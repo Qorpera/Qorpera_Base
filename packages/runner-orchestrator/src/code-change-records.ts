@@ -1,6 +1,7 @@
 import { type CloudCodingRepository, isUuid, parseCloudCodingRepository } from "@qorpera/contracts";
 import { withAbortScope } from "./abort-scope.ts";
 import {
+	CODE_CHANGE_ARCHIVE_COMPLETE_LINE,
 	type CodeChangeArchiveFile,
 	type CodeChangeDiff,
 	type CodeChangePath,
@@ -9,7 +10,8 @@ import {
 	CodeHostJobFailure,
 	CodeHostRefusal,
 	codeAreaPath,
-	type writeCodeChangeRecords,
+	listCodeChangeArchives,
+	writeCodeChangeRecords,
 } from "./code-host-jobs.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { codeSiteNameValid } from "./code-site.ts";
@@ -562,6 +564,11 @@ function checksWords(change: CodeChangeFile): { head: string; section: string[] 
 					)
 				: UNKNOWN;
 		case "not_run":
+			if (change.kind === "landing")
+				return said(
+					"not run",
+					"Not run on this intermediate commit: checks ran and passed on the combined batch tip.",
+				);
 			if (change.kind === "undo")
 				return said(
 					"not run",
@@ -799,6 +806,7 @@ export interface CodeChangeIndexHead extends CodeChangeReleases {
 
 export const CODE_CHANGE_INDEX_LIMIT = 100;
 export const CODE_CHANGE_ARCHIVE_BUCKET = 500;
+export const CODE_CHANGE_ARCHIVES_PER_JOB = 20;
 const CODE_CHANGE_ARCHIVE_SLICE = 200;
 const CODE_CHANGE_MAX_BATCH = 200;
 const CODE_CHANGE_MAX_CONTINUATIONS = 100;
@@ -826,19 +834,24 @@ export function codeChangeArchiveText(
 	start: number,
 	end: number,
 	lines: readonly CodeChangeLine[],
+	complete = false,
 ): string {
 	const byNumber = new Map<number, CodeChangeLine>();
 	for (const entry of lines) {
 		if (entry.n >= start && entry.n <= end) byNumber.set(entry.n, entry);
 	}
 	const ordered = [...byNumber.values()].sort((a, b) => a.n - b.n);
+	const status = complete ? CODE_CHANGE_ARCHIVE_COMPLETE_LINE : `Status: partial (through ${ordered.at(-1)?.n ?? 0}).`;
 	return `${[
 		`# Changes ${start} to ${end} in ${words(`${repository.owner}/${repository.name}`, 200)}`,
+		"",
+		status,
+		"See changes/<n>.md for current status.",
 		"",
 		...(ordered.length
 			? ordered.map((entry) => {
 					const said = words(entry.line, 200);
-					return `- ${entry.n} · ${day(entry.createdAt)} · ${LISTED[entry.state]}${said ? ` · ${said}` : ""}`;
+					return `- ${entry.n} · ${day(entry.createdAt)}${said ? ` · ${said}` : ""}`;
 				})
 			: ["None yet."]),
 	].join("\n")}\n`;
@@ -1129,6 +1142,7 @@ export interface CodeChangeRecordsOptions {
 	hosts: Pick<CodeHostJobs, "run">;
 	/** `writeCodeChangeRecords` of `code-host-jobs.ts`, as it is. */
 	write: typeof writeCodeChangeRecords;
+	listArchives?: (job: CodeHostJob, repository: CloudCodingRepository) => Promise<ReadonlySet<string>>;
 	owner: string;
 	machineIdSha256: string;
 	/** The log lines `code-change` and `code-change-error` (whose `error` is the error itself, for the log to redact). */
@@ -1169,6 +1183,7 @@ export class CodeChangeRecords {
 	readonly #control: CodeChangeRecordsOptions["control"];
 	readonly #hosts: Pick<CodeHostJobs, "run">;
 	readonly #write: typeof writeCodeChangeRecords;
+	readonly #listArchives: (job: CodeHostJob, repository: CloudCodingRepository) => Promise<ReadonlySet<string>>;
 	readonly #owner: string;
 	readonly #machineIdSha256: string;
 	readonly #report: (event: Record<string, unknown>) => void;
@@ -1195,6 +1210,9 @@ export class CodeChangeRecords {
 		this.#control = options.control;
 		this.#hosts = options.hosts;
 		this.#write = options.write;
+		this.#listArchives =
+			options.listArchives ??
+			(options.write === writeCodeChangeRecords ? listCodeChangeArchives : async () => new Set<string>());
 		this.#owner = options.owner;
 		this.#machineIdSha256 = options.machineIdSha256;
 		const report = options.report;
@@ -1227,6 +1245,7 @@ export class CodeChangeRecords {
 		if (!wrote) return async () => undefined;
 		return async () => {
 			this.#rememberArchives(wrote.immutableArchives);
+			if (wrote.changes.length === 0 && wrote.indexVersion === null && !wrote.leftOut.length) return;
 			if (
 				await this.#written(
 					target,
@@ -1335,14 +1354,18 @@ export class CodeChangeRecords {
 		}
 		if (!wrote) return { status: undefined, hasMore: false, writtenKeys: [] };
 		this.#rememberArchives(wrote.immutableArchives);
-		if (!(await this.#written(target, wrote, wrote.leftOut.length ? LEFT_OUT : null, 2, signal)))
+		const needsConfirm = wrote.changes.length > 0 || wrote.indexVersion !== null || wrote.leftOut.length > 0;
+		if (needsConfirm && !(await this.#written(target, wrote, wrote.leftOut.length ? LEFT_OUT : null, 2, signal)))
 			return { status: "failed", hasMore: false, writtenKeys: [] };
 		this.#report({ event: "code-change", step: "written", where: "pass", ...named(target), ...said(wrote) });
 		if (!wrote.leftOut.length) {
 			return {
 				status: "written",
 				hasMore: wrote.hasMore,
-				writtenKeys: wrote.changes.map((change) => `${change.n}:${change.version}`),
+				writtenKeys: [
+					...wrote.changes.map((change) => `${change.n}:${change.version}`),
+					...wrote.immutableArchives.map((key) => `archive:${key}`),
+				],
 			};
 		}
 		this.#report({
@@ -1367,14 +1390,40 @@ export class CodeChangeRecords {
 	}
 
 	async #archivesFor(
+		writer: CodeHostJob,
+		repository: CloudCodingRepository,
 		target: CodeChangeTarget,
 		due: ReturnType<typeof filesOf>,
 		signal: AbortSignal,
-	): Promise<{ files: CodeChangeArchiveFile[]; immutableKeys: string[] }> {
-		if (!due.index) return { files: [], immutableKeys: [] };
+	): Promise<{
+		files: CodeChangeArchiveFile[];
+		immutableKeys: string[];
+		moreArchives: boolean;
+		incomplete: boolean;
+	}> {
+		if (!due.index) return { files: [], immutableKeys: [], moreArchives: false, incomplete: false };
 		const total = Math.max(due.index.lines.length, whole(due.index.total, 0) ? due.index.total : 0);
 		const ranges = codeChangeArchiveRanges(total);
-		if (!ranges.length) return { files: [], immutableKeys: [] };
+		if (!ranges.length) return { files: [], immutableKeys: [], moreArchives: false, incomplete: false };
+		const keyOf = (name: string) => `${target.environmentId}/${target.owner}/${target.name}/${name}`;
+		const uncached = ranges.filter((range) => !(range.immutable && this.#writtenArchives.has(keyOf(range.name))));
+		if (uncached.some((range) => range.immutable)) {
+			try {
+				const onDisk = await this.#listArchives(writer, repository);
+				const foundKeys: string[] = [];
+				for (const range of uncached) {
+					if (range.immutable && onDisk.has(range.name)) foundKeys.push(keyOf(range.name));
+				}
+				if (foundKeys.length) this.#rememberArchives(foundKeys);
+			} catch (error) {
+				if (signal.aborted) throw error;
+				this.#report({ event: "code-change-error", step: "archive-list", ...named(target), error });
+			}
+		}
+		const pending = uncached.filter((range) => !(range.immutable && this.#writtenArchives.has(keyOf(range.name))));
+		if (!pending.length) return { files: [], immutableKeys: [], moreArchives: false, incomplete: false };
+		const batch = pending.slice(0, CODE_CHANGE_ARCHIVES_PER_JOB);
+		const moreArchives = pending.length > batch.length;
 		const known = new Map<number, CodeChangeLine>();
 		for (const change of due.changes) {
 			known.set(change.n, {
@@ -1388,9 +1437,9 @@ export class CodeChangeRecords {
 		for (const line of due.index.lines) known.set(line.n, line);
 		const files: CodeChangeArchiveFile[] = [];
 		const immutableKeys: string[] = [];
-		for (const range of ranges) {
-			const cacheKey = `${target.environmentId}/${target.owner}/${target.name}/${range.name}`;
-			if (range.immutable && this.#writtenArchives.has(cacheKey)) continue;
+		let incomplete = false;
+		for (const range of batch) {
+			const cacheKey = keyOf(range.name);
 			const targetEnd = Math.min(range.end, total);
 			let missingStart: number | null = null;
 			const missing: { from: number; to: number }[] = [];
@@ -1426,6 +1475,7 @@ export class CodeChangeRecords {
 						if (signal.aborted) throw error;
 						this.#report({ event: "code-change-error", step: "archive", ...named(target), error });
 						fetchedOk = false;
+						incomplete = true;
 						break;
 					}
 				}
@@ -1440,12 +1490,12 @@ export class CodeChangeRecords {
 			if (!bucketLines.length) continue;
 			files.push({
 				name: range.name,
-				text: codeChangeArchiveText(target, range.start, range.end, bucketLines),
+				text: codeChangeArchiveText(target, range.start, range.end, bucketLines, range.immutable),
 				immutable: range.immutable,
 			});
 			if (range.immutable) immutableKeys.push(cacheKey);
 		}
-		return { files, immutableKeys };
+		return { files, immutableKeys, moreArchives, incomplete };
 	}
 
 	/** Inside a job: asks what is due, renders it and has the code host write it. Answers what was written, or undefined
@@ -1519,13 +1569,18 @@ export class CodeChangeRecords {
 					this.#now(),
 				)
 			: null;
-		const { files: archives, immutableKeys: immutableArchives } = await this.#archivesFor(target, due, signal);
 		const writer: CodeHostJob = {
 			shell: job.shell,
 			layout: job.layout,
 			signal,
 			...(job.preparedKeptArea === undefined ? {} : { preparedKeptArea: job.preparedKeptArea }),
 		};
+		const {
+			files: archives,
+			immutableKeys: immutableArchives,
+			moreArchives,
+			incomplete: incompleteArchives,
+		} = await this.#archivesFor(writer, repository, target, due, signal);
 		const wrote = await this.#write(writer, {
 			repository,
 			records,
@@ -1557,9 +1612,9 @@ export class CodeChangeRecords {
 					const diff = diffDue(change) ? found.get(change.n) : undefined;
 					return { n: change.n, version: change.version, ...(diff ? { diff } : {}) };
 				}),
-			indexVersion: due.index?.version ?? null,
+			indexVersion: moreArchives || incompleteArchives ? null : (due.index?.version ?? null),
 			leftOut: due.changes.filter((change) => !held.has(change.n)).map((change) => change.n),
-			hasMore: due.hasMore,
+			hasMore: due.hasMore || moreArchives,
 			immutableArchives,
 		};
 	}

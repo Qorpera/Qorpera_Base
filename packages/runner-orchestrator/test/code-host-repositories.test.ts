@@ -2606,6 +2606,21 @@ describe("per-repository landing queue and inline record batching", () => {
 		for (let i = 1; i < reports.length; i += 1) {
 			expect(reports[i]?.mainBefore).toBe(reports[i - 1]?.mainAfter);
 		}
+		for (let i = 0; i < reports.length - 1; i += 1) {
+			const stepReport = reports[i];
+			expect(stepReport?.schema).toBe("qorpera.code-change-report/v2");
+			if (stepReport && stepReport.schema !== "qorpera.code-change-report/v1") {
+				expect(stepReport.checks).toEqual({ state: "not_run" });
+			}
+		}
+		const tipReport = reports[reports.length - 1];
+		expect(tipReport?.schema).toBe("qorpera.code-change-report/v3");
+		if (tipReport && tipReport.schema !== "qorpera.code-change-report/v1") {
+			expect(tipReport.checks?.state).toBe("passed");
+			if (tipReport.checks?.state === "passed") {
+				expect(tipReport.checks.result.commit).toBe(results[7]?.mainSha);
+			}
+		}
 		expect(logged.filter((event) => event.event === "code-checks" && event.step === "stale")).toEqual([]);
 		const mainFiles = (await readdir(join(f.companyRoot, "code/qorpera/example/main"))).sort();
 		for (let index = 0; index < 8; index += 1) expect(mainFiles).toContain(`worker-${index}.js`);
@@ -2656,6 +2671,82 @@ describe("per-repository landing queue and inline record batching", () => {
 		expect(mainFiles).toContain("clean-1.js");
 		expect(mainFiles).toContain("clean-3.js");
 		expect(mainFiles).toContain("clean-4.js");
+	});
+
+	it("defers candidates conflicting or colliding with a failing earlier speculative peer so they land cleanly against real main", async () => {
+		resetMocks();
+		const f = await fixture();
+		const repositories = new CodeHostRepositories(f.jobs, { batchCoalesceMs: 10 });
+		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const checksBase = await startCheckedRepo(f, repo, repositories);
+		const repoGit = join(f.companyRoot, "code/qorpera/example/repo.git");
+
+		const failedRun: CodeChecksRun = {
+			state: "failed",
+			ms: 40,
+			passed: [],
+			failed: {
+				name: "test",
+				run: "npm test",
+				ms: 40,
+				exitCode: 1,
+				atLimit: false,
+				tail: "bad peer failed",
+				log: "~/.qorpera-checks/out/1-test.log",
+			},
+			notRun: [],
+		};
+		const makeChecked = async () =>
+			makeWorkerSession(f, repo, checksBase, repositories, {
+				checksSwitch: async () => ({ checks: true, site: false }),
+				runChecks: async ({ commit }) => {
+					const files = (await f.git(repoGit, "ls-tree", "--name-only", commit)).split("\n");
+					return files.includes("bad-marker.txt") ? failedRun : PASSED_RUN;
+				},
+			});
+
+		const failingPeer = await makeChecked();
+		await writeFile(join(failingPeer.tree, "shared.js"), "export const who = 'bad';\n");
+		await writeFile(join(failingPeer.tree, "Alpha.ts"), "export const a = 1;\n");
+		await writeFile(join(failingPeer.tree, "bad-marker.txt"), "fail\n");
+		await f.git(failingPeer.tree, "add", "shared.js", "Alpha.ts", "bad-marker.txt");
+		const failingHead = await f
+			.git(failingPeer.tree, "commit", "-q", "-m", "bad peer")
+			.then(() => f.git(failingPeer.tree, "rev-parse", "HEAD"));
+
+		const conflictingGood = await makeChecked();
+		await writeFile(join(conflictingGood.tree, "shared.js"), "export const who = 'good';\n");
+		await f.git(conflictingGood.tree, "add", "shared.js");
+		const conflictingGoodHead = await f
+			.git(conflictingGood.tree, "commit", "-q", "-m", "good shared")
+			.then(() => f.git(conflictingGood.tree, "rev-parse", "HEAD"));
+
+		const caseCollidingGood = await makeChecked();
+		await writeFile(join(caseCollidingGood.tree, "alpha.ts"), "export const a = 2;\n");
+		await f.git(caseCollidingGood.tree, "add", "alpha.ts");
+		const caseCollidingHead = await f
+			.git(caseCollidingGood.tree, "commit", "-q", "-m", "good alpha")
+			.then(() => f.git(caseCollidingGood.tree, "rev-parse", "HEAD"));
+
+		const settled = await Promise.allSettled([
+			repositories.land(failingPeer.session, failingHead, signal()),
+			repositories.land(conflictingGood.session, conflictingGoodHead, signal()),
+			repositories.land(caseCollidingGood.session, caseCollidingHead, signal()),
+		]);
+
+		expect(settled[0]?.status).toBe("rejected");
+		if (settled[0]?.status === "rejected") {
+			expect(settled[0].reason).toBeInstanceOf(CodingLandRefused);
+			expect((settled[0].reason as CodingLandRefused).message).toBe("CODING_CHECKS_FAILED");
+		}
+		expect(settled[1]?.status).toBe("fulfilled");
+		expect(settled[2]?.status).toBe("fulfilled");
+		const mainDir = join(f.companyRoot, "code/qorpera/example/main");
+		expect(await readFile(join(mainDir, "shared.js"), "utf8")).toBe("export const who = 'good';\n");
+		expect(await readFile(join(mainDir, "alpha.ts"), "utf8")).toBe("export const a = 2;\n");
+		const mainFiles = (await readdir(mainDir)).sort();
+		expect(mainFiles).not.toContain("bad-marker.txt");
+		expect(mainFiles).not.toContain("Alpha.ts");
 	});
 
 	it("isolates a single check-failing candidate in a batch of 6 via binary-search bisect while landing all 5 clean peers", async () => {
@@ -2714,7 +2805,7 @@ describe("per-repository landing queue and inline record batching", () => {
 		expect(mainFiles).not.toContain("broken-3.js");
 	});
 
-	it("never mixes incompatible secrets scopes or owner users in a single speculative batch", async () => {
+	it("never mixes incompatible owner users, staff agents, or coding machines in a single speculative batch", async () => {
 		resetMocks();
 		const f = await fixture();
 		const repositories = new CodeHostRepositories(f.jobs, { batchCoalesceMs: 10 });
@@ -2722,39 +2813,49 @@ describe("per-repository landing queue and inline record batching", () => {
 		const checksBase = await startCheckedRepo(f, repo, repositories);
 
 		const scopesChecked: string[] = [];
-		const makeScoped = async (name: string, ownerUserId: string, secretsScopeHash: string) => {
+		const makeScoped = async (name: string, ownerUserId: string, agentId: string, machineId: string) => {
 			const worker = await makeWorkerSession(f, repo, checksBase, repositories, {
 				checksSwitch: async () => ({ checks: true, site: false }),
 				runChecks: async () => {
-					scopesChecked.push(`${ownerUserId}:${secretsScopeHash}`);
+					scopesChecked.push(`${ownerUserId}:${agentId}:${machineId}`);
 					return PASSED_RUN;
 				},
 			});
-			const scopedSession = {
+			const scopedSession: CodingFolderRepositorySession = {
 				...worker.session,
-				claim: { ...worker.session.claim, ownerUserId },
-				secretsScopeHash,
-			} as CodingFolderRepositorySession;
+				claim: { ...worker.session.claim, ownerUserId, agentId },
+				machine: { ...worker.session.machine, machineId },
+			};
 			const head = await f.commit(worker.tree, `${name}.js`);
 			return { session: scopedSession, head };
 		};
 
-		const a1 = await makeScoped("a1", "11111111-1111-4111-8111-111111111111", "scope-a");
-		const a2 = await makeScoped("a2", "11111111-1111-4111-8111-111111111111", "scope-a");
-		const b1 = await makeScoped("b1", "22222222-2222-4222-8222-222222222222", "scope-a");
-		const aDiff = await makeScoped("a-diff", "11111111-1111-4111-8111-111111111111", "scope-b");
+		const ownerA = "11111111-1111-4111-8111-111111111111";
+		const ownerB = "22222222-2222-4222-8222-222222222222";
+		const agentA = "33333333-3333-4333-8333-333333333333";
+		const agentB = "44444444-4444-4444-8444-444444444444";
+		const machineA = "55555555-5555-4555-8555-555555555555";
+		const machineB = "66666666-6666-4666-8666-666666666666";
+
+		const a1 = await makeScoped("a1", ownerA, agentA, machineA);
+		const a2 = await makeScoped("a2", ownerA, agentA, machineA);
+		const diffOwner = await makeScoped("b1", ownerB, agentA, machineA);
+		const diffAgent = await makeScoped("a-agent", ownerA, agentB, machineA);
+		const diffMachine = await makeScoped("a-machine", ownerA, agentA, machineB);
 
 		const results = await Promise.all([
 			repositories.land(a1.session, a1.head, signal()),
-			repositories.land(b1.session, b1.head, signal()),
+			repositories.land(diffOwner.session, diffOwner.head, signal()),
 			repositories.land(a2.session, a2.head, signal()),
-			repositories.land(aDiff.session, aDiff.head, signal()),
+			repositories.land(diffAgent.session, diffAgent.head, signal()),
+			repositories.land(diffMachine.session, diffMachine.head, signal()),
 		]);
-		expect(results).toHaveLength(4);
+		expect(results).toHaveLength(5);
 		expect(scopesChecked).toEqual([
-			"11111111-1111-4111-8111-111111111111:scope-a",
-			"22222222-2222-4222-8222-222222222222:scope-a",
-			"11111111-1111-4111-8111-111111111111:scope-b",
+			`${ownerA}:${agentA}:${machineA}`,
+			`${ownerB}:${agentA}:${machineA}`,
+			`${ownerA}:${agentB}:${machineA}`,
+			`${ownerA}:${agentA}:${machineB}`,
 		]);
 	});
 

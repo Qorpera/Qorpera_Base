@@ -136,7 +136,12 @@ export interface CodeChangeReportV1 {
  * (`codeChecksPassed`). */
 export interface CodeChangeReportV2 extends Omit<CodeChangeReportV1, "schema"> {
 	schema: "qorpera.code-change-report/v2";
-	checks: { state: "none" } | { state: "off" } | { state: "passed"; result: Record<string, unknown> } | null;
+	checks:
+		| { state: "none" }
+		| { state: "off" }
+		| { state: "not_run" }
+		| { state: "passed"; result: Record<string, unknown> }
+		| null;
 }
 /** The same report with what became of the site the checks left (`qorpera.code-change-report/v3`, own code storage step
  * 4), made only for a landing whose checks passed: `site` is null when there was none to take (no recipe, or sites

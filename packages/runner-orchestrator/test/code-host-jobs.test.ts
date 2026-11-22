@@ -27,6 +27,7 @@ import {
 	bundleCodeArea,
 	CODE_AREA_CONFIG,
 	CODE_AREA_IN_QORPERA_REF,
+	CODE_CHANGE_ARCHIVE_COMPLETE_LINE,
 	CODE_CHECKS_FILE,
 	type CodeBranchLanding,
 	type CodeChangeDiff,
@@ -44,6 +45,7 @@ import {
 	fsckCodeArea,
 	inspectCodeArea,
 	landCodeBranch,
+	listCodeChangeArchives,
 	removeCodeDownloads,
 	retireCodeWorktrees,
 	seedCodeArea,
@@ -1531,8 +1533,9 @@ describe("code host: nightly care of a repository kept in Qorpera (own code stor
 		expect(pieces.length).toBe(Math.ceil(whole.length / 256));
 		expect(pieces.slice(0, -1).every((piece) => piece.length === 256)).toBe(true);
 		const bundleCommands = c.log.slice(beforeBundle);
-		expect(bundleCommands.some((command) => command.argv[0] === "/usr/bin/dd")).toBe(false);
-		expect(bundleCommands.filter((command) => command.argv[2] === 'exec cat -- "$1"')).toHaveLength(1);
+		const ddCommands = bundleCommands.filter((command) => command.argv[0] === "/usr/bin/dd");
+		expect(ddCommands.length).toBeGreaterThanOrEqual(1);
+		expect(ddCommands.length).toBeLessThan(pieces.length);
 
 		// Anywhere with git: a mirror of the bundle is the whole repository.
 		const file = join(f.root, "all.bundle"),
@@ -1647,7 +1650,7 @@ describe("code host: nightly care of a repository kept in Qorpera (own code stor
 		).toEqual([["repack", "--geometric=2", "-d", "--write-midx", "--write-bitmap-index", "-q"]]);
 		expect(
 			c.log.filter((command) => command.argv.includes("commit-graph")).map((command) => command.argv.slice(3)),
-		).toEqual([["commit-graph", "write", "--reachable", "--changed-paths", "--split=no-merge"]]);
+		).toEqual([["commit-graph", "write", "--reachable", "--changed-paths", "--split", "--expire-time=1.day.ago"]]);
 		expect(await exists(join(c.repo, "objects/pack/multi-pack-index"))).toBe(true);
 		expect(await exists(join(c.repo, "objects/info/commit-graphs/commit-graph-chain"))).toBe(true);
 		expect(c.log.some((command) => command.argv.includes("pack-refs"))).toBe(false);
@@ -3685,24 +3688,93 @@ describe("code host exec batching", () => {
 		);
 	});
 
-	it("writes immutable changes/archive rollup files without overwriting existing immutable rollups", async () => {
+	it("bounds peak buffered bytes when streaming a bundle into a slow sink", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s = await session(f, c, baseSha);
+		const payload = Array.from({ length: 128 }, (_, i) =>
+			createHash("sha256").update(`bundle-entropy-${i}`).digest("hex"),
+		).join("\n");
+		const head = await s.commit({ "large.txt": payload }, "large payload");
+		await landCodeBranch(c.job, { repository: kept, workerId: s.workerId, headSha: head });
+		const checked = await checkCodeArea(c.job, { repository: kept });
+		if (checked.state !== "present") throw new Error("expected present area");
+		const chunkBytes = 256;
+		let inFlightBytes = 0;
+		let peakBufferedBytes = 0;
+		const wrappedShell = {
+			run: async (command: CodeHostCommand, runSignal: AbortSignal) => {
+				const innerOnStdout = command.onStdout;
+				const trackedCommand: CodeHostCommand = innerOnStdout
+					? {
+							...command,
+							onStdout: (chunk) => {
+								inFlightBytes += chunk.length;
+								if (inFlightBytes > peakBufferedBytes) peakBufferedBytes = inFlightBytes;
+								innerOnStdout(chunk);
+							},
+						}
+					: command;
+				return await c.job.shell.run(trackedCommand, runSignal);
+			},
+		};
+		const pieces: Buffer[] = [];
+		const bundled = await bundleCodeArea(
+			{ ...c.job, shell: wrappedShell },
+			{ repository: kept, refsSha256: checked.refsSha256 },
+			{
+				write: async (chunk) => {
+					await delay(5);
+					inFlightBytes -= chunk.length;
+					pieces.push(Buffer.from(chunk));
+				},
+			},
+			{ chunkBytes },
+		);
+		const whole = Buffer.concat(pieces);
+		expect(bundled.bytes).toBeGreaterThan(chunkBytes * 4);
+		expect(whole.length).toBe(bundled.bytes);
+		expect(createHash("sha256").update(whole).digest("hex")).toBe(bundled.sha256);
+		expect(inFlightBytes).toBe(0);
+		expect(peakBufferedBytes).toBeLessThanOrEqual(chunkBytes * 4);
+	});
+
+	it("upgrades partial changes/archive rollups to complete, skips overwriting complete rollups, and lists only complete ones", async () => {
 		const f = await fixture(),
 			c = await f.company();
 		await startCodeArea(c.job, { repository: kept });
+		const partialText =
+			"# Changes 1 to 500 in qorpera/example\n\nStatus: partial (through 450).\n\n- 1 · 2026-11-10 · Init\n";
+		const completeText = `# Changes 1 to 500 in qorpera/example\n\n${CODE_CHANGE_ARCHIVE_COMPLETE_LINE}\nSee changes/<n>.md for current status.\n\n- 1 · 2026-11-10 · Init\n`;
 		await writeCodeChangeRecords(c.job, {
 			repository: kept,
 			records: [{ n: 1, text: "# Change 1\n" }],
 			index: "# Changes in qorpera/example\n\n- 1 · 2026-11-10 · in main · Init\n",
-			archives: [{ name: "0001-0500.md", text: "# Changes 1 to 500\n\n- 1 · Init\n", immutable: true }],
+			archives: [
+				{ name: "0001-0500.md", text: partialText, immutable: false },
+				{ name: "0501-1000.md", text: partialText, immutable: false },
+			],
 		});
 		const archivePath = join(c.code, "changes/archive/0001-0500.md");
-		expect(await readFile(archivePath, "utf8")).toBe("# Changes 1 to 500\n\n- 1 · Init\n");
+		expect(await readFile(archivePath, "utf8")).toBe(partialText);
+		expect([...(await listCodeChangeArchives(c.job, kept))]).toEqual([]);
+
+		await writeCodeChangeRecords(c.job, {
+			repository: kept,
+			records: [],
+			index: null,
+			archives: [{ name: "0001-0500.md", text: completeText, immutable: true }],
+		});
+		expect(await readFile(archivePath, "utf8")).toBe(completeText);
+		expect([...(await listCodeChangeArchives(c.job, kept))]).toEqual(["0001-0500.md"]);
+
 		await writeCodeChangeRecords(c.job, {
 			repository: kept,
 			records: [],
 			index: null,
 			archives: [{ name: "0001-0500.md", text: "# Attempted Overwrite\n", immutable: true }],
 		});
-		expect(await readFile(archivePath, "utf8")).toBe("# Changes 1 to 500\n\n- 1 · Init\n");
+		expect(await readFile(archivePath, "utf8")).toBe(completeText);
 	});
 });

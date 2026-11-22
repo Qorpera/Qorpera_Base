@@ -137,9 +137,7 @@ class BatchAbortOrAuthDropped extends Error {
 }
 
 function sessionScopeKey(session: CodingFolderRepositorySession): string {
-	const extra = session as CodingFolderRepositorySession & { secretsScopeHash?: unknown };
-	const scope = typeof extra.secretsScopeHash === "string" ? extra.secretsScopeHash : "";
-	return `${session.claim.ownerUserId}\0${session.machine.machineId}\0${scope}`;
+	return `${session.claim.ownerUserId}\0${session.claim.agentId}\0${session.machine.machineId}`;
 }
 
 function sameChecksSwitch(a: CodeChecksSwitched, b: CodeChecksSwitched): boolean {
@@ -1194,18 +1192,20 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 							const isTip = i === landed.steps.length - 1;
 							const stepChecks: LandingChecks =
 								gate !== null && passedRun !== null
-									? {
-											state: "passed",
-											result: codeChecksPassed({
-												commit: step.mainSha,
-												how: step.state,
-												blob: gate.blob,
-												run: passedRun,
-												changed: i === 0 ? gate.changed : null,
-												tries: waiter.staleTries,
-											}),
-											site: isTip ? passedRun.site : null,
-										}
+									? isTip
+										? {
+												state: "passed",
+												result: codeChecksPassed({
+													commit: step.mainSha,
+													how: step.state,
+													blob: gate.blob,
+													run: passedRun,
+													changed: chain.length === 1 ? gate.changed : null,
+													tries: waiter.staleTries,
+												}),
+												site: passedRun.site,
+											}
+										: { state: "not_run" }
 									: { state: "none" };
 							let report: CodeChangeReport | undefined;
 							try {

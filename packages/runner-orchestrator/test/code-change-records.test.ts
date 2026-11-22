@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	answeredBefore,
 	CODE_CHANGE_ARCHIVE_BUCKET,
+	CODE_CHANGE_ARCHIVES_PER_JOB,
 	CODE_CHANGE_CHECKS_BYTES,
 	CODE_CHANGE_PICTURE_PATH_BYTES,
 	CODE_CHANGE_RECORD_BYTES,
@@ -789,9 +790,7 @@ describe("codeChangeRecordText: the checks (step 3)", () => {
 			{ schema: "qorpera.code-checks/v2", as: 11 },
 		])
 			as({ kind: "undo", undoes: [12], checksState: "inherited", checks });
-		// A state this executor does not know, and not run for a row that is neither an undo nor a restore.
 		as({ checksState: "skipped" as CodeChangeFile["checksState"] });
-		as({ checksState: "not_run" });
 		as({ checksState: "not_run", kind: "found" });
 	});
 
@@ -968,13 +967,33 @@ describe("codeChangeIndexText", () => {
 			{ start: 1, end: 500, name: "0001-0500.md", immutable: true },
 			{ start: 501, end: 1000, name: "0501-1000.md", immutable: false },
 		]);
-		expect(codeChangeArchiveText({ owner: "qorpera", name: "shop" }, 1, 500, [line(2), line(1)])).toBe(
+		expect(codeChangeArchiveText({ owner: "qorpera", name: "shop" }, 1, 500, [line(2), line(1)], false)).toBe(
 			text(
 				"# Changes 1 to 500 in qorpera/shop",
 				"",
-				"- 1 · 2026-11-10 · in main · Change 1",
-				"- 2 · 2026-11-10 · in main · Change 2",
+				"Status: partial (through 2).",
+				"See changes/<n>.md for current status.",
+				"",
+				"- 1 · 2026-11-10 · Change 1",
+				"- 2 · 2026-11-10 · Change 2",
 			),
+		);
+		expect(codeChangeArchiveText({ owner: "qorpera", name: "shop" }, 1, 500, [line(2), line(1)], true)).toBe(
+			text(
+				"# Changes 1 to 500 in qorpera/shop",
+				"",
+				"Status: complete.",
+				"See changes/<n>.md for current status.",
+				"",
+				"- 1 · 2026-11-10 · Change 1",
+				"- 2 · 2026-11-10 · Change 2",
+			),
+		);
+		const intermediateBatchRecord = codeChangeRecordText(
+			change({ kind: "landing", state: "landed", checksState: "not_run", checks: null }),
+		);
+		expect(intermediateBatchRecord).toContain(
+			"Not run on this intermediate commit: checks ran and passed on the combined batch tip.",
 		);
 	});
 });
@@ -3218,8 +3237,11 @@ describe("CodeChangeRecords", () => {
 			{ name: "0001-0500.md", immutable: true },
 		]);
 		expect(t.wrote[0]?.archives?.[0]?.text).toContain("# Changes 1 to 500 in qorpera/shop");
-		expect(t.wrote[0]?.archives?.[0]?.text).toContain("- 1 · 2026-11-10 · in main · Change 1");
-		expect(t.wrote[0]?.archives?.[0]?.text).toContain("- 500 · 2026-11-10 · in main · Change 500");
+		expect(t.wrote[0]?.archives?.[0]?.text).toContain("Status: complete.");
+		expect(t.wrote[0]?.archives?.[0]?.text).toContain("See changes/<n>.md for current status.");
+		expect(t.wrote[0]?.archives?.[0]?.text).toContain("- 1 · 2026-11-10 · Change 1");
+		expect(t.wrote[0]?.archives?.[0]?.text).toContain("- 500 · 2026-11-10 · Change 500");
+		expect(t.wrote[0]?.archives?.[0]?.text).not.toContain("in main");
 
 		const archiveCallsBefore = t.calls.filter((call) => call.method === "qorpera_code_change_archive").length;
 		t.kernel.answer = (method) => {
@@ -3241,5 +3263,99 @@ describe("CodeChangeRecords", () => {
 		const archiveCallsAfter = t.calls.filter((call) => call.method === "qorpera_code_change_archive").length;
 		expect(archiveCallsAfter).toBe(archiveCallsBefore);
 		expect(t.wrote.at(-1)?.archives).toBeUndefined();
+	});
+
+	it("paginates archives over 25,100 changes within MAX_CODE_CHANGE_ARCHIVES and skips on-disk complete archives after restart", async () => {
+		const total = 30_100;
+		const writtenOnDisk = new Set<string>();
+		const latestLines = Array.from({ length: 100 }, (_, idx) => ({
+			n: total - idx,
+			createdAt: "2026-11-10T12:11:05+00:00",
+			state: "landed",
+			kind: "landing",
+			line: `Change ${total - idx}`,
+		}));
+		let indexConfirmed = false;
+		const t = setup({
+			listArchives: async () => new Set(writtenOnDisk),
+		});
+		const baseWrite = t.write;
+		t.kernel.answer = (method, args) => {
+			if (method === "qorpera_code_change_files") {
+				return {
+					schema: "qorpera.code-change-files/v1",
+					repository: TARGET,
+					changes: [],
+					index: indexConfirmed ? null : { version: 77, total, lines: latestLines },
+				};
+			}
+			if (method === "qorpera_code_change_archive") {
+				const from = args.p_from as number;
+				const to = args.p_to as number;
+				return {
+					schema: "qorpera.code-change-archive/v1",
+					repository: TARGET,
+					from,
+					to,
+					lines: Array.from({ length: to - from + 1 }, (_, idx) => ({
+						n: from + idx,
+						createdAt: "2026-11-10T12:11:05+00:00",
+						state: "landed",
+						kind: "landing",
+						line: `Change ${from + idx}`,
+					})),
+				};
+			}
+			if (method === "qorpera_code_change_files_written") {
+				const payload = args.p_written as { indexVersion: number | null };
+				if (payload.indexVersion === 77) indexConfirmed = true;
+				return { schema: "qorpera.code-change-files-written/v1", state: "recorded" };
+			}
+			return undefined;
+		};
+		expect(baseWrite).toBeDefined();
+		await expect(t.pass()).resolves.toEqual({ written: 1, failed: 0 });
+		expect(t.runs).toHaveLength(3);
+		expect(t.wrote.map((entry) => entry.archives?.length ?? 0)).toEqual([
+			CODE_CHANGE_ARCHIVES_PER_JOB,
+			CODE_CHANGE_ARCHIVES_PER_JOB,
+			CODE_CHANGE_ARCHIVES_PER_JOB,
+		]);
+		expect(indexConfirmed).toBe(true);
+		for (const entry of t.wrote) {
+			for (const archive of entry.archives ?? []) {
+				if (archive.immutable) writtenOnDisk.add(archive.name);
+			}
+		}
+		expect(writtenOnDisk.size).toBe(60);
+
+		indexConfirmed = false;
+		const restarted = setup({
+			listArchives: async () => new Set(writtenOnDisk),
+		});
+		restarted.kernel.answer = (method, args) => {
+			if (method === "qorpera_code_change_files") {
+				return {
+					schema: "qorpera.code-change-files/v1",
+					repository: TARGET,
+					changes: [],
+					index: indexConfirmed ? null : { version: 78, total, lines: latestLines },
+				};
+			}
+			if (method === "qorpera_code_change_archive") {
+				throw new Error("should not fetch already-complete on-disk archives after restart");
+			}
+			if (method === "qorpera_code_change_files_written") {
+				const payload = args.p_written as { indexVersion: number | null };
+				if (payload.indexVersion === 78) indexConfirmed = true;
+				return { schema: "qorpera.code-change-files-written/v1", state: "recorded" };
+			}
+			return undefined;
+		};
+		await expect(restarted.pass()).resolves.toEqual({ written: 1, failed: 0 });
+		expect(restarted.runs).toHaveLength(1);
+		expect(restarted.calls.filter((call) => call.method === "qorpera_code_change_archive")).toHaveLength(0);
+		expect(restarted.wrote[0]?.archives).toBeUndefined();
+		expect(indexConfirmed).toBe(true);
 	});
 });

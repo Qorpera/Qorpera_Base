@@ -154,7 +154,7 @@ export function neverPublished(name: string): boolean {
  * directory, what git has not finished, and its shared files, which only their lease publishes (git.ts; fewer in the
  * code host's view, `codeHost`). */
 export function unpublished(path: string, codeHost: boolean): boolean {
-	return path.split("/").some(neverPublished) || gitUnpublished(path) || gitSharedPath(path, codeHost);
+	return path.split("/").some(neverPublished) || gitUnpublished(path, codeHost) || gitSharedPath(path, codeHost);
 }
 
 /** The seeded paths by key: QorperaOS/ and the platform's folders and files under it. */

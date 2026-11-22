@@ -481,40 +481,13 @@ test("a way out's commands may be refused the deletes of published objects, by d
 	assert.deepEqual(turnRefusals([published.map((rest) => deleted(rest)), []], 1, repoGit).odd, odd, "no way out unless the driver says so");
 	// Only a published object's path, as folder-service/git.ts gitPublishedObject takes it, or a loose object's folder:
 	// refs, packed-refs, git's own indexes, a pack's .keep, a temporary pack, the objects and pack folders are odd.
-	const others = [
-		"refs/heads/main",
-		"packed-refs",
-		"logs/HEAD",
-		"objects/info/packs",
-		"objects/info/commit-graphs/graph-0123.graph",
-		"objects/pack/multi-pack-index-0123.bitmap",
-		`objects/pack/pack-${sha1}.keep`,
-		`objects/pack/tmp_pack_${sha1}`,
-		"objects/pack",
-		"objects",
-		"objects/ab/cdef",
-		"objects/AB",
-		`objects/incoming-Q1/pack/pack-${sha1}.pack`,
-	];
+	const others = ["refs/heads/main", "packed-refs", "logs/HEAD", "objects/info/packs", "objects/info/commit-graph",
+		"objects/pack/multi-pack-index", `objects/pack/pack-${sha1}.keep`, `objects/pack/tmp_pack_${sha1}`, "objects/pack", "objects",
+		"objects/ab/cdef", "objects/AB", `objects/incoming-Q1/pack/pack-${sha1}.pack`];
 	for (const rest of others)
-		assert.deepEqual(
-			judged([[deleted(rest)], []], 1, true),
-			{ refused: [], odd: [[`${repoGit}${rest}`, GIT_OBJECT_DELETE]], deletes: 0 },
-			rest,
-		);
-	const shapes = [
-		...published,
-		`objects/${sha256.slice(0, 2)}/${sha256.slice(2)}`,
-		`objects/pack/pack-${sha256}.pack`,
-		...["bitmap", "mtimes", "promisor"].map((kind) => `objects/pack/pack-${sha1}.${kind}`),
-		"objects/info/commit-graph",
-		"objects/info/commit-graphs/commit-graph-chain",
-		`objects/info/commit-graphs/graph-${sha1}.graph`,
-		`objects/info/commit-graphs/graph-${sha256}.graph`,
-		"objects/pack/multi-pack-index",
-		`objects/pack/multi-pack-index-${sha1}.bitmap`,
-		`objects/pack/multi-pack-index-${sha256}.bitmap`,
-	];
+		assert.deepEqual(judged([[deleted(rest)], []], 1, true), { refused: [], odd: [[`${repoGit}${rest}`, GIT_OBJECT_DELETE]], deletes: 0 }, rest);
+	const shapes = [...published, `objects/${sha256.slice(0, 2)}/${sha256.slice(2)}`, `objects/pack/pack-${sha256}.pack`,
+		...["bitmap", "mtimes", "promisor"].map((kind) => `objects/pack/pack-${sha1}.${kind}`)];
 	for (const rest of shapes) assert.equal(judged([[deleted(rest)], []], 1, true).deletes, 1, rest);
 	const objectShape = /^\t\t\/(\^objects\\\/[^\n]*\$)\/\.test\($/m.exec(readFileSync(folderGit, "utf8"))?.[1];
 	assert.ok(objectShape, "gitPublishedObject's pattern");

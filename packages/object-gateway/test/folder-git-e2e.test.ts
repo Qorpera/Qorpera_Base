@@ -1156,26 +1156,58 @@ describe.skipIf(!program || !gitBin)("git on the mount, with the pinned git", ()
 
 			await first.git("commit-graph", "write", "--reachable");
 			await first.git("multi-pack-index", "write");
-			const publishedIndexes = ["info/commit-graph", "pack/multi-pack-index"].map((i) => `${R}/objects/${i}`);
-			const unpublishedIndex = `${R}/objects/info/packs`;
-			for (const index of [...publishedIndexes, unpublishedIndex]) await stat(join(first.company, index));
+			const indexes = ["info/commit-graph", "info/packs", "pack/multi-pack-index"].map((i) => `${R}/objects/${i}`);
+			for (const index of indexes) await stat(join(first.company, index));
 			expect(refusedAt(await at.service.boundary(CODING_MACHINE_ID))).toEqual([]);
-			for (const index of publishedIndexes) expect(at.core.entries.has(index)).toBe(true);
-			expect(at.core.entries.has(unpublishedIndex)).toBe(false);
-			await expect(stat(join(second.company, unpublishedIndex))).rejects.toMatchObject({ code: "ENOENT" });
-			await at.service.poll();
-			for (const index of publishedIndexes)
-				expect(
-					await eventually(async () => {
-						try {
-							await stat(join(second.company, index));
-							return true;
-						} catch {
-							return false;
-						}
-					}),
-				).toBe(true);
+			for (const index of indexes) {
+				expect(at.core.entries.has(index)).toBe(false);
+				await expect(stat(join(second.company, index))).rejects.toMatchObject({ code: "ENOENT" });
+			}
 			expect(await first.git("fsck", "--no-progress", "--no-dangling")).toBe("");
+			expect(await second.git("fsck", "--no-progress", "--no-dangling")).toBe("");
+		},
+		TIMEOUT,
+	);
+
+	it(
+		"a code host publishes commit-graph and multi-pack-index files for sessions to read, keeping info/packs local",
+		async () => {
+			const at = await area();
+			const host = await mountSession(at, "host");
+			const second = await mountSession(at, "second");
+			await host.git("repack", "--geometric=2", "-d", "--write-midx", "--write-bitmap-index", "-q");
+			await host.git(
+				"commit-graph",
+				"write",
+				"--reachable",
+				"--changed-paths",
+				"--split",
+				"--expire-time=1.day.ago",
+			);
+			expect((await host.publish()).code).toBe(0);
+			const hostEntries = [...at.core.entries.keys()];
+			expect(hostEntries).toContain(`${R}/objects/pack/multi-pack-index`);
+			expect(
+				hostEntries.some((p) => p.startsWith(`${R}/objects/pack/multi-pack-index-`) && p.endsWith(".bitmap")),
+			).toBe(true);
+			expect(hostEntries).toContain(`${R}/objects/info/commit-graphs/commit-graph-chain`);
+			expect(
+				hostEntries.some((p) => p.startsWith(`${R}/objects/info/commit-graphs/graph-`) && p.endsWith(".graph")),
+			).toBe(true);
+			expect(at.core.entries.has(`${R}/objects/info/packs`)).toBe(false);
+			await at.service.poll();
+			expect(
+				await eventually(async () => {
+					try {
+						await stat(join(second.company, `${R}/objects/pack/multi-pack-index`));
+						await stat(join(second.company, `${R}/objects/info/commit-graphs/commit-graph-chain`));
+						return true;
+					} catch {
+						return false;
+					}
+				}),
+			).toBe(true);
+			expect(await second.git("commit-graph", "verify")).toBe("");
 			expect(await second.git("fsck", "--no-progress", "--no-dangling")).toBe("");
 		},
 		TIMEOUT,

@@ -730,6 +730,9 @@ export class Run {
 	}
 }
 
+export const STREAM_FILE_WINDOW_BYTES = 32 * 1024 * 1024;
+const STREAM_FILE_WINDOW_CHUNKS = 4;
+
 export async function streamFileOut(
 	run: Run,
 	file: string,
@@ -739,85 +742,124 @@ export async function streamFileOut(
 	write: (piece: Buffer) => Promise<void>,
 	failureCode: string,
 	mismatchMessage: string,
+	maxWindowBytes = STREAM_FILE_WINDOW_BYTES,
 ): Promise<void> {
+	if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || !Number.isSafeInteger(chunkBytes) || chunkBytes < 1)
+		throw new Error("INVALID_CODE_HOST_JOB");
 	const read = createHash("sha256");
-	const streamAbort = new AbortController();
-	const onJobAbort = () => streamAbort.abort(run.job.signal.reason);
-	if (run.job.signal.aborted) streamAbort.abort(run.job.signal.reason);
-	else run.job.signal.addEventListener("abort", onJobAbort, { once: true });
-	let pending: Buffer[] = [];
-	let pendingBytes = 0;
-	let total = 0;
-	let chain: Promise<void> = Promise.resolve();
-	let hasWriteFailure = false;
-	let writeFailure: unknown;
-	let overflow = false;
-	const enqueue = (piece: Buffer) => {
-		const copy = Buffer.from(piece);
-		chain = chain
-			.then(async () => {
-				if (hasWriteFailure) return;
-				run.job.signal.throwIfAborted();
-				await write(copy);
-			})
-			.catch((error: unknown) => {
-				if (!hasWriteFailure) {
-					hasWriteFailure = true;
-					writeFailure = error;
-					streamAbort.abort(error);
-				}
-			});
-	};
-	const handleChunk = (chunk: Buffer) => {
-		if (hasWriteFailure || overflow || chunk.length === 0) return;
-		total += chunk.length;
-		if (total > expectedBytes) {
-			overflow = true;
-			streamAbort.abort(new CodeHostJobFailure(failureCode, "the file grew while being read"));
-			return;
-		}
-		read.update(chunk);
-		pending.push(chunk);
-		pendingBytes += chunk.length;
-		while (pendingBytes >= chunkBytes) {
-			const combined = pending.length === 1 ? (pending[0] as Buffer) : Buffer.concat(pending, pendingBytes);
-			const piece = combined.subarray(0, chunkBytes);
-			const rest = combined.subarray(chunkBytes);
-			pending = rest.length > 0 ? [rest] : [];
-			pendingBytes = rest.length;
-			enqueue(piece);
-		}
-	};
-	let result: CodeHostCommandResult | undefined;
-	let runError: unknown;
-	try {
-		result = await run.sh('exec cat -- "$1"', [file], {
-			maximumOutputBytes: Math.min(MAX_BLOB, Math.max(chunkBytes, 64 * 1024)),
-			signal: streamAbort.signal,
-			onStdout: handleChunk,
+	if (expectedBytes === 0) {
+		const probe = await run.command(["/usr/bin/dd", `if=${file}`, "bs=1", "count=1", "status=none"], {
+			maximumOutputBytes: 1,
 		});
-	} catch (error) {
-		runError = error;
-	} finally {
-		run.job.signal.removeEventListener("abort", onJobAbort);
+		if (probe.status !== 0) throw new CodeHostJobFailure(failureCode, tail(probe.stderr) || "a piece was cut short");
+		if (probe.stdout.length > 0) throw new CodeHostJobFailure(failureCode, "the file grew while being read");
+		if (read.digest("hex") !== expectedSha256) throw new CodeHostJobFailure(failureCode, mismatchMessage);
+		return;
 	}
-	await chain;
-	if (hasWriteFailure) throw writeFailure;
-	if (overflow) throw new CodeHostJobFailure(failureCode, "the file grew while being read");
-	run.job.signal.throwIfAborted();
-	if (runError !== undefined) throw runError;
-	if (!result || result.status !== 0)
-		throw new CodeHostJobFailure(failureCode, tail(result?.stderr ?? "") || "a piece was cut short");
-	if (total === 0 && result.stdout.length > 0) {
-		handleChunk(result.stdout);
+	const chunksPerWindow = Math.max(
+		1,
+		Math.min(STREAM_FILE_WINDOW_CHUNKS, Math.floor(Math.max(chunkBytes, maxWindowBytes) / chunkBytes)),
+	);
+	const windowBytes = chunksPerWindow * chunkBytes;
+	let total = 0;
+	for (let chunkIndex = 0; chunkIndex * chunkBytes < expectedBytes; chunkIndex += chunksPerWindow) {
+		const offset = chunkIndex * chunkBytes;
+		const wantBytes = Math.min(windowBytes, expectedBytes - offset);
+		const wantChunks = Math.ceil(wantBytes / chunkBytes);
+		const isFinalWindow = offset + wantBytes === expectedBytes;
+		const streamAbort = new AbortController();
+		const onJobAbort = () => streamAbort.abort(run.job.signal.reason);
+		if (run.job.signal.aborted) streamAbort.abort(run.job.signal.reason);
+		else run.job.signal.addEventListener("abort", onJobAbort, { once: true });
+		let pending: Buffer[] = [];
+		let pendingBytes = 0;
+		let windowTotal = 0;
+		let chain: Promise<void> = Promise.resolve();
+		let hasWriteFailure = false;
+		let writeFailure: unknown;
+		let overflow = false;
+		const enqueue = (piece: Buffer) => {
+			const copy = Buffer.from(piece);
+			chain = chain
+				.then(async () => {
+					if (hasWriteFailure) return;
+					run.job.signal.throwIfAborted();
+					await write(copy);
+				})
+				.catch((error: unknown) => {
+					if (!hasWriteFailure) {
+						hasWriteFailure = true;
+						writeFailure = error;
+						streamAbort.abort(error);
+					}
+				});
+		};
+		const handleChunk = (chunk: Buffer) => {
+			if (hasWriteFailure || overflow || chunk.length === 0) return;
+			windowTotal += chunk.length;
+			if (windowTotal > wantBytes) {
+				overflow = true;
+				streamAbort.abort(new CodeHostJobFailure(failureCode, "the file grew while being read"));
+				return;
+			}
+			read.update(chunk);
+			pending.push(chunk);
+			pendingBytes += chunk.length;
+			while (pendingBytes >= chunkBytes) {
+				const combined = pending.length === 1 ? (pending[0] as Buffer) : Buffer.concat(pending, pendingBytes);
+				const piece = combined.subarray(0, chunkBytes);
+				const rest = combined.subarray(chunkBytes);
+				pending = rest.length > 0 ? [rest] : [];
+				pendingBytes = rest.length;
+				enqueue(piece);
+			}
+		};
+		let result: CodeHostCommandResult | undefined;
+		let runError: unknown;
+		try {
+			// WHY: LXD exec stdout callbacks have no pause/resume backpressure; windowing dd bounds
+			// peak buffered orchestrator memory to windowBytes even when the upload sink stalls.
+			result = await run.command(
+				[
+					"/usr/bin/dd",
+					`if=${file}`,
+					`bs=${chunkBytes}`,
+					`skip=${chunkIndex}`,
+					`count=${isFinalWindow ? wantChunks + 1 : wantChunks}`,
+					"iflag=fullblock",
+					"status=none",
+				],
+				{
+					maximumOutputBytes: wantBytes + chunkBytes,
+					signal: streamAbort.signal,
+					onStdout: handleChunk,
+				},
+			);
+		} catch (error) {
+			runError = error;
+		} finally {
+			run.job.signal.removeEventListener("abort", onJobAbort);
+		}
 		await chain;
 		if (hasWriteFailure) throw writeFailure;
 		if (overflow) throw new CodeHostJobFailure(failureCode, "the file grew while being read");
-	}
-	if (pendingBytes > 0) {
-		const last = pending.length === 1 ? (pending[0] as Buffer) : Buffer.concat(pending, pendingBytes);
-		await write(last);
 		run.job.signal.throwIfAborted();
+		if (runError !== undefined) throw runError;
+		if (!result || result.status !== 0)
+			throw new CodeHostJobFailure(failureCode, tail(result?.stderr ?? "") || "a piece was cut short");
+		if (windowTotal === 0 && result.stdout.length > 0) {
+			handleChunk(result.stdout);
+			await chain;
+			if (hasWriteFailure) throw writeFailure;
+			if (overflow) throw new CodeHostJobFailure(failureCode, "the file grew while being read");
+		}
+		if (pendingBytes > 0) {
+			const last = pending.length === 1 ? (pending[0] as Buffer) : Buffer.concat(pending, pendingBytes);
+			await write(last);
+			run.job.signal.throwIfAborted();
+		}
+		if (windowTotal !== wantBytes) throw new CodeHostJobFailure(failureCode, "a piece was cut short");
+		total += windowTotal;
 	}
 	if (total !== expectedBytes) throw new CodeHostJobFailure(failureCode, "a piece was cut short");
 	if (read.digest("hex") !== expectedSha256) throw new CodeHostJobFailure(failureCode, mismatchMessage);
@@ -1873,6 +1915,10 @@ export async function landCodeBranchBatch(
 				]);
 				const fields = merged.stdout.toString("utf8").split("\0");
 				if (merged.status === 1) {
+					if (tip !== mainStart) {
+						deferred.push(i);
+						continue;
+					}
 					const paths = [...new Set(fields.slice(1).filter(Boolean))];
 					rejected.push({
 						index: i,
@@ -1912,6 +1958,10 @@ export async function landCodeBranchBatch(
 				if (refused.length) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
 			} catch (error) {
 				if (error instanceof CodeHostRefusal) {
+					if (tip !== mainStart) {
+						deferred.push(i);
+						continue;
+					}
 					rejected.push({ index: i, workerId, headSha, error });
 					continue;
 				}
@@ -2200,7 +2250,7 @@ export async function collectCodeGarbage(
 			}
 			await run.gitOk(
 				run.repo,
-				["commit-graph", "write", "--reachable", "--changed-paths", "--split=no-merge"],
+				["commit-graph", "write", "--reachable", "--changed-paths", "--split", "--expire-time=1.day.ago"],
 				"CODE_HOST_GC_FAILED",
 			);
 			return { state: "collected", restored: run.restored };
@@ -2790,10 +2840,34 @@ export interface CodeChangeArchiveFile {
 	text: string;
 	immutable?: boolean;
 }
+export const CODE_CHANGE_ARCHIVE_COMPLETE_LINE = "Status: complete.";
+export const MAX_CODE_CHANGE_ARCHIVES = 50;
 const MAX_RECORDS = 200;
-const MAX_ARCHIVES = 50;
+const MAX_ARCHIVES = MAX_CODE_CHANGE_ARCHIVES;
 const ARCHIVE_FILE_NAME = /^(\d{4,9})-(\d{4,9})\.md$/;
 const MAX_RECORD_TEXT = 256 * 1024;
+
+export async function listCodeChangeArchives(
+	job: CodeHostJob,
+	repositoryInput: CloudCodingRepository,
+): Promise<Set<string>> {
+	const repository = keptRepositoryOf(repositoryInput);
+	return withJob(job, repository, async (run) => {
+		if (job.preparedKeptArea !== run.area) await keptArea(run);
+		const archiveFolder = `${run.code}/changes/archive`;
+		const listed = await run.sh(
+			'if [ -d "$1" ]; then for f in "$1"/*.md; do [ -f "$f" ] || continue; if head -n 4 -- "$f" | grep -Fxq -- "$2"; then basename -- "$f"; fi; done; fi',
+			[archiveFolder, CODE_CHANGE_ARCHIVE_COMPLETE_LINE],
+		);
+		if (listed.status !== 0) throw new CodeHostJobFailure("CODE_HOST_RECORD_FAILED", tail(listed.stderr));
+		const found = new Set<string>();
+		for (const line of listed.stdout.toString("utf8").split("\n")) {
+			const name = line.trim();
+			if (ARCHIVE_FILE_NAME.test(name)) found.add(name);
+		}
+		return found;
+	});
+}
 
 function recordText(value: unknown): string {
 	if (typeof value !== "string" || !value || value.includes("\0") || Buffer.byteLength(value) > MAX_RECORD_TEXT)
@@ -2946,7 +3020,21 @@ export async function writeCodeChangeRecords(
 			return found;
 		};
 		const there = (file: { path: string }) => type.get(file.path) === "file";
-		const hashableTexts = texts.filter((file) => there(file) && !file.immutable);
+		const existingCompleteArchives = new Set<string>();
+		const immutableExisting = texts.filter((file) => file.immutable && there(file));
+		if (immutableExisting.length) {
+			const checked = await run.sh(
+				'marker=$1; shift; for p do if head -n 4 -- "$p" | grep -Fxq -- "$marker"; then printf "1\\n"; else printf "0\\n"; fi; done',
+				[CODE_CHANGE_ARCHIVE_COMPLETE_LINE, ...immutableExisting.map((file) => file.path)],
+			);
+			const flags = checked.stdout.toString("latin1").split("\n");
+			if (checked.status !== 0 || flags.pop() !== "" || flags.length !== immutableExisting.length)
+				throw new CodeHostJobFailure("CODE_HOST_RECORD_FAILED", tail(checked.stderr));
+			immutableExisting.forEach((file, idx) => {
+				if (flags[idx] === "1") existingCompleteArchives.add(file.path);
+			});
+		}
+		const hashableTexts = texts.filter((file) => there(file) && !existingCompleteArchives.has(file.path));
 		const [textHashes, pictureHashes] = await Promise.all([
 			hashes(
 				'for p do sha256sum <"$p" || exit 1; done',
@@ -2962,7 +3050,7 @@ export async function writeCodeChangeRecords(
 			),
 		]);
 		const newTexts = texts.filter((file) => {
-				if (file.immutable && there(file)) return false;
+				if (existingCompleteArchives.has(file.path)) return false;
 				return textHashes.get(file.path) !== createHash("sha256").update(file.bytes).digest("hex");
 			}),
 			newPictures = pictures.filter((file) => pictureHashes.get(file.path) !== file.blob);

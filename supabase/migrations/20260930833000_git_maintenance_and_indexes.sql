@@ -13,16 +13,35 @@ begin
 	execute v_definition;
 end $$;
 
-create or replace function public.qorpera_folder_git_object(p_key text)
+create or replace function public.qorpera_folder_git_index(p_key text)
 returns boolean language sql immutable set search_path = '' as $$
 	select coalesce(p_key ~ ('^code/[^/]+/[^/]+/repo\.git/objects/('
-		|| '[0-9a-f]{2}/[0-9a-f]{38}([0-9a-f]{24})?'
-		|| '|pack/pack-[0-9a-f]{40}([0-9a-f]{24})?\.(pack|idx|rev|bitmap|mtimes|promisor)'
-		|| '|info/commit-graph'
+		|| 'info/commit-graph'
 		|| '|info/commit-graphs/(commit-graph-chain|graph-[0-9a-f]{40}([0-9a-f]{24})?\.graph)'
 		|| '|pack/multi-pack-index(-[0-9a-f]{40}([0-9a-f]{24})?\.bitmap)?'
 		|| ')$'), false)
 $$;
+
+select pg_temp.git_maint_patch('public.qorpera_folder_git_refusal(text,text,text,uuid)'::regprocedure, array[
+	$old$	if v_rest ~ '^objects(/|$)' then
+		if (v_folder and v_rest !~ '^objects(/[0-9a-f]{2}|/pack)?$') or (not v_folder and not public.qorpera_folder_git_object(p_key)) then
+			return 'git_platform_only'; end if;$old$,
+	$new$	if v_rest ~ '^objects(/|$)' then
+		if not v_folder and public.qorpera_folder_git_index(p_key) then
+			return 'git_platform_only'; end if;
+		if (v_folder and v_rest !~ '^objects(/[0-9a-f]{2}|/pack)?$') or (not v_folder and not public.qorpera_folder_git_object(p_key)) then
+			return 'git_platform_only'; end if;$new$]);
+
+select pg_temp.git_maint_patch('public.qorpera_code_change_checks_valid(jsonb)'::regprocedure, array[
+	$old$				when '"off"'::jsonb then p_change -> 'checks' = '{"state":"off"}'::jsonb$old$,
+	$new$				when '"off"'::jsonb then p_change -> 'checks' = '{"state":"off"}'::jsonb
+				when '"not_run"'::jsonb then p_change -> 'checks' = '{"state":"not_run"}'::jsonb$new$]);
+
+select pg_temp.git_maint_patch(
+	'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)'::regprocedure, array[
+	$old$					when 'off' then ' Checks are switched off for this repository, so nothing checked this change.' end$old$,
+	$new$					when 'off' then ' Checks are switched off for this repository, so nothing checked this change.'
+					when 'not_run' then ' Checks ran and passed on the combined batch tip.' end$new$]);
 
 alter table public.qorpera_code_repositories
 	alter column gc_enabled set default true,
@@ -86,18 +105,26 @@ begin
 		'from', p_from, 'to', p_to, 'lines', v_lines);
 end $$;
 
-revoke all on function public.qorpera_folder_git_object(text),
+revoke all on function public.qorpera_folder_git_index(text),
 	public.qorpera_code_change_archive(text, text, uuid, text, text, integer, integer)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 grant execute on function public.qorpera_code_change_archive(text, text, uuid, text, text, integer, integer)
 	to service_role;
+comment on function public.qorpera_folder_git_index(text) is
+	'Platform-only Git acceleration index allow-list under repo.git/objects (20260930833000).';
 comment on function public.qorpera_code_change_archive(text, text, uuid, text, text, integer, integer) is
 	'Bounded slice of compact change-index lines (at most 250 rows) for writing immutable changes/archive rollups (20260930833000).';
 
 do $guard$
 begin
-	if position('multi-pack-index' in pg_get_functiondef('public.qorpera_folder_git_object(text)'::regprocedure)) = 0 then
-		raise exception '20260930833000 missing from qorpera_folder_git_object'; end if;
+	if position('multi-pack-index' in pg_get_functiondef('public.qorpera_folder_git_index(text)'::regprocedure)) = 0 then
+		raise exception '20260930833000 missing from qorpera_folder_git_index'; end if;
+	if position('qorpera_folder_git_index' in pg_get_functiondef('public.qorpera_folder_git_refusal(text,text,text,uuid)'::regprocedure)) = 0 then
+		raise exception '20260930833000 missing from qorpera_folder_git_refusal'; end if;
+	if position('not_run' in pg_get_functiondef('public.qorpera_code_change_checks_valid(jsonb)'::regprocedure)) = 0 then
+		raise exception '20260930833000 missing from qorpera_code_change_checks_valid'; end if;
+	if position('combined batch tip' in pg_get_functiondef('public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)'::regprocedure)) = 0 then
+		raise exception '20260930833000 missing from qorpera_complete_coding_turn'; end if;
 	if position('not between 1 and 200' in pg_get_functiondef('public.qorpera_code_change_files(text,text,uuid,text,text,integer)'::regprocedure)) = 0 then
 		raise exception '20260930833000 missing from qorpera_code_change_files'; end if;
 	if position('<= 200' in pg_get_functiondef('public.qorpera_code_change_files_written_valid(jsonb)'::regprocedure)) = 0 then

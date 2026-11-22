@@ -17,14 +17,18 @@ begin
 		'objects/pack/multi-pack-index-' || s40 || '.bitmap',
 		'objects/pack/multi-pack-index-' || s64 || '.bitmap'
 	] loop
-		perform pg_temp.base_assert(public.qorpera_folder_git_object(g || v_path),
-			'expected git object allow-list to accept ' || v_path);
+		perform pg_temp.base_assert(public.qorpera_folder_git_index(g || v_path),
+			'expected git platform index allow-list to accept ' || v_path);
+		perform pg_temp.base_assert(not public.qorpera_folder_git_object(g || v_path),
+			'expected git object allow-list to exclude platform index ' || v_path);
 		perform pg_temp.base_assert(public.qorpera_folder_git_refusal(g || v_path, 'write', 'platform', w) is null,
 			'expected platform write allowed for ' || v_path);
-		perform pg_temp.base_assert(public.qorpera_folder_git_refusal(g || v_path, 'write', 'session', w) is null,
-			'expected session create allowed for ' || v_path);
-		perform pg_temp.base_assert(public.qorpera_folder_git_refusal(g || v_path, 'delete', 'session', w) = 'git_object_delete',
-			'expected session delete refused for ' || v_path);
+		perform pg_temp.base_assert(public.qorpera_folder_git_refusal(g || v_path, 'delete', 'platform', w) is null,
+			'expected platform delete allowed for ' || v_path);
+		perform pg_temp.base_assert(public.qorpera_folder_git_refusal(g || v_path, 'write', 'session', w) = 'git_platform_only',
+			'expected session write refused as git_platform_only for ' || v_path);
+		perform pg_temp.base_assert(public.qorpera_folder_git_refusal(g || v_path, 'delete', 'session', w) = 'git_platform_only',
+			'expected session delete refused as git_platform_only for ' || v_path);
 		perform pg_temp.base_assert(public.qorpera_folder_git_refusal(g || v_path, 'write', 'member', w) = 'git_platform_only',
 			'expected member write refused for ' || v_path);
 	end loop;
@@ -49,11 +53,25 @@ begin
 		'objects/pack/multi-pack-index.d/multi-pack-index-' || s40 || '.midx',
 		'objects/pack/evil.bitmap'
 	] loop
+		perform pg_temp.base_assert(not public.qorpera_folder_git_index(g || v_path),
+			'expected git platform index allow-list to reject ' || v_path);
 		perform pg_temp.base_assert(not public.qorpera_folder_git_object(g || v_path),
 			'expected git object allow-list to reject ' || v_path);
 		perform pg_temp.base_assert(public.qorpera_folder_git_refusal(g || v_path, 'write', 'session', w) = 'git_platform_only',
 			'expected session write refused for ' || v_path);
 	end loop;
+
+	perform pg_temp.base_assert(public.qorpera_code_change_checks_valid(jsonb_build_object(
+		'state', 'landed', 'how', 'merged', 'mainAfter', s40,
+		'checks', jsonb_build_object('state', 'not_run'))),
+		'landed intermediate batch report with checks_state not_run must be valid');
+	perform pg_temp.base_assert(not public.qorpera_code_change_checks_valid(jsonb_build_object(
+		'state', 'landed', 'how', 'merged', 'mainAfter', s40,
+		'checks', jsonb_build_object('state', 'not_run', 'result', jsonb_build_object()))),
+		'not_run with extra result key must be rejected');
+	perform pg_temp.base_assert(not public.qorpera_code_change_checks_valid(jsonb_build_object(
+		'state', 'conflict', 'checks', jsonb_build_object('state', 'not_run'))),
+		'non-landed report with not_run checks must be rejected');
 
 	insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
 	values ('92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000010', 'company', 'defaults-check');
@@ -78,6 +96,7 @@ begin
 		not has_function_privilege('anon', 'public.qorpera_code_change_archive(text,text,uuid,text,text,integer,integer)', 'EXECUTE')
 		and not has_function_privilege('authenticated', 'public.qorpera_code_change_archive(text,text,uuid,text,text,integer,integer)', 'EXECUTE')
 		and has_function_privilege('service_role', 'public.qorpera_code_change_archive(text,text,uuid,text,text,integer,integer)', 'EXECUTE')
+		and not has_function_privilege('service_role', 'public.qorpera_folder_git_index(text)', 'EXECUTE')
 		and not has_function_privilege('service_role', 'public.qorpera_folder_git_object(text)', 'EXECUTE'),
 		'expected exact privileges');
 
