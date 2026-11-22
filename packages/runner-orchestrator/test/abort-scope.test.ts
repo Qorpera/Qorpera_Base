@@ -1,6 +1,6 @@
 import { getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { withAbortScope, withTimeoutScope } from "../src/abort-scope.ts";
+import { withAbortScope, withAbortScopes, withTimeoutScope } from "../src/abort-scope.ts";
 import { CloudCodingExecutor } from "../src/coding-executor.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 
@@ -71,7 +71,7 @@ describe("the coding executor over the signal that lasts as long as its process"
 			for (let claims = 0; claims < 5; claims++)
 				expect(await running.claim(lasting.signal)).toEqual({ state: "idle" });
 			expect(call).toHaveBeenCalledTimes(5);
-			expect(watch.made()).toBeGreaterThanOrEqual(5);
+			expect(watch.made()).toBe(0);
 			expect(watch.on(lasting.signal)).toBe(0);
 			expect(getEventListeners(lasting.signal, "abort")).toHaveLength(0);
 		} finally {
@@ -119,5 +119,92 @@ describe("withTimeoutScope", () => {
 		} finally {
 			watch.restore();
 		}
+	});
+});
+
+describe("withAbortScopes", () => {
+	it("forwards abort from any parent, clears listeners on resolve and reject, and never calls AbortSignal.any", async () => {
+		const first = new AbortController();
+		const second = new AbortController();
+		const watch = watchAbortSignalAny();
+		try {
+			await withAbortScopes([first.signal, undefined, second.signal], async (scoped) => {
+				expect(scoped.aborted).toBe(false);
+				expect(getEventListeners(first.signal, "abort")).toHaveLength(1);
+				expect(getEventListeners(second.signal, "abort")).toHaveLength(1);
+			});
+			expect(getEventListeners(first.signal, "abort")).toHaveLength(0);
+			expect(getEventListeners(second.signal, "abort")).toHaveLength(0);
+
+			await expect(
+				withAbortScopes([first.signal, second.signal], async () => {
+					throw new Error("boom");
+				}),
+			).rejects.toThrow("boom");
+			expect(getEventListeners(first.signal, "abort")).toHaveLength(0);
+			expect(getEventListeners(second.signal, "abort")).toHaveLength(0);
+
+			const reason = new Error("SECOND_PARENT_ABORT");
+			await withAbortScopes(
+				[first.signal, second.signal],
+				async (scoped) => {
+					second.abort(reason);
+					expect(scoped.aborted).toBe(true);
+					expect(scoped.reason).toBe(reason);
+				},
+				60_000,
+			);
+			expect(getEventListeners(first.signal, "abort")).toHaveLength(0);
+			expect(getEventListeners(second.signal, "abort")).toHaveLength(0);
+			expect(watch.made()).toBe(0);
+		} finally {
+			watch.restore();
+		}
+	});
+
+	it("starts aborted without scheduling a timer or leaking listeners when a parent is pre-aborted", async () => {
+		const live = new AbortController();
+		const ended = new AbortController();
+		const reason = new Error("ALREADY_ENDED");
+		ended.abort(reason);
+		const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+		try {
+			await withAbortScopes(
+				[live.signal, ended.signal],
+				async (scoped) => {
+					expect(scoped.aborted).toBe(true);
+					expect(scoped.reason).toBe(reason);
+				},
+				60_000,
+			);
+			expect(setTimeoutSpy).not.toHaveBeenCalled();
+			expect(getEventListeners(live.signal, "abort")).toHaveLength(0);
+		} finally {
+			setTimeoutSpy.mockRestore();
+		}
+	});
+
+	it("aborts with TimeoutError when timeoutMs elapses", async () => {
+		const parent = new AbortController();
+		let timedReason: unknown;
+		await withAbortScopes(
+			[parent.signal],
+			async (scoped) => {
+				await new Promise<void>((resolve) => {
+					scoped.addEventListener(
+						"abort",
+						() => {
+							timedReason = scoped.reason;
+							resolve();
+						},
+						{ once: true },
+					);
+				});
+			},
+			15,
+		);
+		expect(timedReason).toBeInstanceOf(DOMException);
+		expect((timedReason as DOMException).name).toBe("TimeoutError");
+		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
 	});
 });
