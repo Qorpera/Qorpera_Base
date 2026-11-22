@@ -52,7 +52,7 @@
                         - header: { key: x-forwarded-host, value: sites.qorpera.com }
                           append_action: OVERWRITE_IF_EXISTS_OR_ADD
                       routes:
-                        - { match: { prefix: / }, route: { cluster: api_gw, timeout: 0s, prefix_rewrite: /functions/v1/site-serve/ } }
+                        - { match: { prefix: / }, route: { cluster: api_gw, timeout: 0s, prefix_rewrite: /functions/v1/site-serve/, upgrade_configs: [{ upgrade_type: websocket, enabled: false }] } }
                     # Private app links: the app relay on every path, WebSocket upgrades on, and nothing else of the stack.
                     - name: apps
                       domains: ["*-preview.qorpera.com"]
