@@ -1,4 +1,3 @@
-import { isIP } from "node:net";
 import { parseBoundedText, parseClosedRecord, parseInteger } from "@qorpera/contracts";
 import { CodingSecretMask } from "./coding-secret-mask.ts";
 import {
@@ -8,6 +7,12 @@ import {
 	type HostedAppTargetEnv,
 	maskAppLogText,
 } from "./company-machine-secrets.ts";
+import {
+	type RoutineProbeDnsLookup,
+	resolveAndValidateProbeAddress,
+	sendPinnedIpProbe,
+	validateRoutineProbeUrl,
+} from "./routine-check-gate.ts";
 
 export const APP_DEPLOY_CONFIG_SCHEMA = "qorpera.app-deploy/v1";
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
@@ -42,6 +47,11 @@ export interface CodeChangeLandedEvent {
 
 export interface AppAutoRedeployHooks {
 	currentReleaseId(site: string, signal: AbortSignal): Promise<string | null>;
+	loadBuildSecrets?(
+		site: string,
+		targetEnv: HostedAppTargetEnv,
+		signal: AbortSignal,
+	): Promise<HostedAppSecretBundle | null>;
 	loadRuntimeSecrets?(
 		site: string,
 		targetEnv: HostedAppTargetEnv,
@@ -75,6 +85,7 @@ export interface AppAutoRedeployHooks {
 		},
 		signal: AbortSignal,
 	): Promise<void>;
+	lookup?: RoutineProbeDnsLookup;
 	probeHealth?(
 		input: { readonly url: string; readonly expectStatus: number; readonly timeoutMs: number },
 		signal: AbortSignal,
@@ -114,57 +125,21 @@ export type AppAutoRedeployResult =
 			readonly failedReleaseId: string;
 			readonly restoredReleaseId: string | null;
 			readonly error: string;
+	  }
+	| {
+			readonly status: "rollback_failed";
+			readonly site: string;
+			readonly commitSha: string;
+			readonly failedReleaseId: string;
+			readonly restoredReleaseId: string | null;
+			readonly error: string;
+			readonly rollbackError: string;
 	  };
-
-const BLOCKED_HEALTH_HOSTS = new Set(["metadata.google.internal", "metadata.goog", "instance-data", "169.254.169.254"]);
-
-function isBlockedNonLocalIp(host: string): boolean {
-	const cleaned = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-	const version = isIP(cleaned);
-	if (version === 4) {
-		const parts = cleaned.split(".").map((part) => Number.parseInt(part, 10));
-		if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return true;
-		const [a, b] = parts as [number, number, number, number];
-		if (a === 0 || a === 10 || a >= 224) return true;
-		if (a === 169 && b === 254) return true;
-		if (a === 172 && b >= 16 && b <= 31) return true;
-		if (a === 192 && b === 168) return true;
-		if (a === 100 && b >= 64 && b <= 127) return true;
-		return false;
-	}
-	if (version === 6) {
-		const lower = cleaned.toLowerCase();
-		if (lower === "::" || lower.startsWith("fc") || lower.startsWith("fd")) return true;
-		if (/^fe[89ab]/.test(lower) || lower.startsWith("ff") || lower.startsWith("::ffff:")) return true;
-		return false;
-	}
-	return false;
-}
 
 function parseHealthUrl(raw: unknown): string {
 	const value = parseBoundedText(raw, "deploy.json healthUrl", 1024);
 	if (CONTROL_CHARS.test(value)) throw new RangeError("deploy.json healthUrl contains control characters");
-	let parsed: URL;
-	try {
-		parsed = new URL(value);
-	} catch {
-		throw new RangeError("deploy.json healthUrl is not a valid URL");
-	}
-	if (
-		(parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
-		parsed.username !== "" ||
-		parsed.password !== ""
-	) {
-		throw new RangeError("deploy.json healthUrl must be http or https without embedded credentials");
-	}
-	const host = parsed.hostname.toLowerCase().replace(/\.+$/, "");
-	const isLocal = host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
-	if (parsed.protocol === "http:" && !isLocal) {
-		throw new RangeError("deploy.json http healthUrl is restricted to localhost or 127.0.0.1");
-	}
-	if (!isLocal && (BLOCKED_HEALTH_HOSTS.has(host) || host.endsWith(".internal") || isBlockedNonLocalIp(host))) {
-		throw new RangeError("deploy.json healthUrl target host is blocked");
-	}
+	const parsed = validateRoutineProbeUrl(value, true);
 	return parsed.toString();
 }
 
@@ -340,21 +315,23 @@ export function shouldAutoRedeployOnCodeChange(
 async function defaultHttpProbe(
 	input: { readonly url: string; readonly expectStatus: number; readonly timeoutMs: number },
 	signal: AbortSignal,
+	lookup?: RoutineProbeDnsLookup,
 ): Promise<{ readonly ok: boolean; readonly status: number | null; readonly error?: string }> {
 	const controller = new AbortController();
 	const onAbort = () => controller.abort();
 	signal.addEventListener("abort", onAbort, { once: true });
 	const timer = setTimeout(() => controller.abort(), input.timeoutMs);
 	try {
-		const response = await fetch(input.url, { method: "GET", redirect: "manual", signal: controller.signal });
-		await response.body?.cancel().catch(() => undefined);
-		const ok = response.status === input.expectStatus;
+		const parsed = validateRoutineProbeUrl(input.url, true);
+		const resolved = await resolveAndValidateProbeAddress(parsed, { allowLocalhost: true, lookup });
+		const answer = await sendPinnedIpProbe(parsed, resolved, controller.signal);
+		const ok = answer.status === input.expectStatus;
 		return ok
-			? { ok: true, status: response.status }
+			? { ok: true, status: answer.status }
 			: {
 					ok: false,
-					status: response.status,
-					error: `Expected HTTP ${input.expectStatus}, received ${response.status}`,
+					status: answer.status,
+					error: `Expected HTTP ${input.expectStatus}, received ${answer.status}`,
 				};
 	} catch (error) {
 		if (signal.aborted) throw error;
@@ -402,29 +379,23 @@ export async function runPostLandAppAutoRedeploy(options: {
 	}
 	signal.throwIfAborted();
 	const previousReleaseId = await hooks.currentReleaseId(config.site, signal);
-	let envPath: string | null = null;
-	let mask = new CodingSecretMask();
-	if (config.injectRuntimeSecrets && hooks.loadRuntimeSecrets && secretsManager) {
-		const loaded = await hooks.loadRuntimeSecrets(config.site, config.targetEnv, signal);
-		const bundle: HostedAppSecretBundle = config.injectDatabaseUrl
-			? loaded
-			: {
-					siteId: loaded.siteId,
-					slug: loaded.slug,
-					scope: loaded.scope,
-					targetEnv: loaded.targetEnv,
-					secrets: loaded.secrets,
-					...(loaded.config === undefined ? {} : { config: loaded.config }),
-					...(loaded.maskHistory === undefined ? {} : { maskHistory: loaded.maskHistory }),
-				};
-		const delivered = await secretsManager.deliver(bundle);
-		envPath = delivered.envPath;
-		mask = delivered.mask;
+
+	let buildEnvPath: string | null = null;
+	let buildMask = new CodingSecretMask();
+	let deliveredBuild: Awaited<ReturnType<CompanyMachineSecretsManager["deliverBuild"]>> | null = null;
+	if (hooks.loadBuildSecrets && secretsManager) {
+		const buildBundle = await hooks.loadBuildSecrets(config.site, config.targetEnv, signal);
+		if (buildBundle !== null) {
+			deliveredBuild = await secretsManager.deliverBuild(buildBundle);
+			buildEnvPath = deliveredBuild.envPath;
+			buildMask = deliveredBuild.mask;
+		}
 	}
+
 	let releaseId: string;
 	try {
 		const built = await hooks.build(
-			{ site: config.site, commitSha: event.mainAfter, command: config.buildCommand, envPath },
+			{ site: config.site, commitSha: event.mainAfter, command: config.buildCommand, envPath: buildEnvPath },
 			signal,
 		);
 		releaseId = built.releaseId;
@@ -436,72 +407,143 @@ export async function runPostLandAppAutoRedeploy(options: {
 			site: config.site,
 			commitSha: event.mainAfter,
 			rolledBack: false,
-			error: maskAppLogText(mask, rawMessage),
+			error: maskAppLogText(buildMask, rawMessage),
 		};
+	} finally {
+		if (deliveredBuild) {
+			await deliveredBuild.scrub().catch(() => undefined);
+		}
 	}
-	let lastError = "Health check failed";
-	let reloadFailed = false;
+
+	let runtimeEnvPath: string | null = null;
+	let runtimeMask = new CodingSecretMask();
+	let runtimeEnvUpdated = false;
+	let previousRuntimeEnv: Buffer | null = null;
 	try {
-		await hooks.reload(
-			{ site: config.site, commitSha: event.mainAfter, releaseId, command: config.reloadCommand, envPath },
-			signal,
-		);
-	} catch (error) {
-		if (signal.aborted) throw error;
-		reloadFailed = true;
-		lastError = error instanceof Error ? error.message : "Reload failed";
-	}
-	if (!reloadFailed) {
-		const probe = hooks.probeHealth ?? defaultHttpProbe;
-		for (let attempt = 1; attempt <= config.healthAttempts; attempt += 1) {
-			signal.throwIfAborted();
-			const result = await probe(
-				{ url: config.healthUrl, expectStatus: config.healthExpectStatus, timeoutMs: config.healthTimeoutMs },
-				signal,
-			);
-			if (result.ok) {
-				return {
-					status: "deployed",
+		if (config.injectRuntimeSecrets && hooks.loadRuntimeSecrets && secretsManager) {
+			previousRuntimeEnv = await secretsManager.snapshot(config.site);
+			const loaded = await hooks.loadRuntimeSecrets(config.site, config.targetEnv, signal);
+			const bundle: HostedAppSecretBundle = config.injectDatabaseUrl
+				? loaded
+				: {
+						siteId: loaded.siteId,
+						slug: loaded.slug,
+						scope: loaded.scope,
+						targetEnv: loaded.targetEnv,
+						secrets: loaded.secrets,
+						...(loaded.config === undefined ? {} : { config: loaded.config }),
+						...(loaded.maskHistory === undefined ? {} : { maskHistory: loaded.maskHistory }),
+					};
+			const delivered = await secretsManager.deliver(bundle);
+			runtimeEnvPath = delivered.envPath;
+			runtimeMask = delivered.mask;
+			runtimeEnvUpdated = true;
+		}
+
+		let lastError = "Health check failed";
+		let reloadFailed = false;
+		try {
+			await hooks.reload(
+				{
 					site: config.site,
 					commitSha: event.mainAfter,
 					releaseId,
-					healthStatus: result.status,
-					attempts: attempt,
-				};
-			}
-			lastError = result.error ?? `Unhealthy response (${String(result.status ?? "no status")})`;
-			if (attempt < config.healthAttempts) {
-				await pause(config.healthIntervalMs, signal);
+					command: config.reloadCommand,
+					envPath: runtimeEnvPath,
+				},
+				signal,
+			);
+		} catch (error) {
+			if (signal.aborted) throw error;
+			reloadFailed = true;
+			lastError = error instanceof Error ? error.message : "Reload failed";
+		}
+
+		if (!reloadFailed) {
+			const probe = hooks.probeHealth ?? ((input, s) => defaultHttpProbe(input, s, hooks.lookup));
+			for (let attempt = 1; attempt <= config.healthAttempts; attempt += 1) {
+				signal.throwIfAborted();
+				const result = await probe(
+					{ url: config.healthUrl, expectStatus: config.healthExpectStatus, timeoutMs: config.healthTimeoutMs },
+					signal,
+				);
+				if (result.ok) {
+					return {
+						status: "deployed",
+						site: config.site,
+						commitSha: event.mainAfter,
+						releaseId,
+						healthStatus: result.status,
+						attempts: attempt,
+					};
+				}
+				lastError = result.error ?? `Unhealthy response (${String(result.status ?? "no status")})`;
+				if (attempt < config.healthAttempts) {
+					await pause(config.healthIntervalMs, signal);
+				}
 			}
 		}
-	}
-	const maskedError = maskAppLogText(mask, lastError);
-	await hooks.rollback(
-		{
-			site: config.site,
-			previousReleaseId,
-			failedReleaseId: releaseId,
-			command: config.rollbackCommand,
-		},
-		signal,
-	);
-	if (hooks.emitAppUnhealthy) {
-		await hooks.emitAppUnhealthy(
-			{
+
+		const maskedError = maskAppLogText(runtimeMask, lastError);
+		if (runtimeEnvUpdated && secretsManager) {
+			await secretsManager.restore(config.site, previousRuntimeEnv).catch(() => undefined);
+		}
+		try {
+			await hooks.rollback(
+				{
+					site: config.site,
+					previousReleaseId,
+					failedReleaseId: releaseId,
+					command: config.rollbackCommand,
+				},
+				signal,
+			);
+		} catch (rollbackFailure) {
+			if (signal.aborted) throw rollbackFailure;
+			const rawRollbackError = rollbackFailure instanceof Error ? rollbackFailure.message : "Rollback failed";
+			const maskedRollbackError = maskAppLogText(runtimeMask, rawRollbackError);
+			if (hooks.emitAppUnhealthy) {
+				await hooks.emitAppUnhealthy(
+					{
+						site: config.site,
+						status: "rollback_failed",
+						restartCount: config.healthAttempts,
+						error: `${maskedError}; rollback failed: ${maskedRollbackError}`,
+					},
+					signal,
+				);
+			}
+			return {
+				status: "rollback_failed",
 				site: config.site,
-				status: "rollback_triggered",
-				restartCount: config.healthAttempts,
+				commitSha: event.mainAfter,
+				failedReleaseId: releaseId,
+				restoredReleaseId: previousReleaseId,
 				error: maskedError,
-			},
-			signal,
-		);
+				rollbackError: maskedRollbackError,
+			};
+		}
+
+		if (hooks.emitAppUnhealthy) {
+			await hooks.emitAppUnhealthy(
+				{
+					site: config.site,
+					status: "rollback_triggered",
+					restartCount: config.healthAttempts,
+					error: maskedError,
+				},
+				signal,
+			);
+		}
+		return {
+			status: "rolled_back",
+			site: config.site,
+			commitSha: event.mainAfter,
+			failedReleaseId: releaseId,
+			restoredReleaseId: previousReleaseId,
+			error: maskedError,
+		};
+	} finally {
+		previousRuntimeEnv?.fill(0);
 	}
-	return {
-		status: "rolled_back",
-		site: config.site,
-		commitSha: event.mainAfter,
-		failedReleaseId: releaseId,
-		restoredReleaseId: previousReleaseId,
-		error: maskedError,
-	};
 }

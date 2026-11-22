@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -42,7 +42,7 @@ describe("app-auto-redeploy", () => {
 				reloadCommand: "reload",
 				healthUrl: "http://evil.example.com/health",
 			}),
-		).toThrow(/localhost/);
+		).toThrow(/https/);
 		expect(() =>
 			parseAppDeployConfig({
 				site: "billing-app",
@@ -68,7 +68,7 @@ describe("app-auto-redeploy", () => {
 		expect(globMatchesPath("docs/README.md", "apps/billing/index.ts")).toBe(false);
 	});
 
-	it("deploys on matching landed changes with tmpfs runtime secrets and health check", async () => {
+	it("isolates build secrets from prod runtime secrets and delivers runtime secrets only after build succeeds", async () => {
 		const root = await mkdtemp(join(tmpdir(), "qorpera-redeploy-"));
 		const secretsManager = new CompanyMachineSecretsManager({ rootDir: root, verifyTmpfs: async () => true });
 		try {
@@ -92,6 +92,7 @@ describe("app-auto-redeploy", () => {
 			});
 			expect(skip).toEqual({ matched: false, reason: "paths_unmatched" });
 
+			let observedBuildEnvPath: string | null = null;
 			const reload = vi.fn().mockResolvedValue(undefined);
 			const rollback = vi.fn().mockResolvedValue(undefined);
 			const probeHealth = vi
@@ -112,6 +113,13 @@ describe("app-auto-redeploy", () => {
 				signal: new AbortController().signal,
 				hooks: {
 					currentReleaseId: async () => "rel-1",
+					loadBuildSecrets: async () => ({
+						siteId: randomUUID(),
+						slug: "billing-app",
+						scope: "build",
+						targetEnv: "prod",
+						secrets: { NPM_TOKEN: "npm_build_token_12345678" },
+					}),
 					loadRuntimeSecrets: async () => ({
 						siteId: randomUUID(),
 						slug: "billing-app",
@@ -120,10 +128,21 @@ describe("app-auto-redeploy", () => {
 						secrets: { OPENAI_API_KEY: "sk-proj-secret-redeploy-12345" },
 					}),
 					build: async ({ envPath }) => {
-						expect(envPath).toBe(join(root, "billing-app.env"));
+						observedBuildEnvPath = envPath;
+						expect(envPath).not.toBeNull();
+						expect(envPath).not.toBe(join(root, "billing-app.env"));
+						const buildContent = await readFile(envPath!, "utf8");
+						expect(buildContent).toContain("NPM_TOKEN");
+						expect(buildContent).not.toContain("OPENAI_API_KEY");
+						await expect(stat(join(root, "billing-app.env"))).rejects.toThrow();
 						return { releaseId: "rel-2" };
 					},
-					reload,
+					reload: async (input, s) => {
+						expect(input.envPath).toBe(join(root, "billing-app.env"));
+						const runtimeContent = await readFile(input.envPath!, "utf8");
+						expect(runtimeContent).toContain("OPENAI_API_KEY");
+						await reload(input, s);
+					},
 					rollback,
 					probeHealth,
 				},
@@ -136,6 +155,8 @@ describe("app-auto-redeploy", () => {
 				healthStatus: 200,
 				attempts: 2,
 			});
+			expect(observedBuildEnvPath).not.toBeNull();
+			await expect(stat(observedBuildEnvPath!)).rejects.toThrow();
 			expect(reload).toHaveBeenCalledTimes(1);
 			expect(rollback).not.toHaveBeenCalled();
 		} finally {
@@ -144,11 +165,20 @@ describe("app-auto-redeploy", () => {
 		}
 	});
 
-	it("automatically rolls back and emits masked app_unhealthy alert when smoke health check fails", async () => {
+	it("restores previous runtime env file on rollback and masks rollback failures too", async () => {
 		const root = await mkdtemp(join(tmpdir(), "qorpera-rollback-"));
 		const secretsManager = new CompanyMachineSecretsManager({ rootDir: root, verifyTmpfs: async () => true });
-		const secretValue = "sk-proj-never-leak-in-alert-999";
+		const prevSecret = "sk-proj-previous-release-key-111";
+		const newSecret = "sk-proj-never-leak-in-alert-999";
+		const siteId = randomUUID();
 		try {
+			await secretsManager.deliver({
+				siteId,
+				slug: "billing-app",
+				scope: "runtime",
+				targetEnv: "prod",
+				secrets: { OPENAI_API_KEY: prevSecret },
+			});
 			const config = parseAppDeployConfig({
 				autoRedeploy: true,
 				site: "billing-app",
@@ -177,16 +207,16 @@ describe("app-auto-redeploy", () => {
 				hooks: {
 					currentReleaseId: async () => "rel-1",
 					loadRuntimeSecrets: async () => ({
-						siteId: randomUUID(),
+						siteId,
 						slug: "billing-app",
 						scope: "runtime",
 						targetEnv: "prod",
-						secrets: { OPENAI_API_KEY: secretValue },
+						secrets: { OPENAI_API_KEY: newSecret },
 					}),
 					build: async () => ({ releaseId: "rel-3" }),
 					reload: async () => undefined,
 					rollback,
-					probeHealth: async () => ({ ok: false, status: 500, error: `Crash using ${secretValue}` }),
+					probeHealth: async () => ({ ok: false, status: 500, error: `Crash using ${newSecret}` }),
 					emitAppUnhealthy,
 				},
 			});
@@ -194,20 +224,59 @@ describe("app-auto-redeploy", () => {
 			if (result.status === "rolled_back") {
 				expect(result.restoredReleaseId).toBe("rel-1");
 				expect(result.failedReleaseId).toBe("rel-3");
-				expect(result.error).not.toContain(secretValue);
+				expect(result.error).not.toContain(newSecret);
 				expect(result.error).toContain("***");
 			}
-			expect(rollback).toHaveBeenCalledWith(
-				{
-					site: "billing-app",
-					previousReleaseId: "rel-1",
-					failedReleaseId: "rel-3",
-					command: "rollback-app",
+			const restoredEnv = await readFile(join(root, "billing-app.env"), "utf8");
+			expect(restoredEnv).toContain(prevSecret);
+			expect(restoredEnv).not.toContain(newSecret);
+			expect(emitAppUnhealthy).toHaveBeenCalledTimes(1);
+
+			const emitRollbackFailed = vi.fn().mockResolvedValue(undefined);
+			const failedRollback = await runPostLandAppAutoRedeploy({
+				config,
+				event: {
+					kind: "landed",
+					repo: "acme/web",
+					change: "chg-4",
+					mainBefore: SHA_BEFORE,
+					mainAfter: SHA_AFTER,
+					paths: ["apps/billing/index.ts"],
 				},
+				secretsManager,
+				signal: new AbortController().signal,
+				hooks: {
+					currentReleaseId: async () => "rel-1",
+					loadRuntimeSecrets: async () => ({
+						siteId,
+						slug: "billing-app",
+						scope: "runtime",
+						targetEnv: "prod",
+						secrets: { OPENAI_API_KEY: newSecret },
+					}),
+					build: async () => ({ releaseId: "rel-4" }),
+					reload: async () => undefined,
+					rollback: async () => {
+						throw new Error(`rollback crashed with ${newSecret}`);
+					},
+					probeHealth: async () => ({ ok: false, status: 500, error: `probe fail ${newSecret}` }),
+					emitAppUnhealthy: emitRollbackFailed,
+				},
+			});
+			expect(failedRollback.status).toBe("rollback_failed");
+			if (failedRollback.status === "rollback_failed") {
+				expect(failedRollback.rollbackError).not.toContain(newSecret);
+				expect(failedRollback.rollbackError).toContain("***");
+			}
+			expect(emitRollbackFailed).toHaveBeenCalledWith(
+				expect.objectContaining({
+					site: "billing-app",
+					status: "rollback_failed",
+				}),
 				expect.any(AbortSignal),
 			);
-			expect(emitAppUnhealthy).toHaveBeenCalledTimes(1);
-			expect(JSON.stringify(emitAppUnhealthy.mock.calls[0])).not.toContain(secretValue);
+			const alertArg = emitRollbackFailed.mock.calls[0]?.[0] as { error: string };
+			expect(alertArg.error).not.toContain(newSecret);
 		} finally {
 			await secretsManager.scrubAll();
 			await rm(root, { recursive: true, force: true });

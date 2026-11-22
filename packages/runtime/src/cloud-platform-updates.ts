@@ -279,6 +279,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Higher parallel worker limits per member",
 		text: "Operators can now raise the global or per-member Claude Code parallel worker limit up to 64 (the default stays unchanged until raised), and extra workers wait in the queue until a slot frees. Split work into as many independent parallel workers or coding sessions as the task benefits from rather than assuming a fixed cap of four; coding sessions automatically spread across additional machines when one is busy.",
 	},
+	{
+		id: "vault-secrets-and-code-routines",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "App vault secrets and code/ops routine triggers",
+		text: "Coding sessions can now use company-owned OpenAI and Anthropic vault keys and receive sorted secretNames (names only, never values) in their turn context. Owners and admins can scope environment secrets to build, test, or runtime and deliver runtime secrets to hosted apps via tmpfs with masked logs. Routines created with manage_routine now support code-change, app-unhealthy, and database-change listeners plus deterministic checkBeforeWake gates (HTTPS probes and repository checks) that wake an agent only on failure or state change.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

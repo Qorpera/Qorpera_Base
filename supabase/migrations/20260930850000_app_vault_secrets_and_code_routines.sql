@@ -57,6 +57,73 @@ alter table public.qorpera_coding_environment_grants
 	add column target_env text not null default 'all' check (target_env in ('all', 'dev', 'test', 'prod')),
 	add column site_id uuid references public.qorpera_company_sites(id) on delete cascade;
 
+create function public.qorpera_set_coding_environment_grant_scope(
+	p_profile_id uuid,
+	p_grant_id uuid,
+	p_scope text,
+	p_target_env text,
+	p_site_id uuid default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_user_id uuid := auth.uid();
+	v_role public.qorpera_profile_role;
+	v_grant public.qorpera_coding_environment_grants%rowtype;
+begin
+	if auth.role() is distinct from 'authenticated' or v_user_id is null then
+		raise exception 'coding environment grants need an owner or administrator' using errcode = '42501';
+	end if;
+	if coalesce(p_scope, '') not in ('all', 'build', 'test', 'runtime') then
+		raise exception 'coding environment grant scope is invalid' using errcode = '22023';
+	end if;
+	if coalesce(p_target_env, '') not in ('all', 'dev', 'test', 'prod') then
+		raise exception 'coding environment grant target environment is invalid' using errcode = '22023';
+	end if;
+	select member.role into v_role from public.qorpera_profile_members as member
+	where member.profile_id = p_profile_id and member.user_id = v_user_id;
+	if v_role is null or v_role not in ('owner', 'admin') then
+		raise exception 'coding environment grants need an owner or administrator' using errcode = '42501';
+	end if;
+	perform 1 from public.qorpera_profiles as profile where profile.id = p_profile_id for key share;
+	select member.role into v_role from public.qorpera_profile_members as member
+	where member.profile_id = p_profile_id and member.user_id = v_user_id for share;
+	if v_role is null or v_role not in ('owner', 'admin') then
+		raise exception 'coding environment grants need an owner or administrator' using errcode = '42501';
+	end if;
+	select environment_grant.* into v_grant from public.qorpera_coding_environment_grants as environment_grant
+	where environment_grant.id = p_grant_id and environment_grant.profile_id = p_profile_id
+		and environment_grant.status = 'active' for update;
+	if v_grant.id is null then
+		raise exception 'coding environment grant is unavailable' using errcode = '42501';
+	end if;
+	if p_site_id is not null and not exists (
+		select 1 from public.qorpera_company_sites as site
+		where site.id = p_site_id and site.profile_id = p_profile_id
+			and site.environment_id = v_grant.environment_id
+	) then
+		raise exception 'hosted app site is unavailable' using errcode = '42501';
+	end if;
+	update public.qorpera_coding_environment_grants
+	set scope = p_scope, target_env = p_target_env, site_id = p_site_id
+	where id = v_grant.id
+	returning * into v_grant;
+	return jsonb_build_object(
+		'schema', 'qorpera.coding-environment-grant-scope/v1',
+		'grantId', v_grant.id,
+		'secretId', v_grant.secret_id,
+		'repository', v_grant.repository,
+		'scope', v_grant.scope,
+		'targetEnv', v_grant.target_env,
+		'siteId', v_grant.site_id,
+		'status', v_grant.status
+	);
+end
+$$;
+
 select pg_temp.w6c_patch('public.qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)'::regprocedure, array[
 	$old$		where environment_grant.profile_id = v_session.profile_id
 			and environment_grant.environment_id = v_session.environment_id
@@ -606,7 +673,7 @@ begin
 			or (p_check - array['kind', 'url', 'expectStatus', 'timeoutMs']) <> '{}'::jsonb
 			or jsonb_typeof(p_check -> 'url') <> 'string'
 			or char_length(p_check ->> 'url') not between 10 and 1024
-			or (p_check ->> 'url') !~ '^https?://[^[:space:][:cntrl:]]+$' then
+			or (p_check ->> 'url') !~ '^https://[^/@[:space:][:cntrl:]]+(/[^[:space:][:cntrl:]]*)?$' then
 			return false;
 		end if;
 		if p_check ? 'expectStatus' and (jsonb_typeof(p_check -> 'expectStatus') <> 'number'
@@ -819,6 +886,31 @@ select pg_temp.w6c_patch('public.qorpera_company_state_routine_rules(uuid,uuid,j
 	$new$	elsif p_parse ? 'checkBeforeWake' and jsonb_typeof(p_parse -> 'checkBeforeWake') = 'object'
 		and v_when not in ('every','weekly','window','once') then
 		v_problem := 'checkBeforeWake is only supported on scheduled or dynamic routines';
+	elsif p_parse ? 'checkBeforeWake' and jsonb_typeof(p_parse -> 'checkBeforeWake') = 'object'
+		and p_parse -> 'checkBeforeWake' ->> 'kind' = 'code_checks'
+		and p_parse -> 'checkBeforeWake' ? 'repo'
+		and (v_owner is null or not exists (
+			select 1 from public.qorpera_coding_repository_grants g
+			where g.environment_id = p_environment_id and g.staff_agent_id = v_owner and g.enabled
+				and lower((g.repository ->> 'owner') || '/' || (g.repository ->> 'name'))
+					= lower(p_parse -> 'checkBeforeWake' ->> 'repo'))) then
+		v_problem := 'this routine''s agent does not have access to repository '
+			|| left(coalesce(p_parse -> 'checkBeforeWake' ->> 'repo', ''), 100);
+	elsif v_when = 'code-change' and (v_owner is null or not exists (
+		select 1 from public.qorpera_coding_repository_grants g
+		where g.environment_id = p_environment_id and g.staff_agent_id = v_owner and g.enabled
+			and lower((g.repository ->> 'owner') || '/' || (g.repository ->> 'name'))
+				= lower(coalesce(p_parse -> 'trigger' ->> 'repo', '')))) then
+		v_problem := 'this routine''s agent does not have access to repository '
+			|| left(coalesce(p_parse -> 'trigger' ->> 'repo', ''), 100);
+	elsif v_when = 'data-change' and (v_owner is null or not public.qorpera_folder_actor_allowed(
+		p_environment_id, p_profile_id,
+		jsonb_build_object('kind', 'staff_agent', 'staffAgentId', v_owner,
+			'requesterUserId', coalesce(p_actor ->> 'userId', p_actor ->> 'requesterUserId'),
+			'audience', jsonb_build_object('kind', 'company'), 'sessionKind', 'in_house'),
+		'data/' || coalesce(p_parse -> 'trigger' ->> 'database', ''), 'read')) then
+		v_problem := 'this routine''s agent may not read database '
+			|| left(coalesce(p_parse -> 'trigger' ->> 'database', ''), 64);
 	elsif v_when = 'app-unhealthy' and not exists (select 1 from public.qorpera_company_sites site
 		where site.profile_id = p_profile_id and site.environment_id = p_environment_id
 			and (site.slug = p_parse -> 'trigger' ->> 'site' or site.id::text = p_parse -> 'trigger' ->> 'site')) then
@@ -879,6 +971,21 @@ select pg_temp.w6c_patch('public.qorpera_folder_wake_authorized(public.qorpera_w
 	$new$	if p_wake.source_kind = 'app-unhealthy' and not exists (select 1 from public.qorpera_company_sites site
 		where site.id = p_wake.source_id and site.profile_id = p_wake.profile_id
 			and site.environment_id = p_wake.environment_id) then
+		return false;
+	end if;
+	if p_wake.source_kind = 'code-change' and not exists (
+		select 1 from public.qorpera_coding_repository_grants g
+		where g.environment_id = p_wake.environment_id and g.staff_agent_id = p_wake.staff_agent_id and g.enabled
+			and lower((g.repository ->> 'owner') || '/' || (g.repository ->> 'name'))
+				= lower(coalesce(p_wake.payload ->> 'repo', ''))) then
+		return false;
+	end if;
+	if p_wake.source_kind = 'data-change' and not public.qorpera_folder_actor_allowed(
+		p_wake.environment_id, p_wake.profile_id,
+		jsonb_build_object('kind', 'staff_agent', 'staffAgentId', p_wake.staff_agent_id,
+			'requesterUserId', p_wake.requested_by_user_id,
+			'audience', jsonb_build_object('kind', 'company'), 'sessionKind', 'in_house'),
+		'data/' || coalesce(p_wake.payload ->> 'database', ''), 'read') then
 		return false;
 	end if;
 	-- A member's login pays only for work that member started (20260928230000).$new$
@@ -1014,6 +1121,9 @@ declare
 	v_skipped integer := 0;
 	v_wake_ids jsonb := '[]'::jsonb;
 	v_event_paths jsonb;
+	v_main_before jsonb;
+	v_found_paths jsonb;
+	v_found_before text;
 	v_payload jsonb;
 	v_change_key text;
 	v_message text;
@@ -1032,6 +1142,35 @@ begin
 		return jsonb_build_object('schema', c_schema, 'state', 'not_folder', 'wakes', 0, 'skipped', 0, 'wakeIds', '[]'::jsonb);
 	end if;
 	v_event_paths := case when jsonb_typeof(p_event -> 'paths') = 'array' then p_event -> 'paths' else '[]'::jsonb end;
+	v_main_before := p_event -> 'mainBefore';
+	if p_kind = 'landed' and (jsonb_array_length(v_event_paths) = 0 or v_main_before is null) then
+		select
+			case
+				when jsonb_typeof(c.paths) = 'array' then
+					coalesce((select jsonb_agg(item ->> 'path') from jsonb_array_elements(c.paths) item where item ? 'path'), '[]'::jsonb)
+				else '[]'::jsonb
+			end,
+			c.main_before
+		into v_found_paths, v_found_before
+		from public.qorpera_code_changes c
+		where c.environment_id = p_environment_id
+			and c.owner = lower(p_owner)
+			and c.name = lower(p_name)
+			and (
+				((p_event ->> 'change') ~ '^[0-9]+$' and c.n = (p_event ->> 'change')::integer)
+				or (c.main_after = (p_event ->> 'mainAfter'))
+			)
+		order by c.n desc
+		limit 1;
+		if found then
+			if jsonb_array_length(v_event_paths) = 0 then
+				v_event_paths := coalesce(v_found_paths, '[]'::jsonb);
+			end if;
+			if v_main_before is null and v_found_before is not null then
+				v_main_before := to_jsonb(v_found_before);
+			end if;
+		end if;
+	end if;
 	select coalesce(jsonb_agg(l.listener order by l.routine_id), '[]'::jsonb) into v_listeners
 	from (
 		select jsonb_build_object(
@@ -1077,7 +1216,7 @@ begin
 		'name', lower(p_name),
 		'kind', p_kind,
 		'change', p_event -> 'change',
-		'mainBefore', p_event -> 'mainBefore',
+		'mainBefore', v_main_before,
 		'mainAfter', p_event -> 'mainAfter',
 		'workerId', p_event -> 'workerId',
 		'paths', v_event_paths,
@@ -1099,7 +1238,10 @@ begin
 					where s.profile_id = v_profile and s.staff_agent_id = (v_listener.l ->> 'staff')::uuid
 						and s.employment_status = 'active')
 				or not exists (select 1 from public.qorpera_profile_members m
-					where m.profile_id = v_profile and m.user_id = (v_listener.l ->> 'requester')::uuid) then
+					where m.profile_id = v_profile and m.user_id = (v_listener.l ->> 'requester')::uuid)
+				or not exists (select 1 from public.qorpera_coding_repository_grants g
+					where g.environment_id = p_environment_id and g.staff_agent_id = (v_listener.l ->> 'staff')::uuid
+						and g.enabled and lower((g.repository ->> 'owner') || '/' || (g.repository ->> 'name')) = v_repo) then
 				v_skipped := v_skipped + 1;
 				continue;
 			end if;
@@ -1439,7 +1581,13 @@ begin
 					where s.profile_id = v_profile and s.staff_agent_id = (v_listener.l ->> 'staff')::uuid
 						and s.employment_status = 'active')
 				or not exists (select 1 from public.qorpera_profile_members m
-					where m.profile_id = v_profile and m.user_id = (v_listener.l ->> 'requester')::uuid) then
+					where m.profile_id = v_profile and m.user_id = (v_listener.l ->> 'requester')::uuid)
+				or not public.qorpera_folder_actor_allowed(
+					p_environment_id, v_profile,
+					jsonb_build_object('kind', 'staff_agent', 'staffAgentId', (v_listener.l ->> 'staff')::uuid,
+						'requesterUserId', (v_listener.l ->> 'requester')::uuid,
+						'audience', jsonb_build_object('kind', 'company'), 'sessionKind', 'in_house'),
+					'data/' || p_database, 'read') then
 				v_skipped := v_skipped + 1;
 				continue;
 			end if;
@@ -1494,74 +1642,16 @@ begin
 end
 $$;
 
-alter table public.qorpera_provider_connection_versions
-	add column allow_routine_coding_dispatch boolean not null default false,
-	add constraint qorpera_provider_conn_ver_routine_coding
-		check (not allow_routine_coding_dispatch or allow_autonomous);
-
-select pg_temp.w6c_patch('public.qorpera_consent_provider_connection_autonomous(uuid,uuid,boolean)'::regprocedure, array[
-	$old$		to_jsonb(v_version) || jsonb_build_object('version',v_next,'allow_autonomous',p_allow_autonomous,$old$,
-	$new$		to_jsonb(v_version) || jsonb_build_object('version',v_next,'allow_autonomous',p_allow_autonomous,
-			'allow_routine_coding_dispatch', case when p_allow_autonomous then v_version.allow_routine_coding_dispatch else false end,$new$
-]);
-
-create function public.qorpera_connection_allows_routine_coding_dispatch(p_connection_id uuid, p_version bigint)
-returns boolean
-language sql
-stable
-security definer
-set search_path = ''
-as $$
-	select exists (
-		select 1 from public.qorpera_provider_connections as connection
-		join public.qorpera_provider_connection_versions as version
-			on version.connection_id = connection.id and version.version = p_version
-		where connection.id = p_connection_id
-			and connection.status = 'active'
-			and version.authorization_state = 'active'
-			and version.allow_autonomous
-			and version.allow_routine_coding_dispatch
-	) and not exists (
-		select 1 from public.qorpera_provider_connection_versions as newer
-		where newer.connection_id = p_connection_id
-			and newer.version > p_version
-			and (not newer.allow_autonomous or not newer.allow_routine_coding_dispatch)
-	)
-$$;
-
-select pg_temp.w6c_patch('public.qorpera_coding_owner_problem(uuid,uuid,text,uuid)'::regprocedure, array[
-	$old$	v_connection uuid; v_allowed boolean;$old$,
-	$new$	v_connection uuid; v_connection_version bigint; v_allowed boolean;$new$,
-	$old$	select login.connection_id, login.allow_autonomous into v_connection, v_allowed
-	from public.qorpera_coding_owner_login(p_profile_id, p_owner_user_id, p_harness) login;$old$,
-	$new$	select login.connection_id, login.connection_version, login.allow_autonomous into v_connection, v_connection_version, v_allowed
-	from public.qorpera_coding_owner_login(p_profile_id, p_owner_user_id, p_harness) login;$new$,
-	$old$	if public.qorpera_connection_is_chatgpt_plan(v_connection)
-		and v_connection is distinct from public.qorpera_sponsor_binding_connection(p_run_binding_id) then$old$,
-	$new$	if public.qorpera_connection_is_chatgpt_plan(v_connection)
-		and v_connection is distinct from public.qorpera_sponsor_binding_connection(p_run_binding_id)
-		and not public.qorpera_connection_allows_routine_coding_dispatch(v_connection, v_connection_version) then$new$
-]);
-
-select pg_temp.w6c_patch('public.qorpera_coding_owner_payer(uuid,uuid,text,uuid)'::regprocedure, array[
-	$old$declare v_connection uuid;$old$,
-	$new$declare v_connection uuid; v_connection_version bigint;$new$,
-	$old$	select sponsor.binding_id, sponsor.version, sponsor.connection_id into binding_id, version, v_connection
-	from public.qorpera_coding_owner_sponsor(p_profile_id, p_owner_user_id, p_harness) sponsor;
-	if public.qorpera_connection_is_chatgpt_plan(v_connection)
-		and v_connection is distinct from public.qorpera_sponsor_binding_connection(p_run_binding_id) then$old$,
-	$new$	select sponsor.binding_id, sponsor.version, sponsor.connection_id, sponsor.connection_version
-	into binding_id, version, v_connection, v_connection_version
-	from public.qorpera_coding_owner_sponsor(p_profile_id, p_owner_user_id, p_harness) sponsor;
-	if public.qorpera_connection_is_chatgpt_plan(v_connection)
-		and v_connection is distinct from public.qorpera_sponsor_binding_connection(p_run_binding_id)
-		and not public.qorpera_connection_allows_routine_coding_dispatch(v_connection, v_connection_version) then$new$
-]);
-
-create function public.qorpera_set_routine_coding_dispatch(
-	p_profile_id uuid,
-	p_connection_id uuid,
-	p_allow boolean
+create function public.qorpera_skip_checked_routine_wake(
+	p_routine_id uuid,
+	p_expected_version bigint,
+	p_trigger_id text,
+	p_scheduled_for timestamptz,
+	p_expected_last_scheduled_for timestamptz,
+	p_next_due_at timestamptz,
+	p_healthy boolean,
+	p_summary text,
+	p_detail text default null
 )
 returns jsonb
 language plpgsql
@@ -1569,70 +1659,210 @@ security definer
 set search_path = ''
 as $$
 declare
-	v_user uuid := auth.uid();
-	v_connection public.qorpera_provider_connections%rowtype;
-	v_version public.qorpera_provider_connection_versions%rowtype;
-	v_next bigint;
+	v_profile_id uuid;
+	v_routine public.qorpera_cloud_routines%rowtype;
+	v_cursor public.qorpera_cloud_routine_schedule_cursors%rowtype;
+	v_prev public.qorpera_routine_check_states%rowtype;
+	v_now timestamptz := clock_timestamp();
+	v_summary text := btrim(coalesce(p_summary, ''));
+	v_detail text := case when p_detail is null then null else left(p_detail, 2000) end;
+	v_state_changed boolean;
+	v_should_wake boolean;
+	v_failures integer;
 begin
-	if auth.role() is distinct from 'authenticated' or v_user is null or p_allow is null
-		or p_profile_id is null or p_connection_id is null then
-		raise exception 'routine coding dispatch consent requires the connection owner' using errcode = '42501';
+	if auth.role() is distinct from 'service_role' then
+		raise exception 'Routine check authority is required' using errcode = '42501';
 	end if;
-	perform 1 from public.qorpera_profiles where id = p_profile_id for key share;
-	perform 1 from public.qorpera_profile_members
-	where profile_id = p_profile_id and user_id = v_user for share;
-	if not found then
-		raise exception 'routine coding dispatch consent requires current membership' using errcode = '42501';
+	if p_routine_id is null or p_expected_version is null or p_expected_version < 1
+		or octet_length(convert_to(btrim(coalesce(p_trigger_id, '')), 'utf8')) not between 1 and 160
+		or p_trigger_id ~ E'[\r\n]'
+		or p_scheduled_for is null or not isfinite(p_scheduled_for)
+		or p_next_due_at is null or not isfinite(p_next_due_at)
+		or p_next_due_at <= p_scheduled_for
+		or (p_expected_last_scheduled_for is not null
+			and (not isfinite(p_expected_last_scheduled_for) or p_scheduled_for <= p_expected_last_scheduled_for))
+		or p_healthy is null
+		or char_length(v_summary) not between 1 and 500
+		or v_summary ~ '[[:cntrl:]]' then
+		raise exception 'Routine check wake decision is invalid' using errcode = '22023';
 	end if;
-	select * into v_connection from public.qorpera_provider_connections
-	where id = p_connection_id and profile_id = p_profile_id and owner_user_id = v_user and status = 'active'
+	select routine.profile_id into v_profile_id
+	from public.qorpera_cloud_routines as routine where routine.id = p_routine_id;
+	if v_profile_id is null then
+		return jsonb_build_object('schema', 'qorpera.routine-check-wake/v1', 'status', 'stale', 'shouldWake', false);
+	end if;
+	perform 1 from public.qorpera_profiles where id = v_profile_id for key share;
+	select routine.* into v_routine
+	from public.qorpera_cloud_routines as routine where routine.id = p_routine_id for share;
+	select cursor.* into v_cursor
+	from public.qorpera_cloud_routine_schedule_cursors as cursor
+	where cursor.routine_id = p_routine_id
+		and cursor.routine_version = p_expected_version
+		and cursor.trigger_id = btrim(p_trigger_id)
 	for update;
-	if not found then
-		raise exception 'routine coding dispatch consent requires the connection owner' using errcode = '42501';
+	if v_routine.id is null or v_routine.status <> 'active'
+		or v_routine.current_version <> p_expected_version
+		or v_cursor.routine_id is null
+		or v_cursor.last_scheduled_for is distinct from p_expected_last_scheduled_for
+		or not exists (
+			select 1 from public.qorpera_cloud_routine_versions as version
+			cross join lateral jsonb_array_elements(version.triggers) as trigger(value)
+			where version.routine_id = p_routine_id and version.version = p_expected_version
+				and trigger.value ->> 'id' = btrim(p_trigger_id)
+				and trigger.value ->> 'kind' = 'schedule'
+				and trigger.value ? 'checkBeforeWake'
+		) then
+		return jsonb_build_object('schema', 'qorpera.routine-check-wake/v1', 'status', 'stale', 'shouldWake', false);
 	end if;
-	select * into v_version from public.qorpera_provider_connection_versions
-	where connection_id = v_connection.id order by version desc limit 1;
-	if not found or v_version.authorization_state <> 'active' then
-		raise exception 'provider connection has no active current version' using errcode = '55000';
+	select * into v_prev from public.qorpera_routine_check_states where routine_id = p_routine_id for update;
+	v_state_changed := v_prev.routine_id is not null and v_prev.last_healthy is distinct from p_healthy;
+	v_failures := case when p_healthy then 0 else coalesce(v_prev.consecutive_failures, 0) + 1 end;
+	v_should_wake := (not p_healthy) or v_state_changed;
+	insert into public.qorpera_routine_check_states (
+		routine_id, profile_id, environment_id, last_healthy, last_summary, last_detail,
+		consecutive_failures, checked_at, state_changed_at
+	) values (
+		v_routine.id, v_routine.profile_id, v_routine.environment_id, p_healthy, v_summary, v_detail,
+		v_failures, v_now, v_now
+	)
+	on conflict (routine_id) do update set
+		last_healthy = excluded.last_healthy,
+		last_summary = excluded.last_summary,
+		last_detail = excluded.last_detail,
+		consecutive_failures = excluded.consecutive_failures,
+		checked_at = excluded.checked_at,
+		state_changed_at = case
+			when public.qorpera_routine_check_states.last_healthy is distinct from excluded.last_healthy
+			then excluded.checked_at
+			else public.qorpera_routine_check_states.state_changed_at
+		end;
+	if not v_should_wake then
+		update public.qorpera_cloud_routine_schedule_cursors
+		set last_scheduled_for = p_scheduled_for, next_due_at = p_next_due_at, updated_at = statement_timestamp()
+		where routine_id = p_routine_id and routine_version = p_expected_version
+			and trigger_id = btrim(p_trigger_id);
 	end if;
-	if p_allow and not v_version.allow_autonomous then
-		raise exception 'Turn on background work for this login before allowing routine coding dispatch' using errcode = '55000';
-	end if;
-	if v_version.allow_routine_coding_dispatch = p_allow then
-		return jsonb_build_object(
-			'schema', 'qorpera.routine-coding-dispatch-consent/v1',
-			'connection_id', v_connection.id,
-			'version', v_version.version,
-			'allow_autonomous', v_version.allow_autonomous,
-			'allow_routine_coding_dispatch', v_version.allow_routine_coding_dispatch,
-			'changed', false
-		);
-	end if;
-	v_next := v_version.version + 1;
-	insert into public.qorpera_provider_connection_versions
-	select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
-		to_jsonb(v_version) || jsonb_build_object(
-			'version', v_next,
-			'allow_routine_coding_dispatch', p_allow,
-			'consented_by_user_id', v_user,
-			'consent_version', 'qorpera-routine-coding-dispatch-consent/v1',
-			'created_at', clock_timestamp()
-		))).*;
-	update public.qorpera_provider_connections
-	set autonomous_consent_revision = autonomous_consent_revision + 1
-	where id = v_connection.id;
 	return jsonb_build_object(
-		'schema', 'qorpera.routine-coding-dispatch-consent/v1',
-		'connection_id', v_connection.id,
-		'version', v_next,
-		'allow_autonomous', v_version.allow_autonomous,
-		'allow_routine_coding_dispatch', p_allow,
-		'changed', true
+		'schema', 'qorpera.routine-check-wake/v1',
+		'status', case when v_should_wake then 'wake_required' else 'skipped' end,
+		'routineId', v_routine.id,
+		'healthy', p_healthy,
+		'previousHealthy', v_prev.last_healthy,
+		'stateChanged', v_state_changed,
+		'shouldWake', v_should_wake,
+		'consecutiveFailures', v_failures,
+		'nextDueAt', p_next_due_at,
+		'checkedAt', v_now
 	);
 end
 $$;
 
+create function public.qorpera_read_routine_code_checks(
+	p_routine_id uuid,
+	p_repo text default null
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+	v_routine public.qorpera_cloud_routines%rowtype;
+	v_version public.qorpera_cloud_routine_versions%rowtype;
+	v_repo text := nullif(lower(btrim(coalesce(p_repo, ''))), '');
+	v_latest record;
+begin
+	if auth.role() is distinct from 'service_role' then
+		raise exception 'Routine check authority is required' using errcode = '42501';
+	end if;
+	if p_routine_id is null then
+		raise exception 'Routine id is required' using errcode = '22023';
+	end if;
+	if v_repo is not null and v_repo !~ '^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?/[a-z0-9_][a-z0-9_.-]{0,99}$' then
+		raise exception 'Repository name is invalid' using errcode = '22023';
+	end if;
+	select * into v_routine from public.qorpera_cloud_routines where id = p_routine_id;
+	if v_routine.id is null or v_routine.status <> 'active' then
+		return jsonb_build_object('schema', 'qorpera.routine-code-checks/v1', 'ok', false,
+			'summary', 'Routine is unavailable', 'detail', null);
+	end if;
+	select * into v_version from public.qorpera_cloud_routine_versions
+	where routine_id = v_routine.id and version = v_routine.current_version;
+	if v_repo is not null and not exists (
+		select 1 from public.qorpera_coding_repository_grants g
+		where g.environment_id = v_routine.environment_id
+			and g.staff_agent_id = v_version.staff_agent_id
+			and g.enabled
+			and lower((g.repository ->> 'owner') || '/' || (g.repository ->> 'name')) = v_repo
+	) then
+		return jsonb_build_object('schema', 'qorpera.routine-code-checks/v1', 'ok', false,
+			'summary', 'Repository grant is unavailable', 'detail', v_repo);
+	end if;
+	select ch.owner, ch.name, ch.n, ch.state, ch.checks_state, ch.checks
+	into v_latest
+	from (
+		select distinct on (lower(c.owner), lower(c.name))
+			c.owner, c.name, c.n, c.state, c.checks_state, c.checks
+		from public.qorpera_code_changes as c
+		join public.qorpera_coding_repository_grants as g
+			on g.environment_id = c.environment_id
+			and g.staff_agent_id = v_version.staff_agent_id
+			and g.enabled
+			and lower((g.repository ->> 'owner') || '/' || (g.repository ->> 'name'))
+				= lower(c.owner) || '/' || lower(c.name)
+		where c.environment_id = v_routine.environment_id
+			and (v_repo is null or lower(c.owner) || '/' || lower(c.name) = v_repo)
+		order by lower(c.owner), lower(c.name), c.n desc
+	) as ch
+	order by (ch.state in ('conflict', 'refused')) desc, ch.n desc
+	limit 1;
+	if not found then
+		return jsonb_build_object('schema', 'qorpera.routine-code-checks/v1', 'ok', true,
+			'summary', 'No failed code checks recorded', 'detail', null);
+	end if;
+	if v_latest.state in ('conflict', 'refused') then
+		return jsonb_build_object('schema', 'qorpera.routine-code-checks/v1', 'ok', false,
+			'summary', lower(v_latest.owner) || '/' || lower(v_latest.name) || ' change #' || v_latest.n || ' ' || v_latest.state,
+			'detail', coalesce(v_latest.checks::text, v_latest.state));
+	end if;
+	return jsonb_build_object('schema', 'qorpera.routine-code-checks/v1', 'ok', true,
+		'summary', lower(v_latest.owner) || '/' || lower(v_latest.name) || ' change #' || v_latest.n || ' checks ' || coalesce(v_latest.checks_state, 'ok'),
+		'detail', null);
+end
+$$;
+
+create function public.qorpera_folder_emit_data_change_wakes(
+	p_binding jsonb,
+	p_database text,
+	p_event jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+	v_tool jsonb;
+	v_run public.qorpera_execution_runs%rowtype;
+begin
+	v_tool := public.qorpera_folder_tool_run(p_binding, '[]'::jsonb);
+	v_run := jsonb_populate_record(null::public.qorpera_execution_runs, v_tool -> 'run');
+	if coalesce(p_database, '') !~ '^[a-z][a-z0-9_-]{0,63}$'
+		or p_event is null or jsonb_typeof(p_event) <> 'object' then
+		raise exception 'Data change wake event is invalid' using errcode = '22023';
+	end if;
+	if not public.qorpera_folder_actor_allowed(
+		v_run.environment_id, v_run.profile_id, v_tool -> 'resolved', 'data/' || p_database, 'read'
+	) then
+		raise exception 'Database is unavailable to this run' using errcode = '42501';
+	end if;
+	return public.qorpera_emit_data_change_routine_wakes(v_run.environment_id, p_database, p_event);
+end
+$$;
+
 revoke all on function
+	public.qorpera_set_coding_environment_grant_scope(uuid, uuid, text, text, uuid),
 	public.qorpera_revoke_app_secret_grants_on_membership_change(),
 	public.qorpera_grant_app_secret(uuid, uuid, uuid, text, text),
 	public.qorpera_revoke_app_secret_grant(uuid, uuid),
@@ -1641,18 +1871,19 @@ revoke all on function
 	public.qorpera_glob_matches(text, text),
 	public.qorpera_routine_check_before_wake_valid(jsonb),
 	public.qorpera_record_routine_check_result(uuid, boolean, text, text),
+	public.qorpera_skip_checked_routine_wake(uuid, bigint, text, timestamptz, timestamptz, timestamptz, boolean, text, text),
+	public.qorpera_read_routine_code_checks(uuid, text),
 	public.qorpera_emit_code_change_routine_wakes(uuid, text, text, text, jsonb),
 	public.qorpera_emit_app_unhealthy_routine_wakes(uuid, uuid, jsonb),
 	public.qorpera_emit_data_change_routine_wakes(uuid, text, jsonb),
-	public.qorpera_connection_allows_routine_coding_dispatch(uuid, bigint),
-	public.qorpera_set_routine_coding_dispatch(uuid, uuid, boolean)
+	public.qorpera_folder_emit_data_change_wakes(jsonb, text, jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker, qorpera_site_relay;
 
 grant execute on function
+	public.qorpera_set_coding_environment_grant_scope(uuid, uuid, text, text, uuid),
 	public.qorpera_grant_app_secret(uuid, uuid, uuid, text, text),
 	public.qorpera_revoke_app_secret_grant(uuid, uuid),
-	public.qorpera_list_app_secrets(uuid, uuid),
-	public.qorpera_set_routine_coding_dispatch(uuid, uuid, boolean)
+	public.qorpera_list_app_secrets(uuid, uuid)
 	to authenticated;
 
 grant execute on function
@@ -1661,9 +1892,12 @@ grant execute on function
 
 grant execute on function
 	public.qorpera_record_routine_check_result(uuid, boolean, text, text),
+	public.qorpera_skip_checked_routine_wake(uuid, bigint, text, timestamptz, timestamptz, timestamptz, boolean, text, text),
+	public.qorpera_read_routine_code_checks(uuid, text),
 	public.qorpera_emit_code_change_routine_wakes(uuid, text, text, text, jsonb),
 	public.qorpera_emit_app_unhealthy_routine_wakes(uuid, uuid, jsonb),
-	public.qorpera_emit_data_change_routine_wakes(uuid, text, jsonb)
+	public.qorpera_emit_data_change_routine_wakes(uuid, text, jsonb),
+	public.qorpera_folder_emit_data_change_wakes(jsonb, text, jsonb)
 	to service_role;
 
 drop function pg_temp.w6c_patch(regprocedure, text[]);
@@ -1676,5 +1910,5 @@ comment on function public.qorpera_coding_environment_name_allowed(text) is
 	'20260930850000: allows company-owned OPENAI_* and ANTHROPIC_* coding environment secrets while keeping host and harness internals refused.';
 comment on function public.qorpera_authorize_app_secrets(uuid, text, uuid, text, text) is
 	'20260930850000: broker-only scoped secret authorization for hosted app tmpfs injection.';
-comment on function public.qorpera_set_routine_coding_dispatch(uuid, uuid, boolean) is
-	'20260930850000: explicit member opt-in allowing unattended routines to dispatch coding sessions on a connection with background work enabled.';
+comment on function public.qorpera_skip_checked_routine_wake(uuid, bigint, text, timestamptz, timestamptz, timestamptz, boolean, text, text) is
+	'20260930850000: records deterministic checkBeforeWake result and advances schedule cursor without waking the LLM when healthy and unchanged.';

@@ -5,6 +5,15 @@ import { isUuid } from "@qorpera/contracts";
 import type { CodeChangeRecordsOptions } from "./code-change-records.ts";
 import { CODE_SITE_MAX_BYTES, CODE_SITE_MAX_FILES } from "./code-site.ts";
 import type { CodeSiteTarget, CodeSiteUploadFile } from "./code-site-uploads.ts";
+import type { CodingSecretMask } from "./coding-secret-mask.ts";
+import {
+	type CompanyMachineSecretsManager,
+	fetchHostedAppSecrets,
+	type HostedAppDeliveredSecrets,
+	type HostedAppSecretBundle,
+	type HostedAppTargetEnv,
+	maskAppLogText,
+} from "./company-machine-secrets.ts";
 import {
 	type BlobUploadFetch,
 	NATIVE_SITE_MAX_BYTES,
@@ -15,7 +24,10 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-export const NATIVE_WEB_HOSTING_RPCS = ["qorpera_web_code_deployment_register"] as const;
+export const NATIVE_WEB_HOSTING_RPCS = [
+	"qorpera_web_code_deployment_register",
+	"qorpera_emit_app_unhealthy_routine_wakes",
+] as const;
 
 const SHA1_PATTERN = /^[0-9a-f]{40}$/;
 const OCI_DIGEST_REF_PATTERN = /^[^\s\x00-\x1f]+@sha256:[0-9a-f]{64}$/;
@@ -48,6 +60,7 @@ export interface BuildAppImageInput {
 	readonly dockerfile: string | null;
 	readonly port: number;
 	readonly registryPrefix: string;
+	readonly buildEnvPath?: string;
 }
 
 export interface BuildAppImageResult {
@@ -72,6 +85,12 @@ export type AppHostFetch = (
 	},
 ) => Promise<AppHostFetchResponse>;
 
+export interface AppSecretsBrokerConfig {
+	readonly origin: string;
+	readonly executorToken: string;
+	readonly fetchImpl?: typeof fetch;
+}
+
 export interface NativeEdgeHostingConfig {
 	readonly routerInternalUrl: string;
 	readonly controlToken: string;
@@ -84,6 +103,9 @@ export interface NativeEdgeHostingConfig {
 	readonly buildAppImage?: BuildAppImageFn;
 	readonly fetchImpl?: BlobUploadFetch;
 	readonly appHostFetchImpl?: AppHostFetch;
+	readonly appSecretsBroker?: AppSecretsBrokerConfig;
+	readonly secretsManager?: CompanyMachineSecretsManager;
+	readonly appTargetEnv?: HostedAppTargetEnv;
 }
 
 export interface NativeDeploymentRegistered {
@@ -265,6 +287,7 @@ export async function buildAppImageWithScript(
 		env: {
 			PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 			...(input.dockerfile ? { QORPERA_DOCKERFILE: input.dockerfile } : {}),
+			...(input.buildEnvPath ? { QORPERA_BUILD_SECRETS_FILE: input.buildEnvPath } : {}),
 			QORPERA_APP_PORT: String(input.port),
 		},
 	});
@@ -290,48 +313,131 @@ const defaultAppHostFetch: AppHostFetch = async (url, init) => {
 	return { status: res.status, body: await res.text() };
 };
 
+export async function emitHostedAppUnhealthy(
+	control: CodeChangeRecordsOptions["control"],
+	event: {
+		readonly environmentId: string;
+		readonly siteId: string;
+		readonly slug: string;
+		readonly status: string;
+		readonly restartCount?: number;
+		readonly error?: string;
+	},
+	signal: AbortSignal,
+): Promise<void> {
+	try {
+		await control.call(
+			"qorpera_emit_app_unhealthy_routine_wakes",
+			{
+				p_environment_id: event.environmentId,
+				p_site_id: event.siteId,
+				p_slug: event.slug,
+				p_status: event.status,
+				p_restart_count: event.restartCount ?? 0,
+				p_error: event.error ?? null,
+			},
+			signal,
+		);
+	} catch {
+		// WHY: routine wake emission is best-effort and must not mask deploy failures.
+	}
+}
+
 export async function triggerBlueGreenAppDeploy(options: {
 	readonly appHostInternalUrl: string;
 	readonly controlToken: string;
 	readonly deploymentId: string;
 	readonly siteId: string;
+	readonly slug?: string;
+	readonly companyId?: string;
+	readonly environmentId?: string;
+	readonly control?: CodeChangeRecordsOptions["control"];
 	readonly ociImageRef: string;
 	readonly healthPath: string;
 	readonly idleTimeoutSec: number;
 	readonly memoryMb: number;
 	readonly vcpuLimit: number;
 	readonly env: Record<string, string>;
+	readonly secretsManager?: CompanyMachineSecretsManager;
+	readonly appSecrets?: HostedAppSecretBundle;
+	readonly appSecretsBroker?: AppSecretsBrokerConfig;
+	readonly appTargetEnv?: HostedAppTargetEnv;
 	readonly fetchImpl?: AppHostFetch;
 	readonly signal?: AbortSignal;
-}): Promise<{ upstreamAddr: string }> {
+}): Promise<{ upstreamAddr: string; envPath?: string }> {
 	const base = options.appHostInternalUrl.replace(/\/+$/, "");
 	const fetchImpl = options.fetchImpl ?? defaultAppHostFetch;
-	const res = await fetchImpl(`${base}/_internal/apps/deploy`, {
-		method: "POST",
-		headers: {
-			authorization: `Bearer ${options.controlToken}`,
-			"content-type": "application/json",
-		},
-		body: JSON.stringify({
-			deployment_id: options.deploymentId,
-			site_id: options.siteId,
-			oci_image_ref: options.ociImageRef,
-			health_path: options.healthPath,
-			idle_timeout_sec: options.idleTimeoutSec,
-			memory_mb: options.memoryMb,
-			vcpu_limit: options.vcpuLimit,
-			env: options.env,
-		}),
-		signal: options.signal,
-	});
-	if (res.status < 200 || res.status >= 300) {
-		throw new Error(`APP_HOST_DEPLOY_FAILED_${res.status}`);
+	let delivered: HostedAppDeliveredSecrets | undefined;
+	let previousBytes: Buffer | null = null;
+	let deliveredSlug = options.slug;
+	if (options.secretsManager && (options.appSecrets || options.appSecretsBroker)) {
+		const bundle =
+			options.appSecrets ??
+			(await fetchHostedAppSecrets({
+				brokerOrigin: options.appSecretsBroker!.origin,
+				executorToken: options.appSecretsBroker!.executorToken,
+				...(options.companyId ? { companyId: options.companyId } : {}),
+				siteId: options.siteId,
+				scope: "runtime",
+				targetEnv: options.appTargetEnv ?? "prod",
+				fetchImpl: options.appSecretsBroker!.fetchImpl,
+				signal: options.signal ?? AbortSignal.timeout(10_000),
+			}));
+		deliveredSlug = bundle.slug;
+		previousBytes = await options.secretsManager.snapshot(bundle.slug);
+		delivered = await options.secretsManager.deliver(bundle);
 	}
-	const parsed = JSON.parse(res.body) as unknown;
-	if (!isRecord(parsed) || typeof parsed.upstream_addr !== "string" || !parsed.upstream_addr) {
-		throw new Error("APP_HOST_DEPLOY_INVALID_RESPONSE");
+	try {
+		const res = await fetchImpl(`${base}/_internal/apps/deploy`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${options.controlToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				deployment_id: options.deploymentId,
+				site_id: options.siteId,
+				oci_image_ref: options.ociImageRef,
+				health_path: options.healthPath,
+				idle_timeout_sec: options.idleTimeoutSec,
+				memory_mb: options.memoryMb,
+				vcpu_limit: options.vcpuLimit,
+				env: options.env,
+				...(delivered ? { env_path: delivered.envPath } : {}),
+			}),
+			signal: options.signal,
+		});
+		if (res.status < 200 || res.status >= 300) {
+			throw new Error(`APP_HOST_DEPLOY_FAILED_${res.status}`);
+		}
+		const parsed = JSON.parse(res.body) as unknown;
+		if (!isRecord(parsed) || typeof parsed.upstream_addr !== "string" || !parsed.upstream_addr) {
+			throw new Error("APP_HOST_DEPLOY_INVALID_RESPONSE");
+		}
+		return delivered
+			? { upstreamAddr: parsed.upstream_addr, envPath: delivered.envPath }
+			: { upstreamAddr: parsed.upstream_addr };
+	} catch (error) {
+		if (options.secretsManager && delivered) {
+			await options.secretsManager.restore(delivered.slug, previousBytes).catch(() => undefined);
+		}
+		if (options.control && options.environmentId && deliveredSlug) {
+			const rawError = error instanceof Error ? error.message : "APP_HOST_DEPLOY_FAILED";
+			const maskedError = delivered ? maskAppLogText(delivered.mask, rawError) : rawError;
+			await emitHostedAppUnhealthy(
+				options.control,
+				{
+					environmentId: options.environmentId,
+					siteId: options.siteId,
+					slug: deliveredSlug,
+					status: "deploy_failed",
+					error: maskedError,
+				},
+				options.signal ?? AbortSignal.timeout(5000),
+			);
+		}
+		throw error;
 	}
-	return { upstreamAddr: parsed.upstream_addr };
 }
 
 export async function fetchAppLogs(options: {
@@ -339,6 +445,9 @@ export async function fetchAppLogs(options: {
 	readonly controlToken: string;
 	readonly deploymentId: string;
 	readonly tail?: number;
+	readonly mask?: CodingSecretMask;
+	readonly secretsManager?: CompanyMachineSecretsManager;
+	readonly slug?: string;
 	readonly fetchImpl?: AppHostFetch;
 	readonly signal?: AbortSignal;
 }): Promise<AppLogEntry[]> {
@@ -353,6 +462,8 @@ export async function fetchAppLogs(options: {
 	if (res.status !== 200) throw new Error(`APP_HOST_LOGS_FAILED_${res.status}`);
 	const parsed = JSON.parse(res.body) as unknown;
 	if (!isRecord(parsed) || !Array.isArray(parsed.entries)) throw new Error("APP_HOST_LOGS_INVALID");
+	const effectiveMask =
+		options.mask ?? (options.secretsManager && options.slug ? options.secretsManager.maskFor(options.slug) : null);
 	const out: AppLogEntry[] = [];
 	for (const entry of parsed.entries) {
 		if (
@@ -361,7 +472,8 @@ export async function fetchAppLogs(options: {
 			typeof entry.stream === "string" &&
 			typeof entry.line === "string"
 		) {
-			out.push({ ts_ms: entry.ts_ms, stream: entry.stream, line: entry.line });
+			const line = effectiveMask ? maskAppLogText(effectiveMask, entry.line) : entry.line;
+			out.push({ ts_ms: entry.ts_ms, stream: entry.stream, line });
 		}
 	}
 	return out;
@@ -375,6 +487,7 @@ export async function deployCodeSiteToNativeEdge(options: {
 	readonly change: number;
 	readonly spec: NativeCodeSiteSpec;
 	readonly files: readonly CodeSiteUploadFile[];
+	readonly siteId?: string;
 	readonly sourceDir?: string;
 	readonly edge: NativeEdgeHostingConfig;
 	readonly signal: AbortSignal;
@@ -432,18 +545,40 @@ export async function deployCodeSiteToNativeEdge(options: {
 			throw new Error("APP_SOURCE_DIR_REQUIRED");
 		}
 		const sourceDir = options.sourceDir ?? ".";
-		const built = await builderFn(
-			{
-				target,
-				change,
-				tree: spec.tree,
-				sourceDir,
-				dockerfile: spec.dockerfile,
-				port,
-				registryPrefix: edge.registryPrefix ?? "127.0.0.1:5000/qorpera-apps",
-			},
-			signal,
-		);
+		let buildSecrets: HostedAppDeliveredSecrets | undefined;
+		if (options.siteId && edge.appSecretsBroker && edge.secretsManager) {
+			const bundle = await fetchHostedAppSecrets({
+				brokerOrigin: edge.appSecretsBroker.origin,
+				executorToken: edge.appSecretsBroker.executorToken,
+				companyId: target.companyId,
+				siteId: options.siteId,
+				scope: "build",
+				targetEnv: edge.appTargetEnv ?? "prod",
+				fetchImpl: edge.appSecretsBroker.fetchImpl,
+				signal,
+			});
+			buildSecrets = await edge.secretsManager.deliverBuild(bundle);
+		}
+		let built: BuildAppImageResult;
+		try {
+			built = await builderFn(
+				{
+					target,
+					change,
+					tree: spec.tree,
+					sourceDir,
+					dockerfile: spec.dockerfile,
+					port,
+					registryPrefix: edge.registryPrefix ?? "127.0.0.1:5000/qorpera-apps",
+					...(buildSecrets ? { buildEnvPath: buildSecrets.envPath } : {}),
+				},
+				signal,
+			);
+		} finally {
+			if (buildSecrets) {
+				await buildSecrets.scrub().catch(() => undefined);
+			}
+		}
 		if (!OCI_DIGEST_REF_PATTERN.test(built.ociImageRef)) {
 			throw new Error("APP_IMAGE_REF_INVALID");
 		}

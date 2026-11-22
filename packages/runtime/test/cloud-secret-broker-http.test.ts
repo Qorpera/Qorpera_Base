@@ -88,6 +88,31 @@ function fixture(reflectSecret = false) {
 			],
 		};
 	});
+	const authorizeAppSecrets = vi.fn(async (request: { siteId: string; scope: string; targetEnv: string }) => {
+		const sealed = Buffer.from(keyring.seal({ value: ENVIRONMENT_VALUE }, identity));
+		return {
+			schema: "qorpera.app-secrets-authorization/v1",
+			companyId: identity.companyId,
+			environmentId: identity.environmentId,
+			siteId: request.siteId,
+			slug: "billing-app",
+			scope: request.scope,
+			targetEnv: request.targetEnv,
+			secrets: [
+				{
+					name: "OPENAI_API_KEY",
+					secretId: identity.secretId,
+					secretVersion: identity.version,
+					keyId: identity.keyId,
+					ownerKind: "company",
+					scope: request.scope,
+					targetEnv: request.targetEnv,
+					encryptedEnvelopeBase64: sealed.toString("base64"),
+					envelopeSha256: createHash("sha256").update(sealed).digest("hex"),
+				},
+			],
+		};
+	});
 	const authority: CloudSecretBrokerAuthority = {
 		describeCapture: vi.fn(async () => description),
 		completeCapture: vi.fn(async (_ticket, _capability, encryptedEnvelope) => {
@@ -146,6 +171,7 @@ function fixture(reflectSecret = false) {
 			};
 		}),
 		authorizeCodingEnvironment,
+		authorizeAppSecrets,
 	};
 	const adapter: CloudSecretConnectorAdapter = {
 		connectorId: "linear",
@@ -185,6 +211,7 @@ function fixture(reflectSecret = false) {
 	return {
 		authority,
 		authorizeCodingEnvironment,
+		authorizeAppSecrets,
 		capability,
 		ticketId,
 		wrappingKey,
@@ -465,6 +492,46 @@ it("answers the coding environment only to the executor's token, uncached, and n
 		expect(await closed.json()).toEqual(notFound);
 	}
 	expect(f.authorizeCodingEnvironment).toHaveBeenCalledTimes(2);
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
+it("serves /v1/app-secrets only to the coding executor token and decrypts scoped app secrets", async () => {
+	const f = fixture();
+	const port = await f.service.start();
+	const siteId = randomUUID();
+	const body = {
+		schema: "qorpera.app-secrets-request/v1",
+		siteId,
+		scope: "runtime",
+		targetEnv: "prod",
+	};
+	const post = (authorization: string, sent: Record<string, unknown> = body) =>
+		fetch(`http://127.0.0.1:${port}/v1/app-secrets?company=${randomUUID()}`, {
+			method: "POST",
+			headers: { authorization, "content-type": "application/json" },
+			body: JSON.stringify(sent),
+		});
+	const guest = await post(`Bearer ${f.runtimeToken}`);
+	expect(guest.status).toBe(404);
+	expect(f.authorizeAppSecrets).not.toHaveBeenCalled();
+
+	const ok = await post(`Bearer ${f.codingExecutorToken}`);
+	expect(ok.status).toBe(200);
+	expect(ok.headers.get("cache-control")).toBe("no-store");
+	expect(await ok.json()).toEqual({
+		schema: "qorpera.app-secrets/v1",
+		siteId,
+		slug: "billing-app",
+		scope: "runtime",
+		targetEnv: "prod",
+		secrets: { OPENAI_API_KEY: ENVIRONMENT_VALUE },
+	});
+	expect(f.authorizeAppSecrets).toHaveBeenCalledTimes(1);
+
+	const bad = await post(`Bearer ${f.codingExecutorToken}`, { ...body, scope: "all" });
+	expect(bad.status).toBe(403);
+	expect(f.authorizeAppSecrets).toHaveBeenCalledTimes(1);
 	f.wrappingKey.fill(0);
 	f.keyring.close();
 });

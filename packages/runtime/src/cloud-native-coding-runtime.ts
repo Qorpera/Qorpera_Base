@@ -318,9 +318,9 @@ function contextPullRequest(value: unknown, repository: CloudCodingRepository): 
 	}
 }
 
-/** Strict: the context must be this turn's, contiguous and bounded. */
 const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 
+/** Strict: the context must be this turn's, contiguous and bounded. */
 export function parseCloudCodingTurnContext(
 	value: unknown,
 	scope: { workerId: string; sequence: number },

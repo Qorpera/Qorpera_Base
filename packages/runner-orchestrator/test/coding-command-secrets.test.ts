@@ -514,21 +514,15 @@ describe("a coding machine's values for the folder service's save check (5j-5 (a
 				"prod",
 			),
 		).toThrow(RangeError);
+		expect(() =>
+			filterScopedSecrets(
+				[{ name: "LD_PRELOAD", value: "/tmp/x.so", scope: "runtime", targetEnv: "prod", sensitive: false }],
+				"runtime",
+				"prod",
+			),
+		).toThrow(RangeError);
 
 		const appMask = buildAppSecretMask(filtered.secrets, [OLDER_KEY]);
 		expect(masked(appMask.stream(), "sk-proj-scoped-12345678 prod 3000")).toBe("*** prod 3000");
-
-		const workerId = randomUUID();
-		const machineId = randomUUID();
-		const f = fixture();
-		f.environment.mockResolvedValueOnce({
-			environment: { API_KEY },
-			mask: [],
-			config: { NODE_ENV: "test", PORT: "3000" },
-		});
-		const scope = f.scope(workerId);
-		const resolved = await f.secrets.session(machineId, scope).resolve(f.request(machineId, scope), signal());
-		expect(resolved.environment).toEqual({ NODE_ENV: "test", PORT: "3000", API_KEY });
-		expect(masked(resolved.mask(), `PORT=3000 KEY=${API_KEY}`)).toBe("PORT=3000 KEY=***");
 	});
 });

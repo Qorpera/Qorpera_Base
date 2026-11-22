@@ -250,12 +250,77 @@ function shown(forms: readonly (() => unknown)[]): CloudToolContent {
 	throw new CloudToolRefusal("The answer is too large to show: name one database");
 }
 
+export interface CloudDataChangeWakeEvent {
+	readonly database: string;
+	readonly payload: Readonly<Record<string, unknown>>;
+}
+
+function inferDataChangeMeta(
+	sqlText: string | null,
+	answer: Record<string, unknown>,
+	rows: readonly unknown[] | null,
+): {
+	readonly table?: string;
+	readonly tables?: readonly string[];
+	readonly operation?: "insert" | "update" | "delete";
+	readonly rowId?: string | number;
+} {
+	const tables = new Set<string>();
+	let operation: "insert" | "update" | "delete" | undefined;
+	if (typeof answer.table === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(answer.table)) tables.add(answer.table);
+	if (Array.isArray(answer.tables)) {
+		for (const item of answer.tables) {
+			if (typeof item === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(item)) tables.add(item);
+		}
+	}
+	if (answer.operation === "insert" || answer.operation === "update" || answer.operation === "delete") {
+		operation = answer.operation;
+	}
+	if (sqlText) {
+		const stripped = sqlText.replace(/--[^\n]*/g, " ").replace(/\/\*[\s\S]*?\*\//g, " ");
+		const insertMatch = /\binsert\s+into\s+(?:"?([a-z][a-z0-9_]{0,63})"?)/i.exec(stripped);
+		const updateMatch = /\bupdate\s+(?:"?([a-z][a-z0-9_]{0,63})"?)/i.exec(stripped);
+		const deleteMatch = /\bdelete\s+from\s+(?:"?([a-z][a-z0-9_]{0,63})"?)/i.exec(stripped);
+		if (!operation) {
+			if (insertMatch) operation = "insert";
+			else if (updateMatch) operation = "update";
+			else if (deleteMatch) operation = "delete";
+		}
+		for (const match of [insertMatch, updateMatch, deleteMatch]) {
+			const tableName = match?.[1]?.toLowerCase();
+			if (tableName && /^[a-z][a-z0-9_]{0,63}$/.test(tableName)) tables.add(tableName);
+		}
+	}
+	let rowId: string | number | undefined;
+	if (typeof answer.rowId === "string" || typeof answer.rowId === "number") {
+		rowId = answer.rowId;
+	} else if (rows && rows.length === 1 && Array.isArray(answer.columns)) {
+		const idIndex = answer.columns.indexOf("id");
+		const firstRow = rows[0];
+		if (idIndex >= 0 && Array.isArray(firstRow)) {
+			const candidate = firstRow[idIndex];
+			if (typeof candidate === "string" || typeof candidate === "number") rowId = candidate;
+		} else if (firstRow && typeof firstRow === "object" && !Array.isArray(firstRow)) {
+			const candidate = (firstRow as Record<string, unknown>).id;
+			if (typeof candidate === "string" || typeof candidate === "number") rowId = candidate;
+		}
+	}
+	const tableList = [...tables];
+	return {
+		...(tableList.length === 1 ? { table: tableList[0] } : {}),
+		...(tableList.length > 0 ? { tables: tableList } : {}),
+		...(operation ? { operation } : {}),
+		...(rowId !== undefined ? { rowId } : {}),
+	};
+}
+
 /** The tools, for one run. `apply`: whether the run may write a database, that is apply its steps and run its
  * changes (a worker only reads). */
 export function cloudDataTools(options: {
 	folder: Pick<CloudCompanyFolderClient, "dataPass" | "readText">;
 	door: CloudCompanyDataDoor;
 	apply: boolean;
+	onDataChanged?: (event: CloudDataChangeWakeEvent, signal: AbortSignal) => Promise<void>;
 }): readonly CloudNativeTool[] {
 	const { folder, door } = options;
 
@@ -565,6 +630,35 @@ export function cloudDataTools(options: {
 				change: request.change,
 				...(answer.changed === undefined ? {} : { changed: answer.changed }),
 			};
+			if (options.onDataChanged && (answer.changed === undefined || (answer.changed as number) > 0)) {
+				let actionSql: string | null = null;
+				try {
+					const read = await folder.readText(
+						`data/${request.database}/actions/${request.change}.sql`,
+						FILE_BYTES,
+						context.signal,
+					);
+					actionSql = read?.text ?? null;
+				} catch {
+					actionSql = null;
+				}
+				const meta = inferDataChangeMeta(actionSql, answer, rows);
+				const eventKey = `${request.database}:${request.change}:${String(answer.asOf ?? Date.now())}:${String(meta.rowId ?? "")}`;
+				await options
+					.onDataChanged(
+						{
+							database: request.database,
+							payload: {
+								eventKey,
+								change: request.change,
+								...meta,
+								...(typeof answer.asOf === "string" ? { at: answer.asOf } : {}),
+							},
+						},
+						context.signal,
+					)
+					.catch(() => undefined);
+			}
 			if (rows === null) return shown([() => ({ ...done, asOf: answer.asOf })]);
 			// The change ran whole; what it gave back is shown whole when it fits one result, else as many rows as fit.
 			const page = (count: number) => ({

@@ -148,15 +148,18 @@ function escapeDotenvValue(value: string): string {
 	return `${out}"`;
 }
 
-function prepareAppEnvironment(bundle: HostedAppSecretBundle): {
+function prepareAppEnvironment(
+	bundle: HostedAppSecretBundle,
+	expectedScope: HostedAppSecretScope = "runtime",
+): {
 	readonly envBuffer: Buffer;
 	readonly secretNames: readonly string[];
 	readonly mask: CodingSecretMask;
 } {
 	parseUuid(bundle.siteId, "Hosted app siteId");
 	validateAppSlug(bundle.slug);
-	if (bundle.scope !== "runtime") {
-		throw new RangeError("Hosted app tmpfs delivery only accepts runtime scope secrets");
+	if (bundle.scope !== expectedScope) {
+		throw new RangeError(`Hosted app tmpfs delivery only accepts ${expectedScope} scope secrets`);
 	}
 	if (bundle.targetEnv !== "dev" && bundle.targetEnv !== "prod") {
 		throw new RangeError("Hosted app target environment is invalid");
@@ -359,6 +362,83 @@ async function scrubFile(filePath: string): Promise<void> {
 	}
 }
 
+export async function fetchHostedAppSecrets(options: {
+	readonly brokerOrigin: string;
+	readonly executorToken: string;
+	readonly companyId?: string;
+	readonly siteId: string;
+	readonly scope: HostedAppSecretScope;
+	readonly targetEnv: HostedAppTargetEnv;
+	readonly fetchImpl?: typeof fetch;
+	readonly signal: AbortSignal;
+}): Promise<HostedAppSecretBundle> {
+	const siteId = parseUuid(options.siteId, "Hosted app siteId");
+	if (options.scope !== "build" && options.scope !== "test" && options.scope !== "runtime") {
+		throw new RangeError("Hosted app secret scope is invalid");
+	}
+	if (options.targetEnv !== "dev" && options.targetEnv !== "prod") {
+		throw new RangeError("Hosted app target environment is invalid");
+	}
+	const url = new URL("/v1/app-secrets", options.brokerOrigin);
+	if (options.companyId !== undefined) {
+		url.searchParams.set("company", parseUuid(options.companyId, "Hosted app companyId").toLowerCase());
+	}
+	const fetchImpl = options.fetchImpl ?? fetch;
+	const res = await fetchImpl(url.toString(), {
+		method: "POST",
+		redirect: "manual",
+		headers: {
+			authorization: `Bearer ${options.executorToken}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			schema: "qorpera.app-secrets-request/v1",
+			siteId,
+			scope: options.scope,
+			targetEnv: options.targetEnv,
+		}),
+		signal: options.signal,
+	});
+	if (res.status !== 200) {
+		await res.body?.cancel().catch(() => undefined);
+		throw new Error(`APP_SECRETS_BROKER_FAILED_${res.status}`);
+	}
+	const raw = (await res.json()) as unknown;
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+		throw new Error("APP_SECRETS_BROKER_INVALID");
+	}
+	const body = raw as Record<string, unknown>;
+	if (
+		body.schema !== "qorpera.app-secrets/v1" ||
+		typeof body.siteId !== "string" ||
+		body.siteId.toLowerCase() !== siteId.toLowerCase() ||
+		typeof body.slug !== "string" ||
+		!APP_SLUG_PATTERN.test(body.slug) ||
+		body.scope !== options.scope ||
+		body.targetEnv !== options.targetEnv ||
+		!body.secrets ||
+		typeof body.secrets !== "object" ||
+		Array.isArray(body.secrets)
+	) {
+		throw new Error("APP_SECRETS_BROKER_INVALID");
+	}
+	const secrets: Record<string, string> = {};
+	for (const [name, value] of Object.entries(body.secrets as Record<string, unknown>)) {
+		if (!appSecretEnvNameAllowed(name) || typeof value !== "string") {
+			throw new Error("APP_SECRETS_BROKER_INVALID");
+		}
+		validateSecretValue(value, true);
+		secrets[name] = value;
+	}
+	return Object.freeze({
+		siteId,
+		slug: body.slug,
+		scope: options.scope,
+		targetEnv: options.targetEnv,
+		secrets: Object.freeze(secrets),
+	});
+}
+
 export class CompanyMachineSecretsManager {
 	readonly #rootDir: string;
 	readonly #verifyTmpfs: TmpfsVerifier;
@@ -369,28 +449,32 @@ export class CompanyMachineSecretsManager {
 		this.#verifyTmpfs = options?.verifyTmpfs ?? isTmpfsMountedPath;
 	}
 
+	async #writeAtomicEnv(targetPath: string, slug: string, envBuffer: Buffer): Promise<void> {
+		const tmpfsOk = await this.#verifyTmpfs(this.#rootDir);
+		if (!tmpfsOk) {
+			throw new Error("APP_SECRETS_NOT_TMPFS");
+		}
+		await mkdir(dirname(targetPath), { recursive: true, mode: APP_SECRETS_DIR_MODE });
+		const tmpPath = join(dirname(targetPath), `.${slug}.${randomBytes(8).toString("hex")}.tmp`);
+		const handle = await open(tmpPath, "wx", 0o600);
+		try {
+			await handle.writeFile(envBuffer);
+			await handle.chmod(APP_SECRETS_FILE_MODE);
+		} catch (error) {
+			await handle.close().catch(() => undefined);
+			await unlink(tmpPath).catch(() => undefined);
+			throw error;
+		}
+		await handle.close();
+		await rename(tmpPath, targetPath);
+	}
+
 	async deliver(bundle: HostedAppSecretBundle): Promise<HostedAppDeliveredSecrets> {
 		const slug = validateAppSlug(bundle.slug);
 		const envPath = appSecretEnvPath(slug, this.#rootDir);
-		const { envBuffer, secretNames, mask } = prepareAppEnvironment(bundle);
+		const { envBuffer, secretNames, mask } = prepareAppEnvironment(bundle, "runtime");
 		try {
-			const tmpfsOk = await this.#verifyTmpfs(this.#rootDir);
-			if (!tmpfsOk) {
-				throw new Error("APP_SECRETS_NOT_TMPFS");
-			}
-			await mkdir(dirname(envPath), { recursive: true, mode: APP_SECRETS_DIR_MODE });
-			const tmpPath = join(dirname(envPath), `.${slug}.${randomBytes(8).toString("hex")}.tmp`);
-			const handle = await open(tmpPath, "wx", 0o600);
-			try {
-				await handle.writeFile(envBuffer);
-				await handle.chmod(APP_SECRETS_FILE_MODE);
-			} catch (error) {
-				await handle.close().catch(() => undefined);
-				await unlink(tmpPath).catch(() => undefined);
-				throw error;
-			}
-			await handle.close();
-			await rename(tmpPath, envPath);
+			await this.#writeAtomicEnv(envPath, slug, envBuffer);
 			this.#active.set(slug, { envPath, mask });
 			return Object.freeze({
 				siteId: bundle.siteId,
@@ -403,6 +487,47 @@ export class CompanyMachineSecretsManager {
 		} finally {
 			envBuffer.fill(0);
 		}
+	}
+
+	async deliverBuild(bundle: HostedAppSecretBundle): Promise<HostedAppDeliveredSecrets> {
+		const slug = validateAppSlug(bundle.slug);
+		const envPath = join(this.#rootDir, `.${slug}.build.${randomBytes(8).toString("hex")}.env`);
+		const { envBuffer, secretNames, mask } = prepareAppEnvironment(bundle, "build");
+		try {
+			await this.#writeAtomicEnv(envPath, slug, envBuffer);
+			return Object.freeze({
+				siteId: bundle.siteId,
+				slug,
+				envPath,
+				secretNames,
+				mask,
+				scrub: () => scrubFile(envPath),
+			});
+		} finally {
+			envBuffer.fill(0);
+		}
+	}
+
+	async snapshot(slug: string): Promise<Buffer | null> {
+		const envPath = appSecretEnvPath(slug, this.#rootDir);
+		try {
+			const info = await lstat(envPath);
+			if (!info.isFile()) return null;
+			return await readFile(envPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return null;
+			throw error;
+		}
+	}
+
+	async restore(slug: string, previousBytes: Buffer | null): Promise<void> {
+		const validSlug = validateAppSlug(slug);
+		if (previousBytes === null) {
+			await this.scrub(validSlug);
+			return;
+		}
+		const envPath = appSecretEnvPath(validSlug, this.#rootDir);
+		await this.#writeAtomicEnv(envPath, validSlug, previousBytes);
 	}
 
 	maskFor(slug: string): CodingSecretMask | null {

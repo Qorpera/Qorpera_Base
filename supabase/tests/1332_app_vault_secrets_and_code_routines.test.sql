@@ -170,6 +170,30 @@ begin
 		= array['ANTHROPIC_API_KEY', 'NPM_TOKEN', 'OPENAI_API_KEY'],
 		'coding broker excludes runtime-only grant: ' || v_auth
 	);
+
+	perform pg_temp.base_assert(
+		pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000002',
+			format('select public.qorpera_set_coding_environment_grant_scope(%L, %L, %L, %L, null)',
+				'92400000-0000-4000-8000-000000000010',
+				(select id from public.qorpera_coding_environment_grants where secret_id = '13320000-0000-4000-8000-000000000072' limit 1),
+				'build', 'prod')) like '42501:%',
+		'contributor cannot change coding grant scope'
+	);
+
+	v_auth := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000001',
+		format('select public.qorpera_set_coding_environment_grant_scope(%L, %L, %L, %L, null)',
+			'92400000-0000-4000-8000-000000000010',
+			(select id from public.qorpera_coding_environment_grants where secret_id = '13320000-0000-4000-8000-000000000072' limit 1),
+			'build', 'prod'));
+	perform pg_temp.base_assert(v_auth like 'ok:%' and substring(v_auth from 4)::jsonb ->> 'targetEnv' = 'prod',
+		'owner scopes coding grant to prod: ' || v_auth);
+
+	perform pg_temp.base_claims('service_role');
+	v_context := public.qorpera_read_coding_turn_context(v_binding);
+	perform pg_temp.base_assert(
+		v_context -> 'secretNames' = '["NPM_TOKEN","OPENAI_API_KEY"]'::jsonb,
+		'prod-targeted coding grant excluded from secretNames: ' || coalesce(v_context -> 'secretNames', 'null'::jsonb)::text
+	);
 end $$;
 
 do $$
@@ -375,6 +399,21 @@ begin
 	perform pg_temp.base_assert(public.qorpera_company_state_parse_problems('routine', v_parse_data) = '[]'::jsonb, 'data-change valid');
 	perform pg_temp.base_assert(public.qorpera_company_state_parse_problems('routine', v_parse_check) = '[]'::jsonb, 'checkBeforeWake valid');
 
+	perform pg_temp.base_assert(
+		not public.qorpera_routine_check_before_wake_valid(
+			jsonb_build_object('kind', 'http_probe', 'url', 'http://169.254.169.254/latest/meta-data')),
+		'http_probe rejects plain http URL in SQL'
+	);
+
+	perform pg_temp.base_assert(
+		(public.qorpera_company_state_routine_rules(
+			'92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000010',
+			v_owner_actor, 'qorperaos/agents/alice/routines/bad-repo.md',
+			jsonb_set(v_parse_code, '{trigger,repo}', '"other/ungranted"'::jsonb), false)) -> 'problems' -> 0 ->> 'message'
+		like 'this routine''s agent does not have access to repository%',
+		'ungranted repo refused on code-change save'
+	);
+
 	v_parse_bad := jsonb_set(v_parse_app, '{checkBeforeWake}',
 		jsonb_build_object('kind', 'http_probe', 'url', 'https://billing.example.test/health'));
 	perform pg_temp.base_assert(
@@ -505,15 +544,37 @@ begin
 	v_chk := public.qorpera_record_routine_check_result(v_r_check, true, 'HTTP 200 OK');
 	perform pg_temp.base_assert(not (v_chk ->> 'shouldWake')::boolean and not (v_chk ->> 'stateChanged')::boolean,
 		'post-recovery healthy check stays quiet');
+
+	v_chk := public.qorpera_skip_checked_routine_wake(
+		v_r_check, 1, 'file',
+		clock_timestamp(), null, clock_timestamp() + interval '15 minutes',
+		true, 'HTTP 200 OK', null
+	);
+	perform pg_temp.base_assert(
+		v_chk ->> 'status' = 'skipped' and not (v_chk ->> 'shouldWake')::boolean,
+		'skip_checked_routine_wake advances healthy schedule without wake: ' || v_chk::text
+	);
+	v_chk := public.qorpera_skip_checked_routine_wake(
+		v_r_check, 1, 'file',
+		clock_timestamp() + interval '15 minutes',
+		(select last_scheduled_for from public.qorpera_cloud_routine_schedule_cursors where routine_id = v_r_check and trigger_id = 'file'),
+		clock_timestamp() + interval '30 minutes',
+		false, 'HTTP 503', 'backend unhealthy'
+	);
+	perform pg_temp.base_assert(
+		v_chk ->> 'status' = 'wake_required' and (v_chk ->> 'shouldWake')::boolean,
+		'skip_checked_routine_wake signals wake_required on failure: ' || v_chk::text
+	);
+
+	v_chk := public.qorpera_read_routine_code_checks(v_r_check, 'qorpera/qorpera_base');
+	perform pg_temp.base_assert((v_chk ->> 'ok')::boolean, 'code_checks clean when no failed changes: ' || v_chk::text);
 end $$;
 
 do $$
 declare
 	v_plan_conn uuid := (current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id')::uuid;
 	v_other_binding uuid := '13320000-0000-4000-8000-000000000202';
-	v_res text;
 	v_problem text;
-	v_payer record;
 begin
 	set local session_replication_role = replica;
 	insert into public.qorpera_model_logins(id, profile_id, compute_identity_id, credential_capsule_id, broker_authority_id, provider,
@@ -526,54 +587,11 @@ begin
 	where v.connection_id = v_plan_conn and v.version = 2;
 	set local session_replication_role = origin;
 
-	v_res := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000002',
-		format('select public.qorpera_set_routine_coding_dispatch(%L, %L, true)',
-			'92400000-0000-4000-8000-000000000010', v_plan_conn));
-	perform pg_temp.base_assert(v_res = '42501:routine coding dispatch consent requires the connection owner',
-		'non-owner refused: ' || v_res);
-
 	v_problem := public.qorpera_coding_owner_problem(
 		'92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000001', 'codex', v_other_binding);
 	perform pg_temp.base_assert(
 		v_problem = 'Coding for this work needs a Codex login: a ChatGPT plan pays only for work started on it',
-		'default lockout still active: ' || coalesce(v_problem, 'null')
-	);
-
-	v_res := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000001',
-		format('select public.qorpera_set_routine_coding_dispatch(%L, %L, true)',
-			'92400000-0000-4000-8000-000000000010', v_plan_conn));
-	perform pg_temp.base_assert(
-		v_res like 'ok:%'
-		and (substring(v_res from 4)::jsonb ->> 'allow_routine_coding_dispatch')::boolean
-		and (substring(v_res from 4)::jsonb ->> 'changed')::boolean,
-		'owner opts in to routine coding dispatch: ' || v_res
-	);
-
-	v_problem := public.qorpera_coding_owner_problem(
-		'92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000001', 'codex', v_other_binding);
-	perform pg_temp.base_assert(v_problem is null, 'opt-in lifts lockout: ' || coalesce(v_problem, 'null'));
-
-	select * into v_payer from public.qorpera_coding_owner_payer(
-		'92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000001', 'codex', v_other_binding);
-	perform pg_temp.base_assert(v_payer.binding_id is not null, 'payer resolves with opt-in');
-
-	v_res := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000001',
-		format('select public.qorpera_consent_provider_connection_autonomous(%L, %L, false)',
-			'92400000-0000-4000-8000-000000000010', v_plan_conn));
-	perform pg_temp.base_assert(v_res like 'ok:%', 'turning off allow_autonomous resets routine coding dispatch cleanly: ' || v_res);
-
-	perform pg_temp.base_assert(
-		not (select allow_routine_coding_dispatch from public.qorpera_provider_connection_versions
-			where connection_id = v_plan_conn order by version desc limit 1),
-		'allow_routine_coding_dispatch reset to false when allow_autonomous withdrawn'
-	);
-
-	v_res := pg_temp.t1332_as_member('92400000-0000-4000-8000-000000000001',
-		format('select public.qorpera_set_routine_coding_dispatch(%L, %L, true)',
-			'92400000-0000-4000-8000-000000000010', v_plan_conn));
-	perform pg_temp.base_assert(
-		v_res = '55000:Turn on background work for this login before allowing routine coding dispatch',
-		'requires allow_autonomous first: ' || v_res
+		'ChatGPT plan coding dispatch invariant preserved: ' || coalesce(v_problem, 'null')
 	);
 end $$;
 

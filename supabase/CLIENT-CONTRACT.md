@@ -1787,8 +1787,9 @@ value never comes back to a client. The broker's screen seals only the one field
 and without a NUL, so the coding machine can mask it in its output; it refuses any other capture for `environment`.
 
 A coding session gets its member's own environment secrets and the company's that an owner or administrator granted on
-its repository with `scope in ('all', 'build', 'test')`; a company secret with no grant (or granted only for `runtime`)
-reaches no coding session. When the member's and a granted company secret have the same name, the company's wins.
+its repository with `scope in ('all', 'build', 'test')` and `target_env in ('all', 'dev', 'test')`; a company secret
+with no grant (or granted only for `runtime` or `prod`) reaches no coding session. When the member's and a granted
+company secret have the same name, the company's wins.
 `qorpera_read_coding_turn_context` also surfaces `secretNames` (sorted uppercase variable names only, never values) so
 coding agents know which secrets are present without guessing or inspecting `env`.
 
@@ -1812,12 +1813,15 @@ gave it stops being an owner or administrator or leaves: promoting them again re
 administrator grants it again. Rotating the secret keeps its grants. A member's own environment secrets end when they
 leave, as their other secrets do.
 
-### Hosted-app vault secrets and routine coding dispatch opt-in (20260930850000_app_vault_secrets_and_code_routines)
+### Hosted-app vault secrets (20260930850000_app_vault_secrets_and_code_routines)
 
 Company environment secrets may also be granted to hosted app sites scoped by `scope` (`build`, `test`, `runtime`) and
 `target_env` (`dev`, `prod`). Runtime secrets are delivered only into tmpfs (`/run/qorpera-apps/<slug>.env`, mode `0400`)
 and masked in app logs; values are never returned to member clients.
 
+- `qorpera_set_coding_environment_grant_scope(profile, grant, scope, target_env, site = null)`: owner or admin updates
+  the `scope` (`all`, `build`, `test`, `runtime`), `target_env` (`all`, `dev`, `test`, `prod`), and optional `site_id`
+  on an active coding environment grant.
 - `qorpera_grant_app_secret(profile, secret, site, scope = 'runtime', target_env = 'prod')`: owner or admin grants a
   company environment secret to a hosted app site. Answers `{schema: "qorpera.app-secret-grant/v1", grantId, secretId,
   siteId, slug, name, scope, targetEnv, issuedByUserId, status, createdAt}`; idempotent on duplicate active grants.
@@ -1825,9 +1829,6 @@ and masked in app logs; values are never returned to member clients.
   when the underlying secret is revoked or when the issuer stops being an owner or admin or leaves.
 - `qorpera_list_app_secrets(profile, site)`: any company member (including viewers) lists active grants for `site`
   (names, scopes, target environments, versions, grant IDs; never values). Non-members receive `[]`.
-- `qorpera_set_routine_coding_dispatch(profile, connection, allow)`: the connection owner opts in or out of allowing
-  unattended routines to dispatch coding sessions on that connection (requires `allow_autonomous = true` first; turning
-  off `allow_autonomous` automatically resets `allow_routine_coding_dispatch` to `false`).
 
 ### Coding MCP sign-ins (20260928559210_coding_mcp_sign_ins)
 

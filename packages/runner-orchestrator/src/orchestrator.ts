@@ -2,6 +2,12 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import { CloudRunnerProviderRequestError } from "./provider-http.ts";
+import {
+	parseRoutineCheckBeforeWake,
+	type RoutineCheckBeforeWake,
+	type RoutineCheckGateOptions,
+	runRoutineCheckBeforeWake,
+} from "./routine-check-gate.ts";
 
 export type CloudRunnerCapability = "agent_turn" | "git_worktree" | "company_substrate";
 export type CloudComputeIdentityOwnershipKind = "member" | "company" | "department" | "security_boundary";
@@ -263,6 +269,32 @@ export interface CloudRoutineWakeOccurrence {
 	scheduledFor: string;
 }
 
+export interface CheckCloudRoutineWakeInput {
+	readonly routineId: string;
+	readonly expectedVersion: number;
+	readonly triggerId: string;
+	readonly scheduledFor: string;
+	readonly expectedLastScheduledFor?: string;
+	readonly nextDueAt: string;
+	readonly healthy: boolean;
+	readonly summary: string;
+	readonly detail: string | null;
+}
+
+export interface CloudRoutineCheckWakeDecision {
+	readonly status: "skipped" | "wake_required" | "stale";
+	readonly shouldWake: boolean;
+	readonly previousHealthy: boolean | null;
+	readonly stateChanged: boolean;
+	readonly consecutiveFailures: number;
+}
+
+export interface CloudRoutineCodeChecksResult {
+	readonly ok: boolean;
+	readonly summary: string;
+	readonly detail: string | null;
+}
+
 export interface CloudRunnerOrchestratorControlPlane {
 	renewControl?(signal?: AbortSignal): Promise<void>;
 	/** One answer for the lists of an idle pass (migration 20260930612000): spares a pass's list requests, nothing else. */
@@ -274,6 +306,11 @@ export interface CloudRunnerOrchestratorControlPlane {
 	): Promise<CloudRoutineSchedulePage>;
 	enqueueRoutineWake(input: EnqueueCloudRoutineWakeInput, signal?: AbortSignal): Promise<CloudRoutineWakeOccurrence>;
 	advanceRoutineNextDue(input: AdvanceCloudRoutineNextDueInput, signal?: AbortSignal): Promise<CloudRoutineNextDue>;
+	checkRoutineWake?(input: CheckCloudRoutineWakeInput, signal?: AbortSignal): Promise<CloudRoutineCheckWakeDecision>;
+	readRoutineCodeChecks?(
+		input: { readonly routineId: string; readonly repo?: string },
+		signal?: AbortSignal,
+	): Promise<CloudRoutineCodeChecksResult>;
 	/** Folder-v2 dynamic routines (folder core C1c-3e): each next run in its own company's transaction. */
 	listFolderDynamicRoutines?(
 		afterRoutineId: string | undefined,
@@ -375,6 +412,7 @@ export interface CloudRoutineScheduleReconcilerOptions {
 	/** How often the folder-v2 dynamic routines are listed (folder core C1c-3e); default 30 s. */
 	folderDynamicIntervalMs?: number;
 	concurrency?: number;
+	checkGate?: Pick<RoutineCheckGateOptions, "fetch" | "lookup" | "allowLocalhost">;
 }
 
 export interface CloudFolderDrainsOptions {
@@ -508,6 +546,25 @@ type CloudRunnerOrchestratorRequest =
 			triggerId: string;
 			expectedLastScheduledFor?: string;
 			nextDueAt: string;
+	  }
+	| {
+			action: "check_routine_wake";
+			orchestratorId: string;
+			routineId: string;
+			expectedVersion: number;
+			triggerId: string;
+			scheduledFor: string;
+			expectedLastScheduledFor?: string;
+			nextDueAt: string;
+			healthy: boolean;
+			summary: string;
+			detail: string | null;
+	  }
+	| {
+			action: "read_routine_code_checks";
+			orchestratorId: string;
+			routineId: string;
+			repo?: string;
 	  }
 	| { action: "folder_dynamic_routines"; orchestratorId: string; afterRoutineId?: string; limit: number }
 	| { action: "restore_dynamic_routine"; orchestratorId: string; routineId: string; expectedVersion: number }
@@ -1069,7 +1126,13 @@ function parseOrchestrationClaim(value: unknown): CloudRunnerOrchestrationClaim 
 }
 
 type RoutineScheduleTrigger =
-	| { id: string; kind: "schedule"; intervalMinutes: number; startAt?: string }
+	| {
+			id: string;
+			kind: "schedule";
+			intervalMinutes: number;
+			startAt?: string;
+			checkBeforeWake?: RoutineCheckBeforeWake;
+	  }
 	| {
 			id: string;
 			kind: "schedule";
@@ -1078,6 +1141,7 @@ type RoutineScheduleTrigger =
 			weekdays: readonly string[];
 			localTime: string;
 			timeZone: string;
+			checkBeforeWake?: RoutineCheckBeforeWake;
 	  }
 	| {
 			id: string;
@@ -1088,6 +1152,7 @@ type RoutineScheduleTrigger =
 			windowStart: string;
 			windowEnd: string;
 			timeZone: string;
+			checkBeforeWake?: RoutineCheckBeforeWake;
 	  };
 
 interface DueRoutineOccurrence {
@@ -1137,6 +1202,11 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 	) {
 		return undefined;
 	}
+	const hasCheckBeforeWake = Object.hasOwn(input, "checkBeforeWake");
+	const checkBeforeWake = hasCheckBeforeWake ? parseRoutineCheckBeforeWake(input.checkBeforeWake) : undefined;
+	if (hasCheckBeforeWake && checkBeforeWake === undefined) {
+		return undefined;
+	}
 	const hasAdvancedWindow =
 		input.months !== undefined || input.windowStart !== undefined || input.windowEnd !== undefined;
 	if (hasAdvancedWindow) {
@@ -1153,6 +1223,7 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 						"windowEnd",
 						"timeZone",
 						"replyPolicy",
+						"checkBeforeWake",
 					].includes(key),
 			) ||
 			input.startAt !== undefined ||
@@ -1200,11 +1271,14 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 			windowStart: input.windowStart,
 			windowEnd: input.windowEnd,
 			timeZone: input.timeZone,
+			...(checkBeforeWake ? { checkBeforeWake } : {}),
 		};
 	}
 	if (input.weekdays === undefined && input.localTime === undefined && input.timeZone === undefined) {
 		if (
-			Object.keys(input).some((key) => !["id", "kind", "intervalMinutes", "startAt", "replyPolicy"].includes(key)) ||
+			Object.keys(input).some(
+				(key) => !["id", "kind", "intervalMinutes", "startAt", "replyPolicy", "checkBeforeWake"].includes(key),
+			) ||
 			(input.startAt !== undefined &&
 				(typeof input.startAt !== "string" ||
 					!Number.isFinite(Date.parse(input.startAt)) ||
@@ -1217,14 +1291,23 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 			kind: "schedule",
 			intervalMinutes: input.intervalMinutes as number,
 			...(typeof input.startAt === "string" ? { startAt: new Date(input.startAt).toISOString() } : {}),
+			...(checkBeforeWake ? { checkBeforeWake } : {}),
 		};
 	}
 	if (
 		Object.keys(input).some(
 			(key) =>
-				!["id", "kind", "intervalMinutes", "startAt", "weekdays", "localTime", "timeZone", "replyPolicy"].includes(
-					key,
-				),
+				![
+					"id",
+					"kind",
+					"intervalMinutes",
+					"startAt",
+					"weekdays",
+					"localTime",
+					"timeZone",
+					"replyPolicy",
+					"checkBeforeWake",
+				].includes(key),
 		) ||
 		(input.startAt !== undefined &&
 			(typeof input.startAt !== "string" ||
@@ -1257,6 +1340,7 @@ function parseScheduleTrigger(value: unknown): RoutineScheduleTrigger | undefine
 		weekdays: input.weekdays as string[],
 		localTime: input.localTime,
 		timeZone: input.timeZone,
+		...(checkBeforeWake ? { checkBeforeWake } : {}),
 	};
 }
 
@@ -1650,6 +1734,7 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 	readonly #pageSize: number;
 	readonly #catchUpLimit: number;
 	readonly #concurrency: number;
+	readonly #checkGate: Pick<RoutineCheckGateOptions, "fetch" | "lookup" | "allowLocalhost">;
 	/** A control plane that answers the first-slot advance with 400 does not know
 	 * it yet (its edge function predates this orchestrator): report that and keep
 	 * scheduling as before for a while, instead of failing every poll, then ask
@@ -1667,6 +1752,7 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 		this.#catchUpLimit = options.catchUpLimit ?? 32;
 		this.#folderDynamicIntervalMs = options.folderDynamicIntervalMs ?? 30_000;
 		this.#concurrency = options.concurrency ?? DEFAULT_COMPANY_CONCURRENCY;
+		this.#checkGate = options.checkGate ?? {};
 		if (!Number.isSafeInteger(this.#pageSize) || this.#pageSize < 1 || this.#pageSize > 500) {
 			throw new Error("Routine schedule page size is outside the supported range");
 		}
@@ -1749,6 +1835,87 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 						}
 					}
 					for (const occurrence of wakes) {
+						let checkPayload: Record<string, JsonValue> | undefined;
+						if (trigger.checkBeforeWake) {
+							try {
+								const gateSignal = signal ?? new AbortController().signal;
+								let recordedStatus: "skipped" | "wake_required" | "stale" | undefined;
+								const decision = await runRoutineCheckBeforeWake(
+									trigger.checkBeforeWake,
+									{ healthy: null },
+									{
+										...this.#checkGate,
+										...(controlPlane.readRoutineCodeChecks
+											? {
+													runCodeChecks: async ({ repo }, checkSignal) =>
+														await controlPlane.readRoutineCodeChecks!(
+															{ routineId: head.routineId, ...(repo === undefined ? {} : { repo }) },
+															checkSignal,
+														),
+												}
+											: {}),
+										...(controlPlane.checkRoutineWake
+											? {
+													recordResult: async (result, checkSignal) => {
+														const recorded = await controlPlane.checkRoutineWake!(
+															{
+																routineId: head.routineId,
+																expectedVersion: head.version,
+																triggerId: occurrence.triggerId,
+																scheduledFor: occurrence.scheduledFor,
+																...(occurrence.expectedLastScheduledFor === undefined
+																	? {}
+																	: { expectedLastScheduledFor: occurrence.expectedLastScheduledFor }),
+																nextDueAt: occurrence.nextDueAt,
+																healthy: result.healthy,
+																summary: result.summary,
+																detail: result.detail,
+															},
+															checkSignal,
+														);
+														recordedStatus = recorded.status;
+														return {
+															previousHealthy: recorded.previousHealthy,
+															stateChanged: recorded.stateChanged,
+															shouldWake: recorded.shouldWake,
+															consecutiveFailures: recorded.consecutiveFailures,
+														};
+													},
+												}
+											: {}),
+									},
+									gateSignal,
+								);
+								if (recordedStatus === "stale") break;
+								if (recordedStatus === "skipped") continue;
+								if (!decision.shouldWake) {
+									const advanceInput: AdvanceCloudRoutineNextDueInput = {
+										routineId: head.routineId,
+										expectedVersion: head.version,
+										triggerId: occurrence.triggerId,
+										...(occurrence.expectedLastScheduledFor === undefined
+											? {}
+											: { expectedLastScheduledFor: occurrence.expectedLastScheduledFor }),
+										nextDueAt: occurrence.nextDueAt,
+									};
+									if (signal) await controlPlane.advanceRoutineNextDue(advanceInput, signal);
+									else await controlPlane.advanceRoutineNextDue(advanceInput);
+									continue;
+								}
+								checkPayload = {
+									healthy: decision.healthy,
+									stateChanged: decision.stateChanged,
+									consecutiveFailures: decision.consecutiveFailures,
+									status: decision.status,
+									summary: decision.summary,
+									detail: decision.detail,
+								};
+							} catch (error) {
+								if (signal?.aborted) throw error;
+								headErrors.push(error);
+								break;
+							}
+						}
 						const input: EnqueueCloudRoutineWakeInput = {
 							routineId: head.routineId,
 							expectedVersion: head.version,
@@ -1756,6 +1923,7 @@ export class CloudRoutineScheduleReconciler implements CloudRunnerOccurrenceReco
 							payload: {
 								schema: "qorpera.routine-schedule-occurrence/v1",
 								coalesced: occurrence.coalesced,
+								...(checkPayload === undefined ? {} : { checkBeforeWake: checkPayload }),
 							},
 						};
 						try {
@@ -3108,6 +3276,75 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 			signal,
 		);
 		return parseRoutineNextDue(advanced);
+	}
+
+	async checkRoutineWake(
+		input: CheckCloudRoutineWakeInput,
+		signal?: AbortSignal,
+	): Promise<CloudRoutineCheckWakeDecision> {
+		requiredUuid(input.routineId, "Routine id");
+		const answer = await this.#request(
+			{
+				action: "check_routine_wake",
+				orchestratorId: this.#orchestratorId,
+				routineId: input.routineId,
+				expectedVersion: input.expectedVersion,
+				triggerId: input.triggerId,
+				scheduledFor: new Date(input.scheduledFor).toISOString(),
+				...(input.expectedLastScheduledFor
+					? { expectedLastScheduledFor: new Date(input.expectedLastScheduledFor).toISOString() }
+					: {}),
+				nextDueAt: new Date(input.nextDueAt).toISOString(),
+				healthy: input.healthy,
+				summary: input.summary,
+				detail: input.detail,
+			},
+			signal,
+		);
+		const obj = record(answer, "routine check wake decision");
+		if (
+			obj.schema !== "qorpera.routine-check-wake/v1" ||
+			(obj.status !== "skipped" && obj.status !== "wake_required" && obj.status !== "stale") ||
+			typeof obj.shouldWake !== "boolean"
+		) {
+			throw new Error("Runner orchestrator returned invalid routine check wake decision");
+		}
+		return {
+			status: obj.status,
+			shouldWake: obj.shouldWake,
+			previousHealthy: typeof obj.previousHealthy === "boolean" ? obj.previousHealthy : null,
+			stateChanged: obj.stateChanged === true,
+			consecutiveFailures: Number.isSafeInteger(obj.consecutiveFailures) ? (obj.consecutiveFailures as number) : 0,
+		};
+	}
+
+	async readRoutineCodeChecks(
+		input: { readonly routineId: string; readonly repo?: string },
+		signal?: AbortSignal,
+	): Promise<CloudRoutineCodeChecksResult> {
+		requiredUuid(input.routineId, "Routine id");
+		const answer = await this.#request(
+			{
+				action: "read_routine_code_checks",
+				orchestratorId: this.#orchestratorId,
+				routineId: input.routineId,
+				...(input.repo === undefined ? {} : { repo: input.repo }),
+			},
+			signal,
+		);
+		const obj = record(answer, "routine code checks result");
+		if (
+			obj.schema !== "qorpera.routine-code-checks/v1" ||
+			typeof obj.ok !== "boolean" ||
+			typeof obj.summary !== "string"
+		) {
+			throw new Error("Runner orchestrator returned invalid routine code checks result");
+		}
+		return {
+			ok: obj.ok,
+			summary: obj.summary,
+			detail: typeof obj.detail === "string" ? obj.detail : null,
+		};
 	}
 
 	async listFolderDynamicRoutines(

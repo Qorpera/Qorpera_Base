@@ -90,6 +90,7 @@ async function fixture(
 		files?: Map<string, string>;
 		/** The automatic review, when the run has one: its approval's id reaches the tool. */
 		review?: CloudNativeActionReview;
+		onDataChanged?: Parameters<typeof cloudDataTools>[0]["onDataChanged"];
 	} = {},
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -134,7 +135,12 @@ async function fixture(
 			return door({ verb, body }, doorCalls.length);
 		}),
 	};
-	const tools = cloudDataTools({ folder, door: stand, apply: options.apply ?? true });
+	const tools = cloudDataTools({
+		folder,
+		door: stand,
+		apply: options.apply ?? true,
+		...(options.onDataChanged ? { onDataChanged: options.onDataChanged } : {}),
+	});
 	const boundary = new CloudNativeToolBoundary({
 		companyId: run.identity.companyId,
 		runId: run.identity.runId,
@@ -241,6 +247,44 @@ describe("the company data tools", () => {
 		expect(f.platformCalls.map((call) => call.method)).toEqual([PASS, READ, PASS]);
 		expect(f.doorCalls[1]?.body.texts).toEqual({ [sha(step)]: step });
 		expect(f.doorCalls[1]?.body.pass).not.toBe(f.doorCalls[0]?.body.pass);
+	});
+
+	it("emits onDataChanged after a committed data_change action with inferred table, operation, and rowId", async () => {
+		const actionSql = "insert into orders (id, total) values (:id, :total) returning id;\n";
+		const files = new Map(FILES);
+		files.set("data/shop/actions/add-order.sql", actionSql);
+		const events: unknown[] = [];
+		const f = await fixture(
+			(_call, count) =>
+				count === 1
+					? ok({ need: [{ path: "data/shop/actions/add-order.sql", sha256: sha(actionSql) }] })
+					: ok({ changed: 1, rows: [[42]], columns: ["id"], more: false, asOf: "2026-11-22T10:00:00Z" }),
+			{
+				files,
+				onDataChanged: async (event) => {
+					events.push(event);
+				},
+			},
+		);
+		const answer = await f.invoke("data_change", {
+			database: "shop",
+			change: "add-order",
+			params: { id: 42, total: 99 },
+		});
+		expect(answer.status).toBe("ok");
+		expect(events).toEqual([
+			{
+				database: "shop",
+				payload: expect.objectContaining({
+					change: "add-order",
+					table: "orders",
+					tables: ["orders"],
+					operation: "insert",
+					rowId: 42,
+					at: "2026-11-22T10:00:00Z",
+				}),
+			},
+		]);
 	});
 
 	it("sends no text whose hash is not the one asked for, and gives up when the files keep changing", async () => {

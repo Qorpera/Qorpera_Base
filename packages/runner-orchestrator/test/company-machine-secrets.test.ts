@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	APP_SECRETS_FILE_MODE,
 	appSecretEnvNameAllowed,
@@ -10,6 +10,7 @@ import {
 	buildGuestScrubAppSecretsCommand,
 	CompanyMachineSecretsManager,
 	createMaskedAppLogStream,
+	fetchHostedAppSecrets,
 	isTmpfsMountedPath,
 } from "../src/company-machine-secrets.ts";
 
@@ -126,5 +127,93 @@ describe("company-machine-secrets", () => {
 
 		const scrubCmd = buildGuestScrubAppSecretsCommand("billing-app");
 		expect(scrubCmd.join(" ")).toContain("/run/qorpera-apps/billing-app.env");
+	});
+
+	it("supports separate build-only tmpfs delivery, snapshot/restore, and broker /v1/app-secrets fetching", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-app-secrets-build-"));
+		const manager = new CompanyMachineSecretsManager({ rootDir: root, verifyTmpfs: async () => true });
+		const companyId = randomUUID();
+		const siteId = randomUUID();
+		try {
+			const build = await manager.deliverBuild({
+				siteId,
+				slug: "billing-app",
+				scope: "build",
+				targetEnv: "prod",
+				secrets: { NPM_TOKEN: "npm_build_only_secret_123456" },
+			});
+			expect(build.envPath).not.toBe(join(root, "billing-app.env"));
+			expect(await readFile(build.envPath, "utf8")).toContain("npm_build_only_secret_123456");
+			await build.scrub();
+			await expect(stat(build.envPath)).rejects.toThrow();
+
+			const initial = await manager.deliver({
+				siteId,
+				slug: "billing-app",
+				scope: "runtime",
+				targetEnv: "prod",
+				secrets: { OPENAI_API_KEY: "sk-proj-original-runtime-key" },
+			});
+			const snap = await manager.snapshot("billing-app");
+			expect(snap).not.toBeNull();
+			await manager.deliver({
+				siteId,
+				slug: "billing-app",
+				scope: "runtime",
+				targetEnv: "prod",
+				secrets: { OPENAI_API_KEY: "sk-proj-updated-runtime-key" },
+			});
+			await manager.restore("billing-app", snap);
+			expect(await readFile(initial.envPath, "utf8")).toContain("sk-proj-original-runtime-key");
+
+			const fetchImpl = vi.fn(async (input: string | URL, init?: RequestInit) => {
+				expect(String(input)).toBe(`https://broker.qorpera.test/v1/app-secrets?company=${companyId}`);
+				expect(init?.method).toBe("POST");
+				expect(init?.redirect).toBe("manual");
+				return new Response(
+					JSON.stringify({
+						schema: "qorpera.app-secrets/v1",
+						siteId,
+						slug: "billing-app",
+						scope: "runtime",
+						targetEnv: "prod",
+						secrets: { OPENAI_API_KEY: "sk-proj-broker-fetched-123456" },
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}) as unknown as typeof fetch;
+
+			const fetched = await fetchHostedAppSecrets({
+				brokerOrigin: "https://broker.qorpera.test",
+				executorToken: "exec-token",
+				companyId,
+				siteId,
+				scope: "runtime",
+				targetEnv: "prod",
+				fetchImpl,
+				signal: new AbortController().signal,
+			});
+			expect(fetched).toEqual({
+				siteId,
+				slug: "billing-app",
+				scope: "runtime",
+				targetEnv: "prod",
+				secrets: { OPENAI_API_KEY: "sk-proj-broker-fetched-123456" },
+			});
+
+			await expect(
+				fetchHostedAppSecrets({
+					brokerOrigin: "https://broker.qorpera.test",
+					executorToken: "exec-token",
+					siteId,
+					scope: "runtime",
+					targetEnv: "prod",
+					fetchImpl: (async () => new Response("forbidden", { status: 403 })) as unknown as typeof fetch,
+					signal: new AbortController().signal,
+				}),
+			).rejects.toThrow("APP_SECRETS_BROKER_FAILED_403");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 });

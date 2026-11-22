@@ -81,7 +81,6 @@ export interface CodingEnvironmentScope {
 export interface CodingEnvironmentAnswer {
 	readonly environment: Readonly<Record<string, string>>;
 	readonly mask: readonly string[];
-	readonly config?: Readonly<Record<string, string>>;
 }
 
 /** Where a session's environment secrets come from: the company's secret broker (deploy/coding-worker). Each call
@@ -242,10 +241,8 @@ export class CodingMachineCommandSecrets {
 		const fresh = !answer;
 		if (!answer) {
 			const asked = await this.#source.environment(scope, signal);
-			const config = asked.config ?? {};
-			checkConfigValues(Object.values(config));
 			secretValues = Object.values(asked.environment);
-			answer = Object.freeze({ ...config, ...asked.environment });
+			answer = Object.freeze({ ...asked.environment });
 			history = [...asked.mask];
 		}
 		signal.throwIfAborted();
@@ -337,6 +334,62 @@ function checkConfigValues(candidates: Iterable<string>): void {
 	}
 }
 
+const SCOPED_ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+const SCOPED_ENV_REFUSED_PREFIX = /^(LC|GIT|LD|DYLD|QORPERA|SSH|XDG|DOCKER|CLAUDE|CODEX)_/;
+const SCOPED_ENV_RESERVED = new Set([
+	"HOME",
+	"PATH",
+	"TMPDIR",
+	"TMP",
+	"TEMP",
+	"USER",
+	"LOGNAME",
+	"SHELL",
+	"PWD",
+	"OLDPWD",
+	"TERM",
+	"COLORTERM",
+	"COLUMNS",
+	"LINES",
+	"LANG",
+	"LANGUAGE",
+	"TZ",
+	"BASH_ENV",
+	"ENV",
+	"IFS",
+	"PS1",
+	"PS2",
+	"PS4",
+	"PROMPT_COMMAND",
+	"SHELLOPTS",
+	"BASHOPTS",
+	"CDPATH",
+	"GLOBIGNORE",
+	"HOSTNAME",
+	"SHLVL",
+	"MAIL",
+	"MAILPATH",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"NO_PROXY",
+	"ALL_PROXY",
+	"FTP_PROXY",
+	"SSL_CERT_FILE",
+	"SSL_CERT_DIR",
+	"NODE_EXTRA_CA_CERTS",
+]);
+
+function checkEnvName(name: string): void {
+	if (
+		typeof name !== "string" ||
+		!SCOPED_ENV_NAME.test(name) ||
+		SCOPED_ENV_REFUSED_PREFIX.test(name) ||
+		SCOPED_ENV_RESERVED.has(name)
+	) {
+		throw new RangeError(`environment variable name is not allowed: ${name}`);
+	}
+}
+
 export function filterScopedSecrets(
 	entries: readonly ScopedEnvironmentEntry[],
 	scope: Exclude<CodingSecretScope, "all">,
@@ -347,6 +400,7 @@ export function filterScopedSecrets(
 	for (const entry of entries) {
 		if (entry.scope !== "all" && entry.scope !== scope) continue;
 		if (entry.targetEnv !== "all" && entry.targetEnv !== targetEnv) continue;
+		checkEnvName(entry.name);
 		if (entry.sensitive === false) {
 			checkConfigValues([entry.value]);
 			config[entry.name] = entry.value;
