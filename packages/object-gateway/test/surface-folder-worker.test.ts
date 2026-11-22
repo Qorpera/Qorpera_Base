@@ -906,4 +906,93 @@ describe("SurfaceFolderWorker", () => {
 			p_lease_token: lease403,
 		});
 	});
+
+	it("retries lock-conflict rollbacks and reports failed when all attempts hit lock conflicts, but stays uncertain if a TimeoutError precedes 42501", async () => {
+		const hLock = createHarness({ "brand/voice.md": "Original voice." });
+		const lockJobId = randomUUID();
+		const lockChangeId = randomUUID();
+		const lockLease = randomUUID();
+		hLock.setPreCommitErrors([
+			new ObjectDependencyError(409, true),
+			Object.assign(new Error("could not serialize access"), { code: "40001" }),
+			new ObjectDependencyError(409, true),
+		]);
+		hLock.setPendingClaim({
+			merges: [
+				{
+					jobId: lockJobId,
+					kind: "land_change",
+					surfaceId: hLock.surfaceId,
+					profileId: hLock.profileId,
+					environmentId: hLock.environmentId,
+					leaseToken: lockLease,
+					folderRoot: "brand",
+					payload: { changeIds: [lockChangeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: lockChangeId,
+							kind: "folder_patch",
+							title: "Update voice under contention",
+							summary: "Refines brand voice",
+							affectedPaths: ["voice.md"],
+							patchManifest: [{ op: "write_text", path: "voice.md", content: "Contended update." }],
+						},
+					],
+				},
+			],
+		});
+
+		expect(await hLock.worker.processDue(8)).toBe(1);
+		expect(hLock.getCommitCount()).toBe(3);
+		expect(hLock.readText("brand/voice.md")).toBe("Original voice.");
+		expect(hLock.completedMerges).toHaveLength(1);
+		expect(hLock.completedMerges[0]).toMatchObject({
+			p_job_id: lockJobId,
+			p_status: "failed",
+			p_lease_token: lockLease,
+		});
+		expect(hLock.events.some((ev) => ev.kind === "surface_folder_merge_failed")).toBe(true);
+		expect(hLock.events.some((ev) => ev.kind === "surface_folder_merge_completion_failed")).toBe(false);
+
+		const hUncertainThen42501 = createHarness({ "brand/voice.md": "Original voice." });
+		const uncertainJobId = randomUUID();
+		const uncertainChangeId = randomUUID();
+		hUncertainThen42501.setPreCommitErrors([
+			new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+			Object.assign(new Error("Company membership is required"), { code: "42501" }),
+			Object.assign(new Error("Company membership is required"), { code: "42501" }),
+		]);
+		hUncertainThen42501.setPendingClaim({
+			merges: [
+				{
+					jobId: uncertainJobId,
+					kind: "land_change",
+					surfaceId: hUncertainThen42501.surfaceId,
+					profileId: hUncertainThen42501.profileId,
+					environmentId: hUncertainThen42501.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "brand",
+					payload: { changeIds: [uncertainChangeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: uncertainChangeId,
+							kind: "folder_patch",
+							title: "Update voice before membership removal",
+							summary: "Refines brand voice",
+							affectedPaths: ["voice.md"],
+							patchManifest: [{ op: "write_text", path: "voice.md", content: "Maybe landed." }],
+						},
+					],
+				},
+			],
+		});
+
+		expect(await hUncertainThen42501.worker.processDue(8)).toBe(1);
+		expect(hUncertainThen42501.getCommitCount()).toBe(3);
+		expect(hUncertainThen42501.completedMerges).toHaveLength(0);
+		expect(hUncertainThen42501.events.some((ev) => ev.kind === "surface_folder_merge_completion_failed")).toBe(true);
+		expect(hUncertainThen42501.events.some((ev) => ev.kind === "surface_folder_merge_failed")).toBe(false);
+	});
 });
