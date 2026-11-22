@@ -23,17 +23,20 @@ export interface MemberDefaultModels {
 	conversationEffort: SessionEffort;
 	codingModel: string;
 	codingEffort: SessionEffort;
+	storedConversationModel: string | null;
+	storedCodingModel: string | null;
 	conversationModels: readonly string[];
 	codingModels: readonly string[];
-	efforts: Readonly<Record<string, readonly SessionEffort[]>>;
+	conversationEfforts: Readonly<Record<string, readonly SessionEffort[]>>;
+	codingEfforts: Readonly<Record<string, readonly SessionEffort[]>>;
 	version: number;
 }
 
 export interface MemberDefaultModelsUpdate {
-	conversationModel: string;
-	conversationEffort: SessionEffort;
-	codingModel: string;
-	codingEffort: SessionEffort;
+	conversationModel?: string;
+	conversationEffort?: SessionEffort;
+	codingModel?: string;
+	codingEffort?: SessionEffort;
 	expectedVersion: number;
 }
 
@@ -99,14 +102,28 @@ function parseEffortMap(value: unknown, label: string): Readonly<Record<string, 
 	return out;
 }
 
+function parseOptionalModel(value: unknown, label: string): string | null {
+	if (value === null || value === undefined) return null;
+	return nonEmptyString(value, label, 128);
+}
+
+const CODING_EFFORTS_BEFORE_LIST: Record<ReturnType<typeof modelProvider>, readonly SessionEffort[]> = {
+	openai: ["low", "medium", "high"],
+	anthropic: ["low", "medium", "high", "xhigh", "max"],
+	google: ["low", "medium", "high", "xhigh"],
+};
+
 export function defaultModelEfforts(
 	state: MemberDefaultModels | undefined,
+	kind: "conversation" | "coding",
 	modelId: string,
 ): readonly SessionEffort[] {
 	const provider = modelProvider(modelId);
-	const listed = state?.efforts[modelId];
-	const offered = listed ? PROVIDER_EFFORTS[provider].filter((effort) => listed.includes(effort)) : [];
-	return offered.length > 0 ? offered : EFFORTS_BEFORE_LIST[provider];
+	const listed = kind === "coding" ? state?.codingEfforts[modelId] : state?.conversationEfforts[modelId];
+	const allowedByProvider = kind === "coding" ? CODING_EFFORTS_BEFORE_LIST[provider] : PROVIDER_EFFORTS[provider];
+	const offered = listed ? allowedByProvider.filter((effort) => listed.includes(effort)) : [];
+	if (offered.length > 0) return offered;
+	return kind === "coding" ? CODING_EFFORTS_BEFORE_LIST[provider] : EFFORTS_BEFORE_LIST[provider];
 }
 
 export function parseMemberDefaultModels(value: unknown): MemberDefaultModels {
@@ -119,9 +136,12 @@ export function parseMemberDefaultModels(value: unknown): MemberDefaultModels {
 		conversationEffort: parseEffort(input.conversationEffort, "conversation default effort"),
 		codingModel: nonEmptyString(input.codingModel, "coding default model", 128),
 		codingEffort: parseEffort(input.codingEffort, "coding default effort"),
+		storedConversationModel: parseOptionalModel(input.storedConversationModel, "stored conversation model"),
+		storedCodingModel: parseOptionalModel(input.storedCodingModel, "stored coding model"),
 		conversationModels: parseModelList(input.conversationModels, "conversation models"),
 		codingModels: parseModelList(input.codingModels, "coding models"),
-		efforts: parseEffortMap(input.efforts, "default model efforts"),
+		conversationEfforts: parseEffortMap(input.conversationEfforts, "conversation model efforts"),
+		codingEfforts: parseEffortMap(input.codingEfforts, "coding model efforts"),
 		version: boundedInteger(input.version, "default models version", 0, Number.MAX_SAFE_INTEGER),
 	};
 }
@@ -233,10 +253,10 @@ export function createWebDefaultModels(
 				"qorpera_set_member_default_models",
 				{
 					p_profile_id: normalizedProfileId,
-					p_conversation_model: update.conversationModel,
-					p_conversation_effort: update.conversationEffort,
-					p_coding_model: update.codingModel,
-					p_coding_effort: update.codingEffort,
+					p_conversation_model: update.conversationModel ?? null,
+					p_conversation_effort: update.conversationEffort ?? null,
+					p_coding_model: update.codingModel ?? null,
+					p_coding_effort: update.codingEffort ?? null,
 					p_expected_version: update.expectedVersion,
 				},
 				signal,

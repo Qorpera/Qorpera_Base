@@ -79,19 +79,14 @@ export class DefaultModelsView {
 		}
 	}
 
-	async #save(next: {
-		conversationModel: string;
-		conversationEffort: SessionEffort;
-		codingModel: string;
-		codingEffort: SessionEffort;
+	async #save(patch: {
+		conversationModel?: string;
+		conversationEffort?: SessionEffort;
+		codingModel?: string;
+		codingEffort?: SessionEffort;
 	}): Promise<void> {
 		const current = this.#state;
 		if (!current || this.#saving || this.#lifetime.signal.aborted) return;
-		const conversationEffort = clampEffort(
-			next.conversationEffort,
-			defaultModelEfforts(current, next.conversationModel),
-		);
-		const codingEffort = clampEffort(next.codingEffort, defaultModelEfforts(current, next.codingModel));
 		this.#saving = true;
 		this.#error = undefined;
 		this.#status = undefined;
@@ -99,10 +94,7 @@ export class DefaultModelsView {
 		try {
 			const saved = await this.#client.set(
 				{
-					conversationModel: next.conversationModel,
-					conversationEffort,
-					codingModel: next.codingModel,
-					codingEffort,
+					...patch,
 					expectedVersion: current.version,
 				},
 				this.#lifetime.signal,
@@ -136,7 +128,7 @@ export class DefaultModelsView {
 	#select(
 		role: string,
 		ariaLabel: string,
-		options: readonly { value: string; label: string }[],
+		options: readonly { value: string; label: string; disabled?: boolean }[],
 		selected: string,
 		onChange: (value: string) => void,
 	): HTMLSelectElement {
@@ -152,7 +144,11 @@ export class DefaultModelsView {
 				},
 			},
 			...options.map((option) =>
-				h("option", { value: option.value, selected: option.value === selected }, option.label),
+				h(
+					"option",
+					{ value: option.value, selected: option.value === selected, disabled: option.disabled === true },
+					option.label,
+				),
 			),
 		);
 		select.value = selected;
@@ -189,60 +185,98 @@ export class DefaultModelsView {
 		const state = this.#state;
 		if (!state) return;
 
-		const convEfforts = defaultModelEfforts(state, state.conversationModel);
-		const codingEfforts = defaultModelEfforts(state, state.codingModel);
+		const convUnavailable =
+			state.storedConversationModel !== null && !state.conversationModels.includes(state.storedConversationModel);
+		const codingUnavailable =
+			state.storedCodingModel !== null && !state.codingModels.includes(state.storedCodingModel);
+		const shownConvModel = convUnavailable ? state.storedConversationModel! : state.conversationModel;
+		const shownCodingModel = codingUnavailable ? state.storedCodingModel! : state.codingModel;
+
+		const convEfforts = defaultModelEfforts(state, "conversation", shownConvModel);
+		const codingEfforts = defaultModelEfforts(state, "coding", shownCodingModel);
+
+		const convModelOptions: { value: string; label: string; disabled?: boolean }[] = [
+			...(convUnavailable
+				? [
+						{
+							value: state.storedConversationModel!,
+							label: t("{model} (unavailable here)", { model: modelName(state.storedConversationModel!) }),
+							disabled: true,
+						},
+					]
+				: []),
+			...state.conversationModels.map((id) => ({ value: id, label: modelName(id) })),
+		];
+		const codingModelOptions: { value: string; label: string; disabled?: boolean }[] = [
+			...(codingUnavailable
+				? [
+						{
+							value: state.storedCodingModel!,
+							label: t("{model} (unavailable here)", { model: modelName(state.storedCodingModel!) }),
+							disabled: true,
+						},
+					]
+				: []),
+			...state.codingModels.map((id) => ({ value: id, label: modelName(id) })),
+		];
 
 		const convModelSelect = this.#select(
 			"conversation-model",
 			t("Conversational model"),
-			state.conversationModels.map((id) => ({ value: id, label: modelName(id) })),
-			state.conversationModel,
-			(value) =>
-				void this.#save({
-					conversationModel: value,
-					conversationEffort: state.conversationEffort,
-					codingModel: state.codingModel,
-					codingEffort: state.codingEffort,
-				}),
+			convModelOptions,
+			shownConvModel,
+			(value) => {
+				const allowed = defaultModelEfforts(state, "conversation", value);
+				const clamped = clampEffort(state.conversationEffort, allowed);
+				void this.#save(
+					clamped !== state.conversationEffort
+						? { conversationModel: value, conversationEffort: clamped }
+						: { conversationModel: value },
+				);
+			},
 		);
 		const convEffortSelect = this.#select(
 			"conversation-effort",
 			t("Conversational effort"),
 			convEfforts.map((effort) => ({ value: effort, label: effortLabel(effort) })),
 			clampEffort(state.conversationEffort, convEfforts),
-			(value) =>
-				void this.#save({
-					conversationModel: state.conversationModel,
-					conversationEffort: value as SessionEffort,
-					codingModel: state.codingModel,
-					codingEffort: state.codingEffort,
-				}),
+			(value) => {
+				const effort = value as SessionEffort;
+				void this.#save(
+					effort === "max" && state.storedConversationModel === null
+						? { conversationModel: state.conversationModel, conversationEffort: effort }
+						: { conversationEffort: effort },
+				);
+			},
 		);
 		const codingModelSelect = this.#select(
 			"coding-model",
 			t("Coding and working model"),
-			state.codingModels.map((id) => ({ value: id, label: modelName(id) })),
-			state.codingModel,
-			(value) =>
-				void this.#save({
-					conversationModel: state.conversationModel,
-					conversationEffort: state.conversationEffort,
-					codingModel: value,
-					codingEffort: state.codingEffort,
-				}),
+			codingModelOptions,
+			shownCodingModel,
+			(value) => {
+				const allowed = defaultModelEfforts(state, "coding", value);
+				const clamped = clampEffort(state.codingEffort, allowed);
+				void this.#save(
+					clamped !== state.codingEffort
+						? { codingModel: value, codingEffort: clamped }
+						: { codingModel: value },
+				);
+			},
 		);
 		const codingEffortSelect = this.#select(
 			"coding-effort",
 			t("Coding and working effort"),
 			codingEfforts.map((effort) => ({ value: effort, label: effortLabel(effort) })),
 			clampEffort(state.codingEffort, codingEfforts),
-			(value) =>
-				void this.#save({
-					conversationModel: state.conversationModel,
-					conversationEffort: state.conversationEffort,
-					codingModel: state.codingModel,
-					codingEffort: value as SessionEffort,
-				}),
+			(value) => {
+				const effort = value as SessionEffort;
+				void this.#save(
+					(effort === "xhigh" || effort === "max") && state.storedCodingModel === null
+						? { codingModel: state.codingModel, codingEffort: effort }
+						: { codingEffort: effort },
+				);
+			},
 		);
 
 		const missingExtraProviders =

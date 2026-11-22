@@ -66,10 +66,13 @@ do $$
 declare
 	v_bob uuid := '92400000-0000-4000-8000-000000000031';
 	v_carol uuid := '92400000-0000-4000-8000-000000000032';
+	v_profile_b uuid := '13400000-0000-4000-8000-000000000020';
+	v_profile_c uuid := '13400000-0000-4000-8000-000000000021';
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
 	v_defaults jsonb;
 	v_menu jsonb;
 	v_run public.qorpera_execution_runs;
+	v_worker_run public.qorpera_execution_runs;
 	v_ticket jsonb;
 	v_cap_sha text;
 	v_described jsonb;
@@ -88,6 +91,7 @@ declare
 	v_alice jsonb := pg_temp.c4_alice();
 	v_dispatch jsonb;
 	v_worker public.qorpera_runtime_workers;
+	v_wake public.qorpera_wake_occurrences;
 	v_cross_refused boolean := false;
 begin
 	perform pg_temp.base_assert(
@@ -121,6 +125,9 @@ begin
 		and v_defaults ->> 'conversationEffort' = 'low'
 		and v_defaults ->> 'codingModel' = 'claude-opus-5-5'
 		and v_defaults ->> 'codingEffort' = 'high'
+		and v_defaults -> 'storedConversationModel' = 'null'::jsonb
+		and v_defaults -> 'storedCodingModel' = 'null'::jsonb
+		and v_defaults -> 'codingEfforts' -> 'gpt-6-astra' = '["low","medium","high"]'::jsonb
 		and (v_defaults ->> 'version')::bigint = 0,
 		'2: initial defaults: ' || v_defaults::text);
 
@@ -128,6 +135,10 @@ begin
 	perform pg_temp.base_assert(v_defaults ->> 'schema' = 'qorpera.member-default-models/v1'
 		and v_defaults ->> 'codingModel' = 'claude-opus-5-5',
 		'2: account-wide defaults without company: ' || v_defaults::text);
+
+	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_set_member_default_models(%L, null, null, null, null, 0)', pg_temp.md_profile()));
+	perform pg_temp.base_assert(pg_temp.md_refused(v_defaults) = '22023', '2: empty partial update refused: ' || v_defaults::text);
 
 	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
 		format('select public.qorpera_set_member_default_models(%L, ''gemini-4-neon'', ''low'', ''claude-opus-5-5'', ''high'', 0)', pg_temp.md_profile()));
@@ -138,17 +149,39 @@ begin
 	perform pg_temp.base_assert(pg_temp.md_refused(v_defaults) = '22023', '2: max effort on OpenAI refused: ' || v_defaults::text);
 
 	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
-		format('select public.qorpera_set_member_default_models(%L, ''claude-opus-5-5'', ''medium'', ''gpt-6-astra'', ''xhigh'', 0)', pg_temp.md_profile()));
+		format('select public.qorpera_set_member_default_models(%L, null, null, ''gpt-6-astra'', ''xhigh'', 0)', pg_temp.md_profile()));
+	perform pg_temp.base_assert(pg_temp.md_refused(v_defaults) = '22023', '2: xhigh coding effort on OpenAI refused: ' || v_defaults::text);
+
+	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_set_member_default_models(%L, null, null, null, ''medium'', 0)', pg_temp.md_profile()));
+	perform pg_temp.base_assert(v_defaults -> 'storedConversationModel' = 'null'::jsonb
+		and v_defaults -> 'storedCodingModel' = 'null'::jsonb
+		and v_defaults ->> 'codingEffort' = 'medium'
+		and (v_defaults ->> 'version')::bigint = 1,
+		'2: single-field save with no prior row keeps stored models null: ' || v_defaults::text);
+
+	v_run := pg_temp.md_turn(v_bob, 'Check staff mapping after coding effort only save');
+	perform pg_temp.base_assert(v_run.model_selection is distinct from 'member_default'
+		and v_run.claude_model is null and v_run.gemini_model is null,
+		'2: single-field coding save does not override conversational staff mapping: sel=' || coalesce(v_run.model_selection, 'null'));
+	update public.qorpera_runner_jobs set status = 'failed', last_error = 'Fixture end', finished_at = clock_timestamp() where run_id = v_run.id;
+
+	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_set_member_default_models(%L, ''claude-opus-5-5'', ''medium'', ''gpt-6-astra'', ''medium'', 1)', pg_temp.md_profile()));
 	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'claude-opus-5-5'
 		and v_defaults ->> 'conversationEffort' = 'medium'
 		and v_defaults ->> 'codingModel' = 'gpt-6-astra'
-		and v_defaults ->> 'codingEffort' = 'xhigh'
-		and (v_defaults ->> 'version')::bigint = 1,
+		and v_defaults ->> 'codingEffort' = 'medium'
+		and (v_defaults ->> 'version')::bigint = 2,
 		'3: split defaults saved: ' || v_defaults::text);
 
 	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
-		format('select public.qorpera_set_member_default_models(%L, ''gpt-6.2-sol'', ''low'', ''gpt-6-astra'', ''high'', 0)', pg_temp.md_profile()));
-	perform pg_temp.base_assert(pg_temp.md_refused(v_defaults) = 'QRC01', '3: stale version rejected: ' || v_defaults::text);
+		format('select public.qorpera_set_member_default_models(%L, ''gpt-6.2-sol'', null, null, null, 0)', pg_temp.md_profile()));
+	perform pg_temp.base_assert(pg_temp.md_refused(v_defaults) = 'QRC01', '3: stale version 0 rejected: ' || v_defaults::text);
+
+	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_set_member_default_models(%L, ''gpt-6.2-sol'', null, null, null, 1)', pg_temp.md_profile()));
+	perform pg_temp.base_assert(pg_temp.md_refused(v_defaults) = 'QRC01', '3: stale version 1 rejected: ' || v_defaults::text);
 
 	v_menu := pg_temp.md_call(pg_temp.md_owner(),
 		format('select public.qorpera_get_session_model(%L)', pg_temp.md_session(v_bob)));
@@ -168,13 +201,27 @@ begin
 	perform pg_temp.base_assert(v_worker.harness is null and v_worker.claude_login_id is null
 		and v_worker.claude_model is null and v_worker.claude_effort is null,
 		'4: OpenAI coding default keeps in-house worker on Codex instead of Claude-first: ' || to_jsonb(v_worker)::text);
+	perform pg_temp.c4_drain();
+	v_worker := pg_temp.c4_worker('13400000-0000-4000-8000-0000000000d1');
+	select * into strict v_wake from public.qorpera_wake_occurrences where id = v_worker.occurrence_id;
+	perform pg_temp.base_materialize();
+	select run.* into strict v_worker_run from public.qorpera_execution_runs as run
+	join public.qorpera_wake_occurrences as wake on wake.run_id = run.id
+	where wake.id = v_wake.id;
+	perform pg_temp.base_assert(v_worker_run.model_id = 'gpt-6-astra'
+		and v_worker_run.model_selection = 'member_default'
+		and v_worker_run.reasoning_effort = 'medium',
+		'4: Codex worker-dispatch run uses member coding default model and effort: model='
+			|| coalesce(v_worker_run.model_id, 'null') || ' sel=' || coalesce(v_worker_run.model_selection, 'null')
+			|| ' effort=' || coalesce(v_worker_run.reasoning_effort, 'null'));
+	update public.qorpera_runner_jobs set status = 'failed', last_error = 'Fixture end', finished_at = clock_timestamp() where run_id = v_worker_run.id;
 
 	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
-		format('select public.qorpera_set_member_default_models(%L, ''gpt-6-astra'', ''high'', ''claude-fable-5-2'', ''max'', 1)', pg_temp.md_profile()));
+		format('select public.qorpera_set_member_default_models(%L, ''gpt-6-astra'', ''high'', ''claude-fable-5-2'', ''max'', 2)', pg_temp.md_profile()));
 	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'gpt-6-astra'
 		and v_defaults ->> 'codingModel' = 'claude-fable-5-2'
 		and v_defaults ->> 'codingEffort' = 'max'
-		and (v_defaults ->> 'version')::bigint = 2,
+		and (v_defaults ->> 'version')::bigint = 3,
 		'4: swapped split defaults saved: ' || v_defaults::text);
 
 	v_dispatch := pg_temp.c4_dispatch(v_alice, 'md-worker-claude', 'QorperaOS/agents/alice/todos/onboarding/md-claude',
@@ -207,12 +254,35 @@ begin
 	reset session authorization;
 
 	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
-		format('select public.qorpera_set_member_default_models(%L, ''gemini-4-neon'', ''high'', ''claude-fable-5-2'', ''max'', 2)', pg_temp.md_profile()));
+		format('select public.qorpera_set_member_default_models(%L, ''gemini-4-neon'', ''high'', ''claude-fable-5-2'', ''max'', 3)', pg_temp.md_profile()));
 	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'gemini-4-neon'
+		and v_defaults ->> 'storedConversationModel' = 'gemini-4-neon'
 		and v_defaults ->> 'conversationEffort' = 'high'
 		and v_defaults ->> 'codingModel' = 'claude-fable-5-2'
-		and (v_defaults ->> 'version')::bigint = 3,
+		and (v_defaults ->> 'version')::bigint = 4,
 		'5: Gemini conversational + Claude coding split saved: ' || v_defaults::text);
+
+	insert into public.qorpera_profiles(id, name, created_by_user_id) values (v_profile_b, 'Company B Without Vault', pg_temp.md_owner());
+	insert into public.qorpera_profile_members(profile_id, user_id, email, role) values (v_profile_b, pg_temp.md_owner(), 'owner@example.com', 'owner');
+
+	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_get_member_default_models(%L)', v_profile_b));
+	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'gpt-6.2-sol'
+		and v_defaults ->> 'storedConversationModel' = 'gemini-4-neon',
+		'5: Company B reports effective fallback alongside stored Gemini default: ' || v_defaults::text);
+
+	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_set_member_default_models(%L, null, null, null, ''high'', 4)', v_profile_b));
+	perform pg_temp.base_assert(v_defaults ->> 'storedConversationModel' = 'gemini-4-neon'
+		and v_defaults ->> 'codingEffort' = 'high'
+		and (v_defaults ->> 'version')::bigint = 5,
+		'5: partial coding save in Company B preserves stored Gemini default: ' || v_defaults::text);
+
+	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_get_member_default_models(%L)', pg_temp.md_profile()));
+	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'gemini-4-neon'
+		and v_defaults ->> 'codingEffort' = 'high',
+		'5: Company A still uses Gemini after Company B coding save: ' || v_defaults::text);
 
 	v_run := pg_temp.md_turn(v_carol, 'Hello on Gemini default');
 	perform pg_temp.base_assert(v_run.gemini_model = 'gemini-4-neon' and v_run.gemini_effort = 'high'
@@ -237,6 +307,53 @@ begin
 	perform pg_temp.base_assert(v_key_state -> 'key' -> 'lastErrorCode' = 'null'::jsonb
 		and v_key_state -> 'key' -> 'lastErrorAt' = 'null'::jsonb,
 		'5: successful Gemini usage clears last error: ' || v_key_state::text);
+
+	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_set_member_default_models(%L, ''claude-opus-5-5'', null, null, null, 5)', pg_temp.md_profile()));
+	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'claude-opus-5-5'
+		and (v_defaults ->> 'version')::bigint = 6,
+		'5: switched conversational default from Gemini to Claude: ' || v_defaults::text);
+
+	v_key_state := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_update_gemini_key_settings(%L, null, 5000, 1)', pg_temp.md_profile()));
+	perform pg_temp.base_assert((v_key_state -> 'key' ->> 'monthlyCapCents')::bigint = 5000
+		and (v_key_state -> 'key' ->> 'defaultForChats')::boolean = false,
+		'5: saving cap with null defaultForChats updates cap without reverting default model: ' || v_key_state::text);
+	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_get_member_default_models(%L)', pg_temp.md_profile()));
+	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'claude-opus-5-5',
+		'5: cap save preserved Claude conversational default: ' || v_defaults::text);
+
+	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_set_member_default_models(%L, ''gemini-4-neon'', null, null, null, 6)', pg_temp.md_profile()));
+	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'gemini-4-neon'
+		and (v_defaults ->> 'version')::bigint = 7,
+		'5: switched conversational default back to Gemini: ' || v_defaults::text);
+
+	v_ticket := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_begin_gemini_key_save(%L, false, 5000)', pg_temp.md_profile()));
+	v_cap_sha := encode(extensions.digest(v_ticket ->> 'capability', 'sha256'), 'hex');
+	set local session authorization qorpera_secret_broker;
+	v_described := public.qorpera_describe_gemini_key_ticket(
+		v_authority.id, v_authority.capability_sha256, (v_ticket ->> 'ticketId')::uuid, v_cap_sha);
+	v_saved := public.qorpera_complete_gemini_key_save(
+		v_authority.id, v_authority.capability_sha256, (v_ticket ->> 'ticketId')::uuid, v_cap_sha,
+		v_described ->> 'keyId', v_envelope_b64, v_envelope_sha, 'AQ...bYux');
+	reset session authorization;
+	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_get_member_default_models(%L)', pg_temp.md_profile()));
+	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'gemini-4-neon',
+		'5: replacing Gemini key preserves member default model: ' || v_defaults::text);
+
+	insert into public.qorpera_profiles(id, name, created_by_user_id) values (v_profile_c, 'Company C Viewer Check', pg_temp.md_owner());
+	insert into public.qorpera_profile_members(profile_id, user_id, email, role) values (v_profile_c, pg_temp.md_owner(), 'owner@example.com', 'viewer');
+	insert into public.qorpera_cloud_secret_broker_authorities(profile_id, principal_id, service_origin, key_id, capability_sha256, status)
+	values (v_profile_c, v_authority.principal_id, v_authority.service_origin, v_authority.key_id, repeat('e', 64), 'active');
+
+	v_check_ticket := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_begin_gemini_key_check(%L)', v_profile_c));
+	perform pg_temp.base_assert(v_check_ticket ->> 'schema' = 'qorpera.gemini-key-ticket/v1',
+		'5: viewer can begin check on their own active key: ' || v_check_ticket::text);
 
 	v_check_ticket := pg_temp.md_call(pg_temp.md_owner(),
 		format('select public.qorpera_begin_gemini_key_check(%L)', pg_temp.md_profile()));

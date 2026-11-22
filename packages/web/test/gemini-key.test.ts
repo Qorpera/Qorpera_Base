@@ -244,7 +244,7 @@ describe("GeminiKeyView", () => {
 			}),
 			updateSettings: vi.fn(async (input) => {
 				state = sampleState({
-					defaultForChats: input.defaultForChats,
+					defaultForChats: input.defaultForChats ?? state.key?.defaultForChats ?? false,
 					monthlyCapCents: input.monthlyCapCents,
 					version: input.expectedVersion + 1,
 					capReached: input.monthlyCapCents !== null && input.monthlyCapCents * 10_000 <= 12_340_000,
@@ -311,7 +311,7 @@ describe("GeminiKeyView", () => {
 			.dispatchEvent(new Event("submit", { cancelable: true }));
 		await settle();
 		expect(client.updateSettings).toHaveBeenLastCalledWith(
-			{ defaultForChats: false, monthlyCapCents: 1_000, expectedVersion: 1 },
+			{ defaultForChats: null, monthlyCapCents: 1_000, expectedVersion: 1 },
 			expect.any(AbortSignal),
 		);
 		expect(view.el.textContent).toContain("Cap reached");

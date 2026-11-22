@@ -74,7 +74,7 @@ export interface GeminiKeySaveInput {
 }
 
 export interface GeminiKeySettingsInput {
-	defaultForChats: boolean;
+	defaultForChats?: boolean | null;
 	monthlyCapCents: number | null;
 	expectedVersion: number;
 }
@@ -390,7 +390,7 @@ export function createWebGeminiKey(
 					"qorpera_update_gemini_key_settings",
 					{
 						p_profile_id: normalizedProfileId,
-						p_default_for_chats: input.defaultForChats,
+						p_default_for_chats: input.defaultForChats ?? null,
 						p_monthly_cap_cents: monthlyCapCents,
 						p_expected_version: input.expectedVersion,
 					},

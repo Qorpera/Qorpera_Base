@@ -132,7 +132,7 @@ create table public.qorpera_member_default_models (
 	),
 	constraint qorpera_member_default_models_coding_effort check (
 		coding_effort is null
-		or coding_effort in ('low', 'medium', 'high', 'xhigh')
+		or coding_effort in ('low', 'medium', 'high')
 		or coding_model in ('claude-fable-5-2', 'claude-opus-5-5')
 	)
 );
@@ -156,8 +156,10 @@ declare
 	v_user uuid := auth.uid();
 	v_principal uuid;
 	v_key public.qorpera_gemini_keys%rowtype;
+	v_defaults public.qorpera_member_default_models%rowtype;
 	v_month text := public.qorpera_gemini_current_month();
 	v_same_month boolean;
+	v_default_for_chats boolean;
 begin
 	if auth.role() is distinct from 'authenticated' or v_user is null or p_profile_id is null
 		or not exists (select 1 from public.qorpera_profile_members as member
@@ -175,6 +177,12 @@ begin
 			'key', null
 		);
 	end if;
+	select * into v_defaults from public.qorpera_member_default_models where user_id = v_user;
+	v_default_for_chats := case
+		when v_defaults.user_id is not null and v_defaults.conversation_model is not null
+			then v_defaults.conversation_model = 'gemini-4-neon'
+		else v_key.default_for_chats
+	end;
 	v_same_month := v_key.spend_month = v_month;
 	return jsonb_build_object(
 		'schema', 'qorpera.gemini-key/v1',
@@ -182,7 +190,7 @@ begin
 		'key', jsonb_build_object(
 			'id', v_key.id,
 			'keyHint', v_key.key_hint,
-			'defaultForChats', v_key.default_for_chats,
+			'defaultForChats', v_default_for_chats,
 			'monthlyCapCents', v_key.monthly_cap_cents,
 			'spendMonth', v_month,
 			'monthSpendMicrodollars', case when v_same_month then v_key.month_spend_microdollars else 0::bigint end,
@@ -211,8 +219,7 @@ declare
 begin
 	if auth.role() is distinct from 'authenticated' or v_user is null or p_profile_id is null
 		or not exists (select 1 from public.qorpera_profile_members as member
-			where member.profile_id = p_profile_id and member.user_id = v_user
-				and member.role in ('owner', 'admin', 'contributor')) then
+			where member.profile_id = p_profile_id and member.user_id = v_user) then
 		raise exception 'Gemini key check requires member authority' using errcode = '42501'; end if;
 	select authority.* into v_authority
 	from public.qorpera_cloud_secret_broker_authorities as authority
@@ -292,17 +299,7 @@ select pg_temp.md_replace(
 		case when v_carry then v_previous.month_cached_tokens else 0::bigint end,
 		case when v_carry then v_previous.month_output_tokens else 0::bigint end,
 		clock_timestamp()
-	) returning * into v_saved;
-	if v_saved.default_for_chats then
-		insert into public.qorpera_member_default_models (user_id, conversation_model)
-		values (v_ticket.owner_user_id, 'gemini-4-neon')
-		on conflict (user_id) do update set
-			conversation_model = 'gemini-4-neon',
-			conversation_effort = case when public.qorpera_member_default_models.conversation_effort = 'max'
-				then 'xhigh' else public.qorpera_member_default_models.conversation_effort end,
-			version = public.qorpera_member_default_models.version + 1,
-			updated_at = clock_timestamp();
-	end if;$new$);
+	) returning * into v_saved;$new$);
 
 create function public.qorpera_describe_gemini_key_check(
 	p_broker_authority_id uuid,
@@ -456,8 +453,30 @@ select pg_temp.md_replace(
 
 select pg_temp.md_replace(
 	'public.qorpera_update_gemini_key_settings(uuid,boolean,bigint,bigint)'::regprocedure,
-	$old$	if not public.qorpera_gemini_key_cap_reached(v_key) then$old$,
-	$new$	if p_default_for_chats then
+	$old$	if p_default_for_chats is null
+		or (p_monthly_cap_cents is not null and p_monthly_cap_cents not between 100 and 10000000)
+		or p_expected_version is null or p_expected_version < 1 then$old$,
+	$new$	if (p_monthly_cap_cents is not null and p_monthly_cap_cents not between 100 and 10000000)
+		or p_expected_version is null or p_expected_version < 1 then$new$);
+
+select pg_temp.md_replace(
+	'public.qorpera_update_gemini_key_settings(uuid,boolean,bigint,bigint)'::regprocedure,
+	$old$	update public.qorpera_gemini_keys
+	set default_for_chats = p_default_for_chats,
+		monthly_cap_cents = p_monthly_cap_cents,
+		version = version + 1,
+		updated_at = clock_timestamp()
+	where id = v_key.id
+	returning * into v_key;
+	if not public.qorpera_gemini_key_cap_reached(v_key) then$old$,
+	$new$	update public.qorpera_gemini_keys
+	set default_for_chats = coalesce(p_default_for_chats, default_for_chats),
+		monthly_cap_cents = p_monthly_cap_cents,
+		version = version + 1,
+		updated_at = clock_timestamp()
+	where id = v_key.id
+	returning * into v_key;
+	if p_default_for_chats is true then
 		insert into public.qorpera_member_default_models (user_id, conversation_model)
 		values (v_user, 'gemini-4-neon')
 		on conflict (user_id) do update set
@@ -466,7 +485,7 @@ select pg_temp.md_replace(
 				then 'xhigh' else public.qorpera_member_default_models.conversation_effort end,
 			version = public.qorpera_member_default_models.version + 1,
 			updated_at = clock_timestamp();
-	else
+	elsif p_default_for_chats is false then
 		update public.qorpera_member_default_models
 		set conversation_model = null,
 			version = version + 1,
@@ -524,13 +543,15 @@ declare
 	v_gemini boolean;
 	v_gemini_legacy_default boolean := false;
 	v_conv_model text;
+	v_conv_display_model text;
 	v_conv_effort text;
 	v_coding_model text;
+	v_coding_display_model text;
 	v_coding_effort text;
 	v_conv_models jsonb;
 	v_coding_models jsonb;
-	v_all_models jsonb;
-	v_efforts jsonb;
+	v_conv_efforts jsonb;
+	v_coding_efforts jsonb;
 begin
 	if auth.role() is distinct from 'authenticated' or v_user is null then
 		raise exception 'Default model settings are unavailable' using errcode = '42501'; end if;
@@ -556,9 +577,15 @@ begin
 		when v_row.conversation_model is null and v_gemini_legacy_default then 'gemini-4-neon'
 		else 'gpt-6.2-sol'
 	end;
+	v_conv_display_model := coalesce(v_row.conversation_model, v_conv_model);
 	v_conv_effort := coalesce(v_row.conversation_effort, v_policy ->> 'effort', 'low');
-	if v_conv_effort = 'max' and v_conv_model not in ('claude-fable-5-2', 'claude-opus-5-5') then
+	if v_conv_effort = 'max' and v_conv_display_model not in ('claude-fable-5-2', 'claude-opus-5-5') then
 		v_conv_effort := 'xhigh';
+	end if;
+	if v_conv_effort = 'xhigh'
+		and v_conv_display_model in ('gpt-6.2-sol', 'gpt-6-astra')
+		and not (public.qorpera_model_policy_thread_efforts(v_policy) ? 'xhigh') then
+		v_conv_effort := 'high';
 	end if;
 	v_coding_model := case
 		when v_row.coding_model in ('claude-fable-5-2', 'claude-opus-5-5') and v_claude then v_row.coding_model
@@ -566,33 +593,43 @@ begin
 		when v_claude then 'claude-opus-5-5'
 		else 'gpt-6.2-sol'
 	end;
+	v_coding_display_model := coalesce(v_row.coding_model, v_coding_model);
 	v_coding_effort := coalesce(v_row.coding_effort, v_policy ->> 'unattended', 'high');
-	if v_coding_effort = 'max' and v_coding_model not in ('claude-fable-5-2', 'claude-opus-5-5') then
-		v_coding_effort := 'xhigh';
+	if v_coding_effort in ('xhigh', 'max') and v_coding_display_model not in ('claude-fable-5-2', 'claude-opus-5-5') then
+		v_coding_effort := 'high';
 	end if;
 	v_conv_models := '["gpt-6.2-sol","gpt-6-astra"]'::jsonb
 		|| case when v_claude then '["claude-opus-5-5","claude-fable-5-2"]'::jsonb else '[]'::jsonb end
 		|| case when v_gemini then '["gemini-4-neon"]'::jsonb else '[]'::jsonb end;
 	v_coding_models := case when v_claude then '["claude-opus-5-5","claude-fable-5-2"]'::jsonb else '[]'::jsonb end
 		|| '["gpt-6.2-sol","gpt-6-astra"]'::jsonb;
-	v_all_models := '["gpt-6.2-sol","gpt-6-astra","claude-opus-5-5","claude-fable-5-2","gemini-4-neon"]'::jsonb;
 	select jsonb_object_agg(model.id,
 		case
 			when model.id in ('claude-fable-5-2', 'claude-opus-5-5') then '["low","medium","high","xhigh","max"]'::jsonb
 			when model.id = 'gemini-4-neon' then '["low","medium","high","xhigh"]'::jsonb
 			else '["low","medium","high"]'::jsonb || public.qorpera_model_policy_thread_efforts(v_policy)
 		end)
-	into v_efforts
-	from jsonb_array_elements_text(v_all_models) as model(id);
+	into v_conv_efforts
+	from jsonb_array_elements_text('["gpt-6.2-sol","gpt-6-astra","claude-opus-5-5","claude-fable-5-2","gemini-4-neon"]'::jsonb) as model(id);
+	select jsonb_object_agg(model.id,
+		case
+			when model.id in ('claude-fable-5-2', 'claude-opus-5-5') then '["low","medium","high","xhigh","max"]'::jsonb
+			else '["low","medium","high"]'::jsonb
+		end)
+	into v_coding_efforts
+	from jsonb_array_elements_text('["gpt-6.2-sol","gpt-6-astra","claude-opus-5-5","claude-fable-5-2"]'::jsonb) as model(id);
 	return jsonb_build_object(
 		'schema', 'qorpera.member-default-models/v1',
 		'conversationModel', v_conv_model,
 		'conversationEffort', v_conv_effort,
 		'codingModel', v_coding_model,
 		'codingEffort', v_coding_effort,
+		'storedConversationModel', v_row.conversation_model,
+		'storedCodingModel', v_row.coding_model,
 		'conversationModels', v_conv_models,
 		'codingModels', v_coding_models,
-		'efforts', v_efforts,
+		'conversationEfforts', v_conv_efforts,
+		'codingEfforts', v_coding_efforts,
 		'version', coalesce(v_row.version, 0)
 	);
 end $$;
@@ -620,7 +657,9 @@ begin
 		where member.profile_id = p_profile_id and member.user_id = v_user
 			and member.role in ('owner', 'admin', 'contributor')) then
 		raise exception 'Default model settings require member authority' using errcode = '42501'; end if;
-	if (p_conversation_model is not null and p_conversation_model not in (
+	if (p_conversation_model is null and p_conversation_effort is null
+			and p_coding_model is null and p_coding_effort is null)
+		or (p_conversation_model is not null and p_conversation_model not in (
 			'gpt-6.2-sol', 'gpt-6-astra', 'claude-fable-5-2', 'claude-opus-5-5', 'gemini-4-neon'))
 		or (p_conversation_effort is not null and p_conversation_effort not in ('low', 'medium', 'high', 'xhigh', 'max'))
 		or (p_coding_model is not null and p_coding_model not in (
@@ -628,48 +667,79 @@ begin
 		or (p_coding_effort is not null and p_coding_effort not in ('low', 'medium', 'high', 'xhigh', 'max'))
 		or p_expected_version is null or p_expected_version < 0 then
 		raise exception 'Default model settings are invalid' using errcode = '22023'; end if;
+	if p_conversation_model is not null then
+		perform 1 from public.qorpera_gemini_keys
+		where owner_user_id = v_user and status = 'active'
+		order by id
+		for update;
+	end if;
 	select * into v_row from public.qorpera_member_default_models where user_id = v_user for update;
 	if coalesce(v_row.version, 0) <> p_expected_version then
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01',
 			'message', 'Default model settings changed; refresh before retrying', 'details', null, 'hint', null)::text,
 			detail = '{"status":409,"headers":{}}'; end if;
-	v_conv_model := coalesce(p_conversation_model, v_row.conversation_model);
-	v_conv_effort := coalesce(p_conversation_effort, v_row.conversation_effort);
-	v_coding_model := coalesce(p_coding_model, v_row.coding_model);
-	v_coding_effort := coalesce(p_coding_effort, v_row.coding_effort);
-	if (v_conv_model in ('claude-fable-5-2', 'claude-opus-5-5') or v_coding_model in ('claude-fable-5-2', 'claude-opus-5-5'))
+	if (p_conversation_model in ('claude-fable-5-2', 'claude-opus-5-5') or p_coding_model in ('claude-fable-5-2', 'claude-opus-5-5'))
 		and not public.qorpera_member_claude_default_available(p_profile_id, v_user) then
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC02',
 			'message', 'Sign in to Claude in Settings before choosing a Claude default model',
 			'details', null, 'hint', null)::text,
 			detail = '{"status":403,"headers":{}}'; end if;
-	if v_conv_model = 'gemini-4-neon'
+	if p_conversation_model = 'gemini-4-neon'
 		and not public.qorpera_member_gemini_default_available(p_profile_id, v_user) then
 		raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC02',
 			'message', 'Add a Gemini API key in Settings before choosing Gemini 4 Neon as your default',
 			'details', null, 'hint', null)::text,
 			detail = '{"status":403,"headers":{}}'; end if;
+	v_conv_model := coalesce(p_conversation_model, v_row.conversation_model);
+	v_conv_effort := coalesce(p_conversation_effort, v_row.conversation_effort);
+	v_coding_model := coalesce(p_coding_model, v_row.coding_model);
+	v_coding_effort := coalesce(p_coding_effort, v_row.coding_effort);
+	if p_conversation_model is not null and p_conversation_effort is null
+		and v_conv_effort = 'max' and v_conv_model not in ('claude-fable-5-2', 'claude-opus-5-5') then
+		v_conv_effort := 'xhigh';
+	end if;
+	if p_coding_model is not null and p_coding_effort is null
+		and v_coding_effort in ('xhigh', 'max') and v_coding_model not in ('claude-fable-5-2', 'claude-opus-5-5') then
+		v_coding_effort := 'high';
+	end if;
 	if v_conv_effort = 'max' and coalesce(v_conv_model not in ('claude-fable-5-2', 'claude-opus-5-5'), true) then
 		raise exception 'Conversational effort max needs a Claude model' using errcode = '22023'; end if;
-	if v_coding_effort = 'max' and coalesce(v_coding_model not in ('claude-fable-5-2', 'claude-opus-5-5'), true) then
-		raise exception 'Coding effort max needs a Claude model' using errcode = '22023'; end if;
-	insert into public.qorpera_member_default_models (
-		user_id, conversation_model, conversation_effort, coding_model, coding_effort, version, updated_at
-	) values (
-		v_user, v_conv_model, v_conv_effort, v_coding_model, v_coding_effort, p_expected_version + 1, clock_timestamp()
-	)
-	on conflict (user_id) do update set
-		conversation_model = excluded.conversation_model,
-		conversation_effort = excluded.conversation_effort,
-		coding_model = excluded.coding_model,
-		coding_effort = excluded.coding_effort,
-		version = excluded.version,
-		updated_at = clock_timestamp();
-	update public.qorpera_gemini_keys
-	set default_for_chats = (v_conv_model = 'gemini-4-neon'),
-		updated_at = clock_timestamp()
-	where owner_user_id = v_user and status = 'active'
-		and default_for_chats is distinct from (v_conv_model = 'gemini-4-neon');
+	if v_coding_effort in ('xhigh', 'max') and coalesce(v_coding_model not in ('claude-fable-5-2', 'claude-opus-5-5'), true) then
+		raise exception 'Coding effort % needs a Claude model', v_coding_effort using errcode = '22023'; end if;
+	if p_expected_version = 0 then
+		insert into public.qorpera_member_default_models (
+			user_id, conversation_model, conversation_effort, coding_model, coding_effort, version, updated_at
+		) values (
+			v_user, v_conv_model, v_conv_effort, v_coding_model, v_coding_effort, 1, clock_timestamp()
+		)
+		on conflict (user_id) do nothing
+		returning * into v_row;
+		if not found then
+			raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01',
+				'message', 'Default model settings changed; refresh before retrying', 'details', null, 'hint', null)::text,
+				detail = '{"status":409,"headers":{}}'; end if;
+	else
+		update public.qorpera_member_default_models
+		set conversation_model = v_conv_model,
+			conversation_effort = v_conv_effort,
+			coding_model = v_coding_model,
+			coding_effort = v_coding_effort,
+			version = p_expected_version + 1,
+			updated_at = clock_timestamp()
+		where user_id = v_user and version = p_expected_version
+		returning * into v_row;
+		if not found then
+			raise sqlstate 'PGRST' using message = jsonb_build_object('code', 'QRC01',
+				'message', 'Default model settings changed; refresh before retrying', 'details', null, 'hint', null)::text,
+				detail = '{"status":409,"headers":{}}'; end if;
+	end if;
+	if p_conversation_model is not null then
+		update public.qorpera_gemini_keys
+		set default_for_chats = (v_conv_model = 'gemini-4-neon'),
+			updated_at = clock_timestamp()
+		where owner_user_id = v_user and status = 'active'
+			and default_for_chats is distinct from (v_conv_model = 'gemini-4-neon');
+	end if;
 	return public.qorpera_get_member_default_models(p_profile_id);
 end $$;
 

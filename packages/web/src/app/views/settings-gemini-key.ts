@@ -131,13 +131,12 @@ export class GeminiKeyView {
 			this.#draw();
 			return;
 		}
-		const defaultForChats = existing ? existing.defaultForChats : false;
 		this.#working = "save";
 		this.#error = undefined;
 		this.#status = undefined;
 		this.#draw();
 		try {
-			const next = await this.#client.save({ apiKey, defaultForChats, monthlyCapCents }, this.#lifetime.signal);
+			const next = await this.#client.save({ apiKey, defaultForChats: false, monthlyCapCents }, this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
 			this.#state = next;
 			this.#keyDraft = "";
@@ -162,7 +161,7 @@ export class GeminiKeyView {
 		}
 	}
 
-	async #updateSettings(defaultForChats: boolean, monthlyCapCents: number | null, savedNotice: string): Promise<void> {
+	async #updateSettings(monthlyCapCents: number | null, savedNotice: string): Promise<void> {
 		const key = this.#state?.key;
 		if (!key || this.#working || this.#lifetime.signal.aborted) return;
 		this.#working = "settings";
@@ -171,7 +170,7 @@ export class GeminiKeyView {
 		this.#draw();
 		try {
 			const next = await this.#client.updateSettings(
-				{ defaultForChats, monthlyCapCents, expectedVersion: key.version },
+				{ defaultForChats: null, monthlyCapCents, expectedVersion: key.version },
 				this.#lifetime.signal,
 			);
 			if (this.#lifetime.signal.aborted) return;
@@ -233,7 +232,7 @@ export class GeminiKeyView {
 			this.#draw();
 			return;
 		}
-		await this.#updateSettings(key.defaultForChats, parsed, t("Monthly spend cap saved."));
+		await this.#updateSettings(parsed, t("Monthly spend cap saved."));
 	}
 
 	async #revoke(): Promise<void> {
