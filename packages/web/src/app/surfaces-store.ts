@@ -657,6 +657,7 @@ export class SurfacesStore {
 	readonly #studioUndoSnapshots = new Map<string, Readonly<Record<string, string>>>();
 	readonly #cloudFilesLoading = new Set<string>();
 	readonly #mintingPreviewPasses = new Set<string>();
+	readonly #lastPreviewSyncKey = new Map<string, string>();
 	#undoTimer: ReturnType<typeof setTimeout> | undefined;
 	#pollTimer: ReturnType<typeof setInterval> | undefined;
 	#hintTimer: ReturnType<typeof setTimeout> | undefined;
@@ -761,6 +762,7 @@ export class SurfacesStore {
 		if (this.#retryLoadTimer) clearTimeout(this.#retryLoadTimer);
 		for (const timer of this.#localTimers) clearTimeout(timer);
 		this.#localTimers.clear();
+		this.#lastPreviewSyncKey.clear();
 		this.#undoTimer = undefined;
 		this.#pollTimer = undefined;
 		this.#hintTimer = undefined;
@@ -1409,6 +1411,42 @@ export class SurfacesStore {
 			!this.state.cloudSurfaceFiles[workspace.surface.id]
 		) {
 			void this.refreshCloudFiles(workspace.surface);
+		}
+		if (
+			stored &&
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(workspace.surface.id) &&
+			this.#options.client &&
+			stored.surface.archetype === "live_build" &&
+			stored.surface.sourceKind === "code_repo"
+		) {
+			const selection = this.previewSelection(workspace.surface.id);
+			const explorationSession =
+				selection.explorationSessionId !== null
+					? stored.activeSessions.find((session) => session.id === selection.explorationSessionId)
+					: undefined;
+			const explorationChangeIds = explorationSession
+				? explorationSession.changes.filter(isOpenChange).map((change) => change.id)
+				: [];
+			const expectedIds = [...new Set([...selection.toggledChangeIds, ...explorationChangeIds])].sort().join(",");
+			if (expectedIds.length > 0) {
+				const selectionKey = `${selection.explorationSessionId ?? ""}|${expectedIds}`;
+				const primary = stored.previewState.primary;
+				const primaryIds = [...new Set(primary.toggledChangeIds)].sort().join(",");
+				const matchesPrimary = primary.status !== "live_baseline" && primaryIds === expectedIds;
+				if (matchesPrimary) {
+					this.#lastPreviewSyncKey.set(workspace.surface.id, selectionKey);
+				} else if (this.#lastPreviewSyncKey.get(workspace.surface.id) !== selectionKey) {
+					this.#lastPreviewSyncKey.set(workspace.surface.id, selectionKey);
+					void this.#syncPreview(workspace.surface.id, { background: true }).then((ok) => {
+						if (!ok && this.#lastPreviewSyncKey.get(workspace.surface.id) === selectionKey) {
+							this.#lastPreviewSyncKey.delete(workspace.surface.id);
+						}
+					});
+				}
+			} else {
+				this.#lastPreviewSyncKey.delete(workspace.surface.id);
+			}
 		}
 		this.#syncPolling();
 	}
@@ -2813,14 +2851,39 @@ export class SurfacesStore {
 		return { toggledChangeIds, explorationSessionId };
 	}
 
-	async #syncPreview(surfaceId: string): Promise<void> {
-		if (isLocalSurfaceId(surfaceId) || !this.#options.client) return;
+	async #syncPreview(surfaceId: string, options?: { background?: boolean }): Promise<boolean> {
+		if (isLocalSurfaceId(surfaceId) || !this.#options.client) return false;
 		const selection = this.previewSelection(surfaceId);
-		const previewState = await this.#run(`preview:${surfaceId}`, (client) =>
-			client.setPreviewSelection(surfaceId, selection),
-		);
+		const workspaceBefore = this.workspace(surfaceId);
+		const explorationChangeIds =
+			selection.explorationSessionId !== null
+				? (workspaceBefore?.activeSessions
+						.find((session) => session.id === selection.explorationSessionId)
+						?.changes.filter(isOpenChange)
+						.map((change) => change.id) ?? [])
+				: [];
+		const expectedIds = [...new Set([...selection.toggledChangeIds, ...explorationChangeIds])].sort().join(",");
+		const selectionKey = `${selection.explorationSessionId ?? ""}|${expectedIds}`;
+		this.#lastPreviewSyncKey.set(surfaceId, selectionKey);
+		let previewState: SurfacePreviewCompositionState | undefined;
+		if (options?.background) {
+			try {
+				previewState = await this.#options.client.setPreviewSelection(surfaceId, selection);
+			} catch {
+				return false;
+			}
+			if (this.#options.signal.aborted) return false;
+		} else {
+			previewState = await this.#run(`preview:${surfaceId}`, (client) =>
+				client.setPreviewSelection(surfaceId, selection),
+			);
+		}
 		const workspace = this.workspace(surfaceId);
-		if (previewState && workspace) this.#putWorkspace({ ...workspace, previewState });
+		if (previewState && workspace) {
+			this.#putWorkspace({ ...workspace, previewState });
+			return true;
+		}
+		return false;
 	}
 
 	async publish(surfaceId: string): Promise<boolean> {

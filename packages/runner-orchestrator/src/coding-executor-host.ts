@@ -3300,6 +3300,24 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// saved was checked for its secret values by the folder's save check above.
 			if (claim.repository.host === "qorpera") {
 				const repositories = folder.repositories;
+				if (claim.surfaceSession) {
+					if (!repositories?.verifyStaged) throw new Error("CODING_REPOSITORY_NOT_HERE");
+					const staged = await repositories.verifyStaged(
+						this.#repositorySession(claim, ready.machine, ready.storage, ready.folder.uid, ready.baseSha, root),
+						submission.headSha,
+						signal,
+					);
+					return {
+						pullRequest: null,
+						noChange: !staged.changed,
+						staged: {
+							branch: staged.branch,
+							baseSha: staged.baseSha,
+							headSha: staged.headSha,
+							filesChanged: staged.filesChanged,
+						},
+					};
+				}
 				if (!repositories?.land) throw new Error("CODING_REPOSITORY_NOT_HERE");
 				if (submission.headSha === ready.baseSha) return { pullRequest: null, noChange: true };
 				// The picture the session named with its hand-in is checked by the landing, in the commit that lands.

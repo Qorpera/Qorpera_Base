@@ -715,6 +715,44 @@ describe("the coding executor over a session turn", () => {
 		expect(await stepOf("github.com")).toBe("Publishing the draft pull request");
 	});
 
+	it("stages surface-backed Qorpera coding turns with staged artifact and staging step without landing main", async () => {
+		const w = world();
+		const surfaceSession = {
+			sessionId: randomUUID(),
+			surfaceId: randomUUID(),
+			slug: "website",
+			title: "Hjemmeside",
+		};
+		w.world.claim.repository = { host: "qorpera", owner: "surfaces", name: "website", baseBranch: "main" } as never;
+		(w.world.claim as Record<string, unknown>).surfaceSession = surfaceSession;
+		const branch = `qorpera/coding/${w.world.claim.workerId}`;
+		vi.mocked(w.host.publish).mockResolvedValueOnce({
+			pullRequest: null,
+			noChange: false,
+			staged: { branch, baseSha, headSha, filesChanged: 1 },
+		});
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Staged the homepage draft for preview.",
+			headSha,
+			operationKey: "done",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+		const publishing = w.world.calls.find(
+			(c) => c.method === "qorpera_record_coding_progress" && c.args.p_phase === "publishing",
+		);
+		expect(publishing?.args.p_last_step).toBe("Staging changes for preview");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion.p_outcome).toBe("succeeded");
+		expect(completion.p_artifacts).toEqual([{ kind: "staged", branch, baseSha, headSha }]);
+	});
+
 	it.each([
 		[
 			"CODING_CHECKS_FAILED",
@@ -1509,6 +1547,20 @@ describe("the coding executor over a session turn", () => {
 		// Runtime v92: a session takes any number of turns (the claim of turn 65 used to be refused
 		// forever while the kernel admitted it).
 		expect(parseCodingSessionClaim(claimJson(workerId, randomUUID(), { sequence: 65 })).sequence).toBe(65);
+		const surfaceSession = {
+			sessionId: randomUUID(),
+			surfaceId: randomUUID(),
+			slug: "website",
+			title: "Hjemmeside",
+		};
+		expect(parseCodingSessionClaim(claimJson(workerId, randomUUID(), { surfaceSession })).surfaceSession).toEqual(
+			surfaceSession,
+		);
+		expect(() =>
+			parseCodingSessionClaim(
+				claimJson(workerId, randomUUID(), { surfaceSession: { ...surfaceSession, slug: "BAD SLUG" } }),
+			),
+		).toThrow("Invalid coding claim");
 		const turn = parseCodingTurnState(
 			{
 				schema: "qorpera.coding-turn-state/v1",

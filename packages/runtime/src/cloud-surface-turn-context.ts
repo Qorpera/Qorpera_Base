@@ -30,6 +30,7 @@ export interface SurfaceTurnBriefInput {
 	readonly surfaceSlug: string;
 	readonly surfaceTitle: string;
 	readonly briefMarkdown: string | null;
+	readonly fullPrompt?: string | null;
 	readonly repositoryKey?: string | null;
 	readonly folderRoot?: string | null;
 	readonly explorationVariantLabel?: string | null;
@@ -45,11 +46,14 @@ export interface SurfaceCodingTurnBinding extends SurfaceTurnBriefInput {
 }
 
 export const SURFACE_STAGED_CODING_INSTRUCTIONS =
+	"IMPORTANT — Surface Staged Mode (overrides direct-landing instructions above): " +
 	"This session is scoped to a Qorpera Surface — a direct live projection of its codebase or Company Files folder. " +
-	"Founders preview multiple unmerged staged changes from concurrent sessions toggled on or off simultaneously in Preview before approving or landing any of them onto main. " +
+	"Commits you make on this session branch stay STAGED for founder Preview and approval and do NOT land on main until the founder approves them. " +
+	"Founders preview multiple unmerged staged changes from concurrent sessions toggled on or off simultaneously in Preview before approving or publishing any of them. " +
+	"Preview renders static web assets from the repository's index.html at the root or from the folder configured in .qorpera/checks.json under site.folder — make sure a clean servable index.html and its assets are committed on the session branch (commit the built output folder if you use a bundler). " +
 	"Keep each staged change atomic, self-contained, and conflict-minimizing: touch only the files needed for this deliverable and avoid unrequested sweeping refactors across shared files. " +
-	"For each cohesive user-visible deliverable you complete, commit cleanly on the current branch and call coding_record_change with a plain founder-facing title, short summary, and commit SHA before moving to the next change. " +
-	"When all requested deliverables are committed and verified, call coding_finish to stage the session as ready for review.";
+	"For each cohesive user-visible deliverable you complete, commit cleanly on the current branch and call coding_record_change with a plain founder-facing title, short summary, parentSha, and commitSha before moving to the next change. " +
+	"When all requested deliverables are committed and verified, call coding_finish with the final headSha to stage the session as ready for review.";
 
 // WHY: Injects global company Identity assets, Surface domain taste (brief.md), Point-to-Change DOM context, and conflict paths directly into scoped coding turns.
 export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
@@ -76,6 +80,11 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		sections.push(
 			`## Exploration Direction: ${explorationVariantLabel}\nDeliver a distinct, cohesive take matching this direction so founders can compare side-by-side variants cleanly in Preview.`,
 		);
+	}
+
+	const fullPrompt = binding.fullPrompt?.trim();
+	if (fullPrompt && fullPrompt.length > 1400) {
+		sections.push(`## Full Surface Request\n${fullPrompt.slice(0, 16000)}`);
 	}
 
 	const identity = binding.identityContext;

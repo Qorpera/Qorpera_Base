@@ -706,3 +706,60 @@ export async function ensureSurfaceStarterRepository(
 		return { status: "created" as const, mainSha: kept, restored: run.restored };
 	});
 }
+
+export interface VerifyStagedSurfaceBranchInput {
+	readonly repository: CloudCodingRepository;
+	readonly workerId: string;
+	readonly baseSha: string;
+	readonly headSha: string;
+}
+
+export interface VerifyStagedSurfaceBranchResult {
+	readonly branch: string;
+	readonly baseSha: string;
+	readonly headSha: string;
+	readonly changed: boolean;
+	readonly filesChanged: number;
+	readonly restored: readonly string[];
+}
+
+export async function verifyStagedSurfaceBranch(
+	job: CodeHostJob,
+	input: VerifyStagedSurfaceBranchInput,
+): Promise<VerifyStagedSurfaceBranchResult> {
+	const repository = keptRepositoryOf(input.repository);
+	if (!isUuid(input.workerId)) throw new Error("INVALID_CODE_HOST_JOB");
+	const baseSha = assertSha(input.baseSha);
+	const headSha = assertSha(input.headSha);
+	const branch = `qorpera/coding/${input.workerId}`;
+	const ref = `refs/heads/${branch}`;
+	return await withJob(job, repository, async (run) => {
+		const { area } = await prepareKeptArea(run);
+		void area;
+		const branchTip = await run.ref(ref);
+		if (!branchTip) throw new CodeHostRefusal("CODE_HOST_EXPORT_NO_BRANCH", [ref]);
+		const [hasBase, hasHead] = await run.areCommits(run.repo, [baseSha, headSha]);
+		if (!hasBase) throw new CodeHostRefusal("CODE_HOST_BASE_UNKNOWN", [baseSha]);
+		if (!hasHead) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
+		const held = await run.git(run.repo, ["merge-base", "--is-ancestor", headSha, branchTip]);
+		if (held.status === 1) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
+		if (held.status !== 0) throw new CodeHostJobFailure("CODE_HOST_EXPORT_FAILED", tail(held.stderr));
+		const beyond = await run.gitOk(
+			run.repo,
+			["rev-list", "--max-count=1", headSha, `^${baseSha}`],
+			"CODE_HOST_EXPORT_FAILED",
+		);
+		if (!beyond.length) {
+			return { branch, baseSha, headSha, changed: false, filesChanged: 0, restored: run.restored };
+		}
+		const changedPaths = await diffPathsBetween(run, baseSha, headSha, "CODE_HOST_EXPORT_FAILED");
+		return {
+			branch,
+			baseSha,
+			headSha,
+			changed: true,
+			filesChanged: changedPaths.length,
+			restored: run.restored,
+		};
+	});
+}
