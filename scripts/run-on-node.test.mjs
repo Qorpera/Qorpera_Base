@@ -28,8 +28,9 @@ import {
 	copyOptions,
 	customTarget,
 	DROPPED,
-	dockerLabelScript,
 	describeProbes,
+	diskTidyLine,
+	dockerLabelScript,
 	EXTRA_MEMORY_MIB,
 	EXTRA_PAUSE_SECONDS,
 	EXTRA_PRESSURE,
@@ -76,9 +77,11 @@ import {
 	runResult,
 	runScript,
 	SET_UP,
+	shouldWakeStoppedMachines,
 	SLOT,
 	SPREAD_MS,
 	secretLooking,
+	vmNameForMachine,
 	seedScript,
 	shellQuote,
 	slotsTaken,
@@ -2322,4 +2325,37 @@ test("release-check parses --from-release and rejects invalid combinations", () 
 	assert.equal(parsed.base, "origin/master");
 	assert.throws(() => parseArgs(["--from-release", "bd48f5e9e", "changed"]), /--from-release is for release-check/);
 	assert.throws(() => parseArgs(["--quick", "release-check"]), /--quick is for one short command, not for changed/);
+});
+
+test("pruneScript reaps orphaned cdgateway/qext containers and diskTidyLine parses cleanly", () => {
+	const script = pruneScript();
+	assert.equal(spawnSync("bash", ["-n", "-c", script]).status, 0);
+	assert.match(script, /--filter name=\^cdgateway-/);
+	assert.match(script, /--filter name=\^qext-/);
+	assert.match(script, /docker volume prune -f/);
+	assert.equal(spawnSync("bash", ["-n", "-c", diskTidyLine()]).status, 0);
+});
+
+test("vmNameForMachine and shouldWakeStoppedMachines identify wakeable sleeping VMs only when needed", () => {
+	assert.equal(vmNameForMachine({ name: "node02" }), "qorpera-testvm-node02");
+	assert.equal(vmNameForMachine({ name: "bad name!" }), null);
+	const idle = (name, extra = {}) => ({
+		name,
+		busy: 0,
+		waiting: 0,
+		quickBusy: 0,
+		quickWaiting: 0,
+		arriving: 0,
+		frontWaiting: 0,
+		closed: false,
+		setUp: true,
+		cpus: 10,
+		load: 0.1,
+		...extra,
+	});
+	const down = (name) => ({ name, unreachable: "connect failed" });
+	assert.deepEqual(shouldWakeStoppedMachines([idle("node01"), down("node02")]), []);
+	assert.deepEqual(shouldWakeStoppedMachines([idle("node01", { busy: 4 }), down("node02")]), ["node02"]);
+	assert.deepEqual(shouldWakeStoppedMachines([down("node01"), down("node02")]), ["node01", "node02"]);
+	assert.deepEqual(shouldWakeStoppedMachines([down("node02")], { explicitMachine: true }), ["node02"]);
 });

@@ -123,7 +123,14 @@ export const LANE_KEEP = ".keep";
 export const LANE_IDLE_DAYS = 7;
 export const LANE_TIDY_STAMP = `${HOME}/.lane-tidy`;
 export const LANE_TIDY_EVERY_MINUTES = 60;
+export const DISK_TIDY_STAMP = `${HOME}/.disk-tidy`;
+export const DISK_TIDY_EVERY_MINUTES = 60;
+export const TREE_KEEP_COUNT = 12;
 export const LOW_DISK_MIB = 15 * 1024;
+export const TIDY_DISK_MIB = 25 * 1024;
+export const WAKE_PROJECT = "testmachines";
+const WAKE_POLL_MS = 3_000;
+const WAKE_TIMEOUT_MS = 90_000;
 /** Inside a machine, CLOSED takes it out of the automatic choice (maintenance, removal); --machine still reaches
  * it. It survives a reboot. Runs already queued there still run. A machine without SET_UP, which guest-setup.sh
  * writes last, counts as closed too: its runner users may not exist yet. */
@@ -459,8 +466,23 @@ export function pruneScript() {
 		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +2 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
 		laneTidyLine(),
 		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null; docker ps -aq --filter label=${RUN_LABEL} 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
+		`for id in $(docker ps -aq --filter name=^cdgateway- 2>/dev/null; docker ps -aq --filter name=^qext- 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 7200 ] && docker rm -f -v "$id" >/dev/null; done`,
+		diskTidyLine(),
 		"true",
 	].join("\n");
+}
+
+export function diskTidyLine({
+	trees = `${HOME}/trees`,
+	keepTrees = TREE_KEEP_COUNT,
+	lowDiskMiB = TIDY_DISK_MIB,
+	sudo = "sudo -n ",
+	stamp = DISK_TIDY_STAMP,
+	everyMinutes = DISK_TIDY_EVERY_MINUTES,
+} = {}) {
+	const everySeconds = everyMinutes * 60;
+	const capTrees = `avail=$(df -Pm / | awk 'NR==2 {print $4}'); if [ -n "$avail" ] && [ "$avail" -lt ${lowDiskMiB} ]; then ls -t ${trees}/*.lock 2>/dev/null | tail -n +${keepTrees + 1} | while read -r l; do flock -n "$l" ${sudo}rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done; fi`;
+	return `if [ ! -e ${stamp} ] || [ $(( $(date +%s) - $(stat -c %Y ${stamp} 2>/dev/null || echo 0) )) -ge ${everySeconds} ]; then touch ${stamp}; docker volume prune -f >/dev/null 2>&1 || true; ${capTrees}; fi`;
 }
 
 export function laneTidyLine({
@@ -1134,6 +1156,67 @@ function sshArgs(machine, key) {
 	];
 }
 
+export function vmNameForMachine(machine) {
+	if (!machine?.name || !/^[a-z0-9-]+$/.test(machine.name)) return null;
+	return `qorpera-testvm-${machine.name}`;
+}
+
+export function shouldWakeStoppedMachines(probes, { explicitMachine = false, quick = false, front = false } = {}) {
+	const unreachable = probes.filter((probe) => probe.unreachable).map((probe) => probe.name);
+	if (!unreachable.length) return [];
+	const open = runOrder(probes, explicitMachine, quick, front);
+	const reachableOpen = open.filter((name) => {
+		const probe = probes.find((candidate) => candidate.name === name);
+		return Boolean(probe && !probe.unreachable);
+	});
+	if (!reachableOpen.length) return unreachable;
+	const width = quick ? QUICK_SLOTS : front ? CPU_SLOTS : CPU_SLOTS - KEPT_SLOTS;
+	const allSaturated = reachableOpen.every((name) => {
+		const probe = probes.find((candidate) => candidate.name === name);
+		if (!probe) return true;
+		return quick ? probe.quickBusy >= width : probe.busy >= width;
+	});
+	return allSaturated ? unreachable : [];
+}
+
+function queryLxdVmStatus(jump, vmName) {
+	const res = spawnSync(
+		"ssh",
+		["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", jump, "lxc", "list", "--project", WAKE_PROJECT, "--format", "csv", "-c", "ns"],
+		{ encoding: "utf8", timeout: 12_000 },
+	);
+	if (res.status !== 0) return null;
+	for (const line of res.stdout.split("\n")) {
+		const [name, status] = line.trim().split(",");
+		if (name === vmName) return status ?? null;
+	}
+	return null;
+}
+
+async function wakeStoppedMachine(machine, key) {
+	const vmName = vmNameForMachine(machine);
+	if (!vmName || !machine.jump) return null;
+	const status = queryLxdVmStatus(machine.jump, vmName);
+	if (status !== "STOPPED") return null;
+	console.error(`== run-on-node: waking sleeping test machine ${machine.name} (${vmName})`);
+	const started = spawnSync(
+		"ssh",
+		["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", machine.jump, "lxc", "start", vmName, "--project", WAKE_PROJECT],
+		{ encoding: "utf8", timeout: 30_000 },
+	);
+	if (started.status !== 0) return null;
+	const deadline = Date.now() + WAKE_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, WAKE_POLL_MS));
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(new Error("wake probe timed out")), PROBE_TIMEOUT_MS);
+		const probe = await probeOverSsh(machine, key, controller.signal);
+		clearTimeout(timer);
+		if (!probe.unreachable) return probe;
+	}
+	return null;
+}
+
 /** One probe over SSH. Its own process group, so that stopping it also ends the jump's ssh, which shares its
  * stderr and would otherwise keep the probe from closing. */
 function probeOverSsh(machine, key, signal) {
@@ -1443,8 +1526,29 @@ async function main() {
 		quick: options.quick,
 		front: options.front,
 	});
+	const explicitMachine = Boolean(options.machine) || customTarget(process.env);
+	if (!options.dryRun) {
+		const wakeCandidates = shouldWakeStoppedMachines(probes, {
+			explicitMachine,
+			quick: options.quick,
+			front: options.front,
+		});
+		if (wakeCandidates.length) {
+			const woke = await Promise.all(
+				wakeCandidates.map(async (name) => {
+					const machine = machines.find((candidate) => candidate.name === name);
+					return machine ? wakeStoppedMachine(machine, key) : null;
+				}),
+			);
+			for (const probe of woke) {
+				if (!probe) continue;
+				const idx = probes.findIndex((candidate) => candidate.name === probe.name);
+				if (idx >= 0) probes[idx] = probe;
+			}
+		}
+	}
 	const probeSeconds = (Date.now() - probeStarted) / 1000;
-	const ranked = runOrder(probes, Boolean(options.machine) || customTarget(process.env), options.quick, options.front).map((name) => {
+	const ranked = runOrder(probes, explicitMachine, options.quick, options.front).map((name) => {
 		const machine = machines.find((candidate) => candidate.name === name);
 		return { ...machine, ssh: sshArgs(machine, key) };
 	});
