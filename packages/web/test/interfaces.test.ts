@@ -445,7 +445,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			]);
 			// The row stands above the member's own arrangement, which keeps the rest: Sites among them.
 			expect(owedRow(element).nextElementSibling?.classList.contains("rail-apps-grid")).toBe(true);
-			expect(gridIcons(element)).toEqual(["Members", "Sites", "New program"]);
+			expect(gridIcons(element)).toEqual(["Members", "Sites"]);
 			// Its tiles are the platform's: no key the member drags or groups by, but the place other members are seen in.
 			const shopTile = owedRow(element).querySelector<HTMLElement>(".rail-website")!;
 			expect(shopTile.dataset.appKey).toBeUndefined();
@@ -485,7 +485,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 				["Ads", `#/c/${profileA.profileId}/a/ads`],
 			]);
 			// Products is not made yet: nothing stands for it. The rest keeps the member's arrangement.
-			expect(gridIcons(element)).toEqual(["Members", "Trips", "New program"]);
+			expect(gridIcons(element)).toEqual(["Members", "Trips"]);
 			const ads = owedRow(element).querySelector<HTMLElement>("[data-owed-place='app:ads']")!;
 			expect(ads.style.getPropertyValue("--app-colour")).toBe(colourNameHex("orange"));
 			draw({ name: "company", profileId: profileA.profileId, section: "app", id: "money" });
@@ -499,7 +499,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			controller.store.set({ apps: [app("money", "Money", { kit: "program" })] });
 			draw();
 			expect(owedRow(element).hidden).toBe(true);
-			expect(gridIcons(element)).toEqual(["Members", "Money", "New program"]);
+			expect(gridIcons(element)).toEqual(["Members", "Money"]);
 		});
 
 		it("shows the four windows for an owed view alone", () => {
@@ -511,7 +511,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			draw();
 			expect(apps(element).hidden).toBe(false);
 			expect(owedIcons(element)).toEqual([["Shoes", `#/c/${profileA.profileId}/a/products`]]);
-			expect(gridIcons(element)).toEqual(["New program"]);
+			expect(gridIcons(element)).toEqual([]);
 		});
 	});
 

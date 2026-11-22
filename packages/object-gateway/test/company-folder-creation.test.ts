@@ -54,6 +54,7 @@ function database(
 		followUpThrows?: Error;
 		sealIncomplete?: boolean;
 		openInvalid?: boolean;
+		surfaceFirst?: boolean;
 	} = {},
 ) {
 	const calls: { method: string; args: Record<string, unknown> }[] = [];
@@ -139,7 +140,13 @@ function database(
 			return "stored" as const;
 		},
 	};
-	const creator = new CompanyFolderCreator({ workerId, authority, store, replication });
+	const creator = new CompanyFolderCreator({
+		workerId,
+		authority,
+		store,
+		replication,
+		...(options.surfaceFirst ? { surfaceFirst: true } : {}),
+	});
 	const named = (method: string) => calls.filter((call) => call.method === method);
 	return { creator, calls, named };
 }
@@ -447,6 +454,21 @@ describe("CompanyFolderCreator", () => {
 		};
 		expect(() => new CompanyFolderCreator({ ...base, workerId: "worker" })).toThrow();
 		expect(() => new CompanyFolderCreator({ ...base, workerId, leaseSeconds: 10 })).toThrow();
+	});
+
+	it("stages Surface-First starter identity/ files with application/json media type when surfaceFirst is enabled", async () => {
+		const { creator, named } = database({ claims: [claim()], surfaceFirst: true });
+		expect(await creator.createOne()).toBe(true);
+		const createCall = named("qorpera_folder_company_create")[0];
+		const units = createCall?.args.p_units as { op: string; path: string; file?: { mediaType: string } }[];
+		expect(units.some((u) => u.op === "mkdir" && u.path === "identity")).toBe(true);
+		expect(units.find((u) => u.op === "write" && u.path === "identity/brief.md")?.file?.mediaType).toBe(
+			"text/markdown",
+		);
+		expect(units.find((u) => u.op === "write" && u.path === "identity/tokens.json")?.file?.mediaType).toBe(
+			"application/json",
+		);
+		expect(units.find((u) => u.op === "write" && u.path === "identity/tokens.css")?.file?.mediaType).toBe("text/css");
 	});
 
 	it("aborts in-flight sibling workers via mapBounded child signal without replacing the triggering failure", async () => {

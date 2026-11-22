@@ -320,15 +320,25 @@ def split_env(source, dest, release_keys):
     missing = [key for key in release_keys if key not in document['env']]
     need(not missing, f'the env file lacks release keys: {missing}')
     document['env'] = {key: value for key, value in document['env'].items() if key not in set(release_keys)}
-    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as handle:
-        json.dump(document, handle, indent=2)
-        handle.write('\n')
-        handle.flush()
-        os.fchown(handle.fileno(), info.st_uid, info.st_gid)
-        os.fchmod(handle.fileno(), info.st_mode & 0o7777)
-        os.fsync(handle.fileno())
-    folder = os.open(os.path.dirname(os.path.abspath(dest)), os.O_RDONLY | os.O_DIRECTORY)
+    # WHY: Write and fsync a sibling temp file then link into place so a crash cannot leave a truncated file blocking retries.
+    dest_dir = os.path.dirname(os.path.abspath(dest))
+    tmp = os.path.join(dest_dir, f'.{os.path.basename(dest)}.tmp.{os.getpid()}.{os.urandom(6).hex()}')
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            json.dump(document, handle, indent=2)
+            handle.write('\n')
+            handle.flush()
+            os.fchown(handle.fileno(), info.st_uid, info.st_gid)
+            os.fchmod(handle.fileno(), info.st_mode & 0o7777)
+            os.fsync(handle.fileno())
+        os.link(tmp, dest)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+    folder = os.open(dest_dir, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(folder)
     finally:
