@@ -339,3 +339,47 @@ it("detaches caller AbortSignal listeners after refresh completes", async () => 
 	await expect(usage.refresh(w.request, caller.signal)).resolves.toMatchObject({ status: "completed" });
 	expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
 });
+
+it("aborts the Claude reset claim retry sleep promptly when the caller aborts", async () => {
+	const w = world();
+	const claudeEnvelope = Buffer.from("sealed-claude-reset");
+	const claudeLoginId = randomUUID();
+	const ownerUserId = randomUUID();
+	const caller = new AbortController();
+	const claimClaudeLoginReset = vi.fn(async () => {
+		setTimeout(() => caller.abort(new Error("caller gone")), 20);
+		throw new Error("temporary claim error");
+	});
+	const usage = new CloudModelLoginUsage({
+		authority: {
+			...w.authority,
+			describeClaudeLoginRead: vi.fn(async () => ({
+				schema: "qorpera.claude-login-read-description/v1",
+				state: "open",
+				claudeLoginId,
+				ownerUserId,
+				keyId: "company-kek-1",
+				version: 1,
+				envelopeSha256: createHash("sha256").update(claudeEnvelope).digest("hex"),
+				encryptedEnvelopeBase64: claudeEnvelope.toString("base64"),
+				usage: false,
+				resets: false,
+				reset: "full",
+				resetState: "asked",
+			})),
+			claimClaudeLoginReset,
+			recordClaudeLoginRead: vi.fn(async () => true),
+		},
+		keyring: w.keyring,
+		fetch: w.usageFetch as typeof fetch,
+		claude: {
+			readClaudeLogin: vi.fn(async () => ({ usage: null, resets: null })),
+			useClaudeReset: vi.fn(async () => ({ outcome: "failed" as const })),
+		},
+	});
+	const started = Date.now();
+	await expect(usage.refresh(w.request, caller.signal)).rejects.toThrow("caller gone");
+	expect(Date.now() - started).toBeLessThan(500);
+	expect(claimClaudeLoginReset).toHaveBeenCalledTimes(1);
+	expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
+});

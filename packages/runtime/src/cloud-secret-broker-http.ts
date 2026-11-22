@@ -812,7 +812,7 @@ export class HttpCloudSecretBrokerService {
 
 	/** The services a request's company gets: this broker's own, or its company's on the shared vault
 	 * (the company from the path or the `?company=` every client adds; unknown means not served here). */
-	async #scope(companyId: string | undefined, parentSignal?: AbortSignal): Promise<RequestScope | undefined> {
+	async #scope(companyId: string | undefined): Promise<RequestScope | undefined> {
 		const companies = this.#companies;
 		if (!companies) {
 			return {
@@ -824,7 +824,7 @@ export class HttpCloudSecretBrokerService {
 			};
 		}
 		if (companyId === undefined || !UUID.test(companyId)) return undefined;
-		return withAbortScopes([parentSignal], (signal) => companies.resolve(companyId, signal), 10_000);
+		return withAbortScopes([], (signal) => companies.resolve(companyId, signal), 10_000);
 	}
 
 	/** G2-6a: the request holds its binding's run lease, or it is refused (the caller's catch answers 403, and nothing
@@ -854,7 +854,7 @@ export class HttpCloudSecretBrokerService {
 		const shape = mcp
 			? parseMcpRelayRequest(request, url)
 			: parseGitRelayRequest(request, url, path.endsWith("/refs"));
-		const scope = await this.#scope(url.searchParams.get("company")?.toLowerCase(), controller.signal);
+		const scope = await this.#scope(url.searchParams.get("company")?.toLowerCase());
 		if (!scope) {
 			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
 			return;
