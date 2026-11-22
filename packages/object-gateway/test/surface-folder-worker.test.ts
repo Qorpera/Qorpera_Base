@@ -995,4 +995,212 @@ describe("SurfaceFolderWorker", () => {
 		expect(hUncertainThen42501.events.some((ev) => ev.kind === "surface_folder_merge_completion_failed")).toBe(true);
 		expect(hUncertainThen42501.events.some((ev) => ev.kind === "surface_folder_merge_failed")).toBe(false);
 	});
+
+	it("reads and stages multiple files concurrently, skips redundant parent directory probes and unchanged writes", async () => {
+		const readPaths: string[] = [];
+		let activeReads = 0;
+		let maxConcurrentReads = 0;
+		let activeStages = 0;
+		let maxConcurrentStages = 0;
+		let openUploads = 0;
+
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const objects = new Map<string, Uint8Array>();
+		const entries = new Map<string, StoredEntry>();
+		const put = (path: string, text: string): string => {
+			const parts = path.split("/");
+			for (let i = 1; i < parts.length; i += 1) {
+				const dir = parts.slice(0, i).join("/");
+				if (!entries.has(dir)) {
+					entries.set(dir, {
+						kind: "folder",
+						version: randomUUID(),
+						content: null,
+						manifestSha256: null,
+						fileSha256: null,
+						mediaType: "inode/directory",
+					});
+				}
+			}
+			const bytes = new TextEncoder().encode(text);
+			const fileSha = digestSha256(bytes);
+			const manifestText = JSON.stringify({
+				schema: "qorpera.cloud-file-manifest/v2",
+				fileSha256: fileSha,
+				bytes: bytes.byteLength,
+				mediaType: "application/json",
+				executable: false,
+				chunks: bytes.byteLength > 0 ? [{ sha256: fileSha, bytes: bytes.byteLength }] : [],
+			});
+			const manifestBytes = new TextEncoder().encode(manifestText);
+			const manifestSha = digestSha256(manifestBytes);
+			objects.set(fileSha, bytes);
+			objects.set(manifestSha, manifestBytes);
+			const version = randomUUID();
+			entries.set(path, {
+				kind: "file",
+				version,
+				content: bytes,
+				manifestSha256: manifestSha,
+				fileSha256: fileSha,
+				mediaType: "application/json",
+			});
+			return version;
+		};
+		put("identity/tokens.json", `${JSON.stringify({ colors: { accent: "#111111" } }, null, 2)}\n`);
+		const unchangedVersion = put("identity/voice.md", "Same voice.");
+		const intents = new Map<
+			string,
+			{ manifestSha256: string; fileSha256: string; bytes: number; mediaType: string; executable: boolean }
+		>();
+		const committedUnits: Record<string, unknown>[][] = [];
+		const completedMerges: Record<string, unknown>[] = [];
+		const jobId = randomUUID();
+		const changeId = randomUUID();
+		let claimed = false;
+
+		const worker = new SurfaceFolderWorker({
+			authority: {
+				async publisher(method, args) {
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						if (claimed) return { merges: [], publishes: [] };
+						claimed = true;
+						return {
+							merges: [
+								{
+									jobId,
+									kind: "land_change",
+									surfaceId,
+									profileId,
+									environmentId,
+									leaseToken: randomUUID(),
+									folderRoot: "identity",
+									payload: { changeIds: [changeId] },
+									preMergeSnapshot: null,
+									approvedChanges: [
+										{
+											changeId,
+											kind: "folder_patch",
+											title: "Update accent only",
+											summary: "Updates accent and leaves voice unchanged",
+											affectedPaths: ["tokens.json", "voice.md"],
+											patchManifest: [
+												{ op: "merge_json", path: "tokens.json", patch: { colors: { accent: "#2255aa" } } },
+												{ op: "write_text", path: "voice.md", content: "Same voice." },
+											],
+										},
+									],
+								},
+							],
+							publishes: [],
+						};
+					}
+					if (method === "qorpera_folder_read") {
+						const path = String(args.p_path);
+						readPaths.push(path);
+						activeReads += 1;
+						maxConcurrentReads = Math.max(maxConcurrentReads, activeReads);
+						await new Promise((resolve) => setTimeout(resolve, 15));
+						activeReads -= 1;
+						const entry = entries.get(path);
+						if (!entry) return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false, entry: null };
+						return {
+							schema: "qorpera.folder-read/v1",
+							asOfSeq: 1,
+							found: true,
+							entry: {
+								path,
+								kind: entry.kind,
+								version: entry.version,
+								manifestSha256: entry.manifestSha256,
+								fileSha256: entry.fileSha256,
+								bytes: entry.content?.byteLength ?? 0,
+								mediaType: entry.mediaType,
+								executable: false,
+							},
+						};
+					}
+					if (method === "qorpera_folder_authorize_object_download") {
+						const buf = objects.get(String(args.p_sha256));
+						return { schema: "qorpera.folder-object-download/v1", profileId, bytes: buf?.byteLength ?? 0 };
+					}
+					if (method === "qorpera_folder_open_upload") {
+						openUploads += 1;
+						activeStages += 1;
+						maxConcurrentStages = Math.max(maxConcurrentStages, activeStages);
+						await new Promise((resolve) => setTimeout(resolve, 15));
+						activeStages -= 1;
+						const manifestText = String(args.p_manifest);
+						const manifestBytes = new TextEncoder().encode(manifestText);
+						const manifestSha = digestSha256(manifestBytes);
+						const parsed = JSON.parse(manifestText) as {
+							fileSha256: string;
+							bytes: number;
+							mediaType: string;
+							executable: boolean;
+						};
+						const intentId = randomUUID();
+						intents.set(intentId, {
+							manifestSha256: manifestSha,
+							fileSha256: parsed.fileSha256,
+							bytes: parsed.bytes,
+							mediaType: parsed.mediaType,
+							executable: parsed.executable,
+						});
+						return { schema: "qorpera.folder-upload/v1", intentId, manifestSha256: manifestSha, present: [] };
+					}
+					if (method === "qorpera_folder_authorize_object_upload") {
+						return { schema: "qorpera.folder-object-upload/v1", profileId };
+					}
+					if (method === "qorpera_folder_confirm_object") {
+						return { schema: "qorpera.folder-object/v1", sha256: args.p_sha256, bytes: args.p_bytes };
+					}
+					if (method === "qorpera_folder_seal_upload") {
+						const intent = intents.get(String(args.p_intent))!;
+						return { schema: "qorpera.folder-seal/v1", state: "sealed", intentId: args.p_intent, file: intent };
+					}
+					if (method === "qorpera_folder_commit") {
+						const units = args.p_units as Record<string, unknown>[];
+						committedUnits.push(units);
+						return {
+							schema: "qorpera.folder-commit/v1",
+							units: units.map(() => ({ outcome: "saved", version: randomUUID() })),
+						};
+					}
+					if (method === "qorpera_surface_complete_merge") {
+						completedMerges.push(args);
+						return { jobId: args.p_job_id, status: args.p_status };
+					}
+					return { renewed: true };
+				},
+			},
+			store: {
+				async get(_profileId, hash) {
+					return objects.get(hash)!;
+				},
+			},
+			replication: {
+				async uploadWithAuthority(_profileId, hash, bytes, hooks) {
+					await hooks.authorize();
+					objects.set(hash, new Uint8Array(bytes));
+					await hooks.confirm();
+					return "stored";
+				},
+			},
+			completionRetryDelaysMs: [5],
+		});
+
+		expect(await worker.processDue(8)).toBe(1);
+		expect(maxConcurrentReads).toBeGreaterThanOrEqual(2);
+		expect(maxConcurrentStages).toBe(2);
+		expect(readPaths).not.toContain("identity");
+		expect(openUploads).toBe(2);
+		expect(committedUnits[0]?.map((unit) => unit.path)).toEqual(["identity/tokens.json", "identity/tokens.css"]);
+		const snapshot = completedMerges[0]?.p_pre_merge_snapshot as {
+			versionsAfter?: Record<string, string | null>;
+		};
+		expect(snapshot?.versionsAfter?.["identity/voice.md"]).toBe(unchangedVersion);
+	});
 });
