@@ -26,9 +26,10 @@ unplugged as gone, and one never seen has a new hour to appear.
 The reconciler (root, the plug unit) reads LXD every few seconds and keeps the map true:
 - a machine that stopped (asleep) keeps its address and its entry, and its connections are flushed once;
 - a machine that is gone (missing from two reads of LXD in a row after it was seen, or never created within an hour of
-  its last plug) is unplugged: under the plug lock its address is quarantined for 15 minutes and marked unflushed before
-  its lease, entry, and seen marker are removed; after releasing the plug lock dnsmasq reloads and its connections,
-  per-machine counts, and DNS elements (E8b) are cleared, then the unflushed marker is removed;
+  its last plug) is unplugged: under the plug lock its address is quarantined for 15 minutes and marked unflushed, its
+  lease and per-machine nft state (counts, refused flows, brake, DNS, and reach elements) are cleared, and its entry
+  and seen marker are removed; after releasing the plug lock dnsmasq reloads and its connections are flushed, removing
+  the unflushed marker once the flush succeeds;
 - every entry is checked against its machine's LXD config, a running machine's card must be a port of qagent0, and
   every machine on qagent0 must have an entry. Anything else is a problem, and a problem makes the exit unhealthy
   (`qorpera-agent-exit.sh verify` reads <run-dir>/plug.json);

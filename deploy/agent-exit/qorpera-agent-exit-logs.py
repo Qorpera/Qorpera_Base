@@ -22,7 +22,8 @@ flows-YYYY-MM-DD.jsonl (the logger), the client history clients-YYYY-MM-DD.jsonl
   counted (the plug's reconciler was down for a while, say) is counted with the next day the tender counts, under its
   own day ("late"); it never changes the day it belongs to;
 - it keeps 90 days, and deletes the oldest parts while the logs hold more than 80% of their cap (2 GiB unless set) or
-  the disk has less than its floor (10% unless set) plus 5 points free: the DNS record's and the connection log's
+  the disk has less than its floor (10% unless set) plus 5 points free (a floor of 0 turns this off): the DNS record's
+  and the connection log's
   first, the client history's last. One rule for the connection log and the client history, at 90 days and under
   pressure alike: a part goes only once a counts file names it. The open files and the counts never go under
   pressure; at 90 days a counts file goes after every part it names, and the newest one (the checkpoint) never. Each
@@ -97,8 +98,7 @@ PART_BYTES = 64 * 1024 * 1024
 KEEP_DAYS = 90
 CAP_BYTES = 2 * 1024 * 1024 * 1024
 FLOOR_PERCENT = 10.0
-# The tender starts deleting before the logger has to pause: at 80% of the cap, or with less than the floor plus 5
-# points of the disk free.
+# WHY: Start deleting before the logger pauses (at 80% of cap, or below floor + 5 points free; a floor of 0 turns this off).
 CAP_SHARE = 0.8
 LOW_WATER_MARGIN = 5.0
 # WHY: Renamed files wait for in-flight writes (the plug opens per line; the logger stats before each write).

@@ -246,7 +246,8 @@ far more. So `X logs` (the logs' timer, every 5 minutes) tends them:
   cannot seal) is a problem in `logs.json`, so `verify` fails.
 - **Keeps the disk safe.** 90 days are kept. A part the NAS holds (the shipper's record of it, below) goes from the
   node a week after its day, with no deletion record: the NAS has it. Past 80% of the cap, or with less than the floor
-  plus 5 points of the disk free, the parts the NAS holds go first, oldest first; then the oldest of the rest: the DNS
+  plus 5 points of the disk free (a floor of 0 turns this off), the parts the NAS holds go first, oldest first; then the
+  oldest of the rest: the DNS
   record's and the connection log's, then the client history's (small, and
   what ties addresses to companies). One rule for the connection log and the client history, at 90 days and under
   pressure alike: a part goes only once a counts file names it. The open files and the counts never go under
