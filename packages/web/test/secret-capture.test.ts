@@ -75,4 +75,64 @@ describe("secret capture", () => {
 		const { cloud } = fixture();
 		await expect(begin(cloud, ticket(scope))).rejects.toThrow();
 	});
+
+	it("aborts captureSecret on caller signal or timeout, and forwards AbortSignal on CloudApi read RPCs", async () => {
+		vi.useFakeTimers();
+		try {
+			const { cloud } = fixture();
+			const captured = await begin(cloud, ticket());
+			const seenSignals: AbortSignal[] = [];
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(
+					(_route: string, init?: RequestInit) =>
+						new Promise((_resolve, reject) => {
+							const sig = init?.signal;
+							if (sig) {
+								seenSignals.push(sig);
+								sig.addEventListener("abort", () => reject(sig.reason), { once: true });
+							}
+						}),
+				),
+			);
+
+			const api = new CloudApi(cloud);
+			const caller = new AbortController();
+			const p1 = api.captureSecret(captured, "secret-value", caller.signal);
+			expect(seenSignals).toHaveLength(1);
+			caller.abort(new Error("cancelled"));
+			await expect(p1).rejects.toThrow("cancelled");
+			expect(seenSignals[0]?.aborted).toBe(true);
+
+			const p2 = api.captureSecret(captured, "secret-value");
+			const caught = p2.catch((error: unknown) => error);
+			await vi.advanceTimersByTimeAsync(20_000);
+			const err = await caught;
+			expect(err).toBeInstanceOf(DOMException);
+			expect((err as DOMException).name).toBe("TimeoutError");
+
+			const rpcSignal = new AbortController().signal;
+			vi.mocked(cloud.rpc).mockResolvedValueOnce({ items: [], nextCursor: null } as never);
+			await api.listSessions(profileA.environmentId, rpcSignal);
+			expect(cloud.rpc).toHaveBeenLastCalledWith(
+				"qorpera_list_shared_sessions_page",
+				expect.objectContaining({ p_environment_id: profileA.environmentId }),
+				rpcSignal,
+			);
+
+			vi.mocked(cloud.rpc).mockResolvedValueOnce([] as never);
+			await api.readSessionEvents(id(50), 0, 100, rpcSignal);
+			expect(cloud.rpc).toHaveBeenLastCalledWith(
+				"qorpera_read_session_events",
+				expect.objectContaining({ p_session_id: id(50) }),
+				rpcSignal,
+			);
+
+			vi.mocked(cloud.rpc).mockResolvedValueOnce([] as never);
+			await api.readSessionEvents(id(50), 0, 100);
+			expect(vi.mocked(cloud.rpc).mock.calls.at(-1)).toHaveLength(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

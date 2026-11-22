@@ -2546,4 +2546,54 @@ describe("AppBridge database actions (qorpera.act)", () => {
 		apps.dispose();
 		company.abort();
 	});
+
+	it("bounds readApps concurrency without readMany, batches with readMany, and reuses unchanged manifest versions", async () => {
+		const files: Record<string, string> = {};
+		for (let i = 0; i < 20; i += 1) {
+			const name = `app-${String(i).padStart(2, "0")}`;
+			files[`apps/${name}/app.toml`] = `name = "App ${i}"\nentry = "index.html"\n`;
+			files[`apps/${name}/index.html`] = `<p>${i}</p>`;
+		}
+		const base = fakeFolder(files);
+		let inFlight = 0;
+		let maxInFlight = 0;
+		let readFileCalls = 0;
+		const { readMany: _omitted, ...withoutReadMany } = base as unknown as Record<string, unknown>;
+		const slowFolder = {
+			...withoutReadMany,
+			read: async (path: string, signal: AbortSignal) => {
+				if (path.endsWith("/app.toml")) {
+					inFlight += 1;
+					if (inFlight > maxInFlight) maxInFlight = inFlight;
+					await new Promise((resolve) => setTimeout(resolve, 2));
+					inFlight -= 1;
+				}
+				return base.read(path, signal);
+			},
+			readFile: async (...args: Parameters<typeof base.readFile>) => {
+				readFileCalls += 1;
+				return base.readFile(...args);
+			},
+		};
+		const signal = new AbortController().signal;
+		const first = await readApps(slowFolder as never, signal);
+		expect(first).toHaveLength(20);
+		expect(maxInFlight).toBeLessThanOrEqual(8);
+		expect(readFileCalls).toBe(20);
+
+		readFileCalls = 0;
+		const second = await readApps(slowFolder as never, signal, first);
+		expect(second).toHaveLength(20);
+		expect(readFileCalls).toBe(0);
+
+		const readManySpy = vi.fn(async (paths: readonly string[], sig: AbortSignal) =>
+			Promise.all(paths.map((path) => base.read(path, sig))),
+		);
+		const readSpy = vi.fn(base.read.bind(base));
+		const batchedFolder = { ...base, read: readSpy, readMany: readManySpy };
+		const third = await readApps(batchedFolder as never, signal, second);
+		expect(third).toHaveLength(20);
+		expect(readManySpy).toHaveBeenCalledTimes(1);
+		expect(readSpy).toHaveBeenCalledTimes(1);
+	});
 });
