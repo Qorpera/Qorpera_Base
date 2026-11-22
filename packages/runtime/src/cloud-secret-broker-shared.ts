@@ -306,7 +306,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		if (known) return known.scope;
 		signal.throwIfAborted();
 		// A refresh already running (the first one after a start included) may serve it: wait for that one.
-		if (this.#refreshing) {
+		if (this.#refreshing && !this.#refreshing.controller.signal.aborted) {
 			try {
 				await this.refresh(signal);
 			} catch (error) {
@@ -316,8 +316,15 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		}
 		// A company created a moment ago may not be on the list yet: look again, but not on every request.
 		if (this.#now() - this.#lastLookup < MISSING_LOOKUP_MS) return this.#unknown(id);
-		this.#lastLookup = this.#now();
-		await this.refresh(signal);
+		const previousLookup = this.#lastLookup;
+		const lookupStartedAt = this.#now();
+		this.#lastLookup = lookupStartedAt;
+		try {
+			await this.refresh(signal);
+		} catch (error) {
+			if (signal.aborted && this.#lastLookup === lookupStartedAt) this.#lastLookup = previousLookup;
+			throw error;
+		}
 		return this.#served.get(id)?.scope;
 	}
 
@@ -336,13 +343,14 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	/** One refresh: registers the new companies, serves every registered one, drops the rest. */
 	refresh(signal: AbortSignal): Promise<void> {
 		if (signal.aborted) return Promise.reject(signal.reason);
+		if (this.#closing.signal.aborted) return Promise.reject(this.#closing.signal.reason);
 		let state = this.#refreshing;
-		if (!state) {
-			// WHY: Decouple the shared refresh signal from any single caller so one client abort cannot poison or cancel piggybacking waiters.
+		if (!state || state.controller.signal.aborted) {
+			// WHY: Decouple the shared refresh signal from any single caller and drop aborted refreshes so arriving callers start fresh.
+			if (state && this.#refreshing === state) this.#refreshing = undefined;
 			const controller = new AbortController();
 			const onClose = (): void => controller.abort(this.#closing.signal.reason);
-			if (this.#closing.signal.aborted) controller.abort(this.#closing.signal.reason);
-			else this.#closing.signal.addEventListener("abort", onClose, { once: true });
+			this.#closing.signal.addEventListener("abort", onClose, { once: true });
 			const created: {
 				promise: Promise<void>;
 				readonly controller: AbortController;
@@ -377,7 +385,10 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 			if (released) return;
 			released = true;
 			state.waiters -= 1;
-			if (aborted && state.waiters === 0) state.controller.abort(signal.reason);
+			if (aborted && state.waiters === 0) {
+				if (this.#refreshing === state) this.#refreshing = undefined;
+				state.controller.abort(signal.reason);
+			}
 		};
 		const onAbort = (): void => release(true);
 		signal.addEventListener("abort", onAbort, { once: true });

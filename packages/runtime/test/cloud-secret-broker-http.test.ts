@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { connect } from "node:net";
 import type { JsonValue } from "@qorpera/contracts";
+import type { CloudConnectorOAuthFlows } from "@qorpera/runtime/cloud-connector-oauth";
 import {
 	CloudSecretBroker,
 	type CloudSecretBrokerAuthority,
@@ -11,6 +12,7 @@ import {
 	type CodingRepositoryCredentialRequest,
 } from "@qorpera/runtime/cloud-secret-broker";
 import {
+	CLOUD_SECRET_BROKER_SHUTDOWN_GRACE_MS,
 	HttpCloudSecretBrokerClient,
 	HttpCloudSecretBrokerService,
 	type NativeBindingProof,
@@ -183,6 +185,7 @@ function fixture(reflectSecret = false) {
 		arguments: { title: "Login is broken" },
 	};
 	return {
+		adapter,
 		authority,
 		authorizeCodingEnvironment,
 		capability,
@@ -551,6 +554,225 @@ it("closes sockets promptly on early rejections with unread bodies while keeping
 	const bodiless = await fetch(`http://127.0.0.1:${port}/v1/unknown`);
 	expect(bodiless.status).toBe(404);
 	expect(bodiless.headers.get("connection")?.toLowerCase()).not.toBe("close");
+	f.wrappingKey.fill(0);
+	f.keyring.close();
+});
+
+it("drains in-flight non-relay requests before returning from close, rejects new requests with 503, and bounds half-open sockets", async () => {
+	expect(CLOUD_SECRET_BROKER_SHUTDOWN_GRACE_MS).toBeGreaterThanOrEqual(80_000);
+	expect(CLOUD_SECRET_BROKER_SHUTDOWN_GRACE_MS).toBeLessThan(90_000);
+	const f = fixture();
+	const port = await f.service.start();
+	expect(f.service.maxConnections).toBe(256);
+	expect((await capture(port, f, "lin_api_DRAIN_TEST")).status).toBe(200);
+
+	let enterHandler!: () => void;
+	const inHandler = new Promise<void>((resolve) => {
+		enterHandler = resolve;
+	});
+	let releaseHandler!: () => void;
+	const handlerBarrier = new Promise<void>((resolve) => {
+		releaseHandler = resolve;
+	});
+	let keyringClosedUnderHandler = false;
+	let closedAfterService = false;
+	vi.mocked(f.adapter.execute).mockImplementationOnce(async () => {
+		enterHandler();
+		await handlerBarrier;
+		keyringClosedUnderHandler = closedAfterService;
+		return { issueId: "LIN-DRAIN" };
+	});
+
+	const inFlight = fetch(`http://127.0.0.1:${port}/v1/operations`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${f.runtimeToken}`,
+			"x-qorpera-identity": f.holder,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({ schema: "qorpera.cloud-secret-operation-request/v1", ...f.operation }),
+	});
+	await inHandler;
+
+	// WHY: Hold an accepted socket mid-request-line before close() so closeIdleConnections() leaves it open to exercise the 503-while-closing branch.
+	const lateSocket = connect({ host: "127.0.0.1", port });
+	lateSocket.setEncoding("utf8");
+	let lateResponse = "";
+	lateSocket.on("data", (chunk) => {
+		lateResponse += chunk;
+	});
+	const lateClosed = new Promise<void>((resolve) => lateSocket.once("close", resolve));
+	await new Promise<void>((resolve) => lateSocket.once("connect", resolve));
+	lateSocket.write("GET /v1/unknown ");
+	await new Promise((resolve) => setTimeout(resolve, 25));
+
+	let closeSettled = false;
+	const closing = f.service.close().then(() => {
+		closeSettled = true;
+		closedAfterService = true;
+		f.keyring.close();
+	});
+
+	try {
+		lateSocket.write(`HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n\r\n`);
+		await lateClosed;
+		expect(lateResponse).toMatch(/^HTTP\/1\.1 503 /);
+		expect(lateResponse.toLowerCase()).toContain("\r\nconnection: close\r\n");
+
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(closeSettled).toBe(false);
+	} finally {
+		lateSocket.destroy();
+		releaseHandler();
+	}
+
+	const finished = await inFlight;
+	expect(finished.status).toBe(200);
+	expect(await finished.json()).toEqual({
+		kind: "json",
+		value: { issueId: "LIN-DRAIN" },
+	});
+	await closing;
+	expect(keyringClosedUnderHandler).toBe(false);
+	f.wrappingKey.fill(0);
+
+	const halfOpenFixture = fixture();
+	const halfOpenPort = await halfOpenFixture.service.start();
+	const stalled = connect({ host: "127.0.0.1", port: halfOpenPort });
+	stalled.on("error", () => undefined);
+	await new Promise<void>((resolve) => stalled.once("connect", resolve));
+	stalled.write(`POST /v1/operations HTTP/1.1\r\nHost: 127.0.0.1:${halfOpenPort}\r\n`);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	const startedClose = Date.now();
+	await halfOpenFixture.service.close(120);
+	expect(Date.now() - startedClose).toBeLessThan(1_500);
+	stalled.destroy();
+	halfOpenFixture.wrappingKey.fill(0);
+	halfOpenFixture.keyring.close();
+});
+
+it("waits for oauth.abandon background tasks without aborting them inside grace, and aborts them when grace expires", async () => {
+	const makeOAuthFixture = () => {
+		const f = fixture();
+		let abandonSignal: AbortSignal | undefined;
+		let enterAbandon!: () => void;
+		const abandonStarted = new Promise<void>((resolve) => {
+			enterAbandon = resolve;
+		});
+		let finishAbandon!: () => void;
+		const abandonBarrier = new Promise<void>((resolve) => {
+			finishAbandon = resolve;
+		});
+		const oauth = {
+			confirm: vi.fn(async () => ({
+				ticketId: f.ticketId,
+				captureCapability: f.capability,
+				connectorId: "enable_banking",
+				accountLabel: "Main Bank",
+				fields: { session_id: "sess-1" },
+			})),
+			abandon: vi.fn(async (_completion: unknown, signal: AbortSignal) => {
+				abandonSignal = signal;
+				enterAbandon();
+				await abandonBarrier;
+			}),
+		} as unknown as CloudConnectorOAuthFlows;
+		vi.mocked(f.authority.completeCapture).mockRejectedValueOnce(new Error("expired"));
+		const service = new HttpCloudSecretBrokerService(f.broker, f.runtimeToken, {
+			memberOrigins: ["https://app.qorpera.test"],
+			oauth,
+			proveBinding: f.proveBinding,
+		});
+		services.push(service);
+		return {
+			f,
+			service,
+			abandonStarted,
+			finishAbandon,
+			getAbandonSignal: () => abandonSignal,
+		};
+	};
+
+	const confirmBody = JSON.stringify({
+		schema: "qorpera.cloud-connector-oauth-confirm/v1",
+		confirmation: "a".repeat(43),
+		browserProof: "b".repeat(43),
+	});
+
+	const drained = makeOAuthFixture();
+	const port1 = await drained.service.start();
+	const res1 = await fetch(`http://127.0.0.1:${port1}/v1/oauth/${drained.f.ticketId}/confirm`, {
+		method: "POST",
+		headers: { origin: "https://app.qorpera.test", "content-type": "application/json" },
+		body: confirmBody,
+	});
+	expect(res1.status).toBe(403);
+	await drained.abandonStarted;
+	let drainedClosed = false;
+	const closing1 = drained.service.close(2_000).then(() => {
+		drainedClosed = true;
+	});
+	await new Promise((resolve) => setTimeout(resolve, 60));
+	expect(drainedClosed).toBe(false);
+	expect(drained.getAbandonSignal()?.aborted).toBe(false);
+	drained.finishAbandon();
+	await closing1;
+	expect(drained.getAbandonSignal()?.aborted).toBe(false);
+	drained.f.wrappingKey.fill(0);
+	drained.f.keyring.close();
+
+	const expired = makeOAuthFixture();
+	const port2 = await expired.service.start();
+	const res2 = await fetch(`http://127.0.0.1:${port2}/v1/oauth/${expired.f.ticketId}/confirm`, {
+		method: "POST",
+		headers: { origin: "https://app.qorpera.test", "content-type": "application/json" },
+		body: confirmBody,
+	});
+	expect(res2.status).toBe(403);
+	await expired.abandonStarted;
+	const closeStart = Date.now();
+	await expired.service.close(100);
+	expect(Date.now() - closeStart).toBeLessThan(1_500);
+	expect(expired.getAbandonSignal()?.aborted).toBe(true);
+	expired.finishAbandon();
+	expired.f.wrappingKey.fill(0);
+	expired.f.keyring.close();
+});
+
+it("enforces MAX_CONCURRENT_RELAYS and returns 503 with connection close once full", async () => {
+	const f = fixture();
+	let entered = 0;
+	let allEntered!: () => void;
+	const sixtyFourEntered = new Promise<void>((resolve) => {
+		allEntered = resolve;
+	});
+	f.authority.authorizeCodingMcpSignIn = vi.fn(
+		async (_request, signal) =>
+			await new Promise((_resolve, reject) => {
+				entered += 1;
+				if (entered === 64) allEntered();
+				signal?.addEventListener("abort", () => reject(signal.reason ?? new Error("aborted")), { once: true });
+			}),
+	);
+	const port = await f.service.start();
+	const relayHeaders = {
+		authorization: `Bearer ${f.codingExecutorToken}`,
+		"x-qorpera-coding-worker": randomUUID(),
+		"x-qorpera-coding-lease": randomUUID(),
+		"x-qorpera-coding-executor": "coding-node-02",
+		"x-qorpera-mcp-url": "https://mcp.example.com/mcp",
+		accept: "application/json, text/event-stream",
+	};
+	const pending = Array.from({ length: 64 }, () =>
+		fetch(`http://127.0.0.1:${port}/v1/coding-mcp`, { headers: relayHeaders }).catch(() => undefined),
+	);
+	await sixtyFourEntered;
+	const overflow = await fetch(`http://127.0.0.1:${port}/v1/coding-mcp`, { headers: relayHeaders });
+	expect(overflow.status).toBe(503);
+	expect(overflow.headers.get("connection")?.toLowerCase()).toBe("close");
+	expect(await overflow.json()).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "busy" });
+	await f.service.close(1_000);
+	await Promise.all(pending);
 	f.wrappingKey.fill(0);
 	f.keyring.close();
 });

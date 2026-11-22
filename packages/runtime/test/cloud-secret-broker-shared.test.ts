@@ -838,3 +838,37 @@ it("keeps a shared refresh alive when its initiator aborts while another waiter 
 	expect(getEventListeners(sole.signal, "abort")).toHaveLength(0);
 	await companies.close();
 });
+
+it("starts a fresh refresh when a new resolve arrives after the previous refresh aborted before settling", async () => {
+	const one = randomUUID();
+	const { principal } = principalFixture({ registered: [one] });
+	const origCompanies = principal.companies.getMockImplementation()!;
+	let rejectStale: ((error: Error) => void) | undefined;
+	let staleSignal: AbortSignal | undefined;
+	principal.companies.mockImplementationOnce(
+		async (signal?: AbortSignal) =>
+			await new Promise<Awaited<ReturnType<typeof origCompanies>>>((_resolve, reject) => {
+				staleSignal = signal;
+				rejectStale = reject;
+			}),
+	);
+	const companies = new SharedCloudSecretBrokerCompanies({
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		helper: helperFixture(),
+	});
+
+	const first = new AbortController();
+	const firstResolve = companies.resolve(one, first.signal);
+	await vi.waitFor(() => expect(rejectStale).toBeDefined());
+	first.abort(new Error("FIRST_TIMED_OUT"));
+	await expect(firstResolve).rejects.toThrow("FIRST_TIMED_OUT");
+	expect(staleSignal?.aborted).toBe(true);
+
+	const scope = await companies.resolve(one, new AbortController().signal);
+	expect(scope).toBeDefined();
+	expect(principal.companies).toHaveBeenCalledTimes(2);
+	rejectStale!(new Error("STALE_ABORTED"));
+	await companies.close();
+});

@@ -113,6 +113,8 @@ const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_REQUEST_BYTES = 96 * 1024;
 const MAX_RESPONSE_BYTES = 48 * 1024;
 const MAX_CONCURRENT_RELAYS = 64;
+// WHY: Cover a 35 s model-login renewal plus three 15 s save retries (80 s) while still closing inside TimeoutStopSec=90.
+export const CLOUD_SECRET_BROKER_SHUTDOWN_GRACE_MS = 82_000;
 /** A header value the coding relay reads or passes on (5j-6b): visible ASCII with inner spaces, at most 4 KiB. */
 const RELAY_HEADER_VALUE = /^[\x21-\x7e](?:[\x20-\x7e]{0,4094}[\x21-\x7e])?$/;
 /** The relay's idle timeout, on either side: an MCP server's event stream may wait minutes between events, and a
@@ -586,7 +588,7 @@ async function readRequest(request: IncomingMessage): Promise<unknown> {
 	let body: Buffer | undefined;
 	try {
 		for await (const chunkValue of request) {
-			const chunk = Buffer.isBuffer(chunkValue) ? Buffer.from(chunkValue) : Buffer.from(chunkValue);
+			const chunk = Buffer.isBuffer(chunkValue) ? chunkValue : Buffer.from(chunkValue);
 			bytes += chunk.byteLength;
 			if (bytes > MAX_REQUEST_BYTES) {
 				chunk.fill(0);
@@ -829,13 +831,17 @@ export class HttpCloudSecretBrokerService {
 		return this.#server?.requestTimeout;
 	}
 
+	get maxConnections(): number | undefined {
+		return this.#server?.maxConnections;
+	}
+
 	#notifyDrain(): void {
 		if (this.#inFlight === 0 && this.#backgroundTasks.size === 0) {
 			for (const notify of [...this.#drainWaiters]) notify();
 		}
 	}
 
-	async close(graceMs = 35_000): Promise<void> {
+	async close(graceMs = CLOUD_SECRET_BROKER_SHUTDOWN_GRACE_MS): Promise<void> {
 		if (this.#closePromise) return this.#closePromise;
 		const server = this.#server;
 		if (!server) return;
@@ -843,16 +849,16 @@ export class HttpCloudSecretBrokerService {
 		this.#server = undefined;
 		this.#closingServer = server;
 		const shuttingDown = (async () => {
-			// WHY: Abort long-lived streaming relays at once and bound drain so SIGTERM finishes before TimeoutStopSec and always zeroes the keyring.
+			// WHY: Abort long-lived streaming relays at once while letting non-relay requests and oauth.abandon drain within grace before TimeoutStopSec.
 			const shutdownError = new Error("Cloud secret broker shutting down");
-			this.#shutdown.abort(shutdownError);
 			for (const controller of this.#relayAborts) controller.abort(shutdownError);
 			const closed = new Promise<void>((resolve, reject) =>
 				server.close((error) => (error ? reject(error) : resolve())),
 			);
-			const boundedGraceMs = Number.isFinite(graceMs) ? Math.max(0, graceMs) : 35_000;
+			const boundedGraceMs = Number.isFinite(graceMs) ? Math.max(0, graceMs) : CLOUD_SECRET_BROKER_SHUTDOWN_GRACE_MS;
 			const deadlineAt = Date.now() + boundedGraceMs;
 			server.closeIdleConnections();
+			let timedOut = boundedGraceMs === 0;
 			if ((this.#inFlight > 0 || this.#backgroundTasks.size > 0) && boundedGraceMs > 0) {
 				let timer: ReturnType<typeof setTimeout> | undefined;
 				try {
@@ -866,12 +872,18 @@ export class HttpCloudSecretBrokerService {
 							done();
 							return;
 						}
-						timer = setTimeout(done, boundedGraceMs);
+						timer = setTimeout(() => {
+							timedOut = true;
+							done();
+						}, boundedGraceMs);
 						timer.unref?.();
 					});
 				} finally {
 					if (timer) clearTimeout(timer);
 				}
+			}
+			if (timedOut || this.#inFlight > 0 || this.#backgroundTasks.size > 0) {
+				this.#shutdown.abort(shutdownError);
 			}
 			if (this.#inFlight > 0 || boundedGraceMs === 0) {
 				server.closeAllConnections();
@@ -886,6 +898,7 @@ export class HttpCloudSecretBrokerService {
 					new Promise<void>((resolve) => {
 						closeTimer = setTimeout(
 							() => {
+								this.#shutdown.abort(shutdownError);
 								server.closeAllConnections();
 								resolve();
 							},

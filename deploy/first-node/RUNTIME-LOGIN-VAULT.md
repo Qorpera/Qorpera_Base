@@ -97,7 +97,7 @@ no database login and no service key; it sees a login only for one operation and
   (the login needs a new sign-in), anything else is retried later. At most 4 renewals run at once.
   Budgets nest: Codex 25 s, helper answer 28 s, broker wait 30 s, vault renewal 35 s; once asked, a
   renewal runs to its budget whatever the member's request does, because only it can save the new
-  login. Stopping the unit lets renewals in flight finish (`KillMode=mixed`, 40 s).
+  login. Stopping the unit lets renewals in flight finish (`KillMode=mixed`, 85 s; the helper drains up to 75 s).
 - **Part B, sign-in** (migration `20260928184000`, `cloud-model-login-sign-in.ts`,
   `cloud-model-login-vault-sign-in.ts`): a member signs in to the vault; the web client is unchanged.
   - An operator switches a company with `qorpera_set_model_login_sign_in(company, true)` (service
@@ -375,7 +375,7 @@ Prerequisites on each host: the broker build and the CA file
 reinstalled from this build **first** (an older helper refuses a config with the new limit keys and a
 vault token, and stops for every broker on the host); a host without a helper installs it as in
 "Installing the helper" above, its own token included (`helper-token` refuses on a host without one).
-Reinstalling node 1's helper restarts it: renewals in flight finish (its stop waits up to 40 s), but a
+Reinstalling node 1's helper restarts it: renewals in flight finish (the helper drains up to 75 s, `TimeoutStopSec=85`), but a
 member in the middle of a sign-in has to start again, so pick a moment with none pending (no
 `qorpera_native_provider_login_sessions` row with status `pending` and `expires_at` in the future).
 
