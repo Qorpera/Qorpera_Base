@@ -6,6 +6,7 @@ import {
 	assertCompanyComputerScreenBinding,
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { CompanyComputerGuestBoundary, CompanyComputerGuestCommands } from "./cloud-company-computer-guest.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import {
@@ -129,7 +130,16 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 		input: Parameters<CompanyComputerGuestCommands["run"]>[0],
 		capture?: string,
 	): Promise<{ code: number; stdout: string; stderr: string }> {
-		const signal = AbortSignal.any([input.signal, this.#stop.signal]);
+		return withAbortScopes([input.signal, this.#stop.signal], (signal) =>
+			this.#executeWithSignal(input, signal, capture),
+		);
+	}
+
+	async #executeWithSignal(
+		input: Parameters<CompanyComputerGuestCommands["run"]>[0],
+		signal: AbortSignal,
+		capture?: string,
+	): Promise<{ code: number; stdout: string; stderr: string }> {
 		await this.#ready(signal);
 		const program = input.program === "/bin/bash" ? "/usr/bin/bash" : input.program;
 		for (const path of ["/usr/bin/bwrap", "/usr/bin/tini", "/usr/bin/bash", program]) await assertRootOwned(path);
@@ -290,7 +300,7 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 			throw new Error("INVALID_OFFICE_COMMAND");
 		const copied = { ...input, args: [...input.args], environment: { ...input.environment } };
 		return this.#track(
-			(deadline) => this.#execute({ ...copied, signal: AbortSignal.any([copied.signal, deadline]) }),
+			(deadline) => withAbortScopes([copied.signal, deadline], (signal) => this.#execute({ ...copied, signal })),
 			input.timeoutMs + 15000,
 		);
 	}
@@ -298,7 +308,7 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 	async capturePng(input: Parameters<CompanyComputerGuestCommands["capturePng"]>[0]): Promise<Uint8Array> {
 		const copied = { ...input };
 		return this.#track(
-			(deadline) => this.#capture({ ...copied, signal: AbortSignal.any([copied.signal, deadline]) }),
+			(deadline) => withAbortScopes([copied.signal, deadline], (signal) => this.#capture({ ...copied, signal })),
 			20000,
 		);
 	}
@@ -311,40 +321,41 @@ export class CompanyComputerLinuxCommands implements CompanyComputerGuestCommand
 			input.maxBytes > 16 * 1024 * 1024
 		)
 			throw new Error("INVALID_OFFICE_CAPTURE");
-		const signal = AbortSignal.any([input.signal, this.#stop.signal]);
-		await this.#ready(signal);
-		const root = await openCompanyComputerLinuxDirectory(this.#captureRoot, true);
-		await root.close();
-		const directory = await mkdtemp(join(this.#captureRoot, "capture-"));
-		try {
-			const result = await this.#execute(
-				{
-					program: "/usr/bin/scrot",
-					args: ["--silent", "/qorpera-capture/screen.png"],
-					environment: {},
-					workingDirectory: "/home/qorpera",
-					timeoutMs: 5000,
-					maxOutputBytes: 4096,
-					signal,
-				},
-				directory,
-			);
-			if (result.code !== 0) throw new Error("OFFICE_CAPTURE_FAILED");
-			const file = await open(join(directory, "screen.png"), constants.O_RDONLY | constants.O_NOFOLLOW);
+		return withAbortScopes([input.signal, this.#stop.signal], async (signal) => {
+			await this.#ready(signal);
+			const root = await openCompanyComputerLinuxDirectory(this.#captureRoot, true);
+			await root.close();
+			const directory = await mkdtemp(join(this.#captureRoot, "capture-"));
 			try {
-				const info = await file.stat();
-				if (!info.isFile() || info.nlink !== 1 || info.size < 33 || info.size > input.maxBytes)
-					throw new Error("INVALID_OFFICE_CAPTURE");
-				const bytes = await file.readFile();
-				if (bytes.length !== info.size) throw new Error("INVALID_OFFICE_CAPTURE");
-				signal.throwIfAborted();
-				return Uint8Array.from(bytes);
+				const result = await this.#execute(
+					{
+						program: "/usr/bin/scrot",
+						args: ["--silent", "/qorpera-capture/screen.png"],
+						environment: {},
+						workingDirectory: "/home/qorpera",
+						timeoutMs: 5000,
+						maxOutputBytes: 4096,
+						signal,
+					},
+					directory,
+				);
+				if (result.code !== 0) throw new Error("OFFICE_CAPTURE_FAILED");
+				const file = await open(join(directory, "screen.png"), constants.O_RDONLY | constants.O_NOFOLLOW);
+				try {
+					const info = await file.stat();
+					if (!info.isFile() || info.nlink !== 1 || info.size < 33 || info.size > input.maxBytes)
+						throw new Error("INVALID_OFFICE_CAPTURE");
+					const bytes = await file.readFile();
+					if (bytes.length !== info.size) throw new Error("INVALID_OFFICE_CAPTURE");
+					signal.throwIfAborted();
+					return Uint8Array.from(bytes);
+				} finally {
+					await file.close();
+				}
 			} finally {
-				await file.close();
+				await rm(directory, { recursive: true, force: true });
 			}
-		} finally {
-			await rm(directory, { recursive: true, force: true });
-		}
+		});
 	}
 
 	close(): Promise<void> {

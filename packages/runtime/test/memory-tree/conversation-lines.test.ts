@@ -1,3 +1,4 @@
+import { getEventListeners } from "node:events";
 import type {
 	CloudCompanyFolderCommitResult,
 	CloudCompanyFolderFileEntry,
@@ -786,4 +787,15 @@ it("reads a conversation's block only as the commit stores it", () => {
 	expect(memoryBlockLines(text, PATH, "run")).toBeNull();
 	expect(memoryBlockLines(text, "t0/00000001.jsonl")).toBeNull();
 	expect(memoryBlockLines(text.slice(0, -1), PATH)).toBeNull();
+});
+
+it("detaches parent abort listeners after settle and close", async () => {
+	const host = thread(2, 1);
+	const lines = writer(host, fake());
+	const controller = new AbortController();
+	await lines.open(controller.signal);
+	await lines.settle(controller.signal);
+	expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+	await lines.close(controller.signal);
+	expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
 });

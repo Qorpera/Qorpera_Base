@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { parseCloudCodingCommandRead, parseCloudCodingCommandReceipt } from "@qorpera/contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { collectCodingCommandOutput, readCodingCommandLog } from "../src/cloud-coding-command-log.ts";
 
 const roots: string[] = [];
@@ -154,5 +154,78 @@ describe("retained coding command log pages", () => {
 		const tail = await readCodingCommandLog({ ...f, read: { ...f.read, tail: true, limit: 16 } });
 		expect(tail.output).toBe("\uFFFD\uFFFD \uFFFD\uFFFDA");
 		expect(tail.log.nextOffset).toBe(mixed.length);
+	});
+
+	it("batches small chunks without per-chunk fsync and guarantees final sync on completion", async () => {
+		const f = await fixture(Buffer.alloc(0));
+		const handle = await open(f.path, "a");
+		const writeSpy = vi.spyOn(handle, "write");
+		const syncSpy = vi.spyOn(handle, "sync");
+		const datasyncSpy = vi.spyOn(handle, "datasync");
+		const chunks = Array.from({ length: 500 }, (_, index) => Buffer.from(`line-${String(index).padStart(4, "0")}\n`));
+		try {
+			await collectCodingCommandOutput([Readable.from(chunks)], handle, 1048576, {
+				flushBytes: 65_536,
+				flushIntervalMs: 5_000,
+			});
+		} finally {
+			await handle.close();
+		}
+		expect(await readFile(f.path)).toEqual(Buffer.concat(chunks));
+		expect(writeSpy.mock.calls.length).toBeLessThanOrEqual(4);
+		expect(syncSpy).toHaveBeenCalledTimes(1);
+		expect(datasyncSpy.mock.calls.length).toBeLessThanOrEqual(1);
+	});
+
+	it("flushes and datasyncs buffered bytes on the periodic interval for live readers", async () => {
+		const f = await fixture(Buffer.alloc(0));
+		const handle = await open(f.path, "a");
+		const datasyncSpy = vi.spyOn(handle, "datasync");
+		const syncSpy = vi.spyOn(handle, "sync");
+		const stream = new PassThrough();
+		const done = collectCodingCommandOutput([stream], handle, 1048576, {
+			flushBytes: 65_536,
+			flushIntervalMs: 25,
+		});
+		try {
+			stream.write("ready on :3000\n");
+			await vi.waitFor(async () => {
+				const live = await readCodingCommandLog({ ...f, terminal: false });
+				expect(live.output).toBe("ready on :3000\n");
+			});
+			await vi.waitFor(() => {
+				expect(datasyncSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+			});
+			stream.end("stopped\n");
+			await done;
+		} finally {
+			await handle.close();
+		}
+		expect(syncSpy).toHaveBeenCalledTimes(1);
+		expect(await readFile(f.path, "utf8")).toBe("ready on :3000\nstopped\n");
+	});
+
+	it("propagates periodic write failures promptly and rejects invalid flush options", async () => {
+		const f = await fixture(Buffer.alloc(0));
+		const handle = await open(f.path, "a");
+		try {
+			await expect(collectCodingCommandOutput([], handle, 1048576, { flushBytes: 0 })).rejects.toThrow(
+				"INVALID_CODING_LOG_FLUSH_OPTIONS",
+			);
+			await expect(collectCodingCommandOutput([], handle, 1048576, { flushIntervalMs: 0 })).rejects.toThrow(
+				"INVALID_CODING_LOG_FLUSH_OPTIONS",
+			);
+			vi.spyOn(handle, "write").mockRejectedValueOnce(new Error("ENOSPC"));
+			const stream = new PassThrough();
+			const done = collectCodingCommandOutput([stream], handle, 1048576, {
+				flushBytes: 65_536,
+				flushIntervalMs: 20,
+			});
+			stream.write("will fail on timer flush\n");
+			await expect(done).rejects.toThrow("ENOSPC");
+			stream.destroy();
+		} finally {
+			await handle.close();
+		}
 	});
 });

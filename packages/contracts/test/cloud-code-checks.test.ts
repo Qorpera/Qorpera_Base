@@ -170,6 +170,40 @@ describe("cloud-code-checks canonical parser and v2 schema", () => {
 				format: "junit",
 			});
 		}
+
+		const serverSite = parseCodeChecksText(
+			JSON.stringify({
+				site: {
+					kind: "server",
+					name: "my-app",
+					title: "My App",
+					dockerfile: "Dockerfile",
+					port: 3000,
+					healthPath: "/healthz",
+					idleTimeoutSec: 300,
+					memoryMb: 512,
+					vcpuLimit: 1.5,
+					spaFallback: null,
+				},
+				checks: [{ name: "test", run: "npm test" }],
+			}),
+		);
+		expect(serverSite.ok).toBe(true);
+		if (serverSite.ok) {
+			expect(serverSite.site).toEqual({
+				folder: ".",
+				name: "my-app",
+				title: "My App",
+				kind: "server",
+				dockerfile: "Dockerfile",
+				port: 3000,
+				healthPath: "/healthz",
+				idleTimeoutSec: 300,
+				memoryMb: 512,
+				vcpuLimit: 1.5,
+				spaFallback: null,
+			});
+		}
 	});
 
 	it("rejects invalid v2 fields including traversal, .git paths, and reserved env names", () => {

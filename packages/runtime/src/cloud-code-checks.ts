@@ -437,7 +437,19 @@ function serializePreflightOutcome(
 			notRun: [...payload.notRun],
 			skipped: payload.skipped.map((item) => ({ name: item.name, blockedBy: [...item.blockedBy] })),
 			site: payload.site
-				? { folder: payload.site.folder, name: payload.site.name, title: payload.site.title }
+				? {
+						folder: payload.site.folder,
+						name: payload.site.name,
+						title: payload.site.title,
+						...(payload.site.kind !== undefined ? { kind: payload.site.kind } : {}),
+						...(payload.site.dockerfile !== undefined ? { dockerfile: payload.site.dockerfile } : {}),
+						...(payload.site.port !== undefined ? { port: payload.site.port } : {}),
+						...(payload.site.healthPath !== undefined ? { healthPath: payload.site.healthPath } : {}),
+						...(payload.site.idleTimeoutSec !== undefined ? { idleTimeoutSec: payload.site.idleTimeoutSec } : {}),
+						...(payload.site.memoryMb !== undefined ? { memoryMb: payload.site.memoryMb } : {}),
+						...(payload.site.vcpuLimit !== undefined ? { vcpuLimit: payload.site.vcpuLimit } : {}),
+						...(payload.site.spaFallback !== undefined ? { spaFallback: payload.site.spaFallback } : {}),
+					}
 				: null,
 			...(payload.autoIncludedNeeds && payload.autoIncludedNeeds.length > 0
 				? { autoIncludedNeeds: [...payload.autoIncludedNeeds] }
@@ -1117,6 +1129,8 @@ export async function runCodingPreflightChecks(options: {
 		if (request.validateSite === true && overallState === "passed") {
 			if (parsed.site === null) {
 				siteValidation = { state: "no_site" };
+			} else if (parsed.site.kind === "server") {
+				siteValidation = { state: "valid", folder: parsed.site.folder, files: 0, bytes: 0 };
 			} else {
 				const valStarted = await startSubCommand(
 					"site-validate",

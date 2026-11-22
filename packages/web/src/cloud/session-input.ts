@@ -3,7 +3,7 @@ import type {
 	NativeProviderHarness,
 	SessionTurnRequestResult,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
-import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import { withScopedCloudDeadline } from "./abort-scope.ts";
 import { SESSION_PROMPT_SCHEMA } from "./api.ts";
 import type { Cloud } from "./client.ts";
 import { createWebNativeSubscription } from "./native-subscription.ts";
@@ -108,7 +108,8 @@ export function createWebSessionInputWriter(
 					text,
 				)
 			: undefined;
-		return withCloudDeadline(
+		return withScopedCloudDeadline(
+			[companySignal, signal],
 			async (deadline) => {
 				if (
 					!UUID_PATTERN.test(sessionId) ||
@@ -192,7 +193,6 @@ export function createWebSessionInputWriter(
 				return receipt;
 			},
 			files.length ? 75000 : 15000,
-			AbortSignal.any([companySignal, signal]),
 		);
 	};
 }

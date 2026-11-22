@@ -153,10 +153,20 @@ export interface CodeCheck {
 	readonly artifacts?: CodeCheckArtifacts;
 }
 
+export type CodeSiteKind = "static" | "server" | "hybrid";
+
 export interface CodeSiteRecipe {
 	readonly folder: string;
 	readonly name: string | null;
 	readonly title: string | null;
+	readonly kind?: CodeSiteKind;
+	readonly dockerfile?: string | null;
+	readonly port?: number;
+	readonly healthPath?: string;
+	readonly idleTimeoutSec?: number;
+	readonly memoryMb?: number;
+	readonly vcpuLimit?: number;
+	readonly spaFallback?: string | null;
 }
 
 export interface CodeChecksProblem {
@@ -447,6 +457,15 @@ function parseChecksJson(text: string): unknown {
 	return root;
 }
 
+function isValidHealthPath(field: string): boolean {
+	if (field.length < 1 || field.length > 256 || !field.startsWith("/")) return false;
+	for (const ch of field) {
+		const code = ch.codePointAt(0) as number;
+		if (code <= 0x20 || code === 0x7f || /\s/.test(ch)) return false;
+	}
+	return true;
+}
+
 function parseSite(value: unknown, at: string, refuse: Refuse): CodeSiteRecipe | null {
 	if (!isObject(value)) {
 		refuse(at, "WRONG_TYPE", "Must be an object.");
@@ -455,29 +474,92 @@ function parseSite(value: unknown, at: string, refuse: Refuse): CodeSiteRecipe |
 	let folder: string | null = null;
 	let name: string | null = null;
 	let title: string | null = null;
+	let kind: CodeSiteKind | undefined;
+	let dockerfile: string | null | undefined;
+	let port: number | undefined;
+	let healthPath: string | undefined;
+	let idleTimeoutSec: number | undefined;
+	let memoryMb: number | undefined;
+	let vcpuLimit: number | undefined;
+	let spaFallback: string | null | undefined;
 	for (const [key, field] of Object.entries(value)) {
 		const fieldAt = pointer(at, key);
-		if (key !== "folder" && key !== "name" && key !== "title") refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
-		else if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-		else if (key === "folder") {
-			if (isCodeSiteFolderValid(field)) folder = field;
-			else
-				refuse(
-					fieldAt,
-					"INVALID_PATH",
-					'Must be "." or a folder of the repository: a relative path without . or .. parts, at most 300 bytes.',
-				);
-		} else if (key === "name") {
-			const refused = codeSiteNameRefusalText(field);
-			if (refused === null) name = field;
-			else refuse(fieldAt, "INVALID_VALUE", refused);
-		} else if (field.startsWith(" ") || field.endsWith(" "))
-			refuse(fieldAt, "SITE_TITLE", "Must not start or end with a space.");
-		else if (isCodeSiteTitleValid(field)) title = field;
-		else refuse(fieldAt, "INVALID_VALUE", "Must be 1 to 120 characters on one line.");
+		if (key === "folder" || key === "name" || key === "title") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (key === "folder") {
+				if (isCodeSiteFolderValid(field)) folder = field;
+				else
+					refuse(
+						fieldAt,
+						"INVALID_PATH",
+						'Must be "." or a folder of the repository: a relative path without . or .. parts, at most 300 bytes.',
+					);
+			} else if (key === "name") {
+				const refused = codeSiteNameRefusalText(field);
+				if (refused === null) name = field;
+				else refuse(fieldAt, "INVALID_VALUE", refused);
+			} else if (field.startsWith(" ") || field.endsWith(" "))
+				refuse(fieldAt, "SITE_TITLE", "Must not start or end with a space.");
+			else if (isCodeSiteTitleValid(field)) title = field;
+			else refuse(fieldAt, "INVALID_VALUE", "Must be 1 to 120 characters on one line.");
+		} else if (key === "kind") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (field === "static" || field === "server" || field === "hybrid") kind = field;
+			else refuse(fieldAt, "INVALID_VALUE", 'Must be "static", "server", or "hybrid".');
+		} else if (key === "dockerfile") {
+			if (field === null) dockerfile = null;
+			else if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (field !== "." && isCodeSiteFolderValid(field)) dockerfile = field;
+			else refuse(fieldAt, "INVALID_PATH", "Must be a relative file path without . or .. parts, at most 300 bytes.");
+		} else if (key === "port") {
+			if (typeof field !== "number" || !Number.isInteger(field) || field < 1 || field > 65535)
+				refuse(fieldAt, "INVALID_VALUE", "Must be a whole port number from 1 to 65535.");
+			else port = field;
+		} else if (key === "healthPath") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (!isValidHealthPath(field))
+				refuse(fieldAt, "INVALID_VALUE", "Must start with / and contain 1 to 256 non-space characters.");
+			else healthPath = field;
+		} else if (key === "idleTimeoutSec") {
+			if (typeof field !== "number" || !Number.isInteger(field) || field < 0 || field > 86400)
+				refuse(fieldAt, "INVALID_VALUE", "Must be a whole number of seconds from 0 to 86400.");
+			else idleTimeoutSec = field;
+		} else if (key === "memoryMb") {
+			if (typeof field !== "number" || !Number.isInteger(field) || field < 64 || field > 8192)
+				refuse(fieldAt, "INVALID_VALUE", "Must be a whole number of megabytes from 64 to 8192.");
+			else memoryMb = field;
+		} else if (key === "vcpuLimit") {
+			if (typeof field !== "number" || !Number.isFinite(field) || field < 0.25 || field > 8)
+				refuse(fieldAt, "INVALID_VALUE", "Must be a number from 0.25 to 8.");
+			else vcpuLimit = field;
+		} else if (key === "spaFallback") {
+			if (field === null) spaFallback = null;
+			else if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (field !== "." && field.length <= 512 && isCodeSiteFolderValid(field)) spaFallback = field;
+			else refuse(fieldAt, "INVALID_PATH", "Must be a relative path such as index.html without . or .. parts.");
+		} else {
+			refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
+		}
 	}
-	if (!("folder" in value)) refuse(at, "MISSING_KEY", "Needs folder.");
-	return folder === null ? null : { folder, name, title };
+	const effectiveKind = kind ?? "static";
+	if (!("folder" in value)) {
+		if (effectiveKind === "server") folder = ".";
+		else refuse(at, "MISSING_KEY", "Needs folder.");
+	}
+	if (folder === null) return null;
+	return {
+		folder,
+		name,
+		title,
+		...(kind !== undefined ? { kind } : {}),
+		...(dockerfile !== undefined ? { dockerfile } : {}),
+		...(port !== undefined ? { port } : {}),
+		...(healthPath !== undefined ? { healthPath } : {}),
+		...(idleTimeoutSec !== undefined ? { idleTimeoutSec } : {}),
+		...(memoryMb !== undefined ? { memoryMb } : {}),
+		...(vcpuLimit !== undefined ? { vcpuLimit } : {}),
+		...(spaFallback !== undefined ? { spaFallback } : {}),
+	};
 }
 
 function parseCaches(value: unknown, at: string, refuse: Refuse): CodeCheckCache[] {

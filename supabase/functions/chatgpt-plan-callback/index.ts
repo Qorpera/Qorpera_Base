@@ -1,3 +1,4 @@
+import { withTimeoutScope } from "../_shared/abort-timeout.ts";
 import { chatGptPlanReturnUrl, handleChatGptPlanCallback } from "./chatgpt-plan-callback.ts";
 
 const RPC_TIMEOUT_MS = 5_000;
@@ -7,19 +8,21 @@ async function callbackTarget(state: string): Promise<string | undefined> {
 	const base = Deno.env.get("SUPABASE_URL");
 	const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 	if (!base || !key) return undefined;
-	const response = await fetch(new URL("/rest/v1/rpc/qorpera_chatgpt_plan_callback_target", base), {
-		method: "POST",
-		headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json" },
-		body: JSON.stringify({ p_state: state }),
-		redirect: "error",
-		signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
+	return withTimeoutScope(RPC_TIMEOUT_MS, async (signal) => {
+		const response = await fetch(new URL("/rest/v1/rpc/qorpera_chatgpt_plan_callback_target", base), {
+			method: "POST",
+			headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json" },
+			body: JSON.stringify({ p_state: state }),
+			redirect: "error",
+			signal,
+		});
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			return undefined;
+		}
+		const target: unknown = await response.json();
+		return typeof target === "string" ? target : undefined;
 	});
-	if (!response.ok) {
-		await response.body?.cancel();
-		return undefined;
-	}
-	const target: unknown = await response.json();
-	return typeof target === "string" ? target : undefined;
 }
 
 /** Exact web origins this deployment serves, as a JSON array; absent means the production app only. */

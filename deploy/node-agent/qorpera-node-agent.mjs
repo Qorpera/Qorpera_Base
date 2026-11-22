@@ -624,7 +624,7 @@ export class NodeAgent {
 		need(revision !== null, "SWITCH_NEEDS_AN_ADOPTED_RELEASE");
 		await this.quiet(0);
 		const oldPid = await this.ports.mainPid(fromUnit);
-		const before = oldPid > 0 ? await this.ports.cmdline(oldPid) : [];
+		const before = oldPid > 0 ? await this.ports.cmdline(oldPid).catch(() => []) : [];
 		need(before.length > 0, `SWITCH_OLD_UNIT_NOT_RUNNING ${fromUnit}`);
 		// Migration records carry no release, so gc never prunes them: unswitch needs the old unit's command.
 		let diff = null;
@@ -714,7 +714,7 @@ export class NodeAgent {
 	/** Whether a role's unit runs and every health URL answers. */
 	async roleUp(settings) {
 		if ((await this.ports.mainPid(settings.unit)) <= 0) return false;
-		return (await Promise.all(settings.health.map((url) => this.ports.healthy(url)))).every(Boolean);
+		return (await Promise.all(settings.health.map((url) => this.ports.healthy(url, { attempts: 1 })))).every(Boolean);
 	}
 
 	/** `force` skips the quiet gate, for a new role that is down already; it refuses while the role still runs. */
@@ -779,8 +779,8 @@ export class NodeAgent {
 					const pid = await this.ports.mainPid(settings.unit);
 					const [release, command, healthy] = await Promise.all([
 						this.roleRevision(role),
-						pid > 0 ? this.ports.cmdline(pid) : Promise.resolve([]),
-						Promise.all(settings.health.map((url) => this.ports.healthy(url))),
+						pid > 0 ? this.ports.cmdline(pid).catch(() => []) : Promise.resolve([]),
+						Promise.all(settings.health.map((url) => this.ports.healthy(url, { attempts: 1 }))),
 					]);
 					return [role, { release, unit: settings.unit, pid, command, healthy }];
 				}),
@@ -858,98 +858,128 @@ export async function withNodeLock(action, lockPath = LOCK) {
 const run = promisify(execFile);
 
 /** The real node: systemd, /proc, the LXD socket and the health ports. */
-export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket") {
+export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket", { exec = run } = {}) {
 	const lxdGet = (path) =>
 		new Promise((resolve, reject) => {
 			let settled = false;
-			const fail = (error) => {
+			const finish = (error, value) => {
 				if (settled) return;
 				settled = true;
-				reject(error);
+				clearTimeout(deadline);
+				if (error) reject(error);
+				else resolve(value);
 			};
 			const req = request({ socketPath: lxdSocket, path, headers: { host: "lxd" }, timeout: 30_000 }, (response) => {
 				const chunks = [];
 				let bytes = 0;
 				response.on("data", (chunk) => {
+					if (settled) return;
 					bytes += chunk.byteLength;
 					if (bytes > 32 * 1024 * 1024) {
-						req.destroy(new Error("LXD response exceeded 32 MiB"));
+						const overflow = new Error("LXD response exceeded 32 MiB");
+						req.destroy(overflow);
+						finish(overflow);
 						return;
 					}
 					chunks.push(chunk);
 				});
-				response.on("aborted", () => fail(new Error("LXD response aborted")));
-				response.on("error", fail);
+				response.on("aborted", () => finish(new Error("LXD response aborted")));
+				response.on("error", (error) => finish(error));
+				response.on("close", () => {
+					if (!response.complete) finish(new Error("LXD response closed before completing"));
+				});
 				response.on("end", () => {
-					if (settled) return;
 					if (!response.complete) {
-						fail(new Error("LXD response truncated"));
+						finish(new Error("LXD response truncated"));
 						return;
 					}
-					settled = true;
 					try {
-						resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+						const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+						if ((response.statusCode ?? 0) >= 400 || body?.type === "error") {
+							finish(new Error(`LXD GET ${path}: ${body?.error ?? `HTTP ${response.statusCode}`}`));
+							return;
+						}
+						finish(null, body);
 					} catch (error) {
-						reject(error);
+						finish(error);
 					}
 				});
 			});
-			req.on("timeout", () => req.destroy(new Error("LXD request timed out")));
-			req.on("error", fail);
+			const deadline = setTimeout(() => {
+				const timeout = new Error("LXD request timed out");
+				req.destroy(timeout);
+				finish(timeout);
+			}, 30_000);
+			deadline.unref?.();
+			req.on("timeout", () => {
+				const timeout = new Error("LXD request timed out");
+				req.destroy(timeout);
+				finish(timeout);
+			});
+			req.on("error", (error) => finish(error));
 			req.end();
 		});
 	return {
 		async instances() {
 			const body = await lxdGet("/1.0/instances?recursion=1&all-projects=true");
+			if (!Array.isArray(body?.metadata)) throw new Error("LXD instances response missing metadata array");
 			return body.metadata.map((instance) => ({ name: instance.name, status: instance.status }));
 		},
 		async restart(unit) {
-			await run("/usr/bin/systemctl", ["restart", unit], { timeout: 180_000 });
+			await exec("/usr/bin/systemctl", ["restart", unit], { timeout: 180_000 });
 		},
 		async enable(unit, now) {
-			await run("/usr/bin/systemctl", ["enable", ...(now ? ["--now"] : []), unit], { timeout: 180_000 });
+			await exec("/usr/bin/systemctl", ["enable", ...(now ? ["--now"] : []), unit], { timeout: 180_000 });
 		},
 		async disable(unit, now) {
-			await run("/usr/bin/systemctl", ["disable", ...(now ? ["--now"] : []), unit], { timeout: 180_000 });
+			await exec("/usr/bin/systemctl", ["disable", ...(now ? ["--now"] : []), unit], { timeout: 180_000 });
 		},
 		async mainPid(unit) {
-			const { stdout } = await run("/usr/bin/systemctl", ["show", unit, "-p", "MainPID", "--value"]);
+			const { stdout } = await exec("/usr/bin/systemctl", ["show", unit, "-p", "MainPID", "--value"], {
+				timeout: 30_000,
+			});
 			return Number(stdout.trim());
 		},
 		async isEnabled(unit) {
-			const result = await run("/usr/bin/systemctl", ["is-enabled", unit]).catch((error) => error);
+			const result = await exec("/usr/bin/systemctl", ["is-enabled", unit], { timeout: 30_000 }).catch((error) => error);
+			if (result instanceof Error && (result.killed || result.signal || typeof result.code !== "number")) throw result;
 			return String(result.stdout ?? "").trim() === "enabled";
 		},
 		async unitDiff(oldUnit, newUnit) {
-			const { stdout } = await run("/usr/bin/python3", [
-				"-I",
-				MIGRATE_HELPER,
-				"show-diff",
-				"--old",
-				oldUnit,
-				"--new",
-				newUnit,
-			]);
+			const { stdout } = await exec(
+				"/usr/bin/python3",
+				["-I", MIGRATE_HELPER, "show-diff", "--old", oldUnit, "--new", newUnit],
+				{ timeout: 150_000 },
+			);
 			return JSON.parse(stdout);
 		},
 		async conflicts(unit) {
-			const { stdout } = await run("/usr/bin/systemctl", ["show", unit, "-p", "Conflicts", "--value"]);
+			const { stdout } = await exec("/usr/bin/systemctl", ["show", unit, "-p", "Conflicts", "--value"], {
+				timeout: 30_000,
+			});
 			return stdout.trim().split(/\s+/).filter(Boolean);
 		},
 		async cmdline(pid) {
 			return (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0").filter(Boolean);
 		},
-		async healthy(url) {
-			for (let attempt = 0; attempt < 60; attempt++) {
-				const ok = await fetch(url, { signal: AbortSignal.timeout(3000) }).then(
-					async (response) => {
-						await response.body?.cancel().catch(() => undefined);
-						return response.ok;
-					},
-					() => false,
-				);
+		async healthy(url, { attempts = 60 } = {}) {
+			const limit = Math.max(1, attempts);
+			for (let attempt = 0; attempt < limit; attempt++) {
+				const controller = new AbortController();
+				const timer = setTimeout(() => controller.abort(), 3000);
+				timer.unref?.();
+				let ok = false;
+				try {
+					const response = await fetch(url, { signal: controller.signal });
+					await response.body?.cancel().catch(() => undefined);
+					ok = response.ok;
+				} catch {
+					ok = false;
+				} finally {
+					clearTimeout(timer);
+				}
 				if (ok) return true;
-				await new Promise((resolve) => setTimeout(resolve, 1000));
+				if (attempt + 1 < limit) await new Promise((resolve) => setTimeout(resolve, 1000));
 			}
 			return false;
 		},

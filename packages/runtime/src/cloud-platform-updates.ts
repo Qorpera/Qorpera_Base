@@ -266,9 +266,16 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Coding sessions can now visually inspect screenshots of web interfaces they build before handing work in. Inside a coding session, the agent can start a local dev or preview server, capture PNG, JPEG, or WebP screenshots with headless Chromium or Playwright across desktop and mobile viewports, and view the rendered images directly in its context to catch layout, styling, and responsive bugs before committing. Ask for visual verification when dispatching coding work on websites or UI changes.",
 	},
 	{
+		id: "native-web-hosting",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "Native hosting for websites, webapps and custom domains",
+		text: "Repositories kept in Qorpera can now deploy both static websites and full-stack dynamic webapps natively on Qorpera servers, without external hosting providers. Static sites support clean URLs, single-page app fallbacks, redirects and custom headers; dynamic or hybrid apps declare kind server or hybrid with their port, health path and optional Dockerfile in the repository checks. Every change that passes waits in What's new to preview and put live on a Qorpera domain first, and founders or admins can then make a site public and attach their own custom domain with automatic HTTPS in Sites.",
+	},
+	{
 		id: "checks-v2-paths-caches-artifacts",
 		kind: "capability",
-		date: "2026-11-21",
+		date: "2026-11-22",
 		title: "Smarter repository checks with caches and artifacts",
 		text: "Repository checks now support path filters (paths, pathsIgnore, alwaysRun), blessed build caches (caches with restoreKeys), structured failure reports (artifacts in junit, tap, or vitest-json format), and finer controls: maxParallel up to 8, failFast, exclusive steps, retries, static env variables, and least-privilege secrets allow-lists. DAG suites are budgeted by critical path rather than total sum, and preflight runs support cleanCopy to test a clean clone matching landing plus validateSite before hand-in. Failed landing runs also persist full masked logs in the company folder.",
 	},

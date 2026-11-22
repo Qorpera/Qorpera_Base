@@ -366,5 +366,13 @@ describe("mail message", () => {
 			assert.equal(clean(cut.text as string), cut.text, `text ${lead}`);
 			assert.ok(Buffer.byteLength(JSON.stringify(cut)) <= MAX_MESSAGE_BYTES);
 		}
+		const skewed = normalizeMessage(EMAIL_ID, {
+			...message,
+			text: `${"\u0001".repeat(30_000)}${"a".repeat(300_000)}`,
+			html: null,
+		});
+		assert.equal(skewed.truncated, true);
+		assert.ok(Buffer.byteLength(JSON.stringify(skewed)) <= MAX_MESSAGE_BYTES);
+		assert.ok(typeof skewed.text === "string" && skewed.text.length > 100_000);
 	});
 });

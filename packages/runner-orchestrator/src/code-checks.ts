@@ -5,6 +5,7 @@ import {
 	type CodeCheckArtifacts,
 	type CodeCheckCache,
 	type CodeChecksProblem,
+	type CodeSiteKind,
 	type CodeSiteRecipe,
 	codeChecksWallBudget,
 	type FailedTestCase,
@@ -34,6 +35,7 @@ export type {
 	CodeCheckCache,
 	CodeChecksProblem,
 	CodeCommitFile,
+	CodeSiteKind,
 	CodeSiteRecipe,
 	FailedTestCase,
 };

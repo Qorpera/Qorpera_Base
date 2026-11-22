@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	CHATGPT_PLAN_LOGIN_FIELD,
 	type ChatGptPlanLogin,
@@ -617,12 +618,20 @@ export class CloudModelLoginVault {
 			return "failed";
 		}
 		if (opened.kind !== "chatgpt_plan") return "failed";
-		if ((await plan.revoke(opened.plan.refreshToken, AbortSignal.timeout(RENEWAL_BUDGET_MS))) !== "revoked")
+		if (
+			(await withAbortScopes(
+				[],
+				(deadline) => plan.revoke(opened.plan.refreshToken, deadline),
+				RENEWAL_BUDGET_MS,
+			)) !== "revoked"
+		)
 			return "failed";
 		const finished = record(
-			await this.#company.finishChatGptPlanRevocation(
-				{ loginId: owner.loginId, token, baseVersion },
-				AbortSignal.timeout(SAVE_DEADLINE_MS),
+			await withAbortScopes(
+				[],
+				(deadline) =>
+					this.#company.finishChatGptPlanRevocation({ loginId: owner.loginId, token, baseVersion }, deadline),
+				SAVE_DEADLINE_MS,
 			),
 			"ChatGPT plan revocation",
 		);
@@ -765,7 +774,7 @@ export class CloudModelLoginVault {
 		try {
 			// Once asked, a renewal runs to its own budget whatever the caller does: the provider may
 			// already have spent the old token, and only this call can save the new one.
-			result = await renewer.renew(current.text, AbortSignal.timeout(RENEWAL_BUDGET_MS));
+			result = await withAbortScopes([], (deadline) => renewer.renew(current.text, deadline), RENEWAL_BUDGET_MS);
 		} catch {
 			result = { outcome: "transient", reason: "renewer_failed" };
 		}
@@ -805,11 +814,15 @@ export class CloudModelLoginVault {
 			};
 			for (let attempt = 0; attempt < 3; attempt += 1) {
 				try {
-					const signal = AbortSignal.timeout(SAVE_DEADLINE_MS);
 					const saved = record(
-						issue.ownerUserId !== undefined
-							? await this.#accountAuthority.commitAccountModelLoginRenewal(commit, signal)
-							: await this.#company.commitModelLoginRenewal(commit, signal),
+						await withAbortScopes(
+							[],
+							(signal) =>
+								issue.ownerUserId !== undefined
+									? this.#accountAuthority.commitAccountModelLoginRenewal(commit, signal)
+									: this.#company.commitModelLoginRenewal(commit, signal),
+							SAVE_DEADLINE_MS,
+						),
 						"Model login renewal",
 					);
 					if (saved.schema !== "qorpera.model-login-renewal/v1" || saved.version !== next)
@@ -846,7 +859,7 @@ export class CloudModelLoginVault {
 			return undefined;
 		}
 		// Once asked, a renewal runs to its own budget whatever the caller does.
-		const result = await plan.refresh(current, AbortSignal.timeout(RENEWAL_BUDGET_MS));
+		const result = await withAbortScopes([], (deadline) => plan.refresh(current, deadline), RENEWAL_BUDGET_MS);
 		if (result.outcome !== "renewed") {
 			await this.#release(issue, renewal, result.outcome === "refused", result.reason);
 			return undefined;
@@ -855,7 +868,9 @@ export class CloudModelLoginVault {
 		// OpenAI already spent the old refresh token: a pass the database would refuse (not later than the one
 		// it holds) cannot be saved, so the login asks for a new sign-in and the new token is ended.
 		if (Date.parse(renewed.accessExpiresAt) <= Date.parse(current.accessExpiresAt)) {
-			await plan.revoke(renewed.refreshToken, AbortSignal.timeout(SAVE_DEADLINE_MS)).catch(() => undefined);
+			await withAbortScopes([], (deadline) => plan.revoke(renewed.refreshToken, deadline), SAVE_DEADLINE_MS).catch(
+				() => undefined,
+			);
 			await this.#release(issue, renewal, true, "renewal_invalid");
 			return undefined;
 		}
@@ -871,19 +886,24 @@ export class CloudModelLoginVault {
 			for (let attempt = 0; attempt < 3; attempt += 1) {
 				try {
 					const saved = record(
-						await this.#company.commitChatGptPlanRenewal(
-							{
-								loginId: issue.loginId,
-								token: renewal.token,
-								baseVersion: renewal.baseVersion,
-								keyId: renewal.keyId,
-								encryptedEnvelope: envelope,
-								envelopeSha256,
-								accessIssuedAt: renewed.accessIssuedAt,
-								accessExpiresAt: renewed.accessExpiresAt,
-								renewNotBefore: renewed.renewNotBefore,
-							},
-							AbortSignal.timeout(SAVE_DEADLINE_MS),
+						await withAbortScopes(
+							[],
+							(deadline) =>
+								this.#company.commitChatGptPlanRenewal(
+									{
+										loginId: issue.loginId,
+										token: renewal.token,
+										baseVersion: renewal.baseVersion,
+										keyId: renewal.keyId,
+										encryptedEnvelope: envelope,
+										envelopeSha256,
+										accessIssuedAt: renewed.accessIssuedAt,
+										accessExpiresAt: renewed.accessExpiresAt,
+										renewNotBefore: renewed.renewNotBefore,
+									},
+									deadline,
+								),
+							SAVE_DEADLINE_MS,
 						),
 						"Model login renewal",
 					);
@@ -930,9 +950,13 @@ export class CloudModelLoginVault {
 		};
 		const account = input.scope === "account" || input.ownerUserId !== undefined;
 		if (account && !this.#account) return;
-		await (account
-			? this.#accountAuthority.releaseAccountModelLoginRenewal(release, AbortSignal.timeout(SAVE_DEADLINE_MS))
-			: this.#company.releaseModelLoginRenewal(release, AbortSignal.timeout(SAVE_DEADLINE_MS))
+		await withAbortScopes(
+			[],
+			(deadline) =>
+				account
+					? this.#accountAuthority.releaseAccountModelLoginRenewal(release, deadline)
+					: this.#company.releaseModelLoginRenewal(release, deadline),
+			SAVE_DEADLINE_MS,
 		).catch(() => undefined);
 	}
 
@@ -950,9 +974,14 @@ export class CloudModelLoginVault {
 			reason: /^[a-z][a-z0-9_]{0,63}$/.test(reason) ? reason : "renewal_failed",
 		};
 		try {
-			await (issue.ownerUserId !== undefined
-				? this.#accountAuthority.releaseAccountModelLoginRenewal(release, AbortSignal.timeout(SAVE_DEADLINE_MS))
-				: this.#company.releaseModelLoginRenewal(release, AbortSignal.timeout(SAVE_DEADLINE_MS)));
+			await withAbortScopes(
+				[],
+				(deadline) =>
+					issue.ownerUserId !== undefined
+						? this.#accountAuthority.releaseAccountModelLoginRenewal(release, deadline)
+						: this.#company.releaseModelLoginRenewal(release, deadline),
+				SAVE_DEADLINE_MS,
+			);
 		} catch {
 			// The lock lapses by itself after 5 minutes.
 		}

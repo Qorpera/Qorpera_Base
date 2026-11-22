@@ -1,4 +1,4 @@
-import { once } from "node:events";
+import { getEventListeners, once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createConnection, createServer, Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -551,5 +551,44 @@ describe("private native egress relay", () => {
 			await answered(login, "more");
 			await answered(picture, "more");
 		});
+	});
+
+	it("detaches abort listeners from the parent and internal server signals on connection and server close", async () => {
+		const root = await mkdtemp(join(tmpdir(), "q-egress-listeners-"));
+		cleanup.push(() => rm(root, { recursive: true, force: true }));
+		const seenSignals = new Set<AbortSignal>();
+		const origAdd = EventTarget.prototype.addEventListener;
+		const spy = vi.spyOn(EventTarget.prototype, "addEventListener").mockImplementation(function (
+			this: EventTarget,
+			...args: Parameters<typeof origAdd>
+		) {
+			if (args[0] === "abort" && this instanceof AbortSignal) seenSignals.add(this);
+			return origAdd.apply(this, args);
+		});
+		try {
+			const parent = new AbortController();
+			const server = await startNativeCodexEgress({
+				root,
+				signal: parent.signal,
+				transport: { resolve: vi.fn(async () => ["93.184.216.34"]), connect: vi.fn(() => new Socket()) },
+			});
+			expect(getEventListeners(parent.signal, "abort")).toHaveLength(1);
+			const internal = [...seenSignals].find((sig) => sig !== parent.signal);
+			expect(internal).toBeDefined();
+			const internalBaseline = getEventListeners(internal!, "abort").length;
+			for (let i = 0; i < 4; i++) {
+				const socket = createConnection(server.path);
+				socket.on("error", () => undefined);
+				await once(socket, "connect");
+				socket.destroy();
+				await once(socket, "close");
+			}
+			await vi.waitFor(() => expect(getEventListeners(internal!, "abort")).toHaveLength(internalBaseline));
+			expect(getEventListeners(parent.signal, "abort")).toHaveLength(1);
+			await server.close();
+			expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });

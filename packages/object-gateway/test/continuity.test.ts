@@ -681,10 +681,13 @@ describe("cloud object outage continuity", () => {
 		const body = Buffer.from("revive-race-object");
 		const hash = createHash("sha256").update(body).digest("hex");
 		const entryName = `pending/${profileId}-${hash}`;
-		expect(await fixture.upload(hash, body)).toBe("stored");
-		fixture.cloud.deletion = true;
-		await fixture.replication.remove(profileId, hash, body.length, authorizationId);
-		fixture.cloud.deletion = false;
+		await fixture.journal.write(entryName, {
+			profileId,
+			sha256: hash,
+			bytes: body.length,
+			state: "deleted",
+			authorizationId,
+		});
 
 		await fixture.restart();
 		const origRead = fixture.journal.read.bind(fixture.journal);
@@ -944,5 +947,57 @@ describe("cloud object outage continuity", () => {
 		expect(r1).toEqual(r2);
 		expect(r2).toEqual(r3);
 		expect(r1.pending).toBe(0);
+	});
+
+	it("removes journal entries on delete, prunes legacy deleted tombstones in reconcile, and skips cached deleted keys in blockedEntries", async () => {
+		const fixture = await gateway();
+		const smallJournal = new ObjectGatewayJournal(join(fixture.root, "small-journal"), 3);
+		const replication = new ObjectGatewayReplication(smallJournal, fixture.objects, fixture.authority);
+		for (let i = 0; i < 6; i++) {
+			const payload = Buffer.from(`burst-delete-${i}`);
+			const hash = createHash("sha256").update(payload).digest("hex");
+			await replication.uploadWithAuthority(profileId, hash, payload, {
+				authorize: async () => {},
+				confirm: async () => {},
+			});
+			fixture.cloud.deletion = true;
+			await replication.remove(profileId, hash, payload.length, authorizationId);
+			fixture.cloud.deletion = false;
+		}
+		expect(await smallJournal.list("pending")).toEqual([]);
+
+		const legacyBody = Buffer.from("legacy-deleted-tombstone");
+		const legacyHash = createHash("sha256").update(legacyBody).digest("hex");
+		const legacyKey = `pending/${profileId}-${legacyHash}`;
+		const blockedBody = Buffer.from("still-blocked-entry");
+		const blockedHash = createHash("sha256").update(blockedBody).digest("hex");
+		const blockedKey = `pending/${profileId}-${blockedHash}`;
+		await smallJournal.write(legacyKey, {
+			profileId,
+			sha256: legacyHash,
+			bytes: legacyBody.length,
+			state: "deleted",
+			authorizationId,
+		});
+		await smallJournal.write(blockedKey, {
+			profileId,
+			sha256: blockedHash,
+			bytes: blockedBody.length,
+			state: "blocked",
+		});
+
+		expect(await replication.status()).toEqual({ pending: 0, blocked: 1, degraded: true });
+		const readSpy = vi.spyOn(smallJournal, "read");
+		const page = await replication.blockedEntries(undefined, 10);
+		expect(page).toEqual({
+			objects: [{ profileId, sha256: blockedHash, bytes: blockedBody.length }],
+			next: undefined,
+		});
+		expect(readSpy.mock.calls.map((call) => call[0])).toEqual([blockedKey]);
+		expect(readSpy.mock.calls[0]?.[1]).toEqual({ skipDirectoryCheck: true });
+		readSpy.mockRestore();
+
+		await replication.reconcile();
+		expect(await smallJournal.list("pending")).toEqual([blockedKey]);
 	});
 });

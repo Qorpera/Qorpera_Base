@@ -26,6 +26,9 @@ export interface GoodWillDependencies {
 	stripe: GoodWillStripe;
 	livemode: boolean;
 	returnUrl: string;
+	maxBatch?: number;
+	budgetMs?: number;
+	now?: () => number;
 }
 
 export interface GoodWillOutcome {
@@ -128,13 +131,25 @@ export async function startGoodWillCard(
 	return { status: 200, body: { url } };
 }
 
+const MAX_GOOD_WILL_BATCH = 20;
+const GOOD_WILL_BUDGET_MS = 45_000;
+
 /** The closed months' invoices, one each (Stripe's idempotency keys and the database's record keep it once). */
 export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<Json> {
 	const due = await deps.goodWill.call("due", { livemode: deps.livemode });
-	const months = Array.isArray(due.months) ? due.months : [];
+	const rawMonths = Array.isArray(due.months) ? due.months : [];
+	// WHY: process un-invoiced months (no invoiceId yet) before existing invoices so open retries cannot consume the budget first.
+	const months = [...rawMonths].sort(
+		(a, b) => Number(Boolean(string(object(a)?.invoiceId))) - Number(Boolean(string(object(b)?.invoiceId))),
+	);
+	const maxBatch = deps.maxBatch ?? MAX_GOOD_WILL_BATCH;
+	const now = deps.now ?? Date.now;
+	const deadline = now() + (deps.budgetMs ?? GOOD_WILL_BUDGET_MS);
+	let processed = 0;
 	let invoiced = 0;
 	const problems: string[] = [];
 	for (const value of months) {
+		if (processed >= maxBatch || now() >= deadline) break;
 		const month = object(value);
 		const profileId = string(month?.profileId);
 		const period = string(month?.month);
@@ -204,6 +219,7 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 				await record(invoiceId);
 			}
 			if (created || invoice.status === "draft") {
+				processed++;
 				// The company's card now, also when a founder saved another one after the draft was made.
 				if (!created && invoice.default_payment_method !== paymentMethodId)
 					await deps.stripe.post(`/v1/invoices/${encodeURIComponent(invoiceId)}`, {

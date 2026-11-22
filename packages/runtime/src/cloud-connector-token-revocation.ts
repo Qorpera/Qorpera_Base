@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { withAbortScope } from "./abort-scope.ts";
+import { withAbortScope, withAbortScopes } from "./abort-scope.ts";
 import { cloudConnector } from "./cloud-connector-catalog.ts";
 import { type EnableBankingClient, EnableBankingSessionEnded } from "./cloud-connector-enable-banking.ts";
 import { GITHUB_API_VERSION } from "./cloud-connector-github.ts";
@@ -244,9 +244,10 @@ export class CloudConnectorTokenRevocations {
 			failed = 0;
 		for (let round = 0; round < CLAIMS_PER_PASS && !signal.aborted; round += 1) {
 			const claims = parseClaims(
-				await this.#authority.claimConnectorTokenRevocations(
-					CLAIM_LIMIT,
-					AbortSignal.any([signal, AbortSignal.timeout(DATABASE_DEADLINE_MS)]),
+				await withAbortScopes(
+					[signal],
+					(claimSignal) => this.#authority.claimConnectorTokenRevocations(CLAIM_LIMIT, claimSignal),
+					DATABASE_DEADLINE_MS,
 				),
 			);
 			for (const claim of claims) {
@@ -255,9 +256,14 @@ export class CloudConnectorTokenRevocations {
 				if (answer.outcome) completed += 1;
 				else failed += 1;
 				// Recorded even when the pass is closing: the revoke has happened.
-				await this.#authority.completeConnectorTokenRevocation(
-					{ secretId: claim.secretId, version: claim.version, ...answer },
-					AbortSignal.timeout(DATABASE_DEADLINE_MS),
+				await withAbortScopes(
+					[],
+					(completeSignal) =>
+						this.#authority.completeConnectorTokenRevocation(
+							{ secretId: claim.secretId, version: claim.version, ...answer },
+							completeSignal,
+						),
+					DATABASE_DEADLINE_MS,
 				);
 			}
 			// SQL completes kept and superseded entries itself: a short claim may still leave some due.

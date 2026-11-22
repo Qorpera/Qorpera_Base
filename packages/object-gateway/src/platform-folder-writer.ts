@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { ObjectDependencyError } from "./dependency.ts";
 import type { MemberCompanyAuthority, MemberCompanyPublisherRpc } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
-import type { FileSystemObjectStore } from "./object-store.ts";
+import {
+	type FileSystemObjectStore,
+	hashAndVerifyObjectBytes,
+	isVerifiedObjectBytes,
+	type VerifiedObjectBytes,
+} from "./object-store.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
 /*
@@ -27,23 +32,42 @@ export async function mapBounded<T, R>(
 	concurrency: number,
 	fn: (item: T, index: number, signal: AbortSignal) => Promise<R>,
 	signal?: AbortSignal,
+	budget?: { readonly maxBytes: number; readonly sizeOf: (item: T) => number },
 ): Promise<R[]> {
 	if (items.length === 0) return [];
 	if (signal?.aborted) throw signal.reason;
 	const results = new Array<R>(items.length);
 	const siblingAbort = new ObjectDependencyError(503);
 	const child = new AbortController();
-	const onParentAbort = () => child.abort(signal?.reason);
+	let budgetWaiters: (() => void)[] = [];
+	const wakeWaiters = (): void => {
+		const waiters = budgetWaiters;
+		budgetWaiters = [];
+		for (const wake of waiters) wake();
+	};
+	const onParentAbort = () => {
+		child.abort(signal?.reason);
+		wakeWaiters();
+	};
 	if (signal) signal.addEventListener("abort", onParentAbort, { once: true });
 	let next = 0;
+	let active = 0;
+	let inFlightBytes = 0;
 	let stop = false;
 	let firstErrorIndex = Number.POSITIVE_INFINITY;
 	let firstError: unknown;
 	const worker = async (): Promise<void> => {
 		for (;;) {
 			if (stop || child.signal.aborted) return;
+			if (next >= items.length) return;
+			const itemBytes = budget ? Math.max(0, budget.sizeOf(items[next] as T)) : 0;
+			if (budget && active > 0 && inFlightBytes + itemBytes > budget.maxBytes) {
+				await new Promise<void>((resolve) => budgetWaiters.push(resolve));
+				continue;
+			}
 			const index = next++;
-			if (index >= items.length) return;
+			active++;
+			inFlightBytes += itemBytes;
 			try {
 				results[index] = await fn(items[index] as T, index, child.signal);
 			} catch (error) {
@@ -61,6 +85,10 @@ export async function mapBounded<T, R>(
 				stop = true;
 				if (!child.signal.aborted) child.abort(siblingAbort);
 				return;
+			} finally {
+				active--;
+				inFlightBytes -= itemBytes;
+				wakeWaiters();
 			}
 		}
 	};
@@ -205,21 +233,40 @@ export class PlatformFolderWriter {
 		bytes: Uint8Array,
 		kind: { readonly mediaType: string; readonly executable: boolean },
 		signal: AbortSignal,
-		options?: { readonly profileId?: string; readonly objectConcurrency?: number },
+		options?: {
+			readonly profileId?: string;
+			readonly objectConcurrency?: number;
+			readonly verified?: VerifiedObjectBytes;
+		},
 	): Promise<PlatformFileReference> {
 		if (bytes.byteLength > MAX_CHUNKS * CHUNK_BYTES) platformFolderProblem("file_too_large");
-		const objects = new Map<string, Uint8Array>();
+		const objects = new Map<string, VerifiedObjectBytes>();
 		const chunks: { sha256: string; bytes: number }[] = [];
 		const multiChunk = bytes.byteLength > CHUNK_BYTES;
-		const whole = multiChunk ? createHash("sha256") : undefined;
-		for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_BYTES) {
-			const chunk = bytes.subarray(offset, Math.min(offset + CHUNK_BYTES, bytes.byteLength));
-			const hash = contentHash(chunk);
-			chunks.push({ sha256: hash, bytes: chunk.byteLength });
-			objects.set(hash, chunk);
-			whole?.update(chunk);
+		const preVerified =
+			!multiChunk &&
+			options?.verified !== undefined &&
+			isVerifiedObjectBytes(options.verified, options.verified.sha256, bytes)
+				? options.verified
+				: undefined;
+		let fileSha256: string;
+		if (preVerified) {
+			if (bytes.byteLength > 0) {
+				chunks.push({ sha256: preVerified.sha256, bytes: bytes.byteLength });
+				objects.set(preVerified.sha256, preVerified);
+			}
+			fileSha256 = preVerified.sha256;
+		} else {
+			const whole = multiChunk ? createHash("sha256") : undefined;
+			for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_BYTES) {
+				const chunk = bytes.subarray(offset, Math.min(offset + CHUNK_BYTES, bytes.byteLength));
+				const verified = hashAndVerifyObjectBytes(chunk);
+				chunks.push({ sha256: verified.sha256, bytes: chunk.byteLength });
+				objects.set(verified.sha256, verified);
+				whole?.update(chunk);
+			}
+			fileSha256 = whole ? whole.digest("hex") : (chunks[0]?.sha256 ?? contentHash(bytes));
 		}
-		const fileSha256 = whole ? whole.digest("hex") : (chunks[0]?.sha256 ?? contentHash(bytes));
 		// The canonical version-2 manifest: keys in this order, no spaces, so the same file gives the same manifest.
 		const manifestText = JSON.stringify({
 			schema: "qorpera.cloud-file-manifest/v2",
@@ -230,8 +277,9 @@ export class PlatformFolderWriter {
 			chunks,
 		});
 		const manifestBytes = new TextEncoder().encode(manifestText);
-		const manifestSha256 = contentHash(manifestBytes);
-		objects.set(manifestSha256, manifestBytes);
+		const manifestVerified = hashAndVerifyObjectBytes(manifestBytes);
+		const manifestSha256 = manifestVerified.sha256;
+		objects.set(manifestSha256, manifestVerified);
 		const open = (await this.#rpc(
 			"qorpera_folder_open_upload",
 			{ p_environment_id: environmentId, p_actor: this.#actor, p_manifest: manifestText },
@@ -255,8 +303,14 @@ export class PlatformFolderWriter {
 			for (const hash of list) if (!objects.has(hash)) platformFolderProblem("stage_invalid");
 			if (!knownProfileId) {
 				const first = list[0] as string;
-				const firstObject = objects.get(first) as Uint8Array;
-				knownProfileId = await this.#uploadProfile(environmentId, intentId, first, firstObject.byteLength, signal);
+				const firstObject = objects.get(first) as VerifiedObjectBytes;
+				knownProfileId = await this.#uploadProfile(
+					environmentId,
+					intentId,
+					first,
+					firstObject.bytes.byteLength,
+					signal,
+				);
 			}
 			const profileId = knownProfileId;
 			const objectConcurrency =
@@ -267,16 +321,22 @@ export class PlatformFolderWriter {
 				list,
 				objectConcurrency,
 				async (hash, _index, stepSignal) => {
-					const object = objects.get(hash) as Uint8Array;
+					const object = objects.get(hash) as VerifiedObjectBytes;
 					const authorize = () =>
-						this.#uploadProfile(environmentId, intentId, hash, object.byteLength, stepSignal);
+						this.#uploadProfile(environmentId, intentId, hash, object.bytes.byteLength, stepSignal);
 					// WHY: uploadWithAuthority re-runs authorize() inside the exclusive journal lane and fails closed on profile mismatch.
-					await this.#options.replication.uploadWithAuthority(profileId, hash, object, {
-						authorize: async () => {
-							if ((await authorize()) !== profileId) throw new ObjectDependencyError(403);
+					await this.#options.replication.uploadWithAuthority(
+						profileId,
+						hash,
+						object.bytes,
+						{
+							authorize: async () => {
+								if ((await authorize()) !== profileId) throw new ObjectDependencyError(403);
+							},
+							confirm: () => this.#confirm(environmentId, intentId, hash, object.bytes.byteLength, stepSignal),
 						},
-						confirm: () => this.#confirm(environmentId, intentId, hash, object.byteLength, stepSignal),
-					});
+						object,
+					);
 				},
 				signal,
 			);

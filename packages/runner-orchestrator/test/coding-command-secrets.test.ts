@@ -459,4 +459,34 @@ describe("a coding machine's values for the folder service's save check (5j-5 (a
 			expect(masked(await readMask(session, req), `${API_KEY} ${OLDER_KEY} ${pubEnv}`)).toBe(`*** *** ${pubEnv}`);
 		}
 	});
+
+	it("releaseMachine clears all sessions, history, and answered state for one machine without affecting others", async () => {
+		const first = randomUUID();
+		const second = randomUUID();
+		const third = randomUUID();
+		const f = fixture(
+			{ [first]: { API_KEY }, [second]: { OTHER_KEY }, [third]: { AWAY_KEY } },
+			{ [first]: [OLDER_KEY] },
+		);
+		const machineA = randomUUID();
+		const machineB = randomUUID();
+		await f.secrets.attached(machineA, f.scope(first), signal());
+		await f.secrets.session(machineA, f.scope(second)).resolve(f.request(machineA, f.scope(second)), signal());
+		await f.secrets.attached(machineB, f.scope(third), signal());
+		expect(sorted(f.secrets.values(machineA))).toEqual([API_KEY, OLDER_KEY, OTHER_KEY].sort());
+		expect(sorted(f.secrets.values(machineB))).toEqual([AWAY_KEY]);
+
+		f.secrets.releaseMachine(machineA);
+		expect(f.secrets.values(machineA)).toBeUndefined();
+		expect(sorted(f.secrets.values(machineB))).toEqual([AWAY_KEY]);
+
+		f.environment.mockImplementationOnce(async () => {
+			f.secrets.releaseMachine(machineA);
+			return answer({ API_KEY });
+		});
+		await expect(f.secrets.attached(machineA, f.scope(first), signal())).rejects.toThrow(
+			"CODING_COMMAND_SECRETS_RELEASED",
+		);
+		expect(f.secrets.values(machineA)).toBeUndefined();
+	});
 });

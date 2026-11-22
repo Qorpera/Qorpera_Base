@@ -22,10 +22,34 @@ struct Record {
 	view: View,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Key {
+	dev: u64,
+	ino: u64,
+	size: u64,
+	mtime: (i64, i64),
+	ctime: (i64, i64),
+	uid: u32,
+	mode: u32,
+}
+
+fn key_of(meta: &std::fs::Metadata) -> Key {
+	Key {
+		dev: meta.dev(),
+		ino: meta.ino(),
+		size: meta.len(),
+		mtime: (meta.mtime(), meta.mtime_nsec()),
+		ctime: (meta.ctime(), meta.ctime_nsec()),
+		uid: meta.uid(),
+		mode: meta.mode(),
+	}
+}
+
 pub struct ViewFile {
 	primary: PathBuf,
 	dir: PathBuf,
 	lock: Mutex<File>,
+	cached: Mutex<Option<(Key, View)>>,
 }
 
 pub struct Prepared<'a> {
@@ -54,7 +78,12 @@ impl ViewFile {
 			return Err(bad("view state must be a private directory owned by the daemon"));
 		}
 		// A publisher must not create this lock while a first mount is still initializing its read journal.
-		let store = Self { primary, dir: dir.to_path_buf(), lock: Mutex::new(open_private(&dir.join(LOCK), fresh)?) };
+		let store = Self {
+			primary,
+			dir: dir.to_path_buf(),
+			lock: Mutex::new(open_private(&dir.join(LOCK), fresh)?),
+			cached: Mutex::new(None),
+		};
 		{
 			let _lock = store.acquire()?;
 			if fresh {
@@ -117,7 +146,26 @@ impl ViewFile {
 	}
 
 	pub fn target(&self) -> io::Result<View> {
-		read(&self.primary)
+		if let Ok(meta) = std::fs::symlink_metadata(&self.primary) {
+			if meta.is_file() && private(&meta) {
+				let key = key_of(&meta);
+				if let Some((cached_key, view)) = &*self.cached.lock().unwrap() {
+					if *cached_key == key {
+						return Ok(view.clone());
+					}
+				}
+			}
+		}
+		match read_with_key(&self.primary) {
+			Ok((view, key)) => {
+				*self.cached.lock().unwrap() = key.map(|k| (k, view.clone()));
+				Ok(view)
+			}
+			Err(error) => {
+				*self.cached.lock().unwrap() = None;
+				Err(error)
+			}
+		}
 	}
 }
 
@@ -167,26 +215,37 @@ fn open_private(path: &Path, create: bool) -> io::Result<File> {
 	Ok(file)
 }
 
-fn read_private(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+fn read_private_with_key(path: &Path, limit: u64) -> io::Result<(Vec<u8>, Option<Key>)> {
 	let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)?;
 	let meta = file.metadata()?;
 	if !meta.is_file() || !private(&meta) || meta.len() > limit {
 		return Err(bad("view credentials must be a private regular file of at most 4 KiB owned by the daemon"));
 	}
+	let before = key_of(&meta);
 	let mut bytes = Vec::new();
-	file.take(limit + 1).read_to_end(&mut bytes)?;
+	(&file).take(limit + 1).read_to_end(&mut bytes)?;
 	if bytes.len() as u64 > limit { return Err(bad("view credentials exceed 4 KiB")); }
-	Ok(bytes)
+	let stable = file.metadata().ok().filter(|after| key_of(after) == before).map(|_| before);
+	Ok((bytes, stable))
+}
+
+fn read_private(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+	Ok(read_private_with_key(path, limit)?.0)
 }
 
 fn valid(view: &View) -> bool {
 	[&view.environment_id, &view.view_id, &view.pass].iter().all(|v| !v.is_empty() && v.len() <= 256 && v.bytes().all(|b| b.is_ascii_graphic()))
 }
 
-pub fn read(path: &Path) -> io::Result<View> {
-	let view: View = serde_json::from_slice(&read_private(path, 4096)?).map_err(|_| bad("view file must be JSON {environmentId,viewId,pass}"))?;
+fn read_with_key(path: &Path) -> io::Result<(View, Option<Key>)> {
+	let (bytes, key) = read_private_with_key(path, 4096)?;
+	let view: View = serde_json::from_slice(&bytes).map_err(|_| bad("view file must be JSON {environmentId,viewId,pass}"))?;
 	if !valid(&view) { return Err(bad("view credentials must be printable ASCII without spaces")); }
-	Ok(view)
+	Ok((view, key))
+}
+
+pub fn read(path: &Path) -> io::Result<View> {
+	Ok(read_with_key(path)?.0)
 }
 
 fn bad(message: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidData, message) }
@@ -307,5 +366,24 @@ mod tests {
 		assert!(DaemonLock::acquire(&temp.0, false, true).unwrap().is_none());
 		drop(publisher);
 		assert!(DaemonLock::acquire(&temp.0, false, true).unwrap().is_some());
+	}
+
+	#[test]
+	fn target_caches_until_primary_changes_or_loses_privacy() {
+		let temp = Temp::new();
+		let a = view("a");
+		let primary = temp.primary(&a);
+		let store = ViewFile::open(primary.clone(), &temp.0, &a, true).unwrap();
+		assert_eq!(store.target().unwrap(), a);
+		assert!(store.cached.lock().unwrap().is_some());
+		assert_eq!(store.target().unwrap(), a);
+		let b = view("b");
+		temp.primary(&b);
+		assert_eq!(store.target().unwrap(), b);
+		std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o644)).unwrap();
+		assert!(store.target().is_err());
+		assert!(store.cached.lock().unwrap().is_none());
+		std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o600)).unwrap();
+		assert_eq!(store.target().unwrap(), b);
 	}
 }

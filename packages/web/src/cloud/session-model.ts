@@ -1,4 +1,5 @@
-import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
+import { withScopedCloudDeadline } from "./abort-scope.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
 
@@ -146,7 +147,8 @@ export function createWebSessionModel(
 			: selection.serviceTier !== undefined
 				? "qorpera_set_session_service_tier"
 				: "qorpera_set_session_model";
-		return withCloudDeadline(
+		return withScopedCloudDeadline(
+			[companySignal, signal],
 			async (deadline) => {
 				const check = () => {
 					deadline.throwIfAborted();
@@ -297,7 +299,6 @@ export function createWebSessionModel(
 				}
 			},
 			10000,
-			AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
 		);
 	};
 	return {
