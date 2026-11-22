@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
 	compileIdentityTokensCss,
 	IDENTITY_TOKENS_CSS_PATH,
@@ -11,7 +11,12 @@ import { ObjectDependencyError } from "./dependency.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
-import { PLATFORM_ACTOR, PlatformFolderWriter } from "./platform-folder-writer.ts";
+import {
+	mapBounded,
+	PLATFORM_ACTOR,
+	PLATFORM_STAGE_CONCURRENCY,
+	PlatformFolderWriter,
+} from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
 const MAX_READ_BYTES = 2 * 1024 * 1024;
@@ -151,6 +156,22 @@ function raceSignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 	});
 }
 
+function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+	if (ms <= 0 || signal?.aborted) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		const onAbort = (): void => {
+			clearTimeout(timer);
+			resolve();
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		timer.unref?.();
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
 type CommittedRpcResult<T> =
 	| { readonly outcome: "confirmed"; readonly value: T }
 	| { readonly outcome: "already_completed" }
@@ -179,10 +200,7 @@ async function retryCommittedRpc<T>(
 			lastError = error;
 			const delayMs = delaysMs[attempt];
 			if (delayMs === undefined || shutdownSignal?.aborted) break;
-			await new Promise<void>((resolve) => {
-				const timer = setTimeout(resolve, delayMs);
-				timer.unref?.();
-			});
+			await delayWithAbort(delayMs, shutdownSignal);
 		}
 	}
 	throw lastError;
@@ -445,31 +463,47 @@ export class SurfaceFolderWorker {
 			? raw.publishes.map(parseClaimedFolderPublish).filter((j): j is ClaimedFolderPublishJob => j !== null)
 			: [];
 
-		let handled = 0;
+		const bySurface = new Map<
+			string,
+			(
+				| { readonly kind: "merge"; readonly job: ClaimedFolderMergeJob }
+				| { readonly kind: "publish"; readonly job: ClaimedFolderPublishJob }
+			)[]
+		>();
 		for (const merge of merges) {
-			if (signal?.aborted) break;
-			await withAbortScopes(
-				callerSignals,
-				(jobSignal) =>
-					this.#withJobLease(merge.jobId, merge.leaseToken, jobSignal, () =>
-						this.#handleMerge(merge, jobSignal, signal),
-					),
-				this.#jobTimeoutMs,
-			);
-			handled += 1;
+			const queue = bySurface.get(merge.surfaceId) ?? [];
+			queue.push({ kind: "merge", job: merge });
+			bySurface.set(merge.surfaceId, queue);
 		}
 		for (const pub of publishes) {
-			if (signal?.aborted) break;
-			await withAbortScopes(
-				callerSignals,
-				(jobSignal) =>
-					this.#withJobLease(pub.jobId, pub.leaseToken, jobSignal, () =>
-						this.#handlePublish(pub, jobSignal, signal),
-					),
-				this.#jobTimeoutMs,
-			);
-			handled += 1;
+			const queue = bySurface.get(pub.surfaceId) ?? [];
+			queue.push({ kind: "publish", job: pub });
+			bySurface.set(pub.surfaceId, queue);
 		}
+
+		let handled = 0;
+		const surfaceQueues = [...bySurface.values()];
+		await mapBounded(
+			surfaceQueues,
+			PLATFORM_STAGE_CONCURRENCY,
+			async (queue) => {
+				for (const item of queue) {
+					if (signal?.aborted) break;
+					await withAbortScopes(
+						callerSignals,
+						(jobSignal) =>
+							this.#withJobLease(item.job.jobId, item.job.leaseToken, jobSignal, (leasedSignal, isLeaseLost) =>
+								item.kind === "merge"
+									? this.#handleMerge(item.job, leasedSignal, signal, isLeaseLost)
+									: this.#handlePublish(item.job, leasedSignal, signal),
+							),
+						this.#jobTimeoutMs,
+					);
+					handled += 1;
+				}
+			},
+			signal,
+		);
 		return handled;
 	}
 
@@ -477,24 +511,38 @@ export class SurfaceFolderWorker {
 		jobId: string,
 		leaseToken: string | null,
 		signal: AbortSignal,
-		work: () => Promise<T>,
+		work: (leasedSignal: AbortSignal, isLeaseLost: () => boolean) => Promise<T>,
 	): Promise<T> {
-		if (!leaseToken) return await work();
+		if (!leaseToken) return await work(signal, () => false);
+		const leaseLost = new AbortController();
+		const renewAbort = new AbortController();
 		let renewing = false;
 		const timer = setInterval(() => {
-			if (signal.aborted || renewing) return;
+			if (signal.aborted || renewAbort.signal.aborted || leaseLost.signal.aborted || renewing) return;
 			renewing = true;
-			void this.#options.authority
-				.publisher(
-					"qorpera_surface_renew_lease",
-					{
-						p_kind: "job",
-						p_id: jobId,
-						p_lease_token: leaseToken,
-						p_extend_seconds: this.#leaseExtendSeconds,
-					},
-					signal,
-				)
+			void withAbortScopes(
+				[signal, renewAbort.signal],
+				(renewSignal) =>
+					this.#options.authority.publisher(
+						"qorpera_surface_renew_lease",
+						{
+							p_kind: "job",
+							p_id: jobId,
+							p_lease_token: leaseToken,
+							p_extend_seconds: this.#leaseExtendSeconds,
+						},
+						renewSignal,
+					),
+				15_000,
+			)
+				.then((result) => {
+					const lost =
+						result === false ||
+						(result && typeof result === "object" && (result as { renewed?: unknown }).renewed === false);
+					if (lost && !leaseLost.signal.aborted) {
+						leaseLost.abort(new Error("Surface folder job lease lost during execution"));
+					}
+				})
 				.catch(() => undefined)
 				.finally(() => {
 					renewing = false;
@@ -502,10 +550,38 @@ export class SurfaceFolderWorker {
 		}, this.#leaseRenewIntervalMs);
 		timer.unref?.();
 		try {
-			return await work();
+			return await withAbortScopes([signal, leaseLost.signal], (leasedSignal) =>
+				work(leasedSignal, () => leaseLost.signal.aborted),
+			);
 		} finally {
 			clearInterval(timer);
+			renewAbort.abort();
 		}
+	}
+
+	async #readFolderMeta(
+		environmentId: string,
+		path: string,
+		signal: AbortSignal,
+	): Promise<{ readonly exists: boolean; readonly version: string | null; readonly isDirectory: boolean }> {
+		const response = (await this.#options.authority.publisher(
+			"qorpera_folder_read",
+			{ p_environment_id: environmentId, p_actor: PLATFORM_ACTOR, p_path: path },
+			signal,
+		)) as {
+			schema?: unknown;
+			found?: unknown;
+			entry?: { kind?: unknown; version?: unknown } | null;
+		} | null;
+		if (response?.schema !== "qorpera.folder-read/v1") {
+			throw new Error(`Invalid folder read response for ${path}`);
+		}
+		if (!response.found || !response.entry) {
+			return { exists: false, version: null, isDirectory: false };
+		}
+		const version = typeof response.entry.version === "string" ? response.entry.version : null;
+		const isDirectory = response.entry.kind === "folder" || response.entry.kind === "dir";
+		return { exists: true, version, isDirectory };
 	}
 
 	async #readFolderEntry(environmentId: string, path: string, signal: AbortSignal): Promise<FolderFileState> {
@@ -558,6 +634,7 @@ export class SurfaceFolderWorker {
 		job: ClaimedFolderMergeJob,
 		signal: AbortSignal,
 		shutdownSignal: AbortSignal | undefined,
+		isLeaseLost: () => boolean,
 	): Promise<void> {
 		let committed = false;
 		const markCommitted = () => {
@@ -584,7 +661,7 @@ export class SurfaceFolderWorker {
 				return;
 			}
 			this.#emit({ kind: "surface_folder_merge_failed", jobId: job.jobId, error: errorDetail });
-			if (!shutdownSignal?.aborted) {
+			if (!shutdownSignal?.aborted && !isLeaseLost()) {
 				await withAbortScopes(
 					shutdownSignal ? [shutdownSignal] : [],
 					(failSignal) => this.#completeMerge(job, { status: "failed", errorDetail }, failSignal),
@@ -620,9 +697,107 @@ export class SurfaceFolderWorker {
 			touchedPaths.add(IDENTITY_TOKENS_CSS_PATH);
 		}
 
+		const snapshotId = `merge:${job.jobId}`;
+		const changeIds = job.approvedChanges.map((c) => c.changeId);
+		const orderedTouchedPaths = [...touchedPaths];
+		const [existingRaw, readStates] = await Promise.all([
+			this.#options.authority
+				.publisher(
+					"qorpera_surface_load_folder_snapshot",
+					{
+						p_profile_id: job.profileId,
+						p_surface_id: job.surfaceId,
+						p_change_id: null,
+						p_snapshot_id: snapshotId,
+					},
+					signal,
+				)
+				.catch(() => null),
+			mapBounded(
+				orderedTouchedPaths,
+				PLATFORM_STAGE_CONCURRENCY,
+				(path, _idx, readSignal) => this.#readFolderEntry(environmentId, path, readSignal),
+				signal,
+			),
+		]);
 		const currentByPath = new Map<string, FolderFileState>();
-		for (const path of touchedPaths) {
-			currentByPath.set(path, await this.#readFolderEntry(environmentId, path, signal));
+		for (let i = 0; i < orderedTouchedPaths.length; i += 1) {
+			currentByPath.set(orderedTouchedPaths[i] as string, readStates[i] as FolderFileState);
+		}
+
+		const existingSnapshot =
+			existingRaw && typeof existingRaw === "object" && !Array.isArray(existingRaw)
+				? parseSnapshotRecord(existingRaw as Record<string, unknown>)
+				: null;
+		if (
+			existingSnapshot?.afterContentSha256 &&
+			Object.keys(existingSnapshot.afterContentSha256).length > 0 &&
+			Object.entries(existingSnapshot.afterContentSha256).every(([path, expectedSha]) => {
+				const state = currentByPath.get(path);
+				if (!state || state.isDirectory) return false;
+				const currentSha = state.content === null ? null : sha256Hex(state.content);
+				return currentSha === expectedSha;
+			})
+		) {
+			// WHY: A previous worker already committed this jobId before crashing; reuse its pre-commit filesBefore so Undo never restores post-merge content.
+			markCommitted();
+			const versionsAfter: Record<string, string | null> = {};
+			for (const path of Object.keys(existingSnapshot.afterContentSha256)) {
+				versionsAfter[path] = currentByPath.get(path)?.version ?? null;
+			}
+			const inlineSnapshot: Record<string, unknown> = {
+				snapshotId,
+				folderRoot,
+				changeIds,
+				filesBefore: existingSnapshot.filesBefore,
+				versionsAfter,
+				afterContentSha256: existingSnapshot.afterContentSha256,
+			};
+			let preMergeSnapshot: Record<string, unknown> = inlineSnapshot;
+			if (Buffer.byteLength(JSON.stringify(inlineSnapshot), "utf8") > MAX_INLINE_SNAPSHOT_BYTES) {
+				await retryCommittedRpc(
+					(attemptSignal) =>
+						this.#options.authority.publisher(
+							"qorpera_surface_save_folder_snapshot",
+							{
+								p_profile_id: job.profileId,
+								p_surface_id: job.surfaceId,
+								p_snapshot_id: snapshotId,
+								p_folder_root: folderRoot,
+								p_change_ids: changeIds,
+								p_files_before: existingSnapshot.filesBefore,
+								p_versions_after: versionsAfter,
+								p_after_content_sha256: existingSnapshot.afterContentSha256,
+							},
+							attemptSignal,
+						),
+					shutdownSignal,
+					this.#completionRetryDelaysMs,
+				);
+				preMergeSnapshot = { externalSnapshotId: snapshotId, folderRoot, changeIds };
+			}
+			const completion = await retryCommittedRpc(
+				(attemptSignal) => this.#completeMerge(job, { status: "landed", preMergeSnapshot }, attemptSignal),
+				shutdownSignal,
+				this.#completionRetryDelaysMs,
+				{ treatNotRunningAsDoneOnRetry: true },
+			);
+			if (completion.outcome === "unconfirmed_423") {
+				this.#emit({
+					kind: "surface_folder_merge_completion_unconfirmed",
+					jobId: job.jobId,
+					surfaceId: job.surfaceId,
+					status: 423,
+				});
+				return;
+			}
+			this.#emit({
+				kind: "surface_folder_merge_landed",
+				jobId: job.jobId,
+				surfaceId: job.surfaceId,
+				paths: orderedTouchedPaths,
+			});
+			return;
 		}
 
 		const working = new Map<string, string | null>();
@@ -666,12 +841,41 @@ export class SurfaceFolderWorker {
 		}
 
 		const writePaths = [...working.entries()].filter(([, content]) => content !== null).map(([path]) => path);
-		const missingDirs: string[] = [];
-		for (const dir of parentDirectoriesOf(writePaths)) {
-			const dirState = await this.#readFolderEntry(environmentId, dir, signal);
-			if (!dirState.isDirectory && dirState.version === null) {
-				missingDirs.push(dir);
-			}
+		const parentDirs = parentDirectoriesOf(writePaths);
+		const parentDirMetas = await mapBounded(
+			parentDirs,
+			PLATFORM_STAGE_CONCURRENCY,
+			(dir, _idx, dirSignal) => this.#readFolderMeta(environmentId, dir, dirSignal),
+			signal,
+		);
+		const missingDirs = parentDirs.filter((_, idx) => {
+			const meta = parentDirMetas[idx];
+			return meta !== undefined && !meta.isDirectory && meta.version === null;
+		});
+
+		const stagedEntries = [...working.entries()].filter(([, nextContent]) => nextContent !== null) as [
+			string,
+			string,
+		][];
+		const stagedFiles = await mapBounded(
+			stagedEntries,
+			PLATFORM_STAGE_CONCURRENCY,
+			([path, nextContent], _idx, stageSignal) =>
+				raceSignal(
+					this.#folder.stage(
+						environmentId,
+						UTF8_ENCODER.encode(nextContent),
+						{ mediaType: mediaTypeForPath(path), executable: false },
+						stageSignal,
+						{ profileId: job.profileId },
+					),
+					stageSignal,
+				),
+			signal,
+		);
+		const stagedByPath = new Map<string, unknown>();
+		for (let i = 0; i < stagedEntries.length; i += 1) {
+			stagedByPath.set(stagedEntries[i]![0], stagedFiles[i]);
 		}
 
 		const units: Record<string, unknown>[] = [];
@@ -687,21 +891,10 @@ export class SurfaceFolderWorker {
 				units.push({ op: "delete", path, expectedVersion: priorState.version });
 				unitPaths.push(path);
 			} else {
-				const bytes = UTF8_ENCODER.encode(nextContent);
-				const file = await raceSignal(
-					this.#folder.stage(
-						environmentId,
-						bytes,
-						{ mediaType: mediaTypeForPath(path), executable: false },
-						signal,
-						{ profileId: job.profileId },
-					),
-					signal,
-				);
 				units.push({
 					op: "write",
 					path,
-					file,
+					file: stagedByPath.get(path),
 					...(priorState?.version ? { expectedVersion: priorState.version } : {}),
 				});
 				unitPaths.push(path);
@@ -712,6 +905,27 @@ export class SurfaceFolderWorker {
 			await this.#completeMerge(job, { status: "landed", preMergeSnapshot: null }, signal);
 			return;
 		}
+
+		const afterContentSha256: Record<string, string | null> = {};
+		for (const [path, content] of working) {
+			afterContentSha256[path] = content === null ? null : sha256Hex(content);
+		}
+
+		// WHY: Persist filesBefore durably before qorpera_folder_commit so crash retries never capture post-merge contents as filesBefore.
+		await this.#options.authority.publisher(
+			"qorpera_surface_save_folder_snapshot",
+			{
+				p_profile_id: job.profileId,
+				p_surface_id: job.surfaceId,
+				p_snapshot_id: snapshotId,
+				p_folder_root: folderRoot,
+				p_change_ids: changeIds,
+				p_files_before: filesBefore,
+				p_versions_after: null,
+				p_after_content_sha256: afterContentSha256,
+			},
+			signal,
+		);
 
 		// WHY: Refuse to start qorpera_folder_commit if the job deadline already fired, then decouple the in-flight commit and operation-key replays from jobSignal so an abort never marks a committed write failed.
 		signal.throwIfAborted();
@@ -752,14 +966,12 @@ export class SurfaceFolderWorker {
 		markCommitted();
 
 		const versionsAfter: Record<string, string | null> = {};
-		const afterContentSha256: Record<string, string | null> = {};
-		for (const [path, content] of working) {
+		for (const [path] of working) {
 			versionsAfter[path] = commitResult.versionsAfter[path] ?? null;
-			afterContentSha256[path] = content === null ? null : sha256Hex(content);
 		}
 
-		const changeIds = job.approvedChanges.map((c) => c.changeId);
 		const inlineSnapshot: Record<string, unknown> = {
+			snapshotId,
 			folderRoot,
 			changeIds,
 			filesBefore,
@@ -768,7 +980,6 @@ export class SurfaceFolderWorker {
 		};
 		let preMergeSnapshot: Record<string, unknown> = inlineSnapshot;
 		if (Buffer.byteLength(JSON.stringify(inlineSnapshot), "utf8") > MAX_INLINE_SNAPSHOT_BYTES) {
-			const snapshotId = randomUUID();
 			await retryCommittedRpc(
 				(attemptSignal) =>
 					this.#options.authority.publisher(
@@ -865,10 +1076,18 @@ export class SurfaceFolderWorker {
 			return;
 		}
 
+		const beforePaths = Object.keys(snapshot.filesBefore);
+		const readCurrentStates = await mapBounded(
+			beforePaths,
+			PLATFORM_STAGE_CONCURRENCY,
+			(path, _idx, readSignal) => this.#readFolderEntry(environmentId, path, readSignal),
+			signal,
+		);
 		const currentByPath = new Map<string, FolderFileState>();
 		const conflictPaths: string[] = [];
-		for (const path of Object.keys(snapshot.filesBefore)) {
-			const current = await this.#readFolderEntry(environmentId, path, signal);
+		for (let i = 0; i < beforePaths.length; i += 1) {
+			const path = beforePaths[i] as string;
+			const current = readCurrentStates[i] as FolderFileState;
 			currentByPath.set(path, current);
 			if (snapshot.versionsAfter && Object.hasOwn(snapshot.versionsAfter, path)) {
 				const expectedVersion = snapshot.versionsAfter[path] ?? null;
@@ -900,12 +1119,40 @@ export class SurfaceFolderWorker {
 		const restoreWritePaths = Object.entries(snapshot.filesBefore)
 			.filter(([, content]) => content !== null)
 			.map(([path]) => path);
-		const missingDirs: string[] = [];
-		for (const dir of parentDirectoriesOf(restoreWritePaths)) {
-			const dirState = await this.#readFolderEntry(environmentId, dir, signal);
-			if (!dirState.isDirectory && dirState.version === null) {
-				missingDirs.push(dir);
-			}
+		const restoreParentDirs = parentDirectoriesOf(restoreWritePaths);
+		const restoreDirMetas = await mapBounded(
+			restoreParentDirs,
+			PLATFORM_STAGE_CONCURRENCY,
+			(dir, _idx, dirSignal) => this.#readFolderMeta(environmentId, dir, dirSignal),
+			signal,
+		);
+		const missingDirs = restoreParentDirs.filter((_, idx) => {
+			const meta = restoreDirMetas[idx];
+			return meta !== undefined && !meta.isDirectory && meta.version === null;
+		});
+
+		const restoreStagedEntries = Object.entries(snapshot.filesBefore).filter(
+			([, beforeContent]) => beforeContent !== null,
+		) as [string, string][];
+		const restoreStagedFiles = await mapBounded(
+			restoreStagedEntries,
+			PLATFORM_STAGE_CONCURRENCY,
+			([path, beforeContent], _idx, stageSignal) =>
+				raceSignal(
+					this.#folder.stage(
+						environmentId,
+						UTF8_ENCODER.encode(beforeContent),
+						{ mediaType: mediaTypeForPath(path), executable: false },
+						stageSignal,
+						{ profileId: job.profileId },
+					),
+					stageSignal,
+				),
+			signal,
+		);
+		const restoreStagedByPath = new Map<string, unknown>();
+		for (let i = 0; i < restoreStagedEntries.length; i += 1) {
+			restoreStagedByPath.set(restoreStagedEntries[i]![0], restoreStagedFiles[i]);
 		}
 
 		const units: Record<string, unknown>[] = [];
@@ -921,21 +1168,10 @@ export class SurfaceFolderWorker {
 				units.push({ op: "delete", path, expectedVersion: current.version });
 				unitPaths.push(path);
 			} else {
-				const bytes = UTF8_ENCODER.encode(beforeContent);
-				const file = await raceSignal(
-					this.#folder.stage(
-						environmentId,
-						bytes,
-						{ mediaType: mediaTypeForPath(path), executable: false },
-						signal,
-						{ profileId: job.profileId },
-					),
-					signal,
-				);
 				units.push({
 					op: "write",
 					path,
-					file,
+					file: restoreStagedByPath.get(path),
 					...(current?.version ? { expectedVersion: current.version } : {}),
 				});
 				unitPaths.push(path);
@@ -1037,10 +1273,7 @@ export class SurfaceFolderWorker {
 				lastError = error;
 				const delayMs = this.#completionRetryDelaysMs[attempt];
 				if (delayMs === undefined || shutdownSignal?.aborted) break;
-				await new Promise<void>((resolve) => {
-					const timer = setTimeout(resolve, delayMs);
-					timer.unref?.();
-				});
+				await delayWithAbort(delayMs, shutdownSignal);
 			}
 		}
 		if (lastError !== undefined) {
@@ -1090,22 +1323,38 @@ export class SurfaceFolderWorker {
 		shutdownSignal: AbortSignal | undefined,
 	): Promise<void> {
 		try {
-			await this.#options.authority.publisher(
-				"qorpera_surface_complete_publish",
-				{
-					p_job_id: job.jobId,
-					p_status: "published",
-					p_published_head_sha: null,
-					p_error_detail: null,
-					p_lease_token: job.leaseToken,
-				},
-				signal,
+			signal.throwIfAborted();
+			const completion = await retryCommittedRpc(
+				(attemptSignal) =>
+					this.#options.authority.publisher(
+						"qorpera_surface_complete_publish",
+						{
+							p_job_id: job.jobId,
+							p_status: "published",
+							p_published_head_sha: null,
+							p_error_detail: null,
+							p_lease_token: job.leaseToken,
+						},
+						attemptSignal,
+					),
+				shutdownSignal,
+				this.#completionRetryDelaysMs,
+				{ treatNotRunningAsDoneOnRetry: true },
 			);
+			if (completion.outcome === "unconfirmed_423") {
+				this.#emit({
+					kind: "surface_folder_publish_completion_unconfirmed",
+					jobId: job.jobId,
+					surfaceId: job.surfaceId,
+					status: 423,
+				});
+				return;
+			}
 			this.#emit({ kind: "surface_folder_publish_completed", jobId: job.jobId, surfaceId: job.surfaceId });
 		} catch (error) {
 			const errorDetail = formatError(error);
 			this.#emit({ kind: "surface_folder_publish_failed", jobId: job.jobId, error: errorDetail });
-			if (!shutdownSignal?.aborted) {
+			if (!shutdownSignal?.aborted && isDefiniteCommitRejection(error)) {
 				await withAbortScopes(
 					shutdownSignal ? [shutdownSignal] : [],
 					(failSignal) =>

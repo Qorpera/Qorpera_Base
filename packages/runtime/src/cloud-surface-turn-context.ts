@@ -170,8 +170,14 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 	}
 
 	if (binding.conflictPaths && binding.conflictPaths.length > 0) {
+		const maxConflictPaths = 100;
+		const shown = binding.conflictPaths.slice(0, maxConflictPaths).map((path) => `- ${path.slice(0, 256)}`);
+		const overflow = binding.conflictPaths.length - shown.length;
+		if (overflow > 0) {
+			shown.push(`- ...and ${overflow} more paths`);
+		}
 		sections.push(
-			`## Conflict Reconciliation\nReconcile overlapping changes cleanly across these files:\n${binding.conflictPaths.map((path) => `- ${path}`).join("\n")}`,
+			`## Conflict Reconciliation\nReconcile overlapping changes cleanly across these files:\n${shown.join("\n")}`,
 		);
 	}
 

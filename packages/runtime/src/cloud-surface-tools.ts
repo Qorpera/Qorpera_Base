@@ -35,6 +35,7 @@ import {
 	type SurfaceSourceKind,
 	type SurfaceStatus,
 } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import {
 	type CloudNativeTool,
@@ -50,6 +51,9 @@ const MAX_SURFACE_PATH_CHARS = 512;
 const MAX_OWNER_LABEL_CHARS = 160;
 const MAX_VARIANT_LABEL_CHARS = 80;
 const MAX_OPS_ACTION_PAYLOAD_BYTES = 256 * 1024;
+const MAX_STAGE_SURFACE_PATCH_BYTES = 512 * 1024;
+const MAX_MERGE_JSON_DEPTH = 16;
+const DISALLOWED_MERGE_JSON_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const MAX_AUTOMATION_TITLE_CHARS = 120;
 const MAX_AUTOMATION_SCHEDULE_CHARS = 160;
 const MANAGE_SURFACE_AUTOMATION_ACTIONS = ["create", "update", "delete"] as const;
@@ -288,12 +292,34 @@ function assertSafeRelativePath(path: string, field: string): string {
 	if (
 		trimmed.length === 0 ||
 		trimmed.startsWith("/") ||
+		trimmed.endsWith("/") ||
 		trimmed.includes("\\") ||
-		trimmed.split("/").some((segment) => segment === "..")
+		trimmed.includes("\0") ||
+		trimmed.includes(":") ||
+		trimmed.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
 	) {
 		throw new CloudToolArgumentRefusal(`${field} must be a safe relative path`);
 	}
 	return trimmed;
+}
+
+function validateMergeJsonValue(value: unknown, field: string, depth: number): void {
+	if (depth > MAX_MERGE_JSON_DEPTH) {
+		throw new CloudToolArgumentRefusal(`${field} exceeds maximum nesting depth of ${MAX_MERGE_JSON_DEPTH}`);
+	}
+	if (value === null || typeof value !== "object") return;
+	if (Array.isArray(value)) {
+		for (let i = 0; i < value.length; i += 1) {
+			validateMergeJsonValue(value[i], `${field}[${i}]`, depth + 1);
+		}
+		return;
+	}
+	for (const key of Object.getOwnPropertyNames(value)) {
+		if (DISALLOWED_MERGE_JSON_KEYS.has(key)) {
+			throw new CloudToolArgumentRefusal(`${field} contains forbidden key "${key}"`);
+		}
+		validateMergeJsonValue((value as Record<string, unknown>)[key], `${field}.${key}`, depth + 1);
+	}
 }
 
 function parseOptionalNotePathsArg(value: unknown): string[] {
@@ -620,10 +646,10 @@ export function createControlPlaneSurfaceToolsPort(
 		},
 
 		async listSurfaceSenses(companyId, signal) {
-			const response = await rpc(
-				"qorpera_native_surface_describe_senses",
-				{ p_profile_id: companyId },
-				signal ?? new AbortController().signal,
+			const response = await withAbortScopes(
+				signal ? [signal] : [],
+				(rpcSignal) => rpc("qorpera_native_surface_describe_senses", { p_profile_id: companyId }, rpcSignal),
+				15_000,
 			);
 			return parseSurfaceCompanySenses(response, "listSurfaceSenses");
 		},
@@ -1060,8 +1086,12 @@ export function createStageSurfacePatchTool(sessionId: string, port: SurfacePatc
 				const safePath = assertSafeRelativePath(op.path, `ops[${index}].path`);
 				if (op.op === "write_text") return { op: "write_text", path: safePath, content: op.content };
 				if (op.op === "delete") return { op: "delete", path: safePath };
+				validateMergeJsonValue(op.patch, `ops[${index}].patch`, 0);
 				return { op: "merge_json", path: safePath, patch: op.patch };
 			});
+			if (Buffer.byteLength(JSON.stringify(normalizedOps), "utf8") > MAX_STAGE_SURFACE_PATCH_BYTES) {
+				throw new CloudToolArgumentRefusal(`ops exceeds ${MAX_STAGE_SURFACE_PATCH_BYTES} bytes`);
+			}
 			const notePaths = parseOptionalNotePathsArg(raw.notePaths);
 			const finishSession = parseBooleanArg(raw.finishSession, "finishSession", false);
 			return {

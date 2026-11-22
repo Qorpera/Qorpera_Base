@@ -1,6 +1,5 @@
 import {
 	compileIdentityTokens,
-	compileIdentityTokensCss,
 	IDENTITY_BRIEF_PATH,
 	IDENTITY_COMPANY_PATH,
 	IDENTITY_LOGO_PATH,
@@ -15,6 +14,7 @@ import {
 	type SurfaceSessionQuestion,
 	type SurfaceSourceKind,
 } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
@@ -185,6 +185,7 @@ export interface SurfaceSessionRunnerPorts {
 	readonly renewSessionLease?: SurfaceSessionLeaseRenewalPort["renewSessionLease"];
 	readonly leaseRenewIntervalMs?: number;
 	readonly leaseExtendSeconds?: number;
+	readonly completionRetryDelaysMs?: readonly number[];
 	readonly signal?: AbortSignal;
 }
 
@@ -308,12 +309,13 @@ export async function loadSurfaceSharedAssets(
 	const voiceSummary = byPath.get(IDENTITY_VOICE_PATH) ?? null;
 	const tokensJson = byPath.get(IDENTITY_TOKENS_JSON_PATH) ?? null;
 	const existingTokensCss = byPath.get(IDENTITY_TOKENS_CSS_PATH) ?? null;
-	const compiledTokensCss =
-		existingTokensCss === null &&
-		tokensJson !== null &&
-		Object.keys(compileIdentityTokens(tokensJson).vars).length > 0
-			? compileIdentityTokensCss(tokensJson)
-			: null;
+	let compiledTokensCss: string | null = null;
+	if (existingTokensCss === null && tokensJson !== null) {
+		const compiled = compileIdentityTokens(tokensJson);
+		if (Object.keys(compiled.vars).length > 0) {
+			compiledTokensCss = compiled.css;
+		}
+	}
 	const tokensCss = existingTokensCss ?? compiledTokensCss;
 	const companyProfileJson = byPath.get(IDENTITY_COMPANY_PATH) ?? null;
 	const productSpecsJson = byPath.get(PRODUCT_SPECS_PATH) ?? null;
@@ -461,6 +463,33 @@ export function createControlPlaneSessionLeaseRenewalPort(
 
 const DEFAULT_SESSION_LEASE_RENEW_INTERVAL_MS = 60_000;
 const DEFAULT_SESSION_LEASE_EXTEND_SECONDS = 300;
+const DEFAULT_COMPLETION_RETRY_DELAYS_MS = [250, 750] as const;
+
+function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+	if (ms <= 0 || signal?.aborted) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		const onAbort = (): void => {
+			clearTimeout(timer);
+			resolve();
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		timer.unref?.();
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+function isAlreadyCompletedSessionError(error: unknown): boolean {
+	if (!error || typeof error !== "object") return false;
+	const text = error instanceof Error ? error.message : String(error);
+	if (/session is not running|not running/i.test(text)) return true;
+	const status = (error as { status?: unknown }).status;
+	if (status === 423) return true;
+	const code = (error as { code?: unknown }).code;
+	return code === "55000" && /running/i.test(text);
+}
 
 export async function runSurfaceSessionTurn(
 	input: SurfaceSessionTurnInput,
@@ -473,12 +502,27 @@ export async function runSurfaceSessionTurn(
 	let identityContext: SurfaceIdentityContext | null = null;
 	let sharedAssets: SurfaceSharedAssetsContext | null = null;
 
+	let initialRenewTimer: ReturnType<typeof setTimeout> | undefined;
 	let leaseTimer: ReturnType<typeof setInterval> | undefined;
 	let leaseLost = false;
+	let outcomeReady = false;
 	const leaseAbort = new AbortController();
+	const stopLeaseRenewal = (): void => {
+		if (initialRenewTimer !== undefined) {
+			clearTimeout(initialRenewTimer);
+			initialRenewTimer = undefined;
+		}
+		if (leaseTimer !== undefined) {
+			clearInterval(leaseTimer);
+			leaseTimer = undefined;
+		}
+		if (!leaseAbort.signal.aborted) {
+			leaseAbort.abort();
+		}
+	};
 	const onCallerAbort = (): void => {
 		turnAbort.abort(callerSignal.reason);
-		leaseAbort.abort(callerSignal.reason);
+		stopLeaseRenewal();
 	};
 	if (callerSignal.aborted) {
 		onCallerAbort();
@@ -497,12 +541,12 @@ export async function runSurfaceSessionTurn(
 			Math.min(900, Math.floor(ports.leaseExtendSeconds ?? DEFAULT_SESSION_LEASE_EXTEND_SECONDS)),
 		);
 		let inFlight = false;
-		// WHY: Keep the session lease alive for long turns and abort immediately if another worker reclaims the lease.
-		leaseTimer = setInterval(() => {
+		const renewOnce = (): void => {
 			if (inFlight || leaseAbort.signal.aborted) return;
 			inFlight = true;
-			void Promise.resolve()
-				.then(() =>
+			void withAbortScopes(
+				[leaseAbort.signal],
+				(renewSignal) =>
 					renewSessionLease(
 						{
 							sessionId: input.sessionId,
@@ -510,13 +554,14 @@ export async function runSurfaceSessionTurn(
 							leaseToken,
 							extendSeconds,
 						},
-						leaseAbort.signal,
+						renewSignal,
 					),
-				)
+				15_000,
+			)
 				.then((result) => {
-					if (result && result.renewed === false) {
+					if (result && result.renewed === false && !leaseAbort.signal.aborted) {
 						leaseLost = true;
-						leaseAbort.abort(new Error("Surface session lease lost during execution"));
+						stopLeaseRenewal();
 						turnAbort.abort(new Error("Surface session lease lost during execution"));
 					}
 				})
@@ -524,51 +569,53 @@ export async function runSurfaceSessionTurn(
 				.finally(() => {
 					inFlight = false;
 				});
-		}, intervalMs);
+		};
+		// WHY: Fire an initial renewal on the next tick so wakes queued near the 10-minute lease bound extend immediately without racing synchronous abort-listener registration.
+		initialRenewTimer = setTimeout(renewOnce, 0);
+		initialRenewTimer.unref?.();
+		leaseTimer = setInterval(renewOnce, intervalMs);
 		leaseTimer.unref?.();
 	}
 
 	try {
-		if (folderReader) {
-			const loaded = await loadSurfaceSharedAssets(folderReader, signal);
-			if (loaded) {
-				if (
-					input.surfaceSlug !== "identity" &&
-					(loaded.briefMarkdown || loaded.voiceSummary || loaded.tokensJson)
-				) {
-					identityContext = {
-						briefMarkdown: loaded.briefMarkdown,
-						voiceSummary: loaded.voiceSummary,
-						tokensJson: loaded.tokensJson,
-					};
-				}
-				if (
-					loaded.tokensCss ||
-					loaded.companyProfileJson ||
-					loaded.productSpecsJson ||
-					loaded.productCatalogJson ||
-					loaded.hasLogoSvg
-				) {
-					sharedAssets = {
-						tokensCss: loaded.tokensCss,
-						companyProfileJson: loaded.companyProfileJson,
-						productSpecsJson: loaded.productSpecsJson,
-						productCatalogJson: loaded.productCatalogJson,
-						hasLogoSvg: loaded.hasLogoSvg,
-					};
-				}
+		const explicitBrief = input.briefMarkdown?.trim() || null;
+		const [loaded, folderBrief] = folderReader
+			? await Promise.all([
+					loadSurfaceSharedAssets(folderReader, signal),
+					explicitBrief === null
+						? readOptionalFolderText(
+								folderReader,
+								`QorperaOS/surfaces/${input.surfaceSlug}/brief.md`,
+								MAX_SURFACE_BRIEF_BYTES,
+								signal,
+							)
+						: Promise.resolve(null),
+				])
+			: [null, null];
+		if (loaded) {
+			if (input.surfaceSlug !== "identity" && (loaded.briefMarkdown || loaded.voiceSummary || loaded.tokensJson)) {
+				identityContext = {
+					briefMarkdown: loaded.briefMarkdown,
+					voiceSummary: loaded.voiceSummary,
+					tokensJson: loaded.tokensJson,
+				};
+			}
+			if (
+				loaded.tokensCss ||
+				loaded.companyProfileJson ||
+				loaded.productSpecsJson ||
+				loaded.productCatalogJson ||
+				loaded.hasLogoSvg
+			) {
+				sharedAssets = {
+					tokensCss: loaded.tokensCss,
+					companyProfileJson: loaded.companyProfileJson,
+					productSpecsJson: loaded.productSpecsJson,
+					productCatalogJson: loaded.productCatalogJson,
+					hasLogoSvg: loaded.hasLogoSvg,
+				};
 			}
 		}
-		const explicitBrief = input.briefMarkdown?.trim() || null;
-		const folderBrief =
-			explicitBrief === null && folderReader
-				? await readOptionalFolderText(
-						folderReader,
-						`QorperaOS/surfaces/${input.surfaceSlug}/brief.md`,
-						MAX_SURFACE_BRIEF_BYTES,
-						signal,
-					)
-				: null;
 		const briefMarkdown = explicitBrief ?? folderBrief ?? input.briefSummary?.trim() ?? null;
 		const pointToChangeTarget = extractPointToChangeTarget(input.originRef);
 		const normalizedFolderRoot =
@@ -713,24 +760,49 @@ export async function runSurfaceSessionTurn(
 		if (leaseLost) {
 			throw new Error("Surface session lease lost during execution");
 		}
+		// WHY: Stop lease renewal before completing the turn so Postgres clearing lease_token never causes a concurrent renewal to abort the in-flight completion response.
+		stopLeaseRenewal();
+		outcomeReady = true;
 		const state = outcome.state ?? (outcome.question ? "needs_input" : "ready");
 		const replyText = outcome.replyText?.trim() || null;
 		const question = outcome.question ?? null;
 		const notePaths = outcome.notePaths ? [...outcome.notePaths] : null;
 		const branchHeadSha = outcome.branchHeadSha ?? null;
-		await ports.completeSessionTurn(
-			{
-				sessionId: input.sessionId,
-				companyId: input.companyId,
-				state,
-				replyText,
-				question,
-				notePaths,
-				branchHeadSha,
-				...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
-			},
-			signal,
-		);
+		const completionPayload: SurfaceSessionTurnCompletion = {
+			sessionId: input.sessionId,
+			companyId: input.companyId,
+			state,
+			replyText,
+			question,
+			notePaths,
+			branchHeadSha,
+			...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
+		};
+		const retryDelays = ports.completionRetryDelaysMs ?? DEFAULT_COMPLETION_RETRY_DELAYS_MS;
+		let lastCompletionError: unknown;
+		for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+			try {
+				await withAbortScopes(
+					[],
+					(completeSignal) => ports.completeSessionTurn(completionPayload, completeSignal),
+					15_000,
+				);
+				lastCompletionError = undefined;
+				break;
+			} catch (error) {
+				if (attempt > 0 && isAlreadyCompletedSessionError(error)) {
+					lastCompletionError = undefined;
+					break;
+				}
+				lastCompletionError = error;
+				const delayMs = retryDelays[attempt];
+				if (delayMs === undefined || callerSignal.aborted) break;
+				await delayWithAbort(delayMs, callerSignal);
+			}
+		}
+		if (lastCompletionError !== undefined) {
+			throw lastCompletionError;
+		}
 		return {
 			sessionId: input.sessionId,
 			sourceKind: input.sourceKind,
@@ -744,22 +816,29 @@ export async function runSurfaceSessionTurn(
 			error: null,
 		};
 	} catch (error) {
+		stopLeaseRenewal();
 		const { errorMessage, replyText } = formatSessionFailure(error);
-		if (!leaseLost) {
-			const completionSignal = callerSignal.aborted ? new AbortController().signal : callerSignal;
-			await ports.completeSessionTurn(
-				{
-					sessionId: input.sessionId,
-					companyId: input.companyId,
-					state: "failed",
-					replyText,
-					question: null,
-					notePaths: null,
-					branchHeadSha: null,
-					...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
-				},
-				completionSignal,
-			);
+		if (!outcomeReady && !leaseLost && !callerSignal.aborted) {
+			try {
+				await withAbortScopes(
+					[callerSignal],
+					(failSignal) =>
+						ports.completeSessionTurn(
+							{
+								sessionId: input.sessionId,
+								companyId: input.companyId,
+								state: "failed",
+								replyText,
+								question: null,
+								notePaths: null,
+								branchHeadSha: null,
+								...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
+							},
+							failSignal,
+						),
+					10_000,
+				);
+			} catch {}
 		}
 		return {
 			sessionId: input.sessionId,
@@ -775,8 +854,7 @@ export async function runSurfaceSessionTurn(
 			cause: error,
 		};
 	} finally {
-		if (leaseTimer !== undefined) clearInterval(leaseTimer);
-		leaseAbort.abort();
+		stopLeaseRenewal();
 		callerSignal.removeEventListener("abort", onCallerAbort);
 	}
 }

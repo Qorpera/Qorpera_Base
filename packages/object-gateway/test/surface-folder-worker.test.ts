@@ -995,4 +995,221 @@ describe("SurfaceFolderWorker", () => {
 		expect(hUncertainThen42501.events.some((ev) => ev.kind === "surface_folder_merge_completion_failed")).toBe(true);
 		expect(hUncertainThen42501.events.some((ev) => ev.kind === "surface_folder_merge_failed")).toBe(false);
 	});
+
+	it("preserves original filesBefore across crash retries after folder commit and includes snapshotId inline", async () => {
+		const h = createHarness({ "brand/voice.md": "Original pre-merge voice." });
+		const jobId = randomUUID();
+		const changeId = randomUUID();
+		const mergeJob = {
+			jobId,
+			kind: "land_change" as const,
+			surfaceId: h.surfaceId,
+			profileId: h.profileId,
+			environmentId: h.environmentId,
+			leaseToken: randomUUID(),
+			folderRoot: "brand",
+			payload: { changeIds: [changeId] },
+			preMergeSnapshot: null,
+			approvedChanges: [
+				{
+					changeId,
+					kind: "folder_patch",
+					title: "Update voice",
+					summary: "Updates voice copy",
+					affectedPaths: ["voice.md"],
+					patchManifest: [{ op: "write_text", path: "voice.md", content: "Updated merged voice." }],
+				},
+			],
+		};
+
+		h.setFailCompleteMergeAttempts(10);
+		h.setPendingClaim({ merges: [mergeJob] });
+		expect(await h.worker.processDue(8)).toBe(1);
+		expect(h.readText("brand/voice.md")).toBe("Updated merged voice.");
+		expect(h.completedMerges).toHaveLength(0);
+
+		h.setFailCompleteMergeAttempts(0);
+		h.setPendingClaim({ merges: [{ ...mergeJob, leaseToken: randomUUID() }] });
+		expect(await h.worker.processDue(8)).toBe(1);
+		expect(h.completedMerges).toHaveLength(1);
+		const snap = h.completedMerges[0]?.p_pre_merge_snapshot as {
+			snapshotId?: string;
+			filesBefore?: Record<string, string | null>;
+		};
+		expect(snap?.snapshotId).toBe(`merge:${jobId}`);
+		expect(snap?.filesBefore).toEqual({ "brand/voice.md": "Original pre-merge voice." });
+	});
+
+	it("aborts in-flight jobs when lease renewal returns renewed:false, retries transient publishes, and runs distinct surfaces concurrently", async () => {
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceA = randomUUID();
+		const surfaceB = randomUUID();
+		let activeReads = 0;
+		let maxActiveReads = 0;
+		let publishAttempts = 0;
+		const completedMerges: Record<string, unknown>[] = [];
+		const completedPublishes: Record<string, unknown>[] = [];
+		let leaseLossObserved = false;
+
+		const worker = new SurfaceFolderWorker({
+			authority: {
+				async publisher(method, args, signal) {
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						return {
+							merges: [
+								{
+									jobId: randomUUID(),
+									kind: "land_change",
+									surfaceId: surfaceA,
+									profileId,
+									environmentId,
+									leaseToken: randomUUID(),
+									folderRoot: "a",
+									payload: {},
+									preMergeSnapshot: null,
+									approvedChanges: [
+										{
+											changeId: randomUUID(),
+											kind: "folder_patch",
+											title: "A",
+											summary: "A",
+											affectedPaths: ["x.txt"],
+											patchManifest: [{ op: "delete", path: "x.txt" }],
+										},
+									],
+								},
+								{
+									jobId: randomUUID(),
+									kind: "land_change",
+									surfaceId: surfaceB,
+									profileId,
+									environmentId,
+									leaseToken: randomUUID(),
+									folderRoot: "b",
+									payload: {},
+									preMergeSnapshot: null,
+									approvedChanges: [
+										{
+											changeId: randomUUID(),
+											kind: "folder_patch",
+											title: "B",
+											summary: "B",
+											affectedPaths: ["y.txt"],
+											patchManifest: [{ op: "delete", path: "y.txt" }],
+										},
+									],
+								},
+							],
+							publishes: [
+								{
+									jobId: randomUUID(),
+									surfaceId: surfaceB,
+									profileId,
+									environmentId,
+									leaseToken: randomUUID(),
+								},
+							],
+						};
+					}
+					if (method === "qorpera_surface_load_folder_snapshot") return null;
+					if (method === "qorpera_folder_read") {
+						activeReads += 1;
+						maxActiveReads = Math.max(maxActiveReads, activeReads);
+						await new Promise((r) => setTimeout(r, 30));
+						activeReads -= 1;
+						return { schema: "qorpera.folder-read/v1", found: false, entry: null };
+					}
+					if (method === "qorpera_surface_complete_merge") {
+						completedMerges.push(args);
+						return { status: args.p_status };
+					}
+					if (method === "qorpera_surface_complete_publish") {
+						publishAttempts += 1;
+						if (publishAttempts === 1) throw new Error("transient 503");
+						completedPublishes.push(args);
+						return { status: args.p_status };
+					}
+					if (method === "qorpera_surface_renew_lease") {
+						return { renewed: true };
+					}
+					signal.throwIfAborted();
+					return null;
+				},
+			},
+			store: { get: async () => new Uint8Array() },
+			replication: { uploadWithAuthority: async () => "stored" },
+			completionRetryDelaysMs: [5, 5],
+		});
+
+		expect(await worker.processDue(8)).toBe(3);
+		expect(maxActiveReads).toBeGreaterThanOrEqual(2);
+		expect(completedPublishes).toHaveLength(1);
+		expect(completedPublishes[0]?.p_status).toBe("published");
+		expect(publishAttempts).toBe(2);
+
+		const lostMerges: Record<string, unknown>[] = [];
+		const lossWorker = new SurfaceFolderWorker({
+			authority: {
+				async publisher(method, args, signal) {
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						return {
+							merges: [
+								{
+									jobId: randomUUID(),
+									kind: "land_change",
+									surfaceId: surfaceA,
+									profileId,
+									environmentId,
+									leaseToken: randomUUID(),
+									folderRoot: "a",
+									payload: {},
+									preMergeSnapshot: null,
+									approvedChanges: [
+										{
+											changeId: randomUUID(),
+											kind: "folder_patch",
+											title: "Slow",
+											summary: "Slow",
+											affectedPaths: ["x.txt"],
+											patchManifest: [{ op: "delete", path: "x.txt" }],
+										},
+									],
+								},
+							],
+							publishes: [],
+						};
+					}
+					if (method === "qorpera_surface_load_folder_snapshot") return null;
+					if (method === "qorpera_folder_read") {
+						await new Promise<void>((_, reject) => {
+							signal.addEventListener(
+								"abort",
+								() => {
+									leaseLossObserved = true;
+									reject(signal.reason ?? new Error("aborted"));
+								},
+								{ once: true },
+							);
+						});
+					}
+					if (method === "qorpera_surface_renew_lease") {
+						return { renewed: false };
+					}
+					if (method === "qorpera_surface_complete_merge") {
+						lostMerges.push(args);
+					}
+					return null;
+				},
+			},
+			store: { get: async () => new Uint8Array() },
+			replication: { uploadWithAuthority: async () => "stored" },
+			leaseRenewIntervalMs: 50,
+			jobTimeoutMs: 5_000,
+			completionRetryDelaysMs: [5],
+		});
+		expect(await lossWorker.processDue(8)).toBe(1);
+		expect(leaseLossObserved).toBe(true);
+		expect(lostMerges).toHaveLength(0);
+	});
 });
