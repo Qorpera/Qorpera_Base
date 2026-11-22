@@ -4381,4 +4381,118 @@ create trigger nap before update on slowed for each row execute function nap();
 			remove(ENV_A, "data/clusterrace/tables/002-add-note.sql");
 		}
 	});
+
+	it("waits past stepLockMs on concurrent live apply, scopes peer pool reclamation, prunes idle pools on remove, and enforces connect and stopped-listener cache guards", async () => {
+		const companyDb = companyDatabase(ENV_A);
+		put(ENV_A, {
+			"data/slowapply/database.toml": 'title = "Slow Apply"\n',
+			"data/slowapply/tables/001-slow.sql": "select pg_sleep(0.5);\ncreate table slow_items (id int primary key, title text not null);\n",
+			"data/slowapply/queries/slow-watch.sql": "select pg_sleep(0.25), count(*) from slow_items;\n",
+			"data/slowapply/actions/add-slow.sql": "insert into slow_items (id, title) values (:id, :title);\n",
+		});
+		const gwSlowA = new Gateway({
+			store: { host: "127.0.0.1", port: storePort, logins },
+			platform: new Platform({ url: "http://platform", publishableKey: "publishable", fetch: platformFetch }),
+			limits: { ...LIMITS_HERE, stepLockMs: 250, stepMs: 10_000 },
+			workers: 2,
+		});
+		const gwSlowB = new Gateway({
+			store: { host: "127.0.0.1", port: storePort, logins },
+			platform: new Platform({ url: "http://platform", publishableKey: "publishable", fetch: platformFetch }),
+			limits: { ...LIMITS_HERE, stepLockMs: 250, stepMs: 10_000 },
+			workers: 2,
+		});
+		const gwExpired = new Gateway({
+			store: { host: "127.0.0.1", port: storePort, logins },
+			platform: new Platform({ url: "http://platform", publishableKey: "publishable", fetch: platformFetch }),
+			limits: { ...LIMITS_HERE, changeMs: 0 },
+		});
+		const ownerCaller = { userId: OWNER, key: `u:${OWNER}`, token: owner };
+		const viewerCaller = { userId: VIEWER, key: `u:${VIEWER}`, token: viewer };
+		const slowTexts = () => Object.fromEntries([...FOLDERS[ENV_A].values()].map((t) => [sha256(t), t]));
+		try {
+			const [applyA, applyB] = await Promise.all([
+				gwSlowA.apply(ownerCaller, ENV_A, { database: "slowapply", texts: slowTexts() }),
+				gwSlowB.apply(ownerCaller, ENV_A, { database: "slowapply", texts: slowTexts() }),
+			]);
+			assert.equal(applyA.applied, true, JSON.stringify(applyA));
+			assert.equal(applyB.applied, true, JSON.stringify(applyB));
+			assert.deepEqual([applyA.results[0].state, applyB.results[0].state].sort(), ["already", "applied"]);
+
+			const countBeforeReclaim = gwSlowA.poolCount;
+			assert.ok(countBeforeReclaim >= 2, `expected active pools after apply, got ${countBeforeReclaim}`);
+			await gwSlowA.reclaimIdlePools("other_company_db");
+			assert.equal(gwSlowA.poolCount, countBeforeReclaim, "peer reclaimIdlePools must not evict unrelated database pools");
+			await gwSlowA.reclaimIdlePools(companyDb);
+			assert.ok(
+				gwSlowA.poolCount < countBeforeReclaim && gwSlowA.poolCount <= 1,
+				`peer reclaimIdlePools must close only target database pools, expected <= 1 remaining (@postgres), got ${gwSlowA.poolCount}`,
+			);
+			await gwSlowA.reclaimIdlePools("postgres");
+			assert.equal(gwSlowA.poolCount, 0, "reclaiming postgres pool must leave zero idle pools");
+
+			put(ENV_A, {
+				"data/slowapply/tables/002-owner.sql": "create table owner_ping (id int primary key);\n",
+			});
+			const ownerStep = await gwSlowA.apply(ownerCaller, ENV_A, { database: "slowapply", texts: slowTexts() });
+			assert.equal(ownerStep.applied, true, JSON.stringify(ownerStep));
+			const countAfterOwner = gwSlowA.poolCount;
+			assert.ok(countAfterOwner >= 2, `expected keeper + owner pools, got ${countAfterOwner}`);
+			let shrunk = false;
+			for (let i = 0; i < 40; i++) {
+				if (gwSlowA.poolCount < countAfterOwner) {
+					shrunk = true;
+					break;
+				}
+				await new Promise((r) => setTimeout(r, 100));
+			}
+			assert.equal(shrunk, true, `expected idle owner pool remove handler to shrink poolCount below ${countAfterOwner}, got ${gwSlowA.poolCount}`);
+
+			await gwSlowB.close();
+			await assert.rejects(
+				() => gwSlowB.rows(viewerCaller, ENV_A, { database: "slowapply", table: "slow_items", texts: slowTexts() }),
+				(err) => err?.status === 503,
+				"closed gateway connect() must refuse with 503",
+			);
+
+			await assert.rejects(
+				() =>
+					gwExpired.change(ownerCaller, ENV_A, {
+						database: "slowapply",
+						change: "add-slow",
+						params: { id: 1, title: "late" },
+						texts: slowTexts(),
+					}),
+				(err) => err?.status === 408,
+				"expired connect(deadline) must refuse with 408",
+			);
+
+			const watchController = new AbortController();
+			const pendingWatch = gwSlowA
+				.watch(
+					viewerCaller,
+					ENV_A,
+					{
+						watches: [{ database: "slowapply", question: "slow-watch", params: {}, etag: "stale" }],
+						wait: 1,
+						texts: slowTexts(),
+					},
+					watchController.signal,
+				)
+				.catch((err) => err);
+			await new Promise((r) => setTimeout(r, 60));
+			await gwSlowA.evictCompany(companyDb);
+			await pendingWatch;
+			assert.equal(gwSlowA.watchCacheCount, 0, "stopped listener must not repopulate watch cache after eviction");
+		} finally {
+			await gwSlowA.close();
+			await gwSlowB.close();
+			await gwExpired.close();
+			remove(ENV_A, "data/slowapply/database.toml");
+			remove(ENV_A, "data/slowapply/tables/001-slow.sql");
+			remove(ENV_A, "data/slowapply/tables/002-owner.sql");
+			remove(ENV_A, "data/slowapply/queries/slow-watch.sql");
+			remove(ENV_A, "data/slowapply/actions/add-slow.sql");
+		}
+	});
 });

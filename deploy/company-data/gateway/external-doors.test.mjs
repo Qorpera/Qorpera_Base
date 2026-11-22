@@ -840,6 +840,10 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 			assert.equal(wakesOld.length, 0);
 			assert.equal(wakesNew.length, 1);
 
+			gateway.notifySchemaChange(companyDatabase(envId), "shop");
+			await new Promise((r) => setTimeout(r, 120));
+			assert.equal(wakesNew.length, 1, "peer schemaChange IPC must invalidate caches without waking triggers directly");
+
 			const terminated = await asSuperuser(
 				"postgres",
 				"select pid, pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway listen'",
@@ -861,13 +865,21 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 				await new Promise((r) => setTimeout(r, 50));
 			}
 			assert.equal(reconnected, true, "expected LISTEN backend to reconnect with a new pid");
+			for (let i = 0; i < 40 && !wakesNew.slice(1).some((w) => w.tables.includes("*")); i++) {
+				await new Promise((r) => setTimeout(r, 25));
+			}
+			assert.ok(
+				wakesNew.slice(1).some((w) => w.tables.includes("*")),
+				`expected wildcard catch-up wake after LISTEN reconnect without any new write, got ${JSON.stringify(wakesNew)}`,
+			);
+			const wakesAfterCatchUp = wakesNew.length;
 			await post(
 				`/v1/hook-data/${envId}/change`,
 				{ database: "shop", change: "ingest-stripe", hookId: "hook-reconnect-1", params: { email: "r2@example.com", source: "stripe" } },
 				{ authorization: `Bearer ${hookToken}` },
 			);
-			for (let i = 0; i < 80 && wakesNew.length < 2; i++) await new Promise((r) => setTimeout(r, 25));
-			assert.ok(wakesNew.length >= 2, `expected trigger wake after LISTEN reconnect, got ${wakesNew.length}`);
+			for (let i = 0; i < 80 && wakesNew.length <= wakesAfterCatchUp; i++) await new Promise((r) => setTimeout(r, 25));
+			assert.ok(wakesNew.length > wakesAfterCatchUp, `expected trigger wake after LISTEN reconnect, got ${wakesNew.length}`);
 
 			const wakesBeforeEvict = wakesNew.length;
 			await gateway.evictDatabase(companyDatabase(envId), "shop");

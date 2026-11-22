@@ -1283,6 +1283,7 @@ export class Gateway {
 	#onDrop;
 	#onSchemaChange;
 	#onMakeRoom;
+	#lastMakeRoomBroadcast = new Map();
 	#onUnsettledTx;
 	/** Backends that were sent a cancel, by pid, with when: such a backend's connection is never used again, since a
 	 * cancel that arrives late would stop whatever runs on it then. */
@@ -1431,15 +1432,29 @@ export class Gateway {
 		set.add(value);
 	}
 
+	get poolCount() {
+		return this.#pools.size;
+	}
+
+	get watchCacheCount() {
+		return this.#watchCacheOrder.size;
+	}
+
 	notifySchemaChange(database, schema) {
 		if (typeof database !== "string" || typeof schema !== "string") return;
-		if (TEST_SCHEMA_NAME.test(schema)) this.#bumpSchemaEpoch(database, schema);
-		else this.#notifySchema(database, schema);
+		this.#bumpSchemaEpoch(database, schema);
+		const listener = this.#listeners.get(database);
+		if (!listener) return;
+		// WHY: Invalidate local watch and viewer caches immediately without waking listeners; PostgreSQL NOTIFY delivers the single trigger wake.
+		listener.gen++;
+		listener.schemaGen.set(schema, listener.gen);
+		listener.schemaDdlGen.set(schema, listener.gen);
+		listener.viewerScoped.delete(schema);
 	}
 
 	reclaimIdlePools(database, asking = "") {
 		if (typeof database !== "string") return Promise.resolve();
-		return this.#makeRoomLocal(database, asking);
+		return this.#makeRoomLocal(database, asking, { fallback: false });
 	}
 
 	noteUnsettledTx(database, txid) {
@@ -1589,11 +1604,16 @@ export class Gateway {
 	}
 
 	async #makeRoom(database, asking) {
-		this.#onMakeRoom({ database });
+		const now = Date.now();
+		const last = this.#lastMakeRoomBroadcast.get(database) ?? 0;
+		if (now - last >= 1_000) {
+			this.#rememberMap(this.#lastMakeRoomBroadcast, database, now);
+			this.#onMakeRoom({ database });
+		}
 		await this.#makeRoomLocal(database, asking);
 	}
 
-	async #makeRoomLocal(database, asking) {
+	async #makeRoomLocal(database, asking, { fallback = true } = {}) {
 		const reclaim = (filter) => {
 			const ending = [];
 			for (const [key, entry] of this.#pools) {
@@ -1613,7 +1633,7 @@ export class Gateway {
 			return ending;
 		};
 		let ending = reclaim((key) => key.endsWith(`@${database}`));
-		if (ending.length === 0) ending = reclaim(() => true);
+		if (ending.length === 0 && fallback) ending = reclaim(() => true);
 		await raceTimeout(Promise.all(ending), POOL_END_TIMEOUT_MS);
 	}
 
@@ -3689,7 +3709,12 @@ export class Gateway {
 			const [owner, write, read] = ["o", "w", "r"].map((kind) => quoted(`${database}_${kind}${n}`));
 			// Each logs in on its own, with a password derived from the folder key, and is a member of nothing: no other
 			// login is a member of it either, but the admin, which made it and hands it its schema.
-			for (const [role, limit] of [[owner, POOL_SIZE.o], [write, POOL_SIZE.w], [read, POOL_SIZE.r]]) {
+			// WHY: Scale owner role connection limit with cluster worker count (matching test schemas) so concurrent multi-worker applies serialize on advisory locks instead of hitting 53300.
+			for (const [role, limit] of [
+				[owner, Math.min(4, Math.max(POOL_SIZE.o, this.#workers))],
+				[write, POOL_SIZE.w],
+				[read, POOL_SIZE.r],
+			]) {
 				const name = role.slice(1, -1);
 				const has = await client.query("select 1 from pg_roles where rolname = $1", [name]);
 				const options = `login noinherit connection limit ${limit} password '${this.#password(name)}'`;
@@ -3865,7 +3890,9 @@ export class Gateway {
 			);
 			let storedTestMeta = null;
 			if (isTest) {
+				await client.query(`set local lock_timeout = ${effectiveStepMs}`);
 				await client.query("select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('qorpera_test_apply'), pg_catalog.hashtext($1))", [schema]);
+				await client.query(`set local lock_timeout = ${effectiveLockMs}`);
 				const metaRow = (
 					await client.query("select pg_catalog.obj_description(oid, 'pg_namespace') as comment from pg_catalog.pg_namespace where nspname = $1", [schema])
 				).rows[0];
@@ -3886,8 +3913,10 @@ export class Gateway {
 					};
 				}
 			} else if (!dry) {
-				// WHY: Serialize live step application per schema and re-check qorpera_data.steps via keeper so concurrent applies settle cleanly.
+				// WHY: Wait up to effectiveStepMs for a peer's apply lock while keeping effectiveLockMs for the step's own DDL.
+				await client.query(`set local lock_timeout = ${effectiveStepMs}`);
 				await client.query("select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('qorpera_step_apply'), pg_catalog.hashtext($1))", [name]);
+				await client.query(`set local lock_timeout = ${effectiveLockMs}`);
 				const recorded = (
 					await this.#pool(database, "qorpera_data_keeper").query("select sha256 from qorpera_data.steps where database = $1 and name = $2", [
 						name,
@@ -6059,6 +6088,7 @@ export class Gateway {
 		this.#full.delete(database);
 		this.#unsettled.delete(database);
 		this.#unsettledOverflow.delete(database);
+		this.#lastMakeRoomBroadcast.delete(database);
 		this.#swept.delete(database);
 		for (const map of [this.#folders, this.#folderInFlight, this.#relations, this.#schemaEpoch]) {
 			for (const key of map.keys()) if (key.startsWith(`${database}/`)) map.delete(key);
@@ -6597,6 +6627,7 @@ export class Gateway {
 		this.#triggerStops.clear();
 		this.#notifier.close();
 		this.#rateBuckets.clear();
+		this.#lastMakeRoomBroadcast.clear();
 		for (const entry of this.#watchInFlight.values()) entry.controller.abort();
 		this.#watchInFlight.clear();
 		for (const listener of this.#listeners.values()) {
