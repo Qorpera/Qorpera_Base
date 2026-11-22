@@ -127,10 +127,27 @@ async fn main() {
         "qorpera-web-router listening"
     );
     let (pub_handle, int_handle) = bound.spawn();
+    #[cfg(unix)]
+    let unix_handle = env::var("QORPERA_WEB_ROUTER_PUBLIC_UNIX")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|p| {
+            let pb = PathBuf::from(&p);
+            let h = qorpera_web_router::server::spawn_public_unix_listener(pb, Arc::clone(&state))
+                .expect("failed to bind public unix socket");
+            info!(unix_socket = %p, "qorpera-web-router listening on unix socket");
+            (p, h)
+        });
     shutdown_signal().await;
     info!("shutting down qorpera-web-router");
     pub_handle.abort();
     int_handle.abort();
+    #[cfg(unix)]
+    if let Some((path, h)) = unix_handle {
+        h.abort();
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 async fn shutdown_signal() {

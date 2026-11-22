@@ -1,8 +1,10 @@
 use crate::security::sanitize_redirect_location;
+use arc_swap::{ArcSwap, Guard};
+use http::HeaderValue;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
@@ -244,6 +246,7 @@ pub enum StaticResolution<'a> {
     NotFound,
 }
 
+#[derive(Clone)]
 pub struct RouteTable {
     pub hosts_domain: String,
     pub legacy_hosts_domains: Vec<String>,
@@ -257,13 +260,50 @@ pub struct RouteTable {
     sites_by_id: HashMap<String, Arc<SiteRecord>>,
     domains_by_host: HashMap<String, CustomDomainRecord>,
     upstream_overrides: HashMap<String, UpstreamOverride>,
+    content_type_headers: HashMap<String, HeaderValue>,
+    etag_headers: HashMap<String, HeaderValue>,
+}
+
+pub struct SharedRoutes {
+    inner: ArcSwap<RouteTable>,
+    write_lock: Mutex<()>,
+}
+
+impl SharedRoutes {
+    pub fn new(initial: RouteTable) -> Self {
+        Self {
+            inner: ArcSwap::from_pointee(initial),
+            write_lock: Mutex::new(()),
+        }
+    }
+
+    #[inline]
+    pub fn load(&self) -> Guard<Arc<RouteTable>> {
+        self.inner.load()
+    }
+
+    pub fn update<R>(&self, f: impl FnOnce(&mut RouteTable) -> R) -> R {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut next = (**self.inner.load()).clone();
+        let out = f(&mut next);
+        self.inner.store(Arc::new(next));
+        out
+    }
 }
 
 impl RouteTable {
     pub fn from_snapshot(snapshot: EdgeSnapshot) -> Self {
         let mut sites_by_slug = HashMap::with_capacity(snapshot.sites.len());
         let mut sites_by_id = HashMap::with_capacity(snapshot.sites.len());
+        let mut content_type_headers = HashMap::new();
+        let mut etag_headers = HashMap::new();
         for site in snapshot.sites {
+            if let Some(ref dep) = site.live_deployment {
+                collect_precomputed_headers(&dep.manifest, &mut content_type_headers, &mut etag_headers);
+            }
+            for dep in site.preview_deployments.values() {
+                collect_precomputed_headers(&dep.manifest, &mut content_type_headers, &mut etag_headers);
+            }
             let arc = Arc::new(site);
             sites_by_slug.insert(arc.slug.clone(), Arc::clone(&arc));
             sites_by_id.insert(arc.id.clone(), arc);
@@ -291,7 +331,26 @@ impl RouteTable {
             sites_by_id,
             domains_by_host,
             upstream_overrides: HashMap::new(),
+            content_type_headers,
+            etag_headers,
         }
+    }
+
+    #[inline]
+    pub fn content_type_header(&self, content_type: &str) -> HeaderValue {
+        if let Some(val) = self.content_type_headers.get(content_type) {
+            return val.clone();
+        }
+        HeaderValue::from_str(content_type)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"))
+    }
+
+    #[inline]
+    pub fn etag_header(&self, sha256: &str) -> Option<HeaderValue> {
+        if let Some(val) = self.etag_headers.get(sha256) {
+            return Some(val.clone());
+        }
+        HeaderValue::from_str(&format!("\"{sha256}\"")).ok()
     }
 
     pub fn apply_snapshot(&mut self, snapshot: EdgeSnapshot) {
@@ -520,6 +579,25 @@ impl RouteTable {
             }
         }
         None
+    }
+}
+
+fn collect_precomputed_headers(
+    manifest: &SiteManifest,
+    content_types: &mut HashMap<String, HeaderValue>,
+    etags: &mut HashMap<String, HeaderValue>,
+) {
+    for file in manifest.files.values() {
+        if !content_types.contains_key(&file.content_type) {
+            let hv = HeaderValue::from_str(&file.content_type)
+                .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
+            content_types.insert(file.content_type.clone(), hv);
+        }
+        if !etags.contains_key(&file.sha256) {
+            if let Ok(ev) = HeaderValue::from_str(&format!("\"{}\"", file.sha256)) {
+                etags.insert(file.sha256.clone(), ev);
+            }
+        }
     }
 }
 

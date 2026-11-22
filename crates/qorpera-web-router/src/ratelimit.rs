@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-const SHARD_COUNT: usize = 64;
+const SHARD_COUNT: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateDecision {
@@ -10,14 +10,17 @@ pub struct RateDecision {
     pub retry_after_secs: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Key128(u64, u64);
+
 struct Bucket {
     tokens: f64,
     last_refill: Instant,
 }
 
 struct Shard {
-    buckets: HashMap<String, Bucket>,
-    fifo: VecDeque<String>,
+    buckets: HashMap<Key128, Bucket>,
+    fifo: VecDeque<Key128>,
     last_sweep: Option<Instant>,
 }
 
@@ -39,28 +42,41 @@ pub struct RateLimiter {
     shards: Vec<Mutex<Shard>>,
 }
 
-fn fnv1a_pair(a: &str, b: &str) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
+#[inline]
+fn hash_pair_128(a: &str, b: &str) -> Key128 {
+    let mut h1: u64 = 0xcbf29ce484222325;
+    let mut h2: u64 = 0x84222325cbf29ce4;
     for byte in a.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
+        let v = *byte as u64;
+        h1 = (h1 ^ v).wrapping_mul(0x100000001b3);
+        h2 = h2.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(v ^ 0x55);
     }
-    hash ^= b'|' as u64;
-    hash = hash.wrapping_mul(0x100000001b3);
+    h1 = (h1 ^ (b'|' as u64)).wrapping_mul(0x100000001b3);
+    h2 = h2.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(0xff);
     for byte in b.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
+        let v = *byte as u64;
+        h1 = (h1 ^ v).wrapping_mul(0x100000001b3);
+        h2 = h2.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(v ^ 0xaa);
     }
-    hash
+    h2 ^= h2 >> 33;
+    h2 = h2.wrapping_mul(0xff51afd7ed558ccd);
+    h2 ^= h2 >> 33;
+    Key128(h1, h2)
 }
 
-fn fnv1a_str(s: &str) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
+#[inline]
+fn hash_str_128(s: &str) -> Key128 {
+    let mut h1: u64 = 0xcbf29ce484222325;
+    let mut h2: u64 = 0x84222325cbf29ce4;
     for byte in s.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
+        let v = *byte as u64;
+        h1 = (h1 ^ v).wrapping_mul(0x100000001b3);
+        h2 = h2.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(v ^ 0x55);
     }
-    hash
+    h2 ^= h2 >> 33;
+    h2 = h2.wrapping_mul(0xff51afd7ed558ccd);
+    h2 ^= h2 >> 33;
+    Key128(h1, h2)
 }
 
 impl RateLimiter {
@@ -84,25 +100,24 @@ impl RateLimiter {
     }
 
     pub fn check(&self, key: &str) -> RateDecision {
-        let shard_idx = (fnv1a_str(key) as usize) & (SHARD_COUNT - 1);
-        self.check_in_shard(shard_idx, key, Instant::now())
+        let k = hash_str_128(key);
+        let shard_idx = (k.0 as usize) & (SHARD_COUNT - 1);
+        self.check_in_shard(shard_idx, k, Instant::now())
     }
 
     pub fn check_pair(&self, host: &str, client_ip: &str) -> RateDecision {
-        let shard_idx = (fnv1a_pair(host, client_ip) as usize) & (SHARD_COUNT - 1);
-        let mut key_buf = String::with_capacity(host.len() + 1 + client_ip.len());
-        key_buf.push_str(host);
-        key_buf.push('|');
-        key_buf.push_str(client_ip);
-        self.check_in_shard(shard_idx, &key_buf, Instant::now())
+        let k = hash_pair_128(host, client_ip);
+        let shard_idx = (k.0 as usize) & (SHARD_COUNT - 1);
+        self.check_in_shard(shard_idx, k, Instant::now())
     }
 
     pub fn check_at(&self, key: &str, now: Instant) -> RateDecision {
-        let shard_idx = (fnv1a_str(key) as usize) & (SHARD_COUNT - 1);
-        self.check_in_shard(shard_idx, key, now)
+        let k = hash_str_128(key);
+        let shard_idx = (k.0 as usize) & (SHARD_COUNT - 1);
+        self.check_in_shard(shard_idx, k, now)
     }
 
-    fn check_in_shard(&self, shard_idx: usize, key: &str, now: Instant) -> RateDecision {
+    fn check_in_shard(&self, shard_idx: usize, key: Key128, now: Instant) -> RateDecision {
         let Ok(mut shard) = self.shards[shard_idx].lock() else {
             return RateDecision {
                 allowed: true,
@@ -110,7 +125,7 @@ impl RateLimiter {
             };
         };
 
-        if let Some(entry) = shard.buckets.get_mut(key) {
+        if let Some(entry) = shard.buckets.get_mut(&key) {
             return self.consume(entry, now);
         }
 
@@ -138,15 +153,15 @@ impl RateLimiter {
             }
         }
 
-        let owned = key.to_string();
-        shard.fifo.push_back(owned.clone());
-        let entry = shard.buckets.entry(owned).or_insert(Bucket {
+        shard.fifo.push_back(key);
+        let entry = shard.buckets.entry(key).or_insert(Bucket {
             tokens: self.burst,
             last_refill: now,
         });
         self.consume(entry, now)
     }
 
+    #[inline]
     fn consume(&self, entry: &mut Bucket, now: Instant) -> RateDecision {
         let elapsed = now.saturating_duration_since(entry.last_refill).as_secs_f64();
         entry.tokens = (entry.tokens + elapsed * self.rate_per_sec).min(self.burst);

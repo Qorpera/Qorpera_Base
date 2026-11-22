@@ -1,4 +1,4 @@
-use crate::blob_store::{BlobError, BlobStore, PutOutcome};
+use crate::blob_store::{AcceptedEncodings, BlobError, BlobStore, PutOutcome};
 use crate::dns_verify::{default_dns_servers, verify_domains_once};
 use crate::proxy::{
     full_body, is_websocket_upgrade, proxy_empty_request, proxy_http_or_ws, ActivityTracker, BoxBody,
@@ -7,10 +7,10 @@ use crate::proxy::{
 use crate::ratelimit::RateLimiter;
 use crate::routes::{
     matching_custom_headers, normalize_host_cow, resolve_static_path, DeploymentKind, EdgeSnapshot,
-    HostScope, ResolvedHost, RouteTable, StaticResolution,
+    HostScope, ResolvedHost, RouteTable, SharedRoutes, StaticResolution,
 };
 use crate::security::{
-    check_cross_site_write, constant_time_eq, extract_client_ip, inject_preview_banner,
+    check_cross_site_write, constant_time_eq, extract_client_ip_cow, inject_preview_banner,
     parse_cookie, render_app_unavailable_page, render_not_found_page, render_password_page,
     render_takedown_page, sanitize_next_path, sanitize_redirect_location, sign_preview_cookie,
     sign_session_cookie, verify_preview_cookie, verify_session_cookie, HSTS_HEADER,
@@ -21,7 +21,7 @@ use http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Limited};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
-use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -29,7 +29,7 @@ use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
@@ -258,7 +258,7 @@ pub struct RouterConfig {
 
 pub struct RouterState {
     pub blobs: Arc<BlobStore>,
-    pub routes: Arc<RwLock<RouteTable>>,
+    pub routes: Arc<SharedRoutes>,
     pub limiter: Arc<RateLimiter>,
     pub unlock_limiter: Arc<RateLimiter>,
     pub activity: Arc<ActivityTracker>,
@@ -289,7 +289,7 @@ impl RouterState {
         let ready = Arc::new(AtomicBool::new(cfg.database_url.is_none()));
         Self {
             blobs,
-            routes: Arc::new(RwLock::new(RouteTable::from_snapshot(initial))),
+            routes: Arc::new(SharedRoutes::new(RouteTable::from_snapshot(initial))),
             limiter: Arc::new(RateLimiter::new(cfg.rate_limit_rps, cfg.rate_limit_burst, 65_536)),
             unlock_limiter: Arc::new(RateLimiter::new(
                 cfg.unlock_limit_rps,
@@ -360,12 +360,17 @@ impl BoundServers {
                         let st = Arc::clone(&state);
                         async move { Ok::<_, hyper::Error>(handle_public(st, peer.ip(), req).await) }
                     });
-                    let _ = hyper::server::conn::http1::Builder::new()
+                    let mut builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+                    builder
+                        .http1()
                         .timer(TokioTimer::new())
-                        .header_read_timeout(HEADER_READ_TIMEOUT)
-                        .serve_connection(io, svc)
-                        .with_upgrades()
-                        .await;
+                        .header_read_timeout(HEADER_READ_TIMEOUT);
+                    builder
+                        .http2()
+                        .timer(TokioTimer::new())
+                        .keep_alive_interval(Duration::from_secs(30))
+                        .keep_alive_timeout(Duration::from_secs(10));
+                    let _ = builder.serve_connection_with_upgrades(io, svc).await;
                 });
             }
         });
@@ -402,6 +407,57 @@ impl BoundServers {
 
         (pub_handle, int_handle)
     }
+}
+
+#[cfg(unix)]
+pub fn spawn_public_unix_listener(
+    path: std::path::PathBuf,
+    state: Arc<RouterState>,
+) -> Result<tokio::task::JoinHandle<()>, std::io::Error> {
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let listener = tokio::net::UnixListener::bind(&path)?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666));
+    }
+    let sem = Arc::new(Semaphore::new(MAX_PUBLIC_CONNS));
+    Ok(tokio::spawn(async move {
+        let loopback = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                continue;
+            };
+            let Ok(permit) = Arc::clone(&sem).try_acquire_owned() else {
+                drop(stream);
+                continue;
+            };
+            let st = Arc::clone(&state);
+            tokio::spawn(async move {
+                let _permit = permit;
+                let io = TokioIo::new(stream);
+                let svc = service_fn(move |req| {
+                    let s = Arc::clone(&st);
+                    async move { Ok::<_, hyper::Error>(handle_public(s, loopback, req).await) }
+                });
+                let mut builder = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+                builder
+                    .http1()
+                    .timer(TokioTimer::new())
+                    .header_read_timeout(HEADER_READ_TIMEOUT);
+                builder
+                    .http2()
+                    .timer(TokioTimer::new())
+                    .keep_alive_interval(Duration::from_secs(30))
+                    .keep_alive_timeout(Duration::from_secs(10));
+                let _ = builder.serve_connection_with_upgrades(io, svc).await;
+            });
+        }
+    }))
 }
 
 #[derive(Serialize)]
@@ -548,11 +604,7 @@ async fn handle_internal(state: Arc<RouterState>, req: Request<Incoming>) -> Res
             .query()
             .and_then(|q| query_param(q, "domain"))
             .unwrap_or_default();
-        let allowed = state
-            .routes
-            .read()
-            .map(|guard| guard.is_tls_allowed(&domain))
-            .unwrap_or(false);
+        let allowed = state.routes.load().is_tls_allowed(&domain);
         return if allowed {
             text_response(StatusCode::OK, "allowed")
         } else {
@@ -593,12 +645,9 @@ async fn handle_internal(state: Arc<RouterState>, req: Request<Incoming>) -> Res
             Ok(s) => s,
             Err(_) => return text_response(StatusCode::BAD_REQUEST, "invalid snapshot json"),
         };
-        if let Ok(mut guard) = state.routes.write() {
-            guard.apply_snapshot(snapshot);
-            state.ready.store(true, Ordering::Release);
-            return json_response(StatusCode::OK, HealthBody { ok: true });
-        }
-        return text_response(StatusCode::INTERNAL_SERVER_ERROR, "route lock poisoned");
+        state.routes.update(|table| table.apply_snapshot(snapshot));
+        state.ready.store(true, Ordering::Release);
+        return json_response(StatusCode::OK, HealthBody { ok: true });
     }
 
     if method == Method::POST {
@@ -618,11 +667,9 @@ async fn handle_internal(state: Arc<RouterState>, req: Request<Incoming>) -> Res
                         Ok(v) => v,
                         Err(_) => return text_response(StatusCode::BAD_REQUEST, "invalid json"),
                     };
-                    if let Ok(mut guard) = state.routes.write() {
-                        guard.set_upstream_override(dep_id.to_string(), parsed.upstream_addr.clone());
-                    } else {
-                        return text_response(StatusCode::INTERNAL_SERVER_ERROR, "route lock poisoned");
-                    }
+                    state.routes.update(|table| {
+                        table.set_upstream_override(dep_id.to_string(), parsed.upstream_addr.clone());
+                    });
                     if let Some(ref db_url) = state.database_url {
                         persist_upstream_to_db(db_url, &state.db_slot, dep_id, &parsed.upstream_addr).await;
                     }
@@ -692,6 +739,7 @@ async fn handle_public(
         .get("x-forwarded-host")
         .or_else(|| req.headers().get("host"))
         .and_then(|v| v.to_str().ok())
+        .or_else(|| req.uri().authority().map(|a| a.as_str()))
         .unwrap_or("");
     let Some(host_cow) = normalize_host_cow(raw_host) else {
         return html_response(StatusCode::BAD_REQUEST, render_not_found_page(), true);
@@ -704,9 +752,17 @@ async fn handle_public(
             host_owned.as_deref().unwrap_or("")
         }
     };
-    let client_ip = extract_client_ip(req.headers(), peer_ip, &state.trusted_proxies);
+    let client_ip_cow = extract_client_ip_cow(req.headers(), peer_ip, &state.trusted_proxies);
+    let client_ip_owned: Option<String>;
+    let client_ip: &str = match client_ip_cow {
+        std::borrow::Cow::Borrowed(s) => s,
+        std::borrow::Cow::Owned(s) => {
+            client_ip_owned = Some(s);
+            client_ip_owned.as_deref().unwrap_or("")
+        }
+    };
 
-    let decision = state.limiter.check_pair(host, &client_ip);
+    let decision = state.limiter.check_pair(host, client_ip);
     if !decision.allowed {
         return Response::builder()
             .status(StatusCode::TOO_MANY_REQUESTS)
@@ -722,19 +778,9 @@ async fn handle_public(
         return text_response(StatusCode::FORBIDDEN, "cross-site write refused");
     }
 
-    let (resolved_host, global_public_enabled, live_upstream) = {
-        let Ok(guard) = state.routes.read() else {
-            return text_response(StatusCode::SERVICE_UNAVAILABLE, "router unavailable");
-        };
-        let resolved_host = guard.resolve_host(host);
-        let live_upstream = match &resolved_host {
-            Some(ResolvedHost::Site { site, scope, .. }) if *scope != HostScope::NextHost => {
-                site.live_deployment.as_ref().and_then(|dep| guard.upstream_for(dep))
-            }
-            _ => None,
-        };
-        (resolved_host, guard.public_enabled, live_upstream)
-    };
+    let route_table = state.routes.load();
+    let resolved_host = route_table.resolve_host(host);
+    let global_public_enabled = route_table.public_enabled;
 
     let Some(resolved_host) = resolved_host else {
         return html_response(StatusCode::NOT_FOUND, render_not_found_page(), true);
@@ -771,17 +817,24 @@ async fn handle_public(
 
     if scope == HostScope::NextHost && req.method() == Method::GET && req.uri().path() == "/.qorpera/enter" {
         let host_s = host.to_string();
+        drop(route_table);
         return handle_preview_enter(state, &site, &host_s, req).await;
     }
 
     if scope == HostScope::OwnHost && is_member_pass_post {
         let host_s = host.to_string();
+        drop(route_table);
         return handle_member_pass(state, &site, &host_s, req).await;
     }
 
-    let now_unix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let is_public = global_public_enabled && site.is_public && scope != HostScope::NextHost;
+    let now_unix = if canonical_redirect.is_some() || !is_public {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    } else {
+        0
+    };
 
     if let Some(primary) = canonical_redirect {
         let in_app_iframe = scope == HostScope::OwnHost
@@ -814,8 +867,6 @@ async fn handle_public(
         }
     }
 
-    let is_public = global_public_enabled && site.is_public && scope != HostScope::NextHost;
-
     if !is_public && req.uri().path() == "/robots.txt" && req.method() == Method::GET {
         return Response::builder()
             .status(StatusCode::OK)
@@ -831,7 +882,9 @@ async fn handle_public(
         && req.method() == Method::POST
     {
         let host_s = host.to_string();
-        return handle_unlock(state, &site, &host_s, &client_ip, req).await;
+        let ip_s = client_ip.to_string();
+        drop(route_table);
+        return handle_unlock(state, &site, &host_s, &ip_s, req).await;
     }
 
     let mut preview_version_id: Option<String> = None;
@@ -909,11 +962,16 @@ async fn handle_public(
                 status,
             } => {
                 if deployment.kind == DeploymentKind::Static || status == 200 {
+                    let ct_hdr = route_table.content_type_header(&file.content_type);
+                    let etag_hdr = route_table.etag_header(&file.sha256);
+                    drop(route_table);
                     return serve_static_file(
                         &state.blobs,
                         &deployment.manifest,
                         resolved_path.as_ref(),
                         file,
+                        ct_hdr,
+                        etag_hdr,
                         status,
                         is_public,
                         scope == HostScope::NextHost,
@@ -931,17 +989,10 @@ async fn handle_public(
         }
     }
 
-    state.activity.record(&deployment.id);
+    let current_upstream = route_table.upstream_for(deployment);
+    drop(route_table);
 
-    let current_upstream = if scope == HostScope::NextHost {
-        state
-            .routes
-            .read()
-            .ok()
-            .and_then(|g| g.upstream_for(deployment))
-    } else {
-        live_upstream
-    };
+    state.activity.record(&deployment.id);
 
     let wake_deployment = || WakeRequest {
         deployment_id: deployment.id.clone(),
@@ -969,6 +1020,7 @@ async fn handle_public(
     };
 
     let host_s = host.to_string();
+    let ip_s = client_ip.to_string();
     let retry_meta = if was_cached
         && matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS)
         && !is_websocket_upgrade(req.headers())
@@ -985,20 +1037,18 @@ async fn handle_public(
         None
     };
 
-    match proxy_http_or_ws(&state.proxy_client, &upstream, req, &host_s, &client_ip, !is_public).await {
+    match proxy_http_or_ws(&state.proxy_client, &upstream, req, &host_s, &ip_s, !is_public).await {
         Ok(res) => res,
         Err(ProxyError::ConnectFailed(_)) => {
-            let existing_replacement = if let Ok(mut guard) = state.routes.write() {
-                if guard.clear_upstream_if_matches(&deployment.id, &upstream) {
+            let existing_replacement = state.routes.update(|table| {
+                if table.clear_upstream_if_matches(&deployment.id, &upstream) {
                     None
                 } else {
-                    guard
+                    table
                         .upstream_for(deployment)
                         .filter(|addr| addr != &upstream)
                 }
-            } else {
-                None
-            };
+            });
             if let Some((method, pq, headers)) = retry_meta {
                 let next_upstream = match existing_replacement {
                     Some(addr) => Ok(addr),
@@ -1012,7 +1062,7 @@ async fn handle_public(
                         &pq,
                         &headers,
                         &host_s,
-                        &client_ip,
+                        &ip_s,
                         !is_public,
                     )
                     .await
@@ -1038,9 +1088,9 @@ async fn handle_public(
 async fn wake_and_record(state: &Arc<RouterState>, req: WakeRequest) -> Result<String, String> {
     let dep_id = req.deployment_id.clone();
     let addr = state.waker.wake(req).await?;
-    if let Ok(mut guard) = state.routes.write() {
-        guard.set_upstream_override(dep_id.clone(), Some(addr.clone()));
-    }
+    state.routes.update(|table| {
+        table.set_upstream_override(dep_id.clone(), Some(addr.clone()));
+    });
     if let Some(ref db_url) = state.database_url {
         let url = db_url.clone();
         let slot = Arc::clone(&state.db_slot);
@@ -1210,6 +1260,8 @@ async fn serve_static_file(
     manifest: &crate::routes::SiteManifest,
     resolved_path: &str,
     file: &crate::routes::ManifestFile,
+    content_type_hdr: HeaderValue,
+    etag_hdr: Option<HeaderValue>,
     status: u16,
     is_public: bool,
     is_preview: bool,
@@ -1225,20 +1277,10 @@ async fn serve_static_file(
             .unwrap();
     }
 
-    let mut etag_buf = [0u8; 66];
-    let etag_owned;
-    let etag: &str = if file.sha256.len() == 64 && file.sha256.is_ascii() {
-        etag_buf[0] = b'"';
-        etag_buf[1..65].copy_from_slice(file.sha256.as_bytes());
-        etag_buf[65] = b'"';
-        std::str::from_utf8(&etag_buf).unwrap_or("")
-    } else {
-        etag_owned = format!("\"{}\"", file.sha256);
-        &etag_owned
-    };
     if status == 200 && !is_preview {
         if let Some(inm) = req.headers().get("if-none-match").and_then(|v| v.to_str().ok()) {
-            if etag_matches(inm, etag) {
+            let etag_str = etag_hdr.as_ref().and_then(|v| v.to_str().ok()).unwrap_or("");
+            if !etag_str.is_empty() && etag_matches(inm, etag_str) {
                 return build_static_response(
                     StatusCode::NOT_MODIFIED,
                     None,
@@ -1246,7 +1288,8 @@ async fn serve_static_file(
                     manifest,
                     resolved_path,
                     file,
-                    etag,
+                    content_type_hdr,
+                    etag_hdr,
                     is_public,
                     None,
                     full_body(Bytes::new()),
@@ -1286,7 +1329,8 @@ async fn serve_static_file(
                             manifest,
                             resolved_path,
                             file,
-                            etag,
+                            content_type_hdr,
+                            etag_hdr,
                             is_public,
                             None,
                             body,
@@ -1305,14 +1349,16 @@ async fn serve_static_file(
         }
     }
 
-    let accepts_gzip = !is_preview
-        && req
-            .headers()
+    let accepted = if is_preview {
+        AcceptedEncodings::IDENTITY
+    } else {
+        req.headers()
             .get("accept-encoding")
             .and_then(|v| v.to_str().ok())
-            .map_or(false, header_accepts_gzip);
+            .map_or(AcceptedEncodings::IDENTITY, AcceptedEncodings::from_header)
+    };
 
-    let payload = match blobs.get(&file.sha256, accepts_gzip).await {
+    let payload = match blobs.get_encoded(&file.sha256, accepted).await {
         Ok(p) => p,
         Err(_) => return text_response(StatusCode::SERVICE_UNAVAILABLE, "blob unavailable"),
     };
@@ -1337,7 +1383,8 @@ async fn serve_static_file(
         manifest,
         resolved_path,
         file,
-        etag,
+        content_type_hdr,
+        etag_hdr,
         is_public,
         encoding,
         body,
@@ -1352,7 +1399,8 @@ fn build_static_response(
     manifest: &crate::routes::SiteManifest,
     resolved_path: &str,
     file: &crate::routes::ManifestFile,
-    etag: &str,
+    content_type_hdr: HeaderValue,
+    etag_hdr: Option<HeaderValue>,
     is_public: bool,
     encoding: Option<&'static str>,
     body: BoxBody,
@@ -1364,16 +1412,13 @@ fn build_static_response(
     } else {
         "public, max-age=0, must-revalidate"
     };
-    let mut res = Response::builder()
-        .status(status)
-        .body(body)
-        .unwrap_or_else(|_| text_response(StatusCode::INTERNAL_SERVER_ERROR, "response error"));
+    let mut res = Response::new(body);
+    *res.status_mut() = status;
     let headers = res.headers_mut();
+    headers.reserve(12);
 
-    let content_type = HeaderValue::from_str(&file.content_type)
-        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
-    headers.insert(HeaderName::from_static("content-type"), content_type);
-    if let Ok(etag_val) = HeaderValue::from_str(etag) {
+    headers.insert(HeaderName::from_static("content-type"), content_type_hdr);
+    if let Some(etag_val) = etag_hdr {
         headers.insert(HeaderName::from_static("etag"), etag_val);
     }
     headers.insert(
@@ -1422,12 +1467,14 @@ fn build_static_response(
             HeaderValue::from_static("same-origin"),
         );
     }
-    for (k, v) in matching_custom_headers(manifest, resolved_path, is_public) {
-        if let (Ok(name), Ok(val)) = (
-            HeaderName::from_bytes(k.as_bytes()),
-            HeaderValue::from_str(&v),
-        ) {
-            headers.insert(name, val);
+    if !manifest.headers.is_empty() {
+        for (k, v) in matching_custom_headers(manifest, resolved_path, is_public) {
+            if let (Ok(name), Ok(val)) = (
+                HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(&v),
+            ) {
+                headers.insert(name, val);
+            }
         }
     }
     res
@@ -1442,31 +1489,6 @@ fn etag_matches(if_none_match: &str, etag: &str) -> bool {
         let token = candidate.trim();
         let normalized = token.strip_prefix("W/").unwrap_or(token);
         if normalized == etag {
-            return true;
-        }
-    }
-    false
-}
-
-fn header_accepts_gzip(header: &str) -> bool {
-    for part in header.split(',') {
-        let mut segments = part.split(';');
-        let Some(coding) = segments.next().map(str::trim) else {
-            continue;
-        };
-        if !coding.eq_ignore_ascii_case("gzip") {
-            continue;
-        }
-        let mut q = 1.0f32;
-        for param in segments {
-            let p = param.trim();
-            if let Some(val) = p.strip_prefix("q=").or_else(|| p.strip_prefix("Q=")) {
-                if let Ok(parsed) = val.trim().parse::<f32>() {
-                    q = parsed;
-                }
-            }
-        }
-        if q > 0.0 {
             return true;
         }
     }

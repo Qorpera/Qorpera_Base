@@ -1,6 +1,6 @@
-use crate::routes::{EdgeSnapshot, RouteTable};
+use crate::routes::{EdgeSnapshot, SharedRoutes};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_postgres::NoTls;
@@ -12,7 +12,7 @@ const DB_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn spawn_postgres_sync(
     database_url: String,
-    routes: Arc<RwLock<RouteTable>>,
+    routes: Arc<SharedRoutes>,
     ready: Arc<AtomicBool>,
     reconcile_interval: Duration,
     domain_verify_tx: Option<mpsc::Sender<()>>,
@@ -44,7 +44,7 @@ pub fn spawn_postgres_sync(
 
 async fn run_sync_session(
     database_url: &str,
-    routes: Arc<RwLock<RouteTable>>,
+    routes: Arc<SharedRoutes>,
     ready: Arc<AtomicBool>,
     reconcile_interval: Duration,
     domain_verify_tx: Option<mpsc::Sender<()>>,
@@ -125,7 +125,7 @@ fn should_trigger_dns(payload: &str) -> bool {
 
 async fn refresh_snapshot(
     client: &tokio_postgres::Client,
-    routes: &Arc<RwLock<RouteTable>>,
+    routes: &Arc<SharedRoutes>,
 ) -> Result<(), String> {
     let row = tokio::time::timeout(
         DB_QUERY_TIMEOUT,
@@ -137,8 +137,7 @@ async fn refresh_snapshot(
     let json: serde_json::Value = row.get(0);
     let snapshot: EdgeSnapshot =
         serde_json::from_value(json).map_err(|e| format!("snapshot parse failed: {e}"))?;
-    let mut guard = routes.write().map_err(|_| "route lock poisoned".to_string())?;
-    guard.apply_snapshot(snapshot);
+    routes.update(|table| table.apply_snapshot(snapshot));
     Ok(())
 }
 

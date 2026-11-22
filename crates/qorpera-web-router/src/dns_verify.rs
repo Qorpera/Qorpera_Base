@@ -1,8 +1,8 @@
-use crate::routes::{DomainStatus, RouteTable};
+use crate::routes::{DomainStatus, SharedRoutes};
 use serde::{Deserialize, Serialize};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Semaphore};
@@ -413,15 +413,13 @@ fn status_sql_str(status: DomainStatus) -> &'static str {
 }
 
 pub async fn verify_domains_once(
-    routes: &Arc<RwLock<RouteTable>>,
+    routes: &Arc<SharedRoutes>,
     dns_servers: &[SocketAddr],
     database_url: Option<&str>,
     query_timeout: Duration,
 ) -> Vec<DomainCheckOutcome> {
     let (domains, expected_ipv4, expected_ipv6, expected_cname_target, domains_enabled) = {
-        let Ok(guard) = routes.read() else {
-            return Vec::new();
-        };
+        let guard = routes.load();
         (
             guard.custom_domains(),
             guard.edge_ipv4.clone(),
@@ -507,9 +505,9 @@ pub async fn verify_domains_once(
                 Some(eval.reason.as_str())
             };
 
-            if let Ok(mut guard) = routes_ref.write() {
-                guard.update_domain_check(&domain.id, next_status, eval.verified);
-            }
+            routes_ref.update(|table| {
+                table.update_domain_check(&domain.id, next_status, eval.verified);
+            });
 
             if let Some(ref client) = db_ref {
                 let res = tokio::time::timeout(
@@ -560,7 +558,7 @@ pub async fn verify_domains_once(
 }
 
 pub fn spawn_dns_verifier(
-    routes: Arc<RwLock<RouteTable>>,
+    routes: Arc<SharedRoutes>,
     dns_servers: Vec<SocketAddr>,
     database_url: Option<String>,
     interval: Duration,

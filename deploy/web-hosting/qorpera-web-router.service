@@ -7,10 +7,13 @@ Wants=network-online.target
 Type=simple
 DynamicUser=yes
 StateDirectory=qorpera-web-blobs
+RuntimeDirectory=qorpera-web-router
+RuntimeDirectoryMode=0755
 LoadCredentialEncrypted=control_token:/etc/credstore.encrypted/qorpera-web-control-token
 LoadCredentialEncrypted=cookie_secret:/etc/credstore.encrypted/qorpera-web-cookie-secret
 LoadCredentialEncrypted=database_url:/etc/credstore.encrypted/qorpera-web-database-url
 Environment=QORPERA_WEB_ROUTER_PUBLIC_BIND=127.0.0.1:8095
+Environment=QORPERA_WEB_ROUTER_PUBLIC_UNIX=/run/qorpera-web-router/public.sock
 Environment=QORPERA_WEB_ROUTER_INTERNAL_BIND=127.0.0.1:8094
 Environment=QORPERA_WEB_ROUTER_BLOB_ROOT=/var/lib/qorpera-web-blobs
 Environment=QORPERA_WEB_ROUTER_CONTROL_TOKEN_FILE=%d/control_token
@@ -27,6 +30,7 @@ PrivateTmp=yes
 PrivateDevices=yes
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LimitNOFILE=65536
 MemoryMax=1G
 
 [Install]

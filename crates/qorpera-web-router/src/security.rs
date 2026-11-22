@@ -1,5 +1,6 @@
 use http::{HeaderMap, Method};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::net::IpAddr;
 use subtle::ConstantTimeEq;
 
@@ -15,15 +16,30 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 pub fn extract_client_ip(headers: &HeaderMap, peer_ip: IpAddr, trusted_proxies: &[IpAddr]) -> String {
+    extract_client_ip_cow(headers, peer_ip, trusted_proxies).into_owned()
+}
+
+pub fn extract_client_ip_cow<'a>(
+    headers: &'a HeaderMap,
+    peer_ip: IpAddr,
+    trusted_proxies: &[IpAddr],
+) -> Cow<'a, str> {
     let trusted = peer_ip.is_loopback() || trusted_proxies.contains(&peer_ip);
     if trusted {
         if let Some(val) = headers.get(CLIENT_IP_HEADER).and_then(|v| v.to_str().ok()) {
-            if let Ok(parsed) = val.trim().parse::<IpAddr>() {
-                return normalize_ip_bucket(parsed);
+            let trimmed = val.trim();
+            if let Ok(parsed) = trimmed.parse::<IpAddr>() {
+                if matches!(parsed, IpAddr::V4(_)) {
+                    return Cow::Borrowed(trimmed);
+                }
+                return Cow::Owned(normalize_ip_bucket(parsed));
             }
         }
     }
-    normalize_ip_bucket(peer_ip)
+    if peer_ip == IpAddr::V4(std::net::Ipv4Addr::LOCALHOST) {
+        return Cow::Borrowed("127.0.0.1");
+    }
+    Cow::Owned(normalize_ip_bucket(peer_ip))
 }
 
 fn normalize_ip_bucket(ip: IpAddr) -> String {

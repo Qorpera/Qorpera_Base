@@ -488,12 +488,14 @@ async fn wait_for_health(
         format!("/{health_path}")
     };
     let mut last_err = "not_ready".to_string();
+    let mut step = Duration::from_millis(10).min(interval);
     while Instant::now() < deadline {
         match probe_http(addr, &path).await {
             Ok(()) => return Ok(()),
             Err(err) => {
                 last_err = err;
-                tokio::time::sleep(interval).await;
+                tokio::time::sleep(step).await;
+                step = (step * 2).min(interval);
             }
         }
     }

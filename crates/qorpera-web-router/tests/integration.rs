@@ -1234,6 +1234,38 @@ async fn hardening_security_utf8_limits_cookie_strip_stale_pool_and_readiness() 
         .unwrap()
         .to_string();
 
+    let (st, hdrs, body_br) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/")
+            .header("host", "priv-hard.qorpera.site")
+            .header("cookie", session_cookie.clone())
+            .header("accept-encoding", "gzip, br, zstd")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(hdrs.get("content-encoding").unwrap(), "br");
+    assert!(body_br.len() < html_bytes.len());
+
+    let (st, hdrs, body_zstd) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/")
+            .header("host", "priv-hard.qorpera.site")
+            .header("cookie", session_cookie.clone())
+            .header("accept-encoding", "zstd;q=1.0, br;q=0.5, gzip;q=0.5")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(hdrs.get("content-encoding").unwrap(), "zstd");
+    assert!(body_zstd.len() < html_bytes.len());
+
     let (st, hdrs, _) = http_call(
         pub_addr,
         Request::builder()
@@ -1282,4 +1314,24 @@ async fn hardening_security_utf8_limits_cookie_strip_stale_pool_and_readiness() 
     assert_eq!(saw_cookie.lock().unwrap().as_str(), "app_sid=user42");
     assert_eq!(hdrs.get("cache-control").unwrap(), "private, no-store, no-transform");
     assert_eq!(hdrs.get("x-robots-tag").unwrap(), "noindex, nofollow, noarchive");
+
+    let stream = TcpStream::connect(pub_addr).await.unwrap();
+    let io = TokioIo::new(stream);
+    let (mut h2_sender, h2_conn) =
+        hyper::client::conn::http2::handshake(hyper_util::rt::TokioExecutor::new(), io)
+            .await
+            .unwrap();
+    tokio::spawn(async move {
+        let _ = h2_conn.await;
+    });
+    let h2_req = Request::builder()
+        .method("GET")
+        .uri("http://priv-hard.qorpera.site/")
+        .header("cookie", session_cookie)
+        .header("accept-encoding", "br, zstd, gzip")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+    let h2_res = h2_sender.send_request(h2_req).await.unwrap();
+    assert_eq!(h2_res.status(), StatusCode::OK);
+    assert_eq!(h2_res.headers().get("content-encoding").unwrap(), "br");
 }

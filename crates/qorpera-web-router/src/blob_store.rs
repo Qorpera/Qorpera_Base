@@ -1,20 +1,25 @@
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use flate2::{write::GzEncoder, Compression};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::broadcast;
 
 pub const DEFAULT_MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
 pub const DEFAULT_MAX_BLOB_BYTES: usize = 100 * 1024 * 1024;
-const GZIP_MIN_BYTES: usize = 256;
-const BLOCKING_OFFLOAD_THRESHOLD: usize = 32 * 1024;
-const CACHE_SHARDS: usize = 16;
+const COMPRESS_MIN_BYTES: usize = 256;
+const PRECOMPRESS_MAX_BYTES: usize = 8 * 1024 * 1024;
+const BLOCKING_OFFLOAD_THRESHOLD: usize = 16 * 1024;
+const CACHE_SHARDS: usize = 64;
+const BROTLI_QUALITY: u32 = 6;
+const BROTLI_WINDOW: u32 = 22;
+const ZSTD_LEVEL: i32 = 9;
 
 static TEMP_FILE_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -28,6 +33,8 @@ pub enum PutOutcome {
 pub enum ContentEncoding {
     Identity,
     Gzip,
+    Brotli,
+    Zstd,
 }
 
 impl ContentEncoding {
@@ -35,7 +42,62 @@ impl ContentEncoding {
         match self {
             ContentEncoding::Identity => None,
             ContentEncoding::Gzip => Some("gzip"),
+            ContentEncoding::Brotli => Some("br"),
+            ContentEncoding::Zstd => Some("zstd"),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AcceptedEncodings {
+    pub gzip_q: f32,
+    pub br_q: f32,
+    pub zstd_q: f32,
+}
+
+impl AcceptedEncodings {
+    pub const IDENTITY: Self = Self {
+        gzip_q: 0.0,
+        br_q: 0.0,
+        zstd_q: 0.0,
+    };
+
+    pub const GZIP_ONLY: Self = Self {
+        gzip_q: 1.0,
+        br_q: 0.0,
+        zstd_q: 0.0,
+    };
+
+    pub fn from_header(header: &str) -> Self {
+        let mut out = Self::default();
+        for part in header.split(',') {
+            let mut segments = part.split(';');
+            let Some(coding) = segments.next().map(str::trim) else {
+                continue;
+            };
+            if coding.is_empty() {
+                continue;
+            }
+            let mut q = 1.0f32;
+            for param in segments {
+                let p = param.trim();
+                if let Some(val) = p.strip_prefix("q=").or_else(|| p.strip_prefix("Q=")) {
+                    if let Ok(parsed) = val.trim().parse::<f32>() {
+                        if parsed.is_finite() {
+                            q = parsed.clamp(0.0, 1.0);
+                        }
+                    }
+                }
+            }
+            if coding.eq_ignore_ascii_case("br") {
+                out.br_q = q;
+            } else if coding.eq_ignore_ascii_case("zstd") {
+                out.zstd_q = q;
+            } else if coding.eq_ignore_ascii_case("gzip") {
+                out.gzip_q = q;
+            }
+        }
+        out
     }
 }
 
@@ -95,20 +157,55 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 struct CachedBlob {
     raw: Bytes,
     gzip: Option<Bytes>,
+    brotli: Option<Bytes>,
+    zstd: Option<Bytes>,
     accounted_bytes: usize,
 }
 
 impl CachedBlob {
-    fn to_payload(&self, prefer_gzip: bool) -> BlobPayload {
+    fn new(raw: Bytes, gzip: Option<Bytes>, brotli: Option<Bytes>, zstd: Option<Bytes>) -> Self {
+        let accounted_bytes = raw.len()
+            + gzip.as_ref().map_or(0, Bytes::len)
+            + brotli.as_ref().map_or(0, Bytes::len)
+            + zstd.as_ref().map_or(0, Bytes::len);
+        Self {
+            raw,
+            gzip,
+            brotli,
+            zstd,
+            accounted_bytes,
+        }
+    }
+
+    fn to_payload(&self, accepted: AcceptedEncodings) -> BlobPayload {
         let raw_len = self.raw.len();
-        if prefer_gzip {
-            if let Some(gz) = &self.gzip {
-                return BlobPayload {
-                    bytes: gz.clone(),
-                    raw_len,
-                    encoding: ContentEncoding::Gzip,
-                };
+        let mut best_q = 0.0f32;
+        let mut best: Option<(ContentEncoding, &Bytes)> = None;
+
+        if accepted.br_q > best_q {
+            if let Some(ref br) = self.brotli {
+                best_q = accepted.br_q;
+                best = Some((ContentEncoding::Brotli, br));
             }
+        }
+        if accepted.zstd_q > best_q {
+            if let Some(ref zs) = self.zstd {
+                best_q = accepted.zstd_q;
+                best = Some((ContentEncoding::Zstd, zs));
+            }
+        }
+        if accepted.gzip_q > best_q {
+            if let Some(ref gz) = self.gzip {
+                best = Some((ContentEncoding::Gzip, gz));
+            }
+        }
+
+        if let Some((encoding, bytes)) = best {
+            return BlobPayload {
+                bytes: bytes.clone(),
+                raw_len,
+                encoding,
+            };
         }
         BlobPayload {
             bytes: self.raw.clone(),
@@ -118,31 +215,77 @@ impl CachedBlob {
     }
 }
 
-struct LruNode {
-    key: String,
+struct SieveEntry {
     value: CachedBlob,
+    visited: AtomicBool,
+}
+
+struct SieveNode {
+    key: String,
+    entry: Arc<SieveEntry>,
     prev: Option<usize>,
     next: Option<usize>,
 }
 
-struct LruShard {
+struct SieveShard {
     index: HashMap<String, usize>,
-    nodes: Vec<Option<LruNode>>,
+    entries: HashMap<String, Arc<SieveEntry>>,
+    nodes: Vec<Option<SieveNode>>,
     free: Vec<usize>,
     head: Option<usize>,
     tail: Option<usize>,
+    hand: Option<usize>,
     total_bytes: usize,
     max_bytes: usize,
 }
 
-impl LruShard {
+struct WaitFreeShard {
+    readable: ArcSwap<HashMap<String, Arc<SieveEntry>>>,
+    writer: Mutex<SieveShard>,
+}
+
+impl WaitFreeShard {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            readable: ArcSwap::from_pointee(HashMap::new()),
+            writer: Mutex::new(SieveShard::new(max_bytes)),
+        }
+    }
+
+    #[inline]
+    fn contains(&self, key: &str) -> bool {
+        self.readable.load().contains_key(key)
+    }
+
+    #[inline]
+    fn get_wait_free(&self, key: &str, accepted: AcceptedEncodings) -> Option<BlobPayload> {
+        let map = self.readable.load();
+        let entry = map.get(key)?;
+        if !entry.visited.load(Ordering::Relaxed) {
+            entry.visited.store(true, Ordering::Relaxed);
+        }
+        Some(entry.value.to_payload(accepted))
+    }
+
+    fn insert(&self, key: String, blob: CachedBlob) {
+        if let Ok(mut guard) = self.writer.lock() {
+            if guard.insert(key, blob) {
+                self.readable.store(Arc::new(guard.entries.clone()));
+            }
+        }
+    }
+}
+
+impl SieveShard {
     fn new(max_bytes: usize) -> Self {
         Self {
             index: HashMap::new(),
+            entries: HashMap::new(),
             nodes: Vec::new(),
             free: Vec::new(),
             head: None,
             tail: None,
+            hand: None,
             total_bytes: 0,
             max_bytes,
         }
@@ -155,6 +298,9 @@ impl LruShard {
             };
             (node.prev, node.next)
         };
+        if self.hand == Some(idx) {
+            self.hand = prev;
+        }
         if let Some(p) = prev {
             if let Some(pn) = self.nodes[p].as_mut() {
                 pn.next = next;
@@ -175,61 +321,96 @@ impl LruShard {
         }
     }
 
-    fn push_back(&mut self, idx: usize) {
-        let old_tail = self.tail;
+    fn push_front(&mut self, idx: usize) {
+        let old_head = self.head;
         if let Some(node) = self.nodes[idx].as_mut() {
-            node.prev = old_tail;
-            node.next = None;
+            node.prev = None;
+            node.next = old_head;
         }
-        if let Some(t) = old_tail {
-            if let Some(tn) = self.nodes[t].as_mut() {
-                tn.next = Some(idx);
+        if let Some(h) = old_head {
+            if let Some(hn) = self.nodes[h].as_mut() {
+                hn.prev = Some(idx);
             }
         } else {
-            self.head = Some(idx);
+            self.tail = Some(idx);
         }
-        self.tail = Some(idx);
+        self.head = Some(idx);
     }
 
-    fn get(&mut self, key: &str, prefer_gzip: bool) -> Option<BlobPayload> {
-        let idx = *self.index.get(key)?;
-        if self.tail != Some(idx) {
+    fn evict_one(&mut self) -> bool {
+        let mut cursor = self.hand.or(self.tail);
+        let Some(start) = cursor else {
+            return false;
+        };
+        let mut steps = 0usize;
+        let max_steps = self.index.len().saturating_mul(2).saturating_add(2);
+        while let Some(idx) = cursor {
+            if steps > max_steps {
+                cursor = Some(start);
+                break;
+            }
+            steps += 1;
+            let (was_visited, prev) = match self.nodes[idx].as_ref() {
+                Some(n) => (n.entry.visited.swap(false, Ordering::Relaxed), n.prev),
+                None => return false,
+            };
+            if !was_visited {
+                self.hand = prev;
+                self.detach(idx);
+                if let Some(evicted) = self.nodes[idx].take() {
+                    self.index.remove(&evicted.key);
+                    self.entries.remove(&evicted.key);
+                    self.total_bytes = self
+                        .total_bytes
+                        .saturating_sub(evicted.entry.value.accounted_bytes);
+                }
+                self.free.push(idx);
+                return true;
+            }
+            cursor = prev.or(self.tail);
+        }
+        if let Some(idx) = cursor {
             self.detach(idx);
-            self.push_back(idx);
+            if let Some(evicted) = self.nodes[idx].take() {
+                self.index.remove(&evicted.key);
+                self.entries.remove(&evicted.key);
+                self.total_bytes = self
+                    .total_bytes
+                    .saturating_sub(evicted.entry.value.accounted_bytes);
+            }
+            self.free.push(idx);
+            return true;
         }
-        self.nodes[idx].as_ref().map(|n| n.value.to_payload(prefer_gzip))
+        false
     }
 
-    fn insert(&mut self, key: String, raw: Bytes, gzip: Option<Bytes>) {
-        let accounted = raw.len() + gzip.as_ref().map_or(0, Bytes::len);
+    fn insert(&mut self, key: String, blob: CachedBlob) -> bool {
+        let accounted = blob.accounted_bytes;
         if self.max_bytes == 0 || accounted > self.max_bytes {
-            return;
+            return false;
         }
         if let Some(existing_idx) = self.index.remove(&key) {
             self.detach(existing_idx);
+            self.entries.remove(&key);
             if let Some(old) = self.nodes[existing_idx].take() {
-                self.total_bytes = self.total_bytes.saturating_sub(old.value.accounted_bytes);
+                self.total_bytes = self
+                    .total_bytes
+                    .saturating_sub(old.entry.value.accounted_bytes);
             }
             self.free.push(existing_idx);
         }
         while self.total_bytes + accounted > self.max_bytes {
-            let Some(oldest_idx) = self.head else {
+            if !self.evict_one() {
                 break;
-            };
-            self.detach(oldest_idx);
-            if let Some(evicted) = self.nodes[oldest_idx].take() {
-                self.index.remove(&evicted.key);
-                self.total_bytes = self.total_bytes.saturating_sub(evicted.value.accounted_bytes);
             }
-            self.free.push(oldest_idx);
         }
-        let node = LruNode {
+        let entry = Arc::new(SieveEntry {
+            value: blob,
+            visited: AtomicBool::new(false),
+        });
+        let node = SieveNode {
             key: key.clone(),
-            value: CachedBlob {
-                raw,
-                gzip,
-                accounted_bytes: accounted,
-            },
+            entry: Arc::clone(&entry),
             prev: None,
             next: None,
         };
@@ -242,8 +423,10 @@ impl LruShard {
             slot
         };
         self.total_bytes += accounted;
-        self.index.insert(key, idx);
-        self.push_back(idx);
+        self.index.insert(key.clone(), idx);
+        self.entries.insert(key, entry);
+        self.push_front(idx);
+        true
     }
 }
 
@@ -284,21 +467,32 @@ impl Drop for InFlightGuard<'_> {
     }
 }
 
-fn shard_for_sha(sha256: &str) -> usize {
-    let b = sha256.as_bytes().first().copied().unwrap_or(0);
-    let nibble = match b {
+fn hex_nibble(b: u8) -> usize {
+    match b {
         b'0'..=b'9' => (b - b'0') as usize,
         b'a'..=b'f' => (b - b'a' + 10) as usize,
         _ => 0,
-    };
-    nibble & (CACHE_SHARDS - 1)
+    }
+}
+
+fn shard_for_sha(sha256: &str) -> usize {
+    let bytes = sha256.as_bytes();
+    let n0 = bytes.first().copied().map_or(0, hex_nibble);
+    let n1 = bytes.get(1).copied().map_or(0, hex_nibble);
+    ((n0 << 4) | n1) & (CACHE_SHARDS - 1)
+}
+
+struct PrecompressedVariants {
+    gzip: Option<Bytes>,
+    brotli: Option<Bytes>,
+    zstd: Option<Bytes>,
 }
 
 pub struct BlobStore {
     root: PathBuf,
     max_blob_bytes: usize,
     max_cache_bytes: usize,
-    shards: Vec<Mutex<LruShard>>,
+    shards: Vec<WaitFreeShard>,
     inflight: Mutex<HashMap<String, broadcast::Sender<ReadResult>>>,
 }
 
@@ -311,7 +505,7 @@ impl BlobStore {
         };
         let mut shards = Vec::with_capacity(CACHE_SHARDS);
         for _ in 0..CACHE_SHARDS {
-            shards.push(Mutex::new(LruShard::new(per_shard)));
+            shards.push(WaitFreeShard::new(per_shard));
         }
         Self {
             root,
@@ -333,19 +527,17 @@ impl BlobStore {
         Ok(self.root.join(&sha256[0..2]).join(&sha256[2..4]).join(sha256))
     }
 
-    fn gzip_path(raw_path: &Path) -> PathBuf {
+    fn sidecar_path(raw_path: &Path, ext: &str) -> PathBuf {
         let mut os = raw_path.as_os_str().to_os_string();
-        os.push(".gz");
+        os.push(ext);
         PathBuf::from(os)
     }
 
     pub async fn exists(&self, sha256: &str) -> Result<bool, BlobError> {
         let path = self.blob_path(sha256)?;
         let shard_idx = shard_for_sha(sha256);
-        if let Ok(guard) = self.shards[shard_idx].lock() {
-            if guard.index.contains_key(sha256) {
-                return Ok(true);
-            }
+        if self.shards[shard_idx].contains(sha256) {
+            return Ok(true);
         }
         match tokio::fs::metadata(&path).await {
             Ok(meta) => Ok(meta.is_file()),
@@ -358,7 +550,7 @@ impl BlobStore {
         &self,
         sha256: &str,
         bytes: Bytes,
-        precompress_gzip: bool,
+        precompress: bool,
     ) -> Result<PutOutcome, BlobError> {
         let path = self.blob_path(sha256)?;
         if bytes.len() > self.max_blob_bytes {
@@ -366,17 +558,33 @@ impl BlobStore {
         }
         let expected_sha = sha256.to_string();
         let bytes_for_cpu = bytes.clone();
-        let (hash_ok, gzipped) = if bytes.len() >= BLOCKING_OFFLOAD_THRESHOLD {
+        let should_precompress = precompress
+            && bytes.len() >= COMPRESS_MIN_BYTES
+            && bytes.len() <= PRECOMPRESS_MAX_BYTES
+            && !is_likely_incompressible(&bytes);
+
+        let (hash_ok, variants) = if bytes.len() >= BLOCKING_OFFLOAD_THRESHOLD || should_precompress {
             tokio::task::spawn_blocking(move || {
                 if sha256_hex(&bytes_for_cpu) != expected_sha {
-                    return (false, None);
+                    return (
+                        false,
+                        PrecompressedVariants {
+                            gzip: None,
+                            brotli: None,
+                            zstd: None,
+                        },
+                    );
                 }
-                let gz = if precompress_gzip && bytes_for_cpu.len() >= GZIP_MIN_BYTES {
-                    compress_if_smaller(&bytes_for_cpu)
+                let v = if should_precompress {
+                    precompress_all(&bytes_for_cpu)
                 } else {
-                    None
+                    PrecompressedVariants {
+                        gzip: None,
+                        brotli: None,
+                        zstd: None,
+                    }
                 };
-                (true, gz)
+                (true, v)
             })
             .await
             .map_err(|e| BlobError::Io(std::io::Error::other(e.to_string())))?
@@ -384,12 +592,14 @@ impl BlobStore {
             if sha256_hex(&bytes) != sha256 {
                 return Err(BlobError::HashMismatch);
             }
-            let gz = if precompress_gzip && bytes.len() >= GZIP_MIN_BYTES {
-                compress_if_smaller(&bytes)
-            } else {
-                None
-            };
-            (true, gz)
+            (
+                true,
+                PrecompressedVariants {
+                    gzip: None,
+                    brotli: None,
+                    zstd: None,
+                },
+            )
         };
         if !hash_ok {
             return Err(BlobError::HashMismatch);
@@ -403,24 +613,40 @@ impl BlobStore {
         }
         write_atomic(&path, &bytes, true).await?;
 
-        if let Some(ref gz) = gzipped {
-            let gz_path = Self::gzip_path(&path);
-            let _ = write_atomic(&gz_path, gz, false).await;
+        if let Some(ref gz) = variants.gzip {
+            let _ = write_atomic(&Self::sidecar_path(&path, ".gz"), gz, false).await;
         }
+        if let Some(ref br) = variants.brotli {
+            let _ = write_atomic(&Self::sidecar_path(&path, ".br"), br, false).await;
+        }
+        if let Some(ref zs) = variants.zstd {
+            let _ = write_atomic(&Self::sidecar_path(&path, ".zst"), zs, false).await;
+        }
+
+        let cached = CachedBlob::new(bytes, variants.gzip, variants.brotli, variants.zstd);
         let shard_idx = shard_for_sha(sha256);
-        if let Ok(mut guard) = self.shards[shard_idx].lock() {
-            guard.insert(sha256.to_string(), bytes, gzipped);
-        }
+        self.shards[shard_idx].insert(sha256.to_string(), cached);
         Ok(PutOutcome::Stored)
     }
 
     pub async fn get(&self, sha256: &str, prefer_gzip: bool) -> Result<BlobPayload, BlobError> {
+        let accepted = if prefer_gzip {
+            AcceptedEncodings::GZIP_ONLY
+        } else {
+            AcceptedEncodings::IDENTITY
+        };
+        self.get_encoded(sha256, accepted).await
+    }
+
+    pub async fn get_encoded(
+        &self,
+        sha256: &str,
+        accepted: AcceptedEncodings,
+    ) -> Result<BlobPayload, BlobError> {
         let path = self.blob_path(sha256)?;
         let shard_idx = shard_for_sha(sha256);
-        if let Ok(mut guard) = self.shards[shard_idx].lock() {
-            if let Some(hit) = guard.get(sha256, prefer_gzip) {
-                return Ok(hit);
-            }
+        if let Some(hit) = self.shards[shard_idx].get_wait_free(sha256, accepted) {
+            return Ok(hit);
         }
 
         let existing_rx = {
@@ -439,7 +665,7 @@ impl BlobStore {
 
         if let Some(mut rx) = existing_rx {
             return match rx.recv().await {
-                Ok(ReadResult::Ok(blob)) => Ok(blob.to_payload(prefer_gzip)),
+                Ok(ReadResult::Ok(blob)) => Ok(blob.to_payload(accepted)),
                 Ok(ReadResult::NotFound) => Err(BlobError::NotFound),
                 Ok(ReadResult::Corrupt) => Err(BlobError::CorruptOnDisk),
                 Ok(ReadResult::Io(msg)) => Err(BlobError::Io(std::io::Error::other(msg))),
@@ -484,21 +710,21 @@ impl BlobStore {
             return Err(BlobError::CorruptOnDisk);
         }
 
-        let gz_path = Self::gzip_path(&path);
-        let gzip = match tokio::fs::read(&gz_path).await {
-            Ok(vec) => Some(Bytes::from(vec)),
-            Err(_) => None,
-        };
-        let accounted = raw.len() + gzip.as_ref().map_or(0, Bytes::len);
-        let cached = CachedBlob {
-            raw: raw.clone(),
-            gzip: gzip.clone(),
-            accounted_bytes: accounted,
-        };
-        let payload = cached.to_payload(prefer_gzip);
-        if let Ok(mut shard_guard) = self.shards[shard_idx].lock() {
-            shard_guard.insert(sha256.to_string(), raw, gzip);
-        }
+        let gz_path = Self::sidecar_path(&path, ".gz");
+        let br_path = Self::sidecar_path(&path, ".br");
+        let zs_path = Self::sidecar_path(&path, ".zst");
+        let (gz_res, br_res, zs_res) = tokio::join!(
+            tokio::fs::read(&gz_path),
+            tokio::fs::read(&br_path),
+            tokio::fs::read(&zs_path),
+        );
+        let gzip = gz_res.ok().map(Bytes::from);
+        let brotli = br_res.ok().map(Bytes::from);
+        let zstd = zs_res.ok().map(Bytes::from);
+
+        let cached = CachedBlob::new(raw, gzip, brotli, zstd);
+        let payload = cached.to_payload(accepted);
+        self.shards[shard_idx].insert(sha256.to_string(), cached.clone());
         guard.finish(ReadResult::Ok(cached));
         Ok(payload)
     }
@@ -511,15 +737,13 @@ impl BlobStore {
     ) -> Result<(Bytes, usize), BlobError> {
         let path = self.blob_path(sha256)?;
         let shard_idx = shard_for_sha(sha256);
-        if let Ok(mut guard) = self.shards[shard_idx].lock() {
-            if let Some(hit) = guard.get(sha256, false) {
-                let total = hit.raw_len;
-                if total == 0 || start >= total || start > end_inclusive {
-                    return Ok((Bytes::new(), total));
-                }
-                let capped_end = end_inclusive.min(total - 1);
-                return Ok((hit.bytes.slice(start..=capped_end), total));
+        if let Some(hit) = self.shards[shard_idx].get_wait_free(sha256, AcceptedEncodings::IDENTITY) {
+            let total = hit.raw_len;
+            if total == 0 || start >= total || start > end_inclusive {
+                return Ok((Bytes::new(), total));
             }
+            let capped_end = end_inclusive.min(total - 1);
+            return Ok((hit.bytes.slice(start..=capped_end), total));
         }
 
         let meta = tokio::fs::metadata(&path).await?;
@@ -530,7 +754,7 @@ impl BlobStore {
         let capped_end = end_inclusive.min(total - 1);
         let max_direct_cache = (self.max_cache_bytes / CACHE_SHARDS).min(4 * 1024 * 1024);
         if total <= max_direct_cache {
-            let payload = self.get(sha256, false).await?;
+            let payload = self.get_encoded(sha256, AcceptedEncodings::IDENTITY).await?;
             return Ok((payload.bytes.slice(start..=capped_end), payload.raw_len));
         }
 
@@ -543,10 +767,65 @@ impl BlobStore {
     }
 }
 
-fn compress_if_smaller(raw: &[u8]) -> Option<Bytes> {
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+fn is_likely_incompressible(bytes: &[u8]) -> bool {
+    if bytes.len() < 12 {
+        return false;
+    }
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+        || bytes.starts_with(b"\xff\xd8\xff")
+        || bytes.starts_with(b"GIF8")
+        || bytes.starts_with(b"wOF2")
+        || bytes.starts_with(b"\x1f\x8b")
+        || bytes.starts_with(b"\x28\xb5\x2f\xfd")
+        || bytes.starts_with(b"PK\x03\x04")
+        || bytes.starts_with(b"\x1a\x45\xdf\xa3")
+        || bytes.starts_with(b"OggS")
+        || bytes.starts_with(b"ID3")
+    {
+        return true;
+    }
+    if bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return true;
+    }
+    if &bytes[4..8] == b"ftyp" {
+        return true;
+    }
+    false
+}
+
+fn precompress_all(raw: &[u8]) -> PrecompressedVariants {
+    let gzip = compress_gzip_if_smaller(raw);
+    let brotli = compress_brotli_if_smaller(raw);
+    let zstd = compress_zstd_if_smaller(raw);
+    PrecompressedVariants { gzip, brotli, zstd }
+}
+
+fn compress_gzip_if_smaller(raw: &[u8]) -> Option<Bytes> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(raw).ok()?;
     let compressed = encoder.finish().ok()?;
+    if compressed.len() * 100 < raw.len() * 95 {
+        Some(Bytes::from(compressed))
+    } else {
+        None
+    }
+}
+
+fn compress_brotli_if_smaller(raw: &[u8]) -> Option<Bytes> {
+    let mut out = Vec::new();
+    {
+        let mut writer = brotli::CompressorWriter::new(&mut out, 4096, BROTLI_QUALITY, BROTLI_WINDOW);
+        writer.write_all(raw).ok()?;
+    }
+    if out.len() * 100 < raw.len() * 95 {
+        Some(Bytes::from(out))
+    } else {
+        None
+    }
+}
+
+fn compress_zstd_if_smaller(raw: &[u8]) -> Option<Bytes> {
+    let compressed = zstd::bulk::compress(raw, ZSTD_LEVEL).ok()?;
     if compressed.len() * 100 < raw.len() * 95 {
         Some(Bytes::from(compressed))
     } else {
@@ -559,46 +838,61 @@ async fn write_atomic(target: &Path, bytes: &[u8], sync_data: bool) -> Result<()
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let mut tmp = target.as_os_str().to_os_string();
-    tmp.push(format!(".{}.{}.{}.tmp", std::process::id(), seq, nonce));
-    let tmp_path = PathBuf::from(tmp);
-    let write_res = async {
-        let mut file = tokio::fs::File::create(&tmp_path).await?;
-        tokio::io::AsyncWriteExt::write_all(&mut file, bytes).await?;
-        if sync_data {
-            file.sync_data().await?;
+    let file_name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("blob");
+    let tmp = target.with_file_name(format!(".{file_name}.tmp-{}-{seq}-{nonce}", std::process::id()));
+    let mut file = tokio::fs::File::create(&tmp).await?;
+    tokio::io::AsyncWriteExt::write_all(&mut file, bytes).await?;
+    if sync_data {
+        file.sync_data().await?;
+    }
+    drop(file);
+    match tokio::fs::rename(&tmp, target).await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            Err(BlobError::Io(err))
         }
-        tokio::fs::rename(&tmp_path, target).await?;
-        Ok::<(), std::io::Error>(())
     }
-    .await;
-    if let Err(err) = write_res {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(BlobError::Io(err));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     #[tokio::test]
-    async fn put_get_and_verify_integrity() {
+    async fn put_get_and_verify_integrity_across_br_zstd_gzip() {
         let dir = tempdir().unwrap();
         let store = BlobStore::new(dir.path().to_path_buf(), 1024 * 1024, 1024 * 1024);
-        let body = Bytes::from("hello world ".repeat(100));
+        let body = Bytes::from("<html><body><h1>Hej Danmark</h1><p>Hurtig webhosting paa dansk bare metal.</p></body></html>".repeat(40));
         let hash = sha256_hex(&body);
 
         assert_eq!(store.put(&hash, body.clone(), true).await.unwrap(), PutOutcome::Stored);
         assert_eq!(store.put(&hash, body.clone(), true).await.unwrap(), PutOutcome::Exists);
         assert!(store.exists(&hash).await.unwrap());
 
+        let br = store
+            .get_encoded(&hash, AcceptedEncodings::from_header("gzip, br, zstd"))
+            .await
+            .unwrap();
+        assert_eq!(br.encoding, ContentEncoding::Brotli);
+        assert!(br.bytes.len() < body.len());
+
+        let zs = store
+            .get_encoded(&hash, AcceptedEncodings::from_header("zstd;q=1.0, br;q=0.5, gzip;q=0.5"))
+            .await
+            .unwrap();
+        assert_eq!(zs.encoding, ContentEncoding::Zstd);
+        assert!(zs.bytes.len() < body.len());
+
         let gz = store.get(&hash, true).await.unwrap();
         assert_eq!(gz.encoding, ContentEncoding::Gzip);
-        assert_eq!(gz.raw_len, body.len());
         assert!(gz.bytes.len() < body.len());
+        assert!(br.bytes.len() <= gz.bytes.len());
 
         let raw = store.get(&hash, false).await.unwrap();
         assert_eq!(raw.encoding, ContentEncoding::Identity);
@@ -606,17 +900,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn skips_precompression_for_png_magic_bytes() {
+        let dir = tempdir().unwrap();
+        let store = BlobStore::new(dir.path().to_path_buf(), 1024 * 1024, 1024 * 1024);
+        let mut fake_png = b"\x89PNG\r\n\x1a\n".to_vec();
+        fake_png.extend_from_slice(&[0u8; 2048]);
+        let body = Bytes::from(fake_png);
+        let hash = sha256_hex(&body);
+
+        store.put(&hash, body.clone(), true).await.unwrap();
+        let res = store
+            .get_encoded(&hash, AcceptedEncodings::from_header("br, zstd, gzip"))
+            .await
+            .unwrap();
+        assert_eq!(res.encoding, ContentEncoding::Identity);
+        assert_eq!(res.bytes, body);
+    }
+
+    #[tokio::test]
     async fn rejects_hash_mismatch_and_detects_corruption() {
         let dir = tempdir().unwrap();
         let store = BlobStore::new(dir.path().to_path_buf(), 0, 1024 * 1024);
-        let body = Bytes::from_static(b"authentic");
-        let hash = sha256_hex(&body);
+        let body = Bytes::from_static(b"hello world");
         let wrong = "0".repeat(64);
-
         assert!(matches!(
             store.put(&wrong, body.clone(), false).await,
             Err(BlobError::HashMismatch)
         ));
+
+        let hash = sha256_hex(&body);
         store.put(&hash, body, false).await.unwrap();
 
         let disk_path = dir.path().join(&hash[0..2]).join(&hash[2..4]).join(&hash);
@@ -625,30 +937,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn evicts_lru_entries_in_constant_time_and_coalesces_cold_reads() {
+    async fn evicts_sieve_entries_and_coalesces_cold_reads() {
         let dir = tempdir().unwrap();
-        let store = std::sync::Arc::new(BlobStore::new(dir.path().to_path_buf(), 16 * 64, 1024 * 1024));
+        let store = Arc::new(BlobStore::new(dir.path().to_path_buf(), 64 * 64, 1024 * 1024));
         let mut hashes = Vec::new();
-        for i in 0..40 {
-            let body = Bytes::from(format!("payload-{i:04}-{}", "a".repeat(20)));
+        for i in 0..80 {
+            let body = Bytes::from(format!("blob-payload-{i:04}-abcdefghij"));
             let h = sha256_hex(&body);
             store.put(&h, body, false).await.unwrap();
             hashes.push(h);
         }
-
         let target = hashes[0].clone();
         let mut tasks = Vec::new();
         for _ in 0..32 {
-            let s = std::sync::Arc::clone(&store);
+            let s = Arc::clone(&store);
             let h = target.clone();
             tasks.push(tokio::spawn(async move { s.get(&h, false).await.unwrap().raw_len }));
         }
         for t in tasks {
             assert!(t.await.unwrap() > 20);
         }
-
         let (slice, total) = store.get_range(&target, 0, 7).await.unwrap();
-        assert_eq!(slice.as_ref(), b"payload-");
+        assert_eq!(slice.as_ref(), b"blob-pay");
         assert!(total > 20);
     }
 }

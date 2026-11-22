@@ -26,12 +26,15 @@ https:// {
 		issuer zerossl
 	}
 
-	reverse_proxy 127.0.0.1:8095 {
+	encode zstd br gzip
+
+	reverse_proxy unix//run/qorpera-web-router/public.sock {
 		header_up X-Forwarded-Host {http.request.host}
 		header_up X-Qorpera-Client-IP {http.request.remote.host}
 		header_up -CF-Connecting-IP
 		flush_interval -1
 		transport http {
+			versions 1.1
 			dial_timeout 3s
 			response_header_timeout 35s
 			keepalive 90s

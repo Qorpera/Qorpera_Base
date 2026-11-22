@@ -1,4 +1,5 @@
 use crate::security::{strip_platform_cookie, HSTS_HEADER};
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Uri};
 use http_body_util::{BodyExt, Full};
@@ -8,6 +9,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
@@ -137,7 +139,8 @@ pub struct ActivitySnapshot {
 }
 
 pub struct ActivityTracker {
-    last_seen_ms: Mutex<HashMap<String, u64>>,
+    entries: ArcSwap<HashMap<String, Arc<AtomicU64>>>,
+    write_lock: Mutex<()>,
 }
 
 impl Default for ActivityTracker {
@@ -149,7 +152,8 @@ impl Default for ActivityTracker {
 impl ActivityTracker {
     pub fn new() -> Self {
         Self {
-            last_seen_ms: Mutex::new(HashMap::new()),
+            entries: ArcSwap::from_pointee(HashMap::new()),
+            write_lock: Mutex::new(()),
         }
     }
 
@@ -157,30 +161,52 @@ impl ActivityTracker {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
-        if let Ok(mut map) = self.last_seen_ms.lock() {
-            if let Some(slot) = map.get_mut(deployment_id) {
-                *slot = now_ms;
-                return;
+        let guard = self.entries.load();
+        if let Some(slot) = guard.get(deployment_id) {
+            let prev = slot.load(Ordering::Relaxed);
+            if now_ms.saturating_sub(prev) >= 1_000 {
+                slot.store(now_ms, Ordering::Relaxed);
             }
-            if map.len() >= MAX_ACTIVITY_ENTRIES {
-                map.retain(|_, ts| now_ms.saturating_sub(*ts) < ACTIVITY_STALE_MS);
-            }
-            map.insert(deployment_id.to_string(), now_ms);
+            return;
         }
+        drop(guard);
+
+        let _lock = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let current = self.entries.load();
+        if let Some(slot) = current.get(deployment_id) {
+            slot.store(now_ms, Ordering::Relaxed);
+            return;
+        }
+        let mut next: HashMap<String, Arc<AtomicU64>> = (**current).clone();
+        if next.len() >= MAX_ACTIVITY_ENTRIES {
+            next.retain(|_, ts| now_ms.saturating_sub(ts.load(Ordering::Relaxed)) < ACTIVITY_STALE_MS);
+        }
+        next.insert(deployment_id.to_string(), Arc::new(AtomicU64::new(now_ms)));
+        self.entries.store(Arc::new(next));
     }
 
     pub fn snapshot(&self) -> ActivitySnapshot {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
-        let deployments = self
-            .last_seen_ms
-            .lock()
-            .map(|mut m| {
-                m.retain(|_, ts| now_ms.saturating_sub(*ts) < ACTIVITY_STALE_MS);
-                m.clone()
-            })
-            .unwrap_or_default();
+        let guard = self.entries.load();
+        let mut deployments = HashMap::with_capacity(guard.len());
+        let mut stale_found = false;
+        for (k, v) in guard.iter() {
+            let ts = v.load(Ordering::Relaxed);
+            if now_ms.saturating_sub(ts) < ACTIVITY_STALE_MS {
+                deployments.insert(k.clone(), ts);
+            } else {
+                stale_found = true;
+            }
+        }
+        drop(guard);
+        if stale_found {
+            let _lock = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let mut next: HashMap<String, Arc<AtomicU64>> = (**self.entries.load()).clone();
+            next.retain(|_, ts| now_ms.saturating_sub(ts.load(Ordering::Relaxed)) < ACTIVITY_STALE_MS);
+            self.entries.store(Arc::new(next));
+        }
         ActivitySnapshot { deployments }
     }
 }

@@ -7,6 +7,8 @@ description = "Native edge HTTP/WebSocket router, content-addressed static blob 
 license = "MIT"
 
 [dependencies]
+arc-swap = "1.7"
+brotli = "8"
 bytes = "1.10"
 flate2 = "1.1"
 hex = "0.4"
@@ -22,6 +24,7 @@ tokio = { version = "1.45", features = ["full"] }
 tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+zstd = "0.13"
 
 [dev-dependencies]
 tempfile = "3.20"
