@@ -1069,6 +1069,68 @@ begin
 
 	perform pg_temp.sf_as(v_owner);
 	set local role authenticated;
+	perform public.qorpera_undo_surface_change(v_batch_c1);
+	reset role;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed := public.qorpera_surface_claim_pending_jobs(32);
+	reset role;
+	select (elem ->> 'jobId')::uuid, (elem ->> 'leaseToken')::uuid
+	into v_batch_undo_job_id, v_batch_undo_lease
+	from jsonb_array_elements(v_claimed -> 'merges') elem
+	where elem ->> 'kind' = 'undo_change' and elem ->> 'sessionId' = v_batch_session_id::text;
+	perform pg_temp.sf_assert(v_batch_undo_job_id is not null, 'claimed second batch undo job');
+
+	update public.qorpera_surface_jobs
+	set lease_expires_at = clock_timestamp() - interval '1 minute'
+	where id = v_batch_undo_job_id;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed := public.qorpera_surface_claim_pending_jobs(32);
+	reset role;
+	select (elem ->> 'leaseToken')::uuid into v_batch_undo_lease
+	from jsonb_array_elements(v_claimed -> 'merges') elem
+	where (elem ->> 'jobId')::uuid = v_batch_undo_job_id;
+	perform pg_temp.sf_assert(v_batch_undo_lease is not null, 'expired undo_change attempt 1 is requeued and reclaimed');
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	perform public.qorpera_surface_complete_merge(
+		v_batch_undo_job_id,
+		'landed',
+		repeat('b', 64),
+		repeat('a', 64),
+		null,
+		null,
+		null,
+		null,
+		v_batch_undo_lease
+	);
+	reset role;
+	perform pg_temp.sf_assert(
+		(select status from public.qorpera_surface_changes where id = v_batch_c1) = 'staged'
+		and (select status from public.qorpera_surface_changes where id = v_batch_c2) = 'staged'
+		and (select unpublished_change_count from public.qorpera_surfaces where id = v_folder_surface_id) = v_batch_unpub_before,
+		'retried undo_change completing landed keeps batch staged and unpublished_change_count aligned'
+	);
+
+	update public.qorpera_surface_jobs
+	set status = 'running', attempts = 3, lease_expires_at = clock_timestamp() - interval '1 minute', lease_token = gen_random_uuid()
+	where id = v_batch_undo_job_id;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	perform public.qorpera_surface_claim_pending_jobs(32);
+	reset role;
+	perform pg_temp.sf_assert(
+		(select status from public.qorpera_surface_jobs where id = v_batch_undo_job_id) = 'failed'
+		and (select status from public.qorpera_surface_changes where id = v_batch_c1) = 'staged'
+		and (select status from public.qorpera_surface_changes where id = v_batch_c2) = 'staged',
+		'expired undo_change at max attempts marks job failed without blindly restoring staged changes to merged'
+	);
+
+	perform pg_temp.sf_as(v_owner);
+	set local role authenticated;
 	v_session := public.qorpera_start_surface_session(v_folder_surface_id, 'Capacity test', 'Release claim test', 'member', null, null, null, null, null);
 	reset role;
 	v_release_session_id := (v_session ->> 'id')::uuid;
@@ -1105,12 +1167,29 @@ begin
 	perform pg_temp.sf_assert(
 		(v_released ->> 'released')::boolean = true
 		and (v_released ->> 'state') = 'queued'
+		and (v_released ->> 'retryAfterAt') is not null
 		and (select state from public.qorpera_surface_sessions where id = v_release_session_id) = 'queued'
 		and (select lease_token from public.qorpera_surface_sessions where id = v_release_session_id) is null
-		and (select lease_expires_at from public.qorpera_surface_sessions where id = v_release_session_id) is null
+		and (select lease_expires_at from public.qorpera_surface_sessions where id = v_release_session_id) > clock_timestamp()
 		and (select retry_count from public.qorpera_surface_sessions where id = v_release_session_id) = 0,
-		'release_session_claim returns running session to queued without incrementing retry_count'
+		'release_session_claim returns running session to queued with backoff without incrementing retry_count'
 	);
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed2 := public.qorpera_surface_claim_pending_jobs(32);
+	reset role;
+	perform pg_temp.sf_assert(
+		not exists (
+			select 1 from jsonb_array_elements(v_claimed2 -> 'sessions') elem
+			where elem ->> 'sessionId' = v_release_session_id::text
+		),
+		'released session is not immediately reclaimed during backoff window'
+	);
+
+	update public.qorpera_surface_sessions
+	set lease_expires_at = clock_timestamp() - interval '1 second'
+	where id = v_release_session_id;
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
@@ -1122,7 +1201,7 @@ begin
 			where elem ->> 'sessionId' = v_release_session_id::text
 		)
 		and (select retry_count from public.qorpera_surface_sessions where id = v_release_session_id) = 0,
-		'released session is immediately reclaimable with retry_count still 0'
+		'released session is reclaimable after backoff elapses with retry_count still 0'
 	);
 end $$;
 

@@ -1874,4 +1874,117 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 		);
 		expect(mem.files.get("identity/brief.md")).toBe(originalText);
 	});
+
+	it("recovers idempotently when a folder undo committed filesBefore and crashed before reporting completion", async () => {
+		const originalTokens = '{"accent":"#111111"}\n';
+		const mem = createInMemoryCompanyFolder({ "identity/tokens.json": originalTokens });
+		const landComplete = vi.fn().mockResolvedValue(undefined);
+		const landHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: landComplete,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: mem.folder,
+			completionRetryDelaysMs: [],
+		});
+
+		const surfaceId = randomUUID();
+		const profileId = randomUUID();
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const landJobId = randomUUID();
+
+		await landHandlers.runMergeJob(
+			{
+				jobId: landJobId,
+				surfaceId,
+				profileId,
+				sessionId,
+				kind: "land_change",
+				payload: {},
+				repositoryKey: null,
+				folderRoot: "identity",
+				sourceKind: "folder",
+				approvedChanges: [
+					{
+						changeId,
+						title: "Update accent",
+						summary: "",
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						affectedPaths: ["identity/tokens.json"],
+						patchManifest: [{ op: "merge_json", path: "identity/tokens.json", patch: { accent: "#998877" } }],
+					},
+				],
+			},
+			new AbortController().signal,
+		);
+
+		const landed = landComplete.mock.calls[0]?.[0] as {
+			status: string;
+			mainBefore: string;
+			mainAfter: string;
+			preMergeSnapshot: Record<string, unknown>;
+		};
+		expect(landed.status).toBe("landed");
+
+		const undoJob = {
+			jobId: randomUUID(),
+			surfaceId,
+			profileId,
+			sessionId,
+			kind: "undo_change" as const,
+			payload: {
+				changeId,
+				landedMainBefore: landed.mainBefore,
+				landedMainAfter: landed.mainAfter,
+			},
+			repositoryKey: null,
+			folderRoot: "identity",
+			sourceKind: "folder" as const,
+			preMergeSnapshot: landed.preMergeSnapshot,
+		};
+
+		const failingUndoHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: vi.fn().mockRejectedValue(new Error("Control plane outage during undo")),
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: mem.folder,
+			completionRetryDelaysMs: [],
+		});
+		await expect(failingUndoHandlers.runMergeJob(undoJob, new AbortController().signal)).rejects.toThrow(
+			"Control plane outage during undo",
+		);
+		expect(mem.files.get("identity/tokens.json")).toBe(originalTokens);
+		expect(mem.files.get("identity/tokens.css")).toBeUndefined();
+		const commitsAfterFirstUndo = mem.commitCalls.length;
+
+		const retryComplete = vi.fn().mockResolvedValue(undefined);
+		const retryUndoHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: retryComplete,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: mem.folder,
+			completionRetryDelaysMs: [1],
+		});
+		await retryUndoHandlers.runMergeJob(undoJob, new AbortController().signal);
+
+		expect(mem.commitCalls).toHaveLength(commitsAfterFirstUndo);
+		expect(mem.files.get("identity/tokens.json")).toBe(originalTokens);
+		expect(retryComplete).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				jobId: undoJob.jobId,
+				status: "landed",
+				mainBefore: landed.mainAfter,
+				mainAfter: landed.mainBefore,
+			}),
+			expect.any(AbortSignal),
+		);
+	});
 });

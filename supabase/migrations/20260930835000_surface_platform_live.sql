@@ -2226,38 +2226,6 @@ begin
 				if v_expired_job.session_id is not null then
 					perform public.qorpera_evaluate_surface_session_lifecycle(v_expired_job.session_id);
 				end if;
-			elsif v_expired_job.kind = 'undo_change' then
-				with restored as (
-					update public.qorpera_surface_changes
-					set status = 'merged', resolved_at = coalesce(resolved_at, v_now)
-					where (
-						(
-							jsonb_typeof(v_expired_job.payload -> 'changeIds') = 'array'
-							and id in (
-								select x::uuid
-								from jsonb_array_elements_text(v_expired_job.payload -> 'changeIds') as x
-							)
-						)
-						or (
-							jsonb_typeof(v_expired_job.payload -> 'changeIds') is distinct from 'array'
-							and v_expired_job.payload ? 'changeId'
-							and id = (v_expired_job.payload ->> 'changeId')::uuid
-						)
-					)
-						and surface_id = v_expired_job.surface_id
-						and status = 'staged'
-					returning id
-				)
-				update public.qorpera_surfaces
-				set
-					unpublished_change_count = unpublished_change_count + (select count(*) from restored),
-					updated_at = v_now
-				where id = v_expired_job.surface_id
-					and exists (select 1 from restored);
-
-				if v_expired_job.session_id is not null then
-					perform public.qorpera_evaluate_surface_session_lifecycle(v_expired_job.session_id);
-				end if;
 			elsif v_expired_job.kind = 'publish_surface' then
 				update public.qorpera_surfaces
 				set
@@ -2663,7 +2631,7 @@ revoke all on function public.qorpera_surface_renew_lease(text, uuid, uuid, inte
 grant execute on function public.qorpera_surface_renew_lease(text, uuid, uuid, integer)
 	to service_role;
 
--- WHY: Returns a claimed session to queued/reconciling without spending retry_count when a provider rejects with HTTP 429 capacity backpressure.
+-- WHY: Returns a claimed session to queued/reconciling with a short backoff without spending retry_count when a provider rejects with HTTP 429.
 create function public.qorpera_surface_release_session_claim(
 	p_session_id uuid,
 	p_lease_token uuid
@@ -2673,6 +2641,7 @@ language plpgsql security definer set search_path = '' as $$
 declare
 	v_session public.qorpera_surface_sessions%rowtype;
 	v_next_state text;
+	v_backoff_until timestamptz := clock_timestamp() + interval '5 seconds';
 begin
 	if p_lease_token is null then
 		raise exception 'Lease token is required' using errcode = '22023';
@@ -2693,11 +2662,16 @@ begin
 	set
 		state = v_next_state,
 		lease_token = null,
-		lease_expires_at = null,
+		lease_expires_at = v_backoff_until,
 		updated_at = clock_timestamp()
 	where id = p_session_id;
 
-	return jsonb_build_object('sessionId', p_session_id, 'released', true, 'state', v_next_state);
+	return jsonb_build_object(
+		'sessionId', p_session_id,
+		'released', true,
+		'state', v_next_state,
+		'retryAfterAt', v_backoff_until
+	);
 end $$;
 revoke all on function public.qorpera_surface_release_session_claim(uuid, uuid)
 	from public, anon, authenticated;
@@ -3255,9 +3229,10 @@ do $$ begin
 	end if;
 
 	if to_regprocedure('public.qorpera_wake_runner_orchestrators_internal()') is not null then
+		-- WHY: Only wake orchestrators when lease_expires_at is null so 429 backpressure releases wait for their backoff window instead of spinning.
 		create trigger qorpera_surface_sessions_wake_orchestrators
 			after insert or update of state on public.qorpera_surface_sessions
-			for each row when (new.state in ('queued', 'reconciling'))
+			for each row when (new.state in ('queued', 'reconciling') and new.lease_expires_at is null)
 			execute function public.qorpera_wake_runner_orchestrators_internal();
 		create trigger qorpera_surface_previews_wake_orchestrators
 			after insert or update of status on public.qorpera_surface_previews

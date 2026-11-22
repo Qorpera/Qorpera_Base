@@ -1204,6 +1204,26 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			signal,
 		);
 
+		// WHY: If a prior undo attempt already restored filesBefore and crashed before reporting completion, report landed idempotently instead of conflicting.
+		const alreadyReverted = restoreEntries.every((entry) => {
+			const current = currentVersioned[entry.path];
+			const currentContent = current && typeof current.content === "string" ? current.content : null;
+			return hashNullableText(currentContent) === hashNullableText(entry.content);
+		});
+		if (alreadyReverted) {
+			markCommitted();
+			await completeCommittedMerge(
+				{
+					jobId: job.jobId,
+					status: "landed",
+					mainBefore: landedMainAfter,
+					mainAfter: snapshot.snapshotId,
+				},
+				signal,
+			);
+			return;
+		}
+
 		const conflictPaths: string[] = [];
 		for (const entry of restoreEntries) {
 			const current = currentVersioned[entry.path];

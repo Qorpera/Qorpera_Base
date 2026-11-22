@@ -205,6 +205,7 @@ export class SurfaceWorkerLoop {
 	readonly #inFlightPublishes = new Set<string>();
 	readonly #inFlightAutomations = new Set<string>();
 	readonly #activeTasks = new Set<Promise<void>>();
+	#capacityBackoffUntil = 0;
 
 	constructor(ports: SurfaceWorkerLoopPorts, options: SurfaceWorkerLoopOptions = {}) {
 		this.#ports = ports;
@@ -481,6 +482,8 @@ export class SurfaceWorkerLoop {
 			const isCapacityBusy =
 				typeof error === "object" && error !== null && (error as { status?: unknown }).status === 429;
 			if (!signal.aborted && isCapacityBusy) {
+				// WHY: Back off at least one poll interval after provider HTTP 429 so wakes cannot spin a tight retry loop while saturated.
+				this.#capacityBackoffUntil = Math.max(this.#capacityBackoffUntil, Date.now() + this.#pollIntervalMs);
 				if (this.#ports.releaseSessionClaim && session.leaseToken) {
 					try {
 						await this.#ports.releaseSessionClaim(
@@ -531,6 +534,7 @@ export class SurfaceWorkerLoop {
 		let woken = false;
 		let releaseWait: (() => void) | undefined;
 		const unsubscribe = wake?.subscribe(() => {
+			if (Date.now() < this.#capacityBackoffUntil) return;
 			if (releaseWait) {
 				releaseWait();
 			} else {
@@ -549,9 +553,12 @@ export class SurfaceWorkerLoop {
 					this.#emit({ kind: "tick_failed", error: error instanceof Error ? error.message : String(error) });
 				}
 				if (signal.aborted) return;
-				if (!tickFailed && woken) continue;
+				const backoffRemaining = this.#capacityBackoffUntil - Date.now();
+				const inBackoff = backoffRemaining > 0;
+				if (!tickFailed && !inBackoff && woken) continue;
+				const waitMs = inBackoff ? Math.max(backoffRemaining, this.#pollIntervalMs) : this.#pollIntervalMs;
 				await new Promise<void>((resolve) => {
-					if (signal.aborted || (!tickFailed && woken)) {
+					if (signal.aborted || (!tickFailed && !inBackoff && woken)) {
 						resolve();
 						return;
 					}
@@ -561,7 +568,7 @@ export class SurfaceWorkerLoop {
 						releaseWait = undefined;
 						resolve();
 					};
-					const timer = setTimeout(done, this.#pollIntervalMs);
+					const timer = setTimeout(done, waitMs);
 					signal.addEventListener("abort", done, { once: true });
 					releaseWait = done;
 				});
