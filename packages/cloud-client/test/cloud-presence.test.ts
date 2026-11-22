@@ -426,4 +426,66 @@ describe("shared browser presence", () => {
 			await handle.stop();
 		}
 	});
+	it("resets hung outbound track and bounds hung removeChannel across reconnect", async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+		const handle = f.join();
+		try {
+			await vi.waitFor(() => expect(f.channels).toHaveLength(1));
+			const old = f.channels[0];
+			// WHY: Simulate a dying WebSocket where track() and removeChannel() never settle.
+			old.track = () => new Promise<string>(() => {}) as never;
+			f.remove.mockImplementationOnce(() => new Promise<string>(() => {}));
+			old.status("SUBSCRIBED");
+			await vi.advanceTimersByTimeAsync(10);
+			old.status("CLOSED");
+			await vi.advanceTimersByTimeAsync(3_100);
+			await vi.waitFor(() => expect(f.channels).toHaveLength(2));
+			const fresh = f.channels[1];
+			fresh.status("SUBSCRIBED");
+			handle.setOpenThread("legal-agent");
+			await vi.waitFor(() => expect(fresh.tracked.length).toBeGreaterThanOrEqual(2));
+			expect(fresh.tracked.at(-1)).toMatchObject({ staff_agent_id: "legal-agent" });
+		} finally {
+			await handle.stop();
+		}
+	});
+	it("negatively caches unregistered client IDs and chunks large identity lookups", async () => {
+		const f = fixture();
+		const unknownId = "90000000-0000-4000-8000-000000000001";
+		const batchSizes: number[] = [];
+		f.list.mockImplementation(async (_profile: string, ids: string[]) => {
+			batchSizes.push(ids.length);
+			return ids.includes(remoteId) ? [identity] : [];
+		});
+		const handle = f.join();
+		try {
+			await vi.waitFor(() => expect(f.channels).toHaveLength(1));
+			const c = f.channels[0];
+			c.status("SUBSCRIBED");
+			c.state = {
+				[remoteId]: [signed("open_thread", 1)],
+				[unknownId]: [{ staff_agent_id: "x", sequence: 1, signature: "A".repeat(88) }],
+			};
+			c.sync();
+			await vi.waitFor(() => expect(f.members).toHaveBeenCalledOnce());
+			expect(f.list).toHaveBeenCalledTimes(1);
+			c.sync();
+			c.sync();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(f.list).toHaveBeenCalledTimes(1);
+
+			const crowded: Record<string, Array<Record<string, unknown>>> = {};
+			for (let i = 1; i <= 125; i++) {
+				crowded[`40000000-0000-4000-8000-${String(i).padStart(12, "0")}`] = [
+					{ staff_agent_id: "x", sequence: 1, signature: "A".repeat(88) },
+				];
+			}
+			c.state = crowded;
+			c.sync();
+			await vi.waitFor(() => expect(batchSizes).toEqual([2, 100, 25]));
+		} finally {
+			await handle.stop();
+		}
+	});
 });

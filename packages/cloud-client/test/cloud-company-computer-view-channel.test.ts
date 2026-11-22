@@ -174,4 +174,19 @@ describe("browser-safe office viewer channel", () => {
 		expect(() => other.send(new Uint8Array([1]))).toThrow("VIEW_UNAVAILABLE");
 		expect(g.socket.sent).toHaveLength(1);
 	});
+	it("delivers live RFB frames directly without copying after attach and backlog drain", async () => {
+		const f = fixture();
+		f.socket.open();
+		f.socket.receive(encoded(f.ack()));
+		const channel = await f.pending;
+		const received: ArrayBuffer[] = [];
+		channel.onmessage = (event) => {
+			received.push(event.data);
+		};
+		const frame = new Uint8Array([1, 2, 3, 4]).buffer;
+		f.socket.receive(frame);
+		expect(received).toHaveLength(1);
+		expect(received[0]).toBe(frame);
+		channel.close();
+	});
 });
