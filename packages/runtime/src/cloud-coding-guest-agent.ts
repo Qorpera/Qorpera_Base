@@ -23,6 +23,7 @@ import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
+	CODING_CHECK_CACHES,
 	CODING_GUEST,
 	CODING_GUEST_MOUNT_V2,
 	CODING_GUEST_VERBS,
@@ -117,6 +118,7 @@ export interface CodingGuestAgentPorts {
 	/** The machine's package caches (CODING_PACKAGE_CACHES): their folder, the tmpfiles file that makes them, and the most
 	 * their tool folders may hold at boot. */
 	packageCaches?: { root: string; config: string; limitBytes: number };
+	checkCaches?: { root: string; limitBytes: number };
 	subidFiles?: { uid: string; gid: string };
 	/** systemd-resolved's upstream list, bound over a session's /etc/resolv.conf (the stub is not in its netns). */
 	resolvConf?: string;
@@ -156,6 +158,12 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 			root: CODING_PACKAGE_CACHES.root,
 			config: "/etc/tmpfiles.d/qorpera-packages.conf",
 			limitBytes: CODING_PACKAGE_CACHES.limitBytes,
+		},
+		checkCaches: ports.checkCaches ?? {
+			root: ports.packageCaches
+				? join(dirname(ports.packageCaches.root), "qorpera-check-caches")
+				: CODING_CHECK_CACHES.root,
+			limitBytes: CODING_CHECK_CACHES.limitBytes,
 		},
 		subidFiles: ports.subidFiles ?? { uid: "/etc/subuid", gid: "/etc/subgid" },
 		resolvConf: ports.resolvConf ?? "/run/systemd/resolve/resolv.conf",
@@ -516,7 +524,10 @@ async function ensureSubids(at: Agent, name: string, uid: number): Promise<void>
  * removes what was not read, written or changed for 30 days. Each tool folder is a line of its own, so it is only ever
  * emptied, never removed. The tools' trees are left out of it (`x`, their contents too): a browser or an unpacked
  * package missing a file it has not read for 30 days is broken, so the agent ages each whole (ageCodingPackageTrees). */
-export function codingPackageCachesTmpfiles(root: string): string {
+export function codingPackageCachesTmpfiles(
+	root: string,
+	checkCachesRoot = join(dirname(root), "qorpera-check-caches"),
+): string {
 	const { group, ageDays, tools } = CODING_PACKAGE_CACHES;
 	const acl = `group:${group}:rwx,default:group:${group}:rwx`;
 	return [
@@ -526,7 +537,10 @@ export function codingPackageCachesTmpfiles(root: string): string {
 			`d ${path} 2775 root ${group} ${ageDays}d`,
 			`a ${path} - - - - ${acl}`,
 		]),
+		`d ${checkCachesRoot} 2775 root ${CODING_CHECK_CACHES.group} ${CODING_CHECK_CACHES.ageDays}d`,
+		`a ${checkCachesRoot} - - - - ${acl}`,
 		...tools.flatMap(({ folder, trees }) => trees.map((tree) => `x ${root}/${folder}/${tree}`)),
+		`x ${checkCachesRoot}/*/*`,
 		"",
 	].join("\n");
 }
@@ -582,59 +596,255 @@ export async function ageCodingPackageTrees(root: string, nowMs: number, ageMs: 
 			}
 	return removed;
 }
-/** Whole tool folders of the machine's package caches under `root` emptied, the least recently used first, while
- * together they hold more than `limitBytes` on disk; answers the folders emptied, in that order (ties in the tools'
- * order; one that holds nothing is passed over). What they hold is the blocks of each file and folder in them, a file
- * linked twice counted once; a file also linked from a folder not yet emptied still counts after its first folder is
- * emptied, so the trim goes on while it stays on disk. A folder's last use is the newest read, write or change of a file
- * in it (a hard link into a project changes only the change time). A tool folder that is not a real folder is neither
- * counted nor emptied. Emptied, a folder stays, with its owner, mode and ACL. */
+function trackCacheInode(
+	held: Map<string, { bytes: number; refs: number }>,
+	seen: Set<string>,
+	dev: number,
+	ino: number,
+	bytes: number,
+): number {
+	const key = `${dev}:${ino}`;
+	if (seen.has(key)) return 0;
+	seen.add(key);
+	const known = held.get(key);
+	if (known) known.refs++;
+	else held.set(key, { bytes, refs: 1 });
+	return bytes;
+}
+
 export async function trimCodingPackageCaches(root: string, limitBytes: number): Promise<string[]> {
-	// Each file or folder once (by device and inode), with its blocks and how many of the tool folders still hold it.
-	const held = new Map<string, { bytes: number; folders: number }>();
-	const folders: { folder: string; path: string; entries: string[]; bytes: number; usedMs: number }[] = [];
-	for (const { folder } of CODING_PACKAGE_CACHES.tools) {
-		const path = join(root, folder);
-		if (!(await missing(() => lstat(path)))?.isDirectory()) continue;
-		const entries = new Set<string>();
-		let bytes = 0;
-		let usedMs = 0;
-		for (const directories = [path]; directories.length > 0; ) {
+	const held = new Map<string, { bytes: number; refs: number }>();
+	const dirInfo = new Map<string, { key: string; bytes: number; usedMs: number }>();
+	const units: {
+		relative: string;
+		path: string;
+		toolPath: string;
+		toolIndex: number;
+		keys: string[];
+		bytes: number;
+		usedMs: number;
+	}[] = [];
+	for (const [toolIndex, { folder, trees }] of CODING_PACKAGE_CACHES.tools.entries()) {
+		const toolPath = join(root, folder);
+		if (!(await missing(() => lstat(toolPath)))?.isDirectory()) continue;
+		const treeRoots = new Set<string>();
+		for (const tree of trees) {
+			for (const matched of await treesMatching(toolPath, tree)) treeRoots.add(matched);
+		}
+		for (const directories = [toolPath]; directories.length > 0; ) {
 			const directory = directories.pop() as string;
-			for (const name of (await missing(() => readdir(directory))) ?? []) {
+			const names = (await missing(() => readdir(directory))) ?? [];
+			if (directory !== toolPath && names.length === 0) {
+				const info = dirInfo.get(directory);
+				if (info) {
+					dirInfo.delete(directory);
+					units.push({
+						relative: directory.slice(root.length + 1),
+						path: directory,
+						toolPath,
+						toolIndex,
+						keys: [info.key],
+						bytes: info.bytes,
+						usedMs: info.usedMs,
+					});
+				}
+				continue;
+			}
+			for (const name of names) {
 				const entry = join(directory, name);
 				const stat = await missing(() => lstat(entry));
 				if (!stat) continue;
-				if (stat.isDirectory()) directories.push(entry);
-				else if (stat.isFile()) usedMs = Math.max(usedMs, stat.atimeMs, stat.mtimeMs, stat.ctimeMs);
-				const key = `${stat.dev}:${stat.ino}`;
-				if (entries.has(key)) continue;
-				entries.add(key);
-				bytes += stat.blocks * 512;
-				const known = held.get(key);
-				if (known) known.folders++;
-				else held.set(key, { bytes: stat.blocks * 512, folders: 1 });
+				if (treeRoots.has(entry)) {
+					const entries = new Set<string>();
+					let bytes = trackCacheInode(held, entries, stat.dev, stat.ino, stat.blocks * 512);
+					let fileUsedMs = 0;
+					let dirUsedMs = Math.max(stat.mtimeMs, stat.ctimeMs);
+					if (stat.isDirectory()) {
+						for (const stack = [entry]; stack.length > 0; ) {
+							const current = stack.pop() as string;
+							for (const childName of (await missing(() => readdir(current))) ?? []) {
+								const child = join(current, childName);
+								const childStat = await missing(() => lstat(child));
+								if (!childStat) continue;
+								bytes += trackCacheInode(held, entries, childStat.dev, childStat.ino, childStat.blocks * 512);
+								if (childStat.isDirectory()) {
+									dirUsedMs = Math.max(dirUsedMs, childStat.mtimeMs, childStat.ctimeMs);
+									stack.push(child);
+								} else if (childStat.isFile()) {
+									fileUsedMs = Math.max(fileUsedMs, childStat.atimeMs, childStat.mtimeMs, childStat.ctimeMs);
+								}
+							}
+						}
+					} else if (stat.isFile()) {
+						fileUsedMs = Math.max(stat.atimeMs, stat.mtimeMs, stat.ctimeMs);
+					}
+					units.push({
+						relative: entry.slice(root.length + 1),
+						path: entry,
+						toolPath,
+						toolIndex,
+						keys: [...entries],
+						bytes,
+						usedMs: fileUsedMs > 0 ? fileUsedMs : dirUsedMs,
+					});
+				} else if (stat.isDirectory()) {
+					const dirSeen = new Set<string>();
+					const bytes = trackCacheInode(held, dirSeen, stat.dev, stat.ino, stat.blocks * 512);
+					dirInfo.set(entry, {
+						key: `${stat.dev}:${stat.ino}`,
+						bytes,
+						usedMs: Math.max(stat.mtimeMs, stat.ctimeMs),
+					});
+					directories.push(entry);
+				} else {
+					const entries = new Set<string>();
+					const bytes = trackCacheInode(held, entries, stat.dev, stat.ino, stat.blocks * 512);
+					const usedMs = stat.isFile()
+						? Math.max(stat.atimeMs, stat.mtimeMs, stat.ctimeMs)
+						: Math.max(stat.mtimeMs, stat.ctimeMs);
+					units.push({
+						relative: entry.slice(root.length + 1),
+						path: entry,
+						toolPath,
+						toolIndex,
+						keys: [...entries],
+						bytes,
+						usedMs,
+					});
+				}
 			}
 		}
-		folders.push({ folder, path, entries: [...entries], bytes, usedMs });
 	}
 	let total = 0;
 	for (const { bytes } of held.values()) total += bytes;
-	const emptied: string[] = [];
-	for (const { folder, path, entries, bytes } of folders.sort((a, b) => a.usedMs - b.usedMs)) {
+	const evicted: string[] = [];
+	units.sort((a, b) => a.usedMs - b.usedMs || a.toolIndex - b.toolIndex || a.relative.localeCompare(b.relative));
+	for (const unit of units) {
 		if (total <= limitBytes) break;
-		if (bytes === 0) continue;
-		for (const name of (await missing(() => readdir(path))) ?? [])
-			await rm(join(path, name), { recursive: true, force: true });
-		// What only this folder held is gone; what another folder still holds stays counted.
-		for (const key of entries) {
-			const known = held.get(key) as { bytes: number; folders: number };
-			if (--known.folders === 0) total -= known.bytes;
+		if (unit.bytes === 0) continue;
+		await rm(unit.path, { recursive: true, force: true });
+		for (const key of unit.keys) {
+			const known = held.get(key);
+			if (known && --known.refs === 0) total -= known.bytes;
 		}
-		emptied.push(folder);
+		let parent = dirname(unit.path);
+		while (parent !== unit.toolPath && parent.startsWith(`${unit.toolPath}/`)) {
+			const remaining = await missing(() => readdir(parent));
+			if (!remaining || remaining.length > 0) break;
+			try {
+				await rmdir(parent);
+			} catch {
+				break;
+			}
+			const info = dirInfo.get(parent);
+			if (info) {
+				dirInfo.delete(parent);
+				const known = held.get(info.key);
+				if (known && --known.refs === 0) total -= known.bytes;
+			}
+			parent = dirname(parent);
+		}
+		evicted.push(unit.relative);
 	}
-	return emptied;
+	return evicted;
 }
+
+const STAGING_TTL_MS = 3_600_000;
+
+export async function trimCodingCheckCaches(root: string, limitBytes: number, nowMs = Date.now()): Promise<string[]> {
+	if (!(await missing(() => lstat(root)))?.isDirectory()) return [];
+	const held = new Map<string, { bytes: number; refs: number }>();
+	const entries: {
+		relative: string;
+		path: string;
+		parent: string;
+		keys: string[];
+		bytes: number;
+		usedMs: number;
+	}[] = [];
+	const repoDirs = (await missing(() => readdir(root))) ?? [];
+	for (const repoName of repoDirs) {
+		const repoPath = join(root, repoName);
+		const repoStat = await missing(() => lstat(repoPath));
+		if (!repoStat) continue;
+		if (repoName.startsWith(".staging-")) {
+			if (nowMs - Math.max(repoStat.mtimeMs, repoStat.ctimeMs) > STAGING_TTL_MS) {
+				await rm(repoPath, { recursive: true, force: true });
+			}
+			continue;
+		}
+		if (!repoStat.isDirectory()) continue;
+		const keyNames = (await missing(() => readdir(repoPath))) ?? [];
+		for (const keyName of keyNames) {
+			const entryPath = join(repoPath, keyName);
+			const entryStat = await missing(() => lstat(entryPath));
+			if (!entryStat) continue;
+			if (keyName.startsWith(".staging-")) {
+				if (nowMs - Math.max(entryStat.mtimeMs, entryStat.ctimeMs) > STAGING_TTL_MS) {
+					await rm(entryPath, { recursive: true, force: true });
+				}
+				continue;
+			}
+			const seen = new Set<string>();
+			let bytes = trackCacheInode(held, seen, entryStat.dev, entryStat.ino, entryStat.blocks * 512);
+			let fileUsedMs = 0;
+			let dirUsedMs = Math.max(entryStat.mtimeMs, entryStat.ctimeMs);
+			if (entryStat.isDirectory()) {
+				for (const stack = [entryPath]; stack.length > 0; ) {
+					const current = stack.pop() as string;
+					for (const childName of (await missing(() => readdir(current))) ?? []) {
+						const child = join(current, childName);
+						const childStat = await missing(() => lstat(child));
+						if (!childStat) continue;
+						bytes += trackCacheInode(held, seen, childStat.dev, childStat.ino, childStat.blocks * 512);
+						if (childStat.isDirectory()) {
+							dirUsedMs = Math.max(dirUsedMs, childStat.mtimeMs, childStat.ctimeMs);
+							stack.push(child);
+						} else if (childStat.isFile()) {
+							fileUsedMs = Math.max(fileUsedMs, childStat.atimeMs, childStat.mtimeMs, childStat.ctimeMs);
+						}
+					}
+				}
+			} else if (entryStat.isFile()) {
+				fileUsedMs = Math.max(entryStat.atimeMs, entryStat.mtimeMs, entryStat.ctimeMs);
+			}
+			const marker = await missing(() => lstat(join(entryPath, ".last-used")));
+			const usedMs = marker?.isFile()
+				? Math.max(marker.atimeMs, marker.mtimeMs, marker.ctimeMs)
+				: fileUsedMs > 0
+					? fileUsedMs
+					: dirUsedMs;
+			entries.push({
+				relative: `${repoName}/${keyName}`,
+				path: entryPath,
+				parent: repoPath,
+				keys: [...seen],
+				bytes,
+				usedMs,
+			});
+		}
+		const afterStaging = await missing(() => readdir(repoPath));
+		if (afterStaging && afterStaging.length === 0) await ignore(rmdir(repoPath));
+	}
+	let total = 0;
+	for (const { bytes } of held.values()) total += bytes;
+	const evicted: string[] = [];
+	entries.sort((a, b) => a.usedMs - b.usedMs || a.relative.localeCompare(b.relative));
+	for (const entry of entries) {
+		if (total <= limitBytes) break;
+		if (entry.bytes === 0) continue;
+		await rm(entry.path, { recursive: true, force: true });
+		for (const key of entry.keys) {
+			const known = held.get(key);
+			if (known && --known.refs === 0) total -= known.bytes;
+		}
+		const remaining = await missing(() => readdir(entry.parent));
+		if (remaining && remaining.length === 0) await ignore(rmdir(entry.parent));
+		evicted.push(entry.relative);
+	}
+	return evicted;
+}
+
 /** The machine's package caches, once a boot, at its first mount and before the session's user (the guest agent has no
  * boot of its own; every turn mounts before its commands run): the tmpfiles file written, its folders made or set right,
  * the tools' trees not used for the age removed whole, and the tool folders trimmed to the limit. Its record lives in memory, so a restarted machine does it again. Answers
@@ -646,10 +856,11 @@ async function ensurePackageCaches(at: Agent): Promise<boolean> {
 	const { root, config, limitBytes } = at.packageCaches;
 	try {
 		await mkdir(dirname(config), { recursive: true, mode: 0o755 });
-		await writeText(config, codingPackageCachesTmpfiles(root), 0o644);
+		await writeText(config, codingPackageCachesTmpfiles(root, at.checkCaches.root), 0o644);
 		await at.system(TOOLS.systemdTmpfiles, ["--create", config]);
 		await ageCodingPackageTrees(root, at.nowMs(), CODING_PACKAGE_CACHES.ageDays * 86_400_000);
 		await trimCodingPackageCaches(root, limitBytes);
+		await trimCodingCheckCaches(at.checkCaches.root, at.checkCaches.limitBytes, at.nowMs());
 		await writeText(ready, "", 0o600);
 		return true;
 	} catch {

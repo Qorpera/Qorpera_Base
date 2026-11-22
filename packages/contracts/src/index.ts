@@ -17,6 +17,7 @@ export interface ExecutionIdentity {
 	claimantId: string;
 }
 
+export * from "./cloud-code-checks.ts";
 export * from "./cloud-coding.ts";
 export * from "./cloud-coding-command.ts";
 export * from "./cloud-coding-guest.ts";

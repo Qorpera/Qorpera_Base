@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+	CODING_CHECK_CACHES,
 	CODING_GUEST,
 	CODING_GUEST_MOUNT_V2,
 	CODING_GUEST_VERBS,
+	CODING_PACKAGE_CACHE_ENVIRONMENT,
+	CODING_PACKAGE_CACHES,
 	type CodingGuestOutputRequest,
 	type CodingGuestRunRequest,
 	parseCodingGuestAnswer,
@@ -281,5 +284,34 @@ describe("coding guest answers", () => {
 			{ schema: "qorpera.coding-guest-refusal/v1", code: "FOLDER_UNMOUNTED", detail: "x" },
 		])
 			expect(() => parseCodingGuestRefusal(value)).toThrow("Invalid coding guest refusal");
+	});
+	it("exposes expanded package caches and check caches configuration", () => {
+		expect(CODING_PACKAGE_CACHES.tools.map((tool) => tool.folder)).toEqual([
+			"npm",
+			"pnpm",
+			"pip",
+			"uv",
+			"ms-playwright",
+			"cargo",
+			"go-mod",
+			"go-build",
+			"bun",
+			"turbo",
+			"sccache",
+		]);
+		expect(CODING_PACKAGE_CACHE_ENVIRONMENT).toMatchObject({
+			CARGO_HOME: "/var/cache/qorpera-packages/cargo",
+			GOMODCACHE: "/var/cache/qorpera-packages/go-mod",
+			GOCACHE: "/var/cache/qorpera-packages/go-build",
+			BUN_INSTALL_CACHE_DIR: "/var/cache/qorpera-packages/bun",
+			TURBO_CACHE_DIR: "/var/cache/qorpera-packages/turbo",
+			SCCACHE_DIR: "/var/cache/qorpera-packages/sccache",
+		});
+		expect(CODING_CHECK_CACHES).toEqual({
+			root: "/var/cache/qorpera-check-caches",
+			group: "qorpera-coding",
+			limitBytes: 8_589_934_592,
+			ageDays: 30,
+		});
 	});
 });

@@ -20,6 +20,7 @@ import { basename, dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+	CODING_CHECK_CACHES,
 	CODING_GUEST,
 	CODING_PACKAGE_CACHES,
 	parseCodingGuestAnswer,
@@ -32,6 +33,7 @@ import {
 	type CodingGuestAgentPorts,
 	codingPackageCachesTmpfiles,
 	runCodingGuestAgent,
+	trimCodingCheckCaches,
 	trimCodingPackageCaches,
 } from "../src/cloud-coding-guest-agent.ts";
 import { FOLDER_CACHE } from "../src/cloud-folder-cache-dir.ts";
@@ -1086,13 +1088,18 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 					settings: {},
 					trees: ["archive-v*/*", "environments-v*/*", "builds-v*/*"],
 				},
-				// Playwright's own browser GC, run by one session, removes another's browsers (its install unreadable).
 				{
 					folder: "ms-playwright",
 					variables: ["PLAYWRIGHT_BROWSERS_PATH"],
 					settings: { PLAYWRIGHT_SKIP_BROWSER_GC: "1" },
 					trees: ["*"],
 				},
+				{ folder: "cargo", variables: ["CARGO_HOME"], settings: {}, trees: ["registry/src/*", "git/checkouts/*"] },
+				{ folder: "go-mod", variables: ["GOMODCACHE"], settings: {}, trees: ["*"] },
+				{ folder: "go-build", variables: ["GOCACHE"], settings: {}, trees: [] },
+				{ folder: "bun", variables: ["BUN_INSTALL_CACHE_DIR"], settings: {}, trees: ["*"] },
+				{ folder: "turbo", variables: ["TURBO_CACHE_DIR"], settings: {}, trees: [] },
+				{ folder: "sccache", variables: ["SCCACHE_DIR"], settings: {}, trees: [] },
 			],
 		});
 		const acl = "group:qorpera-coding:rwx,default:group:qorpera-coding:rwx";
@@ -1100,17 +1107,36 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 			[
 				"# The machine's package caches, which its coding sessions and Qorpera's checks share. Written by the coding guest",
 				"# agent at the first mount of each boot (CODING_PACKAGE_CACHES).",
-				...["", "/npm", "/pnpm", "/pip", "/uv", "/ms-playwright"].flatMap((folder) => [
+				...[
+					"",
+					"/npm",
+					"/pnpm",
+					"/pip",
+					"/uv",
+					"/ms-playwright",
+					"/cargo",
+					"/go-mod",
+					"/go-build",
+					"/bun",
+					"/turbo",
+					"/sccache",
+				].flatMap((folder) => [
 					`d /var/cache/qorpera-packages${folder} 2775 root qorpera-coding 30d`,
 					`a /var/cache/qorpera-packages${folder} - - - - ${acl}`,
 				]),
-				// The trees tmpfiles ages no file of: the agent ages each whole.
+				`d ${CODING_CHECK_CACHES.root} 2775 root qorpera-coding 30d`,
+				`a ${CODING_CHECK_CACHES.root} - - - - ${acl}`,
 				"x /var/cache/qorpera-packages/npm/_npx/*",
 				"x /var/cache/qorpera-packages/pnpm/v*/links/*",
 				"x /var/cache/qorpera-packages/uv/archive-v*/*",
 				"x /var/cache/qorpera-packages/uv/environments-v*/*",
 				"x /var/cache/qorpera-packages/uv/builds-v*/*",
 				"x /var/cache/qorpera-packages/ms-playwright/*",
+				"x /var/cache/qorpera-packages/cargo/registry/src/*",
+				"x /var/cache/qorpera-packages/cargo/git/checkouts/*",
+				"x /var/cache/qorpera-packages/go-mod/*",
+				"x /var/cache/qorpera-packages/bun/*",
+				`x ${CODING_CHECK_CACHES.root}/*/*`,
 				"",
 			].join("\n"),
 		);
@@ -1267,25 +1293,34 @@ describe("the package caches' trim", () => {
 		await at("npm", past, past);
 		const browser = await planted(join(root, "ms-playwright", "ffmpeg-1013", "tiny"), 1024);
 		await utimes(browser, ahead(3), ahead(3));
-		expect(await trimCodingPackageCaches(root, 2.5 * MIB)).toEqual(["pnpm", "npm"]);
+		expect(await trimCodingPackageCaches(root, 2.5 * MIB)).toEqual(["pnpm/store/entry", "npm/store/entry"]);
 		for (const folder of ["pnpm", "npm"]) {
 			expect((await lstat(join(root, folder))).isDirectory()).toBe(true);
 			expect(await readdir(join(root, folder))).toEqual([]);
 		}
 		for (const folder of ["uv", "pip"]) expect(await readdir(join(root, folder, "store"))).toEqual(["entry"]);
 		expect(await readdir(join(root, "ms-playwright", "ffmpeg-1013"))).toEqual(["tiny"]);
-		// At the limit, nothing goes; a byte under it, the least recently used that holds anything.
 		let total = 0;
 		for (const folder of await readdir(root)) total += await held(join(root, folder));
 		expect(await trimCodingPackageCaches(root, total)).toEqual([]);
-		expect(await trimCodingPackageCaches(root, total - 1)).toEqual(["uv"]);
-		expect(await trimCodingPackageCaches(root, 0)).toEqual(["pip", "ms-playwright"]);
+		expect(await trimCodingPackageCaches(root, total - 1)).toEqual(["uv/store/entry"]);
+		expect(await trimCodingPackageCaches(root, 0)).toEqual(["pip/store/entry", "ms-playwright/ffmpeg-1013"]);
+	});
+
+	it("evicts only least-recently-used entries inside a tool folder while keeping newer entries intact", async () => {
+		const root = await caches();
+		const older = await planted(join(root, "npm", "_cacache", "content-v2", "old-entry"));
+		await utimes(older, past, past);
+		await delay(30);
+		const newer = await planted(join(root, "npm", "_cacache", "content-v2", "new-entry"));
+		await utimes(newer, ahead(1), ahead(1));
+		expect(await trimCodingPackageCaches(root, 1.5 * MIB)).toEqual(["npm/_cacache/content-v2/old-entry"]);
+		expect(await readdir(join(root, "npm", "_cacache", "content-v2"))).toEqual(["new-entry"]);
 	});
 
 	it("counts the blocks a folder holds: a file linked twice once, a sparse file as what it holds", async () => {
 		const root = await caches();
 		const shared = await planted(join(root, "pnpm", "files", "00", "a"));
-		// Linked twice in pnpm's own folder too: one folder, however many of its names.
 		await link(shared, join(root, "pnpm", "files", "00", "b"));
 		await mkdir(join(root, "uv", "archive-v0"), { recursive: true });
 		await link(shared, join(root, "uv", "archive-v0", "a"));
@@ -1295,9 +1330,11 @@ describe("the package caches' trim", () => {
 		await utimes(await planted(join(root, "npm", "_cacache", "used"), 64 * 1024), ahead(2), ahead(2));
 		expect(await trimCodingPackageCaches(root, 1.5 * MIB)).toEqual([]);
 		expect(await readdir(join(root, "uv", "archive-v0"))).toEqual(["a"]);
-		// Under half of it, pnpm goes first (a tie with uv, in the tools' order), and the file stays on disk through uv's
-		// link: uv goes too. Then they hold less than the limit: pip and npm, used later, stay.
-		expect(await trimCodingPackageCaches(root, 0.5 * MIB)).toEqual(["pnpm", "uv"]);
+		expect(await trimCodingPackageCaches(root, 0.5 * MIB)).toEqual([
+			"pnpm/files/00/a",
+			"pnpm/files/00/b",
+			"uv/archive-v0/a",
+		]);
 		expect(await readdir(join(root, "pnpm"))).toEqual([]);
 		expect(await readdir(join(root, "uv"))).toEqual([]);
 		expect(await readdir(join(root, "pip", "wheels"))).toEqual(["sparse"]);
@@ -1382,6 +1419,22 @@ describe("the package caches' trim", () => {
 		expect(await trimCodingPackageCaches(root, MIB)).toEqual([]);
 		expect(await readdir(dirname(elsewhere))).toEqual(["big"]);
 		expect(await trimCodingPackageCaches(join(root, "none"), 0)).toEqual([]);
+	});
+
+	it("trims check caches by LRU .last-used timestamp and cleans stale staging directories", async () => {
+		const root = await caches();
+		await planted(join(root, "repo-a", "old-key", "data", "blob"));
+		const oldMarker = await planted(join(root, "repo-a", "old-key", ".last-used"), 0);
+		await utimes(oldMarker, past, past);
+		await delay(30);
+		await planted(join(root, "repo-b", "new-key", "data", "blob"));
+		const newMarker = await planted(join(root, "repo-b", "new-key", ".last-used"), 0);
+		await utimes(newMarker, ahead(2), ahead(2));
+		await planted(join(root, "repo-a", ".staging-stale", "tmp"), 1024);
+		const nowMs = Date.now() + 2 * 3_600_000;
+		expect(await trimCodingCheckCaches(root, 1.5 * MIB, nowMs)).toEqual(["repo-a/old-key"]);
+		await gone(join(root, "repo-a"));
+		expect(await readdir(join(root, "repo-b"))).toEqual(["new-key"]);
 	});
 });
 

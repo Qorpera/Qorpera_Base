@@ -80,6 +80,7 @@ describe("parseCodeChecksText", () => {
 		expect(parseCodeChecksText(text)).toEqual({
 			ok: true,
 			mode: "sequential",
+			criticalPathSeconds: 1080,
 			totalTimeoutSeconds: 1080,
 			checks: [
 				{ name: "install", run: "npm ci", timeoutSeconds: 180, cwd: "." },
@@ -104,6 +105,7 @@ describe("parseCodeChecksText", () => {
 		expect(diamond).toEqual({
 			ok: true,
 			mode: "dag",
+			criticalPathSeconds: 1800,
 			totalTimeoutSeconds: 2400,
 			checks: [
 				{ name: "build", run: "npm run build", timeoutSeconds: 600, cwd: ".", needs: ["lint", "test"] },
@@ -964,8 +966,8 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 			);
 			expect(subset.state).toBe("passed");
 			expect(subset.mode).toBe("dag");
-			expect(subset.checks).toHaveLength(1);
-			expect(subset.checks[0].name).toBe("build");
+			expect(subset.autoIncludedNeeds).toEqual(["install", "lint", "typecheck"]);
+			expect(subset.checks.map((c: { name: string }) => c.name)).toEqual(["install", "lint", "typecheck", "build"]);
 		} finally {
 			f.boundary.close();
 			f.run.close();
@@ -1177,6 +1179,154 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 			process.off("unhandledRejection", onUnhandled);
 			f.boundary.close();
 			f.run.close();
+		}
+	});
+
+	it("supports cleanCopy, validateSite, retries, exclusive, env, and structured failure artifacts in pre-flight", async () => {
+		const checksFile = JSON.stringify({
+			maxParallel: 2,
+			checks: [
+				{ name: "build", run: "npm run build", needs: [], exclusive: true, env: { MODE: "ci" } },
+				{
+					name: "test",
+					run: "npm test",
+					needs: ["build"],
+					retries: 1,
+					artifacts: { paths: ["reports/junit.xml"], format: "junit" },
+				},
+			],
+			site: { folder: "dist" },
+		});
+		const startedCommands: string[] = [];
+		let testAttempts = 0;
+		const f = await preflightFixture({
+			pollMs: 5,
+			onStart: (input, ctx) => {
+				startedCommands.push(input.command);
+				if (input.command.includes("QORPERA_CLEAN_COPY")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "succeeded",
+						output: `QORPERA_CLEAN_COPY ${"a".repeat(40)} dirty /home/qorpera-200001/.qorpera-preflight/abc123\n`,
+					});
+				}
+				if (input.command.includes(".qorpera/checks.json")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "succeeded",
+						output: checksFile,
+					});
+				}
+				if (input.command.includes("npm test")) {
+					testAttempts++;
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: testAttempts === 1 ? "failed" : "succeeded",
+						exitCode: testAttempts === 1 ? 1 : 0,
+						output: testAttempts === 1 ? "flaky fail\n" : "ok\n",
+					});
+				}
+				if (input.command.includes("QORPERA_SITE_VALIDATE_EOF")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "succeeded",
+						output: "QORPERA_SITE_OK 12 4096\n",
+					});
+				}
+				return receiptOf(ctx.workerId, input.commandId, input.inputSha256, { state: "succeeded", output: "" });
+			},
+		});
+		try {
+			const res = JSON.parse(
+				(await f.invoke({ operationKey: "pf-v2-ok", runChecks: true, cleanCopy: true, validateSite: true })).text,
+			);
+			expect(res).toMatchObject({
+				state: "passed",
+				cleanCopy: { commit: "a".repeat(40), uncommittedChangesIgnored: true },
+				siteValidation: { state: "valid", folder: "dist", files: 12, bytes: 4096 },
+			});
+			expect(res.checks[1].attempts).toBe(2);
+			expect(startedCommands.some((c) => c.includes("MODE='ci' CI=true QORPERA_CHECKS=1"))).toBe(true);
+			expect(startedCommands.some((c) => c.includes("/home/qorpera-200001/.qorpera-preflight/abc123"))).toBe(true);
+			expect(startedCommands.some((c) => c.startsWith('rm -rf -- "$HOME/.qorpera-preflight/'))).toBe(true);
+		} finally {
+			f.boundary.close();
+			f.run.close();
+		}
+
+		const badSite = await preflightFixture({
+			pollMs: 5,
+			onStart: (input, ctx) => {
+				if (input.command.includes(".qorpera/checks.json")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "succeeded",
+						output: JSON.stringify({
+							checks: [{ name: "build", run: "npm run build" }],
+							site: { folder: "dist" },
+						}),
+					});
+				}
+				if (input.command.includes("QORPERA_SITE_VALIDATE_EOF")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "failed",
+						exitCode: 3,
+						output: "QORPERA_SITE_PROBLEM SITE_NO_INDEX\n",
+					});
+				}
+				return receiptOf(ctx.workerId, input.commandId, input.inputSha256, { state: "succeeded", output: "" });
+			},
+		});
+		try {
+			const res = JSON.parse(
+				(await badSite.invoke({ operationKey: "pf-site-bad", runChecks: true, validateSite: true })).text,
+			);
+			expect(res).toMatchObject({
+				state: "failed",
+				siteValidation: { state: "invalid", folder: "dist", problem: { code: "SITE_NO_INDEX", path: null } },
+			});
+		} finally {
+			badSite.boundary.close();
+			badSite.run.close();
+		}
+
+		const artFail = await preflightFixture({
+			pollMs: 5,
+			onStart: (input, ctx) => {
+				if (input.command.includes(".qorpera/checks.json")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "succeeded",
+						output: JSON.stringify({
+							checks: [
+								{
+									name: "unit",
+									run: "vitest run",
+									artifacts: { paths: ["junit.xml"], format: "junit" },
+								},
+							],
+						}),
+					});
+				}
+				if (input.command.includes("vitest run")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "failed",
+						exitCode: 1,
+						output: "1 failed\n",
+					});
+				}
+				if (input.command.includes("QORPERA_ARTIFACT_EOF")) {
+					const m = /'junit' '([0-9a-f]{24})'/.exec(input.command);
+					const nonce = m?.[1] ?? "";
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "succeeded",
+						output: `QORPERA_ARTIFACT_BEGIN:${nonce}:junit\n<testsuite name="ui"><testcase name="renders"><failure message="boom"/></testcase></testsuite>\nQORPERA_ARTIFACT_END:${nonce}\n`,
+					});
+				}
+				return receiptOf(ctx.workerId, input.commandId, input.inputSha256, { state: "succeeded", output: "" });
+			},
+		});
+		try {
+			const res = JSON.parse((await artFail.invoke({ operationKey: "pf-art", runChecks: true })).text);
+			expect(res.state).toBe("failed");
+			expect(res.checks[0].failedTests).toEqual([{ suite: "ui", name: "renders", message: "boom" }]);
+		} finally {
+			artFail.boundary.close();
+			artFail.run.close();
 		}
 	});
 });

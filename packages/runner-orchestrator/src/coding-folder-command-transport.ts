@@ -30,6 +30,7 @@ import { type LxdCodingMachineBinding, lxdCodingMachinePlan } from "./coding-mac
 // in yet: 5g-6 chooses it for sessions on the folder model.
 
 const SHA = /^[0-9a-f]{64}$/;
+const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 type Action = "start" | "read" | "cancel";
 type State = CloudCodingCommandReceipt["state"];
 type Final = Exclude<State, "running">;
@@ -619,6 +620,7 @@ export interface LxdCodingFolderCommandSession {
 	readonly cwd: string;
 	/** The host's own names for the session, such as GIT_CONFIG_*. */
 	readonly environment?: Readonly<Record<string, string>>;
+	readonly allowedSecrets?: readonly string[];
 }
 
 export interface LxdCodingFolderCommandTransportOptions {
@@ -667,7 +669,8 @@ export class LxdCodingFolderCommandTransport {
 	readonly #scope: Readonly<CloudCodingCommandScope>;
 	readonly #companyId: string;
 	readonly #machineId: string;
-	readonly #session: Readonly<Required<LxdCodingFolderCommandSession>>;
+	readonly #session: Readonly<Required<Omit<LxdCodingFolderCommandSession, "allowedSecrets">>>;
+	readonly #allowedSecrets: ReadonlySet<string> | undefined;
 	readonly #custody: string;
 	readonly #limitBytes: number;
 	readonly #guest: LxdCodingFolderCommandTransportOptions["guest"];
@@ -695,7 +698,11 @@ export class LxdCodingFolderCommandTransport {
 			!absolute(options.custody) ||
 			!Number.isSafeInteger(options.limitBytes) ||
 			options.limitBytes < 1_048_576 ||
-			options.limitBytes > 1_073_741_824
+			options.limitBytes > 1_073_741_824 ||
+			(session.allowedSecrets !== undefined &&
+				(!Array.isArray(session.allowedSecrets) ||
+					session.allowedSecrets.length > 256 ||
+					!session.allowedSecrets.every((name) => typeof name === "string" && ENVIRONMENT_NAME.test(name))))
 		)
 			throw new Error("CODING_COMMAND_BINDING_INVALID");
 		this.#scope = Object.freeze({ ...scope });
@@ -707,6 +714,7 @@ export class LxdCodingFolderCommandTransport {
 			cwd: session.cwd,
 			environment: Object.freeze({ ...session.environment }),
 		});
+		this.#allowedSecrets = session.allowedSecrets === undefined ? undefined : new Set(session.allowedSecrets);
 		this.#custody = options.custody;
 		this.#limitBytes = options.limitBytes;
 		this.#guest = options.guest;
@@ -744,8 +752,9 @@ export class LxdCodingFolderCommandTransport {
 		signal: AbortSignal,
 		create: boolean,
 		work: (folder: string, budget: AbortSignal) => Promise<T>,
+		extraBudgetMs = 0,
 	): Promise<T> {
-		const budget = AbortSignal.any([signal, AbortSignal.timeout(BUDGET_MS)]);
+		const budget = AbortSignal.any([signal, AbortSignal.timeout(BUDGET_MS + extraBudgetMs)]);
 		return locked(`${this.#custody}\0${commandId}`, async () => {
 			signal.throwIfAborted();
 			await assertFolder(this.#custody, false);
@@ -837,6 +846,12 @@ export class LxdCodingFolderCommandTransport {
 				// Only on the machine it was first started on: one that started again since may have run it already.
 				if (!outcome && !progress.acknowledged && !progress.cancelled && request.startOperationId === start) {
 					const secrets = await this.#secrets.resolve(this.#secretRequest(input.commandId), budget);
+					const injectedSecrets =
+						this.#allowedSecrets === undefined
+							? secrets.environment
+							: Object.fromEntries(
+									Object.entries(secrets.environment).filter(([name]) => this.#allowedSecrets?.has(name)),
+								);
 					const { uid, gid, cwd, environment } = this.#session;
 					// Nor once it started again while the secrets were read: the command then ended with the boot it was
 					// started under, before it ran.
@@ -852,7 +867,7 @@ export class LxdCodingFolderCommandTransport {
 								gid,
 								command: request.command,
 								cwd,
-								environment: { ...secrets.environment, ...environment, ...sessionEnvironment(uid) },
+								environment: { ...injectedSecrets, ...environment, ...sessionEnvironment(uid) },
 								timeoutMs: request.timeoutMs,
 							},
 							budget,
@@ -878,13 +893,25 @@ export class LxdCodingFolderCommandTransport {
 		scope: CloudCodingCommandScope,
 		input: CloudCodingCommandRead,
 		signal: AbortSignal,
+		options?: { readonly waitMs?: number },
 	): Promise<CloudCodingCommandReceipt> {
 		const read = parseCloudCodingCommandRead(input);
+		const waitMs = options?.waitMs ?? 0;
+		if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > CODING_GUEST.maxWaitMs)
+			throw new Error("CODING_COMMAND_INPUT_INVALID");
 		await this.#gate("read", scope, read.commandId, null, signal);
-		const receipt = await this.#within(read.commandId, signal, false, async (folder, budget) => {
-			const { request, progress, outcome } = await this.#records(folder, read.commandId);
-			return holding(request, () => this.#settle(folder, request, progress, outcome, budget, signal, read, false));
-		});
+		const receipt = await this.#within(
+			read.commandId,
+			signal,
+			false,
+			async (folder, budget) => {
+				const { request, progress, outcome } = await this.#records(folder, read.commandId);
+				return holding(request, () =>
+					this.#settle(folder, request, progress, outcome, budget, signal, read, false, waitMs),
+				);
+			},
+			waitMs,
+		);
 		await this.#gate("read", scope, read.commandId, null, signal);
 		return answered(receipt);
 	}
@@ -937,10 +964,19 @@ export class LxdCodingFolderCommandTransport {
 		signal: AbortSignal,
 		read: Omit<CloudCodingCommandRead, "commandId">,
 		cancelSent: boolean,
+		waitMs = 0,
 	): Promise<CloudCodingCommandReceipt> {
 		let shown: State = "running";
 		if (!outcome)
-			({ progress, outcome, shown } = await this.#advance(folder, request, progress, budget, signal, cancelSent));
+			({ progress, outcome, shown } = await this.#advance(
+				folder,
+				request,
+				progress,
+				budget,
+				signal,
+				cancelSent,
+				waitMs,
+			));
 		const page = await readPage(folder, progress, request.limitBytes, outcome !== undefined, read);
 		return parseCloudCodingCommandReceipt({
 			schema: "qorpera.coding-command-result/v2",
@@ -965,6 +1001,7 @@ export class LxdCodingFolderCommandTransport {
 		budget: AbortSignal,
 		signal: AbortSignal,
 		cancelSent: boolean,
+		waitMs = 0,
 	): Promise<{ progress: Progress; outcome?: Outcome; shown: State }> {
 		const workerId = this.#scope.workerId,
 			commandId = request.commandId;
@@ -989,7 +1026,7 @@ export class LxdCodingFolderCommandTransport {
 						commandId,
 						offset: at,
 						maxBytes: skip ? 1 : CODING_GUEST.maxPageBytes,
-						waitMs: 0,
+						waitMs: index === 0 ? waitMs : 0,
 					},
 					budget,
 				);

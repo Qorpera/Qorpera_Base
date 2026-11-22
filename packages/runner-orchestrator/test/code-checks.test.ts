@@ -171,7 +171,7 @@ describe("the checks file's rules", () => {
 
 	it("refuses any other key, at the top and in a check, by its JSON pointer", () => {
 		expect(problems(withChecks([{ name: "t", run: "x" }], { "a/b~c": true }))).toEqual(["UNKNOWN_KEY /a~1b~0c"]);
-		expect(problems(withChecks([{ name: "t", run: "x", env: {} }]))).toEqual(["UNKNOWN_KEY /checks/0/env"]);
+		expect(problems(withChecks([{ name: "t", run: "x", bogus: {} }]))).toEqual(["UNKNOWN_KEY /checks/0/bogus"]);
 	});
 
 	it("needs checks: an array of 1 to 20 objects", () => {
@@ -1251,7 +1251,47 @@ describe("the row's value for a run that passed", () => {
 			{ ...good, run: passedRun([{ name: "Bad", run: "x", ms: 1 }]) },
 			{ ...good, changed: { added: ["Bad"], removed: [], run: [] } },
 			{ ...good, changed: { added: [], removed: Array.from({ length: 21 }, (_, index) => `c${index}`), run: [] } },
+			{
+				...good,
+				run: passedRun([{ name: "t", run: "x", ms: 0, skipped: "manual" as unknown as "paths_unmatched" }]),
+			},
 		])
 			expect(() => codeChecksPassed(bad)).toThrow("INVALID_CODE_CHECKS_RESULT");
+	});
+
+	it("preserves skipped: paths_unmatched in qorpera.code-checks/v1 and formats structured failures within 3500 bytes", () => {
+		const run = passedRun([
+			{ name: "lint", run: "npm run lint", ms: 500 },
+			{ name: "web", run: "npm test", ms: 0, skipped: "paths_unmatched" },
+		]);
+		const value = codeChecksPassed({ commit: COMMIT, how: "fast-forward", blob: BLOB, run, changed: null, tries: 1 });
+		expect(value.checks).toEqual([
+			{ name: "lint", run: "npm run lint", ms: 500 },
+			{ name: "web", run: "npm test", ms: 0, skipped: "paths_unmatched" },
+		]);
+
+		const withTests = codeChecksFailedSummary(
+			failedRun({
+				tail: "FAIL src/cart.test.ts\nexpected 80",
+				persistedLog: "code/acme/shop/_check-runs/0000000001-0001-abcdef123456/2-test.log",
+				failedTests: [
+					{
+						suite: "Cart",
+						name: "applies discount",
+						file: "src/cart.test.ts",
+						line: 42,
+						message: "expected 90 to equal 80",
+					},
+				],
+			}),
+			"fast-forward",
+		);
+		expect(bytes(withTests)).toBeLessThanOrEqual(3500);
+		expect(withTests).toContain("Failed tests (1):");
+		expect(withTests).toContain("Cart › applies discount (src/cart.test.ts:42): expected 90 to equal 80");
+		expect(withTests).toContain(
+			"Full masked log saved at code/acme/shop/_check-runs/0000000001-0001-abcdef123456/2-test.log.",
+		);
+		expect(unseenIn(withTests)).toBe(false);
 	});
 });

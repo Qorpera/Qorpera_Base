@@ -5759,6 +5759,12 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			PLAYWRIGHT_BROWSERS_PATH: "/var/cache/qorpera-packages/ms-playwright",
 			// Playwright's own GC would remove another session's browsers, its install unreadable in that session's home.
 			PLAYWRIGHT_SKIP_BROWSER_GC: "1",
+			CARGO_HOME: "/var/cache/qorpera-packages/cargo",
+			GOMODCACHE: "/var/cache/qorpera-packages/go-mod",
+			GOCACHE: "/var/cache/qorpera-packages/go-build",
+			BUN_INSTALL_CACHE_DIR: "/var/cache/qorpera-packages/bun",
+			TURBO_CACHE_DIR: "/var/cache/qorpera-packages/turbo",
+			SCCACHE_DIR: "/var/cache/qorpera-packages/sccache",
 		});
 		const company = Object.fromEntries(
 			Object.keys(CODING_PACKAGE_CACHE_ENVIRONMENT).map((name) => [name, `/company/value/of/${name}`]),
@@ -5954,7 +5960,13 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			},
 			notRun: ["build"],
 		});
-		expect(f.ran().map(checkOf)).toEqual([undefined, "npm ci", "npm test"]);
+		expect(
+			f
+				.ran()
+				.filter((r) => !r.environment.QORPERA_CHECKS_PERSIST_DIR)
+				.map(checkOf),
+		).toEqual([undefined, "npm ci", "npm test"]);
+		expect(f.ran().some((r) => Boolean(r.environment.QORPERA_CHECKS_PERSIST_DIR))).toBe(true);
 		// Killed (often for memory): a failure of the code all the same.
 		f.ending((run) => (checkOf(run) === "npm ci" ? { state: "exited", code: 137 } : {}));
 		expect(await f.run(CHECKS, 2)).toMatchObject({
@@ -6032,7 +6044,10 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		// The session's secret value is masked as its commands' output is, before anything of it is kept or handed on.
 		const masked = await handed(`key=${SECRET}\nbell\u0007\n`, 3);
 		expect(masked).toBe("key=***\nbell\u0007\n");
-		const id = f.ran().at(-1)?.commandId as string;
+		const id = f
+			.ran()
+			.filter((r) => checkOf(r) !== undefined)
+			.at(-1)?.commandId as string;
 		const kept = await readFile(join(f.custody, "host-commands", id.replaceAll("-", ""), "output.log"), "utf8");
 		expect(kept).toBe("key=***\nbell\u0007\n");
 		// The copy's output, and a check that passed, are never handed on.
@@ -8940,6 +8955,210 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			const started = performance.now();
 			expect(await f.run(CHECKS.slice(0, 1))).toMatchObject({ state: "passed" });
 			expect(performance.now() - started).toBeLessThan(1_500);
+			const copy = f.ran()[0];
+			expect(copy?.command).toContain("b=(0.1 0.2 0.5 1 2)");
+			expect(copy?.command).not.toContain("sleep 3");
+			const waitValues = mocked.guestOutput.mock.calls.map((call) => (call[0] as { waitMs?: number })?.waitMs);
+			expect(waitValues).toContain(5000);
+		});
+
+		it("enforces exclusive, retries, failFast: false, maxParallel, per-check env, and per-check secrets allow-list", async () => {
+			const f = await checksFixture({
+				secrets: { ALLOWED_SECRET: "secret-allowed-111111", OTHER_SECRET: "secret-other-222222" },
+			});
+			let flakyAttempts = 0;
+			const activeNames = new Set<string>();
+			let exclusiveOverlapped = false;
+			f.ending((run) => {
+				const cmd = checkOf(run);
+				if (!cmd) return {};
+				if (cmd === "run-exclusive") {
+					if (activeNames.size > 0) exclusiveOverlapped = true;
+					activeNames.add("exclusive");
+					return { after: 30 };
+				}
+				if (cmd === "run-flaky") {
+					flakyAttempts++;
+					return flakyAttempts === 1 ? { code: 1, printed: "transient error\n" } : { code: 0 };
+				}
+				return { after: 20 };
+			});
+			const baseOutput = mocked.guestOutput.getMockImplementation()!;
+			mocked.guestOutput.mockImplementation(async (request: unknown) => {
+				const res = await baseOutput(request);
+				const asked = parseCodingGuestRequest("output", request);
+				const found = f.commands.get(asked.commandId);
+				if (found && res.answer.state !== "running" && checkOf(found.run) === "run-exclusive") {
+					activeNames.delete("exclusive");
+				}
+				return res;
+			});
+			const checks: readonly CodeCheck[] = [
+				{
+					name: "excl",
+					run: "run-exclusive",
+					timeoutSeconds: 60,
+					cwd: ".",
+					needs: [],
+					exclusive: true,
+					env: { CUSTOM_FLAG: "yes" },
+					secrets: ["ALLOWED_SECRET"],
+				},
+				{
+					name: "flaky",
+					run: "run-flaky",
+					timeoutSeconds: 60,
+					cwd: ".",
+					needs: [],
+					retries: 1,
+					secrets: [],
+				},
+			];
+			const passed = await f.session.runChecks!(
+				{ commit: COMMIT, checks, attempt: 1, site: null, maxParallel: 6 },
+				f.signal,
+			);
+			expect(passed.state).toBe("passed");
+			expect(exclusiveOverlapped).toBe(false);
+			expect(flakyAttempts).toBe(2);
+			const exclRun = f.ran().find((r) => checkOf(r) === "run-exclusive");
+			expect(exclRun?.environment.CUSTOM_FLAG).toBe("yes");
+			expect(exclRun?.environment.ALLOWED_SECRET).toBe("secret-allowed-111111");
+			expect(exclRun?.environment.OTHER_SECRET).toBeUndefined();
+			const flakyRun = f.ran().find((r) => checkOf(r) === "run-flaky");
+			expect(flakyRun?.environment.ALLOWED_SECRET).toBeUndefined();
+			expect(flakyRun?.environment.OTHER_SECRET).toBeUndefined();
+
+			mocked.guestOutput.mockImplementation(baseOutput);
+			f.ending((run) => (checkOf(run) === "fail-left" ? { code: 1, printed: "left failed\n" } : {}));
+			const noFailFast = await f.session.runChecks!(
+				{
+					commit: COMMIT,
+					attempt: 2,
+					site: null,
+					failFast: false,
+					checks: [
+						{ name: "left", run: "fail-left", timeoutSeconds: 60, cwd: ".", needs: [] },
+						{ name: "left-child", run: "after-left", timeoutSeconds: 60, cwd: ".", needs: ["left"] },
+						{ name: "right", run: "pass-right", timeoutSeconds: 60, cwd: ".", needs: [] },
+					],
+				},
+				f.signal,
+			);
+			expect(noFailFast).toMatchObject({
+				state: "failed",
+				passed: [{ name: "right", ms: expect.any(Number) }],
+				failed: { name: "left", exitCode: 1 },
+				notRun: ["left-child"],
+			});
+		});
+
+		it("applies incremental path filters, runs downstream checks whose needs were skipped, and bypasses when checks file changed", async () => {
+			const f = await checksFixture();
+			const checks: readonly CodeCheck[] = [
+				{ name: "web-build", run: "build-web", timeoutSeconds: 60, cwd: ".", needs: [], paths: ["web/**"] },
+				{
+					name: "api-test",
+					run: "test-api",
+					timeoutSeconds: 60,
+					cwd: ".",
+					needs: ["web-build"],
+					paths: ["api/**"],
+				},
+				{
+					name: "always",
+					run: "smoke",
+					timeoutSeconds: 60,
+					cwd: ".",
+					needs: [],
+					paths: ["web/**"],
+					alwaysRun: true,
+				},
+			];
+			const filtered = await f.session.runChecks!(
+				{ commit: COMMIT, checks, attempt: 1, site: null, changedPaths: ["api/server.ts"], checksChanged: false },
+				f.signal,
+			);
+			expect(filtered).toMatchObject({
+				state: "passed",
+				checks: [
+					{ name: "web-build", ms: 0, skipped: "paths_unmatched" },
+					{ name: "api-test", ms: expect.any(Number) },
+					{ name: "always", ms: expect.any(Number) },
+				],
+			});
+			expect(f.ran().map(checkOf)).not.toContain("build-web");
+			expect(f.ran().map(checkOf)).toContain("test-api");
+			expect(f.ran().map(checkOf)).toContain("smoke");
+
+			const bypassed = await f.session.runChecks!(
+				{ commit: COMMIT, checks, attempt: 2, site: null, changedPaths: ["api/server.ts"], checksChanged: true },
+				f.signal,
+			);
+			expect(bypassed.state).toBe("passed");
+			expect(f.ran().map(checkOf)).toContain("build-web");
+		});
+
+		it("persists caches only on passing landing runs and parses structured failure artifacts with boundary protection", async () => {
+			const f = await checksFixture({ packageCaches: true });
+			const caches = [
+				{ key: `deps-\${hash('package-lock.json')}`, paths: ["node_modules"], restoreKeys: ["deps-"] },
+			];
+			const failingChecks: readonly CodeCheck[] = [
+				{
+					name: "unit",
+					run: "vitest run",
+					timeoutSeconds: 60,
+					cwd: ".",
+					artifacts: { paths: ["reports/junit.xml"], when: "on_failure", format: "junit" },
+				},
+			];
+			f.ending((run) => {
+				if (checkOf(run) === "vitest run") return { code: 1, printed: "1 failed\n" };
+				if (run.environment.QORPERA_CHECKS_PERSIST_DIR) {
+					const nonce = run.environment.QORPERA_CHECKS_ARTIFACT_NONCE;
+					const rel = run.environment.QORPERA_CHECKS_PERSIST_REL;
+					return {
+						code: 0,
+						printed: [
+							`QORPERA_ARTIFACT_BEGIN:${nonce}:junit`,
+							'<testsuite name="auth"><testcase name="rejects"><failure message="bad status"/></testcase></testsuite>',
+							`QORPERA_ARTIFACT_END:${nonce}`,
+							`QORPERA_PERSISTED:${nonce}:${JSON.stringify({ dir: rel, log: `${rel}/1-unit.log`, files: 2, bytes: 120 })}`,
+						].join("\n"),
+					};
+				}
+				return {};
+			});
+			const failed = await f.session.runChecks!(
+				{ commit: COMMIT, checks: failingChecks, attempt: 1, site: null, caches },
+				f.signal,
+			);
+			expect(failed).toMatchObject({
+				state: "failed",
+				failed: {
+					name: "unit",
+					persistedLog: expect.stringContaining("_check-runs/"),
+					artifactsDir: expect.stringContaining("_check-runs/"),
+					failedTests: [{ suite: "auth", name: "rejects", message: "bad status" }],
+				},
+			});
+			expect(f.ran().some((r) => Boolean(r.environment.QORPERA_CHECKS_CACHE_GLOBAL_ROOT))).toBe(false);
+
+			f.ending(() => ({ code: 0 }));
+			const passed = await f.session.runChecks!(
+				{ commit: COMMIT, checks: failingChecks, attempt: 2, site: null, caches },
+				f.signal,
+			);
+			expect(passed.state).toBe("passed");
+			expect(f.ran().some((r) => Boolean(r.environment.QORPERA_CHECKS_CACHE_GLOBAL_ROOT))).toBe(true);
+			const passCopy = f
+				.ran()
+				.find(
+					(r) =>
+						r.environment.QORPERA_CHECKS_NAME === runName(1, 2) && Boolean(r.environment.QORPERA_CHECKS_COMMIT),
+				);
+			expect(passCopy?.environment.QORPERA_CHECKS_CACHES).toBe(JSON.stringify(caches));
 		});
 	});
 });
