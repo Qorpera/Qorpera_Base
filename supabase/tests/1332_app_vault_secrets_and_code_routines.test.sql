@@ -871,6 +871,16 @@ begin
 		v_problem = 'Coding for this work needs a Codex login: a ChatGPT plan pays only for work started on it',
 		'ChatGPT plan coding dispatch invariant preserved: ' || coalesce(v_problem, 'null')
 	);
+	perform pg_temp.base_assert(
+		exists (
+			select 1
+			from public.qorpera_native_host_calls
+			where name = 'qorpera_folder_emit_data_change_wakes'
+				and scope = 'binding'
+				and budget = 'standard'
+		),
+		'qorpera_folder_emit_data_change_wakes is registered in qorpera_native_host_calls with binding/standard'
+	);
 end $$;
 
 rollback;

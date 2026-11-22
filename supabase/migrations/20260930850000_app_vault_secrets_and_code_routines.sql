@@ -2414,6 +2414,8 @@ grant execute on function
 	public.qorpera_folder_emit_data_change_wakes(jsonb, text, jsonb)
 	to service_role;
 
+insert into public.qorpera_native_host_calls(name, scope) values ('qorpera_folder_emit_data_change_wakes', 'binding');
+
 drop function pg_temp.w6c_patch(regprocedure, text[]);
 
 comment on table public.qorpera_code_releases is
