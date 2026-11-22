@@ -79,6 +79,8 @@ export const SURFACES: Record<string, string> = {
 	"These changes conflict. Turn one off to preview the rest.":
 		"Ændringerne er i konflikt. Slå én fra for at se resten.",
 	"The preview could not be built.": "Forhåndsvisningen kunne ikke bygges.",
+	"The preview could not be opened.": "Forhåndsvisningen kunne ikke åbnes.",
+	"Reconnecting preview…": "Genopretter forhåndsvisning…",
 	"Preview appears here when a change is ready.": "Forhåndsvisningen vises her, når en ændring er klar.",
 	"Opening surface…": "Åbner surface…",
 	"This surface isn't available.": "Denne surface er ikke tilgængelig.",
