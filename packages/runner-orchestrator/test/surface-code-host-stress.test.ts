@@ -330,11 +330,60 @@ describe("surface code_repo parallel work, merge conflicts, previews, and scale 
 			],
 			updateBranchRef: true,
 		});
-		expect(dirtyRebase.status).toBe("conflicted");
-		if (dirtyRebase.status !== "conflicted") throw new Error("expected conflicted for dirty worktree");
-		expect(dirtyRebase.conflictPaths).toContain("feature.js");
+		expect(dirtyRebase).toMatchObject({ status: "deferred", reason: "worktree_dirty" });
 		expect(await readFile(join(active.worktree, "feature.js"), "utf8")).toContain("WIP uncommitted");
 		expect(await f.git(f.repo, "rev-parse", `refs/heads/qorpera/coding/${active.workerId}`)).toBe(committedHead);
+
+		const advancedPeer = await f.startSession(baseSha);
+		const stagedChangeId = randomUUID();
+		const stagedH1 = await advancedPeer.commit({ "staged.js": "export const s = 1;\n" }, "Staged H1");
+		const unstagedH2 = await advancedPeer.commit({ "wip-next.js": "export const s = 2;\n" }, "Follow-up H2");
+		const advancedRebase = await rebaseSessionChanges(f.job, {
+			repository: f.repository,
+			workerId: advancedPeer.workerId,
+			ontoSha: landedOther.mainAfter,
+			remainingChanges: [{ changeId: stagedChangeId, parentSha: baseSha, headSha: stagedH1, title: "Staged H1" }],
+			updateBranchRef: true,
+		});
+		expect(advancedRebase).toMatchObject({ status: "deferred", reason: "branch_advanced" });
+		expect(await f.git(f.repo, "rev-parse", `refs/heads/qorpera/coding/${advancedPeer.workerId}`)).toBe(unstagedH2);
+		expect(await readFile(join(advancedPeer.worktree, "wip-next.js"), "utf8")).toContain("export const s = 2;");
+
+		const assumePeer = await f.startSession(baseSha);
+		const assumeHead = await assumePeer.commit({ "hidden.js": "export const h = 1;\n" }, "Hidden base");
+		await f.git(assumePeer.worktree, "update-index", "--assume-unchanged", "hidden.js");
+		await writeFile(join(assumePeer.worktree, "hidden.js"), "export const h = 999;\n");
+		const assumeRebase = await rebaseSessionChanges(f.job, {
+			repository: f.repository,
+			workerId: assumePeer.workerId,
+			ontoSha: landedOther.mainAfter,
+			remainingChanges: [{ changeId: randomUUID(), parentSha: baseSha, headSha: assumeHead, title: "Hidden" }],
+			updateBranchRef: true,
+		});
+		expect(assumeRebase).toMatchObject({ status: "deferred", reason: "worktree_dirty" });
+		expect(await readFile(join(assumePeer.worktree, "hidden.js"), "utf8")).toContain("export const h = 999;");
+
+		const subPeer = await f.startSession(baseSha);
+		const nestedRepoDir = join(subPeer.worktree, "submod");
+		await mkdir(nestedRepoDir, { recursive: true });
+		await f.git(nestedRepoDir, "init", "--quiet");
+		await writeFile(join(nestedRepoDir, "inner.txt"), "nested\n");
+		await f.git(nestedRepoDir, "add", "inner.txt");
+		await f.git(nestedRepoDir, "commit", "--quiet", "-m", "Nested");
+		await f.git(subPeer.worktree, "add", "submod");
+		await f.git(subPeer.worktree, "commit", "--quiet", "-m", "Add gitlink");
+		const subHead = await f.git(subPeer.worktree, "rev-parse", "HEAD");
+		const logCountBeforeSub = f.log.length;
+		const subRebase = await rebaseSessionChanges(f.job, {
+			repository: f.repository,
+			workerId: subPeer.workerId,
+			ontoSha: landedOther.mainAfter,
+			remainingChanges: [{ changeId: randomUUID(), parentSha: baseSha, headSha: subHead, title: "Submod" }],
+			updateBranchRef: true,
+		});
+		expect(subRebase).toMatchObject({ status: "deferred", reason: "worktree_unsafe" });
+		const subCommands = f.log.slice(logCountBeforeSub);
+		expect(subCommands.some((cmd) => cmd.argv.includes("status") || cmd.argv.includes("reset"))).toBe(false);
 
 		await expect(
 			cherryPickChangeUnits(f.job, {
@@ -372,12 +421,15 @@ describe("surface code_repo parallel work, merge conflicts, previews, and scale 
 		});
 
 		const rebaseRpcs: Record<string, unknown>[] = [];
+		const workerEvents: Record<string, unknown>[] = [];
 		const profileId = randomUUID();
 		const environmentId = randomUUID();
 		const surfaceId = randomUUID();
 		const sessionId = randomUUID();
+		const advancedPeerSessionId = randomUUID();
 		let claimed = false;
 		const worker = new SurfaceCodeHostWorker({
+			report: (ev) => workerEvents.push(ev),
 			control: {
 				async call(method: SurfaceCodeHostRpc, args: Record<string, unknown>) {
 					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
@@ -426,7 +478,20 @@ describe("surface code_repo parallel work, merge conflicts, previews, and scale 
 										{ changeId: m2Id, parentSha: m1Head, headSha: m2Head, title: "M2" },
 										{ changeId: m3Id, parentSha: m2Head, headSha: m3Head, title: "M3" },
 									],
-									peerSessions: [],
+									peerSessions: [
+										{
+											sessionId: advancedPeerSessionId,
+											workerId: advancedPeer.workerId,
+											remainingChanges: [
+												{
+													changeId: stagedChangeId,
+													parentSha: baseSha,
+													headSha: stagedH1,
+													title: "Staged H1",
+												},
+											],
+										},
+									],
 								},
 							],
 						};
@@ -455,6 +520,14 @@ describe("surface code_repo parallel work, merge conflicts, previews, and scale 
 			p_conflicted_change_id: m3Id,
 			p_conflict_paths: ["index.html"],
 		});
+		expect(workerEvents).toContainEqual(
+			expect.objectContaining({
+				event: "surface-code-host-rebase-deferred",
+				sessionId: advancedPeerSessionId,
+				reason: "branch_advanced",
+			}),
+		);
+		expect(await f.git(f.repo, "rev-parse", `refs/heads/qorpera/coding/${advancedPeer.workerId}`)).toBe(unstagedH2);
 	}, 25_000);
 
 	it("handles 20 rapid preview toggles outside hosts.run lock, parallel multi-part uploads, zero leaked refs, and CODE_HOST_JOB_YIELDED retries", async () => {

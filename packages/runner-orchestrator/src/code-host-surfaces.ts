@@ -17,6 +17,7 @@ import {
 	type Run,
 	SHA,
 	tail,
+	WORKTREE_IN_PROGRESS,
 	withJob,
 	ZERO,
 } from "./code-host-jobs.ts";
@@ -61,7 +62,10 @@ export interface RebaseSessionChangesInput {
 	readonly ontoSha: string;
 	readonly remainingChanges: readonly CodeHostChangeRange[];
 	readonly updateBranchRef?: boolean;
+	readonly allowedBranchTips?: readonly string[];
 }
+
+export type RebaseDeferReason = "branch_advanced" | "worktree_dirty" | "worktree_unsafe" | "cas_race";
 
 export type RebaseSessionChangesResult =
 	| {
@@ -73,6 +77,7 @@ export type RebaseSessionChangesResult =
 				readonly parentSha: string;
 				readonly headSha: string;
 			}[];
+			readonly worktreeSynced?: boolean;
 			readonly restored: readonly string[];
 	  }
 	| {
@@ -85,6 +90,12 @@ export type RebaseSessionChangesResult =
 				readonly parentSha: string;
 				readonly headSha: string;
 			}[];
+			readonly restored: readonly string[];
+	  }
+	| {
+			readonly status: "deferred";
+			readonly ontoSha: string;
+			readonly reason: RebaseDeferReason;
 			readonly restored: readonly string[];
 	  };
 
@@ -171,7 +182,7 @@ async function treeOfCommit(run: Run, commitSha: string, errorCode: string): Pro
 	return tree;
 }
 
-// WHY: Uses Git 2.40+ --merge-base for single-exec zero-orphan 3-way merges; falls back to synthetic parented commits only on legacy Git 2.38/2.39.
+// WHY: Git 2.38/2.39 (macOS dev) lacks --merge-base on merge-tree, so fall back to synthetic parented commits only on exit 129.
 async function applyRange(
 	run: Run,
 	cursorCommit: string,
@@ -339,6 +350,109 @@ export async function cherryPickChangeUnits(
 	});
 }
 
+async function inspectWorktreeForRebase(
+	run: Run,
+	workerId: string,
+	branchRef: string,
+	oldTip: string | null,
+): Promise<{ readonly exists: false } | { readonly exists: true; readonly defer: RebaseDeferReason | null }> {
+	const wtTree = `${run.code}/worktrees/${workerId}`;
+	const wtAdmin = `${run.repo}/worktrees/${workerId}`;
+	const [treeType, adminType, linkType, backType, commonType, headType, refsType, ...progress] = await run.types([
+		wtTree,
+		wtAdmin,
+		`${wtTree}/.git`,
+		`${wtAdmin}/gitdir`,
+		`${wtAdmin}/commondir`,
+		`${wtAdmin}/HEAD`,
+		`${wtAdmin}/refs`,
+		...WORKTREE_IN_PROGRESS.map((name) => `${wtAdmin}/${name}`),
+	]);
+	if (treeType === "none" && adminType === "none") return { exists: false };
+	if (
+		treeType !== "directory" ||
+		adminType !== "directory" ||
+		linkType !== "file" ||
+		backType !== "file" ||
+		commonType !== "file" ||
+		headType !== "file"
+	) {
+		return { exists: true, defer: "worktree_unsafe" };
+	}
+	const [linkBytes, backBytes, commonBytes, headBytes] = await run.readMany([
+		`${wtTree}/.git`,
+		`${wtAdmin}/gitdir`,
+		`${wtAdmin}/commondir`,
+		`${wtAdmin}/HEAD`,
+	]);
+	if (
+		!linkBytes?.equals(Buffer.from(`gitdir: ${wtAdmin}\n`)) ||
+		!backBytes?.equals(Buffer.from(`${wtTree}/.git\n`)) ||
+		!commonBytes?.equals(Buffer.from("../..\n")) ||
+		!headBytes?.equals(Buffer.from(`ref: ${branchRef}\n`))
+	) {
+		return { exists: true, defer: "worktree_unsafe" };
+	}
+	if (!oldTip) return { exists: true, defer: "worktree_unsafe" };
+	if (progress.some((type) => type !== "none")) return { exists: true, defer: "worktree_dirty" };
+	if (refsType !== "none") {
+		if (refsType !== "directory") return { exists: true, defer: "worktree_unsafe" };
+		const own = await run.command([
+			"/usr/bin/find",
+			`${wtAdmin}/refs`,
+			"-mindepth",
+			"1",
+			"!",
+			"-type",
+			"d",
+			"-print",
+			"-quit",
+		]);
+		if (own.status !== 0) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", tail(own.stderr));
+		if (own.stdout.length) return { exists: true, defer: "worktree_dirty" };
+	}
+	// WHY: A session controls its worktree; reject gitlinks and nested .git before any git status/reset touches disk so submodule configs cannot execute filter drivers on the code host.
+	const headRecords = await run.checkNames(run.repo, oldTip).catch((error: unknown) => {
+		if (error instanceof CodeHostRefusal) return null;
+		throw error;
+	});
+	if (
+		!headRecords ||
+		codeFolderRefuses(run.area, headRecords, `worktrees/${workerId}`).length > 0 ||
+		headRecords.some((record) => record.type === "commit")
+	) {
+		return { exists: true, defer: "worktree_unsafe" };
+	}
+	const nested = await run.command(["/usr/bin/find", wtTree, "-mindepth", "2", "-iname", ".git", "-print", "-quit"]);
+	if (nested.status !== 0) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", tail(nested.stderr));
+	if (nested.stdout.length) return { exists: true, defer: "worktree_unsafe" };
+	// WHY: Edits flagged assume-unchanged or skip-worktree are hidden from porcelain status and would be overwritten by reset --hard.
+	const plain = await run.sh(
+		'out=$1; shift; "$@" >"$out" || exit 2; grep -q -v "^H " "$out"; case $? in 1) exit 0 ;; 0) exit 1 ;; *) exit 2 ;; esac',
+		[
+			`${run.directory}/rebase-index.out`,
+			run.layout.git,
+			"--no-replace-objects",
+			`--git-dir=${wtAdmin}`,
+			`--work-tree=${wtTree}`,
+			"ls-files",
+			"-v",
+		],
+	);
+	if (plain.status !== 0) return { exists: true, defer: "worktree_dirty" };
+	const clean = await run.clean([
+		`--git-dir=${wtAdmin}`,
+		`--work-tree=${wtTree}`,
+		"status",
+		"--porcelain",
+		"-z",
+		"--untracked-files=normal",
+		"--ignore-submodules=all",
+	]);
+	if (!clean) return { exists: true, defer: "worktree_dirty" };
+	return { exists: true, defer: null };
+}
+
 export async function rebaseSessionChanges(
 	job: CodeHostJob,
 	input: RebaseSessionChangesInput,
@@ -348,6 +462,9 @@ export async function rebaseSessionChanges(
 	const ontoSha = assertSha(input.ontoSha);
 	if (!Array.isArray(input.remainingChanges)) throw new Error("INVALID_CODE_HOST_JOB");
 	for (const change of input.remainingChanges) assertChangeRange(change);
+	if (input.allowedBranchTips !== undefined) {
+		for (const tip of input.allowedBranchTips) assertSha(tip);
+	}
 
 	return withJob(job, repository, async (run) => {
 		await prepareKeptArea(run);
@@ -365,35 +482,23 @@ export async function rebaseSessionChanges(
 		const oldTip = input.updateBranchRef ? await run.ref(branchRef) : null;
 		let hasWorktree = false;
 		if (input.updateBranchRef) {
-			const [adminType, treeType] = await run.types([wtAdmin, wtTree]);
-			hasWorktree = adminType === "directory" && treeType === "directory";
-			if (hasWorktree) {
-				// WHY: Never move or hard-reset a worktree with uncommitted tracked edits (e.g., an actively running peer turn).
-				const dirty = await run.git(wtAdmin, [
-					`--work-tree=${wtTree}`,
-					"status",
-					"--porcelain",
-					"-z",
-					"--untracked-files=no",
-				]);
-				if (dirty.status !== 0 || dirty.stdout.length > 0) {
-					const dirtyPaths =
-						dirty.status === 0
-							? dirty.stdout
-									.toString("utf8")
-									.split("\0")
-									.filter(Boolean)
-									.map((entry) => entry.slice(3))
-							: [];
-					return {
-						status: "conflicted" as const,
-						ontoSha,
-						conflictedChangeId: input.remainingChanges[0]?.changeId ?? input.workerId,
-						conflictPaths: [...new Set(dirtyPaths)],
-						rebasedBeforeConflict: [],
-						restored: run.restored,
-					};
+			const expectedTips = new Set<string>(
+				input.allowedBranchTips && input.allowedBranchTips.length > 0
+					? input.allowedBranchTips
+					: input.remainingChanges.length > 0
+						? [input.remainingChanges[input.remainingChanges.length - 1]!.headSha]
+						: [],
+			);
+			// WHY: If an active peer session committed past its last staged change, moving its branch and resetting its worktree would destroy unrecorded commits.
+			if (oldTip !== null && expectedTips.size > 0 && !expectedTips.has(oldTip)) {
+				return { status: "deferred" as const, ontoSha, reason: "branch_advanced" as const, restored: run.restored };
+			}
+			const inspected = await inspectWorktreeForRebase(run, input.workerId, branchRef, oldTip);
+			if (inspected.exists) {
+				if (inspected.defer !== null) {
+					return { status: "deferred" as const, ontoSha, reason: inspected.defer, restored: run.restored };
 				}
+				hasWorktree = true;
 			}
 		}
 
@@ -436,30 +541,34 @@ export async function rebaseSessionChanges(
 			cursorTree = applied.treeSha;
 		}
 
+		let worktreeSynced = true;
 		if (input.updateBranchRef) {
-			if (cursor !== ontoSha) {
+			if (hasWorktree) {
+				const cursorRecords = await run.checkNames(run.repo, cursor);
+				if (cursorRecords.some((record) => record.type === "commit")) {
+					return {
+						status: "deferred" as const,
+						ontoSha,
+						reason: "worktree_unsafe" as const,
+						restored: run.restored,
+					};
+				}
+				const refused = codeFolderRefuses(run.area, cursorRecords, `worktrees/${input.workerId}`);
+				if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+			} else if (cursor !== ontoSha) {
 				const { records } = await run.checkNamesIncremental(run.repo, ontoSha, cursor);
 				const refused = codeFolderRefuses(run.area, records, `worktrees/${input.workerId}`);
 				if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
 			}
-			// WHY: Compare-and-swap prevents clobbering a concurrent session commit; hard-resetting the linked worktree keeps disk + index aligned with the moved branch ref.
+			// WHY: Compare-and-swap avoids clobbering a concurrent commit; resetting the linked worktree keeps disk and index aligned with the moved branch ref.
 			const updated = await run.git(run.repo, ["update-ref", branchRef, cursor, oldTip ?? ZERO]);
 			if (updated.status !== 0) {
-				return {
-					status: "conflicted" as const,
-					ontoSha,
-					conflictedChangeId: input.remainingChanges[0]?.changeId ?? input.workerId,
-					conflictPaths: [],
-					rebasedBeforeConflict: [],
-					restored: run.restored,
-				};
+				return { status: "deferred" as const, ontoSha, reason: "cas_race" as const, restored: run.restored };
 			}
 			if (hasWorktree) {
-				await run.gitOk(
-					wtAdmin,
-					[`--work-tree=${wtTree}`, "reset", "--hard", "--quiet", cursor],
-					"CODE_HOST_REBASE_FAILED",
-				);
+				// WHY: Once the branch ref moved, return clean with worktreeSynced=false rather than throwing so Postgres still records the moved SHAs.
+				const reset = await run.git(wtAdmin, [`--work-tree=${wtTree}`, "reset", "--hard", "--quiet", cursor]);
+				if (reset.status !== 0) worktreeSynced = false;
 			}
 		}
 		return {
@@ -467,6 +576,7 @@ export async function rebaseSessionChanges(
 			ontoSha,
 			branchHeadSha: cursor,
 			rebasedChanges: rebased,
+			...(input.updateBranchRef ? { worktreeSynced } : {}),
 			restored: run.restored,
 		};
 	});

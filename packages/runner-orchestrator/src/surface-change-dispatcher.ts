@@ -79,9 +79,13 @@ export async function approveAndSyncSurfaceChanges(
 		throw error;
 	}
 
-	// WHY: Once cherryPickChangeUnits advances refs/heads/main, isolate sibling/peer rebases so a single session rebase failure never aborts or fails an already-landed merge.
+	// WHY: Once cherryPickChangeUnits advances refs/heads/main, isolate non-abort rebase errors so one peer session never fails an already-landed merge.
 	let siblingRebase: RebaseSessionChangesResult | null = null;
 	if (request.siblingRemainingChanges.length > 0) {
+		const allowedBranchTips = [
+			request.siblingRemainingChanges[request.siblingRemainingChanges.length - 1]!.headSha,
+			...request.approvedChanges.map((change) => change.headSha),
+		];
 		try {
 			siblingRebase = await rebaseSessionChanges(job, {
 				repository: request.repository,
@@ -89,14 +93,14 @@ export async function approveAndSyncSurfaceChanges(
 				ontoSha: landed.mainAfter,
 				remainingChanges: request.siblingRemainingChanges,
 				updateBranchRef: true,
+				allowedBranchTips,
 			});
-		} catch {
+		} catch (error) {
+			if (job.signal.aborted) throw error;
 			siblingRebase = {
-				status: "conflicted",
+				status: "deferred",
 				ontoSha: landed.mainAfter,
-				conflictedChangeId: request.siblingRemainingChanges[0]!.changeId,
-				conflictPaths: [],
-				rebasedBeforeConflict: [],
+				reason: "worktree_dirty",
 				restored: [],
 			};
 		}
@@ -113,14 +117,14 @@ export async function approveAndSyncSurfaceChanges(
 				ontoSha: landed.mainAfter,
 				remainingChanges: peer.remainingChanges,
 				updateBranchRef: true,
+				allowedBranchTips: [peer.remainingChanges[peer.remainingChanges.length - 1]!.headSha],
 			});
-		} catch {
+		} catch (error) {
+			if (job.signal.aborted) throw error;
 			result = {
-				status: "conflicted",
+				status: "deferred",
 				ontoSha: landed.mainAfter,
-				conflictedChangeId: peer.remainingChanges[0]!.changeId,
-				conflictPaths: [],
-				rebasedBeforeConflict: [],
+				reason: "worktree_dirty",
 				restored: [],
 			};
 		}

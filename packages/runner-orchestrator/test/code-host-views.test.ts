@@ -1236,6 +1236,10 @@ describe("codeHostPublishAnswer", () => {
 			answer: "waiting",
 			detail: "code/a/b/repo.git/HEAD: not_applied (the save did not get through yet)",
 		});
+		expect(codeHostPublishAnswer(1, Buffer.from(retryableNotApplied))).toEqual({
+			answer: "waiting",
+			detail: "code/a/b/repo.git/HEAD: not_applied (the save did not get through yet)",
+		});
 		const batchLimit = `${JSON.stringify({
 			paths: [
 				{

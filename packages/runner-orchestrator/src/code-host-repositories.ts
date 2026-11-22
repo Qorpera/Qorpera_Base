@@ -1589,12 +1589,6 @@ function namedPaths(paths: readonly string[]): string {
 	return `${shown.join(", ")}${more ? ` and ${more} more` : ""}`;
 }
 
-/** The words of a session's workspace refused for the names of what it would hold, or for a file too large (the code
- * host's `CODE_HOST_NAMES_*`, `CODE_HOST_FILE_TOO_LARGE`), or undefined for any other failure. The same names are
- * refused the same way at every follow-up, so the words never say one tries again. Whose names they are says what to
- * do: the session's own branch (its worktree made again, `CodeWorktreeNamesRefused`) is carried into a new session;
- * GitHub's default branch (a seed, or a new worktree at GitHub's base) is a member's to fix on GitHub; the default
- * branch of a repository kept in Qorpera can be fixed by no session. */
 function formatStartFailure(error: CodeHostJobFailure | CodeHostRefusal): string {
 	if (!(error instanceof CodeHostJobFailure) || error.code !== "CODE_HOST_PUBLISH_REFUSED" || !error.detail) {
 		return CODE_START_FAILED;
@@ -1625,6 +1619,12 @@ function formatStartFailure(error: CodeHostJobFailure | CodeHostRefusal): string
 	return parts.length > 0 ? `${CODE_START_FAILED} (${parts.join("; ").slice(0, 240)})` : CODE_START_FAILED;
 }
 
+/** The words of a session's workspace refused for the names of what it would hold, or for a file too large (the code
+ * host's `CODE_HOST_NAMES_*`, `CODE_HOST_FILE_TOO_LARGE`), or undefined for any other failure. The same names are
+ * refused the same way at every follow-up, so the words never say one tries again. Whose names they are says what to
+ * do: the session's own branch (its worktree made again, `CodeWorktreeNamesRefused`) is carried into a new session;
+ * GitHub's default branch (a seed, or a new worktree at GitHub's base) is a member's to fix on GitHub; the default
+ * branch of a repository kept in Qorpera can be fixed by no session. */
 function namesRefused(
 	session: Pick<CodingFolderRepositorySession, "claim">,
 	error: CodeHostJobFailure | CodeHostRefusal,

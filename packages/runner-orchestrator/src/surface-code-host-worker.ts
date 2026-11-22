@@ -18,7 +18,7 @@ import {
 	withJob,
 } from "./code-host-jobs.ts";
 import { type CodeSiteTreeFile, CodeSiteTreeInvalid, readSurfaceSiteTree } from "./code-host-sites.ts";
-import { composePreviewTree } from "./code-host-surfaces.ts";
+import { composePreviewTree, type RebaseSessionChangesResult } from "./code-host-surfaces.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { CODE_SITE_EXTENSIONS, CODE_SITE_PATH, codeSiteManifest, codeSiteTreeProblem } from "./code-site.ts";
 import { CODE_SITE_LIST_BYTES, CODE_SITE_LIST_FILES, type CodeSiteTreeRead } from "./code-site-uploads.ts";
@@ -852,29 +852,27 @@ export class SurfaceCodeHostWorker {
 	async #persistRebaseOutcome(
 		surfaceId: string,
 		sessionId: string,
-		result:
-			| {
-					readonly status: "clean";
-					readonly branchHeadSha: string;
-					readonly rebasedChanges: readonly {
-						readonly changeId: string;
-						readonly parentSha: string;
-						readonly headSha: string;
-					}[];
-			  }
-			| {
-					readonly status: "conflicted";
-					readonly conflictedChangeId: string;
-					readonly conflictPaths: readonly string[];
-					readonly rebasedBeforeConflict: readonly {
-						readonly changeId: string;
-						readonly parentSha: string;
-						readonly headSha: string;
-					}[];
-			  },
+		result: RebaseSessionChangesResult,
 		signal: AbortSignal,
 	): Promise<void> {
+		if (result.status === "deferred") {
+			this.#emit({
+				event: "surface-code-host-rebase-deferred",
+				surfaceId,
+				sessionId,
+				reason: result.reason,
+			});
+			return;
+		}
 		if (result.status === "clean") {
+			if (result.worktreeSynced === false) {
+				this.#emit({
+					event: "surface-code-host-rebase-worktree-unsynced",
+					surfaceId,
+					sessionId,
+					branchHeadSha: result.branchHeadSha,
+				});
+			}
 			await this.#control.call(
 				"qorpera_surface_update_rebased_changes",
 				{
@@ -939,7 +937,7 @@ export class SurfaceCodeHostWorker {
 			return true;
 		}
 
-		// WHY: Keep only fast git composition and tree reading inside hosts.run; perform HTTP site uploads outside so preview uploads never block merges or coding sessions.
+		// WHY: Preview HTTP uploads must stay outside hosts.run so slow network I/O never blocks company merges or coding turns.
 		const baseSha = preview.baseSha && preview.baseSha !== ZERO_SHA ? preview.baseSha : undefined;
 		type PreparedPreview =
 			| {

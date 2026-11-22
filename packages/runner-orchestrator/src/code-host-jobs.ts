@@ -2615,7 +2615,7 @@ export async function bundleCodeArea(
 }
 
 /** What git keeps in its folder for a worktree while a merge, a pick, a revert, a bisect or a rebase is under way. */
-const WORKTREE_IN_PROGRESS = [
+export const WORKTREE_IN_PROGRESS = [
 	"MERGE_HEAD",
 	"CHERRY_PICK_HEAD",
 	"REVERT_HEAD",

@@ -572,26 +572,23 @@ export function codeHostPublishAnswer(status: number, stdout: Buffer): CodeHostP
 			}),
 			...(unsaved.length > 20 ? [`and ${unsaved.length - 20} more`] : []),
 		].join(", ");
+	const allRetryable = () =>
+		unsaved.every((entry) =>
+			isRetryablePublishEntry({
+				outcome: entry.outcome,
+				...(typeof entry.reason === "string" ? { reason: entry.reason } : {}),
+			}),
+		);
 	if (status === 0 && refused === undefined && unsaved.length === 0) return { answer: "saved" };
 	if (status === 4 && (refused !== undefined || unsaved.length > 0)) {
-		if (
-			refused === undefined &&
-			unsaved.length > 0 &&
-			unsaved.every((entry) =>
-				isRetryablePublishEntry({
-					outcome: entry.outcome,
-					...(typeof entry.reason === "string" ? { reason: entry.reason } : {}),
-				}),
-			)
-		) {
+		if (refused === undefined && unsaved.length > 0 && allRetryable()) {
 			return { answer: "waiting", detail: detail() };
 		}
 		return { answer: "refused", detail: detail() };
 	}
-	// `waiting` is the only outcome a later publish can still turn into saved.
 	if (status === 1)
 		return {
-			answer: refused !== undefined || unsaved.some((entry) => entry.outcome !== "waiting") ? "refused" : "waiting",
+			answer: refused !== undefined || !allRetryable() ? "refused" : "waiting",
 			detail: detail(),
 		};
 	return { answer: "unanswered" };
