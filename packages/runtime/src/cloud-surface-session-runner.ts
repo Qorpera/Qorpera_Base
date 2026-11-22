@@ -347,7 +347,7 @@ export async function loadSurfaceSharedAssets(
 	};
 }
 
-function extractPointToChangeTarget(originRef: unknown): PointToChangeTarget | null {
+export function extractPointToChangeTarget(originRef: unknown): PointToChangeTarget | null {
 	if (!originRef || typeof originRef !== "object" || Array.isArray(originRef)) return null;
 	const rec = originRef as Record<string, unknown>;
 	const candidates: unknown[] = [originRef];

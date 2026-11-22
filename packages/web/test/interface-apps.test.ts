@@ -2645,4 +2645,125 @@ describe("AppBridge database actions (qorpera.act)", () => {
 		await readApps(folder503 as never, signal, after503);
 		expect(readMany503).toHaveBeenCalledTimes(2);
 	});
+
+	it("assembles streamed file pieces into one flat Blob and reads todos across agents with bounded concurrency", async () => {
+		const chunk = new Uint8Array(512 * 1024).fill(9);
+		const chunkCount = 20;
+		const totalBytes = chunk.byteLength * chunkCount;
+		const f = fakeFolder({
+			"apps/streamed/index.html": '<div hidden><img src="big.webp"></div>',
+			"apps/streamed/big.webp": new Uint8Array(totalBytes),
+		});
+		const pieces = vi.fn(
+			async (
+				_file: { bytes: number },
+				_signal: AbortSignal,
+				onPiece: (piece: Uint8Array, index: number, count: number) => void,
+			) => {
+				for (let index = 0; index < chunkCount; index++) onPiece(chunk, index, chunkCount);
+			},
+		);
+		const OriginalBlob = globalThis.Blob;
+		const blobSizes: number[] = [];
+		const BlobSpy = vi.fn(function (this: Blob, parts?: BlobPart[], options?: BlobPropertyBag) {
+			blobSizes.push(parts?.length ?? 0);
+			return new OriginalBlob(parts, options);
+		}) as unknown as typeof Blob;
+		vi.stubGlobal("Blob", BlobSpy);
+		try {
+			const assembled = await assembleApp(
+				Object.assign(f, { readFilePieces: pieces }) as never,
+				{ path: "apps/streamed", entry: "index.html" },
+				new AbortController().signal,
+			);
+			expect(assembled.ok).toBe(true);
+			if (!assembled.ok) throw new Error(assembled.message);
+			const handed = new Map(assembled.framed.files);
+			expect([...handed.values()][0]?.size).toBe(totalBytes);
+			expect(blobSizes).toContain(chunkCount);
+			expect(blobSizes.length).toBeLessThanOrEqual(2);
+		} finally {
+			vi.stubGlobal("Blob", OriginalBlob);
+		}
+
+		const todoFiles: Record<string, string> = {
+			"apps/todoapp/app.toml": 'name = "TodoApp"\nreads = ["todos"]\n',
+		};
+		for (let a = 0; a < 12; a++) {
+			for (let t = 0; t < 3; t++) {
+				const todoId = `33333333-3333-4333-8333-${String(a * 10 + t + 1).padStart(12, "0")}`;
+				todoFiles[`QorperaOS/agents/agent-${String(a).padStart(2, "0")}/todos/t-${t}.md`] =
+					`---\nid: ${todoId}\ntitle: "Task ${a}-${t}"\nstatus: open\n---\nBody\n`;
+			}
+		}
+		const base = fakeFolder(todoFiles);
+		let inFlight = 0;
+		let maxInFlight = 0;
+		const trackedFolder = {
+			...base,
+			list: async (...args: Parameters<typeof base.list>) => {
+				inFlight += 1;
+				if (inFlight > maxInFlight) maxInFlight = inFlight;
+				await new Promise((resolve) => setTimeout(resolve, 2));
+				try {
+					return await base.list(...args);
+				} finally {
+					inFlight -= 1;
+				}
+			},
+			readFile: async (...args: Parameters<typeof base.readFile>) => {
+				inFlight += 1;
+				if (inFlight > maxInFlight) maxInFlight = inFlight;
+				await new Promise((resolve) => setTimeout(resolve, 2));
+				try {
+					return await base.readFile(...args);
+				} finally {
+					inFlight -= 1;
+				}
+			},
+		};
+		const parsed = parseAppManifest('name = "TodoApp"\nreads = ["todos"]\n');
+		if (!parsed.ok) throw new Error("manifest");
+		const bridge = new AppBridge(
+			{ folder: () => trackedFolder as never, agents: () => [] },
+			{ name: "todoapp", path: "apps/todoapp", manifest: parsed.manifest, problems: [], version: null },
+			crypto.randomUUID(),
+			new AbortController().signal,
+		);
+		const answer = await bridge.answer({ method: "todos", params: {} });
+		expect(answer.ok).toBe(true);
+		if (answer.ok) expect(answer.value).toHaveLength(36);
+		expect(maxInFlight).toBeGreaterThan(1);
+		expect(maxInFlight).toBeLessThanOrEqual(8);
+
+		const manyFiles: Record<string, string> = {
+			"apps/todoapp/app.toml": 'name = "TodoApp"\nreads = ["todos"]\n',
+		};
+		for (let a = 0; a < 20; a++) {
+			for (let t = 0; t < 30; t++) {
+				const todoId = `44444444-4444-4444-8444-${String(a * 100 + t + 1).padStart(12, "0")}`;
+				manyFiles[`QorperaOS/agents/agent-${String(a).padStart(2, "0")}/todos/t-${String(t).padStart(2, "0")}.md`] =
+					`---\nid: ${todoId}\ntitle: "Many ${a}-${t}"\nstatus: open\n---\nBody\n`;
+			}
+		}
+		const manyBase = fakeFolder(manyFiles);
+		const listedTodoDirs: string[] = [];
+		const manyFolder = {
+			...manyBase,
+			list: async (...args: Parameters<typeof manyBase.list>) => {
+				if (args[0]?.endsWith("/todos")) listedTodoDirs.push(args[0]);
+				return manyBase.list(...args);
+			},
+		};
+		const cappedBridge = new AppBridge(
+			{ folder: () => manyFolder as never, agents: () => [] },
+			{ name: "todoapp", path: "apps/todoapp", manifest: parsed.manifest, problems: [], version: null },
+			crypto.randomUUID(),
+			new AbortController().signal,
+		);
+		const cappedAnswer = await cappedBridge.answer({ method: "todos", params: {} });
+		expect(cappedAnswer.ok).toBe(true);
+		if (cappedAnswer.ok) expect(cappedAnswer.value).toHaveLength(200);
+		expect(listedTodoDirs.length).toBeLessThanOrEqual(8);
+	});
 });

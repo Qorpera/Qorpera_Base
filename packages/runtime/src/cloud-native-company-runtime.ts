@@ -205,6 +205,9 @@ import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills }
 import {
 	createControlPlaneSessionCompletionPort,
 	createControlPlaneSessionLeaseRenewalPort,
+	extractPointToChangeTarget,
+	loadSurfaceIdentityContext,
+	loadSurfaceSharedAssets,
 	runSurfaceSessionTurn,
 	type SurfaceSessionTurnExecutionOutcome,
 	type SurfaceSessionTurnInput,
@@ -212,7 +215,6 @@ import {
 import {
 	type CloudSurfaceToolsPort,
 	type ControlPlaneSurfaceToolsPortOptions,
-	createCodingRecordChangeTool,
 	createControlPlaneSurfaceToolsPort,
 	createManageSurfaceAutomationTool,
 	createProposeSurfaceTool,
@@ -220,6 +222,7 @@ import {
 	type SurfaceCompanySenses,
 	type SurfaceToolsRpcClient,
 } from "./cloud-surface-tools.ts";
+import type { SurfaceCodingTurnBinding } from "./cloud-surface-turn-context.ts";
 import {
 	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	cloudAskMemberFinalKey,
@@ -611,12 +614,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				if (!this.#coding)
 					throw new Error("Coding sessions run in the coding composition, which this node does not carry");
 				stage = "coding-session";
+				const surfaceSession = await this.#loadSurfaceCodingBinding(
+					binding,
+					context.identity,
+					wake.payload,
+					signal,
+				);
 				composition.finish("succeeded", { outputBytes: 0 });
 				return await this.#coding.execute(request, identityRoot, signal, {
 					binding,
 					identity: context.identity,
 					wake,
 					observability,
+					...(surfaceSession ? { surfaceSession } : {}),
 				});
 			}
 			// A plain worker Claude Code does (20260930770000) is never a Codex turn: its run is the Claude Code worker's own
@@ -672,7 +682,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					wake,
 					observability,
 					serviceTier,
-					machinesAvailable: await machinesRequest,
 				});
 			}
 			// A post in a conversation is the run's request (21 October 2026, item 3): the post the wake names, or a card
@@ -1537,7 +1546,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							// The company's databases (slice 5), on a host that names the data gateway's run door: every
 							// run describes and asks them; a worker does not apply steps.
 							...(this.#companyData
-								? cloudDataTools({ folder: folder.client, door: this.#companyData, apply: !work.isWorker })
+								? cloudDataTools({
+										folder: folder.client,
+										door: this.#companyData,
+										apply: !work.isWorker,
+										onDataChanged: async (event, requestSignal) => {
+											await this.#paths.call(
+												"qorpera_folder_emit_data_change_wakes",
+												{
+													p_binding: binding,
+													p_database: event.database,
+													p_event: event.payload,
+												},
+												requestSignal,
+											);
+										},
+									})
 								: []),
 							cloudCompanyContextTool(context, binding, this.#paths, () => requestSources),
 							...(viewed ? [memoryZoomTool(binding, identity, this.#paths)] : []),
@@ -2012,6 +2036,89 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		return { providerSessionId: result.providerSessionId, delivery: { messageCount: 0, finalMessageId: null } };
 	}
 
+	async #loadSurfaceCodingBinding(
+		binding: CloudNativeToolBinding,
+		identity: CloudNativeToolIdentity,
+		payload: Record<string, unknown>,
+		signal: AbortSignal,
+	): Promise<SurfaceCodingTurnBinding | undefined> {
+		const rawSurface = payload.surfaceSession;
+		if (!rawSurface || typeof rawSurface !== "object" || Array.isArray(rawSurface)) return undefined;
+		const surfaceRef = rawSurface as Record<string, unknown>;
+		const sessionId = String(surfaceRef.sessionId);
+		const surfaceSlug = String(surfaceRef.surfaceSlug);
+		const leaseToken = String(surfaceRef.leaseToken);
+		const sessionTurnRaw = (await this.#paths.call(
+			"qorpera_native_surface_read_session_turn",
+			{
+				p_profile_id: identity.companyId,
+				p_session_id: sessionId,
+				p_lease_token: leaseToken,
+			},
+			signal,
+		)) as Record<string, unknown> | null;
+		if (!sessionTurnRaw || typeof sessionTurnRaw !== "object" || typeof sessionTurnRaw.prompt !== "string") {
+			throw new Error("Surface coding turn payload could not be loaded");
+		}
+		const surfaceTitle =
+			typeof sessionTurnRaw.surfaceTitle === "string" && sessionTurnRaw.surfaceTitle.trim()
+				? sessionTurnRaw.surfaceTitle.trim()
+				: surfaceSlug;
+		const conflictPaths = Array.isArray(sessionTurnRaw.conflictPaths)
+			? sessionTurnRaw.conflictPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+			: [];
+		const folderClient = new CloudCompanyFolderClient({
+			binding,
+			identity,
+			control: this.#paths,
+			bytes: this.#folderBytes(binding, identity),
+			...(this.#eventHooks ? { signedHooks: this.#eventHooks } : {}),
+		});
+		const readBrief = async (): Promise<string | null> => {
+			try {
+				const found = await folderClient.readText(`QorperaOS/surfaces/${surfaceSlug}/brief.md`, 16_384, signal);
+				const text = found?.text.trim();
+				return text ? text : null;
+			} catch (error) {
+				if (signal.aborted) throw error;
+				return null;
+			}
+		};
+		const [briefMarkdown, identityContext, sharedSnapshot] = await Promise.all([
+			readBrief(),
+			loadSurfaceIdentityContext(folderClient, signal).catch((error) => {
+				if (signal.aborted) throw error;
+				return null;
+			}),
+			loadSurfaceSharedAssets(folderClient, signal).catch((error) => {
+				if (signal.aborted) throw error;
+				return null;
+			}),
+		]);
+		const surfaceTools = createControlPlaneSurfaceToolsPort(this.#paths, {
+			leaseToken,
+			deferSessionCompletion: true,
+		});
+		const pointToChangeTarget = extractPointToChangeTarget(sessionTurnRaw.originRef ?? null);
+		return {
+			sessionId,
+			surfaceSlug,
+			surfaceTitle,
+			briefMarkdown:
+				briefMarkdown ?? (typeof sessionTurnRaw.briefSummary === "string" ? sessionTurnRaw.briefSummary : null),
+			fullPrompt: sessionTurnRaw.prompt,
+			repositoryKey: typeof sessionTurnRaw.repositoryKey === "string" ? sessionTurnRaw.repositoryKey : null,
+			folderRoot: typeof sessionTurnRaw.folderRoot === "string" ? sessionTurnRaw.folderRoot : null,
+			explorationVariantLabel:
+				typeof sessionTurnRaw.explorationVariantLabel === "string" ? sessionTurnRaw.explorationVariantLabel : null,
+			identityContext,
+			sharedAssets: sharedSnapshot,
+			pointToChangeTarget,
+			conflictPaths,
+			recordChange: surfaceTools.recordChange,
+		};
+	}
+
 	async #surfaceSessionTurn(
 		identityRoot: string,
 		signal: AbortSignal,
@@ -2021,10 +2128,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			wake: CloudWakeEnvelope;
 			observability: CloudRuntimeObservability;
 			serviceTier: CloudRuntimeServiceTier;
-			machinesAvailable: boolean;
 		},
 	): Promise<{ providerSessionId: string; delivery: { messageCount: number; finalMessageId: string | null } }> {
-		const { binding, context, wake, observability, serviceTier, machinesAvailable } = input;
+		const { binding, context, wake, observability, serviceTier } = input;
 		const identity = context.identity;
 		const payload = wake.payload as Record<string, unknown>;
 		const sessionId = String(payload.surfaceSessionId);
@@ -2442,10 +2548,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		};
 
 		const readOnlyNames = new Set(["company_read", "company_list"]);
-		const machineGateway =
-			this.#machines && machinesAvailable && identity.audienceKind === "company"
-				? this.#machines(binding)
-				: undefined;
 
 		const turnResult = await runSurfaceSessionTurn(turnInput, {
 			folder: folderClient,
@@ -2473,39 +2575,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						return [...turnReq.tools, ...folderTools];
 					},
 				}),
-			executeCodeRepoTurn: async (codeReq) =>
-				runModelTurn({
-					instructions: codeReq.instructions,
-					turnBrief: codeReq.turnBrief,
-					prompt: codeReq.input.prompt,
-					turnSignal: codeReq.signal,
-					buildTools: (runIdentity, operations) => {
-						const readOnlyFolderTools = cloudFolderFileTools({
-							folder: folderClient,
-							operations,
-							identity: runIdentity,
-						}).filter((tool) => readOnlyNames.has(tool.name));
-						const machineTools = machineGateway
-							? cloudMachineTools({
-									binding,
-									identity: runIdentity,
-									control: this.#paths,
-									operations,
-									gateway: machineGateway,
-									worker: true,
-									...(this.#codingValues ? { codingValues: this.#codingValues } : {}),
-									...(this.#companyAccounts ? { accountFills: true } : {}),
-								})
-							: [];
-						return [
-							createCodingRecordChangeTool(codeReq.binding.sessionId, {
-								recordChange: codeReq.binding.recordChange,
-							}),
-							...readOnlyFolderTools,
-							...machineTools,
-						];
-					},
-				}),
+			executeCodeRepoTurn: async () => {
+				throw new Error("Code repository surface sessions run through the coding executor; retry this session.");
+			},
 			completeSessionTurn: completionPort.completeSessionTurn,
 			renewSessionLease: leaseRenewalPort.renewSessionLease,
 			signal,

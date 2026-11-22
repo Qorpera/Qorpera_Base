@@ -870,6 +870,49 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("auto-composes preview selection once for cloud code_repo surfaces with newly staged changes and retries after transient failure without setting state.error", async () => {
+		let attempts = 0;
+		const readyPreview = {
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame({
+				status: "composing",
+				toggledChangeIds: [CHANGES[0]],
+			}),
+			compareFrames: [],
+		};
+		const setPreviewSelection = vi.fn(async () => {
+			attempts += 1;
+			if (attempts === 1) throw new Error("transient offline");
+			return readyPreview;
+		});
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () => workspace([session(["staged"])])),
+			setPreviewSelection,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		expect(setPreviewSelection).toHaveBeenCalledTimes(1);
+		expect(setPreviewSelection).toHaveBeenCalledWith(SURFACE, {
+			toggledChangeIds: [CHANGES[0]],
+			explorationSessionId: null,
+		});
+		expect(store.state.error).toBeUndefined();
+
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(2);
+		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("composing");
+
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(2);
+		store.dispose();
+	});
+
 	it("compiles live company identity tokens from folder-relative staged patches on the identity surface", async () => {
 		const identity = summary({
 			id: "22222222-2222-4222-8222-222222222291",
@@ -1198,6 +1241,15 @@ describe("SurfacesStore", () => {
 							resolvedAt: null,
 						},
 					],
+					previewState: {
+						surfaceId: SURFACE,
+						mode: "single",
+						primary: previewFrame({
+							previewId: PREVIEW_IDS[0],
+							toggledChangeIds: [CHANGES[0], CHANGES[1]],
+						}),
+						compareFrames: [],
+					},
 				}),
 			),
 			setPreviewSelection,

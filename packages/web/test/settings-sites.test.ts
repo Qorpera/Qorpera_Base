@@ -1511,7 +1511,9 @@ describe("sites client", () => {
 			],
 		}));
 		const access = await createWebSites({ rpc } as unknown as Cloud, { profileId: id(10) }).access();
-		expect(rpc.mock.calls).toEqual([["qorpera_company_site_access", { p_profile_id: id(10) }]]);
+		expect(rpc.mock.calls).toEqual([
+			["qorpera_company_site_access", { p_profile_id: id(10) }, expect.any(AbortSignal)],
+		]);
 		expect([...access.takenDown]).toEqual([[shop.id, { at, reason: "Spam" }]]);
 		// Each site taken down by its name too (the review of #1774, F4); one not taken down is not named.
 		expect([...access.named]).toEqual([
@@ -1706,7 +1708,11 @@ describe("sites client", () => {
 			shop.id,
 			gift.id,
 		]);
-		expect(cloud.rpc).toHaveBeenLastCalledWith("qorpera_company_site_access", { p_profile_id: id(10) });
+		expect(cloud.rpc).toHaveBeenLastCalledWith(
+			"qorpera_company_site_access",
+			{ p_profile_id: id(10) },
+			expect.any(AbortSignal),
+		);
 	});
 
 	it("draws a site Qorpera took down through the real calls, the rest as today", async () => {

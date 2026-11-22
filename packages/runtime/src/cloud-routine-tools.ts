@@ -1,4 +1,11 @@
-import { companyStatePath } from "@qorpera/cloud-client/company-state-files";
+import {
+	companyStatePath,
+	ROUTINE_CODE_CHANGE_EVENTS,
+	ROUTINE_DATA_CHANGE_OPERATIONS,
+	type RoutineCheckBeforeWake,
+	type RoutineCodeChangeEvent,
+	type RoutineDataChangeOperation,
+} from "@qorpera/cloud-client/company-state-files";
 import type { CloudFolderRoutineDecision, CloudFolderRoutineDecisionRequest } from "./cloud-folder-routine-decision.ts";
 import {
 	CLOUD_FOLDER_ROUTINE_NAME,
@@ -32,6 +39,14 @@ const ACTIONS = ["list", "upsert", "pause", "resume", "remove", "conclude"] as c
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /** An event type as a sender names it: printable ASCII without spaces, at most 128 characters. */
 const EVENT_TYPE = /^[\x21-\x7e]{1,128}$/;
+const REPO_OWNER = /^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const REPO_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/;
+const REPO_FULL = /^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/;
+const SITE_SLUG = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
+const DATA_DB = /^[a-z][a-z0-9_-]{0,63}$/;
+const DATA_TABLE = /^[a-z][a-z0-9_]{0,63}$/;
+const CHECK_URL = /^https:\/\/[^/@\s\u0000-\u001f\u007f]+(?:\/[^\s\u0000-\u001f\u007f]*)?$/;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const DECISIONS = ["next", "conclude"] as const;
 
 function fits(
@@ -273,8 +288,165 @@ function compileTrigger(value: unknown): Record<string, unknown> {
 			replyPolicy: reply(t.report),
 		};
 	}
+	if (kind === "code_change") {
+		const t = triggerKeys(value, kind, ["owner", "name", "timeZone"], ["events", "paths", "report"], {
+			owner: "acme",
+			name: "web",
+			events: ["landed", "checks_failed"],
+			paths: ["src/**/*.ts"],
+			timeZone: zone,
+		});
+		if (typeof t.owner !== "string" || !REPO_OWNER.test(t.owner))
+			throw new CloudToolArgumentRefusal("owner is the repository owner name, like acme");
+		if (typeof t.name !== "string" || !REPO_NAME.test(t.name))
+			throw new CloudToolArgumentRefusal("name is the repository name, like web");
+		const rawEvents = t.events === undefined ? ["landed"] : t.events;
+		if (
+			!Array.isArray(rawEvents) ||
+			rawEvents.length < 1 ||
+			rawEvents.length > 4 ||
+			new Set(rawEvents).size !== rawEvents.length ||
+			rawEvents.some(
+				(ev) => typeof ev !== "string" || !ROUTINE_CODE_CHANGE_EVENTS.includes(ev as RoutineCodeChangeEvent),
+			)
+		)
+			throw new CloudToolArgumentRefusal(
+				'events is 1 to 4 distinct values from landed, undone, checks_failed, or conflict, like ["landed"]',
+			);
+		const paths =
+			t.paths === undefined
+				? {}
+				: Array.isArray(t.paths) &&
+						t.paths.length >= 1 &&
+						t.paths.length <= 20 &&
+						new Set(t.paths).size === t.paths.length &&
+						t.paths.every(
+							(pat) =>
+								typeof pat === "string" && pat.length >= 1 && pat.length <= 256 && !CONTROL_CHARS.test(pat),
+						)
+					? { paths: [...(t.paths as string[])] }
+					: undefined;
+		if (!paths)
+			throw new CloudToolArgumentRefusal(
+				'paths is 1 to 20 distinct glob patterns of at most 256 characters, like ["src/**/*.ts"]',
+			);
+		return {
+			kind: "listener",
+			source: "code-change",
+			repo: `${t.owner}/${t.name}`.toLowerCase(),
+			events: [...(rawEvents as RoutineCodeChangeEvent[])],
+			...paths,
+			timeZone: timeZone(t.timeZone, "timeZone"),
+			replyPolicy: reply(t.report),
+		};
+	}
+	if (kind === "app_unhealthy") {
+		const t = triggerKeys(value, kind, ["site", "timeZone"], ["report"], {
+			site: "billing-app",
+			timeZone: zone,
+		});
+		if (typeof t.site !== "string" || (!SITE_SLUG.test(t.site) && !UUID.test(t.site)))
+			throw new CloudToolArgumentRefusal("site is a hosted app slug (like billing-app) or site UUID");
+		return {
+			kind: "listener",
+			source: "app-unhealthy",
+			site: t.site.toLowerCase(),
+			timeZone: timeZone(t.timeZone, "timeZone"),
+			replyPolicy: reply(t.report),
+		};
+	}
+	if (kind === "data_change") {
+		const t = triggerKeys(value, kind, ["database", "timeZone"], ["tables", "operations", "report"], {
+			database: "billing",
+			tables: ["invoices"],
+			operations: ["insert"],
+			timeZone: zone,
+		});
+		if (typeof t.database !== "string" || !DATA_DB.test(t.database))
+			throw new CloudToolArgumentRefusal("database is a lowercase company database name, like billing");
+		const tables =
+			t.tables === undefined
+				? {}
+				: Array.isArray(t.tables) &&
+						t.tables.length >= 1 &&
+						t.tables.length <= 20 &&
+						new Set(t.tables).size === t.tables.length &&
+						t.tables.every((tb) => typeof tb === "string" && DATA_TABLE.test(tb))
+					? { tables: [...(t.tables as string[])] }
+					: undefined;
+		if (!tables)
+			throw new CloudToolArgumentRefusal('tables is 1 to 20 distinct lowercase table names, like ["invoices"]');
+		const operations =
+			t.operations === undefined
+				? {}
+				: Array.isArray(t.operations) &&
+						t.operations.length >= 1 &&
+						t.operations.length <= 3 &&
+						new Set(t.operations).size === t.operations.length &&
+						t.operations.every(
+							(op) =>
+								typeof op === "string" &&
+								ROUTINE_DATA_CHANGE_OPERATIONS.includes(op as RoutineDataChangeOperation),
+						)
+					? { operations: [...(t.operations as RoutineDataChangeOperation[])] }
+					: undefined;
+		if (!operations)
+			throw new CloudToolArgumentRefusal("operations is 1 to 3 distinct values from insert, update, or delete");
+		return {
+			kind: "listener",
+			source: "data-change",
+			database: t.database,
+			...tables,
+			...operations,
+			timeZone: timeZone(t.timeZone, "timeZone"),
+			replyPolicy: reply(t.report),
+		};
+	}
 	throw new CloudToolArgumentRefusal(
-		`trigger is an object whose kind is dynamic, when_done, every, weekly, file_change or event, like ${JSON.stringify({ kind: "dynamic", timeZone: zone })}`,
+		`trigger is an object whose kind is dynamic, when_done, every, weekly, file_change, event, code_change, app_unhealthy or data_change, like ${JSON.stringify({ kind: "dynamic", timeZone: zone })}`,
+	);
+}
+
+function compileCheckBeforeWake(value: unknown): RoutineCheckBeforeWake {
+	const kind = (value as { kind?: unknown } | null)?.kind;
+	if (kind === "http_probe") {
+		const c = object(value, ["kind", "url", "expectStatus", "timeoutMs"], ["kind", "url"]);
+		if (typeof c.url !== "string" || c.url.length < 10 || c.url.length > 1024 || !CHECK_URL.test(c.url))
+			throw new CloudToolArgumentRefusal("checkBeforeWake.url must be an https URL without embedded credentials");
+		if (
+			c.expectStatus !== undefined &&
+			(!Number.isSafeInteger(c.expectStatus) || (c.expectStatus as number) < 100 || (c.expectStatus as number) > 599)
+		)
+			throw new CloudToolArgumentRefusal("checkBeforeWake.expectStatus must be an HTTP status code from 100 to 599");
+		if (
+			c.timeoutMs !== undefined &&
+			(!Number.isSafeInteger(c.timeoutMs) || (c.timeoutMs as number) < 500 || (c.timeoutMs as number) > 30000)
+		)
+			throw new CloudToolArgumentRefusal("checkBeforeWake.timeoutMs must be between 500 and 30000");
+		return {
+			kind: "http_probe",
+			url: c.url,
+			...(c.expectStatus === undefined ? {} : { expectStatus: c.expectStatus as number }),
+			...(c.timeoutMs === undefined ? {} : { timeoutMs: c.timeoutMs as number }),
+		};
+	}
+	if (kind === "code_checks") {
+		const c = object(value, ["kind", "repo", "timeoutMs"], ["kind"]);
+		if (c.repo !== undefined && (typeof c.repo !== "string" || !REPO_FULL.test(c.repo)))
+			throw new CloudToolArgumentRefusal("checkBeforeWake.repo must be owner/name");
+		if (
+			c.timeoutMs !== undefined &&
+			(!Number.isSafeInteger(c.timeoutMs) || (c.timeoutMs as number) < 1000 || (c.timeoutMs as number) > 300000)
+		)
+			throw new CloudToolArgumentRefusal("checkBeforeWake.timeoutMs must be between 1000 and 300000");
+		return {
+			kind: "code_checks",
+			...(c.repo === undefined ? {} : { repo: (c.repo as string).toLowerCase() }),
+			...(c.timeoutMs === undefined ? {} : { timeoutMs: c.timeoutMs as number }),
+		};
+	}
+	throw new CloudToolArgumentRefusal(
+		'checkBeforeWake must be { kind: "http_probe", url, expectStatus?, timeoutMs? } or { kind: "code_checks", repo?, timeoutMs? }',
 	);
 }
 
@@ -305,6 +477,10 @@ export const CLOUD_ROUTINE_TOOL_DESCRIPTION = [
 	"- every (minutes) and weekly (localTime HH:MM, weekdays): work tied to the clock, such as a Monday report. A new one runs once at once as a kickoff, then on its schedule; give firstRunAt only when the first run must wait.",
 	"- file_change: each saved change under path, a company path you can read (match exact or subtree), wakes you once with what changed, never your own.",
 	"- event: what other services send to a hook or mailbox (hookId from list_hooks; only, its event types): each run gets up to 20 new events.",
+	"- code_change: triggers on landed, undone, checks_failed, or conflict for a repo (owner, name) with optional paths globs.",
+	"- app_unhealthy: triggers when a hosted app (site slug or id) fails health checks or crash-loops.",
+	"- data_change: triggers on Company Database table changes (database, optional tables and operations).",
+	"checkBeforeWake (optional on recurring scheduled routines — every or weekly): deterministic http_probe or code_checks gate that wakes you only on failure or state change.",
 	"file_change and event listen from their last save, which drops what was not delivered yet. timeZone is the member's IANA time zone, from the wake's time; times are ISO 8601 with an offset, and a time on the hour or half hour moves a few minutes later per agent. report: optional (speak only when useful), required (always; it needs your public thread, or the run is skipped) or silent (never).",
 	"Start dense while a responsibility is new: while you can move it without a member, the next run is minutes to a few hours away, not the next morning. Give a finite watch an expiresAt, or for every and weekly a maxOccurrences, so it ends by itself. When you pick a threshold or a cadence nobody gave you, tell the member it is your starting assumption.",
 	"The routine is the file routines/<routineKey>.md in your folder. A conflict means it changed since it was read: call again with a new operationKey.",
@@ -487,7 +663,77 @@ export function cloudRoutineTools(
 								report: reportSchema,
 							},
 						},
+						{
+							type: "object",
+							additionalProperties: false,
+							required: ["kind", "owner", "name", "timeZone"],
+							properties: {
+								kind: { const: "code_change" },
+								owner: { type: "string" },
+								name: { type: "string" },
+								events: {
+									type: "array",
+									minItems: 1,
+									maxItems: 4,
+									items: { type: "string", enum: [...ROUTINE_CODE_CHANGE_EVENTS] },
+								},
+								paths: {
+									type: "array",
+									minItems: 1,
+									maxItems: 20,
+									items: { type: "string" },
+								},
+								timeZone: zoneSchema,
+								report: reportSchema,
+							},
+						},
+						{
+							type: "object",
+							additionalProperties: false,
+							required: ["kind", "site", "timeZone"],
+							properties: {
+								kind: { const: "app_unhealthy" },
+								site: { type: "string" },
+								timeZone: zoneSchema,
+								report: reportSchema,
+							},
+						},
+						{
+							type: "object",
+							additionalProperties: false,
+							required: ["kind", "database", "timeZone"],
+							properties: {
+								kind: { const: "data_change" },
+								database: { type: "string" },
+								tables: {
+									type: "array",
+									minItems: 1,
+									maxItems: 20,
+									items: { type: "string" },
+								},
+								operations: {
+									type: "array",
+									minItems: 1,
+									maxItems: 3,
+									items: { type: "string", enum: [...ROUTINE_DATA_CHANGE_OPERATIONS] },
+								},
+								timeZone: zoneSchema,
+								report: reportSchema,
+							},
+						},
 					],
+				},
+				checkBeforeWake: {
+					type: "object",
+					additionalProperties: false,
+					required: ["kind"],
+					properties: {
+						kind: { type: "string", enum: ["http_probe", "code_checks"] },
+						url: { type: "string" },
+						expectStatus: { type: "integer", minimum: 100, maximum: 599 },
+						repo: { type: "string" },
+						timeoutMs: { type: "integer", minimum: 500, maximum: 300000 },
+					},
 				},
 				expiresAt: { type: "string", format: "date-time" },
 				maxOccurrences: {
@@ -570,6 +816,7 @@ export function cloudRoutineTools(
 							"title",
 							"intent",
 							"trigger",
+							"checkBeforeWake",
 							"expiresAt",
 							"maxOccurrences",
 							"quietHours",
@@ -614,6 +861,11 @@ export function cloudRoutineTools(
 				intent: text(a.intent, 32768),
 				trigger: compileTrigger(a.trigger),
 			};
+			if (a.checkBeforeWake !== undefined) {
+				if ((request.trigger as { kind: string }).kind !== "schedule")
+					throw new CloudToolArgumentRefusal("checkBeforeWake is only supported on recurring scheduled routines");
+				request.checkBeforeWake = compileCheckBeforeWake(a.checkBeforeWake);
+			}
 			if (a.expiresAt !== undefined) request.expiresAt = instant(a.expiresAt, "expiresAt");
 			request.trigger = spreadTrigger(request.trigger as Record<string, unknown>, offsetMinutes, request.expiresAt);
 			// A dynamic routine's run after its end would never happen.
