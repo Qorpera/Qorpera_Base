@@ -2067,6 +2067,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const conflictPaths = Array.isArray(sessionTurnRaw.conflictPaths)
 			? sessionTurnRaw.conflictPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
+		const productFolderRoots = Array.isArray(sessionTurnRaw.productFolderRoots)
+			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+			: [];
 		const folderClient = new CloudCompanyFolderClient({
 			binding,
 			identity,
@@ -2090,7 +2093,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				if (signal.aborted) throw error;
 				return null;
 			}),
-			loadSurfaceSharedAssets(folderClient, signal).catch((error) => {
+			loadSurfaceSharedAssets(folderClient, signal, productFolderRoots).catch((error) => {
 				if (signal.aborted) throw error;
 				return null;
 			}),
@@ -2158,6 +2161,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const conflictPaths = Array.isArray(sessionTurnRaw.conflictPaths)
 			? sessionTurnRaw.conflictPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
+		const productFolderRoots = Array.isArray(sessionTurnRaw.productFolderRoots)
+			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+			: [];
 		const turnInput: SurfaceSessionTurnInput = {
 			sessionId,
 			surfaceId,
@@ -2170,6 +2176,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			state: sessionTurnRaw.state === "reconciling" ? "reconciling" : "queued",
 			repositoryKey: typeof sessionTurnRaw.repositoryKey === "string" ? sessionTurnRaw.repositoryKey : null,
 			folderRoot: typeof sessionTurnRaw.folderRoot === "string" ? sessionTurnRaw.folderRoot : null,
+			...(productFolderRoots.length > 0 ? { productFolderRoots } : {}),
 			briefSummary: typeof sessionTurnRaw.briefSummary === "string" ? sessionTurnRaw.briefSummary : null,
 			explorationVariantLabel:
 				typeof sessionTurnRaw.explorationVariantLabel === "string" ? sessionTurnRaw.explorationVariantLabel : null,

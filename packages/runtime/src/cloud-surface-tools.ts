@@ -847,7 +847,7 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 			const folderRoot =
 				rawFolderRoot ??
 				(sourceKind === "folder" || archetype === "studio"
-					? kind === "identity" || isGlobal || raw.slug === "identity"
+					? kind === "identity" || raw.slug === "identity"
 						? "identity"
 						: `surfaces/${raw.slug}`
 					: null);

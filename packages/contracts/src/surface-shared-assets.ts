@@ -20,6 +20,43 @@ export const SHARED_COMPANY_ASSET_PATHS = [
 	PRODUCT_CATALOG_PATH,
 ] as const;
 
+export const IDENTITY_SHARED_ASSET_PATHS = [
+	IDENTITY_TOKENS_JSON_PATH,
+	IDENTITY_TOKENS_CSS_PATH,
+	IDENTITY_BRIEF_PATH,
+	IDENTITY_VOICE_PATH,
+	IDENTITY_LOGO_PATH,
+	IDENTITY_COMPANY_PATH,
+] as const;
+
+export interface SharedProductAssetCandidates {
+	readonly specsPaths: readonly string[];
+	readonly catalogPaths: readonly string[];
+}
+
+export function sharedProductAssetCandidates(
+	productFolderRoots?: readonly string[] | null,
+): SharedProductAssetCandidates {
+	const roots: string[] = [];
+	const seen = new Set<string>();
+	for (const raw of productFolderRoots ?? []) {
+		const cleaned = raw.trim().replace(/^\/+|\/+$/g, "");
+		if (!cleaned || seen.has(cleaned)) continue;
+		seen.add(cleaned);
+		roots.push(cleaned);
+	}
+	if (roots.length === 0) {
+		return {
+			specsPaths: [PRODUCT_SPECS_PATH],
+			catalogPaths: [PRODUCT_CATALOG_PATH],
+		};
+	}
+	return {
+		specsPaths: roots.map((root) => `${root}/specs.json`),
+		catalogPaths: roots.map((root) => `${root}/catalog.json`),
+	};
+}
+
 export const SURFACE_SHARED_DIR = "public/qorpera-shared";
 export const SURFACE_IDENTITY_CSS_MOUNT_PATH = "qorpera-identity.css";
 export const SURFACE_IDENTITY_CSS_PUBLIC_URL = "/__qorpera/identity/tokens.css";

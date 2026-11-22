@@ -1193,5 +1193,41 @@ describe("cloud surface session runner", () => {
 		expect(seen["market-notes"]).toContain("<slug>.report.json");
 		expect(seen["market-notes"]).toContain("bar_chart");
 		expect(seen["market-notes"]).not.toContain("vendors.json");
+
+		await hook.runDeliveredSession(
+			{
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				profileId: randomUUID(),
+				surfaceSlug: "inventory",
+				surfaceTitle: "Inventory",
+				surfaceArchetype: "studio",
+				surfaceSourceKind: "folder",
+				surfaceKind: "database",
+				folderRoot: "surfaces/inventory",
+				prompt: "Add SKU table.",
+				leaseToken: randomUUID(),
+			},
+			"machine-1",
+		);
+		expect(seen.inventory).not.toContain("Product Studio file layout");
+		expect(seen.inventory).not.toContain("vendors.json");
+
+		const isolatedLoaded = await loadSurfaceSharedAssets(
+			{
+				async readText(path) {
+					const files: Record<string, string> = {
+						"product/specs.json": '{"legacy":true}',
+						"surfaces/thetabands/specs.json": '{"weightGrams":44}',
+						"surfaces/thetabands/catalog.json": '{"skus":["TB-1"]}',
+					};
+					return files[path] ?? null;
+				},
+			},
+			new AbortController().signal,
+			["surfaces/thetabands"],
+		);
+		expect(isolatedLoaded?.productSpecsJson).toBe('{"weightGrams":44}');
+		expect(isolatedLoaded?.productCatalogJson).toBe('{"skus":["TB-1"]}');
 	});
 });

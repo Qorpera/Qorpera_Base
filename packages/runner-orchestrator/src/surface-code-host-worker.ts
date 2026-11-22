@@ -35,6 +35,7 @@ export const SURFACE_CODE_HOST_RPCS = [
 	"qorpera_surface_site_version_list",
 	"qorpera_surface_site_version_put",
 	"qorpera_surface_site_version_finish",
+	"qorpera_surface_shared_product_folder_roots",
 ] as const;
 
 export type SurfaceCodeHostRpc = (typeof SURFACE_CODE_HOST_RPCS)[number];
@@ -590,6 +591,20 @@ export class SurfaceCodeHostWorker {
 		return createSurfaceExecutionHandlers({
 			controlPlane,
 			resolveCodeHostJob: () => codeHostJob,
+			resolveProductFolderRoots: async (profileId, callSignal) => {
+				try {
+					const raw = await this.#control.call(
+						"qorpera_surface_shared_product_folder_roots",
+						{ p_profile_id: profileId },
+						callSignal,
+					);
+					return Array.isArray(raw)
+						? raw.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+						: [];
+				} catch {
+					return [];
+				}
+			},
 			folder: sharedFolderReader,
 			buildAndUploadPreview: async (input, callSignal) => {
 				const uploaded = await uploadSurfaceSiteTree(

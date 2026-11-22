@@ -185,6 +185,8 @@ describe("SurfaceCodeHostWorker", () => {
 						return { updated: 1, sessionId: args.p_session_id };
 					case "qorpera_surface_renew_lease":
 						return { renewed: true };
+					case "qorpera_surface_shared_product_folder_roots":
+						return [];
 					default:
 						throw new Error(`Unexpected RPC ${method}`);
 				}
@@ -388,6 +390,9 @@ describe("SurfaceCodeHostWorker", () => {
 				}
 				if (method === "qorpera_surface_renew_lease") {
 					return { renewed: true };
+				}
+				if (method === "qorpera_surface_shared_product_folder_roots") {
+					return [];
 				}
 				throw new Error(`Unexpected RPC ${method}`);
 			},
@@ -612,6 +617,9 @@ describe("SurfaceCodeHostWorker", () => {
 				if (method === "qorpera_surface_renew_lease") {
 					return { renewed: true };
 				}
+				if (method === "qorpera_surface_shared_product_folder_roots") {
+					return [];
+				}
 				throw new Error(`Unexpected RPC ${method}`);
 			},
 		};
@@ -711,6 +719,9 @@ describe("SurfaceCodeHostWorker", () => {
 				}
 				if (method === "qorpera_surface_renew_lease") {
 					return { renewed: true };
+				}
+				if (method === "qorpera_surface_shared_product_folder_roots") {
+					return [];
 				}
 				throw new Error(`Unexpected RPC ${method}`);
 			},
