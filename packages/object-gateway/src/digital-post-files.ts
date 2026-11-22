@@ -50,6 +50,7 @@ export const DIGITAL_POST_INDEX = "digital-post/letters.json";
 /** The chunk size the vault staged in, and the piece the database answers at most (its answers stay under 1 MiB). */
 const CHUNK_BYTES = 1024 * 1024;
 const PIECE_BYTES = 512 * 1024;
+const MAX_STAGING_IN_FLIGHT_BYTES = 32 * 1024 * 1024;
 /** The index stays within what the Mailbox reads of a folder file (256 KiB): the oldest letters are left out first. */
 export const DIGITAL_POST_INDEX_MAX_BYTES = 240 * 1024;
 const MEDIA_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
@@ -287,6 +288,7 @@ export class DigitalPostLetterWriter {
 				return [index, ref] as const;
 			},
 			signal,
+			{ maxBytes: MAX_STAGING_IN_FLIGHT_BYTES, sizeOf: ({ file }) => file.bytes },
 		);
 		const staged = new Map<number, unknown>(stagedPairs);
 		const year = claim.folder.split("/").slice(0, 2).join("/");

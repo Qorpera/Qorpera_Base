@@ -657,4 +657,55 @@ describe("a member's program file put into the company's place for programs", ()
 		expect(r2.status).toBe(200);
 		expect(peakCommits).toBe(1);
 	});
+
+	it("keeps finish() serialized when a waiting finish aborts before the active finish completes", async () => {
+		let sealCount = 0;
+		let commitInFlight = 0;
+		let peakCommits = 0;
+		let releaseCommit!: () => void;
+		const commitGate = new Promise<void>((resolve) => {
+			releaseCommit = resolve;
+		});
+		const g = await gateway({
+			onPublisher: async (method) => {
+				if (method === "qorpera_folder_seal_upload") sealCount++;
+				if (method === "qorpera_folder_commit") {
+					commitInFlight++;
+					peakCommits = Math.max(peakCommits, commitInFlight);
+					if (peakCommits === 1) await commitGate;
+					commitInFlight--;
+				}
+			},
+		});
+		const file = program(16);
+		const id = await uploadOf(await g.open(file));
+		expect((await g.piece(id, 0, file.pieces[0]!)).status).toBe(200);
+
+		const firstFinish = g.finish(id);
+		await new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+		const ac = new AbortController();
+		const abortedSecond = fetch(`${g.base}/${id}`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${memberToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ schema: "qorpera.member-program-finish/v1", operationKey: "web:add-1" }),
+			signal: ac.signal,
+		});
+		await new Promise<void>((resolve) => setTimeout(resolve, 25));
+		ac.abort();
+		await expect(abortedSecond).rejects.toThrow();
+		await new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+		const thirdFinish = g.finish(id);
+		await new Promise<void>((resolve) => setTimeout(resolve, 25));
+		expect(sealCount).toBe(1);
+		expect(commitInFlight).toBe(1);
+		expect(peakCommits).toBe(1);
+
+		releaseCommit();
+		const [r1, r3] = await Promise.all([firstFinish, thirdFinish]);
+		expect(r1.status).toBe(200);
+		expect(r3.status).toBe(200);
+		expect(peakCommits).toBe(1);
+	});
 });

@@ -536,8 +536,10 @@ export async function serveMemberProgramUpload(
 		upload.finishTail = new Promise<void>((resolve) => {
 			releaseFinish = resolve;
 		});
+		let acquired = false;
 		try {
 			await waitTurn(previousFinish, signal);
+			acquired = true;
 			if (uploads.get(actor.userId) !== upload) throw new ObjectDependencyError(404);
 			await finish(
 				response,
@@ -568,7 +570,8 @@ export async function serveMemberProgramUpload(
 			).catch(gone);
 		} finally {
 			upload.finishing--;
-			releaseFinish();
+			if (acquired) releaseFinish();
+			else void previousFinish.then(releaseFinish, releaseFinish);
 		}
 	} finally {
 		clearTimeout(timer);

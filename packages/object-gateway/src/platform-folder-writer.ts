@@ -32,23 +32,42 @@ export async function mapBounded<T, R>(
 	concurrency: number,
 	fn: (item: T, index: number, signal: AbortSignal) => Promise<R>,
 	signal?: AbortSignal,
+	budget?: { readonly maxBytes: number; readonly sizeOf: (item: T) => number },
 ): Promise<R[]> {
 	if (items.length === 0) return [];
 	if (signal?.aborted) throw signal.reason;
 	const results = new Array<R>(items.length);
 	const siblingAbort = new ObjectDependencyError(503);
 	const child = new AbortController();
-	const onParentAbort = () => child.abort(signal?.reason);
+	let budgetWaiters: (() => void)[] = [];
+	const wakeWaiters = (): void => {
+		const waiters = budgetWaiters;
+		budgetWaiters = [];
+		for (const wake of waiters) wake();
+	};
+	const onParentAbort = () => {
+		child.abort(signal?.reason);
+		wakeWaiters();
+	};
 	if (signal) signal.addEventListener("abort", onParentAbort, { once: true });
 	let next = 0;
+	let active = 0;
+	let inFlightBytes = 0;
 	let stop = false;
 	let firstErrorIndex = Number.POSITIVE_INFINITY;
 	let firstError: unknown;
 	const worker = async (): Promise<void> => {
 		for (;;) {
 			if (stop || child.signal.aborted) return;
+			if (next >= items.length) return;
+			const itemBytes = budget ? Math.max(0, budget.sizeOf(items[next] as T)) : 0;
+			if (budget && active > 0 && inFlightBytes + itemBytes > budget.maxBytes) {
+				await new Promise<void>((resolve) => budgetWaiters.push(resolve));
+				continue;
+			}
 			const index = next++;
-			if (index >= items.length) return;
+			active++;
+			inFlightBytes += itemBytes;
 			try {
 				results[index] = await fn(items[index] as T, index, child.signal);
 			} catch (error) {
@@ -66,6 +85,10 @@ export async function mapBounded<T, R>(
 				stop = true;
 				if (!child.signal.aborted) child.abort(siblingAbort);
 				return;
+			} finally {
+				active--;
+				inFlightBytes -= itemBytes;
+				wakeWaiters();
 			}
 		}
 	};

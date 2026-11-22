@@ -40,6 +40,7 @@ const HASH = /^[0-9a-f]{64}$/;
 const MAX_STORED_LINES = 1000;
 const RECONCILE_CONCURRENCY = 4;
 const STATUS_CONCURRENCY = 16;
+const MAX_LEGACY_TOMBSTONE_PRUNE = 500;
 
 interface AuditWaiter {
 	readonly events: readonly Record<string, unknown>[];
@@ -503,14 +504,16 @@ export class ObjectGatewayReplication {
 			if (!discoveredAborted) {
 				this.#scanCursor = discovered.length < limit ? undefined : discovered.at(-1);
 				// WHY: Prune legacy state="deleted" tombstones so pending/ cannot lock out at MAX_RECORDS.
-				const staleDeleted = names.filter((name) => this.#deletedKeys.has(name)).slice(0, Math.max(limit, 500));
+				const staleDeleted = names
+					.filter((name) => this.#deletedKeys.has(name))
+					.slice(0, MAX_LEGACY_TOMBSTONE_PRUNE);
 				let pruneIndex = 0;
 				const pruneWorker = async (): Promise<void> => {
 					while (pruneIndex < staleDeleted.length) {
 						const name = staleDeleted[pruneIndex++]!;
 						await this.#journal
 							.exclusive(name, async () => {
-								const stored = await this.#journal.read(name, { skipDirectoryCheck: true });
+								const stored = await this.#journal.read(name);
 								if (stored === undefined) {
 									this.#deletedKeys.delete(name);
 									this.#keyVersions.delete(name);

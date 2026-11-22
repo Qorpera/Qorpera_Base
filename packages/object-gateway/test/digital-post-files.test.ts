@@ -7,7 +7,7 @@ import {
 	digitalPostIndexText,
 	parseDigitalPostLetterClaim,
 } from "../src/digital-post-files.ts";
-import { PlatformFolderProblem } from "../src/platform-folder-writer.ts";
+import { mapBounded, PlatformFolderProblem } from "../src/platform-folder-writer.ts";
 
 /* The Digital Post letters' writer (digital-post-files.ts): claim a kept letter, read its staged files back in pieces and
  * check them, make the folders it lacks, put the letter's folder whole and the index in one change set as the platform,
@@ -282,5 +282,52 @@ describe("digitalPostIndexText", () => {
 		expect(text.endsWith("\n")).toBe(true);
 		const oneMore = `${JSON.stringify({ schema: "qorpera.digital-post-letters/v1", letters: letters.slice(0, kept.length + 1) })}\n`;
 		expect(Buffer.byteLength(oneMore, "utf8")).toBeGreaterThan(DIGITAL_POST_INDEX_MAX_BYTES);
+	});
+});
+
+describe("mapBounded byte budget", () => {
+	it("serializes oversized items within the byte budget while still running small items concurrently and honoring abort", async () => {
+		const MiB = 1024 * 1024;
+		const sizes = [20 * MiB, 20 * MiB, 4 * MiB, 4 * MiB, 4 * MiB, 4 * MiB];
+		let inFlightBytes = 0;
+		let peakBytes = 0;
+		let active = 0;
+		let peakSmallConcurrency = 0;
+		const results = await mapBounded(
+			sizes,
+			4,
+			async (bytes, index) => {
+				active++;
+				inFlightBytes += bytes;
+				peakBytes = Math.max(peakBytes, inFlightBytes);
+				if (bytes === 4 * MiB) peakSmallConcurrency = Math.max(peakSmallConcurrency, active);
+				await new Promise<void>((resolve) => setTimeout(resolve, 15));
+				inFlightBytes -= bytes;
+				active--;
+				return index;
+			},
+			undefined,
+			{ maxBytes: 32 * MiB, sizeOf: (bytes) => bytes },
+		);
+		expect(results).toEqual([0, 1, 2, 3, 4, 5]);
+		expect(peakBytes).toBeLessThanOrEqual(32 * MiB);
+		expect(peakSmallConcurrency).toBe(4);
+
+		const ac = new AbortController();
+		const blocked = mapBounded(
+			[32 * MiB, 32 * MiB],
+			4,
+			async (_bytes, _index, itemSignal) => {
+				await new Promise<void>((_resolve, reject) => {
+					if (itemSignal.aborted) reject(itemSignal.reason);
+					else itemSignal.addEventListener("abort", () => reject(itemSignal.reason), { once: true });
+				});
+			},
+			ac.signal,
+			{ maxBytes: 32 * MiB, sizeOf: (bytes) => bytes },
+		);
+		await new Promise<void>((resolve) => setTimeout(resolve, 10));
+		ac.abort(new Error("budget-cancelled"));
+		await expect(blocked).rejects.toThrow("budget-cancelled");
 	});
 });
