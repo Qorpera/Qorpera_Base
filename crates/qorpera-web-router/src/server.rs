@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
-use tokio_postgres::NoTls;
+use crate::postgres_sync::connect_postgres_client;
 
 const MAX_FORM_BODY_BYTES: usize = 16 * 1024;
 const MAX_CONTROL_JSON_BYTES: usize = 64 * 1024;
@@ -97,13 +97,7 @@ impl PostgresAuthBackend {
                 }
             }
         }
-        let (client, conn) = tokio::time::timeout(AUTH_DB_TIMEOUT, tokio_postgres::connect(db_url, NoTls))
-            .await
-            .ok()?
-            .ok()?;
-        tokio::spawn(async move {
-            let _ = conn.await;
-        });
+        let client = connect_postgres_client(db_url, AUTH_DB_TIMEOUT).await.ok()?;
         let arc = Arc::new(client);
         let mut guard = slot.lock().await;
         *guard = Some(Arc::clone(&arc));

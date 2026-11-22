@@ -1,15 +1,74 @@
 use crate::routes::{EdgeSnapshot, SharedRoutes};
 use sha2::{Digest, Sha256};
+use std::io::BufReader;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio_postgres::NoTls;
+use tokio_postgres_rustls::MakeRustlsConnect;
 use tracing::{error, info, warn};
 
 pub const ROUTE_NOTIFY_CHANNEL: &str = "qorpera_web_route_changes";
 const DB_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DB_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub fn build_postgres_tls_connector(ca_file: Option<&Path>) -> Result<MakeRustlsConnect, String> {
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let native = rustls_native_certs::load_native_certs();
+    for cert in native.certs {
+        let _ = root_store.add(cert);
+    }
+    let env_ca = std::env::var("QORPERA_WEB_ROUTER_DATABASE_CA_FILE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let extra_ca = ca_file
+        .map(|p| p.to_path_buf())
+        .or_else(|| env_ca.map(std::path::PathBuf::from));
+    if let Some(path) = extra_ca {
+        let file = std::fs::File::open(&path)
+            .map_err(|e| format!("failed to open database CA file {}: {e}", path.display()))?;
+        let mut reader = BufReader::new(file);
+        let mut added = 0usize;
+        for item in rustls_pemfile::certs(&mut reader) {
+            let cert = item.map_err(|e| format!("invalid PEM cert in {}: {e}", path.display()))?;
+            root_store
+                .add(cert)
+                .map_err(|e| format!("failed to load CA cert from {}: {e}", path.display()))?;
+            added += 1;
+        }
+        if added == 0 {
+            return Err(format!("no CA certificates found in {}", path.display()));
+        }
+    }
+    let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| format!("tls protocol version setup failed: {e}"))?
+    .with_root_certificates(root_store)
+    .with_no_client_auth();
+    Ok(MakeRustlsConnect::new(tls_config))
+}
+
+pub async fn connect_postgres_client(
+    database_url: &str,
+    timeout: Duration,
+) -> Result<tokio_postgres::Client, String> {
+    let tls = build_postgres_tls_connector(None)?;
+    let (client, conn) = tokio::time::timeout(timeout, tokio_postgres::connect(database_url, tls))
+        .await
+        .map_err(|_| "connect timed out".to_string())?
+        .map_err(|e| format!("connect failed: {e}"))?;
+    tokio::spawn(async move {
+        if let Err(err) = conn.await {
+            warn!(error = %err, "postgres client connection closed");
+        }
+    });
+    Ok(client)
+}
 
 pub fn spawn_postgres_sync(
     database_url: String,
@@ -50,8 +109,9 @@ async fn run_sync_session(
     reconcile_interval: Duration,
     domain_verify_tx: Option<mpsc::Sender<()>>,
 ) -> Result<(), String> {
+    let tls = build_postgres_tls_connector(None)?;
     let (client, mut connection) =
-        tokio::time::timeout(DB_CONNECT_TIMEOUT, tokio_postgres::connect(database_url, NoTls))
+        tokio::time::timeout(DB_CONNECT_TIMEOUT, tokio_postgres::connect(database_url, tls))
             .await
             .map_err(|_| "connect timed out".to_string())?
             .map_err(|e| format!("connect failed: {e}"))?;
@@ -167,4 +227,16 @@ fn futures_poll_notifications<S, T>(
     conn: &mut tokio_postgres::Connection<S, T>,
 ) -> ConnectionMessages<'_, S, T> {
     ConnectionMessages { conn }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_default_rustls_connector_and_rejects_missing_ca_file() {
+        assert!(build_postgres_tls_connector(None).is_ok());
+        let missing = Path::new("/nonexistent/qorpera-missing-ca.pem");
+        assert!(build_postgres_tls_connector(Some(missing)).is_err());
+    }
 }

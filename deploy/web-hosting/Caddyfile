@@ -1,4 +1,5 @@
 {
+	default_bind {$QORPERA_EDGE_BIND:0.0.0.0}
 	email ops@qorpera.com
 	storage file_system {
 		root /var/lib/qorpera-web-certs
@@ -15,6 +16,10 @@
 			idle 2m
 		}
 	}
+}
+
+http:// {
+	redir https://{host}{uri} 308
 }
 
 https:// {

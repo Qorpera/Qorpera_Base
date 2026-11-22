@@ -1,14 +1,14 @@
 table inet qorpera_web_edge {
 	chain prerouting {
 		type filter hook prerouting priority raw; policy accept;
-		iifname != "lo" tcp dport { 80, 443 } tcp flags syn notrack
+		iifname != { "lo", "tailscale0" } tcp dport { 80, 443 } tcp flags syn notrack
 	}
 
 	chain input {
 		type filter hook input priority filter; policy accept;
-		iifname "lo" accept
+		iifname { "lo", "tailscale0" } accept
 		tcp dport { 80, 443 } ct state invalid,untracked synproxy sack-perm timestamp wscale 7 mss 1460
-		ct state invalid drop
+		tcp dport { 80, 443 } ct state invalid drop
 		tcp dport { 80, 443 } ct state established,related accept
 		udp dport 443 ct state new limit rate over 2000/second burst 4000 packets drop
 	}

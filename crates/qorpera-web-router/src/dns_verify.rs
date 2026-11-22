@@ -1,3 +1,4 @@
+use crate::postgres_sync::connect_postgres_client;
 use crate::routes::{DomainStatus, SharedRoutes};
 use serde::{Deserialize, Serialize};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -7,7 +8,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
-use tokio_postgres::NoTls;
 use tracing::{info, warn};
 
 pub const DNS_TYPE_A: u16 = 1;
@@ -433,19 +433,10 @@ pub async fn verify_domains_once(
     }
 
     let db_client = if let Some(url) = database_url {
-        match tokio::time::timeout(DB_OP_TIMEOUT, tokio_postgres::connect(url, NoTls)).await {
-            Ok(Ok((client, conn))) => {
-                tokio::spawn(async move {
-                    let _ = conn.await;
-                });
-                Some(Arc::new(client))
-            }
-            Ok(Err(err)) => {
+        match connect_postgres_client(url, DB_OP_TIMEOUT).await {
+            Ok(client) => Some(Arc::new(client)),
+            Err(err) => {
                 warn!(error = %err, "dns verifier postgres connect failed");
-                None
-            }
-            Err(_) => {
-                warn!("dns verifier postgres connect timed out");
                 None
             }
         }
