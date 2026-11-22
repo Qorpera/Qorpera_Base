@@ -74,6 +74,7 @@ turns up afterwards.
 
 import argparse
 import bisect
+import collections
 import contextlib
 import datetime
 import fcntl
@@ -104,6 +105,8 @@ LOW_WATER_MARGIN = 5.0
 SETTLE_SECONDS = 2.0
 # Distinct destinations are kept up to this many per company and day; past it the count says "at least".
 DESTINATIONS_KEPT = 100_000
+MAX_ASKED = 65536
+COUNT_HEARTBEAT_SECONDS = 60.0
 
 OPEN = re.compile(r"^(flows|clients)-(\d{4}-\d{2}-\d{2})\.jsonl$")
 SEALING = re.compile(r"^(flows|clients)-(\d{4}-\d{2}-\d{2})\.p(\d{3,})\.sealing$")
@@ -431,12 +434,13 @@ def normalised(reason):
     return re.sub(r"\d+", "N", str(reason))[:120]
 
 
-def tally(flow_paths, intervals, client_records=()):
+def tally(flow_paths, intervals, client_records=(), heartbeat=None):
     """The line guard's numbers, per company, for these connection log files: each line's company from `intervals`."""
     companies = {}
     node = {"records": 0, "gaps": 0, "gapReasons": {}, "unreadableLines": 0}
     machine_buckets = {}
     failed_windows = {}
+    last_beat = time.monotonic()
 
     def company(who):
         key = who.get("company") if who and isinstance(who.get("company"), str) else "unattributed"
@@ -454,13 +458,22 @@ def tally(flow_paths, intervals, client_records=()):
                 entry["failedPast"] = True
         window = failed_windows.setdefault(key, {})
         minute = int(ts // 60)
-        window.setdefault(minute, set()).add(dst)
+        bucket_set = window.setdefault(minute, set())
+        if len(bucket_set) < DESTINATIONS_KEPT:
+            bucket_set.add(dst)
         for old in [m for m in window if m < minute - 1]:
             size = len(window.pop(old))
             if size > entry["peakFailed60s"]:
                 entry["peakFailed60s"], entry["peakFailed60sAt"] = size, iso(old * 60)
 
+    seen = 0
     for record in read_lines(flow_paths):
+        seen += 1
+        if heartbeat is not None and seen % 4096 == 0:
+            now_mono = time.monotonic()
+            if now_mono - last_beat >= COUNT_HEARTBEAT_SECONDS:
+                last_beat = now_mono
+                heartbeat()
         event = record.get("event")
         if event == "unreadable":
             node["unreadableLines"] += record["count"]
@@ -537,14 +550,14 @@ def tally(flow_paths, intervals, client_records=()):
     return {"companies": dict(sorted(result.items())), "node": node}
 
 
-def count_day(log_dir, day, start, files=None, late=()):
+def count_day(log_dir, day, start, files=None, late=(), heartbeat=None):
     """The line guard's numbers for `day` from its own files, per company, with `late` client history parts (names of
     other days' parts) applied first; and who is still plugged in when it ends, and the intervals."""
     files = regular_files(log_dir) if files is None else files
     client_records = list(read_lines(day_files(log_dir, "clients", day, files)
                                      + [os.path.join(log_dir, name) for name in late if name.startswith("clients-")]))
     intervals, end = attribution_intervals(start, [r for r in client_records if r.get("ts") is not None])
-    counts = tally(day_files(log_dir, "flows", day, files), intervals, client_records)
+    counts = tally(day_files(log_dir, "flows", day, files), intervals, client_records, heartbeat=heartbeat)
     return counts, end, intervals
 
 
@@ -638,7 +651,7 @@ def write_attribution(log_dir, through, plugged):
         print(f"qorpera-agent-exit-logs: cannot write attribution.json: {error}", file=sys.stderr, flush=True)
 
 
-def count_closed_days(log_dir, now, host):
+def count_closed_days(log_dir, now, host, heartbeat=None):
     """Counts each closed day once, in order, once all its files are sealed (each counted part keeps its name). A part
     that turns up for a day already counted (a late one) is counted with the next day counted, under its own day: it
     never changes a day already counted. The counts file is the one commit point (written whole, then renamed): it
@@ -656,14 +669,16 @@ def count_closed_days(log_dir, now, host):
         waiting = unsealed(files, day)
         if waiting:
             return done, [f"{day} is closed but not counted: {', '.join(waiting)} not sealed"]
+        if heartbeat is not None:
+            heartbeat()
         own = sorted(name for name in files if PART.match(name) and file_day(name) == day)
         late = sorted(name for name in files if PART.match(name) and file_day(name) < day and name not in counted)
-        counts, end, intervals = count_day(log_dir, day, plugged, files, late)
+        counts, end, intervals = count_day(log_dir, day, plugged, files, late, heartbeat=heartbeat)
         late_counts = []
         for original in sorted({file_day(name) for name in late}):
             parts = [name for name in late if file_day(name) == original]
             flows = [os.path.join(log_dir, name) for name in parts if name.startswith("flows-")]
-            late_counts.append({"day": original, "parts": parts, **tally(flows, intervals)})
+            late_counts.append({"day": original, "parts": parts, **tally(flows, intervals, heartbeat=heartbeat)})
         write_json(os.path.join(log_dir, f"counts-{day}.json"),
                    {"schema": "qorpera.agent-exit-counts/v1", "day": day, "host": host, "countedAt": iso(now),
                     "parts": own, "late": late_counts, "pluggedInAtEnd": end, **counts})
@@ -821,15 +836,18 @@ def tend_locked(log_dir, status, cap, floor, now, part_bytes, settle, free):
         for name in regular_files(os.path.join(log_dir, LOST)):
             if TEMPORARY.match(name):
                 os.unlink(os.path.join(log_dir, LOST, name))
+    def counting_heartbeat():
+        write_json(status, result | {"ranAt": iso(time.time()), "problems": problems, "counting": True}, 0o644)
+
     steps = (
         ("sealed", lambda: seal_files(log_dir, now, part_bytes, settle)),
         ("dnsRotated", lambda: rotate_dns(log_dir, now, part_bytes)),
-        ("daysCounted", lambda: count_closed_days(log_dir, now, socket.gethostname())),
+        ("daysCounted", lambda: count_closed_days(log_dir, now, socket.gethostname(), heartbeat=counting_heartbeat)),
     )
     for key, step in steps:
         if key == "daysCounted":
             # Counting a busy day takes minutes: the status says the pass is alive (and the disk's steps done) meanwhile.
-            write_json(status, result | {"problems": problems, "counting": True}, 0o644)
+            counting_heartbeat()
         try:
             result[key] = step()
             if key == "daysCounted":
@@ -1216,10 +1234,10 @@ def dns_time(m, reference):
     return None
 
 
-def resolutions(sources, clients, addresses):
+def resolutions(sources, clients, addresses, max_asked=MAX_ASKED):
     """(client, address) to [(time, name)], oldest first: each answer the exit's DNS gave a client, under the name the
     client asked for (the first of a CNAME chain). `sources` are (path, the time its lines end) in order."""
-    found, unreadable, asked = {}, [], {}
+    found, unreadable, asked = {}, [], collections.OrderedDict()
     needles = [f" {client}/" for client in clients]
     for path, reference in sources:
         opener = gzip.open if path.endswith(".gz") else open
@@ -1234,6 +1252,9 @@ def resolutions(sources, clients, addresses):
                     query = (m.group(6), m.group(8), m.group(7))
                     if m.group(9).startswith("query"):
                         asked[query] = m.group(10)
+                        asked.move_to_end(query)
+                        if len(asked) > max_asked:
+                            asked.popitem(last=False)
                     elif m.group(11) in addresses and (ts := dns_time(m, reference)) is not None:
                         name = asked.get(query, m.group(10))
                         found.setdefault((m.group(8), m.group(11)), []).append((ts, name))

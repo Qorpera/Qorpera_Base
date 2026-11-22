@@ -42,6 +42,7 @@ for 30 seconds or failing for 2 minutes, a resolver not answering, a map, chain 
 """
 
 import argparse
+import concurrent.futures
 import importlib.util
 import ipaddress
 import json
@@ -383,6 +384,41 @@ class Names:
         # restart of this reconciler.
         self.uncut = set()
         self.problems = []
+        self._last_ports = {}
+        self._last_mapped = {}
+        self._heartbeat_at = 0.0
+
+    def _heartbeat(self):
+        now_mono = _monotonic()
+        if now_mono - self._heartbeat_at < 5.0:
+            return
+        self._heartbeat_at = now_mono
+        status = {"schema": STATUS_SCHEMA, "at": plug.now_iso(time.time()), "resolvers": self._last_ports,
+                  "mapped": self._last_mapped, "reach": self.reach_now, "problems": list(self.problems)}
+        try:
+            plug.write_replace(self.status_path, json.dumps(status, sort_keys=True) + "\n")
+        except OSError:
+            pass
+
+    def _conntrack_ok(self, result):
+        return result.returncode == 0 or (result.returncode == 1 and "0 flow entries" in result.stderr)
+
+    def _run_address_batch(self, addresses, fn):
+        ordered = sorted(addresses)
+        if len(ordered) <= 4:
+            out = []
+            for address in ordered:
+                out.append((address, fn(address)))
+                self._heartbeat()
+            return out
+        out = []
+        chunk_size = 32
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            for i in range(0, len(ordered), chunk_size):
+                chunk = ordered[i:i + chunk_size]
+                out.extend(zip(chunk, pool.map(fn, chunk)))
+                self._heartbeat()
+        return out
 
     def run(self, command, *, input=None):
         try:
@@ -577,11 +613,12 @@ class Names:
             return
         for port in sorted(self.cut - set(self.owed)):
             companies = {c for c, p in ports.items() if p == port}
-            done = True
-            for address in sorted(a for a, c in clients.items() if c in companies and self.kernel):
-                result = self.in_exit("conntrack", "-D", "-s", address)
-                if result.returncode != 0 and not (result.returncode == 1 and "0 flow entries" in result.stderr):
-                    done = False
+            targets = [a for a, c in clients.items() if c in companies and self.kernel]
+            results = self._run_address_batch(
+                targets,
+                lambda address: self._conntrack_ok(self.in_exit("conntrack", "-D", "-s", address)),
+            )
+            done = all(ok for _, ok in results)
             if done:
                 plug.remove(os.path.join(self.names_dir, f"{port}.owed"))
                 self.cut.discard(port)
@@ -683,14 +720,17 @@ class Names:
             self.unflushed |= set(loaded) | set(mapped) | self.machines
             self.uncut |= (set(loaded) | set(reached) | self.machines) - set(reach)
             self.flush_all = False
-        for address in sorted(self.uncut):
-            result = self.in_exit("conntrack", "-D", "-s", address)
-            if result.returncode == 0 or (result.returncode == 1 and "0 flow entries" in result.stderr):
+        self._last_mapped = mapped
+        for address, ok in self._run_address_batch(
+            self.uncut,
+            lambda addr: self._conntrack_ok(self.in_exit("conntrack", "-D", "-s", addr)),
+        ):
+            if ok:
                 self.uncut.discard(address)
             else:
                 self.problems.append(f"the connections of {address} could not be ended yet")
-        for address in sorted(self.unflushed):
-            if self.flush(address):
+        for address, ok in self._run_address_batch(self.unflushed, self.flush):
+            if ok:
                 self.unflushed.discard(address)
             else:
                 self.problems.append(f"the DNS connections of {address} could not be ended yet")
@@ -757,6 +797,7 @@ class Names:
         self.problems = []
         at = time.time()
         mono = _monotonic()
+        self._heartbeat_at = mono
         self.check_reader(at, mono)
         rules = self.read_rules()
         clients = verified_clients(self.args.state_dir, self.clients_cache)
@@ -803,6 +844,7 @@ class Names:
                 self.problems.append(f"the resolver of {company} (port {port}) is not answering")
                 if units.get(port) == "active":
                     self.start(port, mono, again=True)
+        self._last_ports = ports
         mapped = self.sync_map(wanted_map(clients, rules, ports), waiting,
                                wanted_reach(clients, rules, ports, present or set()))
         self.cut_owed(clients, ports)
@@ -811,6 +853,7 @@ class Names:
         return self.write_status(at, ports, mapped)
 
     def write_status(self, at, ports, mapped):
+        self._last_ports, self._last_mapped, self._heartbeat_at = ports, mapped, _monotonic()
         status = {"schema": STATUS_SCHEMA, "at": plug.now_iso(at), "resolvers": ports, "mapped": mapped,
                   "reach": self.reach_now, "problems": self.problems}
         plug.write_replace(self.status_path, json.dumps(status, sort_keys=True) + "\n")
