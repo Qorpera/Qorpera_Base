@@ -1,4 +1,8 @@
+import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { JsonValue } from "@qorpera/contracts";
 import {
 	buildPreflightCheckCommand,
@@ -1352,6 +1356,112 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 		} finally {
 			withSecrets.boundary.close();
 			withSecrets.run.close();
+		}
+	});
+
+	it("validates server site dockerfile with lstat in pre-flight clean copy", async () => {
+		const root = mkdtempSync(join(tmpdir(), "qorpera-preflight-server-site-"));
+		const dir = join(root, ".qorpera-preflight", "run");
+		mkdirSync(dir, { recursive: true });
+		try {
+			const runServerSitePreflight = async (opKey: string, site: Record<string, unknown>) => {
+				let sawSiteValidate = false;
+				const f = await preflightFixture({
+					pollMs: 5,
+					onStart: (input, ctx) => {
+						if (input.command.includes("QORPERA_CLEAN_COPY")) {
+							return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+								state: "succeeded",
+								output: `QORPERA_CLEAN_COPY ${"b".repeat(40)} clean ${dir}\n`,
+							});
+						}
+						if (input.command.includes(".qorpera/checks.json")) {
+							return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+								state: "succeeded",
+								output: JSON.stringify({
+									checks: [{ name: "test", run: "echo ok" }],
+									site,
+								}),
+							});
+						}
+						if (input.command.includes("QORPERA_SITE_VALIDATE_EOF")) {
+							sawSiteValidate = true;
+							const run = spawnSync("bash", ["-c", input.command], { encoding: "utf8" });
+							const code = run.status ?? 1;
+							return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+								state: code === 0 ? "succeeded" : "failed",
+								exitCode: code,
+								output: `${run.stdout ?? ""}${run.stderr ?? ""}`,
+							});
+						}
+						return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+							state: "succeeded",
+							output: "",
+						});
+					},
+				});
+				try {
+					const parsed = JSON.parse(
+						(await f.invoke({ operationKey: opKey, runChecks: true, cleanCopy: true, validateSite: true })).text,
+					);
+					return { parsed, sawSiteValidate };
+				} finally {
+					f.boundary.close();
+					f.run.close();
+				}
+			};
+
+			const missing = await runServerSitePreflight("pf-srv-missing", {
+				kind: "server",
+				dockerfile: "docker/Dockerfile",
+			});
+			expect(missing.sawSiteValidate).toBe(true);
+			expect(missing.parsed).toMatchObject({
+				state: "failed",
+				siteValidation: {
+					state: "invalid",
+					folder: ".",
+					problem: { code: "SITE_FOLDER_MISSING", path: "docker/Dockerfile" },
+				},
+			});
+
+			mkdirSync(join(dir, "docker"), { recursive: true });
+			writeFileSync(join(dir, "real-dockerfile"), "FROM node:22\n");
+			symlinkSync(join(dir, "real-dockerfile"), join(dir, "docker", "Dockerfile"));
+			const symlinked = await runServerSitePreflight("pf-srv-symlink", {
+				kind: "server",
+				dockerfile: "docker/Dockerfile",
+			});
+			expect(symlinked.sawSiteValidate).toBe(true);
+			expect(symlinked.parsed).toMatchObject({
+				state: "failed",
+				siteValidation: {
+					state: "invalid",
+					folder: ".",
+					problem: { code: "SITE_FOLDER_MISSING", path: "docker/Dockerfile" },
+				},
+			});
+
+			unlinkSync(join(dir, "docker", "Dockerfile"));
+			writeFileSync(join(dir, "docker", "Dockerfile"), "FROM node:22\n");
+			const present = await runServerSitePreflight("pf-srv-present", {
+				kind: "server",
+				dockerfile: "docker/Dockerfile",
+			});
+			expect(present.sawSiteValidate).toBe(true);
+			expect(present.parsed).toMatchObject({
+				state: "passed",
+				siteValidation: { state: "valid", folder: ".", files: 0, bytes: 0 },
+			});
+
+			const noDockerfile = await runServerSitePreflight("pf-srv-auto", { kind: "server" });
+			expect(noDockerfile.sawSiteValidate).toBe(false);
+			expect(noDockerfile.parsed).toMatchObject({
+				state: "passed",
+				siteValidation: { state: "valid", folder: ".", files: 0, bytes: 0 },
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
 		}
 	});
 });

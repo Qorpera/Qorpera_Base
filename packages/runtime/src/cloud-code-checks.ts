@@ -303,6 +303,27 @@ function buildSiteValidateCommand(folder: string, workDir?: string): string {
 	return `python3 -I - ${shellQuote(base)} ${shellQuote(folder)} <<'QORPERA_SITE_VALIDATE_EOF'\n${py}\nQORPERA_SITE_VALIDATE_EOF`;
 }
 
+function buildServerSiteValidateCommand(dockerfile: string, workDir?: string): string {
+	const base = workDir ?? ".";
+	const py = [
+		"import os,stat,sys",
+		"def fail(code,p=''):print('QORPERA_SITE_PROBLEM '+code+(' '+p if p else ''));sys.exit(3)",
+		"root=sys.argv[1];dockerfile=sys.argv[2]",
+		"if not stat.S_ISDIR(os.lstat(root).st_mode):sys.exit(2)",
+		'parts=dockerfile.split("/")',
+		'if any(part in ("",".","..") for part in parts):sys.exit(2)',
+		"target=os.path.join(root,dockerfile)",
+		"try:",
+		"\tmode=os.lstat(target).st_mode",
+		"except OSError:",
+		"\tfail('SITE_FOLDER_MISSING',dockerfile)",
+		"if not stat.S_ISREG(mode):",
+		"\tfail('SITE_FOLDER_MISSING',dockerfile)",
+		"print('QORPERA_SITE_OK 0 0')",
+	].join("\n");
+	return `python3 -I - ${shellQuote(base)} ${shellQuote(dockerfile)} <<'QORPERA_SITE_VALIDATE_EOF'\n${py}\nQORPERA_SITE_VALIDATE_EOF`;
+}
+
 function buildArtifactReadCommand(
 	paths: readonly string[],
 	format: CodeCheckArtifactFormat,
@@ -1129,14 +1150,14 @@ export async function runCodingPreflightChecks(options: {
 		if (request.validateSite === true && overallState === "passed") {
 			if (parsed.site === null) {
 				siteValidation = { state: "no_site" };
-			} else if (parsed.site.kind === "server") {
+			} else if (parsed.site.kind === "server" && !parsed.site.dockerfile) {
 				siteValidation = { state: "valid", folder: parsed.site.folder, files: 0, bytes: 0 };
 			} else {
-				const valStarted = await startSubCommand(
-					"site-validate",
-					buildSiteValidateCommand(parsed.site.folder, cleanWorkDir),
-					SITE_VALIDATE_TIMEOUT_MS,
-				);
+				const validateCommand =
+					parsed.site.kind === "server" && parsed.site.dockerfile
+						? buildServerSiteValidateCommand(parsed.site.dockerfile, cleanWorkDir)
+						: buildSiteValidateCommand(parsed.site.folder, cleanWorkDir);
+				const valStarted = await startSubCommand("site-validate", validateCommand, SITE_VALIDATE_TIMEOUT_MS);
 				const valWaited = await waitUntilDone(
 					"site-validate",
 					valStarted,
