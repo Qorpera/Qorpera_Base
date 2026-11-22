@@ -303,6 +303,65 @@ describe("the company's reading for an app's page", () => {
 			}),
 		).toMatchObject({ stopped: false, waiting: 0 });
 	});
+
+	it("aborts read() promptly while waiting on slow standing and deduplicates ended-agent file reads", async () => {
+		const repeatedText = writeReadingFile({
+			...FILE,
+			changes: [
+				{ agent: "market", what: "ended", line: "Market ended 1" },
+				{ agent: "market", what: "changed", line: "Market changed 2" },
+				{ agent: "market", what: "changed", line: "Market changed 3" },
+				{ agent: "ghost", what: "changed", line: "Ghost changed 1" },
+				{ agent: "ghost", what: "changed", line: "Ghost changed 2" },
+			],
+		});
+		const marketFile = writeAgentFile({
+			id: market.id,
+			name: market.displayName,
+			role: market.role,
+			agentKind: "agent",
+			status: "archived",
+			colour: null,
+			figure: null,
+			model: null,
+			effort: null,
+			instructions: market.charter,
+		});
+		const baseFiles = folder(() => repeatedText, { "QorperaOS/agents/market/agent.md": marketFile });
+		const readPaths: string[] = [];
+		const tracedFiles = {
+			...baseFiles,
+			read: async (path: string) => {
+				readPaths.push(path);
+				return baseFiles.read(path);
+			},
+		};
+		const source = new CompanyReading(
+			{
+				folder: () => tracedFiles as never,
+				people: () => people(),
+				standing: async () => STOPPED,
+			},
+			new AbortController().signal,
+		);
+		const first = await source.read(new AbortController().signal);
+		expect(first.reading?.changes[0]?.agent?.name).toBe("Market");
+		expect(readPaths.filter((p) => p === "QorperaOS/agents/market/agent.md")).toHaveLength(1);
+		expect(readPaths.filter((p) => p === "QorperaOS/agents/ghost/agent.md")).toHaveLength(1);
+
+		const hanging = new CompanyReading(
+			{
+				folder: () => folder(() => TEXT) as never,
+				people: () => people(),
+				standing: () => new Promise(() => {}),
+			},
+			new AbortController().signal,
+		);
+		const caller = new AbortController();
+		const pending = hanging.read(caller.signal);
+		caller.abort(new DOMException("Caller left", "AbortError"));
+		await expect(pending).rejects.toThrow(/Caller left/);
+	});
 });
 
 describe("the company's standing while a page reads it", () => {

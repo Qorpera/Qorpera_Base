@@ -145,7 +145,7 @@ export function createWebRoomMessages(
 							body,
 							signal: deadline,
 							redirect: "error",
-							cache: "no-store",
+							// WHY: Omit cache: "no-store" on cross-origin POST so Chrome reuses the CORS preflight cache across room calls.
 							credentials: "omit",
 						});
 						cloud.noticeResponse?.(`${origin.origin}/rest/v1/rpc/${method}`, data.session.access_token, response);

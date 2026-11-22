@@ -89,19 +89,31 @@ function fakeCalls(described: CloudMemberDataDescription) {
 	const calls = {
 		describe: vi.fn(async () => described),
 		changes: vi.fn(async () => ({ writes: [], more: false, asOf })),
-		rows: vi.fn(async (asked: { table: string; after?: readonly unknown[] }): Promise<CloudMemberDataPage> => {
-			if (asked.table === "open_repairs")
-				return { columns: ["bike"], key: [], rows: [{ values: ["Trek"], seen: seen(9) }], more: true, etag, asOf };
-			if (asked.table === "notes") return { columns: ["note"], key: [], rows: [], more: false, etag, asOf };
-			if (asked.after) return repairs([[3, "Raleigh Tourist", 520, false]]);
-			return repairs(
-				[
-					[1, "Gazelle Orange C7", 450, true],
-					[2, "Batavus Finez", 350, false],
-				],
-				true,
-			);
-		}),
+		rows: vi.fn(
+			async (
+				asked: { table: string; after?: readonly unknown[] },
+				_signal?: AbortSignal,
+			): Promise<CloudMemberDataPage> => {
+				if (asked.table === "open_repairs")
+					return {
+						columns: ["bike"],
+						key: [],
+						rows: [{ values: ["Trek"], seen: seen(9) }],
+						more: true,
+						etag,
+						asOf,
+					};
+				if (asked.table === "notes") return { columns: ["note"], key: [], rows: [], more: false, etag, asOf };
+				if (asked.after) return repairs([[3, "Raleigh Tourist", 520, false]]);
+				return repairs(
+					[
+						[1, "Gazelle Orange C7", 450, true],
+						[2, "Batavus Finez", 350, false],
+					],
+					true,
+				);
+			},
+		),
 		query: vi.fn(async () => ({ columns: ["bike"], rows: [["Christiania Cargo"]], more: false, etag, asOf })),
 		edit: vi.fn(async (edit: CloudMemberDataEdit) => {
 			edits.push(edit);
@@ -938,6 +950,251 @@ describe("the page's words for values and refusals", () => {
 			expect(disconnects).toBeGreaterThanOrEqual(4);
 		} finally {
 			vi.unstubAllGlobals();
+		}
+	});
+
+	it("caps watch multi-page refetches, stops on repeated cursors, and aborts in-flight #again fetches when hidden", async () => {
+		vi.useFakeTimers();
+		const originalVis = Object.getOwnPropertyDescriptor(document, "visibilityState");
+		let vis: DocumentVisibilityState = "visible";
+		Object.defineProperty(document, "visibilityState", {
+			configurable: true,
+			get: () => vis,
+		});
+		try {
+			const { calls } = fakeCalls(describedWith());
+			const watchResolves: Array<(answer: Awaited<ReturnType<CompanyDataCalls["watchTables"]>>) => void> = [];
+			calls.watchTables.mockImplementation(
+				() =>
+					new Promise<Awaited<ReturnType<CompanyDataCalls["watchTables"]>>>((resolve) => {
+						watchResolves.push(resolve);
+					}),
+			);
+			calls.rows.mockImplementation(async (asked) => {
+				const n = asked.after ? Number(asked.after[0]) + 1 : 1;
+				return {
+					...repairs([[n, `Bike ${n}`, n * 10, true]], true),
+					next: [String(n)],
+				};
+			});
+
+			const controller = company(describedWith(), true);
+			const databases = new CompanyDatabases(
+				() => calls,
+				(next) => controller.store.set({ companyData: next }),
+				controller.signal,
+			);
+			const container = document.createElement("main");
+			document.body.append(container);
+			const draw = () => renderData(container, controller, databases);
+			draw();
+			cleanup.push(controller.store.subscribe(draw));
+			await vi.advanceTimersByTimeAsync(0);
+
+			for (let i = 0; i < 12; i++) {
+				button(container, "Show more").click();
+				await vi.advanceTimersByTimeAsync(0);
+			}
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(13);
+
+			calls.rows.mockClear();
+			watchResolves.shift()?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs([[1, "Bike 1 Updated", 15, true]], true),
+							next: ["1"],
+							etag: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls.rows).toHaveBeenCalledTimes(9);
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(13);
+			expect(texts(container, "button.data-row .is-lead")).toContain("Bike 1 Updated");
+			expect(texts(container, "button.data-row .is-lead")).toContain("Bike 13");
+
+			await vi.advanceTimersByTimeAsync(500);
+			calls.rows.mockClear();
+			calls.rows.mockImplementation(async (asked) => {
+				const prev = asked.after ? Number(asked.after[0]) : 0;
+				const n = prev === 13 ? 1 : prev + 1;
+				return {
+					...repairs([[n, `Bike ${n}`, n * 10, true]], true),
+					next: [String(n)],
+				};
+			});
+			watchResolves.shift()?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs([[13, "Bike 13 Promoted", 130, true]], true),
+							next: ["13"],
+							etag: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls.rows).toHaveBeenCalledTimes(9);
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(13);
+			const promotedLeads = texts(container, "button.data-row .is-lead");
+			expect(promotedLeads[0]).toBe("Bike 13 Promoted");
+			expect(promotedLeads).toContain("Bike 10");
+			expect(promotedLeads).toContain("Bike 11");
+			expect(promotedLeads).toContain("Bike 12");
+
+			await vi.advanceTimersByTimeAsync(500);
+			calls.rows.mockClear();
+			calls.rows.mockImplementation(async (asked) => {
+				const after = asked.after?.[0];
+				if (after === "edge-10") {
+					return {
+						...repairs(
+							[
+								[10, "Bike 10", 100, true],
+								[11, "Bike 11", 110, true],
+								[12, "Bike 12", 120, true],
+							],
+							false,
+						),
+					};
+				}
+				const n = after ? Number(after) + 1 : 2;
+				if (n === 10) {
+					return {
+						...repairs([[13, "Bike 13 At Edge", 135, true]], true),
+						next: ["edge-10"],
+					};
+				}
+				return {
+					...repairs([[n, `Bike ${n}`, n * 10, true]], true),
+					next: [String(n)],
+				};
+			});
+			watchResolves.shift()?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs([[1, "Bike 1", 10, true]], true),
+							next: ["1"],
+							etag: "ffffffffffffffffffffffffffffffff",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls.rows).toHaveBeenCalledTimes(9);
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(10);
+			button(container, "Show more").click();
+			await vi.advanceTimersByTimeAsync(0);
+			const recoveredLeads = texts(container, "button.data-row .is-lead");
+			expect(recoveredLeads).toContain("Bike 13 At Edge");
+			expect(recoveredLeads).toContain("Bike 10");
+			expect(recoveredLeads).toContain("Bike 11");
+			expect(recoveredLeads).toContain("Bike 12");
+
+			await vi.advanceTimersByTimeAsync(500);
+			calls.rows.mockClear();
+			calls.rows.mockImplementation(async (asked) => {
+				const after = asked.after?.[0];
+				if (after === "11") {
+					return {
+						...repairs(
+							[
+								[1, "Bike 1 Demoted", 125, true],
+								[12, "Bike 12", 120, true],
+							],
+							false,
+						),
+					};
+				}
+				const n = after ? Number(after) + 1 : 3;
+				return {
+					...repairs([[n, `Bike ${n}`, n * 10, true]], true),
+					next: [String(n)],
+				};
+			});
+			watchResolves.shift()?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs([[2, "Bike 2", 20, true]], true),
+							next: ["2"],
+							etag: "abababababababababababababababab",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls.rows).toHaveBeenCalledTimes(9);
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(10);
+			button(container, "Show more").click();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(texts(container, "button.data-row .is-lead")).toContain("Bike 1 Demoted");
+
+			await vi.advanceTimersByTimeAsync(500);
+			calls.rows.mockClear();
+			calls.rows.mockImplementation(async () => ({
+				...repairs([[2, "Bike 2 Loop", 20, true]], true),
+				next: ["1"],
+			}));
+			watchResolves.shift()?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs([[1, "Bike 1 Loop", 15, true]], true),
+							next: ["1"],
+							etag: "dddddddddddddddddddddddddddddddd",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls.rows).toHaveBeenCalledTimes(1);
+
+			await vi.advanceTimersByTimeAsync(500);
+			let againSignal: AbortSignal | undefined;
+			calls.rows.mockImplementationOnce(
+				(_asked, signal) =>
+					new Promise<CloudMemberDataPage>((_resolve, reject) => {
+						againSignal = signal;
+						signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {
+							once: true,
+						});
+					}),
+			);
+			watchResolves.shift()?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs([[200, "Fresh 200", 200, true]], true),
+							next: ["200"],
+							etag: "cccccccccccccccccccccccccccccccc",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(againSignal).toBeDefined();
+			expect(againSignal?.aborted).toBe(false);
+
+			vis = "hidden";
+			document.dispatchEvent(new Event("visibilitychange"));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(againSignal?.aborted).toBe(true);
+			expect(texts(container, "button.data-row .is-lead")).not.toContain("Fresh 200");
+		} finally {
+			if (originalVis) Object.defineProperty(document, "visibilityState", originalVis);
+			else delete (document as unknown as Record<string, unknown>).visibilityState;
+			vi.useRealTimers();
 		}
 	});
 });

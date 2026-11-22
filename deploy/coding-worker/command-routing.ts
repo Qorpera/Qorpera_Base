@@ -28,8 +28,13 @@ export class CodingCommandRouter {
 	constructor(options: CodingCommandRouterOptions) {
 		this.#options = { ...options, peers: options.peers.map((peer) => Object.freeze({ ...peer })) };
 	}
-	async execute(request: CloudCodingCommandHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudCodingCommandExecution> {
-		await authorizeCodingCommand(this.#options.control, request, signal);
+	async execute(
+		request: CloudCodingCommandHttpRequest,
+		signal: AbortSignal,
+		localOnly = false,
+		preauthorized = false,
+	): Promise<CloudCodingCommandExecution> {
+		if (!preauthorized) await authorizeCodingCommand(this.#options.control, request, signal);
 		const value = await this.#options.control.call("qorpera_route_coding_command", {
 			p_binding: request.binding, p_scope: request.scope, p_action: request.action,
 			p_command_id: request.input.commandId,
@@ -65,4 +70,32 @@ export class CodingCommandRouter {
 		// the node that holds the machine and its disk. This executor's checks after it can only refuse the receipt.
 		return { receipt, hidden: async () => undefined };
 	}
+}
+
+export function codingCommandRoutes(
+	router: CodingCommandRouter,
+	control: CodingCommandRouterOptions["control"],
+	localOnly: boolean,
+): {
+	authorize(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<{ inputSha256: string }>;
+	execute(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<CloudCodingCommandExecution>;
+} {
+	// WHY: Single-use handoff avoids a duplicate serial qorpera_authorize_coding_command RPC between ingress authorize and execute.
+	const authorized = new WeakSet<CloudCodingCommandHttpRequest>();
+	const seen = new WeakSet<CloudCodingCommandHttpRequest>();
+	return {
+		authorize: async (request, signal) => {
+			const authority = await authorizeCodingCommand(control, request, signal);
+			if (!seen.has(request)) {
+				seen.add(request);
+				authorized.add(request);
+			}
+			return authority;
+		},
+		execute: (request, signal) => {
+			const pre = authorized.has(request);
+			if (pre) authorized.delete(request);
+			return router.execute(request, signal, localOnly, pre);
+		},
+	};
 }

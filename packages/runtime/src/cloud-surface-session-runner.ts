@@ -364,6 +364,7 @@ function buildFolderSurfaceInstructions(input: SurfaceSessionTurnInput, folderRo
 		`This session is scoped to the Studio/Identity Surface "${input.surfaceTitle}" (${input.surfaceSlug}), which projects ${folderRoot}/ directly from Company Files. ` +
 		"Founders preview multiple unmerged staged patches toggled on or off simultaneously before approving any change. " +
 		`Use stage_surface_patch to stage cohesive folder_patch operations (write_text, merge_json, delete) relative to ${folderRoot}/, keeping each change atomic and conflict-minimizing. ` +
+		"Studio renders structured JSON (tokens, specs, *.report.json), Markdown prose (voice.md, brief.md), and SVG marks natively — do not create standalone HTML/CSS code pages inside Studio folders. " +
 		`Any file writes are strictly confined to ${folderRoot}/ and ${notesRoot}/; attach concise supporting analyses as notePaths under ${notesRoot}/ rather than creating loose markdown files elsewhere.`
 	);
 }

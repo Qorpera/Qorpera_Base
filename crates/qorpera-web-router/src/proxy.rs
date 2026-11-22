@@ -9,19 +9,146 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 
-pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
+pub type BoxBodyError = Box<dyn std::error::Error + Send + Sync>;
+pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxBodyError>;
 
+pub const MAX_ACTIVE_WS_CONNS: usize = 2048;
+pub const MAX_ACTIVE_WS_PER_DEPLOYMENT: usize = 128;
+pub const MAX_ACTIVE_WS_PER_IP: usize = 64;
+pub const DEFAULT_WS_ACTIVITY_HEARTBEAT: Duration = Duration::from_secs(15);
+pub const DEFAULT_WS_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_ACTIVITY_ENTRIES: usize = 16_384;
 const ACTIVITY_STALE_MS: u64 = 24 * 60 * 60 * 1000;
 const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const PROXY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Default)]
+struct WsCounts {
+    by_deployment: HashMap<String, usize>,
+    by_ip: HashMap<String, usize>,
+}
+
+pub struct WsLimiter {
+    global: Arc<Semaphore>,
+    per_deployment_limit: usize,
+    per_ip_limit: usize,
+    counts: Arc<Mutex<WsCounts>>,
+}
+
+pub struct WsPermit {
+    _global: OwnedSemaphorePermit,
+    counts: Arc<Mutex<WsCounts>>,
+    deployment_id: String,
+    client_ip: String,
+}
+
+impl Drop for WsPermit {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.counts.lock() {
+            if let Some(count) = guard.by_deployment.get_mut(&self.deployment_id) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    guard.by_deployment.remove(&self.deployment_id);
+                }
+            }
+            if let Some(count) = guard.by_ip.get_mut(&self.client_ip) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    guard.by_ip.remove(&self.client_ip);
+                }
+            }
+        }
+    }
+}
+
+impl WsLimiter {
+    pub fn new(global_limit: usize, per_deployment_limit: usize, per_ip_limit: usize) -> Self {
+        Self {
+            global: Arc::new(Semaphore::new(global_limit)),
+            per_deployment_limit: per_deployment_limit.max(1),
+            per_ip_limit: per_ip_limit.max(1),
+            counts: Arc::new(Mutex::new(WsCounts::default())),
+        }
+    }
+
+    pub fn try_acquire(&self, deployment_id: &str, client_ip: &str) -> Option<WsPermit> {
+        // WHY: Enforce per-deployment and per-IP caps atop the global semaphore so one tenant or client cannot starve others.
+        let global_permit = Arc::clone(&self.global).try_acquire_owned().ok()?;
+        let mut guard = self.counts.lock().ok()?;
+        let dep_cur = guard.by_deployment.get(deployment_id).copied().unwrap_or(0);
+        let ip_cur = guard.by_ip.get(client_ip).copied().unwrap_or(0);
+        if dep_cur >= self.per_deployment_limit || ip_cur >= self.per_ip_limit {
+            return None;
+        }
+        guard.by_deployment.insert(deployment_id.to_string(), dep_cur + 1);
+        guard.by_ip.insert(client_ip.to_string(), ip_cur + 1);
+        Some(WsPermit {
+            _global: global_permit,
+            counts: Arc::clone(&self.counts),
+            deployment_id: deployment_id.to_string(),
+            client_ip: client_ip.to_string(),
+        })
+    }
+}
+
+struct TrackingIo<T> {
+    inner: T,
+    epoch: Instant,
+    last_io_ms: Arc<AtomicU64>,
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for TrackingIo<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let res = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &res {
+            if buf.filled().len() > before {
+                let ms = self.epoch.elapsed().as_millis().max(1) as u64;
+                self.last_io_ms.store(ms, Ordering::Relaxed);
+            }
+        }
+        res
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for TrackingIo<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let res = Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let Poll::Ready(Ok(n)) = &res {
+            if *n > 0 {
+                let ms = self.epoch.elapsed().as_millis().max(1) as u64;
+                self.last_io_ms.store(ms, Ordering::Relaxed);
+            }
+        }
+        res
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
 
 pub fn full_body(bytes: impl Into<Bytes>) -> BoxBody {
     Full::new(bytes.into())
@@ -33,6 +160,7 @@ pub fn full_body(bytes: impl Into<Bytes>) -> BoxBody {
 pub enum ProxyError {
     ConnectFailed(String),
     UpstreamFailed(String),
+    Overloaded,
 }
 
 impl std::fmt::Display for ProxyError {
@@ -40,6 +168,7 @@ impl std::fmt::Display for ProxyError {
         match self {
             ProxyError::ConnectFailed(e) => write!(f, "connect_failed: {e}"),
             ProxyError::UpstreamFailed(e) => write!(f, "upstream_failed: {e}"),
+            ProxyError::Overloaded => write!(f, "ws_overloaded"),
         }
     }
 }
@@ -375,6 +504,7 @@ pub fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
     has_upgrade && has_connection
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn proxy_http_or_ws(
     pool: &PooledProxyClient,
     upstream_addr: &str,
@@ -382,9 +512,26 @@ pub async fn proxy_http_or_ws(
     forwarded_host: &str,
     client_ip: &str,
     is_private: bool,
+    ws_limiter: &Arc<WsLimiter>,
+    activity: &Arc<ActivityTracker>,
+    deployment_id: &str,
+    ws_heartbeat: Duration,
+    ws_idle_timeout: Duration,
 ) -> Result<Response<BoxBody>, ProxyError> {
     if is_websocket_upgrade(req.headers()) {
-        return proxy_websocket(upstream_addr, req, forwarded_host, client_ip, is_private).await;
+        return proxy_websocket(
+            upstream_addr,
+            req,
+            forwarded_host,
+            client_ip,
+            is_private,
+            ws_limiter,
+            activity,
+            deployment_id,
+            ws_heartbeat,
+            ws_idle_timeout,
+        )
+        .await;
     }
 
     let path_and_query = req
@@ -402,7 +549,7 @@ pub async fn proxy_http_or_ws(
         copy_request_headers(&parts.headers, headers, forwarded_host, client_ip, false);
     }
     let upstream_req = out_builder
-        .body(body.boxed())
+        .body(body.map_err(|e| Box::new(e) as BoxBodyError).boxed())
         .map_err(|e| ProxyError::UpstreamFailed(format!("build_upstream_request_failed: {e}")))?;
 
     let upstream_res = tokio::time::timeout(PROXY_RESPONSE_TIMEOUT, pool.client.request(upstream_req))
@@ -442,13 +589,23 @@ pub async fn proxy_empty_request(
     build_proxied_response(upstream_res, is_private)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn proxy_websocket(
     upstream_addr: &str,
     mut req: Request<Incoming>,
     forwarded_host: &str,
     client_ip: &str,
     is_private: bool,
+    ws_limiter: &Arc<WsLimiter>,
+    activity: &Arc<ActivityTracker>,
+    deployment_id: &str,
+    ws_heartbeat: Duration,
+    ws_idle_timeout: Duration,
 ) -> Result<Response<BoxBody>, ProxyError> {
+    // WHY: Cap concurrent upgraded WebSockets globally, per deployment, and per client IP before dialing upstream.
+    let ws_permit = ws_limiter
+        .try_acquire(deployment_id, client_ip)
+        .ok_or(ProxyError::Overloaded)?;
     let stream = tokio::time::timeout(PROXY_CONNECT_TIMEOUT, TcpStream::connect(upstream_addr))
         .await
         .map_err(|_| ProxyError::ConnectFailed("upstream_connect_timeout".to_string()))?
@@ -494,13 +651,54 @@ async fn proxy_websocket(
 
     if status == StatusCode::SWITCHING_PROTOCOLS {
         let upstream_on_upgrade = hyper::upgrade::on(&mut upstream_res);
+        let activity_ref = Arc::clone(activity);
+        let dep_id = deployment_id.to_string();
+        let idle_limit = ws_idle_timeout.max(Duration::from_millis(50));
+        let heartbeat_every = ws_heartbeat.min(idle_limit / 2).max(Duration::from_millis(25));
         tokio::spawn(async move {
-            if let (Ok(client_upgraded), Ok(upstream_upgraded)) =
-                tokio::join!(client_upgrade, upstream_on_upgrade)
-            {
-                let mut c = TokioIo::new(client_upgraded);
-                let mut u = TokioIo::new(upstream_upgraded);
-                let _ = tokio::io::copy_bidirectional(&mut c, &mut u).await;
+            let _ws_permit = ws_permit;
+            // WHY: Close idle WebSockets with no traffic and only pulse activity when bytes flow so idle sockets cannot pin apps awake.
+            let Ok(Ok((client_upgraded, upstream_upgraded))) = tokio::time::timeout(
+                WS_HANDSHAKE_TIMEOUT,
+                async { tokio::try_join!(client_upgrade, upstream_on_upgrade) },
+            )
+            .await
+            else {
+                return;
+            };
+            let epoch = Instant::now();
+            let last_io_ms = Arc::new(AtomicU64::new(0));
+            let mut c = TrackingIo {
+                inner: TokioIo::new(client_upgraded),
+                epoch,
+                last_io_ms: Arc::clone(&last_io_ms),
+            };
+            let mut u = TrackingIo {
+                inner: TokioIo::new(upstream_upgraded),
+                epoch,
+                last_io_ms: Arc::clone(&last_io_ms),
+            };
+            let mut copy = std::pin::pin!(tokio::io::copy_bidirectional(&mut c, &mut u));
+            let mut heartbeat = tokio::time::interval(heartbeat_every);
+            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            heartbeat.tick().await;
+            let idle_limit_ms = idle_limit.as_millis() as u64;
+            let mut last_reported_io_ms = 0u64;
+            loop {
+                tokio::select! {
+                    _ = &mut copy => break,
+                    _ = heartbeat.tick() => {
+                        let last_ms = last_io_ms.load(Ordering::Relaxed);
+                        let now_ms = epoch.elapsed().as_millis() as u64;
+                        if now_ms.saturating_sub(last_ms) >= idle_limit_ms {
+                            break;
+                        }
+                        if last_ms > last_reported_io_ms {
+                            last_reported_io_ms = last_ms;
+                            activity_ref.record(&dep_id);
+                        }
+                    }
+                }
             }
         });
         let mut builder = Response::builder().status(StatusCode::SWITCHING_PROTOCOLS);
@@ -579,7 +777,10 @@ fn build_proxied_response(
             );
         }
     }
-    let body = upstream_res.into_body().boxed();
+    let body = upstream_res
+        .into_body()
+        .map_err(|e| Box::new(e) as BoxBodyError)
+        .boxed();
     builder
         .body(body)
         .map_err(|e| ProxyError::UpstreamFailed(e.to_string()))
@@ -635,4 +836,31 @@ fn should_forward_response_header(name: &HeaderName, is_private: bool) -> bool {
 
 pub fn new_shared_activity() -> Arc<ActivityTracker> {
     Arc::new(ActivityTracker::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ws_limiter_enforces_global_per_deployment_and_per_ip_caps_and_cleans_up_on_drop() {
+        let limiter = WsLimiter::new(4, 2, 2);
+        let p1 = limiter.try_acquire("dep-a", "1.1.1.1").unwrap();
+        let p2 = limiter.try_acquire("dep-a", "1.1.1.2").unwrap();
+        assert!(limiter.try_acquire("dep-a", "1.1.1.3").is_none());
+
+        let p3 = limiter.try_acquire("dep-b", "1.1.1.1").unwrap();
+        assert!(limiter.try_acquire("dep-c", "1.1.1.1").is_none());
+
+        let p4 = limiter.try_acquire("dep-b", "1.1.1.4").unwrap();
+        assert!(limiter.try_acquire("dep-c", "1.1.1.5").is_none());
+
+        drop(p1);
+        drop(p2);
+        drop(p3);
+        drop(p4);
+        let guard = limiter.counts.lock().unwrap();
+        assert!(guard.by_deployment.is_empty());
+        assert!(guard.by_ip.is_empty());
+    }
 }

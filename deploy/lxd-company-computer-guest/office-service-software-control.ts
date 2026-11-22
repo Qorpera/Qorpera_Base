@@ -162,6 +162,41 @@ async function readServiceCandidate(path: string, size: number) {
 	}
 }
 
+export async function checkOfficeSoftwareInstallChallenge(
+	input: {
+		registryUrl: string;
+		registryKey: string;
+		updateId: string;
+		challengeId: string;
+		capability: string;
+		timeoutMs?: number;
+		fetchImplementation?: typeof fetch;
+	},
+	checked: AbortSignal,
+): Promise<unknown> {
+	// WHY: Share the 3 s RPC timeout across both fetch headers and body reading so a stalled 200 body cannot hang up to the outer 60 s control timeout.
+	const rpcSignal = AbortSignal.any([checked, AbortSignal.timeout(input.timeoutMs ?? 3000)]);
+	const response = await (input.fetchImplementation ?? fetch)(
+		`${input.registryUrl}/rest/v1/rpc/qorpera_check_office_software_install`,
+		{
+			method: "POST",
+			redirect: "error",
+			signal: rpcSignal,
+			headers: { ...supabaseServiceHeaders(input.registryKey), "content-type": "application/json" },
+			body: JSON.stringify({
+				p_update_id: input.updateId,
+				p_challenge_id: input.challengeId,
+				p_provider_capability: input.capability,
+			}),
+		},
+	);
+	if (!response.ok) {
+		await response.body?.cancel();
+		throw new Error("OFFICE_SOFTWARE_CONTROL_AUTHORITY");
+	}
+	return decode(await readBoundedCloudResponse(response, 65536, rpcSignal));
+}
+
 async function lockedInstall(input: ReturnType<typeof parseOfficeSoftwareControlArgs>, signal: AbortSignal) {
 	const { command } = input;
 	await assertCompanyComputerPreparationLockAndBoot(command);
@@ -327,23 +362,17 @@ async function lockedInstall(input: ReturnType<typeof parseOfficeSoftwareControl
 			{
 				verifyLocal,
 				install: installLxdOfficeServiceSoftwareFiles,
-				async check(checked) {
-					const response = await fetch(`${config.registryUrl}/rest/v1/rpc/qorpera_check_office_software_install`, {
-						method: "POST",
-						redirect: "error",
-						signal: AbortSignal.any([checked, AbortSignal.timeout(3000)]),
-						headers: { ...supabaseServiceHeaders(registryKey), "content-type": "application/json" },
-						body: JSON.stringify({
-							p_update_id: plan.updateId,
-							p_challenge_id: packet.challengeId,
-							p_provider_capability: capability,
-						}),
-					});
-					if (!response.ok) {
-						await response.body?.cancel();
-						throw new Error("OFFICE_SOFTWARE_CONTROL_AUTHORITY");
-					}
-					return decode(await readBoundedCloudResponse(response, 65536, checked));
+				check(checked) {
+					return checkOfficeSoftwareInstallChallenge(
+						{
+							registryUrl: config.registryUrl,
+							registryKey,
+							updateId: plan.updateId,
+							challengeId: String(packet.challengeId),
+							capability,
+						},
+						checked,
+					);
 				},
 			},
 			signal,
