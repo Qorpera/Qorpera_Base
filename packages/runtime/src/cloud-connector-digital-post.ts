@@ -1,6 +1,7 @@
 import { createPrivateKey, X509Certificate } from "node:crypto";
 import { request as httpsRequest } from "node:https";
 import { POSTGRES_UUID_PATTERN as UUID_PATTERN } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import { ConnectorRequestError, decodeUtf8 } from "./cloud-connector-http.ts";
 import { DIGITAL_POST_LETTER_MAX_BYTES } from "./digital-post-memo.ts";
 
@@ -160,46 +161,51 @@ export function digitalPostTransport(
 ): DigitalPostTransport {
 	const host = target?.host ?? new URL(DIGITAL_POST_ORIGINS[app.environment]).hostname;
 	return (request, maximumBytes, deadlineMs, signal) =>
-		new Promise((resolve, reject) => {
-			const stop = AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]);
-			if (stop.aborted) return reject(new Error("Digital Post request ended"));
-			const body = request.body ? Buffer.from(request.body) : undefined;
-			const outgoing = httpsRequest(
-				{
-					host,
-					port: target?.port ?? 443,
-					servername: host,
-					...(target ? { ca: target.ca } : {}),
-					method: request.method,
-					path: request.path,
-					headers: { ...request.headers, ...(body ? { "content-length": String(body.byteLength) } : {}) },
-					cert: app.certificatePem,
-					key: app.privateKeyPem,
-					minVersion: "TLSv1.2",
-					agent: false,
-				},
-				(response) => {
-					const chunks: Buffer[] = [];
-					let bytes = 0;
-					response.on("data", (chunk: Buffer) => {
-						bytes += chunk.byteLength;
-						if (bytes > maximumBytes) response.destroy(new DigitalPostAnswerTooLarge());
-						else chunks.push(chunk);
-					});
-					response.once("error", reject);
-					response.once("end", () =>
-						resolve({ status: response.statusCode ?? 0, body: new Uint8Array(Buffer.concat(chunks, bytes)) }),
+		withAbortScopes(
+			[signal],
+			(stop) =>
+				new Promise((resolve, reject) => {
+					if (stop.aborted) return reject(new Error("Digital Post request ended"));
+					const body = request.body ? Buffer.from(request.body) : undefined;
+					const outgoing = httpsRequest(
+						{
+							host,
+							port: target?.port ?? 443,
+							servername: host,
+							...(target ? { ca: target.ca } : {}),
+							method: request.method,
+							path: request.path,
+							headers: { ...request.headers, ...(body ? { "content-length": String(body.byteLength) } : {}) },
+							cert: app.certificatePem,
+							key: app.privateKeyPem,
+							minVersion: "TLSv1.2",
+							agent: false,
+						},
+						(response) => {
+							const chunks: Buffer[] = [];
+							let bytes = 0;
+							response.on("data", (chunk: Buffer) => {
+								bytes += chunk.byteLength;
+								if (bytes > maximumBytes) response.destroy(new DigitalPostAnswerTooLarge());
+								else chunks.push(chunk);
+							});
+							response.once("error", reject);
+							response.once("end", () => {
+								const joined = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, bytes);
+								resolve({ status: response.statusCode ?? 0, body: new Uint8Array(joined) });
+							});
+						},
 					);
-				},
-			);
-			const end = (): void => {
-				outgoing.destroy(new Error("Digital Post request ended"));
-			};
-			stop.addEventListener("abort", end, { once: true });
-			outgoing.once("close", () => stop.removeEventListener("abort", end));
-			outgoing.once("error", reject);
-			outgoing.end(body);
-		});
+					const end = (): void => {
+						outgoing.destroy(new Error("Digital Post request ended"));
+					};
+					stop.addEventListener("abort", end, { once: true });
+					outgoing.once("close", () => stop.removeEventListener("abort", end));
+					outgoing.once("error", reject);
+					outgoing.end(body);
+				}),
+			deadlineMs,
+		);
 }
 
 function refusal(status: number): Error {

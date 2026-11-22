@@ -15,6 +15,7 @@ import {
 	writeHookFile,
 	writeMailboxFile,
 } from "@qorpera/cloud-client/company-state-files";
+import { withAbortScopes, withDefaultTimeout } from "./abort-scope.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
@@ -441,18 +442,29 @@ export class ConnectionFileWriter {
 	}
 
 	/** Writes due files until none is due or `max` were handled. Returns how many were handled. */
-	writeDue(max = 20, signal: AbortSignal = AbortSignal.timeout(240_000)): Promise<number> {
-		return drainPlatformClaims(max, () => this.writeOne(signal), signal);
+	writeDue(max = 20, signal?: AbortSignal): Promise<number> {
+		return withDefaultTimeout(signal, 240_000, (scoped) =>
+			drainPlatformClaims(max, () => this.writeOne(scoped), scoped),
+		);
 	}
 
 	/** Claims one due connection and brings its file to the claim; false when nothing is due. */
-	async writeOne(signal: AbortSignal = AbortSignal.timeout(60_000)): Promise<boolean> {
+	writeOne(signal?: AbortSignal): Promise<boolean> {
+		return withDefaultTimeout(signal, 60_000, (scoped) => this.#writeOne(scoped));
+	}
+
+	async #writeOne(signal: AbortSignal): Promise<boolean> {
 		// The claim gets its own short deadline, as the finish does: a drain whose budget ends during the call would
 		// otherwise reject a claim the database may already have committed.
-		const answer = await this.#options.authority.publisher(
-			"qorpera_claim_connection_file",
-			{ p_worker: this.#options.workerId, p_lease_seconds: this.#leaseSeconds },
-			AbortSignal.timeout(FINISH_MS),
+		const answer = await withAbortScopes(
+			[],
+			(claimSignal) =>
+				this.#options.authority.publisher(
+					"qorpera_claim_connection_file",
+					{ p_worker: this.#options.workerId, p_lease_seconds: this.#leaseSeconds },
+					claimSignal,
+				),
+			FINISH_MS,
 		);
 		let claim: ConnectionFileClaim | null;
 		try {
@@ -580,17 +592,22 @@ export class ConnectionFileWriter {
 		generation: number,
 		code: string | null,
 	): Promise<void> {
-		const answer = (await this.#options.authority.publisher(
-			"qorpera_finish_connection_file",
-			{
-				p_worker: this.#options.workerId,
-				p_secret_id: secretId,
-				p_generation: generation,
-				p_problem: code,
-				// A vault secret's finish names no kind, so a database from before E1 takes it as before.
-				...(kind === "vault" ? {} : { p_subject_kind: kind }),
-			},
-			AbortSignal.timeout(FINISH_MS),
+		const answer = (await withAbortScopes(
+			[],
+			(finishSignal) =>
+				this.#options.authority.publisher(
+					"qorpera_finish_connection_file",
+					{
+						p_worker: this.#options.workerId,
+						p_secret_id: secretId,
+						p_generation: generation,
+						p_problem: code,
+						// A vault secret's finish names no kind, so a database from before E1 takes it as before.
+						...(kind === "vault" ? {} : { p_subject_kind: kind }),
+					},
+					finishSignal,
+				),
+			FINISH_MS,
 		)) as { schema?: unknown; finished?: unknown } | null;
 		if (answer?.schema !== "qorpera.connection-file-finish/v1" || typeof answer.finished !== "boolean")
 			problem("finish_invalid");

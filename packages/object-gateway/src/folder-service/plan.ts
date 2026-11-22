@@ -318,20 +318,26 @@ export function planBoundary(
 		// its own removal named (it changed before that removal, from a base the machine had not seen) would go
 		// unseen, so the folder stays, and so does what was removed in it.
 		if (inside.some(([p, r]) => r.kind !== "folder" && view.liveVersion(p) !== r.version)) {
-			for (const p of [path, ...inside.map(([q]) => q)])
-				dropped.push({ path: p, reason: "something in the folder changed since the machine saw it" });
+			dropped.push({ path, reason: "something in the folder changed since the machine saw it" });
+			for (const [q] of inside)
+				dropped.push({ path: q, reason: "something in the folder changed since the machine saw it" });
 			continue;
 		}
 		// The oldest position of any folder removed in it: a removed subfolder hid what came into it after.
-		const asOfSeq = Math.min(
-			ref.asOfSeq ?? Number.MAX_SAFE_INTEGER,
-			...inside.map(([, r]) => (r.kind === "folder" ? (r.asOfSeq ?? 0) : Number.MAX_SAFE_INTEGER)),
-		);
+		let asOfSeq = ref.asOfSeq ?? Number.MAX_SAFE_INTEGER;
+		for (const [, r] of inside) {
+			if (r.kind === "folder") {
+				const seq = r.asOfSeq ?? 0;
+				if (seq < asOfSeq) asOfSeq = seq;
+			}
+		}
+		const paths = [path];
+		for (const [p] of inside) paths.push(p);
 		deletes.push({
 			kind: "delete",
 			path,
 			ref: ref.kind === "folder" ? { ...ref, asOfSeq } : ref,
-			paths: [path, ...inside.map(([p]) => p)],
+			paths,
 		});
 	}
 
@@ -382,7 +388,7 @@ export function planBoundary(
 		const contents: NewFolderEntry[] = [];
 		for (const item of under) {
 			absorbed.add(item);
-			create.paths.push(...item.paths);
+			for (const p of item.paths) create.paths.push(p);
 			const rel = item.path.slice(create.path.length + 1);
 			contents.push(
 				item.kind === "new"

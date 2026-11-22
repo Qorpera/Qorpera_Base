@@ -4,12 +4,12 @@ import { programUploadPath } from "@qorpera/cloud-client/app-program";
 import { parseCloudMemberFolderRead } from "@qorpera/cloud-client/cloud-member-folder";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import { appMediaType } from "@qorpera/cloud-client/interface-apps";
-import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
+import { drainBoundedIncomingBody, ObjectDependencyError, readBoundedIncomingBody } from "./dependency.ts";
 import type { MemberCompanyAuthority, MemberCompanyPublisherRpc } from "./member-company-authority.ts";
 import { memberFolderWriter } from "./member-folder-commits.ts";
 import type { MemberRequestObservationSpan } from "./member-observability.ts";
 import { UUID } from "./native-objects.ts";
-import { contentHash } from "./platform-folder-writer.ts";
+import { hashAndVerifyObjectBytes, type VerifiedObjectBytes, verifyObjectBytes } from "./object-store.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
 const PIECE_BYTES = 4 * 1024 * 1024;
@@ -37,6 +37,7 @@ export interface MemberProgramUploadOptions {
 interface Upload {
 	readonly id: string;
 	readonly userId: string;
+	readonly profileId: string;
 	readonly environmentId: string;
 	readonly path: string;
 	readonly bytes: number;
@@ -53,6 +54,7 @@ interface Upload {
 	renewed: number;
 	finished: boolean;
 	finishing: number;
+	finishTail: Promise<void>;
 }
 
 type Publish = (
@@ -68,6 +70,7 @@ type Publish = (
 ) => Promise<unknown>;
 
 const uploads = new Map<string, Upload>();
+const openingUsers = new Set<string>();
 let clock: () => number = Date.now;
 let sweeping: ReturnType<typeof setInterval> | undefined;
 
@@ -83,11 +86,12 @@ function sweep(now: number): void {
 function activeUploads(): number {
 	let count = 0;
 	for (const upload of uploads.values()) if (!upload.finished) count++;
-	return count;
+	return count + openingUsers.size;
 }
 
 export function forgetMemberProgramUploads(): void {
 	for (const user of [...uploads.keys()]) drop(user);
+	openingUsers.clear();
 	clearInterval(sweeping);
 	sweeping = undefined;
 }
@@ -161,19 +165,26 @@ function finishKey(value: unknown): string {
 	return input.operationKey;
 }
 
-function body(request: IncomingMessage, size: number): Promise<Uint8Array> {
-	return boundedObjectOperation(async () => {
-		const chunks: Buffer[] = [];
-		let count = 0;
-		for await (const part of request) {
-			const chunk = Buffer.from(part);
-			count += chunk.length;
-			if (count > size) throw new ObjectDependencyError(413);
-			chunks.push(chunk);
-		}
-		if (count !== size) throw new ObjectDependencyError(400);
-		return Buffer.concat(chunks);
-	}, REQUEST_MS);
+function body(request: IncomingMessage, size: number, signal?: AbortSignal): Promise<Uint8Array> {
+	return readBoundedIncomingBody(request, size, REQUEST_MS, signal ? { signal } : undefined);
+}
+
+function waitTurn(previous: Promise<void>, signal: AbortSignal): Promise<void> {
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise<void>((resolve, reject) => {
+		const onAbort = (): void => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		previous.then(
+			() => {
+				signal.removeEventListener("abort", onAbort);
+				resolve();
+			},
+			() => {
+				signal.removeEventListener("abort", onAbort);
+				resolve();
+			},
+		);
+	});
 }
 
 async function json(request: IncomingMessage, observation?: MemberRequestObservationSpan): Promise<unknown> {
@@ -208,6 +219,7 @@ async function put(
 	upload: Upload,
 	hash: string,
 	bytes: Uint8Array,
+	verified: VerifiedObjectBytes,
 	publish: Publish,
 	options: MemberProgramUploadOptions,
 ) {
@@ -220,16 +232,21 @@ async function put(
 		if (typeof answer.profileId !== "string" || !UUID.test(answer.profileId)) throw new ObjectDependencyError(403);
 		return answer.profileId;
 	};
-	const profileId = await authorize();
-	await options.replication.uploadWithAuthority(profileId, hash, bytes, {
-		authorize: async () => {
-			if ((await authorize()) !== profileId) throw new ObjectDependencyError(403);
+	await options.replication.uploadWithAuthority(
+		upload.profileId,
+		hash,
+		bytes,
+		{
+			authorize: async () => {
+				if ((await authorize()) !== upload.profileId) throw new ObjectDependencyError(403);
+			},
+			confirm: async () => {
+				const confirmed = schema(await publish("qorpera_folder_confirm_object", args), "qorpera.folder-object/v1");
+				if (confirmed.sha256 !== hash || confirmed.bytes !== bytes.byteLength) throw new ObjectDependencyError(403);
+			},
 		},
-		confirm: async () => {
-			const confirmed = schema(await publish("qorpera_folder_confirm_object", args), "qorpera.folder-object/v1");
-			if (confirmed.sha256 !== hash || confirmed.bytes !== bytes.byteLength) throw new ObjectDependencyError(403);
-		},
-	});
+		verified,
+	);
 }
 
 const received = (upload: Upload) =>
@@ -238,6 +255,7 @@ const received = (upload: Upload) =>
 async function open(
 	response: ServerResponse,
 	userId: string,
+	profileId: string,
 	environmentId: string,
 	request: ReturnType<typeof memberProgramUploadRequest>,
 	publish: Publish,
@@ -246,7 +264,9 @@ async function open(
 ): Promise<void> {
 	const mediaType = appMediaType(request.path);
 	const text = manifestText(request.fileSha256, request.bytes, mediaType, request.pieces);
-	const manifestSha256 = contentHash(text);
+	const manifestBytes = new TextEncoder().encode(text);
+	const manifestVerified = hashAndVerifyObjectBytes(manifestBytes);
+	const manifestSha256 = manifestVerified.sha256;
 	const mine = uploads.get(userId);
 	if (mine && (mine.finished || now - mine.renewed >= ALIVE_MS)) drop(userId);
 	else if (
@@ -259,7 +279,7 @@ async function open(
 		send(response, 200, { schema: "qorpera.member-program-upload/v1", uploadId: mine.id, have: received(mine) });
 		return;
 	}
-	if (uploads.has(userId)) {
+	if (uploads.has(userId) || openingUsers.has(userId)) {
 		send(response, 429, { error: "Another file of this member is going up" });
 		return;
 	}
@@ -267,50 +287,56 @@ async function open(
 		send(response, 429, { error: "Too many uploads are going up" });
 		return;
 	}
-	const opened = schema(await publish("qorpera_folder_open_upload", { p_manifest: text }), "qorpera.folder-upload/v1");
-	if (
-		typeof opened.intentId !== "string" ||
-		!UUID.test(opened.intentId) ||
-		opened.manifestSha256 !== manifestSha256 ||
-		!Array.isArray(opened.present)
-	)
-		throw new ObjectDependencyError(503);
-	const upload: Upload = {
-		id: opened.intentId,
-		userId,
-		environmentId,
-		path: request.path,
-		bytes: request.bytes,
-		fileSha256: request.fileSha256,
-		pieces: request.pieces,
-		mediaType,
-		manifestSha256,
-		present: new Set(opened.present.filter((hash): hash is string => typeof hash === "string")),
-		hash: createHash("sha256"),
-		held: new Map(),
-		next: 0,
-		digest: null,
-		touched: now,
-		renewed: now,
-		finished: false,
-		finishing: 0,
-	};
-	if (!upload.present.has(manifestSha256))
-		await put(upload, manifestSha256, new TextEncoder().encode(text), publish, options);
-	if (uploads.has(userId)) {
-		send(response, 429, { error: "Another file of this member is going up" });
-		return;
+	openingUsers.add(userId);
+	try {
+		const opened = schema(
+			await publish("qorpera_folder_open_upload", { p_manifest: text }),
+			"qorpera.folder-upload/v1",
+		);
+		if (
+			typeof opened.intentId !== "string" ||
+			!UUID.test(opened.intentId) ||
+			opened.manifestSha256 !== manifestSha256 ||
+			!Array.isArray(opened.present)
+		)
+			throw new ObjectDependencyError(503);
+		const upload: Upload = {
+			id: opened.intentId,
+			userId,
+			profileId,
+			environmentId,
+			path: request.path,
+			bytes: request.bytes,
+			fileSha256: request.fileSha256,
+			pieces: request.pieces,
+			mediaType,
+			manifestSha256,
+			present: new Set(opened.present.filter((hash): hash is string => typeof hash === "string")),
+			hash: createHash("sha256"),
+			held: new Map(),
+			next: 0,
+			digest: null,
+			touched: now,
+			renewed: now,
+			finished: false,
+			finishing: 0,
+			finishTail: Promise.resolve(),
+		};
+		if (!upload.present.has(manifestSha256))
+			await put(upload, manifestSha256, manifestBytes, manifestVerified, publish, options);
+		if (uploads.has(userId)) {
+			send(response, 429, { error: "Another file of this member is going up" });
+			return;
+		}
+		uploads.set(userId, upload);
+		if (!sweeping) {
+			sweeping = setInterval(() => sweep(clock()), IDLE_MS);
+			sweeping.unref?.();
+		}
+		send(response, 200, { schema: "qorpera.member-program-upload/v1", uploadId: upload.id, have: [] });
+	} finally {
+		openingUsers.delete(userId);
 	}
-	if (activeUploads() >= MAX_ACTIVE_UPLOADS) {
-		send(response, 429, { error: "Too many uploads are going up" });
-		return;
-	}
-	uploads.set(userId, upload);
-	if (!sweeping) {
-		sweeping = setInterval(() => sweep(clock()), IDLE_MS);
-		sweeping.unref?.();
-	}
-	send(response, 200, { schema: "qorpera.member-program-upload/v1", uploadId: upload.id, have: [] });
 }
 
 async function piece(
@@ -320,6 +346,7 @@ async function piece(
 	index: number,
 	publish: Publish,
 	options: MemberProgramUploadOptions,
+	signal: AbortSignal,
 ): Promise<void> {
 	const now = options.now ?? Date.now;
 	if (upload.finished || index >= upload.pieces.length) throw new ObjectDependencyError(404);
@@ -331,18 +358,23 @@ async function piece(
 		throw new ObjectDependencyError(400);
 	const fresh = index >= upload.next && !upload.held.has(index);
 	if (fresh && index >= upload.next + HELD_AHEAD) {
-		await body(request, size);
+		await drainBoundedIncomingBody(request, size, REQUEST_MS, { signal });
 		send(response, 409, { error: "Send the earlier pieces first" });
 		return;
 	}
-	const bytes = await body(request, size);
+	const bytes = await body(request, size, signal);
 	const hash = upload.pieces[index]!;
-	if (contentHash(bytes) !== hash) throw new ObjectDependencyError(400);
+	let verified: VerifiedObjectBytes;
+	try {
+		verified = verifyObjectBytes(hash, bytes);
+	} catch {
+		throw new ObjectDependencyError(400);
+	}
 	if (now() - upload.renewed > RENEW_MS) {
 		schema(await publish("qorpera_folder_renew_upload", { p_intent: upload.id }), "qorpera.folder-upload-renew/v1");
 		upload.renewed = now();
 	}
-	if (!upload.present.has(hash)) await put(upload, hash, bytes, publish, options);
+	if (!upload.present.has(hash)) await put(upload, hash, bytes, verified, publish, options);
 	if (uploads.get(upload.userId) !== upload) throw new ObjectDependencyError(404);
 	if (index >= upload.next && !upload.held.has(index)) {
 		upload.held.set(index, bytes);
@@ -476,7 +508,7 @@ export async function serveMemberProgramUpload(
 		clock = now;
 		sweep(now());
 		if (opening) {
-			await open(response, actor.userId, environmentId, opening, publish, options, now());
+			await open(response, actor.userId, member.profileId, environmentId, opening, publish, options, now());
 			return;
 		}
 		const upload = uploads.get(actor.userId);
@@ -495,41 +527,52 @@ export async function serveMemberProgramUpload(
 			throw error;
 		};
 		if (kind === "piece") {
-			await piece(request, response, upload, Number(step), publish, options).catch(gone);
+			await piece(request, response, upload, Number(step), publish, options, signal).catch(gone);
 			return;
 		}
 		upload.finishing++;
-		await finish(
-			response,
-			upload,
-			operationKey!,
-			publish,
-			(units, key) =>
-				options.authority.publisher(
-					"qorpera_folder_commit",
-					{ p_environment_id: environmentId, p_actor: actor, p_operation_key: key, p_units: units },
-					signal,
-				),
-			async () => {
-				const entry = parseCloudMemberFolderRead(
-					await options.authority.member(
-						"qorpera_member_folder_read",
-						token,
-						{ p_environment_id: environmentId, p_path: upload.path },
+		const previousFinish = upload.finishTail;
+		let releaseFinish!: () => void;
+		upload.finishTail = new Promise<void>((resolve) => {
+			releaseFinish = resolve;
+		});
+		let acquired = false;
+		try {
+			await waitTurn(previousFinish, signal);
+			acquired = true;
+			if (uploads.get(actor.userId) !== upload) throw new ObjectDependencyError(404);
+			await finish(
+				response,
+				upload,
+				operationKey!,
+				publish,
+				(units, key) =>
+					options.authority.publisher(
+						"qorpera_folder_commit",
+						{ p_environment_id: environmentId, p_actor: actor, p_operation_key: key, p_units: units },
 						signal,
 					),
-				).entry;
-				if (!entry) return null;
-				return entry.kind === "file" && entry.file
-					? { fileSha256: entry.file.fileSha256, bytes: entry.file.bytes, version: entry.version }
-					: { fileSha256: "", bytes: -1, version: entry.version };
-			},
-			observation,
-		)
-			.catch(gone)
-			.finally(() => {
-				upload.finishing--;
-			});
+				async () => {
+					const entry = parseCloudMemberFolderRead(
+						await options.authority.member(
+							"qorpera_member_folder_read",
+							token,
+							{ p_environment_id: environmentId, p_path: upload.path },
+							signal,
+						),
+					).entry;
+					if (!entry) return null;
+					return entry.kind === "file" && entry.file
+						? { fileSha256: entry.file.fileSha256, bytes: entry.file.bytes, version: entry.version }
+						: { fileSha256: "", bytes: -1, version: entry.version };
+				},
+				observation,
+			).catch(gone);
+		} finally {
+			upload.finishing--;
+			if (acquired) releaseFinish();
+			else void previousFinish.then(releaseFinish, releaseFinish);
+		}
 	} finally {
 		clearTimeout(timer);
 		response.off("close", onClose);

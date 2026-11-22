@@ -7,7 +7,7 @@ import {
 } from "@qorpera/cloud-client/company-state-files";
 import { companyPathKey, osRelative } from "@qorpera/cloud-client/company-state-shared";
 import { SHA256_HEX_PATTERN } from "@qorpera/contracts";
-import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
+import { ObjectDependencyError, readBoundedIncomingBody } from "./dependency.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import type { MemberRequestObservationSpan } from "./member-observability.ts";
 import { UUID } from "./native-objects.ts";
@@ -312,23 +312,14 @@ async function body(request: IncomingMessage, observation?: MemberRequestObserva
 	if (!length || !/^[1-9][0-9]{0,6}$/.test(length) || request.headers["content-type"] !== "application/json")
 		throw new ObjectDependencyError(400);
 	if (Number(length) > MAX_BODY_BYTES) throw new ObjectDependencyError(413);
-	return boundedObjectOperation(async () => {
-		const chunks: Buffer[] = [];
-		let count = 0;
-		for await (const part of request) {
-			const chunk = Buffer.from(part);
-			count += chunk.length;
-			observation?.update({ requestBodyBytes: count });
-			if (count > Number(length)) throw new ObjectDependencyError(413);
-			chunks.push(chunk);
-		}
-		if (count !== Number(length)) throw new ObjectDependencyError(400);
-		try {
-			return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
-		} catch {
-			throw new ObjectDependencyError(400);
-		}
+	const bytes = await readBoundedIncomingBody(request, Number(length), 5_000, {
+		onBytes: (count) => observation?.update({ requestBodyBytes: count }),
 	});
+	try {
+		return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+	} catch {
+		throw new ObjectDependencyError(400);
+	}
 }
 
 type MemberActor = Extract<FolderWriterActor, { kind: "member" }>;

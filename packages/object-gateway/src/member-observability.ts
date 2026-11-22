@@ -151,6 +151,7 @@ export class MemberCompanyObservations {
 	readonly #retentionMs: number;
 	readonly #startedAt: string | null;
 	readonly #rows = new Map<string, { begin: number; row: MemberRequestObservation }>();
+	#lastBegin = Number.NEGATIVE_INFINITY;
 	#evicted = 0;
 	#dropped = 0;
 
@@ -182,12 +183,16 @@ export class MemberCompanyObservations {
 	}
 
 	#prune(now: number): void {
+		const monotonic = now >= this.#lastBegin;
 		for (const [id, entry] of this.#rows) {
 			if (now < entry.begin || now - entry.begin >= this.#retentionMs) {
 				this.#rows.delete(id);
 				this.#evicted++;
+			} else if (monotonic) {
+				break;
 			}
 		}
+		if (this.#rows.size === 0) this.#lastBegin = Number.NEGATIVE_INFINITY;
 	}
 
 	start(operation: MemberObservationOperation): MemberRequestObservationSpan {
@@ -225,6 +230,7 @@ export class MemberCompanyObservations {
 				logicalWriteInputBytes: null,
 			};
 			this.#rows.set(row.attemptId, { begin, row });
+			if (begin > this.#lastBegin) this.#lastBegin = begin;
 			// The span retains only an opaque attempt ID, not an evicted record.
 			const id = row.attemptId;
 			return {

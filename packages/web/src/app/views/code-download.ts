@@ -1,4 +1,5 @@
 import type { CloudMemberFolderClient } from "@qorpera/cloud-client/cloud-member-folder";
+import { createAbortScope } from "../../cloud/abort-scope.ts";
 import { CloudRpcError } from "../../cloud/client.ts";
 import type {
 	CodeDownload as CodeDownloadAnswer,
@@ -281,7 +282,8 @@ export class CodeDownload {
 		this.#job = job;
 		this.#ended = null;
 		this.#draw();
-		const signal = AbortSignal.any([this.#host.signal, job.signal]);
+		const scope = createAbortScope([this.#host.signal, job.signal]);
+		const signal = scope.signal;
 		let text = "";
 		try {
 			text = await this.#make(calls, repository, kind, signal);
@@ -291,6 +293,8 @@ export class CodeDownload {
 				if (error instanceof CloudRpcError && error.missing) this.#calls = null;
 				else text = t("The code could not be made ready just now. Try again.");
 			}
+		} finally {
+			scope.dispose();
 		}
 		this.#job = null;
 		if (this.#host.signal.aborted) return;

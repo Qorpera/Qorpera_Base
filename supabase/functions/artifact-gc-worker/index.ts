@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
+import { withTimeoutScope } from "../_shared/abort-timeout.ts";
 import {
 	parseAuthorizedArtifactGcWorkerObjects,
 	parseCompanyObjectGcWorkerJob,
@@ -139,32 +140,34 @@ Deno.serve(async (request) => {
 					return data;
 				},
 				collect: async (object) => {
-					let response: Response;
-					try {
-						response = await fetch(`${gatewayUrl}/v1/folder-gc/${object.profileId}/${object.sha256}`, {
-							method: "DELETE",
-							headers: {
-								authorization: `Bearer ${gatewayControlToken}`,
-								"x-qorpera-gc-lease-id": object.leaseId,
-							},
-							signal: AbortSignal.timeout(20_000),
-						});
-					} catch {
-						// An unreachable or hung gateway is a busy one: stop for this run.
-						return "busy";
-					}
-					if (response.status === 503) {
-						await response.body?.cancel();
-						return "busy";
-					}
-					if (!response.ok) {
-						await response.body?.cancel();
-						throw new Error("Folder object cleanup failed");
-					}
-					const outcome = ((await response.json()) as { outcome?: unknown } | null)?.outcome;
-					if (outcome !== "removed" && outcome !== "restored" && outcome !== "stale")
-						throw new Error("Folder object cleanup answer is invalid");
-					return outcome;
+					return withTimeoutScope(20_000, async (signal) => {
+						let response: Response;
+						try {
+							response = await fetch(`${gatewayUrl}/v1/folder-gc/${object.profileId}/${object.sha256}`, {
+								method: "DELETE",
+								headers: {
+									authorization: `Bearer ${gatewayControlToken}`,
+									"x-qorpera-gc-lease-id": object.leaseId,
+								},
+								signal,
+							});
+						} catch {
+							// An unreachable or hung gateway is a busy one: stop for this run.
+							return "busy";
+						}
+						if (response.status === 503) {
+							void response.body?.cancel().catch(() => undefined);
+							return "busy";
+						}
+						if (!response.ok) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new Error("Folder object cleanup failed");
+						}
+						const outcome = ((await response.json()) as { outcome?: unknown } | null)?.outcome;
+						if (outcome !== "removed" && outcome !== "restored" && outcome !== "stale")
+							throw new Error("Folder object cleanup answer is invalid");
+						return outcome;
+					});
 				},
 			},
 			crypto.randomUUID(),
@@ -207,33 +210,43 @@ Deno.serve(async (request) => {
 		path: string;
 	}): Promise<void> => {
 		if (!gatewayUrl || !gatewayControlToken) throw new Error("NAS object cleanup is not configured");
-		const response = await fetch(`${gatewayUrl}/v1/profile-objects/${input.path}`, {
-			method: "DELETE",
-			headers: {
-				authorization: `Bearer ${gatewayControlToken}`,
-				"x-qorpera-deletion-authorization-id": input.authorizationId,
-				"x-qorpera-object-bytes": String(input.bytes),
-			},
-			signal: AbortSignal.timeout(15_000),
+		await withTimeoutScope(15_000, async (signal) => {
+			const response = await fetch(`${gatewayUrl}/v1/profile-objects/${input.path}`, {
+				method: "DELETE",
+				headers: {
+					authorization: `Bearer ${gatewayControlToken}`,
+					"x-qorpera-deletion-authorization-id": input.authorizationId,
+					"x-qorpera-object-bytes": String(input.bytes),
+				},
+				signal,
+			});
+			void response.body?.cancel().catch(() => undefined);
+			if (!response.ok) throw new Error("NAS object removal failed");
 		});
-		void response.body?.cancel().catch(() => undefined);
-		if (!response.ok) throw new Error("NAS object removal failed");
 	};
+	let reconciliationFailed = 0;
 	const { data: pendingDeletions, error: pendingDeletionError } = await client.rpc(
 		"qorpera_list_authorized_profile_object_deletions",
 		{ p_limit: 100 },
 	);
-	if (pendingDeletionError) return jsonResponse({ error: "Authorized object reconciliation failed" }, 503);
-	try {
-		await reconcileAuthorizedArtifactGcWorkerObjects(
-			parseAuthorizedArtifactGcWorkerObjects(pendingDeletions),
-			async (object) => {
-				if (object.backend === "supabase-storage") await removeAuthorizedSupabaseObject(object);
-				else if (object.backend === "nas-object-gateway") await removeAuthorizedNasObject(object);
-			},
-		);
-	} catch {
-		return jsonResponse({ error: "Authorized object reconciliation failed" }, 503);
+	if (pendingDeletionError) {
+		reconciliationFailed = 1;
+	} else {
+		try {
+			await reconcileAuthorizedArtifactGcWorkerObjects(
+				parseAuthorizedArtifactGcWorkerObjects(pendingDeletions),
+				async (object) => {
+					try {
+						if (object.backend === "supabase-storage") await removeAuthorizedSupabaseObject(object);
+						else if (object.backend === "nas-object-gateway") await removeAuthorizedNasObject(object);
+					} catch {
+						reconciliationFailed += 1;
+					}
+				},
+			);
+		} catch {
+			reconciliationFailed += 1;
+		}
 	}
 	const storage: ArtifactGcStorageProvider = createRoutedArtifactGcStorageProvider({
 		removeSupabase: async (object, gcLeaseId) => {
@@ -262,17 +275,19 @@ Deno.serve(async (request) => {
 		},
 		removeNas: async (object, gcLeaseId) => {
 			if (!gatewayUrl || !gatewayControlToken) throw new Error("NAS object cleanup is not configured");
-			const response = await fetch(`${gatewayUrl}/v1/profile-objects/${object.path}`, {
-				method: "DELETE",
-				headers: {
-					authorization: `Bearer ${gatewayControlToken}`,
-					"x-qorpera-gc-lease-id": gcLeaseId,
-					"x-qorpera-object-bytes": String(object.bytes),
-				},
-				signal: AbortSignal.timeout(15_000),
+			await withTimeoutScope(15_000, async (signal) => {
+				const response = await fetch(`${gatewayUrl}/v1/profile-objects/${object.path}`, {
+					method: "DELETE",
+					headers: {
+						authorization: `Bearer ${gatewayControlToken}`,
+						"x-qorpera-gc-lease-id": gcLeaseId,
+						"x-qorpera-object-bytes": String(object.bytes),
+					},
+					signal,
+				});
+				void response.body?.cancel().catch(() => undefined);
+				if (!response.ok) throw new Error("NAS object removal failed");
 			});
-			void response.body?.cancel().catch(() => undefined);
-			if (!response.ok) throw new Error("NAS object removal failed");
 		},
 	});
 
@@ -320,5 +335,10 @@ Deno.serve(async (request) => {
 			deletedProfileStore,
 		);
 	}
-	return jsonResponse({ deletedProfileObjects, companyStorage, folderObjects });
+	return jsonResponse({
+		deletedProfileObjects,
+		companyStorage,
+		folderObjects,
+		...(reconciliationFailed > 0 ? { reconciliationFailed } : {}),
+	});
 });

@@ -2,6 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	CLAUDE_RESET_ARGUMENTS,
 	type ClaudeLoginResets,
@@ -211,6 +212,7 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 				claudeRead: read,
 				signal,
 			});
+			isolated.child.stdin.on("error", () => undefined);
 			return { child: isolated.child, close: () => isolated.close() };
 		}
 		const environment = {
@@ -246,6 +248,25 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 						stdio: ["pipe", "pipe", "pipe"],
 						detached: true,
 					});
+		let closed = false;
+		const waitForClose = (ms: number): Promise<void> => {
+			if (closed) return Promise.resolve();
+			return new Promise<void>((resolveExit) => {
+				const onClose = (): void => {
+					clearTimeout(timer);
+					resolveExit();
+				};
+				const timer = setTimeout(() => {
+					child.removeListener("close", onClose);
+					resolveExit();
+				}, ms);
+				timer.unref?.();
+				child.once("close", onClose);
+			});
+		};
+		child.once("close", () => {
+			closed = true;
+		});
 		const kill = (): void => {
 			try {
 				if (child.pid) process.kill(-child.pid, "SIGKILL");
@@ -255,77 +276,78 @@ export class ClaudeLoginReader implements ClaudeLoginReads {
 		};
 		signal.addEventListener("abort", kill, { once: true });
 		child.once("error", () => undefined);
+		child.stdin.on("error", () => undefined);
 		return {
 			child,
 			async close() {
 				signal.removeEventListener("abort", kill);
-				if (child.exitCode === null && child.signalCode === null) {
+				if (!closed && child.exitCode === null && child.signalCode === null) {
 					if (read === "screen") {
-						child.stdin.write("\x03");
-						await new Promise((resolvePause) => setTimeout(resolvePause, 150));
-						child.stdin.write("\x03");
-						await new Promise<void>((resolveExit) => {
-							const timer = setTimeout(resolveExit, 3000);
-							child.once("close", () => {
-								clearTimeout(timer);
-								resolveExit();
-							});
-						});
+						if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.write("\x03");
+						await waitForClose(150);
+						if (!closed && child.exitCode === null && child.signalCode === null) {
+							if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.write("\x03");
+							await waitForClose(3000);
+						}
 					}
-					kill();
-					await new Promise<void>((resolveExit) => {
-						const timer = setTimeout(resolveExit, 2000);
-						child.once("close", () => {
-							clearTimeout(timer);
-							resolveExit();
-						});
-					});
+					if (!closed && child.exitCode === null && child.signalCode === null) {
+						kill();
+						await waitForClose(2000);
+					}
 				}
 			},
 		};
 	}
 
 	async #usage(root: string, signal: AbortSignal): Promise<ClaudeLoginUsage | null> {
-		const deadline = AbortSignal.any([signal, AbortSignal.timeout(USAGE_MS)]);
-		const run = await this.#launch(root, USAGE_ARGUMENTS, "usage", deadline);
-		try {
-			const id = `usage-${randomUUID()}`;
-			const answered = new Promise<unknown>((resolveAnswer, reject) => {
-				let buffered = "";
-				let total = 0;
-				run.child.stdout.setEncoding("utf8");
-				run.child.stdout.on("data", (chunk: string) => {
-					total += chunk.length;
-					if (total > MAX_OUTPUT_CHARACTERS) {
-						reject(new Error("Claude Code said too much"));
-						return;
-					}
-					buffered += chunk;
-					let end = buffered.indexOf("\n");
-					while (end >= 0) {
-						const line = buffered.slice(0, end);
-						buffered = buffered.slice(end + 1);
-						end = buffered.indexOf("\n");
-						try {
-							const event = JSON.parse(line) as { type?: unknown; response?: Record<string, unknown> };
-							if (event.type === "control_response" && event.response?.request_id === id)
-								resolveAnswer(event.response);
-						} catch {}
-					}
-				});
-				run.child.stdout.once("end", () => reject(new Error("Claude Code ended without its usage")));
-				deadline.addEventListener("abort", () => reject(deadline.reason), { once: true });
-			});
-			run.child.stderr.resume();
-			run.child.stdin.write(
-				`${JSON.stringify({ type: "control_request", request_id: id, request: { subtype: "get_usage", skip_behaviors: true } })}\n`,
-			);
-			const response = (await answered) as { subtype?: unknown; response?: unknown };
-			return response.subtype === "success" ? (claudeUsageFromGetUsage(response.response) ?? null) : null;
-		} finally {
-			run.child.stdin.end();
-			await run.close();
-		}
+		return withAbortScopes(
+			[signal],
+			async (deadline) => {
+				const run = await this.#launch(root, USAGE_ARGUMENTS, "usage", deadline);
+				let onAbort: (() => void) | undefined;
+				try {
+					const id = `usage-${randomUUID()}`;
+					const answered = new Promise<unknown>((resolveAnswer, reject) => {
+						let buffered = "";
+						let total = 0;
+						run.child.stdout.setEncoding("utf8");
+						run.child.stdout.on("data", (chunk: string) => {
+							total += chunk.length;
+							if (total > MAX_OUTPUT_CHARACTERS) {
+								reject(new Error("Claude Code said too much"));
+								return;
+							}
+							buffered += chunk;
+							let end = buffered.indexOf("\n");
+							while (end >= 0) {
+								const line = buffered.slice(0, end);
+								buffered = buffered.slice(end + 1);
+								end = buffered.indexOf("\n");
+								try {
+									const event = JSON.parse(line) as { type?: unknown; response?: Record<string, unknown> };
+									if (event.type === "control_response" && event.response?.request_id === id)
+										resolveAnswer(event.response);
+								} catch {}
+							}
+						});
+						run.child.stdout.once("end", () => reject(new Error("Claude Code ended without its usage")));
+						onAbort = () => reject(deadline.reason);
+						deadline.addEventListener("abort", onAbort, { once: true });
+					});
+					run.child.stderr.resume();
+					run.child.stdin.write(
+						`${JSON.stringify({ type: "control_request", request_id: id, request: { subtype: "get_usage", skip_behaviors: true } })}\n`,
+					);
+					const response = (await answered) as { subtype?: unknown; response?: unknown };
+					return response.subtype === "success" ? (claudeUsageFromGetUsage(response.response) ?? null) : null;
+				} finally {
+					if (onAbort) deadline.removeEventListener("abort", onAbort);
+					run.child.stdin.end();
+					await run.close();
+				}
+			},
+			USAGE_MS,
+		);
 	}
 
 	#watch(run: ClaudeProcess): { screen(): ClaudeResetScreen | undefined; ended(): boolean } {

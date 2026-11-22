@@ -8,6 +8,7 @@ import {
 	companyComputerPreparationRoot,
 	parseCompanyComputerPreparationRequest,
 } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	assertCompanyComputerLinuxHost,
 	assertCompanyComputerWorkbenchMount,
@@ -202,19 +203,24 @@ export async function prepareCompanyComputerGuest(value: unknown, caller: AbortS
 	caller.throwIfAborted();
 	if (pending) throw new Error("OFFICE_GUEST_PREPARATION_PENDING");
 	const request = parseCompanyComputerPreparationRequest(value);
-	const signal = AbortSignal.any([caller, AbortSignal.timeout(300000)]);
-	pending = true;
-	let abort = () => {};
-	const stopped = new Promise<never>((_resolve, reject) => {
-		abort = () => reject(new Error("OFFICE_GUEST_PREPARATION_ABORTED"));
-		signal.addEventListener("abort", abort, { once: true });
-	});
-	const operation = inspect(request, signal).finally(() => {
-		pending = false;
-	});
-	try {
-		return await Promise.race([operation, stopped]);
-	} finally {
-		signal.removeEventListener("abort", abort);
-	}
+	return withAbortScopes(
+		[caller],
+		async (signal) => {
+			pending = true;
+			let abort = () => {};
+			const stopped = new Promise<never>((_resolve, reject) => {
+				abort = () => reject(new Error("OFFICE_GUEST_PREPARATION_ABORTED"));
+				signal.addEventListener("abort", abort, { once: true });
+			});
+			const operation = inspect(request, signal).finally(() => {
+				pending = false;
+			});
+			try {
+				return await Promise.race([operation, stopped]);
+			} finally {
+				signal.removeEventListener("abort", abort);
+			}
+		},
+		300000,
+	);
 }

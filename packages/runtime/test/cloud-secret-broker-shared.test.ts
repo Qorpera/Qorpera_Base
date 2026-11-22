@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { getEventListeners } from "node:events";
 import type { CloudConnectorOAuthFlows } from "@qorpera/runtime/cloud-connector-oauth";
 import type { ModelLoginSignInHelper } from "@qorpera/runtime/cloud-model-login-sign-in";
 import { CloudModelLoginUpkeep } from "@qorpera/runtime/cloud-model-login-upkeep";
@@ -741,4 +742,44 @@ it("serves each request from its company's services on the shared vault, and not
 				modelLoginUsage: {} as never,
 			}),
 	).toThrow("Cloud secret broker service configuration is invalid");
+});
+
+it("aborts resolve and refresh promptly while another refresh is in flight", async () => {
+	const one = randomUUID();
+	const missing = randomUUID();
+	const { principal } = principalFixture({ registered: [one] });
+	let releaseRefresh: (() => void) | undefined;
+	const origCompanies = principal.companies.getMockImplementation()!;
+	principal.companies.mockImplementationOnce(async () => {
+		await new Promise<void>((resolve) => {
+			releaseRefresh = resolve;
+		});
+		return origCompanies();
+	});
+	const companies = new SharedCloudSecretBrokerCompanies({
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		helper: helperFixture(),
+	});
+
+	const refresh = companies.refresh(new AbortController().signal);
+	await vi.waitFor(() => expect(releaseRefresh).toBeDefined());
+	const resolveCaller = new AbortController();
+	const resolveReason = new Error("RESOLVE_ABORTED");
+	const pendingResolve = companies.resolve(missing, resolveCaller.signal);
+	resolveCaller.abort(resolveReason);
+	await expect(pendingResolve).rejects.toBe(resolveReason);
+	expect(getEventListeners(resolveCaller.signal, "abort")).toHaveLength(0);
+
+	const refreshCaller = new AbortController();
+	const refreshReason = new Error("REFRESH_ABORTED");
+	const pendingRefresh = companies.refresh(refreshCaller.signal);
+	refreshCaller.abort(refreshReason);
+	await expect(pendingRefresh).rejects.toBe(refreshReason);
+	expect(getEventListeners(refreshCaller.signal, "abort")).toHaveLength(0);
+
+	releaseRefresh!();
+	await refresh;
+	await companies.close();
 });

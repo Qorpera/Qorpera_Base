@@ -3,7 +3,7 @@ import { createServer as createHttpServer } from "node:http";
 import { type AddressInfo, connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NasObjects } from "../src/folder-service/objects.ts";
 import { MAX_COMMIT_STRUCTURED_BYTES, STRUCTURED_TOO_LARGE } from "../src/folder-service/plan.ts";
 import {
@@ -3058,5 +3058,113 @@ describe("multi-batch boundary commits", () => {
 		expect(readPeak).toBe(STAGE_CONCURRENCY);
 		expect(putPeak).toBe(STAGE_CONCURRENCY);
 		expect(objects.maxCacheBytes).toBeGreaterThan(0);
+	});
+
+	it("preserves early 413 status and rejects truncated responses without hanging in GatewayUploads", async () => {
+		const token = "t".repeat(43);
+		let mode: "reject413" | "truncate" = "reject413";
+		const server = createHttpServer((req, res) => {
+			if (mode === "reject413") {
+				res.writeHead(413, { connection: "close" });
+				res.end();
+				req.socket.destroy();
+				return;
+			}
+			res.writeHead(200, { "content-length": "100" });
+			res.write("partial");
+			res.flushHeaders();
+			setTimeout(() => req.socket.destroy(), 15);
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+		const { port } = server.address() as AddressInfo;
+		const uploads = new GatewayUploads({ url: `http://127.0.0.1:${port}`, token });
+		cleanups.push(() => uploads.close());
+		const actor = { kind: "view" as const, viewId: "9e6f7081-92a3-4b4c-8d5e-6f708192a3b4", pass: PASS };
+
+		const payload = Buffer.alloc(2 * 1024 * 1024, 7);
+		const u1 = uploads.start(ENV, actor, "intent-413", hashOf(payload), payload.byteLength);
+		let err413: unknown;
+		try {
+			await u1.write(payload.subarray(0, 64 * 1024));
+			await new Promise<void>((resolve) => setTimeout(resolve, 25));
+			await u1.write(payload.subarray(64 * 1024));
+			await u1.end();
+		} catch (error) {
+			err413 = error;
+		}
+		expect(err413).toBeInstanceOf(ProtocolError);
+		expect((err413 as ProtocolError).code).toBe("TOO_LARGE");
+
+		mode = "truncate";
+		const small = Buffer.from("hello");
+		const u2 = uploads.start(ENV, actor, "intent-trunc", hashOf(small), small.byteLength);
+		await u2.write(small);
+		await expect(u2.end()).rejects.toMatchObject({ code: "UNAVAILABLE" });
+	});
+
+	it("skips redundant NAS chunk reads for single-chunk stageFile without secrets", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-stage-skip-"));
+		cleanups.push(() => rm(root, { recursive: true, force: true }));
+		const core = new FakeCore();
+		const objects = new NasObjects({ root, cacheBytes: 16 * 1024 * 1024 });
+		const staging = new FolderStaging(core, new FakeUploads(root, core), objects);
+		const data = Buffer.from("single-chunk-bytes");
+		const file = await storeFile(root, "one.txt", data, 1, data.byteLength);
+		core.seed([file]);
+		const sha = hashOf(data);
+		const content = { size: data.byteLength, chunks: [{ sha256: sha, bytes: data.byteLength }] };
+		core.catalog.set(sha, data.byteLength);
+		const chunkSpy = vi.spyOn(objects, "chunk");
+		const actor = { kind: "view" as const, viewId: "9e6f7081-92a3-4b4c-8d5e-6f708192a3b4", pass: PASS };
+		core.openView(actor.viewId, PASS);
+		await staging.stageFile(ENV, actor, PROFILE, content, "text/plain", false);
+		await staging.stageFile(ENV, actor, PROFILE, content, "text/plain", false, noSecrets());
+		expect(chunkSpy).toHaveBeenCalledTimes(0);
+
+		await staging.stageFile(ENV, actor, PROFILE, content, "text/plain", false, secretsOf("not-in-file"));
+		expect(chunkSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("pushes only settled batch paths in #settleNodes and runs due renewIntents concurrently without overlap", async () => {
+		let clock = 1_000_000;
+		const f = await fixture({ now: () => clock, maxBoundaryBatches: 1 });
+		f.core.seed([folder("QorperaOS"), folder("QorperaOS/rules"), folder("src")]);
+		const view = await f.open();
+		const feedMessages: { resync: boolean; paths: string[] }[] = [];
+		view.subscribe({
+			change: (msg) => feedMessages.push({ resync: msg.resync, paths: [...msg.paths] }),
+			closed: () => undefined,
+		});
+		for (let i = 0; i < 65; i++) await write(view, `QorperaOS/rules/r${String(i).padStart(3, "0")}.md`, `rule-${i}`);
+		for (let i = 0; i < 5; i++) await write(view, `src/later-${i}.txt`, `later-${i}`);
+		feedMessages.length = 0;
+		const report = await view.publish(false);
+		expect(report.paths.filter((p) => p.outcome === "saved")).toHaveLength(64);
+		const firstBatchMsg = feedMessages.find((m) => m.paths.includes("QorperaOS/rules/r000.md"));
+		expect(firstBatchMsg).toBeDefined();
+		expect(firstBatchMsg?.resync).toBe(false);
+		expect(firstBatchMsg?.paths.some((p) => p.startsWith("src/later-"))).toBe(false);
+		const secondReport = await view.publish(false);
+		expect(secondReport.paths.every((p) => p.outcome === "saved")).toBe(true);
+
+		for (let i = 0; i < 6; i++) await write(view, `src/intent-${i}.txt`, `unique-intent-payload-${i}`);
+		clock += 11 * 60_000;
+		let active = 0;
+		let peak = 0;
+		let renewCalls = 0;
+		const origRenew = f.core.renewUpload.bind(f.core);
+		f.core.renewUpload = async (env, actor, id) => {
+			renewCalls++;
+			active++;
+			peak = Math.max(peak, active);
+			await new Promise<void>((resolve) => setTimeout(resolve, 20));
+			active--;
+			return origRenew(env, actor, id);
+		};
+		await Promise.all([f.service.renewIntents(), f.service.renewIntents()]);
+		expect(peak).toBeGreaterThan(1);
+		expect(peak).toBeLessThanOrEqual(4);
+		expect(renewCalls).toBe(12);
 	});
 });

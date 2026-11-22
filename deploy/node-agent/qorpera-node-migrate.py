@@ -179,7 +179,7 @@ def unit_text(settings, old_unit, launcher, role):
 
 def show(unit):
     output = subprocess.run(['/usr/bin/systemctl', 'show', '--all', unit], check=True, capture_output=True,
-                            text=True).stdout
+                            text=True, timeout=30).stdout
     return dict(line.split('=', 1) for line in output.splitlines() if '=' in line)
 
 
@@ -414,7 +414,7 @@ def main(argv):
         lock = node_lock()
         try:
             cat = subprocess.run(['/usr/bin/systemctl', 'cat', options['--old']], check=True, capture_output=True,
-                                 text=True).stdout
+                                 text=True, timeout=30).stdout
             blocks = parse_cat(cat)
             check_sources(blocks, options['--old'])
             sys.stdout.write(unit_text(effective_settings(blocks), options['--old'], options['--exec'],
@@ -423,7 +423,7 @@ def main(argv):
             os.close(lock)
     elif command == 'show-diff':
         old, new = show(options['--old']), show(options['--new'])
-        cats = [subprocess.run(['/usr/bin/systemctl', 'cat', unit], check=True, capture_output=True, text=True).stdout
+        cats = [subprocess.run(['/usr/bin/systemctl', 'cat', unit], check=True, capture_output=True, text=True, timeout=30).stdout
                 for unit in [options['--old'], options['--new']]]
         watchdog_set = any(re.match(r'\s*WatchdogSec=', line) for cat in cats for line in cat.splitlines())
         print(json.dumps(show_diff(old, new, options['--old'], options['--new'], watchdog_set)))

@@ -22,9 +22,11 @@ export async function withCloudDeadline<T>(
 	if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) {
 		throw new Error("Cloud request deadline is invalid");
 	}
+	signal?.throwIfAborted();
 	const controller = new AbortController();
-	const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-	combined.throwIfAborted();
+	const onParentAbort = (): void => controller.abort(signal?.reason);
+	if (signal) signal.addEventListener("abort", onParentAbort, { once: true });
+	const combined = controller.signal;
 	let rejectAbort: () => void = () => {};
 	const cancelled = new Promise<never>((_resolve, reject) => {
 		rejectAbort = () => reject(combined.reason);
@@ -44,6 +46,7 @@ export async function withCloudDeadline<T>(
 		throw error;
 	} finally {
 		clearTimeout(timer);
+		if (signal) signal.removeEventListener("abort", onParentAbort);
 		combined.removeEventListener("abort", rejectAbort);
 	}
 }

@@ -1,10 +1,12 @@
-import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { execFile, spawnSync } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
+import { mkdtemp, open as openFile, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { type AddressInfo, connect, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { ObjectLockConflict, ObjectStatementTimeout } from "../src/dependency.ts";
 import {
@@ -18,7 +20,13 @@ import {
 } from "../src/folder-service/core.ts";
 import { createNodeTransport, nodeRequest, ResponseTooLargeError } from "../src/folder-service/https-request.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
-import { CHUNK_BYTES, NasObjects, ObjectIntegrityError, parseManifest } from "../src/folder-service/objects.ts";
+import {
+	CHUNK_BYTES,
+	NasObjects,
+	ObjectIntegrityError,
+	ObjectUnavailableError,
+	parseManifest,
+} from "../src/folder-service/objects.ts";
 import {
 	type BridgeInfo,
 	encodeFrame,
@@ -42,6 +50,8 @@ import { type TreeEntry, ViewTree } from "../src/folder-service/view-tree.ts";
 import {
 	BRIDGE,
 	CID,
+	CODING,
+	codingGrants,
 	ENV,
 	EXEC_HOST,
 	FakeCore,
@@ -49,6 +59,7 @@ import {
 	grants,
 	hashOf,
 	MACHINE,
+	noSecrets,
 	PASS,
 	PROFILE,
 	storeFile,
@@ -1937,5 +1948,150 @@ describe("SupabaseFolderCore paging and oversized fallback", () => {
 			),
 		).rejects.toThrow();
 		expect(requestsOnResetFresh).toBe(2);
+	});
+
+	it("validates per-caller size on joined #pending NasObjects reads and drops expired waiters without leaking slots", async () => {
+		const root = await tempdir();
+		const content = Buffer.from("same-hash-size-check");
+		const file = await storeFile(root, "item.txt", content, 1, content.byteLength);
+		const reader = new NasObjects({ root, cacheBytes: 1024 * 1024, parallel: 1, timeoutMs: 1_000 });
+		const [ok, bad] = await Promise.allSettled([
+			reader.chunk(PROFILE, file.fileSha256!, content.byteLength),
+			reader.chunk(PROFILE, file.fileSha256!, content.byteLength + 1),
+		]);
+		expect(ok.status === "fulfilled" && ok.value.equals(content)).toBe(true);
+		expect(bad.status === "rejected" && bad.reason instanceof ObjectIntegrityError).toBe(true);
+
+		const slow = new NasObjects({ root, cacheBytes: 0, parallel: 1, timeoutMs: 40 });
+		const other = await storeFile(root, "other.txt", Buffer.from("second-obj"), 2, 10);
+		const fifoHash = "f".repeat(64);
+		const fifoPath = join(root, PROFILE, fifoHash);
+		await promisify(execFile)("mkfifo", [fifoPath]);
+		let unblocked = false;
+		const unblockFifo = async () => {
+			if (unblocked) return;
+			unblocked = true;
+			const writer = await openFile(fifoPath, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK).catch(() => undefined);
+			await writer?.close();
+		};
+		try {
+			const stuck = slow.chunk(PROFILE, fifoHash, 10).catch((error) => error);
+			await new Promise<void>((resolve) => setTimeout(resolve, 10));
+			const queued = await Promise.all([
+				slow.chunk(PROFILE, other.fileSha256!, 10).catch((error) => error),
+				slow.chunk(PROFILE, file.fileSha256!, content.byteLength).catch((error) => error),
+			]);
+			expect(await stuck).toBeInstanceOf(ObjectUnavailableError);
+			for (const err of queued) expect(err).toBeInstanceOf(ObjectUnavailableError);
+			await unblockFifo();
+			await new Promise<void>((resolve) => setTimeout(resolve, 15));
+			expect((await slow.chunk(PROFILE, other.fileSha256!, 10)).toString()).toBe("second-obj");
+		} finally {
+			await unblockFifo();
+		}
+	});
+
+	it("does not resurrect a closed non-run_box view after an in-flight #reload completes, and runs stopCleanly machine boundaries in parallel", async () => {
+		const root = await tempdir();
+		const file = await storeFile(root, "doc.txt", Buffer.from("hi"), 1);
+		const core = new FakeCore();
+		core.seed([file]);
+		const viewId = "20000000-0000-4000-8000-000000000010";
+		const pass = "pass-reload-".padEnd(43, "r");
+		core.openView(viewId, pass);
+		const { service, path } = await serve(core, root);
+		const execBridge: BridgeInfo = { cid: 81, lookup: "found", machine: EXEC_HOST };
+		const io = await Client.open(path);
+		expect((await io.hello("io", pass, execBridge, viewId)).kind).toBe(Kind.helloOk);
+
+		let listEntered!: () => void;
+		let releaseList!: () => void;
+		const listStarted = new Promise<void>((resolve) => {
+			listEntered = resolve;
+		});
+		const listGate = new Promise<void>((resolve) => {
+			releaseList = resolve;
+		});
+		const origFeed = core.feed.bind(core);
+		let triggerResync = true;
+		core.feed = async (env, actor, afterSeq) => {
+			if (triggerResync) {
+				triggerResync = false;
+				return { asOfSeq: core.seq, resync: true, events: [], next: { afterSeq: 0, cursor: null }, more: false };
+			}
+			return origFeed(env, actor, afterSeq);
+		};
+		const origList = core.list.bind(core);
+		core.list = async (env, actor, after) => {
+			listEntered();
+			await listGate;
+			return origList(env, actor, after);
+		};
+
+		core.seq++;
+		const polling = service.poll();
+		await listStarted;
+		core.views.delete(viewId);
+		await service.renewLeases();
+		releaseList();
+		await polling;
+		const afterClose = await io.read("doc.txt", 1, 0, 2);
+		expect(afterClose).toBe("VIEW_CLOSED");
+
+		const core2 = new FakeCore();
+		core2.seed([file]);
+		const machineA = "30000000-0000-4000-8000-0000000000a1";
+		const machineB = "30000000-0000-4000-8000-0000000000b2";
+		const viewA = "30000000-0000-4000-8000-000000000011";
+		const viewB = "30000000-0000-4000-8000-000000000012";
+		const passA = "pass-stop-a-".padEnd(43, "a");
+		const passB = "pass-stop-b-".padEnd(43, "b");
+		core2.openView(viewA, passA, { kind: "coding_session", codingMachineId: machineA });
+		core2.openView(viewB, passB, { kind: "coding_session", codingMachineId: machineB });
+		const service2 = new FolderService({
+			core: core2,
+			objects: new NasObjects({ root, cacheBytes: 1024 * 1024 }),
+			grants: codingGrants(),
+			log: () => undefined,
+		});
+		cleanup.push(() => service2.stop());
+		service2.secrets(machineA, noSecrets());
+		service2.secrets(machineB, noSecrets());
+		const bridgeA: BridgeInfo = {
+			cid: 91,
+			lookup: "found",
+			machine: { ...CODING, name: `qorpera-coding-machine-${machineA.replaceAll("-", "")}` },
+		};
+		const bridgeB: BridgeInfo = {
+			cid: 92,
+			lookup: "found",
+			machine: { ...CODING, name: `qorpera-coding-machine-${machineB.replaceAll("-", "")}` },
+		};
+		const hA = await service2.open(
+			{ protocol: 3, environmentId: ENV, viewId: viewA, pass: passA, role: "io" },
+			bridgeA,
+		);
+		const hB = await service2.open(
+			{ protocol: 3, environmentId: ENV, viewId: viewB, pass: passB, role: "io" },
+			bridgeB,
+		);
+		cleanup.push(
+			() => hA.release(),
+			() => hB.release(),
+		);
+		await hA.read({ path: "doc.txt", version: v(1), offset: 0, length: 2 });
+		await hB.read({ path: "doc.txt", version: v(1), offset: 0, length: 2 });
+		let arrived = 0;
+		let releaseBarrier!: () => void;
+		const barrier = new Promise<void>((resolve) => {
+			releaseBarrier = resolve;
+		});
+		core2.releaseHook = async () => {
+			arrived++;
+			if (arrived >= 2) releaseBarrier();
+			await barrier;
+		};
+		expect(await service2.stopCleanly()).toBe(true);
+		expect(arrived).toBe(2);
 	});
 });

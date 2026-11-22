@@ -1,4 +1,5 @@
 import { type CloudCodingRepository, isUuid, parseCloudCodingRepository, SHA256_HEX_PATTERN } from "@qorpera/contracts";
+import { withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
 import {
 	CODE_BUNDLE_MAXIMUM_BYTES,
 	CODE_BUNDLE_NAME,
@@ -417,42 +418,45 @@ export class CodeImport {
 	/** One import to its outcome, as `qorpera_code_request_finish` takes it. It never throws. */
 	async run(request: CodeImportRequest, signal: AbortSignal): Promise<CodeImportOutcome> {
 		const started = this.#now();
-		let outcome: CodeImportOutcome, run: ImportRun | undefined;
-		try {
-			run = this.#runOf(request, signal);
-			outcome = await this.#import(run);
-		} catch (error) {
-			if (run) outcome = await this.#ended(run, error);
-			else {
-				outcome = { schema: OUTCOME, state: "failed", code: "IMPORT_REQUEST_INVALID" };
-				this.#report({
-					event: "code-import-error",
-					step: "request",
-					requestId: request?.requestId,
-					code: codeOf(error),
-				});
+		const halt = new AbortController();
+		return withAbortScopes([signal, halt.signal], async (runSignal) => {
+			let outcome: CodeImportOutcome, run: ImportRun | undefined;
+			try {
+				run = this.#runOf(request, runSignal, halt);
+				outcome = await this.#import(run);
+			} catch (error) {
+				if (run) outcome = await this.#ended(run, error);
+				else {
+					outcome = { schema: OUTCOME, state: "failed", code: "IMPORT_REQUEST_INVALID" };
+					this.#report({
+						event: "code-import-error",
+						step: "request",
+						requestId: request?.requestId,
+						code: codeOf(error),
+					});
+				}
 			}
-		}
-		if (run) {
-			// Nothing of this run's is asked after its outcome: the renewal stops, and a call under way is waited for.
-			run.finished = true;
-			run.cancel?.();
-			await run.calls;
-		}
-		this.#report({
-			event: "code-import",
-			step: "ended",
-			...(run?.named ?? { requestId: request?.requestId }),
-			state: outcome.state,
-			...("result" in outcome ? { result: outcome.result } : {}),
-			...("code" in outcome ? { code: outcome.code } : {}),
-			ms: this.#now() - started,
+			if (run) {
+				// Nothing of this run's is asked after its outcome: the renewal stops, and a call under way is waited for.
+				run.finished = true;
+				run.cancel?.();
+				await run.calls;
+			}
+			this.#report({
+				event: "code-import",
+				step: "ended",
+				...(run?.named ?? { requestId: request?.requestId }),
+				state: outcome.state,
+				...("result" in outcome ? { result: outcome.result } : {}),
+				...("code" in outcome ? { code: outcome.code } : {}),
+				ms: this.#now() - started,
+			});
+			return outcome;
 		});
-		return outcome;
 	}
 
 	/** The claimed import, as the run takes it (part Q parsed it with `codeImportRequestOf`). */
-	#runOf(request: CodeImportRequest, signal: AbortSignal): ImportRun {
+	#runOf(request: CodeImportRequest, signal: AbortSignal, halt: AbortController): ImportRun {
 		if (!isRecord(request)) throw new Error("IMPORT_REQUEST_INVALID");
 		const { requestId, token, companyId, environmentId, input, progress } = request;
 		if (
@@ -475,7 +479,6 @@ export class CodeImport {
 		} catch {
 			throw new Error("IMPORT_REQUEST_INVALID");
 		}
-		const halt = new AbortController();
 		const own: ImportRun["progress"] = {};
 		for (const key of ["raw", "kept", "at", "setAside", "built", "relayRefused"] as const)
 			if (progress[key] !== undefined) (own as Record<string, unknown>)[key] = progress[key];
@@ -492,7 +495,7 @@ export class CodeImport {
 				repository: `${repository.owner}/${repository.name}`,
 				via: input.via,
 			},
-			signal: AbortSignal.any([signal, halt.signal]),
+			signal,
 			halt,
 			progress: own,
 			step: step ?? (input.via === "file" ? "read" : "fetch"),
@@ -1200,16 +1203,18 @@ export class CodeImport {
 			const sent = args();
 			let answer: unknown;
 			try {
-				answer = await this.#control.call(
-					method,
-					{
-						p_owner: this.#owner,
-						p_machine_id_sha256: this.#machineIdSha256,
-						p_request_id: run.request.requestId,
-						p_token: run.request.token,
-						...sent,
-					},
-					AbortSignal.any([signal, AbortSignal.timeout(CALL_MS)]),
+				answer = await withTimeoutScope(signal, CALL_MS, (callSignal) =>
+					this.#control.call(
+						method,
+						{
+							p_owner: this.#owner,
+							p_machine_id_sha256: this.#machineIdSha256,
+							p_request_id: run.request.requestId,
+							p_token: run.request.token,
+							...sent,
+						},
+						callSignal,
+					),
 				);
 				return read(answer);
 			} catch (error) {

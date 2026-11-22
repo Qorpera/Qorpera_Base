@@ -13,6 +13,7 @@ import {
 	parseCloudCodingCommandRead,
 	parseCloudCodingCommandReceipt,
 } from "@qorpera/contracts";
+import { withTimeoutScope } from "./abort-scope.ts";
 import {
 	type CodingCommandSecretRequest,
 	type CodingCommandSecrets,
@@ -745,30 +746,31 @@ export class LxdCodingFolderCommandTransport {
 		create: boolean,
 		work: (folder: string, budget: AbortSignal) => Promise<T>,
 	): Promise<T> {
-		const budget = AbortSignal.any([signal, AbortSignal.timeout(BUDGET_MS)]);
-		return locked(`${this.#custody}\0${commandId}`, async () => {
-			signal.throwIfAborted();
-			await assertFolder(this.#custody, false);
-			const commands = `${this.#custody}/host-commands`,
-				folder = `${commands}/${commandId.replaceAll("-", "")}`;
-			if (create) {
-				await makeFolder(commands);
-				await makeFolder(folder);
-			} else {
-				const found = await assertFolder(commands, true)
-					.then(() => assertFolder(folder, true))
-					.then(
-						() => true,
-						(error: unknown) => {
-							if (errno(error) !== "ENOENT") throw error;
-							return false;
-						},
-					);
-				if (!found) throw new Error("CODING_COMMAND_UNKNOWN");
-			}
-			await sweep(folder);
-			return work(folder, budget);
-		});
+		return withTimeoutScope(signal, BUDGET_MS, (budget) =>
+			locked(`${this.#custody}\0${commandId}`, async () => {
+				signal.throwIfAborted();
+				await assertFolder(this.#custody, false);
+				const commands = `${this.#custody}/host-commands`,
+					folder = `${commands}/${commandId.replaceAll("-", "")}`;
+				if (create) {
+					await makeFolder(commands);
+					await makeFolder(folder);
+				} else {
+					const found = await assertFolder(commands, true)
+						.then(() => assertFolder(folder, true))
+						.then(
+							() => true,
+							(error: unknown) => {
+								if (errno(error) !== "ENOENT") throw error;
+								return false;
+							},
+						);
+					if (!found) throw new Error("CODING_COMMAND_UNKNOWN");
+				}
+				await sweep(folder);
+				return work(folder, budget);
+			}),
+		);
 	}
 
 	async #records(folder: string, commandId: string) {

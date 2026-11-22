@@ -14,6 +14,12 @@ const REUSED_RESET_CODES = new Set(["ECONNRESET", "EPIPE", "ERR_SOCKET_CLOSED"])
 
 class ReusedSocketResetError extends Error {}
 
+interface OpenedRequest {
+	readonly request: ClientRequest;
+	readonly answer: Promise<void>;
+	readonly earlyError: () => ProtocolError | undefined;
+}
+
 function isReusedSocketReset(request: ClientRequest, error: unknown): boolean {
 	if (!request.reusedSocket || !(error instanceof Error)) return false;
 	return "code" in error && typeof error.code === "string" && REUSED_RESET_CODES.has(error.code);
@@ -79,11 +85,7 @@ export class GatewayUploads implements FolderUploads {
 		this.#agent.destroy();
 	}
 
-	#openRequest(
-		url: URL,
-		headers: Record<string, string>,
-		agent: HttpAgent | HttpsAgent | false,
-	): { readonly request: ClientRequest; readonly answer: Promise<void> } {
+	#openRequest(url: URL, headers: Record<string, string>, agent: HttpAgent | HttpsAgent | false): OpenedRequest {
 		const request =
 			url.protocol === "https:"
 				? httpsRequest(url, {
@@ -94,28 +96,49 @@ export class GatewayUploads implements FolderUploads {
 						...(this.#ca ? { ca: this.#ca, minVersion: "TLSv1.2" } : {}),
 					})
 				: httpRequest(url, { method: "PUT", headers, timeout: 60_000, agent });
-		let responded = false;
+		let settled = false;
+		let earlyError: ProtocolError | undefined;
+		let responseSeen = false;
 		const answer = new Promise<void>((resolve, reject) => {
+			const fail = (error: ProtocolError | ReusedSocketResetError): void => {
+				if (settled) return;
+				settled = true;
+				if (error instanceof ProtocolError) earlyError ??= error;
+				reject(error);
+			};
+			const ok = (): void => {
+				if (settled) return;
+				settled = true;
+				resolve();
+			};
 			request.once("response", (response) => {
-				responded = true;
+				responseSeen = true;
+				const status = response.statusCode ?? 0;
+				if (status !== 200 && status !== 201) earlyError = uploadError(status);
 				response.resume();
 				response.once("end", () =>
-					response.statusCode === 200 || response.statusCode === 201
-						? resolve()
-						: reject(uploadError(response.statusCode ?? 0)),
+					status === 200 || status === 201 ? ok() : fail(earlyError ?? uploadError(status)),
 				);
-				response.once("error", () => reject(uploadError(0)));
+				response.once("error", () => fail(earlyError ?? uploadError(0)));
+				response.once("close", () => {
+					if (!response.complete) fail(earlyError ?? uploadError(0));
+				});
 			});
 			request.once("error", (error) => {
-				reject(!responded && isReusedSocketReset(request, error) ? new ReusedSocketResetError() : uploadError(0));
+				fail(
+					earlyError ??
+						(!responseSeen && isReusedSocketReset(request, error)
+							? new ReusedSocketResetError()
+							: uploadError(0)),
+				);
 			});
 			request.once("close", () => {
-				if (!responded) reject(uploadError(0));
+				if (!responseSeen) fail(earlyError ?? uploadError(0));
 			});
 			request.once("timeout", () => request.destroy(new Error("The upload took too long")));
 		});
 		void answer.catch(() => undefined);
-		return { request, answer };
+		return { request, answer, earlyError: () => earlyError };
 	}
 
 	start(environmentId: string, actor: FolderActor, intentId: string, sha256: string, bytes: number): Upload {
@@ -130,22 +153,34 @@ export class GatewayUploads implements FolderUploads {
 		let aborted = false;
 		let streamed = false;
 		let singlePart: Buffer | undefined;
-		let active: { readonly request: ClientRequest; readonly answer: Promise<void> } | undefined;
+		let active: OpenedRequest | undefined;
 
-		const writePart = (request: ClientRequest, part: Buffer): Promise<void> =>
+		const failWrite = (opened: OpenedRequest): Promise<never> => {
+			const early = opened.earlyError();
+			if (early !== undefined) return Promise.reject(early);
+			return opened.answer.then(
+				() => Promise.reject(uploadError(0)),
+				(error) => Promise.reject(error instanceof ReusedSocketResetError ? uploadError(0) : error),
+			);
+		};
+
+		const writePart = (opened: OpenedRequest, part: Buffer): Promise<void> =>
 			new Promise<void>((resolve, reject) => {
-				if (request.destroyed) return reject(uploadError(0));
-				if (request.write(part)) return resolve();
+				if (opened.earlyError() !== undefined || opened.request.destroyed) {
+					void failWrite(opened).then(resolve, reject);
+					return;
+				}
+				if (opened.request.write(part)) return resolve();
 				const drained = (): void => {
-					request.off("close", closed);
+					opened.request.off("close", closed);
 					resolve();
 				};
 				const closed = (): void => {
-					request.off("drain", drained);
-					reject(uploadError(0));
+					opened.request.off("drain", drained);
+					void failWrite(opened).then(resolve, reject);
 				};
-				request.once("drain", drained);
-				request.once("close", closed);
+				opened.request.once("drain", drained);
+				opened.request.once("close", closed);
 			});
 
 		const sendSingle = async (agent: HttpAgent | HttpsAgent | false, body: Buffer | undefined): Promise<void> => {
@@ -176,9 +211,9 @@ export class GatewayUploads implements FolderUploads {
 				if (singlePart !== undefined) {
 					const first = singlePart;
 					singlePart = undefined;
-					await writePart(active.request, first);
+					await writePart(active, first);
 				}
-				await writePart(active.request, part);
+				await writePart(active, part);
 			},
 			end: async () => {
 				if (aborted) throw uploadError(0);
@@ -428,13 +463,10 @@ export class FolderStaging {
 	): Promise<{ readonly file: FileRef; readonly intentId: string }> {
 		const singleChunk = content.chunks.length === 1 && content.chunks[0]!.bytes === content.size;
 		const hash = singleChunk ? undefined : createHash("sha256");
-		if (secrets || hash)
-			await this.#read(
-				profileId,
-				content,
-				secrets && this.#checks.start(secrets, content.size, form),
-				hash ? (bytes) => hash.update(bytes) : undefined,
-			);
+		const check = secrets && secrets.size > 0 ? this.#checks.start(secrets, content.size, form) : undefined;
+		if (check || hash) {
+			await this.#read(profileId, content, check, hash ? (bytes) => hash.update(bytes) : undefined);
+		}
 		const text = manifestText({
 			fileSha256: singleChunk ? content.chunks[0]!.sha256 : hash!.digest("hex"),
 			bytes: content.size,

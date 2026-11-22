@@ -6,7 +6,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/qorpera-company-data/kit
-ExecStart=/bin/bash /opt/qorpera-company-data/kit/backup.sh
+ExecStart=/bin/bash /opt/qorpera-company-data/kit/base-backup.sh
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6

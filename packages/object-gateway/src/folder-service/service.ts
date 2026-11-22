@@ -1,5 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { companyStatePath } from "@qorpera/cloud-client/company-state-files";
+import { withAbortScopes } from "../abort-scope.ts";
 import { memberFolderStructured } from "../member-folder-commits.ts";
 import {
 	COMMAND_ENDED,
@@ -7,6 +8,7 @@ import {
 	type CommitAnswer,
 	type CommitOutcome,
 	type ConflictCopy,
+	type CoreReceipt,
 	CoreRefusal,
 	type FeedCursor,
 	type FolderActor,
@@ -175,6 +177,7 @@ const VIEW_ENDED = "Folder view has ended";
 /** A chunk's own intent lasts 15 minutes and a file's sealed one an hour; each is renewed after 10 while its file is
  * pending (C1D §3.5). */
 const INTENT_RENEW_MS = 10 * 60_000;
+const INTENT_RENEW_CONCURRENCY = 4;
 /** Files staged at once at a boundary (step 0: 12 small files a second to the NAS one at a time, 67 with eight). */
 const STAGING_PARALLEL = 8;
 /** A coding view's boundary waits this long for its secret checks at most (`checkWaitMs`): well inside the 20 s the
@@ -460,8 +463,19 @@ interface Release {
 /** What releasing a view's reads came to: every read released, none yet, or the core's refusal. */
 export type Released = "released" | "unanswered" | CoreRefusal["reason"];
 
+const authorityKeys = new WeakMap<CoreReceipt, string>();
+
+function appendAll<T>(target: T[], items: readonly T[]): void {
+	for (const item of items) target.push(item);
+}
+
 function readKey(read: ReleasedRead): string {
-	return JSON.stringify([read.path, read.version, read.authority]);
+	let auth = authorityKeys.get(read.authority);
+	if (auth === undefined) {
+		auth = JSON.stringify(read.authority);
+		authorityKeys.set(read.authority, auth);
+	}
+	return `${read.path}\0${read.version ?? ""}\0${read.version === null ? "0" : "1"}\0${auth}`;
 }
 
 /** The links a unit makes, by path: a `symlink` unit's, or each of a new folder's. */
@@ -818,6 +832,8 @@ export class FolderService {
 	readonly #searchRunning: number;
 	readonly #searchPaths: number;
 	readonly #searchWorker: NativeSearchWorker | undefined;
+	#renewingLeases: Promise<void> | undefined;
+	#renewingIntents: Promise<void> | undefined;
 	/** Search pages running now, and the turns of those waiting (SEARCH_RUNNING). */
 	#searching = 0;
 	/** Paths of the trees being listed for run views (a first listing, or a listing again while the old tree serves),
@@ -1082,7 +1098,7 @@ export class FolderService {
 				const machine = view.access?.machine;
 				if (machine !== undefined && !view.closed) machines.add(machine);
 			}
-			for (const machine of machines) await this.#machineBoundary(machine, []);
+			await Promise.allSettled([...machines].map((machine) => this.#machineBoundary(machine, [])));
 			await Promise.allSettled(
 				views.filter((view) => codeHost(view) && !view.closed).map((view) => this.#publish(view)),
 			);
@@ -1126,7 +1142,16 @@ export class FolderService {
 	 * lease runs out, unless the core closed it first (a run's end closes its run box). A renewal that cannot reach the
 	 * core leaves the confirmed lease to run out: past it the view is not served (UNAVAILABLE) until a renewal succeeds.
 	 * Exposed for tests. */
-	async renewLeases(): Promise<void> {
+	renewLeases(): Promise<void> {
+		if (this.#renewingLeases) return this.#renewingLeases;
+		const run = this.#renewLeasesNow().finally(() => {
+			if (this.#renewingLeases === run) this.#renewingLeases = undefined;
+		});
+		this.#renewingLeases = run;
+		return run;
+	}
+
+	async #renewLeasesNow(): Promise<void> {
 		await Promise.all(
 			[...this.#views.values()]
 				.filter(
@@ -1301,74 +1326,77 @@ export class FolderService {
 		const database = named as string | null;
 		const actor = view.actor;
 		if (actor.kind !== "view") throw new ProtocolError(ErrorCode.viewRefused, "The view is no machine's", true);
-		const stop = AbortSignal.any([
-			signal,
-			AbortSignal.timeout(verb === "apply" ? this.#dataApplyMs : this.#dataCallMs),
-		]);
-		let pass: MachineDataPass;
-		try {
-			pass = await this.#core.machineDataPass(view.environmentId, actor, database, stop);
-		} catch (error) {
-			if (!(error instanceof CoreRefusal)) {
-				this.#log(`folder-service: ${view.key}: no data pass now: ${(error as Error).message}`);
-				return dataRefusal(503, DATA_UNREACHABLE);
-			}
-			if (error.reason === "stopped")
-				return dataRefusal(423, "The company is stopped now, so its databases take no call from a machine");
-			if (error.forbidden) return dataRefusal(403, "This machine may not reach the company's databases now");
-			if (error.said === NO_SUCH_DATABASE)
-				return dataRefusal(
-					404,
-					`No database ${database} that this machine may read: it needs data/${database}/database.toml (format = "qorpera.database/v1")`,
-				);
-			if (error.said === TOO_MANY_DATA_FOLDERS)
-				return dataRefusal(413, "data/ holds more than 5,000 folders to look through: name one database");
-			if (error.said === TOO_MANY_DATA_FILES)
-				return dataRefusal(
-					413,
-					database === null
-						? "The company's databases hold more than 1,000 files together: name one database"
-						: `data/${database}/ holds more than 1,000 files in database.toml, tables/, queries/ and actions/`,
-				);
-			return dataRefusal(400, "The company's databases did not take this call");
-		}
-		const sent = Buffer.from(JSON.stringify({ ...body, pass: pass.pass }));
-		if (sent.byteLength > DATA_MAX_PAYLOAD) return dataRefusal(413, "The call is larger than 1 MiB");
-		const unknown =
-			verb === "apply" && body.check === undefined
-				? DATA_UNKNOWN.apply
-				: verb === "change" && body.preview !== true
-					? DATA_UNKNOWN.change
-					: undefined;
-		const unanswered = (): DataAnswer =>
-			unknown === undefined ? dataRefusal(503, DATA_UNREACHABLE) : dataRefusal(504, unknown);
-		let answer: DoorAnswer;
-		try {
-			answer = await door.call(verb, sent, stop);
-		} catch (error) {
-			this.#log(`folder-service: ${view.key}: the data door gave no answer: ${(error as Error).message}`);
-			return unanswered();
-		}
-		if (this.#stopping) return unanswered();
-		this.#dataReads(view, request, pass.entries);
-		if (answer === "too_large") return dataRefusal(413, "The answer is larger than 1 MiB: name one database");
-		let value: unknown;
-		try {
-			value = JSON.parse(answer.body.toString("utf8"));
-		} catch {
-			this.#log(`folder-service: ${view.key}: the data door's answer (${answer.status}) is not JSON`);
-			return unanswered();
-		}
-		if (!Number.isInteger(answer.status) || answer.status < 200 || answer.status > 599) return unanswered();
-		if (answer.status === 401) {
-			this.#log(`folder-service: ${view.key}: the data door refused the node's token or the pass`);
-			return dataRefusal(503, DATA_UNREACHABLE);
-		}
-		if (unknown !== undefined && answer.status >= 500 && answer.status !== 507) return dataRefusal(504, unknown);
-		const given: DataAnswer = { status: answer.status, value };
-		if (Buffer.byteLength(JSON.stringify(given)) > DATA_MAX_PAYLOAD)
-			return dataRefusal(413, "The answer is larger than 1 MiB: name one database");
-		return given;
+		return withAbortScopes(
+			[signal],
+			async (stop) => {
+				let pass: MachineDataPass;
+				try {
+					pass = await this.#core.machineDataPass(view.environmentId, actor, database, stop);
+				} catch (error) {
+					if (!(error instanceof CoreRefusal)) {
+						this.#log(`folder-service: ${view.key}: no data pass now: ${(error as Error).message}`);
+						return dataRefusal(503, DATA_UNREACHABLE);
+					}
+					if (error.reason === "stopped")
+						return dataRefusal(423, "The company is stopped now, so its databases take no call from a machine");
+					if (error.forbidden) return dataRefusal(403, "This machine may not reach the company's databases now");
+					if (error.said === NO_SUCH_DATABASE)
+						return dataRefusal(
+							404,
+							`No database ${database} that this machine may read: it needs data/${database}/database.toml (format = "qorpera.database/v1")`,
+						);
+					if (error.said === TOO_MANY_DATA_FOLDERS)
+						return dataRefusal(413, "data/ holds more than 5,000 folders to look through: name one database");
+					if (error.said === TOO_MANY_DATA_FILES)
+						return dataRefusal(
+							413,
+							database === null
+								? "The company's databases hold more than 1,000 files together: name one database"
+								: `data/${database}/ holds more than 1,000 files in database.toml, tables/, queries/ and actions/`,
+						);
+					return dataRefusal(400, "The company's databases did not take this call");
+				}
+				const sent = Buffer.from(JSON.stringify({ ...body, pass: pass.pass }));
+				if (sent.byteLength > DATA_MAX_PAYLOAD) return dataRefusal(413, "The call is larger than 1 MiB");
+				const unknown =
+					verb === "apply" && body.check === undefined
+						? DATA_UNKNOWN.apply
+						: verb === "change" && body.preview !== true
+							? DATA_UNKNOWN.change
+							: undefined;
+				const unanswered = (): DataAnswer =>
+					unknown === undefined ? dataRefusal(503, DATA_UNREACHABLE) : dataRefusal(504, unknown);
+				let answer: DoorAnswer;
+				try {
+					answer = await door.call(verb, sent, stop);
+				} catch (error) {
+					this.#log(`folder-service: ${view.key}: the data door gave no answer: ${(error as Error).message}`);
+					return unanswered();
+				}
+				if (this.#stopping) return unanswered();
+				this.#dataReads(view, request, pass.entries);
+				if (answer === "too_large") return dataRefusal(413, "The answer is larger than 1 MiB: name one database");
+				let value: unknown;
+				try {
+					value = JSON.parse(answer.body.toString("utf8"));
+				} catch {
+					this.#log(`folder-service: ${view.key}: the data door's answer (${answer.status}) is not JSON`);
+					return unanswered();
+				}
+				if (!Number.isInteger(answer.status) || answer.status < 200 || answer.status > 599) return unanswered();
+				if (answer.status === 401) {
+					this.#log(`folder-service: ${view.key}: the data door refused the node's token or the pass`);
+					return dataRefusal(503, DATA_UNREACHABLE);
+				}
+				if (unknown !== undefined && answer.status >= 500 && answer.status !== 507)
+					return dataRefusal(504, unknown);
+				const given: DataAnswer = { status: answer.status, value };
+				if (Buffer.byteLength(JSON.stringify(given)) > DATA_MAX_PAYLOAD)
+					return dataRefusal(413, "The answer is larger than 1 MiB: name one database");
+				return given;
+			},
+			verb === "apply" ? this.#dataApplyMs : this.#dataCallMs,
+		);
 	}
 
 	#dataReads(view: View, request: DataCall, entries: MachineDataPass["entries"]): void {
@@ -2180,7 +2208,11 @@ export class FolderService {
 					}
 					// Every file version the change replaces or removes stays readable for files opened before, the
 					// descendants of a folder it moves away or deletes included.
-					for (const change of event.changes) changed.push(...tree.apply(change, (old) => this.#keep(view, old)));
+					for (const change of event.changes)
+						appendAll(
+							changed,
+							tree.apply(change, (old) => this.#keep(view, old)),
+						);
 				}
 				view.seq = page.next.afterSeq;
 				view.cursor = page.next.cursor;
@@ -2251,7 +2283,7 @@ export class FolderService {
 				if (!page.more) break;
 			}
 			// A run's view the bound closed meanwhile keeps no tree.
-			if (counted && view.closed) return;
+			if (view.closed) return;
 			view.tree = tree;
 			view.seq = position.afterSeq;
 			view.cursor = position.cursor;
@@ -3766,7 +3798,8 @@ export class FolderService {
 		// published, as a move moved back, leaves nothing to publish: its tags go, even when nothing is published.
 		const credited = view.credit.credits(plan.units, pending);
 		view.credit.prune(pending);
-		entries.push(...waitingOf(plan), ...refusedOf(plan, final || last));
+		appendAll(entries, waitingOf(plan));
+		appendAll(entries, refusedOf(plan, final || last));
 		if (final && plan.waiting.length > 0) {
 			view.heard = "open";
 			return {
@@ -3870,7 +3903,8 @@ export class FolderService {
 				...committed(answer),
 				paths: [...entries, ...held(plan, (i) => ({ outcome: "refused", reason: answer.units[i]?.reason }))],
 			});
-		entries.push(...dropped, ...(await this.#settle(view, plan, made, answer)));
+		appendAll(entries, dropped);
+		appendAll(entries, await this.#settle(view, plan, made, answer));
 		return this.#notice(view, unasked, { ...committed(answer), paths: entries });
 	}
 
@@ -4109,7 +4143,7 @@ export class FolderService {
 						refused: answer.refused,
 						paths: batchPaths,
 					});
-					entries.push(...batchPaths);
+					appendAll(entries, batchPaths);
 					return { commitId: null, seq: null, refused: answer.refused, paths: entries };
 				}
 
@@ -4130,7 +4164,7 @@ export class FolderService {
 				} = await this.#outcomes(view, batchPlan, answer);
 				const batchPaths = [...(i === 0 ? dropped : []), ...batchEntries];
 				this.#notice(view, unasked, { ...committed(answer), paths: batchPaths });
-				entries.push(...batchPaths);
+				appendAll(entries, batchPaths);
 				for (const path of batchKept) keptNodes.add(path);
 				for (const path of batchSaved) committedSaved.add(path);
 				for (const [path, version] of batchMade) committedMade.set(path, version);
@@ -4149,8 +4183,8 @@ export class FolderService {
 							break;
 						}
 				if (batchNeedsChangeSet && answer.seq !== null) committedChangeSetSeqs.push(answer.seq);
-				committedUnits.push(...batch);
-				committedOutcomes.push(...answer.units);
+				appendAll(committedUnits, batch);
+				appendAll(committedOutcomes, answer.units);
 				lastCommitId = answer.commitId || lastCommitId;
 				if (answer.seq !== null) lastSeq = answer.seq;
 			}
@@ -4158,8 +4192,9 @@ export class FolderService {
 			await settleCommitted();
 			if (runCount < batches.length) {
 				view.heard = "open";
-				entries.push(
-					...remainingEntries(
+				appendAll(
+					entries,
+					remainingEntries(
 						runCount,
 						"not_applied",
 						"the boundary split reached its batch limit; remaining changes stay pending",
@@ -4780,16 +4815,21 @@ export class FolderService {
 	): void {
 		const pending = view.pending;
 		if (!pending) return;
+		const nodes = pending.nodes();
 		// A kept file keeps the new folders above it that did not save, so it stays reachable; a folder that saved is live.
-		const keepAll = new Set(keep);
-		for (const path of keep)
+		const keepPending = new Set<string>();
+		for (const path of keep) {
+			if (nodes.has(path)) keepPending.add(path);
 			for (let p = path; p.includes("/"); p = p.slice(0, p.lastIndexOf("/"))) {
 				const parent = p.slice(0, p.lastIndexOf("/"));
-				if (!saved.has(parent)) keepAll.add(parent);
+				if (!saved.has(parent) && nodes.has(parent)) keepPending.add(parent);
 			}
-		const before = [...pending.nodes().keys()];
-		const own = this.#ownFolders(view, before);
-		pending.settle(new Set([...keepAll].filter((p) => pending.nodes().has(p))), removals);
+		}
+		const changedSet = new Set<string>(paths);
+		for (const path of nodes.keys()) if (!keepPending.has(path)) changedSet.add(path);
+		const changed = [...changedSet];
+		const own = this.#ownFolders(view, changed);
+		pending.settle(keepPending, removals);
 		this.#liveFolders(view, own);
 		// What still waits keeps its credits, to go with it when it is published again (F3 6b): a new file or link kept
 		// keeps the removal it holds, and so that one's.
@@ -4798,20 +4838,32 @@ export class FolderService {
 		// Nothing left unsaved (a lock or swap file a program still holds is none): the next renewal tells the core so,
 		// and the desktop's seat is free again.
 		if (!pending.unsaved) view.unsavedSince = undefined;
-		this.#push(view, this.#shown(view, [...new Set([...paths, ...before])], own));
+		this.#push(view, this.#shown(view, changed, own));
 	}
 
 	/** Renews the intents that root the bytes of pending files, each after 10 minutes. One the core lets lapse is
 	 * replaced: a chunk is held again under a new intent (put again from the share if the actor no longer holds it), and
 	 * a file whose sealed intent lapsed is staged again at the next boundary. A renewal that could not reach the core is
 	 * tried again next round. The intents of files no longer pending are let go. Exposed for tests. */
-	async renewIntents(): Promise<void> {
-		for (const view of [...this.#views.values()]) {
-			if (view.moving || view.closed) continue;
-			const next = view.intentWork.catch(() => undefined).then(() => this.#renewIntentsFor(view));
-			view.intentWork = next;
-			await next;
-		}
+	renewIntents(): Promise<void> {
+		if (this.#renewingIntents) return this.#renewingIntents;
+		const run = this.#renewIntentsNow().finally(() => {
+			if (this.#renewingIntents === run) this.#renewingIntents = undefined;
+		});
+		this.#renewingIntents = run;
+		return run;
+	}
+
+	async #renewIntentsNow(): Promise<void> {
+		await Promise.allSettled(
+			[...this.#views.values()]
+				.filter((view) => !view.moving && !view.closed)
+				.map((view) => {
+					const next = view.intentWork.catch(() => undefined).then(() => this.#renewIntentsFor(view));
+					view.intentWork = next;
+					return next;
+				}),
+		);
 	}
 
 	async #renewIntentsFor(view: View): Promise<void> {
@@ -4819,6 +4871,7 @@ export class FolderService {
 		const pending = view.pending;
 		if (!pending || view.closed || view.moving) return;
 		const { chunks, files } = this.#neededBytes(view, pending);
+		const due: [string, HeldIntent][] = [];
 		for (const [id, held] of [...view.intents]) {
 			const needed = held.chunk
 				? chunks.has(held.chunk.sha256)
@@ -4828,25 +4881,34 @@ export class FolderService {
 				continue;
 			}
 			if (now - held.renewed < INTENT_RENEW_MS) continue;
-			try {
-				await this.#core.renewUpload(view.environmentId, view.actor, id);
-				held.renewed = now;
-			} catch (error) {
-				if (!(error instanceof CoreRefusal)) {
-					this.#log(
-						`folder-service: ${view.key}: an upload intent was not renewed now: ${(error as Error).message}`,
-					);
-					continue;
-				}
-				// The core let it lapse (C1D §3.5).
-				view.intents.delete(id);
-				// Every file that took that staging (a hard link's new name too) is staged again.
-				if (held.staged)
-					for (const node of [held.node, ...pending.nodes().values()])
-						if (node.kind === "file" && node.staged?.file === held.staged) node.staged = undefined;
-				if (held.chunk) await this.#holdAgain(view, id, held);
-			}
+			due.push([id, held]);
 		}
+		let cursor = 0;
+		const worker = async (): Promise<void> => {
+			while (cursor < due.length) {
+				const [id, held] = due[cursor++]!;
+				if (view.closed || view.moving) return;
+				try {
+					await this.#core.renewUpload(view.environmentId, view.actor, id);
+					held.renewed = now;
+				} catch (error) {
+					if (!(error instanceof CoreRefusal)) {
+						this.#log(
+							`folder-service: ${view.key}: an upload intent was not renewed now: ${(error as Error).message}`,
+						);
+						continue;
+					}
+					// The core let it lapse (C1D §3.5).
+					view.intents.delete(id);
+					// Every file that took that staging (a hard link's new name too) is staged again.
+					if (held.staged)
+						for (const node of [held.node, ...pending.nodes().values()])
+							if (node.kind === "file" && node.staged?.file === held.staged) node.staged = undefined;
+					if (held.chunk) await this.#holdAgain(view, id, held);
+				}
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(INTENT_RENEW_CONCURRENCY, due.length) }, () => worker()));
 	}
 
 	/** The chunks and staged files (by manifest) the view's pending bytes still need: each pending file's as it is and as

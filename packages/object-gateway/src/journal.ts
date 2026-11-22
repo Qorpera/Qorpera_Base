@@ -50,9 +50,9 @@ export class ObjectGatewayJournal {
 		}
 	}
 
-	async read(key: string): Promise<unknown | undefined> {
+	async read(key: string, options?: { readonly skipDirectoryCheck?: boolean }): Promise<unknown | undefined> {
 		const path = this.#path(key);
-		await this.#directory(dirname(path));
+		if (!options?.skipDirectoryCheck) await this.#directory(dirname(path));
 		try {
 			const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
 			try {

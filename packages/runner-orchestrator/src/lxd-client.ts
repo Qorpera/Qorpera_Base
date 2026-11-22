@@ -3769,7 +3769,12 @@ export class LxdUnixClient
 		const input = fdStream("0", 0);
 		const stdout = fdStream("1", maxStdoutBytes);
 		const stderr = fdStream("2", maxStderrBytes);
-		const sockets: NodeWebSocket[] = [];
+		const connectAbort = new AbortController();
+		const sockets: [NodeWebSocket | undefined, NodeWebSocket | undefined, NodeWebSocket | undefined] = [
+			undefined,
+			undefined,
+			undefined,
+		];
 		let failure: Error | undefined;
 		let settle: () => void = () => undefined;
 		const drained = new Promise<void>((resolveDrained) => {
@@ -3778,44 +3783,65 @@ export class LxdUnixClient
 		// Ends the call: the stdout websocket closes first, which kills a command still running.
 		const fail = (error: Error): void => {
 			failure ??= error;
-			for (const socket of sockets) socket.close();
+			connectAbort.abort();
+			for (const socket of sockets) socket?.close();
 			settle();
 		};
 		const aborted = (): void => fail(new Error("LXD exec stream was stopped"));
 		checked.addEventListener("abort", aborted, { once: true });
+		const handshake = AbortSignal.any([checked, connectAbort.signal]);
+		let connects: Promise<void>[] = [];
 		try {
-			for (const stream of [stdout, stderr, input]) {
-				const socket = await NodeWebSocket.connect(
-					new URL(`ws://lxd${envelope.operation}/websocket?secret=${encodeURIComponent(stream.secret)}`),
-					{
-						// A text message is the stream's end; LXD sends it once the command's side has closed.
-						message: () => {
-							if (stream === input) return;
-							stream.ended = true;
-							if (stdout.ended && stderr.ended) settle();
+			connects = [stdout, stderr, input].map(async (stream, index) => {
+				try {
+					const socket = await NodeWebSocket.connect(
+						new URL(`ws://lxd${envelope.operation}/websocket?secret=${encodeURIComponent(stream.secret)}`),
+						{
+							// A text message is the stream's end; LXD sends it once the command's side has closed.
+							message: () => {
+								if (stream === input) return;
+								stream.ended = true;
+								if (stdout.ended && stderr.ended) settle();
+							},
+							binary: (payload) => {
+								if (stream === input || stream.ended || failure) return;
+								stream.bytes += payload.byteLength;
+								if (stream.bytes > stream.bound) {
+									fail(new Error("LXD exec stream output exceeded its bound"));
+									return;
+								}
+								stream.chunks.push(payload);
+							},
+							close: () => {
+								if (stream !== input && !stream.ended)
+									fail(new Error("LXD exec stream ended before its output"));
+							},
 						},
-						binary: (payload) => {
-							if (stream === input || stream.ended || failure) return;
-							stream.bytes += payload.byteLength;
-							if (stream.bytes > stream.bound) {
-								fail(new Error("LXD exec stream output exceeded its bound"));
-								return;
-							}
-							stream.chunks.push(payload);
-						},
-						close: () => {
-							if (stream !== input && !stream.ended) fail(new Error("LXD exec stream ended before its output"));
-						},
-					},
-					EXEC_STREAM_CONNECT_MS,
-					// The deadline and the signal also stop a handshake LXD has not answered yet.
-					{ socketPath: this.#socketPath, signal: checked },
-				);
-				sockets.push(socket);
-				if (failure || checked.aborted) {
-					fail(failure ?? new Error("LXD exec stream was stopped"));
+						EXEC_STREAM_CONNECT_MS,
+						// The deadline and the signal also stop a handshake LXD has not answered yet.
+						{ socketPath: this.#socketPath, signal: handshake },
+					);
+					if (failure || handshake.aborted) {
+						socket.close();
+						fail(failure ?? new Error("LXD exec stream was stopped"));
+						throw failure;
+					}
+					sockets[index] = socket;
+				} catch (error) {
+					fail(
+						checked.aborted
+							? new Error("LXD exec stream was stopped")
+							: error instanceof Error
+								? error
+								: new Error("LXD exec stream failed"),
+					);
 					throw failure;
 				}
+			});
+			await Promise.all(connects);
+			if (failure || checked.aborted) {
+				fail(failure ?? new Error("LXD exec stream was stopped"));
+				throw failure;
 			}
 			const stdinSocket = sockets[2]!;
 			if (stdin.byteLength > 0) stdinSocket.sendBinary(stdin);
@@ -3838,10 +3864,12 @@ export class LxdUnixClient
 			return { exitCode, stdout: Buffer.concat(stdout.chunks), stderr: Buffer.concat(stderr.chunks) };
 		} catch (error) {
 			fail(error instanceof Error ? error : new Error("LXD exec stream failed"));
+			await Promise.allSettled(connects);
 			throw failure;
 		} finally {
+			connectAbort.abort();
 			checked.removeEventListener("abort", aborted);
-			for (const socket of sockets) socket.close();
+			for (const socket of sockets) socket?.close();
 		}
 	}
 
@@ -3908,7 +3936,11 @@ export class LxdUnixClient
 		// Aborted when the call ends: it stops a handshake LXD has not answered, and the input, which closes a source
 		// not read to its end.
 		const callEnd = new AbortController();
-		const sockets: NodeWebSocket[] = [];
+		const sockets: [NodeWebSocket | undefined, NodeWebSocket | undefined, NodeWebSocket | undefined] = [
+			undefined,
+			undefined,
+			undefined,
+		];
 		let failure: Error | undefined;
 		let settle: () => void = () => undefined;
 		const ended = new Promise<void>((resolveEnded) => {
@@ -3918,67 +3950,85 @@ export class LxdUnixClient
 		const fail = (error: Error): void => {
 			failure ??= error;
 			callEnd.abort();
-			for (const socket of sockets) socket.close();
+			for (const socket of sockets) socket?.close();
 			settle();
 		};
 		const aborted = (): void => fail(new Error("LXD exec pipe was stopped"));
 		signal.addEventListener("abort", aborted, { once: true });
 		const handshake = AbortSignal.any([signal, callEnd.signal]);
+		let connects: Promise<void>[] = [];
 		try {
-			for (const stream of streams) {
-				const socket = await NodeWebSocket.connect(
-					new URL(`ws://lxd${envelope.operation}/websocket?secret=${encodeURIComponent(stream.secret)}`),
-					{
-						// A text message is the stream's end; LXD sends it once the command's side has closed.
-						message: () => {
-							if (stream.name === "stdout") stdoutEnded = true;
-							else if (stream.name === "stderr") stderrEnded = true;
-							if (stdoutEnded && stderrEnded) settle();
-						},
-						binary: (payload) => {
-							if (failure) return;
-							if (stream.name === "stdout" && !stdoutEnded && handOver) {
-								// Handed over as it comes, nothing kept: the bound is each message's.
-								if (payload.byteLength > maxStdoutBytes)
-									fail(new Error("LXD exec pipe output exceeded its bound"));
-								else
-									try {
-										handOver(payload);
-									} catch (error) {
-										fail(error instanceof Error ? error : new Error("LXD exec pipe output was refused"));
+			connects = streams.map(async (stream, index) => {
+				try {
+					const socket = await NodeWebSocket.connect(
+						new URL(`ws://lxd${envelope.operation}/websocket?secret=${encodeURIComponent(stream.secret)}`),
+						{
+							// A text message is the stream's end; LXD sends it once the command's side has closed.
+							message: () => {
+								if (stream.name === "stdout") stdoutEnded = true;
+								else if (stream.name === "stderr") stderrEnded = true;
+								if (stdoutEnded && stderrEnded) settle();
+							},
+							binary: (payload) => {
+								if (failure) return;
+								if (stream.name === "stdout" && !stdoutEnded && handOver) {
+									// Handed over as it comes, nothing kept: the bound is each message's.
+									if (payload.byteLength > maxStdoutBytes)
+										fail(new Error("LXD exec pipe output exceeded its bound"));
+									else
+										try {
+											handOver(payload);
+										} catch (error) {
+											fail(error instanceof Error ? error : new Error("LXD exec pipe output was refused"));
+										}
+								} else if (stream.name === "stdout" && !stdoutEnded) {
+									stdoutBytes += payload.byteLength;
+									if (stdoutBytes > maxStdoutBytes) fail(new Error("LXD exec pipe output exceeded its bound"));
+									else {
+										stdout.push(payload);
+										// The caller's own reading may fail; that fails the call, as a bound does.
+										try {
+											onStdout?.(Buffer.from(payload));
+										} catch (error) {
+											fail(error instanceof Error ? error : new Error("LXD exec pipe output was refused"));
+										}
 									}
-							} else if (stream.name === "stdout" && !stdoutEnded) {
-								stdoutBytes += payload.byteLength;
-								if (stdoutBytes > maxStdoutBytes) fail(new Error("LXD exec pipe output exceeded its bound"));
-								else {
-									stdout.push(payload);
-									// The caller's own reading may fail; that fails the call, as a bound does.
-									try {
-										onStdout?.(Buffer.from(payload));
-									} catch (error) {
-										fail(error instanceof Error ? error : new Error("LXD exec pipe output was refused"));
-									}
+								} else if (stream.name === "stderr" && !stderrEnded) {
+									const kept = Buffer.concat([stderrTail, payload]);
+									stderrTail = Buffer.from(kept.subarray(Math.max(0, kept.byteLength - stderrTailBytes)));
 								}
-							} else if (stream.name === "stderr" && !stderrEnded) {
-								const kept = Buffer.concat([stderrTail, payload]);
-								stderrTail = Buffer.from(kept.subarray(Math.max(0, kept.byteLength - stderrTailBytes)));
-							}
+							},
+							// The stdin websocket may close as soon as the command is done with it.
+							close: () => {
+								if ((stream.name === "stdout" && !stdoutEnded) || (stream.name === "stderr" && !stderrEnded))
+									fail(new Error("LXD exec pipe ended before its output"));
+							},
 						},
-						// The stdin websocket may close as soon as the command is done with it.
-						close: () => {
-							if ((stream.name === "stdout" && !stdoutEnded) || (stream.name === "stderr" && !stderrEnded))
-								fail(new Error("LXD exec pipe ended before its output"));
-						},
-					},
-					EXEC_STREAM_CONNECT_MS,
-					// The signal and the call's end also stop a handshake LXD has not answered yet.
-					{ socketPath: this.#socketPath, signal: handshake },
-				);
-				sockets.push(socket);
-				if (failure || signal.aborted) {
-					fail(failure ?? new Error("LXD exec pipe was stopped"));
+						EXEC_STREAM_CONNECT_MS,
+						// The signal and the call's end also stop a handshake LXD has not answered yet.
+						{ socketPath: this.#socketPath, signal: handshake },
+					);
+					if (failure || handshake.aborted) {
+						socket.close();
+						fail(failure ?? new Error("LXD exec pipe was stopped"));
+						throw failure;
+					}
+					sockets[index] = socket;
+				} catch (error) {
+					fail(
+						signal.aborted
+							? new Error("LXD exec pipe was stopped")
+							: error instanceof Error
+								? error
+								: new Error("LXD exec pipe failed"),
+					);
 					throw failure;
 				}
+			});
+			await Promise.all(connects);
+			if (failure || signal.aborted) {
+				fail(failure ?? new Error("LXD exec pipe was stopped"));
+				throw failure;
 			}
 			// The input runs beside the output: a command may print before it has read all of its stdin. Only the
 			// source's own failure fails the call; a websocket that closed under the input leaves it to the exit code.
@@ -4001,11 +4051,12 @@ export class LxdUnixClient
 			return { exitCode, stdout: Buffer.concat(stdout), stderrTail };
 		} catch (error) {
 			fail(error instanceof Error ? error : new Error("LXD exec pipe failed"));
+			await Promise.allSettled(connects);
 			throw failure;
 		} finally {
 			callEnd.abort();
 			signal.removeEventListener("abort", aborted);
-			for (const socket of sockets) socket.close();
+			for (const socket of sockets) socket?.close();
 		}
 	}
 

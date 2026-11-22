@@ -1,0 +1,22 @@
+[Unit]
+Description=Qorpera coding command gateway TCP forward to peer node
+Requires=qorpera-coding-forward.socket
+After=qorpera-coding-forward.socket network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+DynamicUser=yes
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=512 100.80.160.64:8789
+Restart=on-failure
+RestartSec=2s
+LimitNOFILE=4096
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

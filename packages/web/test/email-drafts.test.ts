@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { webcrypto } from "node:crypto";
+import { getEventListeners } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { EmailDraftClient, parseEmailDraftState } from "../src/cloud/email-drafts.ts";
@@ -159,5 +160,55 @@ describe("email draft member transport", () => {
 		])
 			expect(() => parseEmailDraftState({ ...receipt, brokerOrigin })).toThrow();
 		expect(() => parseEmailDraftState({ status: "sent" })).toThrow();
+	});
+	it("bounds broker confirmation to 30 seconds, detaches parent listeners, cancels non-ok bodies, and allows retry", async () => {
+		const f = fixture();
+		vi.useFakeTimers();
+		try {
+			const hangingFetch = vi.fn(
+				(_input: RequestInfo | URL, init?: RequestInit) =>
+					new Promise<Response>((_resolve, reject) => {
+						init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+					}),
+			);
+			vi.stubGlobal("fetch", hangingFetch);
+			const attempt = f.client.act(session, interaction, "send", content);
+			const caught = attempt.catch((error: unknown) => error);
+			await vi.advanceTimersByTimeAsync(29_999);
+			expect(hangingFetch).toHaveBeenCalledTimes(1);
+			await vi.advanceTimersByTimeAsync(1);
+			const error = await caught;
+			expect(error).toBeInstanceOf(DOMException);
+			expect((error as DOMException).name).toBe("TimeoutError");
+			expect(getEventListeners(f.controller.signal, "abort")).toHaveLength(0);
+		} finally {
+			vi.useRealTimers();
+		}
+
+		let cancelled = false;
+		const errorResponse = new Response("upstream failure", { status: 502 });
+		Object.defineProperty(errorResponse, "body", {
+			value: {
+				locked: false,
+				cancel: async () => {
+					cancelled = true;
+				},
+			},
+		});
+		const retryFetch = vi
+			.fn()
+			.mockResolvedValueOnce(errorResponse)
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ ...receipt, status: "sent", actionId, messageId: "m1" })),
+			);
+		vi.stubGlobal("fetch", retryFetch);
+		await expect(f.client.act(session, interaction, "send", content)).rejects.toThrow("could not be confirmed");
+		expect(cancelled).toBe(true);
+		expect(getEventListeners(f.controller.signal, "abort")).toHaveLength(0);
+		await expect(f.client.act(session, interaction, "send", content)).resolves.toMatchObject({
+			status: "sent",
+			messageId: "m1",
+		});
+		expect(sessionStorage.length).toBe(0);
 	});
 });

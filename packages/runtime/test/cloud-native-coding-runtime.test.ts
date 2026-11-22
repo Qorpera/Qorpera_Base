@@ -298,6 +298,8 @@ describe("the coding composition of a native turn", () => {
 					// so links from / work, and the collect lets them through while hosts are on.
 					"The site is served at the top of an address of its own, so its pages, styles and scripts may link its files from / (/src/app.js) or relatively (src/app.js): both work.",
 					"Never build a key into the site.",
+					'For a full-stack or server-rendered webapp (Node, Next.js, Astro, SvelteKit, Python, Go or Docker), set "site": {"kind": "server", "port": 3000, "healthPath": "/health", "dockerfile": "Dockerfile", "name": "...", "title": "..."}',
+					"Every passing change deploys first to the Qorpera hosted domain (https://<name>.qorpera.site/, preview at https://<name>--next.qorpera.site/ via What's new), after which a founder or admin can make it public and attach a custom domain with automatic HTTPS in Sites.",
 					"Make checks fast and honest: they must not need servers or ports your own commands hold, or files git does not track.",
 					// The session's copy is in its home, on the machine's disk, and is removed first, so a second run after a
 					// fix works.

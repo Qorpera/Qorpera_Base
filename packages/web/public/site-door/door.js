@@ -10,7 +10,7 @@
 	const SHOWN = "qorpera-site-door-shown";
 	const TARGET = "qorpera-site";
 	// A site's own host (never a next host), the one path that takes a pass, a pass of base64url, a path of the site.
-	const ACTION = /^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)*\.qorpera\.com\/__qorpera\/member$/;
+	const ACTION = /^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)*\.qorpera\.(?:com|site)\/__qorpera\/member$/;
 	const PASS_TEXT = /^[A-Za-z0-9_-]{43}$/;
 	const PATH = /^\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]{0,511}$/;
 	let used = false;

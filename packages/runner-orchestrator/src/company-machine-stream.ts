@@ -1,4 +1,5 @@
 import { crc32, deflateSync } from "node:zlib";
+import { withAbortScopes } from "./abort-scope.ts";
 
 /**
  * A desktop's live picture (20260930745000; POINTER-PROGRESS.md 05:15Z, step 2): the machine's own VNC server (Xvnc,
@@ -1133,68 +1134,69 @@ export class DesktopStream {
 			evictionRefresh: "clean",
 		};
 		this.#watchers.add(watcher);
-		const done = AbortSignal.any([signal, this.#stop.signal]);
-		const wakeOnEnd = () => watcher.wake();
-		done.addEventListener("abort", wakeOnEnd, { once: true });
-		const began = now();
-		let failures = 0;
-		try {
-			this.#start();
-			// The whole screen for this member: asked anew, so it is a change after the member came, and passes a cycle.
-			this.#requestWhole();
-			for (;;) {
-				if (this.#ended) return this.#ended;
-				if (signal.aborted) return "closed";
-				if (now() - began > (this.#options.maxMs ?? 8 * 3600_000)) return "STREAM_TOO_LONG";
-				if (this.#seq <= watcher.sentSeq) {
-					await new Promise<void>((resolve) => {
-						watcher.wake = resolve;
-						if (done.aborted || this.#seq > watcher.sentSeq) resolve();
-					});
-					watcher.wake = () => {};
-					continue;
-				}
-				// Everything up to here changed before this cycle begins.
-				const upTo = this.#seq;
-				const cycleBegan = now();
-				let verdict: Awaited<ReturnType<DesktopStreamRelease>>;
-				try {
-					verdict = await release(done);
-				} catch {
+		return withAbortScopes([signal, this.#stop.signal], async (done) => {
+			const wakeOnEnd = () => watcher.wake();
+			done.addEventListener("abort", wakeOnEnd, { once: true });
+			const began = now();
+			let failures = 0;
+			try {
+				this.#start();
+				// The whole screen for this member: asked anew, so it is a change after the member came, and passes a cycle.
+				this.#requestWhole();
+				for (;;) {
+					if (this.#ended) return this.#ended;
+					if (signal.aborted) return "closed";
+					if (now() - began > (this.#options.maxMs ?? 8 * 3600_000)) return "STREAM_TOO_LONG";
+					if (this.#seq <= watcher.sentSeq) {
+						await new Promise<void>((resolve) => {
+							watcher.wake = resolve;
+							if (done.aborted || this.#seq > watcher.sentSeq) resolve();
+						});
+						watcher.wake = () => {};
+						continue;
+					}
+					// Everything up to here changed before this cycle begins.
+					const upTo = this.#seq;
+					const cycleBegan = now();
+					let verdict: Awaited<ReturnType<DesktopStreamRelease>>;
+					try {
+						verdict = await release(done);
+					} catch {
+						if (done.aborted) continue;
+						if (++failures >= (this.#options.maxCycleFailures ?? 3)) return "STREAM_UNAVAILABLE";
+						await pause(this.#options.retryMs ?? 250, done);
+						continue;
+					}
+					failures = 0;
+					if (typeof verdict === "object") return verdict.end;
+					if (verdict === "pending") {
+						await pause(this.#options.retryMs ?? 250, done);
+						continue;
+					}
 					if (done.aborted) continue;
-					if (++failures >= (this.#options.maxCycleFailures ?? 3)) return "STREAM_UNAVAILABLE";
-					await pause(this.#options.retryMs ?? 250, done);
-					continue;
+					const sent = await this.#send(watcher, upTo, sink, done);
+					watcher.sentSeq = Math.max(watcher.sentSeq, upTo);
+					if (watcher.evictionRefresh === "stale") {
+						watcher.evictionRefresh = "requested";
+						this.#requestWhole();
+					} else if (sent && watcher.evictionRefresh === "requested") {
+						watcher.evictionRefresh = "clean";
+					}
+					this.#trim();
+					await pause(cycleBegan + (this.#options.cycleEveryMs ?? STREAM_CYCLE_EVERY_MS) - now(), done);
 				}
-				failures = 0;
-				if (typeof verdict === "object") return verdict.end;
-				if (verdict === "pending") {
-					await pause(this.#options.retryMs ?? 250, done);
-					continue;
-				}
-				if (done.aborted) continue;
-				const sent = await this.#send(watcher, upTo, sink, done);
-				watcher.sentSeq = Math.max(watcher.sentSeq, upTo);
-				if (watcher.evictionRefresh === "stale") {
-					watcher.evictionRefresh = "requested";
-					this.#requestWhole();
-				} else if (sent && watcher.evictionRefresh === "requested") {
-					watcher.evictionRefresh = "clean";
-				}
+			} catch (error) {
+				// Cancelled while a message was on its way: the member closed it, or the executor is stopping.
+				if (error instanceof Error && error.message === STREAM_CANCELLED)
+					return this.#ended ?? (signal.aborted ? "closed" : "stopping");
+				return this.#ended ?? "STREAM_UNAVAILABLE";
+			} finally {
+				done.removeEventListener("abort", wakeOnEnd);
+				this.#watchers.delete(watcher);
 				this.#trim();
-				await pause(cycleBegan + (this.#options.cycleEveryMs ?? STREAM_CYCLE_EVERY_MS) - now(), done);
+				if (this.#watchers.size === 0) this.#end("idle");
 			}
-		} catch (error) {
-			// Cancelled while a message was on its way: the member closed it, or the executor is stopping.
-			if (error instanceof Error && error.message === STREAM_CANCELLED)
-				return this.#ended ?? (signal.aborted ? "closed" : "stopping");
-			return this.#ended ?? "STREAM_UNAVAILABLE";
-		} finally {
-			done.removeEventListener("abort", wakeOnEnd);
-			this.#watchers.delete(watcher);
-			this.#trim();
-			if (this.#watchers.size === 0) this.#end("idle");
-		}
+		});
 	}
 
 	/** Starts the relay once. */

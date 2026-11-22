@@ -3,10 +3,23 @@
 # coding machine's disk is larger than the image's, and the image has no cloud-init
 # to grow it. Runs at every boot; a root that already fills its disk stays as it is.
 set -euo pipefail
-[[ $(findmnt -no FSTYPE /) == ext4 ]] || { echo "the root is not ext4: left as it is"; exit 0; }
-part=$(basename "$(readlink -f "$(findmnt -no SOURCE /)")")
-disk=/dev/$(lsblk -no PKNAME "/dev/$part")
-number=$(cat "/sys/class/block/$part/partition")
-# growpart exits 1 when the partition already fills the disk (NOCHANGE).
-growpart "$disk" "$number" || [[ $? -eq 1 ]]
-resize2fs "/dev/$part"
+read -r source fstype < <(findmnt -no SOURCE,FSTYPE /)
+[[ $fstype == ext4 ]] || { echo "the root is not ext4: left as it is"; exit 0; }
+part=$(basename "$(readlink -f "$source")")
+disk=$(lsblk -no PKNAME "/dev/$part")
+number=$(<"/sys/class/block/$part/partition")
+read -r disk_sectors <"/sys/class/block/$disk/size"
+read -r start_sector <"/sys/class/block/$part/start"
+read -r part_sectors <"/sys/class/block/$part/size"
+gap=$(( (disk_sectors - start_sector - part_sectors) * 512 ))
+if (( gap >= 1048576 )); then
+	growpart "/dev/$disk" "$number" || [[ $? -eq 1 ]]
+	read -r part_sectors <"/sys/class/block/$part/size"
+fi
+part_bytes=$(( part_sectors * 512 ))
+super=$(dumpe2fs -h "/dev/$part" 2>/dev/null || true)
+blocks=$(awk -F: '/^Block count:/ {print $2 + 0}' <<<"$super")
+block=$(awk -F: '/^Block size:/ {print $2 + 0}' <<<"$super")
+if (( blocks <= 0 || block <= 0 || part_bytes - blocks * block >= block )); then
+	resize2fs "/dev/$part"
+fi

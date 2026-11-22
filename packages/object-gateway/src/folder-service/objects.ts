@@ -235,8 +235,8 @@ export class NasObjects {
 	readonly #parallel: number;
 	readonly #timeoutMs: number;
 	readonly #pending = new Map<string, Promise<Buffer>>();
-	readonly #interactiveWaiting: (() => void)[] = [];
-	readonly #bulkWaiting: (() => void)[] = [];
+	readonly #interactiveWaiting = new Set<() => void>();
+	readonly #bulkWaiting = new Set<() => void>();
 	#running = 0;
 
 	constructor(options: NasObjectsOptions) {
@@ -388,7 +388,11 @@ export class NasObjects {
 			this.#pending.set(key, created);
 			pending = created;
 		}
-		return pending;
+		return pending.then((bytes) => {
+			if (bytes.byteLength > maximum || (exact !== undefined && bytes.byteLength !== exact))
+				throw new ObjectIntegrityError("Object has the wrong size");
+			return bytes;
+		});
 	}
 
 	async #load(profileId: string, hash: string, maximum: number, exact: number | undefined): Promise<Buffer> {
@@ -444,22 +448,40 @@ export class NasObjects {
 	async #turn<T>(operation: () => Promise<T>, priority: ReadPriority): Promise<T> {
 		let expired = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		let waitEntry: (() => void) | undefined;
+		let cancelWait: (() => void) | undefined;
+		const queue = priority === "interactive" ? this.#interactiveWaiting : this.#bulkWaiting;
 		const deadline = new Promise<never>((_, reject) => {
 			timer = setTimeout(() => {
 				expired = true;
+				if (waitEntry && queue.delete(waitEntry)) cancelWait?.();
 				reject(new ObjectUnavailableError("The storage server did not answer"));
 			}, this.#timeoutMs);
 		});
 		const work = (async (): Promise<T> => {
+			let acquired = false;
 			if (this.#running >= this.#parallel) {
-				const queue = priority === "interactive" ? this.#interactiveWaiting : this.#bulkWaiting;
-				await new Promise<void>((go) => queue.push(go));
-			} else this.#running++;
+				let handed = false;
+				await new Promise<void>((go) => {
+					cancelWait = go;
+					waitEntry = () => {
+						handed = true;
+						go();
+					};
+					queue.add(waitEntry);
+				});
+				waitEntry = undefined;
+				cancelWait = undefined;
+				acquired = handed;
+			} else {
+				this.#running++;
+				acquired = true;
+			}
 			try {
 				if (expired) throw new ObjectUnavailableError("The storage server did not answer");
 				return await operation();
 			} finally {
-				this.#done();
+				if (acquired) this.#done();
 			}
 		})();
 		try {
@@ -472,8 +494,11 @@ export class NasObjects {
 	}
 
 	#done(): void {
-		const next = this.#interactiveWaiting.shift() ?? this.#bulkWaiting.shift();
-		if (next) next();
-		else this.#running--;
+		const queue = this.#interactiveWaiting.size > 0 ? this.#interactiveWaiting : this.#bulkWaiting;
+		const first = queue.values().next();
+		if (!first.done) {
+			queue.delete(first.value);
+			first.value();
+		} else this.#running--;
 	}
 }

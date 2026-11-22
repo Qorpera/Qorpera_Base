@@ -4,6 +4,7 @@ import { type FileHandle, open, realpath } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import type { CompanyComputerScreenBinding } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { isUuid } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { CompanyComputerCommandNotSaved } from "./cloud-company-computer-command-folder.ts";
 import { isCompanyComputerFolderMount, parseCompanyComputerMountinfo } from "./cloud-company-computer-folder-helper.ts";
 import {
@@ -187,15 +188,20 @@ async function openFolderView(
 		if (remaining < 1) return UNAVAILABLE;
 		let answer: unknown;
 		try {
-			answer = await registry.call(
-				"qorpera_folder_view_open",
-				{
-					p_environment_id: request.environmentId,
-					p_opener: { kind: "platform" },
-					p_kind: request.kind,
-					p_anchor: request.anchor,
-				},
-				AbortSignal.any([signal, AbortSignal.timeout(remaining)]),
+			answer = await withAbortScopes(
+				[signal],
+				(callSignal) =>
+					registry.call(
+						"qorpera_folder_view_open",
+						{
+							p_environment_id: request.environmentId,
+							p_opener: { kind: "platform" },
+							p_kind: request.kind,
+							p_anchor: request.anchor,
+						},
+						callSignal,
+					),
+				remaining,
 			);
 		} catch (error) {
 			signal.throwIfAborted();
@@ -223,9 +229,12 @@ export async function closeCompanyComputerFolderView(
 	registry: Pick<HttpCloudCompanyComputerRegistry, "call">,
 	view: CompanyComputerFolderView,
 ): Promise<void> {
-	await registry
-		.call("qorpera_folder_view_close", { p_view_id: view.viewId, p_pass: view.pass }, AbortSignal.timeout(10000))
-		.catch(() => undefined);
+	await withAbortScopes(
+		[],
+		(callSignal) =>
+			registry.call("qorpera_folder_view_close", { p_view_id: view.viewId, p_pass: view.pass }, callSignal),
+		10000,
+	).catch(() => undefined);
 }
 
 /**
@@ -912,15 +921,20 @@ export class CompanyComputerDesktopFolders {
 		};
 		let answer: unknown;
 		try {
-			answer = await this.#registry.call(
-				"qorpera_folder_view_commits",
-				{
-					p_view_id: entry.view.viewId,
-					p_pass: entry.view.pass,
-					p_after_commit_id: (ahead ? (entry.ahead ?? entry.after) : entry.after) ?? null,
-					p_limit: REPORT_READ_UNITS,
-				},
-				AbortSignal.any([record.stop.signal, AbortSignal.timeout(LIST_WAIT_MS)]),
+			answer = await withAbortScopes(
+				[record.stop.signal],
+				(callSignal) =>
+					this.#registry.call(
+						"qorpera_folder_view_commits",
+						{
+							p_view_id: entry.view.viewId,
+							p_pass: entry.view.pass,
+							p_after_commit_id: (ahead ? (entry.ahead ?? entry.after) : entry.after) ?? null,
+							p_limit: REPORT_READ_UNITS,
+						},
+						callSignal,
+					),
+				LIST_WAIT_MS,
 			);
 		} catch (error) {
 			if (companyComputerRegistryRefusal(error)) ended();

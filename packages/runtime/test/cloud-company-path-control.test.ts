@@ -655,4 +655,40 @@ describe("the folder core's entry points (core C3)", () => {
 			answer,
 		);
 	});
+
+	it("cancels response body on post-fetch abort race and on 204 void RPCs", async () => {
+		const abort = new AbortController();
+		let abortedCancelled = false;
+		const abortedBody = new ReadableStream<Uint8Array>({
+			cancel() {
+				abortedCancelled = true;
+			},
+		});
+		const abortTransport = vi.fn<typeof fetch>(async () => {
+			abort.abort();
+			return new Response(abortedBody, { status: 200 });
+		});
+		await expect(fixture(abortTransport).call("qorpera_find_agent_mail", {}, abort.signal)).rejects.toThrow();
+		expect(abortedCancelled).toBe(true);
+
+		let voidCancelled = false;
+		const voidBody = new ReadableStream<Uint8Array>({
+			cancel() {
+				voidCancelled = true;
+			},
+		});
+		const voidTransport = vi.fn<typeof fetch>(
+			async () =>
+				({
+					ok: true,
+					status: 204,
+					body: voidBody,
+					headers: new Headers(),
+				}) as unknown as Response,
+		);
+		await expect(
+			fixture(voidTransport).call("qorpera_assert_company_path_reads", {}, new AbortController().signal),
+		).resolves.toBeNull();
+		expect(voidCancelled).toBe(true);
+	});
 });

@@ -28,8 +28,8 @@ import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { isUnnamed } from "../../ui/company-name.ts";
 import { type MenuEntry, openContextMenu } from "../../ui/context-menu.ts";
-import { fmtTime, h, icon, notice, personAvatar, spinner } from "../../ui/dom.ts";
-import { presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
+import { fmtTime, formatPresentationDate, h, icon, notice, personAvatar, spinner } from "../../ui/dom.ts";
+import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
 import { uiScale } from "../../ui/scale.ts";
 import type { CompanyController } from "../company.ts";
 import {
@@ -138,6 +138,7 @@ interface MailboxUi {
 	busy: boolean;
 	error: string | null;
 	toast: { readonly text: string; readonly agent: string | null; readonly id: number } | null;
+	pendingFocus: { readonly target: string; readonly carried: Element | null } | null;
 }
 
 /** Who an email being written goes to, on one of its lines. */
@@ -187,6 +188,53 @@ const newDraft = (): Draft => ({
 });
 
 const uis = new WeakMap<HTMLElement, MailboxUi>();
+const jsonCache = new WeakMap<object, string>();
+const staffJsonCache = new WeakMap<readonly HostedStaffAgent[], string>();
+const routinesJsonCache = new WeakMap<readonly WebRoutine[], string>();
+const teamMembersJsonCache = new WeakMap<object, string>();
+
+function cachedJson(value: unknown): string {
+	if (!value || typeof value !== "object") return JSON.stringify(value);
+	let cached = jsonCache.get(value);
+	if (cached === undefined) {
+		cached = JSON.stringify(value);
+		jsonCache.set(value, cached);
+	}
+	return cached;
+}
+
+function cachedStaffJson(staff: readonly HostedStaffAgent[]): string {
+	let cached = staffJsonCache.get(staff);
+	if (cached === undefined) {
+		cached = JSON.stringify(
+			staff.map((agent) => [agent.id, agent.displayName, agent.employmentStatus, agent.appearance]),
+		);
+		staffJsonCache.set(staff, cached);
+	}
+	return cached;
+}
+
+function cachedRoutinesJson(list: readonly WebRoutine[] | null | undefined): string {
+	if (!list) return "null";
+	let cached = routinesJsonCache.get(list);
+	if (cached === undefined) {
+		cached = JSON.stringify(list.map((routine) => [routine.routineId, routine.status, routine.prompt]));
+		routinesJsonCache.set(list, cached);
+	}
+	return cached;
+}
+
+function cachedTeamMembersJson(
+	members: readonly { readonly userId: string; readonly displayName: string | null }[] | undefined,
+): string {
+	if (!members) return "null";
+	let cached = teamMembersJsonCache.get(members);
+	if (cached === undefined) {
+		cached = JSON.stringify(members.map((member) => [member.userId, member.displayName]));
+		teamMembersJsonCache.set(members, cached);
+	}
+	return cached;
+}
 /** A number for each company controller drawn: the company opened again draws afresh, so the cards it keeps are its. */
 const controllers = new WeakMap<CompanyController, number>();
 let controllerCount = 0;
@@ -436,6 +484,7 @@ export function renderMailbox(
 			busy: false,
 			error: null,
 			toast: null,
+			pendingFocus: null,
 		};
 		uis.set(container, ui);
 	}
@@ -452,7 +501,7 @@ export function renderMailbox(
 	const lists = ui.tab === "addresses" ? [] : [request];
 	const threads = ui.open ? [ui.open] : [];
 	const letters = ui.letter ? [ui.letter] : [];
-	const staff = state.staff.map((agent) => [agent.id, agent.displayName, agent.employmentStatus, agent.appearance]);
+	const digitalPost = mail ? digitalPostOf(mail) : null;
 	const key = JSON.stringify([
 		profileId,
 		controllerKey(company),
@@ -466,27 +515,41 @@ export function renderMailbox(
 		// draws them from it, also when it reads the same as the last one.
 		[...(answeredBy.get(ui) ?? [])].map(([address, kept]) => [address, kept.agents, kept.read === mail?.addresses]),
 		// How each agent answers an address, as its routine says.
-		manageViews.get(ui)?.routines.list?.map((routine) => [routine.routineId, routine.status, routine.prompt]) ?? null,
+		cachedRoutinesJson(manageViews.get(ui)?.routines.list),
 		state.team?.capabilities.write === true,
 		state.team?.capabilities.authorize === true,
-		state.team?.members.map((member) => [member.userId, member.displayName]) ?? null,
+		cachedTeamMembersJson(state.team?.members),
 		company.cofounderId() ?? null,
-		staff,
-		mail
+		cachedStaffJson(state.staff),
+		mail && digitalPost
 			? [
-					mail.addresses,
-					mail.waiting,
-					mail.answers,
-					lists.map((each) => mail.lists[mailListKey(each)] ?? null),
-					threads.map((thread) => [mail.threads[thread] ?? null, mailSummary(company, thread) ?? null]),
-					digitalPostOf(mail).connection ?? null,
-					digitalPostOf(mail).letters,
-					letters.map((letter) => digitalPostOf(mail).open[letter] ?? null),
+					cachedJson(mail.addresses),
+					cachedJson(mail.waiting),
+					cachedJson(mail.answers),
+					lists.map((each) => cachedJson(mail.lists[mailListKey(each)] ?? null)),
+					threads.map((thread) => [
+						cachedJson(mail.threads[thread] ?? null),
+						cachedJson(mailSummary(company, thread) ?? null),
+					]),
+					cachedJson(digitalPost.connection ?? null),
+					cachedJson(digitalPost.letters),
+					letters.map((letter) => cachedJson(digitalPost.open[letter] ?? null)),
 				]
 			: null,
 	]);
 	const page: Page = { company, ui, name, profileId, redraw, options };
-	show(container, key, () => settle(container.firstElementChild, drawPage(page)), moveFocus);
+	if (moveFocus === undefined && ui.pendingFocus !== null && document.activeElement !== ui.pendingFocus.carried) {
+		ui.pendingFocus = null;
+	}
+	const targetFocus = moveFocus ?? ui.pendingFocus?.target;
+	show(container, key, () => settle(container.firstElementChild, drawPage(page)), targetFocus);
+	if (targetFocus !== undefined) {
+		const waitingForThread = ui.open !== null && mail?.threads[ui.open] === undefined;
+		const drawn = [...container.querySelectorAll<HTMLElement>("[data-focus-key]")].some(
+			(element) => element.dataset.focusKey === targetFocus,
+		);
+		ui.pendingFocus = waitingForThread && !drawn ? { target: targetFocus, carried: document.activeElement } : null;
+	}
 	CompanyMail.of(company)?.watch(lists, threads, stillShown, letters);
 }
 
@@ -566,17 +629,16 @@ function outside(text: string, tag: keyof HTMLElementTagNameMap = "span", classN
 function when(at: string): string {
 	const date = new Date(at);
 	if (Number.isNaN(date.getTime())) return "";
-	const timeZone = presentationTimeZone();
-	const dayOf = (moment: Date) => moment.toLocaleDateString("en-CA", { timeZone });
-	const day = dayOf(date);
-	const today = dayOf(new Date());
-	if (day === today)
-		return date.toLocaleTimeString(presentationLocale(), { hour: "2-digit", minute: "2-digit", timeZone });
-	return date.toLocaleDateString(
-		presentationLocale(),
-		day.slice(0, 4) === today.slice(0, 4)
-			? { month: "short", day: "numeric", timeZone }
-			: { year: "numeric", month: "short", day: "numeric", timeZone },
+	const locale = presentationLocale();
+	const timeZone = timeZoneOption().timeZone;
+	const day = presentationDay(date, timeZone);
+	const today = presentationDay(new Date(), timeZone);
+	if (day === today) return formatPresentationDate(date, "time", locale, timeZone);
+	return formatPresentationDate(
+		date,
+		day.slice(0, 4) === today.slice(0, 4) ? "short-date" : "full-date",
+		locale,
+		timeZone,
 	);
 }
 
@@ -840,18 +902,18 @@ function manageOf(page: Page): ManageViews | null {
 	// about it, changed. A form being filled is otherwise left alone.
 	const state = company.store.get();
 	const shown = JSON.stringify([
-		state.mail?.addresses ?? null,
+		cachedJson(state.mail?.addresses ?? null),
 		(state.mail?.addresses ?? []).map((address) => handlersOf(page, address.address)),
 		ui.answering,
 		ui.answerErrors,
 		ui.addAgent,
 		// Whether each agent has words on how it answers, which its menu says.
-		views.routines.list?.map((routine) => [routine.routineId, routine.status, routine.prompt]) ?? null,
+		cachedRoutinesJson(views.routines.list),
 		ui.addHow !== "",
 		ui.postOpen,
 		views.post !== undefined,
 		assigns(page, views.calls),
-		state.staff.map((agent) => [agent.id, agent.displayName, agent.employmentStatus, agent.appearance]),
+		cachedStaffJson(state.staff),
 	]);
 	if (views.shown !== shown) {
 		views.shown = shown;
@@ -870,9 +932,11 @@ function waitingItems(page: Page): readonly MailWaitingItem[] {
 }
 
 function matches(search: string, ...words: (string | undefined)[]): boolean {
-	const asked = search.trim().toLocaleLowerCase(presentationLocale());
+	if (!search) return true;
+	const locale = presentationLocale();
+	const asked = search.trim().toLocaleLowerCase(locale);
 	if (!asked) return true;
-	return words.some((word) => word?.toLocaleLowerCase(presentationLocale()).includes(asked));
+	return words.some((word) => word?.toLocaleLowerCase(locale).includes(asked));
 }
 
 function listView(page: Page): HTMLElement {

@@ -1,9 +1,10 @@
-import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
 import {
 	CloudSessionRunControl,
 	type CloudSessionRunState,
 	type CloudSessionRunTerminalStatus,
 } from "@qorpera/cloud-client/cloud-session-run-control";
+import { withScopedCloudDeadline } from "./abort-scope.ts";
 import type { Cloud } from "./client.ts";
 
 export interface WebSessionRunControl {
@@ -31,7 +32,8 @@ export function createWebSessionRunControl(
 		throw new Error("Invalid cloud run control configuration.");
 	const client = (sessionId: string, signal?: AbortSignal) =>
 		new CloudSessionRunControl((method, args, caller) =>
-			withCloudDeadline(
+			withScopedCloudDeadline(
+				[companySignal, caller, signal],
 				async (deadline) => {
 					const check = () => {
 						deadline.throwIfAborted();
@@ -78,7 +80,6 @@ export function createWebSessionRunControl(
 					}
 				},
 				10000,
-				AbortSignal.any([companySignal, caller, ...(signal ? [signal] : [])]),
 			),
 		);
 	return {

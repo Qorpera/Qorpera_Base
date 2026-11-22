@@ -15,6 +15,7 @@ import {
 	parseCloudMachineCommandReceipt,
 	parseRecord,
 } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	captionHash,
 	EXPLAINER_CLIPS,
@@ -519,7 +520,7 @@ export function cloudNarrateAppTool(options: {
 		};
 		const ended = (line: Line | undefined) => (line && "ended" in line ? plain(line.ended) : undefined);
 		const usageNow = (): Promise<CloudVoiceUsage | undefined> =>
-			voice.usage(AbortSignal.any([signal, AbortSignal.timeout(USAGE_MS)])).catch(() => undefined);
+			withAbortScopes([signal], (usageSignal) => voice.usage(usageSignal), USAGE_MS).catch(() => undefined);
 
 		try {
 			const reader = watch(
@@ -653,7 +654,11 @@ export function cloudNarrateAppTool(options: {
 					: undefined;
 				peerEnded = ended(last);
 				if (!last && !peer.state.done)
-					await machines.gateway.cancel(scope, peerId, AbortSignal.timeout(10_000)).catch(() => undefined);
+					await withAbortScopes(
+						[],
+						(cancelSignal) => machines.gateway.cancel(scope, peerId, cancelSignal),
+						10_000,
+					).catch(() => undefined);
 			};
 			const kept: { turn: number; caption: Caption }[] = [];
 			const silent: { caption: string; said: string }[] = [];
@@ -735,10 +740,12 @@ export function cloudNarrateAppTool(options: {
 							break batch;
 						}
 						try {
+							const activeCall = call;
 							said = (
-								await call.speak(
-									line,
-									AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.min(SPEAK_MS, left())))]),
+								await withAbortScopes(
+									[signal],
+									(speakSignal) => activeCall.speak(line, speakSignal),
+									Math.max(1, Math.min(SPEAK_MS, left())),
 								)
 							).transcript;
 						} catch (error) {
