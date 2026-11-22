@@ -10,7 +10,7 @@ import { CompanyFolderCreator } from "./company-folder-creation.ts";
 import { ConnectionFileWriter } from "./connection-files.ts";
 import { DigitalPostLetterWriter } from "./digital-post-files.ts";
 import { ObjectGatewayFolderGc } from "./folder-gc.ts";
-import { stopGateway } from "./gateway-stop.ts";
+import { createGatewaySignalHandler } from "./gateway-stop.ts";
 import { ObjectGatewayJournal } from "./journal.ts";
 import { createSerialGate, startGatewayMaintenance } from "./maintenance.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
@@ -342,10 +342,8 @@ if (process.argv[2] === "migrate") {
 		process.stdout.write(`Qorpera object gateway listening on ${host}:${port(process.env)}\n`);
 	});
 
-	for (const signal of ["SIGINT", "SIGTERM"] as const) {
-		process.on(signal, () => {
-			// WHY: Ignore duplicate shutdown signals so server.close() is invoked once and abort in-flight background writer loops immediately.
-			if (stopping) return;
+	const onSignal = createGatewaySignalHandler({
+		onFirstSignal: () => {
 			stopping = true;
 			triggerReconcile = undefined;
 			shutdown.abort();
@@ -357,16 +355,20 @@ if (process.argv[2] === "migrate") {
 			clearInterval(digitalPostWrites);
 			clearInterval(memoryErasures);
 			clearInterval(companyCreations);
-			stopGateway({
-				close: (done) =>
-					server.close(() => {
-						authority.close();
-						done();
-					}),
-				flush: () => replication.flushStoredLines(),
-				say: (line) => process.stderr.write(line),
-				exit: (code) => process.exit(code),
-			});
-		});
+		},
+		stop: {
+			close: (done) =>
+				server.close(() => {
+					authority.close();
+					done();
+				}),
+			forceClose: () => server.closeAllConnections(),
+			flush: () => replication.flushStoredLines(),
+			say: (line) => process.stderr.write(line),
+			exit: (code) => process.exit(code),
+		},
+	});
+	for (const signal of ["SIGINT", "SIGTERM"] as const) {
+		process.on(signal, onSignal);
 	}
 }
