@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import type { JsonValue } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	bounded,
 	type CloudCodexHomeAction,
@@ -281,24 +282,100 @@ export function cloudClaudeStatusPacket(id: number, words: string): Buffer {
 	return Buffer.concat([length, body]);
 }
 
+const MAX_QUEUED_BYTES = 4 * 1024 * 1024;
+const MAX_QUEUED_PACKETS = 512;
+
 class PacketFrames {
-	#pending: Buffer = Buffer.alloc(0);
+	#chunks: Buffer[] = [];
+	#chunkHead = 0;
+	#headOffset = 0;
+	#buffered = 0;
 	broken = false;
 
+	#peekLength(): number {
+		const first = this.#chunks[this.#chunkHead] as Buffer;
+		if (first.length - this.#headOffset >= 4) return first.readUInt32BE(this.#headOffset);
+		const header = Buffer.allocUnsafe(4);
+		let copied = 0;
+		let index = this.#chunkHead;
+		let offset = this.#headOffset;
+		while (copied < 4) {
+			const chunk = this.#chunks[index] as Buffer;
+			const take = Math.min(4 - copied, chunk.length - offset);
+			chunk.copy(header, copied, offset, offset + take);
+			copied += take;
+			index += 1;
+			offset = 0;
+		}
+		return header.readUInt32BE(0);
+	}
+
+	#take(total: number): Buffer {
+		const first = this.#chunks[this.#chunkHead] as Buffer;
+		const avail = first.length - this.#headOffset;
+		this.#buffered -= total;
+		if (avail >= total) {
+			let packet: Buffer;
+			if (this.#headOffset === 0 && avail === total) {
+				packet = first;
+				this.#chunkHead += 1;
+			} else {
+				packet = Buffer.allocUnsafe(total);
+				first.copy(packet, 0, this.#headOffset, this.#headOffset + total);
+				this.#headOffset += total;
+				if (this.#headOffset === first.length) {
+					this.#chunkHead += 1;
+					this.#headOffset = 0;
+				}
+			}
+			this.#compact();
+			return packet;
+		}
+		const packet = Buffer.allocUnsafe(total);
+		let copied = 0;
+		while (copied < total) {
+			const chunk = this.#chunks[this.#chunkHead] as Buffer;
+			const take = Math.min(total - copied, chunk.length - this.#headOffset);
+			chunk.copy(packet, copied, this.#headOffset, this.#headOffset + take);
+			copied += take;
+			this.#headOffset += take;
+			if (this.#headOffset === chunk.length) {
+				this.#chunkHead += 1;
+				this.#headOffset = 0;
+			}
+		}
+		this.#compact();
+		return packet;
+	}
+
+	#compact(): void {
+		if (this.#chunkHead === this.#chunks.length) {
+			this.#chunks.length = 0;
+			this.#chunkHead = 0;
+			this.#headOffset = 0;
+		} else if (this.#chunkHead >= 32 && this.#chunkHead * 2 >= this.#chunks.length) {
+			this.#chunks = this.#chunks.slice(this.#chunkHead);
+			this.#chunkHead = 0;
+		}
+	}
+
 	push(chunk: Buffer): Buffer[] {
-		if (this.broken) return [];
-		this.#pending = this.#pending.length ? Buffer.concat([this.#pending, chunk]) : chunk;
+		if (this.broken || chunk.length === 0) return [];
+		this.#chunks.push(chunk);
+		this.#buffered += chunk.length;
 		const packets: Buffer[] = [];
-		while (this.#pending.length >= 4) {
-			const length = this.#pending.readUInt32BE(0);
+		while (this.#buffered >= 4) {
+			const length = this.#peekLength();
 			if (length < 1 || length > MAX_PACKET) {
 				this.broken = true;
-				this.#pending = Buffer.alloc(0);
+				this.#chunks.length = 0;
+				this.#chunkHead = 0;
+				this.#headOffset = 0;
+				this.#buffered = 0;
 				return packets;
 			}
-			if (this.#pending.length < 4 + length) break;
-			packets.push(this.#pending.subarray(0, 4 + length));
-			this.#pending = this.#pending.subarray(4 + length);
+			if (this.#buffered < 4 + length) break;
+			packets.push(this.#take(4 + length));
 		}
 		return packets;
 	}
@@ -333,7 +410,10 @@ export class CloudClaudeFilesGate {
 	readonly #ownFolder?: string;
 	readonly #fromMount = new PacketFrames();
 	readonly #fromHome = new PacketFrames();
-	readonly #queue: Buffer[] = [];
+	#queue: Buffer[] = [];
+	#queueHead = 0;
+	#queuedBytes = 0;
+	#spaceWaiters: (() => void)[] = [];
 	readonly #calls = new Map<string, AdmittedCall>();
 	readonly #opening = new Map<number, string>();
 	readonly #handles = new Map<string, string>();
@@ -381,7 +461,7 @@ export class CloudClaudeFilesGate {
 
 	async #decide(action: CloudCodexHomeAction, signal: AbortSignal): Promise<string | undefined> {
 		try {
-			const gate = await this.#review.check(action, AbortSignal.any([this.#signal, signal]));
+			const gate = await withAbortScopes([this.#signal, signal], (both) => this.#review.check(action, both));
 			return gate.run ? undefined : gate.text;
 		} catch {
 			return CLAUDE_REVIEW_FAILED;
@@ -422,15 +502,57 @@ export class CloudClaudeFilesGate {
 		}
 	}
 
+	#notifySpace(): void {
+		if (this.#spaceWaiters.length === 0) return;
+		const waiters = this.#spaceWaiters.splice(0);
+		for (const wake of waiters) wake();
+	}
+
+	#hasSpace(): boolean {
+		return this.#queuedBytes < MAX_QUEUED_BYTES && this.#queue.length - this.#queueHead < MAX_QUEUED_PACKETS;
+	}
+
+	waitForSpace(): Promise<void> {
+		if (this.#hasSpace() || this.#signal.aborted || this.broken) return Promise.resolve();
+		return new Promise<void>((resolve) => {
+			let settled = false;
+			const done = (): void => {
+				if (settled) return;
+				settled = true;
+				this.#signal.removeEventListener("abort", done);
+				const index = this.#spaceWaiters.indexOf(done);
+				if (index >= 0) this.#spaceWaiters.splice(index, 1);
+				resolve();
+			};
+			this.#spaceWaiters.push(done);
+			this.#signal.addEventListener("abort", done, { once: true });
+		});
+	}
+
 	fromMount(chunk: Buffer): void {
-		this.#queue.push(...this.#fromMount.push(chunk));
+		for (const packet of this.#fromMount.push(chunk)) {
+			this.#queue.push(packet);
+			this.#queuedBytes += packet.length;
+		}
+		if (this.broken) this.#notifySpace();
 		if (!this.#draining) void this.#drain();
 	}
 
 	async #drain(): Promise<void> {
 		this.#draining = true;
 		try {
-			for (let packet = this.#queue.shift(); packet; packet = this.#queue.shift()) {
+			while (this.#queueHead < this.#queue.length) {
+				const packet = this.#queue[this.#queueHead] as Buffer;
+				this.#queueHead += 1;
+				this.#queuedBytes -= packet.length;
+				if (this.#queueHead === this.#queue.length) {
+					this.#queue.length = 0;
+					this.#queueHead = 0;
+				} else if (this.#queueHead >= 64 && this.#queueHead * 2 >= this.#queue.length) {
+					this.#queue = this.#queue.slice(this.#queueHead);
+					this.#queueHead = 0;
+				}
+				if (this.#hasSpace()) this.#notifySpace();
 				this.counts.packets += 1;
 				const change = this.#change(packet);
 				if (!change) {
@@ -448,6 +570,7 @@ export class CloudClaudeFilesGate {
 			}
 		} finally {
 			this.#draining = false;
+			if (this.#hasSpace() || this.#signal.aborted || this.broken) this.#notifySpace();
 		}
 	}
 
