@@ -62,6 +62,7 @@ struct State {
 	/// How many of the next chunks, closes, discards, links and removes to answer BUSY (a boundary settling).
 	busy_chunks: usize,
 	busy_closes: usize,
+	denied_closes: usize,
 	busy_discards: usize,
 	busy_links: usize,
 	busy_removes: usize,
@@ -308,6 +309,10 @@ impl FakeNode {
 		let mut s = self.state.lock().unwrap();
 		s.busy_chunks = chunks;
 		s.busy_closes = closes;
+	}
+
+	pub fn deny_closes(&self, closes: usize) {
+		self.state.lock().unwrap().denied_closes = closes;
 	}
 
 	/// The next `discards` discards of a handle are answered BUSY.
@@ -692,6 +697,10 @@ fn write(st: &mut State, s: &mut Stream, k: u8, body: &[u8]) -> std::io::Result<
 			if st.busy_closes > 0 {
 				st.busy_closes -= 1;
 				return error(s, code::BUSY);
+			}
+			if st.denied_closes > 0 {
+				st.denied_closes -= 1;
+				return error(s, code::DENIED);
 			}
 			let open = st.handles.remove(&req.handle).expect("an open handle");
 			let count = req.size.div_ceil(CHUNK) as usize;

@@ -67,6 +67,13 @@ impl Stream {
 			Stream::Unix(s) => s.shutdown(std::net::Shutdown::Both),
 		};
 	}
+
+	pub fn shutdown_write(&self) {
+		let _ = match self {
+			Stream::Vsock(s) => s.shutdown(std::net::Shutdown::Write),
+			Stream::Unix(s) => s.shutdown(std::net::Shutdown::Write),
+		};
+	}
 }
 
 pub enum Listener {
