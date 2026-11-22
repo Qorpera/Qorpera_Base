@@ -307,4 +307,53 @@ describe("LxdCodingGuestClient", () => {
 		);
 		expect(at.execInstanceStream.mock.calls[0]![3]).toBe(controller.signal);
 	});
+
+	it("batches session status via status-all in one exec and rejects mismatched worker lists", async () => {
+		const at = fixture();
+		const otherWorkerId = randomUUID();
+		const bootId = randomUUID();
+		const request = {
+			schema: "qorpera.coding-guest-status-all/v1" as const,
+			workerIds: [at.workerId, otherWorkerId],
+		};
+		const answer = {
+			schema: "qorpera.coding-guest-status-all/v1",
+			bootId,
+			uptimeMs: 90000,
+			sessions: [
+				{
+					workerId: at.workerId,
+					commands: [at.command],
+					usage: { bootId, uptimeMs: 90000, cpuUsageUsec: 120000, ioBytes: 8192, ioComplete: true },
+				},
+				{
+					workerId: otherWorkerId,
+					commands: [],
+					usage: { bootId, uptimeMs: 90000, cpuUsageUsec: 0, ioBytes: 0, ioComplete: true },
+				},
+			],
+		};
+		at.execInstanceStream.mockResolvedValueOnce({ exitCode: 0, stdout: line(answer), stderr: Buffer.alloc(0) });
+		const signal = new AbortController().signal;
+		await expect(at.guest.statusAll(request, signal)).resolves.toEqual(answer);
+		expect(at.execInstanceStream.mock.calls[0]![2]).toMatchObject({
+			command: ["/usr/bin/node", "/opt/qorpera-guest/agent.mjs", "status-all"],
+			maxStdoutBytes: 524288,
+			timeoutMs: 60000,
+		});
+		at.execInstanceStream.mockResolvedValueOnce({
+			exitCode: 0,
+			stdout: line({ ...answer, sessions: [answer.sessions[0]] }),
+			stderr: Buffer.alloc(0),
+		});
+		expect((await rejection(at.guest.statusAll(request, signal))).message).toBe("CODING_GUEST_ANSWER_INVALID");
+		at.execInstanceStream.mockResolvedValueOnce({
+			exitCode: 0,
+			stdout: line({ schema: "qorpera.coding-guest-refusal/v1", code: "CODING_GUEST_ARGUMENTS_INVALID" }),
+			stderr: Buffer.alloc(0),
+		});
+		const refused = await rejection(at.guest.statusAll(request, signal));
+		expect(refused).toBeInstanceOf(CodingGuestRefused);
+		expect((refused as CodingGuestRefused).code).toBe("CODING_GUEST_ARGUMENTS_INVALID");
+	});
 });

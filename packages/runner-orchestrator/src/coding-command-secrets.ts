@@ -1,8 +1,7 @@
-import { isDeepStrictEqual } from "node:util";
+import { createHash } from "node:crypto";
 import { CODING_SECRET_MASK_MINIMUM_BYTES, CodingSecretMask } from "./coding-secret-mask.ts";
 
-// The hook a member coding machine's commands take their secrets through (F3 5g-3c; the broker's side is 5j-4).
-// The executor asks once for each command it starts, and for its output's mask each time it keeps more of it.
+const MAX_SESSION_COMMANDS = 1024;
 
 /** What runs: a model's command, a terminal (5g-7) or a setup step (5h). */
 export type CodingCommandKind = "command" | "terminal" | "install";
@@ -24,6 +23,7 @@ export interface CodingCommandSecretRequest {
 	readonly machineId: string;
 	readonly commandId: string;
 	readonly kind: CodingCommandKind;
+	readonly vaultEnvVersion?: string;
 }
 
 /** A command's secrets. Each `mask()` is a new stream. A failure fails the call that asked. */
@@ -59,6 +59,7 @@ export interface CodingEnvironmentScope {
 	readonly companyId: string;
 	readonly workerId: string;
 	readonly leaseToken: string;
+	readonly vaultEnvVersion?: string;
 }
 
 /** A session's environment from the vault. `mask` holds the older values used on the session's machine by its member,
@@ -76,22 +77,44 @@ export interface CodingEnvironmentSource {
 
 type Environment = Readonly<Record<string, string>>;
 
+interface CommandRef {
+	readonly envHash: string;
+	accepted: boolean;
+}
+
+interface CachedEnvironment {
+	readonly version: string;
+	readonly envHash: string;
+	readonly environment: Environment;
+	readonly history: readonly string[];
+}
+
 interface Session {
-	/** Each command's environment. */
-	readonly commands: Map<string, Environment>;
-	/** The commands the guest took with their environment (`accepted`). */
-	readonly accepted: Set<string>;
+	readonly commands: Map<string, CommandRef>;
+	readonly envByHash: Map<string, Environment>;
+	readonly values: Set<string>;
+	cached?: CachedEnvironment;
 }
 
 interface Machine {
-	/** Per session, by worker. */
 	readonly sessions: Map<string, Session>;
-	/** The values of the sessions released while another stayed attached. */
 	readonly released: Set<string>;
-	/** The values of the vault's answers no command takes: the machine's older values, and a session's environment asked
-	 * at its attach (5j-5 (a)). Masked, never put in an environment. */
 	readonly history: Set<string>;
 	readonly mask: CodingSecretMask;
+}
+
+function environmentHash(environment: Environment): string {
+	const entries = Object.entries(environment).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+	return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
+}
+
+function recordSessionCommand(session: Session, commandId: string, envHash: string): void {
+	if (session.commands.has(commandId)) return;
+	if (session.commands.size >= MAX_SESSION_COMMANDS) {
+		const oldest = session.commands.keys().next().value;
+		if (oldest !== undefined) session.commands.delete(oldest);
+	}
+	session.commands.set(commandId, { envHash, accepted: false });
 }
 
 /** The secrets of the sessions attached to this executor's machines (5j-4). A command's start asks the source, and
@@ -111,20 +134,21 @@ export class CodingMachineCommandSecrets {
 		this.#source = source;
 	}
 
-	/** One session's secrets on its machine, asked for under `scope`, the claim of the call that uses them. */
 	session(machineId: string, scope: CodingEnvironmentScope): CodingCommandSecrets {
 		const session = this.#session(machineId, scope.workerId);
 		const asked = Object.freeze({
 			companyId: scope.companyId,
 			workerId: scope.workerId,
 			leaseToken: scope.leaseToken,
+			...(scope.vaultEnvVersion === undefined ? {} : { vaultEnvVersion: scope.vaultEnvVersion }),
 		});
 		return {
 			resolve: (request, signal) => this.#resolve(machineId, asked, session, request, signal),
 			output: (request, signal) => this.#output(machineId, asked, session, request, signal),
 			accepted: (request) => {
 				this.#check(machineId, asked, request);
-				if (session.commands.has(request.commandId)) session.accepted.add(request.commandId);
+				const ref = session.commands.get(request.commandId);
+				if (ref) ref.accepted = true;
 			},
 		};
 	}
@@ -156,19 +180,18 @@ export class CodingMachineCommandSecrets {
 		return mask;
 	}
 
-	/** The session's attachment ended: its answers go. Until no session is left on the machine, its masks still cover
-	 * them, as another session's commands may have printed them. */
 	release(machineId: string, workerId: string): void {
 		const machine = this.#machines.get(machineId);
 		const session = machine?.sessions.get(workerId);
 		if (!machine || !session) return;
+		session.cached = undefined;
 		machine.sessions.delete(workerId);
 		if (machine.sessions.size === 0) {
 			this.#machines.delete(machineId);
 			this.#answered.delete(machineId);
 			return;
 		}
-		for (const value of values(session.commands.values())) machine.released.add(value);
+		for (const value of session.values) machine.released.add(value);
 	}
 
 	// WHY: Every attachment on the machine already ended in SQL; like an executor restart, the next attach asks the vault again.
@@ -201,14 +224,14 @@ export class CodingMachineCommandSecrets {
 		this.#answered.add(machineId);
 	}
 
-	/** The values the machine's masks cover, once, for the folder service's save check (5j-5 (a)): what its views save
-	 * must hold none of them. Undefined until this process has a vault answer for the machine (none since it started, or
-	 * since the machine's last session was released): what it knows of it then is not all. */
 	values(machineId: string): string[] | undefined {
 		const machine = this.#machines.get(machineId);
 		if (!machine || !this.#answered.has(machineId)) return undefined;
-		const kept = [...machine.sessions.values()].flatMap((session) => [...session.commands.values()]);
-		return [...new Set([...values(kept), ...machine.released, ...machine.history])];
+		const combined = new Set<string>([...machine.released, ...machine.history]);
+		for (const session of machine.sessions.values()) {
+			for (const value of session.values) combined.add(value);
+		}
+		return [...combined];
 	}
 
 	async #resolve(
@@ -220,34 +243,59 @@ export class CodingMachineCommandSecrets {
 	): Promise<{ environment: Environment; mask(): CodingCommandSecretMask }> {
 		this.#check(machineId, scope, request);
 		signal.throwIfAborted();
-		let answer = session.commands.get(request.commandId);
-		let history: readonly string[] = [];
-		const fresh = !answer;
-		if (!answer) {
+		const existing = session.commands.get(request.commandId);
+		if (existing) {
+			const environment = session.envByHash.get(existing.envHash);
+			if (environment) {
+				const machine = this.#activeMachine(machineId, scope, session);
+				this.#answered.add(machineId);
+				const mask = machine.mask;
+				return { environment, mask: () => mask.stream() };
+			}
+		}
+		const version = request.vaultEnvVersion ?? scope.vaultEnvVersion;
+		let environment: Environment;
+		let envHash: string;
+		let history: readonly string[];
+		let fromCache = false;
+		if (version !== undefined && session.cached?.version === version) {
+			environment = session.cached.environment;
+			envHash = session.cached.envHash;
+			history = session.cached.history;
+			fromCache = true;
+		} else {
+			if (version !== undefined) session.cached = undefined;
 			const asked = await this.#source.environment(scope, signal);
-			answer = Object.freeze({ ...asked.environment });
-			history = [...asked.mask];
+			const frozen = Object.freeze({ ...asked.environment });
+			envHash = environmentHash(frozen);
+			environment = session.envByHash.get(envHash) ?? frozen;
+			history = Object.freeze([...asked.mask]);
 		}
 		signal.throwIfAborted();
 		const machine = this.#activeMachine(machineId, scope, session);
-		// A value the mask refuses fails the call before the answer is kept.
-		if (fresh) {
-			const envValues = Object.values(answer);
+		if (!fromCache) {
+			const envValues = Object.values(environment);
 			checkMaskValues(envValues);
 			checkMaskValues(history);
-			// The older values stay in the machine's masks, never in an environment.
 			for (const value of history) {
 				machine.history.add(value);
 				machine.mask.add(value);
 			}
-			for (const value of envValues) machine.mask.add(value);
+			for (const value of envValues) {
+				session.values.add(value);
+				machine.mask.add(value);
+			}
+			session.envByHash.set(envHash, environment);
+			if (version !== undefined) {
+				session.cached = { version, envHash, environment, history };
+			}
 		}
-		let environment = session.commands.get(request.commandId);
-		if (!environment) {
-			// The same answer as an earlier command's is kept once.
-			environment =
-				[...new Set(session.commands.values())].find((kept) => isDeepStrictEqual(kept, answer)) ?? answer;
-			session.commands.set(request.commandId, environment);
+		const raced = session.commands.get(request.commandId);
+		if (raced) {
+			const kept = session.envByHash.get(raced.envHash);
+			if (kept) environment = kept;
+		} else {
+			recordSessionCommand(session, request.commandId, envHash);
 		}
 		this.#answered.add(machineId);
 		const mask = machine.mask;
@@ -263,8 +311,8 @@ export class CodingMachineCommandSecrets {
 	): Promise<(() => CodingCommandSecretMask) | null> {
 		this.#check(machineId, scope, request);
 		signal.throwIfAborted();
-		const environment = session.commands.get(request.commandId);
-		if (!environment || !session.accepted.has(request.commandId)) return null;
+		const ref = session.commands.get(request.commandId);
+		if (!ref || !ref.accepted) return null;
 		const machine = this.#activeMachine(machineId, scope, session);
 		const mask = machine.mask;
 		return () => mask.stream();
@@ -279,8 +327,9 @@ export class CodingMachineCommandSecrets {
 		};
 		this.#machines.set(machineId, machine);
 		const session: Session = machine.sessions.get(workerId) ?? {
-			commands: new Map<string, Environment>(),
-			accepted: new Set<string>(),
+			commands: new Map<string, CommandRef>(),
+			envByHash: new Map<string, Environment>(),
+			values: new Set<string>(),
 		};
 		machine.sessions.set(workerId, session);
 		return session;
@@ -310,9 +359,4 @@ function checkMaskValues(candidates: Iterable<string>): void {
 			throw new RangeError(`a coding secret shorter than ${CODING_SECRET_MASK_MINIMUM_BYTES} bytes can't be masked`);
 		}
 	}
-}
-
-/** Every value of the environments, once. */
-function values(environments: Iterable<Environment>): Set<string> {
-	return new Set([...new Set(environments)].flatMap((environment) => Object.values(environment)));
 }

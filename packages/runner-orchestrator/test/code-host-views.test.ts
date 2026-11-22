@@ -214,6 +214,7 @@ function setup(options: Partial<CodeHostJobsOptions> = {}) {
 		mountWaitMs: 200,
 		publishWaitMs: 200,
 		pollMs: 2,
+		warmViewIdleMs: 0,
 		...options,
 	});
 	return { lxd, control, events, jobs, host: lxd.host(COMPANY) };
@@ -1370,5 +1371,66 @@ describe("the code host's scripts", () => {
 		await expect(readFile(`${dir}/run/view.json`, "utf8")).resolves.toBe('{"view":1}');
 		expect(write().status).not.toBe(0);
 		await expect(readFile(`${dir}/run/view.json`, "utf8")).resolves.toBe('{"view":1}');
+	});
+});
+
+describe("CodeHostJobs warm view pool", () => {
+	it("reuses a warm view for consecutive jobs on the same company and environment, refreshes before reuse, and closes cleanly", async () => {
+		const { lxd, control, jobs, host } = setup({ warmViewIdleMs: 5_000 });
+		try {
+			await expect(jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand)).resolves.toBe("ok");
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_open")).toHaveLength(1);
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_close")).toHaveLength(0);
+			expect(host.mounted).toBe(true);
+
+			await expect(jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand)).resolves.toBe("ok");
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_open")).toHaveLength(1);
+			expect(lxd.labels(COMPANY).filter((label) => label === "start")).toHaveLength(1);
+			expect(lxd.labels(COMPANY).filter((label) => label === "publish").length).toBeGreaterThanOrEqual(3);
+		} finally {
+			await jobs.close();
+		}
+		expect(control.calls.filter((c) => c.method === "qorpera_folder_view_close")).toHaveLength(1);
+		expect(host.mounted).toBe(false);
+	});
+
+	it("tears down a warm view on job error, environment switch, stale mount, or idle TTL", async () => {
+		const { lxd, control, jobs, host } = setup({ warmViewIdleMs: 5_000 });
+		try {
+			await jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand);
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_open")).toHaveLength(1);
+
+			host.unit = exited(3);
+			host.mounted = false;
+			await jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand);
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_open")).toHaveLength(2);
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_close")).toHaveLength(1);
+
+			const otherEnv = randomUUID();
+			await jobs.run(COMPANY, otherEnv, signal(), oneCommand);
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_open")).toHaveLength(3);
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_close")).toHaveLength(2);
+
+			await expect(
+				jobs.run(COMPANY, otherEnv, signal(), async () => {
+					throw new Error("JOB_FAILED");
+				}),
+			).rejects.toThrow("JOB_FAILED");
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_close")).toHaveLength(3);
+			expect(host.mounted).toBe(false);
+		} finally {
+			await jobs.close();
+		}
+
+		const idle = setup({ warmViewIdleMs: 30 });
+		try {
+			await idle.jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand);
+			expect(idle.control.calls.filter((c) => c.method === "qorpera_folder_view_close")).toHaveLength(0);
+			await until(() => idle.control.calls.filter((c) => c.method === "qorpera_folder_view_close").length === 1);
+			expect(idle.host.mounted).toBe(false);
+		} finally {
+			await idle.jobs.close();
+		}
+		expect(lxd.labels(COMPANY).length).toBeGreaterThan(0);
 	});
 });
