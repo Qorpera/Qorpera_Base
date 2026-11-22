@@ -1522,8 +1522,9 @@ describe("SurfacesStore", () => {
 			changes: [mergedChange],
 		});
 		let folderTokens = mergedTokens;
-		const loadCloudFiles = vi.fn(async (surface: ReturnType<typeof summary>) =>
-			surface.id === studioId ? { "brand/tokens.json": folderTokens } : {},
+		const loadCloudFiles = vi.fn(
+			async (surface: ReturnType<typeof summary>): Promise<Record<string, string>> =>
+				surface.id === studioId ? { "brand/tokens.json": folderTokens } : {},
 		);
 		const getSurfaceWorkspace = vi.fn(async (surfaceId: string) =>
 			surfaceId === studioId ? workspace([studioSession], { surface: studio }) : workspace([], { surface: other }),
