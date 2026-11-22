@@ -726,7 +726,7 @@ describe("an app's note waiting in the member's own shared draft", () => {
 		expect(put.mock.calls.at(-1)?.[3]).toBe("> app:orders#1043 · Lund\n\nEarlier words\n\nGet a quote.");
 	});
 
-	it("waits until a leaving room-draft channel clears from getChannels before subscribing a replacement, and bounds stop()", async () => {
+	it("waits until a leaving room-draft channel clears from getChannels, sends one leave per channel, and bounds stop()", async () => {
 		interface HeldChannel {
 			topic: string;
 			leaving: boolean;
@@ -737,8 +737,7 @@ describe("an app's note waiting in the member's own shared draft", () => {
 		}
 		const held: HeldChannel[] = [];
 		const created: HeldChannel[] = [];
-		let hangRemove = true;
-		let finishRemove: (() => void) | undefined;
+		const removeCalls = new Map<HeldChannel, number>();
 		const cloud = {
 			supabase: {
 				getChannels: () => [...held],
@@ -767,18 +766,12 @@ describe("an app's note waiting in the member's own shared draft", () => {
 				}),
 				removeChannel: vi.fn(async (ch: HeldChannel) => {
 					ch.leaving = true;
-					if (hangRemove) {
-						await new Promise<void>((resolve) => {
-							const prev = finishRemove;
-							finishRemove = () => {
-								prev?.();
-								resolve();
-							};
-						});
+					removeCalls.set(ch, (removeCalls.get(ch) ?? 0) + 1);
+					await new Promise<void>((resolve) => setTimeout(resolve, 10_000));
+					for (let i = held.length - 1; i >= 0; i--) {
+						if (held[i]!.topic === ch.topic) held.splice(i, 1);
 					}
-					const idx = held.indexOf(ch);
-					if (idx >= 0) held.splice(idx, 1);
-					return "ok";
+					return "timed out";
 				}),
 			},
 		} as unknown as Cloud;
@@ -806,12 +799,14 @@ describe("an app's note waiting in the member's own shared draft", () => {
 		await vi.advanceTimersByTimeAsync(2_100);
 		expect(created).toHaveLength(1);
 		expect(phases).toEqual(["connecting", "degraded"]);
+		expect(removeCalls.get(created[0]!)).toBe(1);
 
-		hangRemove = false;
-		finishRemove?.();
-		await vi.advanceTimersByTimeAsync(1_100);
+		await vi.advanceTimersByTimeAsync(10_000);
 		expect(created).toHaveLength(2);
 		expect(phases.at(-1)).toBe("connected");
+		expect(removeCalls.get(created[0]!)).toBe(1);
+		await vi.advanceTimersByTimeAsync(15_000);
+		expect(held).toEqual([created[1]]);
 		created[1]!.handler?.({
 			payload: {
 				schema: "qorpera.room-draft/v1",
@@ -826,7 +821,6 @@ describe("an app's note waiting in the member's own shared draft", () => {
 		});
 		expect(received.map((item) => item.body)).toEqual(["Recovered live draft"]);
 
-		hangRemove = true;
 		let secondStopped = false;
 		const stoppingSecond = second.stop().then(() => {
 			secondStopped = true;

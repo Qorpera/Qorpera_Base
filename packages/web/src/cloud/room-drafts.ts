@@ -116,9 +116,25 @@ export interface RoomDraftSubscription {
 const LEAVE_WAIT_MS = 2_000;
 const RETRY_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
+const pendingRemovals = new WeakMap<RealtimeChannel, Promise<unknown>>();
 
 function heldChannels(supabase: Cloud["supabase"], topic: string): RealtimeChannel[] {
 	return (supabase.getChannels?.() ?? []).filter((each) => each.topic === `realtime:${topic}` || each.topic === topic);
+}
+
+function removeChannelOnce(supabase: Cloud["supabase"], each: RealtimeChannel): Promise<unknown> {
+	let leaving = pendingRemovals.get(each);
+	if (!leaving) {
+		// WHY: Send at most one leave push per channel; duplicate removeChannel calls trigger delayed topic-wide _remove calls that drop a successor channel.
+		leaving = supabase
+			.removeChannel(each)
+			.catch(() => undefined)
+			.finally(() => {
+				if (pendingRemovals.get(each) === leaving) pendingRemovals.delete(each);
+			});
+		pendingRemovals.set(each, leaving);
+	}
+	return leaving;
 }
 
 async function freeTopicWithin(
@@ -132,7 +148,7 @@ async function freeTopicWithin(
 			let timer: ReturnType<typeof setTimeout> | undefined;
 			// WHY: Bound removeChannel per held channel so a dropped Realtime socket cannot deadlock room draft reopening.
 			return Promise.race([
-				supabase.removeChannel(each).catch(() => undefined),
+				removeChannelOnce(supabase, each),
 				new Promise<void>((resolve) => {
 					timer = setTimeout(resolve, LEAVE_WAIT_MS);
 				}),

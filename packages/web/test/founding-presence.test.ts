@@ -332,15 +332,14 @@ describe("a founding table's live presence", () => {
 		expect(annaTab.cloud.supabase.channel).toHaveBeenCalledTimes(2);
 	});
 
-	it("waits until a leaving channel disappears from getChannels before subscribing a replacement, and bounds stop()", async () => {
+	it("waits until a leaving channel disappears from getChannels before subscribing a replacement, sends one leave per channel, and bounds stop()", async () => {
 		vi.useFakeTimers();
 		const hub = new Hub();
 		hub.refuseJoin = true;
 		const cloud = hub.cloud(anna);
 		const held: FakeChannel[] = [];
 		const created: FakeChannel[] = [];
-		let hangRemoval = true;
-		let finishRemoval: (() => void) | undefined;
+		const removeCalls = new Map<FakeChannel, number>();
 		(cloud.supabase as unknown as { getChannels: () => FakeChannel[] }).getChannels = () => [...held];
 		vi.mocked(cloud.supabase.channel).mockImplementation(((topic: string, options: Record<string, unknown>) => {
 			const fullTopic = `realtime:${topic}`;
@@ -358,20 +357,14 @@ describe("a founding table's live presence", () => {
 		}) as unknown as typeof cloud.supabase.channel);
 		vi.mocked(cloud.supabase.removeChannel).mockImplementation((async (ch: unknown) => {
 			const fake = ch as FakeChannel;
-			if (hangRemoval) {
-				await new Promise<void>((resolve) => {
-					const prev = finishRemoval;
-					finishRemoval = () => {
-						prev?.();
-						resolve();
-					};
-				});
+			removeCalls.set(fake, (removeCalls.get(fake) ?? 0) + 1);
+			await new Promise<void>((resolve) => setTimeout(resolve, 10_000));
+			for (let i = held.length - 1; i >= 0; i--) {
+				if (held[i]!.topic === fake.topic) held.splice(i, 1);
 			}
-			const idx = held.indexOf(fake);
-			if (idx >= 0) held.splice(idx, 1);
 			hub.channels.delete(fake);
 			hub.presence.delete(fake.key);
-			return "ok";
+			return "timed out";
 		}) as unknown as typeof cloud.supabase.removeChannel);
 
 		const health: FoundingPresenceHealth[] = [];
@@ -389,14 +382,15 @@ describe("a founding table's live presence", () => {
 		await vi.advanceTimersByTimeAsync(4_500);
 		expect(created).toHaveLength(1);
 		expect(last(health)).toBe("degraded");
+		expect(removeCalls.get(created[0]!)).toBe(1);
 
-		hangRemoval = false;
-		finishRemoval?.();
-		await vi.advanceTimersByTimeAsync(10_000);
+		await vi.advanceTimersByTimeAsync(12_000);
 		await until(() => last(health) === "connected", "reconnected only after held channel cleared");
 		expect(created).toHaveLength(2);
+		expect(removeCalls.get(created[0]!)).toBe(1);
+		await vi.advanceTimersByTimeAsync(15_000);
+		expect(held).toEqual([created[1]]);
 
-		hangRemoval = true;
 		let stopped = false;
 		const stopping = handle.stop().then(() => {
 			stopped = true;

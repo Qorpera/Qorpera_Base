@@ -59,9 +59,26 @@ export const FOUNDING_LIVE_MAX_UNITS = 5000;
 const IDENTITY_TTL_MS = 60_000;
 const LEAVE_WAIT_MS = 2_000;
 const MAX_TRACKED_CLIENTS = 512;
+const MAX_REPLAY_GUARD_CLIENTS = 4_096;
+const pendingRemovals = new WeakMap<RealtimeChannel, Promise<unknown>>();
 
 function heldChannels(supabase: Cloud["supabase"], topic: string): RealtimeChannel[] {
 	return (supabase.getChannels?.() ?? []).filter((each) => each.topic === `realtime:${topic}` || each.topic === topic);
+}
+
+function removeChannelOnce(supabase: Cloud["supabase"], each: RealtimeChannel): Promise<unknown> {
+	let leaving = pendingRemovals.get(each);
+	if (!leaving) {
+		// WHY: Send at most one leave push per channel; duplicate removeChannel calls trigger delayed topic-wide _remove calls that drop a successor channel.
+		leaving = supabase
+			.removeChannel(each)
+			.catch(() => undefined)
+			.finally(() => {
+				if (pendingRemovals.get(each) === leaving) pendingRemovals.delete(each);
+			});
+		pendingRemovals.set(each, leaving);
+	}
+	return leaving;
 }
 
 async function freeTopicWithin(
@@ -75,7 +92,7 @@ async function freeTopicWithin(
 			let timer: ReturnType<typeof setTimeout> | undefined;
 			// WHY: Bound removeChannel per held channel so a dropped Realtime socket cannot deadlock reconnect or stop.
 			return Promise.race([
-				supabase.removeChannel(each).catch(() => undefined),
+				removeChannelOnce(supabase, each),
 				new Promise<void>((resolve) => {
 					timer = setTimeout(resolve, LEAVE_WAIT_MS);
 				}),
@@ -354,6 +371,7 @@ export function joinFoundingPresence(
 					if (!prior || prior.number < tab.number) newest.set(tab.remote, tab);
 				}
 				for (const tab of newest.values()) lastState.set(tab.remote, tab.number);
+				capMap(lastState, MAX_REPLAY_GUARD_CLIENTS);
 				report(
 					[...newest.values()].map((tab) => ({
 						clientId: tab.remote,
@@ -410,6 +428,7 @@ export function joinFoundingPresence(
 				if (!(await PresenceSignatures.verify(person.publicKey, bytes, signature))) return;
 				if (source !== channel || stopped || number <= (lastLive.get(remote) ?? 0)) return;
 				lastLive.set(remote, number);
+				capMap(lastLive, MAX_REPLAY_GUARD_CLIENTS);
 				listener.live({ clientId: remote, userId: person.userId, field: at, text, caret, typing, own });
 			})
 			.catch(() => undefined);
