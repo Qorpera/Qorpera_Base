@@ -86,7 +86,7 @@ const ANSWER_BYTES = 4 * 1024 * 1024;
 const PLAIN = /[^ -~À-ÿ]/g;
 
 export const DATA_DESCRIBE_DESCRIPTION =
-	"Show the company's databases: for each, its tables and columns, its steps (applied, waiting, changed after they were applied, or missing) and its questions with their words, and how much room the company's data takes. Name database to see one; without it you see every database you may read.";
+	"Show the company's databases: for each, its tables and views (columns with nullability and defaults, constraints, indexes, view definitions), custom enums and extensions, its steps (applied, waiting, changed after they were applied, or missing) and its questions with their words, and how much room the company's data takes. Name database to see one; without it you see every database you may read.";
 export const DATA_APPLY_DESCRIPTION =
 	"Apply a database's waiting steps now, in number order, and see how each went: applied, failed with PostgreSQL's words, or held. A held step would destroy data (drop a table or column, delete or empty rows): it waits for a member to say yes, and nothing changes until then. Its answer carries allow: call data_apply again with that allow to ask a member on a card, and on their yes the step is applied. Write the files first with the file tools: data/<database>/database.toml and tables/NNN-<name>.sql.";
 export const DATA_CHANGE_DESCRIPTION =
@@ -414,21 +414,49 @@ export function cloudDataTools(options: {
 			const room = { companyBytes: answer.companyBytes, limitBytes: answer.limitBytes };
 			return shown([
 				() => answer,
+				() => ({
+					databases: databases.map((one) => {
+						const { enums: _enums, extensions: _extensions, ddlTruncated: _ddlTruncated, ...rest } = one;
+						return {
+							...rest,
+							tables: (Array.isArray(one.tables) ? one.tables : []).map((table: Record<string, unknown>) => ({
+								name: table.name,
+								kind: table.kind,
+								key: table.key,
+								...(table.rows !== undefined ? { rows: table.rows } : {}),
+								...(table.rowsAbout !== undefined ? { rowsAbout: table.rowsAbout } : {}),
+								columns: (Array.isArray(table.columns) ? table.columns : []).map(
+									(column: Record<string, unknown>) => ({
+										name: column.name,
+										type: column.type,
+										settable: column.settable,
+										...(column.nullable !== undefined ? { nullable: column.nullable } : {}),
+									}),
+								),
+							})),
+						};
+					}),
+					...room,
+					note: "Cut short: name one database to see constraints, indexes, view definitions, enums and extensions",
+				}),
 				// Shorter: each table's columns without their types, each question by name.
 				() => ({
-					databases: databases.map((one) => ({
-						...one,
-						tables: (Array.isArray(one.tables) ? one.tables : []).map((table: Record<string, unknown>) => ({
-							name: table.name,
-							rows: table.rows,
-							columns: (Array.isArray(table.columns) ? table.columns : []).map(
-								(column: Record<string, unknown>) => column.name,
+					databases: databases.map((one) => {
+						const { enums: _enums, extensions: _extensions, ddlTruncated: _ddlTruncated, ...rest } = one;
+						return {
+							...rest,
+							tables: (Array.isArray(one.tables) ? one.tables : []).map((table: Record<string, unknown>) => ({
+								name: table.name,
+								rows: table.rows,
+								columns: (Array.isArray(table.columns) ? table.columns : []).map(
+									(column: Record<string, unknown>) => column.name,
+								),
+							})),
+							questions: (Array.isArray(one.questions) ? one.questions : []).map(
+								(question: Record<string, unknown>) => question.name,
 							),
-						})),
-						questions: (Array.isArray(one.questions) ? one.questions : []).map(
-							(question: Record<string, unknown>) => question.name,
-						),
-					})),
+						};
+					}),
 					...room,
 					note: "Cut short: name one database to see its column types and its questions' words",
 				}),

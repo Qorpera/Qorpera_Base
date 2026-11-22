@@ -1,7 +1,7 @@
 //! Frames on the folder link: a u32 big-endian length (of the type byte plus the payload), one type
 //! byte, then the payload. Control messages carry JSON; a read reply carries the bytes as they are.
 
-use std::io::{self, Read, Write};
+use std::io::{self, IoSlice, Read, Write};
 
 /// The largest payload either side sends or accepts: one read reply (at most `MAX_READ`) or one
 /// listing page, with room to spare.
@@ -48,6 +48,55 @@ pub mod kind {
 	pub const LINK: u8 = b'J';
 	pub const DATA_CALL: u8 = b'T';
 	pub const DATA_ANSWER: u8 = b't';
+}
+
+pub fn write_frame_parts(w: &mut impl Write, kind: u8, parts: &[&[u8]]) -> io::Result<()> {
+	let mut payload_len = 0usize;
+	for p in parts {
+		payload_len = payload_len
+			.checked_add(p.len())
+			.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "frame payload too large"))?;
+	}
+	if payload_len > MAX_PAYLOAD {
+		return Err(io::Error::new(io::ErrorKind::InvalidInput, "frame payload too large"));
+	}
+	let len = (payload_len + 1) as u32;
+	let mut head = [0u8; 5];
+	head[..4].copy_from_slice(&len.to_be_bytes());
+	head[4] = kind;
+	let mut slices: Vec<IoSlice<'_>> = Vec::with_capacity(parts.len() + 1);
+	slices.push(IoSlice::new(&head));
+	for p in parts {
+		if !p.is_empty() {
+			slices.push(IoSlice::new(p));
+		}
+	}
+	let mut idx = 0usize;
+	let mut off = 0usize;
+	while idx < slices.len() {
+		let rem: Vec<IoSlice<'_>> = std::iter::once(IoSlice::new(&slices[idx][off..]))
+			.chain(slices[idx + 1..].iter().copied())
+			.collect();
+		match w.write_vectored(&rem) {
+			Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "failed to write frame")),
+			Ok(mut wrote) => {
+				while wrote > 0 && idx < slices.len() {
+					let left = slices[idx].len() - off;
+					if wrote >= left {
+						wrote -= left;
+						idx += 1;
+						off = 0;
+					} else {
+						off += wrote;
+						wrote = 0;
+					}
+				}
+			}
+			Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+			Err(e) => return Err(e),
+		}
+	}
+	w.flush()
 }
 
 pub fn write_frame(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
@@ -99,6 +148,11 @@ mod tests {
 			assert_eq!(k, kind::DATA);
 			assert_eq!(back, payload);
 		}
+		let mut buf = Vec::new();
+		write_frame_parts(&mut buf, kind::CHUNK, &[b"head", b"", b"-middle-", b"tail"]).unwrap();
+		let (k, back) = read_frame(&mut buf.as_slice()).unwrap();
+		assert_eq!(k, kind::CHUNK);
+		assert_eq!(back, b"head-middle-tail");
 	}
 
 	#[test]

@@ -38,7 +38,8 @@ interface Page {
 	busy: boolean;
 	/** Why the last call failed. What a call did, the page shows by itself. */
 	note: string | undefined;
-	timer: ReturnType<typeof setInterval> | undefined;
+	readSeq: number;
+	stop: (() => void) | undefined;
 }
 
 interface Seat {
@@ -82,7 +83,7 @@ function resetTime(iso: string): string {
 export function renderMembers(container: HTMLElement, company: CompanyController, options: MembersOptions = {}): void {
 	let page = pages.get(container);
 	if (!page || page.company !== company) {
-		if (page?.timer) clearInterval(page.timer);
+		page?.stop?.();
 		const fresh: Page = {
 			company,
 			options,
@@ -90,20 +91,38 @@ export function renderMembers(container: HTMLElement, company: CompanyController
 			error: undefined,
 			busy: false,
 			note: undefined,
-			timer: undefined,
+			readSeq: 0,
+			stop: undefined,
 		};
 		pages.set(container, fresh);
 		void read(container, fresh);
-		fresh.timer = setInterval(() => {
+		const stop = () => {
+			clearInterval(timer);
+			if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
+			company.signal.removeEventListener("abort", stop);
+			if (pages.get(container) === fresh) pages.delete(container);
+		};
+		// WHY: Skip hidden background polls and refresh on tab return without leaking listeners after view unmount.
+		const onVisible = () => {
+			if (!showing(container, fresh) || company.signal.aborted) {
+				stop();
+				return;
+			}
+			if (!document.hidden) void read(container, fresh);
+		};
+		const timer = setInterval(() => {
 			// The page ends when another view took its container (the app reuses it), the container left the document or
 			// the company stopped; coming back draws a new one.
 			if (!showing(container, fresh) || company.signal.aborted) {
-				clearInterval(fresh.timer);
-				if (pages.get(container) === fresh) pages.delete(container);
+				stop();
 				return;
 			}
+			if (typeof document !== "undefined" && document.hidden) return;
 			void read(container, fresh);
 		}, READ_EVERY_MS);
+		if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
+		company.signal.addEventListener("abort", stop, { once: true });
+		fresh.stop = stop;
 		page = fresh;
 	}
 	page.options = options;
@@ -128,11 +147,15 @@ function showing(container: HTMLElement, page: Page): boolean {
 }
 
 async function read(container: HTMLElement, page: Page): Promise<void> {
+	const seq = ++page.readSeq;
 	try {
-		page.data = await page.company.worksFor().read();
+		const data = await page.company.worksFor().read();
+		if (seq !== page.readSeq) return;
+		page.data = data;
 		lastRead.set(page.company, page.data);
 		page.error = undefined;
 	} catch (error) {
+		if (seq !== page.readSeq) return;
 		page.error = error instanceof Error ? error.message : String(error);
 	}
 	// An answer that comes after the member went to another view draws nothing over it.

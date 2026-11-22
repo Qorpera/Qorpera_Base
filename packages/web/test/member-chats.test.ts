@@ -1529,6 +1529,25 @@ describe("the app with a member's chat", () => {
 		await vi.waitFor(() => expect(location.hash).toBe(`#/c/${profileA.profileId}`));
 		await vi.waitFor(() => expect(root.querySelector(".member-thread")).toBeNull());
 	});
+
+	it("skips minute-tick redraws while hidden and updates on visibilitychange", async () => {
+		vi.useFakeTimers();
+		try {
+			const { controller } = company();
+			const view = chatView(controller);
+			await vi.advanceTimersByTimeAsync(0);
+			const updateSpy = vi.spyOn(view, "update");
+			const hiddenSpy = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+			await vi.advanceTimersByTimeAsync(180_000);
+			expect(updateSpy).not.toHaveBeenCalled();
+
+			hiddenSpy.mockReturnValue(false);
+			document.dispatchEvent(new Event("visibilitychange"));
+			expect(updateSpy).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe("the member chat's address", () => {

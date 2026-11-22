@@ -1,7 +1,7 @@
 //! The machine's side of the folder link: a pool of request connections and the feed connection.
 //! Each connection opens with the view's id and pass; the node checks them and the calling machine.
 
-use crate::frame::{kind, read_frame, write_frame};
+use crate::frame::{kind, read_frame, write_frame, write_frame_parts};
 use crate::proto::{
 	code, Ack, Change, ChunkHeader, CloseRequest, Entry, ErrorReply, ExecutableRequest, GetChunk, Hello, HelloOk,
 	LinkRequest, ListRequest, Listing, OpenRequest, Opened, PathRequest, PublishRequest, ReadRequest, ReadsAnswer,
@@ -125,9 +125,22 @@ struct Current {
 struct Connection {
 	stream: Stream,
 	epoch: u64,
-	/// Service intake is volatile and belongs to this exact accepted connection.
 	taken: u64,
 	intake_lost: Option<bool>,
+	read_timeout: Option<Duration>,
+	write_timeout: Option<Duration>,
+}
+
+impl Connection {
+	fn ensure_timeouts(&mut self, read: Option<Duration>, write: Option<Duration>) -> io::Result<()> {
+		if self.read_timeout == read && self.write_timeout == write {
+			return Ok(());
+		}
+		self.stream.set_timeouts(read, write)?;
+		self.read_timeout = read;
+		self.write_timeout = write;
+		Ok(())
+	}
 }
 impl std::ops::Deref for Connection { type Target = Stream; fn deref(&self) -> &Stream { &self.stream } }
 impl std::ops::DerefMut for Connection { fn deref_mut(&mut self) -> &mut Stream { &mut self.stream } }
@@ -282,17 +295,33 @@ impl Link {
 			self.drop_idle();
 			if let Some(feed) = self.feed.lock().unwrap().take() { feed.shutdown(); }
 		}
-		Ok((Connection { stream, epoch, taken: 0, intake_lost: None }, ok))
+		Ok((
+			Connection {
+				stream,
+				epoch,
+				taken: 0,
+				intake_lost: None,
+				read_timeout: Some(timeout),
+				write_timeout: Some(self.timeout),
+			},
+			ok,
+		))
 	}
 
-	/// Opens the feed: the node's answer to the hello, then a stream of changes.
 	pub fn open_feed(&self) -> Result<(Feed, HelloOk), Fail> {
 		let (connection, ok) = self.hello(Role::Feed, FEED_TIMEOUT)?;
 		let mut active = self.feed.lock().unwrap();
 		if connection.epoch != self.epoch() {
 			return Err(Fail::Link(io::Error::other("the view changed while opening its feed")));
 		}
-		*active = Some(Connection { stream: connection.try_clone().map_err(Fail::Link)?, epoch: connection.epoch, taken: 0, intake_lost: None });
+		*active = Some(Connection {
+			stream: connection.try_clone().map_err(Fail::Link)?,
+			epoch: connection.epoch,
+			taken: 0,
+			intake_lost: None,
+			read_timeout: connection.read_timeout,
+			write_timeout: connection.write_timeout,
+		});
 		Ok((Feed { connection }, ok))
 	}
 
@@ -343,6 +372,14 @@ impl Link {
 				Err(Fail::Link(_)) if attempt == 1 => continue,
 				Err(f) => return Err(f),
 			};
+			if let Err(e) = s.ensure_timeouts(Some(self.timeout), Some(self.timeout)) {
+				s.shutdown();
+				self.lost();
+				if attempt == 1 {
+					continue;
+				}
+				return Err(Fail::Link(e));
+			}
 			match exchange(&mut s, request, payload, answer) {
 				Ok(data) => {
 					let current = s.epoch == self.epoch();
@@ -380,6 +417,10 @@ impl Link {
 	/// answers, or its service goes and the connection with it. Given up early, a change the node still made would be
 	/// lost to the program: a file opened there that nothing closes, a close whose version never comes.
 	fn change(&self, request: u8, payload: &[u8], answer: u8) -> Result<Vec<u8>, Fail> {
+		self.change_parts(request, &[payload], answer)
+	}
+
+	fn change_parts(&self, request: u8, parts: &[&[u8]], answer: u8) -> Result<Vec<u8>, Fail> {
 		let mut attempt = 0;
 		loop {
 			attempt += 1;
@@ -388,9 +429,7 @@ impl Link {
 				Err(Fail::Link(_)) if attempt == 1 => continue,
 				Err(f) => return Err(f),
 			};
-			if let Err(f) = self.send_change(&mut s, request, payload) {
-				// No mutation went out when handing over reads failed. A fresh connection must take the journal
-				// again: an earlier I acknowledgement does not survive the service that acknowledged it.
+			if let Err(f) = self.send_change_parts(&mut s, request, parts) {
 				if let Fail::Remote(_) = f {
 					let stale = s.epoch != self.epoch();
 					self.answered(s, &f);
@@ -406,17 +445,12 @@ impl Link {
 			}
 			return match read_answer(&mut s, answer) {
 				Ok(data) => {
-					if let Some(s) = self.after_change(s) {
-						self.give(s);
-					}
+					self.give(s);
 					Ok(data)
 				}
 				Err(f @ Fail::Remote(_)) => {
 					let epoch = s.epoch;
-					match self.after_change(s) {
-						Some(s) => self.answered(s, &f),
-						None => self.note(epoch, &f),
-					}
+					self.answered(s, &f);
 					if epoch != self.epoch() && f.view_closed() { continue; }
 					Err(f)
 				}
@@ -428,9 +462,11 @@ impl Link {
 		}
 	}
 
-	/// The journal lock spans the I/i barrier and the mutation's send, so every open already returned is accounted
-	/// for. Release it before waiting for the mutation's answer: a slow boundary must not hold up unrelated reads.
 	fn send_change(&self, s: &mut Connection, request: u8, payload: &[u8]) -> Result<u64, Fail> {
+		self.send_change_parts(s, request, &[payload])
+	}
+
+	fn send_change_parts(&self, s: &mut Connection, request: u8, parts: &[&[u8]]) -> Result<u64, Fail> {
 		let mut held = self.reads.as_ref().map(|log| log.locked()).transpose().map_err(Fail::Link)?;
 		if let Some(log) = &mut held {
 			self.hand_over(s, log)?;
@@ -439,17 +475,18 @@ impl Link {
 			}
 		}
 		let through = held.as_ref().map_or(0, |log| log.last());
-		s.set_timeouts(None, Some(self.timeout)).map_err(Fail::Link)?;
-		write_frame(&mut s.stream, request, payload).map_err(Fail::Link)?;
+		s.ensure_timeouts(None, Some(self.timeout)).map_err(Fail::Link)?;
+		write_frame_parts(&mut s.stream, request, parts).map_err(Fail::Link)?;
 		Ok(through)
 	}
 
 	fn hand_over(&self, s: &mut Connection, log: &mut Locked<'_>) -> Result<(), Fail> {
+		log.sync().map_err(Fail::Link)?;
 		let mut after = log.released().max(s.taken);
 		if after >= log.last() && s.intake_lost == Some(log.lost()) {
 			return Ok(());
 		}
-		s.set_timeouts(Some(self.timeout), Some(self.timeout)).map_err(Fail::Link)?;
+		s.ensure_timeouts(Some(self.timeout), Some(self.timeout)).map_err(Fail::Link)?;
 		loop {
 			let request = log.request(after);
 			let sent = request.reads.last().map(|read| read.seq);
@@ -463,16 +500,6 @@ impl Link {
 			after = s.taken.max(log.released());
 			if request.lost || after >= log.last() { return Ok(()); }
 		}
-	}
-
-	/// A connection a change used, with a request's read timeout again; ended when it will not take it.
-	fn after_change(&self, s: Connection) -> Option<Connection> {
-		if s.set_timeouts(Some(self.timeout), Some(self.timeout)).is_ok() {
-			return Some(s);
-		}
-		s.shutdown();
-		self.lost();
-		None
 	}
 
 	/// Every idle pooled connection, ended: one the node closed means its service went, and took the others with it.
@@ -519,11 +546,8 @@ impl Link {
 					bytes: data.len() as u64,
 					offset: offset as u64,
 				});
-				let mut payload = Vec::with_capacity(4 + header.len() + end - offset);
-				payload.extend_from_slice(&(header.len() as u32).to_be_bytes());
-				payload.extend_from_slice(&header);
-				payload.extend_from_slice(&data[offset..end]);
-				match self.change(kind::CHUNK, &payload, kind::DONE) {
+				let hdr_len = (header.len() as u32).to_be_bytes();
+				match self.change_parts(kind::CHUNK, &[&hdr_len, &header, &data[offset..end]], kind::DONE) {
 					Ok(_) => offset = end,
 					Err(Fail::Link(_)) if attempt == 1 => continue 'whole,
 					Err(f) => return Err(f),
@@ -621,7 +645,7 @@ impl Link {
 					// Poll only: reads begun after the boundary are for the next one. An empty paths report also
 					// represents an unanswered no-write release, so it is not by itself proof of completion.
 					let request = log.request(log.last());
-					s.set_timeouts(Some(self.timeout), Some(self.timeout)).map_err(Fail::Link)?;
+					s.ensure_timeouts(Some(self.timeout), Some(self.timeout)).map_err(Fail::Link)?;
 					let acknowledged: ReadsAnswer = exchange(&mut s, kind::READS, &json(&request), kind::READS_OK).and_then(|b| parse(&b))?;
 					log.acknowledge(&acknowledged).map_err(Fail::Link)?;
 					if log.lost() || log.released() < through {

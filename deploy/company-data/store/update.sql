@@ -179,6 +179,9 @@ declare
 	v_key text[]; v_others text[]; v_rows bigint; v_bytes bigint; v_old jsonb[]; v_new jsonb[];
 	v_names bigint := octet_length(tg_table_schema) + octet_length(tg_table_name);
 begin
+	if tg_table_schema ~ '^qorpera_test_[0-9a-f]{16}$' then
+		return null;
+	end if;
 	if tg_op = 'INSERT' then
 		select count(*) into v_rows from added;
 	elsif tg_op = 'UPDATE' then

@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { RuntimeNodeObserverFailure, type RuntimeNodeObserverReason } from "../src/runtime-node-observer.ts";
-import { runRuntimeNodeObserverLoops, runtimeNodeObserverLine } from "../src/runtime-node-observer-service.ts";
+import {
+	RuntimeNodeObserverHttpRegistry,
+	runRuntimeNodeObserverLoops,
+	runtimeNodeObserverLine,
+} from "../src/runtime-node-observer-service.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 
 describe("the node observer's loops", () => {
@@ -159,5 +163,20 @@ describe("the node observer's journal line", () => {
 			code: "NODE_INVENTORY_HEADROOM_EXCEEDED",
 			entries: [],
 		});
+	});
+	it("bounds RuntimeNodeObserverHttpRegistry.call without calling AbortSignal.any or AbortSignal.timeout", async () => {
+		const anySpy = vi.spyOn(AbortSignal, "any");
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+		try {
+			const registry = new RuntimeNodeObserverHttpRegistry("https://example.supabase.co", "k".repeat(48));
+			await expect(
+				registry.call("qorpera_observe_runtime_node", {}, AbortSignal.abort(new Error("stopped"))),
+			).rejects.toThrow("NODE_OBSERVER_RPC_UNCONFIRMED");
+			expect(anySpy).not.toHaveBeenCalled();
+			expect(timeoutSpy).not.toHaveBeenCalled();
+		} finally {
+			anySpy.mockRestore();
+			timeoutSpy.mockRestore();
+		}
 	});
 });

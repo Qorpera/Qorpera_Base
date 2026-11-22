@@ -285,13 +285,16 @@ export class CloudIdentityRecoveryAuthority {
 		const digest = recoveryDigest(bytes);
 		if (plan.status === "ready" && (digest !== plan.objectSha256 || bytes.byteLength !== plan.objectBytes))
 			throw new Error("Recovery backup receipt differs");
-		for (const store of Object.values(this.#replicas)) {
-			const stored = await store.put(digest, bytes, signal);
-			if (recoveryDigest(stored) !== digest) throw new Error("Recovery replica conflicts with its address");
-			const reread = await store.get(digest, signal);
-			if (!reread || reread.byteLength !== bytes.byteLength || recoveryDigest(reread) !== digest)
-				throw new Error("Recovery replica verification failed");
-		}
+		// WHY: Replicate to the independent NAS and Supabase stores concurrently while keeping read-after-write verification on both.
+		await Promise.all(
+			Object.values(this.#replicas).map(async (store) => {
+				const stored = await store.put(digest, bytes, signal);
+				if (recoveryDigest(stored) !== digest) throw new Error("Recovery replica conflicts with its address");
+				const reread = await store.get(digest, signal);
+				if (!reread || reread.byteLength !== bytes.byteLength || recoveryDigest(reread) !== digest)
+					throw new Error("Recovery replica verification failed");
+			}),
+		);
 		signal.throwIfAborted();
 		const receipt = parseRecoveryBackupPlan(
 			await this.#control.call(

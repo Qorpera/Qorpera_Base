@@ -237,4 +237,21 @@ describe("provider fresh inspection through the activation deadline", () => {
 		await expect(f.run()).rejects.toThrow(/^OFFICE_SERVICE_INSPECTION_UNCONFIRMED$/);
 		expect(f.use).not.toHaveBeenCalled();
 	});
+
+	it("avoids recursive AbortSignal.any chains across repeated pending polls while still observing prior authority aborts", async () => {
+		const anySpy = vi.spyOn(AbortSignal, "any");
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+		try {
+			const f = await fixture();
+			let polls = 0;
+			f.poll.mockImplementation(async () => (++polls >= 6 ? "succeeded" : "pending"));
+			await expect(f.run()).resolves.toBe("active");
+			expect(polls).toBe(6);
+			expect(anySpy).not.toHaveBeenCalled();
+			expect(timeoutSpy).not.toHaveBeenCalled();
+		} finally {
+			anySpy.mockRestore();
+			timeoutSpy.mockRestore();
+		}
+	});
 });

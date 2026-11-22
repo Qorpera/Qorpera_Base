@@ -2321,7 +2321,7 @@ describe("the rail's line under an idle agent's name in the app", () => {
 		window.dispatchEvent(new Event("online"));
 		await vi.advanceTimersByTimeAsync(5_000);
 		await draw();
-		expect(f.api.getTeam).toHaveBeenCalledWith(profileA.profileId);
+		expect(f.api.getTeam).toHaveBeenCalledWith(profileA.profileId, expect.any(AbortSignal));
 	});
 
 	it("does not loop listProfiles when a company route is genuinely unavailable, and offers retry on non-connection errors", async () => {
@@ -2358,6 +2358,23 @@ describe("the rail's line under an idle agent's name in the app", () => {
 		failList = false;
 		retry!.click();
 		await draw();
-		expect(g.api.getTeam).toHaveBeenCalledWith(profileA.profileId);
+		expect(g.api.getTeam).toHaveBeenCalledWith(profileA.profileId, expect.any(AbortSignal));
+	});
+
+	it("aborts in-flight listProfiles signal when the hub is disposed", async () => {
+		let seen: AbortSignal | undefined;
+		const f = fixture();
+		vi.mocked(f.api.listProfiles).mockImplementation((signal) => {
+			seen = signal;
+			return new Promise(() => {});
+		});
+		const root = document.createElement("div");
+		document.body.append(root);
+		const stop = mountApplication(root, f.cloud, f.api);
+		await draw();
+		expect(seen).toBeInstanceOf(AbortSignal);
+		expect(seen?.aborted).toBe(false);
+		stop();
+		expect(seen?.aborted).toBe(true);
 	});
 });
