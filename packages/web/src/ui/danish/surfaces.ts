@@ -347,4 +347,9 @@ export const SURFACES: Record<string, string> = {
 	"Rollback batch ({count})": "Tilbagefør batch ({count})",
 	"Rolls back all {count} changes landed together in this batch":
 		"Tilbagefører alle {count} ændringer, der blev landet sammen i denne batch",
+	Pages: "Sider",
+	"Brand mark": "Brandmærke",
+	"Vector assets": "Vektorfiler",
+	"Other changed files": "Andre ændrede filer",
+	Removed: "Fjernet",
 };
