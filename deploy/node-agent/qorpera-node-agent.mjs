@@ -487,7 +487,6 @@ export class NodeAgent {
 		need(revision !== null, `ROLE_HAS_NO_RELEASE ${role}`);
 		const release = await this.release(revision);
 		const expected = [...settings.exec, join(this.releases, String(revision), release.roles[role].component)];
-		const previousInvocation = await this.ports.invocationId?.(settings.unit).catch(() => "");
 		const since = this.now();
 		await this.ports.restart(settings.unit);
 		let pid = 0;
@@ -500,14 +499,9 @@ export class NodeAgent {
 		}
 		need(same(command, expected), `ROLE_COMMAND ${role} ${command.join(" ")}`);
 		for (const url of settings.health) need(await this.ports.healthy(url), `ROLE_HEALTH ${role} ${url}`);
-		const currentInvocation = await this.ports.invocationId?.(settings.unit).catch(() => "");
-		// WHY: Scope journal refusal checks to the restarted unit invocation so prior-invocation refusals within the same second cannot fail rollback.
-		const scopedInvocation =
-			currentInvocation && currentInvocation !== previousInvocation ? currentInvocation : undefined;
+		// WHY: Filter journalctl with millisecond --since and --grep so any refusal since restart (including a failed first try before Restart=always) is caught without maxBuffer overflow.
 		need(
-			!(await this.ports.journalSince(settings.unit, since, { invocationId: scopedInvocation, grep: REFUSAL })).includes(
-				REFUSAL,
-			),
+			!(await this.ports.journalSince(settings.unit, since, { grep: REFUSAL })).includes(REFUSAL),
 			`ROLE_REFUSED ${role}`,
 		);
 		return { role, revision, pid };
@@ -1079,26 +1073,17 @@ export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket", { 
 			}
 			return false;
 		},
-		async invocationId(unit) {
-			const { stdout } = await exec("/usr/bin/systemctl", ["show", unit, "-p", "InvocationID", "--value"], {
-				timeout: 30_000,
-			});
-			return stdout.trim();
-		},
-		async journalSince(unit, since, { invocationId, grep } = {}) {
-			// WHY: Prefer exact systemd InvocationID + --grep filtering through the injected exec port to avoid sub-second false positives and maxBuffer overflow.
-			const args =
-				invocationId && /^[0-9a-f]{32}$/i.test(invocationId)
-					? [`_SYSTEMD_INVOCATION_ID=${invocationId}`, "--no-pager", "-o", "cat"]
-					: [
-							"-u",
-							unit,
-							"--since",
-							since.toISOString().replace("T", " ").replace("Z", " UTC"),
-							"--no-pager",
-							"-o",
-							"cat",
-						];
+		async journalSince(unit, since, { grep } = {}) {
+			// WHY: Use millisecond UTC --since plus --grep through the injected exec port to catch every refusal since restart without sub-second overlap or maxBuffer overflow.
+			const args = [
+				"-u",
+				unit,
+				"--since",
+				since.toISOString().replace("T", " ").replace("Z", " UTC"),
+				"--no-pager",
+				"-o",
+				"cat",
+			];
 			if (grep) args.push("--grep", grep);
 			try {
 				const { stdout } = await exec("/usr/bin/journalctl", args, {

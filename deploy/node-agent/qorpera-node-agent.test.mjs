@@ -965,40 +965,23 @@ test("unswitch recovers from an interrupted switch-intent and refuses repeated u
 	}
 });
 
-test("journalSince scopes refusal checks by InvocationID with --grep and falls back to millisecond --since", async () => {
+test("journalSince filters with millisecond UTC --since and --grep and restartRole catches a refusal before a retry succeeds", async () => {
 	const calls = [];
 	const ports = nodePorts("/dev/null", {
 		exec: async (bin, args, opts) => {
 			calls.push({ bin, args, opts });
-			if (bin === "/usr/bin/systemctl") return { stdout: `${"a".repeat(32)}\n`, stderr: "" };
-			if (args.includes("--grep") && args.includes(`_SYSTEMD_INVOCATION_ID=${"a".repeat(32)}`)) {
+			if (calls.length === 1) {
 				const err = new Error("no match");
 				err.code = 1;
 				err.stderr = "";
 				throw err;
 			}
-			return { stdout: "", stderr: "" };
+			return { stdout: '{"state":"QORPERA_NODE_ROLE_START_REFUSED"}\n', stderr: "" };
 		},
 	});
-	const inv = await ports.invocationId(UNITS.provider);
-	assert.equal(inv, "a".repeat(32));
 	const since = new Date("2026-11-22T12:00:00.250Z");
-	assert.equal(
-		await ports.journalSince(UNITS.provider, since, { invocationId: inv, grep: "QORPERA_NODE_ROLE_START_REFUSED" }),
-		"",
-	);
-	assert.deepEqual(calls[1].args, [
-		`_SYSTEMD_INVOCATION_ID=${"a".repeat(32)}`,
-		"--no-pager",
-		"-o",
-		"cat",
-		"--grep",
-		"QORPERA_NODE_ROLE_START_REFUSED",
-	]);
-	assert.equal(calls[1].opts.maxBuffer, 4 * 1024 * 1024);
-
-	await ports.journalSince(UNITS.provider, since, { grep: "QORPERA_NODE_ROLE_START_REFUSED" });
-	assert.deepEqual(calls[2].args, [
+	assert.equal(await ports.journalSince(UNITS.provider, since, { grep: "QORPERA_NODE_ROLE_START_REFUSED" }), "");
+	assert.deepEqual(calls[0].args, [
 		"-u",
 		UNITS.provider,
 		"--since",
@@ -1009,6 +992,44 @@ test("journalSince scopes refusal checks by InvocationID with --grep and falls b
 		"--grep",
 		"QORPERA_NODE_ROLE_START_REFUSED",
 	]);
+	assert.equal(calls[0].opts.maxBuffer, 4 * 1024 * 1024);
+
+	assert.match(
+		await ports.journalSince(UNITS.provider, since, { grep: "QORPERA_NODE_ROLE_START_REFUSED" }),
+		/QORPERA_NODE_ROLE_START_REFUSED/,
+	);
+
+	const node = await nodeFixture();
+	try {
+		await adopted(node);
+		await staged(node, 1, { provider: "p1" });
+		const seenOpts = [];
+		const baseRestart = node.agent.ports.restart;
+		const baseMainPid = node.agent.ports.mainPid;
+		let attempts = 0;
+		const refusalTimes = [];
+		node.agent.ports.restart = async (unit) => {
+			attempts = 0;
+			await baseRestart(unit);
+			if ((await node.link("roles/provider")) === "../releases/1") refusalTimes.push(Date.now());
+		};
+		node.agent.ports.mainPid = async (unit) => {
+			if (unit === UNITS.provider && (await node.link("roles/provider")) === "../releases/1" && attempts++ === 0) {
+				node.state.units[unit].pid = ++node.state.pid;
+				return 0;
+			}
+			return baseMainPid(unit);
+		};
+		node.agent.ports.journalSince = async (_unit, from, opts) => {
+			seenOpts.push(opts);
+			return refusalTimes.some((ts) => ts >= from.getTime()) ? '{"state":"QORPERA_NODE_ROLE_START_REFUSED"}\n' : "";
+		};
+		await assert.rejects(node.agent.apply(1), /APPLY_ROLLED_BACK ROLE_REFUSED provider/);
+		assert.deepEqual(seenOpts[0], { grep: "QORPERA_NODE_ROLE_START_REFUSED" });
+		assert.equal(await node.link("current"), "releases/0");
+	} finally {
+		await node.close();
+	}
 });
 
 test("stage refuses symlinked or oversized release inputs without following links", async () => {
