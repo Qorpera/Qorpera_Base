@@ -287,6 +287,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "company_search now supports smart-case matching (case-sensitive only when the query contains uppercase letters), whole-word matching, negative exclusion globs (or !pattern in glob) to skip paths, and count-only mode for cumulative matching-line and file totals across cursor pages. Regular expressions on the native search worker also accept inline (?i) and (?m) flags and quantifier counts up to 64. The data command on company machines now accepts JSON arrays and objects in name:=<JSON>, reads SQL and parameters from files or stdin, formats output as table, csv, tsv or ndjson, and adds --dry-run, rows and changes.",
 	},
 	{
+		id: "surface-first-company-harness",
+		kind: "behaviour",
+		date: "2026-11-22",
+		title: "Surfaces, live previews and shared identity",
+		text: "Your company now runs on live Surfaces instead of ad-hoc files and separate specialist hierarchies. Every product or brand area projects its real codebase or company folder directly into the founder's canvas, where parallel work sessions propose toggleable changes and side-by-side design explorations before anything merges or goes live. Shared identity styling syncs across builds automatically, and recurring work runs as focused automations instead of permanent background roles. Keep the company folder lean by editing live surface files directly rather than creating extra draft or memo documents.",
+	},
+	{
 		id: "vault-secrets-and-code-routines",
 		kind: "capability",
 		date: "2026-11-22",

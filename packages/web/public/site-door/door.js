@@ -8,20 +8,50 @@
 	const READY = "qorpera-site-door-ready";
 	const PASS = "qorpera-site-door";
 	const SHOWN = "qorpera-site-door-shown";
+	const INSPECTOR_MODE = "qorpera-inspector-mode";
+	const INSPECTOR_PICK = "qorpera-inspector-pick";
+	const IDENTITY_TOKENS_CSS = "qorpera:identity-tokens-css";
 	const TARGET = "qorpera-site";
-	// A site's own host (never a next host), the one path that takes a pass, a pass of base64url, a path of the site.
-	const ACTION = /^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)*\.qorpera\.(?:com|site)\/__qorpera\/member$/;
+	// A site's own host or an isolated preview host (never a next host), the one path that takes a pass, a pass of base64url, a path of the site.
+	const ACTION = /^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)*(?:--p[a-z0-9]{8})?\.qorpera\.(?:com|site)\/__qorpera\/member$/;
 	const PASS_TEXT = /^[A-Za-z0-9_-]{43}$/;
 	const PATH = /^\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]{0,511}$/;
 	let used = false;
+	let targetOrigin = "";
 	let frame;
 	window.addEventListener("message", (event) => {
 		const data = event.data;
-		if (used || !frame || event.source !== app || event.origin !== location.origin) return;
-		if (typeof data !== "object" || data === null || data.type !== PASS) return;
+		if (!frame || typeof data !== "object" || data === null) return;
+		if (used && targetOrigin) {
+			if (event.source === app && event.origin === location.origin && data.type === INSPECTOR_MODE) {
+				if (frame.contentWindow)
+					frame.contentWindow.postMessage({ type: INSPECTOR_MODE, active: Boolean(data.active) }, targetOrigin);
+				return;
+			}
+			if (
+				event.source === app &&
+				event.origin === location.origin &&
+				data.type === IDENTITY_TOKENS_CSS &&
+				typeof data.css === "string"
+			) {
+				if (frame.contentWindow) {
+					const vars =
+						data.vars && typeof data.vars === "object" && !Array.isArray(data.vars) ? data.vars : {};
+					frame.contentWindow.postMessage({ type: IDENTITY_TOKENS_CSS, css: data.css, vars }, targetOrigin);
+				}
+				return;
+			}
+			if (event.source === frame.contentWindow && event.origin === targetOrigin && data.type === INSPECTOR_PICK) {
+				app.postMessage({ type: INSPECTOR_PICK, target: data.target }, location.origin);
+				return;
+			}
+			return;
+		}
+		if (event.source !== app || event.origin !== location.origin || data.type !== PASS) return;
 		const { action, pass, path, title } = data;
 		if (typeof action !== "string" || !ACTION.test(action) || typeof pass !== "string" || !PASS_TEXT.test(pass)) return;
 		if (path !== undefined && (typeof path !== "string" || !PATH.test(path))) return;
+		targetOrigin = new URL(action).origin;
 		used = true;
 		if (typeof title === "string" && title.length <= 200) frame.title = title;
 		const form = document.createElement("form");

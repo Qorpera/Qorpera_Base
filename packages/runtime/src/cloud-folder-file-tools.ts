@@ -603,13 +603,57 @@ export function wallCheck(path: string, text: string): void {
 		);
 }
 
+export type SurfaceFilePolicy =
+	| { readonly mode: "cofounder"; readonly allowExplicitMemberDoc?: boolean }
+	| { readonly mode: "surface_worker"; readonly allowedRoots: readonly string[] };
+
+const COFOUNDER_DOC_SPRAWL_ROOTS = new Set([
+	"strategy",
+	"research",
+	"operations",
+	"plans",
+	"docs",
+	"memos",
+	"reports",
+	"meetings",
+	"marketing",
+	"sales",
+]);
+
+function normalizePolicyPath(targetPath: string): string {
+	return companyPathKey(targetPath).replace(/^\/+|\/+$/g, "");
+}
+
+function enforceSurfaceFilePolicy(policy: SurfaceFilePolicy | undefined, targetPath: string): void {
+	if (!policy) return;
+	const normalized = normalizePolicyPath(targetPath);
+	if (policy.mode === "cofounder") {
+		if (policy.allowExplicitMemberDoc) return;
+		const root = normalized.split("/")[0] ?? "";
+		if (COFOUNDER_DOC_SPRAWL_ROOTS.has(root)) {
+			throw new CloudToolRefusal(
+				`SURFACE_FILE_POLICY_REFUSED: writing under "${root}/" is blocked in Surface-First mode to prevent doc sprawl. Stage a tangible Surface Change via start_surface_session or place a concise Note under QorperaOS/surfaces/<slug>/notes/ instead of creating loose markdown documents.`,
+			);
+		}
+		return;
+	}
+	const allowed = policy.allowedRoots.map((root) => normalizePolicyPath(root)).filter((root) => root.length > 0);
+	const permitted = allowed.some((root) => normalized === root || normalized.startsWith(`${root}/`));
+	if (!permitted) {
+		throw new CloudToolRefusal(
+			`SURFACE_FILE_POLICY_REFUSED: path "${targetPath}" is outside this Surface worker's allowed roots (${allowed.join(", ") || "none"}). Keep file changes strictly inside your assigned Surface folder.`,
+		);
+	}
+}
+
 /** The five tools for a folder-v2 run. `operations` takes the receipts of its changes. */
 export function cloudFolderFileTools(options: {
 	folder: CloudCompanyFolderClient;
 	operations: CloudNativeToolOperations;
 	identity: CloudNativeToolIdentity;
+	surfaceFilePolicy?: SurfaceFilePolicy;
 }): CloudNativeTool[] {
-	const { folder, operations, identity } = options;
+	const { folder, operations, identity, surfaceFilePolicy } = options;
 	const pathSchema = { type: "string", maxLength: 4096 };
 	const nullableVersion = { type: ["string", "null"], pattern: UUID_PATTERN.source };
 
@@ -1329,6 +1373,7 @@ export function cloudFolderFileTools(options: {
 			async execute(value, context) {
 				const input = value as { path: string; operationKey: string; expectedVersion: string | null; text: string };
 				context.observation?.update({ inputBytes: Buffer.byteLength(input.text) });
+				enforceSurfaceFilePolicy(surfaceFilePolicy, input.path);
 				await refuseRetiredPath(folder, input.path, context.signal, "written");
 				// A change of a file keeps its media type and executable bit (a script stays runnable). Read before the receipt
 				// and changing nothing: a file at another version makes the commit a conflict anyway.
@@ -1438,6 +1483,9 @@ export function cloudFolderFileTools(options: {
 					oldTextSha256: createHash("sha256").update(input.oldText, "utf8").digest("hex"),
 					newTextSha256: createHash("sha256").update(input.newText, "utf8").digest("hex"),
 				};
+				if (surfaceFilePolicy?.mode === "surface_worker") {
+					enforceSurfaceFilePolicy(surfaceFilePolicy, input.path);
+				}
 				await refuseRetiredPath(folder, input.path, context.signal, "edited");
 				// The edit is made on the file's text at the version the model read. Another version (this call's own saved
 				// edit included, so a replay reaches its receipt), or nothing at the path, is the folder core's conflict:
@@ -1548,6 +1596,10 @@ export function cloudFolderFileTools(options: {
 					throw new CloudToolRefusal(
 						"A move needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
 					);
+				enforceSurfaceFilePolicy(surfaceFilePolicy, input.to);
+				if (surfaceFilePolicy?.mode === "surface_worker") {
+					enforceSurfaceFilePolicy(surfaceFilePolicy, input.from);
+				}
 				// A retired interface, and the members' list of them, are the members' alone, from either end of a move.
 				await refuseRetiredMove(folder, input.from, input.to, context.signal);
 				// An app comes into apps/ only through save_app, so its manifest is checked (who owns it, whether it is
@@ -1613,6 +1665,7 @@ export function cloudFolderFileTools(options: {
 			refused: cloudFolderRefusal,
 			async execute(value, context) {
 				const input = value as { path: string; operationKey: string };
+				enforceSurfaceFilePolicy(surfaceFilePolicy, input.path);
 				await refuseRetiredPath(folder, input.path, context.signal, "written");
 				return change("company_mkdir", input, { path: input.path }, [{ op: "mkdir", path: input.path }], context);
 			},
@@ -1648,6 +1701,9 @@ export function cloudFolderFileTools(options: {
 					throw new CloudToolRefusal(
 						"A deletion needs the automatic review's approval of this call, and it has none: call again, and if this repeats tell the member",
 					);
+				if (surfaceFilePolicy?.mode === "surface_worker") {
+					enforceSurfaceFilePolicy(surfaceFilePolicy, input.path);
+				}
 				await refuseRetiredPath(folder, input.path, context.signal, "deleted");
 				// Checked before the receipt, and still true once this call's own deletion is saved (the path is then gone),
 				// so a replay of the call reaches its receipt: only an empty folder is deleted, as of the listing that

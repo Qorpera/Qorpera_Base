@@ -62,6 +62,7 @@ const HUMAN_TASK_STATUSES: ReadonlySet<string> = new Set([
 const WAKE_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
 /** A light ask's wake payload (deploy/first-node/RUNTIME-LIGHT-ASK.md; migration 20260930761000). */
 export const CLOUD_LIGHT_ASK_WAKE_SCHEMA = "qorpera.light-ask-wake/v1";
+export const CLOUD_SURFACE_SESSION_WAKE_SCHEMA = "qorpera.surface-session-wake/v1";
 /** A todo's or a worker's key, as manage_worker takes it. */
 const WORK_KEY = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
@@ -242,7 +243,8 @@ export interface CloudWakeEnvelope {
 			| "app-unhealthy"
 			| "data-change"
 			| "human-task"
-			| "light-ask";
+			| "light-ask"
+			| "surface-session";
 		id: string;
 		occurrenceKey: string;
 	}>;
@@ -870,6 +872,42 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			policy.final !== "forbidden"
 		)
 			throw new Error("Invalid light ask wake");
+	} else if (wake.kind === "agent" && source.kind === "surface-session") {
+		const session = closed(payloadBody, [
+			"schema",
+			"surfaceSessionId",
+			"surfaceId",
+			"profileId",
+			"surfaceSlug",
+			"sourceKind",
+			"originKind",
+			"memberInitiated",
+			"leaseToken",
+		]);
+		const surfaceSourceKind = session.sourceKind;
+		if (
+			session.schema !== CLOUD_SURFACE_SESSION_WAKE_SCHEMA ||
+			uuidKey(session.surfaceSessionId) !== uuidKey(source.id) ||
+			uuid(session.surfaceId) === null ||
+			uuidKey(session.profileId) !== uuidKey(identity.companyId) ||
+			source.occurrenceKey.toLowerCase() !==
+				`surface-session:${uuidKey(source.id)}:${uuidKey(session.leaseToken)}` ||
+			typeof session.surfaceSlug !== "string" ||
+			!session.surfaceSlug.trim() ||
+			(surfaceSourceKind !== "code_repo" && surfaceSourceKind !== "folder" && surfaceSourceKind !== "native_ops") ||
+			typeof session.originKind !== "string" ||
+			!session.originKind.trim() ||
+			typeof session.memberInitiated !== "boolean" ||
+			heldMessages !== undefined ||
+			parentRunId !== null ||
+			wake.routine !== null ||
+			actorStaffId !== null ||
+			audience.sessionId !== null ||
+			policy.initial !== "forbidden" ||
+			policy.final !== "forbidden"
+		)
+			throw new Error("Invalid surface session wake");
+		uuid(session.surfaceId);
 	} else if (wake.kind === "agent" && source.kind === "human-task") {
 		// A human task the agent asked for (H2c): someone else changed it, or its due passed. No parent run and no message:
 		// the task itself, when the run may read its file, says what to do next.

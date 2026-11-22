@@ -212,6 +212,108 @@ Deno.serve(async (request) => {
 					p_error: action.error,
 				};
 				break;
+			case "surface_claim_jobs":
+				if (action.lane !== undefined) {
+					rpc = "qorpera_surface_claim_pending_jobs_for_lane";
+					args = {
+						p_limit: action.limit,
+						p_lane: action.lane,
+					};
+				} else {
+					rpc = "qorpera_surface_claim_pending_jobs";
+					args = {
+						p_limit: action.limit,
+					};
+				}
+				break;
+			case "surface_enqueue_session_run":
+				rpc = "qorpera_surface_enqueue_session_run";
+				args = {
+					p_session_id: action.sessionId,
+					p_lease_token: action.leaseToken,
+				};
+				break;
+			case "surface_trigger_automation":
+				rpc = "qorpera_surface_trigger_automation";
+				args = {
+					p_automation_id: action.automationId,
+				};
+				break;
+			case "surface_update_rebased_changes":
+				rpc = "qorpera_surface_update_rebased_changes";
+				args = {
+					p_surface_id: action.surfaceId,
+					p_session_id: action.sessionId,
+					p_branch_head_sha: action.branchHeadSha ?? null,
+					p_rebased_changes: action.rebasedChanges ?? [],
+					p_conflicted_change_id: action.conflictedChangeId ?? null,
+					p_conflict_paths: action.conflictPaths ?? null,
+				};
+				break;
+			case "surface_renew_lease":
+				rpc = "qorpera_surface_renew_lease";
+				args = {
+					p_kind: action.kind,
+					p_id: action.id,
+					p_lease_token: action.leaseToken,
+					p_extend_seconds: action.extendSeconds,
+				};
+				break;
+			case "surface_release_session_claim":
+				rpc = "qorpera_surface_release_session_claim";
+				args = {
+					p_session_id: action.sessionId,
+					p_lease_token: action.leaseToken,
+				};
+				break;
+			case "surface_complete_preview":
+				rpc = "qorpera_surface_complete_preview";
+				args = {
+					p_preview_id: action.previewId,
+					p_status: action.status,
+					p_composite_tree_sha: action.compositeTreeSha ?? null,
+					p_site_version_id: action.siteVersionId ?? null,
+					p_conflict_report: action.conflictReport ?? null,
+					p_error_detail: action.errorDetail ?? null,
+					p_lease_token: action.leaseToken ?? null,
+				};
+				break;
+			case "surface_complete_session_turn":
+				rpc = "qorpera_surface_complete_session_turn";
+				args = {
+					p_session_id: action.sessionId,
+					p_state: action.state,
+					p_reply_text: action.replyText ?? null,
+					p_question: action.question ?? null,
+					p_note_paths: action.notePaths ?? null,
+					p_branch_head_sha: action.branchHeadSha ?? null,
+					p_lease_token: action.leaseToken ?? null,
+				};
+				break;
+			case "surface_complete_merge":
+				rpc = "qorpera_surface_complete_merge";
+				args = {
+					p_job_id: action.jobId,
+					p_status: action.status,
+					p_main_before: action.mainBefore ?? null,
+					p_main_after: action.mainAfter ?? null,
+					p_conflict_change_id: action.conflictChangeId ?? null,
+					p_conflict_paths: action.conflictPaths ?? null,
+					p_error_detail: action.errorDetail ?? null,
+					p_pre_merge_snapshot: action.preMergeSnapshot ?? null,
+					p_lease_token: action.leaseToken ?? null,
+				};
+				break;
+			case "surface_complete_publish":
+				rpc = "qorpera_surface_complete_publish";
+				args = {
+					p_job_id: action.jobId,
+					p_status: action.status,
+					p_published_head_sha: action.publishedHeadSha ?? null,
+					p_error_detail: action.errorDetail ?? null,
+					p_lease_token: action.leaseToken ?? null,
+				};
+				break;
 		}
 		const { data, error } = await withAbortSignal(client.rpc(rpc, args), request.signal);
 		if (error) return jsonResponse({ error: "Orchestrator request was rejected" }, runnerOrchestratorRpcStatus(error));

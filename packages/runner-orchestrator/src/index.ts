@@ -1,3 +1,4 @@
+export * from "./code-host-surfaces.ts";
 export * from "./coding-command-transport.ts";
 export * from "./coding-executor.ts";
 export * from "./coding-executor-host.ts";
@@ -44,3 +45,8 @@ export * from "./runtime-node-observer-service.ts";
 export * from "./runtime-node-releases.ts";
 export * from "./service.ts";
 export * from "./site-blob-upload.ts";
+export * from "./surface-change-dispatcher.ts";
+export * from "./surface-code-host-worker.ts";
+export * from "./surface-execution-bridge.ts";
+export * from "./surface-preview-runner.ts";
+export * from "./surface-worker-loop.ts";

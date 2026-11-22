@@ -104,9 +104,10 @@ for (const forbidGlobalFetch of [false, true]) test(`jitless packaged services s
 			assert.match(request.headers.authorization, /^Bearer [A-Za-z0-9_-]{43}$/);
 			actions.push(body.action);
 			assert(["rotate_control", "due_summary", "routine_heads", "folder_dynamic_routines", "folder_drain_due", "folder_materialize_due",
-				"reconcile", "retained", "claim"].includes(body.action));
+				"reconcile", "retained", "claim", "surface_claim_jobs"].includes(body.action));
 			// An answer that names no list: the pass still asks every list, so they stay covered here.
 			const value = body.action === "due_summary" ? {}
+				: body.action === "surface_claim_jobs" ? { sessions: [], previews: [], merges: [], publishes: [], automations: [] }
 				: ["routine_heads", "folder_dynamic_routines", "folder_drain_due", "folder_materialize_due"].includes(body.action)
 					? { items: [], has_more: false } : body.action === "retained" ? [] : null;
 			response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ value }));
