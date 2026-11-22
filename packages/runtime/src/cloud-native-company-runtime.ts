@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
-import type { JsonValue } from "@qorpera/contracts";
+import type { JsonValue, SurfaceSessionQuestion, SurfaceSourceKind } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import {
 	CLOUD_ACTION_REVIEW_HOLD_MS,
@@ -93,7 +93,7 @@ import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts
 import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudAppGroupsTool } from "./cloud-folder-app-groups.ts";
 import { cloudAppTools } from "./cloud-folder-app-tools.ts";
-import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
+import { cloudFolderFileTools, type SurfaceFilePolicy } from "./cloud-folder-file-tools.ts";
 import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { cloudInterfaceTools } from "./cloud-folder-interface-tools.ts";
@@ -203,6 +203,24 @@ import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
 import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import {
+	createControlPlaneSessionCompletionPort,
+	createControlPlaneSessionLeaseRenewalPort,
+	runSurfaceSessionTurn,
+	type SurfaceSessionTurnExecutionOutcome,
+	type SurfaceSessionTurnInput,
+} from "./cloud-surface-session-runner.ts";
+import {
+	type CloudSurfaceToolsPort,
+	type ControlPlaneSurfaceToolsPortOptions,
+	createCodingRecordChangeTool,
+	createControlPlaneSurfaceToolsPort,
+	createManageSurfaceAutomationTool,
+	createProposeSurfaceTool,
+	createStartSurfaceSessionTool,
+	type SurfaceCompanySenses,
+	type SurfaceToolsRpcClient,
+} from "./cloud-surface-tools.ts";
+import {
 	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	cloudAskMemberFinalKey,
 	cloudAskMemberInstructions,
@@ -275,6 +293,97 @@ async function chatGptPlanRun(identityRoot: string): Promise<boolean> {
 	}
 }
 
+export { type ControlPlaneSurfaceToolsPortOptions, createControlPlaneSurfaceToolsPort, type SurfaceToolsRpcClient };
+
+type CloudRuntimeSurfaceToolsPort = Pick<CloudSurfaceToolsPort, "proposeSurface" | "startSurfaceSession"> &
+	Partial<Pick<CloudSurfaceToolsPort, "listSurfaceSenses" | "manageAutomation">>;
+
+const EXPLICIT_MEMBER_DOC_PATTERN =
+	/\b(?:write|create|draft|save|export|generate|make|put|prepare)\s+(?:a|an|me|us|the)?\s*(?:markdown|md|doc|document|memo|report|plan|brief|pdf|csv|spreadsheet|file)\b|\b(?:as\s+a\s+(?:markdown|md|doc|document|file|pdf|csv|memo|report))\b|\.(?:md|pdf|csv|docx|xlsx)\b/i;
+
+function memberExplicitlyRequestedDocument(context: CloudNativeCompanyContext, wake: CloudWakeEnvelope): boolean {
+	const texts: string[] = [];
+	for (const source of context.currentInputs) {
+		if (source.kind === "current_human_request") texts.push(source.content.text);
+	}
+	if (wake.kind === "room" && Array.isArray(wake.payload.inputIds)) {
+		const ids = new Set(wake.payload.inputIds.filter((id): id is string => typeof id === "string"));
+		for (const source of context.history) {
+			if (source.kind === "historical_human_message" && ids.has(source.id)) {
+				texts.push(source.content.text);
+			}
+		}
+	}
+	return texts.some((text) => EXPLICIT_MEMBER_DOC_PATTERN.test(text));
+}
+
+function mergeSurfaceSenses(
+	baseSenses: JsonValue | null | undefined,
+	surfaceSenses: SurfaceCompanySenses | undefined,
+): JsonValue | null | undefined {
+	if (!surfaceSenses) return baseSenses;
+	const surfaceFields = {
+		surfaces: surfaceSenses.surfaces,
+		automations: surfaceSenses.automations,
+	} as unknown as Record<string, JsonValue>;
+	if (baseSenses && typeof baseSenses === "object" && !Array.isArray(baseSenses)) {
+		return { ...baseSenses, ...surfaceFields };
+	}
+	return surfaceFields;
+}
+
+export interface CloudNativeCompanyRuntimeOptions {
+	presence?: CloudCompanyPathPresenceFactory;
+	controlPlane: NativeCompanyControl;
+	pathControl: CloudCompanyPathControl;
+	command: readonly [string, ...string[]];
+	binarySha256: string;
+	timeoutMs?: number;
+	isolation?: NativeIsolationConfiguration;
+	/** How a ChatGPT plan run's Codex gets the plan's token; `command` unless the host chose the fallback. */
+	chatGptPlanAuth?: CloudChatGptPlanAuth;
+	secretBroker?: CloudSecretOperationClient;
+	/** The vault's company accounts route (A1-4): without it no run is offered company_account. */
+	companyAccounts?: CloudCompanyAccountClient;
+	/** The vault's event hooks route (E3b-2): without it a run's GitHub or HMAC hook is refused as unavailable. */
+	eventHooks?: CloudCompanyFolderSignedHooks;
+	/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
+	computerSession?: CloudCompanyComputerSessionFactory;
+	/** The coding composition (Order 9): only a node with the coding command
+	 * gateway installed carries it. A coding wake on a node without it fails visibly. */
+	coding?: CloudNativeCodingDriver;
+	/** Company machines' command gateway (the coding executor's ingress, 2026-09-28).
+	 * Without it no run is offered the machine tools. */
+	machines?: (binding: CloudNativeToolBinding) => CloudMachineCommandGateway;
+	/**
+	 * The agent's home (lanes/agent-box-20261113, slice 1): the channel from this run's slot to its own machine, for
+	 * Codex's own shell and file tools. Given only where the host is configured for it; used only for a run whose
+	 * company has the switch on (`qorpera_company_home_available`). Without either, every run is exactly as today.
+	 */
+	homeChannel?: (binding: CloudNativeToolBinding) => CloudCodexHomeChannel;
+	/** The Claude Code worker's composition (slice C4c): with the home channel, a plain worker the agent handed to
+	 * Claude Code runs here, on the agent's machine and its member's Claude sign-in. Without it such a run is refused. */
+	claudeWorker?: CloudClaudeWorkerHost;
+	geminiKeys?: GeminiKeyRunClient;
+	geminiApiBaseUrl?: string;
+	geminiAllowLoopback?: boolean;
+	geminiFetch?: typeof fetch;
+	/** The vault's coding value route (20260930705000): with machines, a company agent's own run is offered
+	 * save_coding_value. */
+	codingValues?: CloudMachineCodingValues;
+	/** A company run's file bytes (core C1d: the object gateway's folder route). Every company run is a folder-v2
+	 * run (legacy sweep step C, C-P1). */
+	folderBytes: (binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes;
+	/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
+	 * company_search over it. */
+	folderSearch?: { readonly socketPath: string };
+	/** The data gateway's run door (company databases, slices 5 and 7): with it a run is offered data_describe,
+	 * data_query and, unless it is a worker, data_apply and data_change; without it none of them. */
+	companyData?: CloudCompanyDataDoor;
+	surfaceTools?: CloudRuntimeSurfaceToolsPort;
+	surfaceFirst?: boolean;
+}
+
 /** Cloud-only composition of the native fence, live path gateway and public mouth.
  * Object transport and cloud authority stay in this trusted host. No model tool
  * receives a service key, raw object capability, recipient or canonical mount.
@@ -303,60 +412,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #codingValues: CloudMachineCodingValues | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
 	readonly #companyData: CloudCompanyDataDoor | undefined;
+	readonly #surfaceTools: CloudRuntimeSurfaceToolsPort | undefined;
+	readonly #surfaceFirst: boolean;
 	readonly #folderBytes: (
 		binding: CloudNativeToolBinding,
 		identity: CloudNativeToolIdentity,
 	) => CloudCompanyFolderBytes;
 
-	constructor(options: {
-		presence?: CloudCompanyPathPresenceFactory;
-		controlPlane: NativeCompanyControl;
-		pathControl: CloudCompanyPathControl;
-		command: readonly [string, ...string[]];
-		binarySha256: string;
-		timeoutMs?: number;
-		isolation?: NativeIsolationConfiguration;
-		/** How a ChatGPT plan run's Codex gets the plan's token; `command` unless the host chose the fallback. */
-		chatGptPlanAuth?: CloudChatGptPlanAuth;
-		secretBroker?: CloudSecretOperationClient;
-		/** The vault's company accounts route (A1-4): without it no run is offered company_account. */
-		companyAccounts?: CloudCompanyAccountClient;
-		/** The vault's event hooks route (E3b-2): without it a run's GitHub or HMAC hook is refused as unavailable. */
-		eventHooks?: CloudCompanyFolderSignedHooks;
-		/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
-		computerSession?: CloudCompanyComputerSessionFactory;
-		/** The coding composition (Order 9): only a node with the coding command
-		 * gateway installed carries it. A coding wake on a node without it fails visibly. */
-		coding?: CloudNativeCodingDriver;
-		/** Company machines' command gateway (the coding executor's ingress, 2026-09-28).
-		 * Without it no run is offered the machine tools. */
-		machines?: (binding: CloudNativeToolBinding) => CloudMachineCommandGateway;
-		/**
-		 * The agent's home (lanes/agent-box-20261113, slice 1): the channel from this run's slot to its own machine, for
-		 * Codex's own shell and file tools. Given only where the host is configured for it; used only for a run whose
-		 * company has the switch on (`qorpera_company_home_available`). Without either, every run is exactly as today.
-		 */
-		homeChannel?: (binding: CloudNativeToolBinding) => CloudCodexHomeChannel;
-		/** The Claude Code worker's composition (slice C4c): with the home channel, a plain worker the agent handed to
-		 * Claude Code runs here, on the agent's machine and its member's Claude sign-in. Without it such a run is refused. */
-		claudeWorker?: CloudClaudeWorkerHost;
-		geminiKeys?: GeminiKeyRunClient;
-		geminiApiBaseUrl?: string;
-		geminiAllowLoopback?: boolean;
-		geminiFetch?: typeof fetch;
-		/** The vault's coding value route (20260930705000): with machines, a company agent's own run is offered
-		 * save_coding_value. */
-		codingValues?: CloudMachineCodingValues;
-		/** A company run's file bytes (core C1d: the object gateway's folder route). Every company run is a folder-v2
-		 * run (legacy sweep step C, C-P1). */
-		folderBytes: (binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes;
-		/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
-		 * company_search over it. */
-		folderSearch?: { readonly socketPath: string };
-		/** The data gateway's run door (company databases, slices 5 and 7): with it a run is offered data_describe,
-		 * data_query and, unless it is a worker, data_apply and data_change; without it none of them. */
-		companyData?: CloudCompanyDataDoor;
-	}) {
+	constructor(options: CloudNativeCompanyRuntimeOptions) {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
 		this.#paths = options.pathControl;
@@ -383,6 +446,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#folderBytes = options.folderBytes;
 		this.#folderSearch = options.folderSearch ? Object.freeze({ ...options.folderSearch }) : undefined;
 		this.#companyData = options.companyData;
+		this.#surfaceFirst = options.surfaceFirst ?? Boolean(options.surfaceTools);
+		this.#surfaceTools =
+			options.surfaceTools ?? (this.#surfaceFirst ? createControlPlaneSurfaceToolsPort(this.#paths) : undefined);
 	}
 
 	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
@@ -597,6 +663,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					serviceTier,
 				});
 			}
+			if (wake.kind === "agent" && wake.source.kind === "surface-session") {
+				stage = "native-tools";
+				composition.finish("succeeded", { outputBytes: 0 });
+				return await this.#surfaceSessionTurn(identityRoot, signal, {
+					binding,
+					context,
+					wake,
+					observability,
+					serviceTier,
+					machinesAvailable: await machinesRequest,
+				});
+			}
 			// A post in a conversation is the run's request (21 October 2026, item 3): the post the wake names, or a card
 			// answer with its card, read whole from the history alongside the reads below. It never fails the run.
 			const roomRequest = composeCloudRoomRequest(context, wake, this.#paths, binding, signal);
@@ -711,6 +789,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								return null;
 							})
 						: Promise.resolve(undefined);
+				const surfaceSensesRequest =
+					this.#surfaceFirst &&
+					this.#surfaceTools?.listSurfaceSenses &&
+					context.identity.audienceKind === "company" &&
+					!cloudWorkerToolFilter(wake).isWorker
+						? this.#surfaceTools.listSurfaceSenses(context.identity.companyId, signal).catch((error) => {
+								if (!signal.aborted)
+									console.error(
+										`The company's surface senses were not read (${cloudRuntimeErrorCategory(error, signal)})`,
+									);
+								return undefined;
+							})
+						: Promise.resolve(undefined);
 				// Changes the agent saved from a computer that wait for review (P40): listed only where it can
 				// raise a card (its own conversation or thread, not a worker), the same rule the folder core keeps.
 				const proposalsRequest =
@@ -768,7 +859,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					vision,
 					reading,
 					openWork: await openWorkRequest,
-					senses: await sensesRequest,
+					senses: mergeSurfaceSenses(await sensesRequest, await surfaceSensesRequest),
 					proposals: await proposalsRequest,
 					platformUpdates: await updatesRequest,
 				};
@@ -844,7 +935,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					const views = redactCloudWebhookSecrets(view?.views ?? "");
 					// What the instructions are composed for: the run's tools and whether the vision is agreed (T3-2).
 					if (!offeredTools) throw new Error("The run's tools were not made before its opening");
-					const parts = { head: head.text, views, tools: offeredTools, visionAgreed: cloudVisionAgreed(vision) };
+					const parts = {
+						head: head.text,
+						views,
+						tools: offeredTools,
+						visionAgreed: cloudVisionAgreed(vision),
+						...(this.#surfaceFirst ? { surfaceFirst: true } : {}),
+					};
 					const updates = offeredTools.has("record_reflection") ? platformUpdates?.context : undefined;
 					const prompt = composeCloudNativeCompanyPrompt(
 						{ ...context, continuation },
@@ -1309,7 +1406,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							request: cloudActionReviewRequest(context, wake),
 							// What the agent works for, from its files as this run read them: a run no member started is
 							// judged by it (2026-10-22 amendment, item 2). A vision too large to read as text is left out.
-							mandate: cloudActionReviewMandate(context, wake, vision && "text" in vision ? vision.text : null),
+							mandate: cloudActionReviewMandate(context, wake, vision && "text" in vision ? vision.text : null, {
+								surfaceFirst: this.#surfaceFirst,
+							}),
 							holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
 							connectorEffects,
 							offlineShells,
@@ -1379,12 +1478,24 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							this.#machines && machinesAvailable && identity.audienceKind === "company"
 								? this.#machines(binding)
 								: undefined;
+						const surfaceFilePolicy: SurfaceFilePolicy | undefined =
+							this.#surfaceFirst && !work.isWorker && identity.audienceKind === "company"
+								? {
+										mode: "cofounder",
+										allowExplicitMemberDoc: memberExplicitlyRequestedDocument(context, wake),
+									}
+								: undefined;
 						const runTools: CloudNativeTool[] = [
 							...(computer?.tools ?? []),
 							// A run's file tools act through the folder core with its own authority (P19), and so do the
 							// tools that read and write its interfaces and tables (Interfaces I8a, I8b).
 							...[
-								...cloudFolderFileTools({ folder: folder.client, operations, identity }),
+								...cloudFolderFileTools({
+									folder: folder.client,
+									operations,
+									identity,
+									...(surfaceFilePolicy ? { surfaceFilePolicy } : {}),
+								}),
 								...cloudInterfaceTools({
 									folder: folder.client,
 									identity,
@@ -1392,7 +1503,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								}),
 								...cloudInterfaceWriteTools({ folder: folder.client, operations, identity }),
 								// Interface apps: pages the agent makes to show members its work (5 November 2026).
-								...cloudAppTools({ folder: folder.client, operations, identity }),
+								...(this.#surfaceFirst ? [] : cloudAppTools({ folder: folder.client, operations, identity })),
 								// A picture the agent makes, saved in the folder as a write is (20260930746000).
 								...(pictures
 									? [cloudPictureTool({ folder: folder.client, operations, identity, pictures })]
@@ -1500,29 +1611,33 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 													}),
 												]
 											: []),
-										...cloudSidebarTools(binding, identity, {
-											folderSidebar: new CloudFolderSidebar({
-												folder: folder.client,
-												operations,
-												identity,
-												// The Co-Founder stays on top, outside the sections.
-												people: new Map(
-													[
-														...(context.agentKind === "cofounder" ? [] : [context.agent]),
-														...context.coworkers,
-													].map((agent) => [agent.id, agent.name]),
-												),
-												peopleComplete: !context.coworkersTruncated,
-											}),
-										}),
+										...(this.#surfaceFirst
+											? []
+											: cloudSidebarTools(binding, identity, {
+													folderSidebar: new CloudFolderSidebar({
+														folder: folder.client,
+														operations,
+														identity,
+														// The Co-Founder stays on top, outside the sections.
+														people: new Map(
+															[
+																...(context.agentKind === "cofounder" ? [] : [context.agent]),
+																...context.coworkers,
+															].map((agent) => [agent.id, agent.name]),
+														),
+														peopleComplete: !context.coworkersTruncated,
+													}),
+												})),
 										// The apps drawer's groups, the twin of the sidebar's sections (APP-GROUPS-SPEC §3).
-										cloudAppGroupsTool({ folder: folder.client, operations, identity }),
+										...(this.#surfaceFirst
+											? []
+											: [cloudAppGroupsTool({ folder: folder.client, operations, identity })]),
 										...cloudReviewRuleTools(binding, identity, this.#paths),
 										// Good will (20260930566000): last month's payments and sorting them, the Co-Founder's until
 										// an agent owns the company's money.
 										...cloudGoodWillTools(binding, identity, this.#paths),
 										// The Co-Founder deals the team out between the members (20260930702000).
-										...(context.agentKind === "cofounder"
+										...(context.agentKind === "cofounder" && !this.#surfaceFirst
 											? cloudMemberOfferTools(binding, identity, this.#paths)
 											: []),
 										...(context.agentKind === "cofounder" && identity.audienceKind === "company"
@@ -1591,7 +1706,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								),
 							...(identity.audienceKind === "company"
 								? [
-										...(work.isWorker
+										...(work.isWorker || this.#surfaceFirst
 											? []
 											: cloudHiringTools(identity, {
 													folderHiring: new CloudFolderHiring({
@@ -1640,6 +1755,37 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										// The company's code kept in Qorpera (20260930720000): an agent's own run takes a change
 										// out of main again and describes one; a worker reports to its agent instead.
 										...(work.isWorker ? [] : cloudCodeTools({ folder: folder.client, identity })),
+										...(work.isWorker || !this.#surfaceTools
+											? []
+											: [
+													createProposeSurfaceTool(this.#surfaceTools),
+													createStartSurfaceSessionTool({
+														startSurfaceSession: (sessionRequest, toolContext) =>
+															this.#surfaceTools!.startSurfaceSession(
+																{
+																	...sessionRequest,
+																	ownerLabel:
+																		sessionRequest.ownerLabel ??
+																		(context.agentKind === "cofounder"
+																			? "Co-Founder"
+																			: context.agent.name),
+																},
+																toolContext,
+															),
+													}),
+													...(this.#surfaceTools.manageAutomation
+														? [
+																createManageSurfaceAutomationTool(identity.companyId, {
+																	manageAutomation: (companyId, automationRequest, toolContext) =>
+																		this.#surfaceTools!.manageAutomation!(
+																			companyId,
+																			automationRequest,
+																			toolContext,
+																		),
+																}),
+															]
+														: []),
+												]),
 									]
 								: []),
 							...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
@@ -1866,6 +2012,511 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		return { providerSessionId: result.providerSessionId, delivery: { messageCount: 0, finalMessageId: null } };
 	}
 
+	async #surfaceSessionTurn(
+		identityRoot: string,
+		signal: AbortSignal,
+		input: {
+			binding: CloudNativeToolBinding;
+			context: CloudNativeCompanyContext;
+			wake: CloudWakeEnvelope;
+			observability: CloudRuntimeObservability;
+			serviceTier: CloudRuntimeServiceTier;
+			machinesAvailable: boolean;
+		},
+	): Promise<{ providerSessionId: string; delivery: { messageCount: number; finalMessageId: string | null } }> {
+		const { binding, context, wake, observability, serviceTier, machinesAvailable } = input;
+		const identity = context.identity;
+		const payload = wake.payload as Record<string, unknown>;
+		const sessionId = String(payload.surfaceSessionId);
+		const surfaceId = String(payload.surfaceId);
+		const surfaceSlug = String(payload.surfaceSlug);
+		const sourceKind = payload.sourceKind as SurfaceSourceKind;
+		const leaseToken = String(payload.leaseToken);
+		// WHY: Read the full prompt, briefSummary, originRef, and conflictPaths via native host call so wake payloads remain well under Postgres's 8192-byte check.
+		const sessionTurnRaw = (await this.#paths.call(
+			"qorpera_native_surface_read_session_turn",
+			{
+				p_profile_id: identity.companyId,
+				p_session_id: sessionId,
+				p_lease_token: leaseToken,
+			},
+			signal,
+		)) as Record<string, unknown> | null;
+		if (!sessionTurnRaw || typeof sessionTurnRaw !== "object" || typeof sessionTurnRaw.prompt !== "string") {
+			throw new Error("Surface session turn payload could not be loaded");
+		}
+		const surfaceTitle =
+			typeof sessionTurnRaw.surfaceTitle === "string" && sessionTurnRaw.surfaceTitle.trim()
+				? sessionTurnRaw.surfaceTitle.trim()
+				: surfaceSlug;
+		const conflictPaths = Array.isArray(sessionTurnRaw.conflictPaths)
+			? sessionTurnRaw.conflictPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+			: [];
+		const turnInput: SurfaceSessionTurnInput = {
+			sessionId,
+			surfaceId,
+			companyId: identity.companyId,
+			surfaceSlug,
+			surfaceTitle,
+			sourceKind,
+			prompt: sessionTurnRaw.prompt,
+			state: sessionTurnRaw.state === "reconciling" ? "reconciling" : "queued",
+			repositoryKey: typeof sessionTurnRaw.repositoryKey === "string" ? sessionTurnRaw.repositoryKey : null,
+			folderRoot: typeof sessionTurnRaw.folderRoot === "string" ? sessionTurnRaw.folderRoot : null,
+			briefSummary: typeof sessionTurnRaw.briefSummary === "string" ? sessionTurnRaw.briefSummary : null,
+			explorationVariantLabel:
+				typeof sessionTurnRaw.explorationVariantLabel === "string" ? sessionTurnRaw.explorationVariantLabel : null,
+			originKind:
+				typeof sessionTurnRaw.originKind === "string" ? sessionTurnRaw.originKind : String(payload.originKind),
+			originRef: sessionTurnRaw.originRef ?? null,
+			...(conflictPaths.length > 0 ? { conflictPaths } : {}),
+			leaseToken,
+		};
+
+		const folderClient = new CloudCompanyFolderClient({
+			binding,
+			identity,
+			control: this.#paths,
+			bytes: this.#folderBytes(binding, identity),
+			...(this.#eventHooks ? { signedHooks: this.#eventHooks } : {}),
+		});
+		const stagedNotePaths = new Set<string>();
+		const surfaceTools = createControlPlaneSurfaceToolsPort(this.#paths, {
+			leaseToken,
+			deferSessionCompletion: true,
+			onNotePaths: (paths) => {
+				for (const path of paths) stagedNotePaths.add(path);
+			},
+		});
+		const completionPort = createControlPlaneSessionCompletionPort(this.#paths, identity.companyId);
+		const leaseRenewalPort = createControlPlaneSessionLeaseRenewalPort(this.#paths, identity.companyId);
+		const gateway = new CloudCompanyPathGateway({ binding, identity, control: this.#paths });
+		const isGeminiRun = context.gemini !== undefined;
+		let geminiSession:
+			| {
+					readonly model: NonNullable<CloudNativeCompanyContext["gemini"]>["model"];
+					readonly effort: NonNullable<CloudNativeCompanyContext["gemini"]>["effort"];
+					readonly apiKey: string;
+					readonly apiBaseUrl?: string;
+					readonly allowLoopback?: boolean;
+					readonly fetch?: typeof fetch;
+					readonly initialSpendMicrodollars: number;
+					readonly monthlyCapCents: number | null;
+					readonly onUsage: (
+						usage: {
+							readonly inputTokens: number;
+							readonly cachedTokens: number;
+							readonly outputTokens: number;
+						},
+						requestSignal: AbortSignal,
+					) => Promise<GeminiUsageReceipt | undefined>;
+			  }
+			| undefined;
+		if (context.gemini) {
+			if (!this.#geminiKeys) {
+				throw new Error(
+					"Gemini 4 Neon conversations require the company vault, which this host does not carry; nothing ran on Codex",
+				);
+			}
+			const openedKey = await openGeminiKeyForRun(
+				this.#geminiKeys,
+				{
+					leaseId: binding.leaseId,
+					runId: binding.runId,
+					jobId: binding.jobId,
+					runnerId: binding.runnerId,
+					assignmentId: binding.assignmentId,
+					credentialCapsuleId: binding.credentialCapsuleId,
+					computeIdentityId: binding.computeIdentityId,
+				},
+				signal,
+			);
+			if (openedKey.state === "refused") {
+				if (openedKey.reason === "CAP_REACHED") {
+					throw tagNativeRuntimeFailure(
+						new GeminiCapReachedError(openedKey.monthlyCapCents, openedKey.monthSpendMicrodollars),
+						"native-tools",
+						"budget_exhausted",
+					);
+				}
+				throw tagNativeRuntimeFailure(new GeminiKeyRevokedError(), "native-tools", "authority_unavailable");
+			}
+			geminiSession = {
+				model: context.gemini.model,
+				effort: context.gemini.effort,
+				apiKey: openedKey.apiKey,
+				...(this.#geminiApiBaseUrl ? { apiBaseUrl: this.#geminiApiBaseUrl } : {}),
+				...(this.#geminiAllowLoopback ? { allowLoopback: true } : {}),
+				...(this.#geminiFetch ? { fetch: this.#geminiFetch } : {}),
+				initialSpendMicrodollars: openedKey.monthSpendMicrodollars,
+				monthlyCapCents: openedKey.monthlyCapCents,
+				onUsage: async (usage, requestSignal) => {
+					const recorded = (await this.#paths.call(
+						"qorpera_record_gemini_run_usage",
+						{ p_binding: binding, p_usage: usage },
+						requestSignal,
+					)) as {
+						monthSpendMicrodollars?: unknown;
+						monthlyCapCents?: unknown;
+						capReached?: unknown;
+					} | null;
+					if (
+						!recorded ||
+						typeof recorded.monthSpendMicrodollars !== "number" ||
+						(recorded.monthlyCapCents !== null && typeof recorded.monthlyCapCents !== "number") ||
+						typeof recorded.capReached !== "boolean"
+					) {
+						return undefined;
+					}
+					return {
+						monthSpendMicrodollars: recorded.monthSpendMicrodollars,
+						monthlyCapCents: recorded.monthlyCapCents,
+						capReached: recorded.capReached,
+					};
+				},
+			};
+		}
+
+		let lastProviderSessionId = `surface-session:${sessionId}`;
+		const runModelTurn = async (spec: {
+			instructions: string;
+			turnBrief: string;
+			prompt: string;
+			buildTools: (runIdentity: CloudNativeToolIdentity, operations: CloudNativeToolOperations) => CloudNativeTool[];
+			turnSignal: AbortSignal;
+		}): Promise<SurfaceSessionTurnExecutionOutcome> => {
+			let captured: SurfaceSessionTurnExecutionOutcome | null = null;
+			const surfaceReplyTool: CloudNativeTool = {
+				name: "surface_reply",
+				source: "runtime",
+				description:
+					"Complete this Surface session turn and deliver a concise founder-facing reply summarizing what you staged or verified.",
+				inputSchema: {
+					type: "object",
+					additionalProperties: false,
+					required: ["replyText"],
+					properties: {
+						replyText: { type: "string", minLength: 1, maxLength: 4000 },
+						notePaths: { type: "array", items: { type: "string" }, maxItems: 12 },
+						branchHeadSha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+					},
+				},
+				parseArguments(value) {
+					if (!value || typeof value !== "object" || Array.isArray(value)) {
+						throw new CloudToolArgumentRefusal("surface_reply arguments must be an object");
+					}
+					const rec = value as Record<string, unknown>;
+					const replyText = typeof rec.replyText === "string" ? rec.replyText.trim() : "";
+					if (!replyText || replyText.length > 4000) {
+						throw new CloudToolArgumentRefusal("replyText must be 1..4000 characters");
+					}
+					const notePaths =
+						rec.notePaths === undefined
+							? undefined
+							: Array.isArray(rec.notePaths) &&
+									rec.notePaths.every((p) => typeof p === "string" && p.trim().length > 0)
+								? rec.notePaths.map((p) => (p as string).trim())
+								: null;
+					if (notePaths === null) {
+						throw new CloudToolArgumentRefusal("notePaths must be an array of non-empty paths");
+					}
+					const branchHeadSha =
+						rec.branchHeadSha === undefined
+							? undefined
+							: typeof rec.branchHeadSha === "string" && /^[0-9a-f]{40}$/.test(rec.branchHeadSha)
+								? rec.branchHeadSha
+								: null;
+					if (branchHeadSha === null) {
+						throw new CloudToolArgumentRefusal("branchHeadSha must be a 40-hex commit SHA");
+					}
+					return {
+						replyText,
+						...(notePaths ? { notePaths } : {}),
+						...(branchHeadSha ? { branchHeadSha } : {}),
+					};
+				},
+				async execute(value) {
+					const args = surfaceReplyTool.parseArguments(value) as {
+						replyText: string;
+						notePaths?: string[];
+						branchHeadSha?: string;
+					};
+					captured = {
+						state: "ready",
+						replyText: args.replyText,
+						notePaths: args.notePaths ?? null,
+						branchHeadSha: args.branchHeadSha ?? null,
+					};
+					return { kind: "text", value: JSON.stringify({ ok: true }), completesTurn: true };
+				},
+			};
+			const surfaceAskTool: CloudNativeTool = {
+				name: "surface_ask",
+				source: "runtime",
+				description:
+					"Pause this Surface session turn and ask the founder one concrete clarifying question before staging changes.",
+				inputSchema: {
+					type: "object",
+					additionalProperties: false,
+					required: ["text"],
+					properties: {
+						text: { type: "string", minLength: 1, maxLength: 1000 },
+						replyText: { type: "string", minLength: 1, maxLength: 2000 },
+						options: {
+							type: "array",
+							maxItems: 6,
+							items: { type: "string", minLength: 1, maxLength: 160 },
+						},
+					},
+				},
+				parseArguments(value) {
+					if (!value || typeof value !== "object" || Array.isArray(value)) {
+						throw new CloudToolArgumentRefusal("surface_ask arguments must be an object");
+					}
+					const rec = value as Record<string, unknown>;
+					const questionText = typeof rec.text === "string" ? rec.text.trim() : "";
+					if (!questionText || questionText.length > 1000) {
+						throw new CloudToolArgumentRefusal("text must be 1..1000 characters");
+					}
+					const replyText =
+						rec.replyText === undefined
+							? undefined
+							: typeof rec.replyText === "string" &&
+									rec.replyText.trim().length > 0 &&
+									rec.replyText.trim().length <= 2000
+								? rec.replyText.trim()
+								: null;
+					if (replyText === null) {
+						throw new CloudToolArgumentRefusal("replyText must be 1..2000 characters when supplied");
+					}
+					let options: string[] = [];
+					if (rec.options !== undefined) {
+						if (!Array.isArray(rec.options) || rec.options.length > 6) {
+							throw new CloudToolArgumentRefusal("options must be an array of at most 6 strings");
+						}
+						options = rec.options.map((entry) => {
+							const label = typeof entry === "string" ? entry.trim() : "";
+							if (!label || label.length > 160) {
+								throw new CloudToolArgumentRefusal("Each option must be a string of 1..160 characters");
+							}
+							return label;
+						});
+					}
+					return {
+						text: questionText,
+						options,
+						...(replyText ? { replyText } : {}),
+					};
+				},
+				async execute(value) {
+					const args = surfaceAskTool.parseArguments(value) as unknown as {
+						text: string;
+						replyText?: string;
+						options: string[];
+					};
+					const question: SurfaceSessionQuestion = {
+						text: args.text,
+						options: args.options,
+					};
+					captured = {
+						state: "needs_input",
+						replyText: args.replyText ?? args.text,
+						question,
+					};
+					return { kind: "text", value: JSON.stringify({ ok: true }), completesTurn: true };
+				},
+			};
+
+			const runtimeInstructions = `${spec.instructions}\n\nWhen finished staging changes or inspecting the surface, call surface_reply with a concise founder-facing summary. If a concrete founder decision is required first, call surface_ask.`;
+			const fullPrompt = `${spec.turnBrief}\n\nFounder request:\n${spec.prompt}`;
+			const contextText = `${runtimeInstructions}\n${fullPrompt}`;
+			const contextSha256 = createHash("sha256").update(contextText).digest("hex");
+			const contextBytes = Buffer.byteLength(contextText);
+			let admitted: Record<string, unknown> | undefined;
+
+			const sessionResult = await runCloudNativeRunToolSession({
+				observability,
+				binding,
+				serviceTier,
+				controlPlane: this.#control,
+				...(geminiSession ? { gemini: geminiSession } : {}),
+				beginExecution: async (specification, requestSignal) => {
+					const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
+					const answer = await this.#paths.call(
+						"qorpera_begin_native_company_execution_v3",
+						{
+							p_binding: binding,
+							p_binary_sha256: this.#sha256,
+							p_runtime_bundle_sha256: identity.runtimeBundleSha256,
+							p_reasoning_policy_sha256: identity.reasoningPolicySha256,
+							p_tool_catalog_text: toolCatalogText,
+						},
+						requestSignal,
+						CLOUD_RUN_ROW_READ_MS,
+					);
+					const admission = {
+						runId: binding.runId,
+						jobId: binding.jobId,
+						leaseId: binding.leaseId,
+						binarySha256: this.#sha256,
+						runtimeBundleSha256: identity.runtimeBundleSha256,
+						reasoningEffort: identity.reasoningEffort,
+						reasoningPolicySha256: identity.reasoningPolicySha256,
+						toolCatalogSha256: createHash("sha256").update(toolCatalogText).digest("hex"),
+					};
+					confirmNativeAdmission(answer, {
+						schema: "qorpera.native-company-execution-admission/v1",
+						...admission,
+					});
+					admitted = admission;
+				},
+				opening: async (openingSignal) => {
+					const admission = admitted;
+					if (!admission) throw new Error("Native execution admission was not confirmed");
+					const started = await cloudToolRequest(
+						(requestSignal) =>
+							this.#paths.call(
+								"qorpera_bind_native_company_context",
+								{ p_binding: binding, p_context_sha256: contextSha256, p_context_bytes: contextBytes },
+								requestSignal,
+								CLOUD_RUN_ROW_READ_MS,
+							),
+						openingSignal,
+						CLOUD_RUN_ROW_READ_MS,
+					);
+					confirmNativeAdmission(started, {
+						...admission,
+						schema: "qorpera.native-company-execution-start/v1",
+						contextSha256,
+						contextBytes,
+					});
+					return {
+						prompt: fullPrompt,
+						runtimeInstructions,
+						composeContext: cloudNativeContextIdentity,
+					};
+				},
+				turnCorrection: async () =>
+					captured
+						? undefined
+						: "Your turn ended without calling surface_reply or surface_ask. Call surface_reply now with a brief summary of what you staged, or call surface_ask if founder input is needed.",
+				tools: (runIdentity, operations) => ({
+					tools: [...spec.buildTools(runIdentity, operations), surfaceReplyTool, surfaceAskTool],
+					assertContext: (requestSignal, timeoutMs) => gateway.assertReadableContext(requestSignal, timeoutMs),
+					checkRun: (requestSignal, timeoutMs) => gateway.checkRun(requestSignal, timeoutMs),
+					recordContextView: (frame, outputs, requestSignal) =>
+						gateway.recordContextView(frame, outputs, requestSignal),
+					fenceContextView: (frame, outputs, requestSignal) =>
+						gateway.fenceContextView(frame, outputs, requestSignal),
+				}),
+				command: this.#command,
+				binarySha256: this.#sha256,
+				identityRoot,
+				...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
+				isolation: this.#isolation,
+				...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
+				signal: spec.turnSignal,
+				timeoutMs: this.#timeoutMs,
+			});
+
+			lastProviderSessionId = sessionResult.providerSessionId;
+			if (sessionResult.usageSignal && !isGeminiRun) {
+				await this.#recordUsageSignalKind(binding, sessionResult.usageSignal);
+			}
+			if (!isGeminiRun) {
+				this.#spareEfforts.set(identityRoot, { reasoningEffort: identity.reasoningEffort, serviceTier });
+			}
+			const outcome = captured as SurfaceSessionTurnExecutionOutcome | null;
+			const mergedNotes = [...new Set([...stagedNotePaths, ...(outcome?.notePaths ?? [])])];
+			const finalOutcome: SurfaceSessionTurnExecutionOutcome = outcome
+				? {
+						...outcome,
+						...(mergedNotes.length > 0 ? { notePaths: mergedNotes } : {}),
+					}
+				: {
+						state: "ready",
+						replyText: "Surface turn completed.",
+						...(mergedNotes.length > 0 ? { notePaths: mergedNotes } : {}),
+					};
+			return finalOutcome;
+		};
+
+		const readOnlyNames = new Set(["company_read", "company_list"]);
+		const machineGateway =
+			this.#machines && machinesAvailable && identity.audienceKind === "company"
+				? this.#machines(binding)
+				: undefined;
+
+		const turnResult = await runSurfaceSessionTurn(turnInput, {
+			folder: folderClient,
+			surfaceTools,
+			executeTurn: async (turnReq) =>
+				runModelTurn({
+					instructions: turnReq.instructions,
+					turnBrief: turnReq.turnBrief,
+					prompt: turnReq.input.prompt,
+					turnSignal: turnReq.signal,
+					buildTools: (runIdentity, operations) => {
+						const folderTools =
+							turnReq.mode === "folder"
+								? cloudFolderFileTools({
+										folder: folderClient,
+										operations,
+										identity: runIdentity,
+										surfaceFilePolicy: { mode: "surface_worker", allowedRoots: turnReq.allowedRoots },
+									})
+								: cloudFolderFileTools({
+										folder: folderClient,
+										operations,
+										identity: runIdentity,
+									}).filter((tool) => readOnlyNames.has(tool.name));
+						return [...turnReq.tools, ...folderTools];
+					},
+				}),
+			executeCodeRepoTurn: async (codeReq) =>
+				runModelTurn({
+					instructions: codeReq.instructions,
+					turnBrief: codeReq.turnBrief,
+					prompt: codeReq.input.prompt,
+					turnSignal: codeReq.signal,
+					buildTools: (runIdentity, operations) => {
+						const readOnlyFolderTools = cloudFolderFileTools({
+							folder: folderClient,
+							operations,
+							identity: runIdentity,
+						}).filter((tool) => readOnlyNames.has(tool.name));
+						const machineTools = machineGateway
+							? cloudMachineTools({
+									binding,
+									identity: runIdentity,
+									control: this.#paths,
+									operations,
+									gateway: machineGateway,
+									worker: true,
+									...(this.#codingValues ? { codingValues: this.#codingValues } : {}),
+									...(this.#companyAccounts ? { accountFills: true } : {}),
+								})
+							: [];
+						return [
+							createCodingRecordChangeTool(codeReq.binding.sessionId, {
+								recordChange: codeReq.binding.recordChange,
+							}),
+							...readOnlyFolderTools,
+							...machineTools,
+						];
+					},
+				}),
+			completeSessionTurn: completionPort.completeSessionTurn,
+			renewSessionLease: leaseRenewalPort.renewSessionLease,
+			signal,
+		});
+
+		if (turnResult.cause !== undefined) {
+			throw turnResult.cause;
+		}
+		return { providerSessionId: lastProviderSessionId, delivery: { messageCount: 0, finalMessageId: null } };
+	}
+
 	async #claudeCodeWorker(
 		identityRoot: string,
 		signal: AbortSignal,
@@ -2008,7 +2659,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					reviewer,
 					reviewerModel: CLAUDE_ACTION_REVIEW_MODEL,
 					request: cloudActionReviewRequest(input.context, wake),
-					mandate: cloudActionReviewMandate(input.context, wake, vision && "text" in vision ? vision.text : null),
+					mandate: cloudActionReviewMandate(input.context, wake, vision && "text" in vision ? vision.text : null, {
+						surfaceFirst: this.#surfaceFirst,
+					}),
 					holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
 					facts: {
 						coworkers: new Map(input.context.coworkers.map((coworker) => [coworker.id, coworker.name])),

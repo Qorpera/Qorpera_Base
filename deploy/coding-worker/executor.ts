@@ -29,6 +29,7 @@ import { exportCodeSiteSource, pinCodeSiteTree, readCodeSiteTree } from "../../p
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { CodeSiteUploads } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
 import { RealtimeOrchestratorWake } from "../../packages/runner-orchestrator/src/orchestrator-wake.ts";
+import { SurfaceCodeHostWorker } from "../../packages/runner-orchestrator/src/surface-code-host-worker.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { CodingMachineCommandSecrets } from "../../packages/runner-orchestrator/src/coding-command-secrets.ts";
 import { codingCommandExecution } from "../../packages/runner-orchestrator/src/coding-folder-command-transport.ts";
@@ -544,6 +545,14 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		...(nativeEdge ? { nativeEdge, exportSource: exportCodeSiteSource } : {}),
 	}) : undefined;
 	const machineIdSha256 = createHash("sha256").update(machine).digest("hex");
+	const surfaceCodeHost = codeHostJobs && environment.QORPERA_SURFACE_CODE_HOST_WORKER?.trim() === "1"
+		? new SurfaceCodeHostWorker({
+			control,
+			hosts: codeHostJobs,
+			readTree: readCodeSiteTree,
+			report: logCodeRecord,
+		})
+		: undefined;
 	const codeRequests = codeHostJobs && codeRecords ? codeHostRequestsOf({
 		control, hosts: codeHostJobs, records: codeRecords, ...(codeSites ? { sites: codeSites } : {}), bundles: codeBundles,
 		transports: codeImportTransports(config.broker ? { origin: config.broker.origin,
@@ -921,7 +930,23 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				await codeSites.wait(60_000, stop.signal);
 			}
 		})();
-		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions, caring, requesting, recording, uploading]);
+		const surfacing = (async () => {
+			if (!surfaceCodeHost) return;
+			while (!stop.signal.aborted) {
+				try {
+					const passed = await surfaceCodeHost.pass(stop.signal);
+					if (passed.previews + passed.merges + passed.publishes + passed.failed > 0) {
+						console.log(JSON.stringify({ event: "surface-code-host", step: "pass", ...passed }));
+					}
+				} catch (error) {
+					if (!stop.signal.aborted) {
+						console.error(JSON.stringify({ event: "surface-code-host-error", step: "pass", ...loggedError(error) }));
+					}
+				}
+				await setTimeout(2_000, undefined, { signal: stop.signal }).catch(() => undefined);
+			}
+		})();
+		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions, caring, requesting, recording, uploading, surfacing]);
 	} finally {
 		stop.abort();
 		const closeStep = async (stage: string, work: () => Promise<unknown> | undefined): Promise<void> => {

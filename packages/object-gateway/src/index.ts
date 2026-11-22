@@ -8,3 +8,4 @@ export * from "./object-store.ts";
 export * from "./replication.ts";
 export * from "./service.ts";
 export * from "./supabase-authority.ts";
+export * from "./surface-folder-worker.ts";

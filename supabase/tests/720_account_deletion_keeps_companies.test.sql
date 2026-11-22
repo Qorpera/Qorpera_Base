@@ -71,7 +71,7 @@ select pg_temp.acct_assert(not exists (
 		'qorpera_member_sidebar_places', 'qorpera_member_sidebar_resets', 'qorpera_member_sidebar_sections',
 		-- A member's own arrangement of the apps drawer; it hangs on the memberships (20260930728000).
 		'qorpera_member_app_layouts',
-		'qorpera_member_sidebar_rooms', 'qorpera_native_account_usage_marks', 'qorpera_native_presence_devices',
+		'qorpera_member_sidebar_rooms', 'qorpera_member_surface_state', 'qorpera_native_account_usage_marks', 'qorpera_native_presence_devices',
 		'qorpera_presence_devices',
 		'qorpera_product_feedback', 'qorpera_profile_access_state', 'qorpera_profile_invitation_deliveries',
 		'qorpera_profile_invitations', 'qorpera_profile_members', 'qorpera_review_rules', 'qorpera_room_drafts',
