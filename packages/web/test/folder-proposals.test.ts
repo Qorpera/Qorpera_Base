@@ -339,7 +339,7 @@ describe("open proposals in the agent's thread", () => {
 		vi.mocked(f.api.listAgentProposals).mockResolvedValue(page([first, second]));
 		await f.company.loadConversation(session.sessionId);
 		await settle();
-		expect(f.api.listAgentProposals).toHaveBeenCalledWith(profileA.environmentId, staff.id);
+		expect(f.api.listAgentProposals).toHaveBeenCalledWith(profileA.environmentId, staff.id, f.company.signal);
 		const cards = () => [...f.log().querySelectorAll<HTMLElement>(".proposal-card")];
 		expect(cards().map((card) => card.querySelector("h3")?.textContent)).toEqual([
 			"Change “Notes”",

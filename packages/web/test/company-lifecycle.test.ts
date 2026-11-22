@@ -1024,7 +1024,7 @@ describe("conversation lifecycle regressions", () => {
 		expect(api.readSessionEvents).toHaveBeenCalledTimes(1);
 		first.resolve([event(1)]);
 		await settle();
-		expect(api.readSessionEvents).toHaveBeenNthCalledWith(2, session.sessionId, 1, 500);
+		expect(api.readSessionEvents).toHaveBeenNthCalledWith(2, session.sessionId, 1, 500, controller.signal);
 		second.resolve([event(2)]);
 		await Promise.all([load, reload]);
 		expect(controller.conversation(session.sessionId).get().projection.lastSequence).toBe(2);
@@ -1044,7 +1044,7 @@ describe("conversation lifecycle regressions", () => {
 		expect(state.pending).toHaveLength(101);
 		expect(state.projection.items).toHaveLength(101);
 		expect(state.complete).toBe(true);
-		expect(api.listSessionInputs).toHaveBeenNthCalledWith(2, session.sessionId, 100, 100);
+		expect(api.listSessionInputs).toHaveBeenNthCalledWith(2, session.sessionId, 100, 100, controller.signal);
 	});
 
 	it("reads the history, the waiting inputs and the coding sessions side by side and draws once", async () => {
@@ -1072,7 +1072,7 @@ describe("conversation lifecycle regressions", () => {
 		firstPage.resolve(history.slice(0, 500));
 		await settle();
 		// The next page follows the first; nothing is drawn halfway through the history.
-		expect(api.readSessionEvents).toHaveBeenNthCalledWith(2, session.sessionId, 500, 500);
+		expect(api.readSessionEvents).toHaveBeenNthCalledWith(2, session.sessionId, 500, 500, controller.signal);
 		expect(drawn).toEqual([]);
 		lastPage.resolve(history.slice(500));
 		await load;
@@ -1095,7 +1095,7 @@ describe("conversation lifecycle regressions", () => {
 		expect(store.get().events).toHaveLength(500);
 		expect(store.get().projection.lastSequence).toBe(500);
 		await controller.loadConversation(session.sessionId);
-		expect(api.readSessionEvents).toHaveBeenLastCalledWith(session.sessionId, 500, 500);
+		expect(api.readSessionEvents).toHaveBeenLastCalledWith(session.sessionId, 500, 500, controller.signal);
 		expect(store.get()).toMatchObject({ complete: true, error: undefined });
 		expect(store.get().events).toHaveLength(501);
 	});
@@ -1813,5 +1813,81 @@ describe("agent execution state", () => {
 		expect(controller.conversations.has(evictableId)).toBe(true);
 		expect(controller.conversations.has(id(810))).toBe(false);
 		expect(controller.conversations.has(id(834))).toBe(false);
+	});
+
+	it("forwards controller.signal to CloudApi reads so stop() aborts in-flight requests", async () => {
+		const { api, controller } = company();
+		controller.store.set({
+			team,
+			staff: [staff],
+			sessions: [{ ...session, staffAgentId: staff.id }],
+			loading: false,
+		});
+		const signals: (AbortSignal | undefined)[] = [];
+		vi.spyOn(api, "getTeam").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "listStaff").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "getOrganization").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "readCompanySidebar").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "readMemberAppLayout").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "listStaffActivity").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "readSessionEventsTail").mockImplementation((_id, _before, _limit, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "listSessionInputs").mockImplementation((_id, _after, _limit, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "listCodingSessions").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "listAgentProposals").mockImplementation((_env, _agent, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "readSessionMemoryGeneration").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "listCodingSessionLogins").mockImplementation((_worker, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+
+		void controller.refreshTeam();
+		void controller.refreshStaff();
+		void controller.refreshOrganization();
+		void controller.refreshSidebar();
+		void controller.refreshAppLayout();
+		void controller.refreshActivity();
+		void controller.loadConversation(session.sessionId);
+		void controller.listCodingSessionLogins(id(901));
+
+		expect(signals).toHaveLength(12);
+		for (const signal of signals) {
+			expect(signal).toBe(controller.signal);
+			expect(signal?.aborted).toBe(false);
+		}
+		controller.stop();
+		for (const signal of signals) expect(signal?.aborted).toBe(true);
 	});
 });
