@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { type ClientRequest, Agent as HttpAgent, request as httpRequest } from "node:http";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import type { FolderActor, FolderCore } from "./core.ts";
 import { type ContentCheck, SaveChecks, type StoredForm } from "./git-objects.ts";
@@ -9,6 +9,15 @@ import { ErrorCode, ProtocolError } from "./protocol.ts";
 import type { SecretSet } from "./secret-scan.ts";
 
 export const STAGE_CONCURRENCY = 4;
+
+const REUSED_RESET_CODES = new Set(["ECONNRESET", "EPIPE", "ERR_SOCKET_CLOSED"]);
+
+class ReusedSocketResetError extends Error {}
+
+function isReusedSocketReset(request: ClientRequest, error: unknown): boolean {
+	if (!request.reusedSocket || !(error instanceof Error)) return false;
+	return "code" in error && typeof error.code === "string" && REUSED_RESET_CODES.has(error.code);
+}
 
 /** One object put through the object gateway's route for the folder service (F3 step 3b), streamed. */
 export interface Upload {
@@ -70,6 +79,45 @@ export class GatewayUploads implements FolderUploads {
 		this.#agent.destroy();
 	}
 
+	#openRequest(
+		url: URL,
+		headers: Record<string, string>,
+		agent: HttpAgent | HttpsAgent | false,
+	): { readonly request: ClientRequest; readonly answer: Promise<void> } {
+		const request =
+			url.protocol === "https:"
+				? httpsRequest(url, {
+						method: "PUT",
+						headers,
+						timeout: 60_000,
+						agent,
+						...(this.#ca ? { ca: this.#ca, minVersion: "TLSv1.2" } : {}),
+					})
+				: httpRequest(url, { method: "PUT", headers, timeout: 60_000, agent });
+		let responded = false;
+		const answer = new Promise<void>((resolve, reject) => {
+			request.once("response", (response) => {
+				responded = true;
+				response.resume();
+				response.once("end", () =>
+					response.statusCode === 200 || response.statusCode === 201
+						? resolve()
+						: reject(uploadError(response.statusCode ?? 0)),
+				);
+				response.once("error", () => reject(uploadError(0)));
+			});
+			request.once("error", (error) => {
+				reject(!responded && isReusedSocketReset(request, error) ? new ReusedSocketResetError() : uploadError(0));
+			});
+			request.once("close", () => {
+				if (!responded) reject(uploadError(0));
+			});
+			request.once("timeout", () => request.destroy(new Error("The upload took too long")));
+		});
+		void answer.catch(() => undefined);
+		return { request, answer };
+	}
+
 	start(environmentId: string, actor: FolderActor, intentId: string, sha256: string, bytes: number): Upload {
 		const url = new URL(`/v1/folder-service-objects/${environmentId}/${sha256}`, this.#origin);
 		const headers = {
@@ -79,54 +127,89 @@ export class GatewayUploads implements FolderUploads {
 			"content-type": "application/octet-stream",
 			"content-length": String(bytes),
 		};
-		const request =
-			url.protocol === "https:"
-				? httpsRequest(url, {
-						method: "PUT",
-						headers,
-						timeout: 60_000,
-						agent: this.#agent,
-						...(this.#ca ? { ca: this.#ca, minVersion: "TLSv1.2" } : {}),
-					})
-				: httpRequest(url, { method: "PUT", headers, timeout: 60_000, agent: this.#agent });
-		const answer = new Promise<void>((resolve, reject) => {
-			request.once("response", (response) => {
-				response.resume();
-				response.once("end", () =>
-					response.statusCode === 200 || response.statusCode === 201
-						? resolve()
-						: reject(uploadError(response.statusCode ?? 0)),
-				);
-				response.once("error", () => reject(uploadError(0)));
+		let aborted = false;
+		let streamed = false;
+		let singlePart: Buffer | undefined;
+		let active: { readonly request: ClientRequest; readonly answer: Promise<void> } | undefined;
+
+		const writePart = (request: ClientRequest, part: Buffer): Promise<void> =>
+			new Promise<void>((resolve, reject) => {
+				if (request.destroyed) return reject(uploadError(0));
+				if (request.write(part)) return resolve();
+				const drained = (): void => {
+					request.off("close", closed);
+					resolve();
+				};
+				const closed = (): void => {
+					request.off("drain", drained);
+					reject(uploadError(0));
+				};
+				request.once("drain", drained);
+				request.once("close", closed);
 			});
-			request.once("error", () => reject(uploadError(0)));
-			request.once("timeout", () => request.destroy(new Error("The upload took too long")));
-		});
-		void answer.catch(() => undefined);
+
+		const sendSingle = async (agent: HttpAgent | HttpsAgent | false, body: Buffer | undefined): Promise<void> => {
+			if (aborted) throw uploadError(0);
+			const opened = this.#openRequest(url, headers, agent);
+			active = opened;
+			try {
+				if (body && body.byteLength > 0) opened.request.end(body);
+				else opened.request.end();
+				await opened.answer;
+			} catch (error) {
+				opened.request.destroy();
+				throw error;
+			}
+		};
+
 		return {
-			// A part the socket cannot take yet waits for it to drain; a request that fails, times out or is aborted
-			// meanwhile fails the wait too (every such end closes it), so nothing hangs on a put that ended.
-			write: (part) =>
-				new Promise<void>((resolve, reject) => {
-					if (request.destroyed) return reject(uploadError(0));
-					if (request.write(part)) return resolve();
-					const drained = (): void => {
-						request.off("close", closed);
-						resolve();
-					};
-					const closed = (): void => {
-						request.off("drain", drained);
-						reject(uploadError(0));
-					};
-					request.once("drain", drained);
-					request.once("close", closed);
-				}),
+			write: async (part) => {
+				if (aborted) throw uploadError(0);
+				if (part.byteLength === 0) return;
+				// WHY: hold a single full-body write until end() so a stale keep-alive socket reset can retry once without copying.
+				if (!active && !streamed && singlePart === undefined && part.byteLength === bytes) {
+					singlePart = part;
+					return;
+				}
+				streamed = true;
+				if (!active) active = this.#openRequest(url, headers, this.#agent);
+				if (singlePart !== undefined) {
+					const first = singlePart;
+					singlePart = undefined;
+					await writePart(active.request, first);
+				}
+				await writePart(active.request, part);
+			},
 			end: async () => {
-				request.end();
-				await answer;
+				if (aborted) throw uploadError(0);
+				if (active) {
+					active.request.end();
+					try {
+						await active.answer;
+					} catch (error) {
+						throw error instanceof ReusedSocketResetError ? uploadError(0) : error;
+					}
+					return;
+				}
+				const body = singlePart;
+				singlePart = undefined;
+				try {
+					await sendSingle(this.#agent, body);
+				} catch (error) {
+					if (aborted || !(error instanceof ReusedSocketResetError)) {
+						throw error instanceof ReusedSocketResetError ? uploadError(0) : error;
+					}
+					try {
+						await sendSingle(false, body);
+					} catch (retryError) {
+						throw retryError instanceof ReusedSocketResetError ? uploadError(0) : retryError;
+					}
+				}
 			},
 			abort: () => {
-				request.destroy();
+				aborted = true;
+				singlePart = undefined;
+				active?.request.destroy();
 			},
 		};
 	}

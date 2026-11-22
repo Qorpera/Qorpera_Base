@@ -1,5 +1,21 @@
-import { Agent as HttpAgent, request as httpRequest, type IncomingMessage } from "node:http";
+import { type ClientRequest, Agent as HttpAgent, request as httpRequest, type IncomingMessage } from "node:http";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
+
+const REUSED_RESET_CODES = new Set(["ECONNRESET", "EPIPE", "ERR_SOCKET_CLOSED"]);
+
+class ReusedSocketResetError extends Error {
+	readonly original: unknown;
+
+	constructor(original: unknown) {
+		super("Reused keep-alive socket reset");
+		this.original = original;
+	}
+}
+
+function isReusedSocketReset(req: ClientRequest, error: unknown): boolean {
+	if (!req.reusedSocket || !(error instanceof Error)) return false;
+	return "code" in error && typeof error.code === "string" && REUSED_RESET_CODES.has(error.code);
+}
 
 export class ResponseTooLargeError extends Error {
 	constructor() {
@@ -35,13 +51,12 @@ export interface ManagedTransport {
 	close(): void;
 }
 
-function sendNodeRequest(
+function sendNodeRequestOnce(
 	url: URL,
 	init: BufferedRequest,
 	maxBytes: number,
 	signal: AbortSignal,
-	httpAgent?: HttpAgent,
-	httpsAgent?: HttpsAgent,
+	agent: HttpAgent | HttpsAgent | false | undefined,
 	ca?: string,
 ): Promise<BufferedResponse> {
 	return new Promise((resolve, reject) => {
@@ -49,6 +64,7 @@ function sendNodeRequest(
 		if (url.protocol !== "https:" && url.protocol !== "http:") return reject(new Error("Only HTTP(S) is spoken"));
 		const body = init.body === undefined ? undefined : Buffer.from(init.body, "utf8");
 		const headers = { ...init.headers, ...(body ? { "content-length": String(body.byteLength) } : {}) };
+		let responded = false;
 		const req =
 			url.protocol === "https:"
 				? httpsRequest(
@@ -56,17 +72,14 @@ function sendNodeRequest(
 						{
 							method: init.method,
 							headers,
-							...(httpsAgent ? { agent: httpsAgent } : {}),
+							...(agent !== undefined ? { agent } : {}),
 							...(ca ? { ca, minVersion: "TLSv1.2" } : {}),
 						},
 						onResponse,
 					)
-				: httpRequest(
-						url,
-						{ method: init.method, headers, ...(httpAgent ? { agent: httpAgent } : {}) },
-						onResponse,
-					);
+				: httpRequest(url, { method: init.method, headers, ...(agent !== undefined ? { agent } : {}) }, onResponse);
 		function onResponse(response: IncomingMessage): void {
+			responded = true;
 			const chunks: Buffer[] = [];
 			let bytes = 0;
 			response.on("data", (chunk: Buffer) => {
@@ -81,10 +94,41 @@ function sendNodeRequest(
 			req.destroy(signal.reason instanceof Error ? signal.reason : new Error("Aborted"));
 		};
 		signal.addEventListener("abort", abort, { once: true });
-		req.once("error", reject);
+		req.once("error", (error) => {
+			if (!responded && !signal.aborted && init.method === "GET" && isReusedSocketReset(req, error)) {
+				reject(new ReusedSocketResetError(error));
+				return;
+			}
+			reject(error);
+		});
 		req.once("close", () => signal.removeEventListener("abort", abort));
 		req.end(body);
 	});
+}
+
+async function sendNodeRequest(
+	url: URL,
+	init: BufferedRequest,
+	maxBytes: number,
+	signal: AbortSignal,
+	httpAgent?: HttpAgent,
+	httpsAgent?: HttpsAgent,
+	ca?: string,
+): Promise<BufferedResponse> {
+	const agent = url.protocol === "https:" ? httpsAgent : httpAgent;
+	try {
+		return await sendNodeRequestOnce(url, init, maxBytes, signal, agent, ca);
+	} catch (error) {
+		// WHY: retry idempotent GET once on a fresh socket when an idle keep-alive socket was closed by the peer.
+		if (!(error instanceof ReusedSocketResetError) || signal.aborted) {
+			throw error instanceof ReusedSocketResetError ? error.original : error;
+		}
+		try {
+			return await sendNodeRequestOnce(url, init, maxBytes, signal, false, ca);
+		} catch (retryError) {
+			throw retryError instanceof ReusedSocketResetError ? retryError.original : retryError;
+		}
+	}
 }
 
 export function createNodeTransport(options: NodeTransportOptions = {}): ManagedTransport {

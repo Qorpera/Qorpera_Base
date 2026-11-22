@@ -1811,4 +1811,131 @@ describe("SupabaseFolderCore paging and oversized fallback", () => {
 		await put2.end();
 		expect(connections).toBeLessThanOrEqual(3);
 	});
+
+	it("retries once on stale keep-alive socket resets for GatewayUploads PUT and createNodeTransport GET only", async () => {
+		let mode: "reset-reused" | "reset-fresh" = "reset-reused";
+		let connections = 0;
+		let requestsOnResetFresh = 0;
+		const seenPerSocket = new WeakMap<object, number>();
+		const server = createHttpServer((req, res) => {
+			const count = (seenPerSocket.get(req.socket) ?? 0) + 1;
+			seenPerSocket.set(req.socket, count);
+			if (mode === "reset-fresh") {
+				requestsOnResetFresh++;
+				req.socket.destroy();
+				return;
+			}
+			if (count === 2) {
+				req.socket.destroy();
+				return;
+			}
+			req.resume();
+			req.once("end", () => {
+				res.writeHead(req.method === "PUT" ? 201 : 200, { "content-type": "application/json" });
+				res.end(JSON.stringify({ ok: true }));
+			});
+		});
+		server.on("connection", () => {
+			connections++;
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		cleanup.push(async () => {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		});
+		const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+		const uploads = new GatewayUploads({ url: origin, token: "t".repeat(43) });
+		const transport = createNodeTransport();
+		cleanup.push(() => {
+			uploads.close();
+			transport.close();
+		});
+
+		const body = Buffer.from("retry-body");
+		const put1 = uploads.start(
+			ENV,
+			{ kind: "platform" },
+			"11111111-1111-4111-8111-111111111111",
+			hashOf(body),
+			body.length,
+		);
+		await put1.write(body);
+		await put1.end();
+		expect(connections).toBe(1);
+
+		const put2 = uploads.start(
+			ENV,
+			{ kind: "platform" },
+			"11111111-1111-4111-8111-111111111111",
+			hashOf(body),
+			body.length,
+		);
+		await put2.write(body);
+		await put2.end();
+		expect(connections).toBe(2);
+
+		const get1 = await transport.request(
+			new URL(`${origin}/clocks`),
+			{ method: "GET", headers: {} },
+			1024,
+			AbortSignal.timeout(5_000),
+		);
+		expect(get1.status).toBe(200);
+		const beforeRetryConnections = connections;
+		const get2 = await transport.request(
+			new URL(`${origin}/clocks`),
+			{ method: "GET", headers: {} },
+			1024,
+			AbortSignal.timeout(5_000),
+		);
+		expect(get2.status).toBe(200);
+		expect(connections).toBe(beforeRetryConnections + 1);
+
+		const get3 = await transport.request(
+			new URL(`${origin}/clocks`),
+			{ method: "GET", headers: {} },
+			1024,
+			AbortSignal.timeout(5_000),
+		);
+		expect(get3.status).toBe(200);
+		const beforePostConnections = connections;
+		await expect(
+			transport.request(
+				new URL(`${origin}/rpc`),
+				{ method: "POST", headers: {}, body: "{}" },
+				1024,
+				AbortSignal.timeout(5_000),
+			),
+		).rejects.toThrow();
+		expect(connections).toBe(beforePostConnections);
+
+		mode = "reset-fresh";
+		const freshUploads = new GatewayUploads({ url: origin, token: "t".repeat(43) });
+		const freshTransport = createNodeTransport();
+		cleanup.push(() => {
+			freshUploads.close();
+			freshTransport.close();
+		});
+		const put3 = freshUploads.start(
+			ENV,
+			{ kind: "platform" },
+			"11111111-1111-4111-8111-111111111111",
+			hashOf(body),
+			body.length,
+		);
+		await put3.write(body);
+		await expect(put3.end()).rejects.toMatchObject({ code: "UNAVAILABLE" });
+		expect(requestsOnResetFresh).toBe(1);
+
+		await expect(
+			freshTransport.request(
+				new URL(`${origin}/clocks`),
+				{ method: "GET", headers: {} },
+				1024,
+				AbortSignal.timeout(5_000),
+			),
+		).rejects.toThrow();
+		expect(requestsOnResetFresh).toBe(2);
+	});
 });
