@@ -11,7 +11,6 @@ import {
 	sharedAssetsProducedBy,
 } from "@qorpera/contracts";
 import { h } from "../../ui/dom.ts";
-import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { t } from "../../ui/preferences.ts";
 import {
@@ -23,7 +22,7 @@ import {
 	type SurfacesStore,
 	type SurfaceUpdatePhase,
 } from "../surfaces-store.ts";
-import { surfaceEmblem, surfaceTile } from "./surface-rail.ts";
+import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
 import { type Studio3DConfig, Studio3DViewer } from "./surface-studio-3d.ts";
 
@@ -630,7 +629,7 @@ export class SurfaceStudioView {
 					initialLoading
 						? [h("span", { class: "surface-state is-running" }), h("p", null, t("Opening studio…"))]
 						: [
-								interfaceEmblem(surfaceEmblem(surface), 42),
+								surfaceTile(surface, this.#options.store.lookOf(surface), "is-hero"),
 								h("h2", null, surface.title),
 								workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
 								h(
@@ -875,7 +874,7 @@ export class SurfaceStudioView {
 									"data-act": "studio-open-surface",
 									"data-slug": target.slug,
 								},
-								surfaceTile(target, store.lookOf(target), 12, "is-tiny"),
+								surfaceTile(target, store.lookOf(target), "is-tiny"),
 								h("span", null, target.title),
 							),
 						),
@@ -922,7 +921,7 @@ export class SurfaceStudioView {
 										"data-act": "studio-open-surface",
 										"data-slug": target.slug,
 									},
-									surfaceTile(target, store.lookOf(target), 11, "is-tiny"),
+									surfaceTile(target, store.lookOf(target), "is-tiny"),
 									h("span", null, target.title),
 								),
 							),
@@ -955,7 +954,7 @@ export class SurfaceStudioView {
 										"data-act": "studio-open-surface",
 										"data-slug": target.slug,
 									},
-									surfaceTile(target, store.lookOf(target), 11, "is-tiny"),
+									surfaceTile(target, store.lookOf(target), "is-tiny"),
 									h("span", null, target.title),
 								),
 							),

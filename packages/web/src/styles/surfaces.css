@@ -55,7 +55,6 @@
 .rail-compact .rail-surface-group { justify-items: center; width: 100%; }
 .rail-compact .rail-surface-title,
 .rail-compact .rail-surface-text,
-.rail-compact .rail-surface-meta,
 .rail-compact .rail-surface-proposed,
 .rail-compact .surface-history-toggle,
 .rail-compact .surface-history-row,
@@ -155,35 +154,57 @@
 .rail-surface-members .rail-row-stand { width: 34px; height: 34px; }
 .rail-surface-members .person-avatar { width: 30px; height: 30px; font-size: 11.5px; }
 
-/* A surface's identity tile: a soft squircle in its own colour with a crisp emblem in that colour, deepened on light
- * themes and brightened on dark ones by mixing toward the text colour. */
 .surface-tile {
 	--tile-size: 48px;
 	position: relative; display: grid; place-items: center; width: var(--tile-size); height: var(--tile-size); flex: none;
-	border-radius: 13px; background: color-mix(in srgb, var(--surface-tint, var(--text)) 14%, transparent);
-	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--surface-tint, var(--text)) 22%, transparent);
-	transition: background-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, transform var(--motion-base) var(--ease-spring);
 }
-.surface-tile .interface-emblem { --emblem-ink: color-mix(in srgb, var(--surface-tint, var(--text)) 84%, var(--text)); }
-:root[data-theme="dark"] .surface-tile { background: color-mix(in srgb, var(--surface-tint, var(--text)) 22%, transparent); }
-.surface-tile.is-tiny { --tile-size: 20px; border-radius: 6px; }
-.surface-tile.is-small { --tile-size: 28px; border-radius: 8px; }
-.surface-tile.is-bar { --tile-size: 26px; border-radius: 8px; }
-.surface-tile.is-sheet { --tile-size: 34px; border-radius: 10px; }
-.surface-tile.is-hero { --tile-size: 64px; border-radius: 18px; }
+.surface-tile.is-tiny { --tile-size: 20px; }
+.surface-tile.is-small { --tile-size: 28px; }
+.surface-tile.is-bar { --tile-size: 26px; }
+.surface-tile.is-sheet { --tile-size: 34px; }
+.surface-tile.is-hero { --tile-size: 64px; }
+.surface-figure { position: relative; display: block; width: 100%; height: 100%; }
+.surface-figure-body { position: absolute; inset: 0; transform-origin: 50% 92%; }
+.surface-figure-art { position: absolute; inset: 0; display: block; width: 100%; height: 100%; user-select: none; -webkit-user-drag: none; }
+.surface-figure-eyes { position: absolute; inset: 0; animation: surface-figure-glance 9s var(--figure-phase, 0s) ease-in-out infinite; }
+.surface-figure-eye { position: absolute; transform: translate(-50%, -50%) rotate(var(--turn, 0deg)); }
+.surface-figure-eye > i {
+	display: block; width: 100%; height: 100%; border-radius: 999px; background: #fff;
+	animation: surface-figure-blink 6.4s var(--figure-phase, 0s) infinite;
+}
+.surface-figure.is-working .surface-figure-body { animation: surface-figure-breathe 3.6s ease-in-out infinite; }
+.surface-figure.is-working .surface-figure-eyes { animation: surface-figure-toward 7s var(--figure-phase, 0s) ease-in-out infinite; }
+.surface-figure-ask {
+	position: absolute; inset: 0; display: grid; place-items: center; opacity: 0; transform-origin: 50% 90%;
+	color: var(--surface-tint, var(--text)); font-size: calc(var(--tile-size, 48px) * 0.86); font-weight: 820; line-height: 1;
+}
+.surface-figure.is-attention .surface-figure-body { animation: surface-figure-away 8s var(--figure-phase, 0s) infinite; }
+.surface-figure.is-attention .surface-figure-ask { animation: surface-figure-ask 8s var(--figure-phase, 0s) infinite; }
+@keyframes surface-figure-blink { 0%, 94%, 100% { transform: scaleY(1); } 96.5% { transform: scaleY(0.12); } }
+@keyframes surface-figure-glance {
+	0%, 18% { transform: none; } 24%, 52% { transform: translate(3.5%, -1%); } 58%, 74% { transform: translate(-2.5%, 1%); }
+	80%, 100% { transform: none; }
+}
+@keyframes surface-figure-toward { 0%, 10% { transform: none; } 18%, 60% { transform: translate(6%, 0.5%); } 68%, 100% { transform: none; } }
+@keyframes surface-figure-breathe { 50% { transform: scale(1.025, 0.985); } }
+@keyframes surface-figure-away {
+	0% { opacity: 1; transform: none; } 6% { opacity: 1; transform: translateY(-14%); }
+	9%, 86% { opacity: 0; transform: translateY(-16%) scaleX(0); } 90% { opacity: 1; transform: translateY(-10%); }
+	96%, 100% { opacity: 1; transform: none; }
+}
+@keyframes surface-figure-ask {
+	0%, 8.9% { opacity: 0; transform: translateY(-16%) scaleX(0); } 12% { opacity: 1; transform: translateY(-8%); }
+	16%, 30% { transform: none; } 33% { transform: translateY(-12%); } 36%, 52% { transform: none; }
+	55% { transform: translateY(-12%); } 58%, 74% { transform: none; } 77% { transform: translateY(-12%); }
+	80%, 85% { opacity: 1; transform: none; } 88%, 100% { opacity: 0; transform: translateY(-10%) scaleX(0); }
+}
 .rail-surface {
 	display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 7px 10px; border-radius: 13px;
 	color: var(--text); text-decoration: none; -webkit-font-smoothing: auto;
 	transition: background-color var(--motion-fast) ease;
 }
 .rail-surface:hover { background: var(--rail-hover); text-decoration: none; }
-.rail-surface:hover .surface-tile { transform: scale(1.04); }
-/* WHY: Selection is a soft wash so the emblem keeps its ink (interfaces.css, Jonas 12 Nov 2026). */
 .rail-surface.active { background: color-mix(in srgb, var(--text) 7%, transparent); }
-.rail-surface.active .surface-tile {
-	background: color-mix(in srgb, var(--surface-tint, var(--text)) 20%, transparent);
-	box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--surface-tint, var(--text)) 38%, transparent);
-}
 .rail-surface-text { display: grid; flex: 1; min-width: 0; gap: 2px; }
 .rail-surface-name {
 	min-width: 0; overflow: hidden; color: var(--text); font-size: 14.5px; font-weight: 660; line-height: 20px;
@@ -192,14 +213,6 @@
 .rail-surface-sub {
 	min-width: 0; overflow: hidden; color: var(--rail-small); font-size: 12.5px; font-weight: 450; line-height: 17px;
 	text-overflow: ellipsis; white-space: nowrap;
-}
-.rail-surface-meta {
-	display: flex; align-items: center; gap: 6px; color: var(--rail-small); font-size: 11.5px; font-weight: 500;
-	font-variant-numeric: tabular-nums;
-}
-.rail-surface-working {
-	width: 8px; height: 8px; border-radius: 50%; background: var(--surface-tint, var(--sidebar-selection));
-	animation: surface-breathe 1.6s ease-in-out infinite;
 }
 @keyframes surface-breathe { 50% { opacity: 0.35; transform: scale(0.8); } }
 .rail-surface-proposed {
@@ -223,7 +236,6 @@
 .rail-proposed-btn.is-approve:hover:not(:disabled) { background: var(--agent-active); color: #fff; }
 .rail-proposed-btn.is-dismiss:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
 .rail-proposed-btn:disabled { opacity: 0.45; cursor: default; }
-.surface-attention { width: 7px; height: 7px; border-radius: 50%; background: var(--rail-waiting); }
 
 .surface-tree {
 	display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 2px 0 10px 33px; padding-left: 10px;
@@ -1306,22 +1318,14 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	background: color-mix(in srgb, var(--text) 2%, var(--bg));
 }
 .surface-create-custom[hidden] { display: none; }
-.surface-create-custom-row { display: flex; align-items: flex-start; gap: 14px; }
-.surface-create-custom-tile .surface-tile { --tile-size: 52px; border-radius: 15px; }
-.surface-create-custom-picks { display: grid; flex: 1; min-width: 0; gap: 10px; }
-.surface-create-swatches, .surface-create-emblems { display: flex; flex-wrap: wrap; gap: 6px; }
-.surface-create-swatch {
-	width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: var(--swatch); cursor: pointer;
-	box-shadow: inset 0 0 0 1px rgb(0 0 0 / 10%); transition: box-shadow var(--motion-fast) ease;
+.surface-create-figures { display: flex; flex-wrap: wrap; gap: 4px; }
+.surface-create-figure {
+	display: grid; place-items: center; width: 46px; height: 46px; padding: 3px; border: 1px solid transparent; border-radius: 12px;
+	background: none; cursor: pointer; transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
 }
-.surface-create-swatch[aria-checked="true"] { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--swatch); }
-.surface-create-emblem-choice {
-	display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 1px solid transparent; border-radius: 9px;
-	background: color-mix(in srgb, var(--text) 4%, transparent); cursor: pointer;
-}
-.surface-create-emblem-choice .interface-emblem { --emblem-ink: var(--text-muted); }
-.surface-create-emblem-choice[aria-checked="true"] { border-color: var(--border-strong); background: var(--bg); }
-.surface-create-emblem-choice[aria-checked="true"] .interface-emblem { --emblem-ink: var(--text); }
+.surface-create-figure .surface-tile { --tile-size: 38px; }
+.surface-create-figure[aria-checked="true"] { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
+.surface-create-figure:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .surface-create-seg { justify-self: start; }
 .surface-create-card:hover { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 3.5%, var(--bg)); }
 .surface-create-card.is-selected {
@@ -2015,10 +2019,13 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-thread-jump-dot.is-attention { background: var(--warning); }
 
 @media (prefers-reduced-motion: reduce) {
-	.surface-state.is-running, .surface-ring, .surface-toast, .rail-surface-working, .surface-bar-agent.is-attention, .surface-thread-jump-dot.is-running,
+	.surface-state.is-running, .surface-ring, .surface-toast, .surface-bar-agent.is-attention, .surface-thread-jump-dot.is-running,
 	.surface-studio.is-updating .studio-head::after, .surface-report.is-updating .report-chrome::after,
 	.surface-studio.is-updating .studio-live-dot,
 	.surface-studio.is-updating :is(.studio-reach, .studio-swatch, .studio-doc, .studio-vendor-card)::after,
 	.surface-studio.is-settled .studio-grid, .surface-report.is-settled .report-layout { animation: none; }
-	.rail-surface:hover .surface-tile, .surface-bar-agent:hover, .surface-bar-explore:hover, .surface-thread-jump-chip:hover { transform: none; }
+	.surface-figure-body, .surface-figure-eyes, .surface-figure-eye > i, .surface-figure-ask { animation: none; }
+	.surface-figure.is-attention .surface-figure-ask { opacity: 1; }
+	.surface-figure.is-attention .surface-figure-body { opacity: 0; }
+	.surface-bar-agent:hover, .surface-bar-explore:hover, .surface-thread-jump-chip:hover { transform: none; }
 }
