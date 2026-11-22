@@ -42,10 +42,8 @@ export class CodingCommandRouter {
 		request: CloudCodingCommandHttpRequest,
 		signal: AbortSignal,
 		localOnly = false,
-		authorityOrPreauthorized?: CloudCodingCommandAuthority | boolean,
+		authority?: CloudCodingCommandAuthority,
 	): Promise<CloudCodingCommandExecution> {
-		const authority = typeof authorityOrPreauthorized === "object" ? authorityOrPreauthorized : undefined;
-		const preauthorized = authorityOrPreauthorized === true;
 		let route: CloudCodingCommandRoute;
 		if (authority?.route) {
 			if (
@@ -57,7 +55,7 @@ export class CodingCommandRouter {
 				throw new Error("CODING_COMMAND_ROUTE_INVALID");
 			route = authority.route;
 		} else {
-			if (!preauthorized) await authorizeCodingCommand(this.#options.control, request, signal);
+			await authorizeCodingCommand(this.#options.control, request, signal);
 			const value = await this.#options.control.call("qorpera_route_coding_command", {
 				p_binding: request.binding, p_scope: request.scope, p_action: request.action,
 				p_command_id: request.input.commandId,
@@ -95,32 +93,4 @@ export class CodingCommandRouter {
 		// the node that holds the machine and its disk. This executor's checks after it can only refuse the receipt.
 		return { receipt, hidden: async () => undefined };
 	}
-}
-
-export function codingCommandRoutes(
-	router: CodingCommandRouter,
-	control: CodingCommandRouterOptions["control"],
-	localOnly: boolean,
-): {
-	authorize(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<{ inputSha256: string }>;
-	execute(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<CloudCodingCommandExecution>;
-} {
-	// WHY: Single-use handoff avoids a duplicate serial qorpera_authorize_coding_command RPC between ingress authorize and execute.
-	const authorized = new WeakSet<CloudCodingCommandHttpRequest>();
-	const seen = new WeakSet<CloudCodingCommandHttpRequest>();
-	return {
-		authorize: async (request, signal) => {
-			const authority = await authorizeCodingCommand(control, request, signal);
-			if (!seen.has(request)) {
-				seen.add(request);
-				authorized.add(request);
-			}
-			return authority;
-		},
-		execute: (request, signal) => {
-			const pre = authorized.has(request);
-			if (pre) authorized.delete(request);
-			return router.execute(request, signal, localOnly, pre);
-		},
-	};
 }
