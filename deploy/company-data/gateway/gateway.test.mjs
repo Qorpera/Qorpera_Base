@@ -4244,4 +4244,67 @@ create trigger nap before update on slowed for each row execute function nap();
 			},
 		);
 	});
+
+	it("discards session state between consecutive apply steps, honors noteSignalled PIDs, and isolates watch coalescing after caller abort", async () => {
+		put(ENV_A, {
+			"data/stepiso/database.toml": 'title = "Step Isolation"\n',
+			"data/stepiso/tables/001-tz.sql":
+				"set timezone = 'America/New_York'; create table t (id int primary key, tz text not null);\n",
+			"data/stepiso/tables/002-check.sql": "insert into t values (1, current_setting('TimeZone'));\n",
+			"data/stepiso/queries/read-tz.sql": "select tz from t where id = 1;\n",
+			"data/stepiso/queries/pid.sql": "select pg_backend_pid()::int as pid;\n",
+			"data/stepiso/queries/slow-watch.sql": "select pg_sleep(0.35)::text as waited;\n",
+		});
+		try {
+			await withGateway({ limits: { ...LIMITS_HERE, questionMs: 2_000, watchMs: 5_000 } }, async (other) => {
+				const applied = await ask(owner, "apply", { database: "stepiso" });
+				assert.equal(applied.status, 200, JSON.stringify(applied.value));
+				assert.equal(applied.value.applied, true);
+				const readTz = await ask(viewer, "query", { database: "stepiso", question: "read-tz" });
+				assert.equal(readTz.status, 200, JSON.stringify(readTz.value));
+				assert.notEqual(readTz.value.rows[0][0], "America/New_York");
+
+				const firstPid = await ask(viewer, "query", { database: "stepiso", question: "pid" });
+				assert.equal(firstPid.status, 200, JSON.stringify(firstPid.value));
+				const signalledPid = firstPid.value.rows[0][0];
+				other.noteSignalled([signalledPid]);
+				const secondPid = await ask(viewer, "query", { database: "stepiso", question: "pid" });
+				assert.equal(secondPid.status, 200, JSON.stringify(secondPid.value));
+				assert.notEqual(secondPid.value.rows[0][0], signalledPid);
+
+				const warm = await ask(viewer, "query", { database: "stepiso", question: "slow-watch" });
+				assert.equal(warm.status, 200, JSON.stringify(warm.value));
+				const watchCaller = { userId: VIEWER, key: `u:${VIEWER}`, token: viewer };
+				const goneA = new AbortController();
+				const watchA = other
+					.watch(
+						watchCaller,
+						ENV_A,
+						{ watches: [{ database: "stepiso", question: "slow-watch", params: {}, etag: "stale" }], wait: 1 },
+						goneA.signal,
+					)
+					.catch((err) => err);
+				await new Promise((resolve) => setTimeout(resolve, 60));
+				goneA.abort();
+				const watchB = await other.watch(
+					watchCaller,
+					ENV_A,
+					{
+						watches: [{ database: "stepiso", question: "slow-watch", params: {}, etag: "stale" }],
+						wait: 1,
+					},
+					new AbortController().signal,
+				);
+				assert.equal(watchB.changed.length, 1);
+				await watchA;
+			});
+		} finally {
+			remove(ENV_A, "data/stepiso/database.toml");
+			remove(ENV_A, "data/stepiso/tables/001-tz.sql");
+			remove(ENV_A, "data/stepiso/tables/002-check.sql");
+			remove(ENV_A, "data/stepiso/queries/read-tz.sql");
+			remove(ENV_A, "data/stepiso/queries/pid.sql");
+			remove(ENV_A, "data/stepiso/queries/slow-watch.sql");
+		}
+	});
 });

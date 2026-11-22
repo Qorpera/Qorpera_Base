@@ -169,3 +169,20 @@ test("the drill claims a file only where none is, and removes only its own", asy
 		await rm(temporary, { recursive: true, force: true });
 	}
 });
+
+test("systemd backup service points to base-backup.sh and nginx gives /apply a 120s read timeout", () => {
+	const backupUnit = readFileSync(join(kit, "systemd/qorpera-company-data-backup.service"), "utf8");
+	const execMatch = /^ExecStart=\/bin\/bash \/opt\/qorpera-company-data\/kit\/(.+)$/m.exec(backupUnit);
+	assert.ok(execMatch, "backup service defines ExecStart in kit/");
+	assert.equal(execMatch[1], "base-backup.sh");
+	assert.equal(existsSync(join(kit, execMatch[1])), true, `${execMatch[1]} exists in kit/`);
+
+	const nginx = readFileSync(join(kit, "nginx-company-data.conf"), "utf8");
+	const applyBlock = /location ~ \^\/v1\/company-data\/\[\^\/\]\+\/apply\$ \{[\s\S]*?\}/.exec(nginx)?.[0];
+	assert.ok(applyBlock, "nginx config defines a dedicated /apply location");
+	assert.match(applyBlock, /proxy_read_timeout 120s;/);
+	assert.match(applyBlock, /proxy_buffering off;/);
+	const defaultBlock = /location \/v1\/company-data\/ \{[\s\S]*?\}/.exec(nginx)?.[0];
+	assert.ok(defaultBlock, "nginx config keeps default /v1/company-data/ location");
+	assert.match(defaultBlock, /proxy_read_timeout 35s;/);
+});
