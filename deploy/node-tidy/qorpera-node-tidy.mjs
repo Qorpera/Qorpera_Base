@@ -285,7 +285,7 @@ async function present(path) {
 	}
 }
 
-async function readBoundedTraceFile(path) {
+export async function readBoundedTraceFile(path) {
 	let handle;
 	try {
 		// WHY: Open traced files with O_NOFOLLOW | O_NONBLOCK and a hard byte cap to avoid lstat->readFile TOCTOU and FIFO stalls.
@@ -315,13 +315,20 @@ async function readBoundedTraceFile(path) {
 }
 
 /** Reads the files a set of starting paths name, following paths named inside them (three levels). */
-async function trace(starts, seen = new Map()) {
+async function trace(starts, readCache = new Map(), readTraceFile = readBoundedTraceFile) {
+	const seen = new Map();
 	let frontier = starts;
 	for (let depth = 0; depth < 4 && frontier.length; depth++) {
 		const next = [];
 		for (const path of frontier) {
 			if (seen.has(path)) continue;
-			const text = await readBoundedTraceFile(path);
+			let text;
+			if (readCache.has(path)) {
+				text = readCache.get(path);
+			} else {
+				text = await readTraceFile(path);
+				readCache.set(path, text);
+			}
 			if (text === null) continue;
 			seen.set(path, text);
 			next.push(...(text.match(FILE_PATH) ?? []));
@@ -446,12 +453,13 @@ export function createNodeSystemd(exec = run) {
 					.filter(([name, state]) => name && (state === "enabled" || state === "enabled-runtime"))
 					.map(([name]) => name),
 			);
-			// WHY: Keep reloading, deactivating, and enabled-but-transiently-failed units live so tidy cannot delete their images mid-restart.
+			// WHY: Keep reloading, deactivating, and enabled-but-transiently-failed units (including template instances) live.
 			const liveStates = new Set(["active", "activating", "reloading", "deactivating"]);
+			const isEnabled = (name) => enabled.has(name) || enabled.has(name.replace(/@.+\.([^.]+)$/, "@.$1"));
 			return listOut
 				.split("\n")
 				.map((line) => line.trim().split(/\s+/))
-				.filter(([name, , active]) => name && (liveStates.has(active) || (active === "failed" && enabled.has(name))))
+				.filter(([name, , active]) => name && (liveStates.has(active) || (active === "failed" && isEnabled(name))))
 				.map(([name]) => name);
 		},
 		/** Every installed unit file matching the pattern, whatever its state (a disabled unit may not be loaded). */
@@ -496,18 +504,27 @@ export function createNodeSystemd(exec = run) {
 
 export const nodeSystemd = createNodeSystemd();
 
-export async function tidy({ config, apply, lxd, systemd, now = Date.now(), removeFile = unlink }) {
+export async function tidy({
+	config,
+	apply,
+	lxd,
+	systemd,
+	now = Date.now(),
+	removeFile = unlink,
+	readTraceFile = readBoundedTraceFile,
+}) {
 	const units = await systemd.units(config.unitPattern);
 	const starts = [];
 	for (const unit of units) starts.push(...(await systemd.startPaths(unit)));
 	for (const root of config.extraRoots) starts.push(...(await expand(root)));
 	// Launchers name their env file relative to a base folder, so a pin file is live when a live file names it.
 	const pinFiles = await expand(config.pinFiles);
-	// WHY: Extend the initial trace map in place so live unit/launcher files are not read and parsed twice.
-	const traced = await trace(starts);
-	const direct = [...traced.values()];
+	// WHY: Share only a file-read cache across both passes so files are read once without shrinking BFS depth from live pins.
+	const readCache = new Map();
+	const firstTrace = await trace(starts, readCache, readTraceFile);
+	const direct = [...firstTrace.values()];
 	const livePins = new Set(pinFiles.filter((path) => direct.some((text) => text.includes(basename(path)))));
-	await trace([...livePins], traced);
+	const traced = livePins.size > 0 ? await trace([...starts, ...livePins], readCache, readTraceFile) : firstTrace;
 	const referenced = new Set();
 	for (const text of traced.values()) for (const match of text.match(FINGERPRINT) ?? []) referenced.add(match);
 	const envPins = [];
@@ -527,7 +544,7 @@ export async function tidy({ config, apply, lxd, systemd, now = Date.now(), remo
 		const resting = (await systemd.installedUnits(config.unitPattern)).filter((unit) => !units.includes(unit));
 		const restingStarts = [];
 		for (const unit of resting) restingStarts.push(...(await systemd.startPaths(unit)));
-		const restingTexts = [...(await trace(restingStarts)).values()];
+		const restingTexts = [...(await trace(restingStarts, readCache, readTraceFile)).values()];
 		held = envPins
 			.filter((pin) => restingTexts.some((text) => text.includes(basename(pin.path))))
 			.map((pin) => ({ fingerprint: pin.fingerprint, reason: "old lane pin, until archived" }));

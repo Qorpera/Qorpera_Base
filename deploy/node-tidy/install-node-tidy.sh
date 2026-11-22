@@ -4,7 +4,7 @@
 # the unit and timer, and enables the timer only with --enable-timer, after the dry run has been reviewed.
 set -euo pipefail
 
-EXPECTED_TOOL_SHA256="13b81f9e3b0a7099e02f8697998849f78531f20adf19111c0b4e319a387c7af7"
+EXPECTED_TOOL_SHA256="2265d88f0092dd4083e14a97b1b5f0448246d5168ca3a454f4991ab87377ad70"
 EXPECTED_UNIT_SHA256="288c8a10f2868b922864ed032283d0ef8c20eb1a5910fa0c9306f836c5676294"
 EXPECTED_TIMER_SHA256="7827685e6e78a16eeec690c23429b1ba778ca825de5521c570efea245dbe2aa4"
 SOURCE_ROOT=$(cd "$(dirname "$0")" && pwd)
