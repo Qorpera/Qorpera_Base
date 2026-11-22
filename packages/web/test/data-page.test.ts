@@ -113,8 +113,8 @@ function fakeCalls(described: CloudMemberDataDescription) {
 			return { columns: ["id", "bike", "price", "ready"], key: ["id"], row: { values, seen: seen(99) }, asOf };
 		}),
 		watchTables: vi.fn(
-			(_watches: unknown, signal: AbortSignal) =>
-				new Promise<never>((_resolve, reject) =>
+			(_watches: unknown, signal: AbortSignal): ReturnType<CompanyDataCalls["watchTables"]> =>
+				new Promise((_resolve, reject) =>
 					signal.addEventListener("abort", () => reject(new Error("put away")), { once: true }),
 				),
 		),

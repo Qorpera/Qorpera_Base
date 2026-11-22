@@ -2744,12 +2744,12 @@ describe("the chat's card when the Claude login in use is used up", () => {
 	};
 	function claudeSetup(logins: WebClaudeLogin[]) {
 		const listed = { signInOpen: true, logins };
-		const listClaudeLogins = vi.fn(async () => structuredClone(listed));
+		const listClaudeLogins = vi.fn(async (_signal?: AbortSignal) => structuredClone(listed));
 		const useClaude = vi.fn(async (loginId: string) => {
 			listed.logins = listed.logins.map((login) => ({ ...login, inUse: login.loginId === loginId }));
 		});
 		const f = setup(false, connections(), undefined, undefined, undefined, { listClaudeLogins, useClaude });
-		return { ...f, listed, useClaude };
+		return { ...f, listed, listClaudeLogins, useClaude };
 	}
 	const title = (view: ConversationView) => view.el.querySelector(".usage-wall-title")?.textContent;
 
@@ -2814,11 +2814,11 @@ describe("the chat's card when the Claude login in use is used up", () => {
 	});
 
 	it("keeps background Claude login check live after refresh returns and aborts it on dispose", async () => {
-		const pendingLogins = deferred<ClaudeLogin[]>();
+		const pendingLogins = deferred<{ signInOpen: boolean; logins: WebClaudeLogin[] }>();
 		const f = claudeSetup([{ ...work }, { ...home }]);
 		let observedSignal: AbortSignal | undefined;
-		f.native.listClaudeLogins.mockReset();
-		f.native.listClaudeLogins.mockImplementation((signal) => {
+		f.listClaudeLogins.mockReset();
+		f.listClaudeLogins.mockImplementation((signal?: AbortSignal) => {
 			observedSignal = signal;
 			return pendingLogins.promise;
 		});
@@ -2829,7 +2829,7 @@ describe("the chat's card when the Claude login in use is used up", () => {
 		dispose?.();
 		dispose = undefined;
 		expect(observedSignal?.aborted).toBe(true);
-		pendingLogins.resolve([{ ...work }, { ...home }]);
+		pendingLogins.resolve({ signInOpen: true, logins: [{ ...work }, { ...home }] });
 		await settle();
 	});
 });
