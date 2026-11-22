@@ -46,6 +46,7 @@ export * from "./runtime-node-releases.ts";
 export * from "./service.ts";
 export * from "./site-blob-upload.ts";
 export * from "./surface-change-dispatcher.ts";
+export * from "./surface-code-host-worker.ts";
 export * from "./surface-execution-bridge.ts";
 export * from "./surface-preview-runner.ts";
 export * from "./surface-worker-loop.ts";

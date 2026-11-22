@@ -192,9 +192,41 @@ Deno.serve(async (request) => {
 				};
 				break;
 			case "surface_claim_jobs":
-				rpc = "qorpera_surface_claim_pending_jobs";
+				if (action.lane !== undefined) {
+					rpc = "qorpera_surface_claim_pending_jobs_for_lane";
+					args = {
+						p_limit: action.limit,
+						p_lane: action.lane,
+					};
+				} else {
+					rpc = "qorpera_surface_claim_pending_jobs";
+					args = {
+						p_limit: action.limit,
+					};
+				}
+				break;
+			case "surface_enqueue_session_run":
+				rpc = "qorpera_surface_enqueue_session_run";
 				args = {
-					p_limit: action.limit,
+					p_session_id: action.sessionId,
+					p_lease_token: action.leaseToken,
+				};
+				break;
+			case "surface_trigger_automation":
+				rpc = "qorpera_surface_trigger_automation";
+				args = {
+					p_automation_id: action.automationId,
+				};
+				break;
+			case "surface_update_rebased_changes":
+				rpc = "qorpera_surface_update_rebased_changes";
+				args = {
+					p_surface_id: action.surfaceId,
+					p_session_id: action.sessionId,
+					p_branch_head_sha: action.branchHeadSha ?? null,
+					p_rebased_changes: action.rebasedChanges ?? [],
+					p_conflicted_change_id: action.conflictedChangeId ?? null,
+					p_conflict_paths: action.conflictPaths ?? null,
 				};
 				break;
 			case "surface_renew_lease":

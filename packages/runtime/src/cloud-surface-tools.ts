@@ -134,6 +134,7 @@ export interface CodingRecordChangeRequest {
 	readonly title: string;
 	readonly summary: string;
 	readonly commitSha: string;
+	readonly parentSha?: string | null;
 	readonly dependsOnChangeIds: readonly string[];
 }
 
@@ -224,13 +225,14 @@ export interface CloudSurfaceToolsPort {
 }
 
 export type SurfaceControlPlaneRpc =
-	| "qorpera_propose_surface"
-	| "qorpera_service_start_surface_session"
-	| "qorpera_record_surface_change"
-	| "qorpera_surface_renew_lease"
-	| "qorpera_surface_complete_session_turn"
-	| "qorpera_surface_describe_company_senses"
-	| "qorpera_service_manage_surface_automation";
+	| "qorpera_native_surface_propose"
+	| "qorpera_native_surface_start_session"
+	| "qorpera_native_surface_record_change"
+	| "qorpera_native_surface_read_session_turn"
+	| "qorpera_native_surface_renew_lease"
+	| "qorpera_native_surface_complete_turn"
+	| "qorpera_native_surface_describe_senses"
+	| "qorpera_native_surface_manage_automation";
 
 export interface SurfaceToolsRpcClient {
 	call(
@@ -244,6 +246,9 @@ export interface SurfaceToolsRpcClient {
 export interface ControlPlaneSurfaceToolsPortOptions {
 	readonly defaultOriginKind?: "cofounder" | "automation";
 	readonly defaultOriginLabel?: string;
+	readonly leaseToken?: string | null;
+	readonly deferSessionCompletion?: boolean;
+	readonly onNotePaths?: (notePaths: readonly string[]) => void;
 }
 
 function parseEnumArg<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
@@ -481,19 +486,21 @@ export function createControlPlaneSurfaceToolsPort(
 	return {
 		async recordChange(sessionId, request, context) {
 			const response = await rpc(
-				"qorpera_record_surface_change",
+				"qorpera_native_surface_record_change",
 				{
+					p_profile_id: context.companyId,
 					p_session_id: sessionId,
 					p_title: request.title,
 					p_summary: request.summary,
 					p_kind: "git_range",
-					p_parent_sha: null,
+					p_parent_sha: request.parentSha ?? null,
 					p_head_sha: request.commitSha,
 					p_depends_on_change_ids: [...request.dependsOnChangeIds],
 					p_affected_paths: [],
 					p_diff_stats: null,
 					p_patch_manifest: null,
 					p_finish_session: false,
+					...(options.leaseToken !== undefined ? { p_lease_token: options.leaseToken } : {}),
 				},
 				context.signal,
 			);
@@ -502,9 +509,9 @@ export function createControlPlaneSurfaceToolsPort(
 
 		async proposeSurface(companyId, request, context) {
 			const response = await rpc(
-				"qorpera_propose_surface",
+				"qorpera_native_surface_propose",
 				{
-					p_company_id: companyId,
+					p_profile_id: companyId,
 					p_slug: request.slug,
 					p_title: request.title,
 					p_group: request.group,
@@ -535,9 +542,9 @@ export function createControlPlaneSurfaceToolsPort(
 
 		async startSurfaceSession(request, context) {
 			const response = await rpc(
-				"qorpera_service_start_surface_session",
+				"qorpera_native_surface_start_session",
 				{
-					p_company_id: context.companyId,
+					p_profile_id: context.companyId,
 					p_surface_id: request.surfaceId,
 					p_prompt: request.prompt,
 					p_title: request.title,
@@ -562,8 +569,9 @@ export function createControlPlaneSurfaceToolsPort(
 		async stageSurfacePatch(sessionId, request, context) {
 			const affectedPaths = [...new Set(request.ops.map((op) => op.path))];
 			const response = await rpc(
-				"qorpera_record_surface_change",
+				"qorpera_native_surface_record_change",
 				{
+					p_profile_id: context.companyId,
 					p_session_id: sessionId,
 					p_title: request.title,
 					p_summary: request.summary,
@@ -574,31 +582,22 @@ export function createControlPlaneSurfaceToolsPort(
 					p_affected_paths: affectedPaths,
 					p_diff_stats: null,
 					p_patch_manifest: [...request.ops],
-					p_finish_session: request.finishSession,
+					p_finish_session: options.deferSessionCompletion ? false : request.finishSession,
+					...(options.leaseToken !== undefined ? { p_lease_token: options.leaseToken } : {}),
 				},
 				context.signal,
 			);
 			if (request.notePaths.length > 0) {
-				await rpc(
-					"qorpera_surface_complete_session_turn",
-					{
-						p_session_id: sessionId,
-						p_state: request.finishSession ? "ready" : "running",
-						p_reply_text: null,
-						p_question: null,
-						p_note_paths: [...request.notePaths],
-						p_branch_head_sha: null,
-					},
-					context.signal,
-				);
+				options.onNotePaths?.(request.notePaths);
 			}
 			return parseRecordChangeResult(response, "stageSurfacePatch");
 		},
 
 		async stageSurfaceOpsAction(sessionId, request, context) {
 			const response = await rpc(
-				"qorpera_record_surface_change",
+				"qorpera_native_surface_record_change",
 				{
+					p_profile_id: context.companyId,
 					p_session_id: sessionId,
 					p_title: request.title,
 					p_summary: request.summary,
@@ -612,7 +611,8 @@ export function createControlPlaneSurfaceToolsPort(
 						actionKind: request.actionKind,
 						actionPayload: request.actionPayload,
 					},
-					p_finish_session: request.finishSession,
+					p_finish_session: options.deferSessionCompletion ? false : request.finishSession,
+					...(options.leaseToken !== undefined ? { p_lease_token: options.leaseToken } : {}),
 				},
 				context.signal,
 			);
@@ -621,8 +621,8 @@ export function createControlPlaneSurfaceToolsPort(
 
 		async listSurfaceSenses(companyId, signal) {
 			const response = await rpc(
-				"qorpera_surface_describe_company_senses",
-				{ p_company_id: companyId },
+				"qorpera_native_surface_describe_senses",
+				{ p_profile_id: companyId },
 				signal ?? new AbortController().signal,
 			);
 			return parseSurfaceCompanySenses(response, "listSurfaceSenses");
@@ -630,9 +630,9 @@ export function createControlPlaneSurfaceToolsPort(
 
 		async manageAutomation(companyId, request, context) {
 			const response = await rpc(
-				"qorpera_service_manage_surface_automation",
+				"qorpera_native_surface_manage_automation",
 				{
-					p_company_id: companyId,
+					p_profile_id: companyId,
 					p_action: request.action,
 					p_automation_id: request.automationId,
 					p_title: request.title,
@@ -656,7 +656,7 @@ export function createCodingRecordChangeTool(
 		name: "coding_record_change",
 		source: "worker",
 		description:
-			"Stage one cohesive committed ChangeUnit on this Surface session branch without landing main. Members toggle and approve each recorded change individually; call once per distinct deliverable before coding_finish.",
+			"Stage one cohesive committed ChangeUnit on this Surface session branch without landing main. Members toggle and approve each recorded change individually; pass parentSha (the base commit before this change unit, e.g. git rev-parse HEAD~1) and commitSha, calling once per distinct deliverable before surface_reply.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -664,6 +664,11 @@ export function createCodingRecordChangeTool(
 			properties: {
 				title: { type: "string", description: "Short plain founder-facing title for this change." },
 				summary: { type: "string", description: "1-2 sentences describing what the user will notice." },
+				parentSha: {
+					type: "string",
+					description:
+						"Optional 40-hex Git parent commit SHA before this change unit (e.g. git rev-parse <commitSha>~1); defaults to the previous recorded change head or session base SHA.",
+				},
 				commitSha: { type: "string", description: "40-hex Git commit SHA on the session branch." },
 				dependsOnChangeIds: {
 					type: "array",
@@ -679,7 +684,7 @@ export function createCodingRecordChangeTool(
 					value,
 					"coding_record_change",
 					["title", "summary", "commitSha"],
-					["dependsOnChangeIds"],
+					["parentSha", "dependsOnChangeIds"],
 				);
 			} catch (error) {
 				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
@@ -695,6 +700,13 @@ export function createCodingRecordChangeTool(
 			if (typeof raw.commitSha !== "string" || !GIT_SHA.test(raw.commitSha)) {
 				throw new CloudToolArgumentRefusal("commitSha must be a 40-character lower-case hex SHA");
 			}
+			let parentSha: string | null | undefined;
+			if (raw.parentSha !== undefined && raw.parentSha !== null) {
+				if (typeof raw.parentSha !== "string" || !GIT_SHA.test(raw.parentSha)) {
+					throw new CloudToolArgumentRefusal("parentSha must be a 40-character lower-case hex SHA");
+				}
+				parentSha = raw.parentSha;
+			}
 			const depsRaw = raw.dependsOnChangeIds ?? [];
 			if (!Array.isArray(depsRaw) || depsRaw.length > 32 || depsRaw.some((item) => !isUuid(item))) {
 				throw new CloudToolArgumentRefusal("dependsOnChangeIds must be an array of change UUIDs");
@@ -703,6 +715,7 @@ export function createCodingRecordChangeTool(
 				title,
 				summary,
 				commitSha: raw.commitSha,
+				...(parentSha !== undefined ? { parentSha } : {}),
 				dependsOnChangeIds: [...(depsRaw as string[])],
 			};
 		},

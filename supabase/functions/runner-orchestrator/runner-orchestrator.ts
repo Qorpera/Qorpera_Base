@@ -9,6 +9,8 @@ const SURFACE_SESSION_COMPLETION_STATES = new Set(["needs_input", "ready", "comp
 const SURFACE_MERGE_COMPLETION_STATUSES = new Set(["landed", "conflicted", "failed"]);
 const SURFACE_PUBLISH_COMPLETION_STATUSES = new Set(["published", "failed"]);
 const SURFACE_LEASE_KINDS = new Set(["session", "preview", "job"]);
+const SURFACE_CLAIM_LANES = new Set(["all", "sessions", "folder", "code_repo"]);
+const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
 
 /** The per-company folder drains (folder core C4, P29: deploy/first-node/RUNTIME-COMPANY-FOLDER-LISTENER.md §9): each name
  * the orchestrator may ask for, its due list's and one company's RPC (`(p_after_environment uuid, p_limit integer)` and
@@ -165,6 +167,28 @@ export type RunnerOrchestratorRequest =
 			action: "surface_claim_jobs";
 			orchestratorId: string;
 			limit: number;
+			lane?: "all" | "sessions" | "folder" | "code_repo";
+	  }
+	| {
+			action: "surface_enqueue_session_run";
+			orchestratorId: string;
+			sessionId: string;
+			leaseToken: string;
+	  }
+	| {
+			action: "surface_trigger_automation";
+			orchestratorId: string;
+			automationId: string;
+	  }
+	| {
+			action: "surface_update_rebased_changes";
+			orchestratorId: string;
+			surfaceId: string;
+			sessionId: string;
+			branchHeadSha?: string;
+			rebasedChanges?: { changeId: string; parentSha: string; headSha: string }[];
+			conflictedChangeId?: string;
+			conflictPaths?: string[];
 	  }
 	| {
 			action: "surface_renew_lease";
@@ -496,12 +520,76 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				error: input.error,
 			};
 		}
-		case "surface_claim_jobs":
+		case "surface_claim_jobs": {
+			let lane: "all" | "sessions" | "folder" | "code_repo" | undefined;
+			if (input.lane !== undefined) {
+				if (typeof input.lane !== "string" || !SURFACE_CLAIM_LANES.has(input.lane)) {
+					throw new Error("Invalid surface claim lane");
+				}
+				lane = input.lane as "all" | "sessions" | "folder" | "code_repo";
+			}
 			return {
 				action: input.action,
 				orchestratorId,
 				limit: input.limit === undefined ? 16 : integer(input.limit, "surface job limit", 64),
+				...(lane !== undefined ? { lane } : {}),
 			};
+		}
+		case "surface_enqueue_session_run":
+			return {
+				action: input.action,
+				orchestratorId,
+				sessionId: uuid(input.sessionId, "surface session id"),
+				leaseToken: uuid(input.leaseToken, "surface lease token"),
+			};
+		case "surface_trigger_automation":
+			return {
+				action: input.action,
+				orchestratorId,
+				automationId: uuid(input.automationId, "surface automation id"),
+			};
+		case "surface_update_rebased_changes": {
+			let rebasedChanges: { changeId: string; parentSha: string; headSha: string }[] | undefined;
+			if (input.rebasedChanges !== undefined && input.rebasedChanges !== null) {
+				if (!Array.isArray(input.rebasedChanges) || input.rebasedChanges.length > 64) {
+					throw new Error("Invalid rebased surface changes");
+				}
+				rebasedChanges = input.rebasedChanges.map((item) => {
+					const entry = record(item, "rebased surface change");
+					const changeId = uuid(entry.changeId, "rebased change id");
+					if (
+						typeof entry.parentSha !== "string" ||
+						!GIT_SHA_PATTERN.test(entry.parentSha) ||
+						typeof entry.headSha !== "string" ||
+						!GIT_SHA_PATTERN.test(entry.headSha)
+					) {
+						throw new Error("Invalid rebased change sha");
+					}
+					return { changeId, parentSha: entry.parentSha, headSha: entry.headSha };
+				});
+			}
+			let branchHeadSha: string | undefined;
+			if (input.branchHeadSha !== undefined && input.branchHeadSha !== null) {
+				if (typeof input.branchHeadSha !== "string" || !GIT_SHA_PATTERN.test(input.branchHeadSha)) {
+					throw new Error("Invalid surface branch head sha");
+				}
+				branchHeadSha = input.branchHeadSha;
+			}
+			return {
+				action: input.action,
+				orchestratorId,
+				surfaceId: uuid(input.surfaceId, "surface id"),
+				sessionId: uuid(input.sessionId, "surface session id"),
+				...(branchHeadSha !== undefined ? { branchHeadSha } : {}),
+				...(rebasedChanges !== undefined ? { rebasedChanges } : {}),
+				...(input.conflictedChangeId === null || input.conflictedChangeId === undefined
+					? {}
+					: { conflictedChangeId: uuid(input.conflictedChangeId, "conflicted change id") }),
+				...(input.conflictPaths === null || input.conflictPaths === undefined
+					? {}
+					: { conflictPaths: textArray(input.conflictPaths, "rebase conflict paths", 256, 512) }),
+			};
+		}
 		case "surface_renew_lease": {
 			if (typeof input.kind !== "string" || !SURFACE_LEASE_KINDS.has(input.kind)) {
 				throw new Error("Invalid surface lease kind");

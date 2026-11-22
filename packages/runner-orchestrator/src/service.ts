@@ -6,7 +6,7 @@ import { CloudRunnerOrchestrator, SupabaseCloudRunnerOrchestratorControlPlane } 
 import { RealtimeOrchestratorWake, type RealtimeOrchestratorWakeState } from "./orchestrator-wake.ts";
 import { CloudRunnerProviderRequestError, HttpCloudRunnerProviderAdapter } from "./provider-http.ts";
 import { createSurfaceExecutionHandlers, type SurfaceExecutionBridgePorts } from "./surface-execution-bridge.ts";
-import { SurfaceWorkerLoop, type SurfaceWorkerLoopPorts } from "./surface-worker-loop.ts";
+import { type SurfaceClaimLane, SurfaceWorkerLoop, type SurfaceWorkerLoopPorts } from "./surface-worker-loop.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -31,7 +31,8 @@ export interface CloudRunnerOrchestratorServiceConfig {
 }
 
 export interface CloudRunnerOrchestratorSurfaceWorkerOptions {
-	readonly spawnOverflowMachine: SurfaceWorkerLoopPorts["spawnOverflowMachine"];
+	readonly lane?: SurfaceClaimLane;
+	readonly spawnOverflowMachine?: SurfaceWorkerLoopPorts["spawnOverflowMachine"];
 	readonly dispatchSessionTurn: SurfaceWorkerLoopPorts["dispatchSessionTurn"];
 	readonly runPreviewJob: SurfaceWorkerLoopPorts["runPreviewJob"];
 	readonly runMergeJob?: SurfaceWorkerLoopPorts["runMergeJob"];
@@ -61,6 +62,7 @@ export interface CloudRunnerOrchestratorServiceOptions {
 }
 
 export type DefaultSurfaceWorkerOverrides = Partial<Omit<SurfaceExecutionBridgePorts, "controlPlane">> & {
+	readonly lane?: SurfaceClaimLane;
 	readonly spawnOverflowMachine?: SurfaceWorkerLoopPorts["spawnOverflowMachine"];
 	readonly dispatchSessionTurn?: SurfaceWorkerLoopPorts["dispatchSessionTurn"];
 	readonly runAutomationJob?: SurfaceWorkerLoopPorts["runAutomationJob"];
@@ -84,6 +86,27 @@ export function createDefaultSurfaceWorkerConfig(
 				}),
 			);
 		});
+	const defaultRunOpsActionJob: NonNullable<SurfaceExecutionBridgePorts["runOpsActionJob"]> = async (job) => {
+		const changes = job.approvedChanges ?? [];
+		for (const change of changes) {
+			const manifest =
+				change.patchManifest && typeof change.patchManifest === "object" && !Array.isArray(change.patchManifest)
+					? (change.patchManifest as Record<string, unknown>)
+					: null;
+			const actionKind = typeof manifest?.actionKind === "string" ? manifest.actionKind.trim() : "";
+			if (!actionKind) {
+				return { status: "failed", errorDetail: `Missing actionKind on ops change ${change.changeId}` };
+			}
+			if (actionKind === "noop") {
+				continue;
+			}
+			return {
+				status: "failed",
+				errorDetail: `Ops action kind "${actionKind}" is not enabled on this orchestrator`,
+			};
+		}
+		return { status: "landed" };
+	};
 	const handlers = createSurfaceExecutionHandlers({
 		controlPlane: context.controlPlane,
 		...(overrides.resolveRepository ? { resolveRepository: overrides.resolveRepository } : {}),
@@ -93,26 +116,51 @@ export function createDefaultSurfaceWorkerConfig(
 		...(overrides.undoCodeRepoChange ? { undoCodeRepoChange: overrides.undoCodeRepoChange } : {}),
 		...(overrides.folder ? { folder: overrides.folder } : {}),
 		...(overrides.folderSnapshots ? { folderSnapshots: overrides.folderSnapshots } : {}),
-		...(overrides.runOpsActionJob ? { runOpsActionJob: overrides.runOpsActionJob } : {}),
+		runOpsActionJob: overrides.runOpsActionJob ?? defaultRunOpsActionJob,
 		...(overrides.publishSurface ? { publishSurface: overrides.publishSurface } : {}),
 	});
 
+	const lane = overrides.lane ?? (overrides.folder || overrides.resolveCodeHostJob ? undefined : "sessions");
+
 	return {
-		spawnOverflowMachine:
-			overrides.spawnOverflowMachine ??
-			(async (profileId) => {
-				logEvent({
-					kind: "overflow_machine_unconfigured",
-					profileId,
-					providerAdapterId: context.providerAdapter.adapterId,
-				});
-				throw new Error(
-					`Surface overflow machine provisioning is not configured for provider ${context.providerAdapter.adapterId}`,
-				);
-			}),
+		...(lane !== undefined ? { lane } : {}),
+		...(overrides.spawnOverflowMachine ? { spawnOverflowMachine: overrides.spawnOverflowMachine } : {}),
 		dispatchSessionTurn:
 			overrides.dispatchSessionTurn ??
 			(async (job, machineId, signal) => {
+				if (typeof context.controlPlane.enqueueSurfaceSessionRun === "function" && job.leaseToken) {
+					const enqueued = await context.controlPlane.enqueueSurfaceSessionRun(
+						{ sessionId: job.sessionId, leaseToken: job.leaseToken },
+						signal,
+					);
+					if (enqueued.status === "enqueued") {
+						logEvent({
+							kind: "session_enqueued",
+							sessionId: job.sessionId,
+							surfaceId: job.surfaceId,
+							wakeId: enqueued.wakeId,
+							runId: enqueued.runId,
+						});
+						return;
+					}
+					if (enqueued.status === "deferred") {
+						logEvent({
+							kind: "session_deferred",
+							sessionId: job.sessionId,
+							surfaceId: job.surfaceId,
+							reason: enqueued.reason,
+							retryAfterSeconds: enqueued.retryAfterSeconds,
+						});
+						return;
+					}
+					if (enqueued.reason === "lease_lost" || enqueued.reason === "surfaces_disabled") {
+						return;
+					}
+					if (enqueued.reason === "no_sponsor") {
+						throw new Error("Connect an AI model account in Settings to run this Surface session.");
+					}
+					throw new Error(`Surface session could not start (${enqueued.reason})`);
+				}
 				if (typeof context.providerAdapter.deliverSurfaceSession === "function") {
 					try {
 						await context.providerAdapter.deliverSurfaceSession(job, machineId, signal);
@@ -150,7 +198,19 @@ export function createDefaultSurfaceWorkerConfig(
 		runPublishJob: handlers.runPublishJob,
 		runAutomationJob:
 			overrides.runAutomationJob ??
-			(async (job) => {
+			(async (job, signal) => {
+				if (typeof context.controlPlane.triggerSurfaceAutomation === "function") {
+					const triggered = await context.controlPlane.triggerSurfaceAutomation(job.automationId, signal);
+					logEvent({
+						kind: "automation_triggered",
+						automationId: job.automationId,
+						key: job.key,
+						status: triggered.status,
+						...(triggered.sessionId ? { sessionId: triggered.sessionId } : {}),
+						...(triggered.reason ? { reason: triggered.reason } : {}),
+					});
+					return;
+				}
 				logEvent({
 					kind: "automation_dispatch_unconfigured",
 					automationId: job.automationId,
@@ -208,8 +268,8 @@ export function createSurfaceWorkerLoop(
 		: undefined;
 	return new SurfaceWorkerLoop(
 		{
-			claimPendingJobs: (limit, signal) => controlPlane.claimSurfaceJobs(limit, signal),
-			spawnOverflowMachine: options.spawnOverflowMachine,
+			claimPendingJobs: (limit, signal) => controlPlane.claimSurfaceJobs(limit, signal, options.lane),
+			...(options.spawnOverflowMachine ? { spawnOverflowMachine: options.spawnOverflowMachine } : {}),
 			dispatchSessionTurn: options.dispatchSessionTurn,
 			runPreviewJob: options.runPreviewJob,
 			...(options.runMergeJob ? { runMergeJob: options.runMergeJob } : {}),
