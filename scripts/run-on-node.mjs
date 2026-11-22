@@ -1204,12 +1204,11 @@ export function buildWakeQueryScript(vmName) {
 
 export function buildWakeStartScript(vmName) {
 	const qVm = shellQuote(vmName);
-	return [
-		"set -e",
-		`vm=${qVm}`,
-		`rm -f -- "${SLEEP_MARKER_DIR}/\${vm}"`,
-		`lxc start "$vm" --project ${WAKE_PROJECT}`,
-	].join("\n");
+	return ["set -e", `vm=${qVm}`, `lxc start "$vm" --project ${WAKE_PROJECT}`].join("\n");
+}
+
+export function buildClearSleepMarkerScript(vmName) {
+	return `vm=${shellQuote(vmName)}; rm -f -- "${SLEEP_MARKER_DIR}/\${vm}"`;
 }
 
 export function parseWakeQueryOutput(stdout) {
@@ -1265,6 +1264,7 @@ async function wakeStoppedMachine(machine, key) {
 		const probe = await probeOverSsh(machine, key, controller.signal);
 		clearTimeout(timer);
 		if (!probe.unreachable) {
+			let result = probe;
 			if (probe.closed) {
 				spawnSync(
 					"ssh",
@@ -1275,9 +1275,14 @@ async function wakeStoppedMachine(machine, key) {
 				const reopenTimer = setTimeout(() => reopenController.abort(new Error("wake reopen probe timed out")), PROBE_TIMEOUT_MS);
 				const reopened = await probeOverSsh(machine, key, reopenController.signal);
 				clearTimeout(reopenTimer);
-				return reopened.unreachable ? probe : reopened;
+				result = reopened.unreachable ? probe : reopened;
 			}
-			return probe;
+			spawnSync(
+				"ssh",
+				["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", machine.jump, "bash", "-c", shellQuote(buildClearSleepMarkerScript(vmName))],
+				{ encoding: "utf8", timeout: 10_000 },
+			);
+			return result;
 		}
 	}
 	return null;

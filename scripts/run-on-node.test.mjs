@@ -22,6 +22,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
 	baseCopyCompare,
 	buildClearCaretakerCloseScript,
+	buildClearSleepMarkerScript,
 	buildCloseForSleepScript,
 	buildWakeQueryScript,
 	buildWakeStartScript,
@@ -2370,10 +2371,13 @@ test("vmNameForMachine and shouldWakeStoppedMachines identify wakeable sleeping 
 test("auto-wake only wakes caretaker-slept VMs with matching jump-host marker and never manually stopped VMs", () => {
 	const queryScript = buildWakeQueryScript("qorpera-testvm-node02");
 	const startScript = buildWakeStartScript("qorpera-testvm-node02");
+	const clearMarkerScript = buildClearSleepMarkerScript("qorpera-testvm-node02");
 	assert.equal(spawnSync("bash", ["-n", "-c", queryScript]).status, 0);
 	assert.equal(spawnSync("bash", ["-n", "-c", startScript]).status, 0);
+	assert.equal(spawnSync("bash", ["-n", "-c", clearMarkerScript]).status, 0);
 	assert.doesNotMatch(queryScript, /lxc config set/);
 	assert.doesNotMatch(startScript, /lxc config set/);
+	assert.doesNotMatch(startScript, /rm -f/);
 
 	const caretakerSlept = parseWakeQueryOutput(
 		"status=Stopped\nlast_used_at=2026-11-22T18:00:00Z\nsleep_marker=2026-11-22T18:00:00Z\n",

@@ -286,6 +286,10 @@ auto-wakes a stopped VM only if its jump-host marker matches its current `last_u
 marker and the `caretaker-sleep` close file. A VM stopped manually by an operator while running (`lxc stop`) or stopped
 after a node reboot (`boot.autostart=false`) has no matching marker and is never auto-woken; to keep an already
 caretaker-slept VM out of rotation permanently, run `rm -f ~/.cache/qorpera-test-machine-sleep/<vm>` on the jump host.
+If a wake is interrupted before SSH answers, the caretaker reopens any running VM still carrying a `caretaker-sleep`
+close file on its next tick (while leaving operator-written close reasons untouched). Note that runs that explicitly
+pin a machine (`--machine` or `QORPERA_TEST_MACHINE*`) ignore `/etc/qorpera-test-machine-closed`, so an explicit run
+can still race the brief window between the caretaker's final recheck and `lxc stop`.
 
 To install the LaunchAgent on macOS, point `__SCRIPT_PATH__` at `scripts/test-machine-caretaker.mjs` inside a dedicated
 clean `master` worktree or clone (not a mutable feature checkout, since the script imports sibling helpers from

@@ -21,6 +21,7 @@ import {
 	parseCaretakerDecision,
 	parseCliArgs,
 	parseTelemetryOutput,
+	reconcileStrandedCaretakerState,
 	shouldConsultLlm,
 	telemetryScript,
 } from "./test-machine-caretaker.mjs";
@@ -238,4 +239,84 @@ test("parseTelemetryOutput treats missing or failed df/uptime values as null rat
 	assert.equal(shouldConsultLlm(parsed), false);
 	const guarded = enforceSafetyGuards({ action: "sleep_vm", reason: "test" }, parsed);
 	assert.equal(guarded.action, "keep_awake");
+});
+
+test("running marker-less VM with a stranded caretaker-sleep close is detected and reopened while operator closes stay intact", () => {
+	const tmp = mkdtempSync(join(tmpdir(), "caretaker-close-"));
+	try {
+		const locksDir = join(tmp, "locks");
+		const homeDir = join(tmp, "home");
+		const historyDir = join(homeDir, "run-history");
+		const closedFile = join(tmp, "closed");
+		mkdirSync(locksDir, { recursive: true });
+		mkdirSync(historyDir, { recursive: true });
+
+		writeFileSync(closedFile, "caretaker-sleep\n");
+		const strandedRun = spawnSync(
+			"bash",
+			["-c", telemetryScript({ locksDir, homeDir, historyDir, closedFile, psArgsCmd: "true", psUserCmd: "true" })],
+			{ encoding: "utf8" },
+		);
+		assert.equal(strandedRun.status, 0, strandedRun.stderr);
+		const strandedState = parseTelemetryOutput(strandedRun.stdout, sampleMachine, {
+			vmName: "qorpera-testvm-node02",
+			wakeable: true,
+		});
+		assert.equal(strandedState.caretakerClosed, true);
+
+		let clearedClose = 0;
+		let clearedMarker = 0;
+		const reopened = reconcileStrandedCaretakerState(strandedState, {
+			sleepMarker: null,
+			reconcileRunningClose: true,
+			clearSleepMarker: () => {
+				clearedMarker += 1;
+				return true;
+			},
+			clearCaretakerClose: () => {
+				clearedClose += 1;
+				return true;
+			},
+		});
+		assert.equal(clearedClose, 1);
+		assert.equal(clearedMarker, 0);
+		assert.equal(reopened.caretakerClosed, false);
+
+		let recheckCleared = 0;
+		const keptClosedDuringRecheck = reconcileStrandedCaretakerState(strandedState, {
+			sleepMarker: null,
+			reconcileRunningClose: false,
+			clearCaretakerClose: () => {
+				recheckCleared += 1;
+				return true;
+			},
+		});
+		assert.equal(recheckCleared, 0);
+		assert.equal(keptClosedDuringRecheck.caretakerClosed, true);
+
+		writeFileSync(closedFile, "operator maintenance\n");
+		const operatorRun = spawnSync(
+			"bash",
+			["-c", telemetryScript({ locksDir, homeDir, historyDir, closedFile, psArgsCmd: "true", psUserCmd: "true" })],
+			{ encoding: "utf8" },
+		);
+		assert.equal(operatorRun.status, 0, operatorRun.stderr);
+		const operatorState = parseTelemetryOutput(operatorRun.stdout, sampleMachine, {
+			vmName: "qorpera-testvm-node02",
+			wakeable: true,
+		});
+		assert.equal(operatorState.caretakerClosed, false);
+		let operatorCleared = 0;
+		reconcileStrandedCaretakerState(operatorState, {
+			sleepMarker: null,
+			reconcileRunningClose: true,
+			clearCaretakerClose: () => {
+				operatorCleared += 1;
+				return true;
+			},
+		});
+		assert.equal(operatorCleared, 0);
+	} finally {
+		rmSync(tmp, { recursive: true, force: true });
+	}
 });

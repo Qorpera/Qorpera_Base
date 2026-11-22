@@ -6,8 +6,11 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
 	buildClearCaretakerCloseScript,
+	buildClearSleepMarkerScript,
 	buildCloseForSleepScript,
 	buildWakeQueryScript,
+	CARETAKER_CLOSE_REASON,
+	CLOSED,
 	MACHINES,
 	parseWakeQueryOutput,
 	SLEEP_MARKER_DIR,
@@ -176,17 +179,21 @@ export function telemetryScript({
 	locksDir = "/run/lock",
 	homeDir = "/home/tester",
 	historyDir = "/home/tester/run-history",
+	closedFile = CLOSED,
 	psArgsCmd = "ps -eo args=",
 	psUserCmd = "ps -eo user=",
 } = {}) {
 	const qLocks = shellQuote(locksDir);
 	const qHome = shellQuote(homeDir);
 	const qHist = shellQuote(historyDir);
+	const qClosed = shellQuote(closedFile);
+	const qReason = shellQuote(CARETAKER_CLOSE_REASON);
 	return [
 		"set -u",
 		`locks=${qLocks}`,
 		`home=${qHome}`,
 		`hist_dir=${qHist}`,
+		`closed_file=${qClosed}`,
 		'busy=0; for n in 1 2 3 4 5 6 7; do f="${locks}/qorpera-test-machine-slot${n}.lock"; if [ -e "$f" ] && ! flock -n "$f" true 2>/dev/null; then busy=$((busy+1)); fi; done',
 		'qbusy=0; for n in 1 2; do f="${locks}/qorpera-test-machine-quick-slot${n}.lock"; if [ -e "$f" ] && ! flock -n "$f" true 2>/dev/null; then qbusy=$((qbusy+1)); fi; done',
 		'waiting=$(ls -1 "${locks}/qorpera-test-machine-queue" 2>/dev/null | wc -l | tr -d " ")',
@@ -222,7 +229,8 @@ export function telemetryScript({
 		'vol_count=$(docker volume ls -q 2>/dev/null | wc -l | tr -d " " || echo 0)',
 		'run_dirs=$(ls -1d "${home}/runs"/*/ 2>/dev/null | wc -l | tr -d " " || echo 0)',
 		'tree_dirs=$(ls -1d "${home}/trees"/*/ 2>/dev/null | wc -l | tr -d " " || echo 0)',
-		"printf 'busy=%s\\nwaiting=%s\\nquick_busy=%s\\nquick_waiting=%s\\narriving=%s\\nci_procs=%s\\nssh_sessions=%s\\ndisk_mib=%s\\ntmp_mib=%s\\nmem_mib=%s\\nload=%s\\nidle_min=%s\\nruns_60m=%s\\nstale_ct=%s\\nvol_count=%s\\nrun_dirs=%s\\ntree_dirs=%s\\n' \"$busy\" \"$waiting\" \"$qbusy\" \"$qwaiting\" \"$arriving\" \"$ci_procs\" \"$ssh_sessions\" \"$disk_mib\" \"$tmp_mib\" \"$mem_mib\" \"$load\" \"$idle_min\" \"$runs_60m\" \"$stale_ct\" \"$vol_count\" \"$run_dirs\" \"$tree_dirs\"",
+		`caretaker_closed=0; [ -f "$closed_file" ] && [ "$(cat "$closed_file" 2>/dev/null)" = ${qReason} ] && caretaker_closed=1`,
+		"printf 'busy=%s\\nwaiting=%s\\nquick_busy=%s\\nquick_waiting=%s\\narriving=%s\\nci_procs=%s\\nssh_sessions=%s\\ndisk_mib=%s\\ntmp_mib=%s\\nmem_mib=%s\\nload=%s\\nidle_min=%s\\nruns_60m=%s\\nstale_ct=%s\\nvol_count=%s\\nrun_dirs=%s\\ntree_dirs=%s\\ncaretaker_closed=%s\\n' \"$busy\" \"$waiting\" \"$qbusy\" \"$qwaiting\" \"$arriving\" \"$ci_procs\" \"$ssh_sessions\" \"$disk_mib\" \"$tmp_mib\" \"$mem_mib\" \"$load\" \"$idle_min\" \"$runs_60m\" \"$stale_ct\" \"$vol_count\" \"$run_dirs\" \"$tree_dirs\" \"$caretaker_closed\"",
 	].join("\n");
 }
 
@@ -230,9 +238,7 @@ export function buildTidyScript() {
 	return "if [ -x /usr/local/sbin/qorpera-test-machine-tidy.sh ]; then sudo -n /usr/local/sbin/qorpera-test-machine-tidy.sh; else docker volume prune -f && docker image prune -f; fi";
 }
 
-export function buildClearSleepMarkerScript(vmName) {
-	return `vm=${shellQuote(vmName)}; rm -f -- "${SLEEP_MARKER_DIR}/\${vm}"`;
-}
+export { buildClearSleepMarkerScript };
 
 export function buildJumpStopScript(vmName) {
 	const qVm = shellQuote(vmName);
@@ -318,22 +324,30 @@ export function parseTelemetryOutput(stdout, machine, lxd = { vmName: null, wake
 		dockerVolumes: num("vol_count"),
 		runDirs: num("run_dirs"),
 		treeDirs: num("tree_dirs"),
+		caretakerClosed: num("caretaker_closed") === 1,
 	};
 }
 
-function queryLxdMachine(machine, key) {
+export function reconcileStrandedCaretakerState(
+	state,
+	{ sleepMarker = null, reconcileRunningClose = true, clearSleepMarker = () => true, clearCaretakerClose = () => true } = {},
+) {
+	if (!reconcileRunningClose || state.status !== "RUNNING" || state.unreachable) return state;
+	let reopened = false;
+	if (sleepMarker) clearSleepMarker();
+	if (state.caretakerClosed && clearCaretakerClose() !== false) {
+		reopened = true;
+	}
+	return reopened ? { ...state, caretakerClosed: false } : state;
+}
+
+function queryLxdMachine(machine) {
 	const vmName = vmNameForMachine(machine);
 	if (!vmName || !machine.jump) return { vmName, lxdStatus: null, lastUsedAt: null, sleepMarker: null, wakeable: false };
 	const res = spawnSync("ssh", buildJumpQuerySshArgs(machine), { encoding: "utf8", timeout: 12_000 });
 	if (res.status !== 0) return { vmName, lxdStatus: null, lastUsedAt: null, sleepMarker: null, wakeable: false };
 	const parsed = parseWakeQueryOutput(res.stdout);
 	if (!parsed.status) return { vmName, lxdStatus: null, lastUsedAt: null, sleepMarker: null, wakeable: false };
-	if (parsed.status === "RUNNING" && parsed.sleepMarker) {
-		spawnSync("ssh", buildJumpClearMarkerSshArgs(machine), { encoding: "utf8", timeout: 10_000 });
-		if (key) {
-			spawnSync("ssh", buildClearCaretakerCloseSshArgs(machine, key), { encoding: "utf8", timeout: 10_000 });
-		}
-	}
 	return {
 		vmName,
 		lxdStatus: parsed.status,
@@ -343,8 +357,8 @@ function queryLxdMachine(machine, key) {
 	};
 }
 
-function probeTelemetry(machine, key) {
-	const lxd = queryLxdMachine(machine, key);
+function probeTelemetry(machine, key, { reconcileRunningClose = true } = {}) {
+	const lxd = queryLxdMachine(machine);
 	if (lxd.lxdStatus === "STOPPED") {
 		return {
 			name: machine.name,
@@ -365,6 +379,7 @@ function probeTelemetry(machine, key) {
 			load: 0,
 			idleMinutes: null,
 			runsLast60m: 0,
+			caretakerClosed: false,
 		};
 	}
 	const res = spawnSync("ssh", buildTelemetrySshArgs(machine, key), {
@@ -381,7 +396,19 @@ function probeTelemetry(machine, key) {
 			error: (res.stderr || res.stdout || `exit ${res.status}`).trim().slice(0, 160),
 		};
 	}
-	return parseTelemetryOutput(res.stdout, machine, lxd);
+	const state = parseTelemetryOutput(res.stdout, machine, lxd);
+	return reconcileStrandedCaretakerState(state, {
+		sleepMarker: lxd.sleepMarker,
+		reconcileRunningClose,
+		clearSleepMarker: () => {
+			const r = spawnSync("ssh", buildJumpClearMarkerSshArgs(machine), { encoding: "utf8", timeout: 10_000 });
+			return r.status === 0;
+		},
+		clearCaretakerClose: () => {
+			const r = spawnSync("ssh", buildClearCaretakerCloseSshArgs(machine, key), { encoding: "utf8", timeout: 10_000 });
+			return r.status === 0;
+		},
+	});
 }
 
 function queryPrQueue() {
@@ -449,7 +476,7 @@ async function stopRemoteVm(machine, key) {
 		return { ok: false, skipped: "machine is already closed or unreachable before sleep" };
 	}
 	await new Promise((resolvePromise) => setTimeout(resolvePromise, 2_000));
-	const recheck = probeTelemetry(machine, key);
+	const recheck = probeTelemetry(machine, key, { reconcileRunningClose: false });
 	if (recheck.status !== "RUNNING" || isMachineBusy(recheck)) {
 		spawnSync("ssh", buildClearCaretakerCloseSshArgs(machine, key), { encoding: "utf8", timeout: 12_000 });
 		return { ok: false, skipped: "activity appeared during final safety recheck" };
@@ -520,7 +547,7 @@ async function main() {
 		const localHour = new Date().getHours();
 		const summary = [];
 		for (const machine of targets) {
-			const state = probeTelemetry(machine, key);
+			const state = probeTelemetry(machine, key, { reconcileRunningClose: !opts.dryRun });
 			if (!shouldConsultLlm(state)) {
 				const note =
 					state.status === "STOPPED"
