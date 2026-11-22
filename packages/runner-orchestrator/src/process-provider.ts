@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isAbsolute, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { withTimeoutScope } from "./abort-scope.ts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "./orchestrator.ts";
@@ -282,54 +283,61 @@ export class ProcessCloudRunnerProviderBackend implements CloudRunnerProviderSer
 				} catch {
 					// The native sidecar is still starting.
 				}
-				await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+				await delay(100, undefined, { signal });
 			}
 			if (Date.now() >= deadline) throw new Error("Native provider sidecar did not become ready");
 		} catch (error) {
 			await stopProcess(nativeChild, nativeExit);
 			throw error;
 		}
-		const port = await reserveLoopbackPort();
-		const configPath = join(root, "runner-config.json");
-		await writeFile(
-			configPath,
-			`${JSON.stringify(
-				{
-					schema: "qorpera.ephemeral-runner-service/v1",
-					base_url: this.#config.supabaseUrl,
-					publishable_key: this.#config.supabasePublishableKey,
-					runner_id: runner.runnerId,
-					authority_state_path: join(root, "runner-authority.json"),
-					temporary_root: runtimeTemporaryRoot,
-					image: this.#config.image,
-					podman_path: this.#config.podmanPath,
-					entrypoint: this.#config.entrypoint,
-					capabilities: [...runner.capabilities],
-					job_types: [work.jobType],
-					platform: this.#config.platform,
-					runner_version: this.#config.runnerVersion,
-					native_bridge_url: `http://127.0.0.1:${nativePort}/`,
-					native_bridge_boundary: this.#config.nativeExecutionBoundary,
-					assignment_host: "127.0.0.1",
-					assignment_port: port,
-					max_assignments: 1,
-					environment: {},
+		let port: number;
+		let child: ChildProcess;
+		try {
+			port = await reserveLoopbackPort();
+			const configPath = join(root, "runner-config.json");
+			await writeFile(
+				configPath,
+				`${JSON.stringify(
+					{
+						schema: "qorpera.ephemeral-runner-service/v1",
+						base_url: this.#config.supabaseUrl,
+						publishable_key: this.#config.supabasePublishableKey,
+						runner_id: runner.runnerId,
+						authority_state_path: join(root, "runner-authority.json"),
+						temporary_root: runtimeTemporaryRoot,
+						image: this.#config.image,
+						podman_path: this.#config.podmanPath,
+						entrypoint: this.#config.entrypoint,
+						capabilities: [...runner.capabilities],
+						job_types: [work.jobType],
+						platform: this.#config.platform,
+						runner_version: this.#config.runnerVersion,
+						native_bridge_url: `http://127.0.0.1:${nativePort}/`,
+						native_bridge_boundary: this.#config.nativeExecutionBoundary,
+						assignment_host: "127.0.0.1",
+						assignment_port: port,
+						max_assignments: 1,
+						environment: {},
+					},
+					null,
+					2,
+				)}\n`,
+				{ encoding: "utf-8", mode: 0o600 },
+			);
+			child = spawn(process.execPath, [this.#config.runnerModulePath], {
+				cwd: root,
+				env: {
+					PATH: process.env.PATH ?? "",
+					QORPERA_RUNNER_CONFIG: configPath,
+					CREDENTIALS_DIRECTORY: credentials,
 				},
-				null,
-				2,
-			)}\n`,
-			{ encoding: "utf-8", mode: 0o600 },
-		);
-		const child = spawn(process.execPath, [this.#config.runnerModulePath], {
-			cwd: root,
-			env: {
-				PATH: process.env.PATH ?? "",
-				QORPERA_RUNNER_CONFIG: configPath,
-				CREDENTIALS_DIRECTORY: credentials,
-			},
-			stdio: ["ignore", "pipe", "pipe"],
-			windowsHide: true,
-		});
+				stdio: ["ignore", "pipe", "pipe"],
+				windowsHide: true,
+			});
+		} catch (error) {
+			await stopProcess(nativeChild, nativeExit).catch(() => undefined);
+			throw error;
+		}
 		child.stdout?.on("data", append);
 		child.stderr?.on("data", append);
 		const exit = new Promise<void>((resolveExit) => child.once("close", () => resolveExit()));
@@ -364,7 +372,7 @@ export class ProcessCloudRunnerProviderBackend implements CloudRunnerProviderSer
 				} catch {
 					// The runner activates before opening its loopback assignment inbox.
 				}
-				await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+				await delay(100, undefined, { signal });
 			}
 			throw new Error("Ephemeral runner did not open its assignment inbox");
 		} catch (error) {

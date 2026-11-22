@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -197,5 +198,133 @@ describe("process cloud runner provider", () => {
 			job_id: request.jobId,
 		});
 		await backend.stop(runner, "idle");
+	});
+
+	it("stops the native sidecar process if setup fails after readiness or if acquisition is aborted", async () => {
+		const directory = await root();
+		const runnerModule = join(directory, "runner.mjs");
+		const nativeProviderModule = join(directory, "native-provider.mjs");
+		const nativeProviderMasterKeyFile = join(directory, "native-provider-master-key");
+		await writeFile(runnerModule, "setInterval(() => {}, 1000);\n", "utf-8");
+		await writeFile(
+			nativeProviderModule,
+			[
+				'import { writeFileSync } from "node:fs";',
+				'import { join } from "node:path";',
+				'writeFileSync(join(process.cwd(), "native.pid"), String(process.pid));',
+				"setInterval(() => {}, 1000);",
+			].join("\n"),
+			"utf-8",
+		);
+		await writeFile(nativeProviderMasterKeyFile, `${"b".repeat(43)}\n`, { mode: 0o600 });
+
+		const stateRoot = join(directory, "state");
+		await mkdir(join(stateRoot, runId, "runner-config.json"), { recursive: true });
+		const fetchImplementation = vi.fn(async (input: string | URL | Request) => {
+			const url = String(input);
+			if (url.includes("/rest/v1/rpc/qorpera_provision_execution_runner")) {
+				return new Response(
+					JSON.stringify({
+						runner_id: runnerId,
+						runner_kind: "qorpera_computer",
+						status: "pending",
+						provider_adapter: "process",
+						compute_identity_id: work().computeIdentityId,
+						logical_computer_id: null,
+						worker_class: "managed_sandbox",
+						template_key: "qorpera-member-linux",
+						template_version: "v1",
+						compute_policy_sha256: "f".repeat(64),
+						capabilities: ["agent_turn"],
+					}),
+					{ status: 200 },
+				);
+			}
+			if (url.endsWith("/healthz")) {
+				return existsSync(join(stateRoot, runId, "native.pid"))
+					? new Response('{"ok":true}', { status: 200 })
+					: new Response(null, { status: 503 });
+			}
+			return new Response(null, { status: 404 });
+		});
+		const backend = new ProcessCloudRunnerProviderBackend(
+			{
+				adapterId: "process",
+				supabaseUrl: "https://example.supabase.co",
+				supabaseServiceKey: "sb_secret_private",
+				supabasePublishableKey: "publishable-key",
+				runnerModulePath: runnerModule,
+				nativeProviderModulePath: nativeProviderModule,
+				stateRoot,
+				temporaryRoot: join(directory, "temporary"),
+				image: `registry.example/qorpera@sha256:${"a".repeat(64)}`,
+				podmanPath: join(directory, "podman"),
+				entrypoint: "/opt/qorpera/run-job",
+				nativeProviderMasterKeyFile,
+				nativeExecutionBoundary: "virtual_machine",
+				codexPath: "codex",
+				claudePath: "claude",
+				platform: "linux",
+				runnerVersion: "test",
+			},
+			fetchImplementation,
+		);
+		await expect(backend.acquire(runId, work(), new AbortController().signal)).rejects.toThrow();
+		const pid = Number(await readFile(join(stateRoot, runId, "native.pid"), "utf8"));
+		expect(Number.isInteger(pid) && pid > 0).toBe(true);
+		expect(() => process.kill(pid, 0)).toThrow();
+
+		const abortRunId = "10000000-0000-4000-8000-000000000099";
+		const slowFetch = vi.fn(async (input: string | URL | Request) => {
+			const url = String(input);
+			if (url.includes("/rest/v1/rpc/qorpera_provision_execution_runner")) {
+				return new Response(
+					JSON.stringify({
+						runner_id: runnerId,
+						runner_kind: "qorpera_computer",
+						status: "pending",
+						provider_adapter: "process",
+						compute_identity_id: work().computeIdentityId,
+						logical_computer_id: null,
+						worker_class: "managed_sandbox",
+						template_key: "qorpera-member-linux",
+						template_version: "v1",
+						compute_policy_sha256: "f".repeat(64),
+						capabilities: ["agent_turn"],
+					}),
+					{ status: 200 },
+				);
+			}
+			return new Response(null, { status: 503 });
+		});
+		const abortBackend = new ProcessCloudRunnerProviderBackend(
+			{
+				adapterId: "process",
+				supabaseUrl: "https://example.supabase.co",
+				supabaseServiceKey: "sb_secret_private",
+				supabasePublishableKey: "publishable-key",
+				runnerModulePath: runnerModule,
+				nativeProviderModulePath: nativeProviderModule,
+				stateRoot,
+				temporaryRoot: join(directory, "temporary"),
+				image: `registry.example/qorpera@sha256:${"a".repeat(64)}`,
+				podmanPath: join(directory, "podman"),
+				entrypoint: "/opt/qorpera/run-job",
+				nativeProviderMasterKeyFile,
+				nativeExecutionBoundary: "virtual_machine",
+				codexPath: "codex",
+				claudePath: "claude",
+				platform: "linux",
+				runnerVersion: "test",
+			},
+			slowFetch,
+		);
+		const controller = new AbortController();
+		setTimeout(() => controller.abort(new Error("cancelled")), 30);
+		const startedAt = performance.now();
+		await expect(
+			abortBackend.acquire(abortRunId, { ...work(), runId: abortRunId }, controller.signal),
+		).rejects.toThrow();
+		expect(performance.now() - startedAt).toBeLessThan(1_000);
 	});
 });

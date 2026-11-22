@@ -49,6 +49,8 @@ export class RealtimeOrchestratorWake implements CloudRunnerWakeSource {
 	#listening = false;
 	#running = false;
 	#attempt = 0;
+	#epoch = 0;
+	#connectAbort?: AbortController;
 	#timer?: NodeJS.Timeout;
 
 	constructor(options: RealtimeOrchestratorWakeOptions) {
@@ -91,11 +93,16 @@ export class RealtimeOrchestratorWake implements CloudRunnerWakeSource {
 	start(): void {
 		if (this.#running) return;
 		this.#running = true;
-		void this.#connect();
+		this.#epoch += 1;
+		void this.#connect(this.#epoch);
 	}
 
 	stop(): void {
 		this.#running = false;
+		this.#epoch += 1;
+		const connectAbort = this.#connectAbort;
+		this.#connectAbort = undefined;
+		connectAbort?.abort();
 		clearTimeout(this.#timer);
 		this.#timer = undefined;
 		this.#listening = false;
@@ -104,8 +111,10 @@ export class RealtimeOrchestratorWake implements CloudRunnerWakeSource {
 		socket?.close();
 	}
 
-	async #connect(): Promise<void> {
-		if (!this.#running) return;
+	async #connect(epoch: number): Promise<void> {
+		if (!this.#running || epoch !== this.#epoch) return;
+		const connectAbort = new AbortController();
+		this.#connectAbort = connectAbort;
 		let socket: NodeWebSocket | undefined;
 		try {
 			socket = await NodeWebSocket.connect(
@@ -119,15 +128,19 @@ export class RealtimeOrchestratorWake implements CloudRunnerWakeSource {
 					},
 				},
 				this.#options.connectTimeoutMs,
+				{ signal: connectAbort.signal },
 			);
 		} catch (error) {
+			if (this.#connectAbort === connectAbort) this.#connectAbort = undefined;
+			if (!this.#running || epoch !== this.#epoch || connectAbort.signal.aborted) return;
 			this.#options.onState?.("unreachable", error instanceof Error ? error.message : "Realtime connection failed");
 			this.#retry();
 			return;
 		}
-		if (!this.#running || socket.closed) {
+		if (this.#connectAbort === connectAbort) this.#connectAbort = undefined;
+		if (!this.#running || epoch !== this.#epoch || socket.closed) {
 			socket.close();
-			if (this.#running) this.#retry();
+			if (this.#running && epoch === this.#epoch) this.#retry();
 			return;
 		}
 		this.#socket = socket;
@@ -251,7 +264,8 @@ export class RealtimeOrchestratorWake implements CloudRunnerWakeSource {
 			this.#options.reconnectInitialMs * 2 ** Math.min(this.#attempt, 16),
 		);
 		this.#attempt++;
-		this.#schedule(delay, () => void this.#connect());
+		const epoch = this.#epoch;
+		this.#schedule(delay, () => void this.#connect(epoch));
 	}
 
 	#schedule(delayMs: number, action: () => void): void {

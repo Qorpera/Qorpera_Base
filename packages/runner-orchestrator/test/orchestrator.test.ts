@@ -3544,4 +3544,127 @@ describe("cloud runner orchestrator", () => {
 			}
 		}
 	});
+
+	it("preserves already-claimed work when a mid-batch claimNext call fails transiently", async () => {
+		const first = claim();
+		const control = controlPlane(first);
+		let calls = 0;
+		vi.mocked(control.claimNext).mockImplementation(async () => {
+			calls += 1;
+			if (calls === 1) return first;
+			throw new CloudRunnerOrchestratorRequestError(503);
+		});
+		const controller = new AbortController();
+		const local = localAdapter(
+			vi.fn(async () => {
+				controller.abort();
+			}),
+		);
+		const orchestrator = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: control,
+			providerAdapter: local.adapter,
+			dispatchConcurrency: 2,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+
+		await orchestrator.run(controller.signal, { pollIntervalMs: 500, reconcileIntervalMs: 10_000 });
+		expect(local.deliver).toHaveBeenCalledOnce();
+		expect(control.claimNext).toHaveBeenCalledTimes(2);
+	});
+
+	it("runs runner stop and claim release independently when one cleanup step fails", async () => {
+		const deliverControl = controlPlane();
+		vi.mocked(deliverControl.releaseClaim).mockRejectedValueOnce(new Error("release unavailable"));
+		const deliverLocal = localAdapter(
+			vi.fn(async () => {
+				throw Object.assign(new Error("rejected delivery"), { status: 422 });
+			}),
+		);
+		const deliverOrch = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: deliverControl,
+			providerAdapter: deliverLocal.adapter,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+		await expect(deliverOrch.runOnce()).rejects.toThrow("rejected delivery");
+		expect(deliverControl.releaseClaim).toHaveBeenCalledOnce();
+		expect(deliverLocal.stop).toHaveBeenCalledWith(expect.objectContaining({ runnerId }), "delivery_failed");
+
+		const assignControl = controlPlane();
+		vi.mocked(assignControl.assign).mockRejectedValueOnce(new CloudRunnerOrchestratorRequestError(422));
+		const assignLocal = localAdapter();
+		assignLocal.stop.mockRejectedValueOnce(new Error("provider stop failed"));
+		const assignOrch = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: assignControl,
+			providerAdapter: assignLocal.adapter,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+		await expect(assignOrch.runOnce()).rejects.toThrow("422");
+		expect(assignLocal.stop).toHaveBeenCalledWith(expect.objectContaining({ runnerId }), "delivery_failed");
+		expect(assignControl.releaseClaim).toHaveBeenCalledOnce();
+
+		const incompatControl = controlPlane();
+		const incompatLocal = localAdapter();
+		incompatLocal.acquire.mockResolvedValueOnce({
+			runnerId,
+			logicalComputerId: "99999999-9999-4999-8999-999999999991",
+			workerClass: "managed_sandbox",
+			providerAdapter: "local",
+			capabilities: ["agent_turn"],
+			templateKey: "qorpera-test",
+			templateVersion: "test-v1",
+			policySha256: "f".repeat(64),
+		});
+		incompatLocal.stop.mockRejectedValueOnce(new Error("provider stop failed"));
+		const incompatOrch = new CloudRunnerOrchestrator({
+			orchestratorId,
+			controlPlane: incompatControl,
+			providerAdapter: incompatLocal.adapter,
+			clientClaimId: () => claimId,
+			clientAssignmentId: () => assignmentId,
+			createCapability: () => capability,
+		});
+		await expect(incompatOrch.runOnce()).rejects.toThrow("incompatible computer");
+		expect(incompatLocal.stop).toHaveBeenCalledWith(expect.objectContaining({ runnerId }), "delivery_failed");
+		expect(incompatControl.releaseClaim).toHaveBeenCalledOnce();
+	});
+
+	it("cancels oversized streaming control-plane responses before buffering the entire body", async () => {
+		let pulled = 0;
+		let cancelled = false;
+		const oversizedFetch = vi.fn(async () => {
+			const stream = new ReadableStream<Uint8Array>({
+				pull(controller) {
+					pulled += 1;
+					if (pulled > 10) {
+						controller.close();
+						return;
+					}
+					controller.enqueue(new Uint8Array(1024 * 1024));
+				},
+				cancel() {
+					cancelled = true;
+				},
+			});
+			return new Response(stream, { status: 200, headers: { "content-type": "application/json" } });
+		});
+		const control = new SupabaseCloudRunnerOrchestratorControlPlane(
+			"https://project.supabase.co",
+			"publishable-key",
+			orchestratorId,
+			"c".repeat(43),
+			oversizedFetch as typeof fetch,
+		);
+		await expect(control.retainedClaims(orchestratorId)).rejects.toThrow("exceeds its byte limit");
+		expect(cancelled).toBe(true);
+		expect(pulled).toBeLessThanOrEqual(4);
+	});
 });

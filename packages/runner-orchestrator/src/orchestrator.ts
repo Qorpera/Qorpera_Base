@@ -2460,9 +2460,20 @@ export class CloudRunnerOrchestrator {
 		let fresh = 0;
 		while (claims.length < limit) {
 			const clientClaimId = this.#clientClaimId();
-			const claim = signal
-				? await this.#controlPlane.claimNext(this.#orchestratorId, clientClaimId, this.#claimLeaseSeconds, signal)
-				: await this.#controlPlane.claimNext(this.#orchestratorId, clientClaimId, this.#claimLeaseSeconds);
+			let claim: CloudRunnerOrchestrationClaim | undefined;
+			try {
+				claim = signal
+					? await this.#controlPlane.claimNext(
+							this.#orchestratorId,
+							clientClaimId,
+							this.#claimLeaseSeconds,
+							signal,
+						)
+					: await this.#controlPlane.claimNext(this.#orchestratorId, clientClaimId, this.#claimLeaseSeconds);
+			} catch (error) {
+				if (claims.length > 0 && !signal?.aborted) break;
+				throw error;
+			}
 			if (!claim) break;
 			claims.push(claim);
 			fresh++;
@@ -2551,12 +2562,10 @@ export class CloudRunnerOrchestrator {
 				runner.templateVersion !== claim.work.computeTemplateVersion) ||
 			(claim.work.computePolicySha256 !== undefined && runner.policySha256 !== claim.work.computePolicySha256)
 		) {
-			await this.#providerAdapter.stop(runner, "delivery_failed");
-			await this.#controlPlane.releaseClaim(
-				claim,
-				clientAssignmentId,
-				"Runner provider returned an incompatible computer",
-			);
+			await this.#providerAdapter.stop(runner, "delivery_failed").catch(() => undefined);
+			await this.#controlPlane
+				.releaseClaim(claim, clientAssignmentId, "Runner provider returned an incompatible computer")
+				.catch(() => undefined);
 			throw new Error("Runner provider returned an incompatible computer");
 		}
 		const capability = this.#createCapability();
@@ -2613,7 +2622,7 @@ export class CloudRunnerOrchestrator {
 			 * reconciliation requeues the job, and the provider replays the
 			 * still-live acquisition on the next dispatch. */
 			if (definitiveRejectionStatus(error) !== undefined) {
-				await this.#providerAdapter.stop(runner, "delivery_failed");
+				await this.#providerAdapter.stop(runner, "delivery_failed").catch(() => undefined);
 				await this.#controlPlane
 					.releaseClaim(claim, clientAssignmentId, safeDeliveryFailure(error))
 					.catch(() => undefined);
@@ -2627,12 +2636,10 @@ export class CloudRunnerOrchestrator {
 			assignment.runnerId !== runner.runnerId ||
 			assignment.capabilitySha256 !== cloudRunnerAssignmentCapabilitySha256(capability)
 		) {
-			await this.#providerAdapter.stop(runner, "delivery_failed");
-			await this.#controlPlane.releaseClaim(
-				claim,
-				clientAssignmentId,
-				"Control plane returned an inconsistent runner assignment",
-			);
+			await this.#providerAdapter.stop(runner, "delivery_failed").catch(() => undefined);
+			await this.#controlPlane
+				.releaseClaim(claim, clientAssignmentId, "Control plane returned an inconsistent runner assignment")
+				.catch(() => undefined);
 			throw new Error("Control plane returned an inconsistent runner assignment");
 		}
 		try {
@@ -2651,8 +2658,8 @@ export class CloudRunnerOrchestrator {
 			 * requeues the job, while a delivered one simply keeps going. */
 			const failure = safeDeliveryFailure(error);
 			if (definitiveRejectionStatus(error) !== undefined) {
-				await this.#controlPlane.releaseClaim(claim, clientAssignmentId, failure);
-				await this.#providerAdapter.stop(runner, "delivery_failed");
+				await this.#controlPlane.releaseClaim(claim, clientAssignmentId, failure).catch(() => undefined);
+				await this.#providerAdapter.stop(runner, "delivery_failed").catch(() => undefined);
 			}
 			throw new Error(failure, { cause: error });
 		}
@@ -3387,13 +3394,14 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 				void response.body?.cancel().catch(() => undefined);
 				throw new CloudRunnerOrchestratorRequestError(response.status);
 			}
-			encoded = await response.text();
+			encoded = await readBoundedOrchestratorText(
+				response,
+				2 * 1024 * 1024,
+				"Runner orchestrator response exceeds its byte limit",
+			);
 		} finally {
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", onOuterAbort);
-		}
-		if (Buffer.byteLength(encoded) > 2 * 1024 * 1024) {
-			throw new Error("Runner orchestrator response exceeds its byte limit");
 		}
 		let value: unknown;
 		try {
@@ -3404,6 +3412,47 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		const envelope = record(value, "response envelope");
 		return envelope.value;
 	}
+}
+
+async function readBoundedOrchestratorText(
+	response: {
+		readonly body?: {
+			getReader?: () => {
+				read(): Promise<{ done: boolean; value?: Uint8Array }>;
+				cancel(): Promise<void>;
+				releaseLock(): void;
+			};
+		} | null;
+		text(): Promise<string>;
+	},
+	maxBytes: number,
+	overflowMessage: string,
+): Promise<string> {
+	const getReader = response.body?.getReader;
+	if (typeof getReader !== "function") {
+		const encoded = await response.text();
+		if (Buffer.byteLength(encoded) > maxBytes) throw new Error(overflowMessage);
+		return encoded;
+	}
+	const reader = getReader.call(response.body);
+	const chunks: Buffer[] = [];
+	let bytes = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			bytes += value.byteLength;
+			if (bytes > maxBytes) {
+				await reader.cancel().catch(() => undefined);
+				throw new Error(overflowMessage);
+			}
+			chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return Buffer.concat(chunks, bytes).toString("utf8");
 }
 
 export interface LocalCloudRunnerLaunch {

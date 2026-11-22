@@ -1883,4 +1883,60 @@ describe("warm conversations", () => {
 		releaseKill();
 		await reconciling;
 	});
+
+	it("avoids stale PID temp-file collisions, awaits in-flight retirement on concurrent stop, and memoizes released archives", async () => {
+		const f = await fixture();
+		const signal = new AbortController().signal;
+		await mkdir(join(f.stateRoot, "journals"), { recursive: true });
+		await writeFile(join(f.stateRoot, "journals", `${runId}.json.${process.pid}.tmp`), "stale", { mode: 0o600 });
+
+		const runner = await f.backend.acquire(runId, work(), signal);
+		let stopEntered!: () => void;
+		let releaseStop!: () => void;
+		const entered = new Promise<void>((resolve) => {
+			stopEntered = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			releaseStop = resolve;
+		});
+		const origStop = f.units.stop.bind(f.units);
+		let stopCalls = 0;
+		f.units.stop = async (unit: string) => {
+			stopCalls += 1;
+			if (stopCalls === 1) {
+				stopEntered();
+				await gate;
+			}
+			return origStop(unit);
+		};
+
+		const firstStop = f.backend.stop(runner, "revoked");
+		await entered;
+		let secondResolved = false;
+		const secondStop = f.backend.stop(runner, "revoked").then(() => {
+			secondResolved = true;
+		});
+		await delay(25);
+		expect(secondResolved).toBe(false);
+		releaseStop();
+		await Promise.all([firstStop, secondStop]);
+		expect(secondResolved).toBe(true);
+		expect(await journal(f)).toMatchObject({ physicalState: "stopped", capacityReleased: true });
+
+		const lostRun = "30000000-0000-4000-8000-0000000000c1";
+		await f.backend.acquire(lostRun, work({ runId: lostRun, sourceId: lostRun }), signal);
+		f.units.stop = origStop;
+		f.units.activeUnits.delete("qorpera-shared-runner@0.service");
+		f.release = "unconfirmed";
+		for (let attempt = 1; attempt < 12; attempt++) {
+			await expect(f.backend.reconcile()).rejects.toThrow("release was not confirmed");
+		}
+		await f.backend.reconcile();
+		f.release = "released";
+		const releasesBefore = f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine").length;
+		await f.backend.reconcile();
+		await f.backend.reconcile();
+		expect(f.rpc.filter((call) => call.name === "qorpera_release_runtime_machine")).toHaveLength(releasesBefore + 1);
+		expect(await journal(f, lostRun)).toMatchObject({ physicalState: "lost", capacityReleased: true });
+	});
 });
