@@ -19,6 +19,9 @@ const wellFormed = (text: string) => Buffer.from(text, "utf8").toString("utf8") 
  * path, none empty, `.` or `..`, none ending in `.` or a space, no control character (C0, DEL, C1 and the line and
  * paragraph separators: stricter than the database's `[[:cntrl:]]` where it differs) and no backslash. A path outside
  * `code/` is no path this rule is for: false. No TypeScript copy of the rule was in `@qorpera/contracts`. */
+// WHY: SQL qorpera_folder_commit enforces c_key_bound = 2600 on folded keys; codeFolderRefuses checks it alongside 255-byte names.
+export const CODE_FOLDER_KEY_BYTES = 2600;
+
 export function codeImportFolderPathValid(path: string): boolean {
 	if (typeof path !== "string" || !wellFormed(path)) return false;
 	const bytes = utf8(path);
@@ -66,8 +69,10 @@ export function codeFolderRefuses(
 			if (record.type === "tree") below.add(path);
 			continue;
 		}
+		const full = `${area}/${under}/${path}`;
 		if (
-			codeImportFolderPathValid(`${area}/${under}/${path}`) &&
+			codeImportFolderPathValid(full) &&
+			utf8(folderKey(full)) <= CODE_FOLDER_KEY_BYTES &&
 			path.split("/").every((part) => utf8(part) <= CODE_FOLDER_NAME_BYTES)
 		)
 			continue;

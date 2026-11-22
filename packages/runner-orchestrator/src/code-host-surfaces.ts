@@ -117,6 +117,7 @@ export type ComposePreviewTreeResult =
 			readonly lastCleanTreeSha: string;
 			readonly appliedChangeIds: readonly string[];
 			readonly conflictingChangeId: string;
+			readonly explorationConflicted?: boolean;
 			readonly conflictPaths: readonly string[];
 			readonly restored: readonly string[];
 	  };
@@ -170,7 +171,7 @@ async function treeOfCommit(run: Run, commitSha: string, errorCode: string): Pro
 	return tree;
 }
 
-// WHY: Synthetic commits parented on parentSha pin merge-base universally on Git 2.38+ without mutating refs or worktrees.
+// WHY: Uses Git 2.40+ --merge-base for single-exec zero-orphan 3-way merges; falls back to synthetic parented commits only on legacy Git 2.38/2.39.
 async function applyRange(
 	run: Run,
 	cursorCommit: string,
@@ -180,15 +181,31 @@ async function applyRange(
 ): Promise<
 	{ readonly ok: true; readonly treeSha: string } | { readonly ok: false; readonly paths: readonly string[] }
 > {
-	const cursorTree = await treeOfCommit(run, cursorCommit, errorCode);
-	const headTree = await treeOfCommit(run, headSha, errorCode);
-	const ours = await commitTree(run, cursorTree, parentSha, "qorpera merge ours", [], errorCode);
-	const theirs = await commitTree(run, headTree, parentSha, "qorpera merge theirs", [], errorCode);
-	const merged = await run.git(
+	let merged = await run.git(
 		run.repo,
-		["merge-tree", "--write-tree", "-z", "--name-only", "--no-messages", ours, theirs],
+		[
+			"merge-tree",
+			"--write-tree",
+			"-z",
+			"--name-only",
+			"--no-messages",
+			`--merge-base=${parentSha}`,
+			cursorCommit,
+			headSha,
+		],
 		{ maximumOutputBytes: MAX_READ },
 	);
+	if (merged.status === 129 && /merge-base/i.test(merged.stderr)) {
+		const cursorTree = await treeOfCommit(run, cursorCommit, errorCode);
+		const headTree = await treeOfCommit(run, headSha, errorCode);
+		const ours = await commitTree(run, cursorTree, parentSha, "qorpera merge ours", [], errorCode);
+		const theirs = await commitTree(run, headTree, parentSha, "qorpera merge theirs", [], errorCode);
+		merged = await run.git(
+			run.repo,
+			["merge-tree", "--write-tree", "-z", "--name-only", "--no-messages", ours, theirs],
+			{ maximumOutputBytes: MAX_READ },
+		);
+	}
 	const fields = merged.stdout.toString("utf8").split("\0");
 	if (merged.status === 1) {
 		return { ok: false, paths: [...new Set(fields.slice(1).filter(Boolean))] };
@@ -197,6 +214,27 @@ async function applyRange(
 		throw new CodeHostJobFailure(errorCode, tail(merged.stderr));
 	}
 	return { ok: true, treeSha: fields[0] as string };
+}
+
+async function assertOrderedRange(run: Run, parentSha: string, headSha: string, errorCode: string): Promise<void> {
+	if (parentSha === headSha) return;
+	const ordered = await run.git(run.repo, ["merge-base", "--is-ancestor", parentSha, headSha]);
+	if (ordered.status === 1) {
+		throw new CodeHostRefusal("CODE_HOST_INVALID_CHANGE_RANGE", [parentSha, headSha]);
+	}
+	if (ordered.status !== 0) {
+		throw new CodeHostJobFailure(errorCode, tail(ordered.stderr));
+	}
+}
+
+async function assertAllCommits(run: Run, shas: readonly string[]): Promise<void> {
+	const unique = [...new Set(shas)];
+	if (unique.length === 0) return;
+	const ok = await run.areCommits(run.repo, unique);
+	const missing = unique.filter((_, index) => !ok[index]);
+	if (missing.length > 0) {
+		throw new CodeHostRefusal("CODE_HOST_UNKNOWN_COMMIT", missing);
+	}
 }
 
 async function commitTree(
@@ -235,15 +273,22 @@ export async function cherryPickChangeUnits(
 		if (input.expectMainSha && mainSha !== input.expectMainSha) {
 			throw new CodeHostJobFailure("CODE_HOST_LAND_STALE", "default branch moved before cherry-pick");
 		}
+		await assertAllCommits(
+			run,
+			input.changes.flatMap((change) => [change.parentSha, change.headSha]),
+		);
 		for (const change of input.changes) {
-			if (!(await run.isCommit(run.repo, change.parentSha)) || !(await run.isCommit(run.repo, change.headSha))) {
-				throw new CodeHostRefusal("CODE_HOST_UNKNOWN_COMMIT", [change.parentSha, change.headSha]);
-			}
+			await assertOrderedRange(run, change.parentSha, change.headSha, "CODE_HOST_CHERRY_PICK_FAILED");
 		}
 
 		let cursor = mainSha;
+		let cursorTree = await treeOfCommit(run, cursor, "CODE_HOST_CHERRY_PICK_FAILED");
 		const landedCommits: { changeId: string; commitSha: string }[] = [];
 		for (const change of input.changes) {
+			if (change.parentSha === change.headSha) {
+				landedCommits.push({ changeId: change.changeId, commitSha: cursor });
+				continue;
+			}
 			const applied = await applyRange(
 				run,
 				cursor,
@@ -254,7 +299,6 @@ export async function cherryPickChangeUnits(
 			if (!applied.ok) {
 				throw new CodeHostChangeConflict("CODE_HOST_CHERRY_PICK_CONFLICT", change.changeId, applied.paths);
 			}
-			const cursorTree = await treeOfCommit(run, cursor, "CODE_HOST_CHERRY_PICK_FAILED");
 			if (applied.treeSha === cursorTree) {
 				landedCommits.push({ changeId: change.changeId, commitSha: cursor });
 				continue;
@@ -270,14 +314,18 @@ export async function cherryPickChangeUnits(
 				[`Qorpera-Change: ${change.changeId}`],
 				"CODE_HOST_CHERRY_PICK_FAILED",
 			);
+			cursorTree = applied.treeSha;
 			landedCommits.push({ changeId: change.changeId, commitSha: cursor });
 		}
 
-		const records = await run.checkNames(run.repo, cursor);
-		const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
-		if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+		if (cursor !== mainSha) {
+			const { records } = await run.checkNamesIncremental(run.repo, mainSha, cursor);
+			const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
+			if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+		}
 
-		const paths = await diffPathsBetween(run, mainSha, cursor, "CODE_HOST_CHERRY_PICK_FAILED");
+		const paths =
+			cursor === mainSha ? [] : await diffPathsBetween(run, mainSha, cursor, "CODE_HOST_CHERRY_PICK_FAILED");
 		if (cursor !== mainSha) {
 			await moveBase(run, area.main, base, cursor, mainSha);
 		}
@@ -303,13 +351,60 @@ export async function rebaseSessionChanges(
 
 	return withJob(job, repository, async (run) => {
 		await prepareKeptArea(run);
-		if (!(await run.isCommit(run.repo, ontoSha))) {
-			throw new CodeHostRefusal("CODE_HOST_UNKNOWN_COMMIT", [ontoSha]);
+		await assertAllCommits(run, [
+			ontoSha,
+			...input.remainingChanges.flatMap((change) => [change.parentSha, change.headSha]),
+		]);
+		for (const change of input.remainingChanges) {
+			await assertOrderedRange(run, change.parentSha, change.headSha, "CODE_HOST_REBASE_FAILED");
+		}
+
+		const branchRef = `refs/heads/qorpera/coding/${input.workerId}`;
+		const wtAdmin = `${run.repo}/worktrees/${input.workerId}`;
+		const wtTree = `${run.code}/worktrees/${input.workerId}`;
+		const oldTip = input.updateBranchRef ? await run.ref(branchRef) : null;
+		let hasWorktree = false;
+		if (input.updateBranchRef) {
+			const [adminType, treeType] = await run.types([wtAdmin, wtTree]);
+			hasWorktree = adminType === "directory" && treeType === "directory";
+			if (hasWorktree) {
+				// WHY: Never move or hard-reset a worktree with uncommitted tracked edits (e.g., an actively running peer turn).
+				const dirty = await run.git(wtAdmin, [
+					`--work-tree=${wtTree}`,
+					"status",
+					"--porcelain",
+					"-z",
+					"--untracked-files=no",
+				]);
+				if (dirty.status !== 0 || dirty.stdout.length > 0) {
+					const dirtyPaths =
+						dirty.status === 0
+							? dirty.stdout
+									.toString("utf8")
+									.split("\0")
+									.filter(Boolean)
+									.map((entry) => entry.slice(3))
+							: [];
+					return {
+						status: "conflicted" as const,
+						ontoSha,
+						conflictedChangeId: input.remainingChanges[0]?.changeId ?? input.workerId,
+						conflictPaths: [...new Set(dirtyPaths)],
+						rebasedBeforeConflict: [],
+						restored: run.restored,
+					};
+				}
+			}
 		}
 
 		let cursor = ontoSha;
+		let cursorTree = await treeOfCommit(run, cursor, "CODE_HOST_REBASE_FAILED");
 		const rebased: { changeId: string; parentSha: string; headSha: string }[] = [];
 		for (const change of input.remainingChanges) {
+			if (change.parentSha === change.headSha) {
+				rebased.push({ changeId: change.changeId, parentSha: cursor, headSha: cursor });
+				continue;
+			}
 			const applied = await applyRange(run, cursor, change.parentSha, change.headSha, "CODE_HOST_REBASE_FAILED");
 			if (!applied.ok) {
 				return {
@@ -321,21 +416,51 @@ export async function rebaseSessionChanges(
 					restored: run.restored,
 				};
 			}
+			if (applied.treeSha === cursorTree) {
+				rebased.push({ changeId: change.changeId, parentSha: cursor, headSha: cursor });
+				continue;
+			}
+			const body = change.summary?.trim()
+				? `${change.title.trim()}\n\n${change.summary.trim()}`
+				: change.title.trim();
 			const nextSha = await commitTree(
 				run,
 				applied.treeSha,
 				cursor,
-				change.title.trim(),
+				body,
 				[`Qorpera-Change: ${change.changeId}`],
 				"CODE_HOST_REBASE_FAILED",
 			);
 			rebased.push({ changeId: change.changeId, parentSha: cursor, headSha: nextSha });
 			cursor = nextSha;
+			cursorTree = applied.treeSha;
 		}
 
 		if (input.updateBranchRef) {
-			const branchRef = `refs/heads/qorpera/coding/${input.workerId}`;
-			await run.gitOk(run.repo, ["update-ref", branchRef, cursor], "CODE_HOST_REBASE_FAILED");
+			if (cursor !== ontoSha) {
+				const { records } = await run.checkNamesIncremental(run.repo, ontoSha, cursor);
+				const refused = codeFolderRefuses(run.area, records, `worktrees/${input.workerId}`);
+				if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+			}
+			// WHY: Compare-and-swap prevents clobbering a concurrent session commit; hard-resetting the linked worktree keeps disk + index aligned with the moved branch ref.
+			const updated = await run.git(run.repo, ["update-ref", branchRef, cursor, oldTip ?? ZERO]);
+			if (updated.status !== 0) {
+				return {
+					status: "conflicted" as const,
+					ontoSha,
+					conflictedChangeId: input.remainingChanges[0]?.changeId ?? input.workerId,
+					conflictPaths: [],
+					rebasedBeforeConflict: [],
+					restored: run.restored,
+				};
+			}
+			if (hasWorktree) {
+				await run.gitOk(
+					wtAdmin,
+					[`--work-tree=${wtTree}`, "reset", "--hard", "--quiet", cursor],
+					"CODE_HOST_REBASE_FAILED",
+				);
+			}
 		}
 		return {
 			status: "clean" as const,
@@ -371,15 +496,17 @@ export async function composePreviewTree(
 	return withJob(job, repository, async (run) => {
 		const { mainSha } = await prepareKeptArea(run);
 		const baseSha = input.baseSha ?? mainSha;
-		if (!(await run.isCommit(run.repo, baseSha))) {
-			throw new CodeHostRefusal("CODE_HOST_UNKNOWN_COMMIT", [baseSha]);
-		}
+		await assertAllCommits(run, [
+			baseSha,
+			...(input.exploration ? [input.exploration.baseSha, input.exploration.headSha] : []),
+			...input.changes.flatMap((change) => [change.parentSha, change.headSha]),
+		]);
 
 		let cursorCommit = baseSha;
 		let cursorTree = await treeOfCommit(run, baseSha, "CODE_HOST_PREVIEW_FAILED");
 		const appliedChangeIds: string[] = [];
 
-		if (input.exploration) {
+		if (input.exploration && input.exploration.baseSha !== input.exploration.headSha) {
 			const applied = await applyRange(
 				run,
 				cursorCommit,
@@ -395,22 +522,29 @@ export async function composePreviewTree(
 					lastCleanTreeSha: cursorTree,
 					appliedChangeIds,
 					conflictingChangeId: input.exploration.sessionId,
+					explorationConflicted: true,
 					conflictPaths: applied.paths,
 					restored: run.restored,
 				};
 			}
-			cursorTree = applied.treeSha;
-			cursorCommit = await commitTree(
-				run,
-				cursorTree,
-				cursorCommit,
-				`Preview exploration ${input.exploration.sessionId}`,
-				[],
-				"CODE_HOST_PREVIEW_FAILED",
-			);
+			if (applied.treeSha !== cursorTree) {
+				cursorTree = applied.treeSha;
+				cursorCommit = await commitTree(
+					run,
+					cursorTree,
+					cursorCommit,
+					`Preview exploration ${input.exploration.sessionId}`,
+					[],
+					"CODE_HOST_PREVIEW_FAILED",
+				);
+			}
 		}
 
 		for (const change of input.changes) {
+			if (change.parentSha === change.headSha) {
+				appliedChangeIds.push(change.changeId);
+				continue;
+			}
 			const applied = await applyRange(
 				run,
 				cursorCommit,
@@ -430,15 +564,17 @@ export async function composePreviewTree(
 					restored: run.restored,
 				};
 			}
-			cursorTree = applied.treeSha;
-			cursorCommit = await commitTree(
-				run,
-				cursorTree,
-				cursorCommit,
-				`Preview change ${change.changeId}`,
-				[],
-				"CODE_HOST_PREVIEW_FAILED",
-			);
+			if (applied.treeSha !== cursorTree) {
+				cursorTree = applied.treeSha;
+				cursorCommit = await commitTree(
+					run,
+					cursorTree,
+					cursorCommit,
+					`Preview change ${change.changeId}`,
+					[],
+					"CODE_HOST_PREVIEW_FAILED",
+				);
+			}
 			appliedChangeIds.push(change.changeId);
 		}
 
@@ -480,9 +616,12 @@ export async function inspectChangeRange(
 		if (ordered.status !== 0) throw new CodeHostRefusal("CODE_HOST_INVALID_CHANGE_RANGE", [parentSha, headSha]);
 
 		const numstat = (
-			await run.gitOk(run.repo, ["diff", "--numstat", "-z", parentSha, headSha], "CODE_HOST_INSPECT_FAILED", {
-				maximumOutputBytes: MAX_READ,
-			})
+			await run.gitOk(
+				run.repo,
+				["diff", "--numstat", "--no-renames", "-z", parentSha, headSha],
+				"CODE_HOST_INSPECT_FAILED",
+				{ maximumOutputBytes: MAX_READ },
+			)
 		).toString("utf8");
 		const entries = numstat.split("\0").filter(Boolean);
 		const paths: string[] = [];
@@ -645,7 +784,12 @@ export async function ensureSurfaceStarterRepository(
 			const at =
 				area.main === "present" &&
 				(await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${head}\n`)) === true;
-			if (!at) await moveBase(run, area.main, base, head, head);
+			if (!at) {
+				const records = await run.checkNames(run.repo, head);
+				const refused = codeFolderRefuses(run.area, records, "main");
+				if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+				await moveBase(run, area.main, base, head, head);
+			}
 			return { status: "existing" as const, mainSha: head, restored: run.restored };
 		}
 
@@ -744,6 +888,7 @@ export async function verifyStagedSurfaceBranch(
 		const held = await run.git(run.repo, ["merge-base", "--is-ancestor", headSha, branchTip]);
 		if (held.status === 1) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
 		if (held.status !== 0) throw new CodeHostJobFailure("CODE_HOST_EXPORT_FAILED", tail(held.stderr));
+		await assertOrderedRange(run, baseSha, headSha, "CODE_HOST_EXPORT_FAILED");
 		const beyond = await run.gitOk(
 			run.repo,
 			["rev-list", "--max-count=1", headSha, `^${baseSha}`],
@@ -752,6 +897,9 @@ export async function verifyStagedSurfaceBranch(
 		if (!beyond.length) {
 			return { branch, baseSha, headSha, changed: false, filesChanged: 0, restored: run.restored };
 		}
+		const { records } = await run.checkNamesIncremental(run.repo, baseSha, headSha);
+		const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
+		if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
 		const changedPaths = await diffPathsBetween(run, baseSha, headSha, "CODE_HOST_EXPORT_FAILED");
 		return {
 			branch,

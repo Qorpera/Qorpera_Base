@@ -79,27 +79,51 @@ export async function approveAndSyncSurfaceChanges(
 		throw error;
 	}
 
+	// WHY: Once cherryPickChangeUnits advances refs/heads/main, isolate sibling/peer rebases so a single session rebase failure never aborts or fails an already-landed merge.
 	let siblingRebase: RebaseSessionChangesResult | null = null;
 	if (request.siblingRemainingChanges.length > 0) {
-		siblingRebase = await rebaseSessionChanges(job, {
-			repository: request.repository,
-			workerId: request.workerId,
-			ontoSha: landed.mainAfter,
-			remainingChanges: request.siblingRemainingChanges,
-			updateBranchRef: true,
-		});
+		try {
+			siblingRebase = await rebaseSessionChanges(job, {
+				repository: request.repository,
+				workerId: request.workerId,
+				ontoSha: landed.mainAfter,
+				remainingChanges: request.siblingRemainingChanges,
+				updateBranchRef: true,
+			});
+		} catch {
+			siblingRebase = {
+				status: "conflicted",
+				ontoSha: landed.mainAfter,
+				conflictedChangeId: request.siblingRemainingChanges[0]!.changeId,
+				conflictPaths: [],
+				rebasedBeforeConflict: [],
+				restored: [],
+			};
+		}
 	}
 
 	const peerSync: { sessionId: string; result: RebaseSessionChangesResult }[] = [];
 	for (const peer of request.peerSessions) {
 		if (peer.remainingChanges.length === 0) continue;
-		const result = await rebaseSessionChanges(job, {
-			repository: request.repository,
-			workerId: peer.workerId,
-			ontoSha: landed.mainAfter,
-			remainingChanges: peer.remainingChanges,
-			updateBranchRef: true,
-		});
+		let result: RebaseSessionChangesResult;
+		try {
+			result = await rebaseSessionChanges(job, {
+				repository: request.repository,
+				workerId: peer.workerId,
+				ontoSha: landed.mainAfter,
+				remainingChanges: peer.remainingChanges,
+				updateBranchRef: true,
+			});
+		} catch {
+			result = {
+				status: "conflicted",
+				ontoSha: landed.mainAfter,
+				conflictedChangeId: peer.remainingChanges[0]!.changeId,
+				conflictPaths: [],
+				rebasedBeforeConflict: [],
+				restored: [],
+			};
+		}
 		peerSync.push({ sessionId: peer.sessionId, result });
 	}
 
