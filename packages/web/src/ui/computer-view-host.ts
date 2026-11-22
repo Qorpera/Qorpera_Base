@@ -1,4 +1,5 @@
 import type { CompanyComputerMemberView } from "@qorpera/cloud-client/cloud-company-computer-views";
+import { withAbortScopes } from "../cloud/abort-scope.ts";
 import {
 	type ComputerViewer,
 	type ComputerViewerOptions,
@@ -37,18 +38,18 @@ export class ComputerViewHost {
 			current();
 			this.#viewer = openComputerViewer({
 				...options,
-				requestConnection: async (input) => {
-					const signal = AbortSignal.any([this.#signal, input.signal]);
-					signal.throwIfAborted();
-					if (version !== this.#version) throw new Error("Viewer closed.");
-					const connection = await options.requestConnection({ ...input, signal });
-					if (signal.aborted || version !== this.#version) {
-						await connection.close();
-						throw new Error("Viewer closed.");
-					}
-					this.#connections.set(connection.connectionId, connection);
-					return connection;
-				},
+				requestConnection: async (input) =>
+					await withAbortScopes([this.#signal, input.signal], async (signal) => {
+						signal.throwIfAborted();
+						if (version !== this.#version) throw new Error("Viewer closed.");
+						const connection = await options.requestConnection({ ...input, signal });
+						if (signal.aborted || version !== this.#version) {
+							await connection.close();
+							throw new Error("Viewer closed.");
+						}
+						this.#connections.set(connection.connectionId, connection);
+						return connection;
+					}),
 				releaseConnection: async ({ connectionId }) => {
 					const connection = this.#connections.get(connectionId);
 					await connection?.close();

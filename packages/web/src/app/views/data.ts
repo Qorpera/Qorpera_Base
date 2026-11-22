@@ -9,6 +9,7 @@ import {
 	type CloudMemberDataTable,
 	type CloudMemberDataWatched,
 } from "@qorpera/cloud-client/cloud-member-data";
+import { withAbortScopes } from "../../cloud/abort-scope.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
@@ -472,32 +473,35 @@ class DataListView {
 	}
 
 	async #first(read: ListRead): Promise<void> {
-		const signal = AbortSignal.any([read.stop.signal, this.#lifetime.signal]);
-		try {
-			if (read.tab.kind === "question") {
-				const answer = await this.#calls().query(
-					{ database: read.database, question: read.tab.name, params: read.params },
-					signal,
-				);
+		let ok = false;
+		await withAbortScopes([read.stop.signal, this.#lifetime.signal], async (signal) => {
+			try {
+				if (read.tab.kind === "question") {
+					const answer = await this.#calls().query(
+						{ database: read.database, question: read.tab.name, params: read.params },
+						signal,
+					);
+					if (signal.aborted) return;
+					read.columns = answer.columns;
+					read.key = [];
+					read.rows = answer.rows.map((values) => ({ values, seen: null }));
+					read.more = answer.more;
+					read.etag = answer.etag;
+				} else {
+					const page = await this.#calls().rows(this.#asked(read), signal);
+					if (signal.aborted) return;
+					this.#take(read, [page]);
+				}
+				read.failed = false;
+				ok = true;
+			} catch {
 				if (signal.aborted) return;
-				read.columns = answer.columns;
-				read.key = [];
-				read.rows = answer.rows.map((values) => ({ values, seen: null }));
-				read.more = answer.more;
-				read.etag = answer.etag;
-			} else {
-				const page = await this.#calls().rows(this.#asked(read), signal);
-				if (signal.aborted) return;
-				this.#take(read, [page]);
+				read.failed = true;
 			}
-			read.failed = false;
-		} catch {
-			if (signal.aborted) return;
-			read.failed = true;
-		}
-		read.loading = false;
-		if (this.#list === read) this.#drawBody();
-		if (!read.failed) void this.#watch(read, signal);
+			read.loading = false;
+			if (this.#list === read) this.#drawBody();
+		});
+		if (ok && !read.stop.signal.aborted && !this.#lifetime.signal.aborted) void this.#watch(read);
 	}
 
 	#take(read: ListRead, pages: readonly CloudMemberDataPage[]): void {
@@ -520,72 +524,77 @@ class DataListView {
 		if (read.loading || !read.next || read.tab.kind !== "table") return;
 		read.loading = true;
 		this.#drawBody();
-		const signal = AbortSignal.any([read.stop.signal, this.#lifetime.signal]);
 		const from = read.etag;
-		try {
-			const page = await this.#calls().rows({ ...this.#asked(read), after: read.next }, signal);
-			if (signal.aborted) return;
-			if (read.etag !== from) {
-				read.loading = false;
-				return;
-			}
-			read.rows = [
-				...read.rows,
-				...page.rows.filter(hasValues).map((row) => ({ values: row.values, seen: row.seen })),
-			];
-			read.next = page.next;
-			read.more = page.more;
-			read.tooLarge ||= page.tooLarge === true;
-			read.pages++;
-			read.failed = false;
-		} catch {
-			if (signal.aborted) return;
-			read.failed = true;
-		}
-		read.loading = false;
-		if (this.#list === read) this.#drawBody();
-	}
-
-	async #watch(read: ListRead, signal: AbortSignal): Promise<void> {
-		let failures = 0;
-		while (!signal.aborted && this.el.isConnected) {
-			await shown(signal);
-			if (signal.aborted || !this.el.isConnected) return;
-			const watched: CloudMemberDataWatched =
-				read.tab.kind === "question"
-					? { database: read.database, question: read.tab.name, params: read.params, etag: read.etag ?? "" }
-					: { ...this.#asked(read), etag: read.etag ?? "" };
-			const call = new AbortController();
-			const hidden = () => document.visibilityState === "hidden" && call.abort();
-			document.addEventListener("visibilitychange", hidden);
+		await withAbortScopes([read.stop.signal, this.#lifetime.signal], async (signal) => {
 			try {
-				const answer = await this.#calls().watchTables([watched], AbortSignal.any([signal, call.signal]));
-				failures = 0;
-				if ("changed" in answer && !signal.aborted) {
-					const changed = answer.changed[0]?.answer;
-					if (changed && "key" in changed) await this.#again(read, changed, signal);
-					else if (changed) {
-						read.columns = changed.columns;
-						read.rows = changed.rows.map((values) => ({ values, seen: null }));
-						read.more = changed.more;
-						read.etag = changed.etag;
-					}
-					if (!signal.aborted && this.#list === read) {
-						this.#drawBody();
-						this.#follow(read);
-					}
+				const page = await this.#calls().rows({ ...this.#asked(read), after: read.next }, signal);
+				if (signal.aborted) return;
+				if (read.etag !== from) {
+					read.loading = false;
+					return;
 				}
+				read.rows = [
+					...read.rows,
+					...page.rows.filter(hasValues).map((row) => ({ values: row.values, seen: row.seen })),
+				];
+				read.next = page.next;
+				read.more = page.more;
+				read.tooLarge ||= page.tooLarge === true;
+				read.pages++;
+				read.failed = false;
 			} catch {
 				if (signal.aborted) return;
-				if (!call.signal.aborted) {
-					await sleep(WATCH_RETRY_MS[Math.min(failures, WATCH_RETRY_MS.length - 1)] ?? 10_000, signal);
-					failures++;
-				}
-			} finally {
-				document.removeEventListener("visibilitychange", hidden);
+				read.failed = true;
 			}
-			await sleep(WATCH_GAP_MS, signal);
-		}
+			read.loading = false;
+			if (this.#list === read) this.#drawBody();
+		});
+	}
+
+	async #watch(read: ListRead): Promise<void> {
+		await withAbortScopes([read.stop.signal, this.#lifetime.signal], async (signal) => {
+			let failures = 0;
+			while (!signal.aborted && this.el.isConnected) {
+				await shown(signal);
+				if (signal.aborted || !this.el.isConnected) return;
+				const watched: CloudMemberDataWatched =
+					read.tab.kind === "question"
+						? { database: read.database, question: read.tab.name, params: read.params, etag: read.etag ?? "" }
+						: { ...this.#asked(read), etag: read.etag ?? "" };
+				const call = new AbortController();
+				const hidden = () => document.visibilityState === "hidden" && call.abort();
+				document.addEventListener("visibilitychange", hidden);
+				try {
+					const answer = await withAbortScopes([signal, call.signal], (watchSignal) =>
+						this.#calls().watchTables([watched], watchSignal),
+					);
+					failures = 0;
+					if ("changed" in answer && !signal.aborted) {
+						const changed = answer.changed[0]?.answer;
+						if (changed && "key" in changed) await this.#again(read, changed, signal);
+						else if (changed) {
+							read.columns = changed.columns;
+							read.rows = changed.rows.map((values) => ({ values, seen: null }));
+							read.more = changed.more;
+							read.etag = changed.etag;
+						}
+						if (!signal.aborted && this.#list === read) {
+							this.#drawBody();
+							this.#follow(read);
+						}
+					}
+				} catch {
+					if (signal.aborted) return;
+					if (!call.signal.aborted) {
+						await sleep(WATCH_RETRY_MS[Math.min(failures, WATCH_RETRY_MS.length - 1)] ?? 10_000, signal);
+						failures++;
+					}
+				} finally {
+					document.removeEventListener("visibilitychange", hidden);
+				}
+				await sleep(WATCH_GAP_MS, signal);
+			}
+		});
 	}
 
 	async #again(read: ListRead, first: CloudMemberDataPage, signal: AbortSignal): Promise<void> {

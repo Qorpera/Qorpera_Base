@@ -1,3 +1,4 @@
+import { createAbortScope } from "../../cloud/abort-scope.ts";
 import type { HostedConnectorConnection, HostedConnectorReturn, WebConnectors } from "../../cloud/connectors.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure, figureElement } from "../../ui/avatar.ts";
@@ -751,7 +752,8 @@ class BankView {
 			starting = true;
 			failed = false;
 			draw();
-			const signal = AbortSignal.any([this.#lifetime.signal, attempt.signal]);
+			const scope = createAbortScope([this.#lifetime.signal, attempt.signal]);
+			const signal = scope.signal;
 			try {
 				const url = await client.beginSignIn("bank", existingSecretId, signal, {
 					name: chosen,
@@ -765,6 +767,8 @@ class BankView {
 				starting = false;
 				failed = true;
 				draw();
+			} finally {
+				scope.dispose();
 			}
 		};
 		const draw = () => {

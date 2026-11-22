@@ -1,4 +1,5 @@
 import { osPath, writeGroupFile } from "@qorpera/cloud-client/company-state-files";
+import { createAbortScope } from "../cloud/abort-scope.ts";
 import {
 	createStateFolder,
 	WebCompanyFolderRejectedError,
@@ -28,7 +29,8 @@ export function createConversationStarter(options: {
 	return async (recipientIds, text, viewSignal) => {
 		if (busy) throw new Error(t("Wait for this conversation to finish opening."));
 		const ids = [...new Set(recipientIds)];
-		const signal = AbortSignal.any([company.signal, viewSignal]);
+		const scope = createAbortScope([company.signal, viewSignal]);
+		const signal = scope.signal;
 		const check = () => {
 			signal.throwIfAborted();
 			options.current();
@@ -47,9 +49,14 @@ export function createConversationStarter(options: {
 			if (ids.length > 1 && !state.team.capabilities.authorize)
 				throw new Error(t("Only an owner or admin can create a group chat."));
 		};
-		check();
-		if (!text.trim() || new TextEncoder().encode(text.trim()).length > 65536)
-			throw new Error(t("Enter a message of no more than 64 KiB."));
+		try {
+			check();
+			if (!text.trim() || new TextEncoder().encode(text.trim()).length > 65536)
+				throw new Error(t("Enter a message of no more than 64 KiB."));
+		} catch (error) {
+			scope.dispose();
+			throw error;
+		}
 		busy = true;
 		try {
 			if (options.native.refreshAccountMetadata) {
@@ -159,6 +166,7 @@ export function createConversationStarter(options: {
 			// Failed sends retain the draft and exact retry identity in this session.
 			return sessionId;
 		} finally {
+			scope.dispose();
 			busy = false;
 		}
 	};

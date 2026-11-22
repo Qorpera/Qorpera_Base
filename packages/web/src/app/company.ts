@@ -1,5 +1,6 @@
 import type { CloudMemberDataDescription } from "@qorpera/cloud-client/cloud-member-data";
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
+import { withAbortScopes } from "../cloud/abort-scope.ts";
 import type { CloudApi } from "../cloud/api.ts";
 import type { AppTreeNode, MemberAppLayout, MemberAppLayoutRead } from "../cloud/app-groups.ts";
 import { CloudRpcError, connectionLost, describeError } from "../cloud/client.ts";
@@ -1853,39 +1854,40 @@ export class CompanyController {
 	}
 
 	async groupDetails(sessionId: string, viewSignal: AbortSignal): Promise<GroupChatDetails> {
-		const signal = AbortSignal.any([this.signal, viewSignal]);
-		const current = () => {
-			signal.throwIfAborted();
-			const state = this.store.get();
-			const session = state.sessions.find((item) => item.sessionId === sessionId);
-			if (
-				state.accessLost ||
-				!state.team?.capabilities.read ||
-				state.team.profileId !== this.profile.profileId ||
-				!session ||
-				session.staffAgentId ||
-				typeof session.executionScope?.roomId !== "string" ||
-				session.profileId !== this.profile.profileId ||
-				session.environmentId !== this.profile.environmentId
-			)
-				throw new Error(t("This group chat is no longer available."));
-			return session;
-		};
-		const session = current();
-		const details = await readGroupChatDetails(this.#api.cloud, session, signal);
-		if (current().executionScope?.roomId !== session.executionScope?.roomId)
-			throw new Error(t("This group chat has changed. Open its details again."));
-		const previous = this.store.get().groups?.[details.roomId];
-		const latest =
-			previous &&
-			previous.roomId === details.roomId &&
-			previous.sessionId === details.sessionId &&
-			previous.environmentId === details.environmentId &&
-			previous.version > details.version
-				? previous
-				: details;
-		this.store.set((state) => ({ groups: { ...state.groups, [details.roomId]: latest } }));
-		return latest;
+		return withAbortScopes([this.signal, viewSignal], async (signal) => {
+			const current = () => {
+				signal.throwIfAborted();
+				const state = this.store.get();
+				const session = state.sessions.find((item) => item.sessionId === sessionId);
+				if (
+					state.accessLost ||
+					!state.team?.capabilities.read ||
+					state.team.profileId !== this.profile.profileId ||
+					!session ||
+					session.staffAgentId ||
+					typeof session.executionScope?.roomId !== "string" ||
+					session.profileId !== this.profile.profileId ||
+					session.environmentId !== this.profile.environmentId
+				)
+					throw new Error(t("This group chat is no longer available."));
+				return session;
+			};
+			const session = current();
+			const details = await readGroupChatDetails(this.#api.cloud, session, signal);
+			if (current().executionScope?.roomId !== session.executionScope?.roomId)
+				throw new Error(t("This group chat has changed. Open its details again."));
+			const previous = this.store.get().groups?.[details.roomId];
+			const latest =
+				previous &&
+				previous.roomId === details.roomId &&
+				previous.sessionId === details.sessionId &&
+				previous.environmentId === details.environmentId &&
+				previous.version > details.version
+					? previous
+					: details;
+			this.store.set((state) => ({ groups: { ...state.groups, [details.roomId]: latest } }));
+			return latest;
+		});
 	}
 
 	/** One company-wide read supplies the membership behind every group avatar. */
@@ -3308,23 +3310,34 @@ export class CompanyController {
 			],
 		}));
 		try {
-			const signal = AbortSignal.any([this.signal, ...(viewSignal ? [viewSignal] : [])]);
-			const receipt = quotes.length
-				? await this.#writeInput(
-						sessionId,
-						clientInputId,
-						trimmed,
-						signal,
-						files,
-						executionSponsor,
-						roomTarget,
-						quotes,
-					)
-				: roomTarget
-					? await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor, roomTarget)
-					: await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor);
-			if (this.#stopped) return false;
-			signal.throwIfAborted();
+			const receipt = await withAbortScopes([this.signal, viewSignal], async (signal) => {
+				const written = quotes.length
+					? await this.#writeInput(
+							sessionId,
+							clientInputId,
+							trimmed,
+							signal,
+							files,
+							executionSponsor,
+							roomTarget,
+							quotes,
+						)
+					: roomTarget
+						? await this.#writeInput(
+								sessionId,
+								clientInputId,
+								trimmed,
+								signal,
+								files,
+								executionSponsor,
+								roomTarget,
+							)
+						: await this.#writeInput(sessionId, clientInputId, trimmed, signal, files, executionSponsor);
+				if (this.#stopped) return undefined;
+				signal.throwIfAborted();
+				return written;
+			});
+			if (!receipt) return false;
 			store.set((state) => {
 				const rest = this.roomDrafts.sent(sessionId, text, state.draft ?? "", true);
 				return {

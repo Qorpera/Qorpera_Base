@@ -1,4 +1,5 @@
 import type { MemberAgentMachines, MemberDesktopHold } from "@qorpera/cloud-client/cloud-member-company-computer";
+import { withAbortScopes } from "../../cloud/abort-scope.ts";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
 
 /** The waits before a hand-back that was not answered is asked again: 2, 4, 8, then 15 s. */
@@ -343,7 +344,11 @@ export class DesktopHoldLedger {
 			this.#state(hold, "taking");
 			let answer: MemberDesktopHold | undefined;
 			try {
-				answer = await computer.takeDesktop(machineId, epoch, press, AbortSignal.timeout(HOLD_CALL_MS));
+				answer = await withAbortScopes(
+					[],
+					(signal) => computer.takeDesktop(machineId, epoch, press, signal),
+					HOLD_CALL_MS,
+				);
 			} catch {
 				answer = undefined;
 			}
@@ -676,7 +681,7 @@ export class DesktopHoldLedger {
 		const computer = this.#computer;
 		if (!computer || this.#left) return undefined;
 		try {
-			const list = await computer.agentMachines(agentId, AbortSignal.timeout(HOLD_CALL_MS));
+			const list = await withAbortScopes([], (signal) => computer.agentMachines(agentId, signal), HOLD_CALL_MS);
 			this.listed(list, agentId);
 			return list;
 		} catch {
@@ -701,12 +706,10 @@ export class DesktopHoldLedger {
 		hold.timer = undefined;
 		const asking = (async () => {
 			try {
-				const answer = await computer.handBackDesktop(
-					hold.machineId,
-					hold.reason,
-					epoch,
-					seat,
-					AbortSignal.timeout(HOLD_CALL_MS),
+				const answer = await withAbortScopes(
+					[],
+					(signal) => computer.handBackDesktop(hold.machineId, hold.reason, epoch, seat, signal),
+					HOLD_CALL_MS,
 				);
 				hold.asking = undefined;
 				hold.failed = false;
