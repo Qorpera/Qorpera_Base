@@ -887,6 +887,7 @@ export class SurfaceView {
 									: t("Live matches Base"),
 							"data-act": "publish",
 						},
+						publishBusy ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
 						publishBusy ? t("Publishing…") : t("Publish"),
 						!publishBusy && count ? h("span", { class: "surface-count" }, String(count)) : null,
 					),

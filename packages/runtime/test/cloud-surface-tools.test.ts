@@ -276,6 +276,20 @@ describe("cloud surface runtime tools", () => {
 		).toThrow();
 		expect(() =>
 			tool.parseArguments({
+				title: "Dot segment",
+				summary: "None",
+				ops: [{ op: "write_text", path: "./voice.md", content: "nope" }],
+			}),
+		).toThrow();
+		expect(() =>
+			tool.parseArguments({
+				title: "Empty segment",
+				summary: "None",
+				ops: [{ op: "write_text", path: "a//b.md", content: "nope" }],
+			}),
+		).toThrow();
+		expect(() =>
+			tool.parseArguments({
 				title: "Absolute path",
 				summary: "None",
 				ops: [{ op: "delete", path: "/etc/passwd" }],
@@ -472,6 +486,10 @@ describe("cloud surface runtime tools", () => {
 		});
 		expect(identitySelf).toContain("## Live Shared Company Files");
 		expect(identitySelf).toContain("automatically recompile `identity/tokens.css`");
+		expect(identitySelf).toContain("`identity/voice.md` and `identity/brief.md`");
+		expect(identitySelf).toContain(
+			"do not hand-edit `identity/tokens.css` or create standalone HTML/CSS showcase pages",
+		);
 	});
 
 	it("bridges Surface tools to control-plane RPCs via createControlPlaneSurfaceToolsPort", async () => {

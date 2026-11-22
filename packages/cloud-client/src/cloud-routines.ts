@@ -12,6 +12,14 @@ const HOOK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const EVENT_TYPE = /^[\x21-\x7e]{1,128}$/;
 /** The cloud's closed form for a dynamic routine's next run. */
 const ONCE_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
+const CODE_CHANGE_REPO = /^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9_][a-z0-9_.-]{0,99}$/;
+const CODE_CHANGE_EVENTS = ["landed", "undone", "checks_failed", "conflict"] as const;
+const APP_SITE_SLUG = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
+const DATA_CHANGE_DB = /^[a-z][a-z0-9_-]{0,63}$/;
+const DATA_CHANGE_TABLE = /^[a-z][a-z0-9_]{0,63}$/;
+const DATA_CHANGE_OPS = ["insert", "update", "delete"] as const;
+const CHECK_PROBE_URL = /^https:\/\/[^/@\s\u0000-\u001f\u007f]+(?:\/[^\s\u0000-\u001f\u007f]*)?$/;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const encoder = new TextEncoder();
 
 export const CLOUD_ROUTINE_WEEKDAYS = [
@@ -27,6 +35,19 @@ export type CloudRoutineWeekday = (typeof CLOUD_ROUTINE_WEEKDAYS)[number];
 /** Omitted means a final reply is required; `silent` is the only way to stay quiet. */
 export type CloudRoutineReplyPolicy = "optional" | "required" | "silent";
 
+export type CloudRoutineCheckBeforeWake =
+	| {
+			kind: "http_probe";
+			url: string;
+			expectStatus?: number;
+			timeoutMs?: number;
+	  }
+	| {
+			kind: "code_checks";
+			repo?: string;
+			timeoutMs?: number;
+	  };
+
 interface TriggerBase {
 	id: string;
 	replyPolicy?: CloudRoutineReplyPolicy;
@@ -35,6 +56,7 @@ export interface CloudRoutineIntervalTrigger extends TriggerBase {
 	kind: "schedule";
 	intervalMinutes: number;
 	startAt?: string;
+	checkBeforeWake?: CloudRoutineCheckBeforeWake;
 }
 export interface CloudRoutineWeeklyTrigger extends TriggerBase {
 	kind: "schedule";
@@ -43,6 +65,7 @@ export interface CloudRoutineWeeklyTrigger extends TriggerBase {
 	localTime: string;
 	timeZone: string;
 	startAt?: string;
+	checkBeforeWake?: CloudRoutineCheckBeforeWake;
 }
 export interface CloudRoutineWindowTrigger extends TriggerBase {
 	kind: "schedule";
@@ -52,6 +75,7 @@ export interface CloudRoutineWindowTrigger extends TriggerBase {
 	windowStart: string;
 	windowEnd: string;
 	timeZone: string;
+	checkBeforeWake?: CloudRoutineCheckBeforeWake;
 }
 export interface CloudRoutineFileTrigger extends TriggerBase {
 	kind: "listener";
@@ -67,6 +91,28 @@ export interface CloudRoutineEventTrigger extends TriggerBase {
 	source: "event";
 	hookId: string;
 	only?: string[];
+	timeZone: string;
+}
+export interface CloudRoutineCodeChangeTrigger extends TriggerBase {
+	kind: "listener";
+	source: "code-change";
+	repo: string;
+	events: ("landed" | "undone" | "checks_failed" | "conflict")[];
+	paths?: string[];
+	timeZone: string;
+}
+export interface CloudRoutineAppUnhealthyTrigger extends TriggerBase {
+	kind: "listener";
+	source: "app-unhealthy";
+	site: string;
+	timeZone: string;
+}
+export interface CloudRoutineDataChangeTrigger extends TriggerBase {
+	kind: "listener";
+	source: "data-change";
+	database: string;
+	tables?: string[];
+	operations?: ("insert" | "update" | "delete")[];
 	timeZone: string;
 }
 /** A dynamic routine's one next run. It has no cadence: each run of the agent
@@ -85,7 +131,10 @@ export type CloudRoutineTrigger =
 	| CloudRoutineWeeklyTrigger
 	| CloudRoutineWindowTrigger
 	| CloudRoutineFileTrigger
-	| CloudRoutineEventTrigger;
+	| CloudRoutineEventTrigger
+	| CloudRoutineCodeChangeTrigger
+	| CloudRoutineAppUnhealthyTrigger
+	| CloudRoutineDataChangeTrigger;
 
 export type CloudRoutineEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -199,6 +248,58 @@ function zone(value: unknown): string {
 	return value as string;
 }
 
+function parseCheckBeforeWake(value: unknown): CloudRoutineCheckBeforeWake {
+	const input = record(value, "routine checkBeforeWake");
+	if (input.kind === "http_probe") {
+		only(input, ["kind", "url", "expectStatus", "timeoutMs"], "routine http_probe check");
+		if (
+			typeof input.url !== "string" ||
+			input.url.length < 10 ||
+			input.url.length > 1024 ||
+			!CHECK_PROBE_URL.test(input.url)
+		)
+			invalid("routine http_probe url");
+		if (
+			input.expectStatus !== undefined &&
+			(!Number.isSafeInteger(input.expectStatus) ||
+				(input.expectStatus as number) < 100 ||
+				(input.expectStatus as number) > 599)
+		)
+			invalid("routine http_probe expectStatus");
+		if (
+			input.timeoutMs !== undefined &&
+			(!Number.isSafeInteger(input.timeoutMs) ||
+				(input.timeoutMs as number) < 500 ||
+				(input.timeoutMs as number) > 30000)
+		)
+			invalid("routine http_probe timeoutMs");
+		return {
+			kind: "http_probe",
+			url: input.url,
+			...(input.expectStatus === undefined ? {} : { expectStatus: input.expectStatus as number }),
+			...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs as number }),
+		};
+	}
+	if (input.kind === "code_checks") {
+		only(input, ["kind", "repo", "timeoutMs"], "routine code_checks check");
+		if (input.repo !== undefined && (typeof input.repo !== "string" || !CODE_CHANGE_REPO.test(input.repo)))
+			invalid("routine code_checks repo");
+		if (
+			input.timeoutMs !== undefined &&
+			(!Number.isSafeInteger(input.timeoutMs) ||
+				(input.timeoutMs as number) < 1000 ||
+				(input.timeoutMs as number) > 300000)
+		)
+			invalid("routine code_checks timeoutMs");
+		return {
+			kind: "code_checks",
+			...(input.repo === undefined ? {} : { repo: input.repo }),
+			...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs as number }),
+		};
+	}
+	invalid("routine checkBeforeWake");
+}
+
 /** Mirrors the cloud's trigger rules so a member sees a refusal before the write. */
 export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 	const input = record(value, "routine trigger");
@@ -206,6 +307,105 @@ export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 	if (reply !== undefined && reply !== "optional" && reply !== "required" && reply !== "silent")
 		invalid("routine reply policy");
 	const replyPolicy = reply === undefined ? {} : { replyPolicy: reply as CloudRoutineReplyPolicy };
+	if (input.kind === "listener" && input.source === "code-change") {
+		only(
+			input,
+			["id", "kind", "source", "repo", "events", "paths", "timeZone", "replyPolicy"],
+			"routine code-change listener",
+		);
+		const events = input.events;
+		const paths = input.paths;
+		if (
+			typeof input.id !== "string" ||
+			!LISTENER_ID.test(input.id) ||
+			typeof input.repo !== "string" ||
+			!CODE_CHANGE_REPO.test(input.repo) ||
+			!Array.isArray(events) ||
+			events.length < 1 ||
+			events.length > 4 ||
+			new Set(events).size !== events.length ||
+			events.some(
+				(ev) => typeof ev !== "string" || !CODE_CHANGE_EVENTS.includes(ev as (typeof CODE_CHANGE_EVENTS)[number]),
+			) ||
+			(paths !== undefined &&
+				(!Array.isArray(paths) ||
+					paths.length < 1 ||
+					paths.length > 20 ||
+					new Set(paths).size !== paths.length ||
+					paths.some(
+						(pat) => typeof pat !== "string" || pat.length < 1 || pat.length > 256 || CONTROL_CHARS.test(pat),
+					)))
+		)
+			invalid("routine code-change listener");
+		return {
+			id: input.id,
+			kind: "listener",
+			source: "code-change",
+			repo: input.repo,
+			events: [...(events as ("landed" | "undone" | "checks_failed" | "conflict")[])],
+			...(paths === undefined ? {} : { paths: [...(paths as string[])] }),
+			timeZone: zone(input.timeZone),
+			...replyPolicy,
+		};
+	}
+	if (input.kind === "listener" && input.source === "app-unhealthy") {
+		only(input, ["id", "kind", "source", "site", "timeZone", "replyPolicy"], "routine app-unhealthy listener");
+		if (
+			typeof input.id !== "string" ||
+			!LISTENER_ID.test(input.id) ||
+			typeof input.site !== "string" ||
+			(!APP_SITE_SLUG.test(input.site) && !HOOK_ID.test(input.site))
+		)
+			invalid("routine app-unhealthy listener");
+		return {
+			id: input.id,
+			kind: "listener",
+			source: "app-unhealthy",
+			site: input.site,
+			timeZone: zone(input.timeZone),
+			...replyPolicy,
+		};
+	}
+	if (input.kind === "listener" && input.source === "data-change") {
+		only(
+			input,
+			["id", "kind", "source", "database", "tables", "operations", "timeZone", "replyPolicy"],
+			"routine data-change listener",
+		);
+		const tables = input.tables;
+		const operations = input.operations;
+		if (
+			typeof input.id !== "string" ||
+			!LISTENER_ID.test(input.id) ||
+			typeof input.database !== "string" ||
+			!DATA_CHANGE_DB.test(input.database) ||
+			(tables !== undefined &&
+				(!Array.isArray(tables) ||
+					tables.length < 1 ||
+					tables.length > 20 ||
+					new Set(tables).size !== tables.length ||
+					tables.some((tb) => typeof tb !== "string" || !DATA_CHANGE_TABLE.test(tb)))) ||
+			(operations !== undefined &&
+				(!Array.isArray(operations) ||
+					operations.length < 1 ||
+					operations.length > 3 ||
+					new Set(operations).size !== operations.length ||
+					operations.some(
+						(op) => typeof op !== "string" || !DATA_CHANGE_OPS.includes(op as (typeof DATA_CHANGE_OPS)[number]),
+					)))
+		)
+			invalid("routine data-change listener");
+		return {
+			id: input.id,
+			kind: "listener",
+			source: "data-change",
+			database: input.database,
+			...(tables === undefined ? {} : { tables: [...(tables as string[])] }),
+			...(operations === undefined ? {} : { operations: [...(operations as ("insert" | "update" | "delete")[])] }),
+			timeZone: zone(input.timeZone),
+			...replyPolicy,
+		};
+	}
 	if (input.kind === "listener" && input.source === "event") {
 		only(input, ["id", "kind", "source", "hookId", "only", "timeZone", "replyPolicy"], "routine event listener");
 		const types = input.only;
@@ -276,6 +476,8 @@ export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 			...replyPolicy,
 		};
 	}
+	const checkBeforeWake =
+		input.checkBeforeWake === undefined ? {} : { checkBeforeWake: parseCheckBeforeWake(input.checkBeforeWake) };
 	if (input.kind !== "schedule") invalid("routine trigger kind");
 	const id = text(input.id, "routine trigger id", 160);
 	if (id !== id.trim() || /[\r\n]/.test(id)) invalid("routine trigger id");
@@ -293,7 +495,18 @@ export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 	if ("months" in input || "windowStart" in input || "windowEnd" in input) {
 		only(
 			input,
-			["id", "kind", "intervalMinutes", "months", "weekdays", "windowStart", "windowEnd", "timeZone", "replyPolicy"],
+			[
+				"id",
+				"kind",
+				"intervalMinutes",
+				"months",
+				"weekdays",
+				"windowStart",
+				"windowEnd",
+				"timeZone",
+				"replyPolicy",
+				"checkBeforeWake",
+			],
 			"routine window",
 		);
 		const from = input.windowStart,
@@ -324,12 +537,23 @@ export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 			windowEnd: to as string,
 			timeZone: zone(input.timeZone),
 			...replyPolicy,
+			...checkBeforeWake,
 		};
 	}
 	if ("weekdays" in input || "localTime" in input || "timeZone" in input) {
 		only(
 			input,
-			["id", "kind", "intervalMinutes", "startAt", "weekdays", "localTime", "timeZone", "replyPolicy"],
+			[
+				"id",
+				"kind",
+				"intervalMinutes",
+				"startAt",
+				"weekdays",
+				"localTime",
+				"timeZone",
+				"replyPolicy",
+				"checkBeforeWake",
+			],
 			"routine weekly schedule",
 		);
 		if (typeof input.localTime !== "string" || !LOCAL_TIME.test(input.localTime)) invalid("routine local time");
@@ -340,10 +564,15 @@ export function parseCloudRoutineTrigger(value: unknown): CloudRoutineTrigger {
 			localTime: input.localTime as string,
 			timeZone: zone(input.timeZone),
 			...replyPolicy,
+			...checkBeforeWake,
 		};
 	}
-	only(input, ["id", "kind", "intervalMinutes", "startAt", "replyPolicy"], "routine interval schedule");
-	return { ...base, ...start, ...replyPolicy };
+	only(
+		input,
+		["id", "kind", "intervalMinutes", "startAt", "replyPolicy", "checkBeforeWake"],
+		"routine interval schedule",
+	);
+	return { ...base, ...start, ...replyPolicy, ...checkBeforeWake };
 }
 
 export function parseCloudRoutine(value: unknown): CloudRoutine {
@@ -453,6 +682,16 @@ export function describeCloudRoutineTrigger(trigger: CloudRoutineTrigger, t: Clo
 			return trigger.only
 				? t("When a hook receives {types}", { types: trigger.only.join(", ") })
 				: t("When a hook receives an event");
+		if (trigger.source === "code-change")
+			return t("When {repo} emits {events}", { repo: trigger.repo, events: trigger.events.join(", ") });
+		if (trigger.source === "app-unhealthy") return t("When hosted app {site} is unhealthy", { site: trigger.site });
+		if (trigger.source === "data-change")
+			return trigger.tables
+				? t("When database {database} changes ({tables})", {
+						database: trigger.database,
+						tables: trigger.tables.join(", "),
+					})
+				: t("When database {database} changes", { database: trigger.database });
 		return trigger.match === "subtree"
 			? t("When {path} or anything under it changes", { path: trigger.path })
 			: t("When {path} changes", { path: trigger.path });

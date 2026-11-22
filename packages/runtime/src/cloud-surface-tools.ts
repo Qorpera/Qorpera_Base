@@ -279,8 +279,10 @@ function assertSafeRelativePath(path: string, field: string): string {
 	if (
 		trimmed.length === 0 ||
 		trimmed.startsWith("/") ||
+		trimmed.endsWith("/") ||
 		trimmed.includes("\\") ||
-		trimmed.split("/").some((segment) => segment === "..")
+		trimmed.includes("\0") ||
+		trimmed.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
 	) {
 		throw new CloudToolArgumentRefusal(`${field} must be a safe relative path`);
 	}

@@ -100,9 +100,16 @@ function systemIdOf(value: unknown): string {
 }
 
 /** The connection's state; on a cloud without the call, nothing is connected. */
-export async function readDigitalPost(cloud: Cloud, environmentId: string): Promise<DigitalPostConnection> {
+export async function readDigitalPost(
+	cloud: Cloud,
+	environmentId: string,
+	signal?: AbortSignal,
+): Promise<DigitalPostConnection> {
+	const args = { p_environment_id: environmentId };
 	const input = record(
-		await cloud.rpc("qorpera_member_digital_post", { p_environment_id: environmentId }),
+		await (signal
+			? cloud.rpc("qorpera_member_digital_post", args, signal)
+			: cloud.rpc("qorpera_member_digital_post", args)),
 		"Digital Post",
 	);
 	if (input.schema !== "qorpera.member-digital-post/v1") throw new CloudShapeError("Digital Post");

@@ -39,7 +39,7 @@ https:// {
 		transport http {
 			versions 1.1
 			dial_timeout 3s
-			response_header_timeout 35s
+			response_header_timeout 50s
 			keepalive 90s
 			keepalive_idle_conns 256
 		}

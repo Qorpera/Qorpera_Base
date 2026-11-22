@@ -228,6 +228,7 @@ export interface LxdCodingExecutorHostOptions {
 	/** Or the secrets built on that source, shared with the folder control's save check (5j-5 a): their `values` for a
 	 * machine are what its views may not save. Given, it is used in place of `commandEnvironment`. */
 	commandSecrets?: CodingMachineCommandSecrets;
+	autoRedeploy?: CodingExecutorHost["autoRedeploy"];
 	fetch?: typeof fetch;
 	runGit?: CodingBrokerGitRunner;
 	/** How long a freshly started guest may take to bring up its agent and
@@ -853,6 +854,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	readonly #storage: CodingNasStorage;
 	readonly #placement: CodingMachineStorage;
 	readonly #hostLeases: CodingHostLeases;
+	readonly autoRedeploy?: CodingExecutorHost["autoRedeploy"];
 	#storageWork: Promise<unknown> = Promise.resolve();
 	readonly #machineWork = new Map<string, Promise<unknown>>();
 	readonly #prepared = new Map<string, Prepared>();
@@ -927,6 +929,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (options.journalRoot !== this.#storage.controlPath) throw new Error("CODING_HOST_JOURNAL_NOT_ON_NAS");
 		this.#placement = Object.freeze({ policy: storagePolicy, machineIdSha256: options.machineIdSha256 });
 		this.#hostLeases = options.hostLeases ?? new CodingHostLeases();
+		if (options.autoRedeploy) this.autoRedeploy = options.autoRedeploy;
 		this.#options = {
 			...options,
 			storagePolicy,

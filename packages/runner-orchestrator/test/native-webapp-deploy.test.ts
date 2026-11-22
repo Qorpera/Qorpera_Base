@@ -11,8 +11,10 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import { readCodeChecks } from "../src/code-checks.ts";
 import { codeSiteCollectAnswer, codeSiteReported } from "../src/code-site.ts";
 import { type CodeSiteUploadFile, CodeSiteUploads } from "../src/code-site-uploads.ts";
+import { CompanyMachineSecretsManager } from "../src/company-machine-secrets.ts";
 import {
 	buildNativeAppEnvSpec,
+	deployCodeSiteToNativeEdge,
 	fetchAppLogs,
 	NATIVE_WEB_HOSTING_RPCS,
 	parseNativeCodeSiteSpec,
@@ -218,7 +220,12 @@ describe("_redirects and _headers parsing", () => {
 
 describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", () => {
 	it("uploads static assets to blob store and builds server webapps into native deployments", async () => {
-		expect(NATIVE_WEB_HOSTING_RPCS).toEqual(["qorpera_web_code_deployment_register"]);
+		expect(NATIVE_WEB_HOSTING_RPCS).toEqual([
+			"qorpera_web_code_deployment_register",
+			"qorpera_code_site_for_auto_redeploy",
+			"qorpera_code_site_auto_redeploy_switch",
+			"qorpera_emit_app_unhealthy_routine_wakes",
+		]);
 		expect(
 			buildNativeAppEnvSpec({
 				port: 3000,
@@ -365,6 +372,125 @@ describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", ()
 			fetchImpl: async () => ({ status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:41234" }) }),
 		});
 		expect(blueGreen).toEqual({ upstreamAddr: "127.0.0.1:41234" });
+	});
+
+	it("registers server uploads without prematurely deploying ready versions, masks fetched logs, and emits app_unhealthy on deploy failure", async () => {
+		const rootDir = await mkdtemp(join(tmpdir(), "qorpera-webapp-secrets-"));
+		const secretsManager = new CompanyMachineSecretsManager({ rootDir, verifyTmpfs: async () => true });
+		try {
+			const controlCalls: { method: string; args: Record<string, unknown> }[] = [];
+			const control = {
+				call: vi.fn(async (method: string, args: Record<string, unknown>) => {
+					controlCalls.push({ method, args });
+					if (method === "qorpera_web_code_deployment_register") {
+						return {
+							schema: "qorpera.web-code-deployment/v1",
+							state: "ready",
+							siteId: SITE_ID,
+							slug: "booking-app",
+							versionId: VERSION_ID,
+							deploymentId: DEPLOYMENT_ID,
+							versionNumber: 2,
+							kind: "server",
+						};
+					}
+					return { schema: "qorpera.app-unhealthy-wakes/v1", state: "emitted", wakes: 1, skipped: 0, wakeIds: [] };
+				}),
+			};
+			const appHostFetch = vi.fn(async () => ({
+				status: 200,
+				body: JSON.stringify({ upstream_addr: "127.0.0.1:41230" }),
+			}));
+
+			const uploaded = await deployCodeSiteToNativeEdge({
+				control,
+				owner: "node-1",
+				machineIdSha256: MACHINE_SHA,
+				target: { companyId: COMPANY, environmentId: ENVIRONMENT, owner: "company", name: "booking" },
+				change: 9,
+				spec: parseNativeCodeSiteSpec({
+					schema: "qorpera.code-site/v2",
+					kind: "server",
+					tree: TREE_SHA,
+					files: 0,
+					bytes: 0,
+					folder: ".",
+					name: "booking-app",
+					title: "Booking App",
+					port: 3000,
+					healthPath: "/health",
+				})!,
+				files: [],
+				edge: {
+					routerInternalUrl: "http://127.0.0.1:8094",
+					controlToken: "edge-token",
+					appHostInternalUrl: "http://127.0.0.1:8096",
+					appHostControlToken: "app-token",
+					appHostFetchImpl: appHostFetch,
+					buildAppImage: async () => ({ ociImageRef: IMAGE_REF, builtMs: 12 }),
+				},
+				signal: new AbortController().signal,
+			});
+			expect(uploaded.state).toBe("ready");
+			expect(appHostFetch).not.toHaveBeenCalled();
+
+			const runtimeSecret = "sk-runtime-secret-value-999999";
+			await secretsManager.deliver({
+				siteId: SITE_ID,
+				slug: "booking-app",
+				scope: "runtime",
+				targetEnv: "prod",
+				secrets: { OPENAI_API_KEY: runtimeSecret },
+			});
+			const logs = await fetchAppLogs({
+				appHostInternalUrl: "http://127.0.0.1:8096",
+				controlToken: "app-token",
+				deploymentId: DEPLOYMENT_ID,
+				secretsManager,
+				slug: "booking-app",
+				fetchImpl: async () => ({
+					status: 200,
+					body: JSON.stringify({
+						entries: [{ ts_ms: 1, stream: "stdout", line: `using key ${runtimeSecret}` }],
+					}),
+				}),
+			});
+			expect(logs[0]?.line).not.toContain(runtimeSecret);
+
+			await expect(
+				triggerBlueGreenAppDeploy({
+					appHostInternalUrl: "http://127.0.0.1:8096",
+					controlToken: "app-token",
+					deploymentId: DEPLOYMENT_ID,
+					siteId: SITE_ID,
+					slug: "booking-app",
+					environmentId: ENVIRONMENT,
+					control,
+					ociImageRef: IMAGE_REF,
+					healthPath: "/health",
+					idleTimeoutSec: 600,
+					memoryMb: 512,
+					vcpuLimit: 1,
+					env: { PORT: "3000" },
+					fetchImpl: async () => ({ status: 503, body: "unhealthy" }),
+				}),
+			).rejects.toThrow("APP_HOST_DEPLOY_FAILED_503");
+
+			expect(controlCalls).toContainEqual({
+				method: "qorpera_emit_app_unhealthy_routine_wakes",
+				args: {
+					p_environment_id: ENVIRONMENT,
+					p_site_id: SITE_ID,
+					p_event: {
+						status: "deploy_failed",
+						restartCount: 0,
+						error: "APP_HOST_DEPLOY_FAILED_503",
+					},
+				},
+			});
+		} finally {
+			await rm(rootDir, { recursive: true, force: true });
+		}
 	});
 });
 

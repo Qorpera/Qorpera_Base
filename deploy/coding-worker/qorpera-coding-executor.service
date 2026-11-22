@@ -39,6 +39,9 @@ LoadCredential=qorpera-coding-peer-command:/etc/qorpera/coding-peer-command.key
 LoadCredential=qorpera-coding-broker-executor:/etc/qorpera/coding-broker-executor.key
 # Proof-only: a repository configured with a static "credential" needs its own
 # LoadCredential=qorpera-coding-repository-NAME:<file> in a reviewed drop-in.
+# When webHosting is configured, webHosting.controlTokenCredential and
+# appHostControlTokenCredential each need a reviewed drop-in
+# LoadCredential=qorpera-web-NAME:<file>.
 Restart=on-failure
 RestartSec=5s
 # A SIGTERM mid-turn still detaches each running session from its member's

@@ -331,4 +331,104 @@ describe("a founding table's live presence", () => {
 		await until(() => last(annaTab.health) === "connected", "reconnected after removal");
 		expect(annaTab.cloud.supabase.channel).toHaveBeenCalledTimes(2);
 	});
+
+	it("waits until a leaving channel disappears from getChannels before subscribing a replacement, sends one leave per channel, and bounds stop()", async () => {
+		vi.useFakeTimers();
+		const hub = new Hub();
+		hub.refuseJoin = true;
+		const cloud = hub.cloud(anna);
+		const held: FakeChannel[] = [];
+		const created: FakeChannel[] = [];
+		const removeCalls = new Map<FakeChannel, number>();
+		(cloud.supabase as unknown as { getChannels: () => FakeChannel[] }).getChannels = () => [...held];
+		vi.mocked(cloud.supabase.channel).mockImplementation(((topic: string, options: Record<string, unknown>) => {
+			const fullTopic = `realtime:${topic}`;
+			const existing = held.find((each) => each.topic === fullTopic);
+			if (existing) return existing;
+			const next = new FakeChannel(hub, fullTopic, options);
+			const origSubscribe = next.subscribe.bind(next);
+			next.subscribe = (cb: (status: string) => void) => {
+				if (created.includes(next)) return next;
+				created.push(next);
+				return origSubscribe(cb);
+			};
+			held.push(next);
+			return next;
+		}) as unknown as typeof cloud.supabase.channel);
+		vi.mocked(cloud.supabase.removeChannel).mockImplementation((async (ch: unknown) => {
+			const fake = ch as FakeChannel;
+			removeCalls.set(fake, (removeCalls.get(fake) ?? 0) + 1);
+			await new Promise<void>((resolve) => setTimeout(resolve, 10_000));
+			for (let i = held.length - 1; i >= 0; i--) {
+				if (held[i]!.topic === fake.topic) held.splice(i, 1);
+			}
+			hub.channels.delete(fake);
+			hub.presence.delete(fake.key);
+			return "timed out";
+		}) as unknown as typeof cloud.supabase.removeChannel);
+
+		const health: FoundingPresenceHealth[] = [];
+		const handle = joinFoundingPresence(cloud, table, {
+			tabs() {},
+			live() {},
+			health(value) {
+				health.push(value);
+			},
+		});
+		await until(() => last(health) === "degraded", "initial failed join");
+		expect(created).toHaveLength(1);
+
+		hub.refuseJoin = false;
+		await vi.advanceTimersByTimeAsync(4_500);
+		expect(created).toHaveLength(1);
+		expect(last(health)).toBe("degraded");
+		expect(removeCalls.get(created[0]!)).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(12_000);
+		await until(() => last(health) === "connected", "reconnected only after held channel cleared");
+		expect(created).toHaveLength(2);
+		expect(removeCalls.get(created[0]!)).toBe(1);
+		await vi.advanceTimersByTimeAsync(15_000);
+		expect(held).toEqual([created[1]]);
+
+		let stopped = false;
+		const stopping = handle.stop().then(() => {
+			stopped = true;
+		});
+		await vi.advanceTimersByTimeAsync(2_100);
+		await stopping;
+		expect(stopped).toBe(true);
+		expect(last(health)).toBe("stopped");
+	});
+
+	it("keeps state replay protection when a remote temporarily disappears from a presence sync", async () => {
+		const hub = new Hub();
+		const annaTab = open(hub, anna);
+		const boTab = open(hub, bo);
+		await until(
+			() => (last(annaTab.tabs)?.length ?? 0) === 1 && (last(boTab.tabs)?.length ?? 0) === 1,
+			"both tabs connected",
+		);
+
+		boTab.handle.setState(true, "name");
+		await until(() => last(annaTab.tabs)?.[0]?.field === "name", "bo state seq 2");
+		const boKey = last(annaTab.tabs)![0]!.clientId;
+		const capturedOldMeta = { ...hub.presence.get(boKey)! };
+
+		boTab.handle.setState(true, "vision");
+		await until(() => last(annaTab.tabs)?.[0]?.field === "vision", "bo state seq 3");
+
+		hub.presence.delete(boKey);
+		hub.syncAll();
+		await until(() => (last(annaTab.tabs)?.length ?? 0) === 0, "bo temporarily absent from sync");
+
+		hub.presence.set(boKey, capturedOldMeta);
+		hub.syncAll();
+		await settle();
+		expect(last(annaTab.tabs)).toEqual([]);
+
+		boTab.handle.setState(true, "role");
+		await until(() => last(annaTab.tabs)?.[0]?.field === "role", "newer state accepted");
+		expect(last(annaTab.tabs)?.[0]?.field).toBe("role");
+	});
 });

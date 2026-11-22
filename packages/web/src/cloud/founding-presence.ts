@@ -57,6 +57,60 @@ export interface FoundingPresenceHandle {
 export const FOUNDING_LIVE_MAX_UNITS = 5000;
 /** A device is looked up again after this long, so a seat given up stops resolving within it. */
 const IDENTITY_TTL_MS = 60_000;
+const LEAVE_WAIT_MS = 2_000;
+const MAX_TRACKED_CLIENTS = 512;
+const MAX_REPLAY_GUARD_CLIENTS = 4_096;
+const pendingRemovals = new WeakMap<RealtimeChannel, Promise<unknown>>();
+
+function heldChannels(supabase: Cloud["supabase"], topic: string): RealtimeChannel[] {
+	return (supabase.getChannels?.() ?? []).filter((each) => each.topic === `realtime:${topic}` || each.topic === topic);
+}
+
+function removeChannelOnce(supabase: Cloud["supabase"], each: RealtimeChannel): Promise<unknown> {
+	let leaving = pendingRemovals.get(each);
+	if (!leaving) {
+		// WHY: Send at most one leave push per channel; duplicate removeChannel calls trigger delayed topic-wide _remove calls that drop a successor channel.
+		leaving = supabase
+			.removeChannel(each)
+			.catch(() => undefined)
+			.finally(() => {
+				if (pendingRemovals.get(each) === leaving) pendingRemovals.delete(each);
+			});
+		pendingRemovals.set(each, leaving);
+	}
+	return leaving;
+}
+
+async function freeTopicWithin(
+	supabase: Cloud["supabase"],
+	topic: string,
+	active: RealtimeChannel | undefined,
+): Promise<boolean> {
+	const leaving = [...new Set([...(active ? [active] : []), ...heldChannels(supabase, topic)])];
+	await Promise.all(
+		leaving.map((each) => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			// WHY: Bound removeChannel per held channel so a dropped Realtime socket cannot deadlock reconnect or stop.
+			return Promise.race([
+				removeChannelOnce(supabase, each),
+				new Promise<void>((resolve) => {
+					timer = setTimeout(resolve, LEAVE_WAIT_MS);
+				}),
+			]).finally(() => {
+				clearTimeout(timer);
+			});
+		}),
+	);
+	return heldChannels(supabase, topic).length === 0;
+}
+
+function capMap<K, V>(map: Map<K, V>, max: number): void {
+	while (map.size > max) {
+		const oldest = map.keys().next().value;
+		if (oldest === undefined) break;
+		map.delete(oldest);
+	}
+}
 /** A device the cloud did not know is asked about again after this long. */
 const UNKNOWN_TTL_MS = 5_000;
 /** A sync whose lookup failed is tried again after this long. */
@@ -115,6 +169,7 @@ export function joinFoundingPresence(
 	listener: FoundingPresenceListener,
 ): FoundingPresenceHandle {
 	const clientId = crypto.randomUUID();
+	const topic = `qorpera-founding-${profileId}`;
 	const signatures = new PresenceSignatures();
 	let stopped = false;
 	let channel: RealtimeChannel | undefined;
@@ -134,6 +189,7 @@ export function joinFoundingPresence(
 	const lookups = new Map<string, Promise<Identity | undefined>>();
 	const lastState = new Map<string, number>();
 	const lastLive = new Map<string, number>();
+	const lifetime = new AbortController();
 	let reported = "";
 
 	const report = (tabs: FoundingPresenceTab[]): void => {
@@ -147,15 +203,23 @@ export function joinFoundingPresence(
 	const finalRefusal = (error: unknown): boolean =>
 		error instanceof CloudRpcError && (error.missing || error.code === "42501");
 
-	const end = (health: FoundingPresenceHealth): void => {
+	const end = (health: FoundingPresenceHealth, leave = true): void => {
 		stopped = true;
 		subscribed = false;
+		// WHY: Abort in-flight presence RPCs and release cached client maps when presence stops.
+		lifetime.abort();
 		clearTimeout(retryTimer);
 		clearTimeout(syncTimer);
 		clearInterval(heartbeat);
 		const active = channel;
 		channel = undefined;
-		if (active) void cloud.supabase.removeChannel(active).catch(() => undefined);
+		if (leave && (active || heldChannels(cloud.supabase, topic).length > 0)) {
+			void freeTopicWithin(cloud.supabase, topic, active);
+		}
+		identities.clear();
+		lookups.clear();
+		lastState.clear();
+		lastLive.clear();
 		report([]);
 		listener.health(health);
 	};
@@ -164,11 +228,15 @@ export function joinFoundingPresence(
 		registration ??= signatures
 			.publicKey()
 			.then((publicKey) =>
-				cloud.rpc("qorpera_register_founding_presence", {
-					p_profile_id: profileId,
-					p_client_id: clientId,
-					p_public_key: publicKey,
-				}),
+				cloud.rpc(
+					"qorpera_register_founding_presence",
+					{
+						p_profile_id: profileId,
+						p_client_id: clientId,
+						p_public_key: publicKey,
+					},
+					lifetime.signal,
+				),
 			)
 			.then(() => undefined)
 			.finally(() => {
@@ -183,6 +251,9 @@ export function joinFoundingPresence(
 		const waits: Promise<void>[] = [];
 		const unknown: string[] = [];
 		const now = Date.now();
+		for (const [id, entry] of identities) {
+			if (now - entry.at >= (entry.identity ? IDENTITY_TTL_MS : UNKNOWN_TTL_MS)) identities.delete(id);
+		}
 		for (const remote of new Set(remotes)) {
 			const known = identities.get(remote);
 			if (known && now - known.at < (known.identity ? IDENTITY_TTL_MS : UNKNOWN_TTL_MS)) {
@@ -200,7 +271,7 @@ export function joinFoundingPresence(
 		}
 		if (unknown.length > 0) {
 			const batch = cloud
-				.rpc("qorpera_list_founding_presence", { p_profile_id: profileId, p_client_ids: unknown })
+				.rpc("qorpera_list_founding_presence", { p_profile_id: profileId, p_client_ids: unknown }, lifetime.signal)
 				.then((value) => {
 					const found = new Map(
 						array(value, "table presence devices")
@@ -208,7 +279,15 @@ export function joinFoundingPresence(
 							.map((who) => [who.clientId, who] as const),
 					);
 					const at = Date.now();
-					for (const remote of unknown) identities.set(remote, { identity: found.get(remote), at });
+					for (const remote of unknown) {
+						const knownIdentity = found.get(remote);
+						identities.set(remote, { identity: knownIdentity, at });
+						if (!knownIdentity) {
+							lastState.delete(remote);
+							lastLive.delete(remote);
+						}
+					}
+					capMap(identities, MAX_TRACKED_CLIENTS);
 					return found;
 				});
 			for (const remote of unknown) {
@@ -292,6 +371,7 @@ export function joinFoundingPresence(
 					if (!prior || prior.number < tab.number) newest.set(tab.remote, tab);
 				}
 				for (const tab of newest.values()) lastState.set(tab.remote, tab.number);
+				capMap(lastState, MAX_REPLAY_GUARD_CLIENTS);
 				report(
 					[...newest.values()].map((tab) => ({
 						clientId: tab.remote,
@@ -348,6 +428,7 @@ export function joinFoundingPresence(
 				if (!(await PresenceSignatures.verify(person.publicKey, bytes, signature))) return;
 				if (source !== channel || stopped || number <= (lastLive.get(remote) ?? 0)) return;
 				lastLive.set(remote, number);
+				capMap(lastLive, MAX_REPLAY_GUARD_CLIENTS);
 				listener.live({ clientId: remote, userId: person.userId, field: at, text, caret, typing, own });
 			})
 			.catch(() => undefined);
@@ -360,7 +441,7 @@ export function joinFoundingPresence(
 		syncTimer = undefined;
 		if (failed && failed === channel) {
 			channel = undefined;
-			removal = cloud.supabase.removeChannel(failed).catch(() => undefined);
+			removal = freeTopicWithin(cloud.supabase, topic, failed).then(() => undefined);
 		}
 		report([]);
 		listener.health("degraded");
@@ -377,14 +458,18 @@ export function joinFoundingPresence(
 		const generation = ++connectGeneration;
 		listener.health("connecting");
 		Promise.all([removal, register()])
-			.then(() => {
+			.then(async () => {
 				if (stopped || generation !== connectGeneration) return;
 				const previous = channel;
-				if (previous) {
-					channel = undefined;
-					void cloud.supabase.removeChannel(previous).catch(() => undefined);
+				channel = undefined;
+				// WHY: Wait until no leaving channel holds the topic before calling channel(topic), or subscribe() becomes a no-op.
+				const freed = await freeTopicWithin(cloud.supabase, topic, previous);
+				if (stopped || generation !== connectGeneration) return;
+				if (!freed) {
+					retry(undefined);
+					return;
 				}
-				const next = cloud.supabase.channel(`qorpera-founding-${profileId}`, {
+				const next = cloud.supabase.channel(topic, {
 					config: { private: true, presence: { key: clientId }, broadcast: { self: false } },
 				});
 				channel = next;
@@ -441,8 +526,10 @@ export function joinFoundingPresence(
 			if (stopped) return;
 			const active = channel;
 			channel = undefined;
-			end("stopped");
-			if (active) await cloud.supabase.removeChannel(active).catch(() => undefined);
+			end("stopped", false);
+			if (active || heldChannels(cloud.supabase, topic).length > 0) {
+				await freeTopicWithin(cloud.supabase, topic, active);
+			}
 			await registration?.catch(() => undefined);
 			await cloud
 				.rpc("qorpera_unregister_founding_presence", { p_profile_id: profileId, p_client_id: clientId })

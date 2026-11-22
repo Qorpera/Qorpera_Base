@@ -26,6 +26,7 @@ fi
 if ! id -u caddy >/dev/null 2>&1; then
 	useradd --system --no-create-home --shell /usr/sbin/nologin caddy
 fi
+usermod -aG qorpera-web caddy
 
 install -d -m 0755 /etc/qorpera-web
 install -d -m 0750 -o qorpera-web -g qorpera-web /var/lib/qorpera-web-blobs 2>/dev/null || install -d -m 0755 /var/lib/qorpera-web-blobs

@@ -91,7 +91,7 @@ describe("a company's website in the app", () => {
 		const f = await mount(siteHash("wristband-shop"), () => [row("wristband-shop", "Wristband shop")]);
 		const page = f.root.querySelector<HTMLElement>(".page.site-page")!;
 		expect(page.querySelector(".site-address")?.textContent).toBe("wristband-shop.qorpera.com");
-		expect(passes(f.cloud)).toEqual([["qorpera_site_member_pass", { p_site: id(81) }]]);
+		expect(passes(f.cloud)).toEqual([["qorpera_site_member_pass", { p_site: id(81) }, expect.any(AbortSignal)]]);
 		expect(page.querySelector("iframe.site-frame")?.getAttribute("src")).toBe(SITE_DOOR_URL);
 		const tile = f.root.querySelector<HTMLElement>(".rail-apps-owed [data-owed-place='site:wristband-shop']")!;
 		expect(tile.getAttribute("aria-current")).toBe("page");
@@ -160,9 +160,13 @@ describe("a company's website in the app", () => {
 				],
 			}),
 		);
-		expect(vi.mocked(f.cloud.rpc)).toHaveBeenCalledWith("qorpera_company_site_access", {
-			p_profile_id: profileA.profileId,
-		});
+		expect(vi.mocked(f.cloud.rpc)).toHaveBeenCalledWith(
+			"qorpera_company_site_access",
+			{
+				p_profile_id: profileA.profileId,
+			},
+			expect.any(AbortSignal),
+		);
 		expect(
 			[...f.root.querySelectorAll<HTMLElement>(".rail-apps-owed [data-owed-place]")].map(
 				(tile) => tile.dataset.owedPlace,
