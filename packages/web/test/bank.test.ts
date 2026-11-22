@@ -806,4 +806,26 @@ describe("getting the company a bank from inside Qorpera (app/views/bank.ts)", (
 		renderBank(container, controller, { connection: client, navigate: vi.fn() });
 		expect(step(container)?.textContent).toContain("Register the company");
 	});
+
+	it("caches Intl.DateTimeFormat across repeated chart pointermove hover updates", () => {
+		const container = draw(JSON.stringify(summary()));
+		const wrap = container.querySelector<HTMLElement>(".bank-chart")!;
+		const chart = wrap.querySelector("svg")!;
+		vi.spyOn(chart, "getBoundingClientRect").mockReturnValue({
+			left: 0,
+			top: 0,
+			right: 300,
+			bottom: 100,
+			width: 300,
+			height: 100,
+			x: 0,
+			y: 0,
+			toJSON: () => ({}),
+		});
+		const dateFormatSpy = vi.spyOn(Intl, "DateTimeFormat");
+		for (const clientX of [20, 80, 140, 200, 260, 40, 180]) {
+			wrap.dispatchEvent(new PointerEvent("pointermove", { clientX }));
+		}
+		expect(dateFormatSpy).not.toHaveBeenCalled();
+	});
 });

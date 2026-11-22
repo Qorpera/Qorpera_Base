@@ -322,7 +322,9 @@ export class ConnectionsView {
 			if (
 				!document.hidden &&
 				this.el.isConnected &&
-				([...this.#attempts.values()].some((attempt) => attempt.login) || this.#shown().some(live))
+				([...this.#attempts.values()].some((attempt) => attempt.login) ||
+					this.#shown().some(live) ||
+					this.#claudeReadable())
 			)
 				void this.#refreshUsage();
 		};
@@ -1490,10 +1492,11 @@ export class ConnectionsView {
 	}
 	#draw(): void {
 		clearTimeout(this.#usageClock);
-		if (this.#shown().some(live) || this.#claudeReadable())
+		// WHY: Do not arm a hidden 60s redraw loop or poll after detachment; resume() re-arms on return.
+		if (!document.hidden && (this.#shown().some(live) || this.#claudeReadable()))
 			this.#usageClock = setTimeout(() => {
-				if (document.hidden) this.#draw();
-				else void this.#refreshUsage();
+				if (document.hidden || !this.el.isConnected) return;
+				void this.#refreshUsage();
 			}, 60_000);
 		const focusKey = this.el.contains(document.activeElement)
 			? (document.activeElement as HTMLElement).dataset.focusKey

@@ -387,4 +387,67 @@ describe("open decisions in the Co-Founder's chat", () => {
 		await settle();
 		expect(folds(f)).toEqual(["2 updatesThree versions are ready."]);
 	});
+
+	it("releases thread subscriptions once a sent decision settles in projection and caps retained sent entries", async () => {
+		vi.useFakeTimers();
+		try {
+			const f = setup(true);
+			await vi.advanceTimersByTimeAsync(0);
+			const store = f.company.conversation(session.sessionId);
+			let activeSubscriptions = 0;
+			const originalSubscribe = store.subscribe.bind(store);
+			vi.spyOn(store, "subscribe").mockImplementation((listener) => {
+				activeSubscriptions += 1;
+				const stop = originalSubscribe(listener);
+				return () => {
+					activeSubscriptions -= 1;
+					stop();
+				};
+			});
+
+			f.view.el.querySelector<HTMLButtonElement>(".decision-dock .interaction-options .btn")?.click();
+			await vi.advanceTimersByTimeAsync(0);
+			window.dispatchEvent(new Event("pagehide"));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(f.answered).toHaveBeenCalledTimes(1);
+			const watchedBeforeSettle = activeSubscriptions;
+			expect(watchedBeforeSettle).toBeGreaterThanOrEqual(1);
+
+			// WHY: Once the projection contains the answered interaction without answerFailed, the dock must release its thread subscription.
+			f.store.set({ questions: [], decisions: [] });
+			f.show([
+				{
+					kind: "interaction",
+					id: listed.interactionId,
+					sequence: 1,
+					actorUserId: userA.id,
+					createdAt: listed.createdAt,
+					request: listed.request,
+					answer: {
+						outcome: "answered",
+						answer: { values: ["Approve"] },
+						answeredBy: userA.id,
+						answeredAt: "2026-09-05T10:01:00Z",
+					},
+				},
+			]);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(activeSubscriptions).toBeLessThan(watchedBeforeSettle);
+
+			// WHY: Answering more than 50 decisions across a long session must cap retained sent entries at 50.
+			for (let index = 0; index < 55; index++) {
+				const decisionId = id(800 + index);
+				const next = { ...listed, interactionId: decisionId };
+				f.store.set({ questions: [next], decisions: [{ ...next, kind: "question" as const }] });
+				await vi.advanceTimersByTimeAsync(SETTLE_MS + 10);
+				f.view.el.querySelector<HTMLButtonElement>(".decision-dock .interaction-options .btn")?.click();
+				await vi.advanceTimersByTimeAsync(0);
+				window.dispatchEvent(new Event("pagehide"));
+				await vi.advanceTimersByTimeAsync(0);
+			}
+			expect(f.view.el.querySelectorAll(".messages .decided")).toHaveLength(50);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

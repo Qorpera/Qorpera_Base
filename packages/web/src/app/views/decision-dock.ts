@@ -9,7 +9,7 @@ import {
 } from "../../cloud/open-decisions.ts";
 import type { ActionReviewAnswer } from "../../cloud/review-rules.ts";
 import type { JsonValue } from "../../cloud/types.ts";
-import { type ActionReviewDraft, renderActionReviewCard } from "../../ui/authorization-card.ts";
+import { type ActionReviewDraft, authorizationRequestId, renderActionReviewCard } from "../../ui/authorization-card.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { h, personAvatar, replace } from "../../ui/dom.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
@@ -21,6 +21,7 @@ const NARROW_BELOW = 620;
 const FIGURE_BESIDE = 132;
 const FIGURE_ABOVE = 58;
 const MAX_TIMER_MS = 2 ** 31 - 1;
+const MAX_SENT_DECIDED = 50;
 export const UNDO_MS = 5_000;
 export const SETTLE_MS = 600;
 
@@ -300,8 +301,24 @@ export class DecisionDock {
 		this.el.remove();
 	}
 
+	#settledInThread(entry: Decided): boolean {
+		if (entry.state !== "sent") return false;
+		const id = entry.decision.interactionId.toLowerCase();
+		const thread = this.#host.conversation(entry.decision.sessionId).get();
+		if (thread.interactionAnswers?.[id]) return false;
+		const items = thread.projection?.items ?? [];
+		if (entry.decision.kind === "approval")
+			return items.some(
+				(item) => item.kind === "authorization_decision" && authorizationRequestId(item.body)?.toLowerCase() === id,
+			);
+		return items.some(
+			(item) =>
+				item.kind === "interaction" && item.id.toLowerCase() === id && Boolean(item.answer) && !item.answerFailed,
+		);
+	}
+
 	#dropUndelivered(): boolean {
-		const kept = this.#decided.filter((entry) => {
+		const filtered = this.#decided.filter((entry) => {
 			if (entry.state !== "sent") return true;
 			const id = entry.decision.interactionId;
 			const thread = this.#host.conversation(entry.decision.sessionId).get();
@@ -313,13 +330,30 @@ export class DecisionDock {
 					item.answerFailed === true,
 			);
 		});
+		// WHY: Bound retained "sent" entries across long sessions so SHARED.decided cannot grow without limit.
+		let sentCount = 0;
+		for (const entry of filtered) if (entry.state === "sent") sentCount++;
+		let dropSent = Math.max(0, sentCount - MAX_SENT_DECIDED);
+		const kept =
+			dropSent > 0
+				? filtered.filter((entry) => {
+						if (entry.state === "sent" && dropSent > 0) {
+							dropSent--;
+							return false;
+						}
+						return true;
+					})
+				: filtered;
 		if (kept.length === this.#decided.length) return false;
 		this.#decided.splice(0, this.#decided.length, ...kept);
 		return true;
 	}
 
 	#watchDecided(): void {
-		const sessions = new Set(this.#decided.map((entry) => entry.decision.sessionId));
+		// WHY: Release thread store subscriptions once every sent decision for that thread is confirmed settled.
+		const sessions = new Set(
+			this.#decided.filter((entry) => !this.#settledInThread(entry)).map((entry) => entry.decision.sessionId),
+		);
 		for (const [sessionId, stop] of this.#decidedThreads) {
 			if (sessions.has(sessionId)) continue;
 			stop();

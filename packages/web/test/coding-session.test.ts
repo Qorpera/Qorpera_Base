@@ -1559,6 +1559,53 @@ describe("the element in the thread", () => {
 		element.dispose();
 		expect(seenSignal?.aborted).toBe(true);
 	});
+
+	it("pauses polling while hidden, resumes on visibilitychange, and merges out-of-order events via #eventIds", async () => {
+		vi.useFakeTimers();
+		const session = codingSession({ phase: "running" });
+		const pages = [
+			[event(1, "step", { text: "first", status: "passed" }, "executor")],
+			[
+				event(1, "step", { text: "first", status: "passed" }, "executor"),
+				event(3, "step", { text: "third", status: "passed" }, "executor"),
+				event(2, "step", { text: "second", status: "passed" }, "executor"),
+			],
+		];
+		const read = vi.fn(async () => ({
+			session,
+			isOwner: true,
+			events: pages.shift() ?? [],
+		}));
+		const hiddenSpy = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+		const element = new CodingSessionElement(session, {
+			names: () => owner,
+			viewerOwns: () => true,
+			api: {
+				read,
+				answer: vi.fn(async () => undefined),
+				delegate: vi.fn(async () => undefined),
+				archive: vi.fn(async () => undefined),
+			},
+			signal: disposeAll.signal,
+		});
+		document.body.append(element.el);
+		await settle();
+		expect(read).toHaveBeenCalledTimes(1);
+		// WHY: While hidden, no background poll timers should fire.
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(read).toHaveBeenCalledTimes(1);
+
+		hiddenSpy.mockReturnValue(false);
+		document.dispatchEvent(new Event("visibilitychange"));
+		await settle();
+		expect(read).toHaveBeenCalledTimes(2);
+		expect([...element.el.querySelectorAll(".coding-row-step")].map((row) => row.textContent?.trim())).toEqual([
+			"first passed",
+			"second passed",
+			"third passed",
+		]);
+		element.dispose();
+	});
 });
 
 describe("the sessions' pill above the composer", () => {

@@ -543,6 +543,11 @@ describe("member model account settings", () => {
 		expect(client.listConnections).toHaveBeenCalledTimes(4);
 		expect(view.el.textContent).toContain("5% left");
 		expect(view.el.textContent).not.toContain("at last check");
+
+		// WHY: Detaching view.el without dispose must stop background 60s usage refreshes.
+		view.el.remove();
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(client.listConnections).toHaveBeenCalledTimes(4);
 	});
 	it("shows an active provider usage wall without treating an earlier snapshot as available quota", async () => {
 		vi.useFakeTimers();

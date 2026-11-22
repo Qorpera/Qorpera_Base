@@ -148,6 +148,7 @@ export class ThreadReady {
 					: this.#waiting(site, releases?.canRelease === true, tiles, several),
 			);
 		}
+		for (const [shown, oldTile] of this.#tiles) if (!tiles.has(shown)) this.#desk.forgetTile(oldTile);
 		this.#tiles = tiles;
 		replace(this.el, ...cards);
 		const shown = cards.length > 0;
