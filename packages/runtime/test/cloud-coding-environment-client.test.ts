@@ -194,11 +194,6 @@ describe("executor-side environment client", () => {
 			environment: {},
 			mask: [],
 		});
-		const aiKeys = { OPENAI_API_KEY: API_KEY, ANTHROPIC_API_KEY: DATABASE_URL };
-		await expect(client(async () => answer(aiKeys)).environment(scope, signal())).resolves.toStrictEqual({
-			environment: aiKeys,
-			mask: [],
-		});
 	});
 
 	it("refuses every answer but the exact one with the one opaque error", async () => {
@@ -225,8 +220,6 @@ describe("executor-side environment client", () => {
 			() => answer({ NODE_EXTRA_CA_CERTS: API_KEY }),
 			() => answer({ GIT_TOKEN: API_KEY }),
 			() => answer({ QORPERA_TOKEN: API_KEY }),
-			() => answer({ CLAUDE_CODE_OAUTH_TOKEN: API_KEY }),
-			() => answer({ CODEX_HOME: API_KEY }),
 			// A value outside the broker's bounds.
 			() => answer({ API_KEY: 12345678 }),
 			() => answer({ API_KEY: "short" }),

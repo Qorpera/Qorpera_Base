@@ -1,13 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { link, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
-import {
-	parseCloudCodingCommandRead,
-	parseCloudCodingCommandReceipt,
-	parseCloudMachineCommandReceipt,
-} from "@qorpera/contracts";
+import { parseCloudCodingCommandRead, parseCloudCodingCommandReceipt } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { collectCodingCommandOutput, readCodingCommandLog } from "../src/cloud-coding-command-log.ts";
 
@@ -209,108 +205,27 @@ describe("retained coding command log pages", () => {
 		expect(await readFile(f.path, "utf8")).toBe("ready on :3000\nstopped\n");
 	});
 
-	it("rotates ring segments on overflow while keeping newest bytes, valid UTF-8 seams, and contract receipts", async () => {
+	it("propagates periodic write failures promptly and rejects invalid flush options", async () => {
 		const f = await fixture(Buffer.alloc(0));
-		const maxBytes = 1_048_576;
-		const first = Buffer.alloc(maxBytes, 65);
-		const second = Buffer.alloc(maxBytes, 66);
-		const seamPrefix = Buffer.alloc(maxBytes - 2, 67);
-		const emoji = Buffer.from("😀");
-		const tailMarker = Buffer.from("CRASH_STACK_TRACE\n");
-		const third = Buffer.concat([seamPrefix, emoji, tailMarker]);
-		const all = Buffer.concat([first, second, third]);
-		const expectedWindow = all.subarray(all.length - maxBytes);
 		const handle = await open(f.path, "a");
 		try {
-			await collectCodingCommandOutput([Readable.from([first, second, third])], handle, maxBytes, {
+			await expect(collectCodingCommandOutput([], handle, 1048576, { flushBytes: 0 })).rejects.toThrow(
+				"INVALID_CODING_LOG_FLUSH_OPTIONS",
+			);
+			await expect(collectCodingCommandOutput([], handle, 1048576, { flushIntervalMs: 0 })).rejects.toThrow(
+				"INVALID_CODING_LOG_FLUSH_OPTIONS",
+			);
+			vi.spyOn(handle, "write").mockRejectedValueOnce(new Error("ENOSPC"));
+			const stream = new PassThrough();
+			const done = collectCodingCommandOutput([stream], handle, 1048576, {
 				flushBytes: 65_536,
-				ring: { path: f.path },
+				flushIntervalMs: 20,
 			});
+			stream.write("will fail on timer flush\n");
+			await expect(done).rejects.toThrow("ENOSPC");
+			stream.destroy();
 		} finally {
 			await handle.close();
 		}
-		expect((await stat(f.path)).size).toBe(tailMarker.length + 2);
-		expect((await stat(`${f.path}.prev`)).size).toBe(maxBytes);
-
-		const tail = await readCodingCommandLog({
-			...f,
-			maxBytes,
-			ring: true,
-			read: { ...f.read, tail: true, limit: 64 },
-		});
-		expect(tail.output).toBe(expectedWindow.subarray(expectedWindow.length - 64).toString("utf8"));
-		expect(tail.truncated).toBe(true);
-		expect(tail.log).toEqual({
-			offset: maxBytes - 64,
-			nextOffset: maxBytes,
-			totalBytes: maxBytes,
-			limitBytes: maxBytes,
-			limitReached: true,
-		});
-		const codingReceipt = {
-			schema: "qorpera.coding-command-result/v2" as const,
-			workerId: randomUUID(),
-			commandId: f.read.commandId,
-			inputSha256: "a".repeat(64),
-			state: "failed" as const,
-			exitCode: 1,
-			...tail,
-		};
-		expect(parseCloudCodingCommandReceipt(codingReceipt)).toEqual(codingReceipt);
-		const machineReceipt = {
-			schema: "qorpera.machine-command-result/v1" as const,
-			machineId: randomUUID(),
-			commandId: f.read.commandId,
-			inputSha256: "a".repeat(64),
-			state: "failed" as const,
-			exitCode: 1,
-			...tail,
-		};
-		expect(parseCloudMachineCommandReceipt(machineReceipt)).toEqual(machineReceipt);
-
-		const seamOffset = maxBytes - tailMarker.length - emoji.length - 2;
-		const acrossSeam = await readCodingCommandLog({
-			...f,
-			maxBytes,
-			ring: true,
-			read: { ...f.read, offset: seamOffset, limit: 64 },
-		});
-		expect(acrossSeam.output).toBe(`CC😀${tailMarker.toString("utf8")}`);
-		expect(acrossSeam.log.nextOffset).toBe(maxBytes);
-	});
-
-	it("keeps ring mode file-free under maxBytes and rejects tampered ring predecessor files", async () => {
-		const f = await fixture(Buffer.alloc(0));
-		const maxBytes = 1_048_576;
-		const handle = await open(f.path, "a");
-		try {
-			await collectCodingCommandOutput([Readable.from([Buffer.from("small output\n")])], handle, maxBytes, {
-				ring: { path: f.path },
-			});
-		} finally {
-			await handle.close();
-		}
-		await expect(stat(`${f.path}.prev`)).rejects.toThrow();
-		const page = await readCodingCommandLog({ ...f, maxBytes, ring: true });
-		expect(page.output).toBe("small output\n");
-		expect(page.log.limitReached).toBe(false);
-
-		const wrongSize = await fixture(Buffer.from("curr"));
-		await writeFile(`${wrongSize.path}.prev`, Buffer.from("too-small"), { mode: 0o600 });
-		await expect(readCodingCommandLog({ ...wrongSize, maxBytes, ring: true })).rejects.toThrow(
-			"INVALID_CODING_GUEST_OUTPUT",
-		);
-
-		const linked = await fixture(Buffer.from("curr"));
-		const target = join(linked.mountRoot, "other.log");
-		await writeFile(target, Buffer.alloc(maxBytes, 65), { mode: 0o600 });
-		await link(target, `${linked.path}.prev`);
-		await expect(readCodingCommandLog({ ...linked, maxBytes, ring: true })).rejects.toThrow(
-			"INVALID_CODING_GUEST_OUTPUT",
-		);
-
-		const sym = await fixture(Buffer.from("curr"));
-		await symlink(target, `${sym.path}.prev`);
-		await expect(readCodingCommandLog({ ...sym, maxBytes, ring: true })).rejects.toThrow();
 	});
 });

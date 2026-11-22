@@ -54,17 +54,6 @@ describe("thread interaction requests", () => {
 			connectorId: "environment",
 			repository: "acme/web",
 		});
-		expect(
-			parseCloudInteractionRequestData(card({ name: "openai_api_key", repository: "acme/web" })).payload,
-		).toMatchObject({
-			connectorId: "environment",
-			name: "openai_api_key",
-			repository: "acme/web",
-		});
-		expect(parseCloudInteractionRequestData(card({ name: "anthropic_api_key" })).payload).toMatchObject({
-			connectorId: "environment",
-			name: "anthropic_api_key",
-		});
 		// Without a repository it is still a coding value: a member's own reaches their sessions in every repository.
 		expect(parseCloudInteractionRequestData(card({})).payload).not.toHaveProperty("repository");
 		for (const payload of [
@@ -77,8 +66,7 @@ describe("thread interaction requests", () => {
 			// A coding value's name as the capture takes it.
 			{ name: "npm-token" },
 			{ name: "git_token" },
-			{ name: "claude_code_oauth_token" },
-			{ name: "codex_home" },
+			{ name: "openai_api_key" },
 			// The names a coding machine sets itself, as the kernel lists them.
 			{ name: "path" },
 			{ name: "https_proxy" },

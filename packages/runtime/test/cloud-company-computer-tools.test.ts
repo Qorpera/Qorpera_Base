@@ -838,12 +838,6 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			...capture,
 			codingValue: { ...capture.codingValue, ...field },
 		});
-		expect(parseCompanyComputerAction(value({ variable: "openai_api_key" }))).toMatchObject({
-			action: "vault_capture",
-		});
-		expect(parseCompanyComputerAction(value({ variable: "anthropic_api_key" }))).toMatchObject({
-			action: "vault_capture",
-		});
 		for (const bad of [
 			{ ...capture, hook: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
 			{ ...capture, field: "signing_secret" },
@@ -855,8 +849,7 @@ describe("model-facing cloud computer tools (adapter tests, not native cloud acc
 			value({ service: undefined }),
 			value({ variable: "NPM_TOKEN" }),
 			value({ variable: "path" }),
-			value({ variable: "claude_code_oauth_token" }),
-			value({ variable: "codex_home" }),
+			value({ variable: "openai_api_key" }),
 			value({ variable: "git_token" }),
 			value({ repository: "Acme/web-app" }),
 			value({ repository: "acme" }),

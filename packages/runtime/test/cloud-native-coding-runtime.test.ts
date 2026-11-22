@@ -1046,60 +1046,6 @@ describe("the coding composition of a native turn", () => {
 			expect(instructions).toContain("MACHINE_NEW_DISK: the machine got a new disk");
 		}
 	});
-	it("reads optional secretNames in turn context and refuses invalid shapes", () => {
-		const workerId = randomUUID(),
-			repository = { host: "github.com", owner: "Qorpera", name: "Qorpera_Base", baseBranch: "master" } as const;
-		const context = {
-			schema: "qorpera.coding-turn-context/v2",
-			workerId,
-			sequence: 2,
-			input: { from: "agent", text: "Go on.", answers: null },
-			earlierTurns: [],
-			omittedEarlierTurns: 1,
-			commands: { running: [], stopped: [], omitted: 0 },
-		};
-		const parsed = (value: unknown) =>
-			parseCloudCodingTurnContext(value, { workerId, sequence: 2 }, repository).secretNames;
-		expect(parsed(context)).toBeUndefined();
-		expect(parsed({ ...context, secretNames: [] })).toEqual([]);
-		expect(parsed({ ...context, secretNames: ["NPM_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"] })).toEqual([
-			"NPM_TOKEN",
-			"OPENAI_API_KEY",
-			"ANTHROPIC_API_KEY",
-		]);
-		const tooMany = Array.from({ length: 129 }, (_, index) => `SECRET_${index}`);
-		for (const bad of [
-			null,
-			"OPENAI_API_KEY",
-			{},
-			[123],
-			["openai_api_key"],
-			["OPENAI_API_KEY=sk-test"],
-			["1BAD"],
-			[""],
-			["A".repeat(65)],
-			["OPENAI_API_KEY", "OPENAI_API_KEY"],
-			tooMany,
-		])
-			expect(() => parsed({ ...context, secretNames: bad })).toThrow(/^CODING_TURN_CONTEXT_INVALID$/);
-	});
-	it("surfaces configured secretNames in the coding context prompt when present", async () => {
-		for (const names of [undefined, [], ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]]) {
-			const f = fixture();
-			if (names !== undefined) Object.assign(f.turnContext, { secretNames: names });
-			let prompt = "";
-			vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
-				prompt = options.prompt ?? "";
-				throw new Error("stop after composing");
-			});
-			await expect(f.runtime.execute(f.request, "/private", f.context.signal, f.turn)).rejects.toThrow(
-				"stop after composing",
-			);
-			const parsed = JSON.parse(prompt) as Record<string, unknown>;
-			if (names === undefined) expect(Object.hasOwn(parsed, "secretNames")).toBe(false);
-			else expect(parsed.secretNames).toEqual(names);
-		}
-	});
 	it("keeps the newest earlier turns when the whole history does not fit the prompt", async () => {
 		const f = fixture();
 		// Turn 43: the kernel already left turns 1-3 out of its answer; 4-42 still exceed the prompt.

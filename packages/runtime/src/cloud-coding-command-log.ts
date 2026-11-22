@@ -1,5 +1,5 @@
-import { constants, type Stats } from "node:fs";
-import { type FileHandle, lstat, open, rename } from "node:fs/promises";
+import { constants } from "node:fs";
+import { type FileHandle, lstat, open } from "node:fs/promises";
 import { dirname } from "node:path";
 import { performance } from "node:perf_hooks";
 import {
@@ -11,137 +11,10 @@ import {
 const UTF8_DECODER = new TextDecoder("utf8", { ignoreBOM: true });
 const DEFAULT_FLUSH_BYTES = 65_536;
 const DEFAULT_FLUSH_INTERVAL_MS = 250;
-const RING_OPEN_RETRIES = 3;
-const RING_RETRY_DELAY_MS = 5;
 
 export interface CollectCodingCommandOutputOptions {
 	readonly flushBytes?: number;
 	readonly flushIntervalMs?: number;
-	readonly ring?: {
-		readonly path: string;
-	};
-}
-
-async function writeAll(handle: FileHandle, chunk: Buffer): Promise<void> {
-	let offset = 0;
-	while (offset < chunk.length) {
-		const written = await handle.write(chunk, offset, chunk.length - offset);
-		if (!written.bytesWritten) throw new Error("CODING_LOG_WRITE_FAILED");
-		offset += written.bytesWritten;
-	}
-}
-
-async function readAll(
-	handle: FileHandle,
-	target: Buffer,
-	targetOffset: number,
-	length: number,
-	fileOffset: number,
-): Promise<void> {
-	let used = 0;
-	while (used < length) {
-		const read = await handle.read(target, targetOffset + used, length - used, fileOffset + used);
-		if (!read.bytesRead) break;
-		used += read.bytesRead;
-	}
-	if (used !== length) throw new Error("CODING_LOG_CHANGED");
-}
-
-function isEnoent(error: unknown): boolean {
-	return (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function openLogSnapshot(options: {
-	path: string;
-	owner: number;
-	maxBytes: number;
-	ring: boolean;
-}): Promise<{ handle: FileHandle; stat: Stats; prevHandle?: FileHandle }> {
-	const prevPath = `${options.path}.prev`;
-	for (let attempt = 0; attempt < RING_OPEN_RETRIES; attempt += 1) {
-		let handle: FileHandle;
-		try {
-			handle = await open(options.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-		} catch (error) {
-			if (options.ring && isEnoent(error) && attempt + 1 < RING_OPEN_RETRIES) {
-				const prevExists = await lstat(prevPath)
-					.then(() => true)
-					.catch(() => false);
-				if (prevExists) {
-					await sleep(RING_RETRY_DELAY_MS);
-					continue;
-				}
-			}
-			throw error;
-		}
-		let stat: Stats;
-		let unlinkedDuringRotation = false;
-		try {
-			stat = await handle.stat();
-			if (options.ring && stat.nlink === 0 && attempt + 1 < RING_OPEN_RETRIES) {
-				unlinkedDuringRotation = true;
-			} else if (
-				!stat.isFile() ||
-				stat.nlink !== 1 ||
-				stat.uid !== options.owner ||
-				stat.size > options.maxBytes + 1
-			)
-				throw new Error("INVALID_CODING_GUEST_OUTPUT");
-		} catch (error) {
-			await handle.close().catch(() => undefined);
-			throw error;
-		}
-		if (unlinkedDuringRotation) {
-			await handle.close().catch(() => undefined);
-			await sleep(RING_RETRY_DELAY_MS);
-			continue;
-		}
-		if (!options.ring) return { handle, stat };
-		let prevHandle: FileHandle;
-		try {
-			prevHandle = await open(prevPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-		} catch (error) {
-			if (isEnoent(error)) return { handle, stat };
-			await handle.close().catch(() => undefined);
-			throw error;
-		}
-		try {
-			const prevStat = await prevHandle.stat();
-			const currentPathStat = await lstat(options.path).catch(() => undefined);
-			const rotatedDuringOpen =
-				(prevStat.ino === stat.ino && prevStat.dev === stat.dev) ||
-				!currentPathStat ||
-				currentPathStat.ino !== stat.ino ||
-				currentPathStat.dev !== stat.dev;
-			if (rotatedDuringOpen) {
-				await prevHandle.close().catch(() => undefined);
-				await handle.close().catch(() => undefined);
-				if (attempt + 1 < RING_OPEN_RETRIES) {
-					await sleep(RING_RETRY_DELAY_MS);
-					continue;
-				}
-				throw new Error("CODING_LOG_CHANGED");
-			}
-			if (
-				!prevStat.isFile() ||
-				prevStat.nlink !== 1 ||
-				prevStat.uid !== options.owner ||
-				prevStat.size !== options.maxBytes ||
-				stat.size > options.maxBytes
-			)
-				throw new Error("INVALID_CODING_GUEST_OUTPUT");
-			return { handle, stat, prevHandle };
-		} catch (error) {
-			await prevHandle.close().catch(() => undefined);
-			await handle.close().catch(() => undefined);
-			throw error;
-		}
-	}
-	throw new Error("CODING_LOG_CHANGED");
 }
 
 function asciiEscapedSize(byte: number): number {
@@ -159,6 +32,15 @@ function asciiEscapedSize(byte: number): number {
 	return 6;
 }
 
+async function writeAll(handle: FileHandle, chunk: Buffer): Promise<void> {
+	let offset = 0;
+	while (offset < chunk.length) {
+		const written = await handle.write(chunk, offset, chunk.length - offset);
+		if (!written.bytesWritten) throw new Error("CODING_LOG_WRITE_FAILED");
+		offset += written.bytesWritten;
+	}
+}
+
 export async function collectCodingCommandOutput(
 	streams: readonly NodeJS.ReadableStream[],
 	handle: FileHandle,
@@ -174,14 +56,7 @@ export async function collectCodingCommandOutput(
 		flushIntervalMs < 1
 	)
 		throw new Error("INVALID_CODING_LOG_FLUSH_OPTIONS");
-	const ringPath = options.ring?.path;
-	if (ringPath !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 1))
-		throw new Error("INVALID_CODING_LOG_LIMIT");
-	const prevPath = ringPath === undefined ? undefined : `${ringPath}.prev`;
 	let acceptedBytes = 0;
-	let activeHandle = handle;
-	let ownsActive = false;
-	let currBytes = ringPath === undefined ? 0 : (await handle.stat()).size;
 	let queuedChunks: Buffer[] = [];
 	let queuedBytes = 0;
 	let flushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -209,49 +84,19 @@ export async function collectCodingCommandOutput(
 			rejectOnFailure?.(error);
 		}
 	};
-	const rotate = async (): Promise<void> => {
-		await activeHandle.datasync();
-		dirtySinceSync = false;
-		if (ownsActive) {
-			await activeHandle.close();
-			ownsActive = false;
-		}
-		await rename(ringPath!, prevPath!);
-		activeHandle = await open(
-			ringPath!,
-			constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-			0o600,
-		);
-		ownsActive = true;
-		currBytes = 0;
-		lastSyncAt = performance.now();
-	};
 	const drainBatch = async (batch: Buffer[], syncMode: "ifDue" | "datasync" | "sync"): Promise<void> => {
 		if (failure !== undefined) throw failure;
 		const data = batch.length === 0 ? undefined : batch.length === 1 ? batch[0]! : Buffer.concat(batch);
 		if (data !== undefined && data.length > 0) {
-			if (ringPath === undefined) {
-				await writeAll(activeHandle, data);
-			} else {
-				let offset = 0;
-				while (offset < data.length) {
-					if (currBytes >= maxBytes) await rotate();
-					const space = maxBytes - currBytes;
-					const remaining = data.length - offset;
-					const slice = remaining <= space ? data.subarray(offset) : data.subarray(offset, offset + space);
-					await writeAll(activeHandle, slice);
-					currBytes += slice.length;
-					offset += slice.length;
-				}
-			}
+			await writeAll(handle, data);
 			dirtySinceSync = true;
 		}
 		if (syncMode === "sync") {
-			await activeHandle.sync();
+			await handle.sync();
 			dirtySinceSync = false;
 			lastSyncAt = performance.now();
 		} else if (dirtySinceSync && (syncMode === "datasync" || performance.now() - lastSyncAt >= flushIntervalMs)) {
-			await activeHandle.datasync();
+			await handle.datasync();
 			dirtySinceSync = false;
 			lastSyncAt = performance.now();
 		}
@@ -285,14 +130,11 @@ export async function collectCodingCommandOutput(
 		streams.map(async (stream) => {
 			for await (const value of stream) {
 				if (failure !== undefined) throw failure;
+				const remaining = maxBytes + 1 - acceptedBytes;
+				if (remaining <= 0) continue;
 				const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-				let part = chunk;
-				if (ringPath === undefined) {
-					const remaining = maxBytes + 1 - acceptedBytes;
-					if (remaining <= 0) continue;
-					part = chunk.length <= remaining ? chunk : chunk.subarray(0, remaining);
-					acceptedBytes += part.length;
-				}
+				const part = chunk.length <= remaining ? chunk : chunk.subarray(0, remaining);
+				acceptedBytes += part.length;
 				if (part.length === 0) continue;
 				queuedChunks.push(part);
 				queuedBytes += part.length;
@@ -315,10 +157,6 @@ export async function collectCodingCommandOutput(
 		clearTimer();
 		await writeChain;
 		clearTimer();
-		if (ownsActive) {
-			ownsActive = false;
-			await activeHandle.close().catch(() => undefined);
-		}
 	}
 }
 
@@ -334,7 +172,6 @@ export async function readCodingCommandLog(options: {
 	maxBytes: number;
 	read: CloudCodingCommandRead;
 	terminal: boolean;
-	ring?: boolean;
 }): Promise<Pick<CloudCodingCommandReceipt, "output" | "truncated" | "log">> {
 	const query = parseCloudCodingCommandRead(options.read);
 	for (let parent = dirname(options.path); parent !== dirname(parent); parent = dirname(parent)) {
@@ -347,29 +184,24 @@ export async function readCodingCommandLog(options: {
 			throw new Error("UNPROTECTED_CODING_GUEST_OUTPUT_PATH");
 		if (parent === options.boundary) break;
 	}
-	const { handle, stat, prevHandle } = await openLogSnapshot({
-		path: options.path,
-		owner: options.owner,
-		maxBytes: options.maxBytes,
-		ring: options.ring === true,
-	});
+	const handle = await open(options.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	try {
-		const totalBytes = prevHandle ? options.maxBytes : Math.min(stat.size, options.maxBytes),
+		const stat = await handle.stat();
+		if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== options.owner || stat.size > options.maxBytes + 1)
+			throw new Error("INVALID_CODING_GUEST_OUTPUT");
+		const totalBytes = Math.min(stat.size, options.maxBytes),
 			limit = query.limit ?? 4096;
 		let offset = query.tail ? Math.max(0, totalBytes - limit) : (query.offset ?? 0);
 		if (offset > totalBytes) throw new Error("CODING_LOG_OFFSET_UNAVAILABLE");
 		const base = Math.max(0, offset - 3),
 			buffer = Buffer.alloc(Math.min(totalBytes - base, limit + 7));
-		if (!prevHandle) {
-			await readAll(handle, buffer, 0, buffer.length, base);
-		} else {
-			const split = options.maxBytes - stat.size;
-			const prevCount = base < split ? Math.min(buffer.length, split - base) : 0;
-			if (prevCount > 0) await readAll(prevHandle, buffer, 0, prevCount, stat.size + base);
-			if (prevCount < buffer.length) {
-				await readAll(handle, buffer, prevCount, buffer.length - prevCount, Math.max(0, base - split));
-			}
+		let used = 0;
+		while (used < buffer.length) {
+			const read = await handle.read(buffer, used, buffer.length - used, base + used);
+			if (!read.bytesRead) break;
+			used += read.bytesRead;
 		}
+		if (used !== buffer.length) throw new Error("CODING_LOG_CHANGED");
 		const width = (index: number): number => {
 			const b = buffer[index];
 			const n = b < 128 ? 1 : b >= 194 && b <= 223 ? 2 : b >= 224 && b <= 239 ? 3 : b >= 240 && b <= 244 ? 4 : 1;
@@ -472,14 +304,13 @@ export async function readCodingCommandLog(options: {
 			output = segments.join("");
 		}
 		const nextOffset = base + cursor,
-			limitReached = prevHandle !== undefined || stat.size > options.maxBytes;
+			limitReached = stat.size > options.maxBytes;
 		return {
 			output,
 			truncated: nextOffset < totalBytes || limitReached,
 			log: { offset, nextOffset, totalBytes, limitBytes: options.maxBytes, limitReached },
 		};
 	} finally {
-		await prevHandle?.close();
 		await handle.close();
 	}
 }

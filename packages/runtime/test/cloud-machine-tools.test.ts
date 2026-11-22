@@ -2093,12 +2093,6 @@ describe("machine tools", () => {
 			try {
 				const save = f.tools.find((tool) => tool.name === "save_coding_value")!;
 				expect(save.parseArguments(args)).toEqual(args);
-				expect(save.parseArguments({ ...args, variable: "openai_api_key" })).toMatchObject({
-					variable: "openai_api_key",
-				});
-				expect(save.parseArguments({ ...args, variable: "anthropic_api_key" })).toMatchObject({
-					variable: "anthropic_api_key",
-				});
 				// A purpose is one line of plain text.
 				expect(save.parseArguments({ ...args, purpose: "  Installs\nthe  packages. " })).toMatchObject({
 					purpose: "Installs the packages.",
@@ -2110,8 +2104,7 @@ describe("machine tools", () => {
 					{ ...args, variable: "NPM_TOKEN" },
 					{ ...args, variable: "path" },
 					{ ...args, variable: "git_token" },
-					{ ...args, variable: "claude_code_oauth_token" },
-					{ ...args, variable: "codex_home" },
+					{ ...args, variable: "openai_api_key" },
 					{ ...args, repository: "Acme/Web" },
 					{ ...args, repository: "web" },
 					{ ...args, repository: "acme/web/src" },

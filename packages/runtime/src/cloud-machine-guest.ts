@@ -427,7 +427,6 @@ async function receipt(
 		maxBytes: MACHINE_GUEST_MAX_LOG_BYTES,
 		read: parseCloudCodingCommandRead({ commandId, ...read }),
 		terminal: TERMINAL.has(state),
-		ring: true,
 	}).catch(() => ({
 		output: "",
 		truncated: false,
@@ -852,8 +851,10 @@ export async function executeMachineCommand(commandId: string, ports: MachineGue
 		say();
 		return MACHINE_GUEST_REFUSED_EXIT_CODE;
 	}
-	const logPath = commandPaths(ports, commandId).log;
-	const handle = await open(logPath, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+	const handle = await open(
+		commandPaths(ports, commandId).log,
+		constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW,
+	);
 	const stopped = () => {
 		say();
 		process.kill(process.pid, "SIGTERM");
@@ -869,9 +870,7 @@ export async function executeMachineCommand(commandId: string, ports: MachineGue
 			child.once("error", () => resolveExit(127));
 			child.once("close", (code) => resolveExit(code ?? 128));
 		});
-		const collected = collectCodingCommandOutput([child.stdout, child.stderr], handle, MACHINE_GUEST_MAX_LOG_BYTES, {
-			ring: { path: logPath },
-		});
+		const collected = collectCodingCommandOutput([child.stdout, child.stderr], handle, MACHINE_GUEST_MAX_LOG_BYTES);
 		collected.catch(() => {
 			child.kill("SIGKILL");
 		});
