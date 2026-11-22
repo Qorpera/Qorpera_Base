@@ -20,7 +20,11 @@ exec 9>"$D/.base-backup.lock"
 flock -n 9 || die "another base backup is already running"
 PARTIAL_DIR=""
 cleanup_partial() {
-	[ -z "$PARTIAL_DIR" ] || rm -rf -- "$PARTIAL_DIR"
+	if [ -n "$PARTIAL_DIR" ]; then
+		# WHY: Terminate the in-container pg_basebackup walsender before removing the partial folder because docker exec outlives its client.
+		qc "select pg_terminate_backend(pid) from pg_stat_activity where backend_type = 'walsender' and application_name = 'qorpera-base-backup'" >/dev/null 2>&1 || true
+		rm -rf -- "$PARTIAL_DIR"
+	fi
 }
 trap cleanup_partial EXIT
 trap 'exit 129' HUP
@@ -46,7 +50,7 @@ done
 t0=$(date +%s)
 PARTIAL_DIR="$D/$stamp.partial"
 # Tar format, gzip, with the WAL it needs streamed beside it (pg_wal.tar.gz), so each backup restores on its own.
-dc exec -T -u postgres data-db pg_basebackup -U postgres -D "/backup/base/$stamp.partial" -Ft -z -X stream \
+dc exec -T -e PGAPPNAME=qorpera-base-backup -u postgres data-db pg_basebackup -U postgres -D "/backup/base/$stamp.partial" -Ft -z -X stream \
 	-c "$CHECKPOINT" -l "company-data $stamp" -w </dev/null
 secs=$(($(date +%s) - t0))
 # backup_label names the first WAL file this backup needs. Reading it unpacks the whole tar once, which checks it.

@@ -83,7 +83,7 @@ seed() {
 	wait_store 120 standby || die "the standby did not come up"
 	local receiver_status="NOT streaming"
 	for _ in $(seq 1 60); do
-		receiver_status=$(qc "select coalesce((select status from pg_stat_wal_receiver), 'none')")
+		receiver_status=$(qc "select coalesce((select status from pg_stat_wal_receiver), 'none')" 2>/dev/null) || receiver_status=unreachable
 		[ "$receiver_status" = streaming ] && break
 		sleep 1
 	done
