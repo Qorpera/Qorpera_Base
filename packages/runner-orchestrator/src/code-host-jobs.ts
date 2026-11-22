@@ -3109,10 +3109,20 @@ export async function writeCodeChangeRecords(
 	});
 }
 
-/** An undo's answer. `undone`: the default branch moved from `mainBefore` to the undo's commit `mainAfter`, which
- * changed `diff`; `replayed` when an earlier run of the same request had made it. `nothing`: the default branch no
- * longer holds what the change did, and stays where it is. */
-export type CodeChangeUndone =
+export type CodeChangeUndoDryRun = {
+	state: "dry_run";
+	clean: boolean;
+	mainBefore: string;
+	filesChanged: number;
+	paths: CodeChangePath[];
+	pathsMore: number;
+	matchesBeforeTree: boolean;
+	checksFilePresent: boolean;
+	conflictedPaths: string[];
+	conflictMessages: string[];
+};
+
+export type CodeChangeUndoApplied =
 	| {
 			state: "undone";
 			mainBefore: string;
@@ -3122,38 +3132,39 @@ export type CodeChangeUndone =
 			matchesBeforeTree: boolean;
 			checksFilePresent: boolean;
 	  }
-	| { state: "nothing"; mainSha: string }
-	| {
-			state: "dry_run";
-			clean: boolean;
-			mainBefore: string;
-			filesChanged: number;
-			paths: CodeChangePath[];
-			pathsMore: number;
-			matchesBeforeTree: boolean;
-			checksFilePresent: boolean;
-			conflictedPaths: string[];
-			conflictMessages: string[];
-	  };
+	| { state: "nothing"; mainSha: string };
 
-export async function undoCodeChange(
+/** An undo's answer. `undone`: the default branch moved from `mainBefore` to the undo's commit `mainAfter`, which
+ * changed `diff`; `replayed` when an earlier run of the same request had made it. `nothing`: the default branch no
+ * longer holds what the change did, and stays where it is. */
+export type CodeChangeUndone = CodeChangeUndoApplied | CodeChangeUndoDryRun;
+
+export type CodeChangeUndoInput = {
+	repository: CloudCodingRepository;
+	requestId: string;
+	change: { n: number; mainBefore: string; mainAfter: string };
+	andLater: boolean;
+	message: string;
+	dryRun?: boolean;
+	targets?: readonly { n: number; mainBefore: string; mainAfter: string }[];
+	verifyChecks?: (candidate: {
+		commitSha: string;
+		mainBefore: string;
+		matchesBeforeTree: boolean;
+		checksFilePresent: boolean;
+	}) => Promise<void>;
+};
+
+export function undoCodeChange(
 	job: CodeHostJob,
-	value: {
-		repository: CloudCodingRepository;
-		requestId: string;
-		change: { n: number; mainBefore: string; mainAfter: string };
-		andLater: boolean;
-		message: string;
-		dryRun?: boolean;
-		targets?: readonly { n: number; mainBefore: string; mainAfter: string }[];
-		verifyChecks?: (candidate: {
-			commitSha: string;
-			mainBefore: string;
-			matchesBeforeTree: boolean;
-			checksFilePresent: boolean;
-		}) => Promise<void>;
-	},
-): Promise<CodeChangeUndone> {
+	value: CodeChangeUndoInput & { dryRun: true },
+): Promise<CodeChangeUndoDryRun>;
+export function undoCodeChange(
+	job: CodeHostJob,
+	value: CodeChangeUndoInput & { dryRun?: false },
+): Promise<CodeChangeUndoApplied>;
+export function undoCodeChange(job: CodeHostJob, value: CodeChangeUndoInput): Promise<CodeChangeUndone>;
+export async function undoCodeChange(job: CodeHostJob, value: CodeChangeUndoInput): Promise<CodeChangeUndone> {
 	const input = closedWith(
 		value,
 		["repository", "requestId", "change", "andLater", "message"],

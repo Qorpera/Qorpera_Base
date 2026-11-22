@@ -12,6 +12,8 @@ import {
 import {
 	type archiveCodeArea,
 	type CodeChangePath,
+	type CodeChangeUndoInput,
+	type CodeChangeUndone,
 	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
@@ -24,7 +26,6 @@ import {
 	type showCodeFile,
 	type startCodeArea,
 	type tagCodeArea,
-	type undoCodeChange,
 } from "./code-host-jobs.ts";
 import type { pinCodeSiteTree } from "./code-host-sites.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
@@ -88,7 +89,7 @@ const KINDS = ["undo", "download", "restore"] as const;
 export const CODE_RESTORE_STRAND_IDS = 200;
 
 export interface CodeRequestJobs {
-	undo: typeof undoCodeChange;
+	undo: (job: CodeHostJob, value: CodeChangeUndoInput) => Promise<CodeChangeUndone>;
 	archive: typeof archiveCodeArea;
 	removeDownloads: typeof removeCodeDownloads;
 	start?: typeof startCodeArea;
@@ -779,7 +780,7 @@ export class CodeHostRequests {
 	async #undoneInJob(
 		request: CodeUndoRequest,
 		job: CodeHostJob,
-		undone: Awaited<ReturnType<typeof undoCodeChange>>,
+		undone: CodeChangeUndone,
 		left: {
 			outcome?: CodeRequestOutcome;
 			finished?: { state: "recorded"; change: number | null } | { state: "lost" };
