@@ -313,7 +313,11 @@ export class DecisionDock {
 			);
 		return items.some(
 			(item) =>
-				item.kind === "interaction" && item.id.toLowerCase() === id && Boolean(item.answer) && !item.answerFailed,
+				item.kind === "interaction" &&
+				item.id.toLowerCase() === id &&
+				Boolean(item.answer) &&
+				!item.answer?.pending &&
+				!item.answerFailed,
 		);
 	}
 

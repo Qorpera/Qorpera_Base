@@ -319,12 +319,15 @@ export class ConnectionsView {
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		const resume = () => {
+			if (document.hidden || this.#lifetime.signal.aborted) return;
+			if (!this.el.isConnected) {
+				this.#armUsageClock();
+				return;
+			}
 			if (
-				!document.hidden &&
-				this.el.isConnected &&
-				([...this.#attempts.values()].some((attempt) => attempt.login) ||
-					this.#shown().some(live) ||
-					this.#claudeReadable())
+				[...this.#attempts.values()].some((attempt) => attempt.login) ||
+				this.#shown().some(live) ||
+				this.#claudeReadable()
 			)
 				void this.#refreshUsage();
 		};
@@ -1490,14 +1493,22 @@ export class ConnectionsView {
 				: null,
 		);
 	}
-	#draw(): void {
+	#armUsageClock(): void {
 		clearTimeout(this.#usageClock);
-		// WHY: Do not arm a hidden 60s redraw loop or poll after detachment; resume() re-arms on return.
-		if (!document.hidden && (this.#shown().some(live) || this.#claudeReadable()))
-			this.#usageClock = setTimeout(() => {
-				if (document.hidden || !this.el.isConnected) return;
-				void this.#refreshUsage();
-			}, 60_000);
+		// WHY: Skip hidden polls while keeping a detached cached panel armed so reattaching resumes refreshes.
+		if (this.#lifetime.signal.aborted || document.hidden) return;
+		if (!this.#shown().some(live) && !this.#claudeReadable()) return;
+		this.#usageClock = setTimeout(() => {
+			if (this.#lifetime.signal.aborted || document.hidden) return;
+			if (!this.el.isConnected) {
+				this.#armUsageClock();
+				return;
+			}
+			void this.#refreshUsage();
+		}, 60_000);
+	}
+	#draw(): void {
+		this.#armUsageClock();
 		const focusKey = this.el.contains(document.activeElement)
 			? (document.activeElement as HTMLElement).dataset.focusKey
 			: undefined;
