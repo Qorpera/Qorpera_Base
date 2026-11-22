@@ -590,6 +590,11 @@ export class CloudSurfacesClient {
 		return parseSurfaceSummary(data, "surface");
 	}
 
+	async setSurfaceFigure(surfaceId: string, figure: string): Promise<SurfaceSummary> {
+		const data = await this.#rpc("qorpera_set_surface_figure", { p_surface_id: surfaceId, p_figure: figure });
+		return parseSurfaceSummary(data, "surface");
+	}
+
 	async startSurfaceSession(
 		surfaceId: string,
 		prompt: string,

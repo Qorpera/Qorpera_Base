@@ -12,8 +12,8 @@ import {
 	type StudioPatchOp,
 	SURFACE_ARCHETYPES,
 	SURFACE_AUTOMATION_STATUSES,
+	SURFACE_FIGURES,
 	SURFACE_GROUPS,
-	SURFACE_HEX_COLOR_PATTERN,
 	SURFACE_KINDS,
 	SURFACE_MAX_CHANGE_SUMMARY_CHARS,
 	SURFACE_MAX_CHANGE_TITLE_CHARS,
@@ -144,7 +144,6 @@ export interface ProposeSurfaceRequest {
 	readonly group: SurfaceGroup;
 	readonly archetype: SurfaceArchetype;
 	readonly kind?: SurfaceKind;
-	readonly accentHex?: string | null;
 	readonly isGlobal?: boolean;
 	readonly activateImmediately?: boolean;
 	readonly sourceKind: SurfaceSourceKind;
@@ -271,14 +270,6 @@ function parseBooleanArg(value: unknown, field: string, fallback: boolean): bool
 	if (value === undefined || value === null) return fallback;
 	if (typeof value !== "boolean") {
 		throw new CloudToolArgumentRefusal(`${field} must be a boolean`);
-	}
-	return value;
-}
-
-function parseOptionalAccentHexArg(value: unknown, field: string): string | null {
-	if (value === undefined || value === null) return null;
-	if (typeof value !== "string" || !SURFACE_HEX_COLOR_PATTERN.test(value)) {
-		throw new CloudToolArgumentRefusal(`${field} must be a 6-digit hex color like #d76f45`);
 	}
 	return value;
 }
@@ -525,7 +516,7 @@ export function createControlPlaneSurfaceToolsPort(
 					p_preview_mode: request.previewMode,
 					p_brief_summary: request.briefSummary,
 					p_kind: request.kind ?? "custom",
-					p_accent_hex: request.accentHex ?? null,
+					p_accent_hex: null,
 					p_is_global: request.isGlobal ?? false,
 					p_activate_immediately: request.activateImmediately ?? false,
 				},
@@ -759,10 +750,11 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 					enum: [...SURFACE_KINDS],
 					description: "Semantic kind of surface (identity, website, web_app, mobile_app, product, etc.).",
 				},
-				accentHex: {
+				figure: {
 					type: "string",
-					pattern: SURFACE_HEX_COLOR_PATTERN.source,
-					description: "Optional #rrggbb accent color for the surface icon and badge.",
+					enum: [...SURFACE_FIGURES],
+					description:
+						"The figure the surface is drawn as in the sidebar, the thing it is: omit for its kind's own (website = browser, money = money, files = folder). Its colours are fixed; there is no colour to choose.",
 				},
 				isGlobal: {
 					type: "boolean",
@@ -773,7 +765,6 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 					description: "Set true during Day-0 founding for 1-2 core product surfaces; omit or false to propose.",
 				},
 				sourceKind: { type: "string", enum: [...SURFACE_SOURCE_KINDS] },
-				icon: { type: "string", maxLength: 40 },
 				repositoryKey: { type: "string", maxLength: 200 },
 				folderRoot: { type: "string", maxLength: 256 },
 				previewMode: { type: "string", enum: [...SURFACE_PREVIEW_MODES] },
@@ -789,10 +780,9 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 					["slug", "title", "group", "archetype", "sourceKind"],
 					[
 						"kind",
-						"accentHex",
+						"figure",
 						"isGlobal",
 						"activateImmediately",
-						"icon",
 						"repositoryKey",
 						"folderRoot",
 						"previewMode",
@@ -816,10 +806,13 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 			const sourceKind = parseEnumArg(raw.sourceKind, SURFACE_SOURCE_KINDS, "sourceKind");
 			const kind =
 				raw.kind === undefined || raw.kind === null ? "custom" : parseEnumArg(raw.kind, SURFACE_KINDS, "kind");
-			const accentHex = parseOptionalAccentHexArg(raw.accentHex, "accentHex");
+			const figure =
+				raw.figure === undefined || raw.figure === null
+					? null
+					: parseEnumArg(raw.figure, SURFACE_FIGURES, "figure");
 			const isGlobal = parseBooleanArg(raw.isGlobal, "isGlobal", false);
 			const activateImmediately = parseBooleanArg(raw.activateImmediately, "activateImmediately", false);
-			const icon = parseOptionalBounded(raw.icon, "icon", 40) ?? "page";
+			const icon = figure ? `figure:${figure}` : "page";
 			const repositoryKey = parseOptionalBounded(raw.repositoryKey, "repositoryKey", 200);
 			const folderRoot = parseOptionalBounded(raw.folderRoot, "folderRoot", 256);
 			const previewMode =
@@ -837,7 +830,6 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 				group,
 				archetype,
 				kind,
-				accentHex,
 				isGlobal,
 				activateImmediately,
 				sourceKind,

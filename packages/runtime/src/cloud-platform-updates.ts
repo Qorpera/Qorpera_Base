@@ -300,6 +300,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "App vault secrets and code/ops routine triggers",
 		text: "Coding sessions can now use company-owned OpenAI and Anthropic vault keys and receive sorted secretNames (names only, never values) in their turn context. Owners and admins can scope environment secrets by build, test, or runtime and target environment so production or runtime grants stay out of coding sessions, and manage per-site app secret grants. Routines created with manage_routine now support code-change, app-unhealthy, and database-change listeners plus deterministic checkBeforeWake gates (HTTPS probes and repository checks) that wake an agent only on failure or state change.",
 	},
+	{
+		id: "surface-figures",
+		kind: "behaviour",
+		date: "2026-11-22",
+		title: "Surfaces are drawn as figures",
+		text: "Every surface in the sidebar is now a small figure of the thing it is (a browser for the website, notes and a gold coin for money, a folder for files), in fixed colours. When you propose a surface you may name its figure: leave it out and the surface gets its kind's own figure, or pick another that fits better, such as shop for a web store. Colours are never chosen. Members can change a surface's figure themselves from the sidebar.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

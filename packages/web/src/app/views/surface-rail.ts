@@ -1,7 +1,8 @@
 import type { SurfaceChangeUnit, SurfaceExplorationSet, SurfaceSession, SurfaceSummary } from "@qorpera/contracts";
+import { menuPoint, openContextMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { h, icon } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
-import { type SurfaceFigureState, surfaceFigure } from "../../ui/surface-figure.ts";
+import { type SurfaceFigureState, surfaceFigure, surfaceFigureChoices } from "../../ui/surface-figure.ts";
 import { surfaceHash } from "../router.ts";
 import {
 	type SurfaceLook,
@@ -431,6 +432,39 @@ export class SurfaceRail {
 		this.#profileId = profileId;
 		this.#onAddSurface = onAddSurface;
 		this.el.addEventListener("click", (event) => this.#click(event), { signal });
+		this.el.addEventListener("contextmenu", (event) => this.#menu(event), { signal });
+		pressToOpenMenu(this.el, signal, (event) => this.#menu(event));
+	}
+
+	#menu(event: MouseEvent): void {
+		if (event.shiftKey && (event.clientX || event.clientY)) return;
+		const row = (event.target as Element | null)?.closest<HTMLElement>(".rail-surface");
+		const surface = this.#store.state.surfaces.find((item) => item.slug === row?.dataset.surfaceSlug);
+		if (!row || !surface) return;
+		event.preventDefault();
+		const chosen = surfaceFigureOf(surface, this.#store.lookOf(surface));
+		openContextMenu({
+			label: surface.title,
+			...menuPoint(event, row),
+			opener: row,
+			findOpener: () =>
+				[...this.el.querySelectorAll<HTMLElement>(".rail-surface")].find(
+					(item) => item.dataset.surfaceSlug === surface.slug,
+				) ?? null,
+			items: [
+				{
+					kind: "panel",
+					label: t("Figure"),
+					icon: "palette",
+					panel: (close) => ({
+						el: surfaceFigureChoices(chosen, (figure) => {
+							close();
+							if (figure !== chosen) void this.#store.setFigure(surface.id, figure);
+						}),
+					}),
+				},
+			],
+		});
 	}
 
 	update(activeSlug: string | undefined, canAddProgram = false, members?: SurfaceRailMembers): void {
