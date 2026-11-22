@@ -39,6 +39,43 @@ describe("object-gateway abort scopes", () => {
 		expect(getEventListeners(b.signal, "abort")).toHaveLength(0);
 	});
 
+	it("forwards parent abort reason mid-call and handles pre-aborted parents without arming a timer", async () => {
+		const a = new AbortController();
+		const b = new AbortController();
+		const cause = new Error("deadline-hit");
+		let observedReason: unknown;
+		await withAbortScopes(
+			[a.signal, b.signal],
+			async (signal) => {
+				expect(signal.aborted).toBe(false);
+				b.abort(cause);
+				expect(signal.aborted).toBe(true);
+				observedReason = signal.reason;
+			},
+			10_000,
+		);
+		expect(observedReason).toBe(cause);
+		expect(getEventListeners(a.signal, "abort")).toHaveLength(0);
+		expect(getEventListeners(b.signal, "abort")).toHaveLength(0);
+
+		const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+		const preAborted = new AbortController();
+		const priorCause = new Error("already-aborted");
+		preAborted.abort(priorCause);
+		let preReason: unknown;
+		await withAbortScopes(
+			[a.signal, preAborted.signal],
+			async (signal) => {
+				expect(signal.aborted).toBe(true);
+				preReason = signal.reason;
+			},
+			10_000,
+		);
+		expect(preReason).toBe(priorCause);
+		expect(setTimeoutSpy).not.toHaveBeenCalled();
+		expect(getEventListeners(a.signal, "abort")).toHaveLength(0);
+	});
+
 	it("passes caller signal directly in withDefaultTimeout and bounds omitted signal with TimeoutError", async () => {
 		const caller = new AbortController();
 		const same = await withDefaultTimeout(caller.signal, 5_000, async (signal) => signal === caller.signal);

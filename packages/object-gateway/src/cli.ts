@@ -225,15 +225,15 @@ if (process.argv[2] === "migrate") {
 				writingLines = false;
 			});
 	}, 15_000);
-	const shutdown = new AbortController();
+	let stopping = false;
 	// The connection-file writer's own loop: one drain at a time (its worker id holds at most one claim), at most ten
 	// files and 60 s per tick, so it never holds up the gateway's other maintenance.
 	let writing = false;
 	const writeConnectionFiles = async (): Promise<void> => {
-		if (!connectionFiles || writing || shutdown.signal.aborted) return;
+		if (!connectionFiles || writing || stopping) return;
 		writing = true;
 		try {
-			await withAbortScopes([shutdown.signal], (signal) => connectionFiles.writeDue(10, signal), 60_000);
+			await withAbortScopes([], (signal) => connectionFiles.writeDue(10, signal), 60_000);
 		} catch {
 			process.stderr.write("Connection file writer requires operator attention\n");
 		} finally {
@@ -247,10 +247,10 @@ if (process.argv[2] === "migrate") {
 	// a time, at most ten files and 30 s per tick.
 	let writingResults = false;
 	const writeCodingResults = async (): Promise<void> => {
-		if (!codingResults || writingResults || shutdown.signal.aborted) return;
+		if (!codingResults || writingResults || stopping) return;
 		writingResults = true;
 		try {
-			await withAbortScopes([shutdown.signal], (signal) => codingResults.writeDue(10, signal), 30_000);
+			await withAbortScopes([], (signal) => codingResults.writeDue(10, signal), 30_000);
 		} catch {
 			process.stderr.write("Coding results writer requires operator attention\n");
 		} finally {
@@ -264,10 +264,10 @@ if (process.argv[2] === "migrate") {
 	// time, at most ten files and 60 s per tick.
 	let writingSummaries = false;
 	const writeBankSummaries = async (): Promise<void> => {
-		if (!bankSummaries || writingSummaries || shutdown.signal.aborted) return;
+		if (!bankSummaries || writingSummaries || stopping) return;
 		writingSummaries = true;
 		try {
-			await withAbortScopes([shutdown.signal], (signal) => bankSummaries.writeDue(10, signal), 60_000);
+			await withAbortScopes([], (signal) => bankSummaries.writeDue(10, signal), 60_000);
 		} catch {
 			process.stderr.write("Bank summary writer requires operator attention\n");
 		} finally {
@@ -281,10 +281,10 @@ if (process.argv[2] === "migrate") {
 	// minutes): one drain at a time, at most five letters and 120 s per tick.
 	let writingLetters = false;
 	const writeDigitalPostLetters = async (): Promise<void> => {
-		if (!digitalPostLetters || writingLetters || shutdown.signal.aborted) return;
+		if (!digitalPostLetters || writingLetters || stopping) return;
 		writingLetters = true;
 		try {
-			await withAbortScopes([shutdown.signal], (signal) => digitalPostLetters.writeDue(5, signal), 120_000);
+			await withAbortScopes([], (signal) => digitalPostLetters.writeDue(5, signal), 120_000);
 		} catch {
 			process.stderr.write("Digital Post letter writer requires operator attention\n");
 		} finally {
@@ -298,10 +298,10 @@ if (process.argv[2] === "migrate") {
 	// erases and 30 s per tick.
 	let erasing = false;
 	const eraseMemoryMessages = async (): Promise<void> => {
-		if (!memoryErase || erasing || shutdown.signal.aborted) return;
+		if (!memoryErase || erasing || stopping) return;
 		erasing = true;
 		try {
-			await withAbortScopes([shutdown.signal], (signal) => memoryErase.eraseDue(10, signal), 30_000);
+			await withAbortScopes([], (signal) => memoryErase.eraseDue(10, signal), 30_000);
 		} catch {
 			process.stderr.write("Memory message eraser requires operator attention\n");
 		} finally {
@@ -314,10 +314,10 @@ if (process.argv[2] === "migrate") {
 	// Company creation's own loop: one drain at a time, at most five companies and 120 s per tick.
 	let creating = false;
 	const createCompanies = async (): Promise<void> => {
-		if (!companyCreation || creating || shutdown.signal.aborted) return;
+		if (!companyCreation || creating || stopping) return;
 		creating = true;
 		try {
-			await withAbortScopes([shutdown.signal], (signal) => companyCreation.createDue(5, signal), 120_000);
+			await withAbortScopes([], (signal) => companyCreation.createDue(5, signal), 120_000);
 		} catch {
 			process.stderr.write("Company creation worker requires operator attention\n");
 		} finally {
@@ -333,7 +333,7 @@ if (process.argv[2] === "migrate") {
 
 	for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		process.on(signal, () => {
-			shutdown.abort();
+			stopping = true;
 			maintenance.stop();
 			clearInterval(storedLineWrites);
 			clearInterval(connectionFileWrites);
