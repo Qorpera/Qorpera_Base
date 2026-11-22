@@ -2446,10 +2446,6 @@ export class SurfacesStore {
 		this.store.set({ error: undefined });
 	}
 
-	clearHighlight(): void {
-		if (this.state.highlight) this.store.set({ highlight: undefined });
-	}
-
 	setStudioPatch(changeId: string, ops: readonly StudioPatchOp[]): void {
 		this.store.set((state) => ({ studioPatches: { ...state.studioPatches, [changeId]: ops } }));
 	}
@@ -3440,6 +3436,7 @@ export class SurfacesStore {
 	}
 
 	openDrawer(surfaceId: string, sessionId: string): void {
+		if (this.state.highlight?.sessionId === sessionId) this.store.set({ highlight: undefined });
 		const previous = this.state.drawer;
 		if (previous?.sessionId === sessionId && !previous.explorationId) return;
 		if (previous) this.closeDrawer();
