@@ -231,7 +231,7 @@
 	border-left: 1.5px solid color-mix(in srgb, var(--surface-tint, var(--text)) 18%, transparent);
 }
 .rail-surface-sub.rail-surface-crew { display: flex; align-items: center; gap: 2px; min-height: 22px; overflow: visible; }
-.rail-surface-crew .surface-crew.is-mini { --crew-size: 20px; }
+.surface-crew.is-mini.is-highlighted { border-radius: 50%; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
 .rail-surface-crew-more {
 	margin-left: 4px; color: var(--rail-small); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums;
 }
@@ -538,6 +538,10 @@
 	animation: surface-agent-nudge 2.2s ease-in-out infinite;
 }
 .surface-bar-agent.is-ready { border-color: color-mix(in srgb, var(--text) 12%, transparent); }
+.surface-bar-agent.is-highlighted {
+	border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+	background: color-mix(in srgb, var(--accent) 13%, var(--bg));
+}
 .surface-bar-agent .surface-crew { --crew-size: 24px; width: 24px; height: 24px; }
 .surface-bar-agent-count {
 	min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--sidebar-selection); color: #fff;
@@ -1763,7 +1767,6 @@
 .studio-compare-cell.is-preview {
 	border-left: 1px solid var(--border); background: color-mix(in srgb, var(--accent) 4%, var(--bg)); color: var(--text);
 }
-.surface-exploration-trigger { cursor: pointer; }
 
 /* Framed thread pages matching the rounded surface canvas with a subtle warm-grey tint and the same floating glass composer. */
 .frame:has(.rail.has-surface-rail) .main { background: var(--bg); }

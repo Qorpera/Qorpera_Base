@@ -121,6 +121,7 @@ function crewRow(state: SurfacesState, surface: SurfaceSummary, crew: CrewFigure
 			.map((session) => {
 				const figure = crew.take(session, 20, "is-mini");
 				figure.title = session.title;
+				figure.classList.toggle("is-highlighted", state.highlight?.sessionId === session.id);
 				return figure;
 			}),
 		...openExplorations(workspace).map((exploration) => {
@@ -371,7 +372,7 @@ export class SurfaceRail {
 							look,
 							this.#profileId,
 							active,
-							crewRow(state, surface, this.#crew),
+							active ? crewRow(state, surface, this.#crew) : null,
 							hasMembers ? members : undefined,
 						);
 						const tree =
