@@ -15,6 +15,10 @@ export class Store<T extends object> {
 		return this.#value;
 	}
 
+	get listenerCount(): number {
+		return this.#listeners.size;
+	}
+
 	set(patch: Partial<T> | ((current: T) => Partial<T>)): void {
 		if (this.#disposed) return;
 		const next = typeof patch === "function" ? patch(this.#value) : patch;

@@ -124,4 +124,14 @@ describe("company group metadata", () => {
 			expect(f.company.groupAgents(session.sessionId)).toEqual([]);
 		},
 	);
+
+	it("preserves existing group metadata when a transient refresh fails", async () => {
+		const f = setup();
+		await f.company.refreshGroups();
+		expect(f.company.store.get().groups?.[f.room.roomId]).toEqual(f.room);
+		f.rpc.mockRejectedValueOnce(new Error("temporary outage"));
+		await f.company.refreshGroups();
+		expect(f.company.store.get().groups?.[f.room.roomId]).toEqual(f.room);
+		expect(f.company.store.get().groupsError).toBeTruthy();
+	});
 });
