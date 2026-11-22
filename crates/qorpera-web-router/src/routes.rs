@@ -256,12 +256,13 @@ pub struct RouteTable {
     pub edge_ipv4: Option<String>,
     pub edge_ipv6: Option<String>,
     pub edge_cname_target: Option<String>,
-    sites_by_slug: HashMap<String, Arc<SiteRecord>>,
-    sites_by_id: HashMap<String, Arc<SiteRecord>>,
-    domains_by_host: HashMap<String, CustomDomainRecord>,
+    sites_by_slug: Arc<HashMap<String, Arc<SiteRecord>>>,
+    sites_by_id: Arc<HashMap<String, Arc<SiteRecord>>>,
+    domains_by_host: Arc<HashMap<String, CustomDomainRecord>>,
+    deployment_snapshot_upstreams: Arc<HashMap<String, Option<String>>>,
     upstream_overrides: HashMap<String, UpstreamOverride>,
-    content_type_headers: HashMap<String, HeaderValue>,
-    etag_headers: HashMap<String, HeaderValue>,
+    content_type_headers: Arc<HashMap<String, HeaderValue>>,
+    etag_headers: Arc<HashMap<String, HeaderValue>>,
 }
 
 pub struct SharedRoutes {
@@ -295,14 +296,17 @@ impl RouteTable {
     pub fn from_snapshot(snapshot: EdgeSnapshot) -> Self {
         let mut sites_by_slug = HashMap::with_capacity(snapshot.sites.len());
         let mut sites_by_id = HashMap::with_capacity(snapshot.sites.len());
+        let mut deployment_snapshot_upstreams = HashMap::with_capacity(snapshot.sites.len());
         let mut content_type_headers = HashMap::new();
         let mut etag_headers = HashMap::new();
         for site in snapshot.sites {
             if let Some(ref dep) = site.live_deployment {
                 collect_precomputed_headers(&dep.manifest, &mut content_type_headers, &mut etag_headers);
+                deployment_snapshot_upstreams.insert(dep.id.clone(), dep.upstream_addr.clone());
             }
             for dep in site.preview_deployments.values() {
                 collect_precomputed_headers(&dep.manifest, &mut content_type_headers, &mut etag_headers);
+                deployment_snapshot_upstreams.insert(dep.id.clone(), dep.upstream_addr.clone());
             }
             let arc = Arc::new(site);
             sites_by_slug.insert(arc.slug.clone(), Arc::clone(&arc));
@@ -327,12 +331,13 @@ impl RouteTable {
             edge_ipv4: snapshot.edge_ipv4,
             edge_ipv6: snapshot.edge_ipv6,
             edge_cname_target: snapshot.edge_cname_target,
-            sites_by_slug,
-            sites_by_id,
-            domains_by_host,
+            sites_by_slug: Arc::new(sites_by_slug),
+            sites_by_id: Arc::new(sites_by_id),
+            domains_by_host: Arc::new(domains_by_host),
+            deployment_snapshot_upstreams: Arc::new(deployment_snapshot_upstreams),
             upstream_overrides: HashMap::new(),
-            content_type_headers,
-            etag_headers,
+            content_type_headers: Arc::new(content_type_headers),
+            etag_headers: Arc::new(etag_headers),
         }
     }
 
@@ -392,19 +397,9 @@ impl RouteTable {
     }
 
     fn snapshot_upstream_for(&self, deployment_id: &str) -> Option<String> {
-        for site in self.sites_by_id.values() {
-            if let Some(ref dep) = site.live_deployment {
-                if dep.id == deployment_id {
-                    return dep.upstream_addr.clone();
-                }
-            }
-            for dep in site.preview_deployments.values() {
-                if dep.id == deployment_id {
-                    return dep.upstream_addr.clone();
-                }
-            }
-        }
-        None
+        self.deployment_snapshot_upstreams
+            .get(deployment_id)
+            .and_then(|addr| addr.clone())
     }
 
     pub fn set_upstream_override(&mut self, deployment_id: String, upstream_addr: Option<String>) {
@@ -442,7 +437,8 @@ impl RouteTable {
     }
 
     pub fn update_domain_status(&mut self, domain_id: &str, status: DomainStatus) -> bool {
-        for domain in self.domains_by_host.values_mut() {
+        let domains = Arc::make_mut(&mut self.domains_by_host);
+        for domain in domains.values_mut() {
             if domain.id == domain_id {
                 domain.status = status;
                 return true;
@@ -452,7 +448,8 @@ impl RouteTable {
     }
 
     pub fn update_domain_check(&mut self, domain_id: &str, status: DomainStatus, verified: bool) -> bool {
-        for domain in self.domains_by_host.values_mut() {
+        let domains = Arc::make_mut(&mut self.domains_by_host);
+        for domain in domains.values_mut() {
             if domain.id == domain_id {
                 domain.status = status;
                 domain.consecutive_misses = if verified {
@@ -464,6 +461,48 @@ impl RouteTable {
             }
         }
         false
+    }
+
+    pub fn update_domain_checks(&mut self, updates: &[(String, DomainStatus, bool)]) -> usize {
+        if updates.is_empty() {
+            return 0;
+        }
+        let mut by_id: HashMap<&str, (DomainStatus, bool)> = HashMap::with_capacity(updates.len());
+        for (id, status, verified) in updates {
+            by_id.insert(id.as_str(), (*status, *verified));
+        }
+        let any_changed = self.domains_by_host.values().any(|domain| {
+            if let Some(&(next_status, verified)) = by_id.get(domain.id.as_str()) {
+                let next_misses = if verified {
+                    0
+                } else {
+                    domain.consecutive_misses.saturating_add(1)
+                };
+                domain.status != next_status || domain.consecutive_misses != next_misses
+            } else {
+                false
+            }
+        });
+        if !any_changed {
+            return 0;
+        }
+        let domains = Arc::make_mut(&mut self.domains_by_host);
+        let mut updated = 0usize;
+        for domain in domains.values_mut() {
+            if let Some(&(next_status, verified)) = by_id.get(domain.id.as_str()) {
+                let next_misses = if verified {
+                    0
+                } else {
+                    domain.consecutive_misses.saturating_add(1)
+                };
+                if domain.status != next_status || domain.consecutive_misses != next_misses {
+                    domain.status = next_status;
+                    domain.consecutive_misses = next_misses;
+                    updated += 1;
+                }
+            }
+        }
+        updated
     }
 
     pub fn upstream_for(&self, deployment: &DeploymentRecord) -> Option<String> {

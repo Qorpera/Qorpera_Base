@@ -6,20 +6,22 @@ use std::collections::HashMap;
 use std::io::{SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 
 pub const DEFAULT_MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
 pub const DEFAULT_MAX_BLOB_BYTES: usize = 100 * 1024 * 1024;
 const COMPRESS_MIN_BYTES: usize = 256;
 const PRECOMPRESS_MAX_BYTES: usize = 8 * 1024 * 1024;
+const PUT_CACHE_WARM_MAX_BYTES: usize = 512 * 1024;
 const BLOCKING_OFFLOAD_THRESHOLD: usize = 16 * 1024;
 const CACHE_SHARDS: usize = 64;
-const BROTLI_QUALITY: u32 = 6;
-const BROTLI_WINDOW: u32 = 22;
-const ZSTD_LEVEL: i32 = 9;
+const MAX_CONCURRENT_PRECOMPRESS: usize = 2;
+const BROTLI_QUALITY: i32 = 5;
+const BROTLI_MAX_WINDOW: u32 = 22;
+const ZSTD_LEVEL: i32 = 6;
 
 static TEMP_FILE_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -221,15 +223,15 @@ struct SieveEntry {
 }
 
 struct SieveNode {
-    key: String,
+    key: Arc<str>,
     entry: Arc<SieveEntry>,
     prev: Option<usize>,
     next: Option<usize>,
 }
 
 struct SieveShard {
-    index: HashMap<String, usize>,
-    entries: HashMap<String, Arc<SieveEntry>>,
+    index: HashMap<Arc<str>, usize>,
+    entries: HashMap<Arc<str>, Arc<SieveEntry>>,
     nodes: Vec<Option<SieveNode>>,
     free: Vec<usize>,
     head: Option<usize>,
@@ -240,7 +242,7 @@ struct SieveShard {
 }
 
 struct WaitFreeShard {
-    readable: ArcSwap<HashMap<String, Arc<SieveEntry>>>,
+    readable: ArcSwap<HashMap<Arc<str>, Arc<SieveEntry>>>,
     writer: Mutex<SieveShard>,
 }
 
@@ -267,9 +269,9 @@ impl WaitFreeShard {
         Some(entry.value.to_payload(accepted))
     }
 
-    fn insert(&self, key: String, blob: CachedBlob) {
+    fn insert(&self, key: &str, blob: CachedBlob) {
         if let Ok(mut guard) = self.writer.lock() {
-            if guard.insert(key, blob) {
+            if guard.insert(Arc::from(key), blob) {
                 self.readable.store(Arc::new(guard.entries.clone()));
             }
         }
@@ -384,7 +386,7 @@ impl SieveShard {
         false
     }
 
-    fn insert(&mut self, key: String, blob: CachedBlob) -> bool {
+    fn insert(&mut self, key: Arc<str>, blob: CachedBlob) -> bool {
         let accounted = blob.accounted_bytes;
         if self.max_bytes == 0 || accounted > self.max_bytes {
             return false;
@@ -409,7 +411,7 @@ impl SieveShard {
             visited: AtomicBool::new(false),
         });
         let node = SieveNode {
-            key: key.clone(),
+            key: Arc::clone(&key),
             entry: Arc::clone(&entry),
             prev: None,
             next: None,
@@ -423,7 +425,7 @@ impl SieveShard {
             slot
         };
         self.total_bytes += accounted;
-        self.index.insert(key.clone(), idx);
+        self.index.insert(Arc::clone(&key), idx);
         self.entries.insert(key, entry);
         self.push_front(idx);
         true
@@ -488,12 +490,79 @@ struct PrecompressedVariants {
     zstd: Option<Bytes>,
 }
 
+struct CompressJob {
+    raw: Bytes,
+    reply: oneshot::Sender<PrecompressedVariants>,
+}
+
+struct CompressPool {
+    tx: Mutex<Option<std_mpsc::Sender<CompressJob>>>,
+}
+
+impl CompressPool {
+    fn new() -> Self {
+        Self {
+            tx: Mutex::new(None),
+        }
+    }
+
+    async fn compress(&self, raw: Bytes) -> Result<PrecompressedVariants, BlobError> {
+        let sender = {
+            let mut guard = self
+                .tx
+                .lock()
+                .map_err(|_| BlobError::Io(std::io::Error::other("compress pool lock poisoned")))?;
+            if let Some(ref tx) = *guard {
+                tx.clone()
+            } else {
+                let (tx, rx) = std_mpsc::channel::<CompressJob>();
+                let shared_rx = Arc::new(Mutex::new(rx));
+                for worker_idx in 0..MAX_CONCURRENT_PRECOMPRESS {
+                    let rx_ref = Arc::clone(&shared_rx);
+                    let _ = std::thread::Builder::new()
+                        .name(format!("qorpera-compress-{worker_idx}"))
+                        .spawn(move || {
+                            let mut zstd_ctx = zstd::bulk::Compressor::new(ZSTD_LEVEL).ok();
+                            loop {
+                                let job = {
+                                    let Ok(rx_guard) = rx_ref.lock() else {
+                                        break;
+                                    };
+                                    rx_guard.recv()
+                                };
+                                let Ok(job) = job else {
+                                    break;
+                                };
+                                let variants = precompress_all_with_ctx(&job.raw, zstd_ctx.as_mut());
+                                let _ = job.reply.send(variants);
+                            }
+                        });
+                }
+                *guard = Some(tx.clone());
+                tx
+            }
+        };
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        sender
+            .send(CompressJob {
+                raw,
+                reply: reply_tx,
+            })
+            .map_err(|_| BlobError::Io(std::io::Error::other("compress pool closed")))?;
+        reply_rx
+            .await
+            .map_err(|_| BlobError::Io(std::io::Error::other("compress job dropped")))
+    }
+}
+
 pub struct BlobStore {
     root: PathBuf,
     max_blob_bytes: usize,
     max_cache_bytes: usize,
     shards: Vec<WaitFreeShard>,
     inflight: Mutex<HashMap<String, broadcast::Sender<ReadResult>>>,
+    compress_pool: CompressPool,
 }
 
 impl BlobStore {
@@ -513,6 +582,7 @@ impl BlobStore {
             max_cache_bytes,
             shards,
             inflight: Mutex::new(HashMap::new()),
+            compress_pool: CompressPool::new(),
         }
     }
 
@@ -556,58 +626,42 @@ impl BlobStore {
         if bytes.len() > self.max_blob_bytes {
             return Err(BlobError::TooLarge);
         }
-        let expected_sha = sha256.to_string();
-        let bytes_for_cpu = bytes.clone();
-        let should_precompress = precompress
-            && bytes.len() >= COMPRESS_MIN_BYTES
-            && bytes.len() <= PRECOMPRESS_MAX_BYTES
-            && !is_likely_incompressible(&bytes);
 
-        let (hash_ok, variants) = if bytes.len() >= BLOCKING_OFFLOAD_THRESHOLD || should_precompress {
-            tokio::task::spawn_blocking(move || {
-                if sha256_hex(&bytes_for_cpu) != expected_sha {
-                    return (
-                        false,
-                        PrecompressedVariants {
-                            gzip: None,
-                            brotli: None,
-                            zstd: None,
-                        },
-                    );
-                }
-                let v = if should_precompress {
-                    precompress_all(&bytes_for_cpu)
-                } else {
-                    PrecompressedVariants {
-                        gzip: None,
-                        brotli: None,
-                        zstd: None,
-                    }
-                };
-                (true, v)
-            })
-            .await
-            .map_err(|e| BlobError::Io(std::io::Error::other(e.to_string())))?
+        let hash_ok = if bytes.len() >= BLOCKING_OFFLOAD_THRESHOLD {
+            let expected_sha = sha256.to_string();
+            let bytes_for_hash = bytes.clone();
+            tokio::task::spawn_blocking(move || sha256_hex(&bytes_for_hash) == expected_sha)
+                .await
+                .map_err(|e| BlobError::Io(std::io::Error::other(e.to_string())))?
         } else {
-            if sha256_hex(&bytes) != sha256 {
-                return Err(BlobError::HashMismatch);
-            }
-            (
-                true,
-                PrecompressedVariants {
-                    gzip: None,
-                    brotli: None,
-                    zstd: None,
-                },
-            )
+            sha256_hex(&bytes) == sha256
         };
         if !hash_ok {
             return Err(BlobError::HashMismatch);
         }
 
-        if tokio::fs::metadata(&path).await.map_or(false, |m| m.is_file()) {
+        let shard_idx = shard_for_sha(sha256);
+        if self.shards[shard_idx].contains(sha256)
+            || tokio::fs::metadata(&path).await.map_or(false, |m| m.is_file())
+        {
             return Ok(PutOutcome::Exists);
         }
+
+        let should_precompress = precompress
+            && bytes.len() >= COMPRESS_MIN_BYTES
+            && bytes.len() <= PRECOMPRESS_MAX_BYTES
+            && !is_likely_incompressible(&bytes);
+
+        let variants = if should_precompress {
+            self.compress_pool.compress(bytes.clone()).await?
+        } else {
+            PrecompressedVariants {
+                gzip: None,
+                brotli: None,
+                zstd: None,
+            }
+        };
+
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -624,8 +678,9 @@ impl BlobStore {
         }
 
         let cached = CachedBlob::new(bytes, variants.gzip, variants.brotli, variants.zstd);
-        let shard_idx = shard_for_sha(sha256);
-        self.shards[shard_idx].insert(sha256.to_string(), cached);
+        if cached.accounted_bytes <= PUT_CACHE_WARM_MAX_BYTES {
+            self.shards[shard_idx].insert(sha256, cached);
+        }
         Ok(PutOutcome::Stored)
     }
 
@@ -710,21 +765,30 @@ impl BlobStore {
             return Err(BlobError::CorruptOnDisk);
         }
 
-        let gz_path = Self::sidecar_path(&path, ".gz");
-        let br_path = Self::sidecar_path(&path, ".br");
-        let zs_path = Self::sidecar_path(&path, ".zst");
-        let (gz_res, br_res, zs_res) = tokio::join!(
-            tokio::fs::read(&gz_path),
-            tokio::fs::read(&br_path),
-            tokio::fs::read(&zs_path),
-        );
-        let gzip = gz_res.ok().map(Bytes::from);
-        let brotli = br_res.ok().map(Bytes::from);
-        let zstd = zs_res.ok().map(Bytes::from);
+        let (gzip, brotli, zstd) = if raw.len() >= COMPRESS_MIN_BYTES
+            && raw.len() <= PRECOMPRESS_MAX_BYTES
+            && !is_likely_incompressible(&raw)
+        {
+            let gz_path = Self::sidecar_path(&path, ".gz");
+            let br_path = Self::sidecar_path(&path, ".br");
+            let zs_path = Self::sidecar_path(&path, ".zst");
+            let (gz_res, br_res, zs_res) = tokio::join!(
+                tokio::fs::read(&gz_path),
+                tokio::fs::read(&br_path),
+                tokio::fs::read(&zs_path),
+            );
+            (
+                gz_res.ok().map(Bytes::from),
+                br_res.ok().map(Bytes::from),
+                zs_res.ok().map(Bytes::from),
+            )
+        } else {
+            (None, None, None)
+        };
 
         let cached = CachedBlob::new(raw, gzip, brotli, zstd);
         let payload = cached.to_payload(accepted);
-        self.shards[shard_idx].insert(sha256.to_string(), cached.clone());
+        self.shards[shard_idx].insert(sha256, cached.clone());
         guard.finish(ReadResult::Ok(cached));
         Ok(payload)
     }
@@ -793,10 +857,13 @@ fn is_likely_incompressible(bytes: &[u8]) -> bool {
     false
 }
 
-fn precompress_all(raw: &[u8]) -> PrecompressedVariants {
+fn precompress_all_with_ctx(
+    raw: &[u8],
+    zstd_ctx: Option<&mut zstd::bulk::Compressor<'_>>,
+) -> PrecompressedVariants {
     let gzip = compress_gzip_if_smaller(raw);
     let brotli = compress_brotli_if_smaller(raw);
-    let zstd = compress_zstd_if_smaller(raw);
+    let zstd = compress_zstd_if_smaller(raw, zstd_ctx);
     PrecompressedVariants { gzip, brotli, zstd }
 }
 
@@ -811,10 +878,22 @@ fn compress_gzip_if_smaller(raw: &[u8]) -> Option<Bytes> {
     }
 }
 
+fn optimal_brotli_window(len: usize) -> u32 {
+    if len == 0 {
+        return 10;
+    }
+    let pow2 = len.checked_next_power_of_two().unwrap_or(1 << BROTLI_MAX_WINDOW);
+    pow2.trailing_zeros().clamp(10, BROTLI_MAX_WINDOW)
+}
+
 fn compress_brotli_if_smaller(raw: &[u8]) -> Option<Bytes> {
+    let mut params = brotli::enc::BrotliEncoderParams::default();
+    params.quality = BROTLI_QUALITY;
+    params.lgwin = optimal_brotli_window(raw.len()) as i32;
+    params.size_hint = raw.len();
     let mut out = Vec::new();
     {
-        let mut writer = brotli::CompressorWriter::new(&mut out, 4096, BROTLI_QUALITY, BROTLI_WINDOW);
+        let mut writer = brotli::CompressorWriter::with_params(&mut out, 4096, &params);
         writer.write_all(raw).ok()?;
     }
     if out.len() * 100 < raw.len() * 95 {
@@ -824,8 +903,14 @@ fn compress_brotli_if_smaller(raw: &[u8]) -> Option<Bytes> {
     }
 }
 
-fn compress_zstd_if_smaller(raw: &[u8]) -> Option<Bytes> {
-    let compressed = zstd::bulk::compress(raw, ZSTD_LEVEL).ok()?;
+fn compress_zstd_if_smaller(
+    raw: &[u8],
+    zstd_ctx: Option<&mut zstd::bulk::Compressor<'_>>,
+) -> Option<Bytes> {
+    let compressed = match zstd_ctx {
+        Some(ctx) => ctx.compress(raw).ok()?,
+        None => zstd::bulk::compress(raw, ZSTD_LEVEL).ok()?,
+    };
     if compressed.len() * 100 < raw.len() * 95 {
         Some(Bytes::from(compressed))
     } else {

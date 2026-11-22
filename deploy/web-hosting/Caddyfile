@@ -26,7 +26,11 @@ https:// {
 		issuer zerossl
 	}
 
-	encode zstd br gzip
+	encode {
+		zstd fastest
+		gzip 4
+		minimum_length 512
+	}
 
 	reverse_proxy unix//run/qorpera-web-router/public.sock {
 		header_up X-Forwarded-Host {http.request.host}

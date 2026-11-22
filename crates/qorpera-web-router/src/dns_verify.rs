@@ -453,22 +453,42 @@ pub async fn verify_domains_once(
         None
     };
 
+    struct SweepTargets {
+        servers: Vec<SocketAddr>,
+        expected_ipv4: Option<String>,
+        expected_ipv6: Option<String>,
+        expected_cname_target: Option<String>,
+    }
+
+    let targets = Arc::new(SweepTargets {
+        servers: dns_servers.to_vec(),
+        expected_ipv4,
+        expected_ipv6,
+        expected_cname_target,
+    });
     let sem = Arc::new(Semaphore::new(MAX_PARALLEL_DOMAIN_CHECKS));
-    let servers = Arc::new(dns_servers.to_vec());
-    let mut set = JoinSet::new();
+    let mut set: JoinSet<(DomainCheckOutcome, bool, bool)> = JoinSet::new();
+    let mut outcomes = Vec::with_capacity(domains.len());
+    let mut changed_batch = Vec::new();
 
     for domain in domains {
-        let permit_sem = Arc::clone(&sem);
-        let servers_ref = Arc::clone(&servers);
-        let exp_v4 = expected_ipv4.clone();
-        let exp_v6 = expected_ipv6.clone();
-        let exp_cname = expected_cname_target.clone();
-        let routes_ref = Arc::clone(routes);
+        let Ok(permit) = Arc::clone(&sem).acquire_owned().await else {
+            break;
+        };
+        while let Some(res) = set.try_join_next() {
+            if let Ok((outcome, verified, changed_in_memory)) = res {
+                if changed_in_memory {
+                    changed_batch.push((outcome.id.clone(), outcome.next_status, verified));
+                }
+                outcomes.push(outcome);
+            }
+        }
+        let targets_ref = Arc::clone(&targets);
         let db_ref = db_client.clone();
 
         set.spawn(async move {
-            let _permit = permit_sem.acquire_owned().await.ok()?;
-            let answers = resolve_domain_dns(&servers_ref, &domain.hostname, query_timeout).await;
+            let _permit = permit;
+            let answers = resolve_domain_dns(&targets_ref.servers, &domain.hostname, query_timeout).await;
             let require_txt = domain.is_apex
                 && matches!(
                     domain.status,
@@ -477,9 +497,9 @@ pub async fn verify_domains_once(
             let expectation = DnsExpectation {
                 hostname: domain.hostname.clone(),
                 is_apex: domain.is_apex,
-                expected_ipv4: exp_v4,
-                expected_ipv6: exp_v6,
-                expected_cname_target: exp_cname,
+                expected_ipv4: targets_ref.expected_ipv4.clone(),
+                expected_ipv6: targets_ref.expected_ipv6.clone(),
+                expected_cname_target: targets_ref.expected_cname_target.clone(),
                 verification_token: domain.verification_token.clone(),
                 require_txt,
             };
@@ -504,10 +524,6 @@ pub async fn verify_domains_once(
             } else {
                 Some(eval.reason.as_str())
             };
-
-            routes_ref.update(|table| {
-                table.update_domain_check(&domain.id, next_status, eval.verified);
-            });
 
             if let Some(ref client) = db_ref {
                 let res = tokio::time::timeout(
@@ -538,21 +554,40 @@ pub async fn verify_domains_once(
                 );
             }
 
-            Some(DomainCheckOutcome {
-                id: domain.id,
-                hostname: domain.hostname,
-                previous_status: domain.status,
-                next_status,
-                reason: eval.reason,
-            })
+            let next_misses = if eval.verified {
+                0
+            } else {
+                domain.consecutive_misses.saturating_add(1)
+            };
+            let changed_in_memory =
+                next_status != domain.status || next_misses != domain.consecutive_misses;
+
+            (
+                DomainCheckOutcome {
+                    id: domain.id,
+                    hostname: domain.hostname,
+                    previous_status: domain.status,
+                    next_status,
+                    reason: eval.reason,
+                },
+                eval.verified,
+                changed_in_memory,
+            )
         });
     }
 
-    let mut outcomes = Vec::new();
     while let Some(res) = set.join_next().await {
-        if let Ok(Some(outcome)) = res {
+        if let Ok((outcome, verified, changed_in_memory)) = res {
+            if changed_in_memory {
+                changed_batch.push((outcome.id.clone(), outcome.next_status, verified));
+            }
             outcomes.push(outcome);
         }
+    }
+    if !changed_batch.is_empty() {
+        routes.update(|table| {
+            table.update_domain_checks(&changed_batch);
+        });
     }
     outcomes
 }

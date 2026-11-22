@@ -26,6 +26,8 @@ ReadWritePaths=-/var/snap/lxd/common/lxd -/var/lib/lxd
 ProtectHome=yes
 PrivateTmp=yes
 LimitNOFILE=65536
+MemoryMax=512M
+TasksMax=512
 
 [Install]
 WantedBy=multi-user.target

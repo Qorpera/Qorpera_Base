@@ -32,6 +32,7 @@ CapabilityBoundingSet=
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LimitNOFILE=65536
 MemoryMax=1G
+TasksMax=512
 
 [Install]
 WantedBy=multi-user.target

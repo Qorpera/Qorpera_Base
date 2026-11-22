@@ -12,8 +12,24 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    let default_threads = std::thread::available_parallelism()
+        .map_or(2, |n| n.get().clamp(2, 4));
+    let worker_threads = env::var("QORPERA_APP_HOST_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(default_threads);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .max_blocking_threads(16)
+        .enable_all()
+        .build()
+        .expect("failed building tokio runtime");
+    rt.block_on(async_main());
+}
+
+async fn async_main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

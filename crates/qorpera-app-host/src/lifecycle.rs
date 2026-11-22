@@ -14,6 +14,7 @@ use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 
 const DEFAULT_DEEP_HIBERNATE_SEC: u64 = 3600;
+const MAX_STOPPED_HISTORY: usize = 128;
 const THAW_HEALTH_TIMEOUT: Duration = Duration::from_millis(1500);
 const THAW_HEALTH_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -284,22 +285,30 @@ impl AppLifecycleManager {
             } else {
                 let driver = Arc::clone(&self.driver);
                 let deployments = Arc::clone(&self.deployments);
+                let logs = Arc::clone(&self.logs);
                 let prev_lock = self.deployment_lock(&prev_id)?;
                 let delay = self.drain_delay;
                 tokio::spawn(async move {
                     tokio::time::sleep(delay).await;
                     let _guard = prev_lock.lock().await;
                     let _ = driver.stop(&prev_id).await;
-                    if let Ok(mut map) = deployments.lock() {
+                    let evicted = if let Ok(mut map) = deployments.lock() {
                         if let Some(entry) = map.get_mut(&prev_id) {
                             entry.handle = None;
                             entry.frozen_at_ms = None;
                             entry.state = InstanceState::Stopped;
                         }
+                        evict_old_stopped(&mut map)
+                    } else {
+                        Vec::new()
+                    };
+                    for id in evicted {
+                        logs.remove(&id);
                     }
                 });
             }
         }
+        self.prune_stopped_history();
 
         Ok(status)
     }
@@ -543,9 +552,36 @@ impl AppLifecycleManager {
 
     pub async fn stop_deployment(&self, deployment_id: &str) -> Result<(), String> {
         let dep_lock = self.deployment_lock(deployment_id)?;
-        let _dep_guard = dep_lock.lock().await;
-        self.stop_deployment_unlocked(deployment_id, InstanceState::Stopped)
-            .await
+        let res = {
+            let _dep_guard = dep_lock.lock().await;
+            self.stop_deployment_unlocked(deployment_id, InstanceState::Stopped)
+                .await
+        };
+        drop(dep_lock);
+        self.prune_stopped_history();
+        res
+    }
+
+    fn prune_stopped_history(&self) {
+        let evicted = if let Ok(mut map) = self.deployments.lock() {
+            evict_old_stopped(&mut map)
+        } else {
+            Vec::new()
+        };
+        for id in &evicted {
+            self.logs.remove(id);
+        }
+        if !evicted.is_empty() {
+            if let Ok(mut locks) = self.deployment_locks.lock() {
+                for id in &evicted {
+                    if let Some(lock) = locks.get(id) {
+                        if Arc::strong_count(lock) == 1 {
+                            locks.remove(id);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub async fn shutdown_all(&self) {
@@ -809,6 +845,26 @@ impl AppLifecycleManager {
     pub fn active_deployment_for_site(&self, site_id: &str) -> Option<String> {
         self.live_by_site.lock().ok()?.get(site_id).cloned()
     }
+}
+
+fn evict_old_stopped(map: &mut HashMap<String, ManagedDeployment>) -> Vec<String> {
+    let mut stopped: Vec<(String, u64)> = map
+        .iter()
+        .filter(|(_, d)| d.state == InstanceState::Stopped)
+        .map(|(id, d)| (id.clone(), d.started_at_ms.unwrap_or(0)))
+        .collect();
+    if stopped.len() <= MAX_STOPPED_HISTORY {
+        return Vec::new();
+    }
+    stopped.sort_by_key(|(_, ts)| *ts);
+    let drop_count = stopped.len() - MAX_STOPPED_HISTORY;
+    let mut evicted = Vec::with_capacity(drop_count);
+    for (id, _) in stopped.into_iter().take(drop_count) {
+        if map.remove(&id).is_some() {
+            evicted.push(id);
+        }
+    }
+    evicted
 }
 
 fn status_from_entry(dep: &ManagedDeployment) -> DeploymentStatus {

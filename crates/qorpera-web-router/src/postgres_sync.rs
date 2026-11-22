@@ -1,4 +1,5 @@
 use crate::routes::{EdgeSnapshot, SharedRoutes};
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -80,7 +81,8 @@ async fn run_sync_session(
     .map_err(|_| "listen timed out".to_string())?
     .map_err(|e| format!("listen failed: {e}"))?;
 
-    refresh_snapshot(&client, &routes).await?;
+    let mut last_snapshot_hash: Option<[u8; 32]> = None;
+    refresh_snapshot(&client, &routes, &mut last_snapshot_hash).await?;
     ready.store(true, Ordering::Release);
     info!("loaded initial web routing snapshot from postgres");
     if let Some(ref dtx) = domain_verify_tx {
@@ -103,7 +105,7 @@ async fn run_sync_session(
                         trigger_dns = true;
                     }
                 }
-                refresh_snapshot(&client, &routes).await?;
+                refresh_snapshot(&client, &routes, &mut last_snapshot_hash).await?;
                 if trigger_dns {
                     if let Some(ref dtx) = domain_verify_tx {
                         let _ = dtx.try_send(());
@@ -111,7 +113,7 @@ async fn run_sync_session(
                 }
             }
             _ = ticker.tick() => {
-                refresh_snapshot(&client, &routes).await?;
+                refresh_snapshot(&client, &routes, &mut last_snapshot_hash).await?;
             }
         }
     }
@@ -126,18 +128,24 @@ fn should_trigger_dns(payload: &str) -> bool {
 async fn refresh_snapshot(
     client: &tokio_postgres::Client,
     routes: &Arc<SharedRoutes>,
+    last_hash: &mut Option<[u8; 32]>,
 ) -> Result<(), String> {
     let row = tokio::time::timeout(
         DB_QUERY_TIMEOUT,
-        client.query_one("SELECT public.qorpera_web_edge_snapshot()", &[]),
+        client.query_one("SELECT public.qorpera_web_edge_snapshot()::text", &[]),
     )
     .await
     .map_err(|_| "snapshot query timed out".to_string())?
     .map_err(|e| format!("snapshot query failed: {e}"))?;
-    let json: serde_json::Value = row.get(0);
+    let raw_json: String = row.get(0);
+    let digest: [u8; 32] = Sha256::digest(raw_json.as_bytes()).into();
+    if last_hash.as_ref() == Some(&digest) {
+        return Ok(());
+    }
     let snapshot: EdgeSnapshot =
-        serde_json::from_value(json).map_err(|e| format!("snapshot parse failed: {e}"))?;
+        serde_json::from_str(&raw_json).map_err(|e| format!("snapshot parse failed: {e}"))?;
     routes.update(|table| table.apply_snapshot(snapshot));
+    *last_hash = Some(digest);
     Ok(())
 }
 
