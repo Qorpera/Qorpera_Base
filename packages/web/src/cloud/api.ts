@@ -975,26 +975,39 @@ export class CloudApi {
 	): Promise<CloudSecretReference> {
 		if (!value || value.length > 32 * 1024) throw new Error("The secret is empty or too long.");
 		const route = `${ticket.serviceOrigin}/v1/captures/${ticket.ticketId}?company=${ticket.companyId}`;
-		return withAbortScopes(
-			[signal],
-			async (captureSignal) => {
-				const response = await fetch(route, {
-					method: "POST",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify({
-						schema: "qorpera.cloud-secret-capture-request/v1",
-						captureCapability: ticket.captureCapability,
-						fields: { value },
-					}),
-					redirect: "error",
-					credentials: "omit",
-					signal: captureSignal,
-				});
-				if (!response.ok) throw new Error("The secret could not be saved. Try again in a moment.");
-				return parseSecretReference(await response.json());
-			},
-			SECRET_CAPTURE_TIMEOUT_MS,
-		);
+		try {
+			return await withAbortScopes(
+				[signal],
+				async (captureSignal) => {
+					const response = await fetch(route, {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							schema: "qorpera.cloud-secret-capture-request/v1",
+							captureCapability: ticket.captureCapability,
+							fields: { value },
+						}),
+						redirect: "error",
+						credentials: "omit",
+						signal: captureSignal,
+					});
+					if (!response.ok) throw new Error("The secret could not be saved. Try again in a moment.");
+					return parseSecretReference(await response.json());
+				},
+				SECRET_CAPTURE_TIMEOUT_MS,
+			);
+		} catch (error) {
+			if (
+				!signal?.aborted &&
+				typeof error === "object" &&
+				error !== null &&
+				"name" in error &&
+				error.name === "TimeoutError"
+			) {
+				throw new Error("The secret could not be saved. Try again in a moment.");
+			}
+			throw error;
+		}
 	}
 
 	/** Answer a typed card the agent raised (kernel bundle v70). Never a secret

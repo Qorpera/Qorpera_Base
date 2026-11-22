@@ -108,8 +108,14 @@ describe("secret capture", () => {
 			const caught = p2.catch((error: unknown) => error);
 			await vi.advanceTimersByTimeAsync(20_000);
 			const err = await caught;
-			expect(err).toBeInstanceOf(DOMException);
-			expect((err as DOMException).name).toBe("TimeoutError");
+			expect(err).toBeInstanceOf(Error);
+			expect((err as Error).message).toBe("The secret could not be saved. Try again in a moment.");
+
+			const callerTimeout = new AbortController();
+			const p3 = api.captureSecret(captured, "secret-value", callerTimeout.signal);
+			const callerTimeoutErr = new DOMException("caller timed out", "TimeoutError");
+			callerTimeout.abort(callerTimeoutErr);
+			await expect(p3).rejects.toBe(callerTimeoutErr);
 
 			const rpcSignal = new AbortController().signal;
 			vi.mocked(cloud.rpc).mockResolvedValueOnce({ items: [], nextCursor: null } as never);

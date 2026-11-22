@@ -2595,5 +2595,54 @@ describe("AppBridge database actions (qorpera.act)", () => {
 		expect(third).toHaveLength(20);
 		expect(readManySpy).toHaveBeenCalledTimes(1);
 		expect(readSpy).toHaveBeenCalledTimes(1);
+
+		const updatedFiles = { ...files, "apps/app-00/app.toml": 'name = "App 0 Updated"\nentry = "index.html"\n' };
+		const updatedBase = fakeFolder(updatedFiles);
+		let updatedReadFileCalls = 0;
+		const updatedFolder = {
+			...updatedBase,
+			read: async (path: string, sig: AbortSignal) => {
+				const answer = await updatedBase.read(path, sig);
+				if (path === "apps/app-00/app.toml" && answer.entry) {
+					return {
+						...answer,
+						entry: { ...answer.entry, version: "00000000-0000-4000-8000-000000000099" },
+					};
+				}
+				return answer;
+			},
+			readFile: async (...args: Parameters<typeof updatedBase.readFile>) => {
+				updatedReadFileCalls += 1;
+				return updatedBase.readFile(...args);
+			},
+		};
+		const fourth = await readApps(updatedFolder as never, signal, third);
+		expect(fourth).toHaveLength(20);
+		expect(updatedReadFileCalls).toBe(1);
+		expect(fourth.find((item) => item.name === "app-00")?.manifest?.name).toBe("App 0 Updated");
+		expect(fourth.find((item) => item.name === "app-01")?.manifest?.name).toBe("App 1");
+
+		const readMany404 = vi.fn(async () => {
+			throw new CloudMemberFolderError("Company folder is unavailable (404)", 404);
+		});
+		const read404Spy = vi.fn(base.read.bind(base));
+		const folder404 = { ...base, read: read404Spy, readMany: readMany404 };
+		const after404 = await readApps(folder404 as never, signal);
+		expect(after404).toHaveLength(20);
+		expect(readMany404).toHaveBeenCalledTimes(1);
+		expect(read404Spy).toHaveBeenCalledTimes(21);
+		const after404Again = await readApps(folder404 as never, signal, after404);
+		expect(after404Again).toHaveLength(20);
+		expect(readMany404).toHaveBeenCalledTimes(1);
+
+		const readMany503 = vi.fn(async () => {
+			throw new CloudMemberFolderError("Company folder is unavailable (503)", 503);
+		});
+		const folder503 = { ...base, read: vi.fn(base.read.bind(base)), readMany: readMany503 };
+		const after503 = await readApps(folder503 as never, signal);
+		expect(after503).toHaveLength(20);
+		expect(readMany503).toHaveBeenCalledTimes(1);
+		await readApps(folder503 as never, signal, after503);
+		expect(readMany503).toHaveBeenCalledTimes(2);
 	});
 });
