@@ -79,4 +79,77 @@ describe("a cloud that never answers", () => {
 		expect(error).not.toBeNull();
 		expect(connectionLost(new CloudRpcError("qorpera_list_hosted_profiles", error!, 0))).toBe(false);
 	});
+
+	it("times out a database response that stalls mid-body after headers arrive", async () => {
+		vi.useFakeTimers();
+		let canceled = false;
+		vi.stubGlobal("fetch", () => {
+			const body = new ReadableStream<Uint8Array>({
+				cancel() {
+					canceled = true;
+				},
+			});
+			return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "application/json" } }));
+		});
+		const cloud = createCloud({
+			projectUrl: "https://stall.example.invalid",
+			publishableKey: "sb_publishable_fixture123",
+			objectGatewayUrl: "https://objects.example.invalid",
+		});
+		clouds.push(cloud);
+		let outcome: unknown;
+		void cloud.rpc("qorpera_list_hosted_profiles").then(
+			() => {
+				outcome = "answered";
+			},
+			(error: unknown) => {
+				outcome = error;
+			},
+		);
+		await vi.advanceTimersByTimeAsync(DATABASE_ANSWER_MS - 1);
+		expect(outcome).toBeUndefined();
+		await vi.advanceTimersByTimeAsync(1);
+		expect(canceled).toBe(true);
+		expect(outcome).toBeInstanceOf(CloudRpcError);
+		expect(connectionLost(outcome)).toBe(true);
+	});
+
+	it("aborts a database response streaming mid-body when the caller signal aborts", async () => {
+		let canceled = false;
+		vi.stubGlobal("fetch", () => {
+			const body = new ReadableStream<Uint8Array>({
+				cancel() {
+					canceled = true;
+				},
+			});
+			return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "application/json" } }));
+		});
+		const cloud = createCloud({
+			projectUrl: "https://abort-body.example.invalid",
+			publishableKey: "sb_publishable_fixture123",
+			objectGatewayUrl: "https://objects.example.invalid",
+		});
+		clouds.push(cloud);
+		const stop = new AbortController();
+		const pending = cloud.rpc("qorpera_list_hosted_profiles", {}, stop.signal);
+		await Promise.resolve();
+		await Promise.resolve();
+		stop.abort(new DOMException("Cancelled", "AbortError"));
+		await expect(pending).rejects.toBeInstanceOf(CloudRpcError);
+		expect(canceled).toBe(true);
+	});
+
+	it("bounds stalled /auth/v1/ fetches so token refresh cannot hold auth locks indefinitely", async () => {
+		vi.useFakeTimers();
+		const { cloud, asked } = silentCloud();
+		let settled = false;
+		void cloud.supabase.auth.getUser("stale-access-token").finally(() => {
+			settled = true;
+		});
+		await vi.advanceTimersByTimeAsync(DATABASE_ANSWER_MS - 1);
+		expect(asked).toContain("https://silent.example.invalid/auth/v1/user");
+		expect(settled).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(settled).toBe(true);
+	});
 });

@@ -4,8 +4,8 @@ import { CompanyController } from "../src/app/company.ts";
 import { DraftSync } from "../src/app/room-drafts.ts";
 import { tellAgent } from "../src/app/tell-agent.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
-import { CloudRpcError } from "../src/cloud/client.ts";
-import type { RoomDraft, RoomDraftWrite } from "../src/cloud/room-drafts.ts";
+import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
+import { type RoomDraft, type RoomDraftWrite, subscribeRoomDrafts } from "../src/cloud/room-drafts.ts";
 import type { HostedProfileMember, HostedSession } from "../src/cloud/types.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
 import { accountsFake } from "./mail-fixtures.ts";
@@ -724,5 +724,28 @@ describe("an app's note waiting in the member's own shared draft", () => {
 		expect([state.answering, state.draft]).toEqual(["app:orders#1043 · Lund", "Earlier words\n\nGet a quote."]);
 		await vi.advanceTimersByTimeAsync(310);
 		expect(put.mock.calls.at(-1)?.[3]).toBe("> app:orders#1043 · Lund\n\nEarlier words\n\nGet a quote.");
+	});
+
+	it("bounds subscribeRoomDrafts stop() when removeChannel hangs on a dropped socket", async () => {
+		const channel = {
+			on: vi.fn().mockReturnThis(),
+			subscribe: vi.fn(),
+		};
+		const cloud = {
+			supabase: {
+				channel: vi.fn(() => channel),
+				removeChannel: vi.fn(() => new Promise(() => {})),
+			},
+		} as unknown as Cloud;
+		const subscription = subscribeRoomDrafts(cloud, roomId, vi.fn(), vi.fn());
+		let stopped = false;
+		const done = subscription.stop().then(() => {
+			stopped = true;
+		});
+		await vi.advanceTimersByTimeAsync(1_999);
+		expect(stopped).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
+		await done;
+		expect(stopped).toBe(true);
 	});
 });

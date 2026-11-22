@@ -331,4 +331,27 @@ describe("a founding table's live presence", () => {
 		await until(() => last(annaTab.health) === "connected", "reconnected after removal");
 		expect(annaTab.cloud.supabase.channel).toHaveBeenCalledTimes(2);
 	});
+
+	it("bounds a hung removeChannel so reconnect and stop do not deadlock", async () => {
+		vi.useFakeTimers();
+		const hub = new Hub();
+		hub.refuseJoin = true;
+		const annaTab = open(hub, anna);
+		const removeSpy = vi.mocked(annaTab.cloud.supabase.removeChannel);
+		removeSpy.mockImplementation(() => new Promise(() => {}));
+		await until(() => last(annaTab.health) === "degraded", "initial failed join");
+		hub.refuseJoin = false;
+		await vi.advanceTimersByTimeAsync(2_100);
+		await until(() => last(annaTab.health) === "connected", "reconnected despite hung removeChannel");
+		expect(annaTab.cloud.supabase.channel).toHaveBeenCalledTimes(2);
+
+		let stopped = false;
+		const stopping = annaTab.handle.stop().then(() => {
+			stopped = true;
+		});
+		await vi.advanceTimersByTimeAsync(2_100);
+		await stopping;
+		expect(stopped).toBe(true);
+		expect(last(annaTab.health)).toBe("stopped");
+	});
 });

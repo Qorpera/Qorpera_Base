@@ -113,6 +113,8 @@ export interface RoomDraftSubscription {
 	stop(): Promise<void>;
 }
 
+const LEAVE_WAIT_MS = 2_000;
+
 /** The room's private draft topic. Members receive it; only the cloud publishes,
  * so a change carries the editor the cloud named. Lossy: a missed change is
  * recovered by the next listing or by a write that comes back stale. */
@@ -140,7 +142,18 @@ export function subscribeRoomDrafts(
 	});
 	return {
 		async stop() {
-			await cloud.supabase.removeChannel(channel);
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				// WHY: Bound removeChannel so a dropped Realtime socket cannot deadlock room draft reopening.
+				await Promise.race([
+					cloud.supabase.removeChannel(channel).catch(() => undefined),
+					new Promise<void>((resolve) => {
+						timer = setTimeout(resolve, LEAVE_WAIT_MS);
+					}),
+				]);
+			} finally {
+				clearTimeout(timer);
+			}
 		},
 	};
 }
