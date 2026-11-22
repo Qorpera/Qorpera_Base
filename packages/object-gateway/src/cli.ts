@@ -351,10 +351,11 @@ if (process.argv[2] === "migrate") {
 			clearInterval(memoryErasures);
 			clearInterval(companyCreations);
 			stopGateway({
-				close: (done) => {
-					authority.close();
-					server.close(done);
-				},
+				close: (done) =>
+					server.close(() => {
+						authority.close();
+						done();
+					}),
 				flush: () => replication.flushStoredLines(),
 				say: (line) => process.stderr.write(line),
 				exit: (code) => process.exit(code),

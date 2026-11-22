@@ -39,7 +39,7 @@ export function resolveObjectStoreLanes(environment: NodeJS.ProcessEnv): number 
 		const available = poolSize - MIN_RESERVED_WORKERS;
 		if (available < 1)
 			throw new Error(
-				`QORPERA_OBJECT_GATEWAY_NAS_LANES=1 requires UV_THREADPOOL_SIZE>=${1 + MIN_RESERVED_WORKERS} to reserve workers for the journal`,
+				`UV_THREADPOOL_SIZE=${poolSize} requires UV_THREADPOOL_SIZE>=${1 + MIN_RESERVED_WORKERS} to reserve workers for the journal`,
 			);
 		lanes = Math.min(DEFAULT_LANES, available);
 	}

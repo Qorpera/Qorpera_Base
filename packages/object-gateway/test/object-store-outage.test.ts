@@ -207,7 +207,9 @@ describe("bounded NAS filesystem operations", () => {
 		expect(() => resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "8", QORPERA_OBJECT_GATEWAY_NAS_LANES: "7" })).toThrow(
 			"UV_THREADPOOL_SIZE>=9",
 		);
-		expect(() => resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "2" })).toThrow("UV_THREADPOOL_SIZE>=3");
+		expect(() => resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "2" })).toThrow(
+			"UV_THREADPOOL_SIZE=2 requires UV_THREADPOOL_SIZE>=3",
+		);
 		expect(() => resolveObjectStoreLanes({ UV_THREADPOOL_SIZE: "1", QORPERA_OBJECT_GATEWAY_NAS_LANES: "2" })).toThrow(
 			"UV_THREADPOOL_SIZE>=4",
 		);

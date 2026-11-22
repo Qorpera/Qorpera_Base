@@ -3821,20 +3821,9 @@ export class FolderService {
 			view.heard = "answered";
 			return { commitId: null, seq: null, paths: [...entries, ...dropped] };
 		}
-		const batches = planCommitBatches(plan.units);
+		const batches = final ? [] : planCommitBatches(plan.units);
 		if (batches.length > 1)
-			return await this.#commitBatches(
-				view,
-				pending,
-				plan,
-				batches,
-				credited,
-				entries,
-				dropped,
-				final,
-				last,
-				unasked,
-			);
+			return await this.#commitBatches(view, pending, plan, batches, credited, entries, dropped, last, unasked);
 		const structured = await this.#structured(
 			view,
 			plan.units.map((u) => u.unit),
@@ -3893,7 +3882,6 @@ export class FolderService {
 		credited: readonly (readonly string[] | undefined)[],
 		entries: ReportEntry[],
 		dropped: readonly ReportEntry[],
-		final: boolean,
 		last: boolean,
 		unasked: boolean,
 	): Promise<Report> {
@@ -3929,9 +3917,11 @@ export class FolderService {
 		const committedSaved = new Set<string>();
 		const committedWritten = new Map<string, string>();
 		const committedChangeSetSeqs: number[] = [];
+		let committedSettled = false;
 
 		const settleCommitted = async (): Promise<void> => {
-			if (committedUnits.length === 0) return;
+			if (committedUnits.length === 0 || committedSettled) return;
+			committedSettled = true;
 			const settleKeep = new Set<string>(keptNodes);
 			for (const path of remainingKeep.keys()) settleKeep.add(path);
 			const settleRemovals = new Set<string>(plan.removals);
@@ -3967,107 +3957,109 @@ export class FolderService {
 			return out;
 		};
 
-		for (let i = 0; i < runCount; i++) {
-			if (i > 0) {
-				if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
-				if (view.unproven) {
-					await settleCommitted();
-					view.heard = "refused";
-					const laterRefused = remainingEntries(i, "refused", "unproven");
-					this.#notice(view, unasked, { commitId: null, seq: null, refused: "unproven", paths: laterRefused });
-					return {
-						commitId: null,
-						seq: null,
-						refused: "unproven",
-						paths: [...entries, ...laterRefused],
-					};
-				}
-			}
-
-			const batch = batches[i]!;
-			const offset = unitOffset;
-			unitOffset += batch.length;
-			const batchKey = i === 0 ? baseKey : `${baseKey}:b${i}`;
-			const isFinalBatch = final && i === batches.length - 1;
-
-			const structured = await this.#structured(
-				view,
-				batch.map((u) => u.unit),
-			);
-			const units = structured.map((unit, j): CreditedUnit => {
-				const credits = credited[offset + j];
-				return credits ? { ...unit, credits } : unit;
-			});
-			const batchMade = new Map<string, string>();
-			for (const u of batch)
-				if (u.bytes)
-					for (const path of u.paths) {
-						const node = pending.nodes().get(path);
-						if (node?.kind === "file" || node?.kind === "symlink") batchMade.set(path, node.version);
+		try {
+			for (let i = 0; i < runCount; i++) {
+				if (i > 0) {
+					if (view.closed) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+					if (view.unproven) {
+						await settleCommitted();
+						view.heard = "refused";
+						const laterRefused = remainingEntries(i, "refused", "unproven");
+						this.#notice(view, unasked, { commitId: null, seq: null, refused: "unproven", paths: laterRefused });
+						return {
+							commitId: null,
+							seq: null,
+							refused: "unproven",
+							paths: [...entries, ...laterRefused],
+						};
 					}
+				}
 
-			view.askingFinal = isFinalBatch;
-			let answer: Answer | undefined;
-			try {
-				answer = await this.#commit(view, actor, batchKey, units, isFinalBatch);
-			} finally {
-				view.askingFinal = false;
-			}
-			view.heard = heardOf(answer);
+				const batch = batches[i]!;
+				const offset = unitOffset;
+				unitOffset += batch.length;
+				const batchKey = i === 0 ? baseKey : `${baseKey}:b${i}`;
 
-			if (!answer) {
-				await settleCommitted();
-				decrementBatch(batch);
-				const unansweredKeep = new Set<string>(keptNodes);
-				for (const path of remainingKeep.keys()) unansweredKeep.add(path);
-				const unansweredRemovals = new Set<string>(plan.removals);
-				for (const path of remainingRemovals.keys()) unansweredRemovals.add(path);
-				const batchPlan: BoundaryPlan = {
-					units: batch,
-					waiting: [],
-					dropped: i === 0 ? plan.dropped : [],
-					keep: unansweredKeep,
-					removals: unansweredRemovals,
-					refused: [],
-					gitHeld: plan.gitHeld,
-				};
-				view.unanswered = { key: batchKey, actor, units, plan: batchPlan, made: batchMade, final: isFinalBatch };
-				return {
-					commitId: lastCommitId,
-					seq: lastSeq,
-					paths: [
-						...entries,
-						...(i === 0 ? dropped : []),
-						...notYet(batchPlan),
-						...remainingEntries(i + 1, "not_applied", "the save did not get through yet"),
-					],
-				};
-			}
-
-			if (isFinalBatch && answer.commitId) {
-				const finalPlan: BoundaryPlan = {
-					units: batch,
-					waiting: [],
-					dropped: i === 0 ? plan.dropped : [],
-					keep: new Set(),
-					removals: new Set(),
-					refused: [],
-					gitHeld: plan.gitHeld,
-				};
-				return this.#notice(
+				const structured = await this.#structured(
 					view,
-					unasked,
-					await this.#closedBy(view, finalPlan, answer, [...entries, ...(i === 0 ? dropped : [])]),
+					batch.map((u) => u.unit),
 				);
-			}
-			if (isFinalBatch && view.closed) throw this.#closedOtherwise(view);
+				const units = structured.map((unit, j): CreditedUnit => {
+					const credits = credited[offset + j];
+					return credits ? { ...unit, credits } : unit;
+				});
+				const batchMade = new Map<string, string>();
+				for (const u of batch)
+					if (u.bytes)
+						for (const path of u.paths) {
+							const node = pending.nodes().get(path);
+							if (node?.kind === "file" || node?.kind === "symlink") batchMade.set(path, node.version);
+						}
 
-			if (answer.refused) {
-				if (answer.said === VIEW_ENDED) this.#close(view, VIEW_ENDED);
-				if (holds(view, answer, last)) {
-					if (!view.closed) await settleCommitted();
+				const answer = await this.#commit(view, actor, batchKey, units, false);
+				view.heard = heardOf(answer);
+
+				if (!answer) {
+					await settleCommitted();
+					decrementBatch(batch);
+					const unansweredKeep = new Set<string>(keptNodes);
+					for (const path of remainingKeep.keys()) unansweredKeep.add(path);
+					const unansweredRemovals = new Set<string>(plan.removals);
+					for (const path of remainingRemovals.keys()) unansweredRemovals.add(path);
 					const batchPlan: BoundaryPlan = {
 						units: batch,
+						waiting: [],
+						dropped: i === 0 ? plan.dropped : [],
+						keep: unansweredKeep,
+						removals: unansweredRemovals,
+						refused: [],
+						gitHeld: plan.gitHeld,
+					};
+					view.unanswered = { key: batchKey, actor, units, plan: batchPlan, made: batchMade, final: false };
+					return {
+						commitId: lastCommitId,
+						seq: lastSeq,
+						paths: [
+							...entries,
+							...(i === 0 ? dropped : []),
+							...notYet(batchPlan),
+							...remainingEntries(i + 1, "not_applied", "the save did not get through yet"),
+						],
+					};
+				}
+
+				if (answer.refused) {
+					if (answer.said === VIEW_ENDED) this.#close(view, VIEW_ENDED);
+					if (holds(view, answer, last)) {
+						if (!view.closed) await settleCommitted();
+						const batchPlan: BoundaryPlan = {
+							units: batch,
+							waiting: [],
+							dropped: i === 0 ? plan.dropped : [],
+							keep: keptNodes,
+							removals: plan.removals,
+							refused: [],
+							gitHeld: plan.gitHeld,
+						};
+						const batchHeld = held(batchPlan, (idx) => ({ outcome: "refused", reason: answer.units[idx]?.reason }));
+						const laterRefused = remainingEntries(i + 1, "refused", answer.refused);
+						this.#notice(view, unasked, {
+							commitId: null,
+							seq: null,
+							refused: answer.refused,
+							paths: [...batchHeld, ...laterRefused],
+						});
+						return {
+							commitId: null,
+							seq: null,
+							refused: answer.refused,
+							paths: [...entries, ...batchHeld, ...laterRefused],
+						};
+					}
+					if (!view.closed) await settleCommitted();
+					const remainingUnits = batches.slice(i).flat();
+					const remainingPlan: BoundaryPlan = {
+						units: remainingUnits,
 						waiting: [],
 						dropped: i === 0 ? plan.dropped : [],
 						keep: keptNodes,
@@ -4075,130 +4067,107 @@ export class FolderService {
 						refused: [],
 						gitHeld: plan.gitHeld,
 					};
-					const batchHeld = held(batchPlan, (idx) => ({ outcome: "refused", reason: answer.units[idx]?.reason }));
-					const laterRefused = remainingEntries(i + 1, "refused", answer.refused);
+					const remainingAnswer: CommitAnswer = {
+						commitId: "",
+						seq: null,
+						units: remainingUnits.map((_, idx) => ({
+							unit: idx + 1,
+							outcome: "refused",
+							reason: answer.refused!,
+							version: null,
+						})),
+					};
+					let settledRefusal: ReportEntry[];
+					if (view.unsettled) {
+						const { entries: refusedEntries, keep: refusedKeep } = await this.#outcomes(
+							view,
+							remainingPlan,
+							remainingAnswer,
+						);
+						const prior = view.unsettled;
+						view.unsettled = {
+							...prior,
+							plan: {
+								...prior.plan,
+								units: [...prior.plan.units, ...remainingUnits],
+								keep: refusedKeep,
+								removals: plan.removals,
+							},
+							keep: refusedKeep,
+						};
+						settledRefusal = refusedEntries;
+					} else {
+						settledRefusal = await this.#settle(view, remainingPlan, new Map(), remainingAnswer);
+					}
+					const batchPaths = [...(i === 0 ? dropped : []), ...settledRefusal];
 					this.#notice(view, unasked, {
 						commitId: null,
 						seq: null,
 						refused: answer.refused,
-						paths: [...batchHeld, ...laterRefused],
+						paths: batchPaths,
 					});
-					return {
-						commitId: null,
-						seq: null,
-						refused: answer.refused,
-						paths: [...entries, ...batchHeld, ...laterRefused],
-					};
+					entries.push(...batchPaths);
+					return { commitId: null, seq: null, refused: answer.refused, paths: entries };
 				}
-				if (!view.closed) await settleCommitted();
-				const remainingUnits = batches.slice(i).flat();
-				const remainingPlan: BoundaryPlan = {
-					units: remainingUnits,
+
+				decrementBatch(batch);
+				const batchPlan: BoundaryPlan = {
+					units: batch,
 					waiting: [],
-					dropped: i === 0 ? plan.dropped : [],
-					keep: keptNodes,
-					removals: plan.removals,
+					dropped: [],
+					keep: new Set(),
+					removals: new Set(),
 					refused: [],
 					gitHeld: plan.gitHeld,
 				};
-				const remainingAnswer: CommitAnswer = {
-					commitId: "",
-					seq: null,
-					units: remainingUnits.map((_, idx) => ({
-						unit: idx + 1,
-						outcome: "refused",
-						reason: answer.refused!,
-						version: null,
-					})),
-				};
-				let settledRefusal: ReportEntry[];
-				if (view.unsettled) {
-					const { entries: refusedEntries, keep: refusedKeep } = await this.#outcomes(
-						view,
-						remainingPlan,
-						remainingAnswer,
-					);
-					const prior = view.unsettled;
-					view.unsettled = {
-						...prior,
-						plan: {
-							...prior.plan,
-							units: [...prior.plan.units, ...remainingUnits],
-							keep: refusedKeep,
-							removals: plan.removals,
-						},
-						keep: refusedKeep,
-					};
-					settledRefusal = refusedEntries;
-				} else {
-					settledRefusal = await this.#settle(view, remainingPlan, new Map(), remainingAnswer);
-				}
-				const batchPaths = [...(i === 0 ? dropped : []), ...settledRefusal];
-				this.#notice(view, unasked, {
-					commitId: null,
-					seq: null,
-					refused: answer.refused,
-					paths: batchPaths,
-				});
+				const {
+					entries: batchEntries,
+					keep: batchKept,
+					saved: batchSaved,
+				} = await this.#outcomes(view, batchPlan, answer);
+				const batchPaths = [...(i === 0 ? dropped : []), ...batchEntries];
+				this.#notice(view, unasked, { ...committed(answer), paths: batchPaths });
 				entries.push(...batchPaths);
-				return { commitId: null, seq: null, refused: answer.refused, paths: entries };
+				for (const path of batchKept) keptNodes.add(path);
+				for (const path of batchSaved) committedSaved.add(path);
+				for (const [path, version] of batchMade) committedMade.set(path, version);
+				let batchNeedsChangeSet = false;
+				batch.forEach((planned, idx) => {
+					const outcome = answer.units[idx];
+					const op = planned.unit.op;
+					if ((op === "write" || op === "symlink") && outcome?.outcome === "saved" && outcome.version)
+						committedWritten.set(planned.unit.path, outcome.version);
+					if (op === "move" && outcome?.outcome === "saved") batchNeedsChangeSet = true;
+				});
+				if (!batchNeedsChangeSet && answer.seq !== null)
+					for (const path of batchMade.keys())
+						if (batchSaved.has(path) && !committedWritten.has(path)) {
+							batchNeedsChangeSet = true;
+							break;
+						}
+				if (batchNeedsChangeSet && answer.seq !== null) committedChangeSetSeqs.push(answer.seq);
+				committedUnits.push(...batch);
+				committedOutcomes.push(...answer.units);
+				lastCommitId = answer.commitId || lastCommitId;
+				if (answer.seq !== null) lastSeq = answer.seq;
 			}
 
-			decrementBatch(batch);
-			const batchPlan: BoundaryPlan = {
-				units: batch,
-				waiting: [],
-				dropped: [],
-				keep: new Set(),
-				removals: new Set(),
-				refused: [],
-				gitHeld: plan.gitHeld,
-			};
-			const {
-				entries: batchEntries,
-				keep: batchKept,
-				saved: batchSaved,
-			} = await this.#outcomes(view, batchPlan, answer);
-			const batchPaths = [...(i === 0 ? dropped : []), ...batchEntries];
-			this.#notice(view, unasked, { ...committed(answer), paths: batchPaths });
-			entries.push(...batchPaths);
-			for (const path of batchKept) keptNodes.add(path);
-			for (const path of batchSaved) committedSaved.add(path);
-			for (const [path, version] of batchMade) committedMade.set(path, version);
-			let batchNeedsChangeSet = false;
-			batch.forEach((planned, idx) => {
-				const outcome = answer.units[idx];
-				const op = planned.unit.op;
-				if ((op === "write" || op === "symlink") && outcome?.outcome === "saved" && outcome.version)
-					committedWritten.set(planned.unit.path, outcome.version);
-				if (op === "move" && outcome?.outcome === "saved") batchNeedsChangeSet = true;
-			});
-			if (!batchNeedsChangeSet && answer.seq !== null)
-				for (const path of batchMade.keys())
-					if (batchSaved.has(path) && !committedWritten.has(path)) {
-						batchNeedsChangeSet = true;
-						break;
-					}
-			if (batchNeedsChangeSet && answer.seq !== null) committedChangeSetSeqs.push(answer.seq);
-			committedUnits.push(...batch);
-			committedOutcomes.push(...answer.units);
-			lastCommitId = answer.commitId || lastCommitId;
-			if (answer.seq !== null) lastSeq = answer.seq;
+			await settleCommitted();
+			if (runCount < batches.length) {
+				view.heard = "open";
+				entries.push(
+					...remainingEntries(
+						runCount,
+						"not_applied",
+						"the boundary split reached its batch limit; remaining changes stay pending",
+					),
+				);
+				return { commitId: null, seq: null, paths: entries };
+			}
+			return { commitId: lastCommitId, seq: lastSeq, paths: entries };
+		} finally {
+			if (!committedSettled && !view.closed && committedUnits.length > 0) await settleCommitted();
 		}
-
-		await settleCommitted();
-		if (runCount < batches.length) {
-			view.heard = "open";
-			entries.push(
-				...remainingEntries(
-					runCount,
-					"not_applied",
-					"the boundary split reached its batch limit; remaining changes stay pending",
-				),
-			);
-			return { commitId: null, seq: null, paths: entries };
-		}
-		return { commitId: lastCommitId, seq: lastSeq, paths: entries };
 	}
 
 	// ---- The read log (protocol 3, F3 4c; RUNTIME-FOLDER-COMPANY-MACHINES.md, "Reads") ----------------------------------

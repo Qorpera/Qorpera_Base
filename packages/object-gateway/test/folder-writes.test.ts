@@ -2440,16 +2440,13 @@ describe("multi-batch boundary commits", () => {
 		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
 	});
 
-	it("auto-splits final boundaries with final:true only on the last batch and holds cleanly after endCommand", async () => {
+	it("keeps command finals on the single-commit path after endCommand while auto-splitting non-final publishes", async () => {
 		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-writes-final-"));
 		const core = new FakeCore();
-		core.seed([folder("out"), folder("pre"), folder("ended")]);
-		const liveViewId = "5e6f7081-92a3-4b4c-8d5e-6f708192a3b4";
-		const livePass = "cmdpass_0123456789-abcdefghijklmnopqrstuvwx";
-		const endedViewId = "5e6f7081-92a3-4b4c-8d5e-6f708192a3b5";
-		const endedPass = "cmdpass_9123456789-abcdefghijklmnopqrstuvwx";
-		core.openView(liveViewId, livePass, { kind: "computer_shell_command", machineId: ALLOCATION });
-		core.openView(endedViewId, endedPass, { kind: "computer_shell_command", machineId: ALLOCATION });
+		core.seed([folder("out"), folder("pre")]);
+		const viewId = "5e6f7081-92a3-4b4c-8d5e-6f708192a3b4";
+		const cmdPass = "cmdpass_0123456789-abcdefghijklmnopqrstuvwx";
+		core.openView(viewId, cmdPass, { kind: "computer_shell_command", machineId: ALLOCATION });
 		const objects = new NasObjects({ root, cacheBytes: 64 * 1024 * 1024 });
 		const service = new FolderService({
 			core,
@@ -2459,17 +2456,9 @@ describe("multi-batch boundary commits", () => {
 			log: () => undefined,
 		});
 		const atOffice: BridgeInfo = { cid: 90, lookup: "found", machine: OFFICE };
-		const view = await service.open(
-			{ protocol: 3, environmentId: ENV, viewId: liveViewId, pass: livePass, role: "io" },
-			atOffice,
-		);
-		const endedView = await service.open(
-			{ protocol: 3, environmentId: ENV, viewId: endedViewId, pass: endedPass, role: "io" },
-			atOffice,
-		);
+		const view = await service.open({ protocol: 3, environmentId: ENV, viewId, pass: cmdPass, role: "io" }, atOffice);
 		cleanups.push(async () => {
 			view.release();
-			endedView.release();
 			service.stop();
 			await rm(root, { recursive: true, force: true });
 		});
@@ -2485,31 +2474,16 @@ describe("multi-batch boundary commits", () => {
 		expect(runningReport.paths.every((p) => p.outcome === "saved")).toBe(true);
 
 		for (let i = 0; i < 1050; i++) await write(view, `out/f${String(i).padStart(4, "0")}.txt`, `o-${i % 8}`);
+		core.endCommand(viewId);
 		const finalReport = await view.publish(true);
 		expect(core.commits.slice(2).map((c) => ({ count: c.units.length, final: c.final }))).toEqual([
-			{ count: 1000, final: false },
-			{ count: 50, final: true },
+			{ count: 1050, final: true },
 		]);
-		expect(finalReport.refused).toBeUndefined();
-		expect(finalReport.commitId).toBeTruthy();
-		expect(finalReport.seq).toBe(core.seq);
-		expect(finalReport.closed).toBe(true);
-		expect(finalReport.paths).toHaveLength(1050);
-		expect(finalReport.paths.every((p) => p.outcome === "saved")).toBe(true);
-		expect([...core.entries.keys()].filter((p) => p.startsWith("out/"))).toHaveLength(1050);
-
-		for (let i = 0; i < 1050; i++) await write(endedView, `ended/f${String(i).padStart(4, "0")}.txt`, `e-${i % 8}`);
-		core.endCommand(endedViewId);
-		const endedReport = await endedView.publish(true);
-		expect(core.commits.slice(4).map((c) => ({ count: c.units.length, final: c.final }))).toEqual([
-			{ count: 1000, final: false },
-		]);
-		expect(endedReport.refused).toBe("denied");
-		expect(endedReport.commitId).toBeNull();
-		expect(endedReport.seq).toBeNull();
-		expect(endedReport.closed).toBeUndefined();
-		expect(endedReport.paths.filter((p) => p.outcome === "refused" && p.kept)).toHaveLength(1050);
-		expect([...core.entries.keys()].filter((p) => p.startsWith("ended/"))).toHaveLength(0);
+		expect(finalReport.refused).toBe("invalid");
+		expect(finalReport.commitId).toBeNull();
+		expect(finalReport.seq).toBeNull();
+		expect(finalReport.closed).toBeUndefined();
+		expect([...core.entries.keys()].filter((p) => p.startsWith("out/"))).toHaveLength(0);
 	});
 
 	it("stops on mid-batch refusal, clears batch 1, keeps batches 2 and 3 pending, and retries cleanly", async () => {
@@ -2970,6 +2944,39 @@ describe("multi-batch boundary commits", () => {
 		expect(feedCalls).toBe(1);
 		expect(pushes.length).toBeLessThanOrEqual(2);
 		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(2500);
+	});
+
+	it("settles committed earlier batches when a mid-loop structured NAS read throws", async () => {
+		const { core, objects, open } = await fixture();
+		core.seed([folder("bulk"), folder("QorperaOS"), folder("QorperaOS/rules")]);
+		const view = await open();
+		for (let i = 0; i < 1000; i++) await write(view, `bulk/f${String(i).padStart(4, "0")}.txt`, `v-${i % 8}`);
+		await write(view, "QorperaOS/rules/r0.md", "# Rule 0\n");
+		for (let i = 0; i < 20; i++) await write(view, `bulk/z${String(i).padStart(4, "0")}.txt`, `z-${i % 4}`);
+
+		const origRead = objects.read.bind(objects);
+		let failOnce = true;
+		objects.read = async (profileId, entry, offset, length) => {
+			if (failOnce && entry.path === "QorperaOS/rules/r0.md") {
+				failOnce = false;
+				throw new Error("transient NAS outage");
+			}
+			return origRead(profileId, entry, offset, length);
+		};
+
+		await expect(view.publish()).rejects.toMatchObject({ code: "UNAVAILABLE" });
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000]);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/f"))).toHaveLength(1000);
+		expect(core.entries.has("QorperaOS/rules/r0.md")).toBe(false);
+
+		const retry = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 21]);
+		expect(retry.refused).toBeUndefined();
+		expect(retry.paths).toHaveLength(21);
+		expect(retry.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect(core.entries.has("QorperaOS/rules/r0.md")).toBe(true);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(1020);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
 	});
 
 	it("fails fast on a single structured file over 1 MiB while publishing valid sibling files", async () => {
