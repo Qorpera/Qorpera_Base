@@ -204,7 +204,7 @@ impl VersionMap {
 			let mut writer = BufWriter::with_capacity(64 * 1024, out);
 			for (p, e) in &self.map {
 				serde_json::to_writer(&mut writer, &Line { p: p.clone(), v: Some(e.version.clone()), m: e.made })
-					.expect("serializes");
+					.map_err(io::Error::from)?;
 				writer.write_all(b"\n")?;
 			}
 			let out = writer.into_inner().map_err(|e| e.into_error())?;

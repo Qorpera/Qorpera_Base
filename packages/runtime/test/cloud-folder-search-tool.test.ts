@@ -1181,11 +1181,74 @@ describe("company_search", () => {
 			caseSensitive: false,
 		});
 
+		await s.execute(s.parseArguments({ query: "foo\\S+\\W\\B", regex: true, smart_case: true }), context("c2b"));
+		expect(n.searches[2]).toMatchObject({ query: "foo\\S+\\W\\B", regex: true, caseSensitive: false });
+
+		await s.execute(s.parseArguments({ query: "Foo\\S+", regex: true, smart_case: true }), context("c2c"));
+		expect(n.searches[3]).toMatchObject({ query: "Foo\\S+", regex: true, caseSensitive: true });
+
+		await s.execute(s.parseArguments({ query: "-foo", whole_word: true }), context("c2d"));
+		expect(n.searches[4]).toMatchObject({
+			query: "(?:^|[^A-Za-z0-9_\\n])(?:-foo)\\b",
+			regex: true,
+		});
+
 		const counted = await s.execute(s.parseArguments({ query: "plan", count_only: true }), context("c3"));
-		expect(n.searches[2]).toMatchObject({ filesOnly: true });
+		expect(n.searches[5]).toMatchObject({ filesOnly: true });
 		expect(counted.value).toBe(
 			"5 matching lines in 2 files\nsrc/a.ts: 3\nsrc/b.ts: 2\n\n5 files searched. Nothing more.",
 		);
+
+		const noRegex = await node(() => found({ hits: [], searched: 0, reads: [] }), { version: 2, regex: false });
+		const nrTool = tool(noRegex.path, folder().client);
+		await expect(
+			nrTool.execute(nrTool.parseArguments({ query: "plan", whole_word: true }), context("c-noregex")),
+		).rejects.toThrow(/^WHOLE_WORD_UNAVAILABLE:/);
+
+		const paged = await node(
+			(req) =>
+				req.after === null
+					? found({
+							files: [
+								{ path: "src/a.ts", version: VERSION, count: 3 },
+								{ path: "src/b.ts", version: VERSION, count: 2, partial: true },
+							],
+							searched: 2,
+							reads: [read("src/a.ts"), read("src/b.ts")],
+							next: { path: "src/b.ts", version: VERSION, offset: 500, line: 10 },
+						})
+					: found({
+							files: [
+								{ path: "src/b.ts", version: VERSION, count: 4 },
+								{ path: "src/c.ts", version: VERSION, count: 1 },
+							],
+							searched: 2,
+							reads: [read("src/b.ts"), read("src/c.ts")],
+						}),
+			V2,
+		);
+		let pt = 0;
+		const pf = folder();
+		const pSearch = new CloudFolderSearch({
+			socketPath: paged.path,
+			folder: pf.client,
+			environmentId: ENV,
+			now: () => {
+				pt += 20_000;
+				return pt;
+			},
+		});
+		const pTool = cloudFolderSearchTool({ search: pSearch, folder: pf.client, runId: RUN });
+		const p1 = (await pTool.execute(pTool.parseArguments({ query: "plan", count_only: true }), context("p1")))
+			.value as string;
+		expect(p1).toContain("5 matching lines in 2 files so far\nsrc/a.ts: 3\nsrc/b.ts: 2 so far");
+		const p2 = (
+			await pTool.execute(
+				pTool.parseArguments({ query: "plan", count_only: true, cursor: cursorOf(p1) }),
+				context("p2"),
+			)
+		).value as string;
+		expect(p2).toBe("10 matching lines in 3 files\nsrc/b.ts: 6\nsrc/c.ts: 1\n\n2 files searched. Nothing more.");
 
 		for (const bad of [
 			{ query: "x", exclude_glob: ",,," },

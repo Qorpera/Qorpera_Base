@@ -272,6 +272,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Native hosting for websites, webapps and custom domains",
 		text: "Repositories kept in Qorpera can now deploy both static websites and full-stack dynamic webapps natively on Qorpera servers, without external hosting providers. Static sites support clean URLs, single-page app fallbacks, redirects and custom headers; dynamic or hybrid apps declare kind server or hybrid with their port, health path and optional Dockerfile in the repository checks. Every change that passes waits in What's new to preview and put live on a Qorpera domain first, and founders or admins can then make a site public and attach their own custom domain with automatic HTTPS in Sites.",
 	},
+	{
+		id: "company-search-filters-and-counts",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "Company search smart case, excludes, counts and data CLI",
+		text: "company_search now supports smart_case (case-sensitive only when the query has uppercase letters), whole_word matching, exclude_glob (or !pattern in glob) to skip paths, and count_only for cumulative matching-line and file totals across cursor pages. Regular expressions on the native search worker also accept inline (?i) and (?m) flags and quantifier counts up to 64. The data command on company machines now accepts JSON arrays and objects in name:=<JSON>, reads SQL and parameters from files or stdin, formats output as table, csv, tsv or ndjson, and adds --dry-run, rows and changes.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

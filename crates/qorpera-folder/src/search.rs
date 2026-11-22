@@ -789,7 +789,7 @@ impl CompactTree {
 		self.paths.reserve(extra_paths);
 		for w in incoming {
 			let doc_id = self.next_doc_id;
-			self.next_doc_id = self.next_doc_id.saturating_add(1);
+			self.next_doc_id = self.next_doc_id.checked_add(1).expect("tree doc_id exceeds u32");
 			self.push_wire_ref(w, media, doc_id);
 		}
 	}
@@ -907,7 +907,7 @@ impl CompactTree {
 		upserts: Vec<WorkerEntry>,
 		removes: Vec<String>,
 		media: &MediaInterner,
-	) -> (Self, Vec<u32>) {
+	) -> (Self, Vec<u32>, bool) {
 		let upserts_count = upserts.len();
 		let upsert_path_bytes: usize = upserts.iter().map(|w| w.p.len()).sum();
 		let mut ops: Vec<DeltaOp> = Vec::with_capacity(removes.len() + upserts_count);
@@ -926,8 +926,9 @@ impl CompactTree {
 				deduped.push(op);
 			}
 		}
+		let reset_inverted = (base.next_doc_id as u64).saturating_add(upserts_count as u64) >= u32::MAX as u64;
 		let mut out = Self::with_capacity(base.entries.len() + upserts_count, base.paths.len() + upsert_path_bytes);
-		out.next_doc_id = base.next_doc_id;
+		out.next_doc_id = if reset_inverted { 0 } else { base.next_doc_id };
 		let mut removed_docs = Vec::new();
 		let mut bi = 0usize;
 		let mut oi = 0usize;
@@ -938,10 +939,14 @@ impl CompactTree {
 					bi += 1;
 				}
 				Ordering::Equal => {
-					removed_docs.push(base.entries[bi].doc_id);
+					if !reset_inverted {
+						removed_docs.push(base.entries[bi].doc_id);
+					}
 					if let DeltaOp::Upsert(w) = &deduped[oi] {
 						let doc_id = out.next_doc_id;
-						out.next_doc_id = out.next_doc_id.saturating_add(1);
+						if !reset_inverted {
+							out.next_doc_id = out.next_doc_id.checked_add(1).expect("tree doc_id exceeds u32");
+						}
 						out.push_wire_ref(w, media, doc_id);
 					}
 					bi += 1;
@@ -950,7 +955,9 @@ impl CompactTree {
 				Ordering::Greater => {
 					if let DeltaOp::Upsert(w) = &deduped[oi] {
 						let doc_id = out.next_doc_id;
-						out.next_doc_id = out.next_doc_id.saturating_add(1);
+						if !reset_inverted {
+							out.next_doc_id = out.next_doc_id.checked_add(1).expect("tree doc_id exceeds u32");
+						}
 						out.push_wire_ref(w, media, doc_id);
 					}
 					oi += 1;
@@ -963,13 +970,22 @@ impl CompactTree {
 		while oi < deduped.len() {
 			if let DeltaOp::Upsert(w) = &deduped[oi] {
 				let doc_id = out.next_doc_id;
-				out.next_doc_id = out.next_doc_id.saturating_add(1);
+				if !reset_inverted {
+					out.next_doc_id = out.next_doc_id.checked_add(1).expect("tree doc_id exceeds u32");
+				}
 				out.push_wire_ref(w, media, doc_id);
 			}
 			oi += 1;
 		}
+		if reset_inverted {
+			for (idx, entry) in out.entries.iter_mut().enumerate() {
+				entry.doc_id = u32::try_from(idx).expect("tree entry count exceeds u32");
+			}
+			out.next_doc_id = u32::try_from(out.entries.len()).expect("tree entry count exceeds u32");
+			removed_docs.clear();
+		}
 		out.shrink_to_fit();
-		(out, removed_docs)
+		(out, removed_docs, reset_inverted)
 	}
 
 	fn shrink_to_fit(&mut self) {
@@ -1015,7 +1031,7 @@ impl CompactTree {
 	}
 
 	fn mem_bytes(&self) -> usize {
-		let entries_b = self.entries.capacity() * std::mem::size_of::<CompactEntry>();
+		let entries_b = self.entries.capacity() * (std::mem::size_of::<CompactEntry>() + std::mem::size_of::<DocInfo>());
 		let paths_b = self.paths.capacity();
 		let extras_b = self.extras.capacity() * std::mem::size_of::<ExtraMeta>()
 			+ self.extras.iter().map(ExtraMeta::heap_bytes).sum::<usize>();
@@ -1236,6 +1252,42 @@ struct DocInfo {
 	max_line_bytes: u64,
 }
 
+const _: () = assert!(std::mem::size_of::<CompactEntry>() == 120 && std::mem::size_of::<DocInfo>() == 16);
+
+struct InvertedBudget {
+	used: AtomicUsize,
+	limit: usize,
+}
+
+impl InvertedBudget {
+	fn new(limit: usize) -> Self {
+		Self { used: AtomicUsize::new(0), limit }
+	}
+
+	fn can_afford(&self, extra: usize) -> bool {
+		self.used.load(AtomicOrdering::Relaxed).saturating_add(extra) <= self.limit
+	}
+
+	fn charge(&self, bytes: usize) {
+		if bytes > 0 {
+			self.used.fetch_add(bytes, AtomicOrdering::Relaxed);
+		}
+	}
+
+	fn release(&self, bytes: usize) {
+		if bytes > 0 {
+			let _ = self.used.fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |cur| {
+				Some(cur.saturating_sub(bytes))
+			});
+		}
+	}
+
+	#[cfg(test)]
+	fn used(&self) -> usize {
+		self.used.load(AtomicOrdering::Relaxed)
+	}
+}
+
 #[derive(Clone, Default)]
 struct PostingList {
 	last_doc: u32,
@@ -1312,18 +1364,23 @@ impl PostingList {
 	}
 }
 
-#[derive(Clone, Default)]
 struct InvertedBase {
 	postings: HashMap<u32, PostingList>,
 	doc_info: Vec<DocInfo>,
-	approx_bytes: usize,
+	postings_bytes: usize,
+	budget: Arc<InvertedBudget>,
+}
+
+impl Drop for InvertedBase {
+	fn drop(&mut self) {
+		self.budget.release(self.postings_bytes);
+	}
 }
 
 impl InvertedBase {
-	fn with_docs(doc_count: usize) -> Self {
+	fn with_docs(doc_count: usize, budget: Arc<InvertedBudget>) -> Self {
 		let doc_info = vec![DocInfo::default(); doc_count];
-		let approx_bytes = doc_count * std::mem::size_of::<DocInfo>();
-		Self { postings: HashMap::new(), doc_info, approx_bytes }
+		Self { postings: HashMap::new(), doc_info, postings_bytes: 0, budget }
 	}
 
 	fn try_push_posting(&mut self, tri: u32, doc_id: u32) -> bool {
@@ -1332,7 +1389,9 @@ impl InvertedBase {
 		let Some(added) = entry.try_push_monotonic(doc_id) else {
 			return false;
 		};
-		self.approx_bytes += added + if is_new { 48 } else { 0 };
+		let delta = added + if is_new { 48 } else { 0 };
+		self.postings_bytes += delta;
+		self.budget.charge(delta);
 		true
 	}
 }
@@ -1344,23 +1403,31 @@ struct InvertedIndex {
 	added_docs: HashMap<u32, DocInfo>,
 	added_postings: HashMap<u32, Vec<u32>>,
 	delta_bytes: usize,
-	budget_bytes: usize,
+	budget: Arc<InvertedBudget>,
 	indexed_docs: usize,
 	next_doc_id: u32,
+	generation: u64,
+}
+
+impl Drop for InvertedIndex {
+	fn drop(&mut self) {
+		self.budget.release(self.delta_bytes);
+	}
 }
 
 impl InvertedIndex {
-	fn new(doc_count: usize, budget_bytes: usize) -> Self {
+	fn new(doc_count: usize, budget: Arc<InvertedBudget>) -> Self {
 		Self {
 			profile_uuid: None,
-			base: Arc::new(InvertedBase::with_docs(doc_count)),
+			base: Arc::new(InvertedBase::with_docs(doc_count, budget.clone())),
 			removed_docs: HashSet::new(),
 			added_docs: HashMap::new(),
 			added_postings: HashMap::new(),
 			delta_bytes: 0,
-			budget_bytes,
+			budget,
 			indexed_docs: 0,
 			next_doc_id: doc_count as u32,
+			generation: 0,
 		}
 	}
 
@@ -1368,16 +1435,16 @@ impl InvertedIndex {
 		if doc_count as u32 > self.next_doc_id {
 			self.next_doc_id = doc_count as u32;
 		}
-		if doc_count > self.base.doc_info.len() && self.removed_docs.is_empty() && Arc::strong_count(&self.base) == 1 {
-			let base = Arc::make_mut(&mut self.base);
-			let grow = doc_count - base.doc_info.len();
-			base.doc_info.resize(doc_count, DocInfo::default());
-			base.approx_bytes += grow * std::mem::size_of::<DocInfo>();
+		if doc_count > self.base.doc_info.len() && self.removed_docs.is_empty() {
+			if let Some(base) = Arc::get_mut(&mut self.base) {
+				base.doc_info.resize(doc_count, DocInfo::default());
+			}
 		}
 	}
 
-	fn approx_bytes(&self) -> usize {
-		self.base.approx_bytes + self.delta_bytes
+	fn charge_delta(&mut self, bytes: usize) {
+		self.delta_bytes += bytes;
+		self.budget.charge(bytes);
 	}
 
 	#[inline]
@@ -1408,7 +1475,7 @@ impl InvertedIndex {
 			match trigrams {
 				Some(tris) => {
 					let est = tris.len() * 2 + 64;
-					if self.approx_bytes() + est > self.budget_bytes {
+					if !self.budget.can_afford(est) {
 						info.kind = DOC_BLOOM_ONLY;
 					}
 				}
@@ -1417,13 +1484,11 @@ impl InvertedIndex {
 				}
 			}
 		}
-		let use_base = (doc_id as usize) < self.base.doc_info.len()
-			&& self.removed_docs.is_empty()
-			&& Arc::strong_count(&self.base) == 1;
-		if use_base {
-			let mut overflowed = false;
-			{
-				let base = Arc::make_mut(&mut self.base);
+		let mut wrote_base = false;
+		let mut overflowed = false;
+		if (doc_id as usize) < self.base.doc_info.len() && self.removed_docs.is_empty() {
+			if let Some(base) = Arc::get_mut(&mut self.base) {
+				wrote_base = true;
 				base.doc_info[doc_id as usize] = info;
 				if info.kind == DOC_INDEXED {
 					if let Some(tris) = trigrams {
@@ -1432,20 +1497,24 @@ impl InvertedIndex {
 								let is_new = !self.added_postings.contains_key(&tri);
 								let list = self.added_postings.entry(tri).or_default();
 								list.push(doc_id);
-								self.delta_bytes += 4 + if is_new { 48 } else { 0 };
+								let delta = 4 + if is_new { 48 } else { 0 };
+								self.delta_bytes += delta;
+								self.budget.charge(delta);
 								overflowed = true;
 							}
 						}
 					}
 				}
 			}
+		}
+		if wrote_base {
 			if overflowed {
 				self.maybe_compact();
 			}
 		} else {
 			self.removed_docs.remove(&doc_id);
 			self.added_docs.insert(doc_id, info);
-			self.delta_bytes += std::mem::size_of::<DocInfo>() + 16;
+			self.charge_delta(std::mem::size_of::<DocInfo>() + 16);
 			if info.kind == DOC_INDEXED {
 				if let Some(tris) = trigrams {
 					for &tri in tris {
@@ -1454,17 +1523,17 @@ impl InvertedIndex {
 						match list.last().copied() {
 							None => {
 								list.push(doc_id);
-								self.delta_bytes += 4 + if is_new { 48 } else { 0 };
+								self.charge_delta(4 + if is_new { 48 } else { 0 });
 							}
 							Some(last) if doc_id > last => {
 								list.push(doc_id);
-								self.delta_bytes += 4;
+								self.charge_delta(4);
 							}
 							Some(last) if doc_id == last => {}
 							_ => {
 								if let Err(pos) = list.binary_search(&doc_id) {
 									list.insert(pos, doc_id);
-									self.delta_bytes += 4;
+									self.charge_delta(4);
 								}
 							}
 						}
@@ -1474,9 +1543,11 @@ impl InvertedIndex {
 			self.maybe_compact();
 		}
 		self.indexed_docs += 1;
+		self.generation = self.generation.wrapping_add(1);
 	}
 
 	fn patch_from(&self, removed: &[u32], next_doc_id: u32) -> Self {
+		self.budget.charge(self.delta_bytes);
 		let mut out = Self {
 			profile_uuid: self.profile_uuid,
 			base: self.base.clone(),
@@ -1484,9 +1555,10 @@ impl InvertedIndex {
 			added_docs: self.added_docs.clone(),
 			added_postings: self.added_postings.clone(),
 			delta_bytes: self.delta_bytes,
-			budget_bytes: self.budget_bytes,
+			budget: self.budget.clone(),
 			indexed_docs: self.indexed_docs,
 			next_doc_id,
+			generation: self.generation.wrapping_add(1),
 		};
 		for &doc_id in removed {
 			if let Some(prev) = out.added_docs.remove(&doc_id) {
@@ -1506,7 +1578,7 @@ impl InvertedIndex {
 
 	fn maybe_compact(&mut self) {
 		let threshold = (self.base.doc_info.len() / 8).max(256);
-		let byte_threshold = (self.base.approx_bytes / 4).max(256 * 1024);
+		let byte_threshold = (self.base.postings_bytes / 4).max(256 * 1024);
 		if self.removed_docs.len() + self.added_docs.len() > threshold || self.delta_bytes > byte_threshold {
 			self.compact();
 		}
@@ -1514,7 +1586,7 @@ impl InvertedIndex {
 
 	fn compact(&mut self) {
 		let doc_len = (self.next_doc_id as usize).max(self.base.doc_info.len());
-		let mut new_base = InvertedBase::with_docs(doc_len);
+		let mut new_base = InvertedBase::with_docs(doc_len, self.budget.clone());
 		for (idx, &info) in self.base.doc_info.iter().enumerate() {
 			let doc_id = idx as u32;
 			if !self.removed_docs.contains(&doc_id) {
@@ -1548,7 +1620,9 @@ impl InvertedIndex {
 				for &d in &merged_buf {
 					let _ = np.try_push_monotonic(d);
 				}
-				new_base.approx_bytes += np.bytes.len() + 48;
+				let cost = np.bytes.len() + 48;
+				new_base.postings_bytes += cost;
+				new_base.budget.charge(cost);
 				new_base.postings.insert(tri, np);
 			}
 		}
@@ -1569,7 +1643,9 @@ impl InvertedIndex {
 				for &d in &merged_buf {
 					let _ = np.try_push_monotonic(d);
 				}
-				new_base.approx_bytes += np.bytes.len() + 48;
+				let cost = np.bytes.len() + 48;
+				new_base.postings_bytes += cost;
+				new_base.budget.charge(cost);
 				new_base.postings.insert(tri, np);
 			}
 		}
@@ -1577,7 +1653,9 @@ impl InvertedIndex {
 		self.removed_docs.clear();
 		self.added_docs.clear();
 		self.added_postings.clear();
+		self.budget.release(self.delta_bytes);
 		self.delta_bytes = 0;
+		self.generation = self.generation.wrapping_add(1);
 	}
 
 	fn estimate_cost(&self, q: &CompiledTrigramQuery) -> usize {
@@ -1743,7 +1821,7 @@ struct TreeCacheState {
 	slots: HashMap<u64, TreeSlot>,
 	pins: HashMap<u64, usize>,
 	total_bytes: usize,
-	inverted_budget: usize,
+	inverted_budget: Arc<InvertedBudget>,
 }
 
 struct TreeCache {
@@ -1757,9 +1835,14 @@ impl TreeCache {
 				slots: HashMap::new(),
 				pins: HashMap::new(),
 				total_bytes: 0,
-				inverted_budget,
+				inverted_budget: Arc::new(InvertedBudget::new(inverted_budget)),
 			}),
 		}
+	}
+
+	#[cfg(test)]
+	fn inverted_used_bytes(&self) -> usize {
+		self.inner.lock().unwrap().inverted_budget.used()
 	}
 
 	fn pin(&self, snapshot_id: u64) {
@@ -1822,7 +1905,7 @@ impl TreeCache {
 		let doc_count = tree.len();
 		let bytes = tree.mem_bytes();
 		let mut guard = self.inner.lock().unwrap();
-		let budget = guard.inverted_budget;
+		let budget = guard.inverted_budget.clone();
 		if let Some(old) = guard.slots.remove(&snapshot_id) {
 			guard.total_bytes = guard.total_bytes.saturating_sub(old.bytes);
 		}
@@ -1847,16 +1930,23 @@ impl TreeCache {
 		removes: Vec<String>,
 		media: &MediaInterner,
 	) -> bool {
-		let base = {
+		let (base, budget) = {
 			let guard = self.inner.lock().unwrap();
-			guard.slots.get(&base_snapshot_id).map(|s| (s.tree.clone(), s.inverted.clone()))
+			(
+				guard.slots.get(&base_snapshot_id).map(|s| (s.tree.clone(), s.inverted.clone())),
+				guard.inverted_budget.clone(),
+			)
 		};
 		let Some((base_tree, base_inv)) = base else {
 			return false;
 		};
-		let (patched, removed_docs) = CompactTree::patch(&base_tree, upserts, removes, media);
+		let (patched, removed_docs, reset_inverted) = CompactTree::patch(&base_tree, upserts, removes, media);
 		let next_doc_id = patched.next_doc_id;
-		let new_inv = base_inv.read().unwrap().patch_from(&removed_docs, next_doc_id);
+		let new_inv = if reset_inverted {
+			InvertedIndex::new(patched.len(), budget)
+		} else {
+			base_inv.read().unwrap().patch_from(&removed_docs, next_doc_id)
+		};
 		let bytes = patched.mem_bytes();
 		let mut guard = self.inner.lock().unwrap();
 		if let Some(old) = guard.slots.remove(&snapshot_id) {
@@ -2003,9 +2093,10 @@ impl ObjectError {
 impl SharedIndex {
 	pub fn new(storage_root: PathBuf, index_mib: usize) -> Self {
 		let total = index_mib.max(1) * 1024 * 1024;
-		let trigram_bytes = (total * 25) / 100;
+		// WHY: budget sums to 100% of --index-mib: 50% trees+DocInfo (TS), 15% shared inverted, 15% trigrams, 20% objects.
+		let trigram_bytes = (total * 15) / 100;
 		let object_bytes = (total * 20) / 100;
-		let inverted_bytes = (total * 25) / 100;
+		let inverted_bytes = (total * 15) / 100;
 		let min_shard = CHUNK_BYTES + 4096;
 		let object_shards = if object_bytes >= min_shard * 4 {
 			4
@@ -2483,17 +2574,9 @@ pub struct WorkerRequest {
 	pub path: String,
 	#[serde(default)]
 	pub glob: Option<String>,
-	#[serde(default)]
-	pub exclude_glob: Option<String>,
 	pub names_only: bool,
 	pub files_only: bool,
-	#[serde(default)]
-	pub count_only: bool,
 	pub case_sensitive: bool,
-	#[serde(default)]
-	pub smart_case: bool,
-	#[serde(default)]
-	pub whole_word: bool,
 	pub context: usize,
 	pub links: bool,
 	pub after: Option<SearchCursor>,
@@ -2577,8 +2660,6 @@ fn parse_worker_message(bytes: &[u8]) -> Result<WorkerMessage, serde_json::Error
 pub struct WorkerOk {
 	pub hits: Vec<SearchHit>,
 	pub files: Vec<SearchFile>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub total_matches: Option<u64>,
 	pub searched: u64,
 	pub binary: u64,
 	pub unreadable: u64,
@@ -2845,40 +2926,25 @@ struct CompiledGlob {
 }
 
 impl CompiledGlob {
-	#[cfg(test)]
-	fn parse(glob: &str) -> Self {
-		Self::parse_filters(Some(glob), None).unwrap()
-	}
-
-	fn parse_filters(glob: Option<&str>, exclude_glob: Option<&str>) -> Option<Self> {
+	fn parse(glob: &str) -> Option<Self> {
 		let mut includes = Vec::new();
 		let mut excludes = Vec::new();
-		if let Some(g) = glob {
-			if g.starts_with('!') || g.contains(",!") {
-				for raw in g.split(',') {
-					let token = raw.trim();
-					if token.is_empty() {
-						continue;
-					}
-					if let Some(neg) = token.strip_prefix('!') {
-						if !neg.is_empty() {
-							excludes.push(SingleGlob::parse(neg));
-						}
-					} else {
-						includes.push(SingleGlob::parse(token));
-					}
+		if glob.starts_with('!') || glob.contains(",!") {
+			for raw in glob.split(',') {
+				let token = raw.trim();
+				if token.is_empty() {
+					continue;
 				}
-			} else if !g.is_empty() {
-				includes.push(SingleGlob::parse(g));
-			}
-		}
-		if let Some(eg) = exclude_glob {
-			for raw in eg.split(',') {
-				let token = raw.trim().trim_start_matches('!');
-				if !token.is_empty() {
-					excludes.push(SingleGlob::parse(token));
+				if let Some(neg) = token.strip_prefix('!') {
+					if !neg.is_empty() {
+						excludes.push(SingleGlob::parse(neg));
+					}
+				} else {
+					includes.push(SingleGlob::parse(token));
 				}
 			}
+		} else if !glob.is_empty() {
+			includes.push(SingleGlob::parse(glob));
 		}
 		if includes.is_empty() && excludes.is_empty() {
 			None
@@ -3159,63 +3225,6 @@ fn around(line: &str, found_folded_byte: usize, raw_byte_offset: bool) -> String
 	out
 }
 
-#[inline]
-fn is_ascii_word_byte(b: u8) -> bool {
-	b.is_ascii_alphanumeric() || b == b'_'
-}
-
-fn find_literal_whole_word(text: &str, needle: &str, case_sensitive: bool) -> Option<usize> {
-	if needle.is_empty() {
-		return Some(0);
-	}
-	let nb = needle.as_bytes();
-	let first_is_word = nb.first().copied().is_some_and(is_ascii_word_byte);
-	let last_is_word = nb.last().copied().is_some_and(is_ascii_word_byte);
-	let check_bounds = |hay: &[u8], pos: usize, len: usize| -> bool {
-		let prev_is_word = pos > 0 && is_ascii_word_byte(hay[pos - 1]);
-		let next_is_word = pos + len < hay.len() && is_ascii_word_byte(hay[pos + len]);
-		(prev_is_word != first_is_word) && (last_is_word != next_is_word)
-	};
-	if case_sensitive {
-		let hay = text.as_bytes();
-		let mut from = 0usize;
-		while from + nb.len() <= hay.len() {
-			let rel = find_subslice(&hay[from..], nb)?;
-			let pos = from + rel;
-			if check_bounds(hay, pos, nb.len()) {
-				return Some(pos);
-			}
-			from = pos + 1;
-		}
-		return None;
-	}
-	if text.is_ascii() && needle.is_ascii() {
-		let hay = text.as_bytes();
-		let mut from = 0usize;
-		while from + nb.len() <= hay.len() {
-			let rel = find_subslice_ascii_icase(&hay[from..], nb)?;
-			let pos = from + rel;
-			if check_bounds(hay, pos, nb.len()) {
-				return Some(pos);
-			}
-			from = pos + 1;
-		}
-		return None;
-	}
-	let folded = fold_text(text);
-	let hay = folded.as_bytes();
-	let mut from = 0usize;
-	while from + nb.len() <= hay.len() {
-		let rel = find_subslice(&hay[from..], nb)?;
-		let pos = from + rel;
-		if check_bounds(hay, pos, nb.len()) {
-			return Some(pos);
-		}
-		from = pos + 1;
-	}
-	None
-}
-
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 	if needle.is_empty() {
 		return Some(0);
@@ -3247,7 +3256,6 @@ enum Matcher {
 		query_folded: String,
 		raw_bytes: Option<Vec<u8>>,
 		case_sensitive: bool,
-		whole_word: bool,
 	},
 	Pattern {
 		regex: Regex,
@@ -3255,18 +3263,12 @@ enum Matcher {
 }
 
 impl Matcher {
-	fn build(
-		query: Option<&str>,
-		regex: bool,
-		case_sensitive: bool,
-		whole_word: bool,
-	) -> Result<(Self, CompiledTrigramQuery), PatternError> {
+	fn build(query: Option<&str>, regex: bool, case_sensitive: bool) -> Result<(Self, CompiledTrigramQuery), PatternError> {
 		let Some(q) = query else {
 			return Ok((Self::Always, CompiledTrigramQuery::All));
 		};
 		if regex {
-			let compiled_pattern = if whole_word { format!("\\b(?:{q})\\b") } else { q.to_string() };
-			let re = Regex::compile(&compiled_pattern, case_sensitive)?;
+			let re = Regex::compile(q, case_sensitive)?;
 			let tq = CompiledTrigramQuery::from_query(re.trigram_query());
 			return Ok((Self::Pattern { regex: re }, tq));
 		}
@@ -3278,7 +3280,7 @@ impl Matcher {
 			None
 		};
 		let query_match = if case_sensitive { q.to_string() } else { folded };
-		Ok((Self::Literal { query_folded: query_match, raw_bytes, case_sensitive, whole_word }, tq))
+		Ok((Self::Literal { query_folded: query_match, raw_bytes, case_sensitive }, tq))
 	}
 
 	fn uses_raw_byte_offsets(&self) -> bool {
@@ -3292,10 +3294,7 @@ impl Matcher {
 	fn find_str(&self, text: &str, scratch: &mut ExecScratch) -> Option<usize> {
 		match self {
 			Self::Always => Some(0),
-			Self::Literal { query_folded, case_sensitive, whole_word, .. } => {
-				if *whole_word {
-					return find_literal_whole_word(text, query_folded, *case_sensitive);
-				}
+			Self::Literal { query_folded, case_sensitive, .. } => {
 				if *case_sensitive {
 					text.find(query_folded.as_str())
 				} else if text.is_ascii() && query_folded.is_ascii() {
@@ -3470,13 +3469,10 @@ fn execute_search_with_tree(
 ) -> Result<WorkerOk, WorkerError> {
 	let v2 = req.version == 2;
 	let use_regex = v2 && req.regex;
-	let count_only = req.count_only && !req.names_only;
-	let files_only = (v2 && req.files_only) || count_only;
-	let context = if v2 && !count_only { req.context.min(5) } else { 0 };
-	let effective_case_sensitive = req.case_sensitive
-		|| (req.smart_case && req.query.as_deref().is_some_and(|q| q.chars().any(char::is_uppercase)));
+	let files_only = v2 && req.files_only;
+	let context = if v2 { req.context.min(5) } else { 0 };
 	let (matcher, trigram_query) =
-		Matcher::build(req.query.as_deref(), use_regex, effective_case_sensitive, req.whole_word)
+		Matcher::build(req.query.as_deref(), use_regex, req.case_sensitive)
 			.map_err(|e| WorkerError::simple("pattern", e.0))?;
 	let raw_offsets = matcher.uses_raw_byte_offsets();
 	let use_ranges = req.snapshot_id.is_some();
@@ -3486,10 +3482,7 @@ fn execute_search_with_tree(
 		None
 	};
 	let inline_tree = if use_ranges { CompactTree::new() } else { CompactTree::from_wire(&req.entries, &index.media) };
-	let glob = CompiledGlob::parse_filters(
-		if use_ranges { req.glob.as_deref() } else { None },
-		req.exclude_glob.as_deref(),
-	);
+	let glob = if use_ranges { req.glob.as_deref().and_then(CompiledGlob::parse) } else { None };
 	let tree_ref: &CompactTree = match &synced_tree {
 		Some(resolved) => resolved.tree.as_ref(),
 		None => &inline_tree,
@@ -3520,10 +3513,9 @@ fn execute_search_with_tree(
 	let mut binary: u64 = 0;
 	let mut unreadable: u64 = 0;
 	let mut long_lines: u64 = 0;
-	let mut total_matches: u64 = 0;
 	let mut scratch = ExecScratch::new();
 	let mut profile_uuid_checked: Option<[u8; 16]> = None;
-	let mut inv_candidates_ready = false;
+	let mut inv_candidates_gen: Option<u64> = None;
 	let mut inv_candidates: Option<Vec<u32>> = None;
 	let mut inv_active = false;
 	let mut prefetched_until: usize = 0;
@@ -3571,7 +3563,7 @@ fn execute_search_with_tree(
 		let glob_matched = if use_ranges {
 			glob.as_ref().map_or(true, |g| g.matches_entry(entry_path, &req.path))
 		} else {
-			entry.gm() && glob.as_ref().map_or(true, |g| g.matches_entry(entry_path, &req.path))
+			entry.gm()
 		};
 		let is_text = !req.names_only && kind == 0 && entry_bytes > 0 && glob_matched;
 		if state.examined > 0
@@ -3584,7 +3576,6 @@ fn execute_search_with_tree(
 			return Ok(WorkerOk {
 				hits,
 				files,
-				total_matches: count_only.then_some(total_matches),
 				searched,
 				binary,
 				unreadable,
@@ -3623,7 +3614,6 @@ fn execute_search_with_tree(
 					return Ok(WorkerOk {
 						hits,
 						files,
-						total_matches: count_only.then_some(total_matches),
 						searched,
 						binary,
 						unreadable,
@@ -3658,7 +3648,6 @@ fn execute_search_with_tree(
 					return Ok(WorkerOk {
 						hits,
 						files,
-						total_matches: count_only.then_some(total_matches),
 						searched,
 						binary,
 						unreadable,
@@ -3731,8 +3720,9 @@ fn execute_search_with_tree(
 			if let Some(inv_lock) = synced_inv {
 				if inv_read_guard.is_none() {
 					let guard = inv_lock.read().unwrap();
-					if !inv_candidates_ready {
-						inv_candidates_ready = true;
+					// WHY: concurrent searches on the same snapshot can record new docs between guard drops; re-evaluate whenever generation advances.
+					if inv_candidates_gen != Some(guard.generation) {
+						inv_candidates_gen = Some(guard.generation);
 						if guard.profile_uuid == Some(profile_uuid) && guard.indexed_docs > 0 {
 							inv_active = true;
 							inv_candidates = guard.eval_query(&trigram_query);
@@ -3790,7 +3780,6 @@ fn execute_search_with_tree(
 						});
 						if inv_flush.updates.len() >= 64 {
 							inv_flush.flush();
-							inv_candidates_ready = false;
 						}
 					}
 				}
@@ -3869,7 +3858,6 @@ fn execute_search_with_tree(
 								if !updates.is_empty() {
 									inv_flush.updates.extend(updates);
 									inv_flush.flush();
-									inv_candidates_ready = false;
 								}
 								let (reprobe, _) = index.probe_trigram(
 									profile_uuid,
@@ -4120,7 +4108,6 @@ fn execute_search_with_tree(
 										None => at_cursor(entry, line_start, line),
 									};
 									if count > 0 {
-										total_matches += count;
 										files.push(SearchFile {
 											path: entry_path.to_string(),
 											version: entry.version_string(),
@@ -4131,7 +4118,6 @@ fn execute_search_with_tree(
 									return Ok(WorkerOk {
 										hits,
 										files,
-										total_matches: count_only.then_some(total_matches),
 										searched,
 										binary,
 										unreadable,
@@ -4214,7 +4200,6 @@ fn execute_search_with_tree(
 										None => at_cursor(entry, line_start, line),
 									};
 									if count > 0 {
-										total_matches += count;
 										files.push(SearchFile {
 											path: entry_path.to_string(),
 											version: entry.version_string(),
@@ -4225,7 +4210,6 @@ fn execute_search_with_tree(
 									return Ok(WorkerOk {
 										hits,
 										files,
-										total_matches: count_only.then_some(total_matches),
 										searched,
 										binary,
 										unreadable,
@@ -4298,7 +4282,6 @@ fn execute_search_with_tree(
 										None => at_cursor(entry, line_start, line),
 									};
 									if count > 0 {
-										total_matches += count;
 										files.push(SearchFile {
 											path: entry_path.to_string(),
 											version: entry.version_string(),
@@ -4309,7 +4292,6 @@ fn execute_search_with_tree(
 									return Ok(WorkerOk {
 										hits,
 										files,
-										total_matches: count_only.then_some(total_matches),
 										searched,
 										binary,
 										unreadable,
@@ -4347,7 +4329,6 @@ fn execute_search_with_tree(
 					None => at_cursor(entry, line_start, line),
 				};
 				if count > 0 {
-					total_matches += count;
 					files.push(SearchFile {
 						path: entry_path.to_string(),
 						version: entry.version_string(),
@@ -4358,7 +4339,6 @@ fn execute_search_with_tree(
 				return Ok(WorkerOk {
 					hits,
 					files,
-					total_matches: count_only.then_some(total_matches),
 					searched,
 					binary,
 					unreadable,
@@ -4388,14 +4368,12 @@ fn execute_search_with_tree(
 					});
 					if inv_flush.updates.len() >= 64 {
 						inv_flush.flush();
-						inv_candidates_ready = false;
 					}
 				}
 			}
 		}
 
 		if count > 0 || (files_only && continued && !skipped) {
-			total_matches += count;
 			files.push(SearchFile {
 				path: entry_path.to_string(),
 				version: entry.version_string(),
@@ -4415,7 +4393,6 @@ fn execute_search_with_tree(
 	Ok(WorkerOk {
 		hits,
 		files,
-		total_matches: count_only.then_some(total_matches),
 		searched,
 		binary,
 		unreadable,
@@ -4680,7 +4657,7 @@ pub fn run_worker_io<R: Read, W: Write + Send + 'static>(
 		}));
 	}
 	let mut next_tree_seq = 0u64;
-	let mut snapshot_state: HashMap<u64, Option<u64>> = HashMap::new();
+	let mut snapshot_state: HashMap<u64, u64> = HashMap::new();
 	let mut read_err: Option<String> = None;
 	loop {
 		match read_frame(&mut reader) {
@@ -4688,23 +4665,23 @@ pub fn run_worker_io<R: Read, W: Write + Send + 'static>(
 			Ok(Some(bytes)) => match parse_worker_message(&bytes) {
 				Ok(WorkerMessage::SyncTree(msg)) => {
 					next_tree_seq += 1;
-					snapshot_state.insert(msg.snapshot_id, Some(next_tree_seq));
+					snapshot_state.insert(msg.snapshot_id, next_tree_seq);
 					tree_queue.push(TreeOp::Sync(msg, next_tree_seq));
 				}
 				Ok(WorkerMessage::PatchTree(msg)) => {
 					next_tree_seq += 1;
-					snapshot_state.insert(msg.snapshot_id, Some(next_tree_seq));
+					snapshot_state.insert(msg.snapshot_id, next_tree_seq);
 					tree_queue.push(TreeOp::Patch(msg, next_tree_seq));
 				}
 				Ok(WorkerMessage::DropTree(msg)) => {
 					next_tree_seq += 1;
-					snapshot_state.insert(msg.snapshot_id, None);
+					snapshot_state.remove(&msg.snapshot_id);
 					tree_queue.push(TreeOp::Drop(msg, next_tree_seq));
 				}
 				Ok(WorkerMessage::Search(req)) => {
 					if let Some(sid) = req.snapshot_id {
 						match snapshot_state.get(&sid).copied() {
-							Some(Some(need_seq)) if need_seq > tree_queue.completed() => {
+							Some(need_seq) if need_seq > tree_queue.completed() => {
 								// WHY: pin snapshot before queueing wait so a later dropTree cannot evict it before resolution.
 								index.pin_tree(sid);
 								queue.push(SearchJob {
@@ -4713,11 +4690,11 @@ pub fn run_worker_io<R: Read, W: Write + Send + 'static>(
 									wait_tree_seq: Some((sid, need_seq)),
 								});
 							}
-							Some(Some(_)) => {
+							Some(_) => {
 								let synced_tree = index.get_tree(sid);
 								queue.push(SearchJob { req, synced_tree, wait_tree_seq: None });
 							}
-							Some(None) | None => {
+							None => {
 								queue.push(SearchJob { req, synced_tree: None, wait_tree_seq: None });
 							}
 						}
@@ -4856,13 +4833,9 @@ mod tests {
 			regex: false,
 			path: String::new(),
 			glob: None,
-			exclude_glob: None,
 			names_only: false,
 			files_only: false,
-			count_only: false,
 			case_sensitive: false,
-			smart_case: false,
-			whole_word: false,
 			context: 0,
 			links: true,
 			after: None,
@@ -4924,7 +4897,7 @@ mod tests {
 		}
 		let r = execute_search(&index, &base_request(entries, Some("file_0399_content"))).unwrap();
 		assert_eq!(r.hits.len(), 1);
-		assert!(index.trigrams.total_bytes() <= (1024 * 1024 * 25) / 100 + 65536);
+		assert!(index.trigrams.total_bytes() <= (1024 * 1024 * 15) / 100 + 65536);
 		assert!(index.objects.total_bytes() <= (1024 * 1024 * 20) / 100 + 65536);
 		let _ = fs::remove_dir_all(&dir);
 	}
@@ -5088,7 +5061,7 @@ mod tests {
 		let sub_range = slice_tree(&compact, "docs", Some("docs/b.ts"));
 		assert_eq!(sub_range, 3..4);
 		assert_eq!(compact.path(sub_range.start), "docs/b.ts");
-		let g = CompiledGlob::parse("**/*.ts");
+		let g = CompiledGlob::parse("**/*.ts").unwrap();
 		assert!(!g.matches_entry("docs/a.md", ""));
 		assert!(g.matches_entry("docs/b.ts", ""));
 		assert!(g.matches_entry("docs/b.ts", "docs"));
@@ -5395,7 +5368,7 @@ mod tests {
 	}
 
 	#[test]
-	fn supports_smart_case_whole_word_negative_globs_count_only_and_bounded_around() {
+	fn supports_negative_globs_and_bounded_around() {
 		let dir = temp_dir("ergo");
 		let e0 = write_object_file(
 			&dir,
@@ -5424,26 +5397,23 @@ mod tests {
 		let index = SharedIndex::new(dir.clone(), 8);
 		assert!(index.sync_tree(1, vec![e0, e1, e2], false, true));
 
-		let mut sc_lower = base_request(Vec::new(), Some("plan"));
-		sc_lower.snapshot_id = Some(1);
-		sc_lower.smart_case = true;
-		sc_lower.whole_word = true;
-		sc_lower.glob = Some("*.ts,!*.test.ts".to_string());
-		let r_lower = execute_search(&index, &sc_lower).unwrap();
-		assert_eq!(r_lower.hits.len(), 2);
-		assert!(r_lower.hits.iter().all(|h| h.path == "src/app.ts"));
+		let mut req = base_request(Vec::new(), Some("plan"));
+		req.snapshot_id = Some(1);
+		req.glob = Some("*.ts,!*.test.ts".to_string());
+		let r = execute_search(&index, &req).unwrap();
+		assert_eq!(r.hits.len(), 3);
+		assert!(r.hits.iter().all(|h| h.path != "src/app.test.ts"));
 
-		let mut sc_upper = base_request(Vec::new(), Some("PLAN"));
-		sc_upper.snapshot_id = Some(1);
-		sc_upper.smart_case = true;
-		sc_upper.exclude_glob = Some("*.test.ts".to_string());
-		sc_upper.count_only = true;
-		let r_upper = execute_search(&index, &sc_upper).unwrap();
+		let mut excl_only = base_request(Vec::new(), Some("PLAN"));
+		excl_only.snapshot_id = Some(1);
+		excl_only.case_sensitive = true;
+		excl_only.glob = Some("!*.test.ts".to_string());
+		excl_only.files_only = true;
+		let r_upper = execute_search(&index, &excl_only).unwrap();
 		assert!(r_upper.hits.is_empty());
 		assert_eq!(r_upper.files.len(), 1);
 		assert_eq!(r_upper.files[0].path, "src/app.ts");
 		assert_eq!(r_upper.files[0].count, 1);
-		assert_eq!(r_upper.total_matches, Some(1));
 
 		let naive_around = |line: &str, found_folded_byte: usize, cs: bool| -> String {
 			let chars: Vec<char> = line.chars().map(sanitize_char).collect();
@@ -5519,7 +5489,8 @@ mod tests {
 	#[test]
 	fn inverted_index_handles_out_of_order_inserts_and_compaction() {
 		let profile = [7u8; 16];
-		let mut inv = InvertedIndex::new(100, 1024 * 1024);
+		let budget = Arc::new(InvertedBudget::new(1024 * 1024));
+		let mut inv = InvertedIndex::new(100, budget.clone());
 		let info = DocInfo { kind: DOC_INDEXED, long_lines_1m: 0, max_line_bytes: 16 };
 		let tri_a: u32 = 0x616263;
 		let tri_b: u32 = 0x78797a;
@@ -5528,12 +5499,143 @@ mod tests {
 		inv.record_doc(profile, 30, info, Some(&[tri_a, tri_b]));
 		assert_eq!(inv.postings_for(tri_a), vec![10, 30, 50]);
 		assert_eq!(inv.postings_for(tri_b), vec![30, 50]);
+		let gen_before = inv.generation;
 		inv.compact();
+		assert_ne!(inv.generation, gen_before);
 		assert_eq!(inv.postings_for(tri_a), vec![10, 30, 50]);
 		assert_eq!(inv.postings_for(tri_b), vec![30, 50]);
 		let patched = inv.patch_from(&[50], 101);
 		assert_eq!(patched.postings_for(tri_a), vec![10, 30]);
 		assert_eq!(patched.postings_for(tri_b), vec![30]);
+		drop(patched);
+		drop(inv);
+		assert_eq!(budget.used(), 0);
+	}
+
+	fn make_folder_entry(path: &str, idx: u32) -> WorkerEntry {
+		WorkerEntry {
+			i: idx,
+			k: 1,
+			p: path.to_string(),
+			v: String::new(),
+			m: None,
+			f: None,
+			b: 0,
+			t: None,
+			x: false,
+			tg: None,
+			rb: 0,
+			gm: true,
+		}
+	}
+
+	#[test]
+	fn concurrent_interleaved_searches_do_not_miss_newly_indexed_matches() {
+		let dir = temp_dir("concurrent-inv");
+		let mut entries = vec![make_folder_entry("", 0), make_folder_entry("src", 1)];
+		for i in 0..80u32 {
+			let body = if i % 2 == 0 {
+				format!("export const alpha_{i} = 'CONCURRENT_ALPHA_HIT';\n")
+			} else {
+				format!("export const beta_{i} = 'CONCURRENT_BETA_HIT';\n")
+			};
+			entries.push(write_object_file(
+				&dir,
+				&format!("src/f{i:03}.ts"),
+				&format!("00000000-0000-4000-8000-00000000{:04x}", i + 1),
+				body.as_bytes(),
+				1024,
+				i + 2,
+			));
+		}
+		let index = Arc::new(SharedIndex::new(dir.clone(), 16));
+		assert!(index.sync_tree(1, entries, false, true));
+
+		// WHY: seed doc 2 first so concurrent searches start with indexed_docs > 0 and must observe generation bumps.
+		let mut seed = base_request(Vec::new(), Some("CONCURRENT_ALPHA_HIT"));
+		seed.snapshot_id = Some(1);
+		seed.glob = Some("f000.ts".to_string());
+		assert_eq!(execute_search(&index, &seed).unwrap().hits.len(), 1);
+
+		let barrier = Arc::new(std::sync::Barrier::new(2));
+		let idx_a = index.clone();
+		let bar_a = barrier.clone();
+		let t_a = std::thread::spawn(move || {
+			let mut req = base_request(Vec::new(), Some("CONCURRENT_ALPHA_HIT"));
+			req.snapshot_id = Some(1);
+			bar_a.wait();
+			execute_search(&idx_a, &req).unwrap()
+		});
+		let idx_b = index.clone();
+		let bar_b = barrier.clone();
+		let t_b = std::thread::spawn(move || {
+			let mut req = base_request(Vec::new(), Some("CONCURRENT_BETA_HIT"));
+			req.snapshot_id = Some(1);
+			bar_b.wait();
+			execute_search(&idx_b, &req).unwrap()
+		});
+		let res_a = t_a.join().unwrap();
+		let res_b = t_b.join().unwrap();
+		assert_eq!(res_a.hits.len(), 40);
+		assert_eq!(res_b.hits.len(), 40);
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn shared_inverted_budget_caps_across_trees_and_releases_on_drop() {
+		let dir = temp_dir("shared-budget");
+		let mut entries = vec![make_folder_entry("", 0), make_folder_entry("src", 1)];
+		for i in 0..32u32 {
+			let body = format!("module_{i} unique_token_{i}_alpha_{i} beta_{i}_gamma_{i}\n");
+			entries.push(write_object_file(
+				&dir,
+				&format!("src/b{i:02}.ts"),
+				&format!("00000000-0000-4000-8000-00000001{:04x}", i + 1),
+				body.as_bytes(),
+				1024,
+				i + 2,
+			));
+		}
+		let index = SharedIndex::new(dir.clone(), 1);
+		let limit = (1024 * 1024 * 15) / 100;
+		for sid in 1..=6u64 {
+			assert!(index.sync_tree(sid, entries.clone(), false, true));
+			let mut req = base_request(Vec::new(), Some("unique_token_15_alpha_15"));
+			req.snapshot_id = Some(sid);
+			let res = execute_search(&index, &req).unwrap();
+			assert_eq!(res.hits.len(), 1);
+			assert!(
+				index.trees.inverted_used_bytes() <= limit + 65536,
+				"shared inverted bytes {} exceeded limit {}",
+				index.trees.inverted_used_bytes(),
+				limit
+			);
+		}
+		assert!(index.trees.inverted_used_bytes() > 0);
+		for sid in 1..=6u64 {
+			index.drop_tree(sid);
+		}
+		assert_eq!(index.trees.inverted_used_bytes(), 0);
+		assert_eq!(index.trees.total_bytes(), 0);
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn patch_resets_doc_ids_when_next_doc_id_nears_u32_max() {
+		let dir = temp_dir("docid-reset");
+		let e0 = write_object_file(&dir, "a.ts", "00000000-0000-4000-8000-000000000001", b"alpha\n", 1024, 0);
+		let e1 = write_object_file(&dir, "b.ts", "00000000-0000-4000-8000-000000000002", b"beta\n", 1024, 1);
+		let media = MediaInterner::new();
+		let mut base = CompactTree::from_wire(&[e0], &media);
+		base.next_doc_id = u32::MAX - 1;
+		let (patched, removed, reset) = CompactTree::patch(&base, vec![e1], Vec::new(), &media);
+		assert!(reset);
+		assert!(removed.is_empty());
+		assert_eq!(patched.len(), 2);
+		assert_eq!(patched.entries[0].doc_id, 0);
+		assert_eq!(patched.entries[1].doc_id, 1);
+		assert_eq!(patched.next_doc_id, 2);
+		let _ = fs::remove_dir_all(&dir);
 	}
 
 	fn pipe_buffer() -> (SharedBuf, SharedReader) {

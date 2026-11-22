@@ -119,6 +119,11 @@ interface SearchFile {
 	readonly partial?: true;
 }
 
+interface CountTotal {
+	readonly lines: number;
+	readonly files: number;
+}
+
 interface SearchPage {
 	readonly hits: readonly SearchHit[];
 	readonly files?: readonly SearchFile[];
@@ -420,6 +425,7 @@ export class CloudFolderSearch {
 			readonly search: string;
 			readonly carried?: SearchFile;
 			readonly shown?: true;
+			readonly priorCount?: CountTotal;
 		}
 	>();
 
@@ -526,9 +532,15 @@ export class CloudFolderSearch {
 
 	/** A token for where an answer of `search` said to go on, with the count it showed as going on there, and whether
 	 * an answer showed part of the file it is inside. */
-	seal(cursor: SearchCursor, search: string, carried?: SearchFile, shown = false): string {
+	seal(cursor: SearchCursor, search: string, carried?: SearchFile, shown = false, priorCount?: CountTotal): string {
 		const token = randomBytes(12).toString("base64url");
-		this.#cursors.set(token, { cursor, search, ...(carried ? { carried } : {}), ...(shown ? { shown } : {}) });
+		this.#cursors.set(token, {
+			cursor,
+			search,
+			...(carried ? { carried } : {}),
+			...(shown ? { shown } : {}),
+			...(priorCount ? { priorCount } : {}),
+		});
 		return token;
 	}
 
@@ -536,7 +548,15 @@ export class CloudFolderSearch {
 	open(
 		token: string,
 		search: string,
-	): { readonly cursor: SearchCursor; readonly carried?: SearchFile; readonly shown?: true } | "other" | undefined {
+	):
+		| {
+				readonly cursor: SearchCursor;
+				readonly carried?: SearchFile;
+				readonly shown?: true;
+				readonly priorCount?: CountTotal;
+		  }
+		| "other"
+		| undefined {
 		const sealed = this.#cursors.get(token);
 		if (!sealed) return undefined;
 		if (sealed.search !== search) return "other";
@@ -544,6 +564,7 @@ export class CloudFolderSearch {
 			cursor: sealed.cursor,
 			...(sealed.carried ? { carried: sealed.carried } : {}),
 			...(sealed.shown ? { shown: sealed.shown } : {}),
+			...(sealed.priorCount ? { priorCount: sealed.priorCount } : {}),
 		};
 	}
 
@@ -716,6 +737,8 @@ interface Unit {
 	readonly resume: SearchCursor;
 	/** Its first and last line numbers in its file (a text hit with context), to join it to the next. */
 	readonly span?: readonly [string, number, number];
+	readonly fileCount?: number;
+	readonly filePartial?: boolean;
 }
 
 /** A link shows what it names, quoted as JSON: its target is kept exactly, spaces and line breaks too. */
@@ -748,6 +771,8 @@ function fileUnit(f: SearchFile): Unit {
 	return {
 		lines: [`${f.path}: ${f.count}${f.partial ? " so far (the count goes on with the cursor)" : ""}`],
 		resume: { path: f.path, version: f.version, offset: 0, line: 0 },
+		fileCount: f.count,
+		filePartial: f.partial === true,
 	};
 }
 
@@ -797,8 +822,9 @@ function inFile(file: { readonly path: string; readonly version: string }, curso
  * shows as going on there, and whether the answer shows anything of the file (at that version) the cursor is inside. */
 export function folderSearchText(
 	page: SearchPage,
-	seal: (cursor: SearchCursor, carried?: SearchFile, shown?: boolean) => string,
+	seal: (cursor: SearchCursor, carried?: SearchFile, shown?: boolean, priorCount?: CountTotal) => string,
 	countOnly = false,
+	priorCount?: CountTotal,
 ): string {
 	const units = unitsOf(page);
 	const longLines = page.longLines ?? 0;
@@ -810,8 +836,26 @@ export function folderSearchText(
 			: `${path} is not as the last answer saw it (changed, emptied, gone, or no longer yours to read): what that answer showed of it may not hold.`;
 	});
 	const notes = restarted.length > 0 ? `${restarted.join("\n")}\n\n` : "";
+	const totalsOf = (shownUnits: readonly Unit[]) => {
+		let pageLines = 0;
+		let pageFiles = 0;
+		let hasPartial = false;
+		for (const u of shownUnits) {
+			if (u.fileCount !== undefined) {
+				pageLines += u.fileCount;
+				pageFiles += 1;
+				if (u.filePartial) hasPartial = true;
+			}
+		}
+		return {
+			lines: (priorCount?.lines ?? 0) + pageLines,
+			files: (priorCount?.files ?? 0) + pageFiles,
+			hasPartial,
+		};
+	};
 	const lay = (shown: number, first?: Unit, token = "x".repeat(16)) => {
-		const lines = joined(units.slice(0, shown).map((u, i) => (i === 0 && first !== undefined ? first : u)));
+		const shownUnits = units.slice(0, shown).map((u, i) => (i === 0 && first !== undefined ? first : u));
+		const lines = joined(shownUnits);
 		const cut = shown < units.length;
 		const next = cut ? units[shown]!.resume : page.next;
 		const passed =
@@ -825,26 +869,33 @@ export function folderSearchText(
 				passed;
 		const more = next ? `. More: call again with cursor ${token}` : ". Nothing more.";
 		let body = lines.length === 0 ? "No matches here." : lines.join("\n");
-		if (countOnly && lines.length > 0) {
-			const matchingFiles = (page.files ?? []).filter((f) => f.count > 0).slice(0, shown);
-			const total = matchingFiles.reduce((sum, f) => sum + f.count, 0);
-			const partial = cut || next !== null || matchingFiles.some((f) => f.partial === true);
-			const summary = `${total} matching line${total === 1 ? "" : "s"} in ${matchingFiles.length} file${matchingFiles.length === 1 ? "" : "s"}${partial ? " so far" : ""}`;
-			body = `${summary}\n${body}`;
+		const totals = countOnly ? totalsOf(shownUnits) : undefined;
+		if (totals && totals.lines > 0) {
+			const partial = cut || next !== null || totals.hasPartial;
+			const summary = `${totals.lines} matching line${totals.lines === 1 ? "" : "s"} in ${totals.files} file${totals.files === 1 ? "" : "s"}${partial ? " so far" : ""}`;
+			body = lines.length === 0 ? `${summary}\nNo more matches here.` : `${summary}\n${body}`;
 		}
 		return {
 			text: `${body}\n\n${notes}${counts}${more}`,
 			next,
+			totals,
 		};
 	};
 	const last = page.files?.at(-1);
 	const sealed = (shown: number, first?: Unit): string => {
-		const { text, next } = lay(shown, first);
+		const { text, next, totals } = lay(shown, first);
 		if (!next) return text;
 		// A count shown as going on goes on with the cursor, when the answer showed it (nothing after it was cut).
 		const carried = shown === units.length && last?.partial ? last : undefined;
 		const showsFile = units.slice(0, shown).some((unit) => inFile(unit.resume, next));
-		return lay(shown, first, seal(next, carried, showsFile)).text;
+		// WHY: subtract carried partial file from priorCount so the next page's withCarried merge does not double-count it.
+		const nextPrior: CountTotal | undefined = totals
+			? {
+					lines: Math.max(0, totals.lines - (carried?.count ?? 0)),
+					files: Math.max(0, totals.files - (carried ? 1 : 0)),
+				}
+			: undefined;
+		return lay(shown, first, seal(next, carried, showsFile, nextPrior)).text;
 	};
 	let shown = units.length;
 	while (shown > 1 && !fitsOneResult(lay(shown).text)) shown--;
@@ -856,7 +907,12 @@ export function folderSearchText(
 		const bare = hitUnit(hit, false);
 		if (fitsOneResult(lay(1, bare).text)) return sealed(1, bare);
 	}
-	const only = (line: string): Unit => ({ lines: [line], resume: units[0]!.resume });
+	const only = (line: string): Unit => ({
+		lines: [line],
+		resume: units[0]!.resume,
+		...(units[0]?.fileCount === undefined ? {} : { fileCount: units[0].fileCount }),
+		...(units[0]?.filePartial === undefined ? {} : { filePartial: units[0].filePartial }),
+	});
 	if (hit) {
 		const link = hit.kind === "symlink";
 		const chars = Array.from(link ? (hit.target ?? "") : hit.text);
@@ -925,6 +981,56 @@ function escapeRegexLiteral(text: string): string {
 	return text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 }
 
+function wrapWholeWord(query: string, isRegex: boolean): string {
+	if (isRegex) return `(?:^|[^A-Za-z0-9_\\n])(?:${query})(?:$|[^A-Za-z0-9_\\n])`;
+	const escaped = escapeRegexLiteral(query);
+	const left = /^[A-Za-z0-9_]/.test(query) ? "\\b" : "(?:^|[^A-Za-z0-9_\\n])";
+	const right = /[A-Za-z0-9_]$/.test(query) ? "\\b" : "(?:$|[^A-Za-z0-9_\\n])";
+	return `${left}(?:${escaped})${right}`;
+}
+
+function hasUppercaseLiteral(query: string, isRegex: boolean): boolean {
+	if (!isRegex) return /\p{Lu}/u.test(query);
+	const chars = Array.from(query);
+	for (let i = 0; i < chars.length; ) {
+		const c = chars[i]!;
+		if (c === "\\") {
+			const next = chars[i + 1];
+			if (next === undefined) break;
+			if (next === "x") {
+				if (chars[i + 2] === "{") {
+					const close = chars.indexOf("}", i + 3);
+					i = close < 0 ? i + 2 : close + 1;
+				} else {
+					i += 4;
+				}
+				continue;
+			}
+			if (next === "u") {
+				i += 6;
+				continue;
+			}
+			if (next === "c") {
+				i += 3;
+				continue;
+			}
+			i += 2;
+			continue;
+		}
+		if (c === "(" && chars[i + 1] === "?") {
+			let j = i + 2;
+			while (j < chars.length && /[A-Za-z-]/.test(chars[j]!)) j++;
+			if (j > i + 2 && (chars[j] === ")" || chars[j] === ":")) {
+				i = j + 1;
+				continue;
+			}
+		}
+		if (/\p{Lu}/u.test(c)) return true;
+		i++;
+	}
+	return false;
+}
+
 function formatExcludeGlob(exclude: string): string {
 	const parts = exclude
 		.split(",")
@@ -974,8 +1080,8 @@ export function cloudFolderSearchTool(options: {
 			"what you may read is searched.\n" +
 			"Literal text, not case-sensitive unless you say (or set smart_case for case-sensitive only when query has " +
 			"uppercase); whole_word matches whole words only. With regex, query is a regular expression (linear-time: no " +
-			"back-references or lookaround, counts up to 64, inline (?i) and (?m) flags) if the folder's search runs " +
-			"them; REGEX_OFF means it does not, so search for text.\n" +
+			"back-references or lookaround; counts up to 64 and inline (?i)/(?m) flags on the native worker, counts up to " +
+			"16 on the JS fallback) if the folder's search runs them; REGEX_OFF means it does not, so search for text.\n" +
 			"context adds up to 5 lines before and after each hit (path-line- text); files_only lists just the matching " +
 			"files (path: matching lines); count_only totals matching lines across matching files; exclude_glob (or " +
 			"!pattern in glob) skips matching paths. names_only searches the names of files, folders and links instead " +
@@ -1074,7 +1180,7 @@ export function cloudFolderSearchTool(options: {
 				);
 			if (excludeGlob !== undefined) mergeWireGlob(glob, excludeGlob);
 			if (wholeWord && query !== null) {
-				const wrapped = regex ? `\\b(?:${query})\\b` : `\\b(?:${escapeRegexLiteral(query)})\\b`;
+				const wrapped = wrapWholeWord(query, regex);
 				if (wrapped.length > MAX_QUERY)
 					throw new CloudToolArgumentRefusal(
 						`whole_word query must fit within ${MAX_QUERY} characters as a pattern`,
@@ -1103,13 +1209,10 @@ export function cloudFolderSearchTool(options: {
 			const wireGlob = mergeWireGlob(input.glob, input.exclude_glob);
 			const wireRegex = input.regex || input.whole_word === true;
 			const wireQuery =
-				input.whole_word === true && input.query !== null
-					? input.regex
-						? `\\b(?:${input.query})\\b`
-						: `\\b(?:${escapeRegexLiteral(input.query)})\\b`
-					: input.query;
+				input.whole_word === true && input.query !== null ? wrapWholeWord(input.query, input.regex) : input.query;
 			const wireCaseSensitive =
-				input.case_sensitive || (input.smart_case === true && input.query !== null && /\p{Lu}/u.test(input.query));
+				input.case_sensitive ||
+				(input.smart_case === true && input.query !== null && hasUppercaseLiteral(input.query, input.regex));
 			const wireFilesOnly = input.files_only || input.count_only === true;
 			const asked = JSON.stringify([
 				input.query,
@@ -1157,6 +1260,10 @@ export function cloudFolderSearchTool(options: {
 				const code = error instanceof FolderLinkError ? error.code : "";
 				const detail = error instanceof FolderLinkError ? error.detail : undefined;
 				if (code === "NOT_FOUND") throw new CloudToolRefusal("NOT_FOUND: no such path in the folder you may read");
+				if (code === "BAD_REQUEST" && detail?.startsWith("REGEX_OFF:") && input.whole_word === true && !input.regex)
+					throw new CloudToolRefusal(
+						"WHOLE_WORD_UNAVAILABLE: this node's folder search cannot run whole_word because regular expressions are disabled; search without whole_word",
+					);
 				if (code === "BAD_REQUEST" && detail) throw new CloudToolRefusal(detail);
 				if (code === "BAD_REQUEST")
 					throw new CloudToolRefusal("BAD_REQUEST: the folder search refused the request");
@@ -1171,14 +1278,16 @@ export function cloudFolderSearchTool(options: {
 			const text = redactCloudWebhookSecrets(
 				folderSearchText(
 					page,
-					(cursor, carried, shown) =>
+					(cursor, carried, shown, priorCount) =>
 						search.seal(
 							cursor,
 							asked,
 							carried,
 							shown === true || (opened?.shown === true && inFile(opened.cursor, cursor)),
+							priorCount,
 						),
 					input.count_only === true,
+					opened?.priorCount,
 				),
 			);
 			// Released before the model sees the answer, under the hash of exactly this text; cited by its first release.

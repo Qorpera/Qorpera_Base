@@ -10,8 +10,9 @@ import { byteOrder, type TreeDelta, type TreeEntry, type ViewTree } from "./view
 const DEFAULT_INDEX_MIB = 512;
 const DEFAULT_THREADS = 4;
 const DEFAULT_BUDGET_WAIT_MS = 20_000;
-const TREE_BUDGET_RATIO = 0.65;
-const COMPACT_ENTRY_BYTES = 116;
+const TREE_BUDGET_RATIO = 0.5;
+// WHY: matches Rust size_of::<CompactEntry>() (120) + size_of::<DocInfo>() (16) so admission bounds 100% of --index-mib.
+const COMPACT_ENTRY_BYTES = 136;
 const ESTIMATE_ENTRY_BYTES = COMPACT_ENTRY_BYTES + 80;
 const SEARCH_BUSY = "SEARCH_BUSY: the node's folder search is busy; try again shortly";
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
@@ -47,13 +48,9 @@ interface SearchFrame {
 	readonly regex: boolean;
 	readonly path: string;
 	readonly glob: string | null;
-	readonly excludeGlob?: string | null;
 	readonly namesOnly: boolean;
 	readonly filesOnly: boolean;
-	readonly countOnly?: boolean;
 	readonly caseSensitive: boolean;
-	readonly smartCase?: boolean;
-	readonly wholeWord?: boolean;
 	readonly context: number;
 	readonly links: boolean;
 	readonly after: SearchCursor | null;
@@ -89,7 +86,6 @@ interface DropTreeFrame {
 interface WorkerOk {
 	readonly hits: readonly SearchHit[];
 	readonly files: readonly SearchFile[];
-	readonly totalMatches?: number;
 	readonly searched: number;
 	readonly binary: number;
 	readonly unreadable: number;

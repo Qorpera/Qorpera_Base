@@ -988,12 +988,7 @@ impl FolderFs {
 		let up = Up::Mount(dir);
 		let ttl = self.ttl(&up, Area::Cache);
 		match local.entry(up, name, Area::Cache) {
-			Ok(attr) => {
-				if !ttl.is_zero() {
-					self.s.kernel.track_entry(parent, name);
-				}
-				self.entry(reply, &ttl, &attr)
-			}
+			Ok(attr) => self.entry(reply, &ttl, &attr),
 			Err(_) => return Some(reply),
 		}
 		None
@@ -1308,12 +1303,7 @@ impl FolderFs {
 			Ok(attr)
 		});
 		match made {
-			Ok(attr) => {
-				if area == Area::Cache && !ttl.is_zero() {
-					self.s.kernel.track_entry(parent, name);
-				}
-				self.entry(reply, &ttl, &attr)
-			}
+			Ok(attr) => self.entry(reply, &ttl, &attr),
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
 		None
@@ -1670,12 +1660,7 @@ impl FolderFs {
 					Ok(attr)
 				});
 				match made {
-					Ok(attr) => {
-						if area == Area::Cache && !ttl.is_zero() {
-							self.s.kernel.track_entry(parent, name);
-						}
-						self.entry(reply, &ttl, &attr)
-					}
+					Ok(attr) => self.entry(reply, &ttl, &attr),
 					Err(e) => reply.error(Errno::from_i32(e)),
 				}
 			}
