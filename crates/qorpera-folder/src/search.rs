@@ -926,7 +926,7 @@ impl CompactTree {
 				deduped.push(op);
 			}
 		}
-		let reset_inverted = (base.next_doc_id as u64).saturating_add(upserts_count as u64) >= u32::MAX as u64;
+		let mut reset_inverted = (base.next_doc_id as u64).saturating_add(upserts_count as u64) >= u32::MAX as u64;
 		let mut out = Self::with_capacity(base.entries.len() + upserts_count, base.paths.len() + upsert_path_bytes);
 		out.next_doc_id = if reset_inverted { 0 } else { base.next_doc_id };
 		let mut removed_docs = Vec::new();
@@ -976,6 +976,10 @@ impl CompactTree {
 				out.push_wire_ref(w, media, doc_id);
 			}
 			oi += 1;
+		}
+		// WHY: renumber densely once churn leaves more dead doc_ids than live entries so doc_info never grows unboundedly.
+		if !reset_inverted && (out.next_doc_id as usize) > out.entries.len().saturating_mul(2).max(1024) {
+			reset_inverted = true;
 		}
 		if reset_inverted {
 			for (idx, entry) in out.entries.iter_mut().enumerate() {
@@ -1368,19 +1372,23 @@ struct InvertedBase {
 	postings: HashMap<u32, PostingList>,
 	doc_info: Vec<DocInfo>,
 	postings_bytes: usize,
+	extra_doc_info_bytes: usize,
 	budget: Arc<InvertedBudget>,
 }
 
 impl Drop for InvertedBase {
 	fn drop(&mut self) {
-		self.budget.release(self.postings_bytes);
+		self.budget.release(self.postings_bytes + self.extra_doc_info_bytes);
 	}
 }
 
 impl InvertedBase {
-	fn with_docs(doc_count: usize, budget: Arc<InvertedBudget>) -> Self {
+	fn with_docs(doc_count: usize, live_docs: usize, budget: Arc<InvertedBudget>) -> Self {
 		let doc_info = vec![DocInfo::default(); doc_count];
-		Self { postings: HashMap::new(), doc_info, postings_bytes: 0, budget }
+		// WHY: live DocInfo slots are charged in TS COMPACT_ENTRY_BYTES (136); charge any dead-slot overflow to InvertedBudget.
+		let extra_doc_info_bytes = doc_count.saturating_sub(live_docs) * std::mem::size_of::<DocInfo>();
+		budget.charge(extra_doc_info_bytes);
+		Self { postings: HashMap::new(), doc_info, postings_bytes: 0, extra_doc_info_bytes, budget }
 	}
 
 	fn try_push_posting(&mut self, tri: u32, doc_id: u32) -> bool {
@@ -1404,6 +1412,7 @@ struct InvertedIndex {
 	added_postings: HashMap<u32, Vec<u32>>,
 	delta_bytes: usize,
 	budget: Arc<InvertedBudget>,
+	live_docs: usize,
 	indexed_docs: usize,
 	next_doc_id: u32,
 	generation: u64,
@@ -1419,12 +1428,13 @@ impl InvertedIndex {
 	fn new(doc_count: usize, budget: Arc<InvertedBudget>) -> Self {
 		Self {
 			profile_uuid: None,
-			base: Arc::new(InvertedBase::with_docs(doc_count, budget.clone())),
+			base: Arc::new(InvertedBase::with_docs(doc_count, doc_count, budget.clone())),
 			removed_docs: HashSet::new(),
 			added_docs: HashMap::new(),
 			added_postings: HashMap::new(),
 			delta_bytes: 0,
 			budget,
+			live_docs: doc_count,
 			indexed_docs: 0,
 			next_doc_id: doc_count as u32,
 			generation: 0,
@@ -1432,6 +1442,7 @@ impl InvertedIndex {
 	}
 
 	fn ensure_capacity(&mut self, doc_count: usize) {
+		self.live_docs = doc_count;
 		if doc_count as u32 > self.next_doc_id {
 			self.next_doc_id = doc_count as u32;
 		}
@@ -1546,7 +1557,7 @@ impl InvertedIndex {
 		self.generation = self.generation.wrapping_add(1);
 	}
 
-	fn patch_from(&self, removed: &[u32], next_doc_id: u32) -> Self {
+	fn patch_from(&self, removed: &[u32], next_doc_id: u32, live_docs: usize) -> Self {
 		self.budget.charge(self.delta_bytes);
 		let mut out = Self {
 			profile_uuid: self.profile_uuid,
@@ -1556,6 +1567,7 @@ impl InvertedIndex {
 			added_postings: self.added_postings.clone(),
 			delta_bytes: self.delta_bytes,
 			budget: self.budget.clone(),
+			live_docs,
 			indexed_docs: self.indexed_docs,
 			next_doc_id,
 			generation: self.generation.wrapping_add(1),
@@ -1586,7 +1598,7 @@ impl InvertedIndex {
 
 	fn compact(&mut self) {
 		let doc_len = (self.next_doc_id as usize).max(self.base.doc_info.len());
-		let mut new_base = InvertedBase::with_docs(doc_len, self.budget.clone());
+		let mut new_base = InvertedBase::with_docs(doc_len, self.live_docs, self.budget.clone());
 		for (idx, &info) in self.base.doc_info.iter().enumerate() {
 			let doc_id = idx as u32;
 			if !self.removed_docs.contains(&doc_id) {
@@ -1945,7 +1957,7 @@ impl TreeCache {
 		let new_inv = if reset_inverted {
 			InvertedIndex::new(patched.len(), budget)
 		} else {
-			base_inv.read().unwrap().patch_from(&removed_docs, next_doc_id)
+			base_inv.read().unwrap().patch_from(&removed_docs, next_doc_id, patched.len())
 		};
 		let bytes = patched.mem_bytes();
 		let mut guard = self.inner.lock().unwrap();
@@ -3457,6 +3469,27 @@ impl Drop for InvFlushGuard<'_> {
 	}
 }
 
+fn sync_inv_candidates(
+	guard: &InvertedIndex,
+	profile_uuid: [u8; 16],
+	trigram_query: &CompiledTrigramQuery,
+	inv_candidates_gen: &mut Option<u64>,
+	inv_active: &mut bool,
+	inv_candidates: &mut Option<Vec<u32>>,
+) {
+	// WHY: concurrent searches on the same snapshot can record new docs between guard drops; re-evaluate whenever generation advances.
+	if *inv_candidates_gen != Some(guard.generation) {
+		*inv_candidates_gen = Some(guard.generation);
+		if guard.profile_uuid == Some(profile_uuid) && guard.indexed_docs > 0 {
+			*inv_active = true;
+			*inv_candidates = guard.eval_query(trigram_query);
+		} else {
+			*inv_active = false;
+			*inv_candidates = None;
+		}
+	}
+}
+
 pub fn execute_search(index: &SharedIndex, req: &WorkerRequest) -> Result<WorkerOk, WorkerError> {
 	let resolved_tree = req.snapshot_id.and_then(|sid| index.get_tree(sid));
 	execute_search_with_tree(index, req, resolved_tree)
@@ -3720,17 +3753,14 @@ fn execute_search_with_tree(
 			if let Some(inv_lock) = synced_inv {
 				if inv_read_guard.is_none() {
 					let guard = inv_lock.read().unwrap();
-					// WHY: concurrent searches on the same snapshot can record new docs between guard drops; re-evaluate whenever generation advances.
-					if inv_candidates_gen != Some(guard.generation) {
-						inv_candidates_gen = Some(guard.generation);
-						if guard.profile_uuid == Some(profile_uuid) && guard.indexed_docs > 0 {
-							inv_active = true;
-							inv_candidates = guard.eval_query(&trigram_query);
-						} else {
-							inv_active = false;
-							inv_candidates = None;
-						}
-					}
+					sync_inv_candidates(
+						&guard,
+						profile_uuid,
+						&trigram_query,
+						&mut inv_candidates_gen,
+						&mut inv_active,
+						&mut inv_candidates,
+					);
 					if inv_active {
 						inv_read_guard = Some(guard);
 					}
@@ -5504,10 +5534,68 @@ mod tests {
 		assert_ne!(inv.generation, gen_before);
 		assert_eq!(inv.postings_for(tri_a), vec![10, 30, 50]);
 		assert_eq!(inv.postings_for(tri_b), vec![30, 50]);
-		let patched = inv.patch_from(&[50], 101);
+		let mut patched = inv.patch_from(&[50], 120, 100);
 		assert_eq!(patched.postings_for(tri_a), vec![10, 30]);
 		assert_eq!(patched.postings_for(tri_b), vec![30]);
+		patched.compact();
+		assert!(patched.base.extra_doc_info_bytes >= 20 * std::mem::size_of::<DocInfo>());
 		drop(patched);
+		drop(inv);
+		assert_eq!(budget.used(), 0);
+	}
+
+	#[test]
+	fn generation_bump_forces_candidate_re_evaluation_for_concurrent_readers() {
+		let profile = [9u8; 16];
+		let budget = Arc::new(InvertedBudget::new(1024 * 1024));
+		let inv = Arc::new(RwLock::new(InvertedIndex::new(16, budget.clone())));
+		let info = DocInfo { kind: DOC_INDEXED, long_lines_1m: 0, max_line_bytes: 32 };
+		let other_tri: u32 = 0x6f7468;
+		let needle_tri: u32 = 0x6e6565;
+		let (h1, h2) = trigram_hashes(needle_tri);
+		let query = CompiledTrigramQuery::Exact { tri: needle_tri, h1, h2 };
+
+		inv.write().unwrap().record_doc(profile, 1, info, Some(&[other_tri]));
+
+		let mut inv_candidates_gen: Option<u64> = None;
+		let mut inv_active = false;
+		let mut inv_candidates: Option<Vec<u32>> = None;
+		{
+			let guard = inv.read().unwrap();
+			sync_inv_candidates(
+				&guard,
+				profile,
+				&query,
+				&mut inv_candidates_gen,
+				&mut inv_active,
+				&mut inv_candidates,
+			);
+			assert!(inv_active);
+			assert_eq!(inv_candidates_gen, Some(1));
+			assert_eq!(inv_candidates.as_deref(), Some(&[][..]));
+		}
+
+		// WHY: simulate a second concurrent search flushing a matching doc while the first search dropped its read guard.
+		let second_handle = inv.clone();
+		second_handle.write().unwrap().record_doc(profile, 5, info, Some(&[needle_tri]));
+
+		{
+			let guard = inv.read().unwrap();
+			assert_eq!(guard.doc_info_of(5).kind, DOC_INDEXED);
+			assert!(inv_candidates.as_ref().unwrap().binary_search(&5).is_err());
+			sync_inv_candidates(
+				&guard,
+				profile,
+				&query,
+				&mut inv_candidates_gen,
+				&mut inv_active,
+				&mut inv_candidates,
+			);
+			assert_eq!(inv_candidates_gen, Some(2));
+			assert_eq!(inv_candidates.as_deref(), Some(&[5][..]));
+			assert!(inv_candidates.as_ref().unwrap().binary_search(&5).is_ok());
+		}
+		drop(second_handle);
 		drop(inv);
 		assert_eq!(budget.used(), 0);
 	}
@@ -5628,13 +5716,23 @@ mod tests {
 		let media = MediaInterner::new();
 		let mut base = CompactTree::from_wire(&[e0], &media);
 		base.next_doc_id = u32::MAX - 1;
-		let (patched, removed, reset) = CompactTree::patch(&base, vec![e1], Vec::new(), &media);
+		let (patched, removed, reset) = CompactTree::patch(&base, vec![e1.clone()], Vec::new(), &media);
 		assert!(reset);
 		assert!(removed.is_empty());
 		assert_eq!(patched.len(), 2);
 		assert_eq!(patched.entries[0].doc_id, 0);
 		assert_eq!(patched.entries[1].doc_id, 1);
 		assert_eq!(patched.next_doc_id, 2);
+
+		let mut churned = patched;
+		churned.next_doc_id = 1025;
+		let (dense, dense_removed, dense_reset) = CompactTree::patch(&churned, vec![e1], Vec::new(), &media);
+		assert!(dense_reset);
+		assert!(dense_removed.is_empty());
+		assert_eq!(dense.len(), 2);
+		assert_eq!(dense.entries[0].doc_id, 0);
+		assert_eq!(dense.entries[1].doc_id, 1);
+		assert_eq!(dense.next_doc_id, 2);
 		let _ = fs::remove_dir_all(&dir);
 	}
 
