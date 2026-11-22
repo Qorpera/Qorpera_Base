@@ -2660,7 +2660,6 @@ export function mountApplication(
 							folderImage: cardImage,
 							folderApp: cardApp,
 							decisions: questionsHost(),
-							surfaces: surfacesOf(controller),
 							// A change of this agent's ready to go live, as a card below the thread; a site a message links, as
 							// the Sites page's row under the words.
 							codeReleases: releaseDesk(true),
