@@ -1037,6 +1037,12 @@ describe("SurfacesStore", () => {
 			if (surfaceId === secondSurface.id) return workspace([], { surface: secondSurface });
 			websiteCalls += 1;
 			if (websiteCalls === 2) return staleRefresh.promise;
+			if (websiteCalls === 3) {
+				return workspace([], {
+					surface: summary({ title: "Website (refreshed)" }),
+					recentHistory: [session(["merged", "merged"], { state: "completed" })],
+				});
+			}
 			return workspace([session(["staged", "staged"])], {
 				previewState: {
 					surfaceId: SURFACE,
@@ -1073,10 +1079,14 @@ describe("SurfacesStore", () => {
 		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass1)).toBe(false);
 
 		store.markPreviewPassConsumed(PREVIEW_IDS[0], pass1);
-		await store.remintPreviewPass(SURFACE, PREVIEW_IDS[0], pass1);
+		expect(await store.remintPreviewPass(SURFACE, PREVIEW_IDS[0], pass1)).toBe(true);
 		const pass2 = store.workspace(SURFACE)!.previewState.primary.memberPass!;
 		expect(pass2).not.toBe(pass1);
 		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass2)).toBe(true);
+
+		mintPreviewPass.mockRejectedValueOnce(new Error("mint unavailable"));
+		expect(await store.remintPreviewPass(SURFACE, PREVIEW_IDS[0], pass2)).toBe(false);
+		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass2)).toBe(false);
 
 		const slowPromise = store.refreshWorkspace(SURFACE);
 		store.openDrawer(SURFACE, SESSION);
@@ -1089,6 +1099,7 @@ describe("SurfacesStore", () => {
 		staleRefresh.resolve(workspace([session(["staged", "staged"])]));
 		await slowPromise;
 		expect(store.workspace(SURFACE)?.recentHistory.map((s) => s.id)).toEqual([SESSION]);
+		expect(store.workspace(SURFACE)?.surface.title).toBe("Website (refreshed)");
 
 		getSurfaceWorkspace.mockClear();
 		store.onRealtimeHint("surfaces");

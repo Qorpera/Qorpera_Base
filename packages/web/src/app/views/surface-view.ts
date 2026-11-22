@@ -245,7 +245,7 @@ export class SurfaceView {
 			onPassSent: (previewId, pass) => host.store.markPreviewPassConsumed(previewId, pass),
 			onNeedFreshPass: (previewId, stalePass) => {
 				const surface = this.surface;
-				if (surface) void host.store.remintPreviewPass(surface.id, previewId, stalePass);
+				return surface ? host.store.remintPreviewPass(surface.id, previewId, stalePass) : Promise.resolve(false);
 			},
 		});
 		this.#topSlot.append(this.#handoffForm, this.#banner);
@@ -1192,9 +1192,7 @@ export class SurfaceView {
 					const stage = new SurfaceDoorStage(abort.signal, {
 						isPassUsable: (previewId, pass) => store.isPreviewPassUsable(previewId, pass),
 						onPassSent: (previewId, pass) => store.markPreviewPassConsumed(previewId, pass),
-						onNeedFreshPass: (previewId, stalePass) => {
-							void store.remintPreviewPass(surface.id, previewId, stalePass);
-						},
+						onNeedFreshPass: (previewId, stalePass) => store.remintPreviewPass(surface.id, previewId, stalePass),
 					});
 					stage.setIdentityTokens(store.companyIdentityTokens());
 					const column = h("div", { class: "surface-compare-column" }, head, stage.el);

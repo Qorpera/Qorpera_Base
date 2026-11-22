@@ -763,10 +763,10 @@ export class SurfacesStore {
 	readonly #localCreatedIds = new Set<string>();
 	readonly #studioUndoSnapshots = new Map<string, Readonly<Record<string, string>>>();
 	readonly #cloudFilesLoading = new Set<string>();
-	readonly #mintingPreviewPasses = new Map<string, Promise<void>>();
+	readonly #mintingPreviewPasses = new Map<string, Promise<boolean>>();
 	readonly #previewPassMeta = new Map<
 		string,
-		{ readonly pass: string; readonly mintedAt: number; consumed: boolean }
+		{ readonly pass: string; readonly mintedAt: number; consumed: boolean; retryMint?: boolean }
 	>();
 	readonly #workspaceEpoch = new Map<string, number>();
 	readonly #latestWorkspaceReq = new Map<string, number>();
@@ -1479,34 +1479,42 @@ export class SurfacesStore {
 		return this.refreshWorkspace(surface.id);
 	}
 
-	async refreshWorkspace(surfaceId: string): Promise<SurfaceWorkspace | undefined> {
+	async refreshWorkspace(surfaceId: string, retryDepth = 0): Promise<SurfaceWorkspace | undefined> {
 		const client = this.#options.client;
 		if (!client || isLocalSurfaceId(surfaceId)) return this.workspace(surfaceId);
 		const reqId = ++this.#workspaceReqSeq;
 		const startEpoch = this.#workspaceEpoch.get(surfaceId) ?? 0;
 		this.#latestWorkspaceReq.set(surfaceId, reqId);
 		this.#inFlightWorkspaceRefreshes.add(surfaceId);
+		let rerun = false;
+		let result: SurfaceWorkspace | undefined;
 		try {
 			const workspace = await client.getSurfaceWorkspace(surfaceId);
 			if (this.#options.signal.aborted) return undefined;
-			if (
-				this.#latestWorkspaceReq.get(surfaceId) !== reqId ||
-				(this.#workspaceEpoch.get(surfaceId) ?? 0) !== startEpoch
-			) {
+			if (this.#latestWorkspaceReq.get(surfaceId) !== reqId) {
 				return this.workspace(surfaceId);
 			}
-			this.#putWorkspace(workspace, false);
-			return workspace;
+			if ((this.#workspaceEpoch.get(surfaceId) ?? 0) !== startEpoch) {
+				rerun = retryDepth < 2;
+				result = this.workspace(surfaceId);
+			} else {
+				this.#putWorkspace(workspace, false);
+				result = workspace;
+			}
 		} catch (error) {
 			if (!this.#options.signal.aborted && this.#latestWorkspaceReq.get(surfaceId) === reqId) {
 				this.store.set({ error: describe(error) });
 			}
-			return undefined;
+			result = undefined;
 		} finally {
 			if (this.#latestWorkspaceReq.get(surfaceId) === reqId) {
 				this.#inFlightWorkspaceRefreshes.delete(surfaceId);
 			}
 		}
+		if (rerun && !this.#options.signal.aborted && this.#latestWorkspaceReq.get(surfaceId) === reqId) {
+			return this.refreshWorkspace(surfaceId, retryDepth + 1);
+		}
+		return result;
 	}
 
 	isPreviewPassUsable(previewId: string, pass: string): boolean {
@@ -1524,7 +1532,7 @@ export class SurfacesStore {
 		this.#previewPassMeta.set(previewId, { pass, mintedAt: Date.now(), consumed: true });
 	}
 
-	remintPreviewPass(surfaceId: string, previewId: string, stalePass?: string): Promise<void> {
+	remintPreviewPass(surfaceId: string, previewId: string, stalePass?: string): Promise<boolean> {
 		if (stalePass) this.markPreviewPassConsumed(previewId, stalePass);
 		return this.#ensurePreviewPass(surfaceId, previewId);
 	}
@@ -1620,7 +1628,7 @@ export class SurfacesStore {
 			for (const frame of frames) {
 				if (frame.status === "ready" && frame.previewId && !frame.memberPass) {
 					const meta = this.#previewPassMeta.get(frame.previewId);
-					if (!meta || !meta.consumed) {
+					if (!meta || !meta.consumed || meta.retryMint) {
 						void this.#ensurePreviewPass(workspace.surface.id, frame.previewId);
 					}
 				}
@@ -1637,20 +1645,21 @@ export class SurfacesStore {
 		this.#syncPolling();
 	}
 
-	#ensurePreviewPass(surfaceId: string, previewId: string): Promise<void> {
+	#ensurePreviewPass(surfaceId: string, previewId: string): Promise<boolean> {
 		const mint = this.#options.client?.mintPreviewPass;
-		if (!mint || isLocalSurfaceId(surfaceId)) return Promise.resolve();
+		if (!mint || isLocalSurfaceId(surfaceId)) return Promise.resolve(false);
 		const inFlight = this.#mintingPreviewPasses.get(previewId);
 		if (inFlight) return inFlight;
-		const promise = (async () => {
+		const promise = (async (): Promise<boolean> => {
 			try {
 				const grant = await mint.call(this.#options.client, previewId);
-				if (this.#options.signal.aborted) return;
+				if (this.#options.signal.aborted) return false;
 				this.#previewPassMeta.set(grant.previewId, {
 					pass: grant.memberPass,
 					mintedAt: Date.now(),
 					consumed: false,
 				});
+				let applied = false;
 				this.store.set((state) => {
 					const workspace = state.workspaces[surfaceId];
 					if (!workspace) return {};
@@ -1670,6 +1679,7 @@ export class SurfacesStore {
 						frame: patchFrame(entry.frame),
 					}));
 					if (!changed) return {};
+					applied = true;
 					return {
 						workspaces: {
 							...state.workspaces,
@@ -1684,8 +1694,12 @@ export class SurfacesStore {
 						},
 					};
 				});
+				return applied;
 			} catch {
-				/* WHY: A transient preview pass mint failure retries on the next workspace refresh without breaking the stage. */
+				/* WHY: A transient preview pass mint failure fails the waiting stage and retries on the next workspace refresh. */
+				const meta = this.#previewPassMeta.get(previewId);
+				if (meta) meta.retryMint = true;
+				return false;
 			} finally {
 				this.#mintingPreviewPasses.delete(previewId);
 			}

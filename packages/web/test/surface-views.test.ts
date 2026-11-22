@@ -659,7 +659,10 @@ describe("the surface page", () => {
 			handshakeTimeoutMs: 500,
 			isPassUsable: (_previewId, pass) => !consumed.has(pass),
 			onPassSent: (_previewId, pass) => consumed.add(pass),
-			onNeedFreshPass: (previewId, stalePass) => remints.push({ previewId, stalePass }),
+			onNeedFreshPass: (previewId, stalePass) => {
+				remints.push({ previewId, stalePass });
+				return undefined;
+			},
 		});
 		document.body.append(stage.el);
 
@@ -694,6 +697,20 @@ describe("the surface page", () => {
 		stage.sync(previewFrame({ previewId: PREVIEW_IDS[1], memberPass: null }), "Preview 2");
 		expect(stage.el.querySelector("iframe.is-shown")).toBe(liveFrame);
 		expect(stage.el.querySelector("iframe.is-staging")).toBeNull();
+
+		const failStage = new SurfaceDoorStage(controller.signal, {
+			handshakeTimeoutMs: 500,
+			onNeedFreshPass: async () => false,
+		});
+		document.body.append(failStage.el);
+		failStage.sync(previewFrame({ previewId: PREVIEW_IDS[0], memberPass: pass1 }), "Preview fail");
+		vi.advanceTimersByTime(500);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(failStage.el.querySelector(".surface-frame.is-waiting .surface-state.is-failed")).not.toBeNull();
+		expect(failStage.el.querySelector(".surface-frame.is-waiting p")?.textContent).toBe(
+			"The preview could not be opened.",
+		);
 
 		controller.abort();
 		vi.useRealTimers();

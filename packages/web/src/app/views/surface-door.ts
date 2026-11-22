@@ -67,7 +67,7 @@ export interface SurfaceDoorOptions {
 	readonly handshakeTimeoutMs?: number;
 	readonly isPassUsable?: (previewId: string, pass: string) => boolean;
 	readonly onPassSent?: (previewId: string, pass: string) => void;
-	readonly onNeedFreshPass?: (previewId: string, stalePass?: string) => void;
+	readonly onNeedFreshPass?: (previewId: string, stalePass?: string) => Promise<boolean> | undefined;
 }
 
 export function previewStatusText(frame: SurfacePreviewFrameState): string {
@@ -146,8 +146,7 @@ export class SurfaceDoorStage {
 				this.#dropStaging();
 				const needKey = `${previewId}\0${path}`;
 				if (previewId && this.#options.onNeedFreshPass && this.#requestedPassKey !== needKey) {
-					this.#requestedPassKey = needKey;
-					this.#options.onNeedFreshPass(previewId);
+					this.#requestFreshPass(previewId, needKey);
 				}
 				this.#pill.hidden = true;
 				if (!this.#active) this.#showWaiting("running", t("Opening preview…"));
@@ -162,8 +161,7 @@ export class SurfaceDoorStage {
 				this.#dropStaging();
 				const staleKey = `${previewId}\0${frame.memberPass}`;
 				if (this.#options.onNeedFreshPass && this.#requestedPassKey !== staleKey) {
-					this.#requestedPassKey = staleKey;
-					this.#options.onNeedFreshPass(previewId, frame.memberPass);
+					this.#requestFreshPass(previewId, staleKey, frame.memberPass);
 				}
 				this.#pill.hidden = true;
 				if (!this.#active) this.#showWaiting("running", t("Opening preview…"));
@@ -196,10 +194,9 @@ export class SurfaceDoorStage {
 					this.#dropStaging();
 					if (previewId && this.#options.onNeedFreshPass && this.#retriedPreviewId !== previewId) {
 						this.#retriedPreviewId = previewId;
-						this.#requestedPassKey = `${previewId}\0${slot.pass}`;
 						this.#pill.hidden = true;
 						if (!this.#active) this.#showWaiting("running", t("Reconnecting preview…"));
-						this.#options.onNeedFreshPass(previewId, slot.pass);
+						this.#requestFreshPass(previewId, `${previewId}\0${slot.pass}`, slot.pass);
 						return;
 					}
 					this.#pill.hidden = true;
@@ -279,6 +276,29 @@ export class SurfaceDoorStage {
 		this.clear();
 		this.#lifetime.abort();
 		this.el.remove();
+	}
+
+	#requestFreshPass(previewId: string, requestKey: string, stalePass?: string): void {
+		this.#requestedPassKey = requestKey;
+		const onFailure = () => {
+			if (this.#lifetime.signal.aborted || this.#requestedPassKey !== requestKey || this.#staging) return;
+			this.#requestedPassKey = undefined;
+			this.#pill.hidden = true;
+			this.#dropActive();
+			this.#showWaiting("failed", t("The preview could not be opened."));
+		};
+		let result: Promise<boolean> | undefined;
+		try {
+			result = this.#options.onNeedFreshPass?.(previewId, stalePass);
+		} catch {
+			onFailure();
+			return;
+		}
+		if (result && typeof result.then === "function") {
+			void result.then((minted) => {
+				if (minted === false) onFailure();
+			}, onFailure);
+		}
 	}
 
 	#showWaiting(kind: "running" | "conflicted" | "failed", words: string): void {
