@@ -78,9 +78,13 @@ describe("shared agent activity", () => {
 			await f.company.refreshActivity();
 			await settle();
 			f.draw();
-			expect(rpc).toHaveBeenLastCalledWith("qorpera_list_staff_execution_activity", {
-				p_environment_id: profileA.environmentId,
-			});
+			expect(rpc).toHaveBeenLastCalledWith(
+				"qorpera_list_staff_execution_activity",
+				{
+					p_environment_id: profileA.environmentId,
+				},
+				f.company.signal,
+			);
 			const indicator = f.view.el.querySelector<HTMLElement>(".thread-activity")!;
 			const label = phase === "writing" ? "Writing" : "Working";
 			const sentence = `${staff.displayName} is ${label.toLowerCase()}`;
