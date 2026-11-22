@@ -2,13 +2,14 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regprocedure('public.qorpera_spawn_cross_surface_session(uuid,text,text,text,jsonb)') is not null then
-		raise exception 'Surface Preview Host Serving (20260930836000) is already applied';
+		raise exception 'Surface Preview Host Serving (20260930842000) is already applied';
 	end if;
 	if to_regclass('public.qorpera_surface_previews') is null
 		or to_regprocedure('public.qorpera_site_serve_host(text,text,text,text,integer,integer)') is null
 		or to_regprocedure('public.qorpera_site_member_pass_redeem(text,text)') is null
-		or to_regprocedure('public.qorpera_web_edge_tls_allow(text)') is null then
-		raise exception 'Surface Preview Host Serving (20260930836000) requires 20260930756000, 20260930774000, 20260930832000, and 20260930835000 first';
+		or to_regprocedure('public.qorpera_web_edge_tls_allow(text)') is null
+		or not exists (select 1 from pg_roles where rolname = 'qorpera_web_router') then
+		raise exception 'Surface Preview Host Serving (20260930842000) requires 20260930756000, 20260930774000, 20260930832000, 20260930834000, and 20260930841000 first';
 	end if;
 end $$;
 
@@ -65,7 +66,7 @@ declare v_host text := lower(btrim(coalesce(p_domain, '')));
 	v_parsed jsonb;
 	v_allowed boolean := false;
 begin
-	if auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role') then
+	if auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role', 'qorpera_web_router') then
 		raise exception 'TLS check requires service_role' using errcode = '42501';
 	end if;
 	if right(v_host, 1) = '.' then

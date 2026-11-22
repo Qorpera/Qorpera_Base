@@ -85,6 +85,11 @@ export function verifyObjectBytes(sha256: string, bytes: Uint8Array): VerifiedOb
 	return Object.freeze({ [VERIFIED_BYTES]: Object.freeze({ sha256, bytes }), sha256, bytes });
 }
 
+export function hashAndVerifyObjectBytes(bytes: Uint8Array): VerifiedObjectBytes {
+	const sha256 = digest(bytes);
+	return Object.freeze({ [VERIFIED_BYTES]: Object.freeze({ sha256, bytes }), sha256, bytes });
+}
+
 export function isVerifiedObjectBytes(
 	value: VerifiedObjectBytes | undefined,
 	sha256: string,

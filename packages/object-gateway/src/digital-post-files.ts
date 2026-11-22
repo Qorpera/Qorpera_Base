@@ -6,6 +6,7 @@ import { UUID } from "./native-objects.ts";
 import type { FileSystemObjectStore } from "./object-store.ts";
 import {
 	drainPlatformClaims,
+	mapBounded,
 	PlatformFolderProblem,
 	PlatformFolderWriter,
 	platformFolderProblem,
@@ -49,6 +50,7 @@ export const DIGITAL_POST_INDEX = "digital-post/letters.json";
 /** The chunk size the vault staged in, and the piece the database answers at most (its answers stay under 1 MiB). */
 const CHUNK_BYTES = 1024 * 1024;
 const PIECE_BYTES = 512 * 1024;
+const MAX_STAGING_IN_FLIGHT_BYTES = 32 * 1024 * 1024;
 /** The index stays within what the Mailbox reads of a folder file (256 KiB): the oldest letters are left out first. */
 export const DIGITAL_POST_INDEX_MAX_BYTES = 240 * 1024;
 const MEDIA_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
@@ -167,12 +169,24 @@ export function parseDigitalPostLetterClaim(value: unknown): DigitalPostLetterCl
 /** The index's text: the letters newest first as the vault summarized them, compact JSON with a final line break,
  * leaving out the oldest until it fits the Mailbox's read limit. */
 export function digitalPostIndexText(letters: readonly Record<string, unknown>[]): string {
-	let kept = letters.length;
-	for (;;) {
-		const text = `${JSON.stringify({ schema: "qorpera.digital-post-letters/v1", letters: letters.slice(0, kept) })}\n`;
-		if (kept === 0 || new TextEncoder().encode(text).byteLength <= DIGITAL_POST_INDEX_MAX_BYTES) return text;
-		kept -= 1;
+	const encode = (kept: number): string =>
+		`${JSON.stringify({ schema: "qorpera.digital-post-letters/v1", letters: letters.slice(0, kept) })}\n`;
+	const full = encode(letters.length);
+	if (letters.length === 0 || Buffer.byteLength(full, "utf8") <= DIGITAL_POST_INDEX_MAX_BYTES) return full;
+	let lo = 0;
+	let hi = letters.length - 1;
+	let best = encode(0);
+	while (lo <= hi) {
+		const mid = (lo + hi) >>> 1;
+		const text = encode(mid);
+		if (Buffer.byteLength(text, "utf8") <= DIGITAL_POST_INDEX_MAX_BYTES) {
+			best = text;
+			lo = mid + 1;
+		} else {
+			hi = mid - 1;
+		}
 	}
+	return best;
 }
 
 /** Each unit's outcome of a commit (`qorpera.folder-commit/v1`), in order. */
@@ -258,22 +272,25 @@ export class DigitalPostLetterWriter {
 		// Something else stands where the letter goes: nothing is written, and the letter keeps its bytes and backs off.
 		if (claim.blocked) problem("path_taken");
 		const missing = claim.files.map((file, index) => ({ file, index })).filter(({ file }) => file.version === null);
-		const staged = new Map<number, unknown>();
-		// Only what the folder lacks is read and staged: the whole letter, or the files an earlier write did not leave.
-		for (const { file, index } of claim.folderPresent
-			? missing
-			: claim.files.map((file, index) => ({ file, index }))) {
-			const bytes = await this.#staged(claim, file, index, signal);
-			staged.set(
-				index,
-				await this.#folder.stage(
+		const toStage = claim.folderPresent ? missing : claim.files.map((file, index) => ({ file, index }));
+		const stagedPairs = await mapBounded(
+			toStage,
+			4,
+			async ({ file, index }, _i, stepSignal) => {
+				const bytes = await this.#staged(claim, file, index, stepSignal);
+				const ref = await this.#folder.stage(
 					claim.environmentId,
 					bytes,
 					{ mediaType: file.mediaType, executable: false },
-					signal,
-				),
-			);
-		}
+					stepSignal,
+					{ profileId: claim.profileId },
+				);
+				return [index, ref] as const;
+			},
+			signal,
+			{ maxBytes: MAX_STAGING_IN_FLIGHT_BYTES, sizeOf: ({ file }) => file.bytes },
+		);
+		const staged = new Map<number, unknown>(stagedPairs);
 		const year = claim.folder.split("/").slice(0, 2).join("/");
 		const units: unknown[] = [
 			...(claim.rootPresent ? [] : [{ op: "mkdir", path: DIGITAL_POST_ROOT }]),
@@ -293,6 +310,7 @@ export class DigitalPostLetterWriter {
 			new TextEncoder().encode(digitalPostIndexText(claim.index)),
 			{ mediaType: "application/json", executable: false },
 			signal,
+			{ profileId: claim.profileId },
 		);
 		units.push({
 			op: "write",
@@ -318,29 +336,36 @@ export class DigitalPostLetterWriter {
 		signal: AbortSignal,
 	): Promise<Uint8Array> {
 		const bytes = new Uint8Array(file.bytes);
-		for (let offset = 0; offset < file.bytes; offset += PIECE_BYTES) {
-			signal.throwIfAborted();
-			const chunk = Math.floor(offset / CHUNK_BYTES);
-			const length = Math.min(PIECE_BYTES, file.bytes - offset);
-			const answer = (await this.#options.authority.publisher(
-				"qorpera_read_digital_post_chunk",
-				{
-					p_worker: this.#options.workerId,
-					p_letter_id: claim.letterId,
-					p_file_index: index,
-					p_chunk_index: chunk,
-					p_offset: offset - chunk * CHUNK_BYTES,
-					p_length: length,
-				},
-				signal,
-			)) as { schema?: unknown; content?: unknown } | null;
-			const content =
-				answer?.schema === "qorpera.digital-post-chunk-piece/v1" && typeof answer.content === "string"
-					? Buffer.from(answer.content, "base64")
-					: problem("chunk_invalid");
-			if (content.byteLength !== length) problem("chunk_invalid");
-			bytes.set(content, offset);
-		}
+		const offsets: number[] = [];
+		for (let offset = 0; offset < file.bytes; offset += PIECE_BYTES) offsets.push(offset);
+		await mapBounded(
+			offsets,
+			4,
+			async (offset, _i, stepSignal) => {
+				stepSignal.throwIfAborted();
+				const chunk = Math.floor(offset / CHUNK_BYTES);
+				const length = Math.min(PIECE_BYTES, file.bytes - offset);
+				const answer = (await this.#options.authority.publisher(
+					"qorpera_read_digital_post_chunk",
+					{
+						p_worker: this.#options.workerId,
+						p_letter_id: claim.letterId,
+						p_file_index: index,
+						p_chunk_index: chunk,
+						p_offset: offset - chunk * CHUNK_BYTES,
+						p_length: length,
+					},
+					stepSignal,
+				)) as { schema?: unknown; content?: unknown } | null;
+				const content =
+					answer?.schema === "qorpera.digital-post-chunk-piece/v1" && typeof answer.content === "string"
+						? Buffer.from(answer.content, "base64")
+						: problem("chunk_invalid");
+				if (content.byteLength !== length) problem("chunk_invalid");
+				bytes.set(content, offset);
+			},
+			signal,
+		);
 		if (createHash("sha256").update(bytes).digest("hex") !== file.sha256) problem("chunk_invalid");
 		return bytes;
 	}

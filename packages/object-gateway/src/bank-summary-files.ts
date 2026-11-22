@@ -196,6 +196,7 @@ export class BankSummaryWriter {
 			bytes,
 			{ mediaType: MEDIA_TYPE, executable: false },
 			signal,
+			{ profileId: claim.profileId },
 		);
 		const unit = commitUnitOutcome(
 			await this.#folder.commit(

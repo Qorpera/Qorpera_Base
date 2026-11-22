@@ -211,7 +211,10 @@ export async function startNativeCodexEgress(options: {
 		for (const socket of timed) socket.setTimeout(idleMs());
 	};
 	const controller = new AbortController();
-	const signal = AbortSignal.any([options.signal, controller.signal]);
+	const onParentAbort = (): void => controller.abort(options.signal.reason);
+	if (options.signal.aborted) onParentAbort();
+	else options.signal.addEventListener("abort", onParentAbort, { once: true });
+	const signal = controller.signal;
 	const server = createServer((peer) => {
 		if (signal.aborted || peers.size >= maxConnections) {
 			peer.destroy();
@@ -224,8 +227,12 @@ export async function startNativeCodexEgress(options: {
 		let connecting = false;
 		let fragments = 0;
 		const attempt = new AbortController();
+		const onServerAbort = (): void => attempt.abort(signal.reason);
+		if (signal.aborted) onServerAbort();
+		else signal.addEventListener("abort", onServerAbort, { once: true });
 		const deadline = setTimeout(() => attempt.abort(), 5000);
-		const attemptSignal = AbortSignal.any([signal, attempt.signal]);
+		deadline.unref?.();
+		const attemptSignal = attempt.signal;
 		const close = (): void => {
 			peer.destroy();
 			upstream?.destroy();
@@ -241,6 +248,7 @@ export async function startNativeCodexEgress(options: {
 		peer.once("close", () => {
 			realtimeTunnels.delete(cut);
 			clearTimeout(deadline);
+			signal.removeEventListener("abort", onServerAbort);
 			attempt.abort();
 			attemptSignal.removeEventListener("abort", close);
 			peers.delete(peer);
@@ -395,6 +403,7 @@ export async function startNativeCodexEgress(options: {
 			close() {
 				closing ??= new Promise<void>((resolve) => {
 					controller.abort();
+					options.signal.removeEventListener("abort", onParentAbort);
 					signal.removeEventListener("abort", abort);
 					server.close(() => resolve());
 				});
@@ -403,6 +412,7 @@ export async function startNativeCodexEgress(options: {
 		};
 	} catch (error) {
 		controller.abort();
+		options.signal.removeEventListener("abort", onParentAbort);
 		signal.removeEventListener("abort", abort);
 		throw error;
 	}

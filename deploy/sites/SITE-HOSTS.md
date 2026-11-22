@@ -23,7 +23,7 @@ visitor ──https──▶ Cloudflare (*.qorpera.com: the proxied wildcard rec
   `.qorpera.com`; take the one label before it; a label ending `--next` is a next host and its slug is the label without
   that ending, else an own host; the slug matches `^[a-z0-9]+(-[a-z0-9]+)*$`, is 3 to 48 long and passes the name rule
   below. As one regex: `^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$`, the length checked apart.
-- **Surface preview hosts (`20260930836000`).** The Surface-First Company Harness adds isolated preview hosts of the form
+- **Surface preview hosts (`20260930842000`).** The Surface-First Company Harness adds isolated preview hosts of the form
   `<slug>--p<8chars>.<hosts_domain>` (regex `^([a-z0-9]+(?:-[a-z0-9]+)*)(--next|--p[a-z0-9]{8})?\.<hosts_domain>$`) in
   SQL (`qorpera_site_host`, `qorpera_site_serve_host`, `qorpera_site_member_pass_redeem`) and `site-serve`. The native
   web router (`crates/qorpera-web-router` under `deploy/web-hosting`) currently routes only live (`<slug>`) and `--next`
@@ -43,7 +43,7 @@ visitor ──https──▶ Cloudflare (*.qorpera.com: the proxied wildcard rec
   other first-level name lands on `site-hosts`. There every path goes to the site-serve function
   (`/functions/v1/site-serve/<path>`), with `x-forwarded-host` set to the name the request asked for (port and trailing
   dot taken off, a visitor's own value dropped), and nothing else of the stack is reachable: `/rest/v1/` on a site host
-  is the site's path, not the API. A WebSocket upgrade on a site host is refused by Envoy itself (403). Proven in a real
+  is the site's path, not the API. A WebSocket upgrade on `sites.qorpera.com` or a site host is refused by Envoy itself (403). Proven in a real
   Envoy with api-front's image: `deploy/sites/envoy-front-sites.test.mjs`.
 - **site-serve decides what a name shows**, through SQL (`qorpera_site_serve_host`): a site's files, its password page,
   its 410 page, or `none`. While `hosts_enabled` is false every site host answers `none`, so the front can change before
