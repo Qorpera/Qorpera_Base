@@ -156,13 +156,98 @@ async function answeredWithin(ms: number, input: string | URL | Request, init?: 
 	const onAbort = () => controller.abort(parent?.reason);
 	if (parent?.aborted) onAbort();
 	else parent?.addEventListener("abort", onAbort, { once: true });
-	const timer = setTimeout(() => controller.abort(new DOMException(NO_ANSWER, "TimeoutError")), ms);
-	try {
-		return await globalThis.fetch(input, { ...init, signal: controller.signal });
-	} finally {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const armTimer = (): void => {
 		clearTimeout(timer);
+		timer = setTimeout(() => controller.abort(new DOMException(NO_ANSWER, "TimeoutError")), ms);
+	};
+	armTimer();
+	let done = false;
+	const finish = (): void => {
+		if (done) return;
+		done = true;
+		clearTimeout(timer);
+		timer = undefined;
 		parent?.removeEventListener("abort", onAbort);
+	};
+	let response: Response;
+	try {
+		response = await globalThis.fetch(input, { ...init, signal: controller.signal });
+	} catch (error) {
+		finish();
+		throw error;
 	}
+	// WHY: Clear the headers deadline on headers arrival and use a resettable per-chunk inactivity timer for body streaming.
+	clearTimeout(timer);
+	timer = undefined;
+	if (
+		!(response instanceof Response) ||
+		!response.body ||
+		response.status < 200 ||
+		response.status > 599 ||
+		response.status === 204 ||
+		response.status === 205 ||
+		response.status === 304
+	) {
+		finish();
+		return response;
+	}
+	const reader = response.body.getReader();
+	let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+	const onBodyAbort = (): void => {
+		const reason = controller.signal.reason ?? new DOMException(NO_ANSWER, "TimeoutError");
+		controller.signal.removeEventListener("abort", onBodyAbort);
+		finish();
+		try {
+			streamController?.error(reason);
+		} catch {
+			// WHY: Ignore if the wrapped stream already closed or errored concurrently.
+		}
+		void reader.cancel(reason).catch(() => undefined);
+	};
+	const release = (): void => {
+		controller.signal.removeEventListener("abort", onBodyAbort);
+		finish();
+	};
+	const wrappedBody = new ReadableStream<Uint8Array>({
+		start(ctrl) {
+			streamController = ctrl;
+			if (controller.signal.aborted) {
+				onBodyAbort();
+				return;
+			}
+			controller.signal.addEventListener("abort", onBodyAbort, { once: true });
+			armTimer();
+		},
+		async pull(ctrl) {
+			try {
+				const { value, done: ended } = await reader.read();
+				if (ended) {
+					release();
+					ctrl.close();
+					return;
+				}
+				if (!done) armTimer();
+				if (value) ctrl.enqueue(value);
+			} catch (error) {
+				release();
+				try {
+					ctrl.error(controller.signal.aborted ? controller.signal.reason : error);
+				} catch {
+					// WHY: Ignore if onBodyAbort already errored the stream.
+				}
+			}
+		},
+		async cancel(reason) {
+			release();
+			await reader.cancel(reason).catch(() => undefined);
+		},
+	});
+	return new Response(wrappedBody, {
+		status: response.status,
+		statusText: response.statusText,
+		headers: response.headers,
+	});
 }
 
 export function createCloud(config: CloudConfig): Cloud {
@@ -179,11 +264,16 @@ export function createCloud(config: CloudConfig): Cloud {
 			() => {},
 		);
 	};
-	const database = `${config.projectUrl.replace(/\/+$/, "")}/rest/v1/`;
+	const base = config.projectUrl.replace(/\/+$/, "");
+	const database = `${base}/rest/v1/`;
+	const auth = `${base}/auth/v1/`;
 	const observedFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-		const response = requestUrl(input).startsWith(database)
-			? await answeredWithin(DATABASE_ANSWER_MS, input, init)
-			: await globalThis.fetch(input, init);
+		const url = requestUrl(input);
+		// WHY: Bound /auth/v1/ fetches alongside /rest/v1/ so a stalled token refresh cannot hold the cross-tab navigatorLock forever.
+		const response =
+			url.startsWith(database) || url.startsWith(auth)
+				? await answeredWithin(DATABASE_ANSWER_MS, input, init)
+				: await globalThis.fetch(input, init);
 		notice(input, init, response);
 		return response;
 	};

@@ -6,8 +6,11 @@ import {
 	attachSurfaces,
 	clearLocalSandboxCache,
 	compiledCompanyIdentity,
+	effectiveStudioBaseFiles,
 	migrationPending,
+	normalizeStudioPatchOps,
 	PREVIEW_PASS_TTL_MS,
+	readSurfaceFolderFiles,
 	reportsOwnedBy,
 	runningSessionTotal,
 	SURFACE_UNDO_MS,
@@ -867,6 +870,275 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("auto-composes preview selection once for cloud code_repo surfaces with newly staged changes and retries after transient failure without setting state.error", async () => {
+		let attempts = 0;
+		const readyPreview = {
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame({
+				status: "composing",
+				toggledChangeIds: [CHANGES[0]],
+			}),
+			compareFrames: [],
+		};
+		const setPreviewSelection = vi.fn(async () => {
+			attempts += 1;
+			if (attempts === 1) throw new Error("transient offline");
+			return readyPreview;
+		});
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () => workspace([session(["staged"])])),
+			setPreviewSelection,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		expect(setPreviewSelection).toHaveBeenCalledTimes(1);
+		expect(setPreviewSelection).toHaveBeenCalledWith(SURFACE, {
+			toggledChangeIds: [CHANGES[0]],
+			explorationSessionId: null,
+		});
+		expect(store.state.error).toBeUndefined();
+
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(2);
+		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("composing");
+
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(2);
+		store.dispose();
+	});
+
+	it("compiles live company identity tokens from folder-relative staged patches on the identity surface", async () => {
+		const identity = summary({
+			id: "22222222-2222-4222-8222-222222222291",
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "identity",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const c1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: identity.id,
+			kind: "folder_patch",
+			title: "Update accent",
+			affectedPaths: ["tokens.json"],
+			patchManifest: [{ op: "merge_json", path: "tokens.json", patch: { colors: { accent: "#c9643b" } } }],
+		});
+		const idSession = session(["staged"], { surfaceId: identity.id, changes: [c1] });
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [identity, summary()]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([idSession], { surface: identity })),
+			}),
+			{
+				loadCloudFiles: vi.fn(async () => ({
+					"identity/tokens.json": JSON.stringify({ colors: { primary: "#18181b", accent: "#2563eb" } }),
+				})),
+			},
+		);
+		await store.load();
+		await store.openSurface("identity");
+		await Promise.resolve();
+
+		const tokens = store.companyIdentityTokens();
+		expect(tokens?.vars["--q-color-primary"]).toBe("#18181b");
+		expect(tokens?.vars["--q-color-accent"]).toBe("#c9643b");
+		store.dispose();
+	});
+
+	it("keeps merging folder_patch active on approveAll, overlays optimistic base until post-merge cloud files settle, and refreshes immediately on publish and folder hints", async () => {
+		vi.useFakeTimers();
+		const identityId = "22222222-2222-4222-8222-222222222271";
+		const identity = summary({
+			id: identityId,
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			sourceKind: "folder",
+			folderRoot: "identity",
+			kind: "identity",
+			isGlobal: true,
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const oldTokens = JSON.stringify({ colors: { accent: "#111111" } });
+		const newTokens = JSON.stringify({ colors: { accent: "#ff5500" } });
+		const patchManifest = [
+			{ op: "merge_json" as const, path: "tokens.json", patch: { colors: { accent: "#ff5500" } } },
+		];
+		const stagedChange = change(CHANGES[0], 1, "staged", {
+			surfaceId: identityId,
+			kind: "folder_patch",
+			affectedPaths: ["identity/tokens.json"],
+			patchManifest,
+		});
+		const mergingChange = change(CHANGES[0], 1, "merging", {
+			surfaceId: identityId,
+			kind: "folder_patch",
+			affectedPaths: ["identity/tokens.json"],
+			patchManifest,
+		});
+		const mergedChange = change(CHANGES[0], 1, "merged", {
+			surfaceId: identityId,
+			kind: "folder_patch",
+			affectedPaths: ["identity/tokens.json"],
+			patchManifest,
+		});
+		const stagedSession = session(["staged"], { surfaceId: identityId, changes: [stagedChange] });
+		const mergingSession = session(["merging"], { surfaceId: identityId, changes: [mergingChange] });
+		const mergedSession = session(["merged"], { surfaceId: identityId, state: "completed", changes: [mergedChange] });
+
+		const postMergeFiles = deferred<Record<string, string>>();
+		const postPublishFiles = deferred<Record<string, string>>();
+		const publishRpc = deferred<ReturnType<typeof summary>>();
+		let loadCount = 0;
+		const loadCloudFiles = vi.fn(async () => {
+			loadCount += 1;
+			if (loadCount === 1) return { "identity/tokens.json": oldTokens };
+			if (loadCount === 2) return await postMergeFiles.promise;
+			if (loadCount === 3) return await postPublishFiles.promise;
+			return { "identity/tokens.json": JSON.stringify({ colors: { accent: "#00aa66" } }) };
+		});
+
+		const getSurfaceWorkspace = vi
+			.fn()
+			.mockResolvedValueOnce(workspace([stagedSession], { surface: identity }))
+			.mockResolvedValue(
+				workspace([], {
+					surface: { ...identity, hasUnpublishedChanges: true, unpublishedChangeCount: 1 },
+					recentHistory: [mergedSession],
+				}),
+			);
+
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [identity]),
+			getSurfaceWorkspace,
+			approveSessionAll: vi.fn(async () => mergingSession),
+			publishSurface: vi.fn(() => publishRpc.promise),
+		});
+
+		const store = storeWith(client, { loadCloudFiles, realtimeLive: () => true });
+		await store.load();
+		await store.openSurface("identity");
+		await Promise.resolve();
+		expect(loadCloudFiles).toHaveBeenCalledTimes(1);
+		expect(store.surfaceUpdatePhase(identityId)).toBeNull();
+
+		await store.approveAll(SESSION);
+		expect(store.workspace(identityId)?.activeSessions).toHaveLength(1);
+		expect(store.surfaceUpdatePhase(identityId)).toBe("merging");
+
+		await store.refreshWorkspace(identityId);
+		expect(store.workspace(identityId)?.activeSessions).toHaveLength(0);
+		expect(store.surfaceUpdatePhase(identityId)).toBe("updating");
+		expect(loadCloudFiles).toHaveBeenCalledTimes(2);
+		expect(JSON.parse(effectiveStudioBaseFiles(store.state, identityId)?.["identity/tokens.json"] ?? "{}")).toEqual({
+			colors: { accent: "#ff5500" },
+		});
+		expect(compiledCompanyIdentity(store.state)?.vars["--q-color-accent"]).toBe("#ff5500");
+
+		postMergeFiles.resolve({ "identity/tokens.json": newTokens });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(store.surfaceUpdatePhase(identityId)).toBeNull();
+		expect(store.state.pendingStudioPatches[identityId]).toBeUndefined();
+		expect(store.state.cloudSurfaceFiles[identityId]?.["identity/tokens.json"]).toBe(newTokens);
+
+		const publishPromise = store.publish(identityId);
+		expect(store.surfaceUpdatePhase(identityId)).toBe("publishing");
+		publishRpc.resolve({
+			...identity,
+			hasUnpublishedChanges: false,
+			unpublishedChangeCount: 0,
+		});
+		await publishPromise;
+		expect(loadCloudFiles).toHaveBeenCalledTimes(3);
+		expect(store.surfaceUpdatePhase(identityId)).toBe("updating");
+
+		store.onFolderHint();
+		vi.advanceTimersByTime(60);
+		postPublishFiles.resolve({ "identity/tokens.json": newTokens });
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(loadCloudFiles).toHaveBeenCalledTimes(4);
+		expect(store.surfaceUpdatePhase(identityId)).toBeNull();
+		expect(store.state.cloudSurfaceFiles[identityId]?.["identity/tokens.json"]).toContain("#00aa66");
+		store.dispose();
+	});
+
+	it("lists roots and reads studio files in parallel via readSurfaceFolderFiles", async () => {
+		let activeLists = 0;
+		let maxConcurrentLists = 0;
+		let activeReads = 0;
+		let maxConcurrentReads = 0;
+		const encoder = new TextEncoder();
+		const listGateA = deferred<void>();
+		const listGateB = deferred<void>();
+		const bothListsStarted = deferred<void>();
+		const bothReadsStarted = deferred<void>();
+		const readGates = [deferred<void>(), deferred<void>()];
+		const folder = {
+			list: vi.fn(async (parent: string | null) => {
+				activeLists += 1;
+				maxConcurrentLists = Math.max(maxConcurrentLists, activeLists);
+				if (activeLists === 2) bothListsStarted.resolve();
+				if (parent === "identity") await listGateA.promise;
+				else await listGateB.promise;
+				activeLists -= 1;
+				if (parent === "identity") {
+					return {
+						entries: [
+							{ path: "identity/tokens.json", kind: "file", file: { bytes: 16, id: 0 } },
+							{ path: "identity/voice.md", kind: "file", file: { bytes: 16, id: 1 } },
+							{ path: "identity/logo.png", kind: "file", file: { bytes: 16, id: 2 } },
+						],
+					};
+				}
+				return { entries: [] };
+			}),
+			readFile: vi.fn(async (file: { readonly bytes: number; readonly id: number }) => {
+				activeReads += 1;
+				maxConcurrentReads = Math.max(maxConcurrentReads, activeReads);
+				if (activeReads === 2) bothReadsStarted.resolve();
+				await readGates[file.id]!.promise;
+				activeReads -= 1;
+				return encoder.encode(file.id === 0 ? '{"accent":"#fff"}' : "Calm voice");
+			}),
+		};
+
+		const promise = readSurfaceFolderFiles(
+			folder,
+			["identity", "QorperaOS/surfaces/identity/notes"],
+			new AbortController().signal,
+		);
+		await bothListsStarted.promise;
+		expect(maxConcurrentLists).toBe(2);
+		listGateA.resolve();
+		listGateB.resolve();
+		await bothReadsStarted.promise;
+		expect(maxConcurrentReads).toBe(2);
+		readGates[0]!.resolve();
+		readGates[1]!.resolve();
+
+		const files = await promise;
+		expect(files).toEqual({
+			"identity/tokens.json": '{"accent":"#fff"}',
+			"identity/voice.md": "Calm voice",
+		});
+	});
+
 	it("polls composing/building previews, deduplicates in-flight polls, and pauses when the tab is hidden", async () => {
 		vi.useFakeTimers();
 		const fakeDoc = new EventTarget() as EventTarget & { visibilityState: DocumentVisibilityState };
@@ -969,6 +1241,15 @@ describe("SurfacesStore", () => {
 							resolvedAt: null,
 						},
 					],
+					previewState: {
+						surfaceId: SURFACE,
+						mode: "single",
+						primary: previewFrame({
+							previewId: PREVIEW_IDS[0],
+							toggledChangeIds: [CHANGES[0], CHANGES[1]],
+						}),
+						compareFrames: [],
+					},
 				}),
 			),
 			setPreviewSelection,
@@ -1131,6 +1412,66 @@ describe("SurfacesStore", () => {
 		await store.refreshWorkspace(SURFACE);
 		expect(await store.discardSession(SESSION)).toBe(false);
 		expect(store.session(SESSION)?.changes[0]?.status).toBe("discarded");
+		store.dispose();
+	});
+
+	it("runs a queued dirty refresh and clears updating flags even when an earlier loadCloudFiles call resolves undefined, and matches worker path normalization", async () => {
+		const identityId = "22222222-2222-4222-8222-222222222279";
+		const identity = summary({
+			id: identityId,
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			sourceKind: "folder",
+			folderRoot: "identity",
+			kind: "identity",
+			isGlobal: true,
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const firstLoad = deferred<Record<string, string> | undefined>();
+		const secondLoad = deferred<Record<string, string> | undefined>();
+		let calls = 0;
+		const loadCloudFiles = vi.fn(() => {
+			calls += 1;
+			return calls === 1 ? firstLoad.promise : secondLoad.promise;
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [identity]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: identity })),
+		});
+		const store = storeWith(client, { loadCloudFiles });
+		await store.load();
+		await store.openSurface("identity");
+		expect(loadCloudFiles).toHaveBeenCalledTimes(1);
+		expect(store.isCloudFilesLoading(identityId)).toBe(true);
+
+		const dirtyRefresh = store.refreshCloudFiles(identity, { visible: true });
+		expect(store.surfaceUpdatePhase(identityId)).toBe("updating");
+
+		firstLoad.resolve(undefined);
+		await dirtyRefresh;
+		await Promise.resolve();
+		expect(loadCloudFiles).toHaveBeenCalledTimes(2);
+		expect(store.surfaceUpdatePhase(identityId)).toBe("updating");
+
+		secondLoad.resolve({ "identity/tokens.json": '{"colors":{"accent":"#336699"}}' });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(store.isCloudFilesLoading(identityId)).toBe(false);
+		expect(store.surfaceUpdatePhase(identityId)).toBeNull();
+		expect(store.state.cloudSurfaceFiles[identityId]?.["identity/tokens.json"]).toContain("#336699");
+
+		expect(
+			normalizeStudioPatchOps(
+				[
+					{ op: "write_text", path: "QorperaOS/surfaces/identity/notes/a.md", content: "note" },
+					{ op: "write_text", path: "identity/tokens.json", content: "{}" },
+					{ op: "write_text", path: "voice.md", content: "hi" },
+				],
+				"identity",
+			).map((op) => op.path),
+		).toEqual(["identity/QorperaOS/surfaces/identity/notes/a.md", "identity/tokens.json", "identity/voice.md"]);
 		store.dispose();
 	});
 });

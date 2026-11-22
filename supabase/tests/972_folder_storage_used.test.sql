@@ -31,7 +31,7 @@ begin
 	return case when jsonb_typeof(v_answer) = 'object' then v_answer ->> 'storage_used_bytes' else v_answer #>> '{}' end;
 end $$;
 create function pg_temp.usage_bytes() returns text language sql as $$
-	select bytes::text from public.qorpera_folder_storage_usage where profile_id = '70700000-0000-4000-8000-000000000010'
+	select sum(bytes)::bigint::text from public.qorpera_folder_storage_usage where profile_id = '70700000-0000-4000-8000-000000000010'
 $$;
 create function pg_temp.catalog_bytes() returns text language sql as $$
 	select coalesce(sum(bytes), 0)::text from public.qorpera_profile_objects

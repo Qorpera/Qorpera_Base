@@ -147,6 +147,7 @@ export class AppPanel {
 	#path: string | undefined;
 	#loading: Promise<void> | undefined;
 	#again = false;
+	#againFresh = false;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	/** An app's page only: the open questions that point at it, drawn by Qorpera over the page's corner. */
 	#dock: QuestionDock | undefined;
@@ -275,6 +276,7 @@ export class AppPanel {
 		if (fresh) this.#ask?.reset();
 		if (this.#loading) {
 			this.#again = true;
+			if (fresh) this.#againFresh = true;
 			return this.#loading;
 		}
 		this.#loading = this.#load(fresh)
@@ -284,8 +286,10 @@ export class AppPanel {
 			.finally(() => {
 				this.#loading = undefined;
 				if (this.#again && !this.#lifetime.signal.aborted) {
+					const nextFresh = this.#againFresh;
 					this.#again = false;
-					void this.reload(false);
+					this.#againFresh = false;
+					void this.reload(nextFresh);
 				}
 			});
 		return this.#loading;

@@ -40,7 +40,7 @@ function gift(extra: Partial<CodeReleaseSite> = {}): CodeReleaseSite {
 		owner: "qorpera",
 		name: "saml-gift-message",
 		site: { slug: "saml-gift-message", url: "https://saml-gift-message.qorpera.com/", title: "SAML gift message" },
-		live: { version: 3, kind: "release", since: timestamp, by: userA.id },
+		live: { version: 3, kind: "release", since: timestamp, by: userA.id, auto: false, byExecutor: null },
 		back: { version: 2 },
 		ready: {
 			change: 17,
@@ -72,7 +72,11 @@ const quietProject = (): CodeReleaseSite => ({
 	ready: null,
 });
 const live4 = () =>
-	gift({ live: { version: 4, kind: "release", since: timestamp, by: userA.id }, back: { version: 3 }, ready: null });
+	gift({
+		live: { version: 4, kind: "release", since: timestamp, by: userA.id, auto: false, byExecutor: null },
+		back: { version: 3 },
+		ready: null,
+	});
 
 const releasesOf = (sites: CodeReleaseSite[], canRelease = true, preview = false): CodeReleases => ({
 	canRelease,

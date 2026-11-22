@@ -119,6 +119,14 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"end_role",
 	"hire_team",
 	"narrate_app",
+	"coding_record_change",
+	"propose_surface",
+	"start_surface_session",
+	"stage_surface_patch",
+	"stage_surface_ops_action",
+	"manage_surface_automation",
+	"surface_reply",
+	"surface_ask",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

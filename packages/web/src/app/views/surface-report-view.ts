@@ -1,11 +1,18 @@
 import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
 import type { StudioPatchChange, StudioPatchOp, SurfacePreviewConflict, SurfaceSummary } from "@qorpera/contracts";
 import { h } from "../../ui/dom.ts";
-import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { t } from "../../ui/preferences.ts";
-import { formatConflictPaths, isOpenChange, type SurfacesStore } from "../surfaces-store.ts";
-import { surfaceEmblem } from "./surface-rail.ts";
+import {
+	effectiveStudioBaseFiles,
+	formatConflictPaths,
+	isLocalSurfaceId,
+	isOpenChange,
+	normalizeStudioPatchOps,
+	type SurfacesStore,
+	type SurfaceUpdatePhase,
+} from "../surfaces-store.ts";
+import { surfaceTile } from "./surface-rail.ts";
 
 export interface SurfaceReportOptions {
 	readonly store: SurfacesStore;
@@ -527,6 +534,12 @@ function renderBlock(block: ReportBlock): HTMLElement {
 	}
 }
 
+function updatingLabel(phase: SurfaceUpdatePhase): string {
+	if (phase === "publishing") return t("Publishing…");
+	if (phase === "merging") return t("Applying…");
+	return t("Updating…");
+}
+
 export class SurfaceReportView {
 	readonly el = h("div", { class: "surface-report" });
 	readonly #options: SurfaceReportOptions;
@@ -537,6 +550,8 @@ export class SurfaceReportView {
 	#activeSlug = "";
 	#shownDeps: readonly unknown[] | undefined;
 	#shownOrdered: readonly StudioPatchChange[] | undefined;
+	#wasUpdating = false;
+	#settleTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(options: SurfaceReportOptions) {
 		this.#options = options;
@@ -544,7 +559,19 @@ export class SurfaceReportView {
 		this.#baseFiles = options.baseFiles ? { ...options.baseFiles } : {};
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
-		if (options.loadFiles && !options.baseFiles) void this.#load();
+		if (!options.baseFiles) {
+			const cloudManaged =
+				options.store.canLoadCloudFiles &&
+				!isLocalSurfaceId(options.surface.id) &&
+				options.store.state.source === "cloud";
+			if (cloudManaged) {
+				if (!options.store.state.cloudSurfaceFiles[options.surface.id]) {
+					void options.store.refreshCloudFiles(options.surface);
+				}
+			} else if (options.loadFiles) {
+				void this.#load();
+			}
+		}
 		this.update();
 	}
 
@@ -554,6 +581,10 @@ export class SurfaceReportView {
 	}
 
 	dispose(): void {
+		if (this.#settleTimer) {
+			clearTimeout(this.#settleTimer);
+			this.#settleTimer = undefined;
+		}
 		this.#lifetime.abort();
 	}
 
@@ -576,7 +607,7 @@ export class SurfaceReportView {
 		}
 	}
 
-	#orderedChanges(): StudioPatchChange[] {
+	#orderedChanges(folderRoot: string | null | undefined): StudioPatchChange[] {
 		const store = this.#options.store;
 		const state = store.state;
 		if (state.mode === "live") return [];
@@ -585,7 +616,7 @@ export class SurfaceReportView {
 			for (const change of session.changes) {
 				if (change.kind !== "folder_patch" || !isOpenChange(change) || !store.isChangeShown(change.id)) continue;
 				const ops = this.#options.patches?.[change.id] ?? state.studioPatches[change.id];
-				if (ops?.length) ordered.push({ changeId: change.id, ops });
+				if (ops?.length) ordered.push({ changeId: change.id, ops: normalizeStudioPatchOps(ops, folderRoot) });
 			}
 		}
 		return ordered;
@@ -593,10 +624,9 @@ export class SurfaceReportView {
 
 	#effectiveBaseFiles(surfaceId: string): Readonly<Record<string, string>> {
 		const state = this.#options.store.state;
-		const cloudBase = state.cloudSurfaceFiles[surfaceId];
-		const localBase = state.localStudioBase[surfaceId];
-		if (!cloudBase && !localBase) return this.#baseFiles;
-		return { ...this.#baseFiles, ...(cloudBase ?? {}), ...(localBase ?? {}) };
+		const storeBase = effectiveStudioBaseFiles(state, surfaceId);
+		if (!storeBase) return this.#baseFiles;
+		return this.#options.baseFiles ? { ...this.#baseFiles, ...storeBase } : storeBase;
 	}
 
 	update(): void {
@@ -605,17 +635,41 @@ export class SurfaceReportView {
 		const surface = state.surfaces.find((item) => item.id === this.#options.surface.id) ?? this.#options.surface;
 		const baseFiles = this.#effectiveBaseFiles(surface.id);
 		const workspace = store.workspace(surface.id);
-		const ordered = this.#orderedChanges();
+		const ordered = this.#orderedChanges(surface.folderRoot);
 		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
+		const updatingPhase = this.#options.embedded ? null : store.surfaceUpdatePhase(surface.id);
+		const updating = updatingPhase !== null;
+		const initialLoading =
+			this.#loading || (!state.cloudSurfaceFiles[surface.id] && store.isCloudFilesLoading(surface.id));
+		this.el.classList.toggle("is-updating", updating);
+		this.el.setAttribute("aria-busy", String(updating));
+		if (updating) {
+			if (this.#settleTimer) {
+				clearTimeout(this.#settleTimer);
+				this.#settleTimer = undefined;
+			}
+			this.el.classList.remove("is-settled");
+		} else if (this.#wasUpdating) {
+			this.el.classList.add("is-settled");
+			if (this.#settleTimer) clearTimeout(this.#settleTimer);
+			this.#settleTimer = setTimeout(() => {
+				this.#settleTimer = undefined;
+				this.el.classList.remove("is-settled");
+			}, 600);
+		}
+		this.#wasUpdating = updating;
 		const deps: readonly unknown[] = [
-			this.#loading,
+			initialLoading,
+			updatingPhase,
 			state.mode,
 			state.activeReportSlug,
 			this.#activeSlug,
 			this.#baseFiles,
 			state.cloudSurfaceFiles[surface.id],
+			state.pendingStudioPatches[surface.id],
 			state.localStudioBase[surface.id],
 			surface.title,
+			surface.folderRoot,
 			workspace?.briefSummary,
 			busyReconcile,
 		];
@@ -634,7 +688,7 @@ export class SurfaceReportView {
 		this.#shownDeps = deps;
 		this.#shownOrdered = ordered;
 
-		const composition = composeStudioPreview(baseFiles, ordered);
+		const composition = composeStudioPreview(baseFiles, ordered, surface.folderRoot);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();
@@ -709,7 +763,24 @@ export class SurfaceReportView {
 							)
 						: h("span", { class: "report-chrome-spacer" }),
 					!this.#options.embedded
-						? h("div", { class: "report-chrome-tools" }, h("span", { class: badgeClass }, badgeText))
+						? h(
+								"div",
+								{ class: "report-chrome-tools" },
+								updatingPhase
+									? h(
+											"span",
+											{
+												class: "studio-updating-pill",
+												role: "status",
+												"aria-live": "polite",
+												"data-updating-phase": updatingPhase,
+											},
+											h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
+											h("span", null, updatingLabel(updatingPhase)),
+										)
+									: null,
+								h("span", { class: badgeClass }, badgeText),
+							)
 						: null,
 				)
 			: null;
@@ -753,10 +824,10 @@ export class SurfaceReportView {
 				h(
 					"div",
 					{ class: "studio-empty" },
-					this.#loading
+					initialLoading
 						? [h("span", { class: "surface-state is-running" }), h("p", null, t("Opening studio…"))]
 						: [
-								interfaceEmblem(surfaceEmblem(surface), 42),
+								surfaceTile(surface, this.#options.store.lookOf(surface), "is-hero"),
 								h("h2", null, surface.title),
 								workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
 								h(

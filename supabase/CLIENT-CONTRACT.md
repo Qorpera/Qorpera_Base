@@ -1780,14 +1780,18 @@ like any other (`qorpera_begin_cloud_secret_capture`, the broker's screen, compl
 variable's name in lower case: `npm_token` for `NPM_TOKEN`. A name is `[a-z][a-z0-9_]{0,63}`, never one the coding
 machine sets itself (`home`, `path`, `tmpdir`, `user`, `shell`, `lang`, `tz`, the proxy and certificate variables, and
 any name that starts `lc_`, `git_`, `ld_`, `dyld_`, `ssh_`, `xdg_`, `docker_` or `qorpera_`), and never one that names
-a harness's login or provider (`anthropic_`, `claude_`, `codex_`, `openai_`), so no secret changes who pays for a
-session. The begin refuses any other name with 22023 "That name is not available for an environment variable". A
+a harness's internal runtime credentials (`claude_`, `codex_`). Company-owned `openai_*` and `anthropic_*` variables
+(such as `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`) are allowed since `20260930850000_app_vault_secrets_and_code_routines`.
+The begin refuses any other name with 22023 "That name is not available for an environment variable". A
 value never comes back to a client. The broker's screen seals only the one field `value`, at least 8 UTF-8 bytes long
 and without a NUL, so the coding machine can mask it in its output; it refuses any other capture for `environment`.
 
 A coding session gets its member's own environment secrets and the company's that an owner or administrator granted on
-its repository; a company secret with no grant reaches no session. When the member's and a granted company secret have
-the same name, the company's wins.
+its repository with `scope in ('all', 'build', 'test')` and `target_env in ('all', 'dev', 'test')`; a company secret
+with no grant (or granted only for `runtime` or `prod`) reaches no coding session. When the member's and a granted
+company secret have the same name, the company's wins.
+`qorpera_read_coding_turn_context` also surfaces `secretNames` (sorted uppercase variable names only, never values) so
+coding agents know which secrets are present without guessing or inspecting `env`.
 
 - `qorpera_list_coding_environment(profile, environment)`: `[{schema: "qorpera.coding-environment-secret/v1",
   secretId, name, ownerKind, purpose, version, grants, createdAt, updatedAt}]`, the company's environment secrets and
@@ -1808,6 +1812,30 @@ A grant also ends when its secret is disconnected (`qorpera_revoke_cloud_secret`
 gave it stops being an owner or administrator or leaves: promoting them again revives none, so another owner or
 administrator grants it again. Rotating the secret keeps its grants. A member's own environment secrets end when they
 leave, as their other secrets do.
+
+### Hosted-app vault secrets (20260930850000_app_vault_secrets_and_code_routines)
+
+Company environment secrets may also be granted to hosted app sites scoped by `scope` (`build`, `test`, `runtime`) and
+`target_env` (`dev`, `prod`). Values are never returned to member clients; broker custody authorization
+(`/v1/app-secrets`) and executor-side tmpfs file preparation (`/run/qorpera-apps/<slug>.env`, mode `0400`) plus
+`CodingSecretMask` log masking are provided for app-host container integration (app-host container consumption and
+wake-path injection ship in a separate `crates/` change).
+
+- `qorpera_set_coding_environment_grant_scope(profile, grant, scope, target_env, site = null)`: owner or admin updates
+  the `scope` (`all`, `build`, `test`, `runtime`), `target_env` (`all`, `dev`, `test`, `prod`), and optional `site_id`
+  on an active coding environment grant.
+- `qorpera_grant_app_secret(profile, secret, site, scope = 'runtime', target_env = 'prod')`: owner or admin grants a
+  company environment secret to a hosted app site. Answers `{schema: "qorpera.app-secret-grant/v1", grantId, secretId,
+  siteId, slug, name, scope, targetEnv, issuedByUserId, status, createdAt}`; idempotent on duplicate active grants.
+- `qorpera_revoke_app_secret_grant(profile, grant)`: owner or admin revokes a hosted app secret grant. Grants also end
+  when the underlying secret is revoked or when the issuer stops being an owner or admin or leaves.
+- `qorpera_list_app_secrets(profile, site)`: any company member (including viewers) lists active grants for `site`
+  (names, scopes, target environments, versions, grant IDs; never values). Non-members receive `[]`.
+- `qorpera_set_code_site_auto_redeploy(profile, owner, name, enabled)`: owner or admin enables or disables opt-in
+  post-land server-app auto-redeploy for a repository's live server site (automatically disabled if the enabling
+  member is demoted or leaves; post-land switches append `release`/`back` rows to `qorpera_code_releases` marked
+  `auto_redeploy = true` with `by_executor`, surfaced as `auto: true` and `byExecutor` on `live` in
+  `qorpera_list_code_releases`).
 
 ### Coding MCP sign-ins (20260928559210_coding_mcp_sign_ins)
 

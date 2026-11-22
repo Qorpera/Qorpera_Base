@@ -140,6 +140,7 @@ export function createDefaultSurfaceWorkerConfig(
 							surfaceId: job.surfaceId,
 							wakeId: enqueued.wakeId,
 							runId: enqueued.runId,
+							...(enqueued.workerId ? { workerId: enqueued.workerId } : {}),
 						});
 						return;
 					}

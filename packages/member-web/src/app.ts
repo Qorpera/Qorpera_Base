@@ -35,6 +35,7 @@ export function mountMemberWeb(
 		eventRevision = 0,
 		busy: symbol | undefined,
 		panelStop: AbortController | undefined,
+		sessionTimer: ReturnType<typeof setTimeout> | undefined,
 		dispose: (() => void) | undefined;
 	let closed = false,
 		signingOut = false,
@@ -183,6 +184,10 @@ export function mountMemberWeb(
 	}
 	async function signOut() {
 		signingOut = true;
+		if (sessionTimer !== undefined) {
+			clearTimeout(sessionTimer);
+			sessionTimer = undefined;
+		}
 		subscription.unsubscribe();
 		account.close();
 		clearPanel();
@@ -260,9 +265,14 @@ export function mountMemberWeb(
 		navigation.replaceChildren();
 		accountLabel.textContent = session?.user.email ?? (session ? "Signed in" : "Signed out");
 		const expected = epoch;
+		if (sessionTimer !== undefined) {
+			clearTimeout(sessionTimer);
+			sessionTimer = undefined;
+		}
 		// Auth callbacks run under the SDK's session lock. Leave that callback
 		// before any catalog request can call getSession again.
-		setTimeout(() => {
+		sessionTimer = setTimeout(() => {
+			sessionTimer = undefined;
 			if (closed || expected !== epoch) return;
 			if (account.memberId) home();
 			else login();
@@ -291,6 +301,10 @@ export function mountMemberWeb(
 	return {
 		close() {
 			closed = true;
+			if (sessionTimer !== undefined) {
+				clearTimeout(sessionTimer);
+				sessionTimer = undefined;
+			}
 			mountStop.abort();
 			subscription.unsubscribe();
 			account.close();

@@ -123,7 +123,14 @@ export const LANE_KEEP = ".keep";
 export const LANE_IDLE_DAYS = 7;
 export const LANE_TIDY_STAMP = `${HOME}/.lane-tidy`;
 export const LANE_TIDY_EVERY_MINUTES = 60;
+export const DISK_TIDY_STAMP = `${HOME}/.disk-tidy`;
+export const DISK_TIDY_EVERY_MINUTES = 60;
+export const TREE_KEEP_COUNT = 12;
 export const LOW_DISK_MIB = 15 * 1024;
+export const TIDY_DISK_MIB = 25 * 1024;
+export const WAKE_PROJECT = "testmachines";
+const WAKE_POLL_MS = 3_000;
+const WAKE_TIMEOUT_MS = 90_000;
 /** Inside a machine, CLOSED takes it out of the automatic choice (maintenance, removal); --machine still reaches
  * it. It survives a reboot. Runs already queued there still run. A machine without SET_UP, which guest-setup.sh
  * writes last, counts as closed too: its runner users may not exist yet. */
@@ -441,12 +448,9 @@ export function treeDigest(root, files) {
 	return hash.digest("hex");
 }
 
-/** Best-effort cleanup at the start of every run: runs older than a day by the UTC time in
- * their name (never by mtime: rsync -a gives a run directory the worktree's old mtime),
- * worktree copies unused for 3 days (each worktree has its own copy, and with many sessions 14 days filled
- * node02's disk on 2026-10-09), hosted-db containers older than 6 hours, the cores files of --cores runs killed
- * before they could remove them (/run/lock is a small tmpfs every lock lives on), and run history days older than
- * HISTORY_DAYS, by the date in their name. */
+/** WHY: Prune runs by UTC name (rsync -a preserves old mtimes), reap hosted-db/run containers at 6h
+ * and orphaned cdgateway/qext containers at 2h, trim worktree copies at 3d, and run hourly volume/tree
+ * disk tidy so busy test machines cannot fill their root filesystem or /run/lock tmpfs. */
 export function pruneScript() {
 	return [
 		"set -u",
@@ -459,8 +463,23 @@ export function pruneScript() {
 		`find ${HOME}/trees -maxdepth 1 -name '*.lock' -mtime +2 2>/dev/null | while read -r l; do flock -n "$l" sudo -n rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done`,
 		laneTidyLine(),
 		`for id in $(docker ps -aq --filter name=^qorpera-hosted-db- 2>/dev/null; docker ps -aq --filter label=${RUN_LABEL} 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 21600 ] && docker rm -f "$id" >/dev/null; done`,
+		`for id in $(docker ps -aq --filter name=^cdgateway- 2>/dev/null; docker ps -aq --filter name=^qext- 2>/dev/null); do c=$(docker inspect -f '{{.Created}}' "$id") && [ $(( $(date +%s) - $(date -d "$c" +%s) )) -gt 7200 ] && docker rm -f -v "$id" >/dev/null; done`,
+		diskTidyLine(),
 		"true",
 	].join("\n");
+}
+
+export function diskTidyLine({
+	trees = `${HOME}/trees`,
+	keepTrees = TREE_KEEP_COUNT,
+	lowDiskMiB = TIDY_DISK_MIB,
+	sudo = "sudo -n ",
+	stamp = DISK_TIDY_STAMP,
+	everyMinutes = DISK_TIDY_EVERY_MINUTES,
+} = {}) {
+	const everySeconds = everyMinutes * 60;
+	const capTrees = `avail=$(df -Pm / | awk 'NR==2 {print $4}'); if [ -n "$avail" ] && [ "$avail" -lt ${lowDiskMiB} ]; then ls -t ${trees}/*.lock 2>/dev/null | tail -n +${keepTrees + 1} | while read -r l; do flock -n "$l" ${sudo}rm -rf -- "\${l%.lock}" && rm -f -- "$l"; done; fi`;
+	return `if [ ! -e ${stamp} ] || [ $(( $(date +%s) - $(stat -c %Y ${stamp} 2>/dev/null || echo 0) )) -ge ${everySeconds} ]; then touch ${stamp}; docker volume prune -f >/dev/null 2>&1 || true; ${capTrees}; fi`;
 }
 
 export function laneTidyLine({
@@ -1112,7 +1131,7 @@ export function describeProbes(probes) {
 		.join("; ");
 }
 
-function sshArgs(machine, key) {
+export function sshArgs(machine, key) {
 	return [
 		"-o",
 		"BatchMode=yes",
@@ -1132,6 +1151,141 @@ function sshArgs(machine, key) {
 		// -J would not pass BatchMode to the jump host; a non-interactive session must never prompt there.
 		...(machine.jump ? ["-o", `ProxyCommand=ssh -o BatchMode=yes -o ConnectTimeout=15 -W %h:%p ${machine.jump}`] : []),
 	];
+}
+
+export const SLEEP_MARKER_DIR = "$HOME/.cache/qorpera-test-machine-sleep";
+export const CARETAKER_CLOSE_REASON = "caretaker-sleep";
+
+export function buildCloseForSleepScript(closed = CLOSED) {
+	const qClosed = shellQuote(closed);
+	return `sudo -n bash -c ${shellQuote(`set -o noclobber; printf '%s\\n' ${shellQuote(CARETAKER_CLOSE_REASON)} > ${qClosed}`)}`;
+}
+
+export function buildClearCaretakerCloseScript(closed = CLOSED) {
+	const qClosed = shellQuote(closed);
+	return `if [ -f ${qClosed} ] && [ "$(cat ${qClosed} 2>/dev/null)" = ${shellQuote(CARETAKER_CLOSE_REASON)} ]; then sudo -n rm -f -- ${qClosed}; fi`;
+}
+
+export function vmNameForMachine(machine) {
+	if (!machine?.name || !/^[a-z0-9-]+$/.test(machine.name)) return null;
+	return `qorpera-testvm-${machine.name}`;
+}
+
+export function shouldWakeStoppedMachines(probes, { explicitMachine = false, quick = false, front = false } = {}) {
+	const unreachable = probes.filter((probe) => probe.unreachable).map((probe) => probe.name);
+	if (!unreachable.length) return [];
+	const open = runOrder(probes, explicitMachine, quick, front);
+	const reachableOpen = open.filter((name) => {
+		const probe = probes.find((candidate) => candidate.name === name);
+		return Boolean(probe && !probe.unreachable);
+	});
+	if (!reachableOpen.length) return unreachable;
+	const width = quick ? QUICK_SLOTS : front ? CPU_SLOTS : CPU_SLOTS - KEPT_SLOTS;
+	const allSaturated = reachableOpen.every((name) => {
+		const probe = probes.find((candidate) => candidate.name === name);
+		if (!probe) return true;
+		return quick ? probe.quickBusy >= width : probe.busy >= width;
+	});
+	return allSaturated ? unreachable : [];
+}
+
+export function buildWakeQueryScript(vmName) {
+	const qVm = shellQuote(vmName);
+	return [
+		"set -u",
+		`vm=${qVm}`,
+		`json=$(lxc query "/1.0/instances/\${vm}?project=${WAKE_PROJECT}" 2>/dev/null) || exit 1`,
+		`printf '%s' "$json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("status=" + str(d.get("status") or "")); print("last_used_at=" + str(d.get("last_used_at") or ""))'`,
+		`f="${SLEEP_MARKER_DIR}/\${vm}"`,
+		'marker=""; [ -f "$f" ] && marker=$(head -n 1 "$f" 2>/dev/null || true)',
+		`printf 'sleep_marker=%s\\n' "$marker"`,
+	].join("\n");
+}
+
+export function buildWakeStartScript(vmName) {
+	const qVm = shellQuote(vmName);
+	return ["set -e", `vm=${qVm}`, `lxc start "$vm" --project ${WAKE_PROJECT}`].join("\n");
+}
+
+export function buildClearSleepMarkerScript(vmName) {
+	return `vm=${shellQuote(vmName)}; rm -f -- "${SLEEP_MARKER_DIR}/\${vm}"`;
+}
+
+export function parseWakeQueryOutput(stdout) {
+	const kv = {};
+	for (const line of String(stdout ?? "").split("\n")) {
+		const eq = line.indexOf("=");
+		if (eq > 0) kv[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+	}
+	return {
+		status: kv.status ? kv.status.toUpperCase() : null,
+		lastUsedAt: kv.last_used_at || null,
+		sleepMarker: kv.sleep_marker || null,
+	};
+}
+
+export function isCaretakerSleeping(state) {
+	return Boolean(
+		state &&
+			state.status === "STOPPED" &&
+			typeof state.lastUsedAt === "string" &&
+			state.lastUsedAt.length > 0 &&
+			state.sleepMarker === state.lastUsedAt,
+	);
+}
+
+function queryLxdVmWakeState(jump, vmName) {
+	const res = spawnSync(
+		"ssh",
+		["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", jump, "bash", "-c", shellQuote(buildWakeQueryScript(vmName))],
+		{ encoding: "utf8", timeout: 12_000 },
+	);
+	if (res.status !== 0) return null;
+	return parseWakeQueryOutput(res.stdout);
+}
+
+async function wakeStoppedMachine(machine, key) {
+	const vmName = vmNameForMachine(machine);
+	if (!vmName || !machine.jump) return null;
+	const state = queryLxdVmWakeState(machine.jump, vmName);
+	if (!isCaretakerSleeping(state)) return null;
+	console.error(`== run-on-node: waking caretaker-slept test machine ${machine.name} (${vmName})`);
+	const started = spawnSync(
+		"ssh",
+		["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", machine.jump, "bash", "-c", shellQuote(buildWakeStartScript(vmName))],
+		{ encoding: "utf8", timeout: 30_000 },
+	);
+	if (started.status !== 0) return null;
+	const deadline = Date.now() + WAKE_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, WAKE_POLL_MS));
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(new Error("wake probe timed out")), PROBE_TIMEOUT_MS);
+		const probe = await probeOverSsh(machine, key, controller.signal);
+		clearTimeout(timer);
+		if (!probe.unreachable) {
+			let result = probe;
+			if (probe.closed) {
+				spawnSync(
+					"ssh",
+					["-o", "ConnectTimeout=8", ...sshArgs(machine, key), machine.host, "bash", "-c", shellQuote(buildClearCaretakerCloseScript())],
+					{ encoding: "utf8", timeout: 12_000 },
+				);
+				const reopenController = new AbortController();
+				const reopenTimer = setTimeout(() => reopenController.abort(new Error("wake reopen probe timed out")), PROBE_TIMEOUT_MS);
+				const reopened = await probeOverSsh(machine, key, reopenController.signal);
+				clearTimeout(reopenTimer);
+				result = reopened.unreachable ? probe : reopened;
+			}
+			spawnSync(
+				"ssh",
+				["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", machine.jump, "bash", "-c", shellQuote(buildClearSleepMarkerScript(vmName))],
+				{ encoding: "utf8", timeout: 10_000 },
+			);
+			return result;
+		}
+	}
+	return null;
 }
 
 /** One probe over SSH. Its own process group, so that stopping it also ends the jump's ssh, which shares its
@@ -1443,8 +1597,29 @@ async function main() {
 		quick: options.quick,
 		front: options.front,
 	});
+	const explicitMachine = Boolean(options.machine) || customTarget(process.env);
+	if (!options.dryRun) {
+		const wakeCandidates = shouldWakeStoppedMachines(probes, {
+			explicitMachine,
+			quick: options.quick,
+			front: options.front,
+		});
+		if (wakeCandidates.length) {
+			const woke = await Promise.all(
+				wakeCandidates.map(async (name) => {
+					const machine = machines.find((candidate) => candidate.name === name);
+					return machine ? wakeStoppedMachine(machine, key) : null;
+				}),
+			);
+			for (const probe of woke) {
+				if (!probe) continue;
+				const idx = probes.findIndex((candidate) => candidate.name === probe.name);
+				if (idx >= 0) probes[idx] = probe;
+			}
+		}
+	}
 	const probeSeconds = (Date.now() - probeStarted) / 1000;
-	const ranked = runOrder(probes, Boolean(options.machine) || customTarget(process.env), options.quick, options.front).map((name) => {
+	const ranked = runOrder(probes, explicitMachine, options.quick, options.front).map((name) => {
 		const machine = machines.find((candidate) => candidate.name === name);
 		return { ...machine, ssh: sshArgs(machine, key) };
 	});

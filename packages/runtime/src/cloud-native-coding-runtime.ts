@@ -103,7 +103,7 @@ const INSTRUCTIONS =
 	"The read-only sandbox your harness describes covers only its own built-in tools, which this session does not use; it says nothing about the repository VM. In the VM the selected repository and branch are writable: edit files, install, build, test and commit there through coding_run_command. Never stop, ask or hand in because of that read-only notice; only a command the VM actually refuses shows the repository is not writable, and then name that command and its error. " +
 	// 10 Nov 2026 (audit): "do not look for credentials" read as "use none", although a session is given its
 	// repository's secret values to work with.
-	"Handing your commit in is the platform's work, through coding_finish: never push or publish with credentials in the shell. The secret values this session was given, when it was given any, are environment variables of every command, under the names the company saved them with: use them for what the work needs, such as installing private packages or calling a service, and look for no others. Keep operation keys stable after unknown outcomes. " +
+	"Handing your commit in is the platform's work, through coding_finish: never push or publish with credentials in the shell. The secret values this session was given, when it was given any, are environment variables of every command, under the names the company saved them with: use them for what the work needs, such as installing private packages or calling a service, and look for no others. secretNames in the context lists those exact variable names (never values), so check secretNames instead of guessing or printing env. Keep operation keys stable after unknown outcomes. " +
 	"Keep the session's secret values out of the files and commits you make in /company: the company folder refuses to save them. " +
 	"Commands in this VM can reach the company's databases under /company/data/ with the data CLI (no database credentials on disk; scoped to what both this session's coding agent and member may read, never a member's private folder, with :viewer defaulting to that member unless viewer=<member id> is passed): data describe [<database>], data apply <database>, data query <database> <question> [name=value ...] (or --sql '<one select>'), and data change <database> <change> [name=value ...] print JSON (use name:=<JSON> for numbers, booleans, or null; destructive schema steps stay held for a member's yes through data_apply; never store secrets in steps, queries, actions, or rows). " +
 	"When only the member who owns this session can decide something, call coding_ask with the exact question (and short choices when there are natural ones) and stop; the session pauses until they answer, and your next turn continues from their answer. " +
@@ -219,6 +219,7 @@ export interface CloudCodingTurnContext {
 	/** Whether the session's machine got a new disk since the previous turn started (false on a first turn): only
 	 * /company was kept. A kernel from before 20260930515000 does not say, which reads as false. */
 	machine: { newDisk: boolean };
+	readonly secretNames: readonly string[];
 }
 export interface CloudCodingTurnCommand {
 	commandId: string;
@@ -324,6 +325,8 @@ function contextPullRequest(value: unknown, repository: CloudCodingRepository): 
 	}
 }
 
+const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+
 /** Strict: the context must be this turn's, contiguous and bounded. */
 export function parseCloudCodingTurnContext(
 	value: unknown,
@@ -333,8 +336,7 @@ export function parseCloudCodingTurnContext(
 	const item = closedRecord(
 		value,
 		["schema", "workerId", "sequence", "input", "earlierTurns", "omittedEarlierTurns", "commands"],
-		// 20260930515000 adds `machine`; the runtime rolls before it, so a context without it is read as no new disk.
-		["machine"],
+		["machine", "secretNames"],
 	);
 	if (
 		item.schema !== "qorpera.coding-turn-context/v2" ||
@@ -420,6 +422,21 @@ export function parseCloudCodingTurnContext(
 		throw new Error("CODING_TURN_CONTEXT_INVALID");
 	const machine = Object.hasOwn(item, "machine") ? closedRecord(item.machine, ["newDisk"]) : { newDisk: false };
 	if (typeof machine.newDisk !== "boolean") throw new Error("CODING_TURN_CONTEXT_INVALID");
+	let secretNames: readonly string[] = [];
+	if (Object.hasOwn(item, "secretNames")) {
+		if (!Array.isArray(item.secretNames) || item.secretNames.length > 256)
+			throw new Error("CODING_TURN_CONTEXT_INVALID");
+		const seen = new Set<string>();
+		const parsedNames: string[] = [];
+		for (const name of item.secretNames) {
+			if (typeof name !== "string" || !SECRET_NAME.test(name) || seen.has(name))
+				throw new Error("CODING_TURN_CONTEXT_INVALID");
+			seen.add(name);
+			parsedNames.push(name);
+		}
+		parsedNames.sort();
+		secretNames = Object.freeze(parsedNames);
+	}
 	return {
 		input: { from: current.from, text: current.text, answers },
 		earlierTurns,
@@ -443,6 +460,7 @@ export function parseCloudCodingTurnContext(
 			omitted: Number(commands.omitted),
 		},
 		machine: { newDisk: machine.newDisk },
+		secretNames,
 	};
 }
 
@@ -563,6 +581,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					omittedEarlierTurns: turn.omittedEarlierTurns + turn.earlierTurns.length - kept.length,
 					commands: turn.commands,
 					machine: turn.machine,
+					secretNames: [...turn.secretNames],
 					input: turn.input,
 				},
 				// Measured before trimming: the whole reply fits the control's 256 KiB response bound.
@@ -638,11 +657,13 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				operationKey: receipt.operationKey,
 			});
 		};
+		const surfaceSession = context.surfaceSession;
 		const finish: CloudNativeTool = {
 			name: "coding_finish" satisfies CloudRuntimeToolOperation,
 			source: "worker",
-			description:
-				"End the turn with the exact committed head SHA on the session branch and a factual summary of the changes and check results. notice says in one plain sentence what a customer will notice, and picture names a screenshot you committed that shows it; both may be left out. The platform validates that commit and hands it in: in a repository kept in Qorpera it lands on the default branch; on GitHub it is pushed and the draft pull request opened or updated. This is a durable submission, not proof that it landed. Stop modifying the repository after submitting.",
+			description: surfaceSession
+				? "End the turn with the exact committed head SHA on the session branch and a factual summary of what you built and verified. On this Surface session, commits stay staged on the session branch for founder Preview and approval rather than landing directly on main. Make sure you called coding_record_change for each user-visible deliverable before calling coding_finish. Stop modifying the repository after submitting."
+				: "End the turn with the exact committed head SHA on the session branch and a factual summary of the changes and check results. notice says in one plain sentence what a customer will notice, and picture names a screenshot you committed that shows it; both may be left out. The platform validates that commit and hands it in: in a repository kept in Qorpera it lands on the default branch; on GitHub it is pushed and the draft pull request opened or updated. This is a durable submission, not proof that it landed. Stop modifying the repository after submitting.",
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -756,7 +777,6 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				};
 			},
 		};
-		const surfaceSession = context.surfaceSession;
 		const effectivePrompt = surfaceSession ? `${prompt}\n\n${buildSurfaceTurnBrief(surfaceSession)}` : prompt;
 		const effectiveContextSha256 = surfaceSession
 			? createHash("sha256").update(effectivePrompt).digest("hex")
@@ -799,7 +819,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			turnCorrection: async () =>
 				submitted
 					? undefined
-					: "Your turn ended without coding_finish or coding_ask, so nothing of it is handed in. End it now, by your instructions' rules for handing in. When you have a commit they let you hand in, call coding_finish with its SHA and a factual summary that names what is left; in a repository kept in Qorpera that is only work that is whole and passes its checks, since it lands at once. Otherwise call coding_ask with what is unfinished or blocks you and what you need from the member. This is the last turn of this run: if it ends without one of them, the turn fails.",
+					: surfaceSession
+						? "Your turn ended without coding_finish or coding_ask, so nothing of it is staged yet. If your deliverable is committed on the session branch, call coding_record_change for each deliverable (if not already recorded) and call coding_finish with the final headSha and a factual summary. Otherwise call coding_ask with what blocks you and what you need from the founder. This is the last turn of this run: if it ends without coding_finish or coding_ask, the turn fails."
+						: "Your turn ended without coding_finish or coding_ask, so nothing of it is handed in. End it now, by your instructions' rules for handing in. When you have a commit they let you hand in, call coding_finish with its SHA and a factual summary that names what is left; in a repository kept in Qorpera that is only work that is whole and passes its checks, since it lands at once. Otherwise call coding_ask with what is unfinished or blocks you and what you need from the member. This is the last turn of this run: if it ends without one of them, the turn fails.",
 			beginExecution: async (specification, checked) => {
 				const text = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
 				const started = await this.#control.call(

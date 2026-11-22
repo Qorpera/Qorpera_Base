@@ -14,10 +14,13 @@ import { readdirSync, readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import {
+	applyClusterBroadcast,
+	createClusterWorkerCallbacks,
 	createDirectoryPublicReader,
 	createHttpPublicReader,
 	Gateway,
 	Platform,
+	relayClusterBroadcast,
 	serve,
 	serveRuns,
 	startWatcher,
@@ -285,20 +288,9 @@ try {
 				}
 			: {}),
 		...(cluster.isWorker
-			? {
-					onAgentRead: ({ pid, delta }) => {
-						if (process.connected) safeSend(process, { type: "agentRead", pid, delta });
-					},
-					onDrop: (event) => {
-						if (process.connected) safeSend(process, { type: "drop", ...event });
-					},
-					onTestSchemaDrop: (event) => {
-						if (process.connected) safeSend(process, { type: "testSchemaDrop", ...event });
-					},
-					onUnsettledTx: (database, txid) => {
-						if (process.connected) safeSend(process, { type: "unsettledTx", database, txid });
-					},
-				}
+			? createClusterWorkerCallbacks((message) => {
+					if (process.connected) safeSend(process, message);
+				})
 			: {}),
 	});
 } catch (error) {
@@ -400,22 +392,7 @@ if (workerCount > 1 && cluster.isPrimary) {
 				})();
 				return;
 			}
-			if (message?.type === "testSchemaDrop" && typeof message.database === "string" && typeof message.schema === "string") {
-				void gateway.evictTestSchema(message.database, message.schema);
-				for (const peer of Object.values(cluster.workers ?? {})) {
-					if (peer && peer.id !== worker.id && peer.isConnected()) safeSend(peer, message);
-				}
-				return;
-			}
-			if (message?.type === "drop") {
-				if (message.kind === "company" && typeof message.database === "string") void gateway.evictCompany(message.database);
-				else if (message.kind === "database" && typeof message.database === "string" && typeof message.schema === "string")
-					void gateway.evictDatabase(message.database, message.schema, message.n ?? null);
-				for (const peer of Object.values(cluster.workers ?? {})) {
-					if (peer && peer.id !== worker.id && peer.isConnected()) safeSend(peer, message);
-				}
-				return;
-			}
+			if (relayClusterBroadcast(gateway, message, worker.id, cluster.workers, safeSend)) return;
 			if (message?.type !== "agentRead" || !Number.isInteger(message.pid) || !Number.isInteger(message.delta)) return;
 			const owned = workerReads.get(worker.id);
 			if (!owned) return;
@@ -442,7 +419,9 @@ if (workerCount > 1 && cluster.isPrimary) {
 			stopping = true;
 			stopWatcher();
 			for (const timer of restartTimers) clearTimeout(timer);
-			gateway.close().finally(() => process.exit(1));
+			Promise.race([gateway.close().catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 5_000).unref?.())]).finally(() =>
+				process.exit(1),
+			);
 			return;
 		}
 		const delay = Math.min(5_000, 200 * 2 ** Math.min(5, crashTimes.length - 1));
@@ -473,8 +452,8 @@ if (workerCount > 1 && cluster.isPrimary) {
 					}),
 			),
 		);
-		await Promise.race([drained, new Promise((resolve) => setTimeout(resolve, 5_000))]);
-		await gateway.close();
+		await Promise.race([drained, new Promise((resolve) => setTimeout(resolve, 5_000).unref?.())]);
+		await Promise.race([gateway.close().catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 5_000).unref?.())]);
 		process.exit(0);
 	};
 	process.on("SIGTERM", stop);
@@ -484,9 +463,8 @@ if (workerCount > 1 && cluster.isPrimary) {
 		process.on("message", (message) => {
 			if (message?.type === "full") gateway.setFullDatabases(message.databases);
 			else if (message?.type === "signalled" && Array.isArray(message.pids)) gateway.noteSignalled(message.pids);
-			else if (message?.type === "testSchemaDrop" && typeof message.database === "string" && typeof message.schema === "string") {
-				void gateway.evictTestSchema(message.database, message.schema);
-			} else if (message?.type === "triggerRpcReply" && typeof message.reqId === "string") {
+			else if (applyClusterBroadcast(gateway, message)) return;
+			else if (message?.type === "triggerRpcReply" && typeof message.reqId === "string") {
 				const pending = pendingTriggerRpc.get(message.reqId);
 				if (!pending) return;
 				pendingTriggerRpc.delete(message.reqId);
@@ -500,10 +478,6 @@ if (workerCount > 1 && cluster.isPrimary) {
 				clearTimeout(pending.timer);
 				if (message.ok) pending.resolve(message.result);
 				else pending.reject(Object.assign(new Error(message.message ?? "The data gateway failed"), { status: message.status ?? 500 }));
-			} else if (message?.type === "drop") {
-				if (message.kind === "company" && typeof message.database === "string") void gateway.evictCompany(message.database);
-				else if (message.kind === "database" && typeof message.database === "string" && typeof message.schema === "string")
-					void gateway.evictDatabase(message.database, message.schema, message.n ?? null);
 			}
 		});
 	}
@@ -557,11 +531,13 @@ if (workerCount > 1 && cluster.isPrimary) {
 				one.close(() => resolve());
 			});
 		});
-		await Promise.race([Promise.all(closings), new Promise((resolve) => setTimeout(resolve, 4_000))]);
+		await Promise.race([Promise.all(closings), new Promise((resolve) => setTimeout(resolve, 4_000).unref?.())]);
 		for (const one of [server, runServer]) one?.closeAllConnections?.();
-		await gateway.close();
+		await Promise.race([gateway.close().catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 5_000).unref?.())]);
 		process.exit(0);
 	};
 	process.on("SIGTERM", stop);
 	process.on("SIGINT", stop);
+	// WHY: Drain and exit orphaned cluster workers promptly if the primary process terminates unexpectedly.
+	if (cluster.isWorker) process.on("disconnect", () => void stop());
 }

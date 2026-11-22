@@ -288,8 +288,10 @@ function assertSafeRelativePath(path: string, field: string): string {
 	if (
 		trimmed.length === 0 ||
 		trimmed.startsWith("/") ||
+		trimmed.endsWith("/") ||
 		trimmed.includes("\\") ||
-		trimmed.split("/").some((segment) => segment === "..")
+		trimmed.includes("\0") ||
+		trimmed.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
 	) {
 		throw new CloudToolArgumentRefusal(`${field} must be a safe relative path`);
 	}
@@ -656,7 +658,7 @@ export function createCodingRecordChangeTool(
 		name: "coding_record_change",
 		source: "worker",
 		description:
-			"Stage one cohesive committed ChangeUnit on this Surface session branch without landing main. Members toggle and approve each recorded change individually; pass parentSha (the base commit before this change unit, e.g. git rev-parse HEAD~1) and commitSha, calling once per distinct deliverable before surface_reply.",
+			"Stage one cohesive committed ChangeUnit on this Surface session branch without landing main. Members toggle and approve each recorded change individually; pass parentSha (the base commit before this change unit, e.g. git rev-parse HEAD~1) and commitSha, calling once per distinct deliverable before coding_finish.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
