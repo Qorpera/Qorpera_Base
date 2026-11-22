@@ -1,24 +1,33 @@
+use crate::proxy::BoxBody;
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use flate2::{write::GzEncoder, Compression};
+use http_body_util::BodyExt;
+use hyper::body::{Body, Frame};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio::sync::{broadcast, oneshot};
+use std::task::{Context, Poll};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::{broadcast, mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
 pub const DEFAULT_MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
 pub const DEFAULT_MAX_BLOB_BYTES: usize = 100 * 1024 * 1024;
+pub const DEFAULT_STREAM_THRESHOLD_BYTES: usize = 4 * 1024 * 1024;
 const COMPRESS_MIN_BYTES: usize = 256;
 const PRECOMPRESS_MAX_BYTES: usize = 8 * 1024 * 1024;
 const PUT_CACHE_WARM_MAX_BYTES: usize = 512 * 1024;
 const BLOCKING_OFFLOAD_THRESHOLD: usize = 16 * 1024;
 const CACHE_SHARDS: usize = 64;
 const MAX_CONCURRENT_PRECOMPRESS: usize = 2;
+const MAX_COMPRESS_QUEUE: usize = 32;
+const ENTRY_STRUCTURAL_OVERHEAD: usize = 256;
+const STREAM_CHUNK_BYTES: usize = 64 * 1024;
 const BROTLI_QUALITY: i32 = 5;
 const BROTLI_MAX_WINDOW: u32 = 22;
 const ZSTD_LEVEL: i32 = 6;
@@ -117,6 +126,8 @@ pub enum BlobError {
     TooLarge,
     NotFound,
     CorruptOnDisk,
+    Timeout,
+    BodyRead,
     Io(std::io::Error),
 }
 
@@ -128,9 +139,67 @@ impl std::fmt::Display for BlobError {
             BlobError::TooLarge => write!(f, "blob exceeds maximum allowed size"),
             BlobError::NotFound => write!(f, "blob not found"),
             BlobError::CorruptOnDisk => write!(f, "blob failed sha256 verification on read"),
+            BlobError::Timeout => write!(f, "blob body read timed out"),
+            BlobError::BodyRead => write!(f, "blob body read failed"),
             BlobError::Io(err) => write!(f, "io error: {err}"),
         }
     }
+}
+
+pub enum BlobRead {
+    Buffered(BlobPayload),
+    Stream {
+        file: tokio::fs::File,
+        len: usize,
+        total: usize,
+    },
+}
+
+pub enum BlobRangeRead {
+    Buffered(Bytes, usize),
+    Stream {
+        file: tokio::fs::File,
+        len: usize,
+        total: usize,
+    },
+}
+
+struct ChannelBody {
+    rx: mpsc::Receiver<Result<Frame<Bytes>, hyper::Error>>,
+}
+
+impl Body for ChannelBody {
+    type Data = Bytes;
+    type Error = hyper::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        self.rx.poll_recv(cx)
+    }
+}
+
+pub fn stream_file_body(mut file: tokio::fs::File, mut remaining: usize) -> BoxBody {
+    let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, hyper::Error>>(4);
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; STREAM_CHUNK_BYTES];
+        while remaining > 0 {
+            let want = remaining.min(buf.len());
+            match file.read(&mut buf[..want]).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    remaining -= n;
+                    let chunk = Bytes::copy_from_slice(&buf[..n]);
+                    if tx.send(Ok(Frame::data(chunk))).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    ChannelBody { rx }.boxed()
 }
 
 impl std::error::Error for BlobError {}
@@ -166,7 +235,9 @@ struct CachedBlob {
 
 impl CachedBlob {
     fn new(raw: Bytes, gzip: Option<Bytes>, brotli: Option<Bytes>, zstd: Option<Bytes>) -> Self {
-        let accounted_bytes = raw.len()
+        // WHY: Account for HashMap, Arc, and SIEVE node overhead so tiny blobs cannot bypass max_cache_bytes.
+        let accounted_bytes = ENTRY_STRUCTURAL_OVERHEAD
+            + raw.len()
             + gzip.as_ref().map_or(0, Bytes::len)
             + brotli.as_ref().map_or(0, Bytes::len)
             + zstd.as_ref().map_or(0, Bytes::len);
@@ -493,20 +564,28 @@ struct PrecompressedVariants {
 struct CompressJob {
     raw: Bytes,
     reply: oneshot::Sender<PrecompressedVariants>,
+    _permit: OwnedSemaphorePermit,
 }
 
 struct CompressPool {
-    tx: Mutex<Option<std_mpsc::Sender<CompressJob>>>,
+    tx: Mutex<Option<std_mpsc::SyncSender<CompressJob>>>,
+    queue_sem: Arc<Semaphore>,
 }
 
 impl CompressPool {
     fn new() -> Self {
         Self {
             tx: Mutex::new(None),
+            queue_sem: Arc::new(Semaphore::new(MAX_COMPRESS_QUEUE)),
         }
     }
 
     async fn compress(&self, raw: Bytes) -> Result<PrecompressedVariants, BlobError> {
+        // WHY: Bound queued + active precompression jobs asynchronously so bursts do not grow RAM unboundedly or block Tokio workers.
+        let permit = Arc::clone(&self.queue_sem)
+            .acquire_owned()
+            .await
+            .map_err(|_| BlobError::Io(std::io::Error::other("compress queue closed")))?;
         let sender = {
             let mut guard = self
                 .tx
@@ -515,7 +594,7 @@ impl CompressPool {
             if let Some(ref tx) = *guard {
                 tx.clone()
             } else {
-                let (tx, rx) = std_mpsc::channel::<CompressJob>();
+                let (tx, rx) = std_mpsc::sync_channel::<CompressJob>(MAX_COMPRESS_QUEUE);
                 let shared_rx = Arc::new(Mutex::new(rx));
                 for worker_idx in 0..MAX_CONCURRENT_PRECOMPRESS {
                     let rx_ref = Arc::clone(&shared_rx);
@@ -545,11 +624,12 @@ impl CompressPool {
 
         let (reply_tx, reply_rx) = oneshot::channel();
         sender
-            .send(CompressJob {
+            .try_send(CompressJob {
                 raw,
                 reply: reply_tx,
+                _permit: permit,
             })
-            .map_err(|_| BlobError::Io(std::io::Error::other("compress pool closed")))?;
+            .map_err(|_| BlobError::Io(std::io::Error::other("compress pool unavailable")))?;
         reply_rx
             .await
             .map_err(|_| BlobError::Io(std::io::Error::other("compress job dropped")))
@@ -560,6 +640,7 @@ pub struct BlobStore {
     root: PathBuf,
     max_blob_bytes: usize,
     max_cache_bytes: usize,
+    stream_threshold_bytes: usize,
     shards: Vec<WaitFreeShard>,
     inflight: Mutex<HashMap<String, broadcast::Sender<ReadResult>>>,
     compress_pool: CompressPool,
@@ -580,9 +661,23 @@ impl BlobStore {
             root,
             max_blob_bytes,
             max_cache_bytes,
+            stream_threshold_bytes: DEFAULT_STREAM_THRESHOLD_BYTES,
             shards,
             inflight: Mutex::new(HashMap::new()),
             compress_pool: CompressPool::new(),
+        }
+    }
+
+    pub fn with_stream_threshold(mut self, bytes: usize) -> Self {
+        self.stream_threshold_bytes = bytes;
+        self
+    }
+
+    fn direct_cache_limit(&self) -> usize {
+        if self.max_cache_bytes == 0 {
+            self.stream_threshold_bytes
+        } else {
+            (self.max_cache_bytes / CACHE_SHARDS).min(self.stream_threshold_bytes)
         }
     }
 
@@ -682,6 +777,199 @@ impl BlobStore {
             self.shards[shard_idx].insert(sha256, cached);
         }
         Ok(PutOutcome::Stored)
+    }
+
+    pub async fn put_stream<B>(
+        &self,
+        sha256: &str,
+        mut body: B,
+        precompress: bool,
+        frame_timeout: Duration,
+    ) -> Result<PutOutcome, BlobError>
+    where
+        B: Body<Data = Bytes> + Unpin,
+    {
+        let path = self.blob_path(sha256)?;
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        // WHY: Stream uploads directly to a guarded temp file with incremental SHA-256 so large PUTs do not buffer up to 100 MiB in RAM.
+        let tmp = unique_temp_path(&path);
+        let mut guard = TempFileGuard::new(tmp.clone());
+        let mut file = tokio::fs::File::create(&tmp).await?;
+        let mut hasher = Sha256::new();
+        let mut total_bytes = 0usize;
+        let mut small_buf: Option<Vec<u8>> = Some(Vec::new());
+
+        loop {
+            let next_frame = match tokio::time::timeout(frame_timeout, body.frame()).await {
+                Ok(frame) => frame,
+                Err(_) => {
+                    drop(file);
+                    guard.remove_now().await;
+                    return Err(BlobError::Timeout);
+                }
+            };
+            let Some(frame_res) = next_frame else {
+                break;
+            };
+            let frame = match frame_res {
+                Ok(f) => f,
+                Err(_) => {
+                    drop(file);
+                    guard.remove_now().await;
+                    return Err(BlobError::BodyRead);
+                }
+            };
+            if let Ok(chunk) = frame.into_data() {
+                if chunk.is_empty() {
+                    continue;
+                }
+                let Some(next_total) = total_bytes.checked_add(chunk.len()) else {
+                    drop(file);
+                    guard.remove_now().await;
+                    return Err(BlobError::TooLarge);
+                };
+                if next_total > self.max_blob_bytes {
+                    drop(file);
+                    guard.remove_now().await;
+                    return Err(BlobError::TooLarge);
+                }
+                total_bytes = next_total;
+                hasher.update(&chunk);
+                if let Err(err) = file.write_all(&chunk).await {
+                    drop(file);
+                    guard.remove_now().await;
+                    return Err(BlobError::Io(err));
+                }
+                if let Some(ref mut buf) = small_buf {
+                    if total_bytes <= PRECOMPRESS_MAX_BYTES {
+                        buf.extend_from_slice(&chunk);
+                    } else {
+                        small_buf = None;
+                    }
+                }
+            }
+        }
+
+        let actual_sha = hex::encode(hasher.finalize());
+        if actual_sha != sha256 {
+            drop(file);
+            guard.remove_now().await;
+            return Err(BlobError::HashMismatch);
+        }
+
+        let shard_idx = shard_for_sha(sha256);
+        if self.shards[shard_idx].contains(sha256)
+            || tokio::fs::metadata(&path).await.map_or(false, |m| m.is_file())
+        {
+            drop(file);
+            guard.remove_now().await;
+            return Ok(PutOutcome::Exists);
+        }
+
+        if let Err(err) = file.sync_data().await {
+            drop(file);
+            guard.remove_now().await;
+            return Err(BlobError::Io(err));
+        }
+        drop(file);
+        if let Err(err) = tokio::fs::rename(&tmp, &path).await {
+            guard.remove_now().await;
+            return Err(BlobError::Io(err));
+        }
+        guard.defuse();
+
+        if let Some(buf) = small_buf {
+            let bytes = Bytes::from(buf);
+            let should_precompress = precompress
+                && bytes.len() >= COMPRESS_MIN_BYTES
+                && bytes.len() <= PRECOMPRESS_MAX_BYTES
+                && !is_likely_incompressible(&bytes);
+            let variants = if should_precompress {
+                self.compress_pool.compress(bytes.clone()).await?
+            } else {
+                PrecompressedVariants {
+                    gzip: None,
+                    brotli: None,
+                    zstd: None,
+                }
+            };
+            if let Some(ref gz) = variants.gzip {
+                let _ = write_atomic(&Self::sidecar_path(&path, ".gz"), gz, false).await;
+            }
+            if let Some(ref br) = variants.brotli {
+                let _ = write_atomic(&Self::sidecar_path(&path, ".br"), br, false).await;
+            }
+            if let Some(ref zs) = variants.zstd {
+                let _ = write_atomic(&Self::sidecar_path(&path, ".zst"), zs, false).await;
+            }
+            let cached = CachedBlob::new(bytes, variants.gzip, variants.brotli, variants.zstd);
+            if cached.accounted_bytes <= PUT_CACHE_WARM_MAX_BYTES {
+                self.shards[shard_idx].insert(sha256, cached);
+            }
+        }
+        Ok(PutOutcome::Stored)
+    }
+
+    pub async fn get_or_stream(
+        &self,
+        sha256: &str,
+        accepted: AcceptedEncodings,
+    ) -> Result<BlobRead, BlobError> {
+        let path = self.blob_path(sha256)?;
+        let shard_idx = shard_for_sha(sha256);
+        if let Some(hit) = self.shards[shard_idx].get_wait_free(sha256, accepted) {
+            return Ok(BlobRead::Buffered(hit));
+        }
+        let meta = tokio::fs::metadata(&path).await?;
+        let total = meta.len() as usize;
+        if total > self.direct_cache_limit() {
+            let file = tokio::fs::File::open(&path).await?;
+            return Ok(BlobRead::Stream {
+                file,
+                len: total,
+                total,
+            });
+        }
+        self.get_encoded(sha256, accepted).await.map(BlobRead::Buffered)
+    }
+
+    pub async fn get_range_or_stream(
+        &self,
+        sha256: &str,
+        start: usize,
+        end_inclusive: usize,
+    ) -> Result<BlobRangeRead, BlobError> {
+        let path = self.blob_path(sha256)?;
+        let shard_idx = shard_for_sha(sha256);
+        if let Some(hit) = self.shards[shard_idx].get_wait_free(sha256, AcceptedEncodings::IDENTITY) {
+            let total = hit.raw_len;
+            if total == 0 || start >= total || start > end_inclusive {
+                return Ok(BlobRangeRead::Buffered(Bytes::new(), total));
+            }
+            let capped_end = end_inclusive.min(total - 1);
+            return Ok(BlobRangeRead::Buffered(hit.bytes.slice(start..=capped_end), total));
+        }
+
+        let meta = tokio::fs::metadata(&path).await?;
+        let total = meta.len() as usize;
+        if total == 0 || start >= total || start > end_inclusive {
+            return Ok(BlobRangeRead::Buffered(Bytes::new(), total));
+        }
+        let capped_end = end_inclusive.min(total - 1);
+        if total <= self.direct_cache_limit() {
+            let payload = self.get_encoded(sha256, AcceptedEncodings::IDENTITY).await?;
+            return Ok(BlobRangeRead::Buffered(
+                payload.bytes.slice(start..=capped_end),
+                payload.raw_len,
+            ));
+        }
+
+        let len = capped_end - start + 1;
+        let mut file = tokio::fs::File::open(&path).await?;
+        file.seek(SeekFrom::Start(start as u64)).await?;
+        Ok(BlobRangeRead::Stream { file, len, total })
     }
 
     pub async fn get(&self, sha256: &str, prefer_gzip: bool) -> Result<BlobPayload, BlobError> {
@@ -918,7 +1206,35 @@ fn compress_zstd_if_smaller(
     }
 }
 
-async fn write_atomic(target: &Path, bytes: &[u8], sync_data: bool) -> Result<(), BlobError> {
+struct TempFileGuard {
+    path: Option<PathBuf>,
+}
+
+impl TempFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn defuse(&mut self) {
+        self.path = None;
+    }
+
+    async fn remove_now(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn unique_temp_path(target: &Path) -> PathBuf {
     let seq = TEMP_FILE_SEQ.fetch_add(1, Ordering::Relaxed);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -927,17 +1243,33 @@ async fn write_atomic(target: &Path, bytes: &[u8], sync_data: bool) -> Result<()
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("blob");
-    let tmp = target.with_file_name(format!(".{file_name}.tmp-{}-{seq}-{nonce}", std::process::id()));
+    target.with_file_name(format!(".{file_name}.tmp-{}-{seq}-{nonce}", std::process::id()))
+}
+
+async fn write_atomic(target: &Path, bytes: &[u8], sync_data: bool) -> Result<(), BlobError> {
+    let tmp = unique_temp_path(target);
+    let mut guard = TempFileGuard::new(tmp.clone());
     let mut file = tokio::fs::File::create(&tmp).await?;
-    tokio::io::AsyncWriteExt::write_all(&mut file, bytes).await?;
+    if let Err(err) = file.write_all(bytes).await {
+        drop(file);
+        guard.remove_now().await;
+        return Err(BlobError::Io(err));
+    }
     if sync_data {
-        file.sync_data().await?;
+        if let Err(err) = file.sync_data().await {
+            drop(file);
+            guard.remove_now().await;
+            return Err(BlobError::Io(err));
+        }
     }
     drop(file);
     match tokio::fs::rename(&tmp, target).await {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            guard.defuse();
+            Ok(())
+        }
         Err(err) => {
-            let _ = tokio::fs::remove_file(&tmp).await;
+            guard.remove_now().await;
             Err(BlobError::Io(err))
         }
     }
@@ -1024,7 +1356,7 @@ mod tests {
     #[tokio::test]
     async fn evicts_sieve_entries_and_coalesces_cold_reads() {
         let dir = tempdir().unwrap();
-        let store = Arc::new(BlobStore::new(dir.path().to_path_buf(), 64 * 64, 1024 * 1024));
+        let store = Arc::new(BlobStore::new(dir.path().to_path_buf(), 64 * 512, 1024 * 1024));
         let mut hashes = Vec::new();
         for i in 0..80 {
             let body = Bytes::from(format!("blob-payload-{i:04}-abcdefghij"));
@@ -1045,5 +1377,68 @@ mod tests {
         let (slice, total) = store.get_range(&target, 0, 7).await.unwrap();
         assert_eq!(slice.as_ref(), b"blob-pay");
         assert!(total > 20);
+    }
+
+    #[tokio::test]
+    async fn put_stream_cleans_temp_files_on_error_and_streams_large_reads() {
+        let dir = tempdir().unwrap();
+        let store = BlobStore::new(dir.path().to_path_buf(), 64 * 512, 256 * 1024)
+            .with_stream_threshold(1024);
+
+        let tiny = CachedBlob::new(Bytes::new(), None, None, None);
+        assert!(tiny.accounted_bytes >= ENTRY_STRUCTURAL_OVERHEAD);
+
+        let data = Bytes::from(vec![b'x'; 4096]);
+        let wrong_sha = "1".repeat(64);
+        assert!(matches!(
+            store
+                .put_stream(&wrong_sha, http_body_util::Full::new(data.clone()), false, Duration::from_secs(2))
+                .await,
+            Err(BlobError::HashMismatch)
+        ));
+        let bucket = dir.path().join("11").join("11");
+        let leftover: Vec<_> = std::fs::read_dir(&bucket)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(leftover.is_empty(), "temp file leaked after hash mismatch");
+
+        let sha = sha256_hex(&data);
+        assert_eq!(
+            store
+                .put_stream(&sha, http_body_util::Full::new(data.clone()), false, Duration::from_secs(2))
+                .await
+                .unwrap(),
+            PutOutcome::Stored
+        );
+        assert_eq!(
+            store
+                .put_stream(&sha, http_body_util::Full::new(data.clone()), false, Duration::from_secs(2))
+                .await
+                .unwrap(),
+            PutOutcome::Exists
+        );
+
+        let read = store.get_or_stream(&sha, AcceptedEncodings::IDENTITY).await.unwrap();
+        let streamed = match read {
+            BlobRead::Stream { file, len, total } => {
+                assert_eq!(len, data.len());
+                assert_eq!(total, data.len());
+                stream_file_body(file, len).collect().await.unwrap().to_bytes()
+            }
+            BlobRead::Buffered(_) => panic!("expected streaming read above threshold"),
+        };
+        assert_eq!(streamed, data);
+
+        let range = store.get_range_or_stream(&sha, 100, 199).await.unwrap();
+        let range_bytes = match range {
+            BlobRangeRead::Stream { file, len, total } => {
+                assert_eq!(len, 100);
+                assert_eq!(total, data.len());
+                stream_file_body(file, len).collect().await.unwrap().to_bytes()
+            }
+            BlobRangeRead::Buffered(_, _) => panic!("expected streaming range above threshold"),
+        };
+        assert_eq!(range_bytes.len(), 100);
     }
 }

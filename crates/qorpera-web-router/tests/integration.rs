@@ -1335,3 +1335,282 @@ async fn hardening_security_utf8_limits_cookie_strip_stale_pool_and_readiness() 
     assert_eq!(h2_res.status(), StatusCode::OK);
     assert_eq!(h2_res.headers().get("content-encoding").unwrap(), "br");
 }
+
+#[tokio::test]
+async fn websocket_concurrency_cap_activity_heartbeat_streaming_blobs_timeouts_and_shutdown() {
+    let backend_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let backend_addr = backend_listener.local_addr().unwrap();
+    let backend_task = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = backend_listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
+                let svc = service_fn(|mut req: Request<Incoming>| async move {
+                    if req.uri().path() == "/ws" {
+                        let on_upgrade = hyper::upgrade::on(&mut req);
+                        tokio::spawn(async move {
+                            if let Ok(upgraded) = on_upgrade.await {
+                                let mut ws = TokioIo::new(upgraded);
+                                let mut buf = [0u8; 64];
+                                while let Ok(n) = ws.read(&mut buf).await {
+                                    if n == 0 {
+                                        break;
+                                    }
+                                    if ws.write_all(&buf[..n]).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        });
+                        return Ok::<_, hyper::Error>(
+                            http::Response::builder()
+                                .status(StatusCode::SWITCHING_PROTOCOLS)
+                                .header("connection", "upgrade")
+                                .header("upgrade", "websocket")
+                                .body(Full::new(Bytes::new()))
+                                .unwrap(),
+                        );
+                    }
+                    Ok::<_, hyper::Error>(
+                        http::Response::builder()
+                            .status(StatusCode::OK)
+                            .body(Full::new(Bytes::from_static(b"ok")))
+                            .unwrap(),
+                    )
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .with_upgrades()
+                    .await;
+            });
+        }
+    });
+
+    let dir = tempdir().unwrap();
+    let blobs = Arc::new(
+        BlobStore::new(dir.path().to_path_buf(), 64 * 512, 1024 * 1024).with_stream_threshold(1024),
+    );
+    let large_payload = Bytes::from(vec![b'M'; 8192]);
+    let large_sha = sha256_hex(&large_payload);
+
+    let mut files = HashMap::new();
+    files.insert(
+        "large.bin".to_string(),
+        ManifestFile {
+            sha256: large_sha.clone(),
+            bytes: large_payload.len(),
+            content_type: "application/octet-stream".to_string(),
+            immutable: true,
+        },
+    );
+
+    let snapshot = EdgeSnapshot {
+        hosts_domain: "qorpera.site".to_string(),
+        hosts_enabled: true,
+        public_enabled: true,
+        domains_enabled: true,
+        sites: vec![SiteRecord {
+            id: "site-ws".to_string(),
+            slug: "ws-cap".to_string(),
+            is_public: true,
+            taken_down: false,
+            password_sha256: None,
+            password_version: 1,
+            live_deployment: Some(DeploymentRecord {
+                id: "dep-ws-1".to_string(),
+                kind: DeploymentKind::Hybrid,
+                manifest: SiteManifest {
+                    files,
+                    ..Default::default()
+                },
+                upstream_addr: Some(backend_addr.to_string()),
+                oci_image_ref: None,
+                app_port: Some(3000),
+                health_path: "/".to_string(),
+                idle_timeout_sec: 900,
+                memory_mb: 512,
+                vcpu_limit: 1.0,
+                env_spec: HashMap::new(),
+            }),
+            preview_deployments: HashMap::new(),
+            primary_custom_domain: None,
+        }],
+        ..Default::default()
+    };
+
+    let cfg = test_config(None);
+    let state = Arc::new(
+        RouterState::new(blobs, snapshot, &cfg)
+            .with_ws_limit(2)
+            .with_ws_heartbeat(Duration::from_millis(200))
+            .with_body_read_timeout(Duration::from_millis(120)),
+    );
+    let bound = BoundServers::bind(&cfg, Arc::clone(&state)).await.unwrap();
+    let pub_addr = bound.public_addr;
+    let int_addr = bound.internal_addr;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (pub_h, int_h) = bound.spawn_with_shutdown(shutdown_rx.clone());
+
+    #[cfg(unix)]
+    let (sock_path, unix_h) = {
+        use std::os::unix::fs::PermissionsExt;
+        let sock_path = dir.path().join("public.sock");
+        let h = qorpera_web_router::server::spawn_public_unix_listener_with_shutdown(
+            sock_path.clone(),
+            Arc::clone(&state),
+            shutdown_rx.clone(),
+        )
+        .unwrap();
+        let mode = std::fs::metadata(&sock_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o660, "public.sock must be restricted to 0660");
+        (sock_path, h)
+    };
+
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/_internal/blobs/{large_sha}"))
+            .header("authorization", "Bearer secret-control-token")
+            .body(Full::new(large_payload.clone()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+
+    let (st, hdrs, body) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/large.bin")
+            .header("host", "ws-cap.qorpera.site")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(hdrs.get("content-length").unwrap(), "8192");
+    assert_eq!(body, large_payload);
+
+    let (st, hdrs, body) = http_call(
+        pub_addr,
+        Request::builder()
+            .method("GET")
+            .uri("/large.bin")
+            .header("host", "ws-cap.qorpera.site")
+            .header("range", "bytes=100-299")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(hdrs.get("content-range").unwrap(), "bytes 100-299/8192");
+    assert_eq!(body.len(), 200);
+
+    let open_ws = || async {
+        let stream = TcpStream::connect(pub_addr).await.unwrap();
+        let io = TokioIo::new(stream);
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            let _ = conn.with_upgrades().await;
+        });
+        let res = sender
+            .send_request(
+                Request::builder()
+                    .method("GET")
+                    .uri("/ws")
+                    .header("host", "ws-cap.qorpera.site")
+                    .header("connection", "Upgrade")
+                    .header("upgrade", "websocket")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        res
+    };
+
+    let mut ws1_res = open_ws().await;
+    assert_eq!(ws1_res.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let ws1_io = TokioIo::new(hyper::upgrade::on(&mut ws1_res).await.unwrap());
+
+    let mut ws2_res = open_ws().await;
+    assert_eq!(ws2_res.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let ws2_io = TokioIo::new(hyper::upgrade::on(&mut ws2_res).await.unwrap());
+
+    let ws3_res = open_ws().await;
+    assert_eq!(ws3_res.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let ts_before = *state
+        .activity
+        .snapshot()
+        .deployments
+        .get("dep-ws-1")
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(1250)).await;
+    let ts_after = *state
+        .activity
+        .snapshot()
+        .deployments
+        .get("dep-ws-1")
+        .unwrap();
+    assert!(
+        ts_after > ts_before,
+        "live WS connection must keep advancing deployment activity ({ts_before} -> {ts_after})"
+    );
+
+    drop(ws1_io);
+    drop(ws2_io);
+    let mut recovered = false;
+    for _ in 0..20 {
+        let res = open_ws().await;
+        if res.status() == StatusCode::SWITCHING_PROTOCOLS {
+            recovered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(recovered, "WS permit must be released once clients close");
+
+    let mut stalled = TcpStream::connect(int_addr).await.unwrap();
+    let stalled_req = format!(
+        "POST /_internal/routes/snapshot HTTP/1.1\r\nHost: {int_addr}\r\nAuthorization: Bearer secret-control-token\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n{{\"a\""
+    );
+    stalled.write_all(stalled_req.as_bytes()).await.unwrap();
+    let mut resp = Vec::new();
+    let mut buf = [0u8; 512];
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(300), stalled.read(&mut buf)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                resp.extend_from_slice(&buf[..n]);
+                if String::from_utf8_lossy(&resp).contains("body timeout") {
+                    break;
+                }
+            }
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+    let resp_text = String::from_utf8_lossy(&resp);
+    assert!(
+        resp_text.starts_with("HTTP/1.1 408"),
+        "expected 408 on stalled snapshot upload, got: {resp_text}"
+    );
+
+    let _ = shutdown_tx.send(true);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        let _ = pub_h.await;
+        let _ = int_h.await;
+        #[cfg(unix)]
+        {
+            let _ = unix_h.await;
+            let _ = std::fs::remove_file(&sock_path);
+        }
+    })
+    .await
+    .expect("router listeners must exit promptly on shutdown signal");
+    backend_task.abort();
+}

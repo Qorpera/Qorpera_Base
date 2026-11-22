@@ -13,10 +13,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Semaphore};
 
 pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 
+pub const MAX_ACTIVE_WS_CONNS: usize = 2048;
+pub const DEFAULT_WS_ACTIVITY_HEARTBEAT: Duration = Duration::from_secs(15);
 const MAX_ACTIVITY_ENTRIES: usize = 16_384;
 const ACTIVITY_STALE_MS: u64 = 24 * 60 * 60 * 1000;
 const PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -33,6 +35,7 @@ pub fn full_body(bytes: impl Into<Bytes>) -> BoxBody {
 pub enum ProxyError {
     ConnectFailed(String),
     UpstreamFailed(String),
+    Overloaded,
 }
 
 impl std::fmt::Display for ProxyError {
@@ -40,6 +43,7 @@ impl std::fmt::Display for ProxyError {
         match self {
             ProxyError::ConnectFailed(e) => write!(f, "connect_failed: {e}"),
             ProxyError::UpstreamFailed(e) => write!(f, "upstream_failed: {e}"),
+            ProxyError::Overloaded => write!(f, "ws_overloaded"),
         }
     }
 }
@@ -375,6 +379,7 @@ pub fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
     has_upgrade && has_connection
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn proxy_http_or_ws(
     pool: &PooledProxyClient,
     upstream_addr: &str,
@@ -382,9 +387,24 @@ pub async fn proxy_http_or_ws(
     forwarded_host: &str,
     client_ip: &str,
     is_private: bool,
+    ws_semaphore: &Arc<Semaphore>,
+    activity: &Arc<ActivityTracker>,
+    deployment_id: &str,
+    ws_heartbeat: Duration,
 ) -> Result<Response<BoxBody>, ProxyError> {
     if is_websocket_upgrade(req.headers()) {
-        return proxy_websocket(upstream_addr, req, forwarded_host, client_ip, is_private).await;
+        return proxy_websocket(
+            upstream_addr,
+            req,
+            forwarded_host,
+            client_ip,
+            is_private,
+            ws_semaphore,
+            activity,
+            deployment_id,
+            ws_heartbeat,
+        )
+        .await;
     }
 
     let path_and_query = req
@@ -442,13 +462,22 @@ pub async fn proxy_empty_request(
     build_proxied_response(upstream_res, is_private)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn proxy_websocket(
     upstream_addr: &str,
     mut req: Request<Incoming>,
     forwarded_host: &str,
     client_ip: &str,
     is_private: bool,
+    ws_semaphore: &Arc<Semaphore>,
+    activity: &Arc<ActivityTracker>,
+    deployment_id: &str,
+    ws_heartbeat: Duration,
 ) -> Result<Response<BoxBody>, ProxyError> {
+    // WHY: Cap concurrent upgraded WebSockets before dialing upstream so WS floods cannot exhaust sockets or tasks.
+    let ws_permit = Arc::clone(ws_semaphore)
+        .try_acquire_owned()
+        .map_err(|_| ProxyError::Overloaded)?;
     let stream = tokio::time::timeout(PROXY_CONNECT_TIMEOUT, TcpStream::connect(upstream_addr))
         .await
         .map_err(|_| ProxyError::ConnectFailed("upstream_connect_timeout".to_string()))?
@@ -494,13 +523,33 @@ async fn proxy_websocket(
 
     if status == StatusCode::SWITCHING_PROTOCOLS {
         let upstream_on_upgrade = hyper::upgrade::on(&mut upstream_res);
+        let activity_ref = Arc::clone(activity);
+        let dep_id = deployment_id.to_string();
+        let heartbeat_every = ws_heartbeat.max(Duration::from_millis(50));
         tokio::spawn(async move {
-            if let (Ok(client_upgraded), Ok(upstream_upgraded)) =
-                tokio::join!(client_upgrade, upstream_on_upgrade)
-            {
-                let mut c = TokioIo::new(client_upgraded);
-                let mut u = TokioIo::new(upstream_upgraded);
-                let _ = tokio::io::copy_bidirectional(&mut c, &mut u).await;
+            let _ws_permit = ws_permit;
+            // WHY: Bound post-101 upgrade handshakes and pulse activity while the socket stays open so live WS apps are not frozen.
+            let Ok(Ok((client_upgraded, upstream_upgraded))) = tokio::time::timeout(
+                WS_HANDSHAKE_TIMEOUT,
+                async { tokio::try_join!(client_upgrade, upstream_on_upgrade) },
+            )
+            .await
+            else {
+                return;
+            };
+            let mut c = TokioIo::new(client_upgraded);
+            let mut u = TokioIo::new(upstream_upgraded);
+            let mut copy = std::pin::pin!(tokio::io::copy_bidirectional(&mut c, &mut u));
+            let mut heartbeat = tokio::time::interval(heartbeat_every);
+            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            heartbeat.tick().await;
+            loop {
+                tokio::select! {
+                    _ = &mut copy => break,
+                    _ = heartbeat.tick() => {
+                        activity_ref.record(&dep_id);
+                    }
+                }
             }
         });
         let mut builder = Response::builder().status(StatusCode::SWITCHING_PROTOCOLS);

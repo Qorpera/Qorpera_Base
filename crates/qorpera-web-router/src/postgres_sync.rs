@@ -3,17 +3,20 @@ use sha2::{Digest, Sha256};
 use std::io::BufReader;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use tracing::{error, info, warn};
 
 pub const ROUTE_NOTIFY_CHANNEL: &str = "qorpera_web_route_changes";
 const DB_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DB_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+const SNAPSHOT_OFFLOAD_THRESHOLD_BYTES: usize = 64 * 1024;
 
-pub fn build_postgres_tls_connector(ca_file: Option<&Path>) -> Result<MakeRustlsConnect, String> {
+static DEFAULT_TLS_CONFIG: OnceLock<Result<rustls::ClientConfig, String>> = OnceLock::new();
+
+fn build_tls_client_config(ca_file: Option<&Path>) -> Result<rustls::ClientConfig, String> {
     let mut root_store = rustls::RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let native = rustls_native_certs::load_native_certs();
@@ -50,14 +53,37 @@ pub fn build_postgres_tls_connector(ca_file: Option<&Path>) -> Result<MakeRustls
     .map_err(|e| format!("tls protocol version setup failed: {e}"))?
     .with_root_certificates(root_store)
     .with_no_client_auth();
-    Ok(MakeRustlsConnect::new(tls_config))
+    Ok(tls_config)
+}
+
+pub fn build_postgres_tls_connector(ca_file: Option<&Path>) -> Result<MakeRustlsConnect, String> {
+    // WHY: Cache the default TLS root store so reconnects do not repeat synchronous /etc/ssl/certs reads on Tokio workers.
+    if ca_file.is_none() {
+        let cfg = DEFAULT_TLS_CONFIG
+            .get_or_init(|| build_tls_client_config(None))
+            .as_ref()
+            .map_err(Clone::clone)?
+            .clone();
+        return Ok(MakeRustlsConnect::new(cfg));
+    }
+    Ok(MakeRustlsConnect::new(build_tls_client_config(ca_file)?))
+}
+
+async fn default_postgres_tls_connector() -> Result<MakeRustlsConnect, String> {
+    if let Some(cached) = DEFAULT_TLS_CONFIG.get() {
+        let cfg = cached.as_ref().map_err(Clone::clone)?.clone();
+        return Ok(MakeRustlsConnect::new(cfg));
+    }
+    tokio::task::spawn_blocking(|| build_postgres_tls_connector(None))
+        .await
+        .map_err(|e| format!("tls init task failed: {e}"))?
 }
 
 pub async fn connect_postgres_client(
     database_url: &str,
     timeout: Duration,
 ) -> Result<tokio_postgres::Client, String> {
-    let tls = build_postgres_tls_connector(None)?;
+    let tls = default_postgres_tls_connector().await?;
     let (client, conn) = tokio::time::timeout(timeout, tokio_postgres::connect(database_url, tls))
         .await
         .map_err(|_| "connect timed out".to_string())?
@@ -68,6 +94,45 @@ pub async fn connect_postgres_client(
         }
     });
     Ok(client)
+}
+
+#[derive(Default)]
+pub struct NotifyCoalescer {
+    dirty: AtomicBool,
+    dns_needed: AtomicBool,
+    closed: AtomicBool,
+    wake: Notify,
+}
+
+impl NotifyCoalescer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&self, payload: &str) {
+        if should_trigger_dns(payload) {
+            self.dns_needed.store(true, Ordering::Release);
+        }
+        self.dirty.store(true, Ordering::Release);
+        self.wake.notify_one();
+    }
+
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.wake.notify_one();
+    }
+
+    pub async fn take_or_wait(&self) -> Option<bool> {
+        loop {
+            if self.dirty.swap(false, Ordering::AcqRel) {
+                return Some(self.dns_needed.swap(false, Ordering::AcqRel));
+            }
+            if self.closed.load(Ordering::Acquire) {
+                return None;
+            }
+            self.wake.notified().await;
+        }
+    }
 }
 
 pub fn spawn_postgres_sync(
@@ -109,20 +174,22 @@ async fn run_sync_session(
     reconcile_interval: Duration,
     domain_verify_tx: Option<mpsc::Sender<()>>,
 ) -> Result<(), String> {
-    let tls = build_postgres_tls_connector(None)?;
+    let tls = default_postgres_tls_connector().await?;
     let (client, mut connection) =
         tokio::time::timeout(DB_CONNECT_TIMEOUT, tokio_postgres::connect(database_url, tls))
             .await
             .map_err(|_| "connect timed out".to_string())?
             .map_err(|e| format!("connect failed: {e}"))?;
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(32);
+    // WHY: Coalesce pg_notify bursts losslessly into atomic flags so bursts > 32 never drop domain_recheck or route updates.
+    let coalescer = Arc::new(NotifyCoalescer::new());
+    let coalescer_tx = Arc::clone(&coalescer);
     tokio::spawn(async move {
         let mut stream = futures_poll_notifications(&mut connection);
         while let Some(event) = stream.next().await {
             match event {
                 Ok(tokio_postgres::AsyncMessage::Notification(n)) => {
-                    let _ = tx.try_send(n.payload().to_string());
+                    coalescer_tx.push(n.payload());
                 }
                 Ok(_) => {}
                 Err(err) => {
@@ -131,6 +198,7 @@ async fn run_sync_session(
                 }
             }
         }
+        coalescer_tx.close();
     });
 
     tokio::time::timeout(
@@ -155,16 +223,10 @@ async fn run_sync_session(
 
     loop {
         tokio::select! {
-            notify = rx.recv() => {
-                let Some(first_payload) = notify else {
+            notify = coalescer.take_or_wait() => {
+                let Some(trigger_dns) = notify else {
                     return Err("notification stream closed".to_string());
                 };
-                let mut trigger_dns = should_trigger_dns(&first_payload);
-                while let Ok(p) = rx.try_recv() {
-                    if should_trigger_dns(&p) {
-                        trigger_dns = true;
-                    }
-                }
                 refresh_snapshot(&client, &routes, &mut last_snapshot_hash).await?;
                 if trigger_dns {
                     if let Some(ref dtx) = domain_verify_tx {
@@ -198,15 +260,33 @@ async fn refresh_snapshot(
     .map_err(|_| "snapshot query timed out".to_string())?
     .map_err(|e| format!("snapshot query failed: {e}"))?;
     let raw_json: String = row.get(0);
-    let digest: [u8; 32] = Sha256::digest(raw_json.as_bytes()).into();
-    if last_hash.as_ref() == Some(&digest) {
+    let previous_hash = *last_hash;
+    let parsed = if raw_json.len() >= SNAPSHOT_OFFLOAD_THRESHOLD_BYTES {
+        tokio::task::spawn_blocking(move || parse_snapshot_if_changed(&raw_json, previous_hash))
+            .await
+            .map_err(|e| format!("snapshot parse task failed: {e}"))??
+    } else {
+        parse_snapshot_if_changed(&raw_json, previous_hash)?
+    };
+    let Some((digest, snapshot)) = parsed else {
         return Ok(());
-    }
-    let snapshot: EdgeSnapshot =
-        serde_json::from_str(&raw_json).map_err(|e| format!("snapshot parse failed: {e}"))?;
+    };
     routes.update(|table| table.apply_snapshot(snapshot));
     *last_hash = Some(digest);
     Ok(())
+}
+
+fn parse_snapshot_if_changed(
+    raw_json: &str,
+    previous_hash: Option<[u8; 32]>,
+) -> Result<Option<([u8; 32], EdgeSnapshot)>, String> {
+    let digest: [u8; 32] = Sha256::digest(raw_json.as_bytes()).into();
+    if previous_hash.as_ref() == Some(&digest) {
+        return Ok(None);
+    }
+    let snapshot: EdgeSnapshot =
+        serde_json::from_str(raw_json).map_err(|e| format!("snapshot parse failed: {e}"))?;
+    Ok(Some((digest, snapshot)))
 }
 
 struct ConnectionMessages<'a, S, T> {
@@ -236,7 +316,26 @@ mod tests {
     #[test]
     fn builds_default_rustls_connector_and_rejects_missing_ca_file() {
         assert!(build_postgres_tls_connector(None).is_ok());
+        assert!(build_postgres_tls_connector(None).is_ok());
         let missing = Path::new("/nonexistent/qorpera-missing-ca.pem");
         assert!(build_postgres_tls_connector(Some(missing)).is_err());
+    }
+
+    #[tokio::test]
+    async fn coalescer_preserves_dns_flag_across_large_notify_burst_and_handles_close() {
+        let coalescer = NotifyCoalescer::new();
+        for _ in 0..100 {
+            coalescer.push("route_update");
+        }
+        coalescer.push("domain_recheck");
+        for _ in 0..100 {
+            coalescer.push("route_update");
+        }
+        assert_eq!(coalescer.take_or_wait().await, Some(true));
+
+        coalescer.push("route_update");
+        coalescer.close();
+        assert_eq!(coalescer.take_or_wait().await, Some(false));
+        assert_eq!(coalescer.take_or_wait().await, None);
     }
 }
