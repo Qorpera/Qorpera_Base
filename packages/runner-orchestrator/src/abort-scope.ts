@@ -44,7 +44,6 @@ export async function withTimeoutScope<T>(
 export async function withAbortScopes<T>(
 	parents: readonly (AbortSignal | undefined)[],
 	use: (signal: AbortSignal) => Promise<T>,
-	timeoutMs?: number,
 ): Promise<T> {
 	const scope = new AbortController();
 	const listeners: Array<readonly [AbortSignal, () => void]> = [];
@@ -58,18 +57,9 @@ export async function withAbortScopes<T>(
 		parent.addEventListener("abort", forward, { once: true });
 		listeners.push([parent, forward]);
 	}
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	if (!scope.signal.aborted && timeoutMs !== undefined) {
-		timer = setTimeout(
-			() => scope.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
-			timeoutMs,
-		);
-		timer.unref?.();
-	}
 	try {
 		return await use(scope.signal);
 	} finally {
-		clearTimeout(timer);
 		for (const [parent, forward] of listeners) parent.removeEventListener("abort", forward);
 	}
 }

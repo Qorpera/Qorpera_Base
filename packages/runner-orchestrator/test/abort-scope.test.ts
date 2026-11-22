@@ -145,15 +145,11 @@ describe("withAbortScopes", () => {
 			expect(getEventListeners(second.signal, "abort")).toHaveLength(0);
 
 			const reason = new Error("SECOND_PARENT_ABORT");
-			await withAbortScopes(
-				[first.signal, second.signal],
-				async (scoped) => {
-					second.abort(reason);
-					expect(scoped.aborted).toBe(true);
-					expect(scoped.reason).toBe(reason);
-				},
-				60_000,
-			);
+			await withAbortScopes([first.signal, second.signal], async (scoped) => {
+				second.abort(reason);
+				expect(scoped.aborted).toBe(true);
+				expect(scoped.reason).toBe(reason);
+			});
 			expect(getEventListeners(first.signal, "abort")).toHaveLength(0);
 			expect(getEventListeners(second.signal, "abort")).toHaveLength(0);
 			expect(watch.made()).toBe(0);
@@ -162,49 +158,15 @@ describe("withAbortScopes", () => {
 		}
 	});
 
-	it("starts aborted without scheduling a timer or leaking listeners when a parent is pre-aborted", async () => {
+	it("starts aborted without leaking listeners when a parent is pre-aborted", async () => {
 		const live = new AbortController();
 		const ended = new AbortController();
 		const reason = new Error("ALREADY_ENDED");
 		ended.abort(reason);
-		const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
-		try {
-			await withAbortScopes(
-				[live.signal, ended.signal],
-				async (scoped) => {
-					expect(scoped.aborted).toBe(true);
-					expect(scoped.reason).toBe(reason);
-				},
-				60_000,
-			);
-			expect(setTimeoutSpy).not.toHaveBeenCalled();
-			expect(getEventListeners(live.signal, "abort")).toHaveLength(0);
-		} finally {
-			setTimeoutSpy.mockRestore();
-		}
-	});
-
-	it("aborts with TimeoutError when timeoutMs elapses", async () => {
-		const parent = new AbortController();
-		let timedReason: unknown;
-		await withAbortScopes(
-			[parent.signal],
-			async (scoped) => {
-				await new Promise<void>((resolve) => {
-					scoped.addEventListener(
-						"abort",
-						() => {
-							timedReason = scoped.reason;
-							resolve();
-						},
-						{ once: true },
-					);
-				});
-			},
-			15,
-		);
-		expect(timedReason).toBeInstanceOf(DOMException);
-		expect((timedReason as DOMException).name).toBe("TimeoutError");
-		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
+		await withAbortScopes([live.signal, ended.signal], async (scoped) => {
+			expect(scoped.aborted).toBe(true);
+			expect(scoped.reason).toBe(reason);
+		});
+		expect(getEventListeners(live.signal, "abort")).toHaveLength(0);
 	});
 });
