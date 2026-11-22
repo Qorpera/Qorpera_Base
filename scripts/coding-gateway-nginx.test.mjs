@@ -9,15 +9,17 @@ const NODE_FILES = {
 };
 const FRONTS = Object.keys(NODE_FILES);
 const HOME_OPEN = "\t\tlocation = /v1/home-session {";
+const MEMBER_STREAM_OPEN = "\t\tlocation = /v1/machine-commands/member-stream {";
 const HOME = "http > server > location = /v1/home-session";
+const MEMBER_STREAM = "http > server > location = /v1/machine-commands/member-stream";
 const REST = "http > server > location /";
 const SERVER = "http > server";
 const channelSource = readFileSync(new URL("../packages/runtime/src/cloud-home-channel.ts", import.meta.url), "utf8");
 
-function withoutHome(text) {
+function withoutLocation(text, openLine) {
 	const lines = text.split("\n");
-	const start = lines.indexOf(HOME_OPEN);
-	assert.ok(start >= 0 && lines.lastIndexOf(HOME_OPEN) === start, "one home location");
+	const start = lines.indexOf(openLine);
+	assert.ok(start >= 0 && lines.lastIndexOf(openLine) === start, `one location for ${openLine}`);
 	const end = lines.indexOf("\t\t}", start);
 	assert.ok(end > start);
 	lines.splice(start, end - start + 1);
@@ -34,10 +36,11 @@ test("each front with the home's location taken out and connection-limit directi
 		const rendered = renderCodingGatewayNginx(front);
 		const nodeFile = readFileSync(NODE_FILES[front]);
 		assert.notEqual(rendered, nodeFile.toString("utf8"));
-		const withoutHomeRoute = withoutHome(rendered);
-		assert.equal(withoutHomeRoute.match(/^worker_rlimit_nofile 4096;$/gm)?.length, 1, front);
-		assert.equal(withoutHomeRoute.match(/^events \{ worker_connections 2048; \}$/gm)?.length, 1, front);
-		const normalized = withoutHomeRoute
+		let withoutAddedRoutes = withoutLocation(rendered, HOME_OPEN);
+		if (front === "peer") withoutAddedRoutes = withoutLocation(withoutAddedRoutes, MEMBER_STREAM_OPEN);
+		assert.equal(withoutAddedRoutes.match(/^worker_rlimit_nofile 4096;$/gm)?.length, 1, front);
+		assert.equal(withoutAddedRoutes.match(/^events \{ worker_connections 2048; \}$/gm)?.length, 1, front);
+		const normalized = withoutAddedRoutes
 			.replace("worker_rlimit_nofile 4096;\n", "")
 			.replace("events { worker_connections 2048; }", "events { worker_connections 256; }");
 		assert.ok(Buffer.from(normalized, "utf8").equals(nodeFile), front);
@@ -91,12 +94,53 @@ test("every location denies every method but its own", () => {
 	for (const front of FRONTS) {
 		const directives = nginxDirectives(renderCodingGatewayNginx(front));
 		const locations = [...new Set(directives.map((d) => d.block).filter((block) => block.includes("location")))];
-		assert.deepEqual(locations, [`${HOME} > limit_except GET`, HOME, `${REST} > limit_except POST`, REST]);
+		const expectedLocations =
+			front === "peer"
+				? [
+						`${HOME} > limit_except GET`,
+						HOME,
+						`${MEMBER_STREAM} > limit_except POST`,
+						MEMBER_STREAM,
+						`${REST} > limit_except POST`,
+						REST,
+					]
+				: [`${HOME} > limit_except GET`, HOME, `${REST} > limit_except POST`, REST];
+		assert.deepEqual(locations, expectedLocations);
+		const expectedLimits =
+			front === "peer"
+				? [
+						`${HOME} > limit_except GET: deny all`,
+						`${MEMBER_STREAM} > limit_except POST: deny all`,
+						`${REST} > limit_except POST: deny all`,
+					]
+				: [`${HOME} > limit_except GET: deny all`, `${REST} > limit_except POST: deny all`];
 		assert.deepEqual(
 			directives.filter((d) => d.block.includes("limit_except")).map((d) => `${d.block}: ${d.name} ${d.value}`),
-			[`${HOME} > limit_except GET: deny all`, `${REST} > limit_except POST: deny all`],
+			expectedLimits,
 		);
 	}
+});
+
+test("only the peer front exposes unbuffered long-lived streaming for member-stream", () => {
+	const peer = nginxDirectives(renderCodingGatewayNginx("peer"));
+	assert.deepEqual(
+		peer.filter((d) => d.block === MEMBER_STREAM).map((d) => `${d.name} ${d.value}`),
+		[
+			"proxy_pass http://127.0.0.1:18789",
+			"proxy_set_header Host 127.0.0.1",
+			"proxy_set_header Connection close",
+			'proxy_set_header X-Forwarded-For ""',
+			"proxy_buffering off",
+			"proxy_request_buffering on",
+			"proxy_read_timeout 28800s",
+			"proxy_send_timeout 60s",
+		],
+	);
+	const ingress = nginxDirectives(renderCodingGatewayNginx("ingress"));
+	assert.deepEqual(
+		ingress.filter((d) => d.block.includes(MEMBER_STREAM)),
+		[],
+	);
 });
 
 test("the peer's allow and deny stand at server level, so they cover the home's location too", () => {
@@ -120,9 +164,24 @@ test("the peer's allow and deny stand at server level, so they cover the home's 
 test("both files have balanced blocks and each directive in the block the node has it in", () => {
 	for (const front of FRONTS) {
 		const directives = nginxDirectives(renderCodingGatewayNginx(front));
+		const expectedBlocks =
+			front === "peer"
+				? [
+						"",
+						"events",
+						"http",
+						SERVER,
+						`${HOME} > limit_except GET`,
+						HOME,
+						`${MEMBER_STREAM} > limit_except POST`,
+						MEMBER_STREAM,
+						`${REST} > limit_except POST`,
+						REST,
+					]
+				: ["", "events", "http", SERVER, `${HOME} > limit_except GET`, HOME, `${REST} > limit_except POST`, REST];
 		assert.deepEqual(
 			[...new Set(directives.map((d) => d.block))],
-			["", "events", "http", SERVER, `${HOME} > limit_except GET`, HOME, `${REST} > limit_except POST`, REST],
+			expectedBlocks,
 		);
 		assert.deepEqual(at(directives, "", "worker_rlimit_nofile"), ["4096"]);
 		assert.deepEqual(at(directives, "", "pid"), [`/run/${CODING_GATEWAY_FRONTS[front]}/nginx.pid`]);

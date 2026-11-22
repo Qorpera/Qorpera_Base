@@ -225,11 +225,13 @@ export class MachineCommandRouter {
 		const onAbort = (): void => controller.abort(signal.reason);
 		if (signal.aborted) onAbort();
 		else signal.addEventListener("abort", onAbort, { once: true });
-		const timer = setTimeout(
-			() => controller.abort(new DOMException("Machine wake timed out", "TimeoutError")),
-			CLOUD_MACHINE_WAKE_WAIT_MS,
-		);
-		timer.unref?.();
+		const timer = controller.signal.aborted
+			? undefined
+			: setTimeout(
+					() => controller.abort(new DOMException("Machine wake timed out", "TimeoutError")),
+					CLOUD_MACHINE_WAKE_WAIT_MS,
+				);
+		timer?.unref?.();
 		const bounded = controller.signal;
 		const { wait } = request.input;
 		const wakeLocal = this.#options.wakeLocal;
@@ -253,11 +255,13 @@ export class MachineCommandRouter {
 					})
 					.map((asked) => asked.catch(() => false));
 		const asked = local ? [local, ...peers] : peers;
-		const settled = Promise.allSettled(asked).finally(() => {
+		try {
+			return wait ? await anyTold(asked) : (await Promise.allSettled(asked), false);
+		} finally {
+			controller.abort();
 			clearTimeout(timer);
 			signal.removeEventListener("abort", onAbort);
-		});
-		return wait ? anyTold(asked) : settled.then(() => false);
+		}
 	}
 	/**
 	 * One run's channel to its home (slice 1). The ingress proved the run's holder and SQL authorized the session on
@@ -290,8 +294,13 @@ export class MachineCommandRouter {
 		});
 		return await channel.open({ sessionId: authority.sessionId, machineId: authority.machineId, kind: request.kind }, signal);
 	}
-	async execute(request: CloudMachineCommandHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineCommandReceipt> {
-		const authority = await authorizeMachineCommand(this.#options.control, request, signal);
+	async execute(
+		request: CloudMachineCommandHttpRequest,
+		signal: AbortSignal,
+		localOnly = false,
+		authorized?: MachineCommandAuthority,
+	): Promise<CloudMachineCommandReceipt> {
+		const authority = authorized ?? (await authorizeMachineCommand(this.#options.control, request, signal));
 		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
 			if (!this.#options.executeLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
 			return this.#options.executeLocal(request, authority, signal);
@@ -396,13 +405,23 @@ export class MachineCommandRouter {
 	#told(authority: MachineScreenAuthority): void {
 		const touched = authority.memberTouched;
 		if (!touched) return;
+		const controller = new AbortController();
+		const timer = globalThis.setTimeout(
+			() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+			MEMBER_TOUCHED_TOLD_MS,
+		);
+		timer.unref?.();
 		try {
 			void this.#options.control
-				.call("qorpera_machine_desktop_shared_told", { p_machine_id: authority.machineId, p_at: touched.at },
-					AbortSignal.timeout(MEMBER_TOUCHED_TOLD_MS))
-				.catch(() => undefined);
+				.call(
+					"qorpera_machine_desktop_shared_told",
+					{ p_machine_id: authority.machineId, p_at: touched.at },
+					controller.signal,
+				)
+				.catch(() => undefined)
+				.finally(() => globalThis.clearTimeout(timer));
 		} catch {
-			// Not marked: the agent's next call says it again.
+			globalThis.clearTimeout(timer);
 		}
 	}
 	/** A member's look at a desktop (20260930712000), as this executor's member listener took it: begun as the member (the
@@ -638,14 +657,22 @@ export class MachineCommandRouter {
 		const unused = globalThis.setTimeout(() => {
 			if (!ran) this.#streamsOpen.delete(opened);
 		}, 10_000);
+		unused.unref?.();
 		return async (sink, signal) => {
 			ran = true;
 			globalThis.clearTimeout(unused);
-			const lapsed = new AbortController();
-			const stop = AbortSignal.any([signal, lapsed.signal]);
+			const stop = new AbortController();
+			let lapsed = false;
+			const forward = (): void => stop.abort(signal.reason);
+			if (signal.aborted) forward();
+			else signal.addEventListener("abort", forward, { once: true });
 			const watch = globalThis.setInterval(() => {
-				if (!this.#streamPass(asked)) lapsed.abort();
+				if (!this.#streamPass(asked)) {
+					lapsed = true;
+					stop.abort();
+				}
 			}, MEMBER_STREAM_PASS_CHECK_MS);
+			watch.unref?.();
 			try {
 				if (signal.aborted) return "closed";
 				const pass = this.#streamPass(asked);
@@ -654,18 +681,19 @@ export class MachineCommandRouter {
 				if (pass.authority.served) {
 					if (!this.#options.memberStreamLocal) return "STREAM_UNAVAILABLE";
 					reason = await this.#options.memberStreamLocal({ placementId: pass.authority.placementId,
-						bootId: pass.authority.bootId, userId: asked.userId, generation: asked.generation, epoch: asked.epoch }, sink, stop);
+						bootId: pass.authority.bootId, userId: asked.userId, generation: asked.generation, epoch: asked.epoch }, sink, stop.signal);
 				} else {
 					const peer = this.#options.peers.find((entry) => entry.owner === pass.authority.executorOwner &&
 						entry.providerId === pass.authority.providerId);
 					if (!peer) return "STREAM_UNAVAILABLE";
 					reason = await createHttpMemberMachineScreenPeer({ url: peer.origin,
 						token: await this.#options.credential(peer.tokenCredential), fetch: this.#options.fetch })
-						.memberStream({ passId: pass.authority.passId, epoch: asked.epoch }, sink, stop);
+						.memberStream({ passId: pass.authority.passId, epoch: asked.epoch }, sink, stop.signal);
 				}
-				return lapsed.signal.aborted ? "POINTER_PASS_ENDED" : reason;
+				return lapsed ? "POINTER_PASS_ENDED" : reason;
 			} finally {
 				globalThis.clearInterval(watch);
+				signal.removeEventListener("abort", forward);
 				this.#streamsOpen.delete(opened);
 			}
 		};
@@ -936,9 +964,18 @@ export function machineCommandRoutes(
 	memberPointer?(request: CloudMemberMachinePointerPeerRequest, signal: AbortSignal): Promise<CloudMemberMachinePointerMove>;
 	memberStream?(request: CloudMemberMachineStreamPeerRequest, sink: CloudMemberMachineStreamSink, signal: AbortSignal): Promise<string>;
 } {
+	const authorized = new WeakMap<CloudMachineCommandHttpRequest, MachineCommandAuthority>();
 	return {
-		authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
-		execute: (request, signal) => router.execute(request, signal, localOnly),
+		authorize: async (request, signal) => {
+			const authority = await authorizeMachineCommand(control, request, signal);
+			authorized.set(request, authority);
+			return authority;
+		},
+		execute: (request, signal) => {
+			const pre = authorized.get(request);
+			if (pre) authorized.delete(request);
+			return router.execute(request, signal, localOnly, pre);
+		},
 		wake: (request, signal) => router.wake(request, signal, localOnly),
 		codingValue: (request, signal) => router.codingValue(request, signal, localOnly),
 		accountFill: (request, signal) => router.accountFill(request, signal, localOnly),

@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { getEventListeners } from "node:events";
 import { createServer } from "node:http";
 import type { CloudMachineCommandReceipt } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -73,6 +74,7 @@ import {
 	parseCloudMemberMachineScreenPeerRequest,
 	parseCloudMemberMachineStartAnswer,
 	parseCloudMemberMachineStartPeerRequest,
+	serveCloudMachineCommand,
 } from "../src/cloud-machine-command-http.ts";
 import type { CloudNativeToolBinding } from "../src/cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "../src/cloud-native-tool-operations.ts";
@@ -643,6 +645,37 @@ describe("a machine wake's route", () => {
 			await router({ wakeLocal: failingLocal, told: false }).wake({ ...request(), input: { wait: false } }, signal),
 		).toBe(false);
 	});
+
+	it("aborts losing peer waits immediately on early local win and removes caller abort listener", async () => {
+		const caller = new AbortController();
+		let peerSignal: AbortSignal | undefined;
+		let peerStarted!: () => void;
+		const peerReady = new Promise<void>((resolve) => {
+			peerStarted = resolve;
+		});
+		const hangingRouter = new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers,
+			control: closed({ call: vi.fn() }),
+			credential: async () => randomBytes(32).toString("base64url"),
+			wakeLocal: async () => {
+				await peerReady;
+				return true;
+			},
+			fetch: (async (_input: string | URL | Request, init?: RequestInit) => {
+				peerSignal = init?.signal ?? undefined;
+				peerStarted();
+				await new Promise<void>((resolve) => {
+					peerSignal?.addEventListener("abort", () => resolve(), { once: true });
+				});
+				throw new Error("aborted");
+			}) as typeof fetch,
+		});
+		expect(await hangingRouter.wake(request(), caller.signal)).toBe(true);
+		expect(peerSignal?.aborted).toBe(true);
+		expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
+	});
 });
 
 describe("machine command authority", () => {
@@ -870,6 +903,33 @@ describe("machine command authority", () => {
 			credential: async () => "",
 		});
 		await expect(noMachines.execute(f.request, f.signal)).rejects.toThrow("MACHINE_COMMAND_WRONG_EXECUTOR");
+	});
+
+	it("machineCommandRoutes reuses pre-authorized authority once between authorize and execute while preserving post-execute checks", async () => {
+		const f = fixture();
+		const executeLocal = vi.fn(
+			async (): Promise<CloudMachineCommandReceipt> =>
+				receiptFor(
+					f.request.scope.machineId,
+					f.request.input.commandId,
+					f.inputSha256,
+				) as CloudMachineCommandReceipt,
+		);
+		const local = new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers: [],
+			control: f,
+			credential: async () => "",
+			executeLocal,
+		});
+		const routes = machineCommandRoutes(local, f, false);
+		await serveCloudMachineCommand(routes, f.request, "start", f.signal);
+		expect(executeLocal).toHaveBeenCalledTimes(1);
+		expect(f.call).toHaveBeenCalledTimes(2);
+		await routes.execute(f.request, f.signal);
+		expect(executeLocal).toHaveBeenCalledTimes(2);
+		expect(f.call).toHaveBeenCalledTimes(3);
 	});
 });
 
