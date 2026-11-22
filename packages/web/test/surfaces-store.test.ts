@@ -1474,4 +1474,121 @@ describe("SurfacesStore", () => {
 		).toEqual(["identity/QorperaOS/surfaces/identity/notes/a.md", "identity/tokens.json", "identity/voice.md"]);
 		store.dispose();
 	});
+
+	it("reloads cloud files when a previously visited studio surface unmerges or merges during a background poll", async () => {
+		vi.useFakeTimers();
+		const studioId = "22222222-2222-4222-8222-222222222281";
+		const otherId = "22222222-2222-4222-8222-222222222282";
+		const studio = summary({
+			id: studioId,
+			slug: "brand",
+			title: "Brand",
+			archetype: "studio",
+			sourceKind: "folder",
+			folderRoot: "brand",
+			kind: "brand",
+			siteSlug: null,
+			liveUrl: null,
+			activeSessionCount: 1,
+			runningSessionCount: 1,
+		});
+		const other = summary({
+			id: otherId,
+			slug: "shop",
+			title: "Shop",
+			activeSessionCount: 0,
+			runningSessionCount: 0,
+		});
+		const patchManifest = [
+			{ op: "merge_json" as const, path: "tokens.json", patch: { colors: { accent: "#ff5500" } } },
+		];
+		const mergedChange = change(CHANGES[0], 1, "merged", {
+			surfaceId: studioId,
+			kind: "folder_patch",
+			affectedPaths: ["brand/tokens.json"],
+			patchManifest,
+		});
+		const stagedChange = change(CHANGES[0], 1, "staged", {
+			surfaceId: studioId,
+			kind: "folder_patch",
+			affectedPaths: ["brand/tokens.json"],
+			patchManifest,
+		});
+		const baseTokens = JSON.stringify({ colors: { accent: "#224466" } });
+		const mergedTokens = JSON.stringify({ colors: { accent: "#ff5500" } });
+		let studioSession = session([], {
+			surfaceId: studioId,
+			state: "running",
+			changes: [mergedChange],
+		});
+		let folderTokens = mergedTokens;
+		const loadCloudFiles = vi.fn(async (surface: ReturnType<typeof summary>) =>
+			surface.id === studioId ? { "brand/tokens.json": folderTokens } : {},
+		);
+		const getSurfaceWorkspace = vi.fn(async (surfaceId: string) =>
+			surfaceId === studioId ? workspace([studioSession], { surface: studio }) : workspace([], { surface: other }),
+		);
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [studio, other]),
+				getSurfaceWorkspace,
+			}),
+			{ loadCloudFiles, realtimeLive: () => false },
+		);
+
+		await store.load();
+		await store.openSurface("brand");
+		await Promise.resolve();
+		expect(loadCloudFiles).toHaveBeenCalledTimes(1);
+		expect(JSON.parse(effectiveStudioBaseFiles(store.state, studioId)?.["brand/tokens.json"] ?? "{}")).toEqual({
+			colors: { accent: "#ff5500" },
+		});
+
+		await store.openSurface("shop");
+		await Promise.resolve();
+		const loadsOnShop = loadCloudFiles.mock.calls.length;
+
+		studioSession = session([], {
+			surfaceId: studioId,
+			state: "ready",
+			changes: [stagedChange],
+		});
+		folderTokens = baseTokens;
+		await vi.advanceTimersByTimeAsync(4_100);
+		expect(loadCloudFiles.mock.calls.length).toBeGreaterThan(loadsOnShop);
+
+		await store.openSurface("brand");
+		await Promise.resolve();
+		expect(JSON.parse(effectiveStudioBaseFiles(store.state, studioId)?.["brand/tokens.json"] ?? "{}")).toEqual({
+			colors: { accent: "#224466" },
+		});
+		expect(store.state.pendingStudioPatches[studioId]).toBeUndefined();
+
+		studioSession = session([], {
+			surfaceId: studioId,
+			state: "running",
+			changes: [stagedChange],
+		});
+		await store.openSurface("brand");
+		await store.openSurface("shop");
+		await Promise.resolve();
+		const loadsBeforeMerge = loadCloudFiles.mock.calls.length;
+
+		studioSession = session([], {
+			surfaceId: studioId,
+			state: "ready",
+			changes: [mergedChange],
+		});
+		folderTokens = mergedTokens;
+		await vi.advanceTimersByTimeAsync(4_100);
+		expect(loadCloudFiles.mock.calls.length).toBeGreaterThan(loadsBeforeMerge);
+
+		await store.openSurface("brand");
+		await Promise.resolve();
+		expect(JSON.parse(effectiveStudioBaseFiles(store.state, studioId)?.["brand/tokens.json"] ?? "{}")).toEqual({
+			colors: { accent: "#ff5500" },
+		});
+		expect(store.state.pendingStudioPatches[studioId]).toBeUndefined();
+		store.dispose();
+	});
 });

@@ -1810,7 +1810,10 @@ export class SurfacesStore {
 		}
 
 		const canSyncCloudFiles =
-			this.state.source === "cloud" && !isLocalSurfaceId(surfaceId) && Boolean(this.#options.loadCloudFiles);
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(surfaceId) &&
+			Boolean(this.#options.loadCloudFiles) &&
+			(!background || Boolean(this.state.cloudSurfaceFiles[surfaceId]) || this.#cloudFilesLoading.has(surfaceId));
 		const isFolderSurface = workspace.surface.sourceKind === "folder" || workspace.surface.archetype === "studio";
 		const newlyLandedPatches: StudioPatchChange[] = [];
 		const unmergedChangeIds = new Set<string>();
@@ -1947,10 +1950,10 @@ export class SurfacesStore {
 				}
 			}
 		}
-		if (!background && canSyncCloudFiles) {
+		if (canSyncCloudFiles) {
 			if (needsVisibleFileReload) {
 				void this.refreshCloudFiles(workspace.surface, { visible: true });
-			} else if (!this.state.cloudSurfaceFiles[surfaceId]) {
+			} else if (!background && !this.state.cloudSurfaceFiles[surfaceId]) {
 				void this.refreshCloudFiles(workspace.surface);
 			}
 		}
