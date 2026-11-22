@@ -858,7 +858,7 @@ export async function withNodeLock(action, lockPath = LOCK) {
 const run = promisify(execFile);
 
 /** The real node: systemd, /proc, the LXD socket and the health ports. */
-export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket") {
+export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket", { exec = run } = {}) {
 	const lxdGet = (path) =>
 		new Promise((resolve, reject) => {
 			let settled = false;
@@ -926,34 +926,35 @@ export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket") {
 			return body.metadata.map((instance) => ({ name: instance.name, status: instance.status }));
 		},
 		async restart(unit) {
-			await run("/usr/bin/systemctl", ["restart", unit], { timeout: 180_000 });
+			await exec("/usr/bin/systemctl", ["restart", unit], { timeout: 180_000 });
 		},
 		async enable(unit, now) {
-			await run("/usr/bin/systemctl", ["enable", ...(now ? ["--now"] : []), unit], { timeout: 180_000 });
+			await exec("/usr/bin/systemctl", ["enable", ...(now ? ["--now"] : []), unit], { timeout: 180_000 });
 		},
 		async disable(unit, now) {
-			await run("/usr/bin/systemctl", ["disable", ...(now ? ["--now"] : []), unit], { timeout: 180_000 });
+			await exec("/usr/bin/systemctl", ["disable", ...(now ? ["--now"] : []), unit], { timeout: 180_000 });
 		},
 		async mainPid(unit) {
-			const { stdout } = await run("/usr/bin/systemctl", ["show", unit, "-p", "MainPID", "--value"], {
+			const { stdout } = await exec("/usr/bin/systemctl", ["show", unit, "-p", "MainPID", "--value"], {
 				timeout: 30_000,
 			});
 			return Number(stdout.trim());
 		},
 		async isEnabled(unit) {
-			const result = await run("/usr/bin/systemctl", ["is-enabled", unit], { timeout: 30_000 }).catch((error) => error);
+			const result = await exec("/usr/bin/systemctl", ["is-enabled", unit], { timeout: 30_000 }).catch((error) => error);
+			if (result instanceof Error && (result.killed || result.signal || typeof result.code !== "number")) throw result;
 			return String(result.stdout ?? "").trim() === "enabled";
 		},
 		async unitDiff(oldUnit, newUnit) {
-			const { stdout } = await run(
+			const { stdout } = await exec(
 				"/usr/bin/python3",
 				["-I", MIGRATE_HELPER, "show-diff", "--old", oldUnit, "--new", newUnit],
-				{ timeout: 60_000 },
+				{ timeout: 150_000 },
 			);
 			return JSON.parse(stdout);
 		},
 		async conflicts(unit) {
-			const { stdout } = await run("/usr/bin/systemctl", ["show", unit, "-p", "Conflicts", "--value"], {
+			const { stdout } = await exec("/usr/bin/systemctl", ["show", unit, "-p", "Conflicts", "--value"], {
 				timeout: 30_000,
 			});
 			return stdout.trim().split(/\s+/).filter(Boolean);

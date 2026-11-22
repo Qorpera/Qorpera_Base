@@ -907,6 +907,26 @@ test("status and force unswitch probe health once and tolerate vanished PIDs", a
 		await assert.rejects(() => agent.switch("provider", "qorpera-old-provider.service"), /SWITCH_OLD_UNIT_NOT_RUNNING/);
 		assert.equal(await agent.roleUp({ unit: UNITS.provider, health: ["http://p/healthz"] }), false);
 		assert.deepEqual(healthCalls.at(-1), { url: "http://p/healthz", options: { attempts: 1 } });
+
+		const disabledPorts = nodePorts("/dev/null", {
+			exec: async () => {
+				const err = new Error("disabled");
+				err.code = 1;
+				err.stdout = "disabled\n";
+				throw err;
+			},
+		});
+		assert.equal(await disabledPorts.isEnabled(UNITS.provider), false);
+
+		const timedOutPorts = nodePorts("/dev/null", {
+			exec: async () => {
+				const err = new Error("timed out");
+				err.killed = true;
+				err.signal = "SIGTERM";
+				throw err;
+			},
+		});
+		await assert.rejects(() => timedOutPorts.isEnabled(UNITS.provider), /timed out/);
 	} finally {
 		await new Promise((resolve) => httpServer.close(resolve));
 		await rm(root, { recursive: true, force: true });
