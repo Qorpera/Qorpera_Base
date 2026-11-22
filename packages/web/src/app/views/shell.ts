@@ -1992,7 +1992,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			!hasMembersSurface && (memberRows.length || (placing && !railQuery)) ? parts.members.el : null,
 			hiddenCount ? hiddenGroup.el : null,
 			empty && !surfaceRail ? parts.empty : null,
-			parts.hover.tint,
+			parts.hover.attached ?? null,
 			parts.selection.moving ?? null,
 		].filter((element) => element !== null),
 	);

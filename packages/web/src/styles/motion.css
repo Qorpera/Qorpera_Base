@@ -98,7 +98,6 @@
 	transition: opacity 120ms ease, scale var(--motion-base) var(--ease-spring);
 }
 .rail-hover-tint.is-on { opacity: 1; transition: opacity 90ms ease, scale var(--motion-base) var(--ease-spring); }
-.rail-hover-tint.is-instant { transition: none; }
 .rail-hover-tint.is-pressed { scale: 0.975; }
 .rail-row:active, .rail-pin:active, .cofounder-home:active, .rail-surface:active, .rail-agent-hub-row:active { transform: scale(0.975); }
 /* The drag ghost follows the pointer exactly. */

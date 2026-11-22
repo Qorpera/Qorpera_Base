@@ -15,6 +15,7 @@ export class RailHover {
 	#to: Box | undefined;
 	#leaving = 0;
 	#lighting = 0;
+	#removing = 0;
 	#lit: HTMLElement | undefined;
 	#pointer: { x: number; y: number } | undefined;
 
@@ -46,7 +47,12 @@ export class RailHover {
 		signal.addEventListener("abort", () => {
 			window.clearTimeout(this.#leaving);
 			window.clearTimeout(this.#lighting);
+			window.clearTimeout(this.#removing);
 		});
+	}
+
+	get attached(): HTMLElement | undefined {
+		return this.tint.parentElement === this.#list ? this.tint : undefined;
 	}
 
 	settle(): void {
@@ -94,7 +100,12 @@ export class RailHover {
 		this.#animation = undefined;
 		this.#to = to;
 		Object.assign(this.tint.style, frame(to));
-		if (this.tint.parentElement !== this.#list) return;
+		if (this.tint.parentElement !== this.#list) {
+			this.#list.insertBefore(this.tint, this.#list.querySelector(":scope > .rail-selection-ghost"));
+			// WHY: measuring commits the hidden state, so the fade-in runs on a freshly attached tint.
+			this.tint.getBoundingClientRect();
+		}
+		window.clearTimeout(this.#removing);
 		this.tint.classList.add("is-on");
 		if (!from || reducedMotion() || typeof this.tint.animate !== "function") {
 			this.#light(item, 0);
@@ -128,8 +139,9 @@ export class RailHover {
 		}
 		this.#target = undefined;
 		this.tint.classList.remove("is-on", "is-pressed");
-		this.tint.classList.toggle("is-instant", now);
-		if (now) requestAnimationFrame(() => this.tint.classList.remove("is-instant"));
+		window.clearTimeout(this.#removing);
+		if (now) this.tint.remove();
+		else this.#removing = window.setTimeout(() => this.tint.remove(), 160);
 		this.#light(undefined, 0);
 	}
 
@@ -152,7 +164,12 @@ export class RailHover {
 		const scale = this.tint.classList.contains("is-pressed") ? 0.975 : 1;
 		const width = rect.width / scale;
 		const height = rect.height / scale;
-		const unscaled = new DOMRect(rect.left - (width - rect.width) / 2, rect.top - (height - rect.height) / 2, width, height);
+		const unscaled = new DOMRect(
+			rect.left - (width - rect.width) / 2,
+			rect.top - (height - rect.height) / 2,
+			width,
+			height,
+		);
 		return boxIn(this.#list, unscaled, getComputedStyle(this.tint).borderRadius);
 	}
 }
