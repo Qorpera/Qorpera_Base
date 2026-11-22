@@ -49,6 +49,6 @@ export function folderImageReader(folder: () => Folder): (path: string, signal: 
 		const entry = (await from.read(path, signal)).entry;
 		if (entry?.kind !== "file" || !entry.file || entry.file.bytes > FOLDER_IMAGE_MAX_BYTES) return null;
 		const bytes = await from.readFile(entry.file, signal, FOLDER_IMAGE_MAX_BYTES);
-		return new Blob([Uint8Array.from(bytes)], { type });
+		return new Blob([bytes.slice()], { type });
 	};
 }

@@ -220,4 +220,20 @@ describe("group inline edit writer", () => {
 		expect(f.edits.current().name).toBe(room.name);
 		expect(update).toHaveBeenCalledTimes(1);
 	});
+
+	it("detaches abort listeners from edits.signal after repeated saves", async () => {
+		const update = vi.fn<NonNullable<WorkspaceActions["updateGroup"]>>(async () => true);
+		const f = setup(update);
+		const addSpy = vi.spyOn(f.edits.signal, "addEventListener");
+		const removeSpy = vi.spyOn(f.edits.signal, "removeEventListener");
+		for (const name of ["Group A", "Group B", "Group C"]) {
+			f.edits.change({ name });
+			await settle();
+		}
+		expect(update).toHaveBeenCalledTimes(3);
+		const adds = addSpy.mock.calls.filter(([type]) => type === "abort");
+		const removes = removeSpy.mock.calls.filter(([type]) => type === "abort");
+		expect(adds).toHaveLength(3);
+		expect(removes).toHaveLength(3);
+	});
 });

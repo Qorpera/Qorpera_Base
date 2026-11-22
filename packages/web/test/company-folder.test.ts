@@ -20,6 +20,7 @@ import {
 	type CompanyFolderSource,
 } from "../src/app/views/company-folder.ts";
 import { chooseInCompanyFolder } from "../src/app/views/company-folder-choose.ts";
+import { AppFrame } from "../src/ui/app-frame.ts";
 import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
 import { deferred, id, settle, visibleText } from "./fixtures.ts";
 
@@ -2000,5 +2001,76 @@ describe("choose mode: Open's \"A file…\" on an agent's computer (202609307580
 		expect(rows(failed.el)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
 		await click(failed.cancel());
 		await expect(failed.answer).resolves.toBeNull();
+	});
+
+	it("disposes an HTML preview AppFrame on close even before the iframe fires load", async () => {
+		const fake = folderFake();
+		fake.folders.add("designs");
+		fake.contents.set("designs/sales.html", "<h1>Sales</h1>");
+		const src = source(fake);
+		const host = document.createElement("section");
+		document.body.append(host);
+		const browser = new CompanyFolderBrowser(host, src.value, people);
+		disposers.push(() => browser.dispose());
+		await browser.open();
+		await settle();
+		await click(row(host, "designs"));
+		await click(row(host, "sales.html"));
+		expect(host.querySelector("iframe.files-page-frame")).not.toBeNull();
+		const disposeSpy = vi.spyOn(AppFrame.prototype, "dispose");
+		await click(host.querySelector('.files-preview-head [aria-label="Close sales.html"]'));
+		expect(disposeSpy).toHaveBeenCalledOnce();
+		expect(host.querySelector("iframe.files-page-frame")).toBeNull();
+	});
+
+	it("runs background change-feed sync without setting inert on the list", async () => {
+		vi.useFakeTimers();
+		const fake = folderFake();
+		const gate = deferred<CloudMemberFolderChangesPage>();
+		fake.client.changes.mockImplementationOnce(() => gate.promise);
+		const src = source(fake);
+		const host = document.createElement("section");
+		document.body.append(host);
+		const browser = new CompanyFolderBrowser(host, src.value, people);
+		disposers.push(() => browser.dispose());
+		await browser.open();
+		await settle();
+		src.hint(5);
+		await vi.advanceTimersByTimeAsync(1100);
+		expect(fake.client.changes).toHaveBeenCalledTimes(1);
+		expect(host.querySelector("[inert]")).toBeNull();
+		expect([...host.children].every((el) => !(el as HTMLElement).inert)).toBe(true);
+		gate.resolve({
+			asOfSeq: 4,
+			resync: false,
+			events: [],
+			next: { afterSeq: 4, cursor: null },
+			more: false,
+		});
+		await settle();
+	});
+
+	it("pauses polling while document.hidden is true and resumes on visibilitychange", async () => {
+		vi.useFakeTimers();
+		let hidden = true;
+		Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+		try {
+			const fake = folderFake();
+			const src = source(fake);
+			const host = document.createElement("section");
+			document.body.append(host);
+			const browser = new CompanyFolderBrowser(host, src.value, people);
+			disposers.push(() => browser.dispose());
+			await browser.open();
+			await settle();
+			await vi.advanceTimersByTimeAsync(65_000);
+			expect(fake.client.changes).not.toHaveBeenCalled();
+			hidden = false;
+			document.dispatchEvent(new Event("visibilitychange"));
+			await vi.advanceTimersByTimeAsync(1100);
+			expect(fake.client.changes).toHaveBeenCalledTimes(1);
+		} finally {
+			Reflect.deleteProperty(document, "hidden");
+		}
 	});
 });

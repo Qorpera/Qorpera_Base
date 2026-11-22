@@ -2,6 +2,7 @@ import type {
 	NativeExecutionConnections,
 	NativeMemberConnection,
 } from "@qorpera/cloud-client/cloud-native-subscription-control";
+import { withAbortScopes } from "../../cloud/abort-scope.ts";
 import type {
 	WebClaudeLogin,
 	WebExecutionConnections,
@@ -279,73 +280,79 @@ export class SessionExecutionView {
 		this.#refreshTimer = undefined;
 		const request = new AbortController();
 		this.#request = request;
-		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
-		this.#busy = true;
-		// The line that says the accounts are unavailable stays while they are read again, instead of blinking.
-		if (!this.#failures) this.#error = undefined;
-		this.#render();
-		this.#changed();
-		const conversation = this.#company.conversation(this.#sessionId).get();
-		this.#serverSelection = Boolean(
-			this.#native.selectSessionAccount && !conversation.retrySend && !conversation.sending,
-		);
-		// The cloud's last answer stands until this read lands, so the composer's Login page keeps its
-		// tick through a read; sending, the choice and the reasons wait for #busy to clear anyway.
-		let serverConnectionId: string | undefined;
-		const readConnections = async (): Promise<WebExecutionConnections> => {
-			if (this.#serverSelection) {
-				serverConnectionId = await this.#native.selectSessionAccount!(this.#sessionId, signal);
-				signal.throwIfAborted();
+		let readClaude = false;
+		await withAbortScopes([request.signal, this.#lifetime.signal], async (signal) => {
+			this.#busy = true;
+			// The line that says the accounts are unavailable stays while they are read again, instead of blinking.
+			if (!this.#failures) this.#error = undefined;
+			this.#render();
+			this.#changed();
+			const conversation = this.#company.conversation(this.#sessionId).get();
+			this.#serverSelection = Boolean(
+				this.#native.selectSessionAccount && !conversation.retrySend && !conversation.sending,
+			);
+			// The cloud's last answer stands until this read lands, so the composer's Login page keeps its
+			// tick through a read; sending, the choice and the reasons wait for #busy to clear anyway.
+			let serverConnectionId: string | undefined;
+			const readConnections = async (): Promise<WebExecutionConnections> => {
+				if (this.#serverSelection) {
+					serverConnectionId = await this.#native.selectSessionAccount!(this.#sessionId, signal);
+					signal.throwIfAborted();
+				}
+				return this.#native.listConnections(signal);
+			};
+			const connections = await readConnections().catch(() => undefined);
+			if (signal.aborted) return;
+			this.#serverConnectionId = serverConnectionId;
+			if (connections) {
+				this.#observed = connections;
+				if (this.#failures) this.#error = undefined;
+				this.#failures = 0;
+			} else {
+				this.#observed = undefined;
+				this.#failures++;
+				this.#error = t("Model accounts are unavailable. Trying again…");
 			}
-			return this.#native.listConnections(signal);
-		};
-		const connections = await readConnections().catch(() => undefined);
-		if (signal.aborted) return;
-		this.#serverConnectionId = serverConnectionId;
-		if (connections) {
-			this.#observed = connections;
-			if (this.#failures) this.#error = undefined;
-			this.#failures = 0;
-		} else {
-			this.#observed = undefined;
-			this.#failures++;
-			this.#error = t("Model accounts are unavailable. Trying again…");
-		}
-		this.#busy = false;
-		this.#request = undefined;
-		this.#choose();
-		this.#settleMoved();
-		void this.#countSameLogin();
-		this.#render();
-		this.#changed();
-		this.#scheduleRefresh(
-			this.#failures
-				? ACCOUNT_RETRY_DELAYS_MS[Math.min(this.#failures, ACCOUNT_RETRY_DELAYS_MS.length) - 1]
-				: undefined,
-		);
-		void this.#hydrateUsage();
-		if (this.#claudeReadAt === undefined || Date.now() - this.#claudeReadAt >= CLAUDE_READ_EVERY_MS)
-			void this.#readClaude(signal);
+			this.#busy = false;
+			this.#request = undefined;
+			this.#choose();
+			this.#settleMoved();
+			void this.#countSameLogin();
+			this.#render();
+			this.#changed();
+			this.#scheduleRefresh(
+				this.#failures
+					? ACCOUNT_RETRY_DELAYS_MS[Math.min(this.#failures, ACCOUNT_RETRY_DELAYS_MS.length) - 1]
+					: undefined,
+			);
+			void this.#hydrateUsage();
+			readClaude = this.#claudeReadAt === undefined || Date.now() - this.#claudeReadAt >= CLAUDE_READ_EVERY_MS;
+		});
+		if (readClaude && !request.signal.aborted && !this.#lifetime.signal.aborted)
+			void this.#readClaude(request.signal);
 	}
 
-	async #readClaude(signal: AbortSignal): Promise<void> {
+	async #readClaude(requestSignal: AbortSignal): Promise<void> {
 		if (!this.#native.listClaudeLogins) return;
 		this.#claudeReadAt = Date.now();
-		let logins: readonly WebClaudeLogin[];
-		try {
-			logins = (await this.#native.listClaudeLogins(signal)).logins;
-		} catch {
-			return;
-		}
-		if (signal.aborted) return;
-		const now = Date.now();
-		const usedUp = (login: WebClaudeLogin) => login.usedUpUntil !== undefined && Date.parse(login.usedUpUntil) > now;
-		const inUse = logins.find((login) => login.inUse);
-		const next = inUse && usedUp(inUse) ? logins.find((login) => login !== inUse && !usedUp(login)) : undefined;
-		this.#claudeOut = inUse?.usedUpUntil && next ? { login: inUse, until: inUse.usedUpUntil, next } : undefined;
-		if (this.#claudeMoved && (inUse?.loginId !== this.#claudeMoved.loginId || usedUp(inUse)))
-			this.#claudeMoved = undefined;
-		this.#render();
+		await withAbortScopes([requestSignal, this.#lifetime.signal], async (signal) => {
+			let logins: readonly WebClaudeLogin[];
+			try {
+				logins = (await this.#native.listClaudeLogins!(signal)).logins;
+			} catch {
+				return;
+			}
+			if (signal.aborted) return;
+			const now = Date.now();
+			const usedUp = (login: WebClaudeLogin) =>
+				login.usedUpUntil !== undefined && Date.parse(login.usedUpUntil) > now;
+			const inUse = logins.find((login) => login.inUse);
+			const next = inUse && usedUp(inUse) ? logins.find((login) => login !== inUse && !usedUp(login)) : undefined;
+			this.#claudeOut = inUse?.usedUpUntil && next ? { login: inUse, until: inUse.usedUpUntil, next } : undefined;
+			if (this.#claudeMoved && (inUse?.loginId !== this.#claudeMoved.loginId || usedUp(inUse)))
+				this.#claudeMoved = undefined;
+			this.#render();
+		});
 	}
 
 	async #useClaude(next: WebClaudeLogin): Promise<void> {
@@ -418,28 +425,29 @@ export class SessionExecutionView {
 			return;
 		const request = new AbortController();
 		this.#usageRequest = request;
-		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
-		let refreshed = false;
-		try {
-			// Usage improves account ranking, but an unavailable refresh host must
-			// not prevent the cloud from selecting an already eligible account.
-			// The accounts were read just now: the refresh asks about those, not the cloud again.
-			await this.#native.refreshAccountMetadata(signal, false, this.#observed);
-			signal.throwIfAborted();
-			refreshed = true;
-		} catch {
-			// Eligibility and known usage walls remain enforced by the account read.
-		} finally {
-			if (this.#usageRequest === request) {
-				this.#usageRequest = undefined;
-				this.#usageHydratedAt = Date.now();
+		await withAbortScopes([request.signal, this.#lifetime.signal], async (signal) => {
+			let refreshed = false;
+			try {
+				// Usage improves account ranking, but an unavailable refresh host must
+				// not prevent the cloud from selecting an already eligible account.
+				// The accounts were read just now: the refresh asks about those, not the cloud again.
+				await this.#native.refreshAccountMetadata!(signal, false, this.#observed);
+				signal.throwIfAborted();
+				refreshed = true;
+			} catch {
+				// Eligibility and known usage walls remain enforced by the account read.
+			} finally {
+				if (this.#usageRequest === request) {
+					this.#usageRequest = undefined;
+					this.#usageHydratedAt = Date.now();
+				}
 			}
-		}
-		if (signal.aborted || !refreshed) return;
-		const current = this.#company.conversation(this.#sessionId).get();
-		// Let a submission awaiting its account check start before another read.
-		// The timer also preserves the sponsor if that send becomes uncertain.
-		if (!this.#busy && !current.sending && !current.retrySend) this.#scheduleRefresh(1000);
+			if (signal.aborted || !refreshed) return;
+			const current = this.#company.conversation(this.#sessionId).get();
+			// Let a submission awaiting its account check start before another read.
+			// The timer also preserves the sponsor if that send becomes uncertain.
+			if (!this.#busy && !current.sending && !current.retrySend) this.#scheduleRefresh(1000);
+		});
 	}
 
 	/** Usage is asked for once per opened thread and again only once a known
@@ -721,18 +729,19 @@ export class SessionExecutionView {
 		if (!own || !this.#native.countSessionsOnAccount) return;
 		const request = new AbortController();
 		this.#countRequest = request;
-		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
-		let count: number | undefined;
-		try {
-			count = await this.#native.countSessionsOnAccount(own, signal);
-		} catch {
-			count = undefined;
-		}
-		if (signal.aborted) return;
-		this.#countRequest = undefined;
-		if (count === undefined) this.#countedFor = undefined;
-		else this.#sameLogin = { connectionId: own, count };
-		this.#render();
+		await withAbortScopes([request.signal, this.#lifetime.signal], async (signal) => {
+			let count: number | undefined;
+			try {
+				count = await this.#native.countSessionsOnAccount!(own, signal);
+			} catch {
+				count = undefined;
+			}
+			if (signal.aborted) return;
+			this.#countRequest = undefined;
+			if (count === undefined) this.#countedFor = undefined;
+			else this.#sameLogin = { connectionId: own, count };
+			this.#render();
+		});
 	}
 
 	/** The conversation's own login: the cloud's choice where the cloud chooses, else the one it keeps. */

@@ -53,6 +53,7 @@ select pg_temp.acct_assert(not exists (
 	except
 	select unnest(array['qorpera_account_presence', 'qorpera_claude_logins', 'qorpera_claude_sign_in_members',
 		-- Which of a member's Claude Code workers runs on their Claude plan now (20260930770000): the member's own lease.
+		'qorpera_claude_member_parallel_caps',
 		'qorpera_claude_worker_leases',
 		'qorpera_company_creation_requests', 'qorpera_company_founder_seats',
 		'qorpera_decision_votes',

@@ -1,10 +1,11 @@
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 
-export async function withAbortScopes<T>(
-	parents: readonly (AbortSignal | undefined)[],
-	use: (signal: AbortSignal) => Promise<T>,
-	timeoutMs?: number,
-): Promise<T> {
+export interface AbortScope {
+	readonly signal: AbortSignal;
+	dispose(): void;
+}
+
+export function createAbortScope(parents: readonly (AbortSignal | undefined)[], timeoutMs?: number): AbortScope {
 	const scope = new AbortController();
 	const listeners: Array<readonly [AbortSignal, () => void]> = [];
 	for (const parent of parents) {
@@ -24,11 +25,29 @@ export async function withAbortScopes<T>(
 			timeoutMs,
 		);
 	}
+	return {
+		signal: scope.signal,
+		dispose: () => {
+			if (timer !== undefined) {
+				clearTimeout(timer);
+				timer = undefined;
+			}
+			for (const [parent, forward] of listeners) parent.removeEventListener("abort", forward);
+			listeners.length = 0;
+		},
+	};
+}
+
+export async function withAbortScopes<T>(
+	parents: readonly (AbortSignal | undefined)[],
+	use: (signal: AbortSignal) => Promise<T>,
+	timeoutMs?: number,
+): Promise<T> {
+	const scope = createAbortScope(parents, timeoutMs);
 	try {
 		return await use(scope.signal);
 	} finally {
-		if (timer !== undefined) clearTimeout(timer);
-		for (const [parent, forward] of listeners) parent.removeEventListener("abort", forward);
+		scope.dispose();
 	}
 }
 

@@ -150,10 +150,12 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 		// Cleanup is exact-connection scoped and must still work after the UI's signal is cancelled.
 		try { connection.channel?.close(); } finally { await releaseConnection({ connectionId: connection.connectionId }); }
 	};
+	const HANDSHAKE_TIMEOUT_MS = 30000;
 	const detach = async () => {
 		const active = current;
 		current = undefined;
 		if (!active) return;
+		clearTimeout(active.handshake);
 		active.rfb.viewOnly = true;
 		try { active.rfb.disconnect(); } finally { await release(active.connection); }
 	};
@@ -204,10 +206,17 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 		hint.textContent = "Connecting";
 		syncEmbedded();
 		let connection;
+		const requestScope = new AbortController();
+		const forwardStop = () => requestScope.abort(stop.signal.reason);
+		const forwardAttempt = () => requestScope.abort(attemptStop.signal.reason);
+		if (stop.signal.aborted) forwardStop();
+		else stop.signal.addEventListener("abort", forwardStop, { once: true });
+		if (attemptStop.signal.aborted) forwardAttempt();
+		else attemptStop.signal.addEventListener("abort", forwardAttempt, { once: true });
 		try {
 			await detach();
 			if (closed || attempt !== epoch) return;
-			connection = await requestConnection({ binding: expected, mode, signal: AbortSignal.any([stop.signal, attemptStop.signal]) });
+			connection = await requestConnection({ binding: expected, mode, signal: requestScope.signal });
 			if (closed || attempt !== epoch) { await release(connection); return; }
 			// A reconnect cannot silently change agent, company, physical generation or control mode.
 			if (!connection || typeof connection.connectionId !== "string" || !connection.connectionId || released.has(connection.connectionId) ||
@@ -231,8 +240,19 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 			rfb.scaleViewport = true;
 			rfb.resizeSession = false;
 			rfb.background = "transparent";
-			current = { rfb, connection };
+			// WHY: fail closed if the RFB handshake stalls so reconnect is never permanently disabled.
+			const handshake = setTimeout(() => {
+				if (closed || current?.rfb !== rfb || connected) return;
+				rfb.viewOnly = true;
+				current = undefined;
+				try { rfb.disconnect(); } finally {
+					void release(connection).catch(() => undefined);
+					fail();
+				}
+			}, HANDSHAKE_TIMEOUT_MS);
+			current = { rfb, connection, handshake };
 			rfb.addEventListener("connect", () => {
+				clearTimeout(handshake);
 				if (closed || current?.rfb !== rfb) return;
 				if (mount && mode !== "watch" && !entered) return;
 				connected = true;
@@ -248,6 +268,7 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 				syncEmbedded();
 			});
 			rfb.addEventListener("disconnect", () => {
+				clearTimeout(handshake);
 				if (current?.rfb !== rfb) return;
 				rfb.viewOnly = true;
 				current = undefined;
@@ -258,6 +279,8 @@ function openScreenViewer({ binding, title, requestConnection, releaseConnection
 			if (connection) await release(connection).catch(() => undefined);
 			if (attempt === epoch) fail();
 		} finally {
+			stop.signal.removeEventListener("abort", forwardStop);
+			attemptStop.signal.removeEventListener("abort", forwardAttempt);
 			busy = false;
 			admission = undefined;
 			admissionMode = undefined;

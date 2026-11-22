@@ -113,8 +113,8 @@ function fakeCalls(described: CloudMemberDataDescription) {
 			return { columns: ["id", "bike", "price", "ready"], key: ["id"], row: { values, seen: seen(99) }, asOf };
 		}),
 		watchTables: vi.fn(
-			(_watches: unknown, signal: AbortSignal) =>
-				new Promise<never>((_resolve, reject) =>
+			(_watches: unknown, signal: AbortSignal): ReturnType<CompanyDataCalls["watchTables"]> =>
+				new Promise((_resolve, reject) =>
 					signal.addEventListener("abort", () => reject(new Error("put away")), { once: true }),
 				),
 		),
@@ -365,6 +365,44 @@ describe("the list (app/views/data.ts)", () => {
 		disposeData(container);
 		expect(watchSignal.aborted).toBe(true);
 		expect(getEventListeners(controller.signal, "abort").length).toBeLessThan(listenersBefore);
+	});
+
+	it("keeps watch polling live across multiple rounds without leaking abort listeners", async () => {
+		vi.useFakeTimers();
+		try {
+			const { calls } = fakeCalls(describedWith());
+			const watchSignals: AbortSignal[] = [];
+			const resolvers: Array<() => void> = [];
+			calls.watchTables.mockImplementation(
+				(_watches: unknown, signal: AbortSignal) =>
+					new Promise<{ same: true }>((resolve) => {
+						watchSignals.push(signal);
+						resolvers.push(() => resolve({ same: true }));
+					}),
+			);
+			const controller = company(describedWith(), true);
+			const databases = new CompanyDatabases(
+				() => calls,
+				(next) => controller.store.set({ companyData: next }),
+				controller.signal,
+			);
+			const container = document.createElement("main");
+			document.body.append(container);
+			renderData(container, controller, databases);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls.watchTables).toHaveBeenCalledTimes(1);
+			expect(watchSignals[0]?.aborted).toBe(false);
+			const listenersRound1 = getEventListeners(controller.signal, "abort").length;
+			resolvers[0]!();
+			await vi.advanceTimersByTimeAsync(500);
+			expect(calls.watchTables).toHaveBeenCalledTimes(2);
+			expect(watchSignals[1]?.aborted).toBe(false);
+			expect(getEventListeners(controller.signal, "abort").length).toBe(listenersRound1);
+			disposeData(container);
+			expect(watchSignals[1]?.aborted).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 

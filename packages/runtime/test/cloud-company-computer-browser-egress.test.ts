@@ -290,4 +290,41 @@ describe("office browser public HTTPS relay", () => {
 		);
 		expect(f.assertActive).not.toHaveBeenCalled();
 	});
+	it("drains cleanly when a paused holding peer disconnects mid-check or close runs while peers are held", async () => {
+		const paused = new Error("fixture: nobody present");
+		const f = await fixture({ classifyFailure: (error) => (error === paused ? "paused" : "refused"), graceMs: 2500 });
+		f.assertActive.mockRejectedValue(paused);
+		await once(f.peer, "close");
+
+		const resumeGate = computerDeferred<undefined>();
+		f.assertActive.mockImplementation(() => resumeGate.promise);
+		await new Promise((resolve) => setTimeout(resolve, 1050));
+		const dropped = createConnection(f.relay.path);
+		dropped.on("error", () => undefined);
+		await once(dropped, "connect");
+		await vi.waitFor(() => expect(f.assertActive.mock.calls.length).toBeGreaterThanOrEqual(2));
+		dropped.destroy();
+		await once(dropped, "close");
+		resumeGate.resolve(undefined);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		await f.relay.close();
+
+		const f2 = await fixture({
+			classifyFailure: (error) => (error === paused ? "paused" : "refused"),
+			graceMs: 2500,
+		});
+		f2.assertActive.mockRejectedValue(paused);
+		await once(f2.peer, "close");
+		const closeGate = computerDeferred<undefined>();
+		f2.assertActive.mockImplementation(() => closeGate.promise);
+		await new Promise((resolve) => setTimeout(resolve, 1050));
+		const held = createConnection(f2.relay.path);
+		held.on("error", () => undefined);
+		await once(held, "connect");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const closed = once(held, "close");
+		const relayClosing = f2.relay.close();
+		closeGate.resolve(undefined);
+		await Promise.all([closed, relayClosing]);
+	}, 20000);
 });

@@ -298,7 +298,7 @@ export class ViewTree {
 			const existing = this.#entries.get(p);
 			if (existing && existing.kind !== "folder") {
 				// A file or link where a folder must be: the newer path wins, as it will in the core.
-				changed.push(...this.remove(p, replaced));
+				for (const removedPath of this.remove(p, replaced)) changed.push(removedPath);
 			}
 			if (!this.#entries.has(p)) {
 				this.#link({ ...ROOT, path: p });
@@ -306,7 +306,7 @@ export class ViewTree {
 			}
 		}
 		const previous = this.#entries.get(e.path);
-		if (previous?.kind === "folder" && e.kind !== "folder") changed.push(...this.#removeBelow(e.path, replaced));
+		if (previous?.kind === "folder" && e.kind !== "folder") this.#removeBelowInto(e.path, changed, replaced);
 		const next = entryOf(e, previous, this.#withReceipt(parentOf(e.path)));
 		if (previous && previous.kind !== "folder" && (next.kind !== previous.kind || next.version !== previous.version))
 			replaced?.(previous);
@@ -319,7 +319,8 @@ export class ViewTree {
 	 * or link entry removed, the path's descendants included. */
 	remove(path: string, replaced?: (old: TreeEntry) => void): string[] {
 		if (path === "" || !this.#entries.has(path)) return [];
-		const changed = this.#removeBelow(path, replaced);
+		const changed: string[] = [];
+		this.#removeBelowInto(path, changed, replaced);
 		const removed = this.#entries.get(path);
 		if (removed && removed.kind !== "folder") replaced?.(removed);
 		this.#unlink(path);
@@ -406,18 +407,32 @@ export class ViewTree {
 		}
 	}
 
-	#removeBelow(path: string, replaced?: (old: TreeEntry) => void): string[] {
-		const changed: string[] = [];
-		const names = this.#children.get(path);
-		if (!names) return changed;
-		for (const name of [...names]) {
-			const child = `${path}/${name}`;
-			changed.push(...this.#removeBelow(child, replaced));
-			const removed = this.#entries.get(child);
-			if (removed && removed.kind !== "folder") replaced?.(removed);
-			this.#unlink(child);
-			changed.push(child);
+	#removeBelowInto(path: string, changed: string[], replaced?: (old: TreeEntry) => void): void {
+		const top = this.#children.get(path);
+		if (!top || top.size === 0) return;
+		const stack: { path: string; expanded: boolean }[] = [];
+		const topNames = [...top];
+		for (let i = topNames.length - 1; i >= 0; i--) {
+			stack.push({ path: `${path}/${topNames[i]!}`, expanded: false });
 		}
-		return changed;
+		while (stack.length > 0) {
+			const frame = stack[stack.length - 1]!;
+			if (!frame.expanded) {
+				frame.expanded = true;
+				const names = this.#children.get(frame.path);
+				if (names && names.size > 0) {
+					const list = [...names];
+					for (let i = list.length - 1; i >= 0; i--) {
+						stack.push({ path: `${frame.path}/${list[i]!}`, expanded: false });
+					}
+					continue;
+				}
+			}
+			stack.pop();
+			const removed = this.#entries.get(frame.path);
+			if (removed && removed.kind !== "folder") replaced?.(removed);
+			this.#unlink(frame.path);
+			changed.push(frame.path);
+		}
 	}
 }
