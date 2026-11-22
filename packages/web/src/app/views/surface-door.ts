@@ -283,6 +283,7 @@ export class SurfaceDoorStage {
 		const onFailure = () => {
 			if (this.#lifetime.signal.aborted || this.#requestedPassKey !== requestKey || this.#staging) return;
 			this.#requestedPassKey = undefined;
+			this.#retriedPreviewId = undefined;
 			this.#pill.hidden = true;
 			this.#dropActive();
 			this.#showWaiting("failed", t("The preview could not be opened."));

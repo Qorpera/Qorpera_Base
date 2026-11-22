@@ -1036,8 +1036,18 @@ describe("SurfacesStore", () => {
 		const getSurfaceWorkspace = vi.fn(async (surfaceId: string) => {
 			if (surfaceId === secondSurface.id) return workspace([], { surface: secondSurface });
 			websiteCalls += 1;
-			if (websiteCalls === 2) return staleRefresh.promise;
-			if (websiteCalls === 3) {
+			if (websiteCalls === 2) {
+				return workspace([session(["staged", "staged"])], {
+					previewState: {
+						surfaceId: SURFACE,
+						mode: "single",
+						primary: previewFrame({ previewId: PREVIEW_IDS[0], doorActionUrl: null, memberPass: null }),
+						compareFrames: [],
+					},
+				});
+			}
+			if (websiteCalls === 3) return staleRefresh.promise;
+			if (websiteCalls === 4) {
 				return workspace([], {
 					surface: summary({ title: "Website (refreshed)" }),
 					recentHistory: [session(["merged", "merged"], { state: "completed" })],
@@ -1087,6 +1097,13 @@ describe("SurfacesStore", () => {
 		mintPreviewPass.mockRejectedValueOnce(new Error("mint unavailable"));
 		expect(await store.remintPreviewPass(SURFACE, PREVIEW_IDS[0], pass2)).toBe(false);
 		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass2)).toBe(false);
+
+		await store.refreshWorkspace(SURFACE);
+		await Promise.resolve();
+		await Promise.resolve();
+		const pass3 = store.workspace(SURFACE)!.previewState.primary.memberPass!;
+		expect(pass3).not.toBe(pass2);
+		expect(store.isPreviewPassUsable(PREVIEW_IDS[0], pass3)).toBe(true);
 
 		const slowPromise = store.refreshWorkspace(SURFACE);
 		store.openDrawer(SURFACE, SESSION);
