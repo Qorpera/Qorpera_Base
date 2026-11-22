@@ -872,3 +872,60 @@ it("starts a fresh refresh when a new resolve arrives after the previous refresh
 	rejectStale!(new Error("STALE_ABORTED"));
 	await companies.close();
 });
+
+it("does not let a late-settling aborted refresh overwrite a newer refresh's served companies", async () => {
+	const existing = randomUUID();
+	const pending = randomUUID();
+	const added = randomUUID();
+	const { principal } = principalFixture({ registered: [existing], unregistered: [pending] });
+	let finishStaleRegister!: (value: { schema: string; companyId: string; authorityId: string; keyId: string }) => void;
+	const staleRegisterEntered = new Promise<void>((resolve) => {
+		principal.register.mockImplementationOnce(async () => {
+			resolve();
+			return await new Promise<{
+				schema: string;
+				companyId: string;
+				authorityId: string;
+				keyId: string;
+			}>((resolveRegister) => {
+				finishStaleRegister = resolveRegister;
+			});
+		});
+	});
+	const companies = new SharedCloudSecretBrokerCompanies({
+		principal,
+		keyring: new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) }),
+		adapters: [],
+		helper: helperFixture(),
+	});
+
+	const first = new AbortController();
+	const firstRefresh = companies.refresh(first.signal);
+	await staleRegisterEntered;
+	first.abort(new Error("FIRST_TIMED_OUT"));
+	await expect(firstRefresh).rejects.toThrow("FIRST_TIMED_OUT");
+
+	principal.companies.mockResolvedValueOnce({
+		schema: "qorpera.broker-principal-companies/v1",
+		keyId: "vault-root-1",
+		registered: [
+			{ companyId: existing, authorityId: randomUUID(), keyId: "vault-root-1" },
+			{ companyId: added, authorityId: randomUUID(), keyId: "vault-root-1" },
+		],
+		unregistered: [],
+	});
+	const addedScope = await companies.resolve(added, new AbortController().signal);
+	expect(addedScope).toBeDefined();
+
+	finishStaleRegister({
+		schema: "qorpera.broker-principal-registration/v1",
+		companyId: pending,
+		authorityId: randomUUID(),
+		keyId: "vault-root-1",
+	});
+	await new Promise((resolve) => setTimeout(resolve, 25));
+
+	const stillServed = await companies.resolve(added, new AbortController().signal);
+	expect(stillServed).toBe(addedScope);
+	await companies.close();
+});

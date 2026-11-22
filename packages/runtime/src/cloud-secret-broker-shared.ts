@@ -220,6 +220,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 				waiters: number;
 		  }
 		| undefined;
+	#refreshGeneration = 0;
 	/** The last refresh's failure, until one succeeds. */
 	#refreshFailure: unknown;
 	readonly #timers = new Set<ReturnType<typeof setTimeout>>();
@@ -360,13 +361,16 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 				controller,
 				waiters: 0,
 			};
-			const promise = this.#refresh(controller.signal)
+			this.#refreshGeneration += 1;
+			const generation = this.#refreshGeneration;
+			const promise = this.#refresh(controller.signal, generation)
 				.then(
 					() => {
-						this.#refreshFailure = undefined;
+						if (generation === this.#refreshGeneration) this.#refreshFailure = undefined;
 					},
 					(error: unknown) => {
-						if (!controller.signal.aborted) this.#refreshFailure = error;
+						if (!controller.signal.aborted && generation === this.#refreshGeneration)
+							this.#refreshFailure = error;
 						throw error;
 					},
 				)
@@ -398,7 +402,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		});
 	}
 
-	async #refresh(signal: AbortSignal): Promise<void> {
+	async #refresh(signal: AbortSignal, generation: number): Promise<void> {
 		const answer = record(await this.#principal.companies(signal), "Shared vault companies");
 		if (
 			answer.schema !== "qorpera.broker-principal-companies/v1" ||
@@ -416,7 +420,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		} else {
 			for (const waiting of answer.unregistered) {
 				// Out of time: the next refresh registers the rest.
-				if (signal.aborted) break;
+				if (signal.aborted || generation !== this.#refreshGeneration) break;
 				try {
 					const done = record(
 						await this.#principal.register(company(waiting), signal),
@@ -432,6 +436,8 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 				}
 			}
 		}
+		// WHY: Skip applying a stale snapshot when a newer refresh has already started so an overlapping old run cannot drop newly served companies.
+		if (generation !== this.#refreshGeneration) return;
 		const listed = new Set<string>();
 		for (const entry of registered) {
 			listed.add(entry.companyId);
