@@ -526,5 +526,33 @@ describe("the edge function's route for the one call", () => {
 		await assert.rejects(readRunnerOrchestratorRequest(chunkedReq), /request size/);
 		assert.equal(cancelled, true);
 		assert.ok(pulled <= 10, `expected early stream cancellation, saw ${pulled} chunks`);
+
+		let stalledCancelled = false;
+		const stalled = new ReadableStream<Uint8Array>({
+			pull() {
+				return new Promise<void>(() => {});
+			},
+			cancel() {
+				stalledCancelled = true;
+			},
+		});
+		const stalledReq = new Request("https://project.invalid/functions/v1/runner-orchestrator", {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}` },
+			body: stalled,
+			duplex: "half",
+		} as RequestInit);
+		await assert.rejects(readRunnerOrchestratorRequest(stalledReq, 15), (error: unknown) => {
+			assert.equal(error instanceof Error ? error.name : "", "TimeoutError");
+			return true;
+		});
+		assert.equal(stalledCancelled, true);
+
+		answer = () => {
+			throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+		};
+		const rpcThrown = await post({ action: "due_summary", orchestratorId });
+		assert.equal(rpcThrown.status, 503);
+		assert.deepEqual(await rpcThrown.json(), { error: "Runner orchestration is unavailable" });
 	});
 });

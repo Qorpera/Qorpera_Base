@@ -146,6 +146,44 @@ describe("native login bounded streaming", () => {
 			clearTimeout(keepAlive);
 		}
 	});
+
+	it("applies the request timeout to a slowloris request body and forwards signal to upstreamResolver", async () => {
+		let cancelled = false;
+		let upstreamCalled = false;
+		const stalled = new ReadableStream<Uint8Array>({
+			pull() {
+				return new Promise<void>(() => {});
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const response = await forwardNativeProviderLogin(streamedRequest(stalled), {
+			upstreamUrl: "https://private.example/",
+			timeoutMs: 15,
+			fetchImplementation: async () => {
+				upstreamCalled = true;
+				return Response.json({ ok: true });
+			},
+		});
+		assert.equal(response.status, 400);
+		assert.equal(cancelled, true);
+		assert.equal(upstreamCalled, false);
+
+		let resolverSignal: AbortSignal | undefined;
+		const timedOutResolver = await forwardNativeProviderLogin(streamedRequest(byteStream(2).body), {
+			upstreamUrl: "https://private.example/",
+			timeoutMs: 15,
+			upstreamResolver: (_hash, _purpose, signal) => {
+				resolverSignal = signal;
+				return new Promise((_resolve, reject) => {
+					signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			},
+		});
+		assert.equal(timedOutResolver.status, 503);
+		assert.equal(resolverSignal?.aborted, true);
+	});
 });
 
 describe("native provider login proxy", () => {
