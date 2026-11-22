@@ -1782,6 +1782,51 @@ export class LxdUnixClient
 			throw new Error("LXD_HOST_INVENTORY_UNCONFIRMED");
 		}
 	}
+	async listProjectInstances(project: string, signal: AbortSignal): Promise<LxdHostInventoryInstance[]> {
+		const namePattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
+		if (!namePattern.test(project)) throw new Error("LXD_PROJECT_INSTANCES_UNCONFIRMED");
+		try {
+			// WHY: Scope office passthrough instance lookups to one project instead of dumping all-projects inventory on every refresh.
+			return await withTimeoutScope(signal, 5000, async (checked) => {
+				checked.throwIfAborted();
+				const result = await this.#requestPayload(
+					"GET",
+					`/1.0/instances?project=${encodeURIComponent(project)}&recursion=1`,
+					undefined,
+					undefined,
+					checked,
+					MAX_RESPONSE_BYTES,
+				);
+				const envelope = record(result.body, "project instances");
+				if (
+					result.status !== 200 ||
+					envelope.type !== "sync" ||
+					envelope.status_code !== 200 ||
+					!Array.isArray(envelope.metadata) ||
+					envelope.metadata.length > 4096
+				)
+					throw new Error("invalid project instances");
+				const seen = new Set<string>();
+				const items = envelope.metadata.map((value) => {
+					const raw = record(value, "project instance");
+					const parsed = instance(raw);
+					const itemProject = typeof raw.project === "string" ? raw.project : project;
+					if (itemProject !== project || !namePattern.test(parsed.name) || seen.has(parsed.name))
+						throw new Error("invalid project instance");
+					seen.add(parsed.name);
+					return {
+						...parsed,
+						project: itemProject,
+						location: typeof raw.location === "string" ? raw.location : "",
+					};
+				});
+				checked.throwIfAborted();
+				return items;
+			});
+		} catch {
+			throw new Error("LXD_PROJECT_INSTANCES_UNCONFIRMED");
+		}
+	}
 
 	async inspectOfficeImage(project: string, fingerprint: string, signal: AbortSignal): Promise<LxdOfficeImageRecord> {
 		try {

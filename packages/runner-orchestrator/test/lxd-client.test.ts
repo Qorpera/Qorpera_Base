@@ -1591,4 +1591,75 @@ describe("LXD exec stream", () => {
 		).resolves.toBeUndefined();
 		expect(waitedPath).toContain("/wait?timeout=2");
 	});
+
+	it("lists instances scoped to a single project and rejects invalid or mismatched project records", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-lxd-proj-"));
+		roots.push(root);
+		const socket = join(root, "lxd.socket");
+		const seenUrls: string[] = [];
+		let responseBody: unknown = {};
+		const server = createServer((req, res) => {
+			seenUrls.push(req.url ?? "");
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify(responseBody));
+		});
+		servers.push(server);
+		await new Promise<void>((resolveListen, reject) => {
+			server.once("error", reject);
+			server.listen(socket, () => resolveListen());
+		});
+		const client = new LxdUnixClient(socket, 5);
+		await expect(client.listProjectInstances("../bad", new AbortController().signal)).rejects.toThrow(
+			"LXD_PROJECT_INSTANCES_UNCONFIRMED",
+		);
+		expect(seenUrls).toEqual([]);
+
+		responseBody = {
+			type: "sync",
+			status_code: 200,
+			metadata: [
+				{
+					name: "qorpera-office-1",
+					project: "qprod01",
+					location: "none",
+					type: "virtual-machine",
+					status: "Running",
+					status_code: 103,
+					profiles: [],
+					config: { "user.qorpera.office_id": "id-1" },
+					devices: {},
+					expanded_config: {},
+					expanded_devices: {},
+				},
+			],
+		};
+		const items = await client.listProjectInstances("qprod01", new AbortController().signal);
+		expect(seenUrls).toEqual(["/1.0/instances?project=qprod01&recursion=1"]);
+		expect(items).toHaveLength(1);
+		expect(items[0]?.name).toBe("qorpera-office-1");
+		expect(items[0]?.project).toBe("qprod01");
+
+		responseBody = {
+			type: "sync",
+			status_code: 200,
+			metadata: [
+				{
+					name: "qorpera-office-1",
+					project: "other-proj",
+					location: "none",
+					type: "virtual-machine",
+					status: "Running",
+					status_code: 103,
+					profiles: [],
+					config: {},
+					devices: {},
+					expanded_config: {},
+					expanded_devices: {},
+				},
+			],
+		};
+		await expect(client.listProjectInstances("qprod01", new AbortController().signal)).rejects.toThrow(
+			"LXD_PROJECT_INSTANCES_UNCONFIRMED",
+		);
+	});
 });

@@ -54,6 +54,12 @@ it("uses the real provider HTTP adapter over trusted loopback TLS, with bounded 
 						return;
 					}
 					response.writeHead(200, { "content-type": "application/json" });
+					if (mode === "premature_close") {
+						response.write('{"partial":');
+						response.flushHeaders();
+						setTimeout(() => response.socket?.destroy(), 20);
+						return;
+					}
 					if (mode === "cancel" || mode === "timeout") {
 						response.flushHeaders();
 						return;
@@ -93,6 +99,14 @@ for (const mode of ["success", "redirect", "cancel", "limit", "timeout"]) {
  catch (error) { out.push({ mode, error: error.message, elapsed: performance.now() - start }); }
  finally { if (timer) clearTimeout(timer); }
 }
+const shared = new LxdOfficeProviderHttpRegistry(${JSON.stringify(`https://127.0.0.1:${address.port}`)}, "synthetic-provider-token-".repeat(3));
+for (const mode of ["premature_close", "cancel", "success"]) {
+ const controller = new AbortController();
+ const timer = mode === "cancel" ? setTimeout(() => controller.abort(), 100) : null;
+ try { out.push({ mode: "shared:" + mode, value: await shared.call("qorpera_runtime_office_provider_status", { mode }, controller.signal) }); }
+ catch (error) { out.push({ mode: "shared:" + mode, error: error.message }); }
+ finally { if (timer) clearTimeout(timer); }
+}
 process.stdout.write(JSON.stringify(out));
 `,
 		);
@@ -117,10 +131,24 @@ process.stdout.write(JSON.stringify(out));
 		expect(failure).toBeUndefined();
 		const results = JSON.parse(result.stdout);
 		expect(results[0]).toEqual({ mode: "success", value: { ok: true } });
-		for (const entry of results.slice(1)) expect(entry.error).toBe("OFFICE_PROVIDER_RPC_UNCONFIRMED");
+		for (const entry of results.slice(1, 5)) expect(entry.error).toBe("OFFICE_PROVIDER_RPC_UNCONFIRMED");
 		expect(results[4].elapsed).toBeGreaterThanOrEqual(4900);
 		expect(results[4].elapsed).toBeLessThan(7000);
-		expect(seen).toEqual(["success", "redirect", "cancel", "limit", "timeout"]);
+		expect(results.slice(5)).toEqual([
+			{ mode: "shared:premature_close", error: "OFFICE_PROVIDER_RPC_UNCONFIRMED" },
+			{ mode: "shared:cancel", error: "OFFICE_PROVIDER_RPC_UNCONFIRMED" },
+			{ mode: "shared:success", value: { ok: true } },
+		]);
+		expect(seen).toEqual([
+			"success",
+			"redirect",
+			"cancel",
+			"limit",
+			"timeout",
+			"premature_close",
+			"cancel",
+			"success",
+		]);
 		expect(closed).toEqual(expect.arrayContaining(seen));
 	} finally {
 		server.closeAllConnections();

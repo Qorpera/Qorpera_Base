@@ -1,3 +1,6 @@
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { LxdOfficeCreationIdentity } from "../src/lxd-office-creation-journal.ts";
 import {
@@ -7,8 +10,8 @@ import {
 	officeFleetScope,
 	reconcileOfficeFleet,
 } from "../src/lxd-office-fleet.ts";
-import { renderOfficeFleetUnits } from "../src/lxd-office-fleet-installation.ts";
-import { parseOfficeFleetServiceConfig } from "../src/lxd-office-fleet-service.ts";
+import { renderOfficeFleetUnits, writeOfficeFleetArtifactImmutable } from "../src/lxd-office-fleet-installation.ts";
+import { parseOfficeFleetServiceConfig, runOfficeFleetPollLoop } from "../src/lxd-office-fleet-service.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
 
 const nodeId = "77777777-7777-4777-8777-777777777777";
@@ -172,5 +175,77 @@ describe("office fleet service installation", () => {
 		expect(() => parseOfficeFleetServiceConfig({ ...raw, servicePath: "../service.json" })).toThrow();
 		expect(() => parseOfficeFleetServiceConfig({ ...raw, serviceConfigSha256: "mutable" })).toThrow();
 		expect(() => parseOfficeFleetServiceConfig({ ...raw, nodeId: "node-2" })).toThrow();
+	});
+
+	it("retries transient RPC errors in runOfficeFleetPollLoop with capped backoff while rethrowing fatal errors and stageOnly failures", async () => {
+		const waits: number[] = [];
+		let attempts = 0;
+		let selected = 0;
+		await runOfficeFleetPollLoop({
+			pollIntervalMs: 1000,
+			stageOnly: false,
+			signal: new AbortController().signal,
+			reconcile: async () => {
+				attempts += 1;
+				if (attempts <= 6) throw new Error("OFFICE_PROVIDER_RPC_UNCONFIRMED");
+				return "selected";
+			},
+			onSelected: async () => {
+				selected += 1;
+			},
+			sleep: async (ms) => {
+				waits.push(ms);
+			},
+		});
+		expect(selected).toBe(1);
+		expect(waits).toEqual([1000, 2000, 4000, 8000, 16000, 16000]);
+
+		await expect(
+			runOfficeFleetPollLoop({
+				pollIntervalMs: 1000,
+				stageOnly: false,
+				signal: new AbortController().signal,
+				reconcile: async () => {
+					throw new Error("OFFICE_FLEET_SELECTION_CHANGED");
+				},
+				onSelected: async () => {},
+				sleep: async () => {},
+			}),
+		).rejects.toThrow("OFFICE_FLEET_SELECTION_CHANGED");
+
+		await expect(
+			runOfficeFleetPollLoop({
+				pollIntervalMs: 1000,
+				stageOnly: true,
+				signal: new AbortController().signal,
+				reconcile: async () => {
+					throw new Error("OFFICE_PROVIDER_RPC_UNCONFIRMED");
+				},
+				onSelected: async () => {},
+				sleep: async () => {},
+			}),
+		).rejects.toThrow("OFFICE_PROVIDER_RPC_UNCONFIRMED");
+	});
+
+	it("publishes fleet artifacts atomically via link without leaving temp files or replacing differing targets", async () => {
+		const root = await mkdtemp(join(tmpdir(), "office-fleet-install-"));
+		try {
+			const target = join(root, "qorpera-office-fleet.cjs");
+			const payload = Buffer.from("console.log('fleet');\n");
+			const readExisting = async (path: string) => readFile(path);
+			await writeOfficeFleetArtifactImmutable(target, payload, readExisting);
+			expect((await readFile(target)).equals(payload)).toBe(true);
+			expect((await stat(target)).mode & 0o777).toBe(0o444);
+			expect(await readdir(root)).toEqual(["qorpera-office-fleet.cjs"]);
+
+			await writeOfficeFleetArtifactImmutable(target, payload, readExisting);
+			await expect(
+				writeOfficeFleetArtifactImmutable(target, Buffer.from("different"), readExisting),
+			).rejects.toThrow("OFFICE_FLEET_INSTALL_CONFLICT");
+			expect((await readFile(target)).equals(payload)).toBe(true);
+			expect(await readdir(root)).toEqual(["qorpera-office-fleet.cjs"]);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 });

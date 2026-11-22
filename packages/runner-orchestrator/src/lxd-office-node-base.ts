@@ -1,4 +1,4 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, open, readFile, realpath } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -256,6 +256,26 @@ async function protectedParents(path: string): Promise<void> {
 	}
 }
 
+export async function readBoundedMountInfo(path = "/proc/self/mountinfo", maxBytes = 1048576): Promise<string> {
+	// WHY: Bound procfs mountinfo reads incrementally so a huge mount table cannot be buffered unboundedly before length checks.
+	const file = await open(path, "r");
+	try {
+		const chunks: Buffer[] = [];
+		let total = 0;
+		const chunk = Buffer.allocUnsafe(16384);
+		for (;;) {
+			const { bytesRead } = await file.read(chunk, 0, chunk.length, null);
+			if (bytesRead === 0) break;
+			total += bytesRead;
+			if (total > maxBytes) throw new Error("OFFICE_NODE_BASE_MOUNT_UNCONFIRMED");
+			chunks.push(Buffer.from(chunk.subarray(0, bytesRead)));
+		}
+		return Buffer.concat(chunks, total).toString("utf8");
+	} finally {
+		await file.close();
+	}
+}
+
 /** The production readers: the node's own files and its local LXD daemon. */
 export function lxdOfficeNodeBasePorts(
 	socketPath: string,
@@ -280,7 +300,7 @@ export function lxdOfficeNodeBasePorts(
 		server: (project, signal) => lxd.inspectOfficeServer(project, signal),
 		infrastructure: (project, network, pool, signal) =>
 			lxd.inspectOfficeInfrastructure(project, network, pool, signal),
-		mountInfo: () => readFile("/proc/self/mountinfo", "utf8"),
+		mountInfo: () => readBoundedMountInfo(),
 		hostNamespace: async () => {
 			const bootId = (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim();
 			await assertLxdOfficeHostNamespace(bootId);

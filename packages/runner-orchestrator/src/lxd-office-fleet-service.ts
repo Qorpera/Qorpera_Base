@@ -32,6 +32,52 @@ export function parseOfficeFleetServiceConfig(value: unknown) {
 	};
 }
 
+export function isTransientOfficeFleetError(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		(error.message === "OFFICE_PROVIDER_RPC_UNCONFIRMED" || error.message === "OFFICE_PROVIDER_RPC_PENDING")
+	);
+}
+
+export async function runOfficeFleetPollLoop(options: {
+	pollIntervalMs: number;
+	stageOnly: boolean;
+	signal: AbortSignal;
+	reconcile: (scoped: AbortSignal) => Promise<Awaited<ReturnType<typeof reconcileOfficeFleet>>>;
+	onSelected: () => Promise<void>;
+	sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+}): Promise<void> {
+	const sleep =
+		options.sleep ??
+		(async (ms, signal) => {
+			await delay(ms, undefined, { signal }).catch(() => {});
+		});
+	let consecutiveErrors = 0;
+	const maxBackoffMs = Math.max(options.pollIntervalMs, 30_000);
+	while (!options.signal.aborted) {
+		let result: Awaited<ReturnType<typeof reconcileOfficeFleet>>;
+		try {
+			result = await withAbortScope(options.signal, options.reconcile);
+			consecutiveErrors = 0;
+		} catch (error) {
+			if (options.signal.aborted) return;
+			// WHY: Retry transient registry RPC failures with capped backoff so brief outages do not trip systemd StartLimitBurst=3.
+			if (options.stageOnly || !isTransientOfficeFleetError(error)) throw error;
+			consecutiveErrors += 1;
+			const waitMs = Math.min(maxBackoffMs, options.pollIntervalMs * 2 ** Math.min(consecutiveErrors - 1, 4));
+			await sleep(waitMs, options.signal);
+			continue;
+		}
+		if (result === "selected") {
+			await options.onSelected();
+			return;
+		}
+		if (result === "elsewhere" || result === "held" || result === "staged" || options.stageOnly) return;
+		if (result === "retained") throw new Error("OFFICE_FLEET_EXISTING_OWNER_REQUIRES_ORIGINAL_SERVICE");
+		await sleep(options.pollIntervalMs, options.signal);
+	}
+}
+
 /** Run under the SAME process-owned local journal lock as the lifecycle
  * provider. Each office/host has separate protected configuration and local
  * journal. Only the selected host enters the existing lifecycle service. */
@@ -86,8 +132,11 @@ export async function runOfficeFleetService(configPath: string, signal: AbortSig
 		credential.fill(0);
 	}
 	const client = new LxdUnixClient(policy.host.socketPath);
-	while (!signal.aborted) {
-		const result = await withAbortScope(signal, (scoped) =>
+	await runOfficeFleetPollLoop({
+		pollIntervalMs: service.pollIntervalMs,
+		stageOnly,
+		signal,
+		reconcile: (scoped) =>
 			reconcileOfficeFleet(
 				{
 					policy,
@@ -115,8 +164,7 @@ export async function runOfficeFleetService(configPath: string, signal: AbortSig
 				},
 				scoped,
 			),
-		);
-		if (result === "selected") {
+		onSelected: async () => {
 			// Do not let a config replacement between selection and launch redirect
 			// this process to a different installation.
 			if (
@@ -126,10 +174,6 @@ export async function runOfficeFleetService(configPath: string, signal: AbortSig
 			)
 				throw new Error("OFFICE_FLEET_SERVICE_CHANGED");
 			if (!stageOnly) await runLxdOfficeLifecycleService(config.servicePath, signal);
-			return;
-		}
-		if (result === "elsewhere" || result === "held" || result === "staged" || stageOnly) return;
-		if (result === "retained") throw new Error("OFFICE_FLEET_EXISTING_OWNER_REQUIRES_ORIGINAL_SERVICE");
-		await delay(service.pollIntervalMs, undefined, { signal }).catch(() => {});
-	}
+		},
+	});
 }

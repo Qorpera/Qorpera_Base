@@ -406,4 +406,44 @@ describe("LxdOfficePassthrough", () => {
 		expect(freshCalls).toBe(2);
 		releaseStuck();
 	});
+
+	it("prefers project-scoped listProjectInstances over whole-host inspectHostInventory and aborts pending resolve on passthrough close", async () => {
+		const listProjectInstances = vi.fn(async () => [instance("qorpera-office-scoped")]);
+		const inspectHostInventory = vi.fn(async () => {
+			throw new Error("should not dump whole host");
+		});
+		const resolveScoped = createLxdOfficeGuestResolver(
+			{
+				inspectHostInventory,
+				listProjectInstances,
+				getInstanceState: vi.fn(async () => running("10.41.0.99")),
+			},
+			identity,
+			0,
+		);
+		expect(await resolveScoped(new AbortController().signal)).toBe("10.41.0.99");
+		expect(listProjectInstances).toHaveBeenCalledWith("qprod01", expect.anything());
+		expect(inspectHostInventory).not.toHaveBeenCalled();
+
+		const [viewer, native] = [await freePort(), await freePort()];
+		let resolveSignal: AbortSignal | undefined;
+		const passthrough = await LxdOfficePassthrough.listen(
+			parseLxdOfficePassthroughConfig(document(viewer, 18543, native, 18544)),
+			(checked) => {
+				resolveSignal = checked;
+				return new Promise<string | undefined>((_res, rej) => {
+					checked.addEventListener("abort", () => rej(checked.reason), { once: true });
+				});
+			},
+			{ connectTimeoutMs: 5000 },
+		);
+		closers.push(() => passthrough.close());
+		const client = createConnection({ host: "127.0.0.1", port: viewer });
+		client.on("error", () => {});
+		await vi.waitFor(() => expect(resolveSignal).toBeDefined());
+		expect(resolveSignal?.aborted).toBe(false);
+		await passthrough.close();
+		expect(resolveSignal?.aborted).toBe(true);
+		client.destroy();
+	});
 });

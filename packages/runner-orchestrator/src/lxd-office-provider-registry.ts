@@ -111,10 +111,36 @@ const LIMIT = 65536;
 /** Node 22's web Response/Headers load Undici's WASM parser even when fetch
  * is unused. Keep the production transport entirely on native HTTPS so the
  * service can retain --jitless and its memory execution protections. */
-function nativeRpc(url: string, key: string, body: string, signal: AbortSignal): Promise<unknown> {
+function nativeRpc(
+	url: string,
+	key: string,
+	body: string,
+	signal: AbortSignal,
+	onSettled?: () => void,
+): Promise<unknown> {
 	return new Promise((resolve, reject) => {
 		signal.throwIfAborted();
-		const request = httpsRequest(
+		let settled = false;
+		let gotResponse = false;
+		let activeResponse: { destroy(): void } | undefined;
+		let request: ReturnType<typeof httpsRequest> | undefined;
+		const finish = (action: () => void) => {
+			if (settled) return;
+			settled = true;
+			signal.removeEventListener("abort", fail);
+			onSettled?.();
+			action();
+		};
+		const fail = () => {
+			finish(() => {
+				activeResponse?.destroy();
+				request?.destroy();
+				reject(new Error("unconfirmed"));
+			});
+		};
+		// WHY: Settle on signal abort and premature response/request close so this.#pending can never wedge permanently true.
+		signal.addEventListener("abort", fail, { once: true });
+		request = httpsRequest(
 			url,
 			{
 				method: "POST",
@@ -128,12 +154,13 @@ function nativeRpc(url: string, key: string, body: string, signal: AbortSignal):
 				},
 			},
 			(response) => {
-				response.once("error", reject);
-				const fail = () => {
-					response.destroy();
-					request.destroy();
-					reject(new Error("unconfirmed"));
-				};
+				gotResponse = true;
+				activeResponse = response;
+				response.once("error", fail);
+				response.once("aborted", fail);
+				response.once("close", () => {
+					if (!settled) fail();
+				});
 				const length = response.headers["content-length"];
 				if (
 					response.statusCode !== 200 ||
@@ -146,6 +173,7 @@ function nativeRpc(url: string, key: string, body: string, signal: AbortSignal):
 				const chunks: Buffer[] = [];
 				let size = 0;
 				response.on("data", (chunk: Buffer) => {
+					if (settled) return;
 					size += chunk.length;
 					if (size > LIMIT) {
 						fail();
@@ -157,14 +185,20 @@ function nativeRpc(url: string, key: string, body: string, signal: AbortSignal):
 					try {
 						signal.throwIfAborted();
 						if (!response.complete || (length !== undefined && Number(length) !== size)) throw new Error();
-						resolve(JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))));
+						const parsed: unknown = JSON.parse(
+							new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks)),
+						);
+						finish(() => resolve(parsed));
 					} catch {
 						fail();
 					}
 				});
 			},
 		);
-		request.once("error", reject);
+		request.once("error", fail);
+		request.once("close", () => {
+			if (!settled && !gotResponse) fail();
+		});
 		request.end(body);
 	});
 }
@@ -226,6 +260,14 @@ export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry
 		timer?.unref();
 		const signal = bound.signal;
 		this.#pending = true;
+		let cleaned = false;
+		const cleanup = () => {
+			if (cleaned) return;
+			cleaned = true;
+			if (timer) clearTimeout(timer);
+			caller.removeEventListener("abort", forward);
+			this.#pending = false;
+		};
 		let abort = () => {};
 		const stopped = new Promise<never>((_, reject) => {
 			abort = () => reject(new Error("OFFICE_PROVIDER_RPC_UNCONFIRMED"));
@@ -234,7 +276,7 @@ export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry
 		});
 		const operation = (async () => {
 			signal.throwIfAborted();
-			if (!this.#fetch) return nativeRpc(`${this.#origin}/rest/v1/rpc/${method}`, this.#key, body, signal);
+			if (!this.#fetch) return nativeRpc(`${this.#origin}/rest/v1/rpc/${method}`, this.#key, body, signal, cleanup);
 			const response = await this.#fetch(`${this.#origin}/rest/v1/rpc/${method}`, {
 				method: "POST",
 				redirect: "error",
@@ -248,6 +290,10 @@ export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry
 				body,
 			});
 			const reader = response.body?.getReader();
+			const cancelReader = () => {
+				void reader?.cancel().catch(() => {});
+			};
+			if (reader) signal.addEventListener("abort", cancelReader, { once: true });
 			try {
 				signal.throwIfAborted();
 				const length = response.headers.get("content-length");
@@ -272,6 +318,7 @@ export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry
 				if (length !== null && Number(length) !== size) throw new Error();
 				return JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks)));
 			} finally {
+				signal.removeEventListener("abort", cancelReader);
 				await reader?.cancel().catch(() => {});
 				reader?.releaseLock();
 			}
@@ -279,11 +326,7 @@ export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry
 			.catch(() => {
 				throw new Error("OFFICE_PROVIDER_RPC_UNCONFIRMED");
 			})
-			.finally(() => {
-				if (timer) clearTimeout(timer);
-				caller.removeEventListener("abort", forward);
-				this.#pending = false;
-			});
+			.finally(cleanup);
 		try {
 			return await Promise.race([operation, stopped]);
 		} finally {
