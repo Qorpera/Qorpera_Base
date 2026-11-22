@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { withAbortScopes } from "./abort-scope.ts";
@@ -35,10 +36,13 @@ function port(environment: NodeJS.ProcessEnv): number {
 	return value;
 }
 
+const supabaseCaPath = process.env.QORPERA_SUPABASE_CA_FILE?.trim();
+const supabaseCa = supabaseCaPath ? readFileSync(supabaseCaPath, "utf8").trim() : undefined;
 const authority = new SupabaseObjectAuthority({
 	projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
 	publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
 	secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+	...(supabaseCa !== undefined ? { ca: supabaseCa } : {}),
 });
 const store = new FileSystemObjectStore(
 	resolve(required(process.env, "QORPERA_OBJECT_GATEWAY_STORAGE_ROOT")),
@@ -48,7 +52,10 @@ const store = new FileSystemObjectStore(
 );
 const journal = new ObjectGatewayJournal(required(process.env, "QORPERA_OBJECT_GATEWAY_STATE_ROOT"));
 const maintenanceNasGate = createSerialGate();
-const replication = new ObjectGatewayReplication(journal, store, authority, undefined, maintenanceNasGate);
+let triggerReconcile: (() => void) | undefined;
+const replication = new ObjectGatewayReplication(journal, store, authority, undefined, maintenanceNasGate, {
+	onPendingPressure: () => triggerReconcile?.(),
+});
 const folderGc = new ObjectGatewayFolderGc(store, replication, authority, Date.now, maintenanceNasGate);
 const memberAuthority = new SupabaseMemberCompanyAuthority({
 	projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
@@ -213,6 +220,9 @@ if (process.argv[2] === "migrate") {
 			process.stderr.write("Object gateway maintenance requires operator attention\n");
 		},
 	});
+	triggerReconcile = () => {
+		void maintenance.maintain();
+	};
 	// Stored objects' audit lines are in memory at most this long, however long a maintenance pass takes.
 	let writingLines = false;
 	const storedLineWrites = setInterval(() => {
@@ -333,6 +343,7 @@ if (process.argv[2] === "migrate") {
 
 	for (const signal of ["SIGINT", "SIGTERM"] as const) {
 		process.on(signal, () => {
+			triggerReconcile = undefined;
 			stopping = true;
 			maintenance.stop();
 			clearInterval(storedLineWrites);
@@ -343,7 +354,11 @@ if (process.argv[2] === "migrate") {
 			clearInterval(memoryErasures);
 			clearInterval(companyCreations);
 			stopGateway({
-				close: (done) => server.close(done),
+				close: (done) =>
+					server.close(() => {
+						authority.close();
+						done();
+					}),
 				flush: () => replication.flushStoredLines(),
 				say: (line) => process.stderr.write(line),
 				exit: (code) => process.exit(code),

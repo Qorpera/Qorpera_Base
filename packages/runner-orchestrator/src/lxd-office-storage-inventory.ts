@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
 import { type FileHandle, lstat, open, opendir, realpath } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
+import { withTimeoutScope } from "./abort-scope.ts";
 import { officeCanonical, officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { assertLxdOfficeHostMount } from "./lxd-office-physical-host.ts";
 import { type LxdOfficeMountPolicy, officePhysicalPath } from "./lxd-office-physical-policy.ts";
@@ -282,18 +283,19 @@ export async function inspectOfficeStorage(
 	caller.throwIfAborted();
 	if (pending) throw new Error("OFFICE_INVENTORY_INSPECTION_PENDING");
 	pending = true;
-	const signal = AbortSignal.any([caller, AbortSignal.timeout(300000)]);
-	let abort = () => {};
-	const stopped = new Promise<never>((_resolve, reject) => {
-		abort = () => reject(new Error("OFFICE_INVENTORY_INSPECTION_ABORTED"));
-		signal.addEventListener("abort", abort, { once: true });
+	return withTimeoutScope(caller, 300000, async (signal) => {
+		let abort = () => {};
+		const stopped = new Promise<never>((_resolve, reject) => {
+			abort = () => reject(new Error("OFFICE_INVENTORY_INSPECTION_ABORTED"));
+			signal.addEventListener("abort", abort, { once: true });
+		});
+		const operation = inspect(input, value, signal).finally(() => {
+			pending = false;
+		});
+		try {
+			return await Promise.race([operation, stopped]);
+		} finally {
+			signal.removeEventListener("abort", abort);
+		}
 	});
-	const operation = inspect(input, value, signal).finally(() => {
-		pending = false;
-	});
-	try {
-		return await Promise.race([operation, stopped]);
-	} finally {
-		signal.removeEventListener("abort", abort);
-	}
 }

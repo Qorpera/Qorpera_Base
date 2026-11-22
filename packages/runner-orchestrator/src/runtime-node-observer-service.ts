@@ -1,6 +1,6 @@
 import { request } from "node:https";
 import { setTimeout as delay } from "node:timers/promises";
-import { withAbortScope } from "./abort-scope.ts";
+import { withAbortScope, withTimeoutScope } from "./abort-scope.ts";
 import { officeDigest, officeRecord } from "./lxd-office-image-provenance.ts";
 import { readLxdOfficeCredentialFile, readLxdOfficeProtectedFile } from "./lxd-office-physical-host.ts";
 import { RuntimeNodeAgentExitPublisher } from "./runtime-node-agent-exit.ts";
@@ -36,82 +36,87 @@ export class RuntimeNodeObserverHttpRegistry implements RuntimeNodeObserverRegis
 		this.#key = key;
 	}
 	async call(method: RuntimeNodeObserverMethod, args: Record<string, unknown>, caller: AbortSignal): Promise<unknown> {
-		const signal = AbortSignal.any([caller, AbortSignal.timeout(5000)]);
 		if (!METHODS.has(method) || this.#pending) throw new Error("NODE_OBSERVER_RPC_UNAVAILABLE");
 		this.#pending = true;
 		// Every failure is NODE_OBSERVER_RPC_UNCONFIRMED, carrying a closed code for the log line: the HTTP status, what
 		// was wrong with the answer, the socket's system code, or the timeout. Never the answer's bytes.
 		const unconfirmed = (code: string) => new RuntimeNodeObserverFailure("NODE_OBSERVER_RPC_UNCONFIRMED", code);
 		try {
-			signal.throwIfAborted();
-			const body = JSON.stringify(args);
-			if (Buffer.byteLength(body) > LIMIT) throw unconfirmed("NODE_OBSERVER_RPC_REQUEST_TOO_LARGE");
-			return await new Promise((resolve, reject) => {
-				const req = request(
-					`${this.#origin}/rest/v1/rpc/${method}`,
-					{
-						method: "POST",
-						signal,
-						headers: {
-							apikey: this.#key,
-							authorization: `Bearer ${this.#key}`,
-							"content-type": "application/json",
-							accept: "application/json",
-							"content-length": Buffer.byteLength(body),
-						},
-					},
-					(res) => {
-						res.once("error", reject);
-						const fail = (code: string) => {
-							res.destroy();
-							req.destroy();
-							reject(unconfirmed(code));
-						};
-						const length = res.headers["content-length"];
-						const refused =
-							res.statusCode !== 200
-								? `NODE_OBSERVER_RPC_HTTP_${res.statusCode ?? 0}`
-								: !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(res.headers["content-type"] ?? "")
-									? "NODE_OBSERVER_RPC_CONTENT_TYPE"
-									: length !== undefined && !/^(0|[1-9][0-9]*)$/.test(length)
-										? "NODE_OBSERVER_RPC_RESPONSE_INVALID"
-										: length !== undefined && Number(length) > LIMIT
-											? "NODE_OBSERVER_RPC_RESPONSE_TOO_LARGE"
-											: null;
-						if (refused) {
-							fail(refused);
-							return;
-						}
-						const chunks: Buffer[] = [];
-						let size = 0;
-						res.on("data", (chunk: Buffer) => {
-							size += chunk.length;
-							if (size > LIMIT) {
-								fail("NODE_OBSERVER_RPC_RESPONSE_TOO_LARGE");
-								return;
-							}
-							chunks.push(chunk);
-						});
-						res.once("end", () => {
-							if (signal.aborted) fail(this.#stopped(caller));
-							else if (!res.complete || (length !== undefined && Number(length) !== size))
-								fail("NODE_OBSERVER_RPC_RESPONSE_INCOMPLETE");
-							else {
-								try {
-									resolve(JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))));
-								} catch {
-									fail("NODE_OBSERVER_RPC_RESPONSE_INVALID");
+			return await withTimeoutScope(caller, 5000, async (signal) => {
+				try {
+					signal.throwIfAborted();
+					const body = JSON.stringify(args);
+					if (Buffer.byteLength(body) > LIMIT) throw unconfirmed("NODE_OBSERVER_RPC_REQUEST_TOO_LARGE");
+					return await new Promise((resolve, reject) => {
+						const req = request(
+							`${this.#origin}/rest/v1/rpc/${method}`,
+							{
+								method: "POST",
+								signal,
+								headers: {
+									apikey: this.#key,
+									authorization: `Bearer ${this.#key}`,
+									"content-type": "application/json",
+									accept: "application/json",
+									"content-length": Buffer.byteLength(body),
+								},
+							},
+							(res) => {
+								res.once("error", reject);
+								const fail = (code: string) => {
+									res.destroy();
+									req.destroy();
+									reject(unconfirmed(code));
+								};
+								const length = res.headers["content-length"];
+								const refused =
+									res.statusCode !== 200
+										? `NODE_OBSERVER_RPC_HTTP_${res.statusCode ?? 0}`
+										: !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(res.headers["content-type"] ?? "")
+											? "NODE_OBSERVER_RPC_CONTENT_TYPE"
+											: length !== undefined && !/^(0|[1-9][0-9]*)$/.test(length)
+												? "NODE_OBSERVER_RPC_RESPONSE_INVALID"
+												: length !== undefined && Number(length) > LIMIT
+													? "NODE_OBSERVER_RPC_RESPONSE_TOO_LARGE"
+													: null;
+								if (refused) {
+									fail(refused);
+									return;
 								}
-							}
-						});
-					},
-				);
-				req.once("error", reject);
-				req.end(body);
+								const chunks: Buffer[] = [];
+								let size = 0;
+								res.on("data", (chunk: Buffer) => {
+									size += chunk.length;
+									if (size > LIMIT) {
+										fail("NODE_OBSERVER_RPC_RESPONSE_TOO_LARGE");
+										return;
+									}
+									chunks.push(chunk);
+								});
+								res.once("end", () => {
+									if (signal.aborted) fail(this.#stopped(caller));
+									else if (!res.complete || (length !== undefined && Number(length) !== size))
+										fail("NODE_OBSERVER_RPC_RESPONSE_INCOMPLETE");
+									else {
+										try {
+											resolve(
+												JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))),
+											);
+										} catch {
+											fail("NODE_OBSERVER_RPC_RESPONSE_INVALID");
+										}
+									}
+								});
+							},
+						);
+						req.once("error", reject);
+						req.end(body);
+					});
+				} catch (error) {
+					if (error instanceof RuntimeNodeObserverFailure) throw error;
+					throw unconfirmed(signal.aborted ? this.#stopped(caller) : runtimeNodeObserverCode(error));
+				}
 			});
-		} catch (error) {
-			if (error instanceof RuntimeNodeObserverFailure) throw error;
-			throw unconfirmed(signal.aborted ? this.#stopped(caller) : runtimeNodeObserverCode(error));
 		} finally {
 			this.#pending = false;
 		}

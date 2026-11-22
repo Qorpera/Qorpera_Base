@@ -114,4 +114,19 @@ describe("shared node admission at the provider dispatch boundary", () => {
 		).rejects.toThrow("INVALID_RUNTIME_NODE_MACHINE");
 		expect(call).not.toHaveBeenCalled();
 	});
+
+	it("clears the 5s RPC timeout scope without leaking AbortSignal.timeout on refusal", async () => {
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+		const anySpy = vi.spyOn(AbortSignal, "any");
+		try {
+			const call = vi.fn(async () => ({ state: "refused", reason: "NODE_CAPACITY_EXHAUSTED" }));
+			const refused = await reserveRuntimeNodeMachine(machine, { call }, signal());
+			expect(refused).toEqual({ state: "refused", reason: "NODE_CAPACITY_EXHAUSTED" });
+			expect(timeoutSpy).not.toHaveBeenCalled();
+			expect(anySpy).not.toHaveBeenCalled();
+		} finally {
+			timeoutSpy.mockRestore();
+			anySpy.mockRestore();
+		}
+	});
 });

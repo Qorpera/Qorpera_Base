@@ -682,13 +682,15 @@ describe("agent routines section", () => {
 				{ ...row, routine_id: "10000000-0000-4000-8000-000000000024" },
 			];
 		});
+		const signal = new AbortController().signal;
 		const listed = await createWebRoutines(
 			{ rpc } as unknown as Cloud,
 			profileA,
-			new AbortController().signal,
+			signal,
 			() => {},
 			() => folderFake().folder,
 		).list();
+		expect(rpc).toHaveBeenCalledWith("qorpera_list_cloud_routines", expect.anything(), signal);
 		expect(listed.find((item) => item.routineId === "10000000-0000-4000-8000-000000000025")).toMatchObject({
 			resumeReason: "plan_turned_on",
 			resumedAt: "2026-10-01T10:00:00.000Z",

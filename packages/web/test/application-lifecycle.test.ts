@@ -1188,6 +1188,18 @@ describe("account and route ownership", () => {
 		// A card whose app the company does not have stays plain.
 		expect(gone?.querySelector(".app-card-note")?.textContent).toBe("App");
 		expect(gone?.style.getPropertyValue("--app-colour")).toBe("");
+
+		const mainEl = f.root.querySelector<HTMLElement>("main")!;
+		const qsaSpy = vi.spyOn(mainEl, "querySelectorAll");
+		f.root.querySelector(".thread")!.append(h("p", null, "plain streaming text"));
+		await settle();
+		const cardScans = qsaSpy.mock.calls.filter(([selector]) => selector.includes(".app-card"));
+		expect(cardScans).toHaveLength(0);
+
+		const later = appCard("sales-board", "sales-board", "Later note");
+		f.root.querySelector(".thread")!.append(later);
+		await settle();
+		expect(later.querySelector(".app-card-title")?.textContent).toBe("Sales board");
 	});
 
 	it("names the card a note from an app opens with as the drawer names the app, keeps its line, and opens the app", async () => {
