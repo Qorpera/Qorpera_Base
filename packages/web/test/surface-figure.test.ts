@@ -1,6 +1,7 @@
 import { readdirSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SURFACE_KINDS, surfaceFigureOf, surfaceKindFigure } from "../src/app/surface-kinds.ts";
+import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { DANISH } from "../src/ui/danish/index.ts";
 import {
 	SURFACE_FIGURE_IDS,
@@ -9,6 +10,7 @@ import {
 	surfaceFigureFromIcon,
 	surfaceFigureIcon,
 } from "../src/ui/surface-figure.ts";
+import { COMPANY, fakeClient, storeWith, summary } from "./surface-fixtures.ts";
 
 describe("surface figures", () => {
 	it("ships one picture per figure and nothing else", () => {
@@ -46,5 +48,36 @@ describe("surface figures", () => {
 		const asking = surfaceFigure("money", "attention");
 		expect(asking.querySelector(".surface-figure-ask")?.textContent).toBe("!");
 		expect(surfaceFigure("money", "working").classList.contains("is-working")).toBe(true);
+	});
+});
+
+describe("a surface's figure in the rail", () => {
+	afterEach(() => {
+		document.body.replaceChildren();
+	});
+
+	it("rests, works while sessions run, and asks when it needs you, with words for screen readers", async () => {
+		const surfaces = [
+			summary(),
+			summary({ id: "s-busy", slug: "shop", title: "Shop", runningSessionCount: 2 }),
+			summary({ id: "s-asks", slug: "mail", title: "Mail", runningSessionCount: 1, needsAttentionCount: 1 }),
+		];
+		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => surfaces) }));
+		await store.load();
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+		const row = (slug: string) => rail.el.querySelector<HTMLElement>(`.rail-surface[data-surface-slug="${slug}"]`)!;
+		const state = (slug: string) => row(slug).querySelector(".surface-figure")?.className;
+		const said = (slug: string) => row(slug).querySelector(".visually-hidden")?.textContent ?? null;
+
+		expect(state("website")).toContain("is-rest");
+		expect(said("website")).toBeNull();
+		expect(state("shop")).toContain("is-working");
+		expect(said("shop")).toBe("Working");
+		expect(state("mail")).toContain("is-attention");
+		expect(row("mail").querySelector(".surface-figure-ask")?.textContent).toBe("!");
+		expect(said("mail")).toBe("Needs your attention");
+		store.dispose();
 	});
 });

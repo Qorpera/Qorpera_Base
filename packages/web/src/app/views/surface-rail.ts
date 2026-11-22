@@ -1,7 +1,5 @@
-import { INTERFACE_EMBLEMS } from "@qorpera/cloud-client/interfaces";
 import type { SurfaceChangeUnit, SurfaceExplorationSet, SurfaceSession, SurfaceSummary } from "@qorpera/contracts";
 import { h, icon } from "../../ui/dom.ts";
-import type { Emblem } from "../../ui/interface-emblem.ts";
 import { t } from "../../ui/preferences.ts";
 import { type SurfaceFigureState, surfaceFigure } from "../../ui/surface-figure.ts";
 import { surfaceHash } from "../router.ts";
@@ -23,22 +21,6 @@ import {
 	sessionHeld,
 } from "../surfaces-store.ts";
 import { CrewFigures, crewWave } from "./surface-crew.ts";
-
-const EMBLEMS: ReadonlySet<string> = new Set<string>([
-	...INTERFACE_EMBLEMS,
-	"bank",
-	"globe",
-	"spark",
-	"drawers",
-	"phone",
-	"window",
-	"database",
-]);
-
-export function surfaceEmblem(surface: Pick<SurfaceSummary, "icon" | "archetype">): Emblem {
-	if (EMBLEMS.has(surface.icon)) return surface.icon as Emblem;
-	return surface.archetype === "live_build" ? "globe" : surface.archetype === "ops" ? "board" : "page";
-}
 
 export function surfaceTile(
 	surface: Pick<SurfaceSummary, "icon">,

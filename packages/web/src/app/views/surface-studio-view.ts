@@ -11,11 +11,10 @@ import {
 	sharedAssetsProducedBy,
 } from "@qorpera/contracts";
 import { h } from "../../ui/dom.ts";
-import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { t } from "../../ui/preferences.ts";
 import { formatConflictPaths, isOpenChange, type SurfacesStore } from "../surfaces-store.ts";
-import { surfaceEmblem, surfaceTile } from "./surface-rail.ts";
+import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
 import { type Studio3DConfig, Studio3DViewer } from "./surface-studio-3d.ts";
 
@@ -541,7 +540,7 @@ export class SurfaceStudioView {
 					this.#loading
 						? [h("span", { class: "surface-state is-running" }), h("p", null, t("Opening studio…"))]
 						: [
-								interfaceEmblem(surfaceEmblem(surface), 42),
+								surfaceTile(surface, this.#options.store.lookOf(surface), "is-hero"),
 								h("h2", null, surface.title),
 								workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
 								h(

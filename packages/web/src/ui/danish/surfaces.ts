@@ -245,7 +245,6 @@ export const SURFACES: Record<string, string> = {
 	"Documents, tables, and specs that sessions edit.":
 		"Dokumenter, tabeller og specifikationer, som sessioner redigerer.",
 	"How it is built": "Sådan bygges den",
-	Icon: "Ikon",
 	Brief: "Brief",
 	"Fold into a scheduled agent": "Gør til en planlagt agent",
 	"New scheduled agent": "Ny planlagt agent",
