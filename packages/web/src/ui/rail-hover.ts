@@ -58,8 +58,8 @@ export class RailHover {
 	settle(): void {
 		if (!this.#target) return;
 		const kept = this.#target.isConnected && this.#list.contains(this.#target);
-		const pointed = this.#pointer && document.elementFromPoint(this.#pointer.x, this.#pointer.y);
-		const item = kept ? this.#target : this.#itemOf(pointed ?? null);
+		const pointer = this.#pointer;
+		const item = kept ? this.#target : pointer && this.#itemOf(document.elementFromPoint(pointer.x, pointer.y));
 		if (!item || this.#list.classList.contains("rail-dragging")) {
 			this.#hide(true);
 			return;

@@ -28,6 +28,7 @@ describe("rail hover tint", () => {
 	});
 
 	afterEach(() => {
+		Reflect.deleteProperty(document, "elementFromPoint");
 		controller.abort();
 		list.remove();
 		vi.useRealTimers();
