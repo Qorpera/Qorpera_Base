@@ -21,6 +21,8 @@ function makeStandbyLxd(options?: {
 	missingImages?: ReadonlySet<string>;
 	deleteGate?: Promise<void>;
 	onDeleteStart?: (name: string) => void;
+	onGetInstance?: (name: string, signal?: AbortSignal) => void | Promise<void>;
+	onUpdateConfig?: (name: string, signal?: AbortSignal) => void | Promise<void>;
 }) {
 	const instances = new Map<string, LxdInstanceRecord>();
 	const powerCalls: { name: string; action: string }[] = [];
@@ -33,7 +35,9 @@ function makeStandbyLxd(options?: {
 		async hasImage(_project, fingerprint) {
 			return !options?.missingImages?.has(fingerprint);
 		},
-		async getInstance(_project, name) {
+		async getInstance(_project, name, signal) {
+			if (options?.onGetInstance) await options.onGetInstance(name, signal);
+			signal?.throwIfAborted();
 			return instances.get(name);
 		},
 		async createInstance(_project, request) {
@@ -73,8 +77,10 @@ function makeStandbyLxd(options?: {
 			instances.delete(oldName);
 			instances.set(newName, { ...inst, name: newName });
 		},
-		async updateInstanceConfig(_project, name, update) {
+		async updateInstanceConfig(_project, name, update, signal) {
 			ops.push(`update:${name}`);
+			if (options?.onUpdateConfig) await options.onUpdateConfig(name, signal);
+			signal?.throwIfAborted();
 			if (options?.failUpdateConfig) throw new Error("LXD_CONFIG_UPDATE_FAILED");
 			const inst = instances.get(name);
 			if (!inst) throw new Error("not found");
@@ -404,5 +410,96 @@ describe("CodingStandbyPool", () => {
 		expect(pool.readyCount()).toBe(0);
 		expect(events.some((e) => e.event === "coding-standby-provision-failed")).toBe(true);
 		await pool.close();
+	});
+
+	it("preserves ready standbys when claim signal cancels during getInstance", async () => {
+		const controller = new AbortController();
+		let getCalls = 0;
+		const fake = makeStandbyLxd({
+			onGetInstance: () => {
+				getCalls += 1;
+				controller.abort(new Error("CALLER_CANCELLED"));
+			},
+		});
+		const pool = new CodingStandbyPool({
+			lxd: fake.client,
+			vmPolicy: {
+				project: "coding",
+				imageFingerprint: BASE_FP,
+				storagePool: "coding-disks",
+				cpus: 4,
+				memoryBytes: 8 * 1024 ** 3,
+				rootDiskBytes: 64 * 1024 ** 3,
+			},
+			standbyPoolSize: 2,
+		});
+
+		pool.start();
+		await pool.waitIdle();
+		expect(pool.readyCount(BASE_FP)).toBe(2);
+
+		await expect(pool.claim("coding", memberRequest("m-cancel"), controller.signal)).rejects.toThrow(
+			"CALLER_CANCELLED",
+		);
+		expect(getCalls).toBe(1);
+		expect(fake.deleted).toHaveLength(0);
+		expect(pool.readyCount(BASE_FP)).toBe(2);
+		expect(fake.instances.size).toBe(2);
+		await pool.close();
+	});
+
+	it("stops after a failed config PUT without trying other standbys, on both LXD errors and caller aborts", async () => {
+		const errFake = makeStandbyLxd({ failUpdateConfig: true });
+		const errPool = new CodingStandbyPool({
+			lxd: errFake.client,
+			vmPolicy: {
+				project: "coding",
+				imageFingerprint: BASE_FP,
+				storagePool: "coding-disks",
+				cpus: 4,
+				memoryBytes: 8 * 1024 ** 3,
+				rootDiskBytes: 64 * 1024 ** 3,
+			},
+			standbyPoolSize: 2,
+		});
+		errPool.start();
+		await errPool.waitIdle();
+		expect(errPool.readyCount(BASE_FP)).toBe(2);
+
+		const result = await errPool.claim("coding", memberRequest("m-put-err"), AbortSignal.timeout(5_000));
+		expect(result).toBeNull();
+		expect(errFake.ops.filter((op) => op.startsWith("update:"))).toHaveLength(1);
+		expect(errFake.deleted).toHaveLength(1);
+		expect(errPool.readyCount(BASE_FP)).toBeGreaterThanOrEqual(1);
+		await errPool.close();
+
+		const abortController = new AbortController();
+		const abortFake = makeStandbyLxd({
+			onUpdateConfig: () => {
+				abortController.abort(new Error("PUT_ABORTED"));
+			},
+		});
+		const abortPool = new CodingStandbyPool({
+			lxd: abortFake.client,
+			vmPolicy: {
+				project: "coding",
+				imageFingerprint: BASE_FP,
+				storagePool: "coding-disks",
+				cpus: 4,
+				memoryBytes: 8 * 1024 ** 3,
+				rootDiskBytes: 64 * 1024 ** 3,
+			},
+			standbyPoolSize: 2,
+		});
+		abortPool.start();
+		await abortPool.waitIdle();
+
+		await expect(abortPool.claim("coding", memberRequest("m-put-abort"), abortController.signal)).rejects.toThrow(
+			"PUT_ABORTED",
+		);
+		expect(abortFake.ops.filter((op) => op.startsWith("update:"))).toHaveLength(1);
+		expect(abortFake.deleted).toHaveLength(1);
+		expect(abortPool.readyCount(BASE_FP)).toBeGreaterThanOrEqual(1);
+		await abortPool.close();
 	});
 });

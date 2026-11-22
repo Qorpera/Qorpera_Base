@@ -70,7 +70,7 @@ export class CodingStandbyPool {
 	readonly #ownedNames = new Set<string>();
 	readonly #retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	readonly #failureCounts = new Map<string, number>();
-	readonly #destroyTasks = new Set<Promise<void>>();
+	readonly #destroyTasks = new Set<Promise<unknown>>();
 	#useClock = 0;
 	#closed = false;
 
@@ -183,14 +183,17 @@ export class CodingStandbyPool {
 
 		this.#touchActiveFingerprint(fingerprint);
 
-		const list = this.#ready.get(fingerprint);
-		while (list && list.length > 0) {
+		while (true) {
+			signal.throwIfAborted();
+			const list = this.#ready.get(fingerprint);
+			if (!list || list.length === 0) break;
 			const entry = list.shift();
 			if (!entry) break;
 			if (list.length === 0) this.#ready.delete(fingerprint);
 
 			this.#claiming.add(entry.name);
 			let claimed = false;
+			let stopTrying = false;
 			try {
 				if (
 					entry.storagePool !== requestedPool ||
@@ -205,9 +208,17 @@ export class CodingStandbyPool {
 				let existing: Awaited<ReturnType<CodingStandbyLxdClient["getInstance"]>>;
 				try {
 					existing = await this.#lxd.getInstance(this.#vmPolicy.project, entry.name, signal);
-				} catch {
+				} catch (error) {
+					if (signal.aborted) {
+						this.#returnToReady(fingerprint, entry);
+						throw error;
+					}
 					this.#trackDestroy(this.#destroyStandbyVm(entry.name));
 					continue;
+				}
+				if (signal.aborted) {
+					this.#returnToReady(fingerprint, entry);
+					signal.throwIfAborted();
 				}
 				if (!existing || existing.status !== "Stopped" || existing.statusCode !== 102) {
 					this.#trackDestroy(this.#destroyStandbyVm(entry.name));
@@ -222,19 +233,22 @@ export class CodingStandbyPool {
 						{ config: request.config, devices: request.devices },
 						signal,
 					);
-				} catch {
-					this.#trackDestroy(this.#destroyStandbyVm(entry.name));
-					continue;
+				} catch (error) {
+					const removed = await this.#trackDestroy(this.#destroyStandbyVm(entry.name));
+					if (signal.aborted || !removed) throw error;
+					stopTrying = true;
 				}
 
-				try {
-					await this.#lxd.renameInstance(this.#vmPolicy.project, entry.name, request.name, signal);
-				} catch (error) {
-					await this.#trackDestroy(this.#destroyStandbyVm(entry.name));
-					throw error;
+				if (!stopTrying) {
+					try {
+						await this.#lxd.renameInstance(this.#vmPolicy.project, entry.name, request.name, signal);
+					} catch (error) {
+						await this.#trackDestroy(this.#destroyStandbyVm(entry.name));
+						throw error;
+					}
+					this.#ownedNames.delete(entry.name);
+					claimed = true;
 				}
-				this.#ownedNames.delete(entry.name);
-				claimed = true;
 			} finally {
 				this.#claiming.delete(entry.name);
 			}
@@ -249,6 +263,7 @@ export class CodingStandbyPool {
 				});
 				return { operationId: randomUUID() };
 			}
+			if (stopTrying) break;
 		}
 
 		this.#ensureReplenished(fingerprint);
@@ -473,32 +488,45 @@ export class CodingStandbyPool {
 		}
 	}
 
-	async #destroyStandbyVm(name: string): Promise<void> {
+	async #destroyStandbyVm(name: string): Promise<boolean> {
 		const cleanupSignal = AbortSignal.timeout(this.#cleanupTimeoutMs);
 		try {
 			const existing = await this.#lxd.getInstance(this.#vmPolicy.project, name, cleanupSignal);
-			if (!existing) return;
+			if (!existing) return true;
 			if (existing.status === "Running" || existing.statusCode === 103) {
 				await this.#lxd.setInstancePower(this.#vmPolicy.project, name, "stop", cleanupSignal);
 			}
 			await this.#lxd.deleteInstance(this.#vmPolicy.project, name, cleanupSignal);
+			return true;
 		} catch (error) {
 			this.#report({
 				event: "coding-standby-cleanup-failed",
 				standbyName: name,
 				error: error instanceof Error ? error.message : String(error),
 			});
+			return false;
 		} finally {
 			this.#ownedNames.delete(name);
 		}
 	}
 
-	#trackDestroy(promise: Promise<void>): Promise<void> {
-		this.#destroyTasks.add(promise);
-		return promise.finally(() => {
-			this.#destroyTasks.delete(promise);
+	#returnToReady(imageFingerprint: string, entry: StandbyEntry): void {
+		if (!this.#closed && this.#activeFingerprints.has(imageFingerprint)) {
+			const list = this.#ready.get(imageFingerprint) ?? [];
+			list.unshift(entry);
+			this.#ready.set(imageFingerprint, list);
+		} else {
+			this.#trackDestroy(this.#destroyStandbyVm(entry.name));
+		}
+	}
+
+	#trackDestroy<T>(promise: Promise<T>): Promise<T> {
+		const tracked = promise.finally(() => {
+			this.#destroyTasks.delete(tracked);
 			if (!this.#closed) this.#ensureAllReplenished();
 		});
+		this.#destroyTasks.add(tracked);
+		return tracked;
 	}
 
 	#scheduleRetry(imageFingerprint: string, delayMs: number): void {
