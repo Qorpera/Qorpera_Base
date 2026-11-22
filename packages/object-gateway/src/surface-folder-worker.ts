@@ -92,14 +92,17 @@ function errorTextWithCause(error: unknown): string {
 	return parts.join(" ");
 }
 
-function isAlreadyCompletedJobError(error: unknown): boolean {
+function isExplicitNotRunningError(error: unknown): boolean {
 	if (!error) return false;
-	// WHY: SupabaseMemberCompanyAuthority maps SQLSTATE 55000 from qorpera_surface_complete_merge to HTTP 423 ObjectDependencyError without the PostgREST message body.
-	if (error instanceof ObjectDependencyError && error.status === 423) return true;
 	const text = errorTextWithCause(error);
 	if (/surface job is not running/i.test(text)) return true;
 	const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
 	return code === "55000" && /not running/i.test(text);
+}
+
+function isOpaqueStateConflict423(error: unknown): boolean {
+	// WHY: SupabaseMemberCompanyAuthority maps all SQLSTATE 55000 responses to HTTP 423 ObjectDependencyError without the PostgREST message body.
+	return error instanceof ObjectDependencyError && error.status === 423;
 }
 
 // WHY: Bound object-store and replication calls that do not accept an AbortSignal so per-job timeouts always release the worker.
@@ -127,19 +130,31 @@ function raceSignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 	});
 }
 
+type CommittedRpcResult<T> =
+	| { readonly outcome: "confirmed"; readonly value: T }
+	| { readonly outcome: "already_completed" }
+	| { readonly outcome: "unconfirmed_423" };
+
 async function retryCommittedRpc<T>(
 	fn: (attemptSignal: AbortSignal) => Promise<T>,
 	shutdownSignal: AbortSignal | undefined,
 	delaysMs: readonly number[],
-	options?: { readonly treatNotRunningAsDoneOnRetry?: boolean },
-): Promise<T | undefined> {
+	options?: { readonly treatNotRunningAsDoneOnRetry?: boolean; readonly attemptTimeoutMs?: number },
+): Promise<CommittedRpcResult<T>> {
+	const attemptTimeoutMs = options?.attemptTimeoutMs ?? 15_000;
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
 		try {
-			return await withAbortScopes([], fn, 15_000);
+			const value = await withAbortScopes([], fn, attemptTimeoutMs);
+			return { outcome: "confirmed", value };
 		} catch (error) {
-			if (attempt > 0 && options?.treatNotRunningAsDoneOnRetry && isAlreadyCompletedJobError(error)) {
-				return undefined;
+			if (attempt > 0 && options?.treatNotRunningAsDoneOnRetry) {
+				if (isExplicitNotRunningError(error)) {
+					return { outcome: "already_completed" };
+				}
+				if (isOpaqueStateConflict423(error)) {
+					return { outcome: "unconfirmed_423" };
+				}
 			}
 			lastError = error;
 			const delayMs = delaysMs[attempt];
@@ -678,30 +693,42 @@ export class SurfaceFolderWorker {
 			return;
 		}
 
+		// WHY: Refuse to start qorpera_folder_commit if the job deadline already fired, then decouple the in-flight commit and operation-key replays from jobSignal so an abort never marks a committed write failed.
+		signal.throwIfAborted();
+		markCommitted();
 		const commitResult = await this.#commitUnits(
 			environmentId,
 			`surface-merge:${job.jobId}`,
 			units,
 			unitPaths,
-			signal,
+			shutdownSignal,
 		);
 		if (commitResult.status === "conflict") {
-			await this.#completeMerge(
-				job,
-				{
-					status: "conflicted",
-					conflictPaths: commitResult.conflictPaths,
-					errorDetail: "One or more files changed while landing this Studio patch",
-				},
-				signal,
+			await withAbortScopes(
+				shutdownSignal ? [shutdownSignal] : [],
+				(outcomeSignal) =>
+					this.#completeMerge(
+						job,
+						{
+							status: "conflicted",
+							conflictPaths: commitResult.conflictPaths,
+							errorDetail: "One or more files changed while landing this Studio patch",
+						},
+						outcomeSignal,
+					),
+				10_000,
 			);
 			return;
 		}
 		if (commitResult.status === "failed") {
-			await this.#completeMerge(job, { status: "failed", errorDetail: commitResult.errorDetail }, signal);
+			await withAbortScopes(
+				shutdownSignal ? [shutdownSignal] : [],
+				(outcomeSignal) =>
+					this.#completeMerge(job, { status: "failed", errorDetail: commitResult.errorDetail }, outcomeSignal),
+				10_000,
+			);
 			return;
 		}
-		markCommitted();
 
 		const versionsAfter: Record<string, string | null> = {};
 		const afterContentSha256: Record<string, string | null> = {};
@@ -747,12 +774,21 @@ export class SurfaceFolderWorker {
 			};
 		}
 
-		await retryCommittedRpc(
+		const completion = await retryCommittedRpc(
 			(attemptSignal) => this.#completeMerge(job, { status: "landed", preMergeSnapshot }, attemptSignal),
 			shutdownSignal,
 			this.#completionRetryDelaysMs,
 			{ treatNotRunningAsDoneOnRetry: true },
 		);
+		if (completion.outcome === "unconfirmed_423") {
+			this.#emit({
+				kind: "surface_folder_merge_completion_unconfirmed",
+				jobId: job.jobId,
+				surfaceId: job.surfaceId,
+				status: 423,
+			});
+			return;
+		}
 		this.#emit({
 			kind: "surface_folder_merge_landed",
 			jobId: job.jobId,
@@ -890,37 +926,57 @@ export class SurfaceFolderWorker {
 			return;
 		}
 
+		signal.throwIfAborted();
+		markCommitted();
 		const commitResult = await this.#commitUnits(
 			environmentId,
 			`surface-undo:${job.jobId}`,
 			units,
 			unitPaths,
-			signal,
+			shutdownSignal,
 		);
 		if (commitResult.status === "conflict") {
-			await this.#completeMerge(
-				job,
-				{
-					status: "conflicted",
-					conflictPaths: commitResult.conflictPaths,
-					errorDetail: "Files changed concurrently during Studio rollback",
-				},
-				signal,
+			await withAbortScopes(
+				shutdownSignal ? [shutdownSignal] : [],
+				(outcomeSignal) =>
+					this.#completeMerge(
+						job,
+						{
+							status: "conflicted",
+							conflictPaths: commitResult.conflictPaths,
+							errorDetail: "Files changed concurrently during Studio rollback",
+						},
+						outcomeSignal,
+					),
+				10_000,
 			);
 			return;
 		}
 		if (commitResult.status === "failed") {
-			await this.#completeMerge(job, { status: "failed", errorDetail: commitResult.errorDetail }, signal);
+			await withAbortScopes(
+				shutdownSignal ? [shutdownSignal] : [],
+				(outcomeSignal) =>
+					this.#completeMerge(job, { status: "failed", errorDetail: commitResult.errorDetail }, outcomeSignal),
+				10_000,
+			);
 			return;
 		}
-		markCommitted();
 
-		await retryCommittedRpc(
+		const completion = await retryCommittedRpc(
 			(attemptSignal) => this.#completeMerge(job, { status: "landed" }, attemptSignal),
 			shutdownSignal,
 			this.#completionRetryDelaysMs,
 			{ treatNotRunningAsDoneOnRetry: true },
 		);
+		if (completion.outcome === "unconfirmed_423") {
+			this.#emit({
+				kind: "surface_folder_undo_completion_unconfirmed",
+				jobId: job.jobId,
+				surfaceId: job.surfaceId,
+				status: 423,
+			});
+			return;
+		}
 		this.#emit({ kind: "surface_folder_undo_landed", jobId: job.jobId, surfaceId: job.surfaceId });
 	}
 
@@ -929,13 +985,20 @@ export class SurfaceFolderWorker {
 		operationKey: string,
 		units: readonly Record<string, unknown>[],
 		unitPaths: readonly (string | null)[],
-		signal: AbortSignal,
+		shutdownSignal: AbortSignal | undefined,
 	): Promise<
 		| { readonly status: "saved"; readonly versionsAfter: Record<string, string | null> }
 		| { readonly status: "conflict"; readonly conflictPaths: string[] }
 		| { readonly status: "failed"; readonly errorDetail: string }
 	> {
-		const raw = (await this.#folder.commit(environmentId, operationKey, units, signal)) as {
+		// WHY: qorpera_folder_commit replays idempotently by operationKey, so run it under its own bounded per-attempt signal with retries rather than the job timeout signal.
+		const commitCall = await retryCommittedRpc(
+			(commitSignal) => this.#folder.commit(environmentId, operationKey, units, commitSignal),
+			shutdownSignal,
+			this.#completionRetryDelaysMs,
+			{ attemptTimeoutMs: 20_000 },
+		);
+		const raw = (commitCall.outcome === "confirmed" ? commitCall.value : null) as {
 			schema?: unknown;
 			units?: unknown;
 		} | null;

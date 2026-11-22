@@ -23,6 +23,7 @@ function createHarness(
 		readonly jobTimeoutMs?: number;
 		readonly leaseRenewIntervalMs?: number;
 		readonly hangStoreGet?: boolean;
+		readonly commitDelayMs?: number;
 	},
 ) {
 	const profileId = randomUUID();
@@ -42,6 +43,7 @@ function createHarness(
 		}
 	>();
 	const externalSnapshots = new Map<string, Record<string, unknown>>();
+	const committedByOpKey = new Map<string, Record<string, unknown>>();
 	const completedMerges: Record<string, unknown>[] = [];
 	const completedPublishes: Record<string, unknown>[] = [];
 	const events: Record<string, unknown>[] = [];
@@ -49,6 +51,7 @@ function createHarness(
 	let commitCount = 0;
 	let leaseRenewCount = 0;
 	let completeMergeAttemptErrors: Error[] = [];
+	let postCommitErrors: Error[] = [];
 
 	const putFile = (path: string, text: string, version = randomUUID()): string => {
 		const parts = path.split("/");
@@ -95,7 +98,11 @@ function createHarness(
 	}
 
 	const authority = {
-		async publisher(method: MemberCompanyPublisherRpc, args: Record<string, unknown>): Promise<unknown> {
+		async publisher(
+			method: MemberCompanyPublisherRpc,
+			args: Record<string, unknown>,
+			signal: AbortSignal,
+		): Promise<unknown> {
 			switch (method) {
 				case "qorpera_surface_claim_pending_jobs_for_lane": {
 					expect(args.p_lane).toBe("folder");
@@ -181,77 +188,93 @@ function createHarness(
 				}
 				case "qorpera_folder_commit": {
 					commitCount += 1;
-					const units = args.p_units as {
-						op: string;
-						path: string;
-						expectedVersion?: string;
-						file?: { manifestSha256: string; fileSha256: string; bytes: number; mediaType: string };
-					}[];
-					const outcomes: Record<string, unknown>[] = [];
-					const stagedMutations: (() => void)[] = [];
-					let hasFailure = false;
-					for (const unit of units) {
-						const existing = entries.get(unit.path);
-						if (unit.op === "mkdir") {
-							const nextVersion = randomUUID();
-							stagedMutations.push(() => {
-								if (!entries.has(unit.path)) {
-									entries.set(unit.path, {
-										kind: "folder",
-										version: nextVersion,
-										content: null,
-										manifestSha256: null,
-										fileSha256: null,
-										mediaType: "inode/directory",
-									});
-								}
-							});
-							outcomes.push({ outcome: "saved", version: nextVersion });
-							continue;
-						}
-						if (unit.op === "write") {
-							if (unit.expectedVersion && existing?.version !== unit.expectedVersion) {
-								hasFailure = true;
-								outcomes.push({ outcome: "refused", reason: "version_mismatch" });
-								continue;
-							}
-							if (!unit.expectedVersion && existing) {
-								hasFailure = true;
-								outcomes.push({ outcome: "refused", reason: "exists" });
-								continue;
-							}
-							const fileRef = unit.file!;
-							const content = objects.get(fileRef.fileSha256) ?? new Uint8Array();
-							const nextVersion = randomUUID();
-							stagedMutations.push(() => {
-								entries.set(unit.path, {
-									kind: "file",
-									version: nextVersion,
-									content,
-									manifestSha256: fileRef.manifestSha256,
-									fileSha256: fileRef.fileSha256,
-									mediaType: fileRef.mediaType,
+					const opKey = String(args.p_operation_key ?? "");
+					if (options?.commitDelayMs) {
+						await new Promise((resolve) => setTimeout(resolve, options.commitDelayMs));
+					}
+					signal.throwIfAborted();
+					let result = opKey ? committedByOpKey.get(opKey) : undefined;
+					if (!result) {
+						const units = args.p_units as {
+							op: string;
+							path: string;
+							expectedVersion?: string;
+							file?: { manifestSha256: string; fileSha256: string; bytes: number; mediaType: string };
+						}[];
+						const outcomes: Record<string, unknown>[] = [];
+						const stagedMutations: (() => void)[] = [];
+						let hasFailure = false;
+						for (const unit of units) {
+							const existing = entries.get(unit.path);
+							if (unit.op === "mkdir") {
+								const nextVersion = randomUUID();
+								stagedMutations.push(() => {
+									if (!entries.has(unit.path)) {
+										entries.set(unit.path, {
+											kind: "folder",
+											version: nextVersion,
+											content: null,
+											manifestSha256: null,
+											fileSha256: null,
+											mediaType: "inode/directory",
+										});
+									}
 								});
-							});
-							outcomes.push({ outcome: "saved", version: nextVersion });
-							continue;
-						}
-						if (unit.op === "delete") {
-							if (!existing || existing.version !== unit.expectedVersion) {
-								hasFailure = true;
-								outcomes.push({ outcome: "refused", reason: "version_mismatch" });
+								outcomes.push({ outcome: "saved", version: nextVersion });
 								continue;
 							}
-							stagedMutations.push(() => {
-								entries.delete(unit.path);
-							});
-							outcomes.push({ outcome: "saved", version: null });
+							if (unit.op === "write") {
+								if (unit.expectedVersion && existing?.version !== unit.expectedVersion) {
+									hasFailure = true;
+									outcomes.push({ outcome: "refused", reason: "version_mismatch" });
+									continue;
+								}
+								if (!unit.expectedVersion && existing) {
+									hasFailure = true;
+									outcomes.push({ outcome: "refused", reason: "exists" });
+									continue;
+								}
+								const fileRef = unit.file!;
+								const content = objects.get(fileRef.fileSha256) ?? new Uint8Array();
+								const nextVersion = randomUUID();
+								stagedMutations.push(() => {
+									entries.set(unit.path, {
+										kind: "file",
+										version: nextVersion,
+										content,
+										manifestSha256: fileRef.manifestSha256,
+										fileSha256: fileRef.fileSha256,
+										mediaType: fileRef.mediaType,
+									});
+								});
+								outcomes.push({ outcome: "saved", version: nextVersion });
+								continue;
+							}
+							if (unit.op === "delete") {
+								if (!existing || existing.version !== unit.expectedVersion) {
+									hasFailure = true;
+									outcomes.push({ outcome: "refused", reason: "version_mismatch" });
+									continue;
+								}
+								stagedMutations.push(() => {
+									entries.delete(unit.path);
+								});
+								outcomes.push({ outcome: "saved", version: null });
+							}
+						}
+						if (!hasFailure) {
+							for (const apply of stagedMutations) apply();
+						}
+						result = { schema: "qorpera.folder-commit/v1", units: outcomes };
+						if (opKey && !hasFailure) {
+							committedByOpKey.set(opKey, result);
 						}
 					}
-					if (!hasFailure) {
-						for (const apply of stagedMutations) apply();
+					const postCommitErr = postCommitErrors.shift();
+					if (postCommitErr) {
+						throw postCommitErr;
 					}
-					return { schema: "qorpera.folder-commit/v1", units: outcomes };
+					return result;
 				}
 				case "qorpera_surface_save_folder_snapshot": {
 					const snapshotId = String(args.p_snapshot_id);
@@ -344,6 +367,9 @@ function createHarness(
 		},
 		setCompleteMergeAttemptErrors(errors: Error[]) {
 			completeMergeAttemptErrors = [...errors];
+		},
+		setPostCommitErrors(errors: Error[]) {
+			postCommitErrors = [...errors];
 		},
 		putFile,
 		setPendingClaim(next: { merges?: unknown[]; publishes?: unknown[] }) {
@@ -697,7 +723,95 @@ describe("SurfaceFolderWorker", () => {
 		expect(await h.worker.processDue(8)).toBe(1);
 		expect(h.getCommitCount()).toBe(2);
 		expect(h.readText("brand/voice.md")).toBe("Original voice.");
-		expect(h.events.some((ev) => ev.kind === "surface_folder_undo_landed")).toBe(true);
+		expect(h.events.some((ev) => ev.kind === "surface_folder_undo_completion_unconfirmed" && ev.status === 423)).toBe(
+			true,
+		);
+		expect(h.events.some((ev) => ev.kind === "surface_folder_undo_landed")).toBe(false);
 		expect(h.events.some((ev) => ev.kind === "surface_folder_merge_completion_failed")).toBe(false);
+	});
+
+	it("decouples in-flight folder commits from jobTimeoutMs, replays by operationKey, and never marks a post-commit abort failed", async () => {
+		const h = createHarness({ "brand/voice.md": "Original voice." }, { jobTimeoutMs: 40, commitDelayMs: 70 });
+		const jobId = randomUUID();
+		const changeId = randomUUID();
+		const leaseToken = randomUUID();
+		const shutdown = new AbortController();
+
+		h.setPostCommitErrors([new DOMException("The operation was aborted due to timeout", "TimeoutError")]);
+		h.setPendingClaim({
+			merges: [
+				{
+					jobId,
+					kind: "land_change",
+					surfaceId: h.surfaceId,
+					profileId: h.profileId,
+					environmentId: h.environmentId,
+					leaseToken,
+					folderRoot: "brand",
+					payload: { changeIds: [changeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId,
+							kind: "folder_patch",
+							title: "Update voice",
+							summary: "Refines brand voice",
+							affectedPaths: ["voice.md"],
+							patchManifest: [{ op: "write_text", path: "voice.md", content: "Committed voice." }],
+						},
+					],
+				},
+			],
+		});
+
+		expect(await h.worker.processDue(8, shutdown.signal)).toBe(1);
+		expect(h.getCommitCount()).toBe(2);
+		expect(h.readText("brand/voice.md")).toBe("Committed voice.");
+		expect(h.completedMerges).toHaveLength(1);
+		expect(h.completedMerges[0]).toMatchObject({
+			p_job_id: jobId,
+			p_status: "landed",
+			p_lease_token: leaseToken,
+		});
+
+		const h2 = createHarness({ "brand/voice.md": "Original voice." }, { jobTimeoutMs: 40, commitDelayMs: 50 });
+		const jobId2 = randomUUID();
+		const changeId2 = randomUUID();
+		h2.setPostCommitErrors([
+			new DOMException("aborted 1", "AbortError"),
+			new DOMException("aborted 2", "AbortError"),
+			new DOMException("aborted 3", "AbortError"),
+		]);
+		h2.setPendingClaim({
+			merges: [
+				{
+					jobId: jobId2,
+					kind: "land_change",
+					surfaceId: h2.surfaceId,
+					profileId: h2.profileId,
+					environmentId: h2.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "brand",
+					payload: { changeIds: [changeId2] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: changeId2,
+							kind: "folder_patch",
+							title: "Update voice again",
+							summary: "Updates voice",
+							affectedPaths: ["voice.md"],
+							patchManifest: [{ op: "write_text", path: "voice.md", content: "Committed unconfirmed." }],
+						},
+					],
+				},
+			],
+		});
+
+		expect(await h2.worker.processDue(8, shutdown.signal)).toBe(1);
+		expect(h2.readText("brand/voice.md")).toBe("Committed unconfirmed.");
+		expect(h2.completedMerges).toHaveLength(0);
+		expect(h2.events.some((ev) => ev.kind === "surface_folder_merge_completion_failed")).toBe(true);
+		expect(h2.events.some((ev) => ev.kind === "surface_folder_merge_failed")).toBe(false);
 	});
 });
