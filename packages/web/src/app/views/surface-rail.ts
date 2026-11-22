@@ -1,14 +1,15 @@
 import { INTERFACE_EMBLEMS } from "@qorpera/cloud-client/interfaces";
 import type { SurfaceChangeUnit, SurfaceExplorationSet, SurfaceSession, SurfaceSummary } from "@qorpera/contracts";
 import { h, icon } from "../../ui/dom.ts";
-import { type Emblem, interfaceEmblem } from "../../ui/interface-emblem.ts";
+import type { Emblem } from "../../ui/interface-emblem.ts";
 import { t } from "../../ui/preferences.ts";
+import { type SurfaceFigureState, surfaceFigure } from "../../ui/surface-figure.ts";
 import { surfaceHash } from "../router.ts";
 import {
 	type SurfaceLook,
+	surfaceFigureOf,
 	surfaceKindSubtitle,
 	surfaceLookOf,
-	surfaceTileEmblem,
 	surfaceTint,
 } from "../surface-kinds.ts";
 import {
@@ -42,13 +43,13 @@ export function surfaceEmblem(surface: Pick<SurfaceSummary, "icon" | "archetype"
 export function surfaceTile(
 	surface: Pick<SurfaceSummary, "icon">,
 	look: SurfaceLook,
-	emblemSize = 25,
 	className = "",
+	state: SurfaceFigureState = "rest",
 ): HTMLElement {
 	const tile = h(
 		"span",
 		{ class: ["surface-tile", className].filter(Boolean).join(" "), "aria-hidden": "true" },
-		interfaceEmblem(surfaceTileEmblem(surface, look), emblemSize),
+		surfaceFigure(surfaceFigureOf(surface, look), state),
 	);
 	tile.style.setProperty("--surface-tint", surfaceTint(look));
 	return tile;
@@ -365,11 +366,8 @@ function surfaceRow(
 	active: boolean,
 	members?: SurfaceRailMembers,
 ): HTMLElement {
-	const meta: HTMLElement[] = [];
-	if (surface.runningSessionCount > 0)
-		meta.push(h("span", { class: "rail-surface-working", "aria-label": t("Working") }));
-	if (surface.needsAttentionCount > 0)
-		meta.push(h("span", { class: "surface-attention", "aria-label": t("Needs your attention") }));
+	const state: SurfaceFigureState =
+		surface.needsAttentionCount > 0 ? "attention" : surface.runningSessionCount > 0 ? "working" : "rest";
 	const row = h(
 		"a",
 		{
@@ -381,14 +379,16 @@ function surfaceRow(
 			"data-surface-kind": look.kind,
 			...(active ? { "aria-current": "page" } : {}),
 		},
-		surfaceTile(surface, look),
+		surfaceTile(surface, look, "", state),
 		h(
 			"span",
 			{ class: "rail-surface-text" },
 			h("span", { class: "rail-surface-name" }, surface.title),
 			h("span", { class: "rail-surface-sub" }, surfaceSubtitle(surface, look, members)),
 		),
-		meta.length ? h("span", { class: "rail-surface-meta" }, meta) : null,
+		state === "rest"
+			? null
+			: h("span", { class: "visually-hidden" }, state === "attention" ? t("Needs your attention") : t("Working")),
 	);
 	row.style.setProperty("--surface-tint", surfaceTint(look));
 	return row;
@@ -398,7 +398,7 @@ function proposedSurfaceRow(surface: SurfaceSummary, look: SurfaceLook, busy: bo
 	return h(
 		"div",
 		{ class: "rail-surface-proposed", "data-proposed-surface": surface.slug },
-		surfaceTile(surface, look, 18, "is-small"),
+		surfaceTile(surface, look, "is-small"),
 		h("span", { class: "rail-surface-name" }, surface.title),
 		h("span", { class: "rail-proposed-tag" }, t("Proposed")),
 		h(

@@ -255,7 +255,7 @@ export function openPublishPatchnotesSheet(
 			h(
 				"div",
 				{ class: "surface-patchnotes-head" },
-				surfaceTile(surface, look, 22, "is-sheet"),
+				surfaceTile(surface, look, "is-sheet"),
 				h("div", { class: "surface-patchnotes-heading" }, h("h2", null, t("Patch notes")), h("p", null, subtitle)),
 				total > 0
 					? h(

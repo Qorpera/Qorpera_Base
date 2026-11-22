@@ -203,6 +203,7 @@ describe("operational surfaces", () => {
 		expect(row.querySelector('.surface-approve.is-action[aria-label^="Send"]')).not.toBeNull();
 		const tile = rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="inbox"] .surface-tile')!;
 		expect(tile.style.getPropertyValue("--surface-tint")).toBe("#2f63d8");
+		expect(tile.querySelector(".surface-figure")?.getAttribute("data-figure")).toBe("envelope");
 		expect(rail.el.querySelector('.rail-surface[data-surface-slug="inbox"] .rail-surface-sub')?.textContent).toBe(
 			"1 session active",
 		);
@@ -259,7 +260,7 @@ describe("operational surfaces", () => {
 });
 
 describe("creating surfaces", () => {
-	it("offers nine kinds, a custom surface with colour, icon and brief, and opens a Mobile App in the phone frame", async () => {
+	it("offers nine kinds, a figure for each, a custom surface with a brief, and opens a Mobile App in the phone frame", async () => {
 		const navigated: string[] = [];
 		const store = storeWith(undefined, {
 			companyName: "Brooks",
@@ -295,10 +296,18 @@ describe("creating surfaces", () => {
 		expect(custom.hidden).toBe(true);
 		sheet.querySelector<HTMLElement>('[data-preset="custom"]')!.click();
 		expect(custom.hidden).toBe(false);
-		expect(custom.querySelectorAll(".surface-create-swatch").length).toBeGreaterThan(5);
+		expect(sheet.querySelector(".surface-create-swatch")).toBeNull();
+		const picked = () => sheet.querySelector<HTMLElement>('.surface-create-figure[aria-checked="true"]')?.dataset.figure;
+		expect(sheet.querySelectorAll(".surface-create-figure")).toHaveLength(26);
+		expect(picked()).toBe("gem");
 
 		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
 		expect(custom.hidden).toBe(true);
+		expect(picked()).toBe("phone");
+		sheet.querySelector<HTMLElement>('.surface-create-figure[data-figure="piggy"]')!.click();
+		sheet.querySelector<HTMLElement>('[data-preset="website"]')!.click();
+		expect(picked()).toBe("piggy");
+		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
 		expect(sheet.querySelector<HTMLInputElement>(".surface-create-input")?.value).toBe("Mobile App");
 		sheet
 			.querySelector<HTMLFormElement>(".surface-create-form")!
@@ -306,6 +315,7 @@ describe("creating surfaces", () => {
 		await flush();
 		const mobile = store.state.surfaces.find((item) => item.slug === "mobile")!;
 		expect(store.lookOf(mobile).kind).toBe("mobile_app");
+		expect(mobile.icon).toBe("figure:piggy");
 		expect(store.state.device).toBe("mobile");
 		expect(navigated).toEqual(["mobile"]);
 
@@ -314,10 +324,9 @@ describe("creating surfaces", () => {
 			archetype: "studio",
 			icon: "book",
 			kind: "custom",
-			accent: "#e0559b",
 			description: "Data room for the seed round.",
 		});
-		expect(store.lookOf(investor!)).toEqual({ kind: "custom", accent: "#e0559b" });
+		expect(store.lookOf(investor!)).toEqual({ kind: "custom" });
 		expect(store.workspace(investor!.id)?.briefSummary).toBe("Data room for the seed round.");
 		expect(store.state.localStudioBase[investor!.id]?.["investor-room/brief.md"]).toContain(
 			"Data room for the seed round.",

@@ -109,7 +109,6 @@ export interface CreateSurfaceInput {
 	readonly folderRoot?: string;
 	readonly initialPrompt?: string;
 	readonly kind?: SurfaceKind;
-	readonly accent?: string;
 	readonly description?: string;
 }
 
@@ -1593,17 +1592,13 @@ export class SurfacesStore {
 					archetype: input.archetype,
 					...(input.kind ? { kind: input.kind } : {}),
 					icon,
-					...(input.accent ? { accentHex: input.accent } : {}),
 					folderRoot,
 					briefSummary: description,
 					isGlobal: input.kind === "identity",
 				}),
 			);
 			if (!created) return undefined;
-			const look: SurfaceLook = {
-				kind: input.kind ?? surfaceLookOf(created).kind,
-				...(input.accent ? { accent: input.accent } : {}),
-			};
+			const look: SurfaceLook = { kind: input.kind ?? surfaceLookOf(created).kind };
 			this.store.set((state) => ({
 				surfaces: sortSurfaces([...state.surfaces.filter((item) => item.id !== created.id), created]),
 				workspaces: {
@@ -1628,10 +1623,7 @@ export class SurfacesStore {
 			previewMode: input.archetype === "studio" ? "studio_overlay" : "static_site",
 		});
 		this.#localCreatedIds.add(created.id);
-		const look: SurfaceLook = {
-			kind: input.kind ?? surfaceLookOf(created).kind,
-			...(input.accent ? { accent: input.accent } : {}),
-		};
+		const look: SurfaceLook = { kind: input.kind ?? surfaceLookOf(created).kind };
 		const starterFiles =
 			input.archetype === "studio"
 				? starterStudioFiles(created, this.companyName, look.kind, description ?? undefined)
