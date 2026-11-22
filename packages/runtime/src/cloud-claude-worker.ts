@@ -316,6 +316,10 @@ export const CLAUDE_WORKER_WORDS = Object.freeze({
 		`Claude Code could not open ${member}'s sign-in on Qorpera's side now; nothing ran on the agent's machine. Try again later.`,
 	toolsWrong:
 		"Claude Code did not start the way Qorpera runs it, so it was stopped before it did anything. Try again later.",
+	outputLimit: (worked: boolean) =>
+		worked
+			? "Claude Code emitted a line larger than the 16 MiB stream limit, so it was stopped. Part of the work may be done: look at the files before you try again."
+			: "Claude Code emitted a line larger than the 16 MiB stream limit, so it was stopped before it did anything. Try again later.",
 	cut: (worked: boolean) =>
 		worked
 			? "Claude Code stopped before it finished, without a report. Part of the work may be done: look at the files before you try again."
@@ -562,6 +566,7 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 				}
 			})();
 			let toolsWrong = false;
+			let overflowed = false;
 			let completed = false;
 			try {
 				for await (const line of box.lines) {
@@ -581,7 +586,8 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 						options.step?.({ start: { model: stream.init.model, sessionId: stream.init.sessionId } });
 					}
 				}
-				if (!toolsWrong) completed = true;
+				overflowed = box.overflowed?.() === true;
+				if (!toolsWrong && !overflowed) completed = true;
 			} finally {
 				watching.abort();
 				if (toolsWrong || !completed) {
@@ -606,6 +612,11 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 				...(stream.init ? { model: stream.init.model, sessionId: stream.init.sessionId } : {}),
 			};
 			if (toolsWrong) return blocked(CLAUDE_WORKER_WORDS.toolsWrong, { ...facts, claudeSide: "could_not_start" });
+			if (overflowed)
+				return blocked(
+					CLAUDE_WORKER_WORDS.outputLimit(facts.steps > 0),
+					facts.steps > 0 ? facts : { ...facts, claudeSide: "could_not_start" },
+				);
 			// A successful result is the report, whatever an earlier message said.
 			if (stream.result && !stream.result.isError)
 				return {

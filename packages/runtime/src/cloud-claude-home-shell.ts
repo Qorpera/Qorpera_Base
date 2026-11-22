@@ -413,14 +413,16 @@ export class CloudClaudeHomeShell {
 		socket.on("error", () => undefined);
 		const send = (record: Record<string, unknown>): boolean =>
 			socket.writable ? socket.write(`${JSON.stringify(record)}\n`) : true;
-		const waitDrain = (signal: AbortSignal): Promise<boolean> => {
-			if (socket.destroyed || socket.writableEnded || signal.aborted) return Promise.resolve(false);
+		const waitDrain = (signal: AbortSignal, cancel: AbortSignal): Promise<boolean> => {
+			if (socket.destroyed || socket.writableEnded || signal.aborted || cancel.aborted)
+				return Promise.resolve(false);
 			return new Promise<boolean>((resolve) => {
 				const done = (ok: boolean): void => {
 					socket.removeListener("drain", onDrain);
 					socket.removeListener("close", onEnd);
 					socket.removeListener("error", onEnd);
 					signal.removeEventListener("abort", onEnd);
+					cancel.removeEventListener("abort", onEnd);
 					resolve(ok);
 				};
 				const onDrain = (): void => done(true);
@@ -429,6 +431,7 @@ export class CloudClaudeHomeShell {
 				socket.once("close", onEnd);
 				socket.once("error", onEnd);
 				signal.addEventListener("abort", onEnd, { once: true });
+				cancel.addEventListener("abort", onEnd, { once: true });
 			});
 		};
 		const fail = (words: string, code: number): void => {
@@ -521,6 +524,7 @@ export class CloudClaudeHomeShell {
 			let eventHead = 0;
 			let eventBytes = 0;
 			let overflowed = false;
+			const overflowController = new AbortController();
 			let wake: (() => void) | undefined;
 			channel.processes.set(processId, (message) => {
 				if (overflowed) return;
@@ -532,6 +536,7 @@ export class CloudClaudeHomeShell {
 						events.length = 0;
 						eventHead = 0;
 						eventBytes = 0;
+						overflowController.abort();
 						wake?.();
 						return;
 					}
@@ -618,7 +623,9 @@ export class CloudClaudeHomeShell {
 					const ok = send({
 						[params.stream === "stderr" ? "e" : "o"]: chunk,
 					});
-					if (!ok && !(await waitDrain(asked))) dropped = true;
+					if (!ok && !(await waitDrain(asked, overflowController.signal))) {
+						if (!overflowed) dropped = true;
+					}
 				} else if (message.method === "process/exited") {
 					if (typeof params.exitCode === "number") exitCode = params.exitCode;
 				} else if (message.method === "process/closed") {

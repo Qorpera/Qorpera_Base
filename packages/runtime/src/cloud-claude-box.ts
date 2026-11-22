@@ -837,6 +837,7 @@ export interface ClaudeCodeBox {
 	readonly exited: Promise<number>;
 	/** Claude Code's stderr and the stage's, bounded, for the host's journal. */
 	readonly stderr: () => string;
+	readonly overflowed?: () => boolean;
 	readonly shell: CloudClaudeHomeShell;
 	readonly files?: CloudClaudeFilesGate;
 	readonly reviewer?: ClaudeCodeReviewer;
@@ -1252,15 +1253,20 @@ async function startBox(
 		stdin.end(options.prompt);
 		child.stdout?.setEncoding("utf8");
 		const stdout = child.stdout as Readable;
+		let stdoutOverflowed = false;
 		const lines = claudeBoxStdoutLines(
 			stdout as AsyncIterable<string>,
 			(line) => filesGate?.notice(line),
-			() => void close(),
+			() => {
+				stdoutOverflowed = true;
+				void close();
+			},
 		);
 		return {
 			lines,
 			exited,
 			stderr: () => stderr,
+			overflowed: () => stdoutOverflowed,
 			shell,
 			...(filesGate ? { files: filesGate } : {}),
 			...(reviewer ? { reviewer } : {}),

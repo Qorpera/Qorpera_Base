@@ -1274,4 +1274,46 @@ describe("the box's scratch root on a run host", () => {
 		).rejects.toThrow();
 		expect(performance.now() - started).toBeLessThan(1_000);
 	});
+
+	it("closes with bounded exit wait and reports outputLimit when stdout overflows 16 MiB", async () => {
+		const runRoot = await root();
+		let closeCalled = 0;
+		let finishExit!: (code: number) => void;
+		const exited = new Promise<number>((resolve) => {
+			finishExit = resolve;
+		});
+		let didOverflow = false;
+		const launch: Parameters<typeof runClaudeWorker>[0]["launch"] = async () =>
+			({
+				lines: (async function* () {
+					yield init();
+					yield use("t1", "Bash", { command: "echo big" });
+					yield answer("t1");
+					didOverflow = true;
+				})(),
+				exited,
+				stderr: () => "",
+				overflowed: () => didOverflow,
+				shell: {} as ClaudeCodeBox["shell"],
+				close: async () => {
+					closeCalled += 1;
+					finishExit(137);
+				},
+			}) as ClaudeCodeBox;
+		const outcome = await runClaudeWorker({
+			brief,
+			member: "Ada",
+			logins: vault().logins,
+			launch,
+			root: runRoot,
+			signal: new AbortController().signal,
+		});
+		expect(closeCalled).toBeGreaterThanOrEqual(1);
+		expect(outcome).toMatchObject({
+			outcome: "blocked",
+			needs: CLAUDE_WORKER_WORDS.outputLimit(true),
+			steps: 1,
+		});
+		await rm(runRoot, { recursive: true });
+	});
 });

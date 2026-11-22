@@ -581,3 +581,107 @@ it("closes silent clients when firstLine times out and terminates quiet picture 
 	}
 	await shell.close();
 });
+
+it("terminates commands that exceed the 16 MiB shell event queue cap with HOME_OUTPUT_LIMIT", async () => {
+	const terminated: string[] = [];
+	let markTerminated!: () => void;
+	const terminatedDone = new Promise<void>((resolve) => {
+		markTerminated = resolve;
+	});
+	const oneMiB = "A".repeat(1024 * 1024);
+	const home = fakeHome((message, send) => {
+		if (message.method === "process/start") {
+			const { processId } = message.params as { processId: string };
+			send({ id: message.id, result: {} });
+			for (let i = 0; i < 20; i += 1) {
+				send({ method: "process/output", params: { processId, stream: "stdout", chunk: oneMiB } });
+			}
+		} else if (message.method === "process/terminate") {
+			terminated.push((message.params as { processId: string }).processId);
+			send({ id: message.id, result: {} });
+			markTerminated();
+		}
+	});
+	const { shell } = await shellWith(home.channel);
+	const sock = createConnection(shell.socketPath);
+	sock.pause();
+	await new Promise<void>((resolve) => sock.once("connect", () => resolve()));
+	sock.write(`${JSON.stringify({ cmd: "echo flood", cwd: "/company", env: {} })}\n`);
+	await terminatedDone;
+
+	let raw = "";
+	sock.setEncoding("utf8");
+	sock.on("data", (chunk: string) => {
+		raw += chunk;
+	});
+	sock.resume();
+	await new Promise<void>((resolve) => sock.once("close", () => resolve()));
+
+	let err = "";
+	let code: number | undefined;
+	for (const line of raw.split("\n").filter(Boolean)) {
+		const record = JSON.parse(line) as { e?: string; x?: number };
+		if (record.e) err += Buffer.from(record.e, "base64").toString("utf8");
+		if (typeof record.x === "number") code = record.x;
+	}
+	expect(code).toBe(126);
+	expect(err).toContain("HOME_OUTPUT_LIMIT");
+	expect(terminated).toHaveLength(1);
+	await shell.close();
+});
+
+it("delivers all output chunks in order when a slow client triggers socket backpressure", async () => {
+	const terminated: string[] = [];
+	const totalChunks = 64;
+	const pad = "x".repeat(32 * 1024);
+	const expectedChunks = Array.from({ length: totalChunks }, (_, i) => `[${String(i).padStart(3, "0")}:${pad}]`);
+	let markSent!: () => void;
+	const sentDone = new Promise<void>((resolve) => {
+		markSent = resolve;
+	});
+	const home = fakeHome((message, send) => {
+		if (message.method === "process/start") {
+			const { processId } = message.params as { processId: string };
+			send({ id: message.id, result: {} });
+			for (const text of expectedChunks) {
+				send({
+					method: "process/output",
+					params: { processId, stream: "stdout", chunk: Buffer.from(text).toString("base64") },
+				});
+			}
+			send({ method: "process/exited", params: { processId, exitCode: 0 } });
+			send({ method: "process/closed", params: { processId } });
+			markSent();
+		} else if (message.method === "process/terminate") {
+			terminated.push((message.params as { processId: string }).processId);
+			send({ id: message.id, result: {} });
+		}
+	});
+	const { shell } = await shellWith(home.channel);
+	const sock = createConnection(shell.socketPath);
+	sock.pause();
+	await new Promise<void>((resolve) => sock.once("connect", () => resolve()));
+	sock.write(`${JSON.stringify({ cmd: "echo steady", cwd: "/company", env: {} })}\n`);
+	await sentDone;
+	await new Promise((resolve) => setTimeout(resolve, 40));
+
+	let raw = "";
+	sock.setEncoding("utf8");
+	sock.on("data", (chunk: string) => {
+		raw += chunk;
+	});
+	sock.resume();
+	await new Promise<void>((resolve) => sock.once("close", () => resolve()));
+
+	let out = "";
+	let code: number | undefined;
+	for (const line of raw.split("\n").filter(Boolean)) {
+		const record = JSON.parse(line) as { o?: string; x?: number };
+		if (record.o) out += Buffer.from(record.o, "base64").toString("utf8");
+		if (typeof record.x === "number") code = record.x;
+	}
+	expect(code).toBe(0);
+	expect(terminated).toHaveLength(0);
+	expect(out).toBe(expectedChunks.join(""));
+	await shell.close();
+});
