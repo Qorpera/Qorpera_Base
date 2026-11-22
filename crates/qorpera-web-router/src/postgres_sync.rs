@@ -14,9 +14,49 @@ const DB_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DB_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 const SNAPSHOT_OFFLOAD_THRESHOLD_BYTES: usize = 64 * 1024;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct CaFileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(unix)]
+    ctime: i64,
+    #[cfg(unix)]
+    ctime_nsec: i64,
+}
+
+impl CaFileStamp {
+    fn from_path(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        let modified = meta.modified().ok();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Some(Self {
+                len: meta.len(),
+                modified,
+                dev: meta.dev(),
+                ino: meta.ino(),
+                ctime: meta.ctime(),
+                ctime_nsec: meta.ctime_nsec(),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Some(Self {
+                len: meta.len(),
+                modified,
+            })
+        }
+    }
+}
+
 struct CachedTlsConfig {
     ca_path: Option<PathBuf>,
-    ca_mtime: Option<SystemTime>,
+    ca_stamp: Option<CaFileStamp>,
     config: rustls::ClientConfig,
 }
 
@@ -43,25 +83,23 @@ impl TlsConfigCache {
 
     fn get_or_build(&self, explicit_ca: Option<&Path>) -> Result<rustls::ClientConfig, String> {
         let extra_ca = explicit_ca.map(Path::to_path_buf).or_else(env_ca_file);
-        let mtime = extra_ca
-            .as_ref()
-            .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
-        let cacheable = extra_ca.is_none() || mtime.is_some();
+        let stamp = extra_ca.as_deref().and_then(CaFileStamp::from_path);
+        let cacheable = extra_ca.is_none() || stamp.is_some();
         if cacheable {
             if let Ok(guard) = self.slot.lock() {
                 if let Some(ref entry) = *guard {
-                    if entry.ca_path == extra_ca && entry.ca_mtime == mtime {
+                    if entry.ca_path == extra_ca && entry.ca_stamp == stamp {
                         return Ok(entry.config.clone());
                     }
                 }
             }
         }
-        // WHY: Cache only Ok TLS configs and re-stat CA files so transient boot errors or rotated bundles recover on reconnect.
+        // WHY: Cache only Ok TLS configs and track full file metadata (size, mtime, inode/ctime) so cp -p/rsync rotations invalidate cache.
         let cfg = build_tls_client_config_resolved(extra_ca.as_deref())?;
         if let Ok(mut guard) = self.slot.lock() {
             *guard = Some(CachedTlsConfig {
                 ca_path: extra_ca,
-                ca_mtime: mtime,
+                ca_stamp: stamp,
                 config: cfg.clone(),
             });
         }
