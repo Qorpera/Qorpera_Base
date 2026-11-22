@@ -110,6 +110,23 @@ declare
 	v_big_prompt text := repeat('w', 16000);
 	v_cofounder_worker_id uuid;
 	v_cofounder_coding_lease uuid;
+	v_exp_id uuid;
+	v_var_a uuid;
+	v_var_b uuid;
+	v_lease_a uuid;
+	v_lease_b uuid;
+	v_worker_a uuid;
+	v_worker_b uuid;
+	v_coding_lease_a uuid;
+	v_coding_lease_b uuid;
+	v_exp2_id uuid;
+	v_var_c uuid;
+	v_lease_c uuid;
+	v_worker_c uuid;
+	v_session_timeout uuid;
+	v_lease_timeout uuid;
+	v_worker_timeout uuid;
+	v_prev_title text;
 begin
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
 	select environment_id, staff_agent_id into strict v_env_a, v_cofounder_agent
@@ -201,19 +218,6 @@ begin
 	perform pg_temp.scrcs_assert(v_drain ->> 'state' = 'idle', 'folder worker drain stays idle for surface-backed coding worker: ' || v_drain::text);
 	reset role;
 
-	update public.qorpera_surface_sessions
-	set lease_expires_at = clock_timestamp() - interval '10 minutes'
-	where id = v_session_member;
-	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
-	set local role service_role;
-	perform public.qorpera_surface_claim_pending_jobs_for_lane(16, 'sessions');
-	reset role;
-	perform pg_temp.scrcs_assert(
-		(select state from public.qorpera_surface_sessions where id = v_session_member) = 'running'
-		and (select retry_count from public.qorpera_surface_sessions where id = v_session_member) = 0,
-		'sessions lane sweep skips active coding-backed surface sessions'
-	);
-
 	set local session_replication_role = replica;
 	insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner, machine_id_sha256, binding)
 	values ('13390000-0000-4000-8000-0000000000d1', 'member', v_company_a, v_env_a, v_owner, 'exec-1339', repeat('8', 64), '{}');
@@ -242,7 +246,23 @@ begin
 		'qorpera_claim_coding_session returns surfaceSession metadata: ' || coalesce(v_coding_claim::text, 'null')
 	);
 	v_coding_lease := (v_coding_claim ->> 'leaseToken')::uuid;
+	reset role;
 
+	update public.qorpera_surface_sessions
+	set lease_expires_at = clock_timestamp() - interval '10 minutes'
+	where id = v_session_member;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	perform public.qorpera_surface_claim_pending_jobs_for_lane(16, 'sessions');
+	reset role;
+	perform pg_temp.scrcs_assert(
+		(select state from public.qorpera_surface_sessions where id = v_session_member) = 'running'
+		and (select retry_count from public.qorpera_surface_sessions where id = v_session_member) = 0,
+		'sessions lane sweep skips coding-backed surface sessions while executor holds live lease'
+	);
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
 	perform public.qorpera_record_coding_progress(
 		v_worker_id, v_coding_lease, 'preparing', 'Preparing starter repo', null, '[]'::jsonb, null, repeat('a', 40), null, null, null
 	);
@@ -513,5 +533,196 @@ begin
 	perform pg_temp.scrcs_assert(
 		position('''coding_record_change''' in pg_get_functiondef('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure)) > 0,
 		'qorpera_record_runtime_observation allows coding_record_change'
+	);
+
+	perform pg_temp.scrcs_as(v_owner);
+	set local role authenticated;
+	v_var_a := (public.qorpera_start_surface_session(
+		v_code_surface_id, 'Explore hero layouts', 'Hero exploration', 'member', null, null, 2, 'Hero directions'
+	) ->> 'id')::uuid;
+	reset role;
+	select exploration_id into strict v_exp_id from public.qorpera_surface_sessions where id = v_var_a;
+	select id into strict v_var_b from public.qorpera_surface_sessions where exploration_id = v_exp_id and id <> v_var_a;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed := public.qorpera_surface_claim_pending_jobs_for_lane(16, 'sessions');
+	select (elem ->> 'leaseToken')::uuid into strict v_lease_a
+	from jsonb_array_elements(v_claimed -> 'sessions') elem where (elem ->> 'sessionId')::uuid = v_var_a;
+	select (elem ->> 'leaseToken')::uuid into strict v_lease_b
+	from jsonb_array_elements(v_claimed -> 'sessions') elem where (elem ->> 'sessionId')::uuid = v_var_b;
+	v_worker_a := (public.qorpera_surface_enqueue_session_run(v_var_a, v_lease_a) ->> 'workerId')::uuid;
+	v_worker_b := (public.qorpera_surface_enqueue_session_run(v_var_b, v_lease_b) ->> 'workerId')::uuid;
+
+	reset role;
+	select title into strict v_prev_title from public.qorpera_surfaces where id = v_code_surface_id;
+	update public.qorpera_surfaces set title = repeat('🌟', 80) where id = v_code_surface_id;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_coding_claim := public.qorpera_claim_coding_session('exec-1339', 60);
+	perform pg_temp.scrcs_assert(
+		octet_length(convert_to(v_coding_claim #>> '{surfaceSession,title}', 'utf8')) = 320,
+		'80-emoji surface title fits in coding claim JSON without truncation below 320 bytes'
+	);
+	if (v_coding_claim ->> 'workerId')::uuid = v_worker_a then
+		v_coding_lease_a := (v_coding_claim ->> 'leaseToken')::uuid;
+		v_coding_claim := public.qorpera_claim_coding_session('exec-1339', 60);
+		v_coding_lease_b := (v_coding_claim ->> 'leaseToken')::uuid;
+	else
+		v_coding_lease_b := (v_coding_claim ->> 'leaseToken')::uuid;
+		v_coding_claim := public.qorpera_claim_coding_session('exec-1339', 60);
+		v_coding_lease_a := (v_coding_claim ->> 'leaseToken')::uuid;
+	end if;
+	perform pg_temp.scrcs_assert(
+		v_coding_lease_a is not null and v_coding_lease_b is not null,
+		'both exploration variant coding sessions claimed'
+	);
+
+	perform public.qorpera_complete_coding_turn(
+		p_worker_id => v_worker_a,
+		p_lease_token => v_coding_lease_a,
+		p_outcome => 'succeeded',
+		p_summary => 'Variant A ready.',
+		p_artifacts => jsonb_build_array(jsonb_build_object(
+			'kind', 'staged',
+			'branch', 'qorpera/coding/' || v_worker_a::text,
+			'baseSha', repeat('1', 40),
+			'headSha', repeat('4', 40)
+		))
+	);
+	reset role;
+	update public.qorpera_surfaces set title = v_prev_title where id = v_code_surface_id;
+
+	update public.qorpera_surface_sessions
+	set lease_expires_at = clock_timestamp() - interval '1 minute'
+	where id = v_var_b;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	perform public.qorpera_surface_claim_pending_jobs_for_lane(16, 'sessions');
+	reset role;
+	perform pg_temp.scrcs_assert(
+		(select state from public.qorpera_surface_sessions where id = v_var_b) = 'running'
+		and (select state from public.qorpera_runtime_workers where id = v_worker_b) = 'active',
+		'surface lease sweep exempts coding session with live executor lease'
+	);
+
+	perform pg_temp.scrcs_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_choose_exploration(v_exp_id, v_var_a);
+	reset role;
+
+	perform pg_temp.scrcs_assert(
+		(select state from public.qorpera_surface_sessions where id = v_var_b) = 'discarded'
+		and (select lease_token from public.qorpera_surface_sessions where id = v_var_b) is null
+		and (select state from public.qorpera_runtime_workers where id = v_worker_b) = 'cancelled'
+		and (select phase from public.qorpera_coding_sessions where worker_id = v_worker_b) = 'cancelled',
+		'qorpera_choose_exploration cancels active coding worker of discarded sibling'
+	);
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_errcode := null;
+	begin
+		perform public.qorpera_heartbeat_coding_session(v_worker_b, v_coding_lease_b, 60);
+	exception when others then
+		v_errcode := sqlstate;
+	end;
+	reset role;
+	perform pg_temp.scrcs_assert(
+		v_errcode = '55000',
+		'cancelled sibling coding worker fails next heartbeat with 55000, got ' || coalesce(v_errcode, 'ok')
+	);
+
+	perform pg_temp.scrcs_as(v_owner);
+	set local role authenticated;
+	v_var_c := (public.qorpera_start_surface_session(
+		v_code_surface_id, 'Discardable exploration', 'Discard test', 'member', null, null, 2, 'Discard directions'
+	) ->> 'id')::uuid;
+	reset role;
+	select exploration_id into strict v_exp2_id from public.qorpera_surface_sessions where id = v_var_c;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed := public.qorpera_surface_claim_pending_jobs_for_lane(16, 'sessions');
+	select (elem ->> 'leaseToken')::uuid into strict v_lease_c
+	from jsonb_array_elements(v_claimed -> 'sessions') elem where (elem ->> 'sessionId')::uuid = v_var_c;
+	v_worker_c := (public.qorpera_surface_enqueue_session_run(v_var_c, v_lease_c) ->> 'workerId')::uuid;
+	reset role;
+
+	perform pg_temp.scrcs_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_discard_exploration(v_exp2_id);
+	reset role;
+
+	perform pg_temp.scrcs_assert(
+		(select state from public.qorpera_runtime_workers where id = v_worker_c) = 'cancelled'
+		and (select phase from public.qorpera_coding_sessions where worker_id = v_worker_c) = 'cancelled',
+		'qorpera_discard_exploration cancels active coding workers'
+	);
+
+	perform pg_temp.scrcs_as(v_owner);
+	set local role authenticated;
+	v_session_timeout := (public.qorpera_start_surface_session(
+		v_code_surface_id, 'Build when executor is offline', 'Offline executor test'
+	) ->> 'id')::uuid;
+	reset role;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed := public.qorpera_surface_claim_pending_jobs_for_lane(16, 'sessions');
+	select (elem ->> 'leaseToken')::uuid into strict v_lease_timeout
+	from jsonb_array_elements(v_claimed -> 'sessions') elem where (elem ->> 'sessionId')::uuid = v_session_timeout;
+	v_worker_timeout := (public.qorpera_surface_enqueue_session_run(v_session_timeout, v_lease_timeout) ->> 'workerId')::uuid;
+	reset role;
+
+	update public.qorpera_surface_sessions
+	set lease_expires_at = clock_timestamp() - interval '1 minute'
+	where id = v_session_timeout;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed := public.qorpera_surface_claim_pending_jobs_for_lane(16, 'sessions');
+	reset role;
+
+	select (elem ->> 'leaseToken')::uuid into v_lease_timeout
+	from jsonb_array_elements(v_claimed -> 'sessions') elem where (elem ->> 'sessionId')::uuid = v_session_timeout;
+	perform pg_temp.scrcs_assert(
+		v_lease_timeout is not null
+		and (select retry_count from public.qorpera_surface_sessions where id = v_session_timeout) = 1
+		and (select state from public.qorpera_runtime_workers where id = v_worker_timeout) = 'cancelled'
+		and (select phase from public.qorpera_coding_sessions where worker_id = v_worker_timeout) = 'cancelled',
+		'unclaimed queued coding session expires on timeout, cancels worker, and retries once'
+	);
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	perform public.qorpera_surface_enqueue_session_run(v_session_timeout, v_lease_timeout);
+	reset role;
+
+	perform pg_temp.scrcs_assert(
+		(select phase from public.qorpera_coding_sessions where worker_id = v_worker_timeout) = 'input_ready'
+		and (select state from public.qorpera_runtime_workers where id = v_worker_timeout) = 'active',
+		'retry turn re-activates worker in input_ready phase'
+	);
+
+	update public.qorpera_surface_sessions
+	set lease_expires_at = clock_timestamp() - interval '1 minute'
+	where id = v_session_timeout;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	perform public.qorpera_surface_claim_pending_jobs_for_lane(16, 'sessions');
+	reset role;
+
+	perform pg_temp.scrcs_assert(
+		(select state from public.qorpera_surface_sessions where id = v_session_timeout) = 'failed'
+		and (select state from public.qorpera_runtime_workers where id = v_worker_timeout) = 'cancelled'
+		and (select phase from public.qorpera_coding_sessions where worker_id = v_worker_timeout) = 'cancelled'
+		and exists (
+			select 1 from public.qorpera_surface_session_messages m
+			where m.session_id = v_session_timeout and m.body like 'Session timed out after worker retry%'
+		),
+		'second unclaimed timeout cancels worker and transitions surface session to failed with readable message'
 	);
 end $$;

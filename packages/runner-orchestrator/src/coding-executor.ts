@@ -461,7 +461,7 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 			!/^[a-z0-9][a-z0-9-]{0,63}$/.test(rawSurface.slug) ||
 			typeof rawSurface.title !== "string" ||
 			!rawSurface.title.trim() ||
-			Buffer.byteLength(rawSurface.title) > 200
+			Buffer.byteLength(rawSurface.title) > 400
 		)
 			throw new Error("Invalid coding claim");
 		surfaceSession = {

@@ -1556,6 +1556,23 @@ describe("the coding executor over a session turn", () => {
 		expect(parseCodingSessionClaim(claimJson(workerId, randomUUID(), { surfaceSession })).surfaceSession).toEqual(
 			surfaceSession,
 		);
+		const longCjkTitle = "網".repeat(80);
+		const longEmojiTitle = "🌟".repeat(80);
+		expect(
+			parseCodingSessionClaim(
+				claimJson(workerId, randomUUID(), { surfaceSession: { ...surfaceSession, title: longCjkTitle } }),
+			).surfaceSession?.title,
+		).toBe(longCjkTitle);
+		expect(
+			parseCodingSessionClaim(
+				claimJson(workerId, randomUUID(), { surfaceSession: { ...surfaceSession, title: longEmojiTitle } }),
+			).surfaceSession?.title,
+		).toBe(longEmojiTitle);
+		expect(() =>
+			parseCodingSessionClaim(
+				claimJson(workerId, randomUUID(), { surfaceSession: { ...surfaceSession, title: "a".repeat(401) } }),
+			),
+		).toThrow("Invalid coding claim");
 		expect(() =>
 			parseCodingSessionClaim(
 				claimJson(workerId, randomUUID(), { surfaceSession: { ...surfaceSession, slug: "BAD SLUG" } }),

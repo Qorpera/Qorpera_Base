@@ -467,7 +467,7 @@ returns jsonb language sql stable security definer set search_path = '' as $$
 				'sessionId', ss.id,
 				'surfaceId', surf.id,
 				'slug', surf.slug,
-				'title', surf.title
+				'title', coalesce(nullif(btrim(public.qorpera_surface_utf8_left(surf.title, 320)), ''), surf.slug)
 			))
 			from public.qorpera_surface_sessions ss
 			join public.qorpera_surfaces surf on surf.id = ss.surface_id
@@ -733,6 +733,16 @@ select pg_temp.scrcs_replace('public.qorpera_claim_coding_session(text,integer)'
 				end if;
 				-- C1c-3i (20260930026000): the failure holds this company's rows; the next claim takes the next candidate.
 				return null;$new$,
+	$old$			update public.qorpera_coding_sessions set phase = 'preparing', lease_owner = p_owner,$old$,
+	$new$			if v_session.surface_session_id is not null and not exists (
+				select 1 from public.qorpera_surface_sessions ss
+				where ss.id = v_session.surface_session_id
+					and ss.state in ('running', 'reconciling_running')
+			) then
+				perform public.qorpera_cancel_worker(v_worker, null, 'surface_discarded');
+				return null;
+			end if;
+			update public.qorpera_coding_sessions set phase = 'preparing', lease_owner = p_owner,$new$,
 	$old$			return public.qorpera_coding_session_claim_json(v_session, v_worker);$old$,
 	$new$			if v_session.surface_session_id is not null then
 				update public.qorpera_surface_sessions
@@ -1237,14 +1247,273 @@ begin
 	);
 end $$;
 
+create or replace function public.qorpera_surface_cancel_coding_workers(
+	p_session_ids uuid[],
+	p_reason text default 'surface_discarded'
+)
+returns integer
+language plpgsql volatile security definer set search_path = '' as $$
+declare
+	v_worker_ids uuid[];
+	v_worker public.qorpera_runtime_workers%rowtype;
+	v_cancelled integer := 0;
+begin
+	if coalesce(cardinality(p_session_ids), 0) = 0 then
+		return 0;
+	end if;
+	select coalesce(array_agg(w.id order by w.id), '{}'::uuid[]) into v_worker_ids
+	from public.qorpera_runtime_workers w
+	where w.surface_backed
+		and w.species = 'coding'
+		and w.surface_session_id = any(p_session_ids)
+		and w.state = 'active';
+	if coalesce(cardinality(v_worker_ids), 0) = 0 then
+		return 0;
+	end if;
+	-- WHY: Lock workers via folder entry then coding sessions before callers touch qorpera_surface_sessions.
+	perform public.qorpera_lock_coding_workers(v_worker_ids);
+	for v_worker in
+		select w.*
+		from public.qorpera_runtime_workers w
+		where w.id = any(v_worker_ids)
+			and w.surface_backed
+			and w.species = 'coding'
+			and w.state = 'active'
+		order by w.id
+	loop
+		perform 1
+		from public.qorpera_coding_sessions cs
+		where cs.worker_id = v_worker.id
+		for update;
+		perform public.qorpera_cancel_worker(v_worker, null, coalesce(nullif(btrim(p_reason), ''), 'surface_discarded'));
+		v_cancelled := v_cancelled + 1;
+	end loop;
+	return v_cancelled;
+end $$;
+
+create or replace function public.qorpera_surface_expire_coding_sessions(
+	p_now timestamptz,
+	p_cap integer
+)
+returns void
+language plpgsql volatile security definer set search_path = '' set lock_timeout = '1s' as $$
+declare
+	v_profile_id uuid;
+	v_worker_ids uuid[];
+	v_worker public.qorpera_runtime_workers%rowtype;
+	v_cs public.qorpera_coding_sessions%rowtype;
+	v_ss public.qorpera_surface_sessions%rowtype;
+	v_wk public.qorpera_wake_occurrences%rowtype;
+	v_expired boolean;
+begin
+	-- WHY: Sweep at most one company per call so folder-v2 fence locks never span two companies in one transaction.
+	select s.profile_id into v_profile_id
+	from public.qorpera_surface_sessions s
+	join public.qorpera_runtime_workers rw on rw.id = s.worker_id
+		and rw.surface_backed and rw.species = 'coding' and rw.state = 'active'
+	left join public.qorpera_wake_occurrences wk on wk.id = s.wake_id
+	where s.state in ('running', 'reconciling_running')
+		and not exists (
+			select 1 from public.qorpera_coding_sessions cs
+			where cs.worker_id = s.worker_id
+				and cs.phase in ('preparing', 'running', 'publishing')
+				and cs.lease_until is not null
+				and cs.lease_until > p_now
+		)
+		and (
+			(s.wake_id is null and s.lease_expires_at is not null and s.lease_expires_at <= p_now)
+			or (s.wake_id is not null and (
+				wk.id is null
+				or wk.status in ('failed', 'cancelled', 'completed', 'requires_review')
+				or (wk.status = 'materialized' and s.lease_expires_at is not null and s.lease_expires_at <= p_now)
+				or (wk.status = 'queued' and wk.created_at <= p_now - interval '30 minutes')
+			))
+		)
+	order by coalesce(s.lease_expires_at, s.updated_at) asc
+	limit 1;
+
+	if v_profile_id is null then
+		return;
+	end if;
+
+	select coalesce(array_agg(cand.worker_id order by cand.worker_id), '{}'::uuid[]) into v_worker_ids
+	from (
+		select s.worker_id
+		from public.qorpera_surface_sessions s
+		join public.qorpera_runtime_workers rw on rw.id = s.worker_id
+			and rw.surface_backed and rw.species = 'coding' and rw.state = 'active'
+		left join public.qorpera_wake_occurrences wk on wk.id = s.wake_id
+		where s.profile_id = v_profile_id
+			and s.state in ('running', 'reconciling_running')
+			and not exists (
+				select 1 from public.qorpera_coding_sessions cs
+				where cs.worker_id = s.worker_id
+					and cs.phase in ('preparing', 'running', 'publishing')
+					and cs.lease_until is not null
+					and cs.lease_until > p_now
+			)
+			and (
+				(s.wake_id is null and s.lease_expires_at is not null and s.lease_expires_at <= p_now)
+				or (s.wake_id is not null and (
+					wk.id is null
+					or wk.status in ('failed', 'cancelled', 'completed', 'requires_review')
+					or (wk.status = 'materialized' and s.lease_expires_at is not null and s.lease_expires_at <= p_now)
+					or (wk.status = 'queued' and wk.created_at <= p_now - interval '30 minutes')
+				))
+			)
+		order by coalesce(s.lease_expires_at, s.updated_at) asc
+		limit greatest(1, coalesce(p_cap, 1))
+	) cand;
+
+	if coalesce(cardinality(v_worker_ids), 0) = 0 then
+		return;
+	end if;
+
+	begin
+		perform public.qorpera_lock_coding_workers(v_worker_ids);
+		for v_worker in
+			select w.*
+			from public.qorpera_runtime_workers w
+			where w.id = any(v_worker_ids)
+				and w.surface_backed
+				and w.species = 'coding'
+				and w.state = 'active'
+			order by w.id
+		loop
+			select * into v_cs
+			from public.qorpera_coding_sessions cs
+			where cs.worker_id = v_worker.id
+			for update;
+			if v_cs.worker_id is not null
+				and v_cs.phase in ('preparing', 'running', 'publishing')
+				and v_cs.lease_until is not null
+				and v_cs.lease_until > p_now then
+				continue;
+			end if;
+
+			select * into v_ss
+			from public.qorpera_surface_sessions s
+			where s.id = v_worker.surface_session_id
+			for update;
+			if v_ss.id is null or v_ss.state not in ('running', 'reconciling_running')
+				or v_ss.worker_id is distinct from v_worker.id then
+				continue;
+			end if;
+
+			v_wk := null;
+			if v_ss.wake_id is not null then
+				select * into v_wk from public.qorpera_wake_occurrences where id = v_ss.wake_id;
+			end if;
+			v_expired := (
+				(v_ss.wake_id is null and v_ss.lease_expires_at is not null and v_ss.lease_expires_at <= p_now)
+				or (v_ss.wake_id is not null and (
+					v_wk.id is null
+					or v_wk.status in ('failed', 'cancelled', 'completed', 'requires_review')
+					or (v_wk.status = 'materialized' and v_ss.lease_expires_at is not null and v_ss.lease_expires_at <= p_now)
+					or (v_wk.status = 'queued' and v_wk.created_at <= p_now - interval '30 minutes')
+				))
+			);
+			if not v_expired then
+				continue;
+			end if;
+
+			perform public.qorpera_cancel_worker(v_worker, null, 'surface_lease_expired');
+
+			if v_ss.retry_count < 1 then
+				update public.qorpera_surface_sessions
+				set
+					state = case when state = 'reconciling_running' then 'reconciling' else 'queued' end,
+					retry_count = retry_count + 1,
+					lease_expires_at = null,
+					lease_token = null,
+					wake_id = null,
+					updated_at = p_now
+				where id = v_ss.id;
+
+				insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, body)
+				values (
+					v_ss.profile_id,
+					v_ss.id,
+					'system',
+					'Worker lease expired; automatically retrying session turn.'
+				);
+			else
+				update public.qorpera_surface_sessions
+				set
+					state = 'failed',
+					lease_expires_at = null,
+					lease_token = null,
+					wake_id = null,
+					updated_at = p_now
+				where id = v_ss.id;
+
+				insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, body)
+				values (
+					v_ss.profile_id,
+					v_ss.id,
+					'system',
+					'Session timed out after worker retry. Reply to retry.'
+				);
+			end if;
+		end loop;
+	exception when lock_not_available then
+		null;
+	end;
+end $$;
+
+select pg_temp.scrcs_replace('public.qorpera_choose_exploration(uuid,uuid)'::regprocedure, array[
+	$old$	v_winner := public.qorpera_approve_session_all(p_session_id);$old$,
+	$new$	perform public.qorpera_surface_cancel_coding_workers(
+		(select coalesce(array_agg(s.id), '{}'::uuid[])
+		 from public.qorpera_surface_sessions s
+		 where s.exploration_id = p_exploration_id and s.id <> p_session_id),
+		'surface_discarded'
+	);
+	v_winner := public.qorpera_approve_session_all(p_session_id);$new$,
+	$old$	update public.qorpera_surface_sessions
+	set state = 'discarded', has_active_chat = false, closed_at = clock_timestamp(), updated_at = clock_timestamp()
+	where exploration_id = p_exploration_id and id <> p_session_id;$old$,
+	$new$	update public.qorpera_surface_sessions
+	set state = 'discarded', has_active_chat = false, lease_token = null, lease_expires_at = null, wake_id = null,
+		closed_at = clock_timestamp(), updated_at = clock_timestamp()
+	where exploration_id = p_exploration_id and id <> p_session_id;$new$
+]);
+
+select pg_temp.scrcs_replace('public.qorpera_discard_exploration(uuid)'::regprocedure, array[
+	$old$	update public.qorpera_surface_changes
+	set status = 'discarded', resolved_at = clock_timestamp()$old$,
+	$new$	perform public.qorpera_surface_cancel_coding_workers(
+		(select coalesce(array_agg(s.id), '{}'::uuid[])
+		 from public.qorpera_surface_sessions s
+		 where s.exploration_id = p_exploration_id),
+		'surface_discarded'
+	);
+	update public.qorpera_surface_changes
+	set status = 'discarded', resolved_at = clock_timestamp()$new$,
+	$old$	update public.qorpera_surface_sessions
+	set state = 'discarded', has_active_chat = false, closed_at = clock_timestamp(), updated_at = clock_timestamp()
+	where exploration_id = p_exploration_id;$old$,
+	$new$	update public.qorpera_surface_sessions
+	set state = 'discarded', has_active_chat = false, lease_token = null, lease_expires_at = null, wake_id = null,
+		closed_at = clock_timestamp(), updated_at = clock_timestamp()
+	where exploration_id = p_exploration_id;$new$
+]);
+
 select pg_temp.scrcs_replace('public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)'::regprocedure, array[
+	$old$	if v_lane in ('all', 'sessions') then
+		for v_expired_session in$old$,
+	$new$	if v_lane in ('all', 'sessions') then
+		perform public.qorpera_surface_expire_coding_sessions(v_now, v_cap);
+		for v_expired_session in$new$,
 	$old$			where s.state in ('running', 'reconciling_running')
 				and ($old$,
 	$new$			where s.state in ('running', 'reconciling_running')
 				and not exists (
-					select 1 from public.qorpera_coding_sessions cs
-					where cs.worker_id = s.worker_id
-						and cs.phase in ('queued', 'input_ready', 'preparing', 'running', 'publishing')
+					select 1 from public.qorpera_runtime_workers rw
+					where rw.id = s.worker_id
+						and rw.surface_backed
+						and rw.species = 'coding'
+						and rw.state = 'active'
 				)
 				and ($new$
 ]);
@@ -1258,7 +1527,9 @@ revoke all on function
 	public.qorpera_surface_utf8_left(text, integer),
 	public.qorpera_surface_coding_member_initiated(public.qorpera_surface_sessions, uuid),
 	public.qorpera_surface_resolve_coding_sponsor(uuid, uuid, uuid, boolean, text, boolean),
-	public.qorpera_surface_sync_coding_completion(public.qorpera_coding_sessions, public.qorpera_runtime_workers, text, text, text, jsonb, jsonb)
+	public.qorpera_surface_sync_coding_completion(public.qorpera_coding_sessions, public.qorpera_runtime_workers, text, text, text, jsonb, jsonb),
+	public.qorpera_surface_cancel_coding_workers(uuid[], text),
+	public.qorpera_surface_expire_coding_sessions(timestamptz, integer)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 do $$
@@ -1281,14 +1552,17 @@ begin
 			'public.qorpera_heartbeat_coding_session(uuid,uuid,integer)'::regprocedure,
 			'public.qorpera_record_coding_progress(uuid,uuid,text,text,integer,jsonb,text,text,uuid,uuid,text)'::regprocedure,
 			'public.qorpera_claim_coding_session(text,integer)'::regprocedure,
-			'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)'::regprocedure
+			'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)'::regprocedure,
+			'public.qorpera_choose_exploration(uuid,uuid)'::regprocedure,
+			'public.qorpera_discard_exploration(uuid)'::regprocedure,
+			'public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)'::regprocedure
 		])
 	loop
 		if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
 			raise exception 'Surface coding integration function has an API owner: %', v_owner;
 		end if;
 		execute format('grant select, insert, update on public.qorpera_surface_sessions, public.qorpera_surfaces, public.qorpera_surface_changes, public.qorpera_surface_session_messages to %I', v_owner);
-		execute format('grant execute on function public.qorpera_surface_coding_member_initiated(public.qorpera_surface_sessions, uuid), public.qorpera_surface_sync_coding_completion(public.qorpera_coding_sessions, public.qorpera_runtime_workers, text, text, text, jsonb, jsonb) to %I', v_owner);
+		execute format('grant execute on function public.qorpera_surface_utf8_left(text, integer), public.qorpera_surface_coding_member_initiated(public.qorpera_surface_sessions, uuid), public.qorpera_surface_sync_coding_completion(public.qorpera_coding_sessions, public.qorpera_runtime_workers, text, text, text, jsonb, jsonb), public.qorpera_surface_cancel_coding_workers(uuid[], text), public.qorpera_surface_expire_coding_sessions(timestamptz, integer) to %I', v_owner);
 	end loop;
 end $$;
 
