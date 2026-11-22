@@ -1042,6 +1042,7 @@ describe("Good will", () => {
 		assert.equal(created.length, 2);
 
 		const createdAfterOpen: string[] = [];
+		const callOrder: string[] = [];
 		const openThenFresh = [
 			...[1, 2, 3].map((n) => ({
 				profileId: `30000000-0000-4000-8000-00000000001${n}`,
@@ -1050,7 +1051,6 @@ describe("Good will", () => {
 				customerId: `cus_open_${n}`,
 				paymentMethodId: `pm_open_${n}`,
 				invoiceId: `in_open_${n}`,
-				invoiceUrl: `https://stripe.test/open_${n}`,
 			})),
 			{
 				profileId: "30000000-0000-4000-8000-000000000020",
@@ -1059,7 +1059,6 @@ describe("Good will", () => {
 				customerId: "cus_fresh",
 				paymentMethodId: "pm_fresh",
 				invoiceId: null,
-				invoiceUrl: null,
 			},
 		];
 		const noStarve = await sendGoodWillInvoices({
@@ -1073,8 +1072,12 @@ describe("Good will", () => {
 				},
 			},
 			stripe: {
-				get: async (path) => ({ id: path.split("/").pop(), status: "open", lines: { data: [] } }),
+				get: async (path) => {
+					callOrder.push(`GET ${path}`);
+					return { id: path.split("/").pop(), status: "open", lines: { data: [] } };
+				},
 				post: async (path) => {
+					callOrder.push(`POST ${path}`);
 					if (path === "/v1/invoices") {
 						const id = `in_fresh_${createdAfterOpen.length + 1}`;
 						createdAfterOpen.push(id);
@@ -1086,5 +1089,6 @@ describe("Good will", () => {
 		});
 		assert.deepEqual(noStarve, { invoiced: 1, failed: 0 });
 		assert.deepEqual(createdAfterOpen, ["in_fresh_1"]);
+		assert.equal(callOrder[0], "POST /v1/invoices");
 	});
 });

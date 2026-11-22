@@ -138,9 +138,9 @@ const GOOD_WILL_BUDGET_MS = 45_000;
 export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<Json> {
 	const due = await deps.goodWill.call("due", { livemode: deps.livemode });
 	const rawMonths = Array.isArray(due.months) ? due.months : [];
-	// WHY: process un-invoiced months before already-finalized open invoices so open retries cannot starve new months.
+	// WHY: process un-invoiced months (no invoiceId yet) before existing invoices so open retries cannot consume the budget first.
 	const months = [...rawMonths].sort(
-		(a, b) => Number(Boolean(string(object(a)?.invoiceUrl))) - Number(Boolean(string(object(b)?.invoiceUrl))),
+		(a, b) => Number(Boolean(string(object(a)?.invoiceId))) - Number(Boolean(string(object(b)?.invoiceId))),
 	);
 	const maxBatch = deps.maxBatch ?? MAX_GOOD_WILL_BATCH;
 	const now = deps.now ?? Date.now;
