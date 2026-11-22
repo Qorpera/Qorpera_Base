@@ -62,6 +62,23 @@ function fsyncDirSync(dirPath) {
 	}
 }
 
+function fsyncTreeSync(dirPath) {
+	for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
+		const full = join(dirPath, entry.name);
+		if (entry.isDirectory()) {
+			fsyncTreeSync(full);
+		} else if (entry.isFile()) {
+			const fd = openSync(full, fsConstants.O_RDONLY);
+			try {
+				fsyncSync(fd);
+			} finally {
+				closeSync(fd);
+			}
+		}
+	}
+	fsyncDirSync(dirPath);
+}
+
 const quoted = (name) => `"${String(name).replace(/"/g, '""')}"`;
 const literal = (value) => `'${String(value).replace(/'/g, "''")}'`;
 const TEXT_TYPES = { getTypeParser: () => (value) => value };
@@ -899,6 +916,7 @@ export async function exportDatabaseSnapshot({
 		const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
 		writeFileDurableSync(join(stageDir, "snapshot.json"), manifestJson);
 		for (const table of tables) fsyncDirSync(safeChildPath(stageDir, `tables/${safeTableDir(table.name)}`));
+		if (tables.length > 0) fsyncDirSync(join(stageDir, "tables"));
 		fsyncDirSync(stageDir);
 
 		mkdirSync(dirname(resolvedOut), { recursive: true });
@@ -913,6 +931,8 @@ export async function exportDatabaseSnapshot({
 				renameSync(stageDir, resolvedOut);
 			} catch {
 				cpSync(stageDir, resolvedOut, { recursive: true });
+				// WHY: Fsync copied files and directories before removing stageDir so cross-device swaps remain crash-durable.
+				fsyncTreeSync(resolvedOut);
 				rmSync(stageDir, { recursive: true, force: true });
 			}
 			fsyncDirSync(dirname(resolvedOut));

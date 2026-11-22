@@ -483,8 +483,7 @@ describe("company-data snapshots and lifecycle cleanup", { skip: !dockerUsable }
 		assert.ok(Number(sizes.main) <= 32 * 1024, `expected tiny main fork <= 32 KiB, got ${sizes.main}`);
 
 		const toastDir = join(workDir, "snap-toast");
-		let dumpCalls = 0;
-		const retryStart = Date.now();
+		const dumpAt = [];
 		const exported = await exportDatabaseSnapshot({
 			store: { host: "127.0.0.1", port, logins },
 			user: "postgres",
@@ -493,20 +492,20 @@ describe("company-data snapshots and lifecycle cleanup", { skip: !dockerUsable }
 			schema: "toast_snap",
 			outDir: toastDir,
 			partBytes: 64 * 1024,
-			retryDelayMs: 40,
+			retryDelayMs: 60,
 			dumpSchema: (opts) => {
-				dumpCalls++;
-				if (dumpCalls === 1) throw new Error("transient lock wait");
+				dumpAt.push(Date.now());
+				if (dumpAt.length === 1) throw new Error("transient lock wait");
 				return dockerDumpSchema(opts);
 			},
 		});
-		assert.equal(dumpCalls, 2);
-		assert.ok(Date.now() - retryStart >= 30, "expected retry backoff delay before second dump attempt");
+		assert.equal(dumpAt.length, 2);
+		assert.ok(dumpAt[1] - dumpAt[0] >= 50, `expected backoff gap >= 50ms between dump attempts, got ${dumpAt[1] - dumpAt[0]}ms`);
 		const noteMeta = exported.manifest.tables.find((t) => t.name === "notes");
 		assert.equal(noteMeta.parts.length, 1, `expected 1 ctid part based on main fork, got ${noteMeta.parts.length}`);
 		assert.equal(noteMeta.rows, 4);
 
-		// WHY: Verify set-based keep_record trims large row_changes bursts without O(K^2) array growth and matches update.sql.
+		// WHY: Verify set-based keep_record trims > 5,000 rows across multiple batches until under record_limit and matches update.sql.
 		const trimDb = `trim_${randomBytes(4).toString("hex")}`;
 		await asSuperuser("postgres", `create database ${trimDb}`);
 		try {
@@ -521,8 +520,8 @@ describe("company-data snapshots and lifecycle cleanup", { skip: !dockerUsable }
 			await asSuperuser(
 				trimDb,
 				`insert into qorpera_data.row_changes (txid, schema, relation, op, rows, bytes)
-				select 100 + g, 's', 't', 'add', 1, 100 from generate_series(1, 2000) g;
-				insert into qorpera_data.record_bytes (pid, bytes) values (pg_backend_pid(), 200000)
+				select 100 + g, 's', 't', 'add', 1, 100 from generate_series(1, 6500) g;
+				insert into qorpera_data.record_bytes (pid, bytes) values (pg_backend_pid(), 650000)
 					on conflict (pid) do update set bytes = excluded.bytes;
 				select qorpera_data.keep_record(100);`,
 			);
@@ -532,6 +531,7 @@ describe("company-data snapshots and lifecycle cleanup", { skip: !dockerUsable }
 					"select count(*)::int as rows, coalesce(sum(bytes), 0)::int as held, (select coalesce(sum(bytes), 0)::int from qorpera_data.record_bytes) as counted from qorpera_data.row_changes",
 				)
 			)[0];
+			assert.equal(afterTrim.rows, 499, `expected 499 remaining rows after multi-batch trim, got ${afterTrim.rows}`);
 			assert.ok(afterTrim.held <= 50000, `expected trimmed held bytes <= 50000, got ${afterTrim.held}`);
 			assert.equal(afterTrim.counted, afterTrim.held + 100);
 		} finally {

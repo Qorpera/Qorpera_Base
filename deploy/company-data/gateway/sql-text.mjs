@@ -3,7 +3,7 @@
 // outside strings, quoted names, dollar quotes and comments. It does not decide what the statement does: PostgreSQL
 // does, where it runs.
 
-// WHY: Use sticky /y regexes so readStatement matches at offset without O(N^2) text.slice() copies.
+// WHY: Use sticky /y regexes so readStatement matches at offset without creating substring slices per $ or : token.
 const NAME = /[a-z_][a-z0-9_]*/y;
 const DOLLAR_TAG = /\$([A-Za-z_][A-Za-z0-9_]*)?\$/y;
 // A character a name of PostgreSQL's may hold after its first: a `$` right after one is part of the name (`a$b`), not
