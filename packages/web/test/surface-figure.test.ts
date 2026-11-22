@@ -13,7 +13,7 @@ import {
 	surfaceFigureFromIcon,
 	surfaceFigureIcon,
 } from "../src/ui/surface-figure.ts";
-import { COMPANY, fakeClient, SURFACE, storeWith, summary } from "./surface-fixtures.ts";
+import { COMPANY, fakeClient, SURFACE, session, storeWith, summary, workspace } from "./surface-fixtures.ts";
 
 describe("surface figures", () => {
 	it("ships one picture per figure and nothing else", () => {
@@ -144,6 +144,32 @@ describe("a surface's figure in the rail", () => {
 			vi.useRealTimers();
 		}
 		expect(menu()?.textContent).toContain("Figure");
+		store.dispose();
+	});
+
+	it("shows an open surface's sessions as a row of small figures, six at most, with no list under it", async () => {
+		const sessions = Array.from({ length: 8 }, (_, index) =>
+			session([], {
+				id: `44444444-4444-4444-8444-4444444444${String(index).padStart(2, "0")}`,
+				title: `Session ${index}`,
+				state: index === 0 ? "needs_input" : "ready",
+			}),
+		);
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => workspace(sessions)) }));
+		await store.load();
+		await store.openSurface("website");
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+		const crew = rail.el.querySelector<HTMLElement>(".rail-surface.active .rail-surface-crew")!;
+
+		expect(crew.getAttribute("aria-label")).toBe("8 sessions active");
+		const figures = [...crew.querySelectorAll<HTMLElement>(".surface-crew.is-mini")];
+		expect(figures).toHaveLength(6);
+		expect(figures[0]?.title).toBe("Session 0");
+		expect(figures[0]?.classList.contains("is-waiting")).toBe(true);
+		expect(crew.querySelector(".rail-surface-crew-more")?.textContent).toBe("+2");
+		expect(rail.el.querySelector(".surface-tree")).toBeNull();
 		store.dispose();
 	});
 });

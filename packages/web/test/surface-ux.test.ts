@@ -194,19 +194,14 @@ describe("operational surfaces", () => {
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
 		document.body.append(rail.el);
 		rail.update("inbox");
-		const row = rail.el.querySelector(".surface-session")!;
-		expect(row.classList.contains("is-action")).toBe(true);
-		expect(row.querySelector(".surface-crew .figure")).not.toBeNull();
-		expect(row.querySelector(".surface-crew")?.getAttribute("data-figure")).not.toBe("crown");
-		expect(row.querySelector(".surface-session-status")?.textContent).toBe("Draft ready");
-		expect(row.querySelector(".surface-switch")).toBeNull();
-		expect(row.querySelector('.surface-approve.is-action[aria-label^="Send"]')).not.toBeNull();
+		expect(rail.el.querySelector(".surface-tree")).toBeNull();
+		const crew = rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="inbox"] .rail-surface-crew')!;
+		expect(crew.getAttribute("aria-label")).toBe("1 session active");
+		expect(crew.querySelectorAll(".surface-crew.is-mini .figure")).toHaveLength(1);
+		expect(crew.querySelector(".surface-crew")?.getAttribute("data-figure")).not.toBe("crown");
 		const tile = rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="inbox"] .surface-tile')!;
 		expect(tile.style.getPropertyValue("--surface-tint")).toBe("#2f63d8");
 		expect(tile.querySelector(".surface-figure")?.getAttribute("data-figure")).toBe("envelope");
-		expect(rail.el.querySelector('.rail-surface[data-surface-slug="inbox"] .rail-surface-sub')?.textContent).toBe(
-			"1 session active",
-		);
 
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "inbox");
 		document.body.append(view.el);
@@ -383,7 +378,6 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(membersRow.querySelector(".rail-surface-sub")?.textContent).toBe("1 teammate");
 		const tree = membersRow.nextElementSibling!;
 		expect(tree.querySelector('.rail-members [data-member-id="user-marie"]')).toBe(marie);
-		expect(tree.querySelector(".surface-tree-empty")).toBeNull();
 		expect(rail.el.querySelector('[aria-label="Building"]')).toBeNull();
 		store.dispose();
 	});

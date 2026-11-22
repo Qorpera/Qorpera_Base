@@ -84,10 +84,10 @@ describe("the surface rail", () => {
 		const add = rail.el.querySelector(".rail-surface-add");
 		expect(add ? linkHref(add) : null).toBe(`#/c/${COMPANY}/new-program`);
 		expect(rail.el.querySelector(".surface-switch")).toBeNull();
-		const sessionBtn = rail.el.querySelector<HTMLButtonElement>(".surface-session-main")!;
-		expect(sessionBtn.querySelector(".surface-session-status")?.textContent).toBe("3 changes ready");
-		sessionBtn.click();
-		expect(store.state.drawer?.sessionId).toBe(SESSION);
+		const crew = active?.querySelector<HTMLElement>(".rail-surface-crew");
+		expect(crew?.getAttribute("aria-label")).toBe("1 session active");
+		expect(crew?.querySelectorAll(".surface-crew.is-mini")).toHaveLength(1);
+		expect(rail.el.querySelector(".surface-session, .surface-tree")).toBeNull();
 		store.dispose();
 	});
 
@@ -466,14 +466,6 @@ describe("the surface page", () => {
 		await store.load();
 		await store.openSurface("website");
 
-		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
-		document.body.append(rail.el);
-		rail.update("website");
-		expect(rail.el.querySelector(".surface-conflict-paths")?.textContent).toBe("src/hero.tsx, src/theme.css");
-		rail.el.querySelector<HTMLButtonElement>(`.surface-reconcile[data-change="${CHANGES[0]}"]`)!.click();
-		await flush();
-		expect(reconcileChanges).toHaveBeenNthCalledWith(1, SURFACE, [CHANGES[0]]);
-
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
 		document.body.append(view.el);
 		await flush();
@@ -482,7 +474,7 @@ describe("the surface page", () => {
 		expect(view.el.querySelector(".surface-banner.is-conflict")?.textContent).toContain("src/hero.tsx");
 		view.el.querySelector<HTMLButtonElement>('.surface-banner.is-conflict [data-act="reconcile"]')!.click();
 		await flush();
-		expect(reconcileChanges).toHaveBeenNthCalledWith(2, SURFACE, [CHANGES[0], CHANGES[1]]);
+		expect(reconcileChanges).toHaveBeenNthCalledWith(1, SURFACE, [CHANGES[0], CHANGES[1]]);
 
 		const drawer = view.el.querySelector(".surface-drawer")!;
 		expect(drawer.querySelector(".surface-drawer-change.is-conflicted")?.textContent).toContain("src/hero.tsx");
