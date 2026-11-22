@@ -1681,7 +1681,6 @@ export class SurfaceView {
 			case "bar-agent": {
 				const sessionId = target.dataset.session;
 				if (!sessionId) return;
-				if (store.state.highlight?.sessionId === sessionId) store.clearHighlight();
 				if (store.state.drawer?.sessionId === sessionId && !store.state.drawer.explorationId)
 					store.openPreviewPanel();
 				else store.openDrawer(surface.id, sessionId);

@@ -3025,6 +3025,7 @@ export class SurfacesStore {
 	}
 
 	openDrawer(surfaceId: string, sessionId: string): void {
+		if (this.state.highlight?.sessionId === sessionId) this.store.set({ highlight: undefined });
 		const previous = this.state.drawer;
 		if (previous?.sessionId === sessionId && !previous.explorationId) return;
 		if (previous) this.closeDrawer();

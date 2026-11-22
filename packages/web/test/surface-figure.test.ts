@@ -220,6 +220,11 @@ describe("a surface's figure in the rail", () => {
 		expect(rail.el.querySelector(".rail-surface-crew .surface-crew")?.classList.contains("is-highlighted")).toBe(
 			false,
 		);
+
+		store.closeDrawer();
+		store.store.set({ highlight: { surfaceId: SURFACE, sessionId: SESSION } });
+		store.openDrawer(SURFACE, SESSION);
+		expect(store.state.highlight).toBeUndefined();
 		store.dispose();
 	});
 });
