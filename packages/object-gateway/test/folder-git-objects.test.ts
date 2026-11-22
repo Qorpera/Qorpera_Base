@@ -405,7 +405,7 @@ describe("a pack's check", () => {
 		expect(await outcome(checks, packOf(honest), "pack")).toBe(UNCHECKED);
 		await scratchIsEmpty();
 		const lines = (await readFile(seen, "utf8")).split("\n");
-		expect(lines).toContain("args index-pack --stdin --threads=1");
+		expect(lines).toContain("args index-pack --stdin --threads=2");
 		expect(lines).toContain(`limit ${(512 * 1024 ** 2) / 1024}`);
 		const [group, pid] = (lines.find((l) => l.startsWith("group "))?.split(" ") ?? []).slice(1);
 		expect(group).toBe(pid);

@@ -124,6 +124,42 @@ export function encodeJson(kind: number, value: unknown): Buffer {
 	return encodeFrame(kind, Buffer.from(JSON.stringify(value)));
 }
 
+export interface ReportEntry {
+	readonly path: string;
+	readonly outcome: "saved" | "conflict" | "refused" | "denied" | "waiting_for_review" | "not_applied" | "waiting";
+	readonly reason?: string;
+	readonly receipt?: string;
+	readonly kept?: boolean;
+	readonly target?: string;
+}
+
+export interface Report {
+	readonly commitId: string | null;
+	readonly seq: number | null;
+	readonly paths: readonly ReportEntry[];
+	readonly closed?: true;
+	readonly refused?: "denied" | "unreadable" | "run_ended" | "stopped" | "invalid" | "unproven";
+}
+
+export function fitReport(report: Report, maxBytes = MAX_PAYLOAD): Report {
+	if (report.paths.length === 0 || Buffer.byteLength(JSON.stringify(report)) <= maxBytes) return report;
+	const problems: ReportEntry[] = [];
+	const saved: ReportEntry[] = [];
+	for (const entry of report.paths) {
+		if (entry.outcome === "saved") saved.push(entry);
+		else problems.push(entry);
+	}
+	const kept: ReportEntry[] = [];
+	let used = Buffer.byteLength(JSON.stringify({ ...report, paths: [] }));
+	for (const entry of [...problems, ...saved]) {
+		const size = Buffer.byteLength(JSON.stringify(entry)) + (kept.length === 0 ? 0 : 1);
+		if (used + size > maxBytes) break;
+		kept.push(entry);
+		used += size;
+	}
+	return { ...report, paths: kept };
+}
+
 /** Splits a byte stream into frames. A bad length is a protocol error: the connection is then closed. */
 export class FrameReader {
 	readonly #header = Buffer.allocUnsafeSlow(4);

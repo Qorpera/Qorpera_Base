@@ -623,7 +623,7 @@ describe("cloud object outage continuity", () => {
 			peak = Math.max(peak, inFlight);
 			await new Promise((resolve) => setTimeout(resolve, 15));
 			try {
-				await writeReplica(profile, hash, data);
+				return await writeReplica(profile, hash, data);
 			} finally {
 				inFlight--;
 			}
@@ -947,6 +947,103 @@ describe("cloud object outage continuity", () => {
 		expect(r1).toEqual(r2);
 		expect(r2).toEqual(r3);
 		expect(r1.pending).toBe(0);
+	});
+
+	it("skips WAN download-back on fresh replica creation while verifying 409 duplicates and opt-in read-back", async () => {
+		const fixture = await gateway();
+		const readLegacySpy = vi.spyOn(fixture.authority, "readLegacyObject");
+		expect(await fixture.upload()).toBe("stored");
+		await fixture.replication.reconcile();
+		expect(readLegacySpy).not.toHaveBeenCalled();
+		expect(fixture.cloud.replicas.has(objectKey)).toBe(true);
+
+		const dupBody = Buffer.from("duplicate-replica-payload");
+		const dupHash = createHash("sha256").update(dupBody).digest("hex");
+		const dupKey = `${profileId}/${dupHash}`;
+		fixture.cloud.replicas.set(dupKey, Uint8Array.from(Buffer.from("corrupted-replica-payload")));
+		expect(await fixture.upload(dupHash, dupBody)).toBe("stored");
+		await fixture.replication.reconcile();
+		expect(readLegacySpy).toHaveBeenCalledWith(profileId, dupHash);
+		expect((await fixture.replication.status()).pending).toBe(1);
+
+		fixture.cloud.replicas.set(dupKey, Uint8Array.from(dupBody));
+		await fixture.replication.reconcile();
+		expect(await fixture.replication.status()).toEqual({ pending: 0, blocked: 0, degraded: false });
+
+		const verifiedReplication = new ObjectGatewayReplication(
+			fixture.journal,
+			fixture.objects,
+			fixture.authority,
+			undefined,
+			undefined,
+			{ verifyReplicaReadBack: true },
+		);
+		const optInBody = Buffer.from("opt-in-readback-payload");
+		const optInHash = createHash("sha256").update(optInBody).digest("hex");
+		readLegacySpy.mockClear();
+		await verifiedReplication.uploadWithAuthority(profileId, optInHash, optInBody, {
+			authorize: async () => undefined,
+			confirm: async () => {
+				fixture.cloud.catalog.set(`${profileId}/${optInHash}`, {
+					backend: "nas-object-gateway",
+					bytes: optInBody.length,
+				});
+			},
+		});
+		await verifiedReplication.reconcile();
+		expect(readLegacySpy).toHaveBeenCalledWith(profileId, optInHash);
+	});
+
+	it("removes journal files on delete, cleans legacy deleted tombstones on reconcile, and triggers pressure reconciliation", async () => {
+		const fixture = await gateway();
+		const boundedJournal = new ObjectGatewayJournal(join(fixture.root, "bounded-tombstone-state"), 3);
+		let pressureHits = 0;
+		const replication = new ObjectGatewayReplication(
+			boundedJournal,
+			fixture.objects,
+			fixture.authority,
+			undefined,
+			undefined,
+			{
+				pressureThreshold: 2,
+				onPendingPressure: () => {
+					pressureHits++;
+				},
+			},
+		);
+		for (let i = 0; i < 6; i++) {
+			const payload = Buffer.from(`ephemeral-delete-${i}`);
+			const hash = createHash("sha256").update(payload).digest("hex");
+			await replication.uploadWithAuthority(profileId, hash, payload, {
+				authorize: async () => undefined,
+				confirm: async () => {
+					fixture.cloud.catalog.set(`${profileId}/${hash}`, {
+						backend: "nas-object-gateway",
+						bytes: payload.length,
+					});
+				},
+			});
+			fixture.cloud.deletion = true;
+			await replication.remove(profileId, hash, payload.length, authorizationId);
+			fixture.cloud.deletion = false;
+			expect(await boundedJournal.read(`pending/${profileId}-${hash}`)).toBeUndefined();
+		}
+		expect(await boundedJournal.list("pending")).toEqual([]);
+		expect(pressureHits).toBe(3);
+
+		const legacyBody = Buffer.from("legacy-tombstone-object");
+		const legacyHash = createHash("sha256").update(legacyBody).digest("hex");
+		const legacyKey = `pending/${profileId}-${legacyHash}`;
+		await boundedJournal.write(legacyKey, {
+			profileId,
+			sha256: legacyHash,
+			bytes: legacyBody.length,
+			state: "deleted",
+			authorizationId,
+		});
+		expect(await boundedJournal.list("pending")).toEqual([legacyKey]);
+		await replication.reconcile();
+		expect(await boundedJournal.list("pending")).toEqual([]);
 	});
 
 	it("removes journal entries on delete, prunes legacy deleted tombstones in reconcile, and skips cached deleted keys in blockedEntries", async () => {
