@@ -20,13 +20,18 @@ Environment=QORPERA_APP_HOST_DEEP_HIBERNATE_SEC=3600
 ExecStart=/usr/local/bin/qorpera-app-host
 Restart=always
 RestartSec=2
+TimeoutStopSec=30
+LimitCORE=0
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=-/var/snap/lxd/common/lxd -/var/lib/lxd
 ProtectHome=yes
 PrivateTmp=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
 LimitNOFILE=65536
 MemoryMax=512M
+MemorySwapMax=0
 TasksMax=512
 
 [Install]

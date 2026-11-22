@@ -887,6 +887,7 @@ export class SurfaceView {
 									: t("Live matches Base"),
 							"data-act": "publish",
 						},
+						publishBusy ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
 						publishBusy ? t("Publishing…") : t("Publish"),
 						!publishBusy && count ? h("span", { class: "surface-count" }, String(count)) : null,
 					),
@@ -1025,7 +1026,7 @@ export class SurfaceView {
 						h(
 							"div",
 							{ class: "surface-empty" },
-							surfaceTile(surface, look, 30, "is-hero"),
+							surfaceTile(surface, look, "is-hero"),
 							h("h2", null, surface.title),
 							h(
 								"p",

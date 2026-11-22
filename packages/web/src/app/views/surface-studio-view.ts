@@ -1,6 +1,7 @@
 import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
 import {
 	type CompiledIdentityTokens,
+	compileIdentityTokensCss,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
 	type StudioPatchChange,
@@ -10,12 +11,21 @@ import {
 	sharedAssetsConsumedBy,
 	sharedAssetsProducedBy,
 } from "@qorpera/contracts";
+import { AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
-import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { markdown } from "../../ui/markdown.ts";
+import { framePage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
-import { formatConflictPaths, isOpenChange, type SurfacesStore } from "../surfaces-store.ts";
-import { surfaceEmblem, surfaceTile } from "./surface-rail.ts";
+import {
+	effectiveStudioBaseFiles,
+	formatConflictPaths,
+	isLocalSurfaceId,
+	isOpenChange,
+	normalizeStudioPatchOps,
+	type SurfacesStore,
+	type SurfaceUpdatePhase,
+} from "../surfaces-store.ts";
+import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
 import { type Studio3DConfig, Studio3DViewer } from "./surface-studio-3d.ts";
 
@@ -84,13 +94,34 @@ interface StudioDoc {
 	readonly changed: boolean;
 }
 
-type StudioTab = "overview" | "specs" | "vendors" | "analysis" | "files";
+interface StudioHtmlPage {
+	readonly path: string;
+	readonly title: string;
+	readonly html: string;
+	readonly baseHtml?: string;
+	readonly changed: boolean;
+}
+
+interface StudioSvgAsset {
+	readonly path: string;
+	readonly title: string;
+	readonly svg: string;
+	readonly baseSvg?: string;
+	readonly changed: boolean;
+}
+
+type StudioTab = "overview" | "specs" | "vendors" | "analysis" | "files" | "pages";
 
 const COLOR_VALUE = /^(?:#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|hsl)a?\([^)]+\)|oklch\([^)]+\))$/i;
 const COLOR_GROUPS = new Set(["colors", "color", "palette", "swatches", "colorways"]);
 const TYPE_GROUPS = new Set(["font", "fonts", "typography", "type", "typeface"]);
 const MODEL_GROUPS = new Set(["model", "3d", "geometry"]);
 const VENDOR_GROUPS = new Set(["vendors", "suppliers"]);
+const HTML_FILE_RE = /\.html?$/i;
+const SVG_FILE_RE = /\.svg$/i;
+const MARKDOWN_FILE_RE = /\.(?:md|markdown)$/i;
+const PROSE_TEXT_FILE_RE = /\.txt$/i;
+const TOKEN_STYLESHEET_RE = /(?:^|\/)(?:tokens|qorpera-identity)\.css$/i;
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -302,6 +333,139 @@ function docPriority(path: string): number {
 	return 2;
 }
 
+function svgDataUrl(svg: string): string {
+	return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function htmlDocumentTitle(html: string, fallbackPath: string): string {
+	const match = html.match(/<title\b[^>]*>([\s\S]{1,200}?)<\/title>/i);
+	if (!match) return readableName(fallbackPath);
+	const title = new DOMParser()
+		.parseFromString(`<title>${match[1]}</title>`, "text/html")
+		.title.trim()
+		.replace(/\s+/g, " ");
+	return title && title.length <= 80 ? title : readableName(fallbackPath);
+}
+
+function resolveRelativeStudioPath(fromFilePath: string, href: string): string | null {
+	const trimmed = href.trim();
+	if (!trimmed || /^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) return null;
+	const withoutQuery = trimmed.split(/[?#]/, 1)[0] ?? "";
+	if (!withoutQuery) return null;
+	const fromParts = fromFilePath.includes("/") ? fromFilePath.slice(0, fromFilePath.lastIndexOf("/")).split("/") : [];
+	const minDepth = fromParts.length > 0 ? 1 : 0;
+	const baseParts = withoutQuery.startsWith("/") ? [] : [...fromParts];
+	for (const part of withoutQuery.split("/")) {
+		if (!part || part === ".") continue;
+		if (part === "..") {
+			if (baseParts.length <= (withoutQuery.startsWith("/") ? 0 : minDepth)) return null;
+			baseParts.pop();
+			continue;
+		}
+		baseParts.push(part);
+	}
+	const resolved = baseParts.join("/");
+	if (!resolved) return null;
+	if (withoutQuery.startsWith("/") && minDepth > 0 && !TOKEN_STYLESHEET_RE.test(resolved)) {
+		if (resolved !== fromParts[0] && !resolved.startsWith(`${fromParts[0]}/`)) return null;
+	}
+	return resolved;
+}
+
+function compiledTokensCssFrom(
+	files: Readonly<Record<string, string>>,
+	folderRoot: string | null | undefined,
+	fallbackCss: string,
+): string {
+	const cleanRoot = folderRoot?.replace(/^\/+|\/+$/g, "");
+	const tokensJson =
+		files[IDENTITY_TOKENS_JSON_PATH] ??
+		(cleanRoot ? files[`${cleanRoot}/tokens.json`] : undefined) ??
+		files["tokens.json"];
+	if (tokensJson?.trim()) {
+		const compiled = compileIdentityTokensCss(tokensJson);
+		if (compiled) return compiled;
+	}
+	return files[IDENTITY_TOKENS_CSS_PATH] ?? (cleanRoot ? files[`${cleanRoot}/tokens.css`] : undefined) ?? fallbackCss;
+}
+
+function studioHtmlDependencyChanged(
+	html: string,
+	htmlPath: string,
+	files: Readonly<Record<string, string>>,
+	baseFiles: Readonly<Record<string, string>>,
+	previewTokensCss: string,
+	baseTokensCss: string,
+): boolean {
+	for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
+		const tag = match[0];
+		if (!/\brel\s*=\s*(?:"[^"]*\bstylesheet\b[^"]*"|'[^']*\bstylesheet\b[^']*'|stylesheet\b)/i.test(tag)) continue;
+		const href = tag.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+		const rawHref = href?.[1] ?? href?.[2] ?? href?.[3] ?? "";
+		const resolved = resolveRelativeStudioPath(htmlPath, rawHref);
+		if (!resolved) continue;
+		if (TOKEN_STYLESHEET_RE.test(resolved)) {
+			const nextCss = previewTokensCss || files[resolved] || files[IDENTITY_TOKENS_CSS_PATH] || "";
+			const prevCss = baseTokensCss || baseFiles[resolved] || baseFiles[IDENTITY_TOKENS_CSS_PATH] || "";
+			if (nextCss !== prevCss) return true;
+		} else if (/\.css$/i.test(resolved)) {
+			if ((files[resolved] ?? "") !== (baseFiles[resolved] ?? "")) return true;
+		}
+	}
+	for (const match of html.matchAll(/<img\b[^>]*>/gi)) {
+		const src = match[0].match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+		const rawSrc = src?.[1] ?? src?.[2] ?? src?.[3] ?? "";
+		const resolved = resolveRelativeStudioPath(htmlPath, rawSrc);
+		if (!resolved || !SVG_FILE_RE.test(resolved)) continue;
+		if ((files[resolved] ?? "") !== (baseFiles[resolved] ?? "")) return true;
+	}
+	return false;
+}
+
+export function prepareStudioHtmlPreview(
+	html: string,
+	htmlPath: string,
+	files: Readonly<Record<string, string>>,
+	compiledTokensCss: string,
+): string | null {
+	const doc = new DOMParser().parseFromString(html, "text/html");
+	let modified = false;
+	for (const link of [...doc.querySelectorAll("link[href]")]) {
+		const rel = (link.getAttribute("rel") ?? "").toLowerCase().split(/\s+/);
+		if (!rel.includes("stylesheet")) continue;
+		const resolved = resolveRelativeStudioPath(htmlPath, link.getAttribute("href") ?? "");
+		if (!resolved) continue;
+		let css: string | undefined;
+		if (TOKEN_STYLESHEET_RE.test(resolved)) {
+			css = compiledTokensCss || files[resolved] || files[IDENTITY_TOKENS_CSS_PATH];
+		} else if (/\.css$/i.test(resolved)) {
+			css = files[resolved];
+		}
+		if (!css) continue;
+		const style = doc.createElement("style");
+		style.textContent = css.replace(/<\/style/gi, "<\\/style");
+		link.replaceWith(style);
+		modified = true;
+	}
+	for (const img of [...doc.querySelectorAll("img[src]")]) {
+		const resolved = resolveRelativeStudioPath(htmlPath, img.getAttribute("src") ?? "");
+		if (!resolved || !SVG_FILE_RE.test(resolved)) continue;
+		const svg = files[resolved]?.trim();
+		if (!svg || !/<svg[\s>]/i.test(svg)) continue;
+		img.setAttribute("src", svgDataUrl(svg));
+		modified = true;
+	}
+	if (!modified) return framePage(html);
+	const doctype = doc.doctype ? new XMLSerializer().serializeToString(doc.doctype) : "<!doctype html>";
+	return framePage(`${doctype}${doc.documentElement.outerHTML}`);
+}
+
+function updatingLabel(phase: SurfaceUpdatePhase): string {
+	if (phase === "publishing") return t("Publishing…");
+	if (phase === "merging") return t("Applying…");
+	return t("Updating…");
+}
+
 function sameDeps(prev: readonly unknown[] | undefined, next: readonly unknown[]): boolean {
 	if (!prev || prev.length !== next.length) return false;
 	for (let i = 0; i < next.length; i++) {
@@ -330,23 +494,72 @@ export class SurfaceStudioView {
 	#lastConflict: SurfacePreviewConflict | null = null;
 	#viewer3d: Studio3DViewer | undefined;
 	#reportView: SurfaceReportView | undefined;
+	readonly #htmlFrames: AppFrame[] = [];
 	#tab: StudioTab = "overview";
 	#shownDeps: readonly unknown[] | undefined;
 	#shownOrdered: readonly StudioPatchChange[] | undefined;
 	#appliedIdentityVars: string[] = [];
+	#wasUpdating = false;
+	#settleTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(options: SurfaceStudioOptions) {
 		this.#options = options;
 		this.#baseFiles = options.baseFiles ? { ...options.baseFiles } : {};
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
-		if (options.loadFiles && !options.baseFiles) void this.#load();
+		if (!options.baseFiles) {
+			const cloudManaged =
+				options.store.canLoadCloudFiles &&
+				!isLocalSurfaceId(options.surface.id) &&
+				options.store.state.source === "cloud";
+			if (cloudManaged) {
+				if (!options.store.state.cloudSurfaceFiles[options.surface.id]) {
+					void options.store.refreshCloudFiles(options.surface);
+				}
+			} else if (options.loadFiles) {
+				void this.#load();
+			}
+		}
 		this.update();
 	}
 
 	dispose(): void {
+		this.#disposeHtmlFrames();
+		if (this.#settleTimer) {
+			clearTimeout(this.#settleTimer);
+			this.#settleTimer = undefined;
+		}
 		this.#reportView?.dispose();
 		this.#lifetime.abort();
+	}
+
+	#disposeHtmlFrames(): void {
+		for (const frame of this.#htmlFrames) frame.dispose();
+		this.#htmlFrames.length = 0;
+	}
+
+	#createHtmlFrame(
+		html: string,
+		htmlPath: string,
+		title: string,
+		files: Readonly<Record<string, string>>,
+		compiledTokensCss: string,
+		className: string,
+	): HTMLElement {
+		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss);
+		if (live === null) {
+			return h("p", { class: "studio-html-fallback" }, t("This page can't be shown live."));
+		}
+		const frame = new AppFrame(
+			{ html: live },
+			t("Page: {name}", { name: title }),
+			className,
+			async () => ({ ok: false, error: t("This page can't be shown here.") }),
+			() => undefined,
+			{ again: true },
+		);
+		this.#htmlFrames.push(frame);
+		return frame.frame;
 	}
 
 	async #load(): Promise<void> {
@@ -368,7 +581,7 @@ export class SurfaceStudioView {
 		}
 	}
 
-	#orderedChanges(): StudioPatchChange[] {
+	#orderedChanges(folderRoot: string | null | undefined): StudioPatchChange[] {
 		const store = this.#options.store;
 		const state = store.state;
 		if (state.mode === "live") return [];
@@ -377,7 +590,7 @@ export class SurfaceStudioView {
 			for (const change of session.changes) {
 				if (change.kind !== "folder_patch" || !isOpenChange(change) || !store.isChangeShown(change.id)) continue;
 				const ops = this.#options.patches?.[change.id] ?? state.studioPatches[change.id];
-				if (ops?.length) ordered.push({ changeId: change.id, ops });
+				if (ops?.length) ordered.push({ changeId: change.id, ops: normalizeStudioPatchOps(ops, folderRoot) });
 			}
 		}
 		return ordered;
@@ -385,10 +598,9 @@ export class SurfaceStudioView {
 
 	#effectiveBaseFiles(surfaceId: string): Readonly<Record<string, string>> {
 		const state = this.#options.store.state;
-		const cloudBase = state.cloudSurfaceFiles[surfaceId];
-		const localBase = state.localStudioBase[surfaceId];
-		if (!cloudBase && !localBase) return this.#baseFiles;
-		return { ...this.#baseFiles, ...(cloudBase ?? {}), ...(localBase ?? {}) };
+		const storeBase = effectiveStudioBaseFiles(state, surfaceId);
+		if (!storeBase) return this.#baseFiles;
+		return this.#options.baseFiles ? { ...this.#baseFiles, ...storeBase } : storeBase;
 	}
 
 	#applyIdentityVars(isIdentity: boolean, tokens: CompiledIdentityTokens | null): void {
@@ -420,16 +632,39 @@ export class SurfaceStudioView {
 		const identityTokens = store.companyIdentityTokens();
 		this.#applyIdentityVars(isIdentitySurface, identityTokens);
 		const workspace = store.workspace(surface.id);
-		const ordered = this.#orderedChanges();
+		const ordered = this.#orderedChanges(surface.folderRoot);
 		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
+		const updatingPhase = store.surfaceUpdatePhase(surface.id);
+		const updating = updatingPhase !== null;
+		const initialLoading =
+			this.#loading || (!state.cloudSurfaceFiles[surface.id] && store.isCloudFilesLoading(surface.id));
+		this.el.classList.toggle("is-updating", updating);
+		this.el.setAttribute("aria-busy", String(updating));
+		if (updating) {
+			if (this.#settleTimer) {
+				clearTimeout(this.#settleTimer);
+				this.#settleTimer = undefined;
+			}
+			this.el.classList.remove("is-settled");
+		} else if (this.#wasUpdating) {
+			this.el.classList.add("is-settled");
+			if (this.#settleTimer) clearTimeout(this.#settleTimer);
+			this.#settleTimer = setTimeout(() => {
+				this.#settleTimer = undefined;
+				this.el.classList.remove("is-settled");
+			}, 600);
+		}
+		this.#wasUpdating = updating;
 		const activeOtherSurfaces = state.surfaces.filter((item) => item.status === "active" && item.id !== surface.id);
 		const downstreamSurfaces = activeOtherSurfaces.filter((item) => item.group === "products");
 		const deps: readonly unknown[] = [
-			this.#loading,
+			initialLoading,
+			updatingPhase,
 			state.mode,
 			this.#tab,
 			this.#baseFiles,
 			state.cloudSurfaceFiles[surface.id],
+			state.pendingStudioPatches[surface.id],
 			state.localStudioBase[surface.id],
 			surface,
 			lookKind,
@@ -442,17 +677,22 @@ export class SurfaceStudioView {
 		if (sameDeps(this.#shownDeps, deps) && sameOrderedChanges(this.#shownOrdered, ordered)) return;
 		this.#shownDeps = deps;
 		this.#shownOrdered = ordered;
+		this.#disposeHtmlFrames();
 
-		const composition = composeStudioPreview(baseFiles, ordered);
+		const composition = composeStudioPreview(baseFiles, ordered, surface.folderRoot);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();
+		const previewTokensCss = compiledTokensCssFrom(files, surface.folderRoot, identityTokens?.css ?? "");
+		const baseTokensCss = compiledTokensCssFrom(baseFiles, surface.folderRoot, identityTokens?.css ?? "");
 
 		const colors: ColorToken[] = [];
 		const typography: TypeToken[] = [];
 		const specs: SpecSection[] = [];
 		const vendors: VendorCard[] = [];
 		const docs: StudioDoc[] = [];
+		const htmlPages: StudioHtmlPage[] = [];
+		const svgs: StudioSvgAsset[] = [];
 		const reportPaths: string[] = [];
 		let rawModel:
 			| { readonly value: unknown; readonly base: Record<string, unknown> | undefined; readonly key: string }
@@ -484,17 +724,51 @@ export class SurfaceStudioView {
 					collectSpecs(parsed, baseParsed, [], entries, tables);
 					if (entries.length || tables.length)
 						specs.push({ path, title: readableName(path), changed, entries, tables });
-					continue;
 				}
+				continue;
 			}
-			docs.push({
-				path,
-				title: readableName(path),
-				content,
-				...(baseContent !== undefined ? { baseContent } : {}),
-				isMarkdown: /\.(?:md|markdown)$/i.test(path),
-				changed,
-			});
+			if (HTML_FILE_RE.test(path)) {
+				const dependencyChanged = studioHtmlDependencyChanged(
+					content,
+					path,
+					files,
+					baseFiles,
+					previewTokensCss,
+					baseTokensCss,
+				);
+				htmlPages.push({
+					path,
+					title: htmlDocumentTitle(content, path),
+					html: content,
+					...(baseContent !== undefined ? { baseHtml: baseContent } : {}),
+					changed: changed || dependencyChanged,
+				});
+				continue;
+			}
+			if (SVG_FILE_RE.test(path)) {
+				const trimmed = content.trim();
+				if (/<svg[\s>]/i.test(trimmed)) {
+					const baseTrimmed = baseContent?.trim();
+					svgs.push({
+						path,
+						title: readableName(path),
+						svg: trimmed,
+						...(baseTrimmed && /<svg[\s>]/i.test(baseTrimmed) ? { baseSvg: baseTrimmed } : {}),
+						changed,
+					});
+				}
+				continue;
+			}
+			if (MARKDOWN_FILE_RE.test(path) || PROSE_TEXT_FILE_RE.test(path)) {
+				docs.push({
+					path,
+					title: readableName(path),
+					content,
+					...(baseContent !== undefined ? { baseContent } : {}),
+					isMarkdown: MARKDOWN_FILE_RE.test(path),
+					changed,
+				});
+			}
 		}
 		docs.sort((a, b) => docPriority(a.path) - docPriority(b.path) || a.path.localeCompare(b.path));
 		const modelConfig = rawModel
@@ -526,6 +800,19 @@ export class SurfaceStudioView {
 					surface.folderRoot ? h("span", { class: "studio-path" }, surface.folderRoot) : null,
 					h("span", { class: badgeClass }, badgeText),
 				),
+				updatingPhase
+					? h(
+							"span",
+							{
+								class: "studio-updating-pill",
+								role: "status",
+								"aria-live": "polite",
+								"data-updating-phase": updatingPhase,
+							},
+							h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
+							h("span", null, updatingLabel(updatingPhase)),
+						)
+					: null,
 			),
 		];
 
@@ -555,15 +842,19 @@ export class SurfaceStudioView {
 			);
 		}
 
-		if (filePaths.length === 0) {
+		const allChangedPaths = [...new Set([...Object.keys(baseFiles), ...filePaths])]
+			.sort()
+			.filter((path) => baseFiles[path] !== files[path]);
+
+		if (filePaths.length === 0 && (state.mode !== "compare" || allChangedPaths.length === 0)) {
 			children.push(
 				h(
 					"div",
 					{ class: "studio-empty" },
-					this.#loading
+					initialLoading
 						? [h("span", { class: "surface-state is-running" }), h("p", null, t("Opening studio…"))]
 						: [
-								interfaceEmblem(surfaceEmblem(surface), 42),
+								surfaceTile(surface, this.#options.store.lookOf(surface), "is-hero"),
 								h("h2", null, surface.title),
 								workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
 								h(
@@ -583,8 +874,188 @@ export class SurfaceStudioView {
 		if (state.mode === "compare") {
 			const changedSpecs = specs.filter((spec) => spec.changed);
 			const changedDocs = docs.filter((doc) => doc.changed);
-			const changedVendors = vendors.filter((vendor) => vendor.changed);
-			if (!changedSpecs.length && !changedDocs.length && !changedVendors.length) {
+			const changedSvgs = svgs.filter((asset) => asset.changed);
+			const changedHtmlPages = htmlPages.filter((page) => page.changed);
+			const renderedPaths = new Set<string>();
+			for (const spec of changedSpecs) {
+				const diffs = spec.entries.filter((entry) => entry.changed);
+				if (!diffs.length) continue;
+				renderedPaths.add(spec.path);
+				sections.push(
+					h(
+						"section",
+						{ class: "studio-section studio-compare-card", "data-compare-file": spec.path },
+						h(
+							"div",
+							{ class: "studio-section-head" },
+							h("h2", null, spec.title),
+							h("code", { class: "studio-file-tag" }, spec.path),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-grid" },
+							h("div", { class: "studio-compare-col-head" }, t("Base")),
+							h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+							...diffs.flatMap((entry) => [
+								h(
+									"div",
+									{ class: "studio-compare-cell is-base" },
+									h("small", null, entry.key),
+									h("span", null, entry.prev ?? t("Not set")),
+								),
+								h(
+									"div",
+									{ class: "studio-compare-cell is-preview" },
+									h("small", null, entry.key),
+									h("strong", null, entry.value),
+								),
+							]),
+						),
+					),
+				);
+			}
+			for (const asset of changedSvgs) {
+				renderedPaths.add(asset.path);
+				sections.push(
+					h(
+						"section",
+						{ class: "studio-section studio-compare-card", "data-compare-file": asset.path },
+						h(
+							"div",
+							{ class: "studio-section-head" },
+							h("h2", null, asset.title),
+							h("code", { class: "studio-file-tag" }, asset.path),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-grid" },
+							h("div", { class: "studio-compare-col-head" }, t("Base")),
+							h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+							h(
+								"div",
+								{ class: "studio-compare-cell is-base studio-svg-stage" },
+								asset.baseSvg
+									? h("img", { class: "studio-svg-img", src: svgDataUrl(asset.baseSvg), alt: asset.title })
+									: h("em", null, t("Not in Base")),
+							),
+							h(
+								"div",
+								{ class: "studio-compare-cell is-preview studio-svg-stage" },
+								h("img", { class: "studio-svg-img", src: svgDataUrl(asset.svg), alt: asset.title }),
+							),
+						),
+					),
+				);
+			}
+			for (const doc of changedDocs) {
+				renderedPaths.add(doc.path);
+				sections.push(
+					h(
+						"section",
+						{ class: "studio-section studio-compare-card", "data-compare-file": doc.path },
+						h(
+							"div",
+							{ class: "studio-section-head" },
+							h("h2", null, doc.title),
+							h("code", { class: "studio-file-tag" }, doc.path),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-grid" },
+							h("div", { class: "studio-compare-col-head" }, t("Base")),
+							h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+							h(
+								"div",
+								{ class: "studio-compare-cell is-base studio-doc-body" },
+								doc.baseContent
+									? doc.isMarkdown
+										? markdown(doc.baseContent)
+										: h("div", { class: "studio-plain-text" }, doc.baseContent)
+									: h("em", null, t("Not in Base")),
+							),
+							h(
+								"div",
+								{ class: "studio-compare-cell is-preview studio-doc-body" },
+								doc.isMarkdown ? markdown(doc.content) : h("div", { class: "studio-plain-text" }, doc.content),
+							),
+						),
+					),
+				);
+			}
+			for (const page of changedHtmlPages) {
+				renderedPaths.add(page.path);
+				sections.push(
+					h(
+						"section",
+						{ class: "studio-section studio-compare-card", "data-compare-file": page.path },
+						h(
+							"div",
+							{ class: "studio-section-head" },
+							h("h2", null, page.title),
+							h("code", { class: "studio-file-tag" }, page.path),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-grid" },
+							h("div", { class: "studio-compare-col-head" }, t("Base")),
+							h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+							h(
+								"div",
+								{ class: "studio-compare-cell is-base" },
+								page.baseHtml
+									? this.#createHtmlFrame(
+											page.baseHtml,
+											page.path,
+											page.title,
+											baseFiles,
+											baseTokensCss,
+											"studio-html-frame is-compare",
+										)
+									: h("em", null, t("Not in Base")),
+							),
+							h(
+								"div",
+								{ class: "studio-compare-cell is-preview" },
+								this.#createHtmlFrame(
+									page.html,
+									page.path,
+									page.title,
+									files,
+									previewTokensCss,
+									"studio-html-frame is-compare",
+								),
+							),
+						),
+					),
+				);
+			}
+			const otherChangedPaths = allChangedPaths.filter((path) => !renderedPaths.has(path));
+			if (otherChangedPaths.length > 0) {
+				sections.push(
+					h(
+						"section",
+						{ class: "studio-section studio-compare-card", "data-compare-other": "true" },
+						h("div", { class: "studio-section-head" }, h("h2", null, t("Other changed files"))),
+						h(
+							"ul",
+							{ class: "studio-changed-paths" },
+							otherChangedPaths.map((path) =>
+								h(
+									"li",
+									{ "data-compare-file": path },
+									h("code", { class: "studio-file-tag" }, path),
+									h(
+										"span",
+										{ class: "studio-changed-pill" },
+										files[path] === undefined ? t("Removed") : t("Updated"),
+									),
+								),
+							),
+						),
+					),
+				);
+			}
+			if (sections.length === 0) {
 				sections.push(
 					h(
 						"section",
@@ -592,77 +1063,6 @@ export class SurfaceStudioView {
 						h("p", null, t("No open changes to compare against Base.")),
 					),
 				);
-			} else {
-				for (const spec of changedSpecs) {
-					const diffs = spec.entries.filter((entry) => entry.changed);
-					if (!diffs.length) continue;
-					sections.push(
-						h(
-							"section",
-							{ class: "studio-section studio-compare-card", "data-compare-file": spec.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, spec.title),
-								h("code", { class: "studio-file-tag" }, spec.path),
-							),
-							h(
-								"div",
-								{ class: "studio-compare-grid" },
-								h("div", { class: "studio-compare-col-head" }, t("Base")),
-								h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
-								...diffs.flatMap((entry) => [
-									h(
-										"div",
-										{ class: "studio-compare-cell is-base" },
-										h("small", null, entry.key),
-										h("span", null, entry.prev ?? t("Not set")),
-									),
-									h(
-										"div",
-										{ class: "studio-compare-cell is-preview" },
-										h("small", null, entry.key),
-										h("strong", null, entry.value),
-									),
-								]),
-							),
-						),
-					);
-				}
-				for (const doc of changedDocs) {
-					sections.push(
-						h(
-							"section",
-							{ class: "studio-section studio-compare-card", "data-compare-file": doc.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, doc.title),
-								h("code", { class: "studio-file-tag" }, doc.path),
-							),
-							h(
-								"div",
-								{ class: "studio-compare-grid" },
-								h("div", { class: "studio-compare-col-head" }, t("Base")),
-								h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
-								h(
-									"div",
-									{ class: "studio-compare-cell is-base studio-doc-body" },
-									doc.baseContent
-										? doc.isMarkdown
-											? markdown(doc.baseContent)
-											: h("pre", { class: "studio-code" }, doc.baseContent)
-										: h("em", null, t("Not in Base")),
-								),
-								h(
-									"div",
-									{ class: "studio-compare-cell is-preview studio-doc-body" },
-									doc.isMarkdown ? markdown(doc.content) : h("pre", { class: "studio-code" }, doc.content),
-								),
-							),
-						),
-					);
-				}
 			}
 			children.push(h("div", { class: "studio-grid" }, sections));
 			this.el.replaceChildren(...children);
@@ -675,18 +1075,48 @@ export class SurfaceStudioView {
 		const primarySpec = specs.find((spec) => !isVendorSpec(spec));
 		const vendorSpecs = specs.filter(isVendorSpec);
 		const detailSpecs = specs.filter((spec) => !isVendorSpec(spec));
+		const hasSpecsTab =
+			detailSpecs.some((spec) => spec.tables.length > 0 || spec.entries.length > 0) || typography.length > 0;
+		const hasVendorsTab = vendors.length > 0 || vendorSpecs.length > 0;
+		const hasAnalysisTab = reportPaths.length > 0;
+		const hasFilesTab = docs.length > 0;
+		const hasPagesTab = htmlPages.length > 0;
+		const hasNonIdentitySharedLinks =
+			!isIdentity &&
+			(sharedAssetsConsumedBy(lookKind).some((link) =>
+				activeOtherSurfaces.some((item) => {
+					const targetKind = store.lookOf(item).kind;
+					return (
+						link.producedBy.includes(targetKind) ||
+						(link.producedBy.includes("identity") && item.isGlobal === true)
+					);
+				}),
+			) ||
+				sharedAssetsProducedBy(lookKind).some((link) =>
+					activeOtherSurfaces.some((item) => link.consumedBy.includes(store.lookOf(item).kind)),
+				));
+		const hasOverviewContent = Boolean(
+			(isIdentity && downstreamSurfaces.length > 0) ||
+				hasNonIdentitySharedLinks ||
+				modelConfig ||
+				svgs.length ||
+				colors.length ||
+				(isIdentity && typography.length) ||
+				(!isIdentity && primarySpec && primarySpec.entries.length > 0),
+		);
 		const tabbed = Boolean(modelConfig || vendors.length || reportPaths.length || isIdentity);
 		const availableTabs: { readonly id: StudioTab; readonly label: string }[] = [];
 		if (tabbed) {
-			availableTabs.push({ id: "overview", label: t("Overview") });
-			if (detailSpecs.some((spec) => spec.tables.length > 0 || spec.entries.length > 0) || typography.length)
+			if (hasOverviewContent || (!hasSpecsTab && !hasVendorsTab && !hasAnalysisTab && !hasFilesTab && !hasPagesTab))
+				availableTabs.push({ id: "overview", label: t("Overview") });
+			if (hasSpecsTab)
 				availableTabs.push({ id: "specs", label: isIdentity ? t("Design System") : t("Specs & BOM") });
-			if (vendors.length || vendorSpecs.length)
-				availableTabs.push({ id: "vendors", label: t("Production & Vendors") });
-			if (reportPaths.length > 0)
+			if (hasVendorsTab) availableTabs.push({ id: "vendors", label: t("Production & Vendors") });
+			if (hasAnalysisTab)
 				availableTabs.push({ id: "analysis", label: isIdentity ? t("Philosophy") : t("Analysis") });
-			if (docs.length)
+			if (hasFilesTab)
 				availableTabs.push({ id: "files", label: isIdentity ? t("Voice & Files") : t("Brief & Files") });
+			if (hasPagesTab) availableTabs.push({ id: "pages", label: htmlPages.length === 1 ? t("Page") : t("Pages") });
 			if (!availableTabs.some((tab) => tab.id === this.#tab)) this.#tab = availableTabs[0]!.id;
 			children.push(
 				h(
@@ -766,6 +1196,7 @@ export class SurfaceStudioView {
 		const showVendors = !tabbed || this.#tab === "vendors";
 		const showAnalysis = tabbed && this.#tab === "analysis";
 		const showFiles = !tabbed || this.#tab === "files";
+		const showPages = !tabbed || this.#tab === "pages";
 
 		const identityVarCount = identityTokens ? Object.keys(identityTokens.vars).length : 0;
 
@@ -808,7 +1239,7 @@ export class SurfaceStudioView {
 									"data-act": "studio-open-surface",
 									"data-slug": target.slug,
 								},
-								surfaceTile(target, store.lookOf(target), 12, "is-tiny"),
+								surfaceTile(target, store.lookOf(target), "is-tiny"),
 								h("span", null, target.title),
 							),
 						),
@@ -855,7 +1286,7 @@ export class SurfaceStudioView {
 										"data-act": "studio-open-surface",
 										"data-slug": target.slug,
 									},
-									surfaceTile(target, store.lookOf(target), 11, "is-tiny"),
+									surfaceTile(target, store.lookOf(target), "is-tiny"),
 									h("span", null, target.title),
 								),
 							),
@@ -888,7 +1319,7 @@ export class SurfaceStudioView {
 										"data-act": "studio-open-surface",
 										"data-slug": target.slug,
 									},
-									surfaceTile(target, store.lookOf(target), 11, "is-tiny"),
+									surfaceTile(target, store.lookOf(target), "is-tiny"),
 									h("span", null, target.title),
 								),
 							),
@@ -920,6 +1351,46 @@ export class SurfaceStudioView {
 			if (!this.#viewer3d) this.#viewer3d = new Studio3DViewer(modelConfig, this.#lifetime.signal);
 			else this.#viewer3d.update(modelConfig);
 			sections.push(this.#viewer3d.el);
+		}
+
+		if (svgs.length && showOverview) {
+			sections.push(
+				h(
+					"section",
+					{ class: "studio-section" },
+					h(
+						"div",
+						{ class: "studio-section-head" },
+						h("h2", null, isIdentity ? t("Brand mark") : t("Vector assets")),
+					),
+					h(
+						"div",
+						{ class: "studio-svg-grid" },
+						svgs.map((asset) =>
+							h(
+								"figure",
+								{ class: `studio-svg-card${asset.changed ? " is-changed" : ""}`, "data-file": asset.path },
+								h(
+									"div",
+									{ class: "studio-svg-stage" },
+									h("img", {
+										class: "studio-svg-img",
+										src: svgDataUrl(asset.svg),
+										alt: asset.title,
+									}),
+								),
+								h(
+									"figcaption",
+									{ class: "studio-svg-meta" },
+									h("strong", null, asset.title),
+									h("code", { class: "studio-file-tag" }, asset.path),
+									asset.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+								),
+							),
+						),
+					),
+				),
+			);
 		}
 
 		if (colors.length && showOverview) {
@@ -1142,10 +1613,47 @@ export class SurfaceStudioView {
 						),
 						doc.isMarkdown
 							? h("div", { class: "studio-doc-body" }, markdown(doc.content))
-							: h("pre", { class: "studio-code" }, doc.content),
+							: h("div", { class: "studio-doc-body studio-plain-text" }, doc.content),
 					),
 				);
 			}
+		}
+
+		if (showPages) {
+			for (const page of htmlPages) {
+				sections.push(
+					h(
+						"section",
+						{
+							class: `studio-section studio-html-card${page.changed ? " is-changed" : ""}`,
+							"data-file": page.path,
+						},
+						h(
+							"div",
+							{ class: "studio-section-head" },
+							h("h2", null, page.title),
+							h("code", { class: "studio-file-tag" }, page.path),
+							page.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+						),
+						this.#createHtmlFrame(page.html, page.path, page.title, files, previewTokensCss, "studio-html-frame"),
+					),
+				);
+			}
+		}
+
+		if (sections.length === 0) {
+			children.push(
+				h(
+					"div",
+					{ class: "studio-empty" },
+					surfaceTile(surface, store.lookOf(surface), "is-hero"),
+					h("h2", null, surface.title),
+					workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
+					h("p", null, t("No studio files yet. Describe a change below to create tokens, specs, or guidelines.")),
+				),
+			);
+			this.el.replaceChildren(...children);
+			return;
 		}
 
 		children.push(h("div", { class: "studio-grid" }, sections));

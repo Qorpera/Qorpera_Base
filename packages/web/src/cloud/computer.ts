@@ -133,8 +133,8 @@ export class WebCompanyComputer {
 						method: "POST",
 						keepalive: true,
 						redirect: "error",
+						// WHY: Omit cache: "no-store" on keepalive POST so pagehide hand-back does not trigger an extra CORS preflight during tab unload.
 						credentials: "omit",
-						cache: "no-store",
 						headers: {
 							authorization: `Bearer ${token}`,
 							apikey: this.#cloud.config.publishableKey,

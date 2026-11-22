@@ -1,7 +1,10 @@
+table inet qorpera_web_edge {}
+flush table inet qorpera_web_edge
+
 table inet qorpera_web_edge {
 	chain prerouting {
 		type filter hook prerouting priority raw; policy accept;
-		iifname != { "lo", "tailscale0" } tcp dport { 80, 443 } tcp flags syn notrack
+		iifname != { "lo", "tailscale0" } tcp dport { 80, 443 } tcp flags & (fin|syn|rst|ack) == syn notrack
 	}
 
 	chain input {
@@ -14,17 +17,24 @@ table inet qorpera_web_edge {
 	}
 }
 
+table inet qorpera_web_apps_egress {}
+flush table inet qorpera_web_apps_egress
+
 table inet qorpera_web_apps_egress {
 	set blocked_v4 {
 		type ipv4_addr
 		flags interval
 		elements = {
+			0.0.0.0/8,
 			10.0.0.0/8,
 			100.64.0.0/10,
 			127.0.0.0/8,
 			169.254.0.0/16,
 			172.16.0.0/12,
-			192.168.0.0/16
+			192.0.0.0/24,
+			192.168.0.0/16,
+			224.0.0.0/4,
+			240.0.0.0/4
 		}
 	}
 
@@ -32,9 +42,12 @@ table inet qorpera_web_apps_egress {
 		type ipv6_addr
 		flags interval
 		elements = {
+			::/128,
 			::1/128,
+			::ffff:0:0/96,
 			fc00::/7,
-			fe80::/10
+			fe80::/10,
+			ff00::/8
 		}
 	}
 

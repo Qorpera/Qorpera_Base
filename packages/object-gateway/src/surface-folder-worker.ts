@@ -3,7 +3,9 @@ import {
 	compileIdentityTokensCss,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
+	normalizeStudioFolderRoot,
 	parseStudioPatchOps,
+	resolveStudioFolderPath,
 	type StudioPatchOp,
 } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
@@ -15,6 +17,7 @@ import {
 	mapBounded,
 	PLATFORM_ACTOR,
 	PLATFORM_STAGE_CONCURRENCY,
+	type PlatformFileReference,
 	PlatformFolderWriter,
 } from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
@@ -60,6 +63,30 @@ interface FolderFileState {
 	readonly content: string | null;
 	readonly version: string | null;
 	readonly isDirectory: boolean;
+	readonly fileRef: PlatformFileReference | null;
+}
+
+interface FolderEntryMeta {
+	readonly found: boolean;
+	readonly version: string | null;
+	readonly isDirectory: boolean;
+	readonly manifestSha256: string | null;
+	readonly fileSha256: string | null;
+	readonly bytes: number;
+	readonly fileRef: PlatformFileReference | null;
+}
+
+function knownExistingDirs(entries: ReadonlyMap<string, FolderFileState>): Set<string> {
+	const dirs = new Set<string>();
+	for (const [path, state] of entries) {
+		if (state.version === null) continue;
+		const parts = path.split("/");
+		const limit = state.isDirectory ? parts.length : parts.length - 1;
+		for (let i = 1; i <= limit; i += 1) {
+			dirs.add(parts.slice(0, i).join("/"));
+		}
+	}
+	return dirs;
 }
 
 interface FolderUndoSnapshot {
@@ -208,36 +235,6 @@ async function retryCommittedRpc<T>(
 
 function sha256Hex(text: string): string {
 	return createHash("sha256").update(text, "utf8").digest("hex");
-}
-
-function normalizeFolderRoot(folderRoot: string | null): string {
-	const cleaned = (folderRoot ?? "").trim().replace(/^\/+|\/+$/g, "");
-	if (
-		!cleaned ||
-		cleaned.includes("\\") ||
-		cleaned.includes("\0") ||
-		cleaned.split("/").some((p) => p === "" || p === "." || p === "..")
-	) {
-		throw new Error("Surface folder root is invalid");
-	}
-	return cleaned;
-}
-
-function resolveFolderPath(folderRoot: string, rawPath: string): string {
-	const normalized = rawPath.trim().replace(/^\/+|\/+$/g, "");
-	if (!normalized || normalized.includes("\\") || normalized.includes("\0")) {
-		throw new Error(`Invalid studio patch path: ${rawPath}`);
-	}
-	const segments = normalized.split("/");
-	if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
-		throw new Error(`Unsafe studio patch path: ${rawPath}`);
-	}
-	const prefixed =
-		normalized === folderRoot || normalized.startsWith(`${folderRoot}/`) ? normalized : `${folderRoot}/${normalized}`;
-	if (!prefixed.startsWith(`${folderRoot}/`)) {
-		throw new Error(`Patch path escapes surface folder root: ${rawPath}`);
-	}
-	return prefixed;
 }
 
 function mediaTypeForPath(path: string): string {
@@ -463,47 +460,55 @@ export class SurfaceFolderWorker {
 			? raw.publishes.map(parseClaimedFolderPublish).filter((j): j is ClaimedFolderPublishJob => j !== null)
 			: [];
 
-		const bySurface = new Map<
-			string,
-			(
-				| { readonly kind: "merge"; readonly job: ClaimedFolderMergeJob }
-				| { readonly kind: "publish"; readonly job: ClaimedFolderPublishJob }
-			)[]
-		>();
+		const mergesByEnvironment = new Map<string, ClaimedFolderMergeJob[]>();
 		for (const merge of merges) {
-			const queue = bySurface.get(merge.surfaceId) ?? [];
-			queue.push({ kind: "merge", job: merge });
-			bySurface.set(merge.surfaceId, queue);
-		}
-		for (const pub of publishes) {
-			const queue = bySurface.get(pub.surfaceId) ?? [];
-			queue.push({ kind: "publish", job: pub });
-			bySurface.set(pub.surfaceId, queue);
+			const bucketKey = merge.environmentId ?? merge.surfaceId;
+			const bucket = mergesByEnvironment.get(bucketKey);
+			if (bucket) bucket.push(merge);
+			else mergesByEnvironment.set(bucketKey, [merge]);
 		}
 
 		let handled = 0;
-		const surfaceQueues = [...bySurface.values()];
-		await mapBounded(
-			surfaceQueues,
-			PLATFORM_STAGE_CONCURRENCY,
-			async (queue) => {
-				for (const item of queue) {
-					if (signal?.aborted) break;
+		if (mergesByEnvironment.size > 0) {
+			await mapBounded(
+				[...mergesByEnvironment.values()],
+				PLATFORM_STAGE_CONCURRENCY,
+				async (envMerges) => {
+					for (const merge of envMerges) {
+						if (signal?.aborted) break;
+						await withAbortScopes(
+							callerSignals,
+							(jobSignal) =>
+								this.#withJobLease(merge.jobId, merge.leaseToken, jobSignal, (leasedSignal, isLeaseLost) =>
+									this.#handleMerge(merge, leasedSignal, signal, isLeaseLost),
+								),
+							this.#jobTimeoutMs,
+						);
+						handled += 1;
+					}
+				},
+				signal,
+			);
+		}
+		if (publishes.length > 0 && !signal?.aborted) {
+			await mapBounded(
+				publishes,
+				PLATFORM_STAGE_CONCURRENCY,
+				async (pub) => {
+					if (signal?.aborted) return;
 					await withAbortScopes(
 						callerSignals,
 						(jobSignal) =>
-							this.#withJobLease(item.job.jobId, item.job.leaseToken, jobSignal, (leasedSignal, isLeaseLost) =>
-								item.kind === "merge"
-									? this.#handleMerge(item.job, leasedSignal, signal, isLeaseLost)
-									: this.#handlePublish(item.job, leasedSignal, signal),
+							this.#withJobLease(pub.jobId, pub.leaseToken, jobSignal, (leasedSignal) =>
+								this.#handlePublish(pub, leasedSignal, signal),
 							),
 						this.#jobTimeoutMs,
 					);
 					handled += 1;
-				}
-			},
-			signal,
-		);
+				},
+				signal,
+			);
+		}
 		return handled;
 	}
 
@@ -559,32 +564,7 @@ export class SurfaceFolderWorker {
 		}
 	}
 
-	async #readFolderMeta(
-		environmentId: string,
-		path: string,
-		signal: AbortSignal,
-	): Promise<{ readonly exists: boolean; readonly version: string | null; readonly isDirectory: boolean }> {
-		const response = (await this.#options.authority.publisher(
-			"qorpera_folder_read",
-			{ p_environment_id: environmentId, p_actor: PLATFORM_ACTOR, p_path: path },
-			signal,
-		)) as {
-			schema?: unknown;
-			found?: unknown;
-			entry?: { kind?: unknown; version?: unknown } | null;
-		} | null;
-		if (response?.schema !== "qorpera.folder-read/v1") {
-			throw new Error(`Invalid folder read response for ${path}`);
-		}
-		if (!response.found || !response.entry) {
-			return { exists: false, version: null, isDirectory: false };
-		}
-		const version = typeof response.entry.version === "string" ? response.entry.version : null;
-		const isDirectory = response.entry.kind === "folder" || response.entry.kind === "dir";
-		return { exists: true, version, isDirectory };
-	}
-
-	async #readFolderEntry(environmentId: string, path: string, signal: AbortSignal): Promise<FolderFileState> {
+	async #readFolderMeta(environmentId: string, path: string, signal: AbortSignal): Promise<FolderEntryMeta> {
 		const response = (await this.#options.authority.publisher(
 			"qorpera_folder_read",
 			{ p_environment_id: environmentId, p_actor: PLATFORM_ACTOR, p_path: path },
@@ -598,18 +578,36 @@ export class SurfaceFolderWorker {
 				manifestSha256?: unknown;
 				fileSha256?: unknown;
 				bytes?: unknown;
+				mediaType?: unknown;
+				executable?: unknown;
 			} | null;
 		} | null;
 		if (response?.schema !== "qorpera.folder-read/v1") {
 			throw new Error(`Invalid folder read response for ${path}`);
 		}
 		if (!response.found || !response.entry) {
-			return { content: null, version: null, isDirectory: false };
+			return {
+				found: false,
+				version: null,
+				isDirectory: false,
+				manifestSha256: null,
+				fileSha256: null,
+				bytes: 0,
+				fileRef: null,
+			};
 		}
 		const entry = response.entry;
 		const version = typeof entry.version === "string" ? entry.version : null;
 		if (entry.kind === "folder" || entry.kind === "dir") {
-			return { content: null, version, isDirectory: true };
+			return {
+				found: true,
+				version,
+				isDirectory: true,
+				manifestSha256: null,
+				fileSha256: null,
+				bytes: 0,
+				fileRef: null,
+			};
 		}
 		if (
 			typeof entry.manifestSha256 !== "string" ||
@@ -618,16 +616,74 @@ export class SurfaceFolderWorker {
 		) {
 			throw new Error(`Invalid folder entry metadata for ${path}`);
 		}
+		const fileRef: PlatformFileReference | null =
+			typeof entry.mediaType === "string" && typeof entry.executable === "boolean"
+				? {
+						manifestSha256: entry.manifestSha256,
+						fileSha256: entry.fileSha256,
+						bytes: entry.bytes,
+						mediaType: entry.mediaType,
+						executable: entry.executable,
+					}
+				: null;
+		return {
+			found: true,
+			version,
+			isDirectory: false,
+			manifestSha256: entry.manifestSha256,
+			fileSha256: entry.fileSha256,
+			bytes: entry.bytes,
+			fileRef,
+		};
+	}
+
+	async #readFolderEntry(environmentId: string, path: string, signal: AbortSignal): Promise<FolderFileState> {
+		const meta = await this.#readFolderMeta(environmentId, path, signal);
+		if (!meta.found) {
+			return { content: null, version: null, isDirectory: false, fileRef: null };
+		}
+		if (meta.isDirectory) {
+			return { content: null, version: meta.version, isDirectory: true, fileRef: null };
+		}
 		const bytes = await raceSignal(
 			this.#folder.read(
 				environmentId,
-				{ manifestSha256: entry.manifestSha256, fileSha256: entry.fileSha256, bytes: entry.bytes },
+				{
+					manifestSha256: meta.manifestSha256 as string,
+					fileSha256: meta.fileSha256 as string,
+					bytes: meta.bytes,
+				},
 				MAX_READ_BYTES,
 				signal,
 			),
 			signal,
 		);
-		return { content: UTF8_DECODER.decode(bytes), version, isDirectory: false };
+		return { content: UTF8_DECODER.decode(bytes), version: meta.version, isDirectory: false, fileRef: meta.fileRef };
+	}
+
+	async #findMissingDirectories(
+		environmentId: string,
+		writePaths: readonly string[],
+		knownEntries: ReadonlyMap<string, FolderFileState>,
+		signal: AbortSignal,
+	): Promise<string[]> {
+		const existingDirs = knownExistingDirs(knownEntries);
+		const candidateDirs = parentDirectoriesOf(writePaths).filter((dir) => !existingDirs.has(dir));
+		if (candidateDirs.length === 0) return [];
+		const dirStates = await mapBounded(
+			candidateDirs,
+			PLATFORM_STAGE_CONCURRENCY,
+			(dir, _index, stepSignal) => this.#readFolderMeta(environmentId, dir, stepSignal),
+			signal,
+		);
+		const missingDirs: string[] = [];
+		for (let i = 0; i < candidateDirs.length; i += 1) {
+			const dirState = dirStates[i];
+			if (dirState && !dirState.isDirectory && dirState.version === null) {
+				missingDirs.push(candidateDirs[i] as string);
+			}
+		}
+		return missingDirs;
 	}
 
 	async #handleMerge(
@@ -686,7 +742,7 @@ export class SurfaceFolderWorker {
 		markCommitted: () => void,
 		markPreserveRetryable: () => void,
 	): Promise<void> {
-		const folderRoot = normalizeFolderRoot(job.folderRoot);
+		const folderRoot = normalizeStudioFolderRoot(job.folderRoot);
 		if (job.approvedChanges.length === 0) {
 			throw new Error("Folder merge job has no approved changes");
 		}
@@ -696,7 +752,7 @@ export class SurfaceFolderWorker {
 		for (const change of job.approvedChanges) {
 			const ops = extractStudioOps(change.patchManifest);
 			for (const op of ops) {
-				const fullPath = resolveFolderPath(folderRoot, op.path);
+				const fullPath = resolveStudioFolderPath(folderRoot, op.path);
 				resolvedOps.push({ path: fullPath, op });
 				touchedPaths.add(fullPath);
 			}
@@ -856,43 +912,58 @@ export class SurfaceFolderWorker {
 			}
 		}
 
-		const writePaths = [...working.entries()].filter(([, content]) => content !== null).map(([path]) => path);
-		const parentDirs = parentDirectoriesOf(writePaths);
-		const parentDirMetas = await mapBounded(
-			parentDirs,
-			PLATFORM_STAGE_CONCURRENCY,
-			(dir, _idx, dirSignal) => this.#readFolderMeta(environmentId, dir, dirSignal),
-			signal,
-		);
-		const missingDirs = parentDirs.filter((_, idx) => {
-			const meta = parentDirMetas[idx];
-			return meta !== undefined && !meta.isDirectory && meta.version === null;
-		});
-
-		const stagedEntries = [...working.entries()].filter(([, nextContent]) => nextContent !== null) as [
-			string,
-			string,
-		][];
-		const stagedFiles = await mapBounded(
-			stagedEntries,
-			PLATFORM_STAGE_CONCURRENCY,
-			([path, nextContent], _idx, stageSignal) =>
-				raceSignal(
-					this.#folder.stage(
-						environmentId,
-						UTF8_ENCODER.encode(nextContent),
-						{ mediaType: mediaTypeForPath(path), executable: false },
-						stageSignal,
-						{ profileId: job.profileId },
-					),
-					stageSignal,
-				),
-			signal,
-		);
-		const stagedByPath = new Map<string, unknown>();
-		for (let i = 0; i < stagedEntries.length; i += 1) {
-			stagedByPath.set(stagedEntries[i]![0], stagedFiles[i]);
+		const writesToStage: {
+			readonly path: string;
+			readonly content: string;
+			readonly expectedVersion: string | null;
+		}[] = [];
+		const reusedWriteUnits: {
+			readonly path: string;
+			readonly file: PlatformFileReference;
+			readonly expectedVersion: string;
+		}[] = [];
+		const deleteUnits: { readonly path: string; readonly expectedVersion: string }[] = [];
+		for (const [path, nextContent] of working) {
+			const priorState = currentByPath.get(path);
+			if (nextContent === null) {
+				if (!priorState || priorState.version === null) continue;
+				deleteUnits.push({ path, expectedVersion: priorState.version });
+			} else if (
+				priorState &&
+				priorState.version !== null &&
+				priorState.content === nextContent &&
+				priorState.fileRef !== null
+			) {
+				reusedWriteUnits.push({ path, file: priorState.fileRef, expectedVersion: priorState.version });
+			} else {
+				writesToStage.push({ path, content: nextContent, expectedVersion: priorState?.version ?? null });
+			}
 		}
+
+		const [missingDirs, stagedFiles] = await Promise.all([
+			this.#findMissingDirectories(
+				environmentId,
+				writesToStage.map((entry) => entry.path),
+				currentByPath,
+				signal,
+			),
+			mapBounded(
+				writesToStage,
+				PLATFORM_STAGE_CONCURRENCY,
+				async (entry, _index, stepSignal) =>
+					await raceSignal(
+						this.#folder.stage(
+							environmentId,
+							UTF8_ENCODER.encode(entry.content),
+							{ mediaType: mediaTypeForPath(entry.path), executable: false },
+							stepSignal,
+							{ profileId: job.profileId },
+						),
+						stepSignal,
+					),
+				signal,
+			),
+		]);
 
 		const units: Record<string, unknown>[] = [];
 		const unitPaths: (string | null)[] = [];
@@ -900,21 +971,29 @@ export class SurfaceFolderWorker {
 			units.push({ op: "mkdir", path: dir });
 			unitPaths.push(null);
 		}
-		for (const [path, nextContent] of working) {
-			const priorState = currentByPath.get(path);
-			if (nextContent === null) {
-				if (!priorState || priorState.version === null) continue;
-				units.push({ op: "delete", path, expectedVersion: priorState.version });
-				unitPaths.push(path);
-			} else {
-				units.push({
-					op: "write",
-					path,
-					file: stagedByPath.get(path),
-					...(priorState?.version ? { expectedVersion: priorState.version } : {}),
-				});
-				unitPaths.push(path);
-			}
+		for (const del of deleteUnits) {
+			units.push({ op: "delete", path: del.path, expectedVersion: del.expectedVersion });
+			unitPaths.push(del.path);
+		}
+		for (const reused of reusedWriteUnits) {
+			units.push({
+				op: "write",
+				path: reused.path,
+				file: reused.file,
+				expectedVersion: reused.expectedVersion,
+			});
+			unitPaths.push(reused.path);
+		}
+		for (let i = 0; i < writesToStage.length; i += 1) {
+			const entry = writesToStage[i]!;
+			const file = stagedFiles[i]!;
+			units.push({
+				op: "write",
+				path: entry.path,
+				file,
+				...(entry.expectedVersion ? { expectedVersion: entry.expectedVersion } : {}),
+			});
+			unitPaths.push(entry.path);
 		}
 
 		if (units.length === 0) {
@@ -1103,17 +1182,17 @@ export class SurfaceFolderWorker {
 		}
 
 		const beforePaths = Object.keys(snapshot.filesBefore);
-		const readCurrentStates = await mapBounded(
+		const readStates = await mapBounded(
 			beforePaths,
 			PLATFORM_STAGE_CONCURRENCY,
-			(path, _idx, readSignal) => this.#readFolderEntry(environmentId, path, readSignal),
+			(path, _index, stepSignal) => this.#readFolderEntry(environmentId, path, stepSignal),
 			signal,
 		);
 		const currentByPath = new Map<string, FolderFileState>();
 		const conflictPaths: string[] = [];
 		for (let i = 0; i < beforePaths.length; i += 1) {
 			const path = beforePaths[i] as string;
-			const current = readCurrentStates[i] as FolderFileState;
+			const current = readStates[i] as FolderFileState;
 			currentByPath.set(path, current);
 			if (snapshot.versionsAfter && Object.hasOwn(snapshot.versionsAfter, path)) {
 				const expectedVersion = snapshot.versionsAfter[path] ?? null;
@@ -1142,44 +1221,58 @@ export class SurfaceFolderWorker {
 			return;
 		}
 
-		const restoreWritePaths = Object.entries(snapshot.filesBefore)
-			.filter(([, content]) => content !== null)
-			.map(([path]) => path);
-		const restoreParentDirs = parentDirectoriesOf(restoreWritePaths);
-		const restoreDirMetas = await mapBounded(
-			restoreParentDirs,
-			PLATFORM_STAGE_CONCURRENCY,
-			(dir, _idx, dirSignal) => this.#readFolderMeta(environmentId, dir, dirSignal),
-			signal,
-		);
-		const missingDirs = restoreParentDirs.filter((_, idx) => {
-			const meta = restoreDirMetas[idx];
-			return meta !== undefined && !meta.isDirectory && meta.version === null;
-		});
-
-		const restoreStagedEntries = Object.entries(snapshot.filesBefore).filter(
-			([, beforeContent]) => beforeContent !== null,
-		) as [string, string][];
-		const restoreStagedFiles = await mapBounded(
-			restoreStagedEntries,
-			PLATFORM_STAGE_CONCURRENCY,
-			([path, beforeContent], _idx, stageSignal) =>
-				raceSignal(
-					this.#folder.stage(
-						environmentId,
-						UTF8_ENCODER.encode(beforeContent),
-						{ mediaType: mediaTypeForPath(path), executable: false },
-						stageSignal,
-						{ profileId: job.profileId },
-					),
-					stageSignal,
-				),
-			signal,
-		);
-		const restoreStagedByPath = new Map<string, unknown>();
-		for (let i = 0; i < restoreStagedEntries.length; i += 1) {
-			restoreStagedByPath.set(restoreStagedEntries[i]![0], restoreStagedFiles[i]);
+		const writesToStage: {
+			readonly path: string;
+			readonly content: string;
+			readonly expectedVersion: string | null;
+		}[] = [];
+		const reusedWriteUnits: {
+			readonly path: string;
+			readonly file: PlatformFileReference;
+			readonly expectedVersion: string;
+		}[] = [];
+		const deleteUnits: { readonly path: string; readonly expectedVersion: string }[] = [];
+		for (const [path, beforeContent] of Object.entries(snapshot.filesBefore)) {
+			const current = currentByPath.get(path);
+			if (beforeContent === null) {
+				if (!current || current.version === null) continue;
+				deleteUnits.push({ path, expectedVersion: current.version });
+			} else if (
+				current &&
+				current.version !== null &&
+				current.content === beforeContent &&
+				current.fileRef !== null
+			) {
+				reusedWriteUnits.push({ path, file: current.fileRef, expectedVersion: current.version });
+			} else {
+				writesToStage.push({ path, content: beforeContent, expectedVersion: current?.version ?? null });
+			}
 		}
+
+		const [missingDirs, stagedFiles] = await Promise.all([
+			this.#findMissingDirectories(
+				environmentId,
+				writesToStage.map((entry) => entry.path),
+				currentByPath,
+				signal,
+			),
+			mapBounded(
+				writesToStage,
+				PLATFORM_STAGE_CONCURRENCY,
+				async (entry, _index, stepSignal) =>
+					await raceSignal(
+						this.#folder.stage(
+							environmentId,
+							UTF8_ENCODER.encode(entry.content),
+							{ mediaType: mediaTypeForPath(entry.path), executable: false },
+							stepSignal,
+							{ profileId: job.profileId },
+						),
+						stepSignal,
+					),
+				signal,
+			),
+		]);
 
 		const units: Record<string, unknown>[] = [];
 		const unitPaths: (string | null)[] = [];
@@ -1187,21 +1280,29 @@ export class SurfaceFolderWorker {
 			units.push({ op: "mkdir", path: dir });
 			unitPaths.push(null);
 		}
-		for (const [path, beforeContent] of Object.entries(snapshot.filesBefore)) {
-			const current = currentByPath.get(path);
-			if (beforeContent === null) {
-				if (!current || current.version === null) continue;
-				units.push({ op: "delete", path, expectedVersion: current.version });
-				unitPaths.push(path);
-			} else {
-				units.push({
-					op: "write",
-					path,
-					file: restoreStagedByPath.get(path),
-					...(current?.version ? { expectedVersion: current.version } : {}),
-				});
-				unitPaths.push(path);
-			}
+		for (const del of deleteUnits) {
+			units.push({ op: "delete", path: del.path, expectedVersion: del.expectedVersion });
+			unitPaths.push(del.path);
+		}
+		for (const reused of reusedWriteUnits) {
+			units.push({
+				op: "write",
+				path: reused.path,
+				file: reused.file,
+				expectedVersion: reused.expectedVersion,
+			});
+			unitPaths.push(reused.path);
+		}
+		for (let i = 0; i < writesToStage.length; i += 1) {
+			const entry = writesToStage[i]!;
+			const file = stagedFiles[i]!;
+			units.push({
+				op: "write",
+				path: entry.path,
+				file,
+				...(entry.expectedVersion ? { expectedVersion: entry.expectedVersion } : {}),
+			});
+			unitPaths.push(entry.path);
 		}
 
 		if (units.length === 0) {

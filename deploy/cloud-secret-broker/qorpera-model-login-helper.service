@@ -15,10 +15,11 @@ LoadCredential=qorpera-model-login-helper-token:/etc/qorpera-model-login-helper/
 ExecStart=/usr/bin/node /opt/qorpera-model-login-helper/qorpera-model-login-helper.mjs
 Restart=on-failure
 RestartSec=10
-# Stop lets renewals in flight finish (each ends within 25 s): SIGTERM reaches only the
-# main process, which stops taking new work; Codex is not killed under a renewal.
+# Stop lets renewals and Claude usage resets in flight finish (up to 70 s): SIGTERM reaches only
+# the main process, which stops taking new work; child processes are not killed under a renewal.
 KillMode=mixed
-TimeoutStopSec=40
+TimeoutStopSec=85
+LimitCORE=0
 UMask=0077
 # The socket and each operation's private Codex home live here, in memory.
 # The broker reaches the socket through this group (its unit adds

@@ -1,8 +1,10 @@
 import {
+	IDENTITY_BRIEF_PATH,
 	IDENTITY_COMPANY_PATH,
 	IDENTITY_LOGO_PATH,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
+	IDENTITY_VOICE_PATH,
 	type PointToChangeTarget,
 	PRODUCT_CATALOG_PATH,
 	PRODUCT_SPECS_PATH,
@@ -106,6 +108,7 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 				"## Live Shared Company Files",
 				`- **Visual Identity CSS Live Sync:** Changes you stage to \`${IDENTITY_TOKENS_JSON_PATH}\` automatically recompile \`${IDENTITY_TOKENS_CSS_PATH}\` and flow live as \`${SURFACE_IDENTITY_CSS_MOUNT_PATH}\` CSS custom properties (\`--q-color-*\`, \`--q-font-*\`, \`--q-radius-*\`, \`--q-space-*\`) into every downstream surface with zero manual copy-paste.`,
 				`- **Shared Company Data:** Keep canonical company details in \`${IDENTITY_COMPANY_PATH}\` and the vector mark in \`${IDENTITY_LOGO_PATH}\` so downstream surfaces consume them from \`${SURFACE_SHARED_DIR}/\` automatically.`,
+				`- **Identity Studio Projection:** Studio renders \`${IDENTITY_TOKENS_JSON_PATH}\` (Palette, Typography, Design System), \`${IDENTITY_LOGO_PATH}\` (Brand mark), \`${IDENTITY_VOICE_PATH}\` and \`${IDENTITY_BRIEF_PATH}\` (Voice & guidelines as Markdown prose), and \`identity/*.report.json\` (Philosophy) natively — do not hand-edit \`${IDENTITY_TOKENS_CSS_PATH}\` or create standalone HTML/CSS showcase pages like \`identity/index.html\`.`,
 			]
 		: [
 				"## Live Shared Company Files",
