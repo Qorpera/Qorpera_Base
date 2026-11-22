@@ -2740,6 +2740,7 @@ export class CompanyController {
 				}
 			} catch (error) {
 				failed = true;
+				if (this.#stopped) return;
 				// The history read before the failure stays, so the next read resumes after it, and so do erased copies.
 				// The generation the events reflect stays as it was: a failed read of them again is repeated.
 				const merged = current();

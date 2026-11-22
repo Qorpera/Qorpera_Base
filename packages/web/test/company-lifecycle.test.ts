@@ -1850,7 +1850,9 @@ describe("agent execution state", () => {
 		});
 		vi.spyOn(api, "readSessionEventsTail").mockImplementation((_id, _before, _limit, signal) => {
 			signals.push(signal);
-			return new Promise(() => {});
+			return new Promise((_resolve, reject) => {
+				signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+			});
 		});
 		vi.spyOn(api, "listSessionInputs").mockImplementation((_id, _after, _limit, signal) => {
 			signals.push(signal);
@@ -1868,7 +1870,15 @@ describe("agent execution state", () => {
 			signals.push(signal);
 			return new Promise(() => {});
 		});
+		vi.spyOn(api, "readCodingSession").mockImplementation((_worker, _after, _limit, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
 		vi.spyOn(api, "listCodingSessionLogins").mockImplementation((_worker, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "listSecretConnections").mockImplementation((_profile, _env, signal) => {
 			signals.push(signal);
 			return new Promise(() => {});
 		});
@@ -1879,15 +1889,75 @@ describe("agent execution state", () => {
 		void controller.refreshSidebar();
 		void controller.refreshAppLayout();
 		void controller.refreshActivity();
-		void controller.loadConversation(session.sessionId);
+		const load = controller.loadConversation(session.sessionId);
+		void controller.readCodingSession(id(901));
 		void controller.listCodingSessionLogins(id(901));
+		void controller.provideSecret(
+			session.sessionId,
+			id(902),
+			{
+				surface: "secret",
+				title: "API key",
+				payload: { name: "API_KEY", connectorId: "vault", purpose: "auth" },
+			},
+			"secret-value",
+		);
 
-		expect(signals).toHaveLength(12);
+		expect(signals).toHaveLength(14);
 		for (const signal of signals) {
 			expect(signal).toBe(controller.signal);
 			expect(signal?.aborted).toBe(false);
 		}
 		controller.stop();
+		await load;
 		for (const signal of signals) expect(signal?.aborted).toBe(true);
+		// WHY: Aborting loadConversation via stop() must not write an AbortError back into the cleared store.
+		expect(controller.conversation(session.sessionId, false).get().error).toBeUndefined();
+	});
+
+	it("forwards controller.signal on sidebar reset app-layout reload and group-chat image capability check", async () => {
+		const { api, controller } = company();
+		const ownSidebar = {
+			sections: [],
+			placements: {},
+			pinned: [],
+			hidden: [],
+			own: { changes: 1, moved: [], sections: [], pinned: 0, hidden: 0, contacts: 0, pages: 0, apps: 0 },
+			groupChats: true,
+		};
+		controller.store.set({
+			team,
+			staff: [staff],
+			sessions: [
+				{
+					...session,
+					staffAgentId: undefined,
+					executionScope: { roomId: id(903), groupChat: true },
+				},
+			],
+			loading: false,
+		});
+		const sidebarSignals: (AbortSignal | undefined)[] = [];
+		vi.spyOn(api, "readCompanySidebar").mockImplementation(async (_id, signal) => {
+			sidebarSignals.push(signal);
+			return ownSidebar;
+		});
+		const image = new File(["x"], "a.png", { type: "image/png" });
+		controller.conversation(session.sessionId, false).set({ draft: "Look", attachments: [image] });
+		await controller.sendPrompt(session.sessionId, "Look").catch(() => {});
+		expect(sidebarSignals[0]).toBe(controller.signal);
+
+		const layoutSignals: (AbortSignal | undefined)[] = [];
+		vi.spyOn(api, "manageCompanySidebar").mockResolvedValue(ownSidebar);
+		vi.spyOn(api, "readMemberAppLayout").mockImplementation(async (_id, signal) => {
+			layoutSignals.push(signal);
+			return {
+				layout: { schema: "qorpera.member-app-layout/v1" as const, places: {}, groups: {} },
+				updatedAt: "2026-09-05T10:00:00Z",
+			};
+		});
+		controller.store.set({ sidebar: ownSidebar });
+		await controller.resetSidebar();
+		expect(layoutSignals).toContain(controller.signal);
 	});
 });

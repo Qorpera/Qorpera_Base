@@ -1102,7 +1102,10 @@ describe("dragging agents in the rail", () => {
 		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "set_pins", order: [dee.id, bo.id] });
 	});
 	it("moves agents by editing QorperaOS/agents/sections.md, where the sidebar RPC refuses moves", async () => {
-		const { rail, manage, fake, ready } = companyWithFile([["Research", bo.id, ada.id], ["Ops"]], [dee.id]);
+		const { company, rail, manage, read, fake, ready } = companyWithFile(
+			[["Research", bo.id, ada.id], ["Ops"]],
+			[dee.id],
+		);
 		await ready;
 		await settle();
 		let boxes = layout(rail);
@@ -1111,6 +1114,7 @@ describe("dragging agents in the rail", () => {
 		expect(fileSections(fake.text(SECTIONS_PATH))).toEqual([["Research", bo.id, cy.id, ada.id], ["Ops"]]);
 		expect(fake.text(SECTIONS_PATH)).toContain(`- ${cy.id} Cy\n`);
 		expect(manage).not.toHaveBeenCalled();
+		expect(read).toHaveBeenLastCalledWith(profileA.profileId, company.signal);
 		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Cy", "Ada"]);
 		expect(rail.querySelector(".notice")).toBeNull();
 		// Out of the pinned row into a section: the file places it, and the pin goes.
