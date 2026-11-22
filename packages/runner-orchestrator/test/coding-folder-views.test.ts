@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CODING_GUEST, type CodingGuestRequests } from "@qorpera/contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodingControlBusy, CodingControlRefused } from "../src/coding-executor.ts";
 import type { CodingFolderBoundary } from "../src/coding-folder-control.ts";
 import { CodingFolderRestartRequired, CodingFolderViewRefused, CodingFolderViews } from "../src/coding-folder-views.ts";
@@ -1295,5 +1295,22 @@ describe("CodingFolderViews", () => {
 			{ program: "the folder program" as unknown as Buffer },
 		])
 			expect(() => new CodingFolderViews({ ...options, ...scope })).toThrow("Invalid coding folder program");
+	});
+
+	it("scopes attach, record, and close timers without calling AbortSignal.any or AbortSignal.timeout", async () => {
+		const anySpy = vi.spyOn(AbortSignal, "any");
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+		try {
+			const at = fixture();
+			const attached = await at.views.attach(session(), Date.now() + 600_000, live());
+			expect(attached.viewId).toBeTruthy();
+			const ended = await at.views.end(WORKER, live());
+			expect(ended?.viewId).toBe(attached.viewId);
+			expect(anySpy).not.toHaveBeenCalled();
+			expect(timeoutSpy).not.toHaveBeenCalled();
+		} finally {
+			anySpy.mockRestore();
+			timeoutSpy.mockRestore();
+		}
 	});
 });

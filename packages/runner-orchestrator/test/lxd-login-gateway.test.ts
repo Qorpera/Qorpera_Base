@@ -2011,4 +2011,135 @@ describe("LXD native login gateway and the node's shared execution host", () => 
 			}
 		});
 	});
+
+	it("bounds /v1/provider-target with a scoped timeout, rejects oversized responses, and releases the identity lock", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "ABCD-EFGH" },
+			]);
+		boundary.control.recovery = "established";
+		let providerTargetAttempts = 0;
+		let chunksReadAfterLimit = 0;
+		let capturedSignal: AbortSignal | undefined;
+		const wrappedFetch: typeof fetch = async (input, init) => {
+			if (String(input) === "https://recovery.example.test:10000/v1/provider-target") {
+				providerTargetAttempts += 1;
+				capturedSignal = init?.signal ?? undefined;
+				if (providerTargetAttempts === 1) {
+					let emitted = 0;
+					const body = new ReadableStream<Uint8Array>({
+						pull(controller) {
+							emitted += 1;
+							if (emitted > 10) {
+								chunksReadAfterLimit += 1;
+								controller.close();
+								return;
+							}
+							controller.enqueue(new Uint8Array(64 * 1024));
+						},
+					});
+					return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+				}
+			}
+			return boundary.fetchImplementation(input, init);
+		};
+		const gateway = new LxdNativeLoginGateway(
+			{
+				...config(root),
+				identityRecoveryRegistrarCapability: "r".repeat(43),
+				guestManifestSha256: "m".repeat(64),
+				recoveryWaitMs: 5000,
+			},
+			lxd,
+			wrappedFetch,
+		);
+		const first = await gateway.handle(loginRequest());
+		expect(first.status).toBe(503);
+		expect(capturedSignal).toBeDefined();
+		expect(chunksReadAfterLimit).toBe(0);
+		// WHY: A failed recovery registration must release #exclusive so the next attempt for the same identity succeeds.
+		const second = await gateway.handle(loginRequest());
+		expect(second.status).toBe(200);
+		expect(providerTargetAttempts).toBe(2);
+	});
+
+	it("reconciles journals for independent login identities concurrently", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			secondLoginId = "10000000-0000-4000-8000-000000000099",
+			secondIdentityId = "10000000-0000-4000-8000-000000000098";
+		const b1 = fetchBoundary([
+			{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "AAAA-BBBB" },
+		]);
+		const g1 = new LxdNativeLoginGateway(config(root), lxd, b1.fetchImplementation);
+		expect((await g1.handle(loginRequest())).status).toBe(200);
+		lxd.instance = undefined;
+		lxd.volume = undefined;
+		const b2 = fetchBoundary([
+			{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "CCCC-DDDD" },
+		]);
+		const secondFetch: typeof fetch = async (input, init) => {
+			const res = await b2.fetchImplementation(input, init);
+			const text = await res.text();
+			const rewritten = text.replaceAll(loginId, secondLoginId).replaceAll(computeIdentityId, secondIdentityId);
+			return new Response(rewritten, { status: res.status, headers: res.headers });
+		};
+		const g2 = new LxdNativeLoginGateway(config(root), lxd, secondFetch);
+		expect(
+			(await g2.handle(loginRequest(loginBody({ login_id: secondLoginId, compute_identity_id: secondIdentityId }))))
+				.status,
+		).toBe(200);
+
+		const allocationMeta = new Map<string, { loginId: string; computeIdentityId: string }>();
+		for (const [requests, expectedLoginId, expectedIdentityId] of [
+			[b1.requests, loginId, computeIdentityId],
+			[b2.requests, secondLoginId, secondIdentityId],
+		] as const) {
+			const reserve = requests.find((entry) => entry.url.endsWith("qorpera_reserve_runtime_login_machine"));
+			const parsed = JSON.parse(reserve?.body ?? "{}") as { p_allocation_id?: string };
+			expect(parsed.p_allocation_id).toBeTypeOf("string");
+			allocationMeta.set(parsed.p_allocation_id!, {
+				loginId: expectedLoginId,
+				computeIdentityId: expectedIdentityId,
+			});
+		}
+
+		let inFlight = 0;
+		let maxInFlight = 0;
+		let releaseBarrier!: () => void;
+		const barrier = new Promise<void>((resolveBarrier) => {
+			releaseBarrier = resolveBarrier;
+		});
+		const reconcileBoundary = fetchBoundary([]);
+		const reconcileFetch: typeof fetch = async (input, init) => {
+			if (String(input).endsWith("qorpera_describe_runtime_login_machine")) {
+				const args = JSON.parse(String(init?.body ?? "{}")) as {
+					p_allocation_id: string;
+				};
+				const meta = allocationMeta.get(args.p_allocation_id);
+				expect(meta).toBeDefined();
+				inFlight += 1;
+				maxInFlight = Math.max(maxInFlight, inFlight);
+				if (inFlight >= 2) releaseBarrier();
+				else await Promise.race([barrier, new Promise((r) => setTimeout(r, 250))]);
+				inFlight -= 1;
+				return Response.json({
+					allocationId: args.p_allocation_id,
+					loginId: meta!.loginId,
+					profileId,
+					computeIdentityId: meta!.computeIdentityId,
+					status: "pending",
+					expiresAt,
+					releasedAt: null,
+					cleanupRequired: false,
+				});
+			}
+			return reconcileBoundary.fetchImplementation(input, init);
+		};
+		const reconciler = new LxdNativeLoginGateway(config(root), lxd, reconcileFetch);
+		const result = await reconciler.reconcile(new AbortController().signal);
+		expect(result).toEqual({ scanned: 2, unconfirmed: 0 });
+		expect(maxInFlight).toBe(2);
+	});
 });

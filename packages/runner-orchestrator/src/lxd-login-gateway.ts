@@ -974,7 +974,10 @@ export class LxdNativeLoginGateway {
 	): Promise<void> {
 		let result = await journal.run(action, signal, authorize);
 		while (result.state === "pending") {
-			await new Promise<void>((resolveWait) => setTimeout(resolveWait, 250));
+			await delay(250, undefined, { signal }).catch((error: unknown) => {
+				if (signal.aborted) throw signal.reason;
+				throw error;
+			});
 			signal.throwIfAborted();
 			result = await journal.observe(action, signal);
 		}
@@ -1107,6 +1110,7 @@ export class LxdNativeLoginGateway {
 		const placed = new Set<string>();
 		/** Identities with a sign-in machine here not yet released: never retired. */
 		const live = new Set<string>();
+		const validNames: string[] = [];
 		for (const name of (await readdir(this.#config.stateRoot)).sort()) {
 			signal.throwIfAborted();
 			if (name === JOURNAL_ARCHIVE) continue;
@@ -1115,42 +1119,53 @@ export class LxdNativeLoginGateway {
 				continue;
 			}
 			scanned++;
-			let identity: string | undefined;
-			try {
-				let released = this.#released.get(name);
-				if (!released) {
-					const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
-					identity = journal.binding.computeIdentityId;
-					let wasPlaced = false;
-					const releasedAt = await this.#exclusive(journal.binding.computeIdentityId, async () => {
-						const state = await journal.state();
-						wasPlaced = state.nodeId !== null;
-						if (wasPlaced) placed.add(journal.binding.computeIdentityId);
-						if (state.releasedAt) return state.releasedAt;
-						if (!(await this.#retireOrphan(journal, signal))) {
-							const description = await this.#machineDescription(journal.binding, signal);
-							if (!state.closing && !description.cleanupRequired) return null;
-							await this.#cleanup(journal, signal);
-						}
-						// Orphan retirement and cleanup release the journal or throw.
-						return (await journal.state()).releasedAt;
-					});
-					if (!releasedAt) {
-						live.add(journal.binding.computeIdentityId);
-						continue;
-					}
-					released = this.#remember(name, journal, releasedAt, wasPlaced);
-				}
-				if (released.placed) placed.add(released.computeIdentityId);
-				if (Date.now() - released.releasedAt >= (this.#config.releasedJournalRetentionMs ?? 24 * 60 * 60_000))
-					await this.#exclusive(released.computeIdentityId, () => this.#archive(name));
-			} catch {
-				signal.throwIfAborted();
-				unconfirmed++;
-				// A sign-in machine whose state is unconfirmed may still be live.
-				if (identity) live.add(identity);
-			}
+			validNames.push(name);
 		}
+		// WHY: Clean up independent login identities concurrently so 1-2 slow VM deletions do not
+		// consume the 30s reconcile loop and starve deleted-identity retirement or execution-host sweep.
+		let next = 0;
+		const reconcileWorker = async (): Promise<void> => {
+			while (next < validNames.length) {
+				signal.throwIfAborted();
+				const name = validNames[next++]!;
+				let identity: string | undefined;
+				try {
+					let released = this.#released.get(name);
+					if (!released) {
+						const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
+						identity = journal.binding.computeIdentityId;
+						let wasPlaced = false;
+						const releasedAt = await this.#exclusive(journal.binding.computeIdentityId, async () => {
+							const state = await journal.state();
+							wasPlaced = state.nodeId !== null;
+							if (wasPlaced) placed.add(journal.binding.computeIdentityId);
+							if (state.releasedAt) return state.releasedAt;
+							if (!(await this.#retireOrphan(journal, signal))) {
+								const description = await this.#machineDescription(journal.binding, signal);
+								if (!state.closing && !description.cleanupRequired) return null;
+								await this.#cleanup(journal, signal);
+							}
+							// Orphan retirement and cleanup release the journal or throw.
+							return (await journal.state()).releasedAt;
+						});
+						if (!releasedAt) {
+							live.add(journal.binding.computeIdentityId);
+							continue;
+						}
+						released = this.#remember(name, journal, releasedAt, wasPlaced);
+					}
+					if (released.placed) placed.add(released.computeIdentityId);
+					if (Date.now() - released.releasedAt >= (this.#config.releasedJournalRetentionMs ?? 24 * 60 * 60_000))
+						await this.#exclusive(released.computeIdentityId, () => this.#archive(name));
+				} catch {
+					signal.throwIfAborted();
+					unconfirmed++;
+					// A sign-in machine whose state is unconfirmed may still be live.
+					if (identity) live.add(identity);
+				}
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(4, validNames.length) }, reconcileWorker));
 		await this.#retireDeletedIdentities(live, signal);
 		for (const id of this.#retiring) placed.delete(id);
 		await this.#sweepExecutionHost(placed, signal);
@@ -1268,10 +1283,10 @@ export class LxdNativeLoginGateway {
 		const host = this.#executionHost;
 		if (!host || !computeIdentityIds.length) return;
 		try {
-			const { attached, refused, failed, failure } = await host.attach(
-				computeIdentityIds,
-				timeoutMs === undefined ? signal : AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
-			);
+			const { attached, refused, failed, failure } =
+				timeoutMs === undefined
+					? await host.attach(computeIdentityIds, signal)
+					: await withTimeoutScope(signal, timeoutMs, (checked) => host.attach(computeIdentityIds, checked));
 			for (const id of attached)
 				console.error(`LXD native login attached Compute Identity ${id} to execution host ${host.host.instance}`);
 			if (refused.length)
@@ -1562,26 +1577,64 @@ export class LxdNativeLoginGateway {
 		).trim();
 		if (!/^[A-Za-z0-9_-]{400,1024}$/.test(recipientPublicKey)) throw new Error("LOGIN_IDENTITY_RECOVERY_KEY_INVALID");
 		// 2. Register the target through the node registrar.
-		const registration = await this.#fetch(new URL("/v1/provider-target", configuration.serviceOrigin).href, {
-			method: "POST",
-			headers: { "content-type": "application/json", accept: "application/json" },
-			body: JSON.stringify({
-				registrarNodeId: nodeId,
-				registrarCapability: registrar,
-				targetId,
-				computeIdentityId: binding.computeIdentityId,
-				nodeId,
-				imageSha256: this.#config.imageFingerprint,
-				guestManifestSha256,
-				recipientPublicKey,
-				targetCapability,
-			}),
-			redirect: "error",
-			signal,
+		const registered = await withTimeoutScope(signal, 30_000, async (checked) => {
+			const registration = await this.#fetch(new URL("/v1/provider-target", configuration.serviceOrigin).href, {
+				method: "POST",
+				headers: { "content-type": "application/json", accept: "application/json" },
+				body: JSON.stringify({
+					registrarNodeId: nodeId,
+					registrarCapability: registrar,
+					targetId,
+					computeIdentityId: binding.computeIdentityId,
+					nodeId,
+					imageSha256: this.#config.imageFingerprint,
+					guestManifestSha256,
+					recipientPublicKey,
+					targetCapability,
+				}),
+				redirect: "error",
+				signal: checked,
+			});
+			if (!registration.ok) {
+				await registration.body?.cancel().catch(() => undefined);
+				throw new Error("LOGIN_IDENTITY_RECOVERY_TARGET_REFUSED");
+			}
+			const declared = Number(registration.headers.get("content-length") ?? "0");
+			if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+				await registration.body?.cancel().catch(() => undefined);
+				throw new Error("LOGIN_IDENTITY_RECOVERY_TARGET_REFUSED");
+			}
+			let text: string;
+			if (registration.body) {
+				const reader = registration.body.getReader();
+				const chunks: Uint8Array[] = [];
+				let total = 0;
+				try {
+					for (;;) {
+						const { done, value } = await reader.read();
+						if (done) break;
+						total += value.byteLength;
+						if (total > MAX_RESPONSE_BYTES) {
+							await reader.cancel().catch(() => undefined);
+							throw new Error("LOGIN_IDENTITY_RECOVERY_TARGET_REFUSED");
+						}
+						chunks.push(value);
+					}
+				} finally {
+					reader.releaseLock();
+				}
+				text = Buffer.concat(chunks, total).toString("utf8");
+			} else {
+				text = await registration.text();
+				if (Buffer.byteLength(text) > MAX_RESPONSE_BYTES) throw new Error("LOGIN_IDENTITY_RECOVERY_TARGET_REFUSED");
+			}
+			try {
+				return JSON.parse(text) as { targetId?: unknown };
+			} catch {
+				return undefined;
+			}
 		});
-		const registered = (await registration.json().catch(() => undefined)) as { targetId?: unknown } | undefined;
-		if (!registration.ok || registered?.targetId !== targetId)
-			throw new Error("LOGIN_IDENTITY_RECOVERY_TARGET_REFUSED");
+		if (registered?.targetId !== targetId) throw new Error("LOGIN_IDENTITY_RECOVERY_TARGET_REFUSED");
 		// 3. The login is the consent: request the recovery on its behalf.
 		const recovery = loginRecoveryRequest(
 			await this.#allocationRpc(
@@ -1794,17 +1847,25 @@ export class LxdNativeLoginGateway {
 		while (Date.now() < deadline) {
 			if (signal?.aborted) throw signal.reason;
 			try {
-				await this.#lxd.execInstance(
-					this.#config.project,
-					instanceName,
-					["/usr/bin/test", "-d", "/var/lib/qorpera-bootstrap/credentials"],
-					signal,
+				await withTimeoutScope(signal, Math.max(1, deadline - Date.now()), (checked) =>
+					this.#lxd.execInstance(
+						this.#config.project,
+						instanceName,
+						["/usr/bin/test", "-d", "/var/lib/qorpera-bootstrap/credentials"],
+						checked,
+					),
 				);
 				return;
 			} catch (error) {
+				if (signal?.aborted) throw signal.reason;
 				lastError = error;
 			}
-			await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) break;
+			await delay(Math.min(250, remaining), undefined, { signal }).catch((error: unknown) => {
+				if (signal?.aborted) throw signal.reason;
+				throw error;
+			});
 		}
 		throw new Error("LXD native login guest agent did not become ready", { cause: lastError });
 	}
@@ -1814,24 +1875,35 @@ export class LxdNativeLoginGateway {
 		while (Date.now() < deadline) {
 			if (signal?.aborted) throw signal.reason;
 			try {
-				const state = await this.#lxd.getInstanceState(this.#config.project, instance.name, signal);
+				const state = await withTimeoutScope(signal, Math.max(1, deadline - Date.now()), (checked) =>
+					this.#lxd.getInstanceState(this.#config.project, instance.name, checked),
+				);
 				const address = lxdGuestIpv4(instance, state, this.#config.networkInterface);
 				if (state.status === "Running" && address) {
-					const ready = await withTimeoutScope(signal, 1_000, async (checked) => {
-						const response = await this.#fetch(`http://${address}:${this.#config.nativeBridgePort}/healthz`, {
-							redirect: "error",
-							signal: checked,
-						});
-						await response.body?.cancel().catch(() => undefined);
-						return response.ok;
-					});
+					const ready = await withTimeoutScope(
+						signal,
+						Math.min(1_000, Math.max(1, deadline - Date.now())),
+						async (checked) => {
+							const response = await this.#fetch(`http://${address}:${this.#config.nativeBridgePort}/healthz`, {
+								redirect: "error",
+								signal: checked,
+							});
+							await response.body?.cancel().catch(() => undefined);
+							return response.ok;
+						},
+					);
 					if (ready) return address;
 				}
 			} catch (error) {
 				if (signal?.aborted) throw signal.reason;
 				if (!(error instanceof Error)) throw error;
 			}
-			await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) break;
+			await delay(Math.min(250, remaining), undefined, { signal }).catch((error: unknown) => {
+				if (signal?.aborted) throw signal.reason;
+				throw error;
+			});
 		}
 		throw new Error("LXD native login guest did not activate its private listener");
 	}
