@@ -298,7 +298,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-22",
 		title: "Surfaces are drawn as figures",
-		text: "Every surface in the sidebar is now a small figure of the thing it is (a browser for the website, notes and a gold coin for money, a folder for files), in fixed colours. propose_surface takes figure in place of icon and accentHex: leave it out and the surface gets its kind's own figure, or pick another that fits better, such as shop for a web store. Colours are never chosen. Members can change a surface's figure themselves from the sidebar.",
+		text: "Every surface in the sidebar is now a small figure of the thing it is (a browser for the website, notes and a gold coin for money, a folder for files), in fixed colours. When you propose a surface you may name its figure: leave it out and the surface gets its kind's own figure, or pick another that fits better, such as shop for a web store. Colours are never chosen. Members can change a surface's figure themselves from the sidebar.",
 	},
 ]);
 

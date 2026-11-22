@@ -443,12 +443,14 @@ export class SurfaceRail {
 		if (!row || !surface) return;
 		event.preventDefault();
 		const chosen = surfaceFigureOf(surface, this.#store.lookOf(surface));
-		const slug = CSS.escape(surface.slug);
 		openContextMenu({
 			label: surface.title,
 			...menuPoint(event, row),
 			opener: row,
-			findOpener: () => this.el.querySelector<HTMLElement>(`.rail-surface[data-surface-slug="${slug}"]`),
+			findOpener: () =>
+				[...this.el.querySelectorAll<HTMLElement>(".rail-surface")].find(
+					(item) => item.dataset.surfaceSlug === surface.slug,
+				) ?? null,
 			items: [
 				{
 					kind: "panel",
