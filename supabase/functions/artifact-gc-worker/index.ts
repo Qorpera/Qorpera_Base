@@ -134,21 +134,11 @@ Deno.serve(async (request) => {
 	}
 	const gatewayUrl = Deno.env.get("QORPERA_OBJECT_GATEWAY_URL")?.replace(/\/$/, "");
 	const gatewayControlToken = Deno.env.get("QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN")?.trim();
-	// Folder-v2 objects (C1D §9.10), behind their own switch and before the phases that return early, so a failure
-	// there never holds this one up; its own time budget (60 s) keeps a slow gateway from holding them up.
-	let folderObjects: FolderObjectGcResult | { error: true };
+	// WHY: Keep folder-v2 GC inside 45 s of the shared 110 s run budget and mark budget skips as deferred rather than disabled.
+	let folderObjects: FolderObjectGcResult | { error: true } | { deferred: true };
 	const folderBudgetMs = Math.min(45_000, remainingMs());
 	if (folderBudgetMs <= 2_000) {
-		folderObjects = {
-			enabled: false,
-			swept: 0,
-			claimed: 0,
-			removed: 0,
-			restored: 0,
-			stale: 0,
-			failed: 0,
-			stopped: true,
-		};
+		folderObjects = { deferred: true };
 	} else {
 		const folderPhaseDeadline = Date.now() + folderBudgetMs;
 		try {
@@ -304,6 +294,7 @@ Deno.serve(async (request) => {
 	}
 	const storage: ArtifactGcStorageProvider = createRoutedArtifactGcStorageProvider({
 		concurrency: 4,
+		hasBudget: () => remainingMs() > 2_000,
 		removeSupabase: async (object, gcLeaseId) => {
 			const { data, error } = await client.rpc("qorpera_authorize_profile_object_deletion", {
 				p_profile_id: object.path.slice(0, 36),

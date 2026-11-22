@@ -109,15 +109,13 @@ export interface MailSender {
 
 /** The company's objects: one object's bytes by its sha256, or null when Storage has none. */
 export interface ObjectReader {
-	get(companyId: string, sha256: string): Promise<Uint8Array | null>;
+	get(companyId: string, sha256: string, signal?: AbortSignal): Promise<Uint8Array | null>;
 }
 
 export interface MailOutbox {
 	/** The Supabase secret keys the caller may present. */
 	keys: readonly string[];
-	/** The database's outbox, reached with the key the caller presented. */
 	store(secretKey: string): MailOutboxStore;
-	/** The company's objects, reached with the key the caller presented, for attachments. */
 	objects?(secretKey: string): ObjectReader;
 	sender: MailSender;
 	leaseId?: () => string;
@@ -224,11 +222,11 @@ async function verifiedManifestChunks(
 	file: MailAttachment,
 	objects: ObjectReader,
 ): Promise<{
-	readonly object: (sha256: string) => Promise<Uint8Array>;
+	readonly object: (sha256: string, signal?: AbortSignal) => Promise<Uint8Array>;
 	readonly chunks: readonly { readonly sha256: string; readonly bytes: number }[];
 }> {
-	const object = async (sha256: string): Promise<Uint8Array> => {
-		const bytes = await objects.get(companyId, sha256);
+	const object = async (sha256: string, signal?: AbortSignal): Promise<Uint8Array> => {
+		const bytes = await objects.get(companyId, sha256, signal);
 		if (!bytes) throw new MailSendError(`The attachment ${file.filename} is not in storage yet`, true);
 		if (createHash("sha256").update(bytes).digest("hex") !== sha256)
 			throw new MailSendError(`The attachment ${file.filename} failed its integrity check`, false);
@@ -273,48 +271,54 @@ export async function attachmentBase64(companyId: string, file: MailAttachment, 
 	const parts: string[] = [];
 	const carry = new Uint8Array(3);
 	let carryLen = 0;
-	// WHY: Prefetch a bounded window of 3 chunks concurrently while encoding and hashing strictly in order to cut multi-chunk latency without inflating peak RAM.
+	// WHY: Prefetch a bounded window of 3 chunks concurrently while encoding in order, aborting remaining prefetches on first error.
+	const prefetchController = new AbortController();
 	const inflight = new Map<number, Promise<Uint8Array>>();
 	let nextToFetch = 0;
 	const fillWindow = (): void => {
 		while (inflight.size < CHUNK_PREFETCH_WINDOW && nextToFetch < chunks.length) {
 			const idx = nextToFetch;
 			nextToFetch += 1;
-			const pending = object(chunks[idx]!.sha256);
+			const pending = object(chunks[idx]!.sha256, prefetchController.signal);
 			void pending.catch(() => undefined);
 			inflight.set(idx, pending);
 		}
 	};
 	fillWindow();
-	for (let index = 0; index < chunks.length; index += 1) {
-		const chunk = chunks[index]!;
-		const pending = inflight.get(index)!;
-		inflight.delete(index);
-		const bytes = await pending;
-		fillWindow();
-		if (bytes.length !== chunk.bytes) throw new MailSendError(`The attachment ${file.filename} failed its integrity check`, false);
-		hash.update(bytes);
-		let start = 0;
-		if (carryLen > 0) {
-			const need = 3 - carryLen;
-			if (bytes.length < need) {
-				carry.set(bytes, carryLen);
-				carryLen += bytes.length;
-				continue;
+	try {
+		for (let index = 0; index < chunks.length; index += 1) {
+			const chunk = chunks[index]!;
+			const pending = inflight.get(index)!;
+			inflight.delete(index);
+			const bytes = await pending;
+			fillWindow();
+			if (bytes.length !== chunk.bytes) throw new MailSendError(`The attachment ${file.filename} failed its integrity check`, false);
+			hash.update(bytes);
+			let start = 0;
+			if (carryLen > 0) {
+				const need = 3 - carryLen;
+				if (bytes.length < need) {
+					carry.set(bytes, carryLen);
+					carryLen += bytes.length;
+					continue;
+				}
+				carry.set(bytes.subarray(0, need), carryLen);
+				parts.push(Buffer.from(carry.buffer, 0, 3).toString("base64"));
+				carryLen = 0;
+				start = need;
 			}
-			carry.set(bytes.subarray(0, need), carryLen);
-			parts.push(Buffer.from(carry.buffer, 0, 3).toString("base64"));
-			carryLen = 0;
-			start = need;
+			const remaining = bytes.length - start;
+			const aligned = remaining - (remaining % 3);
+			if (aligned > 0) {
+				parts.push(Buffer.from(bytes.buffer, bytes.byteOffset + start, aligned).toString("base64"));
+			}
+			const tailStart = start + aligned;
+			carryLen = bytes.length - tailStart;
+			if (carryLen > 0) carry.set(bytes.subarray(tailStart), 0);
 		}
-		const remaining = bytes.length - start;
-		const aligned = remaining - (remaining % 3);
-		if (aligned > 0) {
-			parts.push(Buffer.from(bytes.buffer, bytes.byteOffset + start, aligned).toString("base64"));
-		}
-		const tailStart = start + aligned;
-		carryLen = bytes.length - tailStart;
-		if (carryLen > 0) carry.set(bytes.subarray(tailStart), 0);
+	} catch (error) {
+		prefetchController.abort(error);
+		throw error;
 	}
 	if (carryLen > 0) parts.push(Buffer.from(carry.buffer, 0, carryLen).toString("base64"));
 	if (hash.digest("hex") !== file.fileSha256)
@@ -341,46 +345,50 @@ export class StorageObjectReader implements ObjectReader {
 		this.#fetch = fetcher;
 	}
 
-	async get(companyId: string, sha256: string): Promise<Uint8Array | null> {
-		return withTimeoutScope(30_000, async (signal) => {
-			let response: Response;
-			try {
-				response = await this.#fetch(
-					`${this.#projectUrl}/storage/v1/object/authenticated/${OBJECT_BUCKET}/${companyId}/${sha256}`,
-					{ headers: storageHeaders(this.#secretKey), redirect: "error", signal },
-				);
-			} catch (error) {
-				throw new MailSendError(error instanceof Error ? error.message : "Storage request failed", true);
-			}
-			// Storage answers a missing object with 404, or 400 and its own 404 code; any other 400 is a refusal.
-			if (response.status === 404) {
-				void response.body?.cancel().catch(() => undefined);
-				return null;
-			}
-			if (response.status === 400) {
-				let code: unknown;
+	async get(companyId: string, sha256: string, parentSignal?: AbortSignal): Promise<Uint8Array | null> {
+		return withTimeoutScope(
+			30_000,
+			async (signal) => {
+				let response: Response;
 				try {
-					const parsed = await readBoundedJson(response, 16 * 1024, { signal });
-					if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-						code = (parsed as { statusCode?: unknown }).statusCode;
-					}
-				} catch {
-					// Not JSON.
+					response = await this.#fetch(
+						`${this.#projectUrl}/storage/v1/object/authenticated/${OBJECT_BUCKET}/${companyId}/${sha256}`,
+						{ headers: storageHeaders(this.#secretKey), redirect: "error", signal },
+					);
+				} catch (error) {
+					throw new MailSendError(error instanceof Error ? error.message : "Storage request failed", true);
 				}
-				if (code === "404") return null;
-				throw new MailSendError("Storage refused the attachment's read (400)", true);
-			}
-			if (!response.ok) {
-				void response.body?.cancel().catch(() => undefined);
-				throw new MailSendError(`Storage returned HTTP ${response.status}`, true);
-			}
-			try {
-				return await readObjectBytes(response, MAX_GATEWAY_OBJECT_BYTES, signal);
-			} catch (error) {
-				if (error instanceof MailSendError) throw error;
-				throw new MailSendError(error instanceof Error ? error.message : "Storage response read failed", true);
-			}
-		});
+				// Storage answers a missing object with 404, or 400 and its own 404 code; any other 400 is a refusal.
+				if (response.status === 404) {
+					void response.body?.cancel().catch(() => undefined);
+					return null;
+				}
+				if (response.status === 400) {
+					let code: unknown;
+					try {
+						const parsed = await readBoundedJson(response, 16 * 1024, { signal });
+						if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+							code = (parsed as { statusCode?: unknown }).statusCode;
+						}
+					} catch {
+						// Not JSON.
+					}
+					if (code === "404") return null;
+					throw new MailSendError("Storage refused the attachment's read (400)", true);
+				}
+				if (!response.ok) {
+					void response.body?.cancel().catch(() => undefined);
+					throw new MailSendError(`Storage returned HTTP ${response.status}`, true);
+				}
+				try {
+					return await readObjectBytes(response, MAX_GATEWAY_OBJECT_BYTES, signal);
+				} catch (error) {
+					if (error instanceof MailSendError) throw error;
+					throw new MailSendError(error instanceof Error ? error.message : "Storage response read failed", true);
+				}
+			},
+			parentSignal,
+		);
 	}
 }
 
@@ -430,35 +438,39 @@ export class ObjectGatewayReader implements ObjectReader {
 		this.#fetch = fetcher;
 	}
 
-	async get(companyId: string, sha256: string): Promise<Uint8Array | null> {
+	async get(companyId: string, sha256: string, parentSignal?: AbortSignal): Promise<Uint8Array | null> {
 		if (!UUID.test(companyId) || !SHA.test(sha256)) return null;
-		return withTimeoutScope(10_000, async (signal) => {
-			let response: Response;
-			try {
-				response = await this.#fetch(`${this.#gatewayUrl}/v1/internal-objects/${companyId}/${sha256}`, {
-					headers: { authorization: `Bearer ${this.#internalToken}` },
-					redirect: "error",
-					signal,
-				});
-			} catch (error) {
-				throw new MailSendError(error instanceof Error ? error.message : "Object gateway request failed", true);
-			}
-			if (response.status === 404) {
-				void response.body?.cancel().catch(() => undefined);
-				return null;
-			}
-			if (response.status !== 200) {
-				void response.body?.cancel().catch(() => undefined);
-				throw new MailSendError(`Object gateway returned HTTP ${response.status}`, true);
-			}
-			const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-			const etag = response.headers.get("etag");
-			if (!contentType.startsWith("application/octet-stream") || etag !== `"sha256-${sha256}"`) {
-				void response.body?.cancel().catch(() => undefined);
-				throw new MailSendError("Object gateway returned an unexpected object response", true);
-			}
-			return readObjectBytes(response, MAX_GATEWAY_OBJECT_BYTES, signal);
-		});
+		return withTimeoutScope(
+			10_000,
+			async (signal) => {
+				let response: Response;
+				try {
+					response = await this.#fetch(`${this.#gatewayUrl}/v1/internal-objects/${companyId}/${sha256}`, {
+						headers: { authorization: `Bearer ${this.#internalToken}` },
+						redirect: "error",
+						signal,
+					});
+				} catch (error) {
+					throw new MailSendError(error instanceof Error ? error.message : "Object gateway request failed", true);
+				}
+				if (response.status === 404) {
+					void response.body?.cancel().catch(() => undefined);
+					return null;
+				}
+				if (response.status !== 200) {
+					void response.body?.cancel().catch(() => undefined);
+					throw new MailSendError(`Object gateway returned HTTP ${response.status}`, true);
+				}
+				const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+				const etag = response.headers.get("etag");
+				if (!contentType.startsWith("application/octet-stream") || etag !== `"sha256-${sha256}"`) {
+					void response.body?.cancel().catch(() => undefined);
+					throw new MailSendError("Object gateway returned an unexpected object response", true);
+				}
+				return readObjectBytes(response, MAX_GATEWAY_OBJECT_BYTES, signal);
+			},
+			parentSignal,
+		);
 	}
 }
 

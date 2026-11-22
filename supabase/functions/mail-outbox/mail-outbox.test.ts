@@ -728,9 +728,11 @@ describe("mail outbox attachments", () => {
 		assert.equal(peak, 3);
 		assert.equal(parts.join(""), Buffer.from(multi).toString("base64"));
 
+		const prefetchSignals: AbortSignal[] = [];
 		const failingReader: ObjectReader = {
-			async get(_companyId, sha256) {
+			async get(_companyId, sha256, signal) {
 				if (sha256 === file.manifestSha256) return objects.get(sha256) ?? null;
+				if (signal) prefetchSignals.push(signal);
 				await new Promise((resolve) => setTimeout(resolve, 5));
 				throw new MailSendError("storage down", true);
 			},
@@ -739,6 +741,8 @@ describe("mail outbox attachments", () => {
 			() => attachmentBase64(COMPANY, file, failingReader),
 			(err: unknown) => err instanceof MailSendError && err.retryable,
 		);
+		assert.ok(prefetchSignals.length >= 2, "expected concurrent prefetch signals");
+		assert.ok(prefetchSignals.every((sig) => sig.aborted), "first chunk failure must abort in-flight prefetches");
 		await new Promise((resolve) => setTimeout(resolve, 20));
 
 		let clock = 1_000;

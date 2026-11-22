@@ -158,6 +158,39 @@ describe("artifact cleanup worker", () => {
 			leaseId,
 		);
 		assert.equal(routedPeak, 2);
+
+		let callsBeforeStop = 0;
+		const budgeted = createRoutedArtifactGcStorageProvider({
+			concurrency: 1,
+			hasBudget: () => callsBeforeStop < 1,
+			removeSupabase: async () => {
+				callsBeforeStop += 1;
+			},
+			removeNas: async () => {},
+		});
+		let released = false;
+		const job = parseCompanyObjectGcWorkerJob({
+			profile_id: profileId,
+			lease_id: leaseId,
+			objects: objects.slice(0, 3).map((obj) => ({
+				sha256: obj.sha256,
+				bytes: obj.bytes,
+				path: obj.path,
+				backend: "supabase-storage",
+			})),
+		});
+		assert.deepEqual(
+			await runCompanyObjectGcWorkerJob(job, budgeted, {
+				renewLease: async () => {},
+				complete: async () => {},
+				release: async () => {
+					released = true;
+				},
+			}),
+			{ claimed: 3, completed: 0, failed: 3 },
+		);
+		assert.equal(callsBeforeStop, 1);
+		assert.equal(released, true);
 	});
 
 	it("refuses object paths outside the profile", () => {

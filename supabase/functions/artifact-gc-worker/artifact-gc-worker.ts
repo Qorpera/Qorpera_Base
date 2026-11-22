@@ -53,12 +53,19 @@ export function createRoutedArtifactGcStorageProvider(options: {
 	removeSupabase(object: ArtifactGcWorkerObject, leaseId: string): Promise<void>;
 	removeNas(object: ArtifactGcWorkerObject, leaseId: string): Promise<void>;
 	concurrency?: number;
+	hasBudget?: () => boolean;
 }): ArtifactGcStorageProvider {
 	const concurrency = Math.max(1, Math.floor(options.concurrency ?? 1));
+	const checkBudget = (): void => {
+		if (options.hasBudget && !options.hasBudget()) {
+			throw new Error("Artifact cleanup budget exhausted");
+		}
+	};
 	return {
 		remove: async (objects, leaseId) => {
 			if (concurrency === 1 || objects.length <= 1) {
 				for (const object of objects) {
+					checkBudget();
 					if (object.backend === "supabase-storage") await options.removeSupabase(object, leaseId);
 					if (object.backend === "nas-object-gateway") await options.removeNas(object, leaseId);
 				}
@@ -68,6 +75,10 @@ export function createRoutedArtifactGcStorageProvider(options: {
 			let firstError: unknown;
 			const workers = Array.from({ length: Math.min(concurrency, objects.length) }, async () => {
 				while (firstError === undefined) {
+					if (options.hasBudget && !options.hasBudget()) {
+						firstError = new Error("Artifact cleanup budget exhausted");
+						break;
+					}
 					const index = cursor;
 					if (index >= objects.length) break;
 					cursor += 1;
