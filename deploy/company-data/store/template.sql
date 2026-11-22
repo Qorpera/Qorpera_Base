@@ -157,8 +157,8 @@ grant select on qorpera_data.change_log to qorpera_data_recorder;
 create function qorpera_data.keep_record(p_bytes bigint) returns void
 language plpgsql security definer set search_path = '' as $$
 declare
-	v_own bigint; v_cap bigint; v_step bigint; v_total bigint; v_holders int; v_newest bigint; v_line record;
-	v_doomed bigint[] := '{}'; v_freed bigint := 0; v_moved bigint;
+	v_own bigint; v_cap bigint; v_step bigint; v_total bigint; v_holders int; v_newest bigint;
+	v_freed bigint := 0; v_batch_rows bigint; v_batch_freed bigint; v_moved bigint;
 begin
 	insert into qorpera_data.record_bytes as b (pid, bytes) values (pg_catalog.pg_backend_pid(), p_bytes)
 		on conflict (pid) do update set bytes = b.bytes + excluded.bytes
@@ -170,14 +170,31 @@ begin
 	select coalesce(sum(b.bytes), 0), count(*) into v_total, v_holders from qorpera_data.record_bytes b;
 	if v_total > v_cap and pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtext('qorpera_data.record_trim')) then
 		select max(c.seq) into v_newest from qorpera_data.row_changes c;
-		for v_line in
-			select c.seq, c.bytes from qorpera_data.row_changes c where c.seq < v_newest order by c.seq for update skip locked
+		-- WHY: Trim row_changes in set-based 5,000-row batches until under cap instead of O(K^2) PL/pgSQL array appends.
 		loop
 			exit when v_total - v_freed <= v_cap;
-			v_doomed := v_doomed || v_line.seq;
-			v_freed := v_freed + v_line.bytes;
+			with locked as materialized (
+				select c.seq, c.bytes
+				from qorpera_data.row_changes c
+				where c.seq < v_newest
+				order by c.seq
+				limit 5000
+				for update skip locked
+			),
+			doomed as materialized (
+				select l.seq, sum(l.bytes) over (order by l.seq) - l.bytes as prior_bytes
+				from locked l
+			),
+			deleted as (
+				delete from qorpera_data.row_changes c
+				using doomed d
+				where c.seq = d.seq and d.prior_bytes < (v_total - v_freed - v_cap)
+				returning c.bytes
+			)
+			select count(*), coalesce(sum(bytes), 0) into v_batch_rows, v_batch_freed from deleted;
+			v_freed := v_freed + v_batch_freed;
+			exit when v_batch_rows = 0;
 		end loop;
-		delete from qorpera_data.row_changes c where c.seq = any (v_doomed);
 	end if;
 	if v_freed > 0 or v_holders > 64 then
 		with ended as (
@@ -197,16 +214,24 @@ create function qorpera_data.forget_record(p_before timestamptz) returns bigint
 language plpgsql security definer set search_path = '' as $$
 declare v_through bigint; v_lines bigint; v_freed bigint;
 begin
+	-- WHY: Probe each expired change_log entry's max seq via row_changes_txid_seq_idx instead of joining all rows per tx.
 	select max(r.seq) into v_through
-	from qorpera_data.change_log c join qorpera_data.row_changes r on r.txid = c.txid
+	from qorpera_data.change_log c
+	join lateral (
+		select rc.seq
+		from qorpera_data.row_changes rc
+		where rc.txid = c.txid
+		order by rc.seq desc
+		limit 1
+	) r on true
 	where c.at < p_before;
 	if v_through is null then
 		return 0;
 	end if;
-	with gone as (
-		delete from qorpera_data.row_changes r
-		where r.seq in (select x.seq from qorpera_data.row_changes x where x.seq <= v_through order by x.seq limit 50000 for update skip locked)
-		returning r.bytes)
+	with doomed as materialized (
+		select x.seq from qorpera_data.row_changes x where x.seq <= v_through order by x.seq limit 50000 for update skip locked
+	), gone as (
+		delete from qorpera_data.row_changes r using doomed d where r.seq = d.seq returning r.bytes)
 	select count(*), coalesce(sum(gone.bytes), 0) into v_lines, v_freed from gone;
 	if v_freed > 0 then
 		insert into qorpera_data.record_bytes as b (pid, bytes) values (pg_catalog.pg_backend_pid(), -v_freed)

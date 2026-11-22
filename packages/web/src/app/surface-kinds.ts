@@ -1,6 +1,7 @@
 import { SURFACE_KINDS, type SurfaceKind, type SurfaceSummary } from "@qorpera/contracts";
 import type { Emblem } from "../ui/interface-emblem.ts";
 import { phrase, t } from "../ui/preferences.ts";
+import { type SurfaceFigureId, surfaceFigureFromIcon } from "../ui/surface-figure.ts";
 
 export { SURFACE_KINDS, type SurfaceKind };
 
@@ -11,78 +12,61 @@ export interface SurfaceLook {
 
 interface KindSpec {
 	readonly emblem: Emblem;
+	readonly figure: SurfaceFigureId;
 	readonly tint: string;
 	readonly subtitle: string;
 }
 
 const KIND_SPECS: Readonly<Record<SurfaceKind, KindSpec>> = {
-	identity: { emblem: "spark", tint: "#d76f45", subtitle: phrase("Brand, voice, design & philosophy") },
-	website: { emblem: "globe", tint: "#2a9ae0", subtitle: phrase("Marketing site") },
-	web_app: { emblem: "spark", tint: "#5a5fe0", subtitle: phrase("Interactive web app") },
-	mobile_app: { emblem: "phone", tint: "#8b5cf6", subtitle: phrase("iOS & Android app") },
-	desktop_app: { emblem: "window", tint: "#5d7896", subtitle: phrase("Desktop app") },
-	database: { emblem: "database", tint: "#0e9c93", subtitle: phrase("Tables & queries") },
-	dashboard: { emblem: "chart", tint: "#12a467", subtitle: phrase("KPIs & cashflow") },
-	brand: { emblem: "spark", tint: "#d76f45", subtitle: phrase("Colors, type & voice") },
-	product: { emblem: "box", tint: "#ec7a2c", subtitle: phrase("Specs, colorways & BOM") },
-	report: { emblem: "book", tint: "#4a55a2", subtitle: phrase("Essays, analysis & charts") },
-	custom: { emblem: "star", tint: "#6c839b", subtitle: phrase("Custom surface") },
-	inbox: { emblem: "mail", tint: "#2f63d8", subtitle: phrase("Mail & follow-ups") },
-	money: { emblem: "bank", tint: "#0fa958", subtitle: phrase("Balances & invoices") },
-	members: { emblem: "members", tint: "#a145f7", subtitle: phrase("Team & roles") },
-	data: { emblem: "database", tint: "#0e9c93", subtitle: phrase("Tables & queries") },
-	files: { emblem: "drawers", tint: "#d4950f", subtitle: phrase("Company files") },
+	identity: {
+		emblem: "spark",
+		figure: "seal",
+		tint: "#d76f45",
+		subtitle: phrase("Brand, voice, design & philosophy"),
+	},
+	website: { emblem: "globe", figure: "browser", tint: "#2a9ae0", subtitle: phrase("Marketing site") },
+	web_app: { emblem: "spark", figure: "pointer", tint: "#5a5fe0", subtitle: phrase("Interactive web app") },
+	mobile_app: { emblem: "phone", figure: "phone", tint: "#8b5cf6", subtitle: phrase("iOS & Android app") },
+	desktop_app: { emblem: "window", figure: "monitor", tint: "#5d7896", subtitle: phrase("Desktop app") },
+	database: { emblem: "database", figure: "can", tint: "#0e9c93", subtitle: phrase("Tables & queries") },
+	dashboard: { emblem: "chart", figure: "bars", tint: "#12a467", subtitle: phrase("KPIs & cashflow") },
+	brand: { emblem: "spark", figure: "palette", tint: "#d76f45", subtitle: phrase("Colors, type & voice") },
+	product: { emblem: "box", figure: "parcel", tint: "#ec7a2c", subtitle: phrase("Specs, colorways & BOM") },
+	report: { emblem: "book", figure: "book", tint: "#4a55a2", subtitle: phrase("Essays, analysis & charts") },
+	custom: { emblem: "star", figure: "gem", tint: "#6c839b", subtitle: phrase("Custom surface") },
+	inbox: { emblem: "mail", figure: "envelope", tint: "#2f63d8", subtitle: phrase("Mail & follow-ups") },
+	money: { emblem: "bank", figure: "money", tint: "#0fa958", subtitle: phrase("Balances & invoices") },
+	members: { emblem: "members", figure: "people", tint: "#a145f7", subtitle: phrase("Team & roles") },
+	data: { emblem: "database", figure: "can", tint: "#0e9c93", subtitle: phrase("Tables & queries") },
+	files: { emblem: "drawers", figure: "folder", tint: "#d4950f", subtitle: phrase("Company files") },
 };
 
-export const SURFACE_ACCENTS: readonly { readonly name: string; readonly hex: string }[] = [
-	{ name: phrase("Sky"), hex: "#2a9ae0" },
-	{ name: phrase("Blue"), hex: "#2f63d8" },
-	{ name: phrase("Purple"), hex: "#8b5cf6" },
-	{ name: phrase("Pink"), hex: "#e0559b" },
-	{ name: phrase("Red"), hex: "#dc3545" },
-	{ name: phrase("Orange"), hex: "#ec7a2c" },
-	{ name: phrase("Gold"), hex: "#d4950f" },
-	{ name: phrase("Green"), hex: "#12a467" },
-	{ name: phrase("Slate"), hex: "#6c839b" },
-];
-
-export const SURFACE_CUSTOM_EMBLEMS: readonly Emblem[] = [
-	"star",
-	"rocket",
-	"box",
-	"cart",
-	"truck",
-	"heart",
-	"book",
-	"chat",
-	"calendar",
-	"map",
-	"pulse",
-	"code",
-];
-
-const KNOWN_EMBLEMS: ReadonlySet<string> = new Set<string>([
-	...SURFACE_CUSTOM_EMBLEMS,
-	"globe",
-	"spark",
-	"phone",
-	"window",
-	"database",
-	"chart",
-	"mail",
-	"bank",
-	"coin",
-	"members",
-	"drawers",
-	"board",
-	"page",
-	"queue",
-	"hire",
-	"mountain",
-	"tent",
-	"pin",
-	"camera",
-]);
+const EMBLEM_FIGURES: Readonly<Record<string, SurfaceFigureId>> = {
+	globe: "browser",
+	page: "book",
+	book: "book",
+	spark: "palette",
+	phone: "phone",
+	window: "monitor",
+	code: "pointer",
+	database: "can",
+	chart: "bars",
+	pulse: "bars",
+	box: "parcel",
+	truck: "parcel",
+	cart: "shop",
+	mail: "envelope",
+	chat: "envelope",
+	bank: "money",
+	coin: "money",
+	members: "people",
+	drawers: "folder",
+	star: "gem",
+	heart: "gem",
+	map: "house",
+	pin: "house",
+	calendar: "book",
+};
 
 export function inferSurfaceKind(surface: Pick<SurfaceSummary, "slug" | "icon" | "archetype">): SurfaceKind {
 	const { slug, icon } = surface;
@@ -132,12 +116,18 @@ export function surfaceKindTint(kind: SurfaceKind): string {
 }
 
 export function surfaceTint(look: SurfaceLook): string {
-	return look.accent && /^#[0-9a-f]{6}$/i.test(look.accent) ? look.accent : KIND_SPECS[look.kind].tint;
+	return KIND_SPECS[look.kind].tint;
 }
 
-export function surfaceTileEmblem(surface: Pick<SurfaceSummary, "icon">, look: SurfaceLook): Emblem {
-	if (look.kind === "custom" && KNOWN_EMBLEMS.has(surface.icon)) return surface.icon as Emblem;
-	return KIND_SPECS[look.kind].emblem;
+export function surfaceKindFigure(kind: SurfaceKind): SurfaceFigureId {
+	return KIND_SPECS[kind].figure;
+}
+
+export function surfaceFigureOf(surface: Pick<SurfaceSummary, "icon">, look: SurfaceLook): SurfaceFigureId {
+	const chosen = surfaceFigureFromIcon(surface.icon);
+	if (chosen) return chosen;
+	if (look.kind === "custom") return EMBLEM_FIGURES[surface.icon] ?? KIND_SPECS.custom.figure;
+	return KIND_SPECS[look.kind].figure;
 }
 
 export function surfaceKindSubtitle(kind: SurfaceKind): string {

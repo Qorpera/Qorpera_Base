@@ -1,4 +1,10 @@
-import type { StudioPatchChange, StudioPatchOp, SurfacePreviewConflict } from "@qorpera/contracts";
+import {
+	normalizeStudioFolderRoot,
+	resolveStudioFolderPath,
+	type StudioPatchChange,
+	type StudioPatchOp,
+	type SurfacePreviewConflict,
+} from "@qorpera/contracts";
 
 export type { StudioPatchChange, StudioPatchOp };
 
@@ -49,7 +55,17 @@ function mergeJsonObject(
 export function composeStudioPreview(
 	baseFiles: Readonly<Record<string, string>>,
 	orderedChanges: readonly StudioPatchChange[],
+	folderRoot?: string | null,
 ): StudioPreviewComposition {
+	let normalizedRoot: string | null = null;
+	let invalidRoot = false;
+	if (folderRoot !== undefined && folderRoot !== null && folderRoot.trim().length > 0) {
+		try {
+			normalizedRoot = normalizeStudioFolderRoot(folderRoot);
+		} catch {
+			invalidRoot = true;
+		}
+	}
 	const working: Record<string, string> = { ...baseFiles };
 	const touchedWholeFiles = new Map<string, string>();
 	const touchedJsonKeys = new Map<string, Set<string>>();
@@ -61,47 +77,62 @@ export function composeStudioPreview(
 		const conflictOwners = new Set<string>();
 
 		for (const op of change.ops) {
-			if (op.op === "write_text" || op.op === "delete") {
-				const priorOwner = touchedWholeFiles.get(op.path);
-				if (priorOwner && priorOwner !== change.changeId) {
-					conflictPaths.push(op.path);
-					conflictOwners.add(priorOwner);
-					continue;
-				}
-				if (touchedJsonKeys.has(op.path)) {
-					conflictPaths.push(op.path);
-					continue;
-				}
-				touchedWholeFiles.set(op.path, change.changeId);
-				if (op.op === "delete") delete working[op.path];
-				else working[op.path] = op.content;
-				continue;
-			}
-
-			const wholeOwner = touchedWholeFiles.get(op.path);
-			if (wholeOwner && wholeOwner !== change.changeId) {
+			let path: string;
+			if (invalidRoot) {
 				conflictPaths.push(op.path);
-				conflictOwners.add(wholeOwner);
 				continue;
 			}
-			let currentObj: Record<string, unknown> = {};
-			if (typeof working[op.path] === "string") {
+			if (normalizedRoot) {
 				try {
-					const parsed: unknown = JSON.parse(working[op.path] as string);
-					if (isPlainObject(parsed)) currentObj = parsed;
+					path = resolveStudioFolderPath(normalizedRoot, op.path);
 				} catch {
 					conflictPaths.push(op.path);
 					continue;
 				}
+			} else {
+				path = op.path;
 			}
-			const keysForFile = touchedJsonKeys.get(op.path) ?? new Set<string>();
-			const { merged, conflicts } = mergeJsonObject(currentObj, op.patch, keysForFile, "");
-			if (conflicts.length > 0) {
-				conflictPaths.push(op.path);
+			if (op.op === "write_text" || op.op === "delete") {
+				const priorOwner = touchedWholeFiles.get(path);
+				if (priorOwner && priorOwner !== change.changeId) {
+					conflictPaths.push(path);
+					conflictOwners.add(priorOwner);
+					continue;
+				}
+				if (touchedJsonKeys.has(path)) {
+					conflictPaths.push(path);
+					continue;
+				}
+				touchedWholeFiles.set(path, change.changeId);
+				if (op.op === "delete") delete working[path];
+				else working[path] = op.content;
 				continue;
 			}
-			touchedJsonKeys.set(op.path, keysForFile);
-			working[op.path] = `${JSON.stringify(merged, null, 2)}\n`;
+
+			const wholeOwner = touchedWholeFiles.get(path);
+			if (wholeOwner && wholeOwner !== change.changeId) {
+				conflictPaths.push(path);
+				conflictOwners.add(wholeOwner);
+				continue;
+			}
+			let currentObj: Record<string, unknown> = {};
+			if (typeof working[path] === "string") {
+				try {
+					const parsed: unknown = JSON.parse(working[path] as string);
+					if (isPlainObject(parsed)) currentObj = parsed;
+				} catch {
+					conflictPaths.push(path);
+					continue;
+				}
+			}
+			const keysForFile = touchedJsonKeys.get(path) ?? new Set<string>();
+			const { merged, conflicts } = mergeJsonObject(currentObj, op.patch, keysForFile, "");
+			if (conflicts.length > 0) {
+				conflictPaths.push(path);
+				continue;
+			}
+			touchedJsonKeys.set(path, keysForFile);
+			working[path] = `${JSON.stringify(merged, null, 2)}\n`;
 		}
 
 		if (conflictPaths.length > 0) {

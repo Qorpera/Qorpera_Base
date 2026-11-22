@@ -1933,6 +1933,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 									? { coding_command: { url: coding.origin, token_sha256: sha256(coding.token) } }
 									: {}),
 								...(authority.loginCustody === "vault" ? { login_custody: "vault" } : {}),
+								...(runtime.surfaceFirst ? { surface_first: true } : {}),
 								recovery_volume_path: "/var/lib/qorpera-runner",
 							},
 						}
@@ -1969,6 +1970,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 						...(office ? [`QORPERA_COMPANY_COMPUTER_URL=${office.url}`] : []),
 						...(coding ? [`QORPERA_CODING_COMMAND_URL=${coding.origin}`] : []),
 						...(authority.loginCustody === "vault" ? ["QORPERA_NATIVE_LOGIN_CUSTODY=vault"] : []),
+						...(runtime.surfaceFirst ? ["QORPERA_SURFACE_FIRST=1"] : []),
 					]
 				: []),
 			"",

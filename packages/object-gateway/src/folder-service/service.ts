@@ -128,6 +128,7 @@ export interface FolderServiceOptions {
 	readonly staging?: FolderStaging;
 	/** How often the folder clocks are read. A change shows on machines within about this plus one feed call. */
 	readonly pollMs?: number;
+	readonly maxPollMs?: number;
 	/** How often each view is listed again in full: grant expiry is on no feed (proposal P4 in the design note). */
 	readonly reloadMs?: number;
 	/** How long a view with no connection is kept before its tree is dropped. */
@@ -167,6 +168,8 @@ export const LISTING_ONLY = "\u0001";
 const SUPERSEDED_PER_PATH = 16;
 /** The machine's folder program treats 45 s without a frame as a dead link. */
 const HEARTBEAT_MS = 15_000;
+const IDLE_POLL_MAX_MS = 5_000;
+const IDLE_BACKOFF_STEPS = [1, 2, 4, 10] as const;
 /** A core view's lease is 120 s; it is renewed every 40 s while a machine is connected (C1b-3a). */
 const RENEW_MS = 40_000;
 const LEASE_MS = 120_000;
@@ -566,6 +569,7 @@ class View {
 	connections = 0;
 	idleSince: number | undefined;
 	loadedAt = 0;
+	authoritySeq: number | undefined;
 	closed: string | undefined;
 	closedAt: number | undefined;
 	/** Transfers fence new requests before waiting for the accepted operations to finish. */
@@ -772,6 +776,8 @@ export class FolderService {
 	readonly #grants: MountGrants;
 	readonly #staging: FolderStaging | undefined;
 	readonly #pollMs: number;
+	readonly #maxPollMs: number;
+	readonly #backoffConnected: boolean;
 	readonly #reloadMs: number;
 	readonly #idleMs: number;
 	readonly #checkWaitMs: number;
@@ -780,7 +786,11 @@ export class FolderService {
 	readonly #views = new Map<string, View>();
 	readonly #profiles = new Map<string, string>();
 	readonly #profileLookups = new Map<string, Promise<string>>();
-	#timer: ReturnType<typeof setInterval> | undefined;
+	#timer: ReturnType<typeof setTimeout> | undefined;
+	#currentPollMs: number;
+	#scheduledPollMs = 0;
+	#quietTicks = 0;
+	#started = false;
 	#heartbeat: ReturnType<typeof setInterval> | undefined;
 	#renewals: ReturnType<typeof setInterval> | undefined;
 	#polling = false;
@@ -852,6 +862,12 @@ export class FolderService {
 		this.#grants = options.grants;
 		this.#staging = options.staging;
 		this.#pollMs = options.pollMs ?? 500;
+		this.#backoffConnected = options.maxPollMs !== undefined;
+		this.#maxPollMs = Math.max(
+			this.#pollMs,
+			options.maxPollMs ?? (options.pollMs === undefined ? IDLE_POLL_MAX_MS : this.#pollMs),
+		);
+		this.#currentPollMs = this.#pollMs;
 		this.#reloadMs = options.reloadMs ?? 10 * 60_000;
 		this.#idleMs = options.idleMs ?? 60_000;
 		this.#checkWaitMs = options.checkWaitMs ?? CHECK_WAIT_MS;
@@ -877,8 +893,13 @@ export class FolderService {
 		this.#maxBoundaryBatches = Math.max(1, options.maxBoundaryBatches ?? MAX_BOUNDARY_BATCHES);
 	}
 
+	get currentPollMs(): number {
+		return this.#currentPollMs;
+	}
+
 	start(): void {
-		this.#timer ??= setInterval(() => void this.poll(), this.#pollMs);
+		this.#started = true;
+		if (!this.#timer) this.#schedulePoll();
 		this.#heartbeat ??= setInterval(() => this.heartbeat(), HEARTBEAT_MS);
 		this.#renewals ??= setInterval(() => {
 			void this.renewLeases();
@@ -892,13 +913,42 @@ export class FolderService {
 	}
 
 	#stopTimers(): void {
-		if (this.#timer) clearInterval(this.#timer);
+		this.#started = false;
+		if (this.#timer) clearTimeout(this.#timer);
 		if (this.#heartbeat) clearInterval(this.#heartbeat);
 		if (this.#renewals) clearInterval(this.#renewals);
 		this.#timer = undefined;
+		this.#scheduledPollMs = 0;
 		this.#heartbeat = undefined;
 		this.#renewals = undefined;
 		this.#searchWorker?.close();
+	}
+
+	#schedulePoll(): void {
+		if (!this.#started || this.#stopping) return;
+		if (this.#timer) clearTimeout(this.#timer);
+		const delay = this.#currentPollMs;
+		this.#scheduledPollMs = delay;
+		this.#timer = setTimeout(() => {
+			this.#timer = undefined;
+			this.#scheduledPollMs = 0;
+			void this.poll().finally(() => {
+				if (this.#started && !this.#timer) this.#schedulePoll();
+			});
+		}, delay);
+	}
+
+	#noteActivity(): void {
+		this.#quietTicks = 0;
+		this.#currentPollMs = this.#pollMs;
+		if (this.#started && this.#timer && this.#scheduledPollMs > this.#pollMs) this.#schedulePoll();
+	}
+
+	#noteQuietTick(): void {
+		if (this.#maxPollMs <= this.#pollMs) return;
+		this.#quietTicks++;
+		const index = Math.min(this.#quietTicks, IDLE_BACKOFF_STEPS.length - 1);
+		this.#currentPollMs = Math.min(this.#maxPollMs, this.#pollMs * IDLE_BACKOFF_STEPS[index]!);
 	}
 
 	#closeTransports(): void {
@@ -915,6 +965,7 @@ export class FolderService {
 	 * view with it. One the core closed otherwise is listed closed while it stays (#close). */
 	async boundary(machine: string, final: readonly string[] = []): Promise<MachineBoundary> {
 		if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
+		this.#noteActivity();
 		return this.#machineBoundary(machine, final);
 	}
 
@@ -1422,6 +1473,7 @@ export class FolderService {
 	/** Checks a machine's hello and opens (or joins) its view. The first connection of a view lists its tree. */
 	async open(hello: Hello, bridge: BridgeInfo): Promise<ViewHandle> {
 		if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
+		this.#noteActivity();
 		const grant = this.#grants.admit(hello, bridge);
 		let view = this.#views.get(grant.key);
 		// A view that closed while a final of its was out stays, joined only to ask that final again.
@@ -1944,7 +1996,10 @@ export class FolderService {
 				}
 			}
 			const live = [...this.#views.values()].filter((v) => v.tree && !v.closed && !v.moving);
-			if (live.length === 0) return;
+			if (live.length === 0) {
+				this.#noteQuietTick();
+				return;
+			}
 			let clocks: Map<string, number>;
 			try {
 				clocks = await this.#core.clocks([...new Set(live.map((v) => v.environmentId))]);
@@ -1952,11 +2007,17 @@ export class FolderService {
 				this.#log(`folder-service: clocks unavailable: ${(error as Error).message}`);
 				return;
 			}
+			let active = false;
 			for (const view of live) {
 				const last = clocks.get(view.environmentId);
-				if (now - view.loadedAt >= this.#reloadMs || (last !== undefined && last > view.seq))
+				if (now - view.loadedAt >= this.#reloadMs || (last !== undefined && last > view.seq)) {
+					active = true;
 					this.#queue(view, () => this.#catchUp(view));
+				}
 			}
+			const hasConnected = live.some((v) => v.connections > 0);
+			if (active || (hasConnected && !this.#backoffConnected)) this.#noteActivity();
+			else this.#noteQuietTick();
 		} finally {
 			this.#polling = false;
 		}
@@ -2198,6 +2259,7 @@ export class FolderService {
 					told = true;
 					return;
 				}
+				if (page.events.length > 0) this.#noteActivity();
 				for (const event of page.events) {
 					if (event.kind === "authority") {
 						// What the page changed before it counts first: a listing again holds a second tree.
@@ -2249,12 +2311,43 @@ export class FolderService {
 		view.superseded.set(old.path, older);
 	}
 
+	async #fingerprintMatches(view: View): Promise<boolean> {
+		const fingerprint = this.#core.viewFingerprint;
+		if (!fingerprint) return false;
+		let fp = await fingerprint.call(this.#core, view.environmentId, view.actor);
+		if (view.closed) return false;
+		if (fp.seq > view.seq || view.cursor !== null) {
+			await this.#advance(view);
+			if (view.closed || this.#now() - view.loadedAt < this.#reloadMs) return false;
+			fp = await fingerprint.call(this.#core, view.environmentId, view.actor);
+			if (view.closed) return false;
+		}
+		const tree = view.tree;
+		if (!tree || view.cursor !== null || fp.seq !== view.seq) return false;
+		const authorityMatches =
+			view.authoritySeq === undefined ? fp.authoritySeq <= view.seq : fp.authoritySeq === view.authoritySeq;
+		if (!authorityMatches || fp.entryCount !== tree.explicitSize || fp.entriesDigest !== tree.entriesDigest)
+			return false;
+		view.authoritySeq = fp.authoritySeq;
+		return true;
+	}
+
 	/** Lists the view again and tells its machines what differs. Until it is done the old tree serves: a path an
 	 * access change took away goes when the new tree replaces it. Its replaced versions go at once, and those of every
 	 * path the new tree no longer holds go at the end. */
 	async #reload(view: View, why: string, alreadyChanged: readonly string[] = []): Promise<void> {
 		const before = view.tree;
 		if (!before || view.closed) return;
+		if (why === "scheduled" && this.#core.viewFingerprint && alreadyChanged.length === 0) {
+			if (await this.#fingerprintMatches(view)) {
+				view.loadedAt = this.#now();
+				this.#log(
+					`folder-service: ${view.key} fingerprint matched at change ${view.seq}: ${before.explicitSize} paths`,
+				);
+				return;
+			}
+			if (view.closed || this.#now() - view.loadedAt < this.#reloadMs) return;
+		}
 		if (why === "access changed") view.superseded.clear();
 		// A run's view counts both trees while the new one is listed and caught up (#listAll): a page past the node's
 		// bound closes the view, and the old tree goes with it.
@@ -2271,6 +2364,7 @@ export class FolderService {
 					again = true;
 					break;
 				}
+				if (page.events.length > 0) this.#noteActivity();
 				for (const event of page.events) {
 					if (event.kind === "authority") again = true;
 					else for (const change of event.changes) tree.apply(change);
@@ -2287,6 +2381,7 @@ export class FolderService {
 			view.tree = tree;
 			view.seq = position.afterSeq;
 			view.cursor = position.cursor;
+			view.authoritySeq = undefined;
 			view.loadedAt = again ? 0 : this.#now();
 			for (const path of view.superseded.keys()) if (!tree.get(path)) view.superseded.delete(path);
 			const changed = [...alreadyChanged, ...ViewTree.diff(before, tree)];
@@ -2362,6 +2457,7 @@ export class FolderService {
 	}
 
 	#list(view: View, path: string, after: string | undefined, links: boolean) {
+		this.#noteActivity();
 		const tree = this.#tree(view);
 		const result = view.pending
 			? view.pending.children(path, after, LIST_PAGE, links)
@@ -2387,6 +2483,7 @@ export class FolderService {
 
 	/** A file's bytes, or a link's target (protocol 4: below it a link is not there). */
 	async #read(view: View, request: ReadRequest, links: boolean): Promise<Buffer> {
+		this.#noteActivity();
 		this.#tree(view);
 		const target = (link: string): Buffer => {
 			if (!links) throw new ProtocolError(ErrorCode.notFound, "No such file");
@@ -2459,6 +2556,7 @@ export class FolderService {
 	 * is NOT_FOUND; a share that cannot be read now fails the whole page (UNAVAILABLE), so no answer leaves a file out
 	 * without saying so. */
 	async #search(view: View, request: SearchRequest, links: boolean): Promise<SearchAnswer> {
+		this.#noteActivity();
 		// A run's own view only (a core view): an operator mount's machine never searches through this service. A core
 		// view the core closed answers VIEW_CLOSED (from the tree), so its run opens another.
 		if (!view.core) throw new ProtocolError(ErrorCode.badRequest, "Search is for a run's own view");
@@ -3068,6 +3166,7 @@ export class FolderService {
 	 * once, so the core counts a desktop's seat in use from then (C1B §9), not up to a round later; a command's view has
 	 * no seat. */
 	#touch(view: View): void {
+		this.#noteActivity();
 		view.heard = undefined;
 		if (view.moving || view.closed) return;
 		if (view.lease && !view.access?.command && view.unsavedSince === undefined && view.pending?.unsaved) {
@@ -3157,6 +3256,7 @@ export class FolderService {
 	 * starts the gateway's put; the last waits for the gateway, then sets the chunk in the file. A chunk the actor
 	 * holds already is not sent on. */
 	async #chunk(view: View, part: ChunkPart): Promise<void> {
+		this.#noteActivity();
 		// Credited as a change is (#change): to the windows open as the machine sent it.
 		const tags = this.#windowsOf(view);
 		await this.#quiet(view);

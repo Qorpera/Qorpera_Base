@@ -293,6 +293,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Surfaces, live previews and shared identity",
 		text: "Your company now runs on live Surfaces instead of ad-hoc files and separate specialist hierarchies. Every product or brand area projects its real codebase or company folder directly into the founder's canvas, where parallel work sessions propose toggleable changes and side-by-side design explorations before anything merges or goes live. Shared identity styling syncs across builds automatically, and recurring work runs as focused automations instead of permanent background roles. Keep the company folder lean by editing live surface files directly rather than creating extra draft or memo documents.",
 	},
+	{
+		id: "vault-secrets-and-code-routines",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "App vault secrets and code/ops routine triggers",
+		text: "Coding sessions can now use company-owned OpenAI and Anthropic vault keys and receive sorted secretNames (names only, never values) in their turn context. Owners and admins can scope environment secrets by build, test, or runtime and target environment so production or runtime grants stay out of coding sessions, and manage per-site app secret grants. Routines created with manage_routine now support code-change, app-unhealthy, and database-change listeners plus deterministic checkBeforeWake gates (HTTPS probes and repository checks) that wake an agent only on failure or state change.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

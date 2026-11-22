@@ -1537,7 +1537,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							// The company's databases (slice 5), on a host that names the data gateway's run door: every
 							// run describes and asks them; a worker does not apply steps.
 							...(this.#companyData
-								? cloudDataTools({ folder: folder.client, door: this.#companyData, apply: !work.isWorker })
+								? cloudDataTools({
+										folder: folder.client,
+										door: this.#companyData,
+										apply: !work.isWorker,
+										onDataChanged: async (event, requestSignal) => {
+											await this.#paths.call(
+												"qorpera_folder_emit_data_change_wakes",
+												{
+													p_binding: binding,
+													p_database: event.database,
+													p_event: event.payload,
+												},
+												requestSignal,
+											);
+										},
+									})
 								: []),
 							cloudCompanyContextTool(context, binding, this.#paths, () => requestSources),
 							...(viewed ? [memoryZoomTool(binding, identity, this.#paths)] : []),

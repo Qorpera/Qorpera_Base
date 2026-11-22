@@ -355,20 +355,43 @@ if (process.argv[2] === "migrate") {
 		void createCompanies();
 	}, 15_000);
 	let writingSurfaceFolders = false;
+	let surfaceFolderBurst = 0;
+	let surfaceFolderTimer: ReturnType<typeof setTimeout> | undefined;
+	const SURFACE_FOLDER_IDLE_MS = 400;
+	const SURFACE_FOLDER_BURST_PAUSE_MS = 100;
+	const SURFACE_FOLDER_ERROR_MS = 2_000;
+	const scheduleSurfaceFolders = (delayMs: number): void => {
+		if (!surfaceFolderWorker || stopping) return;
+		if (surfaceFolderTimer) clearTimeout(surfaceFolderTimer);
+		surfaceFolderTimer = setTimeout(() => {
+			surfaceFolderTimer = undefined;
+			void writeSurfaceFolders();
+		}, delayMs);
+		surfaceFolderTimer.unref?.();
+	};
 	const writeSurfaceFolders = async (): Promise<void> => {
 		if (!surfaceFolderWorker || writingSurfaceFolders || stopping) return;
 		writingSurfaceFolders = true;
+		let nextDelayMs = SURFACE_FOLDER_IDLE_MS;
 		try {
-			await surfaceFolderWorker.processDue(8, shutdown.signal);
+			const handled = await surfaceFolderWorker.processDue(8, shutdown.signal);
+			if (handled > 0) {
+				surfaceFolderBurst += 1;
+				nextDelayMs = surfaceFolderBurst >= 4 ? SURFACE_FOLDER_BURST_PAUSE_MS : 0;
+				if (surfaceFolderBurst >= 4) surfaceFolderBurst = 0;
+			} else {
+				surfaceFolderBurst = 0;
+			}
 		} catch {
+			surfaceFolderBurst = 0;
+			nextDelayMs = SURFACE_FOLDER_ERROR_MS;
 			if (!shutdown.signal.aborted) process.stderr.write("Surface folder writer requires operator attention\n");
 		} finally {
 			writingSurfaceFolders = false;
+			if (!stopping) scheduleSurfaceFolders(nextDelayMs);
 		}
 	};
-	const surfaceFolderWrites = setInterval(() => {
-		void writeSurfaceFolders();
-	}, 2_000);
+	scheduleSurfaceFolders(SURFACE_FOLDER_IDLE_MS);
 	server.listen(port(process.env), host, () => {
 		process.stdout.write(`Qorpera object gateway listening on ${host}:${port(process.env)}\n`);
 	});
@@ -386,7 +409,8 @@ if (process.argv[2] === "migrate") {
 			clearInterval(digitalPostWrites);
 			clearInterval(memoryErasures);
 			clearInterval(companyCreations);
-			clearInterval(surfaceFolderWrites);
+			if (surfaceFolderTimer) clearTimeout(surfaceFolderTimer);
+			surfaceFolderTimer = undefined;
 		},
 		stop: {
 			close: (done) =>

@@ -232,7 +232,7 @@ export function createWebSiteHosting(cloud: Cloud, company: { profileId: string 
 		async read(signal) {
 			signal?.throwIfAborted();
 			const raw = await withCloudDeadline(
-				() => cloud.rpc("qorpera_company_site_hosting", { p_profile_id: company.profileId }),
+				(deadline) => cloud.rpc("qorpera_company_site_hosting", { p_profile_id: company.profileId }, deadline),
 				HOSTING_TIMEOUT_MS,
 				signal,
 			);
@@ -243,7 +243,8 @@ export function createWebSiteHosting(cloud: Cloud, company: { profileId: string 
 			if (!UUID_PATTERN.test(siteId)) throw new Error("Invalid site.");
 			const raw = asRecord(
 				await withCloudDeadline(
-					() => cloud.rpc("qorpera_set_company_site_public", { p_site_id: siteId, p_public: isPublic }),
+					(deadline) =>
+						cloud.rpc("qorpera_set_company_site_public", { p_site_id: siteId, p_public: isPublic }, deadline),
 					HOSTING_TIMEOUT_MS,
 					signal,
 				),
@@ -263,12 +264,16 @@ export function createWebSiteHosting(cloud: Cloud, company: { profileId: string 
 			const problem = validateCustomDomainInput(hostname);
 			if (problem) throw new Error(problem);
 			const raw = await withCloudDeadline(
-				() =>
-					cloud.rpc("qorpera_add_company_site_domain", {
-						p_site_id: siteId,
-						p_hostname: hostname.trim().toLowerCase().replace(/\.$/, ""),
-						p_is_apex: isApex,
-					}),
+				(deadline) =>
+					cloud.rpc(
+						"qorpera_add_company_site_domain",
+						{
+							p_site_id: siteId,
+							p_hostname: hostname.trim().toLowerCase().replace(/\.$/, ""),
+							p_is_apex: isApex,
+						},
+						deadline,
+					),
 				HOSTING_TIMEOUT_MS,
 				signal,
 			);
@@ -279,7 +284,7 @@ export function createWebSiteHosting(cloud: Cloud, company: { profileId: string 
 			if (!UUID_PATTERN.test(domainId)) throw new Error("Invalid domain.");
 			const raw = asRecord(
 				await withCloudDeadline(
-					() => cloud.rpc("qorpera_remove_company_site_domain", { p_domain_id: domainId }),
+					(deadline) => cloud.rpc("qorpera_remove_company_site_domain", { p_domain_id: domainId }, deadline),
 					HOSTING_TIMEOUT_MS,
 					signal,
 				),
@@ -294,7 +299,7 @@ export function createWebSiteHosting(cloud: Cloud, company: { profileId: string 
 			if (!UUID_PATTERN.test(domainId)) throw new Error("Invalid domain.");
 			const raw = asRecord(
 				await withCloudDeadline(
-					() => cloud.rpc("qorpera_set_primary_site_domain", { p_domain_id: domainId }),
+					(deadline) => cloud.rpc("qorpera_set_primary_site_domain", { p_domain_id: domainId }, deadline),
 					HOSTING_TIMEOUT_MS,
 					signal,
 				),
@@ -309,7 +314,7 @@ export function createWebSiteHosting(cloud: Cloud, company: { profileId: string 
 			if (!UUID_PATTERN.test(domainId)) throw new Error("Invalid domain.");
 			const raw = asRecord(
 				await withCloudDeadline(
-					() => cloud.rpc("qorpera_recheck_company_site_domain", { p_domain_id: domainId }),
+					(deadline) => cloud.rpc("qorpera_recheck_company_site_domain", { p_domain_id: domainId }, deadline),
 					HOSTING_TIMEOUT_MS,
 					signal,
 				),

@@ -314,3 +314,47 @@ export async function exportCodeSiteSource(
 		},
 	};
 }
+
+export async function readRepoDeployConfig(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; commitSha: string },
+): Promise<{ rawConfig: string; paths: string[] } | null> {
+	const input = closed(value, ["repository", "commitSha"]);
+	const repository = keptRepositoryOf(input.repository);
+	const commitSha = input.commitSha;
+	if (typeof commitSha !== "string" || !SHA.test(commitSha)) throw new Error("INVALID_CODE_HOST_JOB");
+	return withJob(job, repository, async (run) => {
+		if (!(await run.prepare()).seeded) return null;
+		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null) return null;
+		const spec = `${commitSha}:.qorpera/deploy.json`;
+		const probe = (
+			await run.gitOk(run.repo, ["cat-file", "--batch-check"], READ_FAILED, {
+				stdin: Buffer.from(`${spec}\n`),
+			})
+		)
+			.toString("latin1")
+			.trim();
+		const parts = probe.split(" ");
+		if (parts.length < 3 || parts[1] !== "blob") return null;
+		const size = Number(parts[2]);
+		if (!Number.isSafeInteger(size) || size <= 0 || size > 64 * 1024) return null;
+		const rawConfig = (
+			await run.gitOk(run.repo, ["cat-file", "blob", spec], READ_FAILED, {
+				maximumOutputBytes: 64 * 1024,
+			})
+		).toString("utf8");
+		const diffOut = (
+			await run.gitOk(
+				run.repo,
+				["diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--first-parent", commitSha],
+				READ_FAILED,
+				{ maximumOutputBytes: 256 * 1024 },
+			)
+		).toString("utf8");
+		const paths = diffOut
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.filter((line) => line.length > 0);
+		return { rawConfig, paths };
+	});
+}
