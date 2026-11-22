@@ -11,6 +11,7 @@ import type {
 	CompanyComputerMemberView,
 } from "@qorpera/cloud-client/cloud-company-computer-views";
 import { MemberCompanyBrowserSession } from "@qorpera/cloud-client/member-company-browser-session";
+import { linkedAbortScope, withAbortScopes } from "./abort-scope.ts";
 import type { WebCompanySession } from "./account.ts";
 import { button, element, input, type Work } from "./dom.ts";
 
@@ -36,13 +37,14 @@ const openViewer = (options: ViewerOptions) =>
 export async function showOfficePanel(options: {
 	root: HTMLElement;
 	company: WebCompanySession;
+	signal?: AbortSignal;
 	work: Work;
 	status(message: string): void;
 	current(): void;
 }): Promise<() => void> {
 	const { root, company, work, status, current } = options,
-		stop = new AbortController(),
-		signal = AbortSignal.any([stop.signal, company.signal]);
+		scope = linkedAbortScope([company.signal, options.signal]),
+		signal = scope.signal;
 	const live = () => {
 		signal.throwIfAborted();
 		company.current();
@@ -50,19 +52,19 @@ export async function showOfficePanel(options: {
 	};
 	let viewer: Viewer | undefined;
 	const connections = new Map<string, CompanyComputerMemberView>();
+	let closed = false;
 	const close = () => {
-		stop.abort();
-		void viewer?.close().catch(() => undefined);
+		if (closed) return;
+		closed = true;
+		signal.removeEventListener("abort", close);
+		scope.dispose();
+		const activeViewer = viewer;
+		viewer = undefined;
+		void activeViewer?.close().catch(() => undefined);
 		for (const connection of connections.values()) void connection.close().catch(() => undefined);
 		connections.clear();
 	};
-	signal.addEventListener(
-		"abort",
-		() => {
-			void viewer?.close().catch(() => undefined);
-		},
-		{ once: true },
-	);
+	signal.addEventListener("abort", close, { once: true });
 	try {
 		let catalog = await company.computer.catalog(signal);
 		live();
@@ -79,10 +81,17 @@ export async function showOfficePanel(options: {
 		}
 		const scope = { ...catalog.scope },
 			startClient = company.computer.start(scope);
-		let start = await startClient.status(signal);
-		live();
+		let start!: Awaited<ReturnType<typeof startClient.status>>;
 		let startId: string | undefined;
+		let startIdGeneration: number | undefined;
 		const renderStart = () => {
+			if (
+				start.intent?.state === "cancelled" ||
+				(startIdGeneration !== undefined && startIdGeneration !== start.computerGeneration)
+			) {
+				startId = undefined;
+				startIdGeneration = undefined;
+			}
 			state.textContent = `Computer: ${start.officeState}${start.intent ? ` · ${start.intent.state}` : ""}. Closing this page preserves its current state.`;
 			controls.replaceChildren(
 				button(
@@ -100,6 +109,10 @@ export async function showOfficePanel(options: {
 					button(
 						"Start computer",
 						async () => {
+							if (startIdGeneration !== start.computerGeneration) {
+								startId = undefined;
+								startIdGeneration = start.computerGeneration;
+							}
 							startId ??= crypto.randomUUID();
 							await startClient.request(start.computerGeneration, startId, signal);
 							live();
@@ -116,6 +129,8 @@ export async function showOfficePanel(options: {
 						"Cancel pending start",
 						async () => {
 							await startClient.cancel(start.intent!, signal);
+							startId = undefined;
+							startIdGeneration = undefined;
 							live();
 							start = await startClient.status(signal);
 							live();
@@ -125,7 +140,11 @@ export async function showOfficePanel(options: {
 					),
 				);
 		};
-		renderStart();
+		const loadStart = async () => {
+			start = await startClient.status(signal);
+			live();
+			renderStart();
+		};
 		const staff = element("select");
 		staff.setAttribute("aria-label", "Agent computer access");
 		const renderStaff = () => {
@@ -207,14 +226,12 @@ export async function showOfficePanel(options: {
 				catalog = next;
 				renderStaff();
 				moreStaff.hidden = !catalog.nextAfter;
-				await grantStatus();
-				await profileChanged();
+				await Promise.all([grantStatus(), profileChanged()]);
 			},
 			work,
 		);
 		moreStaff.hidden = !catalog.nextAfter;
 		root.append(moreStaff);
-		await grantStatus();
 		let views: ReturnType<WebCompanySession["views"]> | undefined;
 		try {
 			views = company.views(scope);
@@ -247,22 +264,23 @@ export async function showOfficePanel(options: {
 				privateSignIn: Boolean(challenge),
 				requestConnection: async (input) => {
 					live();
-					const requestSignal = AbortSignal.any([signal, input.signal]);
-					const connection = challenge
-						? await service.connectPrivate({
-								challenge: await browserSession.privateChallenge(challenge.challengeId, requestSignal),
-								signal: requestSignal,
-							})
-						: await service.connectScreen({ ...input, signal: requestSignal });
-					try {
-						live();
-						requestSignal.throwIfAborted();
-						connections.set(connection.connectionId, connection);
-						return connection;
-					} catch (error) {
-						void connection.close();
-						throw error;
-					}
+					return withAbortScopes([signal, input.signal], async (requestSignal) => {
+						const connection = challenge
+							? await service.connectPrivate({
+									challenge: await browserSession.privateChallenge(challenge.challengeId, requestSignal),
+									signal: requestSignal,
+								})
+							: await service.connectScreen({ ...input, signal: requestSignal });
+						try {
+							live();
+							requestSignal.throwIfAborted();
+							connections.set(connection.connectionId, connection);
+							return connection;
+						} catch (error) {
+							void connection.close().catch(() => undefined);
+							throw error;
+						}
+					});
 				},
 				releaseConnection: async ({ connectionId }) => {
 					const connection = connections.get(connectionId);
@@ -309,7 +327,6 @@ export async function showOfficePanel(options: {
 					),
 				);
 		}
-		await refreshScreens();
 		let profiles: MemberBrowserProfileCatalog | undefined, privacy: CloudCompanyComputerPrivacyStatus | undefined;
 		const profileSelect = element("select"),
 			agentSelect = element("select"),
@@ -416,8 +433,9 @@ export async function showOfficePanel(options: {
 							profileId: profileSelect.value,
 							screenId: screen.binding.screenId,
 						});
-						await refreshScreens();
-						await refreshBrowser();
+						await Promise.all([refreshScreens(), refreshBrowser()]);
+						live();
+						renderBrowserControls();
 					},
 					work,
 				);
@@ -449,8 +467,9 @@ export async function showOfficePanel(options: {
 						"Finish private sign-in",
 						async () => {
 							await browserAction({ method: "finishPrivate" });
-							await refreshScreens();
-							await refreshBrowser();
+							await Promise.all([refreshScreens(), refreshBrowser()]);
+							live();
+							renderBrowserControls();
 						},
 						work,
 					),
@@ -483,8 +502,9 @@ export async function showOfficePanel(options: {
 				button(
 					"Refresh browser status",
 					async () => {
-						await refreshScreens();
-						await refreshBrowser();
+						await Promise.all([refreshScreens(), refreshBrowser()]);
+						live();
+						renderBrowserControls();
 					},
 					work,
 				),
@@ -505,7 +525,9 @@ export async function showOfficePanel(options: {
 		agentSelect.onchange = () => {
 			void work(grantBrowser);
 		};
-		await refreshBrowser();
+		await Promise.all([loadStart(), grantStatus(), refreshScreens(), refreshBrowser()]);
+		live();
+		renderBrowserControls();
 		return close;
 	} catch (error) {
 		close();

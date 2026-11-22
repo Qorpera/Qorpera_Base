@@ -9,16 +9,17 @@ export class WebFileDownloads {
 	readonly #urls = new Map<string, ReturnType<typeof setTimeout>>();
 	readonly #current: () => void;
 	readonly #signal: AbortSignal;
+	readonly #onAbort = () => this.close();
 	constructor(options: { current(): void; signal: AbortSignal }) {
 		this.#current = options.current;
 		this.#signal = options.signal;
-		options.signal.addEventListener("abort", () => this.close(), { once: true });
+		options.signal.addEventListener("abort", this.#onAbort, { once: true });
 	}
 	offer(name: string, bytes: Uint8Array): void {
 		this.#hand(
 			name,
 			bytes.length <= MAX_WHOLE_BYTES,
-			() => new Blob([Uint8Array.from(bytes)], { type: "application/octet-stream" }),
+			() => new Blob([bytes.slice()], { type: "application/octet-stream" }),
 		);
 	}
 	/** A large file, as the pieces it was read in, in order: one `Blob` of them, which copies none. `bytes` is the
@@ -67,6 +68,7 @@ export class WebFileDownloads {
 		URL.revokeObjectURL(url);
 	}
 	close(): void {
+		this.#signal.removeEventListener("abort", this.#onAbort);
 		for (const url of this.#urls.keys()) this.#release(url);
 	}
 }
