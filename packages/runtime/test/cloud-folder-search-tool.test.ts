@@ -1130,4 +1130,135 @@ describe("company_search", () => {
 		const content = await s.execute(s.parseArguments({ query: "split" }), context());
 		expect(content.value).toBe("frag.md:3: split across chunks\n\n1 file searched. Nothing more.");
 	});
+
+	it("translates smart_case, whole_word, exclude_glob, and count_only cleanly onto search v2", async () => {
+		const V2 = { version: 2, regex: true };
+		const n = await node(
+			(req) =>
+				req.filesOnly
+					? found({
+							files: [
+								{ path: "src/a.ts", version: VERSION, count: 3 },
+								{ path: "src/b.ts", version: VERSION, count: 2 },
+							],
+							searched: 5,
+							reads: [read("src/a.ts"), read("src/b.ts")],
+						})
+					: found({ hits: [hit("src/a.ts", 1, "Plan")], searched: 5, reads: [read("src/a.ts")] }),
+			V2,
+		);
+		const f = folder();
+		const s = tool(n.path, f.client);
+
+		await s.execute(
+			s.parseArguments({
+				query: "Plan.v1",
+				glob: "*.ts",
+				exclude_glob: "*.test.ts,dist/**",
+				smart_case: true,
+				whole_word: true,
+			}),
+			context("c1"),
+		);
+		expect(n.searches[0]).toEqual({
+			version: 2,
+			query: "\\b(?:Plan\\.v1)\\b",
+			regex: true,
+			path: "",
+			glob: "*.ts,!*.test.ts,!dist/**",
+			namesOnly: false,
+			filesOnly: false,
+			caseSensitive: true,
+			context: 0,
+			after: null,
+		});
+
+		await s.execute(s.parseArguments({ query: "plan", smart_case: true, exclude_glob: "!*.spec.ts" }), context("c2"));
+		expect(n.searches[1]).toMatchObject({
+			query: "plan",
+			regex: false,
+			glob: "!*.spec.ts",
+			caseSensitive: false,
+		});
+
+		await s.execute(s.parseArguments({ query: "foo\\S+\\W\\B", regex: true, smart_case: true }), context("c2b"));
+		expect(n.searches[2]).toMatchObject({ query: "foo\\S+\\W\\B", regex: true, caseSensitive: false });
+
+		await s.execute(s.parseArguments({ query: "Foo\\S+", regex: true, smart_case: true }), context("c2c"));
+		expect(n.searches[3]).toMatchObject({ query: "Foo\\S+", regex: true, caseSensitive: true });
+
+		await s.execute(s.parseArguments({ query: "-foo", whole_word: true }), context("c2d"));
+		expect(n.searches[4]).toMatchObject({
+			query: "(?:^|[^A-Za-z0-9_\\n])(?:-foo)\\b",
+			regex: true,
+		});
+
+		const counted = await s.execute(s.parseArguments({ query: "plan", count_only: true }), context("c3"));
+		expect(n.searches[5]).toMatchObject({ filesOnly: true });
+		expect(counted.value).toBe(
+			"5 matching lines in 2 files\nsrc/a.ts: 3\nsrc/b.ts: 2\n\n5 files searched. Nothing more.",
+		);
+
+		const noRegex = await node(() => found({ hits: [], searched: 0, reads: [] }), { version: 2, regex: false });
+		const nrTool = tool(noRegex.path, folder().client);
+		await expect(
+			nrTool.execute(nrTool.parseArguments({ query: "plan", whole_word: true }), context("c-noregex")),
+		).rejects.toThrow(/^WHOLE_WORD_UNAVAILABLE:/);
+
+		const paged = await node(
+			(req) =>
+				req.after === null
+					? found({
+							files: [
+								{ path: "src/a.ts", version: VERSION, count: 3 },
+								{ path: "src/b.ts", version: VERSION, count: 2, partial: true },
+							],
+							searched: 2,
+							reads: [read("src/a.ts"), read("src/b.ts")],
+							next: { path: "src/b.ts", version: VERSION, offset: 500, line: 10 },
+						})
+					: found({
+							files: [
+								{ path: "src/b.ts", version: VERSION, count: 4 },
+								{ path: "src/c.ts", version: VERSION, count: 1 },
+							],
+							searched: 2,
+							reads: [read("src/b.ts"), read("src/c.ts")],
+						}),
+			V2,
+		);
+		let pt = 0;
+		const pf = folder();
+		const pSearch = new CloudFolderSearch({
+			socketPath: paged.path,
+			folder: pf.client,
+			environmentId: ENV,
+			now: () => {
+				pt += 20_000;
+				return pt;
+			},
+		});
+		const pTool = cloudFolderSearchTool({ search: pSearch, folder: pf.client, runId: RUN });
+		const p1 = (await pTool.execute(pTool.parseArguments({ query: "plan", count_only: true }), context("p1")))
+			.value as string;
+		expect(p1).toContain("5 matching lines in 2 files so far\nsrc/a.ts: 3\nsrc/b.ts: 2 so far");
+		const p2 = (
+			await pTool.execute(
+				pTool.parseArguments({ query: "plan", count_only: true, cursor: cursorOf(p1) }),
+				context("p2"),
+			)
+		).value as string;
+		expect(p2).toBe("10 matching lines in 3 files\nsrc/b.ts: 6\nsrc/c.ts: 1\n\n2 files searched. Nothing more.");
+
+		for (const bad of [
+			{ query: "x", exclude_glob: ",,," },
+			{ query: "x", count_only: true, names_only: true },
+			{ query: "x", count_only: true, context: 1 },
+			{ glob: "*.ts", whole_word: true },
+			{ query: "a".repeat(252), whole_word: true },
+		])
+			expect(() => s.parseArguments(bad as unknown as JsonValue), JSON.stringify(bad)).toThrow(
+				CloudToolArgumentRefusal,
+			);
+	});
 });

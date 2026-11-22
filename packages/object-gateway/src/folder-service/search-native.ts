@@ -11,8 +11,9 @@ const DEFAULT_INDEX_MIB = 512;
 const DEFAULT_THREADS = 4;
 const DEFAULT_BUDGET_WAIT_MS = 20_000;
 const DEFAULT_FRAME_TIMEOUT_MS = 60_000;
-const TREE_BUDGET_RATIO = 0.65;
-const COMPACT_ENTRY_BYTES = 112;
+const TREE_BUDGET_RATIO = 0.5;
+// WHY: matches Rust size_of::<CompactEntry>() (120) + size_of::<DocInfo>() (16) so admission bounds 100% of --index-mib.
+const COMPACT_ENTRY_BYTES = 136;
 const ESTIMATE_ENTRY_BYTES = COMPACT_ENTRY_BYTES + 80;
 const SEARCH_BUSY = "SEARCH_BUSY: the node's folder search is busy; try again shortly";
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
