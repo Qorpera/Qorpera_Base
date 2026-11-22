@@ -1,6 +1,7 @@
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
+	checkOfficeSoftwareInstallChallenge,
 	installOfficeSoftwareWithinChallenge,
 	parseOfficeSoftwareControlArgs,
 } from "../../../deploy/lxd-company-computer-guest/office-service-software-control.ts";
@@ -250,5 +251,79 @@ describe("temporary root software control assembly", () => {
 		} finally {
 			spy.mockRestore();
 		}
+	});
+	it("bounds challenge RPC response body reading with the RPC timeout and rejects non-OK answers", async () => {
+		let cancelled = false;
+		const outer = new AbortController();
+		const started = Date.now();
+		await expect(
+			checkOfficeSoftwareInstallChallenge(
+				{
+					registryUrl: "https://registry.example.test",
+					registryKey: "sb_secret_0123456789abcdef0123456789abcdef",
+					updateId: randomUUID(),
+					challengeId: randomUUID(),
+					capability: "a".repeat(64),
+					timeoutMs: 40,
+					fetchImplementation: async () =>
+						new Response(
+							new ReadableStream<Uint8Array>({
+								start() {},
+								cancel() {
+									cancelled = true;
+								},
+							}),
+							{ status: 200 },
+						),
+				},
+				outer.signal,
+			),
+		).rejects.toThrow();
+		expect(Date.now() - started).toBeLessThan(1500);
+		expect(outer.signal.aborted).toBe(false);
+		expect(cancelled).toBe(true);
+
+		let seenRedirect: string | undefined;
+		const ok = await checkOfficeSoftwareInstallChallenge(
+			{
+				registryUrl: "https://registry.example.test",
+				registryKey: "sb_secret_0123456789abcdef0123456789abcdef",
+				updateId: "u1",
+				challengeId: "c1",
+				capability: "b".repeat(64),
+				fetchImplementation: async (_url, init) => {
+					seenRedirect = init?.redirect;
+					return Response.json({ ok: true });
+				},
+			},
+			outer.signal,
+		);
+		expect(ok).toEqual({ ok: true });
+		expect(seenRedirect).toBe("error");
+
+		let nonOkCancelled = false;
+		await expect(
+			checkOfficeSoftwareInstallChallenge(
+				{
+					registryUrl: "https://registry.example.test",
+					registryKey: "sb_secret_0123456789abcdef0123456789abcdef",
+					updateId: "u1",
+					challengeId: "c1",
+					capability: "b".repeat(64),
+					fetchImplementation: async () =>
+						new Response(
+							new ReadableStream<Uint8Array>({
+								start() {},
+								cancel() {
+									nonOkCancelled = true;
+								},
+							}),
+							{ status: 503 },
+						),
+				},
+				outer.signal,
+			),
+		).rejects.toThrow("OFFICE_SOFTWARE_CONTROL_AUTHORITY");
+		expect(nonOkCancelled).toBe(true);
 	});
 });

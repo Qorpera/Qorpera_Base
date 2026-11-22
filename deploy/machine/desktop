@@ -127,22 +127,52 @@ browser() {
 	[[ -s $RUN/lang ]] && flags+=(--lang="$(<"$RUN/lang")")
 	launch "$CHROME" "${flags[@]}" "$@"
 }
+# WHY: Start each folder server in a named unit so serve() can stop it cleanly if startup fails or times out.
+launch_serve() { # unit port folder
+	local unit=$1 port=$2 folder=$3
+	systemctl reset-failed "$unit" 2>/dev/null || true
+	systemd-run --quiet --collect --expand-environment=no --unit="$unit" --slice=qorpera-machine.slice --uid=desktop --gid=desktop \
+		-p WorkingDirectory=/home/desktop -p Requisite="$UNIT" -p BindsTo="$UNIT" -p After="$UNIT" \
+		--setenv=HOME=/home/desktop -- \
+		/usr/bin/python3 -m http.server "$port" --bind 127.0.0.1 --directory "$folder"
+}
 # Serves a folder to the desktop's browser on the machine's loopback, as the desktop's user; one server per folder.
 serve() { # folder -> prints the port
-	local folder=$1 port note
+	local folder=$1 port note picked= ready=0 unit
 	for note in "$RUN"/serve-*; do
 		[[ -f $note && $(<"$note") == "$folder" ]] || continue
 		port=${note##*-}
 		if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/"; then echo "$port"; return; fi
+		systemctl stop "qorpera-desktop-serve-$port.service" 2>/dev/null || true
 		rm -f -- "$note"
 	done
 	for port in $(seq 8600 8699); do
-		[[ -z $(ss -ltnH "sport = :$port") && ! -e $RUN/serve-$port ]] && break
+		if [[ -z $(ss -ltnH "sport = :$port") && ! -e $RUN/serve-$port ]]; then
+			picked=$port
+			break
+		fi
 	done
-	[[ -z $(ss -ltnH "sport = :$port") ]] || fail "no free port to serve $folder"
+	[[ -n $picked ]] || fail "no free port to serve $folder"
+	port=$picked
+	unit="qorpera-desktop-serve-$port.service"
 	printf %s "$folder" >"$RUN/serve-$port"
-	launch /usr/bin/python3 -m http.server "$port" --bind 127.0.0.1 --directory "$folder"
-	for _ in $(seq 1 50); do curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/" && break; sleep 0.1; done
+	# WHY: Stop the named server unit and remove the marker if launching or reaching the HTTP server fails.
+	if ! launch_serve "$unit" "$port" "$folder"; then
+		systemctl stop "$unit" 2>/dev/null || true
+		systemctl reset-failed "$unit" 2>/dev/null || true
+		rm -f -- "$RUN/serve-$port"
+		fail "the folder server did not start for $folder"
+	fi
+	for _ in $(seq 1 50); do
+		if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/"; then ready=1; break; fi
+		sleep 0.1
+	done
+	if (( ! ready )); then
+		systemctl stop "$unit" 2>/dev/null || true
+		systemctl reset-failed "$unit" 2>/dev/null || true
+		rm -f -- "$RUN/serve-$port"
+		fail "the folder server did not start for $folder"
+	fi
 	echo "$port"
 }
 quote() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$1"; }
