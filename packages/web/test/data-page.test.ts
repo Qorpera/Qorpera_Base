@@ -713,7 +713,7 @@ describe("the page's words for values and refusals", () => {
 			expect(refusalWords(error)).toBe(words);
 	});
 
-	it("appends Show more rows incrementally, clears loading across live watch updates, caps live refetch depth, and caches Intl formatters", async () => {
+	it("appends Show more rows incrementally, preserves scrolled pages and clears loading across live watch updates, and caches Intl formatters", async () => {
 		vi.useFakeTimers();
 		try {
 			const { calls } = fakeCalls(describedWith());
@@ -798,7 +798,9 @@ describe("the page's words for values and refusals", () => {
 			expect(calls.rows).toHaveBeenCalledTimes(1);
 			pendingMoreResolve?.(repairs([[1000, "Bike 1000", 1000, true]], true));
 			await vi.advanceTimersByTimeAsync(0);
-			expect(calls.rows).toHaveBeenCalledTimes(2);
+			expect(calls.rows).toHaveBeenCalledTimes(5);
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(7);
+			expect(texts(container, "button.data-row .is-lead")).toContain("Bike 1004");
 			expect(container.querySelector(".data-more-rows")).toBeNull();
 
 			await vi.advanceTimersByTimeAsync(500);
@@ -843,6 +845,95 @@ describe("the page's words for values and refusals", () => {
 			expect(dateSpy).not.toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
+		}
+	});
+
+	it("reconnects IntersectionObserver to the reused sentinel across incremental appends and failure retries", async () => {
+		const observed: Element[] = [];
+		let activeCallback: ((entries: Array<{ isIntersecting: boolean }>) => void) | undefined;
+		let disconnects = 0;
+		class FakeIntersectionObserver {
+			readonly #cb: (entries: Array<{ isIntersecting: boolean }>) => void;
+			constructor(cb: (entries: Array<{ isIntersecting: boolean }>) => void) {
+				this.#cb = cb;
+			}
+			observe(el: Element): void {
+				observed.push(el);
+				activeCallback = this.#cb;
+			}
+			disconnect(): void {
+				disconnects += 1;
+				if (activeCallback === this.#cb) activeCallback = undefined;
+			}
+		}
+		vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+		try {
+			const { calls } = fakeCalls(describedWith());
+			calls.watchTables.mockImplementation(() => new Promise(() => {}));
+			calls.rows
+				.mockResolvedValueOnce(
+					repairs(
+						[
+							[1, "Bike 1", 100, true],
+							[2, "Bike 2", 200, false],
+						],
+						true,
+					),
+				)
+				.mockResolvedValueOnce(repairs([[3, "Bike 3", 300, true]], true))
+				.mockRejectedValueOnce(new Error("temporary"))
+				.mockResolvedValueOnce(repairs([[4, "Bike 4", 400, true]], true))
+				.mockResolvedValueOnce(repairs([[5, "Bike 5", 500, true]], false));
+
+			const controller = company(describedWith(), true);
+			const databases = new CompanyDatabases(
+				() => calls,
+				(next) => controller.store.set({ companyData: next }),
+				controller.signal,
+			);
+			const container = document.createElement("main");
+			document.body.append(container);
+			const draw = () => renderData(container, controller, databases);
+			draw();
+			cleanup.push(controller.store.subscribe(draw));
+			await settle();
+
+			const initialRows = [...container.querySelectorAll<HTMLElement>("button.data-row")];
+			const sentinel = container.querySelector<HTMLElement>(".data-more")!;
+			expect(sentinel).not.toBeNull();
+			expect(sentinel.querySelector("button")).toBeNull();
+			expect(observed.at(-1)).toBe(sentinel);
+			observed.length = 0;
+
+			activeCallback?.([{ isIntersecting: true }]);
+			await settle();
+			const afterAppend = [...container.querySelectorAll<HTMLElement>("button.data-row")];
+			expect(afterAppend).toHaveLength(3);
+			expect(afterAppend[0]).toBe(initialRows[0]);
+			expect(afterAppend[1]).toBe(initialRows[1]);
+			expect(container.querySelector(".data-more")).toBe(sentinel);
+			expect(observed).toEqual([sentinel]);
+
+			activeCallback?.([{ isIntersecting: true }]);
+			await settle();
+			expect(button(container, "Try again")).toBeTruthy();
+			expect(activeCallback).toBeUndefined();
+			expect(observed).toEqual([sentinel]);
+
+			button(container, "Try again").click();
+			await settle();
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(4);
+			expect(container.querySelector(".data-more")).toBe(sentinel);
+			expect(observed).toEqual([sentinel, sentinel]);
+			expect(activeCallback).toBeDefined();
+
+			activeCallback?.([{ isIntersecting: true }]);
+			await settle();
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(5);
+			expect(container.querySelector(".data-more")).toBeNull();
+			expect(disconnects).toBeGreaterThanOrEqual(4);
+		} finally {
+			vi.unstubAllGlobals();
 		}
 	});
 });

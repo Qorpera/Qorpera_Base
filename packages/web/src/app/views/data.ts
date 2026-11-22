@@ -22,7 +22,6 @@ import { DataChanges } from "./data-changes.ts";
 import { DataParams } from "./data-params.ts";
 
 const PAGE_ROWS = 100;
-const MAX_LIVE_REFETCH_PAGES = 3;
 const WATCH_GAP_MS = 500;
 const WATCH_RETRY_MS = [2000, 5000, 10_000] as const;
 const SAVED_MS = 1600;
@@ -650,9 +649,8 @@ class DataListView {
 
 	async #again(read: ListRead, first: CloudMemberDataPage, signal: AbortSignal): Promise<void> {
 		const pages = [first];
-		const targetPages = Math.min(read.pages, MAX_LIVE_REFETCH_PAGES);
 		let next = first.next;
-		while (pages.length < targetPages && next && !signal.aborted) {
+		while (pages.length < read.pages && next && !signal.aborted) {
 			try {
 				const page = await this.#calls().rows({ ...this.#asked(read), after: next }, signal);
 				pages.push(page);
@@ -996,7 +994,8 @@ class DataListView {
 	#observeMore(read: ListRead, scroller: HTMLElement | null, sentinel: HTMLElement | null): void {
 		this.#observer?.disconnect();
 		this.#observer = undefined;
-		if (sentinel && typeof IntersectionObserver === "function") {
+		// WHY: wait for manual retry after a failed page and avoid firing while loading.
+		if (sentinel && !read.loading && !read.failed && typeof IntersectionObserver === "function") {
 			this.#observer = new IntersectionObserver(
 				(entries) => {
 					if (entries.some((entry) => entry.isIntersecting)) void this.#more(read);
