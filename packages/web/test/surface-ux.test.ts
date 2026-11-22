@@ -736,17 +736,19 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		frame.append(container);
 		document.body.append(frame);
 		const auth = new AuthController(f.cloud);
-		renderRail(container, company, {
-			profiles: [profileA],
-			user: userA,
-			route: { name: "company", profileId: profileA.profileId, section: "surface", id: "website" },
-			auth,
-			invitations: 0,
-			openSettings: () => {},
-			openFeedback: () => {},
-			openFriends: () => {},
-			agentActions: {},
-		});
+		const draw = (section: "surface" | "staff", routeId: string) =>
+			renderRail(container, company, {
+				profiles: [profileA],
+				user: userA,
+				route: { name: "company", profileId: profileA.profileId, section, id: routeId },
+				auth,
+				invitations: 0,
+				openSettings: () => {},
+				openFeedback: () => {},
+				openFriends: () => {},
+				agentActions: {},
+			});
+		draw("surface", "website");
 
 		const hub = container.querySelector<HTMLElement>(".rail-agents-hub");
 		expect(hub).not.toBeNull();
@@ -767,6 +769,50 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		]);
 		expect(new Set(staffHrefs).size).toBe(3);
 		expect(hub?.querySelector("[data-hub-exploration]")).not.toBeNull();
+
+		const toggle = hub!.querySelector<HTMLButtonElement>("button.rail-agents-head")!;
+		const body = hub!.querySelector<HTMLElement>(".rail-agents-body")!;
+		const count = hub!.querySelector<HTMLElement>(".rail-agents-count")!;
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(body.hidden).toBe(true);
+		expect(count.hidden).toBe(false);
+		const rows = hub!.querySelectorAll(".rail-agent-hub-row").length;
+		expect(Number(count.textContent)).toBe(rows);
+		const waiting = hub!.querySelector<HTMLElement>(".rail-agents-head .rail-hidden-unread")!;
+		const asking = [...hub!.querySelectorAll<HTMLElement>("[data-hub-session], [data-hub-exploration]")].filter(
+			(row) => {
+				const status = row.querySelector("small");
+				return status !== null && status.childElementCount === 0 && status.textContent !== "Ready";
+			},
+		).length;
+		expect(asking).toBeGreaterThan(0);
+		expect(waiting.hidden).toBe(false);
+		expect(waiting.textContent).toBe(String(asking));
+		expect(toggle.getAttribute("aria-label")).toBe(`Agents: ${rows} · Waiting for you: ${asking}`);
+		toggle.click();
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(body.hidden).toBe(false);
+		expect(count.hidden).toBe(true);
+		expect(localStorage.getItem("qorpera.web.rail-agents-open")).toBe("1");
+		expect(waiting.hidden).toBe(true);
+		expect(toggle.getAttribute("aria-label")).toBe("Agents");
+		toggle.click();
+		expect(body.hidden).toBe(true);
+
+		draw("staff", idle.id);
+		expect(body.hidden).toBe(false);
+		expect(hub!.querySelector(`a[data-agent-id="${idle.id}"]`)?.classList.contains("active")).toBe(true);
+		expect(localStorage.getItem("qorpera.web.rail-agents-open")).toBe("0");
+		toggle.click();
+		expect(body.hidden).toBe(true);
+		draw("staff", idle.id);
+		expect(body.hidden).toBe(true);
+		draw("surface", "website");
+		draw("staff", scheduled.id);
+		expect(body.hidden).toBe(false);
+		draw("surface", "website");
+		expect(body.hidden).toBe(true);
+		localStorage.removeItem("qorpera.web.rail-agents-open");
 
 		auth.dispose();
 		store.dispose();
