@@ -3421,4 +3421,94 @@ describe("Digital Post", () => {
 		expect(controller.store.get().mail!.lists[inboxKey]).toBe(inboxListBefore);
 		expect(publish.mock.calls.length).toBe(publishesBeforePoll);
 	});
+
+	it("bounds thread catch-up and list poll pages, stops on repeated cursors, and aborts in-flight RPCs on dispose", async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+		const controller = new CompanyController(f.api, profileA, userA.id);
+		cleanup.push(() => controller.stop());
+		const fake = mailFake(f);
+		fake.addresses = [ADDRESS];
+		const signals: AbortSignal[] = [];
+		const rpcMock = vi.mocked(f.cloud.rpc);
+		const origRpc = rpcMock.getMockImplementation()!;
+		let listCallCount = 0;
+		let threadCallCount = 0;
+		let msgSeq = 600;
+		let repeatCursorMode = false;
+		const mainThread = thread(1);
+		rpcMock.mockImplementation(async (name: string, args?: Record<string, unknown>, signal?: AbortSignal) => {
+			if (signal) signals.push(signal);
+			if (name === "qorpera_member_mail_threads") {
+				listCallCount += 1;
+				const before = (args?.p_request as { before?: { lastAt: string; thread: string } } | undefined)?.before;
+				const idx = before ? Number(before.thread.slice("thread-".length)) + 1 : 1;
+				return {
+					threads: [summary(idx)],
+					nextBefore: { lastAt: at(idx), thread: thread(idx) },
+				};
+			}
+			if (name === "qorpera_member_mail_thread") {
+				threadCallCount += 1;
+				msgSeq += 1;
+				const before = args?.p_before as { at: string; kind: string; id: string } | undefined;
+				const idx = before ? Number(before.id.slice(-4)) - 500 + 1 : 1;
+				const cursorId = repeatCursorMode ? id(500) : id(500 + idx);
+				const cursorAt = repeatCursorMode ? at(500) : at(500 + idx);
+				return {
+					thread: mainThread,
+					address: ADDRESS.address,
+					messages: [received(msgSeq)],
+					more: true,
+					nextBefore: { at: cursorAt, kind: "received", id: cursorId },
+					waiting: [],
+				};
+			}
+			return origRpc(name, args, signal);
+		});
+		const reader = new CompanyMail(controller, f.cloud, accountsFake(), (state) =>
+			controller.store.set({ mail: state }),
+		);
+		cleanup.push(() => reader.dispose());
+		await reader.open();
+		expect(signals.length).toBeGreaterThanOrEqual(3);
+
+		reader.watch([{}], [mainThread], () => true);
+		await vi.advanceTimersByTimeAsync(1);
+		const listKey = Object.keys(controller.store.get().mail!.lists)[0]!;
+		for (let i = 0; i < 12; i++) {
+			reader.older(listKey);
+			await vi.advanceTimersByTimeAsync(1);
+		}
+		expect(controller.store.get().mail!.lists[listKey]!.pages).toBe(13);
+
+		reader.olderMessages(mainThread);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(controller.store.get().mail!.threads[mainThread]?.status).toBe("ready");
+
+		listCallCount = 0;
+		threadCallCount = 0;
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(listCallCount).toBe(10);
+		expect(threadCallCount).toBe(10);
+
+		reader.olderMessages(mainThread);
+		await vi.advanceTimersByTimeAsync(1);
+		repeatCursorMode = true;
+		threadCallCount = 0;
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(threadCallCount).toBe(2);
+
+		const pendingSignals: AbortSignal[] = [];
+		rpcMock.mockImplementation((_name, _args, signal?: AbortSignal) => {
+			if (signal) pendingSignals.push(signal);
+			return new Promise(() => {});
+		});
+		void reader.reread();
+		await vi.advanceTimersByTimeAsync(1);
+		expect(pendingSignals.length).toBeGreaterThanOrEqual(1);
+		expect(pendingSignals.every((s) => !s.aborted)).toBe(true);
+		reader.dispose();
+		expect(pendingSignals.every((s) => s.aborted)).toBe(true);
+	});
 });

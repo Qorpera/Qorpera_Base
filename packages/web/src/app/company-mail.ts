@@ -1,4 +1,5 @@
 import type { CloudMemberFolderClient } from "@qorpera/cloud-client/cloud-member-folder";
+import { withAbortScopes } from "../cloud/abort-scope.ts";
 import { type Cloud, CloudRpcError, describeError } from "../cloud/client.ts";
 import {
 	DIGITAL_POST_INDEX_MAX_BYTES,
@@ -156,6 +157,8 @@ export function mailListKey(request: MailListRequest): string {
 
 const COMPANY_POLL_MS = 60_000;
 const PAGE_POLL_MS = 20_000;
+const MAX_REFRESH_LIST_PAGES = 10;
+const MAX_THREAD_CATCHUP_PAGES = 10;
 
 const EMPTY: MailState = {
 	addresses: [],
@@ -285,29 +288,12 @@ export class CompanyMail {
 		if (readers.get(this.#company) === this) readers.delete(this.#company);
 	}
 
-	async #withFolderDeadline<T>(use: (signal: AbortSignal) => Promise<T>): Promise<T> {
-		const scope = new AbortController();
-		const companySignal = this.#company.signal;
-		const stopSignal = this.#stop.signal;
-		const onCompanyAbort = () => scope.abort(companySignal.reason);
-		const onStopAbort = () => scope.abort(stopSignal.reason);
-		if (companySignal.aborted) onCompanyAbort();
-		else companySignal.addEventListener("abort", onCompanyAbort, { once: true });
-		if (stopSignal.aborted) onStopAbort();
-		else stopSignal.addEventListener("abort", onStopAbort, { once: true });
-		const timer = scope.signal.aborted
-			? undefined
-			: setTimeout(
-					() => scope.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
-					30_000,
-				);
-		try {
-			return await use(scope.signal);
-		} finally {
-			clearTimeout(timer);
-			companySignal.removeEventListener("abort", onCompanyAbort);
-			stopSignal.removeEventListener("abort", onStopAbort);
-		}
+	#withRpcScope<T>(use: (signal: AbortSignal) => Promise<T>): Promise<T> {
+		return withAbortScopes([this.#company.signal, this.#stop.signal], use);
+	}
+
+	#withFolderDeadline<T>(use: (signal: AbortSignal) => Promise<T>): Promise<T> {
+		return withAbortScopes([this.#company.signal, this.#stop.signal], use, 30_000);
 	}
 
 	#set(change: (state: MailState) => MailState): void {
@@ -335,7 +321,10 @@ export class CompanyMail {
 		const read = ++this.#addressReads;
 		if (afterChange) this.#addressesSince = read;
 		try {
-			return { read, addresses: await readMailAddresses(this.#cloud, this.#environmentId) };
+			const addresses = await this.#withRpcScope((signal) =>
+				readMailAddresses(this.#cloud, this.#environmentId, signal),
+			);
+			return { read, addresses };
 		} catch (error) {
 			// A cloud without the member mail read has no mail to show; another failure keeps what was read.
 			if (!(error instanceof CloudRpcError && (error.missing || error.denied))) return null;
@@ -366,7 +355,9 @@ export class CompanyMail {
 					}),
 					this.#once("waiting", async () => {
 						try {
-							waitingResult = await readMailWaiting(this.#cloud, this.#environmentId);
+							waitingResult = await this.#withRpcScope((signal) =>
+								readMailWaiting(this.#cloud, this.#environmentId, signal),
+							);
 						} catch {
 							// The badge keeps its last count.
 						}
@@ -394,7 +385,9 @@ export class CompanyMail {
 		return this.#once("digital-post", async () => {
 			let connection: DigitalPostConnection;
 			try {
-				connection = await readDigitalPost(this.#cloud, this.#environmentId);
+				connection = await this.#withRpcScope((signal) =>
+					readDigitalPost(this.#cloud, this.#environmentId, signal),
+				);
 			} catch {
 				// A cloud without the call has no Digital Post; another failure keeps what was read.
 				return;
@@ -565,21 +558,41 @@ export class CompanyMail {
 		return this.#once(`list:${key}`, async () => {
 			try {
 				const drawn = this.#state?.lists[key];
-				const shown = drawn?.status === "ready" ? Math.max(drawn.pages, 1) : 1;
-				let page = await readMailThreads(this.#cloud, this.#environmentId, { ...request, limit: MAIL_PAGE_SIZE });
-				const read = [...page.threads];
-				let pages = 1;
-				while (pages < shown && page.nextBefore) {
-					if (this.#closed || !this.#watched.lists.has(key)) return;
-					page = await readMailThreads(this.#cloud, this.#environmentId, {
-						...request,
-						before: page.nextBefore,
-						limit: MAIL_PAGE_SIZE,
-					});
+				const target = drawn?.status === "ready" ? Math.max(drawn.pages, 1) : 1;
+				// WHY: Cap background list refreshes and break on repeated cursors so deep scrolls do not trigger unbounded serial RPCs every poll.
+				const cap = Math.min(target, MAX_REFRESH_LIST_PAGES);
+				const read: MailThreadSummary[] = [];
+				let pages = 0;
+				let next: MailCursor | undefined;
+				let completed = false;
+				await this.#withRpcScope(async (signal) => {
+					let page = await readMailThreads(
+						this.#cloud,
+						this.#environmentId,
+						{ ...request, limit: MAIL_PAGE_SIZE },
+						signal,
+					);
 					read.push(...page.threads);
-					pages += 1;
-				}
-				const next = page.nextBefore;
+					pages = 1;
+					const seenCursors = new Set<string>();
+					while (pages < cap && page.nextBefore) {
+						if (this.#closed || !this.#watched.lists.has(key) || signal.aborted) return;
+						const cursorKey = `${page.nextBefore.lastAt}\0${page.nextBefore.thread}`;
+						if (seenCursors.has(cursorKey)) break;
+						seenCursors.add(cursorKey);
+						page = await readMailThreads(
+							this.#cloud,
+							this.#environmentId,
+							{ ...request, before: page.nextBefore, limit: MAIL_PAGE_SIZE },
+							signal,
+						);
+						read.push(...page.threads);
+						pages += 1;
+					}
+					next = page.nextBefore;
+					completed = true;
+				});
+				if (!completed || this.#closed) return;
 				const opened = this.#watched.threads;
 				// Newer mail in a thread the member has open is read with it, and marked read again.
 				const arrived = read.filter((item) => item.unread && opened.has(item.thread));
@@ -588,7 +601,7 @@ export class CompanyMail {
 					const was = state.lists[key];
 					// Show older landed while these pages were read: the list stays as it is, and its next read reads that
 					// page too.
-					if (was?.status === "ready" && was.pages > shown) return state;
+					if (was?.status === "ready" && was.pages > target) return state;
 					const seen = new Set<string>();
 					const threads: MailThreadSummary[] = [];
 					for (const item of read) {
@@ -648,11 +661,18 @@ export class CompanyMail {
 		mark("loading");
 		void this.#once(`older:${key}`, async () => {
 			try {
-				const page = await readMailThreads(this.#cloud, this.#environmentId, {
-					...list.request,
-					before,
-					limit: MAIL_PAGE_SIZE,
-				});
+				const page = await this.#withRpcScope((signal) =>
+					readMailThreads(
+						this.#cloud,
+						this.#environmentId,
+						{
+							...list.request,
+							before,
+							limit: MAIL_PAGE_SIZE,
+						},
+						signal,
+					),
+				);
 				this.#set((state) => {
 					const now = state.lists[key];
 					if (!now) return state;
@@ -700,7 +720,9 @@ export class CompanyMail {
 		mark("loading");
 		void this.#once(`older-messages:${thread}`, async () => {
 			try {
-				const page = await readMailThread(this.#cloud, this.#environmentId, thread, before);
+				const page = await this.#withRpcScope((signal) =>
+					readMailThread(this.#cloud, this.#environmentId, thread, before, signal),
+				);
 				this.#set((state) => {
 					const now = state.threads[thread];
 					if (now?.status !== "ready") return state;
@@ -739,32 +761,51 @@ export class CompanyMail {
 
 	#readThread(thread: string): Promise<void> {
 		return this.#once(`thread:${thread}`, async () => {
-			let read: MailThread;
+			let read: MailThread | undefined;
 			let pages = 1;
 			try {
-				read = await readMailThread(this.#cloud, this.#environmentId, thread);
-				// With older pages kept, more than a page of mail may have come since the last read: the pages before the
-				// newest are read too, back to the newest message shown, so the kept ones still follow on with none between.
-				const shown = this.#state?.threads[thread];
-				const upTo = shown?.status === "ready" && shown.pages > 1 ? shown.thread.messages.at(-1) : undefined;
-				const reaches = (messages: readonly MailMessage[]) =>
-					upTo === undefined || messages.some((message) => messageKey(message) === messageKey(upTo));
-				while (read.thread !== undefined && read.nextBefore && !reaches(read.messages)) {
-					if (this.#closed || !this.#watched.threads.has(thread)) return;
-					const page = await readMailThread(this.#cloud, this.#environmentId, thread, read.nextBefore);
-					if (page.thread === undefined) {
-						read = page;
-						break;
+				await this.#withRpcScope(async (signal) => {
+					const newest = await readMailThread(this.#cloud, this.#environmentId, thread, undefined, signal);
+					// With older pages kept, more than a page of mail may have come since the last read: the pages before the
+					// newest are read too, back to the newest message shown, so the kept ones still follow on with none between.
+					const shown = this.#state?.threads[thread];
+					const upTo = shown?.status === "ready" && shown.pages > 1 ? shown.thread.messages.at(-1) : undefined;
+					const upToKey = upTo ? messageKey(upTo) : undefined;
+					const matchesUpTo = (messages: readonly MailMessage[]) =>
+						upToKey === undefined || messages.some((message) => messageKey(message) === upToKey);
+					if (newest.thread === undefined || !newest.nextBefore || matchesUpTo(newest.messages)) {
+						read = newest;
+						return;
 					}
-					const { nextBefore: _before, ...rest } = read;
+					// WHY: Collect catch-up pages in O(N), bound page depth, and halt on non-advancing cursors to avoid O(P^2) loops.
+					const chunks: (readonly MailMessage[])[] = [newest.messages];
+					let more = newest.more;
+					let nextBefore: MailMessageCursor | undefined = newest.nextBefore;
+					const seenCursors = new Set<string>();
+					while (nextBefore && pages < MAX_THREAD_CATCHUP_PAGES) {
+						if (this.#closed || !this.#watched.threads.has(thread) || signal.aborted) return;
+						const cursorKey = `${nextBefore.at}\0${nextBefore.kind}\0${nextBefore.id}`;
+						if (seenCursors.has(cursorKey)) break;
+						seenCursors.add(cursorKey);
+						const page = await readMailThread(this.#cloud, this.#environmentId, thread, nextBefore, signal);
+						if (page.thread === undefined) {
+							read = page;
+							return;
+						}
+						chunks.push(page.messages);
+						more = page.more;
+						nextBefore = page.nextBefore;
+						pages += 1;
+						if (matchesUpTo(page.messages)) break;
+					}
+					const { nextBefore: _ignored, ...rest } = newest;
 					read = {
 						...rest,
-						messages: [...page.messages, ...read.messages],
-						more: page.more,
-						...(page.nextBefore ? { nextBefore: page.nextBefore } : {}),
+						messages: chunks.reverse().flat(),
+						more,
+						...(nextBefore ? { nextBefore } : {}),
 					};
-					pages += 1;
-				}
+				});
 			} catch (error) {
 				const gone = threadGone(error);
 				this.#set((state) => {
@@ -777,8 +818,10 @@ export class CompanyMail {
 				});
 				return;
 			}
+			if (!read) return;
+			const finalRead = read;
 			// While the company's mail is off the call answers with no thread.
-			if (read.thread === undefined) {
+			if (finalRead.thread === undefined) {
 				this.#set((state) => ({ ...state, threads: { ...state.threads, [thread]: { status: "gone" } } }));
 				return;
 			}
@@ -787,11 +830,11 @@ export class CompanyMail {
 				// Older pages are kept only while the fresh pages reach the newest message they show.
 				const last = was?.status === "ready" ? was.thread.messages.at(-1) : undefined;
 				const joins =
-					last !== undefined && read.messages.some((message) => messageKey(message) === messageKey(last));
+					last !== undefined && finalRead.messages.some((message) => messageKey(message) === messageKey(last));
 				if (was?.status !== "ready" || was.pages < 2 || !joins) {
 					const found: MailThreadRead = {
 						status: "ready",
-						thread: read,
+						thread: finalRead,
 						pages,
 						older: was?.status === "ready" && was.older === "loading" ? "loading" : "idle",
 					};
@@ -799,15 +842,15 @@ export class CompanyMail {
 				}
 				// Older pages were read: they stay before the fresh pages, with the messages newer mail pushed out of them,
 				// and so does where the next older page starts.
-				const fresh = new Set(read.messages.map(messageKey));
+				const fresh = new Set(finalRead.messages.map(messageKey));
 				const kept = was.thread.messages.filter((message) => !fresh.has(messageKey(message)));
-				const { nextBefore: _next, ...newest } = read;
+				const { nextBefore: _next, ...newest } = finalRead;
 				const found: MailThreadRead = {
 					...was,
 					pages: was.pages + pages - 1,
 					thread: {
 						...newest,
-						messages: [...kept, ...read.messages],
+						messages: [...kept, ...finalRead.messages],
 						more: was.thread.more,
 						...(was.thread.nextBefore ? { nextBefore: was.thread.nextBefore } : {}),
 					},
@@ -821,7 +864,7 @@ export class CompanyMail {
 	async #markRead(thread: string): Promise<void> {
 		this.#marked.add(thread);
 		try {
-			await markMailThreadRead(this.#cloud, this.#environmentId, thread);
+			await this.#withRpcScope((signal) => markMailThreadRead(this.#cloud, this.#environmentId, thread, signal));
 		} catch (error) {
 			this.#marked.delete(thread);
 			if (threadGone(error))
@@ -890,7 +933,9 @@ export class CompanyMail {
 	 * cloud refuses, for the window it was written in to say. The lists and the threads a page shows are then read
 	 * again, so the email is in Sent and an answer stands in its thread. */
 	async send(request: MailMemberSend): Promise<MailMemberSent> {
-		const sent = await sendMemberMail(this.#cloud, this.#environmentId, request);
+		const sent = await this.#withRpcScope((signal) =>
+			sendMemberMail(this.#cloud, this.#environmentId, request, signal),
+		);
 		await Promise.all([
 			...[...this.#watched.lists].map(([key, listed]) => this.#readFirst(key, listed)),
 			...[...this.#watched.threads].map((thread) => this.#readThread(thread)),

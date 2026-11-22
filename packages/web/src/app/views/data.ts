@@ -22,6 +22,7 @@ import { DataChanges } from "./data-changes.ts";
 import { DataParams } from "./data-params.ts";
 
 const PAGE_ROWS = 100;
+const MAX_WATCH_REFETCH_PAGES = 10;
 const WATCH_GAP_MS = 500;
 const WATCH_RETRY_MS = [2000, 5000, 10_000] as const;
 const SAVED_MS = 1600;
@@ -615,24 +616,25 @@ class DataListView {
 				const hidden = () => document.visibilityState === "hidden" && call.abort();
 				document.addEventListener("visibilitychange", hidden);
 				try {
-					const answer = await withAbortScopes([signal, call.signal], (watchSignal) =>
-						this.#calls().watchTables([watched], watchSignal),
-					);
-					failures = 0;
-					if ("changed" in answer && !signal.aborted) {
-						const changed = answer.changed[0]?.answer;
-						if (changed && "key" in changed) await this.#again(read, changed, signal);
-						else if (changed) {
-							read.columns = changed.columns;
-							read.rows = changed.rows.map((values) => ({ values, seen: null }));
-							read.more = changed.more;
-							read.etag = changed.etag;
+					// WHY: Scope both watchTables and multi-page #again refetches to visibility so hiding the tab aborts background page fetches immediately.
+					await withAbortScopes([signal, call.signal], async (watchSignal) => {
+						const answer = await this.#calls().watchTables([watched], watchSignal);
+						failures = 0;
+						if ("changed" in answer && !watchSignal.aborted) {
+							const changed = answer.changed[0]?.answer;
+							if (changed && "key" in changed) await this.#again(read, changed, watchSignal);
+							else if (changed) {
+								read.columns = changed.columns;
+								read.rows = changed.rows.map((values) => ({ values, seen: null }));
+								read.more = changed.more;
+								read.etag = changed.etag;
+							}
+							if (!watchSignal.aborted && this.#list === read) {
+								this.#drawBody();
+								this.#follow(read);
+							}
 						}
-						if (!signal.aborted && this.#list === read) {
-							this.#drawBody();
-							this.#follow(read);
-						}
-					}
+					});
 				} catch {
 					if (signal.aborted) return;
 					if (!call.signal.aborted) {
@@ -649,8 +651,14 @@ class DataListView {
 
 	async #again(read: ListRead, first: CloudMemberDataPage, signal: AbortSignal): Promise<void> {
 		const pages = [first];
+		// WHY: Cap watch refetches and stop on repeated cursors so deep scrolls do not flood serial requests on every live update.
+		const limit = Math.min(read.pages, MAX_WATCH_REFETCH_PAGES);
 		let next = first.next;
-		while (pages.length < read.pages && next && !signal.aborted) {
+		const seenCursors = new Set<string>();
+		while (pages.length < limit && next && !signal.aborted) {
+			const cursorKey = JSON.stringify(next);
+			if (seenCursors.has(cursorKey)) break;
+			seenCursors.add(cursorKey);
 			try {
 				const page = await this.#calls().rows({ ...this.#asked(read), after: next }, signal);
 				pages.push(page);

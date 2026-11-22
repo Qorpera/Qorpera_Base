@@ -89,19 +89,31 @@ function fakeCalls(described: CloudMemberDataDescription) {
 	const calls = {
 		describe: vi.fn(async () => described),
 		changes: vi.fn(async () => ({ writes: [], more: false, asOf })),
-		rows: vi.fn(async (asked: { table: string; after?: readonly unknown[] }): Promise<CloudMemberDataPage> => {
-			if (asked.table === "open_repairs")
-				return { columns: ["bike"], key: [], rows: [{ values: ["Trek"], seen: seen(9) }], more: true, etag, asOf };
-			if (asked.table === "notes") return { columns: ["note"], key: [], rows: [], more: false, etag, asOf };
-			if (asked.after) return repairs([[3, "Raleigh Tourist", 520, false]]);
-			return repairs(
-				[
-					[1, "Gazelle Orange C7", 450, true],
-					[2, "Batavus Finez", 350, false],
-				],
-				true,
-			);
-		}),
+		rows: vi.fn(
+			async (
+				asked: { table: string; after?: readonly unknown[] },
+				_signal?: AbortSignal,
+			): Promise<CloudMemberDataPage> => {
+				if (asked.table === "open_repairs")
+					return {
+						columns: ["bike"],
+						key: [],
+						rows: [{ values: ["Trek"], seen: seen(9) }],
+						more: true,
+						etag,
+						asOf,
+					};
+				if (asked.table === "notes") return { columns: ["note"], key: [], rows: [], more: false, etag, asOf };
+				if (asked.after) return repairs([[3, "Raleigh Tourist", 520, false]]);
+				return repairs(
+					[
+						[1, "Gazelle Orange C7", 450, true],
+						[2, "Batavus Finez", 350, false],
+					],
+					true,
+				);
+			},
+		),
 		query: vi.fn(async () => ({ columns: ["bike"], rows: [["Christiania Cargo"]], more: false, etag, asOf })),
 		edit: vi.fn(async (edit: CloudMemberDataEdit) => {
 			edits.push(edit);
@@ -938,6 +950,107 @@ describe("the page's words for values and refusals", () => {
 			expect(disconnects).toBeGreaterThanOrEqual(4);
 		} finally {
 			vi.unstubAllGlobals();
+		}
+	});
+
+	it("caps watch multi-page refetches, stops on repeated cursors, and aborts in-flight #again fetches when hidden", async () => {
+		vi.useFakeTimers();
+		const originalVis = Object.getOwnPropertyDescriptor(document, "visibilityState");
+		let vis: DocumentVisibilityState = "visible";
+		Object.defineProperty(document, "visibilityState", {
+			configurable: true,
+			get: () => vis,
+		});
+		try {
+			const { calls } = fakeCalls(describedWith());
+			const watchResolves: Array<(answer: Awaited<ReturnType<CompanyDataCalls["watchTables"]>>) => void> = [];
+			calls.watchTables.mockImplementation(
+				() =>
+					new Promise<Awaited<ReturnType<CompanyDataCalls["watchTables"]>>>((resolve) => {
+						watchResolves.push(resolve);
+					}),
+			);
+			let rowSeq = 1;
+			calls.rows.mockImplementation(async () => {
+				const n = rowSeq++;
+				return {
+					...repairs([[n, `Bike ${n}`, n * 10, true]], true),
+					next: [String(n)],
+				};
+			});
+
+			const controller = company(describedWith(), true);
+			const databases = new CompanyDatabases(
+				() => calls,
+				(next) => controller.store.set({ companyData: next }),
+				controller.signal,
+			);
+			const container = document.createElement("main");
+			document.body.append(container);
+			const draw = () => renderData(container, controller, databases);
+			draw();
+			cleanup.push(controller.store.subscribe(draw));
+			await vi.advanceTimersByTimeAsync(0);
+
+			for (let i = 0; i < 12; i++) {
+				button(container, "Show more").click();
+				await vi.advanceTimersByTimeAsync(0);
+			}
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(13);
+
+			calls.rows.mockClear();
+			watchResolves.shift()?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs([[100, "Fresh 100", 100, true]], true),
+							next: ["100"],
+							etag: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls.rows).toHaveBeenCalledTimes(9);
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(10);
+
+			await vi.advanceTimersByTimeAsync(500);
+			let againSignal: AbortSignal | undefined;
+			calls.rows.mockImplementationOnce(
+				(_asked, signal) =>
+					new Promise<CloudMemberDataPage>((_resolve, reject) => {
+						againSignal = signal;
+						signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {
+							once: true,
+						});
+					}),
+			);
+			watchResolves.shift()?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs([[200, "Fresh 200", 200, true]], true),
+							next: ["200"],
+							etag: "cccccccccccccccccccccccccccccccc",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(againSignal).toBeDefined();
+			expect(againSignal?.aborted).toBe(false);
+
+			vis = "hidden";
+			document.dispatchEvent(new Event("visibilitychange"));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(againSignal?.aborted).toBe(true);
+			expect(texts(container, "button.data-row .is-lead")).not.toContain("Fresh 200");
+		} finally {
+			if (originalVis) Object.defineProperty(document, "visibilityState", originalVis);
+			else delete (document as unknown as Record<string, unknown>).visibilityState;
+			vi.useRealTimers();
 		}
 	});
 });
