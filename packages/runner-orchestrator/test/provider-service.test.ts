@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NODE_OBSERVATIONS_PATH, ProviderNodeObservability } from "../src/node-observability.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "../src/orchestrator.ts";
-import { HttpCloudRunnerProviderAdapter } from "../src/provider-http.ts";
+import { CloudRunnerProviderRequestError, HttpCloudRunnerProviderAdapter } from "../src/provider-http.ts";
 import { type CloudRunnerProviderServiceBackend, HttpCloudRunnerProviderService } from "../src/provider-service.ts";
 import { ProviderRpcFailed, ProviderStepFailed, providerRpcErrorCode } from "../src/provider-shared.ts";
+import type { ClaimedSurfaceSessionJob } from "../src/surface-worker-loop.ts";
 
 const token = "provider-service-token";
 const runnerId = "55555555-5555-4555-8555-555555555555";
@@ -743,5 +744,100 @@ describe("runner provider HTTP service", () => {
 		} finally {
 			log.mockRestore();
 		}
+	});
+
+	it("delivers authenticated surface_session requests with 202 when enabled and returns 501 when unconfigured", async () => {
+		const machineId = "66666666-6666-4666-8666-666666666666";
+		const session: ClaimedSurfaceSessionJob = {
+			sessionId: "11111111-1111-4111-8111-111111111111",
+			surfaceId: "22222222-2222-4222-8222-222222222222",
+			profileId: "88888888-8888-4888-8888-888888888888",
+			state: "queued",
+			prompt: "Refresh brand tokens",
+			originKind: "member",
+			originRef: { selector: "main.hero" },
+			repositoryKey: "surfaces/website",
+			folderRoot: null,
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			surfaceArchetype: "live_build",
+			surfaceSourceKind: "code_repo",
+			surfaceKind: "website",
+			siteSlug: "thetaband",
+			identityFolderRoot: "identity",
+			briefSummary: "Public site",
+			retryCount: 1,
+			sponsor: {
+				sponsorBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+				sponsorVersion: 4,
+			},
+			placement: {
+				strategy: "reuse_machine",
+				machineId,
+				activeTurns: 0,
+				targetDensity: 6,
+			},
+		};
+
+		const deliverSurfaceSession = vi.fn(async () => undefined);
+		const enabledProvider: CloudRunnerProviderServiceBackend = {
+			...backend(),
+			deliverSurfaceSession,
+		};
+		const enabledService = new HttpCloudRunnerProviderService(enabledProvider, token);
+		services.push(enabledService);
+		const enabledPort = await enabledService.start();
+
+		const rawOk = await fetch(`http://127.0.0.1:${enabledPort}/v1/qorpera-runner-provider`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+			body: JSON.stringify({
+				schema: "qorpera.runner-provider/v1",
+				action: "surface_session",
+				adapter_id: "managed",
+				machine_id: machineId,
+				session,
+			}),
+		});
+		expect(rawOk.status).toBe(202);
+		await expect(rawOk.json()).resolves.toEqual({ ok: true });
+
+		const enabledAdapter = new HttpCloudRunnerProviderAdapter(`http://127.0.0.1:${enabledPort}`, "managed", token);
+		await expect(
+			enabledAdapter.deliverSurfaceSession(session, machineId, new AbortController().signal),
+		).resolves.toBeUndefined();
+		expect(deliverSurfaceSession).toHaveBeenCalledTimes(2);
+		expect(deliverSurfaceSession).toHaveBeenLastCalledWith(session, machineId, expect.any(AbortSignal));
+
+		const disabledService = new HttpCloudRunnerProviderService(backend(), token);
+		services.push(disabledService);
+		const disabledPort = await disabledService.start();
+
+		const rawDisabled = await fetch(`http://127.0.0.1:${disabledPort}/v1/qorpera-runner-provider`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+			body: JSON.stringify({
+				schema: "qorpera.runner-provider/v1",
+				action: "surface_session",
+				adapter_id: "managed",
+				machine_id: machineId,
+				session,
+			}),
+		});
+		expect(rawDisabled.status).toBe(501);
+		await expect(rawDisabled.json()).resolves.toEqual({
+			error: "Surface session execution is not enabled on this provider",
+		});
+
+		const disabledAdapter = new HttpCloudRunnerProviderAdapter(`http://127.0.0.1:${disabledPort}`, "managed", token);
+		let caught: unknown;
+		try {
+			await disabledAdapter.deliverSurfaceSession(session, machineId, new AbortController().signal);
+		} catch (error) {
+			caught = error;
+		}
+		expect(caught).toBeInstanceOf(CloudRunnerProviderRequestError);
+		expect((caught as CloudRunnerProviderRequestError).status).toBe(501);
+		expect((caught as CloudRunnerProviderRequestError).message).toContain("[code=PROVIDER_SURFACE_SESSION]");
 	});
 });

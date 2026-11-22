@@ -499,6 +499,7 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 		const changeId = randomUUID();
 		const explorationId = randomUUID();
 		const automationId = randomUUID();
+		const sponsorBindingId = randomUUID();
 		const sha1 = "a".repeat(40);
 		const sha2 = "b".repeat(40);
 		const bodies: Record<string, unknown>[] = [];
@@ -531,6 +532,8 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 									siteSlug: "thetaband",
 									identityFolderRoot: "identity",
 									briefSummary: "Main site",
+									retryCount: 2,
+									sponsor: { sponsorBindingId, sponsorVersion: 3 },
 									placement: { strategy: "reuse_machine", machineId, activeTurns: 1, targetDensity: 6 },
 								},
 							],
@@ -625,6 +628,8 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 			explorationVariantLabel: "Aftenlys",
 			siteSlug: "thetaband",
 			identityFolderRoot: "identity",
+			retryCount: 2,
+			sponsor: { sponsorBindingId, sponsorVersion: 3 },
 		});
 		expect(claimed.automations?.[0]).toMatchObject({
 			automationId,
@@ -823,5 +828,46 @@ describe("SupabaseCloudRunnerOrchestratorControlPlane surface actions and servic
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
+	});
+
+	it("validates sponsor and retryCount fields when parsing claimed surface sessions", async () => {
+		const orchestratorId = randomUUID();
+		const baseSession = {
+			sessionId: randomUUID(),
+			surfaceId: randomUUID(),
+			profileId: randomUUID(),
+			state: "queued",
+			prompt: "Check copy",
+			originKind: "member",
+			originRef: null,
+			repositoryKey: null,
+			placement: { strategy: "spawn_overflow_machine", machineId: null, activeTurns: 0, targetDensity: 6 },
+		};
+		const makePlane = (sessionOverrides: Record<string, unknown>) =>
+			new SupabaseCloudRunnerOrchestratorControlPlane(
+				"https://project.supabase.co",
+				"publishable-key",
+				orchestratorId,
+				"c".repeat(43),
+				vi.fn(async () =>
+					Response.json({
+						value: {
+							sessions: [{ ...baseSession, ...sessionOverrides }],
+							previews: [],
+							merges: [],
+							publishes: [],
+						},
+					}),
+				) as typeof fetch,
+			);
+
+		const nullSponsor = await makePlane({ retryCount: 0, sponsor: null }).claimSurfaceJobs(4);
+		expect(nullSponsor.sessions[0]?.retryCount).toBe(0);
+		expect(nullSponsor.sessions[0]?.sponsor).toBeNull();
+
+		await expect(makePlane({ retryCount: -1 }).claimSurfaceJobs(4)).rejects.toThrow("retry count");
+		await expect(
+			makePlane({ sponsor: { sponsorBindingId: randomUUID(), sponsorVersion: 0 } }).claimSurfaceJobs(4),
+		).rejects.toThrow("sponsor version");
 	});
 });

@@ -52,7 +52,10 @@ const FOUNDER_KEYS = ["userId", "displayName", "role"] as const;
 const ANSWERS = new Set(["completed", "failed", "retry", "stale"]);
 /** A seeded file's media type, by its extension: the state files are Markdown, interfaces and tables plain text. */
 function mediaType(path: string): string {
-	return path.endsWith(".md") ? "text/markdown" : path.endsWith(".json") ? "application/json" : "text/plain";
+	if (path.endsWith(".md")) return "text/markdown";
+	if (path.endsWith(".json")) return "application/json";
+	if (path.endsWith(".css")) return "text/css";
+	return "text/plain";
 }
 /** A claim, a release and a fail get their own short deadline, so a drain that ran out of time still closes a claim. */
 const CALL_MS = 15_000;

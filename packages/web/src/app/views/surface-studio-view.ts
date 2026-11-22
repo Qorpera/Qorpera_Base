@@ -1,5 +1,15 @@
 import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
-import type { StudioPatchChange, StudioPatchOp, SurfacePreviewConflict, SurfaceSummary } from "@qorpera/contracts";
+import {
+	type CompiledIdentityTokens,
+	IDENTITY_TOKENS_CSS_PATH,
+	IDENTITY_TOKENS_JSON_PATH,
+	type StudioPatchChange,
+	type StudioPatchOp,
+	type SurfacePreviewConflict,
+	type SurfaceSummary,
+	sharedAssetsConsumedBy,
+	sharedAssetsProducedBy,
+} from "@qorpera/contracts";
 import { h } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { markdown } from "../../ui/markdown.ts";
@@ -303,6 +313,7 @@ export class SurfaceStudioView {
 	#reportView: SurfaceReportView | undefined;
 	#tab: StudioTab = "overview";
 	#shown = "";
+	#appliedIdentityVars: string[] = [];
 
 	constructor(options: SurfaceStudioOptions) {
 		this.#options = options;
@@ -360,17 +371,39 @@ export class SurfaceStudioView {
 		return { ...this.#baseFiles, ...(cloudBase ?? {}), ...(localBase ?? {}) };
 	}
 
+	#applyIdentityVars(isIdentity: boolean, tokens: CompiledIdentityTokens | null): void {
+		const nextVars = !isIdentity && tokens ? tokens.vars : {};
+		const nextKeys = Object.keys(nextVars);
+		const nextSet = new Set(nextKeys);
+		for (const prop of this.#appliedIdentityVars) {
+			if (!nextSet.has(prop)) this.el.style.removeProperty(prop);
+		}
+		for (const prop of nextKeys) {
+			const value = nextVars[prop];
+			if (value) this.el.style.setProperty(prop, value);
+		}
+		this.#appliedIdentityVars = nextKeys;
+		this.el.classList.toggle("has-identity-tokens", nextKeys.length > 0);
+	}
+
 	update(): void {
 		const store = this.#options.store;
 		const state = store.state;
 		const surface = state.surfaces.find((item) => item.id === this.#options.surface.id) ?? this.#options.surface;
 		const baseFiles = this.#effectiveBaseFiles(surface.id);
+		const lookKind = store.lookOf(surface).kind;
+		const isIdentitySurface =
+			surface.isGlobal === true ||
+			lookKind === "identity" ||
+			surface.slug === "identity" ||
+			Object.keys(baseFiles).some((path) => path.startsWith("identity/"));
+		const identityTokens = store.companyIdentityTokens();
+		this.#applyIdentityVars(isIdentitySurface, identityTokens);
 		const workspace = store.workspace(surface.id);
 		const ordered = this.#orderedChanges();
 		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
-		const downstreamSurfaces = state.surfaces.filter(
-			(item) => item.status === "active" && item.group === "products" && item.id !== surface.id,
-		);
+		const activeOtherSurfaces = state.surfaces.filter((item) => item.status === "active" && item.id !== surface.id);
+		const downstreamSurfaces = activeOtherSurfaces.filter((item) => item.group === "products");
 		const key = JSON.stringify([
 			this.#loading,
 			state.mode,
@@ -379,8 +412,10 @@ export class SurfaceStudioView {
 			ordered,
 			surface.title,
 			surface.folderRoot,
+			lookKind,
+			identityTokens?.css ?? "",
 			workspace?.briefSummary,
-			downstreamSurfaces.map((item) => [item.id, item.slug, item.title]),
+			activeOtherSurfaces.map((item) => [item.id, item.slug, item.title, item.group, store.lookOf(item).kind]),
 			busyReconcile,
 		]);
 		if (key === this.#shown) return;
@@ -612,10 +647,8 @@ export class SurfaceStudioView {
 			return;
 		}
 
-		const isIdentity =
-			store.lookOf(surface).kind === "identity" ||
-			surface.slug === "identity" ||
-			filePaths.some((path) => path.startsWith("identity/"));
+		const isIdentity = isIdentitySurface || filePaths.some((path) => path.startsWith("identity/"));
+		this.#applyIdentityVars(isIdentity, identityTokens);
 		const isVendorSpec = (spec: SpecSection) => /vendor|supplier/i.test(spec.path);
 		const primarySpec = specs.find((spec) => !isVendorSpec(spec));
 		const vendorSpecs = specs.filter(isVendorSpec);
@@ -712,16 +745,29 @@ export class SurfaceStudioView {
 		const showAnalysis = tabbed && this.#tab === "analysis";
 		const showFiles = !tabbed || this.#tab === "files";
 
+		const identityVarCount = identityTokens ? Object.keys(identityTokens.vars).length : 0;
+
 		if (isIdentity && showOverview && downstreamSurfaces.length > 0) {
 			sections.push(
 				h(
 					"section",
-					{ class: "studio-reach", "data-identity-reach": "true" },
+					{ class: "studio-reach", "data-identity-reach": "true", "data-live-linked": "true" },
 					h(
 						"div",
 						{ class: "studio-reach-head" },
 						h("h2", null, t("Shapes these interfaces")),
-						h("span", { class: "studio-file-tag" }, t("Shared company assets")),
+						h("span", { class: "studio-file-tag" }, t("Live-linked via Company Files")),
+					),
+					h(
+						"div",
+						{ class: "studio-link-flow" },
+						h("span", { class: "studio-live-dot", "aria-hidden": "true" }),
+						h("code", { class: "studio-link-path" }, IDENTITY_TOKENS_JSON_PATH),
+						h("span", { class: "studio-link-arrow", "aria-hidden": "true" }, "→"),
+						h("code", { class: "studio-link-path" }, IDENTITY_TOKENS_CSS_PATH),
+						identityVarCount > 0
+							? h("span", { class: "studio-link-count" }, t("{count} CSS vars", { count: identityVarCount }))
+							: null,
 					),
 					h(
 						"p",
@@ -747,6 +793,105 @@ export class SurfaceStudioView {
 					),
 				),
 			);
+		} else if (!isIdentity && showOverview) {
+			const consumed = sharedAssetsConsumedBy(lookKind);
+			const produced = sharedAssetsProducedBy(lookKind);
+			const linkRows: HTMLElement[] = [];
+			const seenIncomingProducers = new Set<string>();
+			for (const link of consumed) {
+				if (link.liveSyncMode === "prompt_context" && link.producedBy.every((k) => seenIncomingProducers.has(k))) {
+					continue;
+				}
+				const producers = activeOtherSurfaces.filter((item) => {
+					const targetKind = store.lookOf(item).kind;
+					return (
+						link.producedBy.includes(targetKind) ||
+						(link.producedBy.includes("identity") && item.isGlobal === true)
+					);
+				});
+				if (!producers.length) continue;
+				for (const k of link.producedBy) seenIncomingProducers.add(k);
+				const primaryPath =
+					link.liveSyncMode === "css_variables" && link.sourcePaths.includes(IDENTITY_TOKENS_CSS_PATH)
+						? IDENTITY_TOKENS_CSS_PATH
+						: (link.sourcePaths[0] ?? "");
+				linkRows.push(
+					h(
+						"div",
+						{ class: "studio-shared-link-row", "data-link-dir": "in", "data-link-id": link.id },
+						h("span", { class: "studio-shared-link-dir" }, t("Inherits")),
+						h("code", { class: "studio-link-path" }, primaryPath),
+						h(
+							"div",
+							{ class: "studio-reach-chips" },
+							producers.map((target) =>
+								h(
+									"button",
+									{
+										type: "button",
+										class: "studio-reach-chip is-compact",
+										"data-act": "studio-open-surface",
+										"data-slug": target.slug,
+									},
+									surfaceTile(target, store.lookOf(target), 11, "is-tiny"),
+									h("span", null, target.title),
+								),
+							),
+						),
+					),
+				);
+			}
+			for (const link of produced) {
+				const consumers = activeOtherSurfaces
+					.filter((item) => link.consumedBy.includes(store.lookOf(item).kind))
+					.sort((a, b) => (a.group === "products" ? 0 : 1) - (b.group === "products" ? 0 : 1));
+				if (!consumers.length) continue;
+				const primaryPath = link.sourcePaths[0] ?? "";
+				linkRows.push(
+					h(
+						"div",
+						{ class: "studio-shared-link-row", "data-link-dir": "out", "data-link-id": link.id },
+						h("span", { class: "studio-shared-link-dir" }, t("Feeds")),
+						h("code", { class: "studio-link-path" }, primaryPath),
+						h("span", { class: "studio-link-arrow", "aria-hidden": "true" }, "→"),
+						h(
+							"div",
+							{ class: "studio-reach-chips" },
+							consumers.map((target) =>
+								h(
+									"button",
+									{
+										type: "button",
+										class: "studio-reach-chip is-compact",
+										"data-act": "studio-open-surface",
+										"data-slug": target.slug,
+									},
+									surfaceTile(target, store.lookOf(target), 11, "is-tiny"),
+									h("span", null, target.title),
+								),
+							),
+						),
+					),
+				);
+			}
+			if (linkRows.length > 0) {
+				sections.push(
+					h(
+						"section",
+						{ class: "studio-shared-links", "data-live-linked": "true" },
+						h(
+							"div",
+							{ class: "studio-shared-links-head" },
+							h("span", { class: "studio-live-dot", "aria-hidden": "true" }),
+							h("span", { class: "studio-shared-links-title" }, t("Live-linked via Company Files")),
+							identityVarCount > 0
+								? h("span", { class: "studio-link-count" }, t("{count} CSS vars", { count: identityVarCount }))
+								: null,
+						),
+						h("div", { class: "studio-shared-links-list" }, ...linkRows),
+					),
+				);
+			}
 		}
 
 		if (modelConfig && showOverview) {

@@ -29,7 +29,7 @@ import {
 	surfaceHasReports,
 } from "../surfaces-store.ts";
 import { CrewFigures } from "./surface-crew.ts";
-import { SurfaceDoorStage } from "./surface-door.ts";
+import { applyIdentityTokensToFrame, SurfaceDoorStage } from "./surface-door.ts";
 import { openPublishPatchnotesSheet } from "./surface-publish-sheet.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
@@ -488,6 +488,9 @@ export class SurfaceView {
 		} else {
 			this.#reportSlot.hidden = true;
 			this.#drawFrames(surface);
+			const identityTokens = store.companyIdentityTokens();
+			this.#primaryDoor.setIdentityTokens(identityTokens);
+			for (const entry of this.#compareDoors.values()) entry.stage.setIdentityTokens(identityTokens);
 		}
 		if (this.#localHost) {
 			if (this.#mountSlot.hidden) {
@@ -1029,15 +1032,16 @@ export class SurfaceView {
 			sandbox: "allow-scripts",
 			title,
 		});
-		if (attachInspector) {
-			frame.addEventListener(
-				"load",
-				() => {
+		frame.addEventListener(
+			"load",
+			() => {
+				if (attachInspector) {
 					frame.contentWindow?.postMessage({ type: SURFACE_INSPECTOR_MODE_MESSAGE, active: this.#pointing }, "*");
-				},
-				{ signal: this.#lifetime.signal },
-			);
-		}
+				}
+				applyIdentityTokensToFrame(frame, this.#host.store.companyIdentityTokens());
+			},
+			{ signal: this.#lifetime.signal },
+		);
 		frame.srcdoc = html;
 		return frame;
 	}
@@ -1050,6 +1054,7 @@ export class SurfaceView {
 		const workspace = state.workspaces[surface.id];
 		const mode = state.mode === "live" ? "live" : "preview";
 		const look = store.lookOf(surface);
+		const identityTokens = store.companyIdentityTokens();
 		const exploration = openExplorations(workspace)[0];
 		const pickedId = exploration ? store.pickedVariant(exploration) : undefined;
 		const appliedChanges =
@@ -1067,6 +1072,7 @@ export class SurfaceView {
 			look,
 			pickedId,
 			workspace?.briefSummary,
+			identityTokens?.css ?? "",
 			appliedChanges.map((change) => [change.id, change.title, change.summary]),
 		]);
 		if (key === this.#localSiteShown && this.#localFrame?.parentElement === host) return;
@@ -1079,11 +1085,13 @@ export class SurfaceView {
 			look.kind === "custom" ? "website" : look.kind,
 			workspace?.briefSummary ?? undefined,
 			look.accent,
+			identityTokens,
 		);
 		// WHY: Mount a fresh iframe element on every document swap so Blink always lays out and paints srcdoc cleanly.
 		const frame = this.#createLocalFrame(t("Preview of {title}", { title: surface.title }), html, true);
 		this.#localFrame = frame;
 		host.replaceChildren(frame);
+		applyIdentityTokensToFrame(frame, identityTokens);
 	}
 
 	#clearCompare(): void {
@@ -1167,6 +1175,7 @@ export class SurfaceView {
 					const abort = new AbortController();
 					const head = buildHead();
 					const stage = new SurfaceDoorStage(abort.signal);
+					stage.setIdentityTokens(store.companyIdentityTokens());
 					const column = h("div", { class: "surface-compare-column" }, head, stage.el);
 					entry = { stage, column, head, abort };
 					this.#compareDoors.set(session.id, entry);

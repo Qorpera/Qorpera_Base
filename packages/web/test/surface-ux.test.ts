@@ -14,7 +14,9 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import { HubController } from "../src/app/views/hub.ts";
 import { renderNewCompany } from "../src/app/views/new-company.ts";
 import { renderRail } from "../src/app/views/shell.ts";
+import { SITE_DOOR_READY, SITE_DOOR_SHOWN } from "../src/app/views/site-view.ts";
 import { CrewFigures, crewLook, sessionCrew } from "../src/app/views/surface-crew.ts";
+import { IDENTITY_TOKENS_CSS_MESSAGE, SurfaceDoorStage } from "../src/app/views/surface-door.ts";
 import { openCreateSurfaceSheet, openScheduleAgentSheet } from "../src/app/views/surface-migration-sheet.ts";
 import { openPublishPatchnotesSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
@@ -28,6 +30,7 @@ import {
 	change,
 	fakeClient,
 	MESSAGE_IDS,
+	previewFrame,
 	SESSION,
 	SURFACE,
 	session,
@@ -1248,5 +1251,154 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 
 		store.dispose();
 		company.stop();
+	});
+
+	it("renders Live-linked via Company Files strips on Identity and Product and applies live Identity CSS vars to Product", async () => {
+		stubFigureMotion();
+		const navigated: string[] = [];
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			onNavigateSurface: (slug) => navigated.push(slug),
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const identitySurface = store.state.surfaces.find((item) => item.slug === "identity")!;
+		await store.openSurface("identity");
+
+		const identityView = new SurfaceView(
+			{ store, mount: () => undefined, openMigration: () => undefined },
+			"identity",
+		);
+		document.body.append(identityView.el);
+		await flush();
+		identityView.update();
+
+		const identityReach = identityView.el.querySelector<HTMLElement>(
+			'[data-identity-reach="true"][data-live-linked="true"]',
+		)!;
+		expect(identityReach).not.toBeNull();
+		expect(identityReach.textContent).toContain("Live-linked via Company Files");
+		expect(identityReach.textContent).toContain("identity/tokens.json");
+		expect(identityReach.textContent).toContain("identity/tokens.css");
+		identityView.dispose();
+
+		const productView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "product");
+		document.body.append(productView.el);
+		await flush();
+		productView.update();
+
+		const productStudio = productView.el.querySelector<HTMLElement>(".surface-studio")!;
+		expect(productStudio.classList.contains("has-identity-tokens")).toBe(true);
+		expect(productStudio.style.getPropertyValue("--q-color-accent")).toBe("#6f61cf");
+
+		const sharedStrip = productView.el.querySelector<HTMLElement>('.studio-shared-links[data-live-linked="true"]')!;
+		expect(sharedStrip).not.toBeNull();
+		expect(sharedStrip.textContent).toContain("Live-linked via Company Files");
+		expect(sharedStrip.querySelector('[data-link-dir="in"]')?.textContent).toContain("identity/tokens.css");
+		expect(sharedStrip.querySelector('[data-link-dir="out"]')?.textContent).toContain("product/specs.json");
+
+		const outSlugs = [
+			...sharedStrip.querySelectorAll<HTMLButtonElement>('[data-link-dir="out"] .studio-reach-chip'),
+		].map((chip) => chip.dataset.slug);
+		expect(outSlugs).toContain("website");
+		expect(outSlugs).toContain("phone-app");
+
+		sharedStrip.querySelector<HTMLButtonElement>('[data-link-dir="in"] [data-slug="identity"]')!.click();
+		expect(navigated).toEqual(["identity"]);
+
+		const identityTokenChange = store.workspace(identitySurface.id)!.activeSessions[0]!.changes[0]!;
+		await store.toggleChange(identitySurface.id, identityTokenChange.id);
+		productView.update();
+		expect(productStudio.style.getPropertyValue("--q-color-accent")).toBe("#7c6fd6");
+
+		productView.dispose();
+		store.dispose();
+	});
+
+	it("injects live compiled Identity CSS tokens into local live_build iframes and posts them to SurfaceDoorStage", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const identitySurface = store.state.surfaces.find((item) => item.slug === "identity")!;
+		await store.openSurface("identity");
+		const identityTokenChange = store.workspace(identitySurface.id)!.activeSessions[0]!.changes[0]!;
+
+		const websiteView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(websiteView.el);
+		await flush();
+		websiteView.update();
+
+		const localFrame = websiteView.el.querySelector<HTMLIFrameElement>("iframe.surface-local-frame")!;
+		expect(localFrame).not.toBeNull();
+		expect(localFrame.srcdoc).toContain("data-qorpera-identity-tokens");
+		expect(localFrame.srcdoc).toContain("--q-color-accent: #6f61cf;");
+		expect(
+			localFrame.contentDocument?.head.querySelector("style[data-qorpera-identity-tokens]")?.textContent,
+		).toContain("--q-color-accent: #6f61cf;");
+
+		await store.toggleChange(identitySurface.id, identityTokenChange.id);
+		websiteView.update();
+		const updatedFrame = websiteView.el.querySelector<HTMLIFrameElement>("iframe.surface-local-frame")!;
+		expect(updatedFrame.srcdoc).toContain("--q-color-accent: #7c6fd6;");
+		expect(
+			updatedFrame.contentDocument?.head.querySelector("style[data-qorpera-identity-tokens]")?.textContent,
+		).toContain("--q-color-accent: #7c6fd6;");
+		websiteView.dispose();
+
+		const controller = new AbortController();
+		const stage = new SurfaceDoorStage(controller.signal);
+		document.body.append(stage.el);
+		const tokensBefore = store.companyIdentityTokens()!;
+		stage.setIdentityTokens(tokensBefore);
+		stage.sync(
+			previewFrame({
+				previewId: "66666666-6666-4666-8666-666666666601",
+				doorActionUrl: "https://thetaband--p1111aaaa.qorpera.com/__qorpera/member",
+				memberPass: "A".repeat(43),
+			}),
+			"Preview of Website",
+		);
+		const doorFrame = stage.el.querySelector<HTMLIFrameElement>("iframe.surface-frame")!;
+		const posted: { message: unknown; origin: string }[] = [];
+		const mockWin = {
+			postMessage(message: unknown, origin: string) {
+				posted.push({ message, origin });
+			},
+		} as unknown as Window;
+		Object.defineProperty(doorFrame, "contentWindow", { configurable: true, get: () => mockWin });
+		window.dispatchEvent(
+			new MessageEvent("message", { data: { type: SITE_DOOR_READY }, source: mockWin, origin: location.origin }),
+		);
+		window.dispatchEvent(
+			new MessageEvent("message", { data: { type: SITE_DOOR_SHOWN }, source: mockWin, origin: location.origin }),
+		);
+		expect(posted.at(-1)).toEqual({
+			message: {
+				type: IDENTITY_TOKENS_CSS_MESSAGE,
+				css: tokensBefore.css,
+				vars: tokensBefore.vars,
+			},
+			origin: "*",
+		});
+
+		await store.toggleChange(identitySurface.id, identityTokenChange.id);
+		const tokensAfter = store.companyIdentityTokens()!;
+		stage.setIdentityTokens(tokensAfter);
+		expect(posted.at(-1)).toEqual({
+			message: {
+				type: IDENTITY_TOKENS_CSS_MESSAGE,
+				css: tokensAfter.css,
+				vars: tokensAfter.vars,
+			},
+			origin: "*",
+		});
+
+		controller.abort();
+		store.dispose();
 	});
 });

@@ -460,5 +460,6 @@ describe("CompanyFolderCreator", () => {
 		expect(units.find((u) => u.op === "write" && u.path === "identity/tokens.json")?.file?.mediaType).toBe(
 			"application/json",
 		);
+		expect(units.find((u) => u.op === "write" && u.path === "identity/tokens.css")?.file?.mediaType).toBe("text/css");
 	});
 });

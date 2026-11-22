@@ -319,31 +319,61 @@ describe("runner orchestrator service boundary", () => {
 				"c".repeat(43),
 				vi.fn(async () => Response.json({ value: { jobId: runnerId, status: "failed" } })) as typeof fetch,
 			);
+			const providerCalls: Record<string, unknown>[] = [];
 			const fakeProvider = new HttpCloudRunnerProviderAdapter(
 				"https://provider.example",
 				"managed",
 				"provider-token",
-				vi.fn(async () => Response.json({ value: null })) as typeof fetch,
+				vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+					const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+					providerCalls.push(body);
+					if (providerCalls.length === 1) {
+						return new Response(JSON.stringify({ ok: true }), {
+							status: 202,
+							headers: { "content-type": "application/json" },
+						});
+					}
+					return new Response(
+						JSON.stringify({ error: "Surface session execution is not enabled on this provider" }),
+						{
+							status: 501,
+							headers: { "content-type": "application/json" },
+						},
+					);
+				}) as typeof fetch,
 			);
 			const defaultConfig = createDefaultSurfaceWorkerConfig(
 				{ controlPlane: fakeControl, providerAdapter: fakeProvider, orchestratorId },
 				{ onEvent: (event) => events.push(event) },
 			);
-			await defaultConfig.dispatchSessionTurn(
-				{
-					sessionId: runnerId,
-					surfaceId: logicalComputerId,
-					profileId: "88888888-8888-4888-8888-888888888888",
-					state: "queued",
-					prompt: "Test turn",
-					originKind: "member",
-					originRef: null,
-					repositoryKey: null,
-					placement: { strategy: "reuse_machine", machineId: runnerId, activeTurns: 0, targetDensity: 6 },
+			const sampleSession = {
+				sessionId: runnerId,
+				surfaceId: logicalComputerId,
+				profileId: "88888888-8888-4888-8888-888888888888",
+				state: "queued" as const,
+				prompt: "Test turn",
+				originKind: "member",
+				originRef: null,
+				repositoryKey: null,
+				retryCount: 1,
+				sponsor: {
+					sponsorBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+					sponsorVersion: 2,
 				},
-				runnerId,
-				new AbortController().signal,
-			);
+				placement: { strategy: "reuse_machine" as const, machineId: runnerId, activeTurns: 0, targetDensity: 6 },
+			};
+			await defaultConfig.dispatchSessionTurn(sampleSession, runnerId, new AbortController().signal);
+			expect(providerCalls).toHaveLength(1);
+			expect(providerCalls[0]).toEqual({
+				schema: "qorpera.runner-provider/v1",
+				action: "surface_session",
+				adapter_id: "managed",
+				machine_id: runnerId,
+				session: sampleSession,
+			});
+			expect(events).toHaveLength(0);
+
+			await defaultConfig.dispatchSessionTurn(sampleSession, runnerId, new AbortController().signal);
 			await defaultConfig.runAutomationJob?.(
 				{
 					automationId: runnerId,
@@ -360,7 +390,11 @@ describe("runner orchestrator service boundary", () => {
 			);
 			expect(events).toEqual(
 				expect.arrayContaining([
-					expect.objectContaining({ kind: "session_dispatch_unconfigured", sessionId: runnerId }),
+					expect.objectContaining({
+						kind: "session_dispatch_unconfigured",
+						sessionId: runnerId,
+						status: 501,
+					}),
 					expect.objectContaining({ kind: "automation_dispatch_unconfigured", key: "cofounder-pulse" }),
 				]),
 			);

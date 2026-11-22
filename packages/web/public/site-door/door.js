@@ -10,6 +10,7 @@
 	const SHOWN = "qorpera-site-door-shown";
 	const INSPECTOR_MODE = "qorpera-inspector-mode";
 	const INSPECTOR_PICK = "qorpera-inspector-pick";
+	const IDENTITY_TOKENS_CSS = "qorpera:identity-tokens-css";
 	const TARGET = "qorpera-site";
 	// A site's own host or an isolated preview host (never a next host), the one path that takes a pass, a pass of base64url, a path of the site.
 	const ACTION = /^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)*(?:--p[a-z0-9]{8})?\.qorpera\.com\/__qorpera\/member$/;
@@ -25,6 +26,19 @@
 			if (event.source === app && event.origin === location.origin && data.type === INSPECTOR_MODE) {
 				if (frame.contentWindow)
 					frame.contentWindow.postMessage({ type: INSPECTOR_MODE, active: Boolean(data.active) }, targetOrigin);
+				return;
+			}
+			if (
+				event.source === app &&
+				event.origin === location.origin &&
+				data.type === IDENTITY_TOKENS_CSS &&
+				typeof data.css === "string"
+			) {
+				if (frame.contentWindow) {
+					const vars =
+						data.vars && typeof data.vars === "object" && !Array.isArray(data.vars) ? data.vars : {};
+					frame.contentWindow.postMessage({ type: IDENTITY_TOKENS_CSS, css: data.css, vars }, targetOrigin);
+				}
 				return;
 			}
 			if (event.source === frame.contentWindow && event.origin === targetOrigin && data.type === INSPECTOR_PICK) {

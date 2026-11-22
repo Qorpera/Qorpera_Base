@@ -11,7 +11,15 @@
  * `- item` per line below the key), and `#` after a space starts a note. Each kind has a
  * closed set of keys. The same bytes always give the same result, problems included. */
 
-import { type CloudCodingRepository, parseCloudCodingBranch, parseCloudCodingRepository } from "@qorpera/contracts";
+import {
+	type CloudCodingRepository,
+	compileIdentityTokensCss,
+	IDENTITY_BRIEF_PATH,
+	IDENTITY_TOKENS_CSS_PATH,
+	IDENTITY_TOKENS_JSON_PATH,
+	parseCloudCodingBranch,
+	parseCloudCodingRepository,
+} from "@qorpera/contracts";
 import { parseCloudCompanyPath } from "./company-path-schema.ts";
 import {
 	AGENT_COLOURS,
@@ -3295,10 +3303,12 @@ function seedIdentityEntries(options: CompanyStateSeedOptions): CompanyStateSeed
 		null,
 		2,
 	)}\n`;
+	const tokensCss = compileIdentityTokensCss(tokens);
 	return [
 		{ path: "identity", kind: "folder" },
-		{ path: "identity/brief.md", kind: "file", text: brief },
-		{ path: "identity/tokens.json", kind: "file", text: tokens },
+		{ path: IDENTITY_BRIEF_PATH, kind: "file", text: brief },
+		{ path: IDENTITY_TOKENS_JSON_PATH, kind: "file", text: tokens },
+		{ path: IDENTITY_TOKENS_CSS_PATH, kind: "file", text: tokensCss },
 	];
 }
 

@@ -12,6 +12,11 @@ export interface SurfaceMachinePlacementHint {
 	readonly targetDensity: number;
 }
 
+export interface ClaimedSurfaceSessionSponsor {
+	readonly sponsorBindingId: string;
+	readonly sponsorVersion: number;
+}
+
 export interface ClaimedSurfaceSessionJob {
 	readonly sessionId: string;
 	readonly surfaceId: string;
@@ -32,6 +37,8 @@ export interface ClaimedSurfaceSessionJob {
 	readonly siteSlug?: string | null;
 	readonly identityFolderRoot?: string | null;
 	readonly briefSummary?: string | null;
+	readonly retryCount?: number;
+	readonly sponsor?: ClaimedSurfaceSessionSponsor | null;
 	readonly placement: SurfaceMachinePlacementHint;
 }
 

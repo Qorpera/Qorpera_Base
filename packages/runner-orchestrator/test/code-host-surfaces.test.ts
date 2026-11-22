@@ -327,11 +327,27 @@ describe("code-host surfaces multi-change engine", () => {
 
 		const mainDir = join(companyRoot, "code/surfaces/website/main");
 		const html = await readFile(join(mainDir, "index.html"), "utf8");
+		const identityCss = await readFile(join(mainDir, "qorpera-identity.css"), "utf8");
 		const css = await readFile(join(mainDir, "styles.css"), "utf8");
 		const checksText = await readFile(join(mainDir, ".qorpera/checks.json"), "utf8");
 		expect(html).toContain("Thetaband &amp; Co");
-		expect(html).toContain("./styles.css");
-		expect(css).toContain("--surface-accent");
+		expect(html).toContain('<link rel="stylesheet" href="./qorpera-identity.css" />');
+		expect(html).toContain('<link rel="stylesheet" href="./styles.css" />');
+		expect(html.indexOf("./qorpera-identity.css")).toBeLessThan(html.indexOf("./styles.css"));
+		expect(identityCss).toContain(":root {");
+		expect(identityCss).toContain("--q-color-surface: #ffffff;");
+		expect(identityCss).toContain("--q-color-ink: #161615;");
+		expect(identityCss).toContain("--q-color-muted: #6b6966;");
+		expect(identityCss).toContain("--q-color-accent: #d76f45;");
+		expect(identityCss).toContain("--q-font-heading:");
+		expect(identityCss).toContain("--q-font-body:");
+		expect(css).toContain("var(--q-color-surface)");
+		expect(css).toContain("var(--q-color-ink)");
+		expect(css).toContain("var(--q-color-accent)");
+		expect(css).toContain("var(--q-color-muted)");
+		expect(css).toContain("var(--q-font-body)");
+		expect(css).toContain("var(--q-font-heading)");
+		expect(css).not.toMatch(/#[0-9a-f]{3,8}/i);
 		expect(parseFastPreviewRecipe(checksText)).toEqual({
 			run: "true",
 			cwd: ".",

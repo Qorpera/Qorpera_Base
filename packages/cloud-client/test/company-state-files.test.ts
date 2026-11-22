@@ -2744,5 +2744,8 @@ describe("companyStateSeedTree", () => {
 		expect(brief).toContain("Calm wearable EEG headband for deep rest.");
 		const tokens = tree.find((entry) => entry.path === "identity/tokens.json")?.text ?? "";
 		expect(JSON.parse(tokens)).toMatchObject({ brand: "Thetaband" });
+		const tokensCss = tree.find((entry) => entry.path === "identity/tokens.css")?.text ?? "";
+		expect(tokensCss).toContain("--q-color-accent: #2563eb;");
+		expect(tokensCss).toContain("--brand-accent: #2563eb;");
 	});
 });

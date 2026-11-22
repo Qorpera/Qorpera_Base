@@ -440,6 +440,39 @@ describe("cloud surface runtime tools", () => {
 			recordChange: vi.fn(),
 		});
 		expect(emptyIdentity).not.toContain("## Global Company Identity");
+		expect(emptyIdentity).toContain("## Live Shared Company Files");
+		expect(emptyIdentity).toContain("qorpera-identity.css");
+		expect(emptyIdentity).toContain("var(--q-color-accent)");
+		expect(emptyIdentity).toContain("public/qorpera-shared/product/specs.json");
+
+		const withShared = buildSurfaceTurnBrief({
+			sessionId,
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			briefMarkdown: "Main storefront.",
+			sharedAssets: {
+				tokensCss: ":root {\n\t--q-color-accent: #d76f45;\n}\n",
+				companyProfileJson: '{"name":"Thetaband"}',
+				productSpecsJson: '{"batteryHours":14}',
+				productCatalogJson: '{"sku":"TB-1"}',
+				hasLogoSvg: true,
+			},
+		});
+		expect(withShared).toContain("### Compiled Identity CSS (`qorpera-identity.css`)");
+		expect(withShared).toContain("--q-color-accent: #d76f45;");
+		expect(withShared).toContain("### Shared Company Profile (`public/qorpera-shared/identity/company.json`)");
+		expect(withShared).toContain("### Shared Product Specs (`public/qorpera-shared/product/specs.json`)");
+		expect(withShared).toContain("### Shared Product Catalog (`public/qorpera-shared/product/catalog.json`)");
+		expect(withShared).toContain("public/qorpera-shared/identity/logo.svg");
+
+		const identitySelf = buildSurfaceTurnBrief({
+			sessionId,
+			surfaceSlug: "identity",
+			surfaceTitle: "Identity",
+			briefMarkdown: "Brand hub.",
+		});
+		expect(identitySelf).toContain("## Live Shared Company Files");
+		expect(identitySelf).toContain("automatically recompile `identity/tokens.css`");
 	});
 
 	it("bridges Surface tools to control-plane RPCs via createControlPlaneSurfaceToolsPort", async () => {
@@ -905,6 +938,11 @@ describe("cloud surface runtime tools", () => {
 		expect(combined).toContain("identity/");
 		expect(combined).toContain("identity/brief.md");
 		expect(combined).toContain("identity/tokens.json");
+		expect(combined).toContain("identity/tokens.css");
+		expect(combined).toContain("qorpera-identity.css");
+		expect(combined).toContain("identity/company.json");
+		expect(combined).toContain("product/specs.json");
+		expect(combined).toContain("product/catalog.json");
 		expect(combined).toContain("<folderRoot>/");
 		expect(combined).toContain("Preview");
 		expect(combined).toContain("activateImmediately: true");

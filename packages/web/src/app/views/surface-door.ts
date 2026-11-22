@@ -1,4 +1,5 @@
 import {
+	type CompiledIdentityTokens,
 	type PointToChangeTarget,
 	parsePointToChangeTarget,
 	SURFACE_INSPECTOR_MODE_MESSAGE,
@@ -8,6 +9,42 @@ import {
 import { h } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import { SITE_DOOR_PASS, SITE_DOOR_READY, SITE_DOOR_SHOWN, SITE_DOOR_URL } from "./site-view.ts";
+
+export const IDENTITY_TOKENS_CSS_MESSAGE = "qorpera:identity-tokens-css";
+
+export function applyIdentityTokensToFrame(
+	iframe: HTMLIFrameElement,
+	tokens: CompiledIdentityTokens | null,
+	injectStyle = true,
+): void {
+	const css = tokens?.css ?? "";
+	const vars = tokens?.vars ?? {};
+	if (injectStyle) {
+		try {
+			const doc = iframe.contentDocument;
+			if (doc?.head) {
+				let style = doc.head.querySelector<HTMLStyleElement>("style[data-qorpera-identity-tokens]");
+				if (css) {
+					if (!style) {
+						style = doc.createElement("style");
+						style.setAttribute("data-qorpera-identity-tokens", "");
+						doc.head.append(style);
+					}
+					if (style.textContent !== css) style.textContent = css;
+				} else if (style) {
+					style.remove();
+				}
+			}
+		} catch {
+			/* WHY: Cross-origin preview frames block contentDocument access and receive tokens via postMessage below. */
+		}
+	}
+	try {
+		iframe.contentWindow?.postMessage({ type: IDENTITY_TOKENS_CSS_MESSAGE, css, vars }, "*");
+	} catch {
+		/* WHY: Detached or initializing frames ignore postMessage until ready. */
+	}
+}
 
 // WHY: Matches SiteView's sandbox so previews run scripts and forms on their own origin without touching this app's page.
 const SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox";
@@ -63,6 +100,8 @@ export class SurfaceDoorStage {
 	#active: DoorSlot | undefined;
 	#staging: DoorSlot | undefined;
 	#inspectorActive = false;
+	#identityTokens: CompiledIdentityTokens | null = null;
+	#identityTokensCss = "";
 
 	constructor(signal: AbortSignal, options: SurfaceDoorOptions = {}) {
 		this.#options = options;
@@ -150,6 +189,14 @@ export class SurfaceDoorStage {
 		this.#postInspectorMode(active);
 	}
 
+	setIdentityTokens(tokens: CompiledIdentityTokens | null): void {
+		const nextCss = tokens?.css ?? "";
+		if (nextCss === this.#identityTokensCss && Boolean(tokens) === Boolean(this.#identityTokens)) return;
+		this.#identityTokens = tokens;
+		this.#identityTokensCss = nextCss;
+		this.#postIdentityTokens();
+	}
+
 	clear(): void {
 		if (this.#inspectorActive) {
 			this.#postInspectorMode(false);
@@ -192,6 +239,11 @@ export class SurfaceDoorStage {
 		target.postMessage({ type: SURFACE_INSPECTOR_MODE_MESSAGE, active }, location.origin);
 	}
 
+	#postIdentityTokens(): void {
+		if (!this.#active) return;
+		applyIdentityTokensToFrame(this.#active.iframe, this.#identityTokens, false);
+	}
+
 	#onMessage(event: MessageEvent): void {
 		if (event.origin !== location.origin) return;
 		const data = event.data as { type?: unknown; target?: unknown } | null;
@@ -223,13 +275,15 @@ export class SurfaceDoorStage {
 				this.#pill.hidden = true;
 				this.#options.onShownChange?.();
 				if (this.#inspectorActive) this.#postInspectorMode(true);
+				if (this.#identityTokens) this.#postIdentityTokens();
 				return;
 			}
 		}
 		const active = this.#active;
 		if (!active || event.source !== active.iframe.contentWindow) return;
-		if (data.type === SITE_DOOR_SHOWN && this.#inspectorActive) {
-			this.#postInspectorMode(true);
+		if (data.type === SITE_DOOR_SHOWN) {
+			if (this.#inspectorActive) this.#postInspectorMode(true);
+			if (this.#identityTokens) this.#postIdentityTokens();
 			return;
 		}
 		if (data.type === SURFACE_INSPECTOR_PICK_MESSAGE && this.#options.onPick) {

@@ -25,6 +25,7 @@ import type {
 	ClaimedSurfacePreviewJob,
 	ClaimedSurfacePublishJob,
 	ClaimedSurfaceSessionJob,
+	ClaimedSurfaceSessionSponsor,
 	SurfaceMachinePlacementHint,
 } from "./surface-worker-loop.ts";
 
@@ -1333,6 +1334,22 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 		input.briefSummary === undefined
 			? undefined
 			: optionalResponseString(input.briefSummary, "surface brief summary");
+	const retryCount =
+		input.retryCount === undefined || input.retryCount === null
+			? undefined
+			: responseInteger(input.retryCount, "surface session retry count", 0, 10_000);
+	let sponsor: ClaimedSurfaceSessionSponsor | null | undefined;
+	if (input.sponsor !== undefined) {
+		if (input.sponsor === null) {
+			sponsor = null;
+		} else {
+			const rawSponsor = record(input.sponsor, "surface session sponsor");
+			sponsor = {
+				sponsorBindingId: responseUuid(rawSponsor.sponsorBindingId, "surface sponsor binding id"),
+				sponsorVersion: responseInteger(rawSponsor.sponsorVersion, "surface sponsor version", 1, 1_000_000),
+			};
+		}
+	}
 	return {
 		sessionId: responseUuid(input.sessionId, "surface session id"),
 		surfaceId: responseUuid(input.surfaceId, "surface id"),
@@ -1353,6 +1370,8 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 		...(siteSlug !== undefined ? { siteSlug } : {}),
 		...(identityFolderRoot !== undefined ? { identityFolderRoot } : {}),
 		...(briefSummary !== undefined ? { briefSummary } : {}),
+		...(retryCount !== undefined ? { retryCount } : {}),
+		...(sponsor !== undefined ? { sponsor } : {}),
 		placement: parseSurfacePlacementHint(input.placement),
 	};
 }

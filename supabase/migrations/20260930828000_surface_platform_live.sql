@@ -44,7 +44,131 @@ alter table public.qorpera_surface_explorations
 
 alter table public.qorpera_surface_sessions
 	add column note_paths text[] not null default '{}'::text[],
-	add column lease_expires_at timestamptz;
+	add column lease_expires_at timestamptz,
+	add column retry_count integer not null default 0 check (retry_count >= 0);
+
+-- WHY: Wraps qorpera_company_execution_paused safely so surface claims never execute work for paused or deleting companies.
+create function public.qorpera_surface_company_paused(p_company_id uuid)
+returns boolean
+language plpgsql stable security definer set search_path = '' as $$
+begin
+	if to_regprocedure('public.qorpera_company_execution_paused(uuid)') is null then
+		return false;
+	end if;
+	return public.qorpera_company_execution_paused(p_company_id);
+end $$;
+revoke all on function public.qorpera_surface_company_paused(uuid) from public, anon, authenticated;
+grant execute on function public.qorpera_surface_company_paused(uuid) to service_role;
+
+-- WHY: Resolves the paying founder sponsor binding for a surface session or automation without failing when sponsor tables are absent.
+create function public.qorpera_surface_resolve_sponsor(p_company_id uuid, p_user_id uuid default null)
+returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+declare
+	v_uid uuid := p_user_id;
+	v_sponsor jsonb;
+begin
+	if to_regprocedure('public.qorpera_member_first_run_sponsor(uuid,uuid)') is null then
+		return null;
+	end if;
+	if v_uid is null and to_regclass('public.qorpera_company_cofounders') is not null then
+		select created_by_user_id into v_uid
+		from public.qorpera_company_cofounders
+		where profile_id = p_company_id
+		limit 1;
+	end if;
+	if v_uid is null then
+		return null;
+	end if;
+	v_sponsor := public.qorpera_member_first_run_sponsor(p_company_id, v_uid);
+	return v_sponsor;
+exception when others then
+	return null;
+end $$;
+revoke all on function public.qorpera_surface_resolve_sponsor(uuid, uuid) from public, anon, authenticated;
+grant execute on function public.qorpera_surface_resolve_sponsor(uuid, uuid) to service_role;
+
+-- WHY: Reserves a qorpera_company_sites row and password for greenfield live_build surfaces so previews and live sharing work from Minute 1.
+create function public.qorpera_surface_ensure_site(p_surface_id uuid)
+returns uuid
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_surface public.qorpera_surfaces%rowtype;
+	v_cofounder record;
+	v_company_name text;
+	v_prefix text;
+	v_base_slug text;
+	v_slug text;
+	v_suffix integer := 0;
+	v_site_id uuid;
+	v_password text;
+begin
+	select * into v_surface from public.qorpera_surfaces where id = p_surface_id for update;
+	if v_surface.id is null or v_surface.archetype <> 'live_build' then
+		return null;
+	end if;
+	if v_surface.site_id is not null then
+		return v_surface.site_id;
+	end if;
+	if to_regclass('public.qorpera_company_sites') is null or to_regclass('public.qorpera_company_cofounders') is null then
+		return null;
+	end if;
+
+	select environment_id, staff_agent_id into v_cofounder
+	from public.qorpera_company_cofounders
+	where profile_id = v_surface.profile_id
+	limit 1;
+	if v_cofounder.environment_id is null or v_cofounder.staff_agent_id is null then
+		return null;
+	end if;
+
+	select name into v_company_name from public.qorpera_profiles where id = v_surface.profile_id;
+	v_prefix := left(btrim(lower(regexp_replace(coalesce(v_company_name, ''), '[^a-zA-Z0-9]+', '-', 'g')), '-'), 20);
+	if v_prefix <> '' and v_surface.slug <> v_prefix then
+		v_base_slug := left(btrim(v_prefix || '-' || v_surface.slug, '-'), 42);
+	else
+		v_base_slug := left(btrim(v_surface.slug, '-'), 42);
+	end if;
+	if char_length(v_base_slug) < 3 then
+		v_base_slug := v_base_slug || '-app';
+	end if;
+	v_base_slug := btrim(regexp_replace(v_base_slug, '-+', '-', 'g'), '-');
+	v_slug := v_base_slug;
+	while exists (select 1 from public.qorpera_company_sites where slug = v_slug) loop
+		v_suffix := v_suffix + 1;
+		v_slug := left(v_base_slug, 38) || '-' || v_suffix::text;
+	end loop;
+
+	insert into public.qorpera_company_sites(
+		profile_id, environment_id, slug, title, source_path, created_by_staff_agent_id
+	)
+	values (
+		v_surface.profile_id,
+		v_cofounder.environment_id,
+		v_slug,
+		left(v_surface.title, 120),
+		coalesce(v_surface.repository_key, 'surfaces/' || v_surface.slug),
+		v_cofounder.staff_agent_id
+	)
+	returning id into v_site_id;
+
+	if to_regclass('public.qorpera_company_site_secrets') is not null then
+		v_password := substr(encode(extensions.gen_random_bytes(16), 'hex'), 1, 16);
+		insert into public.qorpera_company_site_secrets(site_id, password)
+		values (v_site_id, v_password)
+		on conflict (site_id) do nothing;
+	end if;
+
+	update public.qorpera_surfaces
+	set site_id = v_site_id, updated_at = clock_timestamp()
+	where id = p_surface_id;
+
+	return v_site_id;
+exception when others then
+	return v_surface.site_id;
+end $$;
+revoke all on function public.qorpera_surface_ensure_site(uuid) from public, anon, authenticated;
+grant execute on function public.qorpera_surface_ensure_site(uuid) to service_role;
 
 alter table public.qorpera_surface_changes
 	add column published_at timestamptz,
@@ -69,6 +193,10 @@ declare
 	v_host_id text;
 	v_row public.qorpera_surface_previews%rowtype;
 begin
+	if p_surface.archetype = 'live_build' and p_surface.site_id is null then
+		perform public.qorpera_surface_ensure_site(p_surface.id);
+	end if;
+
 	select string_agg(ch.id::text || ':' || coalesce(ch.head_sha, ''), ',' order by array_position(p_selected_change_ids, ch.id))
 	into v_key_input
 	from public.qorpera_surface_changes ch
@@ -473,6 +601,11 @@ begin
 	)
 	returning * into v_surface;
 
+	if v_surface.archetype = 'live_build' and v_surface.site_id is null then
+		perform public.qorpera_surface_ensure_site(v_surface.id);
+		select * into v_surface from public.qorpera_surfaces where id = v_surface.id;
+	end if;
+
 	return public.qorpera_surface_summary_json(v_surface);
 end $$;
 revoke all on function public.qorpera_create_surface(uuid, text, text, text, text, text, text, text, text, boolean) from public, anon;
@@ -677,6 +810,11 @@ begin
 		brief_summary = coalesce(excluded.brief_summary, public.qorpera_surfaces.brief_summary),
 		updated_at = clock_timestamp()
 	returning * into v_surface;
+
+	if v_surface.archetype = 'live_build' and v_surface.status = 'active' and v_surface.site_id is null then
+		perform public.qorpera_surface_ensure_site(v_surface.id);
+		select * into v_surface from public.qorpera_surfaces where id = v_surface.id;
+	end if;
 
 	return public.qorpera_surface_summary_json(v_surface);
 end $$;
@@ -1165,6 +1303,10 @@ begin
 	v_user_id := public.qorpera_assert_surface_member(v_surface.profile_id, true);
 
 	if v_surface.source_kind = 'code_repo' and v_surface.repository_key is not null then
+		if v_surface.site_id is null then
+			perform public.qorpera_surface_ensure_site(p_surface_id);
+			select * into v_surface from public.qorpera_surfaces where id = p_surface_id;
+		end if;
 		update public.qorpera_surfaces
 		set
 			publish_status = 'publishing',
@@ -1494,6 +1636,7 @@ begin
 			where a.enabled = true
 				and a.next_run_at is not null
 				and a.next_run_at <= v_now
+				and not public.qorpera_surface_company_paused(a.profile_id)
 			order by a.next_run_at asc
 			limit v_cap
 			for update skip locked
@@ -1577,6 +1720,7 @@ begin
 		from public.qorpera_surface_sessions s
 		where s.state in ('queued', 'reconciling')
 			and (s.lease_expires_at is null or s.lease_expires_at <= v_now)
+			and not public.qorpera_surface_company_paused(s.profile_id)
 		order by s.created_at asc
 		limit v_cap
 		for update skip locked
@@ -1603,6 +1747,8 @@ begin
 				'originRef', c.origin_ref,
 				'explorationId', c.exploration_id,
 				'explorationVariantLabel', c.exploration_variant_label,
+				'retryCount', c.retry_count,
+				'sponsor', public.qorpera_surface_resolve_sponsor(c.profile_id, c.created_by_user_id),
 				'repositoryKey', surf.repository_key,
 				'folderRoot', surf.folder_root,
 				'surfaceSlug', surf.slug,
@@ -1630,6 +1776,7 @@ begin
 		where p.status = 'composing'
 			and p.expires_at > v_now
 			and (p.lease_expires_at is null or p.lease_expires_at <= v_now)
+			and not public.qorpera_surface_company_paused(p.profile_id)
 		order by p.created_at asc
 		limit v_cap
 		for update skip locked
@@ -1696,6 +1843,7 @@ begin
 				j.status = 'queued'
 				or (j.status = 'running' and j.lease_expires_at is not null and j.lease_expires_at <= v_now)
 			)
+			and not public.qorpera_surface_company_paused(j.profile_id)
 		order by j.created_at asc
 		limit v_cap
 		for update skip locked
@@ -1833,6 +1981,7 @@ begin
 				j.status = 'queued'
 				or (j.status = 'running' and j.lease_expires_at is not null and j.lease_expires_at <= v_now)
 			)
+			and not public.qorpera_surface_company_paused(j.profile_id)
 		order by j.created_at asc
 		limit v_cap
 		for update skip locked
@@ -1883,19 +2032,35 @@ returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare
 	v_session public.qorpera_surface_sessions%rowtype;
+	v_next_state text := p_state;
+	v_retry_increment integer := 0;
 begin
 	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
 	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
 
-	if p_reply_text is not null and char_length(btrim(p_reply_text)) > 0 then
+	if p_state = 'failed' and v_session.retry_count < 1 then
+		v_next_state := 'queued';
+		v_retry_increment := 1;
+		insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, body)
+		values (
+			v_session.profile_id,
+			p_session_id,
+			'system',
+			coalesce(
+				nullif(btrim(coalesce(p_reply_text, '')), ''),
+				'Previous attempt failed; retrying automatically.'
+			)
+		);
+	elsif p_reply_text is not null and char_length(btrim(p_reply_text)) > 0 then
 		insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, body)
 		values (v_session.profile_id, p_session_id, 'session', btrim(p_reply_text));
 	end if;
 
 	update public.qorpera_surface_sessions
 	set
-		state = p_state,
-		question = p_question,
+		state = v_next_state,
+		retry_count = retry_count + v_retry_increment,
+		question = case when v_next_state = 'queued' then null else p_question end,
 		note_paths = case when p_note_paths is not null then p_note_paths else note_paths end,
 		branch_head_sha = coalesce(p_branch_head_sha, branch_head_sha),
 		lease_expires_at = null,

@@ -781,5 +781,39 @@ describe("the site door", () => {
 			{ type: "qorpera-inspector-pick", target: picked },
 			"https://app.qorpera.com",
 		);
+
+		say(
+			{
+				type: "qorpera:identity-tokens-css",
+				css: ":root { --q-color-accent: #6f61cf; }",
+				vars: { "--q-color-accent": "#6f61cf" },
+			},
+			{},
+			"https://app.qorpera.com",
+		);
+		say(
+			{
+				type: "qorpera:identity-tokens-css",
+				css: ":root { --q-color-accent: #6f61cf; }",
+				vars: { "--q-color-accent": "#6f61cf" },
+			},
+			parent,
+			previewOrigin,
+		);
+		expect(siteWindow.postMessage).toHaveBeenCalledTimes(2);
+
+		say({
+			type: "qorpera:identity-tokens-css",
+			css: ":root { --q-color-accent: #6f61cf; }",
+			vars: { "--q-color-accent": "#6f61cf" },
+		});
+		expect(siteWindow.postMessage).toHaveBeenLastCalledWith(
+			{
+				type: "qorpera:identity-tokens-css",
+				css: ":root { --q-color-accent: #6f61cf; }",
+				vars: { "--q-color-accent": "#6f61cf" },
+			},
+			previewOrigin,
+		);
 	});
 });

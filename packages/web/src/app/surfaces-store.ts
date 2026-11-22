@@ -6,11 +6,15 @@ import {
 	type StartSurfaceSessionOptions,
 } from "@qorpera/cloud-client/surfaces";
 import {
+	type CompiledIdentityTokens,
 	type CrossSurfaceHandoffRequest,
+	compileIdentityTokens,
 	countOpenSurfaceChanges,
+	IDENTITY_TOKENS_JSON_PATH,
 	nextSurfaceSessionLifecycleState,
 	OPEN_SURFACE_CHANGE_STATUSES,
 	RUNNING_SURFACE_SESSION_STATES,
+	type StudioPatchChange,
 	type StudioPatchOp,
 	type SurfaceAutomationSummary,
 	type SurfaceChangeUnit,
@@ -406,6 +410,52 @@ export function productBuildSurfaces(state: Pick<SurfacesState, "surfaces">, exc
 	);
 }
 
+function findIdentitySurface(state: Pick<SurfacesState, "surfaces" | "surfaceLooks">): SurfaceSummary | undefined {
+	return state.surfaces.find(
+		(surface) =>
+			surface.status === "active" &&
+			(surface.isGlobal === true || surfaceLookOf(surface, state.surfaceLooks).kind === "identity"),
+	);
+}
+
+export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityTokens | null {
+	const identity = findIdentitySurface(state);
+	if (!identity) return null;
+	const baseFiles: Record<string, string> = {
+		...(state.cloudSurfaceFiles[identity.id] ?? {}),
+		...(state.localStudioBase[identity.id] ?? {}),
+	};
+	let effectiveFiles: Readonly<Record<string, string>> = baseFiles;
+	if (state.mode !== "live") {
+		const workspace = state.workspaces[identity.id];
+		if (workspace) {
+			const pickedVariants = new Set(
+				openExplorations(workspace)
+					.map((exploration) => state.variantPick[exploration.id] ?? exploration.variantSessionIds[0])
+					.filter((id): id is string => Boolean(id)),
+			);
+			const ordered: StudioPatchChange[] = [];
+			for (const session of workspace.activeSessions) {
+				if (session.explorationId && !pickedVariants.has(session.id)) continue;
+				for (const change of session.changes) {
+					if (change.kind !== "folder_patch" || !isOpenChange(change) || state.hiddenChanges[change.id]) continue;
+					const ops = state.studioPatches[change.id] ?? change.patchManifest;
+					if (ops?.length) ordered.push({ changeId: change.id, ops });
+				}
+			}
+			if (ordered.length > 0) {
+				effectiveFiles = composeStudioPreview(baseFiles, ordered).files;
+			}
+		}
+	}
+	const folderRoot = identity.folderRoot?.replace(/^\/+|\/+$/g, "");
+	const tokensJson =
+		effectiveFiles[IDENTITY_TOKENS_JSON_PATH] ??
+		(folderRoot ? effectiveFiles[`${folderRoot}/tokens.json`] : undefined);
+	if (!tokensJson?.trim()) return null;
+	return compileIdentityTokens(tokensJson);
+}
+
 export interface SurfaceReportSummary {
 	readonly path: string;
 	readonly slug: string;
@@ -695,6 +745,10 @@ export class SurfacesStore {
 		return surfaceLookOf(surface, this.state.surfaceLooks);
 	}
 
+	companyIdentityTokens(): CompiledIdentityTokens | null {
+		return compiledCompanyIdentity(this.state);
+	}
+
 	dispose(): void {
 		if (this.#undoTimer) clearTimeout(this.#undoTimer);
 		if (this.#pollTimer) clearInterval(this.#pollTimer);
@@ -820,6 +874,8 @@ export class SurfacesStore {
 			if (taken.has(spec.slug)) continue;
 			taken.add(spec.slug);
 			const surface = localSurface(spec.slug, spec.name, "products", spec.archetype, spec.icon, index, {
+				kind: spec.kind,
+				...(spec.kind === "identity" ? { isGlobal: true } : {}),
 				sourceKind: spec.archetype === "studio" ? "folder" : "code_repo",
 				folderRoot: spec.folderRoot ?? null,
 				previewMode: spec.archetype === "studio" ? "studio_overlay" : "static_site",
@@ -1289,10 +1345,21 @@ export class SurfacesStore {
 
 	refreshPendingCloudFiles(): void {
 		if (this.state.source !== "cloud" || !this.#options.loadCloudFiles) return;
+		const seen = new Set<string>();
 		for (const workspace of Object.values(this.state.workspaces)) {
+			seen.add(workspace.surface.id);
 			if (!isLocalSurfaceId(workspace.surface.id) && !this.state.cloudSurfaceFiles[workspace.surface.id]) {
 				void this.refreshCloudFiles(workspace.surface);
 			}
+		}
+		const identity = findIdentitySurface(this.state);
+		if (
+			identity &&
+			!seen.has(identity.id) &&
+			!isLocalSurfaceId(identity.id) &&
+			!this.state.cloudSurfaceFiles[identity.id]
+		) {
+			void this.refreshCloudFiles(identity);
 		}
 	}
 
@@ -1309,10 +1376,18 @@ export class SurfacesStore {
 				void this.refreshSurfaces();
 				const client = this.#options.client;
 				if (client) void this.#loadAutomations(client);
+				const refreshed = new Set<string>();
 				for (const workspace of Object.values(this.state.workspaces)) {
 					if (!isLocalSurfaceId(workspace.surface.id)) {
+						refreshed.add(workspace.surface.id);
 						void this.refreshWorkspace(workspace.surface.id);
 						if (reloadFiles) void this.refreshCloudFiles(workspace.surface);
+					}
+				}
+				if (reloadFiles) {
+					const identity = findIdentitySurface(this.state);
+					if (identity && !refreshed.has(identity.id) && !isLocalSurfaceId(identity.id)) {
+						void this.refreshCloudFiles(identity);
 					}
 				}
 			}

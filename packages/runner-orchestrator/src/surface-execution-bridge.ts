@@ -1,10 +1,16 @@
 import { createHash } from "node:crypto";
 import {
 	type CloudCodingRepository,
+	compileIdentityTokensCss,
+	IDENTITY_TOKENS_CSS_PATH,
+	IDENTITY_TOKENS_JSON_PATH,
 	isUuid,
 	parseCloudCodingRepository,
 	parseStudioPatchOps,
+	SHARED_COMPANY_ASSET_PATHS,
 	type StudioPatchOp,
+	SURFACE_IDENTITY_CSS_MOUNT_PATH,
+	SURFACE_SHARED_DIR,
 	type SurfaceSessionState,
 } from "@qorpera/contracts";
 import { type CodeHostJob, CodeHostRefusal, undoCodeChange } from "./code-host-jobs.ts";
@@ -96,6 +102,7 @@ export interface SurfaceExecutionBridgePorts {
 			readonly compositeCommitSha: string;
 			readonly compositeTreeSha: string;
 			readonly previewRef: string | null;
+			readonly sharedAssets?: Readonly<Record<string, string>>;
 		},
 		signal: AbortSignal,
 	) => Promise<{ readonly siteVersionId: string }>;
@@ -143,6 +150,7 @@ export interface SurfaceExecutionBridgePorts {
 			readonly siteId: string | null;
 			readonly liveHeadSha: string | null;
 			readonly payload: Readonly<Record<string, unknown>>;
+			readonly sharedAssets?: Readonly<Record<string, string>>;
 		},
 		signal: AbortSignal,
 	) => Promise<{ readonly publishedHeadSha: string | null }>;
@@ -461,6 +469,36 @@ export async function undoSurfaceCodeRepoChange(
 	}
 }
 
+export async function collectSharedCompanyAssets(
+	folder: Pick<SurfaceCompanyFolderPort, "readFiles">,
+	profileId: string,
+	signal: AbortSignal,
+): Promise<Readonly<Record<string, string>>> {
+	let raw: Readonly<Record<string, string | null>>;
+	try {
+		raw = await folder.readFiles({ profileId, folderRoot: "", paths: [...SHARED_COMPANY_ASSET_PATHS] }, signal);
+	} catch {
+		return {};
+	}
+	const mounted: Record<string, string> = {};
+	for (const assetPath of SHARED_COMPANY_ASSET_PATHS) {
+		const content = raw[assetPath];
+		if (typeof content !== "string") continue;
+		mounted[`${SURFACE_SHARED_DIR}/${assetPath}`] = content;
+	}
+	const existingCss = raw[IDENTITY_TOKENS_CSS_PATH];
+	const tokensJson = raw[IDENTITY_TOKENS_JSON_PATH];
+	let resolvedTokensCss: string | null = typeof existingCss === "string" ? existingCss : null;
+	if (resolvedTokensCss === null && typeof tokensJson === "string") {
+		resolvedTokensCss = compileIdentityTokensCss(tokensJson);
+		mounted[`${SURFACE_SHARED_DIR}/${IDENTITY_TOKENS_CSS_PATH}`] = resolvedTokensCss;
+	}
+	if (resolvedTokensCss !== null) {
+		mounted[SURFACE_IDENTITY_CSS_MOUNT_PATH] = resolvedTokensCss;
+	}
+	return mounted;
+}
+
 export async function prepareSurfaceRepository(
 	codeHostJob: CodeHostJob,
 	input: {
@@ -531,6 +569,9 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 		}
 
 		const buildAndUploadPreview = ports.buildAndUploadPreview;
+		const sharedAssets = ports.folder
+			? await collectSharedCompanyAssets(ports.folder, job.profileId, signal)
+			: undefined;
 		// WHY: qorpera_surface_upsert_preview uses all-zero SHA when live_head_sha is unset; omit so git resolves main.
 		const baseSha = job.baseSha && job.baseSha !== ZERO_SHA ? job.baseSha : undefined;
 		await buildCompositeSurfacePreview(
@@ -555,6 +596,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 							...input,
 							profileId: job.profileId,
 							repository,
+							...(sharedAssets !== undefined ? { sharedAssets } : {}),
 						},
 						signal,
 					),
@@ -698,6 +740,11 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			parsedChanges.push({ changeId: change.changeId, ops });
 		}
 
+		const shouldCompileIdentityCss =
+			targetPaths.has(IDENTITY_TOKENS_JSON_PATH) && IDENTITY_TOKENS_CSS_PATH.startsWith(`${normalizedRoot}/`);
+		if (shouldCompileIdentityCss) {
+			targetPaths.add(IDENTITY_TOKENS_CSS_PATH);
+		}
 		const orderedPaths = [...targetPaths].sort();
 		const readMap = await ports.folder.readFiles(
 			{ profileId: job.profileId, folderRoot: normalizedRoot, paths: orderedPaths },
@@ -724,6 +771,18 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			return;
 		}
 
+		const finalFiles: Record<string, string | null> = { ...applied.files };
+		const pathsToWrite = new Set<string>(applied.modifiedPaths);
+		let mainAfter = applied.mainAfter;
+		if (shouldCompileIdentityCss) {
+			const nextTokensJson = finalFiles[IDENTITY_TOKENS_JSON_PATH];
+			if (typeof nextTokensJson === "string") {
+				finalFiles[IDENTITY_TOKENS_CSS_PATH] = compileIdentityTokensCss(nextTokensJson);
+				pathsToWrite.add(IDENTITY_TOKENS_CSS_PATH);
+				mainAfter = hashFolderFiles(finalFiles);
+			}
+		}
+
 		await snapshotStore.saveSnapshot(
 			{
 				snapshotId: applied.mainBefore,
@@ -736,8 +795,8 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			signal,
 		);
 
-		for (const path of applied.modifiedPaths) {
-			const nextContent = applied.files[path];
+		for (const path of pathsToWrite) {
+			const nextContent = finalFiles[path];
 			if (nextContent === null || nextContent === undefined) {
 				await ports.folder.deleteFile({ profileId: job.profileId, path }, signal);
 			} else {
@@ -750,7 +809,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				jobId: job.jobId,
 				status: "landed",
 				mainBefore: applied.mainBefore,
-				mainAfter: applied.mainAfter,
+				mainAfter,
 			},
 			signal,
 		);
@@ -949,6 +1008,9 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				throw new Error("Surface publish handler is not configured");
 			}
 			const liveHeadSha = typeof job.payload.liveHeadSha === "string" ? job.payload.liveHeadSha : null;
+			const sharedAssets = ports.folder
+				? await collectSharedCompanyAssets(ports.folder, job.profileId, signal)
+				: undefined;
 			const result = await ports.publishSurface(
 				{
 					jobId: job.jobId,
@@ -959,6 +1021,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 					siteId: job.siteId,
 					liveHeadSha,
 					payload: job.payload,
+					...(sharedAssets !== undefined ? { sharedAssets } : {}),
 				},
 				signal,
 			);

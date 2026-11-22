@@ -1,4 +1,5 @@
 import {
+	type CompiledIdentityTokens,
 	type StudioPatchOp,
 	SURFACE_INSPECTOR_MODE_MESSAGE,
 	SURFACE_INSPECTOR_PICK_MESSAGE,
@@ -641,6 +642,9 @@ export function starterStudioFiles(
 				[`${root}/tokens.json`]: JSON.stringify(
 					{
 						colors: {
+							surface: "#f8f7f4",
+							primary: "#18171d",
+							accent: "#7c6fd6",
 							"Warm Paper": "#f8f7f4",
 							"Lys Lavendel": "#c8c2e8",
 							"Aften Lavendel": "#7c6fd6",
@@ -649,6 +653,7 @@ export function starterStudioFiles(
 							Aftenler: "#b8684c",
 						},
 						typography: {
+							heading: "'Newsreader', Georgia, serif",
 							display: "'Newsreader', Georgia, serif",
 							body: "'Inter', -apple-system, sans-serif",
 							mono: "'JetBrains Mono', ui-monospace, monospace",
@@ -1269,25 +1274,43 @@ function previewTheme(
 }
 
 function baseStyles(theme: PreviewTheme): string {
+	const accentVar = `var(--q-color-accent, ${theme.accent})`;
+	const surfaceVar = theme.dark ? theme.bg : `var(--q-color-surface, ${theme.bg})`;
+	const inkVar = theme.dark ? theme.ink : `var(--q-color-primary, ${theme.ink})`;
 	return `
   * { box-sizing: border-box; margin: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: ${theme.bg}; color: ${theme.ink}; line-height: 1.5; transition: background .2s ease, color .2s ease; }
-  .pill { display: inline-flex; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: ${theme.pillBg}; color: ${theme.pillInk}; }
+  body { font-family: var(--q-font-body, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif); background: ${surfaceVar}; color: ${inkVar}; line-height: 1.5; transition: background .2s ease, color .2s ease; }
+  h1, h2, h3, .brand { font-family: var(--q-font-heading, var(--font-heading, inherit)); }
+  .pill { display: inline-flex; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: color-mix(in srgb, ${accentVar} 14%, transparent); color: ${theme.dark ? theme.pillInk : accentVar}; }
   .pills { display: flex; flex-wrap: wrap; gap: 8px; }
   .status { font-size: 12px; font-weight: 600; color: ${theme.muted}; padding: 4px 10px; border-radius: 999px; border: 1px solid ${theme.border}; white-space: nowrap; }
-  .cta { display: inline-flex; align-items: center; justify-content: center; height: 42px; padding: 0 20px; border-radius: 999px; border: 0; background: ${theme.accent}; color: ${theme.ctaInk}; font-weight: 650; font-size: 14px; cursor: pointer; }
-  .cta.ghost { background: transparent; color: ${theme.ink}; border: 1px solid ${theme.border}; }
+  .cta { display: inline-flex; align-items: center; justify-content: center; height: 42px; padding: 0 20px; border-radius: 999px; border: 0; background: ${accentVar}; color: ${theme.ctaInk}; font-weight: 650; font-size: 14px; cursor: pointer; }
+  .cta.ghost { background: transparent; color: ${inkVar}; border: 1px solid ${theme.border}; }
   [data-qorpera-inspect="on"] [data-component] { cursor: crosshair !important; }
-  [data-qorpera-inspect="on"] [data-component]:hover { outline: 2px solid ${theme.accent}; outline-offset: 3px; border-radius: 10px; }`;
+  [data-qorpera-inspect="on"] [data-component]:hover { outline: 2px solid ${accentVar}; outline-offset: 3px; border-radius: 10px; }`;
 }
 
 const INSPECTOR_SCRIPT = `
   <script>
     let inspect = false;
     window.addEventListener("message", (event) => {
-      if (event.data && event.data.type === ${JSON.stringify(SURFACE_INSPECTOR_MODE_MESSAGE)}) {
+      if (!event.data || typeof event.data !== "object") return;
+      if (event.data.type === ${JSON.stringify(SURFACE_INSPECTOR_MODE_MESSAGE)}) {
         inspect = Boolean(event.data.active);
         document.documentElement.dataset.qorperaInspect = inspect ? "on" : "off";
+      } else if (event.data.type === "qorpera:identity-tokens-css") {
+        let style = document.head.querySelector("style[data-qorpera-identity-tokens]");
+        const css = typeof event.data.css === "string" ? event.data.css : "";
+        if (css) {
+          if (!style) {
+            style = document.createElement("style");
+            style.setAttribute("data-qorpera-identity-tokens", "");
+            document.head.appendChild(style);
+          }
+          style.textContent = css;
+        } else if (style) {
+          style.remove();
+        }
       }
     });
     document.addEventListener("click", (event) => {
@@ -1312,12 +1335,20 @@ const INSPECTOR_SCRIPT = `
     }, true);
   </script>`;
 
-function documentOf(theme: PreviewTheme, styles: string, body: string): string {
+function documentOf(
+	theme: PreviewTheme,
+	styles: string,
+	body: string,
+	identityTokens?: CompiledIdentityTokens | null,
+): string {
+	const identityStyle = identityTokens?.css
+		? `\n<style data-qorpera-identity-tokens>${identityTokens.css}</style>`
+		: "";
 	return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />${identityStyle}
 <style>${baseStyles(theme)}
 ${styles}
 </style>
@@ -1329,7 +1360,13 @@ ${INSPECTOR_SCRIPT}
 </html>`;
 }
 
-function websitePreview(theme: PreviewTheme, brief: string | undefined): string {
+function websitePreview(
+	theme: PreviewTheme,
+	brief: string | undefined,
+	identityTokens?: CompiledIdentityTokens | null,
+): string {
+	const accentVar = `var(--q-color-accent, ${theme.accent})`;
+	const pillInkVar = theme.dark ? theme.pillInk : accentVar;
 	const headline =
 		theme.applied === 0
 			? `${theme.name} — built clearly, shipped continuously.`
@@ -1356,9 +1393,9 @@ function websitePreview(theme: PreviewTheme, brief: string | undefined): string 
   .shell { max-width: 900px; margin: 0 auto; display: grid; gap: 28px; }
   header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 18px; border-bottom: 1px solid ${theme.border}; }
   .brand { font-size: 16px; font-weight: 700; letter-spacing: -0.02em; display: flex; align-items: center; gap: 10px; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: ${theme.accent}; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: ${accentVar}; }
   .hero { display: grid; gap: 16px; padding: 36px 32px; border-radius: 22px; background: ${theme.card}; border: 1px solid ${theme.border}; box-shadow: 0 12px 36px -20px rgba(0,0,0,0.22); }
-  .eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: ${theme.pillInk}; }
+  .eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: ${pillInkVar}; }
   h1 { font-size: clamp(28px, 4.4vw, 44px); line-height: 1.08; letter-spacing: -0.03em; font-weight: 750; max-width: 20ch; }
   .lead { font-size: 16px; color: ${theme.muted}; max-width: 58ch; }
   .cta-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
@@ -1366,7 +1403,7 @@ function websitePreview(theme: PreviewTheme, brief: string | undefined): string 
   .card { padding: 20px; border-radius: 16px; background: ${theme.card}; border: 1px solid ${theme.border}; display: grid; gap: 6px; }
   .card h3 { font-size: 15px; font-weight: 650; }
   .card p { font-size: 13.5px; color: ${theme.muted}; }
-  .price { font-size: 24px; font-weight: 750; color: ${theme.pillInk}; margin-top: 4px; }`,
+  .price { font-size: 24px; font-weight: 750; color: ${pillInkVar}; margin-top: 4px; }`,
 		`  <div class="shell">
     <header data-component="SiteHeader">
       <div class="brand"><span class="dot"></span>${theme.name}</div>
@@ -1388,19 +1425,23 @@ function websitePreview(theme: PreviewTheme, brief: string | undefined): string 
       ${card(theme.hasPricing ? "Team" : "Always in sync", theme.hasPricing ? "Volume pricing and priority onboarding for studios." : "Brand tokens, copy, and live site stay connected.", "4.900 kr.")}
     </section>
   </div>`,
+		identityTokens,
 	);
 }
 
-function webAppPreview(theme: PreviewTheme): string {
+function webAppPreview(theme: PreviewTheme, identityTokens?: CompiledIdentityTokens | null): string {
+	const accentVar = `var(--q-color-accent, ${theme.accent})`;
+	const pillBgVar = `color-mix(in srgb, ${accentVar} 14%, transparent)`;
+	const pillInkVar = theme.dark ? theme.pillInk : accentVar;
 	return documentOf(
 		theme,
 		`
   body { height: 100vh; display: grid; grid-template-columns: 220px 1fr; }
   aside { padding: 22px 14px; border-right: 1px solid ${theme.border}; background: ${theme.card}; display: grid; align-content: start; gap: 4px; }
   .logo { display: flex; align-items: center; gap: 9px; padding: 4px 10px 18px; font-weight: 700; letter-spacing: -0.02em; }
-  .logo i { width: 22px; height: 22px; border-radius: 7px; background: ${theme.accent}; }
+  .logo i { width: 22px; height: 22px; border-radius: 7px; background: ${accentVar}; }
   nav a { display: block; padding: 8px 10px; border-radius: 9px; color: ${theme.muted}; font-size: 13.5px; font-weight: 550; text-decoration: none; }
-  nav a.on { background: ${theme.pillBg}; color: ${theme.pillInk}; font-weight: 650; }
+  nav a.on { background: ${pillBgVar}; color: ${pillInkVar}; font-weight: 650; }
   main { padding: 26px 30px 120px; display: grid; align-content: start; gap: 20px; overflow: auto; }
   .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   h1 { font-size: 24px; letter-spacing: -0.02em; }
@@ -1411,7 +1452,7 @@ function webAppPreview(theme: PreviewTheme): string {
   table { width: 100%; border-collapse: collapse; background: ${theme.card}; border: 1px solid ${theme.border}; border-radius: 14px; overflow: hidden; font-size: 13.5px; }
   th, td { padding: 11px 14px; text-align: left; border-bottom: 1px solid ${theme.border}; }
   th { color: ${theme.muted}; font-size: 12px; font-weight: 650; }
-  .tag { padding: 2px 8px; border-radius: 999px; background: ${theme.pillBg}; color: ${theme.pillInk}; font-size: 11.5px; font-weight: 650; }`,
+  .tag { padding: 2px 8px; border-radius: 999px; background: ${pillBgVar}; color: ${pillInkVar}; font-size: 11.5px; font-weight: 650; }`,
 		`  <aside data-component="AppSidebar">
     <div class="logo"><i></i>${theme.name}</div>
     <nav>
@@ -1442,33 +1483,38 @@ function webAppPreview(theme: PreviewTheme): string {
     </table>
     <button class="cta" type="button" data-component="PrimaryAction">New project</button>
   </main>`,
+		identityTokens,
 	);
 }
 
-function mobileAppPreview(theme: PreviewTheme): string {
+function mobileAppPreview(theme: PreviewTheme, identityTokens?: CompiledIdentityTokens | null): string {
+	const accentVar = `var(--q-color-accent, ${theme.accent})`;
+	const surfaceVar = theme.dark ? theme.bg : `var(--q-color-surface, ${theme.bg})`;
+	const pillBgVar = `color-mix(in srgb, ${accentVar} 14%, transparent)`;
+	const pillInkVar = theme.dark ? theme.pillInk : accentVar;
 	return documentOf(
 		theme,
 		`
   body { min-height: 100vh; display: flex; justify-content: center; background: ${theme.dark ? theme.bg : "#f3f2ef"}; }
-  .app { position: relative; width: 100%; max-width: 420px; min-height: 100vh; background: ${theme.bg}; display: flex; flex-direction: column; }
+  .app { position: relative; width: 100%; max-width: 420px; min-height: 100vh; background: ${surfaceVar}; display: flex; flex-direction: column; }
   .statusbar { display: flex; justify-content: space-between; padding: 14px 26px 6px; font-size: 13px; font-weight: 650; }
   .bar { display: flex; align-items: center; justify-content: space-between; padding: 10px 22px 6px; }
   .bar h1 { font-size: 28px; letter-spacing: -0.03em; }
-  .avatar { width: 34px; height: 34px; border-radius: 50%; background: ${theme.pillBg}; color: ${theme.pillInk}; display: grid; place-items: center; font-weight: 700; font-size: 13px; }
+  .avatar { width: 34px; height: 34px; border-radius: 50%; background: ${pillBgVar}; color: ${pillInkVar}; display: grid; place-items: center; font-weight: 700; font-size: 13px; }
   .content { flex: 1; padding: 10px 18px 120px; display: grid; align-content: start; gap: 14px; }
-  .hero { padding: 20px; border-radius: 24px; background: ${theme.accent}; color: ${theme.ctaInk}; display: grid; gap: 6px; }
+  .hero { padding: 20px; border-radius: 24px; background: ${accentVar}; color: ${theme.ctaInk}; display: grid; gap: 6px; }
   .hero small { opacity: .8; font-weight: 600; font-size: 12px; }
   .hero strong { font-size: 30px; letter-spacing: -0.03em; }
   .hero p { opacity: .85; font-size: 13px; }
   .row { display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: 18px; background: ${theme.card}; border: 1px solid ${theme.border}; }
-  .row i { width: 40px; height: 40px; border-radius: 13px; background: ${theme.pillBg}; flex: none; }
+  .row i { width: 40px; height: 40px; border-radius: 13px; background: ${pillBgVar}; flex: none; }
   .row div { flex: 1; min-width: 0; }
   .row b { display: block; font-size: 14.5px; }
   .row span { color: ${theme.muted}; font-size: 12.5px; }
   .tabs { position: sticky; bottom: 0; display: flex; justify-content: space-around; padding: 10px 10px 26px; border-top: 1px solid ${theme.border}; background: ${theme.card}; }
   .tabs a { display: grid; justify-items: center; gap: 4px; color: ${theme.muted}; font-size: 11px; font-weight: 600; text-decoration: none; }
   .tabs a i { width: 22px; height: 22px; border-radius: 7px; background: currentColor; opacity: .35; }
-  .tabs a.on { color: ${theme.pillInk}; }
+  .tabs a.on { color: ${pillInkVar}; }
   .tabs a.on i { opacity: 1; }`,
 		`  <div class="app">
     <div class="statusbar"><span>9:41</span><span>●●● ▮</span></div>
@@ -1495,10 +1541,11 @@ function mobileAppPreview(theme: PreviewTheme): string {
       <a href="#"><i></i>Profile</a>
     </nav>
   </div>`,
+		identityTokens,
 	);
 }
 
-function desktopAppPreview(theme: PreviewTheme): string {
+function desktopAppPreview(theme: PreviewTheme, identityTokens?: CompiledIdentityTokens | null): string {
 	return documentOf(
 		theme,
 		`
@@ -1547,10 +1594,11 @@ function desktopAppPreview(theme: PreviewTheme): string {
       </main>
     </div>
   </div>`,
+		identityTokens,
 	);
 }
 
-function dashboardPreview(theme: PreviewTheme): string {
+function dashboardPreview(theme: PreviewTheme, identityTokens?: CompiledIdentityTokens | null): string {
 	const cash = [42, 44, 43, 47, 49, 48, 52, 55, 54, 58, 61, 64];
 	const max = Math.max(...cash);
 	const points = cash.map((value, index) => `${(index / (cash.length - 1)) * 600},${170 - (value / max) * 150}`);
@@ -1606,21 +1654,29 @@ function dashboardPreview(theme: PreviewTheme): string {
       </table>
     </section>
   </div>`,
+		identityTokens,
 	);
 }
 
-function thetabandWebsitePreview(theme: PreviewTheme, joined: string, brief: string | undefined): string {
+function thetabandWebsitePreview(
+	theme: PreviewTheme,
+	joined: string,
+	brief: string | undefined,
+	identityTokens?: CompiledIdentityTokens | null,
+): string {
 	const isSteps = /fire trin|4-trins|trin/i.test(joined);
 	const isPortrait = /portræt|aftenlys|aften|dark/i.test(joined);
 	const isLavender = /lyse flader|lavendel/i.test(joined) || (!isSteps && !isPortrait);
 	const accent = isPortrait ? "#c65d3b" : isSteps ? "#2d6a57" : "#7c6fd6";
+	const accentVar = `var(--q-color-accent, ${accent})`;
 	const bg = isPortrait ? "#15141a" : isLavender ? "#f6f5fc" : "#f6f8f6";
 	const card = isPortrait ? "#201e28" : "#ffffff";
 	const ink = isPortrait ? "#f7f5f2" : "#18171d";
+	const inkVar = isPortrait ? ink : `var(--q-color-primary, ${ink})`;
 	const muted = isPortrait ? "#b9b4c4" : "#5e5b6a";
 	const border = isPortrait ? "rgba(255,255,255,0.12)" : "rgba(24,23,29,0.09)";
 	const pillBg = isPortrait ? "rgba(198,93,59,0.22)" : isSteps ? "rgba(45,106,87,0.12)" : "rgba(124,111,214,0.13)";
-	const pillInk = isPortrait ? "#f2a488" : accent;
+	const pillInk = isPortrait ? "#f2a488" : accentVar;
 	const variantTitle = isPortrait ? "Portræt og telefon" : isSteps ? "Fire trin" : "Lyse flader";
 	const showDelivery = /levering|retur|fragt/i.test(joined);
 	const stepsHtml = `
@@ -1636,11 +1692,23 @@ function thetabandWebsitePreview(theme: PreviewTheme, joined: string, brief: str
       <strong>Aftenro · 15 min</strong>
       <p>Rolig theta-balance i 11 af 15 minutter</p>
       <svg viewBox="0 0 260 64" aria-hidden="true">
-        <path d="M0,44 C35,44 45,18 82,22 C118,26 132,46 168,26 C204,6 226,34 260,18" fill="none" stroke="${accent}" stroke-width="3" stroke-linecap="round"/>
-        <path d="M0,44 C35,44 45,18 82,22 C118,26 132,46 168,26 C204,6 226,34 260,18 L260,64 L0,64 Z" fill="${accent}" fill-opacity="0.14"/>
+        <path class="wave-stroke" d="M0,44 C35,44 45,18 82,22 C118,26 132,46 168,26 C204,6 226,34 260,18" fill="none" stroke-width="3" stroke-linecap="round"/>
+        <path class="wave-fill" d="M0,44 C35,44 45,18 82,22 C118,26 132,46 168,26 C204,6 226,34 260,18 L260,64 L0,64 Z" fill-opacity="0.14"/>
       </svg>
     </div>`;
-	const themed: PreviewTheme = { ...theme, accent, bg, card, ink, muted, border, pillBg, pillInk, ctaInk: "#ffffff" };
+	const themed: PreviewTheme = {
+		...theme,
+		dark: isPortrait,
+		accent,
+		bg,
+		card,
+		ink,
+		muted,
+		border,
+		pillBg,
+		pillInk: isPortrait ? "#f2a488" : accent,
+		ctaInk: "#ffffff",
+	};
 	return documentOf(
 		themed,
 		`
@@ -1648,14 +1716,14 @@ function thetabandWebsitePreview(theme: PreviewTheme, joined: string, brief: str
   .shell { max-width: 960px; margin: 0 auto; display: grid; gap: 22px; }
   header { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding-bottom: 14px; border-bottom: 1px solid ${border}; }
   .brand { font-size: 16px; font-weight: 750; letter-spacing: -0.02em; display: flex; align-items: center; gap: 9px; }
-  .dot { width: 11px; height: 11px; border-radius: 50%; background: ${accent}; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: ${accentVar}; }
   .hero { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(240px, 0.9fr); gap: 24px; align-items: center; padding: 34px 32px; border-radius: 24px; background: ${card}; border: 1px solid ${border}; box-shadow: 0 18px 44px -26px rgba(0,0,0,0.28); }
   @media (max-width: 720px) { .hero { grid-template-columns: 1fr; padding: 24px 20px; } }
   .hero-copy { display: grid; gap: 14px; }
   .eyebrow { font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: ${pillInk}; }
   h1 { font-size: clamp(28px, 4.2vw, 42px); line-height: 1.06; letter-spacing: -0.03em; font-weight: 750; }
   .lead { font-size: 15.5px; color: ${muted}; max-width: 48ch; }
-  .price-line { font-size: 14px; font-weight: 650; color: ${ink}; }
+  .price-line { font-size: 14px; font-weight: 650; color: ${inkVar}; }
   .cta-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
   .phone-card { padding: 20px; border-radius: 20px; background: ${isPortrait ? "linear-gradient(155deg, #2d2638, #191722)" : isLavender ? "linear-gradient(155deg, #efedfc, #ffffff)" : "linear-gradient(155deg, #edf5f1, #ffffff)"}; border: 1px solid ${border}; display: grid; gap: 8px; }
   .phone-top { display: flex; justify-content: space-between; font-size: 11.5px; font-weight: 650; color: ${muted}; }
@@ -1663,6 +1731,8 @@ function thetabandWebsitePreview(theme: PreviewTheme, joined: string, brief: str
   .phone-card strong { font-size: 20px; letter-spacing: -0.02em; }
   .phone-card p { font-size: 13px; color: ${muted}; }
   .phone-card svg { width: 100%; height: 64px; margin-top: 6px; }
+  .wave-stroke { stroke: ${accentVar}; }
+  .wave-fill { fill: ${accentVar}; }
   .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
   .step { padding: 18px; border-radius: 16px; background: ${card}; border: 1px solid ${border}; display: grid; gap: 5px; }
   .step span { font-size: 11.5px; font-weight: 750; color: ${pillInk}; }
@@ -1692,23 +1762,32 @@ function thetabandWebsitePreview(theme: PreviewTheme, joined: string, brief: str
     ${stepsHtml}
     ${showDelivery ? `<div class="trust" data-component="DeliveryTrust"><span>30 dages ro-garanti</span><span>Gratis standardfragt i DK</span><span>Levering: Batch 1 Q2</span></div>` : ""}
   </div>`,
+		identityTokens,
 	);
 }
 
-function thetabandMobilePreview(theme: PreviewTheme, joined: string): string {
+function thetabandMobilePreview(
+	theme: PreviewTheme,
+	joined: string,
+	identityTokens?: CompiledIdentityTokens | null,
+): string {
 	const showFourStep = /4-trins|parring|guide/i.test(joined);
 	const showSignal = /signal|brainbit|eeg/i.test(joined);
+	const accentVar = `var(--q-color-accent, ${theme.accent})`;
+	const surfaceVar = theme.dark ? theme.bg : `var(--q-color-surface, ${theme.bg})`;
+	const pillBgVar = `color-mix(in srgb, ${accentVar} 14%, transparent)`;
+	const pillInkVar = theme.dark ? theme.pillInk : accentVar;
 	return documentOf(
 		theme,
 		`
   body { min-height: 100vh; display: flex; justify-content: center; background: ${theme.dark ? theme.bg : "#ecebf3"}; }
-  .app { position: relative; width: 100%; max-width: 420px; min-height: 100vh; background: ${theme.bg}; display: flex; flex-direction: column; }
+  .app { position: relative; width: 100%; max-width: 420px; min-height: 100vh; background: ${surfaceVar}; display: flex; flex-direction: column; }
   .statusbar { display: flex; justify-content: space-between; padding: 14px 24px 6px; font-size: 13px; font-weight: 650; }
   .bar { display: flex; align-items: center; justify-content: space-between; padding: 8px 20px 4px; }
   .bar h1 { font-size: 26px; letter-spacing: -0.03em; }
   .conn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; background: rgba(18,164,103,0.13); color: #12a467; font-size: 11.5px; font-weight: 650; }
   .content { flex: 1; padding: 10px 18px 120px; display: grid; align-content: start; gap: 12px; }
-  .hero { padding: 20px; border-radius: 24px; background: linear-gradient(150deg, ${theme.accent}, #4f46a5); color: #ffffff; display: grid; gap: 6px; }
+  .hero { padding: 20px; border-radius: 24px; background: linear-gradient(150deg, ${accentVar}, color-mix(in srgb, ${accentVar} 68%, #1d1a38)); color: #ffffff; display: grid; gap: 6px; }
   .hero small { opacity: .85; font-weight: 600; font-size: 12px; }
   .hero strong { font-size: 26px; letter-spacing: -0.03em; }
   .hero p { opacity: .9; font-size: 13px; }
@@ -1717,14 +1796,14 @@ function thetabandMobilePreview(theme: PreviewTheme, joined: string): string {
   .ch { display: grid; gap: 3px; text-align: center; font-size: 11px; color: ${theme.muted}; }
   .ch b { color: #12a467; font-size: 12.5px; }
   .row { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-radius: 18px; background: ${theme.card}; border: 1px solid ${theme.border}; }
-  .row i { width: 38px; height: 38px; border-radius: 12px; background: ${theme.pillBg}; display: grid; place-items: center; font-style: normal; font-weight: 700; color: ${theme.pillInk}; font-size: 13px; flex: none; }
+  .row i { width: 38px; height: 38px; border-radius: 12px; background: ${pillBgVar}; display: grid; place-items: center; font-style: normal; font-weight: 700; color: ${pillInkVar}; font-size: 13px; flex: none; }
   .row div { flex: 1; min-width: 0; }
   .row b { display: block; font-size: 14px; }
   .row span { color: ${theme.muted}; font-size: 12px; }
   .tabs { position: sticky; bottom: 0; display: flex; justify-content: space-around; padding: 10px 10px 24px; border-top: 1px solid ${theme.border}; background: ${theme.card}; }
   .tabs a { display: grid; justify-items: center; gap: 4px; color: ${theme.muted}; font-size: 11px; font-weight: 600; text-decoration: none; }
   .tabs a i { width: 20px; height: 20px; border-radius: 6px; background: currentColor; opacity: .3; }
-  .tabs a.on { color: ${theme.pillInk}; }
+  .tabs a.on { color: ${pillInkVar}; }
   .tabs a.on i { opacity: 1; }`,
 		`  <div class="app">
     <div class="statusbar"><span>21:14</span><span>5G ▮</span></div>
@@ -1768,10 +1847,15 @@ function thetabandMobilePreview(theme: PreviewTheme, joined: string): string {
       <a href="#"><i></i>Pandebånd</a>
     </nav>
   </div>`,
+		identityTokens,
 	);
 }
 
-function thetabandDashboardPreview(theme: PreviewTheme, joined: string): string {
+function thetabandDashboardPreview(
+	theme: PreviewTheme,
+	joined: string,
+	identityTokens?: CompiledIdentityTokens | null,
+): string {
 	const batch500 = /500|batch 1|scenarie/i.test(joined);
 	const orders = [38, 52, 74, 96, 128, 165, 204, 246, 282, 310, 326, batch500 ? 500 : 340];
 	const max = Math.max(...orders);
@@ -1832,6 +1916,7 @@ function thetabandDashboardPreview(theme: PreviewTheme, joined: string): string 
       </table>
     </section>
   </div>`,
+		identityTokens,
 	);
 }
 
@@ -1844,26 +1929,27 @@ export function renderLocalSitePreviewHtml(
 	kind: SurfaceKind = "website",
 	brief?: string,
 	accent?: string,
+	identityTokens?: CompiledIdentityTokens | null,
 ): string {
 	const baseAccent = accent ?? (kind === "website" ? "#1d1d1b" : kind === "dashboard" ? "#12a467" : "#4f5bd5");
 	const theme = previewTheme(companyName, surface, appliedChanges, mode, baseAccent);
 	const joined = appliedChanges.map((change) => `${change.title} ${change.summary}`).join(" ");
 	if (isThetabandCompany(companyName)) {
-		if (kind === "website") return thetabandWebsitePreview(theme, joined, brief);
-		if (kind === "mobile_app") return thetabandMobilePreview(theme, joined);
-		if (kind === "dashboard") return thetabandDashboardPreview(theme, joined);
+		if (kind === "website") return thetabandWebsitePreview(theme, joined, brief, identityTokens);
+		if (kind === "mobile_app") return thetabandMobilePreview(theme, joined, identityTokens);
+		if (kind === "dashboard") return thetabandDashboardPreview(theme, joined, identityTokens);
 	}
 	switch (kind) {
 		case "web_app":
-			return webAppPreview(theme);
+			return webAppPreview(theme, identityTokens);
 		case "mobile_app":
-			return mobileAppPreview(theme);
+			return mobileAppPreview(theme, identityTokens);
 		case "desktop_app":
-			return desktopAppPreview(theme);
+			return desktopAppPreview(theme, identityTokens);
 		case "dashboard":
-			return dashboardPreview(theme);
+			return dashboardPreview(theme, identityTokens);
 		default:
-			return websitePreview(theme, brief ?? undefined);
+			return websitePreview(theme, brief ?? undefined, identityTokens);
 	}
 }
 
@@ -1933,6 +2019,7 @@ export function starterOrchestrationPlan(companyName: string): StarterSurfaceBun
 										path: "identity/tokens.json",
 										patch: {
 											colors: {
+												accent: "#6f61cf",
 												"Aften Lavendel": "#6f61cf",
 											},
 										},

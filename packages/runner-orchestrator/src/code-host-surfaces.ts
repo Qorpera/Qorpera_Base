@@ -1,4 +1,9 @@
-import { type CloudCodingRepository, isUuid } from "@qorpera/contracts";
+import {
+	type CloudCodingRepository,
+	compileIdentityTokensCss,
+	isUuid,
+	SURFACE_IDENTITY_CSS_MOUNT_PATH,
+} from "@qorpera/contracts";
 import { CODE_FOLDER_ANY_SESSION, codeFolderRefuses } from "./code-folder-names.ts";
 import {
 	CODE_AREA_CONFIG,
@@ -526,24 +531,40 @@ const STARTER_SURFACE_CHECKS_JSON = `${JSON.stringify(
 	2,
 )}\n`;
 
-const STARTER_SURFACE_STYLES_CSS = `:root {
-	--surface-bg: #ffffff;
-	--surface-ink: #161615;
-	--surface-muted: #6b6966;
-	--surface-accent: #d76f45;
-	--surface-font-sans: system-ui, -apple-system, sans-serif;
-}
+const STARTER_SURFACE_IDENTITY_CSS = compileIdentityTokensCss(
+	JSON.stringify({
+		colors: {
+			surface: "#ffffff",
+			ink: "#161615",
+			muted: "#6b6966",
+			accent: "#d76f45",
+		},
+		typography: {
+			heading: "Georgia, serif",
+			body: "system-ui, -apple-system, sans-serif",
+		},
+	}),
+);
 
-* {
+const STARTER_SURFACE_STYLES_CSS = `* {
 	box-sizing: border-box;
 }
 
 body {
 	margin: 0;
-	background: var(--surface-bg);
-	color: var(--surface-ink);
-	font-family: var(--surface-font-sans);
+	background: var(--q-color-surface);
+	color: var(--q-color-ink);
+	font-family: var(--q-font-body);
 	line-height: 1.5;
+}
+
+h1 {
+	font-family: var(--q-font-heading);
+	color: var(--q-color-ink);
+}
+
+a {
+	color: var(--q-color-accent);
 }
 
 .surface-shell {
@@ -553,7 +574,7 @@ body {
 }
 
 .surface-shell p {
-	color: var(--surface-muted);
+	color: var(--q-color-muted);
 }
 `;
 
@@ -574,6 +595,7 @@ function starterSurfaceIndexHtml(title: string): string {
 	<meta charset="utf-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<title>${safeTitle}</title>
+	<link rel="stylesheet" href="./${SURFACE_IDENTITY_CSS_MOUNT_PATH}" />
 	<link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
@@ -654,10 +676,11 @@ export async function ensureSurfaceStarterRepository(
 
 			const checksBlob = await writeBlob(STARTER_SURFACE_CHECKS_JSON);
 			const indexBlob = await writeBlob(starterSurfaceIndexHtml(displayTitle));
+			const identityCssBlob = await writeBlob(STARTER_SURFACE_IDENTITY_CSS);
 			const stylesBlob = await writeBlob(STARTER_SURFACE_STYLES_CSS);
 			const qorperaTree = await writeTree(`100644 blob ${checksBlob}\tchecks.json\n`);
 			const rootTree = await writeTree(
-				`040000 tree ${qorperaTree}\t.qorpera\n100644 blob ${indexBlob}\tindex.html\n100644 blob ${stylesBlob}\tstyles.css\n`,
+				`040000 tree ${qorperaTree}\t.qorpera\n100644 blob ${indexBlob}\tindex.html\n100644 blob ${identityCssBlob}\t${SURFACE_IDENTITY_CSS_MOUNT_PATH}\n100644 blob ${stylesBlob}\tstyles.css\n`,
 			);
 			const initialCommit = (
 				await run.gitOk(

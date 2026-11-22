@@ -1175,7 +1175,19 @@ export function previewInspectorScript(origins: readonly string[]): string {
 	};
 	window.addEventListener("message", (event) => {
 		if (event.source !== window.parent || !allowed.has(event.origin)) return;
-		if (!event.data || typeof event.data !== "object" || event.data.type !== "qorpera-inspector-mode") return;
+		if (!event.data || typeof event.data !== "object") return;
+		if (event.data.type === "qorpera:identity-tokens-css") {
+			const vars = event.data.vars;
+			if (!vars || typeof vars !== "object" || Array.isArray(vars)) return;
+			const root = document.documentElement;
+			for (const [k, v] of Object.entries(vars)) {
+				if (/^--[a-z][a-z0-9-]{1,60}$/.test(k) && typeof v === "string" && v.length <= 160 && !/[;{}<>\\\\]|url\\s*\\(/i.test(v)) {
+					root.style.setProperty(k, v);
+				}
+			}
+			return;
+		}
+		if (event.data.type !== "qorpera-inspector-mode") return;
 		parentOrigin = event.origin;
 		active = Boolean(event.data.active);
 		document.documentElement.style.cursor = active ? "crosshair" : "";

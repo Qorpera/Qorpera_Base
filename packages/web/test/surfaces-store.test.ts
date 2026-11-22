@@ -4,6 +4,7 @@ import { parseRoute, routeHash, surfaceHash } from "../src/app/router.ts";
 import {
 	approvalOutcome,
 	clearLocalSandboxCache,
+	compiledCompanyIdentity,
 	migrationPending,
 	reportsOwnedBy,
 	runningSessionTotal,
@@ -685,6 +686,43 @@ describe("SurfacesStore", () => {
 			toggledChangeIds: [CHANGES[0], peerChange],
 			explorationSessionId: variantB,
 		});
+		store.dispose();
+	});
+
+	it("compiles identity/tokens.json from base + preview patches and updates live on approve and rollback", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const identity = store.state.surfaces.find((item) => item.slug === "identity")!;
+		await store.openSurface("identity");
+		const identitySession = store.workspace(identity.id)!.activeSessions[0]!;
+		const tokenChange = identitySession.changes[0]!;
+
+		const previewed = compiledCompanyIdentity(store.state);
+		expect(previewed).not.toBeNull();
+		expect(previewed?.vars["--q-color-accent"]).toBe("#6f61cf");
+		expect(previewed?.vars["--brand-accent"]).toBe("#6f61cf");
+		expect(previewed?.css).toContain("--q-color-accent: #6f61cf;");
+
+		await store.toggleChange(identity.id, tokenChange.id);
+		expect(store.companyIdentityTokens()?.vars["--q-color-accent"]).toBe("#7c6fd6");
+
+		await store.toggleChange(identity.id, tokenChange.id);
+		expect(store.companyIdentityTokens()?.vars["--q-color-accent"]).toBe("#6f61cf");
+
+		store.setMode("live");
+		expect(store.companyIdentityTokens()?.vars["--q-color-accent"]).toBe("#7c6fd6");
+
+		store.setMode("preview");
+		await store.approveChange(identitySession.id, tokenChange.id);
+		store.setMode("live");
+		expect(store.companyIdentityTokens()?.vars["--q-color-accent"]).toBe("#6f61cf");
+
+		await store.rollbackChange(tokenChange.id);
+		expect(store.companyIdentityTokens()?.vars["--q-color-accent"]).toBe("#7c6fd6");
 		store.dispose();
 	});
 });

@@ -17,6 +17,7 @@ import { cherryPickChangeUnits } from "../src/code-host-surfaces.ts";
 import { SupabaseCloudRunnerOrchestratorControlPlane } from "../src/orchestrator.ts";
 import {
 	assertSurfaceFolderPatchPath,
+	collectSharedCompanyAssets,
 	createSurfaceExecutionHandlers,
 	InMemorySurfaceFolderSnapshotStore,
 	parseSurfaceRepositoryKey,
@@ -593,6 +594,10 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 		expect(JSON.parse(mem.files.get("identity/tokens.json") ?? "{}")).toEqual({
 			colors: { ink: "#161615", accent: "#d76f45", paper: "#f8f6f2" },
 		});
+		const compiledCss = mem.files.get("identity/tokens.css") ?? "";
+		expect(compiledCss).toContain("--q-color-ink: #161615;");
+		expect(compiledCss).toContain("--q-color-accent: #d76f45;");
+		expect(compiledCss).toContain("--q-color-paper: #f8f6f2;");
 		expect(mem.files.get("identity/voice.md")).toBe("Warm, Nordic, concise.\n");
 		expect(mem.files.has("identity/deprecated.md")).toBe(false);
 
@@ -727,9 +732,190 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 		expect(JSON.parse(mem.files.get("identity/tokens.json") ?? "{}")).toEqual({
 			colors: { ink: "#161615" },
 		});
+		expect(mem.files.has("identity/tokens.css")).toBe(false);
 		expect(mem.files.has("identity/voice.md")).toBe(false);
 		expect(mem.files.get("identity/deprecated.md")).toBe("Legacy copy\n");
 	});
+
+	it("recompiles existing identity/tokens.css on tokens.json folder_patch and restores prior CSS on undo_change", async () => {
+		const profileId = randomUUID();
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const priorTokens = `${JSON.stringify({ colors: { accent: "#111111" } }, null, 2)}\n`;
+		const priorCss = ":root {\n  --q-color-accent: #111111;\n}\n";
+		const mem = createInMemoryCompanyFolder({
+			"identity/tokens.json": priorTokens,
+			"identity/tokens.css": priorCss,
+		});
+		const snapshots = new InMemorySurfaceFolderSnapshotStore();
+		const completeSurfaceMerge = vi.fn().mockResolvedValue(undefined);
+		const handlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: mem.folder,
+			folderSnapshots: snapshots,
+		});
+
+		const landJobId = randomUUID();
+		await handlers.runMergeJob(
+			{
+				jobId: landJobId,
+				kind: "land_change",
+				surfaceId,
+				sessionId,
+				profileId,
+				sourceKind: "folder",
+				repositoryKey: null,
+				folderRoot: "identity",
+				payload: { changeIds: [changeId] },
+				approvedChanges: [
+					{
+						changeId,
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						title: "Update brand accent",
+						summary: "",
+						patchManifest: [
+							{ op: "merge_json", path: "identity/tokens.json", patch: { colors: { accent: "#226655" } } },
+						],
+						affectedPaths: ["identity/tokens.json"],
+					},
+				],
+			},
+			new AbortController().signal,
+		);
+
+		const landReport = completeSurfaceMerge.mock.calls[0]?.[0];
+		expect(landReport.status).toBe("landed");
+		expect(mem.files.get("identity/tokens.css")).toContain("--q-color-accent: #226655;");
+		expect(mem.files.get("identity/tokens.css")).toContain("--brand-accent: #226655;");
+
+		completeSurfaceMerge.mockClear();
+		const undoJobId = randomUUID();
+		await handlers.runMergeJob(
+			{
+				jobId: undoJobId,
+				kind: "undo_change",
+				surfaceId,
+				sessionId,
+				profileId,
+				sourceKind: "folder",
+				repositoryKey: null,
+				folderRoot: "identity",
+				payload: {
+					changeId,
+					landedMainBefore: landReport.mainBefore,
+					landedMainAfter: landReport.mainAfter,
+				},
+			},
+			new AbortController().signal,
+		);
+
+		expect(completeSurfaceMerge).toHaveBeenCalledWith(
+			expect.objectContaining({
+				jobId: undoJobId,
+				status: "landed",
+				mainBefore: landReport.mainAfter,
+				mainAfter: landReport.mainBefore,
+			}),
+			expect.any(AbortSignal),
+		);
+		expect(mem.files.get("identity/tokens.json")).toBe(priorTokens);
+		expect(mem.files.get("identity/tokens.css")).toBe(priorCss);
+	});
+
+	it("collects shared company assets with auto-compiled tokens.css and forwards sharedAssets into previews and publishes", async () => {
+		const f = await createGitSurfaceFixture();
+		const seed = await f.startSession();
+		const seedHead = await seed.commit({ "index.html": "<main>Shared assets</main>\n" }, "Seed");
+		const base = await cherryPickChangeUnits(f.job, {
+			repository: f.repository,
+			changes: [{ changeId: randomUUID(), parentSha: f.baseSha, headSha: seedHead, title: "Seed" }],
+		});
+
+		const profileId = randomUUID();
+		const surfaceId = randomUUID();
+		const siteId = randomUUID();
+		const siteVersionId = randomUUID();
+		const specsJson = `${JSON.stringify({ name: "Thetaband", priceDkk: 1995 })}\n`;
+		const tokensJson = `${JSON.stringify({ colors: { accent: "#d76f45", surface: "#f8f6f2" }, typography: { body: "Inter, sans-serif" } })}\n`;
+		const mem = createInMemoryCompanyFolder({
+			"identity/tokens.json": tokensJson,
+			"product/specs.json": specsJson,
+		});
+
+		const collected = await collectSharedCompanyAssets(mem.folder, profileId, new AbortController().signal);
+		expect(collected["qorpera-identity.css"]).toContain("--q-color-accent: #d76f45;");
+		expect(collected["qorpera-identity.css"]).toContain("--q-font-body: Inter, sans-serif;");
+		expect(collected["public/qorpera-shared/identity/tokens.css"]).toBe(collected["qorpera-identity.css"]);
+		expect(collected["public/qorpera-shared/identity/tokens.json"]).toBe(tokensJson);
+		expect(collected["public/qorpera-shared/product/specs.json"]).toBe(specsJson);
+		expect(collected["public/qorpera-shared/identity/logo.svg"]).toBeUndefined();
+
+		const buildAndUploadPreview = vi.fn().mockResolvedValue({ siteVersionId });
+		const publishSurface = vi.fn().mockResolvedValue({ publishedHeadSha: base.mainAfter });
+		const handlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn().mockResolvedValue(undefined),
+				completeSurfaceMerge: vi.fn().mockResolvedValue(undefined),
+				completeSurfacePublish: vi.fn().mockResolvedValue(undefined),
+			},
+			resolveCodeHostJob: () => f.job,
+			folder: mem.folder,
+			buildAndUploadPreview,
+			publishSurface,
+		});
+
+		await handlers.runPreviewJob(
+			{
+				previewId: randomUUID(),
+				surfaceId,
+				profileId,
+				shortHostId: "deadbeef",
+				baseSha: base.mainAfter,
+				selectedChangeIds: [],
+				repositoryKey: "thetaband/website",
+				exploration: null,
+				changes: [],
+			},
+			new AbortController().signal,
+		);
+		expect(buildAndUploadPreview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sharedAssets: expect.objectContaining({
+					"qorpera-identity.css": expect.stringContaining("--q-color-accent: #d76f45;"),
+					"public/qorpera-shared/product/specs.json": specsJson,
+				}),
+			}),
+			expect.any(AbortSignal),
+		);
+
+		await handlers.runPublishJob(
+			{
+				jobId: randomUUID(),
+				surfaceId,
+				profileId,
+				repositoryKey: "thetaband/website",
+				siteId,
+				payload: { liveHeadSha: base.mainAfter, repositoryKey: "thetaband/website" },
+			},
+			new AbortController().signal,
+		);
+		expect(publishSurface).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sharedAssets: expect.objectContaining({
+					"qorpera-identity.css": expect.stringContaining("--q-color-accent: #d76f45;"),
+					"public/qorpera-shared/product/specs.json": specsJson,
+				}),
+			}),
+			expect.any(AbortSignal),
+		);
+	}, 20_000);
 
 	it("publishes site versions and reports both publish success and failure", async () => {
 		const profileId = randomUUID();

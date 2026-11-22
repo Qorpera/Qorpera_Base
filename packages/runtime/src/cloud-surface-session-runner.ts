@@ -1,6 +1,17 @@
 import {
+	compileIdentityTokens,
+	compileIdentityTokensCss,
+	IDENTITY_BRIEF_PATH,
+	IDENTITY_COMPANY_PATH,
+	IDENTITY_LOGO_PATH,
+	IDENTITY_TOKENS_CSS_PATH,
+	IDENTITY_TOKENS_JSON_PATH,
+	IDENTITY_VOICE_PATH,
 	type PointToChangeTarget,
+	PRODUCT_CATALOG_PATH,
+	PRODUCT_SPECS_PATH,
 	parsePointToChangeTarget,
+	SHARED_COMPANY_ASSET_PATHS,
 	type SurfaceSessionQuestion,
 	type SurfaceSourceKind,
 } from "@qorpera/contracts";
@@ -25,14 +36,39 @@ import {
 	SURFACE_STAGED_CODING_INSTRUCTIONS,
 	type SurfaceCodingTurnBinding,
 	type SurfaceIdentityContext,
+	type SurfaceSharedAssetsContext,
 } from "./cloud-surface-turn-context.ts";
 
 const MAX_IDENTITY_BRIEF_BYTES = 16_384;
 const MAX_IDENTITY_VOICE_BYTES = 8_192;
 const MAX_IDENTITY_TOKENS_BYTES = 16_384;
+const MAX_SHARED_ASSET_BYTES = 32_768;
 const MAX_SURFACE_BRIEF_BYTES = 32_768;
 const MAX_FAILURE_REPLY_CHARS = 500;
 const READ_ONLY_FOLDER_TOOLS = new Set(["company_read", "company_list"]);
+
+const SHARED_ASSET_BYTE_LIMITS: Readonly<Record<(typeof SHARED_COMPANY_ASSET_PATHS)[number], number>> = {
+	[IDENTITY_BRIEF_PATH]: MAX_IDENTITY_BRIEF_BYTES,
+	[IDENTITY_VOICE_PATH]: MAX_IDENTITY_VOICE_BYTES,
+	[IDENTITY_TOKENS_JSON_PATH]: MAX_IDENTITY_TOKENS_BYTES,
+	[IDENTITY_TOKENS_CSS_PATH]: MAX_IDENTITY_TOKENS_BYTES,
+	[IDENTITY_LOGO_PATH]: MAX_SHARED_ASSET_BYTES,
+	[IDENTITY_COMPANY_PATH]: MAX_SHARED_ASSET_BYTES,
+	[PRODUCT_SPECS_PATH]: MAX_SHARED_ASSET_BYTES,
+	[PRODUCT_CATALOG_PATH]: MAX_SHARED_ASSET_BYTES,
+};
+
+export interface SurfaceSharedAssetsSnapshot extends SurfaceSharedAssetsContext {
+	readonly briefMarkdown: string | null;
+	readonly voiceSummary: string | null;
+	readonly tokensJson: string | null;
+	readonly tokensCss: string | null;
+	readonly companyProfileJson: string | null;
+	readonly productSpecsJson: string | null;
+	readonly productCatalogJson: string | null;
+	readonly logoSvg: string | null;
+	readonly hasLogoSvg: boolean;
+}
 
 export interface SurfaceFolderTextReader {
 	readText(path: string, maxBytes: number, signal: AbortSignal): Promise<{ readonly text: string } | string | null>;
@@ -85,6 +121,7 @@ export interface SurfaceFolderOrOpsTurnRequest {
 	readonly turnBrief: string;
 	readonly tools: readonly CloudNativeTool[];
 	readonly identityContext: SurfaceIdentityContext | null;
+	readonly sharedAssets?: SurfaceSharedAssetsContext | null;
 	readonly allowedRoots: readonly string[];
 	readonly signal: AbortSignal;
 }
@@ -136,11 +173,67 @@ export interface SurfaceSessionTurnRunResult {
 	readonly sourceKind: SurfaceSourceKind;
 	readonly state: "ready" | "needs_input" | "failed";
 	readonly identityLoaded: boolean;
+	readonly sharedAssetsLoaded?: boolean;
 	readonly replyText: string | null;
 	readonly question: SurfaceSessionQuestion | null;
 	readonly notePaths: readonly string[] | null;
 	readonly branchHeadSha: string | null;
 	readonly error: string | null;
+}
+
+export interface SurfaceSessionDeliveryJob {
+	readonly sessionId: string;
+	readonly surfaceId: string;
+	readonly profileId: string;
+	readonly state?: "queued" | "reconciling";
+	readonly prompt: string;
+	readonly originKind?: string;
+	readonly originRef?: unknown;
+	readonly repositoryKey?: string | null;
+	readonly folderRoot?: string | null;
+	readonly surfaceSlug?: string;
+	readonly surfaceTitle?: string;
+	readonly surfaceArchetype?: string;
+	readonly surfaceSourceKind?: SurfaceSourceKind;
+	readonly surfaceKind?: string;
+	readonly briefSummary?: string | null;
+	readonly explorationId?: string | null;
+	readonly explorationVariantLabel?: string | null;
+	readonly siteSlug?: string | null;
+	readonly identityFolderRoot?: string | null;
+	readonly retryCount?: number;
+	readonly sponsor?: { readonly sponsorBindingId: string; readonly sponsorVersion: number } | null;
+}
+
+export interface SurfaceSessionProviderHookFailure {
+	readonly sessionId: string;
+	readonly surfaceId: string;
+	readonly companyId: string;
+	readonly machineId: string;
+	readonly error: string;
+}
+
+export interface SurfaceSessionProviderHookPorts {
+	resolveRunnerPorts(
+		job: SurfaceSessionDeliveryJob,
+		machineId: string,
+		signal: AbortSignal,
+	): Promise<SurfaceSessionRunnerPorts> | SurfaceSessionRunnerPorts;
+	onResult?: (
+		result: SurfaceSessionTurnRunResult,
+		job: SurfaceSessionDeliveryJob,
+		machineId: string,
+	) => void | Promise<void>;
+	onError?: (failure: SurfaceSessionProviderHookFailure) => void | Promise<void>;
+}
+
+export interface SurfaceSessionProviderHook {
+	deliverSurfaceSession(job: SurfaceSessionDeliveryJob, machineId: string, signal?: AbortSignal): Promise<void>;
+	runDeliveredSession(
+		job: SurfaceSessionDeliveryJob,
+		machineId: string,
+		signal?: AbortSignal,
+	): Promise<SurfaceSessionTurnRunResult>;
 }
 
 function normalizeFolderRoot(path: string): string {
@@ -170,12 +263,64 @@ export async function loadSurfaceIdentityContext(
 	signal: AbortSignal,
 ): Promise<SurfaceIdentityContext | null> {
 	const [briefMarkdown, voiceSummary, tokensJson] = await Promise.all([
-		readOptionalFolderText(folder, "identity/brief.md", MAX_IDENTITY_BRIEF_BYTES, signal),
-		readOptionalFolderText(folder, "identity/voice.md", MAX_IDENTITY_VOICE_BYTES, signal),
-		readOptionalFolderText(folder, "identity/tokens.json", MAX_IDENTITY_TOKENS_BYTES, signal),
+		readOptionalFolderText(folder, IDENTITY_BRIEF_PATH, MAX_IDENTITY_BRIEF_BYTES, signal),
+		readOptionalFolderText(folder, IDENTITY_VOICE_PATH, MAX_IDENTITY_VOICE_BYTES, signal),
+		readOptionalFolderText(folder, IDENTITY_TOKENS_JSON_PATH, MAX_IDENTITY_TOKENS_BYTES, signal),
 	]);
 	if (!briefMarkdown && !voiceSummary && !tokensJson) return null;
 	return { briefMarkdown, voiceSummary, tokensJson };
+}
+
+export async function loadSurfaceSharedAssets(
+	folder: SurfaceFolderTextReader,
+	signal: AbortSignal,
+): Promise<SurfaceSharedAssetsSnapshot | null> {
+	const entries = await Promise.all(
+		SHARED_COMPANY_ASSET_PATHS.map(
+			async (path) =>
+				[path, await readOptionalFolderText(folder, path, SHARED_ASSET_BYTE_LIMITS[path], signal)] as const,
+		),
+	);
+	const byPath = new Map<string, string | null>(entries);
+	const briefMarkdown = byPath.get(IDENTITY_BRIEF_PATH) ?? null;
+	const voiceSummary = byPath.get(IDENTITY_VOICE_PATH) ?? null;
+	const tokensJson = byPath.get(IDENTITY_TOKENS_JSON_PATH) ?? null;
+	const existingTokensCss = byPath.get(IDENTITY_TOKENS_CSS_PATH) ?? null;
+	const compiledTokensCss =
+		existingTokensCss === null &&
+		tokensJson !== null &&
+		Object.keys(compileIdentityTokens(tokensJson).vars).length > 0
+			? compileIdentityTokensCss(tokensJson)
+			: null;
+	const tokensCss = existingTokensCss ?? compiledTokensCss;
+	const companyProfileJson = byPath.get(IDENTITY_COMPANY_PATH) ?? null;
+	const productSpecsJson = byPath.get(PRODUCT_SPECS_PATH) ?? null;
+	const productCatalogJson = byPath.get(PRODUCT_CATALOG_PATH) ?? null;
+	const logoSvg = byPath.get(IDENTITY_LOGO_PATH) ?? null;
+	const hasLogoSvg = logoSvg !== null;
+	if (
+		!briefMarkdown &&
+		!voiceSummary &&
+		!tokensJson &&
+		!tokensCss &&
+		!companyProfileJson &&
+		!productSpecsJson &&
+		!productCatalogJson &&
+		!hasLogoSvg
+	) {
+		return null;
+	}
+	return {
+		briefMarkdown,
+		voiceSummary,
+		tokensJson,
+		tokensCss,
+		companyProfileJson,
+		productSpecsJson,
+		productCatalogJson,
+		logoSvg,
+		hasLogoSvg,
+	};
 }
 
 function extractPointToChangeTarget(originRef: unknown): PointToChangeTarget | null {
@@ -247,10 +392,38 @@ export async function runSurfaceSessionTurn(
 	const signal = ports.signal ?? new AbortController().signal;
 	const folderReader = ports.folder ?? ports.folderToolsContext?.folder;
 	let identityContext: SurfaceIdentityContext | null = null;
+	let sharedAssets: SurfaceSharedAssetsContext | null = null;
 
 	try {
-		if (folderReader && input.surfaceSlug !== "identity") {
-			identityContext = await loadSurfaceIdentityContext(folderReader, signal);
+		if (folderReader) {
+			const loaded = await loadSurfaceSharedAssets(folderReader, signal);
+			if (loaded) {
+				if (
+					input.surfaceSlug !== "identity" &&
+					(loaded.briefMarkdown || loaded.voiceSummary || loaded.tokensJson)
+				) {
+					identityContext = {
+						briefMarkdown: loaded.briefMarkdown,
+						voiceSummary: loaded.voiceSummary,
+						tokensJson: loaded.tokensJson,
+					};
+				}
+				if (
+					loaded.tokensCss ||
+					loaded.companyProfileJson ||
+					loaded.productSpecsJson ||
+					loaded.productCatalogJson ||
+					loaded.hasLogoSvg
+				) {
+					sharedAssets = {
+						tokensCss: loaded.tokensCss,
+						companyProfileJson: loaded.companyProfileJson,
+						productSpecsJson: loaded.productSpecsJson,
+						productCatalogJson: loaded.productCatalogJson,
+						hasLogoSvg: loaded.hasLogoSvg,
+					};
+				}
+			}
 		}
 		const explicitBrief = input.briefMarkdown?.trim() || null;
 		const folderBrief =
@@ -282,6 +455,7 @@ export async function runSurfaceSessionTurn(
 			folderRoot: normalizedFolderRoot,
 			explorationVariantLabel: input.explorationVariantLabel ?? null,
 			identityContext,
+			sharedAssets,
 			pointToChangeTarget,
 			conflictPaths: input.conflictPaths ?? null,
 		});
@@ -320,6 +494,7 @@ export async function runSurfaceSessionTurn(
 				turnBrief,
 				tools,
 				identityContext,
+				sharedAssets,
 				allowedRoots,
 				signal,
 			});
@@ -352,6 +527,7 @@ export async function runSurfaceSessionTurn(
 				turnBrief,
 				tools,
 				identityContext,
+				sharedAssets,
 				allowedRoots: [],
 				signal,
 			});
@@ -369,6 +545,7 @@ export async function runSurfaceSessionTurn(
 				folderRoot: normalizedFolderRoot,
 				explorationVariantLabel: input.explorationVariantLabel ?? null,
 				identityContext,
+				sharedAssets,
 				pointToChangeTarget,
 				conflictPaths: input.conflictPaths ?? null,
 				recordChange: recordChange.bind(ports.surfaceTools),
@@ -420,6 +597,7 @@ export async function runSurfaceSessionTurn(
 			sourceKind: input.sourceKind,
 			state,
 			identityLoaded: identityContext !== null,
+			sharedAssetsLoaded: sharedAssets !== null,
 			replyText,
 			question,
 			notePaths,
@@ -445,6 +623,7 @@ export async function runSurfaceSessionTurn(
 			sourceKind: input.sourceKind,
 			state: "failed",
 			identityLoaded: identityContext !== null,
+			sharedAssetsLoaded: sharedAssets !== null,
 			replyText,
 			question: null,
 			notePaths: null,
@@ -452,4 +631,109 @@ export async function runSurfaceSessionTurn(
 			error: errorMessage,
 		};
 	}
+}
+
+function inferDeliverySourceKind(job: SurfaceSessionDeliveryJob): SurfaceSourceKind {
+	if (job.surfaceSourceKind) return job.surfaceSourceKind;
+	if (job.repositoryKey) return "code_repo";
+	if (job.surfaceArchetype === "ops") return "native_ops";
+	return "folder";
+}
+
+function deliveryJobToTurnInput(job: SurfaceSessionDeliveryJob): SurfaceSessionTurnInput {
+	const surfaceSlug = job.surfaceSlug?.trim() || "surface";
+	const surfaceTitle = job.surfaceTitle?.trim() || surfaceSlug;
+	return {
+		sessionId: job.sessionId,
+		surfaceId: job.surfaceId,
+		companyId: job.profileId,
+		surfaceSlug,
+		surfaceTitle,
+		sourceKind: inferDeliverySourceKind(job),
+		prompt: job.prompt,
+		state: job.state,
+		repositoryKey: job.repositoryKey ?? null,
+		folderRoot: job.folderRoot ?? null,
+		briefSummary: job.briefSummary ?? null,
+		explorationVariantLabel: job.explorationVariantLabel ?? null,
+		originKind: job.originKind,
+		originRef: job.originRef,
+	};
+}
+
+export function createSurfaceSessionProviderHook(ports: SurfaceSessionProviderHookPorts): SurfaceSessionProviderHook {
+	const reportError = async (failure: SurfaceSessionProviderHookFailure): Promise<void> => {
+		if (!ports.onError) return;
+		try {
+			await ports.onError(failure);
+		} catch {}
+	};
+
+	const runDeliveredSession = async (
+		job: SurfaceSessionDeliveryJob,
+		machineId: string,
+		signal?: AbortSignal,
+	): Promise<SurfaceSessionTurnRunResult> => {
+		const turnInput = deliveryJobToTurnInput(job);
+		const runSignal = signal ?? new AbortController().signal;
+		try {
+			const runnerPorts = await ports.resolveRunnerPorts(job, machineId, runSignal);
+			const result = await runSurfaceSessionTurn(turnInput, {
+				...runnerPorts,
+				signal: runnerPorts.signal ?? runSignal,
+			});
+			if (result.state === "failed") {
+				await reportError({
+					sessionId: job.sessionId,
+					surfaceId: job.surfaceId,
+					companyId: job.profileId,
+					machineId,
+					error: result.error ?? result.replyText ?? "Surface session failed",
+				});
+			}
+			if (ports.onResult) {
+				try {
+					await ports.onResult(result, job, machineId);
+				} catch (callbackError) {
+					const { errorMessage } = formatSessionFailure(callbackError);
+					await reportError({
+						sessionId: job.sessionId,
+						surfaceId: job.surfaceId,
+						companyId: job.profileId,
+						machineId,
+						error: errorMessage,
+					});
+				}
+			}
+			return result;
+		} catch (error) {
+			const { errorMessage, replyText } = formatSessionFailure(error);
+			await reportError({
+				sessionId: job.sessionId,
+				surfaceId: job.surfaceId,
+				companyId: job.profileId,
+				machineId,
+				error: errorMessage,
+			});
+			return {
+				sessionId: job.sessionId,
+				sourceKind: turnInput.sourceKind,
+				state: "failed",
+				identityLoaded: false,
+				sharedAssetsLoaded: false,
+				replyText,
+				question: null,
+				notePaths: null,
+				branchHeadSha: null,
+				error: errorMessage,
+			};
+		}
+	};
+
+	return {
+		runDeliveredSession,
+		async deliverSurfaceSession(job, machineId, signal) {
+			await runDeliveredSession(job, machineId, signal);
+		},
+	};
 }

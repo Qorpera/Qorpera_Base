@@ -1,10 +1,28 @@
-import type { PointToChangeTarget } from "@qorpera/contracts";
+import {
+	IDENTITY_COMPANY_PATH,
+	IDENTITY_LOGO_PATH,
+	IDENTITY_TOKENS_CSS_PATH,
+	IDENTITY_TOKENS_JSON_PATH,
+	type PointToChangeTarget,
+	PRODUCT_CATALOG_PATH,
+	PRODUCT_SPECS_PATH,
+	SURFACE_IDENTITY_CSS_MOUNT_PATH,
+	SURFACE_SHARED_DIR,
+} from "@qorpera/contracts";
 import type { CloudSurfaceToolsPort } from "./cloud-surface-tools.ts";
 
 export interface SurfaceIdentityContext {
 	readonly briefMarkdown?: string | null;
 	readonly tokensJson?: string | null;
 	readonly voiceSummary?: string | null;
+}
+
+export interface SurfaceSharedAssetsContext {
+	readonly tokensCss?: string | null;
+	readonly companyProfileJson?: string | null;
+	readonly productSpecsJson?: string | null;
+	readonly productCatalogJson?: string | null;
+	readonly hasLogoSvg?: boolean;
 }
 
 export interface SurfaceTurnBriefInput {
@@ -16,6 +34,7 @@ export interface SurfaceTurnBriefInput {
 	readonly folderRoot?: string | null;
 	readonly explorationVariantLabel?: string | null;
 	readonly identityContext?: SurfaceIdentityContext | null;
+	readonly sharedAssets?: SurfaceSharedAssetsContext | null;
 	readonly pointToChangeTarget?: PointToChangeTarget | null;
 	readonly conflictPaths?: readonly string[] | null;
 	readonly recordChange?: CloudSurfaceToolsPort["recordChange"];
@@ -80,6 +99,57 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 			);
 		}
 	}
+
+	const isIdentitySurface = binding.surfaceSlug === "identity";
+	const sharedLines = isIdentitySurface
+		? [
+				"## Live Shared Company Files",
+				`- **Visual Identity CSS Live Sync:** Changes you stage to \`${IDENTITY_TOKENS_JSON_PATH}\` automatically recompile \`${IDENTITY_TOKENS_CSS_PATH}\` and flow live as \`${SURFACE_IDENTITY_CSS_MOUNT_PATH}\` CSS custom properties (\`--q-color-*\`, \`--q-font-*\`, \`--q-radius-*\`, \`--q-space-*\`) into every downstream surface with zero manual copy-paste.`,
+				`- **Shared Company Data:** Keep canonical company details in \`${IDENTITY_COMPANY_PATH}\` and the vector mark in \`${IDENTITY_LOGO_PATH}\` so downstream surfaces consume them from \`${SURFACE_SHARED_DIR}/\` automatically.`,
+			]
+		: [
+				"## Live Shared Company Files",
+				`- **Visual Identity CSS Live Sync:** Never hardcode brand colors, fonts, or radii in Website, Web App, or Mobile App — style directly with CSS custom properties from \`${SURFACE_IDENTITY_CSS_MOUNT_PATH}\` (\`var(--q-color-primary)\`, \`var(--q-color-accent)\`, \`var(--q-color-surface)\`, \`var(--q-color-muted)\`, \`var(--q-font-heading)\`, \`var(--q-font-body)\`, \`var(--q-radius-*)\`), which auto-compiles from \`${IDENTITY_TOKENS_JSON_PATH}\` so any approved Identity change flows live everywhere with zero rebuild or re-edit.`,
+				`- **Shared Product & Company Data:** Consume \`${SURFACE_SHARED_DIR}/${PRODUCT_SPECS_PATH}\`, \`${SURFACE_SHARED_DIR}/${PRODUCT_CATALOG_PATH}\`, and \`${SURFACE_SHARED_DIR}/${IDENTITY_COMPANY_PATH}\` whenever present rather than hardcoding prices, SKUs, specs, or company contact info across surfaces.`,
+			];
+	const sharedExcerpts: string[] = [];
+	const shared = binding.sharedAssets;
+	if (shared) {
+		if (shared.hasLogoSvg) {
+			sharedLines.push(
+				`- **Shared Brand Logo:** Available at \`${SURFACE_SHARED_DIR}/${IDENTITY_LOGO_PATH}\` (canonical path \`${IDENTITY_LOGO_PATH}\`).`,
+			);
+		}
+		const tokensCss = shared.tokensCss?.trim();
+		if (tokensCss && !isIdentitySurface) {
+			sharedExcerpts.push(
+				`### Compiled Identity CSS (\`${SURFACE_IDENTITY_CSS_MOUNT_PATH}\`)\n\`\`\`css\n${tokensCss.slice(0, 2500)}\n\`\`\``,
+			);
+		}
+		const companyProfileJson = shared.companyProfileJson?.trim();
+		if (companyProfileJson) {
+			sharedExcerpts.push(
+				`### Shared Company Profile (\`${SURFACE_SHARED_DIR}/${IDENTITY_COMPANY_PATH}\`)\n\`\`\`json\n${companyProfileJson.slice(0, 2500)}\n\`\`\``,
+			);
+		}
+		const productSpecsJson = shared.productSpecsJson?.trim();
+		if (productSpecsJson) {
+			sharedExcerpts.push(
+				`### Shared Product Specs (\`${SURFACE_SHARED_DIR}/${PRODUCT_SPECS_PATH}\`)\n\`\`\`json\n${productSpecsJson.slice(0, 3000)}\n\`\`\``,
+			);
+		}
+		const productCatalogJson = shared.productCatalogJson?.trim();
+		if (productCatalogJson) {
+			sharedExcerpts.push(
+				`### Shared Product Catalog (\`${SURFACE_SHARED_DIR}/${PRODUCT_CATALOG_PATH}\`)\n\`\`\`json\n${productCatalogJson.slice(0, 3000)}\n\`\`\``,
+			);
+		}
+	}
+	sections.push(
+		sharedExcerpts.length > 0
+			? `${sharedLines.join("\n")}\n\n${sharedExcerpts.join("\n\n")}`
+			: sharedLines.join("\n"),
+	);
 
 	const brief = binding.briefMarkdown?.trim();
 	if (brief) {

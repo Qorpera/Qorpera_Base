@@ -5,7 +5,9 @@ import type { NativeCompanyExecutionRequest } from "../src/cloud-native-provider
 import { type CloudToolContext, CloudToolRefusal } from "../src/cloud-native-tool-boundary.ts";
 import {
 	createControlPlaneSessionCompletionPort,
+	createSurfaceSessionProviderHook,
 	loadSurfaceIdentityContext,
+	loadSurfaceSharedAssets,
 	runSurfaceSessionTurn,
 	type SurfaceFolderTextReader,
 } from "../src/cloud-surface-session-runner.ts";
@@ -563,5 +565,206 @@ describe("cloud surface session runner", () => {
 				},
 			},
 		]);
+	});
+
+	it("loads all shared Company Files via loadSurfaceSharedAssets and auto-compiles identity/tokens.css when absent", async () => {
+		const signal = new AbortController().signal;
+		const readerWithoutCss = makeMemoryReader({
+			"identity/brief.md": "Quiet Scandinavian craft.",
+			"identity/voice.md": "Calm and direct.",
+			"identity/tokens.json": JSON.stringify({
+				colors: { primary: "#161615", accent: "#d76f45", surface: "#f7f5f2", muted: "#6c6964" },
+				typography: { heading: "Instrument Serif", body: "Inter" },
+				radius: { md: "12px" },
+			}),
+			"identity/company.json": '{"name":"Thetaband","email":"hello@thetaband.dk"}',
+			"product/specs.json": '{"batteryHours":14,"weightGrams":38}',
+			"product/catalog.json": '{"items":[{"sku":"TB-1","priceDkk":1899}]}',
+			"identity/logo.svg": "<svg viewBox='0 0 32 32'></svg>",
+		});
+
+		const compiled = await loadSurfaceSharedAssets(readerWithoutCss, signal);
+		expect(compiled).not.toBeNull();
+		expect(compiled?.hasLogoSvg).toBe(true);
+		expect(compiled?.tokensCss).toContain("--q-color-accent: #d76f45;");
+		expect(compiled?.tokensCss).toContain("--q-color-primary: #161615;");
+		expect(compiled?.tokensCss).toContain("--q-font-heading:");
+		expect(compiled?.tokensCss).toContain("--q-radius-md: 12px;");
+		expect(compiled?.companyProfileJson).toContain('"Thetaband"');
+		expect(compiled?.productSpecsJson).toContain('"batteryHours":14');
+		expect(compiled?.productCatalogJson).toContain('"TB-1"');
+
+		const readerWithExplicitCss = makeMemoryReader({
+			"identity/tokens.json": '{"accent":"#d76f45"}',
+			"identity/tokens.css": ":root {\n\t--q-color-accent: #112233;\n}\n",
+		});
+		const explicit = await loadSurfaceSharedAssets(readerWithExplicitCss, signal);
+		expect(explicit?.tokensCss).toBe(":root {\n\t--q-color-accent: #112233;\n}");
+		expect(explicit?.hasLogoSvg).toBe(false);
+
+		expect(await loadSurfaceSharedAssets(makeMemoryReader({}), signal)).toBeNull();
+	});
+
+	it("propagates shared assets into downstream and Identity turn briefs during runSurfaceSessionTurn", async () => {
+		const reader = makeMemoryReader({
+			"identity/brief.md": "Nordic calm.",
+			"identity/tokens.json": '{"colors":{"primary":"#161615","accent":"#d76f45","surface":"#f7f5f2"}}',
+			"identity/company.json": '{"name":"Thetaband","support":"hej@thetaband.dk"}',
+			"product/specs.json": '{"weightGrams":38}',
+			"product/catalog.json": '{"items":[{"sku":"TB-1","priceDkk":1899}]}',
+			"identity/logo.svg": "<svg></svg>",
+		});
+		const completeSessionTurn = vi.fn().mockResolvedValue(undefined);
+
+		const webResult = await runSurfaceSessionTurn(
+			{
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				companyId: randomUUID(),
+				surfaceSlug: "website",
+				surfaceTitle: "Website",
+				sourceKind: "code_repo",
+				repositoryKey: "surfaces/website",
+				prompt: "Build pricing card.",
+			},
+			{
+				folder: reader,
+				surfaceTools: { recordChange: vi.fn() },
+				completeSessionTurn,
+				async executeCodeRepoTurn(req) {
+					expect(req.binding.sharedAssets?.hasLogoSvg).toBe(true);
+					expect(req.binding.sharedAssets?.tokensCss).toContain("--q-color-accent: #d76f45;");
+					expect(req.turnBrief).toContain("## Live Shared Company Files");
+					expect(req.turnBrief).toContain("qorpera-identity.css");
+					expect(req.turnBrief).toContain("var(--q-color-primary)");
+					expect(req.turnBrief).toContain("public/qorpera-shared/product/specs.json");
+					expect(req.turnBrief).toContain("public/qorpera-shared/product/catalog.json");
+					expect(req.turnBrief).toContain("public/qorpera-shared/identity/company.json");
+					expect(req.turnBrief).toContain('"weightGrams":38');
+					expect(req.turnBrief).toContain('"TB-1"');
+					expect(req.turnBrief).toContain('"hej@thetaband.dk"');
+					return { state: "ready", replyText: "Pricing wired to shared files." };
+				},
+			},
+		);
+		expect(webResult.sharedAssetsLoaded).toBe(true);
+
+		await runSurfaceSessionTurn(
+			{
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				companyId: randomUUID(),
+				surfaceSlug: "identity",
+				surfaceTitle: "Identity",
+				sourceKind: "folder",
+				folderRoot: "identity",
+				prompt: "Refine accent color.",
+			},
+			{
+				folder: reader,
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				completeSessionTurn,
+				async executeTurn(req) {
+					expect(req.turnBrief).not.toContain("## Global Company Identity");
+					expect(req.turnBrief).toContain("## Live Shared Company Files");
+					expect(req.turnBrief).toContain("automatically recompile `identity/tokens.css`");
+					expect(req.sharedAssets?.hasLogoSvg).toBe(true);
+					return { state: "ready", replyText: "Tokens staged." };
+				},
+			},
+		);
+	});
+
+	it("delivers incoming surface sessions through createSurfaceSessionProviderHook without unhandled rejections", async () => {
+		const sessionId = randomUUID();
+		const surfaceId = randomUUID();
+		const profileId = randomUUID();
+		const completeSessionTurn = vi.fn().mockResolvedValue(undefined);
+		const onResult = vi.fn();
+		const onError = vi.fn();
+
+		const hook = createSurfaceSessionProviderHook({
+			resolveRunnerPorts: async () => ({
+				folder: makeMemoryReader({
+					"identity/tokens.json": '{"accent":"#d76f45"}',
+					"product/specs.json": '{"version":2}',
+				}),
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				completeSessionTurn,
+				async executeTurn(req) {
+					expect(req.mode).toBe("folder");
+					expect(req.turnBrief).toContain('"version":2');
+					return { state: "ready", replyText: "Updated studio." };
+				},
+			}),
+			onResult,
+			onError,
+		});
+
+		await hook.deliverSurfaceSession(
+			{
+				sessionId,
+				surfaceId,
+				profileId,
+				surfaceSlug: "product",
+				surfaceTitle: "Product",
+				surfaceSourceKind: "folder",
+				folderRoot: "product",
+				prompt: "Refine specs.",
+			},
+			"machine-1",
+		);
+		expect(onResult).toHaveBeenCalledTimes(1);
+		expect(onError).not.toHaveBeenCalled();
+		expect(completeSessionTurn).toHaveBeenCalledWith(
+			expect.objectContaining({ sessionId, state: "ready", replyText: "Updated studio." }),
+			expect.any(AbortSignal),
+		);
+
+		const failingOnError = vi.fn();
+		const failingHook = createSurfaceSessionProviderHook({
+			resolveRunnerPorts: async () => {
+				throw new Error("Vault credential missing for machine");
+			},
+			onError: failingOnError,
+		});
+
+		await expect(
+			failingHook.deliverSurfaceSession(
+				{
+					sessionId,
+					surfaceId,
+					profileId,
+					surfaceSlug: "website",
+					surfaceTitle: "Website",
+					repositoryKey: "surfaces/website",
+					prompt: "Build hero.",
+				},
+				"machine-2",
+			),
+		).resolves.toBeUndefined();
+		expect(failingOnError).toHaveBeenCalledWith({
+			sessionId,
+			surfaceId,
+			companyId: profileId,
+			machineId: "machine-2",
+			error: "Vault credential missing for machine",
+		});
+
+		const failedResult = await failingHook.runDeliveredSession(
+			{
+				sessionId,
+				surfaceId,
+				profileId,
+				surfaceSlug: "website",
+				surfaceTitle: "Website",
+				repositoryKey: "surfaces/website",
+				prompt: "Build hero.",
+			},
+			"machine-2",
+		);
+		expect(failedResult.state).toBe("failed");
+		expect(failedResult.sourceKind).toBe("code_repo");
+		expect(failedResult.error).toContain("Vault credential missing");
 	});
 });

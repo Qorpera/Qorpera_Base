@@ -3185,7 +3185,9 @@ describe("site-serve: isolated preview origins (--p<id>) and Point-to-Change ins
 		});
 		assert.equal(inspectorRes.status, 200);
 		assert.equal(inspectorRes.headers.get("content-type"), "text/javascript; charset=utf-8");
-		assert.ok((await inspectorRes.text()).includes("qorpera-inspector-pick"));
+		const inspectorBody = await inspectorRes.text();
+		assert.ok(inspectorBody.includes("qorpera-inspector-pick"));
+		assert.ok(inspectorBody.includes("qorpera:identity-tokens-css"));
 
 		const liveStore = store({}, {}, { serveHost: hostFile(HTML, { scope: "site" }) });
 		const liveRes = await handleSiteServe(

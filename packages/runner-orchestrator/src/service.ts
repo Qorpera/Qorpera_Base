@@ -4,7 +4,7 @@ import type { ServiceHttpFetch } from "./http-transport.ts";
 import { nodeHttpFetch } from "./node-http-fetch.ts";
 import { CloudRunnerOrchestrator, SupabaseCloudRunnerOrchestratorControlPlane } from "./orchestrator.ts";
 import { RealtimeOrchestratorWake, type RealtimeOrchestratorWakeState } from "./orchestrator-wake.ts";
-import { HttpCloudRunnerProviderAdapter } from "./provider-http.ts";
+import { CloudRunnerProviderRequestError, HttpCloudRunnerProviderAdapter } from "./provider-http.ts";
 import { createSurfaceExecutionHandlers, type SurfaceExecutionBridgePorts } from "./surface-execution-bridge.ts";
 import { SurfaceWorkerLoop, type SurfaceWorkerLoopPorts } from "./surface-worker-loop.ts";
 
@@ -112,7 +112,26 @@ export function createDefaultSurfaceWorkerConfig(
 			}),
 		dispatchSessionTurn:
 			overrides.dispatchSessionTurn ??
-			(async (job, machineId) => {
+			(async (job, machineId, signal) => {
+				if (typeof context.providerAdapter.deliverSurfaceSession === "function") {
+					try {
+						await context.providerAdapter.deliverSurfaceSession(job, machineId, signal);
+						return;
+					} catch (error) {
+						if (error instanceof CloudRunnerProviderRequestError && error.status === 501) {
+							logEvent({
+								kind: "session_dispatch_unconfigured",
+								sessionId: job.sessionId,
+								surfaceId: job.surfaceId,
+								machineId,
+								providerAdapterId: context.providerAdapter.adapterId,
+								status: error.status,
+							});
+							return;
+						}
+						throw error;
+					}
+				}
 				logEvent({
 					kind: "session_dispatch_unconfigured",
 					sessionId: job.sessionId,
