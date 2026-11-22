@@ -107,4 +107,36 @@ describe("a surface's figure in the rail", () => {
 		expect(rail.el.querySelector(".rail-surface .surface-figure")?.getAttribute("data-figure")).toBe("shop");
 		store.dispose();
 	});
+
+	it("opens the same menu from a long press, under the row from the keyboard, and leaves Shift+right-click to the browser", async () => {
+		const store = storeWith(fakeClient());
+		await store.load();
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+		const row = rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="website"]')!;
+		const menu = () => document.querySelector<HTMLElement>(".context-menu");
+
+		row.dispatchEvent(
+			new MouseEvent("contextmenu", { bubbles: true, cancelable: true, shiftKey: true, clientX: 30, clientY: 30 }),
+		);
+		expect(menu()).toBeNull();
+
+		const keyboard = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+		row.dispatchEvent(keyboard);
+		expect(keyboard.defaultPrevented).toBe(true);
+		expect(menu()).not.toBeNull();
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		document.body.querySelectorAll(".context-menu").forEach((node) => node.remove());
+
+		vi.useFakeTimers();
+		try {
+			row.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch", clientX: 40, clientY: 40 }));
+			vi.advanceTimersByTime(600);
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(menu()?.textContent).toContain("Figure");
+		store.dispose();
+	});
 });
