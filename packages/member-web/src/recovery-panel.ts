@@ -8,19 +8,21 @@ import type {
 	MemberBrowserRecoveryCatalog,
 } from "@qorpera/cloud-client/cloud-member-browser-recovery";
 import { MemberBrowserRecoverySession } from "@qorpera/cloud-client/member-browser-recovery-session";
+import { linkedAbortScope } from "./abort-scope.ts";
 import { button, element, type Work } from "./dom.ts";
 
 export async function showRecoveryPanel(options: {
 	root: HTMLElement;
 	account: { recovery(): { client: CloudMemberBrowserRecovery; signal: AbortSignal; current(): void } };
+	signal?: AbortSignal;
 	work: Work;
 	current(): void;
 	status(message: string): void;
 }): Promise<() => void> {
 	const { root, account, work, current, status } = options,
 		context = account.recovery(),
-		stop = new AbortController(),
-		signal = AbortSignal.any([context.signal, stop.signal]);
+		scope = linkedAbortScope([context.signal, options.signal]),
+		signal = scope.signal;
 	const live = () => {
 		signal.throwIfAborted();
 		context.current();
@@ -131,9 +133,9 @@ export async function showRecoveryPanel(options: {
 	);
 	try {
 		await refresh();
-		return () => stop.abort();
+		return () => scope.dispose();
 	} catch (error) {
-		stop.abort();
+		scope.dispose();
 		throw error;
 	}
 }
