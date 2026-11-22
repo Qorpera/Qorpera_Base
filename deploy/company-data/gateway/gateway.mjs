@@ -3574,6 +3574,7 @@ export class Gateway {
 		let n = null;
 		let applied;
 		if (resolvedTest) {
+			await this.#refreshTestSchemaFromStore(resolvedTest);
 			applied = new Map(resolvedTest.appliedSteps);
 		} else {
 			await this.#ensureCompany(database);
@@ -3637,10 +3638,8 @@ export class Gateway {
 		}
 		if (need.length > 0) return { need };
 		for (const step of steps) if (applied.has(step.name)) results.push({ name: step.name, state: "already" });
-		let testUpdated = false;
 		for (const [index, step] of waiting.entries()) {
 			if (Date.now() - began >= this.#limits.applyMs) {
-				if (resolvedTest && testUpdated) await this.#persistTestSchemaComment(resolvedTest);
 				for (const left of waiting.slice(index)) results.push({ name: left.name, state: "waiting" });
 				return { applied: false, more: true, results };
 			}
@@ -3650,13 +3649,8 @@ export class Gateway {
 				testSchema: resolvedTest,
 			});
 			results.push(outcome);
-			if (outcome.state !== "applied") break;
-			if (resolvedTest) {
-				resolvedTest.appliedSteps.set(step.name, step.sha256);
-				testUpdated = true;
-			}
+			if (outcome.state !== "applied" && outcome.state !== "already") break;
 		}
-		if (resolvedTest && testUpdated) await this.#persistTestSchemaComment(resolvedTest);
 		return { applied: results.every((result) => result.state === "applied" || result.state === "already"), results };
 	}
 
@@ -3688,6 +3682,29 @@ export class Gateway {
 				`begin; set local lock_timeout = ${effectiveLockMs}; set local statement_timeout = ${effectiveStepMs}; ` +
 					`set local search_path = ${quoted(schema)}, qorpera_ext`,
 			);
+			let storedTestMeta = null;
+			if (isTest) {
+				await client.query("select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('qorpera_test_apply'), pg_catalog.hashtext($1))", [schema]);
+				const metaRow = (
+					await client.query("select pg_catalog.obj_description(oid, 'pg_namespace') as comment from pg_catalog.pg_namespace where nspname = $1", [schema])
+				).rows[0];
+				storedTestMeta = this.#verifyTestSchemaMeta(schema, metaRow?.comment);
+				if (!storedTestMeta) {
+					await rollback();
+					refuse(404, `No active test schema ${schema} for ${name}`);
+				}
+				const currentApplied = new Map(storedTestMeta.applied);
+				if (currentApplied.has(step.name)) {
+					testSchema.appliedSteps = currentApplied;
+					await rollback();
+					if (currentApplied.get(step.name) === step.sha256) return { name: step.name, state: "already" };
+					return {
+						name: step.name,
+						state: "changed",
+						detail: "It was changed after it was applied: put its applied text back from the folder's history and write a new step",
+					};
+				}
+			}
 			if (!dry && !isTest) await this.#actorLine(database, (await client.query("select pg_catalog.txid_current()::text as txid")).rows[0].txid, actor);
 			try {
 				await client.query({ text: "select qorpera_data.apply_step($1)", values: [text], queryMode: "extended" });
@@ -3745,9 +3762,32 @@ export class Gateway {
 					allow: ticket,
 				};
 			}
+			let nextTestApplied = null;
+			let nextTestExpiresAt = null;
 			if (!isTest) {
 				await client.query("select qorpera_data.record_step($1, $2, $3)", [name, step.name, step.sha256]);
 				await client.query("select pg_catalog.pg_notify('qorpera_data', $1)", [`${name}.*`]);
+			} else {
+				await client.query("select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('qorpera_test_meta'), pg_catalog.hashtext($1))", [schema]);
+				const latestRow = (
+					await client.query("select pg_catalog.obj_description(oid, 'pg_namespace') as comment from pg_catalog.pg_namespace where nspname = $1", [schema])
+				).rows[0];
+				const latestMeta = this.#verifyTestSchemaMeta(schema, latestRow?.comment) ?? storedTestMeta;
+				nextTestApplied = new Map(latestMeta.applied);
+				nextTestApplied.set(step.name, step.sha256);
+				nextTestExpiresAt = Math.max(testSchema.expiresAt, latestMeta.expiresAt);
+				const signed = this.#signTestSchemaMeta(schema, {
+					v: 1,
+					env: testSchema.environmentId,
+					source: testSchema.sourceDatabase,
+					createdAt: testSchema.createdAt,
+					expiresAt: nextTestExpiresAt,
+					ttlMs: testSchema.ttlMs,
+					readLive: testSchema.readLive,
+					applied: [...nextTestApplied.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
+				});
+				if (!/^[A-Za-z0-9_.:-]+$/.test(signed)) refuse(500, "The data gateway failed");
+				await client.query(`comment on schema ${quoted(schema)} is '${signed}'`);
 			}
 			try {
 				await client.query("commit");
@@ -3758,8 +3798,14 @@ export class Gateway {
 				const told = storeProblem(error);
 				return { name: step.name, state: "failed", detail: told.message, ...told.extra };
 			}
-			if (isTest) this.#bumpSchemaEpoch(database, schema);
-			else this.#notifySchema(database, name);
+			if (isTest) {
+				testSchema.appliedSteps = nextTestApplied;
+				testSchema.expiresAt = nextTestExpiresAt;
+				testSchema.persistedExpiresAt = Math.max(testSchema.persistedExpiresAt ?? 0, nextTestExpiresAt);
+				this.#bumpSchemaEpoch(database, schema);
+			} else {
+				this.#notifySchema(database, name);
+			}
 			return { name: step.name, state: "applied", ...(ticket ? { destroyed: destroys } : {}) };
 		} catch (error) {
 			await rollback();
@@ -3792,6 +3838,7 @@ export class Gateway {
 		if (asked !== null && readable.length === 0) refuse(404, `No database ${asked} that you may read`);
 		const database = companyDatabase(environmentId);
 		const resolvedTest = testSchema !== null ? await this.#resolveTestSchema(environmentId, asked, testSchema) : null;
+		if (resolvedTest) await this.#refreshTestSchemaFromStore(resolvedTest);
 		const exists = resolvedTest ? true : await this.#companyExists(database);
 		const folderResults = await mapBounded(readable, DESCRIBE_CONCURRENCY, (name) =>
 			this.#folderFiles(caller, environmentId, name, body.texts, exists ? database : null, tomls.get(`data/${name}/database.toml`)),
@@ -4238,6 +4285,7 @@ export class Gateway {
 		const wanted = (asked === null ? names : [asked]).sort();
 		const database = companyDatabase(environmentId);
 		const resolvedTest = testSchema !== null ? await this.#resolveTestSchema(environmentId, asked, testSchema) : null;
+		if (resolvedTest) await this.#refreshTestSchemaFromStore(resolvedTest);
 		const exists = resolvedTest ? true : await this.#companyExists(database);
 		const wantedFiles = [];
 		for (const name of wanted) {
@@ -4896,30 +4944,100 @@ export class Gateway {
 	}
 
 	async #persistTestSchemaComment(entry, client = null) {
-		const expiresAt = entry.expiresAt;
-		const signed = this.#signTestSchemaMeta(entry.testSchema, {
-			v: 1,
-			env: entry.environmentId,
-			source: entry.sourceDatabase,
-			createdAt: entry.createdAt,
-			expiresAt,
-			ttlMs: entry.ttlMs,
-			readLive: entry.readLive,
-			applied: [...entry.appliedSteps.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
-		});
-		if (!/^[A-Za-z0-9_.:-]+$/.test(signed)) refuse(500, "The data gateway failed");
-		const sql = `comment on schema ${quoted(entry.testSchema)} is '${signed}'`;
 		if (client) {
-			await client.query(sql);
+			const expiresAt = entry.expiresAt;
+			const signed = this.#signTestSchemaMeta(entry.testSchema, {
+				v: 1,
+				env: entry.environmentId,
+				source: entry.sourceDatabase,
+				createdAt: entry.createdAt,
+				expiresAt,
+				ttlMs: entry.ttlMs,
+				readLive: entry.readLive,
+				applied: [...entry.appliedSteps.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
+			});
+			if (!/^[A-Za-z0-9_.:-]+$/.test(signed)) refuse(500, "The data gateway failed");
+			await client.query(`comment on schema ${quoted(entry.testSchema)} is '${signed}'`);
 			entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, expiresAt);
 			return;
 		}
-		await this.#pool(entry.database, "qorpera_data_admin")
-			.query(sql)
+		const admin = await this.#pool(entry.database, "qorpera_data_admin")
+			.connect()
 			.catch((error) => {
 				throw storeProblem(error);
 			});
-		entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, expiresAt);
+		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		admin.on("error", onClientError);
+		try {
+			await admin.query("begin; set local lock_timeout = 5000");
+			await admin.query("select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('qorpera_test_meta'), pg_catalog.hashtext($1))", [entry.testSchema]);
+			const row = (
+				await admin.query(
+					"select pg_catalog.obj_description(oid, 'pg_namespace') as comment from pg_catalog.pg_namespace where nspname = $1",
+					[entry.testSchema],
+				)
+			).rows[0];
+			if (!row) {
+				await admin.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
+				return;
+			}
+			const storedMeta = this.#verifyTestSchemaMeta(entry.testSchema, row.comment);
+			if (!storedMeta) {
+				await admin.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
+				return;
+			}
+			const mergedApplied = new Map();
+			for (const pair of storedMeta.applied) {
+				if (Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string" && SHA.test(pair[1] ?? "")) {
+					mergedApplied.set(pair[0], pair[1]);
+				}
+			}
+			const mergedExpiresAt = Math.max(entry.expiresAt, storedMeta.expiresAt);
+			const signed = this.#signTestSchemaMeta(entry.testSchema, {
+				v: 1,
+				env: storedMeta.env,
+				source: storedMeta.source,
+				createdAt: storedMeta.createdAt,
+				expiresAt: mergedExpiresAt,
+				ttlMs: storedMeta.ttlMs,
+				readLive: storedMeta.readLive,
+				applied: [...mergedApplied.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
+			});
+			if (!/^[A-Za-z0-9_.:-]+$/.test(signed)) refuse(500, "The data gateway failed");
+			await admin.query(`comment on schema ${quoted(entry.testSchema)} is '${signed}'`);
+			await admin.query("commit");
+			entry.appliedSteps = mergedApplied;
+			entry.expiresAt = mergedExpiresAt;
+			entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, mergedExpiresAt);
+		} catch (error) {
+			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code)))
+				await admin.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
+			else lost ??= error;
+			throw storeProblem(error);
+		} finally {
+			admin.removeListener("error", onClientError);
+			this.#release(admin, lost);
+		}
+	}
+
+	async #refreshTestSchemaFromStore(entry) {
+		const fresh = await this.#loadTestSchemaFromStore(entry.database, entry.testSchema);
+		if (!fresh || fresh.environmentId !== entry.environmentId || fresh.sourceDatabase !== entry.sourceDatabase) {
+			this.#testSchemas.delete(`${entry.database}/${entry.testSchema}`);
+			refuse(404, `No active test schema ${entry.testSchema} for ${entry.sourceDatabase}`);
+		}
+		entry.appliedSteps = fresh.appliedSteps;
+		entry.expiresAt = Math.max(entry.expiresAt, fresh.expiresAt);
+		entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, fresh.expiresAt);
 	}
 
 	#scheduleTestReaper() {
@@ -5120,6 +5238,7 @@ export class Gateway {
 		entry.lastUsedAt = now;
 		entry.expiresAt = now + entry.ttlMs;
 		this.#testSchemaDbs.add(entry.database);
+		let touchRpcFailed = false;
 		if (this.#testSchemaRpc) {
 			await this.#testSchemaRpc
 				.touch({
@@ -5132,14 +5251,16 @@ export class Gateway {
 					ttlMs: entry.ttlMs,
 					readLive: entry.readLive,
 				})
-				.catch(() => undefined);
+				.catch(() => {
+					touchRpcFailed = true;
+				});
 		} else {
 			this.#scheduleTestReaper();
 		}
 		const persistInterval = Math.max(50, Math.min(10_000, Math.floor(entry.ttlMs / 4)));
-		if (entry.expiresAt - (entry.persistedExpiresAt ?? 0) >= persistInterval && !this.#closed) {
+		if ((touchRpcFailed || entry.expiresAt - (entry.persistedExpiresAt ?? 0) >= persistInterval) && !this.#closed) {
 			const key = `${entry.database}/${entry.testSchema}`;
-			const persistSoon = (entry.persistedExpiresAt ?? 0) <= now + Math.max(250, Math.floor(entry.ttlMs / 2));
+			const persistSoon = touchRpcFailed || (entry.persistedExpiresAt ?? 0) <= now + Math.max(250, Math.floor(entry.ttlMs / 2));
 			let writing = this.#testSchemaCommentWrites.get(key);
 			if (!writing) {
 				writing = this.#persistTestSchemaComment(entry)
@@ -5171,7 +5292,13 @@ export class Gateway {
 		if (entry.expiresAt <= now) {
 			let aliveUntil = null;
 			if (this.#testSchemaRpc) {
-				const checked = await this.#testSchemaRpc.check({ database, schema: testSchemaName }).catch(() => null);
+				let checked;
+				try {
+					checked = await this.#runTriggerRpc(() => this.#testSchemaRpc.check({ database, schema: testSchemaName }));
+				} catch (error) {
+					if (error instanceof Refusal) throw error;
+					refuse(503, "The data gateway primary is unavailable");
+				}
 				if (checked && Number.isSafeInteger(checked.expiresAt) && checked.expiresAt > now) {
 					aliveUntil = checked.expiresAt;
 				}
@@ -5179,8 +5306,15 @@ export class Gateway {
 			if (aliveUntil !== null) {
 				entry.expiresAt = aliveUntil;
 			} else {
-				await this.#dropTestSchemaInternal(entry, { broadcast: true }).catch(() => undefined);
-				refuse(404, `Test schema ${testSchemaName} has expired`);
+				const fresh = await this.#loadTestSchemaFromStore(database, testSchemaName);
+				if (fresh && fresh.expiresAt > now) {
+					entry.expiresAt = fresh.expiresAt;
+					entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, fresh.expiresAt);
+					entry.appliedSteps = fresh.appliedSteps;
+				} else {
+					await this.#dropTestSchemaInternal(entry, { broadcast: true }).catch(() => undefined);
+					refuse(404, `Test schema ${testSchemaName} has expired`);
+				}
 			}
 		}
 		this.#testSchemas.set(key, entry);
@@ -5294,7 +5428,7 @@ export class Gateway {
 			try {
 				await admin.query("begin; set local lock_timeout = 5000");
 				for (const [roleName, limit] of [
-					[ownerRole, POOL_SIZE.to],
+					[ownerRole, Math.min(4, Math.max(POOL_SIZE.to, this.#workers))],
 					[writeRole, POOL_SIZE.tw],
 					[readRole, POOL_SIZE.tr],
 				]) {
@@ -5412,7 +5546,6 @@ export class Gateway {
 			candidates.push({
 				...loaded,
 				expiresAt,
-				appliedSteps: local && local.appliedSteps.size >= loaded.appliedSteps.size ? local.appliedSteps : loaded.appliedSteps,
 			});
 		}
 		if (candidates.length === 0) return { schemas: [] };
@@ -5547,6 +5680,22 @@ export class Gateway {
 			if (entry.expiresAt <= now) expiredEntries.push(entry);
 		}
 		for (const entry of expiredEntries) {
+			if (entry.expiresAt > Date.now()) continue;
+			let fresh = null;
+			try {
+				fresh = await this.#loadTestSchemaFromStore(entry.database, entry.testSchema);
+			} catch {
+				continue;
+			}
+			const checkNow = Date.now();
+			if (entry.expiresAt > checkNow) continue;
+			if (fresh && fresh.expiresAt > checkNow) {
+				entry.expiresAt = fresh.expiresAt;
+				entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, fresh.expiresAt);
+				entry.appliedSteps = fresh.appliedSteps;
+				this.#scheduleTestReaper();
+				continue;
+			}
 			await this.#dropTestSchemaInternal(entry, { broadcast: true }).catch(() => undefined);
 			reaped.push({ database: entry.database, schema: entry.testSchema });
 		}
@@ -5574,6 +5723,9 @@ export class Gateway {
 					if (meta && meta.expiresAt > now) {
 						if (!active) {
 							this.#testSchemas.set(key, this.#testSchemaEntryFromMeta(database, row.name, meta));
+							this.#scheduleTestReaper();
+						} else if (meta.expiresAt > active.expiresAt) {
+							active.expiresAt = meta.expiresAt;
 							this.#scheduleTestReaper();
 						}
 						remaining++;

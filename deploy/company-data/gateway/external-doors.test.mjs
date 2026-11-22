@@ -1900,6 +1900,105 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 				assert.equal(d.status, 200);
 			}
 
+			const applyCreated = await sendCluster(
+				listenPort,
+				"POST",
+				`/v1/company-data/${clusterEnv}/test-schemas`,
+				{ database: "clusterdb", ttlSeconds: 4, texts: allTexts() },
+				authHdr,
+			);
+			assert.equal(applyCreated.status, 200, JSON.stringify(applyCreated.value));
+			const applySchema = applyCreated.value.schema;
+			await Promise.all(
+				Array.from({ length: 8 }, () =>
+					sendCluster(
+						listenPort,
+						"POST",
+						`/v1/company-data/${clusterEnv}/query?schema=${applySchema}`,
+						{ database: "clusterdb", question: "all-items", texts: allTexts() },
+						authHdr,
+					),
+				),
+			);
+			clusterFiles.set("data/clusterdb/tables/002-add-sku.sql", "alter table items add column sku text not null default 'SKU-0';\n");
+			const applied2 = await sendCluster(
+				listenPort,
+				"POST",
+				`/v1/company-data/${clusterEnv}/apply?schema=${applySchema}`,
+				{ database: "clusterdb", texts: allTexts() },
+				authHdr,
+			);
+			assert.equal(applied2.status, 200, JSON.stringify(applied2.value));
+			assert.equal(applied2.value.applied, true);
+			assert.deepEqual(applied2.value.results, [
+				{ name: "001-init", state: "already" },
+				{ name: "002-add-sku", state: "applied" },
+			]);
+			await new Promise((r) => setTimeout(r, 1_100));
+			const touchQueries = await Promise.all(
+				Array.from({ length: 8 }, () =>
+					sendCluster(
+						listenPort,
+						"POST",
+						`/v1/company-data/${clusterEnv}/query?schema=${applySchema}`,
+						{ database: "clusterdb", question: "all-items", texts: allTexts() },
+						authHdr,
+					),
+				),
+			);
+			for (const r of touchQueries) assert.equal(r.status, 200, JSON.stringify(r.value));
+			for (let i = 0; i < 4; i++) {
+				const described = await sendCluster(
+					listenPort,
+					"POST",
+					`/v1/company-data/${clusterEnv}/describe?schema=${applySchema}`,
+					{ database: "clusterdb", texts: allTexts() },
+					authHdr,
+				);
+				assert.equal(described.status, 200, JSON.stringify(described.value));
+				assert.deepEqual(
+					described.value.databases[0].applied.map((s) => s.name),
+					["001-init", "002-add-sku"],
+				);
+				const reapply = await sendCluster(
+					listenPort,
+					"POST",
+					`/v1/company-data/${clusterEnv}/apply?schema=${applySchema}`,
+					{ database: "clusterdb", texts: allTexts() },
+					authHdr,
+				);
+				assert.equal(reapply.status, 200, JSON.stringify(reapply.value));
+				assert.equal(reapply.value.applied, true);
+				assert.deepEqual(reapply.value.results, [
+					{ name: "001-init", state: "already" },
+					{ name: "002-add-sku", state: "already" },
+				]);
+			}
+			clusterFiles.set("data/clusterdb/tables/003-add-note.sql", "alter table items add column note text;\n");
+			const concurrentApplies = await Promise.all(
+				Array.from({ length: 4 }, () =>
+					sendCluster(
+						listenPort,
+						"POST",
+						`/v1/company-data/${clusterEnv}/apply?schema=${applySchema}`,
+						{ database: "clusterdb", texts: allTexts() },
+						authHdr,
+					),
+				),
+			);
+			for (const r of concurrentApplies) {
+				assert.equal(r.status, 200, `concurrent cross-worker apply must succeed: ${JSON.stringify(r.value)}`);
+				assert.equal(r.value.applied, true, JSON.stringify(r.value));
+			}
+			assert.equal(
+				concurrentApplies.filter((r) => r.value.results.some((s) => s.name === "003-add-note" && s.state === "applied")).length,
+				1,
+				"exactly one concurrent worker should execute step 003-add-note while peers see already",
+			);
+			await sendCluster(listenPort, "DELETE", `/v1/company-data/${clusterEnv}/test-schemas/${applySchema}`, null, authHdr);
+			clusterFiles.delete("data/clusterdb/tables/002-add-sku.sql");
+			clusterFiles.delete("data/clusterdb/tables/003-add-note.sql");
+
 			const created = await sendCluster(
 				listenPort,
 				"POST",
@@ -1965,6 +2064,102 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 			);
 			for (const r of afterReap) {
 				assert.equal(r.status, 404, `workers must return 404 after primary drop broadcast, got ${r.status}: ${JSON.stringify(r.value)}`);
+			}
+
+			const ipcPlatform = {
+				async memberReads(_tok, _env, paths) {
+					return paths.map((p) =>
+						clusterFiles.has(p) ? { sha256: sha256(clusterFiles.get(p)), bytes: Buffer.byteLength(clusterFiles.get(p)) } : null,
+					);
+				},
+				async memberListPage(_tok, _env, parent, limit) {
+					const prefix = `${parent}/`;
+					const files = [...clusterFiles.entries()]
+						.filter(([p]) => p.startsWith(prefix) && !p.slice(prefix.length).includes("/"))
+						.map(([p, text]) => ({ name: p.slice(prefix.length), sha256: sha256(text), bytes: Buffer.byteLength(text) }));
+					return { files: files.slice(0, limit), more: files.length > limit };
+				},
+				async memberMayWrite() {
+					return true;
+				},
+				async memberFolders() {
+					return ["clusterdb"];
+				},
+			};
+			const primaryReapGw = new Gateway({
+				store: { host: "127.0.0.1", port, logins },
+				platform: ipcPlatform,
+				limits: { testSchemaTtlMs: 220 },
+				testSchemas: { reaper: false },
+			});
+			const failingRpcWorkerGw = new Gateway({
+				store: { host: "127.0.0.1", port, logins },
+				platform: ipcPlatform,
+				limits: { testSchemaTtlMs: 220 },
+				testSchemas: {
+					reaper: false,
+					rpc: {
+						reserve: (p) => primaryReapGw.reserveTestSchema(p),
+						release: ({ database: d, schema: s }) => primaryReapGw.releaseTestSchema(d, s),
+						touch: async () => {
+							throw new Error("simulated touch IPC loss");
+						},
+						check: async () => {
+							throw Object.assign(new Error("simulated check IPC timeout"), { status: 503 });
+						},
+						expiries: () => ({}),
+					},
+				},
+			});
+			const callerObj = { token, userId, key: "k" };
+			let ipcSchema = null;
+			try {
+				const res = await primaryReapGw.createTestSchema(callerObj, clusterEnv, { database: "clusterdb", texts: allTexts() });
+				ipcSchema = res.schema;
+				await new Promise((r) => setTimeout(r, 140));
+				const extended = await failingRpcWorkerGw.query(
+					callerObj,
+					clusterEnv,
+					{ database: "clusterdb", question: "all-items", texts: allTexts() },
+					{ testSchema: res.schema },
+				);
+				assert.deepEqual(extended.rows, [[1, "live-row"]]);
+				await new Promise((r) => setTimeout(r, 110));
+				const reapedEarly = await primaryReapGw.reapExpiredTestSchemas();
+				assert.equal(
+					reapedEarly.some((one) => one.schema === res.schema),
+					false,
+					"primary must re-read PG comment before dropping a schema whose touch IPC was lost",
+				);
+				const stillInPg = await asSuperuser(
+					companyDatabase(clusterEnv),
+					"select nspname from pg_namespace where nspname = $1",
+					[res.schema],
+				);
+				assert.equal(stillInPg.length, 1);
+
+				await new Promise((r) => setTimeout(r, 260));
+				await assert.rejects(
+					() =>
+						failingRpcWorkerGw.query(
+							callerObj,
+							clusterEnv,
+							{ database: "clusterdb", question: "all-items", texts: allTexts() },
+							{ testSchema: res.schema },
+						),
+					(err) => err?.status === 503,
+					"worker check IPC failure must refuse 503 instead of dropping the schema",
+				);
+				const stillPresentAfterCheckFail = await asSuperuser(
+					companyDatabase(clusterEnv),
+					"select nspname from pg_namespace where nspname = $1",
+					[res.schema],
+				);
+				assert.equal(stillPresentAfterCheckFail.length, 1, "check IPC failure must never drop the schema");
+			} finally {
+				if (ipcSchema) await primaryReapGw.dropTestSchema(callerObj, clusterEnv, ipcSchema).catch(() => undefined);
+				await failingRpcWorkerGw.close();
+				await primaryReapGw.close();
 			}
 		} finally {
 			if (child && child.exitCode === null) {
