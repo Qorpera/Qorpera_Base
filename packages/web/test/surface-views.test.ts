@@ -6,6 +6,8 @@ import {
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SITE_DOOR_PASS, SITE_DOOR_READY, SITE_DOOR_SHOWN, SITE_DOOR_URL } from "../src/app/views/site-view.ts";
+import { SurfaceDoorStage } from "../src/app/views/surface-door.ts";
+import { openPublishPatchnotesSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
 import { linkHref } from "../src/ui/dom.ts";
@@ -645,6 +647,131 @@ describe("the surface page", () => {
 		expect(view.el.querySelector<HTMLElement>(".surface-top-slot")?.hidden).toBe(true);
 		expect(view.el.querySelector(".surface-empty")?.textContent).toContain("This surface isn't available.");
 		view.dispose();
+		store.dispose();
+	});
+
+	it("times out hung preview handshakes with one auto-remint retry and never submits consumed passes", async () => {
+		vi.useFakeTimers();
+		const consumed = new Set<string>();
+		const remints: { previewId: string; stalePass?: string }[] = [];
+		const controller = new AbortController();
+		const stage = new SurfaceDoorStage(controller.signal, {
+			handshakeTimeoutMs: 500,
+			isPassUsable: (_previewId, pass) => !consumed.has(pass),
+			onPassSent: (_previewId, pass) => consumed.add(pass),
+			onNeedFreshPass: (previewId, stalePass) => remints.push({ previewId, stalePass }),
+		});
+		document.body.append(stage.el);
+
+		const pass1 = VALID_PASS;
+		const pass2 = `${VALID_PASS.slice(0, -1)}2`;
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], memberPass: pass1 }), "Preview");
+		const firstFrame = stage.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		spyFrameMessages(firstFrame);
+		sendFromFrame(firstFrame, { type: SITE_DOOR_READY });
+		expect(consumed.has(pass1)).toBe(true);
+
+		vi.advanceTimersByTime(500);
+		expect(stage.el.querySelector("iframe.is-staging")).toBeNull();
+		expect(remints).toEqual([{ previewId: PREVIEW_IDS[0], stalePass: pass1 }]);
+
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], memberPass: pass1 }), "Preview");
+		expect(stage.el.querySelector("iframe.is-staging")).toBeNull();
+
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], memberPass: pass2 }), "Preview");
+		expect(stage.el.querySelector("iframe.is-staging")).not.toBeNull();
+		vi.advanceTimersByTime(500);
+		expect(remints).toHaveLength(1);
+		expect(stage.el.querySelector(".surface-frame.is-waiting .surface-state.is-failed")).not.toBeNull();
+
+		const pass3 = `${VALID_PASS.slice(0, -1)}3`;
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[1], memberPass: pass3 }), "Preview 2");
+		const liveFrame = stage.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		spyFrameMessages(liveFrame);
+		sendFromFrame(liveFrame, { type: SITE_DOOR_READY });
+		sendFromFrame(liveFrame, { type: SITE_DOOR_SHOWN });
+		expect(stage.hasShown).toBe(true);
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[1], memberPass: null }), "Preview 2");
+		expect(stage.el.querySelector("iframe.is-shown")).toBe(liveFrame);
+		expect(stage.el.querySelector("iframe.is-staging")).toBeNull();
+
+		controller.abort();
+		vi.useRealTimers();
+	});
+
+	it("preserves a cross-surface drawer when an outgoing SurfaceView disposes and tracks concurrent publish rollbacks", async () => {
+		const brand = summary({
+			id: "22222222-2222-4222-8222-222222222229",
+			slug: "brand",
+			title: "Brand",
+			archetype: "studio",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const rb1 = deferred<ReturnType<typeof session>>();
+		const rb2 = deferred<ReturnType<typeof session>>();
+		let rbCount = 0;
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [summary({ unpublishedChangeCount: 2 }), brand]),
+				getSurfaceWorkspace: vi.fn(async (id: string) =>
+					id === brand.id
+						? workspace(
+								[session(["staged"], { id: "33333333-3333-4333-8333-333333333399", surfaceId: brand.id })],
+								{
+									surface: brand,
+								},
+							)
+						: workspace([session(["merged", "merged"])], { surface: summary({ unpublishedChangeCount: 2 }) }),
+				),
+				undoSurfaceChange: vi.fn(() => {
+					rbCount += 1;
+					return rbCount === 1 ? rb1.promise : rb2.promise;
+				}),
+			}),
+		);
+		await store.load();
+		const websiteView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(websiteView.el);
+		await flush();
+		websiteView.update();
+
+		await store.openSurface("brand");
+		store.openDrawer(brand.id, "33333333-3333-4333-8333-333333333399");
+		websiteView.dispose();
+		expect(store.state.drawer).toEqual({
+			surfaceId: brand.id,
+			sessionId: "33333333-3333-4333-8333-333333333399",
+		});
+
+		HTMLDialogElement.prototype.showModal = function () {
+			this.open = true;
+		};
+		HTMLDialogElement.prototype.close = function () {
+			this.open = false;
+			this.dispatchEvent(new Event("close"));
+		};
+		const websiteSurface = store.state.surfaces.find((item) => item.id === SURFACE)!;
+		const sheet = openPublishPatchnotesSheet(store, websiteSurface);
+		const buttons = [...sheet.el.querySelectorAll<HTMLButtonElement>('[data-act="rollback"]')];
+		expect(buttons).toHaveLength(2);
+		buttons[0]!.click();
+		sheet.el.querySelector<HTMLButtonElement>(`[data-act="rollback"][data-change="${CHANGES[1]}"]`)!.click();
+		expect(
+			sheet.el.querySelector<HTMLButtonElement>(`[data-act="rollback"][data-change="${CHANGES[0]}"]`)?.disabled,
+		).toBe(true);
+		expect(
+			sheet.el.querySelector<HTMLButtonElement>(`[data-act="rollback"][data-change="${CHANGES[1]}"]`)?.disabled,
+		).toBe(true);
+
+		rb1.resolve(session(["staged", "merged"]));
+		await flush();
+		expect(
+			sheet.el.querySelector<HTMLButtonElement>(`[data-act="rollback"][data-change="${CHANGES[1]}"]`)?.disabled,
+		).toBe(true);
+		sheet.close();
+		rb2.resolve(session(["staged", "staged"]));
+		await flush();
 		store.dispose();
 	});
 });

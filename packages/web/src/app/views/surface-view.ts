@@ -208,6 +208,7 @@ export class SurfaceView {
 	#localFrame: HTMLIFrameElement | undefined;
 	#localSiteShown = "";
 	#mountedFor = "";
+	#lastSurfaceId = "";
 	#barShown = "";
 	#framesShown = "";
 	#chromeShown = "";
@@ -239,6 +240,12 @@ export class SurfaceView {
 			onShownChange: () => {
 				const surface = this.surface;
 				if (surface) this.#drawChrome(surface);
+			},
+			isPassUsable: (previewId, pass) => host.store.isPreviewPassUsable(previewId, pass),
+			onPassSent: (previewId, pass) => host.store.markPreviewPassConsumed(previewId, pass),
+			onNeedFreshPass: (previewId, stalePass) => {
+				const surface = this.surface;
+				if (surface) void host.store.remintPreviewPass(surface.id, previewId, stalePass);
 			},
 		});
 		this.#topSlot.append(this.#handoffForm, this.#banner);
@@ -422,7 +429,13 @@ export class SurfaceView {
 		this.#lifetime.abort();
 		this.#mount?.dispose();
 		this.#mount = undefined;
-		this.#host.store.closeDrawer();
+		const ownSurfaceId = this.#lastSurfaceId || this.surface?.id;
+		if (ownSurfaceId) {
+			this.#host.store.clearActiveSurface(ownSurfaceId);
+			if (this.#host.store.state.drawer?.surfaceId === ownSurfaceId) {
+				this.#host.store.closeDrawer();
+			}
+		}
 	}
 
 	update(): void {
@@ -461,6 +474,8 @@ export class SurfaceView {
 			);
 			return;
 		}
+		this.#lastSurfaceId = surface.id;
+		store.setActiveSurface(surface.id);
 		this.#composer.hidden = false;
 		const look = store.lookOf(surface);
 		const reportMode = state.mode === "report" && look.kind !== "report" && surfaceHasReports(state, surface.id);
@@ -1040,7 +1055,7 @@ export class SurfaceView {
 				}
 				applyIdentityTokensToFrame(frame, this.#host.store.companyIdentityTokens());
 			},
-			{ signal: this.#lifetime.signal },
+			{ signal: this.#lifetime.signal, once: true },
 		);
 		frame.srcdoc = html;
 		return frame;
@@ -1174,7 +1189,13 @@ export class SurfaceView {
 				if (!entry) {
 					const abort = new AbortController();
 					const head = buildHead();
-					const stage = new SurfaceDoorStage(abort.signal);
+					const stage = new SurfaceDoorStage(abort.signal, {
+						isPassUsable: (previewId, pass) => store.isPreviewPassUsable(previewId, pass),
+						onPassSent: (previewId, pass) => store.markPreviewPassConsumed(previewId, pass),
+						onNeedFreshPass: (previewId, stalePass) => {
+							void store.remintPreviewPass(surface.id, previewId, stalePass);
+						},
+					});
 					stage.setIdentityTokens(store.companyIdentityTokens());
 					const column = h("div", { class: "surface-compare-column" }, head, stage.el);
 					entry = { stage, column, head, abort };
