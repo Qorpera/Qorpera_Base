@@ -929,6 +929,7 @@ export class SurfacesStore {
 	readonly #workspaceEpoch = new Map<string, number>();
 	readonly #latestWorkspaceReq = new Map<string, number>();
 	readonly #inFlightWorkspaceRefreshes = new Set<string>();
+	readonly #hydratedAttempted = new Set<string>();
 	readonly #previewSyncInFlight = new Set<string>();
 	readonly #previewSyncDirty = new Set<string>();
 	readonly #previewSyncForeground = new Set<string>();
@@ -1116,6 +1117,7 @@ export class SurfacesStore {
 		for (const timer of this.#localTimers) clearTimeout(timer);
 		this.#localTimers.clear();
 		this.#studioUndoSnapshots.clear();
+		this.#hydratedAttempted.clear();
 		this.#previewPassMeta.clear();
 		this.#previewSyncDirty.clear();
 		this.#previewSyncForeground.clear();
@@ -1683,6 +1685,7 @@ export class SurfacesStore {
 		const surface = surfaceBySlug(this.state, slug);
 		if (!surface) return undefined;
 		this.#activeSurfaceId = surface.id;
+		this.#hydratedAttempted.delete(surface.id);
 		if (isLocalSurfaceId(surface.id) || !this.#options.client) {
 			const existing = this.workspace(surface.id) ?? localWorkspace(surface);
 			this.#putWorkspace({ ...existing, surface });
@@ -1691,7 +1694,26 @@ export class SurfacesStore {
 		return this.refreshWorkspace(surface.id);
 	}
 
-	async refreshWorkspace(surfaceId: string, retryDepth = 0): Promise<SurfaceWorkspace | undefined> {
+	hydrateWorkspace(surfaceId: string): void {
+		if (
+			this.state.source !== "cloud" ||
+			isLocalSurfaceId(surfaceId) ||
+			!this.#options.client ||
+			this.state.workspaces[surfaceId] ||
+			this.#inFlightWorkspaceRefreshes.has(surfaceId) ||
+			this.#hydratedAttempted.has(surfaceId)
+		) {
+			return;
+		}
+		this.#hydratedAttempted.add(surfaceId);
+		void this.refreshWorkspace(surfaceId, 0, { background: true });
+	}
+
+	async refreshWorkspace(
+		surfaceId: string,
+		retryDepth = 0,
+		options?: { readonly background?: boolean },
+	): Promise<SurfaceWorkspace | undefined> {
 		const client = this.#options.client;
 		if (!client || isLocalSurfaceId(surfaceId)) return this.workspace(surfaceId);
 		const reqId = ++this.#workspaceReqSeq;
@@ -1710,11 +1732,15 @@ export class SurfacesStore {
 				rerun = retryDepth < 2;
 				result = this.workspace(surfaceId);
 			} else {
-				this.#putWorkspace(workspace, false);
+				this.#putWorkspace(workspace, false, options);
 				result = workspace;
 			}
 		} catch (error) {
-			if (!this.#options.signal.aborted && this.#latestWorkspaceReq.get(surfaceId) === reqId) {
+			if (
+				!options?.background &&
+				!this.#options.signal.aborted &&
+				this.#latestWorkspaceReq.get(surfaceId) === reqId
+			) {
 				this.store.set({ error: describe(error) });
 			}
 			result = undefined;
@@ -1724,7 +1750,7 @@ export class SurfacesStore {
 			}
 		}
 		if (rerun && !this.#options.signal.aborted && this.#latestWorkspaceReq.get(surfaceId) === reqId) {
-			return this.refreshWorkspace(surfaceId, retryDepth + 1);
+			return this.refreshWorkspace(surfaceId, retryDepth + 1, options);
 		}
 		return result;
 	}
@@ -1749,8 +1775,12 @@ export class SurfacesStore {
 		return this.#ensurePreviewPass(surfaceId, previewId);
 	}
 
-	#putWorkspace(workspace: SurfaceWorkspace, bumpEpoch = true): void {
+	#putWorkspace(workspace: SurfaceWorkspace, bumpEpoch = true, options?: { readonly background?: boolean }): void {
 		const surfaceId = workspace.surface.id;
+		const background =
+			options?.background === true &&
+			surfaceId !== this.#activeSurfaceId &&
+			surfaceId !== this.state.drawer?.surfaceId;
 		const prevWorkspace = this.state.workspaces[surfaceId];
 		const prevSurface = prevWorkspace?.surface ?? this.state.surfaces.find((surface) => surface.id === surfaceId);
 		if (bumpEpoch) {
@@ -1780,7 +1810,10 @@ export class SurfacesStore {
 		}
 
 		const canSyncCloudFiles =
-			this.state.source === "cloud" && !isLocalSurfaceId(surfaceId) && Boolean(this.#options.loadCloudFiles);
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(surfaceId) &&
+			Boolean(this.#options.loadCloudFiles) &&
+			(!background || Boolean(this.state.cloudSurfaceFiles[surfaceId]) || this.#cloudFilesLoading.has(surfaceId));
 		const isFolderSurface = workspace.surface.sourceKind === "folder" || workspace.surface.archetype === "studio";
 		const newlyLandedPatches: StudioPatchChange[] = [];
 		const unmergedChangeIds = new Set<string>();
@@ -1906,7 +1939,7 @@ export class SurfacesStore {
 			};
 		});
 		const stored = this.state.workspaces[surfaceId];
-		if (stored && !isLocalSurfaceId(surfaceId) && this.#options.client?.mintPreviewPass) {
+		if (!background && stored && !isLocalSurfaceId(surfaceId) && this.#options.client?.mintPreviewPass) {
 			const frames = [stored.previewState.primary, ...stored.previewState.compareFrames.map((entry) => entry.frame)];
 			for (const frame of frames) {
 				if (frame.status === "ready" && frame.previewId && !frame.memberPass) {
@@ -1920,11 +1953,12 @@ export class SurfacesStore {
 		if (canSyncCloudFiles) {
 			if (needsVisibleFileReload) {
 				void this.refreshCloudFiles(workspace.surface, { visible: true });
-			} else if (!this.state.cloudSurfaceFiles[surfaceId]) {
+			} else if (!background && !this.state.cloudSurfaceFiles[surfaceId]) {
 				void this.refreshCloudFiles(workspace.surface);
 			}
 		}
 		if (
+			!background &&
 			stored &&
 			this.state.source === "cloud" &&
 			!isLocalSurfaceId(workspace.surface.id) &&
@@ -2169,6 +2203,7 @@ export class SurfacesStore {
 				return;
 			}
 			if (this.state.source === "cloud") {
+				this.#hydratedAttempted.clear();
 				void this.refreshSurfaces();
 				const client = this.#options.client;
 				if (client) void this.#loadAutomations(client);
@@ -2177,15 +2212,18 @@ export class SurfacesStore {
 				);
 				const refreshed = new Set<string>();
 				for (const workspace of workspaces) {
-					const relevant =
+					const foreground =
 						workspace.surface.id === this.#activeSurfaceId ||
-						workspace.surface.id === this.state.drawer?.surfaceId ||
+						workspace.surface.id === this.state.drawer?.surfaceId;
+					const activePoll =
+						foreground ||
 						this.#workspaceNeedsPoll(workspace) ||
 						(!this.#activeSurfaceId && workspaces.length <= 1);
-					if (!relevant) continue;
+					const hasCrew = workspace.activeSessions.length > 0 || openExplorations(workspace).length > 0;
+					if (!activePoll && !hasCrew) continue;
 					refreshed.add(workspace.surface.id);
-					void this.refreshWorkspace(workspace.surface.id);
-					if (reloadFiles) void this.refreshCloudFiles(workspace.surface);
+					void this.refreshWorkspace(workspace.surface.id, 0, { background: !foreground });
+					if (reloadFiles && activePoll) void this.refreshCloudFiles(workspace.surface);
 				}
 				if (reloadFiles) {
 					const identity = findIdentitySurface(this.state);
@@ -2218,7 +2256,9 @@ export class SurfacesStore {
 				this.#workspaceNeedsPoll(workspace) &&
 				!this.#inFlightWorkspaceRefreshes.has(workspace.surface.id)
 			) {
-				void this.refreshWorkspace(workspace.surface.id);
+				const foreground =
+					workspace.surface.id === this.#activeSurfaceId || workspace.surface.id === this.state.drawer?.surfaceId;
+				void this.refreshWorkspace(workspace.surface.id, 0, { background: !foreground });
 			}
 		}
 	}
@@ -2653,6 +2693,7 @@ export class SurfacesStore {
 	async archiveSurface(surfaceId: string): Promise<boolean> {
 		const remove = () => {
 			this.#surfacesMutationEpoch += 1;
+			this.#hydratedAttempted.delete(surfaceId);
 			this.store.set((state) => {
 				const workspaces = { ...state.workspaces };
 				delete workspaces[surfaceId];
@@ -3684,7 +3725,25 @@ export class SurfacesStore {
 				startEpoch === this.#surfacesMutationEpoch &&
 				surfaces.length
 			) {
-				this.store.set({ surfaces: sortSurfaces(surfaces) });
+				const prevById = new Map(this.state.surfaces.map((surface) => [surface.id, surface]));
+				const next = sortSurfaces(surfaces);
+				this.store.set({ surfaces: next });
+				for (const surface of next) {
+					if (surface.status !== "active" || isLocalSurfaceId(surface.id)) continue;
+					const prev = prevById.get(surface.id);
+					const workspace = this.state.workspaces[surface.id];
+					const changed = surfaceCountsChanged(prev, surface);
+					if (changed) this.#hydratedAttempted.delete(surface.id);
+					if (
+						workspace &&
+						!this.#inFlightWorkspaceRefreshes.has(surface.id) &&
+						(changed || (surface.activeSessionCount === 0 && workspace.activeSessions.length > 0))
+					) {
+						const foreground =
+							surface.id === this.#activeSurfaceId || surface.id === this.state.drawer?.surfaceId;
+						void this.refreshWorkspace(surface.id, 0, { background: !foreground });
+					}
+				}
 			}
 		} catch {
 			/* WHY: Counts refresh opportunistically; the last good list stays on screen. */
@@ -3758,6 +3817,16 @@ export class SurfacesStore {
 		if (client) await this.#loadAutomations(client);
 		return true;
 	}
+}
+
+function surfaceCountsChanged(prev: SurfaceSummary | undefined, next: SurfaceSummary): boolean {
+	if (!prev) return false;
+	return (
+		prev.activeSessionCount !== next.activeSessionCount ||
+		prev.runningSessionCount !== next.runningSessionCount ||
+		prev.pendingChangeCount !== next.pendingChangeCount ||
+		prev.needsAttentionCount !== next.needsAttentionCount
+	);
 }
 
 function sortSurfaces(surfaces: readonly SurfaceSummary[]): SurfaceSummary[] {
