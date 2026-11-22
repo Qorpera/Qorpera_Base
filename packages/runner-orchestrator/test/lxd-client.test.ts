@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	defaultLxdRequestTimeoutMs,
 	type LxdCreateInstanceRequest,
 	type LxdCreateStorageVolumeRequest,
 	LxdOperationFailed,
@@ -1542,6 +1543,15 @@ describe("LXD exec stream", () => {
 	});
 
 	it("honors explicit waitSeconds above operationTimeoutSeconds on un-signalled operation waits", async () => {
+		expect(defaultLxdRequestTimeoutMs("/1.0/operations/op-1/wait?timeout=600", 120)).toBe(605_000);
+		expect(defaultLxdRequestTimeoutMs("/1.0/operations/op-1/wait?timeout=5&project=qorpera-runners", 120)).toBe(
+			10_000,
+		);
+		expect(defaultLxdRequestTimeoutMs("/1.0/operations/op-1/wait?project=qorpera-runners&timeout=600", 30)).toBe(
+			605_000,
+		);
+		expect(defaultLxdRequestTimeoutMs("/1.0/instances/stalled?project=qorpera-runners", 30)).toBe(30_000);
+
 		const root = await mkdtemp(join(tmpdir(), "qorpera-lxd-wait-"));
 		roots.push(root);
 		const socket = join(root, "lxd.socket");

@@ -1575,6 +1575,11 @@ function validCodingMemoryPath(path: string): boolean {
 	return Number.isSafeInteger(uid) && uid >= 200_000 && uid <= 524_287;
 }
 
+export function defaultLxdRequestTimeoutMs(path: string, operationTimeoutSeconds: number): number {
+	const waitMatch = /\/wait\?(?:.*&)?timeout=(\d+)(?:&|$)/.exec(path);
+	return waitMatch ? (Number(waitMatch[1]) + 5) * 1000 : operationTimeoutSeconds * 1000;
+}
+
 export class LxdUnixClient
 	implements
 		LxdCodeHostClient,
@@ -4223,8 +4228,7 @@ export class LxdUnixClient
 		format: "json" | "text" = "json",
 	): Promise<HttpResult> {
 		if (!signal) {
-			const waitMatch = /\/wait\?(?:.*&)?timeout=(\d+)(?:&|$)/.exec(path);
-			const defaultTimeoutMs = waitMatch ? (Number(waitMatch[1]) + 5) * 1000 : this.#operationTimeoutSeconds * 1000;
+			const defaultTimeoutMs = defaultLxdRequestTimeoutMs(path, this.#operationTimeoutSeconds);
 			return withTimeoutScope(undefined, defaultTimeoutMs, (checked) =>
 				this.#requestPayload(method, path, payload, headers, checked, maximumResponseBytes, format),
 			);
