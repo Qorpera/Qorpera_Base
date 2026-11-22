@@ -2011,4 +2011,329 @@ describe("LXD native login gateway and the node's shared execution host", () => 
 			}
 		});
 	});
+
+	it("rejects oversized /v1/provider-target responses on the first overflow chunk and releases the identity lock", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "ABCD-EFGH" },
+			]);
+		boundary.control.recovery = "established";
+		let providerTargetAttempts = 0;
+		let emitted = 0;
+		let chunksReadAfterLimit = 0;
+		let capturedSignal: AbortSignal | undefined;
+		const wrappedFetch: typeof fetch = async (input, init) => {
+			if (String(input) === "https://recovery.example.test:10000/v1/provider-target") {
+				providerTargetAttempts += 1;
+				capturedSignal = init?.signal ?? undefined;
+				if (providerTargetAttempts === 1) {
+					const body = new ReadableStream<Uint8Array>(
+						{
+							pull(controller) {
+								emitted += 1;
+								// WHY: Each 64 KiB chunk fills MAX_RESPONSE_BYTES; chunk 2 overflows and must cancel before chunk 3+.
+								if (emitted > 2) {
+									chunksReadAfterLimit += 1;
+									controller.close();
+									return;
+								}
+								controller.enqueue(new Uint8Array(64 * 1024));
+							},
+						},
+						{ highWaterMark: 0 },
+					);
+					return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+				}
+			}
+			return boundary.fetchImplementation(input, init);
+		};
+		const gateway = new LxdNativeLoginGateway(
+			{
+				...config(root),
+				identityRecoveryRegistrarCapability: "r".repeat(43),
+				guestManifestSha256: "m".repeat(64),
+				recoveryWaitMs: 5000,
+			},
+			lxd,
+			wrappedFetch,
+		);
+		const first = await gateway.handle(loginRequest());
+		expect(first.status).toBe(503);
+		expect(capturedSignal).toBeDefined();
+		expect(emitted).toBe(2);
+		expect(chunksReadAfterLimit).toBe(0);
+		// WHY: A failed recovery registration must release #exclusive so the next attempt for the same identity succeeds.
+		const second = await gateway.handle(loginRequest());
+		expect(second.status).toBe(200);
+		expect(providerTargetAttempts).toBe(2);
+	});
+
+	it("aborts a hung /v1/provider-target request at 30s and releases the identity lock", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			boundary = fetchBoundary([
+				{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "ABCD-EFGH" },
+			]);
+		boundary.control.recovery = "established";
+		let providerTargetAttempts = 0;
+		let capturedSignal: AbortSignal | undefined;
+		let hitProviderTarget!: () => void;
+		const entered = new Promise<void>((resolve) => {
+			hitProviderTarget = resolve;
+		});
+		const wrappedFetch: typeof fetch = async (input, init) => {
+			if (String(input) === "https://recovery.example.test:10000/v1/provider-target") {
+				providerTargetAttempts += 1;
+				if (providerTargetAttempts === 1) {
+					capturedSignal = init?.signal ?? undefined;
+					hitProviderTarget();
+					return new Promise<Response>((_resolve, reject) => {
+						init?.signal?.addEventListener("abort", () => reject(init.signal?.reason ?? new Error("aborted")), {
+							once: true,
+						});
+					});
+				}
+			}
+			return boundary.fetchImplementation(input, init);
+		};
+		const gateway = new LxdNativeLoginGateway(
+			{
+				...config(root),
+				identityRecoveryRegistrarCapability: "r".repeat(43),
+				guestManifestSha256: "m".repeat(64),
+				loginPreparingAfterMs: 60_000,
+				recoveryWaitMs: 60_000,
+			},
+			lxd,
+			wrappedFetch,
+		);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		let first: Awaited<ReturnType<LxdNativeLoginGateway["handle"]>>;
+		try {
+			const pending = gateway.handle(loginRequest());
+			await entered;
+			await vi.advanceTimersByTimeAsync(30_000);
+			first = await pending;
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(first.status).toBe(503);
+		expect(capturedSignal?.aborted).toBe(true);
+		const second = await gateway.handle(loginRequest());
+		expect(second.status).toBe(200);
+		expect(providerTargetAttempts).toBe(2);
+	});
+
+	it("reconciles journals for independent login identities concurrently", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			secondLoginId = "10000000-0000-4000-8000-000000000099",
+			secondIdentityId = "10000000-0000-4000-8000-000000000098";
+		const b1 = fetchBoundary([
+			{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "AAAA-BBBB" },
+		]);
+		const g1 = new LxdNativeLoginGateway(config(root), lxd, b1.fetchImplementation);
+		expect((await g1.handle(loginRequest())).status).toBe(200);
+		lxd.instance = undefined;
+		lxd.volume = undefined;
+		const b2 = fetchBoundary([
+			{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "CCCC-DDDD" },
+		]);
+		const secondFetch: typeof fetch = async (input, init) => {
+			const res = await b2.fetchImplementation(input, init);
+			const text = await res.text();
+			const rewritten = text.replaceAll(loginId, secondLoginId).replaceAll(computeIdentityId, secondIdentityId);
+			return new Response(rewritten, { status: res.status, headers: res.headers });
+		};
+		const g2 = new LxdNativeLoginGateway(config(root), lxd, secondFetch);
+		expect(
+			(await g2.handle(loginRequest(loginBody({ login_id: secondLoginId, compute_identity_id: secondIdentityId }))))
+				.status,
+		).toBe(200);
+
+		const allocationMeta = new Map<string, { loginId: string; computeIdentityId: string }>();
+		for (const [requests, expectedLoginId, expectedIdentityId] of [
+			[b1.requests, loginId, computeIdentityId],
+			[b2.requests, secondLoginId, secondIdentityId],
+		] as const) {
+			const reserve = requests.find((entry) => entry.url.endsWith("qorpera_reserve_runtime_login_machine"));
+			const parsed = JSON.parse(reserve?.body ?? "{}") as { p_allocation_id?: string };
+			expect(parsed.p_allocation_id).toBeTypeOf("string");
+			allocationMeta.set(parsed.p_allocation_id!, {
+				loginId: expectedLoginId,
+				computeIdentityId: expectedIdentityId,
+			});
+		}
+
+		let inFlight = 0;
+		let maxInFlight = 0;
+		let releaseBarrier!: () => void;
+		const barrier = new Promise<void>((resolveBarrier) => {
+			releaseBarrier = resolveBarrier;
+		});
+		const reconcileBoundary = fetchBoundary([]);
+		const reconcileFetch: typeof fetch = async (input, init) => {
+			if (String(input).endsWith("qorpera_describe_runtime_login_machine")) {
+				const args = JSON.parse(String(init?.body ?? "{}")) as {
+					p_allocation_id: string;
+				};
+				const meta = allocationMeta.get(args.p_allocation_id);
+				expect(meta).toBeDefined();
+				inFlight += 1;
+				maxInFlight = Math.max(maxInFlight, inFlight);
+				if (inFlight >= 2) releaseBarrier();
+				else await Promise.race([barrier, new Promise((r) => setTimeout(r, 250))]);
+				inFlight -= 1;
+				return Response.json({
+					allocationId: args.p_allocation_id,
+					loginId: meta!.loginId,
+					profileId,
+					computeIdentityId: meta!.computeIdentityId,
+					status: "pending",
+					expiresAt,
+					releasedAt: null,
+					cleanupRequired: false,
+				});
+			}
+			return reconcileBoundary.fetchImplementation(input, init);
+		};
+		const reconciler = new LxdNativeLoginGateway(config(root), lxd, reconcileFetch);
+		const result = await reconciler.reconcile(new AbortController().signal);
+		expect(result).toEqual({ scanned: 2, unconfirmed: 0 });
+		expect(maxInFlight).toBe(2);
+	});
+
+	it("bounds each reconciled identity to 20s and waits for all workers to settle on abort", async () => {
+		const root = await stateRoot(),
+			lxd = new FakeLxd(),
+			secondLoginId = "10000000-0000-4000-8000-000000000097",
+			secondIdentityId = "10000000-0000-4000-8000-000000000096";
+		const b1 = fetchBoundary([
+			{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "AAAA-BBBB" },
+		]);
+		const g1 = new LxdNativeLoginGateway(config(root), lxd, b1.fetchImplementation);
+		expect((await g1.handle(loginRequest())).status).toBe(200);
+		lxd.instance = undefined;
+		lxd.volume = undefined;
+		const b2 = fetchBoundary([
+			{ status: "awaiting_member", interactionUrl: "https://provider.example/device", userCode: "CCCC-DDDD" },
+		]);
+		const secondFetch: typeof fetch = async (input, init) => {
+			const res = await b2.fetchImplementation(input, init);
+			const text = await res.text();
+			const rewritten = text.replaceAll(loginId, secondLoginId).replaceAll(computeIdentityId, secondIdentityId);
+			return new Response(rewritten, { status: res.status, headers: res.headers });
+		};
+		const g2 = new LxdNativeLoginGateway(config(root), lxd, secondFetch);
+		expect(
+			(await g2.handle(loginRequest(loginBody({ login_id: secondLoginId, compute_identity_id: secondIdentityId }))))
+				.status,
+		).toBe(200);
+
+		const allocationMeta = new Map<string, { loginId: string; computeIdentityId: string }>();
+		for (const [requests, expectedLoginId, expectedIdentityId] of [
+			[b1.requests, loginId, computeIdentityId],
+			[b2.requests, secondLoginId, secondIdentityId],
+		] as const) {
+			const reserve = requests.find((entry) => entry.url.endsWith("qorpera_reserve_runtime_login_machine"));
+			const parsed = JSON.parse(reserve?.body ?? "{}") as { p_allocation_id?: string };
+			allocationMeta.set(parsed.p_allocation_id!, {
+				loginId: expectedLoginId,
+				computeIdentityId: expectedIdentityId,
+			});
+		}
+
+		let hitSlow!: () => void;
+		const slowEntered = new Promise<void>((resolve) => {
+			hitSlow = resolve;
+		});
+		let hitFast!: () => void;
+		const fastCompleted = new Promise<void>((resolve) => {
+			hitFast = resolve;
+		});
+		const reconcileBoundary = fetchBoundary([]);
+		const timeoutFetch: typeof fetch = async (input, init) => {
+			if (String(input).endsWith("qorpera_describe_runtime_login_machine")) {
+				const args = JSON.parse(String(init?.body ?? "{}")) as { p_allocation_id: string };
+				const meta = allocationMeta.get(args.p_allocation_id)!;
+				if (meta.loginId === loginId) {
+					hitSlow();
+					return new Promise<Response>((_resolve, reject) => {
+						init?.signal?.addEventListener("abort", () => reject(init.signal?.reason ?? new Error("aborted")), {
+							once: true,
+						});
+					});
+				}
+				hitFast();
+				return Response.json({
+					allocationId: args.p_allocation_id,
+					loginId: meta.loginId,
+					profileId,
+					computeIdentityId: meta.computeIdentityId,
+					status: "pending",
+					expiresAt,
+					releasedAt: null,
+					cleanupRequired: false,
+				});
+			}
+			return reconcileBoundary.fetchImplementation(input, init);
+		};
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		let timeoutResult: { scanned: number; unconfirmed: number };
+		try {
+			const reconciler = new LxdNativeLoginGateway(config(root), lxd, timeoutFetch);
+			const pass = reconciler.reconcile(new AbortController().signal);
+			await Promise.all([slowEntered, fastCompleted]);
+			await vi.advanceTimersByTimeAsync(20_000);
+			timeoutResult = await pass;
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(timeoutResult).toEqual({ scanned: 2, unconfirmed: 1 });
+
+		// WHY: On pass abort, reconcile must wait for all in-flight workers to settle before rejecting.
+		let bothEntered!: () => void;
+		let seen = 0;
+		const entered = new Promise<void>((resolve) => {
+			bothEntered = resolve;
+		});
+		let releaseWorker!: () => void;
+		const workerHold = new Promise<void>((resolve) => {
+			releaseWorker = resolve;
+		});
+		let slowWorkerFinished = false;
+		const abortFetch: typeof fetch = async (input, init) => {
+			if (String(input).endsWith("qorpera_describe_runtime_login_machine")) {
+				const args = JSON.parse(String(init?.body ?? "{}")) as { p_allocation_id: string };
+				const meta = allocationMeta.get(args.p_allocation_id)!;
+				seen += 1;
+				if (seen >= 2) bothEntered();
+				if (meta.loginId === loginId) {
+					return new Promise<Response>((_resolve, reject) => {
+						init?.signal?.addEventListener("abort", () => reject(init.signal?.reason ?? new Error("aborted")), {
+							once: true,
+						});
+					});
+				}
+				await workerHold;
+				slowWorkerFinished = true;
+				throw new Error("worker failed after abort");
+			}
+			return reconcileBoundary.fetchImplementation(input, init);
+		};
+		const abortController = new AbortController();
+		const reconciler2 = new LxdNativeLoginGateway(config(root), lxd, abortFetch);
+		let settled = false;
+		const abortedPass = reconciler2.reconcile(abortController.signal).finally(() => {
+			settled = true;
+		});
+		await entered;
+		abortController.abort(new Error("shutdown"));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(settled).toBe(false);
+		releaseWorker();
+		await expect(abortedPass).rejects.toThrow("shutdown");
+		expect(slowWorkerFinished).toBe(true);
+	});
 });

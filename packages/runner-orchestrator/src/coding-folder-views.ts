@@ -10,6 +10,7 @@ import {
 	normalizeUuid,
 	parseClosedRecord,
 } from "@qorpera/contracts";
+import { withTimeoutScope } from "./abort-scope.ts";
 import { CodingControlRefused } from "./coding-executor.ts";
 import {
 	type CodingFolderBoundary,
@@ -224,47 +225,48 @@ export class CodingFolderViews {
 		const { machineId } = lxdCodingMachinePlan(session.machine).binding;
 		// A whole number of milliseconds within a timer's range: `until` may be any time, a fraction of one too.
 		const left = Math.min(TIMER_MAX_MS, Math.max(1, Math.floor(until - Date.now())));
-		const deadline = AbortSignal.any([signal, AbortSignal.timeout(left)]);
 		const asked = { ...session, workerId, environmentId, attachmentToken, bootId };
-		try {
-			await this.install(session.machine, deadline);
-		} catch (error) {
-			throw stopped(signal, deadline, error, "CODING_FOLDER_GUEST_INSTALL_UNCONFIRMED");
-		}
-		const recorded = <T>(work: Promise<T>) =>
-			work.catch((error: unknown) => {
-				throw stopped(signal, deadline, error, RECORD_FAILED);
+		return withTimeoutScope(signal, left, async (deadline) => {
+			try {
+				await this.install(session.machine, deadline);
+			} catch (error) {
+				throw stopped(signal, deadline, error, "CODING_FOLDER_GUEST_INSTALL_UNCONFIRMED");
+			}
+			const recorded = <T>(work: Promise<T>) =>
+				work.catch((error: unknown) => {
+					throw stopped(signal, deadline, error, RECORD_FAILED);
+				});
+			const held = await recorded(this.#held(workerId, deadline));
+			if (held?.machineId === machineId && held.bootId === bootId && held.attachmentToken === attachmentToken) {
+				const shown = await this.#mount(asked, held, until, signal, deadline);
+				if (shown.mount === "mounted") return { viewId: held.viewId, packageCaches: shown.packageCaches };
+				// The node closed it: what it read may still be in the machine. It stays held, for the restart to end.
+				throw new CodingFolderRestartRequired("VIEW_CLOSED");
+			}
+			const finished = held?.machineId ?? machineId;
+			const {
+				reads,
+				unreadable,
+				ends: [replaced],
+			} = await recorded(this.#finish(finished, held ? [held] : [], deadline));
+			// A view opened now would answer unproven until the machine restarted, or be refused until it got a new disk.
+			if (finished === machineId && unreadable) throw new CodingFolderRestartRequired("READS_UNREADABLE");
+			if (finished === machineId && reads === "unproven") throw new CodingFolderRestartRequired("READS_UNPROVEN");
+			const view = await this.#open(asked, machineId, until, signal, deadline);
+			await recorded(this.#keep(view, deadline)).catch(async (error: unknown) => {
+				// Unrecorded, it would outlive a restart unended: it closes, never shown.
+				await this.#close(view, signal);
+				throw error;
 			});
-		const held = await recorded(this.#held(workerId, deadline));
-		if (held?.machineId === machineId && held.bootId === bootId && held.attachmentToken === attachmentToken) {
-			const shown = await this.#mount(asked, held, until, signal, deadline);
-			if (shown.mount === "mounted") return { viewId: held.viewId, packageCaches: shown.packageCaches };
-			// The node closed it: what it read may still be in the machine. It stays held, for the restart to end.
+			// A failed mount leaves the view held: the session's end closes it, and its next attach tries it again. One the
+			// node closed under the mount stays held too, for the restart to end.
+			const shown = await this.#mount(asked, view, until, signal, deadline);
+			if (shown.mount === "mounted")
+				return replaced
+					? { viewId: view.viewId, replaced, packageCaches: shown.packageCaches }
+					: { viewId: view.viewId, packageCaches: shown.packageCaches };
 			throw new CodingFolderRestartRequired("VIEW_CLOSED");
-		}
-		const finished = held?.machineId ?? machineId;
-		const {
-			reads,
-			unreadable,
-			ends: [replaced],
-		} = await recorded(this.#finish(finished, held ? [held] : [], deadline));
-		// A view opened now would answer unproven until the machine restarted, or be refused until it got a new disk.
-		if (finished === machineId && unreadable) throw new CodingFolderRestartRequired("READS_UNREADABLE");
-		if (finished === machineId && reads === "unproven") throw new CodingFolderRestartRequired("READS_UNPROVEN");
-		const view = await this.#open(asked, machineId, until, signal, deadline);
-		await recorded(this.#keep(view, deadline)).catch(async (error: unknown) => {
-			// Unrecorded, it would outlive a restart unended: it closes, never shown.
-			await this.#close(view, signal);
-			throw error;
 		});
-		// A failed mount leaves the view held: the session's end closes it, and its next attach tries it again. One the
-		// node closed under the mount stays held too, for the restart to end.
-		const shown = await this.#mount(asked, view, until, signal, deadline);
-		if (shown.mount === "mounted")
-			return replaced
-				? { viewId: view.viewId, replaced, packageCaches: shown.packageCaches }
-				: { viewId: view.viewId, packageCaches: shown.packageCaches };
-		throw new CodingFolderRestartRequired("VIEW_CLOSED");
 	}
 
 	/** The attachment the session's view was opened under, by its record: an executor that restarted attaches under it
@@ -481,61 +483,63 @@ export class CodingFolderViews {
 	 * mounted before and after it, the folder made if it is missing, and what an interrupted write left removed first.
 	 * Rejects with the caller's reason, or with CODING_FOLDER_VIEW_RECORD_FAILED for anything else, past RECORD_MS too. */
 	async #records<T>(use: (signal: AbortSignal) => Promise<T>, signal: AbortSignal): Promise<T> {
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(RECORD_MS)]);
-		const work = this.#recordWork.then(async () => {
-			checked.throwIfAborted();
-			await this.#assert(checked);
-			await mkdir(this.#root, { mode: 0o700 }).then(
-				() => syncDirectory(posix.dirname(this.#root)),
-				(error: unknown) => {
-					if (!code(error, "EEXIST")) throw error;
-				},
-			);
-			await checkDirectory(this.#root);
-			// A write's temporary file is gone once its use ends, unless the process died in it: half written, or a second
-			// link of the record it became, which no read takes. The folder is this executor's alone (a private rootPath,
-			// deploy/coding-worker/README.md) and its uses never overlap, so any one here now is a dead write's.
-			let swept = false;
-			for (const name of await readdir(this.#root))
-				if (name.startsWith(".write-")) {
-					checked.throwIfAborted();
-					await unlink(posix.join(this.#root, name));
-					swept = true;
-				}
-			if (swept) await syncDirectory(this.#root);
-			const result = await use(checked);
-			await this.#assert(checked);
-			return result;
+		return withTimeoutScope(signal, RECORD_MS, async (checked) => {
+			const work = this.#recordWork.then(async () => {
+				checked.throwIfAborted();
+				await this.#assert(checked);
+				await mkdir(this.#root, { mode: 0o700 }).then(
+					() => syncDirectory(posix.dirname(this.#root)),
+					(error: unknown) => {
+						if (!code(error, "EEXIST")) throw error;
+					},
+				);
+				await checkDirectory(this.#root);
+				// A write's temporary file is gone once its use ends, unless the process died in it: half written, or a second
+				// link of the record it became, which no read takes. The folder is this executor's alone (a private rootPath,
+				// deploy/coding-worker/README.md) and its uses never overlap, so any one here now is a dead write's.
+				let swept = false;
+				for (const name of await readdir(this.#root))
+					if (name.startsWith(".write-")) {
+						checked.throwIfAborted();
+						await unlink(posix.join(this.#root, name));
+						swept = true;
+					}
+				if (swept) await syncDirectory(this.#root);
+				const result = await use(checked);
+				await this.#assert(checked);
+				return result;
+			});
+			// Settled either way: a caller that stopped first leaves no rejection unhandled.
+			this.#recordWork = work.catch(() => undefined);
+			try {
+				return await abortable(work, checked);
+			} catch {
+				if (signal.aborted) throw signal.reason;
+				throw new Error(RECORD_FAILED);
+			}
 		});
-		// Settled either way: a caller that stopped first leaves no rejection unhandled.
-		this.#recordWork = work.catch(() => undefined);
-		try {
-			return await abortable(work, checked);
-		} catch {
-			if (signal.aborted) throw signal.reason;
-			throw new Error(RECORD_FAILED);
-		}
 	}
 
 	async #close(view: HeldView, signal: AbortSignal): Promise<boolean> {
-		const bounded = AbortSignal.any([signal, AbortSignal.timeout(this.#closeMs)]);
-		for (;;) {
-			try {
-				readClosed(
-					await this.#control.call(
-						"qorpera_folder_view_close",
-						{ p_view_id: view.viewId, p_pass: view.pass },
-						bounded,
-					),
-				);
-				return true;
-			} catch (error) {
-				// The core holds no such view: it is gone.
-				if (error instanceof CodingControlRefused) return error.reason === "Folder view is unavailable";
-				if (bounded.aborted) return false;
+		return withTimeoutScope(signal, this.#closeMs, async (bounded) => {
+			for (;;) {
+				try {
+					readClosed(
+						await this.#control.call(
+							"qorpera_folder_view_close",
+							{ p_view_id: view.viewId, p_pass: view.pass },
+							bounded,
+						),
+					);
+					return true;
+				} catch (error) {
+					// The core holds no such view: it is gone.
+					if (error instanceof CodingControlRefused) return error.reason === "Folder view is unavailable";
+					if (bounded.aborted) return false;
+				}
+				if (!(await delay(this.#retryMs, true, { signal: bounded }).catch(() => false))) return false;
 			}
-			if (!(await delay(this.#retryMs, true, { signal: bounded }).catch(() => false))) return false;
-		}
+		});
 	}
 
 	/** Waits to try again, or rejects with `code` once the next try would start past `until`. */
@@ -591,9 +595,9 @@ export class CodingFolderViews {
 			await run(["/usr/bin/mv", "-f", "-T", "--", beside, program.path]);
 		} catch (error) {
 			// Even once the caller stopped: the file's name is random, and nothing else would find it.
-			await this.#exec(project, name, ["/usr/bin/rm", "-f", "--", beside], AbortSignal.timeout(EXEC_MS)).catch(
-				() => undefined,
-			);
+			await withTimeoutScope(undefined, EXEC_MS, (cleanupSignal) =>
+				this.#exec(project, name, ["/usr/bin/rm", "-f", "--", beside], cleanupSignal),
+			).catch(() => undefined);
 			throw error;
 		}
 	}
