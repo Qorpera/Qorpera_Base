@@ -26,9 +26,10 @@ unplugged as gone, and one never seen has a new hour to appear.
 The reconciler (root, the plug unit) reads LXD every few seconds and keeps the map true:
 - a machine that stopped (asleep) keeps its address and its entry, and its connections are flushed once;
 - a machine that is gone (missing from two reads of LXD in a row after it was seen, or never created within an hour of
-  its last plug) is unplugged under the plug lock: its address is quarantined for 15 minutes first, then its lease is
-  removed (dnsmasq reloads), its connections, the exit's per-machine counts and its DNS elements (E8b) are cleared,
-  and its entry is removed;
+  its last plug) is unplugged: under the plug lock its address is quarantined for 15 minutes and marked unflushed, its
+  lease and per-machine nft state (counts, refused flows, brake, DNS, and reach elements) are cleared, and its entry
+  and seen marker are removed; after releasing the plug lock dnsmasq reloads and its connections are flushed, removing
+  the unflushed marker once the flush succeeds;
 - every entry is checked against its machine's LXD config, a running machine's card must be a port of qagent0, and
   every machine on qagent0 must have an entry. Anything else is a problem, and a problem makes the exit unhealthy
   (`qorpera-agent-exit.sh verify` reads <run-dir>/plug.json);
@@ -51,6 +52,7 @@ also against a forged entry, and an address stays tied to its company as long as
 """
 
 import argparse
+import concurrent.futures
 import datetime
 import fcntl
 import http.client
@@ -752,13 +754,26 @@ class Reconciler:
         listed = self.conntrack("-L", "-s", address, netns=self.args.netns)
         if listed is None:
             return None
-        twins = parse_twins(listed.stdout)
+        twins = list(dict.fromkeys(parse_twins(listed.stdout)))
         done = self.conntrack("-D", "-s", address, netns=self.args.netns) is not None
+        twin_commands = []
         for proto, dst, dport, port in twins:
             command = ["-D", "-p", proto, "-s", UPLINK, "-d", dst]
             command += ["--icmp-type", "8", "--icmp-code", "0", "--icmp-id", port] if proto == "icmp" else [
                 "--sport", port, "--dport", dport]
-            done = self.conntrack(*command) is not None and done
+            twin_commands.append(command)
+        if len(twin_commands) <= 1:
+            for command in twin_commands:
+                done = self.conntrack(*command) is not None and done
+        else:
+            def run_twin(command):
+                return command, self.run(["conntrack", *command])
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(twin_commands))) as pool:
+                for command, result in pool.map(run_twin, twin_commands):
+                    if result.returncode != 0 and not (result.returncode == 1 and "0 flow entries" in result.stderr):
+                        self.problems.append(f"conntrack {' '.join(command)} failed: {result.stderr.strip()[:200]}")
+                        done = False
         done = self.conntrack("-D", "-s", address) is not None and done
         return len(twins) if done else None
 
@@ -855,8 +870,9 @@ class Reconciler:
             self.problems.append(f"cannot update the bridge rules: {result.stderr.strip()[:200]}")
 
     def unplug(self, entry, reason):
-        """Under the plug lock, so no plug runs in between; the entry is read again first, and a re-plug (a new time)
-        or a removal by hand since this pass's read keeps or changes what is done."""
+        """Takes the plug lock to re-read the entry (aborting on a newer re-plug), write quarantine and unflushed
+        markers, clear per-machine nft state, and remove lease/entry/seen state; then releases the lock before
+        reloading dnsmasq and flushing connections (removing unflushed once flush succeeds)."""
         address = entry["address"]
         fd = lock(self.paths)
         try:
@@ -872,23 +888,25 @@ class Reconciler:
             quarantine = {"until": time.time() + QUARANTINE_SECONDS, "reason": reason, "company": entry["company"],
                           "machine": entry["machine"], "instance": f"{entry['project']}/{entry['instance']}"}
             write_replace(os.path.join(self.paths.quarantine, address), json.dumps(quarantine, sort_keys=True) + "\n")
+            # WHY: Hold the address via unflushed before releasing plug.lock so slow conntrack flushes never stall concurrent plugs while crashes still retry flush+forget.
+            write_replace(os.path.join(self.paths.unflushed, address), now_iso() + "\n")
             remove(os.path.join(self.paths.dhcp, address))
-            reload = self.run(self.args.reload_dns.split())
-            if reload.returncode != 0:
-                why = reload.stderr.strip()[:200]
-                self.problems.append(f"cannot reload the name service after unplugging {address}: {why}")
-            if self.flush(address) is None:
-                write_replace(os.path.join(self.paths.unflushed, address), now_iso() + "\n")
-            self.forget(address)
             verified = os.path.lexists(os.path.join(self.paths.verified, address))
-            self.history("unplugged" if verified else "dropped", entry, reason=reason)
             for directory in (self.paths.verified, self.paths.noted, self.paths.stopped, self.paths.missing):
                 remove(os.path.join(directory, address))
+            self.forget(address)
+            self.history("unplugged" if verified else "dropped", entry, reason=reason)
             remove(self.paths.entry(address))
             # Last: while the seen marker is there, no plug takes the address.
             remove(os.path.join(self.paths.seen, address))
         finally:
             os.close(fd)
+        reload = self.run(self.args.reload_dns.split())
+        if reload.returncode != 0:
+            why = reload.stderr.strip()[:200]
+            self.problems.append(f"cannot reload the name service after unplugging {address}: {why}")
+        if self.flush(address) is not None:
+            remove(os.path.join(self.paths.unflushed, address))
         print(f"unplugged {address} ({entry['project']}/{entry['instance']}): {reason}", flush=True)
         return True
 
@@ -1041,6 +1059,7 @@ class Reconciler:
             if self.flush(name) is None:
                 self.problems.append(f"the connections of {name}, unplugged, could not be ended yet")
             else:
+                self.forget(name)
                 remove(os.path.join(self.paths.unflushed, name))
 
     def write_status(self, at, entries):

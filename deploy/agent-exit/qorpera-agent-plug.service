@@ -3,6 +3,7 @@ Description=Qorpera agent exit: the agent plug's reconciler (client map, leases,
 Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-node/RUNTIME-AGENT-EXIT.md
 After=qorpera-agent-exit.service snap.lxd.daemon.service
 ConditionPathExists=/run/netns/qexit
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh plug
