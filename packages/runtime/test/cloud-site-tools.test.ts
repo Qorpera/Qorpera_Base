@@ -1477,6 +1477,16 @@ describe("manage_site", () => {
 			slug: "saml-shop",
 			port: 3000,
 		});
+		expect(f.reviewed).toEqual([
+			{
+				action: "app_start",
+				slug: "saml-shop",
+				command: "node server.js",
+				port: 3000,
+				healthPath: "/healthz",
+				cwd: "/root/app",
+			},
+		]);
 
 		const health = outcome(
 			await f.boundary.invoke("call_health", "qorpera", "manage_site", {
@@ -1501,6 +1511,7 @@ describe("manage_site", () => {
 			activePort: 3001,
 			restarted: false,
 		});
+		expect(f.reviewed).toHaveLength(2);
 
 		const stopped = outcome(
 			await f.boundary.invoke("call_stop", "qorpera", "manage_site", {
@@ -1510,5 +1521,6 @@ describe("manage_site", () => {
 		);
 		expect(stopped.status, stopped.text).toBe("ok");
 		expect(stopped.answer).toMatchObject({ schema: "qorpera.site-app-stopped/v1", slug: "saml-shop" });
+		expect(f.reviewed).toHaveLength(2);
 	});
 });

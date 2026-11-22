@@ -27,7 +27,7 @@ import {
 	CloudToolRefusal,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
-import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
+import { type CloudNativeToolOperations, cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 /*
@@ -1275,7 +1275,8 @@ export function cloudSiteTools(options: {
 			)
 				refuse("APP_MACHINE_NOT_FOUND: this app link has no active machine");
 			const scope = { machineId: site.machineId };
-			const gw = options.machines?.gateway;
+			const machines = options.machines;
+			const gw = machines?.gateway;
 			const runApp = async <T>(fn: () => Promise<T>): Promise<T> => {
 				try {
 					return await fn();
@@ -1287,22 +1288,68 @@ export function cloudSiteTools(options: {
 					throw error;
 				}
 			};
+			const runMutatingApp = async <T>(
+				perform: (receiptId: string, envelope: string, signal: AbortSignal) => Promise<T>,
+			): Promise<T> => {
+				if (!machines) refuse("APP_CONTROL_UNAVAILABLE: app supervision is not available on this run's gateway");
+				const operationKey = `manage-site.${createHash("sha256").update(context.callId).digest("hex").slice(0, 32)}`;
+				const content = await machines.operations.execute({
+					operation: {
+						tool: "manage_site",
+						toolVersion: CLOUD_MACHINE_TOOL_VERSION,
+						logicalOperationKey: operationKey,
+						arguments: input as unknown as JsonValue,
+						target: { realm: "company_machine", machineId: scope.machineId },
+						requiresCompanyRevision: false,
+					},
+					signal: context.signal,
+					authorize: async (_operation, admittedIdentity) => {
+						if (!isDeepStrictEqual(admittedIdentity, expected)) throw new Error("Manage site identity changed");
+					},
+					perform: async (operation, effect) => {
+						const envelope = cloudNativeToolOperationEnvelope(effect.identity, operation);
+						try {
+							const answer = await perform(effect.receiptId, envelope, effect.signal);
+							return { content: { kind: "json", value: answer as unknown as JsonValue } };
+						} catch (error) {
+							if (error instanceof CloudMachineAppRefusal)
+								return { content: { kind: "json", value: { refused: error.code } } };
+							const refusal = cloudMachineCommandRefusal(error);
+							if (refusal) return { content: { kind: "json", value: { refused: refusal } } };
+							throw error;
+						}
+					},
+				});
+				const answer = content.kind === "json" ? content.value : null;
+				if (
+					answer &&
+					typeof answer === "object" &&
+					!Array.isArray(answer) &&
+					typeof (answer as Record<string, unknown>).refused === "string"
+				)
+					refuse(
+						`${String((answer as Record<string, unknown>).refused)}: ${site.machine} refused ${input.action}`,
+					);
+				return answer as unknown as T;
+			};
 			if (input.action === "app_start") {
 				const appStart = gw?.appStart;
 				if (!appStart) refuse("APP_CONTROL_UNAVAILABLE: app supervision is not available on this run's gateway");
 				const command = input.command ?? "";
 				const port = input.port ?? 0;
-				const started = await runApp(() =>
+				const started = await runMutatingApp((receiptId, envelope, signal) =>
 					appStart(
 						scope,
 						{
+							receiptId,
+							envelope,
 							slug: input.slug,
 							command,
 							port,
 							...(input.healthPath !== undefined ? { healthPath: input.healthPath } : {}),
 							...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
 						},
-						context.signal,
+						signal,
 					),
 				);
 				return {
@@ -1319,7 +1366,9 @@ export function cloudSiteTools(options: {
 			if (input.action === "app_stop") {
 				const appStop = gw?.appStop;
 				if (!appStop) refuse("APP_CONTROL_UNAVAILABLE: app supervision is not available on this run's gateway");
-				const stopped = await runApp(() => appStop(scope, { slug: input.slug }, context.signal));
+				const stopped = await runMutatingApp((receiptId, envelope, signal) =>
+					appStop(scope, { receiptId, envelope, slug: input.slug }, signal),
+				);
 				return {
 					kind: "text",
 					value: cloudToolJsonText({
@@ -1355,15 +1404,17 @@ export function cloudSiteTools(options: {
 			if (input.action === "app_reload") {
 				const appReload = gw?.appReload;
 				if (!appReload) refuse("APP_CONTROL_UNAVAILABLE: app reload is not available on this run's gateway");
-				const reloaded = await runApp(() =>
+				const reloaded = await runMutatingApp((receiptId, envelope, signal) =>
 					appReload(
 						scope,
 						{
+							receiptId,
+							envelope,
 							slug: input.slug,
 							...(input.port !== undefined ? { port: input.port } : {}),
 							...(input.healthPath !== undefined ? { healthPath: input.healthPath } : {}),
 						},
-						context.signal,
+						signal,
 					),
 				);
 				return {

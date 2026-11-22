@@ -68,7 +68,7 @@ begin
 	foreach v_sig in array array[
 		'public.qorpera_site_agent_list_versions(jsonb,text)',
 		'public.qorpera_site_agent_activate_version(jsonb,text,uuid)',
-		'public.qorpera_authorize_machine_app_op(jsonb,jsonb,text,text)'
+		'public.qorpera_authorize_machine_app_op(jsonb,jsonb,text,text,uuid,text)'
 	] loop
 		perform pg_temp.base_assert(
 			not has_function_privilege('anon', v_sig, 'execute')
@@ -529,9 +529,16 @@ end $$;
 do $$
 declare
 	v_binding jsonb := current_setting('qorpera_test.base_binding')::jsonb;
+	v_run_id uuid := (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
 	v_machine uuid := '13240000-0000-4000-8000-0000000000a1';
 	v_scope jsonb := jsonb_build_object('machineId', '13240000-0000-4000-8000-0000000000a1');
 	v_auth jsonb;
+	v_receipt_start uuid := '13240000-0000-4000-8000-000000000801';
+	v_receipt_reload uuid := '13240000-0000-4000-8000-000000000802';
+	v_receipt_stop uuid := '13240000-0000-4000-8000-000000000803';
+	v_env_start text;
+	v_env_reload text;
+	v_env_stop text;
 begin
 	perform pg_temp.base_claims('service_role');
 	v_auth := public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'logs');
@@ -590,12 +597,131 @@ begin
 		'Running app machine authorizes logs op: ' || v_auth::text
 	);
 	perform pg_temp.base_assert(
-		public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'start') ->> 'state' = 'authorized'
-		and public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'health') ->> 'state' = 'authorized'
-		and public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'reload') ->> 'state' = 'authorized'
-		and public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'stop') ->> 'state' = 'authorized',
-		'All five machine app operations authorize for the owning app site'
+		public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'health') ->> 'state' = 'authorized',
+		'Read-only health op authorizes without receipt'
 	);
+
+	v_env_start := jsonb_build_object(
+		'schema', 'qorpera.cloud-tool-operation/v2',
+		'operation', jsonb_build_object(
+			'tool', 'manage_site',
+			'toolVersion', 'qorpera.machine-tools/v1',
+			'logicalOperationKey', 'manage-site.start1',
+			'requiresCompanyRevision', false,
+			'arguments', jsonb_build_object('action', 'app_start', 'slug', 'live-dash', 'command', 'node app.js', 'port', 4000),
+			'target', jsonb_build_object('realm', 'company_machine', 'machineId', v_machine::text)
+		)
+	)::text;
+	v_env_reload := jsonb_build_object(
+		'schema', 'qorpera.cloud-tool-operation/v2',
+		'operation', jsonb_build_object(
+			'tool', 'manage_site',
+			'toolVersion', 'qorpera.machine-tools/v1',
+			'logicalOperationKey', 'manage-site.reload1',
+			'requiresCompanyRevision', false,
+			'arguments', jsonb_build_object('action', 'app_reload', 'slug', 'live-dash', 'port', 4001),
+			'target', jsonb_build_object('realm', 'company_machine', 'machineId', v_machine::text)
+		)
+	)::text;
+	v_env_stop := jsonb_build_object(
+		'schema', 'qorpera.cloud-tool-operation/v2',
+		'operation', jsonb_build_object(
+			'tool', 'manage_site',
+			'toolVersion', 'qorpera.machine-tools/v1',
+			'logicalOperationKey', 'manage-site.stop1',
+			'requiresCompanyRevision', false,
+			'arguments', jsonb_build_object('action', 'app_stop', 'slug', 'live-dash'),
+			'target', jsonb_build_object('realm', 'company_machine', 'machineId', v_machine::text)
+		)
+	)::text;
+
+	perform pg_temp.base_error(
+		format('select public.qorpera_authorize_machine_app_op(%L, %L, %L, %L)', v_binding, v_scope, 'live-dash', 'start'),
+		'22023'
+	);
+	perform pg_temp.base_error(
+		format('select public.qorpera_authorize_machine_app_op(%L, %L, %L, %L, %L, %L)', v_binding, v_scope, 'live-dash', 'start', v_receipt_start, v_env_start),
+		'42501',
+		'Machine app receipt is unavailable'
+	);
+
+	perform public.qorpera_begin_native_tool_operation(
+		v_binding,
+		v_receipt_start,
+		'manage_site:manage-site.start1',
+		encode(extensions.digest(convert_to(v_env_start, 'UTF8'), 'sha256'), 'hex'),
+		repeat('1', 64),
+		false
+	);
+	v_auth := public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'start', v_receipt_start, v_env_start);
+	perform pg_temp.base_assert(
+		v_auth ->> 'state' = 'authorized'
+		and v_auth ->> 'receiptId' = v_receipt_start::text
+		and v_auth #>> '{arguments,command}' = 'node app.js',
+		'Mutating start op authorizes with matching executing receipt: ' || v_auth::text
+	);
+	perform public.qorpera_site_take_down('live-dash', 'Abuse test');
+	perform pg_temp.base_error(
+		format('select public.qorpera_authorize_machine_app_op(%L, %L, %L, %L)', v_binding, v_scope, 'live-dash', 'logs'),
+		'42501',
+		'SITE_TAKEN_DOWN'
+	);
+	perform pg_temp.base_error(
+		format('select public.qorpera_authorize_machine_app_op(%L, %L, %L, %L, %L, %L)', v_binding, v_scope, 'live-dash', 'start', v_receipt_start, v_env_start),
+		'42501',
+		'SITE_TAKEN_DOWN'
+	);
+	perform public.qorpera_site_restore('live-dash');
+	perform public.qorpera_complete_native_tool_operation(
+		v_binding,
+		v_receipt_start,
+		encode(extensions.digest(convert_to(v_env_start, 'UTF8'), 'sha256'), 'hex'),
+		'{}'::jsonb
+	);
+
+	perform public.qorpera_begin_native_tool_operation(
+		v_binding,
+		v_receipt_reload,
+		'manage_site:manage-site.reload1',
+		encode(extensions.digest(convert_to(v_env_reload, 'UTF8'), 'sha256'), 'hex'),
+		repeat('2', 64),
+		false
+	);
+	perform pg_temp.base_assert(
+		public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'reload', v_receipt_reload, v_env_reload) ->> 'state' = 'authorized',
+		'Reload op authorizes with matching executing receipt'
+	);
+	perform public.qorpera_complete_native_tool_operation(
+		v_binding,
+		v_receipt_reload,
+		encode(extensions.digest(convert_to(v_env_reload, 'UTF8'), 'sha256'), 'hex'),
+		'{}'::jsonb
+	);
+
+	perform public.qorpera_begin_native_tool_operation(
+		v_binding,
+		v_receipt_stop,
+		'manage_site:manage-site.stop1',
+		encode(extensions.digest(convert_to(v_env_stop, 'UTF8'), 'sha256'), 'hex'),
+		repeat('3', 64),
+		false
+	);
+	perform pg_temp.base_assert(
+		public.qorpera_authorize_machine_app_op(v_binding, v_scope, 'live-dash', 'stop', v_receipt_stop, v_env_stop) ->> 'state' = 'authorized',
+		'Stop op authorizes with matching executing receipt'
+	);
+	perform public.qorpera_complete_native_tool_operation(
+		v_binding,
+		v_receipt_stop,
+		encode(extensions.digest(convert_to(v_env_stop, 'UTF8'), 'sha256'), 'hex'),
+		'{}'::jsonb
+	);
+	perform pg_temp.base_error(
+		format('select public.qorpera_authorize_machine_app_op(%L, %L, %L, %L, %L, %L)', v_binding, v_scope, 'live-dash', 'stop', v_receipt_stop, v_env_stop),
+		'42501',
+		'Machine app receipt is unavailable'
+	);
+
 	perform pg_temp.base_error(
 		format('select public.qorpera_authorize_machine_app_op(%L, %L, %L, %L)', v_binding, v_scope, 'rollback-shop', 'logs'),
 		'42501'

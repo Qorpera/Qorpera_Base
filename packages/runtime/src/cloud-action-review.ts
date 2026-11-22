@@ -369,9 +369,11 @@ export function cloudActionEffect(
 		case "unpublish_site":
 			return "destructive";
 		case "manage_site":
-			return args.action === "rollback"
+			return args.action === "rollback" ||
+				args.action === "app_start" ||
+				(args.action === "app_reload" && args.port !== undefined)
 				? "external"
-				: args.action === "app_start" || args.action === "app_stop" || args.action === "app_reload"
+				: args.action === "app_stop" || args.action === "app_reload"
 					? "internal"
 					: "read";
 		// A new hook or mailbox lets the outside reach the company (E3a); pausing or resuming one only changes what the
@@ -1109,13 +1111,27 @@ export function describeCloudAction(
 			"Its link stops working. A website's published copy and password are deleted, and its files stay in the company folder; an app link keeps its password for its next share, and the app keeps running on its machine",
 		);
 	} else if (tool.name === "manage_site") {
-		title = "Roll back a company website to a previous version";
 		target = text(args.slug) || null;
-		add("version", args.versionId);
-		add(
-			"effect",
-			"Switches the live website immediately back to the selected previously published version and keeps the current version in version history",
-		);
+		if (args.action === "app_start") {
+			title = "Start a supervised app on a company machine";
+			add("port", args.port);
+			add("command", args.command);
+			add("cwd", args.cwd);
+			add("health", args.healthPath);
+			add("effect", "Runs the command on the app link's machine as a restartable supervised service");
+		} else if (args.action === "app_reload") {
+			title = "Reload a supervised app on a company machine";
+			add("port", args.port);
+			add("health", args.healthPath);
+			add("effect", "Probes and switches or restarts the supervised app service on its machine");
+		} else {
+			title = "Roll back a company website to a previous version";
+			add("version", args.versionId);
+			add(
+				"effect",
+				"Switches the live website immediately back to the selected previously published version and keeps the current version in version history",
+			);
+		}
 	} else if (tool.name === "company_account") {
 		title =
 			args.action === "open"

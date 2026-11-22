@@ -217,9 +217,19 @@ export async function authorizeMachineAppOp(
 	request: CloudMachineAppHttpRequest,
 	signal: AbortSignal,
 ): Promise<MachineAppAuthority> {
+	const inp = request.input;
+	const receiptId = "receiptId" in inp ? inp.receiptId : null;
+	const envelope = "envelope" in inp ? inp.envelope : null;
 	const value = await control.call(
 		"qorpera_authorize_machine_app_op",
-		{ p_binding: request.binding, p_scope: request.scope, p_slug: request.input.slug, p_op: request.input.op },
+		{
+			p_binding: request.binding,
+			p_scope: request.scope,
+			p_slug: inp.slug,
+			p_op: inp.op,
+			p_receipt_id: receiptId,
+			p_envelope: envelope,
+		},
 		signal,
 	);
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MACHINE_APP_AUTHORITY_INVALID");
@@ -233,7 +243,8 @@ export async function authorizeMachineAppOp(
 	if (
 		result.state !== "authorized" ||
 		result.machineId !== request.scope.machineId ||
-		result.slug !== request.input.slug ||
+		result.slug !== inp.slug ||
+		result.receiptId !== receiptId ||
 		typeof result.placementId !== "string" ||
 		!UUID.test(result.placementId) ||
 		typeof result.bootId !== "string" ||
@@ -249,6 +260,21 @@ export async function authorizeMachineAppOp(
 		Number(result.appPort) > 65535
 	)
 		throw new Error("MACHINE_APP_AUTHORITY_INVALID");
+	if (receiptId !== null) {
+		const args = result.arguments as Record<string, unknown> | null;
+		if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("MACHINE_APP_AUTHORITY_INVALID");
+		if (args.action !== `app_${inp.op}` || args.slug !== inp.slug) throw new Error("MACHINE_APP_AUTHORITY_INVALID");
+		if (
+			inp.op === "start" &&
+			(args.command !== inp.command ||
+				args.port !== inp.port ||
+				args.healthPath !== inp.healthPath ||
+				args.cwd !== inp.cwd)
+		)
+			throw new Error("MACHINE_APP_AUTHORITY_INVALID");
+		if (inp.op === "reload" && (args.port !== inp.port || args.healthPath !== inp.healthPath))
+			throw new Error("MACHINE_APP_AUTHORITY_INVALID");
+	}
 	signal.throwIfAborted();
 	return {
 		machineId: result.machineId,

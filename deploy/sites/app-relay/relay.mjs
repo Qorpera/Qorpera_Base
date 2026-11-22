@@ -1490,6 +1490,27 @@ export function createRelay({
 		return count;
 	}
 
+	function evictLargestBuffered(targetPrograms) {
+		let victim = null;
+		let maxBytes = 0;
+		let oldestStall = Number.POSITIVE_INFINITY;
+		for (const prog of targetPrograms) {
+			for (const stream of prog.streams.values()) {
+				const bytes = stream.bufferedBytes?.() ?? 0;
+				if (bytes <= 0 || !stream.evict) continue;
+				const stalled = stream.stalledSince?.() ?? Number.POSITIVE_INFINITY;
+				if (bytes > maxBytes || (bytes === maxBytes && stalled < oldestStall)) {
+					victim = stream;
+					maxBytes = bytes;
+					oldestStall = stalled;
+				}
+			}
+		}
+		if (!victim) return false;
+		victim.evict();
+		return true;
+	}
+
 	function checkDrained() {
 		if (!draining || totalActiveStreams() > 0) return;
 		for (const wake of drainWaiters) wake();
@@ -2142,12 +2163,15 @@ export function createRelay({
 					return broken();
 				}
 				syncBuffered(res.writableLength);
-				if (
-					streamBuffered > maxStreamBuffered ||
-					program.buffered > maxProgramBufferedBytes ||
-					totalHttpBufferedBytes > maxTotalBufferedBytes
-				)
-					return fail(502, text.notAnswering, text.notAnsweringLead);
+				if (streamBuffered > maxStreamBuffered) return fail(502, text.notAnswering, text.notAnsweringLead);
+				// WHY: Evict the heaviest stalled stream when per-program or relay-wide memory caps trip so fast readers are never disrupted.
+				while (program.buffered > maxProgramBufferedBytes) {
+					if (!evictLargestBuffered([program])) break;
+				}
+				while (totalHttpBufferedBytes > maxTotalBufferedBytes) {
+					if (!evictLargestBuffered(programs.values())) break;
+				}
+				if (over) return;
 				if (isEventStream) lastSseWriteAt = Date.now();
 				pendingWindow += payload.length;
 				if (!room) {
@@ -2181,6 +2205,9 @@ export function createRelay({
 			gone() {
 				fail(502, text.notAnswering, text.notAnsweringLead, { tellProgram: false });
 			},
+			bufferedBytes: () => streamBuffered,
+			stalledSince: () => (waitingDrain ? stalledAt : Number.POSITIVE_INFINITY),
+			evict: () => fail(502, text.notAnswering, text.notAnsweringLead),
 			broken,
 		});
 		res.on("drain", () => {

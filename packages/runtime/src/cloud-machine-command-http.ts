@@ -714,6 +714,8 @@ export function isCloudMachineAppRefusal(value: unknown): value is CloudMachineA
 }
 
 export interface CloudMachineAppStartInput {
+	readonly receiptId: string;
+	readonly envelope: string;
 	readonly slug: string;
 	readonly command: string;
 	readonly port: number;
@@ -730,6 +732,8 @@ export interface CloudMachineAppStartAnswer {
 }
 
 export interface CloudMachineAppStopInput {
+	readonly receiptId: string;
+	readonly envelope: string;
 	readonly slug: string;
 }
 
@@ -758,6 +762,8 @@ export interface CloudMachineAppHealthAnswer {
 }
 
 export interface CloudMachineAppReloadInput {
+	readonly receiptId: string;
+	readonly envelope: string;
 	readonly slug: string;
 	readonly port?: number;
 	readonly healthPath?: string;
@@ -1019,10 +1025,22 @@ export function parseCloudMachineAppHttpRequest(value: unknown): CloudMachineApp
 	const op = raw.op;
 	const slug = raw.slug;
 	if (typeof slug !== "string" || !APP_SLUG.test(slug)) throw new Error(ERROR);
+	const validReceipt = (rawReceiptId: unknown, rawEnvelope: unknown): { receiptId: string; envelope: string } => {
+		if (
+			typeof rawReceiptId !== "string" ||
+			!UUID.test(rawReceiptId) ||
+			typeof rawEnvelope !== "string" ||
+			!rawEnvelope ||
+			Buffer.byteLength(rawEnvelope) > 65536
+		)
+			throw new Error(ERROR);
+		return { receiptId: rawReceiptId, envelope: rawEnvelope };
+	};
 	let input: CloudMachineAppOpInput;
 	if (op === "start") {
-		const allowed = new Set(["op", "slug", "command", "port", "healthPath", "cwd"]);
+		const allowed = new Set(["op", "receiptId", "envelope", "slug", "command", "port", "healthPath", "cwd"]);
 		if (Object.keys(raw).some((k) => !allowed.has(k))) throw new Error(ERROR);
+		const receipt = validReceipt(raw.receiptId, raw.envelope);
 		if (
 			typeof raw.command !== "string" ||
 			!raw.command.trim() ||
@@ -1041,18 +1059,23 @@ export function parseCloudMachineAppHttpRequest(value: unknown): CloudMachineApp
 			throw new Error(ERROR);
 		input = Object.freeze({
 			op: "start",
+			...receipt,
 			slug,
 			command: raw.command,
 			port: Number(raw.port),
 			...(raw.healthPath !== undefined ? { healthPath: raw.healthPath } : {}),
 			...(raw.cwd !== undefined ? { cwd: raw.cwd } : {}),
 		});
-	} else if (op === "stop" || op === "health") {
+	} else if (op === "stop") {
+		record(raw, ["op", "receiptId", "envelope", "slug"]);
+		input = Object.freeze({ op: "stop", ...validReceipt(raw.receiptId, raw.envelope), slug });
+	} else if (op === "health") {
 		record(raw, ["op", "slug"]);
-		input = Object.freeze({ op, slug });
+		input = Object.freeze({ op: "health", slug });
 	} else if (op === "reload") {
-		const allowed = new Set(["op", "slug", "port", "healthPath"]);
+		const allowed = new Set(["op", "receiptId", "envelope", "slug", "port", "healthPath"]);
 		if (Object.keys(raw).some((k) => !allowed.has(k))) throw new Error(ERROR);
+		const receipt = validReceipt(raw.receiptId, raw.envelope);
 		if (
 			(raw.port !== undefined &&
 				(!Number.isInteger(raw.port) || Number(raw.port) < 1 || Number(raw.port) > 65535)) ||
@@ -1061,6 +1084,7 @@ export function parseCloudMachineAppHttpRequest(value: unknown): CloudMachineApp
 			throw new Error(ERROR);
 		input = Object.freeze({
 			op: "reload",
+			...receipt,
 			slug,
 			...(raw.port !== undefined ? { port: Number(raw.port) } : {}),
 			...(raw.healthPath !== undefined ? { healthPath: raw.healthPath } : {}),

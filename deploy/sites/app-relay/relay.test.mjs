@@ -4084,6 +4084,87 @@ describe("app relay overhaul: flow control, SSE, auth modes, custom domains, hea
 		await until(() => !relay.isConnected("shop"), "rogue program removed", 2_000);
 	});
 
+	it("evicts the heaviest stalled stream when maxProgramBufferedBytes is exceeded while letting a fast reader complete", async (t) => {
+		const siteId = randomUUID();
+		const token = "e".repeat(32);
+		const claim = `c${"e".repeat(42)}`;
+		const key = `k${"e".repeat(42)}`;
+		const bigChunk = Buffer.alloc(64 * 1024, 0x62);
+
+		const app = createServer((req, res) => {
+			if (req.url === "/fast") {
+				res.writeHead(200, { "content-type": "text/plain" });
+				res.end("fast-reader-ok");
+				return;
+			}
+			res.writeHead(200, { "content-type": "application/octet-stream" });
+			let sent = 0;
+			const pump = () => {
+				while (sent < 32) {
+					sent++;
+					if (!res.write(bigChunk)) return void res.once("drain", pump);
+				}
+				res.end();
+			};
+			pump();
+		});
+		const appPort = await listen(app);
+		const fetcher = async (url, init) => {
+			const body = JSON.parse(init.body);
+			if (url.endsWith("/qorpera_site_app_connect"))
+				return Response.json({ state: "ok", siteId, port: appPort, key: body.p_secret === claim ? key : null });
+			if (url.endsWith("/qorpera_site_app_session"))
+				return Response.json(body.p_token === token ? { state: "open", siteId } : { state: "locked" });
+			return Response.json({ state: "locked" });
+		};
+		const relay = createRelay({
+			api: "http://database.invalid",
+			...RELAY,
+			hostSuffix: SUFFIX,
+			fetch: fetcher,
+			streamWindowBytes: 64 * 1024,
+			windowUpdateThreshold: 32 * 1024,
+			maxProgramBufferedBytes: 128 * 1024,
+			recheckMs: 0,
+			log: () => {},
+		});
+		const relayPort = await listen(relay);
+		const bridge = await startBridge(relayPort, HOST);
+		const child = spawn(process.execPath, [CLIENT, "shop", String(appPort), claim, SUFFIX], {
+			env: { ...process.env, QORPERA_APP_RELAY_ORIGIN: `ws://127.0.0.1:${bridge.port}` },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		t.after(async () => {
+			child.kill("SIGKILL");
+			await bridge.close();
+			relay.closeAllConnections();
+			await new Promise((r) => relay.close(r));
+			app.closeAllConnections();
+			await new Promise((r) => app.close(r));
+		});
+		await until(() => relay.isConnected("shop"), "eviction client to connect", 5_000);
+
+		const stalled = [];
+		for (let i = 0; i < 4; i++) {
+			const sock = connect(relayPort, "127.0.0.1");
+			t.after(() => sock.destroy());
+			await new Promise((resolve) => sock.once("connect", resolve));
+			sock.pause();
+			sock.write(
+				`GET /stall-${i} HTTP/1.1\r\nHost: ${HOST}\r\nX-Forwarded-Host: ${HOST}\r\nCookie: ${GATE_COOKIE}=${token}\r\n\r\n`,
+			);
+			stalled.push(sock);
+		}
+		await sleep(150);
+
+		for (let i = 0; i < 5; i++) {
+			const fast = await httpGet(relayPort, HOST, "/fast", { cookie: `${GATE_COOKIE}=${token}` });
+			assert.equal(fast.status, 200);
+			assert.equal(fast.text, "fast-reader-ok");
+		}
+		for (const sock of stalled) sock.destroy();
+	});
+
 	it("allows high-burst Vite/SPA page loads in public mode via token bucket without 429", async (t) => {
 		const siteId = randomUUID();
 		const claim = `c${"p".repeat(42)}`;

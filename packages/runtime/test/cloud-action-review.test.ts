@@ -3343,7 +3343,17 @@ describe("company sites (20260930550000)", () => {
 		expect(cloudActionEffect(tool("manage_site"), { action: "list_versions", slug: "wristband-shop" })).toBe("read");
 		expect(cloudActionEffect(tool("manage_site"), { action: "app_logs", slug: "wristband-shop" })).toBe("read");
 		expect(cloudActionEffect(tool("manage_site"), { action: "app_health", slug: "wristband-shop" })).toBe("read");
-		expect(cloudActionEffect(tool("manage_site"), { action: "app_start", slug: "wristband-shop" })).toBe("internal");
+		expect(
+			cloudActionEffect(tool("manage_site"), {
+				action: "app_start",
+				slug: "wristband-shop",
+				command: "node server.js",
+				port: 3000,
+			}),
+		).toBe("external");
+		expect(cloudActionEffect(tool("manage_site"), { action: "app_reload", slug: "wristband-shop", port: 3001 })).toBe(
+			"external",
+		);
 		expect(cloudActionEffect(tool("manage_site"), { action: "app_reload", slug: "wristband-shop" })).toBe("internal");
 		expect(cloudActionEffect(tool("manage_site"), { action: "app_stop", slug: "wristband-shop" })).toBe("internal");
 		expect(

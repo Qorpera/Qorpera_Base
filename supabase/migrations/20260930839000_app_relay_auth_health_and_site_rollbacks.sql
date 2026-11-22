@@ -593,21 +593,24 @@ begin
 	delete from public.qorpera_company_site_versions as version
 	where version.site_id = v_site.id and version.state = 'uploading' and version.id <> v_version.id;
 	delete from public.qorpera_company_site_versions as version
-	where version.id in (
-		select old.id
-		from (
-			select v.id,
-				row_number() over (partition by v.site_id order by v.published_at desc nulls last, v.created_at desc, v.id desc) as site_rank,
-				sum(v.total_bytes) over (
-					order by v.published_at desc nulls last, v.created_at desc, v.id desc
-					rows between unbounded preceding and current row
-				) as company_kept_bytes
-			from public.qorpera_company_site_versions as v
-			join public.qorpera_company_sites as s on s.id = v.site_id
-			where s.profile_id = v_site.profile_id and v.tree is null and v.state = 'kept' and v.id <> v_version.id
-		) as old
-		where old.site_rank > 9 or old.company_kept_bytes > 131072000
-	);
+	where version.state = 'kept'
+		and version.tree is null
+		and version.id <> v_version.id
+		and version.id in (
+			select old.id
+			from (
+				select v.id,
+					row_number() over (partition by v.site_id order by v.published_at desc nulls last, v.created_at desc, v.id desc) as site_rank,
+					sum(v.total_bytes) over (
+						order by v.published_at desc nulls last, v.created_at desc, v.id desc
+						rows between unbounded preceding and current row
+					) as company_kept_bytes
+				from public.qorpera_company_site_versions as v
+				join public.qorpera_company_sites as s on s.id = v.site_id
+				where s.profile_id = v_site.profile_id and v.tree is null and v.state = 'kept' and v.id <> v_version.id
+			) as old
+			where old.site_rank > 9 or old.company_kept_bytes > 131072000
+		);
 	return public.qorpera_site_publish_receipt(v_site, v_version);
 end $$;
 
@@ -886,12 +889,18 @@ create function public.qorpera_authorize_machine_app_op(
 	p_binding jsonb,
 	p_scope jsonb,
 	p_slug text,
-	p_op text
+	p_op text,
+	p_receipt_id uuid default null,
+	p_envelope text default null
 )
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
+	v_envelope jsonb;
+	v_operation jsonb;
+	v_args jsonb;
 	v_identity jsonb;
 	v_run public.qorpera_execution_runs%rowtype;
+	v_receipt public.qorpera_run_operation_receipts%rowtype;
 	v_site public.qorpera_company_sites%rowtype;
 	v_machine public.qorpera_company_machines%rowtype;
 	v_placement public.qorpera_company_machine_placements%rowtype;
@@ -904,8 +913,29 @@ begin
 		or p_scope - 'machineId' <> '{}'::jsonb
 		or coalesce(p_scope ->> 'machineId' !~ v_uuid, true)
 		or not public.qorpera_site_slug_valid(p_slug)
-		or p_op not in ('start', 'stop', 'logs', 'health', 'reload') then
+		or p_op not in ('start', 'stop', 'logs', 'health', 'reload')
+		or (v_mutates and (p_receipt_id is null or p_envelope is null or octet_length(p_envelope) > 65536))
+		or (not v_mutates and (p_receipt_id is not null or p_envelope is not null)) then
 		raise exception 'Machine app request is malformed' using errcode = '22023';
+	end if;
+	if v_mutates then
+		begin
+			v_envelope := p_envelope::jsonb;
+		exception when others then
+			raise exception 'Machine app request is malformed' using errcode = '22023';
+		end;
+		v_operation := v_envelope -> 'operation';
+		v_args := v_operation -> 'arguments';
+		if jsonb_typeof(v_envelope) is distinct from 'object'
+			or v_envelope ->> 'schema' is distinct from 'qorpera.cloud-tool-operation/v2'
+			or v_operation ->> 'tool' is distinct from 'manage_site'
+			or v_operation ->> 'toolVersion' is distinct from 'qorpera.machine-tools/v1'
+			or jsonb_typeof(v_args) is distinct from 'object'
+			or v_args ->> 'action' is distinct from 'app_' || p_op
+			or v_args ->> 'slug' is distinct from p_slug
+			or v_operation -> 'target' is distinct from jsonb_build_object('realm', 'company_machine', 'machineId', p_scope ->> 'machineId') then
+			raise exception 'Machine app request is malformed' using errcode = '22023';
+		end if;
 	end if;
 	v_identity := public.qorpera_describe_native_tool_authority(p_binding) -> 'identity';
 	if v_identity ->> 'audienceKind' is distinct from 'company' then
@@ -913,6 +943,17 @@ begin
 	end if;
 	select run.* into v_run from public.qorpera_execution_runs as run where run.id = (p_binding ->> 'runId')::uuid;
 	if v_mutates then
+		select receipt.* into v_receipt
+		from public.qorpera_run_operation_receipts as receipt
+		where receipt.id = p_receipt_id and receipt.run_id = v_run.id;
+		if not found
+			or v_receipt.status is distinct from 'executing'
+			or v_receipt.operation_kind is distinct from 'cloud_tool'
+			or v_receipt.requires_company_revision is distinct from false
+			or v_receipt.input_sha256 is distinct from encode(extensions.digest(convert_to(p_envelope, 'UTF8'), 'sha256'), 'hex')
+			or v_receipt.logical_operation_key is distinct from 'manage_site:' || (v_operation ->> 'logicalOperationKey') then
+			raise exception 'Machine app receipt is unavailable' using errcode = '42501';
+		end if;
 		perform public.qorpera_assert_wake_work_allowed(v_run.id);
 	end if;
 	select machine.* into v_machine
@@ -933,6 +974,9 @@ begin
 		and site.machine_id = v_machine.id;
 	if not found then
 		raise exception 'Machine app authority is unavailable' using errcode = '42501';
+	end if;
+	if v_site.taken_down_at is not null then
+		raise exception 'SITE_TAKEN_DOWN' using errcode = '42501';
 	end if;
 	v_placement := public.qorpera_company_machine_placement(v_machine.id);
 	if v_machine.desired_state <> 'running'
@@ -981,13 +1025,15 @@ begin
 		'providerId', v_placement.binding ->> 'providerId',
 		'runId', v_run.id,
 		'slug', v_site.slug,
-		'appPort', v_site.app_port
+		'appPort', v_site.app_port,
+		'receiptId', p_receipt_id,
+		'arguments', v_args
 	);
 end $$;
 
-revoke all on function public.qorpera_authorize_machine_app_op(jsonb, jsonb, text, text)
+revoke all on function public.qorpera_authorize_machine_app_op(jsonb, jsonb, text, text, uuid, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker, qorpera_site_relay;
-grant execute on function public.qorpera_authorize_machine_app_op(jsonb, jsonb, text, text)
+grant execute on function public.qorpera_authorize_machine_app_op(jsonb, jsonb, text, text, uuid, text)
 	to service_role;
 
 insert into public.qorpera_native_host_calls(name, scope) values

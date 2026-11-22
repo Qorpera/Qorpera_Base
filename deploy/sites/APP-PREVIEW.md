@@ -183,7 +183,8 @@ optional `QORPERA_APP_RELAY_MAX_BODY_BYTES` (default 10 MiB, configurable up to 
   (`TYPE.window = 12`, initial window 256 KiB per stream, `WINDOW_UPDATE` sent after 64 KiB flushed or on `drain`) so
   one slow visitor never stalls sibling streams on the same tunnel. The relay enforces the granted credit on every
   `BODY` frame (closing a misbehaving program with 1002 if it exceeds its window) plus hard `res.writableLength` caps
-  (512 KiB per stream, 2 MiB per program, 32 MiB relay-wide) as a memory backstop; a stalled visitor is cut off after
+  (512 KiB per stream, 2 MiB per program, 32 MiB relay-wide; when a program or relay cap trips, the relay evicts the
+  heaviest stalled stream so fast readers finish uninterrupted) as a memory backstop; a stalled visitor is cut off after
   30 s (or 4 s without forward progress). No program: 503 "This app is not running right now". Timeouts separate
   first-byte (`FIRST_BYTE_TIMEOUT_MS = 60 s` before response headers → 504) from stream idle
   (`STREAM_IDLE_TIMEOUT_MS = 300 s` after response headers). For `Content-Type: text/event-stream` responses, the relay
