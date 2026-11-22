@@ -101,17 +101,18 @@ select pg_temp.folder_perf_patch(
 		$old$		v_seen := 0; v_found := 0; v_paths := '[]'; v_repos := '{}';$old$,
 		$new$		v_seen := 0; v_found := 0; v_paths := '[]'; v_repos := '{}';
 		v_chunk_unit := 0; v_chunk_version := '00000000-0000-0000-0000-000000000000';$new$,
-		$old$		for v_version in select version.path, version.op, version.kind, version.version
+		$old$		-- One version at a time, in unit order, so the scan stops at the 21st readable one or the cap.
+		for v_version in select version.path, version.op, version.kind, version.version
 			from public.qorpera_folder_path_versions as version
 			where version.commit_id = (v_journal.commit_row).id
 			order by version.unit_no, version.version$old$,
-		$new$		<<chunks>>
+		$new$		-- WHY: Read 64-row keyset chunks in unit order so the scan stops near the 21st readable version or the cap while batching authority lookups.
+		<<chunks>>
 		loop
 			v_chunk_limit := least(64, v_cap + 1 - v_seen);
 			exit chunks when v_chunk_limit <= 0;
 			v_chunk_rows := 0;
 			for v_version in
-				-- WHY: Resolve covering resources and read authority per 64-row keyset chunk so readable commits stop near row 21.
 				with rows as materialized (
 					select version.unit_no, version.path, version.op, version.kind, version.version
 					from public.qorpera_folder_path_versions as version
