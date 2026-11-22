@@ -168,17 +168,13 @@ $new$		if exists (
 		) then$new$
 ]);
 
--- WHY: Use key_sha256 PK lookup on qorpera_folder_entries, skip busy cursor ticks, and lock
--- surviving profiles in id order FOR KEY SHARE SKIP LOCKED before queueing GC rows.
+-- WHY: Use key_sha256 PK lookup on qorpera_folder_entries, skip busy cursor ticks, and skip the GC insert
+-- when v_gone is empty; the 2s lock_timeout rolls back the full tick atomically if a profile row is locked.
 select pg_temp.rpc_patch('public.qorpera_folder_git_versions_expire(integer)'::regprocedure, array[
-$old$	v_queued integer := 0;
-begin
-	if p_limit is null or p_limit not between 1 and 10000 then
+$old$	if p_limit is null or p_limit not between 1 and 10000 then
 		raise exception 'The expiry''s limit is invalid' using errcode = '22023'; end if;
 	select * into v_cursor from public.qorpera_folder_git_expiry for update;$old$,
-$new$	v_queued integer := 0; v_open_profiles uuid[];
-begin
-	if p_limit is null or p_limit not between 1 and 10000 then
+$new$	if p_limit is null or p_limit not between 1 and 10000 then
 		raise exception 'The expiry''s limit is invalid' using errcode = '22023'; end if;
 	select * into v_cursor from public.qorpera_folder_git_expiry for update skip locked;
 	if not found then
@@ -221,30 +217,21 @@ $new$		with gone as (
 		into v_expired, v_gone
 		from gone left join public.qorpera_company_files as file on file.environment_id = gone.environment_id;
 		if jsonb_array_length(v_gone) > 0 then
-			select coalesce(array_agg(locked.id order by locked.id), '{}') into v_open_profiles
-			from (
-				select p.id from public.qorpera_profiles p
-				where p.id in (select distinct (g ->> 'profile')::uuid from jsonb_array_elements(v_gone) g)
-				order by p.id for key share skip locked
-			) locked;
-			if cardinality(v_open_profiles) > 0 then
-				insert into public.qorpera_folder_object_gc(profile_id, sha256, unreferenced_since)
-				select hash.profile_id, hash.sha256, clock_timestamp() from (
-					select (gone ->> 'profile')::uuid as profile_id, gone ->> 'manifest' as sha256
-					from jsonb_array_elements(v_gone) as gone
-					union
-					select chunk.profile_id, chunk.chunk_sha256 from jsonb_array_elements(v_gone) as gone
-					join public.qorpera_folder_file_chunks as chunk on chunk.profile_id = (gone ->> 'profile')::uuid
-						and chunk.manifest_sha256 = gone ->> 'manifest') as hash
-				where hash.profile_id = any(v_open_profiles)
-					and public.qorpera_folder_gc_company(hash.profile_id)
-					and exists (select 1 from public.qorpera_profile_objects as object where object.profile_id = hash.profile_id
-						and object.sha256 = hash.sha256)
-				order by hash.profile_id, hash.sha256 collate "C"
-				on conflict (profile_id, sha256) do update
-				set unreferenced_since = greatest(public.qorpera_folder_object_gc.unreferenced_since, excluded.unreferenced_since);
-				get diagnostics v_queued = row_count;
-			end if;
+			insert into public.qorpera_folder_object_gc(profile_id, sha256, unreferenced_since)
+			select hash.profile_id, hash.sha256, clock_timestamp() from (
+				select (gone ->> 'profile')::uuid as profile_id, gone ->> 'manifest' as sha256
+				from jsonb_array_elements(v_gone) as gone
+				union
+				select chunk.profile_id, chunk.chunk_sha256 from jsonb_array_elements(v_gone) as gone
+				join public.qorpera_folder_file_chunks as chunk on chunk.profile_id = (gone ->> 'profile')::uuid
+					and chunk.manifest_sha256 = gone ->> 'manifest') as hash
+			where public.qorpera_folder_gc_company(hash.profile_id)
+				and exists (select 1 from public.qorpera_profile_objects as object where object.profile_id = hash.profile_id
+					and object.sha256 = hash.sha256)
+			order by hash.profile_id, hash.sha256 collate "C"
+			on conflict (profile_id, sha256) do update
+			set unreferenced_since = greatest(public.qorpera_folder_object_gc.unreferenced_since, excluded.unreferenced_since);
+			get diagnostics v_queued = row_count;
 		end if;$new$
 ]);
 alter function public.qorpera_folder_git_versions_expire(integer) set lock_timeout = '2s';

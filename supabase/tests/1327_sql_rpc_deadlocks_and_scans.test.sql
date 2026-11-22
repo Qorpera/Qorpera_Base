@@ -372,9 +372,91 @@ begin
 		'H7 primary flag swap did not converge');
 end $$;
 
+-- WHY: Prove C6 atomicity when a company profile row is held FOR UPDATE during git expiry: the 2s
+-- lock_timeout rolls back the entire tick (cursor + version rows intact), and the next tick queues GC.
+do $$
+declare
+	v_profile uuid := '13270000-0000-4000-8000-000000000010';
+	v_env uuid := '13270000-0000-4000-8000-000000000020';
+	v_commit uuid := '13270000-0000-4000-8000-0000000000c9';
+	v_write_ver uuid := '13270000-0000-4000-8000-0000000000e1';
+	v_del_ver uuid := '13270000-0000-4000-8000-0000000000e2';
+	v_sha text := repeat('c', 64);
+	v_path text := 'code/acme/app/repo.git/objects/ab/' || repeat('c', 38);
+	v_key bytea := extensions.digest(public.qorpera_folder_key(v_path), 'sha256');
+	v_prev_at timestamptz;
+	v_prev_ver uuid;
+	v_write_at timestamptz;
+	v_del_at timestamptz;
+begin
+	perform pg_sleep(0.01);
+	select after_at, after_version into v_prev_at, v_prev_ver from public.qorpera_folder_git_expiry;
+	v_write_at := greatest(v_prev_at + interval '1 millisecond', clock_timestamp() - interval '7 days 2 seconds');
+	v_del_at := v_write_at + interval '1 millisecond';
+	insert into public.qorpera_profile_objects(profile_id, sha256, bytes) values (v_profile, v_sha, 12);
+	insert into public.qorpera_folder_commits(id, environment_id, seq, operation_key, actor_kind, units)
+	values (v_commit, v_env, 9001, 't1327-git-expiry-lock-test', 'platform', '[]'::jsonb);
+	insert into public.qorpera_folder_path_versions(version, environment_id, path, key_sha256, prior_version,
+		op, kind, commit_id, unit_no, manifest_sha256, created_at)
+	values
+		(v_write_ver, v_env, v_path, v_key, null, 'write', 'file', v_commit, 1, v_sha, v_write_at),
+		(v_del_ver, v_env, v_path, v_key, v_write_ver, 'delete', 'file', v_commit, 2, null, v_del_at);
+end $$;
+
+do $$
+declare
+	v_profile uuid := '13270000-0000-4000-8000-000000000010';
+	v_write_ver uuid := '13270000-0000-4000-8000-0000000000e1';
+	v_del_ver uuid := '13270000-0000-4000-8000-0000000000e2';
+	v_sha text := repeat('c', 64);
+	v_before_at timestamptz;
+	v_before_ver uuid;
+	v_after_at timestamptz;
+	v_after_ver uuid;
+	v_timed_out boolean := false;
+	v_exp jsonb;
+begin
+	select after_at, after_version into v_before_at, v_before_ver from public.qorpera_folder_git_expiry;
+	perform dblink_exec('t1327_c6', 'begin');
+	perform dblink_exec('t1327_c6',
+		format($q$do $x$ begin perform 1 from public.qorpera_profiles where id = %L for update; end $x$ $q$, v_profile));
+	begin
+		perform public.qorpera_folder_git_versions_expire(100);
+	exception when lock_not_available then
+		v_timed_out := true;
+	end;
+	perform dblink_exec('t1327_c6', 'rollback');
+
+	select after_at, after_version into v_after_at, v_after_ver from public.qorpera_folder_git_expiry;
+	perform pg_temp.t1327_ok(v_timed_out,
+		'C6 git expire did not abort on 2s lock_timeout while profile row was locked FOR UPDATE');
+	perform pg_temp.t1327_ok(v_after_at = v_before_at and v_after_ver = v_before_ver,
+		format('C6 cursor advanced despite profile lock rollback: %s/%s vs %s/%s', v_after_at, v_after_ver, v_before_at, v_before_ver));
+	perform pg_temp.t1327_ok(
+		(select count(*) from public.qorpera_folder_path_versions where version in (v_write_ver, v_del_ver)) = 2,
+		'C6 path versions were deleted without queueing GC during profile lock');
+
+	v_exp := public.qorpera_folder_git_versions_expire(100);
+	perform pg_temp.t1327_ok((v_exp ->> 'expired')::integer >= 2 and (v_exp ->> 'queued')::integer >= 1,
+		format('C6 retry after profile lock release did not expire and queue GC: %s', v_exp));
+	perform pg_temp.t1327_ok(
+		exists (select 1 from public.qorpera_folder_object_gc where profile_id = v_profile and sha256 = v_sha),
+		'C6 retry did not write qorpera_folder_object_gc row');
+
+	-- WHY: Restore cursor so subsequent tests in the shared hosted-db run see their aged git versions.
+	update public.qorpera_folder_git_expiry set after_at = v_before_at, after_version = v_before_ver;
+end $$;
+
 select dblink_disconnect(name) from unnest(array['t1327_c4', 't1327_c6', 't1327_h7_1', 't1327_h7_2']) as name;
 
 -- WHY: Clean up all committed fixture rows so shared test-suite database stays spotless.
+delete from public.qorpera_folder_path_versions
+where version in ('13270000-0000-4000-8000-0000000000e1', '13270000-0000-4000-8000-0000000000e2');
+delete from public.qorpera_folder_object_gc
+where profile_id = '13270000-0000-4000-8000-000000000010' and sha256 = repeat('c', 64);
+delete from public.qorpera_profile_objects
+where profile_id = '13270000-0000-4000-8000-000000000010' and sha256 = repeat('c', 64);
+delete from public.qorpera_folder_commits where id = '13270000-0000-4000-8000-0000000000c9';
 delete from public.qorpera_digital_post_letters
 where profile_id in ('13270000-0000-4000-8000-000000000010', '13270000-0000-4000-8000-000000000011');
 delete from public.qorpera_company_sites where slug = 'rpc-1327-site';
