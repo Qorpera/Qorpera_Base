@@ -4,7 +4,9 @@ import type { ServiceHttpFetch } from "./http-transport.ts";
 import { nodeHttpFetch } from "./node-http-fetch.ts";
 import { CloudRunnerOrchestrator, SupabaseCloudRunnerOrchestratorControlPlane } from "./orchestrator.ts";
 import { RealtimeOrchestratorWake, type RealtimeOrchestratorWakeState } from "./orchestrator-wake.ts";
-import { HttpCloudRunnerProviderAdapter } from "./provider-http.ts";
+import { CloudRunnerProviderRequestError, HttpCloudRunnerProviderAdapter } from "./provider-http.ts";
+import { createSurfaceExecutionHandlers, type SurfaceExecutionBridgePorts } from "./surface-execution-bridge.ts";
+import { SurfaceWorkerLoop, type SurfaceWorkerLoopPorts } from "./surface-worker-loop.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -25,13 +27,204 @@ export interface CloudRunnerOrchestratorServiceConfig {
 	dispatchConcurrency: number;
 	/** Push wake-ups over Supabase Realtime (off unless configured): the slow poll that backs them up. */
 	wake?: { backstopMs: number };
+	surfaceWorkerEnabled?: boolean;
 }
+
+export interface CloudRunnerOrchestratorSurfaceWorkerOptions {
+	readonly spawnOverflowMachine: SurfaceWorkerLoopPorts["spawnOverflowMachine"];
+	readonly dispatchSessionTurn: SurfaceWorkerLoopPorts["dispatchSessionTurn"];
+	readonly runPreviewJob: SurfaceWorkerLoopPorts["runPreviewJob"];
+	readonly runMergeJob?: SurfaceWorkerLoopPorts["runMergeJob"];
+	readonly runPublishJob?: SurfaceWorkerLoopPorts["runPublishJob"];
+	readonly runAutomationJob?: SurfaceWorkerLoopPorts["runAutomationJob"];
+	readonly onEvent?: SurfaceWorkerLoopPorts["onEvent"];
+	readonly pollIntervalMs?: number;
+	readonly batchLimit?: number;
+}
+
+export interface CloudRunnerOrchestratorSurfaceWorkerContext {
+	readonly controlPlane: SupabaseCloudRunnerOrchestratorControlPlane;
+	readonly providerAdapter: HttpCloudRunnerProviderAdapter;
+	readonly orchestratorId: string;
+}
+
+export type CloudRunnerOrchestratorSurfaceWorkerOption =
+	| CloudRunnerOrchestratorSurfaceWorkerOptions
+	| ((context: CloudRunnerOrchestratorSurfaceWorkerContext) => CloudRunnerOrchestratorSurfaceWorkerOptions);
 
 export interface CloudRunnerOrchestratorServiceOptions {
 	config: CloudRunnerOrchestratorServiceConfig;
 	signal: AbortSignal;
 	fetchImplementation?: ServiceHttpFetch;
 	onError?: (error: unknown) => void;
+	surfaceWorker?: CloudRunnerOrchestratorSurfaceWorkerOption | null;
+}
+
+export type DefaultSurfaceWorkerOverrides = Partial<Omit<SurfaceExecutionBridgePorts, "controlPlane">> & {
+	readonly spawnOverflowMachine?: SurfaceWorkerLoopPorts["spawnOverflowMachine"];
+	readonly dispatchSessionTurn?: SurfaceWorkerLoopPorts["dispatchSessionTurn"];
+	readonly runAutomationJob?: SurfaceWorkerLoopPorts["runAutomationJob"];
+	readonly onEvent?: SurfaceWorkerLoopPorts["onEvent"];
+	readonly pollIntervalMs?: number;
+	readonly batchLimit?: number;
+};
+
+export function createDefaultSurfaceWorkerConfig(
+	context: CloudRunnerOrchestratorSurfaceWorkerContext,
+	overrides: DefaultSurfaceWorkerOverrides = {},
+): CloudRunnerOrchestratorSurfaceWorkerOptions {
+	const logEvent: (event: Record<string, unknown>) => void =
+		overrides.onEvent ??
+		((event) => {
+			console.error(
+				JSON.stringify({
+					schema: "qorpera.surface-worker/v1",
+					orchestratorId: context.orchestratorId,
+					...event,
+				}),
+			);
+		});
+	const handlers = createSurfaceExecutionHandlers({
+		controlPlane: context.controlPlane,
+		...(overrides.resolveRepository ? { resolveRepository: overrides.resolveRepository } : {}),
+		...(overrides.resolveCodeHostJob ? { resolveCodeHostJob: overrides.resolveCodeHostJob } : {}),
+		...(overrides.buildAndUploadPreview ? { buildAndUploadPreview: overrides.buildAndUploadPreview } : {}),
+		...(overrides.onSessionChangesRebased ? { onSessionChangesRebased: overrides.onSessionChangesRebased } : {}),
+		...(overrides.undoCodeRepoChange ? { undoCodeRepoChange: overrides.undoCodeRepoChange } : {}),
+		...(overrides.folder ? { folder: overrides.folder } : {}),
+		...(overrides.folderSnapshots ? { folderSnapshots: overrides.folderSnapshots } : {}),
+		...(overrides.runOpsActionJob ? { runOpsActionJob: overrides.runOpsActionJob } : {}),
+		...(overrides.publishSurface ? { publishSurface: overrides.publishSurface } : {}),
+	});
+
+	return {
+		spawnOverflowMachine:
+			overrides.spawnOverflowMachine ??
+			(async (profileId) => {
+				logEvent({
+					kind: "overflow_machine_unconfigured",
+					profileId,
+					providerAdapterId: context.providerAdapter.adapterId,
+				});
+				throw new Error(
+					`Surface overflow machine provisioning is not configured for provider ${context.providerAdapter.adapterId}`,
+				);
+			}),
+		dispatchSessionTurn:
+			overrides.dispatchSessionTurn ??
+			(async (job, machineId, signal) => {
+				if (typeof context.providerAdapter.deliverSurfaceSession === "function") {
+					try {
+						await context.providerAdapter.deliverSurfaceSession(job, machineId, signal);
+						return;
+					} catch (error) {
+						if (error instanceof CloudRunnerProviderRequestError && error.status === 501) {
+							logEvent({
+								kind: "session_dispatch_unconfigured",
+								sessionId: job.sessionId,
+								surfaceId: job.surfaceId,
+								machineId,
+								providerAdapterId: context.providerAdapter.adapterId,
+								status: error.status,
+							});
+							throw new Error(
+								`Surface session execution is not enabled on provider ${context.providerAdapter.adapterId}`,
+							);
+						}
+						throw error;
+					}
+				}
+				logEvent({
+					kind: "session_dispatch_unconfigured",
+					sessionId: job.sessionId,
+					surfaceId: job.surfaceId,
+					machineId,
+					providerAdapterId: context.providerAdapter.adapterId,
+				});
+				throw new Error(
+					`Surface session dispatch is not configured for provider ${context.providerAdapter.adapterId}`,
+				);
+			}),
+		runPreviewJob: handlers.runPreviewJob,
+		runMergeJob: handlers.runMergeJob,
+		runPublishJob: handlers.runPublishJob,
+		runAutomationJob:
+			overrides.runAutomationJob ??
+			(async (job) => {
+				logEvent({
+					kind: "automation_dispatch_unconfigured",
+					automationId: job.automationId,
+					key: job.key,
+					outputMode: job.outputMode,
+					profileId: job.profileId,
+				});
+			}),
+		onEvent: logEvent,
+		...(overrides.pollIntervalMs !== undefined ? { pollIntervalMs: overrides.pollIntervalMs } : {}),
+		...(overrides.batchLimit !== undefined ? { batchLimit: overrides.batchLimit } : {}),
+	};
+}
+
+export function createSurfaceWorkerLoop(
+	controlPlane: Pick<SupabaseCloudRunnerOrchestratorControlPlane, "claimSurfaceJobs"> &
+		Partial<
+			Pick<
+				SupabaseCloudRunnerOrchestratorControlPlane,
+				"completeSurfaceSessionTurn" | "renewSurfaceLease" | "releaseSurfaceSessionClaim"
+			>
+		>,
+	options: CloudRunnerOrchestratorSurfaceWorkerOptions,
+): SurfaceWorkerLoop {
+	const reportSessionFailure = controlPlane.completeSurfaceSessionTurn
+		? async (
+				input: { readonly sessionId: string; readonly leaseToken?: string | null; readonly errorDetail: string },
+				signal: AbortSignal,
+			) => {
+				await controlPlane.completeSurfaceSessionTurn!(
+					{
+						sessionId: input.sessionId,
+						state: "failed",
+						replyText: input.errorDetail,
+						...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
+					},
+					signal,
+				);
+			}
+		: undefined;
+	const releaseSessionClaim = controlPlane.releaseSurfaceSessionClaim
+		? (input: { readonly sessionId: string; readonly leaseToken: string }, signal: AbortSignal) =>
+				controlPlane.releaseSurfaceSessionClaim!(input, signal)
+		: undefined;
+	const renewLease = controlPlane.renewSurfaceLease
+		? (
+				input: {
+					readonly kind: "session" | "preview" | "job";
+					readonly id: string;
+					readonly leaseToken: string;
+					readonly extendSeconds?: number;
+				},
+				signal: AbortSignal,
+			) => controlPlane.renewSurfaceLease!(input, signal)
+		: undefined;
+	return new SurfaceWorkerLoop(
+		{
+			claimPendingJobs: (limit, signal) => controlPlane.claimSurfaceJobs(limit, signal),
+			spawnOverflowMachine: options.spawnOverflowMachine,
+			dispatchSessionTurn: options.dispatchSessionTurn,
+			runPreviewJob: options.runPreviewJob,
+			...(options.runMergeJob ? { runMergeJob: options.runMergeJob } : {}),
+			...(options.runPublishJob ? { runPublishJob: options.runPublishJob } : {}),
+			...(options.runAutomationJob ? { runAutomationJob: options.runAutomationJob } : {}),
+			...(reportSessionFailure ? { reportSessionFailure } : {}),
+			...(releaseSessionClaim ? { releaseSessionClaim } : {}),
+			...(renewLease ? { renewLease } : {}),
+			...(options.onEvent ? { onEvent: options.onEvent } : {}),
+		},
+		{
+			...(options.pollIntervalMs !== undefined ? { pollIntervalMs: options.pollIntervalMs } : {}),
+			...(options.batchLimit !== undefined ? { batchLimit: options.batchLimit } : {}),
+		},
+	);
 }
 
 function requiredEnvironmentValue(environment: Readonly<Record<string, string | undefined>>, name: string): string {
@@ -115,6 +308,7 @@ export function cloudRunnerOrchestratorServiceConfigFromEnvironment(
 		reconcileIntervalMs,
 		dispatchConcurrency,
 		...(wakeMode === "realtime" ? { wake: { backstopMs: wakeBackstopMs } } : {}),
+		surfaceWorkerEnabled: environment.QORPERA_SURFACE_WORKER?.trim() === "1",
 	};
 }
 
@@ -167,16 +361,59 @@ export async function runCloudRunnerOrchestratorService(options: CloudRunnerOrch
 				onState: wakeStateLogger(),
 			})
 		: undefined;
+	const surfaceWorkerContext: CloudRunnerOrchestratorSurfaceWorkerContext = {
+		controlPlane,
+		providerAdapter,
+		orchestratorId: options.config.orchestratorId,
+	};
+	const surfaceWorkerConfig =
+		options.surfaceWorker === null
+			? undefined
+			: typeof options.surfaceWorker === "function"
+				? options.surfaceWorker(surfaceWorkerContext)
+				: options.surfaceWorker !== undefined
+					? options.surfaceWorker
+					: options.config.surfaceWorkerEnabled === true
+						? createDefaultSurfaceWorkerConfig(surfaceWorkerContext)
+						: undefined;
+	const surfaceWorkerLoop = surfaceWorkerConfig
+		? createSurfaceWorkerLoop(controlPlane, {
+				...surfaceWorkerConfig,
+				...(surfaceWorkerConfig.pollIntervalMs === undefined && options.config.wake
+					? { pollIntervalMs: options.config.wake.backstopMs }
+					: {}),
+				...(!surfaceWorkerConfig.onEvent && options.onError
+					? {
+							onEvent: (event) => {
+								if (event.kind === "tick_failed") {
+									options.onError?.(new Error(String(event.error ?? "Surface worker tick failed")));
+								}
+							},
+						}
+					: {}),
+			})
+		: undefined;
+	const orchestratorLoopOptions = {
+		pollIntervalMs: options.config.pollIntervalMs,
+		...(options.config.reconcileIntervalMs !== undefined
+			? { reconcileIntervalMs: options.config.reconcileIntervalMs }
+			: {}),
+		...(wake && options.config.wake ? { wake, wakeBackstopMs: options.config.wake.backstopMs } : {}),
+		...(options.onError ? { onError: options.onError } : {}),
+	};
 	wake?.start();
 	try {
-		await orchestrator.run(options.signal, {
-			pollIntervalMs: options.config.pollIntervalMs,
-			...(options.config.reconcileIntervalMs !== undefined
-				? { reconcileIntervalMs: options.config.reconcileIntervalMs }
-				: {}),
-			...(wake && options.config.wake ? { wake, wakeBackstopMs: options.config.wake.backstopMs } : {}),
-			...(options.onError ? { onError: options.onError } : {}),
-		});
+		if (surfaceWorkerLoop) {
+			const runAbort = new AbortController();
+			const runSignal = AbortSignal.any([options.signal, runAbort.signal]);
+			const orchestratorTask = orchestrator.run(runSignal, orchestratorLoopOptions).finally(() => runAbort.abort());
+			const surfaceTask = surfaceWorkerLoop.run(runSignal, wake).finally(() => runAbort.abort());
+			const results = await Promise.allSettled([orchestratorTask, surfaceTask]);
+			const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+			if (rejected) throw rejected.reason;
+		} else {
+			await orchestrator.run(options.signal, orchestratorLoopOptions);
+		}
 	} finally {
 		wake?.stop();
 	}

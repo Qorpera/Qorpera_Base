@@ -153,6 +153,7 @@ const companyCreation =
 				}),
 				store,
 				replication,
+				surfaceFirst: process.env.QORPERA_SURFACE_FIRST === "1",
 			})
 		: undefined;
 const handler = createObjectGatewayHandler({

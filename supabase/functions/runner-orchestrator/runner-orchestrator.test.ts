@@ -385,6 +385,275 @@ describe("runner orchestrator boundary", () => {
 		assert.equal(runnerOrchestratorRpcStatus({ code: "40001" }), 409);
 		assert.equal(runnerOrchestratorRpcStatus({ code: "55000" }), 423);
 	});
+
+	it("parses and validates surface job claim and completion actions", () => {
+		const previewId = "88888888-8888-4888-8888-888888888888";
+		const siteVersionId = "99999999-9999-4999-8999-999999999999";
+		const sessionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+		const jobId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+		const conflictChangeId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+		const sha1 = "a".repeat(40);
+		const sha2 = "b".repeat(40);
+
+		assert.deepEqual(parseRunnerOrchestratorRequest({ action: "surface_claim_jobs", orchestratorId }), {
+			action: "surface_claim_jobs",
+			orchestratorId,
+			limit: 16,
+		});
+		assert.deepEqual(parseRunnerOrchestratorRequest({ action: "surface_claim_jobs", orchestratorId, limit: 32 }), {
+			action: "surface_claim_jobs",
+			orchestratorId,
+			limit: 32,
+		});
+		for (const limit of [0, 65, 1.5, "16", null]) {
+			assert.throws(() => parseRunnerOrchestratorRequest({ action: "surface_claim_jobs", orchestratorId, limit }));
+		}
+
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId,
+				status: "ready",
+				compositeTreeSha: sha1,
+				siteVersionId,
+				conflictReport: null,
+				errorDetail: null,
+			}),
+			{
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId,
+				status: "ready",
+				compositeTreeSha: sha1,
+				siteVersionId,
+			},
+		);
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId,
+				status: "conflicted",
+				conflictReport: { changeIds: [conflictChangeId], paths: ["index.html"] },
+			}),
+			{
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId,
+				status: "conflicted",
+				conflictReport: { changeIds: [conflictChangeId], paths: ["index.html"] },
+			},
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId,
+				status: "building",
+			}),
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId: "not-a-uuid",
+				status: "failed",
+				errorDetail: "Build failed",
+			}),
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_preview",
+				orchestratorId,
+				previewId,
+				status: "failed",
+				errorDetail: "x".repeat(1001),
+			}),
+		);
+
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_session_turn",
+				orchestratorId,
+				sessionId,
+				state: "needs_input",
+				replyText: "Line 1\nLine 2",
+				question: { text: "Which palette?", options: ["Aftenlys", "Varmt studie"] },
+				notePaths: ["notes/decisions.md"],
+				branchHeadSha: sha1,
+			}),
+			{
+				action: "surface_complete_session_turn",
+				orchestratorId,
+				sessionId,
+				state: "needs_input",
+				replyText: "Line 1\nLine 2",
+				question: { text: "Which palette?", options: ["Aftenlys", "Varmt studie"] },
+				notePaths: ["notes/decisions.md"],
+				branchHeadSha: sha1,
+			},
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_session_turn",
+				orchestratorId,
+				sessionId,
+				state: "invalid_state",
+			}),
+		);
+		for (const state of ["queued", "running", "reconciling", "discarded"]) {
+			assert.throws(() =>
+				parseRunnerOrchestratorRequest({
+					action: "surface_complete_session_turn",
+					orchestratorId,
+					sessionId,
+					state,
+				}),
+			);
+		}
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_renew_lease",
+				orchestratorId,
+				kind: "session",
+				id: sessionId,
+				leaseToken: jobId,
+			}),
+			{
+				action: "surface_renew_lease",
+				orchestratorId,
+				kind: "session",
+				id: sessionId,
+				leaseToken: jobId,
+				extendSeconds: 300,
+			},
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_renew_lease",
+				orchestratorId,
+				kind: "invalid",
+				id: sessionId,
+				leaseToken: jobId,
+			}),
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_session_turn",
+				orchestratorId,
+				sessionId,
+				state: "ready",
+				notePaths: ["bad\npath"],
+			}),
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_session_turn",
+				orchestratorId,
+				sessionId,
+				state: "ready",
+				replyText: "x".repeat(16_001),
+			}),
+		);
+
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_merge",
+				orchestratorId,
+				jobId,
+				status: "landed",
+				mainBefore: sha1,
+				mainAfter: sha2,
+			}),
+			{
+				action: "surface_complete_merge",
+				orchestratorId,
+				jobId,
+				status: "landed",
+				mainBefore: sha1,
+				mainAfter: sha2,
+			},
+		);
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_merge",
+				orchestratorId,
+				jobId,
+				status: "conflicted",
+				conflictChangeId,
+				conflictPaths: ["hero.html"],
+				errorDetail: "Merge conflict on hero.html",
+			}),
+			{
+				action: "surface_complete_merge",
+				orchestratorId,
+				jobId,
+				status: "conflicted",
+				conflictChangeId,
+				conflictPaths: ["hero.html"],
+				errorDetail: "Merge conflict on hero.html",
+			},
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_merge",
+				orchestratorId,
+				jobId,
+				status: "queued",
+			}),
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_merge",
+				orchestratorId,
+				jobId,
+				status: "conflicted",
+				conflictChangeId: "not-a-uuid",
+			}),
+		);
+
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_publish",
+				orchestratorId,
+				jobId,
+				status: "published",
+				publishedHeadSha: sha2,
+			}),
+			{
+				action: "surface_complete_publish",
+				orchestratorId,
+				jobId,
+				status: "published",
+				publishedHeadSha: sha2,
+			},
+		);
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_publish",
+				orchestratorId,
+				jobId,
+				status: "failed",
+				errorDetail: "Site upload timed out",
+			}),
+			{
+				action: "surface_complete_publish",
+				orchestratorId,
+				jobId,
+				status: "failed",
+				errorDetail: "Site upload timed out",
+			},
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_complete_publish",
+				orchestratorId,
+				jobId,
+				status: "publishing",
+			}),
+		);
+	});
 });
 
 describe("the edge function's route for the one call", () => {
@@ -502,6 +771,168 @@ describe("the edge function's route for the one call", () => {
 		assert.ok(answers.length > 0);
 		assert.equal(answers.length, migration.match(/\(null, 1\) -> 'items'/g)?.length);
 		for (const [, name, due] of answers) assert.equal(due, lists.get(name), `${name} reads ${due}`);
+	});
+
+	it("authenticates and dispatches all five surface orchestration RPCs", async () => {
+		const previewId = "88888888-8888-4888-8888-888888888888";
+		const siteVersionId = "99999999-9999-4999-8999-999999999999";
+		const sessionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+		const jobId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+		const conflictChangeId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+		const leaseToken = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+		const sha1 = "a".repeat(40);
+		const sha2 = "b".repeat(40);
+		const tokenHash = createHash("sha256").update(token).digest("hex");
+
+		calls.length = 0;
+		answer = answers(true, { data: { sessions: [], previews: [], merges: [], publishes: [] } });
+		const claimRes = await post({ action: "surface_claim_jobs", orchestratorId, limit: 24 });
+		assert.equal(claimRes.status, 200);
+		assert.deepEqual(await claimRes.json(), { value: { sessions: [], previews: [], merges: [], publishes: [] } });
+		assert.deepEqual(calls, [
+			["qorpera_runner_orchestrator_control_valid", { p_orchestrator_id: orchestratorId, p_control_token_sha256: tokenHash }],
+			["qorpera_surface_claim_pending_jobs", { p_limit: 24 }],
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { renewed: true, leaseExpiresAt: "2026-11-22T03:05:00Z" } });
+		const renewRes = await post({
+			action: "surface_renew_lease",
+			orchestratorId,
+			kind: "session",
+			id: sessionId,
+			leaseToken,
+			extendSeconds: 300,
+		});
+		assert.equal(renewRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_renew_lease",
+			{
+				p_kind: "session",
+				p_id: sessionId,
+				p_lease_token: leaseToken,
+				p_extend_seconds: 300,
+			},
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { sessionId, released: true, state: "queued" } });
+		const releaseRes = await post({
+			action: "surface_release_session_claim",
+			orchestratorId,
+			sessionId,
+			leaseToken,
+		});
+		assert.equal(releaseRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_release_session_claim",
+			{
+				p_session_id: sessionId,
+				p_lease_token: leaseToken,
+			},
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { previewId, status: "ready", shortHostId: "ab12cd34", compositeTreeSha: sha1 } });
+		const previewRes = await post({
+			action: "surface_complete_preview",
+			orchestratorId,
+			previewId,
+			status: "ready",
+			compositeTreeSha: sha1,
+			siteVersionId,
+			leaseToken,
+		});
+		assert.equal(previewRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_complete_preview",
+			{
+				p_preview_id: previewId,
+				p_status: "ready",
+				p_composite_tree_sha: sha1,
+				p_site_version_id: siteVersionId,
+				p_conflict_report: null,
+				p_error_detail: null,
+				p_lease_token: leaseToken,
+			},
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { id: sessionId, state: "ready" } });
+		const turnRes = await post({
+			action: "surface_complete_session_turn",
+			orchestratorId,
+			sessionId,
+			state: "ready",
+			replyText: "Prepared changes",
+			notePaths: ["notes/plan.md"],
+			branchHeadSha: sha1,
+			leaseToken,
+		});
+		assert.equal(turnRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_complete_session_turn",
+			{
+				p_session_id: sessionId,
+				p_state: "ready",
+				p_reply_text: "Prepared changes",
+				p_question: null,
+				p_note_paths: ["notes/plan.md"],
+				p_branch_head_sha: sha1,
+				p_lease_token: leaseToken,
+			},
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { jobId, status: "conflicted" } });
+		const mergeRes = await post({
+			action: "surface_complete_merge",
+			orchestratorId,
+			jobId,
+			status: "conflicted",
+			mainBefore: sha1,
+			conflictChangeId,
+			conflictPaths: ["index.html"],
+			preMergeSnapshot: { files: { "identity/tokens.json": "{}" } },
+			leaseToken,
+		});
+		assert.equal(mergeRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_complete_merge",
+			{
+				p_job_id: jobId,
+				p_status: "conflicted",
+				p_main_before: sha1,
+				p_main_after: null,
+				p_conflict_change_id: conflictChangeId,
+				p_conflict_paths: ["index.html"],
+				p_error_detail: null,
+				p_pre_merge_snapshot: { files: { "identity/tokens.json": "{}" } },
+				p_lease_token: leaseToken,
+			},
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { jobId, status: "published" } });
+		const publishRes = await post({
+			action: "surface_complete_publish",
+			orchestratorId,
+			jobId,
+			status: "published",
+			publishedHeadSha: sha2,
+			leaseToken,
+		});
+		assert.equal(publishRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_complete_publish",
+			{
+				p_job_id: jobId,
+				p_status: "published",
+				p_published_head_sha: sha2,
+				p_error_detail: null,
+				p_lease_token: leaseToken,
+			},
+		]);
 	});
 
 	it("returns 503 on transient control-token validation DB errors instead of 401 and cancels oversized chunked bodies", async () => {

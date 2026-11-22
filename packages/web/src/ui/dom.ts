@@ -275,6 +275,7 @@ export function button(
  * the divider stands a third in from the panel's side. */
 const ICON_GRIDS: Readonly<Record<string, { readonly size: number; readonly stroke: number }>> = {
 	navigation: { size: 20, stroke: 1.5 },
+	"panel-right": { size: 20, stroke: 1.5 },
 };
 
 const ICON_PATHS: Record<string, string[]> = {
@@ -283,6 +284,7 @@ const ICON_PATHS: Record<string, string[]> = {
 	table: ["M3 9h18", "M9 3v18"],
 	// The sidebar, on a grid of its own (ICON_GRIDS): its outline is a rectangle (icon), this is its divider.
 	navigation: ["M7.75 3.75v12.5"],
+	"panel-right": ["M12.25 3.75v12.5"],
 	interfaces: ["M3 12h4l3-7 4 14 3-7h4"],
 	check: ["m5 12 4 4L19 6"],
 	bolt: ["M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z"],
@@ -446,6 +448,7 @@ const ICON_PATHS: Record<string, string[]> = {
 	// Lucide maximize-2: show something large.
 	reload: ["M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7"],
 	expand: ["M15 3h6v6", "M9 21H3v-6", "m21 3-7 7", "m3 21 7-7"],
+	crosshair: ["M12 2a10 10 0 1 0 0 20 10 10 0 1 0 0-20Z", "M22 12h-4", "M6 12H2", "M12 6V2", "M12 22v-4"],
 	trash: [
 		"M3 6h18",
 		"M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6",
@@ -472,7 +475,7 @@ export function icon(name: keyof typeof ICON_PATHS | string): SVGSVGElement {
 	}
 	// Lucide layout-grid / table-2 and the sidebar's outline use native rectangles rather than path outlines.
 	const rectangles =
-		name === "navigation"
+		name === "navigation" || name === "panel-right"
 			? [[2.75, 3.75, 14.5, 12.5, 2.75]]
 			: name === "grid"
 				? [

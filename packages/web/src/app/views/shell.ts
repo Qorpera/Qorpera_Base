@@ -73,13 +73,24 @@ import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
 import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
-import { appHash, conceptsHash, type Route, siteHash } from "../router.ts";
+import { appHash, conceptsHash, type Route, siteHash, surfaceHash } from "../router.ts";
+import {
+	activeTaskSessions,
+	hasConflictedChange,
+	isOpenChange,
+	isRunningSession,
+	openExplorations,
+	surfacesOf,
+} from "../surfaces-store.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
 import { personFace } from "./friends.ts";
 import { memberPresence } from "./member-chat.ts";
 import type { SettingsTab } from "./settings.ts";
+import { CrewFigures, crewWave } from "./surface-crew.ts";
+import { openCreateSurfaceSheet, openScheduleAgentSheet } from "./surface-migration-sheet.ts";
+import { isActionChange, SurfaceRail } from "./surface-rail.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
  * main pane. A compact toolbar keeps the rail accessible on small screens. */
@@ -96,6 +107,7 @@ export interface ShellContext {
 	/** Friends, a window of its own beside the account (friends-window.ts). */
 	openFriends: () => void;
 	navigation?: { open: boolean; toggle: () => void };
+	sidebar?: { hidden: boolean; toggle: () => void };
 	/** What the rail's agent and group chat menus can do beyond the sidebar itself. */
 	agentActions?: Pick<WorkspaceActions, "updateAgent" | "deleteAgent" | "updateGroup" | "deleteGroup">;
 	/** A right-click on an agent opens its card beside the row; the rail adds Hide and Delete. */
@@ -409,6 +421,7 @@ interface RailParts {
 	readonly appsDrag: AppGridDrag;
 	readonly toolbar: HTMLElement;
 	readonly close: HTMLButtonElement;
+	readonly sidebarToggle: HTMLButtonElement;
 	readonly add: HTMLAnchorElement;
 	/** The search folds out of its button over the name, and folds back on Esc or its close button. */
 	readonly search: HTMLElement;
@@ -641,6 +654,17 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const searchClose = h("button", { type: "button", class: "rail-search-close" }, icon("close"));
 		const search = h("div", { class: "rail-search" }, searchToggle, input, searchClose);
 		const close = h("button", { type: "button", class: "icon-button rail-mobile-close" }, icon("close"));
+		const sidebarToggle = h(
+			"button",
+			{
+				type: "button",
+				class: "icon-button rail-sidebar-toggle",
+				"aria-controls": "company-navigation",
+				"aria-expanded": "true",
+				hidden: true,
+			},
+			icon("navigation"),
+		);
 		const add = h("a", { class: "rail-add icon-button", href: `#/c/${company.profile.profileId}/new` }, icon("plus"));
 		const connection = h("div", { class: "rail-connection", role: "status", hidden: true });
 		const list = h("div", { class: "rail-scroll", id: "rail-list-agents" });
@@ -691,8 +715,9 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appKeysShown: undefined,
 			appFolding: undefined,
 			appsDrag: undefined as unknown as AppGridDrag,
-			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add),
+			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add, sidebarToggle),
 			close,
+			sidebarToggle,
 			add,
 			search,
 			searchToggle,
@@ -835,6 +860,60 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			},
 			{ signal: company.signal },
 		);
+		let pressClosesAdd = false;
+		document.addEventListener(
+			"pointerdown",
+			(event) => {
+				pressClosesAdd =
+					add.getAttribute("aria-expanded") === "true" &&
+					event.target instanceof Node &&
+					add.contains(event.target);
+			},
+			{ capture: true, signal: company.signal },
+		);
+		add.addEventListener(
+			"click",
+			(event) => {
+				const store = surfacesOf(company);
+				if (!store) return;
+				event.preventDefault();
+				if (pressClosesAdd) {
+					pressClosesAdd = false;
+					return;
+				}
+				if (openMenu()?.el.isConnected && add.getAttribute("aria-expanded") === "true") return;
+				const box = add.getBoundingClientRect();
+				add.setAttribute("aria-expanded", "true");
+				openContextMenu({
+					label: t("Create"),
+					x: box.left,
+					y: box.bottom + 4,
+					opener: add,
+					onClose: () => add.setAttribute("aria-expanded", "false"),
+					items: [
+						{
+							label: t("New surface"),
+							icon: "grid",
+							select: () => openCreateSurfaceSheet(store, company.profile.profileId),
+						},
+						{
+							label: t("New scheduled agent"),
+							icon: "clock",
+							select: () => openScheduleAgentSheet(store),
+						},
+						{ kind: "separator" },
+						{
+							label: t("New conversation"),
+							icon: "plus",
+							select: () => {
+								location.hash = `#/c/${company.profile.profileId}/new`;
+							},
+						},
+					],
+				});
+			},
+			{ signal: company.signal },
+		);
 		// The search button opens the field over the name. Esc or the close button folds it back, clears it and
 		// hands focus back to the button; so does leaving it empty.
 		const openSearch = () => {
@@ -944,6 +1023,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		parts.searchClose.setAttribute("aria-label", t("Close search"));
 		parts.searchClose.title = t("Close search");
 		parts.close.setAttribute("aria-label", t("Close company navigation"));
+		parts.sidebarToggle.setAttribute("aria-label", t("Hide sidebar"));
+		parts.sidebarToggle.title = t("Hide sidebar");
 		parts.add.setAttribute("aria-label", t("New conversation or agent"));
 		parts.add.title = t("New conversation or agent");
 		parts.loading = undefined;
@@ -1308,6 +1389,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.appsDrawer.classList.toggle("is-open", appsOpen);
 	// Closed, its icons can't be reached.
 	parts.appsDrawer.inert = !appsOpen;
+	// WHY: Surfaces lists Inbox, Money, Members and Databases in the rail itself; the old icon drawer above the
+	// Co-Founder duplicated them, so a surface-first rail folds it (and its grid button) away visually.
+	container.classList.toggle("has-surface-rail", surfacesOf(company) !== undefined);
 	showCompanyName(parts.companyName, company.profile.profileName);
 	// Text in the field keeps it open, so a query never filters from a folded field.
 	if (parts.input.value) parts.searchOpen = true;
@@ -1332,12 +1416,14 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const matches = (text: string) => !railQuery || text.toLowerCase().includes(railQuery);
 	parts.close.hidden = !context.navigation;
 	parts.close.onclick = context.navigation?.toggle ?? null;
+	parts.sidebarToggle.hidden = !context.sidebar;
+	parts.sidebarToggle.setAttribute("aria-expanded", String(!context.sidebar?.hidden));
+	parts.sidebarToggle.onclick = context.sidebar?.toggle ?? null;
 	parts.add.hidden = state.team?.capabilities.write === false;
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 
-	const addsPrograms = hasApps && state.team?.capabilities.write === true;
-	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route, addsPrograms);
+	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route);
 	drawOwed(parts, company, owed, route);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
@@ -1424,6 +1510,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			...(agent.id === cofounder?.id && state.openDecisions ? { decisions: state.openDecisions } : {}),
 		};
 	};
+	const surfaceRail = surfaceRailFor(company);
 	const cofounderElement =
 		cofounder && matches(cofounder.displayName)
 			? row(
@@ -1489,9 +1576,12 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		return placed && sectionIdSet.has(placed) ? placed : undefined;
 	};
 	const inWholeSection = (itemId: string) => wholeSections.has(sectionOf(itemId));
+	const surfacesStore = surfacesOf(company);
+	const foldedAgents = surfacesStore?.state.foldedAgentIds ?? {};
 	const shown = (agent: HostedStaffAgent | undefined): agent is HostedStaffAgent =>
 		// A hidden agent is still found by searching for it.
 		Boolean(agent) &&
+		!foldedAgents[agent!.id] &&
 		(matches(agent!.displayName) || inWholeSection(agent!.id)) &&
 		(!hidden.has(agent!.id) || Boolean(railQuery));
 	const roomShown = (roomId: string) =>
@@ -1828,36 +1918,75 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// The Members group is a zone only contacts land in, where the cloud keeps their places. Its title parts it from
 	// the sections above it, as Unassigned's does. With nobody in it, it shows only while a contact is dragged, so one
 	// can be dropped back there (styles/app.css).
-	zone(parts.members.el, placing);
+	const hasMembersSurface = Boolean(
+		surfaceRail &&
+			!railQuery &&
+			surfacesStore?.state.surfaces.some((surface) => surface.status === "active" && surface.slug === "members"),
+	);
+	const memberUnread = contacts.reduce(
+		(sum, contact) =>
+			sum + (contact.zone === MEMBERS_ZONE && !contact.hidden ? (memberChats?.[contact.userId]?.unread ?? 0) : 0),
+		0,
+	);
+	zone(parts.members.el, placing && !hasMembersSurface);
 	parts.members.title.hidden = !sectioned;
 	parts.members.el.classList.toggle("is-empty", !memberRows.length);
-	reconcile(parts.members.list, memberRows);
+	reconcile(parts.members.list, hasMembersSurface ? [] : memberRows);
+	surfaceRail?.update(
+		route.name === "company" && route.section === "surface" ? route.id : undefined,
+		false,
+		hasMembersSurface ? { rows: memberRows, unread: memberUnread, active: Boolean(activeMemberId) } : undefined,
+	);
 	// Collapsed, where section titles hide, a short line parts each group of agents from the
 	// group above it: never under the Co-Founder, never around a section with no one in it.
 	let above = pinnedElements.length > 0;
 	for (const [element, count] of [
 		...sectionGroups.map(({ group, rows: sectionRows }) => [group.el, sectionRows.length] as const),
 		[parts.unassigned.el, unassignedRows.length] as const,
-		[parts.members.el, memberRows.length] as const,
+		[parts.members.el, hasMembersSurface ? 0 : memberRows.length] as const,
 	]) {
 		element.classList.toggle("rail-divided", above && count > 0);
 		above ||= count > 0;
 	}
 	reconcile(parts.cofounderGroup, cofounderElement ? [cofounderElement] : []);
+	const legacyNodes = [
+		sidebar && !railQuery ? parts.pinnedGroup : pinnedElements.length ? parts.pinnedGroup : null,
+		...sectionGroups.filter(({ rows: r }) => r.length || !railQuery).map(({ group }) => group.el),
+		unassignedRows.length || (sectioned && !railQuery) ? parts.unassigned.el : null,
+	].filter((element) => element !== null);
+	const companyAgents = active.filter(
+		(agent) => agent.id !== cofounderId && !foldedAgents[agent.id] && !hidden.has(agent.id),
+	);
+	const workingStaff = companyAgents.filter((agent) => agentWorks(company.agentState(agent.id)));
+	const scheduledStaff = companyAgents.filter(
+		(agent) => !agentWorks(company.agentState(agent.id)) && Boolean(state.agentNotes?.[agent.id]?.next),
+	);
+	const idleStaff = companyAgents.filter(
+		(agent) => !agentWorks(company.agentState(agent.id)) && !state.agentNotes?.[agent.id]?.next,
+	);
+	const activeAgentId =
+		context.route.name === "company" && context.route.section === "staff" ? context.route.id : undefined;
+	const agentsHub =
+		surfaceRail && !railQuery
+			? syncAgentsHub(company, {
+					profileId,
+					activeAgentId,
+					workingStaff,
+					scheduledStaff,
+					idleStaff,
+				})
+			: null;
 	reconcile(
 		parts.list,
 		[
 			...listNotices,
 			cofounderElement ? parts.cofounderGroup : null,
-			// The pinned row stays in place while empty, hidden, so a drag can still reach it.
-			sidebar && !railQuery ? parts.pinnedGroup : pinnedElements.length ? parts.pinnedGroup : null,
+			surfaceRail && !railQuery ? surfaceRail.el : null,
 			parts.loading ?? null,
-			// A section shows while it has rows, and always when nothing is being searched.
-			...sectionGroups.filter(({ rows: r }) => r.length || !railQuery).map(({ group }) => group.el),
-			unassignedRows.length || (sectioned && !railQuery) ? parts.unassigned.el : null,
-			memberRows.length || (placing && !railQuery) ? parts.members.el : null,
+			...(agentsHub ? [agentsHub] : surfaceRail && !railQuery ? [] : legacyNodes),
+			!hasMembersSurface && (memberRows.length || (placing && !railQuery)) ? parts.members.el : null,
 			hiddenCount ? hiddenGroup.el : null,
-			empty ? parts.empty : null,
+			empty && !surfaceRail ? parts.empty : null,
 			parts.selection.moving ?? null,
 		].filter((element) => element !== null),
 	);
@@ -1909,11 +2038,370 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	restoreFocus();
 }
 
+interface AgentsHubParts {
+	readonly el: HTMLElement;
+	readonly title: HTMLElement;
+	readonly workingWrap: HTMLElement;
+	readonly workingTitle: HTMLElement;
+	readonly workingList: HTMLElement;
+	readonly scheduledWrap: HTMLElement;
+	readonly scheduledTitle: HTMLElement;
+	readonly scheduledList: HTMLElement;
+	readonly idleWrap: HTMLElement;
+	readonly idleTitle: HTMLElement;
+	readonly idleList: HTMLElement;
+	readonly workingCrew: CrewFigures;
+	readonly scheduledCrew: CrewFigures;
+	workingKey: string;
+	scheduledKey: string;
+	idleKey: string;
+}
+
+interface AgentsHubInput {
+	readonly profileId: string;
+	readonly activeAgentId: string | undefined;
+	readonly workingStaff: readonly HostedStaffAgent[];
+	readonly scheduledStaff: readonly HostedStaffAgent[];
+	readonly idleStaff: readonly HostedStaffAgent[];
+}
+
+const agentsHubs = new WeakMap<CompanyController, AgentsHubParts>();
+function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLElement | null {
+	const store = surfacesOf(company);
+	if (!store) return null;
+	const state = store.state;
+	const tasks = activeTaskSessions(state);
+	const explorations = state.surfaces
+		.filter((surface) => surface.status === "active")
+		.flatMap((surface) => {
+			const workspace = state.workspaces[surface.id];
+			return openExplorations(workspace).map((exploration) => ({
+				surface,
+				exploration,
+				variants: exploration.variantSessionIds
+					.map((id) => workspace?.activeSessions.find((session) => session.id === id))
+					.filter((session): session is NonNullable<typeof session> => Boolean(session)),
+			}));
+		});
+	const automations = state.automations;
+	const hasWorking = input.workingStaff.length > 0 || tasks.length > 0 || explorations.length > 0;
+	const hasScheduled = automations.length > 0 || input.scheduledStaff.length > 0;
+	const hasIdle = input.idleStaff.length > 0;
+	if (!hasWorking && !hasScheduled && !hasIdle) return null;
+
+	let hub = agentsHubs.get(company);
+	if (!hub) {
+		const title = h("span", null, t("Agents"));
+		const workingTitle = h("div", { class: "rail-agents-subhead" }, t("Working"));
+		const workingList = h("div", { class: "rail-agents-list" });
+		const workingWrap = h("div", { class: "rail-agents-sub", hidden: true }, workingTitle, workingList);
+		const scheduledTitle = h("div", { class: "rail-agents-subhead" }, t("Scheduled"));
+		const scheduledList = h("div", { class: "rail-agents-list" });
+		const scheduledWrap = h("div", { class: "rail-agents-sub", hidden: true }, scheduledTitle, scheduledList);
+		const idleTitle = h("div", { class: "rail-agents-subhead" }, t("Ready"));
+		const idleList = h("div", { class: "rail-agents-list" });
+		const idleWrap = h("div", { class: "rail-agents-sub", hidden: true }, idleTitle, idleList);
+		const el = h(
+			"div",
+			{ class: "rail-agents-hub", role: "group", "aria-label": t("Agents") },
+			h("div", { class: "rail-section-title rail-agents-head" }, title),
+			workingWrap,
+			scheduledWrap,
+			idleWrap,
+		);
+		hub = {
+			el,
+			title,
+			workingWrap,
+			workingTitle,
+			workingList,
+			scheduledWrap,
+			scheduledTitle,
+			scheduledList,
+			idleWrap,
+			idleTitle,
+			idleList,
+			workingCrew: new CrewFigures(),
+			scheduledCrew: new CrewFigures(),
+			workingKey: "",
+			scheduledKey: "",
+			idleKey: "",
+		};
+		agentsHubs.set(company, hub);
+	}
+
+	const locale = presentationLocale();
+	hub.title.textContent = t("Agents");
+	hub.el.setAttribute("aria-label", t("Agents"));
+
+	hub.workingTitle.textContent = t("Working");
+	hub.workingWrap.hidden = !hasWorking;
+	const workingKey = JSON.stringify([
+		locale,
+		input.activeAgentId,
+		input.workingStaff.map((agent) => [agent.id, agent.displayName, company.agentState(agent.id)]),
+		explorations.map(({ surface, exploration, variants }) => [
+			surface.slug,
+			surface.title,
+			exploration.id,
+			exploration.title,
+			variants.length,
+			variants.some(isRunningSession),
+		]),
+		tasks.map(({ surface, session, running }) => [
+			surface.slug,
+			surface.title,
+			session.id,
+			session.title,
+			session.state,
+			running,
+			session.openChangeCount,
+			hasConflictedChange(session),
+		]),
+	]);
+	if (workingKey !== hub.workingKey) {
+		hub.workingKey = workingKey;
+		const workingRows: HTMLElement[] = [
+			...input.workingStaff.map((agent) => {
+				const look = AGENT_LOOK[company.agentState(agent.id)];
+				return h(
+					"a",
+					{
+						class: `rail-agent-hub-row is-working${input.activeAgentId === agent.id ? " active" : ""}`,
+						href: `#/c/${input.profileId}/staff/${agent.id}`,
+						draggable: "false",
+					},
+					h(
+						"span",
+						{ class: "rail-agent-hub-fig" },
+						agentFigure(agent, agent.displayName, { size: 32, activity: look.figure, alive: true }),
+					),
+					h(
+						"span",
+						{ class: "rail-agent-hub-copy" },
+						h("strong", null, agent.displayName),
+						h("small", null, stateLine(look) ?? t("Working")),
+					),
+				);
+			}),
+			...explorations.map(({ surface, exploration, variants }) => {
+				const running = variants.some(isRunningSession);
+				const status: HTMLElement | string = running
+					? crewWave()
+					: t("{count} options", { count: variants.length });
+				return h(
+					"button",
+					{
+						type: "button",
+						class: `rail-agent-hub-row${running ? " is-working" : ""}`,
+						"data-hub-exploration": exploration.id,
+						onclick: () => {
+							location.hash = surfaceHash(input.profileId, surface.slug);
+							store.openExplorationDrawer(surface.id, exploration.id);
+						},
+					},
+					hub!.workingCrew.takeExploration(exploration, variants, 32),
+					h(
+						"span",
+						{ class: "rail-agent-hub-copy" },
+						h("strong", null, exploration.title),
+						h("small", null, status),
+					),
+					h("span", { class: "rail-agent-surface-tag" }, surface.title),
+				);
+			}),
+			...tasks.map(({ surface, session, running }) => {
+				const liveChanges = session.changes.filter((change) => change.status !== "discarded");
+				const actions = liveChanges.length > 0 && liveChanges.every((change) => isActionChange(change, surface));
+				const open = liveChanges.filter(isOpenChange).length;
+				const status: HTMLElement | string = running
+					? crewWave()
+					: session.state === "needs_input"
+						? t("Needs you")
+						: hasConflictedChange(session)
+							? t("Conflict")
+							: actions
+								? open > 1
+									? t("{count} actions ready", { count: open })
+									: t("Action ready")
+								: open === 1
+									? t("1 change ready")
+									: open > 1
+										? t("{count} changes ready", { count: open })
+										: t("Ready");
+				return h(
+					"button",
+					{
+						type: "button",
+						class: `rail-agent-hub-row${running ? " is-working" : ""}`,
+						"data-hub-session": session.id,
+						onclick: () => {
+							location.hash = surfaceHash(input.profileId, surface.slug);
+							store.openDrawer(surface.id, session.id);
+						},
+					},
+					hub!.workingCrew.take(session, 32),
+					h("span", { class: "rail-agent-hub-copy" }, h("strong", null, session.title), h("small", null, status)),
+					h("span", { class: "rail-agent-surface-tag" }, surface.title),
+				);
+			}),
+		];
+		hub.workingList.replaceChildren(...workingRows);
+		hub.workingCrew.settle();
+	}
+
+	hub.scheduledTitle.textContent = t("Scheduled");
+	hub.scheduledWrap.hidden = !hasScheduled;
+	const companyState = company.store.get();
+	const surfaceTitleBySlug = new Map(state.surfaces.map((surface) => [surface.slug, surface.title]));
+	const scheduledKey = JSON.stringify([
+		locale,
+		input.activeAgentId,
+		automations.map((item) => [
+			item.id,
+			item.title,
+			item.scheduleSummary,
+			item.enabled,
+			item.targetSurfaceSlug,
+			Boolean(state.busy[`automation:${item.id}`]),
+		]),
+		input.scheduledStaff.map((agent) => [agent.id, agent.displayName, companyState.agentNotes?.[agent.id]?.next]),
+	]);
+	if (scheduledKey !== hub.scheduledKey) {
+		hub.scheduledKey = scheduledKey;
+		const scheduledRows: HTMLElement[] = [
+			...automations.map((automation) => {
+				const targetTitle = automation.targetSurfaceSlug
+					? surfaceTitleBySlug.get(automation.targetSurfaceSlug)
+					: undefined;
+				const toggle = h("button", {
+					type: "button",
+					class: "surface-switch",
+					role: "switch",
+					"aria-checked": String(automation.enabled),
+					"aria-label": t("Turn {name} on or off", { name: automation.title }),
+					disabled: Boolean(state.busy[`automation:${automation.id}`]),
+					onclick: (event: MouseEvent) => {
+						event.stopPropagation();
+						void store.toggleAutomation(automation.id, !automation.enabled);
+					},
+				});
+				return h(
+					"div",
+					{
+						class: `rail-agent-sched${automation.enabled ? "" : " is-paused"}`,
+						"data-scheduled-agent": automation.id,
+					},
+					h(
+						"button",
+						{
+							type: "button",
+							class: "rail-agent-hub-row",
+							onclick: () => openScheduleAgentSheet(store, automation),
+						},
+						hub!.scheduledCrew.takeScheduled(automation.id, automation.enabled, 32, automation.title),
+						h(
+							"span",
+							{ class: "rail-agent-hub-copy" },
+							h("strong", null, automation.title),
+							h(
+								"small",
+								{ title: automation.scheduleSummary },
+								targetTitle ? `${targetTitle} · ${automation.scheduleSummary}` : automation.scheduleSummary,
+							),
+						),
+					),
+					toggle,
+				);
+			}),
+			...input.scheduledStaff.map((agent) => {
+				const note = idleLine({
+					failed: false,
+					hiredAt: agent.createdAt,
+					note: companyState.agentNotes?.[agent.id],
+				});
+				return h(
+					"a",
+					{
+						class: `rail-agent-hub-row${input.activeAgentId === agent.id ? " active" : ""}`,
+						href: `#/c/${input.profileId}/staff/${agent.id}`,
+						draggable: "false",
+						"data-agent-id": agent.id,
+					},
+					h(
+						"span",
+						{ class: "rail-agent-hub-fig" },
+						agentFigure(agent, agent.displayName, { size: 32, activity: "Idle", alive: true }),
+					),
+					h(
+						"span",
+						{ class: "rail-agent-hub-copy" },
+						h("strong", null, agent.displayName),
+						note?.text ? h("small", null, note.text) : null,
+					),
+				);
+			}),
+		];
+		hub.scheduledList.replaceChildren(...scheduledRows);
+		hub.scheduledCrew.settle();
+	}
+
+	hub.idleTitle.textContent = t("Ready");
+	hub.idleWrap.hidden = !hasIdle;
+	const idleKey = JSON.stringify([
+		locale,
+		input.activeAgentId,
+		input.idleStaff.map((agent) => [agent.id, agent.displayName, agent.role]),
+	]);
+	if (idleKey !== hub.idleKey) {
+		hub.idleKey = idleKey;
+		const idleRows = input.idleStaff.map((agent) =>
+			h(
+				"a",
+				{
+					class: `rail-agent-hub-row${input.activeAgentId === agent.id ? " active" : ""}`,
+					href: `#/c/${input.profileId}/staff/${agent.id}`,
+					draggable: "false",
+					"data-agent-id": agent.id,
+				},
+				h(
+					"span",
+					{ class: "rail-agent-hub-fig" },
+					agentFigure(agent, agent.displayName, { size: 32, activity: "Idle", alive: true }),
+				),
+				h(
+					"span",
+					{ class: "rail-agent-hub-copy" },
+					h("strong", null, agent.displayName),
+					agent.role ? h("small", null, agent.role) : null,
+				),
+			),
+		);
+		hub.idleList.replaceChildren(...idleRows);
+	}
+
+	return hub.el;
+}
+
+const surfaceRails = new WeakMap<CompanyController, SurfaceRail>();
+function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
+	const store = surfacesOf(company);
+	if (!store) return undefined;
+	let rail = surfaceRails.get(company);
+	if (!rail) {
+		rail = new SurfaceRail(store, company.profile.profileId, company.signal, () =>
+			openCreateSurfaceSheet(store, company.profile.profileId),
+		);
+		surfaceRails.set(company, rail);
+	}
+	return rail;
+}
+
 /* ---- Who is where ---------------------------------------------------------------- */
 
-/** The rail place an entry stands for (app/presence-place.ts): its agent, its group chat, or its page or app. */
 function placeOf(element: HTMLElement): string | undefined {
-	const { agentId, cofounderId, roomId, appKey, owedPlace } = element.dataset;
+	const { agentId, cofounderId, roomId, appKey, owedPlace, surfaceSlug } = element.dataset;
+	if (surfaceSlug) return `surface:${surfaceSlug.toLowerCase()}`;
 	if (agentId || cofounderId) return `agent:${(agentId ?? cofounderId)!.toLowerCase()}`;
 	if (roomId) return `room:${roomId.toLowerCase()}`;
 	if (owedPlace) return owedPlace;
@@ -1923,10 +2411,6 @@ function placeOf(element: HTMLElement): string | undefined {
 		: `page:${appKey}`;
 }
 
-/** The other members in the company now, each as a small picture on the agent, group chat, page or app they are in
- * (Jonas, 9 Nov 2026: "a visual in the sidepanel that indicates what agent/interface the user is inside of, like a
- * little notch"). Pages and apps show theirs on the apps button too while the drawer is shut. Set in place, like the
- * current row, so a member moving never rebuilds a row. */
 function paintPresence(container: HTMLElement, parts: RailParts, company: CompanyController): void {
 	const places = company.peopleByPlace();
 	if (places.size === 0) {
@@ -1937,7 +2421,7 @@ function paintPresence(container: HTMLElement, parts: RailParts, company: Compan
 	const visited = new Set<HTMLElement>();
 	const inApps = new Map<string, { userId: string; name: string }>();
 	for (const element of container.querySelectorAll<HTMLElement>(
-		"[data-agent-id], [data-cofounder-id], [data-room-id], [data-app-key], [data-owed-place]",
+		"[data-surface-slug], [data-agent-id], [data-cofounder-id], [data-room-id], [data-app-key], [data-owed-place]",
 	)) {
 		visited.add(element);
 		const place = placeOf(element);
@@ -2090,7 +2574,6 @@ function drawInterfaces(
 	concepts: number,
 	sites: number,
 	route: Route,
-	addsPrograms: boolean,
 ): void {
 	const profileId = company.profile.profileId;
 	const activeName = route.name === "company" && route.section === "interface" ? route.id : undefined;
@@ -2277,15 +2760,8 @@ function drawInterfaces(
 	parts.groupRows = groupRows;
 	parts.appTree = tree;
 	parts.appTiles = tiles;
-	if (addsPrograms) {
-		if (parts.newProgram?.textContent !== t("New program"))
-			parts.newProgram = newProgramIcon(`#/c/${profileId}/new-program`);
-		const open = route.name === "company" && route.section === "new-program";
-		parts.newProgram.classList.toggle("active", open);
-		if (open) parts.newProgram.setAttribute("aria-current", "page");
-		else parts.newProgram.removeAttribute("aria-current");
-		drawn.push(parts.newProgram);
-	} else parts.newProgram = undefined;
+	// WHY: New program lives behind the Building section's + now, never as a drawer tile that cannot be removed.
+	parts.newProgram = undefined;
 	for (const [index, element] of drawn.entries()) element.style.setProperty("--i", String(index));
 	// A lifted icon keeps the order the drag shows; the drag's end draws the drawer afresh.
 	if (!parts.appsDrag.dragging) placeTiles(parts, drawn);
@@ -2663,15 +3139,6 @@ function whatsNewIcon(href: string, count: number): HTMLElement {
 		},
 		h("span", { class: "rail-app-stand" }, interfaceEmblem("spark", 34), countBadge(count)),
 		h("span", { class: "rail-app-name" }, label),
-	);
-}
-
-function newProgramIcon(href: string): HTMLElement {
-	return h(
-		"a",
-		{ class: "rail-app rail-new-program", href, draggable: "false" },
-		h("span", { class: "rail-app-stand" }, h("span", { class: "rail-new-program-mark", "aria-hidden": "true" })),
-		h("span", { class: "rail-app-name" }, t("New program")),
 	);
 }
 

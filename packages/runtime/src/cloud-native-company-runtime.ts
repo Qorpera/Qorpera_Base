@@ -93,7 +93,7 @@ import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts
 import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudAppGroupsTool } from "./cloud-folder-app-groups.ts";
 import { cloudAppTools } from "./cloud-folder-app-tools.ts";
-import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
+import { cloudFolderFileTools, type SurfaceFilePolicy } from "./cloud-folder-file-tools.ts";
 import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import { CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import { cloudInterfaceTools } from "./cloud-folder-interface-tools.ts";
@@ -203,6 +203,16 @@ import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
 import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import {
+	type CloudSurfaceToolsPort,
+	type ControlPlaneSurfaceToolsPortOptions,
+	createControlPlaneSurfaceToolsPort,
+	createManageSurfaceAutomationTool,
+	createProposeSurfaceTool,
+	createStartSurfaceSessionTool,
+	type SurfaceCompanySenses,
+	type SurfaceToolsRpcClient,
+} from "./cloud-surface-tools.ts";
+import {
 	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	cloudAskMemberFinalKey,
 	cloudAskMemberInstructions,
@@ -275,6 +285,97 @@ async function chatGptPlanRun(identityRoot: string): Promise<boolean> {
 	}
 }
 
+export { type ControlPlaneSurfaceToolsPortOptions, createControlPlaneSurfaceToolsPort, type SurfaceToolsRpcClient };
+
+type CloudRuntimeSurfaceToolsPort = Pick<CloudSurfaceToolsPort, "proposeSurface" | "startSurfaceSession"> &
+	Partial<Pick<CloudSurfaceToolsPort, "listSurfaceSenses" | "manageAutomation">>;
+
+const EXPLICIT_MEMBER_DOC_PATTERN =
+	/\b(?:write|create|draft|save|export|generate|make|put|prepare)\s+(?:a|an|me|us|the)?\s*(?:markdown|md|doc|document|memo|report|plan|brief|pdf|csv|spreadsheet|file)\b|\b(?:as\s+a\s+(?:markdown|md|doc|document|file|pdf|csv|memo|report))\b|\.(?:md|pdf|csv|docx|xlsx)\b/i;
+
+function memberExplicitlyRequestedDocument(context: CloudNativeCompanyContext, wake: CloudWakeEnvelope): boolean {
+	const texts: string[] = [];
+	for (const source of context.currentInputs) {
+		if (source.kind === "current_human_request") texts.push(source.content.text);
+	}
+	if (wake.kind === "room" && Array.isArray(wake.payload.inputIds)) {
+		const ids = new Set(wake.payload.inputIds.filter((id): id is string => typeof id === "string"));
+		for (const source of context.history) {
+			if (source.kind === "historical_human_message" && ids.has(source.id)) {
+				texts.push(source.content.text);
+			}
+		}
+	}
+	return texts.some((text) => EXPLICIT_MEMBER_DOC_PATTERN.test(text));
+}
+
+function mergeSurfaceSenses(
+	baseSenses: JsonValue | null | undefined,
+	surfaceSenses: SurfaceCompanySenses | undefined,
+): JsonValue | null | undefined {
+	if (!surfaceSenses) return baseSenses;
+	const surfaceFields = {
+		surfaces: surfaceSenses.surfaces,
+		automations: surfaceSenses.automations,
+	} as unknown as Record<string, JsonValue>;
+	if (baseSenses && typeof baseSenses === "object" && !Array.isArray(baseSenses)) {
+		return { ...baseSenses, ...surfaceFields };
+	}
+	return surfaceFields;
+}
+
+export interface CloudNativeCompanyRuntimeOptions {
+	presence?: CloudCompanyPathPresenceFactory;
+	controlPlane: NativeCompanyControl;
+	pathControl: CloudCompanyPathControl;
+	command: readonly [string, ...string[]];
+	binarySha256: string;
+	timeoutMs?: number;
+	isolation?: NativeIsolationConfiguration;
+	/** How a ChatGPT plan run's Codex gets the plan's token; `command` unless the host chose the fallback. */
+	chatGptPlanAuth?: CloudChatGptPlanAuth;
+	secretBroker?: CloudSecretOperationClient;
+	/** The vault's company accounts route (A1-4): without it no run is offered company_account. */
+	companyAccounts?: CloudCompanyAccountClient;
+	/** The vault's event hooks route (E3b-2): without it a run's GitHub or HMAC hook is refused as unavailable. */
+	eventHooks?: CloudCompanyFolderSignedHooks;
+	/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
+	computerSession?: CloudCompanyComputerSessionFactory;
+	/** The coding composition (Order 9): only a node with the coding command
+	 * gateway installed carries it. A coding wake on a node without it fails visibly. */
+	coding?: CloudNativeCodingDriver;
+	/** Company machines' command gateway (the coding executor's ingress, 2026-09-28).
+	 * Without it no run is offered the machine tools. */
+	machines?: (binding: CloudNativeToolBinding) => CloudMachineCommandGateway;
+	/**
+	 * The agent's home (lanes/agent-box-20261113, slice 1): the channel from this run's slot to its own machine, for
+	 * Codex's own shell and file tools. Given only where the host is configured for it; used only for a run whose
+	 * company has the switch on (`qorpera_company_home_available`). Without either, every run is exactly as today.
+	 */
+	homeChannel?: (binding: CloudNativeToolBinding) => CloudCodexHomeChannel;
+	/** The Claude Code worker's composition (slice C4c): with the home channel, a plain worker the agent handed to
+	 * Claude Code runs here, on the agent's machine and its member's Claude sign-in. Without it such a run is refused. */
+	claudeWorker?: CloudClaudeWorkerHost;
+	geminiKeys?: GeminiKeyRunClient;
+	geminiApiBaseUrl?: string;
+	geminiAllowLoopback?: boolean;
+	geminiFetch?: typeof fetch;
+	/** The vault's coding value route (20260930705000): with machines, a company agent's own run is offered
+	 * save_coding_value. */
+	codingValues?: CloudMachineCodingValues;
+	/** A company run's file bytes (core C1d: the object gateway's folder route). Every company run is a folder-v2
+	 * run (legacy sweep step C, C-P1). */
+	folderBytes: (binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes;
+	/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
+	 * company_search over it. */
+	folderSearch?: { readonly socketPath: string };
+	/** The data gateway's run door (company databases, slices 5 and 7): with it a run is offered data_describe,
+	 * data_query and, unless it is a worker, data_apply and data_change; without it none of them. */
+	companyData?: CloudCompanyDataDoor;
+	surfaceTools?: CloudRuntimeSurfaceToolsPort;
+	surfaceFirst?: boolean;
+}
+
 /** Cloud-only composition of the native fence, live path gateway and public mouth.
  * Object transport and cloud authority stay in this trusted host. No model tool
  * receives a service key, raw object capability, recipient or canonical mount.
@@ -303,60 +404,14 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	readonly #codingValues: CloudMachineCodingValues | undefined;
 	readonly #folderSearch: { readonly socketPath: string } | undefined;
 	readonly #companyData: CloudCompanyDataDoor | undefined;
+	readonly #surfaceTools: CloudRuntimeSurfaceToolsPort | undefined;
+	readonly #surfaceFirst: boolean;
 	readonly #folderBytes: (
 		binding: CloudNativeToolBinding,
 		identity: CloudNativeToolIdentity,
 	) => CloudCompanyFolderBytes;
 
-	constructor(options: {
-		presence?: CloudCompanyPathPresenceFactory;
-		controlPlane: NativeCompanyControl;
-		pathControl: CloudCompanyPathControl;
-		command: readonly [string, ...string[]];
-		binarySha256: string;
-		timeoutMs?: number;
-		isolation?: NativeIsolationConfiguration;
-		/** How a ChatGPT plan run's Codex gets the plan's token; `command` unless the host chose the fallback. */
-		chatGptPlanAuth?: CloudChatGptPlanAuth;
-		secretBroker?: CloudSecretOperationClient;
-		/** The vault's company accounts route (A1-4): without it no run is offered company_account. */
-		companyAccounts?: CloudCompanyAccountClient;
-		/** The vault's event hooks route (E3b-2): without it a run's GitHub or HMAC hook is refused as unavailable. */
-		eventHooks?: CloudCompanyFolderSignedHooks;
-		/** Explicit cloud-office adapter; no local execution or inferred resource grant. */
-		computerSession?: CloudCompanyComputerSessionFactory;
-		/** The coding composition (Order 9): only a node with the coding command
-		 * gateway installed carries it. A coding wake on a node without it fails visibly. */
-		coding?: CloudNativeCodingDriver;
-		/** Company machines' command gateway (the coding executor's ingress, 2026-09-28).
-		 * Without it no run is offered the machine tools. */
-		machines?: (binding: CloudNativeToolBinding) => CloudMachineCommandGateway;
-		/**
-		 * The agent's home (lanes/agent-box-20261113, slice 1): the channel from this run's slot to its own machine, for
-		 * Codex's own shell and file tools. Given only where the host is configured for it; used only for a run whose
-		 * company has the switch on (`qorpera_company_home_available`). Without either, every run is exactly as today.
-		 */
-		homeChannel?: (binding: CloudNativeToolBinding) => CloudCodexHomeChannel;
-		/** The Claude Code worker's composition (slice C4c): with the home channel, a plain worker the agent handed to
-		 * Claude Code runs here, on the agent's machine and its member's Claude sign-in. Without it such a run is refused. */
-		claudeWorker?: CloudClaudeWorkerHost;
-		geminiKeys?: GeminiKeyRunClient;
-		geminiApiBaseUrl?: string;
-		geminiAllowLoopback?: boolean;
-		geminiFetch?: typeof fetch;
-		/** The vault's coding value route (20260930705000): with machines, a company agent's own run is offered
-		 * save_coding_value. */
-		codingValues?: CloudMachineCodingValues;
-		/** A company run's file bytes (core C1d: the object gateway's folder route). Every company run is a folder-v2
-		 * run (legacy sweep step C, C-P1). */
-		folderBytes: (binding: CloudNativeToolBinding, identity: CloudNativeToolIdentity) => CloudCompanyFolderBytes;
-		/** The slot's relay to the node's folder search (F3, the shared execution host only): a folder-v2 run gets
-		 * company_search over it. */
-		folderSearch?: { readonly socketPath: string };
-		/** The data gateway's run door (company databases, slices 5 and 7): with it a run is offered data_describe,
-		 * data_query and, unless it is a worker, data_apply and data_change; without it none of them. */
-		companyData?: CloudCompanyDataDoor;
-	}) {
+	constructor(options: CloudNativeCompanyRuntimeOptions) {
 		this.#control = options.controlPlane;
 		this.#presenceFactory = options.presence;
 		this.#paths = options.pathControl;
@@ -383,6 +438,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		this.#folderBytes = options.folderBytes;
 		this.#folderSearch = options.folderSearch ? Object.freeze({ ...options.folderSearch }) : undefined;
 		this.#companyData = options.companyData;
+		this.#surfaceFirst = options.surfaceFirst ?? Boolean(options.surfaceTools);
+		this.#surfaceTools =
+			options.surfaceTools ?? (this.#surfaceFirst ? createControlPlaneSurfaceToolsPort(this.#paths) : undefined);
 	}
 
 	/** The effort and tier of the last successful run per identity root: a spare starts with them. */
@@ -711,6 +769,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								return null;
 							})
 						: Promise.resolve(undefined);
+				const surfaceSensesRequest =
+					this.#surfaceFirst &&
+					this.#surfaceTools?.listSurfaceSenses &&
+					context.identity.audienceKind === "company" &&
+					!cloudWorkerToolFilter(wake).isWorker
+						? this.#surfaceTools.listSurfaceSenses(context.identity.companyId, signal).catch((error) => {
+								if (!signal.aborted)
+									console.error(
+										`The company's surface senses were not read (${cloudRuntimeErrorCategory(error, signal)})`,
+									);
+								return undefined;
+							})
+						: Promise.resolve(undefined);
 				// Changes the agent saved from a computer that wait for review (P40): listed only where it can
 				// raise a card (its own conversation or thread, not a worker), the same rule the folder core keeps.
 				const proposalsRequest =
@@ -768,7 +839,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					vision,
 					reading,
 					openWork: await openWorkRequest,
-					senses: await sensesRequest,
+					senses: mergeSurfaceSenses(await sensesRequest, await surfaceSensesRequest),
 					proposals: await proposalsRequest,
 					platformUpdates: await updatesRequest,
 				};
@@ -844,7 +915,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					const views = redactCloudWebhookSecrets(view?.views ?? "");
 					// What the instructions are composed for: the run's tools and whether the vision is agreed (T3-2).
 					if (!offeredTools) throw new Error("The run's tools were not made before its opening");
-					const parts = { head: head.text, views, tools: offeredTools, visionAgreed: cloudVisionAgreed(vision) };
+					const parts = {
+						head: head.text,
+						views,
+						tools: offeredTools,
+						visionAgreed: cloudVisionAgreed(vision),
+						...(this.#surfaceFirst ? { surfaceFirst: true } : {}),
+					};
 					const updates = offeredTools.has("record_reflection") ? platformUpdates?.context : undefined;
 					const prompt = composeCloudNativeCompanyPrompt(
 						{ ...context, continuation },
@@ -1309,7 +1386,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							request: cloudActionReviewRequest(context, wake),
 							// What the agent works for, from its files as this run read them: a run no member started is
 							// judged by it (2026-10-22 amendment, item 2). A vision too large to read as text is left out.
-							mandate: cloudActionReviewMandate(context, wake, vision && "text" in vision ? vision.text : null),
+							mandate: cloudActionReviewMandate(context, wake, vision && "text" in vision ? vision.text : null, {
+								surfaceFirst: this.#surfaceFirst,
+							}),
 							holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
 							connectorEffects,
 							offlineShells,
@@ -1379,12 +1458,24 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							this.#machines && machinesAvailable && identity.audienceKind === "company"
 								? this.#machines(binding)
 								: undefined;
+						const surfaceFilePolicy: SurfaceFilePolicy | undefined =
+							this.#surfaceFirst && !work.isWorker && identity.audienceKind === "company"
+								? {
+										mode: "cofounder",
+										allowExplicitMemberDoc: memberExplicitlyRequestedDocument(context, wake),
+									}
+								: undefined;
 						const runTools: CloudNativeTool[] = [
 							...(computer?.tools ?? []),
 							// A run's file tools act through the folder core with its own authority (P19), and so do the
 							// tools that read and write its interfaces and tables (Interfaces I8a, I8b).
 							...[
-								...cloudFolderFileTools({ folder: folder.client, operations, identity }),
+								...cloudFolderFileTools({
+									folder: folder.client,
+									operations,
+									identity,
+									...(surfaceFilePolicy ? { surfaceFilePolicy } : {}),
+								}),
 								...cloudInterfaceTools({
 									folder: folder.client,
 									identity,
@@ -1392,7 +1483,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								}),
 								...cloudInterfaceWriteTools({ folder: folder.client, operations, identity }),
 								// Interface apps: pages the agent makes to show members its work (5 November 2026).
-								...cloudAppTools({ folder: folder.client, operations, identity }),
+								...(this.#surfaceFirst ? [] : cloudAppTools({ folder: folder.client, operations, identity })),
 								// A picture the agent makes, saved in the folder as a write is (20260930746000).
 								...(pictures
 									? [cloudPictureTool({ folder: folder.client, operations, identity, pictures })]
@@ -1500,29 +1591,33 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 													}),
 												]
 											: []),
-										...cloudSidebarTools(binding, identity, {
-											folderSidebar: new CloudFolderSidebar({
-												folder: folder.client,
-												operations,
-												identity,
-												// The Co-Founder stays on top, outside the sections.
-												people: new Map(
-													[
-														...(context.agentKind === "cofounder" ? [] : [context.agent]),
-														...context.coworkers,
-													].map((agent) => [agent.id, agent.name]),
-												),
-												peopleComplete: !context.coworkersTruncated,
-											}),
-										}),
+										...(this.#surfaceFirst
+											? []
+											: cloudSidebarTools(binding, identity, {
+													folderSidebar: new CloudFolderSidebar({
+														folder: folder.client,
+														operations,
+														identity,
+														// The Co-Founder stays on top, outside the sections.
+														people: new Map(
+															[
+																...(context.agentKind === "cofounder" ? [] : [context.agent]),
+																...context.coworkers,
+															].map((agent) => [agent.id, agent.name]),
+														),
+														peopleComplete: !context.coworkersTruncated,
+													}),
+												})),
 										// The apps drawer's groups, the twin of the sidebar's sections (APP-GROUPS-SPEC §3).
-										cloudAppGroupsTool({ folder: folder.client, operations, identity }),
+										...(this.#surfaceFirst
+											? []
+											: [cloudAppGroupsTool({ folder: folder.client, operations, identity })]),
 										...cloudReviewRuleTools(binding, identity, this.#paths),
 										// Good will (20260930566000): last month's payments and sorting them, the Co-Founder's until
 										// an agent owns the company's money.
 										...cloudGoodWillTools(binding, identity, this.#paths),
 										// The Co-Founder deals the team out between the members (20260930702000).
-										...(context.agentKind === "cofounder"
+										...(context.agentKind === "cofounder" && !this.#surfaceFirst
 											? cloudMemberOfferTools(binding, identity, this.#paths)
 											: []),
 										...(context.agentKind === "cofounder" && identity.audienceKind === "company"
@@ -1591,7 +1686,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 								),
 							...(identity.audienceKind === "company"
 								? [
-										...(work.isWorker
+										...(work.isWorker || this.#surfaceFirst
 											? []
 											: cloudHiringTools(identity, {
 													folderHiring: new CloudFolderHiring({
@@ -1640,6 +1735,37 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										// The company's code kept in Qorpera (20260930720000): an agent's own run takes a change
 										// out of main again and describes one; a worker reports to its agent instead.
 										...(work.isWorker ? [] : cloudCodeTools({ folder: folder.client, identity })),
+										...(work.isWorker || !this.#surfaceTools
+											? []
+											: [
+													createProposeSurfaceTool(this.#surfaceTools),
+													createStartSurfaceSessionTool({
+														startSurfaceSession: (sessionRequest, toolContext) =>
+															this.#surfaceTools!.startSurfaceSession(
+																{
+																	...sessionRequest,
+																	ownerLabel:
+																		sessionRequest.ownerLabel ??
+																		(context.agentKind === "cofounder"
+																			? "Co-Founder"
+																			: context.agent.name),
+																},
+																toolContext,
+															),
+													}),
+													...(this.#surfaceTools.manageAutomation
+														? [
+																createManageSurfaceAutomationTool(identity.companyId, {
+																	manageAutomation: (companyId, automationRequest, toolContext) =>
+																		this.#surfaceTools!.manageAutomation!(
+																			companyId,
+																			automationRequest,
+																			toolContext,
+																		),
+																}),
+															]
+														: []),
+												]),
 									]
 								: []),
 							...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),
@@ -2008,7 +2134,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					reviewer,
 					reviewerModel: CLAUDE_ACTION_REVIEW_MODEL,
 					request: cloudActionReviewRequest(input.context, wake),
-					mandate: cloudActionReviewMandate(input.context, wake, vision && "text" in vision ? vision.text : null),
+					mandate: cloudActionReviewMandate(input.context, wake, vision && "text" in vision ? vision.text : null, {
+						surfaceFirst: this.#surfaceFirst,
+					}),
 					holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
 					facts: {
 						coworkers: new Map(input.context.coworkers.map((coworker) => [coworker.id, coworker.name])),
