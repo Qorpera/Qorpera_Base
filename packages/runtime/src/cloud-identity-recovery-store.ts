@@ -140,18 +140,20 @@ export class FileRecoveryObjectStore implements RecoveryObjectStore {
 					constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
 					0o600,
 				);
+				let handleOpen = true;
 				try {
 					await handle.writeFile(snapshot);
 					await handle.sync();
 					await handle.close();
+					handleOpen = false;
 					try {
 						await link(temporary, path);
 					} catch (error) {
 						if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 					}
 				} finally {
-					await handle.close();
-					await unlink(temporary);
+					if (handleOpen) await handle.close().catch(() => undefined);
+					await unlink(temporary).catch(() => undefined);
 				}
 				existing = await this.#read(path);
 			}

@@ -273,10 +273,12 @@ async function installPrivateFile(directory: string, filename: string, bytes: Ui
 		constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
 		0o600,
 	);
+	let handleOpen = true;
 	try {
 		await handle.writeFile(bytes);
 		await handle.sync();
 		await handle.close();
+		handleOpen = false;
 		try {
 			await link(temporary, path);
 		} catch (error) {
@@ -293,9 +295,18 @@ async function installPrivateFile(directory: string, filename: string, bytes: Ui
 			)
 				throw new Error("Recovery installation conflicts with existing private state");
 			const content = Buffer.alloc(bytes.byteLength + 1);
-			const result = await installed.read(content, 0, content.byteLength, 0);
-			if (result.bytesRead !== bytes.byteLength || !content.subarray(0, result.bytesRead).equals(Buffer.from(bytes)))
-				throw new Error("Recovery installation cannot replace an existing identity");
+			try {
+				let length = 0;
+				while (length < content.byteLength) {
+					const result = await installed.read(content, length, content.byteLength - length, length);
+					if (!result.bytesRead) break;
+					length += result.bytesRead;
+				}
+				if (length !== bytes.byteLength || !content.subarray(0, length).equals(Buffer.from(bytes)))
+					throw new Error("Recovery installation cannot replace an existing identity");
+			} finally {
+				content.fill(0);
+			}
 		} finally {
 			await installed.close();
 		}
@@ -306,8 +317,8 @@ async function installPrivateFile(directory: string, filename: string, bytes: Ui
 			await root.close();
 		}
 	} finally {
-		await handle.close();
-		await unlink(temporary);
+		if (handleOpen) await handle.close().catch(() => undefined);
+		await unlink(temporary).catch(() => undefined);
 	}
 }
 
@@ -379,7 +390,22 @@ export async function restoreNativeIdentityKey(options: {
 			const info = await installed.stat();
 			if (!info.isFile() || info.size !== 44 || info.uid !== process.geteuid?.() || (info.mode & 0o077) !== 0)
 				throw new Error("Existing recovery master key is unsafe");
-			key = recoveryBase64((await installed.readFile("utf8")).trim(), 32);
+			const existingBytes = Buffer.alloc(45);
+			try {
+				let length = 0;
+				while (length < existingBytes.byteLength) {
+					const read = await installed.read(existingBytes, length, existingBytes.byteLength - length, length);
+					if (!read.bytesRead) break;
+					length += read.bytesRead;
+				}
+				if (length !== 44) throw new Error("Existing recovery master key changed during read");
+				key = recoveryBase64(
+					new TextDecoder("utf8", { fatal: true }).decode(existingBytes.subarray(0, length)).trim(),
+					32,
+				);
+			} finally {
+				existingBytes.fill(0);
+			}
 		} finally {
 			await installed.close();
 		}
@@ -389,11 +415,12 @@ export async function restoreNativeIdentityKey(options: {
 	}
 	try {
 		if (recoveryDigest(key) !== binding.key.keySha256) throw new Error("Existing identity key differs from recovery");
-		await installPrivateFile(
-			options.directory,
-			"qorpera-native-provider-master-key",
-			Buffer.from(`${key.toString("base64url")}\n`),
-		);
+		const encodedKey = Buffer.from(`${key.toString("base64url")}\n`);
+		try {
+			await installPrivateFile(options.directory, "qorpera-native-provider-master-key", encodedKey);
+		} finally {
+			encodedKey.fill(0);
+		}
 		const releaseSha256 = recoveryDigest(bytes);
 		const receipt = parseIdentityRecoveryReceipt(
 			await transport.post(

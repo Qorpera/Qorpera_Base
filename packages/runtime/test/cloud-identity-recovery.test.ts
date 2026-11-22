@@ -292,6 +292,29 @@ describe("cloud recovery coordinator", () => {
 		expect(Buffer.from(staged!).includes(f.key.toString("base64url"))).toBe(false);
 	});
 
+	it("replicates backups to NAS and Supabase concurrently", async () => {
+		const f = fixture();
+		let started = 0;
+		let releaseBarrier!: () => void;
+		const barrier = new Promise<void>((resolve) => {
+			releaseBarrier = resolve;
+		});
+		const wrapPut = (store: MemoryStore) => {
+			const originalPut = store.put.bind(store);
+			vi.spyOn(store, "put").mockImplementation(async (address, bytes) => {
+				started++;
+				if (started === 2) releaseBarrier();
+				await barrier;
+				return originalPut(address, bytes);
+			});
+		};
+		wrapPut(f.nas);
+		wrapPut(f.supabase);
+		await f.backup();
+		expect(started).toBe(2);
+		expect(f.plan().status).toBe("ready");
+	});
+
 	it("does not release before approval or silently change the selected replica", async () => {
 		const f = fixture();
 		await f.backup();
@@ -609,5 +632,77 @@ describe("recovery transport and storage", () => {
 			20,
 		);
 		await expect(stalled.get("a".repeat(64), signal)).rejects.toThrow("deadline");
+	});
+
+	it("drains active HTTP requests on graceful close and aborts wedged requests after the grace timeout", async () => {
+		const f = fixture();
+		let started!: () => void;
+		const inControl = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		let finishControl!: () => void;
+		const holdControl = new Promise<void>((resolve) => {
+			finishControl = resolve;
+		});
+		const originalCall = f.control.call.bind(f.control);
+		vi.spyOn(f.control, "call").mockImplementationOnce(async (operation, args, requestSignal) => {
+			started();
+			await holdControl;
+			return originalCall(operation, args, requestSignal);
+		});
+		const service = new HttpIdentityRecoveryService(f.authority, "o".repeat(43));
+		services.push(service);
+		const url = await service.start();
+		const inFlight = fetch(`${url}/v1/backup/prepare`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				loginId: f.loginId,
+				loginCapability: f.loginCapability,
+				keySha256: recoveryDigest(f.key),
+			}),
+		});
+		await inControl;
+		const closing = service.close(5_000);
+		finishControl();
+		const response = await inFlight;
+		expect(response.status).toBe(200);
+		expect(response.headers.get("connection")).toBe("close");
+		await closing;
+
+		let abortedOnShutdown = false;
+		let wedgedStarted!: () => void;
+		const inWedged = new Promise<void>((resolve) => {
+			wedgedStarted = resolve;
+		});
+		vi.spyOn(f.control, "call").mockImplementationOnce(async (_operation, _args, requestSignal) => {
+			wedgedStarted();
+			await new Promise<void>((resolve) => {
+				requestSignal.addEventListener(
+					"abort",
+					() => {
+						abortedOnShutdown = true;
+						resolve();
+					},
+					{ once: true },
+				);
+			});
+			requestSignal.throwIfAborted();
+			return {};
+		});
+		const wedgedUrl = await service.start();
+		const wedgedFetch = fetch(`${wedgedUrl}/v1/backup/prepare`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				loginId: f.loginId,
+				loginCapability: f.loginCapability,
+				keySha256: recoveryDigest(f.key),
+			}),
+		}).catch(() => undefined);
+		await inWedged;
+		await service.close(50);
+		await wedgedFetch;
+		expect(abortedOnShutdown).toBe(true);
 	});
 });
