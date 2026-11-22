@@ -120,7 +120,7 @@ export const PAGE_SECURITY_POLICY =
  * web share (STEP5-BUILD.md, release 5.1, item 3). The one label before qorpera.com is a name of letters and digits in
  * runs joined by single hyphens (group 1, the slug, which can never hold `--`), then `--next` on a next host (group 2).
  * The slug is also 3 to 48 long (SITE_HOST_SLUG_LENGTH); SQL checks the rest of the name rule. */
-export const SITE_HOST = /^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$/;
+export const SITE_HOST = /^([a-z0-9]+(?:-[a-z0-9]+)*)(--next|--p[a-z0-9]{8})?\.qorpera\.com$/;
 const SITE_HOST_SLUG_LENGTH = { min: 3, max: 48 } as const;
 /** The session cookie on a site host: host-only, so a visitor's on the own host and a member's on the next host never
  * meet, and no sibling can set or overwrite it. */
@@ -136,6 +136,7 @@ export const HOST_PAGE_SECURITY_POLICY =
 const PLATFORM_FOLDER = "__qorpera";
 /** The member's door on an own host: a one-use pass from the web, posted in a form's body. */
 export const MEMBER_PATH = `/${PLATFORM_FOLDER}/member`;
+export const INSPECTOR_PATH = `/${PLATFORM_FOLDER}/inspector.js`;
 /** A member pass: 32 random bytes, base64url without padding, as Look first's ticket. */
 const PASS = TICKET;
 
@@ -405,7 +406,7 @@ type HostAnswer =
  * 404.html for a path it lacks (status 404, whole: its content is never left out for the visitor's ETag). */
 export function parseHostAnswer(
 	value: unknown,
-	scope: "site" | "next",
+	scope: "site" | "next" | "preview",
 	etag: string | null,
 	options: { length: number },
 ): HostAnswer {
@@ -416,7 +417,8 @@ export function parseHostAnswer(
 	}
 	const scoped = (keys: readonly string[]) => {
 		const answer = closed(value, [...keys, "scope", "public"]);
-		if (answer.scope !== scope || answer.public !== false) invalid();
+		const matches = scope === "preview" ? answer.scope === "preview" || answer.scope === "next" : answer.scope === scope;
+		if (!matches || answer.public !== false) invalid();
 		return answer;
 	};
 	if (state === "locked" || state === "missing") {
@@ -900,7 +902,10 @@ export async function handleSiteServe(request: Request, options: SiteServeOption
 			: site
 				? await onSiteHost(request, options, lang, site, rest)
 				: undefined;
-		if (answer) return site?.scope === "site" ? framedByWeb(answer, options.webOrigins ?? DEFAULT_WEB_ORIGINS) : answer;
+		if (answer)
+			return site?.scope === "site" || site?.scope === "preview"
+				? framedByWeb(answer, options.webOrigins ?? DEFAULT_WEB_ORIGINS)
+				: answer;
 	}
 	return legacySiteServe(request, options);
 }
@@ -956,7 +961,8 @@ export interface SiteHost {
 	host: string;
 	slug: string;
 	/** site: the own host (the live version, a visitor's session); next: the next host (a member's look first). */
-	scope: "site" | "next";
+	scope: "site" | "next" | "preview";
+	readonly previewId?: string;
 }
 
 /** The site host x-forwarded-host names by the one host rule (SITE_HOST and the slug's length), lower-cased; null for
@@ -967,7 +973,10 @@ export function siteHost(forwarded: string | null): SiteHost | null {
 	const match = SITE_HOST.exec(host);
 	const slug = match?.[1];
 	if (!match || !slug || slug.length < SITE_HOST_SLUG_LENGTH.min || slug.length > SITE_HOST_SLUG_LENGTH.max) return null;
-	return { host, slug, scope: match[2] ? "next" : "site" };
+	const suffix = match[2];
+	if (!suffix) return { host, slug, scope: "site" };
+	if (suffix === "--next") return { host, slug, scope: "next" };
+	return { host, slug, scope: "preview", previewId: suffix.slice(3) };
 }
 
 /** Fetch Metadata (D22): a site host's answers go to the site's own pages (same-origin), to what a person typed or
@@ -1098,7 +1107,7 @@ function hostLocked(
 	options: { error?: string; clear?: boolean; extra?: Record<string, string> } = {},
 ): Response {
 	const extra = { ...(options.clear ? { "set-cookie": hostCookie("", 0) } : {}), ...options.extra };
-	if (site.scope === "next") {
+	if (site.scope === "next" || site.scope === "preview") {
 		const text = TEXT[lang];
 		return hostHtml(request, messagePage(lang, text.notLive, text.notLiveLead), status, extra);
 	}
@@ -1109,6 +1118,120 @@ function hostLocked(
  * wherever the page ends), ASCII only, so a page's own encoding never garbles it. */
 export function nextBar(lang: Language): string {
 	return `\n<div lang="${lang}" role="status" style="all:initial;display:block;position:fixed;left:0;right:0;bottom:0;z-index:2147483647;padding:8px 12px;background:#1d1c1a;color:#fff;font:600 14px/1.4 system-ui,sans-serif;text-align:center">${TEXT[lang].bar}</div>\n`;
+}
+
+// WHY: Injected strictly on ephemeral --p<id> preview hosts so founders can point at elements without ever altering production HTML.
+export function previewInspectorTag(): string {
+	return `\n<script src="${INSPECTOR_PATH}" defer></script>\n`;
+}
+
+export function previewInspectorScript(origins: readonly string[]): string {
+	const allowed = JSON.stringify(origins);
+	return `(() => {
+	const allowed = new Set(${allowed});
+	let active = false;
+	let parentOrigin = "";
+	let box = null;
+	let badge = null;
+	const ensureUi = () => {
+		if (box) return;
+		box = document.createElement("div");
+		box.style.cssText = "position:fixed;pointer-events:none;z-index:2147483646;border:2px solid #0e84ff;background:rgba(14,132,255,0.08);border-radius:6px;display:none;transition:all 60ms ease-out;";
+		badge = document.createElement("div");
+		badge.style.cssText = "position:fixed;pointer-events:none;z-index:2147483647;background:#161615;color:#fff;font:600 11px/1.3 system-ui,sans-serif;padding:3px 7px;border-radius:6px;display:none;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.22);";
+		document.documentElement.append(box, badge);
+	};
+	const hide = () => { if (box) box.style.display = "none"; if (badge) badge.style.display = "none"; };
+	const selectorOf = (el) => {
+		if (!el || el.nodeType !== 1) return "body";
+		const parts = [];
+		let cur = el;
+		while (cur && cur.nodeType === 1 && parts.length < 5) {
+			let seg = cur.tagName.toLowerCase();
+			if (cur.id) { parts.unshift(seg + "#" + cur.id); break; }
+			const cls = typeof cur.className === "string" ? cur.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2) : [];
+			if (cls.length) seg += "." + cls.join(".");
+			parts.unshift(seg);
+			cur = cur.parentElement;
+		}
+		return parts.join(" > ");
+	};
+	const onMove = (event) => {
+		if (!active) return;
+		const el = document.elementFromPoint(event.clientX, event.clientY);
+		if (!el || el === box || el === badge) { hide(); return; }
+		ensureUi();
+		const r = el.getBoundingClientRect();
+		box.style.display = "block";
+		box.style.left = r.left + "px";
+		box.style.top = r.top + "px";
+		box.style.width = r.width + "px";
+		box.style.height = r.height + "px";
+		const hint = el.getAttribute("data-qorpera-component") || el.tagName.toLowerCase();
+		badge.textContent = hint;
+		badge.style.display = "block";
+		badge.style.left = Math.max(6, Math.min(window.innerWidth - 160, r.left)) + "px";
+		badge.style.top = Math.max(6, r.top - 26) + "px";
+	};
+	const onClick = (event) => {
+		if (!active || !parentOrigin) return;
+		event.preventDefault();
+		event.stopPropagation();
+		const el = document.elementFromPoint(event.clientX, event.clientY) || event.target;
+		if (!el || el.nodeType !== 1) return;
+		const r = el.getBoundingClientRect();
+		const target = {
+			route: location.pathname || "/",
+			selector: selectorOf(el).slice(0, 512),
+			textSnippet: String(el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 160),
+			tagName: String(el.tagName || "div").toLowerCase().slice(0, 40),
+			componentHint: el.getAttribute("data-qorpera-component") || el.getAttribute("aria-label") || null,
+			boundingBox: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) },
+			viewport: { width: window.innerWidth || 1280, height: window.innerHeight || 800 },
+		};
+		active = false;
+		hide();
+		document.documentElement.style.cursor = "";
+		window.parent.postMessage({ type: "qorpera-inspector-pick", target }, parentOrigin);
+	};
+	window.addEventListener("message", (event) => {
+		if (event.source !== window.parent || !allowed.has(event.origin)) return;
+		if (!event.data || typeof event.data !== "object") return;
+		if (event.data.type === "qorpera:identity-tokens-css") {
+			const vars = event.data.vars;
+			if (!vars || typeof vars !== "object" || Array.isArray(vars)) return;
+			const root = document.documentElement;
+			for (const [k, v] of Object.entries(vars)) {
+				if (/^--[a-z][a-z0-9-]{1,60}$/.test(k) && typeof v === "string" && v.length <= 160 && !/[;{}<>\\\\]|url\\s*\\(/i.test(v)) {
+					root.style.setProperty(k, v);
+				}
+			}
+			return;
+		}
+		if (event.data.type !== "qorpera-inspector-mode") return;
+		parentOrigin = event.origin;
+		active = Boolean(event.data.active);
+		document.documentElement.style.cursor = active ? "crosshair" : "";
+		if (!active) hide();
+	});
+	window.addEventListener("mousemove", onMove, true);
+	window.addEventListener("click", onClick, true);
+})();\n`;
+}
+
+function previewInspectorResponse(request: Request, origins: readonly string[]): Response {
+	if (request.method !== "GET" && request.method !== "HEAD") return hostNotAllowed("GET, HEAD");
+	const bytes = new TextEncoder().encode(previewInspectorScript(origins));
+	return new Response(request.method === "HEAD" ? null : bytes, {
+		status: 200,
+		headers: {
+			...hostHeaders(),
+			"content-type": "text/javascript; charset=utf-8",
+			"content-security-policy": HOST_CONTENT_SECURITY_POLICY,
+			"cache-control": NO_STORE,
+			"content-length": String(bytes.byteLength),
+		},
+	});
 }
 
 function isHtml(contentType: string): boolean {
@@ -1127,7 +1250,8 @@ async function onSiteHost(
 	const text = TEXT[lang];
 	const method = request.method;
 	if (serviceWorkerScript(request.headers)) return hostNotFound(request, lang);
-	if (!fetchAllowed(request.headers, site.scope === "site"))
+	const framable = site.scope === "site" || site.scope === "preview";
+	if (!fetchAllowed(request.headers, framable))
 		return hostMessage(request, lang, 403, text.unavailable, text.ownAddress);
 	if (rest === "/robots.txt") {
 		if (method !== "GET" && method !== "HEAD") return hostNotAllowed("GET, HEAD");
@@ -1151,7 +1275,10 @@ async function onSiteHost(
 	if (path === null) return hostNotFound(request, lang);
 	// The platform's folder, whatever a site holds there: the member's door on an own host, nothing else.
 	if (path === PLATFORM_FOLDER || path.startsWith(`${PLATFORM_FOLDER}/`)) {
-		if (`/${path}` === MEMBER_PATH && site.scope === "site") return hostMember(request, options, lang, site);
+		if (`/${path}` === MEMBER_PATH && framable) return hostMember(request, options, lang, site);
+		if (`/${path}` === INSPECTOR_PATH && site.scope === "preview") {
+			return previewInspectorResponse(request, options.webOrigins ?? DEFAULT_WEB_ORIGINS);
+		}
 		return hostNotFound(request, lang);
 	}
 	if (method !== "GET" && method !== "HEAD") return hostNotAllowed("GET, HEAD");
@@ -1221,7 +1348,7 @@ async function readHostFile(
 	if (wanted === undefined) return { answer: await ask(0, MAX_FILE_BYTES), range: undefined };
 	let answer = "suffix" in wanted ? await ask(0, 0) : await ask(wanted.offset, wanted.length);
 	if (answer.state !== "file") return { answer, range: undefined };
-	if (answer.status === 404 || (site.scope === "next" && isHtml(answer.contentType)))
+	if (answer.status === 404 || ((site.scope === "next" || site.scope === "preview") && isHtml(answer.contentType)))
 		return { answer: await ask(0, MAX_FILE_BYTES), range: undefined };
 	if (answer.sha256 === etag) return { answer, range: undefined };
 	const ifRange = request.headers.get("if-range");
@@ -1238,13 +1365,18 @@ async function readHostFile(
 function hostFileAnswer(
 	request: Request,
 	file: Extract<HostAnswer, { state: "file" }>,
-	scope: "site" | "next",
+	scope: "site" | "next" | "preview",
 	etag: string | null,
 	range: { start: number; end: number } | "unsatisfiable" | undefined,
 	lang: Language,
 ): Response {
 	const fresh = scope === "site" && file.status === 200;
-	const bar = scope === "next" && isHtml(file.contentType) ? UTF8_ENCODER.encode(nextBar(lang)) : null;
+	const suffix =
+		scope === "next" && isHtml(file.contentType)
+			? UTF8_ENCODER.encode(nextBar(lang))
+			: scope === "preview" && isHtml(file.contentType)
+				? UTF8_ENCODER.encode(previewInspectorTag())
+				: null;
 	const headers: Record<string, string> = {
 		...hostHeaders(),
 		"content-type": file.contentType,
@@ -1252,10 +1384,10 @@ function hostFileAnswer(
 		"referrer-policy": "same-origin",
 		"cache-control": fresh ? "private, no-cache, no-transform" : NO_STORE,
 		...(fresh ? { etag: `"${file.sha256}"` } : {}),
-		...(file.status === 200 && !bar ? { "accept-ranges": "bytes" } : {}),
+		...(file.status === 200 && !suffix ? { "accept-ranges": "bytes" } : {}),
 	};
 	if (fresh && etag === file.sha256) return new Response(null, { status: 304, headers });
-	const length = file.bytes + (bar?.byteLength ?? 0);
+	const length = file.bytes + (suffix?.byteLength ?? 0);
 	if (request.method === "HEAD")
 		return new Response(null, { status: file.status, headers: { ...headers, "content-length": String(length) } });
 	if (range === "unsatisfiable")
@@ -1282,10 +1414,10 @@ function hostFileAnswer(
 	)
 		invalid();
 	let body: Uint8Array<ArrayBuffer>;
-	if (bar) {
-		body = new Uint8Array(new ArrayBuffer(bytes.byteLength + bar.byteLength));
+	if (suffix) {
+		body = new Uint8Array(new ArrayBuffer(bytes.byteLength + suffix.byteLength));
 		body.set(bytes, 0);
-		body.set(bar, bytes.byteLength);
+		body.set(suffix, bytes.byteLength);
 	} else {
 		body = bytes as Uint8Array<ArrayBuffer>;
 	}
@@ -1307,7 +1439,7 @@ async function hostUnlock(
 	const method = request.method;
 	if (method === "GET" || method === "HEAD") return hostRedirect("/", 303);
 	if (method !== "POST") return hostNotAllowed("POST");
-	if (site.scope === "next") return hostLocked(request, lang, site, "", 401);
+	if (site.scope === "next" || site.scope === "preview") return hostLocked(request, lang, site, "", 401);
 	const sent = request.headers.get("origin");
 	if (sent !== null && sent !== `https://${site.host}`) return hostMessage(request, lang, 403, text.private, text.refused);
 	if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded"))

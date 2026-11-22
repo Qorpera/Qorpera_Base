@@ -444,6 +444,13 @@ export function cloudActionEffect(
 			return args.action === "status" ? "read" : "internal";
 		case "narrate_app":
 			return "internal";
+		case "propose_surface":
+		case "start_surface_session":
+		case "manage_surface_automation":
+		case "coding_record_change":
+		case "stage_surface_patch":
+		case "stage_surface_ops_action":
+			return "internal";
 		default:
 			return "external";
 	}
@@ -1721,6 +1728,9 @@ const MANDATE_ROUTINE_BYTES = 1024;
 const COFOUNDER_MANDATE =
 	"This agent is the Co-Founder. Its role: the company's direction, one owner for everything the company needs, who is hired and what runs, and the relationship with the founders. It keeps the company's work moving from the first conversation on, without waiting to be asked: as soon as it knows what the company is about, it hires the team that builds the vision with it and, in that run, sets up its own weekday planning routine, which keeps the company plan current, gives work with no owner an owner, checks what owners call done, and brings the founders the decisions that wait for them. Building the vision with the founders is its first todo, not the limit of its work. Finishing what the founders asked for earlier, such as starting or checking work they wanted, is part of it too; sending or sharing it outside the company is not.";
 
+const SURFACE_FIRST_COFOUNDER_MANDATE =
+	"This agent is the Co-Founder in Surface-First mode. Its role: holding the company's direction and its live Surfaces projecting real Company Files and codebases, and guiding the partnership with the founders. From the first conversation on, without waiting to be asked, it populates Identity (identity/) first so every downstream surface inherits brand, voice, and design tokens, creates or proposes core product surfaces with propose_surface, launches focused sessions and side-by-side explorations with start_surface_session, manages recurring Scheduled Agents with manage_surface_automation, and keeps vision.md and reading.md current. It brings founders only previewable results or real decisions that genuinely need them. Finishing what the founders asked for earlier, such as starting or checking surface work they wanted, is part of its role; making external commitments or sending or sharing outside the company without member approval is not.";
+
 /** What the agent works for, as the reviewer reads it (contract: the 2026-10-22 amendment, item 2): its job
  * description, the routine's instructions when a routine started the work (its own wake's, or its chain's first
  * run's), the Co-Founder's role for the Co-Founder, and the company's vision, all as this run's composition read them
@@ -1730,13 +1740,15 @@ export function cloudActionReviewMandate(
 	context: CloudNativeCompanyContext,
 	wake: CloudWakeEnvelope | null,
 	vision: string | null,
+	options: { readonly surfaceFirst?: boolean } = {},
 ): string {
 	const routine = wake?.routine?.intent ?? context.origin?.routineIntent ?? null;
 	const job = context.jobSpecification.content.text.trim();
+	const cofounderMandate = options.surfaceFirst === true ? SURFACE_FIRST_COFOUNDER_MANDATE : COFOUNDER_MANDATE;
 	const head = [
 		`Job description (the agent's agent.md):\n${job ? bounded(job, MANDATE_JOB_BYTES) : "(none)"}`,
 		...(routine ? [`Routine instructions:\n${bounded(routine, MANDATE_ROUTINE_BYTES)}`] : []),
-		...(context.agentKind === "cofounder" ? [COFOUNDER_MANDATE] : []),
+		...(context.agentKind === "cofounder" ? [cofounderMandate] : []),
 	].join("\n\n");
 	const label = `The company's vision (${osPath("vision/vision.md")}):\n`;
 	const room = MANDATE_BYTES - Buffer.byteLength(head) - Buffer.byteLength(label) - 2;

@@ -353,6 +353,8 @@ class SplitEnvTest(unittest.TestCase):
             self.assertEqual(os.stat(dest).st_mode & 0o7777, 0o640)
             with self.assertRaises(FileExistsError):
                 migrate.split_env(str(source), str(dest), ['QORPERA_LXD_IMAGE_FINGERPRINT'])
+            self.assertEqual([p.name for p in Path(folder).iterdir() if '.tmp.' in p.name], [])
+            self.assertEqual(json.loads(dest.read_text())['env'], {'A': '1'})
             with self.assertRaises(SystemExit):
                 migrate.split_env(str(source), str(Path(folder) / 'other.json'), ['QORPERA_MISSING'])
 

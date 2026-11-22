@@ -76,7 +76,7 @@ Dropping the legacy key from the code is a follow-up; deleting it on the nodes h
 |---|---|
 | `stage <folder>` | Verifies the signature and every file, and that `previousRevision` is the current revision, then writes `releases/<revision>`. No service is touched. |
 | `adopt <revision>` | Migration only: points `current` at the first release without restarting anything. |
-| `apply <revision> [--defer <role>]… [--wait <s>]` | Runs the quiet gate (no run or login machine running; the exec host does not count), then points `previous` at the old release and `current` at the new one. Then, **per role whose program, values or `${release}`-named files changed**, it re-checks quiet, points the role's link at the release, and restarts and verifies the role (see below). A value like `${release}/image-provenance.json` keeps its text across releases, so the digest of the file it names is compared too. |
+| `apply <revision> [--defer <role>]… [--wait <s>]` | Runs the quiet gate (no run or login machine in any state other than `Stopped` or `Error`, including `Starting`, `Stopping` or `Frozen`; the exec host does not count), then points `previous` at the old release and `current` at the new one. Missing `--defer`/`--wait` option values refuse with `CLI_OPTION_VALUE`, and negative or non-finite `--wait` values refuse with `INVALID_WAIT`. Then, **per role whose program, values or `${release}`-named files changed**, it re-checks quiet, points the role's link at the release, and restarts and verifies the role (see below). A value like `${release}/image-provenance.json` keeps its text across releases, so the digest of the file it names is compared too. |
 | `rollback [--defer <role>]…` | Swaps back to `previous` and moves the roles that differ, the same way. A failed rollback is recorded. |
 | `switch <role> <old unit>` / `unswitch …` | Migration: moves a role from its old unit to its new one, or back (see below). |
 | `restart <role>` | Points one role at `current`, then restarts and verifies it. This is how a deferred role catches up after resume. |
@@ -217,8 +217,10 @@ These steps run per node: node 2 first, then node 1. They cover the provider and
    - A switch-back always brings the old unit back, then requires it enabled and the new unit disabled; otherwise it
      records `switch-back-failed`. The switch receipts carry the post-switch diff.
    - `agent unswitch <role> <old unit> [--force]` switches back by hand. It records an intent, waits for exactly the
-     command the switch recorded (after a `switch-back-failed`, the command in the switch intent), and writes a receipt
-     either way. After a `switched-back` there is nothing to undo, and it refuses. It waits for a quiet node; `--force` skips that,
+     command the switch recorded (after a `switch-back-failed` or an interrupted `switch` that only wrote its intent,
+     the command in the switch intent), and writes a receipt either way. After a `switched-back` or a completed
+     `unswitched` receipt there is nothing to undo and repeat unswitches refuse (`UNSWITCH_NO_SWITCH_FROM`); a failed
+     `unswitch` leaves the switch active so it can be retried. It waits for a quiet node; `--force` skips that,
      but only for a new role that is down already (no process, or a health URL fails).
    - Run `switch` and `unswitch` detached from the login session (`systemd-run --wait` as a transient unit). A dropped
      SSH session must not kill the agent between stopping the old unit and starting the new one.

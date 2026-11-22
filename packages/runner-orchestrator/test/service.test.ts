@@ -1,8 +1,14 @@
-import { resolve } from "node:path";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { CloudRunnerWork } from "../src/orchestrator.ts";
+import { type CloudRunnerWork, SupabaseCloudRunnerOrchestratorControlPlane } from "../src/orchestrator.ts";
 import { HttpCloudRunnerProviderAdapter } from "../src/provider-http.ts";
-import { cloudRunnerOrchestratorServiceConfigFromEnvironment } from "../src/service.ts";
+import {
+	cloudRunnerOrchestratorServiceConfigFromEnvironment,
+	createDefaultSurfaceWorkerConfig,
+	runCloudRunnerOrchestratorService,
+} from "../src/service.ts";
 
 const runnerId = "55555555-5555-4555-8555-555555555555";
 const logicalComputerId = "66666666-6666-4666-8666-666666666666";
@@ -277,5 +283,205 @@ describe("runner orchestrator service boundary", () => {
 		controller.abort(new Error("service stopping"));
 
 		await expect(request).rejects.toThrow("service stopping");
+	});
+
+	it("defaults surfaceWorkerEnabled to off and enables it only when QORPERA_SURFACE_WORKER=1", () => {
+		const baseEnv = {
+			QORPERA_SUPABASE_URL: "https://project.supabase.co",
+			QORPERA_SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+			QORPERA_RUNNER_ORCHESTRATOR_ID: "11111111-1111-4111-8111-111111111111",
+			QORPERA_RUNNER_ORCHESTRATOR_CONTROL_TOKEN: "c".repeat(43),
+			QORPERA_RUNNER_ORCHESTRATOR_CONTROL_STATE: resolve(".test/orchestrator-control.json"),
+			QORPERA_RUNNER_PROVIDER_URL: "https://provider.example",
+			QORPERA_RUNNER_PROVIDER_ADAPTER: "managed",
+			QORPERA_RUNNER_PROVIDER_TOKEN: "provider-service-token",
+		};
+		expect(cloudRunnerOrchestratorServiceConfigFromEnvironment(baseEnv).surfaceWorkerEnabled).toBe(false);
+		expect(
+			cloudRunnerOrchestratorServiceConfigFromEnvironment({ ...baseEnv, QORPERA_SURFACE_WORKER: "1" })
+				.surfaceWorkerEnabled,
+		).toBe(true);
+		expect(
+			cloudRunnerOrchestratorServiceConfigFromEnvironment({ ...baseEnv, QORPERA_SURFACE_WORKER: "0" })
+				.surfaceWorkerEnabled,
+		).toBe(false);
+	});
+
+	it("auto-starts default SurfaceWorkerLoop when surfaceWorkerEnabled is true and logs gracefully without crashing", async () => {
+		const dir = await realpath(await mkdtemp(join(tmpdir(), "orch-default-surface-")));
+		try {
+			const orchestratorId = "11111111-1111-4111-8111-111111111111";
+			const wakeId = "99999999-9999-4999-8999-999999999999";
+			const leaseToken = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+			const events: Record<string, unknown>[] = [];
+			const controlActions: Record<string, unknown>[] = [];
+			const fakeControl = new SupabaseCloudRunnerOrchestratorControlPlane(
+				"https://project.supabase.co",
+				"publishable-key",
+				orchestratorId,
+				"c".repeat(43),
+				vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+					const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+					controlActions.push(body);
+					if (body.action === "surface_enqueue_session_run") {
+						return Response.json({ value: { status: "enqueued", wakeId, runId: null } });
+					}
+					if (body.action === "surface_trigger_automation") {
+						return Response.json({ value: { status: "started", session: { sessionId: runnerId } } });
+					}
+					return Response.json({ value: { jobId: runnerId, status: "failed" } });
+				}) as typeof fetch,
+			);
+			const providerCalls: Record<string, unknown>[] = [];
+			const fakeProvider = new HttpCloudRunnerProviderAdapter(
+				"https://provider.example",
+				"managed",
+				"provider-token",
+				vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+					const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+					providerCalls.push(body);
+					if (providerCalls.length === 1) {
+						return new Response(JSON.stringify({ ok: true }), {
+							status: 202,
+							headers: { "content-type": "application/json" },
+						});
+					}
+					return new Response(
+						JSON.stringify({ error: "Surface session execution is not enabled on this provider" }),
+						{
+							status: 501,
+							headers: { "content-type": "application/json" },
+						},
+					);
+				}) as typeof fetch,
+			);
+			const defaultConfig = createDefaultSurfaceWorkerConfig(
+				{ controlPlane: fakeControl, providerAdapter: fakeProvider, orchestratorId },
+				{ onEvent: (event) => events.push(event) },
+			);
+			const sampleSession = {
+				sessionId: runnerId,
+				surfaceId: logicalComputerId,
+				profileId: "88888888-8888-4888-8888-888888888888",
+				state: "queued" as const,
+				prompt: "Test turn",
+				originKind: "member",
+				originRef: null,
+				repositoryKey: null,
+				retryCount: 1,
+				sponsor: {
+					sponsorBindingId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+					sponsorVersion: 2,
+				},
+				placement: { strategy: "reuse_machine" as const, machineId: runnerId, activeTurns: 0, targetDensity: 6 },
+			};
+			await defaultConfig.dispatchSessionTurn(sampleSession, runnerId, new AbortController().signal);
+			expect(providerCalls).toHaveLength(1);
+			expect(providerCalls[0]).toEqual({
+				schema: "qorpera.runner-provider/v1",
+				action: "surface_session",
+				adapter_id: "managed",
+				machine_id: runnerId,
+				session: sampleSession,
+			});
+			expect(events).toHaveLength(0);
+
+			await expect(
+				defaultConfig.dispatchSessionTurn(sampleSession, runnerId, new AbortController().signal),
+			).rejects.toThrow(/not enabled/);
+			await defaultConfig.dispatchSessionTurn(
+				{ ...sampleSession, leaseToken },
+				"managed-sandbox",
+				new AbortController().signal,
+			);
+			await defaultConfig.runAutomationJob?.(
+				{
+					automationId: runnerId,
+					profileId: "88888888-8888-4888-8888-888888888888",
+					key: "cofounder-pulse",
+					title: "Co-Founder Pulse",
+					prompt: "Check in",
+					targetSurfaceSlug: null,
+					outputMode: "decision_card",
+					sessionId: null,
+					surfaceId: null,
+				},
+				new AbortController().signal,
+			);
+			expect(defaultConfig.lane).toBe("sessions");
+			expect(controlActions).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ action: "surface_enqueue_session_run", sessionId: runnerId, leaseToken }),
+					expect.objectContaining({ action: "surface_trigger_automation", automationId: runnerId }),
+				]),
+			);
+			expect(events).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						kind: "session_dispatch_unconfigured",
+						sessionId: runnerId,
+						status: 501,
+					}),
+					expect.objectContaining({ kind: "session_enqueued", sessionId: runnerId, wakeId }),
+					expect.objectContaining({ kind: "automation_triggered", key: "cofounder-pulse", status: "started" }),
+				]),
+			);
+
+			let resolveSurfaceClaimed!: () => void;
+			const surfaceClaimed = new Promise<void>((resolveClaim) => {
+				resolveSurfaceClaimed = resolveClaim;
+			});
+			const fakeFetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+				const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+				if (href.includes("provider.example")) return Response.json({ value: null });
+				const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+				switch (body.action) {
+					case "surface_claim_jobs":
+						resolveSurfaceClaimed();
+						return Response.json({
+							value: { sessions: [], previews: [], merges: [], publishes: [], automations: [] },
+						});
+					case "due_summary":
+						return Response.json({ value: {} });
+					case "folder_dynamic_routines":
+						return Response.json({ value: { items: [], has_more: false } });
+					case "retained":
+						return Response.json({ value: [] });
+					default:
+						return Response.json({ value: null });
+				}
+			});
+
+			const controller = new AbortController();
+			const run = runCloudRunnerOrchestratorService({
+				config: {
+					supabaseUrl: "https://project.supabase.co",
+					supabasePublishableKey: "publishable-key",
+					orchestratorId,
+					orchestratorControlToken: "c".repeat(43),
+					orchestratorControlStatePath: join(dir, "control.json"),
+					providerUrl: "https://provider.example",
+					providerAdapterId: "managed",
+					providerServiceToken: "provider-token",
+					pollIntervalMs: 50,
+					reconcileIntervalMs: 250,
+					dispatchConcurrency: 2,
+					surfaceWorkerEnabled: true,
+				},
+				signal: controller.signal,
+				fetchImplementation: fakeFetch as typeof fetch,
+			});
+
+			await Promise.race([
+				surfaceClaimed,
+				run.then(() => {
+					throw new Error("Service exited before default SurfaceWorkerLoop claimed surface jobs");
+				}),
+			]);
+			controller.abort();
+			await run;
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
 	});
 });

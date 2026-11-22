@@ -750,6 +750,95 @@ describe("the site door", () => {
 		expect(submitted).toEqual([{ action: pass().action, target: "qorpera-site", fields: { pass: pass().pass } }]);
 	});
 
+	it("accepts isolated preview hosts (--p<8>) and relays Point-to-Change messages only after a pass", () => {
+		const { parent, say, submitted, site } = runDoor();
+		const previewOrigin = "https://wristband-shop--p12ab34cd.qorpera.com";
+		const previewAction = `${previewOrigin}/__qorpera/member`;
+		const siteWindow = { postMessage: vi.fn() };
+		Object.defineProperty(site, "contentWindow", { configurable: true, get: () => siteWindow });
+
+		for (const badAction of [
+			"https://wristband-shop--next.qorpera.com/__qorpera/member",
+			"https://wristband-shop--p1234567.qorpera.com/__qorpera/member",
+			"https://wristband-shop--p123456789.qorpera.com/__qorpera/member",
+			"https://wristband-shop--P12ab34cd.qorpera.com/__qorpera/member",
+			"https://preview--p12ab34cd.evil.example/__qorpera/member",
+		]) {
+			say({ type: SITE_DOOR_PASS, action: badAction, pass: pass().pass });
+		}
+		expect(submitted).toEqual([]);
+
+		say({ type: "qorpera-inspector-mode", active: true });
+		say({ type: "qorpera-inspector-pick", target: { route: "/" } }, siteWindow, previewOrigin);
+		expect(siteWindow.postMessage).not.toHaveBeenCalled();
+		expect(parent.postMessage).toHaveBeenCalledTimes(1);
+
+		say({ type: SITE_DOOR_PASS, action: previewAction, pass: pass().pass, path: "/pricing" });
+		expect(submitted).toEqual([
+			{ action: previewAction, target: "qorpera-site", fields: { pass: pass().pass, path: "/pricing" } },
+		]);
+
+		say({ type: "qorpera-inspector-mode", active: true }, {}, "https://app.qorpera.com");
+		say({ type: "qorpera-inspector-mode", active: true }, parent, previewOrigin);
+		expect(siteWindow.postMessage).not.toHaveBeenCalled();
+
+		say({ type: "qorpera-inspector-mode", active: 1 });
+		expect(siteWindow.postMessage).toHaveBeenCalledWith(
+			{ type: "qorpera-inspector-mode", active: true },
+			previewOrigin,
+		);
+		say({ type: "qorpera-inspector-mode", active: false });
+		expect(siteWindow.postMessage).toHaveBeenLastCalledWith(
+			{ type: "qorpera-inspector-mode", active: false },
+			previewOrigin,
+		);
+
+		const picked = { route: "/pricing", selector: "h1", tagName: "H1" };
+		say({ type: "qorpera-inspector-pick", target: picked }, {}, previewOrigin);
+		say({ type: "qorpera-inspector-pick", target: picked }, siteWindow, "https://other.qorpera.com");
+		expect(parent.postMessage).toHaveBeenCalledTimes(1);
+
+		say({ type: "qorpera-inspector-pick", target: picked }, siteWindow, previewOrigin);
+		expect(parent.postMessage).toHaveBeenLastCalledWith(
+			{ type: "qorpera-inspector-pick", target: picked },
+			"https://app.qorpera.com",
+		);
+
+		say(
+			{
+				type: "qorpera:identity-tokens-css",
+				css: ":root { --q-color-accent: #6f61cf; }",
+				vars: { "--q-color-accent": "#6f61cf" },
+			},
+			{},
+			"https://app.qorpera.com",
+		);
+		say(
+			{
+				type: "qorpera:identity-tokens-css",
+				css: ":root { --q-color-accent: #6f61cf; }",
+				vars: { "--q-color-accent": "#6f61cf" },
+			},
+			parent,
+			previewOrigin,
+		);
+		expect(siteWindow.postMessage).toHaveBeenCalledTimes(2);
+
+		say({
+			type: "qorpera:identity-tokens-css",
+			css: ":root { --q-color-accent: #6f61cf; }",
+			vars: { "--q-color-accent": "#6f61cf" },
+		});
+		expect(siteWindow.postMessage).toHaveBeenLastCalledWith(
+			{
+				type: "qorpera:identity-tokens-css",
+				css: ":root { --q-color-accent: #6f61cf; }",
+				vars: { "--q-color-accent": "#6f61cf" },
+			},
+			previewOrigin,
+		);
+	});
+
 	it("accepts a native qorpera.site own-host member pass action", () => {
 		const { say, submitted } = runDoor();
 		const action = "https://nordic-shop.qorpera.site/__qorpera/member";

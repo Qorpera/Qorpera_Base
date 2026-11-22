@@ -152,7 +152,15 @@ export type CloudCompanyPathRpc =
 	| "qorpera_site_share_check"
 	| "qorpera_site_share_app"
 	| "qorpera_site_agent_list_versions"
-	| "qorpera_site_agent_activate_version";
+	| "qorpera_site_agent_activate_version"
+	| "qorpera_native_surface_describe_senses"
+	| "qorpera_native_surface_propose"
+	| "qorpera_native_surface_start_session"
+	| "qorpera_native_surface_manage_automation"
+	| "qorpera_native_surface_record_change"
+	| "qorpera_native_surface_read_session_turn"
+	| "qorpera_native_surface_complete_turn"
+	| "qorpera_native_surface_renew_lease";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {
