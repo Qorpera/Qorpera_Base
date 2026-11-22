@@ -140,13 +140,22 @@ const GOOD_WILL_BUDGET_MS = 45_000;
 export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<Json> {
 	const due = await deps.goodWill.call("due", { livemode: deps.livemode });
 	const rawMonths = Array.isArray(due.months) ? due.months : [];
-	// WHY: process un-invoiced months (no invoiceId yet) before existing invoices so open retries cannot consume the budget first.
-	const months = [...rawMonths].sort(
-		(a, b) => Number(Boolean(string(object(a)?.invoiceId))) - Number(Boolean(string(object(b)?.invoiceId))),
-	);
 	const maxBatch = deps.maxBatch ?? MAX_GOOD_WILL_BATCH;
 	const maxStatusChecks = deps.maxStatusChecks ?? MAX_GOOD_WILL_STATUS_CHECKS;
 	const now = deps.now ?? Date.now;
+	const withoutInvoice: unknown[] = [];
+	const withInvoice: unknown[] = [];
+	for (const value of rawMonths) {
+		if (string(object(value)?.invoiceId)) withInvoice.push(value);
+		else withoutInvoice.push(value);
+	}
+	// WHY: Process un-invoiced months before existing ones, and rotate existing invoices hourly above maxStatusChecks so stuck open invoices cannot starve later drafts.
+	if (withInvoice.length > maxStatusChecks && maxStatusChecks > 0) {
+		const windowIndex = Math.floor(Math.max(0, now()) / 3_600_000);
+		const offset = (windowIndex * maxStatusChecks) % withInvoice.length;
+		if (offset > 0) withInvoice.push(...withInvoice.splice(0, offset));
+	}
+	const months = [...withoutInvoice, ...withInvoice];
 	const deadline = now() + (deps.budgetMs ?? GOOD_WILL_BUDGET_MS);
 	let processed = 0;
 	let statusChecks = 0;
@@ -190,7 +199,7 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 			deps.goodWill.call("invoice_failed", { invoiceId, profileId, month: period, livemode: deps.livemode, why });
 		let invoiceId = string(month?.invoiceId);
 		const created = !invoiceId;
-		// WHY: Count Stripe writes against maxBatch and non-draft status GETs against maxStatusChecks so open invoices cannot starve drafts or hammer Stripe.
+		// WHY: Count Stripe writes against maxBatch and non-draft status GETs against maxStatusChecks (rotated hourly above cap) to bound Stripe load without starving drafts.
 		let counted = false;
 		try {
 			let invoice: Json;

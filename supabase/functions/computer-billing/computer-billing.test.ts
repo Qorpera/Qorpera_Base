@@ -1158,6 +1158,54 @@ describe("Good will", () => {
 		assert.deepEqual(statusCapped, { invoiced: 0, failed: 0 });
 		assert.equal(cappedGets, 2, "maxStatusChecks must bound read-only open-invoice GETs");
 
+		const largeOpenBacklog = [
+			...[1, 2, 3, 4, 5].map((n) => ({
+				profileId: `30000000-0000-4000-8000-00000000004${n}`,
+				month: "2026-07",
+				dueOre: 1000,
+				customerId: `cus_backlog_${n}`,
+				paymentMethodId: `pm_backlog_${n}`,
+				invoiceId: `in_backlog_open_${n}`,
+			})),
+			{
+				profileId: "30000000-0000-4000-8000-000000000049",
+				month: "2026-08",
+				dueOre: 1500,
+				customerId: "cus_late_draft",
+				paymentMethodId: "pm_late_draft",
+				invoiceId: "in_late_draft",
+			},
+		];
+		const rotatedFinalized: string[] = [];
+		const rotatedCounts: number[] = [];
+		for (const hour of [0, 1, 2]) {
+			const res = await sendGoodWillInvoices({
+				livemode: false,
+				returnUrl: "https://app.qorpera.com/plan",
+				maxBatch: 2,
+				maxStatusChecks: 2,
+				now: () => hour * 3_600_000,
+				goodWill: {
+					call: async (method) => (method === "due" ? { months: largeOpenBacklog } : { recorded: true }),
+				},
+				stripe: {
+					get: async (path) => {
+						const id = path.split("/").pop() ?? "";
+						return id === "in_late_draft"
+							? { id, status: "draft", default_payment_method: "pm_late_draft", lines: { data: [] } }
+							: { id, status: "open", lines: { data: [] } };
+					},
+					post: async (path) => {
+						if (path.endsWith("/finalize")) rotatedFinalized.push(path);
+						return { id: "in_late_draft", status: "open", hosted_invoice_url: "https://stripe.test/late" };
+					},
+				},
+			});
+			rotatedCounts.push(Number(res.invoiced));
+		}
+		assert.deepEqual(rotatedCounts, [0, 0, 1], "hourly rotation must reach a draft behind more than maxStatusChecks open invoices");
+		assert.deepEqual(rotatedFinalized, ["/v1/invoices/in_late_draft/finalize"]);
+
 		let stripeRedirect: RequestRedirect | undefined;
 		const redirectApi = createStripeApi("sk_test_x", async (_url, init) => {
 			stripeRedirect = init?.redirect;

@@ -478,7 +478,10 @@ hourly budget apply as to any delivery. Mail for an address with no live mailbox
 that the provider no longer has is dropped. The door answers the provider 200 when every recipient is
 settled, 429 with the longest `Retry-After` when a mailbox is over its limits, and 503 when mail is
 switched off or something failed, so the provider retries; a message the database calls malformed is
-logged and settled with 200, since a retry would send the same message.
+logged and settled with 200, since a retry would send the same message. Before reaching the database,
+the function answers 405 for non-POST requests, 413 when the webhook body exceeds 64 KiB, 408 when
+reading the body times out or is aborted, 400 when the body stream fails, is not JSON, or lacks a
+valid message id, and 401 when the signature is missing, invalid, or stale.
 
 **Agents.** A routine on a mailbox is an event routine on its hook: `{kind:"event", hookId}`, optionally
 `only: ["mail.received"]`. An agent makes one with `manage_routine`; an owner or admin gives a mailbox to an agent
