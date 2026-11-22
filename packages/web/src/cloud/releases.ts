@@ -51,11 +51,13 @@ export interface CodeReleaseReady {
 
 export interface CodeReleaseLive {
 	readonly version: number;
-	/** release: a member put a ready version live. back: a member put the version before it live again. */
+	/** WHY: `release` puts a ready version live and `back` restores the prior one, either by a member or an authorized executor (`auto: true`). */
 	readonly kind: "release" | "back";
 	readonly since: string;
-	/** The member who said go (a user id), or null. */
+	/** WHY: the acting member, or the owner/admin who enabled automatic redeploy when `auto` is true (null when absent). */
 	readonly by: string | null;
+	readonly auto: boolean;
+	readonly byExecutor: string | null;
 }
 
 /** One project's site in What's new. */
@@ -131,6 +133,18 @@ export interface SitePreviewShown {
 /** One call's deadline: a few index reads, or a handful of row updates under one lock. */
 const CALL_MS = 15_000;
 const MAX = Number.MAX_SAFE_INTEGER;
+const EXECUTOR_OWNER_PATTERN = /^[A-Za-z0-9_.:-]{1,120}$/;
+
+function parseLiveAuto(item: Record<string, unknown>): { readonly auto: boolean; readonly byExecutor: string | null } {
+	if (item.auto === undefined || item.auto === false) {
+		if (item.byExecutor !== undefined && item.byExecutor !== null) throw new CloudShapeError("live executor");
+		return { auto: false, byExecutor: null };
+	}
+	if (item.auto !== true) throw new CloudShapeError("live auto");
+	if (typeof item.byExecutor !== "string" || !EXECUTOR_OWNER_PATTERN.test(item.byExecutor))
+		throw new CloudShapeError("live executor");
+	return { auto: true, byExecutor: item.byExecutor };
+}
 
 function nullable<T>(value: unknown, parse: (value: unknown) => T): T | null {
 	return value === null ? null : parse(value);
@@ -190,6 +204,7 @@ function parseSite(value: unknown): CodeReleaseSite {
 				kind: oneOf(item.kind, ["release", "back"], "live version kind"),
 				since: timestamp(item.since, "live since"),
 				by: nullable(item.by, (by) => uuid(by, "live by")),
+				...parseLiveAuto(item),
 			};
 		}),
 		back: nullable(input.back, (back) => ({

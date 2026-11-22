@@ -113,6 +113,53 @@ export interface RoomDraftSubscription {
 	stop(): Promise<void>;
 }
 
+const LEAVE_WAIT_MS = 2_000;
+const RETRY_MS = 1_000;
+const RETRY_MAX_MS = 30_000;
+const pendingRemovals = new WeakMap<RealtimeChannel, Promise<unknown>>();
+
+function heldChannels(supabase: Cloud["supabase"], topic: string): RealtimeChannel[] {
+	return (supabase.getChannels?.() ?? []).filter((each) => each.topic === `realtime:${topic}` || each.topic === topic);
+}
+
+function removeChannelOnce(supabase: Cloud["supabase"], each: RealtimeChannel): Promise<unknown> {
+	let leaving = pendingRemovals.get(each);
+	if (!leaving) {
+		// WHY: Send at most one leave push per channel; duplicate removeChannel calls trigger delayed topic-wide _remove calls that drop a successor channel.
+		leaving = supabase
+			.removeChannel(each)
+			.catch(() => undefined)
+			.finally(() => {
+				if (pendingRemovals.get(each) === leaving) pendingRemovals.delete(each);
+			});
+		pendingRemovals.set(each, leaving);
+	}
+	return leaving;
+}
+
+async function freeTopicWithin(
+	supabase: Cloud["supabase"],
+	topic: string,
+	active: RealtimeChannel | undefined,
+): Promise<boolean> {
+	const leaving = [...new Set([...(active ? [active] : []), ...heldChannels(supabase, topic)])];
+	await Promise.all(
+		leaving.map((each) => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			// WHY: Bound removeChannel per held channel so a dropped Realtime socket cannot deadlock room draft reopening.
+			return Promise.race([
+				removeChannelOnce(supabase, each),
+				new Promise<void>((resolve) => {
+					timer = setTimeout(resolve, LEAVE_WAIT_MS);
+				}),
+			]).finally(() => {
+				clearTimeout(timer);
+			});
+		}),
+	);
+	return heldChannels(supabase, topic).length === 0;
+}
+
 /** The room's private draft topic. Members receive it; only the cloud publishes,
  * so a change carries the editor the cloud named. Lossy: a missed change is
  * recovered by the next listing or by a write that comes back stale. */
@@ -122,25 +169,67 @@ export function subscribeRoomDrafts(
 	onDraft: (draft: RoomDraft) => void,
 	onHealth: (phase: RealtimePhase) => void,
 ): RoomDraftSubscription {
-	const channel: RealtimeChannel = cloud.supabase
-		.channel(`qorpera-room-drafts-${roomId}`, { config: { private: true } })
-		.on("broadcast", { event: "draft" }, (message: { payload?: unknown }) => {
-			try {
-				onDraft(parseRoomDraft(message.payload, roomId));
-			} catch {
-				// A malformed change is skipped; the next listing restores the draft.
-			}
+	const topic = `qorpera-room-drafts-${roomId}`;
+	let stopped = false;
+	let channel: RealtimeChannel | undefined;
+	let retryTimer: ReturnType<typeof setTimeout> | undefined;
+	let failures = 0;
+
+	const attach = (): void => {
+		if (stopped) return;
+		const next = cloud.supabase
+			.channel(topic, { config: { private: true } })
+			.on("broadcast", { event: "draft" }, (message: { payload?: unknown }) => {
+				if (stopped || next !== channel) return;
+				try {
+					onDraft(parseRoomDraft(message.payload, roomId));
+				} catch {
+					// A malformed change is skipped; the next listing restores the draft.
+				}
+			});
+		channel = next;
+		next.subscribe((status) => {
+			if (stopped || next !== channel) return;
+			if (status === REALTIME_SUBSCRIBE_STATES.SUBSCRIBED) onHealth("connected");
+			else if (status === REALTIME_SUBSCRIBE_STATES.CHANNEL_ERROR || status === REALTIME_SUBSCRIBE_STATES.TIMED_OUT)
+				onHealth("degraded");
+			else if (status === REALTIME_SUBSCRIBE_STATES.CLOSED) onHealth("stopped");
 		});
-	onHealth("connecting");
-	channel.subscribe((status) => {
-		if (status === REALTIME_SUBSCRIBE_STATES.SUBSCRIBED) onHealth("connected");
-		else if (status === REALTIME_SUBSCRIBE_STATES.CHANNEL_ERROR || status === REALTIME_SUBSCRIBE_STATES.TIMED_OUT)
+	};
+
+	const ensureFreeAndAttach = (): void => {
+		if (stopped) return;
+		// WHY: Never call channel(topic) while RealtimeClient still holds a leaving channel, or subscribe() becomes a no-op.
+		void freeTopicWithin(cloud.supabase, topic, undefined).then((freed) => {
+			if (stopped) return;
+			if (freed) {
+				failures = 0;
+				attach();
+				return;
+			}
 			onHealth("degraded");
-		else if (status === REALTIME_SUBSCRIBE_STATES.CLOSED) onHealth("stopped");
-	});
+			const delay = Math.min(RETRY_MAX_MS, RETRY_MS * 2 ** Math.min(failures, 5));
+			failures++;
+			retryTimer = setTimeout(() => {
+				retryTimer = undefined;
+				ensureFreeAndAttach();
+			}, delay);
+		});
+	};
+
+	onHealth("connecting");
+	if (heldChannels(cloud.supabase, topic).length === 0) attach();
+	else ensureFreeAndAttach();
+
 	return {
 		async stop() {
-			await cloud.supabase.removeChannel(channel);
+			if (stopped) return;
+			stopped = true;
+			clearTimeout(retryTimer);
+			retryTimer = undefined;
+			const active = channel;
+			channel = undefined;
+			await freeTopicWithin(cloud.supabase, topic, active);
 		},
 	};
 }

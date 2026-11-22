@@ -239,6 +239,9 @@ export interface CloudWakeEnvelope {
 			| "machine-event"
 			| "machine-checkin"
 			| "event"
+			| "code-change"
+			| "app-unhealthy"
+			| "data-change"
 			| "human-task"
 			| "light-ask"
 			| "surface-session";
@@ -494,6 +497,65 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 					throw new Error("Invalid event wake");
 				seen.add(id);
 			}
+		} else if (source.kind === "code-change") {
+			const code = closed(payloadBody, [
+				"schema",
+				"repo",
+				"owner",
+				"name",
+				"kind",
+				"change",
+				"mainBefore",
+				"mainAfter",
+				"workerId",
+				"paths",
+				"checks",
+			]);
+			if (
+				code.schema !== "qorpera.code-change-wake/v1" ||
+				typeof code.repo !== "string" ||
+				typeof code.owner !== "string" ||
+				typeof code.name !== "string" ||
+				(code.kind !== "landed" &&
+					code.kind !== "undone" &&
+					code.kind !== "checks_failed" &&
+					code.kind !== "conflict") ||
+				!Array.isArray(code.paths) ||
+				code.paths.some((p) => typeof p !== "string" || Buffer.byteLength(p) > 4096) ||
+				parentRunId !== null ||
+				actorStaffId !== null
+			)
+				throw new Error("Invalid code-change wake");
+		} else if (source.kind === "app-unhealthy") {
+			const app = closed(payloadBody, ["schema", "siteId", "slug", "status", "restartCount", "error"]);
+			if (
+				app.schema !== "qorpera.app-unhealthy-wake/v1" ||
+				uuidKey(app.siteId) !== uuidKey(source.id) ||
+				typeof app.slug !== "string" ||
+				typeof app.status !== "string" ||
+				!Number.isSafeInteger(app.restartCount) ||
+				(app.restartCount as number) < 0 ||
+				(app.error !== null && typeof app.error !== "string") ||
+				parentRunId !== null ||
+				actorStaffId !== null
+			)
+				throw new Error("Invalid app-unhealthy wake");
+		} else if (source.kind === "data-change") {
+			const data = closed(payloadBody, ["schema", "database", "table", "tables", "operation", "rowId"]);
+			if (
+				data.schema !== "qorpera.data-change-wake/v1" ||
+				typeof data.database !== "string" ||
+				(data.table !== null && typeof data.table !== "string") ||
+				!Array.isArray(data.tables) ||
+				data.tables.some((tb) => typeof tb !== "string") ||
+				(data.operation !== null &&
+					data.operation !== "insert" &&
+					data.operation !== "update" &&
+					data.operation !== "delete") ||
+				parentRunId !== null ||
+				actorStaffId !== null
+			)
+				throw new Error("Invalid data-change wake");
 		} else throw new Error("Invalid routine source");
 	} else if (wake.kind === "room") {
 		const post = closed(payloadBody, ["roomId", "inputIds", "recipientStaffId"]);

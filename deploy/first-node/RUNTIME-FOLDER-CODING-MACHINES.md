@@ -626,39 +626,54 @@ environment over exec stdin, and into a snapshot build's `install`. Nothing writ
   bytes, a new name or a new link's target, and in a git change its ref, its log and its new objects. Git's storage is
   read the way git reads it, by the shape of the name wherever a coding machine saves (not only in a `repo.git`): a
   file at a loose object's name (`objects/<2 hex>/<38 or 62 hex>`) is inflated and the object scanned, and its stored
-  bytes too; a file at a pack's name (`objects/pack/pack-<40 or 64 hex>.pack`) is read by the node's git, and every
-  object it rebuilds is scanned, deltas resolved (below). Git writes both under a temporary name first; the check
-  decides by the name they are saved at. The value rules are the same as for any file (8 bytes or more, the exact
-  form): inflating only shows the bytes git compressed, so it adds no kind of false refusal that a plain file's scan
-  does not have. A file at such a name that git could not read is refused as "could not be checked" (below). The
-  executor sends each machine's values of 8 bytes to 32 KiB as keyed hashes under a key of its own (`secrets` on the
-  control socket), so the service never holds a value. Until a machine's first values come, nothing of it is saved. A
-  refused change stays on the machine, and the report says why without naming the value;
+  bytes too; a file at a pack's name (`objects/pack/pack-<40 or 64 hex>.pack`) is scanned both in its raw stored bytes
+  and by the node's git, which rebuilds and scans every unverified object it holds, deltas resolved (below). Git writes
+  both under a temporary name first; the check decides by the name they are saved at. The value rules are the same as
+  for any file (8 bytes or more, the exact form): inflating only shows the bytes git compressed, so it adds no kind of
+  false refusal that a plain file's scan does not have. A file at such a name that git could not read is refused as
+  "could not be checked" (below). The executor sends each machine's values of 8 bytes to 32 KiB as keyed hashes under a
+  key of its own (`secrets` on the control socket), so the service never holds a value. Until a machine's first values
+  come, nothing of it is saved. A refused change stays on the machine, and the report says why without naming the value;
 - pushes: the broker's push check reads every object the push adds (file contents, file and folder names, each
   commit with its message) and refuses a push that carries a value.
 
 A program that encodes a value another way gets past the mask; that is why it is best effort.
 
-**Git's storage in a save.** A pack is read by the node's git, the reader git servers run on every push they take:
-`index-pack --stdin` in a scratch repository, then `cat-file --batch-all-objects --batch --unordered`, piped directly
-into `qorpera-folder scan-pack --spec-fd 3` (with the keyed secret-hash spec passed over fd 3 and the in-process JS
-scanner kept as fallback). A pack git refuses (broken, cut off, thin, with bytes after it) is "could not be checked". So
-is a loose object that does not inflate, has bytes after it, has no header or more than its header's size, or is over
-1 GiB inflated. Git and the scanner run under `prlimit --as` (1 GiB), with the system's and the user's config ignored
-(`GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null`, `HOME` the scratch directory), no hooks and no remotes, for at
-most 30 minutes, up to 2 packs at a time on a node when using the native Rust scanner (1 on the JS fallback) and at most
-512 MiB of running pack copies in scratch tmpfs together (`runningBytes`, bounding only the scratch pack copies while
-`prlimit --as` bounds each check's `git` and scanner process individually rather than in total), so large packs
-serialize and a burst of packs waits its turn without starving other work; the scratch directory is removed however the
-check ends. At most 8
-checks wait for a turn on a node, with at most 2 GiB of packs together; a pack past either is refused as "could not be
-checked" for now, and checked again at the next boundary (one session's boundary checks at most 8 files at once, so this
-is several sessions at once). A pack over 512 MiB, or one whose objects rebuild more than 64 times its size (at least
-256 MiB, at most 4 GiB), is "could not be checked" too. Packs of code rebuild 14 to 26 times their size (express 16,
-Qorpera_Base 14, git/git 26), and the native Rust scanner runs at about 510–520 MiB a second on the test node (up from
-about 10.7 MiB a second under `--jitless` JS), so a pack the size of Qorpera_Base's (183 MiB, 2.6 GiB rebuilt) scans in
-about 5 seconds off the Node event loop rather than 4.2 minutes. A machine with no values inflates and reads nothing.
-`install-folder-service.sh` refuses a node without `/usr/bin/git` and `/usr/bin/prlimit`.
+**Git's storage in a save.** Plain files and loose objects (their stored compressed bytes and inflated content bytes
+independently) of at least 64 KiB stream off the Node event loop through `qorpera-folder scan-stream --spec-fd 3` under
+`prlimit --as` (1 GiB), bounded node-wide to at most 16 concurrent standalone native stream checks (`streamAtOnce`, with
+a loose object's stored and inflated streams sharing one turn so `streamAtOnce: 1` cannot deadlock); smaller plain and
+loose files stay in-process JS to avoid process-spawn overhead. A pack always streams its raw stored bytes through
+`qorpera-folder scan-stream --spec-fd 3` in parallel with `git index-pack --stdin` in a scratch repository (the
+in-process JS scanner remains the fallback for plain, loose, and pack checks when no native `qorpera-folder` binary is
+configured). Once `index-pack` finishes, `SaveChecks` consults a bounded per-node clean-OID LRU cache (up to 250,000
+OIDs) keyed strictly by `SecretSet.digest`: OIDs are inserted only after a pack check passes completely clean, and any
+addition of secret values or key rotation changes the digest so nothing cached under a prior digest is ever skipped.
+When no cached OIDs match the scratch `.idx` v2 (cold cache or digest change), `git cat-file --batch-all-objects
+--batch --unordered` pipes every object directly into `qorpera-folder scan-pack --spec-fd 3` (with the keyed
+secret-hash spec passed over fd 3). When cached OIDs match for the exact same digest, a pack with zero unverified delta
+OIDs skips `cat-file` and `scan-pack`; a small or moderate delta (at most half the pack and at most 65,536 objects, the
+common repack and incremental-fetch case) sorts the delta OIDs by ascending packfile offset and streams them to
+`git cat-file --batch --buffer | qorpera-folder scan-pack --spec-fd 3`; a larger overlapping delta runs sequential
+`git cat-file --batch-all-objects --batch --unordered | qorpera-folder scan-pack --spec-fd 3 --exclude-oids-fd 4` (or
+skips the cached OIDs in the JS `Batch` fallback while still verifying framing). A pack git refuses (broken, cut off,
+thin, with bytes after it) is "could not be checked". So is a loose object that does not inflate, has bytes after it,
+has no header or more than its header's size, or is over 1 GiB inflated. Git and the scanner run under `prlimit --as`
+(1 GiB), with the system's and the user's config ignored (`GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null`, `HOME`
+the scratch directory), no hooks and no remotes, for at most 30 minutes, up to 2 packs at a time on a node when using
+the native Rust scanner (1 on the JS fallback) and at most 512 MiB of running pack copies in scratch tmpfs together
+(`runningBytes`, bounding only the scratch pack copies while `prlimit --as` bounds each check's `git` and scanner
+process individually rather than in total), so large packs serialize and a burst of packs waits its turn without
+starving other work; the scratch directory is removed however the check ends. At most 32 checks wait for a turn on a
+node, with at most 2 GiB of packs together; a pack past either is refused as "could not be checked" for now, and
+checked again at the next boundary (one session's boundary checks at most 8 files at once, so this is several sessions
+at once). A pack over 512 MiB, or one whose unverified objects rebuild more than 64 times its size (at least 256 MiB,
+at most 4 GiB; cached clean OIDs for the same digest do not count against this bound), is "could not be checked" too.
+Packs of code rebuild 14 to 26 times their size (express 16, Qorpera_Base 14, git/git 26), and the native Rust scanner
+runs at about 490–520 MiB a second on the test node (up from about 10.7 MiB a second under `--jitless` JS), so raw-pack
+and large-file scans no longer stall Node's event loop and overlapping repacks scan only new delta objects. A machine
+with no values inflates and reads nothing. `install-folder-service.sh` refuses a node without `/usr/bin/git` and
+`/usr/bin/prlimit`.
 
 **A refused git change is held whole.** Once the check refuses anything in a code area's `repo.git` (an object, a
 pack, a new name), everything else changed in that `repo.git` waits with it, as "it waits for a change that carries a

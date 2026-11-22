@@ -669,6 +669,7 @@ export class SurfaceReportView {
 			state.pendingStudioPatches[surface.id],
 			state.localStudioBase[surface.id],
 			surface.title,
+			surface.folderRoot,
 			workspace?.briefSummary,
 			busyReconcile,
 		];
@@ -687,7 +688,7 @@ export class SurfaceReportView {
 		this.#shownDeps = deps;
 		this.#shownOrdered = ordered;
 
-		const composition = composeStudioPreview(baseFiles, ordered);
+		const composition = composeStudioPreview(baseFiles, ordered, surface.folderRoot);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();

@@ -121,7 +121,7 @@ export interface SurfaceFolderReader<TFile extends SurfaceFolderReadableFile = S
 	): Promise<Uint8Array>;
 }
 
-const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css)$/i;
+const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css|svg|html?)$/i;
 const STUDIO_MAX_FILE_BYTES = 256 * 1024;
 const STUDIO_MAX_FILES = 32;
 const STUDIO_READ_CONCURRENCY = 6;
@@ -634,7 +634,7 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 			}
 		}
 		if (ordered.length > 0) {
-			effectiveFiles = composeStudioPreview(baseFiles, ordered).files;
+			effectiveFiles = composeStudioPreview(baseFiles, ordered, identity.folderRoot ?? "identity").files;
 		}
 	}
 	const folderRoot = identity.folderRoot?.replace(/^\/+|\/+$/g, "");
@@ -2805,7 +2805,7 @@ export class SurfacesStore {
 					.filter((item) => item.ops.length > 0);
 				if (ordered.length > 0) {
 					for (const item of ordered) this.#studioUndoSnapshots.set(item.changeId, currentBase);
-					const composed = composeStudioPreview(currentBase, ordered);
+					const composed = composeStudioPreview(currentBase, ordered, workspace.surface.folderRoot);
 					this.store.set((state) => ({
 						localStudioBase: { ...state.localStudioBase, [surfaceId]: composed.files },
 					}));

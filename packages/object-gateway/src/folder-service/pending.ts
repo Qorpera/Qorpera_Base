@@ -176,6 +176,17 @@ function join(parent: string, name: string): string {
 	return parent === "" ? name : `${parent}/${name}`;
 }
 
+function upperBound(names: readonly string[], after: string): number {
+	let lo = 0;
+	let hi = names.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >>> 1;
+		if (byteOrder(names[mid]!, after) <= 0) lo = mid + 1;
+		else hi = mid;
+	}
+	return lo;
+}
+
 function addIndex(map: Map<string, Set<string>>, key: string, value: string): void {
 	let bucket = map.get(key);
 	if (!bucket) {
@@ -263,6 +274,7 @@ export class PendingView {
 	readonly #nodes = new Map<string, Node>();
 	/** The names of nodes under each folder path. */
 	readonly #children = new Map<string, Set<string>>();
+	readonly #sortedChildren = new Map<string, string[]>();
 	readonly #childrenByKey = new Map<string, Map<string, Set<string>>>();
 	readonly #publishedByKey = new Map<string, Set<string>>();
 	readonly #goneByKey = new Map<string, Set<string>>();
@@ -281,6 +293,7 @@ export class PendingView {
 	readonly #treeChildren = new Map<string, Set<string>>();
 	/** Live entries the view removed, by their live path. */
 	readonly #removed = new Map<string, LiveRef>();
+	readonly #removedByParent = new Map<string, Set<string>>();
 	readonly #removedFoldersByKey = new Map<string, Set<string>>();
 	readonly #removedFilesByKey = new Map<string, Set<string>>();
 	readonly #removedKeyDescendantCounts = new Map<string, number>();
@@ -376,12 +389,7 @@ export class PendingView {
 		return undefined;
 	}
 
-	/** The entry `path` shows, as a listing gives it. */
-	get(path: string): TreeEntry | undefined {
-		const r = this.resolve(path);
-		if (!r) return undefined;
-		if (r.kind === "live") return path === r.entry.path ? r.entry : { ...r.entry, path };
-		const node = r.node;
+	#nodeEntry(path: string, node: PendingFile | PendingFolder | PendingLink): TreeEntry {
 		if (node.kind === "folder")
 			return {
 				path,
@@ -416,6 +424,36 @@ export class PendingView {
 		};
 	}
 
+	#childEntry(path: string, source: string | null, name: string): TreeEntry | undefined {
+		const childPath = join(path, name);
+		const node = this.#nodes.get(childPath);
+		if (node) return node.kind === "gone" ? undefined : this.#nodeEntry(childPath, node);
+		if (source === null) return undefined;
+		const livePath = join(source, name);
+		if (this.#removed.has(livePath)) return undefined;
+		const entry = this.#live().get(livePath);
+		if (!entry) return undefined;
+		return childPath === entry.path ? entry : { ...entry, path: childPath };
+	}
+
+	#pendingNames(path: string): readonly string[] {
+		let names = this.#sortedChildren.get(path);
+		if (!names) {
+			const raw = this.#children.get(path);
+			names = raw ? sortByteOrder([...raw].filter((n) => Buffer.byteLength(n) <= 255)) : [];
+			this.#sortedChildren.set(path, names);
+		}
+		return names;
+	}
+
+	/** The entry `path` shows, as a listing gives it. */
+	get(path: string): TreeEntry | undefined {
+		const r = this.resolve(path);
+		if (!r) return undefined;
+		if (r.kind === "live") return path === r.entry.path ? r.entry : { ...r.entry, path };
+		return this.#nodeEntry(path, r.node);
+	}
+
 	/** Where a read of `path` at `version` finds its bytes: the live entry it shows (its own version), the pending
 	 * chunks, or a link's target (with the live link it shows, if any). Undefined when the path no longer shows that
 	 * version. */
@@ -442,37 +480,61 @@ export class PendingView {
 		if (!r) return "not_found" as const;
 		const folder = r.kind === "live" ? r.entry.kind === "folder" : r.node.kind === "folder";
 		if (!folder) return "not_a_folder" as const;
-		const names = new Set<string>();
-		if (r.source !== null) for (const name of this.#live().names(r.source)) names.add(name);
-		for (const name of this.#children.get(path) ?? []) names.add(name);
-		const sorted = sortByteOrder([...names].filter((n) => Buffer.byteLength(n) <= 255));
-		let start = 0;
-		if (after !== undefined) {
-			let lo = 0;
-			let hi = sorted.length;
-			while (lo < hi) {
-				const mid = (lo + hi) >>> 1;
-				if (byteOrder(sorted[mid]!, after) <= 0) lo = mid + 1;
-				else hi = mid;
-			}
-			start = lo;
-		}
+		const hasPending = this.#children.has(path);
+		const hasRemoved = r.source !== null && this.#removedByParent.has(r.source);
+		if (r.source !== null && !hasPending && !hasRemoved) return this.#live().children(r.source, after, limit, links);
+		const liveNames = r.source !== null ? this.#live().names(r.source) : [];
+		const pendingNames = hasPending ? this.#pendingNames(path) : [];
+		let li = after !== undefined ? upperBound(liveNames, after) : 0;
+		let pi = after !== undefined ? upperBound(pendingNames, after) : 0;
 		const entries: WireEntry[] = [];
-		let i = start;
-		for (; i < sorted.length && entries.length < limit; i++) {
-			const entry = this.get(join(path, sorted[i]!));
-			if (entry && (links || entry.kind !== "symlink")) entries.push(wireEntry(entry));
+		let lastVisible: string | undefined;
+		let hasMore = false;
+		while (li < liveNames.length || pi < pendingNames.length) {
+			let name: string;
+			if (li >= liveNames.length) name = pendingNames[pi++]!;
+			else if (pi >= pendingNames.length) name = liveNames[li++]!;
+			else {
+				const cmp = byteOrder(liveNames[li]!, pendingNames[pi]!);
+				if (cmp < 0) name = liveNames[li++]!;
+				else if (cmp > 0) name = pendingNames[pi++]!;
+				else {
+					name = pendingNames[pi++]!;
+					li++;
+				}
+			}
+			const entry = this.#childEntry(path, r.source, name);
+			if (!entry || (!links && entry.kind === "symlink")) continue;
+			if (entries.length < limit) {
+				entries.push(wireEntry(entry));
+				lastVisible = name;
+			} else {
+				hasMore = true;
+				break;
+			}
 		}
-		return { entries, next: i < sorted.length ? sorted[i - 1]! : null };
+		return { entries, next: hasMore && lastVisible !== undefined ? lastVisible : null };
 	}
 
 	/** Whether the folder at `path` shows any child. */
 	#hasChildren(path: string): boolean {
 		const r = this.resolve(path);
 		if (!r) return false;
-		if (r.source !== null)
-			for (const name of this.#live().names(r.source)) if (this.resolve(join(path, name))) return true;
-		for (const name of this.#children.get(path) ?? []) if (this.resolve(join(path, name))) return true;
+		const pending = this.#children.get(path);
+		if (pending) {
+			for (const name of pending) {
+				const node = this.#nodes.get(join(path, name));
+				if (node && node.kind !== "gone") return true;
+			}
+		}
+		if (r.source === null) return false;
+		const liveNames = this.#live().names(r.source);
+		if (!pending && !this.#removedByParent.has(r.source)) return liveNames.length > 0;
+		for (const name of liveNames) {
+			if (this.#removed.has(join(r.source, name))) continue;
+			if (this.#nodes.get(join(path, name))?.kind === "gone") continue;
+			return true;
+		}
 		return false;
 	}
 
@@ -530,8 +592,7 @@ export class PendingView {
 			if (atKey && atKey.size > (atKey.has(path) ? 1 : 0)) return true;
 		}
 		if (liveKey === "") {
-			for (const node of this.#nodes.values())
-				if (node.kind !== "gone" && node.origin && node.origin.path !== live) return true;
+			if (this.#originNodesByKey.size > 0) return true;
 			return this.#removed.size > (this.#removed.has(live) ? 1 : 0);
 		}
 		if ((this.#originKeyDescendantCounts.get(liveKey) ?? 0) > 0) return true;
@@ -557,11 +618,7 @@ export class PendingView {
 	}
 
 	#movesOutBelow(live: string): boolean {
-		if (live === "") {
-			for (const node of this.#nodes.values())
-				if (node.kind !== "gone" && node.origin && node.origin.path !== "") return true;
-			return false;
-		}
+		if (live === "") return this.#originNodesByKey.size > 0;
 		return (this.#originPathDescendantCounts.get(live) ?? 0) > 0;
 	}
 
@@ -1395,6 +1452,7 @@ export class PendingView {
 	#addRemoved(path: string, ref: LiveRef): void {
 		if (this.#removed.has(path)) this.#deleteRemoved(path);
 		this.#removed.set(path, ref);
+		addIndex(this.#removedByParent, parentOf(path), nameOf(path));
 		const key = folderKey(path);
 		addIndex(ref.kind === "folder" ? this.#removedFoldersByKey : this.#removedFilesByKey, key, path);
 		incAncestors(this.#removedKeyDescendantCounts, key);
@@ -1404,6 +1462,7 @@ export class PendingView {
 		const ref = this.#removed.get(path);
 		if (!ref) return;
 		this.#removed.delete(path);
+		removeIndex(this.#removedByParent, parentOf(path), nameOf(path));
 		const key = folderKey(path);
 		removeIndex(ref.kind === "folder" ? this.#removedFoldersByKey : this.#removedFilesByKey, key, path);
 		decAncestors(this.#removedKeyDescendantCounts, key);
@@ -1419,7 +1478,10 @@ export class PendingView {
 			names = new Set();
 			this.#children.set(parent, names);
 		}
-		names.add(name);
+		if (!names.has(name)) {
+			names.add(name);
+			this.#sortedChildren.delete(parent);
+		}
 		let byKey = this.#childrenByKey.get(parent);
 		if (!byKey) {
 			byKey = new Map();
@@ -1463,7 +1525,10 @@ export class PendingView {
 		const parent = parentOf(path);
 		const name = nameOf(path);
 		const names = this.#children.get(parent);
-		if (names?.delete(name) && names.size === 0) this.#children.delete(parent);
+		if (names?.delete(name)) {
+			if (names.size === 0) this.#children.delete(parent);
+			this.#sortedChildren.delete(parent);
+		}
 		const byKey = this.#childrenByKey.get(parent);
 		if (byKey) {
 			removeIndex(byKey, folderKey(name), name);
@@ -1619,6 +1684,7 @@ export class PendingView {
 	clear(): void {
 		this.#nodes.clear();
 		this.#children.clear();
+		this.#sortedChildren.clear();
 		this.#childrenByKey.clear();
 		this.#publishedByKey.clear();
 		this.#goneByKey.clear();
@@ -1636,6 +1702,7 @@ export class PendingView {
 		this.#treeCounts.clear();
 		this.#treeChildren.clear();
 		this.#removed.clear();
+		this.#removedByParent.clear();
 		this.#removedFoldersByKey.clear();
 		this.#removedFilesByKey.clear();
 		this.#removedKeyDescendantCounts.clear();

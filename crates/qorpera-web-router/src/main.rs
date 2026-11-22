@@ -8,7 +8,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::info;
 
 fn main() {
@@ -142,7 +142,8 @@ async fn async_main() {
         internal_addr = %bound.internal_addr,
         "qorpera-web-router listening"
     );
-    let (pub_handle, int_handle) = bound.spawn();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (pub_handle, int_handle) = bound.spawn_with_shutdown(shutdown_rx.clone());
     #[cfg(unix)]
     let unix_handle = env::var("QORPERA_WEB_ROUTER_PUBLIC_UNIX")
         .ok()
@@ -150,18 +151,26 @@ async fn async_main() {
         .filter(|s| !s.is_empty())
         .map(|p| {
             let pb = PathBuf::from(&p);
-            let h = qorpera_web_router::server::spawn_public_unix_listener(pb, Arc::clone(&state))
-                .expect("failed to bind public unix socket");
+            let h = qorpera_web_router::server::spawn_public_unix_listener_with_shutdown(
+                pb,
+                Arc::clone(&state),
+                shutdown_rx.clone(),
+            )
+            .expect("failed to bind public unix socket");
             info!(unix_socket = %p, "qorpera-web-router listening on unix socket");
             (p, h)
         });
     shutdown_signal().await;
     info!("shutting down qorpera-web-router");
-    pub_handle.abort();
-    int_handle.abort();
+    let _ = shutdown_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        let _ = pub_handle.await;
+        let _ = int_handle.await;
+    })
+    .await;
     #[cfg(unix)]
     if let Some((path, h)) = unix_handle {
-        h.abort();
+        let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
         let _ = std::fs::remove_file(path);
     }
 }

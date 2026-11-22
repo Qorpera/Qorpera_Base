@@ -4497,9 +4497,9 @@ describe("a member's action through the member bridge (20260930713000)", () => {
 			method: "POST",
 			headers: { authorization: "Bearer member-token", "content-type": "application/json" },
 			redirect: "error",
-			cache: "no-store",
 			credentials: "omit",
 		});
+		expect(init?.cache).toBeUndefined();
 		// With the epoch and the seat of the hold the input was captured under (F24, F26).
 		expect(JSON.parse(String(init?.body))).toEqual({ action: { type: "type", text: "Åse" }, epoch: 5, seat: 8 });
 		const busy = transport(() => Response.json({ code: "DESKTOP_BUSY" }, { status: 409 }));

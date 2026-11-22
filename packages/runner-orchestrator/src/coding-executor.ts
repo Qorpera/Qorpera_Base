@@ -6,6 +6,8 @@ import {
 	parseCloudCodingRepository,
 } from "@qorpera/contracts";
 import { withAbortScope, withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
+import { type AppAutoRedeployHooks, parseAppDeployConfig, runPostLandAppAutoRedeploy } from "./app-auto-redeploy.ts";
+import type { CompanyMachineSecretsManager } from "./company-machine-secrets.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA40 = /^[0-9a-f]{40}$/;
@@ -32,6 +34,8 @@ export const CODING_EXECUTOR_RPCS = [
 	"qorpera_describe_coding_turn",
 	"qorpera_complete_coding_turn",
 	"qorpera_defer_coding_session",
+	"qorpera_emit_code_change_routine_wakes",
+	"qorpera_emit_app_unhealthy_routine_wakes",
 ] as const;
 /** The turn cannot have its member's machine yet (a full node, a machine being
  * removed, the session still on another machine): it waits in the queue. */
@@ -376,6 +380,8 @@ export interface CodingExecutorPublication {
 		readonly mainSha: string;
 		readonly filesChanged: number;
 		readonly change: number | null;
+		readonly mainBefore?: string;
+		readonly paths?: readonly string[];
 	};
 	readonly staged?: {
 		readonly branch: string;
@@ -383,6 +389,13 @@ export interface CodingExecutorPublication {
 		readonly headSha: string;
 		readonly filesChanged: number;
 	};
+}
+export interface CodingAutoRedeployContext {
+	readonly rawConfig: string;
+	readonly siteId: string;
+	readonly paths?: readonly string[];
+	readonly secretsManager?: CompanyMachineSecretsManager;
+	readonly hooks: AppAutoRedeployHooks;
 }
 export interface CodingExecutorHost {
 	/** Plan and wake the member's coding machine on genuine node capacity, attach
@@ -414,6 +427,11 @@ export interface CodingExecutorHost {
 	 * kept per-session VMs and close released ones; every failure is recorded
 	 * and returned. */
 	housekeep(signal: AbortSignal): Promise<CodingHousekeepingOutcome[]>;
+	autoRedeploy?(
+		claim: CodingSessionClaim,
+		landed: NonNullable<CodingExecutorPublication["landed"]>,
+		signal: AbortSignal,
+	): Promise<CodingAutoRedeployContext | null>;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -612,7 +630,7 @@ function answerBefore<T>(call: () => Promise<T>, signal: AbortSignal): Promise<T
  * lease is another's): the kernel wrote what happened, and nothing is left for the executor to report. */
 export type CodingTurnOutcome = "completed" | "blocked" | "failed" | "deferred" | "released" | "recovery-required";
 /** Where a reported error happened. `watch`: a read of the running turn that stayed lost, which the turn outlives. */
-export type CodingReportStage = "turn" | "stop" | "defer" | "publish" | "watch";
+export type CodingReportStage = "turn" | "stop" | "defer" | "publish" | "watch" | "redeploy";
 
 /** Claims coding session turns and runs each to its end, many at once: every
  * member's sessions share that member's machine, and the node's capacity is
@@ -1009,6 +1027,27 @@ export class CloudCodingExecutor {
 								? CODING_LANDING_STEP
 								: "Publishing the draft pull request",
 					});
+					const emitCodeChange = async (
+						kind: "landed" | "checks_failed" | "conflict",
+						event: Record<string, unknown>,
+					): Promise<void> => {
+						try {
+							await call(
+								"qorpera_emit_code_change_routine_wakes",
+								{
+									p_environment_id: claimed.environmentId,
+									p_owner: claimed.repository.owner,
+									p_name: claimed.repository.name,
+									p_kind: kind,
+									p_event: event,
+								},
+								signal,
+								5000,
+							);
+						} catch {
+							// WHY: routine wake emission is best-effort and must never fail a finalized turn.
+						}
+					};
 					let publication: CodingExecutorPublication;
 					try {
 						publication = await this.#host.publish(claimed, submission, active);
@@ -1018,12 +1057,24 @@ export class CloudCodingExecutor {
 						if (error instanceof CodingLandConflict) {
 							// Nothing landed: the session merges the default branch itself and finishes again.
 							await complete("failed", landConflict(claimed.repository.baseBranch, error.paths));
+							await emitCodeChange("conflict", {
+								workerId: claimed.workerId,
+								...(turn.runId ? { parentRunId: turn.runId } : {}),
+								paths: error.paths,
+							});
 							return "failed";
 						}
 						if (error instanceof CodingLandRefused) {
 							// Nothing landed, and the same work would be refused again: the turn fails with what to change.
 							this.#reported("publish", error);
 							await complete("failed", error.summary);
+							if (error.message.startsWith("CODING_CHECKS_")) {
+								await emitCodeChange("checks_failed", {
+									workerId: claimed.workerId,
+									...(turn.runId ? { parentRunId: turn.runId } : {}),
+									checks: { code: error.message, summary: withinBytes(error.summary, 1000) },
+								});
+							}
 							return "failed";
 						}
 						if (error instanceof CodingPushRefused || error instanceof CodingSaveRefused) {
@@ -1098,6 +1149,59 @@ export class CloudCodingExecutor {
 									}
 								: {}),
 					});
+					if (landed && landed.state !== "unchanged") {
+						await emitCodeChange("landed", {
+							...(landed.change !== null ? { change: String(landed.change) } : {}),
+							...(landed.mainBefore ? { mainBefore: landed.mainBefore } : {}),
+							mainAfter: landed.mainSha,
+							workerId: claimed.workerId,
+							...(turn.runId ? { parentRunId: turn.runId } : {}),
+							...(landed.paths ? { paths: landed.paths } : {}),
+						});
+						if (this.#host.autoRedeploy) {
+							try {
+								const redeploy = await this.#host.autoRedeploy(claimed, landed, signal);
+								if (redeploy) {
+									const config = parseAppDeployConfig(JSON.parse(redeploy.rawConfig));
+									await runPostLandAppAutoRedeploy({
+										config,
+										event: {
+											kind: "landed",
+											repo: `${claimed.repository.owner}/${claimed.repository.name}`,
+											change: landed.change !== null ? String(landed.change) : landed.mainSha,
+											mainBefore: landed.mainBefore ?? null,
+											mainAfter: landed.mainSha,
+											paths: redeploy.paths ?? landed.paths ?? [],
+										},
+										...(redeploy.secretsManager ? { secretsManager: redeploy.secretsManager } : {}),
+										hooks: {
+											...redeploy.hooks,
+											emitAppUnhealthy: async (unhealthy, hookSignal) => {
+												await call(
+													"qorpera_emit_app_unhealthy_routine_wakes",
+													{
+														p_environment_id: claimed.environmentId,
+														p_site_id: redeploy.siteId,
+														p_event: {
+															status: unhealthy.status,
+															restartCount: unhealthy.restartCount,
+															error: unhealthy.error,
+														},
+													},
+													hookSignal,
+													5000,
+												).catch(() => undefined);
+												await redeploy.hooks.emitAppUnhealthy?.(unhealthy, hookSignal);
+											},
+										},
+										signal,
+									});
+								}
+							} catch (redeployError) {
+								this.#reported("redeploy", redeployError);
+							}
+						}
+					}
 					return "completed";
 				}
 				end();

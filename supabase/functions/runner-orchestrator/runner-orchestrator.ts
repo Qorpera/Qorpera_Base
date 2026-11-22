@@ -95,6 +95,25 @@ export type RunnerOrchestratorRequest =
 			nextDueAt: string;
 	  }
 	| {
+			action: "check_routine_wake";
+			orchestratorId: string;
+			routineId: string;
+			expectedVersion: number;
+			triggerId: string;
+			scheduledFor: string;
+			expectedLastScheduledFor?: string;
+			nextDueAt: string;
+			healthy: boolean;
+			summary: string;
+			detail?: string | null;
+	  }
+	| {
+			action: "read_routine_code_checks";
+			orchestratorId: string;
+			routineId: string;
+			repo?: string;
+	  }
+	| {
 			action: "folder_dynamic_routines";
 			orchestratorId: string;
 			afterRoutineId?: string;
@@ -415,6 +434,53 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 					? { expectedLastScheduledFor: new Date(input.expectedLastScheduledFor).toISOString() }
 					: {}),
 				nextDueAt: new Date(input.nextDueAt).toISOString(),
+			};
+		case "check_routine_wake":
+			if (
+				typeof input.scheduledFor !== "string" ||
+				!Number.isFinite(Date.parse(input.scheduledFor)) ||
+				(input.expectedLastScheduledFor !== undefined &&
+					(typeof input.expectedLastScheduledFor !== "string" ||
+						!Number.isFinite(Date.parse(input.expectedLastScheduledFor)) ||
+						Date.parse(input.scheduledFor) <= Date.parse(input.expectedLastScheduledFor))) ||
+				typeof input.nextDueAt !== "string" ||
+				!Number.isFinite(Date.parse(input.nextDueAt)) ||
+				Date.parse(input.nextDueAt) <= Date.parse(input.scheduledFor) ||
+				typeof input.healthy !== "boolean" ||
+				(input.detail !== undefined &&
+					input.detail !== null &&
+					(typeof input.detail !== "string" || input.detail.length > 2000))
+			) {
+				throw new Error("Invalid routine check wake request");
+			}
+			return {
+				action: input.action,
+				orchestratorId,
+				routineId: uuid(input.routineId, "routine id"),
+				expectedVersion: integer(input.expectedVersion, "routine version", 1_000_000),
+				triggerId: text(input.triggerId, "trigger id", 160),
+				scheduledFor: new Date(input.scheduledFor).toISOString(),
+				...(typeof input.expectedLastScheduledFor === "string"
+					? { expectedLastScheduledFor: new Date(input.expectedLastScheduledFor).toISOString() }
+					: {}),
+				nextDueAt: new Date(input.nextDueAt).toISOString(),
+				healthy: input.healthy,
+				summary: text(input.summary, "routine check summary", 500),
+				...(input.detail === undefined ? {} : { detail: input.detail }),
+			};
+		case "read_routine_code_checks":
+			if (
+				input.repo !== undefined &&
+				(typeof input.repo !== "string" ||
+					!/^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9_][a-z0-9_.-]{0,99}$/.test(input.repo))
+			) {
+				throw new Error("Invalid repository name");
+			}
+			return {
+				action: input.action,
+				orchestratorId,
+				routineId: uuid(input.routineId, "routine id"),
+				...(input.repo === undefined ? {} : { repo: input.repo }),
 			};
 		// Folder-v2 dynamic routines (folder core C1c-3e).
 		case "folder_dynamic_routines":

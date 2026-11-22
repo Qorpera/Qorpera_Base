@@ -347,7 +347,7 @@ export function createWebMachineScreens(options: {
 						),
 						signal: requestSignal,
 						redirect: "error",
-						cache: "no-store",
+						// WHY: Omit cache: "no-store" on cross-origin POST so Chrome caches the CORS preflight instead of adding an OPTIONS RTT per action.
 						credentials: "omit",
 					});
 					if (response.status !== 200 && response.status !== 409) {
@@ -416,7 +416,7 @@ export function createWebMachineScreens(options: {
 						),
 						signal: requestSignal,
 						redirect: "error",
-						cache: "no-store",
+						// WHY: Omit cache: "no-store" on cross-origin POST so Chrome caches the CORS preflight instead of adding an OPTIONS RTT per action.
 						credentials: "omit",
 					});
 					// A bridge or an executor before 20260930744000 has no such route (404), or not for this method (405), or
@@ -493,7 +493,7 @@ export function createWebMachineScreens(options: {
 						body: open === undefined ? "{}" : JSON.stringify({ open }),
 						signal: requestSignal,
 						redirect: "error",
-						cache: "no-store",
+						// WHY: Omit cache: "no-store" on cross-origin POST so Chrome caches the CORS preflight instead of adding an OPTIONS RTT per action.
 						credentials: "omit",
 					});
 					if (response.status !== 200 && response.status !== 409) {

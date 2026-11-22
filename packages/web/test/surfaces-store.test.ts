@@ -913,6 +913,50 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("compiles live company identity tokens from folder-relative staged patches on the identity surface", async () => {
+		const identity = summary({
+			id: "22222222-2222-4222-8222-222222222291",
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "identity",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const c1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: identity.id,
+			kind: "folder_patch",
+			title: "Update accent",
+			affectedPaths: ["tokens.json"],
+			patchManifest: [{ op: "merge_json", path: "tokens.json", patch: { colors: { accent: "#c9643b" } } }],
+		});
+		const idSession = session(["staged"], { surfaceId: identity.id, changes: [c1] });
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [identity, summary()]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([idSession], { surface: identity })),
+			}),
+			{
+				loadCloudFiles: vi.fn(async () => ({
+					"identity/tokens.json": JSON.stringify({ colors: { primary: "#18181b", accent: "#2563eb" } }),
+				})),
+			},
+		);
+		await store.load();
+		await store.openSurface("identity");
+		await Promise.resolve();
+
+		const tokens = store.companyIdentityTokens();
+		expect(tokens?.vars["--q-color-primary"]).toBe("#18181b");
+		expect(tokens?.vars["--q-color-accent"]).toBe("#c9643b");
+		store.dispose();
+	});
+
 	it("keeps merging folder_patch active on approveAll, overlays optimistic base until post-merge cloud files settle, and refreshes immediately on publish and folder hints", async () => {
 		vi.useFakeTimers();
 		const identityId = "22222222-2222-4222-8222-222222222271";

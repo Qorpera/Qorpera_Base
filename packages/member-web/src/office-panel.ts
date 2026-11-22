@@ -78,9 +78,9 @@ export async function showOfficePanel(options: {
 			access = element("section"),
 			screensPanel = element("section"),
 			browserPanel = element("section");
-		root.replaceChildren(heading, state, controls, access, screensPanel, browserPanel);
 		if (!catalog.scope) {
 			state.textContent = "A shared computer has not been provisioned for this company.";
+			root.replaceChildren(heading, state, controls, access, screensPanel, browserPanel);
 			return close;
 		}
 		const scope = { ...catalog.scope },
@@ -235,7 +235,6 @@ export async function showOfficePanel(options: {
 			work,
 		);
 		moreStaff.hidden = !catalog.nextAfter;
-		root.append(moreStaff);
 		let views: ReturnType<WebCompanySession["views"]> | undefined;
 		try {
 			views = company.views(scope);
@@ -453,17 +452,12 @@ export async function showOfficePanel(options: {
 			}
 			if (privacy?.state === "private" && privacy.challenge && views) {
 				const challenge = privacy.challenge;
-				browserControls.append(
-					button(
-						"Open your private browser",
-						async () =>
-							connect(
-								challenge.drains.find((drain) => drain.binding.screenId === challenge.screenId)!.binding,
-								challenge,
-							),
-						work,
-					),
-				);
+				const drain = challenge.drains.find((item) => item.binding.screenId === challenge.screenId);
+				if (drain) {
+					browserControls.append(
+						button("Open your private browser", async () => connect(drain.binding, challenge), work),
+					);
+				}
 			}
 			if (privacy?.challenge && ["entering", "private"].includes(privacy.state))
 				browserControls.append(
@@ -532,6 +526,7 @@ export async function showOfficePanel(options: {
 		await Promise.all([loadStart(), grantStatus(), refreshScreens(), refreshBrowser()]);
 		live();
 		renderBrowserControls();
+		root.replaceChildren(heading, state, controls, access, screensPanel, browserPanel, moreStaff);
 		return close;
 	} catch (error) {
 		close();

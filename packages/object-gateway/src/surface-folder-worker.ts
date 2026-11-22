@@ -3,7 +3,9 @@ import {
 	compileIdentityTokensCss,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
+	normalizeStudioFolderRoot,
 	parseStudioPatchOps,
+	resolveStudioFolderPath,
 	type StudioPatchOp,
 } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
@@ -220,36 +222,6 @@ async function retryCommittedRpc<T>(
 
 function sha256Hex(text: string): string {
 	return createHash("sha256").update(text, "utf8").digest("hex");
-}
-
-function normalizeFolderRoot(folderRoot: string | null): string {
-	const cleaned = (folderRoot ?? "").trim().replace(/^\/+|\/+$/g, "");
-	if (
-		!cleaned ||
-		cleaned.includes("\\") ||
-		cleaned.includes("\0") ||
-		cleaned.split("/").some((p) => p === "" || p === "." || p === "..")
-	) {
-		throw new Error("Surface folder root is invalid");
-	}
-	return cleaned;
-}
-
-function resolveFolderPath(folderRoot: string, rawPath: string): string {
-	const normalized = rawPath.trim().replace(/^\/+|\/+$/g, "");
-	if (!normalized || normalized.includes("\\") || normalized.includes("\0")) {
-		throw new Error(`Invalid studio patch path: ${rawPath}`);
-	}
-	const segments = normalized.split("/");
-	if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
-		throw new Error(`Unsafe studio patch path: ${rawPath}`);
-	}
-	const prefixed =
-		normalized === folderRoot || normalized.startsWith(`${folderRoot}/`) ? normalized : `${folderRoot}/${normalized}`;
-	if (!prefixed.startsWith(`${folderRoot}/`)) {
-		throw new Error(`Patch path escapes surface folder root: ${rawPath}`);
-	}
-	return prefixed;
 }
 
 function mediaTypeForPath(path: string): string {
@@ -721,7 +693,7 @@ export class SurfaceFolderWorker {
 		shutdownSignal: AbortSignal | undefined,
 		markCommitted: () => void,
 	): Promise<void> {
-		const folderRoot = normalizeFolderRoot(job.folderRoot);
+		const folderRoot = normalizeStudioFolderRoot(job.folderRoot);
 		if (job.approvedChanges.length === 0) {
 			throw new Error("Folder merge job has no approved changes");
 		}
@@ -731,7 +703,7 @@ export class SurfaceFolderWorker {
 		for (const change of job.approvedChanges) {
 			const ops = extractStudioOps(change.patchManifest);
 			for (const op of ops) {
-				const fullPath = resolveFolderPath(folderRoot, op.path);
+				const fullPath = resolveStudioFolderPath(folderRoot, op.path);
 				resolvedOps.push({ path: fullPath, op });
 				touchedPaths.add(fullPath);
 			}
