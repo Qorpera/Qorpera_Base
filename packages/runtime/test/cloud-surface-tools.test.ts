@@ -1920,7 +1920,18 @@ describe("cloud surface runtime tools", () => {
 			expect(offeredNames).toContain("company_read");
 			expect(offeredNames).not.toContain("send_message");
 
-			expect(surfaceCalls).toEqual([
+			expect(surfaceCalls.filter((call) => call.method === "qorpera_native_surface_renew_lease")).toEqual([
+				{
+					method: "qorpera_native_surface_renew_lease",
+					args: {
+						p_profile_id: f.context.identity.companyId,
+						p_session_id: sessionId,
+						p_lease_token: leaseToken,
+						p_extend_seconds: 300,
+					},
+				},
+			]);
+			expect(surfaceCalls.filter((call) => call.method !== "qorpera_native_surface_renew_lease")).toEqual([
 				{
 					method: "qorpera_native_surface_read_session_turn",
 					args: {
@@ -2218,6 +2229,79 @@ describe("cloud surface runtime tools", () => {
 			bundleSpy.mockRestore();
 			await rm(tempRoot, { recursive: true, force: true });
 		}
+	});
+
+	it("bounds stage_surface_patch size, merge_json keys/depth, unsafe paths, listSurfaceSenses signal, and conflictPaths brief truncation", async () => {
+		const sessionId = randomUUID();
+		const patchTool = createStageSurfacePatchTool(sessionId, {
+			stageSurfacePatch: vi.fn(),
+		});
+
+		for (const badPath of [".", "a/./b.json", "a//b.json", "dir/", "a\0b.json", "C:file.json"]) {
+			expect(() =>
+				patchTool.parseArguments({
+					title: "Bad path",
+					summary: "Tests path hygiene",
+					ops: [{ op: "delete", path: badPath }],
+				}),
+			).toThrow();
+		}
+
+		expect(() =>
+			patchTool.parseArguments({
+				title: "Oversized patch",
+				summary: "Tests 512 KiB cap",
+				ops: [
+					{ op: "write_text", path: "a.txt", content: "x".repeat(200_000) },
+					{ op: "write_text", path: "b.txt", content: "y".repeat(200_000) },
+					{ op: "write_text", path: "c.txt", content: "z".repeat(200_000) },
+				],
+			}),
+		).toThrow(/524288|exceeds/);
+
+		const protoPatch = JSON.parse('{"__proto__":{"polluted":true}}') as JsonValue;
+		expect(() =>
+			patchTool.parseArguments({
+				title: "Proto pollution",
+				summary: "Tests disallowed keys",
+				ops: [{ op: "merge_json", path: "tokens.json", patch: protoPatch }],
+			}),
+		).toThrow(/forbidden key/);
+
+		let deep: Record<string, JsonValue> = { leaf: 1 };
+		for (let i = 0; i < 20; i += 1) {
+			deep = { next: deep };
+		}
+		expect(() =>
+			patchTool.parseArguments({
+				title: "Deep json",
+				summary: "Tests nesting depth cap",
+				ops: [{ op: "merge_json", path: "tokens.json", patch: deep }],
+			}),
+		).toThrow(/nesting depth/);
+
+		let observedSignal: AbortSignal | undefined;
+		const port = createControlPlaneSurfaceToolsPort({
+			call: async (_method, _args, signal) => {
+				observedSignal = signal;
+				return { surfaces: [], automations: [] };
+			},
+		});
+		await port.listSurfaceSenses(randomUUID());
+		expect(observedSignal).toBeDefined();
+
+		const conflictPaths = Array.from({ length: 140 }, (_, idx) => `src/file-${idx}.ts`);
+		const brief = buildSurfaceTurnBrief({
+			sessionId,
+			surfaceSlug: "web",
+			surfaceTitle: "Website",
+			briefMarkdown: null,
+			conflictPaths,
+		});
+		expect(brief).toContain("- src/file-0.ts");
+		expect(brief).toContain("- src/file-99.ts");
+		expect(brief).not.toContain("- src/file-100.ts");
+		expect(brief).toContain("and 40 more paths");
 	});
 
 	it("routes worker-dispatch coding wakes with surfaceSession into CloudNativeCodingDriver with full prompt and refuses code_repo on legacy surface-session wakes", async () => {
