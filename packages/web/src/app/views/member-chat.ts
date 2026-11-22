@@ -194,9 +194,19 @@ export class MemberChatView {
 		);
 		window.addEventListener("resize", () => this.#autosize(), { signal });
 		window.addEventListener("qorpera-rail-resize", () => this.#autosize(), { signal });
-		// Times and "last online" are words about now: they are written again each minute and when the tab is back.
+		// WHY: Skip minute-tick redraws while hidden and refresh timestamps immediately on tab return.
 		const again = () => this.update();
-		this.#timer = window.setInterval(again, 60_000);
+		this.#timer = window.setInterval(() => {
+			if (document.hidden) return;
+			this.update();
+		}, 60_000);
+		document.addEventListener(
+			"visibilitychange",
+			() => {
+				if (!document.hidden) this.update();
+			},
+			{ signal },
+		);
 		window.addEventListener("focus", again, { signal });
 		window.addEventListener("qorpera-language-change", again, { signal });
 		window.addEventListener("qorpera-time-zone-change", again, { signal });

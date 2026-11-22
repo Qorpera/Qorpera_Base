@@ -17,7 +17,7 @@ const sudoers = read("qorpera-screens-door.sudoers");
 const installer = read("install-screens-door.sh");
 const SEALED = "/etc/credstore.encrypted/qorpera-screens-tunnel";
 /** The one line that hands the token to systemd-creds (through bash's own printf, down a pipe). */
-const SEAL = 'seal() { printf %s "${token}" | systemd-creds encrypt "$@" --name=token - "${SEALED}.new" 2>&1; }';
+const SEAL = 'seal() { rm -f -- "${sealed_tmp}" && printf %s "${token}" | systemd-creds encrypt "$@" --name=token - "${sealed_tmp}" 2>&1; }';
 const sha256 = (name) => createHash("sha256").update(readFileSync(join(here, name))).digest("hex");
 
 test("the installer pins every file it installs and verifies the connector", () => {
@@ -52,6 +52,11 @@ test("the unit runs the connector with the sealed token as its own credential, o
 		"PrivateDevices=yes",
 		"IPAddressDeny=any",
 		"UMask=0077",
+		"LimitCORE=0",
+		"MemoryMax=512M",
+		"MemorySwapMax=0",
+		"TasksMax=128",
+		"TimeoutStopSec=15",
 		"WantedBy=multi-user.target",
 	])
 		assert.match(unit, new RegExp(`^${line.replace(/[.$]/g, "\\$&")}$`, "m"), line);
@@ -94,7 +99,10 @@ test("the door: root only, four verbs, the token in one variable that only bash 
 	for (const line of naming) assert.ok(allowed.has(line), line);
 	assert.ok(naming.includes(SEAL));
 	// Sealed beside, then moved over: never half written; a failure leaves nothing.
-	assert.match(door, /chmod 0600 "\$\{SEALED\}\.new"\n\tmv -f -- "\$\{SEALED\}\.new" "\$\{SEALED\}"/);
+	assert.match(door, /exec 9>"\$\{SEALED_WITH%\/\*}\/\.lock"\n\tflock 9/);
+	assert.match(door, /tmp_dir=\$\(mktemp -d "\$\{STORE\}\/\.seal\.XXXXXX"\)/);
+	assert.match(door, /trap 'rm -rf -- "\$\{tmp_dir\}" "\$\{with_tmp\}"' EXIT/);
+	assert.match(door, /chmod 0600 "\$\{sealed_tmp\}"\n\tmv -f -- "\$\{sealed_tmp\}" "\$\{SEALED\}"/);
 	// The kill switch: stopped, disabled and masked.
 	assert.match(
 		door,
@@ -123,7 +131,12 @@ test("the door answers in its own words only, and says which key sealed the toke
 	);
 	assert.doesNotMatch(door, /--tpm2-pcrs=[0-9]/);
 	assert.match(door, /^SEALED_WITH=\/var\/lib\/qorpera-screens-door\/sealed-with$/m);
-	assert.match(door, /printf '%s\\n' "\$\{key\}" >"\$\{SEALED_WITH\}"/);
+	assert.match(
+		door,
+		/with_tmp=\$\(mktemp "\$\{SEALED_WITH\}\.new\.XXXXXX"\)\n\tprintf '%s\\n' "\$\{key\}" >"\$\{with_tmp\}"\n\tmv -f -- "\$\{with_tmp\}" "\$\{SEALED_WITH\}"/,
+	);
+	assert.match(door, /deadline=\$\(\(SECONDS \+ 30\)\)\n\twhile \(\( SECONDS < deadline \)\); do/);
+	assert.match(door, /\[\[ \$\(systemctl show -p ActiveState --value "\$\{UNIT\}" 2>\/dev\/null \|\| true\) == failed \]\] && break/);
 	for (const said of ['host) sealed="sealed (host key)"', 'host+tpm2) sealed="sealed (host key + tpm)"'])
 		assert.ok(door.includes(said), said);
 });

@@ -453,13 +453,15 @@ export class SiteView {
 			this.#drawNumbers();
 		});
 		this.#watchPages();
-		// Each minute while the view is open: a question whose first ask failed is asked again, and a new day of the
-		// company's moves today's pages to it.
-		const minute = setInterval(() => {
+		// WHY: Skip background retries while hidden and catch up immediately when the tab returns.
+		const tick = () => {
+			if (typeof document !== "undefined" && document.hidden) return;
 			this.#follow("site-now");
 			this.#follow("site-hours");
 			this.#watchPages();
-		}, 60_000);
+		};
+		const minute = setInterval(tick, 60_000);
+		if (typeof document !== "undefined") document.addEventListener("visibilitychange", tick, { signal: page });
 		page.addEventListener("abort", () => clearInterval(minute), { once: true });
 	}
 

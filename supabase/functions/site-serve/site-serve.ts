@@ -73,6 +73,12 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
+import {
+	BodyTooLargeError,
+	DEFAULT_BODY_READ_TIMEOUT_MS,
+	readBoundedBytes,
+	readBoundedJson,
+} from "../_shared/http-guards.ts";
 
 export const DEFAULT_SITES_ORIGIN = "https://sites.qorpera.com";
 /** The web's origins when QORPERA_WEB_ORIGINS is not set: the production app. */
@@ -88,7 +94,15 @@ const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,46}[a-z0-9])$/;
 const TOKEN = /^[A-Za-z0-9_-]{32}$/;
 const SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,199}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const BASE64_CHARS = /^[A-Za-z0-9+/]*={0,2}$/;
+const UTF8_ENCODER = new TextEncoder();
+const UTF8_FATAL_DECODER = new TextDecoder("utf-8", { fatal: true });
+const ROBOTS_TXT_BYTES = UTF8_ENCODER.encode("User-agent: *\nDisallow: /\n");
+
+function isValidBase64(value: string): boolean {
+	// WHY: Flat DFA scan + modulo-4 check avoids millions of regex group repetitions on 10 MiB base64 file payloads.
+	return value.length % 4 === 0 && BASE64_CHARS.test(value);
+}
 const CONTENT_TYPE = /^[a-z]+\/[a-z0-9.+-]+(?:; charset=utf-8)?$/;
 const MAX_SEGMENTS = 16;
 const MAX_PATH = 512;
@@ -182,8 +196,9 @@ export interface SiteStore {
 		etag: string | null,
 		offset: number,
 		length: number,
+		signal?: AbortSignal,
 	): Promise<unknown>;
-	unlock(slug: string, password: string, client: string): Promise<unknown>;
+	unlock(slug: string, password: string, client: string, signal?: AbortSignal): Promise<unknown>;
 	/** What a host answers (qorpera_site_serve_host): on the old host whether the path's site moved or is gone, on a site
 	 * host one file for a session as `serve` gives it, with its status and scope. */
 	serveHost(
@@ -193,16 +208,17 @@ export interface SiteStore {
 		etag: string | null,
 		offset: number,
 		length: number,
+		signal?: AbortSignal,
 	): Promise<unknown>;
 	/** An own host's password (qorpera_site_unlock_host): `unlock`'s answers for the host's site. */
-	unlockHost(host: string, password: string, client: string): Promise<unknown>;
+	unlockHost(host: string, password: string, client: string, signal?: AbortSignal): Promise<unknown>;
 	/** A next host's ticket for a member's session (qorpera_site_enter). */
-	enter(host: string, ticket: string): Promise<unknown>;
+	enter(host: string, ticket: string, signal?: AbortSignal): Promise<unknown>;
 	/** Counts a page view of a session (qorpera_site_count_view): the host, the answered file's path in the site (on the
 	 * old host after the site's name, `<slug>/<path>`) and the session's token. Its answer is not read. */
 	countView(host: string, path: string, token: string): Promise<unknown>;
 	/** An own host's member pass for a member's session (qorpera_site_member_pass_redeem): `enter`'s answers. */
-	memberPass(host: string, pass: string): Promise<unknown>;
+	memberPass(host: string, pass: string, signal?: AbortSignal): Promise<unknown>;
 }
 
 /** The database has no such function yet (PostgREST's PGRST202): this function was installed before its migration. */
@@ -218,6 +234,7 @@ export interface SiteServeOptions {
 	/** Keeps work going after the answer is sent: the edge runtime's EdgeRuntime.waitUntil when not given. Without
 	 * either, a view's count is waited for at most COUNT_WAIT_MS. */
 	waitUntil?: (work: Promise<unknown>) => void;
+	bodyReadTimeoutMs?: number;
 }
 
 /** The longest an answer waits for its view's count when no waitUntil keeps the count going after it. */
@@ -304,7 +321,7 @@ function fileFields(
 		!Number.isSafeInteger(answer.offset) ||
 		(answer.offset as number) < 0 ||
 		(answer.offset as number) > (answer.bytes as number) ||
-		!(answer.content === null || (typeof answer.content === "string" && BASE64.test(answer.content))) ||
+		!(answer.content === null || (typeof answer.content === "string" && isValidBase64(answer.content))) ||
 		// The content is left out when the visitor holds exactly this file, when none was asked for, or when the bytes
 		// asked for start at the file's end.
 		(answer.content === null && !held && length > 0 && (answer.offset as number) < (answer.bytes as number))
@@ -584,7 +601,7 @@ function htmlAnswer(
 	extra: Record<string, string> = {},
 	referrerPolicy: "no-referrer" | "same-origin" = "no-referrer",
 ): Response {
-	const bytes = new TextEncoder().encode(html);
+	const bytes = UTF8_ENCODER.encode(html);
 	return new Response(request.method === "HEAD" ? null : bytes, {
 		status,
 		headers: {
@@ -601,13 +618,12 @@ function redirect(location: string, status: 303 | 308, extra: Record<string, str
 }
 
 function robots(request: Request): Response {
-	const bytes = new TextEncoder().encode("User-agent: *\nDisallow: /\n");
-	return new Response(request.method === "HEAD" ? null : bytes, {
+	return new Response(request.method === "HEAD" ? null : ROBOTS_TXT_BYTES, {
 		status: 200,
 		headers: {
 			...pageHeaders(),
 			"content-type": "text/plain; charset=utf-8",
-			"content-length": String(bytes.byteLength),
+			"content-length": String(ROBOTS_TXT_BYTES.byteLength),
 		},
 	});
 }
@@ -695,7 +711,7 @@ async function readFile(
 	etag: string | null,
 ): Promise<{ answer: ServeAnswer; range: { start: number; end: number } | "unsatisfiable" | undefined }> {
 	const ask = async (offset: number, length: number) =>
-		parseServeAnswer(await store.serve(slug, path, token, etag, offset, length), etag, { length });
+		parseServeAnswer(await store.serve(slug, path, token, etag, offset, length, request.signal), etag, { length });
 	if (request.method === "HEAD") return { answer: await ask(0, 0), range: undefined };
 	const header = request.headers.get("range");
 	const wanted = rangeRequest(header);
@@ -817,32 +833,32 @@ export function clientAddress(header: string | null): string {
 	return [high >> 8, high & 255, low >> 8, low & 255].join(".");
 }
 
-/** Reads a body up to `limit` bytes; null when it is longer. */
-async function readBody(request: Request, limit: number): Promise<Uint8Array | null> {
+function isTimeoutOrAbortError(error: unknown): boolean {
+	if (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError")) return true;
+	return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+}
+
+async function readBody(
+	request: Request,
+	limit: number,
+	timeoutMs = DEFAULT_BODY_READ_TIMEOUT_MS,
+): Promise<{ readonly ok: true; readonly bytes: Uint8Array } | { readonly ok: false; readonly status: 400 | 408 | 413 }> {
 	const declared = request.headers.get("content-length");
-	if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > limit)) return null;
-	if (!request.body) return new Uint8Array();
-	const reader = request.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let total = 0;
+	if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > limit)) {
+		void request.body?.cancel().catch(() => undefined);
+		return { ok: false, status: 413 };
+	}
 	try {
-		for (;;) {
-			const chunk = await reader.read();
-			if (chunk.done) break;
-			total += chunk.value.byteLength;
-			if (total > limit) return null;
-			chunks.push(chunk.value);
-		}
-	} finally {
-		void reader.cancel().catch(() => undefined);
+		const bytes = await readBoundedBytes(request, limit, {
+			timeoutMs,
+			signal: request.signal,
+		});
+		return { ok: true, bytes };
+	} catch (error) {
+		if (error instanceof BodyTooLargeError) return { ok: false, status: 413 };
+		if (request.signal.aborted || isTimeoutOrAbortError(error)) return { ok: false, status: 408 };
+		return { ok: false, status: 400 };
 	}
-	const body = new Uint8Array(total);
-	let offset = 0;
-	for (const chunk of chunks) {
-		body.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return body;
 }
 
 function unavailable(request: Request, lang: Language, error: unknown): Response {
@@ -917,7 +933,10 @@ async function onOldHost(
 	if (!SLUG.test(slug)) return undefined;
 	let answer: OldHostAnswer;
 	try {
-		answer = parseOldHostAnswer(await options.store.serveHost(origin.host, `${slug}/`, null, null, 0, 0), slug);
+		answer = parseOldHostAnswer(
+			await options.store.serveHost(origin.host, `${slug}/`, null, null, 0, 0, request.signal),
+			slug,
+		);
 	} catch (error) {
 		if (error instanceof MissingFunction) return undefined;
 		return unavailable(request, lang, error);
@@ -1031,7 +1050,7 @@ function hostHtml(
 	extra: Record<string, string> = {},
 	referrerPolicy: "no-referrer" | "same-origin" = "no-referrer",
 ): Response {
-	const bytes = new TextEncoder().encode(html);
+	const bytes = UTF8_ENCODER.encode(html);
 	return new Response(request.method === "HEAD" ? null : bytes, {
 		status,
 		headers: {
@@ -1236,13 +1255,12 @@ async function onSiteHost(
 		return hostMessage(request, lang, 403, text.unavailable, text.ownAddress);
 	if (rest === "/robots.txt") {
 		if (method !== "GET" && method !== "HEAD") return hostNotAllowed("GET, HEAD");
-		const bytes = new TextEncoder().encode("User-agent: *\nDisallow: /\n");
-		return new Response(method === "HEAD" ? null : bytes, {
+		return new Response(method === "HEAD" ? null : ROBOTS_TXT_BYTES, {
 			status: 200,
 			headers: {
 				...hostPageHeaders(),
 				"content-type": "text/plain; charset=utf-8",
-				"content-length": String(bytes.byteLength),
+				"content-length": String(ROBOTS_TXT_BYTES.byteLength),
 			},
 		});
 	}
@@ -1318,7 +1336,12 @@ async function readHostFile(
 	etag: string | null,
 ): Promise<{ answer: HostAnswer; range: { start: number; end: number } | "unsatisfiable" | undefined }> {
 	const ask = async (offset: number, length: number) =>
-		parseHostAnswer(await store.serveHost(site.host, path, token, etag, offset, length), site.scope, etag, { length });
+		parseHostAnswer(
+			await store.serveHost(site.host, path, token, etag, offset, length, request.signal),
+			site.scope,
+			etag,
+			{ length },
+		);
 	if (request.method === "HEAD") return { answer: await ask(0, 0), range: undefined };
 	const header = request.headers.get("range");
 	const wanted = rangeRequest(header);
@@ -1350,9 +1373,9 @@ function hostFileAnswer(
 	const fresh = scope === "site" && file.status === 200;
 	const suffix =
 		scope === "next" && isHtml(file.contentType)
-			? new TextEncoder().encode(nextBar(lang))
+			? UTF8_ENCODER.encode(nextBar(lang))
 			: scope === "preview" && isHtml(file.contentType)
-				? new TextEncoder().encode(previewInspectorTag())
+				? UTF8_ENCODER.encode(previewInspectorTag())
 				: null;
 	const headers: Record<string, string> = {
 		...hostHeaders(),
@@ -1390,8 +1413,14 @@ function hostFileAnswer(
 		createHash("sha256").update(bytes).digest("hex") !== file.sha256
 	)
 		invalid();
-	const combined = suffix ? Buffer.concat([bytes, suffix], bytes.byteLength + suffix.byteLength) : null;
-	const body = combined ? new Uint8Array(combined.buffer, combined.byteOffset, combined.byteLength) : bytes;
+	let body: Uint8Array<ArrayBuffer>;
+	if (suffix) {
+		body = new Uint8Array(new ArrayBuffer(bytes.byteLength + suffix.byteLength));
+		body.set(bytes, 0);
+		body.set(suffix, bytes.byteLength);
+	} else {
+		body = bytes as Uint8Array<ArrayBuffer>;
+	}
 	return new Response(body, {
 		status: file.status,
 		headers: { ...headers, "content-length": String(body.byteLength) },
@@ -1415,11 +1444,11 @@ async function hostUnlock(
 	if (sent !== null && sent !== `https://${site.host}`) return hostMessage(request, lang, 403, text.private, text.refused);
 	if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded"))
 		return hostMessage(request, lang, 415, text.private, text.refused);
-	const body = await readBody(request, MAX_UNLOCK_BODY_BYTES);
-	if (!body) return hostMessage(request, lang, 413, text.private, text.refused);
+	const read = await readBody(request, MAX_UNLOCK_BODY_BYTES, options.bodyReadTimeoutMs);
+	if (!read.ok) return hostMessage(request, lang, read.status, text.private, text.refused);
 	let form: URLSearchParams;
 	try {
-		form = new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(body));
+		form = new URLSearchParams(UTF8_FATAL_DECODER.decode(read.bytes));
 	} catch {
 		return hostMessage(request, lang, 400, text.private, text.refused);
 	}
@@ -1430,7 +1459,7 @@ async function hostUnlock(
 	let answer: UnlockAnswer;
 	try {
 		answer = parseUnlockAnswer(
-			await options.store.unlockHost(site.host, password, clientAddress(request.headers.get("cf-connecting-ip"))),
+			await options.store.unlockHost(site.host, password, clientAddress(request.headers.get("cf-connecting-ip")), request.signal),
 		);
 	} catch (error) {
 		if (error instanceof MissingFunction) return undefined;
@@ -1463,7 +1492,7 @@ async function hostEnter(
 	if (!TICKET.test(ticket)) return refused();
 	let answer: ReturnType<typeof parseEnterAnswer>;
 	try {
-		answer = parseEnterAnswer(await options.store.enter(site.host, ticket));
+		answer = parseEnterAnswer(await options.store.enter(site.host, ticket, request.signal));
 	} catch (error) {
 		if (error instanceof MissingFunction) return undefined;
 		return hostUnavailable(request, lang, error);
@@ -1491,11 +1520,11 @@ async function hostMember(
 		return hostMessage(request, lang, 403, text.private, text.fromQorpera);
 	if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded"))
 		return hostMessage(request, lang, 415, text.private, text.fromQorpera);
-	const body = await readBody(request, MAX_UNLOCK_BODY_BYTES);
-	if (!body) return hostMessage(request, lang, 413, text.private, text.fromQorpera);
+	const read = await readBody(request, MAX_UNLOCK_BODY_BYTES, options.bodyReadTimeoutMs);
+	if (!read.ok) return hostMessage(request, lang, read.status, text.private, text.fromQorpera);
 	let form: URLSearchParams;
 	try {
-		form = new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(body));
+		form = new URLSearchParams(UTF8_FATAL_DECODER.decode(read.bytes));
 	} catch {
 		return hostMessage(request, lang, 400, text.private, text.fromQorpera);
 	}
@@ -1507,7 +1536,7 @@ async function hostMember(
 	if (!PASS.test(pass)) return wrong();
 	let answer: ReturnType<typeof parseEnterAnswer>;
 	try {
-		answer = parseEnterAnswer(await options.store.memberPass(site.host, pass));
+		answer = parseEnterAnswer(await options.store.memberPass(site.host, pass, request.signal));
 	} catch (error) {
 		if (error instanceof MissingFunction) return undefined;
 		return hostUnavailable(request, lang, error);
@@ -1660,7 +1689,9 @@ async function legacySiteServe(request: Request, options: SiteServeOptions): Pro
 		try {
 			for (const token of tokens) {
 				// A check only: no bytes.
-				const answer = parseServeAnswer(await options.store.serve(slug, path, token, null, 0, 0), null, { length: 0 });
+				const answer = parseServeAnswer(await options.store.serve(slug, path, token, null, 0, 0, request.signal), null, {
+					length: 0,
+				});
 				if (answer.state !== "locked") return redirect(`/${slug}/~${token}/${path}${search}`, 303);
 			}
 		} catch (error) {
@@ -1689,11 +1720,11 @@ async function unlock(request: Request, options: SiteServeOptions, lang: Languag
 		return htmlAnswer(request, messagePage(lang, text.private, text.refused), 403);
 	if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded"))
 		return htmlAnswer(request, messagePage(lang, text.private, text.refused), 415);
-	const body = await readBody(request, MAX_UNLOCK_BODY_BYTES);
-	if (!body) return htmlAnswer(request, messagePage(lang, text.private, text.refused), 413);
+	const read = await readBody(request, MAX_UNLOCK_BODY_BYTES, options.bodyReadTimeoutMs);
+	if (!read.ok) return htmlAnswer(request, messagePage(lang, text.private, text.refused), read.status);
 	let form: URLSearchParams;
 	try {
-		form = new URLSearchParams(new TextDecoder("utf-8", { fatal: true }).decode(body));
+		form = new URLSearchParams(UTF8_FATAL_DECODER.decode(read.bytes));
 	} catch {
 		return htmlAnswer(request, messagePage(lang, text.private, text.refused), 400);
 	}
@@ -1704,7 +1735,7 @@ async function unlock(request: Request, options: SiteServeOptions, lang: Languag
 	let answer: UnlockAnswer;
 	try {
 		answer = parseUnlockAnswer(
-			await options.store.unlock(slug, password, clientAddress(request.headers.get("cf-connecting-ip"))),
+			await options.store.unlock(slug, password, clientAddress(request.headers.get("cf-connecting-ip")), request.signal),
 		);
 	} catch (error) {
 		return unavailable(request, lang, error);
@@ -1731,27 +1762,16 @@ export function serviceHeaders(secretKey: string): Record<string, string> {
 /** The most bytes of a PostgREST error read for its code. */
 const MAX_ERROR_BYTES = 4096;
 
-/** The `code` of a PostgREST error body of at most 4 KiB, else null. The body is never logged. */
-async function errorCode(response: Response): Promise<string | null> {
-	const reader = response.body?.getReader();
-	if (!reader) return null;
-	const chunks: Uint8Array[] = [];
-	let total = 0;
+async function errorCode(response: Response, signal: AbortSignal): Promise<string | null> {
 	try {
-		for (;;) {
-			const chunk = await reader.read();
-			if (chunk.done) break;
-			total += chunk.value.byteLength;
-			if (total > MAX_ERROR_BYTES) return null;
-			chunks.push(chunk.value);
-		}
-		const parsed: unknown = JSON.parse(new TextDecoder().decode(Buffer.concat(chunks)));
+		const parsed = await readBoundedJson(response, MAX_ERROR_BYTES, {
+			signal,
+			ignoreContentLength: response.headers.has("content-encoding"),
+		});
 		const code = (parsed as { code?: unknown } | null)?.code;
 		return typeof code === "string" ? code : null;
 	} catch {
 		return null;
-	} finally {
-		void reader.cancel().catch(() => undefined);
 	}
 }
 
@@ -1776,19 +1796,30 @@ export class PostgrestSiteStore implements SiteStore {
 		etag: string | null,
 		offset: number,
 		length: number,
+		signal?: AbortSignal,
 	): Promise<unknown> {
-		return this.#call("qorpera_site_serve", {
-			p_slug: slug,
-			p_path: path,
-			p_token: token,
-			p_etag: etag,
-			p_offset: offset,
-			p_length: length,
-		});
+		return this.#call(
+			"qorpera_site_serve",
+			{
+				p_slug: slug,
+				p_path: path,
+				p_token: token,
+				p_etag: etag,
+				p_offset: offset,
+				p_length: length,
+			},
+			this.#timeoutMs,
+			signal,
+		);
 	}
 
-	unlock(slug: string, password: string, client: string): Promise<unknown> {
-		return this.#call("qorpera_site_unlock", { p_slug: slug, p_password: password, p_client: client });
+	unlock(slug: string, password: string, client: string, signal?: AbortSignal): Promise<unknown> {
+		return this.#call(
+			"qorpera_site_unlock",
+			{ p_slug: slug, p_password: password, p_client: client },
+			this.#timeoutMs,
+			signal,
+		);
 	}
 
 	serveHost(
@@ -1798,23 +1829,34 @@ export class PostgrestSiteStore implements SiteStore {
 		etag: string | null,
 		offset: number,
 		length: number,
+		signal?: AbortSignal,
 	): Promise<unknown> {
-		return this.#call("qorpera_site_serve_host", {
-			p_host: host,
-			p_path: path,
-			p_token: token,
-			p_etag: etag,
-			p_offset: offset,
-			p_length: length,
-		});
+		return this.#call(
+			"qorpera_site_serve_host",
+			{
+				p_host: host,
+				p_path: path,
+				p_token: token,
+				p_etag: etag,
+				p_offset: offset,
+				p_length: length,
+			},
+			this.#timeoutMs,
+			signal,
+		);
 	}
 
-	unlockHost(host: string, password: string, client: string): Promise<unknown> {
-		return this.#call("qorpera_site_unlock_host", { p_host: host, p_password: password, p_client: client });
+	unlockHost(host: string, password: string, client: string, signal?: AbortSignal): Promise<unknown> {
+		return this.#call(
+			"qorpera_site_unlock_host",
+			{ p_host: host, p_password: password, p_client: client },
+			this.#timeoutMs,
+			signal,
+		);
 	}
 
-	enter(host: string, ticket: string): Promise<unknown> {
-		return this.#call("qorpera_site_enter", { p_host: host, p_ticket: ticket });
+	enter(host: string, ticket: string, signal?: AbortSignal): Promise<unknown> {
+		return this.#call("qorpera_site_enter", { p_host: host, p_ticket: ticket }, this.#timeoutMs, signal);
 	}
 
 	countView(host: string, path: string, token: string): Promise<unknown> {
@@ -1825,48 +1867,43 @@ export class PostgrestSiteStore implements SiteStore {
 		);
 	}
 
-	memberPass(host: string, pass: string): Promise<unknown> {
-		return this.#call("qorpera_site_member_pass_redeem", { p_host: host, p_pass: pass });
+	memberPass(host: string, pass: string, signal?: AbortSignal): Promise<unknown> {
+		return this.#call("qorpera_site_member_pass_redeem", { p_host: host, p_pass: pass }, this.#timeoutMs, signal);
 	}
 
-	async #call(name: string, args: Record<string, unknown>, timeoutMs = this.#timeoutMs): Promise<unknown> {
-		return withTimeoutScope(timeoutMs, async (signal) => {
-			const response = await this.#fetch(`${this.#projectUrl}/rest/v1/rpc/${name}`, {
-				method: "POST",
-				redirect: "error",
-				headers: { ...serviceHeaders(this.#secretKey), "content-type": "application/json" },
-				body: JSON.stringify(args),
-				signal,
-			});
-			if (!response.ok) {
-				// PostgREST answers 404 with code PGRST202 for a function it does not have: one whose migration is not applied.
-				if (response.status === 404 && (await errorCode(response)) === "PGRST202") throw new MissingFunction(name);
-				void response.body?.cancel().catch(() => undefined);
-				throw new Error(`The database answered HTTP ${response.status}`);
-			}
-			const declared = response.headers.get("content-length");
-			if (declared !== null && Number(declared) > MAX_STORE_ANSWER_BYTES) {
-				void response.body?.cancel().catch(() => undefined);
-				throw new Error("The database's answer is too large");
-			}
-			const reader = response.body?.getReader();
-			if (!reader) throw new Error("The database answered without a body");
-			const chunks: Uint8Array[] = [];
-			let total = 0;
-			try {
-				for (;;) {
-					const chunk = await reader.read();
-					if (chunk.done) break;
-					total += chunk.value.byteLength;
-					if (total > MAX_STORE_ANSWER_BYTES) throw new Error("The database's answer is too large");
-					chunks.push(chunk.value);
+	async #call(
+		name: string,
+		args: Record<string, unknown>,
+		timeoutMs = this.#timeoutMs,
+		parentSignal?: AbortSignal,
+	): Promise<unknown> {
+		return withTimeoutScope(
+			timeoutMs,
+			async (signal) => {
+				const response = await this.#fetch(`${this.#projectUrl}/rest/v1/rpc/${name}`, {
+					method: "POST",
+					redirect: "error",
+					headers: { ...serviceHeaders(this.#secretKey), "content-type": "application/json" },
+					body: JSON.stringify(args),
+					signal,
+				});
+				if (!response.ok) {
+					// PostgREST answers 404 with code PGRST202 for a function it does not have: one whose migration is not applied.
+					if (response.status === 404 && (await errorCode(response, signal)) === "PGRST202") {
+						throw new MissingFunction(name);
+					}
+					void response.body?.cancel().catch(() => undefined);
+					throw new Error(`The database answered HTTP ${response.status}`);
 				}
-			} finally {
-				void reader.cancel().catch(() => undefined);
-			}
-			const merged = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
-			chunks.length = 0;
-			return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(merged));
-		});
+				if (!response.body) throw new Error("The database answered without a body");
+				const merged = await readBoundedBytes(response, MAX_STORE_ANSWER_BYTES, {
+					signal,
+					ignoreContentLength: response.headers.has("content-encoding"),
+					sizeErrorMessage: "The database's answer is too large",
+				});
+				return JSON.parse(UTF8_FATAL_DECODER.decode(merged));
+			},
+			parentSignal,
+		);
 	}
 }

@@ -9,6 +9,7 @@
  */
 
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
+import { readBoundedJson } from "../_shared/http-guards.ts";
 
 const STATE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}$/;
 const CODE = /^[\x21-\x7e]{1,2048}$/;
@@ -21,7 +22,7 @@ export interface ChatGptPlanCallbackOptions {
 	/** The page the member returns to: an HTTPS page of an allowed web origin. */
 	readonly returnUrl: string;
 	/** The company's vault callback address for a state, or undefined (the database's answer). */
-	readonly resolveTarget: (state: string) => Promise<string | undefined>;
+	readonly resolveTarget: (state: string, signal?: AbortSignal) => Promise<string | undefined>;
 	readonly fetchImplementation?: typeof fetch;
 	readonly timeoutMs?: number;
 }
@@ -71,32 +72,6 @@ function optional(value: string | null, pattern: RegExp): string | null | undefi
 	return pattern.test(value) ? value : undefined;
 }
 
-async function boundedJson(response: Response, signal: AbortSignal): Promise<unknown> {
-	const reader = response.body?.getReader();
-	if (!reader) return null;
-	const chunks: Uint8Array[] = [];
-	let length = 0;
-	try {
-		while (true) {
-			signal.throwIfAborted();
-			const next = await reader.read();
-			if (next.done) break;
-			length += next.value.byteLength;
-			if (length > MAX_RESPONSE_BYTES) throw new Error("The vault's answer is too large");
-			chunks.push(next.value);
-		}
-	} finally {
-		void reader.cancel().catch(() => {});
-	}
-	const bytes = new Uint8Array(length);
-	let offset = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-}
-
 export async function handleChatGptPlanCallback(request: Request, options: ChatGptPlanCallbackOptions): Promise<Response> {
 	if (request.method !== "GET") return new Response(null, { status: 405, headers: { allow: "GET" } });
 	const failed = (reason: string) => back(chatGptPlanReturnLocation(options.returnUrl, { reason }));
@@ -110,23 +85,25 @@ export async function handleChatGptPlanCallback(request: Request, options: ChatG
 		return failed("provider_error");
 	try {
 		const timeoutMs = options.timeoutMs ?? 20_000;
-		const target = await options.resolveTarget(state);
-		if (!target) return failed("state_unknown");
-		const url = new URL(target);
-		// The database names the vault; it must also be the state's own company's callback route.
-		const company = state.slice(0, state.indexOf("."));
-		if (
-			url.protocol !== "https:" ||
-			url.username ||
-			url.password ||
-			url.search ||
-			url.hash ||
-			!url.pathname.endsWith(`/v1/model-logins/${company}/chatgpt-plan/callback`)
-		)
-			return failed("provider_error");
+		// WHY: Share the end-to-end callback timeout and caller abort signal across both target resolution and vault forwarding.
 		return await withTimeoutScope(
 			timeoutMs,
 			async (signal) => {
+				const target = await options.resolveTarget(state, signal);
+				signal.throwIfAborted();
+				if (!target) return failed("state_unknown");
+				const url = new URL(target);
+				// The database names the vault; it must also be the state's own company's callback route.
+				const company = state.slice(0, state.indexOf("."));
+				if (
+					url.protocol !== "https:" ||
+					url.username ||
+					url.password ||
+					url.search ||
+					url.hash ||
+					!url.pathname.endsWith(`/v1/model-logins/${company}/chatgpt-plan/callback`)
+				)
+					return failed("provider_error");
 				const answer = await (options.fetchImplementation ?? fetch)(url.href, {
 					method: "POST",
 					headers: { accept: "application/json", "content-type": "application/json" },
@@ -138,7 +115,11 @@ export async function handleChatGptPlanCallback(request: Request, options: ChatG
 					void answer.body?.cancel().catch(() => undefined);
 					return failed("provider_error");
 				}
-				const result = (await boundedJson(answer, signal)) as Record<string, unknown> | null;
+				const result = (await readBoundedJson(answer, MAX_RESPONSE_BYTES, {
+					signal,
+					ignoreContentLength: answer.headers.has("content-encoding"),
+					sizeErrorMessage: "The vault's answer is too large",
+				})) as Record<string, unknown> | null;
 				if (
 					result?.schema === "qorpera.chatgpt-plan-callback-result/v1" &&
 					result.status === "confirm" &&

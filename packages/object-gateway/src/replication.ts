@@ -9,7 +9,7 @@ import {
 	type VerifiedObjectBytes,
 	verifyObjectBytes,
 } from "./object-store.ts";
-import type { ObjectGatewayAuthority } from "./supabase-authority.ts";
+import type { ObjectGatewayAuthority, WriteReplicaResult } from "./supabase-authority.ts";
 
 export interface ObjectReplicationAuthority extends ObjectGatewayAuthority {
 	listLegacyObjects(
@@ -18,8 +18,14 @@ export interface ObjectReplicationAuthority extends ObjectGatewayAuthority {
 	): Promise<LegacyObjectMigrationItem[]>;
 	authorizeReplication(profileId: string, sha256: string, bytes: number): Promise<void>;
 	confirmReplica(profileId: string, sha256: string, bytes: number): Promise<void>;
-	writeReplica(profileId: string, sha256: string, bytes: Uint8Array): Promise<void>;
+	writeReplica(profileId: string, sha256: string, bytes: Uint8Array): Promise<WriteReplicaResult>;
 	removeReplica(profileId: string, sha256: string): Promise<void>;
+}
+
+export interface ObjectGatewayReplicationOptions {
+	readonly verifyReplicaReadBack?: boolean;
+	readonly onPendingPressure?: () => void;
+	readonly pressureThreshold?: number;
 }
 
 interface PendingObject extends LegacyObjectMigrationItem {
@@ -102,6 +108,10 @@ export class ObjectGatewayReplication {
 	#mutationEpoch = 0;
 	#statusInFlight: Promise<{ pending: number; blocked: number; degraded: boolean }> | undefined;
 	readonly #nasGate: MaintenanceGate;
+	readonly #verifyReplicaReadBack: boolean;
+	readonly #onPendingPressure: (() => void) | undefined;
+	readonly #pressureThreshold: number;
+	#pendingSinceReconcile = 0;
 
 	constructor(
 		journal: ObjectGatewayJournal,
@@ -109,12 +119,19 @@ export class ObjectGatewayReplication {
 		authority: ObjectReplicationAuthority,
 		maxStoredLines = MAX_STORED_LINES,
 		nasGate: MaintenanceGate = createSerialGate(),
+		options: ObjectGatewayReplicationOptions = {},
 	) {
 		this.#journal = journal;
 		this.#store = store;
 		this.#authority = authority;
 		this.#maxStoredLines = maxStoredLines;
 		this.#nasGate = nasGate;
+		this.#verifyReplicaReadBack = options.verifyReplicaReadBack ?? false;
+		this.#onPendingPressure = options.onPendingPressure;
+		this.#pressureThreshold = Math.max(
+			1,
+			options.pressureThreshold ?? Math.min(256, Math.floor(journal.maxRecords / 4)),
+		);
 	}
 
 	/** Callbacks belong to the trusted gateway, never to a request body. */
@@ -127,15 +144,18 @@ export class ObjectGatewayReplication {
 			confirm(): Promise<void>;
 		},
 		verified?: VerifiedObjectBytes,
+		options?: { readonly preAuthorized?: boolean },
 	): Promise<ObjectWriteResult> {
 		const object = { profileId, sha256, bytes: bytes.byteLength };
 		const proven = isVerifiedObjectBytes(verified, sha256, bytes) ? verified! : verify(bytes, object);
-		return this.#journal.exclusive(key(object), async () => {
-			// A line the audit refused stops uploads until it is written, as it did when each upload wrote its own.
-			if (this.#storedLinesRefused || this.#storedLines.length >= this.#maxStoredLines)
+		return this.#journal.exclusive(key(object), async (contended) => {
+			let flushed = false;
+			if (this.#storedLinesRefused || this.#storedLines.length >= this.#maxStoredLines) {
 				await this.flushStoredLines();
-			// Recheck inside the same lane as cleanup; an earlier request is not a reusable write grant.
-			await authority.authorize();
+				flushed = true;
+			}
+			// WHY: skip redundant SQL re-check when already authorized after body verification and the object lock was uncontended.
+			if (!options?.preAuthorized || contended || flushed) await authority.authorize();
 			const prior = await this.#journal.read(key(object));
 			if (prior !== undefined && pendingObject(prior, key(object)).state === "delete")
 				throw new ObjectDependencyError(409);
@@ -144,15 +164,16 @@ export class ObjectGatewayReplication {
 			this.#statusInFlight = undefined;
 			const result = await this.#store.put(profileId, sha256, bytes, proven);
 			await authority.confirm();
-			// The answer waits for the intent and the bytes only: on the NAS each synchronous write is a disk flush. The
-			// entry stays `unconfirmed`, which the reconcile treats as it treats `replicate` (a crash just here left it so
-			// already). The audit line waits in memory for the next audit write (`#append`). A crash before that loses it;
-			// the bytes, the catalog row and the entry stand (RUNTIME-COMPANY-FOLDER-C1D.md §9.9).
 			this.#storedLines.push({
 				event: "object_stored_replication_pending",
 				at: new Date().toISOString(),
 				...object,
 			});
+			this.#pendingSinceReconcile++;
+			if (this.#onPendingPressure && !this.#running && this.#pendingSinceReconcile >= this.#pressureThreshold) {
+				this.#pendingSinceReconcile = 0;
+				this.#onPendingPressure();
+			}
 			return result;
 		});
 	}
@@ -383,12 +404,12 @@ export class ObjectGatewayReplication {
 			throw new Error("Replication batch limit is invalid");
 		if (this.#running) return;
 		this.#running = true;
+		this.#pendingSinceReconcile = 0;
 		if (this.#lastError) {
 			this.#lastError = false;
 			this.#statusInFlight = undefined;
 		}
 		try {
-			// A refused audit shows as degraded and stops uploads; the entries below still go on.
 			await this.flushStoredLines().catch(() => {
 				this.#lastError = true;
 				this.#statusInFlight = undefined;
@@ -558,8 +579,9 @@ export class ObjectGatewayReplication {
 		}
 		await this.#authority.confirmReplica(object.profileId, object.sha256, object.bytes);
 		// WHY: reconcile treats `unconfirmed` identically to `replicate`, avoiding an extra NFS temp+fsync+rename here.
-		await this.#authority.writeReplica(object.profileId, object.sha256, bytes);
-		verify(await this.#authority.readLegacyObject(object.profileId, object.sha256), object);
+		const replicaOutcome = await this.#authority.writeReplica(object.profileId, object.sha256, bytes);
+		if (replicaOutcome === "duplicate" || this.#verifyReplicaReadBack)
+			verify(await this.#authority.readLegacyObject(object.profileId, object.sha256), object);
 		await this.audit({
 			event: "object_replicated",
 			at: new Date().toISOString(),
@@ -580,7 +602,6 @@ export class ObjectGatewayReplication {
 			object.bytes,
 		);
 		if (authority.state !== "completed") {
-			// The SQL replication guard holds the existing GC fence at Storage insertion time.
 			await this.#authority.removeReplica(object.profileId, object.sha256);
 			const removeLocal = () => this.#store.remove(object.profileId, object.sha256);
 			await (gated ? this.#nasGate.run(removeLocal) : removeLocal());

@@ -650,4 +650,27 @@ describe("a company's hints by push", () => {
 		expect(made).toHaveLength(3);
 		expect(made[2]!.topic).toBe(`realtime:${topic}`);
 	});
+
+	it("does not report degraded or schedule retries when stopped while channel cleanup times out", async () => {
+		const { cloud, channels, removeChannel } = fakeCloud();
+		const health: [RealtimePhase, string | undefined][] = [];
+		const subscription = subscribeCompanyRealtime(
+			cloud,
+			profileA.profileId,
+			userA.id,
+			() => {},
+			(phase, error) => health.push([phase, error]),
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		channels[0]!.status!("SUBSCRIBED");
+		channels[0]!.status!("CHANNEL_ERROR", transport());
+		health.length = 0;
+
+		removeChannel.mockImplementationOnce(() => new Promise(() => {}));
+		await vi.advanceTimersByTimeAsync(1_000);
+		subscription.stop();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(health).toEqual([["stopped", undefined]]);
+		expect(channels).toHaveLength(1);
+	});
 });

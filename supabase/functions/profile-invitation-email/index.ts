@@ -1,6 +1,13 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
 import {
+	configuredSecretKeys,
+	constantTimeIncludes,
+	createTimedFetch,
+	preferredServiceKey,
+	readBoundedJson,
+} from "../_shared/http-guards.ts";
+import {
 	type ClaimedInvitationDeliveries,
 	deliverProfileInvitationBatch,
 	InvitationEmailSendError,
@@ -10,6 +17,28 @@ import {
 	type ProfileInvitationDeliveryJob,
 	type ProfileInvitationEmail,
 } from "../_shared/profile-invitation-email.ts";
+
+const BATCH = 10;
+const RESEND_RESPONSE_MAX_BYTES = 64 * 1024;
+const RPC_FETCH = createTimedFetch({ timeoutMs: 15_000 });
+
+let cachedClient:
+	| { readonly url: string; readonly key: string; readonly client: ReturnType<typeof createClient> }
+	| undefined;
+
+function serviceClient(url: string, key: string): ReturnType<typeof createClient> {
+	if (!cachedClient || cachedClient.url !== url || cachedClient.key !== key) {
+		cachedClient = {
+			url,
+			key,
+			client: createClient(url, key, {
+				auth: { autoRefreshToken: false, persistSession: false },
+				global: { fetch: RPC_FETCH },
+			}),
+		};
+	}
+	return cachedClient.client;
+}
 
 interface FunctionConfiguration {
 	supabaseUrl: string;
@@ -26,30 +55,16 @@ function jsonResponse(value: unknown, status = 200): Response {
 	});
 }
 
-function configuredSecretKeys(): string[] {
-	const legacyServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-	try {
-		const parsed: unknown = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-			return legacyServiceRoleKey ? [legacyServiceRoleKey] : [];
-		}
-		const keys = Object.values(parsed).filter(
-			(value): value is string => typeof value === "string" && value.length > 20,
-		);
-		if (legacyServiceRoleKey) keys.push(legacyServiceRoleKey);
-		return [...new Set(keys)];
-	} catch {
-		return legacyServiceRoleKey ? [legacyServiceRoleKey] : [];
-	}
-}
-
 function configuration(request: Request): FunctionConfiguration | Response {
-	const secretKeys = configuredSecretKeys();
+	const readEnv = (name: string) => Deno.env.get(name);
+	const secretKeys = configuredSecretKeys(readEnv);
 	const apiKey = request.headers.get("apikey")?.trim();
 	const authorization = request.headers.get("authorization")?.trim();
 	const presentedKey =
 		apiKey || (authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : "");
-	if (!presentedKey || !secretKeys.includes(presentedKey)) return jsonResponse({ error: "Unauthorized" }, 401);
+	if (!presentedKey || !constantTimeIncludes(secretKeys, presentedKey)) {
+		return jsonResponse({ error: "Unauthorized" }, 401);
+	}
 	const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 	const resendApiKey = Deno.env.get("RESEND_API_KEY") ?? "";
 	const from = Deno.env.get("QORPERA_INVITE_FROM") ?? "";
@@ -63,14 +78,14 @@ function configuration(request: Request): FunctionConfiguration | Response {
 	} catch {
 		return jsonResponse({ error: "Invitation URL is invalid" }, 503);
 	}
-	return { supabaseUrl, secretKey: presentedKey, resendApiKey, from, invitationUrl };
+	return { supabaseUrl, secretKey: preferredServiceKey(readEnv) ?? presentedKey, resendApiKey, from, invitationUrl };
 }
 
-async function resendFailure(response: Response): Promise<InvitationEmailSendError> {
+async function resendFailure(response: Response, signal: AbortSignal): Promise<InvitationEmailSendError> {
 	let code = "";
 	let message = `Resend returned HTTP ${response.status}`;
 	try {
-		const body: unknown = await response.json();
+		const body = await readBoundedJson(response, RESEND_RESPONSE_MAX_BYTES, { signal });
 		if (body && typeof body === "object" && !Array.isArray(body)) {
 			const input = body as Record<string, unknown>;
 			if (typeof input.name === "string") code = input.name;
@@ -116,6 +131,7 @@ class ResendInvitationEmailProvider implements InvitationEmailProvider {
 						text: email.text,
 						html: email.html,
 					}),
+					redirect: "error",
 					signal,
 				});
 			} catch (error) {
@@ -124,8 +140,13 @@ class ResendInvitationEmailProvider implements InvitationEmailProvider {
 					true,
 				);
 			}
-			if (!response.ok) throw await resendFailure(response);
-			const body: unknown = await response.json();
+			if (!response.ok) throw await resendFailure(response, signal);
+			let body: unknown;
+			try {
+				body = await readBoundedJson(response, RESEND_RESPONSE_MAX_BYTES, { signal });
+			} catch {
+				throw new InvitationEmailSendError("Resend returned an invalid response", true);
+			}
 			if (!body || typeof body !== "object" || Array.isArray(body)) {
 				throw new InvitationEmailSendError("Resend returned an invalid response", true);
 			}
@@ -142,12 +163,11 @@ Deno.serve(async (request) => {
 	if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 	const config = configuration(request);
 	if (config instanceof Response) return config;
-	const client = createClient(config.supabaseUrl, config.secretKey, {
-		auth: { autoRefreshToken: false, persistSession: false },
-	});
+	const client = serviceClient(config.supabaseUrl, config.secretKey);
 	const leaseId = crypto.randomUUID();
+	// WHY: Cap batch size at 10 to fit inside the 45 s budget instead of stranding 15 active 5-minute leases on slow sends.
 	const { data: claimed, error: claimError } = await client.rpc("qorpera_claim_profile_invitation_deliveries", {
-		p_limit: 25,
+		p_limit: BATCH,
 		p_lease_id: leaseId,
 	});
 	if (claimError) return jsonResponse({ error: "Invitation delivery claim failed" }, 503);

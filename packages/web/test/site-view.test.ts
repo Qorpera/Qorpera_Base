@@ -502,6 +502,28 @@ describe("the site's view", () => {
 		expect(asked.filter((question) => question.question === "site-pages").length - before).toBeLessThanOrEqual(1);
 	});
 
+	it("skips 60s failed-number retries while hidden and retries on visibilitychange", async () => {
+		vi.useFakeTimers();
+		const { answers, asked } = open({
+			"site-now": new Error("Failed to fetch"),
+			"site-pages": new Error("Failed to fetch"),
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		const afterInitial = asked.length;
+		const hiddenSpy = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+		answers["site-now"] = now(4, 9);
+		answers["site-pages"] = pages([["index.html", 5]]);
+		await vi.advanceTimersByTimeAsync(180_000);
+		// WHY: No retry asks should fire while the tab is hidden.
+		expect(asked.length).toBe(afterInitial);
+
+		hiddenSpy.mockReturnValue(false);
+		document.dispatchEvent(new Event("visibilitychange"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(text(".site-now-number")).toBe("4");
+		expect(text(".site-today")).toBe("9 visits today");
+	});
+
 	it("follows a new answer of who is here", async () => {
 		vi.useFakeTimers();
 		const { answers } = open({ "site-now": now(3, 10) });

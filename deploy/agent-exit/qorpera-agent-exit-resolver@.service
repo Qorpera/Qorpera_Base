@@ -16,6 +16,7 @@ ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh resolver %
 ExecReload=+/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=2
+TimeoutStopSec=15
 # dnsmasq parses what agent road machines send: keep it to what it needs (as the dns unit).
 NoNewPrivileges=yes
 ProtectSystem=strict

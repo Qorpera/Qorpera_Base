@@ -116,14 +116,32 @@ function day(value: string): Date {
 	return new Date(`${value}T12:00:00Z`);
 }
 
+// WHY: Cache Intl.DateTimeFormat instances per locale so chart pointermove and month labels avoid repeated formatter allocations.
+const dateFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function cachedDateFormatter(key: string, create: () => Intl.DateTimeFormat): Intl.DateTimeFormat {
+	let formatter = dateFormatters.get(key);
+	if (!formatter) {
+		formatter = create();
+		dateFormatters.set(key, formatter);
+	}
+	return formatter;
+}
+
 function shortDate(value: string): string {
-	return new Intl.DateTimeFormat(presentationLocale(), { day: "numeric", month: "short", timeZone: "UTC" }).format(
-		day(value),
-	);
+	const locale = presentationLocale();
+	return cachedDateFormatter(
+		`${locale}:shortDate`,
+		() => new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", timeZone: "UTC" }),
+	).format(day(value));
 }
 
 function monthName(value: string, style: "long" | "short"): string {
-	return new Intl.DateTimeFormat(presentationLocale(), { month: style, timeZone: "UTC" }).format(day(`${value}-15`));
+	const locale = presentationLocale();
+	return cachedDateFormatter(
+		`${locale}:month:${style}`,
+		() => new Intl.DateTimeFormat(locale, { month: style, timeZone: "UTC" }),
+	).format(day(`${value}-15`));
 }
 
 function rhythmLabel(rhythm: BankRhythm): string {
@@ -962,8 +980,8 @@ class BankView {
 		};
 	}
 
-	#hoverText(summary: BankSummary): string {
-		const { points, today, expected } = this.#points(summary);
+	#hoverText(summary: BankSummary, series = this.#points(summary)): string {
+		const { points, today, expected } = series;
 		const point = points[this.#hover];
 		if (this.#hover < 0 || this.#hover === today || !point) return "";
 		return expected.has(this.#hover)
@@ -972,7 +990,8 @@ class BankView {
 	}
 
 	#chart(summary: BankSummary): HTMLElement {
-		const { points, today, expected } = this.#points(summary);
+		const series = this.#points(summary);
+		const { points, today, expected } = series;
 		const wrap = h("div", { class: "bank-chart" });
 		if (points.length < 2 || today < 0) {
 			wrap.append(
@@ -1052,7 +1071,7 @@ class BankView {
 			dot.setAttribute("cx", at[0].toFixed(1));
 			dot.setAttribute("cy", at[1].toFixed(1));
 			dot.classList.toggle("bank-dot-ahead", expected.has(shown));
-			if (this.#hoverLine) this.#hoverLine.textContent = this.#hoverText(summary);
+			if (this.#hoverLine) this.#hoverLine.textContent = this.#hoverText(summary, series);
 		};
 		place();
 		let lastMonth = "";

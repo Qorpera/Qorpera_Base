@@ -96,6 +96,7 @@ function keepSubscribed(cloud: Cloud, source: ChannelSource, onHealth: RealtimeH
 	let grace: ReturnType<typeof setTimeout> | undefined;
 
 	const report = (error: string): void => {
+		if (stopped) return;
 		if (!pageHidden() && Date.now() >= quietUntil) {
 			unreported = undefined;
 			onHealth("degraded", error);
@@ -197,7 +198,12 @@ function keepSubscribed(cloud: Cloud, source: ChannelSource, onHealth: RealtimeH
 		const old = channel;
 		channel = undefined;
 		const topic = source.topic();
-		if (!(await free(topic, old))) {
+		const freed = await free(topic, old);
+		if (stopped) {
+			renewing = false;
+			return;
+		}
+		if (!freed) {
 			renewing = false;
 			report("Realtime channel cleanup timed out");
 			schedule();
@@ -217,12 +223,17 @@ function keepSubscribed(cloud: Cloud, source: ChannelSource, onHealth: RealtimeH
 	const free = async (topic: string, old: RealtimeChannel | undefined): Promise<boolean> => {
 		const leaving = [...new Set([...(old ? [old] : []), ...held(topic)])];
 		await Promise.all(
-			leaving.map((each) =>
-				Promise.race([
+			leaving.map((each) => {
+				let wait: ReturnType<typeof setTimeout> | undefined;
+				return Promise.race([
 					cloud.supabase.removeChannel(each).catch(() => "error"),
-					new Promise((resolve) => setTimeout(resolve, LEAVE_WAIT_MS)),
-				]),
-			),
+					new Promise<string>((resolve) => {
+						wait = setTimeout(() => resolve("timeout"), LEAVE_WAIT_MS);
+					}),
+				]).finally(() => {
+					if (wait !== undefined) clearTimeout(wait);
+				});
+			}),
 		);
 		return held(topic).length === 0;
 	};

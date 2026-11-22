@@ -1,3 +1,5 @@
+import { DEFAULT_BODY_READ_TIMEOUT_MS, readBoundedText } from "../_shared/http-guards.ts";
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -717,48 +719,15 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 	}
 }
 
-const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
-
-async function readBoundedText(request: Request, maxBytes: number): Promise<string> {
-	const rawLength = request.headers.get("content-length");
-	if (rawLength !== null) {
-		const contentLength = Number(rawLength);
-		if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > maxBytes) {
-			throw new Error("Invalid orchestrator request size");
-		}
-	}
-	const reader = request.body?.getReader();
-	if (!reader) return "";
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	let overflow = false;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			total += value.byteLength;
-			if (total > maxBytes) {
-				overflow = true;
-				throw new Error("Invalid orchestrator request size");
-			}
-			chunks.push(value);
-		}
-	} finally {
-		if (overflow) void reader.cancel().catch(() => undefined);
-	}
-	if (chunks.length === 0) return "";
-	if (chunks.length === 1) return UTF8_DECODER.decode(chunks[0]!);
-	const merged = new Uint8Array(total);
-	let offset = 0;
-	for (const chunk of chunks) {
-		merged.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return UTF8_DECODER.decode(merged);
-}
-
-export async function readRunnerOrchestratorRequest(request: Request): Promise<RunnerOrchestratorRequest> {
-	const text = await readBoundedText(request, MAX_BODY_BYTES);
+export async function readRunnerOrchestratorRequest(
+	request: Request,
+	timeoutMs = DEFAULT_BODY_READ_TIMEOUT_MS,
+): Promise<RunnerOrchestratorRequest> {
+	const text = await readBoundedText(request, MAX_BODY_BYTES, {
+		signal: request.signal,
+		timeoutMs,
+		sizeErrorMessage: "Invalid orchestrator request size",
+	});
 	return parseRunnerOrchestratorRequest(JSON.parse(text));
 }
 

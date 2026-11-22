@@ -31,6 +31,7 @@ import {
 	type TranscriptItem,
 	type TranscriptMessage,
 	type TranscriptPeerLink,
+	type TranscriptProjection,
 	type UnaskedGroup,
 	unaskedGroups,
 } from "../../cloud/transcript.ts";
@@ -132,6 +133,16 @@ import { surfaceTile } from "./surface-rail.ts";
 import { ThreadReady } from "./thread-ready.ts";
 import { ThreadSites } from "./thread-sites.ts";
 
+const transcriptItemJsonCache = new WeakMap<TranscriptItem, string>();
+function cachedTranscriptItemJson(item: TranscriptItem): string {
+	let encoded = transcriptItemJsonCache.get(item);
+	if (encoded === undefined) {
+		encoded = JSON.stringify(item);
+		transcriptItemJsonCache.set(item, encoded);
+	}
+	return encoded;
+}
+
 /* How often the thread re-reads its coding sessions while one is still going: the
  * pill's figures follow them. Nothing is read once they all settled. */
 const CODING_POLL_WORKING_MS = 2_500;
@@ -156,6 +167,7 @@ interface DrawnItem {
 	input?: string | undefined;
 	/** A message's parts, so a change redraws only the part that changed. */
 	message?: MessageParts;
+	abort?: () => void;
 }
 
 /** A node of the thread by its moment, and the day separator it stands under, if any. */
@@ -323,6 +335,8 @@ export class ConversationView {
 	readonly #composer: HTMLTextAreaElement;
 	/** "/" in the composer: the conversation's skills, and their names in blue. */
 	readonly #skills: SkillMentions;
+	#skillsCheckedProjection: TranscriptProjection | undefined;
+	#skillsCheckedOptimistic: ConversationState["optimistic"] | undefined;
 	readonly #send: HTMLButtonElement;
 	/** Speech to text: the microphone beside the send button. */
 	readonly #dictation: Dictation;
@@ -1162,10 +1176,15 @@ export class ConversationView {
 		this.#panel = undefined;
 		this.#attachments.dispose();
 		this.#sharedDrafts.dispose();
-		for (const drawn of this.#drawn.values()) drawn.message?.files?.view.dispose();
+		for (const drawn of this.#drawn.values()) {
+			drawn.abort?.();
+			drawn.message?.files?.view.dispose();
+		}
 		this.#drawn.clear();
 		this.#foldPreviews.clear();
 		this.#messagesSnap = undefined;
+		this.#skillsCheckedProjection = undefined;
+		this.#skillsCheckedOptimistic = undefined;
 		this.#closeCodingSession();
 		clearTimeout(this.#codingPoll);
 		clearTimeout(this.#firstWordsTimer);
@@ -2932,7 +2951,7 @@ export class ConversationView {
 		for (const [first, group] of folds) for (const id of group.items) foldOf.set(id, first);
 		for (const first of this.#openFolds) if (!folds.has(first)) this.#openFolds.delete(first);
 		const key = JSON.stringify([
-			items,
+			items.map(cachedTranscriptItemJson),
 			mentionTargets,
 			// Only what the line shows: the header's poll changes the rest every few seconds.
 			codingSessions.map((coding) => [coding.workerId, coding.harness, coding.title, coding.createdAt]),
@@ -3067,7 +3086,12 @@ export class ConversationView {
 			// A card that replaced itself (an answered interaction redraws in place) is gone from the log.
 			return previous && !taken.has(previous) && this.#inThread(previous.element) ? previous : undefined;
 		};
-		const keep = (id: string, itemKey: string, time: string, draw: () => HTMLElement): HTMLElement => {
+		const keep = (
+			id: string,
+			itemKey: string,
+			time: string,
+			draw: (signal: AbortSignal) => HTMLElement,
+		): HTMLElement => {
 			const slot = slotFor(id);
 			const previous = previousAt(slot);
 			if (previous) taken.add(previous);
@@ -3075,10 +3099,13 @@ export class ConversationView {
 				drawn.set(slot, previous);
 				return previous.element;
 			}
-			const element = draw();
+			const card = new AbortController();
+			const element = draw(card.signal);
 			if (previous) {
 				const timesOnly = previous.key === itemKey;
 				if ((timesOnly || (inert(previous.element) && inert(element))) && sameShape(previous.element, element)) {
+					// WHY: Abort the discarded scratch render so only the retained card keeps active probes/timers.
+					card.abort();
 					// Its controls and what the member typed stay: a times-only change copies text and
 					// labels, never a control's state.
 					copyShape(previous.element, element, timesOnly);
@@ -3090,7 +3117,7 @@ export class ConversationView {
 			}
 			const former = this.#drawn.get(slot)?.element;
 			if (former) replaced.set(element, former);
-			drawn.set(slot, { key: itemKey, time, element });
+			drawn.set(slot, { key: itemKey, time, element, abort: () => card.abort() });
 			return element;
 		};
 		// A member's message changes form as it is sent: the browser's copy (its client id), the
@@ -3124,7 +3151,7 @@ export class ConversationView {
 			// The mention targets and skill names go in as they are, once serialized for the render.
 			// A link may lead to one of the company's sites, whose card stands under the words: the sites as read go in too.
 			const linked = this.#siteCards && item.text?.includes("https://") ? `\n${this.#siteCards.key}` : "";
-			const itemKey = `${JSON.stringify([item, author, mine, room, locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}${linked}`;
+			const itemKey = `${cachedTranscriptItemJson(item)}\n${JSON.stringify([author, mine, room, locale])}${mentioned ? `\n${mentions}` : ""}${skilled ? `\n${skillNames}` : ""}${linked}`;
 			const time = `${zone} ${when(item.createdAt)}`;
 			// The input this form stands for, which the next form finds it by.
 			const input = optimisticInputs.has(item.id)
@@ -3514,7 +3541,7 @@ export class ConversationView {
 					item.id,
 					cardKey,
 					email ? "" : `${zone} ${when(item.createdAt)} ${when(answer?.answeredAt)}`,
-					() =>
+					(cardSignal) =>
 						renderInteractionCard(
 							{ ...item, answer },
 							{
@@ -3524,6 +3551,7 @@ export class ConversationView {
 								inThread: true,
 								viewerId: this.#company.userId,
 								reworking,
+								signal: cardSignal,
 								...(round ? { round } : {}),
 								...(waitingFigure ? { figure: waitingFigure } : {}),
 								...(this.#actions.folderImage ? { image: this.#actions.folderImage } : {}),
@@ -3632,7 +3660,11 @@ export class ConversationView {
 		if (ready?.shown) nodes.push(keep("code ready", "", "", () => ready.el));
 		// Items gone from the thread, and messages whose element passed on, let what they held go.
 		const live = new Set(drawn.values());
-		for (const previous of this.#drawn.values()) if (!live.has(previous)) previous.message?.files?.view.dispose();
+		for (const previous of this.#drawn.values()) {
+			if (live.has(previous)) continue;
+			previous.abort?.();
+			previous.message?.files?.view.dispose();
+		}
 		this.#drawn = drawn;
 		const placeholderShown = this.#messagesPlaceholder?.isConnected === true;
 		if (conversation.loading && !items.length) {
@@ -3889,7 +3921,14 @@ export class ConversationView {
 			this.#messages.tabIndex = -1;
 			this.#messages.focus({ preventScroll: true });
 		}
-		for (const item of items) if (item.kind === "member" || item.kind === "agent") this.#skills.want(item.text);
+		if (
+			this.#skillsCheckedProjection !== conversation.projection ||
+			this.#skillsCheckedOptimistic !== conversation.optimistic
+		) {
+			this.#skillsCheckedProjection = conversation.projection;
+			this.#skillsCheckedOptimistic = conversation.optimistic;
+			for (const item of items) if (item.kind === "member" || item.kind === "agent") this.#skills.want(item.text);
+		}
 		// A keyboard user reading the row keeps it through a state change or a new message.
 		if (rowFocus) this.#messages.querySelector<HTMLElement>(".thread-activity")?.focus({ preventScroll: true });
 		// And one on a coworker's chip keeps it as its line takes in another message.

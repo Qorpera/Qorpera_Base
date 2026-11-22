@@ -726,9 +726,10 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
 - **The worker's folder phase** (`runFolderObjectGc` in `supabase/functions/artifact-gc-worker`): its own try/catch,
   before the phases that return early. It asks `qorpera_folder_gc_enabled()` (and runs only with the gateway
   configured), sweeps 25 intents, claims 25 objects under a new lease, and calls the lane for each in order; a 503, an
-  unreachable gateway or 20 s without an answer stops it for this run, and so does its 60 s budget, checked before
-  each lane (so a phase runs at most about 80 s); any other failure leaves that mark to expire. Its result is
-  `folderObjects` in the worker's answer, where `stopped` means a busy gateway or the budget. The worker's test now runs in the node plan's functions step.
+  unreachable gateway or 20 s without an answer stops it for this run, and so does its 45 s budget within the worker's
+  shared 110 s run budget, checked before each lane (with per-call timeout clamped to remaining time); any other failure
+  leaves that mark to expire. Its result is `folderObjects` in the worker's answer, where `stopped` means a busy gateway
+  or the budget and `deferred: true` means earlier phases exhausted the shared run budget. The worker's test now runs in the node plan's functions step.
 - **The switch** (`qorpera_folder_gc_settings`, off): switching it on is refused (55000) until
   `qorpera_verify_company_path_file`'s body carries P10's marker text `folder-v2 refuses version 1` (§9.3 step 3; a
   refusal written without it keeps the phase off); the worker's question checks that again. The coordinator turns it on after P10 is live: `update public.qorpera_folder_gc_settings set
