@@ -110,6 +110,56 @@ describe("artifact cleanup worker", () => {
 		assert.deepEqual(removed, [`${authorizationId}:${profileId}/${firstSha256}`]);
 	});
 
+	it("reconciles authorized objects with bounded concurrency, respects budgetMs, and bounds routed deletes", async () => {
+		const objects = parseAuthorizedArtifactGcWorkerObjects(
+			Array.from({ length: 6 }, (_, idx) => {
+				const sha = (idx + 1).toString(16).padStart(64, "0");
+				return {
+					authorization_id: `83dc6943-b71c-4ba4-a38d-78da0861e0d${idx}`,
+					profile_id: profileId,
+					sha256: sha,
+					bytes: 12,
+					path: `${profileId}/${sha}`,
+					backend: "nas-object-gateway",
+				};
+			}),
+		);
+		let active = 0;
+		let peak = 0;
+		let clock = 0;
+		const count = await reconcileAuthorizedArtifactGcWorkerObjects(
+			objects,
+			async () => {
+				active += 1;
+				peak = Math.max(peak, active);
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				clock += 100;
+				active -= 1;
+			},
+			{ concurrency: 2, budgetMs: 350, now: () => clock },
+		);
+		assert.equal(peak, 2);
+		assert.ok(count >= 2 && count < objects.length, `expected budget stop, got ${count}`);
+
+		let routedActive = 0;
+		let routedPeak = 0;
+		const provider = createRoutedArtifactGcStorageProvider({
+			concurrency: 2,
+			removeSupabase: async () => {
+				routedActive += 1;
+				routedPeak = Math.max(routedPeak, routedActive);
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				routedActive -= 1;
+			},
+			removeNas: async () => {},
+		});
+		await provider.remove(
+			objects.slice(0, 4).map((obj) => ({ ...obj, backend: "supabase-storage" as const })),
+			leaseId,
+		);
+		assert.equal(routedPeak, 2);
+	});
+
 	it("refuses object paths outside the profile", () => {
 		assert.deepEqual(
 			parseArtifactGcWorkerObjects(
@@ -334,6 +384,29 @@ describe("a deleted company's Storage objects (company delete D5a)", () => {
 			},
 		});
 		assert.deepEqual(blank.completed, [{ path: capsule.path, error: "Storage cleanup failed" }]);
+	});
+
+	it("defers remaining storage deletions when budgetMs elapses", async () => {
+		const secondCapsule: CompanyStorageDeletion = {
+			bucket: "qorpera-native-compute-capsules",
+			path: "30000000-0000-4000-8000-0000000001a2.capsule",
+		};
+		const fake = fakeStorage({
+			"qorpera-native-compute-capsules": [capsule.path, secondCapsule.path],
+		});
+		let clock = 0;
+		const store: CompanyStorageDeletionStore = {
+			...fake.store,
+			remove: async (bucket, paths) => {
+				clock += 2_000;
+				await fake.store.remove(bucket, paths);
+			},
+		};
+		const result = await runCompanyStorageDeletions([capsule, secondCapsule, recovery], store, {
+			budgetMs: 1_500,
+			now: () => clock,
+		});
+		assert.deepEqual(result, { claimed: 3, completed: 1, failed: 0, deferred: 2 });
 	});
 });
 

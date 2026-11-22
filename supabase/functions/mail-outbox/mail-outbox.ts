@@ -20,6 +20,12 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
+import {
+	BodyTooLargeError,
+	constantTimeIncludes,
+	readBoundedBytes as readHttpBoundedBytes,
+	readBoundedJson,
+} from "../_shared/http-guards.ts";
 
 export const BATCH = 10;
 /** Sent emails whose Message-ID is read back in one call, paced like the sends. */
@@ -27,6 +33,10 @@ export const MESSAGE_ID_BATCH = 5;
 /** Between two sends: the provider allows a few requests a second across the platform's email. */
 export const PACE_MS = 600;
 const SEND_TIMEOUT_MS = 10_000;
+const RESEND_RESPONSE_MAX_BYTES = 64 * 1024;
+const CHUNK_PREFETCH_WINDOW = 3;
+const TRUSTED_BASE64_SEGMENTS = new WeakSet<readonly string[]>();
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 /** The attachments an email may carry, as the database checks them: 28 MiB, which is 40 MB once encoded. */
 export const MAX_ATTACHMENT_BYTES = 28 * 1024 * 1024;
 const CHUNK_BYTES = 4 * 1024 * 1024;
@@ -226,7 +236,7 @@ async function verifiedManifestChunks(
 	};
 	let manifest: Record<string, unknown>;
 	try {
-		const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await object(file.manifestSha256)));
+		const parsed: unknown = JSON.parse(UTF8_DECODER.decode(await object(file.manifestSha256)));
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
 		manifest = parsed as Record<string, unknown>;
 	} catch (error) {
@@ -263,8 +273,25 @@ export async function attachmentBase64(companyId: string, file: MailAttachment, 
 	const parts: string[] = [];
 	const carry = new Uint8Array(3);
 	let carryLen = 0;
-	for (const chunk of chunks) {
-		const bytes = await object(chunk.sha256);
+	// WHY: Prefetch a bounded window of 3 chunks concurrently while encoding and hashing strictly in order to cut multi-chunk latency without inflating peak RAM.
+	const inflight = new Map<number, Promise<Uint8Array>>();
+	let nextToFetch = 0;
+	const fillWindow = (): void => {
+		while (inflight.size < CHUNK_PREFETCH_WINDOW && nextToFetch < chunks.length) {
+			const idx = nextToFetch;
+			nextToFetch += 1;
+			const pending = object(chunks[idx]!.sha256);
+			void pending.catch(() => undefined);
+			inflight.set(idx, pending);
+		}
+	};
+	fillWindow();
+	for (let index = 0; index < chunks.length; index += 1) {
+		const chunk = chunks[index]!;
+		const pending = inflight.get(index)!;
+		inflight.delete(index);
+		const bytes = await pending;
+		fillWindow();
 		if (bytes.length !== chunk.bytes) throw new MailSendError(`The attachment ${file.filename} failed its integrity check`, false);
 		hash.update(bytes);
 		let start = 0;
@@ -292,6 +319,7 @@ export async function attachmentBase64(companyId: string, file: MailAttachment, 
 	if (carryLen > 0) parts.push(Buffer.from(carry.buffer, 0, carryLen).toString("base64"));
 	if (hash.digest("hex") !== file.fileSha256)
 		throw new MailSendError(`The attachment ${file.filename} failed its integrity check`, false);
+	TRUSTED_BASE64_SEGMENTS.add(parts);
 	return parts;
 }
 
@@ -319,7 +347,7 @@ export class StorageObjectReader implements ObjectReader {
 			try {
 				response = await this.#fetch(
 					`${this.#projectUrl}/storage/v1/object/authenticated/${OBJECT_BUCKET}/${companyId}/${sha256}`,
-					{ headers: storageHeaders(this.#secretKey), signal },
+					{ headers: storageHeaders(this.#secretKey), redirect: "error", signal },
 				);
 			} catch (error) {
 				throw new MailSendError(error instanceof Error ? error.message : "Storage request failed", true);
@@ -332,7 +360,10 @@ export class StorageObjectReader implements ObjectReader {
 			if (response.status === 400) {
 				let code: unknown;
 				try {
-					code = ((await response.json()) as { statusCode?: unknown }).statusCode;
+					const parsed = await readBoundedJson(response, 16 * 1024, { signal });
+					if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+						code = (parsed as { statusCode?: unknown }).statusCode;
+					}
 				} catch {
 					// Not JSON.
 				}
@@ -344,7 +375,7 @@ export class StorageObjectReader implements ObjectReader {
 				throw new MailSendError(`Storage returned HTTP ${response.status}`, true);
 			}
 			try {
-				return await readBoundedBytes(response, MAX_GATEWAY_OBJECT_BYTES);
+				return await readObjectBytes(response, MAX_GATEWAY_OBJECT_BYTES, signal);
 			} catch (error) {
 				if (error instanceof MailSendError) throw error;
 				throw new MailSendError(error instanceof Error ? error.message : "Storage response read failed", true);
@@ -357,49 +388,19 @@ const MAX_GATEWAY_OBJECT_BYTES = 8 * 1024 * 1024;
 const INTERNAL_GATEWAY_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
-async function readBoundedBytes(response: Response, maxBytes: number): Promise<Uint8Array> {
-	const declared = response.headers.get("content-length");
-	if (declared !== null) {
-		const length = Number(declared);
-		if (!Number.isSafeInteger(length) || length < 0 || length > maxBytes) {
-			void response.body?.cancel().catch(() => undefined);
+async function readObjectBytes(response: Response, maxBytes: number, signal: AbortSignal): Promise<Uint8Array> {
+	try {
+		return await readHttpBoundedBytes(response, maxBytes, {
+			signal,
+			sizeErrorMessage: "Object gateway response exceeded size limit",
+		});
+	} catch (error) {
+		if (error instanceof BodyTooLargeError) {
 			throw new MailSendError("Object gateway response exceeded size limit", true);
 		}
-	}
-	if (!response.body) {
-		const buffer = new Uint8Array(await response.arrayBuffer());
-		if (buffer.byteLength > maxBytes) throw new MailSendError("Object gateway response exceeded size limit", true);
-		return buffer;
-	}
-	const reader = response.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			if (!value || value.byteLength === 0) continue;
-			total += value.byteLength;
-			if (total > maxBytes) {
-				await reader.cancel().catch(() => undefined);
-				throw new MailSendError("Object gateway response exceeded size limit", true);
-			}
-			chunks.push(value);
-		}
-	} catch (error) {
-		await reader.cancel().catch(() => undefined);
 		if (error instanceof MailSendError) throw error;
 		throw new MailSendError(error instanceof Error ? error.message : "Object gateway body read failed", true);
 	}
-	if (chunks.length === 0) return new Uint8Array(0);
-	if (chunks.length === 1) return chunks[0]!;
-	const out = new Uint8Array(total);
-	let offset = 0;
-	for (const chunk of chunks) {
-		out.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return out;
 }
 
 export class ObjectGatewayReader implements ObjectReader {
@@ -456,7 +457,7 @@ export class ObjectGatewayReader implements ObjectReader {
 				void response.body?.cancel().catch(() => undefined);
 				throw new MailSendError("Object gateway returned an unexpected object response", true);
 			}
-			return readBoundedBytes(response, MAX_GATEWAY_OBJECT_BYTES);
+			return readObjectBytes(response, MAX_GATEWAY_OBJECT_BYTES, signal);
 		});
 	}
 }
@@ -511,11 +512,11 @@ export function providerEmail(job: MailJob, contents: readonly (string | readonl
 }
 
 /** A provider refusal: worth another try only for a timeout, a rate limit, a server error or a concurrent send. */
-export async function providerFailure(response: Response): Promise<MailSendError> {
+export async function providerFailure(response: Response, signal?: AbortSignal): Promise<MailSendError> {
 	let code = "";
 	let message = `Resend returned HTTP ${response.status}`;
 	try {
-		const body: unknown = await response.json();
+		const body = await readBoundedJson(response, RESEND_RESPONSE_MAX_BYTES, { signal });
 		if (body && typeof body === "object" && !Array.isArray(body)) {
 			const input = body as Record<string, unknown>;
 			if (typeof input.name === "string") code = input.name;
@@ -543,8 +544,10 @@ function encodeResendPayload(email: ProviderEmail): { readonly body: string | Bl
 	for (let index = 0; index < attachments.length; index += 1) {
 		const item = attachments[index]!;
 		if (index > 0) parts.push(",");
+		// WHY: Skip re-scanning up to 37 MB of base64 produced by attachmentBase64 while still checking external callers.
+		const trusted = Array.isArray(item.content) && TRUSTED_BASE64_SEGMENTS.has(item.content);
 		const segments = typeof item.content === "string" ? [item.content] : item.content;
-		if (segments.every((segment) => SAFE_BASE64.test(segment))) {
+		if (trusted || segments.every((segment) => SAFE_BASE64.test(segment))) {
 			parts.push('{"filename":', JSON.stringify(item.filename), ',"content":"', ...segments, '"}');
 		} else {
 			parts.push('{"filename":', JSON.stringify(item.filename), ',"content":', JSON.stringify(segments.join("")), "}");
@@ -579,15 +582,16 @@ export class ResendSender implements MailSender {
 						"Idempotency-Key": idempotencyKey,
 					},
 					body: payload,
+					redirect: "error",
 					signal,
 				});
 			} catch (error) {
 				throw new MailSendError(error instanceof Error ? error.message : "Resend request failed", true);
 			}
-			if (!response.ok) throw await providerFailure(response);
+			if (!response.ok) throw await providerFailure(response, signal);
 			let body: unknown;
 			try {
-				body = await response.json();
+				body = await readBoundedJson(response, RESEND_RESPONSE_MAX_BYTES, { signal });
 			} catch {
 				throw new MailSendError("Resend returned an invalid response", true);
 			}
@@ -602,6 +606,7 @@ export class ResendSender implements MailSender {
 		return withTimeoutScope(SEND_TIMEOUT_MS, async (signal) => {
 			const response = await this.#fetch(`https://api.resend.com/emails/${encodeURIComponent(providerMessageId)}`, {
 				headers: { Authorization: `Bearer ${this.#apiKey}` },
+				redirect: "error",
 				signal,
 			});
 			if (response.status === 404) {
@@ -612,7 +617,7 @@ export class ResendSender implements MailSender {
 				void response.body?.cancel().catch(() => undefined);
 				throw new Error(`Resend returned HTTP ${response.status}`);
 			}
-			const body: unknown = await response.json();
+			const body = await readBoundedJson(response, RESEND_RESPONSE_MAX_BYTES, { signal });
 			const id =
 				body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).message_id : null;
 			return typeof id === "string" && id.length <= 998 ? id : null;
@@ -626,7 +631,7 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 	const apiKey = request.headers.get("apikey")?.trim();
 	const authorization = request.headers.get("authorization")?.trim();
 	const presented = apiKey || (authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : "");
-	if (!presented || !outbox.keys.includes(presented)) return json({ error: "Unauthorized" }, 401);
+	if (!presented || !constantTimeIncludes(outbox.keys, presented)) return json({ error: "Unauthorized" }, 401);
 	const store = outbox.store(presented);
 	const leaseId = (outbox.leaseId ?? (() => crypto.randomUUID()))();
 	let claim: ReturnType<typeof parseMailClaim>;
@@ -677,6 +682,11 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 					contents.push(await attachmentBase64(job.companyId, file, objects));
 				}
 			}
+			// WHY: Recheck budget after reading attachments so slow object fetches do not start an upload past the worker deadline.
+			if (now() >= deadline) {
+				counts.deferred = claim.jobs.length - index;
+				break;
+			}
 			providerMessageId = await outbox.sender.send(providerEmail(job, contents), `company-mail/${job.mailId}`);
 		} catch (error) {
 			const failure =
@@ -684,14 +694,18 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 			try {
 				await store.fail(job.mailId, job.leaseId, failure.message, failure.retryable);
 				counts[failure.retryable ? "retrying" : "failed"] += 1;
-			} catch {}
+			} catch {
+				console.error("mail-outbox: failed recording delivery failure", { mailId: job.mailId });
+			}
 			continue;
 		}
 		// A completion that is lost leaves the lease to expire: the send is repeated with the same idempotency key.
 		try {
 			await store.complete(job, providerMessageId);
 			counts.sent += 1;
-		} catch {}
+		} catch {
+			console.error("mail-outbox: failed recording delivery completion", { mailId: job.mailId });
+		}
 	}
 	// The provider's Message-ID of what was sent (I5a): best effort, the database asks again in five minutes.
 	let due: { mailId: string; providerMessageId: string }[] = [];
