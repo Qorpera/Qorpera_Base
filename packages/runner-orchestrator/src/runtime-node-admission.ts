@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { withTimeoutScope } from "./abort-scope.ts";
 
 export interface RuntimeNodeRegistry {
 	call(
@@ -64,22 +65,24 @@ export async function reserveRuntimeNodeMachine(
 	)
 		throw new Error("INVALID_RUNTIME_NODE_MACHINE");
 	const started = performance.now();
-	const signal = AbortSignal.any([caller, AbortSignal.timeout(5000)]);
-	const result = await registry.call(
-		"qorpera_reserve_runtime_node_machine",
-		{
-			p_allocation_id: machine.allocationId,
-			p_provider_kind: machine.providerKind,
-			p_provider_id: machine.providerId,
-			p_policy_sha256: machine.policySha256,
-			p_instance_sha256: machine.instanceSha256,
-			p_machine_id_sha256: machine.machineIdSha256,
-			p_cpu_millis: machine.cpuMillis,
-			p_memory_bytes: machine.memoryBytes,
-		},
-		signal,
-	);
-	signal.throwIfAborted();
+	const result = await withTimeoutScope(caller, 5000, async (signal) => {
+		const answer = await registry.call(
+			"qorpera_reserve_runtime_node_machine",
+			{
+				p_allocation_id: machine.allocationId,
+				p_provider_kind: machine.providerKind,
+				p_provider_id: machine.providerId,
+				p_policy_sha256: machine.policySha256,
+				p_instance_sha256: machine.instanceSha256,
+				p_machine_id_sha256: machine.machineIdSha256,
+				p_cpu_millis: machine.cpuMillis,
+				p_memory_bytes: machine.memoryBytes,
+			},
+			signal,
+		);
+		signal.throwIfAborted();
+		return answer;
+	});
 	for (const reason of NODE_CAPACITY_REFUSALS)
 		if (isDeepStrictEqual(result, { state: "refused", reason })) return { state: "refused", reason };
 	if (result === null || typeof result !== "object" || Array.isArray(result))
@@ -111,7 +114,7 @@ export async function reserveRuntimeNodeMachine(
 		state: "reserved",
 		nodeId: record.nodeId,
 		nodeVersion: record.nodeVersion as number,
-		signal: AbortSignal.any([signal, AbortSignal.timeout(validForMs)]),
+		signal: AbortSignal.any([caller, AbortSignal.timeout(validForMs)]),
 		validForMs,
 	};
 }

@@ -388,4 +388,141 @@ describe("open decisions in the Co-Founder's chat", () => {
 		await settle();
 		expect(folds(f)).toEqual(["2 updatesThree versions are ready."]);
 	});
+
+	it("releases thread subscriptions once a sent decision settles in projection and caps retained sent entries", async () => {
+		vi.useFakeTimers();
+		try {
+			const f = setup(true);
+			await vi.advanceTimersByTimeAsync(0);
+			const otherSessionId = id(798);
+			const otherStore = f.company.conversation(otherSessionId, false);
+			let activeSubscriptions = 0;
+			const originalSubscribe = otherStore.subscribe.bind(otherStore);
+			vi.spyOn(otherStore, "subscribe").mockImplementation((listener) => {
+				activeSubscriptions += 1;
+				const stop = originalSubscribe(listener);
+				return () => {
+					activeSubscriptions -= 1;
+					stop();
+				};
+			});
+
+			const pendingDecision = { ...listed, sessionId: otherSessionId, interactionId: id(797) };
+			f.store.set({ questions: [pendingDecision], decisions: [{ ...pendingDecision, kind: "question" as const }] });
+			await vi.advanceTimersByTimeAsync(SETTLE_MS + 10);
+			f.view.el.querySelector<HTMLButtonElement>(".decision-dock .interaction-options .btn")?.click();
+			await vi.advanceTimersByTimeAsync(0);
+			window.dispatchEvent(new Event("pagehide"));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(f.answered).toHaveBeenCalledTimes(1);
+
+			// WHY: A queued pending answer on another thread can still fail, so the dock must keep watching it.
+			f.store.set({ questions: [], decisions: [] });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(activeSubscriptions).toBe(1);
+			expect(f.view.el.querySelectorAll(".messages .decided")).toHaveLength(1);
+			otherStore.set({
+				loading: false,
+				projection: {
+					items: [
+						{
+							kind: "interaction",
+							id: pendingDecision.interactionId,
+							sequence: 1,
+							actorUserId: userA.id,
+							createdAt: listed.createdAt,
+							request: listed.request,
+							answer: {
+								outcome: "answered",
+								answer: { values: ["Approve"] },
+								answeredBy: userA.id,
+								answeredAt: "2026-09-05T10:01:00Z",
+								pending: true,
+							},
+						},
+					],
+					hiddenCount: 0,
+					lastSequence: 1,
+				},
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(activeSubscriptions).toBe(1);
+
+			// WHY: If that queued answer fails delivery, the retained subscription drops the receipt in the open thread.
+			otherStore.set({
+				loading: false,
+				projection: {
+					items: [
+						{
+							kind: "interaction",
+							id: pendingDecision.interactionId,
+							sequence: 1,
+							actorUserId: userA.id,
+							createdAt: listed.createdAt,
+							request: listed.request,
+							answerFailed: true,
+						},
+					],
+					hiddenCount: 0,
+					lastSequence: 1,
+				},
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(activeSubscriptions).toBe(0);
+			expect(f.view.el.querySelectorAll(".messages .decided")).toHaveLength(0);
+
+			// WHY: Once a sent answer is durably written (not pending, not failed), the dock releases its subscription.
+			const settledDecision = { ...listed, sessionId: otherSessionId, interactionId: id(799) };
+			f.store.set({ questions: [settledDecision], decisions: [{ ...settledDecision, kind: "question" as const }] });
+			await vi.advanceTimersByTimeAsync(SETTLE_MS + 10);
+			f.view.el.querySelector<HTMLButtonElement>(".decision-dock .interaction-options .btn")?.click();
+			await vi.advanceTimersByTimeAsync(0);
+			window.dispatchEvent(new Event("pagehide"));
+			await vi.advanceTimersByTimeAsync(0);
+			f.store.set({ questions: [], decisions: [] });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(activeSubscriptions).toBe(1);
+
+			otherStore.set({
+				loading: false,
+				projection: {
+					items: [
+						{
+							kind: "interaction",
+							id: settledDecision.interactionId,
+							sequence: 2,
+							actorUserId: userA.id,
+							createdAt: listed.createdAt,
+							request: listed.request,
+							answer: {
+								outcome: "answered",
+								answer: { values: ["Approve"] },
+								answeredBy: userA.id,
+								answeredAt: "2026-09-05T10:02:00Z",
+							},
+						},
+					],
+					hiddenCount: 0,
+					lastSequence: 2,
+				},
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(activeSubscriptions).toBe(0);
+
+			// WHY: Answering more than 50 decisions across a long session must cap retained sent entries at 50.
+			for (let index = 0; index < 55; index++) {
+				const decisionId = id(800 + index);
+				const next = { ...listed, interactionId: decisionId };
+				f.store.set({ questions: [next], decisions: [{ ...next, kind: "question" as const }] });
+				await vi.advanceTimersByTimeAsync(SETTLE_MS + 10);
+				f.view.el.querySelector<HTMLButtonElement>(".decision-dock .interaction-options .btn")?.click();
+				await vi.advanceTimersByTimeAsync(0);
+				window.dispatchEvent(new Event("pagehide"));
+				await vi.advanceTimersByTimeAsync(0);
+			}
+			expect(f.view.el.querySelectorAll(".messages .decided")).toHaveLength(50);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

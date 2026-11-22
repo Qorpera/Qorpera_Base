@@ -624,7 +624,7 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 		assert.equal(counted.status, 200, JSON.stringify(counted.value));
 		// The slow view's count was ended at a question's time and left it without rows; the view after it was counted.
 		assert.deepEqual(rowsOf(counted), { pg_tables: [2, undefined], slow_things: nothing, some_things: [3, undefined], things: [7, undefined] });
-		assert.deepEqual(Object.keys(counted.value.tables.find((table) => table.name === "things")), ["name", "kind", "key", "rows", "columns"]);
+		assert.deepEqual(Object.keys(counted.value.tables.find((table) => table.name === "things")), ["name", "kind", "key", "rows", "columns", "constraints", "indexes"]);
 		await withGateway({ limits: { ...LIMITS_HERE, countMs: 0 } }, async () => {
 			// No time to count: nothing is said of a table PostgreSQL has no estimate for.
 			const none = await describeOne(viewer, "tally");
@@ -633,7 +633,7 @@ describe("the data gateway against a real PostgreSQL", { skip: dockerUsable ? fa
 			// With an estimate it is given under its own name, never as `rows`; a view never has one.
 			const about = await describeOne(viewer, "tally");
 			assert.deepEqual(rowsOf(about), { pg_tables: nothing, slow_things: nothing, some_things: nothing, things: [undefined, 7] });
-			assert.deepEqual(Object.keys(about.value.tables.find((table) => table.name === "things")), ["name", "kind", "key", "rowsAbout", "columns"]);
+			assert.deepEqual(Object.keys(about.value.tables.find((table) => table.name === "things")), ["name", "kind", "key", "rowsAbout", "columns", "constraints", "indexes"]);
 		});
 		// A question still answers after a count was ended.
 		assert.deepEqual((await ask(viewer, "query", { database: "tally", question: "count" })).value.rows, [[7]]);

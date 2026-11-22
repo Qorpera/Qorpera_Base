@@ -6,14 +6,19 @@
 // and no login to the platform's database.
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
+import { resolve, sep } from "node:path";
 import pg from "pg";
 import { leadingWords, readStatement, VIEWER, wordsWith } from "./sql-text.mjs";
 
 export const DATABASE_NAME = /^[a-z][a-z0-9_]{0,39}$/;
 export const FILE_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const STEP_NAME = /^[0-9]{3}-[a-z0-9]+(-[a-z0-9]+)*$/;
+export const TEST_SCHEMA_NAME = /^qorpera_test_[0-9a-f]{16}$/;
+const TRIGGER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const ENVIRONMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 /** A data pass: 32 random bytes, base64url without padding. */
@@ -23,8 +28,15 @@ const KEPT_PATH = /^data\/[a-z][a-z0-9_]{0,39}\/(database\.toml|(tables|queries|
 const TOML_PATH = /^data\/([a-z][a-z0-9_]{0,39})\/database\.toml$/;
 /** A database folder's own login: the company's database, then o (owner), w (write) or r (read) and the folder's number. */
 const FOLDER_LOGIN = /^c_[0-9a-f]{32}_([owr])[0-9]+$/;
+const TEST_ROLE_LOGIN = /^c_[0-9a-f]{32}_t([owr])_[0-9a-f]{16}$/;
 /** Connections each login may hold: a folder's role holds as many as its CONNECTION LIMIT allows. */
-export const POOL_SIZE = Object.freeze({ o: 1, w: 8, r: 12, qorpera_data_keeper: 4, qorpera_data_admin: 1, qorpera_data_watch: 1, record: 1 });
+export const POOL_SIZE = Object.freeze({ o: 1, w: 8, r: 12, to: 1, tw: 4, tr: 4, qorpera_data_keeper: 4, qorpera_data_admin: 1, qorpera_data_watch: 1, record: 1 });
+const STORED_DDL_MAX_BYTES = 64 * 1024;
+const TRIGGER_MAX_TOTAL = 1_000;
+const TRIGGER_MAX_PER_COMPANY = 256;
+const TRIGGER_METADATA_MAX_BYTES = 4_096;
+const TEST_SCHEMA_COMMENT_PREFIX = "qorpera_test_v1:";
+const TEST_SCHEMA_MAC_PREFIX = "qorpera_test_v1\0";
 const WATCH_WORKERS = 3;
 /** Connections a company's database takes, all logins together. */
 const COMPANY_CONNECTIONS = 36;
@@ -143,6 +155,10 @@ export const LIMITS = Object.freeze({
 	changesWrites: 25,
 	changesWindow: 5_000,
 	changesDays: 14,
+	testSchemaTtlMs: 15 * 60 * 1000,
+	testSchemaMaxTtlMs: 60 * 60 * 1000,
+	testSchemasPerCompany: 8,
+	testSchemasTotal: 128,
 });
 
 const NEAR_SHARE = 0.8;
@@ -220,6 +236,82 @@ const SCHEMA_VIEWER_OBJECTS =
 	"where c.relrowsecurity or c.relkind in ('v', 'm') " +
 	"union " +
 	"select p.proname as name from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace and n.nspname = $1";
+const CONSTRAINT_TYPES = Object.freeze({ p: "primary_key", f: "foreign_key", u: "unique", c: "check" });
+const FK_DELETE_ACTION = Object.freeze({ a: "no_action", r: "restrict", c: "cascade", n: "set_null", d: "set_default" });
+const STORED_DDL_QUERY =
+	"with locked as materialized (" +
+	"select distinct l.relation from pg_catalog.pg_locks l " +
+	"where l.database = (select oid from pg_catalog.pg_database where datname = pg_catalog.current_database()) " +
+	"and l.mode = 'AccessExclusiveLock' and l.relation is not null and l.pid <> pg_catalog.pg_backend_pid()), " +
+	"rels as materialized (" +
+	"select c.oid, c.relname::text as relname, c.relkind::text as relkind, c.relpages, c.reltuples::bigint as estimate, " +
+	"exists (select 1 from locked lk where lk.relation = c.oid) as is_locked, " +
+	"case when not $2::boolean and c.relkind in ('v', 'm') and not exists (select 1 from locked lk where lk.relation = c.oid) " +
+	"then pg_catalog.pg_get_viewdef(c.oid, true) end as view_def " +
+	"from pg_catalog.pg_class c join pg_catalog.pg_namespace s on s.oid = c.relnamespace and s.nspname = $1 " +
+	"where c.relkind in ('r', 'p', 'v', 'm')), " +
+	"cols as (" +
+	"select r.relname as table, a.attname::text as column, pg_catalog.format_type(a.atttypid, a.atttypmod) as type, " +
+	"r.relkind as kind, r.relpages as pages, r.estimate, " +
+	"a.attgenerated <> '' or a.attidentity = 'a' as fixed, " +
+	"not a.attnotnull as nullable, " +
+	"case when not $2::boolean and a.attgenerated = '' and ad.adbin is not null and not r.is_locked " +
+	"then pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) end as default_expr, " +
+	"(select k.n from unnest(i.indkey::int2[]) with ordinality k(attnum, n) where k.attnum = a.attnum) as key, " +
+	"a.attnum " +
+	"from rels r " +
+	"join pg_catalog.pg_attribute a on a.attrelid = r.oid and a.attnum > 0 and not a.attisdropped " +
+	"left join pg_catalog.pg_attrdef ad on ad.adrelid = a.attrelid and ad.adnum = a.attnum " +
+	"left join pg_catalog.pg_index i on i.indrelid = r.oid and i.indisprimary), " +
+	"cons as (" +
+	"select r.relname as table, con.conname::text as name, con.contype::text as contype, " +
+	"coalesce((select array_agg(a.attname::text order by k.ord) " +
+	"from unnest(con.conkey) with ordinality k(attnum, ord) " +
+	"join pg_catalog.pg_attribute a on a.attrelid = con.conrelid and a.attnum = k.attnum), '{}'::text[]) as columns, " +
+	"ref_ns.nspname::text as ref_schema, ref_rel.relname::text as ref_table, " +
+	"case when con.contype = 'f' then coalesce((select array_agg(a.attname::text order by k.ord) " +
+	"from unnest(con.confkey) with ordinality k(attnum, ord) " +
+	"join pg_catalog.pg_attribute a on a.attrelid = con.confrelid and a.attnum = k.attnum), '{}'::text[]) end as ref_columns, " +
+	"con.confdeltype::text as del_type, " +
+	"case when not $2::boolean and con.contype = 'c' and not r.is_locked " +
+	"then pg_catalog.pg_get_constraintdef(con.oid) end as definition " +
+	"from rels r " +
+	"join pg_catalog.pg_constraint con on con.conrelid = r.oid and con.contype in ('p', 'f', 'u', 'c') " +
+	"left join pg_catalog.pg_class ref_rel on ref_rel.oid = con.confrelid " +
+	"left join pg_catalog.pg_namespace ref_ns on ref_ns.oid = ref_rel.relnamespace), " +
+	"idxs as (" +
+	"select r.relname as table, ic.relname::text as name, ix.indisunique as is_unique, am.amname::text as method, " +
+	"coalesce((select array_agg(" +
+	"case when k.attnum > 0 then a.attname::text " +
+	"when not $2::boolean and not r.is_locked and not exists (select 1 from locked lk where lk.relation = ix.indexrelid) " +
+	"then pg_catalog.pg_get_indexdef(ix.indexrelid, k.ord::int, true) else null end order by k.ord) " +
+	"from unnest(ix.indkey::int2[]) with ordinality k(attnum, ord) " +
+	"left join pg_catalog.pg_attribute a on a.attrelid = r.oid and a.attnum = k.attnum and not a.attisdropped " +
+	"where k.ord <= ix.indnkeyatts), '{}'::text[]) as columns, " +
+	"case when not $2::boolean and ix.indpred is not null and not r.is_locked " +
+	"then pg_catalog.pg_get_expr(ix.indpred, ix.indrelid) end as predicate " +
+	"from rels r " +
+	"join pg_catalog.pg_index ix on ix.indrelid = r.oid and ix.indisvalid " +
+	"join pg_catalog.pg_class ic on ic.oid = ix.indexrelid " +
+	"join pg_catalog.pg_am am on am.oid = ic.relam), " +
+	"enums as (" +
+	"select t.typname::text as name, " +
+	"coalesce((select array_agg(e.enumlabel::text order by e.enumsortorder) from pg_catalog.pg_enum e where e.enumtypid = t.oid), '{}'::text[]) as labels " +
+	"from pg_catalog.pg_type t join pg_catalog.pg_namespace s on s.oid = t.typnamespace and s.nspname = $1 " +
+	"where t.typtype = 'e'), " +
+	"exts as (select ext.extname::text as name, ext.extversion::text as version from pg_catalog.pg_extension ext) " +
+	"select " +
+	"coalesce((select pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(" +
+	"'table', c.table, 'column', c.column, 'type', c.type, 'kind', c.kind, 'pages', c.pages, 'estimate', c.estimate, " +
+	"'fixed', c.fixed, 'nullable', c.nullable, 'defaultExpr', c.default_expr, 'key', c.key) order by c.table, c.attnum) from cols c), '[]'::jsonb) as columns, " +
+	"coalesce((select pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object('table', r.relname, 'definition', r.view_def) order by r.relname) from rels r where r.view_def is not null), '[]'::jsonb) as views, " +
+	"coalesce((select pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(" +
+	"'table', c.table, 'name', c.name, 'contype', c.contype, 'columns', c.columns, " +
+	"'refSchema', c.ref_schema, 'refTable', c.ref_table, 'refColumns', c.ref_columns, 'delType', c.del_type, 'definition', c.definition) order by c.table, c.name) from cons c), '[]'::jsonb) as constraints, " +
+	"coalesce((select pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(" +
+	"'table', i.table, 'name', i.name, 'unique', i.is_unique, 'method', i.method, 'columns', i.columns, 'predicate', i.predicate) order by i.table, i.name) from idxs i), '[]'::jsonb) as indexes, " +
+	"coalesce((select pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object('name', e.name, 'labels', e.labels) order by e.name) from enums e), '[]'::jsonb) as enums, " +
+	"coalesce((select pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object('name', x.name, 'version', x.version) order by x.name) from exts x), '[]'::jsonb) as extensions";
 
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -733,6 +825,224 @@ function bearerIs(header, token) {
 	);
 }
 
+function validateHttpUrl(raw, label) {
+	if (typeof raw !== "string" || raw.trim() === "" || /[\r\n\0]/.test(raw)) throw new Error(`${label} must be an http(s) URL`);
+	let parsed;
+	try {
+		parsed = new URL(raw);
+	} catch {
+		throw new Error(`${label} must be an http(s) URL`);
+	}
+	if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username || parsed.password) {
+		throw new Error(`${label} must be an http(s) URL without credentials`);
+	}
+	return parsed.toString();
+}
+
+async function readBoundedResponseText(response, maxBytes) {
+	if (!response.body || typeof response.body.getReader !== "function") {
+		const text = await response.text();
+		if (Buffer.byteLength(text, "utf8") > maxBytes) refuse(503, "Public data reader answer is too large");
+		return text;
+	}
+	const reader = response.body.getReader();
+	const chunks = [];
+	let total = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			const buf = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+			total += buf.byteLength;
+			if (total > maxBytes) {
+				await reader.cancel().catch(() => undefined);
+				refuse(503, "Public data reader answer is too large");
+			}
+			chunks.push(buf);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return Buffer.concat(chunks, total).toString("utf8");
+}
+
+export function createHttpPublicReader({
+	url,
+	token = null,
+	timeoutMs = 8_000,
+	cacheMs = 0,
+	maxBytes = LIMITS.questionTextBytes,
+	fetch = globalThis.fetch,
+}) {
+	const endpoint = validateHttpUrl(url, "Public reader URL");
+	if (token !== null && (typeof token !== "string" || token.trim() === "" || /[\r\n\0]/.test(token))) {
+		throw new Error("Public reader token is invalid");
+	}
+	const ttl = Number.isInteger(cacheMs) ? Math.max(0, Math.min(60_000, cacheMs)) : 0;
+	const timeout = Number.isInteger(timeoutMs) ? Math.max(500, Math.min(30_000, timeoutMs)) : 8_000;
+	const cache = new Map();
+	return async (environmentId, paths) => {
+		if (!ENVIRONMENT.test(environmentId) || !Array.isArray(paths) || paths.length === 0) return new Map();
+		const validPaths = paths.filter((p) => typeof p === "string" && KEPT_PATH.test(p));
+		if (validPaths.length === 0) return new Map();
+		const result = new Map();
+		const missing = [];
+		const now = Date.now();
+		for (const p of validPaths) {
+			if (ttl > 0) {
+				const hit = cache.get(`${environmentId}\0${p}`);
+				if (hit && now - hit.at < ttl) {
+					result.set(p, hit.value);
+					continue;
+				}
+			}
+			missing.push(p);
+		}
+		if (missing.length === 0) return result;
+		const maxResponseBytes = Math.max(256 * 1024, missing.length * (maxBytes + 2048));
+		const parsed = await withFetchTimeout(timeout, async (signal) => {
+			let response;
+			try {
+				response = await fetch(endpoint, {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						...(token ? { authorization: `Bearer ${token}` } : {}),
+					},
+					body: JSON.stringify({ environmentId, paths: missing }),
+					redirect: "error",
+					signal,
+				});
+			} catch {
+				refuse(503, "Public data reader did not answer");
+			}
+			if (response.status === 404) {
+				void response.body?.cancel().catch(() => undefined);
+				return {};
+			}
+			if (!response.ok) {
+				void response.body?.cancel().catch(() => undefined);
+				refuse(503, "Public data reader refused the read");
+			}
+			const raw = await readBoundedResponseText(response, maxResponseBytes);
+			try {
+				const decoded = JSON.parse(raw);
+				if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+					refuse(503, "Public data reader returned an unreadable answer");
+				}
+				return decoded.files && typeof decoded.files === "object" && !Array.isArray(decoded.files) ? decoded.files : decoded;
+			} catch (error) {
+				if (error instanceof Refusal) throw error;
+				refuse(503, "Public data reader returned an unreadable answer");
+			}
+		});
+		const storedAt = Date.now();
+		for (const p of missing) {
+			const val = Object.hasOwn(parsed, p) ? parsed[p] : null;
+			const safeVal = typeof val === "string" && Buffer.byteLength(val, "utf8") <= maxBytes ? val : null;
+			result.set(p, safeVal);
+			if (ttl > 0) {
+				if (cache.size >= 1_024) cache.delete(cache.keys().next().value);
+				cache.set(`${environmentId}\0${p}`, { at: storedAt, value: safeVal });
+			}
+		}
+		return result;
+	};
+}
+
+export function createDirectoryPublicReader({ rootDir, maxBytes = LIMITS.questionTextBytes }) {
+	if (typeof rootDir !== "string" || rootDir.trim() === "" || rootDir.includes("\0")) {
+		throw new Error("Public reader directory is invalid");
+	}
+	const baseRoot = resolve(rootDir);
+	const noFollowFlag = fsConstants.O_NOFOLLOW ?? 0;
+	return async (environmentId, paths) => {
+		const result = new Map();
+		if (!ENVIRONMENT.test(environmentId) || !Array.isArray(paths) || paths.length === 0) return result;
+		let envReal;
+		try {
+			const baseReal = await realpath(baseRoot);
+			const candidate = resolve(baseReal, environmentId);
+			if (!candidate.startsWith(`${baseReal}${sep}`)) return result;
+			const st = await lstat(candidate);
+			if (!st.isDirectory() || st.isSymbolicLink()) return result;
+			envReal = await realpath(candidate);
+			if (!envReal.startsWith(`${baseReal}${sep}`)) return result;
+		} catch {
+			return result;
+		}
+		const envPrefix = `${envReal}${sep}`;
+		for (const relPath of paths) {
+			if (typeof relPath !== "string" || !KEPT_PATH.test(relPath)) {
+				result.set(relPath, null);
+				continue;
+			}
+			const fullPath = resolve(envReal, relPath);
+			if (!fullPath.startsWith(envPrefix)) {
+				result.set(relPath, null);
+				continue;
+			}
+			let handle = null;
+			try {
+				handle = await open(fullPath, fsConstants.O_RDONLY | noFollowFlag);
+				const st = await handle.stat();
+				if (!st.isFile() || st.size > maxBytes) {
+					result.set(relPath, null);
+					continue;
+				}
+				const fileReal = await realpath(fullPath);
+				if (!fileReal.startsWith(envPrefix)) {
+					result.set(relPath, null);
+					continue;
+				}
+				const content = await handle.readFile("utf8");
+				result.set(relPath, Buffer.byteLength(content, "utf8") <= maxBytes ? content : null);
+			} catch {
+				result.set(relPath, null);
+			} finally {
+				await handle?.close().catch(() => undefined);
+			}
+		}
+		return result;
+	};
+}
+
+export function createTriggerWakeDispatcher({
+	url,
+	token = null,
+	timeoutMs = 5_000,
+	fetch = globalThis.fetch,
+	onError = () => undefined,
+}) {
+	const endpoint = validateHttpUrl(url, "Trigger wake URL");
+	if (token !== null && (typeof token !== "string" || token.trim() === "" || /[\r\n\0]/.test(token))) {
+		throw new Error("Trigger wake token is invalid");
+	}
+	const timeout = Number.isInteger(timeoutMs) ? Math.max(500, Math.min(30_000, timeoutMs)) : 5_000;
+	return async (event) => {
+		try {
+			await withFetchTimeout(timeout, async (signal) => {
+				const response = await fetch(endpoint, {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						...(token ? { authorization: `Bearer ${token}` } : {}),
+					},
+					body: JSON.stringify(event),
+					redirect: "error",
+					signal,
+				});
+				void response.body?.cancel().catch(() => undefined);
+				if (!response.ok) {
+					onError(new Error(`Trigger wake receiver returned HTTP ${response.status}`), event);
+				}
+			});
+		} catch (error) {
+			onError(error, event);
+		}
+	};
+}
+
 /** Every value arrives as PostgreSQL's text, and is given a JSON shape here. */
 const TEXT_TYPES = { getTypeParser: () => (value) => value };
 function shaped(value, type) {
@@ -870,11 +1180,28 @@ export class Gateway {
 	/** The node's private token the run door takes ("a host of ours"); without it the run door answers nothing. */
 	#runToken;
 	#hookToken;
+	#hookReader;
 	#adminToken;
+	#directLoginToken;
+	#directHost;
+	#directPort;
+	#triggerToken;
+	#triggerWake;
+	#triggerRpc;
 	#publicReader;
 	#rateBuckets = new Map();
 	#triggerStops = new Map();
 	#notifier = new DataChangeNotifier();
+	#testSchemas = new Map();
+	#testSchemaDrops = new Map();
+	#testSchemaDbs = new Set();
+	#testSchemaOrphanSwept = new Map();
+	#testSchemaCommentWrites = new Map();
+	#testSchemaReserveChain = Promise.resolve();
+	#testSchemaReaperEnabled = true;
+	#testSchemaRpc = null;
+	#testReaper = null;
+	#onTestSchemaDrop;
 	/** Backends running an agent's read now, by pid, with how many: the watcher gives them an agent's limit. */
 	#agentReads = new Map();
 	/** Company databases this gateway has seen exist. */
@@ -897,35 +1224,81 @@ export class Gateway {
 		runs = null,
 		hooks = null,
 		admin = null,
+		directLogin = null,
+		triggers = null,
+		testSchemas = null,
 		publicReader = null,
 		workers = 1,
 		onProvision = () => undefined,
 		beforeCancel = async () => undefined,
 		onAgentRead = () => undefined,
 		onDrop = () => undefined,
+		onTestSchemaDrop = () => undefined,
 		onUnsettledTx = null,
 	}) {
 		this.#store = store;
 		this.#platform = platform;
-		this.#limits = limits;
+		this.#limits = limits === LIMITS ? LIMITS : { ...LIMITS, ...limits };
 		this.#workers = Math.max(1, Number.isInteger(workers) ? workers : 1);
 		this.#runToken = typeof runs?.token === "string" && runs.token.length >= 32 ? runs.token : null;
 		this.#hookToken = typeof hooks?.token === "string" && hooks.token.length >= 32 ? hooks.token : null;
+		this.#hookReader = typeof hooks?.reader === "function" ? hooks.reader : null;
 		this.#adminToken = typeof admin?.token === "string" && admin.token.length >= 32 ? admin.token : null;
-		if (this.#runToken && this.#hookToken && bearerIs(`Bearer ${this.#hookToken}`, this.#runToken)) {
-			throw new Error("The hook token must be distinct from the run door token");
-		}
-		if (this.#runToken && this.#adminToken && bearerIs(`Bearer ${this.#adminToken}`, this.#runToken)) {
-			throw new Error("The admin token must be distinct from the run door token");
-		}
-		if (this.#adminToken && this.#hookToken && bearerIs(`Bearer ${this.#adminToken}`, this.#hookToken)) {
-			throw new Error("The admin token must be distinct from the hook token");
+		this.#directLoginToken =
+			typeof directLogin?.token === "string" && directLogin.token.length >= 32 ? directLogin.token : null;
+		this.#directHost = typeof directLogin?.host === "string" && directLogin.host.trim() !== "" ? directLogin.host.trim() : null;
+		this.#directPort =
+			Number.isInteger(directLogin?.port) && directLogin.port >= 1 && directLogin.port <= 65535 ? directLogin.port : null;
+		this.#triggerToken = typeof triggers?.token === "string" && triggers.token.length >= 32 ? triggers.token : null;
+		this.#triggerWake =
+			typeof triggers?.onWake === "function"
+				? triggers.onWake
+				: typeof triggers?.wakeUrl === "string"
+					? createTriggerWakeDispatcher({
+							url: triggers.wakeUrl,
+							token: triggers.wakeToken ?? null,
+							timeoutMs: triggers.wakeTimeoutMs ?? 5_000,
+							fetch: triggers.fetch ?? globalThis.fetch,
+							onError: triggers.onWakeError ?? (() => undefined),
+						})
+					: null;
+		this.#triggerRpc =
+			triggers?.rpc &&
+			typeof triggers.rpc.register === "function" &&
+			typeof triggers.rpc.list === "function" &&
+			typeof triggers.rpc.unregister === "function"
+				? triggers.rpc
+				: null;
+		this.#testSchemaReaperEnabled = testSchemas?.reaper !== false;
+		this.#testSchemaRpc =
+			testSchemas?.rpc &&
+			typeof testSchemas.rpc.reserve === "function" &&
+			typeof testSchemas.rpc.release === "function" &&
+			typeof testSchemas.rpc.touch === "function" &&
+			typeof testSchemas.rpc.check === "function" &&
+			typeof testSchemas.rpc.expiries === "function"
+				? testSchemas.rpc
+				: null;
+		const secretTokens = [
+			["run door", this.#runToken],
+			["hook", this.#hookToken],
+			["admin", this.#adminToken],
+			["direct-login", this.#directLoginToken],
+			["trigger", this.#triggerToken],
+		].filter(([, value]) => value !== null);
+		for (let i = 0; i < secretTokens.length; i++) {
+			for (let j = i + 1; j < secretTokens.length; j++) {
+				if (bearerIs(`Bearer ${secretTokens[i][1]}`, secretTokens[j][1])) {
+					throw new Error(`The ${secretTokens[j][0]} token must be distinct from the ${secretTokens[i][0]} token`);
+				}
+			}
 		}
 		this.#publicReader = typeof publicReader === "function" ? publicReader : null;
 		this.#onProvision = onProvision;
 		this.#beforeCancel = beforeCancel;
 		this.#onAgentRead = onAgentRead;
 		this.#onDrop = onDrop;
+		this.#onTestSchemaDrop = onTestSchemaDrop;
 		this.#onUnsettledTx = typeof onUnsettledTx === "function" ? onUnsettledTx : null;
 	}
 
@@ -956,7 +1329,7 @@ export class Gateway {
 
 	/** Where a login's password comes from: the gateway's three logins have their own, a folder's login has a derived one. */
 	#password(user) {
-		if (FOLDER_LOGIN.test(user)) return folderPassword(this.#store.logins.folderKey, user);
+		if (FOLDER_LOGIN.test(user) || TEST_ROLE_LOGIN.test(user)) return folderPassword(this.#store.logins.folderKey, user);
 		return this.#store.logins[user.slice("qorpera_data_".length)];
 	}
 
@@ -970,11 +1343,14 @@ export class Gateway {
 			if (this.#closed) throw new Refusal(503, "The data store did not answer");
 			let entry = this.#pools.get(key);
 			if (!entry) {
-				const kind = FOLDER_LOGIN.exec(user)?.[1];
+				const folderKind = FOLDER_LOGIN.exec(user)?.[1];
+				const testKind = folderKind ? null : TEST_ROLE_LOGIN.exec(user)?.[1] ?? null;
+				const kind = folderKind ?? (testKind ? `t${testKind}` : undefined);
 				const baseMax = POOL_SIZE[kind ?? door];
-				const max = this.#workers > 1 && (kind === "r" || kind === "w" || door === "qorpera_data_keeper")
-					? Math.max(1, Math.floor(baseMax / this.#workers))
-					: baseMax;
+				const max =
+					this.#workers > 1 && (kind === "r" || kind === "w" || kind === "tr" || kind === "tw" || door === "qorpera_data_keeper")
+						? Math.max(1, Math.floor(baseMax / this.#workers))
+						: baseMax;
 				const pool = new pg.Pool({
 					host: this.#store.host,
 					port: this.#store.port,
@@ -982,13 +1358,13 @@ export class Gateway {
 					password: this.#password(user),
 					database,
 					max,
-					pipeline: kind === "r" || kind === "w",
+					pipeline: kind === "r" || kind === "w" || kind === "tr" || kind === "tw",
 					keepAlive: true,
 					keepAliveInitialDelayMillis: 10_000,
 					...(door === "qorpera_data_watch" || door === "qorpera_data_keeper"
 						? { query_timeout: WATCH_QUERY_TIMEOUT_MS, statement_timeout: WATCH_QUERY_TIMEOUT_MS }
 						: {}),
-					idleTimeoutMillis: kind === "o" ? 1_000 : 5_000,
+					idleTimeoutMillis: kind === "o" || kind === "to" ? 1_000 : testKind ? 2_000 : 5_000,
 					connectionTimeoutMillis: CONNECT_MS,
 					application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
 				});
@@ -1488,7 +1864,7 @@ export class Gateway {
 		return { values, viewer, previewValues };
 	}
 
-	async #named(kind, caller, environmentId, asked, texts, proofs = null) {
+	async #named(kind, caller, environmentId, asked, texts, proofs = null, testSchemaName = null) {
 		const { folder, may } = NAMED[kind];
 		if (!asked || typeof asked !== "object") refuse(400, `Name a ${kind}`);
 		const { database: name, [kind]: file, params = {} } = asked;
@@ -1499,17 +1875,30 @@ export class Gateway {
 		if (!proof) refuse(404, `No ${kind} ${name}/${file} that you may ${may}`);
 		if (proof.bytes > this.#limits.questionTextBytes) refuse(400, `The ${kind}'s file is larger than ${this.#limits.questionTextBytes / 1024} KiB`);
 		const database = companyDatabase(environmentId);
+		const testSchema = testSchemaName !== null ? await this.#resolveTestSchema(environmentId, name, testSchemaName) : null;
 		const text = await this.#text(database, proof.sha256, texts, this.#limits.questionTextBytes);
 		if (text === null) return { need: { path, sha256: proof.sha256 } };
 		const statement = this.#statement(proof.sha256, text);
 		if (!statement.ok) refuse(400, `${path}: ${statement.problem}`);
-		const n = await this.#folder(database, name);
-		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
+		const n = testSchema ? null : await this.#folder(database, name);
+		if (!testSchema && n === null) refuse(409, `The database ${name} has no applied step yet`);
 		const bound = this.#values(caller, statement, params, kind);
-		return { database, name, n, sql: statement.sql, values: bound.values, viewer: bound.viewer, previewValues: bound.previewValues, sha256: proof.sha256, statement };
+		return {
+			database,
+			name,
+			schema: testSchema ? testSchema.testSchema : name,
+			testSchema,
+			n,
+			sql: statement.sql,
+			values: bound.values,
+			viewer: bound.viewer,
+			previewValues: bound.previewValues,
+			sha256: proof.sha256,
+			statement,
+		};
 	}
 
-	async #ownRead(caller, environmentId, asked) {
+	async #ownRead(caller, environmentId, asked, testSchemaName = null) {
 		const { database: name, sql, params = {} } = asked;
 		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
 		if (typeof sql !== "string" || sql.trim() === "") refuse(400, "Give one read statement");
@@ -1519,10 +1908,20 @@ export class Gateway {
 		const statement = readStatement(sql);
 		if (!statement.ok) refuse(400, statement.problem);
 		const database = companyDatabase(environmentId);
-		const n = await this.#folder(database, name);
-		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
+		const testSchema = testSchemaName !== null ? await this.#resolveTestSchema(environmentId, name, testSchemaName) : null;
+		const n = testSchema ? null : await this.#folder(database, name);
+		if (!testSchema && n === null) refuse(409, `The database ${name} has no applied step yet`);
 		const bound = this.#values(caller, statement, params);
-		return { database, name, n, sql: statement.sql, values: bound.values, viewer: bound.viewer };
+		return {
+			database,
+			name,
+			schema: testSchema ? testSchema.testSchema : name,
+			testSchema,
+			n,
+			sql: statement.sql,
+			values: bound.values,
+			viewer: bound.viewer,
+		};
 	}
 
 	/** Asks a ready question as the database folder's read role, in one read-only transaction. `ms`: the most it may
@@ -1535,7 +1934,9 @@ export class Gateway {
 		const cap = agent ? this.#limits.agentMs : this.#limits.questionMs;
 		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
 		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
-		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect(until ?? undefined);
+		const schema = ready.schema ?? ready.name;
+		const readRole = ready.testSchema ? ready.testSchema.readRole : `${ready.database}_r${ready.n}`;
+		const connecting = this.#pool(ready.database, readRole).connect(until ?? undefined);
 		const client = await (until === null ? connecting : inTime(connecting, until)).catch((error) => {
 			throw storeProblem(error);
 		});
@@ -1566,11 +1967,11 @@ export class Gateway {
 			const limit = Math.max(1, Math.floor(Math.min(cap, ms)));
 			const viewerSetting =
 				ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : `; set local "qorpera.viewer" = ''`;
-			const { state: prepState, needsDeallocate } = this.#preparedState(client, ready.database, ready.name);
+			const { state: prepState, needsDeallocate } = this.#preparedState(client, ready.database, schema);
 			const deallocatePrefix = needsDeallocate ? "deallocate all; " : "";
 			await client.query(
 				`${deallocatePrefix}begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
-					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}${settings}`,
+					`set local datestyle = 'ISO'; set local search_path = ${quoted(schema)}, qorpera_ext${viewerSetting}${settings}`,
 			);
 			if (needsDeallocate) prepState.pendingDeallocate = false;
 			const answer = await work(client, { maxRows, maxBytes });
@@ -1598,7 +1999,9 @@ export class Gateway {
 		const cap = agent ? this.#limits.agentMs : this.#limits.questionMs;
 		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
 		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
-		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect(until ?? undefined);
+		const schema = ready.schema ?? ready.name;
+		const readRole = ready.testSchema ? ready.testSchema.readRole : `${ready.database}_r${ready.n}`;
+		const connecting = this.#pool(ready.database, readRole).connect(until ?? undefined);
 		const client = await (until === null ? connecting : inTime(connecting, until)).catch((error) => {
 			throw storeProblem(error);
 		});
@@ -1629,7 +2032,7 @@ export class Gateway {
 			const limit = Math.max(1, Math.floor(Math.min(cap, ms)));
 			const viewerSetting =
 				ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : `; set local "qorpera.viewer" = ''`;
-			const { state: prepState, needsDeallocate } = this.#preparedState(client, ready.database, ready.name);
+			const { state: prepState, needsDeallocate } = this.#preparedState(client, ready.database, schema);
 			if (needsDeallocate) {
 				await client.query("deallocate all");
 				prepState.pendingDeallocate = false;
@@ -1638,7 +2041,7 @@ export class Gateway {
 			const existedBefore = new Set(prepState.names);
 			const beginSql =
 				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
-				`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}${settings}`;
+				`set local datestyle = 'ISO'; set local search_path = ${quoted(schema)}, qorpera_ext${viewerSetting}${settings}`;
 			const spec = buildQuery(client, { maxRows, maxBytes });
 			const stream = client.connection?.stream;
 			let beginP;
@@ -1686,11 +2089,12 @@ export class Gateway {
 	}
 
 	async #ask(ready, options = {}) {
+		const schema = ready.schema ?? ready.name;
 		const run = () =>
 			this.#readingPipelined(ready, options, (client, { maxRows, maxBytes }) => {
 				const plan = this.#askPlan(ready, maxRows, maxBytes);
 				return {
-					name: plan.key ? this.#preparedName(client, ready.database, ready.name, plan.key) : undefined,
+					name: plan.key ? this.#preparedName(client, ready.database, schema, plan.key) : undefined,
 					text: plan.text,
 					values: ready.values,
 				};
@@ -1700,7 +2104,7 @@ export class Gateway {
 			ran = await run();
 		} catch (error) {
 			if (ready.sha256 && error?.code === "0A000") {
-				this.#bumpSchemaEpoch(ready.database, ready.name);
+				this.#bumpSchemaEpoch(ready.database, schema);
 				try {
 					ran = await run();
 				} catch (retryError) {
@@ -1763,12 +2167,13 @@ export class Gateway {
 	}
 
 	#buildPageQuery(ready, shapeRows, maxBytes) {
+		const schema = ready.schema ?? ready.name;
 		const columns = shapeRows.map((row, index) => ({ ...row, index }));
 		const key = columns.filter((column) => column.key !== null).sort((a, b) => Number(a.key) - Number(b.key));
 		const by = ready.order === null ? null : columns.find((column) => column.name === ready.order);
 		if (ready.order !== null && !by) refuse(400, `No column ${ready.order} in ${ready.table}`);
 		if (key.length === 0 && ready.after !== null) refuse(400, `${ready.table} has no key: it gives its first page alone`);
-		const tag = this.#tag(`${ready.database}|${ready.name}|${ready.table}`);
+		const tag = this.#tag(`${ready.database}|${schema}|${ready.table}`);
 		const [row, asked, sized, madeAs, seen, size, bytesSoFar, rowsMade] = ["row", "asked", "sized", "made", "seen", "size", "bytes", "rows"].map(
 			(name) => `qorpera_${name}_${tag}`,
 		);
@@ -1798,7 +2203,7 @@ export class Gateway {
 		];
 		const text =
 			`with ${asked} as materialized (select ${row}.*, ${SEEN(row)} as ${seen}, ` +
-			`pg_catalog.octet_length(${row}::text) as ${size} from ${quoted(ready.name)}.${quoted(ready.table)} ${row} ${where} ` +
+			`pg_catalog.octet_length(${row}::text) as ${size} from ${quoted(schema)}.${quoted(ready.table)} ${row} ${where} ` +
 			`${order.length > 0 ? `order by ${order.join(", ")}` : ""} limit ${ready.limit + 1}), ` +
 			`${sized} as (select ${asked}.*, ` +
 			`sum(${asked}.${size}) over (rows between unbounded preceding and current row) as ${bytesSoFar} from ${asked}) ` +
@@ -1861,7 +2266,8 @@ export class Gateway {
 	}
 
 	async #page(ready, options = {}) {
-		const relKey = `${ready.database}/${ready.name}/${ready.table}`;
+		const schema = ready.schema ?? ready.name;
+		const relKey = `${ready.database}/${schema}/${ready.table}`;
 		const cachedShape = this.#relations.get(relKey);
 		if (cachedShape) {
 			let built;
@@ -1869,7 +2275,7 @@ export class Gateway {
 				const ran = await this.#readingPipelined(ready, { ...options, settings: ROW_TEXT }, (client, { maxBytes }) => {
 					built = this.#buildPageQuery(ready, cachedShape, maxBytes);
 					return {
-						name: this.#preparedName(client, ready.database, ready.name, built.text),
+						name: this.#preparedName(client, ready.database, schema, built.text),
 						text: built.text,
 						values: built.values,
 					};
@@ -1880,19 +2286,19 @@ export class Gateway {
 				if (error instanceof Refusal) throw error;
 				if (error?.code === "42P01" || error?.code === "42703" || error?.code === "0A000") {
 					this.#relations.delete(relKey);
-					this.#bumpSchemaEpoch(ready.database, ready.name);
+					this.#bumpSchemaEpoch(ready.database, schema);
 				} else {
 					throw storeProblem(error);
 				}
 			}
 		}
 		return this.#reading(ready, { ...options, settings: ROW_TEXT }, async (client, { maxBytes }) => {
-			const shape = await client.query({ text: RELATION, values: [ready.name, ready.table], types: TEXT_TYPES });
+			const shape = await client.query({ text: RELATION, values: [schema, ready.table], types: TEXT_TYPES });
 			if (shape.rows.length === 0) refuse(404, `No table ${ready.table} in ${ready.name}`);
-			this.#cacheRelation(ready.database, ready.name, ready.table, shape.rows);
+			this.#cacheRelation(ready.database, schema, ready.table, shape.rows);
 			options.onShape?.({ kind: shape.rows[0].kind, rls: shape.rows[0].rls === "t" });
 			const built = this.#buildPageQuery(ready, shape.rows, maxBytes);
-			const prepName = this.#preparedName(client, ready.database, ready.name, built.text);
+			const prepName = this.#preparedName(client, ready.database, schema, built.text);
 			const result = await client.query({
 				...(prepName ? { name: prepName } : {}),
 				text: built.text,
@@ -1975,7 +2381,7 @@ export class Gateway {
 		return value;
 	}
 
-	async #table(caller, environmentId, asked, texts, { first = false } = {}) {
+	async #table(caller, environmentId, asked, texts, { first = false, testSchemaName = null } = {}) {
 		if (!asked || typeof asked !== "object" || Array.isArray(asked)) refuse(400, "Name a table");
 		const { database: name, table, order = null, desc = false, limit = this.#limits.pageRowsUsual, after = null } = asked;
 		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
@@ -1989,13 +2395,26 @@ export class Gateway {
 		if (right.need) return right;
 		if (!right.list) refuse(403, `The tables of ${name} are shown to those who may change it`);
 		const database = companyDatabase(environmentId);
-		const n = await this.#folder(database, name);
-		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
-		return { database, name, n, table, order, desc, limit, after, viewer: caller.userId };
+		const testSchema = testSchemaName !== null ? await this.#resolveTestSchema(environmentId, name, testSchemaName) : null;
+		const n = testSchema ? null : await this.#folder(database, name);
+		if (!testSchema && n === null) refuse(409, `The database ${name} has no applied step yet`);
+		return {
+			database,
+			name,
+			schema: testSchema ? testSchema.testSchema : name,
+			testSchema,
+			n,
+			table,
+			order,
+			desc,
+			limit,
+			after,
+			viewer: caller.userId,
+		};
 	}
 
-	async rows(caller, environmentId, body, { gone = null } = {}) {
-		const ready = await this.#table(caller, environmentId, body, body.texts);
+	async rows(caller, environmentId, body, { gone = null, testSchema = null } = {}) {
+		const ready = await this.#table(caller, environmentId, body, body.texts, { testSchemaName: testSchema });
 		if (ready.need) return { need: ready.need };
 		const page = await this.#page(ready, { gone });
 		const asOf = isoNow();
@@ -2119,8 +2538,8 @@ export class Gateway {
 		}
 	}
 
-	async query(caller, environmentId, body, { gone = null } = {}) {
-		const ready = await this.#named("question", caller, environmentId, body, body.texts);
+	async query(caller, environmentId, body, { gone = null, testSchema = null } = {}) {
+		const ready = await this.#named("question", caller, environmentId, body, body.texts, null, testSchema);
 		if (ready.need) return { need: [ready.need] };
 		const answer = await this.#ask(ready, { gone });
 		if (typeof body.etag === "string" && body.etag === answer.etag) return { same: true, etag: answer.etag };
@@ -2146,8 +2565,11 @@ export class Gateway {
 
 	async #writing(ready, actor, { gone = null, settings = "", room }, work) {
 		const ms = this.#limits.changeMs;
+		const schema = ready.schema ?? ready.name;
+		const isTest = Boolean(ready.testSchema);
+		const writeRole = ready.testSchema ? ready.testSchema.writeRole : `${ready.database}_w${ready.n}`;
 		const connectUntil = Date.now() + Math.min(ms, CONNECT_MS - 1_000);
-		const client = await inTime(this.#pool(ready.database, `${ready.database}_w${ready.n}`).connect(connectUntil), connectUntil).catch((error) => {
+		const client = await inTime(this.#pool(ready.database, writeRole).connect(connectUntil), connectUntil).catch((error) => {
 			throw storeProblem(error);
 		});
 		const held = { cut: false };
@@ -2168,18 +2590,18 @@ export class Gateway {
 				ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : `; set local "qorpera.viewer" = ''`;
 			const started = await client.query(
 				`begin; set local statement_timeout = ${ms}; set local lock_timeout = ${ms}; set local timezone = 'UTC'; ` +
-					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}${settings}; ` +
+					`set local datestyle = 'ISO'; set local search_path = ${quoted(schema)}, qorpera_ext${viewerSetting}${settings}; ` +
 					`select pg_catalog.txid_current()::text as txid${full ? `; ${WRITTEN}` : ""}`,
 			);
 			const txid = (full ? started[started.length - 2] : started[started.length - 1]).rows[0].txid;
 			const before = full ? Number(started[started.length - 1].rows[0].rows) : 0;
-			const actorP = this.#actorLine(ready.database, txid, actor, { asyncCommit: true });
+			const actorP = isTest ? Promise.resolve() : this.#actorLine(ready.database, txid, actor, { asyncCommit: true });
 			actorP.catch(() => undefined);
 			const answer = await work(client, undone, held);
 			const [checked] = await Promise.all([
 				client.query(
 					`set constraints all immediate; select kind, object, rows from qorpera_data.effects(); ` +
-						`select table_name, problem from qorpera_data.unwatched('${ready.name}')${full ? `; ${WRITTEN}` : ""}`,
+						`select table_name, problem from qorpera_data.unwatched('${schema}')${full ? `; ${WRITTEN}` : ""}`,
 				),
 				actorP,
 			]);
@@ -2239,9 +2661,12 @@ export class Gateway {
 
 	async #writingPipelined(ready, actor, { gone = null, room }) {
 		const ms = this.#limits.changeMs;
+		const schema = ready.schema ?? ready.name;
+		const isTest = Boolean(ready.testSchema);
+		const writeRole = ready.testSchema ? ready.testSchema.writeRole : `${ready.database}_w${ready.n}`;
 		const connectUntil = Date.now() + Math.min(ms, CONNECT_MS - 1_000);
 		const client = await inTime(
-			this.#pool(ready.database, `${ready.database}_w${ready.n}`).connect(connectUntil),
+			this.#pool(ready.database, writeRole).connect(connectUntil),
 			connectUntil,
 		).catch((error) => {
 			throw storeProblem(error);
@@ -2272,16 +2697,16 @@ export class Gateway {
 				ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : `; set local "qorpera.viewer" = ''`;
 			const beginSql =
 				`begin; set local statement_timeout = ${ms}; set local lock_timeout = ${ms}; set local timezone = 'UTC'; ` +
-				`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}; ` +
+				`set local datestyle = 'ISO'; set local search_path = ${quoted(schema)}, qorpera_ext${viewerSetting}; ` +
 				`select pg_catalog.txid_current()::text as txid${full ? `; ${WRITTEN}` : ""}`;
 			const checkSql =
 				`set constraints all immediate; select kind, object, rows from qorpera_data.effects(); ` +
-				`select table_name, problem from qorpera_data.unwatched('${ready.name}')${full ? `; ${WRITTEN}` : ""}`;
+				`select table_name, problem from qorpera_data.unwatched('${schema}')${full ? `; ${WRITTEN}` : ""}`;
 			// WHY: Await beginSql before pipelining queryP so a failed/cancelled BEGIN never executes ready.sql in autocommit mode.
 			const started = await client.query(beginSql);
 			const txid = (full ? started[started.length - 2] : started[started.length - 1]).rows[0].txid;
 			const before = full ? Number(started[started.length - 1].rows[0].rows) : 0;
-			const actorP = this.#actorLine(ready.database, txid, actor, { asyncCommit: true });
+			const actorP = isTest ? Promise.resolve() : this.#actorLine(ready.database, txid, actor, { asyncCommit: true });
 			actorP.catch(() => undefined);
 			let queryP;
 			let checkP;
@@ -2323,7 +2748,7 @@ export class Gateway {
 				);
 			if (full && Number(checked[3].rows[0].rows) > before)
 				await undone(507, `This company's database is at its size limit of ${amount(this.#limits.companyBytes)}: ${room}`);
-			await (actorP ?? this.#actorLine(ready.database, txid, actor, { asyncCommit: true }));
+			await actorP;
 			let commitP;
 			let discardP;
 			stream.cork?.();
@@ -2373,12 +2798,13 @@ export class Gateway {
 		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
 		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
 		const opts = { gone, room: "only a change that deletes rows and writes none runs until there is room" };
+		const schema = ready.schema ?? ready.name;
 		let result;
 		try {
 			result = await this.#writingPipelined(ready, actor, opts);
 		} catch (error) {
 			if (ready.sha256 && error?.code === "0A000") {
-				this.#bumpSchemaEpoch(ready.database, ready.name);
+				this.#bumpSchemaEpoch(ready.database, schema);
 				try {
 					result = await this.#writingPipelined(ready, actor, opts);
 				} catch (retryError) {
@@ -2410,9 +2836,9 @@ export class Gateway {
 	 * statement takes, and the file's hash, which is what a member is shown before they say yes. `sha256`: the hash
 	 * the member was shown; a file that changed since is not run. `agent`: an agent's rows and bytes for what the
 	 * change gives back. */
-	async change(caller, environmentId, body, { agent = false, gone = null } = {}) {
+	async change(caller, environmentId, body, { agent = false, gone = null, testSchema = null } = {}) {
 		if (body.sha256 !== undefined && (typeof body.sha256 !== "string" || !SHA.test(body.sha256))) refuse(400, "sha256 is the hash a preview gave");
-		const ready = await this.#named("change", caller, environmentId, body, body.texts);
+		const ready = await this.#named("change", caller, environmentId, body, body.texts, null, testSchema);
 		if (ready.need) return { need: [ready.need] };
 		if (body.preview === true) {
 			const values = new Map(
@@ -2428,7 +2854,7 @@ export class Gateway {
 		return { ...(await this.#act(ready, this.#actor(caller, body.change), { agent, gone })), asOf: new Date().toISOString() };
 	}
 
-	async edit(caller, environmentId, body, { gone = null } = {}) {
+	async edit(caller, environmentId, body, { gone = null, testSchema = null } = {}) {
 		const { database: name, table, op, key, values = {}, seen } = body;
 		const plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
@@ -2445,23 +2871,25 @@ export class Gateway {
 		if (!right.list || !(await this.#mayWrite(caller, environmentId, name)))
 			refuse(403, `The rows of ${name} are changed by those who may change its folder`);
 		const database = companyDatabase(environmentId);
-		const n = await this.#folder(database, name);
-		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
+		const resolvedTest = testSchema !== null ? await this.#resolveTestSchema(environmentId, name, testSchema) : null;
+		const n = resolvedTest ? null : await this.#folder(database, name);
+		if (!resolvedTest && n === null) refuse(409, `The database ${name} has no applied step yet`);
+		const schema = resolvedTest ? resolvedTest.testSchema : name;
 		const answer = await this.#writing(
-			{ database, name, n, viewer: caller.userId },
+			{ database, name, schema, testSchema: resolvedTest, n, viewer: caller.userId },
 			{ kind: "member", id: caller.userId, via: "list" },
 			{ gone, settings: ROW_TEXT, room: "only removing a row runs until there is room" },
-			(client, undone) => this.#edited(client, undone, { database, name, table, op, key, values, seen }),
+			(client, undone) => this.#edited(client, undone, { database, name, schema, table, op, key, values, seen }),
 		);
 		return { ...answer, asOf: new Date().toISOString() };
 	}
 
-	async #edited(client, undone, { database, name, table, op, key, values, seen }) {
-		const relKey = `${database}/${name}/${table}`;
+	async #edited(client, undone, { database, name, schema = name, table, op, key, values, seen }) {
+		const relKey = `${database}/${schema}/${table}`;
 		let columns = this.#relations.get(relKey);
 		if (!columns) {
-			columns = (await client.query({ text: RELATION, values: [name, table], types: TEXT_TYPES })).rows;
-			if (columns.length > 0) this.#cacheRelation(database, name, table, columns);
+			columns = (await client.query({ text: RELATION, values: [schema, table], types: TEXT_TYPES })).rows;
+			if (columns.length > 0) this.#cacheRelation(database, schema, table, columns);
 		}
 		if (columns.length === 0) await undone(404, `No table ${table} in ${name}`);
 		if (columns[0].kind !== "r" && columns[0].kind !== "p") await undone(400, `${table} is a view: the list changes no rows of it`);
@@ -2475,9 +2903,9 @@ export class Gateway {
 		}
 		if (op !== "add" && (Object.keys(key).length !== keyed.length || !keyed.every((column) => Object.hasOwn(key, column.name) && key[column.name] !== null)))
 			await undone(400, `A ${op} names the whole key of ${table}: ${keyed.map((column) => column.name).join(", ")}`);
-		const tag = this.#tag(`${database}|${name}|${table}|edit`);
+		const tag = this.#tag(`${database}|${schema}|${table}|edit`);
 		const [row, written, seenAs, size] = ["row", "written", "seen", "size"].map((part) => `qorpera_${part}_${tag}`);
-		const relation = `${quoted(name)}.${quoted(table)}`;
+		const relation = `${quoted(schema)}.${quoted(table)}`;
 		const maxBytes = this.#limits.questionBytes;
 		const kept = `${row}.*, ${SEEN(row)} as ${seenAs}, pg_catalog.octet_length(${row}::text) as ${size}`;
 		const asked = (statement) => {
@@ -2616,6 +3044,7 @@ export class Gateway {
 					client.on("notification", (message) => {
 						const payload = typeof message?.payload === "string" ? message.payload : "";
 						const dot = payload.indexOf(".");
+						if (dot > 0 && dot < payload.length - 1 && TEST_SCHEMA_NAME.test(payload.slice(0, dot))) return;
 						listener.gen++;
 						let notice = null;
 						if (dot > 0 && dot < payload.length - 1) {
@@ -3117,7 +3546,7 @@ export class Gateway {
 	 * what it destroys are still what the member was shown.
 	 * `check: <allow>` applies nothing: it runs the held step named, which must be the next to apply, rolls it back
 	 * and answers `{ step, destroys }` when both are still as `allow` says. That is what the card shows. */
-	async apply(caller, environmentId, body) {
+	async apply(caller, environmentId, body, { testSchema = null } = {}) {
 		const began = Date.now();
 		const name = body.database;
 		if (typeof name !== "string" || !DATABASE_NAME.test(name) || name === "qorpera" || /^(pg_|qorpera_)/.test(name))
@@ -3141,19 +3570,27 @@ export class Gateway {
 			numbers.add(step.name.slice(0, 3));
 		}
 		const database = companyDatabase(environmentId);
-		await this.#ensureCompany(database);
-		await this.#ensureFolder(database, name);
-		const n = await this.#folder(database, name);
-		const keeper = this.#pool(database, "qorpera_data_keeper");
-		const applied = new Map(
-			(
-				await keeper
-					.query("select name, sha256 from qorpera_data.steps where database = $1", [name])
-					.catch((error) => {
-						throw storeProblem(error);
-					})
-			).rows.map((row) => [row.name, row.sha256]),
-		);
+		const resolvedTest = testSchema !== null ? await this.#resolveTestSchema(environmentId, name, testSchema) : null;
+		let n = null;
+		let applied;
+		if (resolvedTest) {
+			await this.#refreshTestSchemaFromStore(resolvedTest);
+			applied = new Map(resolvedTest.appliedSteps);
+		} else {
+			await this.#ensureCompany(database);
+			await this.#ensureFolder(database, name);
+			n = await this.#folder(database, name);
+			const keeper = this.#pool(database, "qorpera_data_keeper");
+			applied = new Map(
+				(
+					await keeper
+						.query("select name, sha256 from qorpera_data.steps where database = $1", [name])
+						.catch((error) => {
+							throw storeProblem(error);
+						})
+				).rows.map((row) => [row.name, row.sha256]),
+			);
+		}
 		const results = [];
 		const live = new Map(steps.map((step) => [step.name, step.sha256]));
 		// A step that was applied stays as it was applied.
@@ -3170,6 +3607,7 @@ export class Gateway {
 				refuse(400, `Step ${step.name} is numbered at or below ${newest}, which is applied: give it a higher number`);
 		const check = body.check === undefined ? null : TICKET.exec(typeof body.check === "string" ? body.check : "");
 		if (body.check !== undefined) {
+			if (resolvedTest) refuse(400, "Test schemas do not use check tickets");
 			if (!check) refuse(400, "check is a held step's allow");
 			const [, stepName, stepSha] = check;
 			if (applied.has(stepName)) refuse(409, `Step ${stepName} is applied already`);
@@ -3208,9 +3646,10 @@ export class Gateway {
 			const outcome = await this.#step(database, name, n, step, texts.get(step.name), {
 				allow: caller.allow ?? null,
 				actor: { kind: "step", id: caller.run ? caller.agentId : caller.userId, via: step.name },
+				testSchema: resolvedTest,
 			});
 			results.push(outcome);
-			if (outcome.state !== "applied") break;
+			if (outcome.state !== "applied" && outcome.state !== "already") break;
 		}
 		return { applied: results.every((result) => result.state === "applied" || result.state === "already"), results };
 	}
@@ -3218,8 +3657,13 @@ export class Gateway {
 	/** One step in one transaction, as the database folder's owner role: kept only if it destroyed nothing, or if what
 	 * it destroyed is exactly what `allow` says a member said yes to (the step, its text's hash, and the hash of what it
 	 * destroys). `dry`: nothing is kept; the answer says what the step would destroy, with the `allow` for it. */
-	async #step(database, name, n, step, text, { allow = null, dry = false, actor = null } = {}) {
-		const client = await this.#pool(database, `${database}_o${n}`)
+	async #step(database, name, n, step, text, { allow = null, dry = false, actor = null, testSchema = null, stepMs = this.#limits.stepMs } = {}) {
+		const isTest = testSchema !== null;
+		const schema = isTest ? testSchema.testSchema : name;
+		const ownerRole = isTest ? testSchema.ownerRole : `${database}_o${n}`;
+		const effectiveStepMs = Math.max(1, Math.floor(stepMs));
+		const effectiveLockMs = Math.min(this.#limits.stepLockMs, effectiveStepMs);
+		const client = await this.#pool(database, ownerRole)
 			.connect()
 			.catch((error) => {
 				throw storeProblem(error);
@@ -3235,10 +3679,33 @@ export class Gateway {
 			});
 		try {
 			await client.query(
-				`begin; set local lock_timeout = ${this.#limits.stepLockMs}; set local statement_timeout = ${this.#limits.stepMs}; ` +
-					`set local search_path = ${quoted(name)}, qorpera_ext`,
+				`begin; set local lock_timeout = ${effectiveLockMs}; set local statement_timeout = ${effectiveStepMs}; ` +
+					`set local search_path = ${quoted(schema)}, qorpera_ext`,
 			);
-			if (!dry) await this.#actorLine(database, (await client.query("select pg_catalog.txid_current()::text as txid")).rows[0].txid, actor);
+			let storedTestMeta = null;
+			if (isTest) {
+				await client.query("select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('qorpera_test_apply'), pg_catalog.hashtext($1))", [schema]);
+				const metaRow = (
+					await client.query("select pg_catalog.obj_description(oid, 'pg_namespace') as comment from pg_catalog.pg_namespace where nspname = $1", [schema])
+				).rows[0];
+				storedTestMeta = this.#verifyTestSchemaMeta(schema, metaRow?.comment);
+				if (!storedTestMeta) {
+					await rollback();
+					refuse(404, `No active test schema ${schema} for ${name}`);
+				}
+				const currentApplied = new Map(storedTestMeta.applied);
+				if (currentApplied.has(step.name)) {
+					testSchema.appliedSteps = currentApplied;
+					await rollback();
+					if (currentApplied.get(step.name) === step.sha256) return { name: step.name, state: "already" };
+					return {
+						name: step.name,
+						state: "changed",
+						detail: "It was changed after it was applied: put its applied text back from the folder's history and write a new step",
+					};
+				}
+			}
+			if (!dry && !isTest) await this.#actorLine(database, (await client.query("select pg_catalog.txid_current()::text as txid")).rows[0].txid, actor);
 			try {
 				await client.query({ text: "select qorpera_data.apply_step($1)", values: [text], queryMode: "extended" });
 			} catch (error) {
@@ -3263,7 +3730,7 @@ export class Gateway {
 				return { name: step.name, state: "failed", detail: storeProblem(error).message, ...storeProblem(error).extra };
 			}
 			const effects = (await client.query("select kind, object, rows from qorpera_data.seal()")).rows;
-			const unwatched = (await client.query("select table_name, problem from qorpera_data.unwatched($1)", [name])).rows;
+			const unwatched = (await client.query("select table_name, problem from qorpera_data.unwatched($1)", [schema])).rows;
 			if (unwatched.length > 0) {
 				await rollback();
 				return {
@@ -3282,7 +3749,7 @@ export class Gateway {
 				await rollback();
 				return { name: step.name, state: ticket ? "held" : "harmless", ...(ticket ? { destroys, allow: ticket } : {}) };
 			}
-			if (ticket && allow !== ticket) {
+			if (!isTest && ticket && allow !== ticket) {
 				await rollback();
 				return {
 					name: step.name,
@@ -3295,8 +3762,33 @@ export class Gateway {
 					allow: ticket,
 				};
 			}
-			await client.query("select qorpera_data.record_step($1, $2, $3)", [name, step.name, step.sha256]);
-			await client.query("select pg_catalog.pg_notify('qorpera_data', $1)", [`${name}.*`]);
+			let nextTestApplied = null;
+			let nextTestExpiresAt = null;
+			if (!isTest) {
+				await client.query("select qorpera_data.record_step($1, $2, $3)", [name, step.name, step.sha256]);
+				await client.query("select pg_catalog.pg_notify('qorpera_data', $1)", [`${name}.*`]);
+			} else {
+				await client.query("select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('qorpera_test_meta'), pg_catalog.hashtext($1))", [schema]);
+				const latestRow = (
+					await client.query("select pg_catalog.obj_description(oid, 'pg_namespace') as comment from pg_catalog.pg_namespace where nspname = $1", [schema])
+				).rows[0];
+				const latestMeta = this.#verifyTestSchemaMeta(schema, latestRow?.comment) ?? storedTestMeta;
+				nextTestApplied = new Map(latestMeta.applied);
+				nextTestApplied.set(step.name, step.sha256);
+				nextTestExpiresAt = Math.max(testSchema.expiresAt, latestMeta.expiresAt);
+				const signed = this.#signTestSchemaMeta(schema, {
+					v: 1,
+					env: testSchema.environmentId,
+					source: testSchema.sourceDatabase,
+					createdAt: testSchema.createdAt,
+					expiresAt: nextTestExpiresAt,
+					ttlMs: testSchema.ttlMs,
+					readLive: testSchema.readLive,
+					applied: [...nextTestApplied.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
+				});
+				if (!/^[A-Za-z0-9_.:-]+$/.test(signed)) refuse(500, "The data gateway failed");
+				await client.query(`comment on schema ${quoted(schema)} is '${signed}'`);
+			}
 			try {
 				await client.query("commit");
 			} catch (error) {
@@ -3306,7 +3798,14 @@ export class Gateway {
 				const told = storeProblem(error);
 				return { name: step.name, state: "failed", detail: told.message, ...told.extra };
 			}
-			this.#notifySchema(database, name);
+			if (isTest) {
+				testSchema.appliedSteps = nextTestApplied;
+				testSchema.expiresAt = nextTestExpiresAt;
+				testSchema.persistedExpiresAt = Math.max(testSchema.persistedExpiresAt ?? 0, nextTestExpiresAt);
+				this.#bumpSchemaEpoch(database, schema);
+			} else {
+				this.#notifySchema(database, name);
+			}
 			return { name: step.name, state: "applied", ...(ticket ? { destroyed: destroys } : {}) };
 		} catch (error) {
 			await rollback();
@@ -3322,9 +3821,10 @@ export class Gateway {
 	}
 
 	/** A database folder as it stands in the store: its tables and columns, its applied steps, its size. */
-	async describe(caller, environmentId, body) {
+	async describe(caller, environmentId, body, { testSchema = null } = {}) {
 		const asked = body.database ?? null;
 		if (asked !== null && (typeof asked !== "string" || !DATABASE_NAME.test(asked))) refuse(400, "Name a database");
+		if (testSchema !== null && asked === null) refuse(400, "Name a database when describing a test schema");
 		const names =
 			asked !== null
 				? [asked]
@@ -3337,7 +3837,9 @@ export class Gateway {
 		const readable = names.filter((name) => tomls.get(`data/${name}/database.toml`));
 		if (asked !== null && readable.length === 0) refuse(404, `No database ${asked} that you may read`);
 		const database = companyDatabase(environmentId);
-		const exists = await this.#companyExists(database);
+		const resolvedTest = testSchema !== null ? await this.#resolveTestSchema(environmentId, asked, testSchema) : null;
+		if (resolvedTest) await this.#refreshTestSchemaFromStore(resolvedTest);
+		const exists = resolvedTest ? true : await this.#companyExists(database);
 		const folderResults = await mapBounded(readable, DESCRIBE_CONCURRENCY, (name) =>
 			this.#folderFiles(caller, environmentId, name, body.texts, exists ? database : null, tomls.get(`data/${name}/database.toml`)),
 		);
@@ -3354,15 +3856,31 @@ export class Gateway {
 			mapBounded(found, DESCRIBE_CONCURRENCY, async ([name, files]) => {
 				const write = await this.#mayWrite(caller, environmentId, name);
 				const list = write || listMembers(files.toml, files.questions.map((question) => question.text), files.cut) === "readers";
-				const n = list && exists ? await this.#folder(database, name) : null;
-				const stored = n === null ? { applied: [], tables: [] } : await this.#stored(database, name, n, countUntil);
+				const n = list && exists && !resolvedTest ? await this.#folder(database, name) : null;
+				const stored =
+					list && resolvedTest
+						? await this.#stored(database, name, null, countUntil, {
+								schema: resolvedTest.testSchema,
+								readRole: resolvedTest.readRole,
+								appliedSteps: resolvedTest.appliedSteps,
+							})
+						: n === null
+							? { applied: [], tables: [], hasStore: false }
+							: await this.#stored(database, name, n, countUntil);
 				return {
 					database: name,
 					name: tomlWord(files.toml, "name"),
 					about: tomlWord(files.toml, "about"),
 					write,
 					list,
-					...(list ? { applied: stored.applied.map((step) => ({ name: step.name, at: step.at })), tables: stored.tables } : {}),
+					...(list
+						? {
+								applied: stored.applied.map((step) => ({ name: step.name, at: step.at })),
+								tables: stored.tables,
+								...(stored.hasStore ? { enums: stored.enums, extensions: stored.extensions } : {}),
+								...(stored.ddlTruncated ? { ddlTruncated: true } : {}),
+							}
+						: {}),
 					questions: namedFiles(files.questions),
 					changes: namedFiles(files.changes),
 				};
@@ -3381,53 +3899,180 @@ export class Gateway {
 		return Number(size.rows[0].bytes);
 	}
 
-	async #stored(database, name, n, until) {
+	async #stored(database, name, n, until, { schema = name, readRole = `${database}_r${n}`, appliedSteps = null } = {}) {
 		const pool = this.#pool(database, "qorpera_data_keeper");
-		const [steps, columns] = await Promise.all([
-			pool.query("select name, sha256, applied_at from qorpera_data.steps where database = $1 order by name", [name]),
-			pool.query(
-				`select c.relname as table, a.attname as column, pg_catalog.format_type(a.atttypid, a.atttypmod) as type,
-					c.relkind as kind, c.relpages as pages, c.reltuples::bigint as estimate,
-					a.attgenerated <> '' or a.attidentity = 'a' as fixed,
-					(select k.n from unnest(i.indkey::int2[]) with ordinality k(attnum, n) where k.attnum = a.attnum) as key
-				from pg_catalog.pg_class c join pg_catalog.pg_namespace s on s.oid = c.relnamespace and s.nspname = $1
-				join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
-				left join pg_catalog.pg_index i on i.indrelid = c.oid and i.indisprimary
-				where c.relkind in ('r', 'p', 'v', 'm') order by c.relname, a.attnum`,
-				[name],
-			),
-		]).catch((error) => {
-			throw storeProblem(error);
-		});
+		const lockMs = Math.min(250, Math.max(50, Math.floor(this.#limits.questionMs / 2)));
+		const runDdl = async (skipLockedExprs) => {
+			const client = await pool.connect();
+			let lost;
+			const onClientError = (error) => {
+				lost ??= error;
+			};
+			client.on("error", onClientError);
+			try {
+				await client.query(`begin transaction read only; set local lock_timeout = ${lockMs}`);
+				const steps =
+					appliedSteps !== null
+						? {
+								rows: [...appliedSteps.entries()]
+									.sort(([a], [b]) => (a < b ? -1 : 1))
+									.map(([stepName, hash]) => ({ name: stepName, sha256: hash, applied_at: new Date() })),
+							}
+						: await client.query("select name, sha256, applied_at from qorpera_data.steps where database = $1 order by name", [name]);
+				const ddl = await client.query(STORED_DDL_QUERY, [schema, skipLockedExprs]);
+				await client.query("commit");
+				return { steps, ddl };
+			} catch (error) {
+				await client.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
+				throw error;
+			} finally {
+				client.removeListener("error", onClientError);
+				this.#release(client, lost);
+			}
+		};
+		let steps;
+		let ddl;
+		try {
+			({ steps, ddl } = await runDdl(false));
+		} catch (error) {
+			if (error?.code === "55P03") {
+				({ steps, ddl } = await runDdl(true).catch((retryError) => {
+					throw storeProblem(retryError);
+				}));
+			} else {
+				throw storeProblem(error);
+			}
+		}
+		const ddlRow = ddl.rows[0] ?? {};
+		const rawColumns = Array.isArray(ddlRow.columns) ? ddlRow.columns : [];
+		const rawViews = Array.isArray(ddlRow.views) ? ddlRow.views : [];
+		const rawConstraints = Array.isArray(ddlRow.constraints) ? ddlRow.constraints : [];
+		const rawIndexes = Array.isArray(ddlRow.indexes) ? ddlRow.indexes : [];
+		const rawEnums = Array.isArray(ddlRow.enums) ? ddlRow.enums : [];
+		const rawExtensions = Array.isArray(ddlRow.extensions) ? ddlRow.extensions : [];
+		let ddlBytes = 0;
+		let ddlTruncated = false;
+		const fitDdl = (value) => {
+			const bytes = Buffer.byteLength(JSON.stringify(value), "utf8");
+			if (ddlBytes + bytes > STORED_DDL_MAX_BYTES) {
+				ddlTruncated = true;
+				return false;
+			}
+			ddlBytes += bytes;
+			return true;
+		};
 		const tables = new Map();
-		for (const row of columns.rows) {
-			if (!tables.has(row.table))
-				tables.set(row.table, { name: row.table, kind: row.kind, pages: Number(row.pages), estimate: Number(row.estimate), counted: null, key: [], columns: [] });
+		for (const row of rawColumns) {
+			if (!tables.has(row.table)) {
+				tables.set(row.table, {
+					name: row.table,
+					kind: row.kind,
+					pages: Number(row.pages),
+					estimate: Number(row.estimate),
+					counted: null,
+					key: [],
+					columns: [],
+					constraints: [],
+					indexes: [],
+					viewDefinition: undefined,
+				});
+			}
 			const table = tables.get(row.table);
 			const settable = (table.kind === "r" || table.kind === "p") && !row.fixed;
-			table.columns.push({ name: row.column, type: row.type, settable });
-			if (row.key !== null) table.key[Number(row.key) - 1] = row.column;
+			const col = {
+				name: row.column,
+				type: row.type,
+				settable,
+				nullable: Boolean(row.nullable),
+			};
+			if (row.defaultExpr !== null && row.defaultExpr !== undefined) {
+				const expr = String(row.defaultExpr);
+				if (expr.length <= 2_048 && fitDdl(expr)) col.default = expr;
+				else ddlTruncated = true;
+			} else {
+				col.default = null;
+			}
+			table.columns.push(col);
+			if (row.key !== null && row.key !== undefined) table.key[Number(row.key) - 1] = row.column;
 		}
-		await this.#count(database, name, n, [...tables.values()], until);
+		for (const con of rawConstraints) {
+			const table = tables.get(con.table);
+			const type = CONSTRAINT_TYPES[con.contype];
+			if (!table || !type) continue;
+			const item = { name: con.name, type };
+			if (Array.isArray(con.columns) && con.columns.length > 0) item.columns = con.columns;
+			if (con.contype === "f") {
+				item.references = {
+					table: con.refTable,
+					...(con.refSchema && con.refSchema !== schema ? { schema: con.refSchema } : {}),
+					columns: Array.isArray(con.refColumns) ? con.refColumns : [],
+				};
+				item.onDelete = FK_DELETE_ACTION[con.delType] ?? "no_action";
+			} else if (con.contype === "c" && typeof con.definition === "string") {
+				item.definition = con.definition;
+			}
+			if (fitDdl(item)) table.constraints.push(item);
+		}
+		for (const idx of rawIndexes) {
+			const table = tables.get(idx.table);
+			if (!table) continue;
+			const item = {
+				name: idx.name,
+				columns: Array.isArray(idx.columns) ? idx.columns.filter((column) => typeof column === "string") : [],
+				unique: Boolean(idx.unique),
+				method: idx.method,
+				...(typeof idx.predicate === "string" && idx.predicate !== "" ? { predicate: idx.predicate } : {}),
+			};
+			if (fitDdl(item)) table.indexes.push(item);
+		}
+		for (const view of rawViews) {
+			const table = tables.get(view.table);
+			if (!table || typeof view.definition !== "string") continue;
+			const def = view.definition.trim();
+			if (fitDdl(def)) table.viewDefinition = def;
+		}
+		const enums = [];
+		for (const item of rawEnums) {
+			const entry = { name: item.name, labels: Array.isArray(item.labels) ? item.labels : [] };
+			if (fitDdl(entry)) enums.push(entry);
+		}
+		const extensions = [];
+		for (const item of rawExtensions) {
+			const entry = { name: item.name, version: item.version };
+			if (fitDdl(entry)) extensions.push(entry);
+		}
+		await this.#count(database, schema, readRole, [...tables.values()], until);
 		return {
+			hasStore: true,
 			applied: steps.rows.map((row) => ({ name: row.name, sha256: row.sha256, at: row.applied_at.toISOString() })),
-			tables: [...tables.values()].map((table) => ({
-				name: table.name,
-				kind: table.kind === "r" || table.kind === "p" ? "table" : "view",
-				key: table.key,
-				...(table.counted !== null
-					? { rows: table.counted }
-					: table.estimate >= 0 && table.kind !== "v"
-						? { rowsAbout: table.estimate }
-						: {}),
-				columns: table.columns,
-			})),
+			tables: [...tables.values()].map((table) => {
+				const isTable = table.kind === "r" || table.kind === "p";
+				return {
+					name: table.name,
+					kind: isTable ? "table" : "view",
+					key: table.key,
+					...(table.counted !== null
+						? { rows: table.counted }
+						: table.estimate >= 0 && table.kind !== "v"
+							? { rowsAbout: table.estimate }
+							: {}),
+					columns: table.columns,
+					...(isTable ? { constraints: table.constraints, indexes: table.indexes } : {}),
+					...(!isTable && table.indexes.length > 0 ? { indexes: table.indexes } : {}),
+					...(table.viewDefinition !== undefined ? { viewDefinition: table.viewDefinition } : {}),
+				};
+			}),
+			enums,
+			extensions,
+			...(ddlTruncated ? { ddlTruncated: true } : {}),
 		};
 	}
 
-	async #count(database, name, n, tables, until) {
+	async #count(database, schema, readRole, tables, until) {
 		if (tables.length === 0 || until - Date.now() < 1 || this.#closed) return;
-		const folderKey = `${database}:${name}:${n}`;
+		const folderKey = `${database}:${schema}:${readRole}`;
 		let pending = tables;
 		while (pending.length > 0 && until - Date.now() >= 1 && !this.#closed) {
 			const existing = this.#inFlightCounts.get(folderKey);
@@ -3463,7 +4108,7 @@ export class Gateway {
 				failed: false,
 				done: null,
 			};
-			const work = this.#countOnce(database, name, n, pending, until, run).finally(() => {
+			const work = this.#countOnce(database, schema, readRole, pending, until, run).finally(() => {
 				if (this.#inFlightCounts.get(folderKey) === run) this.#inFlightCounts.delete(folderKey);
 			});
 			run.done = work.catch(() => undefined);
@@ -3473,7 +4118,7 @@ export class Gateway {
 		}
 	}
 
-	async #countOnce(database, name, n, tables, until, run) {
+	async #countOnce(database, schema, readRole, tables, until, run) {
 		const releaseCompany = await acquirePermit(this.#companyCountGates, database, COUNT_COMPANY_CONCURRENCY, until);
 		if (!releaseCompany) return;
 		let client;
@@ -3485,7 +4130,7 @@ export class Gateway {
 			const rank = (table) => (table.kind === "v" ? 2 : table.kind === "p" ? 1 : 0);
 			const order = [...tables].sort((a, b) => rank(a) - rank(b) || a.pages - b.pages || (a.name < b.name ? -1 : 1));
 			try {
-				client = await inTime(this.#pool(database, `${database}_r${n}`).connect(until), until);
+				client = await inTime(this.#pool(database, readRole).connect(until), until);
 			} catch (error) {
 				if (storeProblem(error) instanceof Refusal) {
 					if (Date.now() < until) run.failed = true;
@@ -3496,7 +4141,7 @@ export class Gateway {
 			client.on("error", onClientError);
 			if (until - Date.now() < 1) return;
 			await client.query(
-				`begin transaction read only; set local timezone = 'UTC'; set local datestyle = 'ISO'; set local search_path = ${quoted(name)}`,
+				`begin transaction read only; set local timezone = 'UTC'; set local datestyle = 'ISO'; set local search_path = ${quoted(schema)}`,
 			);
 			const isFatal = (error) => !error?.code || /^(57P0[123]|08...)$/.test(error.code);
 			const countOne = async (table) => {
@@ -3509,7 +4154,7 @@ export class Gateway {
 				);
 				try {
 					const answer = await client.query({
-						text: `select count(*) from ${quoted(name)}.${quoted(table.name)}`,
+						text: `select count(*) from ${quoted(schema)}.${quoted(table.name)}`,
 						rowMode: "array",
 						types: TEXT_TYPES,
 					});
@@ -3556,7 +4201,7 @@ export class Gateway {
 					);
 					try {
 						const answer = await client.query({
-							text: `select ${batch.map((table) => `(select count(*) from ${quoted(name)}.${quoted(table.name)})`).join(", ")}`,
+							text: `select ${batch.map((table) => `(select count(*) from ${quoted(schema)}.${quoted(table.name)})`).join(", ")}`,
 							rowMode: "array",
 							types: TEXT_TYPES,
 						});
@@ -3631,14 +4276,17 @@ export class Gateway {
 	 * each one's name and words from its database.toml, its steps (applied, waiting, changed after they were applied,
 	 * gone), its tables and columns, its questions and its changes with their words; and the company database's size
 	 * against its limit. The texts it does not hold come from the caller, as for a question. */
-	async runDescribe(caller, environmentId, body) {
+	async runDescribe(caller, environmentId, body, { testSchema = null } = {}) {
 		const asked = body.database ?? null;
 		if (asked !== null && (typeof asked !== "string" || !DATABASE_NAME.test(asked))) refuse(400, "Name a database");
+		if (testSchema !== null && asked === null) refuse(400, "Name a database when describing a test schema");
 		const names = [...caller.files.keys()].map((path) => TOML_PATH.exec(path)?.[1]).filter((name) => name !== undefined);
 		if (asked !== null && !names.includes(asked)) refuse(404, `No database ${asked} that you may read`);
 		const wanted = (asked === null ? names : [asked]).sort();
 		const database = companyDatabase(environmentId);
-		const exists = await this.#companyExists(database);
+		const resolvedTest = testSchema !== null ? await this.#resolveTestSchema(environmentId, asked, testSchema) : null;
+		if (resolvedTest) await this.#refreshTestSchemaFromStore(resolvedTest);
+		const exists = resolvedTest ? true : await this.#companyExists(database);
 		const wantedFiles = [];
 		for (const name of wanted) {
 			for (const [path, file] of caller.files) {
@@ -3667,8 +4315,16 @@ export class Gateway {
 		const [companyBytes, databases] = await Promise.all([
 			exists ? this.#ownBytes(database) : 0,
 			mapBounded(wanted, DESCRIBE_CONCURRENCY, async (name) => {
-				const n = exists ? await this.#folder(database, name) : null;
-				const stored = n === null ? { applied: [], tables: [] } : await this.#stored(database, name, n, countUntil);
+				const n = exists && !resolvedTest ? await this.#folder(database, name) : null;
+				const stored = resolvedTest
+					? await this.#stored(database, name, null, countUntil, {
+							schema: resolvedTest.testSchema,
+							readRole: resolvedTest.readRole,
+							appliedSteps: resolvedTest.appliedSteps,
+						})
+					: n === null
+						? { applied: [], tables: [], hasStore: false }
+						: await this.#stored(database, name, n, countUntil);
 				const root = `data/${name}`;
 				const steps = [...caller.files]
 					.filter(([path]) => path.startsWith(`${root}/tables/`) && path.endsWith(".sql"))
@@ -3705,6 +4361,8 @@ export class Gateway {
 						missing: stored.applied.filter((step) => !live.has(step.name)).map((step) => step.name),
 					},
 					tables: stored.tables,
+					...(stored.hasStore ? { enums: stored.enums, extensions: stored.extensions } : {}),
+					...(stored.ddlTruncated ? { ddlTruncated: true } : {}),
 					questions: named("queries"),
 					changes: named("actions"),
 				};
@@ -3714,18 +4372,20 @@ export class Gateway {
 	}
 
 	/** data_query (§6): a question by name or a read of the run's own, with an agent's limits. */
-	async runQuery(caller, environmentId, body, { gone = null } = {}) {
+	async runQuery(caller, environmentId, body, { gone = null, testSchema = null } = {}) {
 		if (body.sql !== undefined && body.question !== undefined) refuse(400, "Ask a question or give a read, not both");
 		const ready =
-			body.sql !== undefined ? await this.#ownRead(caller, environmentId, body) : await this.#named("question", caller, environmentId, body, body.texts);
+			body.sql !== undefined
+				? await this.#ownRead(caller, environmentId, body, testSchema)
+				: await this.#named("question", caller, environmentId, body, body.texts, null, testSchema);
 		if (ready.need) return { need: [ready.need] };
 		const { columns, rows, more } = await this.#ask(ready, { agent: true, gone });
 		return { columns, rows, more, asOf: new Date().toISOString() };
 	}
 
 	/** data_change (§8): a named change, with an agent's rows and bytes for what it gives back. */
-	runChange(caller, environmentId, body, { gone = null } = {}) {
-		return this.change(caller, environmentId, body, { agent: true, gone });
+	runChange(caller, environmentId, body, { gone = null, testSchema = null } = {}) {
+		return this.change(caller, environmentId, body, { agent: true, gone, testSchema });
 	}
 
 	/** The watcher (§3), one look with `qorpera_data_watch`. It cancels any statement of a database folder's login that
@@ -3742,8 +4402,8 @@ export class Gateway {
 					case when s.statement = any($5::text[]) then pg_catalog.pg_terminate_backend(a.pid) else pg_catalog.pg_cancel_backend(a.pid) end as ended
 				from pg_catalog.pg_stat_activity a
 				cross join lateral (select a.pid::text || '@' || a.query_start::text as statement) s
-				where a.datname ~ '^c_[0-9a-f]{32}$' and a.state = 'active' and a.usename ~ '^c_[0-9a-f]{32}_[owrs][0-9]+$'
-				and clock_timestamp() - a.query_start > make_interval(secs => (case substring(a.usename from '_([owrs])[0-9]+$')
+				where a.datname ~ '^c_[0-9a-f]{32}$' and a.state = 'active' and a.usename ~ '^c_[0-9a-f]{32}_([owrs][0-9]+|t[owr]_[0-9a-f]{16})$'
+				and clock_timestamp() - a.query_start > make_interval(secs => (case coalesce(substring(a.usename from '_([owrs])[0-9]+$'), substring(a.usename from '_t([owr])_[0-9a-f]{16}$'))
 					when 'r' then case when a.pid = any($6::int[]) then $7::float8 else $1::float8 end
 					when 'w' then $2::float8 when 's' then $2::float8 when 'o' then $3::float8
 				end + $4::float8) / 1000)`,
@@ -3771,7 +4431,16 @@ export class Gateway {
 				if (whole - record >= this.#limits.companyBytes) full.add(row.database);
 			}
 			this.#full = full;
-			const unforgotten = await this.#settle(sizes.rows.map((row) => row.database));
+			const companyDbs = sizes.rows.map((row) => row.database);
+			const unforgotten = await this.#settle(companyDbs);
+			const now = Date.now();
+			const dueTestDbs = companyDbs.filter(
+				(db) => this.#testSchemaDbs.has(db) || now - (this.#testSchemaOrphanSwept.get(db) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs,
+			);
+			await this.reapExpiredTestSchemas({ databases: dueTestDbs, trackSwept: true }).catch(() => undefined);
+			const liveDbs = new Set(companyDbs);
+			for (const db of this.#testSchemaOrphanSwept.keys()) if (!liveDbs.has(db)) this.#testSchemaOrphanSwept.delete(db);
+			for (const db of this.#testSchemaDbs) if (!liveDbs.has(db)) this.#testSchemaDbs.delete(db);
 			return {
 				ended: ended.rows
 					.filter((row) => row.ended)
@@ -3836,12 +4505,52 @@ export class Gateway {
 		return unforgotten;
 	}
 
-	async registerDataTrigger({ id, environmentId, database: name, tables = null, minIntervalMs = 60_000, onWake }) {
-		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
+	async registerDataTrigger({ id, environmentId, database: name, tables = null, minIntervalMs = 60_000, onWake = null, metadata = null }) {
+		if (typeof id !== "string" || !TRIGGER_ID.test(id)) refuse(400, "Invalid trigger id");
+		if (typeof name !== "string" || !DATABASE_NAME.test(name) || name === "qorpera" || /^(pg_|qorpera_)/.test(name))
+			refuse(400, "Name a database");
+		let normalizedTables = null;
+		if (tables !== null && tables !== undefined) {
+			if (!Array.isArray(tables) || tables.length > 64) refuse(400, "tables must be an array of at most 64 table names");
+			if (tables.length > 0) {
+				normalizedTables = [];
+				for (const table of tables) {
+					if (typeof table !== "string" || table === "" || Buffer.byteLength(table) > 63 || table.includes("\0"))
+						refuse(400, "Invalid table name in trigger");
+					normalizedTables.push(table);
+				}
+			}
+		}
+		if (!Number.isSafeInteger(minIntervalMs) || minIntervalMs < 10 || minIntervalMs > 86_400_000)
+			refuse(400, "minIntervalMs must be 10 to 86400000");
+		if (metadata !== null && metadata !== undefined) {
+			if (typeof metadata !== "object" || Array.isArray(metadata) || !this.#checkJsonParam(metadata))
+				refuse(400, "metadata must be a JSON object");
+			if (Buffer.byteLength(JSON.stringify(metadata), "utf8") > TRIGGER_METADATA_MAX_BYTES)
+				refuse(400, "metadata is too large");
+		}
+		const wakeHandler = typeof onWake === "function" ? onWake : this.#triggerWake;
+		if (typeof wakeHandler !== "function") refuse(503, "Trigger wake callback is not configured");
 		if (this.#closed) refuse(503, "The data store did not answer");
 		const database = companyDatabase(environmentId);
-		this.#triggerStops.get(id)?.stop();
-		const unregister = this.#notifier.register({ id, environmentId, database: name, tables, minIntervalMs, onWake });
+		const existing = this.#triggerStops.get(id);
+		if (existing && existing.environmentId !== environmentId) refuse(409, "Trigger id already exists in another company");
+		if (!existing) {
+			if (this.#triggerStops.size >= TRIGGER_MAX_TOTAL) refuse(429, "Too many active triggers");
+			let companyCount = 0;
+			for (const item of this.#triggerStops.values()) if (item.environmentId === environmentId) companyCount++;
+			if (companyCount >= TRIGGER_MAX_PER_COMPANY) refuse(429, "Too many active triggers for this company");
+		}
+		existing?.stop();
+		const wrappedWake = metadata ? (ev) => wakeHandler({ ...ev, metadata }) : wakeHandler;
+		const unregister = this.#notifier.register({
+			id,
+			environmentId,
+			database: name,
+			tables: normalizedTables,
+			minIntervalMs,
+			onWake: wrappedWake,
+		});
 		let stopped = false;
 		let listening = null;
 		let reconnectTimer = null;
@@ -3899,7 +4608,8 @@ export class Gateway {
 			listening = null;
 			if (this.#triggerStops.get(id) === entry) this.#triggerStops.delete(id);
 		};
-		entry = { database, schema: name, stop };
+		const registeredAt = isoNow();
+		entry = { id, environmentId, database, schema: name, tables: normalizedTables, minIntervalMs, registeredAt, stop };
 
 		this.#triggerStops.set(id, entry);
 		const initial = attach();
@@ -3912,8 +4622,32 @@ export class Gateway {
 		return stop;
 	}
 
-	unregisterDataTrigger(id) {
-		this.#triggerStops.get(id)?.stop();
+	listDataTriggers(environmentId, { database: name = null } = {}) {
+		companyDatabase(environmentId);
+		if (name !== null && (typeof name !== "string" || !DATABASE_NAME.test(name))) refuse(400, "Name a database");
+		const list = [];
+		for (const entry of this.#triggerStops.values()) {
+			if (entry.environmentId !== environmentId) continue;
+			if (name !== null && entry.schema !== name) continue;
+			list.push({
+				id: entry.id,
+				environmentId: entry.environmentId,
+				database: entry.schema,
+				tables: entry.tables,
+				minIntervalMs: entry.minIntervalMs,
+				registeredAt: entry.registeredAt,
+			});
+		}
+		return list.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+	}
+
+	unregisterDataTrigger(id, environmentId = null) {
+		if (typeof id !== "string" || !id) return false;
+		const entry = this.#triggerStops.get(id);
+		if (!entry) return false;
+		if (environmentId !== null && entry.environmentId !== environmentId) return false;
+		entry.stop();
+		return true;
 	}
 
 	async provisionDirectLogin(environmentId, name, { access = "read-write", connectionLimit = 4 } = {}) {
@@ -3961,8 +4695,8 @@ export class Gateway {
 				await client.query(`alter default privileges for role ${ownerRole} in schema ${schema} grant usage, select on sequences to ${role}`);
 			}
 			await client.query("commit");
-			const host = this.#store.host;
-			const port = this.#store.port;
+			const host = this.#directHost ?? this.#store.host;
+			const port = this.#directPort ?? this.#store.port;
 			const urlHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 			return {
 				host,
@@ -3989,13 +4723,24 @@ export class Gateway {
 	async revokeDirectLogin(environmentId, name) {
 		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
 		const database = companyDatabase(environmentId);
-		const n = await this.#folder(database, name);
+		if (!(await this.#companyExists(database))) return { revoked: false, user: null };
+		let n;
+		try {
+			n = await this.#folder(database, name);
+		} catch (error) {
+			if (error instanceof Refusal && error.status === 404) return { revoked: false, user: null };
+			throw error;
+		}
 		if (n === null) return { revoked: false, user: null };
 		const roleName = `${database}_s${n}`;
 		const role = quoted(roleName);
-		const client = await this.#pool(database, "qorpera_data_admin").connect().catch((error) => {
+		let client;
+		try {
+			client = await this.#pool(database, "qorpera_data_admin").connect();
+		} catch (error) {
+			if (error?.code === "3D000") return { revoked: false, user: null };
 			throw storeProblem(error);
-		});
+		}
 		let lost;
 		const onClientError = (error) => {
 			lost ??= error;
@@ -4094,13 +4839,14 @@ export class Gateway {
 	}
 
 	async hookChange(environmentId, body, { gone = null } = {}) {
-		if (!this.#publicReader) refuse(404, "Hook data access is not enabled");
+		const reader = this.#hookReader ?? this.#publicReader;
+		if (!reader) refuse(404, "Hook data access is not enabled");
 		const { database: name, change: file, params = {}, hookId = null } = body;
 		if (typeof name !== "string" || !DATABASE_NAME.test(name) || typeof file !== "string" || !FILE_NAME.test(file) || file.length > 60)
 			refuse(400, "Name a change as <database>/<change>");
 		if (hookId !== null && (typeof hookId !== "string" || hookId.length > 128)) refuse(400, "Invalid hookId");
 		const sqlPath = `data/${name}/actions/${file}.sql`;
-		const read = await this.#publicReader(environmentId, [sqlPath]);
+		const read = await reader(environmentId, [sqlPath]);
 		const sqlText = read?.get ? read.get(sqlPath) : read?.[sqlPath];
 		if (typeof sqlText !== "string" || Buffer.byteLength(sqlText) > this.#limits.questionTextBytes)
 			refuse(404, `No change ${name}/${file}`);
@@ -4115,6 +4861,897 @@ export class Gateway {
 		const bound = this.#values({ userId: null, run: false }, statement, params, "change");
 		const ready = { database, name, n, sql: statement.sql, values: bound.values, viewer: null, previewValues: bound.previewValues, sha256: hash, statement };
 		return { ...(await this.#act(ready, { kind: "hook", id: hookId, via: file }, { gone })), asOf: isoNow() };
+	}
+
+	#signTestSchemaMeta(testSchema, meta) {
+		const payload = Buffer.from(JSON.stringify(meta), "utf8").toString("base64url");
+		const mac = createHmac("sha256", Buffer.from(this.#store.logins.folderKey, "hex"))
+			.update(`${TEST_SCHEMA_MAC_PREFIX}${testSchema}\0`)
+			.update(payload)
+			.digest("hex");
+		return `${TEST_SCHEMA_COMMENT_PREFIX}${payload}.${mac}`;
+	}
+
+	#verifyTestSchemaMeta(testSchema, comment) {
+		if (typeof testSchema !== "string" || !TEST_SCHEMA_NAME.test(testSchema)) return null;
+		if (typeof comment !== "string" || !comment.startsWith(TEST_SCHEMA_COMMENT_PREFIX)) return null;
+		const rest = comment.slice(TEST_SCHEMA_COMMENT_PREFIX.length);
+		const dot = rest.indexOf(".");
+		if (dot <= 0 || dot >= rest.length - 1) return null;
+		const payload = rest.slice(0, dot);
+		const givenMac = rest.slice(dot + 1);
+		if (!SHA.test(givenMac)) return null;
+		const expectedMac = createHmac("sha256", Buffer.from(this.#store.logins.folderKey, "hex"))
+			.update(`${TEST_SCHEMA_MAC_PREFIX}${testSchema}\0`)
+			.update(payload)
+			.digest("hex");
+		if (!timingSafeEqual(Buffer.from(givenMac, "hex"), Buffer.from(expectedMac, "hex"))) return null;
+		try {
+			const meta = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+			if (
+				!meta ||
+				typeof meta !== "object" ||
+				meta.v !== 1 ||
+				!ENVIRONMENT.test(meta.env ?? "") ||
+				!DATABASE_NAME.test(meta.source ?? "") ||
+				!Number.isSafeInteger(meta.expiresAt) ||
+				!Number.isSafeInteger(meta.ttlMs) ||
+				!Number.isSafeInteger(meta.createdAt) ||
+				typeof meta.readLive !== "boolean" ||
+				!Array.isArray(meta.applied)
+			) {
+				return null;
+			}
+			return meta;
+		} catch {
+			return null;
+		}
+	}
+
+	#testSchemaRoles(database, testSchema) {
+		const idHex = testSchema.slice("qorpera_test_".length);
+		return {
+			idHex,
+			ownerRole: `${database}_to_${idHex}`,
+			writeRole: `${database}_tw_${idHex}`,
+			readRole: `${database}_tr_${idHex}`,
+		};
+	}
+
+	#testSchemaEntryFromMeta(database, testSchemaName, meta) {
+		const roles = this.#testSchemaRoles(database, testSchemaName);
+		const appliedSteps = new Map();
+		for (const pair of meta.applied) {
+			if (Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string" && SHA.test(pair[1] ?? "")) {
+				appliedSteps.set(pair[0], pair[1]);
+			}
+		}
+		return {
+			...roles,
+			environmentId: meta.env,
+			database,
+			sourceDatabase: meta.source,
+			testSchema: testSchemaName,
+			createdAt: meta.createdAt,
+			lastUsedAt: Date.now(),
+			expiresAt: meta.expiresAt,
+			persistedExpiresAt: meta.expiresAt,
+			ttlMs: meta.ttlMs,
+			readLive: meta.readLive,
+			appliedSteps,
+			pending: false,
+		};
+	}
+
+	async #persistTestSchemaComment(entry, client = null) {
+		if (client) {
+			const expiresAt = entry.expiresAt;
+			const signed = this.#signTestSchemaMeta(entry.testSchema, {
+				v: 1,
+				env: entry.environmentId,
+				source: entry.sourceDatabase,
+				createdAt: entry.createdAt,
+				expiresAt,
+				ttlMs: entry.ttlMs,
+				readLive: entry.readLive,
+				applied: [...entry.appliedSteps.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
+			});
+			if (!/^[A-Za-z0-9_.:-]+$/.test(signed)) refuse(500, "The data gateway failed");
+			await client.query(`comment on schema ${quoted(entry.testSchema)} is '${signed}'`);
+			entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, expiresAt);
+			return;
+		}
+		const admin = await this.#pool(entry.database, "qorpera_data_admin")
+			.connect()
+			.catch((error) => {
+				throw storeProblem(error);
+			});
+		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		admin.on("error", onClientError);
+		try {
+			await admin.query("begin; set local lock_timeout = 5000");
+			await admin.query("select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('qorpera_test_meta'), pg_catalog.hashtext($1))", [entry.testSchema]);
+			const row = (
+				await admin.query(
+					"select pg_catalog.obj_description(oid, 'pg_namespace') as comment from pg_catalog.pg_namespace where nspname = $1",
+					[entry.testSchema],
+				)
+			).rows[0];
+			if (!row) {
+				await admin.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
+				return;
+			}
+			const storedMeta = this.#verifyTestSchemaMeta(entry.testSchema, row.comment);
+			if (!storedMeta) {
+				await admin.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
+				return;
+			}
+			const mergedApplied = new Map();
+			for (const pair of storedMeta.applied) {
+				if (Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string" && SHA.test(pair[1] ?? "")) {
+					mergedApplied.set(pair[0], pair[1]);
+				}
+			}
+			const mergedExpiresAt = Math.max(entry.expiresAt, storedMeta.expiresAt);
+			const signed = this.#signTestSchemaMeta(entry.testSchema, {
+				v: 1,
+				env: storedMeta.env,
+				source: storedMeta.source,
+				createdAt: storedMeta.createdAt,
+				expiresAt: mergedExpiresAt,
+				ttlMs: storedMeta.ttlMs,
+				readLive: storedMeta.readLive,
+				applied: [...mergedApplied.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
+			});
+			if (!/^[A-Za-z0-9_.:-]+$/.test(signed)) refuse(500, "The data gateway failed");
+			await admin.query(`comment on schema ${quoted(entry.testSchema)} is '${signed}'`);
+			await admin.query("commit");
+			entry.appliedSteps = mergedApplied;
+			entry.expiresAt = mergedExpiresAt;
+			entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, mergedExpiresAt);
+		} catch (error) {
+			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code)))
+				await admin.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
+			else lost ??= error;
+			throw storeProblem(error);
+		} finally {
+			admin.removeListener("error", onClientError);
+			this.#release(admin, lost);
+		}
+	}
+
+	async #refreshTestSchemaFromStore(entry) {
+		const fresh = await this.#loadTestSchemaFromStore(entry.database, entry.testSchema);
+		if (!fresh || fresh.environmentId !== entry.environmentId || fresh.sourceDatabase !== entry.sourceDatabase) {
+			this.#testSchemas.delete(`${entry.database}/${entry.testSchema}`);
+			refuse(404, `No active test schema ${entry.testSchema} for ${entry.sourceDatabase}`);
+		}
+		entry.appliedSteps = fresh.appliedSteps;
+		entry.expiresAt = Math.max(entry.expiresAt, fresh.expiresAt);
+		entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, fresh.expiresAt);
+	}
+
+	#scheduleTestReaper() {
+		if (this.#testReaper) {
+			clearTimeout(this.#testReaper);
+			this.#testReaper = null;
+		}
+		if (!this.#testSchemaReaperEnabled || this.#closed || this.#testSchemas.size === 0) return;
+		let earliest = Number.POSITIVE_INFINITY;
+		for (const entry of this.#testSchemas.values()) {
+			if (entry.expiresAt < earliest) earliest = entry.expiresAt;
+		}
+		const delay = Math.max(10, Math.min(60_000, earliest - Date.now()));
+		this.#testReaper = setTimeout(() => {
+			this.#testReaper = null;
+			void this.reapExpiredTestSchemas().finally(() => {
+				this.#scheduleTestReaper();
+			});
+		}, delay);
+		this.#testReaper.unref?.();
+	}
+
+	async #listStoreTestSchemas(database) {
+		if (!(await this.#companyExists(database))) return [];
+		let rows;
+		try {
+			rows = (
+				await this.#pool(database, "qorpera_data_keeper").query(
+					"select nspname::text as name, pg_catalog.obj_description(oid, 'pg_namespace') as comment from pg_catalog.pg_namespace where nspname ~ '^qorpera_test_[0-9a-f]{16}$'",
+				)
+			).rows;
+		} catch (error) {
+			if (error?.code === "3D000") return [];
+			throw storeProblem(error);
+		}
+		const out = [];
+		for (const row of rows) {
+			const meta = this.#verifyTestSchemaMeta(row.name, row.comment);
+			if (!meta) continue;
+			out.push(this.#testSchemaEntryFromMeta(database, row.name, meta));
+		}
+		return out;
+	}
+
+	async #loadTestSchemaFromStore(database, testSchemaName) {
+		if (!(await this.#companyExists(database))) return null;
+		let rows;
+		try {
+			rows = (
+				await this.#pool(database, "qorpera_data_keeper").query(
+					"select pg_catalog.obj_description(oid, 'pg_namespace') as comment from pg_catalog.pg_namespace where nspname = $1",
+					[testSchemaName],
+				)
+			).rows;
+		} catch (error) {
+			if (error?.code === "3D000") return null;
+			throw storeProblem(error);
+		}
+		if (rows.length === 0) return null;
+		const meta = this.#verifyTestSchemaMeta(testSchemaName, rows[0].comment);
+		if (!meta) return null;
+		return this.#testSchemaEntryFromMeta(database, testSchemaName, meta);
+	}
+
+	reserveTestSchema(args) {
+		const next = this.#testSchemaReserveChain.then(
+			() => this.#reserveTestSchemaLocked(args),
+			() => this.#reserveTestSchemaLocked(args),
+		);
+		this.#testSchemaReserveChain = next.catch(() => undefined);
+		return next;
+	}
+
+	async #reserveTestSchemaLocked({ database, schema, environmentId, sourceDatabase, ttlMs, createdAt, expiresAt, readLive }) {
+		if (typeof database !== "string" || typeof schema !== "string" || !TEST_SCHEMA_NAME.test(schema)) {
+			refuse(400, "Invalid test schema reservation");
+		}
+		await this.reapExpiredTestSchemas();
+		const now = Date.now();
+		const storeEntries = await this.#listStoreTestSchemas(database).catch(() => []);
+		for (const loaded of storeEntries) {
+			const loadedKey = `${database}/${loaded.testSchema}`;
+			const existing = this.#testSchemas.get(loadedKey);
+			if (existing) {
+				existing.expiresAt = Math.max(existing.expiresAt, loaded.expiresAt);
+				existing.persistedExpiresAt = Math.max(existing.persistedExpiresAt ?? 0, loaded.expiresAt);
+			} else if (loaded.expiresAt > now) {
+				this.#testSchemas.set(loadedKey, loaded);
+				this.#testSchemaDbs.add(database);
+			} else if (this.#testSchemaReaperEnabled) {
+				await this.#dropTestSchemaInternal(loaded, { broadcast: true }).catch(() => undefined);
+			}
+		}
+		let companyActive = 0;
+		for (const item of this.#testSchemas.values()) {
+			if (item.database === database && item.expiresAt > now) companyActive++;
+		}
+		if (companyActive >= this.#limits.testSchemasPerCompany) {
+			refuse(429, `At most ${this.#limits.testSchemasPerCompany} active test schemas per company`);
+		}
+		if (this.#testSchemas.size >= this.#limits.testSchemasTotal) {
+			refuse(429, "Too many active test schemas on the gateway");
+		}
+		const roles = this.#testSchemaRoles(database, schema);
+		const reserveUntil = Math.max(expiresAt, now + this.#limits.applyMs + 10_000);
+		this.#testSchemas.set(`${database}/${schema}`, {
+			...roles,
+			environmentId,
+			database,
+			sourceDatabase,
+			testSchema: schema,
+			createdAt,
+			lastUsedAt: now,
+			expiresAt: reserveUntil,
+			persistedExpiresAt: expiresAt,
+			ttlMs,
+			readLive: Boolean(readLive),
+			appliedSteps: new Map(),
+			pending: true,
+		});
+		this.#testSchemaDbs.add(database);
+		this.#scheduleTestReaper();
+		return { reserved: true };
+	}
+
+	releaseTestSchema(database, schema) {
+		if (typeof database !== "string" || typeof schema !== "string" || !TEST_SCHEMA_NAME.test(schema)) return { released: false };
+		const deleted = this.#testSchemas.delete(`${database}/${schema}`);
+		this.#scheduleTestReaper();
+		return { released: deleted };
+	}
+
+	touchTestSchema({
+		database,
+		schema,
+		environmentId = null,
+		sourceDatabase = null,
+		createdAt = null,
+		expiresAt,
+		ttlMs = null,
+		readLive = false,
+		activate = false,
+	}) {
+		if (typeof database !== "string" || typeof schema !== "string" || !TEST_SCHEMA_NAME.test(schema)) return { ok: false };
+		if (!Number.isSafeInteger(expiresAt)) return { ok: false };
+		const key = `${database}/${schema}`;
+		const now = Date.now();
+		const existing = this.#testSchemas.get(key);
+		if (existing) {
+			existing.lastUsedAt = now;
+			existing.expiresAt = activate ? expiresAt : Math.max(existing.expiresAt, expiresAt);
+			if (activate) existing.pending = false;
+			this.#testSchemaDbs.add(database);
+			this.#scheduleTestReaper();
+			return { ok: true, expiresAt: existing.expiresAt };
+		}
+		if (!activate && (this.#testSchemaDrops.has(key) || expiresAt <= now)) return { ok: false, expiresAt: null };
+		const roles = this.#testSchemaRoles(database, schema);
+		this.#testSchemas.set(key, {
+			...roles,
+			environmentId,
+			database,
+			sourceDatabase,
+			testSchema: schema,
+			createdAt: Number.isSafeInteger(createdAt) ? createdAt : now,
+			lastUsedAt: now,
+			expiresAt,
+			persistedExpiresAt: expiresAt,
+			ttlMs: Number.isSafeInteger(ttlMs) ? ttlMs : this.#limits.testSchemaTtlMs,
+			readLive: Boolean(readLive),
+			appliedSteps: new Map(),
+			pending: false,
+		});
+		this.#testSchemaDbs.add(database);
+		this.#scheduleTestReaper();
+		return { ok: true, expiresAt };
+	}
+
+	checkTestSchema(database, schema) {
+		if (typeof database !== "string" || typeof schema !== "string" || !TEST_SCHEMA_NAME.test(schema)) return { expiresAt: null };
+		const entry = this.#testSchemas.get(`${database}/${schema}`);
+		return { expiresAt: entry && entry.expiresAt > Date.now() ? entry.expiresAt : null };
+	}
+
+	testSchemaExpiries(database) {
+		const out = {};
+		if (typeof database !== "string") return out;
+		const now = Date.now();
+		for (const entry of this.#testSchemas.values()) {
+			if (entry.database === database && !entry.pending && entry.expiresAt > now) {
+				out[entry.testSchema] = entry.expiresAt;
+			}
+		}
+		return out;
+	}
+
+	async #touchTestSchema(entry, now) {
+		entry.lastUsedAt = now;
+		entry.expiresAt = now + entry.ttlMs;
+		this.#testSchemaDbs.add(entry.database);
+		let touchRpcFailed = false;
+		if (this.#testSchemaRpc) {
+			await this.#testSchemaRpc
+				.touch({
+					database: entry.database,
+					schema: entry.testSchema,
+					environmentId: entry.environmentId,
+					sourceDatabase: entry.sourceDatabase,
+					createdAt: entry.createdAt,
+					expiresAt: entry.expiresAt,
+					ttlMs: entry.ttlMs,
+					readLive: entry.readLive,
+				})
+				.catch(() => {
+					touchRpcFailed = true;
+				});
+		} else {
+			this.#scheduleTestReaper();
+		}
+		const persistInterval = Math.max(50, Math.min(10_000, Math.floor(entry.ttlMs / 4)));
+		if ((touchRpcFailed || entry.expiresAt - (entry.persistedExpiresAt ?? 0) >= persistInterval) && !this.#closed) {
+			const key = `${entry.database}/${entry.testSchema}`;
+			const persistSoon = touchRpcFailed || (entry.persistedExpiresAt ?? 0) <= now + Math.max(250, Math.floor(entry.ttlMs / 2));
+			let writing = this.#testSchemaCommentWrites.get(key);
+			if (!writing) {
+				writing = this.#persistTestSchemaComment(entry)
+					.catch(() => undefined)
+					.finally(() => {
+						if (this.#testSchemaCommentWrites.get(key) === writing) this.#testSchemaCommentWrites.delete(key);
+					});
+				this.#testSchemaCommentWrites.set(key, writing);
+			}
+			if (persistSoon) await writing;
+		}
+	}
+
+	async #resolveTestSchema(environmentId, sourceDatabase, testSchemaName) {
+		if (typeof testSchemaName !== "string" || !TEST_SCHEMA_NAME.test(testSchemaName)) {
+			refuse(400, "schema must be a valid ephemeral test schema identifier");
+		}
+		const database = companyDatabase(environmentId);
+		const key = `${database}/${testSchemaName}`;
+		let entry = this.#testSchemas.get(key);
+		if (!entry) {
+			const loaded = await this.#loadTestSchemaFromStore(database, testSchemaName);
+			if (loaded) entry = loaded;
+		}
+		if (!entry || entry.environmentId !== environmentId || entry.sourceDatabase !== sourceDatabase) {
+			refuse(404, `No active test schema ${testSchemaName} for ${sourceDatabase}`);
+		}
+		const now = Date.now();
+		if (entry.expiresAt <= now) {
+			let aliveUntil = null;
+			if (this.#testSchemaRpc) {
+				let checked;
+				try {
+					checked = await this.#runTriggerRpc(() => this.#testSchemaRpc.check({ database, schema: testSchemaName }));
+				} catch (error) {
+					if (error instanceof Refusal) throw error;
+					refuse(503, "The data gateway primary is unavailable");
+				}
+				if (checked && Number.isSafeInteger(checked.expiresAt) && checked.expiresAt > now) {
+					aliveUntil = checked.expiresAt;
+				}
+			}
+			if (aliveUntil !== null) {
+				entry.expiresAt = aliveUntil;
+			} else {
+				const fresh = await this.#loadTestSchemaFromStore(database, testSchemaName);
+				if (fresh && fresh.expiresAt > now) {
+					entry.expiresAt = fresh.expiresAt;
+					entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, fresh.expiresAt);
+					entry.appliedSteps = fresh.appliedSteps;
+				} else {
+					await this.#dropTestSchemaInternal(entry, { broadcast: true }).catch(() => undefined);
+					refuse(404, `Test schema ${testSchemaName} has expired`);
+				}
+			}
+		}
+		this.#testSchemas.set(key, entry);
+		await this.#touchTestSchema(entry, now);
+		return entry;
+	}
+
+	async createTestSchema(caller, environmentId, body) {
+		if (!body || typeof body !== "object" || Array.isArray(body)) refuse(400, "The body is not an object");
+		for (const key of Object.keys(body)) {
+			if (!["database", "ttlSeconds", "readLive", "texts", "pass"].includes(key)) {
+				refuse(400, `Unknown argument: ${key}`);
+			}
+		}
+		const name = body.database;
+		if (typeof name !== "string" || !DATABASE_NAME.test(name) || name === "qorpera" || /^(pg_|qorpera_)/.test(name))
+			refuse(400, "A database's name is a letter, then up to 39 of a-z, 0-9 and _");
+		const readLive = body.readLive === undefined ? false : body.readLive;
+		if (typeof readLive !== "boolean") refuse(400, "readLive must be true or false");
+		const maxTtlSec = Math.max(1, Math.floor(this.#limits.testSchemaMaxTtlMs / 1000));
+		let ttlMs = this.#limits.testSchemaTtlMs;
+		if (body.ttlSeconds !== undefined) {
+			if (!Number.isSafeInteger(body.ttlSeconds) || body.ttlSeconds < 1 || body.ttlSeconds > maxTtlSec) {
+				refuse(400, `ttlSeconds must be 1 to ${maxTtlSec}`);
+			}
+			ttlMs = body.ttlSeconds * 1000;
+		}
+		const root = `data/${name}`;
+		const proof = (await this.#proven(caller, environmentId, [`${root}/database.toml`])).get(`${root}/database.toml`);
+		if (!proof) refuse(404, `No database ${name} that you may read: it needs ${root}/database.toml`);
+		if (!caller.run && !(await this.#mayWrite(caller, environmentId, name))) {
+			refuse(403, `Test schemas for ${name} require write access to its folder`);
+		}
+		const database = companyDatabase(environmentId);
+		if (this.#full.has(database)) {
+			refuse(507, `This company's database is at its size limit of ${amount(this.#limits.companyBytes)}: delete rows or ask for more room`);
+		}
+		await this.#ensureCompany(database);
+		const keeper = this.#pool(database, "qorpera_data_keeper");
+		const appliedRows = (
+			await keeper
+				.query("select name, sha256 from qorpera_data.steps where database = $1 order by name", [name])
+				.catch((error) => {
+					throw storeProblem(error);
+				})
+		).rows;
+		const resolvedTexts = await this.#textsFor(
+			database,
+			appliedRows.map((row) => row.sha256),
+			body.texts,
+			this.#limits.stepTextBytes,
+		);
+		const need = [];
+		const stepTexts = new Map();
+		for (const row of appliedRows) {
+			const text = resolvedTexts.get(row.sha256) ?? null;
+			if (text === null) need.push({ path: `${root}/tables/${row.name}.sql`, sha256: row.sha256 });
+			else stepTexts.set(row.name, text);
+		}
+		if (need.length > 0) return { need };
+		const liveN = await this.#folder(database, name);
+		const idHex = randomBytes(8).toString("hex");
+		const testSchema = `qorpera_test_${idHex}`;
+		const ownerRole = `${database}_to_${idHex}`;
+		const writeRole = `${database}_tw_${idHex}`;
+		const readRole = `${database}_tr_${idHex}`;
+		const now = Date.now();
+		const entry = {
+			idHex,
+			environmentId,
+			database,
+			sourceDatabase: name,
+			testSchema,
+			ownerRole,
+			writeRole,
+			readRole,
+			createdAt: now,
+			lastUsedAt: now,
+			expiresAt: now + ttlMs,
+			persistedExpiresAt: now + ttlMs,
+			ttlMs,
+			readLive,
+			appliedSteps: new Map(),
+			pending: false,
+		};
+		const reservePayload = {
+			database,
+			schema: testSchema,
+			environmentId,
+			sourceDatabase: name,
+			ttlMs,
+			createdAt: now,
+			expiresAt: entry.expiresAt,
+			readLive,
+		};
+		if (this.#testSchemaRpc) {
+			await this.#runTriggerRpc(() => this.#testSchemaRpc.reserve(reservePayload));
+		} else {
+			await this.reserveTestSchema(reservePayload);
+		}
+		let schemaCreated = false;
+		try {
+			const admin = await this.#pool(database, "qorpera_data_admin").connect().catch((error) => {
+				throw storeProblem(error);
+			});
+			let lost;
+			const onClientError = (error) => {
+				lost ??= error;
+			};
+			admin.on("error", onClientError);
+			try {
+				await admin.query("begin; set local lock_timeout = 5000");
+				for (const [roleName, limit] of [
+					[ownerRole, Math.min(4, Math.max(POOL_SIZE.to, this.#workers))],
+					[writeRole, POOL_SIZE.tw],
+					[readRole, POOL_SIZE.tr],
+				]) {
+					const options = `login noinherit connection limit ${limit} password '${this.#password(roleName)}'`;
+					await admin.query(`create role ${quoted(roleName)} ${options}`);
+				}
+				const [ownerQ, writeQ, readQ, schemaQ] = [ownerRole, writeRole, readRole, testSchema].map(quoted);
+				await admin.query(`grant connect on database ${quoted(database)} to ${ownerQ}, ${writeQ}, ${readQ}`);
+				await admin.query(`create schema ${schemaQ} authorization ${ownerQ}`);
+				await admin.query(`grant usage on schema ${schemaQ} to ${writeQ}, ${readQ}`);
+				await admin.query(
+					`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant select on tables to ${writeQ}, ${readQ}; ` +
+						`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant insert, update, delete on tables to ${writeQ}; ` +
+						`alter default privileges for role ${ownerQ} in schema ${schemaQ} grant usage, select on sequences to ${writeQ}`,
+				);
+				if (readLive && liveN !== null) {
+					const liveQ = quoted(name);
+					await admin.query(`grant usage on schema ${liveQ} to ${writeQ}, ${readQ}`);
+					await admin.query(`grant select on all tables in schema ${liveQ} to ${writeQ}, ${readQ}`);
+				}
+				await this.#persistTestSchemaComment(entry, admin);
+				await admin.query("commit");
+				schemaCreated = true;
+			} catch (error) {
+				if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code)))
+					await admin.query("rollback").catch((rbError) => {
+						lost ??= rbError;
+					});
+				else lost ??= error;
+				throw storeProblem(error);
+			} finally {
+				admin.removeListener("error", onClientError);
+				this.#release(admin, lost);
+			}
+			const cloneBegan = Date.now();
+			for (const row of appliedRows) {
+				const leftMs = this.#limits.applyMs - (Date.now() - cloneBegan);
+				if (leftMs <= 0) refuse(408, "Creating the test schema ran past its time limit");
+				const stepLimitMs = Math.min(this.#limits.stepMs, Math.max(1, leftMs));
+				const outcome = await this.#step(database, name, null, row, stepTexts.get(row.name), {
+					testSchema: entry,
+					stepMs: stepLimitMs,
+				});
+				if (outcome.state !== "applied") {
+					if (/time limit/i.test(outcome.detail ?? "") && (stepLimitMs < this.#limits.stepMs || Date.now() - cloneBegan >= this.#limits.applyMs)) {
+						refuse(408, "Creating the test schema ran past its time limit");
+					}
+					refuse(400, `Cloning step ${row.name} into test schema failed: ${outcome.detail ?? outcome.state}`);
+				}
+				entry.appliedSteps.set(row.name, row.sha256);
+			}
+			const readyAt = Date.now();
+			entry.lastUsedAt = readyAt;
+			entry.expiresAt = readyAt + ttlMs;
+			await this.#persistTestSchemaComment(entry);
+		} catch (error) {
+			if (schemaCreated) {
+				await this.#dropTestSchemaInternal(entry, { broadcast: true }).catch(() => undefined);
+			} else if (this.#testSchemaRpc) {
+				await this.#testSchemaRpc.release({ database, schema: testSchema }).catch(() => undefined);
+			} else {
+				this.releaseTestSchema(database, testSchema);
+			}
+			throw error;
+		}
+		this.#testSchemas.set(`${database}/${testSchema}`, entry);
+		this.#testSchemaDbs.add(database);
+		if (this.#testSchemaRpc) {
+			await this.#testSchemaRpc
+				.touch({
+					database,
+					schema: testSchema,
+					environmentId,
+					sourceDatabase: name,
+					createdAt: entry.createdAt,
+					expiresAt: entry.expiresAt,
+					ttlMs,
+					readLive,
+					activate: true,
+				})
+				.catch(() => undefined);
+		} else {
+			this.#scheduleTestReaper();
+		}
+		return {
+			schema: testSchema,
+			database: name,
+			stepsApplied: [...entry.appliedSteps.keys()],
+			readLive,
+			ttlMs,
+			createdAt: new Date(entry.createdAt).toISOString(),
+			expiresAt: new Date(entry.expiresAt).toISOString(),
+		};
+	}
+
+	async listTestSchemas(caller, environmentId, { database: filterDb = null } = {}) {
+		const database = companyDatabase(environmentId);
+		if (filterDb !== null && (typeof filterDb !== "string" || !DATABASE_NAME.test(filterDb))) {
+			refuse(400, "Name a database");
+		}
+		if (this.#testSchemaReaperEnabled) await this.reapExpiredTestSchemas();
+		const [storeEntries, remoteExpiries] = await Promise.all([
+			this.#listStoreTestSchemas(database),
+			this.#testSchemaRpc ? this.#testSchemaRpc.expiries({ database }).catch(() => ({})) : Promise.resolve({}),
+		]);
+		const now = Date.now();
+		const candidates = [];
+		for (const loaded of storeEntries) {
+			if (loaded.environmentId !== environmentId) continue;
+			if (filterDb !== null && loaded.sourceDatabase !== filterDb) continue;
+			const local = this.#testSchemas.get(`${database}/${loaded.testSchema}`);
+			const remoteExpiry = Number.isSafeInteger(remoteExpiries?.[loaded.testSchema]) ? remoteExpiries[loaded.testSchema] : 0;
+			const expiresAt = Math.max(loaded.expiresAt, local?.expiresAt ?? 0, remoteExpiry);
+			if (expiresAt <= now) continue;
+			candidates.push({
+				...loaded,
+				expiresAt,
+			});
+		}
+		if (candidates.length === 0) return { schemas: [] };
+		const sourcePaths = [...new Set(candidates.map((entry) => `data/${entry.sourceDatabase}/database.toml`))];
+		const proofs = await this.#proven(caller, environmentId, sourcePaths);
+		const schemas = candidates
+			.filter((entry) => proofs.get(`data/${entry.sourceDatabase}/database.toml`))
+			.map((entry) => ({
+				schema: entry.testSchema,
+				database: entry.sourceDatabase,
+				stepsApplied: [...entry.appliedSteps.keys()],
+				readLive: entry.readLive,
+				ttlMs: entry.ttlMs,
+				createdAt: new Date(entry.createdAt).toISOString(),
+				expiresAt: new Date(entry.expiresAt).toISOString(),
+			}))
+			.sort((a, b) => (a.schema < b.schema ? -1 : a.schema > b.schema ? 1 : 0));
+		return { schemas };
+	}
+
+	async dropTestSchema(caller, environmentId, testSchemaName) {
+		if (typeof testSchemaName !== "string" || !TEST_SCHEMA_NAME.test(testSchemaName)) {
+			refuse(400, "schema must be a valid ephemeral test schema identifier");
+		}
+		const database = companyDatabase(environmentId);
+		const key = `${database}/${testSchemaName}`;
+		let entry = this.#testSchemas.get(key);
+		if (!entry) {
+			entry = await this.#loadTestSchemaFromStore(database, testSchemaName);
+		}
+		if (!entry || entry.environmentId !== environmentId) {
+			return { dropped: false, schema: testSchemaName };
+		}
+		const proof = (await this.#proven(caller, environmentId, [`data/${entry.sourceDatabase}/database.toml`])).get(
+			`data/${entry.sourceDatabase}/database.toml`,
+		);
+		if (!proof) refuse(404, `No active test schema ${testSchemaName}`);
+		if (!caller.run && !(await this.#mayWrite(caller, environmentId, entry.sourceDatabase))) {
+			refuse(403, `Test schemas for ${entry.sourceDatabase} require write access to its folder`);
+		}
+		await this.#dropTestSchemaInternal(entry, { broadcast: true });
+		return { dropped: true, schema: testSchemaName, database: entry.sourceDatabase };
+	}
+
+	async #dropTestSchemaInternal(entry, { broadcast = false } = {}) {
+		const key = `${entry.database}/${entry.testSchema}`;
+		const inFlight = this.#testSchemaDrops.get(key);
+		if (inFlight) return inFlight;
+		const work = (async () => {
+			this.#testSchemas.delete(key);
+			this.#testSchemaCommentWrites.delete(key);
+			this.#scheduleTestReaper();
+			this.#bumpSchemaEpoch(entry.database, entry.testSchema);
+			const roles = [entry.ownerRole, entry.writeRole, entry.readRole];
+			const closingPools = this.#beginClosePools((poolKey) => roles.some((role) => poolKey === `${role}@${entry.database}`));
+			const watch = this.#pool("postgres", "qorpera_data_watch");
+			let client = null;
+			let lost;
+			const onClientError = (error) => {
+				lost ??= error;
+			};
+			try {
+				try {
+					client = await this.#pool(entry.database, "qorpera_data_admin").connect();
+				} catch (error) {
+					await closingPools;
+					if (error?.code === "3D000") return;
+					throw error;
+				}
+				client.on("error", onClientError);
+				await client.query("begin; set local lock_timeout = 5000");
+				const existing = (
+					await client.query("select rolname::text as name from pg_catalog.pg_roles where rolname = any($1::text[]) order by rolname", [roles])
+				).rows.map((row) => row.name);
+				if (existing.length > 0) {
+					const roleList = existing.map(quoted).join(", ");
+					for (const role of existing) await client.query(`alter role ${quoted(role)} nologin`);
+					await client.query(`revoke all on database ${quoted(entry.database)} from ${roleList}`);
+				}
+				await watch
+					.query("select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where datname = $1 and usename = any($2::text[])", [
+						entry.database,
+						roles,
+					])
+					.catch(() => undefined);
+				await closingPools;
+				await client.query(`drop schema if exists ${quoted(entry.testSchema)} cascade`);
+				if (existing.length > 0) {
+					const roleList = existing.map(quoted).join(", ");
+					await client.query(`drop owned by ${roleList}`);
+					for (const role of existing) await client.query(`drop role if exists ${quoted(role)}`);
+				}
+				await client.query("commit");
+			} catch (error) {
+				if (client) {
+					await client.query("rollback").catch((rbError) => {
+						lost ??= rbError;
+					});
+				}
+				throw storeProblem(error);
+			} finally {
+				if (client) {
+					client.removeListener("error", onClientError);
+					this.#release(client, lost);
+				}
+				if (broadcast) this.#onTestSchemaDrop({ database: entry.database, schema: entry.testSchema });
+			}
+		})().finally(() => {
+			if (this.#testSchemaDrops.get(key) === work) this.#testSchemaDrops.delete(key);
+		});
+		this.#testSchemaDrops.set(key, work);
+		return work;
+	}
+
+	async evictTestSchema(database, testSchema) {
+		if (typeof database !== "string" || typeof testSchema !== "string" || !TEST_SCHEMA_NAME.test(testSchema)) return;
+		const key = `${database}/${testSchema}`;
+		this.#testSchemas.delete(key);
+		this.#testSchemaCommentWrites.delete(key);
+		this.#scheduleTestReaper();
+		this.#bumpSchemaEpoch(database, testSchema);
+		const { ownerRole, writeRole, readRole } = this.#testSchemaRoles(database, testSchema);
+		const roles = [ownerRole, writeRole, readRole];
+		await this.#closePools((poolKey) => roles.some((role) => poolKey === `${role}@${database}`));
+	}
+
+	async reapExpiredTestSchemas({ databases = null, trackSwept = false } = {}) {
+		const now = Date.now();
+		const reaped = [];
+		const expiredEntries = [];
+		for (const entry of this.#testSchemas.values()) {
+			if (entry.expiresAt <= now) expiredEntries.push(entry);
+		}
+		for (const entry of expiredEntries) {
+			if (entry.expiresAt > Date.now()) continue;
+			let fresh = null;
+			try {
+				fresh = await this.#loadTestSchemaFromStore(entry.database, entry.testSchema);
+			} catch {
+				continue;
+			}
+			const checkNow = Date.now();
+			if (entry.expiresAt > checkNow) continue;
+			if (fresh && fresh.expiresAt > checkNow) {
+				entry.expiresAt = fresh.expiresAt;
+				entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, fresh.expiresAt);
+				entry.appliedSteps = fresh.appliedSteps;
+				this.#scheduleTestReaper();
+				continue;
+			}
+			await this.#dropTestSchemaInternal(entry, { broadcast: true }).catch(() => undefined);
+			reaped.push({ database: entry.database, schema: entry.testSchema });
+		}
+		if (Array.isArray(databases) && databases.length > 0 && !this.#closed) {
+			await mapBounded(databases, DESCRIBE_CONCURRENCY, async (database) => {
+				let rows;
+				try {
+					rows = (
+						await this.#pool(database, "qorpera_data_keeper").query(
+							"select nspname::text as name, pg_catalog.obj_description(oid, 'pg_namespace') as comment from pg_catalog.pg_namespace where nspname ~ '^qorpera_test_[0-9a-f]{16}$'",
+						)
+					).rows;
+				} catch {
+					return;
+				}
+				let remaining = 0;
+				for (const row of rows) {
+					const key = `${database}/${row.name}`;
+					const active = this.#testSchemas.get(key);
+					if (active && active.expiresAt > now) {
+						remaining++;
+						continue;
+					}
+					const meta = this.#verifyTestSchemaMeta(row.name, row.comment);
+					if (meta && meta.expiresAt > now) {
+						if (!active) {
+							this.#testSchemas.set(key, this.#testSchemaEntryFromMeta(database, row.name, meta));
+							this.#scheduleTestReaper();
+						} else if (meta.expiresAt > active.expiresAt) {
+							active.expiresAt = meta.expiresAt;
+							this.#scheduleTestReaper();
+						}
+						remaining++;
+						continue;
+					}
+					const roles = this.#testSchemaRoles(database, row.name);
+					await this.#dropTestSchemaInternal(
+						{
+							...roles,
+							environmentId: meta?.env ?? null,
+							database,
+							sourceDatabase: meta?.source ?? null,
+							testSchema: row.name,
+						},
+						{ broadcast: true },
+					).catch(() => undefined);
+					reaped.push({ database, schema: row.name });
+				}
+				if (trackSwept) {
+					this.#testSchemaOrphanSwept.set(database, now);
+					if (remaining === 0) this.#testSchemaDbs.delete(database);
+					else this.#testSchemaDbs.add(database);
+				}
+			});
+		}
+		return reaped;
 	}
 
 	#beginClosePools(match) {
@@ -4135,6 +5772,10 @@ export class Gateway {
 		for (const entry of [...this.#triggerStops.values()]) {
 			if (entry.database === database && entry.schema === name) entry.stop();
 		}
+		const testEntries = [...this.#testSchemas.values()].filter((entry) => entry.database === database && entry.sourceDatabase === name);
+		for (const entry of testEntries) {
+			await this.evictTestSchema(database, entry.testSchema);
+		}
 		const folderKey = `${database}/${name}`;
 		const knownN = n ?? this.#folders.get(folderKey) ?? null;
 		this.#folders.delete(folderKey);
@@ -4151,6 +5792,12 @@ export class Gateway {
 		for (const entry of [...this.#triggerStops.values()]) {
 			if (entry.database === database) entry.stop();
 		}
+		for (const [key, entry] of [...this.#testSchemas.entries()]) {
+			if (entry.database === database) this.#testSchemas.delete(key);
+		}
+		this.#testSchemaDbs.delete(database);
+		this.#testSchemaOrphanSwept.delete(database);
+		this.#scheduleTestReaper();
 		const listener = this.#listeners.get(database);
 		if (listener) {
 			listener.stopped = true;
@@ -4194,6 +5841,10 @@ export class Gateway {
 			refuse(400, "Name a database");
 		const database = companyDatabase(environmentId);
 		if (!(await this.#companyExists(database))) return { dropped: false, database, schema: name, rolesDropped: [] };
+		const testEntries = [...this.#testSchemas.values()].filter((entry) => entry.database === database && entry.sourceDatabase === name);
+		for (const entry of testEntries) {
+			await this.#dropTestSchemaInternal(entry, { broadcast: true }).catch(() => undefined);
+		}
 		const watch = this.#pool("postgres", "qorpera_data_watch");
 		let client;
 		try {
@@ -4316,7 +5967,9 @@ export class Gateway {
 					}
 				}
 				const roles = (
-					await admin.query("select rolname::text as name from pg_catalog.pg_roles where rolname ~ $1 order by rolname", [`^${database}_[owrs][0-9]+$`])
+					await admin.query("select rolname::text as name from pg_catalog.pg_roles where rolname ~ $1 order by rolname", [
+						`^${database}_([owrs][0-9]+|t[owr]_[0-9a-f]{16})$`,
+					])
 				).rows.map((row) => row.name);
 				const rolesDropped = [];
 				for (const role of roles) {
@@ -4356,20 +6009,80 @@ export class Gateway {
 		return caller;
 	}
 
+	#requireScopedAuth(authorization, primaryToken, scopedToken = null) {
+		if (!primaryToken && !scopedToken) refuse(404, "Not a call the data gateway answers");
+		const okPrimary = primaryToken ? bearerIs(authorization, primaryToken) : false;
+		const okScoped = scopedToken ? bearerIs(authorization, scopedToken) : false;
+		if (!okPrimary && !okScoped) refuse(401, "Not allowed");
+	}
+
+	async #readJsonBody(read, { allowEmpty = false } = {}) {
+		const raw = await read(this.#limits.bodyBytes);
+		if (allowEmpty && raw.trim() === "") return {};
+		let body;
+		try {
+			body = JSON.parse(raw);
+		} catch {
+			refuse(400, "The body is not JSON");
+		}
+		if (!body || typeof body !== "object" || Array.isArray(body)) refuse(400, "The body is not an object");
+		return body;
+	}
+
+	async #readOptionalJsonBody(headers, read) {
+		if (headers["content-length"] === undefined && headers["transfer-encoding"] === undefined) return {};
+		return this.#readJsonBody(read, { allowEmpty: true });
+	}
+
+	#decodeSegment(segment) {
+		try {
+			return decodeURIComponent(segment);
+		} catch {
+			refuse(400, "Invalid path encoding");
+		}
+	}
+
+	#extractTestSchemaParam(searchParams, body) {
+		const querySchema = searchParams.has("schema") ? searchParams.get("schema") : undefined;
+		const bodySchema = body.schema;
+		if (querySchema !== undefined && bodySchema !== undefined && querySchema !== bodySchema) {
+			refuse(400, "Conflicting schema parameters");
+		}
+		const requested = querySchema ?? bodySchema;
+		if (requested === undefined || requested === null) return null;
+		if (typeof requested !== "string" || !TEST_SCHEMA_NAME.test(requested)) {
+			refuse(400, "schema must be a valid ephemeral test schema identifier");
+		}
+		return requested;
+	}
+
+	async #runTriggerRpc(work) {
+		try {
+			return await work();
+		} catch (error) {
+			if (error instanceof Refusal) throw error;
+			if (Number.isInteger(error?.status) && error.status >= 400 && error.status < 600 && typeof error?.message === "string") {
+				refuse(error.status, error.message, error.extra && typeof error.extra === "object" ? error.extra : {});
+			}
+			throw error;
+		}
+	}
+
 	/** A member's request, begun as that member. */
-	async handle(method, path, headers, read, gone) {
-		const publicRoute = /^\/v1\/company-data-public\/([^/]+)\/(query|change)$/.exec(path);
+	async handle(method, path, headers, read, gone, search = "") {
+		let pathname = path;
+		let queryStr = search;
+		if (queryStr === "" && pathname.includes("?")) {
+			const idx = pathname.indexOf("?");
+			queryStr = pathname.slice(idx);
+			pathname = pathname.slice(0, idx);
+		}
+		const searchParams = new URLSearchParams(queryStr);
+		const publicRoute = /^\/v1\/company-data-public\/([^/]+)\/(query|change)$/.exec(pathname);
 		if (publicRoute) {
 			if (method !== "POST") refuse(405, "Use POST");
 			companyDatabase(publicRoute[1]);
-			let body;
-			try {
-				body = JSON.parse(await read(this.#limits.bodyBytes));
-			} catch (error) {
-				if (error instanceof Refusal) throw error;
-				refuse(400, "The body is not JSON");
-			}
-			if (!body || typeof body !== "object" || Array.isArray(body)) refuse(400, "The body is not an object");
+			const body = await this.#readJsonBody(read);
 			const forwardedParts =
 				typeof headers["x-forwarded-for"] === "string"
 					? headers["x-forwarded-for"]
@@ -4382,95 +6095,225 @@ export class Gateway {
 				? this.publicQuery(publicRoute[1], body, clientKey, { gone })
 				: this.publicChange(publicRoute[1], body, clientKey, { gone });
 		}
-		const hookRoute = /^\/v1\/hook-data\/([^/]+)\/change$/.exec(path);
+		const hookRoute = /^\/v1\/hook-data\/([^/]+)\/change$/.exec(pathname);
 		if (hookRoute) {
 			if (!this.#hookToken) refuse(404, "Not a call the data gateway answers");
 			if (!bearerIs(headers.authorization, this.#hookToken)) refuse(401, "Not allowed");
 			if (method !== "POST") refuse(405, "Use POST");
 			companyDatabase(hookRoute[1]);
-			let body;
-			try {
-				body = JSON.parse(await read(this.#limits.bodyBytes));
-			} catch (error) {
-				if (error instanceof Refusal) throw error;
-				refuse(400, "The body is not JSON");
-			}
-			if (!body || typeof body !== "object" || Array.isArray(body)) refuse(400, "The body is not an object");
+			const body = await this.#readJsonBody(read);
 			return this.hookChange(hookRoute[1], body, { gone });
 		}
-		const adminRoute = /^\/v1\/admin\/company-data\/([^/]+)\/(drop-database|drop-company)$/.exec(path);
+		const adminDirectRoute = /^\/v1\/admin\/company-data\/([^/]+)\/direct-login(?:\/([^/]+))?$/.exec(pathname);
+		if (adminDirectRoute) {
+			this.#requireScopedAuth(headers.authorization, this.#adminToken, this.#directLoginToken);
+			const environmentId = adminDirectRoute[1];
+			const pathDb = adminDirectRoute[2] !== undefined ? this.#decodeSegment(adminDirectRoute[2]) : null;
+			companyDatabase(environmentId);
+			if (method === "POST") {
+				if (pathDb !== null) refuse(404, "Not a call the data gateway answers");
+				const body = await this.#readJsonBody(read);
+				for (const key of Object.keys(body)) {
+					if (!["database", "access", "connectionLimit"].includes(key)) refuse(400, `Unknown argument: ${key}`);
+				}
+				return this.provisionDirectLogin(environmentId, body.database, {
+					...(body.access !== undefined ? { access: body.access } : {}),
+					...(body.connectionLimit !== undefined ? { connectionLimit: body.connectionLimit } : {}),
+				});
+			}
+			if (method === "DELETE") {
+				const body = await this.#readOptionalJsonBody(headers, read);
+				for (const key of Object.keys(body)) {
+					if (key !== "database") refuse(400, `Unknown argument: ${key}`);
+				}
+				const queryDb = searchParams.has("database") ? searchParams.get("database") : null;
+				const bodyDb = body.database ?? null;
+				const given = [pathDb, queryDb, bodyDb].filter((value) => value !== null);
+				if (given.length === 0) refuse(400, "Name a database");
+				if (new Set(given).size > 1) refuse(400, "Conflicting database parameters");
+				return this.revokeDirectLogin(environmentId, given[0]);
+			}
+			refuse(405, "Use POST or DELETE");
+		}
+		const adminTriggersRoute = /^\/v1\/admin\/company-data\/([^/]+)\/triggers(?:\/([^/]+))?$/.exec(pathname);
+		if (adminTriggersRoute) {
+			this.#requireScopedAuth(headers.authorization, this.#adminToken, this.#triggerToken);
+			const environmentId = adminTriggersRoute[1];
+			const pathId = adminTriggersRoute[2] !== undefined ? this.#decodeSegment(adminTriggersRoute[2]) : null;
+			companyDatabase(environmentId);
+			if (method === "GET") {
+				if (pathId !== null) refuse(404, "Not a call the data gateway answers");
+				const filterDb = searchParams.has("database") ? searchParams.get("database") : null;
+				if (this.#triggerRpc) {
+					return { triggers: await this.#runTriggerRpc(() => this.#triggerRpc.list({ environmentId, database: filterDb })) };
+				}
+				return { triggers: this.listDataTriggers(environmentId, { database: filterDb }) };
+			}
+			if (method === "POST") {
+				if (pathId !== null) refuse(404, "Not a call the data gateway answers");
+				const body = await this.#readJsonBody(read);
+				for (const key of Object.keys(body)) {
+					if (!["id", "database", "tables", "minIntervalMs", "metadata"].includes(key)) {
+						refuse(400, `Unknown argument: ${key}`);
+					}
+				}
+				const payload = {
+					id: body.id,
+					environmentId,
+					database: body.database,
+					tables: body.tables ?? null,
+					minIntervalMs: body.minIntervalMs ?? 60_000,
+					metadata: body.metadata ?? null,
+				};
+				if (this.#triggerRpc) return this.#runTriggerRpc(() => this.#triggerRpc.register(payload));
+				await this.registerDataTrigger(payload);
+				const registered = this.listDataTriggers(environmentId).find((item) => item.id === body.id);
+				return registered ?? { id: body.id, environmentId, database: body.database, tables: payload.tables, minIntervalMs: payload.minIntervalMs };
+			}
+			if (method === "DELETE") {
+				const body = await this.#readOptionalJsonBody(headers, read);
+				for (const key of Object.keys(body)) {
+					if (key !== "id") refuse(400, `Unknown argument: ${key}`);
+				}
+				const queryId = searchParams.has("id") ? searchParams.get("id") : null;
+				const bodyId = body.id ?? null;
+				const given = [pathId, queryId, bodyId].filter((value) => value !== null);
+				if (given.length === 0) refuse(400, "Name a trigger id");
+				if (new Set(given).size > 1) refuse(400, "Conflicting trigger id parameters");
+				const triggerId = given[0];
+				if (typeof triggerId !== "string" || !TRIGGER_ID.test(triggerId)) refuse(400, "Invalid trigger id");
+				if (this.#triggerRpc) {
+					return {
+						unregistered: await this.#runTriggerRpc(() => this.#triggerRpc.unregister({ environmentId, id: triggerId })),
+						id: triggerId,
+					};
+				}
+				return { unregistered: this.unregisterDataTrigger(triggerId, environmentId), id: triggerId };
+			}
+			refuse(405, "Use GET, POST or DELETE");
+		}
+		const adminRoute = /^\/v1\/admin\/company-data\/([^/]+)\/(drop-database|drop-company)$/.exec(pathname);
 		if (adminRoute) {
 			if (!this.#adminToken) refuse(404, "Not a call the data gateway answers");
 			if (!bearerIs(headers.authorization, this.#adminToken)) refuse(401, "Not allowed");
 			if (method !== "POST") refuse(405, "Use POST");
-			let body = {};
-			const raw = await read(this.#limits.bodyBytes);
-			if (raw.trim() !== "") {
-				try {
-					body = JSON.parse(raw);
-				} catch {
-					refuse(400, "The body is not JSON");
-				}
-			}
-			if (!body || typeof body !== "object" || Array.isArray(body)) refuse(400, "The body is not an object");
+			const body = await this.#readJsonBody(read, { allowEmpty: true });
 			return adminRoute[2] === "drop-database" ? this.dropDatabase(adminRoute[1], body.database) : this.dropCompany(adminRoute[1]);
 		}
-		const route = /^\/v1\/company-data\/([^/]+)\/(query|watch|apply|describe|change|rows|edit|changes)$/.exec(path);
+		const testSchemaRoute = /^\/v1\/company-data\/([^/]+)\/test-schemas(?:\/([^/]+))?$/.exec(pathname);
+		if (testSchemaRoute) {
+			const caller = this.#parseCaller(headers.authorization);
+			const environmentId = testSchemaRoute[1];
+			const pathSchema = testSchemaRoute[2] !== undefined ? this.#decodeSegment(testSchemaRoute[2]) : null;
+			companyDatabase(environmentId);
+			if (method === "GET") {
+				if (pathSchema !== null) refuse(404, "Not a call the data gateway answers");
+				const filterDb = searchParams.has("database") ? searchParams.get("database") : null;
+				return this.listTestSchemas(caller, environmentId, { database: filterDb });
+			}
+			if (method === "POST") {
+				if (pathSchema !== null) refuse(404, "Not a call the data gateway answers");
+				const body = await this.#readJsonBody(read);
+				if (body.texts !== undefined && (typeof body.texts !== "object" || body.texts === null || Array.isArray(body.texts)))
+					refuse(400, "Texts are given by their hash");
+				return this.createTestSchema(caller, environmentId, body);
+			}
+			if (method === "DELETE") {
+				const body = await this.#readOptionalJsonBody(headers, read);
+				const querySchema = searchParams.has("schema") ? searchParams.get("schema") : null;
+				const bodySchema = body.schema ?? null;
+				const given = [pathSchema, querySchema, bodySchema].filter((value) => value !== null);
+				if (given.length === 0) refuse(400, "Name a test schema");
+				if (new Set(given).size > 1) refuse(400, "Conflicting schema parameters");
+				return this.dropTestSchema(caller, environmentId, given[0]);
+			}
+			refuse(405, "Use GET, POST or DELETE");
+		}
+		const route = /^\/v1\/company-data\/([^/]+)\/(query|watch|apply|describe|change|rows|edit|changes)$/.exec(pathname);
 		if (!route) refuse(404, "Not a call the data gateway answers");
 		if (method !== "POST") refuse(405, "Use POST");
 		const caller = this.#parseCaller(headers.authorization);
 		const environmentId = route[1];
 		companyDatabase(environmentId);
-		let body;
-		try {
-			body = JSON.parse(await read(this.#limits.bodyBytes));
-		} catch (error) {
-			if (error instanceof Refusal) throw error;
-			refuse(400, "The body is not JSON");
-		}
-		if (!body || typeof body !== "object" || Array.isArray(body)) refuse(400, "The body is not an object");
+		const body = await this.#readJsonBody(read);
 		if (body.texts !== undefined && (typeof body.texts !== "object" || body.texts === null || Array.isArray(body.texts)))
 			refuse(400, "Texts are given by their hash");
+		const testSchema = this.#extractTestSchemaParam(searchParams, body);
+		if (testSchema !== null && (route[2] === "watch" || route[2] === "changes")) {
+			refuse(400, `Test schemas do not support ${route[2]}`);
+		}
 		switch (route[2]) {
 			case "query":
-				return this.query(caller, environmentId, body, { gone });
+				return this.query(caller, environmentId, body, { gone, testSchema });
 			case "watch":
 				return this.watch(caller, environmentId, body, gone);
 			case "apply":
-				return this.apply(caller, environmentId, body);
+				return this.apply(caller, environmentId, body, { testSchema });
 			case "change":
-				return this.change(caller, environmentId, body, { gone });
+				return this.change(caller, environmentId, body, { gone, testSchema });
 			case "rows":
-				return this.rows(caller, environmentId, body, { gone });
+				return this.rows(caller, environmentId, body, { gone, testSchema });
 			case "edit":
-				return this.edit(caller, environmentId, body, { gone });
+				return this.edit(caller, environmentId, body, { gone, testSchema });
 			case "changes":
 				return this.changes(caller, environmentId, body);
 			default:
-				return this.describe(caller, environmentId, body);
+				return this.describe(caller, environmentId, body, { testSchema });
 		}
 	}
 
 	/** An agent's request on the run door (SLICE5): the node's private token as the bearer and a data pass in the body.
 	 * A wrong token, no pass and a pass that redeems to nothing get one answer, 401, with no detail. The pass names the
 	 * company, the run's requester and the files the run may read; nothing else in the request does. */
-	async handleRun(method, path, headers, read, gone = null) {
-		const route = /^\/v1\/run-data\/(describe|apply|query|change)$/.exec(path);
+	async handleRun(method, path, headers, read, gone = null, search = "") {
+		let pathname = path;
+		let queryStr = search;
+		if (queryStr === "" && pathname.includes("?")) {
+			const idx = pathname.indexOf("?");
+			queryStr = pathname.slice(idx);
+			pathname = pathname.slice(0, idx);
+		}
+		const searchParams = new URLSearchParams(queryStr);
 		if (!this.#runToken) refuse(404, "Not a call the data gateway answers");
 		if (!bearerIs(headers.authorization, this.#runToken)) refuse(401, "Not allowed");
+		const testSchemaRoute = /^\/v1\/run-data\/test-schemas(?:\/([^/]+))?$/.exec(pathname);
+		if (testSchemaRoute) {
+			const tail = testSchemaRoute[1] !== undefined ? this.#decodeSegment(testSchemaRoute[1]) : null;
+			const isDelete = method === "DELETE" || (method === "POST" && tail === "delete");
+			const isCreate = method === "POST" && tail === null;
+			if (!isCreate && !isDelete) refuse(405, "Use POST or DELETE");
+			const body = await this.#readJsonBody(read);
+			if (typeof body.pass !== "string" || !PASS.test(body.pass)) refuse(401, "Not allowed");
+			if (body.texts !== undefined && (typeof body.texts !== "object" || body.texts === null || Array.isArray(body.texts)))
+				refuse(400, "Texts are given by their hash");
+			const kept = await this.#platform.redeemPass(body.pass);
+			if (!kept) refuse(401, "Not allowed");
+			const caller = {
+				run: true,
+				userId: kept.requesterUserId,
+				machineId: kept.machineId,
+				agentId: kept.agentId,
+				key: `run:${sha256(body.pass)}`,
+				files: kept.files,
+				allow: kept.allow,
+			};
+			if (isCreate) return this.createTestSchema(caller, kept.environmentId, body);
+			const pathSchema = tail && tail !== "delete" ? tail : null;
+			const querySchema = searchParams.has("schema") ? searchParams.get("schema") : null;
+			const bodySchema = body.schema ?? null;
+			const given = [pathSchema, querySchema, bodySchema].filter((value) => value !== null);
+			if (given.length === 0) refuse(400, "Name a test schema");
+			if (new Set(given).size > 1) refuse(400, "Conflicting schema parameters");
+			return this.dropTestSchema(caller, kept.environmentId, given[0]);
+		}
+		const route = /^\/v1\/run-data\/(describe|apply|query|change)$/.exec(pathname);
 		if (!route) refuse(404, "Not a call the data gateway answers");
 		if (method !== "POST") refuse(405, "Use POST");
-		let body;
-		try {
-			body = JSON.parse(await read(this.#limits.bodyBytes));
-		} catch (error) {
-			if (error instanceof Refusal) throw error;
-			refuse(400, "The body is not JSON");
-		}
-		if (!body || typeof body !== "object" || Array.isArray(body)) refuse(400, "The body is not an object");
+		const body = await this.#readJsonBody(read);
 		if (typeof body.pass !== "string" || !PASS.test(body.pass)) refuse(401, "Not allowed");
 		if (body.texts !== undefined && (typeof body.texts !== "object" || body.texts === null || Array.isArray(body.texts)))
 			refuse(400, "Texts are given by their hash");
+		const testSchema = this.#extractTestSchemaParam(searchParams, body);
 		const kept = await this.#platform.redeemPass(body.pass);
 		if (!kept) refuse(401, "Not allowed");
 		const caller = {
@@ -4484,17 +6327,33 @@ export class Gateway {
 		};
 		switch (route[1]) {
 			case "query":
-				return this.runQuery(caller, kept.environmentId, body, { gone });
+				return this.runQuery(caller, kept.environmentId, body, { gone, testSchema });
 			case "apply":
-				return this.apply(caller, kept.environmentId, body);
+				return this.apply(caller, kept.environmentId, body, { testSchema });
 			case "change":
-				return this.runChange(caller, kept.environmentId, body, { gone });
+				return this.runChange(caller, kept.environmentId, body, { gone, testSchema });
 			default:
-				return this.runDescribe(caller, kept.environmentId, body);
+				return this.runDescribe(caller, kept.environmentId, body, { testSchema });
 		}
 	}
 
 	async close() {
+		if (this.#testReaper) {
+			clearTimeout(this.#testReaper);
+			this.#testReaper = null;
+		}
+		const activeTests = this.#testSchemaReaperEnabled ? [...this.#testSchemas.values()] : [];
+		if (activeTests.length > 0 && !this.#closed) {
+			// WHY: Drop active ephemeral test schemas before marking closed so admin pools can still execute DROP SCHEMA cleanly.
+			await Promise.race([
+				Promise.allSettled(activeTests.map((entry) => this.#dropTestSchemaInternal(entry))),
+				new Promise((resolve) => setTimeout(resolve, 4_000).unref?.()),
+			]);
+		}
+		this.#testSchemas.clear();
+		this.#testSchemaDbs.clear();
+		this.#testSchemaOrphanSwept.clear();
+		this.#testSchemaCommentWrites.clear();
 		this.#closed = true;
 		for (const entry of [...this.#triggerStops.values()]) entry.stop();
 		this.#triggerStops.clear();
@@ -4607,13 +6466,18 @@ function answering(handle, bodyTimeoutMs = BODY_READ_TIMEOUT_MS) {
 		let value;
 		try {
 			const rawUrl = request.url ?? "/";
-			const pathname =
-				rawUrl.startsWith("/") && !rawUrl.includes("..") && !rawUrl.includes("#")
-					? rawUrl.includes("?")
-						? rawUrl.slice(0, rawUrl.indexOf("?"))
-						: rawUrl
-					: new URL(rawUrl, "http://gateway").pathname;
-			value = await handle(request.method, pathname, request.headers, read, gone.signal);
+			let pathname;
+			let search = "";
+			if (rawUrl.startsWith("/") && !rawUrl.includes("..") && !rawUrl.includes("#")) {
+				const q = rawUrl.indexOf("?");
+				pathname = q >= 0 ? rawUrl.slice(0, q) : rawUrl;
+				search = q >= 0 ? rawUrl.slice(q) : "";
+			} else {
+				const parsed = new URL(rawUrl, "http://gateway");
+				pathname = parsed.pathname;
+				search = parsed.search;
+			}
+			value = await handle(request.method, pathname, request.headers, read, gone.signal, search);
 		} catch (error) {
 			const refusal = error instanceof Refusal ? error : new Refusal(500, "The data gateway failed");
 			status = refusal.status;
@@ -4652,7 +6516,9 @@ function listenServer(server, port, host) {
 }
 
 export function serve(gateway, { host = "127.0.0.1", port = 0, bodyTimeoutMs = BODY_READ_TIMEOUT_MS } = {}) {
-	const server = http.createServer(answering((method, path, headers, read, gone) => gateway.handle(method, path, headers, read, gone), bodyTimeoutMs));
+	const server = http.createServer(
+		answering((method, path, headers, read, gone, search) => gateway.handle(method, path, headers, read, gone, search), bodyTimeoutMs),
+	);
 	server.keepAliveTimeout = 65_000;
 	server.headersTimeout = 70_000;
 	return listenServer(server, port, host);
@@ -4661,7 +6527,10 @@ export function serve(gateway, { host = "127.0.0.1", port = 0, bodyTimeoutMs = B
 export function serveRuns(gateway, { host = "127.0.0.1", port = 0, cert = null, key = null, bodyTimeoutMs = BODY_READ_TIMEOUT_MS } = {}) {
 	if ((cert === null) !== (key === null)) throw new Error("The run door needs both a certificate and its key, or neither");
 	if (cert === null && !["127.0.0.1", "::1", "localhost"].includes(host)) throw new Error("The run door off loopback needs TLS");
-	const handler = answering((method, path, headers, read, gone) => gateway.handleRun(method, path, headers, read, gone), bodyTimeoutMs);
+	const handler = answering(
+		(method, path, headers, read, gone, search) => gateway.handleRun(method, path, headers, read, gone, search),
+		bodyTimeoutMs,
+	);
 	const server = cert === null ? http.createServer(handler) : https.createServer({ cert, key, minVersion: "TLSv1.2" }, handler);
 	server.keepAliveTimeout = 65_000;
 	server.headersTimeout = 70_000;

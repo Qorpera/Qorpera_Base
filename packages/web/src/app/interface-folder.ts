@@ -138,7 +138,21 @@ export class CompanyInterfaceFolder {
 		} catch {
 			return;
 		}
-		this.#poll ??= setInterval(() => this.#schedule(), POLL_MS);
+		if (!this.#poll) {
+			// WHY: Skip periodic folder polls while hidden and trigger a sync once the tab becomes visible.
+			this.#poll = setInterval(() => {
+				if (typeof document !== "undefined" && document.hidden) return;
+				this.#schedule();
+			}, POLL_MS);
+			if (typeof document !== "undefined")
+				document.addEventListener(
+					"visibilitychange",
+					() => {
+						if (!document.hidden) this.#schedule();
+					},
+					{ signal: this.#stop.signal },
+				);
+		}
 		await this.#run(() => this.#reload());
 	}
 
