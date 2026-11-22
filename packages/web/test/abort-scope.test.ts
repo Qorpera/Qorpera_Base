@@ -1,7 +1,7 @@
 import { getEventListeners } from "node:events";
 import { CloudRequestTimeoutError } from "@qorpera/cloud-client/cloud-request";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { withAbortScopes, withScopedCloudDeadline } from "../src/cloud/abort-scope.ts";
+import { createAbortScope, withAbortScopes, withScopedCloudDeadline } from "../src/cloud/abort-scope.ts";
 import type { Cloud } from "../src/cloud/client.ts";
 import { GoodWillCardError, startGoodWillCard } from "../src/cloud/good-will.ts";
 
@@ -103,5 +103,26 @@ describe("web cloud abort scopes", () => {
 		await expect(pending).rejects.toBeInstanceOf(GoodWillCardError);
 		expect(observedSignal?.aborted).toBe(true);
 		expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
+	});
+
+	it("supports manual createAbortScope with idempotent dispose and zero timers on pre-aborted parents", () => {
+		vi.useFakeTimers();
+		const live = new AbortController();
+		const scope = createAbortScope([live.signal], 1_000);
+		expect(getEventListeners(live.signal, "abort")).toHaveLength(1);
+		expect(vi.getTimerCount()).toBe(1);
+		scope.dispose();
+		scope.dispose();
+		expect(getEventListeners(live.signal, "abort")).toHaveLength(0);
+		expect(vi.getTimerCount()).toBe(0);
+		expect(scope.signal.aborted).toBe(false);
+
+		const aborted = new AbortController();
+		aborted.abort(new Error("gone"));
+		const preAborted = createAbortScope([live.signal, aborted.signal], 1_000);
+		expect(preAborted.signal.aborted).toBe(true);
+		expect(vi.getTimerCount()).toBe(0);
+		preAborted.dispose();
+		expect(getEventListeners(live.signal, "abort")).toHaveLength(0);
 	});
 });

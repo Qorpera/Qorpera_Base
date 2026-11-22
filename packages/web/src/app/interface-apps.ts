@@ -47,6 +47,7 @@ import {
 	parseAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
 import { isInterfaceName, parseTableFile, parseTableRows } from "@qorpera/cloud-client/interfaces";
+import { withAbortScopes } from "../cloud/abort-scope.ts";
 import { APP_GROUPS_MAX_BYTES, APP_GROUPS_PATH, type AppTreeNode, parseAppGroups } from "../cloud/app-groups.ts";
 import type { WebMemberFolder } from "../cloud/company-folder-writes.ts";
 import type { AppAnswer, AppCall, FramedPage } from "../ui/app-frame.ts";
@@ -1695,7 +1696,7 @@ export class CompanyData implements CompanyLiveSource {
 	/** One question's answer, as the member. */
 	async query(asked: CloudMemberDataQuestion, signal: AbortSignal): Promise<CloudMemberDataAnswer> {
 		this.#current();
-		const answer = await this.#client().query(asked, AbortSignal.any([signal, this.#signal]));
+		const answer = await withAbortScopes([signal, this.#signal], (scoped) => this.#client().query(asked, scoped));
 		this.#current();
 		return answer;
 	}
@@ -1707,7 +1708,7 @@ export class CompanyData implements CompanyLiveSource {
 		this.#current();
 		const client = this.#client();
 		if (!client.previewChange) throw new CloudMemberDataError("Database changes are not available here");
-		const preview = await client.previewChange(asked, AbortSignal.any([signal, this.#signal]));
+		const preview = await withAbortScopes([signal, this.#signal], (scoped) => client.previewChange!(asked, scoped));
 		this.#current();
 		return preview;
 	}
@@ -1716,7 +1717,7 @@ export class CompanyData implements CompanyLiveSource {
 		this.#current();
 		const client = this.#client();
 		if (!client.change) throw new CloudMemberDataError("Database changes are not available here");
-		const result = await client.change(asked, AbortSignal.any([signal, this.#signal]));
+		const result = await withAbortScopes([signal, this.#signal], (scoped) => client.change!(asked, scoped));
 		this.#current();
 		return result;
 	}
@@ -1849,9 +1850,11 @@ export class CompanyData implements CompanyLiveSource {
 			let answer: CloudMemberDataWatchAnswer;
 			try {
 				this.#current();
-				answer = await this.#client().watch(
-					held.map((entry) => ({ ...entry.asked, etag: entry.answer!.etag })),
-					AbortSignal.any([call.signal, this.#signal]),
+				answer = await withAbortScopes([call.signal, this.#signal], (scoped) =>
+					this.#client().watch(
+						held.map((entry) => ({ ...entry.asked, etag: entry.answer!.etag })),
+						scoped,
+					),
 				);
 				this.#current();
 			} catch {

@@ -30,6 +30,7 @@ import {
 	OWED_APPS,
 	writeAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
+import { withAbortScopes } from "../cloud/abort-scope.ts";
 
 export const PROGRAM_ADD_MAX_BYTES = CLOUD_MEMBER_FOLDER_UPLOAD_MAX_BYTES;
 export const MEMBER_TEXT_MAX_BYTES = 64 * 1024;
@@ -359,52 +360,57 @@ export class ProgramAdd {
 
 	async discard(): Promise<void> {
 		await this.#running;
-		const signal = AbortSignal.timeout(SETTLE_MS);
 		const folder = this.#folder();
-		try {
-			await this.#replay(signal);
-			if (this.#listed || (this.#ours() !== null && this.#lists((await this.#kept(signal)).program))) return;
-			const inflight = this.#inflight;
-			const prepared = inflight ? this.#prepared.get(inflight.file) : undefined;
-			if (inflight && prepared && !this.#placed.has(inflight.file)) {
-				const entry = (await folder.read(this.#path(inflight.version, inflight.file), signal)).entry;
-				if (entry?.file?.fileSha256 === prepared.fileSha256 && entry.file.bytes === prepared.bytes)
-					this.#placed.set(inflight.file, {
-						file: inflight.file,
-						kind: inflight.kind,
-						prepared,
-						version: inflight.version,
-						entry: entry.version,
-					});
-			}
-			const placed = [...this.#placed.values()];
-			this.#placed.clear();
-			this.#inflight = undefined;
-			if (this.#claimed) {
-				const read = await folder.read(this.#app, signal);
-				if (read.entry?.kind === "folder")
+		await withAbortScopes(
+			[],
+			async (signal) => {
+				try {
+					await this.#replay(signal);
+					if (this.#listed || (this.#ours() !== null && this.#lists((await this.#kept(signal)).program))) return;
+					const inflight = this.#inflight;
+					const prepared = inflight ? this.#prepared.get(inflight.file) : undefined;
+					if (inflight && prepared && !this.#placed.has(inflight.file)) {
+						const entry = (await folder.read(this.#path(inflight.version, inflight.file), signal)).entry;
+						if (entry?.file?.fileSha256 === prepared.fileSha256 && entry.file.bytes === prepared.bytes)
+							this.#placed.set(inflight.file, {
+								file: inflight.file,
+								kind: inflight.kind,
+								prepared,
+								version: inflight.version,
+								entry: entry.version,
+							});
+					}
+					const placed = [...this.#placed.values()];
+					this.#placed.clear();
+					this.#inflight = undefined;
+					if (this.#claimed) {
+						const read = await folder.read(this.#app, signal);
+						if (read.entry?.kind === "folder")
+							await folder.commit(
+								`web:${crypto.randomUUID()}`,
+								[{ op: "delete", path: this.#app, asOfSeq: read.asOfSeq }],
+								signal,
+							);
+						return;
+					}
+					if (placed.length === 0) return;
 					await folder.commit(
 						`web:${crypto.randomUUID()}`,
-						[{ op: "delete", path: this.#app, asOfSeq: read.asOfSeq }],
+						placed.map(
+							(each): CloudMemberFolderUnit => ({
+								op: "delete",
+								path: this.#path(each.version, each.file),
+								...(each.entry ? { expectedVersion: each.entry } : {}),
+							}),
+						),
 						signal,
 					);
-				return;
-			}
-			if (placed.length === 0) return;
-			await folder.commit(
-				`web:${crypto.randomUUID()}`,
-				placed.map(
-					(each): CloudMemberFolderUnit => ({
-						op: "delete",
-						path: this.#path(each.version, each.file),
-						...(each.entry ? { expectedVersion: each.entry } : {}),
-					}),
-				),
-				signal,
-			);
-		} catch {
-			return;
-		}
+				} catch {
+					return;
+				}
+			},
+			SETTLE_MS,
+		);
 	}
 
 	#kept(signal: AbortSignal) {
@@ -437,7 +443,7 @@ export class ProgramAdd {
 		const { signal } = plan;
 		const now = plan.now ?? (() => new Date());
 		this.#userId = plan.userId;
-		await this.#replay(AbortSignal.timeout(SETTLE_MS));
+		await withAbortScopes([], (replaySignal) => this.#replay(replaySignal), SETTLE_MS);
 		if (this.#listed) return;
 		if (this.#isNew && !this.#claimed) await this.#claim(new Set(plan.taken ?? []), signal);
 		const programPath = `${this.#app}/${PROGRAM_FILE}`;
@@ -551,81 +557,86 @@ export class ProgramAdd {
 		programPath: string,
 		first: { readonly program: Program | null; readonly version: string | null },
 	): Promise<void> {
-		const signal = AbortSignal.timeout(SETTLE_MS);
-		const at = this.#date ?? new Date();
-		let kept = first;
-		let manifest = this.#isNew && kept.program === null;
-		for (let attempt = 1; ; attempt++) {
-			if (this.#lists(kept.program)) {
-				this.#listed = true;
-				return;
-			}
-			const placed = plan.files.map(({ file }) => this.#placed.get(file)!);
-			const head = placed[0]!.version;
-			const free =
-				placed.every((each) => each.version === head) &&
-				!kept.program?.versions.some((each) => each.version === head);
-			const version = free
-				? head
-				: nextMemberVersion({
-						versions: [
-							...(kept.program?.versions ?? []),
-							...placed.map((each) => ({ version: each.version, date: "", forms: [] })),
-						],
+		await withAbortScopes(
+			[],
+			async (signal) => {
+				const at = this.#date ?? new Date();
+				let kept = first;
+				let manifest = this.#isNew && kept.program === null;
+				for (let attempt = 1; ; attempt++) {
+					if (this.#lists(kept.program)) {
+						this.#listed = true;
+						return;
+					}
+					const placed = plan.files.map(({ file }) => this.#placed.get(file)!);
+					const head = placed[0]!.version;
+					const free =
+						placed.every((each) => each.version === head) &&
+						!kept.program?.versions.some((each) => each.version === head);
+					const version = free
+						? head
+						: nextMemberVersion({
+								versions: [
+									...(kept.program?.versions ?? []),
+									...placed.map((each) => ({ version: each.version, date: "", forms: [] })),
+								],
+							});
+					await this.#move(placed, version, signal);
+					const text = programWithVersion(
+						kept.program,
+						version,
+						placed.map((each) => ({
+							for: each.kind,
+							file: each.file.name,
+							bytes: each.prepared.bytes,
+							sha256: each.prepared.fileSha256,
+						})),
+						plan.userId,
+						at,
+					);
+					if (!fits(text)) throw new ProgramAddRefusal("full");
+					const units: CloudMemberFolderUnit[] = [
+						...(manifest
+							? [
+									{
+										op: "write" as const,
+										path: `${this.#app}/${APP_MANIFEST}`,
+										text: writeAppManifest({
+											name: this.#name,
+											about: null,
+											emblem: APP_DEFAULT_EMBLEM,
+											colour: null,
+											entry: APP_DEFAULT_ENTRY,
+											owner: null,
+											posted: true,
+											reads: [],
+											writes: [],
+											concept: false,
+											cover: null,
+											kit: "program",
+										}),
+									},
+								]
+							: []),
+						{ op: "write", path: programPath, text, ...(kept.version ? { expectedVersion: kept.version } : {}) },
+					];
+					const withManifest = manifest;
+					const commit = await this.#commit(units, signal, (answer) => {
+						if (withManifest && answer.units[0]?.outcome === "saved") manifest = false;
+						if (answer.units.at(-1)?.outcome === "saved") {
+							this.#listed = true;
+							this.#placed.clear();
+						}
 					});
-			await this.#move(placed, version, signal);
-			const text = programWithVersion(
-				kept.program,
-				version,
-				placed.map((each) => ({
-					for: each.kind,
-					file: each.file.name,
-					bytes: each.prepared.bytes,
-					sha256: each.prepared.fileSha256,
-				})),
-				plan.userId,
-				at,
-			);
-			if (!fits(text)) throw new ProgramAddRefusal("full");
-			const units: CloudMemberFolderUnit[] = [
-				...(manifest
-					? [
-							{
-								op: "write" as const,
-								path: `${this.#app}/${APP_MANIFEST}`,
-								text: writeAppManifest({
-									name: this.#name,
-									about: null,
-									emblem: APP_DEFAULT_EMBLEM,
-									colour: null,
-									entry: APP_DEFAULT_ENTRY,
-									owner: null,
-									posted: true,
-									reads: [],
-									writes: [],
-									concept: false,
-									cover: null,
-									kit: "program",
-								}),
-							},
-						]
-					: []),
-				{ op: "write", path: programPath, text, ...(kept.version ? { expectedVersion: kept.version } : {}) },
-			];
-			const withManifest = manifest;
-			const commit = await this.#commit(units, signal, (answer) => {
-				if (withManifest && answer.units[0]?.outcome === "saved") manifest = false;
-				if (answer.units.at(-1)?.outcome === "saved") {
-					this.#listed = true;
-					this.#placed.clear();
+					const written = commit.units.at(-1);
+					if (written?.outcome === "saved") return;
+					if (written?.outcome === "denied") throw new ProgramAddRefusal("denied");
+					if (written?.outcome === "refused") throw new ProgramAddRefusal("refused", written.reason);
+					if (written?.outcome !== "conflict" || attempt === TRIES) throw new ProgramAddRefusal("taken");
+					kept = await readKept(this.#folder(), programPath, signal);
 				}
-			});
-			const written = commit.units.at(-1);
-			if (written?.outcome === "saved") return;
-			if (written?.outcome === "denied") throw new ProgramAddRefusal("denied");
-			if (written?.outcome === "refused") throw new ProgramAddRefusal("refused", written.reason);
-			if (written?.outcome !== "conflict" || attempt === TRIES) throw new ProgramAddRefusal("taken");
-			kept = await readKept(this.#folder(), programPath, signal);
-		}
+			},
+			SETTLE_MS,
+		);
 	}
 }

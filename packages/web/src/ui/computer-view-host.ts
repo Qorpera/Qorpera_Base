@@ -1,4 +1,5 @@
 import type { CompanyComputerMemberView } from "@qorpera/cloud-client/cloud-company-computer-views";
+import { type AbortScope, createAbortScope } from "../cloud/abort-scope.ts";
 import {
 	type ComputerViewer,
 	type ComputerViewerOptions,
@@ -11,6 +12,7 @@ import {
 export class ComputerViewHost {
 	readonly #signal: AbortSignal;
 	readonly #connections = new Map<string, CompanyComputerMemberView>();
+	readonly #scopes = new Map<string, AbortScope>();
 	#viewer: ComputerViewer | undefined;
 	#version = 0;
 	#opening = false;
@@ -38,21 +40,47 @@ export class ComputerViewHost {
 			this.#viewer = openComputerViewer({
 				...options,
 				requestConnection: async (input) => {
-					const signal = AbortSignal.any([this.#signal, input.signal]);
-					signal.throwIfAborted();
-					if (version !== this.#version) throw new Error("Viewer closed.");
-					const connection = await options.requestConnection({ ...input, signal });
-					if (signal.aborted || version !== this.#version) {
-						await connection.close();
-						throw new Error("Viewer closed.");
+					const scope = createAbortScope([this.#signal, input.signal]);
+					let handedOff = false;
+					try {
+						scope.signal.throwIfAborted();
+						if (version !== this.#version) throw new Error("Viewer closed.");
+						const raw = await options.requestConnection({ ...input, signal: scope.signal });
+						if (scope.signal.aborted || version !== this.#version) {
+							await raw.close();
+							throw new Error("Viewer closed.");
+						}
+						const connection: CompanyComputerMemberView = {
+							connectionId: raw.connectionId,
+							binding: raw.binding,
+							mode: raw.mode,
+							channel: raw.channel,
+							close: async () => {
+								try {
+									await raw.close();
+								} finally {
+									scope.dispose();
+									this.#scopes.delete(raw.connectionId);
+								}
+							},
+						};
+						this.#scopes.set(connection.connectionId, scope);
+						this.#connections.set(connection.connectionId, connection);
+						handedOff = true;
+						return connection;
+					} finally {
+						if (!handedOff) scope.dispose();
 					}
-					this.#connections.set(connection.connectionId, connection);
-					return connection;
 				},
 				releaseConnection: async ({ connectionId }) => {
 					const connection = this.#connections.get(connectionId);
-					await connection?.close();
-					this.#connections.delete(connectionId);
+					try {
+						await connection?.close();
+					} finally {
+						this.#scopes.get(connectionId)?.dispose();
+						this.#scopes.delete(connectionId);
+						this.#connections.delete(connectionId);
+					}
 				},
 				onClosed: () => {
 					if (version === this.#version) {

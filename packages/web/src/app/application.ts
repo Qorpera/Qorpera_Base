@@ -1,4 +1,5 @@
 import type { User } from "@supabase/supabase-js";
+import { withAbortScopes } from "../cloud/abort-scope.ts";
 import { CloudApi } from "../cloud/api.ts";
 import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
 import { type Cloud, CloudRpcError, describeError, translateCloudErrors } from "../cloud/client.ts";
@@ -2220,48 +2221,51 @@ export function mountApplication(
 								controller.signal,
 								checkConversationAccess,
 							),
-							previewAttachment: async (messageId, index, viewSignal) => {
-								const signal = AbortSignal.any([controller.signal, viewSignal]);
-								const check = () => {
-									signal.throwIfAborted();
-									const selected = currentRoute(),
-										state = controller.store.get();
-									const session = state.sessions.find((item) => item.sessionId === route.id);
-									if (
-										disposed ||
-										company !== controller ||
-										auth.userId !== controller.userId ||
-										state.accessLost ||
-										!state.team?.capabilities.read ||
-										!session ||
-										session.profileId !== controller.profile.profileId ||
-										session.environmentId !== controller.profile.environmentId ||
-										selected.name !== "company" ||
-										selected.profileId !== controller.profile.profileId ||
-										selected.section !== "chat" ||
-										selected.id !== route.id
-									)
-										throw new Error(t("Attachment access changed."));
-								};
-								check();
-								const message = controller
-									.conversation(route.id!)
-									.get()
-									.projection.items.find((item) => item.id === messageId);
-								const ref =
-									message?.kind === "member" && !message.pending && Number.isSafeInteger(index) && index >= 0
-										? message.attachments?.[index]?.reference
-										: undefined;
-								if (!ref) throw new Error(t("This attachment is not available for preview."));
-								const bytes = await createWebSessionAttachments(cloud, controller.userId, signal, check).read(
-									route.id!,
-									messageId,
-									ref,
-									signal,
-								);
-								check();
-								return new Blob([Uint8Array.from(bytes)], { type: ref.mediaType });
-							},
+							previewAttachment: async (messageId, index, viewSignal) =>
+								await withAbortScopes([controller.signal, viewSignal], async (signal) => {
+									const check = () => {
+										signal.throwIfAborted();
+										const selected = currentRoute(),
+											state = controller.store.get();
+										const session = state.sessions.find((item) => item.sessionId === route.id);
+										if (
+											disposed ||
+											company !== controller ||
+											auth.userId !== controller.userId ||
+											state.accessLost ||
+											!state.team?.capabilities.read ||
+											!session ||
+											session.profileId !== controller.profile.profileId ||
+											session.environmentId !== controller.profile.environmentId ||
+											selected.name !== "company" ||
+											selected.profileId !== controller.profile.profileId ||
+											selected.section !== "chat" ||
+											selected.id !== route.id
+										)
+											throw new Error(t("Attachment access changed."));
+									};
+									check();
+									const message = controller
+										.conversation(route.id!)
+										.get()
+										.projection.items.find((item) => item.id === messageId);
+									const ref =
+										message?.kind === "member" &&
+										!message.pending &&
+										Number.isSafeInteger(index) &&
+										index >= 0
+											? message.attachments?.[index]?.reference
+											: undefined;
+									if (!ref) throw new Error(t("This attachment is not available for preview."));
+									const bytes = await createWebSessionAttachments(
+										cloud,
+										controller.userId,
+										signal,
+										check,
+									).read(route.id!, messageId, ref, signal);
+									check();
+									return new Blob([Uint8Array.from(bytes)], { type: ref.mediaType });
+								}),
 							// Routines are files (QorperaOS/agents/<handle>/routines/<key>.md): the editor and the switch
 							// write them through the member's own folder client, with the same checks as every other routine
 							// call.
