@@ -1315,14 +1315,15 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	background: color-mix(in srgb, var(--text) 2%, var(--bg));
 }
 .surface-create-custom[hidden] { display: none; }
-.surface-create-figures { display: flex; flex-wrap: wrap; gap: 4px; }
-.surface-create-figure {
+.surface-figure-choices { display: flex; flex-wrap: wrap; gap: 4px; }
+.context-panel:has(> .surface-figure-choices) { width: 324px; }
+.surface-figure-choice {
 	display: grid; place-items: center; width: 46px; height: 46px; padding: 3px; border: 1px solid transparent; border-radius: 12px;
 	background: none; cursor: pointer; transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
 }
-.surface-create-figure .surface-tile { --tile-size: 38px; }
-.surface-create-figure[aria-checked="true"] { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
-.surface-create-figure:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.surface-figure-choice .surface-tile { --tile-size: 38px; }
+.surface-figure-choice[aria-checked="true"] { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
+.surface-figure-choice:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .surface-create-seg { justify-self: start; }
 .surface-create-card:hover { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 3.5%, var(--bg)); }
 .surface-create-card.is-selected {

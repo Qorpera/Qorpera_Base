@@ -27,6 +27,7 @@ import {
 	type SurfaceWorkspace,
 } from "@qorpera/contracts";
 import { phrase, t } from "../ui/preferences.ts";
+import { type SurfaceFigureId, surfaceFigureIcon } from "../ui/surface-figure.ts";
 import { Store } from "./state.ts";
 import { isOpsKind, type SurfaceKind, type SurfaceLook, surfaceLookOf } from "./surface-kinds.ts";
 import {
@@ -72,6 +73,7 @@ export type SurfacesClient = Pick<
 			| "createAutomation"
 			| "updateAutomation"
 			| "deleteAutomation"
+			| "setSurfaceFigure"
 		>
 	>;
 
@@ -2849,6 +2851,19 @@ export class SurfacesStore {
 		const surface = await this.#run(`auto:${surfaceId}`, (client) =>
 			client.setSurfaceAutoPublish(surfaceId, enabled),
 		);
+		if (!surface) return false;
+		this.#putSurface(surface);
+		return true;
+	}
+
+	async setFigure(surfaceId: string, figure: SurfaceFigureId): Promise<boolean> {
+		const current = this.state.surfaces.find((item) => item.id === surfaceId);
+		if (!current) return false;
+		if (this.isLocalInteractive && isLocalSurfaceId(surfaceId)) {
+			this.#putSurface({ ...current, icon: surfaceFigureIcon(figure) });
+			return true;
+		}
+		const surface = await this.#run(`figure:${surfaceId}`, (client) => client.setSurfaceFigure!(surfaceId, figure));
 		if (!surface) return false;
 		this.#putSurface(surface);
 		return true;

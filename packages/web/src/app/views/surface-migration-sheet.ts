@@ -5,10 +5,10 @@ import { fmtTime, h, icon } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import {
-	SURFACE_FIGURE_IDS,
-	SURFACE_FIGURE_NAMES,
+	markSurfaceFigure,
 	type SurfaceFigureId,
 	surfaceFigure,
+	surfaceFigureChoices,
 	surfaceFigureIcon,
 } from "../../ui/surface-figure.ts";
 import { type SurfaceKind, surfaceKindFigure } from "../surface-kinds.ts";
@@ -358,8 +358,8 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 	},
 ];
 
-function figureTile(figure: SurfaceFigureId, className = "is-sheet"): HTMLElement {
-	return h("span", { class: `surface-tile ${className}`, "aria-hidden": "true" }, surfaceFigure(figure));
+function figureTile(figure: SurfaceFigureId): HTMLElement {
+	return h("span", { class: "surface-tile is-sheet", "aria-hidden": "true" }, surfaceFigure(figure));
 }
 
 export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string): void {
@@ -417,35 +417,10 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 		segment("studio", t("Studio files"), t("Documents, tables, and specs that sessions edit.")),
 	);
 	archetypeRow.setAttribute("aria-label", t("How it is built"));
-	const figures = h(
-		"div",
-		{ class: "surface-create-figures", role: "radiogroup", "aria-label": t("Figure") },
-		SURFACE_FIGURE_IDS.map((id) => {
-			const choice = h(
-				"button",
-				{
-					type: "button",
-					class: "surface-create-figure",
-					role: "radio",
-					"aria-checked": String(id === figure),
-					"aria-label": t(SURFACE_FIGURE_NAMES[id]),
-					title: t(SURFACE_FIGURE_NAMES[id]),
-					"data-figure": id,
-				},
-				figureTile(id, ""),
-			);
-			choice.addEventListener("click", () => {
-				figure = id;
-				figureChosen = true;
-				markFigure();
-			});
-			return choice;
-		}),
-	);
-	const markFigure = () => {
-		for (const choice of figures.querySelectorAll<HTMLElement>("button"))
-			choice.setAttribute("aria-checked", String(choice.dataset.figure === figure));
-	};
+	const figures = surfaceFigureChoices(figure, (id) => {
+		figure = id;
+		figureChosen = true;
+	});
 	const customPanel = h(
 		"div",
 		{ class: "surface-create-custom", hidden: true },
@@ -479,7 +454,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 			customPanel.hidden = preset.kind !== "custom";
 			if (!figureChosen) {
 				figure = surfaceKindFigure(preset.kind);
-				markFigure();
+				markSurfaceFigure(figures, figure);
 			}
 			if (!customName) nameInput.value = preset.kind === "custom" ? "" : t(preset.title);
 			if (preset.kind === "custom") nameInput.focus({ preventScroll: true });

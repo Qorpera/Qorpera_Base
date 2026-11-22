@@ -1,5 +1,5 @@
 import { h } from "./dom.ts";
-import { phrase } from "./preferences.ts";
+import { phrase, t } from "./preferences.ts";
 
 type Eye = readonly [x: number, y: number, width: number, height: number, turn: number];
 
@@ -114,4 +114,37 @@ export function surfaceFigure(figure: SurfaceFigureId, state: SurfaceFigureState
 	);
 	element.style.setProperty("--figure-phase", `-${phase(figure).toFixed(2)}s`);
 	return element;
+}
+
+export function markSurfaceFigure(choices: HTMLElement, figure: SurfaceFigureId): void {
+	for (const choice of choices.querySelectorAll<HTMLElement>(".surface-figure-choice"))
+		choice.setAttribute("aria-checked", String(choice.dataset.figure === figure));
+}
+
+export function surfaceFigureChoices(chosen: SurfaceFigureId, pick: (figure: SurfaceFigureId) => void): HTMLElement {
+	const choices: HTMLElement = h(
+		"div",
+		{ class: "surface-figure-choices", role: "radiogroup", "aria-label": t("Figure") },
+		SURFACE_FIGURE_IDS.map((id) => {
+			const choice = h(
+				"button",
+				{
+					type: "button",
+					class: "surface-figure-choice",
+					role: "radio",
+					"aria-checked": String(id === chosen),
+					"aria-label": t(SURFACE_FIGURE_NAMES[id]),
+					title: t(SURFACE_FIGURE_NAMES[id]),
+					"data-figure": id,
+				},
+				h("span", { class: "surface-tile", "aria-hidden": "true" }, surfaceFigure(id)),
+			);
+			choice.addEventListener("click", () => {
+				markSurfaceFigure(choices, id);
+				pick(id);
+			});
+			return choice;
+		}),
+	);
+	return choices;
 }

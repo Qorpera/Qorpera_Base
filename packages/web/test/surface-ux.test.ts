@@ -297,14 +297,14 @@ describe("creating surfaces", () => {
 		sheet.querySelector<HTMLElement>('[data-preset="custom"]')!.click();
 		expect(custom.hidden).toBe(false);
 		expect(sheet.querySelector(".surface-create-swatch")).toBeNull();
-		const picked = () => sheet.querySelector<HTMLElement>('.surface-create-figure[aria-checked="true"]')?.dataset.figure;
-		expect(sheet.querySelectorAll(".surface-create-figure")).toHaveLength(26);
+		const picked = () => sheet.querySelector<HTMLElement>('.surface-figure-choice[aria-checked="true"]')?.dataset.figure;
+		expect(sheet.querySelectorAll(".surface-figure-choice")).toHaveLength(26);
 		expect(picked()).toBe("gem");
 
 		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
 		expect(custom.hidden).toBe(true);
 		expect(picked()).toBe("phone");
-		sheet.querySelector<HTMLElement>('.surface-create-figure[data-figure="piggy"]')!.click();
+		sheet.querySelector<HTMLElement>('.surface-figure-choice[data-figure="piggy"]')!.click();
 		sheet.querySelector<HTMLElement>('[data-preset="website"]')!.click();
 		expect(picked()).toBe("piggy");
 		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();

@@ -10,7 +10,7 @@ import {
 	surfaceFigureFromIcon,
 	surfaceFigureIcon,
 } from "../src/ui/surface-figure.ts";
-import { COMPANY, fakeClient, storeWith, summary } from "./surface-fixtures.ts";
+import { COMPANY, fakeClient, SURFACE, storeWith, summary } from "./surface-fixtures.ts";
 
 describe("surface figures", () => {
 	it("ships one picture per figure and nothing else", () => {
@@ -78,6 +78,33 @@ describe("a surface's figure in the rail", () => {
 		expect(state("mail")).toContain("is-attention");
 		expect(row("mail").querySelector(".surface-figure-ask")?.textContent).toBe("!");
 		expect(said("mail")).toBe("Needs your attention");
+		store.dispose();
+	});
+
+	it("opens the figures from a right-click on the rail and saves the one picked", async () => {
+		const setSurfaceFigure = vi.fn(async (_id: string, figure: string) => summary({ icon: `figure:${figure}` }));
+		const store = storeWith(fakeClient({ setSurfaceFigure }));
+		await store.load();
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+		const row = rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="website"]')!;
+		expect(row.querySelector(".surface-figure")?.getAttribute("data-figure")).toBe("browser");
+
+		row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+		const panelRow = [...document.querySelectorAll<HTMLElement>(".context-menu-item")].find((item) =>
+			item.textContent?.includes("Figure"),
+		)!;
+		panelRow.click();
+		const choices = document.querySelector<HTMLElement>(".surface-figure-choices")!;
+		expect(choices.querySelector('[aria-checked="true"]')?.getAttribute("data-figure")).toBe("browser");
+		choices.querySelector<HTMLElement>('[data-figure="shop"]')!.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(setSurfaceFigure).toHaveBeenCalledWith(SURFACE, "shop");
+		expect(store.state.surfaces[0]?.icon).toBe("figure:shop");
+		rail.update("website");
+		expect(rail.el.querySelector(".rail-surface .surface-figure")?.getAttribute("data-figure")).toBe("shop");
 		store.dispose();
 	});
 });
