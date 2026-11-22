@@ -8389,3 +8389,201 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		expect(pipe.mock.calls.some((call) => call[2].command.includes("exec-server"))).toBe(false);
 	});
 });
+
+describe("company machine host abort scoping, stream teardown, and pass pacing", () => {
+	it("closes superseded desktop streams on boot change, tears down active streams and codex hashes on remove, and avoids AbortSignal.any in stream release cycles", async () => {
+		const f = await fixture({ folder: true });
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		const closed: string[] = [];
+		let codexSignal: AbortSignal | undefined;
+		let codexPipeCalled = false;
+		const pipe = vi.fn(async (_project: string, _name: string, _req: LxdExecPipeRequest, sig: AbortSignal) => {
+			codexPipeCalled = true;
+			codexSignal = sig;
+			return new Promise<{ exitCode: number; stdout: Buffer; stderrTail: Buffer }>((_resolve, reject) => {
+				const fail = () => reject(sig.reason ?? new Error("aborted"));
+				if (sig.aborted) fail();
+				else sig.addEventListener("abort", fail, { once: true });
+			});
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		f.restart({
+			desktopStreams: (_spec, onEnded) => {
+				const tag = `stream-${closed.length + 1}-${Math.random()}`;
+				const desktop = {
+					ended: null as string | null,
+					close: () => {
+						desktop.ended = "stopping";
+						closed.push(tag);
+						onEnded();
+					},
+					watch: async (release: (sig: AbortSignal) => Promise<unknown>, _sink: unknown, sig: AbortSignal) => {
+						for (let i = 0; i < 3; i++) await release(sig);
+						return "closed";
+					},
+				};
+				return desktop;
+			},
+		});
+		const streamAc = new AbortController();
+		const watch = watchAbortSignalAny();
+		try {
+			expect(
+				await f.host.memberStream(
+					{ placementId: id(6), bootId: f.boot, userId: id(11), generation: 1, epoch: null },
+					{ send: async () => {} },
+					streamAc.signal,
+				),
+			).toBe("closed");
+			expect(watch.made()).toBe(0);
+			expect(watch.on(streamAc.signal)).toBe(0);
+		} finally {
+			watch.restore();
+		}
+		expect(closed).toHaveLength(0);
+
+		expect(
+			await f.host.memberStream(
+				{ placementId: id(6), bootId: id(91), userId: id(11), generation: 1, epoch: null },
+				{ send: async () => {} },
+				streamAc.signal,
+			),
+		).toBe("closed");
+		expect(closed).toHaveLength(1);
+
+		f.homeSessions.push({
+			schema: "qorpera.folder-home-session/v1",
+			state: "open",
+			sessionId: id(30),
+			runId: id(31),
+			staffAgentId: id(32),
+			requestedByUserId: id(33),
+			machineId: id(2),
+			placementId: id(6),
+			bootId: f.boot,
+		});
+		const execPending = f.host
+			.execServer({ placementId: id(6), sessionId: id(30), bootId: f.boot }, f.signal)
+			.catch((error: unknown) => error);
+		for (let i = 0; i < 100 && !codexPipeCalled; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+		expect(codexSignal?.aborted).toBe(false);
+
+		f.entry.released = true;
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "release", state: "done" }]);
+		expect(closed).toHaveLength(2);
+		expect(codexSignal?.aborted).toBe(true);
+		expect(await execPending).toBeDefined();
+	});
+
+	it("aborts in-flight accountFill seal immediately when the helper pipe fails or exits early with a refusal", async () => {
+		const fillRun = {
+			placementId: id(6),
+			bootId: id(7),
+			receiptId: id(8),
+			desktopGeneration: 3,
+			target: { schema: "qorpera.machine-account-fill-target/v1", hosts: ["npmjs.com"] },
+		};
+		const readyLine = `${JSON.stringify({ schema: "qorpera.machine-account-fill-ready/v1", publicKey: "K".repeat(43) })}\n`;
+		const resultLine = `${JSON.stringify({ schema: "qorpera.machine-account-fill-result/v1", code: "NO_FIELD" })}\n`;
+
+		const fFail = await fixture({ accountFillTimeoutMs: 60_000 });
+		let failSealSignal: AbortSignal | undefined;
+		const sealOnFail = vi.fn(
+			(_publicKey: string, sig: AbortSignal) =>
+				new Promise<{ box: Record<string, string> }>((_resolve, reject) => {
+					failSealSignal = sig;
+					sig.addEventListener("abort", () => reject(new Error("seal aborted")), { once: true });
+				}),
+		);
+		Object.assign(fFail.client, {
+			execInstancePipe: vi.fn(async (_project: string, _name: string, request: LxdExecPipeRequest) => {
+				request.onStdout?.(Buffer.from(readyLine));
+				await Promise.resolve();
+				throw new Error("LXD_PIPE_LOST");
+			}),
+		});
+		await expect(fFail.host.accountFill(fillRun, sealOnFail, fFail.signal)).rejects.toThrow("LXD_PIPE_LOST");
+		expect(failSealSignal?.aborted).toBe(true);
+
+		const fRefuse = await fixture({ accountFillTimeoutMs: 60_000 });
+		let refuseSealSignal: AbortSignal | undefined;
+		const sealOnRefuse = vi.fn(
+			(_publicKey: string, sig: AbortSignal) =>
+				new Promise<{ box: Record<string, string> }>((_resolve, reject) => {
+					refuseSealSignal = sig;
+					sig.addEventListener("abort", () => reject(new Error("seal aborted")), { once: true });
+				}),
+		);
+		Object.assign(fRefuse.client, {
+			execInstancePipe: vi.fn(async (_project: string, _name: string, request: LxdExecPipeRequest) => {
+				request.onStdout?.(Buffer.from(readyLine));
+				await Promise.resolve();
+				request.onStdout?.(Buffer.from(resultLine));
+				return { exitCode: 0, stdout: Buffer.from(readyLine + resultLine), stderrTail: Buffer.alloc(0) };
+			}),
+		});
+		expect(await fRefuse.host.accountFill(fillRun, sealOnRefuse, fRefuse.signal)).toEqual({ refused: "NO_FIELD" });
+		expect(refuseSealSignal?.aborted).toBe(true);
+	});
+
+	it("sleeps the full pass interval in pause() when no machine is starting and wakes on wake()", async () => {
+		const f = await fixture();
+		vi.useFakeTimers();
+		const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+		try {
+			const ac = new AbortController();
+			const paused = f.host.pause(15_000, ac.signal);
+			const delays = timeoutSpy.mock.calls.map((call) => call[1]);
+			expect(delays).toEqual([15_000]);
+			await vi.advanceTimersByTimeAsync(1_000);
+			f.host.wake();
+			await paused;
+		} finally {
+			timeoutSpy.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("reopens command windows with bounded parallelism up to 4 concurrent calls", async () => {
+		const f = await fixture({ folder: true });
+		expect(await f.host.pass(f.signal)).toEqual([
+			{ placementId: id(6), step: "start", state: "done", folder: "FOLDER_MOUNTED" },
+		]);
+		const commandIds = [id(70), id(71), id(72), id(73), id(74), id(75)];
+		for (const commandId of commandIds) {
+			await f.host.command(
+				{
+					machineId: id(2),
+					placementId: id(6),
+					commandId,
+					bootId: f.boot,
+					runId: id(31),
+					staffAgentId: id(32),
+					requestedByUserId: id(33),
+					inputSha256: "e".repeat(64),
+				},
+				{ action: "start", commandId, inputSha256: "e".repeat(64), command: "sleep 10", timeoutMs: null },
+				f.signal,
+			);
+		}
+		f.running();
+		f.entry.commands = [...commandIds];
+		f.service.requests.length = 0;
+		let releaseOpen: (() => void) | undefined;
+		f.service.opening = new Promise<void>((resolve) => {
+			releaseOpen = resolve;
+		});
+		const passing = f.host.pass(f.signal);
+		for (let i = 0; i < 100; i++) {
+			const opened = f.service.requests.filter((request) => request.op === "open");
+			if (opened.length >= 4) break;
+			await new Promise((resolve) => setTimeout(resolve, 2));
+		}
+		expect(f.service.requests.filter((request) => request.op === "open")).toHaveLength(4);
+		releaseOpen?.();
+		await passing;
+		expect(f.service.requests.filter((request) => request.op === "open")).toHaveLength(6);
+	});
+});

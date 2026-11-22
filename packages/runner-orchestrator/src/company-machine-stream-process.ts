@@ -169,6 +169,7 @@ export interface DesktopRelaySpec {
 export interface WatchedDesktop {
 	readonly ended: string | null;
 	watch(release: DesktopStreamRelease, sink: DesktopStreamSink, signal: AbortSignal): Promise<string>;
+	close?(): void;
 }
 
 /** This program's version: its own file's sha-256. Main and every instance it starts must be the same program. */
