@@ -51,6 +51,7 @@ function createHarness(
 	let commitCount = 0;
 	let leaseRenewCount = 0;
 	let completeMergeAttemptErrors: Error[] = [];
+	let preCommitErrors: Error[] = [];
 	let postCommitErrors: Error[] = [];
 
 	const putFile = (path: string, text: string, version = randomUUID()): string => {
@@ -188,6 +189,10 @@ function createHarness(
 				}
 				case "qorpera_folder_commit": {
 					commitCount += 1;
+					const preCommitErr = preCommitErrors.shift();
+					if (preCommitErr) {
+						throw preCommitErr;
+					}
 					const opKey = String(args.p_operation_key ?? "");
 					if (options?.commitDelayMs) {
 						await new Promise((resolve) => setTimeout(resolve, options.commitDelayMs));
@@ -367,6 +372,9 @@ function createHarness(
 		},
 		setCompleteMergeAttemptErrors(errors: Error[]) {
 			completeMergeAttemptErrors = [...errors];
+		},
+		setPreCommitErrors(errors: Error[]) {
+			preCommitErrors = [...errors];
 		},
 		setPostCommitErrors(errors: Error[]) {
 			postCommitErrors = [...errors];
@@ -813,5 +821,89 @@ describe("SurfaceFolderWorker", () => {
 		expect(h2.completedMerges).toHaveLength(0);
 		expect(h2.events.some((ev) => ev.kind === "surface_folder_merge_completion_failed")).toBe(true);
 		expect(h2.events.some((ev) => ev.kind === "surface_folder_merge_failed")).toBe(false);
+	});
+
+	it("fails immediately without retrying when qorpera_folder_commit rejects with a definite SQLSTATE 42501 or HTTP 403", async () => {
+		const h = createHarness({ "brand/voice.md": "Original voice." });
+		const jobId = randomUUID();
+		const changeId = randomUUID();
+		const leaseToken = randomUUID();
+
+		h.setPreCommitErrors([Object.assign(new Error("Company membership is required"), { code: "42501" })]);
+		h.setPendingClaim({
+			merges: [
+				{
+					jobId,
+					kind: "land_change",
+					surfaceId: h.surfaceId,
+					profileId: h.profileId,
+					environmentId: h.environmentId,
+					leaseToken,
+					folderRoot: "brand",
+					payload: { changeIds: [changeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId,
+							kind: "folder_patch",
+							title: "Update voice",
+							summary: "Refines brand voice",
+							affectedPaths: ["voice.md"],
+							patchManifest: [{ op: "write_text", path: "voice.md", content: "Should not land." }],
+						},
+					],
+				},
+			],
+		});
+
+		expect(await h.worker.processDue(8)).toBe(1);
+		expect(h.getCommitCount()).toBe(1);
+		expect(h.readText("brand/voice.md")).toBe("Original voice.");
+		expect(h.completedMerges).toHaveLength(1);
+		expect(h.completedMerges[0]).toMatchObject({
+			p_job_id: jobId,
+			p_status: "failed",
+			p_lease_token: leaseToken,
+		});
+		expect(String(h.completedMerges[0]?.p_error_detail ?? "")).toContain("Company membership is required");
+
+		const h403 = createHarness({ "brand/voice.md": "Original voice." });
+		const jobId403 = randomUUID();
+		const lease403 = randomUUID();
+		h403.setPreCommitErrors([new ObjectDependencyError(403)]);
+		h403.setPendingClaim({
+			merges: [
+				{
+					jobId: jobId403,
+					kind: "land_change",
+					surfaceId: h403.surfaceId,
+					profileId: h403.profileId,
+					environmentId: h403.environmentId,
+					leaseToken: lease403,
+					folderRoot: "brand",
+					payload: { changeIds: [changeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId,
+							kind: "folder_patch",
+							title: "Update voice",
+							summary: "Refines brand voice",
+							affectedPaths: ["voice.md"],
+							patchManifest: [{ op: "write_text", path: "voice.md", content: "Should not land." }],
+						},
+					],
+				},
+			],
+		});
+
+		expect(await h403.worker.processDue(8)).toBe(1);
+		expect(h403.getCommitCount()).toBe(1);
+		expect(h403.completedMerges).toHaveLength(1);
+		expect(h403.completedMerges[0]).toMatchObject({
+			p_job_id: jobId403,
+			p_status: "failed",
+			p_lease_token: lease403,
+		});
 	});
 });

@@ -80,6 +80,27 @@ export interface SurfaceFolderWorkerOptions {
 
 const DEFAULT_JOB_TIMEOUT_MS = 45_000;
 const DEFAULT_COMPLETION_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000] as const;
+const TRANSIENT_SQLSTATES = new Set(["40001", "40P01", "55P03", "57014"]);
+
+function isDefiniteCommitRejection(error: unknown): boolean {
+	if (!error || typeof error !== "object") return false;
+	if (error instanceof ObjectDependencyError) {
+		return error.status >= 400 && error.status < 500 && error.status !== 429 && !error.lockConflict;
+	}
+	const code = (error as { code?: unknown }).code;
+	if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) && !TRANSIENT_SQLSTATES.has(code)) {
+		return true;
+	}
+	const status = (error as { status?: unknown }).status;
+	return typeof status === "number" && status >= 400 && status < 500 && status !== 409 && status !== 429;
+}
+
+function isLockConflictRollback(error: unknown): boolean {
+	if (!error || typeof error !== "object") return false;
+	if (error instanceof ObjectDependencyError && error.lockConflict) return true;
+	const code = (error as { code?: unknown }).code;
+	return code === "40001" || code === "40P01" || code === "55P03";
+}
 
 function errorTextWithCause(error: unknown): string {
 	if (!error) return "";
@@ -139,13 +160,12 @@ async function retryCommittedRpc<T>(
 	fn: (attemptSignal: AbortSignal) => Promise<T>,
 	shutdownSignal: AbortSignal | undefined,
 	delaysMs: readonly number[],
-	options?: { readonly treatNotRunningAsDoneOnRetry?: boolean; readonly attemptTimeoutMs?: number },
+	options?: { readonly treatNotRunningAsDoneOnRetry?: boolean },
 ): Promise<CommittedRpcResult<T>> {
-	const attemptTimeoutMs = options?.attemptTimeoutMs ?? 15_000;
 	let lastError: unknown;
 	for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
 		try {
-			const value = await withAbortScopes([], fn, attemptTimeoutMs);
+			const value = await withAbortScopes([], fn, 15_000);
 			return { outcome: "confirmed", value };
 		} catch (error) {
 			if (attempt > 0 && options?.treatNotRunningAsDoneOnRetry) {
@@ -695,13 +715,13 @@ export class SurfaceFolderWorker {
 
 		// WHY: Refuse to start qorpera_folder_commit if the job deadline already fired, then decouple the in-flight commit and operation-key replays from jobSignal so an abort never marks a committed write failed.
 		signal.throwIfAborted();
-		markCommitted();
 		const commitResult = await this.#commitUnits(
 			environmentId,
 			`surface-merge:${job.jobId}`,
 			units,
 			unitPaths,
 			shutdownSignal,
+			markCommitted,
 		);
 		if (commitResult.status === "conflict") {
 			await withAbortScopes(
@@ -729,6 +749,7 @@ export class SurfaceFolderWorker {
 			);
 			return;
 		}
+		markCommitted();
 
 		const versionsAfter: Record<string, string | null> = {};
 		const afterContentSha256: Record<string, string | null> = {};
@@ -927,13 +948,13 @@ export class SurfaceFolderWorker {
 		}
 
 		signal.throwIfAborted();
-		markCommitted();
 		const commitResult = await this.#commitUnits(
 			environmentId,
 			`surface-undo:${job.jobId}`,
 			units,
 			unitPaths,
 			shutdownSignal,
+			markCommitted,
 		);
 		if (commitResult.status === "conflict") {
 			await withAbortScopes(
@@ -961,6 +982,7 @@ export class SurfaceFolderWorker {
 			);
 			return;
 		}
+		markCommitted();
 
 		const completion = await retryCommittedRpc(
 			(attemptSignal) => this.#completeMerge(job, { status: "landed" }, attemptSignal),
@@ -986,22 +1008,47 @@ export class SurfaceFolderWorker {
 		units: readonly Record<string, unknown>[],
 		unitPaths: readonly (string | null)[],
 		shutdownSignal: AbortSignal | undefined,
+		markCommitUncertain: () => void,
 	): Promise<
 		| { readonly status: "saved"; readonly versionsAfter: Record<string, string | null> }
 		| { readonly status: "conflict"; readonly conflictPaths: string[] }
 		| { readonly status: "failed"; readonly errorDetail: string }
 	> {
-		// WHY: qorpera_folder_commit replays idempotently by operationKey, so run it under its own bounded per-attempt signal with retries rather than the job timeout signal.
-		const commitCall = await retryCommittedRpc(
-			(commitSignal) => this.#folder.commit(environmentId, operationKey, units, commitSignal),
-			shutdownSignal,
-			this.#completionRetryDelaysMs,
-			{ attemptTimeoutMs: 20_000 },
-		);
-		const raw = (commitCall.outcome === "confirmed" ? commitCall.value : null) as {
-			schema?: unknown;
-			units?: unknown;
-		} | null;
+		// WHY: qorpera_folder_commit replays idempotently by operationKey, so retry uncertain transport/timeout errors under a fresh 20 s signal while failing immediately on definite 4xx/SQLSTATE rollbacks.
+		let raw: { schema?: unknown; units?: unknown } | null = null;
+		let sawUncertainError = false;
+		let lastError: unknown;
+		for (let attempt = 0; attempt <= this.#completionRetryDelaysMs.length; attempt += 1) {
+			try {
+				raw = (await withAbortScopes(
+					[],
+					(commitSignal) => this.#folder.commit(environmentId, operationKey, units, commitSignal),
+					20_000,
+				)) as { schema?: unknown; units?: unknown } | null;
+				lastError = undefined;
+				break;
+			} catch (error) {
+				if (!sawUncertainError && isDefiniteCommitRejection(error)) {
+					return { status: "failed", errorDetail: formatError(error) };
+				}
+				if (!isLockConflictRollback(error)) {
+					sawUncertainError = true;
+				}
+				lastError = error;
+				const delayMs = this.#completionRetryDelaysMs[attempt];
+				if (delayMs === undefined || shutdownSignal?.aborted) break;
+				await new Promise<void>((resolve) => {
+					const timer = setTimeout(resolve, delayMs);
+					timer.unref?.();
+				});
+			}
+		}
+		if (lastError !== undefined) {
+			if (sawUncertainError) {
+				markCommitUncertain();
+			}
+			throw lastError;
+		}
 		if (
 			raw?.schema !== "qorpera.folder-commit/v1" ||
 			!Array.isArray(raw.units) ||
