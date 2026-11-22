@@ -927,9 +927,19 @@ describe("machine command authority", () => {
 		await serveCloudMachineCommand(routes, f.request, "start", f.signal);
 		expect(executeLocal).toHaveBeenCalledTimes(1);
 		expect(f.call).toHaveBeenCalledTimes(2);
+		await routes.authorize(f.request, f.signal);
+		expect(f.call).toHaveBeenCalledTimes(3);
 		await routes.execute(f.request, f.signal);
 		expect(executeLocal).toHaveBeenCalledTimes(2);
 		expect(f.call).toHaveBeenCalledTimes(3);
+		await routes.execute(f.request, f.signal);
+		expect(executeLocal).toHaveBeenCalledTimes(3);
+		expect(f.call).toHaveBeenCalledTimes(4);
+		await routes.authorize(f.request, f.signal);
+		expect(f.call).toHaveBeenCalledTimes(5);
+		await routes.execute(f.request, f.signal);
+		expect(executeLocal).toHaveBeenCalledTimes(4);
+		expect(f.call).toHaveBeenCalledTimes(6);
 	});
 });
 

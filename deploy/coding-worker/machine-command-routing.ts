@@ -965,10 +965,14 @@ export function machineCommandRoutes(
 	memberStream?(request: CloudMemberMachineStreamPeerRequest, sink: CloudMemberMachineStreamSink, signal: AbortSignal): Promise<string>;
 } {
 	const authorized = new WeakMap<CloudMachineCommandHttpRequest, MachineCommandAuthority>();
+	const seen = new WeakSet<CloudMachineCommandHttpRequest>();
 	return {
 		authorize: async (request, signal) => {
 			const authority = await authorizeMachineCommand(control, request, signal);
-			authorized.set(request, authority);
+			if (!seen.has(request)) {
+				seen.add(request);
+				authorized.set(request, authority);
+			}
 			return authority;
 		},
 		execute: (request, signal) => {
