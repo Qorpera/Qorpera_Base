@@ -480,7 +480,7 @@ describe("the surface page", () => {
 		expect(drawer.querySelector(".surface-drawer-change.is-conflicted")?.textContent).toContain("src/hero.tsx");
 		drawer.querySelector<HTMLButtonElement>(`[data-act="reconcile"][data-change="${CHANGES[0]}"]`)!.click();
 		await flush();
-		expect(reconcileChanges).toHaveBeenNthCalledWith(3, SURFACE, [CHANGES[0]]);
+		expect(reconcileChanges).toHaveBeenNthCalledWith(2, SURFACE, [CHANGES[0]]);
 		view.dispose();
 		store.dispose();
 	});
