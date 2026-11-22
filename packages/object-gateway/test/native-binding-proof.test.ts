@@ -143,4 +143,97 @@ describe("the folder route's lease proof", () => {
 			"qorpera_native_binding_proven",
 		]);
 	});
+
+	it("uses qorpera_folder_download_fence for post-read checks when pre-read returns fence metadata", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-fence-"));
+		await mkdir(join(root, "objects"), { mode: 0o700 });
+		const store = new FileSystemObjectStore(join(root, "objects"));
+		await store.put(companyId, sha256, bytes);
+		const nativeToken = randomBytes(32).toString("base64url");
+		const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+		let fenceMode: "allow" | "deny" | "mismatch" = "allow";
+		const authority = new SupabaseObjectAuthority({
+			projectUrl: "https://cloud.test",
+			publishableKey: "sb_publishable_fixture",
+			secretKey: "sb_secret_fixture",
+			requestTimeoutMs: 1_000,
+			circuitCooldownMs: 0,
+			fetch: async (input, init) => {
+				const request = new Request(input, init);
+				const name = new URL(request.url).pathname.split("/").at(-1)!;
+				const args = (await request.json()) as Record<string, unknown>;
+				calls.push({ name, args });
+				if (name === "qorpera_native_binding_proven") return Response.json(true);
+				if (name === "qorpera_folder_authorize_object_download")
+					return Response.json({
+						schema: "qorpera.folder-object-download/v1",
+						profileId: companyId,
+						bytes: bytes.length,
+						authoritySeq: 42,
+						checkedAt: "2026-11-22T09:00:00.000Z",
+						viaActive: true,
+					});
+				if (name === "qorpera_folder_download_fence") {
+					if (fenceMode === "deny")
+						return Response.json({ code: "42501", message: "Object is unavailable" }, { status: 403 });
+					return Response.json({
+						schema: "qorpera.folder-object-download/v1",
+						profileId: companyId,
+						bytes: fenceMode === "mismatch" ? bytes.length + 1 : bytes.length,
+						authoritySeq: 42,
+						rechecked: false,
+					});
+				}
+				return Response.json({ code: "42883" }, { status: 404 });
+			},
+		});
+		const replication = new ObjectGatewayReplication(
+			new ObjectGatewayJournal(join(root, "journal")),
+			store,
+			authority,
+		);
+		const server = createServer(
+			createObjectGatewayHandler({
+				store,
+				authority,
+				replication,
+				controlToken: "synthetic-control",
+				nativeObjects: { token: nativeToken, folder: authority },
+			}),
+		);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("Missing fixture server");
+		cleanups.push(async () => {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			await rm(root, { recursive: true, force: true });
+		});
+		const url = `http://127.0.0.1:${address.port}/v1/folder-objects/${environmentId}/${sha256}`;
+		const headers = {
+			authorization: `Bearer ${nativeToken}`,
+			"x-qorpera-native-binding": binding,
+			"x-qorpera-identity": holder,
+		};
+
+		const ok = await fetch(url, { headers });
+		expect(ok.status).toBe(200);
+		expect(Buffer.from(await ok.arrayBuffer()).toString()).toBe("object");
+		expect(calls.map((c) => c.name)).toEqual([
+			"qorpera_native_binding_proven",
+			"qorpera_folder_authorize_object_download",
+			"qorpera_folder_download_fence",
+		]);
+		expect(calls[2]!.args).toMatchObject({
+			p_authority_seq: 42,
+			p_checked_at: "2026-11-22T09:00:00.000Z",
+			p_via_active: true,
+		});
+
+		fenceMode = "deny";
+		expect((await fetch(url, { headers })).status).toBe(403);
+
+		fenceMode = "mismatch";
+		expect((await fetch(url, { headers })).status).toBe(503);
+	});
 });

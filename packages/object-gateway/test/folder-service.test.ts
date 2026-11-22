@@ -16,7 +16,9 @@ import {
 	parseCommitAnswer,
 	parseFeedPage,
 	parseListPage,
+	parseViewFingerprint,
 	SupabaseFolderCore,
+	type ViewFingerprint,
 } from "../src/folder-service/core.ts";
 import { createNodeTransport, nodeRequest, ResponseTooLargeError } from "../src/folder-service/https-request.ts";
 import { MountGrants, parseOperatorMounts } from "../src/folder-service/mounts.ts";
@@ -2093,5 +2095,128 @@ describe("SupabaseFolderCore paging and oversized fallback", () => {
 		};
 		expect(await service2.stopCleanly()).toBe(true);
 		expect(arrived).toBe(2);
+	});
+
+	it("skips scheduled full #listAll reloads when viewFingerprint matches and reloads on authority or digest drift", async () => {
+		const root = await tempdir();
+		const alpha = await storeFile(root, "alpha.txt", Buffer.from("alpha-1"), 1);
+		const beta = await storeFile(root, "beta.txt", Buffer.from("beta-1"), 2);
+		const core = new FakeCore();
+		core.seed([alpha]);
+		let authoritySeq = 0;
+		let fingerprintCalls = 0;
+		let forceDigestDrift = false;
+		const computeFingerprint = (): ViewFingerprint => {
+			const snapshot = new ViewTree();
+			for (const entry of core.entries.values()) {
+				if (!core.hidden(entry.path)) snapshot.put(entry);
+			}
+			return {
+				seq: core.seq,
+				authoritySeq,
+				entryCount: snapshot.explicitSize,
+				entriesDigest: forceDigestDrift ? "f".repeat(32) : snapshot.entriesDigest,
+			};
+		};
+		const fpCore: FakeCore & { viewFingerprint(): Promise<ViewFingerprint> } = Object.assign(core, {
+			viewFingerprint: async () => {
+				fingerprintCalls++;
+				return computeFingerprint();
+			},
+		});
+
+		let clock = 1_000;
+		const { service, path } = await serve(fpCore, root, () => clock, { reloadMs: 100, pollMs: 10_000 });
+		const io = await Client.open(path);
+		expect((await io.hello("io")).kind).toBe(Kind.helloOk);
+		expect(core.listCalls).toBe(1);
+		expect(await io.list("")).toEqual(["alpha.txt"]);
+
+		clock += 100;
+		await service.poll();
+		await service.settled();
+		clock += 100;
+		await service.poll();
+		await service.settled();
+		expect(fingerprintCalls).toBe(2);
+		expect(core.listCalls).toBe(1);
+
+		core.write(beta);
+		clock += 100;
+		await service.poll();
+		await service.settled();
+		expect(core.listCalls).toBe(1);
+		expect(await io.list("")).toEqual(["alpha.txt", "beta.txt"]);
+
+		forceDigestDrift = true;
+		clock += 100;
+		await service.poll();
+		await service.settled();
+		expect(core.listCalls).toBe(2);
+
+		forceDigestDrift = false;
+		clock += 100;
+		await service.poll();
+		await service.settled();
+		expect(core.listCalls).toBe(2);
+
+		authoritySeq++;
+		clock += 100;
+		await service.poll();
+		await service.settled();
+		expect(core.listCalls).toBe(3);
+
+		expect(
+			parseViewFingerprint({
+				schema: "qorpera.folder-view-fingerprint/v1",
+				seq: 4,
+				authoritySeq: 2,
+				entryCount: 1,
+				entriesDigest: "0123456789abcdef0123456789abcdef",
+			}),
+		).toEqual({
+			seq: 4,
+			authoritySeq: 2,
+			entryCount: 1,
+			entriesDigest: "0123456789abcdef0123456789abcdef",
+		});
+		expect(() => parseViewFingerprint({ schema: "bad" })).toThrow();
+		await service.stop();
+	});
+
+	it("backs off idle clock polling adaptively, resets on activity, and honors explicit fixed pollMs", async () => {
+		const root = await tempdir();
+		const alpha = await storeFile(root, "alpha.txt", Buffer.from("a"), 1);
+		const core = new FakeCore();
+		core.seed([alpha]);
+
+		const fixed = await serve(core, root, undefined, { pollMs: 25 });
+		expect(fixed.service.currentPollMs).toBe(25);
+		await fixed.service.poll();
+		await fixed.service.poll();
+		expect(fixed.service.currentPollMs).toBe(25);
+
+		const adaptive = await serve(core, root, undefined, { pollMs: 20, maxPollMs: 200 });
+		const io = await Client.open(adaptive.path);
+		expect((await io.hello("io")).kind).toBe(Kind.helloOk);
+		expect(adaptive.service.currentPollMs).toBe(20);
+
+		await adaptive.service.poll();
+		expect(adaptive.service.currentPollMs).toBe(40);
+		await adaptive.service.poll();
+		expect(adaptive.service.currentPollMs).toBe(80);
+		await adaptive.service.poll();
+		expect(adaptive.service.currentPollMs).toBe(200);
+		await adaptive.service.poll();
+		expect(adaptive.service.currentPollMs).toBe(200);
+
+		expect(await io.list("")).toEqual(["alpha.txt"]);
+		expect(adaptive.service.currentPollMs).toBe(20);
+
+		await adaptive.service.poll();
+		expect(adaptive.service.currentPollMs).toBe(40);
+		core.write(await storeFile(root, "beta.txt", Buffer.from("b"), 2));
+		await adaptive.service.poll();
+		expect(adaptive.service.currentPollMs).toBe(20);
 	});
 });
