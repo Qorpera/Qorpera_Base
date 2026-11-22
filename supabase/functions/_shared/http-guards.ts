@@ -4,7 +4,6 @@ export const DEFAULT_RPC_TIMEOUT_MS = 25_000;
 export const DEFAULT_RPC_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_BODY_READ_TIMEOUT_MS = 10_000;
 
-const UTF8_ENCODER = new TextEncoder();
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 export class BodyTooLargeError extends Error {
@@ -24,7 +23,6 @@ export interface ReadBoundedBodyOptions {
 export interface TimedFetchOptions {
 	readonly timeoutMs?: number;
 	readonly maxResponseBytes?: number;
-	readonly redirect?: RequestRedirect;
 	readonly fetchImplementation?: typeof fetch;
 }
 
@@ -42,25 +40,6 @@ export function preferredServiceKey(readEnv: (name: string) => string | undefine
 		return undefined;
 	}
 	return undefined;
-}
-
-export function constantTimeEqual(left: string, right: string): boolean {
-	const leftBytes = UTF8_ENCODER.encode(left);
-	const rightBytes = UTF8_ENCODER.encode(right);
-	let diff = leftBytes.byteLength ^ rightBytes.byteLength;
-	const length = Math.max(leftBytes.byteLength, rightBytes.byteLength);
-	for (let index = 0; index < length; index++) {
-		diff |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
-	}
-	return diff === 0;
-}
-
-export function constantTimeIncludes(allowed: readonly string[], candidate: string): boolean {
-	let matched = false;
-	for (const entry of allowed) {
-		if (constantTimeEqual(entry, candidate)) matched = true;
-	}
-	return matched;
 }
 
 async function readStreamBounded(
@@ -171,7 +150,6 @@ export function withAbortSignal<T>(query: T, signal?: AbortSignal): T {
 export function createTimedFetch(options?: TimedFetchOptions): typeof fetch {
 	const timeoutMs = options?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
 	const maxResponseBytes = options?.maxResponseBytes ?? DEFAULT_RPC_MAX_RESPONSE_BYTES;
-	const redirect = options?.redirect ?? "error";
 	const fetchImpl = options?.fetchImplementation ?? fetch;
 	return async function timedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
 		const parentSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
@@ -181,7 +159,7 @@ export function createTimedFetch(options?: TimedFetchOptions): typeof fetch {
 			async (signal) => {
 				const response = await fetchImpl(input, {
 					...init,
-					redirect: init?.redirect ?? redirect,
+					redirect: init?.redirect ?? "error",
 					signal,
 				});
 				const noBody = response.status === 204 || response.status === 205 || response.status === 304 || method === "HEAD";

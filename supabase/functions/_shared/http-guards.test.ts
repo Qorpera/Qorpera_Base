@@ -3,13 +3,12 @@ import { describe, it } from "node:test";
 import { withTimeoutScope } from "./abort-timeout.ts";
 import {
 	BodyTooLargeError,
-	constantTimeEqual,
-	constantTimeIncludes,
 	createTimedFetch,
 	preferredServiceKey,
 	readBoundedBytes,
 	readBoundedJson,
 	readBoundedText,
+	withAbortSignal,
 } from "./http-guards.ts";
 
 function stalledStream() {
@@ -56,7 +55,7 @@ describe("withTimeoutScope", () => {
 	});
 });
 
-describe("preferredServiceKey and constant-time comparison", () => {
+describe("preferredServiceKey and withAbortSignal", () => {
 	it("prefers SUPABASE_SERVICE_ROLE_KEY over SUPABASE_SECRET_KEYS and falls back cleanly", () => {
 		const secretMap = JSON.stringify({ primary: "sb_secret_123456789012345678901234" });
 		assert.equal(
@@ -75,14 +74,25 @@ describe("preferredServiceKey and constant-time comparison", () => {
 		);
 	});
 
-	it("compares strings and arrays in constant time", () => {
-		assert.equal(constantTimeEqual("secret-token", "secret-token"), true);
-		assert.equal(constantTimeEqual("secret-token", "secret-tokeN"), false);
-		assert.equal(constantTimeEqual("secret-token", "secret-token-longer"), false);
-		assert.equal(constantTimeEqual("", ""), true);
-		assert.equal(constantTimeIncludes(["alpha", "beta-key"], "beta-key"), true);
-		assert.equal(constantTimeIncludes(["alpha", "beta-key"], "gamma"), false);
-		assert.equal(constantTimeIncludes([], ""), false);
+	it("attaches AbortSignal when query builder supports abortSignal and passes plain promises through", async () => {
+		const ac = new AbortController();
+		let attached: AbortSignal | undefined;
+		const builder = {
+			abortSignal(signal: AbortSignal) {
+				attached = signal;
+				return this;
+			},
+			then(resolve: (value: { data: string }) => unknown) {
+				return Promise.resolve({ data: attached === ac.signal ? "wired" : "missed" }).then(resolve);
+			},
+		};
+		const wired = await withAbortSignal(builder, ac.signal);
+		assert.equal(attached, ac.signal);
+		assert.deepEqual(wired, { data: "wired" });
+
+		const plain = Promise.resolve({ data: "plain" });
+		assert.equal(withAbortSignal(plain, ac.signal), plain);
+		assert.deepEqual(await withAbortSignal(plain, ac.signal), { data: "plain" });
 	});
 });
 
