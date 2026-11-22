@@ -236,10 +236,19 @@ const tierOf = (path: string): string => path.slice(0, path.indexOf("/"));
 
 /** `signal`, or `ms` from now, whichever ends first. Its timer is a global one, as step-lines' are; `end` clears it. */
 function deadline(signal: AbortSignal, ms: number): { readonly signal: AbortSignal; end(): void } {
-	const timeout = new AbortController();
-	const timer = setTimeout(() => timeout.abort(), ms);
+	const controller = new AbortController();
+	const onAbort = (): void => controller.abort(signal.reason);
+	if (signal.aborted) onAbort();
+	else signal.addEventListener("abort", onAbort, { once: true });
+	const timer = setTimeout(() => controller.abort(), ms);
 	timer.unref?.();
-	return { signal: AbortSignal.any([signal, timeout.signal]), end: () => clearTimeout(timer) };
+	return {
+		signal: controller.signal,
+		end: () => {
+			clearTimeout(timer);
+			signal.removeEventListener("abort", onAbort);
+		},
+	};
 }
 
 /** Resolves when `promise` settles or `signal` aborts, whichever is first. */
