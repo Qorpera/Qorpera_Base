@@ -3269,4 +3269,49 @@ describe("per-repository landing queue and inline record batching", () => {
 		expect(repairCalls).toHaveLength(1);
 		expect(refCalls).toHaveLength(1);
 	});
+
+	it("starts a surface-backed Qorpera repository with starter files and verifies staged commits without moving main", async () => {
+		const f = await fixture();
+		const kept: CloudCodingRepository = { host: "qorpera", owner: "surfaces", name: "website", baseBranch: "main" };
+		const claim: CodingSessionClaim = {
+			...f.session.claim,
+			repository: kept,
+			baseSha: null,
+			surfaceSession: {
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				slug: "website",
+				title: "Hjemmeside",
+			},
+		};
+		const { baseSha } = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal());
+		expect(baseSha).toMatch(/^[0-9a-f]{40}$/);
+		const repo = join(f.companyRoot, "code/surfaces/website/repo.git");
+		expect(await f.git(repo, "show", `${baseSha}:index.html`)).toContain("Hjemmeside");
+		expect(await f.git(repo, "show", `${baseSha}:.qorpera/checks.json`)).toContain('"checks"');
+
+		const session = { ...f.session, claim, baseSha };
+		expect(await f.repositories.prepare(session, signal())).toEqual({
+			cwd: `/company/code/surfaces/website/worktrees/${f.workerId}`,
+		});
+		const tree = join(f.companyRoot, "code/surfaces/website/worktrees", f.workerId);
+		expect(await f.repositories.verifyStaged(session, baseSha, signal())).toEqual({
+			branch: claim.branch,
+			baseSha,
+			headSha: baseSha,
+			changed: false,
+			filesChanged: 0,
+		});
+
+		const head = await f.commit(tree, "landing.html");
+		expect(await f.repositories.verifyStaged(session, head, signal())).toEqual({
+			branch: claim.branch,
+			baseSha,
+			headSha: head,
+			changed: true,
+			filesChanged: 1,
+		});
+		expect(await f.git(repo, "rev-parse", "refs/heads/main")).toBe(baseSha);
+		expect(await f.git(repo, "rev-parse", `refs/heads/${claim.branch}`)).toBe(head);
+	});
 });

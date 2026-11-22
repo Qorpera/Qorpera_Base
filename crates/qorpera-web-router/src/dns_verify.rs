@@ -1,9 +1,10 @@
 use crate::postgres_sync::connect_postgres_client;
 use crate::routes::{DomainStatus, SharedRoutes};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Semaphore};
@@ -16,6 +17,41 @@ pub const DNS_TYPE_TXT: u16 = 16;
 pub const DNS_TYPE_AAAA: u16 = 28;
 const MAX_PARALLEL_DOMAIN_CHECKS: usize = 16;
 const DB_OP_TIMEOUT: Duration = Duration::from_secs(5);
+const UNCHANGED_DB_HEARTBEAT: Duration = Duration::from_secs(10 * 60);
+
+#[derive(Default)]
+pub struct DomainPersistTracker {
+    last_persisted: Mutex<HashMap<String, tokio::time::Instant>>,
+}
+
+impl DomainPersistTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn should_persist(&self, domain_id: &str, changed: bool, heartbeat: Duration) -> bool {
+        if changed {
+            return true;
+        }
+        let Ok(map) = self.last_persisted.lock() else {
+            return true;
+        };
+        map.get(domain_id)
+            .is_none_or(|ts| ts.elapsed() >= heartbeat)
+    }
+
+    pub fn mark_persisted(&self, domain_id: &str) {
+        if let Ok(mut map) = self.last_persisted.lock() {
+            map.insert(domain_id.to_string(), tokio::time::Instant::now());
+        }
+    }
+
+    pub fn prune_missing(&self, active_ids: &HashSet<String>) {
+        if let Ok(mut map) = self.last_persisted.lock() {
+            map.retain(|id, _| active_ids.contains(id));
+        }
+    }
+}
 
 static DNS_TX_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -418,6 +454,17 @@ pub async fn verify_domains_once(
     database_url: Option<&str>,
     query_timeout: Duration,
 ) -> Vec<DomainCheckOutcome> {
+    verify_domains_once_with_tracker(routes, dns_servers, database_url, query_timeout, None, true).await
+}
+
+async fn verify_domains_once_with_tracker(
+    routes: &Arc<SharedRoutes>,
+    dns_servers: &[SocketAddr],
+    database_url: Option<&str>,
+    query_timeout: Duration,
+    persist_tracker: Option<&Arc<DomainPersistTracker>>,
+    force_all_persist: bool,
+) -> Vec<DomainCheckOutcome> {
     let (domains, expected_ipv4, expected_ipv6, expected_cname_target, domains_enabled) = {
         let guard = routes.load();
         (
@@ -429,7 +476,14 @@ pub async fn verify_domains_once(
         )
     };
     if !domains_enabled || domains.is_empty() {
+        if let Some(tracker) = persist_tracker {
+            tracker.prune_missing(&HashSet::new());
+        }
         return Vec::new();
+    }
+    if let Some(tracker) = persist_tracker {
+        let active_ids: HashSet<String> = domains.iter().map(|d| d.id.clone()).collect();
+        tracker.prune_missing(&active_ids);
     }
 
     let db_client = if let Some(url) = database_url {
@@ -476,6 +530,7 @@ pub async fn verify_domains_once(
         }
         let targets_ref = Arc::clone(&targets);
         let db_ref = db_client.clone();
+        let tracker_ref = persist_tracker.map(Arc::clone);
 
         set.spawn(async move {
             let _permit = permit;
@@ -515,24 +570,42 @@ pub async fn verify_domains_once(
             } else {
                 Some(eval.reason.as_str())
             };
-
-            if let Some(ref client) = db_ref {
-                let res = tokio::time::timeout(
-                    DB_OP_TIMEOUT,
-                    client.execute(
-                        "SELECT public.qorpera_web_domain_mark_checked($1::text::uuid, $2::text, $3::text)",
-                        &[&domain.id, &status_sql_str(next_status), &err_text],
-                    ),
-                )
-                .await;
-                match res {
-                    Ok(Err(err)) => {
-                        warn!(domain = %domain.hostname, error = %err, "failed persisting domain check");
+            let next_misses = if eval.verified {
+                0
+            } else {
+                domain.consecutive_misses.saturating_add(1)
+            };
+            let changed_in_memory =
+                next_status != domain.status || next_misses != domain.consecutive_misses;
+            // WHY: Always persist explicit rechecks or domains with NULL last_checked_at while throttling unchanged periodic writes.
+            let force_persist =
+                force_all_persist || changed_in_memory || domain.last_checked_at.is_none();
+            let should_write_db = tracker_ref.as_ref().is_none_or(|t| {
+                t.should_persist(&domain.id, force_persist, UNCHANGED_DB_HEARTBEAT)
+            });
+            if should_write_db {
+                if let Some(ref client) = db_ref {
+                    let res = tokio::time::timeout(
+                        DB_OP_TIMEOUT,
+                        client.execute(
+                            "SELECT public.qorpera_web_domain_mark_checked($1::text::uuid, $2::text, $3::text)",
+                            &[&domain.id, &status_sql_str(next_status), &err_text],
+                        ),
+                    )
+                    .await;
+                    match res {
+                        Ok(Err(err)) => {
+                            warn!(domain = %domain.hostname, error = %err, "failed persisting domain check");
+                        }
+                        Err(_) => {
+                            warn!(domain = %domain.hostname, "timed out persisting domain check");
+                        }
+                        Ok(Ok(_)) => {
+                            if let Some(ref tracker) = tracker_ref {
+                                tracker.mark_persisted(&domain.id);
+                            }
+                        }
                     }
-                    Err(_) => {
-                        warn!(domain = %domain.hostname, "timed out persisting domain check");
-                    }
-                    Ok(Ok(_)) => {}
                 }
             }
 
@@ -544,14 +617,6 @@ pub async fn verify_domains_once(
                     "custom domain status transitioned"
                 );
             }
-
-            let next_misses = if eval.verified {
-                0
-            } else {
-                domain.consecutive_misses.saturating_add(1)
-            };
-            let changed_in_memory =
-                next_status != domain.status || next_misses != domain.consecutive_misses;
 
             (
                 DomainCheckOutcome {
@@ -590,6 +655,7 @@ pub fn spawn_dns_verifier(
     interval: Duration,
     mut trigger_rx: mpsc::Receiver<()>,
 ) {
+    let persist_tracker = Arc::new(DomainPersistTracker::new());
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -599,7 +665,15 @@ pub fn spawn_dns_verifier(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    let _ = verify_domains_once(&routes, &dns_servers, database_url.as_deref(), Duration::from_secs(3)).await;
+                    let _ = verify_domains_once_with_tracker(
+                        &routes,
+                        &dns_servers,
+                        database_url.as_deref(),
+                        Duration::from_secs(3),
+                        Some(&persist_tracker),
+                        false,
+                    )
+                    .await;
                     last_sweep = tokio::time::Instant::now();
                 }
                 msg = trigger_rx.recv() => {
@@ -611,7 +685,15 @@ pub fn spawn_dns_verifier(
                         tokio::time::sleep(min_trigger_gap - elapsed).await;
                     }
                     while trigger_rx.try_recv().is_ok() {}
-                    let _ = verify_domains_once(&routes, &dns_servers, database_url.as_deref(), Duration::from_secs(3)).await;
+                    let _ = verify_domains_once_with_tracker(
+                        &routes,
+                        &dns_servers,
+                        database_url.as_deref(),
+                        Duration::from_secs(3),
+                        Some(&persist_tracker),
+                        true,
+                    )
+                    .await;
                     last_sweep = tokio::time::Instant::now();
                 }
             }
@@ -760,5 +842,22 @@ mod tests {
 
         let sub = resolve_domain_dns(&[bad_addr, addr], "www.minbutik.dk", Duration::from_secs(2)).await;
         assert_eq!(sub.cname_records, vec!["sites.qorpera.site".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn persist_tracker_skips_unchanged_inside_heartbeat_and_prunes_removed() {
+        let tracker = DomainPersistTracker::new();
+        let hb = Duration::from_millis(60);
+        assert!(tracker.should_persist("dom-1", false, hb));
+        tracker.mark_persisted("dom-1");
+        assert!(!tracker.should_persist("dom-1", false, hb));
+        assert!(tracker.should_persist("dom-1", true, hb));
+
+        tokio::time::sleep(Duration::from_millis(70)).await;
+        assert!(tracker.should_persist("dom-1", false, hb));
+        tracker.mark_persisted("dom-1");
+
+        tracker.prune_missing(&HashSet::from(["dom-2".to_string()]));
+        assert!(tracker.should_persist("dom-1", false, hb));
     }
 }

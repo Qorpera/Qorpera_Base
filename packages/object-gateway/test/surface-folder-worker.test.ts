@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
 import { describe, expect, it } from "vitest";
 import { ObjectDependencyError } from "../src/dependency.ts";
 import type { MemberCompanyPublisherRpc } from "../src/member-company-authority.ts";
@@ -996,6 +997,80 @@ describe("SurfaceFolderWorker", () => {
 		expect(hUncertainThen42501.completedMerges).toHaveLength(0);
 		expect(hUncertainThen42501.events.some((ev) => ev.kind === "surface_folder_merge_completion_failed")).toBe(true);
 		expect(hUncertainThen42501.events.some((ev) => ev.kind === "surface_folder_merge_failed")).toBe(false);
+	});
+
+	it("matches composeStudioPreview path resolution and rejects ./ dot-segment ops identically", async () => {
+		const baseFiles = { "identity/voice.md": "Base voice.\n" };
+		const dotChangeId = randomUUID();
+		const dotOps = [{ op: "write_text" as const, path: "./voice.md", content: "Dot segment.\n" }];
+		const dotPreview = composeStudioPreview(baseFiles, [{ changeId: dotChangeId, ops: dotOps }], "identity");
+		expect(dotPreview.status).toBe("conflicted");
+
+		const hDot = createHarness(baseFiles);
+		hDot.setPendingClaim({
+			merges: [
+				{
+					jobId: randomUUID(),
+					kind: "land_change",
+					surfaceId: hDot.surfaceId,
+					profileId: hDot.profileId,
+					environmentId: hDot.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "identity",
+					payload: { changeIds: [dotChangeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: dotChangeId,
+							kind: "folder_patch",
+							title: "Dot segment write",
+							summary: "Attempts ./voice.md",
+							affectedPaths: ["./voice.md"],
+							patchManifest: dotOps,
+						},
+					],
+				},
+			],
+		});
+		expect(await hDot.worker.processDue(8)).toBe(1);
+		expect(hDot.completedMerges[0]?.p_status).toBe("failed");
+		expect(String(hDot.completedMerges[0]?.p_error_detail)).toContain("Unsafe studio patch path");
+
+		const okChangeId = randomUUID();
+		const okOps = [{ op: "write_text" as const, path: "voice.md", content: "Clean voice.\n" }];
+		const okPreview = composeStudioPreview(baseFiles, [{ changeId: okChangeId, ops: okOps }], "identity");
+		expect(okPreview.status).toBe("ready");
+		expect(okPreview.files["identity/voice.md"]).toBe("Clean voice.\n");
+
+		const hOk = createHarness(baseFiles);
+		hOk.setPendingClaim({
+			merges: [
+				{
+					jobId: randomUUID(),
+					kind: "land_change",
+					surfaceId: hOk.surfaceId,
+					profileId: hOk.profileId,
+					environmentId: hOk.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "identity",
+					payload: { changeIds: [okChangeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: okChangeId,
+							kind: "folder_patch",
+							title: "Update voice",
+							summary: "Updates voice.md",
+							affectedPaths: ["voice.md"],
+							patchManifest: okOps,
+						},
+					],
+				},
+			],
+		});
+		expect(await hOk.worker.processDue(8)).toBe(1);
+		expect(hOk.completedMerges[0]?.p_status).toBe("landed");
+		expect(hOk.readText("identity/voice.md")).toBe("Clean voice.\n");
 	});
 
 	it("reads and stages multiple files concurrently, skips redundant parent directory probes and unchanged writes", async () => {

@@ -80,6 +80,7 @@ import type { CloudModelLoginUsage } from "./cloud-model-login-vault-usage.ts";
 import { isNativeJobHolder, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 import { type CloudToolContent, cloudToolJsonText } from "./cloud-native-tool-boundary.ts";
 import {
+	type AppSecretsRequest,
 	CloudSecretBroker,
 	type CloudSecretCaptureRequest,
 	type CloudSecretOperationRequest,
@@ -88,6 +89,7 @@ import {
 	type CodingRelaySignIn,
 	type CodingRepositoryCredentialRequest,
 	type CodingRepositoryFetchRequest,
+	parseAppSecretsRequest,
 	parseCodingEnvironmentRequest,
 	parseCodingMcpSignInRequest,
 	parseCodingRepositoryCredentialRequest,
@@ -267,6 +269,27 @@ function parseCodingEnvironmentHttpRequest(value: unknown): CodingEnvironmentReq
 		workerId: input.workerId,
 		leaseToken: input.leaseToken,
 		executorOwner: input.executorOwner,
+	});
+}
+
+function parseAppSecretsHttpRequest(value: unknown): AppSecretsRequest {
+	const input = record(value, "App secrets request");
+	const allowed = ["schema", "siteId", "scope", "targetEnv", "executorOwner", "machineIdSha256", "deploymentId"];
+	const required = ["schema", "siteId", "scope", "targetEnv", "executorOwner", "machineIdSha256"];
+	if (
+		Object.keys(input).some((key) => !allowed.includes(key)) ||
+		required.some((key) => !Object.hasOwn(input, key)) ||
+		input.schema !== "qorpera.app-secrets-request/v1"
+	) {
+		throw new Error("App secrets request is invalid");
+	}
+	return parseAppSecretsRequest({
+		siteId: input.siteId,
+		scope: input.scope,
+		targetEnv: input.targetEnv,
+		executorOwner: input.executorOwner,
+		machineIdSha256: input.machineIdSha256,
+		...(Object.hasOwn(input, "deploymentId") ? { deploymentId: input.deploymentId } : {}),
 	});
 }
 
@@ -1614,6 +1637,23 @@ export class HttpCloudSecretBrokerService {
 					schema: environment.schema,
 					environment: { ...environment.environment },
 					mask: [...environment.mask],
+				});
+				return;
+			}
+			if (
+				path === "/v1/app-secrets" &&
+				this.#codingExecutorToken !== undefined &&
+				tokenMatches(this.#codingExecutorToken, request.headers.authorization)
+			) {
+				const parsed = parseAppSecretsHttpRequest(await readRequest(request));
+				const appSecrets = await withAbortScopes([], (signal) => scope.broker.appSecrets(parsed, signal), 10_000);
+				response(reply, 200, {
+					schema: appSecrets.schema,
+					siteId: appSecrets.siteId,
+					slug: appSecrets.slug,
+					scope: appSecrets.scope,
+					targetEnv: appSecrets.targetEnv,
+					secrets: { ...appSecrets.secrets },
 				});
 				return;
 			}

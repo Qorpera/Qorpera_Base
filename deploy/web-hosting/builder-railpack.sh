@@ -10,6 +10,8 @@ SOURCE_DIR="$1"
 IMAGE_TAG="$2"
 DOCKERFILE_REL="${QORPERA_DOCKERFILE:-}"
 APP_PORT="${QORPERA_APP_PORT:-3000}"
+BUILD_TIMEOUT_SEC="${QORPERA_BUILD_TIMEOUT_SEC:-600}"
+PUSH_TIMEOUT_SEC="${QORPERA_PUSH_TIMEOUT_SEC:-300}"
 
 if [ ! -d "$SOURCE_DIR" ]; then
 	echo "Source directory not found: $SOURCE_DIR" >&2
@@ -28,17 +30,17 @@ if [ -n "$DOCKERFILE_REL" ]; then
 		echo "Dockerfile not found: $DOCKERFILE_PATH" >&2
 		exit 4
 	fi
-	docker build --pull=false --build-arg "PORT=${APP_PORT}" -f "$DOCKERFILE_PATH" -t "$IMAGE_TAG" "$SOURCE_DIR" >&2
+	timeout --kill-after=30s "$BUILD_TIMEOUT_SEC" docker build --pull=false --build-arg "PORT=${APP_PORT}" -f "$DOCKERFILE_PATH" -t "$IMAGE_TAG" "$SOURCE_DIR" >&2
 elif [ -f "${SOURCE_DIR}/Dockerfile" ]; then
-	docker build --pull=false --build-arg "PORT=${APP_PORT}" -f "${SOURCE_DIR}/Dockerfile" -t "$IMAGE_TAG" "$SOURCE_DIR" >&2
+	timeout --kill-after=30s "$BUILD_TIMEOUT_SEC" docker build --pull=false --build-arg "PORT=${APP_PORT}" -f "${SOURCE_DIR}/Dockerfile" -t "$IMAGE_TAG" "$SOURCE_DIR" >&2
 elif command -v railpack >/dev/null 2>&1; then
-	railpack build "$SOURCE_DIR" --name "$IMAGE_TAG" --env "PORT=${APP_PORT}" >&2
+	timeout --kill-after=30s "$BUILD_TIMEOUT_SEC" railpack build "$SOURCE_DIR" --name "$IMAGE_TAG" --env "PORT=${APP_PORT}" >&2
 else
 	echo "No Dockerfile found and railpack is not installed" >&2
 	exit 5
 fi
 
-docker push "$IMAGE_TAG" >&2
+timeout --kill-after=30s "$PUSH_TIMEOUT_SEC" docker push "$IMAGE_TAG" >&2
 IMAGE_REPO="${IMAGE_TAG%:*}"
 DIGEST_REF="$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE_TAG" 2>/dev/null | grep -F "${IMAGE_REPO}@sha256:" | head -n 1 || true)"
 if [ -z "$DIGEST_REF" ]; then

@@ -239,6 +239,9 @@ export interface CloudWakeEnvelope {
 			| "machine-event"
 			| "machine-checkin"
 			| "event"
+			| "code-change"
+			| "app-unhealthy"
+			| "data-change"
 			| "human-task"
 			| "light-ask"
 			| "surface-session";
@@ -494,6 +497,65 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 					throw new Error("Invalid event wake");
 				seen.add(id);
 			}
+		} else if (source.kind === "code-change") {
+			const code = closed(payloadBody, [
+				"schema",
+				"repo",
+				"owner",
+				"name",
+				"kind",
+				"change",
+				"mainBefore",
+				"mainAfter",
+				"workerId",
+				"paths",
+				"checks",
+			]);
+			if (
+				code.schema !== "qorpera.code-change-wake/v1" ||
+				typeof code.repo !== "string" ||
+				typeof code.owner !== "string" ||
+				typeof code.name !== "string" ||
+				(code.kind !== "landed" &&
+					code.kind !== "undone" &&
+					code.kind !== "checks_failed" &&
+					code.kind !== "conflict") ||
+				!Array.isArray(code.paths) ||
+				code.paths.some((p) => typeof p !== "string" || Buffer.byteLength(p) > 4096) ||
+				parentRunId !== null ||
+				actorStaffId !== null
+			)
+				throw new Error("Invalid code-change wake");
+		} else if (source.kind === "app-unhealthy") {
+			const app = closed(payloadBody, ["schema", "siteId", "slug", "status", "restartCount", "error"]);
+			if (
+				app.schema !== "qorpera.app-unhealthy-wake/v1" ||
+				uuidKey(app.siteId) !== uuidKey(source.id) ||
+				typeof app.slug !== "string" ||
+				typeof app.status !== "string" ||
+				!Number.isSafeInteger(app.restartCount) ||
+				(app.restartCount as number) < 0 ||
+				(app.error !== null && typeof app.error !== "string") ||
+				parentRunId !== null ||
+				actorStaffId !== null
+			)
+				throw new Error("Invalid app-unhealthy wake");
+		} else if (source.kind === "data-change") {
+			const data = closed(payloadBody, ["schema", "database", "table", "tables", "operation", "rowId"]);
+			if (
+				data.schema !== "qorpera.data-change-wake/v1" ||
+				typeof data.database !== "string" ||
+				(data.table !== null && typeof data.table !== "string") ||
+				!Array.isArray(data.tables) ||
+				data.tables.some((tb) => typeof tb !== "string") ||
+				(data.operation !== null &&
+					data.operation !== "insert" &&
+					data.operation !== "update" &&
+					data.operation !== "delete") ||
+				parentRunId !== null ||
+				actorStaffId !== null
+			)
+				throw new Error("Invalid data-change wake");
 		} else throw new Error("Invalid routine source");
 	} else if (wake.kind === "room") {
 		const post = closed(payloadBody, ["roomId", "inputIds", "recipientStaffId"]);
@@ -546,6 +608,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		// A plain worker Claude Code does names its harness (20260930770000); a Codex worker never does.
 		const harnessNamed = !!payloadBody && typeof payloadBody === "object" && Object.hasOwn(payloadBody, "harness");
 		const claudeNamed = !!payloadBody && typeof payloadBody === "object" && Object.hasOwn(payloadBody, "claude");
+		const surfaceSessionNamed =
+			!!payloadBody && typeof payloadBody === "object" && Object.hasOwn(payloadBody, "surfaceSession");
 		const work = closed(payloadBody, [
 			"schema",
 			"workerId",
@@ -561,6 +625,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			...(coding ? ["coding"] : []),
 			...(harnessNamed ? ["harness"] : []),
 			...(claudeNamed ? ["claude"] : []),
+			...(surfaceSessionNamed ? ["surfaceSession"] : []),
 		]);
 		const dispatch = closed(work.dispatch, [
 			"goal",
@@ -574,6 +639,24 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			"completion",
 		]);
 		closed(work.todo, ["todoKey", "title", "path"]);
+		if (surfaceSessionNamed) {
+			if (!coding) throw new Error("Invalid worker dispatch wake");
+			const surfaceSession = closed(work.surfaceSession, ["sessionId", "surfaceId", "surfaceSlug", "leaseToken"]);
+			uuid(surfaceSession.sessionId);
+			uuid(surfaceSession.surfaceId);
+			uuid(surfaceSession.leaseToken);
+			if (
+				typeof surfaceSession.surfaceSlug !== "string" ||
+				!/^[a-z0-9][a-z0-9-]{0,63}$/.test(surfaceSession.surfaceSlug)
+			)
+				throw new Error("Invalid worker dispatch wake");
+		}
+		const surfaceCodingRoot = coding && surfaceSessionNamed;
+		const validParent = surfaceCodingRoot
+			? parentRunId === null && work.parentRunId === null
+			: parentRunId !== null &&
+				uuidKey(parentRunId) !== uuidKey(identity.runId) &&
+				uuid(work.parentRunId) === parentRunId;
 		if (
 			work.schema !== "qorpera.worker-dispatch/v1" ||
 			uuid(work.workerId) !== source.id ||
@@ -588,9 +671,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				(coding ||
 					harnessNamed ||
 					source.occurrenceKey !== `worker-dispatch:${source.id}:${work.sequence}:codex`)) ||
-			parentRunId === null ||
-			uuidKey(parentRunId) === uuidKey(identity.runId) ||
-			uuid(work.parentRunId) !== parentRunId ||
+			!validParent ||
 			actorStaffId !== null ||
 			actorUserId !== null ||
 			audience.kind !== "company" ||

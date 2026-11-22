@@ -420,8 +420,15 @@ function parseWaitingItem(value: unknown): MailWaitingItem {
 }
 
 /** The company's addresses, by local part; none while its mail is off. */
-export async function readMailAddresses(cloud: Cloud, environmentId: string): Promise<MailAddress[]> {
-	const answer = await cloud.rpc("qorpera_member_mail_addresses", { p_environment_id: environmentId });
+export async function readMailAddresses(
+	cloud: Cloud,
+	environmentId: string,
+	signal?: AbortSignal,
+): Promise<MailAddress[]> {
+	const args = { p_environment_id: environmentId };
+	const answer = await (signal
+		? cloud.rpc("qorpera_member_mail_addresses", args, signal)
+		: cloud.rpc("qorpera_member_mail_addresses", args));
 	return array(answer, "mail addresses").map(parseAddress);
 }
 
@@ -430,18 +437,22 @@ export async function readMailThreads(
 	cloud: Cloud,
 	environmentId: string,
 	request: MailThreadRequest,
+	signal?: AbortSignal,
 ): Promise<MailThreadPage> {
+	const args = {
+		p_environment_id: environmentId,
+		p_request: {
+			...(request.address === undefined ? {} : { address: request.address }),
+			...(request.state === undefined ? {} : { state: request.state }),
+			...(request.direction === undefined ? {} : { direction: request.direction }),
+			...(request.before === undefined ? {} : { before: request.before }),
+			limit: request.limit ?? MAIL_PAGE_SIZE,
+		},
+	};
 	const answer = record(
-		await cloud.rpc("qorpera_member_mail_threads", {
-			p_environment_id: environmentId,
-			p_request: {
-				...(request.address === undefined ? {} : { address: request.address }),
-				...(request.state === undefined ? {} : { state: request.state }),
-				...(request.direction === undefined ? {} : { direction: request.direction }),
-				...(request.before === undefined ? {} : { before: request.before }),
-				limit: request.limit ?? MAIL_PAGE_SIZE,
-			},
-		}),
+		await (signal
+			? cloud.rpc("qorpera_member_mail_threads", args, signal)
+			: cloud.rpc("qorpera_member_mail_threads", args)),
 		"mail threads",
 	);
 	return {
@@ -457,13 +468,17 @@ export async function readMailThread(
 	environmentId: string,
 	thread: string,
 	before?: MailMessageCursor,
+	signal?: AbortSignal,
 ): Promise<MailThread> {
+	const args = {
+		p_environment_id: environmentId,
+		p_thread: thread,
+		...(before === undefined ? {} : { p_before: before }),
+	};
 	const answer = record(
-		await cloud.rpc("qorpera_member_mail_thread", {
-			p_environment_id: environmentId,
-			p_thread: thread,
-			...(before === undefined ? {} : { p_before: before }),
-		}),
+		await (signal
+			? cloud.rpc("qorpera_member_mail_thread", args, signal)
+			: cloud.rpc("qorpera_member_mail_thread", args)),
 		"mail thread",
 	);
 	const more = flag(answer.more, "mail thread more");
@@ -478,17 +493,32 @@ export async function readMailThread(
 }
 
 /** The sends that wait for a person, newest first. */
-export async function readMailWaiting(cloud: Cloud, environmentId: string): Promise<MailWaitingItem[]> {
-	const answer = await cloud.rpc("qorpera_member_mail_waiting", { p_environment_id: environmentId });
+export async function readMailWaiting(
+	cloud: Cloud,
+	environmentId: string,
+	signal?: AbortSignal,
+): Promise<MailWaitingItem[]> {
+	const args = { p_environment_id: environmentId };
+	const answer = await (signal
+		? cloud.rpc("qorpera_member_mail_waiting", args, signal)
+		: cloud.rpc("qorpera_member_mail_waiting", args));
 	return array(answer, "mail waiting sends").map(parseWaitingItem);
 }
 
 /** This member has read the thread: its unread mark clears until a newer message arrives. */
-export async function markMailThreadRead(cloud: Cloud, environmentId: string, thread: string): Promise<void> {
-	const answer = await cloud.rpc("qorpera_mark_mail_thread_read", {
+export async function markMailThreadRead(
+	cloud: Cloud,
+	environmentId: string,
+	thread: string,
+	signal?: AbortSignal,
+): Promise<void> {
+	const args = {
 		p_environment_id: environmentId,
 		p_thread: thread,
-	});
+	};
+	const answer = await (signal
+		? cloud.rpc("qorpera_mark_mail_thread_read", args, signal)
+		: cloud.rpc("qorpera_mark_mail_thread_read", args));
 	if (answer !== true) throw new CloudShapeError("mail read mark");
 }
 
@@ -501,20 +531,24 @@ export async function sendMemberMail(
 	cloud: Cloud,
 	environmentId: string,
 	request: MailMemberSend,
+	signal?: AbortSignal,
 ): Promise<MailMemberSent> {
+	const args = {
+		p_environment_id: environmentId,
+		p_request: {
+			sendId: request.sendId,
+			from: request.from,
+			to: request.to,
+			...(request.cc?.length ? { cc: request.cc } : {}),
+			subject: request.subject,
+			text: request.text,
+			...(request.replyTo ? { replyTo: { kind: request.replyTo.kind, id: request.replyTo.id } } : {}),
+		},
+	};
 	const answer = record(
-		await cloud.rpc("qorpera_send_member_mail", {
-			p_environment_id: environmentId,
-			p_request: {
-				sendId: request.sendId,
-				from: request.from,
-				to: request.to,
-				...(request.cc?.length ? { cc: request.cc } : {}),
-				subject: request.subject,
-				text: request.text,
-				...(request.replyTo ? { replyTo: { kind: request.replyTo.kind, id: request.replyTo.id } } : {}),
-			},
-		}),
+		await (signal
+			? cloud.rpc("qorpera_send_member_mail", args, signal)
+			: cloud.rpc("qorpera_send_member_mail", args)),
 		"mail send",
 	);
 	return {

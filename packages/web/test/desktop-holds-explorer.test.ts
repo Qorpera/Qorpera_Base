@@ -100,6 +100,7 @@ interface Page {
 	/** Machines this page's ledger knows of: in a list it was given, or taken over. */
 	known: Set<Machine>;
 	sent: { id: number; machine: Machine; epoch: number }[];
+	sentIds: number[];
 	/** The highest epoch a hand-back answer for each machine reached this page with. */
 	answered: Map<Machine, number>;
 	/** How many releases of each machine this page asked: a take-over answered "called off" must follow one. */
@@ -149,7 +150,7 @@ function told(one: Request): string {
 }
 
 /** One explored schedule: the steps taken, and the first invariant broken, if any. */
-async function explore(seed: number, steps: number): Promise<{ log: string[]; broken?: string }> {
+async function explore(seed: number, steps: number, trace = false): Promise<{ log: string[]; broken?: string }> {
 	const next = random(seed);
 	const pick = <T>(items: readonly T[]): T => items[Math.floor(next() * items.length)] as T;
 	// The seed's shape.
@@ -159,12 +160,16 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 	/** A request held back for several steps, now and then. */
 	const lag = () => (next() < 0.3 ? 2 + Math.floor(next() * 12) : 0);
 	const db = new Database(machines);
-	const requests: Request[] = [];
+	const activeRequests: Request[] = [];
+	const unsettledByPage = new Array<number>(pageCount).fill(0);
+	const pageTakes: Request[][] = Array.from({ length: pageCount }, () => []);
+	const openVoids: Request[][] = Array.from({ length: pageCount }, () => []);
 	const dones: Done[] = [];
-	const log: string[] = [
-		`${pageCount} page(s), ${machines.length} machine(s), without: ${[...off].join(", ") || "none"}`,
-	];
+	const log: string[] = trace
+		? [`${pageCount} page(s), ${machines.length} machine(s), without: ${[...off].join(", ") || "none"}`]
+		: [];
 	let ids = 0;
+	let activity = 0;
 	const raise = (page: Page, machine: Machine, epoch: number, why: Seen["why"], seat?: number) =>
 		page.seen.push({
 			step: db.step,
@@ -188,7 +193,8 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				seats.set(one.machine, (seats.get(one.machine) ?? new Set()).add(one.seat));
 		return seats;
 	};
-	const flush = async () => {
+	const flush = async (hadWork: boolean) => {
+		if (!hadWork) return;
 		for (let n = 0; n < 30; n++) await Promise.resolve();
 	};
 	const request = (
@@ -200,7 +206,8 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		extra: { press?: string; name?: HoldName } = {},
 	) =>
 		new Promise<unknown>((resolve, reject) => {
-			requests.push({
+			activity++;
+			const entry: Request = {
 				id: ++ids,
 				page,
 				kind,
@@ -214,47 +221,51 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				deliverAt: 0,
 				resolve,
 				reject,
-			});
+			};
+			activeRequests.push(entry);
+			unsettledByPage[page]!++;
 			const one = pages[page] as Page;
 			if (kind === "take") {
+				pageTakes[page]!.push(entry);
 				const floor = one.floor.get(machine as Machine);
 				if (floor !== undefined && (epoch as number) < floor)
 					one.silent.push(
 						`p${page}'s take-over of ${machine?.slice(-2)} went out at ${epoch}, below the ${floor} a refusal named`,
 					);
 				one.sent.push({ id: ids, machine: machine as Machine, epoch: epoch as number });
+				one.sentIds.push(ids);
 				one.known.add(machine as Machine);
 				raise(one, machine as Machine, epoch as number, "sent");
+			} else if (kind === "back" && extra.name?.seat === null) {
+				openVoids[page]!.push(entry);
 			}
 		});
 	const pages: Page[] = [];
 	/** I11 (F27, F28), as a hand-back leaves a page: one that knows the end of every take-over it sent for the machine at
 	 * that epoch is EXACT (it names a seat), never VOID, so it ends no hold but the seat it names. */
 	const certain = (index: number, machine: Machine, epoch: number, seat: number | null) => {
-		const known = requests.every(
-			(one) =>
-				one.page !== index ||
-				one.kind !== "take" ||
-				one.machine !== machine ||
-				one.epoch !== epoch ||
-				// Delivered at an earlier step: the page has read it by now.
-				(one.delivered !== undefined && one.delivered < db.step),
-		);
-		// A VOID asked again (its call was VOID while a take-over was unanswered, and stays VOID until answered: its answer is
-		// what fences an earlier copy of it) is not a new decision.
-		const again = requests.some(
-			(one) =>
-				one.page === index &&
-				one.kind === "back" &&
+		if (seat !== null) return;
+		const takes = pageTakes[index]!;
+		for (let i = 0; i < takes.length; i++) {
+			const one = takes[i]!;
+			if (
 				one.machine === machine &&
 				one.epoch === epoch &&
-				one.name?.seat === null &&
-				one.delivered === undefined,
+				!(one.delivered !== undefined && one.delivered < db.step)
+			) {
+				return;
+			}
+		}
+		const voids = openVoids[index]!;
+		for (let i = 0; i < voids.length; i++) {
+			const one = voids[i]!;
+			if (one.machine === machine && one.epoch === epoch && one.delivered === undefined) {
+				return;
+			}
+		}
+		(pages[index] as Page).silent.push(
+			`I11: p${index} sent VOID for ${machine.slice(-2)} at ${epoch}, though every take-over it sent there was answered`,
 		);
-		if (known && !again && seat === null)
-			(pages[index] as Page).silent.push(
-				`I11: p${index} sent VOID for ${machine.slice(-2)} at ${epoch}, though every take-over it sent there was answered`,
-			);
 	};
 	for (let index = 0; index < pageCount; index++) {
 		const stop = new AbortController();
@@ -272,8 +283,12 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				db.handBack(MEMBER, machine as Machine, epoch, { seat });
 			},
 		};
+		const ledger = new DesktopHoldLedger(computer as unknown as WebCompanyComputer, stop.signal);
+		ledger.subscribe(() => {
+			activity++;
+		});
 		pages.push({
-			ledger: new DesktopHoldLedger(computer as unknown as WebCompanyComputer, stop.signal),
+			ledger,
 			stop,
 			open: true,
 			window: 0,
@@ -281,6 +296,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 			released: new Set(),
 			known: new Set(),
 			sent: [],
+			sentIds: [],
 			answered: new Map(),
 			releases: new Map(),
 			floor: new Map(),
@@ -292,6 +308,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 	}
 	const effect = (one: Request) => {
 		one.effect = true;
+		if (one.settled) unsettledByPage[one.page]!--;
 		one.deliverAt = db.step + lag();
 		if (one.kind === "take")
 			one.answer = db.take(MEMBER, one.machine as Machine, one.epoch as number, one.id, one.press);
@@ -300,8 +317,10 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		else one.answer = db.list(MEMBER);
 	};
 	const deliver = (one: Request) => {
+		activity++;
 		one.settled = true;
 		one.delivered = db.step;
+		if (one.effect) unsettledByPage[one.page]!--;
 		const page = pages[one.page] as Page;
 		if (one.kind === "take") {
 			const answer = one.answer as MemberDesktopHold;
@@ -328,13 +347,16 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		const window = page.window;
 		void request(index, "list", undefined, undefined, true).then(
 			(list) => {
+				activity++;
 				if (!page.open || page.window !== window) return;
 				for (const machine of machines) page.known.add(machine);
 				shown(page, list as MemberAgentMachines);
 				// The window takes nothing up from a list (review r14): it only tells the ledger.
 				page.ledger.listed(list as MemberAgentMachines, AGENT);
 			},
-			() => undefined,
+			() => {
+				activity++;
+			},
 		);
 	};
 	/** The page asks this machine back (the explorer's own account, for I2 and I4). */
@@ -343,20 +365,17 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		page.releases.set(machine, (page.releases.get(machine) ?? 0) + 1);
 	};
 	const check = (): string | undefined => {
-		for (const [index, page] of pages.entries()) {
+		for (let index = 0; index < pages.length; index++) {
+			const page = pages[index]!;
 			// I4 (and I11, noted as hand-backs leave the page)
 			if (page.silent.length) return page.silent[0]?.startsWith("I11") ? page.silent[0] : `I4: ${page.silent[0]}`;
 			// I10 (F27, F28): a machine this page released, with no take-over of it on purpose since, once every request of
 			// the page's reached the database and its answer came or was lost, and no hand-back of it is unanswered: no
 			// lease seated by a take-over of this page's is live there.
-			const settledAll = requests.every((one) => one.page !== index || (one.effect && one.settled));
-			if (settledAll)
+			if (unsettledByPage[index] === 0)
 				for (const machine of page.released) {
 					if (page.ledger.releasing(machine) !== undefined) continue;
-					const lease = db.seatedByAny(
-						machine,
-						page.sent.map((sent) => sent.id),
-					);
+					const lease = db.seatedByAny(machine, page.sentIds);
 					if (lease)
 						return `I10: p${index} released ${machine.slice(-2)}, everything it sent is settled, yet the lease its take-over #${lease.seatedBy} seated (seat ${lease.seat}, epoch ${lease.epoch}) is live`;
 				}
@@ -365,7 +384,8 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				if (page.ledger.holder(machine) !== undefined)
 					return `I2: page ${index} may use ${machine.slice(-2)} after its release was asked`;
 			// I3
-			for (const sent of page.sent) {
+			for (let s = 0; s < page.sent.length; s++) {
+				const sent = page.sent[s]!;
 				const past = page.answered.get(sent.machine);
 				const lease = db.leases.get(sent.machine);
 				if (past !== undefined && past > sent.epoch && lease?.live && lease.takes.has(sent.id))
@@ -375,21 +395,256 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		// I1: once I'm done answered, no lease of the member's holds that was taken under an epoch at or below one the page
 		// had sent a take-over under or been shown a hold under; nor one taken before it was pressed, nor by a take-over the
 		// page had sent. (A lease another tab takes later, above all of those, is a new take-over, outside the answer.)
-		for (const done of dones)
-			for (const machine of machines) {
+		for (let d = 0; d < dones.length; d++) {
+			const done = dones[d]!;
+			for (let m = 0; m < machines.length; m++) {
+				const machine = machines[m]!;
 				const lease = db.leases.get(machine);
 				if (!lease?.live || lease.member !== MEMBER) continue;
 				const upTo = done.upTo.get(machine);
-				if (
-					upTo?.has(lease.seat) ||
-					lease.takenStep < done.pressed ||
-					[...lease.takes].some((take) => done.sent.has(take))
-				)
+				let fromSent = false;
+				for (const take of lease.takes) {
+					if (done.sent.has(take)) {
+						fromSent = true;
+						break;
+					}
+				}
+				if (upTo?.has(lease.seat) || lease.takenStep < done.pressed || fromSent)
 					return `I1: page ${done.page}'s I'm done answered at step ${done.answered} (seats owed ${[...(upTo ?? [])]}), yet ${machine.slice(-2)} is held by a lease under ${lease.epoch} taken at step ${lease.takenStep} (takes ${[...lease.takes]})`;
 			}
+		}
 		return undefined;
 	};
-	type Action = { kind: Kind; weight: number; name: string; run: () => boolean | undefined };
+	type StaticAction = {
+		readonly kind: Kind;
+		readonly weight: number;
+		readonly async: boolean;
+		readonly name: (index: number, page: Page) => string;
+		readonly run: (step: number, index: number, page: Page) => boolean | undefined;
+	};
+	const allStatic: readonly StaticAction[] = [
+		{
+			kind: "take over",
+			weight: 4,
+			async: true,
+			name: (index, page) => `p${index} take over ${page.selected.slice(-2)}`,
+			run: (step, index, page) => {
+				if (!page.open) return false;
+				const machine = page.selected;
+				page.released.delete(machine);
+				page.known.add(machine);
+				const pressed = step;
+				const before = page.releases.get(machine) ?? 0;
+				const finishing = page.finishing > 0;
+				const finishes = page.finishes;
+				// As the window does: the press's stamp goes with it (review r13).
+				const taking = page.ledger.take(machine, AGENT, page.ledger.stamp());
+				void taking.then((answer) => {
+					activity++;
+					// A take-over the page did not call off (no release of the machine since the press, and no Hand back or
+					// I'm done at work, whose later rounds give back what reads show) never comes to nothing unsaid (review
+					// r11 F18).
+					const calledOff =
+						(page.releases.get(machine) ?? 0) !== before || finishing || page.finishes !== finishes;
+					if (answer.state === "called-off" && !calledOff)
+						page.silent.push(
+							`p${index}'s take-over of ${machine.slice(-2)} pressed at step ${pressed} was called off, though the page asked no release of it`,
+						);
+					// What the window joins a press by (review r12 F19) agrees with the answer: called off when it says so, live
+					// when it holds or tells the member why not (one not sent while a hand-back is unanswered may be either).
+					if (answer.state !== "releasing" && (answer.state === "called-off") !== page.ledger.calledOff(taking))
+						page.silent.push(
+							`p${index}'s take-over of ${machine.slice(-2)} pressed at step ${pressed} was answered ${answer.state}, yet the ledger says it was${page.ledger.calledOff(taking) ? "" : " not"} called off`,
+						);
+					// The window: taken while another machine was chosen goes back as it comes.
+					if (answer.state === "ok" && page.selected !== machine) {
+						page.ledger.release(machine, AGENT);
+						letGo(page, machine);
+					}
+				});
+				return true;
+			},
+		},
+		{
+			kind: "hand back",
+			weight: 2,
+			async: true,
+			name: (index) => `p${index} hand back`,
+			run: (_step, _index, page) => {
+				for (const machine of machines) letGo(page, machine);
+				page.finishing++;
+				page.finishes++;
+				void page.ledger.releaseAgent(AGENT, "handed_back", true).finally(() => {
+					activity++;
+					page.finishing--;
+				});
+				return true;
+			},
+		},
+		{
+			kind: "I'm done",
+			weight: 3,
+			async: true,
+			name: (index) => `p${index} I'm done`,
+			run: (step, index, page) => {
+				for (const machine of machines) letGo(page, machine);
+				const pressed = step;
+				page.finishing++;
+				page.finishes++;
+				void page.ledger
+					.releaseAgent(AGENT, "handed_back", true)
+					.then((done) => {
+						activity++;
+						if (done)
+							dones.push({
+								page: index,
+								pressed,
+								answered: db.step,
+								sent: new Set(page.sentIds),
+								upTo: owed(page, pressed),
+							});
+					})
+					.finally(() => {
+						activity++;
+						page.finishing--;
+					});
+				return true;
+			},
+		},
+		{
+			kind: "close",
+			weight: 2,
+			async: true,
+			name: (index) => `p${index} close`,
+			run: (_step, _index, page) => {
+				if (!page.open) return false;
+				page.open = false;
+				page.window++;
+				for (const machine of machines) letGo(page, machine);
+				void page.ledger.releaseAgent(AGENT, "closed");
+				return true;
+			},
+		},
+		{
+			kind: "reopen",
+			weight: 2,
+			async: true,
+			name: (index) => `p${index} reopen`,
+			run: (_step, index, page) => {
+				if (page.open) return false;
+				page.open = true;
+				page.window++;
+				windowRead(index);
+				return true;
+			},
+		},
+		{
+			kind: "switch",
+			weight: 2,
+			async: true,
+			name: (index) => `p${index} switch`,
+			run: (_step, _index, page) => {
+				if (!page.open || machines.length < 2) return false;
+				page.selected = page.selected === MACHINES[0] ? MACHINES[1] : MACHINES[0];
+				for (const machine of page.known) if (machine !== page.selected) letGo(page, machine);
+				page.ledger.releaseOthers(AGENT, page.selected);
+				return true;
+			},
+		},
+		{
+			kind: "window read",
+			weight: 3,
+			async: true,
+			name: (index) => `p${index} window read`,
+			run: (_step, index, page) => {
+				if (!page.open) return false;
+				windowRead(index);
+				return true;
+			},
+		},
+		{
+			kind: "input",
+			weight: 2,
+			async: false,
+			name: (index) => `p${index} heartbeat and input`,
+			run: (_step, _index, page) => {
+				const held = page.ledger.holder(page.selected);
+				if (!page.open || held === undefined) return false;
+				if (!db.keep(MEMBER, page.selected, held.epoch, held.seat))
+					page.ledger.ended(page.selected, held.epoch, held.seat);
+				return true;
+			},
+		},
+		{
+			kind: "time",
+			weight: 1,
+			async: true,
+			name: () => "time passes",
+			run: () => {
+				vi.advanceTimersByTime(20_000);
+				return true;
+			},
+		},
+		{
+			kind: "tab takes",
+			weight: 2,
+			async: false,
+			name: () => "another tab takes over",
+			run: () => {
+				const machine = pick(machines);
+				db.take(MEMBER, machine, db.epoch(MEMBER, machine), -1);
+				return true;
+			},
+		},
+		{
+			kind: "tab hands back",
+			weight: 1,
+			async: false,
+			name: () => "another tab hands back",
+			run: () => {
+				const machine = pick(machines);
+				// Another tab hands back what it holds, by its seat.
+				db.handBack(MEMBER, machine, db.epoch(MEMBER, machine), { seat: db.leases.get(machine)?.seat ?? null });
+				return true;
+			},
+		},
+		{
+			kind: "member takes",
+			weight: 1,
+			async: false,
+			name: () => "another member takes over",
+			run: () => {
+				const machine = pick(machines);
+				db.take(OTHER, machine, db.epoch(OTHER, machine), -1);
+				return true;
+			},
+		},
+		{
+			kind: "member hands back",
+			weight: 1,
+			async: false,
+			name: () => "another member hands back",
+			run: () => {
+				const machine = pick(machines);
+				db.handBack(OTHER, machine, db.epoch(OTHER, machine), { seat: db.leases.get(machine)?.seat ?? null });
+				return true;
+			},
+		},
+		{
+			kind: "lease runs out",
+			weight: 1,
+			async: false,
+			name: () => "a lease runs out",
+			run: () => {
+				db.expire(pick(machines));
+				return true;
+			},
+		},
+	];
+	const baseActions = allStatic.filter((action) => !off.has(action.kind));
+	const baseWeight = baseActions.reduce((sum, action) => sum + action.weight, 0);
+	const allowLoss = !off.has("answer lost");
+	const due: Request[] = [];
 	for (let step = 1; step <= steps; step++) {
 		db.step = step;
 		// The page's clock moves on a little each step (an earlier ledger stamped list reads with it).
@@ -397,258 +652,86 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		const index = pageCount === 1 || next() < 0.5 ? 0 : 1;
 		const page = pages[index] as Page;
 		// What may happen to a request now: it reaches the database (even after its answer was lost), or its answer comes.
-		const due = requests.filter((one) => (one.effect ? !one.settled && step >= one.deliverAt : step >= one.effectAt));
-		const every: Action[] = [
-			{
-				kind: "take over",
-				weight: 4,
-				name: `p${index} take over ${page.selected.slice(-2)}`,
-				run: () => {
-					if (!page.open) return false;
-					const machine = page.selected;
-					page.released.delete(machine);
-					page.known.add(machine);
-					const pressed = step;
-					const before = page.releases.get(machine) ?? 0;
-					const finishing = page.finishing > 0;
-					const finishes = page.finishes;
-					// As the window does: the press's stamp goes with it (review r13).
-					const taking = page.ledger.take(machine, AGENT, page.ledger.stamp());
-					void taking.then((answer) => {
-						// A take-over the page did not call off (no release of the machine since the press, and no Hand back or
-						// I'm done at work, whose later rounds give back what reads show) never comes to nothing unsaid (review
-						// r11 F18).
-						const calledOff =
-							(page.releases.get(machine) ?? 0) !== before || finishing || page.finishes !== finishes;
-						if (answer.state === "called-off" && !calledOff)
-							page.silent.push(
-								`p${index}'s take-over of ${machine.slice(-2)} pressed at step ${pressed} was called off, though the page asked no release of it`,
-							);
-						// What the window joins a press by (review r12 F19) agrees with the answer: called off when it says so, live
-						// when it holds or tells the member why not (one not sent while a hand-back is unanswered may be either).
-						if (answer.state !== "releasing" && (answer.state === "called-off") !== page.ledger.calledOff(taking))
-							page.silent.push(
-								`p${index}'s take-over of ${machine.slice(-2)} pressed at step ${pressed} was answered ${answer.state}, yet the ledger says it was${page.ledger.calledOff(taking) ? "" : " not"} called off`,
-							);
-						// The window: taken while another machine was chosen goes back as it comes.
-						if (answer.state === "ok" && page.selected !== machine) {
-							page.ledger.release(machine, AGENT);
-							letGo(page, machine);
-						}
-					});
-					return true;
-				},
-			},
-			{
-				kind: "hand back",
-				weight: 2,
-				name: `p${index} hand back`,
-				run: () => {
-					for (const machine of machines) letGo(page, machine);
-					page.finishing++;
-					page.finishes++;
-					void page.ledger.releaseAgent(AGENT, "handed_back", true).finally(() => {
-						page.finishing--;
-					});
-					return true;
-				},
-			},
-			{
-				kind: "I'm done",
-				weight: 3,
-				name: `p${index} I'm done`,
-				run: () => {
-					for (const machine of machines) letGo(page, machine);
-					const pressed = step;
-					page.finishing++;
-					page.finishes++;
-					void page.ledger
-						.releaseAgent(AGENT, "handed_back", true)
-						.then((done) => {
-							if (done)
-								dones.push({
-									page: index,
-									pressed,
-									answered: db.step,
-									sent: new Set(page.sent.map((sent) => sent.id)),
-									upTo: owed(page, pressed),
-								});
-						})
-						.finally(() => {
-							page.finishing--;
-						});
-					return true;
-				},
-			},
-			{
-				kind: "close",
-				weight: 2,
-				name: `p${index} close`,
-				run: () => {
-					if (!page.open) return false;
-					page.open = false;
-					page.window++;
-					for (const machine of machines) letGo(page, machine);
-					void page.ledger.releaseAgent(AGENT, "closed");
-					return true;
-				},
-			},
-			{
-				kind: "reopen",
-				weight: 2,
-				name: `p${index} reopen`,
-				run: () => {
-					if (page.open) return false;
-					page.open = true;
-					page.window++;
-					windowRead(index);
-					return true;
-				},
-			},
-			{
-				kind: "switch",
-				weight: 2,
-				name: `p${index} switch`,
-				run: () => {
-					if (!page.open || machines.length < 2) return false;
-					page.selected = page.selected === MACHINES[0] ? MACHINES[1] : MACHINES[0];
-					for (const machine of page.known) if (machine !== page.selected) letGo(page, machine);
-					page.ledger.releaseOthers(AGENT, page.selected);
-					return true;
-				},
-			},
-			{
-				kind: "window read",
-				weight: 3,
-				name: `p${index} window read`,
-				run: () => {
-					if (!page.open) return false;
-					windowRead(index);
-					return true;
-				},
-			},
-			{
-				kind: "input",
-				weight: 2,
-				name: `p${index} heartbeat and input`,
-				run: () => {
-					const held = page.ledger.holder(page.selected);
-					if (!page.open || held === undefined) return false;
-					if (!db.keep(MEMBER, page.selected, held.epoch, held.seat))
-						page.ledger.ended(page.selected, held.epoch, held.seat);
-					return true;
-				},
-			},
-			{
-				kind: "time",
-				weight: 1,
-				name: "time passes",
-				run: () => {
-					vi.advanceTimersByTime(20_000);
-					return true;
-				},
-			},
-			{
-				kind: "tab takes",
-				weight: 2,
-				name: "another tab takes over",
-				run: () => {
-					const machine = pick(machines);
-					db.take(MEMBER, machine, db.epoch(MEMBER, machine), -1);
-					return true;
-				},
-			},
-			{
-				kind: "tab hands back",
-				weight: 1,
-				name: "another tab hands back",
-				run: () => {
-					const machine = pick(machines);
-					// Another tab hands back what it holds, by its seat.
-					db.handBack(MEMBER, machine, db.epoch(MEMBER, machine), { seat: db.leases.get(machine)?.seat ?? null });
-					return true;
-				},
-			},
-			{
-				kind: "member takes",
-				weight: 1,
-				name: "another member takes over",
-				run: () => {
-					const machine = pick(machines);
-					db.take(OTHER, machine, db.epoch(OTHER, machine), -1);
-					return true;
-				},
-			},
-			{
-				kind: "member hands back",
-				weight: 1,
-				name: "another member hands back",
-				run: () => {
-					const machine = pick(machines);
-					db.handBack(OTHER, machine, db.epoch(OTHER, machine), { seat: db.leases.get(machine)?.seat ?? null });
-					return true;
-				},
-			},
-			{
-				kind: "lease runs out",
-				weight: 1,
-				name: "a lease runs out",
-				run: () => {
-					db.expire(pick(machines));
-					return true;
-				},
-			},
-		];
-		const actions = every.filter((action) => !off.has(action.kind));
-		if (due.length) {
-			const one = pick(due);
-			const named = one.name ? (one.name.seat !== null ? ` seat ${one.name.seat}` : " VOID") : "";
-			const label = `${one.kind} #${one.id} of p${one.page}${one.machine ? ` ${one.machine.slice(-2)}@${one.epoch}${named}` : ""}`;
-			if (!one.effect)
-				actions.push({
-					kind: "take over",
-					weight: 8,
-					name: `reaches the database: ${label}`,
-					run: () => {
-						effect(one);
-						return true;
-					},
-				});
-			else
-				actions.push({
-					kind: "take over",
-					weight: 8,
-					name: `answer delivered: ${label} (${told(one)})`,
-					run: () => {
-						deliver(one);
-						return true;
-					},
-				});
-			if (!one.settled && !off.has("answer lost"))
-				actions.push({
-					kind: "answer lost",
-					weight: 2,
-					name: `answer lost: ${label}`,
-					run: () => {
-						one.settled = true;
-						one.reject(new Error("lost"));
-						return true;
-					},
-				});
+		due.length = 0;
+		let write = 0;
+		for (let i = 0; i < activeRequests.length; i++) {
+			const one = activeRequests[i]!;
+			if (one.effect && one.settled) continue;
+			activeRequests[write++] = one;
+			if (one.effect ? step >= one.deliverAt : step >= one.effectAt) due.push(one);
 		}
-		const total = actions.reduce((sum, action) => sum + action.weight, 0);
+		activeRequests.length = write;
+
+		let pickedDue: Request | undefined;
+		let total = baseWeight;
+		let hasLoss = false;
+		if (due.length) {
+			pickedDue = pick(due);
+			total += 8;
+			if (!pickedDue.settled && allowLoss) {
+				hasLoss = true;
+				total += 2;
+			}
+		}
 		let roll = next() * total;
-		let action = actions.at(-1) as Action;
-		for (const one of actions) {
-			roll -= one.weight;
+		let ran = false;
+		let hadAsyncWork = false;
+		const activityBefore = activity;
+		let chosenStatic: StaticAction | undefined;
+		for (let i = 0; i < baseActions.length; i++) {
+			const candidate = baseActions[i]!;
+			roll -= candidate.weight;
 			if (roll < 0) {
-				action = one;
+				chosenStatic = candidate;
 				break;
 			}
 		}
-		if (action.run() === false) continue;
-		log.push(`${step}: ${action.name}`);
-		await flush();
+		if (chosenStatic) {
+			if (chosenStatic.run(step, index, page) === false) continue;
+			ran = true;
+			hadAsyncWork = chosenStatic.async || activity !== activityBefore;
+			if (trace) log.push(`${step}: ${chosenStatic.name(index, page)}`);
+		} else if (pickedDue) {
+			const formatLabel = () => {
+				const named = pickedDue!.name
+					? pickedDue!.name.seat !== null
+						? ` seat ${pickedDue!.name.seat}`
+						: " VOID"
+					: "";
+				return `${pickedDue!.kind} #${pickedDue!.id} of p${pickedDue!.page}${pickedDue!.machine ? ` ${pickedDue!.machine.slice(-2)}@${pickedDue!.epoch}${named}` : ""}`;
+			};
+			roll -= 8;
+			if (roll < 0 || !hasLoss) {
+				if (!pickedDue.effect) {
+					effect(pickedDue);
+					ran = true;
+					hadAsyncWork = activity !== activityBefore;
+					if (trace) log.push(`${step}: reaches the database: ${formatLabel()}`);
+				} else {
+					const answerDesc = trace ? told(pickedDue) : "";
+					deliver(pickedDue);
+					ran = true;
+					hadAsyncWork = true;
+					if (trace) log.push(`${step}: answer delivered: ${formatLabel()} (${answerDesc})`);
+				}
+			} else {
+				activity++;
+				pickedDue.settled = true;
+				if (pickedDue.effect) unsettledByPage[pickedDue.page]!--;
+				pickedDue.reject(new Error("lost"));
+				ran = true;
+				hadAsyncWork = true;
+				if (trace) log.push(`${step}: answer lost: ${formatLabel()}`);
+			}
+		} else {
+			const last = baseActions[baseActions.length - 1]!;
+			if (last.run(step, index, page) === false) continue;
+			ran = true;
+			hadAsyncWork = last.async || activity !== activityBefore;
+			if (trace) log.push(`${step}: ${last.name(index, page)}`);
+		}
+		if (!ran) continue;
+		await flush(hadAsyncWork);
 		const broken = check();
 		if (broken) {
 			for (const one of pages) one.stop.abort();
@@ -656,7 +739,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		}
 	}
 	for (const one of pages) one.stop.abort();
-	await flush();
+	await flush(true);
 	return { log };
 }
 
@@ -721,13 +804,30 @@ describe("the ledger of desktop holds, explored", () => {
 	it("keeps I1, I2 and I3 over seeded schedules of take-overs, hand-backs, I'm done, closes, switches and lost answers", async () => {
 		const seeds = [...FOUND.map((found) => found.seed), ...Array.from({ length: 8000 }, (_, n) => n + 1)];
 		for (const seed of seeds) {
-			const { log, broken } = await explore(seed, 60);
+			const { broken } = await explore(seed, 60);
 			if (broken) {
+				const { log } = await explore(seed, 60, true);
 				const found = FOUND.find((one) => one.seed === seed);
 				expect.fail(
 					`seed ${seed}: ${broken}${found ? `\n(found earlier: ${found.finding})` : ""}\n${log.join("\n")}`,
 				);
 			}
 		}
+	});
+
+	it("returns promptly from movesSettled when AbortSignal aborts while pointer moves are still in flight", async () => {
+		const ledger = new DesktopHoldLedger(undefined);
+		let finishMove!: () => void;
+		const inFlight = new Promise<void>((resolve) => {
+			finishMove = resolve;
+		});
+		ledger.moveGoing(MACHINES[0], inFlight);
+		const abort = new AbortController();
+		const settledPromise = ledger.movesSettled(MACHINES[0], abort.signal);
+		abort.abort();
+		expect(await settledPromise).toBe(false);
+		finishMove();
+		await inFlight;
+		expect(await ledger.movesSettled(MACHINES[0], new AbortController().signal)).toBe(true);
 	});
 });

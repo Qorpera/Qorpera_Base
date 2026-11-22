@@ -129,6 +129,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_gemini_4_neon.sql",
 			"_member_default_models_and_gemini_health.sql",
 			"_surface_host_wiring.sql",
+			"_app_vault_secrets_and_code_routines.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(

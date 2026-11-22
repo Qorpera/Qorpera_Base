@@ -121,7 +121,7 @@ export interface SurfaceFolderReader<TFile extends SurfaceFolderReadableFile = S
 	): Promise<Uint8Array>;
 }
 
-const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css)$/i;
+const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css|svg|html?)$/i;
 const STUDIO_MAX_FILE_BYTES = 256 * 1024;
 const STUDIO_MAX_FILES = 32;
 const STUDIO_READ_CONCURRENCY = 6;
@@ -634,7 +634,7 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 			}
 		}
 		if (ordered.length > 0) {
-			effectiveFiles = composeStudioPreview(baseFiles, ordered).files;
+			effectiveFiles = composeStudioPreview(baseFiles, ordered, identity.folderRoot ?? "identity").files;
 		}
 	}
 	const folderRoot = identity.folderRoot?.replace(/^\/+|\/+$/g, "");
@@ -930,8 +930,10 @@ export class SurfacesStore {
 	readonly #inFlightWorkspaceRefreshes = new Set<string>();
 	readonly #previewSyncInFlight = new Set<string>();
 	readonly #previewSyncDirty = new Set<string>();
+	readonly #previewSyncForeground = new Set<string>();
 	readonly #previewSyncGen = new Map<string, number>();
 	readonly #previewSyncWaiters = new Map<string, (() => void)[]>();
+	readonly #lastPreviewSyncKey = new Map<string, string>();
 	#activeSurfaceId: string | undefined;
 	#workspaceReqSeq = 0;
 	#surfacesReqSeq = 0;
@@ -1116,6 +1118,8 @@ export class SurfacesStore {
 		this.#studioUndoSnapshots.clear();
 		this.#previewPassMeta.clear();
 		this.#previewSyncDirty.clear();
+		this.#previewSyncForeground.clear();
+		this.#lastPreviewSyncKey.clear();
 		for (const waiters of this.#previewSyncWaiters.values()) {
 			for (const resolve of waiters) resolve();
 		}
@@ -1918,6 +1922,30 @@ export class SurfacesStore {
 				void this.refreshCloudFiles(workspace.surface, { visible: true });
 			} else if (!this.state.cloudSurfaceFiles[surfaceId]) {
 				void this.refreshCloudFiles(workspace.surface);
+			}
+		}
+		if (
+			stored &&
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(workspace.surface.id) &&
+			this.#options.client &&
+			stored.surface.archetype === "live_build" &&
+			stored.surface.sourceKind === "code_repo" &&
+			stored.previewState.mode !== "compare"
+		) {
+			const info = this.#previewSelectionInfo(workspace.surface.id);
+			if (info.hasOpenChanges) {
+				const primary = stored.previewState.primary;
+				const primaryIds = [...new Set(primary.toggledChangeIds)].sort().join(",");
+				const matchesPrimary = primary.status !== "live_baseline" && primaryIds === info.toggledKey;
+				if (matchesPrimary) {
+					this.#lastPreviewSyncKey.set(workspace.surface.id, info.selectionKey);
+				} else if (this.#lastPreviewSyncKey.get(workspace.surface.id) !== info.selectionKey) {
+					this.#lastPreviewSyncKey.set(workspace.surface.id, info.selectionKey);
+					void this.#syncPreview(workspace.surface.id, { background: true });
+				}
+			} else {
+				this.#lastPreviewSyncKey.delete(workspace.surface.id);
 			}
 		}
 		this.#syncPolling();
@@ -2777,7 +2805,7 @@ export class SurfacesStore {
 					.filter((item) => item.ops.length > 0);
 				if (ordered.length > 0) {
 					for (const item of ordered) this.#studioUndoSnapshots.set(item.changeId, currentBase);
-					const composed = composeStudioPreview(currentBase, ordered);
+					const composed = composeStudioPreview(currentBase, ordered, workspace.surface.folderRoot);
 					this.store.set((state) => ({
 						localStudioBase: { ...state.localStudioBase, [surfaceId]: composed.files },
 					}));
@@ -3510,11 +3538,44 @@ export class SurfacesStore {
 		return { toggledChangeIds, explorationSessionId };
 	}
 
-	async #syncPreview(surfaceId: string): Promise<void> {
+	#previewSelectionInfo(surfaceId: string): {
+		readonly selection: { toggledChangeIds: string[]; explorationSessionId: string | null };
+		readonly toggledKey: string;
+		readonly selectionKey: string;
+		readonly hasOpenChanges: boolean;
+	} {
+		const selection = this.previewSelection(surfaceId);
+		const workspace = this.workspace(surfaceId);
+		const explorationChangeIds =
+			selection.explorationSessionId !== null
+				? (workspace?.activeSessions
+						.find((session) => session.id === selection.explorationSessionId)
+						?.changes.filter(isOpenChange)
+						.map((change) => change.id) ?? [])
+				: [];
+		const toggledKey = [...new Set(selection.toggledChangeIds)].sort().join(",");
+		const explorationKey = [...new Set(explorationChangeIds)].sort().join(",");
+		return {
+			selection,
+			toggledKey,
+			selectionKey: `${selection.explorationSessionId ?? ""}|${toggledKey}|${explorationKey}`,
+			hasOpenChanges: toggledKey.length > 0 || explorationKey.length > 0,
+		};
+	}
+
+	async #syncPreview(surfaceId: string, options?: { background?: boolean }): Promise<void> {
 		const client = this.#options.client;
 		if (isLocalSurfaceId(surfaceId) || !client) return;
+		const foreground = !options?.background;
+		const busyKey = `preview:${surfaceId}`;
 		this.#previewSyncGen.set(surfaceId, (this.#previewSyncGen.get(surfaceId) ?? 0) + 1);
 		this.#previewSyncDirty.add(surfaceId);
+		if (foreground) {
+			this.#previewSyncForeground.add(surfaceId);
+			if (!this.#options.signal.aborted && (!this.state.busy[busyKey] || this.state.error !== undefined)) {
+				this.store.set((state) => ({ busy: { ...state.busy, [busyKey]: true }, error: undefined }));
+			}
+		}
 		if (this.#previewSyncInFlight.has(surfaceId)) {
 			await new Promise<void>((resolve) => {
 				const list = this.#previewSyncWaiters.get(surfaceId);
@@ -3523,24 +3584,28 @@ export class SurfacesStore {
 			});
 			return;
 		}
-		const busyKey = `preview:${surfaceId}`;
 		this.#previewSyncInFlight.add(surfaceId);
-		if (!this.#options.signal.aborted) {
-			this.store.set((state) => ({ busy: { ...state.busy, [busyKey]: true }, error: undefined }));
-		}
 		try {
 			while (this.#previewSyncDirty.has(surfaceId) && !this.#options.signal.aborted) {
 				this.#previewSyncDirty.delete(surfaceId);
 				const gen = this.#previewSyncGen.get(surfaceId) ?? 0;
-				const selection = this.previewSelection(surfaceId);
+				const info = this.#previewSelectionInfo(surfaceId);
+				this.#lastPreviewSyncKey.set(surfaceId, info.selectionKey);
 				try {
-					const previewState = await client.setPreviewSelection(surfaceId, selection);
+					const previewState = await client.setPreviewSelection(surfaceId, info.selection);
 					if (this.#options.signal.aborted) return;
 					if ((this.#previewSyncGen.get(surfaceId) ?? 0) !== gen) continue;
 					const workspace = this.workspace(surfaceId);
 					if (previewState && workspace) this.#putWorkspace({ ...workspace, previewState });
 				} catch (error) {
-					if (!this.#options.signal.aborted) {
+					if (this.#lastPreviewSyncKey.get(surfaceId) === info.selectionKey) {
+						this.#lastPreviewSyncKey.delete(surfaceId);
+					}
+					if (
+						!this.#options.signal.aborted &&
+						this.#previewSyncForeground.has(surfaceId) &&
+						!this.#previewSyncDirty.has(surfaceId)
+					) {
 						this.store.set({
 							error: isMissingSurfaceRpcError(error) ? this.#options.unavailableMessage : describe(error),
 						});
@@ -3550,7 +3615,8 @@ export class SurfacesStore {
 			}
 		} finally {
 			this.#previewSyncInFlight.delete(surfaceId);
-			if (!this.#options.signal.aborted) {
+			this.#previewSyncForeground.delete(surfaceId);
+			if (!this.#options.signal.aborted && this.state.busy[busyKey]) {
 				this.store.set((state) => {
 					const busy = { ...state.busy };
 					delete busy[busyKey];

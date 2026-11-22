@@ -97,7 +97,7 @@ begin
 	v_context := pg_temp.nd_context(v_turn);
 	perform pg_temp.base_assert(v_context ->> 'sequence' = '1' and v_context -> 'machine' = '{"newDisk":false}'
 		and (select array_agg(k order by k collate "C") from jsonb_object_keys(v_context) k)
-			= array['commands', 'earlierTurns', 'input', 'machine', 'omittedEarlierTurns', 'schema', 'sequence', 'workerId'],
+			= array['commands', 'earlierTurns', 'input', 'machine', 'omittedEarlierTurns', 'schema', 'secretNames', 'sequence', 'workerId'],
 		'the first turn: ' || v_context::text);
 	perform pg_temp.nd_next(v_turn, 'Go on.');
 end $$;

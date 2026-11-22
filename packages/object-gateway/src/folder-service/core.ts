@@ -58,6 +58,13 @@ export interface ListPage {
 	readonly next: string | null;
 }
 
+export interface ViewFingerprint {
+	readonly seq: number;
+	readonly authoritySeq: number;
+	readonly entryCount: number;
+	readonly entriesDigest: string;
+}
+
 /** One change of a change set on the feed (20260928237000). A move's arrival names the version the path had where it
  * came from (`priorVersion`), when the actor may read that path too. */
 export interface FeedChange extends CoreEntry {
@@ -86,6 +93,7 @@ export interface FeedPage {
 export interface FolderCore {
 	/** One page of the actor's whole tree, in the core's key order, after the path `after`. */
 	list(environmentId: string, actor: FolderActor, after: string | null, signal?: AbortSignal): Promise<ListPage>;
+	viewFingerprint?(environmentId: string, actor: FolderActor, signal?: AbortSignal): Promise<ViewFingerprint>;
 	feed(
 		environmentId: string,
 		actor: FolderActor,
@@ -670,6 +678,24 @@ function entryOf(value: unknown, removal = false): CoreEntry {
 	return out;
 }
 
+const FINGERPRINT_DIGEST = /^[0-9a-f]{32}$/;
+
+export function parseViewFingerprint(value: unknown): ViewFingerprint {
+	const answer = answerRecord(value, "view fingerprint");
+	if (
+		answer.schema !== "qorpera.folder-view-fingerprint/v1" ||
+		typeof answer.entriesDigest !== "string" ||
+		!FINGERPRINT_DIGEST.test(answer.entriesDigest)
+	)
+		invalidAnswer("view fingerprint");
+	return {
+		seq: seqOf(answer.seq, "fingerprint seq"),
+		authoritySeq: seqOf(answer.authoritySeq, "fingerprint authoritySeq"),
+		entryCount: seqOf(answer.entryCount, "fingerprint entryCount"),
+		entriesDigest: answer.entriesDigest,
+	};
+}
+
 export function parseListPage(value: unknown): ListPage {
 	const page = answerRecord(value, "list");
 	if (page.schema !== "qorpera.folder-list/v1" || !Array.isArray(page.entries)) invalidAnswer("list");
@@ -803,6 +829,16 @@ export class SupabaseFolderCore implements FolderCore {
 					p_after: after,
 					p_recursive: true,
 				},
+				signal,
+			),
+		);
+	}
+
+	async viewFingerprint(environmentId: string, actor: FolderActor, signal?: AbortSignal): Promise<ViewFingerprint> {
+		return parseViewFingerprint(
+			await this.#rpc(
+				"qorpera_folder_view_fingerprint",
+				{ p_environment_id: environmentId, p_actor: actorJson(actor) },
 				signal,
 			),
 		);

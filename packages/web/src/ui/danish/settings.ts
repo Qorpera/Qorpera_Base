@@ -625,6 +625,13 @@ export const SETTINGS: Record<string, string> = {
 	"Version {version} · since {time} · {name} said go": "Version {version} · siden {time} · {name} sagde ja",
 	"Version {version} · since {time} · {name} went back":
 		"Version {version} · siden {time} · {name} satte den live igen",
+	"Version {version} · since {time} · automatic": "Version {version} · siden {time} · automatisk",
+	"Version {version} · since {time} · automatic (enabled by {name})":
+		"Version {version} · siden {time} · automatisk (slået til af {name})",
+	"Version {version} · since {time} · went back automatically":
+		"Version {version} · siden {time} · sat live igen automatisk",
+	"Version {version} · since {time} · went back automatically (enabled by {name})":
+		"Version {version} · siden {time} · sat live igen automatisk (slået til af {name})",
 	"The password is in Sites.": "Adgangskoden står under Hjemmesider.",
 	"Open the site": "Åbn hjemmesiden",
 	"Go back to version {version}": "Gå tilbage til version {version}",
