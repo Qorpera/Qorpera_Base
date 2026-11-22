@@ -1100,6 +1100,46 @@ describe("the page's words for values and refusals", () => {
 
 			await vi.advanceTimersByTimeAsync(500);
 			calls.rows.mockClear();
+			calls.rows.mockImplementation(async (asked) => {
+				const after = asked.after?.[0];
+				if (after === "11") {
+					return {
+						...repairs(
+							[
+								[1, "Bike 1 Demoted", 125, true],
+								[12, "Bike 12", 120, true],
+							],
+							false,
+						),
+					};
+				}
+				const n = after ? Number(after) + 1 : 3;
+				return {
+					...repairs([[n, `Bike ${n}`, n * 10, true]], true),
+					next: [String(n)],
+				};
+			});
+			watchResolves.shift()?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs([[2, "Bike 2", 20, true]], true),
+							next: ["2"],
+							etag: "abababababababababababababababab",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls.rows).toHaveBeenCalledTimes(9);
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(10);
+			button(container, "Show more").click();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(texts(container, "button.data-row .is-lead")).toContain("Bike 1 Demoted");
+
+			await vi.advanceTimersByTimeAsync(500);
+			calls.rows.mockClear();
 			calls.rows.mockImplementation(async () => ({
 				...repairs([[2, "Bike 2 Loop", 20, true]], true),
 				next: ["1"],

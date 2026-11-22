@@ -577,16 +577,21 @@ class DataListView {
 				boundaryRow &&
 				JSON.stringify(previousRows[boundaryIndex]!.values) === JSON.stringify(boundaryRow.values)
 			) {
-				// WHY: Anchor deep-scroll tail joins only when the head's final row is unchanged so a tail row promoted onto the boundary cannot skip rows.
 				const seenKeys = new Set(freshRows.map((row) => keyOf(first.columns, first.key, row.values)));
-				keptTail = true;
-				const tail = previousRows
-					.slice(boundaryIndex + 1)
-					.filter((row) => !seenKeys.has(keyOf(first.columns, first.key, row.values)));
-				read.rows = [...freshRows, ...tail];
-				read.next = previousNext;
-				read.more = previousMore;
-				read.pages = previousPages;
+				// WHY: Keep the old tail only when every prior row through the boundary is still present, so a head row edited into the tail cannot vanish behind a stale cursor.
+				const allHeadPresent = previousRows
+					.slice(0, boundaryIndex + 1)
+					.every((row) => seenKeys.has(keyOf(first.columns, first.key, row.values)));
+				if (allHeadPresent) {
+					keptTail = true;
+					const tail = previousRows
+						.slice(boundaryIndex + 1)
+						.filter((row) => !seenKeys.has(keyOf(first.columns, first.key, row.values)));
+					read.rows = [...freshRows, ...tail];
+					read.next = previousNext;
+					read.more = previousMore;
+					read.pages = previousPages;
+				}
 			}
 		}
 		if (!keptTail) {
