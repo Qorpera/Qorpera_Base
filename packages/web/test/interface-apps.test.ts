@@ -2735,5 +2735,35 @@ describe("AppBridge database actions (qorpera.act)", () => {
 		if (answer.ok) expect(answer.value).toHaveLength(36);
 		expect(maxInFlight).toBeGreaterThan(1);
 		expect(maxInFlight).toBeLessThanOrEqual(8);
+
+		const manyFiles: Record<string, string> = {
+			"apps/todoapp/app.toml": 'name = "TodoApp"\nreads = ["todos"]\n',
+		};
+		for (let a = 0; a < 20; a++) {
+			for (let t = 0; t < 30; t++) {
+				const todoId = `44444444-4444-4444-8444-${String(a * 100 + t + 1).padStart(12, "0")}`;
+				manyFiles[`QorperaOS/agents/agent-${String(a).padStart(2, "0")}/todos/t-${String(t).padStart(2, "0")}.md`] =
+					`---\nid: ${todoId}\ntitle: "Many ${a}-${t}"\nstatus: open\n---\nBody\n`;
+			}
+		}
+		const manyBase = fakeFolder(manyFiles);
+		const listedTodoDirs: string[] = [];
+		const manyFolder = {
+			...manyBase,
+			list: async (...args: Parameters<typeof manyBase.list>) => {
+				if (args[0]?.endsWith("/todos")) listedTodoDirs.push(args[0]);
+				return manyBase.list(...args);
+			},
+		};
+		const cappedBridge = new AppBridge(
+			{ folder: () => manyFolder as never, agents: () => [] },
+			{ name: "todoapp", path: "apps/todoapp", manifest: parsed.manifest, problems: [], version: null },
+			crypto.randomUUID(),
+			new AbortController().signal,
+		);
+		const cappedAnswer = await cappedBridge.answer({ method: "todos", params: {} });
+		expect(cappedAnswer.ok).toBe(true);
+		if (cappedAnswer.ok) expect(cappedAnswer.value).toHaveLength(200);
+		expect(listedTodoDirs.length).toBeLessThanOrEqual(8);
 	});
 });

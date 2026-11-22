@@ -276,7 +276,6 @@ export class AppPanel {
 		if (fresh) this.#ask?.reset();
 		if (this.#loading) {
 			this.#again = true;
-			// WHY: Preserve an explicit fresh reload queued during an in-flight load instead of downgrading it to fresh=false.
 			if (fresh) this.#againFresh = true;
 			return this.#loading;
 		}

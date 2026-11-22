@@ -579,7 +579,6 @@ export class CodingSessionElement {
 					if (outOfOrder) this.#events.sort((a, b) => a.id - b.id);
 				}
 				this.#cursor = this.#events[this.#events.length - 1]?.id ?? this.#cursor;
-				// WHY: Require cursor advancement before scheduling a 0 ms catch-up poll so duplicate full pages cannot spin infinitely.
 				more = read.events.length >= READ_PAGE && this.#cursor > previousCursor;
 				this.#caughtUp = !more;
 				this.#session = { ...read.session, isOwner: read.isOwner };

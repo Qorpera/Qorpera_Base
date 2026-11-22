@@ -208,17 +208,8 @@ export const STANDING_EVERY_MS = 30_000;
 const TEXT = new TextDecoder("utf-8", { fatal: true });
 /** An agent's file is read up to this size when a change line names an ended agent. */
 const AGENT_FILE_MAX_BYTES = 64 * 1024;
+const ENDED_AGENT_CONCURRENCY = 6;
 
-/**
- * The open company's reading for its app pages: one per open company, shared by every page that reads `reading`.
- * - The reading file is read as the member at each call, its bytes only when its version changed; a file that does not
- *   read keeps the last reading that did (with none, the company has none yet). The agents' folder names are read again
- *   when the file or the company's agents changed.
- * - The standing is read at the first call, then every 30 s while a page watches (`watch`) and the tab is shown, and
- *   when the tab comes back; a page is told (its `onChange`) when it changed. A backend without the read answers null
- *   for good, and is asked no more.
- * - It stops with the company (`signal`).
- */
 function raceAbort(promise: Promise<void>, signal: AbortSignal): Promise<void> {
 	if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
 	return new Promise<void>((resolve, reject) => {
@@ -237,6 +228,16 @@ function raceAbort(promise: Promise<void>, signal: AbortSignal): Promise<void> {
 	});
 }
 
+/**
+ * The open company's reading for its app pages: one per open company, shared by every page that reads `reading`.
+ * - The reading file is read as the member at each call, its bytes only when its version changed; a file that does not
+ *   read keeps the last reading that did (with none, the company has none yet). The agents' folder names are read again
+ *   when the file or the company's agents changed.
+ * - The standing is read at the first call, then every 30 s while a page watches (`watch`) and the tab is shown, and
+ *   when the tab comes back; a page is told (its `onChange`) when it changed. A backend without the read answers null
+ *   for good, and is asked no more.
+ * - It stops with the company (`signal`).
+ */
 export class CompanyReading {
 	readonly #host: CompanyReadingHost;
 	readonly #signal: AbortSignal;
@@ -339,7 +340,6 @@ export class CompanyReading {
 			handlesFor = live;
 			// A change line may name an agent whose role ended, which the state folders no longer list: its own file says
 			// which agent it was, renamed or numbered alike.
-			// WHY: Deduplicate ended-agent handles and fetch their agent.md files with bounded concurrency instead of serial duplicate reads.
 			const missingHandles = [
 				...new Set(
 					file.changes
@@ -350,13 +350,16 @@ export class CompanyReading {
 			if (missingHandles.length > 0) {
 				const resolved = new Array<string | null>(missingHandles.length).fill(null);
 				let next = 0;
-				const workers = Array.from({ length: Math.min(6, missingHandles.length) }, async () => {
-					while (!signal.aborted) {
-						const index = next++;
-						if (index >= missingHandles.length) return;
-						resolved[index] = await this.#endedAgent(folder, missingHandles[index]!, signal);
-					}
-				});
+				const workers = Array.from(
+					{ length: Math.min(ENDED_AGENT_CONCURRENCY, missingHandles.length) },
+					async () => {
+						while (!signal.aborted) {
+							const index = next++;
+							if (index >= missingHandles.length) return;
+							resolved[index] = await this.#endedAgent(folder, missingHandles[index]!, signal);
+						}
+					},
+				);
 				await Promise.all(workers);
 				for (let index = 0; index < missingHandles.length; index++) {
 					const id = resolved[index];

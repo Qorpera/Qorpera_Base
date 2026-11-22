@@ -531,7 +531,6 @@ class AppFiles {
 
 	async #pieces(file: CloudMemberFolderFile, type: string): Promise<Blob> {
 		const folder = this.#folder;
-		// WHY: Collect pieces into a flat array and construct one Blob at the end instead of nesting a new Blob wrapper per chunk.
 		const parts: BlobPart[] = [];
 		await this.#turn(() =>
 			folder.readFilePieces!(
@@ -1497,37 +1496,44 @@ export class AppBridge {
 		const agents = (await listAll(folder, "QorperaOS/agents", this.#signal, 200)).filter(
 			(entry) => entry.kind === "folder",
 		);
-		// WHY: List agent todo folders and read candidate markdown files with bounded concurrency instead of serializing 1 + A + T round trips.
-		const listed = await mapLimited(agents, APP_READ_CONCURRENCY, this.#signal, async (agent) => ({
-			agent: agent.path.slice(agent.path.lastIndexOf("/") + 1),
-			files: await listAll(folder, `${agent.path}/todos`, this.#signal, TODO_FILES).catch(() => []),
-		}));
-		const candidates: { agent: string; file: CloudMemberFolderEntry }[] = [];
-		for (const group of listed) {
-			for (const file of group.files) {
-				if (file.kind !== "file" || appFileKind(file.path) !== "md") continue;
-				candidates.push({ agent: group.agent, file });
-			}
-		}
 		const todos: { agent: string; title: string; status: string; updatedAt: string }[] = [];
 		const batchSize = APP_READ_CONCURRENCY * 2;
-		for (let start = 0; start < candidates.length && todos.length < TODO_FILES; start += batchSize) {
-			const slice = candidates.slice(start, start + batchSize);
-			const read = await mapLimited(slice, APP_READ_CONCURRENCY, this.#signal, async ({ agent, file }) => {
-				const text = await readText(folder, file, this.#signal, 16 * 1024);
-				const parsed = text === null ? null : parseCompanyStateFile(file.path, text);
-				if (parsed?.ok !== true || parsed.file.kind !== "todo") return null;
-				return {
-					agent,
-					title: parsed.file.title,
-					status: parsed.file.status,
-					updatedAt: file.updatedAt,
-				};
-			});
-			for (const item of read) {
-				if (!item) continue;
-				todos.push(item);
-				if (todos.length >= TODO_FILES) break;
+		for (
+			let agentStart = 0;
+			agentStart < agents.length && todos.length < TODO_FILES;
+			agentStart += APP_READ_CONCURRENCY
+		) {
+			const remaining = TODO_FILES - todos.length;
+			const agentChunk = agents.slice(agentStart, agentStart + APP_READ_CONCURRENCY);
+			const listed = await mapLimited(agentChunk, APP_READ_CONCURRENCY, this.#signal, async (agent) => ({
+				agent: agent.path.slice(agent.path.lastIndexOf("/") + 1),
+				files: await listAll(folder, `${agent.path}/todos`, this.#signal, remaining).catch(() => []),
+			}));
+			const candidates: { agent: string; file: CloudMemberFolderEntry }[] = [];
+			for (const group of listed) {
+				for (const file of group.files) {
+					if (file.kind !== "file" || appFileKind(file.path) !== "md") continue;
+					candidates.push({ agent: group.agent, file });
+				}
+			}
+			for (let start = 0; start < candidates.length && todos.length < TODO_FILES; start += batchSize) {
+				const slice = candidates.slice(start, start + batchSize);
+				const read = await mapLimited(slice, APP_READ_CONCURRENCY, this.#signal, async ({ agent, file }) => {
+					const text = await readText(folder, file, this.#signal, 16 * 1024);
+					const parsed = text === null ? null : parseCompanyStateFile(file.path, text);
+					if (parsed?.ok !== true || parsed.file.kind !== "todo") return null;
+					return {
+						agent,
+						title: parsed.file.title,
+						status: parsed.file.status,
+						updatedAt: file.updatedAt,
+					};
+				});
+				for (const item of read) {
+					if (!item) continue;
+					todos.push(item);
+					if (todos.length >= TODO_FILES) break;
+				}
 			}
 		}
 		return todos;
