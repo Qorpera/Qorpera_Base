@@ -382,6 +382,39 @@ function compiledTokensCssFrom(
 	return files[IDENTITY_TOKENS_CSS_PATH] ?? (cleanRoot ? files[`${cleanRoot}/tokens.css`] : undefined) ?? fallbackCss;
 }
 
+function studioHtmlDependencyChanged(
+	html: string,
+	htmlPath: string,
+	files: Readonly<Record<string, string>>,
+	baseFiles: Readonly<Record<string, string>>,
+	previewTokensCss: string,
+	baseTokensCss: string,
+): boolean {
+	for (const match of html.matchAll(/<link\b[^>]*>/gi)) {
+		const tag = match[0];
+		if (!/\brel\s*=\s*(?:"[^"]*\bstylesheet\b[^"]*"|'[^']*\bstylesheet\b[^']*'|stylesheet\b)/i.test(tag)) continue;
+		const href = tag.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+		const rawHref = href?.[1] ?? href?.[2] ?? href?.[3] ?? "";
+		const resolved = resolveRelativeStudioPath(htmlPath, rawHref);
+		if (!resolved) continue;
+		if (TOKEN_STYLESHEET_RE.test(resolved)) {
+			const nextCss = previewTokensCss || files[resolved] || files[IDENTITY_TOKENS_CSS_PATH] || "";
+			const prevCss = baseTokensCss || baseFiles[resolved] || baseFiles[IDENTITY_TOKENS_CSS_PATH] || "";
+			if (nextCss !== prevCss) return true;
+		} else if (/\.css$/i.test(resolved)) {
+			if ((files[resolved] ?? "") !== (baseFiles[resolved] ?? "")) return true;
+		}
+	}
+	for (const match of html.matchAll(/<img\b[^>]*>/gi)) {
+		const src = match[0].match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+		const rawSrc = src?.[1] ?? src?.[2] ?? src?.[3] ?? "";
+		const resolved = resolveRelativeStudioPath(htmlPath, rawSrc);
+		if (!resolved || !SVG_FILE_RE.test(resolved)) continue;
+		if ((files[resolved] ?? "") !== (baseFiles[resolved] ?? "")) return true;
+	}
+	return false;
+}
+
 export function prepareStudioHtmlPreview(
 	html: string,
 	htmlPath: string,
@@ -620,12 +653,20 @@ export class SurfaceStudioView {
 				continue;
 			}
 			if (HTML_FILE_RE.test(path)) {
+				const dependencyChanged = studioHtmlDependencyChanged(
+					content,
+					path,
+					files,
+					baseFiles,
+					previewTokensCss,
+					baseTokensCss,
+				);
 				htmlPages.push({
 					path,
 					title: htmlDocumentTitle(content, path),
 					html: content,
 					...(baseContent !== undefined ? { baseHtml: baseContent } : {}),
-					changed,
+					changed: changed || dependencyChanged,
 				});
 				continue;
 			}
@@ -713,7 +754,11 @@ export class SurfaceStudioView {
 			);
 		}
 
-		if (filePaths.length === 0) {
+		const allChangedPaths = [...new Set([...Object.keys(baseFiles), ...filePaths])]
+			.sort()
+			.filter((path) => baseFiles[path] !== files[path]);
+
+		if (filePaths.length === 0 && (state.mode !== "compare" || allChangedPaths.length === 0)) {
 			children.push(
 				h(
 					"div",
@@ -741,16 +786,188 @@ export class SurfaceStudioView {
 		if (state.mode === "compare") {
 			const changedSpecs = specs.filter((spec) => spec.changed);
 			const changedDocs = docs.filter((doc) => doc.changed);
-			const changedVendors = vendors.filter((vendor) => vendor.changed);
 			const changedSvgs = svgs.filter((asset) => asset.changed);
 			const changedHtmlPages = htmlPages.filter((page) => page.changed);
-			if (
-				!changedSpecs.length &&
-				!changedDocs.length &&
-				!changedVendors.length &&
-				!changedSvgs.length &&
-				!changedHtmlPages.length
-			) {
+			const renderedPaths = new Set<string>();
+			for (const spec of changedSpecs) {
+				const diffs = spec.entries.filter((entry) => entry.changed);
+				if (!diffs.length) continue;
+				renderedPaths.add(spec.path);
+				sections.push(
+					h(
+						"section",
+						{ class: "studio-section studio-compare-card", "data-compare-file": spec.path },
+						h(
+							"div",
+							{ class: "studio-section-head" },
+							h("h2", null, spec.title),
+							h("code", { class: "studio-file-tag" }, spec.path),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-grid" },
+							h("div", { class: "studio-compare-col-head" }, t("Base")),
+							h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+							...diffs.flatMap((entry) => [
+								h(
+									"div",
+									{ class: "studio-compare-cell is-base" },
+									h("small", null, entry.key),
+									h("span", null, entry.prev ?? t("Not set")),
+								),
+								h(
+									"div",
+									{ class: "studio-compare-cell is-preview" },
+									h("small", null, entry.key),
+									h("strong", null, entry.value),
+								),
+							]),
+						),
+					),
+				);
+			}
+			for (const asset of changedSvgs) {
+				renderedPaths.add(asset.path);
+				sections.push(
+					h(
+						"section",
+						{ class: "studio-section studio-compare-card", "data-compare-file": asset.path },
+						h(
+							"div",
+							{ class: "studio-section-head" },
+							h("h2", null, asset.title),
+							h("code", { class: "studio-file-tag" }, asset.path),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-grid" },
+							h("div", { class: "studio-compare-col-head" }, t("Base")),
+							h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+							h(
+								"div",
+								{ class: "studio-compare-cell is-base studio-svg-stage" },
+								asset.baseSvg
+									? h("img", { class: "studio-svg-img", src: svgDataUrl(asset.baseSvg), alt: asset.title })
+									: h("em", null, t("Not in Base")),
+							),
+							h(
+								"div",
+								{ class: "studio-compare-cell is-preview studio-svg-stage" },
+								h("img", { class: "studio-svg-img", src: svgDataUrl(asset.svg), alt: asset.title }),
+							),
+						),
+					),
+				);
+			}
+			for (const doc of changedDocs) {
+				renderedPaths.add(doc.path);
+				sections.push(
+					h(
+						"section",
+						{ class: "studio-section studio-compare-card", "data-compare-file": doc.path },
+						h(
+							"div",
+							{ class: "studio-section-head" },
+							h("h2", null, doc.title),
+							h("code", { class: "studio-file-tag" }, doc.path),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-grid" },
+							h("div", { class: "studio-compare-col-head" }, t("Base")),
+							h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+							h(
+								"div",
+								{ class: "studio-compare-cell is-base studio-doc-body" },
+								doc.baseContent
+									? doc.isMarkdown
+										? markdown(doc.baseContent)
+										: h("div", { class: "studio-plain-text" }, doc.baseContent)
+									: h("em", null, t("Not in Base")),
+							),
+							h(
+								"div",
+								{ class: "studio-compare-cell is-preview studio-doc-body" },
+								doc.isMarkdown ? markdown(doc.content) : h("div", { class: "studio-plain-text" }, doc.content),
+							),
+						),
+					),
+				);
+			}
+			for (const page of changedHtmlPages) {
+				renderedPaths.add(page.path);
+				sections.push(
+					h(
+						"section",
+						{ class: "studio-section studio-compare-card", "data-compare-file": page.path },
+						h(
+							"div",
+							{ class: "studio-section-head" },
+							h("h2", null, page.title),
+							h("code", { class: "studio-file-tag" }, page.path),
+						),
+						h(
+							"div",
+							{ class: "studio-compare-grid" },
+							h("div", { class: "studio-compare-col-head" }, t("Base")),
+							h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+							h(
+								"div",
+								{ class: "studio-compare-cell is-base" },
+								page.baseHtml
+									? this.#createHtmlFrame(
+											page.baseHtml,
+											page.path,
+											page.title,
+											baseFiles,
+											baseTokensCss,
+											"studio-html-frame is-compare",
+										)
+									: h("em", null, t("Not in Base")),
+							),
+							h(
+								"div",
+								{ class: "studio-compare-cell is-preview" },
+								this.#createHtmlFrame(
+									page.html,
+									page.path,
+									page.title,
+									files,
+									previewTokensCss,
+									"studio-html-frame is-compare",
+								),
+							),
+						),
+					),
+				);
+			}
+			const otherChangedPaths = allChangedPaths.filter((path) => !renderedPaths.has(path));
+			if (otherChangedPaths.length > 0) {
+				sections.push(
+					h(
+						"section",
+						{ class: "studio-section studio-compare-card", "data-compare-other": "true" },
+						h("div", { class: "studio-section-head" }, h("h2", null, t("Other changed files"))),
+						h(
+							"ul",
+							{ class: "studio-changed-paths" },
+							otherChangedPaths.map((path) =>
+								h(
+									"li",
+									{ "data-compare-file": path },
+									h("code", { class: "studio-file-tag" }, path),
+									h(
+										"span",
+										{ class: "studio-changed-pill" },
+										files[path] === undefined ? t("Removed") : t("Updated"),
+									),
+								),
+							),
+						),
+					),
+				);
+			}
+			if (sections.length === 0) {
 				sections.push(
 					h(
 						"section",
@@ -758,157 +975,6 @@ export class SurfaceStudioView {
 						h("p", null, t("No open changes to compare against Base.")),
 					),
 				);
-			} else {
-				for (const spec of changedSpecs) {
-					const diffs = spec.entries.filter((entry) => entry.changed);
-					if (!diffs.length) continue;
-					sections.push(
-						h(
-							"section",
-							{ class: "studio-section studio-compare-card", "data-compare-file": spec.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, spec.title),
-								h("code", { class: "studio-file-tag" }, spec.path),
-							),
-							h(
-								"div",
-								{ class: "studio-compare-grid" },
-								h("div", { class: "studio-compare-col-head" }, t("Base")),
-								h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
-								...diffs.flatMap((entry) => [
-									h(
-										"div",
-										{ class: "studio-compare-cell is-base" },
-										h("small", null, entry.key),
-										h("span", null, entry.prev ?? t("Not set")),
-									),
-									h(
-										"div",
-										{ class: "studio-compare-cell is-preview" },
-										h("small", null, entry.key),
-										h("strong", null, entry.value),
-									),
-								]),
-							),
-						),
-					);
-				}
-				for (const asset of changedSvgs) {
-					sections.push(
-						h(
-							"section",
-							{ class: "studio-section studio-compare-card", "data-compare-file": asset.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, asset.title),
-								h("code", { class: "studio-file-tag" }, asset.path),
-							),
-							h(
-								"div",
-								{ class: "studio-compare-grid" },
-								h("div", { class: "studio-compare-col-head" }, t("Base")),
-								h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
-								h(
-									"div",
-									{ class: "studio-compare-cell is-base studio-svg-stage" },
-									asset.baseSvg
-										? h("img", { class: "studio-svg-img", src: svgDataUrl(asset.baseSvg), alt: asset.title })
-										: h("em", null, t("Not in Base")),
-								),
-								h(
-									"div",
-									{ class: "studio-compare-cell is-preview studio-svg-stage" },
-									h("img", { class: "studio-svg-img", src: svgDataUrl(asset.svg), alt: asset.title }),
-								),
-							),
-						),
-					);
-				}
-				for (const doc of changedDocs) {
-					sections.push(
-						h(
-							"section",
-							{ class: "studio-section studio-compare-card", "data-compare-file": doc.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, doc.title),
-								h("code", { class: "studio-file-tag" }, doc.path),
-							),
-							h(
-								"div",
-								{ class: "studio-compare-grid" },
-								h("div", { class: "studio-compare-col-head" }, t("Base")),
-								h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
-								h(
-									"div",
-									{ class: "studio-compare-cell is-base studio-doc-body" },
-									doc.baseContent
-										? doc.isMarkdown
-											? markdown(doc.baseContent)
-											: h("div", { class: "studio-plain-text" }, doc.baseContent)
-										: h("em", null, t("Not in Base")),
-								),
-								h(
-									"div",
-									{ class: "studio-compare-cell is-preview studio-doc-body" },
-									doc.isMarkdown
-										? markdown(doc.content)
-										: h("div", { class: "studio-plain-text" }, doc.content),
-								),
-							),
-						),
-					);
-				}
-				for (const page of changedHtmlPages) {
-					sections.push(
-						h(
-							"section",
-							{ class: "studio-section studio-compare-card", "data-compare-file": page.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, page.title),
-								h("code", { class: "studio-file-tag" }, page.path),
-							),
-							h(
-								"div",
-								{ class: "studio-compare-grid" },
-								h("div", { class: "studio-compare-col-head" }, t("Base")),
-								h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
-								h(
-									"div",
-									{ class: "studio-compare-cell is-base" },
-									page.baseHtml
-										? this.#createHtmlFrame(
-												page.baseHtml,
-												page.path,
-												page.title,
-												baseFiles,
-												baseTokensCss,
-												"studio-html-frame is-compare",
-											)
-										: h("em", null, t("Not in Base")),
-								),
-								h(
-									"div",
-									{ class: "studio-compare-cell is-preview" },
-									this.#createHtmlFrame(
-										page.html,
-										page.path,
-										page.title,
-										files,
-										previewTokensCss,
-										"studio-html-frame is-compare",
-									),
-								),
-							),
-						),
-					);
-				}
 			}
 			children.push(h("div", { class: "studio-grid" }, sections));
 			this.el.replaceChildren(...children);

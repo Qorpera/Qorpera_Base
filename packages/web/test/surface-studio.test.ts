@@ -328,4 +328,76 @@ describe("SurfaceStudioView", () => {
 		expect(prepared).toContain("data:image/svg+xml;charset=utf-8,");
 		expect(prepared).not.toContain('href="./tokens.css"');
 	});
+
+	it("marks HTML pages Updated when inlined CSS changes and lists unrendered changed paths in Compare without code", async () => {
+		const identity = summary({
+			id: IDENTITY_ID,
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			icon: "spark",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "identity",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const c1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: IDENTITY_ID,
+			kind: "folder_patch",
+			title: "Update styles and config",
+			affectedPaths: ["extra.css", "config.yaml", "broken.json"],
+		});
+		const idSession = session(["staged"], { surfaceId: IDENTITY_ID, changes: [c1] });
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [summary(), identity]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([idSession], { surface: identity })),
+			}),
+		);
+		await store.load();
+		await store.openSurface("identity");
+		store.setStudioPatch(CHANGES[0], [
+			{ op: "write_text", path: "extra.css", content: "body { background: #111; }" },
+			{ op: "write_text", path: "config.yaml", content: "theme: evening\n" },
+			{ op: "write_text", path: "broken.json", content: "{not valid json" },
+		]);
+
+		const view = new SurfaceStudioView({
+			store,
+			surface: identity,
+			signal: new AbortController().signal,
+			baseFiles: {
+				"identity/index.html":
+					'<!doctype html><html><head><title>Preview</title><link rel="stylesheet" href="./extra.css"></head><body>Hi</body></html>',
+				"identity/extra.css": "body { background: #fff; }",
+				"identity/config.yaml": "theme: day\n",
+			},
+		});
+		document.body.append(view.el);
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="pages"]')!.click();
+		const pageCard = view.el.querySelector('[data-file="identity/index.html"]')!;
+		expect(pageCard.classList.contains("is-changed")).toBe(true);
+		expect(pageCard.querySelector(".studio-changed-pill")?.textContent).toBe("Updated");
+
+		store.setMode("compare");
+		view.update();
+		expect(view.el.querySelector(".studio-compare-empty")).toBeNull();
+		expect(
+			view.el.querySelector('[data-compare-file="identity/index.html"] iframe.studio-html-frame'),
+		).not.toBeNull();
+		const otherCard = view.el.querySelector('[data-compare-other="true"]')!;
+		expect(otherCard.querySelector('[data-compare-file="identity/config.yaml"]')).not.toBeNull();
+		expect(otherCard.querySelector('[data-compare-file="identity/broken.json"]')).not.toBeNull();
+		expect(otherCard.textContent).not.toContain("theme: evening");
+		expect(otherCard.textContent).not.toContain("{not valid json");
+		expect(view.el.querySelector("pre")).toBeNull();
+
+		view.dispose();
+		store.dispose();
+	});
 });

@@ -277,6 +277,20 @@ describe("cloud surface runtime tools", () => {
 		).toThrow();
 		expect(() =>
 			tool.parseArguments({
+				title: "Dot segment",
+				summary: "None",
+				ops: [{ op: "write_text", path: "./voice.md", content: "nope" }],
+			}),
+		).toThrow();
+		expect(() =>
+			tool.parseArguments({
+				title: "Empty segment",
+				summary: "None",
+				ops: [{ op: "write_text", path: "a//b.md", content: "nope" }],
+			}),
+		).toThrow();
+		expect(() =>
+			tool.parseArguments({
 				title: "Absolute path",
 				summary: "None",
 				ops: [{ op: "delete", path: "/etc/passwd" }],

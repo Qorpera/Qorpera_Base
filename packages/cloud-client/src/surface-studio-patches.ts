@@ -1,4 +1,10 @@
-import type { StudioPatchChange, StudioPatchOp, SurfacePreviewConflict } from "@qorpera/contracts";
+import {
+	normalizeStudioFolderRoot,
+	resolveStudioFolderPath,
+	type StudioPatchChange,
+	type StudioPatchOp,
+	type SurfacePreviewConflict,
+} from "@qorpera/contracts";
 
 export type { StudioPatchChange, StudioPatchOp };
 
@@ -45,38 +51,21 @@ function mergeJsonObject(
 	return { merged, conflicts };
 }
 
-function normalizeFolderRoot(folderRoot: string | null | undefined): string {
-	const cleaned = (folderRoot ?? "").trim().replace(/^\/+|\/+$/g, "");
-	if (!cleaned || cleaned.includes("\\") || cleaned.includes("\0")) return "";
-	if (cleaned.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) return "";
-	return cleaned;
-}
-
-function resolveStudioPatchPath(
-	folderRoot: string,
-	baseFiles: Readonly<Record<string, string>>,
-	rawPath: string,
-): string {
-	const normalized = rawPath
-		.trim()
-		.replace(/^(?:\.\/)+/, "")
-		.replace(/^\/+|\/+$/g, "");
-	if (!folderRoot || !normalized || Object.hasOwn(baseFiles, normalized)) return normalized;
-	if (normalized.includes("\\") || normalized.includes("\0")) return normalized;
-	if (normalized.split("/").some((segment) => segment === "" || segment === "." || segment === ".."))
-		return normalized;
-	return normalized === folderRoot || normalized.startsWith(`${folderRoot}/`)
-		? normalized
-		: `${folderRoot}/${normalized}`;
-}
-
 // WHY: Composes non-code Studio folder_patch ChangeUnits deterministically in memory for sub-10ms live toggling without git builds.
 export function composeStudioPreview(
 	baseFiles: Readonly<Record<string, string>>,
 	orderedChanges: readonly StudioPatchChange[],
 	folderRoot?: string | null,
 ): StudioPreviewComposition {
-	const root = normalizeFolderRoot(folderRoot);
+	let normalizedRoot: string | null = null;
+	let invalidRoot = false;
+	if (folderRoot !== undefined && folderRoot !== null && folderRoot.trim().length > 0) {
+		try {
+			normalizedRoot = normalizeStudioFolderRoot(folderRoot);
+		} catch {
+			invalidRoot = true;
+		}
+	}
 	const working: Record<string, string> = { ...baseFiles };
 	const touchedWholeFiles = new Map<string, string>();
 	const touchedJsonKeys = new Map<string, Set<string>>();
@@ -88,7 +77,21 @@ export function composeStudioPreview(
 		const conflictOwners = new Set<string>();
 
 		for (const op of change.ops) {
-			const path = resolveStudioPatchPath(root, baseFiles, op.path);
+			let path: string;
+			if (invalidRoot) {
+				conflictPaths.push(op.path);
+				continue;
+			}
+			if (normalizedRoot) {
+				try {
+					path = resolveStudioFolderPath(normalizedRoot, op.path);
+				} catch {
+					conflictPaths.push(op.path);
+					continue;
+				}
+			} else {
+				path = op.path;
+			}
 			if (op.op === "write_text" || op.op === "delete") {
 				const priorOwner = touchedWholeFiles.get(path);
 				if (priorOwner && priorOwner !== change.changeId) {
