@@ -155,6 +155,10 @@ impl Link {
 
 	pub fn has_reads(&self) -> bool { self.reads.is_some() }
 
+	pub fn reads_lost(&self) -> bool {
+		self.reads.as_ref().is_some_and(|log| log.locked().is_ok_and(|l| l.lost()))
+	}
+
 	pub fn epoch(&self) -> u64 { self.view.lock().unwrap().epoch }
 
 	/// Checks atomic primary-file replacement even while the filesystem is idle. A bad replacement never erases

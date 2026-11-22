@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
 
-const FOLD_BUDGET: usize = 4096;
 const MAX_PATTERN_BYTES: usize = 16 * 1024;
 const MAX_NESTING_DEPTH: usize = 64;
 const MAX_QUANTIFIER_COUNT: usize = 64;
@@ -424,7 +424,46 @@ struct Parser<'a> {
 	folded_input: bool,
 	saw_cs: bool,
 	saw_ci: bool,
-	fold_budget: usize,
+}
+
+fn bmp_folded_map() -> &'static [(u32, u32)] {
+	static TABLE: OnceLock<Vec<(u32, u32)>> = OnceLock::new();
+	TABLE.get_or_init(|| {
+		let mut entries = Vec::new();
+		for code in 128u32..=0xffff {
+			if let Some(ch) = char::from_u32(code) {
+				let folded = fold_char(ch);
+				let mut it = folded.chars();
+				if let (Some(f), None) = (it.next(), it.next()) {
+					let f_code = f as u32;
+					if f_code != code {
+						entries.push((code, f_code));
+					}
+				}
+			}
+		}
+		entries
+	})
+}
+
+fn bmp_unfolded_map() -> &'static [(u32, u32)] {
+	static TABLE: OnceLock<Vec<(u32, u32)>> = OnceLock::new();
+	TABLE.get_or_init(|| {
+		let mut entries = Vec::new();
+		let mut variants = Vec::new();
+		for code in 128u32..=0xffff {
+			if let Some(ch) = char::from_u32(code) {
+				variants.clear();
+				expand_unfolded_case(ch, &mut variants);
+				for &v in &variants {
+					if v != code {
+						entries.push((code, v));
+					}
+				}
+			}
+		}
+		entries
+	})
 }
 
 impl<'a> Parser<'a> {
@@ -439,7 +478,6 @@ impl<'a> Parser<'a> {
 			folded_input: first_folded,
 			saw_cs: false,
 			saw_ci: false,
-			fold_budget: FOLD_BUDGET,
 		};
 		let expr = p.parse_alt()?;
 		if p.pos < p.chars.len() {
@@ -456,7 +494,6 @@ impl<'a> Parser<'a> {
 				folded_input: want_folded,
 				saw_cs: false,
 				saw_ci: false,
-				fold_budget: FOLD_BUDGET,
 			};
 			let expr2 = p2.parse_alt()?;
 			return Ok((expr2, want_folded));
@@ -820,16 +857,15 @@ impl<'a> Parser<'a> {
 			let mut added = Vec::new();
 			let mut variants = Vec::new();
 			for &(lo, hi) in &ranges {
-				// WHY: Fold ASCII ranges unconditionally and fail closed if non-ASCII folding exceeds budget instead of silently skipping later classes.
-				let mut fold_range = |start: u32, end: u32| {
-					for code in start..=end {
+				if lo < 128 {
+					for code in lo..=hi.min(127) {
 						if let Some(ch) = char::from_u32(code) {
 							if self.folded_input {
 								let folded = fold_char(ch);
 								let mut it = folded.chars();
 								if let (Some(f), None) = (it.next(), it.next()) {
 									let f_code = f as u32;
-									if f_code != code {
+									if f_code < lo || f_code > hi {
 										added.push((f_code, f_code));
 									}
 								}
@@ -837,25 +873,26 @@ impl<'a> Parser<'a> {
 								variants.clear();
 								expand_unfolded_case(ch, &mut variants);
 								for &v in &variants {
-									if v != code {
+									if v < lo || v > hi {
 										added.push((v, v));
 									}
 								}
 							}
 						}
 					}
-				};
-				if lo < 128 {
-					fold_range(lo, hi.min(127));
 				}
 				if hi >= 128 {
 					let non_ascii_lo = lo.max(128);
-					let span = (hi - non_ascii_lo + 1) as usize;
-					if span > self.fold_budget {
-						return Err(too_large_err());
+					let table = if self.folded_input { bmp_folded_map() } else { bmp_unfolded_map() };
+					let start = table.partition_point(|&(cp, _)| cp < non_ascii_lo);
+					for &(cp, target) in &table[start..] {
+						if cp > hi {
+							break;
+						}
+						if target < lo || target > hi {
+							added.push((target, target));
+						}
 					}
-					self.fold_budget -= span;
-					fold_range(non_ascii_lo, hi);
 				}
 			}
 			ranges.extend(added);
@@ -2051,11 +2088,14 @@ mod tests {
 	}
 
 	#[test]
-	fn fails_closed_when_non_ascii_class_fold_exceeds_budget_and_tracks_text_anchors() {
-		assert!(Regex::compile("[\u{1000}-\u{2001}A]", false).is_err());
-		assert!(Regex::compile("[\u{0100}-\u{0fff}][\u{0100}-\u{0fff}][A-Z]", false).is_err());
+	fn folds_wide_non_ascii_classes_accurately_and_tracks_text_anchors() {
+		assert!(matches("[\u{0080}-\u{ffff}]", "\u{00e9}", false));
+		assert!(matches("[\u{0080}-\u{ffff}]", "k", false));
+		assert!(matches("[\u{00c9}]", "\u{00e9}", false));
+		assert!(matches("[\u{0100}-\u{2fff}]", "\u{0101}", false));
 		assert!(matches("[\u{0100}-\u{0110}A-Z]", "a", false));
 		assert!(matches("[\u{0100}-\u{0110}A-Z]", "\u{0101}", false));
+		assert!(matches("[\u{0100}-\u{0fff}][\u{0100}-\u{0fff}][A-Z]", "\u{0101}\u{0103}z", false));
 		assert!(Regex::compile("(?-m)^foo", true).unwrap().has_text_anchor());
 		assert!(Regex::compile("(?-m)foo$", true).unwrap().has_text_anchor());
 		assert!(!Regex::compile("^foo$", true).unwrap().has_text_anchor());

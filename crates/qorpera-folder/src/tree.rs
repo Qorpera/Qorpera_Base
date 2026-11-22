@@ -212,8 +212,31 @@ impl Tree {
 		keep: bool,
 		hold: Option<&str>,
 	) -> (Arc<Vec<Child>>, bool) {
+		let (children, kept, _) = self.install_inner(dir, entries, started, keep, hold, false);
+		(children, kept)
+	}
+
+	pub fn install_dir(
+		&mut self,
+		dir: u64,
+		entries: Vec<Entry>,
+		started: u64,
+		keep: bool,
+	) -> (Arc<Vec<Child>>, bool, Vec<u64>) {
+		self.install_inner(dir, entries, started, keep, None, true)
+	}
+
+	fn install_inner(
+		&mut self,
+		dir: u64,
+		entries: Vec<Entry>,
+		started: u64,
+		keep: bool,
+		hold: Option<&str>,
+		hold_all: bool,
+	) -> (Arc<Vec<Child>>, bool, Vec<u64>) {
 		let Some(dir_path) = self.nodes.get(&dir).filter(|n| !n.detached).map(|n| n.path.clone()) else {
-			return (Arc::new(Vec::new()), false);
+			return (Arc::new(Vec::new()), false, Vec::new());
 		};
 		let current = self.dir_changes(dir) <= started;
 		let keep = keep && current;
@@ -263,6 +286,15 @@ impl Tree {
 		}
 		children.sort_by(|a, b| a.name.cmp(&b.name));
 		children.dedup_by(|a, b| a.name == b.name);
+		let mut held = Vec::new();
+		if hold_all {
+			held.reserve(children.len());
+			for c in &children {
+				if self.hold(c.ino) {
+					held.push(c.ino);
+				}
+			}
+		}
 		let children = Arc::new(children);
 		if keep {
 			for c in children.iter() {
@@ -291,7 +323,7 @@ impl Tree {
 				self.prune(c.ino);
 			}
 		}
-		(children, keep)
+		(children, keep, held)
 	}
 
 	/// The kernel looked a node up once more (from a cached listing).
@@ -301,18 +333,6 @@ impl Tree {
 			true
 		} else {
 			false
-		}
-	}
-
-	pub fn hold_child(&mut self, dir: u64, name: &str) -> Option<(u64, Attr)> {
-		let dir_path = self.path(dir)?;
-		let child_path = crate::proto::join(dir_path, name);
-		let &ino = self.by_path.get(&child_path)?;
-		let attr = self.attr(ino)?;
-		if self.hold(ino) {
-			Some((ino, attr))
-		} else {
-			None
 		}
 	}
 
@@ -921,7 +941,7 @@ mod tests {
 	}
 
 	#[test]
-	fn hold_returns_false_for_pruned_node_and_forget_reports_zero_lookups() {
+	fn hold_returns_false_for_pruned_node_and_install_dir_holds_unkept_children() {
 		let mut t = Tree::new();
 		let (kids, _) = t.install(ROOT, vec![file("a.txt", 1, "v1")], t.changes(), true, None);
 		let a = ino_of(&kids, "a.txt");
@@ -931,12 +951,15 @@ mod tests {
 		assert!(t.forget(a, 1));
 		t.drop_listings("");
 		assert!(!t.hold(a));
-		assert!(t.hold_child(ROOT, "a.txt").is_none());
-		let (kids2, _) = t.install(ROOT, vec![file("a.txt", 2, "v2")], t.changes(), true, None);
-		let a2 = ino_of(&kids2, "a.txt");
-		let (held_ino, held_attr) = t.hold_child(ROOT, "a.txt").expect("resolves live child");
-		assert_eq!((held_ino, held_attr.size), (a2, 2));
-		assert!(t.forget(held_ino, 1));
+
+		let (kids2, kept2, held2) = t.install_dir(ROOT, vec![file("b.txt", 2, "v2")], t.changes(), false);
+		assert!(!kept2);
+		let b = ino_of(&kids2, "b.txt");
+		assert_eq!(held2, vec![b]);
+		assert!(t.hold(b));
+		assert!(!t.forget(b, 1));
+		assert!(t.forget(b, 1));
+		assert!(!t.hold(b));
 		assert!(!t.forget(ROOT, 1));
 	}
 }

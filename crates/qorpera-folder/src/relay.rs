@@ -105,6 +105,7 @@ fn pipe(local: Stream, remote: Stream) {
 			return;
 		}
 	};
+	let (up_tx, up_rx) = std::sync::mpsc::channel::<()>();
 	let up = std::thread::Builder::new().name("relay-up".into()).spawn(move || {
 		// WHY: Propagate clean EOF with SHUT_WR so half-closed requests keep receiving their in-flight response.
 		if copy_buffered(&mut from_local, &mut into_remote).is_ok() {
@@ -113,10 +114,16 @@ fn pipe(local: Stream, remote: Stream) {
 			from_local.shutdown();
 			into_remote.shutdown();
 		}
+		let _ = up_tx.send(());
 	});
 	let (mut from_remote, mut into_local) = (remote, local);
 	if copy_buffered(&mut from_remote, &mut into_local).is_ok() {
 		into_local.shutdown_write();
+		// WHY: Bound teardown when the server closes an idle pooled socket so the up thread does not pin an ActiveGuard slot.
+		if up_rx.recv_timeout(std::time::Duration::from_millis(200)).is_err() {
+			from_remote.shutdown();
+			into_local.shutdown();
+		}
 	} else {
 		from_remote.shutdown();
 		into_local.shutdown();
@@ -263,6 +270,48 @@ mod tests {
 		let mut reply = Vec::new();
 		first.read_to_end(&mut reply).unwrap();
 		assert_eq!(reply, b"PING");
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn server_close_on_idle_client_releases_relay_slot_promptly() {
+		let dir = std::env::temp_dir().join(format!(
+			"qorpera-folder-relay-idle-{}-{}",
+			std::process::id(),
+			std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos()
+		));
+		std::fs::create_dir(&dir).unwrap();
+		let service_sock = dir.join("service.sock");
+		let relay_sock = dir.join("relay.sock");
+		let service = UnixListener::bind(&service_sock).unwrap();
+		let relay = UnixListener::bind(&relay_sock).unwrap();
+		let upstream = format!("unix:{}", service_sock.display());
+		std::thread::spawn(move || run_with_limit(relay, &upstream, 1));
+		std::thread::spawn(move || {
+			for (i, conn) in service.incoming().enumerate() {
+				let mut conn = conn.unwrap();
+				if i == 0 {
+					let _ = conn.write_all(b"bye");
+					drop(conn);
+				} else {
+					let _ = conn.write_all(b"ok");
+					drop(conn);
+				}
+			}
+		});
+
+		let mut idle_client = UnixStream::connect(&relay_sock).unwrap();
+		let mut buf = [0u8; 3];
+		idle_client.read_exact(&mut buf).unwrap();
+		assert_eq!(&buf, b"bye");
+		std::thread::sleep(std::time::Duration::from_millis(350));
+
+		let mut next_client = UnixStream::connect(&relay_sock).unwrap();
+		next_client.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+		let mut reply = Vec::new();
+		next_client.read_to_end(&mut reply).unwrap();
+		assert_eq!(reply, b"ok");
+		drop(idle_client);
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 }

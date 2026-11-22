@@ -107,6 +107,7 @@ fn pass(machine: Stream, cid: u32, service: &str, machines: &Machines) -> io::Re
 	let _ = to_service.set_timeouts(None, None);
 	let mut from_machine = machine.try_clone()?;
 	let mut into_service = to_service.try_clone()?;
+	let (up_tx, up_rx) = std::sync::mpsc::channel::<()>();
 	let upstream = std::thread::Builder::new().name(format!("bridge-{cid}-up")).spawn(move || {
 		// WHY: Propagate clean EOF with SHUT_WR so half-closed requests keep receiving their in-flight response.
 		if copy_buffered(&mut from_machine, &mut into_service).is_ok() {
@@ -115,10 +116,16 @@ fn pass(machine: Stream, cid: u32, service: &str, machines: &Machines) -> io::Re
 			into_service.shutdown();
 			from_machine.shutdown();
 		}
+		let _ = up_tx.send(());
 	})?;
 	let mut into_machine = machine;
 	if copy_buffered(&mut to_service, &mut into_machine).is_ok() {
 		into_machine.shutdown_write();
+		// WHY: Bound teardown when the service closes an idle pooled socket so the upstream copy thread exits promptly.
+		if up_rx.recv_timeout(std::time::Duration::from_millis(200)).is_err() {
+			into_machine.shutdown();
+			to_service.shutdown();
+		}
 	} else {
 		into_machine.shutdown();
 		to_service.shutdown();
