@@ -10,6 +10,7 @@ import {
 	StripeRequestError,
 	verifyStripeSignature,
 } from "./computer-billing.ts";
+import { sendGoodWillInvoices } from "./good-will.ts";
 
 const SECRET = "whsec_test_secret";
 const NOW = 1_790_000_000;
@@ -991,5 +992,53 @@ describe("Good will", () => {
 		const badUtf8CheckoutRes = await handleComputerBilling(badUtf8Checkout, f.deps);
 		assert.equal(badUtf8CheckoutRes.status, 400);
 		assert.equal(badUtf8CheckoutRes.headers.get("access-control-allow-origin"), "https://app.qorpera.com");
+	});
+
+	it("bounds Stripe API response size and caps sendGoodWillInvoices by batch size and budget", async () => {
+		const oversizedStripe = createStripeApi(
+			"sk_test_x",
+			async () =>
+				new Response("{}", {
+					status: 200,
+					headers: { "content-length": String(3 * 1024 * 1024) },
+				}),
+		);
+		await assert.rejects(
+			() => oversizedStripe.get("/v1/invoices/in_1"),
+			(err: unknown) => err instanceof StripeRequestError && err.status === 502,
+		);
+
+		const created: string[] = [];
+		const months = [1, 2, 3].map((n) => ({
+			profileId: `30000000-0000-4000-8000-00000000000${n}`,
+			month: "2026-10",
+			dueOre: 1000,
+			customerId: `cus_${n}`,
+			paymentMethodId: `pm_${n}`,
+		}));
+		const summary = await sendGoodWillInvoices({
+			livemode: false,
+			returnUrl: "https://app.qorpera.com/plan",
+			maxBatch: 2,
+			goodWill: {
+				call: async (method) => {
+					if (method === "due") return { months };
+					return { recorded: true };
+				},
+			},
+			stripe: {
+				get: async () => ({ id: "in_x", status: "draft", lines: { data: [] } }),
+				post: async (path) => {
+					if (path === "/v1/invoices") {
+						const id = `in_${created.length + 1}`;
+						created.push(id);
+						return { id, status: "draft", lines: { data: [] } };
+					}
+					return { id: "in_final", status: "open", hosted_invoice_url: "https://stripe.test/inv" };
+				},
+			},
+		});
+		assert.deepEqual(summary, { invoiced: 2, failed: 0 });
+		assert.equal(created.length, 2);
 	});
 });

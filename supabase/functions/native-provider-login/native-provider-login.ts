@@ -1,3 +1,5 @@
+import { withTimeoutScope } from "../_shared/abort-timeout.ts";
+
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -140,33 +142,42 @@ async function forwardLogin(request: Request, options: NativeProviderLoginProxyO
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
 			throw new Error("Native login proxy timeout is invalid");
 		}
-		const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
-		target = await resolveUpstream(refresh && options.upstreamResolver
-			? { ...options, upstreamResolver: (hash) => options.upstreamResolver!(hash, "account_refresh") }
-			: options, signal, await sha256Hex(capability));
-		if (refresh) target.url = new URL("account-refresh", target.url).href;
-		if (planConfirm) target.url = new URL("chatgpt-plan/confirm", target.url).href;
-		if (claudeCode) target.url = new URL("claude/code", target.url).href;
-		const upstream = await (options.fetchImplementation ?? fetch)(target.url, {
-			method: "POST",
-			headers: {
-				accept: "application/json",
-				authorization: `Bearer ${capability}`,
-				"content-type": "application/json",
+		return await withTimeoutScope(
+			timeoutMs,
+			async (signal) => {
+				target = await resolveUpstream(
+					refresh && options.upstreamResolver
+						? { ...options, upstreamResolver: (hash) => options.upstreamResolver!(hash, "account_refresh") }
+						: options,
+					signal,
+					await sha256Hex(capability),
+				);
+				if (refresh) target.url = new URL("account-refresh", target.url).href;
+				if (planConfirm) target.url = new URL("chatgpt-plan/confirm", target.url).href;
+				if (claudeCode) target.url = new URL("claude/code", target.url).href;
+				const upstream = await (options.fetchImplementation ?? fetch)(target.url, {
+					method: "POST",
+					headers: {
+						accept: "application/json",
+						authorization: `Bearer ${capability}`,
+						"content-type": "application/json",
+					},
+					body: body.buffer,
+					redirect: "error",
+					signal,
+				});
+				const responseBody = await readLoginBody(upstream, MAX_RESPONSE_BYTES, signal);
+				return new Response(responseBody, {
+					status: upstream.status,
+					headers: {
+						"cache-control": "no-store",
+						"content-type": "application/json",
+						"x-qorpera-login-gateway": gatewayHeader(target, "forwarded"),
+					},
+				});
 			},
-			body: body.buffer,
-			redirect: "error",
-			signal,
-		});
-		const responseBody = await readLoginBody(upstream, MAX_RESPONSE_BYTES, signal);
-		return new Response(responseBody, {
-			status: upstream.status,
-			headers: {
-				"cache-control": "no-store",
-				"content-type": "application/json",
-				"x-qorpera-login-gateway": gatewayHeader(target, "forwarded"),
-			},
-		});
+			request.signal,
+		);
 	} catch (error) {
 		// Upstream detail stays private: the body is generic and the header names only the error class.
 		const failure = error instanceof Error ? error.name : "Error";

@@ -267,12 +267,25 @@ function deliveryError(error: unknown): { message: string; retryable: boolean } 
 	return { message: message.slice(0, 1000), retryable: true };
 }
 
+export interface ComputerHourNoticeBatchOptions {
+	paceMs?: number;
+	budgetMs?: number;
+	now?: () => number;
+	sleep?: (ms: number) => Promise<void>;
+}
+
 export async function deliverComputerHourNoticeBatch(
 	jobs: readonly ComputerHourNoticeJob[],
 	appUrlBase: string,
 	provider: ComputerHourEmailProvider,
 	store: ComputerHourNoticeStore,
+	options: ComputerHourNoticeBatchOptions = {},
 ): Promise<ComputerHourNoticeBatchResult> {
+	const paceMs = options.paceMs ?? 0;
+	const budgetMs = options.budgetMs;
+	const now = options.now ?? Date.now;
+	const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+	const deadline = budgetMs !== undefined ? now() + budgetMs : undefined;
 	const result: ComputerHourNoticeBatchResult = {
 		claimed: jobs.length,
 		delivered: 0,
@@ -280,7 +293,10 @@ export async function deliverComputerHourNoticeBatch(
 		failed: 0,
 		completionPending: 0,
 	};
-	for (const job of jobs) {
+	for (const [index, job] of jobs.entries()) {
+		if (deadline !== undefined && now() >= deadline) break;
+		if (index > 0 && paceMs > 0) await sleep(paceMs);
+		if (deadline !== undefined && now() >= deadline) break;
 		let providerMessageId: string;
 		try {
 			const email = buildComputerHourEmail(job, appUrlBase);

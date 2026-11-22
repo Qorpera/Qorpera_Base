@@ -642,4 +642,52 @@ describe("mail outbox attachments", () => {
 		});
 		assert.equal(sent.length, 1);
 	});
+
+	it("StorageObjectReader rejects oversized responses and handleMailOutbox stops when budgetMs elapses", async () => {
+		const sha = "a".repeat(64);
+		const reader = new StorageObjectReader(
+			"https://project.example",
+			KEY,
+			async () =>
+				new Response(new Uint8Array(10), {
+					status: 200,
+					headers: { "content-length": String(9 * 1024 * 1024) },
+				}),
+		);
+		await assert.rejects(
+			() => reader.get("30000000-0000-4000-8000-000000000010", sha),
+			(err: unknown) => err instanceof MailSendError && err.retryable === true,
+		);
+
+		const sent: string[] = [];
+		let clock = 1_000;
+		const sender: MailSender = {
+			async send(email) {
+				sent.push(email.subject);
+				clock += 30_000;
+				return `msg-${sent.length}`;
+			},
+			async messageId() {
+				return null;
+			},
+		};
+		const harness = outbox([job(1), job(2)], sender, undefined);
+		const response = await handleMailOutbox(post(), {
+			keys: [KEY],
+			store: () => harness.store,
+			sender,
+			pace: 0,
+			budgetMs: 20_000,
+			now: () => clock,
+		});
+		assert.deepEqual(await response.json(), {
+			claimed: 2,
+			sent: 1,
+			retrying: 0,
+			failed: 0,
+			rejected: 0,
+			messageIds: 0,
+		});
+		assert.equal(sent.length, 1);
+	});
 });

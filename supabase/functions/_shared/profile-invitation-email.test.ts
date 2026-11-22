@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import { describe, it } from "node:test";
+import { withTimeoutScope } from "./abort-timeout.ts";
 import {
 	buildProfileInvitationEmail,
 	deliverProfileInvitationBatch,
@@ -218,5 +220,98 @@ describe("profile invitation email delivery", () => {
 			unreadable: 0,
 		});
 		assert.equal(failed, false);
+	});
+
+	it("continues delivering remaining jobs when store.fail throws and honors paceMs and budgetMs", async () => {
+		const secondId = "b8450f9d-c912-43ea-81f6-62c7247d752b";
+		const thirdId = "c8450f9d-c912-43ea-81f6-62c7247d752c";
+		const sleeps: number[] = [];
+		let clock = 1_000;
+		const sentIds: string[] = [];
+		const result = await deliverProfileInvitationBatch(
+			{
+				jobs: [job(), job({ invitationId: secondId }), job({ invitationId: thirdId })],
+				unusable: [{ invitationId: "d8450f9d-c912-43ea-81f6-62c7247d752d", leaseId, message: "bad row" }],
+				unreadable: 0,
+			},
+			"https://qorpera.com/invitation",
+			{
+				send: async (item) => {
+					sentIds.push(item.invitationId);
+					if (item.invitationId === invitationId) throw new InvitationEmailSendError("rate limited", true);
+					clock += 30_000;
+					return { messageId: `msg-${item.invitationId}` };
+				},
+			},
+			{
+				complete: async () => undefined,
+				fail: async () => {
+					throw new Error("lease expired (40001)");
+				},
+			},
+			{
+				paceMs: 600,
+				budgetMs: 20_000,
+				now: () => clock,
+				sleep: async (ms) => {
+					sleeps.push(ms);
+					clock += ms;
+				},
+			},
+		);
+		assert.deepEqual(sentIds, [invitationId, secondId]);
+		assert.deepEqual(sleeps, [600]);
+		assert.deepEqual(result, {
+			claimed: 4,
+			delivered: 1,
+			retrying: 0,
+			failed: 0,
+			completionPending: 2,
+			unreadable: 0,
+		});
+	});
+});
+
+describe("withTimeoutScope", () => {
+	it("forwards parent abort reason, cleans up parent listeners, and skips timer when pre-aborted", async () => {
+		const parent = new AbortController();
+		const reason = new Error("caller-gone");
+		await withTimeoutScope(
+			60_000,
+			async (signal) => {
+				assert.equal(signal.aborted, false);
+				assert.equal(getEventListeners(parent.signal, "abort").length, 1);
+				parent.abort(reason);
+				assert.equal(signal.aborted, true);
+				assert.equal(signal.reason, reason);
+			},
+			parent.signal,
+		);
+		assert.equal(getEventListeners(parent.signal, "abort").length, 0);
+
+		let timedReason: unknown;
+		await withTimeoutScope(15, async (signal) => {
+			await new Promise<void>((resolve) => {
+				signal.addEventListener(
+					"abort",
+					() => {
+						timedReason = signal.reason;
+						resolve();
+					},
+					{ once: true },
+				);
+			});
+		});
+		assert.equal((timedReason as DOMException).name, "TimeoutError");
+
+		await withTimeoutScope(
+			60_000,
+			async (signal) => {
+				assert.equal(signal.aborted, true);
+				assert.equal(signal.reason, reason);
+			},
+			parent.signal,
+		);
+		assert.equal(getEventListeners(parent.signal, "abort").length, 0);
 	});
 });

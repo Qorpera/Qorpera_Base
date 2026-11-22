@@ -234,12 +234,25 @@ function deliveryError(error: unknown): { message: string; retryable: boolean } 
 	return { message: message.slice(0, 1000), retryable: true };
 }
 
+export interface InvitationDeliveryBatchOptions {
+	paceMs?: number;
+	budgetMs?: number;
+	now?: () => number;
+	sleep?: (ms: number) => Promise<void>;
+}
+
 export async function deliverProfileInvitationBatch(
 	{ jobs, unusable, unreadable }: ClaimedInvitationDeliveries,
 	invitationUrlBase: string,
 	provider: InvitationEmailProvider,
 	store: InvitationDeliveryStore,
+	options: InvitationDeliveryBatchOptions = {},
 ): Promise<InvitationDeliveryBatchResult> {
+	const paceMs = options.paceMs ?? 0;
+	const budgetMs = options.budgetMs;
+	const now = options.now ?? Date.now;
+	const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+	const deadline = budgetMs !== undefined ? now() + budgetMs : undefined;
 	const result: InvitationDeliveryBatchResult = {
 		claimed: jobs.length + unusable.length + unreadable,
 		delivered: 0,
@@ -249,10 +262,17 @@ export async function deliverProfileInvitationBatch(
 		unreadable,
 	};
 	for (const lease of unusable) {
-		await store.fail(lease, lease.message.slice(0, 1000), false);
-		result.failed += 1;
+		try {
+			await store.fail(lease, lease.message.slice(0, 1000), false);
+			result.failed += 1;
+		} catch {
+			result.completionPending += 1;
+		}
 	}
-	for (const job of jobs) {
+	for (const [index, job] of jobs.entries()) {
+		if (deadline !== undefined && now() >= deadline) break;
+		if (index > 0 && paceMs > 0) await sleep(paceMs);
+		if (deadline !== undefined && now() >= deadline) break;
 		let providerMessageId: string;
 		try {
 			const email = buildProfileInvitationEmail(job, invitationUrlBase);
@@ -260,7 +280,12 @@ export async function deliverProfileInvitationBatch(
 			providerMessageId = text(sent.messageId, "provider message id", 256);
 		} catch (error) {
 			const failure = deliveryError(error);
-			await store.fail(job, failure.message, failure.retryable);
+			try {
+				await store.fail(job, failure.message, failure.retryable);
+			} catch {
+				result.completionPending += 1;
+				continue;
+			}
 			if (failure.retryable) result.retrying += 1;
 			else result.failed += 1;
 			continue;

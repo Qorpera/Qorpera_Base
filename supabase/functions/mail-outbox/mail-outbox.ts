@@ -19,6 +19,7 @@
 
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
+import { withTimeoutScope } from "../_shared/abort-timeout.ts";
 
 export const BATCH = 10;
 /** Sent emails whose Message-ID is read back in one call, paced like the sends. */
@@ -112,6 +113,8 @@ export interface MailOutbox {
 	leaseId?: () => string;
 	pace?: number;
 	sleep?: (ms: number) => Promise<void>;
+	budgetMs?: number;
+	now?: () => number;
 }
 
 function json(value: unknown, status = 200): Response {
@@ -311,35 +314,42 @@ export class StorageObjectReader implements ObjectReader {
 	}
 
 	async get(companyId: string, sha256: string): Promise<Uint8Array | null> {
-		let response: Response;
-		try {
-			response = await this.#fetch(
-				`${this.#projectUrl}/storage/v1/object/authenticated/${OBJECT_BUCKET}/${companyId}/${sha256}`,
-				{ headers: storageHeaders(this.#secretKey), signal: AbortSignal.timeout(30_000) },
-			);
-		} catch (error) {
-			throw new MailSendError(error instanceof Error ? error.message : "Storage request failed", true);
-		}
-		// Storage answers a missing object with 404, or 400 and its own 404 code; any other 400 is a refusal.
-		if (response.status === 404) {
-			void response.body?.cancel().catch(() => undefined);
-			return null;
-		}
-		if (response.status === 400) {
-			let code: unknown;
+		return withTimeoutScope(30_000, async (signal) => {
+			let response: Response;
 			try {
-				code = ((await response.json()) as { statusCode?: unknown }).statusCode;
-			} catch {
-				// Not JSON.
+				response = await this.#fetch(
+					`${this.#projectUrl}/storage/v1/object/authenticated/${OBJECT_BUCKET}/${companyId}/${sha256}`,
+					{ headers: storageHeaders(this.#secretKey), signal },
+				);
+			} catch (error) {
+				throw new MailSendError(error instanceof Error ? error.message : "Storage request failed", true);
 			}
-			if (code === "404") return null;
-			throw new MailSendError("Storage refused the attachment's read (400)", true);
-		}
-		if (!response.ok) {
-			void response.body?.cancel().catch(() => undefined);
-			throw new MailSendError(`Storage returned HTTP ${response.status}`, true);
-		}
-		return new Uint8Array(await response.arrayBuffer());
+			// Storage answers a missing object with 404, or 400 and its own 404 code; any other 400 is a refusal.
+			if (response.status === 404) {
+				void response.body?.cancel().catch(() => undefined);
+				return null;
+			}
+			if (response.status === 400) {
+				let code: unknown;
+				try {
+					code = ((await response.json()) as { statusCode?: unknown }).statusCode;
+				} catch {
+					// Not JSON.
+				}
+				if (code === "404") return null;
+				throw new MailSendError("Storage refused the attachment's read (400)", true);
+			}
+			if (!response.ok) {
+				void response.body?.cancel().catch(() => undefined);
+				throw new MailSendError(`Storage returned HTTP ${response.status}`, true);
+			}
+			try {
+				return await readBoundedBytes(response, MAX_GATEWAY_OBJECT_BYTES);
+			} catch (error) {
+				if (error instanceof MailSendError) throw error;
+				throw new MailSendError(error instanceof Error ? error.message : "Storage response read failed", true);
+			}
+		});
 	}
 }
 
@@ -421,31 +431,33 @@ export class ObjectGatewayReader implements ObjectReader {
 
 	async get(companyId: string, sha256: string): Promise<Uint8Array | null> {
 		if (!UUID.test(companyId) || !SHA.test(sha256)) return null;
-		let response: Response;
-		try {
-			response = await this.#fetch(`${this.#gatewayUrl}/v1/internal-objects/${companyId}/${sha256}`, {
-				headers: { authorization: `Bearer ${this.#internalToken}` },
-				redirect: "error",
-				signal: AbortSignal.timeout(10_000),
-			});
-		} catch (error) {
-			throw new MailSendError(error instanceof Error ? error.message : "Object gateway request failed", true);
-		}
-		if (response.status === 404) {
-			void response.body?.cancel().catch(() => undefined);
-			return null;
-		}
-		if (response.status !== 200) {
-			void response.body?.cancel().catch(() => undefined);
-			throw new MailSendError(`Object gateway returned HTTP ${response.status}`, true);
-		}
-		const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-		const etag = response.headers.get("etag");
-		if (!contentType.startsWith("application/octet-stream") || etag !== `"sha256-${sha256}"`) {
-			void response.body?.cancel().catch(() => undefined);
-			throw new MailSendError("Object gateway returned an unexpected object response", true);
-		}
-		return readBoundedBytes(response, MAX_GATEWAY_OBJECT_BYTES);
+		return withTimeoutScope(10_000, async (signal) => {
+			let response: Response;
+			try {
+				response = await this.#fetch(`${this.#gatewayUrl}/v1/internal-objects/${companyId}/${sha256}`, {
+					headers: { authorization: `Bearer ${this.#internalToken}` },
+					redirect: "error",
+					signal,
+				});
+			} catch (error) {
+				throw new MailSendError(error instanceof Error ? error.message : "Object gateway request failed", true);
+			}
+			if (response.status === 404) {
+				void response.body?.cancel().catch(() => undefined);
+				return null;
+			}
+			if (response.status !== 200) {
+				void response.body?.cancel().catch(() => undefined);
+				throw new MailSendError(`Object gateway returned HTTP ${response.status}`, true);
+			}
+			const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+			const etag = response.headers.get("etag");
+			if (!contentType.startsWith("application/octet-stream") || etag !== `"sha256-${sha256}"`) {
+				void response.body?.cancel().catch(() => undefined);
+				throw new MailSendError("Object gateway returned an unexpected object response", true);
+			}
+			return readBoundedBytes(response, MAX_GATEWAY_OBJECT_BYTES);
+		});
 	}
 }
 
@@ -554,52 +566,57 @@ export class ResendSender implements MailSender {
 
 	async send(email: ProviderEmail, idempotencyKey: string): Promise<string> {
 		const { body: payload, byteLength } = encodeResendPayload(email);
-		let response: Response;
-		try {
-			response = await this.#fetch("https://api.resend.com/emails", {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${this.#apiKey}`,
-					"Content-Type": "application/json",
-					"Idempotency-Key": idempotencyKey,
-				},
-				body: payload,
-				// A second more for each MiB an email with attachments carries.
-				signal: AbortSignal.timeout(SEND_TIMEOUT_MS + Math.floor(byteLength / (1024 * 1024)) * 1000),
-			});
-		} catch (error) {
-			throw new MailSendError(error instanceof Error ? error.message : "Resend request failed", true);
-		}
-		if (!response.ok) throw await providerFailure(response);
-		let body: unknown;
-		try {
-			body = await response.json();
-		} catch {
-			throw new MailSendError("Resend returned an invalid response", true);
-		}
-		const id = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).id : undefined;
-		if (typeof id !== "string" || !id.trim() || id.length > 256)
-			throw new MailSendError("Resend returned an invalid message id", true);
-		return id;
+		const timeoutMs = SEND_TIMEOUT_MS + Math.floor(byteLength / (1024 * 1024)) * 1000;
+		return withTimeoutScope(timeoutMs, async (signal) => {
+			let response: Response;
+			try {
+				response = await this.#fetch("https://api.resend.com/emails", {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${this.#apiKey}`,
+						"Content-Type": "application/json",
+						"Idempotency-Key": idempotencyKey,
+					},
+					body: payload,
+					// A second more for each MiB an email with attachments carries.
+					signal,
+				});
+			} catch (error) {
+				throw new MailSendError(error instanceof Error ? error.message : "Resend request failed", true);
+			}
+			if (!response.ok) throw await providerFailure(response);
+			let body: unknown;
+			try {
+				body = await response.json();
+			} catch {
+				throw new MailSendError("Resend returned an invalid response", true);
+			}
+			const id = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).id : undefined;
+			if (typeof id !== "string" || !id.trim() || id.length > 256)
+				throw new MailSendError("Resend returned an invalid message id", true);
+			return id;
+		});
 	}
 
 	async messageId(providerMessageId: string): Promise<string | null> {
-		const response = await this.#fetch(`https://api.resend.com/emails/${encodeURIComponent(providerMessageId)}`, {
-			headers: { Authorization: `Bearer ${this.#apiKey}` },
-			signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+		return withTimeoutScope(SEND_TIMEOUT_MS, async (signal) => {
+			const response = await this.#fetch(`https://api.resend.com/emails/${encodeURIComponent(providerMessageId)}`, {
+				headers: { Authorization: `Bearer ${this.#apiKey}` },
+				signal,
+			});
+			if (response.status === 404) {
+				void response.body?.cancel().catch(() => undefined);
+				return null;
+			}
+			if (!response.ok) {
+				void response.body?.cancel().catch(() => undefined);
+				throw new Error(`Resend returned HTTP ${response.status}`);
+			}
+			const body: unknown = await response.json();
+			const id =
+				body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).message_id : null;
+			return typeof id === "string" && id.length <= 998 ? id : null;
 		});
-		if (response.status === 404) {
-			void response.body?.cancel().catch(() => undefined);
-			return null;
-		}
-		if (!response.ok) {
-			void response.body?.cancel().catch(() => undefined);
-			throw new Error(`Resend returned HTTP ${response.status}`);
-		}
-		const body: unknown = await response.json();
-		const id =
-			body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).message_id : null;
-		return typeof id === "string" && id.length <= 998 ? id : null;
 	}
 }
 
@@ -627,6 +644,8 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 	}
 	const pace = outbox.pace ?? PACE_MS;
 	const sleep = outbox.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+	const now = outbox.now ?? Date.now;
+	const deadline = now() + (outbox.budgetMs ?? 45_000);
 	const counts = {
 		claimed: claim.jobs.length + claim.rejected.length,
 		sent: 0,
@@ -637,7 +656,9 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 	};
 	let objects: ObjectReader | undefined;
 	for (const [index, job] of claim.jobs.entries()) {
+		if (now() >= deadline) break;
 		if (index > 0 && pace > 0) await sleep(pace);
+		if (now() >= deadline) break;
 		let providerMessageId: string;
 		try {
 			// Each file in base64 as soon as it is read, without a copy: its bytes are dropped before the next one.
@@ -667,11 +688,15 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 	}
 	// The provider's Message-ID of what was sent (I5a): best effort, the database asks again in five minutes.
 	let due: { mailId: string; providerMessageId: string }[] = [];
-	try {
-		due = parseMessageIdsDue(await store.messageIdsDue(MESSAGE_ID_BATCH));
-	} catch {}
+	if (now() < deadline) {
+		try {
+			due = parseMessageIdsDue(await store.messageIdsDue(MESSAGE_ID_BATCH));
+		} catch {}
+	}
 	for (const [index, item] of due.entries()) {
+		if (now() >= deadline) break;
 		if ((claim.jobs.length > 0 || index > 0) && pace > 0) await sleep(pace);
+		if (now() >= deadline) break;
 		try {
 			const messageId = await outbox.sender.messageId(item.providerMessageId);
 			if (messageId) {
