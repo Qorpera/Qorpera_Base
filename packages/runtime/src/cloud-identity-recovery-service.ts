@@ -69,36 +69,61 @@ export class HttpIdentityRecoveryService {
 			const closed = new Promise<void>((resolve, reject) =>
 				server.close((error) => (error ? reject(error) : resolve())),
 			);
+			const boundedGraceMs = Number.isFinite(graceMs) ? Math.max(0, graceMs) : 25_000;
+			const deadlineAt = Date.now() + boundedGraceMs;
 			server.closeIdleConnections();
-			if (this.#inFlight > 0) {
-				const boundedGraceMs = Number.isFinite(graceMs) ? Math.max(0, graceMs) : 25_000;
-				if (boundedGraceMs > 0) {
-					let timer: ReturnType<typeof setTimeout> | undefined;
-					try {
-						await new Promise<void>((resolve) => {
-							const done = () => {
-								this.#drainWaiters.delete(done);
-								resolve();
-							};
-							this.#drainWaiters.add(done);
-							if (this.#inFlight === 0) {
-								done();
-								return;
-							}
-							timer = setTimeout(done, boundedGraceMs);
-							timer.unref?.();
-						});
-					} finally {
-						if (timer) clearTimeout(timer);
-					}
+			if (this.#inFlight > 0 && boundedGraceMs > 0) {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				try {
+					await new Promise<void>((resolve) => {
+						const done = () => {
+							this.#drainWaiters.delete(done);
+							resolve();
+						};
+						this.#drainWaiters.add(done);
+						if (this.#inFlight === 0) {
+							done();
+							return;
+						}
+						timer = setTimeout(done, boundedGraceMs);
+						timer.unref?.();
+					});
+				} finally {
+					if (timer) clearTimeout(timer);
 				}
+			}
+			const abortAndCloseAll = (): void => {
 				if (this.#inFlight > 0) {
 					const shutdownError = new Error("Recovery service shutting down");
 					for (const controller of this.#activeAborts) controller.abort(shutdownError);
-					server.closeAllConnections();
 				}
+				server.closeAllConnections();
+			};
+			if (this.#inFlight > 0 || boundedGraceMs === 0) {
+				abortAndCloseAll();
+				await closed;
+				return;
 			}
 			server.closeIdleConnections();
+			// WHY: Server.close() stops Node's header/request timeout checker, so bound waiting for half-open or flushing sockets to the remaining grace window.
+			let closeTimer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				await Promise.race([
+					closed,
+					new Promise<void>((resolve) => {
+						closeTimer = setTimeout(
+							() => {
+								abortAndCloseAll();
+								resolve();
+							},
+							Math.max(1, deadlineAt - Date.now()),
+						);
+						closeTimer.unref?.();
+					}),
+				]);
+			} finally {
+				if (closeTimer) clearTimeout(closeTimer);
+			}
 			await closed;
 		})();
 		this.#closePromise = shuttingDown;

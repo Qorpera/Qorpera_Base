@@ -274,6 +274,7 @@ async function installPrivateFile(directory: string, filename: string, bytes: Ui
 		0o600,
 	);
 	let handleOpen = true;
+	let failed = false;
 	try {
 		await handle.writeFile(bytes);
 		await handle.sync();
@@ -295,6 +296,7 @@ async function installPrivateFile(directory: string, filename: string, bytes: Ui
 			)
 				throw new Error("Recovery installation conflicts with existing private state");
 			const content = Buffer.alloc(bytes.byteLength + 1);
+			const expected = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 			try {
 				let length = 0;
 				while (length < content.byteLength) {
@@ -302,7 +304,7 @@ async function installPrivateFile(directory: string, filename: string, bytes: Ui
 					if (!result.bytesRead) break;
 					length += result.bytesRead;
 				}
-				if (length !== bytes.byteLength || !content.subarray(0, length).equals(Buffer.from(bytes)))
+				if (length !== bytes.byteLength || !content.subarray(0, length).equals(expected))
 					throw new Error("Recovery installation cannot replace an existing identity");
 			} finally {
 				content.fill(0);
@@ -316,9 +318,13 @@ async function installPrivateFile(directory: string, filename: string, bytes: Ui
 		} finally {
 			await root.close();
 		}
+	} catch (error) {
+		failed = true;
+		throw error;
 	} finally {
 		if (handleOpen) await handle.close().catch(() => undefined);
-		await unlink(temporary).catch(() => undefined);
+		if (failed) await unlink(temporary).catch(() => undefined);
+		else await unlink(temporary);
 	}
 }
 

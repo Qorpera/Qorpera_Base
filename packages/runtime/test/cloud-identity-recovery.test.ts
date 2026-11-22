@@ -1,5 +1,6 @@
 import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -704,5 +705,42 @@ describe("recovery transport and storage", () => {
 		await service.close(50);
 		await wedgedFetch;
 		expect(abortedOnShutdown).toBe(true);
+
+		const stalledUrl = new URL(await service.start());
+		const stalledPort = Number(stalledUrl.port);
+		const partialSocket = createConnection({ host: "127.0.0.1", port: stalledPort });
+		await new Promise<void>((resolve, reject) => {
+			partialSocket.once("connect", () => resolve());
+			partialSocket.once("error", reject);
+		});
+		partialSocket.write("POST /v1/backup HTTP/1.1\r\n");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		const closedPartialAt = Date.now();
+		await service.close(50);
+		expect(Date.now() - closedPartialAt).toBeLessThan(1_000);
+		partialSocket.destroy();
+
+		const closingUrl = new URL(await service.start());
+		const closingPort = Number(closingUrl.port);
+		const lateSocket = createConnection({ host: "127.0.0.1", port: closingPort });
+		await new Promise<void>((resolve, reject) => {
+			lateSocket.once("connect", () => resolve());
+			lateSocket.once("error", reject);
+		});
+		lateSocket.write("POST /v1/backup HTTP/1.1\r\n");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		const closingWhileParsing = service.close(5_000);
+		const lateResponse = new Promise<string>((resolve) => {
+			const chunks: Buffer[] = [];
+			lateSocket.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+			lateSocket.once("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+			lateSocket.once("close", () => resolve(Buffer.concat(chunks).toString("utf8")));
+		});
+		lateSocket.write("Host: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
+		const rawReply = await lateResponse;
+		expect(rawReply).toContain("HTTP/1.1 503");
+		expect(rawReply.toLowerCase()).toContain("connection: close");
+		await closingWhileParsing;
+		lateSocket.destroy();
 	});
 });

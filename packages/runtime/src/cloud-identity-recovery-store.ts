@@ -141,6 +141,7 @@ export class FileRecoveryObjectStore implements RecoveryObjectStore {
 					0o600,
 				);
 				let handleOpen = true;
+				let failed = false;
 				try {
 					await handle.writeFile(snapshot);
 					await handle.sync();
@@ -151,9 +152,13 @@ export class FileRecoveryObjectStore implements RecoveryObjectStore {
 					} catch (error) {
 						if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 					}
+				} catch (error) {
+					failed = true;
+					throw error;
 				} finally {
 					if (handleOpen) await handle.close().catch(() => undefined);
-					await unlink(temporary).catch(() => undefined);
+					if (failed) await unlink(temporary).catch(() => undefined);
+					else await unlink(temporary);
 				}
 				existing = await this.#read(path);
 			}
