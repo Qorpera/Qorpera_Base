@@ -214,8 +214,9 @@ Table `qorpera_event_deliveries`:
 | `too_large` | 413 | over the hook's limit |
 | `limited` | 429 | over the hook's minute (`Retry-After: 60`) or the company's budget (`Retry-After: 600`) |
 | `unavailable` | 503 | the intake is switched off (`Retry-After: 300`) |
-| — | 400 | input the database calls malformed |
+| — | 400 | input the database calls malformed, or a request body stream that could not be read |
 | — | 404, 405 | a path that is not a hook address ("This is not a hook address"); a method other than POST |
+| — | 408 | the request body read timed out or was aborted before completing |
 | — | 413, 431 | a body over 256 KiB; kept headers over 8000 bytes |
 | — | 503 | the database cannot be reached; the sender retries |
 
@@ -928,7 +929,7 @@ anchor with master again (RUNTIME-RELEASE-TRAIN.md). After it is live:
    `supabase/config.toml`). It needs only `SUPABASE_URL` and the service key the platform provides.
    Until the switch is on it answers every delivery that reaches the database, a POST to a
    well-formed address, 503 ("Events are unavailable right now"), before looking the address up. The
-   function's own answers (405, 413, 431) come first either way. A path that is not a 43-character
+   function's own answers (400, 405, 408, 413, 431) come first either way. A path that is not a 43-character
    address gets 404 ("This is not a hook address") from the function itself, by its shape alone;
    an address with no live hook gets 404 ("No hook has this address") once the switch is on.
 2. Schedule retention:

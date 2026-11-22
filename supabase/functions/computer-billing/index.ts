@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
-import { createTimedFetch, preferredServiceKey, withAbortSignal } from "../_shared/http-guards.ts";
+import { createTimedFetch, preferredServiceKey } from "../_shared/http-guards.ts";
 import {
 	type BillingStore,
 	BillingStoreError,
@@ -37,15 +37,12 @@ const supabase = createClient(required("SUPABASE_URL"), serviceKey(), {
 });
 
 const store: BillingStore = {
-	async call(method, args, signal) {
-		const { data, error } = await withAbortSignal(
-			supabase.rpc("qorpera_computer_billing", {
-				p_key: billingKey,
-				p_method: method,
-				p_args: args,
-			}),
-			signal,
-		);
+	async call(method, args) {
+		const { data, error } = await supabase.rpc("qorpera_computer_billing", {
+			p_key: billingKey,
+			p_method: method,
+			p_args: args,
+		});
 		if (error) throw new BillingStoreError(error.code ?? undefined, error.message);
 		if (!data || typeof data !== "object" || Array.isArray(data))
 			throw new BillingStoreError(undefined, `Billing ${method} answered without an object`);
@@ -54,15 +51,12 @@ const store: BillingStore = {
 };
 
 const goodWill: BillingStore = {
-	async call(method, args, signal) {
-		const { data, error } = await withAbortSignal(
-			supabase.rpc("qorpera_good_will_billing", {
-				p_key: billingKey,
-				p_method: method,
-				p_args: args,
-			}),
-			signal,
-		);
+	async call(method, args) {
+		const { data, error } = await supabase.rpc("qorpera_good_will_billing", {
+			p_key: billingKey,
+			p_method: method,
+			p_args: args,
+		});
 		if (error) throw new BillingStoreError(error.code ?? undefined, error.message);
 		if (!data || typeof data !== "object" || Array.isArray(data))
 			throw new BillingStoreError(undefined, `Good will ${method} answered without an object`);

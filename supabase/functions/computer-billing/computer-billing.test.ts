@@ -1092,9 +1092,71 @@ describe("Good will", () => {
 		assert.equal(callOrder[0], "POST /v1/invoices");
 		assert.equal(
 			callOrder.filter((entry) => entry.startsWith("GET /v1/invoices/")).length,
-			1,
-			"maxBatch must bound Stripe GET calls for already-open months",
+			3,
+			"open invoice status checks stay separate from maxBatch writes",
 		);
+
+		const openBeforeDraft = [
+			...[1, 2, 3].map((n) => ({
+				profileId: `30000000-0000-4000-8000-00000000003${n}`,
+				month: "2026-08",
+				dueOre: 1000,
+				customerId: `cus_open_${n}`,
+				paymentMethodId: `pm_open_${n}`,
+				invoiceId: `in_open_ahead_${n}`,
+			})),
+			{
+				profileId: "30000000-0000-4000-8000-000000000039",
+				month: "2026-09",
+				dueOre: 1500,
+				customerId: "cus_draft",
+				paymentMethodId: "pm_draft",
+				invoiceId: "in_existing_draft",
+			},
+		];
+		const finalizedDrafts: string[] = [];
+		const draftReached = await sendGoodWillInvoices({
+			livemode: false,
+			returnUrl: "https://app.qorpera.com/plan",
+			maxBatch: 2,
+			goodWill: {
+				call: async (method) => (method === "due" ? { months: openBeforeDraft } : { recorded: true }),
+			},
+			stripe: {
+				get: async (path) => {
+					const id = path.split("/").pop() ?? "";
+					return id === "in_existing_draft"
+						? { id, status: "draft", default_payment_method: "pm_draft", lines: { data: [] } }
+						: { id, status: "open", lines: { data: [] } };
+				},
+				post: async (path) => {
+					if (path.endsWith("/finalize")) finalizedDrafts.push(path);
+					return { id: "in_existing_draft", status: "open", hosted_invoice_url: "https://stripe.test/draft" };
+				},
+			},
+		});
+		assert.deepEqual(draftReached, { invoiced: 1, failed: 0 });
+		assert.deepEqual(finalizedDrafts, ["/v1/invoices/in_existing_draft/finalize"]);
+
+		let cappedGets = 0;
+		const statusCapped = await sendGoodWillInvoices({
+			livemode: false,
+			returnUrl: "https://app.qorpera.com/plan",
+			maxBatch: 2,
+			maxStatusChecks: 2,
+			goodWill: {
+				call: async (method) => (method === "due" ? { months: openBeforeDraft } : { recorded: true }),
+			},
+			stripe: {
+				get: async (path) => {
+					cappedGets += 1;
+					return { id: path.split("/").pop(), status: "open", lines: { data: [] } };
+				},
+				post: async () => ({ id: "unused", status: "open" }),
+			},
+		});
+		assert.deepEqual(statusCapped, { invoiced: 0, failed: 0 });
+		assert.equal(cappedGets, 2, "maxStatusChecks must bound read-only open-invoice GETs");
 
 		let stripeRedirect: RequestRedirect | undefined;
 		const redirectApi = createStripeApi("sk_test_x", async (_url, init) => {

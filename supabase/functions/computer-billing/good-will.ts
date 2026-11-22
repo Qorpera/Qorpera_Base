@@ -27,6 +27,7 @@ export interface GoodWillDependencies {
 	livemode: boolean;
 	returnUrl: string;
 	maxBatch?: number;
+	maxStatusChecks?: number;
 	budgetMs?: number;
 	now?: () => number;
 }
@@ -132,6 +133,7 @@ export async function startGoodWillCard(
 }
 
 const MAX_GOOD_WILL_BATCH = 20;
+const MAX_GOOD_WILL_STATUS_CHECKS = 50;
 const GOOD_WILL_BUDGET_MS = 45_000;
 
 /** The closed months' invoices, one each (Stripe's idempotency keys and the database's record keep it once). */
@@ -143,13 +145,15 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 		(a, b) => Number(Boolean(string(object(a)?.invoiceId))) - Number(Boolean(string(object(b)?.invoiceId))),
 	);
 	const maxBatch = deps.maxBatch ?? MAX_GOOD_WILL_BATCH;
+	const maxStatusChecks = deps.maxStatusChecks ?? MAX_GOOD_WILL_STATUS_CHECKS;
 	const now = deps.now ?? Date.now;
 	const deadline = now() + (deps.budgetMs ?? GOOD_WILL_BUDGET_MS);
 	let processed = 0;
+	let statusChecks = 0;
 	let invoiced = 0;
 	const problems: string[] = [];
 	for (const value of months) {
-		if (processed >= maxBatch || now() >= deadline) break;
+		if (processed >= maxBatch || statusChecks >= maxStatusChecks || now() >= deadline) break;
 		const month = object(value);
 		const profileId = string(month?.profileId);
 		const period = string(month?.month);
@@ -184,11 +188,11 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 		};
 		const failed = (invoiceId: string, why: string) =>
 			deps.goodWill.call("invoice_failed", { invoiceId, profileId, month: period, livemode: deps.livemode, why });
-		// WHY: Count every valid month that hits Stripe toward maxBatch so open or failing months cannot hammer Stripe until the 45 s budget expires.
-		processed++;
+		let invoiceId = string(month?.invoiceId);
+		const created = !invoiceId;
+		// WHY: Count Stripe writes against maxBatch and non-draft status GETs against maxStatusChecks so open invoices cannot starve drafts or hammer Stripe.
+		let counted = false;
 		try {
-			let invoiceId = string(month?.invoiceId);
-			const created = !invoiceId;
 			let invoice: Json;
 			if (invoiceId) {
 				try {
@@ -196,10 +200,14 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 				} catch (error) {
 					// A draft deleted at Stripe: the month fails (for review) instead of asking for it every hour.
 					if (!(error instanceof Error && "status" in error && error.status === 404)) throw error;
+					statusChecks++;
+					counted = true;
 					await failed(invoiceId, "deleted");
 					continue;
 				}
 			} else {
+				processed++;
+				counted = true;
 				// A draft Stripe leaves alone (auto_advance false), recorded before anything is added to it.
 				invoice = await deps.stripe.post(
 					"/v1/invoices",
@@ -221,6 +229,10 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 				await record(invoiceId);
 			}
 			if (created || invoice.status === "draft") {
+				if (!counted) {
+					processed++;
+					counted = true;
+				}
 				// The company's card now, also when a founder saved another one after the draft was made.
 				if (!created && invoice.default_payment_method !== paymentMethodId)
 					await deps.stripe.post(`/v1/invoices/${encodeURIComponent(invoiceId)}`, {
@@ -249,16 +261,27 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 				await record(invoiceId, string(invoice.hosted_invoice_url));
 				invoiced++;
 			} else if (invoice.status === "void" || invoice.status === "uncollectible") {
+				statusChecks++;
+				counted = true;
 				await failed(invoiceId, String(invoice.status));
 			} else if (invoice.status === "paid") {
+				statusChecks++;
+				counted = true;
 				// Paid while its word was lost: the month is charged now.
 				await deps.goodWill.call("invoice_paid", {
 					invoiceId,
 					invoiceUrl: string(invoice.hosted_invoice_url) ?? null,
 					livemode: deps.livemode,
 				});
+			} else {
+				statusChecks++;
+				counted = true;
 			}
 		} catch (error) {
+			if (!counted) {
+				if (created) processed++;
+				else statusChecks++;
+			}
 			// One company's failure leaves the others; the next tick asks again.
 			problems.push(`${profileId} ${period}: ${error instanceof Error ? error.message : String(error)}`);
 		}

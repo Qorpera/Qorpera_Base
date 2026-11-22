@@ -1,17 +1,3 @@
-/* Event intake (build step W1a; contract section 19, 2026-09-29 amendment "events wake agents";
- * design deploy/first-node/RUNTIME-EVENT-INTAKE.md).
- *
- * POST /event-intake/<address>: one delivery to one of a company's hooks. The function holds no
- * company secret. It reads the body up to 256 KiB, keeps an allowed list of headers and hands the
- * delivery to the database's intake door, qorpera_receive_event, which decides the outcome:
- * accepted (202), duplicate (200), unknown (404), paused or not_ready (409), too_large (413),
- * limited (429, with Retry-After) or unavailable (503, the intake is switched off). The function
- * itself answers 404 for a path that is not a hook address (decided by its shape alone, whether or
- * not the intake is switched on), 405 for a method other than POST, 413 for a body over 256 KiB,
- * 431 for kept headers over 8000 bytes, 400 for input the database calls malformed and 503 when
- * the database cannot be reached, so the sender retries. Signatures of signed hooks are checked
- * later by the company's vault, never here. */
-
 import { Buffer } from "node:buffer";
 import { BodyTooLargeError, DEFAULT_BODY_READ_TIMEOUT_MS, readBoundedBytes } from "../_shared/http-guards.ts";
 

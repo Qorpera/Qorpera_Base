@@ -71,7 +71,7 @@ type Json = Record<string, unknown>;
 
 /** The database's billing door: qorpera_computer_billing(key, method, args). */
 export interface BillingStore {
-	call(method: string, args: Json, signal?: AbortSignal): Promise<Json>;
+	call(method: string, args: Json): Promise<Json>;
 }
 
 export interface StripeApi {

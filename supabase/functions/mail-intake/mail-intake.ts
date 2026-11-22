@@ -1,18 +1,3 @@
-/* Mail intake (build step M2a; contract section 19, 2026-09-29 amendment "events wake agents", item 9; design
- * deploy/first-node/RUNTIME-EVENT-INTAKE.md, "Mail (M2)").
- *
- * POST /mail-intake: the mail provider's (Resend's) webhook for a received message. The function checks the
- * webhook's signature (Standard Webhooks, as Svix sends it) with the platform's signing secret, fetches the whole
- * message from the provider's API with the platform's key, writes it as at most 256 KiB of JSON text (the subject,
- * the thread, whether it was sent automatically and the trust results before the bodies) and hands it with all its recipients (To, Cc, Bcc and the envelope) to the
- * database's mail door, qorpera_receive_mail, which stores it once in each live mailbox among them and drops the
- * rest. Answers: 200 when every recipient is settled (stored, a duplicate, unknown or paused; mail to a paused
- * mailbox and mail the provider no longer has are dropped; other event types are ignored), 401 for a bad or stale
- * signature, 400 for a payload that is not JSON or a received-mail event without a valid message id, 405, 413,
- * 429 with Retry-After when a mailbox is over its limits, and 503 when
- * mail is switched off or the provider or database cannot be reached, so the provider retries. A message the
- * database calls malformed is logged and settled: a retry would not change it. */
-
 import { Buffer } from "node:buffer";
 import { BodyTooLargeError, DEFAULT_BODY_READ_TIMEOUT_MS, readBoundedBytes } from "../_shared/http-guards.ts";
 
