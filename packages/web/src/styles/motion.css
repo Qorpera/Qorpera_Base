@@ -90,17 +90,13 @@
 /* The hover tint fades in; leaving it, or losing the selection to the travelling
  * highlight, lets go at once, so two highlights never show. */
 .rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row {
-	transition:
-		color var(--motion-base) ease,
-		transform var(--motion-base) var(--ease-spring);
+	transition: color var(--motion-base) ease;
 }
 :is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row):hover:not(.active) {
 	transition:
 		background-color var(--motion-fast) ease,
-		color var(--motion-base) ease,
-		transform var(--motion-base) var(--ease-spring);
+		color var(--motion-base) ease;
 }
-.rail-row:active, .rail-pin:active, .cofounder-home:active, .rail-surface:active, .rail-agent-hub-row:active { transform: scale(0.975); }
 /* The drag ghost follows the pointer exactly. */
 .rail-drag-ghost, .rail-drag-ghost * { transition: none !important; animation: none !important; }
 :is(.rail-row-status, .cofounder-status) { transition: border-color var(--motion-fast) ease; }
