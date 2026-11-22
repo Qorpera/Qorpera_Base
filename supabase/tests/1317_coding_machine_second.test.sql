@@ -33,6 +33,9 @@ values ('13170000-0000-4000-8000-000000000020', 'exec-1317', true, array['codex'
 		'imageFingerprint', repeat('f', 64), 'bootstrapSha256', repeat('e', 64), 'storagePool', 'default', 'network', 'qorpera-coding',
 		'cpus', 2, 'memoryBytes', 4294967296, 'rootDiskBytes', 21474836480),
 	'{"rootPath":"/nas/coding"}');
+insert into public.qorpera_coding_repository_grants(environment_id, staff_agent_id, repository, enabled)
+values ('13170000-0000-4000-8000-000000000020', '13170000-0000-4000-8000-0000000000a1',
+	'{"host":"github.com","owner":"acme","name":"app","baseBranch":"main"}', true);
 insert into public.qorpera_runtime_workers(id, profile_id, environment_id, staff_agent_id, todo_id, worker_key, species, title, access,
 	revival, dispatch, requested_by_user_id, steering_run_id, owner_user_id, owner_sponsor_binding_id, owner_sponsor_version)
 select ('13170000-0000-4000-8000-0000000000c' || n)::uuid, '13170000-0000-4000-8000-000000000010', '13170000-0000-4000-8000-000000000020',
@@ -70,6 +73,11 @@ create function pg_temp.run(p_n integer, p_plan jsonb) returns jsonb language sq
 		(select lease_token from public.qorpera_coding_sessions where worker_id = pg_temp.worker(p_n)), p_plan ->> 'bindingText',
 		pg_temp.storage(p_n), pg_temp.node())
 $$;
+create function pg_temp.attach(p_n integer, p_plan jsonb) returns jsonb language sql as $$
+	select public.qorpera_attach_coding_session(pg_temp.worker(p_n),
+		(select lease_token from public.qorpera_coding_sessions where worker_id = pg_temp.worker(p_n)), p_plan ->> 'bindingText',
+		pg_temp.storage(p_n), pg_temp.node(), null)
+$$;
 create function pg_temp.load(p_plan jsonb, p_load jsonb) returns jsonb language sql as $$
 	select public.qorpera_record_coding_machine_load((p_plan ->> 'machineId')::uuid, 'exec-1317', p_plan ->> 'bindingText', pg_temp.node(), p_load)
 $$;
@@ -104,8 +112,9 @@ declare v_p1 jsonb; v_p2 jsonb; v_p3 jsonb; v_p4 jsonb; v_p5 jsonb; v_p6 jsonb; 
 	v_environment constant uuid := '13170000-0000-4000-8000-000000000020';
 	v_enrolled constant uuid := '13170000-0000-4000-8000-000000000021';
 begin
-	perform pg_temp.ok((select session_cpu_millis = 0 and session_memory_bytes = 0 from public.qorpera_coding_executors
-		where environment_id = v_environment and owner = 'exec-1317'), 'no session size until the operator sets one');
+	perform pg_temp.ok((select session_cpu_millis = 1000 and session_memory_bytes = 2147483648 and max_attached_sessions = 6
+		from public.qorpera_coding_executors where environment_id = v_environment and owner = 'exec-1317'),
+		'default session sizing and attachment cap are set');
 	perform set_config('request.jwt.claims', '{"role":"authenticated"}', true);
 	perform pg_temp.ok(pg_temp.error(format('select public.qorpera_configure_coding_session_size(%L, %L, 1000, 2147483648)',
 		v_environment, 'exec-1317')) = '42501 Coding machine operator authority required', 'only the operator sets the size');
@@ -119,8 +128,8 @@ begin
 	perform public.qorpera_coding_executor_enroll(v_enrolled, 'codex');
 	perform pg_temp.ok(exists (select 1 from public.qorpera_coding_executors
 		where environment_id = v_enrolled and owner = 'exec-1317'
-			and session_cpu_millis = 1000 and session_memory_bytes = 2147483648),
-		'auto-enrolled executor inherits session_cpu_millis and session_memory_bytes');
+			and session_cpu_millis = 1000 and session_memory_bytes = 2147483648 and max_attached_sessions = 6),
+		'auto-enrolled executor inherits session_cpu_millis, session_memory_bytes and max_attached_sessions');
 	delete from public.qorpera_coding_executors where environment_id = v_enrolled;
 
 	v_p1 := pg_temp.plan(1);
@@ -143,6 +152,8 @@ begin
 		and pg_temp.run(3, v_p3) ->> 'intent' = 'run', 'the three turns run');
 	perform pg_temp.ok(pg_temp.home(1) = v_first.id and pg_temp.home(2) = v_first.id and pg_temp.home(3) = v_second.id,
 		'each session has its machine');
+	perform pg_temp.ok(pg_temp.attach(1, v_p1) ->> 'state' = 'attached' and pg_temp.attach(2, v_p2) ->> 'state' = 'attached',
+		's1 and s2 attach on machine 1');
 
 	v_recorded := pg_temp.load(v_p1, pg_temp.report(true, pg_temp.line(1, 500, 1073741824), pg_temp.line(2, 500, 1073741824)));
 	perform pg_temp.ok((v_recorded ->> 'sessions')::integer = 2, format('the guest''s load is recorded: %s', v_recorded));

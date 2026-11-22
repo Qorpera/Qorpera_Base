@@ -1395,12 +1395,14 @@ describe("LXD exec stream", () => {
 	it("batch-reads /proc/meminfo and cgroup memory.stat unprivileged over websocket exec", async () => {
 		const codingA =
 			"/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.slice/memory.stat";
+		const folderA = "/sys/fs/cgroup/system.slice/qorpera-folder-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.service/memory.stat";
 		const codingMissing =
 			"/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.slice/memory.stat";
 		const userA = "/sys/fs/cgroup/user.slice/user-200000.slice/memory.stat";
 		const files = new Map<string, string>([
 			["/proc/meminfo", "MemTotal:        8388608 kB\nMemAvailable:    4194304 kB\n"],
 			[codingA, "anon 134217728\nfile 4294967296\nshmem 16777216\nkernel 8388608\n"],
+			[folderA, "anon 33554432\nfile 536870912\nshmem 1048576\nkernel 2097152\n"],
 			[userA, "anon 67108864\nfile 1073741824\nkernel 4194304\n"],
 		]);
 		const exec = await fake((_stdin, post) => {
@@ -1411,12 +1413,14 @@ describe("LXD exec stream", () => {
 		const client = new LxdUnixClient(exec.socket, 30);
 		const result = await client.readCodingMachineMemory("coding", "coding-vm", [
 			codingA,
+			folderA,
 			codingMissing,
 			userA,
 			codingA,
 		]);
 		expect(result.meminfo).toBe("MemTotal:        8388608 kB\nMemAvailable:    4194304 kB");
 		expect(result.stats.get(codingA)).toBe("anon 134217728\nfile 4294967296\nshmem 16777216\nkernel 8388608");
+		expect(result.stats.get(folderA)).toBe("anon 33554432\nfile 536870912\nshmem 1048576\nkernel 2097152");
 		expect(result.stats.get(userA)).toBe("anon 67108864\nfile 1073741824\nkernel 4194304");
 		expect(result.stats.has(codingMissing)).toBe(false);
 		expect(exec.posts).toHaveLength(1);
@@ -1436,7 +1440,7 @@ describe("LXD exec stream", () => {
 			expect.stringContaining("/usr/bin/cat --"),
 			"qorpera-memory",
 		]);
-		expect(command.slice(4)).toEqual(["/proc/meminfo", codingA, codingMissing, userA]);
+		expect(command.slice(4)).toEqual(["/proc/meminfo", codingA, folderA, codingMissing, userA]);
 
 		const onlyMeminfo = await client.readCodingMachineMemory("coding", "coding-vm", []);
 		expect(onlyMeminfo.meminfo).toContain("MemTotal:");
@@ -1497,6 +1501,9 @@ describe("LXD exec stream", () => {
 			"/etc/shadow",
 			"/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.slice/memory.current",
 			"/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.slice/memory.stat",
+			"/sys/fs/cgroup/system.slice/qorpera-folder-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.service/memory.current",
+			"/sys/fs/cgroup/system.slice/qorpera-folder-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.service/memory.stat",
+			"/sys/fs/cgroup/system.slice/ssh.service/memory.stat",
 			"/sys/fs/cgroup/user.slice/user-1000.slice/memory.stat",
 			"/sys/fs/cgroup/user.slice/user-199999.slice/memory.stat",
 			"/sys/fs/cgroup/user.slice/user-524288.slice/memory.stat",

@@ -436,7 +436,7 @@ export function cloudWorkerTools(
 					type: "string",
 					enum: ["codex", "claude-code"],
 					description:
-						"A coding session's agent. On any other worker, claude-code: Claude Code does the work instead of a run of you, on your machine and on the asking member's own Claude sign-in, up to four at once for that member; only when a member asks for Claude Code or picked Claude for the conversation. Give it access write: it works with your own rights on your machine and in the company's files, and saveTo is where its files go, not a limit.",
+						"A coding session's agent. On any other worker, claude-code: Claude Code does the work instead of a run of you, on your machine and on the asking member's own Claude sign-in, in parallel up to that member's configured parallel limit (extras wait in the queue); only when a member asks for Claude Code or picked Claude for the conversation. Give it access write: it works with your own rights on your machine and in the company's files, and saveTo is where its files go, not a limit.",
 				},
 				repository: {
 					type: "object",

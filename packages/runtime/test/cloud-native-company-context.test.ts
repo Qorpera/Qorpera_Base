@@ -2235,7 +2235,7 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"- One file: write it yourself where it belongs and link it.",
 		"- Bigger work or many files: dispatch a worker with saveTo set to the destination folder.",
 		"- Work a member asks Claude Code to do: dispatch a worker with harness claude-code (runs on that member's Claude sign-in).",
-		"Otherwise omit harness unless a member asks for codex: write workers automatically run on Claude Code (up to four at once for that member while available and your machine is up) and fall back to Codex otherwise.",
+		"Otherwise omit harness unless a member asks for codex: write workers automatically run in parallel on Claude Code (up to that member's configured parallel limit while available and your machine is up; extras queue rather than failing) and fall back to Codex otherwise.",
 		"run on a company machine and save outputs into /company",
 		"Real software lives in a coding session (manage_worker, species coding) with its repository under code/",
 		"A coding session cannot push, merge, open pull requests, or message anyone: it hands in with coding_finish (or asks with coding_ask when blocked)",
