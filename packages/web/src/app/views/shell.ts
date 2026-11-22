@@ -2046,7 +2046,14 @@ interface AgentsHubParts {
 	readonly title: HTMLElement;
 	readonly toggle: HTMLElement;
 	readonly count: HTMLElement;
+	readonly waiting: HTMLElement;
 	readonly body: HTMLElement;
+	open: boolean;
+	held: boolean;
+	activeAgentId: string | undefined;
+	releasedFor: string | undefined;
+	rowCount: number;
+	waitingCount: number;
 	readonly workingWrap: HTMLElement;
 	readonly workingTitle: HTMLElement;
 	readonly workingList: HTMLElement;
@@ -2099,10 +2106,12 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 	if (!hub) {
 		const title = h("span", { class: "rail-agents-label" }, t("Agents"));
 		const count = h("span", { class: "rail-agents-count" });
+		const waiting = h("span", { class: "rail-hidden-unread", "aria-hidden": "true", hidden: true });
 		const toggle = h(
 			"button",
 			{ type: "button", class: "rail-section-title rail-agents-head", "aria-controls": "rail-agents-body" },
 			title,
+			waiting,
 			count,
 			h("span", { class: "rail-agents-chevron", "aria-hidden": "true" }, icon("chevron-down")),
 		);
@@ -2127,30 +2136,21 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 		try {
 			open = localStorage.getItem(AGENTS_OPEN_KEY) === "1";
 		} catch {
-			/* Storage may be unavailable; the section starts folded. */
+			// WHY: storage can be blocked; the section then starts folded.
 		}
-		const paintOpen = () => {
-			el.classList.toggle("is-open", open);
-			toggle.setAttribute("aria-expanded", String(open));
-			body.hidden = !open;
-			count.hidden = open;
-		};
-		toggle.addEventListener("click", () => {
-			open = !open;
-			try {
-				localStorage.setItem(AGENTS_OPEN_KEY, open ? "1" : "0");
-			} catch {
-				/* The choice lasts this visit. */
-			}
-			paintOpen();
-		});
-		paintOpen();
-		hub = {
+		const made: AgentsHubParts = {
 			el,
 			title,
 			toggle,
 			count,
+			waiting,
 			body,
+			open,
+			held: false,
+			activeAgentId: undefined,
+			releasedFor: undefined,
+			rowCount: 0,
+			waitingCount: 0,
 			workingWrap,
 			workingTitle,
 			workingList,
@@ -2166,6 +2166,18 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			scheduledKey: "",
 			idleKey: "",
 		};
+		toggle.addEventListener("click", () => {
+			made.open = !(made.open || made.held);
+			made.held = false;
+			made.releasedFor = made.activeAgentId;
+			try {
+				localStorage.setItem(AGENTS_OPEN_KEY, made.open ? "1" : "0");
+			} catch {
+				// WHY: storage can be blocked; the choice then lasts this visit.
+			}
+			paintAgentsFold(made);
+		});
+		hub = made;
 		agentsHubs.set(company, hub);
 	}
 
@@ -2419,10 +2431,48 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 		hub.idleList.replaceChildren(...idleRows);
 	}
 
-	hub.count.textContent = String(
-		hub.workingList.childElementCount + hub.scheduledList.childElementCount + hub.idleList.childElementCount,
-	);
+	hub.rowCount =
+		hub.workingList.childElementCount + hub.scheduledList.childElementCount + hub.idleList.childElementCount;
+	hub.waitingCount =
+		tasks.filter(
+			({ session, running }) =>
+				!running &&
+				(session.state === "needs_input" ||
+					hasConflictedChange(session) ||
+					session.changes.some((change) => change.status !== "discarded" && isOpenChange(change))),
+		).length + explorations.filter(({ variants }) => variants.length > 0 && !variants.some(isRunningSession)).length;
+	const activeInside =
+		input.activeAgentId !== undefined &&
+		[input.workingStaff, input.scheduledStaff, input.idleStaff].some((list) =>
+			list.some((agent) => agent.id === input.activeAgentId),
+		);
+	if (input.activeAgentId !== hub.activeAgentId) hub.releasedFor = undefined;
+	hub.activeAgentId = input.activeAgentId;
+	hub.held = activeInside && hub.releasedFor !== input.activeAgentId;
+	paintAgentsFold(hub);
 	return hub.el;
+}
+
+function paintAgentsFold(hub: AgentsHubParts): void {
+	const shown = hub.open || hub.held;
+	hub.el.classList.toggle("is-open", shown);
+	hub.toggle.setAttribute("aria-expanded", String(shown));
+	hub.body.hidden = !shown;
+	hub.count.textContent = String(hub.rowCount);
+	hub.count.hidden = shown;
+	hub.waiting.textContent = hub.waitingCount > 99 ? "99+" : String(hub.waitingCount);
+	hub.waiting.hidden = shown || hub.waitingCount === 0;
+	hub.toggle.setAttribute(
+		"aria-label",
+		shown
+			? t("Agents")
+			: [
+					t("Agents: {count}", { count: hub.rowCount }),
+					hub.waitingCount ? t("Waiting for you: {count}", { count: hub.waitingCount }) : "",
+				]
+					.filter(Boolean)
+					.join(" · "),
+	);
 }
 
 const surfaceRails = new WeakMap<CompanyController, SurfaceRail>();
