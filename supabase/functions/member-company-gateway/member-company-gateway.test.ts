@@ -1708,4 +1708,30 @@ describe("the bridge's own entrypoint (index.ts)", () => {
 		assert.equal(failed.status, 503);
 		assert.equal(getEventListeners(req5.signal, "abort").length, 0);
 	});
+
+	it("cuts off a trickling pass-through stream when maxStreamMs elapses and detaches caller abort listeners", async () => {
+		let cancelled = false;
+		const req = request(object);
+		const trickling = await forward(req, {
+			upstreamUrl,
+			timeoutMs: 80,
+			maxStreamMs: 60,
+			fetchImplementation: async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						async pull(controller) {
+							await new Promise((resolve) => setTimeout(resolve, 25));
+							controller.enqueue(new Uint8Array([1]));
+						},
+						cancel() {
+							cancelled = true;
+						},
+					}),
+				),
+		});
+		assert.equal(trickling.status, 200);
+		await assert.rejects(trickling.arrayBuffer());
+		assert.equal(cancelled, true);
+		assert.equal(getEventListeners(req.signal, "abort").length, 0);
+	});
 });

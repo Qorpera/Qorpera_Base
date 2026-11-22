@@ -3146,4 +3146,67 @@ describe("site-serve: a page view's count", () => {
 			new Response(JSON.stringify(PGRST202), { status: 404 })) as typeof fetch);
 		await assert.rejects(missing.countView(OWN, "index.html", TOKEN), MissingFunction);
 	});
+
+	it("returns 400 on errored unlock stream, 408 on aborted unlock, validates base64 strictly, and aborts stalled RPC bodies", async () => {
+		const { store: siteStore } = store(undefined, undefined, { unlockHost: { state: "wrong" } });
+		const errored = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.error(new Error("reset"));
+			},
+		});
+		const erroredRes = await serve(
+			hostRequest(OWN, "/.qorpera/unlock", {
+				method: "POST",
+				body: errored,
+				duplex: "half",
+				headers: { "content-type": "application/x-www-form-urlencoded", origin: `https://${OWN}` },
+			} as RequestInit),
+			siteStore,
+		);
+		assert.equal(erroredRes.status, 400);
+
+		const aborted = new AbortController();
+		aborted.abort(new DOMException("aborted", "AbortError"));
+		const abortedRes = await serve(
+			hostRequest(OWN, "/.qorpera/unlock", {
+				method: "POST",
+				body: "password=pw",
+				signal: aborted.signal,
+				headers: { "content-type": "application/x-www-form-urlencoded", origin: `https://${OWN}` },
+			}),
+			siteStore,
+		);
+		assert.equal(abortedRes.status, 408);
+
+		for (const badContent of ["a=", "====", "a===", "ab=c", "ab!d"]) {
+			assert.throws(() =>
+				parseServeAnswer(
+					{
+						state: "file",
+						path: "index.html",
+						contentType: "text/html; charset=utf-8",
+						bytes: 3,
+						sha256: sha("abc"),
+						offset: 0,
+						content: badContent,
+					},
+					null,
+					{ length: 3 },
+				),
+			);
+		}
+
+		let seenSignal: AbortSignal | undefined;
+		const stalled = new PostgrestSiteStore(
+			"https://project.example.test",
+			"sb_secret_fixture",
+			(async (_url: string | URL | Request, init?: RequestInit) => {
+				seenSignal = init?.signal ?? undefined;
+				return new Response(new ReadableStream({ start() {} }), { status: 200 });
+			}) as typeof fetch,
+			40,
+		);
+		await assert.rejects(() => stalled.serveHost(OWN, "", null, null, 0, 10));
+		assert.equal(seenSignal?.aborted, true);
+	});
 });
