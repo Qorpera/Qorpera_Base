@@ -119,8 +119,13 @@ function surfaceRow(
 	crew: HTMLElement | null,
 	members?: SurfaceRailMembers,
 ): HTMLElement {
-	const state: SurfaceFigureState =
-		surface.needsAttentionCount > 0 ? "attention" : surface.runningSessionCount > 0 ? "working" : "rest";
+	const state: SurfaceFigureState = surface.runningSessionCount > 0 ? "working" : "rest";
+	const notice =
+		surface.needsAttentionCount > 0
+			? t("Needs your attention")
+			: surface.runningSessionCount > 0
+				? t("Working")
+				: null;
 	const row = h(
 		"a",
 		{
@@ -139,9 +144,7 @@ function surfaceRow(
 			h("span", { class: "rail-surface-name" }, surface.title),
 			crew ?? h("span", { class: "rail-surface-sub" }, surfaceSubtitle(surface, look, members)),
 		),
-		state === "rest"
-			? null
-			: h("span", { class: "visually-hidden" }, state === "attention" ? t("Needs your attention") : t("Working")),
+		notice ? h("span", { class: "visually-hidden" }, notice) : null,
 	);
 	row.style.setProperty("--surface-tint", surfaceTint(look));
 	return row;
@@ -240,9 +243,6 @@ export class SurfaceRail {
 		const memberRows = members?.rows ?? [];
 		reconcileChildren(this.#membersList, memberRows);
 		const state = this.#store.state;
-		const activeWorkspace = activeSlug
-			? state.workspaces[state.surfaces.find((s) => s.slug === activeSlug)?.id ?? ""]
-			: undefined;
 		const deps: readonly unknown[] = [
 			activeSlug,
 			canAddProgram,
@@ -251,11 +251,7 @@ export class SurfaceRail {
 			members?.active ?? false,
 			state.source,
 			state.surfaces,
-			activeWorkspace,
-			state.hiddenChanges,
-			state.variantPick,
-			state.collapsed,
-			state.drawer,
+			state.workspaces,
 			state.highlight,
 			state.busy,
 			state.surfaceLooks,
@@ -314,12 +310,15 @@ export class SurfaceRail {
 						const look = surfaceLookOf(surface, state.surfaceLooks);
 						const active = surface.slug === activeSlug;
 						const hasMembers = look.kind === "members" && memberRows.length > 0;
+						if (surface.activeSessionCount > 0 && !state.workspaces[surface.id]) {
+							this.#store.hydrateWorkspace(surface.id);
+						}
 						const row = surfaceRow(
 							surface,
 							look,
 							this.#profileId,
 							active,
-							active ? crewRow(state, surface, this.#crew) : null,
+							crewRow(state, surface, this.#crew),
 							hasMembers ? members : undefined,
 						);
 						if (!hasMembers) return [row];
