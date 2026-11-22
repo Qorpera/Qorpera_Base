@@ -149,7 +149,11 @@ export class RailHover {
 		window.clearTimeout(this.#lighting);
 		if (this.#lit && this.#lit !== item) this.#lit.classList.remove(LIT_CLASS);
 		this.#lit = item;
-		if (!item || item.classList.contains("active")) return;
+		if (!item) return;
+		if (item.classList.contains("active")) {
+			item.classList.remove(LIT_CLASS);
+			return;
+		}
 		if (delay <= 0) item.classList.add(LIT_CLASS);
 		else this.#lighting = window.setTimeout(() => item.classList.add(LIT_CLASS), delay);
 	}
@@ -159,14 +163,13 @@ export class RailHover {
 	}
 
 	#currentBox(): Box {
-		// WHY: the press shrink is undone so a slide that starts mid-press starts from the item's full box.
+		// WHY: the press shrink scales the rect around its centre; the layout size undoes it mid-spring too.
 		const rect = this.tint.getBoundingClientRect();
-		const scale = this.tint.classList.contains("is-pressed") ? 0.975 : 1;
-		const width = rect.width / scale;
-		const height = rect.height / scale;
+		const width = this.tint.offsetWidth || rect.width;
+		const height = this.tint.offsetHeight || rect.height;
 		const unscaled = new DOMRect(
-			rect.left - (width - rect.width) / 2,
-			rect.top - (height - rect.height) / 2,
+			rect.left + rect.width / 2 - width / 2,
+			rect.top + rect.height / 2 - height / 2,
 			width,
 			height,
 		);
@@ -185,7 +188,7 @@ function sameBox(a: Box, b: Box): boolean {
 
 function frame(box: Box): Keyframe & Record<string, string> {
 	return {
-		transform: `translate(${box.left}px, ${box.top}px)`,
+		translate: `${box.left}px ${box.top}px`,
 		width: `${box.width}px`,
 		height: `${box.height}px`,
 		borderRadius: box.radius,
