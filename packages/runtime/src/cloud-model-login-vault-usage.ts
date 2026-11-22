@@ -5,6 +5,7 @@ import {
 	parseNativeAccountRefreshDescription,
 	parseNativeAccountRefreshRequest,
 } from "@qorpera/cloud-client/native-account-refresh";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { ClaudeLoginReads } from "./cloud-claude-login-reader.ts";
 import {
 	CLAUDE_RESET_KINDS,
@@ -380,17 +381,19 @@ export class CloudModelLoginUsage {
 		const recordRead = this.#authority.recordClaudeLoginRead;
 		if (!reads || !recordRead || (!claude.usage && !claude.resets)) return;
 		try {
-			const read = await reads.readClaudeLogin(
-				{ credentials: await this.#claudeCredentials(claude), usage: claude.usage, resets: claude.resets },
-				AbortSignal.any([signal, AbortSignal.timeout(CLAUDE_READ_MS)]),
+			const credentials = await this.#claudeCredentials(claude);
+			const read = await withAbortScopes(
+				[signal],
+				(deadline) => reads.readClaudeLogin({ credentials, usage: claude.usage, resets: claude.resets }, deadline),
+				CLAUDE_READ_MS,
 			);
 			const usage = claude.usage ? read.usage : null;
 			const resets = claude.resets ? read.resets : null;
 			if (!usage && !resets) return;
-			await recordRead.call(
-				this.#authority,
-				{ ...request, usage, resets, reset: null },
-				AbortSignal.any([signal, AbortSignal.timeout(SAVE_DEADLINE_MS)]),
+			await withAbortScopes(
+				[signal],
+				(deadline) => recordRead.call(this.#authority, { ...request, usage, resets, reset: null }, deadline),
+				SAVE_DEADLINE_MS,
 			);
 		} catch {
 			return;
@@ -406,9 +409,10 @@ export class CloudModelLoginUsage {
 		const authority = this.#authority;
 		if (!reads || !authority.claimClaudeLoginReset || !authority.recordClaudeLoginRead) return "preparing";
 		if (claude.resetState !== "asked" && claude.resetState !== "using") {
-			await this.#authority.completeModelLoginAccountRefresh(
-				request,
-				AbortSignal.any([signal, AbortSignal.timeout(SAVE_DEADLINE_MS)]),
+			await withAbortScopes(
+				[signal],
+				(deadline) => this.#authority.completeModelLoginAccountRefresh(request, deadline),
+				SAVE_DEADLINE_MS,
 			);
 			return "completed";
 		}
@@ -421,7 +425,17 @@ export class CloudModelLoginUsage {
 				if (!claimed) return "preparing";
 			} catch {
 				signal.throwIfAborted();
-				await new Promise((resolveWait) => setTimeout(resolveWait, CLAUDE_CLAIM_RETRY_MS));
+				await new Promise<void>((resolveWait, rejectWait) => {
+					const onAbort = (): void => {
+						clearTimeout(timer);
+						rejectWait(signal.reason);
+					};
+					const timer = setTimeout(() => {
+						signal.removeEventListener("abort", onAbort);
+						resolveWait();
+					}, CLAUDE_CLAIM_RETRY_MS);
+					signal.addEventListener("abort", onAbort, { once: true });
+				});
 			}
 		}
 		if (!claimed) return "preparing";
@@ -433,7 +447,11 @@ export class CloudModelLoginUsage {
 			try {
 				const credentials = await this.#claudeCredentials({ ...claude, envelope });
 				outcome = { outcome: "unconfirmed" };
-				outcome = await reads.useClaudeReset({ credentials, kind }, AbortSignal.timeout(CLAUDE_RESET_MS));
+				outcome = await withAbortScopes(
+					[],
+					(deadline) => reads.useClaudeReset({ credentials, kind }, deadline),
+					CLAUDE_RESET_MS,
+				);
 			} catch {
 				outcome = outcome.outcome === "failed" ? outcome : { outcome: "unconfirmed" };
 			} finally {
@@ -441,11 +459,20 @@ export class CloudModelLoginUsage {
 			}
 			for (let attempt = 0; attempt < CLAUDE_SAVE_ATTEMPTS; attempt++) {
 				try {
-					await authority.recordClaudeLoginRead?.(
-						{ ...request, usage: null, resets: null, reset: outcome },
-						AbortSignal.timeout(SAVE_DEADLINE_MS),
+					await withAbortScopes(
+						[],
+						(deadline) =>
+							authority.recordClaudeLoginRead?.(
+								{ ...request, usage: null, resets: null, reset: outcome },
+								deadline,
+							) ?? Promise.resolve(),
+						SAVE_DEADLINE_MS,
 					);
-					await authority.completeModelLoginAccountRefresh(request, AbortSignal.timeout(SAVE_DEADLINE_MS));
+					await withAbortScopes(
+						[],
+						(deadline) => authority.completeModelLoginAccountRefresh(request, deadline),
+						SAVE_DEADLINE_MS,
+					);
 					return;
 				} catch {
 					await new Promise((resolveWait) => setTimeout(resolveWait, CLAUDE_SAVE_RETRY_MS));
@@ -541,9 +568,14 @@ export class CloudModelLoginUsage {
 			for (const login of description.logins) login.envelope.fill(0);
 			if (claude.state === "open") claude.envelope.fill(0);
 		}
-		await this.#authority.completeModelLoginAccountRefresh(
-			{ requestId: refresh.requestId, capabilitySha256 },
-			AbortSignal.any([signal, AbortSignal.timeout(SAVE_DEADLINE_MS)]),
+		await withAbortScopes(
+			[signal],
+			(deadline) =>
+				this.#authority.completeModelLoginAccountRefresh(
+					{ requestId: refresh.requestId, capabilitySha256 },
+					deadline,
+				),
+			SAVE_DEADLINE_MS,
 		);
 		return answer("completed");
 	}
@@ -565,10 +597,10 @@ export class CloudModelLoginUsage {
 					email: nativeProviderAccountEmail("codex-cli", codex.text) ?? null,
 					identity: nativeProviderAccountIdentity(codex.text) ?? null,
 					usage:
-						(await readNativeProviderAccountUsage(
-							codex.text,
-							AbortSignal.any([signal, AbortSignal.timeout(USAGE_DEADLINE_MS)]),
-							this.#fetch,
+						(await withAbortScopes(
+							[signal],
+							(deadline) => readNativeProviderAccountUsage(codex.text, deadline, this.#fetch),
+							USAGE_DEADLINE_MS,
 						)) ?? null,
 				};
 			};
@@ -598,18 +630,23 @@ export class CloudModelLoginUsage {
 							read,
 						);
 			if (!metadata.email && !metadata.identity && !metadata.usage) return;
-			await this.#authority.recordModelLoginAccountMetadata(
-				{
-					requestId: refresh.requestId,
-					capabilitySha256,
-					loginId: login.loginId,
-					connectionId: login.connectionId,
-					connectionVersion: login.connectionVersion,
-					providerAccountEmail: metadata.email,
-					providerAccountUsage: metadata.usage,
-					providerAccountIdentity: metadata.identity,
-				},
-				AbortSignal.any([signal, AbortSignal.timeout(SAVE_DEADLINE_MS)]),
+			await withAbortScopes(
+				[signal],
+				(deadline) =>
+					this.#authority.recordModelLoginAccountMetadata(
+						{
+							requestId: refresh.requestId,
+							capabilitySha256,
+							loginId: login.loginId,
+							connectionId: login.connectionId,
+							connectionVersion: login.connectionVersion,
+							providerAccountEmail: metadata.email,
+							providerAccountUsage: metadata.usage,
+							providerAccountIdentity: metadata.identity,
+						},
+						deadline,
+					),
+				SAVE_DEADLINE_MS,
 			);
 		} catch {
 			// Unknown usage for this login.

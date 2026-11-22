@@ -1,5 +1,6 @@
-import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
+import { readBoundedCloudResponse } from "@qorpera/cloud-client/cloud-request";
 import type { TableValue } from "@qorpera/cloud-client/interfaces";
+import { withScopedCloudDeadline } from "./abort-scope.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 
 export type MemberNotificationSubject =
@@ -339,7 +340,8 @@ export function createWebMemberNotifications(
 	let observedNotifications = new Set<string>();
 	const rpc = (method: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> => {
 		const body = JSON.stringify(args);
-		return withCloudDeadline(
+		return withScopedCloudDeadline(
+			[companySignal, signal],
 			async (deadline) => {
 				const check = () => {
 					deadline.throwIfAborted();
@@ -390,7 +392,6 @@ export function createWebMemberNotifications(
 				}
 			},
 			10000,
-			AbortSignal.any([companySignal, ...(signal ? [signal] : [])]),
 		).catch((error: unknown) => {
 			if (error instanceof CloudRpcError && error.denied) throw error;
 			throw new Error("Company notices could not be confirmed.");

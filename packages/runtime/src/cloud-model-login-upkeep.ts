@@ -1,3 +1,4 @@
+import { withAbortScopes } from "./abort-scope.ts";
 import type { CloudModelLoginVault } from "./cloud-model-login-vault.ts";
 import { cloudVaultFailureClass } from "./cloud-vault-database-failure.ts";
 
@@ -40,6 +41,7 @@ export class CloudModelLoginUpkeep {
 	readonly #usage: CloudModelLoginRecheck | undefined;
 	readonly #passEveryMs: number;
 	readonly #firstPassMs: number;
+	readonly #closing = new AbortController();
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#running: Promise<void> | undefined;
 	#started = false;
@@ -78,6 +80,7 @@ export class CloudModelLoginUpkeep {
 
 	async close(): Promise<void> {
 		this.#closed = true;
+		this.#closing.abort();
 		clearTimeout(this.#timer);
 		await this.#running;
 	}
@@ -90,7 +93,14 @@ export class CloudModelLoginUpkeep {
 		await this.#rechecks();
 		for (let ended = 0; ended < REVOCATIONS_PER_PASS && !this.#closed; ended += 1) {
 			try {
-				if ((await this.#vault.revokeUnused(AbortSignal.timeout(TAKE_DEADLINE_MS))) !== "revoked") return;
+				if (
+					(await withAbortScopes(
+						[this.#closing.signal],
+						(signal) => this.#vault.revokeUnused(signal),
+						TAKE_DEADLINE_MS,
+					)) !== "revoked"
+				)
+					return;
 			} catch (error) {
 				console.error(
 					`Model login upkeep: ending an unused ChatGPT plan login failed (class: ${cloudVaultFailureClass(error)}); the next pass tries again.`,
@@ -103,9 +113,17 @@ export class CloudModelLoginUpkeep {
 	/** Due usage rechecks, one at a time, until none is due, one fails, or the pass has done enough. */
 	async #rechecks(): Promise<void> {
 		if (!this.#usage) return;
+		const usage = this.#usage;
 		for (let read = 0; read < RECHECKS_PER_PASS && !this.#closed; read += 1) {
 			try {
-				if ((await this.#usage.recheck(AbortSignal.timeout(RECHECK_DEADLINE_MS))) === "none") return;
+				if (
+					(await withAbortScopes(
+						[this.#closing.signal],
+						(signal) => usage.recheck(signal),
+						RECHECK_DEADLINE_MS,
+					)) === "none"
+				)
+					return;
 			} catch (error) {
 				console.error(
 					`Model login upkeep: a usage recheck failed (class: ${cloudVaultFailureClass(error)}); the next pass tries again.`,
@@ -117,14 +135,23 @@ export class CloudModelLoginUpkeep {
 
 	async #renewals(): Promise<void> {
 		try {
-			await this.#vault.recordAccounts(AbortSignal.timeout(TAKE_DEADLINE_MS * 2));
+			await withAbortScopes(
+				[this.#closing.signal],
+				(signal) => this.#vault.recordAccounts(signal),
+				TAKE_DEADLINE_MS * 2,
+			);
 		} catch (error) {
 			console.error(
 				`Model login upkeep: recording login accounts failed (class: ${cloudVaultFailureClass(error)}); the next pass tries again.`,
 			);
 		}
+		if (this.#closed) return;
 		try {
-			const switched = await this.#vault.switchOffReplacedNodeLogins(AbortSignal.timeout(TAKE_DEADLINE_MS));
+			const switched = await withAbortScopes(
+				[this.#closing.signal],
+				(signal) => this.#vault.switchOffReplacedNodeLogins(signal),
+				TAKE_DEADLINE_MS,
+			);
 			if (switched.switchedOff > 0)
 				console.error(
 					`Model login upkeep: switched off ${switched.switchedOff} old node login(s) the vault replaced.`,
@@ -136,7 +163,14 @@ export class CloudModelLoginUpkeep {
 		}
 		for (let renewed = 0; renewed < RENEWALS_PER_PASS && !this.#closed; renewed += 1) {
 			try {
-				if ((await this.#vault.renewIdle(AbortSignal.timeout(TAKE_DEADLINE_MS))) === "none") return;
+				if (
+					(await withAbortScopes(
+						[this.#closing.signal],
+						(signal) => this.#vault.renewIdle(signal),
+						TAKE_DEADLINE_MS,
+					)) === "none"
+				)
+					return;
 			} catch (error) {
 				// The database or the answer failed: the next pass tries again. The error itself may name
 				// a login; only the fact and its class are logged, so a broken call never switches renewal off unseen.

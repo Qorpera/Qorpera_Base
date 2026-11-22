@@ -1,11 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import {
-	createServer,
-	request as httpRequest,
-	type IncomingMessage,
-	type Server,
-	type ServerResponse,
-} from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage, type Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { gzipSync } from "node:zlib";
 import {
@@ -95,7 +89,7 @@ function brokerFixture(
 	const mcpSecret = sealed(options.mcpFields ?? { value: MCP_VALUE }, 1);
 	const githubSecret = sealed({ access_token: GITHUB_TOKEN }, 2);
 	const state = { signIn: true };
-	const authorizeCodingMcpSignIn = vi.fn(async (request: CodingMcpSignInRequest) =>
+	const authorizeCodingMcpSignIn = vi.fn(async (request: CodingMcpSignInRequest, _signal?: AbortSignal) =>
 		(options.editMcp ?? ((answer) => answer))({
 			schema: "qorpera.coding-mcp-sign-in-authorization/v1",
 			companyId,
@@ -194,12 +188,18 @@ async function fixture(options: Parameters<typeof brokerFixture>[0] & { readonly
 	};
 	const call = (
 		route: string,
-		init: { method?: string; headers?: Record<string, string>; body?: Uint8Array | string } = {},
+		init: {
+			method?: string;
+			headers?: Record<string, string>;
+			body?: Uint8Array | string;
+			signal?: AbortSignal;
+		} = {},
 	) =>
 		fetch(`http://127.0.0.1:${port}${route}${route.includes("?") ? "&" : "?"}company=${f.companyId}`, {
 			method: init.method ?? "GET",
 			headers: { authorization: `Bearer ${executorToken}`, ...binding, ...init.headers },
 			body: init.body,
+			signal: init.signal,
 			redirect: "manual",
 		});
 	return {
@@ -940,5 +940,51 @@ describe("capturing an MCP sign-in", () => {
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ ok: true });
 		expect(f.seen.at(-1)?.body.toString("utf8")).toBe(payload);
+	});
+
+	it("clears relay reply timeout listeners after completion and aborts sign-in lookup when the client disconnects", async () => {
+		const f = await fixture();
+		f.answer((_req, reply) => {
+			reply.writeHead(200, { "content-type": "application/json" });
+			reply.end(JSON.stringify({ ok: true }));
+		});
+		const observedReplies: ServerResponse[] = [];
+		const timeoutArgs: number[] = [];
+		const originalSetTimeout = ServerResponse.prototype.setTimeout;
+		const timeoutSpy = vi.spyOn(ServerResponse.prototype, "setTimeout").mockImplementation(function (
+			this: ServerResponse,
+			msecs: number,
+			callback?: () => void,
+		) {
+			observedReplies.push(this);
+			timeoutArgs.push(msecs);
+			return originalSetTimeout.call(this, msecs, callback);
+		});
+		try {
+			const res = await f.call("/v1/coding-mcp", { headers: mcpHeaders() });
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({ ok: true });
+			expect(observedReplies.length).toBeGreaterThanOrEqual(2);
+			expect(timeoutArgs).toContain(0);
+			for (const reply of observedReplies) expect(reply.listenerCount("timeout")).toBe(0);
+		} finally {
+			timeoutSpy.mockRestore();
+		}
+
+		let lookupSignal: AbortSignal | undefined;
+		f.authorizeCodingMcpSignIn.mockImplementationOnce(
+			async (_request, signal) =>
+				await new Promise((_resolve, reject) => {
+					lookupSignal = signal;
+					signal?.addEventListener("abort", () => reject(signal.reason ?? new Error("aborted")), { once: true });
+				}),
+		);
+		const clientAbort = new AbortController();
+		const pending = f.call("/v1/coding-mcp", { headers: mcpHeaders(), signal: clientAbort.signal });
+		await vi.waitFor(() => expect(lookupSignal).toBeDefined());
+		expect(lookupSignal?.aborted).toBe(false);
+		clientAbort.abort();
+		await expect(pending).rejects.toThrow();
+		await vi.waitFor(() => expect(lookupSignal?.aborted).toBe(true));
 	});
 });
