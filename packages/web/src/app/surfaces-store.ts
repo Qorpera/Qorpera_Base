@@ -2031,10 +2031,6 @@ export class SurfacesStore {
 		this.store.set({ error: undefined });
 	}
 
-	clearHighlight(): void {
-		if (this.state.highlight) this.store.set({ highlight: undefined });
-	}
-
 	setStudioPatch(changeId: string, ops: readonly StudioPatchOp[]): void {
 		this.store.set((state) => ({ studioPatches: { ...state.studioPatches, [changeId]: ops } }));
 	}
