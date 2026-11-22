@@ -1886,6 +1886,9 @@
 .frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-send:disabled {
 	background: var(--send-idle); color: #fff;
 }
+:root[data-composer-color="grey"] .frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-send:disabled {
+	background: color-mix(in srgb, var(--text) 3.5%, transparent); color: color-mix(in srgb, var(--text) 32%, transparent);
+}
 .frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-mic {
 	right: 44px; bottom: 6px; width: 34px; height: 34px; min-height: 34px;
 }

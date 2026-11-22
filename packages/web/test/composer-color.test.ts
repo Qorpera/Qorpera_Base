@@ -1,9 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
+import { CompanyController } from "../src/app/company.ts";
+import { attachSurfaces, clearLocalSandboxCache } from "../src/app/surfaces-store.ts";
 import { renderAccount } from "../src/app/views/account.ts";
 import { renderAppearance } from "../src/app/views/appearance.ts";
+import { renderRail } from "../src/app/views/shell.ts";
 import appCss from "../src/styles/app.css?raw";
+import conversationCss from "../src/styles/conversation.css?raw";
+import darkCss from "../src/styles/dark.css?raw";
 import settingsCss from "../src/styles/settings.css?raw";
 import surfacesCss from "../src/styles/surfaces.css?raw";
 import tokensCss from "../src/styles/tokens.css?raw";
@@ -16,7 +21,8 @@ import {
 	watchTheme,
 } from "../src/ui/preferences.ts";
 import { RailSelection } from "../src/ui/rail-selection.ts";
-import { fixture, userA } from "./fixtures.ts";
+import { fixture, profileA, stubFigureMotion, userA } from "./fixtures.ts";
+import { storeWith } from "./surface-fixtures.ts";
 
 const storageKey = "qorpera.web.composer-color";
 let stopWatching: (() => void) | undefined;
@@ -273,6 +279,106 @@ describe("rail selection and grey appearance styles", () => {
 			"color-mix(in srgb, var(--text) 7%, var(--rail))",
 		);
 		expect(greyRail?.style.getPropertyValue("--rail-selection-sub").trim()).toBe("var(--rail-small)");
+
+		const statusCrest = appRules.find((rule) =>
+			rule.selectorText.includes(".rail-agent-hub-row.active") &&
+			rule.selectorText.includes(".rail-surface.active") &&
+			rule.style.getPropertyValue("--status-crest").trim() === "var(--rail-selection-text)",
+		);
+		expect(statusCrest).toBeDefined();
+
+		const softDisabled = "color-mix(in srgb, var(--text) 3.5%, transparent)";
+		const conversationRules = cssRulesOf(conversationCss);
+		expect(
+			conversationRules
+				.find((rule) => rule.selectorText === ':root[data-composer-color="grey"] .composer-send:disabled')
+				?.style.background,
+		).toBe(softDisabled);
+		expect(
+			conversationRules
+				.find((rule) => rule.selectorText === ':root[data-composer-color="grey"] .interaction-send:disabled')
+				?.style.background,
+		).toBe(softDisabled);
+		expect(
+			cssRulesOf(darkCss)
+				.find(
+					(rule) =>
+						rule.selectorText === ':root[data-theme="dark"][data-composer-color="grey"] .composer-send:disabled',
+				)
+				?.style.background,
+		).toBe(softDisabled);
+		expect(
+			surfaceRules
+				.find(
+					(rule) =>
+						rule.selectorText ===
+						':root[data-composer-color="grey"] .frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-send:disabled',
+				)
+				?.style.background,
+		).toBe(softDisabled);
+	});
+
+	it("slides RailSelection between surface routes in renderRail", async () => {
+		stubFigureMotion();
+		const f = fixture();
+		const company = new CompanyController(f.cloud, profileA.profileId, userA.id);
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: profileA.profileId, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		attachSurfaces(company, store);
+
+		const container = h("aside");
+		const frame = h("div", { class: "frame" }, container);
+		document.body.append(frame);
+		const auth = new AuthController(f.cloud);
+
+		const origAnimate = HTMLElement.prototype.animate;
+		const animate = vi.fn(() => ({ finished: new Promise<void>(() => {}), cancel: vi.fn() }) as unknown as Animation);
+		HTMLElement.prototype.animate = animate;
+		vi.spyOn(HTMLElement.prototype, "offsetParent", "get").mockImplementation(function (this: HTMLElement) {
+			return this.parentElement;
+		});
+		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+			if (this.dataset.surfaceSlug === "website") return new DOMRect(10, 100, 260, 64);
+			if (this.dataset.surfaceSlug === "inbox") return new DOMRect(10, 200, 260, 64);
+			return new DOMRect(0, 0, 300, 600);
+		});
+
+		try {
+			const renderAt = (id: string) =>
+				renderRail(container, company, {
+					profiles: [profileA],
+					user: userA,
+					route: { name: "company", profileId: profileA.profileId, section: "surface", id },
+					auth,
+					invitations: 0,
+					openSettings: () => {},
+					openFeedback: () => {},
+					openFriends: () => {},
+					agentActions: {},
+				});
+
+			renderAt("website");
+			expect(container.querySelector('.rail-surface[data-surface-slug="website"]')?.classList.contains("active")).toBe(
+				true,
+			);
+
+			renderAt("inbox");
+			const nextSurface = container.querySelector<HTMLElement>('.rail-surface[data-surface-slug="inbox"]');
+			expect(nextSurface?.classList.contains("active")).toBe(true);
+			expect(nextSurface?.classList.contains("selection-arriving")).toBe(true);
+			expect(container.querySelector(".rail-selection-ghost")).not.toBeNull();
+			expect(animate).toHaveBeenCalledOnce();
+		} finally {
+			HTMLElement.prototype.animate = origAnimate;
+			clearLocalSandboxCache();
+			auth.dispose();
+			store.dispose();
+			company.stop();
+		}
 	});
 
 	it("slides RailSelection from Co-Founder to an active surface row", () => {

@@ -341,6 +341,7 @@
 .composer-dictation-note[hidden] { display: none; }
 .composer-send { right: 3px; display: grid; place-items: center; padding: 0; border: 0; background: var(--composer-accent); color: var(--composer-on-accent); cursor: pointer; }
 .composer-send:disabled { background: #e8e8e8; color: #aaa; cursor: default; }
+:root[data-composer-color="grey"] .composer-send:disabled { background: color-mix(in srgb, var(--text) 3.5%, transparent); color: color-mix(in srgb, var(--text) 32%, transparent); }
 .composer-send:not(:disabled):hover { background: var(--composer-accent-hover); }
 /* The "+" menu (Attach files, Model, Login): a menu like the app's others (.context-menu), in the system face at a
  * regular weight with a thin edge and a width of its own. It stands over the "+" that opens it, not over the field. */
@@ -1600,6 +1601,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 }
 .interaction-send .icon { width: 16px; height: 16px; stroke-width: 2.2; }
 .interaction-send:disabled { background: var(--pane-strong); color: var(--text-muted); cursor: default; }
+:root[data-composer-color="grey"] .interaction-send:disabled { background: color-mix(in srgb, var(--text) 3.5%, transparent); color: color-mix(in srgb, var(--text) 32%, transparent); }
 .interaction-send:not(:disabled):hover { background: var(--composer-accent-hover); }
 .interaction-send:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 /* A card with its answer, in a thread, is the exchange it was (ui/interaction-card.ts; Jonas, 13 Nov 2026): no frame.
