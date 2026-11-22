@@ -56,7 +56,10 @@ from (values
 	('qorpera_member_notifications', 'qorpera_member_notifications_dedupe_history')
 ) as expected(tbl, idx);
 
+-- WHY: Force ordered index scans over bitmap+sort fallbacks on nearly-empty test tables.
 set local enable_seqscan = off;
+set local enable_bitmapscan = off;
+set local enable_sort = off;
 
 select pg_temp.assert_plan_uses_index(
 	$$select 1 from public.qorpera_runtime_machine_allocations
