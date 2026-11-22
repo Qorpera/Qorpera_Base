@@ -731,7 +731,7 @@ begin
 	perform pg_temp.base_assert(jsonb_array_length(pg_temp.rec_files(2) -> 'changes') = 2
 		and pg_temp.rec_files(2) -> 'changes' -> 1 ->> 'n' = '2' and pg_temp.rec_files(2) -> 'index' = v -> 'index', 'two rows');
 	perform pg_temp.base_error($q$select pg_temp.rec_files(0)$q$, '22023', 'Code change files request invalid');
-	perform pg_temp.base_error($q$select pg_temp.rec_files(21)$q$, '22023', 'Code change files request invalid');
+	perform pg_temp.base_error($q$select pg_temp.rec_files(201)$q$, '22023', 'Code change files request invalid');
 	perform pg_temp.base_error($q$select pg_temp.rec_files(5, null)$q$, '22023', 'Code change files request invalid');
 	-- An executor that does not hold the company, and a repository nobody registered: no row, no list, no company.
 	perform pg_temp.base_assert(pg_temp.rec_files(p_machine => repeat('6', 64)) = jsonb_build_object(
@@ -750,7 +750,7 @@ begin
 		pg_temp.rec_wrote('[{"n":1,"version":1,"pathsMore":1.5}]'),
 		pg_temp.rec_wrote() || '{"indexVersion":-1}', pg_temp.rec_wrote() || '{"indexVersion":"3"}',
 		pg_temp.rec_wrote() || '{"problem":"it broke"}', pg_temp.rec_wrote() || '{"problem":7}',
-		pg_temp.rec_wrote((select jsonb_agg(jsonb_build_object('n', i, 'version', 1)) from generate_series(1, 51) i))] loop
+		pg_temp.rec_wrote((select jsonb_agg(jsonb_build_object('n', i, 'version', 1)) from generate_series(1, 201) i))] loop
 		perform pg_temp.base_error(format('select pg_temp.rec_written(%L)', v_bad), '22023', 'Code change files report invalid');
 	end loop;
 	perform pg_temp.base_error($q$select pg_temp.rec_written(null)$q$, '22023', 'Code change files report invalid');

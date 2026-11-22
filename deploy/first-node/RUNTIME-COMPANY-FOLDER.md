@@ -939,9 +939,14 @@ version check still refuses the second writer.
 - A session cannot delete a published path under `repo.git/objects` (`EPERM`),
   and `objects/pack/*.keep` is never published.
 - Git's own indexes of the objects (`objects/info/packs`, a commit-graph, a
-  multi-pack index) stay in the view that made them, the code host's too, and
-  are never published: the core takes none from a session, and one lists what
-  its own view's git held.
+  multi-pack index) stay in a session's view and are never published by a
+  session: the core refuses them from sessions (`git_platform_only`). The
+  platform's code host publishes only the strict acceleration index files
+  (`objects/info/commit-graph`, `objects/info/commit-graphs/commit-graph-chain`,
+  `objects/info/commit-graphs/graph-<hex>.graph`, `objects/pack/multi-pack-index`,
+  `objects/pack/multi-pack-index-<hex>.bitmap`) produced during maintenance so
+  every view reads them; `objects/info/packs*` and temporary index files remain
+  unpublished in every view.
 - The `files` ref format is pinned; reftable is not used. A fetch that updates
   N refs means N synchronous publishes, which the spike measures.
 

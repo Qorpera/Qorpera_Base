@@ -405,6 +405,19 @@ export function draftReplaced(state: Pick<ConversationState, "draftEpoch">): Pic
 	return { draftEpoch: (state.draftEpoch ?? 0) + 1 };
 }
 
+function sameJson(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	if (a === undefined || b === undefined) return false;
+	return JSON.stringify(a) === JSON.stringify(b);
+}
+
+const APP_ICON_RETRY_MS = 30_000;
+const MAX_CACHED_CONVERSATIONS = 25;
+const newestActivityByAgent = new WeakMap<
+	readonly HostedStaffExecutionActivity[],
+	Map<string, HostedStaffExecutionActivity>
+>();
+
 /** Drop optimistic card answers once the projection carries them, or once their
  * input failed: that answer never reached the agent, so the card is open again. */
 function reconcileInteractionAnswers(
@@ -417,22 +430,22 @@ function reconcileInteractionAnswers(
 		projection.items.flatMap((item) => (item.kind === "interaction" && item.answer ? [item.id.toLowerCase()] : [])),
 	);
 	const failed = new Set(pending.flatMap((input) => (input.status === "failed" ? [input.inputId] : [])));
-	const kept = Object.fromEntries(
-		Object.entries(answers).filter(
-			([id, answer]) => !settled.has(id) && !(answer.inputId && failed.has(answer.inputId)),
-		),
-	);
-	return Object.keys(kept).length ? kept : undefined;
+	const entries = Object.entries(answers);
+	const kept = entries.filter(([id, answer]) => !settled.has(id) && !(answer.inputId && failed.has(answer.inputId)));
+	if (kept.length === entries.length) return answers;
+	return kept.length ? Object.fromEntries(kept) : undefined;
 }
 
 function reconcileOptimistic(state: Pick<ConversationState, "optimistic" | "pending" | "events">) {
-	return state.optimistic.filter((item) => {
+	if (!state.optimistic.length) return state.optimistic;
+	const kept = state.optimistic.filter((item) => {
 		const id = item.inputId ?? item.clientInputId;
 		return (
 			!state.pending.some((input) => input.inputId === id) &&
 			!state.events.some((event) => event.sessionInputId === id)
 		);
 	});
+	return kept.length === state.optimistic.length ? state.optimistic : kept;
 }
 
 /** A fresh listing of a thread's coding sessions, keeping any session the thread
@@ -664,7 +677,7 @@ export class CompanyController {
 	#tailMissing = false;
 	/** Taken inputs a thread has read back for once: never again (a run queued for hours stays taken
 	 * without an event, and each load would read further back). */
-	readonly #readBackFor = new Set<string>();
+	readonly #readBackFor = new Map<string, Set<string>>();
 	/** Proposals this browser discarded: a listing read before the discard landed does not show them again. */
 	readonly #discardedProposals = new Set<string>();
 	/** Per failed run: when its details may be read next (performance.now()), and
@@ -942,10 +955,11 @@ export class CompanyController {
 		try {
 			const sessions = await this.#api.listMemberMentions(this.profile.profileId);
 			if (this.#stopped || version !== this.#mentionReads) return;
-			this.store.set({
-				mentions: Object.fromEntries(sessions.map((item) => [item.sessionId, item.count])),
-				mentionsReady: true,
-			});
+			const mentions = Object.fromEntries(sessions.map((item) => [item.sessionId, item.count]));
+			const current = this.store.get();
+			if (!current.mentionsReady || !sameJson(current.mentions, mentions)) {
+				this.store.set({ mentions, mentionsReady: true });
+			}
 			this.#seeMentions();
 		} catch (error) {
 			if (this.#stopped || version !== this.#mentionReads) return;
@@ -969,7 +983,10 @@ export class CompanyController {
 					waitingOnMe[item.staffAgentId] = item;
 					if (item.approvals) approvals[item.staffAgentId] = item.approvals;
 				}
-				this.store.set({ waitingOnMe, approvals });
+				const current = this.store.get();
+				if (!sameJson(current.waitingOnMe, waitingOnMe) || !sameJson(current.approvals, approvals)) {
+					this.store.set({ waitingOnMe, approvals });
+				}
 				return;
 			} catch (error) {
 				if (this.#stopped || version !== this.#approvalReads) return;
@@ -984,7 +1001,7 @@ export class CompanyController {
 			if (this.#stopped || version !== this.#approvalReads) return;
 			const approvals: Record<string, number> = {};
 			for (const item of waiting) approvals[item.staffAgentId] = (approvals[item.staffAgentId] ?? 0) + item.count;
-			this.store.set({ approvals });
+			if (!sameJson(this.store.get().approvals, approvals)) this.store.set({ approvals });
 		} catch (error) {
 			if (this.#stopped || version !== this.#approvalReads) return;
 			if (error instanceof CloudRpcError && error.missing)
@@ -1309,7 +1326,7 @@ export class CompanyController {
 			const sidebar = await this.#api.readCompanySidebar(this.profile.profileId);
 			// A change in flight answers with a newer sidebar than this read.
 			if (this.#stopped || version !== this.#versions.sidebar || this.#sidebarPending) return;
-			this.store.set({ sidebar });
+			if (!sameJson(this.store.get().sidebar, sidebar)) this.store.set({ sidebar });
 			// The member's apps layout is part of their own sidebar: a hint for one is a hint for the other.
 			if (sidebar.own) void this.refreshAppLayout();
 			// Hints from now on: on the company's topic, or by postgres_changes on a channel of their own, so a cloud without
@@ -1457,26 +1474,33 @@ export class CompanyController {
 	 * it (as Mailbox's note does, app/company-mail.ts). The application sets it. */
 	appIconAccounts?: Pick<WebNativeSubscription, "listConnections" | "selectSessionAccount">;
 	readonly #iconReads = new Map<string, Promise<void>>();
+	readonly #iconReadRetryAt = new Map<string, number>();
 	#iconWatch?: ReturnType<typeof setInterval>;
 
 	/** Reads an app's own icons into `appIcons`, one read at a time for each app. A read that fails keeps what was read
 	 * before. A new icon ends the app's drawing. */
-	loadAppIcons(app: string): Promise<void> {
+	loadAppIcons(app: string, options?: { force?: boolean }): Promise<void> {
 		const running = this.#iconReads.get(app);
 		if (running || this.#stopped || !this.appIconReader) return running ?? Promise.resolve();
+		if (!options?.force && (this.#iconReadRetryAt.get(app) ?? 0) > Date.now()) return Promise.resolve();
 		const read = this.appIconReader(app)
 			.then((icons) => {
+				this.#iconReadRetryAt.delete(app);
 				if (this.#stopped) return;
 				const state = this.store.get();
 				const drawing = state.appIconsDrawing?.[app];
 				// A new icon, or an old id drawn again (an app at its 12 replaces one), ends the drawing.
 				const done = drawing && icons.some((icon) => !drawing.known.includes(iconVersion(icon)));
-				this.store.set({
-					appIcons: { ...state.appIcons, [app]: icons },
-					...(done ? { appIconsDrawing: withoutKey(state.appIconsDrawing, app) } : {}),
-				});
+				if (done || !sameJson(state.appIcons?.[app], icons)) {
+					this.store.set({
+						appIcons: { ...state.appIcons, [app]: icons },
+						...(done ? { appIconsDrawing: withoutKey(state.appIconsDrawing, app) } : {}),
+					});
+				}
 			})
-			.catch(() => undefined)
+			.catch(() => {
+				this.#iconReadRetryAt.set(app, Date.now() + APP_ICON_RETRY_MS);
+			})
 			.finally(() => this.#iconReads.delete(app));
 		this.#iconReads.set(app, read);
 		return read;
@@ -1484,7 +1508,8 @@ export class CompanyController {
 
 	/** Reads again the icons of every app whose icons were read: the apps' folder changed. */
 	refreshAppIcons(): void {
-		for (const app of Object.keys(this.store.get().appIcons ?? {})) void this.loadAppIcons(app);
+		this.#iconReadRetryAt.clear();
+		for (const app of Object.keys(this.store.get().appIcons ?? {})) void this.loadAppIcons(app, { force: true });
 	}
 
 	/** Generate icon (Jonas, 12 Nov 2026): asks the agent who made the app, or the Co-Founder when none did or it left, to
@@ -1591,7 +1616,7 @@ export class CompanyController {
 				this.store.set((state) => ({
 					appIconsDrawing: stale.reduce((all, name) => withoutKey(all, name), state.appIconsDrawing),
 				}));
-			for (const name of names) if (!stale.includes(name)) void this.loadAppIcons(name);
+			for (const name of names) if (!stale.includes(name)) void this.loadAppIcons(name, { force: true });
 		}, APP_ICONS_WATCH_MS);
 	}
 
@@ -1771,7 +1796,11 @@ export class CompanyController {
 		try {
 			const activity = await this.#api.listStaffActivity(this.profile.environmentId);
 			if (this.#stopped || version !== this.#versions.activity) return;
-			this.store.set((state) => ({ activity, recoveries: stillFailed(state.recoveries, activity) }));
+			const current = this.store.get();
+			const recoveries = stillFailed(current.recoveries, activity);
+			if (!sameJson(current.activity, activity) || recoveries !== current.recoveries) {
+				this.store.set({ activity, recoveries });
+			}
 			if (activity.some((item) => item.activity !== "needs_attention")) this.#watchWork(6_000);
 			this.#settleStops();
 			void this.#readRecoveries(activity);
@@ -1915,7 +1944,9 @@ export class CompanyController {
 				session.environmentId === profile.environmentId,
 		);
 		if (!sessions.length) {
-			this.store.set({ groups: {}, groupsError: undefined });
+			if (Object.keys(state.groups ?? {}).length > 0 || state.groupsError !== undefined) {
+				this.store.set({ groups: {}, groupsError: undefined });
+			}
 			return;
 		}
 		try {
@@ -1944,10 +1975,14 @@ export class CompanyController {
 						? previous
 						: room;
 			}
-			this.store.set({ groups, groupsError: undefined });
+			if (!sameJson(current.groups, groups) || current.groupsError !== undefined) {
+				this.store.set({ groups, groupsError: undefined });
+			}
 		} catch (error) {
-			if (canRead() && version === this.#versions.groups)
-				this.store.set({ groups: {}, groupsError: describeError(error) });
+			if (canRead() && version === this.#versions.groups) {
+				const groupsError = describeError(error);
+				if (this.store.get().groupsError !== groupsError) this.store.set({ groupsError });
+			}
 		}
 	}
 
@@ -2010,10 +2045,18 @@ export class CompanyController {
 	 * (20260930542000) is not the agent's run any more: it is listed apart. */
 	#newestActivity(staffAgentId: string | undefined): HostedStaffExecutionActivity | undefined {
 		if (!staffAgentId) return undefined;
-		return this.store
-			.get()
-			.activity.filter((item) => item.staffAgentId === staffAgentId && !item.superseded)
-			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+		const activity = this.store.get().activity;
+		let index = newestActivityByAgent.get(activity);
+		if (!index) {
+			index = new Map<string, HostedStaffExecutionActivity>();
+			for (const item of activity) {
+				if (!item.staffAgentId || item.superseded) continue;
+				const current = index.get(item.staffAgentId);
+				if (!current || item.updatedAt.localeCompare(current.updatedAt) > 0) index.set(item.staffAgentId, item);
+			}
+			newestActivityByAgent.set(activity, index);
+		}
+		return index.get(staffAgentId);
 	}
 
 	/** The agent's failure from before its newer work, if the server lists one (20260930542000). */
@@ -2311,7 +2354,10 @@ export class CompanyController {
 
 	conversation(sessionId: string, load = true): Store<ConversationState> {
 		let store = this.conversations.get(sessionId);
-		if (!store) {
+		if (store) {
+			this.conversations.delete(sessionId);
+			this.conversations.set(sessionId, store);
+		} else {
 			store = new Store<ConversationState>({
 				sessionId,
 				events: [],
@@ -2323,6 +2369,7 @@ export class CompanyController {
 				optimistic: [],
 			});
 			this.conversations.set(sessionId, store);
+			this.#pruneConversations(sessionId);
 			if (load) void this.loadConversation(sessionId);
 		}
 		return store;
@@ -2330,8 +2377,51 @@ export class CompanyController {
 
 	setOpenSession(sessionId: string | undefined): void {
 		this.#openSessionId = sessionId;
+		if (sessionId) {
+			const existing = this.conversations.get(sessionId);
+			if (existing) {
+				this.conversations.delete(sessionId);
+				this.conversations.set(sessionId, existing);
+			}
+		}
+		this.#pruneConversations(sessionId);
 		this.#trackOpen();
 		this.#seeMentions();
+	}
+
+	#pruneConversations(protectedId?: string): void {
+		if (this.conversations.size <= MAX_CACHED_CONVERSATIONS) return;
+		for (const [id, store] of [...this.conversations]) {
+			if (this.conversations.size <= MAX_CACHED_CONVERSATIONS) break;
+			if (
+				id === protectedId ||
+				id === this.#openSessionId ||
+				this.#conversationLoads.has(id) ||
+				store.listenerCount > 0
+			)
+				continue;
+			const state = store.get();
+			if (
+				state.optimistic.length > 0 ||
+				Boolean(state.draft) ||
+				Boolean(state.attachments?.length) ||
+				state.sending ||
+				Boolean(state.retrySend) ||
+				state.answering !== undefined ||
+				Boolean(state.interactionAnswers && Object.keys(state.interactionAnswers).length > 0) ||
+				Boolean(state.interactionError) ||
+				Boolean(state.sendError) ||
+				Boolean(state.discardingProposals?.length) ||
+				Boolean(state.earlierLoading) ||
+				Boolean(state.earlierError) ||
+				Boolean(state.quoteRecords?.length)
+			)
+				continue;
+			store.dispose();
+			this.conversations.delete(id);
+			this.#conversationReadAt.delete(id);
+			this.#readBackFor.delete(id);
+		}
 	}
 
 	/** Where this tab is when no conversation is open (app/presence-place.ts), or nowhere (undefined). */
@@ -2447,17 +2537,30 @@ export class CompanyController {
 			// A conversation read for the first time is read in full.
 			const full = request.full || !known.complete;
 			request.full = false;
-			const events = [...known.events];
-			const places = new Map(events.map((event, place) => [event.sequence, place]));
+			let events: HostedSessionEvent[] = known.events;
+			let copiedEvents = false;
+			let places: Map<number, number> | undefined;
+			let added = false;
 			/** Set when a read replaced an event with its erased copy. */
 			let replaced = false;
 			const add = (read: readonly HostedSessionEvent[]) => {
+				if (!read.length) return;
+				if (!places) places = new Map(events.map((event, place) => [event.sequence, place]));
 				for (const event of read) {
 					const place = places.get(event.sequence);
 					if (place === undefined) {
+						if (!copiedEvents) {
+							events = [...events];
+							copiedEvents = true;
+						}
 						places.set(event.sequence, events.length);
 						events.push(event);
+						added = true;
 					} else if (erasedCopy(events[place], event)) {
+						if (!copiedEvents) {
+							events = [...events];
+							copiedEvents = true;
+						}
 						events[place] = event;
 						replaced = true;
 					}
@@ -2553,22 +2656,42 @@ export class CompanyController {
 				let earlier = hasEarlier ?? store.get().hasEarlier ?? false;
 				// An input a run took before the oldest event read stands in the transcript before it: read
 				// back until its place is read, so it is not shown again as waiting.
-				const taken = earlier
-					? takenBefore(pending, merged).filter((input) => !this.#readBackFor.has(input.inputId))
-					: [];
+				const readBack = this.#readBackFor.get(sessionId);
+				const taken = earlier ? takenBefore(pending, merged).filter((input) => !readBack?.has(input.inputId)) : [];
 				if (taken.length) {
-					for (const input of taken) this.#readBackFor.add(input.inputId);
+					const seen = readBack ?? new Set<string>();
+					if (!readBack) this.#readBackFor.set(sessionId, seen);
+					for (const input of taken) seen.add(input.inputId);
 					const read = await this.#readTail(sessionId, merged, taken, () => !this.#stopped);
 					if (!read) return;
 					// "Show earlier" may have landed meanwhile, and reached further back.
 					merged = mergeEvents(store.get().events, read.events);
 					earlier = earlierOf(read, store.get());
 				}
-				const optimistic = reconcileOptimistic({ optimistic: store.get().optimistic, pending, events: merged });
-				const projection = projectTranscript(merged, pending);
-				const codingSessions = listed
-					? newerCodingSessions(listed, store.get().codingSessions)
-					: (store.get().codingSessions ?? []);
+				const latest = store.get();
+				const eventsUnchanged = !added && !replaced && taken.length === 0 && latest.events === known.events;
+				if (eventsUnchanged) merged = latest.events;
+				const pendingChanged = full && !sameJson(pending, latest.pending);
+				const nextPending = pendingChanged ? pending : latest.pending;
+				const projection =
+					!eventsUnchanged || pendingChanged || !latest.complete
+						? projectTranscript(merged, nextPending)
+						: latest.projection;
+				const optimistic =
+					!eventsUnchanged || pendingChanged || latest.optimistic.length > 0
+						? reconcileOptimistic({ optimistic: latest.optimistic, pending: nextPending, events: merged })
+						: latest.optimistic;
+				const interactionAnswers =
+					projection !== latest.projection || nextPending !== latest.pending
+						? reconcileInteractionAnswers(latest.interactionAnswers, projection, nextPending)
+						: latest.interactionAnswers;
+				const rawCoding = listed
+					? newerCodingSessions(listed, latest.codingSessions)
+					: (latest.codingSessions ?? []);
+				const codingSessions =
+					latest.codingSessions && sameJson(rawCoding, latest.codingSessions) ? latest.codingSessions : rawCoding;
+				const nextProposals = proposals ? this.#withoutDiscarded(proposals) : latest.proposals;
+				const proposalsChanged = proposals !== undefined && !sameJson(nextProposals, latest.proposals);
 				const now = Date.now();
 				this.#conversationReadAt.set(sessionId, {
 					any: now,
@@ -2578,22 +2701,39 @@ export class CompanyController {
 				// further back than the events read again, and left the generation as this read found it, the generation
 				// stays unknown and the next full read reads the events again.
 				const settled =
-					store.get().memoryGeneration === reflected &&
-					(reread === undefined || (store.get().events[0]?.sequence ?? reread) >= reread);
-				store.set({
-					events: merged,
-					pending,
-					projection,
-					loading: false,
-					complete: true,
-					error: undefined,
-					optimistic,
-					interactionAnswers: reconcileInteractionAnswers(store.get().interactionAnswers, projection, pending),
-					codingSessions,
-					...(proposals ? { proposals: this.#withoutDiscarded(proposals) } : {}),
-					...(generation === undefined ? {} : { memoryGeneration: settled ? generation : undefined }),
-					hasEarlier: earlier,
-				});
+					latest.memoryGeneration === reflected &&
+					(reread === undefined || (latest.events[0]?.sequence ?? reread) >= reread);
+				const nextGeneration =
+					generation === undefined ? latest.memoryGeneration : settled ? generation : undefined;
+				const unchanged =
+					!latest.loading &&
+					latest.complete &&
+					latest.error === undefined &&
+					merged === latest.events &&
+					nextPending === latest.pending &&
+					projection === latest.projection &&
+					optimistic === latest.optimistic &&
+					interactionAnswers === latest.interactionAnswers &&
+					codingSessions === latest.codingSessions &&
+					!proposalsChanged &&
+					nextGeneration === latest.memoryGeneration &&
+					earlier === latest.hasEarlier;
+				if (!unchanged) {
+					store.set({
+						events: merged,
+						pending: nextPending,
+						projection,
+						loading: false,
+						complete: true,
+						error: undefined,
+						optimistic,
+						interactionAnswers,
+						codingSessions,
+						...(proposalsChanged ? { proposals: nextProposals } : {}),
+						...(generation === undefined ? {} : { memoryGeneration: nextGeneration }),
+						hasEarlier: earlier,
+					});
+				}
 			} catch (error) {
 				failed = true;
 				// The history read before the failure stays, so the next read resumes after it, and so do erased copies.
@@ -2628,18 +2768,28 @@ export class CompanyController {
 		pending: readonly PendingSessionInput[] | undefined,
 		live: () => boolean,
 	): Promise<{ events: HostedSessionEvent[]; hasEarlier: boolean } | undefined> {
-		let events = [...loaded];
-		const shown = () => projectTranscript(events, []).items.length;
-		const wanted = pending ? 0 : shown() + TAIL_ITEMS;
+		let older: HostedSessionEvent[] = [];
+		const loadedInputIds = pending
+			? new Set(loaded.flatMap((event) => (event.sessionInputId ? [event.sessionInputId] : [])))
+			: undefined;
+		const remainingPending = pending?.filter((input) => !loadedInputIds?.has(input.inputId));
 		let hasEarlier = true;
 		for (let page = 0; page < TAIL_PAGES && hasEarlier; page++) {
-			const read = await this.#api.readSessionEventsTail(sessionId, events[0]?.sequence, TAIL_PAGE);
+			const before = older[0]?.sequence ?? loaded[0]?.sequence;
+			const read = await this.#api.readSessionEventsTail(sessionId, before, TAIL_PAGE);
 			if (!live()) return undefined;
-			events = mergeEvents(read, events);
+			if (read.length)
+				older = older.length ? mergeEvents(read, older) : [...read].sort((a, b) => a.sequence - b.sequence);
 			// Sequences start at 1: a full page that does not reach it may have more before it.
 			hasEarlier = read.length === TAIL_PAGE && (read[0]?.sequence ?? 1) > 1;
-			if (pending ? !waitingBefore(pending, events) : shown() >= wanted) break;
+			if (
+				remainingPending
+					? !waitingBefore(remainingPending, older.length ? older : loaded)
+					: projectTranscript(older, []).items.length >= TAIL_ITEMS
+			)
+				break;
 		}
+		const events = loaded.length ? (older.length ? mergeEvents(older, loaded) : [...loaded]) : older;
 		return { events, hasEarlier };
 	}
 
@@ -3491,6 +3641,22 @@ export class CompanyController {
 
 	/** The agents' activity moves with their events: read at most every few seconds while they write. */
 	readonly #refreshActivitySoon = throttle(() => void this.refreshActivity(), 3_000);
+	readonly #refreshStaffSoon = readOnHint(() => {
+		if (this.#stopped) return;
+		void this.refreshStaff();
+		void this.refreshOrganization();
+	}, 250);
+	readonly #refreshTeamSoon = readOnHint(() => {
+		if (this.#stopped) return;
+		void this.refreshTeam();
+	}, 250);
+	readonly #refreshCompanyFileSoon = readOnHint(() => {
+		if (this.#stopped) return;
+		void this.refreshGroups();
+		const waiting = Object.values(this.store.get().recoveries).filter((recovery) => recovery.proposalId);
+		for (const recovery of waiting) this.#recheckRecovery(recovery.runId);
+		if (waiting.length) void this.refreshActivity();
+	}, 250);
 
 	#onHint(resource: RealtimeResource): void {
 		if (this.#stopped) return;
@@ -3501,10 +3667,9 @@ export class CompanyController {
 			this.#sessionsChangedSoon();
 			this.#refreshActivitySoon();
 		} else if (resource === "staff") {
-			void this.refreshStaff();
-			void this.refreshOrganization();
+			this.#refreshStaffSoon();
 		} else if (resource === "access") {
-			void this.refreshTeam();
+			this.#refreshTeamSoon();
 		} else if (resource === "sidebar") {
 			this.#refreshSidebarSoon();
 		} else if (resource === "member-chats") {
@@ -3513,11 +3678,7 @@ export class CompanyController {
 			// An agent may have begun a stretch at its computer (20260930742000).
 			this.#atComputers.hinted();
 		} else if (resource === "company-file") {
-			void this.refreshGroups();
-			// Accepting a proposal moves the Company File head: runs waiting on one are read again.
-			const waiting = Object.values(this.store.get().recoveries).filter((recovery) => recovery.proposalId);
-			for (const recovery of waiting) this.#recheckRecovery(recovery.runId);
-			if (waiting.length) void this.refreshActivity();
+			this.#refreshCompanyFileSoon();
 		}
 	}
 

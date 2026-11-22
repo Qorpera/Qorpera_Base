@@ -137,6 +137,8 @@ export interface InteractionCardContext {
 	/** An app of the company by its name, for an option whose preview names one; undefined when the company has no
 	 * such app, or where the apps cannot be reached. */
 	app?: (name: string) => InteractionCardApp | undefined;
+	/** WHY: optional per-card signal for callers to abort mail_address probes and timers before rerender. */
+	signal?: AbortSignal;
 	now?: number;
 }
 
@@ -347,6 +349,7 @@ function mailAddressParts(
 	calls: MailAddressCalls | undefined,
 	busy: boolean,
 	use: (handle: string, refused: (text: string) => void) => void,
+	signal: AbortSignal,
 ): { body: HTMLElement[]; actions: HTMLElement[] } {
 	const suggestions = [...new Set(options.map((option) => option.value).filter((value) => MAIL_HANDLE.test(value)))];
 	const able = calls?.canChoose === true;
@@ -387,24 +390,37 @@ function mailAddressParts(
 			);
 	};
 	const check = able && calls ? new HandleCheck(calls.status, draw) : undefined;
-	input.addEventListener("input", () => {
-		const cleaned = cleanHandle(input.value);
-		if (cleaned !== input.value) input.value = cleaned;
-		check?.set(cleaned);
-	});
-	input.addEventListener("keydown", (event) => {
-		if (event.key !== "Enter" || event.isComposing) return;
-		event.preventDefault();
-		submit();
-	});
-	void calls?.handles(new AbortController().signal).then(
-		(mail) => {
-			if (mail.domain === null) mailOff = true;
-			else domain.textContent = `@${mail.domain}`;
-			draw();
+	if (signal.aborted) check?.stop();
+	else signal.addEventListener("abort", () => check?.stop(), { once: true });
+	input.addEventListener(
+		"input",
+		() => {
+			const cleaned = cleanHandle(input.value);
+			if (cleaned !== input.value) input.value = cleaned;
+			check?.set(cleaned);
 		},
-		() => undefined,
+		{ signal },
 	);
+	input.addEventListener(
+		"keydown",
+		(event) => {
+			if (event.key !== "Enter" || event.isComposing) return;
+			event.preventDefault();
+			submit();
+		},
+		{ signal },
+	);
+	if (!signal.aborted) {
+		void calls?.handles(signal).then(
+			(mail) => {
+				if (signal.aborted) return;
+				if (mail.domain === null) mailOff = true;
+				else domain.textContent = `@${mail.domain}`;
+				draw();
+			},
+			() => undefined,
+		);
+	}
 	const pills =
 		able && suggestions.length > 1
 			? h(
@@ -522,7 +538,10 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 	const state = interactionState(request, item.answer, context.now);
 	let busy = false;
 	let card: HTMLElement;
+	let disposeParts: (() => void) | undefined;
 	const rerender = () => {
+		disposeParts?.();
+		disposeParts = undefined;
 		const next = renderInteractionCard(item, { ...context, now: context.now });
 		card.replaceWith(next);
 		card = next;
@@ -681,22 +700,36 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 			);
 		}
 		if (open && questionInput(request) === "mail_address") {
-			const parts = mailAddressParts(options, context.mailAddress, busy, (handle, refused) => {
-				if (busy || !context.mailAddress) return;
-				busy = true;
-				for (const control of card.querySelectorAll<HTMLElement>("button, input"))
-					control.setAttribute("aria-disabled", "true");
-				void context.mailAddress.choose(handle).then(rerender, (error: unknown) => {
-					busy = false;
+			const cardAbort = new AbortController();
+			const onContextAbort = () => cardAbort.abort();
+			if (context.signal?.aborted) cardAbort.abort();
+			else context.signal?.addEventListener("abort", onContextAbort, { once: true });
+			disposeParts = () => {
+				context.signal?.removeEventListener("abort", onContextAbort);
+				cardAbort.abort();
+			};
+			const parts = mailAddressParts(
+				options,
+				context.mailAddress,
+				busy,
+				(handle, refused) => {
+					if (busy || !context.mailAddress) return;
+					busy = true;
 					for (const control of card.querySelectorAll<HTMLElement>("button, input"))
-						control.removeAttribute("aria-disabled");
-					refused(
-						error instanceof Error && error.message
-							? error.message
-							: t("The address could not be made. Try again."),
-					);
-				});
-			});
+						control.setAttribute("aria-disabled", "true");
+					void context.mailAddress.choose(handle).then(rerender, (error: unknown) => {
+						busy = false;
+						for (const control of card.querySelectorAll<HTMLElement>("button, input"))
+							control.removeAttribute("aria-disabled");
+						refused(
+							error instanceof Error && error.message
+								? error.message
+								: t("The address could not be made. Try again."),
+						);
+					});
+				},
+				cardAbort.signal,
+			);
 			body.push(...parts.body);
 			actions.push(
 				...parts.actions,

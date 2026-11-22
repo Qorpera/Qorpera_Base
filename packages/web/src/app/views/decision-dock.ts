@@ -304,7 +304,8 @@ export class DecisionDock {
 		const kept = this.#decided.filter((entry) => {
 			if (entry.state !== "sent") return true;
 			const id = entry.decision.interactionId;
-			const thread = this.#host.conversation(entry.decision.sessionId).get();
+			const thread = this.#host.questions.conversationState(entry.decision.sessionId);
+			if (!thread) return true;
 			if (thread.interactionAnswers?.[id]) return true;
 			return !(thread.projection?.items ?? []).some(
 				(item) =>
@@ -355,7 +356,9 @@ export class DecisionDock {
 						!(decision.kind === "draft" && decision.othersAnswer) &&
 						(expiry(decision) > now || (decision.kind === "draft" && questions.draftUnsettled(decision))) &&
 						!this.#onItsWay(decision.interactionId) &&
-						!this.#host.conversation(decision.sessionId).get().interactionAnswers?.[decision.interactionId],
+						!this.#host.questions.conversationState(decision.sessionId)?.interactionAnswers?.[
+							decision.interactionId
+						],
 				),
 			...questions.unsettledDrafts(),
 		].sort(decisionOrder);
@@ -881,7 +884,7 @@ export class DecisionDock {
 				await this.#host.questions.answer(entry.decision, outcome, value);
 			}
 		} catch (error) {
-			const said = this.#host.conversation(decision.sessionId).get().interactionError;
+			const said = this.#host.questions.conversationState(decision.sessionId)?.interactionError;
 			const pickOf = entry.decision.kind === "question" ? (entry as DecidedCard).pickOf : undefined;
 			const stale =
 				pickOf !== undefined &&

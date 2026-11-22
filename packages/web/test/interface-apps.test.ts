@@ -2546,4 +2546,103 @@ describe("AppBridge database actions (qorpera.act)", () => {
 		apps.dispose();
 		company.abort();
 	});
+
+	it("bounds readApps concurrency without readMany, batches with readMany, and reuses unchanged manifest versions", async () => {
+		const files: Record<string, string> = {};
+		for (let i = 0; i < 20; i += 1) {
+			const name = `app-${String(i).padStart(2, "0")}`;
+			files[`apps/${name}/app.toml`] = `name = "App ${i}"\nentry = "index.html"\n`;
+			files[`apps/${name}/index.html`] = `<p>${i}</p>`;
+		}
+		const base = fakeFolder(files);
+		let inFlight = 0;
+		let maxInFlight = 0;
+		let readFileCalls = 0;
+		const { readMany: _omitted, ...withoutReadMany } = base as unknown as Record<string, unknown>;
+		const slowFolder = {
+			...withoutReadMany,
+			read: async (path: string, signal: AbortSignal) => {
+				if (path.endsWith("/app.toml")) {
+					inFlight += 1;
+					if (inFlight > maxInFlight) maxInFlight = inFlight;
+					await new Promise((resolve) => setTimeout(resolve, 2));
+					inFlight -= 1;
+				}
+				return base.read(path, signal);
+			},
+			readFile: async (...args: Parameters<typeof base.readFile>) => {
+				readFileCalls += 1;
+				return base.readFile(...args);
+			},
+		};
+		const signal = new AbortController().signal;
+		const first = await readApps(slowFolder as never, signal);
+		expect(first).toHaveLength(20);
+		expect(maxInFlight).toBeLessThanOrEqual(8);
+		expect(readFileCalls).toBe(20);
+
+		readFileCalls = 0;
+		const second = await readApps(slowFolder as never, signal, first);
+		expect(second).toHaveLength(20);
+		expect(readFileCalls).toBe(0);
+
+		const readManySpy = vi.fn(async (paths: readonly string[], sig: AbortSignal) =>
+			Promise.all(paths.map((path) => base.read(path, sig))),
+		);
+		const readSpy = vi.fn(base.read.bind(base));
+		const batchedFolder = { ...base, read: readSpy, readMany: readManySpy };
+		const third = await readApps(batchedFolder as never, signal, second);
+		expect(third).toHaveLength(20);
+		expect(readManySpy).toHaveBeenCalledTimes(1);
+		expect(readSpy).toHaveBeenCalledTimes(1);
+
+		const updatedFiles = { ...files, "apps/app-00/app.toml": 'name = "App 0 Updated"\nentry = "index.html"\n' };
+		const updatedBase = fakeFolder(updatedFiles);
+		let updatedReadFileCalls = 0;
+		const updatedFolder = {
+			...updatedBase,
+			read: async (path: string, sig: AbortSignal) => {
+				const answer = await updatedBase.read(path, sig);
+				if (path === "apps/app-00/app.toml" && answer.entry) {
+					return {
+						...answer,
+						entry: { ...answer.entry, version: "00000000-0000-4000-8000-000000000099" },
+					};
+				}
+				return answer;
+			},
+			readFile: async (...args: Parameters<typeof updatedBase.readFile>) => {
+				updatedReadFileCalls += 1;
+				return updatedBase.readFile(...args);
+			},
+		};
+		const fourth = await readApps(updatedFolder as never, signal, third);
+		expect(fourth).toHaveLength(20);
+		expect(updatedReadFileCalls).toBe(1);
+		expect(fourth.find((item) => item.name === "app-00")?.manifest?.name).toBe("App 0 Updated");
+		expect(fourth.find((item) => item.name === "app-01")?.manifest?.name).toBe("App 1");
+
+		const readMany404 = vi.fn(async () => {
+			throw new CloudMemberFolderError("Company folder is unavailable (404)", 404);
+		});
+		const read404Spy = vi.fn(base.read.bind(base));
+		const folder404 = { ...base, read: read404Spy, readMany: readMany404 };
+		const after404 = await readApps(folder404 as never, signal);
+		expect(after404).toHaveLength(20);
+		expect(readMany404).toHaveBeenCalledTimes(1);
+		expect(read404Spy).toHaveBeenCalledTimes(21);
+		const after404Again = await readApps(folder404 as never, signal, after404);
+		expect(after404Again).toHaveLength(20);
+		expect(readMany404).toHaveBeenCalledTimes(1);
+
+		const readMany503 = vi.fn(async () => {
+			throw new CloudMemberFolderError("Company folder is unavailable (503)", 503);
+		});
+		const folder503 = { ...base, read: vi.fn(base.read.bind(base)), readMany: readMany503 };
+		const after503 = await readApps(folder503 as never, signal);
+		expect(after503).toHaveLength(20);
+		expect(readMany503).toHaveBeenCalledTimes(1);
+		await readApps(folder503 as never, signal, after503);
+		expect(readMany503).toHaveBeenCalledTimes(2);
+	});
 });

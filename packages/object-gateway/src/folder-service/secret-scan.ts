@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 
 /**
  * The save check's matcher (5j-5 (a); RUNTIME-FOLDER-CODING-MACHINES.md, "Masking"): a coding machine's secret values
@@ -123,9 +123,9 @@ function foundRange(m: Matcher, bytes: Buffer, firstStart: number, last: number,
 /** One machine's secret values (the control socket's `secrets`), kept for this run only. */
 export class SecretSet {
 	readonly #key: Buffer;
-	/** Each value once, by its length, tag and whole. */
 	readonly #values: ReadonlyMap<string, SecretValue>;
 	#matcher: Matcher | undefined;
+	#digest: string | undefined;
 
 	constructor(key: Buffer, values: Iterable<SecretValue>) {
 		this.#key = Buffer.from(key);
@@ -136,6 +136,20 @@ export class SecretSet {
 
 	get size(): number {
 		return this.#values.size;
+	}
+
+	get digest(): string {
+		if (this.#digest === undefined) {
+			const hash = createHash("sha256");
+			hash.update(this.#key);
+			hash.update("\0");
+			for (const id of [...this.#values.keys()].sort()) {
+				hash.update(id);
+				hash.update("\0");
+			}
+			this.#digest = hash.digest("hex");
+		}
+		return this.#digest;
 	}
 
 	/** The same key and values: what was checked against one was checked against the other. */

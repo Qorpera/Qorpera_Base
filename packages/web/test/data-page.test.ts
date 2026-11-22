@@ -712,4 +712,232 @@ describe("the page's words for values and refusals", () => {
 		] as const)
 			expect(refusalWords(error)).toBe(words);
 	});
+
+	it("appends Show more rows incrementally, preserves scrolled pages and clears loading across live watch updates, and caches Intl formatters", async () => {
+		vi.useFakeTimers();
+		try {
+			const { calls } = fakeCalls(describedWith());
+			const watchResolves: Array<
+				(value: { changed: Array<{ index: number; answer: CloudMemberDataPage }> }) => void
+			> = [];
+			calls.watchTables.mockImplementation(
+				(_watches: unknown, signal: AbortSignal) =>
+					new Promise((resolve, reject) => {
+						watchResolves.push(resolve);
+						signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+					}),
+			);
+			let pendingMoreResolve: ((page: CloudMemberDataPage) => void) | undefined;
+			calls.rows.mockImplementation(async (asked: { after?: readonly unknown[] }) => {
+				if (!asked.after) {
+					return repairs(
+						[
+							[1, "Bike 1", 100, true],
+							[2, "Bike 2", 200, false],
+						],
+						true,
+					);
+				}
+				const cursor = Number(asked.after[0]);
+				if (cursor === 999) {
+					return new Promise<CloudMemberDataPage>((resolve) => {
+						pendingMoreResolve = resolve;
+					});
+				}
+				const nextId = cursor + 1;
+				return repairs([[nextId, `Bike ${nextId}`, nextId * 100, true]], cursor >= 1000 ? true : nextId < 8);
+			});
+
+			const controller = company(describedWith(), true);
+			const databases = new CompanyDatabases(
+				() => calls,
+				(next) => controller.store.set({ companyData: next }),
+				controller.signal,
+			);
+			const container = document.createElement("main");
+			document.body.append(container);
+			const draw = () => renderData(container, controller, databases);
+			draw();
+			cleanup.push(controller.store.subscribe(draw));
+			await vi.advanceTimersByTimeAsync(0);
+
+			const initialRows = [...container.querySelectorAll<HTMLElement>("button.data-row")];
+			expect(initialRows).toHaveLength(2);
+
+			button(container, "Show more").click();
+			await vi.advanceTimersByTimeAsync(0);
+			const afterFirstMore = [...container.querySelectorAll<HTMLElement>("button.data-row")];
+			expect(afterFirstMore).toHaveLength(3);
+			expect(afterFirstMore[0]).toBe(initialRows[0]);
+			expect(afterFirstMore[1]).toBe(initialRows[1]);
+
+			for (let i = 0; i < 4; i += 1) {
+				button(container, "Show more").click();
+				await vi.advanceTimersByTimeAsync(0);
+			}
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(7);
+
+			calls.rows.mockClear();
+			const firstWatch = watchResolves.shift();
+			firstWatch?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs(
+								[
+									[1, "Bike 1 Updated", 150, true],
+									[999, "Bike 999", 999, false],
+								],
+								true,
+							),
+							etag: "fedcba9876543210fedcba9876543210",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls.rows).toHaveBeenCalledTimes(1);
+			pendingMoreResolve?.(repairs([[1000, "Bike 1000", 1000, true]], true));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls.rows).toHaveBeenCalledTimes(5);
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(7);
+			expect(texts(container, "button.data-row .is-lead")).toContain("Bike 1004");
+			expect(container.querySelector(".data-more-rows")).toBeNull();
+
+			await vi.advanceTimersByTimeAsync(500);
+			const secondWatch = watchResolves.shift();
+			expect(secondWatch).toBeDefined();
+
+			calls.rows.mockImplementationOnce(
+				() =>
+					new Promise<CloudMemberDataPage>((resolve) => {
+						pendingMoreResolve = resolve;
+					}),
+			);
+			button(container, "Show more").click();
+			expect(container.querySelector(".data-more-rows")).not.toBeNull();
+			secondWatch?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs([[1, "Live Replace", 111, true]], true),
+							etag: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(container.querySelector(".data-more-rows")).toBeNull();
+			expect(button(container, "Show more")).toBeTruthy();
+			pendingMoreResolve?.(repairs([[50, "Stale page", 500, true]], false));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(container.querySelector(".data-more-rows")).toBeNull();
+			expect(texts(container, "button.data-row .is-lead")).not.toContain("Stale page");
+
+			shownValue(10, "number");
+			shownValue("2026-11-09", "date");
+			shownValue("2026-11-09T10:30:00Z", "time");
+			const numSpy = vi.spyOn(Intl, "NumberFormat");
+			const dateSpy = vi.spyOn(Intl, "DateTimeFormat");
+			shownValue(42.5, "number");
+			shownValue(99.1, "number");
+			shownValue("2026-11-10", "date");
+			shownValue("2026-11-10T11:45:00Z", "time");
+			expect(numSpy).not.toHaveBeenCalled();
+			expect(dateSpy).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("reconnects IntersectionObserver to the reused sentinel across incremental appends and failure retries", async () => {
+		const observed: Element[] = [];
+		let activeCallback: ((entries: Array<{ isIntersecting: boolean }>) => void) | undefined;
+		let disconnects = 0;
+		class FakeIntersectionObserver {
+			readonly #cb: (entries: Array<{ isIntersecting: boolean }>) => void;
+			constructor(cb: (entries: Array<{ isIntersecting: boolean }>) => void) {
+				this.#cb = cb;
+			}
+			observe(el: Element): void {
+				observed.push(el);
+				activeCallback = this.#cb;
+			}
+			disconnect(): void {
+				disconnects += 1;
+				if (activeCallback === this.#cb) activeCallback = undefined;
+			}
+		}
+		vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+		try {
+			const { calls } = fakeCalls(describedWith());
+			calls.watchTables.mockImplementation(() => new Promise(() => {}));
+			calls.rows
+				.mockResolvedValueOnce(
+					repairs(
+						[
+							[1, "Bike 1", 100, true],
+							[2, "Bike 2", 200, false],
+						],
+						true,
+					),
+				)
+				.mockResolvedValueOnce(repairs([[3, "Bike 3", 300, true]], true))
+				.mockRejectedValueOnce(new Error("temporary"))
+				.mockResolvedValueOnce(repairs([[4, "Bike 4", 400, true]], true))
+				.mockResolvedValueOnce(repairs([[5, "Bike 5", 500, true]], false));
+
+			const controller = company(describedWith(), true);
+			const databases = new CompanyDatabases(
+				() => calls,
+				(next) => controller.store.set({ companyData: next }),
+				controller.signal,
+			);
+			const container = document.createElement("main");
+			document.body.append(container);
+			const draw = () => renderData(container, controller, databases);
+			draw();
+			cleanup.push(controller.store.subscribe(draw));
+			await settle();
+
+			const initialRows = [...container.querySelectorAll<HTMLElement>("button.data-row")];
+			const sentinel = container.querySelector<HTMLElement>(".data-more")!;
+			expect(sentinel).not.toBeNull();
+			expect(sentinel.querySelector("button")).toBeNull();
+			expect(observed.at(-1)).toBe(sentinel);
+			observed.length = 0;
+
+			activeCallback?.([{ isIntersecting: true }]);
+			await settle();
+			const afterAppend = [...container.querySelectorAll<HTMLElement>("button.data-row")];
+			expect(afterAppend).toHaveLength(3);
+			expect(afterAppend[0]).toBe(initialRows[0]);
+			expect(afterAppend[1]).toBe(initialRows[1]);
+			expect(container.querySelector(".data-more")).toBe(sentinel);
+			expect(observed).toEqual([sentinel]);
+
+			activeCallback?.([{ isIntersecting: true }]);
+			await settle();
+			expect(button(container, "Try again")).toBeTruthy();
+			expect(activeCallback).toBeUndefined();
+			expect(observed).toEqual([sentinel]);
+
+			button(container, "Try again").click();
+			await settle();
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(4);
+			expect(container.querySelector(".data-more")).toBe(sentinel);
+			expect(observed).toEqual([sentinel, sentinel]);
+			expect(activeCallback).toBeDefined();
+
+			activeCallback?.([{ isIntersecting: true }]);
+			await settle();
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(5);
+			expect(container.querySelector(".data-more")).toBeNull();
+			expect(disconnects).toBeGreaterThanOrEqual(4);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
 });

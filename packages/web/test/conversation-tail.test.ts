@@ -243,6 +243,39 @@ describe("Show earlier", () => {
 		expect(store.get().earlierError).toBeUndefined();
 		expect(store.get().events).toHaveLength(400);
 	});
+
+	it("keeps paging older history past hidden receipts until enough new visible items are loaded", async () => {
+		const { api, controller } = company();
+		const history = transcript(1600, (n) => {
+			if (n > 1400) return message(n);
+			const offset = (1400 - n) % 200;
+			return offset < 80 ? message(n) : receipt(n);
+		});
+		vi.mocked(api.readSessionEventsTail).mockImplementation(history.tail);
+		const store = controller.conversation(session.sessionId, false);
+		await controller.loadConversation(session.sessionId);
+		expect(store.get().events).toHaveLength(200);
+		expect(store.get().projection.items).toHaveLength(200);
+
+		vi.mocked(api.readSessionEventsTail).mockClear();
+		await controller.loadEarlier(session.sessionId);
+		expect(vi.mocked(api.readSessionEventsTail).mock.calls.map((call) => call[1])).toEqual([1401, 1201]);
+		expect(store.get().events).toHaveLength(600);
+		expect(store.get().projection.items).toHaveLength(360);
+
+		const allReceipts = transcript(1400, (n) => (n > 1200 ? message(n) : receipt(n)));
+		const quiet = company();
+		vi.mocked(quiet.api.readSessionEventsTail).mockImplementation(allReceipts.tail);
+		const quietStore = quiet.controller.conversation(session.sessionId, false);
+		await quiet.controller.loadConversation(session.sessionId);
+		vi.mocked(quiet.api.readSessionEventsTail).mockClear();
+		await quiet.controller.loadEarlier(session.sessionId);
+		expect(vi.mocked(quiet.api.readSessionEventsTail).mock.calls.map((call) => call[1])).toEqual([
+			1201, 1001, 801, 601, 401,
+		]);
+		expect(quietStore.get().events).toHaveLength(1200);
+		expect(quietStore.get().hasEarlier).toBe(true);
+	});
 });
 
 describe("the thread view with unread history", () => {
@@ -534,5 +567,49 @@ describe("the two agents' view-only conversation", () => {
 		controller.conversation(pair).set({ hasEarlier: false });
 		await settle();
 		expect(transcript.el.querySelector(".thread-earlier-button")).toBeNull();
+	});
+
+	it("skips re-serializing and re-rendering on PairTranscriptView.update when inputs are unchanged", async () => {
+		const f = fixture();
+		const controller = new CompanyController(f.api, profileA, userA.id);
+		const coworker = { ...staff, id: id(97), displayName: "Helper" };
+		controller.store.set({ team, staff: [staff, coworker], sessions: [], loading: false });
+		const pair = id(98);
+		const reply: TranscriptItem = {
+			kind: "agent",
+			id: id(501),
+			sequence: 1,
+			text: "Done",
+			attachmentCount: 0,
+			phase: "final",
+			staffSpeaker: { runId: id(502), staffAgentId: staff.id, staffVersion: 1 },
+			createdAt: at(1),
+		};
+		controller.conversation(pair, false).set({
+			loading: false,
+			complete: true,
+			hasEarlier: false,
+			projection: { items: [reply], hiddenCount: 0, lastSequence: 1 },
+		});
+		vi.spyOn(controller, "loadConversation").mockResolvedValue();
+		const transcript = new PairTranscriptView(controller, pair, [coworker.id, staff.id], () => {});
+		document.body.append(transcript.el);
+		cleanup.push(() => {
+			transcript.dispose();
+			controller.stop();
+		});
+		const bubble = transcript.el.querySelector(".pair-messages .bubble");
+		expect(bubble).not.toBeNull();
+
+		const stringifySpy = vi.spyOn(JSON, "stringify");
+		transcript.update();
+		transcript.update();
+		expect(stringifySpy).not.toHaveBeenCalled();
+		expect(transcript.el.querySelector(".pair-messages .bubble")).toBe(bubble);
+
+		controller.store.set({ staff: [staff, { ...coworker, displayName: "Renamed Helper" }] });
+		transcript.update();
+		expect(stringifySpy).toHaveBeenCalled();
+		expect(transcript.el.textContent).toContain("Renamed Helper");
 	});
 });
