@@ -565,10 +565,15 @@ begin
 	where active.singleton;
 	v_claude := public.qorpera_member_claude_default_available(p_profile_id, v_user);
 	v_gemini := public.qorpera_member_gemini_default_available(p_profile_id, v_user);
-	if v_row.user_id is null and v_gemini then
-		select exists (select 1 from public.qorpera_gemini_keys as key
-			where key.owner_user_id = v_user and key.status = 'active' and key.default_for_chats)
-		into v_gemini_legacy_default;
+	if v_row.conversation_model is null and v_gemini then
+		if p_profile_id is not null then
+			v_gemini_legacy_default := coalesce(
+				(public.qorpera_member_gemini_key_open(p_profile_id, v_user)).default_for_chats, false);
+		else
+			select exists (select 1 from public.qorpera_gemini_keys as key
+				where key.owner_user_id = v_user and key.status = 'active' and key.default_for_chats)
+			into v_gemini_legacy_default;
+		end if;
 	end if;
 	v_conv_model := case
 		when v_row.conversation_model = 'gemini-4-neon' and v_gemini then 'gemini-4-neon'

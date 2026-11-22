@@ -397,4 +397,19 @@ begin
 	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'gpt-6.2-sol'
 		and v_defaults ->> 'codingModel' = 'claude-fable-5-2',
 		'5: revoking Gemini key resets conversational default without touching coding default: ' || v_defaults::text);
+
+	v_ticket := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_begin_gemini_key_save(%L, true, 10000)', pg_temp.md_profile()));
+	v_cap_sha := encode(extensions.digest(v_ticket ->> 'capability', 'sha256'), 'hex');
+	set local session authorization qorpera_secret_broker;
+	v_described := public.qorpera_describe_gemini_key_ticket(
+		v_authority.id, v_authority.capability_sha256, (v_ticket ->> 'ticketId')::uuid, v_cap_sha);
+	v_saved := public.qorpera_complete_gemini_key_save(
+		v_authority.id, v_authority.capability_sha256, (v_ticket ->> 'ticketId')::uuid, v_cap_sha,
+		v_described ->> 'keyId', v_envelope_b64, v_envelope_sha, 'AQ...cZvy');
+	reset session authorization;
+	v_defaults := pg_temp.md_call(pg_temp.md_owner(),
+		format('select public.qorpera_get_member_default_models(%L)', pg_temp.md_profile()));
+	perform pg_temp.base_assert(v_defaults ->> 'conversationModel' = 'gemini-4-neon',
+		'5: get_member_default_models agrees with resolvers when key saved with default_for_chats=true and conversation_model is null: ' || v_defaults::text);
 end $$;
