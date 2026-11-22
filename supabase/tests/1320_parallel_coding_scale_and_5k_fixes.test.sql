@@ -299,10 +299,21 @@ begin
 		from public.qorpera_coding_executors where environment_id = v_env_spread and owner = 'exec-1320-big'),
 		'sane non-zero defaults and max_attached_sessions=6 applied to new executors');
 	perform pg_temp.t1320_ok(pg_temp.t1320_error(format('select public.qorpera_configure_coding_session_size(%L, %L, 1000, 2147483648, 0)',
-		v_env_spread, 'exec-1320-big')) like '23514 %'
+		v_env_spread, 'exec-1320-big')) like '22023 %'
 		and pg_temp.t1320_error(format('select public.qorpera_configure_coding_session_size(%L, %L, 1000, 2147483648, 65)',
-		v_env_spread, 'exec-1320-big')) like '23514 %',
-		'max_attached_sessions check constraint enforces 1..64');
+		v_env_spread, 'exec-1320-big')) like '22023 %'
+		and pg_temp.t1320_error(format('select public.qorpera_configure_coding_session_size(%L, %L, 1000, 2147483648, null::integer)',
+		v_env_spread, 'exec-1320-big')) like '22023 %'
+		and pg_temp.t1320_error(format('select public.qorpera_configure_coding_session_size(%L, %L, -1, 2147483648, 6)',
+		v_env_spread, 'exec-1320-big')) like '22023 %'
+		and pg_temp.t1320_error(format('select public.qorpera_configure_coding_session_size(%L, %L, 1000, null::bigint, 6)',
+		v_env_spread, 'exec-1320-big')) like '22023 %',
+		'5-arg qorpera_configure_coding_session_size validates inputs with 22023');
+	perform pg_temp.t1320_ok(not has_function_privilege('service_role',
+			'public.qorpera_coding_machine_full(public.qorpera_coding_machines,uuid,bigint,bigint,integer,boolean)', 'execute')
+		and not has_function_privilege('service_role',
+			'public.qorpera_coding_machine_full(public.qorpera_coding_machines,uuid,bigint,bigint,integer)', 'execute'),
+		'internal qorpera_coding_machine_full overloads stay revoked from API roles');
 	perform public.qorpera_configure_coding_session_size(v_env_spread, 'exec-1320-big', 1000, 2147483648, 5);
 	perform public.qorpera_coding_executor_enroll(v_env_enroll, 'codex');
 	perform pg_temp.t1320_ok(exists (select 1 from public.qorpera_coding_executors
@@ -429,8 +440,11 @@ begin
 		and (select vm_allocation_id = v_m2 from public.qorpera_coding_sessions where worker_id = v_s_rehome)
 		and (select machine_id = v_m2 from public.qorpera_coding_session_loads where worker_id = v_s_rehome)
 		and exists (select 1 from public.qorpera_folder_run_read_records where run_id = v_turn
-			and resource_id = (v_read -> 'authority' ->> 'resourceId')::uuid),
-		format('detached session re-homed off full VM #1 onto existing non-full VM #2 and took in read set: %s', v_pr));
+			and resource_id = (v_read -> 'authority' ->> 'resourceId')::uuid)
+		and exists (select 1 from public.qorpera_coding_session_events event where event.worker_id = v_s_rehome
+			and event.kind = 'step' and event.actor = 'executor' and event.body ->> 'reason' = 'MACHINE_NEW_DISK'
+			and (event.body ->> 'rehomedFrom')::uuid = v_m1 and (event.body ->> 'rehomedTo')::uuid = v_m2),
+		format('detached session re-homed off structurally full VM #1 onto VM #2, took in read set, and emitted MACHINE_NEW_DISK: %s', v_pr));
 	v_att := public.qorpera_attach_coding_session(v_s_rehome,
 		(select lease_token from public.qorpera_coding_sessions where worker_id = v_s_rehome),
 		v_pr ->> 'bindingText', pg_temp.t1320_storage(v_s_rehome, v_node2, '/nas/coding-2'), v_node2, null);
@@ -445,12 +459,62 @@ begin
 	v_m3 := (v_p4 ->> 'machineId')::uuid;
 	perform pg_temp.t1320_ok(v_p4 ->> 'state' = 'planned' and v_m3 not in (v_m1, v_m2)
 		and (select number = 3 from public.qorpera_coding_machines where id = v_m3)
-		and (select vm_allocation_id = v_m3 from public.qorpera_coding_sessions where worker_id = v_s_rehome2),
-		format('detached session re-homed off full VM #1 by spawning overflow VM #3 while VM #1 stays awake: %s', v_p4));
+		and (select vm_allocation_id = v_m3 from public.qorpera_coding_sessions where worker_id = v_s_rehome2)
+		and exists (select 1 from public.qorpera_coding_session_events event where event.worker_id = v_s_rehome2
+			and event.kind = 'step' and event.actor = 'executor' and event.body ->> 'reason' = 'MACHINE_NEW_DISK'
+			and (event.body ->> 'rehomedFrom')::uuid = v_m1 and (event.body ->> 'rehomedTo')::uuid = v_m3),
+		format('detached session re-homed off structurally full VM #1 by spawning overflow VM #3 with MACHINE_NEW_DISK: %s', v_p4));
 	v_att := public.qorpera_attach_coding_session(v_s_rehome2,
 		(select lease_token from public.qorpera_coding_sessions where worker_id = v_s_rehome2),
 		v_p4 ->> 'bindingText', pg_temp.t1320_storage(v_s_rehome2, v_node1, '/nas/coding-1'), v_node1, null);
 	perform pg_temp.t1320_ok(v_att ->> 'state' = 'attached', 'overflow re-homed session attaches on VM #3');
+
+	v_pr := public.qorpera_record_coding_machine_load(v_m3, 'exec-1320-1', v_p4 ->> 'bindingText', v_node1,
+		jsonb_build_object('schema', 'qorpera.coding-machine-load/v1', 'full', true,
+			'sessions', jsonb_build_array(jsonb_build_object('workerId', v_s_rehome2, 'cpuMillis', 1800, 'memoryBytes', 1048576))));
+	perform pg_temp.t1320_ok((v_pr ->> 'sessions')::integer = 1
+		and (select full_until > clock_timestamp() from public.qorpera_coding_machines where id = v_m3)
+		and (select cpu_millis = 1800 and memory_bytes = 1048576 from public.qorpera_coding_session_loads where worker_id = v_s_rehome2),
+		'load records cpu_millis=1800 and full_until');
+	v_pr := public.qorpera_record_coding_machine_load(v_m3, 'exec-1320-1', v_p4 ->> 'bindingText', v_node1,
+		jsonb_build_object('schema', 'qorpera.coding-machine-load/v1', 'full', null,
+			'sessions', jsonb_build_array(jsonb_build_object('workerId', v_s_rehome2, 'cpuMillis', null, 'memoryBytes', 2097152))));
+	perform pg_temp.t1320_ok((v_pr ->> 'sessions')::integer = 1
+		and (select full_until > clock_timestamp() from public.qorpera_coding_machines where id = v_m3)
+		and (select cpu_millis = 1800 and memory_bytes = 2097152 from public.qorpera_coding_session_loads where worker_id = v_s_rehome2),
+		'memory-only load with full=null and cpuMillis=null preserves existing full_until and cpu_millis');
+	update public.qorpera_coding_machines set full_until = null where id = v_m3;
+	v_pr := public.qorpera_record_coding_machine_load(v_m3, 'exec-1320-1', v_p4 ->> 'bindingText', v_node1,
+		jsonb_build_object('schema', 'qorpera.coding-machine-load/v1', 'full', true,
+			'sessions', jsonb_build_array(jsonb_build_object('workerId', v_s_rehome2, 'cpuMillis', null, 'memoryBytes', 3145728))));
+	perform pg_temp.t1320_ok((v_pr ->> 'sessions')::integer = 1
+		and (select full_until > clock_timestamp() from public.qorpera_coding_machines where id = v_m3)
+		and (select cpu_millis = 1800 and memory_bytes = 3145728 from public.qorpera_coding_session_loads where worker_id = v_s_rehome2),
+		'memory-only load with full=true and cpuMillis=null latches full_until while preserving cpu_millis');
+	perform pg_temp.t1320_ok(pg_temp.t1320_error(format(
+		'select public.qorpera_record_coding_machine_load(%L, %L, %L, %L, %L::jsonb)',
+		v_m3, 'exec-1320-1', v_p4 ->> 'bindingText', v_node1,
+		'{"schema":"qorpera.coding-machine-load/v1","sessions":[]}')) = '22023 Coding machine load invalid'
+		and pg_temp.t1320_error(format(
+		'select public.qorpera_record_coding_machine_load(%L, %L, %L, %L, %L::jsonb)',
+		v_m3, 'exec-1320-1', v_p4 ->> 'bindingText', v_node1,
+		jsonb_build_object('schema', 'qorpera.coding-machine-load/v1', 'full', false,
+			'sessions', jsonb_build_array(jsonb_build_object('workerId', v_s_rehome2, 'memoryBytes', 1024)))::text))
+		= '22023 Coding machine load invalid',
+		'missing full or cpuMillis keys are still rejected with 22023');
+
+	v_s4 := pg_temp.t1320_make_session(v_env, 'exec-1320-1');
+	set local session_replication_role = replica;
+	update public.qorpera_coding_sessions set vm_allocation_id = v_m3, attached_machine_id = null, attached_at = null,
+		attachment_token = null, attachment_until = null, attachment_turn = null
+	where worker_id = v_s4;
+	update public.qorpera_coding_session_loads set cpu_millis = 500, memory_bytes = 524288 where worker_id = v_s_rehome2;
+	set local session_replication_role = origin;
+	v_pr := public.qorpera_plan_coding_machine(v_s4,
+		(select lease_token from public.qorpera_coding_sessions where worker_id = v_s4), v_node1, v_digest);
+	perform pg_temp.t1320_ok(v_pr ->> 'state' = 'planned' and (v_pr ->> 'machineId')::uuid = v_m3
+		and not exists (select 1 from public.qorpera_coding_session_events where worker_id = v_s4),
+		format('transient full_until hint alone never moves an already-homed detached session: %s', v_pr));
 
 	v_s_retire := pg_temp.t1320_make_session(v_env, 'exec-1320-1');
 	set local session_replication_role = replica;
@@ -465,8 +529,11 @@ begin
 	v_m4 := (v_p5 ->> 'machineId')::uuid;
 	perform pg_temp.t1320_ok(v_p5 ->> 'state' = 'planned' and v_m4 not in (v_m1, v_m2, v_m3)
 		and (select number = 4 from public.qorpera_coding_machines where id = v_m4)
-		and (select vm_allocation_id = v_m4 from public.qorpera_coding_sessions where worker_id = v_s_retire),
-		format('expired-attachment session re-homed off retiring VM #3 onto VM #4: %s', v_p5));
+		and (select vm_allocation_id = v_m4 from public.qorpera_coding_sessions where worker_id = v_s_retire)
+		and exists (select 1 from public.qorpera_coding_session_events event where event.worker_id = v_s_retire
+			and event.kind = 'step' and event.actor = 'executor' and event.body ->> 'reason' = 'MACHINE_NEW_DISK'
+			and (event.body ->> 'rehomedFrom')::uuid = v_m3 and (event.body ->> 'rehomedTo')::uuid = v_m4),
+		format('expired-attachment session re-homed off retiring VM #3 onto VM #4 with MACHINE_NEW_DISK: %s', v_p5));
 	v_att := public.qorpera_attach_coding_session(v_s_retire,
 		(select lease_token from public.qorpera_coding_sessions where worker_id = v_s_retire),
 		v_p5 ->> 'bindingText', pg_temp.t1320_storage(v_s_retire, v_node1, '/nas/coding-1'), v_node1, null);
@@ -478,13 +545,17 @@ begin
 		and v_pr ->> 'machineId' = v_m3::text,
 		format('actively attached session on retiring VM #3 still gets MACHINE_RETIRING: %s', v_pr));
 
-	v_s4 := pg_temp.t1320_make_session(v_env, 'exec-1320-1');
 	update public.qorpera_coding_machines set retire_requested_at = clock_timestamp() where id = v_m4;
 	v_s5 := pg_temp.t1320_make_session(v_env, 'exec-1320-2');
 	v_pr := public.qorpera_plan_coding_machine(v_s5,
 		(select lease_token from public.qorpera_coding_sessions where worker_id = v_s5), v_node2, v_digest);
 	perform pg_temp.t1320_ok(v_pr ->> 'state' = 'planned' and (v_pr ->> 'machineId')::uuid not in (v_m1, v_m2, v_m3, v_m4),
 		format('node 2 skips full/retiring VMs across nodes and allocates number 5: %s', v_pr));
+
+	perform pg_temp.t1320_ok(
+		position('rehomedFrom' in pg_get_functiondef('public.qorpera_read_coding_turn_context(jsonb)'::regprocedure)) > 0
+		and position('20260930515000' in pg_get_functiondef('public.qorpera_read_coding_turn_context(jsonb)'::regprocedure)) > 0,
+		'qorpera_read_coding_turn_context surfaces rehomedFrom events as machine.newDisk while preserving 20260930515000');
 end $$;
 
 rollback;

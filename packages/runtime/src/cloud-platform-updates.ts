@@ -165,7 +165,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-19",
 		title: "Claude Code workers side by side",
-		text: "A member's Claude Code workers now run up to four at once instead of one after another; a fifth waits until one of them ends, and still never moves to Codex while it waits. Each works on the Claude login that member has in use when it starts, and the runs on one login share its plan's limits, so split work into parts that can go on side by side, and keep to fewer when the member's plan is near its limit.",
+		text: "A member's Claude Code workers now run in parallel up to that member's configured parallel limit instead of one after another; extras wait in the queue until one ends, and still never move to Codex while waiting. Each works on the Claude login that member has in use when it starts, and the runs on one login share its plan's limits, so split work into parts that can go on side by side, and keep to fewer when the member's plan is near its limit.",
 	},
 	{
 		id: "app-pictures-webp",
@@ -264,6 +264,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		date: "2026-11-21",
 		title: "Visual screenshot inspection in coding sessions",
 		text: "Coding sessions can now visually inspect screenshots of web interfaces they build before handing work in. Inside a coding session, the agent can start a local dev or preview server, capture PNG, JPEG, or WebP screenshots with headless Chromium or Playwright across desktop and mobile viewports, and view the rendered images directly in its context to catch layout, styling, and responsive bugs before committing. Ask for visual verification when dispatching coding work on websites or UI changes.",
+	},
+	{
+		id: "claude-code-parallel-scale",
+		kind: "behaviour",
+		date: "2026-11-22",
+		title: "Higher parallel worker limits per member",
+		text: "Claude Code workers are no longer capped at four per member: operators can raise the global or per-member parallel limit up to 64, and extra workers queue cleanly instead of failing. Dispatch as many independent parallel workers or coding sessions as the task benefits from without artificially capping batches at four; coding sessions automatically spread across additional machines when one is busy.",
 	},
 ]);
 

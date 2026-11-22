@@ -9550,7 +9550,7 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		expect(await step(40_000, 106_000_000, rebooted)).toBe(true);
 	});
 
-	it("decouples #recordMachineLoad from #keepMachine observation deadline aborts", async () => {
+	it("decouples #recordMachineLoad from #keepMachine observation deadline aborts without erasing CPU", async () => {
 		const f = await folderFixture();
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.host.endTurn(f.claim);
@@ -9590,11 +9590,79 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 				sessions: [
 					{
 						workerId: f.claim.workerId,
-						cpuMillis: 0,
+						cpuMillis: null,
 						memoryBytes: 104_857_600 + 20_971_520 + 314_572_800,
 					},
 				],
 			},
 		});
+		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   6291456 kB\n");
+		expect(await impatient.keep(f.signal)).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "keep",
+				state: "failed",
+				code: "CODING_HOST_KEEP_DEADLINE",
+			},
+		]);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_machine_id: f.machine.machineId,
+			p_load: {
+				schema: "qorpera.coding-machine-load/v1",
+				full: null,
+				sessions: [
+					{
+						workerId: f.claim.workerId,
+						cpuMillis: null,
+						memoryBytes: 104_857_600 + 20_971_520 + 314_572_800,
+					},
+				],
+			},
+		});
+	});
+
+	it("bounds and parallelizes fallback uid lookups and negative-caches missing user.json per boot", async () => {
+		const f = await folderFixture();
+		const second = f.another();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
+		f.host.endTurn(f.claim);
+		f.host.endTurn(second);
+		f.state.listed = [f.entry()];
+		const restarted = new LxdCodingExecutorHost({ ...f.options, folder: f.folder, keepDeadlineMs: 120 });
+		const readInstanceFile = vi.mocked(f.client.readInstanceFile).getMockImplementation()!;
+		const userJsonReads: string[] = [];
+		vi.mocked(f.client.readInstanceFile).mockImplementation(async (project, name, path, limit, signal) => {
+			if (path.endsWith("/user.json")) {
+				userJsonReads.push(path);
+				throw new Error("Missing file");
+			}
+			return readInstanceFile(project, name, path, limit, signal);
+		});
+		await restarted.keep(f.signal);
+		expect(userJsonReads).toHaveLength(2);
+		await restarted.keep(f.signal);
+		expect(userJsonReads).toHaveLength(2);
+		const rebooted = randomUUID();
+		f.files.set("/proc/sys/kernel/random/boot_id", {
+			uid: 0,
+			gid: 0,
+			mode: 0o444,
+			content: Buffer.from(`${rebooted}\n`),
+		});
+		mocked.guestStatus.mockResolvedValue(f.status([], { bootId: rebooted, uptimeMs: 10_000 }));
+		await restarted.keep(f.signal);
+		expect(userJsonReads).toHaveLength(4);
+
+		const stalledHost = new LxdCodingExecutorHost({ ...f.options, folder: f.folder, keepDeadlineMs: 120 });
+		mocked.guestStatus.mockImplementation(() => new Promise(() => {}));
+		vi.mocked(f.client.readInstanceFile).mockImplementation(async (project, name, path, limit, signal) => {
+			if (path.endsWith("/user.json")) return new Promise(() => {});
+			return readInstanceFile(project, name, path, limit, signal);
+		});
+		const loadsBefore = f.calls("qorpera_record_coding_machine_load").length;
+		await stalledHost.keep(f.signal);
+		expect(f.calls("qorpera_record_coding_machine_load")).toHaveLength(loadsBefore + 1);
 	});
 });

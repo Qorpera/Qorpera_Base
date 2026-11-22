@@ -2542,10 +2542,13 @@ files. So a dispatch or a follow-up leaves its row active with no occurrence, an
   3. `qorpera_folder_admit_wakes`;
   4. one block per worker: the dispatch wake of a row with none (a worker with `harness: claude-code` first takes its
      member's Claude Code lease under the id its wake gets, `qorpera_claude_worker_lease_take`, 20260930770000: up to
-     `qorpera_claude_parallel_runs.cap` Claude Code runs per member at once, across all of the member's Claude logins
-     (20260930810000: one slot row per live run, the first free slot up to the cap, under a per-member advisory lock; the
-     row records the worker's Claude login at the take, which the run keeps to its end; the cap is 1 until the release
-     sets 4); a take
+     `qorpera_claude_worker_run_cap(member_user_id)` Claude Code runs per member at once, across all of the member's
+     Claude logins (20260930810000 and 20260930832000: effective cap is `coalesce(qorpera_claude_member_parallel_caps.cap,
+     qorpera_claude_parallel_runs.cap)` with range `1..64`; one slot row per live run in `qorpera_claude_worker_leases`
+     slots `1..64`, taking the first free slot up to the effective cap under a per-member advisory lock; the row records
+     the worker's Claude login at the take, which the run keeps to its end; operators configure global or per-member caps
+     via `service_role`-only `qorpera_set_claude_parallel_cap(smallint, uuid)` and read them via
+     `qorpera_get_claude_parallel_cap(uuid)`); a take
      lost to another drain is `skipped`, and the worker starts on a later pass. Its wake's payload names `harness: claude-code`, which no Codex worker's carries, and, when the worker recorded
      its conversation's Claude pick, `claude: {model, effort}`, 20260930784000; a defaulted worker that a Claude Code run
      handed back with `qorpera_claude_worker_fall_back` (a Claude-side block: signed out, not open, plan limit, could not

@@ -482,6 +482,7 @@ const CODING_LOAD_CPU_FULL_PERCENT = 85;
 const CODING_LOAD_MEMORY_FULL_PERCENT = 80;
 const CODING_LOAD_MEMINFO_AVAILABLE_MIN_PERCENT = 15;
 const CODING_LOAD_CPU_HYSTERESIS_SAMPLES = 3;
+const CODING_LOAD_UID_LOOKUP_MS = 2_000;
 const CGROUP_MEMORY_STAT_PATTERNS = [
 	/^anon ([0-9]{1,15})$/m,
 	/^shmem ([0-9]{1,15})$/m,
@@ -817,6 +818,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	readonly #attachments = new Map<string, Attachment>();
 	readonly #samples = new Map<string, SessionSample>();
 	readonly #cpuHighSamples = new Map<string, { bootId: string; count: number }>();
+	readonly #folderUidCache = new Map<string, { bootId: string; uid: number | null }>();
 	readonly #leaseWork = new Map<string, Promise<unknown>>();
 	/** Per session, the serial of the last attach this process recorded: a
 	 * keeper pass leaves a session a turn attached during the pass to that turn. */
@@ -3766,7 +3768,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				this.#attachments.delete(workerId);
 				this.#attachSerials.delete(workerId);
 				this.#samples.delete(workerId);
+				this.#folderUidCache.delete(workerId);
 			}
+		for (const workerId of this.#folderUidCache.keys())
+			if (!kept.has(workerId) && !this.#attachments.has(workerId)) this.#folderUidCache.delete(workerId);
 		const released = this.#released;
 		this.#released = [];
 		return [...released, ...unplanned, ...held, ...outcomes];
@@ -3987,7 +3992,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		}
 		// WHY: Run load reporting under its own deadline so a slow or timed-out observation never suppresses fullness reporting.
 		const loadDeadline = AbortSignal.any([passSignal, AbortSignal.timeout(keepMs)]);
-		const loadSessions = activeCpu ?? entry.attached.map(({ workerId }) => ({ workerId, cpuMillis: 0 }));
+		const loadSessions: readonly { workerId: string; cpuMillis: number | null }[] =
+			activeCpu ?? entry.attached.map(({ workerId }) => ({ workerId, cpuMillis: null }));
 		const loadOutcomes = await abortable(
 			this.#recordMachineLoad(machine, bindingText, observedBootId, loadSessions, activeCpu !== null, loadDeadline),
 			loadDeadline,
@@ -4006,12 +4012,34 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		machine: Readonly<LxdCodingMachineBinding>,
 		bindingText: string,
 		bootId: string | null,
-		sessions: readonly { workerId: string; cpuMillis: number }[],
+		sessions: readonly { workerId: string; cpuMillis: number | null }[],
 		cpuObserved: boolean,
 		signal: AbortSignal,
 	): Promise<void> {
 		const name = lxdCodingMachineName(machine.machineId);
 		const folder = this.#options.folder;
+		const resolvedUids = new Map<string, number>();
+		if (folder) {
+			const missingUidWorkers: string[] = [];
+			for (const { workerId } of sessions) {
+				const attachment = this.#attachments.get(workerId);
+				const knownUid =
+					attachment && (bootId === null || attachment.bootId === bootId) && attachment.folder
+						? attachment.folder.uid
+						: null;
+				if (knownUid !== null) resolvedUids.set(workerId, knownUid);
+				else missingUidWorkers.push(workerId);
+			}
+			if (missingUidWorkers.length > 0) {
+				const lookedUp = await Promise.all(
+					missingUidWorkers.map(async (workerId) => ({
+						workerId,
+						uid: await this.#adoptedFolderUid(machine, workerId, undefined, bootId, signal),
+					})),
+				);
+				for (const { workerId, uid } of lookedUp) if (uid !== null) resolvedUids.set(workerId, uid);
+			}
+		}
 		const groupsByWorker = new Map<string, string[]>();
 		const allGroups: string[] = [];
 		for (const { workerId } of sessions) {
@@ -4021,12 +4049,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			];
 			if (folder) {
 				paths.push(`/sys/fs/cgroup/system.slice/qorpera-folder-${worker32}.service/memory.stat`);
-				const attachment = this.#attachments.get(workerId);
-				const uid =
-					attachment && (bootId === null || attachment.bootId === bootId) && attachment.folder
-						? attachment.folder.uid
-						: await this.#adoptedFolderUid(machine, workerId, undefined, signal);
-				if (uid !== null) paths.push(`/sys/fs/cgroup/user.slice/user-${uid}.slice/memory.stat`);
+				const uid = resolvedUids.get(workerId);
+				if (uid !== undefined) paths.push(`/sys/fs/cgroup/user.slice/user-${uid}.slice/memory.stat`);
 			}
 			groupsByWorker.set(workerId, paths);
 			allGroups.push(...paths);
@@ -4045,7 +4069,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			for (const path of groupsByWorker.get(workerId) ?? [])
 				memoryBytes += cgroupMemoryStatBytes(stats.get(path) ?? "");
 			memoryBytes = Math.min(CODING_LOAD_MAX_MEMORY_BYTES, memoryBytes);
-			totalCpuMillis += cpuMillis;
+			if (cpuMillis !== null) totalCpuMillis += cpuMillis;
 			totalMemoryBytes += memoryBytes;
 			return { workerId, cpuMillis, memoryBytes };
 		});
@@ -4062,7 +4086,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			}
 		}
 		const memoryFull = totalMemoryBytes * 100 >= machine.memoryBytes * CODING_LOAD_MEMORY_FULL_PERCENT;
-		const full = meminfoFull || memoryFull || cpuFull;
+		const full: boolean | null = cpuObserved
+			? meminfoFull || memoryFull || cpuFull
+			: meminfoFull || memoryFull
+				? true
+				: null;
 		const recorded = record(
 			await this.#call(
 				"qorpera_record_coding_machine_load",
@@ -4161,7 +4189,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			const folder =
 				known.folder ??
 				(this.#options.folder
-					? await this.#adoptedFolderUid(machine, workerId, item, signal).then((uid) =>
+					? await this.#adoptedFolderUid(machine, workerId, item, bootId, signal).then((uid) =>
 							uid !== null ? { uid } : undefined,
 						)
 					: undefined);
@@ -4172,7 +4200,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			this.#attachments.set(workerId, next);
 			return next;
 		}
-		const folderUid = this.#options.folder ? await this.#adoptedFolderUid(machine, workerId, item, signal) : null;
+		const folderUid = this.#options.folder
+			? await this.#adoptedFolderUid(machine, workerId, item, bootId, signal)
+			: null;
 		const adopted: Attachment = {
 			workerId,
 			machine,
@@ -4193,24 +4223,47 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		machine: Readonly<LxdCodingMachineBinding>,
 		workerId: string,
 		item: Record<string, unknown> | undefined,
+		bootId: string | null,
 		signal: AbortSignal,
 	): Promise<number | null> {
 		const fromSql = validGuestUid(item?.guestUid);
-		if (fromSql !== null) return fromSql;
+		if (fromSql !== null) {
+			if (bootId !== null) this.#folderUidCache.set(workerId, { bootId, uid: fromSql });
+			return fromSql;
+		}
+		if (bootId !== null) {
+			const cached = this.#folderUidCache.get(workerId);
+			if (cached && cached.bootId === bootId) return cached.uid;
+		}
+		// WHY: Bound fallback guest file reads so slow lookups cannot exhaust loadDeadline before readCodingMachineMemory runs.
+		const lookupMs = Math.min(
+			CODING_LOAD_UID_LOOKUP_MS,
+			Math.max(10, Math.floor((this.#options.keepDeadlineMs ?? CODING_KEEP_MACHINE_MS) / 4)),
+		);
+		const lookupDeadline = AbortSignal.any([signal, AbortSignal.timeout(lookupMs)]);
 		try {
-			const file = await this.#options.client.readInstanceFile(
-				machine.project,
-				lxdCodingMachineName(machine.machineId),
-				`${CODING_GUEST.state}/sessions/${workerId.replaceAll("-", "")}/user.json`,
-				1024,
-				signal,
+			const file = await abortable(
+				this.#options.client.readInstanceFile(
+					machine.project,
+					lxdCodingMachineName(machine.machineId),
+					`${CODING_GUEST.state}/sessions/${workerId.replaceAll("-", "")}/user.json`,
+					1024,
+					lookupDeadline,
+				),
+				lookupDeadline,
 			);
-			if (file.uid !== 0 || file.gid !== 0) return null;
-			const parsed = record(JSON.parse(file.content.toString("utf8")));
-			if (parsed.schema !== "qorpera.coding-guest-session-user/v1") return null;
-			return validGuestUid(parsed.uid);
+			const uid =
+				file.uid === 0 && file.gid === 0
+					? (() => {
+							const parsed = record(JSON.parse(file.content.toString("utf8")));
+							return parsed.schema === "qorpera.coding-guest-session-user/v1" ? validGuestUid(parsed.uid) : null;
+						})()
+					: null;
+			if (bootId !== null) this.#folderUidCache.set(workerId, { bootId, uid });
+			return uid;
 		} catch (error) {
 			if (signal.aborted) throw error;
+			if (bootId !== null && !lookupDeadline.aborted) this.#folderUidCache.set(workerId, { bootId, uid: null });
 			return null;
 		}
 	}
