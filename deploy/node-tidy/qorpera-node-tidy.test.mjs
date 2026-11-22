@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { agentPins, parseConfig, planImages, planStaging, readHoldDir, tidy } from "./qorpera-node-tidy.mjs";
+import { agentPins, nodeLxd, parseConfig, planImages, planStaging, readHoldDir, tidy } from "./qorpera-node-tidy.mjs";
 
 const HOUR = 60 * 60_000;
 const now = Date.parse("2026-09-23T18:00:00.000Z");
@@ -230,7 +231,7 @@ test("a refusal deletes nothing, not even old transfer files", async () => {
 });
 
 /** The node agent's layout: releases/<n>/release.json, current, roles/provider. */
-async function agentLayout(root, releases, { current, provider }) {
+async function agentLayout(root, releases, { current, provider, previous }) {
 	const agent = join(root, "opt-qorpera-node");
 	await mkdir(join(agent, "roles"), { recursive: true });
 	for (const [revision, character] of Object.entries(releases)) {
@@ -241,6 +242,7 @@ async function agentLayout(root, releases, { current, provider }) {
 	await mkdir(join(agent, "releases", ".stage-x"));
 	await symlink(`releases/${current}`, join(agent, "current"));
 	if (provider !== undefined) await symlink(`../releases/${provider}`, join(agent, "roles", "provider"));
+	if (previous !== undefined) await symlink(`releases/${previous}`, join(agent, "previous"));
 	return agent;
 }
 
@@ -522,6 +524,82 @@ test("readHoldDir fails closed on unsafe ownership/mode, unreadable dir, non-dir
 		}
 	} finally {
 		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("keeps the agent's explicit previous rollback image even when an abandoned higher revision exists", async () => {
+	const node = await nodeFixture();
+	try {
+		const agentRoot = await agentLayout(
+			node.root,
+			{ 10: "a", 11: "b", 12: "c" },
+			{ current: 12, provider: 12, previous: 10 },
+		);
+		const lxd = {
+			async images() {
+				return [image("a", 300), image("b", 200), image("c", 100)];
+			},
+			async instances() {
+				return [];
+			},
+			async deleteImage() {},
+		};
+		const systemd = {
+			async units() {
+				return [];
+			},
+			async installedUnits() {
+				return [];
+			},
+			async startPaths() {
+				return [];
+			},
+		};
+		const report = await tidy({
+			config: config({ agentRoot, keepFingerprints: [] }),
+			apply: false,
+			lxd,
+			systemd,
+			now,
+		});
+		assert.equal(report.refusal, null);
+		assert.deepEqual(
+			Object.fromEntries(report.keep.map((kept) => [kept.fingerprint[0], kept.reason])),
+			{ a: "previous runtime pin", c: "live runtime pin" },
+		);
+		assert.deepEqual(
+			report.remove.map((removed) => removed.fingerprint[0]),
+			["b"],
+		);
+	} finally {
+		await rm(node.root, { recursive: true, force: true });
+	}
+});
+
+test("nodeLxd rejects truncated socket responses and HTTP 500 errors promptly", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "qorpera-tidy-lxd-"));
+	const sock = join(dir, "lxd.sock");
+	let mode = "truncate";
+	const server = createServer((socket) => {
+		socket.once("data", () => {
+			if (mode === "truncate") {
+				socket.write('HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{"meta');
+				socket.destroy();
+			} else {
+				const payload = JSON.stringify({ type: "error", error: "daemon shutting down" });
+				socket.end(`HTTP/1.1 503 Service Unavailable\r\nContent-Length: ${payload.length}\r\n\r\n${payload}`);
+			}
+		});
+	});
+	try {
+		await new Promise((resolve) => server.listen(sock, resolve));
+		const lxd = nodeLxd(sock);
+		await assert.rejects(() => lxd.images(), /closed|aborted|truncated/i);
+		mode = "error";
+		await assert.rejects(() => lxd.images(), /daemon shutting down/);
+	} finally {
+		server.close();
+		await rm(dir, { recursive: true, force: true });
 	}
 });
 
