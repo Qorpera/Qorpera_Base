@@ -4256,7 +4256,7 @@ create trigger nap before update on slowed for each row execute function nap();
 			"data/stepiso/queries/slow-watch.sql": "select pg_sleep(0.35)::text as waited;\n",
 		});
 		try {
-			await withGateway({ limits: { ...LIMITS_HERE, questionMs: 5_000, watchMs: 5_000 } }, async (other) => {
+			await withGateway({ limits: { ...LIMITS_HERE, questionMs: 2_000, watchMs: 5_000 } }, async (other) => {
 				const applied = await ask(owner, "apply", { database: "stepiso" });
 				assert.equal(applied.status, 200, JSON.stringify(applied.value));
 				assert.equal(applied.value.applied, true);

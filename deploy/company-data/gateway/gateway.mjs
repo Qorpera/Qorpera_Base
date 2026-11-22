@@ -985,7 +985,9 @@ export class Gateway {
 					pipeline: kind === "r" || kind === "w",
 					keepAlive: true,
 					keepAliveInitialDelayMillis: 10_000,
-					...(door === "qorpera_data_watch" || door === "qorpera_data_keeper" ? { query_timeout: WATCH_QUERY_TIMEOUT_MS } : {}),
+					...(door === "qorpera_data_watch" || door === "qorpera_data_keeper"
+						? { query_timeout: WATCH_QUERY_TIMEOUT_MS, statement_timeout: WATCH_QUERY_TIMEOUT_MS }
+						: {}),
 					idleTimeoutMillis: kind === "o" ? 1_000 : 5_000,
 					connectionTimeoutMillis: CONNECT_MS,
 					application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
@@ -1269,6 +1271,17 @@ export class Gateway {
 		this.#watchCacheBytes += bytes;
 	}
 
+	#touchListenerCache(listener, baseKey, entry) {
+		listener.cache.delete(baseKey);
+		listener.cache.set(baseKey, entry);
+		const globalKey = `${listener.epoch}\0${baseKey}`;
+		const tracked = this.#watchCacheOrder.get(globalKey);
+		if (tracked) {
+			this.#watchCacheOrder.delete(globalKey);
+			this.#watchCacheOrder.set(globalKey, tracked);
+		}
+	}
+
 	async #textsFor(database, hashes, supplied, maximum) {
 		const found = new Map();
 		const toSelect = [];
@@ -1280,6 +1293,8 @@ export class Gateway {
 			seen.add(hash);
 			const kept = this.#texts.get(hash);
 			if (kept !== undefined) {
+				this.#texts.delete(hash);
+				this.#texts.set(hash, kept);
 				found.set(hash, kept);
 				continue;
 			}
@@ -2866,6 +2881,7 @@ export class Gateway {
 						let answer;
 						const cached = cacheable ? listener.cache.get(baseKey) : undefined;
 						if (cached && cached.epoch === listener.epoch && cached.gen >= itemGen) {
+							this.#touchListenerCache(listener, baseKey, cached);
 							if (isTable && cached.meta) tableMeta.set(index, cached.meta);
 							answer = cached.answer;
 						} else {
@@ -4145,10 +4161,13 @@ export class Gateway {
 			const waiting = [...listener.heard];
 			listener.heard.clear();
 			for (const tell of waiting) tell(null);
-			await listener.ready?.catch(() => undefined);
-			const clientToEnd = listener.client;
+			const activeClient = listener.client;
 			listener.client = null;
-			await clientToEnd?.end().catch(() => undefined);
+			await activeClient?.end().catch(() => undefined);
+			await listener.ready?.catch(() => undefined);
+			const lateClient = listener.client;
+			listener.client = null;
+			await lateClient?.end().catch(() => undefined);
 		}
 		for (const [key, entry] of this.#watchInFlight) {
 			if (key.includes(`|${database}|`)) {
@@ -4489,10 +4508,13 @@ export class Gateway {
 			this.#clearListenerCache(listener);
 			listener.viewerScoped.clear();
 			for (const tell of [...listener.heard]) tell(null);
-			await listener.ready?.catch(() => undefined);
-			const clientToEnd = listener.client;
+			const activeClient = listener.client;
 			listener.client = null;
-			await clientToEnd?.end().catch(() => undefined);
+			await activeClient?.end().catch(() => undefined);
+			await listener.ready?.catch(() => undefined);
+			const lateClient = listener.client;
+			listener.client = null;
+			await lateClient?.end().catch(() => undefined);
 		}
 		this.#listeners.clear();
 		this.#watchCacheOrder.clear();
