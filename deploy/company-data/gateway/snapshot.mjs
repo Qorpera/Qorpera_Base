@@ -2,8 +2,10 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
 	closeSync,
+	constants as fsConstants,
 	cpSync,
 	existsSync,
+	fsyncSync,
 	mkdirSync,
 	openSync,
 	readdirSync,
@@ -11,11 +13,11 @@ import {
 	readSync,
 	renameSync,
 	rmSync,
-	writeFileSync,
 	writeSync,
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { setTimeout as delay } from "node:timers/promises";
 import pg from "pg";
 import { DATABASE_NAME } from "./gateway.mjs";
 
@@ -24,10 +26,58 @@ const DEFAULT_PART_BYTES = 16 * 1024 * 1024;
 const BLOCK_BYTES = 8192;
 const DEFAULT_LOCK_WAIT_MS = 2_000;
 const DEFAULT_MAX_TRIES = 8;
+const DEFAULT_RETRY_DELAY_MS = 100;
+const MAX_RETRY_DELAY_MS = 1_000;
+const MAX_SCHEMA_DUMP_BYTES = 64 * 1024 * 1024;
 const CURSOR_BATCH = 2_000;
 const CSV_READ_CHUNK = 256 * 1024;
 const MAX_RESTORE_BATCH_BYTES = 4 * 1024 * 1024;
 const CLIENT_CONNECT_TIMEOUT_MS = 15_000;
+
+function writeFileDurableSync(filePath, data) {
+	const buf = Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
+	const fd = openSync(filePath, "w");
+	try {
+		let written = 0;
+		while (written < buf.length) {
+			const n = writeSync(fd, buf, written, buf.length - written);
+			if (n <= 0) throw new Error(`Short write to ${filePath}`);
+			written += n;
+		}
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function fsyncDirSync(dirPath) {
+	let fd = null;
+	try {
+		fd = openSync(dirPath, fsConstants.O_RDONLY);
+		fsyncSync(fd);
+	} catch (error) {
+		if (!error || !["EINVAL", "EPERM", "EBADF", "EISDIR", "ENOTSUP"].includes(error.code)) throw error;
+	} finally {
+		if (fd !== null) closeSync(fd);
+	}
+}
+
+function fsyncTreeSync(dirPath) {
+	for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
+		const full = join(dirPath, entry.name);
+		if (entry.isDirectory()) {
+			fsyncTreeSync(full);
+		} else if (entry.isFile()) {
+			const fd = openSync(full, fsConstants.O_RDONLY);
+			try {
+				fsyncSync(fd);
+			} finally {
+				closeSync(fd);
+			}
+		}
+	}
+	fsyncDirSync(dirPath);
+}
 
 const quoted = (name) => `"${String(name).replace(/"/g, '""')}"`;
 const literal = (value) => `'${String(value).replace(/'/g, "''")}'`;
@@ -410,6 +460,8 @@ function runPgDump({ host, port, user, password, database, schema, snapshotId, l
 			{ env: { ...process.env, PGPASSWORD: password } },
 		);
 		const outChunks = [];
+		let outBytes = 0;
+		let outOverflow = false;
 		const errChunks = [];
 		let errBytes = 0;
 		const MAX_ERR_BYTES = 65_536;
@@ -420,7 +472,16 @@ function runPgDump({ host, port, user, password, database, schema, snapshotId, l
 		}, Math.max(30_000, lockWaitMs * 5));
 		timer.unref?.();
 		child.stdout.on("data", (chunk) => {
-			outChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+			if (outOverflow) return;
+			const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			outBytes += buf.length;
+			// WHY: Bound pg_dump schema stdout so a runaway dump cannot OOM the gateway process.
+			if (outBytes > MAX_SCHEMA_DUMP_BYTES) {
+				outOverflow = true;
+				child.kill("SIGKILL");
+				return;
+			}
+			outChunks.push(buf);
 		});
 		child.stderr.on("data", (chunk) => {
 			if (errBytes >= MAX_ERR_BYTES) return;
@@ -438,7 +499,11 @@ function runPgDump({ host, port, user, password, database, schema, snapshotId, l
 		});
 		child.on("close", (code) => {
 			clearTimeout(timer);
-			if (code === 0 && !timedOut) resolvePromise(Buffer.concat(outChunks).toString("utf8"));
+			if (outOverflow) {
+				const error = new Error(`pg_dump schema exceeded ${MAX_SCHEMA_DUMP_BYTES} bytes`);
+				error.nonRetryable = true;
+				reject(error);
+			} else if (code === 0 && !timedOut) resolvePromise(Buffer.concat(outChunks).toString("utf8"));
 			else {
 				const err = Buffer.concat(errChunks).toString("utf8").trim();
 				const message = timedOut ? "pg_dump timed out" : err || `pg_dump exited ${code}`;
@@ -465,7 +530,8 @@ async function listSchemaTables(client, schema) {
 				join lateral unnest(i.indkey::int2[]) with ordinality k(attnum, n) on true
 				join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum
 				where i.indrelid = c.oid and i.indisprimary) as pk_types,
-			pg_catalog.pg_table_size(c.oid) as heap_bytes
+			pg_catalog.pg_table_size(c.oid) as heap_bytes,
+			pg_catalog.pg_relation_size(c.oid, 'main') as main_bytes
 		from pg_catalog.pg_class c
 		join pg_catalog.pg_namespace n on n.oid = c.relnamespace and n.nspname = $1
 		where c.relkind = 'r' and c.relpersistence = 'p'
@@ -478,6 +544,7 @@ async function listSchemaTables(client, schema) {
 		pkCols: Array.isArray(row.pk_cols) ? row.pk_cols : null,
 		pkTypes: Array.isArray(row.pk_types) ? row.pk_types : null,
 		heapBytes: Number(row.heap_bytes ?? 0),
+		mainBytes: Number(row.main_bytes ?? row.heap_bytes ?? 0),
 	}));
 }
 
@@ -550,7 +617,9 @@ function buildPartQueries(schema, table, cuts, partBytes) {
 		});
 	}
 	const blocksPerPart = Math.max(1, Math.floor((partBytes * 0.85) / BLOCK_BYTES));
-	const blocks = Math.ceil(table.heapBytes / BLOCK_BYTES);
+	// WHY: Use main-fork relation size for ctid block ranges so TOAST storage does not emit empty trailing part scans.
+	const mainBytes = table.mainBytes ?? table.heapBytes;
+	const blocks = Math.ceil(mainBytes / BLOCK_BYTES);
 	const count = Math.max(1, Math.ceil(blocks / blocksPerPart));
 	return Array.from({ length: count }, (_, index) => {
 		const low = `ctid >= '(${index * blocksPerPart},0)'::tid`;
@@ -624,6 +693,7 @@ async function writeQueryToCsvFile(client, sql, fullPath) {
 			if (batch.rows.length < CURSOR_BATCH) break;
 		}
 		if (pieceFill > 0) pieces.push(pieceHash.digest("hex"));
+		fsyncSync(fd);
 		return { bytes: totalBytes, sha256: whole.digest("hex"), pieces };
 	} finally {
 		if (fd !== null) closeSync(fd);
@@ -666,6 +736,7 @@ export async function exportDatabaseSnapshot({
 	partBytes = DEFAULT_PART_BYTES,
 	lockWaitMs = DEFAULT_LOCK_WAIT_MS,
 	maxTries = DEFAULT_MAX_TRIES,
+	retryDelayMs = DEFAULT_RETRY_DELAY_MS,
 	user = "qorpera_data_admin",
 	password = store.logins.admin,
 }) {
@@ -693,6 +764,10 @@ export async function exportDatabaseSnapshot({
 			tries++;
 			if (tries > maxTries) {
 				throw new Error(`Snapshot could not lock ${schema} in ${maxTries} tries: ${restarts.join("; ")}`);
+			}
+			if (tries > 1 && retryDelayMs > 0) {
+				// WHY: Back off between lock/dump retries instead of spinning tightly on immediate DDL contention.
+				await delay(Math.min(MAX_RETRY_DELAY_MS, retryDelayMs * 2 ** (tries - 2)));
 			}
 			tables = await listSchemaTables(client, schema);
 			await client.query("begin isolation level repeatable read, read only");
@@ -744,7 +819,7 @@ export async function exportDatabaseSnapshot({
 			const buf = Buffer.isBuffer(content) ? content : Buffer.from(content, "utf8");
 			const full = safeChildPath(stageDir, relPath);
 			mkdirSync(dirname(full), { recursive: true });
-			writeFileSync(full, buf);
+			writeFileDurableSync(full, buf);
 			files[relPath] = hashBytes(buf);
 		};
 
@@ -839,7 +914,10 @@ export async function exportDatabaseSnapshot({
 			files,
 		};
 		const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
-		writeFileSync(join(stageDir, "snapshot.json"), manifestJson, "utf8");
+		writeFileDurableSync(join(stageDir, "snapshot.json"), manifestJson);
+		for (const table of tables) fsyncDirSync(safeChildPath(stageDir, `tables/${safeTableDir(table.name)}`));
+		if (tables.length > 0) fsyncDirSync(join(stageDir, "tables"));
+		fsyncDirSync(stageDir);
 
 		mkdirSync(dirname(resolvedOut), { recursive: true });
 		const backupDir = `${resolvedOut}.prev-${randomBytes(6).toString("hex")}`;
@@ -853,8 +931,11 @@ export async function exportDatabaseSnapshot({
 				renameSync(stageDir, resolvedOut);
 			} catch {
 				cpSync(stageDir, resolvedOut, { recursive: true });
+				// WHY: Fsync copied files and directories before removing stageDir so cross-device swaps remain crash-durable.
+				fsyncTreeSync(resolvedOut);
 				rmSync(stageDir, { recursive: true, force: true });
 			}
+			fsyncDirSync(dirname(resolvedOut));
 		} catch (swapError) {
 			rmSync(resolvedOut, { recursive: true, force: true });
 			if (movedPrev) {

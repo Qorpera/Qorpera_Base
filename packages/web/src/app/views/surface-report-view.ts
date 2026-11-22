@@ -1,11 +1,10 @@
 import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
 import type { StudioPatchChange, StudioPatchOp, SurfacePreviewConflict, SurfaceSummary } from "@qorpera/contracts";
 import { h } from "../../ui/dom.ts";
-import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { t } from "../../ui/preferences.ts";
 import { formatConflictPaths, isOpenChange, type SurfacesStore } from "../surfaces-store.ts";
-import { surfaceEmblem } from "./surface-rail.ts";
+import { surfaceTile } from "./surface-rail.ts";
 
 export interface SurfaceReportOptions {
 	readonly store: SurfacesStore;
@@ -265,7 +264,11 @@ function parseReportJson(path: string, content: string): Omit<ReportDocument, "c
 }
 
 function renderBarChart(block: Extract<ReportBlock, { kind: "bar_chart" }>): HTMLElement {
-	const max = block.max ?? Math.max(1, ...block.items.map((item) => item.value));
+	let itemMax = 1;
+	for (const item of block.items) {
+		if (Number.isFinite(item.value) && item.value > itemMax) itemMax = item.value;
+	}
+	const max = typeof block.max === "number" && Number.isFinite(block.max) && block.max > 0 ? block.max : itemMax;
 	return h(
 		"figure",
 		{ class: "report-visual report-bars" },
@@ -279,7 +282,8 @@ function renderBarChart(block: Extract<ReportBlock, { kind: "bar_chart" }>): HTM
 			"div",
 			{ class: "report-bar-list" },
 			block.items.map((item) => {
-				const pct = Math.max(4, Math.min(100, Math.round((item.value / max) * 100)));
+				const safeVal = Number.isFinite(item.value) ? item.value : 0;
+				const pct = Math.max(4, Math.min(100, Math.round((safeVal / max) * 100)));
 				const fill = h("span", { class: "report-bar-fill" });
 				fill.style.width = `${pct}%`;
 				return h(
@@ -300,9 +304,17 @@ function renderBarChart(block: Extract<ReportBlock, { kind: "bar_chart" }>): HTM
 }
 
 function renderLineChart(block: Extract<ReportBlock, { kind: "line_chart" }>): HTMLElement {
-	const allValues = block.series.flatMap((series) => series.values);
-	const rawMax = Math.max(...allValues, 1);
-	const rawMin = Math.min(...allValues, 0);
+	let rawMax = 1;
+	let rawMin = 0;
+	let count = 2;
+	for (const series of block.series) {
+		if (series.values.length > count) count = series.values.length;
+		for (const value of series.values) {
+			if (!Number.isFinite(value)) continue;
+			if (value > rawMax) rawMax = value;
+			if (value < rawMin) rawMin = value;
+		}
+	}
 	const span = Math.max(1, rawMax - rawMin);
 	const padTop = rawMin >= 0 ? Math.min(rawMax * 1.08, rawMax + span * 0.12) : rawMax + span * 0.12;
 	const padMin = rawMin >= 0 ? 0 : rawMin - span * 0.1;
@@ -338,9 +350,11 @@ function renderLineChart(block: Extract<ReportBlock, { kind: "line_chart" }>): H
 		);
 	}
 
-	const count = Math.max(2, ...block.series.map((s) => s.values.length));
 	const xAt = (index: number) => left + (index / (count - 1)) * plotW;
-	const yAt = (value: number) => top + plotH - ((value - padMin) / range) * plotH;
+	const yAt = (value: number) => {
+		const safe = Number.isFinite(value) ? value : padMin;
+		return top + plotH - ((safe - padMin) / range) * plotH;
+	};
 
 	for (let i = 0; i < block.xLabels.length; i++) {
 		svg.append(
@@ -520,7 +534,8 @@ export class SurfaceReportView {
 	#loading = false;
 	#lastConflict: SurfacePreviewConflict | null = null;
 	#activeSlug = "";
-	#shown = "";
+	#shownDeps: readonly unknown[] | undefined;
+	#shownOrdered: readonly StudioPatchChange[] | undefined;
 
 	constructor(options: SurfaceReportOptions) {
 		this.#options = options;
@@ -530,6 +545,11 @@ export class SurfaceReportView {
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
 		if (options.loadFiles && !options.baseFiles) void this.#load();
 		this.update();
+	}
+
+	setBaseFiles(files: Readonly<Record<string, string>>): void {
+		if (files === this.#baseFiles) return;
+		this.#baseFiles = files;
 	}
 
 	dispose(): void {
@@ -586,19 +606,32 @@ export class SurfaceReportView {
 		const workspace = store.workspace(surface.id);
 		const ordered = this.#orderedChanges();
 		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
-		const key = JSON.stringify([
+		const deps: readonly unknown[] = [
 			this.#loading,
 			state.mode,
 			state.activeReportSlug,
 			this.#activeSlug,
-			baseFiles,
-			ordered,
+			this.#baseFiles,
+			state.cloudSurfaceFiles[surface.id],
+			state.localStudioBase[surface.id],
 			surface.title,
 			workspace?.briefSummary,
 			busyReconcile,
-		]);
-		if (key === this.#shown) return;
-		this.#shown = key;
+		];
+		const sameDeps =
+			this.#shownDeps !== undefined &&
+			this.#shownDeps.length === deps.length &&
+			deps.every((value, index) => Object.is(this.#shownDeps![index], value));
+		const sameOrdered =
+			this.#shownOrdered !== undefined &&
+			this.#shownOrdered.length === ordered.length &&
+			ordered.every(
+				(item, index) =>
+					this.#shownOrdered![index]!.changeId === item.changeId && this.#shownOrdered![index]!.ops === item.ops,
+			);
+		if (sameDeps && sameOrdered) return;
+		this.#shownDeps = deps;
+		this.#shownOrdered = ordered;
 
 		const composition = composeStudioPreview(baseFiles, ordered);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
@@ -722,7 +755,7 @@ export class SurfaceReportView {
 					this.#loading
 						? [h("span", { class: "surface-state is-running" }), h("p", null, t("Opening studio…"))]
 						: [
-								interfaceEmblem(surfaceEmblem(surface), 42),
+								surfaceTile(surface, this.#options.store.lookOf(surface), "is-hero"),
 								h("h2", null, surface.title),
 								workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
 								h(

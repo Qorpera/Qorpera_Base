@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	parseLxdRunnerBootstrapConfig,
+	validateNativeProviderEnvironment,
+} from "../../runtime/src/lxd-runner-bootstrap.ts";
+import {
 	type LxdClient,
 	type LxdCreateInstanceRequest,
 	type LxdCreateStorageVolumeRequest,
@@ -2849,6 +2853,7 @@ describe("LXD cloud runner provider", () => {
 		const environment = files.get("/var/lib/qorpera-bootstrap/native-provider.env");
 		expect(environment).toContain("QORPERA_NATIVE_RUNTIME=company-path-v1\n");
 		expect(environment).toContain("QORPERA_CLOUD_SECRET_BROKER_URL=https://secrets.example.test\n");
+		expect(environment).not.toContain("QORPERA_SURFACE_FIRST=1\n");
 		expect(environment).not.toContain("q".repeat(43));
 		expect(environment).not.toContain("s".repeat(43));
 		expect(files.get("/var/lib/qorpera-bootstrap/credentials/qorpera-native-object-token")).toBe(
@@ -2869,6 +2874,46 @@ describe("LXD cloud runner provider", () => {
 		await restarted.deliver(runner, delivery(work()));
 		await restarted.stop(runner, "idle");
 		expect(lxd.volumes.has(`native-recovery-${runId}`)).toBe(true);
+	});
+
+	it("forwards QORPERA_SURFACE_FIRST=1 into native-provider.env when surfaceFirst is enabled", async () => {
+		const directory = await root();
+		const baseSettings = governedConfig(join(directory, "state"));
+		if (!baseSettings.nativeCompanyRuntime) throw new Error("Expected nativeCompanyRuntime");
+		const settings = {
+			...baseSettings,
+			nativeCompanyRuntime: {
+				...baseSettings.nativeCompanyRuntime,
+				surfaceFirst: true,
+			},
+		};
+		const lxd = new FakeLxd();
+		const backend = new LxdCloudRunnerProviderBackend(
+			settings,
+			lxd,
+			new FakeGuest(),
+			fetchProvisioner([], work(), true),
+		);
+		await backend.acquire(runId, work(), new AbortController().signal);
+		const files = new Map(lxd.filePushes.map((file) => [file.path, file.content]));
+		const rawBootstrap = files.get("/var/lib/qorpera-bootstrap/bootstrap.json");
+		const rawRunnerConfig = files.get("/var/lib/qorpera-bootstrap/runner-config.json");
+		const rawEnvironment = files.get("/var/lib/qorpera-bootstrap/native-provider.env");
+		if (!rawBootstrap || !rawRunnerConfig || !rawEnvironment) throw new Error("Expected pushed bootstrap files");
+		expect(rawEnvironment).toContain("QORPERA_SURFACE_FIRST=1\n");
+		const parsedBootstrap = parseLxdRunnerBootstrapConfig(JSON.parse(rawBootstrap));
+		expect(parsedBootstrap.companyRuntime?.surfaceFirst).toBe(true);
+		const runnerConfig = JSON.parse(rawRunnerConfig) as { base_url: string; native_bridge_url: string };
+		expect(() =>
+			validateNativeProviderEnvironment(
+				rawEnvironment,
+				runnerConfig.base_url,
+				runnerConfig.native_bridge_url,
+				parsedBootstrap.computeIdentityId,
+				undefined,
+				parsedBootstrap.companyRuntime,
+			),
+		).not.toThrow();
 	});
 
 	it("gives a vault login guest no identity volume and tells its host to ask the vault", async () => {

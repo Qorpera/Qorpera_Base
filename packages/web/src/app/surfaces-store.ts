@@ -83,6 +83,8 @@ export type ApprovalOutcome = "open" | "hold" | "history";
 
 export const SURFACE_UNDO_MS = 5_000;
 const POLL_MS = 4_000;
+export const PREVIEW_PASS_TTL_MS = 45_000;
+const MAX_LOCAL_SANDBOX_CACHE = 8;
 
 export type SurfaceUndoVerb = "merged" | "sent" | "done";
 
@@ -109,7 +111,6 @@ export interface CreateSurfaceInput {
 	readonly folderRoot?: string;
 	readonly initialPrompt?: string;
 	readonly kind?: SurfaceKind;
-	readonly accent?: string;
 	readonly description?: string;
 }
 
@@ -421,42 +422,92 @@ function findIdentitySurface(state: Pick<SurfacesState, "surfaces" | "surfaceLoo
 	);
 }
 
+const compiledIdentityByState = new WeakMap<SurfacesState, CompiledIdentityTokens | null>();
+let lastCompiledIdentity:
+	| {
+			readonly identityId: string;
+			readonly folderRoot: string | null | undefined;
+			readonly liveMode: boolean;
+			readonly cloudFiles: Readonly<Record<string, string>> | undefined;
+			readonly localFiles: Readonly<Record<string, string>> | undefined;
+			readonly workspace: SurfaceWorkspace | undefined;
+			readonly variantPick: Readonly<Record<string, string>>;
+			readonly hiddenChanges: Readonly<Record<string, true>>;
+			readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
+			readonly result: CompiledIdentityTokens | null;
+	  }
+	| undefined;
+
 export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityTokens | null {
+	if (compiledIdentityByState.has(state)) return compiledIdentityByState.get(state) ?? null;
 	const identity = findIdentitySurface(state);
-	if (!identity) return null;
+	if (!identity) {
+		compiledIdentityByState.set(state, null);
+		return null;
+	}
+	const cloudFiles = state.cloudSurfaceFiles[identity.id];
+	const localFiles = state.localStudioBase[identity.id];
+	const liveMode = state.mode === "live";
+	const workspace = liveMode ? undefined : state.workspaces[identity.id];
+	if (
+		lastCompiledIdentity &&
+		lastCompiledIdentity.identityId === identity.id &&
+		lastCompiledIdentity.folderRoot === identity.folderRoot &&
+		lastCompiledIdentity.liveMode === liveMode &&
+		lastCompiledIdentity.cloudFiles === cloudFiles &&
+		lastCompiledIdentity.localFiles === localFiles &&
+		(liveMode ||
+			(lastCompiledIdentity.workspace === workspace &&
+				lastCompiledIdentity.variantPick === state.variantPick &&
+				lastCompiledIdentity.hiddenChanges === state.hiddenChanges &&
+				lastCompiledIdentity.studioPatches === state.studioPatches))
+	) {
+		compiledIdentityByState.set(state, lastCompiledIdentity.result);
+		return lastCompiledIdentity.result;
+	}
 	const baseFiles: Record<string, string> = {
-		...(state.cloudSurfaceFiles[identity.id] ?? {}),
-		...(state.localStudioBase[identity.id] ?? {}),
+		...(cloudFiles ?? {}),
+		...(localFiles ?? {}),
 	};
 	let effectiveFiles: Readonly<Record<string, string>> = baseFiles;
-	if (state.mode !== "live") {
-		const workspace = state.workspaces[identity.id];
-		if (workspace) {
-			const pickedVariants = new Set(
-				openExplorations(workspace)
-					.map((exploration) => state.variantPick[exploration.id] ?? exploration.variantSessionIds[0])
-					.filter((id): id is string => Boolean(id)),
-			);
-			const ordered: StudioPatchChange[] = [];
-			for (const session of workspace.activeSessions) {
-				if (session.explorationId && !pickedVariants.has(session.id)) continue;
-				for (const change of session.changes) {
-					if (change.kind !== "folder_patch" || !isOpenChange(change) || state.hiddenChanges[change.id]) continue;
-					const ops = state.studioPatches[change.id] ?? change.patchManifest;
-					if (ops?.length) ordered.push({ changeId: change.id, ops });
-				}
+	if (!liveMode && workspace) {
+		const pickedVariants = new Set(
+			openExplorations(workspace)
+				.map((exploration) => state.variantPick[exploration.id] ?? exploration.variantSessionIds[0])
+				.filter((id): id is string => Boolean(id)),
+		);
+		const ordered: StudioPatchChange[] = [];
+		for (const session of workspace.activeSessions) {
+			if (session.explorationId && !pickedVariants.has(session.id)) continue;
+			for (const change of session.changes) {
+				if (change.kind !== "folder_patch" || !isOpenChange(change) || state.hiddenChanges[change.id]) continue;
+				const ops = state.studioPatches[change.id] ?? change.patchManifest;
+				if (ops?.length) ordered.push({ changeId: change.id, ops });
 			}
-			if (ordered.length > 0) {
-				effectiveFiles = composeStudioPreview(baseFiles, ordered).files;
-			}
+		}
+		if (ordered.length > 0) {
+			effectiveFiles = composeStudioPreview(baseFiles, ordered).files;
 		}
 	}
 	const folderRoot = identity.folderRoot?.replace(/^\/+|\/+$/g, "");
 	const tokensJson =
 		effectiveFiles[IDENTITY_TOKENS_JSON_PATH] ??
 		(folderRoot ? effectiveFiles[`${folderRoot}/tokens.json`] : undefined);
-	if (!tokensJson?.trim()) return null;
-	return compileIdentityTokens(tokensJson);
+	const result = tokensJson?.trim() ? compileIdentityTokens(tokensJson) : null;
+	lastCompiledIdentity = {
+		identityId: identity.id,
+		folderRoot: identity.folderRoot,
+		liveMode,
+		cloudFiles,
+		localFiles,
+		workspace,
+		variantPick: state.variantPick,
+		hiddenChanges: state.hiddenChanges,
+		studioPatches: state.studioPatches,
+		result,
+	};
+	compiledIdentityByState.set(state, result);
+	return result;
 }
 
 export interface SurfaceReportSummary {
@@ -468,14 +519,14 @@ export interface SurfaceReportSummary {
 	readonly ownerTitle?: string;
 }
 
-export function surfaceReports(
-	state: Pick<SurfacesState, "localStudioBase"> & Partial<Pick<SurfacesState, "cloudSurfaceFiles">>,
-	surfaceId: string,
-): SurfaceReportSummary[] {
-	const cloudFiles = state.cloudSurfaceFiles?.[surfaceId];
-	const localFiles = state.localStudioBase[surfaceId];
-	const files = cloudFiles && localFiles ? { ...cloudFiles, ...localFiles } : (cloudFiles ?? localFiles);
-	if (!files) return [];
+const EMPTY_REPORTS: readonly SurfaceReportSummary[] = [];
+const singleFileReportCache = new WeakMap<Readonly<Record<string, string>>, readonly SurfaceReportSummary[]>();
+const dualFileReportCache = new WeakMap<
+	Readonly<Record<string, string>>,
+	WeakMap<Readonly<Record<string, string>>, readonly SurfaceReportSummary[]>
+>();
+
+function parseReportsFromFiles(files: Readonly<Record<string, string>>): readonly SurfaceReportSummary[] {
 	const results: SurfaceReportSummary[] = [];
 	for (const path of Object.keys(files).sort()) {
 		if (!/\.report\.json$/i.test(path)) continue;
@@ -500,7 +551,34 @@ export function surfaceReports(
 			results.push({ path, slug, title, category, readingTime, ...(ownerTitle ? { ownerTitle } : {}) });
 		} catch {}
 	}
-	return results;
+	return results.length > 0 ? results : EMPTY_REPORTS;
+}
+
+export function surfaceReports(
+	state: Pick<SurfacesState, "localStudioBase"> & Partial<Pick<SurfacesState, "cloudSurfaceFiles">>,
+	surfaceId: string,
+): readonly SurfaceReportSummary[] {
+	const cloudFiles = state.cloudSurfaceFiles?.[surfaceId];
+	const localFiles = state.localStudioBase[surfaceId];
+	if (!cloudFiles && !localFiles) return EMPTY_REPORTS;
+	if (cloudFiles && localFiles) {
+		let byLocal = dualFileReportCache.get(cloudFiles);
+		if (!byLocal) {
+			byLocal = new WeakMap();
+			dualFileReportCache.set(cloudFiles, byLocal);
+		}
+		const cached = byLocal.get(localFiles);
+		if (cached) return cached;
+		const parsed = parseReportsFromFiles({ ...cloudFiles, ...localFiles });
+		byLocal.set(localFiles, parsed);
+		return parsed;
+	}
+	const files = (cloudFiles ?? localFiles)!;
+	const cached = singleFileReportCache.get(files);
+	if (cached) return cached;
+	const parsed = parseReportsFromFiles(files);
+	singleFileReportCache.set(files, parsed);
+	return parsed;
 }
 
 export function surfaceHasReports(
@@ -510,18 +588,38 @@ export function surfaceHasReports(
 	return surfaceReports(state, surfaceId).length > 0;
 }
 
+interface ReportsOwnerCacheEntry {
+	readonly reports: readonly SurfaceReportSummary[];
+	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
+	readonly byOwner: Map<string, readonly SurfaceReportSummary[]>;
+}
+
+const reportsOwnerCache = new WeakMap<SurfaceWorkspace, ReportsOwnerCacheEntry>();
+
 export function reportsOwnedBy(
 	state: Pick<SurfacesState, "localStudioBase" | "workspaces" | "studioPatches"> &
 		Partial<Pick<SurfacesState, "cloudSurfaceFiles">>,
 	surfaceId: string,
 	owner: { readonly kind: "exploration"; readonly id: string } | { readonly kind: "session"; readonly id: string },
-): SurfaceReportSummary[] {
+): readonly SurfaceReportSummary[] {
 	const reports = surfaceReports(state, surfaceId);
-	if (reports.length === 0) return [];
+	if (reports.length === 0) return EMPTY_REPORTS;
 	const workspace = state.workspaces[surfaceId];
-	if (!workspace) return [];
+	if (!workspace) return EMPTY_REPORTS;
+	const wantedKey = `${owner.kind}:${owner.id}`;
+	const cached = reportsOwnerCache.get(workspace);
+	if (cached && cached.reports === reports && cached.studioPatches === state.studioPatches) {
+		return cached.byOwner.get(wantedKey) ?? EMPTY_REPORTS;
+	}
 	const explorations = openExplorations(workspace);
 	const plainSessions = workspace.activeSessions.filter((session) => !session.explorationId);
+	const variantsByExploration = new Map<string, SurfaceSession[]>();
+	for (const session of workspace.activeSessions) {
+		if (!session.explorationId) continue;
+		const list = variantsByExploration.get(session.explorationId);
+		if (list) list.push(session);
+		else variantsByExploration.set(session.explorationId, [session]);
+	}
 	const ownerKeyFor = (report: SurfaceReportSummary): string | undefined => {
 		for (const exp of explorations) {
 			if (exp.notePaths?.includes(report.path)) return `exploration:${exp.id}`;
@@ -545,7 +643,7 @@ export function reportsOwnedBy(
 			if (touches) return `session:${sess.id}`;
 		}
 		for (const exp of explorations) {
-			const variants = workspace.activeSessions.filter((item) => item.explorationId === exp.id);
+			const variants = variantsByExploration.get(exp.id) ?? [];
 			const touches = variants.some((variant) =>
 				variant.changes.some((change) => change.affectedPaths.includes(report.path)),
 			);
@@ -555,8 +653,16 @@ export function reportsOwnedBy(
 		if (explorations[0]) return `exploration:${explorations[0].id}`;
 		return undefined;
 	};
-	const wantedKey = `${owner.kind}:${owner.id}`;
-	return reports.filter((report) => ownerKeyFor(report) === wantedKey);
+	const byOwner = new Map<string, SurfaceReportSummary[]>();
+	for (const report of reports) {
+		const key = ownerKeyFor(report);
+		if (!key) continue;
+		const list = byOwner.get(key);
+		if (list) list.push(report);
+		else byOwner.set(key, [report]);
+	}
+	reportsOwnerCache.set(workspace, { reports, studioPatches: state.studioPatches, byOwner });
+	return byOwner.get(wantedKey) ?? EMPTY_REPORTS;
 }
 
 function replaceSession(
@@ -656,7 +762,22 @@ export class SurfacesStore {
 	readonly #localCreatedIds = new Set<string>();
 	readonly #studioUndoSnapshots = new Map<string, Readonly<Record<string, string>>>();
 	readonly #cloudFilesLoading = new Set<string>();
-	readonly #mintingPreviewPasses = new Set<string>();
+	readonly #mintingPreviewPasses = new Map<string, Promise<boolean>>();
+	readonly #previewPassMeta = new Map<
+		string,
+		{ readonly pass: string; readonly mintedAt: number; consumed: boolean; retryMint?: boolean }
+	>();
+	readonly #workspaceEpoch = new Map<string, number>();
+	readonly #latestWorkspaceReq = new Map<string, number>();
+	readonly #inFlightWorkspaceRefreshes = new Set<string>();
+	readonly #previewSyncInFlight = new Set<string>();
+	readonly #previewSyncDirty = new Set<string>();
+	readonly #previewSyncGen = new Map<string, number>();
+	readonly #previewSyncWaiters = new Map<string, (() => void)[]>();
+	#activeSurfaceId: string | undefined;
+	#workspaceReqSeq = 0;
+	#surfacesReqSeq = 0;
+	#surfacesMutationEpoch = 0;
 	#undoTimer: ReturnType<typeof setTimeout> | undefined;
 	#pollTimer: ReturnType<typeof setInterval> | undefined;
 	#hintTimer: ReturnType<typeof setTimeout> | undefined;
@@ -694,6 +815,24 @@ export class SurfacesStore {
 			busy: {},
 		});
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
+		if (typeof document !== "undefined") {
+			document.addEventListener(
+				"visibilitychange",
+				() => {
+					if (this.#options.signal.aborted) return;
+					this.#syncPolling();
+					if (
+						document.visibilityState !== "hidden" &&
+						this.state.source === "cloud" &&
+						this.#options.client &&
+						this.#options.realtimeLive?.() !== true
+					) {
+						this.#pollDueWorkspaces();
+					}
+				},
+				{ signal: options.signal },
+			);
+		}
 		if (options.localInteractive) {
 			this.store.subscribe(() => {
 				if (this.isLocalInteractive) this.#persistLocalSandbox();
@@ -703,6 +842,7 @@ export class SurfacesStore {
 
 	#persistLocalSandbox(): void {
 		const state = this.state;
+		localSandboxCache.delete(this.#options.companyId);
 		localSandboxCache.set(this.#options.companyId, {
 			surfaces: state.surfaces,
 			workspaces: state.workspaces,
@@ -719,6 +859,11 @@ export class SurfacesStore {
 			localCreatedIds: [...this.#localCreatedIds],
 			localSeq: this.#localSeq,
 		});
+		while (localSandboxCache.size > MAX_LOCAL_SANDBOX_CACHE) {
+			const oldest = localSandboxCache.keys().next().value;
+			if (oldest === undefined) break;
+			localSandboxCache.delete(oldest);
+		}
 	}
 
 	get state(): SurfacesState {
@@ -761,6 +906,13 @@ export class SurfacesStore {
 		if (this.#retryLoadTimer) clearTimeout(this.#retryLoadTimer);
 		for (const timer of this.#localTimers) clearTimeout(timer);
 		this.#localTimers.clear();
+		this.#studioUndoSnapshots.clear();
+		this.#previewPassMeta.clear();
+		this.#previewSyncDirty.clear();
+		for (const waiters of this.#previewSyncWaiters.values()) {
+			for (const resolve of waiters) resolve();
+		}
+		this.#previewSyncWaiters.clear();
 		this.#undoTimer = undefined;
 		this.#pollTimer = undefined;
 		this.#hintTimer = undefined;
@@ -861,6 +1013,8 @@ export class SurfacesStore {
 	#useLocal(error?: string): void {
 		const cached = this.#options.localInteractive ? localSandboxCache.get(this.#options.companyId) : undefined;
 		if (cached) {
+			localSandboxCache.delete(this.#options.companyId);
+			localSandboxCache.set(this.#options.companyId, cached);
 			for (const id of cached.localCreatedIds) this.#localCreatedIds.add(id);
 			this.#localSeq = Math.max(this.#localSeq, cached.localSeq);
 			this.store.set({
@@ -1303,10 +1457,19 @@ export class SurfacesStore {
 		return this.state.workspaces[surfaceId];
 	}
 
+	setActiveSurface(surfaceId: string | undefined): void {
+		this.#activeSurfaceId = surfaceId;
+	}
+
+	clearActiveSurface(surfaceId: string): void {
+		if (this.#activeSurfaceId === surfaceId) this.#activeSurfaceId = undefined;
+	}
+
 	async openSurface(slug: string): Promise<SurfaceWorkspace | undefined> {
 		await this.load();
 		const surface = surfaceBySlug(this.state, slug);
 		if (!surface) return undefined;
+		this.#activeSurfaceId = surface.id;
 		if (isLocalSurfaceId(surface.id) || !this.#options.client) {
 			const existing = this.workspace(surface.id) ?? localWorkspace(surface);
 			this.#putWorkspace({ ...existing, surface });
@@ -1315,21 +1478,78 @@ export class SurfacesStore {
 		return this.refreshWorkspace(surface.id);
 	}
 
-	async refreshWorkspace(surfaceId: string): Promise<SurfaceWorkspace | undefined> {
+	async refreshWorkspace(surfaceId: string, retryDepth = 0): Promise<SurfaceWorkspace | undefined> {
 		const client = this.#options.client;
 		if (!client || isLocalSurfaceId(surfaceId)) return this.workspace(surfaceId);
+		const reqId = ++this.#workspaceReqSeq;
+		const startEpoch = this.#workspaceEpoch.get(surfaceId) ?? 0;
+		this.#latestWorkspaceReq.set(surfaceId, reqId);
+		this.#inFlightWorkspaceRefreshes.add(surfaceId);
+		let rerun = false;
+		let result: SurfaceWorkspace | undefined;
 		try {
 			const workspace = await client.getSurfaceWorkspace(surfaceId);
 			if (this.#options.signal.aborted) return undefined;
-			this.#putWorkspace(workspace);
-			return workspace;
+			if (this.#latestWorkspaceReq.get(surfaceId) !== reqId) {
+				return this.workspace(surfaceId);
+			}
+			if ((this.#workspaceEpoch.get(surfaceId) ?? 0) !== startEpoch) {
+				rerun = retryDepth < 2;
+				result = this.workspace(surfaceId);
+			} else {
+				this.#putWorkspace(workspace, false);
+				result = workspace;
+			}
 		} catch (error) {
-			if (!this.#options.signal.aborted) this.store.set({ error: describe(error) });
-			return undefined;
+			if (!this.#options.signal.aborted && this.#latestWorkspaceReq.get(surfaceId) === reqId) {
+				this.store.set({ error: describe(error) });
+			}
+			result = undefined;
+		} finally {
+			if (this.#latestWorkspaceReq.get(surfaceId) === reqId) {
+				this.#inFlightWorkspaceRefreshes.delete(surfaceId);
+			}
 		}
+		if (rerun && !this.#options.signal.aborted && this.#latestWorkspaceReq.get(surfaceId) === reqId) {
+			return this.refreshWorkspace(surfaceId, retryDepth + 1);
+		}
+		return result;
 	}
 
-	#putWorkspace(workspace: SurfaceWorkspace): void {
+	isPreviewPassUsable(previewId: string, pass: string): boolean {
+		const meta = this.#previewPassMeta.get(previewId);
+		if (!meta || meta.pass !== pass) return true;
+		return !meta.consumed && Date.now() - meta.mintedAt < PREVIEW_PASS_TTL_MS;
+	}
+
+	markPreviewPassConsumed(previewId: string, pass: string): void {
+		const existing = this.#previewPassMeta.get(previewId);
+		if (existing && existing.pass === pass) {
+			existing.consumed = true;
+			return;
+		}
+		this.#previewPassMeta.set(previewId, { pass, mintedAt: Date.now(), consumed: true });
+	}
+
+	remintPreviewPass(surfaceId: string, previewId: string, stalePass?: string): Promise<boolean> {
+		if (stalePass) this.markPreviewPassConsumed(previewId, stalePass);
+		return this.#ensurePreviewPass(surfaceId, previewId);
+	}
+
+	#putWorkspace(workspace: SurfaceWorkspace, bumpEpoch = true): void {
+		if (bumpEpoch) {
+			this.#workspaceEpoch.set(workspace.surface.id, (this.#workspaceEpoch.get(workspace.surface.id) ?? 0) + 1);
+		}
+		const now = Date.now();
+		const trackIncomingPass = (frame: SurfaceWorkspace["previewState"]["primary"]): void => {
+			if (!frame.previewId || !frame.memberPass) return;
+			const existing = this.#previewPassMeta.get(frame.previewId);
+			if (!existing || existing.pass !== frame.memberPass) {
+				this.#previewPassMeta.set(frame.previewId, { pass: frame.memberPass, mintedAt: now, consumed: false });
+			}
+		};
+		trackIncomingPass(workspace.previewState.primary);
+		for (const entry of workspace.previewState.compareFrames) trackIncomingPass(entry.frame);
 		const sessions = [...workspace.activeSessions, ...workspace.recentHistory];
 		const extractedPatches: Record<string, readonly StudioPatchOp[]> = {};
 		for (const session of sessions) {
@@ -1360,6 +1580,14 @@ export class SurfacesStore {
 				if (frame.status !== "ready" || !frame.previewId || frame.memberPass) return frame;
 				const prev = prevPasses.get(frame.previewId);
 				if (!prev) return frame;
+				const meta = this.#previewPassMeta.get(frame.previewId);
+				if (
+					meta &&
+					meta.pass === prev.memberPass &&
+					(meta.consumed || now - meta.mintedAt >= PREVIEW_PASS_TTL_MS)
+				) {
+					return frame;
+				}
 				return {
 					...frame,
 					doorActionUrl: frame.doorActionUrl ?? prev.doorActionUrl,
@@ -1398,7 +1626,10 @@ export class SurfacesStore {
 			const frames = [stored.previewState.primary, ...stored.previewState.compareFrames.map((entry) => entry.frame)];
 			for (const frame of frames) {
 				if (frame.status === "ready" && frame.previewId && !frame.memberPass) {
-					void this.#ensurePreviewPass(workspace.surface.id, frame.previewId);
+					const meta = this.#previewPassMeta.get(frame.previewId);
+					if (!meta || !meta.consumed || meta.retryMint) {
+						void this.#ensurePreviewPass(workspace.surface.id, frame.previewId);
+					}
 				}
 			}
 		}
@@ -1413,51 +1644,67 @@ export class SurfacesStore {
 		this.#syncPolling();
 	}
 
-	async #ensurePreviewPass(surfaceId: string, previewId: string): Promise<void> {
+	#ensurePreviewPass(surfaceId: string, previewId: string): Promise<boolean> {
 		const mint = this.#options.client?.mintPreviewPass;
-		if (!mint || isLocalSurfaceId(surfaceId) || this.#mintingPreviewPasses.has(previewId)) return;
-		this.#mintingPreviewPasses.add(previewId);
-		try {
-			const grant = await mint.call(this.#options.client, previewId);
-			if (this.#options.signal.aborted) return;
-			this.store.set((state) => {
-				const workspace = state.workspaces[surfaceId];
-				if (!workspace) return {};
-				let changed = false;
-				const patchFrame = <T extends SurfaceWorkspace["previewState"]["primary"]>(frame: T): T => {
-					if (frame.previewId !== grant.previewId) return frame;
-					changed = true;
-					return {
-						...frame,
-						doorActionUrl: grant.doorActionUrl,
-						memberPass: grant.memberPass,
+		if (!mint || isLocalSurfaceId(surfaceId)) return Promise.resolve(false);
+		const inFlight = this.#mintingPreviewPasses.get(previewId);
+		if (inFlight) return inFlight;
+		const promise = (async (): Promise<boolean> => {
+			try {
+				const grant = await mint.call(this.#options.client, previewId);
+				if (this.#options.signal.aborted) return false;
+				this.#previewPassMeta.set(grant.previewId, {
+					pass: grant.memberPass,
+					mintedAt: Date.now(),
+					consumed: false,
+				});
+				let applied = false;
+				this.store.set((state) => {
+					const workspace = state.workspaces[surfaceId];
+					if (!workspace) return {};
+					let changed = false;
+					const patchFrame = <T extends SurfaceWorkspace["previewState"]["primary"]>(frame: T): T => {
+						if (frame.previewId !== grant.previewId) return frame;
+						changed = true;
+						return {
+							...frame,
+							doorActionUrl: grant.doorActionUrl,
+							memberPass: grant.memberPass,
+						};
 					};
-				};
-				const primary = patchFrame(workspace.previewState.primary);
-				const compareFrames = workspace.previewState.compareFrames.map((entry) => ({
-					...entry,
-					frame: patchFrame(entry.frame),
-				}));
-				if (!changed) return {};
-				return {
-					workspaces: {
-						...state.workspaces,
-						[surfaceId]: {
-							...workspace,
-							previewState: {
-								...workspace.previewState,
-								primary,
-								compareFrames,
+					const primary = patchFrame(workspace.previewState.primary);
+					const compareFrames = workspace.previewState.compareFrames.map((entry) => ({
+						...entry,
+						frame: patchFrame(entry.frame),
+					}));
+					if (!changed) return {};
+					applied = true;
+					return {
+						workspaces: {
+							...state.workspaces,
+							[surfaceId]: {
+								...workspace,
+								previewState: {
+									...workspace.previewState,
+									primary,
+									compareFrames,
+								},
 							},
 						},
-					},
-				};
-			});
-		} catch {
-			/* WHY: A transient preview pass mint failure retries on the next workspace refresh without breaking the stage. */
-		} finally {
-			this.#mintingPreviewPasses.delete(previewId);
-		}
+					};
+				});
+				return applied;
+			} catch {
+				/* WHY: A transient preview pass mint failure fails the waiting stage and retries on the next workspace refresh. */
+				const meta = this.#previewPassMeta.get(previewId);
+				if (meta) meta.retryMint = true;
+				return false;
+			} finally {
+				this.#mintingPreviewPasses.delete(previewId);
+			}
+		})();
+		this.#mintingPreviewPasses.set(previewId, promise);
+		return promise;
 	}
 
 	async refreshCloudFiles(surface: SurfaceSummary): Promise<void> {
@@ -1514,13 +1761,20 @@ export class SurfacesStore {
 				void this.refreshSurfaces();
 				const client = this.#options.client;
 				if (client) void this.#loadAutomations(client);
+				const workspaces = Object.values(this.state.workspaces).filter(
+					(workspace) => !isLocalSurfaceId(workspace.surface.id),
+				);
 				const refreshed = new Set<string>();
-				for (const workspace of Object.values(this.state.workspaces)) {
-					if (!isLocalSurfaceId(workspace.surface.id)) {
-						refreshed.add(workspace.surface.id);
-						void this.refreshWorkspace(workspace.surface.id);
-						if (reloadFiles) void this.refreshCloudFiles(workspace.surface);
-					}
+				for (const workspace of workspaces) {
+					const relevant =
+						workspace.surface.id === this.#activeSurfaceId ||
+						workspace.surface.id === this.state.drawer?.surfaceId ||
+						this.#workspaceNeedsPoll(workspace) ||
+						(!this.#activeSurfaceId && workspaces.length <= 1);
+					if (!relevant) continue;
+					refreshed.add(workspace.surface.id);
+					void this.refreshWorkspace(workspace.surface.id);
+					if (reloadFiles) void this.refreshCloudFiles(workspace.surface);
 				}
 				if (reloadFiles) {
 					const identity = findIdentitySurface(this.state);
@@ -1532,37 +1786,56 @@ export class SurfacesStore {
 		}, 180);
 	}
 
-	#syncPolling(): void {
-		const running = Object.values(this.state.workspaces).some(
-			(workspace) =>
-				workspace.surface.publishStatus === "publishing" ||
-				workspace.previewState.primary.status === "composing" ||
-				workspace.previewState.primary.status === "building" ||
-				workspace.previewState.compareFrames.some(
-					(entry) => entry.frame.status === "composing" || entry.frame.status === "building",
-				) ||
-				workspace.activeSessions.some(
-					(session) => isRunningSession(session) || session.changes.some((change) => change.status === "merging"),
-				),
+	#workspaceNeedsPoll(workspace: SurfaceWorkspace): boolean {
+		return (
+			workspace.surface.publishStatus === "publishing" ||
+			workspace.previewState.primary.status === "composing" ||
+			workspace.previewState.primary.status === "building" ||
+			workspace.previewState.compareFrames.some(
+				(entry) => entry.frame.status === "composing" || entry.frame.status === "building",
+			) ||
+			workspace.activeSessions.some(
+				(session) => isRunningSession(session) || session.changes.some((change) => change.status === "merging"),
+			)
 		);
+	}
+
+	#pollDueWorkspaces(): void {
+		for (const workspace of Object.values(this.state.workspaces)) {
+			if (
+				!isLocalSurfaceId(workspace.surface.id) &&
+				this.#workspaceNeedsPoll(workspace) &&
+				!this.#inFlightWorkspaceRefreshes.has(workspace.surface.id)
+			) {
+				void this.refreshWorkspace(workspace.surface.id);
+			}
+		}
+	}
+
+	#syncPolling(): void {
+		const running = Object.values(this.state.workspaces).some((workspace) => this.#workspaceNeedsPoll(workspace));
 		const realtimeConnected = this.#options.realtimeLive?.() === true;
-		if (running && !realtimeConnected && !this.#pollTimer && this.#options.client && this.state.source === "cloud") {
+		const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+		if (
+			running &&
+			!realtimeConnected &&
+			!hidden &&
+			!this.#pollTimer &&
+			this.#options.client &&
+			this.state.source === "cloud"
+		) {
 			this.#pollTimer = setInterval(() => {
-				if (this.#options.realtimeLive?.() === true) {
+				if (
+					this.#options.signal.aborted ||
+					this.#options.realtimeLive?.() === true ||
+					(typeof document !== "undefined" && document.visibilityState === "hidden")
+				) {
 					this.#syncPolling();
 					return;
 				}
-				for (const workspace of Object.values(this.state.workspaces))
-					if (
-						workspace.surface.publishStatus === "publishing" ||
-						workspace.activeSessions.some(
-							(session) =>
-								isRunningSession(session) || session.changes.some((change) => change.status === "merging"),
-						)
-					)
-						void this.refreshWorkspace(workspace.surface.id);
+				this.#pollDueWorkspaces();
 			}, POLL_MS);
-		} else if ((!running || realtimeConnected) && this.#pollTimer) {
+		} else if ((!running || realtimeConnected || hidden) && this.#pollTimer) {
 			clearInterval(this.#pollTimer);
 			this.#pollTimer = undefined;
 		}
@@ -1593,17 +1866,14 @@ export class SurfacesStore {
 					archetype: input.archetype,
 					...(input.kind ? { kind: input.kind } : {}),
 					icon,
-					...(input.accent ? { accentHex: input.accent } : {}),
 					folderRoot,
 					briefSummary: description,
 					isGlobal: input.kind === "identity",
 				}),
 			);
 			if (!created) return undefined;
-			const look: SurfaceLook = {
-				kind: input.kind ?? surfaceLookOf(created).kind,
-				...(input.accent ? { accent: input.accent } : {}),
-			};
+			this.#surfacesMutationEpoch += 1;
+			const look: SurfaceLook = { kind: input.kind ?? surfaceLookOf(created).kind };
 			this.store.set((state) => ({
 				surfaces: sortSurfaces([...state.surfaces.filter((item) => item.id !== created.id), created]),
 				workspaces: {
@@ -1628,10 +1898,7 @@ export class SurfacesStore {
 			previewMode: input.archetype === "studio" ? "studio_overlay" : "static_site",
 		});
 		this.#localCreatedIds.add(created.id);
-		const look: SurfaceLook = {
-			kind: input.kind ?? surfaceLookOf(created).kind,
-			...(input.accent ? { accent: input.accent } : {}),
-		};
+		const look: SurfaceLook = { kind: input.kind ?? surfaceLookOf(created).kind };
 		const starterFiles =
 			input.archetype === "studio"
 				? starterStudioFiles(created, this.companyName, look.kind, description ?? undefined)
@@ -1801,11 +2068,13 @@ export class SurfacesStore {
 				});
 			return undefined;
 		} finally {
-			this.store.set((state) => {
-				const busy = { ...state.busy };
-				delete busy[key];
-				return { busy };
-			});
+			if (!this.#options.signal.aborted) {
+				this.store.set((state) => {
+					const busy = { ...state.busy };
+					delete busy[key];
+					return { busy };
+				});
+			}
 		}
 	}
 
@@ -1976,6 +2245,7 @@ export class SurfacesStore {
 
 	async archiveSurface(surfaceId: string): Promise<boolean> {
 		const remove = () => {
+			this.#surfacesMutationEpoch += 1;
 			this.store.set((state) => {
 				const workspaces = { ...state.workspaces };
 				delete workspaces[surfaceId];
@@ -2089,11 +2359,13 @@ export class SurfacesStore {
 			});
 			return undefined;
 		} finally {
-			this.store.set((state) => {
-				const busy = { ...state.busy };
-				delete busy[busyKey];
-				return { busy };
-			});
+			if (!this.#options.signal.aborted) {
+				this.store.set((state) => {
+					const busy = { ...state.busy };
+					delete busy[busyKey];
+					return { busy };
+				});
+			}
 		}
 	}
 
@@ -2204,12 +2476,21 @@ export class SurfacesStore {
 		return t("Merged “{title}” into Base", { title });
 	}
 
+	#evictStudioUndoSnapshots(changeIds: readonly string[] | undefined): void {
+		if (!changeIds) return;
+		for (const id of changeIds) this.#studioUndoSnapshots.delete(id);
+	}
+
 	#offerUndo(label: string, changeIds: readonly string[], verb: SurfaceUndoVerb = "merged"): void {
 		if (this.#undoTimer) clearTimeout(this.#undoTimer);
+		const previous = this.state.undo;
+		if (previous) this.#evictStudioUndoSnapshots(previous.changeIds);
 		const id = ++this.#undoSeq;
 		this.store.set({ undo: { id, label, changeIds, verb } });
 		this.#undoTimer = setTimeout(() => {
-			if (this.state.undo?.id === id) this.store.set({ undo: undefined });
+			this.#undoTimer = undefined;
+			this.#evictStudioUndoSnapshots(changeIds);
+			if (!this.#options.signal.aborted && this.state.undo?.id === id) this.store.set({ undo: undefined });
 		}, SURFACE_UNDO_MS);
 	}
 
@@ -2218,9 +2499,9 @@ export class SurfacesStore {
 	}
 
 	async approveChange(sessionId: string, changeId: string): Promise<ApprovalOutcome | undefined> {
-		const drawerOpen = this.drawerOpenOn(sessionId);
 		const found = this.#sessionAt(sessionId);
 		if (this.isLocalInteractive && found && isLocalSurfaceId(found.workspace.surface.id)) {
+			const drawerOpen = this.drawerOpenOn(sessionId);
 			const now = new Date().toISOString();
 			const target = found.session.changes.find((item) => item.id === changeId);
 			const changes = found.session.changes.map((change) =>
@@ -2255,7 +2536,7 @@ export class SurfacesStore {
 		}
 		const updated = await this.#run(`change:${changeId}`, (client) => client.approveSurfaceChange(changeId));
 		if (!updated) return undefined;
-		const outcome = approvalOutcome(updated, drawerOpen);
+		const outcome = approvalOutcome(updated, this.drawerOpenOn(sessionId));
 		this.#applySession(updated, outcome);
 		const change = updated.changes.find((item) => item.id === changeId);
 		this.#offerUndo(change?.title ?? updated.title, [changeId], this.#undoVerbFor(updated.surfaceId));
@@ -2300,16 +2581,16 @@ export class SurfacesStore {
 			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
 		}
 		this.#applySession(updated, "history");
-		this.#offerUndo(updated.title, merged, this.#undoVerbFor(updated.surfaceId));
+		if (merged.length > 0) this.#offerUndo(updated.title, merged, this.#undoVerbFor(updated.surfaceId));
 		void this.refreshSurfaces();
 		return true;
 	}
 
 	async discardChange(sessionId: string, changeId: string): Promise<boolean> {
-		const drawerOpen = this.drawerOpenOn(sessionId);
 		const found = this.#sessionAt(sessionId);
 		if (!found) return false;
 		if (this.isLocalInteractive && isLocalSurfaceId(found.workspace.surface.id)) {
+			const drawerOpen = this.drawerOpenOn(sessionId);
 			const now = new Date().toISOString();
 			const target = found.session.changes.find((item) => item.id === changeId);
 			const changes = found.session.changes.map((change) =>
@@ -2353,7 +2634,8 @@ export class SurfacesStore {
 		if (!updated) return false;
 		const openCount = countOpenSurfaceChanges(updated.changes);
 		const hasMerged = updated.changes.some((change) => change.status === "merged");
-		const outcome: ApprovalOutcome = openCount === 0 && !hasMerged ? "history" : approvalOutcome(updated, drawerOpen);
+		const outcome: ApprovalOutcome =
+			openCount === 0 && !hasMerged ? "history" : approvalOutcome(updated, this.drawerOpenOn(sessionId));
 		if (outcome === "history" && this.drawerOpenOn(sessionId)) {
 			this.store.set({ drawer: undefined });
 			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
@@ -2442,24 +2724,34 @@ export class SurfacesStore {
 			this.#applySession(updated, "history");
 			return true;
 		}
-		let latest: SurfaceSession | undefined = session;
+		let latest: SurfaceSession | undefined;
 		for (const change of session.changes.filter(isOpenChange)) {
 			const next = await this.#run(`change:${change.id}`, (client) => client.discardSurfaceChange(change.id));
-			if (!next) return false;
+			if (!next) {
+				if (latest) {
+					this.#applySession(latest, approvalOutcome(latest, this.drawerOpenOn(sessionId)));
+					void this.refreshSurfaces();
+				}
+				return false;
+			}
 			latest = next;
 		}
 		if (this.drawerOpenOn(sessionId)) {
 			this.store.set({ drawer: undefined });
 			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
 		}
-		if (latest) this.#applySession(latest, "history");
+		this.#applySession(latest ?? session, "history");
+		void this.refreshSurfaces();
 		return true;
 	}
 
 	async undo(): Promise<boolean> {
 		const undo = this.state.undo;
 		if (!undo) return false;
-		if (this.#undoTimer) clearTimeout(this.#undoTimer);
+		if (this.#undoTimer) {
+			clearTimeout(this.#undoTimer);
+			this.#undoTimer = undefined;
+		}
 		this.store.set({ undo: undefined });
 		if (this.isLocalInteractive && undo.changeIds.every((id) => id.startsWith("local-"))) {
 			return Boolean(this.#undoLocalChangeIds(undo.changeIds));
@@ -2468,7 +2760,13 @@ export class SurfacesStore {
 		for (const changeId of undo.changeIds) {
 			if (restored?.changes.find((item) => item.id === changeId)?.status === "staged") continue;
 			const next = await this.#run(`undo:${changeId}`, (client) => client.undoSurfaceChange(changeId));
-			if (!next) return false;
+			if (!next) {
+				if (restored) {
+					this.#applySession(restored, approvalOutcome(restored, this.drawerOpenOn(restored.id)));
+					void this.refreshSurfaces();
+				}
+				return false;
+			}
 			restored = next;
 		}
 		if (restored) this.#applySession(restored, approvalOutcome(restored, this.drawerOpenOn(restored.id)));
@@ -2564,7 +2862,13 @@ export class SurfacesStore {
 		for (const change of undoable) {
 			if (restored?.changes.find((item) => item.id === change.id)?.status === "staged") continue;
 			const next = await this.#run(`undo:${change.id}`, (client) => client.undoSurfaceChange(change.id));
-			if (!next) return false;
+			if (!next) {
+				if (restored) {
+					this.#applySession(restored, approvalOutcome(restored, this.drawerOpenOn(restored.id)));
+					void this.refreshSurfaces();
+				}
+				return false;
+			}
 			restored = next;
 		}
 		if (restored) this.#applySession(restored, approvalOutcome(restored, false));
@@ -2769,6 +3073,8 @@ export class SurfacesStore {
 	}
 
 	async pickVariant(surfaceId: string, explorationId: string, sessionId: string): Promise<void> {
+		const previousDrawer = this.state.drawer;
+		const switchingDrawer = previousDrawer?.explorationId === explorationId && previousDrawer.sessionId !== sessionId;
 		this.store.set((state) => ({
 			variantPick: { ...state.variantPick, [explorationId]: sessionId },
 			...(state.drawer?.explorationId === explorationId ? { drawer: { surfaceId, sessionId, explorationId } } : {}),
@@ -2776,6 +3082,10 @@ export class SurfacesStore {
 				? { mode: "preview" as const, activeReportSlug: undefined }
 				: {}),
 		}));
+		if (switchingDrawer && !isLocalSurfaceId(surfaceId)) {
+			void this.#options.client?.setSessionChatOpen(previousDrawer.sessionId, false).catch(() => undefined);
+			void this.#options.client?.setSessionChatOpen(sessionId, true).catch(() => undefined);
+		}
 		await this.#syncPreview(surfaceId);
 	}
 
@@ -2814,13 +3124,58 @@ export class SurfacesStore {
 	}
 
 	async #syncPreview(surfaceId: string): Promise<void> {
-		if (isLocalSurfaceId(surfaceId) || !this.#options.client) return;
-		const selection = this.previewSelection(surfaceId);
-		const previewState = await this.#run(`preview:${surfaceId}`, (client) =>
-			client.setPreviewSelection(surfaceId, selection),
-		);
-		const workspace = this.workspace(surfaceId);
-		if (previewState && workspace) this.#putWorkspace({ ...workspace, previewState });
+		const client = this.#options.client;
+		if (isLocalSurfaceId(surfaceId) || !client) return;
+		this.#previewSyncGen.set(surfaceId, (this.#previewSyncGen.get(surfaceId) ?? 0) + 1);
+		this.#previewSyncDirty.add(surfaceId);
+		if (this.#previewSyncInFlight.has(surfaceId)) {
+			await new Promise<void>((resolve) => {
+				const list = this.#previewSyncWaiters.get(surfaceId);
+				if (list) list.push(resolve);
+				else this.#previewSyncWaiters.set(surfaceId, [resolve]);
+			});
+			return;
+		}
+		const busyKey = `preview:${surfaceId}`;
+		this.#previewSyncInFlight.add(surfaceId);
+		if (!this.#options.signal.aborted) {
+			this.store.set((state) => ({ busy: { ...state.busy, [busyKey]: true }, error: undefined }));
+		}
+		try {
+			while (this.#previewSyncDirty.has(surfaceId) && !this.#options.signal.aborted) {
+				this.#previewSyncDirty.delete(surfaceId);
+				const gen = this.#previewSyncGen.get(surfaceId) ?? 0;
+				const selection = this.previewSelection(surfaceId);
+				try {
+					const previewState = await client.setPreviewSelection(surfaceId, selection);
+					if (this.#options.signal.aborted) return;
+					if ((this.#previewSyncGen.get(surfaceId) ?? 0) !== gen) continue;
+					const workspace = this.workspace(surfaceId);
+					if (previewState && workspace) this.#putWorkspace({ ...workspace, previewState });
+				} catch (error) {
+					if (!this.#options.signal.aborted) {
+						this.store.set({
+							error: isMissingSurfaceRpcError(error) ? this.#options.unavailableMessage : describe(error),
+						});
+					}
+					if (!this.#previewSyncDirty.has(surfaceId)) break;
+				}
+			}
+		} finally {
+			this.#previewSyncInFlight.delete(surfaceId);
+			if (!this.#options.signal.aborted) {
+				this.store.set((state) => {
+					const busy = { ...state.busy };
+					delete busy[busyKey];
+					return { busy };
+				});
+			}
+			const waiters = this.#previewSyncWaiters.get(surfaceId);
+			if (waiters) {
+				this.#previewSyncWaiters.delete(surfaceId);
+				for (const resolve of waiters) resolve();
+			}
+		}
 	}
 
 	async publish(surfaceId: string): Promise<boolean> {
@@ -2863,6 +3218,7 @@ export class SurfacesStore {
 	}
 
 	#putSurface(surface: SurfaceSummary): void {
+		this.#surfacesMutationEpoch += 1;
 		this.store.set((state) => {
 			const workspace = state.workspaces[surface.id];
 			const nextSurfaces = sortSurfaces(state.surfaces.map((item) => (item.id === surface.id ? surface : item)));
@@ -2876,9 +3232,18 @@ export class SurfacesStore {
 	async refreshSurfaces(): Promise<void> {
 		const client = this.#options.client;
 		if (!client || this.state.source !== "cloud") return;
+		const reqId = ++this.#surfacesReqSeq;
+		const startEpoch = this.#surfacesMutationEpoch;
 		try {
 			const surfaces = await client.listSurfaces(this.#options.companyId);
-			if (!this.#options.signal.aborted && surfaces.length) this.store.set({ surfaces: sortSurfaces(surfaces) });
+			if (
+				!this.#options.signal.aborted &&
+				reqId === this.#surfacesReqSeq &&
+				startEpoch === this.#surfacesMutationEpoch &&
+				surfaces.length
+			) {
+				this.store.set({ surfaces: sortSurfaces(surfaces) });
+			}
 		} catch {
 			/* WHY: Counts refresh opportunistically; the last good list stays on screen. */
 		}
@@ -2940,6 +3305,7 @@ export class SurfacesStore {
 			client.applyMigrationChecklist(this.#options.companyId, input),
 		);
 		if (!surfaces) return false;
+		this.#surfacesMutationEpoch += 1;
 		const migration = this.state.migration;
 		this.store.set({
 			source: surfaces.length ? "cloud" : this.state.source,

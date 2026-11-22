@@ -11,11 +11,10 @@ import {
 	sharedAssetsProducedBy,
 } from "@qorpera/contracts";
 import { h } from "../../ui/dom.ts";
-import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { t } from "../../ui/preferences.ts";
 import { formatConflictPaths, isOpenChange, type SurfacesStore } from "../surfaces-store.ts";
-import { surfaceEmblem, surfaceTile } from "./surface-rail.ts";
+import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
 import { type Studio3DConfig, Studio3DViewer } from "./surface-studio-3d.ts";
 
@@ -302,6 +301,25 @@ function docPriority(path: string): number {
 	return 2;
 }
 
+function sameDeps(prev: readonly unknown[] | undefined, next: readonly unknown[]): boolean {
+	if (!prev || prev.length !== next.length) return false;
+	for (let i = 0; i < next.length; i++) {
+		if (!Object.is(prev[i], next[i])) return false;
+	}
+	return true;
+}
+
+function sameOrderedChanges(
+	prev: readonly StudioPatchChange[] | undefined,
+	next: readonly StudioPatchChange[],
+): boolean {
+	if (!prev || prev.length !== next.length) return false;
+	for (let i = 0; i < next.length; i++) {
+		if (prev[i]!.changeId !== next[i]!.changeId || prev[i]!.ops !== next[i]!.ops) return false;
+	}
+	return true;
+}
+
 export class SurfaceStudioView {
 	readonly el = h("div", { class: "surface-studio" });
 	readonly #options: SurfaceStudioOptions;
@@ -312,7 +330,8 @@ export class SurfaceStudioView {
 	#viewer3d: Studio3DViewer | undefined;
 	#reportView: SurfaceReportView | undefined;
 	#tab: StudioTab = "overview";
-	#shown = "";
+	#shownDeps: readonly unknown[] | undefined;
+	#shownOrdered: readonly StudioPatchChange[] | undefined;
 	#appliedIdentityVars: string[] = [];
 
 	constructor(options: SurfaceStudioOptions) {
@@ -404,22 +423,24 @@ export class SurfaceStudioView {
 		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
 		const activeOtherSurfaces = state.surfaces.filter((item) => item.status === "active" && item.id !== surface.id);
 		const downstreamSurfaces = activeOtherSurfaces.filter((item) => item.group === "products");
-		const key = JSON.stringify([
+		const deps: readonly unknown[] = [
 			this.#loading,
 			state.mode,
 			this.#tab,
-			baseFiles,
-			ordered,
-			surface.title,
-			surface.folderRoot,
+			this.#baseFiles,
+			state.cloudSurfaceFiles[surface.id],
+			state.localStudioBase[surface.id],
+			surface,
 			lookKind,
 			identityTokens?.css ?? "",
 			workspace?.briefSummary,
-			activeOtherSurfaces.map((item) => [item.id, item.slug, item.title, item.group, store.lookOf(item).kind]),
+			state.surfaces,
+			state.surfaceLooks,
 			busyReconcile,
-		]);
-		if (key === this.#shown) return;
-		this.#shown = key;
+		];
+		if (sameDeps(this.#shownDeps, deps) && sameOrderedChanges(this.#shownOrdered, ordered)) return;
+		this.#shownDeps = deps;
+		this.#shownOrdered = ordered;
 
 		const composition = composeStudioPreview(baseFiles, ordered);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
@@ -541,7 +562,7 @@ export class SurfaceStudioView {
 					this.#loading
 						? [h("span", { class: "surface-state is-running" }), h("p", null, t("Opening studio…"))]
 						: [
-								interfaceEmblem(surfaceEmblem(surface), 42),
+								surfaceTile(surface, this.#options.store.lookOf(surface), "is-hero"),
 								h("h2", null, surface.title),
 								workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
 								h(
@@ -786,7 +807,7 @@ export class SurfaceStudioView {
 									"data-act": "studio-open-surface",
 									"data-slug": target.slug,
 								},
-								surfaceTile(target, store.lookOf(target), 12, "is-tiny"),
+								surfaceTile(target, store.lookOf(target), "is-tiny"),
 								h("span", null, target.title),
 							),
 						),
@@ -833,7 +854,7 @@ export class SurfaceStudioView {
 										"data-act": "studio-open-surface",
 										"data-slug": target.slug,
 									},
-									surfaceTile(target, store.lookOf(target), 11, "is-tiny"),
+									surfaceTile(target, store.lookOf(target), "is-tiny"),
 									h("span", null, target.title),
 								),
 							),
@@ -866,7 +887,7 @@ export class SurfaceStudioView {
 										"data-act": "studio-open-surface",
 										"data-slug": target.slug,
 									},
-									surfaceTile(target, store.lookOf(target), 11, "is-tiny"),
+									surfaceTile(target, store.lookOf(target), "is-tiny"),
 									h("span", null, target.title),
 								),
 							),
@@ -1074,10 +1095,12 @@ export class SurfaceStudioView {
 					store,
 					surface,
 					signal: this.#lifetime.signal,
-					baseFiles: this.#options.baseFiles,
+					baseFiles: this.#baseFiles,
 					patches: this.#options.patches,
 					embedded: true,
 				});
+			} else {
+				this.#reportView.setBaseFiles(this.#baseFiles);
 			}
 			this.#reportView.update();
 			sections.push(this.#reportView.el);
