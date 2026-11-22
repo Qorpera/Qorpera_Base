@@ -800,4 +800,91 @@ describe("the save check of git's own storage (repo.git)", () => {
 		expect(core.entries.get(a)?.fileSha256).toBe(hashOf(honest));
 		expect(core.entries.get(b)?.fileSha256).toBe(hashOf(later));
 	});
+
+	it("skips staging and secret-scanning unpublished git temp files on close and boundary while scanning after rename", async () => {
+		const scratch = await mkdtemp(join(tmpdir(), "qorpera-folder-unpub-"));
+		cleanups.push(() => rm(scratch, { recursive: true, force: true }));
+		const carryingPack = packHolding(scratch, `secret=${VALUE}\n`);
+		const honestPack = packHolding(scratch, "clean pack content\n");
+		const carryingLoose = looseObject("blob", `loose secret ${VALUE}\n`);
+		const honestLoose = looseObject("blob", "clean loose object\n");
+		const repo = "code/acme/app/repo.git";
+		const { core, service, open, staged, nothingNamed } = await company(secretsOf(VALUE), {
+			code: null,
+			"code/acme": null,
+			"code/acme/app": null,
+			[repo]: null,
+			[`${repo}/objects`]: null,
+			[`${repo}/objects/pack`]: null,
+			[`${repo}/objects/${carryingLoose.name.slice("objects/".length, "objects/xx".length)}`]: null,
+			[`${repo}/objects/${honestLoose.name.slice("objects/".length, "objects/xx".length)}`]: null,
+		});
+		const view = await open();
+
+		const tmpPackBad = `${repo}/objects/pack/tmp_pack_bad1`;
+		const tmpPackGood = `${repo}/objects/pack/tmp_pack_good1`;
+		const tmpObjBad = `${repo}/${carryingLoose.name.slice(0, "objects/xx/".length)}tmp_obj_bad1`;
+		const tmpObjGood = `${repo}/${honestLoose.name.slice(0, "objects/xx/".length)}tmp_obj_good1`;
+		const keepFile = `${repo}/objects/pack/pack-${"3".repeat(40)}.keep`;
+		const swapFile = "docs/draft.md~";
+
+		await put(view, tmpPackBad, carryingPack);
+		await put(view, tmpPackGood, honestPack);
+		await put(view, tmpObjBad, carryingLoose.data);
+		await put(view, tmpObjGood, honestLoose.data);
+		await put(view, keepFile, Buffer.from(`keep ${VALUE}`));
+		await put(view, swapFile, Buffer.from(`swap ${VALUE}`));
+		expect(staged()).toBe(0);
+
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([]);
+		expect(staged()).toBe(0);
+
+		const finalPackGood = `${repo}/objects/pack/pack-${"2".repeat(40)}.pack`;
+		const finalObjGood = `${repo}/${honestLoose.name}`;
+		await view.rename({ from: tmpPackGood, to: finalPackGood, noReplace: true });
+		await view.rename({ from: tmpObjGood, to: finalObjGood, noReplace: true });
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([]);
+		expect(staged()).toBe(2);
+		expect(core.entries.get(finalPackGood)?.fileSha256).toBe(hashOf(honestPack));
+		expect(core.entries.get(finalObjGood)?.fileSha256).toBe(hashOf(honestLoose.data));
+
+		const finalPackBad = `${repo}/objects/pack/pack-${"1".repeat(40)}.pack`;
+		const finalObjBad = `${repo}/${carryingLoose.name}`;
+		await view.rename({ from: tmpPackBad, to: finalPackBad, noReplace: true });
+		await view.rename({ from: tmpObjBad, to: finalObjBad, noReplace: true });
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual(
+			[refused(finalPackBad, CARRIES), refused(finalObjBad, CARRIES)].sort(byPath),
+		);
+		expect(core.entries.has(finalPackBad)).toBe(false);
+		expect(core.entries.has(finalObjBad)).toBe(false);
+		nothingNamed();
+	});
+
+	it("reuses the content-addressed clean check cache across identical files and checks deltas on secret expansion", async () => {
+		const checks = new SaveChecks();
+		let scanStarts = 0;
+		const origStart = checks.start.bind(checks);
+		checks.start = (...args) => {
+			scanStarts++;
+			return origStart(...args);
+		};
+		const { core, service, open, nothingNamed } = await company(secretsOf("other-value-0002"), {}, checks);
+		const view = await open();
+		const text = `shared payload with ${VALUE}\n`;
+		await write(view, "docs/first.txt", text);
+		expect(scanStarts).toBe(1);
+		await write(view, "docs/second.txt", text);
+		expect(scanStarts).toBe(1);
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([]);
+		expect(core.entries.get("docs/first.txt")?.fileSha256).toBe(hashOf(text));
+		expect(core.entries.get("docs/second.txt")?.fileSha256).toBe(hashOf(text));
+
+		await write(view, "docs/third.txt", text);
+		expect(scanStarts).toBe(1);
+		service.secrets(CODING_MACHINE_ID, secretsOf("other-value-0002", VALUE));
+		expect(refusedIn(await service.boundary(CODING_MACHINE_ID))).toEqual([refused("docs/third.txt", CARRIES)]);
+		expect(scanStarts).toBe(2);
+		expect(core.entries.has("docs/third.txt")).toBe(false);
+		nothingNamed();
+	});
 });

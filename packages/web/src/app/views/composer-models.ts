@@ -1,3 +1,4 @@
+import { withAbortScopes } from "../../cloud/abort-scope.ts";
 import {
 	MODELS_BEFORE_LIST,
 	modelEfforts,
@@ -256,25 +257,26 @@ export class ComposerModels {
 		if (!this.#client || this.#signal.aborted || this.#request || !this.#canRead()) return;
 		const request = new AbortController();
 		this.#request = request;
-		const signal = AbortSignal.any([request.signal, this.#signal]);
 		this.#error = "";
 		this.#listOpen = false;
 		this.#notify();
-		try {
-			const value = await this.#client.read(this.#sessionId, signal);
-			signal.throwIfAborted();
-			this.#observed = value;
-			this.#pending = undefined;
-		} catch {
-			if (!signal.aborted) this.#error = t("The model is unavailable. Refresh to try again.");
-		} finally {
-			if (this.#request === request) {
-				this.#request = undefined;
-				this.#notify();
-				if (!this.el.hidden && (document.activeElement === this.el || !this.el.contains(document.activeElement)))
-					this.focus();
+		await withAbortScopes([request.signal, this.#signal], async (signal) => {
+			try {
+				const value = await this.#client!.read(this.#sessionId, signal);
+				signal.throwIfAborted();
+				this.#observed = value;
+				this.#pending = undefined;
+			} catch {
+				if (!signal.aborted) this.#error = t("The model is unavailable. Refresh to try again.");
+			} finally {
+				if (this.#request === request) {
+					this.#request = undefined;
+					this.#notify();
+					if (!this.el.hidden && (document.activeElement === this.el || !this.el.contains(document.activeElement)))
+						this.focus();
+				}
 			}
-		}
+		});
 	}
 
 	focus(): void {
@@ -428,29 +430,35 @@ export class ComposerModels {
 		}
 		const request = new AbortController();
 		this.#request = request;
-		const signal = AbortSignal.any([request.signal, this.#signal]);
 		this.#pending = selection;
 		this.#pressed = pressed;
 		if (selection.modelId !== undefined) this.#listOpen = false;
 		this.#notify();
-		try {
-			const value = await this.#client.set(this.#sessionId, selection, this.#observed.version, signal);
-			signal.throwIfAborted();
-			this.#observed = value;
-			this.#pending = undefined;
-		} catch {
-			if (!signal.aborted) this.#error = t("The change could not be confirmed. Refresh the model before sending.");
-		} finally {
-			if (this.#request === request) {
-				this.#request = undefined;
-				this.#notify();
-				if (!this.el.hidden && (!this.el.contains(document.activeElement) || document.activeElement === this.el)) {
-					if (this.#pressed && !this.#unusable(this.#pressed)) this.#pressed.focus();
-					else this.focus();
+		const observedVersion = this.#observed.version;
+		await withAbortScopes([request.signal, this.#signal], async (signal) => {
+			try {
+				const value = await this.#client!.set(this.#sessionId, selection, observedVersion, signal);
+				signal.throwIfAborted();
+				this.#observed = value;
+				this.#pending = undefined;
+			} catch {
+				if (!signal.aborted)
+					this.#error = t("The change could not be confirmed. Refresh the model before sending.");
+			} finally {
+				if (this.#request === request) {
+					this.#request = undefined;
+					this.#notify();
+					if (
+						!this.el.hidden &&
+						(!this.el.contains(document.activeElement) || document.activeElement === this.el)
+					) {
+						if (this.#pressed && !this.#unusable(this.#pressed)) this.#pressed.focus();
+						else this.focus();
+					}
+					this.#pressed = undefined;
 				}
-				this.#pressed = undefined;
 			}
-		}
+		});
 	}
 
 	#unusable(control: HTMLElement): boolean {

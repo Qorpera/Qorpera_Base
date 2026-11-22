@@ -47,6 +47,7 @@ import {
 	parseAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
 import { isInterfaceName, parseTableFile, parseTableRows } from "@qorpera/cloud-client/interfaces";
+import { withAbortScopes } from "../cloud/abort-scope.ts";
 import { APP_GROUPS_MAX_BYTES, APP_GROUPS_PATH, type AppTreeNode, parseAppGroups } from "../cloud/app-groups.ts";
 import type { WebMemberFolder } from "../cloud/company-folder-writes.ts";
 import type { AppAnswer, AppCall, FramedPage } from "../ui/app-frame.ts";
@@ -126,10 +127,33 @@ type Folder = Pick<CloudMemberFolderClient, "read" | "list" | "readFile"> &
 const LIST_PAGE = 50;
 /** Apps a company lists, at most. */
 const MAX_APPS = 200;
+const APP_READ_CONCURRENCY = 8;
+const NO_READ_MANY = new WeakSet<object>();
 const TEXT = new TextDecoder("utf-8", { fatal: true });
 /** Every read here reads a file's entry live, as the member, just before its bytes: those may come from the member's
  * file cache (company-files.ts). */
 const LIVE = { cached: true } as const;
+
+async function mapLimited<T, R>(
+	items: readonly T[],
+	limit: number,
+	signal: AbortSignal,
+	run: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+	signal.throwIfAborted();
+	const out = new Array<R>(items.length);
+	let next = 0;
+	const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+		while (!signal.aborted) {
+			const index = next++;
+			if (index >= items.length) return;
+			out[index] = await run(items[index]!, index);
+		}
+	});
+	await Promise.all(workers);
+	signal.throwIfAborted();
+	return out;
+}
 
 async function listAll(
 	folder: Folder,
@@ -183,20 +207,18 @@ export async function readAppIcons(
 		// More than 12 can stand (two saves at once, a file written another way): every one is read, so a member's pick
 		// is still drawn; the panel shows the newest 12 and the picked one (review F4 on #1696).
 		.slice(0, 4 * APP_ICONS_MAX);
-	await Promise.all(
-		files.map(async (entry) => {
-			const key = `${entry.path}@${entry.seq}`;
-			const kept = known.get(key);
-			if (kept) {
-				byFile.set(key, kept);
-				return;
-			}
-			const text = await readText(folder, entry, signal, APP_ICON_MAX_BYTES);
-			const read = text === null ? null : parseAppIcon(text);
-			const id = appIconIdOf(entry.path.slice(entry.path.lastIndexOf("/") + 1));
-			if (read?.ok && id) byFile.set(key, { id, icon: read.icon, seq: entry.seq });
-		}),
-	);
+	await mapLimited(files, APP_READ_CONCURRENCY, signal, async (entry) => {
+		const key = `${entry.path}@${entry.seq}`;
+		const kept = known.get(key);
+		if (kept) {
+			byFile.set(key, kept);
+			return;
+		}
+		const text = await readText(folder, entry, signal, APP_ICON_MAX_BYTES);
+		const read = text === null ? null : parseAppIcon(text);
+		const id = appIconIdOf(entry.path.slice(entry.path.lastIndexOf("/") + 1));
+		if (read?.ok && id) byFile.set(key, { id, icon: read.icon, seq: entry.seq });
+	});
 	return { icons: [...byFile.values()].sort((a, b) => b.seq - a.seq), byFile };
 }
 
@@ -208,39 +230,93 @@ export async function readAppGroups(folder: Folder, signal: AbortSignal): Promis
 	return text === null ? undefined : parseAppGroups(text);
 }
 
+async function readManifestEntries(
+	folder: Folder,
+	paths: readonly string[],
+	signal: AbortSignal,
+): Promise<(CloudMemberFolderEntry | null)[]> {
+	if (!paths.length) return [];
+	if (folder.readMany && !NO_READ_MANY.has(folder)) {
+		const out: (CloudMemberFolderEntry | null)[] = [];
+		let fallback = false;
+		for (let start = 0; start < paths.length; start += CLOUD_MEMBER_FOLDER_READ_MANY) {
+			signal.throwIfAborted();
+			const chunk = paths.slice(start, start + CLOUD_MEMBER_FOLDER_READ_MANY);
+			try {
+				const reads = await folder.readMany(chunk, signal);
+				for (let i = 0; i < chunk.length; i++) out.push(reads[i]?.entry ?? null);
+			} catch (error: unknown) {
+				if (signal.aborted) throw error;
+				if (error instanceof CloudMemberFolderError && error.status === 404) NO_READ_MANY.add(folder);
+				const rest = await mapLimited(paths.slice(start), APP_READ_CONCURRENCY, signal, async (path) => {
+					return (await folder.read(path, signal)).entry;
+				});
+				out.push(...rest);
+				fallback = true;
+				break;
+			}
+		}
+		if (!fallback) signal.throwIfAborted();
+		return out;
+	}
+	return mapLimited(paths, APP_READ_CONCURRENCY, signal, async (path) => (await folder.read(path, signal)).entry);
+}
+
 /** The company's apps, in name order: every folder of `apps/` with its manifest read. */
-export async function readApps(folder: Folder, signal: AbortSignal): Promise<CompanyApp[]> {
+export async function readApps(
+	folder: Folder,
+	signal: AbortSignal,
+	previous: readonly CompanyApp[] = [],
+): Promise<CompanyApp[]> {
 	const top = await folder.read(APPS_FOLDER, signal);
 	if (top.entry?.kind !== "folder") return [];
 	const folders = (await listAll(folder, APPS_FOLDER, signal, MAX_APPS)).filter((entry) => entry.kind === "folder");
-	const apps = await Promise.all(
-		folders.map(async (entry): Promise<CompanyApp | null> => {
-			const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
-			if (!isInterfaceName(name)) return null;
-			const manifest = (await folder.read(`${entry.path}/${APP_MANIFEST}`, signal)).entry;
-			const text = manifest ? await readText(folder, manifest, signal, APP_MANIFEST_MAX_BYTES) : null;
-			const changed = Math.max(entry.seq, manifest?.seq ?? 0);
-			if (text === null)
-				return {
-					name,
-					path: entry.path,
-					manifest: null,
-					problems: [{ line: null, message: manifest ? "app.toml is not text" : "app.toml is missing" }],
-					version: manifest?.version ?? null,
-					changed,
-				};
-			const parsed = parseAppManifest(text);
+	const candidates: { entry: CloudMemberFolderEntry; name: string; manifestPath: string }[] = [];
+	for (const entry of folders) {
+		const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
+		if (!isInterfaceName(name)) continue;
+		candidates.push({ entry, name, manifestPath: `${entry.path}/${APP_MANIFEST}` });
+	}
+	if (!candidates.length) return [];
+	const known = new Map(previous.map((app) => [app.name, app]));
+	const manifests = await readManifestEntries(
+		folder,
+		candidates.map((item) => item.manifestPath),
+		signal,
+	);
+	return mapLimited(candidates, APP_READ_CONCURRENCY, signal, async ({ entry, name }, index): Promise<CompanyApp> => {
+		const manifest = manifests[index] ?? null;
+		const changed = Math.max(entry.seq, manifest?.seq ?? 0);
+		const prev = known.get(name);
+		// WHY: skip re-fetching manifest bytes when a valid manifest keeps the same server version.
+		if (
+			prev?.manifest !== null &&
+			prev?.manifest !== undefined &&
+			prev.version !== null &&
+			prev.version === manifest?.version
+		) {
+			return prev.changed === changed ? prev : { ...prev, changed };
+		}
+		const text = manifest ? await readText(folder, manifest, signal, APP_MANIFEST_MAX_BYTES) : null;
+		if (text === null)
 			return {
 				name,
 				path: entry.path,
-				manifest: parsed.ok ? parsed.manifest : null,
-				problems: parsed.ok ? [] : parsed.problems,
+				manifest: null,
+				problems: [{ line: null, message: manifest ? "app.toml is not text" : "app.toml is missing" }],
 				version: manifest?.version ?? null,
 				changed,
 			};
-		}),
-	);
-	return apps.filter((app): app is CompanyApp => app !== null);
+		const parsed = parseAppManifest(text);
+		return {
+			name,
+			path: entry.path,
+			manifest: parsed.ok ? parsed.manifest : null,
+			problems: parsed.ok ? [] : parsed.problems,
+			version: manifest?.version ?? null,
+			changed,
+		};
+	});
 }
 
 /* ---- Putting a page together ----------------------------------------------------------------------------------- */
@@ -296,9 +372,6 @@ const WHOLE_READ_BYTES = 8 * 1024 * 1024;
 interface WarmBudget {
 	left: number;
 }
-
-/** Folders whose database has no qorpera_member_folder_read_many yet (it answered 404): each path is read alone there. */
-const NO_READ_MANY = new WeakSet<object>();
 
 class AppFiles {
 	readonly #folder: Folder;
@@ -1695,7 +1768,7 @@ export class CompanyData implements CompanyLiveSource {
 	/** One question's answer, as the member. */
 	async query(asked: CloudMemberDataQuestion, signal: AbortSignal): Promise<CloudMemberDataAnswer> {
 		this.#current();
-		const answer = await this.#client().query(asked, AbortSignal.any([signal, this.#signal]));
+		const answer = await withAbortScopes([signal, this.#signal], (scoped) => this.#client().query(asked, scoped));
 		this.#current();
 		return answer;
 	}
@@ -1707,7 +1780,7 @@ export class CompanyData implements CompanyLiveSource {
 		this.#current();
 		const client = this.#client();
 		if (!client.previewChange) throw new CloudMemberDataError("Database changes are not available here");
-		const preview = await client.previewChange(asked, AbortSignal.any([signal, this.#signal]));
+		const preview = await withAbortScopes([signal, this.#signal], (scoped) => client.previewChange!(asked, scoped));
 		this.#current();
 		return preview;
 	}
@@ -1716,7 +1789,7 @@ export class CompanyData implements CompanyLiveSource {
 		this.#current();
 		const client = this.#client();
 		if (!client.change) throw new CloudMemberDataError("Database changes are not available here");
-		const result = await client.change(asked, AbortSignal.any([signal, this.#signal]));
+		const result = await withAbortScopes([signal, this.#signal], (scoped) => client.change!(asked, scoped));
 		this.#current();
 		return result;
 	}
@@ -1849,9 +1922,11 @@ export class CompanyData implements CompanyLiveSource {
 			let answer: CloudMemberDataWatchAnswer;
 			try {
 				this.#current();
-				answer = await this.#client().watch(
-					held.map((entry) => ({ ...entry.asked, etag: entry.answer!.etag })),
-					AbortSignal.any([call.signal, this.#signal]),
+				answer = await withAbortScopes([call.signal, this.#signal], (scoped) =>
+					this.#client().watch(
+						held.map((entry) => ({ ...entry.asked, etag: entry.answer!.etag })),
+						scoped,
+					),
 				);
 				this.#current();
 			} catch {
@@ -2317,7 +2392,7 @@ export class CompanyApps {
 					try {
 						const folder = this.#source.folder();
 						const [apps, groups] = await Promise.all([
-							readApps(folder, this.#stop.signal),
+							readApps(folder, this.#stop.signal, this.#last),
 							this.#publishGroups ? readAppGroups(folder, this.#stop.signal).catch(() => null) : null,
 						]);
 						// A failed read of the groups keeps what was read before.
@@ -2381,6 +2456,7 @@ export class CompanyApps {
 		this.#timer = setTimeout(() => {
 			this.#timer = undefined;
 			void this.read().then(() => {
+				if (this.#stop.signal.aborted) return;
 				for (const listener of [...this.#listeners]) listener();
 			});
 		}, APPS_HINT_MS);

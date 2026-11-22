@@ -1,3 +1,4 @@
+import { withAbortScopes } from "../../cloud/abort-scope.ts";
 import { describeError } from "../../cloud/client.ts";
 import type { GroupChatDetails, GroupChatDraft } from "../../cloud/group-details.ts";
 import { t } from "../../ui/preferences.ts";
@@ -146,84 +147,88 @@ export class GroupEdits {
 		this.#discard();
 		this.#resetting = true;
 		this.#resetRequired = true;
-		const signal = AbortSignal.any([this.signal, this.#attempt.signal]);
 		this.store.set({ status: t("Refreshing group details…"), failed: false });
-		try {
-			await this.#company.refreshSessions();
-			signal.throwIfAborted();
-			const details = await this.#company.groupDetails(this.#details.sessionId, signal);
-			signal.throwIfAborted();
-			if (details.version < this.#details.version) throw new Error(t("Group details are not current yet."));
-			this.reconcile(details);
-			signal.throwIfAborted();
-			this.#resetRequired = false;
-			this.store.set({ status: "", failed: false });
-		} catch {
-			if (!signal.aborted) this.store.set({ status: t("Group details could not be refreshed."), failed: true });
-		} finally {
-			this.#resetting = false;
-			this.store.set({});
-		}
+		await withAbortScopes([this.signal, this.#attempt.signal], async (signal) => {
+			try {
+				await this.#company.refreshSessions();
+				signal.throwIfAborted();
+				const details = await this.#company.groupDetails(this.#details.sessionId, signal);
+				signal.throwIfAborted();
+				if (details.version < this.#details.version) throw new Error(t("Group details are not current yet."));
+				this.reconcile(details);
+				signal.throwIfAborted();
+				this.#resetRequired = false;
+				this.store.set({ status: "", failed: false });
+			} catch {
+				if (!signal.aborted) this.store.set({ status: t("Group details could not be refreshed."), failed: true });
+			} finally {
+				this.#resetting = false;
+				this.store.set({});
+			}
+		});
 	}
 
 	async save(): Promise<void> {
 		if (this.#resetRequired) return this.discardChanges();
 		if (this.#saving || !this.#update || !this.canWrite() || (!this.#changes.size && !this.#needsRefresh)) return;
 		this.#saving = true;
-		const signal = AbortSignal.any([this.signal, this.#attempt.signal]);
 		this.store.set({ status: t("Saving…"), failed: false });
-		try {
-			do {
-				while (this.#changes.size) {
-					signal.throwIfAborted();
-					if (!this.canWrite()) throw new Error(t("Only an owner or admin can change group chats."));
-					const retrying = this.#retry !== undefined;
-					const attempt = this.#retry ?? {
-						observed: { ...this.#details, members: this.#details.members.map((member) => ({ ...member })) },
-						draft: this.current(),
-						changes: new Map(this.#changes),
-					};
-					this.#retry = attempt;
-					let wrote: boolean;
-					try {
-						wrote = await this.#update(attempt.observed.sessionId, attempt.observed, attempt.draft, signal);
-					} catch (error) {
-						// A failed preflight can accept corrections, but cannot resolve an earlier uncertain write.
-						if (error instanceof GroupUpdateNotWrittenError && !retrying) this.#retry = undefined;
-						throw error;
+		let aborted = false;
+		await withAbortScopes([this.signal, this.#attempt.signal], async (signal) => {
+			try {
+				do {
+					while (this.#changes.size) {
+						signal.throwIfAborted();
+						if (!this.canWrite()) throw new Error(t("Only an owner or admin can change group chats."));
+						const retrying = this.#retry !== undefined;
+						const attempt = this.#retry ?? {
+							observed: { ...this.#details, members: this.#details.members.map((member) => ({ ...member })) },
+							draft: this.current(),
+							changes: new Map(this.#changes),
+						};
+						this.#retry = attempt;
+						let wrote: boolean;
+						try {
+							wrote = await this.#update!(attempt.observed.sessionId, attempt.observed, attempt.draft, signal);
+						} catch (error) {
+							// A failed preflight can accept corrections, but cannot resolve an earlier uncertain write.
+							if (error instanceof GroupUpdateNotWrittenError && !retrying) this.#retry = undefined;
+							throw error;
+						}
+						signal.throwIfAborted();
+						this.#retry = undefined;
+						this.#needsRefresh = true;
+						for (const [key, revision] of attempt.changes) {
+							if (this.#changes.get(key) !== revision) continue;
+							this.#changes.delete(key);
+							delete this.#draft[key];
+						}
+						// A write raises the room's version by one. A retry that finds its write already in the file writes
+						// nothing, but the uncertain try it repeats (or another writer) raised it. Nothing written leaves it.
+						this.reconcile({
+							...attempt.observed,
+							...attempt.draft,
+							name: attempt.draft.name.trim(),
+							purpose: attempt.draft.purpose.trim(),
+							...(attempt.draft.subtitle !== undefined ? { subtitle: attempt.draft.subtitle.trim() } : {}),
+							version: attempt.observed.version + (wrote || retrying ? 1 : 0),
+						});
 					}
+					await this.#company.refreshSessions();
 					signal.throwIfAborted();
-					this.#retry = undefined;
-					this.#needsRefresh = true;
-					for (const [key, revision] of attempt.changes) {
-						if (this.#changes.get(key) !== revision) continue;
-						this.#changes.delete(key);
-						delete this.#draft[key];
-					}
-					// A write raises the room's version by one. A retry that finds its write already in the file writes
-					// nothing, but the uncertain try it repeats (or another writer) raised it. Nothing written leaves it.
-					this.reconcile({
-						...attempt.observed,
-						...attempt.draft,
-						name: attempt.draft.name.trim(),
-						purpose: attempt.draft.purpose.trim(),
-						...(attempt.draft.subtitle !== undefined ? { subtitle: attempt.draft.subtitle.trim() } : {}),
-						version: attempt.observed.version + (wrote || retrying ? 1 : 0),
-					});
-				}
-				await this.#company.refreshSessions();
-				signal.throwIfAborted();
-				this.reconcile(await this.#company.groupDetails(this.#details.sessionId, signal));
-				signal.throwIfAborted();
-				this.#needsRefresh = false;
-			} while (this.#changes.size);
-			this.store.set({ status: t("Saved"), failed: false });
-		} catch (error) {
-			if (!signal.aborted) this.store.set({ status: describeError(error), failed: true });
-		} finally {
-			this.#saving = false;
-			if (signal.aborted) void this.save();
-		}
+					this.reconcile(await this.#company.groupDetails(this.#details.sessionId, signal));
+					signal.throwIfAborted();
+					this.#needsRefresh = false;
+				} while (this.#changes.size);
+				this.store.set({ status: t("Saved"), failed: false });
+			} catch (error) {
+				if (!signal.aborted) this.store.set({ status: describeError(error), failed: true });
+			} finally {
+				aborted = signal.aborted;
+				this.#saving = false;
+			}
+		});
+		if (aborted) void this.save();
 	}
 
 	dispose(): void {

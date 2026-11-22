@@ -1,6 +1,8 @@
 import type { Duplex } from "node:stream";
 import type { ConnectOverCDPTransport } from "playwright-core";
 
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+
 /** Broker-owned Chromium DevTools pipe, never a socket in a browser/desktop
  * namespace or a member-facing protocol. Frames contain private working bytes;
  * malformed frames and errors must never be included in diagnostics. */
@@ -11,7 +13,8 @@ export class CompanyComputerBrowserPipe implements ConnectOverCDPTransport {
 	readonly #output: Duplex;
 	readonly #stop: () => void;
 	#closed = false;
-	#buffer = Buffer.alloc(0);
+	#chunks: Buffer[] = [];
+	#bufferedBytes = 0;
 
 	constructor(input: Duplex, output: Duplex, stop: () => void) {
 		this.#input = input;
@@ -46,16 +49,33 @@ export class CompanyComputerBrowserPipe implements ConnectOverCDPTransport {
 	#receive(bytes: Buffer): void {
 		if (this.#closed) return;
 		try {
-			if (this.#buffer.length + bytes.length > 16 * 1024 * 1024) throw new Error("limit");
-			this.#buffer = Buffer.concat([this.#buffer, bytes]);
+			if (this.#bufferedBytes + bytes.length > 16 * 1024 * 1024) throw new Error("limit");
+			let offset = 0;
 			let frames = 0;
 			while (!this.#closed) {
-				const end = this.#buffer.indexOf(0);
-				if (end < 0) break;
+				const end = bytes.indexOf(0, offset);
+				if (end < 0) {
+					if (offset < bytes.length) {
+						// WHY: copy only the trailing partial slice so a multi-MB incoming chunk slab is not pinned across frames.
+						const tail = offset === 0 ? bytes : Buffer.from(bytes.subarray(offset));
+						this.#chunks.push(tail);
+						this.#bufferedBytes += tail.length;
+					}
+					break;
+				}
 				if (++frames > 4096) throw new Error("limit");
-				const frame = this.#buffer.subarray(0, end);
-				this.#buffer = this.#buffer.subarray(end + 1);
-				const message: unknown = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(frame));
+				const slice = bytes.subarray(offset, end);
+				let frame: Buffer;
+				if (this.#chunks.length === 0) {
+					frame = slice;
+				} else {
+					if (slice.length > 0) this.#chunks.push(slice);
+					frame = Buffer.concat(this.#chunks, this.#bufferedBytes + slice.length);
+					this.#chunks = [];
+					this.#bufferedBytes = 0;
+				}
+				offset = end + 1;
+				const message: unknown = JSON.parse(UTF8.decode(frame));
 				if (!message || typeof message !== "object" || Array.isArray(message) || !this.onmessage)
 					throw new Error("invalid");
 				this.onmessage(message);
@@ -68,7 +88,8 @@ export class CompanyComputerBrowserPipe implements ConnectOverCDPTransport {
 	close(): void {
 		if (this.#closed) return;
 		this.#closed = true;
-		this.#buffer = Buffer.alloc(0);
+		this.#chunks = [];
+		this.#bufferedBytes = 0;
 		this.#input.destroy();
 		this.#output.destroy();
 		this.#stop();

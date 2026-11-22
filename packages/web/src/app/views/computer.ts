@@ -4,6 +4,7 @@ import type {
 	MemberAgentMachine,
 	MemberAgentMachines,
 } from "@qorpera/cloud-client/cloud-member-company-computer";
+import { withAbortScopes } from "../../cloud/abort-scope.ts";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
 import type {
 	MachineActAnswer,
@@ -3144,7 +3145,7 @@ export class ComputerPanel {
 		this.#fileDialog = dialog;
 		let path: string | null;
 		try {
-			path = await choose(AbortSignal.any([signal, dialog.stop.signal]));
+			path = await withAbortScopes([signal, dialog.stop.signal], (chooseSignal) => choose(chooseSignal));
 		} catch {
 			path = null;
 		} finally {

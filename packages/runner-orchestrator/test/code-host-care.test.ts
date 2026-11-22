@@ -60,7 +60,7 @@ class Area {
 	worktrees = [W1, W2];
 	/** The sessions whose worktree files a retire removed, with git's folder for them still there. */
 	filesGone: string[] = [];
-	objects = { loose: 12, packs: 1, sizeKiB: 64 };
+	objects = { loose: 72, packs: 1, sizeKiB: 64 };
 	repaired: "none" | "head" | "files" = "none";
 	fsck: { state: "ok" | "problems" | "timeout"; exitCode: number | null; detail: string } = {
 		state: "ok",
@@ -564,7 +564,7 @@ describe("CodeHostCare", () => {
 			// The refs are read again in the pack's own job, before anything is packed.
 			["check", { repository: REPOSITORY }, {}],
 			// Never pruning, never packing refs, with the job's own gc block.
-			["collect", { repository: REPOSITORY }, BLOCK, { packRefs: false, prune: false }],
+			["collect", { repository: REPOSITORY }, BLOCK, { packRefs: false, prune: false, packArchivedRefs: true }],
 			["check", { repository: REPOSITORY }, {}],
 			["fsck", { repository: REPOSITORY }, undefined],
 			["retire", { repository: REPOSITORY, workerIds: [W1] }, { phase: "files" }],
@@ -1150,7 +1150,20 @@ describe("CodeHostCare", () => {
 		expect(packed(t)).toEqual(["step:gc", "job:check", "job:collect"]);
 		expect(t.outcome()).toMatchObject({ state: "done", problem: "AREA_SHALLOW", gc: { state: "shallow" } });
 
-		// Nothing loose: nothing to pack.
+		t = gcOn();
+		t.area.objects.loose = 63;
+		t.area.objects.packs = 7;
+		await t.pass();
+		expect(packed(t)).toEqual([]);
+		expect(t.outcome()).toMatchObject({ state: "done", problem: null, gc: { state: "skipped" }, retired: 1 });
+
+		t = gcOn();
+		t.area.objects.loose = 0;
+		t.area.objects.packs = 8;
+		await t.pass();
+		expect(packed(t)).toEqual(PACK);
+		expect(t.outcome()).toMatchObject({ state: "done", problem: null, gc: { state: "collected" }, retired: 1 });
+
 		t = gcOn();
 		t.area.objects.loose = 0;
 		await t.pass();

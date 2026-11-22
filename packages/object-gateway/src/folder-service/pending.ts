@@ -154,7 +154,7 @@ export function neverPublished(name: string): boolean {
  * directory, what git has not finished, and its shared files, which only their lease publishes (git.ts; fewer in the
  * code host's view, `codeHost`). */
 export function unpublished(path: string, codeHost: boolean): boolean {
-	return path.split("/").some(neverPublished) || gitUnpublished(path) || gitSharedPath(path, codeHost);
+	return path.split("/").some(neverPublished) || gitUnpublished(path, codeHost) || gitSharedPath(path, codeHost);
 }
 
 /** The seeded paths by key: QorperaOS/ and the platform's folders and files under it. */
@@ -188,6 +188,18 @@ function addIndex(map: Map<string, Set<string>>, key: string, value: string): vo
 function removeIndex(map: Map<string, Set<string>>, key: string, value: string): void {
 	const bucket = map.get(key);
 	if (bucket?.delete(value) && bucket.size === 0) map.delete(key);
+}
+
+function incAncestors(counts: Map<string, number>, path: string): void {
+	for (let p = parentOf(path); p !== ""; p = parentOf(p)) counts.set(p, (counts.get(p) ?? 0) + 1);
+}
+
+function decAncestors(counts: Map<string, number>, path: string): void {
+	for (let p = parentOf(path); p !== ""; p = parentOf(p)) {
+		const next = (counts.get(p) ?? 0) - 1;
+		if (next <= 0) counts.delete(p);
+		else counts.set(p, next);
+	}
 }
 
 /** `path` is `folder` or below it. */
@@ -254,8 +266,16 @@ export class PendingView {
 	readonly #childrenByKey = new Map<string, Map<string, Set<string>>>();
 	readonly #publishedByKey = new Map<string, Set<string>>();
 	readonly #goneByKey = new Map<string, Set<string>>();
+	readonly #nodesByKey = new Map<string, Set<string>>();
+	readonly #nodeKeyDescendantCounts = new Map<string, number>();
+	readonly #publishedKeyDescendantCounts = new Map<string, number>();
 	readonly #movedByOrigin = new Map<string, Set<string>>();
 	readonly #movedByOriginKey = new Map<string, Set<string>>();
+	readonly #originNodesByKey = new Map<string, Set<string>>();
+	readonly #originKeyDescendantCounts = new Map<string, number>();
+	readonly #originPathDescendantCounts = new Map<string, number>();
+	readonly #replacesByPath = new Map<string, Set<string>>();
+	readonly #replacesByKey = new Map<string, Set<string>>();
 	readonly #filePaths = new Map<PendingFile, string>();
 	readonly #treeCounts = new Map<string, number>();
 	readonly #treeChildren = new Map<string, Set<string>>();
@@ -263,6 +283,7 @@ export class PendingView {
 	readonly #removed = new Map<string, LiveRef>();
 	readonly #removedFoldersByKey = new Map<string, Set<string>>();
 	readonly #removedFilesByKey = new Map<string, Set<string>>();
+	readonly #removedKeyDescendantCounts = new Map<string, number>();
 	/** Open handles, and the file each writes; a draft's is in the view only once its close lands it (`openWrite`). */
 	readonly #handles = new Map<number, { readonly node: PendingFile; readonly draft?: Draft }>();
 	/** Files with chunks written, through any handle, since their state was last fixed. */
@@ -501,16 +522,30 @@ export class PendingView {
 	#pendingBelow(path: string, live: string): boolean {
 		const key = folderKey(path);
 		const liveKey = folderKey(live);
-		for (const p of this.#nodes.keys()) if (p !== path && within(folderKey(p), key)) return true;
-		for (const node of this.#nodes.values())
-			if (
-				node.kind !== "gone" &&
-				node.origin &&
-				node.origin.path !== live &&
-				within(folderKey(node.origin.path), liveKey)
-			)
-				return true;
-		for (const p of this.#removed.keys()) if (p !== live && within(folderKey(p), liveKey)) return true;
+		if (key === "") {
+			if (this.#nodes.size > (this.#nodes.has(path) ? 1 : 0)) return true;
+		} else {
+			if ((this.#nodeKeyDescendantCounts.get(key) ?? 0) > 0) return true;
+			const atKey = this.#nodesByKey.get(key);
+			if (atKey && atKey.size > (atKey.has(path) ? 1 : 0)) return true;
+		}
+		if (liveKey === "") {
+			for (const node of this.#nodes.values())
+				if (node.kind !== "gone" && node.origin && node.origin.path !== live) return true;
+			return this.#removed.size > (this.#removed.has(live) ? 1 : 0);
+		}
+		if ((this.#originKeyDescendantCounts.get(liveKey) ?? 0) > 0) return true;
+		const originAtKey = this.#originNodesByKey.get(liveKey);
+		if (originAtKey) {
+			for (const p of originAtKey) {
+				const node = this.#nodes.get(p);
+				if (node && node.kind !== "gone" && node.origin && node.origin.path !== live) return true;
+			}
+		}
+		if ((this.#removedKeyDescendantCounts.get(liveKey) ?? 0) > 0) return true;
+		for (const bucket of [this.#removedFoldersByKey.get(liveKey), this.#removedFilesByKey.get(liveKey)]) {
+			if (bucket && bucket.size > (bucket.has(live) ? 1 : 0)) return true;
+		}
 		return false;
 	}
 
@@ -518,16 +553,16 @@ export class PendingView {
 	 * renamed it only in case does not show in it, but in the core it is in it. A name never published is no unit. */
 	#hiddenBelow(path: string): boolean {
 		const key = folderKey(path);
-		for (const [p, node] of this.#nodes)
-			if (node.kind !== "gone" && !unpublished(p, this.#codeHost) && folderKey(p).startsWith(`${key}/`)) return true;
-		return false;
+		return key !== "" && (this.#publishedKeyDescendantCounts.get(key) ?? 0) > 0;
 	}
 
 	#movesOutBelow(live: string): boolean {
-		for (const node of this.#nodes.values())
-			if (node.kind !== "gone" && node.origin && node.origin.path !== live && within(node.origin.path, live))
-				return true;
-		return false;
+		if (live === "") {
+			for (const node of this.#nodes.values())
+				if (node.kind !== "gone" && node.origin && node.origin.path !== "") return true;
+			return false;
+		}
+		return (this.#originPathDescendantCounts.get(live) ?? 0) > 0;
 	}
 
 	/** A file the view moved here (its origin is another live path). */
@@ -637,28 +672,39 @@ export class PendingView {
 	 * above it, or a new file or link that replaces it (in any case). */
 	#takesAway(path: string): boolean {
 		const key = folderKey(path);
-		for (const removed of this.#removed.keys()) if (within(key, folderKey(removed))) return true;
-		for (const [at, node] of this.#nodes) {
-			if (node.kind === "gone") continue;
-			if (node.origin && node.origin.path !== at && within(path, node.origin.path)) return true;
-			if (node.kind !== "folder" && node.replaces && folderKey(node.replaces.path) === key) return true;
+		for (let anc = key; anc !== ""; anc = parentOf(anc)) {
+			if (this.#removedFoldersByKey.has(anc) || this.#removedFilesByKey.has(anc)) return true;
 		}
-		return false;
+		for (let anc = path; anc !== ""; anc = parentOf(anc)) {
+			if (this.#movedByOrigin.has(anc)) return true;
+		}
+		return this.#replacesByKey.has(key);
 	}
 
 	/** The live file at `path` this view removed, moved away, or replaced with a new one of its own, if it did. */
 	#tookAway(path: string): LiveRef | undefined {
 		const removed = this.#removed.get(path);
 		if (removed) return removed.kind === "file" ? removed : undefined;
-		for (const [at, node] of this.#nodes) {
-			if (at !== path && node.kind === "file" && node.origin?.path === path) return node.origin;
-			if (
-				node.kind !== "folder" &&
-				node.kind !== "gone" &&
-				node.replaces?.path === path &&
-				node.replaces.kind === "file"
-			)
-				return node.replaces;
+		const moved = this.#movedByOrigin.get(path);
+		if (moved) {
+			for (const at of moved) {
+				const node = this.#nodes.get(at);
+				if (node?.kind === "file" && node.origin?.path === path) return node.origin;
+			}
+		}
+		const replacers = this.#replacesByPath.get(path);
+		if (replacers) {
+			for (const at of replacers) {
+				const node = this.#nodes.get(at);
+				if (
+					node &&
+					node.kind !== "folder" &&
+					node.kind !== "gone" &&
+					node.replaces?.path === path &&
+					node.replaces.kind === "file"
+				)
+					return node.replaces;
+			}
 		}
 		return undefined;
 	}
@@ -1033,7 +1079,7 @@ export class PendingView {
 				folderKey(from) !== folderKey(to) ||
 				unpublished(from, this.#codeHost) ||
 				unpublished(to, this.#codeHost));
-		if (fresh && lets) this.#release(fresh);
+		if (fresh && lets) this.#release(fresh, from);
 		const take = fresh !== undefined && !unpublished(to, this.#codeHost);
 		const replaces = target ? this.#replaced(target, to, options.toBase, take) : undefined;
 		// Then `from` is hidden if the live folder still shows what the node holds there.
@@ -1254,9 +1300,13 @@ export class PendingView {
 
 	/** A new file or link lets the live one it replaced go: that one is removed at the writer's base if the feed has not
 	 * changed it since; else its newer version shows again, as a conflict would leave it. */
-	#release(node: PendingFile | PendingLink): void {
+	#release(node: PendingFile | PendingLink, at?: string): void {
 		const base = node.replaces;
 		if (!base) return;
+		if (at !== undefined && this.#nodes.get(at) === node) {
+			removeIndex(this.#replacesByPath, base.path, at);
+			removeIndex(this.#replacesByKey, folderKey(base.path), at);
+		}
 		node.replaces = undefined;
 		if (this.#live().get(base.path)?.version === base.version) this.#addRemoved(base.path, base);
 		else if (this.#nodes.get(base.path)?.kind === "gone") this.#unset(base.path);
@@ -1291,12 +1341,20 @@ export class PendingView {
 	}
 
 	#collectUnder(path: string, out: [string, Node][]): void {
-		const children = this.#treeChildren.get(path);
-		if (!children) return;
-		for (const child of children) {
+		const top = this.#treeChildren.get(path);
+		if (!top || top.size === 0) return;
+		const stack: string[] = [];
+		const topList = [...top];
+		for (let i = topList.length - 1; i >= 0; i--) stack.push(topList[i]!);
+		while (stack.length > 0) {
+			const child = stack.pop()!;
 			const node = this.#nodes.get(child);
 			if (node) out.push([child, node]);
-			this.#collectUnder(child, out);
+			const nested = this.#treeChildren.get(child);
+			if (nested && nested.size > 0) {
+				const list = [...nested];
+				for (let i = list.length - 1; i >= 0; i--) stack.push(list[i]!);
+			}
 		}
 	}
 
@@ -1337,14 +1395,18 @@ export class PendingView {
 	#addRemoved(path: string, ref: LiveRef): void {
 		if (this.#removed.has(path)) this.#deleteRemoved(path);
 		this.#removed.set(path, ref);
-		addIndex(ref.kind === "folder" ? this.#removedFoldersByKey : this.#removedFilesByKey, folderKey(path), path);
+		const key = folderKey(path);
+		addIndex(ref.kind === "folder" ? this.#removedFoldersByKey : this.#removedFilesByKey, key, path);
+		incAncestors(this.#removedKeyDescendantCounts, key);
 	}
 
 	#deleteRemoved(path: string): void {
 		const ref = this.#removed.get(path);
 		if (!ref) return;
 		this.#removed.delete(path);
-		removeIndex(ref.kind === "folder" ? this.#removedFoldersByKey : this.#removedFilesByKey, folderKey(path), path);
+		const key = folderKey(path);
+		removeIndex(ref.kind === "folder" ? this.#removedFoldersByKey : this.#removedFilesByKey, key, path);
+		decAncestors(this.#removedKeyDescendantCounts, key);
 	}
 
 	#set(path: string, node: Node): void {
@@ -1370,14 +1432,26 @@ export class PendingView {
 			if (count === 1) addIndex(this.#treeChildren, parentOf(cur), cur);
 		}
 		const key = folderKey(path);
+		addIndex(this.#nodesByKey, key, path);
+		incAncestors(this.#nodeKeyDescendantCounts, key);
 		if (node.kind === "gone") addIndex(this.#goneByKey, key, path);
 		else {
-			if (!unpublished(path, this.#codeHost)) addIndex(this.#publishedByKey, key, path);
+			if (!unpublished(path, this.#codeHost)) {
+				addIndex(this.#publishedByKey, key, path);
+				incAncestors(this.#publishedKeyDescendantCounts, key);
+			}
 			if (node.kind === "file") this.#filePaths.set(node, path);
 			if (node.origin) {
 				if (node.origin.path !== path) addIndex(this.#movedByOrigin, node.origin.path, path);
 				const originKey = folderKey(node.origin.path);
 				if (originKey !== key) addIndex(this.#movedByOriginKey, originKey, path);
+				addIndex(this.#originNodesByKey, originKey, path);
+				incAncestors(this.#originKeyDescendantCounts, originKey);
+				incAncestors(this.#originPathDescendantCounts, node.origin.path);
+			}
+			if (node.kind !== "folder" && node.replaces) {
+				addIndex(this.#replacesByPath, node.replaces.path, path);
+				addIndex(this.#replacesByKey, folderKey(node.replaces.path), path);
 			}
 		}
 	}
@@ -1403,14 +1477,26 @@ export class PendingView {
 			} else this.#treeCounts.set(cur, count);
 		}
 		const key = folderKey(path);
+		removeIndex(this.#nodesByKey, key, path);
+		decAncestors(this.#nodeKeyDescendantCounts, key);
 		if (node.kind === "gone") removeIndex(this.#goneByKey, key, path);
 		else {
-			if (!unpublished(path, this.#codeHost)) removeIndex(this.#publishedByKey, key, path);
+			if (!unpublished(path, this.#codeHost)) {
+				removeIndex(this.#publishedByKey, key, path);
+				decAncestors(this.#publishedKeyDescendantCounts, key);
+			}
 			if (node.kind === "file" && this.#filePaths.get(node) === path) this.#filePaths.delete(node);
 			if (node.origin) {
 				if (node.origin.path !== path) removeIndex(this.#movedByOrigin, node.origin.path, path);
 				const originKey = folderKey(node.origin.path);
 				if (originKey !== key) removeIndex(this.#movedByOriginKey, originKey, path);
+				removeIndex(this.#originNodesByKey, originKey, path);
+				decAncestors(this.#originKeyDescendantCounts, originKey);
+				decAncestors(this.#originPathDescendantCounts, node.origin.path);
+			}
+			if (node.kind !== "folder" && node.replaces) {
+				removeIndex(this.#replacesByPath, node.replaces.path, path);
+				removeIndex(this.#replacesByKey, folderKey(node.replaces.path), path);
 			}
 		}
 	}
@@ -1424,6 +1510,12 @@ export class PendingView {
 	/** Every pending node, by path. */
 	nodes(): ReadonlyMap<string, PendingFile | PendingFolder | PendingLink | { readonly kind: "gone" }> {
 		return this.#nodes;
+	}
+
+	nodesUnder(path: string): [string, PendingFile | PendingFolder | PendingLink | { readonly kind: "gone" }][] {
+		const out: [string, Node][] = [];
+		this.#collectUnder(path, out);
+		return out;
 	}
 
 	/** The live paths below the live folder `path`: what a move of it takes along. */
@@ -1530,13 +1622,22 @@ export class PendingView {
 		this.#childrenByKey.clear();
 		this.#publishedByKey.clear();
 		this.#goneByKey.clear();
+		this.#nodesByKey.clear();
+		this.#nodeKeyDescendantCounts.clear();
+		this.#publishedKeyDescendantCounts.clear();
 		this.#movedByOrigin.clear();
 		this.#movedByOriginKey.clear();
+		this.#originNodesByKey.clear();
+		this.#originKeyDescendantCounts.clear();
+		this.#originPathDescendantCounts.clear();
+		this.#replacesByPath.clear();
+		this.#replacesByKey.clear();
 		this.#filePaths.clear();
 		this.#treeCounts.clear();
 		this.#treeChildren.clear();
 		this.#removed.clear();
 		this.#removedFoldersByKey.clear();
 		this.#removedFilesByKey.clear();
+		this.#removedKeyDescendantCounts.clear();
 	}
 }

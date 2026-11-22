@@ -93,8 +93,9 @@ export const CHECK_RUNNING = "its check for secret values has not ended yet";
 /** Why the rest of a code area's git directory waits while a file's check there has not ended: the check may yet refuse
  * the file, and then nothing else of its git change may be in the folder. */
 export const WAITS_FOR_CHECK = "it waits for a change whose check for secret values has not ended yet";
+export const STRUCTURED_TOO_LARGE = "a structured file exceeds the 1 MiB limit";
 export const MAX_COMMIT_UNITS = 1000;
-export const MAX_NEW_FOLDER_ENTRIES = 10_000;
+export const MAX_NEW_FOLDER_ENTRIES = 1_000;
 export const MAX_COMMIT_STRUCTURED_FILES = 64;
 export const MAX_COMMIT_STRUCTURED_BYTES = 1024 * 1024;
 
@@ -264,6 +265,11 @@ export function planBoundary(
 			waiting.push({ path, reason: "its bytes are not saved yet" });
 			continue;
 		}
+		if (companyStatePath(path) && file.bytes > MAX_COMMIT_STRUCTURED_BYTES) {
+			keep.add(path);
+			refuse(path, STRUCTURED_TOO_LARGE);
+			continue;
+		}
 		if (origin) writes.push({ kind: "write", path, file, expected: origin.version, paths: [path] });
 		else news.push({ kind: "new", path, file, expected: node.replaces?.version, paths: [path] });
 	}
@@ -312,20 +318,26 @@ export function planBoundary(
 		// its own removal named (it changed before that removal, from a base the machine had not seen) would go
 		// unseen, so the folder stays, and so does what was removed in it.
 		if (inside.some(([p, r]) => r.kind !== "folder" && view.liveVersion(p) !== r.version)) {
-			for (const p of [path, ...inside.map(([q]) => q)])
-				dropped.push({ path: p, reason: "something in the folder changed since the machine saw it" });
+			dropped.push({ path, reason: "something in the folder changed since the machine saw it" });
+			for (const [q] of inside)
+				dropped.push({ path: q, reason: "something in the folder changed since the machine saw it" });
 			continue;
 		}
 		// The oldest position of any folder removed in it: a removed subfolder hid what came into it after.
-		const asOfSeq = Math.min(
-			ref.asOfSeq ?? Number.MAX_SAFE_INTEGER,
-			...inside.map(([, r]) => (r.kind === "folder" ? (r.asOfSeq ?? 0) : Number.MAX_SAFE_INTEGER)),
-		);
+		let asOfSeq = ref.asOfSeq ?? Number.MAX_SAFE_INTEGER;
+		for (const [, r] of inside) {
+			if (r.kind === "folder") {
+				const seq = r.asOfSeq ?? 0;
+				if (seq < asOfSeq) asOfSeq = seq;
+			}
+		}
+		const paths = [path];
+		for (const [p] of inside) paths.push(p);
 		deletes.push({
 			kind: "delete",
 			path,
 			ref: ref.kind === "folder" ? { ...ref, asOfSeq } : ref,
-			paths: [path, ...inside.map(([p]) => p)],
+			paths,
 		});
 	}
 
@@ -376,7 +388,7 @@ export function planBoundary(
 		const contents: NewFolderEntry[] = [];
 		for (const item of under) {
 			absorbed.add(item);
-			create.paths.push(...item.paths);
+			for (const p of item.paths) create.paths.push(p);
 			const rel = item.path.slice(create.path.length + 1);
 			contents.push(
 				item.kind === "new"

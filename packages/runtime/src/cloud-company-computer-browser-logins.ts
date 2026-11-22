@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { lstat, open, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -91,6 +92,7 @@ export class CompanyComputerBrowserLogins {
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#work: Promise<void> = Promise.resolve();
 	#closed = false;
+	#dirty = false;
 
 	constructor(options: { path: string; intervalMs?: number; now?: () => number }) {
 		if (!options.path.startsWith("/") || /[\x00-\x1f\x7f\\]/.test(options.path))
@@ -174,18 +176,24 @@ export class CompanyComputerBrowserLogins {
 		const set = new Map<string, { cookie: CompanyComputerLoginCookie; from: string }>();
 		const cleared = new Map<string, { cookie: CompanyComputerLoginCookie; from: string }>();
 		let changed = false;
-		for (const [id, entry] of this.#attached) {
-			let current: Map<string, CompanyComputerLoginCookie>;
-			try {
-				current = await this.#read(entry.context);
-			} catch {
-				continue; // A browser that is closing is read again, or detached, next time.
-			}
+		const attached = [...this.#attached.entries()];
+		const readings = await Promise.all(
+			attached.map(async ([id, entry]) => {
+				try {
+					return { id, entry, current: await this.#read(entry.context) };
+				} catch {
+					return { id, entry, current: undefined }; // A browser that is closing is read again, or detached, next time.
+				}
+			}),
+		);
+		for (const { id, entry, current } of readings) {
+			if (!current) continue;
 			for (const [k, cookie] of current) {
 				const before = entry.seen.get(k);
 				if (before && same(before, cookie)) continue;
 				const held = jar.get(k);
 				if (held && same(held, cookie)) continue;
+				jar.delete(k);
 				jar.set(k, cookie);
 				set.set(k, { cookie, from: id });
 				cleared.delete(k);
@@ -208,31 +216,49 @@ export class CompanyComputerBrowserLogins {
 				jar.delete(k);
 				changed = true;
 			}
-		for (const [id, entry] of this.#attached) {
-			const add = [...set.entries()].filter(([, item]) => item.from !== id);
-			if (add.length) {
-				try {
-					await entry.context.addCookies(add.map(([, item]) => plain(item.cookie)));
-					for (const [k, item] of add) entry.seen.set(k, item.cookie);
-				} catch {
-					/* The next pass offers them again through the store on reopen. */
-				}
-			}
-			for (const [k, item] of cleared) {
-				if (item.from === id) continue;
-				try {
-					await entry.context.clearCookies({
-						name: item.cookie.name,
-						domain: item.cookie.domain,
-						path: item.cookie.path,
-					});
-					entry.seen.delete(k);
-				} catch {
-					/* Left signed in here until its own session ends. */
-				}
-			}
+		while (jar.size > MAX_COOKIES) {
+			const oldest = jar.keys().next().value;
+			if (oldest === undefined) break;
+			jar.delete(oldest);
+			changed = true;
 		}
-		if (changed) await this.#save(jar);
+		if (set.size || cleared.size) {
+			await Promise.allSettled(
+				attached.map(async ([id, entry]) => {
+					const add = [...set.entries()].filter(([, item]) => item.from !== id);
+					if (add.length) {
+						try {
+							await entry.context.addCookies(add.map(([, item]) => plain(item.cookie)));
+							for (const [k, item] of add) entry.seen.set(k, item.cookie);
+						} catch {
+							/* The next pass offers them again through the store on reopen. */
+						}
+					}
+					const toClear = [...cleared.entries()].filter(([, item]) => item.from !== id);
+					if (toClear.length) {
+						await Promise.allSettled(
+							toClear.map(async ([k, item]) => {
+								try {
+									await entry.context.clearCookies({
+										name: item.cookie.name,
+										domain: item.cookie.domain,
+										path: item.cookie.path,
+									});
+									entry.seen.delete(k);
+								} catch {
+									/* Left signed in here until its own session ends. */
+								}
+							}),
+						);
+					}
+				}),
+			);
+		}
+		if (changed) this.#dirty = true;
+		if (this.#dirty) {
+			await this.#save(jar);
+			this.#dirty = false;
+		}
 	}
 
 	async #load(): Promise<Map<string, CompanyComputerLoginCookie>> {
@@ -266,24 +292,42 @@ export class CompanyComputerBrowserLogins {
 
 	async #save(jar: Map<string, CompanyComputerLoginCookie>): Promise<void> {
 		// Newest sign-ins win the space when a company collects more than the store holds.
-		const cookies = [...jar.values()].slice(-MAX_COOKIES);
-		const bytes = Buffer.from(JSON.stringify({ schema: SCHEMA, cookies }));
+		while (jar.size > MAX_COOKIES) {
+			const oldest = jar.keys().next().value;
+			if (oldest === undefined) break;
+			jar.delete(oldest);
+		}
+		let bytes = Buffer.from(JSON.stringify({ schema: SCHEMA, cookies: [...jar.values()] }));
+		while (bytes.length > MAX_FILE_BYTES && jar.size > 0) {
+			const drop = Math.max(1, Math.ceil((jar.size * (bytes.length - MAX_FILE_BYTES)) / bytes.length));
+			let removed = 0;
+			for (const oldest of jar.keys()) {
+				jar.delete(oldest);
+				if (++removed >= drop) break;
+			}
+			bytes = Buffer.from(JSON.stringify({ schema: SCHEMA, cookies: [...jar.values()] }));
+		}
 		if (bytes.length > MAX_FILE_BYTES) throw new Error("BROWSER_LOGIN_STORE_TOO_LARGE");
-		const temporary = join(dirname(this.#path), `.company-logins.${process.pid}.${this.#now()}.tmp`);
+		const temporary = join(
+			dirname(this.#path),
+			`.company-logins.${process.pid}.${this.#now()}.${randomBytes(6).toString("hex")}.tmp`,
+		);
 		const file = await open(
 			temporary,
 			constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
 			0o600,
 		);
 		try {
-			await file.writeFile(bytes);
-			await file.sync();
+			try {
+				await file.writeFile(bytes);
+				await file.sync();
+			} finally {
+				await file.close();
+			}
+			await rename(temporary, this.#path);
 		} catch (error) {
-			await file.close();
-			await rm(temporary, { force: true });
+			await rm(temporary, { force: true }).catch(() => undefined);
 			throw error;
 		}
-		await file.close();
-		await rename(temporary, this.#path);
 	}
 }

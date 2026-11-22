@@ -11,6 +11,8 @@ import {
 } from "./code-change-records.ts";
 import {
 	CODE_CHECKS_MAIN_MOVED,
+	type CodeChecksRun,
+	type CodeSiteRecipe,
 	codeChecksFailedSummary,
 	codeChecksGate,
 	codeChecksNotRunSummary,
@@ -19,6 +21,8 @@ import {
 } from "./code-checks.ts";
 import {
 	addCodeWorktree,
+	CODE_LAND_BATCH_MAX,
+	type CodeBranchBatchPreparedStep,
 	type CodeBranchLanded,
 	type CodeBranchToCheck,
 	type CodeHostJob,
@@ -26,11 +30,14 @@ import {
 	CodeHostRefusal,
 	CodeWorktreeNamesRefused,
 	codeAreaPath,
+	commitCodeBranchBatch,
 	exportCodeBranch,
 	landCodeBranch,
+	landCodeBranchBatch,
 	startCodeArea,
 } from "./code-host-jobs.ts";
 import { attachCodeSession, type CodeAreaBroker } from "./code-host-seed.ts";
+import { pinCodeSiteTree } from "./code-host-sites.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { codeImportShown } from "./code-import.ts";
 import {
@@ -85,9 +92,71 @@ export interface CodeHostRepositoriesOptions {
 	report?: (event: Record<string, unknown>) => void;
 	/** `CODE_CHANGE_RECORD_MS`, for tests. */
 	recordMs?: number;
-	/** The pass that uploads a repository's site (`code-site-uploads.ts`, own code storage step 4): woken after a
-	 * landing whose report says its site was made, so the upload starts now. */
 	sites?: { wake(): void };
+	batchCoalesceMs?: number;
+	batchMaxSize?: number;
+}
+
+const DEFAULT_BATCH_COALESCE_MS = 150;
+
+interface LandingWaiter {
+	readonly session: CodingFolderRepositorySession;
+	readonly headSha: string;
+	readonly signal: AbortSignal;
+	readonly options: { picture?: string };
+	readonly scopeKey: string;
+	readonly canBatch: boolean;
+	prefetchedSwitch?: CodeChecksSwitched;
+	staleTries: 1 | 2;
+	checkAttempts: number;
+	settled: boolean;
+	resolve(value: CodingLanded): void;
+	reject(error: unknown): void;
+	cleanup(): void;
+}
+
+interface RepoLandingQueue {
+	running: boolean;
+	completedOne: boolean;
+	waiters: LandingWaiter[];
+	wakeCoalesce?: () => void;
+}
+
+interface BatchChainStep {
+	readonly waiter: LandingWaiter;
+	readonly step: CodeBranchBatchPreparedStep;
+}
+
+type CodeChecksGateRun = Extract<ReturnType<typeof codeChecksGate>, { gate: "run" }>;
+
+class BatchAbortOrAuthDropped extends Error {
+	readonly survivors: LandingWaiter[];
+	constructor(survivors: LandingWaiter[]) {
+		super("BATCH_MEMBER_DROPPED");
+		this.survivors = survivors;
+	}
+}
+
+function sessionScopeKey(session: CodingFolderRepositorySession): string {
+	return `${session.claim.ownerUserId}\0${session.claim.agentId}\0${session.machine.machineId}`;
+}
+
+function sameChecksSwitch(a: CodeChecksSwitched, b: CodeChecksSwitched): boolean {
+	return a.checks === b.checks && a.site === b.site && (a.rootLinks === true) === (b.rootLinks === true);
+}
+
+function settleResolve(waiter: LandingWaiter, value: CodingLanded): void {
+	if (waiter.settled) return;
+	waiter.settled = true;
+	waiter.cleanup();
+	waiter.resolve(value);
+}
+
+function settleReject(waiter: LandingWaiter, error: unknown): void {
+	if (waiter.settled) return;
+	waiter.settled = true;
+	waiter.cleanup();
+	waiter.reject(error);
 }
 
 /** What the repository's checks said of a landing that moved main: its report's `checks` (step 3), and for a run that
@@ -120,24 +189,39 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	readonly #report: (event: Record<string, unknown>) => void;
 	readonly #recordMs: number;
 	readonly #sites: { wake(): void } | undefined;
-	readonly #landingQueues = new Map<string, (() => boolean)[]>();
+	readonly #batchCoalesceMs: number;
+	readonly #batchMaxSize: number;
+	readonly #landingQueues = new Map<string, RepoLandingQueue>();
 
 	constructor(jobs: Pick<CodeHostJobs, "run">, options: CodeHostRepositoriesOptions = {}) {
 		const recordMs = options.recordMs ?? CODE_CHANGE_RECORD_MS;
-		if (!Number.isSafeInteger(recordMs) || recordMs < 1) throw new Error("INVALID_CODE_HOST_REPOSITORIES");
+		const batchCoalesceMs = options.batchCoalesceMs ?? DEFAULT_BATCH_COALESCE_MS;
+		const batchMaxSize = options.batchMaxSize ?? CODE_LAND_BATCH_MAX;
+		if (
+			!Number.isSafeInteger(recordMs) ||
+			recordMs < 1 ||
+			!Number.isSafeInteger(batchCoalesceMs) ||
+			batchCoalesceMs < 0 ||
+			batchCoalesceMs > 5000 ||
+			!Number.isSafeInteger(batchMaxSize) ||
+			batchMaxSize < 1 ||
+			batchMaxSize > CODE_LAND_BATCH_MAX
+		)
+			throw new Error("INVALID_CODE_HOST_REPOSITORIES");
 		this.#jobs = jobs;
 		this.#records = options.records;
 		this.#sites = options.sites;
 		const report = options.report;
-		// The log must never change what happens: a reporter that throws is not heard.
 		this.#report = (event) => {
 			try {
 				report?.(event);
 			} catch {
-				/* not heard */
+				undefined;
 			}
 		};
 		this.#recordMs = recordMs;
+		this.#batchCoalesceMs = batchCoalesceMs;
+		this.#batchMaxSize = batchMaxSize;
 	}
 
 	/** A job that failed at one of its steps or was refused by rule (the code host's own error, which names its code)
@@ -249,15 +333,189 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	): Promise<CodingLanded> {
 		const { profileId, environmentId, repository } = session.claim;
 		if (repository.host !== "qorpera") throw new Error("CODE_HOST_REPOSITORY_NOT_HERE");
-		const release = await this.#acquireLandingTurn(
-			`${profileId}:${environmentId}:${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}`,
-			signal,
-		);
+		if (signal.aborted) throw signal.reason;
+		const key = `${profileId}:${environmentId}:${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}:${repository.baseBranch}`;
+		let queue = this.#landingQueues.get(key);
+		if (!queue) {
+			queue = { running: false, completedOne: false, waiters: [] };
+			this.#landingQueues.set(key, queue);
+		}
+		const activeQueue = queue;
+		return await new Promise<CodingLanded>((resolve, reject) => {
+			const onAbort = () => {
+				if (waiter.settled) return;
+				const index = activeQueue.waiters.indexOf(waiter);
+				if (index >= 0) {
+					activeQueue.waiters.splice(index, 1);
+					settleReject(waiter, signal.reason);
+					if (activeQueue.waiters.length === 0) activeQueue.wakeCoalesce?.();
+				}
+			};
+			const waiter: LandingWaiter = {
+				session,
+				headSha,
+				signal,
+				options,
+				scopeKey: sessionScopeKey(session),
+				canBatch: session.checksSwitch !== undefined && session.runChecks !== undefined,
+				staleTries: 1,
+				checkAttempts: 0,
+				settled: false,
+				resolve,
+				reject,
+				cleanup: () => signal.removeEventListener("abort", onAbort),
+			};
+			signal.addEventListener("abort", onAbort, { once: true });
+			activeQueue.waiters.push(waiter);
+			if (activeQueue.waiters.length >= this.#batchMaxSize) activeQueue.wakeCoalesce?.();
+			if (!activeQueue.running) {
+				activeQueue.running = true;
+				void this.#drainLandingQueue(key, activeQueue);
+			}
+		});
+	}
+
+	async #drainLandingQueue(key: string, queue: RepoLandingQueue): Promise<void> {
 		try {
-			signal.throwIfAborted();
-			return await this.#landSerialized(session, headSha, signal, options);
+			await Promise.resolve();
+			while (queue.waiters.length > 0) {
+				if (queue.completedOne && this.#batchCoalesceMs > 0 && queue.waiters.length < this.#batchMaxSize) {
+					await this.#waitCoalesce(queue);
+				}
+				const picked = await this.#takeNextTurn(queue);
+				if (!picked) continue;
+				if (picked.mode === "solo") {
+					await this.#runSoloWaiter(picked.waiter);
+				} else {
+					await this.#runBatchWaiters(queue, picked.waiters, picked.switched);
+				}
+				queue.completedOne = true;
+			}
 		} finally {
-			release();
+			queue.running = false;
+			if (queue.waiters.length === 0) {
+				if (this.#landingQueues.get(key) === queue) this.#landingQueues.delete(key);
+			} else {
+				queue.running = true;
+				void this.#drainLandingQueue(key, queue);
+			}
+		}
+	}
+
+	#waitCoalesce(queue: RepoLandingQueue): Promise<void> {
+		return new Promise<void>((resolve) => {
+			if (queue.waiters.length === 0 || queue.waiters.length >= this.#batchMaxSize) {
+				resolve();
+				return;
+			}
+			const done = () => {
+				clearTimeout(timer);
+				if (queue.wakeCoalesce === done) queue.wakeCoalesce = undefined;
+				resolve();
+			};
+			const timer = setTimeout(done, this.#batchCoalesceMs);
+			queue.wakeCoalesce = done;
+		});
+	}
+
+	async #takeNextTurn(
+		queue: RepoLandingQueue,
+	): Promise<
+		| { mode: "solo"; waiter: LandingWaiter }
+		| { mode: "batch"; waiters: LandingWaiter[]; switched: CodeChecksSwitched }
+		| null
+	> {
+		while (queue.waiters.length > 0) {
+			const first = queue.waiters.shift() as LandingWaiter;
+			if (first.settled) continue;
+			if (first.signal.aborted) {
+				settleReject(first, first.signal.reason);
+				continue;
+			}
+			if (!first.canBatch || this.#batchMaxSize <= 1) return { mode: "solo", waiter: first };
+			if (!first.prefetchedSwitch) {
+				try {
+					first.prefetchedSwitch = await (
+						first.session.checksSwitch as NonNullable<CodingFolderRepositorySession["checksSwitch"]>
+					)(first.signal);
+				} catch (error) {
+					settleReject(first, error);
+					continue;
+				}
+				if (first.signal.aborted) {
+					settleReject(first, first.signal.reason);
+					continue;
+				}
+			}
+			const firstSwitch = first.prefetchedSwitch;
+			if (!firstSwitch.checks || firstSwitch.drill !== undefined) return { mode: "solo", waiter: first };
+			const batch: LandingWaiter[] = [first];
+			const workers = new Set<string>([first.session.claim.workerId]);
+			const remaining: LandingWaiter[] = [];
+			const queued = queue.waiters.splice(0, queue.waiters.length);
+			for (const candidate of queued) {
+				if (candidate.settled) continue;
+				if (candidate.signal.aborted) {
+					settleReject(candidate, candidate.signal.reason);
+					continue;
+				}
+				if (
+					batch.length >= this.#batchMaxSize ||
+					!candidate.canBatch ||
+					candidate.scopeKey !== first.scopeKey ||
+					workers.has(candidate.session.claim.workerId)
+				) {
+					remaining.push(candidate);
+					continue;
+				}
+				if (!candidate.prefetchedSwitch) {
+					try {
+						candidate.prefetchedSwitch = await (
+							candidate.session.checksSwitch as NonNullable<CodingFolderRepositorySession["checksSwitch"]>
+						)(candidate.signal);
+					} catch (error) {
+						settleReject(candidate, error);
+						continue;
+					}
+					if (candidate.signal.aborted) {
+						settleReject(candidate, candidate.signal.reason);
+						continue;
+					}
+				}
+				const candidateSwitch = candidate.prefetchedSwitch;
+				if (candidateSwitch.drill !== undefined || !sameChecksSwitch(firstSwitch, candidateSwitch)) {
+					remaining.push(candidate);
+					continue;
+				}
+				batch.push(candidate);
+				workers.add(candidate.session.claim.workerId);
+			}
+			if (remaining.length > 0) queue.waiters.unshift(...remaining);
+			if (batch.length === 1) return { mode: "solo", waiter: first };
+			return { mode: "batch", waiters: batch, switched: firstSwitch };
+		}
+		return null;
+	}
+
+	async #runSoloWaiter(waiter: LandingWaiter): Promise<void> {
+		if (waiter.settled) return;
+		if (waiter.signal.aborted) {
+			settleReject(waiter, waiter.signal.reason);
+			return;
+		}
+		try {
+			const landed = await this.#landSerialized(
+				waiter.session,
+				waiter.headSha,
+				waiter.signal,
+				waiter.options,
+				waiter.prefetchedSwitch,
+				waiter.staleTries,
+				waiter.checkAttempts,
+			);
+			settleResolve(waiter, landed);
+		} catch (error) {
+			settleReject(waiter, error);
 		}
 	}
 
@@ -266,23 +524,24 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 		headSha: string,
 		signal: AbortSignal,
 		options: { picture?: string },
+		prefetchedSwitch?: CodeChecksSwitched,
+		initialTries: 1 | 2 = 1,
+		initialRuns = 0,
 	): Promise<CodingLanded> {
 		const { checksSwitch, runChecks } = session;
-		// The switch's answer lost is read as on: a landing never goes in unchecked for want of an answer.
 		const switched: CodeChecksSwitched =
-			checksSwitch !== undefined && runChecks !== undefined
-				? await checksSwitch(signal)
-				: { checks: false, site: false };
+			prefetchedSwitch !== undefined
+				? prefetchedSwitch
+				: checksSwitch !== undefined && runChecks !== undefined
+					? await checksSwitch(signal)
+					: { checks: false, site: false };
 		const enabled = switched.checks;
 		const told = (step: string, extra: Record<string, unknown> = {}) =>
 			this.#report({ event: "code-checks", step, ...named(session), ...extra });
-		// An operator's drill the switch handed over (step 5): the kernel hands it to no other answer, so it acts on this
-		// landing's run or on none (no checks file, nothing to check, no site to take: spent, and the operator sets it
-		// again). The log says it was taken.
 		const drill = switched.drill;
 		if (drill !== undefined) told("drill", { drill });
-		let runs = 0;
-		for (let tries: 1 | 2 = 1; ; tries = 2) {
+		let runs = initialRuns;
+		for (let tries: 1 | 2 = initialTries; ; tries = 2) {
 			const found = await this.#landing(
 				session,
 				headSha,
@@ -523,6 +782,17 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 				this.#failed(session, "report", error);
 				return;
 			}
+			if (record.change !== null && checks.state === "passed" && checks.site?.state === "made") {
+				await pinCodeSiteTree(
+					{
+						shell: job.shell,
+						layout: job.layout,
+						signal: bounded,
+						preparedKeptArea: codeAreaPath(session.claim.repository),
+					},
+					{ repository: session.claim.repository, change: record.change, tree: checks.site.tree },
+				).catch(() => undefined);
+			}
 			const records = this.#records;
 			if (!records) return;
 			try {
@@ -626,53 +896,596 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 		this.#report({ event: "code-change-error", step, ...named(session), error });
 	}
 
-	#acquireLandingTurn(key: string, signal: AbortSignal): Promise<() => void> {
-		if (signal.aborted) return Promise.reject(signal.reason);
-		const existing = this.#landingQueues.get(key);
-		const makeRelease = (waiters: (() => boolean)[]) => {
-			let released = false;
-			return () => {
-				if (released) return;
-				released = true;
-				this.#releaseLandingTurn(key, waiters);
-			};
-		};
-		if (!existing) {
-			const waiters: (() => boolean)[] = [];
-			this.#landingQueues.set(key, waiters);
-			return Promise.resolve(makeRelease(waiters));
+	async #runBatchWaiters(
+		queue: RepoLandingQueue,
+		initialWaiters: LandingWaiter[],
+		switched: CodeChecksSwitched,
+	): Promise<void> {
+		const live = this.#filterLiveWaiters(initialWaiters);
+		if (live.length === 0) return;
+		if (live.length === 1) {
+			await this.#runSoloWaiter(live[0] as LandingWaiter);
+			return;
 		}
-		return new Promise<() => void>((resolve, reject) => {
-			let settled = false;
-			const release = makeRelease(existing);
-			const onAbort = () => {
-				if (settled) return;
-				settled = true;
-				const index = existing.indexOf(wake);
-				if (index >= 0) existing.splice(index, 1);
-				reject(signal.reason);
-			};
-			const wake = (): boolean => {
-				if (settled) return false;
-				settled = true;
-				signal.removeEventListener("abort", onAbort);
-				if (signal.aborted) {
-					reject(signal.reason);
-					return false;
+		const repository = (live[0] as LandingWaiter).session.claim.repository;
+		const batchWaiters = [...live];
+		try {
+			let authorized: LandingWaiter[] = [];
+			const prepared = await this.#withBatchSignal(batchWaiters, async (batchSignal) => {
+				return await this.#jobs.run(
+					(batchWaiters[0] as LandingWaiter).session.claim.profileId,
+					(batchWaiters[0] as LandingWaiter).session.claim.environmentId,
+					batchSignal,
+					async (job) => {
+						authorized = await this.#authorizeBatchMembers(batchWaiters);
+						if (authorized.length === 0) return null;
+						const result = await landCodeBranchBatch(job, {
+							repository,
+							candidates: authorized.map((waiter) => ({
+								workerId: waiter.session.claim.workerId,
+								headSha: waiter.headSha,
+							})),
+						});
+						const unchangedRecords: { waiter: LandingWaiter; mainSha: string; record: LandingRecord }[] = [];
+						for (const item of result.unchanged) {
+							const waiter = authorized[item.index] as LandingWaiter;
+							if (waiter.settled || waiter.signal.aborted) {
+								settleReject(waiter, waiter.signal.reason);
+								continue;
+							}
+							const record: LandingRecord = {
+								landed: true,
+								filesChanged: 0,
+								change: null,
+								owed: undefined,
+								confirm: undefined,
+							};
+							await this.#recordInJob(
+								waiter.session,
+								job,
+								{
+									state: "unchanged",
+									mainSha: item.mainSha,
+									mainBefore: item.mainSha,
+									containedAt: item.containedAt,
+									diff: { filesChanged: 0, paths: [], pathsMore: 0 },
+									picture: null,
+									restored: result.restored,
+								},
+								waiter.headSha,
+								record,
+								{ state: "none" },
+							);
+							unchangedRecords.push({ waiter, mainSha: item.mainSha, record });
+						}
+						return { result, unchangedRecords };
+					},
+				);
+			});
+			if (!prepared) return;
+			const { result, unchangedRecords } = prepared;
+			for (const entry of unchangedRecords) {
+				await this.#reportOwed(entry.waiter.session, entry.record);
+				if (entry.record.confirm) {
+					const confirm = entry.record.confirm;
+					try {
+						await withTimeoutScope(undefined, Math.ceil(this.#recordMs / 2), (confirmSignal) =>
+							answeredBefore(confirm, confirmSignal),
+						);
+					} catch (error) {
+						this.#failed(entry.waiter.session, "written", error);
+					}
 				}
-				resolve(release);
-				return true;
-			};
-			existing.push(wake);
-			signal.addEventListener("abort", onAbort, { once: true });
-		});
+				settleResolve(entry.waiter, {
+					state: "unchanged",
+					mainSha: entry.mainSha,
+					filesChanged: 0,
+					change: entry.record.change,
+				});
+			}
+			for (const rejected of result.rejected) {
+				const waiter = authorized[rejected.index] as LandingWaiter;
+				await this.#rejectRefusal(waiter, rejected.error);
+			}
+			const deferredWaiters = this.#filterLiveWaiters(
+				result.deferred.map((index) => authorized[index] as LandingWaiter),
+			);
+			const chain: BatchChainStep[] = result.accepted
+				.map((step) => ({ waiter: authorized[step.index] as LandingWaiter, step }))
+				.filter(({ waiter }) => {
+					if (waiter.settled) return false;
+					if (waiter.signal.aborted) {
+						settleReject(waiter, waiter.signal.reason);
+						return false;
+					}
+					return true;
+				});
+			if (chain.length !== result.accepted.length) {
+				const survivors = [...chain.map((entry) => entry.waiter), ...deferredWaiters];
+				if (survivors.length > 0) queue.waiters.unshift(...survivors);
+				return;
+			}
+			if (chain.length === 0) {
+				if (deferredWaiters.length > 0) queue.waiters.unshift(...deferredWaiters);
+				return;
+			}
+			const hasChecks = result.mainChecks.entry.kind !== "missing" || result.tipChecks.entry.kind !== "missing";
+			if (!hasChecks) {
+				const committed = await this.#commitBatch(chain, null, null);
+				const requeue = [...committed.requeue, ...deferredWaiters];
+				if (requeue.length > 0) queue.waiters.unshift(...requeue);
+				return;
+			}
+			const gate = codeChecksGate(readCodeChecks(result.mainChecks), readCodeChecks(result.tipChecks));
+			if (gate.gate === "refused") {
+				for (const { waiter } of chain) {
+					this.#report({
+						event: "code-checks",
+						step: "refused",
+						...named(waiter.session),
+						tries: waiter.staleTries,
+					});
+					settleReject(waiter, new CodingLandRefused("CODING_CHECKS_REFUSED", gate.summary));
+				}
+				if (deferredWaiters.length > 0) queue.waiters.unshift(...deferredWaiters);
+				return;
+			}
+			const outcome = await this.#checkAndLandChain(chain, gate, switched, undefined);
+			const requeue = [...outcome.requeue, ...deferredWaiters];
+			if (requeue.length > 0) queue.waiters.unshift(...requeue);
+		} catch (error) {
+			for (const waiter of batchWaiters) {
+				if (!waiter.settled) await this.#rejectJobError(waiter, error);
+			}
+		}
 	}
 
-	#releaseLandingTurn(key: string, waiters: (() => boolean)[]): void {
-		while (waiters.length > 0) {
-			if (waiters.shift()?.()) return;
+	async #checkAndLandChain(
+		chain: readonly BatchChainStep[],
+		gate: CodeChecksGateRun,
+		switched: CodeChecksSwitched,
+		knownTipFailure: Extract<CodeChecksRun, { state: "failed" | "site_refused" }> | undefined,
+	): Promise<{ allLanded: boolean; requeue: LandingWaiter[] }> {
+		const live = this.#filterLiveChain(chain);
+		if (live.length !== chain.length) {
+			return { allLanded: false, requeue: live.map((entry) => entry.waiter) };
 		}
-		if (this.#landingQueues.get(key) === waiters) this.#landingQueues.delete(key);
+		const tip = chain[chain.length - 1] as BatchChainStep;
+		const site: CodeSiteRecipe | null = switched.site ? gate.site : null;
+		let failure: Extract<CodeChecksRun, { state: "failed" | "site_refused" }> | undefined = knownTipFailure;
+		if (failure === undefined) {
+			const runChecks = tip.waiter.session.runChecks;
+			if (!runChecks) throw new Error("CODE_HOST_LANDING_INVALID");
+			const input = {
+				commit: tip.step.mainAfter,
+				checks: gate.checks,
+				site,
+				...(switched.rootLinks === true ? { rootLinks: true } : {}),
+			};
+			let run: CodeChecksRun;
+			try {
+				tip.waiter.checkAttempts += 1;
+				run = await runChecks({ ...input, attempt: tip.waiter.checkAttempts }, tip.waiter.signal);
+				if (run.state === "not_run") {
+					this.#report({
+						event: "code-checks",
+						step: "not-run",
+						...named(tip.waiter.session),
+						why: run.why,
+						code: run.code,
+						attempt: tip.waiter.checkAttempts,
+					});
+					tip.waiter.checkAttempts += 1;
+					run = await runChecks({ ...input, attempt: tip.waiter.checkAttempts }, tip.waiter.signal);
+				}
+			} catch (error) {
+				settleReject(tip.waiter, error);
+				const others = this.#filterLiveWaiters(chain.slice(0, -1).map((entry) => entry.waiter));
+				return { allLanded: false, requeue: others };
+			}
+			const afterCheckLive = this.#filterLiveChain(chain);
+			if (afterCheckLive.length !== chain.length) {
+				return { allLanded: false, requeue: afterCheckLive.map((entry) => entry.waiter) };
+			}
+			if (run.state === "not_run") {
+				this.#report({
+					event: "code-checks",
+					step: "not-run",
+					...named(tip.waiter.session),
+					why: run.why,
+					code: run.code,
+					attempt: tip.waiter.checkAttempts,
+				});
+				settleReject(tip.waiter, new CodingLandRefused("CODING_CHECKS_DID_NOT_RUN", codeChecksNotRunSummary(run)));
+				const others = this.#filterLiveWaiters(chain.slice(0, -1).map((entry) => entry.waiter));
+				return { allLanded: false, requeue: others };
+			}
+			if (run.state === "passed") {
+				const committed = await this.#commitBatch(chain, gate, run);
+				return { allLanded: committed.allLanded, requeue: committed.requeue };
+			}
+			failure = run;
+		}
+		if (chain.length === 1) {
+			const only = chain[0] as BatchChainStep;
+			if (failure.state === "failed") {
+				this.#report({
+					event: "code-checks",
+					step: "failed",
+					...named(only.waiter.session),
+					attempt: only.waiter.checkAttempts,
+					exitCode: failure.failed.exitCode,
+					atLimit: failure.failed.atLimit,
+				});
+				settleReject(
+					only.waiter,
+					new CodingLandRefused("CODING_CHECKS_FAILED", codeChecksFailedSummary(failure, only.step.how)),
+				);
+			} else {
+				if (site === null) throw new Error("CODE_HOST_LANDING_INVALID");
+				this.#report({
+					event: "code-checks",
+					step: "site-refused",
+					...named(only.waiter.session),
+					attempt: only.waiter.checkAttempts,
+					problem: failure.problem.code,
+					variable: failure.problem.variable,
+				});
+				settleReject(
+					only.waiter,
+					new CodingLandRefused(
+						"CODING_CHECKS_SITE_REFUSED",
+						codeSiteRefusedSummary(failure.problem, site.folder),
+					),
+				);
+			}
+			return { allLanded: false, requeue: [] };
+		}
+		const mid = Math.floor(chain.length / 2);
+		const left = chain.slice(0, mid);
+		const right = chain.slice(mid);
+		const leftOutcome = await this.#checkAndLandChain(left, gate, switched, undefined);
+		if (leftOutcome.allLanded) {
+			return await this.#checkAndLandChain(right, gate, switched, failure);
+		}
+		const liveRight = this.#filterLiveWaiters(right.map((entry) => entry.waiter));
+		return { allLanded: false, requeue: [...leftOutcome.requeue, ...liveRight] };
+	}
+
+	async #commitBatch(
+		chain: readonly BatchChainStep[],
+		gate: CodeChecksGateRun | null,
+		passedRun: Extract<CodeChecksRun, { state: "passed" }> | null,
+	): Promise<{ allLanded: boolean; requeue: LandingWaiter[] }> {
+		const waiters = chain.map((entry) => entry.waiter);
+		const live = this.#filterLiveWaiters(waiters);
+		if (live.length !== waiters.length) return { allLanded: false, requeue: live };
+		const first = waiters[0] as LandingWaiter;
+		const last = waiters[waiters.length - 1] as LandingWaiter;
+		const repository = first.session.claim.repository;
+		const records: LandingRecord[] = chain.map(() => ({
+			landed: false,
+			filesChanged: 0,
+			change: null,
+			owed: undefined,
+			confirm: undefined,
+		}));
+		let batchConfirm: (() => Promise<void>) | undefined;
+		try {
+			const committed = await this.#withBatchSignal(waiters, async (batchSignal) => {
+				return await this.#jobs.run(
+					first.session.claim.profileId,
+					first.session.claim.environmentId,
+					batchSignal,
+					async (job) => {
+						const authorized = await this.#authorizeBatchMembers(waiters);
+						if (authorized.length !== waiters.length) throw new BatchAbortOrAuthDropped(authorized);
+						const landed = await commitCodeBranchBatch(job, {
+							repository,
+							steps: chain.map(({ waiter, step }) => ({
+								workerId: step.workerId,
+								headSha: step.headSha,
+								how: step.how,
+								mainBefore: step.mainBefore,
+								mainAfter: step.mainAfter,
+								...(waiter.options.picture === undefined ? {} : { picture: waiter.options.picture }),
+							})),
+						});
+						await withTimeoutScope(job.signal, this.#recordMs, async (bounded) => {
+							for (let i = 0; i < landed.steps.length; i += 1) {
+								const step = landed.steps[i] as (typeof landed.steps)[number];
+								const waiter = (chain[i] as BatchChainStep).waiter;
+								const record = records[i] as LandingRecord;
+								record.landed = true;
+								const isTip = i === landed.steps.length - 1;
+								const stepChecks: LandingChecks =
+									gate !== null && passedRun !== null
+										? isTip
+											? {
+													state: "passed",
+													result: codeChecksPassed({
+														commit: step.mainSha,
+														how: step.state,
+														blob: gate.blob,
+														run: passedRun,
+														changed: chain.length === 1 ? gate.changed : null,
+														tries: waiter.staleTries,
+													}),
+													site: passedRun.site,
+												}
+											: { state: "not_run" }
+										: { state: "none" };
+								let report: CodeChangeReport | undefined;
+								try {
+									const diff = codeChangeDiffOf(step.diff);
+									record.filesChanged = diff?.filesChanged ?? 0;
+									if (waiter.session.recordChange) {
+										report = landingReport(
+											{
+												state: step.state,
+												mainSha: step.mainSha,
+												mainBefore: step.mainBefore,
+												containedAt: null,
+												diff: step.diff,
+												picture: step.picture,
+												restored: landed.restored,
+											},
+											step.headSha,
+											diff,
+											stepChecks,
+										);
+									}
+								} catch (error) {
+									this.#failed(waiter.session, "report", error);
+								}
+								if (report) {
+									try {
+										record.change = await this.#reported(waiter.session, report, bounded);
+									} catch (error) {
+										record.owed = report;
+										this.#failed(waiter.session, "report", error);
+									}
+								}
+								if (isTip && record.change !== null && passedRun?.site?.state === "made") {
+									await pinCodeSiteTree(
+										{
+											shell: job.shell,
+											layout: job.layout,
+											signal: bounded,
+											preparedKeptArea: codeAreaPath(repository),
+										},
+										{ repository, change: record.change, tree: passedRun.site.tree },
+									).catch(() => undefined);
+								}
+							}
+							const changeRecords = this.#records;
+							if (changeRecords) {
+								try {
+									batchConfirm = await answeredBefore(
+										() =>
+											changeRecords.inJob(
+												{
+													shell: job.shell,
+													layout: job.layout,
+													signal: bounded,
+													preparedKeptArea: codeAreaPath(repository),
+												},
+												targetOf(last.session),
+												bounded,
+											),
+										bounded,
+									);
+								} catch (error) {
+									this.#failed(last.session, "files", error);
+								}
+							}
+						});
+						return landed;
+					},
+				);
+			});
+			for (let i = 0; i < chain.length; i += 1) {
+				await this.#reportOwed((chain[i] as BatchChainStep).waiter.session, records[i] as LandingRecord);
+			}
+			if (batchConfirm) {
+				const confirm = batchConfirm;
+				try {
+					await withTimeoutScope(undefined, Math.ceil(this.#recordMs / 2), (confirmSignal) =>
+						answeredBefore(confirm, confirmSignal),
+					);
+				} catch (error) {
+					this.#failed(last.session, "written", error);
+				}
+			}
+			const madeSite = passedRun?.site?.state === "made";
+			for (let i = 0; i < committed.steps.length; i += 1) {
+				const step = committed.steps[i] as (typeof committed.steps)[number];
+				const waiter = (chain[i] as BatchChainStep).waiter;
+				const record = records[i] as LandingRecord;
+				const isTip = i === committed.steps.length - 1;
+				if (passedRun !== null) {
+					this.#report({
+						event: "code-checks",
+						step: "landed",
+						...named(waiter.session),
+						checks: "passed",
+						attempt: waiter.checkAttempts,
+						tries: waiter.staleTries,
+						site: isTip ? (passedRun.site?.state ?? null) : null,
+					});
+				}
+				settleResolve(waiter, {
+					state: step.state,
+					mainSha: step.mainSha,
+					filesChanged: record.filesChanged,
+					change: record.change,
+				});
+			}
+			if (madeSite) {
+				try {
+					this.#sites?.wake();
+				} catch (error) {
+					this.#failed(last.session, "wake", error);
+				}
+			}
+			return { allLanded: true, requeue: [] };
+		} catch (error) {
+			if (error instanceof BatchAbortOrAuthDropped) {
+				return { allLanded: false, requeue: this.#filterLiveWaiters(error.survivors) };
+			}
+			if (
+				error instanceof CodeHostJobFailure &&
+				(error.code === "CODE_HOST_LAND_STALE" || error.code === "CODE_HOST_BASE_MOVED")
+			) {
+				const retryable: LandingWaiter[] = [];
+				for (const { waiter } of chain) {
+					if (waiter.settled) continue;
+					if (waiter.signal.aborted) {
+						settleReject(waiter, waiter.signal.reason);
+						continue;
+					}
+					this.#report({
+						event: "code-checks",
+						step: "stale",
+						...named(waiter.session),
+						attempt: waiter.checkAttempts,
+						tries: waiter.staleTries,
+					});
+					if (waiter.staleTries >= 2) {
+						settleReject(
+							waiter,
+							new CodingLandRefused("CODING_CHECKS_MAIN_MOVED", CODE_CHECKS_MAIN_MOVED, { cause: error }),
+						);
+					} else {
+						waiter.staleTries = 2;
+						retryable.push(waiter);
+					}
+				}
+				return { allLanded: false, requeue: retryable };
+			}
+			for (let i = 0; i < chain.length; i += 1) {
+				const waiter = (chain[i] as BatchChainStep).waiter;
+				const record = records[i] as LandingRecord;
+				if (record.landed) await this.#reportOwed(waiter.session, record);
+				if (!waiter.settled) await this.#rejectJobError(waiter, error);
+			}
+			return { allLanded: false, requeue: [] };
+		}
+	}
+
+	async #authorizeBatchMembers(waiters: readonly LandingWaiter[]): Promise<LandingWaiter[]> {
+		const authorized: LandingWaiter[] = [];
+		for (const waiter of waiters) {
+			if (waiter.settled) continue;
+			if (waiter.signal.aborted) {
+				settleReject(waiter, waiter.signal.reason);
+				continue;
+			}
+			try {
+				await waiter.session.assertAuthorized(waiter.signal);
+				if (waiter.signal.aborted) {
+					settleReject(waiter, waiter.signal.reason);
+					continue;
+				}
+				authorized.push(waiter);
+			} catch (error) {
+				settleReject(waiter, error);
+			}
+		}
+		return authorized;
+	}
+
+	#filterLiveWaiters(waiters: readonly LandingWaiter[]): LandingWaiter[] {
+		const live: LandingWaiter[] = [];
+		for (const waiter of waiters) {
+			if (waiter.settled) continue;
+			if (waiter.signal.aborted) {
+				settleReject(waiter, waiter.signal.reason);
+				continue;
+			}
+			live.push(waiter);
+		}
+		return live;
+	}
+
+	#filterLiveChain(chain: readonly BatchChainStep[]): BatchChainStep[] {
+		const live: BatchChainStep[] = [];
+		for (const entry of chain) {
+			if (entry.waiter.settled) continue;
+			if (entry.waiter.signal.aborted) {
+				settleReject(entry.waiter, entry.waiter.signal.reason);
+				continue;
+			}
+			live.push(entry);
+		}
+		return live;
+	}
+
+	async #withBatchSignal<T>(waiters: readonly LandingWaiter[], run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+		const controller = new AbortController();
+		const cleanups: (() => void)[] = [];
+		const checkAllAborted = () => {
+			if (controller.signal.aborted) return;
+			if (waiters.every((waiter) => waiter.settled || waiter.signal.aborted)) {
+				const reason = waiters.find((waiter) => waiter.signal.aborted)?.signal.reason;
+				controller.abort(reason);
+			}
+		};
+		for (const waiter of waiters) {
+			if (waiter.signal.aborted) continue;
+			const listener = () => checkAllAborted();
+			waiter.signal.addEventListener("abort", listener, { once: true });
+			cleanups.push(() => waiter.signal.removeEventListener("abort", listener));
+		}
+		checkAllAborted();
+		try {
+			return await run(controller.signal);
+		} finally {
+			for (const cleanup of cleanups) cleanup();
+		}
+	}
+
+	async #rejectRefusal(waiter: LandingWaiter, error: CodeHostRefusal): Promise<void> {
+		if (waiter.settled) return;
+		if (error.code === "CODE_HOST_LAND_CONFLICT") {
+			await this.#reportRefused(waiter.session, waiter.headSha, "conflict", error.code, error.paths);
+			settleReject(waiter, new CodingLandConflict(error.paths));
+			return;
+		}
+		const summary = landRefusal(
+			waiter.session.claim.repository.baseBranch,
+			error.code,
+			error.code === "CODE_HOST_NAMES_FOLDER_REFUSES"
+				? error.paths.map((path) => codeImportShown(path))
+				: error.paths,
+		);
+		if (summary === undefined) {
+			settleReject(waiter, error);
+			return;
+		}
+		await this.#reportRefused(waiter.session, waiter.headSha, "refused", error.code, error.paths);
+		settleReject(waiter, new CodingLandRefused(error.code, summary, { cause: error }));
+	}
+
+	async #rejectJobError(waiter: LandingWaiter, error: unknown): Promise<void> {
+		if (waiter.settled) return;
+		if (waiter.signal.aborted) {
+			settleReject(waiter, waiter.signal.reason);
+			return;
+		}
+		if (error instanceof CodeHostRefusal) {
+			await this.#rejectRefusal(waiter, error);
+			return;
+		}
+		if (error instanceof CodeHostJobFailure && error.code === "CODE_HOST_REF_UNREADABLE") {
+			const summary = landRefusal(waiter.session.claim.repository.baseBranch, error.code, []);
+			if (summary !== undefined) {
+				await this.#reportRefused(waiter.session, waiter.headSha, "refused", error.code, []);
+				settleReject(waiter, new CodingLandRefused(error.code, summary, { cause: error }));
+				return;
+			}
+		}
+		settleReject(waiter, error);
 	}
 
 	/** One job on the code host of the session's company, in that company's line. The session's run authority is asked

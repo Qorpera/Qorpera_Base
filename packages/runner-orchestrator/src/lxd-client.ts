@@ -39,6 +39,8 @@ const MAX_EXEC_STREAM_INPUT_BYTES = 64 * 1024;
 const MAX_EXEC_STREAM_OUTPUT_BYTES = 8 * 1024 * 1024;
 const CODING_MEMORY_CODING_SLICE =
 	/^\/sys\/fs\/cgroup\/qorpera\.slice\/qorpera-coding\.slice\/qorpera-coding-[0-9a-f]{32}\.slice\/memory\.stat$/;
+const CODING_MEMORY_FOLDER_SERVICE =
+	/^\/sys\/fs\/cgroup\/system\.slice\/qorpera-folder-[0-9a-f]{32}\.service\/memory\.stat$/;
 const CODING_MEMORY_USER_SLICE = /^\/sys\/fs\/cgroup\/user\.slice\/user-([2-5][0-9]{5})\.slice\/memory\.stat$/;
 const CODING_MEMORY_HEADER = /^=== (\/[A-Za-z0-9/_.-]+) ===$/;
 const CODING_MEMORY_BATCH_SIZE = 58;
@@ -1565,7 +1567,7 @@ async function pipeInput(
 }
 
 function validCodingMemoryPath(path: string): boolean {
-	if (CODING_MEMORY_CODING_SLICE.test(path)) return true;
+	if (CODING_MEMORY_CODING_SLICE.test(path) || CODING_MEMORY_FOLDER_SERVICE.test(path)) return true;
 	const user = CODING_MEMORY_USER_SLICE.exec(path);
 	if (!user) return false;
 	const uid = Number(user[1]);

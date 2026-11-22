@@ -18,6 +18,7 @@ import {
 	claudeBoxInvocation,
 	claudeBoxMountOptions,
 	claudeBoxSettings,
+	claudeBoxStdoutLines,
 	claudeReviewerArguments,
 	claudeReviewerInvocation,
 	claudeReviewerVerdict,
@@ -375,4 +376,67 @@ it("reviews one at a time, and a closed reviewer starts none", async () => {
 	reviewer.close();
 	await expect(reviewer.review(input, new AbortController().signal)).rejects.toThrow();
 	expect(run).toHaveBeenCalledTimes(3);
+});
+
+it("rejects an aborted queued review immediately while keeping subsequent waiters serialized", async () => {
+	let releaseFirst!: () => void;
+	const order: string[] = [];
+	const run = vi.fn(async (input: { prompt: string }) => {
+		order.push(`start:${input.prompt}`);
+		if (input.prompt === "first") {
+			await new Promise<void>((resolve) => {
+				releaseFirst = resolve;
+			});
+		}
+		order.push(`end:${input.prompt}`);
+		return { decision: "allow" };
+	});
+	const reviewer = new ClaudeCodeReviewer(run);
+	const base = { instructions: "i", model: "haiku", effort: "low" as const };
+	const first = reviewer.review({ ...base, prompt: "first" }, new AbortController().signal);
+	const abortSecond = new AbortController();
+	const second = reviewer.review({ ...base, prompt: "second" }, abortSecond.signal);
+	const third = reviewer.review({ ...base, prompt: "third" }, new AbortController().signal);
+	abortSecond.abort(new Error("cancelled"));
+	await expect(second).rejects.toThrow("cancelled");
+	expect(order).toEqual(["start:first"]);
+	releaseFirst();
+	await Promise.all([first, third]);
+	expect(order).toEqual(["start:first", "end:first", "start:third", "end:third"]);
+});
+
+it("splits stdout chunks linearly, notifies on trailing unterminated lines, and fails closed on overflow", async () => {
+	const noticed: string[] = [];
+	const yielded: string[] = [];
+	async function* chunks() {
+		yield '{"a":';
+		yield '1}\n{"b":2}\n{"c":';
+		yield "3}";
+	}
+	for await (const line of claudeBoxStdoutLines(chunks(), (line) => noticed.push(line), undefined, 64)) {
+		yielded.push(line);
+	}
+	expect(yielded).toEqual(['{"a":1}', '{"b":2}', '{"c":3}']);
+	expect(noticed).toEqual(['{"a":1}', '{"b":2}', '{"c":3}']);
+
+	let overflowed = 0;
+	const beforeOverflow: string[] = [];
+	async function* huge() {
+		yield "ok\n";
+		yield "x".repeat(40);
+		yield "y".repeat(40);
+		yield "\nafter\n";
+	}
+	for await (const line of claudeBoxStdoutLines(
+		huge(),
+		(line) => beforeOverflow.push(line),
+		() => {
+			overflowed += 1;
+		},
+		64,
+	)) {
+		expect(line).toBe("ok");
+	}
+	expect(beforeOverflow).toEqual(["ok"]);
+	expect(overflowed).toBe(1);
 });

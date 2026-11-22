@@ -1,3 +1,4 @@
+import { withAbortScopes } from "../../cloud/abort-scope.ts";
 import type { CloudApi } from "../../cloud/api.ts";
 import { formatUsdCents, formatUsdMicrodollars } from "../../cloud/gemini-key.ts";
 import type { MemberNotification, WebMemberNotifications } from "../../cloud/member-notifications.ts";
@@ -281,30 +282,31 @@ export class ExecutionNotices {
 			return;
 		const request = new AbortController();
 		this.#request = request;
-		const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
-		try {
-			const items = await this.#client.listNotifications(signal);
-			if (signal.aborted) return;
-			this.#items = told(items);
-			await this.#readStop(signal);
-			// The plan card has its own reads; a failed one hides only the card, and the next poll reads again.
-			if (!this.#offerDone)
-				this.#offer = await this.#readOffer(items, signal).catch((error: unknown) => {
-					if (signal.aborted) throw error;
-					this.#offerChecked = "";
-					return undefined;
-				});
-		} catch {
-			if (signal.aborted) return;
-			// Nothing stale is shown, and nothing can be dismissed, until a read succeeds. A card shown
-			// before comes back then: its plan is still offered in this window.
-			this.#items = [];
-			this.#offer = undefined;
-			this.#offerChecked = "";
-		} finally {
-			if (this.#request === request) this.#request = undefined;
-			if (!signal.aborted) this.#draw();
-		}
+		await withAbortScopes([request.signal, this.#lifetime.signal], async (signal) => {
+			try {
+				const items = await this.#client!.listNotifications(signal);
+				if (signal.aborted) return;
+				this.#items = told(items);
+				await this.#readStop(signal);
+				// The plan card has its own reads; a failed one hides only the card, and the next poll reads again.
+				if (!this.#offerDone)
+					this.#offer = await this.#readOffer(items, signal).catch((error: unknown) => {
+						if (signal.aborted) throw error;
+						this.#offerChecked = "";
+						return undefined;
+					});
+			} catch {
+				if (signal.aborted) return;
+				// Nothing stale is shown, and nothing can be dismissed, until a read succeeds. A card shown
+				// before comes back then: its plan is still offered in this window.
+				this.#items = [];
+				this.#offer = undefined;
+				this.#offerChecked = "";
+			} finally {
+				if (this.#request === request) this.#request = undefined;
+				if (!signal.aborted) this.#draw();
+			}
+		});
 	}
 
 	/** An agent's routine waits for this member's account, and the member has a ChatGPT plan they have not

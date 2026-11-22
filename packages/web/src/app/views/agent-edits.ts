@@ -1,3 +1,4 @@
+import { createAbortScope } from "../../cloud/abort-scope.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentColor, figureFor } from "../../ui/avatar.ts";
 import { t } from "../../ui/preferences.ts";
@@ -114,7 +115,8 @@ export class AgentEdits {
 	async save(): Promise<void> {
 		if (this.#saving || !this.#update || !this.canWrite() || this.#written === this.#revision) return;
 		this.#saving = true;
-		const signal = AbortSignal.any([this.signal, this.#attempt.signal]);
+		const scope = createAbortScope([this.signal, this.#attempt.signal]);
+		const signal = scope.signal;
 		this.store.set({ status: t("Saving…"), failed: false, saved: false });
 		try {
 			do {
@@ -142,6 +144,7 @@ export class AgentEdits {
 			if (!signal.aborted)
 				this.store.set({ status: t("Your changes could not be saved."), failed: true, saved: false });
 		} finally {
+			scope.dispose();
 			this.#saving = false;
 			// A newly authorized edit may arrive while an aborted request settles.
 			// Revocation already discarded the old queue; only that new edit may run.

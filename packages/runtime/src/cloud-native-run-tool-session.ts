@@ -346,16 +346,24 @@ export async function runCloudNativeRunToolSession(options: {
 			runLog || options.closing
 				? async (closeSignal: AbortSignal) => {
 						closingStarted = true;
-						try {
-							if (runLog)
-								try {
-									await runLog.log.close(closeSignal);
-								} finally {
-									await runLog.lines.finish(closeSignal);
-								}
-						} finally {
-							await options.closing?.(closeSignal);
+						if (runLog) {
+							let logError: unknown;
+							let hasLogError = false;
+							try {
+								await runLog.log.close(closeSignal);
+							} catch (error) {
+								logError = error;
+								hasLogError = true;
+							}
+							const settled = await Promise.allSettled([
+								runLog.lines.finish(closeSignal),
+								...(options.closing ? [options.closing(closeSignal)] : []),
+							]);
+							if (hasLogError) throw logError;
+							for (const item of settled) if (item.status === "rejected") throw item.reason;
+							return;
 						}
+						await options.closing?.(closeSignal);
 					}
 				: undefined;
 		if (options.gemini) {

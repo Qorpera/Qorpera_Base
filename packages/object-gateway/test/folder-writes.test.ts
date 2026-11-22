@@ -3,8 +3,9 @@ import { createServer as createHttpServer } from "node:http";
 import { type AddressInfo, connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NasObjects } from "../src/folder-service/objects.ts";
+import { MAX_COMMIT_STRUCTURED_BYTES, STRUCTURED_TOO_LARGE } from "../src/folder-service/plan.ts";
 import {
 	type BridgeInfo,
 	encodeFrame,
@@ -22,7 +23,13 @@ import {
 } from "../src/folder-service/protocol.ts";
 import { createFolderServer } from "../src/folder-service/server.ts";
 import { FolderService, LISTING_ONLY, type ViewHandle } from "../src/folder-service/service.ts";
-import { FolderStaging, type FolderUploads, GatewayUploads, manifestText } from "../src/folder-service/staging.ts";
+import {
+	FolderStaging,
+	type FolderUploads,
+	GatewayUploads,
+	manifestText,
+	STAGE_CONCURRENCY,
+} from "../src/folder-service/staging.ts";
 import {
 	ALLOCATION,
 	BRIDGE,
@@ -1420,13 +1427,15 @@ describe("writes through the mount", () => {
 		let now = Date.now();
 		const { core, open, service } = await fixture({ now: () => now });
 		const view = await open();
-		// A swap file saved three times and never published: only its last version's bytes are held.
 		for (const text of ["one", "two", "three"]) await write(view, "draft.md~", text);
-		const opened = [...core.intents.keys()];
-		expect(opened).toHaveLength(6);
+		const swapOpened = [...core.intents.keys()];
+		expect(swapOpened).toHaveLength(3);
+		for (const text of ["alpha", "beta", "gamma"]) await write(view, "draft.md", text);
+		const allOpened = [...core.intents.keys()];
+		expect(allOpened).toHaveLength(9);
 		now += 10 * 60_000;
 		await service.renewIntents();
-		expect(core.renewals).toEqual(opened.slice(4));
+		expect(core.renewals).toEqual([swapOpened[2], ...allOpened.slice(7)]);
 	});
 
 	it("cuts a file at its close, on the grid or to nothing, with no chunk sent", async () => {
@@ -1787,6 +1796,9 @@ describe("the gateway's upload", () => {
 		const uploads = new GatewayUploads({
 			url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
 			token: "t".repeat(43),
+		});
+		cleanups.push(async () => {
+			uploads.close();
 		});
 		const actor = { kind: "member" as const, userId: MEMBER };
 		const part = Buffer.alloc(4 * 1024 * 1024);
@@ -2565,8 +2577,8 @@ describe("multi-batch boundary commits", () => {
 			{ key: `${baseKey}:b1`, count: 1000 },
 			{ key: `${baseKey}:b1`, count: 1000 },
 		]);
-		expect(first.commitId).toBeNull();
-		expect(first.seq).toBeNull();
+		expect(first.commitId).toBeTruthy();
+		expect(first.seq).toBe(1);
 		expect(first.paths.filter((p) => p.outcome === "saved")).toHaveLength(1000);
 		expect(first.paths.filter((p) => p.outcome === "not_applied" && p.kept)).toHaveLength(1500);
 		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(1000);
@@ -2767,16 +2779,16 @@ describe("multi-batch boundary commits", () => {
 		core.commitHook = undefined;
 		const commitsBeforeClosed = core.commits.length;
 		for (let i = 0; i < 1200; i++) await write(viewB, `c/f${String(i).padStart(4, "0")}.txt`, `c-${i % 8}`);
-		const origFeed = core.feed.bind(core);
+		const origCommit = core.commit.bind(core);
 		let closedTriggered = false;
-		core.feed = async (...args) => {
-			const page = await origFeed(...args);
+		core.commit = async (...args) => {
+			const answer = await origCommit(...args);
 			if (!closedTriggered && core.commits.length === commitsBeforeClosed + 1) {
 				closedTriggered = true;
 				core.views.get(closedViewId)!.state = "closed";
 				await service.renewLeases();
 			}
-			return page;
+			return answer;
 		};
 		await expect(viewB.publish()).rejects.toMatchObject({ code: "VIEW_CLOSED" });
 		expect(core.commits).toHaveLength(commitsBeforeClosed + 1);
@@ -2904,5 +2916,257 @@ describe("multi-batch boundary commits", () => {
 		expect(retryReport?.paths).toHaveLength(100);
 		expect(retryReport?.paths.every((p) => p.outcome === "saved")).toBe(true);
 		expect(core.entries.has("src/del.txt")).toBe(true);
+	});
+
+	it("defers feed catch-up and FUSE change push across multi-batch commits until settlement at the end", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("bulk")]);
+		const pushes: unknown[] = [];
+		const view = await open();
+		view.subscribe({ change: (message) => pushes.push(message), closed: () => undefined });
+		for (let i = 0; i < 2500; i++) await write(view, `bulk/f${String(i).padStart(4, "0")}.txt`, `v-${i % 8}`);
+
+		let feedCalls = 0;
+		const origFeed = core.feed.bind(core);
+		core.feed = async (...args) => {
+			feedCalls++;
+			return origFeed(...args);
+		};
+		pushes.length = 0;
+
+		const report = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 1000, 500]);
+		expect(report.refused).toBeUndefined();
+		expect(report.commitId).toBeTruthy();
+		expect(report.seq).toBe(core.seq);
+		expect(report.paths).toHaveLength(2500);
+		expect(report.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect(feedCalls).toBe(1);
+		expect(pushes.length).toBeLessThanOrEqual(2);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(2500);
+	});
+
+	it("settles committed earlier batches when a mid-loop structured NAS read throws", async () => {
+		const { core, objects, open } = await fixture();
+		core.seed([folder("bulk"), folder("QorperaOS"), folder("QorperaOS/rules")]);
+		const view = await open();
+		for (let i = 0; i < 1000; i++) await write(view, `bulk/f${String(i).padStart(4, "0")}.txt`, `v-${i % 8}`);
+		await write(view, "QorperaOS/rules/r0.md", "# Rule 0\n");
+		for (let i = 0; i < 20; i++) await write(view, `bulk/z${String(i).padStart(4, "0")}.txt`, `z-${i % 4}`);
+
+		const origRead = objects.read.bind(objects);
+		let failOnce = true;
+		objects.read = async (profileId, entry, offset, length) => {
+			if (failOnce && entry.path === "QorperaOS/rules/r0.md") {
+				failOnce = false;
+				throw new Error("transient NAS outage");
+			}
+			return origRead(profileId, entry, offset, length);
+		};
+
+		await expect(view.publish()).rejects.toMatchObject({ code: "UNAVAILABLE" });
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000]);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/f"))).toHaveLength(1000);
+		expect(core.entries.has("QorperaOS/rules/r0.md")).toBe(false);
+
+		const retry = await view.publish();
+		expect(core.commits.map((c) => c.units.length)).toEqual([1000, 21]);
+		expect(retry.refused).toBeUndefined();
+		expect(retry.paths).toHaveLength(21);
+		expect(retry.paths.every((p) => p.outcome === "saved")).toBe(true);
+		expect(core.entries.has("QorperaOS/rules/r0.md")).toBe(true);
+		expect([...core.entries.keys()].filter((p) => p.startsWith("bulk/"))).toHaveLength(1020);
+		expect(await view.publish()).toEqual({ commitId: null, seq: null, paths: [] });
+	});
+
+	it("fails fast on a single structured file over 1 MiB while publishing valid sibling files", async () => {
+		const { core, open } = await fixture();
+		core.seed([folder("QorperaOS"), folder("QorperaOS/rules")]);
+		const view = await open();
+		await write(view, "QorperaOS/rules/huge.md", "x".repeat(MAX_COMMIT_STRUCTURED_BYTES + 1));
+		await write(view, "QorperaOS/rules/ok.md", "# Valid rule\n");
+
+		const report = await view.publish();
+		expect(core.commits).toHaveLength(1);
+		expect(report.paths).toContainEqual({
+			path: "QorperaOS/rules/huge.md",
+			outcome: "refused",
+			reason: STRUCTURED_TOO_LARGE,
+			kept: true,
+		});
+		expect(report.paths).toContainEqual({ path: "QorperaOS/rules/ok.md", outcome: "saved" });
+		expect(core.entries.has("QorperaOS/rules/ok.md")).toBe(true);
+		expect(core.entries.has("QorperaOS/rules/huge.md")).toBe(false);
+	});
+
+	it("parallelizes multi-chunk puts and ordered chunk reads up to STAGE_CONCURRENCY", async () => {
+		const { root, core, objects } = await fixture();
+		const chunkBuffers = Array.from({ length: 6 }, (_, i) => Buffer.from(`chunk-${i}-${"a".repeat(128)}`));
+		const chunkRefs = chunkBuffers.map((buf) => ({ sha256: hashOf(buf), bytes: buf.byteLength }));
+		for (let i = 0; i < chunkBuffers.length; i++) {
+			await storeFile(root, `seed-${i}.bin`, chunkBuffers[i]!, i + 1, chunkBuffers[i]!.byteLength);
+		}
+		const freshObjects = new NasObjects({ root, cacheBytes: 1024 * 1024 });
+		let readInFlight = 0;
+		let readPeak = 0;
+		const origChunk = freshObjects.chunk.bind(freshObjects);
+		freshObjects.chunk = async (profileId, sha256, bytes, priority) => {
+			readInFlight++;
+			readPeak = Math.max(readPeak, readInFlight);
+			try {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				return await origChunk(profileId, sha256, bytes, priority);
+			} finally {
+				readInFlight--;
+			}
+		};
+
+		let putInFlight = 0;
+		let putPeak = 0;
+		const baseUploads = new FakeUploads(root, core);
+		const trackedUploads: FolderUploads = {
+			start(environmentId, actor, intentId, sha256, bytes) {
+				const inner = baseUploads.start(environmentId, actor, intentId, sha256, bytes);
+				return {
+					write: (part) => inner.write(part),
+					end: async () => {
+						putInFlight++;
+						putPeak = Math.max(putPeak, putInFlight);
+						try {
+							await new Promise((resolve) => setTimeout(resolve, 15));
+							await inner.end();
+						} finally {
+							putInFlight--;
+						}
+					},
+					abort: () => inner.abort(),
+				};
+			},
+		};
+		const staging = new FolderStaging(core, trackedUploads, freshObjects);
+		const totalSize = chunkBuffers.reduce((sum, buf) => sum + buf.byteLength, 0);
+		const staged = await staging.stageFile(
+			ENV,
+			{ kind: "member", userId: MEMBER },
+			PROFILE,
+			{ chunks: chunkRefs, size: totalSize },
+			"application/octet-stream",
+			false,
+			secretsOf("absent-secret-value-0001"),
+		);
+		expect(staged.file.fileSha256).toBe(hashOf(Buffer.concat(chunkBuffers)));
+		expect(readPeak).toBe(STAGE_CONCURRENCY);
+		expect(putPeak).toBe(STAGE_CONCURRENCY);
+		expect(objects.maxCacheBytes).toBeGreaterThan(0);
+	});
+
+	it("preserves early 413 status and rejects truncated responses without hanging in GatewayUploads", async () => {
+		const token = "t".repeat(43);
+		let mode: "reject413" | "truncate" = "reject413";
+		const server = createHttpServer((req, res) => {
+			if (mode === "reject413") {
+				res.writeHead(413, { connection: "close" });
+				res.end();
+				req.socket.destroy();
+				return;
+			}
+			res.writeHead(200, { "content-length": "100" });
+			res.write("partial");
+			res.flushHeaders();
+			setTimeout(() => req.socket.destroy(), 15);
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+		const { port } = server.address() as AddressInfo;
+		const uploads = new GatewayUploads({ url: `http://127.0.0.1:${port}`, token });
+		cleanups.push(async () => {
+			uploads.close();
+		});
+		const actor = { kind: "view" as const, viewId: "9e6f7081-92a3-4b4c-8d5e-6f708192a3b4", pass: PASS };
+
+		const payload = Buffer.alloc(2 * 1024 * 1024, 7);
+		const u1 = uploads.start(ENV, actor, "intent-413", hashOf(payload), payload.byteLength);
+		let err413: unknown;
+		try {
+			await u1.write(payload.subarray(0, 64 * 1024));
+			await new Promise<void>((resolve) => setTimeout(resolve, 25));
+			await u1.write(payload.subarray(64 * 1024));
+			await u1.end();
+		} catch (error) {
+			err413 = error;
+		}
+		expect(err413).toBeInstanceOf(ProtocolError);
+		expect((err413 as ProtocolError).code).toBe("TOO_LARGE");
+
+		mode = "truncate";
+		const small = Buffer.from("hello");
+		const u2 = uploads.start(ENV, actor, "intent-trunc", hashOf(small), small.byteLength);
+		await u2.write(small);
+		await expect(u2.end()).rejects.toMatchObject({ code: "UNAVAILABLE" });
+	});
+
+	it("skips redundant NAS chunk reads for single-chunk stageFile without secrets", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-folder-stage-skip-"));
+		cleanups.push(() => rm(root, { recursive: true, force: true }));
+		const core = new FakeCore();
+		const objects = new NasObjects({ root, cacheBytes: 16 * 1024 * 1024 });
+		const staging = new FolderStaging(core, new FakeUploads(root, core), objects);
+		const data = Buffer.from("single-chunk-bytes");
+		const file = await storeFile(root, "one.txt", data, 1, data.byteLength);
+		core.seed([file]);
+		const sha = hashOf(data);
+		const content = { size: data.byteLength, chunks: [{ sha256: sha, bytes: data.byteLength }] };
+		core.catalog.set(sha, data.byteLength);
+		const chunkSpy = vi.spyOn(objects, "chunk");
+		const actor = { kind: "view" as const, viewId: "9e6f7081-92a3-4b4c-8d5e-6f708192a3b4", pass: PASS };
+		core.openView(actor.viewId, PASS);
+		await staging.stageFile(ENV, actor, PROFILE, content, "text/plain", false);
+		await staging.stageFile(ENV, actor, PROFILE, content, "text/plain", false, noSecrets());
+		expect(chunkSpy).toHaveBeenCalledTimes(0);
+
+		await staging.stageFile(ENV, actor, PROFILE, content, "text/plain", false, secretsOf("not-in-file"));
+		expect(chunkSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("pushes only settled batch paths in #settleNodes and runs due renewIntents concurrently without overlap", async () => {
+		let clock = 1_000_000;
+		const f = await fixture({ now: () => clock, maxBoundaryBatches: 1 });
+		f.core.seed([folder("QorperaOS"), folder("QorperaOS/rules"), folder("src")]);
+		const view = await f.open();
+		const feedMessages: { resync: boolean; paths: string[] }[] = [];
+		view.subscribe({
+			change: (msg) => feedMessages.push({ resync: msg.resync, paths: [...msg.paths] }),
+			closed: () => undefined,
+		});
+		for (let i = 0; i < 65; i++) await write(view, `QorperaOS/rules/r${String(i).padStart(3, "0")}.md`, `rule-${i}`);
+		for (let i = 0; i < 5; i++) await write(view, `src/later-${i}.txt`, `later-${i}`);
+		feedMessages.length = 0;
+		const report = await view.publish(false);
+		expect(report.paths.filter((p) => p.outcome === "saved")).toHaveLength(64);
+		const firstBatchMsg = feedMessages.find((m) => m.paths.includes("QorperaOS/rules/r000.md"));
+		expect(firstBatchMsg).toBeDefined();
+		expect(firstBatchMsg?.resync).toBe(false);
+		expect(firstBatchMsg?.paths.some((p) => p.startsWith("src/later-"))).toBe(false);
+		const secondReport = await view.publish(false);
+		expect(secondReport.paths.every((p) => p.outcome === "saved")).toBe(true);
+
+		for (let i = 0; i < 6; i++) await write(view, `src/intent-${i}.txt`, `unique-intent-payload-${i}`);
+		clock += 11 * 60_000;
+		let active = 0;
+		let peak = 0;
+		let renewCalls = 0;
+		const origRenew = f.core.renewUpload.bind(f.core);
+		f.core.renewUpload = async (env, actor, id) => {
+			renewCalls++;
+			active++;
+			peak = Math.max(peak, active);
+			await new Promise<void>((resolve) => setTimeout(resolve, 20));
+			active--;
+			return origRenew(env, actor, id);
+		};
+		await Promise.all([f.service.renewIntents(), f.service.renewIntents()]);
+		expect(peak).toBeGreaterThan(1);
+		expect(peak).toBeLessThanOrEqual(4);
+		expect(renewCalls).toBe(12);
 	});
 });

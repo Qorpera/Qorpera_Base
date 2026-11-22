@@ -482,8 +482,12 @@ function mergeHistoryItems(history: readonly GeminiHistoryItem[]): GeminiContent
 	return merged;
 }
 
+// WHY: Default 200-turn safety cap applies only when neither timeoutMs nor monthlyCapCents bounds the run (or when
+// maxTurns is passed explicitly), excludes the single turnCorrection retry, and fails with budget_exhausted.
+const MAX_GEMINI_TURNS = 200;
+
 async function composeGeminiContents(
-	history: readonly GeminiHistoryItem[],
+	history: GeminiHistoryItem[],
 	composer: CloudCodexContextComposer | undefined,
 	context: {
 		readonly requestId: string;
@@ -507,8 +511,11 @@ async function composeGeminiContents(
 		signal,
 	);
 	const result: GeminiContent[] = [];
+	const keptIndices = new Set<number>();
+	let folded = false;
 	for (const entry of composed.input) {
 		if ("work" in entry) {
+			folded = true;
 			appendMergedContent(result, {
 				role: "user",
 				parts: [{ text: redactCloudWebhookSecrets(entry.work) }],
@@ -516,7 +523,19 @@ async function composeGeminiContents(
 			continue;
 		}
 		const kept = history[entry.keep];
-		if (kept) appendMergedContent(result, kept);
+		if (kept) {
+			keptIndices.add(entry.keep);
+			appendMergedContent(result, kept);
+		}
+	}
+	if (folded && result.length > 0) {
+		for (let i = 0; i < history.length; i += 1) {
+			if (keptIndices.has(i)) continue;
+			const entry = history[i];
+			if (entry.parts.some((part) => "inlineData" in part)) {
+				history[i] = { ...entry, parts: entry.parts.filter((part) => !("inlineData" in part)) };
+			}
+		}
 	}
 	return result.length > 0 ? result : mergeHistoryItems(history);
 }
@@ -549,7 +568,11 @@ export async function runCloudGeminiToolSession(options: {
 	observability?: CloudRuntimeObservability;
 	signal: AbortSignal;
 	timeoutMs?: number;
+	maxTurns?: number;
 }): Promise<CloudCodexToolSessionResult> {
+	const explicitMaxTurns = options.maxTurns;
+	if (explicitMaxTurns !== undefined && (!Number.isSafeInteger(explicitMaxTurns) || explicitMaxTurns < 1))
+		throw new Error("Invalid Gemini maxTurns");
 	const baseUrl = validateGeminiBaseUrl(options.apiBaseUrl ?? GEMINI_DEFAULT_API_BASE, options.allowLoopback === true);
 	const fetcher = options.fetch ?? fetch;
 	const runWithSession = async (sessionSignal: AbortSignal): Promise<CloudCodexToolSessionResult> => {
@@ -701,10 +724,26 @@ export async function runCloudGeminiToolSession(options: {
 			let pendingFenceInputs: CloudNativeResultInput[] = [];
 			let correctionSent = false;
 			let turnIndex = 0;
+			let countedTurns = 0;
+			let isCorrectionTurn = false;
 
 			while (true) {
 				sessionSignal.throwIfAborted();
 				assertWithinCap();
+				const effectiveMaxTurns =
+					explicitMaxTurns !== undefined
+						? explicitMaxTurns
+						: options.timeoutMs === undefined && monthlyCapCents === null
+							? MAX_GEMINI_TURNS
+							: null;
+				if (effectiveMaxTurns !== null && !isCorrectionTurn && countedTurns >= effectiveMaxTurns)
+					throw tagNativeRuntimeFailure(
+						new Error("Gemini tool session exceeded maximum turn limit"),
+						"native-tools",
+						"budget_exhausted",
+					);
+				if (!isCorrectionTurn) countedTurns += 1;
+				isCorrectionTurn = false;
 				turnIndex += 1;
 				const turnId = `gemini-turn-${turnIndex}`;
 				const fenced = await options.boundary.fenceNativeResults(pendingFenceInputs, {
@@ -892,6 +931,7 @@ export async function runCloudGeminiToolSession(options: {
 								media: 0,
 							},
 						});
+						isCorrectionTurn = true;
 						continue;
 					}
 				}

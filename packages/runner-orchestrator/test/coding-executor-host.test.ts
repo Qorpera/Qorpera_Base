@@ -9293,7 +9293,9 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.host.endTurn(f.claim);
 		f.state.listed = [f.entry()];
-		const slicePath = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${f.claim.workerId.replaceAll("-", "")}.slice/memory.stat`;
+		const worker32 = f.claim.workerId.replaceAll("-", "");
+		const slicePath = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${worker32}.slice/memory.stat`;
+		const folderServicePath = `/sys/fs/cgroup/system.slice/qorpera-folder-${worker32}.service/memory.stat`;
 		const userPath = "/sys/fs/cgroup/user.slice/user-200000.slice/memory.stat";
 		const setFile = (path: string, text: string) =>
 			f.files.set(path, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from(text) });
@@ -9309,12 +9311,14 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 				"",
 			].join("\n"),
 		);
+		setFile(folderServicePath, ["anon 67108864", "file 536870912", "kernel 2097152", "shmem 1048576", ""].join("\n"));
 		setFile(
 			userPath,
 			["anon 134217728", "file 2147483648", "kernel 4194304", "shmem 0", "inactive_file 2147483648", ""].join("\n"),
 		);
 		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   4194304 kB\n");
-		const expectedWorkingSet = 536_870_912 + 8_388_608 + 16_777_216 + 134_217_728 + 4_194_304;
+		const expectedWorkingSet =
+			536_870_912 + 8_388_608 + 16_777_216 + 67_108_864 + 2_097_152 + 1_048_576 + 134_217_728 + 4_194_304;
 		vi.mocked(f.client.readInstanceFile).mockClear();
 		vi.mocked(f.client.readCodingMachineMemory).mockClear();
 		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 600_000, cpuUsageUsec: 1_000_000 }));
@@ -9325,7 +9329,7 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		expect(f.client.readCodingMachineMemory).toHaveBeenCalledWith(
 			f.machine.project,
 			f.plan.request.name,
-			[slicePath, userPath],
+			[slicePath, folderServicePath, userPath],
 			expect.any(AbortSignal),
 		);
 		expect(
@@ -9351,12 +9355,29 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
 			p_load: {
 				schema: "qorpera.coding-machine-load/v1",
+				full: false,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 3500, memoryBytes: expectedWorkingSet }],
+			},
+		});
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 620_000, cpuUsageUsec: 36_000_000 + 35_000_000 }));
+		await f.host.keep(f.signal);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				full: false,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 3500, memoryBytes: expectedWorkingSet }],
+			},
+		});
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 630_000, cpuUsageUsec: 71_000_000 + 35_000_000 }));
+		await f.host.keep(f.signal);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				schema: "qorpera.coding-machine-load/v1",
 				full: true,
 				sessions: [{ workerId: f.claim.workerId, cpuMillis: 3500, memoryBytes: expectedWorkingSet }],
 			},
 		});
 		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   800000 kB\n");
-		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 620_000, cpuUsageUsec: 36_000_000 }));
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 640_000, cpuUsageUsec: 106_000_000 }));
 		expect(await f.host.keep(f.signal)).toEqual([
 			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
 		]);
@@ -9367,18 +9388,19 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 			},
 		});
 		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   6000000 kB\n");
-		setFile(slicePath, "anon 7516192768\nfile 1048576\nkernel 0\nshmem 0\n");
+		setFile(slicePath, "anon 6871947674\nfile 1048576\nkernel 0\nshmem 0\n");
+		setFile(folderServicePath, "anon 0\nfile 1048576\n");
 		setFile(userPath, "anon 0\nfile 4294967296\n");
-		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 630_000, cpuUsageUsec: 36_000_000 }));
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 650_000, cpuUsageUsec: 106_000_000 }));
 		await f.host.keep(f.signal);
 		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
 			p_load: {
 				full: true,
-				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 7_516_192_768 }],
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 6_871_947_674 }],
 			},
 		});
 		setFile(slicePath, "anon 1048576\nfile 6442450944\n");
-		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 640_000, cpuUsageUsec: 36_000_000 }));
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 660_000, cpuUsageUsec: 106_000_000 }));
 		await f.host.keep(f.signal);
 		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
 			p_load: {
@@ -9718,5 +9740,271 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 				}),
 			]),
 		);
+	});
+
+	it("includes FUSE cgroup working-set memory and latches full immediately at 80% memory", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		const worker32 = f.claim.workerId.replaceAll("-", "");
+		const slicePath = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${worker32}.slice/memory.stat`;
+		const folderServicePath = `/sys/fs/cgroup/system.slice/qorpera-folder-${worker32}.service/memory.stat`;
+		const userPath = "/sys/fs/cgroup/user.slice/user-200000.slice/memory.stat";
+		const setFile = (path: string, text: string) =>
+			f.files.set(path, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from(text) });
+		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   6291456 kB\n");
+		setFile(slicePath, "anon 6442450944\nfile 1073741824\nkernel 0\nshmem 0\n");
+		setFile(folderServicePath, "anon 322122547\nfile 536870912\nkernel 0\nshmem 0\n");
+		setFile(userPath, "anon 0\nfile 0\nkernel 0\nshmem 0\n");
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 600_000, cpuUsageUsec: 0 }));
+		await f.host.keep(f.signal);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				full: false,
+				sessions: [{ workerId: f.claim.workerId, cpuMillis: 0, memoryBytes: 6_442_450_944 + 322_122_547 }],
+			},
+		});
+		setFile(folderServicePath, "anon 429496730\nfile 536870912\nkernel 4194304\nshmem 1048576\n");
+		mocked.guestStatus.mockResolvedValue(f.status([], { uptimeMs: 610_000, cpuUsageUsec: 0 }));
+		await f.host.keep(f.signal);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				full: true,
+				sessions: [
+					{
+						workerId: f.claim.workerId,
+						cpuMillis: 0,
+						memoryBytes: 6_442_450_944 + 429_496_730 + 4_194_304 + 1_048_576,
+					},
+				],
+			},
+		});
+	});
+
+	it("recovers folder.uid on adopted attachments after restart via SQL guestUid and user.json fallback", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		const worker32 = f.claim.workerId.replaceAll("-", "");
+		const slicePath = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${worker32}.slice/memory.stat`;
+		const folderServicePath = `/sys/fs/cgroup/system.slice/qorpera-folder-${worker32}.service/memory.stat`;
+		const userPath = "/sys/fs/cgroup/user.slice/user-200000.slice/memory.stat";
+		const setFile = (path: string, text: string) =>
+			f.files.set(path, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from(text) });
+		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   6291456 kB\n");
+		setFile(slicePath, "anon 10485760\n");
+		setFile(folderServicePath, "anon 2097152\n");
+		setFile(userPath, "anon 268435456\nkernel 4194304\n");
+		const control = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method, args, signal) => {
+			const res = (await control(method, args, signal)) as Record<string, unknown>;
+			if (method === "qorpera_keep_coding_attachments" && Array.isArray(res.sessions)) {
+				return {
+					...res,
+					sessions: res.sessions.map((s) =>
+						typeof s === "object" && s !== null && (s as Record<string, unknown>).state === "kept"
+							? { ...(s as Record<string, unknown>), guestUid: 200000 }
+							: s,
+					),
+				};
+			}
+			return res;
+		});
+		const restartedFromSql = new LxdCodingExecutorHost({ ...f.options, folder: f.folder });
+		vi.mocked(f.client.readCodingMachineMemory).mockClear();
+		expect(await restartedFromSql.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		expect(f.client.readCodingMachineMemory).toHaveBeenCalledWith(
+			f.machine.project,
+			f.plan.request.name,
+			[slicePath, folderServicePath, userPath],
+			expect.any(AbortSignal),
+		);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				full: false,
+				sessions: [
+					{
+						workerId: f.claim.workerId,
+						memoryBytes: 10_485_760 + 2_097_152 + 268_435_456 + 4_194_304,
+					},
+				],
+			},
+		});
+
+		f.call.mockImplementation(control);
+		setFile(
+			`/var/lib/qorpera-guest/sessions/${worker32}/user.json`,
+			JSON.stringify({ schema: "qorpera.coding-guest-session-user/v1", uid: 200000 }),
+		);
+		const restartedFromGuestFile = new LxdCodingExecutorHost({ ...f.options, folder: f.folder });
+		vi.mocked(f.client.readCodingMachineMemory).mockClear();
+		expect(await restartedFromGuestFile.keep(f.signal)).toEqual([
+			{ machineId: f.machine.machineId, workerId: f.claim.workerId, step: "keep", state: "done" },
+		]);
+		expect(f.client.readCodingMachineMemory).toHaveBeenCalledWith(
+			f.machine.project,
+			f.plan.request.name,
+			[slicePath, folderServicePath, userPath],
+			expect.any(AbortSignal),
+		);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_load: {
+				full: false,
+				sessions: [
+					{
+						workerId: f.claim.workerId,
+						memoryBytes: 10_485_760 + 2_097_152 + 268_435_456 + 4_194_304,
+					},
+				],
+			},
+		});
+	});
+
+	it("applies 3-sample CPU hysteresis with reset on drop or reboot while memory pressure latches immediately", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		const setFile = (path: string, text: string) =>
+			f.files.set(path, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from(text) });
+		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   6291456 kB\n");
+		const step = async (uptimeMs: number, cpuUsageUsec: number, bootId = f.bootId) => {
+			setFile("/proc/sys/kernel/random/boot_id", `${bootId}\n`);
+			mocked.guestStatus.mockResolvedValue(f.status([], { bootId, uptimeMs, cpuUsageUsec }));
+			await f.host.keep(f.signal);
+			return (f.calls("qorpera_record_coding_machine_load").at(-1) as { p_load: { full: boolean } }).p_load.full;
+		};
+		expect(await step(600_000, 1_000_000)).toBe(false);
+		expect(await step(610_000, 36_000_000)).toBe(false);
+		expect(await step(620_000, 71_000_000)).toBe(false);
+		expect(await step(630_000, 72_000_000)).toBe(false);
+		expect(await step(640_000, 107_000_000)).toBe(false);
+		expect(await step(650_000, 142_000_000)).toBe(false);
+		expect(await step(660_000, 177_000_000)).toBe(true);
+		const rebooted = randomUUID();
+		expect(await step(10_000, 1_000_000, rebooted)).toBe(false);
+		expect(await step(20_000, 36_000_000, rebooted)).toBe(false);
+		expect(await step(30_000, 71_000_000, rebooted)).toBe(false);
+		expect(await step(40_000, 106_000_000, rebooted)).toBe(true);
+	});
+
+	it("decouples #recordMachineLoad from #keepMachine observation deadline aborts without erasing CPU", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		f.state.listed = [f.entry()];
+		const worker32 = f.claim.workerId.replaceAll("-", "");
+		const slicePath = `/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${worker32}.slice/memory.stat`;
+		const folderServicePath = `/sys/fs/cgroup/system.slice/qorpera-folder-${worker32}.service/memory.stat`;
+		const userPath = "/sys/fs/cgroup/user.slice/user-200000.slice/memory.stat";
+		const setFile = (path: string, text: string) =>
+			f.files.set(path, { uid: 0, gid: 0, mode: 0o444, content: Buffer.from(text) });
+		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   800000 kB\n");
+		setFile(slicePath, "anon 104857600\n");
+		setFile(folderServicePath, "anon 20971520\n");
+		setFile(userPath, "anon 314572800\n");
+		setFile(
+			`/var/lib/qorpera-guest/sessions/${worker32}/user.json`,
+			JSON.stringify({ schema: "qorpera.coding-guest-session-user/v1", uid: 200000 }),
+		);
+		mocked.guestStatus.mockImplementation(() => new Promise(() => {}));
+		const impatient = new LxdCodingExecutorHost({ ...f.options, folder: f.folder, keepDeadlineMs: 50 });
+		const loadCallsBefore = f.calls("qorpera_record_coding_machine_load").length;
+		expect(await impatient.keep(f.signal)).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "keep",
+				state: "failed",
+				code: "CODING_HOST_KEEP_DEADLINE",
+			},
+		]);
+		expect(f.calls("qorpera_record_coding_machine_load")).toHaveLength(loadCallsBefore + 1);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_machine_id: f.machine.machineId,
+			p_load: {
+				schema: "qorpera.coding-machine-load/v1",
+				full: true,
+				sessions: [
+					{
+						workerId: f.claim.workerId,
+						cpuMillis: null,
+						memoryBytes: 104_857_600 + 20_971_520 + 314_572_800,
+					},
+				],
+			},
+		});
+		setFile("/proc/meminfo", "MemTotal:       8388608 kB\nMemAvailable:   6291456 kB\n");
+		expect(await impatient.keep(f.signal)).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "keep",
+				state: "failed",
+				code: "CODING_HOST_KEEP_DEADLINE",
+			},
+		]);
+		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
+			p_machine_id: f.machine.machineId,
+			p_load: {
+				schema: "qorpera.coding-machine-load/v1",
+				full: null,
+				sessions: [
+					{
+						workerId: f.claim.workerId,
+						cpuMillis: null,
+						memoryBytes: 104_857_600 + 20_971_520 + 314_572_800,
+					},
+				],
+			},
+		});
+	});
+
+	it("bounds and parallelizes fallback uid lookups and negative-caches missing user.json per boot", async () => {
+		const f = await folderFixture();
+		const second = f.another();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
+		f.host.endTurn(f.claim);
+		f.host.endTurn(second);
+		f.state.listed = [f.entry()];
+		const restarted = new LxdCodingExecutorHost({ ...f.options, folder: f.folder, keepDeadlineMs: 120 });
+		const readInstanceFile = vi.mocked(f.client.readInstanceFile).getMockImplementation()!;
+		const userJsonReads: string[] = [];
+		vi.mocked(f.client.readInstanceFile).mockImplementation(async (project, name, path, limit, signal) => {
+			if (path.endsWith("/user.json")) {
+				userJsonReads.push(path);
+				throw new Error("Missing file");
+			}
+			return readInstanceFile(project, name, path, limit, signal);
+		});
+		await restarted.keep(f.signal);
+		expect(userJsonReads).toHaveLength(2);
+		await restarted.keep(f.signal);
+		expect(userJsonReads).toHaveLength(2);
+		const rebooted = randomUUID();
+		f.files.set("/proc/sys/kernel/random/boot_id", {
+			uid: 0,
+			gid: 0,
+			mode: 0o444,
+			content: Buffer.from(`${rebooted}\n`),
+		});
+		mocked.guestStatus.mockResolvedValue(f.status([], { bootId: rebooted, uptimeMs: 10_000 }));
+		await restarted.keep(f.signal);
+		expect(userJsonReads).toHaveLength(4);
+
+		const stalledHost = new LxdCodingExecutorHost({ ...f.options, folder: f.folder, keepDeadlineMs: 120 });
+		mocked.guestStatus.mockImplementation(() => new Promise(() => {}));
+		vi.mocked(f.client.readInstanceFile).mockImplementation(async (project, name, path, limit, signal) => {
+			if (path.endsWith("/user.json")) return new Promise(() => {});
+			return readInstanceFile(project, name, path, limit, signal);
+		});
+		const loadsBefore = f.calls("qorpera_record_coding_machine_load").length;
+		await stalledHost.keep(f.signal);
+		expect(f.calls("qorpera_record_coding_machine_load")).toHaveLength(loadsBefore + 1);
 	});
 });

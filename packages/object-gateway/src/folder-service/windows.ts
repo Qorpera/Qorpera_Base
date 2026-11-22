@@ -173,9 +173,9 @@ export class CreditTags {
 			}
 			this.#add(this.#nodes, r.node, tags);
 		}
-		if (before.moved !== undefined)
-			for (const [path, node] of pending.nodes())
-				if (node.kind !== "gone" && path.startsWith(`${before.moved}/`)) this.#add(this.#nodes, node, tags);
+		if (before.moved !== undefined && before.moved !== "")
+			for (const [, node] of pending.nodesUnder(before.moved))
+				if (node.kind !== "gone") this.#add(this.#nodes, node, tags);
 	}
 
 	/** A chunk set in a file open for writing, under these tags: in the step that sets it. */

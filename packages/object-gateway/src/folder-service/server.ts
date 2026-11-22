@@ -3,10 +3,10 @@ import {
 	type BridgeInfo,
 	DATA_MAX_PAYLOAD,
 	ErrorCode,
-	encodeFrame,
 	encodeJson,
 	type Frame,
 	FrameReader,
+	fitReport,
 	HELLO_MAX_PAYLOAD,
 	Kind,
 	MAX_PAYLOAD,
@@ -74,6 +74,21 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 
 	const send = (bytes: Buffer): void => {
 		if (!ended) socket.write(bytes);
+	};
+	const sendFrame = (kind: number, payload: Uint8Array): void => {
+		if (ended) return;
+		if (payload.byteLength > MAX_PAYLOAD) throw new Error("Frame payload is too large");
+		const head = Buffer.allocUnsafe(5);
+		head.writeUInt32BE(payload.byteLength + 1, 0);
+		head[4] = kind;
+		if (payload.byteLength === 0) {
+			socket.write(head);
+			return;
+		}
+		socket.cork();
+		socket.write(head);
+		socket.write(payload);
+		socket.uncork();
 	};
 	/** Resolves once the machine has read what was sent (or the connection ended). */
 	const drained = (): Promise<void> =>
@@ -233,7 +248,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 			}
 			case Kind.read: {
 				const bytes = await handle.read(parseRead(frame.payload));
-				send(encodeFrame(Kind.data, bytes));
+				sendFrame(Kind.data, bytes);
 				return;
 			}
 			case Kind.search:
@@ -267,7 +282,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 			case Kind.getChunk: {
 				const request = parseGetChunk(frame.payload);
 				const bytes = await handle.getChunk(request.handle, request.index);
-				send(encodeFrame(Kind.data, bytes.subarray(request.offset, request.offset + request.length)));
+				sendFrame(Kind.data, bytes.subarray(request.offset, request.offset + request.length));
 				return;
 			}
 			case Kind.close: {
@@ -301,7 +316,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 				return;
 			}
 			case Kind.publish:
-				send(encodeJson(Kind.report, await handle.publish(parsePublish(frame.payload).final)));
+				send(encodeJson(Kind.report, fitReport(await handle.publish(parsePublish(frame.payload).final))));
 				return;
 			case Kind.reads:
 				send(encodeJson(Kind.readsOk, await handle.reads(parseReads(frame.payload))));
@@ -320,7 +335,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 
 	socket.on("data", (data: Buffer) => {
 		try {
-			queue.push(...reader.push(data));
+			for (const frame of reader.push(data)) queue.push(frame);
 		} catch (error) {
 			fail(error);
 			end();
