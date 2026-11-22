@@ -1143,7 +1143,7 @@ export class ConversationView {
 							surfaces.navigateSurface(surface.slug);
 						},
 					},
-					surfaceTile(surface, look, 13, "is-tiny"),
+					surfaceTile(surface, look, "is-tiny"),
 					h("span", { class: "surface-thread-jump-title" }, surface.title),
 					h(
 						"span",

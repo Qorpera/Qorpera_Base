@@ -1,14 +1,13 @@
-import { INTERFACE_EMBLEMS } from "@qorpera/cloud-client/interfaces";
 import type { SurfaceChangeUnit, SurfaceExplorationSet, SurfaceSession, SurfaceSummary } from "@qorpera/contracts";
 import { h, icon } from "../../ui/dom.ts";
-import { type Emblem, interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { t } from "../../ui/preferences.ts";
+import { type SurfaceFigureState, surfaceFigure } from "../../ui/surface-figure.ts";
 import { surfaceHash } from "../router.ts";
 import {
 	type SurfaceLook,
+	surfaceFigureOf,
 	surfaceKindSubtitle,
 	surfaceLookOf,
-	surfaceTileEmblem,
 	surfaceTint,
 } from "../surface-kinds.ts";
 import {
@@ -23,32 +22,16 @@ import {
 } from "../surfaces-store.ts";
 import { CrewFigures, crewWave } from "./surface-crew.ts";
 
-const EMBLEMS: ReadonlySet<string> = new Set<string>([
-	...INTERFACE_EMBLEMS,
-	"bank",
-	"globe",
-	"spark",
-	"drawers",
-	"phone",
-	"window",
-	"database",
-]);
-
-export function surfaceEmblem(surface: Pick<SurfaceSummary, "icon" | "archetype">): Emblem {
-	if (EMBLEMS.has(surface.icon)) return surface.icon as Emblem;
-	return surface.archetype === "live_build" ? "globe" : surface.archetype === "ops" ? "board" : "page";
-}
-
 export function surfaceTile(
 	surface: Pick<SurfaceSummary, "icon">,
 	look: SurfaceLook,
-	emblemSize = 25,
 	className = "",
+	state: SurfaceFigureState = "rest",
 ): HTMLElement {
 	const tile = h(
 		"span",
 		{ class: ["surface-tile", className].filter(Boolean).join(" "), "aria-hidden": "true" },
-		interfaceEmblem(surfaceTileEmblem(surface, look), emblemSize),
+		surfaceFigure(surfaceFigureOf(surface, look), state),
 	);
 	tile.style.setProperty("--surface-tint", surfaceTint(look));
 	return tile;
@@ -365,11 +348,8 @@ function surfaceRow(
 	active: boolean,
 	members?: SurfaceRailMembers,
 ): HTMLElement {
-	const meta: HTMLElement[] = [];
-	if (surface.runningSessionCount > 0)
-		meta.push(h("span", { class: "rail-surface-working", "aria-label": t("Working") }));
-	if (surface.needsAttentionCount > 0)
-		meta.push(h("span", { class: "surface-attention", "aria-label": t("Needs your attention") }));
+	const state: SurfaceFigureState =
+		surface.needsAttentionCount > 0 ? "attention" : surface.runningSessionCount > 0 ? "working" : "rest";
 	const row = h(
 		"a",
 		{
@@ -381,14 +361,16 @@ function surfaceRow(
 			"data-surface-kind": look.kind,
 			...(active ? { "aria-current": "page" } : {}),
 		},
-		surfaceTile(surface, look),
+		surfaceTile(surface, look, "", state),
 		h(
 			"span",
 			{ class: "rail-surface-text" },
 			h("span", { class: "rail-surface-name" }, surface.title),
 			h("span", { class: "rail-surface-sub" }, surfaceSubtitle(surface, look, members)),
 		),
-		meta.length ? h("span", { class: "rail-surface-meta" }, meta) : null,
+		state === "rest"
+			? null
+			: h("span", { class: "visually-hidden" }, state === "attention" ? t("Needs your attention") : t("Working")),
 	);
 	row.style.setProperty("--surface-tint", surfaceTint(look));
 	return row;
@@ -398,7 +380,7 @@ function proposedSurfaceRow(surface: SurfaceSummary, look: SurfaceLook, busy: bo
 	return h(
 		"div",
 		{ class: "rail-surface-proposed", "data-proposed-surface": surface.slug },
-		surfaceTile(surface, look, 18, "is-small"),
+		surfaceTile(surface, look, "is-small"),
 		h("span", { class: "rail-surface-name" }, surface.title),
 		h("span", { class: "rail-proposed-tag" }, t("Proposed")),
 		h(
@@ -441,7 +423,7 @@ export class SurfaceRail {
 	readonly #profileId: string;
 	readonly #onAddSurface: (() => void) | undefined;
 	readonly #crew = new CrewFigures();
-	#shown = "";
+	#shown: readonly unknown[] | undefined;
 	#active: string | undefined;
 
 	constructor(store: SurfacesStore, profileId: string, signal: AbortSignal, onAddSurface?: () => void) {
@@ -456,7 +438,10 @@ export class SurfaceRail {
 		const memberRows = members?.rows ?? [];
 		reconcileChildren(this.#membersList, memberRows);
 		const state = this.#store.state;
-		const key = JSON.stringify([
+		const activeWorkspace = activeSlug
+			? state.workspaces[state.surfaces.find((s) => s.slug === activeSlug)?.id ?? ""]
+			: undefined;
+		const deps: readonly unknown[] = [
 			activeSlug,
 			canAddProgram,
 			memberRows.length,
@@ -464,7 +449,7 @@ export class SurfaceRail {
 			members?.active ?? false,
 			state.source,
 			state.surfaces,
-			activeSlug ? state.workspaces[state.surfaces.find((s) => s.slug === activeSlug)?.id ?? ""] : null,
+			activeWorkspace,
 			state.hiddenChanges,
 			state.variantPick,
 			state.historyOpen,
@@ -473,9 +458,15 @@ export class SurfaceRail {
 			state.highlight,
 			state.busy,
 			state.surfaceLooks,
-		]);
-		if (key === this.#shown) return;
-		this.#shown = key;
+		];
+		if (
+			this.#shown &&
+			this.#shown.length === deps.length &&
+			deps.every((value, index) => Object.is(this.#shown![index], value))
+		) {
+			return;
+		}
+		this.#shown = deps;
 		const groups: HTMLElement[] = [];
 		for (const [group, label] of [
 			["products", t("Building")],
