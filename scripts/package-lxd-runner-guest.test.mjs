@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -316,5 +316,55 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 		assert.equal(syntax.status, 0, syntax.stderr);
 	} finally {
 		await rm(outputRoot, { recursive: true, force: true });
+	}
+});
+
+test("qorpera-claude-box-stage bounds sshfs teardown with SIGKILL and preserves the box exit code", async () => {
+	const work = await mkdtemp(join(tmpdir(), "qorpera-claude-box-stage-test-"));
+	let sshfsPid = 0;
+	try {
+		const bin = join(work, "bin");
+		const mnt = join(work, "mnt");
+		const pidFile = join(work, "sshfs.pid");
+		await mkdir(bin);
+		await mkdir(mnt);
+		await writeFile(join(bin, "mountpoint"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+		await writeFile(join(bin, "umount"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+		await writeFile(
+			join(bin, "setpriv"),
+			'#!/bin/sh\nwhile [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done\n[ "$1" = "--" ] && shift\nexec "$@"\n',
+			{ mode: 0o755 },
+		);
+		const stubSshfs = join(bin, "stub-sshfs");
+		await writeFile(
+			stubSshfs,
+			`#!/bin/sh\ntrap '' TERM\necho $$ > "${pidFile}"\nwhile :; do sleep 1; done\n`,
+			{ mode: 0o755 },
+		);
+		const started = Date.now();
+		const stagePath = join(repositoryRoot, "deploy/claude-box/qorpera-claude-box-stage.sh");
+		const run = spawnSync(
+			"/bin/bash",
+			["-c", 'exec 4</dev/null 5>/dev/null; exec /bin/bash "$1" "$2" "$3" passive -- /bin/sh -c "exit 7"', "_", stagePath, mnt, stubSshfs],
+			{
+				cwd: work,
+				encoding: "utf-8",
+				timeout: 6000,
+				env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+			},
+		);
+		const elapsed = Date.now() - started;
+		assert.equal(run.status, 7, run.stderr);
+		assert.ok(elapsed < 4500, `expected bounded sshfs teardown, took ${elapsed}ms`);
+		sshfsPid = Number((await readFile(pidFile, "utf-8")).trim());
+		assert.ok(Number.isInteger(sshfsPid) && sshfsPid > 0);
+		assert.throws(() => process.kill(sshfsPid, 0), { code: "ESRCH" });
+	} finally {
+		if (sshfsPid > 0) {
+			try {
+				process.kill(sshfsPid, "SIGKILL");
+			} catch {}
+		}
+		await rm(work, { recursive: true, force: true });
 	}
 });

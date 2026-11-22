@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -2641,4 +2641,63 @@ test("a press on the dock can steer nothing but which of three programs starts (
 		'\t\t\t[[ $started == yes ]] || { echo "a press on the dock $app icon started nothing beside planted names ($shape)" >&2; exit 1; }\n',
 	])
 		assert.ok(imageScript.includes(line), line);
+});
+
+test("desktop serve cleans up stale markers on failure and never clobbers an occupied port range", async () => {
+	const desktop = read("deploy/machine/desktop");
+	const failLine = desktop.match(/^fail\(\) \{[^\n]+\}$/m)?.[0];
+	const serveStart = desktop.indexOf("serve() { # folder -> prints the port\n");
+	const serveEnd = desktop.indexOf("\n}\n", serveStart);
+	assert.ok(failLine && serveStart >= 0 && serveEnd > serveStart);
+	const serveSource = `${failLine}\n${desktop.slice(serveStart, serveEnd + 2)}`;
+
+	const work = await mkdtemp(join(tmpdir(), "qorpera-desktop-serve-"));
+	try {
+		const runServe = (runDir, stubs) =>
+			spawnSync("bash", ["-euo", "pipefail", "-c", `RUN=$1\n${stubs}\n${serveSource}\nserve "$2"`, "_", runDir, "/company/site"], {
+				encoding: "utf8",
+			});
+
+		const unreachableRun = join(work, "unreachable");
+		await mkdir(unreachableRun);
+		const unreachable = runServe(
+			unreachableRun,
+			'ss() { :; }; launch() { return 0; }; curl() { return 1; }; sleep() { :; }',
+		);
+		assert.equal(unreachable.status, 1);
+		assert.match(unreachable.stderr, /did not start/);
+		assert.deepEqual(await readdir(unreachableRun), []);
+
+		const launchFailRun = join(work, "launch-fail");
+		await mkdir(launchFailRun);
+		const launchFail = runServe(
+			launchFailRun,
+			'ss() { :; }; launch() { return 1; }; curl() { return 0; }; sleep() { :; }',
+		);
+		assert.equal(launchFail.status, 1);
+		assert.match(launchFail.stderr, /did not start/);
+		assert.deepEqual(await readdir(launchFailRun), []);
+
+		const fullRun = join(work, "full");
+		await mkdir(fullRun);
+		for (let port = 8600; port <= 8699; port++) {
+			await writeFile(join(fullRun, `serve-${port}`), `/other/${port}`);
+		}
+		const full = runServe(fullRun, 'ss() { :; }; launch() { return 0; }; curl() { return 1; }; sleep() { :; }');
+		assert.equal(full.status, 1);
+		assert.match(full.stderr, /no free port/);
+		assert.equal(await readFile(join(fullRun, "serve-8699"), "utf8"), "/other/8699");
+
+		const okRun = join(work, "ok");
+		await mkdir(okRun);
+		const ok = runServe(
+			okRun,
+			'tries=0; ss() { :; }; launch() { return 0; }; curl() { tries=$((tries + 1)); (( tries >= 2 )); }; sleep() { :; }',
+		);
+		assert.equal(ok.status, 0, ok.stderr);
+		assert.equal(ok.stdout.trim(), "8600");
+		assert.equal(await readFile(join(okRun, "serve-8600"), "utf8"), "/company/site");
+	} finally {
+		await rm(work, { recursive: true, force: true });
+	}
 });
