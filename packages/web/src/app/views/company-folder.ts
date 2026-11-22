@@ -767,10 +767,10 @@ export class CompanyFolderBrowser {
 						(this.#viewer !== null && document.activeElement === this.#viewer && this.#viewer.contains(focus)))
 				)
 					focus.focus();
-				// The window was drawn while the root rested, so nothing in it could take focus then.
-				if (!this.#disposed && this.#viewer?.open && !this.#viewer.contains(document.activeElement))
-					this.#viewer.focus({ preventScroll: true });
 			}
+			// The window was drawn while the root rested, so nothing in it could take focus then.
+			if (!this.#disposed && this.#viewer?.open && !this.#viewer.contains(document.activeElement))
+				this.#viewer.focus({ preventScroll: true });
 			this.#navigate();
 		}
 	}

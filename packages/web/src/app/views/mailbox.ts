@@ -555,7 +555,8 @@ export function renderMailbox(
 		options,
 		updateSearch: () => {
 			if (!stillShown() || ui.open !== null || ui.letter !== null || ui.tab === "addresses") return false;
-			const latestMail = company.store.get().mail;
+			if (company.store.get() !== state) return false;
+			const latestMail = state.mail;
 			if (!latestMail || !mailShown(latestMail)) return false;
 			const root = container.firstElementChild;
 			const scroll = container.querySelector<HTMLElement>(".mailbox-scroll");

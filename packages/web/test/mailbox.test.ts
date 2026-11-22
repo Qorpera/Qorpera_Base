@@ -3324,20 +3324,86 @@ describe("Digital Post", () => {
 		expect(lines(main)).toHaveLength(2);
 	});
 
-	it("batches initial CompanyMail refresh into one publish and preserves list reference on unchanged poll", async () => {
+	it("falls back to a full redraw on search input when store state advanced before debounced render", async () => {
+		const f = fixture();
+		const controller = new CompanyController(f.api, profileA, userA.id);
+		const me = {
+			userId: userA.id,
+			email: "a@example.invalid",
+			displayName: "Account A",
+			role: "owner" as const,
+			joinedAt: timestamp,
+		};
+		controller.store.set({
+			loading: false,
+			staff: [cofounder, ada, bo],
+			sessions: [session],
+			team: {
+				...team,
+				role: "owner",
+				capabilities: { ...team.capabilities, write: true, authorize: true },
+				members: [me],
+			},
+		});
+		cleanup.push(() => controller.stop());
+		const fake = mailFake(f);
+		fake.addresses = [ADDRESS];
+		fake.threads = [summary(1, { subject: "Quarterly budget" }), summary(2, { subject: "Cake order" })];
+		const accounts = accountsFake();
+		const reader = new CompanyMail(controller, f.cloud, accounts, (state) => controller.store.set({ mail: state }));
+		cleanup.push(() => reader.dispose());
+		await reader.open();
+		const main = h("main");
+		document.body.append(main);
+		const draw = () => renderMailbox(main, controller, "mailbox");
+		draw();
+		await vi.waitFor(() => expect(Object.keys(controller.store.get().mail?.lists ?? {})).toHaveLength(1));
+		draw();
+		expect(lines(main)).toHaveLength(2);
+		expect(main.querySelector(".mailbox-section")).toBeNull();
+
+		fake.waiting = [waitingItem(id(901), { snippet: "Cake waiting." })];
+		await reader.reread();
+		expect(main.querySelector(".mailbox-section")).toBeNull();
+
+		const input = main.querySelector<HTMLInputElement>(".mailbox-search input")!;
+		type(input, "cake");
+		expect(main.querySelector(".mailbox-section")).not.toBeNull();
+		expect(lines(main)).toHaveLength(2);
+	});
+
+	it("publishes addresses and waiting without blocking on slow Digital Post, and preserves paginated list reference on unchanged poll", async () => {
 		vi.useFakeTimers();
 		const f = fixture();
 		const controller = new CompanyController(f.api, profileA, userA.id);
 		cleanup.push(() => controller.stop());
 		const fake = mailFake(f);
 		fake.addresses = [ADDRESS];
-		fake.threads = [summary(1)];
+		fake.digitalPost = digitalPostConnected();
+		fake.threads = Array.from({ length: 55 }, (_, i) => summary(i + 1));
+		let releaseDigitalPost!: () => void;
+		const rpcMock = vi.mocked(f.cloud.rpc);
+		const origRpc = rpcMock.getMockImplementation()!;
+		rpcMock.mockImplementation(async (name: string, args?: Record<string, unknown>, signal?: AbortSignal) => {
+			if (name === "qorpera_member_digital_post") {
+				await new Promise<void>((resolve) => {
+					releaseDigitalPost = resolve;
+				});
+			}
+			return origRpc(name, args, signal);
+		});
 		const accounts = accountsFake();
 		const publish = vi.fn((state) => controller.store.set({ mail: state }));
 		const reader = new CompanyMail(controller, f.cloud, accounts, publish);
 		cleanup.push(() => reader.dispose());
-		await reader.open();
+
+		const opening = reader.open();
+		await vi.advanceTimersByTimeAsync(1);
 		expect(publish).toHaveBeenCalledTimes(1);
+		expect(controller.store.get().mail?.addresses).toHaveLength(1);
+		releaseDigitalPost();
+		await opening;
+		expect(publish).toHaveBeenCalledTimes(2);
 
 		const inboxRequest = {};
 		reader.watch([inboxRequest], [], () => true);
@@ -3345,7 +3411,8 @@ describe("Digital Post", () => {
 		const firstLists = controller.store.get().mail!.lists;
 		const inboxKey = Object.keys(firstLists)[0]!;
 		const inboxListBefore = firstLists[inboxKey]!;
-		expect(inboxListBefore.threads).toHaveLength(1);
+		expect(inboxListBefore.threads).toHaveLength(50);
+		expect(inboxListBefore.next).toBeDefined();
 		const publishesBeforePoll = publish.mock.calls.length;
 		const listCallsBefore = calls(fake, "qorpera_member_mail_threads").length;
 
