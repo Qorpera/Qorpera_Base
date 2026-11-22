@@ -27,7 +27,6 @@ import { constants } from "node:fs";
 import {
 	chmod,
 	chown,
-	copyFile,
 	lstat,
 	mkdir,
 	open,
@@ -53,6 +52,8 @@ const RUN_MACHINE = /^qorpera-(login-|refresh-)?[0-9a-f]{32}$/;
 const REFUSAL = "QORPERA_NODE_ROLE_START_REFUSED";
 const MIGRATE_HELPER = "/usr/local/libexec/qorpera-node/qorpera-node-migrate.py"; // switch compares units with it
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_MANIFEST_BYTES = 1024 * 1024;
+const MAX_SIGNATURE_BYTES = 4096;
 const MAX_REVISION = 999_999_999;
 const START_ATTEMPTS = 120; // 500 ms apart: a role has one minute to exec its program
 const LOCK = "/run/lock/qorpera-node-update.lock";
@@ -189,16 +190,74 @@ export async function readReleaseKeys({ folder, legacy, owner = 0 }) {
 	return [...keys.keys()].sort().map((id) => ({ id, key: keys.get(id) }));
 }
 
+async function readBoundedRegularFile(path, maxBytes, errorCode) {
+	// WHY: Open untrusted release files with O_NOFOLLOW | O_NONBLOCK and a hard byte cap to block symlinks, FIFOs, and oversized payloads.
+	const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	try {
+		const info = await handle.stat();
+		need(info.isFile() && info.size <= maxBytes, errorCode);
+		const chunks = [];
+		let total = 0;
+		const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, Math.max(1, maxBytes + 1)));
+		for (;;) {
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+			if (bytesRead === 0) break;
+			total += bytesRead;
+			need(total <= maxBytes, errorCode);
+			chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+		}
+		return Buffer.concat(chunks, total);
+	} finally {
+		await handle.close();
+	}
+}
+
+async function copyBoundedRegularFile(sourcePath, destinationPath, maxBytes, owner, errorCode) {
+	// WHY: Stream-copy release payloads without following symlinks or blocking on FIFOs and bound bytes before writing to disk.
+	const src = await open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	let dst = null;
+	try {
+		const info = await src.stat();
+		need(info.isFile() && info.size <= maxBytes, errorCode);
+		dst = await open(destinationPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+		const buffer = Buffer.allocUnsafe(64 * 1024);
+		let total = 0;
+		for (;;) {
+			const { bytesRead } = await src.read(buffer, 0, buffer.length, null);
+			if (bytesRead === 0) break;
+			total += bytesRead;
+			need(total <= maxBytes, errorCode);
+			let offset = 0;
+			while (offset < bytesRead) {
+				const { bytesWritten } = await dst.write(buffer, offset, bytesRead - offset);
+				need(bytesWritten > 0, errorCode);
+				offset += bytesWritten;
+			}
+		}
+		if (owner !== null) await dst.chown(owner, owner);
+		await dst.chmod(0o444);
+		await dst.sync();
+	} finally {
+		await src.close();
+		if (dst !== null) await dst.close();
+	}
+}
+
 /** Reads and verifies a release folder: the signature over release.json by one of the release keys, and every listed
  * file. `keyId` names the key that verified it. */
 export async function verifyReleaseFolder(folder, keys) {
-	const bytes = await readFile(join(folder, "release.json"));
-	const signature = Buffer.from((await readFile(join(folder, "release.sig"), "utf8")).trim(), "base64");
+	const bytes = await readBoundedRegularFile(join(folder, "release.json"), MAX_MANIFEST_BYTES, "RELEASE_MANIFEST_UNSAFE");
+	const signature = Buffer.from(
+		(await readBoundedRegularFile(join(folder, "release.sig"), MAX_SIGNATURE_BYTES, "RELEASE_SIGNATURE_UNSAFE"))
+			.toString("utf8")
+			.trim(),
+		"base64",
+	);
 	const keyId = keys.find(({ key }) => verify(null, bytes, key, signature))?.id;
 	need(keyId, "RELEASE_SIGNATURE");
 	const release = parseRelease(bytes);
 	for (const file of release.files) {
-		const content = await readFile(join(folder, file.name));
+		const content = await readBoundedRegularFile(join(folder, file.name), file.bytes, `RELEASE_FILE_MISMATCH ${file.name}`);
 		need(content.length === file.bytes && sha256(content) === file.sha256, `RELEASE_FILE_MISMATCH ${file.name}`);
 	}
 	return { release, bytes, keyId };
@@ -333,11 +392,23 @@ export class NodeAgent {
 		const temporary = join(this.releases, `.stage-${release.revision}-${randomUUID()}`);
 		await mkdir(temporary, { mode: 0o700 });
 		try {
-			for (const name of ["release.json", "release.sig", ...release.files.map((file) => file.name)]) {
-				await copyFile(join(source, name), join(temporary, name));
-				if (this.owner !== null) await chown(join(temporary, name), this.owner, this.owner);
-				await chmod(join(temporary, name), 0o444);
-				await syncPath(join(temporary, name));
+			const stagedFiles = [
+				{ name: "release.json", maxBytes: MAX_MANIFEST_BYTES, code: "RELEASE_MANIFEST_UNSAFE" },
+				{ name: "release.sig", maxBytes: MAX_SIGNATURE_BYTES, code: "RELEASE_SIGNATURE_UNSAFE" },
+				...release.files.map((file) => ({
+					name: file.name,
+					maxBytes: file.bytes,
+					code: `RELEASE_FILE_MISMATCH ${file.name}`,
+				})),
+			];
+			for (const entry of stagedFiles) {
+				await copyBoundedRegularFile(
+					join(source, entry.name),
+					join(temporary, entry.name),
+					entry.maxBytes,
+					this.owner,
+					entry.code,
+				);
 			}
 			// The copy must be the manifest verified above, not a second one swapped into the source meanwhile.
 			const copied = await verifyReleaseFolder(temporary, keys);
@@ -387,15 +458,18 @@ export class NodeAgent {
 	}
 
 	async quiet(waitSeconds) {
+		need(Number.isFinite(waitSeconds) && waitSeconds >= 0, "INVALID_WAIT");
 		const deadline = Date.now() + waitSeconds * 1000;
 		for (;;) {
+			// WHY: Treat transitional LXD states (Starting, Stopping, Restarting, etc.) as busy so updates never interrupt a booting/stopping VM.
 			const busy = (await this.ports.instances())
-				.filter((instance) => instance.status === "Running" && RUN_MACHINE.test(instance.name))
+				.filter((instance) => instance.status !== "Stopped" && instance.status !== "Error" && RUN_MACHINE.test(instance.name))
 				.map((instance) => instance.name);
 			if (!busy.length) return;
-			need(Date.now() < deadline, `NODE_NOT_QUIET ${busy.join(",")}`);
+			const remainingMs = deadline - Date.now();
+			need(remainingMs > 0, `NODE_NOT_QUIET ${busy.join(",")}`);
 			this.ports.log?.(`waiting for a quiet node: ${busy.join(",")}`);
-			await this.ports.sleep(10_000);
+			await this.ports.sleep(Math.min(10_000, remainingMs));
 		}
 	}
 
@@ -413,6 +487,7 @@ export class NodeAgent {
 		need(revision !== null, `ROLE_HAS_NO_RELEASE ${role}`);
 		const release = await this.release(revision);
 		const expected = [...settings.exec, join(this.releases, String(revision), release.roles[role].component)];
+		const previousInvocation = await this.ports.invocationId?.(settings.unit).catch(() => "");
 		const since = this.now();
 		await this.ports.restart(settings.unit);
 		let pid = 0;
@@ -425,7 +500,16 @@ export class NodeAgent {
 		}
 		need(same(command, expected), `ROLE_COMMAND ${role} ${command.join(" ")}`);
 		for (const url of settings.health) need(await this.ports.healthy(url), `ROLE_HEALTH ${role} ${url}`);
-		need(!(await this.ports.journalSince(settings.unit, since)).includes(REFUSAL), `ROLE_REFUSED ${role}`);
+		const currentInvocation = await this.ports.invocationId?.(settings.unit).catch(() => "");
+		// WHY: Scope journal refusal checks to the restarted unit invocation so prior-invocation refusals within the same second cannot fail rollback.
+		const scopedInvocation =
+			currentInvocation && currentInvocation !== previousInvocation ? currentInvocation : undefined;
+		need(
+			!(await this.ports.journalSince(settings.unit, since, { invocationId: scopedInvocation, grep: REFUSAL })).includes(
+				REFUSAL,
+			),
+			`ROLE_REFUSED ${role}`,
+		);
 		return { role, revision, pid };
 	}
 
@@ -534,6 +618,7 @@ export class NodeAgent {
 			// new release, and `restart <role>` puts it back later.
 			await this.point("current", current);
 			if (previous !== null) await this.point("previous", previous);
+			else await rm(join(this.nodeRoot, "previous"), { force: true });
 			const failed = onNew.at(-1);
 			const stillOnNew = [];
 			try {
@@ -693,22 +778,28 @@ export class NodeAgent {
 	 * switch could not switch back by itself (switch-back-failed), from its intent. A switched-back role has nothing to
 	 * undo. */
 	async switchedFrom(role, fromUnit) {
+		// WHY: Replay switch and unswitch records chronologically so interrupted switch() intents remain recoverable and completed unswitches clear active state.
 		const names = (await readdir(this.journal).catch(() => [])).filter((name) =>
-			/-switch-(intent|receipt)-rnone-/.test(name),
+			/-((un)?switch)-(intent|receipt)-rnone-/.test(name),
 		);
 		let lastIntent = null;
-		const records = [];
+		let activeSwitch = null;
 		for (const name of names.sort()) {
 			const record = JSON.parse(await readFile(join(this.journal, name), "utf8"));
 			if (record.role !== role) continue;
-			if (record.kind === "switch-intent") lastIntent = record;
-			else records.push({ receipt: record, intent: lastIntent });
+			if (record.kind === "switch-intent") {
+				lastIntent = record;
+				activeSwitch = { from: record.from, before: record.before };
+			} else if (record.kind === "switch-receipt") {
+				if (record.state === "switched") activeSwitch = { from: record.from, before: record.before };
+				else if (record.state === "switch-back-failed")
+					activeSwitch = lastIntent?.from === record.from ? { from: record.from, before: lastIntent.before } : null;
+				else activeSwitch = null;
+			} else if (record.kind === "unswitch-receipt" && record.state === "unswitched") {
+				activeSwitch = null;
+			}
 		}
-		const last = records.at(-1);
-		if (!last || last.receipt.from !== fromUnit) return null;
-		if (last.receipt.state === "switched") return last.receipt.before;
-		if (last.receipt.state === "switch-back-failed" && last.intent?.from === fromUnit) return last.intent.before;
-		return null;
+		return activeSwitch?.from === fromUnit ? activeSwitch.before : null;
 	}
 
 	/** Whether a role's unit runs and every health URL answers. */
@@ -796,6 +887,7 @@ export class NodeAgent {
 		const keep = new Set([current, await this.revisionOf("previous")]);
 		for (const role of Object.keys(config.roles)) keep.add(await this.roleRevision(role));
 		const removed = [];
+		const remaining = new Set();
 		for (const name of await readdir(this.releases)) {
 			const folder = join(this.releases, name);
 			if (name.startsWith(".stage-")) {
@@ -805,7 +897,10 @@ export class NodeAgent {
 			}
 			if (!/^(0|[1-9][0-9]*)$/.test(name)) continue;
 			const revision = Number(name);
-			if (keep.has(revision) || revision > current) continue;
+			if (keep.has(revision) || revision > current) {
+				remaining.add(revision);
+				continue;
+			}
 			await chmod(folder, 0o700);
 			await rm(folder, { recursive: true, force: true });
 			removed.push(revision);
@@ -817,7 +912,8 @@ export class NodeAgent {
 		let pruned = 0;
 		for (const name of await readdir(this.journal).catch(() => [])) {
 			const revision = /-r(\d+)-[0-9a-f-]{36}\.json$/.exec(name)?.[1];
-			if (revision !== undefined && removed.includes(Number(revision))) {
+			// WHY: Prune journal records for any deleted revision even if an earlier gc crashed between rm(folder) and journal cleanup.
+			if (revision !== undefined && !remaining.has(Number(revision)) && !keep.has(Number(revision))) {
 				await rm(join(this.journal, name), { force: true });
 				pruned++;
 			}
@@ -983,13 +1079,39 @@ export function nodePorts(lxdSocket = "/var/snap/lxd/common/lxd/unix.socket", { 
 			}
 			return false;
 		},
-		async journalSince(unit, since) {
-			const { stdout } = await run(
-				"/usr/bin/journalctl",
-				["-u", unit, "--since", `@${Math.floor(since.getTime() / 1000)}`, "--no-pager", "-o", "cat"],
-				{ maxBuffer: 32 * 1024 * 1024, timeout: 30_000 },
-			);
-			return stdout;
+		async invocationId(unit) {
+			const { stdout } = await exec("/usr/bin/systemctl", ["show", unit, "-p", "InvocationID", "--value"], {
+				timeout: 30_000,
+			});
+			return stdout.trim();
+		},
+		async journalSince(unit, since, { invocationId, grep } = {}) {
+			// WHY: Prefer exact systemd InvocationID + --grep filtering through the injected exec port to avoid sub-second false positives and maxBuffer overflow.
+			const args =
+				invocationId && /^[0-9a-f]{32}$/i.test(invocationId)
+					? [`_SYSTEMD_INVOCATION_ID=${invocationId}`, "--no-pager", "-o", "cat"]
+					: [
+							"-u",
+							unit,
+							"--since",
+							since.toISOString().replace("T", " ").replace("Z", " UTC"),
+							"--no-pager",
+							"-o",
+							"cat",
+						];
+			if (grep) args.push("--grep", grep);
+			try {
+				const { stdout } = await exec("/usr/bin/journalctl", args, {
+					maxBuffer: grep ? 4 * 1024 * 1024 : 32 * 1024 * 1024,
+					timeout: 30_000,
+				});
+				return stdout;
+			} catch (error) {
+				if (grep && !error?.killed && !error?.signal && error?.code === 1 && !String(error.stderr ?? "").trim()) {
+					return "";
+				}
+				throw error;
+			}
 		},
 		sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 		log: (line) => process.stderr.write(`${line}\n`),
@@ -1002,14 +1124,22 @@ async function main(argv) {
 	const agent = new NodeAgent({ ports: nodePorts() });
 	const values = (name) => {
 		const found = [];
-		for (let index = 0; index < rest.length; index++) if (rest[index] === name) found.push(rest[index + 1]);
+		for (let index = 0; index < rest.length; index++) {
+			if (rest[index] === name) {
+				const value = rest[index + 1];
+				need(value !== undefined && !value.startsWith("--"), `CLI_OPTION_VALUE ${name}`);
+				found.push(value);
+			}
+		}
 		return found;
 	};
+	const waitRaw = values("--wait")[0];
+	const waitSeconds = waitRaw === undefined ? 0 : Number(waitRaw);
+	if (command === "apply") need(Number.isFinite(waitSeconds) && waitSeconds >= 0, "INVALID_WAIT");
 	const actions = {
 		stage: () => agent.stage(rest[0]),
 		adopt: () => agent.adopt(Number(rest[0])),
-		apply: () =>
-			agent.apply(Number(rest[0]), { defer: values("--defer"), waitSeconds: Number(values("--wait")[0] ?? 0) }),
+		apply: () => agent.apply(Number(rest[0]), { defer: values("--defer"), waitSeconds }),
 		rollback: () => agent.rollback({ defer: values("--defer") }),
 		switch: () => agent.switch(rest[0], rest[1]),
 		unswitch: () => agent.unswitch(rest[0], rest[1], { force: rest.includes("--force") }),
