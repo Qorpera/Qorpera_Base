@@ -1,3 +1,4 @@
+import { withAbortScopes } from "./abort-scope.ts";
 import { type MemberAppLayout, type MemberAppLayoutRead, parseMemberAppLayoutRead } from "./app-groups.ts";
 import type { Cloud } from "./client.ts";
 import {
@@ -129,6 +130,8 @@ function requiredUuid(value: string, label: string): string {
 
 export const SESSION_PROMPT_SCHEMA = "qorpera.session-prompt/v1";
 
+const SECRET_CAPTURE_TIMEOUT_MS = 20_000;
+
 export class CloudApi {
 	readonly cloud: Cloud;
 
@@ -136,10 +139,16 @@ export class CloudApi {
 		this.cloud = cloud;
 	}
 
+	#rpc(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal): Promise<unknown> {
+		return signal ? this.cloud.rpc(name, args, signal) : this.cloud.rpc(name, args);
+	}
+
 	// Accounts, profiles, membership
 
-	listProfiles(): Promise<HostedProfile[]> {
-		return this.cloud.rpc("qorpera_list_hosted_profiles").then(parseProfiles);
+	listProfiles(signal?: AbortSignal): Promise<HostedProfile[]> {
+		return signal
+			? this.cloud.rpc("qorpera_list_hosted_profiles", {}, signal).then(parseProfiles)
+			: this.cloud.rpc("qorpera_list_hosted_profiles").then(parseProfiles);
 	}
 
 	/** The company's good will: its months, invoices and the card that pays them. Any member may read it. */
@@ -367,10 +376,12 @@ export class CloudApi {
 		return this.cloud.rpc("qorpera_clear_member_picture").then(parseMemberPictureChange);
 	}
 
-	getTeam(profileId: string): Promise<HostedProfileTeam> {
-		return this.cloud
-			.rpc("qorpera_profile_team_info", { p_profile_id: requiredUuid(profileId, "Profile id") })
-			.then(parseTeam);
+	getTeam(profileId: string, signal?: AbortSignal): Promise<HostedProfileTeam> {
+		return this.#rpc(
+			"qorpera_profile_team_info",
+			{ p_profile_id: requiredUuid(profileId, "Profile id") },
+			signal,
+		).then(parseTeam);
 	}
 
 	/** Hands in the time zone this member's app shows times in, for a company that has none (migration
@@ -459,16 +470,20 @@ export class CloudApi {
 
 	// Organization and staff
 
-	listStaff(profileId: string): Promise<HostedStaffAgent[]> {
-		return this.cloud
-			.rpc("qorpera_list_profile_staff", { p_profile_id: requiredUuid(profileId, "Profile id") })
-			.then(parseStaffList);
+	listStaff(profileId: string, signal?: AbortSignal): Promise<HostedStaffAgent[]> {
+		return this.#rpc(
+			"qorpera_list_profile_staff",
+			{ p_profile_id: requiredUuid(profileId, "Profile id") },
+			signal,
+		).then(parseStaffList);
 	}
 
-	getOrganization(profileId: string): Promise<HostedCompanyOrganization | undefined> {
-		return this.cloud
-			.rpc("qorpera_company_organization_json", { p_profile_id: requiredUuid(profileId, "Profile id") })
-			.then(parseHostedCompanyOrganization);
+	getOrganization(profileId: string, signal?: AbortSignal): Promise<HostedCompanyOrganization | undefined> {
+		return this.#rpc(
+			"qorpera_company_organization_json",
+			{ p_profile_id: requiredUuid(profileId, "Profile id") },
+			signal,
+		).then(parseHostedCompanyOrganization);
 	}
 
 	// Shared drafts: a member's unsent message in a room, which the room's other
@@ -572,10 +587,12 @@ export class CloudApi {
 	}
 
 	/** The member's own arrangement of the apps drawer over the company's apps/groups.md (20260930728000). */
-	readMemberAppLayout(profileId: string): Promise<MemberAppLayoutRead> {
-		return this.cloud
-			.rpc("qorpera_member_app_layout", { p_profile_id: requiredUuid(profileId, "Profile id") })
-			.then(parseMemberAppLayoutRead);
+	readMemberAppLayout(profileId: string, signal?: AbortSignal): Promise<MemberAppLayoutRead> {
+		return this.#rpc(
+			"qorpera_member_app_layout",
+			{ p_profile_id: requiredUuid(profileId, "Profile id") },
+			signal,
+		).then(parseMemberAppLayoutRead);
 	}
 
 	/** Writes it whole; refused (QAL01) when another tab wrote since `expected`. */
@@ -594,10 +611,12 @@ export class CloudApi {
 	}
 
 	/** Sections are the company's; pins and hidden agents are the signed-in member's. */
-	readCompanySidebar(profileId: string): Promise<CompanySidebar> {
-		return this.cloud
-			.rpc("qorpera_read_company_sidebar", { p_profile_id: requiredUuid(profileId, "Profile id") })
-			.then(parseCompanySidebar);
+	readCompanySidebar(profileId: string, signal?: AbortSignal): Promise<CompanySidebar> {
+		return this.#rpc(
+			"qorpera_read_company_sidebar",
+			{ p_profile_id: requiredUuid(profileId, "Profile id") },
+			signal,
+		).then(parseCompanySidebar);
 	}
 
 	manageCompanySidebar(profileId: string, request: SidebarRequest): Promise<CompanySidebar> {
@@ -609,12 +628,14 @@ export class CloudApi {
 			.then(parseCompanySidebar);
 	}
 
-	listStaffActivity(environmentId: string): Promise<HostedStaffExecutionActivity[]> {
-		return this.cloud
-			.rpc("qorpera_list_staff_execution_activity", {
+	listStaffActivity(environmentId: string, signal?: AbortSignal): Promise<HostedStaffExecutionActivity[]> {
+		return this.#rpc(
+			"qorpera_list_staff_execution_activity",
+			{
 				p_environment_id: requiredUuid(environmentId, "Environment id"),
-			})
-			.then(parseStaffExecutionActivity);
+			},
+			signal,
+		).then(parseStaffExecutionActivity);
 	}
 
 	getRunRecovery(runId: string): Promise<HostedRunRecovery> {
@@ -684,14 +705,16 @@ export class CloudApi {
 		return collectPages((cursor) => {
 			signal?.throwIfAborted();
 			const after = cursor ?? since;
-			return this.cloud
-				.rpc("qorpera_list_shared_sessions_page", {
+			return this.#rpc(
+				"qorpera_list_shared_sessions_page",
+				{
 					p_environment_id: requiredUuid(environmentId, "Environment id"),
 					p_after_updated_at: after?.time ?? null,
 					p_after_id: after?.id ?? null,
 					p_limit: 100,
-				})
-				.then(parseSessionPage);
+				},
+				signal,
+			).then(parseSessionPage);
 		});
 	}
 
@@ -721,26 +744,31 @@ export class CloudApi {
 			.then(parseAgentThreadHandle);
 	}
 
-	readSessionEvents(sessionId: string, afterSequence = 0, limit = 500): Promise<HostedSessionEvent[]> {
-		return this.cloud
-			.rpc("qorpera_read_session_events", {
+	readSessionEvents(
+		sessionId: string,
+		afterSequence = 0,
+		limit = 500,
+		signal?: AbortSignal,
+	): Promise<HostedSessionEvent[]> {
+		return this.#rpc(
+			"qorpera_read_session_events",
+			{
 				p_session_id: requiredUuid(sessionId, "Session id"),
 				p_after_sequence: afterSequence,
 				p_limit: limit,
-			})
-			.then(parseEvents);
+			},
+			signal,
+		).then(parseEvents);
 	}
 
 	/** A conversation's erasure generation (`memory_generation`, 20260928509140): an erase of one of its messages raises
 	 * it, and rewrites that event's body in place without a new sequence. Read from the session row under the same read
 	 * policy that Realtime's session hints use; undefined when the row is not readable. */
-	async readSessionMemoryGeneration(sessionId: string): Promise<number | undefined> {
+	async readSessionMemoryGeneration(sessionId: string, signal?: AbortSignal): Promise<number | undefined> {
 		const id = requiredUuid(sessionId, "Session id");
-		const { data, error } = await this.cloud.supabase
-			.from("qorpera_shared_sessions")
-			.select("memory_generation")
-			.eq("id", id)
-			.maybeSingle();
+		const query = this.cloud.supabase.from("qorpera_shared_sessions").select("memory_generation").eq("id", id);
+		const bound = signal && typeof query.abortSignal === "function" ? query.abortSignal(signal) : query;
+		const { data, error } = await bound.maybeSingle();
 		if (error) throw error;
 		const generation = (data as { memory_generation?: unknown } | null)?.memory_generation;
 		return typeof generation === "number" && Number.isSafeInteger(generation) && generation >= 0
@@ -755,14 +783,17 @@ export class CloudApi {
 		sessionId: string,
 		beforeSequence: number | undefined,
 		limit: number,
+		signal?: AbortSignal,
 	): Promise<HostedSessionEvent[]> {
-		return this.cloud
-			.rpc("qorpera_read_session_events_tail", {
+		return this.#rpc(
+			"qorpera_read_session_events_tail",
+			{
 				p_session_id: requiredUuid(sessionId, "Session id"),
 				p_before_sequence: beforeSequence ?? null,
 				p_limit: limit,
-			})
-			.then(parseEvents);
+			},
+			signal,
+		).then(parseEvents);
 	}
 
 	// Coding sessions (Order 9): what the thread element renders. The list finds
@@ -771,11 +802,13 @@ export class CloudApi {
 
 	// Each copy of a session is stamped with when it was asked for (CodingSession.askedAt).
 
-	listCodingSessions(sessionId: string): Promise<CodingSession[]> {
+	listCodingSessions(sessionId: string, signal?: AbortSignal): Promise<CodingSession[]> {
 		const asked = performance.now();
-		return this.cloud
-			.rpc("qorpera_list_coding_sessions", { p_session_id: requiredUuid(sessionId, "Session id") })
-			.then((value) => parseCodingSessions(value, asked));
+		return this.#rpc(
+			"qorpera_list_coding_sessions",
+			{ p_session_id: requiredUuid(sessionId, "Session id") },
+			signal,
+		).then((value) => parseCodingSessions(value, asked));
 	}
 
 	readCodingSession(workerId: string, afterEvent = 0, limit = 200, signal?: AbortSignal): Promise<CodingSessionRead> {
@@ -826,10 +859,12 @@ export class CloudApi {
 	}
 
 	/** The session's owner reads its login and the logins they may move it to (20260930551000). */
-	listCodingSessionLogins(workerId: string): Promise<CodingSessionLogins> {
-		return this.cloud
-			.rpc("qorpera_list_coding_session_logins", { p_worker_id: requiredUuid(workerId, "Coding session id") })
-			.then(parseCodingSessionLogins);
+	listCodingSessionLogins(workerId: string, signal?: AbortSignal): Promise<CodingSessionLogins> {
+		return this.#rpc(
+			"qorpera_list_coding_session_logins",
+			{ p_worker_id: requiredUuid(workerId, "Coding session id") },
+			signal,
+		).then(parseCodingSessionLogins);
 	}
 
 	/** The session's owner moves it to another of their logins; nothing moves a session by itself. */
@@ -844,14 +879,16 @@ export class CloudApi {
 	}
 
 	/** The first page of the caller's open proposals of one agent: changes its runs saved that wait for review (P40c). */
-	listAgentProposals(environmentId: string, staffAgentId: string): Promise<FolderProposalPage> {
-		return this.cloud
-			.rpc("qorpera_member_folder_agent_proposals", {
+	listAgentProposals(environmentId: string, staffAgentId: string, signal?: AbortSignal): Promise<FolderProposalPage> {
+		return this.#rpc(
+			"qorpera_member_folder_agent_proposals",
+			{
 				p_environment_id: requiredUuid(environmentId, "Company id"),
 				p_staff_agent_id: requiredUuid(staffAgentId, "Staff agent id"),
 				p_request: {},
-			})
-			.then(parseFolderProposalPage);
+			},
+			signal,
+		).then(parseFolderProposalPage);
 	}
 
 	/** The member discards a proposal; the answer is how it stands now (a decided one answers as it was decided). */
@@ -865,24 +902,37 @@ export class CloudApi {
 			.then((value) => parseFolderProposalDiscard(value, id));
 	}
 
-	listSessionInputs(sessionId: string, afterPosition = 0, limit = 100): Promise<PendingSessionInputPage> {
-		return this.cloud
-			.rpc("qorpera_list_session_inputs", {
+	listSessionInputs(
+		sessionId: string,
+		afterPosition = 0,
+		limit = 100,
+		signal?: AbortSignal,
+	): Promise<PendingSessionInputPage> {
+		return this.#rpc(
+			"qorpera_list_session_inputs",
+			{
 				p_session_id: requiredUuid(sessionId, "Session id"),
 				p_after_position: afterPosition,
 				p_limit: limit,
-			})
-			.then(parsePendingSessionInputs);
+			},
+			signal,
+		).then(parsePendingSessionInputs);
 	}
 
 	/** The company's saved secrets (references only: never a value). */
-	listSecretConnections(profileId: string, environmentId: string): Promise<CloudSecretReference[]> {
-		return this.cloud
-			.rpc("qorpera_list_cloud_secret_connections", {
+	listSecretConnections(
+		profileId: string,
+		environmentId: string,
+		signal?: AbortSignal,
+	): Promise<CloudSecretReference[]> {
+		return this.#rpc(
+			"qorpera_list_cloud_secret_connections",
+			{
 				p_profile_id: requiredUuid(profileId, "Profile id"),
 				p_environment_id: requiredUuid(environmentId, "Environment id"),
-			})
-			.then(parseSecretReferences);
+			},
+			signal,
+		).then(parseSecretReferences);
 	}
 
 	/** A one-time ticket to put a secret into the company's cloud custody. The
@@ -918,22 +968,46 @@ export class CloudApi {
 	 * companies' brokers can share one origin, each its own process: the company
 	 * id (not a secret) lets the origin's router pick the company's broker, and a
 	 * broker refuses a ticket of any other company. */
-	async captureSecret(ticket: CloudSecretCaptureTicket, value: string): Promise<CloudSecretReference> {
+	async captureSecret(
+		ticket: CloudSecretCaptureTicket,
+		value: string,
+		signal?: AbortSignal,
+	): Promise<CloudSecretReference> {
 		if (!value || value.length > 32 * 1024) throw new Error("The secret is empty or too long.");
 		const route = `${ticket.serviceOrigin}/v1/captures/${ticket.ticketId}?company=${ticket.companyId}`;
-		const response = await fetch(route, {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({
-				schema: "qorpera.cloud-secret-capture-request/v1",
-				captureCapability: ticket.captureCapability,
-				fields: { value },
-			}),
-			redirect: "error",
-			credentials: "omit",
-		});
-		if (!response.ok) throw new Error("The secret could not be saved. Try again in a moment.");
-		return parseSecretReference(await response.json());
+		try {
+			return await withAbortScopes(
+				[signal],
+				async (captureSignal) => {
+					const response = await fetch(route, {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							schema: "qorpera.cloud-secret-capture-request/v1",
+							captureCapability: ticket.captureCapability,
+							fields: { value },
+						}),
+						redirect: "error",
+						credentials: "omit",
+						signal: captureSignal,
+					});
+					if (!response.ok) throw new Error("The secret could not be saved. Try again in a moment.");
+					return parseSecretReference(await response.json());
+				},
+				SECRET_CAPTURE_TIMEOUT_MS,
+			);
+		} catch (error) {
+			if (
+				!signal?.aborted &&
+				typeof error === "object" &&
+				error !== null &&
+				"name" in error &&
+				error.name === "TimeoutError"
+			) {
+				throw new Error("The secret could not be saved. Try again in a moment.");
+			}
+			throw error;
+		}
 	}
 
 	/** Answer a typed card the agent raised (kernel bundle v70). Never a secret
