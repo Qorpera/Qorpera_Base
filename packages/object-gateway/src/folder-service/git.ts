@@ -71,6 +71,14 @@ export function gitPublishedObject(path: string): boolean {
 	);
 }
 
+const PLATFORM_OBJECT_INDEX =
+	/^objects\/(info\/commit-graph|info\/commit-graphs\/(commit-graph-chain|graph-[0-9a-f]{40}([0-9a-f]{24})?\.graph)|pack\/multi-pack-index(-[0-9a-f]{40}([0-9a-f]{24})?\.bitmap)?)$/;
+
+export function gitPlatformObjectIndex(path: string): boolean {
+	const place = gitPlace(path);
+	return place.kind === "git" && PLATFORM_OBJECT_INDEX.test(place.rest);
+}
+
 /** The most units one change set takes (core §3), the folders the core makes for a git change's among them. */
 export const GIT_UNITS = 1000;
 
@@ -199,30 +207,26 @@ export function gitRefused(path: string, codeHost = false): boolean {
 	return place.kind === "git" && ((!codeHost && gitSessionLocal(place.rest)) || gitAlternates(place.rest));
 }
 
-/** A file git makes in the git directory that a boundary never publishes: an object or pack it has not finished
- * (`tmp_*`, a push's `incoming-*` quarantine), a pack's `.keep`, and every lock (a shared file's goes with its lease,
- * a worker's own is git's until it renames it). A git killed midway leaves them; they stay this view's. So do git's
- * own indexes of the objects (`gitObjectIndex`). */
-export function gitUnpublished(path: string): boolean {
+// WHY: Sessions never publish git object indexes because a poisoned commit-graph alters commit trees;
+// only the platform code host publishes strict commit-graph and multi-pack-index files at maintenance.
+export function gitUnpublished(path: string, codeHost = false): boolean {
 	const place = gitPlace(path);
 	if (place.kind !== "git") return false;
 	const parts = place.rest.split("/");
 	const name = parts[parts.length - 1];
 	if (name.endsWith(".lock")) return true;
 	if (!gitObject(place.rest)) return false;
-	return (
+	if (
 		name.startsWith("tmp_") ||
 		parts.some((part) => part.startsWith("incoming-")) ||
-		(parts[1] === "pack" && name.endsWith(".keep")) ||
-		gitObjectIndex(place.rest)
-	);
+		(parts[1] === "pack" && name.endsWith(".keep"))
+	)
+		return true;
+	if (!gitObjectIndex(place.rest)) return false;
+	if (!codeHost) return true;
+	return place.rest !== "objects/info/commit-graphs" && !PLATFORM_OBJECT_INDEX.test(place.rest);
 }
 
-/** An index git keeps of the objects, and makes again from them (`rest` is below `repo.git/`): `objects/info/packs`
- * (and the `packs_*` it is written as, by `git update-server-info`, which `git repack` and `git gc` run), a
- * commit-graph (`objects/info/commit-graph`, and the split one's `objects/info/commit-graphs/`), and a multi-pack index
- * (`objects/pack/multi-pack-index*`). The core takes none from a session (446200: `git_platform_only`), and one made in
- * another view lists what that view's git held, so each view keeps its own, the code host's too: none is published. */
 function gitObjectIndex(rest: string): boolean {
 	const parts = rest.split("/");
 	if (parts[0] !== "objects" || parts.length < 3) return false;

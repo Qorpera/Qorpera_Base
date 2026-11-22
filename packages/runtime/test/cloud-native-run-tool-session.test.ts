@@ -648,3 +648,36 @@ it("gives adapters.close its full 10 s budget instead of cutting it off at the 5
 		vi.useRealTimers();
 	}
 });
+
+it("runs runLog.lines.finish and options.closing in parallel after runLog.log.close", async () => {
+	const f = fixture();
+	const w = workLog(f.binding.runId);
+	let activeClosing = 0;
+	let peakClosing = 0;
+	const events: string[] = [];
+	w.log.close.mockImplementation(async () => {
+		events.push("log.close");
+	});
+	w.lines.finish.mockImplementation(async () => {
+		events.push("lines.finish:start");
+		activeClosing += 1;
+		peakClosing = Math.max(peakClosing, activeClosing);
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		activeClosing -= 1;
+		events.push("lines.finish:end");
+	});
+	const optionsClosing = vi.fn(async () => {
+		events.push("closing:start");
+		activeClosing += 1;
+		peakClosing = Math.max(peakClosing, activeClosing);
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		activeClosing -= 1;
+		events.push("closing:end");
+	});
+	await f.start({
+		closing: optionsClosing,
+		tools: () => ({ ...f.tools(), runLog: w.runLog }),
+	});
+	expect(events[0]).toBe("log.close");
+	expect(peakClosing).toBe(2);
+});

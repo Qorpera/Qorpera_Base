@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { companyStatePath, osPath } from "@qorpera/cloud-client/company-state-files";
 import type { JsonValue } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import { cloudConnectorOperation } from "./cloud-connector-catalog.ts";
 import { cloudControlBackoffMs, cloudControlPause, cloudControlRetryable } from "./cloud-control-errors.ts";
 import { cloudScriptContentsIncomplete } from "./cloud-machine-script-review.ts";
@@ -46,8 +47,8 @@ const REQUEST_BYTES = 4096;
 const DETAIL_BYTES = 600;
 /** Text the member approves (a file's content, an issue's body, an agent's or worker's instructions): an excerpt. */
 const CONTENT_BYTES = 1200;
-/** A hold that ends early (the run stops, or the kernel refuses the wait) parks its card, asking again through lost
- * or late answers for up to this long. Best effort: the kernel's heartbeat covers a crash. */
+/** WHY: A hold that ends early or times out retries parking for at most this long; once exhausted, #leave is skipped
+ * and the call fails with REVIEW_UNAVAILABLE, relying on the server's held_until heartbeat to wake the agent later. */
 const PARK_ON_EXIT_MS = 30_000;
 
 /** Plain titles for connector writes, by tool name; others show their tool name. */
@@ -730,22 +731,50 @@ function eventWhen(only: unknown): string {
 /** The same for a routine file's `when: event` (cloud-folder-proposals.ts). */
 export const cloudActionEventWhen = eventWhen;
 
-/** A time zone this host can read, if the value is one. */
-function knownZone(value: JsonValue | undefined): string | undefined {
-	if (typeof value !== "string" || !value) return undefined;
+const CLOCK_FORMATTER_LIMIT = 64;
+const clockFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function clockFormatter(timeZone: string): Intl.DateTimeFormat | undefined {
+	const cached = clockFormatters.get(timeZone);
+	if (cached) {
+		clockFormatters.delete(timeZone);
+		clockFormatters.set(timeZone, cached);
+		return cached;
+	}
+	let formatter: Intl.DateTimeFormat;
 	try {
-		new Intl.DateTimeFormat("en-US", { timeZone: value });
-		return value;
+		formatter = new Intl.DateTimeFormat("en-US", {
+			timeZone,
+			hourCycle: "h23",
+			year: "numeric",
+			month: "numeric",
+			day: "numeric",
+			hour: "2-digit",
+			minute: "2-digit",
+		});
 	} catch {
 		return undefined;
 	}
+	if (clockFormatters.size >= CLOCK_FORMATTER_LIMIT) {
+		const oldest = clockFormatters.keys().next().value;
+		if (oldest !== undefined) clockFormatters.delete(oldest);
+	}
+	clockFormatters.set(timeZone, formatter);
+	return formatter;
+}
+
+/** A time zone this host can read, if the value is one. */
+function knownZone(value: JsonValue | undefined): string | undefined {
+	if (typeof value !== "string" || !value) return undefined;
+	return clockFormatter(value) ? value : undefined;
 }
 
 /** An instant on a zone's clock, as people write it: "1 Oct 2026 at 09:00". */
 function clock(value: JsonValue | undefined, timeZone: string): string {
 	const instant = typeof value === "string" ? Date.parse(value) : Number.NaN;
 	if (!Number.isFinite(instant)) return "";
-	const parts = Object.fromEntries(
+	const formatter =
+		clockFormatter(timeZone) ??
 		new Intl.DateTimeFormat("en-US", {
 			timeZone,
 			hourCycle: "h23",
@@ -754,10 +783,8 @@ function clock(value: JsonValue | undefined, timeZone: string): string {
 			day: "numeric",
 			hour: "2-digit",
 			minute: "2-digit",
-		})
-			.formatToParts(instant)
-			.map((part) => [part.type, part.value]),
-	);
+		});
+	const parts = Object.fromEntries(formatter.formatToParts(instant).map((part) => [part.type, part.value]));
 	return `${parts.day} ${MONTHS[Number(parts.month) - 1]} ${parts.year} at ${parts.hour}:${parts.minute}`;
 }
 
@@ -1617,15 +1644,28 @@ export function cloudActionReviewRequest(context: CloudNativeCompanyContext, wak
 	const before = named[0]?.sequence ?? Number.POSITIVE_INFINITY;
 	let answered: { card: boolean; text: string } | undefined;
 	if (interaction !== undefined) {
-		const card = context.history.map(agentCard).find((item) => item?.id === interaction);
-		answered = card ? { card: true, text: card.text } : undefined;
-	} else
-		for (const source of context.history.filter((item) => (item.sequence ?? 0) < before).sort(bySequence)) {
+		for (const source of context.history) {
 			const card = agentCard(source);
-			if (card) answered = { card: true, text: card.text };
-			else if (source.kind === "historical_agent_send")
-				answered = { card: false, text: memberText(source.content.text) };
+			if (card?.id === interaction) {
+				answered = { card: true, text: card.text };
+				break;
+			}
 		}
+	} else {
+		const prior = context.history.filter((item) => (item.sequence ?? 0) < before).sort(bySequence);
+		for (let index = prior.length - 1; index >= 0; index -= 1) {
+			const source = prior[index];
+			const card = agentCard(source);
+			if (card) {
+				answered = { card: true, text: card.text };
+				break;
+			}
+			if (source.kind === "historical_agent_send") {
+				answered = { card: false, text: memberText(source.content.text) };
+				break;
+			}
+		}
+	}
 	let reply = "";
 	const header = answered?.card ? ANSWERED_CARD_HEADER : ANSWERED_MESSAGE_HEADER;
 	const replyLimit = Math.min(ANSWERED_BYTES, room - Buffer.byteLength(header) - 3);
@@ -1851,6 +1891,11 @@ export class CloudActionReviewGate {
 			: result;
 	}
 
+	willReview(call: Pick<CloudActionCall, "tool" | "parsed">): boolean {
+		const effect = cloudActionEffect(call.tool, call.parsed, this.#connectorEffects, this.#offlineShells);
+		return effect !== "read" && effect !== "internal";
+	}
+
 	async #check(call: CloudActionCall, signal: AbortSignal): Promise<CloudActionGateResult> {
 		const effect = cloudActionEffect(call.tool, call.parsed, this.#connectorEffects, this.#offlineShells);
 		if (effect === "read" || effect === "internal") return { run: true };
@@ -1918,17 +1963,21 @@ export class CloudActionReviewGate {
 		for (let attempt = 0; ; attempt += 1) {
 			const span = this.#observability?.start("action_review");
 			try {
-				const deadline = AbortSignal.any([signal, AbortSignal.timeout(REVIEW_DEADLINE_MS)]);
-				verdict = parseCloudActionVerdict(
-					await this.#reviewer.review(
-						{
-							instructions: CLOUD_ACTION_REVIEW_INSTRUCTIONS,
-							prompt,
-							model: this.#reviewerModel,
-							effort: CLOUD_ACTION_REVIEW_EFFORT,
-						},
-						deadline,
-					),
+				verdict = await withAbortScopes(
+					[signal],
+					async (deadline) =>
+						parseCloudActionVerdict(
+							await this.#reviewer.review(
+								{
+									instructions: CLOUD_ACTION_REVIEW_INSTRUCTIONS,
+									prompt,
+									model: this.#reviewerModel,
+									effort: CLOUD_ACTION_REVIEW_EFFORT,
+								},
+								deadline,
+							),
+						),
+					REVIEW_DEADLINE_MS,
 				);
 				span?.finish("succeeded", { inputBytes: Buffer.byteLength(prompt) });
 				break;
@@ -2028,38 +2077,44 @@ export class CloudActionReviewGate {
 		repeat?: string,
 		repeatElsewhere?: string,
 	): Promise<CloudActionGateResult> {
+		const state = { parkExhausted: false };
 		try {
-			return await this.#poll(reviewId, approver, signal, elsewhere, repeat, repeatElsewhere);
+			return await this.#poll(reviewId, approver, signal, elsewhere, state, repeat, repeatElsewhere);
 		} catch (error) {
 			// The hold ended early (the run stopped, or the kernel refused the wait): park the
 			// card so its answer wakes the agent.
-			await this.#leave(reviewId);
+			if (!state.parkExhausted) await this.#leave(reviewId);
 			throw error;
 		}
 	}
 
 	/** Parks the card of a hold that ended early. Never throws. */
 	async #leave(reviewId: string): Promise<void> {
-		const deadline = AbortSignal.timeout(PARK_ON_EXIT_MS);
-		for (let attempt = 0; ; attempt += 1) {
-			try {
-				await this.#control.call(
-					"qorpera_await_action_review",
-					// Leaving: park an unanswered card, but never use an approval this call will not run.
-					{ p_binding: this.#binding, p_review_id: reviewId, p_park: true, p_leaving: true },
-					deadline,
-				);
-				return;
-			} catch (error) {
-				// A refusal stands; a lost or late answer is asked again (the park is idempotent) while time is left.
-				if (deadline.aborted || !cloudControlRetryable(error)) return;
-			}
-			try {
-				await cloudControlPause(cloudControlBackoffMs(attempt), deadline);
-			} catch {
-				return;
-			}
-		}
+		await withAbortScopes(
+			[],
+			async (deadline) => {
+				for (let attempt = 0; ; attempt += 1) {
+					try {
+						await this.#control.call(
+							"qorpera_await_action_review",
+							// Leaving: park an unanswered card, but never use an approval this call will not run.
+							{ p_binding: this.#binding, p_review_id: reviewId, p_park: true, p_leaving: true },
+							deadline,
+						);
+						return;
+					} catch (error) {
+						// A refusal stands; a lost or late answer is asked again (the park is idempotent) while time is left.
+						if (deadline.aborted || !cloudControlRetryable(error)) return;
+					}
+					try {
+						await cloudControlPause(cloudControlBackoffMs(attempt), deadline);
+					} catch {
+						return;
+					}
+				}
+			},
+			PARK_ON_EXIT_MS,
+		);
 	}
 
 	async #poll(
@@ -2067,31 +2122,54 @@ export class CloudActionReviewGate {
 		approver: string,
 		signal: AbortSignal,
 		elsewhere: boolean,
+		pollState: { parkExhausted: boolean },
 		repeat?: string,
 		repeatElsewhere?: string,
 	): Promise<CloudActionGateResult> {
 		const until = Date.now() + this.#holdMs;
+		let parkUntil: number | undefined;
 		for (let parkFailures = 0; ; ) {
-			const park = Date.now() >= until;
+			const now = Date.now();
+			const park = now >= until;
+			if (park && parkUntil === undefined) parkUntil = now + PARK_ON_EXIT_MS;
 			let answer: unknown;
 			try {
-				answer = await this.#control.call(
-					"qorpera_await_action_review",
-					{ p_binding: this.#binding, p_review_id: reviewId, p_park: park },
-					signal,
-				);
+				answer = park
+					? await withAbortScopes(
+							[signal],
+							(parkSignal) =>
+								this.#control.call(
+									"qorpera_await_action_review",
+									{ p_binding: this.#binding, p_review_id: reviewId, p_park: true },
+									parkSignal,
+								),
+							Math.max(1, (parkUntil ?? now) - now),
+						)
+					: await this.#control.call(
+							"qorpera_await_action_review",
+							{ p_binding: this.#binding, p_review_id: reviewId, p_park: false },
+							signal,
+						);
 			} catch (error) {
-				// A lost or late answer does not end the hold (production pass 2, 16 Oct 2026: one poll in about 150
-				// waited past the lock timeout behind a same-run step, and the held call was told its review was
-				// unavailable). A wait is idempotent (asked again, it finds the approval it used or the park it made),
-				// so it is asked again: at the poll's pace until the hold runs out, then until the card parks. If a
-				// wait uses the approval after its answer woke the agent, however long after, the woken run is told
-				// it was used (20260930489000). A refusal or a stopped run ends the hold.
+				// WHY: Lost or late wait answers are idempotent, so #poll retries at the poll pace until the hold runs out,
+				// then retries parking for at most PARK_ON_EXIT_MS. Once that 30 s bound is exhausted, #leave is skipped and
+				// the call fails with REVIEW_UNAVAILABLE, relying on the server's held_until heartbeat to wake the agent later.
+				if (park && !signal.aborted && Date.now() >= (parkUntil ?? now)) {
+					pollState.parkExhausted = true;
+					throw error;
+				}
 				if (signal.aborted || !cloudControlRetryable(error)) throw error;
-				await cloudControlPause(
-					park ? cloudControlBackoffMs(parkFailures++) : Math.max(0, Math.min(this.#pollMs, until - Date.now())),
-					signal,
-				);
+				if (park) {
+					const remaining = (parkUntil ?? now) - Date.now();
+					const wait = cloudControlBackoffMs(parkFailures++);
+					if (remaining <= 0 || wait >= remaining) {
+						pollState.parkExhausted = true;
+						throw error;
+					}
+					await cloudControlPause(wait, signal);
+				} else {
+					await cloudControlPause(Math.max(0, Math.min(this.#pollMs, until - Date.now())), signal);
+				}
 				continue;
 			}
 			const state = object(answer);

@@ -3,6 +3,7 @@ import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { JsonValue } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	CLOUD_ACTION_REVIEW_HOLD_MS,
 	CloudActionReviewChannel,
@@ -82,7 +83,12 @@ import {
 	type CloudCompanyPathPresenceFactory,
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
-import { CloudControlRpcEnded, cloudControlRetryable, cloudControlTransientCode } from "./cloud-control-errors.ts";
+import {
+	CloudControlRpcEnded,
+	cloudControlPause,
+	cloudControlRetryable,
+	cloudControlTransientCode,
+} from "./cloud-control-errors.ts";
 import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudAppGroupsTool } from "./cloud-folder-app-groups.ts";
@@ -443,6 +449,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		{ reasoningEffort: CloudRuntimeReasoningEffort; serviceTier: CloudRuntimeServiceTier }
 	>();
 
+	#rememberSpareEffort(
+		identityRoot: string,
+		settings: { reasoningEffort: CloudRuntimeReasoningEffort; serviceTier: CloudRuntimeServiceTier },
+	): void {
+		this.#spareEfforts.delete(identityRoot);
+		this.#spareEfforts.set(identityRoot, settings);
+		if (this.#spareEfforts.size > 64) {
+			const oldest = this.#spareEfforts.keys().next().value;
+			if (oldest !== undefined) this.#spareEfforts.delete(oldest);
+		}
+	}
+
 	/** Warm conversations: starts a spare Codex process for the next run on this identity root. */
 	prepareSpare(identityRoot: string, idleMs: number): void {
 		const settings = this.#spareEfforts.get(identityRoot);
@@ -646,9 +664,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const continuationShown = composeCloudContinuation(context, this.#paths, binding, signal);
 			continuationShown.catch(() => undefined);
 			let requestSources: readonly CloudCompanyContextSource[] = [];
-			const machinesAvailable = await machinesRequest;
-			stage = "codex-home";
-			const home = await homeRequest;
 			const wakeControl: CloudWakeControl = {
 				call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
 			};
@@ -665,7 +680,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				stage = "prompt-composition";
 				return descriptors;
 			};
-			stage = "prompt-composition";
 			// Every company run is a folder-v2 run: its context names the agent's folder, and it reads and writes the
 			// company's files and its state files through the folder core (core C3's thin writers,
 			// RUNTIME-COMPANY-STATE-FILES.md §5). The context parser refuses a context without one (legacy sweep
@@ -830,6 +844,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					platformUpdates: await updatesRequest,
 				};
 			};
+			const contextPromise = composeContext();
+			contextPromise.catch(() => undefined);
+			const machinesAvailable = await machinesRequest;
+			stage = "codex-home";
+			const home = await homeRequest;
+			stage = "prompt-composition";
 			const {
 				initialPresence,
 				gateway,
@@ -841,7 +861,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				senses,
 				proposals,
 				platformUpdates,
-			} = await composeContext().catch(async (error) => {
+			} = await contextPromise.catch(async (error) => {
 				await connectorTools();
 				throw error;
 			});
@@ -925,28 +945,39 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					const contextSha256 = createHash("sha256").update(text).digest("hex");
 					// What composition read from the folder is released under the composed context before any model request,
 					// with the paths of the proposals it shows (P40b).
-					await notebooks.releaseComposition(contextSha256, openingSignal, [
-						...(proposals?.reads ?? []),
-						...(updates ? (platformUpdates?.reads ?? []) : []),
-					]);
 					// So are the summary lines the view and the branches show, and the run's first request is recorded with
 					// the settle's wait (§13). A failed release fails the run. A failed record leaves it without the answer,
 					// the view reference (W4a-1), which is for the workers the run dispatches (W4b).
-					if (view)
-						await memoryCommitView(
-							this.#paths,
-							binding,
-							view,
-							{
-								contextSha256,
-								headBytes: Buffer.byteLength(head.text),
-								stablePrefixSha256: createHash("sha256")
-									.update(cloudNativeStableInstructions(context, parts, cloudWorkerToolFilter(wake).isWorker))
-									.digest("hex"),
-							},
-							wait,
-							openingSignal,
-						);
+					await Promise.all([
+						notebooks.releaseComposition(contextSha256, openingSignal, [
+							...(proposals?.reads ?? []),
+							...(updates ? (platformUpdates?.reads ?? []) : []),
+						]),
+						...(view
+							? [
+									memoryCommitView(
+										this.#paths,
+										binding,
+										view,
+										{
+											contextSha256,
+											headBytes: Buffer.byteLength(head.text),
+											stablePrefixSha256: createHash("sha256")
+												.update(
+													cloudNativeStableInstructions(
+														context,
+														parts,
+														cloudWorkerToolFilter(wake).isWorker,
+													),
+												)
+												.digest("hex"),
+										},
+										wait,
+										openingSignal,
+									),
+								]
+							: []),
+					]);
 					composed = {
 						prompt,
 						runtimeInstructions: compileCloudNativeCompanyInstructions(context, wake, parts),
@@ -1008,7 +1039,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const publicWrite = <T>(
 				write: (requestSignal: AbortSignal) => Promise<T>,
 				toolSignal: AbortSignal | undefined,
-			): Promise<T> => cloudRunRowWrite(toolRun, write, toolSignal ? AbortSignal.any([signal, toolSignal]) : signal);
+			): Promise<T> =>
+				toolSignal
+					? withAbortScopes([signal, toolSignal], (combined) => cloudRunRowWrite(toolRun, write, combined))
+					: cloudRunRowWrite(toolRun, write, signal);
 			const mouth = new CloudAgentMouth(
 				binding.runId,
 				async (input, toolSignal) => {
@@ -1311,19 +1345,24 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										// A close that fails does not fail the run, whose work is done (F10), but it is said
 										// in the host's journal, so a close no call reaches is never silent.
 										endSession: async (sessionId, reason) => {
-											const closing = AbortSignal.timeout(CLOUD_HOME_CLOSE_MS);
-											try {
-												await this.#paths.call(
-													"qorpera_close_home_session",
-													{ p_binding: binding, p_session_id: sessionId, p_reason: reason },
-													closing,
-												);
-											} catch (error) {
-												console.error(
-													`The agent's home session was not closed (${cloudRuntimeErrorCategory(error, closing)})`,
-												);
-												throw error;
-											}
+											await withAbortScopes(
+												[],
+												async (closing) => {
+													try {
+														await this.#paths.call(
+															"qorpera_close_home_session",
+															{ p_binding: binding, p_session_id: sessionId, p_reason: reason },
+															closing,
+														);
+													} catch (error) {
+														console.error(
+															`The agent's home session was not closed (${cloudRuntimeErrorCategory(error, closing)})`,
+														);
+														throw error;
+													}
+												},
+												CLOUD_HOME_CLOSE_MS,
+											);
 										},
 										signal: input.signal,
 									}),
@@ -1792,7 +1831,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				stage = "public-completion";
 				const delivery = await mouth.finish(wake.policy.final === "required");
 				if (!isGeminiRun)
-					this.#spareEfforts.set(identityRoot, { reasoningEffort: context.identity.reasoningEffort, serviceTier });
+					this.#rememberSpareEffort(identityRoot, {
+						reasoningEffort: context.identity.reasoningEffort,
+						serviceTier,
+					});
 				return { providerSessionId: result.providerSessionId, delivery };
 			} finally {
 				await mouth.close();
@@ -1946,7 +1988,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			timeoutMs: this.#timeoutMs,
 		});
 		if (usageSignal) await this.#recordUsageSignalKind(binding, usageSignal);
-		this.#spareEfforts.set(identityRoot, { reasoningEffort: identity.reasoningEffort, serviceTier });
+		this.#rememberSpareEffort(identityRoot, { reasoningEffort: identity.reasoningEffort, serviceTier });
 		return { providerSessionId: result.providerSessionId, delivery: { messageCount: 0, finalMessageId: null } };
 	}
 
@@ -1972,289 +2014,323 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const run = await CloudNativeToolRun.open(binding, this.#control, signal, NATIVE_AUTHORITY_LEASE_SECONDS * 1000);
 		let pictureLane: CloudClaudePictureLane | undefined;
 		try {
-			const runSignal = AbortSignal.any([signal, run.signal]);
-			const operations = new CloudNativeToolOperations(run, this.#control);
-			const folder = new CloudCompanyFolderClient({
-				binding,
-				identity,
-				control: this.#paths,
-				bytes: this.#folderBytes(binding, identity),
-			});
-			// The admission, as a light ask's: the run's executable policy, and Claude Code's own tools as its catalog.
-			const toolCatalogText = cloudToolJsonText(CLAUDE_WORKER_CATALOG, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
-			const admission = {
-				runId: binding.runId,
-				jobId: binding.jobId,
-				leaseId: binding.leaseId,
-				binarySha256: this.#sha256,
-				runtimeBundleSha256: identity.runtimeBundleSha256,
-				reasoningEffort: identity.reasoningEffort,
-				reasoningPolicySha256: identity.reasoningPolicySha256,
-				toolCatalogSha256: createHash("sha256").update(toolCatalogText).digest("hex"),
-			};
-			confirmNativeAdmission(
-				await this.#paths.call(
-					"qorpera_begin_native_company_execution_v3",
-					{
-						p_binding: binding,
-						p_binary_sha256: this.#sha256,
-						p_runtime_bundle_sha256: identity.runtimeBundleSha256,
-						p_reasoning_policy_sha256: identity.reasoningPolicySha256,
-						p_tool_catalog_text: toolCatalogText,
-					},
-					runSignal,
-					CLOUD_RUN_ROW_READ_MS,
-				),
-				{ schema: "qorpera.native-company-execution-admission/v1", ...admission },
-			);
-			// The context is what Claude Code is told: its system note and the brief.
-			const prompt = claudeWorkerPrompt(brief);
-			const contextText = `${CLAUDE_WORKER_SYSTEM_NOTE}\n${prompt}`;
-			const contextSha256 = createHash("sha256").update(contextText).digest("hex");
-			const contextBytes = Buffer.byteLength(contextText);
-			confirmNativeAdmission(
-				await cloudToolRequest(
-					(requestSignal) =>
-						this.#paths.call(
-							"qorpera_bind_native_company_context",
-							{ p_binding: binding, p_context_sha256: contextSha256, p_context_bytes: contextBytes },
-							requestSignal,
-							CLOUD_RUN_ROW_READ_MS,
-						),
-					runSignal,
-					CLOUD_RUN_ROW_READ_MS,
-				),
-				{ ...admission, schema: "qorpera.native-company-execution-start/v1", contextSha256, contextBytes },
-			);
-			input.composition.finish("succeeded", { outputBytes: contextBytes });
-			// The run's own work log, where the run keeps one: one step per tool call of Claude Code's. No compactor serves
-			// it (no Codex), so its step lines are left for a later run to build (§7.2).
-			const opened = await openCloudRunLog({
-				resume: new CloudRunResumeRpc({ run, control: this.#paths }),
-				folder: new CloudRunLogCompanyFolder({
-					environmentId: identity.environmentId,
-					runId: binding.runId,
-					folder,
+			return await withAbortScopes([signal, run.signal], async (runSignal) => {
+				const operations = new CloudNativeToolOperations(run, this.#control);
+				const folder = new CloudCompanyFolderClient({
+					binding,
+					identity,
 					control: this.#paths,
-				}),
-				log: {
+					bytes: this.#folderBytes(binding, identity),
+				});
+				// The admission, as a light ask's: the run's executable policy, and Claude Code's own tools as its catalog.
+				const toolCatalogText = cloudToolJsonText(CLAUDE_WORKER_CATALOG, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
+				const admission = {
 					runId: binding.runId,
-					protection: new CloudRunLogRpcProtection({
-						environmentId: identity.environmentId,
-						jobId: binding.jobId,
-						runId: binding.runId,
-						call: (method, argumentsValue, requestSignal) =>
-							this.#paths.call(method, argumentsValue, requestSignal),
+					jobId: binding.jobId,
+					leaseId: binding.leaseId,
+					binarySha256: this.#sha256,
+					runtimeBundleSha256: identity.runtimeBundleSha256,
+					reasoningEffort: identity.reasoningEffort,
+					reasoningPolicySha256: identity.reasoningPolicySha256,
+					toolCatalogSha256: createHash("sha256").update(toolCatalogText).digest("hex"),
+				};
+				confirmNativeAdmission(
+					await this.#paths.call(
+						"qorpera_begin_native_company_execution_v3",
+						{
+							p_binding: binding,
+							p_binary_sha256: this.#sha256,
+							p_runtime_bundle_sha256: identity.runtimeBundleSha256,
+							p_reasoning_policy_sha256: identity.reasoningPolicySha256,
+							p_tool_catalog_text: toolCatalogText,
+						},
+						runSignal,
+						CLOUD_RUN_ROW_READ_MS,
+					),
+					{ schema: "qorpera.native-company-execution-admission/v1", ...admission },
+				);
+				// The context is what Claude Code is told: its system note and the brief.
+				const prompt = claudeWorkerPrompt(brief);
+				const contextText = `${CLAUDE_WORKER_SYSTEM_NOTE}\n${prompt}`;
+				const contextSha256 = createHash("sha256").update(contextText).digest("hex");
+				const contextBytes = Buffer.byteLength(contextText);
+				confirmNativeAdmission(
+					await cloudToolRequest(
+						(requestSignal) =>
+							this.#paths.call(
+								"qorpera_bind_native_company_context",
+								{ p_binding: binding, p_context_sha256: contextSha256, p_context_bytes: contextBytes },
+								requestSignal,
+								CLOUD_RUN_ROW_READ_MS,
+							),
+						runSignal,
+						CLOUD_RUN_ROW_READ_MS,
+					),
+					{ ...admission, schema: "qorpera.native-company-execution-start/v1", contextSha256, contextBytes },
+				);
+				input.composition.finish("succeeded", { outputBytes: contextBytes });
+				const home = await input.home;
+				const sessionId = randomUUID();
+				const reviewer = new CloudActionReviewChannel();
+				const notebooks = new CloudFolderNotebooks({
+					folder,
+					runId: binding.runId,
+					agentFolder: cloudAgentFolder(
+						identity.companyId,
+						identity.staffAgentId,
+						cloudAgentFolderPlace(input.context),
+					),
+				});
+				// The run's own work log, where the run keeps one: one step per tool call of Claude Code's. No compactor serves
+				// it (no Codex), so its step lines are left for a later run to build (§7.2).
+				// The member's name for the words, and on a follow-up the worker's earlier report. A read that fails is no reason to
+				// end the worker: it says "the member who asked" and goes on without the earlier report.
+				const [opened, facts, vision] = await Promise.all([
+					openCloudRunLog({
+						resume: new CloudRunResumeRpc({ run, control: this.#paths }),
+						folder: new CloudRunLogCompanyFolder({
+							environmentId: identity.environmentId,
+							runId: binding.runId,
+							folder,
+							control: this.#paths,
+						}),
+						log: {
+							runId: binding.runId,
+							protection: new CloudRunLogRpcProtection({
+								environmentId: identity.environmentId,
+								jobId: binding.jobId,
+								runId: binding.runId,
+								call: (method, argumentsValue, requestSignal) =>
+									this.#paths.call(method, argumentsValue, requestSignal),
+							}),
+							signal: run.signal,
+							effectful: (tool) =>
+								!["claude_code", "claude_code_read", "claude_code_grep", "claude_code_glob"].includes(
+									tool.name,
+								),
+						},
+						lines: { call: new MemoryCompactChannel().call, lane: new MemoryCompactLane() },
 					}),
-					signal: run.signal,
-					effectful: (tool) =>
-						!["claude_code", "claude_code_read", "claude_code_grep", "claude_code_glob"].includes(tool.name),
-				},
-				lines: { call: new MemoryCompactChannel().call, lane: new MemoryCompactLane() },
-			});
-			const log = opened?.log ?? undefined;
-			// The member's name for the words, and on a follow-up the worker's earlier report. A read that fails is no reason to
-			// end the worker: it says "the member who asked" and goes on without the earlier report.
-			const facts = (await this.#paths
-				.call("qorpera_claude_worker_run_facts", { p_binding: binding }, runSignal)
-				.catch(() => {
-					runSignal.throwIfAborted();
-					return null;
-				})) as { member?: unknown; earlier?: unknown; ownCodexLogin?: unknown } | null;
-			const member = typeof facts?.member === "string" && facts.member ? facts.member : "the member who asked";
-			const earlier = typeof facts?.earlier === "string" && facts.earlier ? facts.earlier : null;
-			const home = await input.home;
-			const sessionId = randomUUID();
-			const reviewer = new CloudActionReviewChannel();
-			const notebooks = new CloudFolderNotebooks({
-				folder,
-				runId: binding.runId,
-				agentFolder: cloudAgentFolder(
-					identity.companyId,
-					identity.staffAgentId,
-					cloudAgentFolderPlace(input.context),
-				),
-			});
-			const vision = home
-				? await readCloudAgentHeadVision(notebooks.composition, runSignal).catch(() => {
+					this.#paths.call("qorpera_claude_worker_run_facts", { p_binding: binding }, runSignal).catch(() => {
 						runSignal.throwIfAborted();
 						return null;
-					})
-				: null;
-			const review = new CloudActionReviewGate({
-				binding,
-				control: {
-					call: (method, argumentsValue, requestSignal) => this.#paths.call(method, argumentsValue, requestSignal),
-				},
-				reviewer,
-				reviewerModel: CLAUDE_ACTION_REVIEW_MODEL,
-				request: cloudActionReviewRequest(input.context, wake),
-				mandate: cloudActionReviewMandate(input.context, wake, vision && "text" in vision ? vision.text : null, {
-					surfaceFirst: this.#surfaceFirst,
-				}),
-				holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
-				facts: {
-					coworkers: new Map(input.context.coworkers.map((coworker) => [coworker.id, coworker.name])),
-					timeZone: wake.time.timeZone,
-				},
-			});
-			const chosen = await claudeWorkerPictures({
-				facts,
-				home: home !== undefined,
-				...(host.pictures ? { given: host.pictures(identityRoot) } : {}),
-				lane: () => this.#claudePictureLane(identityRoot, binding, identity, runSignal),
-				foreignOwner: (path, ownerSignal) =>
-					cloudPictureForeignOwner(folder, path, identity.staffAgentId, ownerSignal),
-			});
-			pictureLane = chosen.lane;
-			const pictures = chosen.pictures;
-			const usageMark: { at: number; owed: ClaudeLoginUsage | null } = { at: 0, owed: null };
-			const recordUsage = (usage: ClaudeLoginUsage) =>
-				this.#paths
-					.call(
-						"qorpera_record_claude_run_usage",
-						{ p_binding: binding, p_usage: usage },
-						AbortSignal.timeout(CLOUD_CLAUDE_USAGE_MS),
-					)
-					.catch(() => undefined);
-			let outcome: ClaudeWorkerOutcome;
-			if (!home) outcome = claudeWorkerBlocked(cloudHomeRefusalWords(undefined));
-			else
-				outcome = await runClaudeWorker({
-					brief: { ...brief, earlier },
-					member,
-					logins: claudeWorkerLogins(host.logins, {
-						leaseId: binding.leaseId,
-						runId: binding.runId,
-						jobId: binding.jobId,
-						runnerId: binding.runnerId,
-						assignmentId: binding.assignmentId,
-						credentialCapsuleId: binding.credentialCapsuleId,
-						computeIdentityId: binding.computeIdentityId,
+					}) as Promise<{ member?: unknown; earlier?: unknown; ownCodexLogin?: unknown } | null>,
+					home
+						? readCloudAgentHeadVision(notebooks.composition, runSignal).catch(() => {
+								runSignal.throwIfAborted();
+								return null;
+							})
+						: Promise.resolve(null),
+				]);
+				const log = opened?.log ?? undefined;
+				const member = typeof facts?.member === "string" && facts.member ? facts.member : "the member who asked";
+				const earlier = typeof facts?.earlier === "string" && facts.earlier ? facts.earlier : null;
+				const review = new CloudActionReviewGate({
+					binding,
+					control: {
+						call: (method, argumentsValue, requestSignal) =>
+							this.#paths.call(method, argumentsValue, requestSignal),
+					},
+					reviewer,
+					reviewerModel: CLAUDE_ACTION_REVIEW_MODEL,
+					request: cloudActionReviewRequest(input.context, wake),
+					mandate: cloudActionReviewMandate(input.context, wake, vision && "text" in vision ? vision.text : null, {
+						surfaceFirst: this.#surfaceFirst,
 					}),
-					launch: (box) =>
-						launchClaudeCodeBox({
-							...box,
-							...(host.configuration ? { configuration: host.configuration } : {}),
-							...(host.proof ? { proof: host.proof } : {}),
-							channel: channelOf(binding) as CloudClaudeHomeChannel,
-							sessionId,
-							machineId: home.machineId,
-							review: {
-								gate: cloudHomeActionReview(review),
-								machine: { id: home.machineId, name: home.machine },
-								attach: (made) => reviewer.attach(made),
-							},
-							pictures,
-							// The run's one home session (both channels) is ended in SQL once both are closed.
-							endSession: async (id, reason) => {
-								await this.#paths.call(
-									"qorpera_close_home_session",
-									{ p_binding: binding, p_session_id: id, p_reason: reason },
-									AbortSignal.timeout(CLOUD_HOME_CLOSE_MS),
-								);
-							},
+					holdMs: ["human", "room", "first-run"].includes(wake.kind) ? CLOUD_ACTION_REVIEW_HOLD_MS : 0,
+					facts: {
+						coworkers: new Map(input.context.coworkers.map((coworker) => [coworker.id, coworker.name])),
+						timeZone: wake.time.timeZone,
+					},
+				});
+				const chosen = await claudeWorkerPictures({
+					facts,
+					home: home !== undefined,
+					...(host.pictures ? { given: host.pictures(identityRoot) } : {}),
+					lane: () => this.#claudePictureLane(identityRoot, binding, identity, runSignal),
+					foreignOwner: (path, ownerSignal) =>
+						cloudPictureForeignOwner(folder, path, identity.staffAgentId, ownerSignal),
+				});
+				pictureLane = chosen.lane;
+				const pictures = chosen.pictures;
+				const usageMark: { at: number; owed: ClaudeLoginUsage | null } = { at: 0, owed: null };
+				const recordUsage = (usage: ClaudeLoginUsage) =>
+					withAbortScopes(
+						[],
+						(usageSignal) =>
+							this.#paths.call(
+								"qorpera_record_claude_run_usage",
+								{ p_binding: binding, p_usage: usage },
+								usageSignal,
+							),
+						CLOUD_CLAUDE_USAGE_MS,
+					).catch(() => undefined);
+				let outcome: ClaudeWorkerOutcome;
+				if (!home) outcome = claudeWorkerBlocked(cloudHomeRefusalWords(undefined));
+				else
+					outcome = await runClaudeWorker({
+						brief: { ...brief, earlier },
+						member,
+						logins: claudeWorkerLogins(host.logins, {
+							leaseId: binding.leaseId,
+							runId: binding.runId,
+							jobId: binding.jobId,
+							runnerId: binding.runnerId,
+							assignmentId: binding.assignmentId,
+							credentialCapsuleId: binding.credentialCapsuleId,
+							computeIdentityId: binding.computeIdentityId,
 						}),
-					root: identityRoot,
-					usage: (usage) => {
-						usageMark.owed = usage;
-						if (Date.now() - usageMark.at < CLOUD_CLAUDE_USAGE_EVERY_MS) return;
-						usageMark.at = Date.now();
-						usageMark.owed = null;
-						void recordUsage(usage);
-					},
-					step: (step) => {
-						if (!log) return;
-						try {
-							const call = "start" in step ? `claude-code-start-${binding.runId}` : step.id;
-							const argumentsText =
-								"start" in step
-									? JSON.stringify({
-											claudeCode: CLAUDE_CODE_PIN.version,
-											model: step.start.model,
-											session: step.start.sessionId,
-										})
-									: JSON.stringify({ what: step.what });
-							const j = log.step({
-								call,
-								tool:
+						launch: (box) =>
+							launchClaudeCodeBox({
+								...box,
+								...(host.configuration ? { configuration: host.configuration } : {}),
+								...(host.proof ? { proof: host.proof } : {}),
+								channel: channelOf(binding) as CloudClaudeHomeChannel,
+								sessionId,
+								machineId: home.machineId,
+								review: {
+									gate: cloudHomeActionReview(review),
+									machine: { id: home.machineId, name: home.machine },
+									attach: (made) => reviewer.attach(made),
+								},
+								pictures,
+								// The run's one home session (both channels) is ended in SQL once both are closed.
+								endSession: async (id, reason) => {
+									await withAbortScopes(
+										[],
+										(closeSignal) =>
+											this.#paths.call(
+												"qorpera_close_home_session",
+												{ p_binding: binding, p_session_id: id, p_reason: reason },
+												closeSignal,
+											),
+										CLOUD_HOME_CLOSE_MS,
+									);
+								},
+							}),
+						root: identityRoot,
+						usage: (usage) => {
+							usageMark.owed = usage;
+							if (Date.now() - usageMark.at < CLOUD_CLAUDE_USAGE_EVERY_MS) return;
+							usageMark.at = Date.now();
+							usageMark.owed = null;
+							void recordUsage(usage);
+						},
+						step: (step) => {
+							if (!log) return;
+							try {
+								const call = "start" in step ? `claude-code-start-${binding.runId}` : step.id;
+								const argumentsText =
 									"start" in step
-										? "claude_code"
-										: `claude_code_${step.tool
-												.toLowerCase()
-												.replace(/[^a-z0-9_]/g, "_")
-												.slice(0, 40)}`,
-								argumentsText,
-								argumentSha256: createHash("sha256").update(argumentsText).digest("hex"),
-							});
-							log.finish(j, JSON.stringify("start" in step ? { ok: true } : { ok: step.ok, ms: step.ms }), []);
-						} catch {
-							// A step the log cannot take leaves the run's record thinner, never the work.
-						}
-					},
+										? JSON.stringify({
+												claudeCode: CLAUDE_CODE_PIN.version,
+												model: step.start.model,
+												session: step.start.sessionId,
+											})
+										: JSON.stringify({ what: step.what });
+								const j = log.step({
+									call,
+									tool:
+										"start" in step
+											? "claude_code"
+											: `claude_code_${step.tool
+													.toLowerCase()
+													.replace(/[^a-z0-9_]/g, "_")
+													.slice(0, 40)}`,
+									argumentsText,
+									argumentSha256: createHash("sha256").update(argumentsText).digest("hex"),
+								});
+								log.finish(
+									j,
+									JSON.stringify("start" in step ? { ok: true } : { ok: step.ok, ms: step.ms }),
+									[],
+								);
+							} catch {
+								// A step the log cannot take leaves the run's record thinner, never the work.
+							}
+						},
+						signal: runSignal,
+					});
+				if (usageMark.owed) await recordUsage(usageMark.owed);
+				runSignal.throwIfAborted();
+				if (log) await withAbortScopes([], (closeSignal) => log.close(closeSignal), 10_000).catch(() => undefined);
+				// What the run changed on the machine's folder, as its home's window credited it (at most four in the report), once
+				// the view's last boundary is in: read after a short wait and again until it stands still (bounded).
+				const outputs = home
+					? (
+							await claudeWorkerSettledOutputs(async (readSignal) => {
+								const after = (await this.#paths.call(
+									"qorpera_claude_worker_run_facts",
+									{ p_binding: binding },
+									readSignal,
+								)) as { outputs?: unknown };
+								return claudeWorkerReportedOutputs(after?.outputs, `${input.outputFolder}/results.md`);
+							}, runSignal)
+						).slice(0, 4)
+					: [];
+				if (
+					outcome.claudeSide &&
+					(await this.#claudeWorkerFellBack(binding, outcome.claudeSide, outputs, runSignal))
+				)
+					return {
+						providerSessionId: claudeWorkerSessionId(outcome),
+						delivery: { messageCount: 0, finalMessageId: null },
+					};
+				const workers = new CloudFolderWorkers({
+					folder,
+					operations,
+					identity,
+					handle: input.handle,
+					outputFolder: input.outputFolder,
+				});
+				const report = {
+					operationKey: "claude-code-report",
+					outcome: outcome.outcome,
+					summary: outcome.summary,
+					...(outcome.needs === undefined ? {} : { needs: outcome.needs }),
+					...(outputs.length ? { outputs } : {}),
+				};
+				const reportText = JSON.stringify(report);
+				const saved = await workers.report(report, {
+					companyId: identity.companyId,
+					runId: binding.runId,
+					callId: `claude-code-report-${binding.runId}`,
+					argumentSha256: createHash("sha256").update(reportText).digest("hex"),
 					signal: runSignal,
 				});
-			if (usageMark.owed) await recordUsage(usageMark.owed);
-			runSignal.throwIfAborted();
-			await log?.close(AbortSignal.timeout(10_000)).catch(() => undefined);
-			// What the run changed on the machine's folder, as its home's window credited it (at most four in the report), once
-			// the view's last boundary is in: read after a short wait and again until it stands still (bounded).
-			const outputs = home
-				? (
-						await claudeWorkerSettledOutputs(async (readSignal) => {
-							const after = (await this.#paths.call(
-								"qorpera_claude_worker_run_facts",
-								{ p_binding: binding },
-								readSignal,
-							)) as { outputs?: unknown };
-							return claudeWorkerReportedOutputs(after?.outputs, `${input.outputFolder}/results.md`);
-						}, runSignal)
-					).slice(0, 4)
-				: [];
-			if (outcome.claudeSide && (await this.#claudeWorkerFellBack(binding, outcome.claudeSide, outputs, runSignal)))
+				const answer =
+					saved.kind === "text"
+						? (JSON.parse(saved.value) as { outcome?: unknown; reason?: unknown; problems?: unknown })
+						: {};
+				// The folder core's own reason and problems name rules and paths, never the report's text.
+				if (answer.outcome !== "saved")
+					throw new Error(
+						`The Claude Code worker's report was not saved (${String(answer.outcome)}: ${String(answer.reason)} ${JSON.stringify(answer.problems ?? []).slice(0, 600)})`,
+					);
 				return {
 					providerSessionId: claudeWorkerSessionId(outcome),
 					delivery: { messageCount: 0, finalMessageId: null },
 				};
-			const workers = new CloudFolderWorkers({
-				folder,
-				operations,
-				identity,
-				handle: input.handle,
-				outputFolder: input.outputFolder,
 			});
-			const report = {
-				operationKey: "claude-code-report",
-				outcome: outcome.outcome,
-				summary: outcome.summary,
-				...(outcome.needs === undefined ? {} : { needs: outcome.needs }),
-				...(outputs.length ? { outputs } : {}),
-			};
-			const reportText = JSON.stringify(report);
-			const saved = await workers.report(report, {
-				companyId: identity.companyId,
-				runId: binding.runId,
-				callId: `claude-code-report-${binding.runId}`,
-				argumentSha256: createHash("sha256").update(reportText).digest("hex"),
-				signal: runSignal,
-			});
-			const answer =
-				saved.kind === "text"
-					? (JSON.parse(saved.value) as { outcome?: unknown; reason?: unknown; problems?: unknown })
-					: {};
-			// The folder core's own reason and problems name rules and paths, never the report's text.
-			if (answer.outcome !== "saved")
-				throw new Error(
-					`The Claude Code worker's report was not saved (${String(answer.outcome)}: ${String(answer.reason)} ${JSON.stringify(answer.problems ?? []).slice(0, 600)})`,
-				);
-			return {
-				providerSessionId: claudeWorkerSessionId(outcome),
-				delivery: { messageCount: 0, finalMessageId: null },
-			};
 		} finally {
-			if (pictureLane)
-				await Promise.race([pictureLane.close(), new Promise((resolve) => setTimeout(resolve, 30_000).unref())]);
-			run.close();
+			try {
+				if (pictureLane) {
+					let timer: ReturnType<typeof setTimeout> | undefined;
+					try {
+						await Promise.race([
+							pictureLane.close().catch(() => undefined),
+							new Promise<void>((resolve) => {
+								timer = setTimeout(resolve, 30_000);
+								timer.unref?.();
+							}),
+						]);
+					} finally {
+						clearTimeout(timer);
+					}
+				}
+			} finally {
+				run.close();
+			}
 		}
 	}
 
@@ -2309,7 +2385,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					console.error("The Claude Code worker's fallback to Codex was not saved");
 					return false;
 				}
-				await new Promise((resolve) => setTimeout(resolve, 1000 * attempt).unref?.());
+				await cloudControlPause(1000 * attempt, signal);
 			}
 		}
 	}
@@ -2322,10 +2398,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	 */
 	async #recordGeminiCapReached(binding: CloudNativeToolBinding): Promise<void> {
 		try {
-			await this.#paths.call(
-				"qorpera_record_gemini_cap_reached",
-				{ p_binding: binding },
-				AbortSignal.timeout(10_000),
+			await withAbortScopes(
+				[],
+				(recordSignal) =>
+					this.#paths.call("qorpera_record_gemini_cap_reached", { p_binding: binding }, recordSignal, 10_000),
 				10_000,
 			);
 		} catch {
@@ -2341,10 +2417,15 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 	async #recordUsageSignalKind(binding: CloudNativeToolBinding, kind: NativeProviderUsageSignal): Promise<void> {
 		try {
 			// The 10 s is the call's own budget, so the transport waits that long too.
-			await this.#paths.call(
-				"qorpera_record_provider_usage_signal",
-				{ p_binding: binding, p_signal_kind: kind },
-				AbortSignal.timeout(10_000),
+			await withAbortScopes(
+				[],
+				(recordSignal) =>
+					this.#paths.call(
+						"qorpera_record_provider_usage_signal",
+						{ p_binding: binding, p_signal_kind: kind },
+						recordSignal,
+						10_000,
+					),
 				10_000,
 			);
 		} catch {

@@ -21,6 +21,7 @@ import {
 	Run,
 	SHA,
 	SHA256,
+	streamFileOut,
 	treeRecords,
 	withJob,
 } from "./code-host-jobs.ts";
@@ -162,29 +163,16 @@ async function readOut(
 	chunkBytes: number,
 	write: (piece: Buffer) => Promise<void>,
 ): Promise<void> {
-	const read = createHash("sha256");
-	for (let index = 0; index * chunkBytes < measured.bytes; index += 1) {
-		const length = Math.min(chunkBytes, measured.bytes - index * chunkBytes);
-		const piece = await run.command(
-			[
-				"/usr/bin/dd",
-				`if=${file}`,
-				`bs=${chunkBytes}`,
-				`skip=${index}`,
-				"count=1",
-				"iflag=fullblock",
-				"status=none",
-			],
-			{ maximumOutputBytes: length },
-		);
-		if (piece.status !== 0 || piece.stdout.length !== length)
-			throw new CodeHostJobFailure(FAILED, "a piece was cut short");
-		read.update(piece.stdout);
-		await write(piece.stdout);
-		run.job.signal.throwIfAborted();
-	}
-	if (read.digest("hex") !== measured.sha256)
-		throw new CodeHostJobFailure(FAILED, "the file read out is not the one made");
+	await streamFileOut(
+		run,
+		file,
+		measured.bytes,
+		measured.sha256,
+		chunkBytes,
+		write,
+		FAILED,
+		"the file read out is not the one made",
+	);
 }
 
 // The file source: read ------------------------------------------------------------------------------------------------

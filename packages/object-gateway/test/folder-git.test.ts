@@ -9,6 +9,7 @@ import {
 	gitFolders,
 	gitLockTarget,
 	gitPlace,
+	gitPlatformObjectIndex,
 	gitPublishedObject,
 	gitReflog,
 	gitRefused,
@@ -123,7 +124,9 @@ describe("git paths", () => {
 		expect(gitRefused(`${R}/objects/info/alternates`, true)).toBe(true);
 	});
 
-	it("never publishes what git has not finished", () => {
+	it("never publishes what git has not finished, and keeps object indexes platform-only", () => {
+		const sha1 = "0123456789abcdef0123456789abcdef01234567";
+		const sha256 = `${sha1}${"89abcdef".repeat(3)}`;
 		for (const rest of [
 			"refs/heads/main.lock",
 			"worktrees/w1/index.lock",
@@ -132,15 +135,19 @@ describe("git paths", () => {
 			"objects/pack/tmp_idx_Ab12",
 			"objects/incoming-Q1/pack/pack-1.pack",
 			"objects/pack/pack-1.keep",
-			// Git's own indexes of the objects, and the names it writes them as.
 			"objects/info/packs",
 			"objects/info/packs_Ab12Cd",
 			"objects/info/commit-graph",
+			"objects/info/commit-graph.lock",
 			"objects/info/commit-graphs",
 			"objects/info/commit-graphs/commit-graph-chain",
-			"objects/info/commit-graphs/graph-0123.graph",
+			"objects/info/commit-graphs/commit-graph-chain.lock",
+			"objects/info/commit-graphs/tmp_graph_Ab12",
+			`objects/info/commit-graphs/graph-${sha1}.graph`,
 			"objects/pack/multi-pack-index",
-			"objects/pack/multi-pack-index-0123.bitmap",
+			"objects/pack/multi-pack-index.lock",
+			"objects/pack/tmp_midx_Ab12",
+			`objects/pack/multi-pack-index-${sha1}.bitmap`,
 			"objects/pack/multi-pack-index.d/multi-pack-index-0123.midx",
 		])
 			expect(gitUnpublished(`${R}/${rest}`), rest).toBe(true);
@@ -155,6 +162,54 @@ describe("git paths", () => {
 			"info/packs",
 		])
 			expect(gitUnpublished(`${R}/${rest}`), rest).toBe(false);
+		for (const rest of [
+			"objects/info/commit-graph",
+			"objects/info/commit-graphs",
+			"objects/info/commit-graphs/commit-graph-chain",
+			`objects/info/commit-graphs/graph-${sha1}.graph`,
+			`objects/info/commit-graphs/graph-${sha256}.graph`,
+			"objects/pack/multi-pack-index",
+			`objects/pack/multi-pack-index-${sha1}.bitmap`,
+			`objects/pack/multi-pack-index-${sha256}.bitmap`,
+		])
+			expect(gitUnpublished(`${R}/${rest}`, true), `codeHost:${rest}`).toBe(false);
+		for (const rest of [
+			"objects/info/packs",
+			"objects/info/packs_Ab12Cd",
+			"objects/info/commit-graph.lock",
+			"objects/info/commit-graphs/commit-graph-chain.lock",
+			"objects/info/commit-graphs/tmp_graph_Ab12",
+			"objects/info/commit-graphs/graph-0123.graph",
+			`objects/info/commit-graphs/graph-${sha1.toUpperCase()}.graph`,
+			`objects/info/commit-graphs/graph-${sha1}a.graph`,
+			"objects/info/commit-graphs/evil.txt",
+			"objects/pack/multi-pack-index.lock",
+			"objects/pack/tmp_midx_Ab12",
+			"objects/pack/multi-pack-index-0123.bitmap",
+			`objects/pack/multi-pack-index-${sha1}.pack`,
+			`objects/pack/multi-pack-index.d/multi-pack-index-${sha1}.midx`,
+		])
+			expect(gitUnpublished(`${R}/${rest}`, true), `codeHost:${rest}`).toBe(true);
+		for (const rest of [
+			"objects/info/commit-graph",
+			"objects/info/commit-graphs/commit-graph-chain",
+			`objects/info/commit-graphs/graph-${sha1}.graph`,
+			`objects/info/commit-graphs/graph-${sha256}.graph`,
+			"objects/pack/multi-pack-index",
+			`objects/pack/multi-pack-index-${sha1}.bitmap`,
+			`objects/pack/multi-pack-index-${sha256}.bitmap`,
+		])
+			expect(gitPlatformObjectIndex(`${R}/${rest}`), rest).toBe(true);
+		for (const rest of [
+			"objects/info/commit-graphs",
+			"objects/info/commit-graphs/graph-0123.graph",
+			"objects/info/commit-graphs/evil.txt",
+			"objects/info/packs",
+			"objects/pack/multi-pack-index-0123.bitmap",
+			`objects/pack/multi-pack-index-${sha1}.pack`,
+			`objects/pack/multi-pack-index.d/multi-pack-index-${sha1}.midx`,
+		])
+			expect(gitPlatformObjectIndex(`${R}/${rest}`), rest).toBe(false);
 		expect(gitUnpublished("code/acme/app/worktrees/w1/objects/info/packs")).toBe(false);
 		expect(gitUnpublished("code/acme/app/worktrees/w1/yarn.lock")).toBe(false);
 	});
@@ -174,7 +229,9 @@ describe("git paths", () => {
 			"objects/info/packs",
 			"objects/info/commit-graph",
 			"objects/info/commit-graphs/commit-graph-chain",
+			`objects/info/commit-graphs/graph-${sha1}.graph`,
 			"objects/pack/multi-pack-index",
+			`objects/pack/multi-pack-index-${sha1}.bitmap`,
 			`objects/pack/pack-${sha1}.keep`,
 			`objects/pack/tmp_pack_${sha1}`,
 			`objects/incoming-Q1/pack/pack-${sha1}.pack`,
@@ -725,47 +782,94 @@ describe("the lock protocol in the folder service", () => {
 		]);
 	});
 
-	it("keeps git's own indexes of the objects in the view that made them, the code host's too: no boundary publishes one, and none waits", async () => {
+	it("keeps git object indexes unpublished in sessions and publishes strict acceleration indexes only from the code host", async () => {
 		const { core, open, openAs } = await repo(codeHostGrants());
-		// The stand-in takes from a session under `objects/` only what the core does (446200).
 		core.gitObjectRules = true;
 		core.seed([folder(`${R}/objects/info`), folder(`${R}/objects/pack`)]);
 		core.openView(CODE_HOST.viewId, CODE_HOST.pass, { kind: "code_host", machineId: null });
-		const views = [await open("first"), await openAs(CODE_HOST)];
-		for (const view of views) {
-			// As `git update-server-info` (which `git repack` and `git gc` run), `git commit-graph write` (split, too) and
-			// `git multi-pack-index write` make them: under a temporary name or a lock, renamed into place.
-			await write(view, `${R}/objects/info/packs_Ab12Cd`, "P pack-1.pack\n", true);
-			await view.rename({ from: `${R}/objects/info/packs_Ab12Cd`, to: `${R}/objects/info/packs`, noReplace: false });
-			await write(view, `${R}/objects/info/commit-graph.lock`, "CGPH", true);
-			await view.rename({
-				from: `${R}/objects/info/commit-graph.lock`,
-				to: `${R}/objects/info/commit-graph`,
-				noReplace: false,
-			});
-			await view.mkdir(`${R}/objects/info/commit-graphs`);
-			await write(view, `${R}/objects/info/commit-graphs/commit-graph-chain`, "0123\n");
-			await write(view, `${R}/objects/pack/multi-pack-index.lock`, "MIDX", true);
-			await view.rename({
-				from: `${R}/objects/pack/multi-pack-index.lock`,
-				to: `${R}/objects/pack/multi-pack-index`,
-				noReplace: false,
-			});
-			const notes = `code/acme/app/${view.codeHost ? "host" : "session"}.txt`;
-			await write(view, notes, "notes\n");
-			const answer = await view.publish();
-			expect(answer.paths.map((p) => `${p.outcome} ${p.path}`)).toEqual([`saved ${notes}`]);
-		}
+		const sha = "0".repeat(40);
+		const first = await open("first");
+		await write(first, `${R}/objects/info/packs_Ab12Cd`, "P pack-1.pack\n", true);
+		await first.rename({ from: `${R}/objects/info/packs_Ab12Cd`, to: `${R}/objects/info/packs`, noReplace: false });
+		await write(first, `${R}/objects/info/commit-graph.lock`, "CGPH", true);
+		await first.rename({
+			from: `${R}/objects/info/commit-graph.lock`,
+			to: `${R}/objects/info/commit-graph`,
+			noReplace: false,
+		});
+		await first.mkdir(`${R}/objects/info/commit-graphs`);
+		await write(first, `${R}/objects/info/commit-graphs/commit-graph-chain`, `${sha}\n`);
+		await write(first, `${R}/objects/info/commit-graphs/graph-${sha}.graph`, "CGPH");
+		await write(first, `${R}/objects/pack/multi-pack-index.lock`, "MIDX", true);
+		await first.rename({
+			from: `${R}/objects/pack/multi-pack-index.lock`,
+			to: `${R}/objects/pack/multi-pack-index`,
+			noReplace: false,
+		});
+		await write(first, `${R}/objects/pack/multi-pack-index-${sha}.bitmap`, "BITM");
+		await write(first, "code/acme/app/session.txt", "notes\n");
+		const sessionAnswer = await first.publish();
+		expect(sessionAnswer.paths.map((p) => `${p.outcome} ${p.path}`)).toEqual(["saved code/acme/app/session.txt"]);
 		expect([...core.entries.keys()].filter((p) => /\/objects\/(info|pack)\//.test(p))).toEqual([]);
-		for (const view of views) {
-			expect((await view.publish()).paths).toEqual([]);
-			expect(await names(view, `${R}/objects/info`)).toEqual(["commit-graph", "commit-graphs", "packs"]);
-			expect(await names(view, `${R}/objects/pack`)).toEqual(["multi-pack-index"]);
-		}
+		const stagedRef = (content: string) => ({
+			manifestSha256: hashOf(content),
+			fileSha256: hashOf(content),
+			bytes: Buffer.byteLength(content),
+			mediaType: "application/octet-stream",
+			executable: false,
+		});
+		const directSession = await core.commit(
+			ENV,
+			{ kind: "view", viewId: SESSIONS.first.viewId, pass: SESSIONS.first.pass },
+			"session-direct-indexes",
+			[
+				{ op: "write", path: `${R}/objects/info/commit-graph`, file: stagedRef("CGPH") },
+				{ op: "write", path: `${R}/objects/pack/multi-pack-index`, file: stagedRef("MIDX") },
+			],
+		);
+		expect(directSession.units.map((u) => `${u.outcome}:${u.reason}`)).toEqual([
+			"refused:git_platform_only",
+			"refused:git_platform_only",
+		]);
+		const host = await openAs(CODE_HOST);
+		await write(host, `${R}/objects/info/packs_Ab12Cd`, "P pack-1.pack\n", true);
+		await host.rename({ from: `${R}/objects/info/packs_Ab12Cd`, to: `${R}/objects/info/packs`, noReplace: false });
+		await write(host, `${R}/objects/info/commit-graph.lock`, "CGPH", true);
+		await host.rename({
+			from: `${R}/objects/info/commit-graph.lock`,
+			to: `${R}/objects/info/commit-graph`,
+			noReplace: false,
+		});
+		await host.mkdir(`${R}/objects/info/commit-graphs`);
+		await write(host, `${R}/objects/info/commit-graphs/commit-graph-chain`, `${sha}\n`);
+		await write(host, `${R}/objects/info/commit-graphs/graph-${sha}.graph`, "CGPH");
+		await write(host, `${R}/objects/info/commit-graphs/graph-0123.graph`, "bad\n");
+		await write(host, `${R}/objects/pack/multi-pack-index.lock`, "MIDX", true);
+		await host.rename({
+			from: `${R}/objects/pack/multi-pack-index.lock`,
+			to: `${R}/objects/pack/multi-pack-index`,
+			noReplace: false,
+		});
+		await write(host, `${R}/objects/pack/multi-pack-index-${sha}.bitmap`, "BITM");
+		await write(host, `${R}/objects/pack/multi-pack-index-0123.bitmap`, "bad\n");
+		await write(host, "code/acme/app/host.txt", "notes\n");
+		const hostAnswer = await host.publish();
+		expect(hostAnswer.paths.map((p) => `${p.outcome} ${p.path}`).sort()).toEqual([
+			"saved code/acme/app/host.txt",
+			`saved ${R}/objects/info/commit-graph`,
+			`saved ${R}/objects/info/commit-graphs`,
+			`saved ${R}/objects/info/commit-graphs/commit-graph-chain`,
+			`saved ${R}/objects/info/commit-graphs/graph-${sha}.graph`,
+			`saved ${R}/objects/pack/multi-pack-index`,
+			`saved ${R}/objects/pack/multi-pack-index-${sha}.bitmap`,
+		]);
+		expect(core.entries.has(`${R}/objects/info/packs`)).toBe(false);
+		expect(core.entries.has(`${R}/objects/info/commit-graphs/graph-0123.graph`)).toBe(false);
+		expect(core.entries.has(`${R}/objects/pack/multi-pack-index-0123.bitmap`)).toBe(false);
+		expect(await names(host, `${R}/objects/info`)).toEqual(["commit-graph", "commit-graphs", "packs"]);
 		const second = await open("second");
-		expect(await names(second, `${R}/objects/info`)).toEqual([]);
-		expect(await names(second, `${R}/objects/pack`)).toEqual([]);
-		// A file there that is neither an object nor an index still goes to the core, which refuses it from a session.
+		expect(await names(second, `${R}/objects/info`)).toEqual(["commit-graph", "commit-graphs"]);
+		expect(await names(second, `${R}/objects/pack`)).toEqual(["multi-pack-index", `multi-pack-index-${sha}.bitmap`]);
 		await write(second, `${R}/objects/info/sparse`, "x\n");
 		expect((await second.publish()).paths).toEqual([
 			expect.objectContaining({ path: `${R}/objects/info/sparse`, outcome: "refused", reason: "git_platform_only" }),

@@ -67,7 +67,7 @@ export interface CodeCareJobs {
 		job: CodeHostJob,
 		value: { repository: CloudCodingRepository },
 		block: CodeHostGcBlock,
-		options: { packRefs: false; prune: false },
+		options: { packRefs: false; prune: false; packArchivedRefs?: boolean },
 	): Promise<{ state: "collected" | "busy" | "held" }>;
 	retire(
 		job: CodeHostJob,
@@ -117,6 +117,8 @@ export interface CodeHostCareOptions {
 	fsckMs?: number;
 	/** The largest bundle copied out. Default 2 GiB, the job's own. */
 	bundleMaximumBytes?: number;
+	gcLooseThreshold?: number;
+	gcPackThreshold?: number;
 }
 
 type CareStep = "begin" | "check" | "fsck" | "bundle" | "gc" | "verify" | "retire" | "retire-git";
@@ -227,11 +229,15 @@ export class CodeHostCare {
 	readonly #limit: number;
 	readonly #fsck: { maximumMs: number } | undefined;
 	readonly #bundleMaximumBytes: number;
+	readonly #gcLooseThreshold: number;
+	readonly #gcPackThreshold: number;
 	readonly #deleting: CodeHostDeletions;
 
 	constructor(options: CodeHostCareOptions) {
 		const limit = options.limit ?? 20,
-			bundleMaximumBytes = options.bundleMaximumBytes ?? CODE_BUNDLE_MAXIMUM_BYTES;
+			bundleMaximumBytes = options.bundleMaximumBytes ?? CODE_BUNDLE_MAXIMUM_BYTES,
+			gcLooseThreshold = options.gcLooseThreshold ?? 64,
+			gcPackThreshold = options.gcPackThreshold ?? 8;
 		if (
 			typeof options.owner !== "string" ||
 			!options.owner ||
@@ -241,6 +247,10 @@ export class CodeHostCare {
 			limit > 50 ||
 			!Number.isSafeInteger(bundleMaximumBytes) ||
 			bundleMaximumBytes < 1 ||
+			!Number.isSafeInteger(gcLooseThreshold) ||
+			gcLooseThreshold < 1 ||
+			!Number.isSafeInteger(gcPackThreshold) ||
+			gcPackThreshold < 1 ||
 			(options.fsckMs !== undefined && (!Number.isSafeInteger(options.fsckMs) || options.fsckMs < 1))
 		)
 			throw new Error("INVALID_CODE_HOST_CARE");
@@ -255,6 +265,8 @@ export class CodeHostCare {
 		this.#limit = limit;
 		this.#fsck = options.fsckMs === undefined ? undefined : { maximumMs: options.fsckMs };
 		this.#bundleMaximumBytes = bundleMaximumBytes;
+		this.#gcLooseThreshold = gcLooseThreshold;
+		this.#gcPackThreshold = gcPackThreshold;
 		this.#deleting = controlCodeHostDeletions({
 			control: options.control,
 			owner: options.owner,
@@ -629,20 +641,26 @@ export class CodeHostCare {
 			outcome.gc.state = "shallow";
 			return undefined;
 		}
-		// The copy that stands behind the pack (`holds`) was written this night or read whole this night.
-		if (!run.sound || holds === null || checked.objects.loose < 1) return undefined;
-		// Whether the pack's own steps began: from then on, what the job saved must be looked at.
+		const packs =
+			Number.isSafeInteger(checked.objects.packs) && checked.objects.packs >= 0 ? checked.objects.packs : 0;
+		if (
+			!run.sound ||
+			holds === null ||
+			(checked.objects.loose < this.#gcLooseThreshold && packs < this.#gcPackThreshold)
+		)
+			return undefined;
 		let packing = false;
 		try {
 			const collected = await this.#job(run, "gc", signal, async (job, block, go) => {
 				if (!go.flags.gc) return undefined;
-				// What is packed is what fsck passed and a copy holds: the refs of the night's check. They are read
-				// again here, where no other job of the company can run: moved refs are another repository than the
-				// one that was checked, and its pack waits for the run that checks it.
 				const now = checkedOf(await this.#jobs.check(job, { repository }, {}));
 				if (now.state !== "present" || now.refsSha256 !== checked.refsSha256) return { state: "moved" as const };
 				packing = true;
-				return await this.#jobs.collect(job, { repository }, block, { packRefs: false, prune: false });
+				return await this.#jobs.collect(job, { repository }, block, {
+					packRefs: false,
+					prune: false,
+					packArchivedRefs: true,
+				});
 			});
 			if (collected?.state === "collected") outcome.gc.state = "collected";
 			else {

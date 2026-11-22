@@ -33,6 +33,7 @@ import {
 	isCloudAgentFolder,
 } from "@qorpera/cloud-client/cloud-agent-folder";
 import type { JsonValue } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	CloudCompanyHeadConflict,
 	CloudCompanyPathNotText,
@@ -223,21 +224,26 @@ async function readNotebook(
 	const logs: NotebookFile[] = new Array(listed.length);
 	let next = 0;
 	// After one failure the answer is already a failure: stop reading the rest.
-	let failed = false;
-	const [profile] = await Promise.all([
-		readFile(gateway, paths.profile, signal),
-		...Array.from({ length: Math.min(READ_CONCURRENCY, listed.length) }, async () => {
-			while (!failed && next < listed.length) {
-				const index = next++;
-				try {
-					logs[index] = await readFile(gateway, listed[index], signal);
-				} catch (error) {
-					failed = true;
-					throw error;
+	const stop = new AbortController();
+	const [profile] = await withAbortScopes([signal, stop.signal], (readSignal) =>
+		Promise.all([
+			readFile(gateway, paths.profile, readSignal).catch((error) => {
+				stop.abort(error);
+				throw error;
+			}),
+			...Array.from({ length: Math.min(READ_CONCURRENCY, listed.length) }, async () => {
+				while (!readSignal.aborted && next < listed.length) {
+					const index = next++;
+					try {
+						logs[index] = await readFile(gateway, listed[index], readSignal);
+					} catch (error) {
+						stop.abort(error);
+						throw error;
+					}
 				}
-			}
-		}),
-	]);
+			}),
+		]),
+	);
 	return { profile, logs };
 }
 
@@ -690,12 +696,12 @@ export function cloudMemoryTools(
 			];
 			const scored = all.map((fact, index) => {
 				const haystack = normalize(fact.fact);
-				return { fact, index, hits: words.filter((word) => haystack.includes(word)).length };
+				return { fact, haystack, index, hits: words.filter((word) => haystack.includes(word)).length };
 			});
 			let matched = scored.filter((item) => item.hits > 0);
 			if (!matched.length) {
 				const needle = normalize(request.query);
-				matched = scored.filter((item) => normalize(item.fact.fact).includes(needle));
+				matched = scored.filter((item) => item.haystack.includes(needle));
 			}
 			matched.sort((a, b) => b.hits - a.hits || b.fact.date.localeCompare(a.fact.date) || a.index - b.index);
 			const results = matched.slice(0, request.limit).map((item) => ({ ...item.fact }));

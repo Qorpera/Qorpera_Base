@@ -824,4 +824,210 @@ describe("runCloudGeminiToolSession", () => {
 		expect(error).toBeInstanceOf(DOMException);
 		expect((error as DOMException).name).toBe("TimeoutError");
 	});
+
+	it("bounds unbounded tool loops with budget_exhausted, excludes turnCorrection and timeout-bounded runs, and prunes folded inlineData", async () => {
+		const loopBoundary = makeBoundary([
+			{
+				name: "spin_tool",
+				description: "Spin",
+				source: "company_file",
+				inputSchema: { type: "object", additionalProperties: false },
+				parseArguments: () => ({}),
+				execute: async () => ({ kind: "text", value: "again" }),
+			},
+		]);
+		let spinRequests = 0;
+		const spinFetch: typeof fetch = async () => {
+			spinRequests += 1;
+			return new Response(
+				JSON.stringify({
+					candidates: [
+						{
+							content: {
+								role: "model",
+								parts: [{ functionCall: { id: `call_${spinRequests}`, name: "spin_tool", args: {} } }],
+							},
+						},
+					],
+					usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 10 },
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		};
+		const capError = await runCloudGeminiToolSession({
+			boundary: loopBoundary,
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: spinFetch,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Loop",
+			maxTurns: 3,
+			signal: new AbortController().signal,
+		}).catch((failure: unknown) => failure);
+		expect(spinRequests).toBe(3);
+		expect(nativeRuntimeFailureMetadata(capError)).toMatchObject({ category: "budget_exhausted" });
+
+		let correctionRequests = 0;
+		const correctionFetch: typeof fetch = async () => {
+			correctionRequests += 1;
+			return new Response(
+				JSON.stringify({
+					candidates: [
+						{
+							content: {
+								role: "model",
+								parts: [{ text: correctionRequests === 1 ? "Draft." : "Final." }],
+							},
+						},
+					],
+					usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 10 },
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		};
+		const corrected = await runCloudGeminiToolSession({
+			boundary: makeBoundary([]),
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: correctionFetch,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Draft then fix",
+			maxTurns: 1,
+			turnCorrection: async () => "Send your final reply.",
+			signal: new AbortController().signal,
+		});
+		expect(correctionRequests).toBe(2);
+		expect(corrected.fencedRequests).toBe(2);
+
+		let boundedRequests = 0;
+		const boundedFetch: typeof fetch = async () => {
+			boundedRequests += 1;
+			if (boundedRequests <= 201) {
+				return new Response(
+					JSON.stringify({
+						candidates: [
+							{
+								content: {
+									role: "model",
+									parts: [{ functionCall: { id: `long_${boundedRequests}`, name: "spin_tool", args: {} } }],
+								},
+							},
+						],
+						usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			return new Response(
+				JSON.stringify({
+					candidates: [{ content: { role: "model", parts: [{ text: "Completed after 201 tool turns." }] } }],
+					usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		};
+		const longBounded = await runCloudGeminiToolSession({
+			boundary: loopBoundary,
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: boundedFetch,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			timeoutMs: 60_000,
+			prompt: "Long timeout-bounded run",
+			signal: new AbortController().signal,
+		});
+		expect(longBounded.toolCalls).toBe(201);
+		expect(boundedRequests).toBe(202);
+
+		const pngBytes = Buffer.from(TINY_PNG_BASE64, "base64");
+		const pngSha256 = createHash("sha256").update(pngBytes).digest("hex");
+		const imgBoundary = makeBoundary([
+			{
+				name: "take_shot",
+				description: "Take a screenshot",
+				source: "runtime",
+				images: true,
+				inputSchema: { type: "object", additionalProperties: false },
+				parseArguments: () => ({}),
+				execute: async () => ({
+					kind: "json",
+					value: { captured: true, imageSha256: pngSha256 },
+					image: { png: pngBytes, sha256: pngSha256 },
+				}),
+			},
+		]);
+		const bodies: Array<Record<string, unknown>> = [];
+		let imgTurn = 0;
+		const imgFetch: typeof fetch = async (_url, init) => {
+			bodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+			imgTurn += 1;
+			if (imgTurn <= 3) {
+				return new Response(
+					JSON.stringify({
+						candidates: [
+							{
+								content: {
+									role: "model",
+									parts: [{ functionCall: { id: `shot_${imgTurn}`, name: "take_shot", args: {} } }],
+								},
+							},
+						],
+						usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 10 },
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			return new Response(
+				JSON.stringify({
+					candidates: [{ content: { role: "model", parts: [{ text: "Done." }] } }],
+					usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 10 },
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		};
+		await runCloudGeminiToolSession({
+			boundary: imgBoundary,
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: imgFetch,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Take screenshots",
+			composeContext: async (request) => {
+				if (request.items.length < 5) return { input: request.items.map((_, keep) => ({ keep })) };
+				if (request.items.length === 5) {
+					return {
+						input: [
+							{ keep: 0 },
+							{ work: JSON.stringify({ schema: "qorpera.run-work/v1", lines: ["0+1|Shot 1 folded"] }) },
+							{ keep: 3 },
+							{ keep: 4 },
+						],
+					};
+				}
+				return { input: [{ keep: 0 }, { keep: 2 }] };
+			},
+			signal: new AbortController().signal,
+		});
+		expect(bodies).toHaveLength(4);
+		expect(JSON.stringify(bodies[1])).toContain(TINY_PNG_BASE64);
+		expect(JSON.stringify(bodies[2])).toContain("Shot 1 folded");
+		expect(JSON.stringify(bodies[2])).toContain(TINY_PNG_BASE64);
+		expect(JSON.stringify(bodies[3])).not.toContain(TINY_PNG_BASE64);
+	});
 });

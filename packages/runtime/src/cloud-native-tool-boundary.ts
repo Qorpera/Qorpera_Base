@@ -301,6 +301,10 @@ export type CloudToolContent = ({ kind: "text"; value: string } | { kind: "json"
 
 /** The auto-review step (runtime v130) an acting call passes before it runs. */
 export interface CloudNativeActionReview {
+	willReview?(call: {
+		tool: Pick<CloudNativeTool, "name" | "source" | "reviewContents" | "reviewIdentity">;
+		parsed: JsonValue;
+	}): boolean;
 	check(
 		call: {
 			/** What the review needs of the tool: a full one satisfies it, and so does one of the home's own actions,
@@ -1271,6 +1275,7 @@ export class CloudNativeToolBoundary {
 		if (this.#review) {
 			// Auto-review (v130): an acting call runs only after the reviewer lets it, or a
 			// member approves it. A review that cannot run never counts as an approval.
+			const reviewed = this.#review.willReview ? this.#review.willReview({ tool, parsed }) : true;
 			let gate: CloudActionGateResult;
 			try {
 				gate = await untilStopped(
@@ -1304,13 +1309,15 @@ export class CloudNativeToolBoundary {
 				return reported("denied", { kind: "text", value: text });
 			}
 			actionReviewId = gate.reviewId;
-			// The call may have waited for an approval: authority is checked again right before the effect (contract 4.3).
-			try {
-				this.#signal.throwIfAborted();
-				await untilStopped(() => this.#assertActive(this.#signal), this.#signal);
-				this.#signal.throwIfAborted();
-			} catch {
-				return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
+			if (tool.prepare || reviewed) {
+				// The call may have waited for an approval: authority is checked again right before the effect (contract 4.3).
+				try {
+					this.#signal.throwIfAborted();
+					await untilStopped(() => this.#assertActive(this.#signal), this.#signal);
+					this.#signal.throwIfAborted();
+				} catch {
+					return this.#result(callId, tool, digest, "denied", { kind: "text", value: "AUTHORITY_UNAVAILABLE" });
+				}
 			}
 		}
 		// An acting call is committed to the work log, with no result yet, before it runs. If that cannot land, it does

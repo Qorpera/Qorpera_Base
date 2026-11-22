@@ -627,3 +627,89 @@ it("keeps a fake instruction a tool result carried into the run's lines as data 
 	});
 	expect(cloudNativeContextReply(request, composed).input).toEqual(composed.input);
 });
+
+it("reads step-tree blocks in parallel with bounded concurrency without calling AbortSignal.any", async () => {
+	const anySpy = vi.spyOn(AbortSignal, "any");
+	try {
+		const log = new FakeLog();
+		let active = 0;
+		let peak = 0;
+		const origTreeRead = log.treeRead.bind(log);
+		log.treeRead = async (path: string) => {
+			active += 1;
+			peak = Math.max(peak, active);
+			await new Promise((resolve) => setTimeout(resolve, 15));
+			try {
+				return await origTreeRead(path);
+			} finally {
+				active -= 1;
+			}
+		};
+		const lines = writer(log, fake(named).call);
+		log.commit(...Array.from({ length: 64 }, (_, j) => step(j, `short ${j}`)));
+		await lines.finish(open());
+		expect(peak).toBeGreaterThanOrEqual(2);
+		expect(peak).toBeLessThanOrEqual(8);
+		expect(anySpy).not.toHaveBeenCalled();
+		expect(log.commits.length).toBeGreaterThanOrEqual(1);
+	} finally {
+		anySpy.mockRestore();
+	}
+});
+
+it("keeps unstored lines and never overwrites with version null or latches stale when block reads abort", async () => {
+	const log = new FakeLog();
+	const existingPath = "t0/00000009.jsonl";
+	const existingLine: MemoryTreeLine = { l: 0, k: 144, free: true, text: "existing 144" };
+	log.files.set(existingPath, { version: "v-existing", text: memoryBlockText([existingLine], "run") });
+
+	const runAbort = new AbortController();
+	let readCalls = 0;
+	const origTreeRead = log.treeRead.bind(log);
+	log.treeRead = async (path: string) => {
+		readCalls += 1;
+		// WHY: Abort after #blocks reads finish and #store begins, while treeRead ignores the signal and resolves.
+		if (readCalls === 12) runAbort.abort();
+		return origTreeRead(path);
+	};
+	const lines = new CloudRunStepLines({
+		log,
+		call: fake(named).call,
+		lane: new MemoryCompactLane(),
+		signal: runAbort.signal,
+	});
+	log.commit(...Array.from({ length: 160 }, (_, j) => step(j, `short ${j}`)));
+	await lines.lines(160, BUDGET, open());
+	expect(log.commits).toEqual([]);
+
+	log.treeRead = origTreeRead;
+	await lines.finish(open());
+	const writtenExisting = log.commits.flatMap((commit) => commit.blocks).find((block) => block.path === existingPath);
+	expect(writtenExisting?.version).toBe("v-existing");
+	expect(log.lines(existingPath).map((line) => line.text)).toContain("existing 144");
+
+	const staleLog = new FakeLog();
+	const staleAbort = new AbortController();
+	let firstCommit = true;
+	const origCommitTree = staleLog.commitTree.bind(staleLog);
+	staleLog.commitTree = async (key, blocks, generation) => {
+		if (firstCommit) {
+			firstCommit = false;
+			staleAbort.abort();
+			return "stale";
+		}
+		return origCommitTree(key, blocks, generation);
+	};
+	const staleLines = new CloudRunStepLines({
+		log: staleLog,
+		call: fake(named).call,
+		lane: new MemoryCompactLane(),
+		signal: staleAbort.signal,
+	});
+	staleLog.commit(step(0, "short 0"), step(1, "short 1"));
+	await staleLines.lines(2, BUDGET, open());
+	expect(staleLog.files.size).toBe(0);
+
+	await staleLines.finish(open());
+	expect(staleLog.lines().map((line) => `${line.l}.${line.k}`)).toEqual(["0.0", "0.1", "1.0"]);
+});
