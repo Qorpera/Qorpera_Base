@@ -143,6 +143,8 @@ impl Program {
 			.arg("--cache-dir").arg(caches(node))
 			.env_remove(KERNEL_OFF).env_remove(NOTIFY_FAILS).env_remove(NAMES).env_remove(SLOW_LOOKUP).env_remove(SLOW_FALL_BACK)
 			.env_remove(CLOSE_GATE).env_remove(LATE_CREATE).env_remove(PASS_MS).env_remove(DISK_BYTES)
+			// WHY: isolate cache-sweep tests from low free space (<10%) on shared CI VMs unless a test overrides DISK_BYTES.
+			.env(DISK_BYTES, "100000000")
 			.envs(env.iter().copied())
 			.stdout(Stdio::null()).stderr(File::create(&log).unwrap())
 			.spawn().unwrap();
