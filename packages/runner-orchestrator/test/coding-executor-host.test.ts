@@ -5412,9 +5412,16 @@ describe("a coding machine's secret values for the folder service's save check (
 		]);
 	});
 
-	it("releases cached machine secrets on sleep, machine removal, external stop, and stale keeper prune", async () => {
+	it("releases cached machine secrets on sleep, machine removal, external stop, folder restart, new disk, and stale keeper prune", async () => {
+		const extraScope = (f: Awaited<ReturnType<typeof secretsFixture>>) => ({
+			companyId: f.claim.profileId,
+			workerId: randomUUID(),
+			leaseToken: randomUUID(),
+		});
+
 		const fSleep = await secretsFixture({ environment: { API_KEY } });
 		await fSleep.host.prepareWorkspace(fSleep.claim, fSleep.turn(), fSleep.signal);
+		await fSleep.commandSecrets.attached(fSleep.machine.machineId, extraScope(fSleep), fSleep.signal);
 		expect(fSleep.commandSecrets.values(fSleep.machine.machineId)).toEqual([API_KEY]);
 		fSleep.views.endMachine.mockResolvedValue([
 			{ workerId: fSleep.claim.workerId, viewId: fSleep.viewId, saved: true, closed: true },
@@ -5427,6 +5434,7 @@ describe("a coding machine's secret values for the folder service's save check (
 
 		const fRemove = await secretsFixture({ environment: { API_KEY } });
 		await fRemove.host.prepareWorkspace(fRemove.claim, fRemove.turn(), fRemove.signal);
+		await fRemove.commandSecrets.attached(fRemove.machine.machineId, extraScope(fRemove), fRemove.signal);
 		expect(fRemove.commandSecrets.values(fRemove.machine.machineId)).toEqual([API_KEY]);
 		fRemove.state.listed = [
 			fRemove.entry({ removeDue: true, reserved: false, asleepSince: new Date().toISOString() }),
@@ -5446,6 +5454,7 @@ describe("a coding machine's secret values for the folder service's save check (
 
 		const fStop = await secretsFixture({ environment: { API_KEY } });
 		await fStop.host.prepareWorkspace(fStop.claim, fStop.turn(), fStop.signal);
+		await fStop.commandSecrets.attached(fStop.machine.machineId, extraScope(fStop), fStop.signal);
 		fStop.host.endTurn(fStop.claim);
 		expect(fStop.commandSecrets.values(fStop.machine.machineId)).toEqual([API_KEY]);
 		fStop.state.stoppedFromOutside = true;
@@ -5457,6 +5466,110 @@ describe("a coding machine's secret values for the folder service's save check (
 			"CODING_FOLDER_VIEW_UNSAVED",
 		);
 		expect(fStop.commandSecrets.values(fStop.machine.machineId)).toBeUndefined();
+
+		const fRestart = await secretsFixture({ environment: { API_KEY } });
+		await fRestart.host.prepareWorkspace(fRestart.claim, fRestart.turn(), fRestart.signal);
+		await fRestart.commandSecrets.attached(fRestart.machine.machineId, extraScope(fRestart), fRestart.signal);
+		fRestart.host.endTurn(fRestart.claim);
+		fRestart.state.folderRestart = true;
+		fRestart.lxd.running = false;
+		fRestart.environment.mockRejectedValueOnce(new Error("CODING_ENVIRONMENT_UNAVAILABLE"));
+		await expect(fRestart.host.prepareWorkspace(fRestart.claim, fRestart.turn(), fRestart.signal)).rejects.toThrow(
+			"CODING_ENVIRONMENT_UNAVAILABLE",
+		);
+		expect(fRestart.commandSecrets.values(fRestart.machine.machineId)).toBeUndefined();
+
+		const fNewDisk = await secretsFixture({ environment: { API_KEY } });
+		await fNewDisk.host.prepareWorkspace(fNewDisk.claim, fNewDisk.turn(), fNewDisk.signal);
+		await fNewDisk.commandSecrets.attached(fNewDisk.machine.machineId, extraScope(fNewDisk), fNewDisk.signal);
+		fNewDisk.host.endTurn(fNewDisk.claim);
+		fNewDisk.state.folderRestart = true;
+		fNewDisk.state.newDisk = true;
+		fNewDisk.lxd.running = false;
+		fNewDisk.environment.mockRejectedValueOnce(new Error("CODING_ENVIRONMENT_UNAVAILABLE"));
+		await expect(fNewDisk.host.prepareWorkspace(fNewDisk.claim, fNewDisk.turn(), fNewDisk.signal)).rejects.toThrow(
+			"CODING_ENVIRONMENT_UNAVAILABLE",
+		);
+		expect(fNewDisk.commandSecrets.values(fNewDisk.machine.machineId)).toBeUndefined();
+	});
+
+	it("preserves a re-attached session's secrets when a stale detach record for an older token finishes", async () => {
+		const f = await secretsFixture({ environment: { API_KEY } });
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		let detachEntered!: () => void;
+		let releaseDetach!: () => void;
+		const detachStarted = new Promise<void>((resolve) => {
+			detachEntered = resolve;
+		});
+		const detachGate = new Promise<void>((resolve) => {
+			releaseDetach = resolve;
+		});
+		const baseCall = f.call.getMockImplementation()!;
+		let heldDetach = false;
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_record_coding_session_detached" && !heldDetach) {
+				heldDetach = true;
+				detachEntered();
+				await detachGate;
+			}
+			return baseCall(method, args, signal);
+		});
+		f.state.listed = [f.entry()];
+		f.state.release.set(f.claim.workerId, "ARCHIVED");
+		await f.host.keep(f.signal);
+		await detachStarted;
+		f.state.release.delete(f.claim.workerId);
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(f.commandSecrets.values(f.machine.machineId)).toEqual([API_KEY]);
+		releaseDetach();
+		await f.host.settled();
+		expect(f.commandSecrets.values(f.machine.machineId)).toEqual([API_KEY]);
+	});
+
+	it("aborts sibling observeFolder calls on first error and cancels directory retry pauses on caller abort", async () => {
+		const f = await folderFixture();
+		const workers = Array.from({ length: 4 }, () => ({ workerId: randomUUID(), attachmentToken: randomUUID() }));
+		f.state.listed = [f.entry({ attached: workers })];
+		const siblingSignals: AbortSignal[] = [];
+		let count = 0;
+		mocked.guestStatus.mockImplementation(async (_req, itemSignal) => {
+			const idx = count++;
+			if (idx === 0) {
+				await new Promise<void>((resolve) => setTimeout(resolve, 15));
+				throw new Error("CODING_GUEST_UNREACHABLE");
+			}
+			siblingSignals.push(itemSignal);
+			await new Promise<void>((resolve) => {
+				if (itemSignal.aborted) resolve();
+				else itemSignal.addEventListener("abort", () => resolve(), { once: true });
+			});
+			throw itemSignal.reason;
+		});
+		const outcomes = await f.host.keep(f.signal);
+		expect(outcomes).toEqual([
+			{
+				machineId: f.machine.machineId,
+				workerId: null,
+				step: "keep",
+				state: "failed",
+				code: "CODING_GUEST_UNREACHABLE",
+			},
+		]);
+		expect(siblingSignals).toHaveLength(3);
+		expect(siblingSignals.every((sig) => sig.aborted)).toBe(true);
+
+		const fDir = await folderFixture();
+		const impatient = new LxdCodingExecutorHost({ ...fDir.options, folder: fDir.folder, storageStepTimeoutMs: 50 });
+		await impatient.prepareWorkspace(fDir.claim, fDir.turn(), fDir.signal);
+		mocked.storageAssert.mockImplementationOnce(() => new Promise(() => {}));
+		const controller = new AbortController();
+		const started = performance.now();
+		globalThis.setTimeout(() => controller.abort(new Error("caller-cancelled")), 80);
+		await expect(impatient.publish(fDir.claim, fDir.submission, controller.signal)).rejects.toMatchObject({
+			name: "AbortError",
+		});
+		expect(performance.now() - started).toBeLessThan(300);
 	});
 
 	it("observes multiple attached sessions concurrently with bounded parallelism and runs housekeep steps concurrently in list order", async () => {
