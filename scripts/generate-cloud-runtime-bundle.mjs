@@ -7,11 +7,22 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929027299_runtime_bundle_activation_v272.sql";
-const activationVersion = 272;
-const previousActivationVersion = 271;
-const previousActivationSha256 = "65fdee24c81b0a24a84aaf0359a68decf04e840d7668c3b35d26cf3ed0a6ee47";
-const activationRequires = Object.freeze([]);
+const activation = "supabase/migrations/20260929027399_runtime_bundle_activation_v273.sql";
+const activationVersion = 273;
+const previousActivationVersion = 272;
+const previousActivationSha256 = "04b3381f2c24f3011cfd8dbc57bf11b0dcf0d1e206ce6626ea054047d15ff4b9";
+const activationRequires = Object.freeze([
+	[
+		"20260930843000_surface_platform_live",
+		"#2095 (Surface-First Company Harness): bundle 273 includes Surface tools and runtime flows gated by qorpera_surface_settings",
+		"to_regclass('public.qorpera_surface_settings') is not null and to_regprocedure('public.qorpera_surfaces_enabled()') is not null",
+	],
+	[
+		"20260930844000_surface_host_wiring",
+		"#2126 (Surface host wiring): bundle 273 relies on Surface folder snapshot, site upload, session enqueue, and automation trigger RPCs",
+		"to_regprocedure('public.qorpera_surface_trigger_automation(uuid)') is not null and to_regprocedure('public.qorpera_surface_site_version_list(uuid,jsonb)') is not null",
+	],
+]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);
