@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { POSTGRES_UUID_PATTERN as UUID } from "@qorpera/contracts";
+import { withAbortScope } from "./abort-scope.ts";
 import {
 	DigitalPostAnswerTooLarge,
 	type DigitalPostClient,
@@ -466,7 +467,7 @@ export class CloudDigitalPostSyncUpkeep {
 	}
 
 	async pass(): Promise<void> {
-		await logDigitalPostSyncPass(this.#syncs, this.#closing.signal);
+		await withAbortScope(this.#closing.signal, (signal) => logDigitalPostSyncPass(this.#syncs, signal));
 	}
 }
 

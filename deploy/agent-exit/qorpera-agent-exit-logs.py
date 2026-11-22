@@ -7,8 +7,9 @@ flows-YYYY-MM-DD.jsonl (the logger), the client history clients-YYYY-MM-DD.jsonl
 `tend` runs every 5 minutes (qorpera-agent-exit-logs.timer, root) and keeps them small and safe for the node:
 - it seals each open file into a compressed part (<kind>-YYYY-MM-DD.pNNN.jsonl.gz) once its day is closed, or sooner
   once it holds 64 MiB. A day is closed two hours after it ends (UTC): the plug's "plugged" lines carry the entry's
-  time, normally less than an hour back. The writers open the file for each line, so a renamed file takes no new
-  lines. The open file is first renamed to <kind>-YYYY-MM-DD.pNNN.sealing, so a pass cut short finishes the same part
+  time, normally less than an hour back. The plug opens the file for each line and the logger checks the path's inode
+  before each write (reopening on rename or unlink and closing while paused), so a renamed file takes no new lines. The
+  open file is first renamed to <kind>-YYYY-MM-DD.pNNN.sealing, so a pass cut short finishes the same part
   and never seals a line twice;
 - it copies dns.log into dns-YYYY-MM-DDTHHMMSSZ.log (then compressed) and truncates it once a day, or sooner once it
   holds 64 MiB. The copy stops at what was there plus one part, however fast dnsmasq writes; dnsmasq appends, so it
@@ -99,7 +100,7 @@ FLOOR_PERCENT = 10.0
 # points of the disk free.
 CAP_SHARE = 0.8
 LOW_WATER_MARGIN = 5.0
-# How long the renamed files wait for a line already being written (the writers open the file for each line).
+# WHY: Renamed files wait for in-flight writes (the plug opens per line; the logger stats before each write).
 SETTLE_SECONDS = 2.0
 # Distinct destinations are kept up to this many per company and day; past it the count says "at least".
 DESTINATIONS_KEPT = 100_000

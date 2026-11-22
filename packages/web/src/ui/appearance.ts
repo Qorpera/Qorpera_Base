@@ -170,13 +170,16 @@ export function safariOnMac(): boolean {
 export function applyBrowserChrome(): void {
 	const root = document.documentElement;
 	if (!safariOnMac()) {
-		delete root.dataset.chrome;
-		delete root.dataset.windowInactive;
+		if (root.dataset.chrome !== undefined) delete root.dataset.chrome;
+		if (root.dataset.windowInactive !== undefined) delete root.dataset.windowInactive;
 		return;
 	}
-	root.dataset.chrome = "safari";
-	if (document.hasFocus()) delete root.dataset.windowInactive;
-	else root.dataset.windowInactive = "";
+	if (root.dataset.chrome !== "safari") root.dataset.chrome = "safari";
+	if (document.hasFocus()) {
+		if (root.dataset.windowInactive !== undefined) delete root.dataset.windowInactive;
+	} else if (root.dataset.windowInactive !== "") {
+		root.dataset.windowInactive = "";
+	}
 }
 
 /** Keep the in-front mark current. Once the page itself loses focus, the focus and blur
@@ -186,22 +189,50 @@ function watchBrowserChrome(): () => void {
 	applyBrowserChrome();
 	if (document.documentElement.dataset.chrome !== "safari") return () => undefined;
 	let poll: ReturnType<typeof setInterval> | undefined;
-	const onFocus = () => {
+	let defer: ReturnType<typeof setTimeout> | undefined;
+	let blurred = false;
+	const stopPoll = () => {
 		if (poll !== undefined) clearInterval(poll);
 		poll = undefined;
+	};
+	const startPoll = () => {
+		if (document.visibilityState === "hidden") return;
+		poll ??= setInterval(applyBrowserChrome, 500);
+	};
+	const onFocus = () => {
+		blurred = false;
+		if (defer !== undefined) clearTimeout(defer);
+		defer = undefined;
+		stopPoll();
 		applyBrowserChrome();
 	};
 	const onBlur = () => {
+		blurred = true;
+		if (defer !== undefined) clearTimeout(defer);
 		// Focus moving into a frame blurs the page first; look once it has landed.
-		setTimeout(applyBrowserChrome, 0);
-		poll ??= setInterval(applyBrowserChrome, 500);
+		defer = setTimeout(() => {
+			defer = undefined;
+			applyBrowserChrome();
+		}, 0);
+		startPoll();
+	};
+	const onVisibility = () => {
+		if (document.visibilityState === "hidden") {
+			stopPoll();
+			return;
+		}
+		applyBrowserChrome();
+		if (blurred) startPoll();
 	};
 	window.addEventListener("focus", onFocus);
 	window.addEventListener("blur", onBlur);
+	document.addEventListener("visibilitychange", onVisibility);
 	return () => {
-		if (poll !== undefined) clearInterval(poll);
+		if (defer !== undefined) clearTimeout(defer);
+		stopPoll();
 		window.removeEventListener("focus", onFocus);
 		window.removeEventListener("blur", onBlur);
+		document.removeEventListener("visibilitychange", onVisibility);
 	};
 }
 

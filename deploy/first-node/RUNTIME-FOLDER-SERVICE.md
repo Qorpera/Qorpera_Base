@@ -384,7 +384,8 @@ service, so the execution host stays small:
   text, version, offset}], searched, binary, unreadable, reads: [{path, kind, version, authority?}], next}`. Only a
   run's own view (a core view) searches; an operator mount's machine gets `BAD_REQUEST`.
   - **Search version 2 (keyholes S4, 12 Nov 2026).** The hello's answer to a run's own view says `search: {version: 2,
-    regex}` (`regex`: the service runs V8's linear-time engine, below). A request with `version: 2` takes `{version,
+    regex}` (`regex: true` whenever the native Rust search worker is present, or when the JS fallback runs with V8's
+    linear-time engine). A request with `version: 2` takes `{version,
     query, regex, path, glob, namesOnly, filesOnly, caseSensitive, context, after}`: `query` null (with `namesOnly`) is a
     find of the names the glob keeps; `filesOnly` answers each file with a match once, with how many of its lines match
     (`files: [{path, version, count, partial?}]`; a page that began inside a file gives it an entry at its end, count 0
@@ -405,21 +406,46 @@ service, so the execution host stays small:
     after it up to the next hit, each its first 200 characters: no line is shown twice. A page that ends at a hit, or
     out of time, goes on from the first of the lines a next hit would show before it (`from`), and a page out of time
     stops only once that moves the search on, so pages show the same lines around each hit as one long page would.
-  - **Regular expressions.** RE2's kind, every step linear, run by V8's linear-time engine (the `l` flag), which node
-    runs only when started with `--enable-experimental-regexp-engine`. **Off as the unit ships** (v240, 13 Nov 2026:
-    the engine is the founder's open choice): the unit starts node without the flag, so the hello says `regex: false`,
-    the runtime refuses a pattern in words (`REGEX_OFF`, nothing sent), and the service refuses one too if asked. **The
-    one change that turns patterns on:** the unit's line
-    `ExecStart=/usr/bin/node --jitless --enable-experimental-regexp-engine /opt/qorpera-folder-service/qorpera-folder-service.cjs`
-    and its pin `EXPECTED_SERVICE_UNIT_SHA256` in `install-folder-service.sh` moved to it (`scripts/package-folder-service.test.mjs`
-    checks both states), then a folder service roll; nothing else changes (the tool, the runtime and the protocol
-    already take it). That engine refuses what it cannot run in linear time (a count above 16, counts inside counts) and
-    has no case folding, so `regex.ts` reads each pattern first: it refuses back-references, lookaround, inline flags,
-    `\p` classes, POSIX classes and unknown escapes, with a coded message that says what to change (`REGEX_…: …`,
-    as `BAD_REQUEST`), and for a search that is not case-sensitive it lowercases the pattern's letters and adds each
-    class range's lowercase forms (up to 4,096 characters of ranges a pattern), and the text is lowercased as for a
-    literal search. A pattern's piece is 256 KiB (the engine runs one in one step, about 20 ms a MiB under
-    `--jitless`, measured 48 MB/s on node 24); `^` and `$` match at each line's ends.
+  - **Native search worker & regular expressions (Wave-2 decision, 21 Nov 2026).** In v240 (13 Nov 2026), regular
+    expressions shipped off as the founder's open engine choice: V8's linear-time engine (`l` flag) requires starting
+    node with `--enable-experimental-regexp-engine` in `qorpera-folder-service.service`. On 21 Nov 2026 (Jonas,
+    Wave-2), we chose an off-event-loop pure-Rust Thompson NFA + trigram search worker inside `qorpera-folder` so
+    patterns run on every node with **no change to `qorpera-folder-service.service`** (no experimental V8 flag). When
+    `/opt/qorpera-folder-service/qorpera-folder` is present, `folder-service` lazily spawns a persistent
+    zero-credential child process (`qorpera-folder search-worker --storage-root <dir> --index-mib 512 --threads 4`)
+    over 4-byte length-prefixed JSON frames on stdin/stdout and advertises `regex: true` in `hello`.
+    - **Content-addressed index & linear-time regex.** All worker caches are budgeted inside `--index-mib` (default
+      `512 MiB`: `65%` / `332.8 MiB` (`349.0 MB`) arena-packed `CompactTree` synced views at `112 + path byte length`
+      bytes/entry — ~136 bytes/path at 24-byte benchmark paths, ~192 bytes/path at 80-byte company-repo paths — holding
+      all `SEARCH_PATHS = 1,500,000` paths simultaneously plus ~61 MB of transient patch-copy headroom for average paths
+      up to ~80 bytes; `25%` / `128.0 MiB` sharded LRU trigram filters; `10%` / `51.2 MiB` verified manifests/chunks),
+      keyed by `(profile_id, manifest_sha256)`. On cache miss, objects are opened under
+      `--storage-root/<profile_id>/<sha256>` with `O_NOFOLLOW` and verified against SHA-256 and manifest metadata
+      before indexing; verified immutable objects share index entries across parallel views with zero cross-tenant
+      leakage. Warm trigram skips check the company's profile directory once per search (catching an unmounted share
+      without firing per-file `lstat` RPCs on NFS, matching `NasObjects`'s in-memory `ByteCache` semantics for immutable
+      objects) and still record every skipped file in `reads` at its searched version so read-provenance accounting
+      matches a full scan identically. Patterns run on a pure-Rust Thompson NFA engine (`crates/qorpera-folder/src/re.rs`,
+      `O(m * n)` worst-case, zero backtracking) with exact `REGEX_*` refusal codes and Unicode case folding (`ς -> σ`)
+      matching `regex.ts` (count limit 16, no back-references, lookaround, inline flags, `\p` or POSIX classes).
+    - **Incremental tree sync, budget back-pressure & event-loop budget.** Each `ViewTree` syncs to the worker once on
+      first search via `2,048`-entry chunks, yielding to the Node event loop every `10 ms` (`setImmediate`) and
+      checking `serving()` on each turn (measured on `node02` under `node --jitless`: 100,000 paths in `680.6 ms`,
+      `12.6–32.1 ms` max lag; 1,000,000 paths in `7,025.2 ms`, `17.4 ms` max lag). Subsequent feed mutations apply an
+      incremental `patchTree` delta from `ViewTree.changesSince(rev)` (retaining at least 512 newest revisions) using a
+      yielding `O(N + K)` merge in Node and a single-pass `O(N + K)` linear merge in Rust (measured under `--jitless`:
+      at 100,000 paths, 1-delta `16.0 ms` / `3.1 ms` lag and 512-delta `28.2 ms` / `13.0 ms` lag; at 1,000,000 paths,
+      1-delta `115.3 ms` / `18.2 ms` lag and 512-delta `132.7 ms` / `18.9 ms` lag), falling back to a cooperative full
+      sync on delta rollover, idle eviction when total tree bytes plus transient patch copies exceed the budget, or
+      worker restart. Node owns snapshot lifetime, verifies worker generation across every yield and frame send so
+      restarts never leak or install stale-generation trees, and enforces the `65%` tree budget via idle-only LRU
+      eviction (`inUse === 0`) plus FIFO back-pressure bounded by `SEARCH_WAIT_MS` (20 s, failing with `UNAVAILABLE` /
+      `SEARCH_BUSY` on timeout and draining any smaller waiters behind a timed-out head), so neither active nor mid-sync
+      snapshots are ever silently evicted; the worker's reader thread resolves each snapshot `Arc` synchronously before
+      a later `dropTree` frame can remove it.
+    - **JS fallback.** When `folderProgram` is unset (legacy unit tests), `folder-service` falls back to in-process
+      `search.ts` and `regex.ts` (`SEARCH_RUNNING = 4`, advertising `regex: true` only if node started with
+      `--enable-experimental-regexp-engine`).
   - **Globs.** `glob` keeps to matching paths: `*` and `?` within a name, a whole `**` part for any number of folders
     (a `**` inside a name is a `*`; a trailing `**` also matches the folder itself, so `docs/**` keeps `docs`); a glob
     without '/' is matched against the name. Matching walks the name and the
@@ -445,7 +471,9 @@ service, so the execution host stays small:
     another); an operator mount's view is `BAD_REQUEST`. A storage server that cannot be read now fails the page
     (`UNAVAILABLE`), and so does a share with no folder for the company's objects (an unmounted share shows an empty
     mountpoint), so a page never looks empty because the share is gone. A file whose bytes are missing from a share
-    that is there, or fail their hash check, is passed over, counted in `unreadable`, logged and not read. A `path` that names a file may give an empty page; that only confirms what the
+    that is there, or fail their hash check, is passed over, counted in `unreadable`, logged and not read (on a cache
+    miss; once verified and cached in `NasObjects` or the worker's content-addressed trigram index, immutable objects
+    are served or skipped from memory after checking the company's profile directory once per search). A `path` that names a file may give an empty page; that only confirms what the
     model named.
 - **What a page read.** `reads` names every folder whose names it walked, every file whose bytes it read (binary
   ones too), and every entry whose name is a hit, each with its receipt. A folder shown only because it holds readable
@@ -453,8 +481,17 @@ service, so the execution host stays small:
   reading them again: the page that gave the cursor drew on them. The run releases a page's reads with the run actor
   under the hash of the text it shows (`qorpera_folder_record_release`, P8), before the model sees it.
 - **Memory.** A searching run holds its view's tree, about 670 bytes a path: 16 runs at once of a 100,000-path
-  company take about 1 GiB of the service's memory beside its object cache. There is no index: each page reads the
-  files' text through the object cache (1 GiB by default, `cacheMiB`), and a tree is per run, not per company.
+  company take about 1 GiB of the service's memory beside its object cache (`cacheMiB`, 1 GiB by default). The
+  Node-side `SyncedTreeSnapshot` holds only references to existing `TreeEntry` objects and builds `SearchRead` entries
+  on demand for the `<= 4,000` returned read ranges (~12 MiB pointer overhead at `SEARCH_PATHS = 1,500,000`). The
+  persistent Rust search worker budgets all three caches inside `--index-mib 512` (`332.8 MiB` / `349.0 MB`
+  arena-packed `CompactTree` synced views at `112 + path byte length` bytes/entry — holding all `1,500,000`
+  `SEARCH_PATHS` plus ~61 MB transient patch-copy headroom for average paths up to ~80 bytes, or falling back to
+  idle-only LRU eviction + bounded FIFO back-pressure above that — `128.0 MiB` trigram filters, and `51.2 MiB` verified
+  manifests/chunks; measured on `node02` at `47.3 MiB` `VmRSS` after indexing 10,000 files, `19.0 MiB` `VmRSS` for a
+  100,000-path synced tree with ~24-byte paths, and `130.5 MiB` `VmRSS` for a 1,000,000-path synced tree, returning to
+  `130.7 MiB` after a 512-delta `patchTree` + old-snapshot drop), keeping combined Node (~2.15 GiB) + Rust (~0.53 GiB)
+  worst-case memory (~2.68 GiB) comfortably inside the unit's 3 GiB `MemoryMax`.
 - **Bounds for search in every run (keyholes S4).** The unit's `MemoryMax` is 3 GiB.
   - The trees of the node's run views hold at most 1,500,000 paths in all (`SEARCH_PATHS`, about 1 GiB), counting the
     trees being listed for them page by page (a first listing, and a listing again, which holds the old tree and the
@@ -464,10 +501,10 @@ service, so the execution host stays small:
     `SEARCH_FULL: …`; a request on a view closed so, `VIEW_CLOSED` with the same words, so the run opens another, which
     is refused while the node is full. The run tells the model the folder search is full now. Other views (desktops,
     coding machines) are not counted.
-  - At most 4 pages run at once on the node (`SEARCH_RUNNING`); each gives the event loop a turn every 10 ms, so a
-    machine's request waits at most about 40 ms behind search work. At most 32 more wait their turn, in order, each for
-    at most 20 s; past either, `UNAVAILABLE` with `SEARCH_BUSY: …`. A page reads ahead at most 8 files' first pieces
-    (into the object cache, which bounds them).
+  - Up to 16 search pages run concurrently off the event loop when the native Rust search worker is enabled
+    (`SEARCH_RUNNING_NATIVE = 16`, backed by 4 Rust worker threads); the in-process JS fallback remains capped at 4
+    (`SEARCH_RUNNING = 4`), yielding every 10 ms. At most 32 more wait their turn, in order, each for at most 20 s;
+    past either, `UNAVAILABLE` with `SEARCH_BUSY: …`.
   - Later step, not built: one tree per company per node, shared by its runs and filtered by each run's receipts, so
     memory grows with companies, not runs.
 - **The relay.** A native host is a Node program and has no vsock, so the execution host carries its connection.
@@ -496,7 +533,8 @@ service, so the execution host stays small:
     new admission rule, with its own review): a slice of its own.
   - **Releasing search version 2.** The folder service on each node first, while no company machine runs on the node
     (a restart of the service ends its machines' mounts: wait or pause them as on 11 Nov), its unit unchanged
-    (patterns off, above); then the runtime bundle (its `company_search` asks version 2 of a node that says it, version 1 of one that does
+    (patterns stayed off in v240 and turned on via the Rust `search-worker` on 21 Nov 2026 without changing the unit);
+    then the runtime bundle (its `company_search` asks version 2 of a node that says it, version 1 of one that does
     not); then each node's shared execution service, after the hello check above (its new default turns search on
     unless the host's environment says `off`). Any order works for what is live: an old runtime asks version 1 of a
     new service, and a new runtime asks only version 1's parts of an old one, saying so for the rest.
@@ -574,9 +612,11 @@ In slice 4b the core opens a view of its own for an offline shell command (`comp
   change set). The report then has `refused` with that reason, `commitId` and `seq` null, and each path `refused` and
   kept pending. The view stays open, so a final refused while the company is paused can be asked again once the pause
   lifts; but a final refused after a renewal closed the view meanwhile did not close it, and the machine hears
-  `VIEW_CLOSED` with why it closed. A boundary is never split: a final carrying more than 1000 units is refused `invalid` every time, and, as
-  after any final refused for good, the office service closes that view itself (slice 4d,
-  RUNTIME-FOLDER-COMPANY-MACHINES.md).
+  `VIEW_CLOSED` with why it closed. A final boundary is never split: a final carrying more than 1000 units (or exceeding
+  the core's structured-file limits) is refused `invalid` every time, and, as after any final refused for good, the
+  office service closes that view itself (slice 4d, RUNTIME-FOLDER-COMPANY-MACHINES.md). Non-final boundaries that
+  exceed those limits split across consecutive dependency-preserving change sets (RUNTIME-FOLDER-WRITES.md,
+  "A boundary").
 - **The command's end.** Once the command's end is recorded (C1B §8), the core saves only the final. A change set it
   refuses whole (a quiet period's included) stays pending, so the final carries it.
 - **Kept for the final.** A command's view that its own machine has held is kept when its last connection leaves: its

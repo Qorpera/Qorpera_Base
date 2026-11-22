@@ -2524,6 +2524,53 @@ describe("the review step", () => {
 		});
 	});
 
+	it("preserves custom repeat instructions on a first-time ask hold that parks", async () => {
+		const { review } = gate({
+			verdict: { decision: "ask", reason: "Needs approval.", builtIn: "none", ruleIds: [] },
+		});
+		const instance = new CloudActionReviewGate({
+			binding,
+			control: {
+				call: async (method) => {
+					if (method === "qorpera_begin_action_review") {
+						return { state: "review", agent: { name: "Tina" }, company: { name: "Acme" }, rules: [] };
+					}
+					if (method === "qorpera_record_action_review") {
+						return {
+							reviewId: randomUUID(),
+							decision: "ask",
+							card: true,
+							approverName: "Ada",
+							cardElsewhere: false,
+							reason: "Needs approval.",
+						};
+					}
+					return { state: "parked" };
+				},
+			},
+			reviewer: { review },
+			request: "",
+			holdMs: 0,
+			pollMs: 1,
+		});
+		const result = await instance.check(
+			{
+				tool: tool("home_command"),
+				parsed: { command: "x" },
+				argumentsText: '{"command":"x"}',
+				argumentSha256: "d".repeat(64),
+				callId: "home:first-ask",
+				repeat: "run that exact command again yourself",
+			},
+			new AbortController().signal,
+		);
+		expect(result).toMatchObject({
+			run: false,
+			text: expect.stringContaining("run that exact command again yourself"),
+		});
+		expect(result.run === false ? result.text : "").not.toContain("call the same tool again");
+	});
+
 	it("gives the reviewer everything a call would change when its arguments only name it, and never reviews a part", async () => {
 		const { calls, review } = gate({});
 		const control: CloudActionReviewControl = {

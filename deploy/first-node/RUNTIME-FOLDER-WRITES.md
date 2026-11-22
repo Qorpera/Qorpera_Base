@@ -108,7 +108,11 @@ This replaces §2's "saved with each command's read record": step 3 has no comma
 
 ## A boundary
 
-A boundary publishes the view's pending changes as one change set.
+A boundary publishes the view's pending changes as one change set whenever they fit the core's per-commit bounds (at
+most 1,000 units, 64 parsed structured files, and 1 MiB of parsed structured text). When a non-final boundary exceeds
+those bounds, the folder service splits it into consecutive dependency-preserving change sets (at most 100 per
+boundary), each under a deterministic operation key derived from the boundary's base key (`base`, `base:b1`, …). A
+final boundary (`final: true`) is never split: it remains one change set so the core closes the view atomically.
 
 **When.** In step 3: when the machine asks (`qorpera-folder publish --view-file <file>`), for a mount configured with a quiet
 period about two seconds after the last change (the desktop rule of §2), and before a change that needs what is
@@ -135,7 +139,8 @@ and, while its command runs, about two seconds after its last change, as a deskt
   its own, and the replacement conflicts if the version it names is gone. Removed, or moved to another path, it lets
   the live one go: removed at that version, or shown again if another machine changed it since (renamed only in case
   to the new one's name, too: the newer version shows there);
-- a new folder with everything created inside it: one `new_folder`;
+- a new folder with everything created inside it: one `new_folder` when its contents fit the core's limits (at most
+  10,000 entries, 64 structured files, and 1 MiB of structured text); otherwise `mkdir` followed by its child units;
 - a deleted folder with everything inside it: one `delete` with `asOfSeq`; a deleted file: `delete`;
 - `mkdir` of an empty folder: `mkdir`.
 
@@ -143,8 +148,16 @@ and, while its command runs, about two seconds after its last change, as a deskt
 independently: one may save while another fails. And a unit's `expectedVersion` must be known before its change set,
 while a move gives what it moves new versions. So the view only lets pending changes build up that can be published
 together that way: every unit names a live path as it is, no unit needs a version another unit makes, and no unit's
-failure can lose another's work. The units are ordered so a path is freed before it is filled, and a new folder made
-before what goes in it. Then:
+failure can lose another's work. The units are ordered so a path is freed before it is filled, a new folder is made before what goes in it, and in any
+git directory (`repo.git/` or `.git/`) new objects and their folders land before the index, logs, and refs that name
+them (with those metadata units kept in one batch when they fit, and object deletions after them). When a non-final
+boundary splits across batches, each committed batch settles immediately (clearing its saved entries while keeping
+later batches and earlier kept byte-carrying failures pending) and records its own notice if unasked. If a later batch
+is refused whole, gets no answer, waits on the feed (`unsettled`), or hits the per-boundary batch cap, the boundary
+stops at once: earlier committed batches stay committed, remaining batches stay pending (or settle together under the
+view's non-holding refusal rule), and the report returns `commitId: null` and `seq: null` (with `refused` when refused)
+while `paths` lists both the earlier batches' outcomes and the uncommitted paths' outcomes; when every batch commits,
+`commitId` and `seq` name the last committed batch. Then:
 - **a conflict** keeps this view's version on the receipt (P17's conflict copies, below), and the path shows the
   live version;
 - **refused, denied, or not applied** (its folder was not made, the save did not get through) for a unit carrying new

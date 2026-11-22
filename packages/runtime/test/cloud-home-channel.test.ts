@@ -1,10 +1,11 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { connect } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLOUD_HOME_OUTDATED, CLOUD_HOME_UNAVAILABLE, cloudHomeRefusalWords } from "../src/cloud-codex-home.ts";
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
 import {
 	CLOUD_HOME_CHANNEL_KEEPALIVE,
+	CLOUD_HOME_CHANNEL_LINE_BYTES,
 	CLOUD_HOME_SFTP_PIECE_BYTES,
 	type CloudHomeChannelKind,
 	CloudHomeChannelRefused,
@@ -12,6 +13,7 @@ import {
 	type CloudHomeChannelSide,
 	cloudHomeChannelHandshake,
 	cloudHomeChannelKeepAlive,
+	cloudHomeChannelLines,
 	cloudHomeSftpBytes,
 	cloudHomeSftpLines,
 	parseCloudHomeChannelHandshake,
@@ -333,5 +335,227 @@ describe("the file channel's kind (Claude Code on the home, slice C1)", () => {
 		const refused = await f.open("sftp").catch((error: unknown) => error);
 		expect((refused as CloudHomeChannelRefused).reason).toBe("HOME_SFTP_MISSING");
 		expect(cloudHomeRefusalWords("HOME_SFTP_MISSING")).toBe(CLOUD_HOME_OUTDATED);
+	});
+});
+
+describe("home channel framing bounds and keep-alive teardown", () => {
+	it("enforces CLOUD_HOME_CHANNEL_LINE_BYTES per line rather than per coalesced chunk", async () => {
+		const threeMiB = "a".repeat(3 * 1024 * 1024);
+		const burst = Buffer.from(`${threeMiB}\n${threeMiB}\n${threeMiB}\n`, "utf8");
+		expect(burst.byteLength).toBeGreaterThan(CLOUD_HOME_CHANNEL_LINE_BYTES);
+		const lines: string[] = [];
+		for await (const line of cloudHomeChannelLines(
+			(async function* () {
+				yield burst;
+			})(),
+		)) {
+			lines.push(line);
+		}
+		expect(lines).toHaveLength(3);
+		expect(lines.every((line) => line.length === threeMiB.length)).toBe(true);
+
+		const tooLarge = Buffer.concat([Buffer.alloc(CLOUD_HOME_CHANNEL_LINE_BYTES + 1, 0x61), Buffer.from("\n")]);
+		await expect(async () => {
+			for await (const _line of cloudHomeChannelLines(
+				(async function* () {
+					yield tooLarge;
+				})(),
+			)) {
+				expect(_line).toBeDefined();
+			}
+		}).rejects.toThrow("Home line too large");
+	});
+
+	it("stops the client keep-alive interval when the line iterator ends on remote close", async () => {
+		const activeTimers = new Set<ReturnType<typeof setInterval>>();
+		const realSetInterval = globalThis.setInterval;
+		const realClearInterval = globalThis.clearInterval;
+		const setSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+			...args: Parameters<typeof setInterval>
+		) => {
+			const timer = realSetInterval(...args);
+			activeTimers.add(timer);
+			return timer;
+		}) as typeof setInterval);
+		const clearSpy = vi.spyOn(globalThis, "clearInterval").mockImplementation(((
+			timer: ReturnType<typeof setInterval>,
+		) => {
+			activeTimers.delete(timer);
+			return realClearInterval(timer);
+		}) as typeof clearInterval);
+		try {
+			const m = machine();
+			const f = await fixture(async () => m.side);
+			const stream = await f.open();
+			m.push('{"id":1,"result":{}}');
+			await m.side.close();
+			const received: string[] = [];
+			for await (const line of stream.lines) received.push(line);
+			expect(received).toEqual(['{"id":1,"result":{}}']);
+			expect(activeTimers.size).toBe(0);
+		} finally {
+			setSpy.mockRestore();
+			clearSpy.mockRestore();
+		}
+	});
+
+	it("aborts in-flight home authorization when the client socket closes and flushes 403 refusals cleanly", async () => {
+		const token = randomBytes(32).toString("base64url");
+		const binding = {
+			leaseId: randomUUID(),
+			runId: randomUUID(),
+			jobId: randomUUID(),
+			runnerId: randomUUID(),
+			assignmentId: randomUUID(),
+			credentialCapsuleId: randomUUID(),
+			computeIdentityId: randomUUID(),
+			provider: "openai" as const,
+			nativeHarness: "codex-cli" as const,
+			model: "gpt-test",
+		};
+		let authorizeSignal: AbortSignal | undefined;
+		const service = new HttpCloudCodingCommandService({
+			token,
+			port: 0,
+			proveBinding: async () => undefined,
+			authorize: async () => {
+				throw new Error("not here");
+			},
+			execute: async () => {
+				throw new Error("not here");
+			},
+			home: {
+				authorize: async (_request, signal) => {
+					authorizeSignal = signal;
+					return await new Promise((_resolve, reject) => {
+						signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+					});
+				},
+				open: async () => {
+					throw new Error("should not open");
+				},
+			},
+		});
+		const port = await service.start();
+		cleanups.push(async () => await service.close());
+
+		const badSocket = connect({ host: "127.0.0.1", port });
+		await new Promise<void>((resolve, reject) => {
+			badSocket.once("connect", resolve);
+			badSocket.once("error", reject);
+		});
+		const refusedReply = new Promise<string>((resolve) => {
+			const chunks: Buffer[] = [];
+			badSocket.on("data", (chunk: Buffer) => chunks.push(chunk));
+			badSocket.once("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+		});
+		badSocket.write(
+			`GET /v1/home-session HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: Upgrade\r\nupgrade: qorpera-home-session/1\r\nauthorization: Bearer wrong\r\n\r\n`,
+		);
+		expect(await refusedReply).toContain("HTTP/1.1 403 Forbidden");
+		badSocket.destroy();
+
+		const holder = `job.${binding.jobId}.${randomBytes(32).toString("base64url")}`;
+		const socket = connect({ host: "127.0.0.1", port });
+		await new Promise<void>((resolve, reject) => {
+			socket.once("connect", resolve);
+			socket.once("error", reject);
+		});
+		socket.write(
+			`GET /v1/home-session HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: Upgrade\r\nupgrade: qorpera-home-session/1\r\nauthorization: Bearer ${token}\r\nx-qorpera-identity: ${holder}\r\n\r\n` +
+				`${JSON.stringify({ schema: "qorpera-home-session/1", binding, machineId: randomUUID(), sessionId: randomUUID() })}\n`,
+		);
+		await vi.waitFor(() => expect(authorizeSignal).toBeDefined());
+		expect(authorizeSignal!.aborted).toBe(false);
+		socket.destroy();
+		await vi.waitFor(() => expect(authorizeSignal!.aborted).toBe(true));
+	});
+
+	it("applies backpressure on fromMachine and exits cleanly when a paused client disconnects mid-drain", async () => {
+		const token = randomBytes(32).toString("base64url");
+		const binding = {
+			leaseId: randomUUID(),
+			runId: randomUUID(),
+			jobId: randomUUID(),
+			runnerId: randomUUID(),
+			assignmentId: randomUUID(),
+			credentialCapsuleId: randomUUID(),
+			computeIdentityId: randomUUID(),
+			provider: "openai" as const,
+			nativeHarness: "codex-cli" as const,
+			model: "gpt-test",
+		};
+		let yielded = 0;
+		let sideClosed = false;
+		const totalLines = 256;
+		const payload = "x".repeat(256 * 1024);
+		const service = new HttpCloudCodingCommandService({
+			token,
+			port: 0,
+			proveBinding: async () => undefined,
+			authorize: async () => {
+				throw new Error("not here");
+			},
+			execute: async () => {
+				throw new Error("not here");
+			},
+			home: {
+				authorize: async (request) => ({
+					state: "authorized",
+					sessionId: request.sessionId,
+					machineId: request.machineId,
+					machine: "dev-box",
+					placementId: randomUUID(),
+					bootId: randomUUID(),
+					executorOwner: "node-a",
+					providerId: "machine-node",
+				}),
+				open: async () => ({
+					write: () => undefined,
+					lines: (async function* () {
+						while (yielded < totalLines && !sideClosed) {
+							yielded += 1;
+							yield payload;
+						}
+					})(),
+					close: async () => {
+						sideClosed = true;
+					},
+				}),
+			},
+		});
+		const port = await service.start();
+		cleanups.push(async () => await service.close());
+
+		const holder = `job.${binding.jobId}.${randomBytes(32).toString("base64url")}`;
+		const socket = connect({ host: "127.0.0.1", port });
+		await new Promise<void>((resolve, reject) => {
+			socket.once("connect", resolve);
+			socket.once("error", reject);
+		});
+		const ready = new Promise<void>((resolve, reject) => {
+			let buffered = "";
+			const onData = (chunk: Buffer) => {
+				buffered += chunk.toString("utf8");
+				const sep = buffered.indexOf("\r\n\r\n");
+				if (sep >= 0 && buffered.slice(sep + 4).includes("\n")) {
+					socket.off("data", onData);
+					socket.pause();
+					resolve();
+				}
+			};
+			socket.on("data", onData);
+			socket.once("error", reject);
+		});
+		socket.write(
+			`GET /v1/home-session HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: Upgrade\r\nupgrade: qorpera-home-session/1\r\nauthorization: Bearer ${token}\r\nx-qorpera-identity: ${holder}\r\n\r\n` +
+				`${JSON.stringify({ schema: "qorpera-home-session/1", binding, machineId: randomUUID(), sessionId: randomUUID() })}\n`,
+		);
+		await ready;
+		await vi.waitFor(() => expect(yielded).toBeGreaterThan(0));
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(yielded).toBeLessThan(totalLines);
+		socket.destroy();
+		await vi.waitFor(() => expect(sideClosed).toBe(true));
 	});
 });

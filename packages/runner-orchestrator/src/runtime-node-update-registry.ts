@@ -1,3 +1,4 @@
+import { withTimeoutScope } from "./abort-scope.ts";
 import { officeCanonical, officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import {
 	NODE_UPDATE_PHASES,
@@ -332,38 +333,40 @@ export class RuntimeNodeUpdateRegistry {
 				p_capability: this.#config.capability,
 			});
 			if (Buffer.byteLength(body) > 65536) throw new Error();
-			const response = await this.#fetch(`${this.#config.origin}/rest/v1/rpc/${rpc}`, {
-				method: "POST",
-				headers: this.#headers,
-				body,
-				redirect: "error",
-				credentials: "omit",
-				signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
-			});
-			if (
-				response.status !== 200 ||
-				!/^application\/json(?:\s*;|$)/i.test(response.headers.get("content-type") ?? "") ||
-				!response.body
-			) {
-				await response.body?.cancel();
-				throw new Error();
-			}
-			const reader = response.body.getReader(),
-				chunks: Uint8Array[] = [];
-			let size = 0;
-			try {
-				while (true) {
-					const item = await reader.read();
-					if (item.done) break;
-					size += item.value.byteLength;
-					if (size > 1024 * 1024) throw new Error();
-					chunks.push(item.value);
+			return await withTimeoutScope(signal, 5000, async (checked) => {
+				const response = await this.#fetch(`${this.#config.origin}/rest/v1/rpc/${rpc}`, {
+					method: "POST",
+					headers: this.#headers,
+					body,
+					redirect: "error",
+					credentials: "omit",
+					signal: checked,
+				});
+				if (
+					response.status !== 200 ||
+					!/^application\/json(?:\s*;|$)/i.test(response.headers.get("content-type") ?? "") ||
+					!response.body
+				) {
+					await response.body?.cancel().catch(() => undefined);
+					throw new Error();
 				}
-				return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-			} finally {
-				await reader.cancel();
-				reader.releaseLock();
-			}
+				const reader = response.body.getReader(),
+					chunks: Uint8Array[] = [];
+				let size = 0;
+				try {
+					while (true) {
+						const item = await reader.read();
+						if (item.done) break;
+						size += item.value.byteLength;
+						if (size > 1024 * 1024) throw new Error();
+						chunks.push(item.value);
+					}
+					return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+				} finally {
+					await reader.cancel().catch(() => undefined);
+					reader.releaseLock();
+				}
+			});
 		} catch {
 			// The backend, proxy and transport may echo credentials in their errors.
 			throw new Error("NODE_UPDATE_REGISTRY_REQUEST_UNCONFIRMED");

@@ -477,7 +477,7 @@ describe("cloud worker outage recovery", () => {
 		await vi.advanceTimersByTimeAsync(11);
 		expect(await outage.running).toBe(refusal);
 		expect(lane.renew).toHaveBeenCalledOnce();
-		expect(lane.release).toHaveBeenCalledWith("revoked");
+		expect(lane.release).toHaveBeenCalledWith("revoked", expect.any(AbortSignal));
 	});
 
 	it("stops the run 10 s before the native lease ends while its renewal goes unanswered", async () => {
@@ -502,7 +502,7 @@ describe("cloud worker outage recovery", () => {
 		expect(outage.signal().aborted).toBe(true);
 		expect(await outage.running).toBeInstanceOf(Error);
 		expect(lane.renew).toHaveBeenCalledTimes(2);
-		expect(lane.release).toHaveBeenCalledWith("revoked");
+		expect(lane.release).toHaveBeenCalledWith("revoked", expect.any(AbortSignal));
 	});
 
 	it("keeps the native lease renewed while the job lease's renewal stalls, and stops at the job lease's end", async () => {
@@ -525,7 +525,7 @@ describe("cloud worker outage recovery", () => {
 		expect(await outage.running).toBeInstanceOf(CloudRequestTimeoutError);
 		expect(outage.control.calls.filter((call) => call.action === "renew")).toHaveLength(2);
 		expect(lane.renew).toHaveBeenCalledTimes(2);
-		expect(lane.release).toHaveBeenCalledWith("revoked");
+		expect(lane.release).toHaveBeenCalledWith("revoked", expect.any(AbortSignal));
 	});
 
 	// The audit B1 review (10 November 2026): a round's job renewal that answers late, then a slow heartbeat, must not
@@ -579,7 +579,7 @@ describe("cloud worker outage recovery", () => {
 		await vi.advanceTimersByTimeAsync(200);
 		expect(String(await outage.running)).toContain("Runner execution authority expired");
 		expect(lane.renew).toHaveBeenCalledTimes(2);
-		expect(lane.release).toHaveBeenCalledWith("revoked");
+		expect(lane.release).toHaveBeenCalledWith("revoked", expect.any(AbortSignal));
 	});
 
 	it("never lets a renewal's answer that comes after its try was cut move the native lease back", async () => {

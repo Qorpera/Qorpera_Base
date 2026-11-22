@@ -28,7 +28,7 @@ import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
 import { companyInSentence, companyNameText } from "../ui/company-name.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
-import { type InteractionCardApp, refreshAppPreviews } from "../ui/interaction-card.ts";
+import { disposeCardPictures, type InteractionCardApp, refreshAppPreviews } from "../ui/interaction-card.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
 import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
@@ -83,7 +83,7 @@ import { FoundingView } from "./views/founding.ts";
 import { FriendsWindow } from "./views/friends-window.ts";
 import { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
-import { renderInterface } from "./views/interface.ts";
+import { disposeInterface, renderInterface } from "./views/interface.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
 import { MemberChatView } from "./views/member-chat.ts";
 import {
@@ -401,14 +401,19 @@ export function mountApplication(
 		}
 	};
 	let decorating = false;
-	new MutationObserver(() => {
+	const appCardObserver = new MutationObserver(() => {
 		if (decorating) return;
 		decorating = true;
 		queueMicrotask(() => {
-			decorating = false;
-			decorateAppCards();
+			try {
+				if (!disposed) decorateAppCards();
+			} finally {
+				appCardObserver.takeRecords();
+				decorating = false;
+			}
 		});
-	}).observe(main, { childList: true, subtree: true });
+	});
+	appCardObserver.observe(main, { childList: true, subtree: true });
 	let routeRevision = 0;
 	let accountRevision = 0;
 	holdWebsiteIdea();
@@ -706,6 +711,7 @@ export function mountApplication(
 
 	function teardownCompany(): void {
 		settingsAfterHome = undefined;
+		disposeInterface(main);
 		notices?.dispose();
 		notices = undefined;
 		interfacePages?.dispose();
@@ -764,166 +770,184 @@ export function mountApplication(
 
 	async function ensureCompany(profileId: string): Promise<CompanyController | undefined> {
 		if (company?.profile.profileId === profileId) return company;
-		if (pendingCompany?.profileId === profileId && pendingCompany.revision === routeRevision)
-			return pendingCompany.promise;
+		if (pendingCompany?.profileId === profileId && pendingCompany.revision === routeRevision) {
+			if (!profiles.some((item) => item.profileId === profileId)) return pendingCompany.promise;
+			pendingCompany = undefined;
+		}
 		teardownCompany();
 		const current = captureRoute();
 		const currentHub = hub;
+		if (!profiles.find((item) => item.profileId === profileId) && currentHub.store.get().connectionLost)
+			return undefined;
+		let settled = false;
+		let clearOnFinish = true;
+		let pending: { profileId: string; revision: number; promise: Promise<CompanyController | undefined> } | undefined;
 		const promise = (async () => {
-			let profile = profiles.find((item) => item.profileId === profileId);
-			if (!profile) {
-				await currentHub.refresh();
-				if (!current()) return undefined;
-				profile = currentHub.store.get().profiles.find((item) => item.profileId === profileId);
-			}
-			const userId = auth.userId;
-			if (!current() || !profile || !userId) return undefined;
-			const controller: CompanyController = new CompanyController(
-				api,
-				profile,
-				userId,
-				(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget) =>
-					createWebSessionInputWriter(
-						cloud,
-						userId,
-						controller.signal,
-						(target) => {
-							const route = currentRoute();
-							if (
-								disposed ||
-								company !== controller ||
-								auth.userId !== userId ||
-								route.name !== "company" ||
-								route.profileId !== profile.profileId ||
-								!(
-									(route.section === "chat" && route.id === target) ||
-									(route.section === "new" && startingSession?.sessionId === target) ||
-									// A note the member sent from elsewhere in the company (an app's page, the Mailbox, Generate icon
-									// in the apps drawer), on its way: their press, which named the agent, stands for the thread on
-									// screen (CompanyController.sendNote).
-									controller.noteOnItsWay(target)
-								)
-							)
-								throw new Error(t("Company access is unavailable."));
-							controller.assertCanSend(target);
-							const observedRoom = controller.roomTargetFor(target);
-							if (
-								observedRoom?.roomId !== roomTarget?.roomId ||
-								observedRoom?.environmentId !== roomTarget?.environmentId
-							)
-								throw new Error(t("The conversation destination changed. Refresh before sending."));
-						},
-						profile.profileId,
-					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
-			);
-			company = controller;
-			// A member who may write the folder brings the logo everyone sees in step with QorperaOS/brand/logo.svg once
-			// the company has opened: its Branding & Identity agent may have drawn a new one meanwhile.
-			const syncLogo = controller.store.subscribe(() => {
-				const team = controller.store.get().team;
-				if (!team || controller.store.get().accessLost) return;
-				syncLogo();
-				if (!team.capabilities.write) return;
-				const current = () => {
-					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
-						throw new Error(t("Company access changed."));
-				};
-				void logos
-					.sync(
-						profile.profileId,
-						() => new WebCompanyFiles(cloud, profile, userId, team.role, controller.signal, current).folder(),
-						controller.signal,
-					)
-					.catch(() => undefined);
-			});
-			// On a cloud from before each member's own sidebar (20260930727000), the company's sections are
-			// QorperaOS/agents/sections.md and the rail's moves are the member's edits of it.
-			controller.useSectionsFile((signal) => {
-				const current = () => {
-					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
-						throw new Error(t("Company access changed."));
-				};
-				current();
-				const role = controller.store.get().team?.role;
-				if (!role) throw new Error(t("Company access changed."));
-				return new WebCompanyFiles(cloud, profile, userId, role, signal, current).folder();
-			});
-			if (planReturn && planReturn.signIn.companyId === controller.profile.profileId) {
-				const outcome = planReturn;
-				planReturn = undefined;
-				if (outcome.signIn.memberId !== userId) forgetChatGptPlanSignIn();
-				else {
-					// A ChatGPT plan sign-in for this company. Its confirm belongs to the member, not to a
-					// page: it finishes while Settings closes or the route changes, stopping only if the
-					// account changes, and AI subscriptions shows the outcome.
-					const plan = createWebNativeSubscription(
-						cloud,
-						profile.profileId,
-						userId,
-						new AbortController().signal,
-						() => {
-							if (auth.userId !== userId) throw new Error("The account changed.");
-						},
-					);
-					void finishPlanSignIn(memberPlanSignIn(userId, profile.profileId), plan, outcome);
-					queueMicrotask(() => {
-						if (disposed || company !== controller) return;
-						const route = currentRoute();
-						if (route.name === "company" && route.section === "home") settingsAfterHome = "ai-subscriptions";
-						else openSettings("ai-subscriptions");
-					});
+			try {
+				let profile = profiles.find((item) => item.profileId === profileId);
+				if (!profile) {
+					await currentHub.refresh();
+					if (!current()) return undefined;
+					profile = currentHub.store.get().profiles.find((item) => item.profileId === profileId);
 				}
-			}
-			// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it. No other
-			// connector is signed in from the web since Company connections left Settings (10 Nov 2026).
-			if (connectorReturn?.connector === "bank") noteBankReturn(connectorReturn);
-			connectorReturn = undefined;
-			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
-				if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
-					throw new Error(t("Company access is unavailable."));
-			});
-			// Open computers outlive the thread they were opened in; leaving the company ends them. A `machines` hint
-			// reads an open window's machines at once.
-			computerPanels = new ComputerPanels(computer, controller.signal, {
-				hints: (listener) => controller.onInvalidate(listener),
-				// The machine's clock and backdrop follow the company's time zone (20260930739000).
-				timeZone: () => controller.store.get().team?.timeZone,
-				// The company's apps a member may open on a computer (20260930758000): each by its name, its entry page's
-				// folder when the page is its index.html (the helper serves the folder), else the page itself.
-				apps: () =>
-					controller.store
-						.get()
-						.apps?.filter((app) => app.manifest !== null && app.manifest.kit !== "program")
-						.map((app) => ({
-							name: app.manifest?.name ?? app.name,
-							path:
-								app.manifest === null || app.manifest.entry === "index.html"
-									? app.path
-									: `${app.path}/${app.manifest.entry}`,
-						})),
-				// Open's "A file…": the company folder's own browser in choose mode, read as the member.
-				chooseFile: (signal) => {
+				const userId = auth.userId;
+				if (!current() || !profile || !userId) {
+					if (current() && userId && !currentHub.store.get().connectionLost) clearOnFinish = false;
+					return undefined;
+				}
+				const controller: CompanyController = new CompanyController(
+					api,
+					profile,
+					userId,
+					(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget) =>
+						createWebSessionInputWriter(
+							cloud,
+							userId,
+							controller.signal,
+							(target) => {
+								const route = currentRoute();
+								if (
+									disposed ||
+									company !== controller ||
+									auth.userId !== userId ||
+									route.name !== "company" ||
+									route.profileId !== profile.profileId ||
+									!(
+										(route.section === "chat" && route.id === target) ||
+										(route.section === "new" && startingSession?.sessionId === target) ||
+										// A note the member sent from elsewhere in the company (an app's page, the Mailbox, Generate icon
+										// in the apps drawer), on its way: their press, which named the agent, stands for the thread on
+										// screen (CompanyController.sendNote).
+										controller.noteOnItsWay(target)
+									)
+								)
+									throw new Error(t("Company access is unavailable."));
+								controller.assertCanSend(target);
+								const observedRoom = controller.roomTargetFor(target);
+								if (
+									observedRoom?.roomId !== roomTarget?.roomId ||
+									observedRoom?.environmentId !== roomTarget?.environmentId
+								)
+									throw new Error(t("The conversation destination changed. Refresh before sending."));
+							},
+							profile.profileId,
+						)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
+				);
+				company = controller;
+				// A member who may write the folder brings the logo everyone sees in step with QorperaOS/brand/logo.svg once
+				// the company has opened: its Branding & Identity agent may have drawn a new one meanwhile.
+				const syncLogo = controller.store.subscribe(() => {
+					const team = controller.store.get().team;
+					if (!team || controller.store.get().accessLost) return;
+					syncLogo();
+					if (!team.capabilities.write) return;
+					const current = () => {
+						if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
+							throw new Error(t("Company access changed."));
+					};
+					void logos
+						.sync(
+							profile.profileId,
+							() => new WebCompanyFiles(cloud, profile, userId, team.role, controller.signal, current).folder(),
+							controller.signal,
+						)
+						.catch(() => undefined);
+				});
+				// On a cloud from before each member's own sidebar (20260930727000), the company's sections are
+				// QorperaOS/agents/sections.md and the rail's moves are the member's edits of it.
+				controller.useSectionsFile((signal) => {
+					const current = () => {
+						if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
+							throw new Error(t("Company access changed."));
+					};
+					current();
 					const role = controller.store.get().team?.role;
-					if (!role) return Promise.resolve(null);
-					return chooseInCompanyFolder(
-						new WebCompanyFiles(cloud, profile, userId, role, controller.signal, () => {
-							if (
-								disposed ||
-								company !== controller ||
-								auth.userId !== userId ||
-								controller.store.get().accessLost
-							)
-								throw new Error(t("Company access changed."));
-						}),
-						signal,
-					);
-				},
-			});
-			unsubscribeCompany = controller.store.subscribe(() => render());
-			void controller.start();
-			return controller;
+					if (!role) throw new Error(t("Company access changed."));
+					return new WebCompanyFiles(cloud, profile, userId, role, signal, current).folder();
+				});
+				if (planReturn && planReturn.signIn.companyId === controller.profile.profileId) {
+					const outcome = planReturn;
+					planReturn = undefined;
+					if (outcome.signIn.memberId !== userId) forgetChatGptPlanSignIn();
+					else {
+						// A ChatGPT plan sign-in for this company. Its confirm belongs to the member, not to a
+						// page: it finishes while Settings closes or the route changes, stopping only if the
+						// account changes, and AI subscriptions shows the outcome.
+						const plan = createWebNativeSubscription(
+							cloud,
+							profile.profileId,
+							userId,
+							new AbortController().signal,
+							() => {
+								if (auth.userId !== userId) throw new Error("The account changed.");
+							},
+						);
+						void finishPlanSignIn(memberPlanSignIn(userId, profile.profileId), plan, outcome);
+						queueMicrotask(() => {
+							if (disposed || company !== controller) return;
+							const route = currentRoute();
+							if (route.name === "company" && route.section === "home") settingsAfterHome = "ai-subscriptions";
+							else openSettings("ai-subscriptions");
+						});
+					}
+				}
+				// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it. No other
+				// connector is signed in from the web since Company connections left Settings (10 Nov 2026).
+				if (connectorReturn?.connector === "bank") noteBankReturn(connectorReturn);
+				connectorReturn = undefined;
+				computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
+					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
+						throw new Error(t("Company access is unavailable."));
+				});
+				// Open computers outlive the thread they were opened in; leaving the company ends them. A `machines` hint
+				// reads an open window's machines at once.
+				computerPanels = new ComputerPanels(computer, controller.signal, {
+					hints: (listener) => controller.onInvalidate(listener),
+					// The machine's clock and backdrop follow the company's time zone (20260930739000).
+					timeZone: () => controller.store.get().team?.timeZone,
+					// The company's apps a member may open on a computer (20260930758000): each by its name, its entry page's
+					// folder when the page is its index.html (the helper serves the folder), else the page itself.
+					apps: () =>
+						controller.store
+							.get()
+							.apps?.filter((app) => app.manifest !== null && app.manifest.kit !== "program")
+							.map((app) => ({
+								name: app.manifest?.name ?? app.name,
+								path:
+									app.manifest === null || app.manifest.entry === "index.html"
+										? app.path
+										: `${app.path}/${app.manifest.entry}`,
+							})),
+					// Open's "A file…": the company folder's own browser in choose mode, read as the member.
+					chooseFile: (signal) => {
+						const role = controller.store.get().team?.role;
+						if (!role) return Promise.resolve(null);
+						return chooseInCompanyFolder(
+							new WebCompanyFiles(cloud, profile, userId, role, controller.signal, () => {
+								if (
+									disposed ||
+									company !== controller ||
+									auth.userId !== userId ||
+									controller.store.get().accessLost
+								)
+									throw new Error(t("Company access changed."));
+							}),
+							signal,
+						);
+					},
+				});
+				unsubscribeCompany = controller.store.subscribe(() => render());
+				void controller.start();
+				return controller;
+			} finally {
+				settled = true;
+				if (clearOnFinish && pending && pendingCompany === pending) pendingCompany = undefined;
+			}
 		})();
-		pendingCompany = { profileId, revision: routeRevision, promise };
+		if (!settled || !clearOnFinish) {
+			pending = { profileId, revision: routeRevision, promise };
+			pendingCompany = pending;
+		}
 		return promise;
 	}
 
@@ -1149,12 +1173,25 @@ export function mountApplication(
 			frame.classList.remove("navigation-open");
 			rail.hidden = true;
 			renderTopbar(topbar, shellContext(authState.user, route), undefined);
+			const hubState = hub.store.get();
+			const transient = hubState.connectionLost || (!hubState.loaded && !hubState.error);
 			replace(
 				main,
 				h(
 					"section",
 					{ class: "page" },
-					notice("danger", t("This company is not available to your account.")),
+					notice(
+						transient ? "neutral" : "danger",
+						transient
+							? t("Can't reach Qorpera. Trying again…")
+							: (hubState.error ?? t("This company is not available to your account.")),
+					),
+					hubState.error && !transient
+						? button(t("Try again"), () => {
+								pendingCompany = undefined;
+								void hub.refresh();
+							})
+						: null,
 					h("a", { href: "#/" }, t("Back to companies")),
 				),
 			);
@@ -1470,8 +1507,10 @@ export function mountApplication(
 		// Pictures of the folder for previews, one reader per company, so what a card read is not read again per thread.
 		let cardImage = cardImages.get(controller);
 		if (!cardImage) {
-			cardImage = folderImageReader(() => memberFolder(companyCurrent, t("Company access changed.")));
-			cardImages.set(controller, cardImage);
+			const reader = folderImageReader(() => memberFolder(companyCurrent, t("Company access changed.")));
+			cardImage = reader;
+			cardImages.set(controller, reader);
+			controller.signal.addEventListener("abort", () => disposeCardPictures(reader), { once: true });
 		}
 		// The apps that question options' previews name, as the company's apps were last read; a card drawn before they
 		// were read is brought up to date by decorateAppCards.
@@ -1986,6 +2025,7 @@ export function mountApplication(
 			newConversation?.dispose();
 			newConversation = undefined;
 		}
+		if (route.section !== "interface") disposeInterface(main);
 		if (route.section !== "meet") meetState = {};
 		switch (route.section) {
 			case "new": {
@@ -2637,6 +2677,7 @@ export function mountApplication(
 
 	return () => {
 		disposed = true;
+		appCardObserver.disconnect();
 		railLayout.dispose();
 		window.removeEventListener("languagechange", onLanguage);
 		window.removeEventListener("qorpera-language-change", onLanguage);

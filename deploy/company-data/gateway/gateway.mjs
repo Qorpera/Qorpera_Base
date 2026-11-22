@@ -360,6 +360,7 @@ export function parsePublicConfig(toml) {
 
 export class DataChangeNotifier {
 	#triggers = new Map();
+	#byEnv = new Map();
 	#timers = new Map();
 	#lastFired = new Map();
 	#pending = new Map();
@@ -368,12 +369,27 @@ export class DataChangeNotifier {
 		if (typeof id !== "string" || !id || typeof onWake !== "function") throw new Error("Invalid data-change trigger");
 		this.unregister(id);
 		const tableSet = Array.isArray(tables) && tables.length > 0 ? new Set(tables.map((t) => String(t).toLowerCase())) : null;
-		this.#triggers.set(id, { id, environmentId, database, tables: tableSet, minIntervalMs: Math.max(10, minIntervalMs), onWake });
+		const trigger = { id, environmentId, database, tables: tableSet, minIntervalMs: Math.max(10, minIntervalMs), onWake };
+		this.#triggers.set(id, trigger);
+		let envSet = this.#byEnv.get(environmentId);
+		if (!envSet) {
+			envSet = new Set();
+			this.#byEnv.set(environmentId, envSet);
+		}
+		envSet.add(trigger);
 		return () => this.unregister(id);
 	}
 
 	unregister(id) {
-		this.#triggers.delete(id);
+		const trigger = this.#triggers.get(id);
+		if (trigger) {
+			this.#triggers.delete(id);
+			const envSet = this.#byEnv.get(trigger.environmentId);
+			if (envSet) {
+				envSet.delete(trigger);
+				if (envSet.size === 0) this.#byEnv.delete(trigger.environmentId);
+			}
+		}
 		const timer = this.#timers.get(id);
 		if (timer) clearTimeout(timer);
 		this.#timers.delete(id);
@@ -383,9 +399,11 @@ export class DataChangeNotifier {
 
 	notify(environmentId, notice) {
 		if (notice?.ddl) return;
-		const now = Date.now();
-		for (const trigger of this.#triggers.values()) {
-			if (trigger.environmentId !== environmentId) continue;
+		const envSet = this.#byEnv.get(environmentId);
+		if (!envSet || envSet.size === 0) return;
+		const now = performance.now();
+		for (const trigger of [...envSet]) {
+			if (this.#triggers.get(trigger.id) !== trigger) continue;
 			if (notice !== null && notice.schema !== trigger.database) continue;
 			if (notice !== null && notice.table !== null && trigger.tables && !trigger.tables.has(notice.table.toLowerCase())) continue;
 			const tableName = notice?.table ?? "*";
@@ -395,7 +413,8 @@ export class DataChangeNotifier {
 				this.#pending.set(trigger.id, batch);
 			}
 			batch.add(tableName);
-			const elapsed = now - (this.#lastFired.get(trigger.id) ?? 0);
+			const last = this.#lastFired.get(trigger.id);
+			const elapsed = last === undefined ? trigger.minIntervalMs : Math.max(0, now - last);
 			if (elapsed >= trigger.minIntervalMs) {
 				this.#flush(trigger);
 			} else if (!this.#timers.has(trigger.id)) {
@@ -413,7 +432,7 @@ export class DataChangeNotifier {
 		const tables = [...(this.#pending.get(trigger.id) ?? [])];
 		this.#pending.delete(trigger.id);
 		if (tables.length === 0) return;
-		this.#lastFired.set(trigger.id, Date.now());
+		this.#lastFired.set(trigger.id, performance.now());
 		Promise.resolve(trigger.onWake({ id: trigger.id, environmentId: trigger.environmentId, database: trigger.database, tables, at: isoNow() })).catch(
 			() => undefined,
 		);
@@ -424,6 +443,7 @@ export class DataChangeNotifier {
 		this.#timers.clear();
 		this.#pending.clear();
 		this.#triggers.clear();
+		this.#byEnv.clear();
 		this.#lastFired.clear();
 	}
 }
@@ -568,10 +588,19 @@ export class Platform {
 		} catch {
 			refuse(503, "The company folder did not answer");
 		}
-		if (response.status === 401) refuse(401, "Sign in again");
-		if (refusedAs !== undefined && (response.status === 403 || response.status === 404)) return refusedAs;
-		if (!response.ok) refuse(response.status === 403 || response.status === 404 ? 403 : 503, "The company folder refused the read");
-		return response.json();
+		if (response.status === 401) {
+			void response.body?.cancel().catch(() => undefined);
+			refuse(401, "Sign in again");
+		}
+		if (refusedAs !== undefined && (response.status === 403 || response.status === 404)) {
+			void response.body?.cancel().catch(() => undefined);
+			return refusedAs;
+		}
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			refuse(response.status === 403 || response.status === 404 ? 403 : 503, "The company folder refused the read");
+		}
+		return response.json().catch(() => refuse(503, "The company folder returned an unreadable answer"));
 	}
 	async memberFolders(token, environmentId, parent, limit) {
 		const answer = await this.#rpc(token, "qorpera_member_folder_list", {
@@ -635,7 +664,10 @@ export class Platform {
 		} catch {
 			refuse(503, "The platform did not answer");
 		}
-		if (!response.ok) refuse(503, "The platform refused the pass");
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => undefined);
+			refuse(503, "The platform refused the pass");
+		}
 		const answer = await response.json().catch(() => refuse(503, "The platform's answer is not a pass"));
 		if (answer === null) return null;
 		const files = Array.isArray(answer?.files) ? answer.files : null;
@@ -803,6 +835,7 @@ export class Gateway {
 	#beforeCancel;
 	#onAgentRead;
 	#onDrop;
+	#onUnsettledTx;
 	/** Backends that were sent a cancel, by pid, with when: such a backend's connection is never used again, since a
 	 * cancel that arrives late would stop whatever runs on it then. */
 	#signalled = new Map();
@@ -822,6 +855,7 @@ export class Gateway {
 	/** Company databases this gateway has seen exist. */
 	#exists = new Set();
 	#unsettled = new Map();
+	#unsettledOverflow = new Set();
 	#swept = new Map();
 	#inFlightCounts = new Map();
 	#companyCountGates = new Map();
@@ -844,6 +878,7 @@ export class Gateway {
 		beforeCancel = async () => undefined,
 		onAgentRead = () => undefined,
 		onDrop = () => undefined,
+		onUnsettledTx = null,
 	}) {
 		this.#store = store;
 		this.#platform = platform;
@@ -866,6 +901,21 @@ export class Gateway {
 		this.#beforeCancel = beforeCancel;
 		this.#onAgentRead = onAgentRead;
 		this.#onDrop = onDrop;
+		this.#onUnsettledTx = typeof onUnsettledTx === "function" ? onUnsettledTx : null;
+	}
+
+	noteUnsettledTx(database, txid) {
+		if (typeof database !== "string" || typeof txid !== "string" || this.#unsettledOverflow.has(database)) return;
+		let set = this.#unsettled.get(database);
+		if (!set) {
+			set = new Set();
+			this.#unsettled.set(database, set);
+		}
+		set.add(txid);
+		if (set.size > 10_000) {
+			this.#unsettled.delete(database);
+			this.#unsettledOverflow.add(database);
+		}
 	}
 
 	setAgentRead(pid, delta) {
@@ -1012,17 +1062,16 @@ export class Gateway {
 		const epoch = this.#schemaEpoch.get(`${database}/${schema}`) ?? 0;
 		let state = this.#prepared.get(client);
 		if (!state) {
-			state = { epoch, names: new Set() };
+			state = { epoch, names: new Set(), pendingDeallocate: false };
 			this.#prepared.set(client, state);
 			return { state, needsDeallocate: false };
 		}
 		if (state.epoch !== epoch) {
-			const hadAny = state.names.size > 0;
+			if (state.names.size > 0) state.pendingDeallocate = true;
 			state.epoch = epoch;
 			state.names.clear();
-			return { state, needsDeallocate: hadAny };
 		}
-		return { state, needsDeallocate: false };
+		return { state, needsDeallocate: state.pendingDeallocate };
 	}
 
 	#preparedName(client, database, schema, key) {
@@ -1411,10 +1460,13 @@ export class Gateway {
 			const limit = Math.max(1, Math.floor(Math.min(cap, ms)));
 			const viewerSetting =
 				ready.viewer && ENVIRONMENT.test(ready.viewer) ? `; set local "qorpera.viewer" = '${ready.viewer}'` : `; set local "qorpera.viewer" = ''`;
+			const { state: prepState, needsDeallocate } = this.#preparedState(client, ready.database, ready.name);
+			const deallocatePrefix = needsDeallocate ? "deallocate all; " : "";
 			await client.query(
-				`begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
+				`${deallocatePrefix}begin transaction read only; set local statement_timeout = ${limit}; set local timezone = 'UTC'; ` +
 					`set local datestyle = 'ISO'; set local search_path = ${quoted(ready.name)}, qorpera_ext${viewerSetting}${settings}`,
 			);
+			if (needsDeallocate) prepState.pendingDeallocate = false;
 			const answer = await work(client, { maxRows, maxBytes });
 			await client.query("rollback");
 			return answer;
@@ -1440,7 +1492,7 @@ export class Gateway {
 		const cap = agent ? this.#limits.agentMs : this.#limits.questionMs;
 		const maxRows = agent ? this.#limits.agentRows : this.#limits.questionRows;
 		const maxBytes = agent ? this.#limits.agentBytes : this.#limits.questionBytes;
-		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect();
+		const connecting = this.#pool(ready.database, `${ready.database}_r${ready.n}`).connect(until ?? undefined);
 		const client = await (until === null ? connecting : inTime(connecting, until)).catch((error) => {
 			throw storeProblem(error);
 		});
@@ -1505,6 +1557,7 @@ export class Gateway {
 					lost = beginRes.reason;
 				throw beginRes.reason;
 			}
+			if (needsDeallocate) prepState.pendingDeallocate = false;
 			if (queryRes.status === "rejected") {
 				const error = queryRes.reason;
 				if (spec.name && (!existedBefore.has(spec.name) || error?.code === "0A000" || error?.code === "42P01" || error?.code === "42703"))
@@ -1977,8 +2030,8 @@ export class Gateway {
 			.catch((error) => {
 				throw storeProblem(error);
 			});
-		if (!this.#unsettled.has(database)) this.#unsettled.set(database, new Set());
-		this.#unsettled.get(database).add(txid);
+		if (this.#onUnsettledTx) this.#onUnsettledTx(database, String(txid));
+		else this.noteUnsettledTx(database, String(txid));
 	}
 
 	async #writing(ready, actor, { gone = null, settings = "", room }, work) {
@@ -2076,9 +2129,10 @@ export class Gateway {
 
 	async #writingPipelined(ready, actor, { gone = null, room }) {
 		const ms = this.#limits.changeMs;
+		const connectUntil = Date.now() + Math.min(ms, CONNECT_MS - 1_000);
 		const client = await inTime(
-			this.#pool(ready.database, `${ready.database}_w${ready.n}`).connect(),
-			Date.now() + Math.min(ms, CONNECT_MS - 1_000),
+			this.#pool(ready.database, `${ready.database}_w${ready.n}`).connect(connectUntil),
+			connectUntil,
 		).catch((error) => {
 			throw storeProblem(error);
 		});
@@ -2393,6 +2447,7 @@ export class Gateway {
 				ready: null,
 				failed: false,
 				stopped: false,
+				dropped: false,
 				epoch: ++this.#listenEpoch,
 				gen: 0,
 				wildcardGen: 0,
@@ -2402,10 +2457,9 @@ export class Gateway {
 				cache: new Map(),
 				viewerScoped: new Map(),
 			};
-			let dropped = false;
 			const lost = () => {
-				if (dropped) return;
-				dropped = true;
+				if (listener.dropped) return;
+				listener.dropped = true;
 				if (this.#listeners.get(database) === listener) this.#listeners.delete(database);
 				listener.cache.clear();
 				listener.viewerScoped.clear();
@@ -2521,12 +2575,15 @@ export class Gateway {
 					names.size > 0
 						? new RegExp(`(?<![A-Za-z0-9_])(?:${[...names].map(escapeRegExp).join("|")})(?![A-Za-z0-9_])`, "i")
 						: null;
-				return { all: false, names, regex };
+				return { all: false, names, regex, failed: false };
 			})
-			.catch(() => ({ all: true, names: new Set(), regex: null }));
+			.catch(() => ({ all: true, names: new Set(), regex: null, failed: true }));
 		listener.viewerScoped.set(schema, pending);
 		const found = await pending;
-		if (listener.viewerScoped.get(schema) === pending) listener.viewerScoped.set(schema, found);
+		if (listener.viewerScoped.get(schema) === pending) {
+			if (found.failed) listener.viewerScoped.delete(schema);
+			else listener.viewerScoped.set(schema, found);
+		}
 		return found;
 	}
 
@@ -2792,7 +2849,7 @@ export class Gateway {
 				};
 			};
 			let scan = await settleDirty(await differing());
-			while (scan.changed.length === 0 && !scan.partial && Date.now() < holdUntil && !stop.aborted && !this.#closed) {
+			while (scan.changed.length === 0 && !scan.partial && Date.now() < holdUntil && !stop.aborted && !this.#closed && !listener.stopped && !listener.dropped) {
 				if (dirty.size === 0)
 					await new Promise((resolve) => {
 						const timer = setTimeout(resolve, holdUntil - Date.now());
@@ -2805,11 +2862,17 @@ export class Gateway {
 						stop.addEventListener("abort", done, { once: true });
 					});
 				wake = () => undefined;
-				if (dirty.size === 0 || stop.aborted) break;
+				if (dirty.size === 0 || stop.aborted || listener.stopped) break;
 				const batch = [...dirty].sort((a, b) => a - b);
 				dirty.clear();
 				scan = await settleDirty(await differing(batch));
+				if (listener.dropped) break;
 				if (scan.changed.length === 0 && !scan.partial) await new Promise((resolve) => setTimeout(resolve, this.#limits.watchAgainMs));
+			}
+			if (listener.dropped && scan.changed.length === 0 && !scan.partial && dirty.size > 0 && !stop.aborted && !this.#closed && Date.now() < deadline) {
+				const batch = [...dirty].sort((a, b) => a - b);
+				dirty.clear();
+				scan = await settleDirty(await differing(batch));
 			}
 			const partial = scan.partial ? { partial: true } : {};
 			return scan.changed.length > 0 ? { changed: scan.changed, ...partial } : { same: true, ...partial };
@@ -2827,6 +2890,11 @@ export class Gateway {
 		const admin = await this.#pool("postgres", "qorpera_data_admin").connect().catch((error) => {
 			throw storeProblem(error);
 		});
+		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		admin.on("error", onClientError);
 		try {
 			await admin.query("select pg_advisory_lock(hashtext('qorpera_data.company'), hashtext($1))", [database]);
 			try {
@@ -2857,12 +2925,16 @@ export class Gateway {
 				if (ready.rowCount !== 1) refuse(503, "The company's database is not ready");
 				this.#provisioned.add(database);
 			} finally {
-				await admin.query("select pg_advisory_unlock(hashtext('qorpera_data.company'), hashtext($1))", [database]).catch(() => undefined);
+				await admin.query("select pg_advisory_unlock(hashtext('qorpera_data.company'), hashtext($1))", [database]).catch((unlockError) => {
+					lost ??= unlockError;
+				});
 			}
 		} catch (error) {
+			if (!(error instanceof Refusal) && (!error?.code || /^(57P0[123]|08...)$/.test(error.code))) lost ??= error;
 			throw storeProblem(error);
 		} finally {
-			admin.release();
+			admin.removeListener("error", onClientError);
+			this.#release(admin, lost);
 		}
 	}
 
@@ -2870,7 +2942,14 @@ export class Gateway {
 	async #ensureFolder(database, name) {
 		const known = await this.#folder(database, name).catch(() => null);
 		if (known !== null) return known;
-		const client = await this.#pool(database, "qorpera_data_admin").connect();
+		const client = await this.#pool(database, "qorpera_data_admin").connect().catch((error) => {
+			throw storeProblem(error);
+		});
+		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
+		client.on("error", onClientError);
 		try {
 			await client.query("begin");
 			await client.query("select pg_advisory_xact_lock(hashtext('qorpera_data.databases'))");
@@ -2898,10 +2977,15 @@ export class Gateway {
 			this.#folders.set(`${database}/${name}`, n);
 			return n;
 		} catch (error) {
-			await client.query("rollback").catch(() => undefined);
+			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code)))
+				await client.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
+			else lost ??= error;
 			throw storeProblem(error);
 		} finally {
-			client.release();
+			client.removeListener("error", onClientError);
+			this.#release(client, lost);
 		}
 	}
 
@@ -3259,6 +3343,9 @@ export class Gateway {
 		if (!releaseCompany) return;
 		let client;
 		let lost;
+		const onClientError = (error) => {
+			lost ??= error;
+		};
 		try {
 			const rank = (table) => (table.kind === "v" ? 2 : table.kind === "p" ? 1 : 0);
 			const order = [...tables].sort((a, b) => rank(a) - rank(b) || a.pages - b.pages || (a.name < b.name ? -1 : 1));
@@ -3271,6 +3358,7 @@ export class Gateway {
 				}
 				throw error;
 			}
+			client.on("error", onClientError);
 			if (until - Date.now() < 1) return;
 			await client.query(
 				`begin transaction read only; set local timezone = 'UTC'; set local datestyle = 'ISO'; set local search_path = ${quoted(name)}`,
@@ -3367,17 +3455,26 @@ export class Gateway {
 					if (!(await countOne(order[idx++]))) break;
 				}
 			}
-			if (!lost) await client.query("rollback").catch(() => undefined);
+			if (!lost)
+				await client.query("rollback").catch((rbError) => {
+					lost ??= rbError;
+				});
 		} catch (error) {
 			run.failed = true;
 			if (client) {
-				if (error?.code && !/^(57P0[123]|08...)$/.test(error.code)) await client.query("rollback").catch(() => undefined);
-				else lost = error;
+				if (error?.code && !/^(57P0[123]|08...)$/.test(error.code))
+					await client.query("rollback").catch((rbError) => {
+						lost ??= rbError;
+					});
+				else lost ??= error;
 			} else if (!(storeProblem(error) instanceof Refusal)) {
 				throw error;
 			}
 		} finally {
-			if (client) this.#release(client, lost);
+			if (client) {
+				client.removeListener("error", onClientError);
+				this.#release(client, lost);
+			}
 			releaseCompany();
 		}
 	}
@@ -3557,13 +3654,17 @@ export class Gateway {
 		const now = Date.now();
 		const unforgotten = [];
 		const active = databases
-			.map((database) => ({
-				database,
-				sweep: now - (this.#swept.get(database) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs,
-				waiting: [...(this.#unsettled.get(database) ?? [])],
-			}))
+			.map((database) => {
+				const overflow = this.#unsettledOverflow.delete(database);
+				return {
+					database,
+					overflow,
+					sweep: overflow || now - (this.#swept.get(database) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs,
+					waiting: [...(this.#unsettled.get(database) ?? [])],
+				};
+			})
 			.filter((entry) => entry.sweep || entry.waiting.length > 0);
-		const results = await mapBounded(active, DESCRIBE_CONCURRENCY, async ({ database, sweep, waiting }) => {
+		const results = await mapBounded(active, DESCRIBE_CONCURRENCY, async ({ database, overflow, sweep, waiting }) => {
 			const keeper = this.#pool(database, "qorpera_data_keeper");
 			let forgotFailed = false;
 			const looked = await keeper
@@ -3578,11 +3679,14 @@ export class Gateway {
 					return answer;
 				})
 				.catch(() => null);
-			return { database, sweep, waiting, looked, forgotFailed };
+			return { database, overflow, sweep, waiting, looked, forgotFailed };
 		});
-		for (const { database, sweep, waiting, looked, forgotFailed } of results) {
+		for (const { database, overflow, sweep, waiting, looked, forgotFailed } of results) {
 			if (forgotFailed) unforgotten.push(database);
-			if (looked === null) continue;
+			if (looked === null) {
+				if (overflow) this.#unsettledOverflow.add(database);
+				continue;
+			}
 			if (sweep) this.#swept.set(database, now);
 			const running = new Set(looked.rows.map((line) => line.txid));
 			const unsettled = this.#unsettled.get(database) ?? new Set();
@@ -3593,13 +3697,15 @@ export class Gateway {
 		}
 		const live = new Set(databases);
 		for (const known of [this.#unsettled, this.#swept]) for (const database of known.keys()) if (!live.has(database)) known.delete(database);
+		for (const database of this.#unsettledOverflow) if (!live.has(database)) this.#unsettledOverflow.delete(database);
 		return unforgotten;
 	}
 
 	async registerDataTrigger({ id, environmentId, database: name, tables = null, minIntervalMs = 60_000, onWake }) {
 		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
+		if (this.#closed) refuse(503, "The data store did not answer");
 		const database = companyDatabase(environmentId);
-		this.#triggerStops.get(id)?.();
+		this.#triggerStops.get(id)?.stop();
 		const unregister = this.#notifier.register({ id, environmentId, database: name, tables, minIntervalMs, onWake });
 		let stopped = false;
 		let listening = null;
@@ -3620,6 +3726,7 @@ export class Gateway {
 					.catch(() => {
 						if (listening === next) {
 							listening = null;
+							next.stop();
 							scheduleReconnect();
 						}
 					});
@@ -3644,6 +3751,7 @@ export class Gateway {
 			return sub;
 		};
 
+		let entry;
 		const stop = () => {
 			if (stopped) return;
 			stopped = true;
@@ -3654,10 +3762,11 @@ export class Gateway {
 			unregister();
 			listening?.stop();
 			listening = null;
-			if (this.#triggerStops.get(id) === stop) this.#triggerStops.delete(id);
+			if (this.#triggerStops.get(id) === entry) this.#triggerStops.delete(id);
 		};
+		entry = { database, schema: name, stop };
 
-		this.#triggerStops.set(id, stop);
+		this.#triggerStops.set(id, entry);
 		const initial = attach();
 		try {
 			await initial.ready;
@@ -3669,7 +3778,7 @@ export class Gateway {
 	}
 
 	unregisterDataTrigger(id) {
-		this.#triggerStops.get(id)?.();
+		this.#triggerStops.get(id)?.stop();
 	}
 
 	async provisionDirectLogin(environmentId, name, { access = "read-write", connectionLimit = 4 } = {}) {
@@ -3786,14 +3895,16 @@ export class Gateway {
 	}
 
 	#takeRateToken(key, limitPerMinute) {
-		const now = Date.now();
+		const now = performance.now();
 		let bucket = this.#rateBuckets.get(key);
 		if (!bucket) {
 			if (this.#rateBuckets.size >= 10_000) this.#rateBuckets.delete(this.#rateBuckets.keys().next().value);
 			bucket = { tokens: limitPerMinute, updatedAt: now };
 			this.#rateBuckets.set(key, bucket);
 		} else {
-			const refill = ((now - bucket.updatedAt) / 60_000) * limitPerMinute;
+			this.#rateBuckets.delete(key);
+			this.#rateBuckets.set(key, bucket);
+			const refill = (Math.max(0, now - bucket.updatedAt) / 60_000) * limitPerMinute;
 			bucket.tokens = Math.min(limitPerMinute, bucket.tokens + refill);
 			bucket.updatedAt = now;
 		}
@@ -3871,17 +3982,24 @@ export class Gateway {
 		return { ...(await this.#act(ready, { kind: "hook", id: hookId, via: file }, { gone })), asOf: isoNow() };
 	}
 
-	async #closePools(match) {
+	#beginClosePools(match) {
 		const ending = [];
 		for (const [key, { pool }] of this.#pools) {
 			if (!match(key)) continue;
 			this.#pools.delete(key);
 			ending.push(pool.end().catch(() => undefined));
 		}
-		await Promise.all(ending);
+		return Promise.all(ending);
+	}
+
+	async #closePools(match) {
+		await this.#beginClosePools(match);
 	}
 
 	async evictDatabase(database, name, n = null) {
+		for (const entry of [...this.#triggerStops.values()]) {
+			if (entry.database === database && entry.schema === name) entry.stop();
+		}
 		const folderKey = `${database}/${name}`;
 		const knownN = n ?? this.#folders.get(folderKey) ?? null;
 		this.#folders.delete(folderKey);
@@ -3894,14 +4012,19 @@ export class Gateway {
 		}
 	}
 
-	async evictCompany(database) {
+	async evictCompany(database, { beforeWaitPools = null } = {}) {
+		for (const entry of [...this.#triggerStops.values()]) {
+			if (entry.database === database) entry.stop();
+		}
 		const listener = this.#listeners.get(database);
 		if (listener) {
 			listener.stopped = true;
 			this.#listeners.delete(database);
 			listener.cache.clear();
 			listener.viewerScoped.clear();
+			const waiting = [...listener.heard];
 			listener.heard.clear();
+			for (const tell of waiting) tell(null);
 			await listener.client?.end().catch(() => undefined);
 		}
 		for (const [key, entry] of this.#watchInFlight) {
@@ -3910,11 +4033,14 @@ export class Gateway {
 				this.#watchInFlight.delete(key);
 			}
 		}
-		await this.#closePools((key) => key.endsWith(`@${database}`));
+		const closing = this.#beginClosePools((key) => key.endsWith(`@${database}`));
+		if (beforeWaitPools) await beforeWaitPools();
+		await closing;
 		this.#provisioned.delete(database);
 		this.#exists.delete(database);
 		this.#full.delete(database);
 		this.#unsettled.delete(database);
+		this.#unsettledOverflow.delete(database);
 		this.#swept.delete(database);
 		for (const map of [this.#folders, this.#folderInFlight, this.#relations, this.#schemaEpoch]) {
 			for (const key of map.keys()) if (key.startsWith(`${database}/`)) map.delete(key);
@@ -3965,13 +4091,15 @@ export class Gateway {
 				for (const role of existing) await client.query(`alter role ${quoted(role)} nologin`);
 				await client.query(`revoke all on database ${quoted(database)} from ${roleList}`);
 			}
-			await this.#closePools((key) => roles.some((role) => key === `${role}@${database}`));
+			// WHY: Terminate active backends before awaiting pool.end() so checked-out queries do not deadlock the admin pool.
+			const closingPools = this.#beginClosePools((key) => roles.some((role) => key === `${role}@${database}`));
 			await watch
 				.query("select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where datname = $1 and usename = any($2::text[])", [
 					database,
 					roles,
 				])
 				.catch(() => undefined);
+			await closingPools;
 			await client.query(`drop schema if exists ${quoted(name)} cascade`);
 			await client.query("delete from qorpera_data.databases where name = $1", [name]);
 			if (existing.length > 0) {
@@ -4016,7 +4144,18 @@ export class Gateway {
 				if (exists) {
 					await admin.query(`alter database ${quoted(database)} allow_connections false`).catch(() => undefined);
 				}
-				await this.evictCompany(database);
+				await this.evictCompany(database, {
+					beforeWaitPools: exists
+						? async () => {
+								await watch
+									.query(
+										"select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where datname = $1 and pid <> pg_catalog.pg_backend_pid()",
+										[database],
+									)
+									.catch(() => undefined);
+							}
+						: null,
+				});
 				this.#onDrop({ kind: "company", database });
 				if (exists) {
 					for (let attempt = 0; attempt < 5; attempt++) {
@@ -4215,7 +4354,7 @@ export class Gateway {
 
 	async close() {
 		this.#closed = true;
-		for (const stop of [...this.#triggerStops.values()]) stop();
+		for (const entry of [...this.#triggerStops.values()]) entry.stop();
 		this.#triggerStops.clear();
 		this.#notifier.close();
 		this.#rateBuckets.clear();
@@ -4261,11 +4400,13 @@ export function startWatcher(gateway, { everyMs = 10_000, failed = () => undefin
 	return () => clearInterval(timer);
 }
 
+const BODY_READ_TIMEOUT_MS = 15_000;
+
 /** One request to `handle(method, path, headers, read, gone)`: JSON in, JSON out. */
-function answering(handle) {
+function answering(handle, bodyTimeoutMs = BODY_READ_TIMEOUT_MS) {
 	return async (request, response) => {
 		const gone = new AbortController();
-		response.on("close", () => {
+		response.once("close", () => {
 			if (!response.writableEnded) gone.abort();
 		});
 		const read = (maximum) =>
@@ -4273,25 +4414,41 @@ function answering(handle) {
 				const declared = Number(request.headers["content-length"]);
 				if (!Number.isSafeInteger(declared) || declared < 0) return reject(new Refusal(411, "Say the body's length"));
 				if (declared > maximum) return reject(new Refusal(413, "The body is too large"));
+				if (declared === 0 && request.complete) return resolve("");
 				const parts = [];
 				let bytes = 0;
 				let settled = false;
 				const finish = (fn, value) => {
 					if (settled) return;
 					settled = true;
+					clearTimeout(timer);
+					request.off("data", onData);
+					request.off("end", onEnd);
+					request.off("error", onFailed);
+					request.off("aborted", onFailed);
+					request.off("close", onFailed);
 					fn(value);
 				};
-				request.on("data", (part) => {
+				const onData = (part) => {
 					bytes += part.length;
 					if (bytes > maximum) {
+						request.pause();
 						finish(reject, new Refusal(413, "The body is too large"));
-						request.destroy();
 					} else parts.push(part);
-				});
-				request.on("end", () => finish(resolve, parts.length === 0 ? "" : parts.length === 1 ? parts[0].toString("utf8") : Buffer.concat(parts).toString("utf8")));
-				request.on("error", () => finish(reject, new Refusal(400, "The body did not arrive")));
-				request.on("aborted", () => finish(reject, new Refusal(400, "The body did not arrive")));
-				request.on("close", () => finish(reject, new Refusal(400, "The body did not arrive")));
+				};
+				const onEnd = () =>
+					finish(resolve, parts.length === 0 ? "" : parts.length === 1 ? parts[0].toString("utf8") : Buffer.concat(parts).toString("utf8"));
+				const onFailed = () => finish(reject, new Refusal(400, "The body did not arrive"));
+				const timer = setTimeout(() => {
+					request.pause();
+					finish(reject, new Refusal(408, "The body took too long"));
+				}, bodyTimeoutMs);
+				timer.unref?.();
+				request.on("data", onData);
+				request.on("end", onEnd);
+				request.on("error", onFailed);
+				request.on("aborted", onFailed);
+				request.on("close", onFailed);
 			});
 		let status = 200;
 		let value;
@@ -4309,11 +4466,24 @@ function answering(handle) {
 			status = refusal.status;
 			value = { error: refusal.message, ...refusal.extra };
 		}
-		if (gone.signal.aborted) return;
+		if (gone.signal.aborted) {
+			request.destroy();
+			return;
+		}
 		const text = value && typeof value === "object" && typeof value[RAW_JSON] === "string" ? value[RAW_JSON] : JSON.stringify(value);
 		const payload = Buffer.from(text, "utf8");
-		response.writeHead(status, { "content-type": "application/json", "content-length": payload.length, "cache-control": "no-store" });
-		response.end(payload);
+		const hasDeclaredBody =
+			(request.headers["content-length"] !== undefined && request.headers["content-length"] !== "0") ||
+			request.headers["transfer-encoding"] !== undefined;
+		const closeUnread = hasDeclaredBody && !request.complete;
+		response.writeHead(status, {
+			"content-type": "application/json",
+			"content-length": payload.length,
+			"cache-control": "no-store",
+			...(closeUnread ? { connection: "close" } : {}),
+		});
+		if (closeUnread) response.end(payload, () => request.destroy());
+		else response.end(payload);
 	};
 }
 
@@ -4328,17 +4498,17 @@ function listenServer(server, port, host) {
 	});
 }
 
-export function serve(gateway, { host = "127.0.0.1", port = 0 } = {}) {
-	const server = http.createServer(answering((method, path, headers, read, gone) => gateway.handle(method, path, headers, read, gone)));
+export function serve(gateway, { host = "127.0.0.1", port = 0, bodyTimeoutMs = BODY_READ_TIMEOUT_MS } = {}) {
+	const server = http.createServer(answering((method, path, headers, read, gone) => gateway.handle(method, path, headers, read, gone), bodyTimeoutMs));
 	server.keepAliveTimeout = 65_000;
 	server.headersTimeout = 70_000;
 	return listenServer(server, port, host);
 }
 
-export function serveRuns(gateway, { host = "127.0.0.1", port = 0, cert = null, key = null } = {}) {
+export function serveRuns(gateway, { host = "127.0.0.1", port = 0, cert = null, key = null, bodyTimeoutMs = BODY_READ_TIMEOUT_MS } = {}) {
 	if ((cert === null) !== (key === null)) throw new Error("The run door needs both a certificate and its key, or neither");
 	if (cert === null && !["127.0.0.1", "::1", "localhost"].includes(host)) throw new Error("The run door off loopback needs TLS");
-	const handler = answering((method, path, headers, read, gone) => gateway.handleRun(method, path, headers, read, gone));
+	const handler = answering((method, path, headers, read, gone) => gateway.handleRun(method, path, headers, read, gone), bodyTimeoutMs);
 	const server = cert === null ? http.createServer(handler) : https.createServer({ cert, key, minVersion: "TLSv1.2" }, handler);
 	server.keepAliveTimeout = 65_000;
 	server.headersTimeout = 70_000;

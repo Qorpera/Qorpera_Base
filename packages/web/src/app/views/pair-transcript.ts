@@ -10,7 +10,7 @@ import {
 import { fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { leave } from "../../ui/motion.ts";
-import { t } from "../../ui/preferences.ts";
+import { presentationLocale, t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { sentTimeHover } from "../../ui/sent-time-hover.ts";
 import { messagesSkeleton } from "../../ui/skeleton.ts";
@@ -49,6 +49,8 @@ export class PairTranscriptView {
 	/** The messages' placeholder, one per load, so the log does not read it out again on each redraw. */
 	#placeholder: HTMLElement | undefined;
 	#renderedKey = "";
+	#identityKey = "";
+	readonly #rendered = new Map<string, { key: string; node: HTMLElement }>();
 	#disposed = false;
 	/** "Show earlier": older messages come in above, and the reader stays where they were. */
 	#earlier: HTMLButtonElement | undefined;
@@ -150,6 +152,7 @@ export class PairTranscriptView {
 		const items = conversation.projection.items.filter(
 			(item): item is TranscriptMessage | TranscriptNote => item.kind === "agent" || item.kind === "note",
 		);
+		const locale = presentationLocale();
 		const key = JSON.stringify([
 			items,
 			conversation.loading,
@@ -161,6 +164,7 @@ export class PairTranscriptView {
 			second.name,
 			first.agent?.appearance,
 			second.agent?.appearance,
+			locale,
 		]);
 		if (key === this.#renderedKey) return;
 		this.#renderedKey = key;
@@ -173,16 +177,36 @@ export class PairTranscriptView {
 				: messages === 1
 					? t("1 message")
 					: t("{count} messages", { count: messages });
-		replace(
-			this.#identity,
-			// The header names this thread's own agent first, as the reference product does.
-			agentFigure(second.agent, second.name, { size: 24 }),
-			h("span", { class: "pair-name" }, second.name),
-			h("span", { class: "pair-glyph", "aria-label": t("and") }, "⇄"),
-			agentFigure(first.agent, first.name, { size: 24 }),
-			h("span", { class: "pair-name" }, first.name),
-			count ? h("span", { class: "pair-count" }, count) : null,
-		);
+		const identityKey = JSON.stringify([
+			first.name,
+			second.name,
+			first.agent?.appearance,
+			second.agent?.appearance,
+			count,
+			locale,
+		]);
+		if (identityKey !== this.#identityKey) {
+			this.#identityKey = identityKey;
+			replace(
+				this.#identity,
+				// The header names this thread's own agent first, as the reference product does.
+				agentFigure(second.agent, second.name, { size: 24 }),
+				h("span", { class: "pair-name" }, second.name),
+				h("span", { class: "pair-glyph", "aria-label": t("and") }, "⇄"),
+				agentFigure(first.agent, first.name, { size: 24 }),
+				h("span", { class: "pair-name" }, first.name),
+				count ? h("span", { class: "pair-count" }, count) : null,
+			);
+		}
+		const seen = new Set<string>();
+		const keep = (id: string, itemKey: string, build: () => HTMLElement): HTMLElement => {
+			seen.add(id);
+			const existing = this.#rendered.get(id);
+			if (existing && existing.key === itemKey) return existing.node;
+			const node = build();
+			this.#rendered.set(id, { key: itemKey, node });
+			return node;
+		};
 		const nodes: HTMLElement[] = [];
 		if (conversation.hasEarlier && !conversation.loading) {
 			this.#earlier ??= h(
@@ -220,53 +244,69 @@ export class PairTranscriptView {
 		for (const item of items) {
 			const date = parseConversationTimestamp(item.createdAt);
 			if (date && needsConversationTimestamp(date, previous)) {
+				const moment = date.toISOString();
+				const label = conversationTimestampLabel(date);
+				const title = conversationTimestampTitle(date);
 				nodes.push(
-					h(
-						"time",
-						{
-							class: "conversation-timestamp",
-							datetime: date.toISOString(),
-							title: conversationTimestampTitle(date),
-						},
-						conversationTimestampLabel(date),
+					keep(`ts:${item.id}`, `${moment}\0${label}\0${title}`, () =>
+						h("time", { class: "conversation-timestamp", datetime: moment, title }, label),
 					),
 				);
 			}
 			if (date) previous = date;
 			if (item.kind === "note") {
-				nodes.push(h("div", { class: "conversation-note", role: "note" }, item.text));
+				nodes.push(
+					keep(item.id, item.text, () => h("div", { class: "conversation-note", role: "note" }, item.text)),
+				);
 			} else if (item.kind === "agent") {
 				const speaker = this.#agent(item.staffSpeaker?.staffAgentId ?? "");
 				const name = item.staffSpeaker?.displayName ?? speaker.name;
 				// The thread's own agent speaks from the right, the coworker from the left.
 				const right = item.staffSpeaker?.staffAgentId === this.#agentIds[1];
 				const other = this.#agent(right ? this.#agentIds[0] : this.#agentIds[1]);
+				const time = fmtTime(item.createdAt);
+				const itemKey = JSON.stringify([
+					item.text,
+					item.createdAt,
+					time,
+					item.held === true,
+					right,
+					name,
+					speaker.agent?.id,
+					speaker.agent?.appearance,
+					speaker.agent?.templateId,
+					item.held ? other.name : "",
+					locale,
+				]);
 				nodes.push(
-					h(
-						"div",
-						{ class: right ? "pair-row pair-row-right" : "pair-row" },
-						agentFigure(speaker.agent, name, { size: 28 }),
+					keep(item.id, itemKey, () =>
 						h(
-							"article",
-							{
-								class: right ? "message from-agent pair-right" : "message from-agent",
-								"aria-label": `${name} · ${fmtTime(item.createdAt)}`,
-								dataset: { messageId: item.id, sentAt: item.createdAt },
-							},
-							h("div", { class: "message-author" }, name),
-							...markdownBubbles(item.text).map((body) => h("div", { class: "bubble" }, body)),
-							item.held
-								? h(
-										"div",
-										{ class: "message-caption", title: t("Sent without waking the coworker") },
-										t("Left for {name}'s next turn", { name: other.name }),
-									)
-								: null,
+							"div",
+							{ class: right ? "pair-row pair-row-right" : "pair-row" },
+							agentFigure(speaker.agent, name, { size: 28 }),
+							h(
+								"article",
+								{
+									class: right ? "message from-agent pair-right" : "message from-agent",
+									"aria-label": `${name} · ${time}`,
+									dataset: { messageId: item.id, sentAt: item.createdAt },
+								},
+								h("div", { class: "message-author" }, name),
+								...markdownBubbles(item.text).map((body) => h("div", { class: "bubble" }, body)),
+								item.held
+									? h(
+											"div",
+											{ class: "message-caption", title: t("Sent without waking the coworker") },
+											t("Left for {name}'s next turn", { name: other.name }),
+										)
+									: null,
+							),
 						),
 					),
 				);
 			}
 		}
+		for (const id of this.#rendered.keys()) if (!seen.has(id)) this.#rendered.delete(id);
 		if (conversation.loading && !items.length) {
 			this.#placeholder ??= messagesSkeleton();
 			nodes.push(this.#placeholder);
@@ -293,6 +333,7 @@ export class PairTranscriptView {
 		this.#disposed = true;
 		this.#lifetime.abort();
 		window.clearInterval(this.#timer);
+		this.#rendered.clear();
 		// The sheet slides back out to the right while the dimmed thread clears.
 		leave(this.el, "is-leaving", () => this.el.remove());
 	}

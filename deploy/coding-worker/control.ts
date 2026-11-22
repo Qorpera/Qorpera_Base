@@ -10,6 +10,7 @@ import { CODING_EXECUTOR_RPCS, CodingControlBusy, CodingControlRefused } from ".
 import { CODING_HOST_RPCS } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { CODING_SNAPSHOT_RPCS } from "../../packages/runner-orchestrator/src/coding-snapshots.ts";
 import { COMPANY_MACHINE_HOST_RPCS } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
+import { withTimeoutSignal } from "./timeout-signal.ts";
 
 /** The executor's closed RPC set (exported for the tests, which run the routes and the host against it: F33 of #1661). */
 export const CODING_CONTROL_METHODS: ReadonlySet<string> = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODING_SNAPSHOT_RPCS, ...COMPANY_MACHINE_HOST_RPCS, ...CODE_HOST_RPCS,
@@ -110,35 +111,55 @@ export class CodingExecutorHttpControl {
 		const body = JSON.stringify(args);
 		const maxRequestBytes = method === "qorpera_web_code_deployment_register" ? 4 * 1024 * 1024 : 128 * 1024;
 		if (Buffer.byteLength(body) > maxRequestBytes) throw new Error("CODING_CONTROL_REQUEST_TOO_LARGE");
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
 		const refusals = VIEW_REFUSALS.get(method);
 		let failure: Error = unconfirmed(method, "no answer");
 		try {
-			const response = await this.#fetch(`${this.#origin}/rest/v1/rpc/${method}`, {
-				method: "POST", redirect: "error", signal: checked,
-				headers: { ...supabaseServiceHeaders(this.#key), "content-type": "application/json" }, body,
-			});
-			if (response.status !== 200) {
-				failure = unconfirmed(method, `HTTP ${response.status}`);
-				const refusable = REFUSABLE.has(method) && (response.status === 401 || response.status === 403);
-				const kept = refusals !== undefined && [400, 401, 403].includes(response.status);
-				const leased = LEASED.has(method) && [400, 401, 403].includes(response.status);
-				// An error body that stalls is not worth waiting for: it stays unconfirmed.
-				const error = postgrestError(await readBoundedCloudResponse(response, 4096, AbortSignal.any([checked, AbortSignal.timeout(1000)])));
-				if (error) failure = unconfirmed(method, `HTTP ${response.status} ${error.code} ${error.message}`);
-				if (response.status === 500 || response.status === 504 || refusable || kept || leased) {
-					const reason = kept && error && ["42501", "22023"].includes(error.code) && refusals?.has(error.message) ? error.message : null;
-					const leaseGone = LEASED.has(method) && error !== undefined && LEASE_REFUSALS.get(error.code)?.includes(response.status) === true;
-					// 55P03 with 500; 57014 (a statement out of time) with 500, or 504 from a PostgREST that answers it so.
-					if ((response.status === 500 && error?.code === "55P03") || ([500, 504].includes(response.status) && error?.code === "57014"))
-						failure = new CodingControlBusy();
-					else if (error && ((refusable && error.code === "42501") || reason !== null || leaseGone))
-						failure = new CodingControlRefused(error.details !== null && DETAIL.test(error.details) ? error.details : null, reason);
+			return await withTimeoutSignal(signal, 30000, async (checked) => {
+				const response = await this.#fetch(`${this.#origin}/rest/v1/rpc/${method}`, {
+					method: "POST",
+					redirect: "error",
+					signal: checked,
+					headers: { ...supabaseServiceHeaders(this.#key), "content-type": "application/json" },
+					body,
+				});
+				if (response.status !== 200) {
+					failure = unconfirmed(method, `HTTP ${response.status}`);
+					const refusable = REFUSABLE.has(method) && (response.status === 401 || response.status === 403);
+					const kept = refusals !== undefined && [400, 401, 403].includes(response.status);
+					const leased = LEASED.has(method) && [400, 401, 403].includes(response.status);
+					// An error body that stalls is not worth waiting for: it stays unconfirmed.
+					const error = postgrestError(
+						await withTimeoutSignal(checked, 1000, (errorSignal) =>
+							readBoundedCloudResponse(response, 4096, errorSignal),
+						),
+					);
+					if (error) failure = unconfirmed(method, `HTTP ${response.status} ${error.code} ${error.message}`);
+					if (response.status === 500 || response.status === 504 || refusable || kept || leased) {
+						const reason =
+							kept && error && ["42501", "22023"].includes(error.code) && refusals?.has(error.message)
+								? error.message
+								: null;
+						const leaseGone =
+							LEASED.has(method) && error !== undefined && LEASE_REFUSALS.get(error.code)?.includes(response.status) === true;
+						// 55P03 with 500; 57014 (a statement out of time) with 500, or 504 from a PostgREST that answers it so.
+						if (
+							(response.status === 500 && error?.code === "55P03") ||
+							([500, 504].includes(response.status) && error?.code === "57014")
+						)
+							failure = new CodingControlBusy();
+						else if (error && ((refusable && error.code === "42501") || reason !== null || leaseGone))
+							failure = new CodingControlRefused(
+								error.details !== null && DETAIL.test(error.details) ? error.details : null,
+								reason,
+							);
+					}
+					throw new Error("unconfirmed");
 				}
-				throw new Error("unconfirmed");
-			}
-			failure = unconfirmed(method, "answer not read");
-			return JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(await readBoundedCloudResponse(response, 256 * 1024, checked))) as unknown;
+				failure = unconfirmed(method, "answer not read");
+				return JSON.parse(
+					new TextDecoder("utf8", { fatal: true }).decode(await readBoundedCloudResponse(response, 256 * 1024, checked)),
+				) as unknown;
+			});
 		} catch {
 			throw failure;
 		}

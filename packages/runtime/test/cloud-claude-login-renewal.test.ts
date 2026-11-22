@@ -29,7 +29,7 @@ import {
 } from "@qorpera/runtime/cloud-secret-broker-shared";
 import { CloudSecretKeyring } from "@qorpera/runtime/cloud-secret-crypto";
 import { CloudSecretBrokerBusyError, cloudVaultDatabaseBusy } from "@qorpera/runtime/cloud-vault-database-failure";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const CANARY = `CANARY-PARALLEL-${randomUUID()}`;
 const credentials = (tag: string) =>
@@ -443,6 +443,72 @@ describe("the vault's Claude renewer", () => {
 		expect(await renewer.idle()).toBe(1);
 		expect(await renewer.idle()).toBe(0);
 		expect(db.calls).toEqual(["idle", "release:unchanged", "idle", "idle"]);
+	});
+
+	it("coalesces idle pending commits and idle renewals with concurrent check calls", async () => {
+		const db = database();
+		const origCommit = db.authority.commitClaudeLoginRenewal;
+		let failCommit = true;
+		let commitCalls = 0;
+		let releaseCommit: (() => void) | undefined;
+		const seenNonZero: boolean[] = [];
+		db.authority.commitClaudeLoginRenewal = async (request, signal) => {
+			if (failCommit) throw new Error("database away");
+			commitCalls += 1;
+			seenNonZero.push(request.encryptedEnvelope.some((byte) => byte !== 0));
+			await new Promise<void>((resolve) => {
+				releaseCommit = resolve;
+			});
+			seenNonZero.push(request.encryptedEnvelope.some((byte) => byte !== 0));
+			return origCommit(request, signal);
+		};
+		const renewer = new CloudClaudeLoginRenewer({
+			authority: db.authority,
+			checker: checker([{ outcome: "renewed", credentials: b64(credentials("v2")) }]),
+			keyring: db.keyring,
+			commitRetryMs: 20,
+		});
+		expect(await renewer.check(db.login.id, "poll")).toBe("failed");
+
+		failCommit = false;
+		db.login.checkedAt = Date.now();
+		const idleCommit = renewer.idle();
+		await vi.waitFor(() => expect(releaseCommit).toBeDefined());
+		const concurrentCheck = renewer.check(db.login.id, "poll");
+		expect(commitCalls).toBe(1);
+		releaseCommit!();
+		expect(await concurrentCheck).toBe("renewed");
+		await idleCommit;
+		expect(commitCalls).toBe(1);
+		expect(seenNonZero).toEqual([true, true]);
+		expect(db.login.version).toBe(2);
+
+		const db2 = database();
+		let finishCheck: ((result: ClaudeLoginCheck) => void) | undefined;
+		let takeCalls = 0;
+		const origTake = db2.authority.takeClaudeLoginRenewal;
+		db2.authority.takeClaudeLoginRenewal = async (request, signal) => {
+			takeCalls += 1;
+			return origTake(request, signal);
+		};
+		const renewer2 = new CloudClaudeLoginRenewer({
+			authority: db2.authority,
+			checker: {
+				checkClaudeLogin: () =>
+					new Promise<ClaudeLoginCheck>((resolve) => {
+						finishCheck = resolve;
+					}),
+			},
+			keyring: db2.keyring,
+		});
+		const idleRenewal = renewer2.idle();
+		await vi.waitFor(() => expect(finishCheck).toBeDefined());
+		const coalesced = renewer2.check(db2.login.id, "open");
+		finishCheck!({ outcome: "renewed", credentials: b64(credentials("v3")) });
+		expect(await coalesced).toBe("renewed");
+		expect(await idleRenewal).toBe(1);
+		expect(takeCalls).toBe(0);
+		expect(db2.login.version).toBe(2);
 	});
 
 	it("refuses a taken renewal out of shape", async () => {

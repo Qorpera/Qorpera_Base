@@ -548,4 +548,49 @@ describe("a member's program file put into the company's place for programs", ()
 			expect(response.headers.get("access-control-allow-methods")).toBe(method);
 		}
 	});
+
+	it("caps global concurrent active uploads across users and frees capacity on stop", async () => {
+		const g = await gateway({
+			member: (token) => ({
+				schema: "qorpera.member-folder-writer/v1",
+				actor: { kind: "member", userId: `35000000-0000-4000-8000-${token.slice(-12).padStart(12, "0")}` },
+				profileId,
+			}),
+		});
+		const file = program(16);
+		const ids: string[] = [];
+		for (let i = 0; i < 64; i++) {
+			const tok = `tok-${String(i).padStart(12, "0")}`;
+			const res = await g.open(file, path, tok);
+			expect(res.status).toBe(200);
+			ids.push(await uploadOf(res));
+		}
+		const overflow = await g.open(file, path, "tok-000000000099");
+		expect(overflow.status).toBe(429);
+		const stopRes = await fetch(`${g.base}/${ids[0]}/stop`, {
+			method: "POST",
+			headers: { authorization: "Bearer tok-000000000000" },
+		});
+		expect(stopRes.status).toBe(204);
+		const admitted = await g.open(file, path, "tok-000000000099");
+		expect(admitted.status).toBe(200);
+	});
+
+	it("does not count finished uploads against the global concurrent active upload cap", async () => {
+		const g = await gateway({
+			member: (token) => ({
+				schema: "qorpera.member-folder-writer/v1",
+				actor: { kind: "member", userId: `35000000-0000-4000-8000-${token.slice(-12).padStart(12, "0")}` },
+				profileId,
+			}),
+		});
+		const file = program(16);
+		for (let i = 0; i < 64; i++) {
+			const tok = `fin-${String(i).padStart(12, "0")}`;
+			const id = await uploadOf(await g.open(file, path, tok));
+			expect((await g.piece(id, 0, file.pieces[0]!, tok)).status).toBe(200);
+			expect((await g.finish(id, tok)).status).toBe(200);
+		}
+		expect((await g.open(file, path, "fin-000000000099")).status).toBe(200);
+	});
 });

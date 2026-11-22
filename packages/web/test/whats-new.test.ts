@@ -1560,4 +1560,44 @@ describe("What's new: a site Qorpera took down (step 5.1)", () => {
 		);
 		expect(openLink(view)).toBeUndefined();
 	});
+
+	it("shares one IntersectionObserver across release tiles and disconnects it on dispose", async () => {
+		let created = 0;
+		const observed: Element[] = [];
+		const unobserved: Element[] = [];
+		let disconnected = 0;
+		let cb: IntersectionObserverCallback | undefined;
+		class FakeIntersectionObserver {
+			constructor(callback: IntersectionObserverCallback) {
+				created += 1;
+				cb = callback;
+			}
+			observe(el: Element) {
+				observed.push(el);
+			}
+			unobserve(el: Element) {
+				unobserved.push(el);
+			}
+			disconnect() {
+				disconnected += 1;
+			}
+		}
+		vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+		try {
+			const { view, image } = await page([releasesOf([shop()])]);
+			expect(created).toBe(1);
+			expect(observed).toHaveLength(3);
+			expect(image).not.toHaveBeenCalled();
+
+			cb!([{ target: observed[0]!, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+			await settle();
+			expect(unobserved).toEqual([observed[0]]);
+			expect(image).toHaveBeenCalledTimes(1);
+
+			view.dispose();
+			expect(disconnected).toBe(1);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
 });

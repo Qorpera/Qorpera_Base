@@ -10,6 +10,7 @@ import {
 } from "@qorpera/contracts";
 import type { CloudChatGptPlanAuth } from "./cloud-codex-tool-session.ts";
 import { type CloudCodingCommandGateway, cloudCodingCommandTools } from "./cloud-coding-command-tools.ts";
+import { CODING_INSPECT_IMAGE_SCHEMA } from "./cloud-coding-image-inspect.ts";
 import {
 	cloudControlBackoffMs,
 	cloudControlEnded,
@@ -115,6 +116,7 @@ const INSTRUCTIONS =
 	// Own code storage, step 2b (10 Nov 2026): every landing is a numbered change with a record a founder reads. The
 	// sentence and the picture are the session's to give; a hand-in without them lands the same.
 	"With coding_finish, also give notice: one plain sentence, in the language of the brief, on what a customer of the company will notice, written for a founder who reads no code, so with no file, branch, commit or test name in it. Leave it out when a customer will notice nothing. When the change shows on a screen, give picture too: take a screenshot of the new screen with the machine's headless Chromium (chromium --headless --screenshot=<file> --window-size=1280,800 <address>), keep it small (a few hundred KB; one over 4 MB is not used), commit it under docs/changes/ with a name of its own, and give its path in the repository. Neither is required: never hold work back for them. " +
+	"For UI or web changes, verify what you built visually before coding_finish: start a local dev or preview server, capture PNG, JPEG, or WebP screenshots with the machine's headless Chromium or Playwright (for example at desktop 1280x800 and mobile 390x844 widths into a temporary file or docs/changes/), and call coding_run_command with inspectImage set to that relative workspace path (using a fresh operationKey for each new or re-captured screenshot) to view each screenshot directly in your context, fix layout, styling, or responsive issues, and stop any temporary server and remove temporary screenshots before committing. " +
 	// Own code storage, slice 1 (8 Nov 2026): a repository kept in Qorpera starts empty, and its landing merges.
 	// Step 6 (12 Nov 2026): code brought in keeps its other branches under refs/qorpera/imported/heads/, for reading; the
 	// import's follow-ups (13 Nov 2026): one is brought into the default branch by merging it into the session's branch.
@@ -131,6 +133,24 @@ const INSTRUCTIONS =
  * attached when the disk was replaced, so no command of it ended as MACHINE_NEW_DISK to say so. */
 const NEW_DISK =
 	"machine.newDisk is true: your machine got a new disk since your previous turn started. Only /company was kept, which holds the repository, so home and cache folders, Docker images and anything installed outside /company start fresh.";
+
+function codingShownImageSha256(text: unknown): string | undefined {
+	if (typeof text !== "string") return undefined;
+	let answer: unknown;
+	try {
+		answer = JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+	if (!answer || typeof answer !== "object" || Array.isArray(answer)) return undefined;
+	const { schema, kind, imageSha256 } = answer as { schema?: unknown; kind?: unknown; imageSha256?: unknown };
+	return schema === CODING_INSPECT_IMAGE_SCHEMA &&
+		kind === "image" &&
+		typeof imageSha256 === "string" &&
+		SHA.test(imageSha256)
+		? imageSha256
+		: undefined;
+}
 
 function record(value: unknown, label = "Invalid coding turn authority"): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(label);
@@ -821,10 +841,25 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 							purpose: frame.purpose,
 							outputs: outputs.map((output) => {
 								const envelope = record(JSON.parse(output.output), "Invalid coding context output");
+								const provenance = record(envelope.provenance, "Invalid coding context output");
+								const content =
+									envelope.content && typeof envelope.content === "object" && !Array.isArray(envelope.content)
+										? (envelope.content as Record<string, unknown>)
+										: undefined;
+								const shownImage =
+									!output.capture &&
+									output.imageSha256 !== undefined &&
+									envelope.status === "ok" &&
+									provenance.tool === "coding_run_command" &&
+									provenance.source === "worker" &&
+									provenance.companyReadId === undefined &&
+									provenance.companyId === initial.identity.companyId &&
+									provenance.runId === initial.identity.runId &&
+									codingShownImageSha256(content?.text) === output.imageSha256;
 								if (
 									output.capture ||
-									output.imageSha256 ||
-									record(envelope.provenance, "Invalid coding context output").companyReadId !== undefined
+									(output.imageSha256 !== undefined && !shownImage) ||
+									provenance.companyReadId !== undefined
 								)
 									throw new Error("CODING_CONTEXT_RESOURCES_REFUSED");
 								return {

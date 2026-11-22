@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -352,6 +352,110 @@ describe("company-data snapshots and lifecycle cleanup", { skip: !dockerUsable }
 						applySchema: false,
 					}),
 				/integrity check failed/,
+			);
+		} finally {
+			await asSuperuser("postgres", `drop database if exists ${restoreDb} with (force)`);
+		}
+	});
+
+	it("restores wide multi-megabyte rows in byte-bounded batches, retries stale cuts without leaking CSV FDs, and swaps existing outDir cleanly", async () => {
+		const database = companyDatabase(envId);
+		const wideDir = join(workDir, "wide-snap");
+		const restoreDb = `qorpera_snap_wide_${randomBytes(4).toString("hex")}`;
+		await asSuperuser(database, "create schema if not exists wide");
+		await asSuperuser(database, "create table wide.blobs (id integer primary key, payload text not null)");
+		const oneMiB = "w".repeat(1024 * 1024);
+		for (let id = 1; id <= 6; id += 1) {
+			await asSuperuser(database, "insert into wide.blobs (id, payload) values ($1, $2)", [id, `${id}:${oneMiB}`]);
+		}
+		const workDirFds = () => {
+			if (!existsSync("/proc/self/fd")) return [];
+			const open = [];
+			for (const entry of readdirSync("/proc/self/fd")) {
+				try {
+					const target = readlinkSync(`/proc/self/fd/${entry}`);
+					if (target.includes(workDir)) open.push(target);
+				} catch {}
+			}
+			return open;
+		};
+		const exported = await exportDatabaseSnapshot({
+			store: { host: "127.0.0.1", port, logins: { admin: "test-password" } },
+			user: "postgres",
+			password: "test-password",
+			database,
+			schema: "wide",
+			outDir: wideDir,
+			cuts: { blobs: ["not-an-integer"] },
+			dumpSchema: async () =>
+				"CREATE SCHEMA wide;\nCREATE TABLE wide.blobs (id integer NOT NULL, payload text NOT NULL);\nALTER TABLE ONLY wide.blobs ADD CONSTRAINT blobs_pkey PRIMARY KEY (id);\n",
+		});
+		assert.equal(exported.manifest.tables[0].rows, 6);
+		assert.deepEqual(workDirFds(), []);
+
+		const sentinelPath = join(wideDir, "sentinel.txt");
+		writeFileSync(sentinelPath, "keep-me", "utf8");
+		await assert.rejects(
+			() =>
+				exportDatabaseSnapshot({
+					store: { host: "127.0.0.1", port, logins: { admin: "test-password" } },
+					user: "postgres",
+					password: "test-password",
+					database,
+					schema: "wide",
+					outDir: wideDir,
+					dumpSchema: async () => {
+						throw new Error("simulated pg_dump outage");
+					},
+				}),
+			/simulated pg_dump outage/,
+		);
+		assert.equal(readFileSync(sentinelPath, "utf8"), "keep-me");
+
+		const replaced = await exportDatabaseSnapshot({
+			store: { host: "127.0.0.1", port, logins: { admin: "test-password" } },
+			user: "postgres",
+			password: "test-password",
+			database,
+			schema: "wide",
+			outDir: wideDir,
+			dumpSchema: async () =>
+				"CREATE SCHEMA wide;\nCREATE TABLE wide.blobs (id integer NOT NULL, payload text NOT NULL);\nALTER TABLE ONLY wide.blobs ADD CONSTRAINT blobs_pkey PRIMARY KEY (id);\n",
+		});
+		assert.equal(existsSync(sentinelPath), false);
+		assert.equal(JSON.parse(readFileSync(join(wideDir, "snapshot.json"), "utf8")).takenAt, replaced.manifest.takenAt);
+		assert.deepEqual(
+			readdirSync(workDir).filter((name) => name.startsWith("wide-snap.prev-") || name.startsWith("wide-snap.stage-")),
+			[],
+		);
+
+		await asSuperuser("postgres", `create database ${restoreDb}`);
+		try {
+			const origQuery = pg.Client.prototype.query;
+			let insertQueries = 0;
+			pg.Client.prototype.query = function wrappedQuery(...args) {
+				const text = typeof args[0] === "string" ? args[0] : args[0]?.text;
+				if (typeof text === "string" && text.startsWith('insert into "wide"."blobs"')) insertQueries += 1;
+				return origQuery.apply(this, args);
+			};
+			try {
+				const restored = await restoreDatabaseSnapshot({
+					store: { host: "127.0.0.1", port, logins: { admin: "test-password" } },
+					user: "postgres",
+					password: "test-password",
+					database: restoreDb,
+					schema: "wide",
+					snapshotDir: wideDir,
+				});
+				assert.equal(restored.restoredRows.blobs, 6);
+			} finally {
+				pg.Client.prototype.query = origQuery;
+			}
+			assert.ok(insertQueries >= 2, `expected multiple byte-bounded INSERT batches, saw ${insertQueries}`);
+			const rows = await asSuperuser(restoreDb, "select id, length(payload)::int as n from wide.blobs order by id");
+			assert.deepEqual(
+				rows,
+				[1, 2, 3, 4, 5, 6].map((id) => ({ id, n: 2 + 1024 * 1024 })),
 			);
 		} finally {
 			await asSuperuser("postgres", `drop database if exists ${restoreDb} with (force)`);

@@ -116,12 +116,13 @@ export function createCloudHomeChannel(options: {
 				socket.on("error", () => undefined);
 				const reader = cloudHomeChannelLines(socket);
 				let ready: CloudHomeChannelReady | undefined;
+				let wake: (() => void) | undefined;
 				try {
 					socket.write(`${cloudHomeChannelHandshake({ ...input, binding: options.binding })}\n`);
 					const first = await Promise.race([
 						reader.next(),
 						new Promise<never>((_resolve, reject) => {
-							const wake = (): void => reject(new Error(`${ERROR}: no answer to the handshake`));
+							wake = (): void => reject(new Error(`${ERROR}: no answer to the handshake`));
 							if (deadline.aborted) wake();
 							else deadline.addEventListener("abort", wake, { once: true });
 						}),
@@ -130,6 +131,8 @@ export function createCloudHomeChannel(options: {
 				} catch (error) {
 					socket.destroy();
 					throw new Error(`${ERROR}: ${String((error as Error)?.message ?? "")}`.trim());
+				} finally {
+					if (wake) deadline.removeEventListener("abort", wake);
 				}
 				if (!ready?.ok) {
 					socket.destroy();
@@ -140,16 +143,24 @@ export function createCloudHomeChannel(options: {
 					throw new Error(ERROR);
 				}
 				// While the channel is open this end says it is there, and the ingress's own such lines are dropped here.
-				const stopKeepAlive = cloudHomeChannelKeepAlive(
-					socket,
-					options.keepAliveMs ?? CLOUD_HOME_CHANNEL_KEEPALIVE_MS,
-				);
-				socket.once("close", stopKeepAlive);
+				const stopKeepAlive =
+					socket.destroyed || socket.closed
+						? () => undefined
+						: cloudHomeChannelKeepAlive(socket, options.keepAliveMs ?? CLOUD_HOME_CHANNEL_KEEPALIVE_MS);
+				if (socket.destroyed || socket.closed) stopKeepAlive();
+				else socket.once("close", stopKeepAlive);
+				const lines = (async function* (): AsyncGenerator<string> {
+					try {
+						yield* cloudHomeChannelWithoutKeepAlive(reader);
+					} finally {
+						stopKeepAlive();
+					}
+				})();
 				return {
 					write: (line) => {
 						if (socket.writable) socket.write(`${line}\n`);
 					},
-					lines: cloudHomeChannelWithoutKeepAlive(reader),
+					lines,
 					close: async () => {
 						stopKeepAlive();
 						socket.destroy();

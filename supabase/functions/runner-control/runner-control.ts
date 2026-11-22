@@ -227,14 +227,46 @@ export function parseRunnerControlRequest(value: unknown): RunnerControlRequest 
 	}
 }
 
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+
 export async function readRunnerControlRequest(request: Request): Promise<RunnerControlRequest> {
-	const contentLength = Number(request.headers.get("content-length") ?? "0");
-	if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > MAX_BODY_BYTES) {
-		throw new Error("Invalid runner request size");
+	const rawLength = request.headers.get("content-length");
+	if (rawLength !== null) {
+		const contentLength = Number(rawLength);
+		if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > MAX_BODY_BYTES) {
+			throw new Error("Invalid runner request size");
+		}
 	}
-	const text = await request.text();
-	if (new TextEncoder().encode(text).byteLength > MAX_BODY_BYTES) {
-		throw new Error("Invalid runner request size");
+	const reader = request.body?.getReader();
+	if (!reader) return parseRunnerControlRequest(JSON.parse(""));
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	let overflow = false;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > MAX_BODY_BYTES) {
+				overflow = true;
+				throw new Error("Invalid runner request size");
+			}
+			chunks.push(value);
+		}
+	} finally {
+		if (overflow) void reader.cancel().catch(() => undefined);
+	}
+	let text = "";
+	if (chunks.length === 1) {
+		text = UTF8_DECODER.decode(chunks[0]!);
+	} else if (chunks.length > 1) {
+		const merged = new Uint8Array(total);
+		let offset = 0;
+		for (const chunk of chunks) {
+			merged.set(chunk, offset);
+			offset += chunk.byteLength;
+		}
+		text = UTF8_DECODER.decode(merged);
 	}
 	return parseRunnerControlRequest(JSON.parse(text));
 }

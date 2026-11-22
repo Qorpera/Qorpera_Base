@@ -218,3 +218,68 @@ it.each(unshownScreens)("never shows a runtime tool's image from %s", async (_, 
 		content: { text: "TOOL_OUTCOME_UNCONFIRMED" },
 	});
 });
+
+it("shows a worker tool's image after its JSON envelope naming imageSha256 and fences it back", async () => {
+	const boundary = new CloudNativeToolBoundary({
+		companyId: randomUUID(),
+		runId: randomUUID(),
+		signal: new AbortController().signal,
+		assertActive: async () => undefined,
+		tools: [
+			{
+				name: "coding_run_command",
+				source: "worker",
+				images: true,
+				description: "Run commands or inspect workspace screenshots.",
+				inputSchema: { type: "object", additionalProperties: false },
+				parseArguments: (value) => value,
+				execute: async () => ({
+					kind: "json",
+					value: { schema: "qorpera.coding-image-inspection/v1", kind: "image", imageSha256: sha256 },
+					image: { png, sha256 },
+				}),
+			},
+		],
+	});
+	try {
+		expect(boundary.captureImagesEnabled).toBe(true);
+		const result = await boundary.invoke("coding-img-1", "qorpera", "coding_run_command", {});
+		expect(result.success).toBe(true);
+		expect(result.contentItems).toHaveLength(2);
+		expect(result.contentItems[1]).toEqual({
+			type: "inputImage",
+			imageUrl: `data:image/png;base64,${png.toString("base64")}`,
+		});
+		const text = result.contentItems[0].text;
+		expect(JSON.parse(text)).toMatchObject({
+			status: "ok",
+			provenance: { tool: "coding_run_command", source: "worker" },
+		});
+		expect(
+			await boundary.fenceNativeResults([
+				{
+					kind: "function_call_output",
+					callId: "coding-img-1",
+					output: [
+						{ type: "input_text", text },
+						{ type: "input_image", sha256 },
+					],
+				},
+			]),
+		).toEqual([{ kind: "function_call_output", callId: "coding-img-1", output: text, imageSha256: sha256 }]);
+		await expect(
+			boundary.fenceNativeResults([
+				{
+					kind: "function_call_output",
+					callId: "coding-img-1",
+					output: [
+						{ type: "input_text", text },
+						{ type: "input_image", sha256: "b".repeat(64) },
+					],
+				},
+			]),
+		).rejects.toThrow("Native image not issued");
+	} finally {
+		boundary.close();
+	}
+});

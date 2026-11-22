@@ -263,13 +263,28 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 		company: CompanyComputerDesktopCompany | undefined,
 	): Promise<CompanyComputerScreenSessionHandle> {
 		const binding = desktop.binding;
-		const lifetime = AbortSignal.any([desktop.stop.signal, this.#stop.signal]);
-		const startup = AbortSignal.any([request, lifetime]);
+		const onManagerStop = (): void => desktop.stop.abort(this.#stop.signal.reason);
+		if (this.#stop.signal.aborted) onManagerStop();
+		else this.#stop.signal.addEventListener("abort", onManagerStop, { once: true });
+		const lifetime = desktop.stop.signal;
+		const startupController = new AbortController();
+		const onStartupRequestAbort = (): void => startupController.abort(request.reason);
+		const onStartupLifetimeAbort = (): void => startupController.abort(lifetime.reason);
+		if (request.aborted) onStartupRequestAbort();
+		else request.addEventListener("abort", onStartupRequestAbort, { once: true });
+		if (lifetime.aborted) onStartupLifetimeAbort();
+		else lifetime.addEventListener("abort", onStartupLifetimeAbort, { once: true });
+		const startup = startupController.signal;
+		const detachStartup = (): void => {
+			request.removeEventListener("abort", onStartupRequestAbort);
+			lifetime.removeEventListener("abort", onStartupLifetimeAbort);
+		};
 		const { layout, runtimeRoot } = this.#options;
 		const files: FileHandle[] = [];
 		let temporary: string | undefined;
 		let ownedByProcess = false;
 		const remove = async (): Promise<void> => {
+			this.#stop.signal.removeEventListener("abort", onManagerStop);
 			await Promise.all(files.map((file) => file.close()));
 			if (temporary) await rm(temporary, { recursive: true, force: true });
 			if (this.#desktops.get(binding.screenOrdinal) === desktop) this.#desktops.delete(binding.screenOrdinal);
@@ -499,15 +514,20 @@ export class CompanyComputerLinuxDesktopLauncher implements CompanyComputerScree
 				},
 				startup,
 				15000,
-			).catch(async (error) => {
-				await stop();
-				throw error;
-			});
+			)
+				.catch(async (error) => {
+					await stop();
+					throw error;
+				})
+				.finally(() => {
+					detachStartup();
+				});
 			void ready.catch(() => undefined);
 			desktop.handle = { ready, exited, stop };
 			if (startup.aborted) kill();
 			return desktop.handle;
 		} catch (error) {
+			detachStartup();
 			if (!ownedByProcess) await remove();
 			throw error;
 		}

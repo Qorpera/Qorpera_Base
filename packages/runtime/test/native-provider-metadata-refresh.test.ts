@@ -386,4 +386,93 @@ describe("native provider account metadata refresh", () => {
 		);
 		expect(fetcher).not.toHaveBeenCalled();
 	});
+
+	it("preserves receiver binding when NativeProviderHost invokes a class-based control plane with private fields", async () => {
+		const f = await fixture();
+		const root = await mkdtemp(join(tmpdir(), "qorpera-account-class-test-"));
+		roots.push(root);
+		const source = join(root, "source");
+		const temporaryRoot = join(root, "temporary");
+		await mkdir(join(source, "codex"), { recursive: true });
+		await mkdir(temporaryRoot);
+		const token = `header.${Buffer.from(JSON.stringify({ email: "class@example.com" })).toString("base64url")}.signature`;
+		await writeFile(
+			join(source, "codex", "auth.json"),
+			JSON.stringify({
+				tokens: {
+					id_token: token,
+					access_token: "provider-secret",
+					account_id: "provider-account",
+				},
+			}),
+			{ mode: 0o600 },
+		);
+		const masterKey = randomBytes(32).toString("base64url");
+		const sealed = await sealNativeCredentialCapsule(source, masterKey, account.capsuleId);
+		const recorded: unknown[] = [];
+		const completed: string[] = [];
+
+		class PrivateFieldControlPlane implements NativeProviderControlPlane {
+			readonly #expectedIdentity: string;
+			constructor(expectedIdentity: string) {
+				this.#expectedIdentity = expectedIdentity;
+			}
+			async describeLogin(): Promise<never> {
+				throw new Error("Unexpected");
+			}
+			async completeLogin(): Promise<never> {
+				throw new Error("Unexpected");
+			}
+			async validateExecution(): Promise<never> {
+				throw new Error("Unexpected");
+			}
+			async sendMessage(): Promise<never> {
+				throw new Error("Unexpected");
+			}
+			async describeAccountRefresh(requestId: string) {
+				expect(requestId).toBe(request.requestId);
+				return {
+					computeIdentityId: this.#expectedIdentity,
+					requestedByUserId: request.requestedByUserId,
+					expiresAt: request.expiresAt,
+					status: "pending" as const,
+				};
+			}
+			async completeAccountRefresh(requestId: string) {
+				if (this.#expectedIdentity !== identity) return false;
+				completed.push(requestId);
+				return true;
+			}
+			async listAccountRefreshes(computeIdentityId: string) {
+				expect(computeIdentityId).toBe(this.#expectedIdentity);
+				return [account];
+			}
+			async recordAccountMetadata(
+				computeIdentityId: string,
+				entry: NativeProviderAccountRefresh,
+				metadata: Record<string, unknown>,
+			) {
+				expect(computeIdentityId).toBe(this.#expectedIdentity);
+				recorded.push({ capsuleId: entry.capsuleId, metadata });
+			}
+		}
+
+		const host = new NativeProviderHost({
+			controlPlane: new PrivateFieldControlPlane(identity),
+			capsules: { get: async () => sealed, put: f.put },
+			masterKey,
+			computeIdentityId: identity,
+			temporaryRoot,
+			harness: {
+				beginLogin: async () => {
+					throw new Error("Unexpected");
+				},
+			},
+		});
+		hosts.push(host);
+		const result = await host.refreshRequestedAccountMetadata(request);
+		expect(result).toMatchObject({ request_id: request.requestId, status: "completed" });
+		expect(completed).toEqual([request.requestId]);
+		expect(recorded).toHaveLength(1);
+	});
 });

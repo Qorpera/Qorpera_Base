@@ -61,7 +61,14 @@ import { RailSelection } from "../../ui/rail-selection.ts";
 import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type IdleLine, idleLine } from "../agent-line.ts";
 import { type AuthController, displayName } from "../auth.ts";
-import { type AgentState, agentWorks, type CompanyController, isAgentPairSession } from "../company.ts";
+import {
+	type AgentState,
+	agentWorks,
+	type CompanyController,
+	isAgentPairSession,
+	isAgentThreadSession,
+	isPrimaryStaffSession,
+} from "../company.ts";
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
@@ -436,6 +443,8 @@ interface RailParts {
 	connectionShown: string;
 	/** Whether the last draw found the rail collapsed, where the search field is hidden. */
 	collapsed: boolean;
+	layoutKey: string | undefined;
+	readonly presenceElements: Set<HTMLElement>;
 	/** The highlight that slides to the conversation opened (ui/rail-selection.ts). */
 	readonly selection: RailSelection;
 	/** Where every agent and conversation the company has listed leads: a row that comes back
@@ -710,6 +719,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			locale: "",
 			connectionShown: "",
 			collapsed: false,
+			layoutKey: undefined,
+			presenceElements: new Set(),
 			selection: new RailSelection(),
 			known: new Set(),
 			settled: false,
@@ -1229,7 +1240,22 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const profileId = company.profile.profileId;
 	const activeSessionId = route.name === "company" && route.section === "chat" ? route.id : undefined;
 	const activeStaffId = route.name === "company" && route.section === "staff" ? route.id : undefined;
-	const sessionOf = (staffId: string) => company.primarySessionFor(staffId);
+	const primaryByStaff = new Map<string, HostedSession>();
+	const fallbackPrimaryByStaff = new Map<string, HostedSession>();
+	for (const session of state.sessions) {
+		const staffId = session.staffAgentId;
+		if (!staffId) continue;
+		if (isAgentThreadSession(session)) {
+			if (!primaryByStaff.has(staffId)) primaryByStaff.set(staffId, session);
+		} else if (
+			!primaryByStaff.has(staffId) &&
+			!fallbackPrimaryByStaff.has(staffId) &&
+			isPrimaryStaffSession(session)
+		) {
+			fallbackPrimaryByStaff.set(staffId, session);
+		}
+	}
+	const sessionOf = (staffId: string) => primaryByStaff.get(staffId) ?? fallbackPrimaryByStaff.get(staffId);
 	const isActive = (staffId: string) =>
 		activeStaffId === staffId || (activeSessionId !== undefined && sessionOf(staffId)?.sessionId === activeSessionId);
 	const cofounderSessionId = state.organization?.cofounder.memberSessionId;
@@ -1240,12 +1266,13 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// While What's new shows, an agent's own app of that name stays out: two pages of one name (own code storage step 4).
 	// The company's owed views stand first, in a row of their own (company views step 4): out of the rest.
 	const owed = owedViews(state.siteList ?? [], state.apps ?? [], state.sitesTakenDown);
+	const owedAppsSet = new Set(owed.apps);
 	const postedApps = (state.apps ?? []).filter(
 		(app) =>
 			app.manifest?.posted === true &&
 			!app.manifest.concept &&
 			!(state.whatsNew && app.name === "whats-new") &&
-			!owed.apps.includes(app),
+			!owedAppsSet.has(app),
 	);
 	const concepts = companyConcepts(state.apps ?? []).length;
 	// The websites the company's agents published: one Sites entry while there are any (Jonas, 9 Nov 2026).
@@ -1296,8 +1323,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.searchToggle.tabIndex = parts.searchOpen ? -1 : 0;
 	parts.searchClose.hidden = !parts.searchOpen;
 	reconcile(container, [parts.toolbar, parts.appsDrawer, parts.list, parts.foot]);
-	parts.selection.measure(parts.list);
-	const places = measureRows(parts.list);
 	parts.collapsed = isCollapsed(container);
 	// The open field covers the name and the four windows, so they take no clicks or focus; the collapsed rail shows
 	// the four windows, not the field.
@@ -1332,6 +1357,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// A row whose model is unchanged keeps its element (and its figure); only changed rows are built.
 	// A pinned card and a row lead to the same place, so the cache key says which one it is.
 	const rows = new Map<string, { shown: string; element: HTMLElement }>();
+	const activeStates: Array<{ element: HTMLElement; current: boolean; key: string }> = [];
+	let anyRowRebuilt = false;
 	const row = <M>(
 		key: string,
 		href: string,
@@ -1346,13 +1373,12 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			kept?.shown === shown && !kept.element.querySelector("[data-motion-unavailable]")
 				? kept
 				: { shown, element: build(model, href) };
+		if (entry !== kept) anyRowRebuilt = true;
 		if (kept && entry !== kept && kept.element === focused) successor = entry.element;
 		if (entry !== kept && parts.settled)
 			changedRow(kept?.shown, shown, entry.element, !parts.known.has(href), parts.mentionsRead);
 		rows.set(key, entry);
-		entry.element.classList.toggle("active", current);
-		if (current) entry.element.setAttribute("aria-current", "page");
-		else entry.element.removeAttribute("aria-current");
+		activeStates.push({ element: entry.element, current, key });
 		return entry.element;
 	};
 	const mentionedIn = (sessionId: string | undefined) => Boolean(sessionId && state.mentions?.[sessionId]);
@@ -1385,9 +1411,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					}
 				: {}),
 			mentioned: mentionedIn(
-				agent.id === cofounder?.id && cofounderSessionId
-					? cofounderSessionId
-					: company.primarySessionFor(agent.id)?.sessionId,
+				agent.id === cofounder?.id && cofounderSessionId ? cofounderSessionId : sessionOf(agent.id)?.sessionId,
 			),
 			...(waiting
 				? {
@@ -1443,14 +1467,17 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		return row(`${keyPrefix}${href}`, href, model, activeMemberId === userId, build);
 	};
 	const roster = company.sidebarRoster();
+	const rosterSet = new Set(roster);
 	const rooms = company.groupChatRooms();
 	// Group chats the sidebar places; the others stand after the Unassigned agents.
 	const placedRooms: ReadonlyMap<string, HostedSession> = sidebar?.groupChats ? rooms : new Map();
-	const pinned = (sidebar?.pinned ?? []).filter((itemId) => roster.includes(itemId));
+	const pinned = (sidebar?.pinned ?? []).filter((itemId) => rosterSet.has(itemId));
+	const pinnedSet = new Set(pinned);
 	const hidden = new Set(sidebar?.hidden ?? []);
 	// A search that names a section lists everyone in it, pinned ones too; "Unassigned" names
 	// what is in no section once there are sections to tell it from.
 	const sectionNames = sidebar?.sections ?? [];
+	const sectionIdSet = new Set(sectionNames.map((item) => item.sectionId));
 	const wholeSections = new Set(
 		railQuery
 			? sectionNames.filter((item) => matches(item.name)).map((item) => item.sectionId as string | undefined)
@@ -1459,7 +1486,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (railQuery && sectionNames.length && matches(t("Unassigned"))) wholeSections.add(undefined);
 	const sectionOf = (itemId: string) => {
 		const placed = sidebar?.placements[itemId]?.sectionId;
-		return placed && sectionNames.some((item) => item.sectionId === placed) ? placed : undefined;
+		return placed && sectionIdSet.has(placed) ? placed : undefined;
 	};
 	const inWholeSection = (itemId: string) => wholeSections.has(sectionOf(itemId));
 	const shown = (agent: HostedStaffAgent | undefined): agent is HostedStaffAgent =>
@@ -1525,7 +1552,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			sidebar ? containerOrder(sidebar, sectionId, roster) : sectionId ? [] : roster,
 			contactsIn(sectionId ? `section:${sectionId}` : "unassigned"),
 		)
-			.filter((itemId) => !pinned.includes(itemId))
+			.filter((itemId) => !pinnedSet.has(itemId))
 			.flatMap((itemId) => {
 				const contact = contactOf.get(itemId);
 				if (contact) return contactShown(contact) ? [memberElement(itemId)] : [];
@@ -1543,11 +1570,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			group = sectionParts(`section:${item.sectionId}`, item.sectionId);
 			parts.sections.set(item.sectionId, group);
 		}
-		if (group.title.textContent !== item.name) group.title.textContent = item.name;
-		return { group, rows: inContainer(item.sectionId) };
+		return { group, name: item.name, rows: inContainer(item.sectionId) };
 	});
-	for (const [sectionId] of parts.sections)
-		if (!sidebar?.sections.some((item) => item.sectionId === sectionId)) parts.sections.delete(sectionId);
+	for (const [sectionId] of parts.sections) if (!sectionIdSet.has(sectionId)) parts.sections.delete(sectionId);
 	// Hidden agents and group chats fold at the foot of the list, where they can be shown
 	// again. A search already lists the matching ones in their places.
 	const hiddenItems = railQuery ? [] : roster.filter((itemId) => hidden.has(itemId));
@@ -1559,52 +1584,36 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const hiddenUnread = hiddenContacts.reduce((sum, contact) => sum + (memberChats?.[contact.userId]?.unread ?? 0), 0);
 	const hiddenCount = hiddenItems.length + hiddenPages.length + hiddenContacts.length;
 	const hiddenGroup = parts.hiddenGroup;
-	hiddenGroup.count.textContent = String(hiddenCount);
-	hiddenGroup.count.hidden = hiddenGroup.open;
-	// Empty with nothing waiting, so the fold reads as its name and its count alone.
-	hiddenGroup.unread.textContent = hiddenUnread === 0 ? "" : hiddenUnread > 99 ? "99+" : String(hiddenUnread);
-	hiddenGroup.unread.hidden = hiddenUnread === 0 || hiddenGroup.open;
-	hiddenGroup.chevron.hidden = !hiddenGroup.open;
-	hiddenGroup.toggle.setAttribute("aria-expanded", String(hiddenGroup.open));
-	hiddenGroup.toggle.setAttribute(
-		"aria-label",
-		[t("Hidden: {count}", { count: hiddenCount }), hiddenUnread ? t("Unread: {count}", { count: hiddenUnread }) : ""]
-			.filter(Boolean)
-			.join(" · "),
-	);
-	hiddenGroup.list.hidden = !hiddenGroup.open;
-	reconcile(
-		hiddenGroup.list,
-		hiddenGroup.open
-			? [
-					...hiddenPages.map((entry) =>
-						row(
-							`hidden-page:${entry.name}`,
-							"",
-							{ name: entry.name, title: entry.file.name, emblem: entry.file.emblem },
-							false,
-							hiddenPageRow,
-						),
+	const hiddenRowElements = hiddenGroup.open
+		? [
+				...hiddenPages.map((entry) =>
+					row(
+						`hidden-page:${entry.name}`,
+						"",
+						{ name: entry.name, title: entry.file.name, emblem: entry.file.emblem },
+						false,
+						hiddenPageRow,
 					),
-					...hiddenItems.flatMap((itemId) => {
-						if (placedRooms.has(itemId)) return [roomElement(itemId, "hidden:")];
-						const agent = company.staffById(itemId);
-						return agent
-							? [
-									row(
-										`hidden:#/c/${profileId}/staff/${agent.id}`,
-										`#/c/${profileId}/staff/${agent.id}`,
-										agentModel(agent),
-										isActive(agent.id),
-										agentRow,
-									),
-								]
-							: [];
-					}),
-					...hiddenContacts.map((contact) => memberElement(contact.userId, "hidden:")),
-				]
-			: [],
-	);
+				),
+				...hiddenItems.flatMap((itemId) => {
+					if (placedRooms.has(itemId)) return [roomElement(itemId, "hidden:")];
+					const agent = company.staffById(itemId);
+					return agent
+						? [
+								row(
+									`hidden:#/c/${profileId}/staff/${agent.id}`,
+									`#/c/${profileId}/staff/${agent.id}`,
+									agentModel(agent),
+									isActive(agent.id),
+									agentRow,
+								),
+							]
+						: [];
+				}),
+				...hiddenContacts.map((contact) => memberElement(contact.userId, "hidden:")),
+			]
+		: [];
+	const activeStaffIds = new Set(active.map((agent) => agent.id));
 	const unassignedRows = [
 		...inContainer(undefined),
 		// Conversations that are not one agent's own thread and that the sidebar does not
@@ -1618,7 +1627,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					!isAgentPairSession(session) &&
 					!placedRooms.has(String(session.executionScope?.roomId).toLowerCase()) &&
 					(!session.staffAgentId ||
-						!active.some((agent) => agent.id === session.staffAgentId) ||
+						!activeStaffIds.has(session.staffAgentId) ||
 						(session.executionScope &&
 							("group" in session.executionScope ||
 								("roomId" in session.executionScope && session.executionScope.agentThread !== true)))),
@@ -1701,6 +1710,80 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				? t("No matching conversations.")
 				: t("No agents yet.")
 			: null;
+	const listNotices = [
+		connectionNotice(),
+		errorNotice("sessions", state.sessionsError, () =>
+			button(t("Retry conversations"), () => void company.refreshSessions(), { small: true }),
+		),
+		// Group details are decoration (names and figures of a group chat) and are read
+		// again with every conversation refresh. A failure never shows in the rail: the
+		// text would name cloud machinery, and there is nothing for the member to do.
+		errorNotice("company", state.error, () =>
+			button(t("Retry company"), () => void company.refreshAll(), { small: true }),
+		),
+		errorNotice("rail", state.railError, () =>
+			button(t("Dismiss"), () => company.reportRailError(undefined), { small: true }),
+		),
+		resetNotice(),
+	];
+	const sectioned = sectionGroups.length > 0;
+	const placing = state.memberContactPlacing === true && contacts.length > 0;
+	const rowKeyOf = (el: HTMLElement) => el.getAttribute("data-href") ?? el.dataset.page ?? "";
+	const layoutKey = JSON.stringify([
+		parts.collapsed,
+		Boolean(sidebar),
+		activeStates.filter((entry) => entry.current).map((entry) => entry.key),
+		cofounderElement ? rowKeyOf(cofounderElement) : null,
+		pinnedElements.map(rowKeyOf),
+		sectionGroups.map(({ group, name, rows: sectionRows }) => [
+			group.title.dataset.sectionId ?? "",
+			name,
+			sectionRows.map(rowKeyOf),
+		]),
+		sectioned,
+		placing,
+		Boolean(railQuery),
+		unassignedRows.map(rowKeyOf),
+		memberRows.map(rowKeyOf),
+		hiddenGroup.open,
+		hiddenCount,
+		hiddenUnread,
+		hiddenRowElements.map(rowKeyOf),
+		waiting,
+		empty,
+		[...notices.entries()].map(([about, entry]) => [about, entry.text]),
+	]);
+	const shouldMeasure =
+		parts.layoutKey !== undefined &&
+		(layoutKey !== parts.layoutKey || anyRowRebuilt || Boolean(parts.selection.moving));
+	let places: ReturnType<typeof measureRows>;
+	if (shouldMeasure) {
+		parts.selection.measure(parts.list);
+		places = measureRows(parts.list);
+	}
+	for (const { element, current } of activeStates) {
+		if (element.classList.contains("active") !== current) element.classList.toggle("active", current);
+		if (current) {
+			if (element.getAttribute("aria-current") !== "page") element.setAttribute("aria-current", "page");
+		} else if (element.hasAttribute("aria-current")) {
+			element.removeAttribute("aria-current");
+		}
+	}
+	hiddenGroup.count.textContent = String(hiddenCount);
+	hiddenGroup.count.hidden = hiddenGroup.open;
+	// Empty with nothing waiting, so the fold reads as its name and its count alone.
+	hiddenGroup.unread.textContent = hiddenUnread === 0 ? "" : hiddenUnread > 99 ? "99+" : String(hiddenUnread);
+	hiddenGroup.unread.hidden = hiddenUnread === 0 || hiddenGroup.open;
+	hiddenGroup.chevron.hidden = !hiddenGroup.open;
+	hiddenGroup.toggle.setAttribute("aria-expanded", String(hiddenGroup.open));
+	hiddenGroup.toggle.setAttribute(
+		"aria-label",
+		[t("Hidden: {count}", { count: hiddenCount }), hiddenUnread ? t("Unread: {count}", { count: hiddenUnread }) : ""]
+			.filter(Boolean)
+			.join(" · "),
+	);
+	hiddenGroup.list.hidden = !hiddenGroup.open;
+	reconcile(hiddenGroup.list, hiddenRowElements);
 	if (empty && parts.empty.textContent !== empty) parts.empty.textContent = empty;
 	// Drop zones exist only where the sidebar does; while searching, only rows that match show.
 	const zone = (element: HTMLElement, on: boolean) => {
@@ -1708,14 +1791,14 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		if (on) element.dataset.dropZone = value;
 		else delete element.dataset.dropZone;
 	};
-	const sectioned = sectionGroups.length > 0;
 	zone(parts.pinnedGroup, Boolean(sidebar));
 	parts.pinnedGroup.classList.toggle("is-empty", !pinnedElements.length);
 	reconcile(parts.pinnedGroup, [...pinnedElements, parts.pinnedGroup.querySelector<HTMLElement>(".rail-drop-slot")!]);
 	// A section title opens its menu from the keyboard only for members who can change it;
 	// for everyone else it is just a label, never a tab stop.
 	const organize = canOrganize(company);
-	for (const { group, rows: sectionRows } of sectionGroups) {
+	for (const { group, name, rows: sectionRows } of sectionGroups) {
+		if (group.title.textContent !== name) group.title.textContent = name;
 		zone(group.el, true);
 		reconcile(group.list, sectionRows);
 		if (organize) {
@@ -1745,7 +1828,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// The Members group is a zone only contacts land in, where the cloud keeps their places. Its title parts it from
 	// the sections above it, as Unassigned's does. With nobody in it, it shows only while a contact is dragged, so one
 	// can be dropped back there (styles/app.css).
-	const placing = state.memberContactPlacing === true && contacts.length > 0;
 	zone(parts.members.el, placing);
 	parts.members.title.hidden = !sectioned;
 	parts.members.el.classList.toggle("is-empty", !memberRows.length);
@@ -1765,20 +1847,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	reconcile(
 		parts.list,
 		[
-			connectionNotice(),
-			errorNotice("sessions", state.sessionsError, () =>
-				button(t("Retry conversations"), () => void company.refreshSessions(), { small: true }),
-			),
-			// Group details are decoration (names and figures of a group chat) and are read
-			// again with every conversation refresh. A failure never shows in the rail: the
-			// text would name cloud machinery, and there is nothing for the member to do.
-			errorNotice("company", state.error, () =>
-				button(t("Retry company"), () => void company.refreshAll(), { small: true }),
-			),
-			errorNotice("rail", state.railError, () =>
-				button(t("Dismiss"), () => company.reportRailError(undefined), { small: true }),
-			),
-			resetNotice(),
+			...listNotices,
 			cofounderElement ? parts.cofounderGroup : null,
 			// The pinned row stays in place while empty, hidden, so a drag can still reach it.
 			sidebar && !railQuery ? parts.pinnedGroup : pinnedElements.length ? parts.pinnedGroup : null,
@@ -1792,8 +1861,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			parts.selection.moving ?? null,
 		].filter((element) => element !== null),
 	);
-	parts.selection.move(parts.list);
-	glideRows(parts.list, places);
+	if (shouldMeasure) {
+		parts.selection.move(parts.list);
+		glideRows(parts.list, places);
+	}
+	parts.layoutKey = layoutKey;
 	parts.rows = rows;
 	// Everything the company lists now is known from here on, drawn or not (hidden, filtered out).
 	parts.known.add(`#/c/${profileId}`);
@@ -1857,30 +1929,50 @@ function placeOf(element: HTMLElement): string | undefined {
  * current row, so a member moving never rebuilds a row. */
 function paintPresence(container: HTMLElement, parts: RailParts, company: CompanyController): void {
 	const places = company.peopleByPlace();
+	if (places.size === 0) {
+		if (parts.presenceElements.size === 0) return;
+		for (const element of [...parts.presenceElements]) paintHere(element, [], parts.presenceElements);
+		return;
+	}
+	const visited = new Set<HTMLElement>();
 	const inApps = new Map<string, { userId: string; name: string }>();
 	for (const element of container.querySelectorAll<HTMLElement>(
 		"[data-agent-id], [data-cofounder-id], [data-room-id], [data-app-key], [data-owed-place]",
 	)) {
+		visited.add(element);
 		const place = placeOf(element);
 		const people = (place && places.get(place)) || [];
 		if (element.dataset.appKey || element.dataset.owedPlace)
 			for (const person of people) inApps.set(person.userId, person);
-		paintHere(element, people);
+		paintHere(element, people, parts.presenceElements);
 	}
-	paintHere(parts.apps, parts.appsOpen ? [] : [...inApps.values()]);
+	visited.add(parts.apps);
+	paintHere(parts.apps, parts.appsOpen ? [] : [...inApps.values()], parts.presenceElements);
+	for (const element of [...parts.presenceElements]) {
+		if (!visited.has(element)) paintHere(element, [], parts.presenceElements);
+	}
 }
 
-function paintHere(element: HTMLElement, people: readonly { userId: string; name: string }[]): void {
-	const kept = element.querySelector<HTMLElement>(":scope > .rail-here, :scope > * > .rail-here");
-	// Who and by what name: a renamed member is drawn anew.
-	const key = JSON.stringify(people.map((person) => [person.userId, person.name]));
+function paintHere(
+	element: HTMLElement,
+	people: readonly { userId: string; name: string }[],
+	painted: Set<HTMLElement>,
+): void {
 	if (!people.length) {
-		kept?.remove();
+		if (!painted.has(element)) return;
+		painted.delete(element);
+		element.querySelector<HTMLElement>(":scope > .rail-here, :scope > * > .rail-here")?.remove();
 		element.removeAttribute("aria-description");
 		element.style.removeProperty("--here-count");
 		return;
 	}
-	if (kept?.dataset.people === key) return;
+	const kept = element.querySelector<HTMLElement>(":scope > .rail-here, :scope > * > .rail-here");
+	// Who and by what name: a renamed member is drawn anew.
+	const key = JSON.stringify(people.map((person) => [person.userId, person.name]));
+	if (kept?.dataset.people === key) {
+		painted.add(element);
+		return;
+	}
 	const names = people.map((person) => person.name);
 	const said =
 		names.length === 1
@@ -1900,6 +1992,7 @@ function paintHere(element: HTMLElement, people: readonly { userId: string; name
 	const stand = element.querySelector<HTMLElement>(":scope > .cofounder-stand, :scope > .rail-pin-stand");
 	if (stand) stand.append(marker);
 	element.setAttribute("aria-description", said);
+	painted.add(element);
 }
 
 /* ---- The apps drawer --------------------------------------------------------------- */

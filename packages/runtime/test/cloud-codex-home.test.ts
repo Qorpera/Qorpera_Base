@@ -645,4 +645,83 @@ describe("the review at the host", () => {
 			},
 		);
 	});
+
+	it("returns an error and finishes unnamed steps if the home channel drops during review", async () => {
+		const machine = fakeMachine();
+		const { steps, log } = runLog();
+		let releaseReview: (() => void) | undefined;
+		await withHome(
+			{
+				channel: { open: async () => machine.stream },
+				steps: new CloudCodexHomeSteps(log),
+				review: {
+					check: async (action) => {
+						if (action.step.tool === "write_stdin") {
+							await new Promise<void>((resolve) => {
+								releaseReview = resolve;
+							});
+						}
+						return { run: true };
+					},
+				},
+			},
+			async (_home, slot) => {
+				slot.send({
+					id: 1,
+					method: "process/start",
+					params: {
+						processId: "5",
+						argv: ["/bin/bash", "-lc", "cat"],
+						cwd: "file:///company",
+						metadata: { toolCallId: "call-s" },
+					},
+				});
+				await until(() => machine.written.length === 1);
+				machine.answer(JSON.stringify({ id: 1, result: {} }));
+				expect(await slot.next()).toEqual({ id: 1, result: {} });
+				slot.send({ id: 2, method: "process/write", params: { processId: "5", chunk: base64("after-drop\n") } });
+				await until(() => releaseReview !== undefined);
+				machine.end();
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				releaseReview?.();
+				const reply = await slot.next();
+				expect(reply).toMatchObject({ id: 2, error: { code: -32010 } });
+				const typed = steps.find((step) => step.tool === "write_stdin");
+				expect(typed?.result).toBeDefined();
+				expect(machine.written).toHaveLength(1);
+			},
+		);
+	});
+
+	it("fails replay promptly when the reconnected machine stream closes mid-handshake", async () => {
+		const first = fakeMachine();
+		const second = fakeMachine();
+		let opens = 0;
+		await withHome(
+			{
+				channel: {
+					open: async () => {
+						opens += 1;
+						if (opens === 1) return first.stream;
+						return second.stream;
+					},
+				},
+			},
+			async (_home, slot) => {
+				slot.send({ id: 1, method: "initialize", params: { clientName: "codex" } });
+				await until(() => first.written.length === 1);
+				first.answer(JSON.stringify({ id: 1, result: { sessionId: "s" } }));
+				expect(await slot.next()).toEqual({ id: 1, result: { sessionId: "s" } });
+				first.end();
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				const startedAt = Date.now();
+				slot.send({ id: 2, method: "fs/readFile", params: { path: "file:///company/a" } });
+				await until(() => second.written.length === 1);
+				second.end();
+				const reply = await slot.next();
+				expect(Date.now() - startedAt).toBeLessThan(3_000);
+				expect(reply).toMatchObject({ id: 2, error: { code: -32010 } });
+			},
+		);
+	});
 });

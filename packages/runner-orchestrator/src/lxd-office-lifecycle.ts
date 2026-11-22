@@ -7,6 +7,7 @@ import {
 	parseCompanyComputerLifecycleRequest,
 	parseCompanyComputerPreparationCommand,
 } from "@qorpera/contracts";
+import { withAbortScope, withTimeoutScope } from "./abort-scope.ts";
 import { LxdUnixClient } from "./lxd-client.ts";
 import { LxdOfficeActivationWorker } from "./lxd-office-activation-worker.ts";
 import { assertOfficeAdoptionKernelLock } from "./lxd-office-adoption-files.ts";
@@ -357,18 +358,19 @@ export class LxdOfficeLifecycle {
 		if (pending.has(this.#root)) throw new Error("OFFICE_LIFECYCLE_PENDING");
 		pending.add(this.#root);
 		try {
-			const signal = AbortSignal.any([caller, AbortSignal.timeout(300000)]);
-			const result = await this.#run(signal);
-			const request = this.#protectedRecovery;
-			if (result.state === "active" && request && result.transitionId === request.transitionId) {
-				signal.throwIfAborted();
-				await publish(
-					this.#root,
-					`recovery-active-${request.transitionId}.json`,
-					Buffer.from(JSON.stringify(request)),
-				);
-			}
-			return result;
+			return await withTimeoutScope(caller, 300000, async (signal) => {
+				const result = await this.#run(signal);
+				const request = this.#protectedRecovery;
+				if (result.state === "active" && request && result.transitionId === request.transitionId) {
+					signal.throwIfAborted();
+					await publish(
+						this.#root,
+						`recovery-active-${request.transitionId}.json`,
+						Buffer.from(JSON.stringify(request)),
+					);
+				}
+				return result;
+			});
 		} catch (error) {
 			this.#activeIntent = undefined;
 			this.#activeRecovery = undefined;
@@ -1214,7 +1216,7 @@ export async function runLxdOfficeLifecycle(
 	while (!signal.aborted) {
 		let result: LxdOfficeLifecycleResult | undefined;
 		try {
-			result = await lifecycle.reconcile(signal);
+			result = await withAbortScope(signal, (scoped) => lifecycle.reconcile(scoped));
 		} catch (error) {
 			// Diagnostic observers have no authority over reconciliation.
 			if (!signal.aborted) {

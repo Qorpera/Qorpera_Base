@@ -7,6 +7,7 @@ import {
 	assertCompanyComputerScope,
 	type CompanyComputerScope,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	assertCompanyComputerScreenEventReceipt,
 	type CompanyComputerScreenEventCustody,
@@ -301,8 +302,8 @@ export class CompanyComputerScreenOutbox implements CompanyComputerScreenEventCu
 	flush(signal: AbortSignal): Promise<void> {
 		if (this.#closing) return Promise.reject(new Error("SCREEN_OUTBOX_CLOSED"));
 		if (this.#flushing) return this.#flushing;
-		signal = AbortSignal.any([signal, this.#stop.signal]);
-		this.#flushing = (async () => {
+		const parents = signal === this.#stop.signal ? [this.#stop.signal] : [signal, this.#stop.signal];
+		this.#flushing = withAbortScopes(parents, async (combined) => {
 			const records = await this.#local(() => this.#records());
 			const first = new Map<string, (typeof records)[number]>();
 			const closedAt = new Map<string, number>();
@@ -338,7 +339,7 @@ export class CompanyComputerScreenOutbox implements CompanyComputerScreenEventCu
 				...ordered.filter((r) => r.name <= this.#cursor),
 			].slice(0, 64);
 			for (const record of candidates) {
-				signal.throwIfAborted();
+				combined.throwIfAborted();
 				this.#cursor = record.name;
 				const { startup, binding, privacy, event } = record.observation;
 				try {
@@ -349,7 +350,7 @@ export class CompanyComputerScreenOutbox implements CompanyComputerScreenEventCu
 								structuredClone({ p_startup: startup, p_binding: binding, p_privacy: privacy, p_event: event }),
 								checked,
 							),
-						signal,
+						combined,
 						3000,
 					);
 					assertCompanyComputerScreenEventReceipt(receipt, event);
@@ -363,7 +364,7 @@ export class CompanyComputerScreenOutbox implements CompanyComputerScreenEventCu
 									{ p_record: bytes.toString("utf8") },
 									checked,
 								),
-							signal,
+							combined,
 							3000,
 						);
 						assertRetentionReceipt(receipt, record.observation, bytes);
@@ -380,7 +381,7 @@ export class CompanyComputerScreenOutbox implements CompanyComputerScreenEventCu
 					await this.#syncRoot();
 				});
 			}
-		})().finally(() => {
+		}).finally(() => {
 			this.#flushing = undefined;
 		});
 		return this.#flushing;

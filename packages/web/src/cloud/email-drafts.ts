@@ -1,3 +1,4 @@
+import { withAbortScopes } from "./abort-scope.ts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
 
@@ -265,20 +266,30 @@ export class EmailDraftClient {
 		if (!ticket.actionId || !ticket.brokerOrigin)
 			throw new Error("The email action could not be confirmed. Check its status before trying again.");
 		this.#signal.throwIfAborted();
-		const response = await fetch(
-			`${ticket.brokerOrigin}/v1/email-drafts/${ticket.actionId}?company=${ticket.companyId}`,
-			{
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ schema: "qorpera.email-draft-action/v1", capability: pending.capability }),
-				redirect: "error",
-				credentials: "omit",
-				signal: this.#signal,
+		const result = await withAbortScopes(
+			[this.#signal],
+			async (signal) => {
+				const response = await fetch(
+					`${ticket.brokerOrigin}/v1/email-drafts/${ticket.actionId}?company=${ticket.companyId}`,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ schema: "qorpera.email-draft-action/v1", capability: pending.capability }),
+						redirect: "error",
+						credentials: "omit",
+						signal,
+					},
+				);
+				try {
+					if (!response.ok)
+						throw new Error("The email action could not be confirmed. Check its status before trying again.");
+					return parseEmailDraftState(await response.json());
+				} finally {
+					if (!response.body?.locked) void response.body?.cancel?.().catch(() => undefined);
+				}
 			},
+			30_000,
 		);
-		if (!response.ok)
-			throw new Error("The email action could not be confirmed. Check its status before trying again.");
-		const result = parseEmailDraftState(await response.json());
 		if (result.companyId !== ticket.companyId || result.actionId !== ticket.actionId)
 			throw new Error("The email action response is invalid.");
 		if (["ready", "saved", "sent", "discarded"].includes(result.status)) this.#remember(key);

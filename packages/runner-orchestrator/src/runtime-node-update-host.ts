@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { lstat, open, readdir, readFile, readlink, realpath, rename } from "node:fs/promises";
 import { request } from "node:http";
 import { dirname, join } from "node:path";
+import { withTimeoutScope } from "./abort-scope.ts";
 import { officeCanonical, officeDigest, officeRecord, officeSha } from "./lxd-office-image-provenance.ts";
 import { officeInstallHash } from "./lxd-office-installation.ts";
 import {
@@ -507,26 +508,32 @@ export class LinuxNodeUpdatePhysicalPorts implements NodeUpdatePhysicalPorts {
 		const measured: { url: string; ok: true; listenerInode: string; pid: string }[] = [];
 		for (const url of this.#e.healthUrls) {
 			const listenerInode = await ownedSocket(url);
-			const response = await fetch(url, {
-				redirect: "error",
-				signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
-			});
-			if (response.status !== 200 || !response.body) throw new Error("NODE_UPDATE_HEALTH_UNCONFIRMED");
-			const reader = response.body.getReader();
-			let size = 0;
-			const chunks: Uint8Array[] = [];
-			try {
-				while (true) {
-					const item = await reader.read();
-					if (item.done) break;
-					size += item.value.length;
-					if (size > 1024) throw new Error("NODE_UPDATE_HEALTH_UNCONFIRMED");
-					chunks.push(item.value);
+			const chunks = await withTimeoutScope(signal, 5000, async (checked) => {
+				const response = await fetch(url, {
+					redirect: "error",
+					signal: checked,
+				});
+				if (response.status !== 200 || !response.body) {
+					await response.body?.cancel().catch(() => undefined);
+					throw new Error("NODE_UPDATE_HEALTH_UNCONFIRMED");
 				}
-			} finally {
-				await reader.cancel();
-				reader.releaseLock();
-			}
+				const reader = response.body.getReader();
+				let size = 0;
+				const parts: Uint8Array[] = [];
+				try {
+					while (true) {
+						const item = await reader.read();
+						if (item.done) break;
+						size += item.value.length;
+						if (size > 1024) throw new Error("NODE_UPDATE_HEALTH_UNCONFIRMED");
+						parts.push(item.value);
+					}
+				} finally {
+					await reader.cancel().catch(() => undefined);
+					reader.releaseLock();
+				}
+				return parts;
+			});
 			if (officeCanonical(JSON.parse(Buffer.concat(chunks).toString("utf8"))) !== '{"ok":true}')
 				throw new Error("NODE_UPDATE_HEALTH_UNCONFIRMED");
 			if ((await ownedSocket(url)) !== listenerInode) throw new Error("NODE_UPDATE_HEALTH_LISTENER_CHANGED");
@@ -642,28 +649,34 @@ export class LinuxNodeUpdatePhysicalPorts implements NodeUpdatePhysicalPorts {
 			throw new Error("NODE_UPDATE_PHYSICAL_ALREADY_CLAIMED");
 		let facts: unknown;
 		if (intent.phase === "stage") {
-			const before = await this.#facts(release.previous.artifactSha256, true),
-				response = await fetch(`${this.#e.artifactBaseUrl}${release.artifact.sha256}.mjs`, {
+			const before = await this.#facts(release.previous.artifactSha256, true);
+			const chunks = await withTimeoutScope(signal, 30000, async (checked) => {
+				const response = await fetch(`${this.#e.artifactBaseUrl}${release.artifact.sha256}.mjs`, {
 					redirect: "error",
 					credentials: "omit",
-					signal: AbortSignal.any([signal, AbortSignal.timeout(30000)]),
+					signal: checked,
 				});
-			if (response.status !== 200 || !response.body) throw new Error("NODE_UPDATE_ARTIFACT_UNAVAILABLE");
-			const reader = response.body.getReader(),
-				chunks: Uint8Array[] = [];
-			let size = 0;
-			try {
-				while (true) {
-					const item = await reader.read();
-					if (item.done) break;
-					size += item.value.length;
-					if (size > release.artifact.bytes) throw new Error("NODE_UPDATE_ARTIFACT_OVERSIZED");
-					chunks.push(item.value);
+				if (response.status !== 200 || !response.body) {
+					await response.body?.cancel().catch(() => undefined);
+					throw new Error("NODE_UPDATE_ARTIFACT_UNAVAILABLE");
 				}
-			} finally {
-				await reader.cancel();
-				reader.releaseLock();
-			}
+				const reader = response.body.getReader(),
+					parts: Uint8Array[] = [];
+				let size = 0;
+				try {
+					while (true) {
+						const item = await reader.read();
+						if (item.done) break;
+						size += item.value.length;
+						if (size > release.artifact.bytes) throw new Error("NODE_UPDATE_ARTIFACT_OVERSIZED");
+						parts.push(item.value);
+					}
+				} finally {
+					await reader.cancel().catch(() => undefined);
+					reader.releaseLock();
+				}
+				return parts;
+			});
 			const bytes = Buffer.concat(chunks);
 			if (bytes.length !== release.artifact.bytes || officeInstallHash(bytes) !== release.artifact.sha256)
 				throw new Error("NODE_UPDATE_ARTIFACT_CHANGED");

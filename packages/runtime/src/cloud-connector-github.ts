@@ -5,6 +5,7 @@ import {
 	ConnectorRequestError,
 	type ConnectorResponse,
 	clipText,
+	codePointCount,
 	connectorRequest,
 	decodeUtf8,
 	fitItems,
@@ -228,7 +229,7 @@ export function createGitHubConnectorAdapters(
 					commentLimit > 0
 						? jsonArray(await github(context, `${base}/comments`, { query: { per_page: String(commentLimit) } }))
 						: [];
-				const body = clipText(jsonString(issue.body, 100_000) ?? "", BODY_CHARS, BODY_BYTES);
+				const body = clipText(typeof issue.body === "string" ? issue.body : "", BODY_CHARS, BODY_BYTES);
 				// Comments share one text budget so the whole result stays readable
 				// inside the tool-result size the model receives.
 				let budget = COMMENT_BUDGET_CHARS;
@@ -237,11 +238,11 @@ export function createGitHubConnectorAdapters(
 					if (budget <= 0) break;
 					const comment = jsonRecord(item);
 					const text = clipText(
-						jsonString(comment.body, 100_000) ?? "",
+						typeof comment.body === "string" ? comment.body : "",
 						Math.min(COMMENT_CHARS, budget),
 						COMMENT_BYTES,
 					);
-					budget -= [...text.text].length;
+					budget -= codePointCount(text.text);
 					included.push({
 						author: user(comment.user),
 						created_at: jsonString(comment.created_at, 40),

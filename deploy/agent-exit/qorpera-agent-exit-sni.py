@@ -389,7 +389,7 @@ class Judge:
         if flow.state == "passed" and flags & ACK:
             past = (ack - flow.start) & 0xFFFFFFFF
             if len(flow.hello) <= past < 1 << 31:
-                flow.state = "done"
+                flow.state, flow.hello = "done", b""
                 return [(ident, REPEAT, LISTED)]
         return [(ident, ACCEPT, 0)]
 
@@ -411,7 +411,7 @@ class Judge:
         self.refused += 1
         self.report(f"refused {machine}:{port} -> {server}:{server_port}: {why}")
         held = [i for i in self.release(key, flow) if i != ident]
-        flow.state, flow.data, flow.known = "refused", None, None
+        flow.state, flow.data, flow.known, flow.hello = "refused", None, None, b""
         return [(i, DROP, 0) for i in held] + [(ident, REPEAT, REFUSED)]
 
     def release(self, key, flow):

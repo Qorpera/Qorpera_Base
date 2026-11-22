@@ -438,7 +438,7 @@ describe("ephemeral cloud runner worker", () => {
 		expect(Date.now() - started).toBeLessThan(5_000);
 		expect(service.requests.filter((request) => request.action === "renew")).toHaveLength(1);
 		expect(service.requests.some((request) => request.action === "fail")).toBe(false);
-		expect(lane.release).toHaveBeenCalledExactlyOnceWith("revoked");
+		expect(lane.release).toHaveBeenCalledExactlyOnceWith("revoked", expect.any(AbortSignal));
 	});
 
 	it("stops the run at once when the lease's renewal is refused while the native authority's renewal retries", async () => {
@@ -475,7 +475,7 @@ describe("ephemeral cloud runner worker", () => {
 		expect(Date.now() - started).toBeLessThan(5_000);
 		expect(lane.renew).toHaveBeenCalledOnce();
 		expect(service.requests.some((request) => request.action === "fail")).toBe(false);
-		expect(lane.release).toHaveBeenCalledExactlyOnceWith("revoked");
+		expect(lane.release).toHaveBeenCalledExactlyOnceWith("revoked", expect.any(AbortSignal));
 	});
 
 	it("reports deterministic job-contract failures without retrying them, and releases the native lease", async () => {
@@ -487,7 +487,24 @@ describe("ephemeral cloud runner worker", () => {
 
 		expect(result).toMatchObject({ status: "failed", job: { status: "failed" } });
 		expect(service.requests.at(-1)).toMatchObject({ action: "fail", retryable: false });
-		expect(lane.release).toHaveBeenCalledExactlyOnceWith("released");
+		expect(lane.release).toHaveBeenCalledExactlyOnceWith("released", expect.any(AbortSignal));
+	});
+
+	it("preserves the primary permanent execution error when native authority release fails in finally", async () => {
+		const service = new RunnerService();
+		const runner = await activeRunner(service);
+		lane.release.mockRejectedValueOnce(new CloudRunnerBrokerRequestError("release unavailable (503)", 503, true));
+		const result = await worker(runner, async () => {
+			throw new Error("Runner substrate is inconsistent");
+		}).runNext(assignment);
+
+		expect(result).toMatchObject({ status: "failed", job: { status: "failed" } });
+		expect(service.requests.at(-1)).toMatchObject({
+			action: "fail",
+			error: "Runner substrate is inconsistent",
+			retryable: false,
+		});
+		expect(lane.release).toHaveBeenCalledExactlyOnceWith("released", expect.any(AbortSignal));
 	});
 
 	it("tries a run again when a stage before the model's turn timed out or lost its transport, and nothing else", async () => {
@@ -580,7 +597,7 @@ describe("ephemeral cloud runner worker", () => {
 		await expect(running).rejects.toThrow("worker stopped");
 		expect(service.requests.some((request) => request.action === "fail")).toBe(false);
 		expect(runner.leasedJobs()).toMatchObject([{ jobId, status: "leased" }]);
-		expect(lane.release).toHaveBeenCalledExactlyOnceWith("revoked");
+		expect(lane.release).toHaveBeenCalledExactlyOnceWith("revoked", expect.any(AbortSignal));
 	});
 
 	it("replays a staged completion after an ambiguous response without rerunning the company run", async () => {

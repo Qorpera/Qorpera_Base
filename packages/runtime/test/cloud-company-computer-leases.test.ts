@@ -160,6 +160,33 @@ describe("cloud screen lease handle (test-double authority)", () => {
 		expect(handle.signal.aborted).toBe(true);
 	});
 
+	it("isolates a timed-out caller during assertActive without aborting the shared check or screen lease", async () => {
+		const stop = new AbortController();
+		const run = computerRun(stop.signal);
+		const control = leaseControl();
+		const handle = await CompanyComputerScreenLeaseHandle.acquire(run, computerScope(), control);
+		handles.push(handle);
+		const checked = computerDeferred<ReturnType<typeof computerLease>>();
+		let observedSignal: AbortSignal | undefined;
+		control.check = vi.fn((_lease, requestSignal) => {
+			observedSignal = requestSignal;
+			return checked.promise;
+		});
+		const caller1 = new AbortController();
+		const caller2 = new AbortController();
+		const first = handle.assertActive(caller1.signal);
+		const second = handle.assertActive(caller2.signal);
+		await vi.waitFor(() => expect(observedSignal).toBeDefined());
+		caller1.abort(new Error("SCREENSHOT_TIMEOUT"));
+		await expect(first).rejects.toThrow("SCREEN_LEASE_UNAVAILABLE");
+		expect(handle.signal.aborted).toBe(false);
+		expect(run.signal.aborted).toBe(false);
+		expect(observedSignal?.aborted).toBe(false);
+		checked.resolve(computerLease());
+		await expect(second).resolves.toBeUndefined();
+		expect(control.check).toHaveBeenCalledOnce();
+	});
+
 	it("bounds uncooperative I/O and rejects invalid timeout budgets", async () => {
 		vi.useFakeTimers();
 		const pending = companyComputerRequest(() => new Promise(() => {}), new AbortController().signal, 10);

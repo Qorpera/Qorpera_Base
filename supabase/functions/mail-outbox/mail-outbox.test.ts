@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
 import {
-	attachmentBytes,
+	attachmentBase64,
 	BATCH,
 	createMailObjectReader,
 	handleMailOutbox,
@@ -305,6 +305,23 @@ describe("Resend sender", () => {
 			"Idempotency-Key": "company-mail/1",
 		});
 		assert.deepEqual(JSON.parse(String(request?.init.body)), email);
+
+		const withAttachments: ProviderEmail = {
+			...email,
+			attachments: [
+				{ filename: 'report "Q4".pdf', content: Buffer.from("hello-pdf").toString("base64") },
+				{ filename: "notes.txt", content: [Buffer.from("abc").toString("base64"), Buffer.from("def").toString("base64")] },
+			],
+		};
+		assert.equal(await sender.send(withAttachments, "company-mail/2"), "resend-1");
+		assert.ok(request?.init.body instanceof Blob);
+		assert.deepEqual(JSON.parse(await request.init.body.text()), {
+			...email,
+			attachments: [
+				{ filename: 'report "Q4".pdf', content: Buffer.from("hello-pdf").toString("base64") },
+				{ filename: "notes.txt", content: Buffer.from("abcdef").toString("base64") },
+			],
+		});
 	});
 
 	it("says which refusals are worth another try", async () => {
@@ -376,7 +393,10 @@ describe("mail outbox attachments", () => {
 		const f = outbox([job(1, { companyId: COMPANY, attachments: files }), job(2)], sender, reader(objects));
 		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 2, sent: 2, retrying: 0, failed: 0, rejected: 0, messageIds: 0 });
 		assert.deepEqual(
-			sent[0][0].attachments?.map((file) => [file.filename, Buffer.from(file.content, "base64").equals(Buffer.from(file.filename === "invoice.pdf" ? pdf : csv))]),
+			sent[0][0].attachments?.map((file) => {
+				const encoded = typeof file.content === "string" ? file.content : file.content.join("");
+				return [file.filename, Buffer.from(encoded, "base64").equals(Buffer.from(file.filename === "invoice.pdf" ? pdf : csv))];
+			}),
 			[
 				["invoice.pdf", true],
 				["totals.csv", true],
@@ -391,19 +411,67 @@ describe("mail outbox attachments", () => {
 		const missing = new Map(objects);
 		missing.delete([...objects.keys()].find((key) => objects.get(key)!.length === 4 * 1024 * 1024)!);
 		await assert.rejects(
-			attachmentBytes(COMPANY, file, reader(missing)),
+			attachmentBase64(COMPANY, file, reader(missing)),
 			(error: unknown) => error instanceof MailSendError && error.retryable && /not in storage yet/.test(error.message),
 		);
 		const tampered = new Map(objects);
 		tampered.set(file.manifestSha256, new TextEncoder().encode("{}"));
 		await assert.rejects(
-			attachmentBytes(COMPANY, file, reader(tampered)),
+			attachmentBase64(COMPANY, file, reader(tampered)),
 			(error: unknown) => error instanceof MailSendError && !error.retryable && /integrity/.test(error.message),
 		);
 		await assert.rejects(
-			attachmentBytes(COMPANY, { ...file, bytes: file.bytes - 1 }, reader(objects)),
+			attachmentBase64(COMPANY, { ...file, bytes: file.bytes - 1 }, reader(objects)),
 			(error: unknown) => error instanceof MailSendError && !error.retryable && /manifest/.test(error.message),
 		);
+		const rawChunk = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+		const badLenStore = new Map<string, Uint8Array>();
+		badLenStore.set(sha(rawChunk), rawChunk);
+		const badLenManifest = new TextEncoder().encode(
+			JSON.stringify({
+				schema: "qorpera.cloud-file-manifest/v1",
+				fileSha256: sha(rawChunk),
+				bytes: 9,
+				mediaType: "application/octet-stream",
+				chunks: [{ sha256: sha(rawChunk), bytes: 9 }],
+			}),
+		);
+		badLenStore.set(sha(badLenManifest), badLenManifest);
+		await assert.rejects(
+			attachmentBase64(
+				COMPANY,
+				{ filename: "bad-len.bin", manifestSha256: sha(badLenManifest), fileSha256: sha(rawChunk), bytes: 9 },
+				reader(badLenStore),
+			),
+			(error: unknown) => error instanceof MailSendError && !error.retryable && /integrity/.test(error.message),
+		);
+		const wrongWholeSha = "f".repeat(64);
+		const wrongWholeStore = new Map<string, Uint8Array>();
+		wrongWholeStore.set(sha(rawChunk), rawChunk);
+		const wrongWholeManifest = new TextEncoder().encode(
+			JSON.stringify({
+				schema: "qorpera.cloud-file-manifest/v1",
+				fileSha256: wrongWholeSha,
+				bytes: rawChunk.length,
+				mediaType: "application/octet-stream",
+				chunks: [{ sha256: sha(rawChunk), bytes: rawChunk.length }],
+			}),
+		);
+		wrongWholeStore.set(sha(wrongWholeManifest), wrongWholeManifest);
+		await assert.rejects(
+			attachmentBase64(
+				COMPANY,
+				{ filename: "bad-whole.bin", manifestSha256: sha(wrongWholeManifest), fileSha256: wrongWholeSha, bytes: rawChunk.length },
+				reader(wrongWholeStore),
+			),
+			(error: unknown) => error instanceof MailSendError && !error.retryable && /integrity/.test(error.message),
+		);
+		const shortCarry = new Uint8Array(4 * 1024 * 1024 + 1).map((_, index) => (index * 13 + 3) & 0xff);
+		const shortStore = new Map<string, Uint8Array>();
+		const shortFile = companyFile(shortStore, shortCarry, "carry.bin");
+		const encodedParts = await attachmentBase64(COMPANY, shortFile, reader(shortStore));
+		assert.ok(encodedParts.length >= 2);
+		assert.equal(encodedParts.join(""), Buffer.from(shortCarry).toString("base64"));
 		const { sender, sent } = recording();
 		const f = outbox([job(1, { companyId: COMPANY, attachments: [file] })], sender, reader(missing));
 		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 1, sent: 0, retrying: 1, failed: 0, rejected: 0, messageIds: 0 });

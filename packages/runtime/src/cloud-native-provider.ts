@@ -7,6 +7,7 @@ import {
 	type NativeProviderLoginPrompt,
 } from "@qorpera/cloud-client/native-provider-login";
 import type { JsonValue } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import { isNativeHostPublishableKey } from "./cloud-native-host-dispatch.ts";
 import type { CloudRunnerNativeAuthority } from "./cloud-runner-broker.ts";
 import type { CloudRunnerSandboxGuarantees, CloudRunnerSandboxProcess } from "./cloud-runner-sandbox.ts";
@@ -255,11 +256,16 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 		const deadline = Date.now() + timeoutMs;
 		for (;;) {
 			signal.throwIfAborted();
-			const response = await this.#fetch(this.#healthUrl, {
-				method: "GET",
-				redirect: "error",
-				signal: AbortSignal.any([signal, AbortSignal.timeout(BRIDGE_HEALTH_REQUEST_MS)]),
-			}).catch(() => undefined);
+			const response = await withAbortScopes(
+				[signal],
+				(reqSignal) =>
+					this.#fetch(this.#healthUrl, {
+						method: "GET",
+						redirect: "error",
+						signal: reqSignal,
+					}),
+				BRIDGE_HEALTH_REQUEST_MS,
+			).catch(() => undefined);
 			void response?.body?.cancel().catch(() => undefined);
 			if (response?.ok) return;
 			signal.throwIfAborted();
@@ -313,14 +319,10 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 
 	async #startExecution(authority: CloudRunnerNativeAuthority, body: JsonValue): Promise<CloudRunnerSandboxProcess> {
 		const executionAbort = new AbortController();
-		const result = this.#request(
-			this.#executeUrl,
-			body,
-			AbortSignal.any([
-				executionAbort.signal,
-				...(this.#requestTimeoutMs === undefined ? [] : [AbortSignal.timeout(this.#requestTimeoutMs)]),
-				...(this.#signal ? [this.#signal] : []),
-			]),
+		const result = withAbortScopes(
+			[executionAbort.signal, this.#signal],
+			(reqSignal) => this.#request(this.#executeUrl, body, reqSignal),
+			this.#requestTimeoutMs,
 		).then((value) => {
 			const envelope = record(value, "Native provider bridge response");
 			if (
@@ -396,10 +398,10 @@ export class HttpNativeProviderComputerBridge implements NativeProviderComputerB
 								code = bridgeRefusalCode(
 									JSON.parse(
 										new TextDecoder("utf-8", { fatal: true }).decode(
-											await readBoundedCloudResponse(
-												response,
-												4096,
-												AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+											await withAbortScopes(
+												[signal],
+												(readSignal) => readBoundedCloudResponse(response, 4096, readSignal),
+												5000,
 											),
 										),
 									),

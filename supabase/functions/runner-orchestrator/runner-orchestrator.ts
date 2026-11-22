@@ -398,15 +398,48 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 	}
 }
 
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+
+async function readBoundedText(request: Request, maxBytes: number): Promise<string> {
+	const rawLength = request.headers.get("content-length");
+	if (rawLength !== null) {
+		const contentLength = Number(rawLength);
+		if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > maxBytes) {
+			throw new Error("Invalid orchestrator request size");
+		}
+	}
+	const reader = request.body?.getReader();
+	if (!reader) return "";
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	let overflow = false;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > maxBytes) {
+				overflow = true;
+				throw new Error("Invalid orchestrator request size");
+			}
+			chunks.push(value);
+		}
+	} finally {
+		if (overflow) void reader.cancel().catch(() => undefined);
+	}
+	if (chunks.length === 0) return "";
+	if (chunks.length === 1) return UTF8_DECODER.decode(chunks[0]!);
+	const merged = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		merged.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return UTF8_DECODER.decode(merged);
+}
+
 export async function readRunnerOrchestratorRequest(request: Request): Promise<RunnerOrchestratorRequest> {
-	const contentLength = Number(request.headers.get("content-length") ?? "0");
-	if (!Number.isFinite(contentLength) || contentLength < 0 || contentLength > MAX_BODY_BYTES) {
-		throw new Error("Invalid orchestrator request size");
-	}
-	const text = await request.text();
-	if (new TextEncoder().encode(text).byteLength > MAX_BODY_BYTES) {
-		throw new Error("Invalid orchestrator request size");
-	}
+	const text = await readBoundedText(request, MAX_BODY_BYTES);
 	return parseRunnerOrchestratorRequest(JSON.parse(text));
 }
 
@@ -415,4 +448,21 @@ export function runnerOrchestratorRpcStatus(error: { code?: string }): number {
 	if (error.code === "40001" || error.code === "23505") return 409;
 	if (error.code === "55000") return 423;
 	return 503;
+}
+
+export function orchestratorAuthFailure(
+	validationError: { code?: string } | null | undefined,
+	valid: unknown,
+): { readonly status: number; readonly error: string } | null {
+	if (validationError) {
+		const status = runnerOrchestratorRpcStatus(validationError);
+		return {
+			status,
+			error: status === 401 ? "Orchestrator authorization was rejected" : "Orchestrator authorization is unavailable",
+		};
+	}
+	if (valid !== true) {
+		return { status: 401, error: "Orchestrator authorization was rejected" };
+	}
+	return null;
 }

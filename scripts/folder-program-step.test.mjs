@@ -175,7 +175,7 @@ test("the tests run beside the release build, its check and the program against 
 	assert.ok(flags(e2e, "--device").includes("/dev/fuse"));
 	assert.equal(
 		e2e.at(-1),
-		"node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts test/folder-data-e2e.test.ts",
+		"node ../../node_modules/vitest/dist/cli.js --run test/folder-mount-e2e.test.ts test/folder-git-e2e.test.ts test/folder-data-e2e.test.ts test/folder-search-e2e.test.ts",
 	);
 	// The runs with real git read the pinned git from its volume, built once per test machine and checked against its
 	// digest first.
