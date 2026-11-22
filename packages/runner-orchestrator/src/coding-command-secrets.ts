@@ -120,15 +120,8 @@ function recordSessionCommand(session: Session, commandId: string, envHash: stri
 		return;
 	}
 	if (session.commands.size >= MAX_SESSION_COMMANDS) {
-		let victim: string | undefined;
-		for (const [id, ref] of session.commands) {
-			if (!ref.accepted) {
-				victim = id;
-				break;
-			}
-		}
-		const target = victim ?? session.commands.keys().next().value;
-		if (target !== undefined) session.commands.delete(target);
+		const oldest = session.commands.keys().next().value;
+		if (oldest !== undefined) session.commands.delete(oldest);
 	}
 	session.commands.set(commandId, { envHash, accepted: false });
 }
