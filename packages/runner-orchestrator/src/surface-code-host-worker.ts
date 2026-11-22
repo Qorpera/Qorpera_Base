@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { type CloudCodingRepository, isUuid } from "@qorpera/contracts";
 import { withAbortScope } from "./abort-scope.ts";
 import { type CodeHostJob, keptRepositoryOf, withJob } from "./code-host-jobs.ts";
-import { type CodeSiteTreeFile, readCodeSiteTree } from "./code-host-sites.ts";
+import { type CodeSiteTreeFile, readSurfaceSiteTree } from "./code-host-sites.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { codeSiteManifest } from "./code-site.ts";
 import { CODE_SITE_LIST_BYTES, CODE_SITE_LIST_FILES, type CodeSiteTreeRead } from "./code-site-uploads.ts";
@@ -455,7 +455,7 @@ export class SurfaceCodeHostWorker {
 	constructor(options: SurfaceCodeHostWorkerOptions) {
 		this.#control = options.control;
 		this.#hosts = options.hosts;
-		this.#readTree = options.readTree ?? readCodeSiteTree;
+		this.#readTree = options.readTree ?? readSurfaceSiteTree;
 		this.#batchLimit = Math.min(Math.max(1, options.batchLimit ?? 8), 64);
 		this.#leaseRenewIntervalMs = Math.max(50, options.leaseRenewIntervalMs ?? 60_000);
 		this.#leaseExtendSeconds = Math.min(Math.max(30, options.leaseExtendSeconds ?? 300), 900);

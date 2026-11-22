@@ -608,6 +608,8 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		// A plain worker Claude Code does names its harness (20260930770000); a Codex worker never does.
 		const harnessNamed = !!payloadBody && typeof payloadBody === "object" && Object.hasOwn(payloadBody, "harness");
 		const claudeNamed = !!payloadBody && typeof payloadBody === "object" && Object.hasOwn(payloadBody, "claude");
+		const surfaceSessionNamed =
+			!!payloadBody && typeof payloadBody === "object" && Object.hasOwn(payloadBody, "surfaceSession");
 		const work = closed(payloadBody, [
 			"schema",
 			"workerId",
@@ -623,6 +625,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			...(coding ? ["coding"] : []),
 			...(harnessNamed ? ["harness"] : []),
 			...(claudeNamed ? ["claude"] : []),
+			...(surfaceSessionNamed ? ["surfaceSession"] : []),
 		]);
 		const dispatch = closed(work.dispatch, [
 			"goal",
@@ -636,6 +639,24 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 			"completion",
 		]);
 		closed(work.todo, ["todoKey", "title", "path"]);
+		if (surfaceSessionNamed) {
+			if (!coding) throw new Error("Invalid worker dispatch wake");
+			const surfaceSession = closed(work.surfaceSession, ["sessionId", "surfaceId", "surfaceSlug", "leaseToken"]);
+			uuid(surfaceSession.sessionId);
+			uuid(surfaceSession.surfaceId);
+			uuid(surfaceSession.leaseToken);
+			if (
+				typeof surfaceSession.surfaceSlug !== "string" ||
+				!/^[a-z0-9][a-z0-9-]{0,63}$/.test(surfaceSession.surfaceSlug)
+			)
+				throw new Error("Invalid worker dispatch wake");
+		}
+		const surfaceCodingRoot = coding && surfaceSessionNamed;
+		const validParent = surfaceCodingRoot
+			? parentRunId === null && work.parentRunId === null
+			: parentRunId !== null &&
+				uuidKey(parentRunId) !== uuidKey(identity.runId) &&
+				uuid(work.parentRunId) === parentRunId;
 		if (
 			work.schema !== "qorpera.worker-dispatch/v1" ||
 			uuid(work.workerId) !== source.id ||
@@ -650,9 +671,7 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 				(coding ||
 					harnessNamed ||
 					source.occurrenceKey !== `worker-dispatch:${source.id}:${work.sequence}:codex`)) ||
-			parentRunId === null ||
-			uuidKey(parentRunId) === uuidKey(identity.runId) ||
-			uuid(work.parentRunId) !== parentRunId ||
+			!validParent ||
 			actorStaffId !== null ||
 			actorUserId !== null ||
 			audience.kind !== "company" ||
