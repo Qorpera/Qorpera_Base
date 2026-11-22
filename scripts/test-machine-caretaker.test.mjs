@@ -1,13 +1,26 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
+	buildJumpClearMarkerSshArgs,
+	buildJumpQuerySshArgs,
+	buildJumpStopScript,
+	buildJumpStopSshArgs,
 	buildTelemetryPrompt,
+	buildTelemetrySshArgs,
+	buildTidyScript,
+	buildTidySshArgs,
 	enforceSafetyGuards,
 	fallbackDecision,
 	isMachineBusy,
 	parseCaretakerDecision,
 	parseCliArgs,
+	parseTelemetryOutput,
 	shouldConsultLlm,
+	telemetryScript,
 } from "./test-machine-caretaker.mjs";
 
 const idleMachine = (overrides = {}) => ({
@@ -31,6 +44,8 @@ const idleMachine = (overrides = {}) => ({
 	runsLast60m: 2,
 	...overrides,
 });
+
+const sampleMachine = { name: "node02", host: "tester@10.201.0.2", jump: "company41-node-02" };
 
 test("shouldConsultLlm skips stopped, busy healthy, and freshly active machines to avoid wasted LLM tokens", () => {
 	assert.equal(shouldConsultLlm(idleMachine({ status: "STOPPED" })), false);
@@ -112,4 +127,105 @@ test("fallbackDecision tidies low disk and only sleeps wakeable VMs after long i
 		model: "haiku",
 		machine: "node02",
 	});
+});
+
+test("SSH command builders properly shell-quote remote bash -c scripts so login shells parse them intact", () => {
+	const builders = [
+		buildTelemetrySshArgs(sampleMachine, "/tmp/test-key"),
+		buildTidySshArgs(sampleMachine, "/tmp/test-key"),
+		buildJumpQuerySshArgs(sampleMachine),
+		buildJumpClearMarkerSshArgs(sampleMachine),
+		buildJumpStopSshArgs(sampleMachine),
+	];
+	for (const argv of builders) {
+		const bashIdx = argv.indexOf("bash");
+		assert.ok(bashIdx > 0, `expected bash in ${JSON.stringify(argv)}`);
+		assert.equal(argv[bashIdx + 1], "-c");
+		const remoteCmd = argv.slice(bashIdx).join(" ");
+		const check = spawnSync("sh", ["-c", `bash -n -c ${argv[bashIdx + 2]}`], { encoding: "utf8" });
+		assert.equal(check.status, 0, `remote login shell failed to parse: ${remoteCmd}\n${check.stderr}`);
+	}
+	assert.equal(spawnSync("bash", ["-n", "-c", buildTidyScript()]).status, 0);
+	assert.equal(spawnSync("bash", ["-n", "-c", buildJumpStopScript("qorpera-testvm-node02")]).status, 0);
+	assert.doesNotMatch(buildJumpStopScript("qorpera-testvm-node02"), /lxc config set/);
+});
+
+test("telemetryScript runs locally under bash -c without self-matching sshd or using gawk-only syntax", () => {
+	const tmp = mkdtempSync(join(tmpdir(), "caretaker-telemetry-"));
+	try {
+		const locksDir = join(tmp, "locks");
+		const homeDir = join(tmp, "home");
+		const historyDir = join(homeDir, "run-history");
+		mkdirSync(locksDir, { recursive: true });
+		mkdirSync(historyDir, { recursive: true });
+		const nowSec = Math.floor(Date.now() / 1000);
+		const today = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+		writeFileSync(
+			join(historyDir, `${today}.jsonl`),
+			[
+				JSON.stringify({ run: "r1", endedAt: nowSec - 120 }),
+				JSON.stringify({ run: "r2", endedAt: nowSec - 600 }),
+				JSON.stringify({ run: "r3", endedAt: nowSec - 7200 }),
+			].join("\n") + "\n",
+		);
+		const defaultScript = telemetryScript({ locksDir, homeDir, historyDir });
+		const defaultRun = spawnSync("bash", ["-c", defaultScript], { encoding: "utf8" });
+		assert.equal(defaultRun.status, 0, defaultRun.stderr);
+		const parsedDefault = parseTelemetryOutput(defaultRun.stdout, sampleMachine, {
+			vmName: "qorpera-testvm-node02",
+			wakeable: true,
+		});
+		assert.equal(parsedDefault.runsLast60m, 2);
+		assert.equal(typeof parsedDefault.otherSshSessions, "number");
+
+		const selfCheckScript = telemetryScript({
+			locksDir,
+			homeDir,
+			historyDir,
+			psArgsCmd: "ps -eo args= | grep -v '^sshd'",
+		});
+		const selfRun = spawnSync("bash", ["-c", selfCheckScript], { encoding: "utf8" });
+		assert.equal(selfRun.status, 0, selfRun.stderr);
+		assert.match(selfRun.stdout, /^ssh_sessions=0$/m);
+		const parsedSelf = parseTelemetryOutput(selfRun.stdout, sampleMachine, {
+			vmName: "qorpera-testvm-node02",
+			wakeable: true,
+		});
+		assert.equal(parsedSelf.otherSshSessions, 0);
+
+		const fakePsScript = telemetryScript({
+			locksDir,
+			homeDir,
+			historyDir,
+			psArgsCmd:
+				"printf '%s\\n' 'sshd-session: tester@notty' 'bash -c sshd-session: tester@notty' 'sshd: tester@pts/0'",
+			psUserCmd: "printf '%s\\n' 'root' 'ci01' 'ci02' 'tester'",
+		});
+		const fakeRun = spawnSync("bash", ["-c", fakePsScript], { encoding: "utf8" });
+		assert.equal(fakeRun.status, 0, fakeRun.stderr);
+		assert.match(fakeRun.stdout, /^ssh_sessions=2$/m);
+		const parsedFake = parseTelemetryOutput(fakeRun.stdout, sampleMachine, {
+			vmName: "qorpera-testvm-node02",
+			wakeable: true,
+		});
+		assert.equal(parsedFake.otherSshSessions, 1);
+		assert.equal(parsedFake.activeCiProcs, 2);
+	} finally {
+		rmSync(tmp, { recursive: true, force: true });
+	}
+});
+
+test("parseTelemetryOutput treats missing or failed df/uptime values as null rather than zero", () => {
+	const parsed = parseTelemetryOutput(
+		"busy=0\nwaiting=0\nquick_busy=0\nquick_waiting=0\narriving=0\nci_procs=0\nssh_sessions=1\ndisk_mib=\ntmp_mib=err\nmem_mib=\nload=\nidle_min=\nruns_60m=0\nstale_ct=0\nvol_count=0\nrun_dirs=0\ntree_dirs=0\n",
+		sampleMachine,
+		{ vmName: "qorpera-testvm-node02", wakeable: true },
+	);
+	assert.equal(parsed.diskFreeGiB, null);
+	assert.equal(parsed.tmpFreeGiB, null);
+	assert.equal(parsed.memAvailGiB, null);
+	assert.equal(parsed.idleMinutes, null);
+	assert.equal(shouldConsultLlm(parsed), false);
+	const guarded = enforceSafetyGuards({ action: "sleep_vm", reason: "test" }, parsed);
+	assert.equal(guarded.action, "keep_awake");
 });

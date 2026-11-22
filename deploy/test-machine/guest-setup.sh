@@ -119,8 +119,9 @@ cat >/usr/local/sbin/qorpera-test-machine-tidy.sh <<'EOF'
 set -euo pipefail
 HOME_DIR="${QORPERA_TEST_HOME:-/home/tester}"
 KEEP_TREES="${QORPERA_TIDY_KEEP_TREES:-12}"
-CONTAINER_AGE_SEC="${QORPERA_TIDY_CONTAINER_AGE_SEC:-7200}"
-RUN_AGE_HOURS="${QORPERA_TIDY_RUN_AGE_HOURS:-3}"
+STALE_CONTAINER_AGE_SEC="${QORPERA_TIDY_STALE_CONTAINER_AGE_SEC:-7200}"
+HOSTED_CONTAINER_AGE_SEC="${QORPERA_TIDY_HOSTED_CONTAINER_AGE_SEC:-21600}"
+RUN_AGE_HOURS="${QORPERA_TIDY_RUN_AGE_HOURS:-24}"
 TMP_AGE_MIN="${QORPERA_TIDY_TMP_AGE_MIN:-120}"
 BUILDER_UNTIL="${QORPERA_TIDY_BUILDER_UNTIL:-48h}"
 JOURNAL_MAX="${QORPERA_TIDY_JOURNAL_MAX:-200M}"
@@ -128,25 +129,39 @@ log() { printf '[%s] test-machine-tidy: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "
 if command -v docker >/dev/null 2>&1; then
 	now=$(date +%s)
 	removed_ct=0
-	ids=$(
+	reap_older_than() {
+		local max_age="$1"
+		shift
+		local id created ts
+		for id in "$@"; do
+			[ -n "$id" ] || continue
+			created=$(docker inspect -f '{{.Created}}' "$id" 2>/dev/null || true)
+			[ -n "$created" ] || continue
+			ts=$(date -d "$created" +%s 2>/dev/null || echo "$now")
+			if [ $((now - ts)) -gt "$max_age" ]; then
+				if docker rm -f -v "$id" >/dev/null 2>&1; then
+					removed_ct=$((removed_ct + 1))
+				fi
+			fi
+		done
+	}
+	mapfile -t short_ids < <(
 		{
 			docker ps -aq --filter 'name=^cdgateway-' 2>/dev/null || true
 			docker ps -aq --filter 'name=^qext-' 2>/dev/null || true
-			docker ps -aq --filter 'name=^qorpera-hosted-db-' 2>/dev/null || true
-			docker ps -aq --filter 'label=qorpera-run' 2>/dev/null || true
 			docker ps -aq --filter 'status=exited' 2>/dev/null || true
 		} | sort -u
 	)
-	for id in $ids; do
-		[ -n "$id" ] || continue
-		created=$(docker inspect -f '{{.Created}}' "$id" 2>/dev/null || true)
-		[ -n "$created" ] || continue
-		ts=$(date -d "$created" +%s 2>/dev/null || echo "$now")
-		if [ $((now - ts)) -gt "$CONTAINER_AGE_SEC" ]; then
-			docker rm -f -v "$id" >/dev/null 2>&1 && removed_ct=$((removed_ct + 1)) || true
-		fi
-	done
+	mapfile -t hosted_ids < <(
+		{
+			docker ps -aq --filter 'name=^qorpera-hosted-db-' 2>/dev/null || true
+			docker ps -aq --filter 'label=qorpera-run' 2>/dev/null || true
+		} | sort -u
+	)
+	reap_older_than "$STALE_CONTAINER_AGE_SEC" ${short_ids[@]+"${short_ids[@]}"}
+	reap_older_than "$HOSTED_CONTAINER_AGE_SEC" ${hosted_ids[@]+"${hosted_ids[@]}"}
 	vol_out=$(docker volume prune -f 2>/dev/null | tail -n 1 || true)
+	# WHY: Avoid `docker image prune --all` so pinned pre-pulled CI images remain cached on disk.
 	img_out=$(docker image prune -f 2>/dev/null | tail -n 1 || true)
 	bld_out=$(docker builder prune -f --filter "until=${BUILDER_UNTIL}" 2>/dev/null | tail -n 1 || true)
 	log "containers_reaped=${removed_ct} volumes='${vol_out}' images='${img_out}' builder='${bld_out}'"

@@ -1,10 +1,19 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MACHINES, WAKE_PROJECT, vmNameForMachine } from "./run-on-node.mjs";
+import {
+	buildWakeQueryScript,
+	MACHINES,
+	parseWakeQueryOutput,
+	SLEEP_MARKER_DIR,
+	shellQuote,
+	sshArgs,
+	vmNameForMachine,
+	WAKE_PROJECT,
+} from "./run-on-node.mjs";
 
 export const ALLOWED_ACTIONS = new Set(["keep_awake", "tidy_disk", "sleep_vm", "tidy_and_sleep"]);
 export const DEFAULT_MIN_IDLE_MINUTES = 5;
@@ -156,86 +165,168 @@ export function buildTelemetryPrompt(snapshot) {
 		'- "tidy_disk": run the safe deterministic disk/container cleanup script while keeping the VM running (prefer when diskFreeGiB < 25, tmpFreeGiB < 2, or stale containers/volumes accumulated).',
 		'- "sleep_vm": cleanly stop the VM to free host RAM (only when wakeable=true, idleMinutes >= 5, no active work, and burst/PR queue looks quiet; run-on-node will auto-wake it on the next CI run).',
 		'- "tidy_and_sleep": run tidy_disk first, then stop the VM.',
-		"Never invent other actions. Reply with ONLY compact JSON: {\"action\":\"...\",\"reason\":\"short 1-sentence reason\"}.",
+		'Never invent other actions. Reply with ONLY compact JSON: {"action":"...","reason":"short 1-sentence reason"}.',
 		`Telemetry: ${JSON.stringify(snapshot)}`,
 	].join("\n");
 }
 
-function sshArgs(machine, key) {
+export function telemetryScript({
+	locksDir = "/run/lock",
+	homeDir = "/home/tester",
+	historyDir = "/home/tester/run-history",
+	psArgsCmd = "ps -eo args=",
+	psUserCmd = "ps -eo user=",
+} = {}) {
+	const qLocks = shellQuote(locksDir);
+	const qHome = shellQuote(homeDir);
+	const qHist = shellQuote(historyDir);
 	return [
-		"-o",
-		"BatchMode=yes",
-		"-o",
-		"IdentitiesOnly=yes",
-		"-o",
-		"StrictHostKeyChecking=accept-new",
-		"-o",
-		`UserKnownHostsFile=${join(homedir(), ".ssh", "known_hosts_qorpera_test_machines")}`,
-		"-o",
-		"ConnectTimeout=8",
-		"-i",
-		key,
-		...(machine.jump ? ["-o", `ProxyCommand=ssh -o BatchMode=yes -o ConnectTimeout=8 -W %h:%p ${machine.jump}`] : []),
-	];
+		"set -u",
+		`locks=${qLocks}`,
+		`home=${qHome}`,
+		`hist_dir=${qHist}`,
+		'busy=0; for n in 1 2 3 4 5 6 7; do f="${locks}/qorpera-test-machine-slot${n}.lock"; if [ -e "$f" ] && ! flock -n "$f" true 2>/dev/null; then busy=$((busy+1)); fi; done',
+		'qbusy=0; for n in 1 2; do f="${locks}/qorpera-test-machine-quick-slot${n}.lock"; if [ -e "$f" ] && ! flock -n "$f" true 2>/dev/null; then qbusy=$((qbusy+1)); fi; done',
+		'waiting=$(ls -1 "${locks}/qorpera-test-machine-queue" 2>/dev/null | wc -l | tr -d " ")',
+		'qwaiting=$(ls -1 "${locks}/qorpera-test-machine-quick-queue" 2>/dev/null | wc -l | tr -d " ")',
+		'arriving=$(ls -1 "${home}/arriving" 2>/dev/null | wc -l | tr -d " ")',
+		`ci_procs=$(${psUserCmd} 2>/dev/null | awk '/^ci[0-9][0-9]$/ { n++ } END { print n + 0 }')`,
+		`ssh_sessions=$(${psArgsCmd} 2>/dev/null | awk '/^sshd(-session)?: tester@/ { n++ } END { print n + 0 }')`,
+		"disk_mib=$(df -Pm / 2>/dev/null | awk 'NR==2 {print $4}')",
+		"tmp_mib=$(df -Pm /tmp 2>/dev/null | awk 'NR==2 {print $4}')",
+		"mem_mib=$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || true)",
+		"load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || true)",
+		"now=$(date +%s)",
+		"uptime_s=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || true)",
+		'idle_min=""',
+		'if [ -n "$uptime_s" ]; then',
+		"  last_act=$((now - uptime_s))",
+		'  for f in "${locks}"/qorpera-test-machine-ci*.lock "${hist_dir}"/*.jsonl; do [ -e "$f" ] || continue; mt=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0); [ "$mt" -gt "$last_act" ] && last_act=$mt; done',
+		"  idle_min=$(( (now - last_act) / 60 ))",
+		"fi",
+		"runs_60m=0",
+		"cutoff_sec=$((now - 3600))",
+		"today=$(date -u +%Y%m%d)",
+		"yest=$(date -u -d '-1 day' +%Y%m%d 2>/dev/null || date -u -v-1d +%Y%m%d 2>/dev/null || true)",
+		'for d in "$today" "$yest"; do',
+		'  [ -n "$d" ] || continue',
+		'  hist="${hist_dir}/${d}.jsonl"',
+		'  if [ -f "$hist" ]; then',
+		'    c=$(awk -v c="$cutoff_sec" \'{ if (match($0, /"endedAt":[0-9]+/)) { s = substr($0, RSTART + 10, RLENGTH - 10) + 0; if (s >= c) n++ } } END { print n + 0 }\' "$hist" 2>/dev/null || echo 0)',
+		"    runs_60m=$((runs_60m + c))",
+		"  fi",
+		"done",
+		'stale_ct=$(docker ps -aq 2>/dev/null | wc -l | tr -d " " || echo 0)',
+		'vol_count=$(docker volume ls -q 2>/dev/null | wc -l | tr -d " " || echo 0)',
+		'run_dirs=$(ls -1d "${home}/runs"/*/ 2>/dev/null | wc -l | tr -d " " || echo 0)',
+		'tree_dirs=$(ls -1d "${home}/trees"/*/ 2>/dev/null | wc -l | tr -d " " || echo 0)',
+		"printf 'busy=%s\\nwaiting=%s\\nquick_busy=%s\\nquick_waiting=%s\\narriving=%s\\nci_procs=%s\\nssh_sessions=%s\\ndisk_mib=%s\\ntmp_mib=%s\\nmem_mib=%s\\nload=%s\\nidle_min=%s\\nruns_60m=%s\\nstale_ct=%s\\nvol_count=%s\\nrun_dirs=%s\\ntree_dirs=%s\\n' \"$busy\" \"$waiting\" \"$qbusy\" \"$qwaiting\" \"$arriving\" \"$ci_procs\" \"$ssh_sessions\" \"$disk_mib\" \"$tmp_mib\" \"$mem_mib\" \"$load\" \"$idle_min\" \"$runs_60m\" \"$stale_ct\" \"$vol_count\" \"$run_dirs\" \"$tree_dirs\"",
+	].join("\n");
+}
+
+export function buildTidyScript() {
+	return "if [ -x /usr/local/sbin/qorpera-test-machine-tidy.sh ]; then sudo -n /usr/local/sbin/qorpera-test-machine-tidy.sh; else docker volume prune -f && docker image prune -f; fi";
+}
+
+export function buildClearSleepMarkerScript(vmName) {
+	return `vm=${shellQuote(vmName)}; rm -f -- "${SLEEP_MARKER_DIR}/\${vm}"`;
+}
+
+export function buildJumpStopScript(vmName) {
+	const qVm = shellQuote(vmName);
+	return [
+		"set -eu",
+		`vm=${qVm}`,
+		`json=$(lxc query "/1.0/instances/\${vm}?project=${WAKE_PROJECT}")`,
+		`last_used=$(printf '%s' "$json" | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("last_used_at") or ""))')`,
+		'[ -n "$last_used" ] || exit 2',
+		`lxc stop "$vm" --project ${WAKE_PROJECT} --timeout 60`,
+		`mkdir -p "${SLEEP_MARKER_DIR}"`,
+		`printf '%s\\n' "$last_used" > "${SLEEP_MARKER_DIR}/\${vm}"`,
+	].join("\n");
+}
+
+export function buildTelemetrySshArgs(machine, key, scriptOpts) {
+	return ["-o", "ConnectTimeout=8", ...sshArgs(machine, key), machine.host, "bash", "-c", shellQuote(telemetryScript(scriptOpts))];
+}
+
+export function buildTidySshArgs(machine, key) {
+	return ["-o", "ConnectTimeout=8", ...sshArgs(machine, key), machine.host, "bash", "-c", shellQuote(buildTidyScript())];
+}
+
+export function buildJumpQuerySshArgs(machine) {
+	const vmName = vmNameForMachine(machine);
+	if (!vmName) throw new Error(`Invalid machine name: ${machine?.name}`);
+	return ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", machine.jump, "bash", "-c", shellQuote(buildWakeQueryScript(vmName))];
+}
+
+export function buildJumpClearMarkerSshArgs(machine) {
+	const vmName = vmNameForMachine(machine);
+	if (!vmName) throw new Error(`Invalid machine name: ${machine?.name}`);
+	return ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", machine.jump, "bash", "-c", shellQuote(buildClearSleepMarkerScript(vmName))];
+}
+
+export function buildJumpStopSshArgs(machine) {
+	const vmName = vmNameForMachine(machine);
+	if (!vmName) throw new Error(`Invalid machine name: ${machine?.name}`);
+	return ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", machine.jump, "bash", "-c", shellQuote(buildJumpStopScript(vmName))];
+}
+
+export function parseTelemetryOutput(stdout, machine, lxd = { vmName: null, wakeable: false }) {
+	const kv = {};
+	for (const line of String(stdout ?? "").split("\n")) {
+		const eq = line.indexOf("=");
+		if (eq > 0) kv[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+	}
+	const optNum = (k) => (kv[k] !== undefined && /^-?\d+(\.\d+)?$/.test(kv[k]) ? Number(kv[k]) : null);
+	const num = (k) => optNum(k) ?? 0;
+	const diskMiB = optNum("disk_mib");
+	const tmpMiB = optNum("tmp_mib");
+	const memMiB = optNum("mem_mib");
+	const idleMin = optNum("idle_min");
+	return {
+		name: machine.name,
+		vmName: lxd.vmName,
+		status: "RUNNING",
+		wakeable: lxd.wakeable,
+		unreachable: false,
+		busy: num("busy"),
+		waiting: num("waiting"),
+		quickBusy: num("quick_busy"),
+		quickWaiting: num("quick_waiting"),
+		arriving: num("arriving"),
+		activeCiProcs: num("ci_procs"),
+		otherSshSessions: Math.max(0, num("ssh_sessions") - 1),
+		diskFreeGiB: diskMiB === null ? null : Math.round((diskMiB / 1024) * 10) / 10,
+		tmpFreeGiB: tmpMiB === null ? null : Math.round((tmpMiB / 1024) * 10) / 10,
+		memAvailGiB: memMiB === null ? null : Math.round((memMiB / 1024) * 10) / 10,
+		load: optNum("load"),
+		idleMinutes: idleMin === null ? null : Math.max(0, idleMin),
+		runsLast60m: num("runs_60m"),
+		containers: num("stale_ct"),
+		dockerVolumes: num("vol_count"),
+		runDirs: num("run_dirs"),
+		treeDirs: num("tree_dirs"),
+	};
 }
 
 function queryLxdMachine(machine) {
 	const vmName = vmNameForMachine(machine);
-	if (!vmName || !machine.jump) return { vmName, lxdStatus: null, wakeable: false };
-	const res = spawnSync(
-		"ssh",
-		[
-			"-o",
-			"BatchMode=yes",
-			"-o",
-			"ConnectTimeout=8",
-			machine.jump,
-			"lxc",
-			"list",
-			"--project",
-			WAKE_PROJECT,
-			"--format",
-			"csv",
-			"-c",
-			"ns",
-		],
-		{ encoding: "utf8", timeout: 12_000 },
-	);
-	if (res.status !== 0) return { vmName, lxdStatus: null, wakeable: false };
-	for (const line of res.stdout.split("\n")) {
-		const [name, status] = line.trim().split(",");
-		if (name === vmName) return { vmName, lxdStatus: status ?? null, wakeable: true };
+	if (!vmName || !machine.jump) return { vmName, lxdStatus: null, lastUsedAt: null, sleepMarker: null, wakeable: false };
+	const res = spawnSync("ssh", buildJumpQuerySshArgs(machine), { encoding: "utf8", timeout: 12_000 });
+	if (res.status !== 0) return { vmName, lxdStatus: null, lastUsedAt: null, sleepMarker: null, wakeable: false };
+	const parsed = parseWakeQueryOutput(res.stdout);
+	if (!parsed.status) return { vmName, lxdStatus: null, lastUsedAt: null, sleepMarker: null, wakeable: false };
+	if (parsed.status === "RUNNING" && parsed.sleepMarker) {
+		spawnSync("ssh", buildJumpClearMarkerSshArgs(machine), { encoding: "utf8", timeout: 10_000 });
 	}
-	return { vmName, lxdStatus: null, wakeable: false };
-}
-
-function telemetryScript() {
-	return [
-		"set -u",
-		"busy=0; for n in 1 2 3 4 5 6 7; do f=/run/lock/qorpera-test-machine-slot${n}.lock; if [ -e \"$f\" ] && ! flock -n \"$f\" true 2>/dev/null; then busy=$((busy+1)); fi; done",
-		"qbusy=0; for n in 1 2; do f=/run/lock/qorpera-test-machine-quick-slot${n}.lock; if [ -e \"$f\" ] && ! flock -n \"$f\" true 2>/dev/null; then qbusy=$((qbusy+1)); fi; done",
-		"waiting=$(ls -1 /run/lock/qorpera-test-machine-queue 2>/dev/null | wc -l)",
-		"qwaiting=$(ls -1 /run/lock/qorpera-test-machine-quick-queue 2>/dev/null | wc -l)",
-		"arriving=$(ls -1 /home/tester/arriving 2>/dev/null | wc -l)",
-		"ci_procs=$(ps -eo user= 2>/dev/null | grep -cE '^ci[0-9]{2}$' || true)",
-		"ssh_sessions=$(pgrep -f 'sshd-session: tester@|sshd: tester@' 2>/dev/null | wc -l || echo 0)",
-		"disk_mib=$(df -Pm / | awk 'NR==2 {print $4}')",
-		"tmp_mib=$(df -Pm /tmp | awk 'NR==2 {print $4}')",
-		"mem_mib=$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)",
-		"load=$(cut -d' ' -f1 /proc/loadavg)",
-		"now=$(date +%s)",
-		"uptime_s=$(awk '{print int($1)}' /proc/uptime)",
-		"last_act=$((now - uptime_s))",
-		"for f in /run/lock/qorpera-test-machine-ci*.lock /home/tester/run-history/*.jsonl; do [ -e \"$f\" ] || continue; mt=$(stat -c %Y \"$f\" 2>/dev/null || echo 0); [ \"$mt\" -gt \"$last_act\" ] && last_act=$mt; done",
-		"idle_min=$(( (now - last_act) / 60 ))",
-		"runs_60m=0; today=$(date -u +%Y%m%d); hist=/home/tester/run-history/${today}.jsonl",
-		"if [ -f \"$hist\" ]; then cutoff_sec=$((now - 3600)); runs_60m=$(awk -v c=\"$cutoff_sec\" '{ if (match($0, /\"endedAt\":([0-9]+)/, m) && (m[1]+0) >= c) n++ } END { print n+0 }' \"$hist\" 2>/dev/null || echo 0); fi",
-		"stale_ct=$(docker ps -aq 2>/dev/null | wc -l || echo 0)",
-		"vol_count=$(docker volume ls -q 2>/dev/null | wc -l || echo 0)",
-		"run_dirs=$(ls -1d /home/tester/runs/*/ 2>/dev/null | wc -l || echo 0)",
-		"tree_dirs=$(ls -1d /home/tester/trees/*/ 2>/dev/null | wc -l || echo 0)",
-		"printf 'busy=%s\\nwaiting=%s\\nquick_busy=%s\\nquick_waiting=%s\\narriving=%s\\nci_procs=%s\\nssh_sessions=%s\\ndisk_mib=%s\\ntmp_mib=%s\\nmem_mib=%s\\nload=%s\\nidle_min=%s\\nruns_60m=%s\\nstale_ct=%s\\nvol_count=%s\\nrun_dirs=%s\\ntree_dirs=%s\\n' \"$busy\" \"$waiting\" \"$qbusy\" \"$qwaiting\" \"$arriving\" \"$ci_procs\" \"$ssh_sessions\" \"$disk_mib\" \"$tmp_mib\" \"$mem_mib\" \"$load\" \"$idle_min\" \"$runs_60m\" \"$stale_ct\" \"$vol_count\" \"$run_dirs\" \"$tree_dirs\"",
-	].join("\n");
+	return {
+		vmName,
+		lxdStatus: parsed.status,
+		lastUsedAt: parsed.lastUsedAt,
+		sleepMarker: parsed.sleepMarker,
+		wakeable: true,
+	};
 }
 
 function probeTelemetry(machine, key) {
@@ -262,7 +353,7 @@ function probeTelemetry(machine, key) {
 			runsLast60m: 0,
 		};
 	}
-	const res = spawnSync("ssh", [...sshArgs(machine, key), machine.host, "bash", "-c", telemetryScript()], {
+	const res = spawnSync("ssh", buildTelemetrySshArgs(machine, key), {
 		encoding: "utf8",
 		timeout: 15_000,
 	});
@@ -276,36 +367,7 @@ function probeTelemetry(machine, key) {
 			error: (res.stderr || res.stdout || `exit ${res.status}`).trim().slice(0, 160),
 		};
 	}
-	const kv = {};
-	for (const line of res.stdout.split("\n")) {
-		const eq = line.indexOf("=");
-		if (eq > 0) kv[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-	}
-	const num = (k) => (kv[k] !== undefined && /^-?\d+(\.\d+)?$/.test(kv[k]) ? Number(kv[k]) : 0);
-	return {
-		name: machine.name,
-		vmName: lxd.vmName,
-		status: "RUNNING",
-		wakeable: lxd.wakeable,
-		unreachable: false,
-		busy: num("busy"),
-		waiting: num("waiting"),
-		quickBusy: num("quick_busy"),
-		quickWaiting: num("quick_waiting"),
-		arriving: num("arriving"),
-		activeCiProcs: num("ci_procs"),
-		otherSshSessions: Math.max(0, num("ssh_sessions") - 1),
-		diskFreeGiB: Math.round((num("disk_mib") / 1024) * 10) / 10,
-		tmpFreeGiB: Math.round((num("tmp_mib") / 1024) * 10) / 10,
-		memAvailGiB: Math.round((num("mem_mib") / 1024) * 10) / 10,
-		load: num("load"),
-		idleMinutes: Math.max(0, num("idle_min")),
-		runsLast60m: num("runs_60m"),
-		containers: num("stale_ct"),
-		dockerVolumes: num("vol_count"),
-		runDirs: num("run_dirs"),
-		treeDirs: num("tree_dirs"),
-	};
+	return parseTelemetryOutput(res.stdout, machine, lxd);
 }
 
 function queryPrQueue() {
@@ -346,19 +408,21 @@ function queryPrQueue() {
 
 function consultClaudeHaiku(snapshot, model = DEFAULT_MODEL) {
 	const prompt = buildTelemetryPrompt(snapshot);
+	const env = { ...process.env };
+	for (const k of Object.keys(env)) {
+		if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) delete env[k];
+	}
 	const res = spawnSync(
 		"claude",
 		["-p", "--model", model, "--no-session-persistence", "--tools", "", "--output-format", "json", prompt],
-		{ encoding: "utf8", timeout: 25_000 },
+		{ encoding: "utf8", timeout: 25_000, env },
 	);
 	if (res.status !== 0) return null;
 	return parseCaretakerDecision(res.stdout);
 }
 
 function runRemoteTidy(machine, key) {
-	const cmd =
-		"if [ -x /usr/local/sbin/qorpera-test-machine-tidy.sh ]; then sudo -n /usr/local/sbin/qorpera-test-machine-tidy.sh; else docker volume prune -f && docker image prune -f; fi";
-	const res = spawnSync("ssh", [...sshArgs(machine, key), machine.host, "bash", "-c", cmd], {
+	const res = spawnSync("ssh", buildTidySshArgs(machine, key), {
 		encoding: "utf8",
 		timeout: 180_000,
 	});
@@ -370,25 +434,7 @@ function stopRemoteVm(machine, key) {
 	if (recheck.status !== "RUNNING" || isMachineBusy(recheck)) {
 		return { ok: false, skipped: "activity appeared during final safety recheck" };
 	}
-	const vmName = vmNameForMachine(machine);
-	const res = spawnSync(
-		"ssh",
-		[
-			"-o",
-			"BatchMode=yes",
-			"-o",
-			"ConnectTimeout=10",
-			machine.jump,
-			"lxc",
-			"stop",
-			vmName,
-			"--project",
-			WAKE_PROJECT,
-			"--timeout",
-			"60",
-		],
-		{ encoding: "utf8", timeout: 75_000 },
-	);
+	const res = spawnSync("ssh", buildJumpStopSshArgs(machine), { encoding: "utf8", timeout: 75_000 });
 	return { ok: res.status === 0, out: (res.stdout || res.stderr || "").trim().slice(0, 200) };
 }
 
@@ -496,7 +542,16 @@ async function main() {
 	}
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+function isDirectEntry() {
+	if (!process.argv[1]) return false;
+	try {
+		return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+	} catch {
+		return import.meta.url === pathToFileURL(process.argv[1]).href;
+	}
+}
+
+if (isDirectEntry()) {
 	main()
 		.then((code) => process.exit(code))
 		.catch((err) => {

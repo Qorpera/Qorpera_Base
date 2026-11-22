@@ -266,7 +266,8 @@ run that is still copying to a machine shows there as `arriving` in another sess
 
 - **Out of rotation, nothing changed on the node:** close it (`echo "<reason>" > /etc/qorpera-test-machine-closed`
   as root inside the VM) or stop it (`lxc stop`; probes then find it unreachable, and runs try it only when node 2
-  is not open). It stays enrolled and charged.
+  is not open — a manual `lxc stop` leaves no caretaker sleep marker under `~/.cache/qorpera-test-machine-sleep/`,
+  so `run-on-node.mjs` never auto-wakes it). It stays enrolled and charged.
 - **Remove it:** close it and wait until `--dry-run --machine node01` shows 0 busy, 0 waiting and 0 arriving. Hold
   (step 2), then `lxc stop qorpera-testvm-node01 --project testmachines` and `lxc delete qorpera-testvm-node01
   --project testmachines`; `lxc project delete testmachines`; `lxc network delete testmach0`; `lxc network acl

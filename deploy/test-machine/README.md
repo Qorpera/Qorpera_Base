@@ -19,7 +19,7 @@ machine that does not answer is skipped, so the list may name a machine before i
 | --- | --- |
 | VM | `qorpera-testvm-<node>` in LXD project `testmachines` (restricted: managed disks and NICs on `testmach0` only, no containers, no low-level VM options; project limits 10 vCPU, the VM's memory, 160 GiB) |
 | Size | 10 vCPU, 16 GiB RAM (24 GiB on node 2), 150 GiB root disk on pool `qorpera-vm`, `boot.autostart=false`, marker `user.test-machine-purpose`. Node 2's was made at 6 vCPU for PR #326's physical acceptance (6+ CPUs, 16 GiB, KVM), resized to 10 on 2026-09-29 (12 does not fit node 2: below) and to 24 GiB on 2026-11-07 for nested VM tests inside it. Setup records whether `/dev/kvm` is present |
-| Image | Ubuntu 26.04 server, then [`guest-setup.sh`](guest-setup.sh): Docker Engine (rootful), Node 24.21.0 (pinned checksum), Git, build tools, Python, bubblewrap, LXD 6.9 rev 40424 for nested tests. The pinned PostgreSQL image of `scripts/test-hosted-db.mjs`, `node:24-bookworm-slim` and `node:22-bookworm-slim` (the runtime office probes, as in CI) and api-front's pinned `envoyproxy/envoy:v1.39.1` (`deploy/sites/envoy-front-sites.test.mjs`) are pre-pulled. Stopped containers, dangling images and build cache older than a week are pruned weekly |
+| Image | Ubuntu 26.04 server, then [`guest-setup.sh`](guest-setup.sh): Docker Engine (rootful), Node 24.21.0 (pinned checksum), Git, build tools, Python, bubblewrap, LXD 6.9 rev 40424 for nested tests. The pinned PostgreSQL image of `scripts/test-hosted-db.mjs`, `node:24-bookworm-slim` and `node:22-bookworm-slim` (the runtime office probes, as in CI) and api-front's pinned `envoyproxy/envoy:v1.39.1` (`deploy/sites/envoy-front-sites.test.mjs`) are pre-pulled. An hourly `test-machine-tidy.timer` (`/usr/local/sbin/qorpera-test-machine-tidy.sh`) prunes anonymous Docker volumes, dangling images (keeping pinned tags), build cache older than 48 hours, exited/`cdgateway-*`/`qext-*` containers older than 2 hours, `qorpera-hosted-db-*`/`qorpera-run` containers older than 6 hours, run directories older than 24 hours, worktree copies beyond the 12 newest, stale `/tmp` test leftovers older than 2 hours, and caps `systemd-journald` at 200M |
 | Self-update | `apt-daily*` and `unattended-upgrades` are masked, as for coding images (`deploy/coding-worker/COMMAND-GUEST.md`), and every snap is held |
 | Network | Bridge `testmach0` on each node (10.201.0.1/24, NAT, no IPv6; the guest guard's `testmach0` subnet), VM at 10.201.0.2 (node 2) or 10.201.0.3 (node 1) with MAC/IP filtering and port isolation. The addresses differ so that each machine's host key has its own line in `~/.ssh/known_hosts_qorpera_test_machines` |
 | Egress | ACL `testmach-egress`: the internet only. Rejected: 10/8 except the bridge's own /24, 172.16/12, 192.168/16 (LAN and NAS), 100.64/10 (Tailscale), 169.254/16, 127/8, 0/8, 192.0.0/24, 198.18/15, 224/4 and all IPv6. The node itself (the gateway) is rejected on every TCP and UDP port except DNS and DHCP; ICMP to it is not blocked. LXD applies reject rules before allow rules, so the rejects are written to leave the needed holes rather than relying on allow rules |
@@ -266,6 +266,30 @@ Access needs the key `~/.ssh/id_ed25519_qorpera_testvm` (one key for both machin
 `company41-node-02` and `company41-node-01`. The first connection to a machine records its host key
 (`StrictHostKeyChecking=accept-new`). `QORPERA_TEST_MACHINE` and `QORPERA_TEST_MACHINE_JUMP` point a run at one
 other machine instead of the list (no status is posted then); `QORPERA_TEST_MACHINE_KEY` replaces the key.
+
+### Auto-sleep, auto-wake, and caretaker
+
+`scripts/test-machine-caretaker.mjs` runs on an operator Mac every 5 minutes (never inside a test VM, so no LLM
+credentials touch the guest). When a running test VM has been idle for at least 5 minutes or drops below 25 GiB free
+disk (2 GiB `/tmp`), it collects read-only slot, process, disk, and GitHub PR-queue telemetry and asks Claude Haiku to
+pick one fixed action: `keep_awake`, `tidy_disk`, `sleep_vm`, or `tidy_and_sleep`. Deterministic safety guards refuse
+to sleep any VM with active slots, queued/arriving runs, `ciNN` processes, other SSH sessions, `< 5` minutes idle, or
+missing non-interactive `lxc` access on its jump host, and force `tidy_disk` under critical free space (`< 15` GiB root
+or `< 1.5` GiB `/tmp`).
+
+Before stopping a VM, the caretaker records the VM's read-only LXD `last_used_at` timestamp under
+`~/.cache/qorpera-test-machine-sleep/<vm>` on the jump host (never mutating LXD config or the enrolled configuration
+digest). When all open reachable machines are busy or none answered, `scripts/run-on-node.mjs` auto-wakes a stopped VM
+only if its jump-host marker matches its current `last_used_at`, then removes the marker. A VM stopped manually by an
+operator (`lxc stop`) or stopped after a node reboot (`boot.autostart=false`) has no matching marker and is never
+auto-woken.
+
+To install the LaunchAgent on macOS, point `__SCRIPT_PATH__` at `scripts/test-machine-caretaker.mjs` inside a dedicated
+clean `master` worktree or clone (not a mutable feature checkout, since the script imports sibling helpers from
+`scripts/`), render [`com.qorpera.test-machine-caretaker.plist.template`](com.qorpera.test-machine-caretaker.plist.template)
+with your local `USER`, `HOME`, `PATH` (including `node`, `gh`, `ssh`, and `claude`), and log paths, install it at
+`~/Library/LaunchAgents/com.qorpera.test-machine-caretaker.plist`, and load it with
+`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.qorpera.test-machine-caretaker.plist`.
 
 ## The systemd suites
 

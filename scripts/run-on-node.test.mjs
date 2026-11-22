@@ -21,6 +21,8 @@ import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
 	baseCopyCompare,
+	buildWakeQueryScript,
+	buildWakeStartScript,
 	CHANGED_CORES,
 	CLOSED,
 	CPU_SLOTS,
@@ -46,6 +48,7 @@ import {
 	HISTORY_SCHEMA,
 	historyScript,
 	includeRules,
+	isCaretakerSleeping,
 	joinRecords,
 	KEPT_SLOTS,
 	LANE_FOLDERS,
@@ -59,6 +62,7 @@ import {
 	parseArgs,
 	parseSeed,
 	parseStatus,
+	parseWakeQueryOutput,
 	pickSlot,
 	probeAll,
 	probeScript,
@@ -2358,4 +2362,29 @@ test("vmNameForMachine and shouldWakeStoppedMachines identify wakeable sleeping 
 	assert.deepEqual(shouldWakeStoppedMachines([idle("node01", { busy: 4 }), down("node02")]), ["node02"]);
 	assert.deepEqual(shouldWakeStoppedMachines([down("node01"), down("node02")]), ["node01", "node02"]);
 	assert.deepEqual(shouldWakeStoppedMachines([down("node02")], { explicitMachine: true }), ["node02"]);
+});
+
+test("auto-wake only wakes caretaker-slept VMs with matching jump-host marker and never manually stopped VMs", () => {
+	const queryScript = buildWakeQueryScript("qorpera-testvm-node02");
+	const startScript = buildWakeStartScript("qorpera-testvm-node02");
+	assert.equal(spawnSync("bash", ["-n", "-c", queryScript]).status, 0);
+	assert.equal(spawnSync("bash", ["-n", "-c", startScript]).status, 0);
+	assert.doesNotMatch(queryScript, /lxc config set/);
+	assert.doesNotMatch(startScript, /lxc config set/);
+
+	const caretakerSlept = parseWakeQueryOutput(
+		"status=Stopped\nlast_used_at=2026-11-22T18:00:00Z\nsleep_marker=2026-11-22T18:00:00Z\n",
+	);
+	assert.equal(isCaretakerSleeping(caretakerSlept), true);
+
+	const manuallyStopped = parseWakeQueryOutput("status=Stopped\nlast_used_at=2026-11-22T18:00:00Z\nsleep_marker=\n");
+	assert.equal(isCaretakerSleeping(manuallyStopped), false);
+
+	const operatorRestartedThenStopped = parseWakeQueryOutput(
+		"status=Stopped\nlast_used_at=2026-11-22T19:00:00Z\nsleep_marker=2026-11-22T18:00:00Z\n",
+	);
+	assert.equal(isCaretakerSleeping(operatorRestartedThenStopped), false);
+
+	const running = parseWakeQueryOutput("status=Running\nlast_used_at=2026-11-22T18:00:00Z\nsleep_marker=2026-11-22T18:00:00Z\n");
+	assert.equal(isCaretakerSleeping(running), false);
 });

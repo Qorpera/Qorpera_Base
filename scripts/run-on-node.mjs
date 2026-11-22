@@ -448,12 +448,9 @@ export function treeDigest(root, files) {
 	return hash.digest("hex");
 }
 
-/** Best-effort cleanup at the start of every run: runs older than a day by the UTC time in
- * their name (never by mtime: rsync -a gives a run directory the worktree's old mtime),
- * worktree copies unused for 3 days (each worktree has its own copy, and with many sessions 14 days filled
- * node02's disk on 2026-10-09), hosted-db containers older than 6 hours, the cores files of --cores runs killed
- * before they could remove them (/run/lock is a small tmpfs every lock lives on), and run history days older than
- * HISTORY_DAYS, by the date in their name. */
+/** WHY: Prune runs by UTC name (rsync -a preserves old mtimes), reap hosted-db/run containers at 6h
+ * and orphaned cdgateway/qext containers at 2h, trim worktree copies at 3d, and run hourly volume/tree
+ * disk tidy so busy test machines cannot fill their root filesystem or /run/lock tmpfs. */
 export function pruneScript() {
 	return [
 		"set -u",
@@ -1134,7 +1131,7 @@ export function describeProbes(probes) {
 		.join("; ");
 }
 
-function sshArgs(machine, key) {
+export function sshArgs(machine, key) {
 	return [
 		"-o",
 		"BatchMode=yes",
@@ -1155,6 +1152,8 @@ function sshArgs(machine, key) {
 		...(machine.jump ? ["-o", `ProxyCommand=ssh -o BatchMode=yes -o ConnectTimeout=15 -W %h:%p ${machine.jump}`] : []),
 	];
 }
+
+export const SLEEP_MARKER_DIR = "$HOME/.cache/qorpera-test-machine-sleep";
 
 export function vmNameForMachine(machine) {
 	if (!machine?.name || !/^[a-z0-9-]+$/.test(machine.name)) return null;
@@ -1179,29 +1178,71 @@ export function shouldWakeStoppedMachines(probes, { explicitMachine = false, qui
 	return allSaturated ? unreachable : [];
 }
 
-function queryLxdVmStatus(jump, vmName) {
+export function buildWakeQueryScript(vmName) {
+	const qVm = shellQuote(vmName);
+	return [
+		"set -u",
+		`vm=${qVm}`,
+		`json=$(lxc query "/1.0/instances/\${vm}?project=${WAKE_PROJECT}" 2>/dev/null) || exit 1`,
+		`printf '%s' "$json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("status=" + str(d.get("status") or "")); print("last_used_at=" + str(d.get("last_used_at") or ""))'`,
+		`f="${SLEEP_MARKER_DIR}/\${vm}"`,
+		'marker=""; [ -f "$f" ] && marker=$(head -n 1 "$f" 2>/dev/null || true)',
+		`printf 'sleep_marker=%s\\n' "$marker"`,
+	].join("\n");
+}
+
+export function buildWakeStartScript(vmName) {
+	const qVm = shellQuote(vmName);
+	return [
+		"set -e",
+		`vm=${qVm}`,
+		`rm -f -- "${SLEEP_MARKER_DIR}/\${vm}"`,
+		`lxc start "$vm" --project ${WAKE_PROJECT}`,
+	].join("\n");
+}
+
+export function parseWakeQueryOutput(stdout) {
+	const kv = {};
+	for (const line of String(stdout ?? "").split("\n")) {
+		const eq = line.indexOf("=");
+		if (eq > 0) kv[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+	}
+	return {
+		status: kv.status ? kv.status.toUpperCase() : null,
+		lastUsedAt: kv.last_used_at || null,
+		sleepMarker: kv.sleep_marker || null,
+	};
+}
+
+export function isCaretakerSleeping(state) {
+	return Boolean(
+		state &&
+			state.status === "STOPPED" &&
+			typeof state.lastUsedAt === "string" &&
+			state.lastUsedAt.length > 0 &&
+			state.sleepMarker === state.lastUsedAt,
+	);
+}
+
+function queryLxdVmWakeState(jump, vmName) {
 	const res = spawnSync(
 		"ssh",
-		["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", jump, "lxc", "list", "--project", WAKE_PROJECT, "--format", "csv", "-c", "ns"],
+		["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", jump, "bash", "-c", shellQuote(buildWakeQueryScript(vmName))],
 		{ encoding: "utf8", timeout: 12_000 },
 	);
 	if (res.status !== 0) return null;
-	for (const line of res.stdout.split("\n")) {
-		const [name, status] = line.trim().split(",");
-		if (name === vmName) return status ?? null;
-	}
-	return null;
+	return parseWakeQueryOutput(res.stdout);
 }
 
 async function wakeStoppedMachine(machine, key) {
 	const vmName = vmNameForMachine(machine);
 	if (!vmName || !machine.jump) return null;
-	const status = queryLxdVmStatus(machine.jump, vmName);
-	if (status !== "STOPPED") return null;
-	console.error(`== run-on-node: waking sleeping test machine ${machine.name} (${vmName})`);
+	const state = queryLxdVmWakeState(machine.jump, vmName);
+	if (!isCaretakerSleeping(state)) return null;
+	console.error(`== run-on-node: waking caretaker-slept test machine ${machine.name} (${vmName})`);
 	const started = spawnSync(
 		"ssh",
-		["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", machine.jump, "lxc", "start", vmName, "--project", WAKE_PROJECT],
+		["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", machine.jump, "bash", "-c", shellQuote(buildWakeStartScript(vmName))],
 		{ encoding: "utf8", timeout: 30_000 },
 	);
 	if (started.status !== 0) return null;
