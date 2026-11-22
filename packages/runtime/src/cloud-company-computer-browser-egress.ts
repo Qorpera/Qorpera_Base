@@ -102,7 +102,7 @@ export async function startCompanyComputerBrowserEgress(options: {
 	let paused: "idle" | "unanswered" | undefined;
 	let checkedAt = 0;
 	let answeredAt = performance.now();
-	let holding = 0;
+	const holdingPeers = new Set<Socket>();
 	let closing: Promise<void> | undefined;
 	const fail = (): void => {
 		if (!signal.aborted) {
@@ -118,7 +118,7 @@ export async function startCompanyComputerBrowserEgress(options: {
 	const check = (checked: AbortSignal): Promise<void> =>
 		cloudToolRequest((s) => track(options.assertActive(s)), checked, 3000);
 	const accept = (peer: Socket): void => {
-		if (signal.aborted || peers.size >= 64 || ++attempts > 4096) {
+		if (signal.aborted || peer.destroyed || peer.closed || peers.size >= 64 || ++attempts > 4096) {
 			peer.destroy();
 			return;
 		}
@@ -130,6 +130,7 @@ export async function startCompanyComputerBrowserEgress(options: {
 		else signal.addEventListener("abort", onSignalAbort, { once: true });
 		const checked = attempt.signal;
 		const timer = setTimeout(() => attempt.abort(), 5000);
+		timer.unref();
 		let upstream: Socket | undefined;
 		let buffer = Buffer.alloc(0);
 		let headerComplete = false;
@@ -242,21 +243,36 @@ export async function startCompanyComputerBrowserEgress(options: {
 		// connection (somebody back at the screen) asks at once, at most once a
 		// second, and waits for that answer instead of failing the page.
 		peer.on("error", () => undefined);
-		if (signal.aborted || peers.size + holding >= 64 || (!checking && performance.now() - checkedAt < 1000)) {
+		if (
+			signal.aborted ||
+			peers.size + holdingPeers.size >= 64 ||
+			(!checking && performance.now() - checkedAt < 1000)
+		) {
 			peer.destroy();
 			return;
 		}
-		holding++;
+		holdingPeers.add(peer);
+		const onHoldingClose = (): void => {
+			holdingPeers.delete(peer);
+		};
+		track(
+			new Promise<void>((resolve) => {
+				peer.once("close", () => {
+					onHoldingClose();
+					resolve();
+				});
+			}),
+		);
 		void periodic().then(() => {
-			holding--;
-			if (paused || signal.aborted) peer.destroy();
+			holdingPeers.delete(peer);
+			if (paused || signal.aborted || peer.destroyed || peer.closed) peer.destroy();
 			else accept(peer);
 		});
 	});
 	server.maxConnections = 64;
 	const abort = (): void => {
 		clearInterval(interval);
-		for (const socket of [...peers, ...upstreams]) socket.destroy();
+		for (const socket of [...peers, ...upstreams, ...holdingPeers]) socket.destroy();
 		server.close();
 	};
 	server.on("error", fail);
@@ -299,6 +315,7 @@ export async function startCompanyComputerBrowserEgress(options: {
 		if (paused === "idle" && performance.now() - checkedAt < 5000) return;
 		void periodic();
 	}, 1000);
+	interval.unref();
 	const close = (): Promise<void> => {
 		closing ??= cloudToolRequest(
 			async () => {
@@ -308,7 +325,7 @@ export async function startCompanyComputerBrowserEgress(options: {
 				signal.removeEventListener("abort", abort);
 				await new Promise<void>((resolve) => server.close(() => resolve()));
 				await Promise.allSettled([...pending]);
-				if (peers.size || upstreams.size || pending.size)
+				if (peers.size || upstreams.size || holdingPeers.size || pending.size)
 					throw new Error("OFFICE_BROWSER_EGRESS_DRAIN_UNCONFIRMED");
 			},
 			new AbortController().signal,
