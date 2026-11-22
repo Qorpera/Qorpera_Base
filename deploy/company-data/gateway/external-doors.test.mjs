@@ -1641,7 +1641,7 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 				});
 				try {
 					const orphan1 = `qorpera_test_${"a".repeat(16)}`;
-					await asSuperuser(companyDatabase(slowEnv), `create schema ${orphan1}`);
+					await asSuperuser(companyDatabase(slowEnv), `create schema ${orphan1} authorization qorpera_data_admin`);
 					await idleWatchGw.watchOnce();
 					const afterFirst = await asSuperuser(
 						companyDatabase(slowEnv),
@@ -1650,7 +1650,7 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 					);
 					assert.deepEqual(afterFirst, [], "first watchOnce sweeps pre-existing orphan");
 					const orphan2 = `qorpera_test_${"b".repeat(16)}`;
-					await asSuperuser(companyDatabase(slowEnv), `create schema ${orphan2}`);
+					await asSuperuser(companyDatabase(slowEnv), `create schema ${orphan2} authorization qorpera_data_admin`);
 					try {
 						await idleWatchGw.watchOnce();
 						const afterSecond = await asSuperuser(
@@ -1815,10 +1815,12 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 			child.stderr.on("data", (chunk) => {
 				logs += chunk.toString("utf8");
 			});
+			const authHdr = { authorization: `Bearer ${token}` };
+			const adminHdr = { authorization: `Bearer ${adminTok}` };
 			let ready = false;
 			for (let i = 0; i < 100; i++) {
 				try {
-					const h = await sendCluster(listenPort, "GET", "/health", null);
+					const h = await sendCluster(listenPort, "GET", `/v1/admin/company-data/${clusterEnv}/triggers`, null, adminHdr);
 					if (h.status === 200) {
 						ready = true;
 						break;
@@ -1827,9 +1829,6 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 				await new Promise((r) => setTimeout(r, 100));
 			}
 			assert.equal(ready, true, `DATA_WORKERS=2 gateway did not become ready:\n${logs}`);
-
-			const authHdr = { authorization: `Bearer ${token}` };
-			const adminHdr = { authorization: `Bearer ${adminTok}` };
 			const applied = await sendCluster(
 				listenPort,
 				"POST",
