@@ -1521,12 +1521,27 @@ describe("CodeHostRequests", () => {
 							targetSha: MAIN,
 						},
 			);
-			const prune = vi.fn<NonNullable<CodeRequestJobs["prune"]>>(async () => ({
-				retiredWorktrees: [R1],
-				deletedBranches: [`qorpera/coding/${R1}`],
+			const prune = vi.fn<NonNullable<CodeRequestJobs["prune"]>>(async (_job, value) => ({
+				retiredWorktrees: [...value.workerIds],
+				deletedBranches:
+					value.phase === "git-folder" && value.deleteMergedBranches
+						? value.workerIds.map((id) => `qorpera/coding/${id}`)
+						: [],
 				skippedWorktrees: [],
 			}));
 			const t = setup();
+			t.kernel.answer = (method, args) => {
+				if (method === "qorpera_code_request_step") {
+					const step = (args.p_progress as { step?: string } | null)?.step;
+					return {
+						schema: STEP,
+						state: "go",
+						leaseUntil: "2026-11-10T12:35:00+00:00",
+						candidates: step === "files" ? [R1, R2] : [R1],
+					};
+				}
+				return undefined;
+			};
 			const extraJobs: CodeRequestJobs = { ...t.jobs, log, show, start, tag, prune };
 			const r = new CodeHostRequests({
 				control: t.kernel,
@@ -1619,6 +1634,11 @@ describe("CodeHostRequests", () => {
 			await expect(r.pass(new AbortController().signal)).resolves.toEqual({ done: 2, refused: 0, failed: 0, busy: 0 });
 			expect(t.runs[3]?.options).toEqual({ readOnly: true });
 			expect(t.runs[4]?.options).toBeUndefined();
+			expect(t.runs[5]?.options).toBeUndefined();
+			expect(prune.mock.calls.map((c) => [c[1].phase, c[1].workerIds, c[1].deleteMergedBranches])).toEqual([
+				["files", [R1, R2], undefined],
+				["git-folder", [R1], true],
+			]);
 			expect(t.finishes()[3]).toEqual(
 				finishOf(R1, T1, {
 					schema: SCHEMA,
@@ -1706,6 +1726,7 @@ describe("CodeHostRequests", () => {
 						requestId: R2,
 						token: T2,
 						runChecks: true,
+						priorVerifiedChange: 11,
 						siteConfigured: true,
 						priorSite: { change: 11, tree: BEFORE },
 					},
@@ -1740,6 +1761,7 @@ describe("CodeHostRequests", () => {
 					state: "done",
 					result: "undone",
 					matchesBeforeTree: true,
+					checksVerified: "inherited",
 					siteReused: true,
 				}),
 			);
@@ -1750,6 +1772,34 @@ describe("CodeHostRequests", () => {
 					code: "CODE_HOST_UNDO_CONFLICT",
 					paths: ["src/front.tsx"],
 					messages: ["CONFLICT (content): Merge conflict in src/front.tsx"],
+				}),
+			);
+			const unverified = setup();
+			unverified.jobs.undo.mockImplementationOnce(async (_job, value) => {
+				await value.verifyChecks?.({
+					commitSha: UNDONE,
+					mainBefore: MAIN,
+					matchesBeforeTree: true,
+					checksFilePresent: true,
+				});
+				return {
+					state: "undone",
+					mainBefore: MAIN,
+					mainAfter: UNDONE,
+					diff: DIFF,
+					replayed: false,
+					matchesBeforeTree: true,
+					checksFilePresent: true,
+				};
+			});
+			unverified.kernel.claims = [[{ ...UNDO, runChecks: true, priorVerifiedChange: null }]];
+			await expect(unverified.pass()).resolves.toEqual({ done: 0, refused: 1, failed: 0, busy: 0 });
+			expect(unverified.finishes()[0]).toMatchObject(
+				finishOf(R1, T1, {
+					schema: SCHEMA,
+					state: "refused",
+					code: "CODE_HOST_UNDO_CHECKS_REQUIRED",
+					paths: [".qorpera/checks.json"],
 				}),
 			);
 			const started = Date.now();

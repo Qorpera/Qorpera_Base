@@ -478,11 +478,12 @@ export interface CloudCompanyCodeRequestV2 {
 
 export interface CloudCompanyCodeClaimOverlap {
 	readonly workerId: string;
-	readonly branch: string;
+	readonly workerKey: string;
+	readonly title: string;
 	readonly phase: string;
+	readonly branch: string;
 	readonly claimedPaths: readonly string[];
-	readonly overlappingPaths: readonly string[];
-	readonly updatedAt: string;
+	readonly matchedPaths: readonly string[];
 }
 
 export interface CloudCompanyCodeRepositoryStatus {
@@ -491,24 +492,34 @@ export interface CloudCompanyCodeRepositoryStatus {
 		readonly owner: string;
 		readonly name: string;
 		readonly path: string;
+		readonly registered: boolean;
 		readonly archived: boolean;
 		readonly archivedAt: string | null;
-		readonly checksEnabled: boolean;
+		readonly mainSha: string | null;
 		readonly lastChange: number;
-		readonly lastMain: string | null;
-		readonly site: Readonly<Record<string, unknown>>;
+		readonly checksEnabled: boolean;
+		readonly siteEnabled: boolean;
+		readonly restoredAt: string | null;
+		readonly importedAt: string | null;
 	};
 	readonly sessions: readonly {
 		readonly workerId: string;
+		readonly workerKey: string;
+		readonly agent: string;
+		readonly todoKey: string | null;
+		readonly title: string;
+		readonly state: string;
+		readonly phase: string;
+		readonly harness: string;
 		readonly branch: string;
 		readonly worktree: string;
-		readonly phase: string;
-		readonly harness: string | null;
-		readonly workerState: string | null;
-		readonly title: string | null;
-		readonly folder: string | null;
+		readonly baseSha: string | null;
 		readonly claimedPaths: readonly string[];
+		readonly sequence: number;
 		readonly archived: boolean;
+		readonly needs: string | null;
+		readonly path: string;
+		readonly createdAt: string;
 		readonly updatedAt: string;
 	}[];
 	readonly sessionsTotal: number;
@@ -517,23 +528,31 @@ export interface CloudCompanyCodeRepositoryStatus {
 		readonly n: number;
 		readonly kind: string;
 		readonly state: string;
+		readonly how: string | null;
 		readonly title: string | null;
 		readonly notice: string | null;
 		readonly workerId: string | null;
-		readonly filesChanged: number | null;
 		readonly checksState: string | null;
 		readonly siteState: string | null;
+		readonly filesChanged: number | null;
 		readonly mainBefore: string | null;
 		readonly mainAfter: string | null;
+		readonly undoes: readonly number[] | null;
+		readonly revertedBy: number | null;
 		readonly createdAt: string;
 	}[];
+	readonly site: Readonly<Record<string, unknown>> | null;
 	readonly queue: {
-		readonly queued: number;
-		readonly preparing: number;
+		readonly landing: number;
 		readonly running: number;
-		readonly publishing: number;
-		readonly openRequests: number;
+		readonly queued: number;
 		readonly restoring: boolean;
+		readonly openRequests: readonly {
+			readonly requestId: string;
+			readonly kind: string;
+			readonly state: string;
+			readonly createdAt: string;
+		}[];
 	};
 }
 
@@ -569,8 +588,14 @@ export type CloudCompanyCodeQueryAsked =
 
 export type CloudCompanyCodeLifecycleAnswer =
 	| { readonly state: "queued"; readonly requestId: string }
-	| { readonly state: "done"; readonly result: "archived"; readonly owner: string; readonly name: string; readonly archivedAt: string }
-	| { readonly state: "already"; readonly owner: string; readonly name: string; readonly archivedAt?: string }
+	| {
+			readonly state: "done";
+			readonly result: "archived" | "unarchived";
+			readonly owner: string;
+			readonly name: string;
+			readonly archivedAt: string | null;
+	  }
+	| { readonly state: "already"; readonly owner: string; readonly name: string; readonly archivedAt?: string | null }
 	| { readonly state: "refused"; readonly reason: (typeof CODE_LIFECYCLE_REASONS)[number] | CloudCompanyCodeRefusal };
 
 /** Where an import takes the code from: a GitHub project as `Owner/Name`, or a git bundle in the company folder
@@ -2146,7 +2171,7 @@ export class CloudCompanyFolderClient {
 				{ p_binding: this.#binding, p_owner: owner, p_name: name },
 				signal,
 			),
-			["schema", "registered", "repository", "sessions", "sessionsTotal", "changesCount", "recentChanges", "queue"],
+			["schema", "registered", "repository", "sessions", "sessionsTotal", "changesCount", "recentChanges", "site", "queue"],
 		);
 		if (
 			input.schema !== "qorpera.code-repository-status/v1" ||
@@ -2156,11 +2181,34 @@ export class CloudCompanyFolderClient {
 			!input.repository ||
 			typeof input.repository !== "object" ||
 			Array.isArray(input.repository) ||
+			(input.site !== null && (typeof input.site !== "object" || Array.isArray(input.site))) ||
 			!input.queue ||
 			typeof input.queue !== "object" ||
 			Array.isArray(input.queue)
 		)
 			invalid();
+		const repo = input.repository as Record<string, unknown>;
+		const queue = input.queue as Record<string, unknown>;
+		if (
+			typeof repo.owner !== "string" ||
+			typeof repo.name !== "string" ||
+			typeof repo.path !== "string" ||
+			typeof repo.registered !== "boolean" ||
+			typeof repo.archived !== "boolean" ||
+			!nullableString(repo.archivedAt) ||
+			!nullableString(repo.mainSha) ||
+			typeof repo.checksEnabled !== "boolean" ||
+			typeof repo.siteEnabled !== "boolean" ||
+			!nullableString(repo.restoredAt) ||
+			!nullableString(repo.importedAt) ||
+			typeof queue.restoring !== "boolean" ||
+			!Array.isArray(queue.openRequests)
+		)
+			invalid();
+		counter(repo.lastChange);
+		counter(queue.landing);
+		counter(queue.running);
+		counter(queue.queued);
 		return {
 			registered: input.registered,
 			repository: input.repository as CloudCompanyCodeRepositoryStatus["repository"],
@@ -2168,6 +2216,7 @@ export class CloudCompanyFolderClient {
 			sessionsTotal: counter(input.sessionsTotal),
 			changesCount: counter(input.changesCount),
 			recentChanges: input.recentChanges as CloudCompanyCodeRepositoryStatus["recentChanges"],
+			site: input.site as CloudCompanyCodeRepositoryStatus["site"],
 			queue: input.queue as CloudCompanyCodeRepositoryStatus["queue"],
 		};
 	}
@@ -2196,6 +2245,21 @@ export class CloudCompanyFolderClient {
 			["schema", "overlaps"],
 		);
 		if (input.schema !== "qorpera.code-claim-overlaps/v1" || !Array.isArray(input.overlaps)) invalid();
+		for (const item of input.overlaps) {
+			const row = record(item, ["workerId", "workerKey", "title", "phase", "branch", "claimedPaths", "matchedPaths"]);
+			uuid(row.workerId);
+			if (
+				typeof row.workerKey !== "string" ||
+				typeof row.title !== "string" ||
+				typeof row.phase !== "string" ||
+				typeof row.branch !== "string" ||
+				!Array.isArray(row.claimedPaths) ||
+				!row.claimedPaths.every((p) => typeof p === "string") ||
+				!Array.isArray(row.matchedPaths) ||
+				!row.matchedPaths.every((p) => typeof p === "string")
+			)
+				invalid();
+		}
 		return input.overlaps as CloudCompanyCodeClaimOverlap[];
 	}
 
@@ -2300,18 +2364,26 @@ export class CloudCompanyFolderClient {
 				if (state === "queued") return { state, requestId: uuid(input.requestId) };
 				if (
 					state === "done" &&
-					input.result === "archived" &&
+					(input.result === "archived" || input.result === "unarchived") &&
 					typeof input.owner === "string" &&
 					typeof input.name === "string" &&
-					typeof input.archivedAt === "string"
+					nullableString(input.archivedAt)
 				)
-					return { state, result: "archived", owner: input.owner, name: input.name, archivedAt: input.archivedAt };
+					return {
+						state,
+						result: input.result,
+						owner: input.owner,
+						name: input.name,
+						archivedAt: input.archivedAt as string | null,
+					};
 				if (state === "already" && typeof input.owner === "string" && typeof input.name === "string")
 					return {
 						state,
 						owner: input.owner,
 						name: input.name,
-						...(typeof input.archivedAt === "string" ? { archivedAt: input.archivedAt } : {}),
+						...(input.archivedAt === undefined || !nullableString(input.archivedAt)
+							? {}
+							: { archivedAt: input.archivedAt as string | null }),
 					};
 				const reason = CODE_LIFECYCLE_REASONS.find((known) => known === input.reason);
 				if (state !== "refused" || reason === undefined) invalid();

@@ -268,8 +268,9 @@ begin
 		and (v_item -> 'targets' -> 0 ->> 'n')::integer = 3
 		and (v_item -> 'targets' -> 1 ->> 'n')::integer = 2
 		and (v_item ->> 'runChecks')::boolean
+		and (v_item ->> 'priorVerifiedChange')::integer = 1
 		and v_item -> 'priorSite' ->> 'tree' = pg_temp.rec_sha('t1'),
-		'range undo claim includes targets newest-first and priorSite at change 1: ' || v_item::text
+		'range undo claim includes targets newest-first, priorVerifiedChange, and priorSite at change 1: ' || v_item::text
 	);
 	v_res := public.qorpera_code_request_finish(
 		'exec-1170', repeat('5', 64), v_id, v_token,
@@ -374,8 +375,9 @@ begin
 
 	v_res := public.qorpera_folder_code_status(pg_temp.c3_alice(), 'company', 'shop');
 	perform pg_temp.base_assert(
-		(v_res -> 'repository' ->> 'archived')::boolean,
-		'archived repo remains readable via status'
+		(v_res -> 'repository' ->> 'archived')::boolean
+		and (v_res -> 'queue' ->> 'restoring')::boolean = false,
+		'archived repo remains readable via status with queue.restoring'
 	);
 
 	v_res := public.qorpera_folder_code_history(
@@ -393,6 +395,12 @@ begin
 		'tag create refuses on archived repository: ' || v_res::text
 	);
 
+	perform pg_temp.base_error(
+		$sql$select public.qorpera_folder_code_lifecycle(pg_temp.c3_alice(), '{"operationKey":"life-tag-dot","op":"tag","owner":"company","name":"shop","mode":"create","tag":"v1/.hidden"}'::jsonb)$sql$,
+		'22023',
+		'Code request is invalid'
+	);
+
 	v_res := public.qorpera_folder_code_lifecycle(
 		pg_temp.c3_alice(),
 		jsonb_build_object('operationKey', 'life-tag-list', 'op', 'tag', 'owner', 'company', 'name', 'shop', 'mode', 'list')
@@ -403,12 +411,77 @@ begin
 		pg_temp.c3_alice(),
 		jsonb_build_object('operationKey', 'life-prune-1', 'op', 'prune', 'owner', 'company', 'name', 'shop', 'deleteMergedBranches', true)
 	);
-	perform pg_temp.base_assert(v_res ->> 'state' = 'queued', 'prune queues lifecycle request');
+	v_id := (v_res ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(
+		v_res ->> 'state' = 'queued'
+		and not ((select input from public.qorpera_code_requests where id = v_id) ? 'workerIds'),
+		'prune queues lifecycle request without pre-snapshotted workerIds'
+	);
+	set local role service_role;
+	v_claim := public.qorpera_code_requests_claim('exec-1170', repeat('5', 64), 10, array['lifecycle']);
+	select elem into v_item from jsonb_array_elements(v_claim -> 'requests') as elem where (elem ->> 'requestId')::uuid = v_id;
+	v_token := (v_item ->> 'token')::uuid;
+	v_res := public.qorpera_code_request_step('exec-1170', repeat('5', 64), v_id, v_token, '{"step":"files"}'::jsonb);
+	perform pg_temp.base_assert(
+		v_res ->> 'state' = 'go'
+		and jsonb_typeof(v_res -> 'candidates') = 'array'
+		and (v_res -> 'candidates') ? v_b1::text
+		and (v_res -> 'candidates') ? v_b2::text,
+		'prune step returns live archived candidates: ' || v_res::text
+	);
+	reset role;
+	update public.qorpera_coding_sessions set archived_at = null, archived_by = null where worker_id = v_b2;
+	set local role service_role;
+	v_res := public.qorpera_code_request_step('exec-1170', repeat('5', 64), v_id, v_token, '{"step":"git-folder"}'::jsonb);
+	perform pg_temp.base_assert(
+		v_res ->> 'state' = 'go'
+		and (v_res -> 'candidates') ? v_b1::text
+		and not ((v_res -> 'candidates') ? v_b2::text),
+		'prune second step re-checks live candidates and excludes reopened session: ' || v_res::text
+	);
+	reset role;
 
 	v_other_w := pg_temp.rec_turn(10, 2, pg_temp.rec_sha('h10'));
 	perform pg_temp.base_error(
 		format('select public.qorpera_open_coding_turn((select w from public.qorpera_runtime_workers w where w.id = %L), ''agent'', ''Next turn'', null, null)', v_other_w),
 		'55000',
 		'This repository is archived; no new coding sessions can run on it'
+	);
+
+	v_res := public.qorpera_folder_code_lifecycle(
+		pg_temp.c3_alice(),
+		jsonb_build_object('operationKey', 'life-unarchive-1', 'op', 'unarchive', 'owner', 'company', 'name', 'shop')
+	);
+	perform pg_temp.base_assert(
+		v_res ->> 'state' = 'done' and v_res ->> 'result' = 'unarchived'
+		and (pg_temp.rec_shop()).archived_at is null,
+		'unarchive clears archived_at and restores repository: ' || v_res::text
+	);
+	v_res := public.qorpera_folder_code_lifecycle(
+		pg_temp.c3_alice(),
+		jsonb_build_object('operationKey', 'life-unarchive-2', 'op', 'unarchive', 'owner', 'company', 'name', 'shop')
+	);
+	perform pg_temp.base_assert(
+		v_res ->> 'state' = 'already',
+		'second unarchive reports already: ' || v_res::text
+	);
+
+	v_res := public.qorpera_folder_request_code_undo_v2(
+		pg_temp.c3_alice(),
+		jsonb_build_object(
+			'operationKey', 'undo-range-reverted-edge',
+			'owner', 'company',
+			'name', 'shop',
+			'change', 2,
+			'toChange', 4,
+			'dryRun', true,
+			'reason', 'Range starting on reverted change 2 selects smallest landed change 4'
+		)
+	);
+	v_id := (v_res ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(
+		v_res ->> 'state' = 'queued'
+		and ((select input ->> 'change' from public.qorpera_code_requests where id = v_id)::integer) = 4,
+		'range undo starting on reverted change advances lower edge to smallest landed change: ' || v_res::text
 	);
 end $$;

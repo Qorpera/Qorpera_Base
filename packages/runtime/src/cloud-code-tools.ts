@@ -55,6 +55,7 @@ const ACTIONS = [
 	"bring_in",
 	"create",
 	"archive",
+	"unarchive",
 	"tag",
 	"prune",
 ] as const;
@@ -86,10 +87,11 @@ const KEYS = {
 	bring_in: ["action", "operationKey", "owner", "name", "from", "look"],
 	create: ["action", "operationKey", "owner", "name"],
 	archive: ["action", "operationKey", "owner", "name", "reason"],
+	unarchive: ["action", "operationKey", "owner", "name"],
 	tag: ["action", "operationKey", "owner", "name", "mode", "tag", "ref", "message"],
 	prune: ["action", "operationKey", "owner", "name", "deleteMergedBranches"],
 } as const;
-const HISTORY_STATES = ["landed", "reverted", "refused", "unchanged"] as const;
+const HISTORY_STATES = ["landed", "reverted", "conflict", "refused", "lost"] as const;
 const TAG_MODES = ["create", "list"] as const;
 const JSON_RENDER_BYTES = 256 * 1024;
 const INCOMING =
@@ -109,14 +111,14 @@ const MAX_SHOW_BYTES = 128 * 1024;
 
 export const CLOUD_CODE_TOOL_DESCRIPTION = [
 	"Look after the company's code kept in Qorpera. Qorpera numbers every change that goes into main and writes its record at code/<owner>/<name>/changes/<number>.md. Change numbers are yours, never the members' words.",
-	"Every action takes owner and name. Mutating actions (undo, describe, bring_in, create, archive, tag, prune) also take operationKey; read-only actions (status, log, diff, show, branches, merge_preview, history) omit it.",
+	"Every action takes owner and name. Mutating actions (undo, describe, bring_in, create, archive, unarchive, tag, prune) also take operationKey; read-only actions (status, log, diff, show, branches, merge_preview, history) omit it.",
 	"- status: inspect a repository in one SQL call: active/recent coding sessions with claimedPaths, worktrees, recent changes, queue, archive/site state, and checks config.",
 	"- log / diff / show / branches / merge_preview: lightweight read-only git inspection without booting a coding VM. Refs accept main, a change number, a 40-char SHA, worker:<id>, tag:<name> or imported:<branch>.",
 	"- history: paginated, filterable SQL history of recorded changes (by state, workerId, path, cursor, limit).",
-	"- undo: revert one change, a range (change + toChange), a list (changes) or with andLater true. Supports dryRun, runChecks (verify checks unless force true), and site-aware revert.",
+	"- undo: revert one change, a range (change + toChange), a list (changes) or with andLater true. Supports dryRun, runChecks (gate on a prior checks-verified state unless force true), and site-aware revert.",
 	"- describe: set a change's customer-facing notice and picture.",
 	'- bring_in: bring existing code in from {"github":"owner/name"} or {"file":"code/_incoming/<folder>/<name>.bundle"} (look true only inspects it).',
-	"- create / archive / tag / prune: initialize an empty repository, archive an inactive repository (preserving reads), create or list git tags, or prune archived worktrees and merged worker branches.",
+	"- create / archive / unarchive / tag / prune: initialize an empty repository, archive or unarchive a repository (preserving reads), create or list git tags, or prune archived worktrees and merged worker branches.",
 ].join("\n");
 
 type CodeRefInput = string | number;
@@ -220,6 +222,12 @@ interface CodeArchive {
 	readonly name: string;
 	readonly reason?: string;
 }
+interface CodeUnarchive {
+	readonly action: "unarchive";
+	readonly operationKey: string;
+	readonly owner: string;
+	readonly name: string;
+}
 interface CodeTag {
 	readonly action: "tag";
 	readonly operationKey: string;
@@ -250,6 +258,7 @@ type CodeCall =
 	| CodeBringIn
 	| CodeCreate
 	| CodeArchive
+	| CodeUnarchive
 	| CodeTag
 	| CodePrune;
 
@@ -498,6 +507,7 @@ function parse(value: unknown): CodeCall {
 	}
 	const operationKey = a.operationKey as string;
 	if (action === "create") return { action, operationKey, owner, name };
+	if (action === "unarchive") return { action, operationKey, owner, name };
 	if (action === "archive") {
 		const reason = line(a.reason, "reason", 500);
 		if (reason !== undefined && Buffer.byteLength(reason) > 500)
@@ -516,6 +526,7 @@ function parse(value: unknown): CodeCall {
 			!TAG_PATTERN.test(a.tag) ||
 			a.tag.includes("..") ||
 			a.tag.includes("//") ||
+			a.tag.includes("/.") ||
 			a.tag.endsWith("/") ||
 			a.tag.endsWith(".") ||
 			a.tag.endsWith(".lock")
@@ -566,8 +577,8 @@ function parse(value: unknown): CodeCall {
 		if (a.changes !== undefined) {
 			if (a.change !== undefined || a.toChange !== undefined || andLater)
 				throw new CloudToolArgumentRefusal("changes cannot be combined with change, toChange or andLater");
-			if (!Array.isArray(a.changes) || a.changes.length < 1 || a.changes.length > 100)
-				throw new CloudToolArgumentRefusal("changes must be a list of 1 to 100 distinct change numbers");
+			if (!Array.isArray(a.changes) || a.changes.length < 1 || a.changes.length > 50)
+				throw new CloudToolArgumentRefusal("changes must be a list of 1 to 50 distinct change numbers");
 			changes = a.changes.map((c) => parseChangeNumber(c, "changes"));
 			if (new Set(changes).size !== changes.length)
 				throw new CloudToolArgumentRefusal("changes must not repeat a change number");
@@ -576,8 +587,8 @@ function parse(value: unknown): CodeCall {
 			if (a.toChange !== undefined) {
 				if (andLater) throw new CloudToolArgumentRefusal("toChange cannot be combined with andLater");
 				toChange = parseChangeNumber(a.toChange, "toChange");
-				if (toChange < change || toChange - change >= 100)
-					throw new CloudToolArgumentRefusal("toChange must be at least change and span at most 100 changes");
+				if (toChange < change || toChange - change >= 50)
+					throw new CloudToolArgumentRefusal("toChange must be at least change and span at most 50 changes");
 			}
 		}
 		return {
@@ -802,7 +813,7 @@ function importRefused(
 
 function lifecycleRefused(
 	reason: Extract<CloudCompanyCodeLifecycleAnswer, { state: "refused" }>["reason"],
-	request: CodeCreate | CodeArchive | CodeTag | CodePrune,
+	request: CodeCreate | CodeArchive | CodeUnarchive | CodeTag | CodePrune,
 ): string {
 	switch (reason) {
 		case "deleting":
@@ -1260,14 +1271,17 @@ export function cloudCodeTools(options: {
 						owner: request.owner,
 						name: request.name,
 						path: repoPath,
-						hasMain: mainEntry?.kind === "folder" || sqlStatus.repository.lastMain !== null,
+						hasMain: mainEntry?.kind === "folder" || sqlStatus.repository.mainSha !== null,
 						archived: sqlStatus.repository.archived,
 						archivedAt: sqlStatus.repository.archivedAt,
 						checksEnabled: sqlStatus.repository.checksEnabled,
+						siteEnabled: sqlStatus.repository.siteEnabled,
 						lastChange: sqlStatus.repository.lastChange,
-						lastMain: sqlStatus.repository.lastMain,
+						mainSha: sqlStatus.repository.mainSha,
+						restoredAt: sqlStatus.repository.restoredAt,
+						importedAt: sqlStatus.repository.importedAt,
 						restoring: sqlStatus.queue.restoring,
-						site: sqlStatus.repository.site as JsonValue,
+						site: sqlStatus.site as JsonValue,
 					},
 					sessions: sqlStatus.sessions.slice(0, sessionCount) as unknown as JsonValue,
 					sessionsTotal: sqlStatus.sessionsTotal,
@@ -1447,46 +1461,48 @@ export function cloudCodeTools(options: {
 	};
 
 	const runLifecycle = async (
-		request: CodeCreate | CodeArchive | CodeTag | CodePrune,
+		request: CodeCreate | CodeArchive | CodeUnarchive | CodeTag | CodePrune,
 		context: CloudToolContext,
 	): Promise<CloudToolContent> => {
 		const payload: Record<string, unknown> & { readonly operationKey: string } =
 			request.action === "create"
 				? { operationKey: request.operationKey, op: "create", owner: request.owner, name: request.name }
-				: request.action === "archive"
-					? {
-							operationKey: request.operationKey,
-							op: "archive",
-							owner: request.owner,
-							name: request.name,
-							...(request.reason === undefined ? {} : { reason: request.reason }),
-						}
-					: request.action === "tag"
-						? request.mode === "list"
-							? {
-									operationKey: request.operationKey,
-									op: "tag",
-									owner: request.owner,
-									name: request.name,
-									mode: "list",
-								}
-							: {
-									operationKey: request.operationKey,
-									op: "tag",
-									owner: request.owner,
-									name: request.name,
-									mode: "create",
-									tag: request.tag,
-									...(request.ref === undefined ? {} : { target: request.ref }),
-									...(request.message === undefined ? {} : { message: request.message }),
-								}
-						: {
+				: request.action === "unarchive"
+					? { operationKey: request.operationKey, op: "unarchive", owner: request.owner, name: request.name }
+					: request.action === "archive"
+						? {
 								operationKey: request.operationKey,
-								op: "prune",
+								op: "archive",
 								owner: request.owner,
 								name: request.name,
-								deleteMergedBranches: request.deleteMergedBranches,
-							};
+								...(request.reason === undefined ? {} : { reason: request.reason }),
+							}
+						: request.action === "tag"
+							? request.mode === "list"
+								? {
+										operationKey: request.operationKey,
+										op: "tag",
+										owner: request.owner,
+										name: request.name,
+										mode: "list",
+									}
+								: {
+										operationKey: request.operationKey,
+										op: "tag",
+										owner: request.owner,
+										name: request.name,
+										mode: "create",
+										tag: request.tag,
+										...(request.ref === undefined ? {} : { target: request.ref }),
+										...(request.message === undefined ? {} : { message: request.message }),
+									}
+							: {
+									operationKey: request.operationKey,
+									op: "prune",
+									owner: request.owner,
+									name: request.name,
+									deleteMergedBranches: request.deleteMergedBranches,
+								};
 		const asked = await folder.codeLifecycle(payload, context.signal);
 		if (asked.state === "refused") throw new CloudToolRefusal(lifecycleRefused(asked.reason, request));
 		if (asked.state === "done") {
@@ -1611,7 +1627,7 @@ export function cloudCodeTools(options: {
 				operationKey: {
 					type: "string",
 					pattern: OPERATION_KEY.source,
-					description: "Required for undo, describe, bring_in, create, archive, tag and prune.",
+					description: "Required for undo, describe, bring_in, create, archive, unarchive, tag and prune.",
 				},
 				owner: { type: "string", minLength: 1, maxLength: 39 },
 				name: { type: "string", minLength: 1, maxLength: 100 },
@@ -1620,10 +1636,10 @@ export function cloudCodeTools(options: {
 				changes: {
 					type: "array",
 					minItems: 1,
-					maxItems: 100,
+					maxItems: 50,
 					uniqueItems: true,
 					items: { type: "integer", minimum: 1 },
-					description: "With undo: list of 1 to 100 distinct change numbers.",
+					description: "With undo: list of 1 to 50 distinct change numbers.",
 				},
 				from: {
 					type: "object",
@@ -1637,8 +1653,12 @@ export function cloudCodeTools(options: {
 				look: { type: "boolean" },
 				andLater: { type: "boolean" },
 				dryRun: { type: "boolean", description: "With undo: preview without moving main." },
-				runChecks: { type: "boolean", description: "With undo: require checks verification before moving main." },
-				force: { type: "boolean", description: "With undo: bypass checks verification in an emergency." },
+				runChecks: {
+					type: "boolean",
+					description:
+						"With undo: require the reverted tree to match a prior checks-verified state (or have no checks); refuses unverified trees unless force is true.",
+				},
+				force: { type: "boolean", description: "With undo: bypass checks verification gate in an emergency." },
 				reason: { type: "string", minLength: 1, maxLength: 500 },
 				notice: {
 					type: "string",
@@ -1703,6 +1723,7 @@ export function cloudCodeTools(options: {
 			if (
 				request.action === "create" ||
 				request.action === "archive" ||
+				request.action === "unarchive" ||
 				request.action === "tag" ||
 				request.action === "prune"
 			)

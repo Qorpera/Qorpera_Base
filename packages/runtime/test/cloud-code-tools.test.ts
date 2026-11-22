@@ -150,7 +150,7 @@ async function fixture(
 }
 
 describe("manage_code: the tool an agent's own run is offered", () => {
-	it("is one tool with 14 actions, described concisely within the catalog's bound", async () => {
+	it("is one tool with 15 actions, described concisely within the catalog's bound", async () => {
 		const f = await fixture(() => queued);
 		try {
 			expect(f.tools.map((tool) => [tool.name, tool.source])).toEqual([["manage_code", "runtime"]]);
@@ -166,7 +166,7 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 				"- undo:",
 				"- describe:",
 				"- bring_in:",
-				"- create / archive / tag / prune:",
+				"- create / archive / unarchive / tag / prune:",
 			])
 				expect(tool.description).toContain(said);
 			expect(tool.inputSchema).toMatchObject({
@@ -189,13 +189,14 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 							"bring_in",
 							"create",
 							"archive",
+							"unarchive",
 							"tag",
 							"prune",
 						],
 					},
 					change: { type: "integer", minimum: 1 },
 					toChange: { type: "integer", minimum: 1 },
-					changes: { type: "array", minItems: 1, maxItems: 100 },
+					changes: { type: "array", minItems: 1, maxItems: 50 },
 					andLater: { type: "boolean" },
 					dryRun: { type: "boolean" },
 					runChecks: { type: "boolean" },
@@ -249,13 +250,20 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 				[{ ...undo, runChecks: "yes" }, "runChecks is true or false"],
 				[{ ...undo, force: "yes" }, "force is true or false"],
 				[{ ...undo, changes: [12, 13] }, "changes cannot be combined with change"],
+				[
+					{ ...less("change"), changes: Array.from({ length: 51 }, (_, i) => i + 1) },
+					"changes must be a list of 1 to 50 distinct change numbers",
+				],
 				[{ ...undo, toChange: 10 }, "toChange must be at least change"],
+				[{ ...undo, toChange: 62 }, "toChange must be at least change and span at most 50 changes"],
 				[{ ...undo, toChange: 15, andLater: true }, "toChange cannot be combined with andLater"],
+				[{ action: "history", owner: "acme", name: "shop", state: "unchanged" }, "state must be one of landed, reverted, conflict, refused, lost"],
 				[{ action: "diff", owner: "acme", name: "shop", base: "main" }, "diff requires base and head"],
 				[{ action: "show", owner: "acme", name: "shop", path: "../escape" }, "path must be a relative repository path"],
 				[{ action: "merge_preview", owner: "acme", name: "shop" }, "merge_preview requires head"],
 				[{ action: "tag", operationKey: "t1", owner: "acme", name: "shop", mode: "list", tag: "v1" }, "tag list does not take"],
 				[{ action: "tag", operationKey: "t2", owner: "acme", name: "shop", mode: "create", tag: "bad..tag" }, "tag must be a valid git tag name"],
+				[{ action: "tag", operationKey: "t3", owner: "acme", name: "shop", mode: "create", tag: "v1/.hidden" }, "tag must be a valid git tag name"],
 				[{ ...undo, notice: "x".repeat(201) }, "notice is one line of at most 200 characters"],
 				[{ ...undo, notice: "a\tb" }, "notice is one line of at most 200 characters"],
 				[
@@ -1735,32 +1743,79 @@ describe("manage_code status (SQL-backed)", () => {
 		repository: {
 			owner: "acme",
 			name: "shop",
+			path: "code/acme/shop",
+			registered: true,
 			archived: false,
 			archivedAt: null,
-			archivedReason: null,
-			checksEnabled: true,
+			mainSha: "a".repeat(40),
 			lastChange: 13,
-			lastMain: "a".repeat(40),
-			site: { slug: "shop-demo", url: "https://shop-demo.qorpera.com/", liveChange: 12 },
+			checksEnabled: true,
+			siteEnabled: true,
+			restoredAt: null,
+			importedAt: null,
 		},
+		sessionsTotal: 1,
 		sessions: [
 			{
 				workerId: "10000000-0000-4000-8000-000000000001",
-				phase: "working",
+				workerKey: "cart-totals",
+				agent: "nora",
+				todoKey: "checkout",
+				title: "Fix cart totals",
+				state: "active",
+				phase: "running",
 				harness: "codex",
-				claimedPaths: ["src/cart/**"],
-				worktree: "code/acme/shop/worktrees/10000000-0000-4000-8000-000000000001",
 				branch: "qorpera/coding/10000000-0000-4000-8000-000000000001",
+				worktree: "code/acme/shop/worktrees/10000000-0000-4000-8000-000000000001",
+				baseSha: "a".repeat(40),
+				claimedPaths: ["src/cart/**"],
+				sequence: 1,
+				archived: false,
+				needs: null,
+				path: "QorperaOS/agents/nora/todos/checkout/cart-totals",
+				createdAt: "2026-11-22T08:00:00Z",
 				updatedAt: "2026-11-22T09:00:00Z",
 			},
 		],
-		sessionsTotal: 1,
 		changesCount: 2,
 		recentChanges: [
-			{ n: 13, state: "landed", summary: "Add promo codes", createdAt: "2026-11-21T10:00:00Z", workerId: null },
-			{ n: 12, state: "landed", summary: "Update cart totals", createdAt: "2026-11-20T10:00:00Z", workerId: null },
+			{
+				n: 13,
+				kind: "land",
+				state: "landed",
+				how: "fast-forward",
+				title: "Add promo codes",
+				notice: null,
+				workerId: null,
+				checksState: "passed",
+				siteState: "made",
+				filesChanged: 2,
+				mainBefore: "b".repeat(40),
+				mainAfter: "a".repeat(40),
+				undoes: null,
+				revertedBy: null,
+				createdAt: "2026-11-21T10:00:00Z",
+			},
+			{
+				n: 12,
+				kind: "land",
+				state: "landed",
+				how: "fast-forward",
+				title: "Update cart totals",
+				notice: null,
+				workerId: null,
+				checksState: "passed",
+				siteState: "made",
+				filesChanged: 1,
+				mainBefore: "c".repeat(40),
+				mainAfter: "b".repeat(40),
+				undoes: null,
+				revertedBy: null,
+				createdAt: "2026-11-20T10:00:00Z",
+			},
 		],
-		queue: { pendingRequests: 0, runningRequests: 0, activeChecks: 0, restoring: false },
+		site: { slug: "shop-demo", url: "https://shop-demo.qorpera.com/", liveChange: 12 },
+		queue: { landing: 0, running: 1, queued: 0, restoring: false, openRequests: [] },
 		...over,
 	});
 
@@ -1777,17 +1832,27 @@ describe("manage_code status (SQL-backed)", () => {
 			...Object.keys(seed.rawFiles ?? {}),
 			...(seed.folders ?? []),
 		];
-		const f = await folderWriterFixture({
-			files: seed.files,
-			folders: [...new Set([...(seed.folders ?? []), ...ancestors(allPaths)])],
-			links: seed.links,
-		});
+		const sqlAnswer = seed.sqlStatus ?? baseSqlStatus();
+		const statusCalls: Record<string, unknown>[] = [];
+		const f = await folderWriterFixture(
+			{
+				files: seed.files,
+				folders: [...new Set([...(seed.folders ?? []), ...ancestors(allPaths)])],
+				links: seed.links,
+			},
+			{
+				rpc: (method, args) => {
+					if (method === "qorpera_folder_code_status") {
+						statusCalls.push(structuredClone(args));
+						return sqlAnswer;
+					}
+					return undefined;
+				},
+			},
+		);
 		for (const [path, bytes] of Object.entries(seed.rawFiles ?? {})) {
 			f.seed(path, bytes, "application/octet-stream");
 		}
-		const statusSpy = vi
-			.spyOn(f.folder, "codeRepositoryStatus")
-			.mockResolvedValue((seed.sqlStatus ?? baseSqlStatus()) as never);
 		const listSpy = vi.spyOn(f.folder, "list");
 		const tools = cloudCodeTools({ folder: f.folder, identity: f.identity });
 		const boundary = new CloudNativeToolBoundary({
@@ -1809,10 +1874,10 @@ describe("manage_code status (SQL-backed)", () => {
 				text: envelope.content.text,
 			};
 		};
-		return { ...f, statusSpy, listSpy, boundary, invoke };
+		return { ...f, statusCalls, listSpy, boundary, invoke };
 	}
 
-	it("returns SQL-backed status with sessions, claimedPaths, recent changes, queue, and checks without any folder list crawl", async () => {
+	it("returns SQL-backed status through real CloudCompanyFolderClient parsing without any folder list crawl", async () => {
 		const f = await statusFixture({
 			folders: ["code/acme/shop/main"],
 			files: {
@@ -1828,7 +1893,7 @@ describe("manage_code status (SQL-backed)", () => {
 		try {
 			const answer = await f.invoke({ action: "status", owner: "acme", name: "shop" });
 			expect(answer).toMatchObject({ success: true, status: "ok", truncated: false });
-			expect(f.statusSpy).toHaveBeenCalledWith("acme", "shop", expect.any(AbortSignal));
+			expect(f.statusCalls).toEqual([{ p_binding: f.binding, p_owner: "acme", p_name: "shop" }]);
 			expect(f.listSpy).not.toHaveBeenCalled();
 			const parsed = JSON.parse(answer.text);
 			expect(parsed).toMatchObject({
@@ -1840,8 +1905,11 @@ describe("manage_code status (SQL-backed)", () => {
 					hasMain: true,
 					archived: false,
 					checksEnabled: true,
+					siteEnabled: true,
 					lastChange: 13,
+					mainSha: "a".repeat(40),
 					restoring: false,
+					site: { slug: "shop-demo", url: "https://shop-demo.qorpera.com/", liveChange: 12 },
 				},
 				sessionsTotal: 1,
 				sessionsTruncated: false,
@@ -1850,10 +1918,11 @@ describe("manage_code status (SQL-backed)", () => {
 					present: true,
 					total: 2,
 					changes: [
-						{ n: 13, state: "landed", summary: "Add promo codes" },
-						{ n: 12, state: "landed", summary: "Update cart totals" },
+						{ n: 13, state: "landed", title: "Add promo codes" },
+						{ n: 12, state: "landed", title: "Update cart totals" },
 					],
 				},
+				queue: { landing: 0, running: 1, queued: 0, restoring: false, openRequests: [] },
 				checks: {
 					present: true,
 					valid: true,
@@ -1862,7 +1931,10 @@ describe("manage_code status (SQL-backed)", () => {
 				},
 			});
 			expect(parsed.sessions[0]).toMatchObject({
-				phase: "working",
+				workerKey: "cart-totals",
+				agent: "nora",
+				state: "active",
+				phase: "running",
 				claimedPaths: ["src/cart/**"],
 			});
 			expect(f.releases).toHaveLength(1);
@@ -2040,6 +2112,16 @@ describe("manage_code read queries, history, lifecycle, and v2 undo", () => {
 						archivedAt: "2026-11-22T09:00:00Z",
 					};
 				}
+				if (req.op === "unarchive") {
+					return {
+						schema: "qorpera.code-lifecycle/v1",
+						state: "done",
+						result: "unarchived",
+						owner: "acme",
+						name: "shop",
+						archivedAt: null,
+					};
+				}
 				return { schema: "qorpera.code-lifecycle/v1", state: "queued", requestId: REQUEST };
 			}
 			if (method === UNDO) return queued;
@@ -2093,6 +2175,15 @@ describe("manage_code read queries, history, lifecycle, and v2 undo", () => {
 			const archived = await f.invoke({ action: "archive", operationKey: "ar-1", owner: "acme", name: "shop", reason: "Retired" });
 			expect(archived.success).toBe(true);
 			expect(archived.text).toContain("archived");
+
+			const unarchived = await f.invoke({ action: "unarchive", operationKey: "unar-1", owner: "acme", name: "shop" });
+			expect(unarchived.success).toBe(true);
+			expect(JSON.parse(unarchived.text)).toMatchObject({
+				action: "unarchive",
+				state: "done",
+				result: "unarchived",
+				archivedAt: null,
+			});
 
 			const tagged = await f.invoke({
 				action: "tag",

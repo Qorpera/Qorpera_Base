@@ -4242,14 +4242,21 @@ export async function tagCodeArea(
 
 export async function pruneCodeArea(
 	job: CodeHostJob,
-	value: { repository: CloudCodingRepository; workerIds: readonly string[]; deleteMergedBranches?: boolean },
+	value: {
+		repository: CloudCodingRepository;
+		workerIds: readonly string[];
+		phase: "files" | "git-folder";
+		deleteMergedBranches?: boolean;
+	},
 ): Promise<{
 	retiredWorktrees: string[];
 	deletedBranches: string[];
 	skippedWorktrees: { workerId: string; reason: string }[];
 }> {
-	const input = closedWith(value, ["repository", "workerIds"], ["deleteMergedBranches"]);
+	const input = closedWith(value, ["repository", "workerIds", "phase"], ["deleteMergedBranches"]);
 	const repository = keptRepositoryOf(input.repository);
+	const phase = input.phase;
+	if (phase !== "files" && phase !== "git-folder") throw new Error("INVALID_CODE_HOST_JOB");
 	const deleteMergedBranches = input.deleteMergedBranches === true;
 	if (input.deleteMergedBranches !== undefined && typeof input.deleteMergedBranches !== "boolean")
 		throw new Error("INVALID_CODE_HOST_JOB");
@@ -4262,19 +4269,18 @@ export async function pruneCodeArea(
 		const retiredWorktrees: string[] = [];
 		const deletedBranches: string[] = [];
 		const skippedWorktrees: { workerId: string; reason: string }[] = [];
-		for (const workerId of workerIds) {
-			const fileReason = await retireFiles(run, workerId);
-			if (fileReason === null) {
-				const adminReason = await retireGitFolder(run, workerId);
-				if (adminReason === null || adminReason === "NOT_THERE") retiredWorktrees.push(workerId);
-				else skippedWorktrees.push({ workerId, reason: adminReason });
-			} else if (fileReason === "NOT_THERE") {
-				const adminReason = await retireGitFolder(run, workerId);
-				if (adminReason === null) retiredWorktrees.push(workerId);
-				else if (adminReason !== "NOT_THERE") skippedWorktrees.push({ workerId, reason: adminReason });
-			} else {
-				skippedWorktrees.push({ workerId, reason: fileReason });
+		if (phase === "files") {
+			for (const workerId of workerIds) {
+				const fileReason = await retireFiles(run, workerId);
+				if (fileReason === null) retiredWorktrees.push(workerId);
+				else skippedWorktrees.push({ workerId, reason: fileReason });
 			}
+			return { retiredWorktrees, deletedBranches, skippedWorktrees };
+		}
+		for (const workerId of workerIds) {
+			const adminReason = await retireGitFolder(run, workerId);
+			if (adminReason === null) retiredWorktrees.push(workerId);
+			else if (adminReason !== "NOT_THERE") skippedWorktrees.push({ workerId, reason: adminReason });
 		}
 		if (deleteMergedBranches && workerIds.length > 0) {
 			const branchRefs = workerIds.map((id) => `refs/heads/qorpera/coding/${id}`);

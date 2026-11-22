@@ -4033,15 +4033,24 @@ describe("read-only git queries, conflict messages, v2 undo, tags, and prune", (
 		if (listed.mode !== "list") throw new Error("expected list");
 		expect(listed.tags.map((t) => t.tag).sort()).toEqual(["v1.0.0", "v1.0.1"]);
 
-		const pruned = await pruneCodeArea(c.job, {
+		const filesPhase = await pruneCodeArea(c.job, {
 			repository: kept,
 			workerIds: [sMerged.workerId, sUnmerged.workerId],
-			deleteMergedBranches: true,
+			phase: "files",
 		});
-		expect(pruned.retiredWorktrees.sort()).toEqual([sMerged.workerId, sUnmerged.workerId].sort());
-		expect(pruned.deletedBranches).toEqual([`qorpera/coding/${sMerged.workerId}`]);
+		expect(filesPhase.retiredWorktrees.sort()).toEqual([sMerged.workerId, sUnmerged.workerId].sort());
+		expect(filesPhase.deletedBranches).toEqual([]);
 		expect(await exists(sMerged.tree)).toBe(false);
 		expect(await exists(sUnmerged.tree)).toBe(false);
+
+		const gitPhase = await pruneCodeArea(c.job, {
+			repository: kept,
+			workerIds: [sMerged.workerId, sUnmerged.workerId],
+			phase: "git-folder",
+			deleteMergedBranches: true,
+		});
+		expect(gitPhase.retiredWorktrees.sort()).toEqual([sMerged.workerId, sUnmerged.workerId].sort());
+		expect(gitPhase.deletedBranches).toEqual([`qorpera/coding/${sMerged.workerId}`]);
 		expect(await f.git(c.repo, "--git-dir=.", "show-ref", "--verify", `refs/heads/qorpera/coding/${sUnmerged.workerId}`)).toBeTruthy();
 	});
 });

@@ -119,6 +119,7 @@ export interface CodeUndoRequest extends Claimed {
 	runChecks?: boolean;
 	force?: boolean;
 	checksEnabled?: boolean;
+	priorVerifiedChange?: number | null;
 	siteConfigured?: boolean;
 	priorSite?: { change: number; tree: string } | null;
 	targets?: { n: number; mainBefore: string; mainAfter: string }[];
@@ -325,6 +326,11 @@ function requestOf(value: unknown): CodeRequest {
 			if (typeof entry.checksEnabled !== "boolean") throw new Error("CODE_REQUEST_INVALID");
 			parsed.checksEnabled = entry.checksEnabled;
 		}
+		if (entry.priorVerifiedChange !== undefined) {
+			if (entry.priorVerifiedChange === null) parsed.priorVerifiedChange = null;
+			else if (whole(entry.priorVerifiedChange, 1)) parsed.priorVerifiedChange = entry.priorVerifiedChange;
+			else throw new Error("CODE_REQUEST_INVALID");
+		}
 		if (entry.siteConfigured !== undefined) {
 			if (typeof entry.siteConfigured !== "boolean") throw new Error("CODE_REQUEST_INVALID");
 			parsed.siteConfigured = entry.siteConfigured;
@@ -336,7 +342,7 @@ function requestOf(value: unknown): CodeRequest {
 			} else throw new Error("CODE_REQUEST_INVALID");
 		}
 		if (entry.targets !== undefined) {
-			if (!Array.isArray(entry.targets) || entry.targets.length < 1 || entry.targets.length > 100)
+			if (!Array.isArray(entry.targets) || entry.targets.length < 1 || entry.targets.length > 50)
 				throw new Error("CODE_REQUEST_INVALID");
 			parsed.targets = entry.targets.map((item) => {
 				if (!isRecord(item) || !whole(item.n, 1) || !sha(item.mainBefore) || !sha(item.mainAfter))
@@ -686,7 +692,7 @@ export class CodeHostRequests {
 										checksVerified = "off";
 										return;
 									}
-									if (candidate.matchesBeforeTree) {
+									if (candidate.matchesBeforeTree && request.priorVerifiedChange != null) {
 										checksVerified = "inherited";
 										return;
 									}
@@ -698,7 +704,9 @@ export class CodeHostRequests {
 										"CODE_HOST_UNDO_CHECKS_REQUIRED",
 										[".qorpera/checks.json"],
 										[
-											"Repository has .qorpera/checks.json and the merged undo tree differs from prior verified commits; pass force: true for an emergency unchecked revert or use andLater: true to revert cleanly to a prior verified state.",
+											candidate.matchesBeforeTree
+												? "Repository has .qorpera/checks.json and the prior commit before this change has no passed checks record; pass force: true for an emergency unchecked revert or dispatch a coding worker to run checks."
+												: "Repository has .qorpera/checks.json and reverting without later changes produces an unverified tree; use andLater: true to roll back to a prior checks-verified state, pass force: true for an emergency unchecked revert, or dispatch a coding worker to make a checked revert.",
 										],
 									);
 								}
@@ -790,6 +798,15 @@ export class CodeHostRequests {
 				const matchesBeforeTree = undone.matchesBeforeTree === true;
 				const canReuseSite = Boolean(request.priorSite && matchesBeforeTree);
 				const siteNeedsRebuild = Boolean(request.siteConfigured && !canReuseSite);
+				const effectiveChecksVerified: "passed" | "inherited" | "none" | "off" | "not_run" =
+					checksVerified ??
+					(matchesBeforeTree && request.priorVerifiedChange != null
+						? "inherited"
+						: !undone.checksFilePresent
+							? "none"
+							: request.checksEnabled === false
+								? "off"
+								: "not_run");
 				left.outcome = {
 					schema: SCHEMA,
 					state: "done",
@@ -800,7 +817,7 @@ export class CodeHostRequests {
 					...(isV2
 						? {
 								matchesBeforeTree,
-								...(checksVerified !== undefined ? { checksVerified } : {}),
+								checksVerified: effectiveChecksVerified,
 								...(canReuseSite ? { siteReused: true } : {}),
 								...(siteNeedsRebuild ? { siteNeedsRebuild: true } : {}),
 							}
@@ -971,22 +988,78 @@ export class CodeHostRequests {
 			} else {
 				if (!this.#jobs.prune) throw new Error("NOT_BUILT");
 				const pruneJob = this.#jobs.prune;
-				const workerIds = Array.isArray(life.workerIds) ? (life.workerIds as string[]) : [];
 				const deleteMergedBranches = life.deleteMergedBranches === true;
-				const pruned = await this.#hosts.run(request.companyId, request.environmentId, signal, (job) =>
-					pruneJob(job, { repository, workerIds, deleteMergedBranches }),
-				);
+				const filesPhase = await this.#hosts.run(request.companyId, request.environmentId, signal, async (job) => {
+					const step = await this.#stepPrune(request, "files", job.signal);
+					if (step.state !== "go") throw new RequestStopped(step.state);
+					if (step.candidates.length === 0)
+						return {
+							candidates: [] as string[],
+							retiredWorktrees: [] as string[],
+							skippedWorktrees: [] as { workerId: string; reason: string }[],
+						};
+					const res = await pruneJob(job, { repository, workerIds: step.candidates, phase: "files" });
+					return {
+						candidates: step.candidates,
+						retiredWorktrees: res.retiredWorktrees,
+						skippedWorktrees: res.skippedWorktrees,
+					};
+				});
+				const needsGitFolderPass =
+					filesPhase.candidates.length > 0 &&
+					(filesPhase.retiredWorktrees.length > 0 ||
+						filesPhase.skippedWorktrees.some((s) => s.reason === "NOT_THERE") ||
+						deleteMergedBranches);
+				let retiredWorktrees: string[] = [];
+				let deletedBranches: string[] = [];
+				const skippedMap = new Map<string, string>();
+				for (const item of filesPhase.skippedWorktrees) {
+					if (item.reason !== "NOT_THERE") skippedMap.set(item.workerId, item.reason);
+				}
+				if (needsGitFolderPass) {
+					const gitPhase = await this.#hosts.run(request.companyId, request.environmentId, signal, async (job) => {
+						const step = await this.#stepPrune(request, "git-folder", job.signal);
+						if (step.state !== "go") throw new RequestStopped(step.state);
+						if (step.candidates.length === 0)
+							return {
+								candidates: [] as string[],
+								retiredWorktrees: [] as string[],
+								deletedBranches: [] as string[],
+								skippedWorktrees: [] as { workerId: string; reason: string }[],
+							};
+						const res = await pruneJob(job, {
+							repository,
+							workerIds: step.candidates,
+							phase: "git-folder",
+							deleteMergedBranches,
+						});
+						return { candidates: step.candidates, ...res };
+					});
+					for (const item of gitPhase.skippedWorktrees) skippedMap.set(item.workerId, item.reason);
+					const candidateSet = new Set(gitPhase.candidates);
+					const retiredSet = new Set(gitPhase.retiredWorktrees);
+					for (const id of filesPhase.retiredWorktrees) {
+						if (candidateSet.has(id) && !skippedMap.has(id)) retiredSet.add(id);
+					}
+					retiredWorktrees = [...retiredSet];
+					deletedBranches = gitPhase.deletedBranches;
+				}
 				outcome = {
 					schema: SCHEMA,
 					state: "done",
 					result: "pruned",
-					retiredWorktrees: pruned.retiredWorktrees,
-					deletedBranches: pruned.deletedBranches,
-					skippedWorktrees: pruned.skippedWorktrees,
+					retiredWorktrees,
+					deletedBranches,
+					skippedWorktrees: [...skippedMap.entries()].map(([workerId, reason]) => ({ workerId, reason })),
 				};
 			}
 		} catch (error) {
-			if (signal.aborted) outcome = { schema: SCHEMA, state: "busy" };
+			if (error instanceof RequestStopped && error.stop === "lost") {
+				this.#report({ event: "code-request", ...named(request), state: "lost" });
+				return "busy";
+			}
+			if (signal.aborted || (error instanceof RequestStopped && error.stop === "busy"))
+				outcome = { schema: SCHEMA, state: "busy" };
 			else if (error instanceof CodeHostRefusal && LIFECYCLE_REFUSALS.test(error.code))
 				outcome = {
 					schema: SCHEMA,
@@ -1250,6 +1323,35 @@ export class CodeHostRequests {
 			(answer.state === "go" || answer.state === "busy" || answer.state === "lost")
 		)
 			return answer.state;
+		throw new Error("CODE_REQUEST_STEP_UNCONFIRMED");
+	}
+
+	async #stepPrune(
+		request: CodeLifecycleRequest,
+		phase: "files" | "git-folder",
+		signal: AbortSignal,
+	): Promise<{ state: "go"; candidates: string[] } | { state: "busy" | "lost" }> {
+		const answer = await this.#call(
+			CODE_REQUEST_RPCS[1],
+			{
+				p_owner: this.#owner,
+				p_machine_id_sha256: this.#machineIdSha256,
+				p_request_id: request.requestId,
+				p_token: request.token,
+				p_progress: { step: phase },
+			},
+			signal,
+		);
+		if (isRecord(answer) && answer.schema === "qorpera.code-request-step/v1") {
+			if (answer.state === "busy" || answer.state === "lost") return { state: answer.state };
+			if (
+				answer.state === "go" &&
+				Array.isArray(answer.candidates) &&
+				answer.candidates.length <= 200 &&
+				answer.candidates.every((id) => isUuid(id))
+			)
+				return { state: "go", candidates: [...answer.candidates] };
+		}
 		throw new Error("CODE_REQUEST_STEP_UNCONFIRMED");
 	}
 

@@ -284,7 +284,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-22",
 		title: "Faster code inspection, path claims and safer undos",
-		text: "manage_code now supports fast read-only git inspection without booting a coding machine (commit log, diffs, file show at any ref, branch ahead/behind counts, merge previews and paginated change history) plus repository create, archive, tag and prune actions, SQL-backed status, and dry-run, checked or range undos that reuse prior verified site builds. When dispatching parallel coding sessions with manage_worker, declare claimedPaths to receive immediate overlap warnings against active sessions. company_read also batches up to 24 files with parallel reads and per-file line ranges.",
+		text: "manage_code now supports fast read-only git inspection without booting a coding machine (commit log, diffs, file show at any ref, branch ahead/behind counts, merge previews and paginated change history) plus repository create, archive, unarchive, tag and prune actions, SQL-backed status, and dry-run, verification-gated or range undos that reuse prior verified site builds. When dispatching parallel coding sessions with manage_worker, declare claimedPaths to receive immediate overlap warnings against active sessions. company_read also batches up to 24 files with parallel reads and per-file line ranges.",
 	},
 ]);
 

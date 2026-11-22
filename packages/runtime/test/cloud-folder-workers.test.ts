@@ -708,18 +708,33 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 });
 
 it("forwards claimedPaths on coding dispatch and attaches claimOverlapWarning when active sessions overlap", async () => {
-	const f = await fixture({ files: { [TODO]: todoText() } });
 	const otherId = "4b0e9c1a-0000-4000-8000-000000000099";
-	const overlaps = vi.spyOn(f.folder, "codeClaimOverlaps").mockResolvedValueOnce([
+	const overlapCalls: Record<string, unknown>[] = [];
+	const f = await fixture(
+		{ files: { [TODO]: todoText() } },
 		{
-			workerId: otherId,
-			branch: `qorpera/coding/${otherId}`,
-			phase: "working",
-			claimedPaths: ["src/cart/**"],
-			overlappingPaths: ["src/cart/totals.ts"],
-			updatedAt: "2026-11-22T09:00:00Z",
+			rpc: (method, args) => {
+				if (method === "qorpera_folder_code_claim_overlaps") {
+					overlapCalls.push(structuredClone(args));
+					return {
+						schema: "qorpera.code-claim-overlaps/v1",
+						overlaps: [
+							{
+								workerId: otherId,
+								workerKey: "cart-ui",
+								title: "Update cart UI",
+								phase: "running",
+								branch: `qorpera/coding/${otherId}`,
+								claimedPaths: ["src/cart/**"],
+								matchedPaths: ["src/cart/totals.ts"],
+							},
+						],
+					};
+				}
+				return undefined;
+			},
 		},
-	]);
+	);
 	const result = parse(
 		await f.workers().change(
 			{
@@ -742,17 +757,22 @@ it("forwards claimedPaths on coding dispatch and attaches claimOverlapWarning wh
 		overlappingSessions: [
 			{
 				workerId: otherId,
-				phase: "working",
+				workerKey: "cart-ui",
+				title: "Update cart UI",
+				phase: "running",
 				claimedPaths: ["src/cart/**"],
+				matchedPaths: ["src/cart/totals.ts"],
 			},
 		],
 	});
-	expect(overlaps).toHaveBeenCalledWith(
+	expect(overlapCalls).toEqual([
 		{
-			repository: { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" },
-			claimedPaths: ["src/cart/totals.ts"],
-			excludeWorkerId: expect.any(String),
+			p_binding: f.binding,
+			p_request: {
+				repository: { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" },
+				claimedPaths: ["src/cart/totals.ts"],
+				excludeWorkerId: expect.any(String),
+			},
 		},
-		expect.any(AbortSignal),
-	);
+	]);
 });

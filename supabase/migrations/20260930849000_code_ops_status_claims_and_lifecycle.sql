@@ -346,6 +346,11 @@ begin
 				and session.repository ->> 'host' = 'qorpera' and session.repository ->> 'owner' = p_owner
 				and session.repository ->> 'name' = p_name and session.phase in ('queued','input_ready')
 		),
+		'restoring', exists (
+			select 1 from public.qorpera_code_requests req
+			where req.environment_id = p_environment_id and req.owner = p_owner and req.name = p_name
+				and req.kind = 'restore' and req.state in ('queued','running')
+		),
 		'openRequests', coalesce((
 			select jsonb_agg(jsonb_build_object(
 				'requestId', req.id,
@@ -814,7 +819,6 @@ declare
 	v_tag text;
 	v_target text;
 	v_message text;
-	v_workers uuid[];
 	v_id uuid;
 	v_now timestamptz := clock_timestamp();
 begin
@@ -823,14 +827,14 @@ begin
 		or not public.qorpera_code_json_text(p_request -> 'operationKey', '^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$')
 		or not public.qorpera_code_json_text(p_request -> 'owner', '^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?$')
 		or not public.qorpera_code_json_text(p_request -> 'name', '^[a-z0-9_]([a-z0-9_.-]{0,98}[a-z0-9_-])?$')
-		or not coalesce(p_request ->> 'op' in ('create','archive','tag','prune'), false) then
+		or not coalesce(p_request ->> 'op' in ('create','archive','unarchive','tag','prune'), false) then
 		raise exception 'Code request is invalid' using errcode = '22023';
 	end if;
 	v_op := p_request ->> 'op';
 	v_owner := p_request ->> 'owner';
 	v_name := p_request ->> 'name';
 
-	if v_op = 'create' then
+	if v_op in ('create','unarchive') then
 		if p_request - array['operationKey','op','owner','name'] <> '{}'::jsonb then
 			raise exception 'Code request is invalid' using errcode = '22023';
 		end if;
@@ -852,7 +856,7 @@ begin
 		if v_mode = 'create' then
 			v_tag := p_request ->> 'tag';
 			if v_tag is null or v_tag !~ '^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$'
-				or v_tag like '%..%' or v_tag like '%//%'
+				or v_tag like '%..%' or v_tag like '%//%' or v_tag like '%/.%'
 				or right(v_tag, 1) in ('/', '.') or right(v_tag, 5) = '.lock'
 				or (p_request ? 'message' and p_request -> 'message' <> 'null'::jsonb
 					and (jsonb_typeof(p_request -> 'message') <> 'string'
@@ -962,6 +966,24 @@ begin
 				'owner', v_owner, 'name', v_name, 'archivedAt', v_now
 			);
 		end if;
+	elsif v_op = 'unarchive' then
+		select * into v_repo from public.qorpera_code_repositories repo
+		where repo.environment_id = v_run.environment_id and repo.owner = v_owner and repo.name = v_name for update;
+		if not found then raise exception 'No such repository' using errcode = 'P0002'; end if;
+		if v_repo.archived_at is null then
+			v_result := jsonb_build_object(
+				'schema', 'qorpera.code-lifecycle/v1', 'state', 'already',
+				'owner', v_owner, 'name', v_name, 'archivedAt', null
+			);
+		else
+			update public.qorpera_code_repositories
+			set archived_at = null, archived_by_agent_id = null, archived_by_user_id = null
+			where environment_id = v_repo.environment_id and owner = v_repo.owner and name = v_repo.name;
+			v_result := jsonb_build_object(
+				'schema', 'qorpera.code-lifecycle/v1', 'state', 'done', 'result', 'unarchived',
+				'owner', v_owner, 'name', v_name, 'archivedAt', null
+			);
+		end if;
 	elsif v_op = 'tag' then
 		select * into v_repo from public.qorpera_code_repositories repo
 		where repo.environment_id = v_run.environment_id and repo.owner = v_owner and repo.name = v_name for update;
@@ -996,26 +1018,6 @@ begin
 			where executor.environment_id = v_run.environment_id and executor.enabled) <> 1 then
 			v_result := jsonb_build_object('schema', 'qorpera.code-lifecycle/v1', 'state', 'refused', 'reason', 'no_executor');
 		else
-			select coalesce(array_agg(candidate.worker_id order by candidate.worker_id), '{}'::uuid[]) into v_workers
-			from (
-				select session.worker_id
-				from public.qorpera_coding_sessions session
-				join public.qorpera_runtime_workers worker on worker.id = session.worker_id
-				where session.environment_id = v_repo.environment_id
-					and session.repository ->> 'host' = 'qorpera'
-					and session.repository ->> 'owner' = v_repo.owner
-					and session.repository ->> 'name' = v_repo.name
-					and session.archived_at is not null
-					and session.attached_machine_id is null
-					and session.vm_allocation_id is null
-					and worker.state <> 'active'
-					and not exists (
-						select 1 from public.qorpera_coding_session_turns turn
-						where turn.worker_id = session.worker_id and turn.outcome is null
-					)
-				order by session.archived_at, session.worker_id
-				limit 200
-			) as candidate;
 			insert into public.qorpera_code_requests(
 				environment_id, owner, name, profile_id, kind, input, by_kind, by_user_id, by_agent_id, run_id
 			)
@@ -1023,7 +1025,6 @@ begin
 				v_repo.environment_id, v_repo.owner, v_repo.name, v_repo.profile_id, 'lifecycle',
 				jsonb_build_object(
 					'op', 'prune',
-					'workerIds', to_jsonb(v_workers),
 					'deleteMergedBranches', coalesce((p_request ->> 'deleteMergedBranches')::boolean, false)
 				),
 				'agent', v_run.requested_by_user_id, v_run.staff_agent_id, v_run.id
@@ -1143,6 +1144,7 @@ begin
 		if v_targets is null or cardinality(v_targets) = 0 then
 			raise exception 'No such change' using errcode = 'P0002';
 		end if;
+		v_n := v_targets[cardinality(v_targets)];
 	end if;
 
 	select * into v_change from public.qorpera_code_changes change
@@ -1414,7 +1416,7 @@ select pg_temp.code_ops_patch(
 select pg_temp.code_ops_patch(
 	'public.qorpera_code_requests_claim(text,text,integer,text[])'::regprocedure, array[
 	$old$v_import boolean := false; -- 20260930736000$old$,
-	$new$v_import boolean := false; v_targets_meta jsonb; v_repo_row public.qorpera_code_repositories%rowtype; v_prior_site jsonb;$new$,
+	$new$v_import boolean := false; v_targets_meta jsonb; v_repo_row public.qorpera_code_repositories%rowtype; v_prior_site jsonb; v_prior_verified integer;$new$,
 	$old$or not p_kinds <@ array['undo','download','restore','import'] then$old$,
 	$new$or not p_kinds <@ array['undo','download','restore','import','query','lifecycle'] then$new$,
 	$old$		if v_request.kind = 'undo' then
@@ -1429,6 +1431,11 @@ select pg_temp.code_ops_patch(
 				select * into v_repo_row from public.qorpera_code_repositories repo
 				where repo.environment_id = v_request.environment_id and repo.owner = v_request.owner
 					and repo.name = v_request.name;
+				select max(back.n) into v_prior_verified
+				from public.qorpera_code_changes back
+				where back.environment_id = v_request.environment_id and back.owner = v_request.owner
+					and back.name = v_request.name and back.checks_state in ('passed','inherited')
+					and back.main_after = v_begun ->> 'mainBefore';
 				select jsonb_build_object('change', back.n, 'tree', back.site ->> 'tree') into v_prior_site
 				from public.qorpera_code_changes back
 				where back.environment_id = v_request.environment_id and back.owner = v_request.owner
@@ -1453,6 +1460,7 @@ select pg_temp.code_ops_patch(
 					'runChecks', coalesce((v_request.input ->> 'runChecks')::boolean, false),
 					'force', coalesce((v_request.input ->> 'force')::boolean, false),
 					'checksEnabled', coalesce(v_repo_row.checks_enabled, true),
+					'priorVerifiedChange', v_prior_verified,
 					'siteConfigured', (v_repo_row.site_id is not null or v_prior_site is not null),
 					'priorSite', v_prior_site
 				) || case when v_targets_meta is not null then jsonb_build_object('targets', v_targets_meta) else '{}'::jsonb end;
@@ -1461,6 +1469,37 @@ select pg_temp.code_ops_patch(
 			v_item := v_item || jsonb_build_object('op', v_request.input ->> 'op', 'query', v_request.input);
 		elsif v_request.kind = 'lifecycle' then
 			v_item := v_item || jsonb_build_object('op', v_request.input ->> 'op', 'lifecycle', v_request.input);$new$
+]);
+
+select pg_temp.code_ops_patch(
+	'public.qorpera_code_request_step(text,text,uuid,uuid,jsonb)'::regprocedure, array[
+	$old$	v_generation bigint; v_progress jsonb; v_place boolean; v_step text; v_waiting text; -- 20260930736000$old$,
+	$new$	v_generation bigint; v_progress jsonb; v_place boolean; v_step text; v_waiting text; v_candidates jsonb;$new$,
+	$old$	return jsonb_build_object('schema', 'qorpera.code-request-step/v1', 'state', 'go', 'leaseUntil', v_request.lease_until);$old$,
+	$new$	if v_request.kind = 'lifecycle' and v_request.input ->> 'op' = 'prune' then
+		select coalesce(jsonb_agg(candidate.worker_id order by candidate.worker_id), '[]'::jsonb) into v_candidates
+		from (
+			select session.worker_id
+			from public.qorpera_coding_sessions session
+			join public.qorpera_runtime_workers worker on worker.id = session.worker_id
+			where session.environment_id = v_request.environment_id
+				and session.repository ->> 'host' = 'qorpera'
+				and session.repository ->> 'owner' = v_request.owner
+				and session.repository ->> 'name' = v_request.name
+				and session.archived_at is not null
+				and session.attached_machine_id is null
+				and session.vm_allocation_id is null
+				and worker.state <> 'active'
+				and not exists (
+					select 1 from public.qorpera_coding_session_turns turn
+					where turn.worker_id = session.worker_id and turn.outcome is null
+				)
+			order by session.archived_at, session.worker_id
+			limit 200
+		) as candidate;
+	end if;
+	return jsonb_build_object('schema', 'qorpera.code-request-step/v1', 'state', 'go', 'leaseUntil', v_request.lease_until)
+		|| case when v_candidates is not null then jsonb_build_object('candidates', v_candidates) else '{}'::jsonb end;$new$
 ]);
 
 select pg_temp.code_ops_patch(
