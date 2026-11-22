@@ -488,12 +488,25 @@ const CODING_ATTACH_LEASE_MARGIN_MS = 15_000;
 const CODING_KEEP_MACHINE_MS = 15_000;
 const CODING_LOAD_MAX_CPU_MILLIS = 999_999_999;
 const CODING_LOAD_MAX_MEMORY_BYTES = 1_099_511_627_776;
-const CODING_LOAD_FULL_PERCENT = 85;
+const CODING_LOAD_CPU_FULL_PERCENT = 85;
+const CODING_LOAD_MEMORY_FULL_PERCENT = 80;
+const CODING_LOAD_MEMINFO_AVAILABLE_MIN_PERCENT = 15;
+const CODING_LOAD_CPU_HYSTERESIS_SAMPLES = 3;
+const CODING_LOAD_UID_LOOKUP_MS = 2_000;
 const CGROUP_MEMORY_STAT_PATTERNS = [
 	/^anon ([0-9]{1,15})$/m,
 	/^shmem ([0-9]{1,15})$/m,
 	/^kernel ([0-9]{1,15})$/m,
 ] as const;
+
+function validGuestUid(value: unknown): number | null {
+	return typeof value === "number" &&
+		Number.isSafeInteger(value) &&
+		value >= CODING_GUEST.minUid &&
+		value <= CODING_GUEST.maxUid
+		? value
+		: null;
+}
 
 function sessionCpuMillis(
 	sample: SessionSample | undefined,
@@ -528,7 +541,7 @@ function meminfoMemoryFull(content: string): boolean {
 	const availableKb = Number(available[1]);
 	if (!Number.isSafeInteger(totalKb) || totalKb <= 0 || !Number.isSafeInteger(availableKb) || availableKb < 0)
 		return false;
-	return availableKb * 100 < totalKb * (100 - CODING_LOAD_FULL_PERCENT);
+	return availableKb * 100 < totalKb * CODING_LOAD_MEMINFO_AVAILABLE_MIN_PERCENT;
 }
 /** A session's first mount has less than its attachment's minute, and a machine still booting (a fresh machine's
  * first boot starts the image's services and sets up its new machine id) can take longer than that just to start the
@@ -1464,6 +1477,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	readonly #attached = new Map<string, Attached>();
 	readonly #attachments = new Map<string, Attachment>();
 	readonly #samples = new Map<string, SessionSample>();
+	readonly #cpuHighSamples = new Map<string, { bootId: string; count: number }>();
+	readonly #folderUidCache = new Map<string, { bootId: string; uid: number | null }>();
 	readonly #leaseWork = new Map<string, Promise<unknown>>();
 	/** Per session, the serial of the last attach this process recorded: a
 	 * keeper pass leaves a session a turn attached during the pass to that turn. */
@@ -4843,6 +4858,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			this.#commandSecrets?.release(machine.machineId, workerId);
 		}
 		this.#samples.delete(workerId);
+		this.#folderUidCache.delete(workerId);
 	}
 	/** A member's machine LXD shows stopped after its settled start (the
 	 * reconcile has just written that stop down) lost every session's boot: each
@@ -4877,6 +4893,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#helperBoots.delete(machine.machineId);
 		this.#settledBoots.delete(machine.machineId);
 		this.#folderStartOperations.delete(machine.machineId);
+		this.#cpuHighSamples.delete(machine.machineId);
 	}
 	/** SQL marks the machine to restart for the company folder (rule 4), or with `newDisk` for a new disk (rule 4,
 	 * `unreadable`), which marks it to restart too. From then on no coding view opens on it. A mark already there stays. */
@@ -4998,6 +5015,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#helperBoots.delete(machine.machineId);
 		this.#settledBoots.delete(machine.machineId);
 		this.#folderStartOperations.delete(machine.machineId);
+		this.#cpuHighSamples.delete(machine.machineId);
 		await this.#recordError(machine.machineId, "wake", null, signal).catch(() => undefined);
 	}
 	/** The sessions SQL detached are no longer attached here. */
@@ -5012,6 +5030,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				this.#commandSecrets?.release(machineId, workerId);
 			}
 			this.#samples.delete(workerId);
+			this.#folderUidCache.delete(workerId);
 		}
 	}
 	/** A stopped member machine's session folders unplugged under `authorize`:
@@ -5092,39 +5111,21 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			(entry) => entry.attached.length && !unplanned.some(({ machineId }) => machineId === entry.machineId),
 		);
 		const kept = new Set(entries.flatMap((entry) => entry.attached.map(({ workerId }) => workerId)));
-		const outcomes = (
-			await Promise.all(
-				entries.map((entry) => {
-					const deadline = AbortSignal.any([
-						signal,
-						AbortSignal.timeout(this.#options.keepDeadlineMs ?? CODING_KEEP_MACHINE_MS),
-					]);
-					// The pass stops waiting at the deadline even for a call that does not.
-					return abortable(this.#keepMachine(entry, deadline, lasting), deadline).catch(
-						(error): CodingKeepOutcome[] => {
-							signal.throwIfAborted();
-							return [
-								{
-									machineId: entry.machineId,
-									workerId: null,
-									step: "keep",
-									state: "failed",
-									code: deadline.aborted ? "CODING_HOST_KEEP_DEADLINE" : errorCodeOf(error),
-								},
-							];
-						},
-					);
-				}),
-			)
-		).flat();
+		const outcomes = (await Promise.all(entries.map((entry) => this.#keepMachine(entry, signal, lasting)))).flat();
+		const activeMachines = new Set(entries.map((entry) => entry.machineId));
+		for (const machineId of this.#cpuHighSamples.keys())
+			if (!activeMachines.has(machineId)) this.#cpuHighSamples.delete(machineId);
 		// Forget what no machine carries any more, unless a turn took it on during this pass.
 		for (const [workerId, attachment] of this.#attachments)
 			if (!kept.has(workerId) && attachment.since < pass) {
 				this.#attachments.delete(workerId);
 				this.#attachSerials.delete(workerId);
 				this.#samples.delete(workerId);
+				this.#folderUidCache.delete(workerId);
 				this.#commandSecrets?.release(attachment.machine.machineId, workerId);
 			}
+		for (const workerId of this.#folderUidCache.keys())
+			if (!kept.has(workerId) && !this.#attachments.has(workerId)) this.#folderUidCache.delete(workerId);
 		const released = this.#released;
 		this.#released = [];
 		return [...released, ...unplanned, ...held, ...outcomes];
@@ -5141,184 +5142,270 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * turns and lifecycle steps. A session a turn attached during the step is that
 	 * turn's to renew, and SQL keeps a session attached in the last 30 seconds that
 	 * the observation may predate. Released sessions are handed to #release. */
-	async #keepMachine(entry: ListedMachine, deadline: AbortSignal, signal: AbortSignal): Promise<CodingKeepOutcome[]> {
-		const machine = lxdCodingMachinePlan(entry.binding as unknown as LxdCodingMachineBinding).binding;
-		if (machine.machineId !== entry.machineId) throw new Error("CODING_HOST_MACHINE_LIST_INVALID");
-		const attaches = new Map(entry.attached.map(({ workerId }) => [workerId, this.#attachSerials.get(workerId)]));
-		const generations = new Map(
-			entry.attached.map(({ workerId, attachmentToken }) => [workerId, digest(attachmentToken)]),
-		);
-		const folder = this.#options.folder;
-		// The folder service holds the machine's secret values in memory only (5j-5 (a)): given again each pass, one that
-		// restarted has them back within a pass. Beside the renewals, which a failure here never holds up; it never rejects.
-		// A service from before the check is reported each pass: until it is replaced, no save is checked.
-		const secrets = folder?.control.secrets(machine.machineId, deadline).then(
-			(held): CodingKeepOutcome[] =>
-				held === "unsupported"
-					? [
-							{
-								machineId: machine.machineId,
-								workerId: null,
-								step: "secrets",
-								state: "not-now",
-								code: "CODING_FOLDER_SECRETS_UNSUPPORTED",
-							},
-						]
-					: [],
-			(error: unknown): CodingKeepOutcome[] => {
-				if (signal.aborted) return [];
-				const code = deadline.aborted ? "CODING_HOST_KEEP_DEADLINE" : errorCodeOf(error);
-				return [{ machineId: machine.machineId, workerId: null, step: "secrets", state: "failed", code }];
-			},
-		);
-		const observed = folder
-			? await this.#observeFolder(
-					folder,
-					machine,
-					entry.attached.map(({ workerId }) => workerId),
-					deadline,
-				)
-			: await this.#observe(machine, deadline);
-		// A guest lease of the listed generation that ran out can never be renewed,
-		// and the watchdog has stopped the session's commands. Left out of the
-		// observation, the session is released (EXPIRED) with the commands SQL last
-		// saw running: its next turn, or its turn still running here, attaches it
-		// under a new generation.
-		const lost = new Set<string>();
-		const sessions: { workerId: string; busy: boolean; running: ObservedCommand[] }[] = [];
-		const sessionCpu: { workerId: string; cpuMillis: number }[] = [];
-		for (const [workerId, seen] of observed.sessions) {
-			if (seen.lease?.expiresInMs === 0 && seen.lease.tokenSha256 === generations.get(workerId)) {
-				lost.add(workerId);
-				continue;
-			}
-			const sample = this.#samples.get(workerId);
-			const now: SessionSample = {
-				bootId: observed.bootId,
-				cpuSeconds: seen.cpuUsageUsec / 1e6,
-				cpuUsageUsec: seen.cpuUsageUsec,
-				ioBytes: seen.ioBytes,
-				at: seen.uptimeMs,
-			};
-			// Busy by the one idle rule since the last look of this boot (`@qorpera/contracts` idle-rule): at least 5% of
-			// one core, or 512 KiB read or written in 30 seconds. A server that only waits does neither. A look that read
-			// only some of the machine's processes is busy: bytes it could not see never let the machine sleep.
-			const busy =
-				!seen.ioComplete ||
-				(sample !== undefined && sample.bootId === observed.bootId && idleRuleBusy(sample, now));
-			const cpuMillis = sessionCpuMillis(sample, observed.bootId, seen.uptimeMs, seen.cpuUsageUsec);
-			this.#samples.set(workerId, now);
-			sessions.push({ workerId, busy, running: seen.running });
-			sessionCpu.push({ workerId, cpuMillis });
+	async #keepMachine(
+		entry: ListedMachine,
+		passSignal: AbortSignal,
+		signal: AbortSignal,
+	): Promise<CodingKeepOutcome[]> {
+		let machine: LxdCodingMachineBinding;
+		let bindingText: string;
+		try {
+			const plan = lxdCodingMachinePlan(entry.binding as unknown as LxdCodingMachineBinding);
+			machine = plan.binding;
+			if (machine.machineId !== entry.machineId) throw new Error("CODING_HOST_MACHINE_LIST_INVALID");
+			bindingText = plan.text;
+		} catch (error) {
+			passSignal.throwIfAborted();
+			return [
+				{ machineId: entry.machineId, workerId: null, step: "keep", state: "failed", code: errorCodeOf(error) },
+			];
 		}
-		const bindingText = lxdCodingMachinePlan(machine).text;
-		const started = performance.now();
-		const kept = record(
-			await this.#call(
-				"qorpera_keep_coding_attachments",
-				{
-					p_machine_id: machine.machineId,
-					p_owner: this.#options.owner,
-					p_binding_text: bindingText,
-					p_machine_id_sha256: this.#options.machineIdSha256,
-					p_observation: {
-						schema: "qorpera.coding-machine-observation/v1",
-						busy: sessions.some((session) => session.busy),
-						sessions,
-					},
-				},
-				deadline,
-			),
-		);
-		if (
-			kept.schema !== "qorpera.coding-attachments/v1" ||
-			kept.machineId !== machine.machineId ||
-			!Array.isArray(kept.sessions)
-		)
-			throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
-		const items = kept.sessions.map((value) => {
-			const item = record(value);
-			const workerId = typeof item.workerId === "string" && UUID.test(item.workerId) ? item.workerId : null;
-			if (!workerId || typeof item.attachmentToken !== "string" || !UUID.test(item.attachmentToken))
-				throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
-			return { workerId, item };
-		});
-		const renewals: Promise<CodingKeepOutcome>[] = [];
-		const keptWorkers = new Set<string>();
-		for (const { workerId, item } of items) {
-			const outcome = (state: CodingKeepOutcome["state"], code?: string): CodingKeepOutcome => ({
-				machineId: machine.machineId,
-				workerId,
-				step: "keep",
-				state,
-				...(code ? { code } : {}),
-			});
-			if (item.state === "kept") {
-				if (lost.has(workerId) && generations.get(workerId) === digest(String(item.attachmentToken))) {
-					// Attached too recently for SQL to judge it by this observation: released at a later pass.
-					renewals.push(Promise.resolve(outcome("not-now", "GUEST_LEASE_EXPIRED")));
-					continue;
-				}
-				keptWorkers.add(workerId);
-				// Each session's renewal on its own, one guest lease step at a time per session.
-				renewals.push(
-					abortable(
-						this.#leaseTask(workerId, async () => {
-							deadline.throwIfAborted();
-							if (this.#attachSerials.get(workerId) !== attaches.get(workerId)) return false;
-							const attachment = await this.#attachmentOn(machine, workerId, item, observed.bootId, deadline);
-							// On the folder model the renewed attachment is all: its view is the folder service's to renew.
-							if (!folder)
-								await this.#refreshGuestLease(attachment, started + Number(item.validForMs), deadline);
-							return true;
-						}),
-						deadline,
-					).then(
-						(renewed) => (renewed ? outcome("done") : outcome("not-now", "TURN_ATTACHED")),
-						(error: unknown) => {
-							signal.throwIfAborted();
-							return outcome("failed", deadline.aborted ? "CODING_HOST_KEEP_DEADLINE" : errorCodeOf(error));
+		const keepMs = this.#options.keepDeadlineMs ?? CODING_KEEP_MACHINE_MS;
+		const keepDeadline = AbortSignal.any([passSignal, AbortSignal.timeout(keepMs)]);
+		let observedBootId: string | null = null;
+		let activeCpu: { workerId: string; cpuMillis: number }[] | null = null;
+		let keepFailed = false;
+		let keepTimedOut = false;
+		let keepOutcomes: CodingKeepOutcome[];
+		try {
+			keepOutcomes = await abortable(
+				(async (): Promise<CodingKeepOutcome[]> => {
+					const attaches = new Map(
+						entry.attached.map(({ workerId }) => [workerId, this.#attachSerials.get(workerId)]),
+					);
+					const generations = new Map(
+						entry.attached.map(({ workerId, attachmentToken }) => [workerId, digest(attachmentToken)]),
+					);
+					const folder = this.#options.folder;
+					const secrets = folder?.control.secrets(machine.machineId, keepDeadline).then(
+						(held): CodingKeepOutcome[] =>
+							held === "unsupported"
+								? [
+										{
+											machineId: machine.machineId,
+											workerId: null,
+											step: "secrets",
+											state: "not-now",
+											code: "CODING_FOLDER_SECRETS_UNSUPPORTED",
+										},
+									]
+								: [],
+						(error: unknown): CodingKeepOutcome[] => {
+							if (signal.aborted) return [];
+							const code = keepDeadline.aborted ? "CODING_HOST_KEEP_DEADLINE" : errorCodeOf(error);
+							return [{ machineId: machine.machineId, workerId: null, step: "secrets", state: "failed", code }];
 						},
-					),
-				);
-			} else if (item.state === "release" && typeof item.reason === "string" && /^[A-Z_]{1,64}$/.test(item.reason))
-				this.#release(
-					machine,
-					workerId,
-					String(item.attachmentToken),
-					item.reason,
-					observed.sessions.get(workerId)?.running ?? [],
-					signal,
-				);
-			else throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
+					);
+					const observed = folder
+						? await this.#observeFolder(
+								folder,
+								machine,
+								entry.attached.map(({ workerId }) => workerId),
+								keepDeadline,
+							)
+						: await this.#observe(machine, keepDeadline);
+					const lost = new Set<string>();
+					const sessions: { workerId: string; busy: boolean; running: ObservedCommand[] }[] = [];
+					const sessionCpu: { workerId: string; cpuMillis: number }[] = [];
+					for (const [workerId, seen] of observed.sessions) {
+						if (seen.lease?.expiresInMs === 0 && seen.lease.tokenSha256 === generations.get(workerId)) {
+							lost.add(workerId);
+							continue;
+						}
+						const sample = this.#samples.get(workerId);
+						const now: SessionSample = {
+							bootId: observed.bootId,
+							cpuSeconds: seen.cpuUsageUsec / 1e6,
+							cpuUsageUsec: seen.cpuUsageUsec,
+							ioBytes: seen.ioBytes,
+							at: seen.uptimeMs,
+						};
+						const busy =
+							!seen.ioComplete ||
+							(sample !== undefined && sample.bootId === observed.bootId && idleRuleBusy(sample, now));
+						const cpuMillis = sessionCpuMillis(sample, observed.bootId, seen.uptimeMs, seen.cpuUsageUsec);
+						this.#samples.set(workerId, now);
+						sessions.push({ workerId, busy, running: seen.running });
+						sessionCpu.push({ workerId, cpuMillis });
+					}
+					const started = performance.now();
+					const kept = record(
+						await this.#call(
+							"qorpera_keep_coding_attachments",
+							{
+								p_machine_id: machine.machineId,
+								p_owner: this.#options.owner,
+								p_binding_text: bindingText,
+								p_machine_id_sha256: this.#options.machineIdSha256,
+								p_observation: {
+									schema: "qorpera.coding-machine-observation/v1",
+									busy: sessions.some((session) => session.busy),
+									sessions,
+								},
+							},
+							keepDeadline,
+						),
+					);
+					if (
+						kept.schema !== "qorpera.coding-attachments/v1" ||
+						kept.machineId !== machine.machineId ||
+						!Array.isArray(kept.sessions)
+					)
+						throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
+					const items = kept.sessions.map((value) => {
+						const item = record(value);
+						const workerId = typeof item.workerId === "string" && UUID.test(item.workerId) ? item.workerId : null;
+						if (!workerId || typeof item.attachmentToken !== "string" || !UUID.test(item.attachmentToken))
+							throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
+						return { workerId, item };
+					});
+					const renewals: Promise<CodingKeepOutcome>[] = [];
+					const keptWorkers = new Set<string>();
+					for (const { workerId, item } of items) {
+						const outcome = (state: CodingKeepOutcome["state"], code?: string): CodingKeepOutcome => ({
+							machineId: machine.machineId,
+							workerId,
+							step: "keep",
+							state,
+							...(code ? { code } : {}),
+						});
+						if (item.state === "kept") {
+							if (lost.has(workerId) && generations.get(workerId) === digest(String(item.attachmentToken))) {
+								renewals.push(Promise.resolve(outcome("not-now", "GUEST_LEASE_EXPIRED")));
+								continue;
+							}
+							keptWorkers.add(workerId);
+							renewals.push(
+								abortable(
+									this.#leaseTask(workerId, async () => {
+										keepDeadline.throwIfAborted();
+										if (this.#attachSerials.get(workerId) !== attaches.get(workerId)) return false;
+										const attachment = await this.#attachmentOn(
+											machine,
+											workerId,
+											item,
+											observed.bootId,
+											keepDeadline,
+										);
+										if (!folder)
+											await this.#refreshGuestLease(
+												attachment,
+												started + Number(item.validForMs),
+												keepDeadline,
+											);
+										return true;
+									}),
+									keepDeadline,
+								).then(
+									(renewed) => (renewed ? outcome("done") : outcome("not-now", "TURN_ATTACHED")),
+									(error: unknown) => {
+										signal.throwIfAborted();
+										return outcome(
+											"failed",
+											keepDeadline.aborted ? "CODING_HOST_KEEP_DEADLINE" : errorCodeOf(error),
+										);
+									},
+								),
+							);
+						} else if (
+							item.state === "release" &&
+							typeof item.reason === "string" &&
+							/^[A-Z_]{1,64}$/.test(item.reason)
+						)
+							this.#release(
+								machine,
+								workerId,
+								String(item.attachmentToken),
+								item.reason,
+								observed.sessions.get(workerId)?.running ?? [],
+								signal,
+							);
+						else throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
+					}
+					// WHY: Wait for renewals so adopted attachments recover folder.uid before #recordMachineLoad queries user-<uid>.slice.
+					const renewalOutcomes = await Promise.all(renewals);
+					observedBootId = observed.bootId;
+					activeCpu = sessionCpu.filter(({ workerId }) => keptWorkers.has(workerId));
+					return [...renewalOutcomes, ...((await secrets) ?? [])];
+				})(),
+				keepDeadline,
+			);
+		} catch (error) {
+			passSignal.throwIfAborted();
+			keepFailed = true;
+			keepTimedOut = keepDeadline.aborted;
+			keepOutcomes = [
+				{
+					machineId: machine.machineId,
+					workerId: null,
+					step: "keep",
+					state: "failed",
+					code: keepTimedOut ? "CODING_HOST_KEEP_DEADLINE" : errorCodeOf(error),
+				},
+			];
 		}
-		const activeCpu = sessionCpu.filter(({ workerId }) => keptWorkers.has(workerId));
-		const load = this.#recordMachineLoad(machine, bindingText, observed.bootId, activeCpu, deadline).then(
+		// WHY: Run load reporting under its own deadline so a slow or timed-out observation never suppresses fullness reporting.
+		const loadDeadline = AbortSignal.any([passSignal, AbortSignal.timeout(keepMs)]);
+		const loadSessions: readonly { workerId: string; cpuMillis: number | null }[] =
+			activeCpu ?? entry.attached.map(({ workerId }) => ({ workerId, cpuMillis: null }));
+		const loadOutcomes = await abortable(
+			this.#recordMachineLoad(machine, bindingText, observedBootId, loadSessions, activeCpu !== null, loadDeadline),
+			loadDeadline,
+		).then(
 			(): CodingKeepOutcome[] => [],
 			(error: unknown): CodingKeepOutcome[] => {
-				if (signal.aborted) return [];
-				const code = deadline.aborted ? "CODING_HOST_KEEP_DEADLINE" : errorCodeOf(error);
+				if (signal.aborted || passSignal.aborted) return [];
+				if (keepFailed && !keepTimedOut) return [];
+				const code = loadDeadline.aborted ? "CODING_HOST_KEEP_DEADLINE" : errorCodeOf(error);
 				return [{ machineId: machine.machineId, workerId: null, step: "load", state: "failed", code }];
 			},
 		);
-		return [...(await Promise.all(renewals)), ...(await load), ...((await secrets) ?? [])];
+		return [...keepOutcomes, ...loadOutcomes];
 	}
 	async #recordMachineLoad(
 		machine: Readonly<LxdCodingMachineBinding>,
 		bindingText: string,
-		bootId: string,
-		sessions: readonly { workerId: string; cpuMillis: number }[],
+		bootId: string | null,
+		sessions: readonly { workerId: string; cpuMillis: number | null }[],
+		cpuObserved: boolean,
 		signal: AbortSignal,
 	): Promise<void> {
 		const name = lxdCodingMachineName(machine.machineId);
+		const folder = this.#options.folder;
+		const resolvedUids = new Map<string, number>();
+		if (folder) {
+			const missingUidWorkers: string[] = [];
+			for (const { workerId } of sessions) {
+				const attachment = this.#attachments.get(workerId);
+				const knownUid =
+					attachment && (bootId === null || attachment.bootId === bootId) && attachment.folder
+						? attachment.folder.uid
+						: null;
+				if (knownUid !== null) resolvedUids.set(workerId, knownUid);
+				else missingUidWorkers.push(workerId);
+			}
+			if (missingUidWorkers.length > 0) {
+				const lookedUp = await Promise.all(
+					missingUidWorkers.map(async (workerId) => ({
+						workerId,
+						uid: await this.#adoptedFolderUid(machine, workerId, undefined, bootId, signal),
+					})),
+				);
+				for (const { workerId, uid } of lookedUp) if (uid !== null) resolvedUids.set(workerId, uid);
+			}
+		}
 		const groupsByWorker = new Map<string, string[]>();
 		const allGroups: string[] = [];
 		for (const { workerId } of sessions) {
-			const slice = `qorpera-coding-${workerId.replaceAll("-", "")}.slice`;
-			const paths = [`/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/${slice}/memory.stat`];
-			const attachment = this.#attachments.get(workerId);
-			if (attachment?.bootId === bootId && attachment.folder)
-				paths.push(`/sys/fs/cgroup/user.slice/user-${attachment.folder.uid}.slice/memory.stat`);
+			const worker32 = workerId.replaceAll("-", "");
+			const paths = [
+				`/sys/fs/cgroup/qorpera.slice/qorpera-coding.slice/qorpera-coding-${worker32}.slice/memory.stat`,
+			];
+			if (folder) {
+				paths.push(`/sys/fs/cgroup/system.slice/qorpera-folder-${worker32}.service/memory.stat`);
+				const uid = resolvedUids.get(workerId);
+				if (uid !== undefined) paths.push(`/sys/fs/cgroup/user.slice/user-${uid}.slice/memory.stat`);
+			}
 			groupsByWorker.set(workerId, paths);
 			allGroups.push(...paths);
 		}
@@ -5336,14 +5423,28 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			for (const path of groupsByWorker.get(workerId) ?? [])
 				memoryBytes += cgroupMemoryStatBytes(stats.get(path) ?? "");
 			memoryBytes = Math.min(CODING_LOAD_MAX_MEMORY_BYTES, memoryBytes);
-			totalCpuMillis += cpuMillis;
+			if (cpuMillis !== null) totalCpuMillis += cpuMillis;
 			totalMemoryBytes += memoryBytes;
 			return { workerId, cpuMillis, memoryBytes };
 		});
-		const full =
-			meminfoFull ||
-			totalCpuMillis * 100 >= machine.cpus * 1000 * CODING_LOAD_FULL_PERCENT ||
-			totalMemoryBytes * 100 >= machine.memoryBytes * CODING_LOAD_FULL_PERCENT;
+		const cpuHigh = cpuObserved && totalCpuMillis * 100 >= machine.cpus * 1000 * CODING_LOAD_CPU_FULL_PERCENT;
+		let cpuFull = false;
+		if (cpuObserved && bootId !== null) {
+			if (cpuHigh) {
+				const prior = this.#cpuHighSamples.get(machine.machineId);
+				const count = prior && prior.bootId === bootId ? prior.count + 1 : 1;
+				this.#cpuHighSamples.set(machine.machineId, { bootId, count });
+				cpuFull = count >= CODING_LOAD_CPU_HYSTERESIS_SAMPLES;
+			} else {
+				this.#cpuHighSamples.delete(machine.machineId);
+			}
+		}
+		const memoryFull = totalMemoryBytes * 100 >= machine.memoryBytes * CODING_LOAD_MEMORY_FULL_PERCENT;
+		const full: boolean | null = cpuObserved
+			? meminfoFull || memoryFull || cpuFull
+			: meminfoFull || memoryFull
+				? true
+				: null;
 		const recorded = record(
 			await this.#call(
 				"qorpera_record_coding_machine_load",
@@ -5439,28 +5540,86 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			throw new Error("CODING_HOST_ATTACHMENTS_INVALID");
 		const known = this.#attachments.get(workerId);
 		if (known && known.machine.machineId === machine.machineId && known.bootId === bootId) {
-			const next =
+			const folder =
+				known.folder ??
+				(this.#options.folder
+					? await this.#adoptedFolderUid(machine, workerId, item, bootId, signal).then((uid) =>
+							uid !== null ? { uid } : undefined,
+						)
+					: undefined);
+			const next: Attachment =
 				known.token === token && known.turn.sequence === turn.sequence
-					? { ...known, turn: { ...turn, open: turn.open && known.turn.open } }
-					: { ...known, token, turn };
+					? { ...known, ...(folder ? { folder } : {}), turn: { ...turn, open: turn.open && known.turn.open } }
+					: { ...known, ...(folder ? { folder } : {}), token, turn };
 			this.#attachments.set(workerId, next);
 			return next;
 		}
+		const folderUid = this.#options.folder
+			? await this.#adoptedFolderUid(machine, workerId, item, bootId, signal)
+			: null;
 		const adopted: Attachment = {
 			workerId,
 			machine,
 			storage: lxdCodingSessionStorage(machine, this.#placement, workerId),
 			bootId,
-			// On the folder model the guest holds no configuration of the session's: its view is under the attachment.
 			guestConfigSha256: this.#options.folder
 				? this.#folderSessionSha(workerId, machine.machineId, bootId)
 				: await this.#installedConfiguration(machine, workerId, bootId, signal),
 			token,
 			turn,
 			since: performance.now(),
+			...(folderUid !== null ? { folder: { uid: folderUid } } : {}),
 		};
 		this.#attachments.set(workerId, adopted);
 		return adopted;
+	}
+	async #adoptedFolderUid(
+		machine: Readonly<LxdCodingMachineBinding>,
+		workerId: string,
+		item: Record<string, unknown> | undefined,
+		bootId: string | null,
+		signal: AbortSignal,
+	): Promise<number | null> {
+		const fromSql = validGuestUid(item?.guestUid);
+		if (fromSql !== null) {
+			if (bootId !== null) this.#folderUidCache.set(workerId, { bootId, uid: fromSql });
+			return fromSql;
+		}
+		if (bootId !== null) {
+			const cached = this.#folderUidCache.get(workerId);
+			if (cached && cached.bootId === bootId) return cached.uid;
+		}
+		// WHY: Bound fallback guest file reads so slow lookups cannot exhaust loadDeadline before readCodingMachineMemory runs.
+		const lookupMs = Math.min(
+			CODING_LOAD_UID_LOOKUP_MS,
+			Math.max(10, Math.floor((this.#options.keepDeadlineMs ?? CODING_KEEP_MACHINE_MS) / 4)),
+		);
+		const lookupDeadline = AbortSignal.any([signal, AbortSignal.timeout(lookupMs)]);
+		try {
+			const file = await abortable(
+				this.#options.client.readInstanceFile(
+					machine.project,
+					lxdCodingMachineName(machine.machineId),
+					`${CODING_GUEST.state}/sessions/${workerId.replaceAll("-", "")}/user.json`,
+					1024,
+					lookupDeadline,
+				),
+				lookupDeadline,
+			);
+			const uid =
+				file.uid === 0 && file.gid === 0
+					? (() => {
+							const parsed = record(JSON.parse(file.content.toString("utf8")));
+							return parsed.schema === "qorpera.coding-guest-session-user/v1" ? validGuestUid(parsed.uid) : null;
+						})()
+					: null;
+			if (bootId !== null) this.#folderUidCache.set(workerId, { bootId, uid });
+			return uid;
+		} catch (error) {
+			if (signal.aborted) throw error;
+			if (bootId !== null && !lookupDeadline.aborted) this.#folderUidCache.set(workerId, { bootId, uid: null });
+			return null;
+		}
 	}
 	/** The digest of the session's active configuration in the guest, which must be the one this executor journaled
 	 * for the boot. */
@@ -6067,6 +6226,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#helperBoots.delete(entry.machineId);
 		this.#settledBoots.delete(entry.machineId);
 		this.#folderStartOperations.delete(entry.machineId);
+		this.#cpuHighSamples.delete(entry.machineId);
 		// Asleep, no session is attached: each ends with what it stopped. All are recorded; the first failure is reported.
 		for (const { workerId, attachmentToken } of member ? entry.attached : [])
 			try {
@@ -6143,6 +6303,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#settledBoots.delete(machineId);
 		this.#folderStarts.delete(machineId);
 		this.#folderStartOperations.delete(machineId);
+		this.#cpuHighSamples.delete(machineId);
 	}
 	async #recordError(
 		machineId: string,

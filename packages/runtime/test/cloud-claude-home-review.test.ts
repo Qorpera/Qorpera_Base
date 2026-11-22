@@ -313,3 +313,62 @@ it("never sends a hook the host cannot read: a change too big to review whole go
 	expect(cloudClaudeFileCall("")).toBeUndefined();
 	expect(CLAUDE_REPEAT_ELSEWHERE).not.toMatch(/without another review/);
 });
+
+it("reassembles SFTP packets split across 1-byte header boundaries without dropping or duplicating packets", async () => {
+	const { gate, toHome, settle } = filesGate(() => undefined);
+	const pkt = read(42, "handle-split");
+	for (let i = 0; i < pkt.length; i += 1) gate.fromMount(pkt.subarray(i, i + 1));
+	await settle();
+	expect(toHome).toEqual([pkt]);
+});
+
+it("applies mount backpressure in waitForSpace until queued packets drain or the signal aborts", async () => {
+	let releaseReview!: () => void;
+	const stop = new AbortController();
+	const toHome: Buffer[] = [];
+	const gate = new CloudClaudeFilesGate({
+		machine: MACHINE,
+		review: {
+			check: vi.fn(async () => {
+				await new Promise<void>((resolve) => {
+					releaseReview = resolve;
+				});
+				return { run: true as const };
+			}),
+		},
+		signal: stop.signal,
+		toHome: (bytes) => toHome.push(bytes),
+		toMount: () => undefined,
+	});
+	gate.fromMount(remove(1, "/company/blocked.md"));
+	for (let i = 0; i < 520; i += 1) gate.fromMount(read(2 + i, "h"));
+	let resumed = false;
+	const waiting = gate.waitForSpace().then(() => {
+		resumed = true;
+	});
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	expect(resumed).toBe(false);
+	releaseReview();
+	await waiting;
+	expect(resumed).toBe(true);
+
+	const abortStop = new AbortController();
+	const abortGate = new CloudClaudeFilesGate({
+		machine: MACHINE,
+		review: { check: vi.fn(() => new Promise<{ run: true }>(() => undefined)) },
+		signal: abortStop.signal,
+		toHome: () => undefined,
+		toMount: () => undefined,
+	});
+	abortGate.fromMount(remove(1, "/company/hung.md"));
+	for (let i = 0; i < 520; i += 1) abortGate.fromMount(read(2 + i, "h"));
+	let abortedWake = false;
+	const abortWaiting = abortGate.waitForSpace().then(() => {
+		abortedWake = true;
+	});
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	expect(abortedWake).toBe(false);
+	abortStop.abort();
+	await abortWaiting;
+	expect(abortedWake).toBe(true);
+});

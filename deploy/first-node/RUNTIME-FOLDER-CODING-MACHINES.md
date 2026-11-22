@@ -751,27 +751,47 @@ Docker and compose on a nested VM first; Q11 asks for the fallback if the proof 
 ## More machines
 
 When a machine is full, a new session opens the member's next machine (the lowest free `number`) for the same coding
-agent, repository and setup digest on the same node, so it starts from the same snapshot (5k; migration
-`20260930828000`, SQL tests `1317` and `1318`, Q9 settled):
+agent, repository and setup digest (5k; migrations `20260930828000` and `20260930837000`, SQL tests `1317`, `1318`, and
+`1323`, Q9 settled):
 
-- A machine's sessions are every session not archived that has it as its machine or that a plan placed on it before
-  its run authority (`qorpera_coding_session_loads`), attached or not. Each counts at the larger of the company's
-  session size (the executor's `session_cpu_millis` and `session_memory_bytes`, configured via
-  `qorpera_configure_coding_session_size` and inherited on auto-enrollment) and the processor and memory last measured
-  for it. A machine is full for a new session when they and the new one (at most the machine's own size, so an empty
-  machine always takes one) need more processor or memory than the machine has. Archiving a session frees its room.
+- A machine's active sessions are the non-archived sessions currently attached to it (`attached_at is not null` and
+  `attachment_until > clock_timestamp()`) or running an active leased turn (`phase in ('preparing', 'running',
+  'publishing')` and `lease_until > clock_timestamp()`) placed on it (`coalesce(load.machine_id,
+  session.vm_allocation_id)`). Detached idle sessions do not consume active slots. Each active session counts at the
+  larger of the executor's session floor (`session_cpu_millis` default `1000`, `session_memory_bytes` default
+  `2147483648` / 2 GiB, configured via `qorpera_configure_coding_session_size` and inherited on auto-enrollment) and the
+  processor and memory last measured for it. Executors also cap active concurrency per VM via `max_attached_sessions`
+  (default `6`, range `1..64`, inherited on auto-enrollment). A machine is structurally full when active sessions reach
+  `max_attached_sessions` or when active sessions plus the arriving session (at most the machine's own size, so an empty
+  machine always takes one) exceed the machine's CPU or memory. Archiving or detaching a session frees its active room.
+- Cross-node overflow: only a session's own NAS storage volume (`qorpera_coding_storage_volumes.worker_id`) pins that
+  session to a node. During candidate selection, full or retiring machines on another node are skipped rather than
+  returning `NODE_NOT_PREFERRED`; `NODE_NOT_PREFERRED` is returned only when a non-full reusable machine exists on
+  another node (and the session is not volume-pinned locally). When all existing machines are full or retiring, the
+  local node allocates the lowest free `number`.
 - On each keeper pass, the executor measures per-session CPU (from guest usage deltas) and non-reclaimable cgroup
-  memory (`anon + shmem + kernel` from `memory.stat`, excluding reclaimable file page cache) plus guest `/proc/meminfo`
-  pressure via a batched unprivileged websocket exec (`LxdUnixClient.readCodingMachineMemory`), and reports them via
-  `qorpera_record_coding_machine_load` (update-only on place rows so it never locks `qorpera_coding_sessions` after
-  `qorpera_coding_machines`, preserving lock order with `qorpera_keep_coding_attachments`).
+  working-set memory (`anon + shmem + kernel` from `memory.stat`, excluding reclaimable file page cache) across
+  `qorpera-coding-<w>.slice`, `system.slice/qorpera-folder-<w>.service` (FUSE), and `user-<uid>.slice` (rootless Docker;
+  `uid` recovered from `qorpera_keep_coding_attachments`'s `guestUid` or `user.json` on adoption) plus guest
+  `/proc/meminfo` pressure via a batched unprivileged websocket exec (`LxdUnixClient.readCodingMachineMemory`), and
+  reports them via `qorpera_record_coding_machine_load` under a deadline decoupled from observation. Memory pressure
+  (`>= 80%` working-set or `MemAvailable < 15%`) latches `full_until` immediately; CPU pressure (`>= 85%`) requires 3
+  consecutive high samples on the same boot before latching `full_until`. When observation fails or times out, load
+  reporting still sends fresh memory readings with `cpuMillis: null` (preserving prior measured CPU) and `full: true` on
+  memory pressure or `full: null` otherwise (preserving any existing `full_until` latch).
 - The guest/executor fullness hint (`full_until`, good for two minutes after a report with `full: true`, cleared on a
-  report with `full: false`) only turns new sessions away. It never moves or refuses a session that has the machine.
-- A session has one machine for life and never moves, attached or not. Its plan takes its own machine without asking
-  whether it is full, so a reattach always fits.
-- While a session's machine retires, the session is refused (`MACHINE_RETIRING`). A session whose machine is gone for
-  good (removed) is placed like a new session, at its last measured load. A new disk (5g) keeps the machine's id, so it
-  moves no session. New sessions pass a retiring machine by and open the lowest free number instead of waiting for it.
+  report with `full: false`) only turns arriving sessions away during candidate selection. It never moves or refuses an
+  already-homed session, attached or detached.
+- Actively attached sessions stay pinned to their machine (regardless of fullness) and receive `MACHINE_RETIRING` while
+  their machine retires. A detached session (`attached_at is null` or expired `attachment_until`) stays on its homed
+  machine while that machine is healthy and has structural room (including through transient `full_until` spikes), but
+  when its homed machine is retiring/removing or structurally full it re-homes onto a non-full active machine (taking in
+  its read set under `FOR UPDATE`) or spawns an overflow machine (bypassing `PREVIOUS_MACHINE_AWAKE`), recording a
+  `MACHINE_NEW_DISK` executor event with `rehomedFrom`/`rehomedTo` so the next turn's `qorpera_read_coding_turn_context`
+  reports `machine.newDisk: true` (informing the agent that `/company` is kept while home, caches, Docker state, and
+  local git config start fresh). A session whose machine is removed is placed like a new session at its last measured
+  load. A new disk (5g) keeps the machine's id, so it moves no session. New sessions pass a retiring machine by and open
+  the lowest free number instead of waiting for it.
 
 ## The code host
 
@@ -825,7 +845,7 @@ Migration slots and SQL test numbers are reserved in the registry when a slice i
 | 5h | Setup file and snapshots: the three formats and their mapping, the strict schema, builder VMs, the digest with each named Dockerfile's bytes, snapshot keys and refresh, one build at a time, a failed build keeps the old snapshot, `install` at attach, image and Dockerfile setups (BuildKit, the image built again from the worktree at attach), compose devcontainers settled | Parser tests for each format and each ignored or refused key; a refresh on a setup change and on a default-branch change; a failed build keeps the old snapshot and reports its log; a second build for the same repository and member waits; a change to a named Dockerfile alone gives a new digest, so the next new session gets a new machine; a context file changed on a session's branch is in the image built at attach |
 | 5i | Previews and the browser: the preview proxy, single-use capabilities and host cookies, member-only access, host-initiated streams; the `coding_browser` tool with a boundary before each screenshot | Proxy tests: a capability works once, a cookie works only on its host, another member is refused; a screenshot waits for a boundary |
 | 5j | Secrets and the vault relay: environment secrets (member and company, with grants), host-side injection, masking in output, logs, receipts, terminals, saves and pushes, the relay for MCP sign-ins and git fetch | Masking across chunk boundaries and in base64 and URL forms; a save carrying a value refused; a push carrying a value refused; a company secret without a grant not injected; the relay forwards a sign-in only to its own origin and refuses a push; the SQL part may land before 5g |
-| 5k | A second machine: `number`, the full rule, opening the next machine from the same snapshot (migration `20260930828000`). SQL session size, update-only load record (`qorpera_record_coding_machine_load`), and executor keeper load reporting (`coding-executor-host.ts`) | A full machine opens the lowest free number for the same agent, repository and digest; a session never moves while its machine is live; a reattach always fits; the fullness hint only turns new sessions away; a removed machine's session is placed anew; concurrent plans, keep attachments, and load reports serialize with zero lock-order inversions (`1317`, `1318`, `coding-executor-host.test.ts`) |
+| 5k | A second machine: `number`, the full rule, opening the next machine (migrations `20260930828000` and `20260930837000`). Active-only session accounting, `max_attached_sessions` (default 6) and non-zero sizing floors (`1000` mCPU, `2 GiB`), cross-node overflow, detached re-homing off retiring or structurally full machines with `MACHINE_NEW_DISK` notice, update-only load record (`qorpera_record_coding_machine_load`, preserving CPU on null), and decoupled executor load reporting including FUSE and adopted user slices with 3-sample CPU hysteresis (`coding-executor-host.ts`) | Active-only capacity spreads concurrent arrivals across VMs; full/retiring remote VMs allow cross-node overflow while non-full remote VMs return `NODE_NOT_PREFERRED`; detached sessions stay on transient `full_until` hints and re-home with `MACHINE_NEW_DISK` notice off retiring or structurally full machines; attached sessions stay pinned; concurrent plans, keep attachments, and load reports serialize with zero lock-order inversions (`1317`, `1318`, `1323`, `coding-executor-host.test.ts`, `lxd-client.test.ts`) |
 | 5l | Retirements after step 6: the private repository folder, `cloud-coding-git-guest.ts`, `coding-git-transfer.ts`, the 64 MiB cap, the storage and command helpers, the NAS data and custody plugs, COMMAND-GUEST.md | The changed tests pass with the old paths gone; `git grep` finds no caller |
 | 5m | Live proof (below) | — |
 

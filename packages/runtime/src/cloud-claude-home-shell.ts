@@ -70,6 +70,11 @@ const VALUE_CHARS = 4096;
 const MAX_CONNECTIONS = 64;
 /** How long `initialize` may take on a fresh channel. */
 const INITIALIZE_MS = 20_000;
+const FIRST_LINE_TIMEOUT_MS = 10_000;
+const PROCESS_START_TIMEOUT_MS = 30_000;
+const PROCESS_TERMINATE_TIMEOUT_MS = 5_000;
+const QUIET_MAX_OUTPUT_BYTES = 1024 * 1024;
+const MAX_SHELL_EVENT_BYTES = 16 * 1024 * 1024;
 const PICTURE_PLACE_MS = 30_000;
 const PICTURE_WRITE_MS = 120_000;
 const PICTURE_PLACE = [
@@ -406,8 +411,28 @@ export class CloudClaudeHomeShell {
 		}
 		this.#sockets.add(socket);
 		socket.on("error", () => undefined);
-		const send = (record: Record<string, unknown>): void => {
-			if (socket.writable) socket.write(`${JSON.stringify(record)}\n`);
+		const send = (record: Record<string, unknown>): boolean =>
+			socket.writable ? socket.write(`${JSON.stringify(record)}\n`) : true;
+		const waitDrain = (signal: AbortSignal, cancel: AbortSignal): Promise<boolean> => {
+			if (socket.destroyed || socket.writableEnded || signal.aborted || cancel.aborted)
+				return Promise.resolve(false);
+			return new Promise<boolean>((resolve) => {
+				const done = (ok: boolean): void => {
+					socket.removeListener("drain", onDrain);
+					socket.removeListener("close", onEnd);
+					socket.removeListener("error", onEnd);
+					signal.removeEventListener("abort", onEnd);
+					cancel.removeEventListener("abort", onEnd);
+					resolve(ok);
+				};
+				const onDrain = (): void => done(true);
+				const onEnd = (): void => done(false);
+				socket.once("drain", onDrain);
+				socket.once("close", onEnd);
+				socket.once("error", onEnd);
+				signal.addEventListener("abort", onEnd, { once: true });
+				cancel.addEventListener("abort", onEnd, { once: true });
+			});
 		};
 		const fail = (words: string, code: number): void => {
 			send({ e: Buffer.from(`${words}\n`).toString("base64") });
@@ -495,22 +520,53 @@ export class CloudClaudeHomeShell {
 			// Grep and Glob through the box's `rg` bridge (cloud-claude-home-shell-client.ts).
 			if (request.cmd.startsWith("exec rg ")) this.counts.searches += 1;
 			processId = `claude-${this.counts.commands}-${randomBytes(4).toString("hex")}`;
-			const events: Record<string, unknown>[] = [];
+			let events: Record<string, unknown>[] = [];
+			let eventHead = 0;
+			let eventBytes = 0;
+			let overflowed = false;
+			const overflowController = new AbortController();
 			let wake: (() => void) | undefined;
 			channel.processes.set(processId, (message) => {
+				if (overflowed) return;
+				if (message.method === "process/output") {
+					const chunk = (message.params as Record<string, unknown> | undefined)?.chunk;
+					const size = typeof chunk === "string" ? chunk.length : 0;
+					if (eventBytes + size > MAX_SHELL_EVENT_BYTES) {
+						overflowed = true;
+						events.length = 0;
+						eventHead = 0;
+						eventBytes = 0;
+						overflowController.abort();
+						wake?.();
+						return;
+					}
+					eventBytes += size;
+				}
 				events.push(message);
 				wake?.();
 			});
-			const started = await call(channel, "process/start", {
-				processId,
-				argv: ["/bin/bash", "-c", request.cmd],
-				cwd: `file://${encodeURI(request.cwd)}`,
-				env: { ...CLOUD_CLAUDE_SHELL_ENVIRONMENT, ...request.env },
-				tty: false,
-				pipeStdin: false,
-				arg0: null,
-			});
+			const started = await call(
+				channel,
+				"process/start",
+				{
+					processId,
+					argv: ["/bin/bash", "-c", request.cmd],
+					cwd: `file://${encodeURI(request.cwd)}`,
+					env: { ...CLOUD_CLAUDE_SHELL_ENVIRONMENT, ...request.env },
+					tty: false,
+					pipeStdin: false,
+					arg0: null,
+				},
+				{ signal: asked, timeoutMs: PROCESS_START_TIMEOUT_MS },
+			);
 			if ("error" in started) {
+				if (asked.aborted || (started.error as { message?: unknown })?.message === "timeout") {
+					if (!channel.closed) {
+						this.counts.terminated += 1;
+						await call(channel, "process/terminate", { processId }, { timeoutMs: PROCESS_TERMINATE_TIMEOUT_MS });
+					}
+					if (asked.aborted) return;
+				}
 				fail(
 					channel.closed ? CLOUD_CLAUDE_SHELL_UNAVAILABLE : "HOME_START_FAILED: the command could not start.",
 					channel.closed ? 255 : 126,
@@ -525,12 +581,32 @@ export class CloudClaudeHomeShell {
 			asked.addEventListener("abort", onDrop, { once: true });
 			let exitCode: number | undefined;
 			for (;;) {
-				const message = events.shift();
+				if (overflowed) {
+					if (!channel.closed) {
+						this.counts.terminated += 1;
+						await call(channel, "process/terminate", { processId }, { timeoutMs: PROCESS_TERMINATE_TIMEOUT_MS });
+					}
+					fail("HOME_OUTPUT_LIMIT: the command produced more output than the channel can buffer.", 126);
+					return;
+				}
+				const message = eventHead < events.length ? events[eventHead++] : undefined;
+				if (eventHead === events.length) {
+					events.length = 0;
+					eventHead = 0;
+				} else if (eventHead >= 64 && eventHead * 2 >= events.length) {
+					events = events.slice(eventHead);
+					eventHead = 0;
+				}
 				if (!message) {
 					if (dropped) {
 						if (!channel.closed) {
 							this.counts.terminated += 1;
-							await call(channel, "process/terminate", { processId });
+							await call(
+								channel,
+								"process/terminate",
+								{ processId },
+								{ timeoutMs: PROCESS_TERMINATE_TIMEOUT_MS },
+							);
 						}
 						return;
 					}
@@ -542,7 +618,14 @@ export class CloudClaudeHomeShell {
 				}
 				const params = (message.params ?? {}) as Record<string, unknown>;
 				if (message.method === "process/output") {
-					send({ [params.stream === "stderr" ? "e" : "o"]: typeof params.chunk === "string" ? params.chunk : "" });
+					const chunk = typeof params.chunk === "string" ? params.chunk : "";
+					eventBytes = Math.max(0, eventBytes - chunk.length);
+					const ok = send({
+						[params.stream === "stderr" ? "e" : "o"]: chunk,
+					});
+					if (!ok && !(await waitDrain(asked, overflowController.signal))) {
+						if (!overflowed) dropped = true;
+					}
 				} else if (message.method === "process/exited") {
 					if (typeof params.exitCode === "number") exitCode = params.exitCode;
 				} else if (message.method === "process/closed") {
@@ -568,12 +651,34 @@ export class CloudClaudeHomeShell {
 	}
 }
 
-function call(channel: Channel, method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+function call(
+	channel: Channel,
+	method: string,
+	params: Record<string, unknown>,
+	options?: { signal?: AbortSignal; timeoutMs?: number },
+): Promise<Record<string, unknown>> {
 	if (channel.closed) return Promise.resolve({ error: { message: "closed" } });
+	if (options?.signal?.aborted) return Promise.resolve({ error: { message: "aborted" } });
 	channel.next += 1;
 	const id = channel.next;
 	return new Promise((resolve) => {
-		channel.pending.set(id, resolve);
+		let settled = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const finish = (value: Record<string, unknown>): void => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			options?.signal?.removeEventListener("abort", onAbort);
+			channel.pending.delete(id);
+			resolve(value);
+		};
+		const onAbort = (): void => finish({ error: { message: "aborted" } });
+		if (options?.signal) options.signal.addEventListener("abort", onAbort, { once: true });
+		if (options?.timeoutMs !== undefined) {
+			timer = setTimeout(() => finish({ error: { message: "timeout" } }), options.timeoutMs);
+			timer.unref();
+		}
+		channel.pending.set(id, finish);
 		channel.stream.write(JSON.stringify({ id, method, params }));
 	});
 }
@@ -604,6 +709,8 @@ async function quiet(
 	const processId = `claude-picture-${randomBytes(6).toString("hex")}`;
 	let exitCode: number | undefined;
 	const out: Buffer[] = [];
+	let outBytes = 0;
+	let overflow = false;
 	let lost = false;
 	let closed: () => void = () => undefined;
 	const done = new Promise<void>((resolve) => {
@@ -611,9 +718,18 @@ async function quiet(
 	});
 	channel.processes.set(processId, (message) => {
 		const params = (message.params ?? {}) as Record<string, unknown>;
-		if (message.method === "process/output" && params.stream !== "stderr" && typeof params.chunk === "string")
-			out.push(Buffer.from(params.chunk, "base64"));
-		else if (message.method === "process/exited" && typeof params.exitCode === "number") exitCode = params.exitCode;
+		if (message.method === "process/output" && params.stream !== "stderr" && typeof params.chunk === "string") {
+			if (overflow) return;
+			const decoded = Buffer.from(params.chunk, "base64");
+			outBytes += decoded.length;
+			if (outBytes > QUIET_MAX_OUTPUT_BYTES) {
+				overflow = true;
+				out.length = 0;
+				closed();
+				return;
+			}
+			out.push(decoded);
+		} else if (message.method === "process/exited" && typeof params.exitCode === "number") exitCode = params.exitCode;
 		else if (message.method === "process/closed") {
 			lost = message.lost === true;
 			closed();
@@ -622,8 +738,10 @@ async function quiet(
 	const deadlineAt = performance.now() + PICTURE_PLACE_MS;
 	const remainingMs = () => Math.max(0, Math.ceil(deadlineAt - performance.now()));
 	try {
-		const started = await raceWithDeadline(
-			call(channel, "process/start", {
+		const started = await call(
+			channel,
+			"process/start",
+			{
 				processId,
 				argv,
 				cwd: "file:///",
@@ -631,22 +749,24 @@ async function quiet(
 				tty: false,
 				pipeStdin: false,
 				arg0: null,
-			}),
-			signal,
-			remainingMs(),
+			},
+			{ signal, timeoutMs: remainingMs() },
 		);
-		if (started === undefined) {
-			if (!channel.closed) void call(channel, "process/terminate", { processId });
+		if ("error" in started) {
+			if ((started.error as { message?: unknown })?.message === "timeout" || signal.aborted) {
+				if (!channel.closed)
+					void call(channel, "process/terminate", { processId }, { timeoutMs: PROCESS_TERMINATE_TIMEOUT_MS });
+			}
 			return undefined;
 		}
-		if ("error" in started) return undefined;
 		const finished = await raceWithDeadline(
 			done.then(() => true),
 			signal,
 			remainingMs(),
 		);
-		if (finished !== true) {
-			if (!channel.closed) void call(channel, "process/terminate", { processId });
+		if (finished !== true || overflow) {
+			if (!channel.closed)
+				void call(channel, "process/terminate", { processId }, { timeoutMs: PROCESS_TERMINATE_TIMEOUT_MS });
 			return undefined;
 		}
 		return lost ? undefined : { code: exitCode, out: Buffer.concat(out).toString("utf8") };
@@ -662,9 +782,11 @@ function firstLine(socket: Socket, signal: AbortSignal): Promise<string | undefi
 		const chunks: Buffer[] = [];
 		let bytes = 0;
 		let settled = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
 		const done = (value: string | undefined): void => {
 			if (settled) return;
 			settled = true;
+			clearTimeout(timer);
 			socket.removeListener("data", data);
 			socket.removeListener("end", end);
 			socket.removeListener("close", end);
@@ -692,6 +814,8 @@ function firstLine(socket: Socket, signal: AbortSignal): Promise<string | undefi
 			chunks.push(chunk);
 		};
 		const end = (): void => done(undefined);
+		timer = setTimeout(end, FIRST_LINE_TIMEOUT_MS);
+		timer.unref();
 		socket.on("data", data);
 		socket.once("end", end);
 		socket.once("close", end);

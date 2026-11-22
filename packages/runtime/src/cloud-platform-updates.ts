@@ -165,7 +165,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-19",
 		title: "Claude Code workers side by side",
-		text: "A member's Claude Code workers now run up to four at once instead of one after another; a fifth waits until one of them ends, and still never moves to Codex while it waits. Each works on the Claude login that member has in use when it starts, and the runs on one login share its plan's limits, so split work into parts that can go on side by side, and keep to fewer when the member's plan is near its limit.",
+		text: "A member's Claude Code workers now run in parallel up to that member's configured parallel limit instead of one after another; extras wait in the queue until one ends, and still never move to Codex while waiting. Each works on the Claude login that member has in use when it starts, and the runs on one login share its plan's limits, so split work into parts that can go on side by side, and keep to fewer when the member's plan is near its limit.",
 	},
 	{
 		id: "app-pictures-webp",
@@ -271,6 +271,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		date: "2026-11-22",
 		title: "Native hosting for websites, webapps and custom domains",
 		text: "Repositories kept in Qorpera can now deploy both static websites and full-stack dynamic webapps natively on Qorpera servers, without external hosting providers. Static sites support clean URLs, single-page app fallbacks, redirects and custom headers; dynamic or hybrid apps declare kind server or hybrid with their port, health path and optional Dockerfile in the repository checks. Every change that passes waits in What's new to preview and put live on a Qorpera domain first, and founders or admins can then make a site public and attach their own custom domain with automatic HTTPS in Sites.",
+	},
+	{
+		id: "claude-code-parallel-scale",
+		kind: "behaviour",
+		date: "2026-11-22",
+		title: "Higher parallel worker limits per member",
+		text: "Operators can now raise the global or per-member Claude Code parallel worker limit up to 64 (the default stays unchanged until raised), and extra workers wait in the queue until a slot frees. Split work into as many independent parallel workers or coding sessions as the task benefits from rather than assuming a fixed cap of four; coding sessions automatically spread across additional machines when one is busy.",
 	},
 	{
 		id: "checks-v2-paths-caches-artifacts",

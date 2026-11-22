@@ -72,6 +72,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const HASH = /^[0-9a-f]{64}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const REQUEST_LIMIT = 128 * 1024;
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
 const RESULT_LIMIT = 128 * 1024;
 const ERROR = "Coding command gateway unavailable";
 type CommandInput = { commandId: string; inputSha256: string; command: string; timeoutMs: number | null };
@@ -246,9 +247,7 @@ export function createHttpCloudCodingCommandGateway(options: {
 						throw new Error(ERROR);
 					}
 					const bytes = await readBoundedCloudResponse(response, RESULT_LIMIT, requestSignal);
-					const receipt = parseCloudCodingCommandReceipt(
-						JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes)),
-					);
+					const receipt = parseCloudCodingCommandReceipt(JSON.parse(UTF8.decode(bytes)));
 					if (
 						receipt.workerId !== admitted.scope.workerId ||
 						receipt.commandId !== admitted.input.commandId ||
@@ -377,7 +376,7 @@ async function readRequest(request: IncomingMessage, signal: AbortSignal): Promi
 			if (count > REQUEST_LIMIT) throw new Error(ERROR);
 			chunks.push(bytes);
 		}
-		return JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks, count)));
+		return JSON.parse(UTF8.decode(Buffer.concat(chunks, count)));
 	} finally {
 		signal.removeEventListener("abort", abort);
 	}
@@ -455,7 +454,11 @@ export class HttpCloudCodingCommandService {
 		const controller = new AbortController();
 		this.#controllers.add(controller);
 		const onSocketClose = (): void => controller.abort();
+		const onAbort = (): void => {
+			socket.destroy();
+		};
 		socket.once("close", onSocketClose);
+		controller.signal.addEventListener("abort", onAbort, { once: true });
 		const bearer = Buffer.from(String(request.headers.authorization ?? ""));
 		const header = request.headers["x-qorpera-identity"];
 		// The run's ingress proves the run's holder; a peer listener takes none, as for a machine command: only
@@ -580,6 +583,7 @@ export class HttpCloudCodingCommandService {
 		} finally {
 			stopKeepAlive();
 			socket.removeListener("close", onSocketClose);
+			controller.signal.removeEventListener("abort", onAbort);
 			this.#controllers.delete(controller);
 			controller.abort();
 			await side?.close().catch(() => undefined);
