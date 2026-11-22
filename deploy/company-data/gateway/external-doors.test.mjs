@@ -11,13 +11,16 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { POSTGRES_IMAGE, POSTGRES_LOCALE } from "../../../scripts/test-hosted-db.mjs";
 import {
+	applyClusterBroadcast,
 	companyDatabase,
+	createClusterWorkerCallbacks,
 	createDirectoryPublicReader,
 	createHttpPublicReader,
 	createTriggerWakeDispatcher,
 	DataChangeNotifier,
 	Gateway,
 	parsePublicConfig,
+	relayClusterBroadcast,
 	serve,
 	serveRuns,
 	startWatcher,
@@ -558,6 +561,60 @@ describe("parsePublicConfig and DataChangeNotifier", () => {
 		} finally {
 			await reserveGw.close();
 		}
+	});
+
+	it("relays schemaChange, makeRoom, testSchemaDrop, and drop IPC broadcasts to primary and connected peers only", () => {
+		const primaryCalls = [];
+		const peerCalls = [];
+		const makeFakeGw = (sink) => ({
+			notifySchemaChange: (database, schema) => sink.push(["schemaChange", database, schema]),
+			reclaimIdlePools: (database) => sink.push(["makeRoom", database]),
+			evictTestSchema: (database, schema) => sink.push(["testSchemaDrop", database, schema]),
+			evictCompany: (database) => sink.push(["dropCompany", database]),
+			evictDatabase: (database, schema, n) => sink.push(["dropDatabase", database, schema, n]),
+		});
+		const primaryGw = makeFakeGw(primaryCalls);
+		const peerGw = makeFakeGw(peerCalls);
+		const sentToPeers = [];
+		const workers = {
+			1: { id: 1, isConnected: () => true },
+			2: { id: 2, isConnected: () => true },
+			3: { id: 3, isConnected: () => false },
+			4: { id: 4, isConnected: () => true },
+		};
+		const fromWorker = [];
+		const callbacks = createClusterWorkerCallbacks((msg) => fromWorker.push(msg));
+		callbacks.onSchemaChange({ database: "c_1", schema: "shop" });
+		callbacks.onMakeRoom({ database: "c_1" });
+		callbacks.onTestSchemaDrop({ database: "c_1", schema: "qorpera_test_0123456789abcdef" });
+		callbacks.onDrop({ kind: "database", database: "c_1", schema: "shop", n: 2 });
+		callbacks.onDrop({ kind: "company", database: "c_1" });
+
+		for (const msg of fromWorker) {
+			assert.equal(
+				relayClusterBroadcast(primaryGw, msg, 1, workers, (peer, payload) => {
+					sentToPeers.push({ id: peer.id, payload });
+					if (peer.id === 2) assert.equal(applyClusterBroadcast(peerGw, payload), true);
+				}),
+				true,
+			);
+		}
+		assert.equal(relayClusterBroadcast(primaryGw, { type: "agentRead", pid: 1, delta: 1 }, 1, workers, () => {}), false);
+		assert.equal(applyClusterBroadcast(peerGw, { type: "unknown" }), false);
+
+		const expected = [
+			["schemaChange", "c_1", "shop"],
+			["makeRoom", "c_1"],
+			["testSchemaDrop", "c_1", "qorpera_test_0123456789abcdef"],
+			["dropDatabase", "c_1", "shop", 2],
+			["dropCompany", "c_1"],
+		];
+		assert.deepEqual(primaryCalls, expected);
+		assert.deepEqual(peerCalls, expected);
+		assert.deepEqual(
+			sentToPeers.map((entry) => entry.id),
+			[2, 4, 2, 4, 2, 4, 2, 4, 2, 4],
+		);
 	});
 });
 

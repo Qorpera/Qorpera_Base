@@ -6818,6 +6818,47 @@ export function serve(gateway, { host = "127.0.0.1", port = 0, bodyTimeoutMs = B
 	return listenServer(server, port, host);
 }
 
+export function createClusterWorkerCallbacks(send) {
+	return {
+		onAgentRead: ({ pid, delta }) => send({ type: "agentRead", pid, delta }),
+		onDrop: (event) => send({ type: "drop", ...event }),
+		onTestSchemaDrop: (event) => send({ type: "testSchemaDrop", ...event }),
+		onSchemaChange: (event) => send({ type: "schemaChange", ...event }),
+		onMakeRoom: (event) => send({ type: "makeRoom", ...event }),
+		onUnsettledTx: (database, txid) => send({ type: "unsettledTx", database, txid }),
+	};
+}
+
+export function applyClusterBroadcast(gateway, message) {
+	if (message?.type === "testSchemaDrop" && typeof message.database === "string" && typeof message.schema === "string") {
+		void gateway.evictTestSchema(message.database, message.schema);
+		return true;
+	}
+	if (message?.type === "schemaChange" && typeof message.database === "string" && typeof message.schema === "string") {
+		gateway.notifySchemaChange(message.database, message.schema);
+		return true;
+	}
+	if (message?.type === "makeRoom" && typeof message.database === "string") {
+		void gateway.reclaimIdlePools(message.database);
+		return true;
+	}
+	if (message?.type === "drop") {
+		if (message.kind === "company" && typeof message.database === "string") void gateway.evictCompany(message.database);
+		else if (message.kind === "database" && typeof message.database === "string" && typeof message.schema === "string")
+			void gateway.evictDatabase(message.database, message.schema, message.n ?? null);
+		return true;
+	}
+	return false;
+}
+
+export function relayClusterBroadcast(gateway, message, senderId, workers, send) {
+	if (!applyClusterBroadcast(gateway, message)) return false;
+	for (const peer of Object.values(workers ?? {})) {
+		if (peer && peer.id !== senderId && peer.isConnected()) send(peer, message);
+	}
+	return true;
+}
+
 export function serveRuns(gateway, { host = "127.0.0.1", port = 0, cert = null, key = null, bodyTimeoutMs = BODY_READ_TIMEOUT_MS } = {}) {
 	if ((cert === null) !== (key === null)) throw new Error("The run door needs both a certificate and its key, or neither");
 	if (cert === null && !["127.0.0.1", "::1", "localhost"].includes(host)) throw new Error("The run door off loopback needs TLS");
