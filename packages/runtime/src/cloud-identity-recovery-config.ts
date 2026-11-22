@@ -28,10 +28,18 @@ export async function readRecoveryCredential(directory: string, name: string): P
 		)
 			throw new Error("Recovery credential ownership, permissions or size is unsafe");
 		const bytes = Buffer.alloc(16_385);
-		const read = await handle.read(bytes, 0, bytes.byteLength, 0);
-		if (read.bytesRead !== info.size || read.bytesRead > 16_384)
-			throw new Error("Recovery credential changed during read");
-		return new TextDecoder("utf8", { fatal: true }).decode(bytes.subarray(0, read.bytesRead)).trim();
+		try {
+			let length = 0;
+			while (length < bytes.byteLength) {
+				const read = await handle.read(bytes, length, bytes.byteLength - length, length);
+				if (!read.bytesRead) break;
+				length += read.bytesRead;
+			}
+			if (length !== info.size || length > 16_384) throw new Error("Recovery credential changed during read");
+			return new TextDecoder("utf8", { fatal: true }).decode(bytes.subarray(0, length)).trim();
+		} finally {
+			bytes.fill(0);
+		}
 	} finally {
 		await handle.close();
 	}

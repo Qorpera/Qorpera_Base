@@ -17,50 +17,88 @@ pub trait Chunks {
 	fn get(&self, handle: u32, index: u32, offset: u64, length: u64) -> Result<Vec<u8>, Fail>;
 }
 
-/// The chunk being written.
-struct Current {
+const MAX_CACHED_CHUNKS: usize = 4;
+
+struct CachedChunk {
 	index: u64,
 	data: Vec<u8>,
-	/// Changed since it was sent (or never sent).
 	dirty: bool,
 }
 
 pub struct Writer {
 	pub handle: u32,
 	size: u64,
-	/// The lengths of the chunks the node holds for the file, from the first. A chunk past the size may linger there;
-	/// the close leaves it out.
 	held: Vec<u64>,
-	current: Option<Current>,
+	cache: Vec<CachedChunk>,
 }
 
 fn too_large() -> Fail {
 	Fail::Remote(ErrorReply { code: crate::proto::code::TOO_LARGE.into(), message: "The file would pass 256 MiB".into() })
 }
 
-/// The length of chunk `index` of a file of `size` bytes.
 fn chunk_len(size: u64, index: u64) -> u64 {
 	size.saturating_sub(index * CHUNK).min(CHUNK)
 }
 
 impl Writer {
-	/// A file the node opened as `handle` at `size`: it holds the chunks of that size (none after a truncate).
 	pub fn new(handle: u32, size: u64) -> Writer {
 		let count = size.div_ceil(CHUNK);
-		Writer { handle, size, held: (0..count).map(|i| chunk_len(size, i)).collect(), current: None }
+		Writer { handle, size, held: (0..count).map(|i| chunk_len(size, i)).collect(), cache: Vec::with_capacity(MAX_CACHED_CHUNKS) }
 	}
 
 	pub fn size(&self) -> u64 {
 		self.size
 	}
 
-	/// Makes chunk `index` the one in memory: the one before is sent if it changed; this one is read back if the node
-	/// holds it.
-	fn load(&mut self, store: &impl Chunks, index: u64) -> Result<(), Fail> {
-		if self.current.as_ref().is_some_and(|c| c.index == index) {
+	fn flush_positions(&mut self, store: &impl Chunks, mut indices: Vec<u64>) -> Result<(), Fail> {
+		indices.sort_unstable();
+		indices.dedup();
+		for target in indices {
+			let Some(pos) = self.cache.iter().position(|c| c.index == target && c.dirty) else {
+				continue;
+			};
+			let idx = target as usize;
+			if !self.cache[pos].data.is_empty() {
+				store.put(self.handle, idx as u32, &self.cache[pos].data)?;
+			}
+			self.cache[pos].dirty = false;
+			let len = self.cache[pos].data.len() as u64;
+			if idx < self.held.len() {
+				self.held[idx] = len;
+			} else {
+				debug_assert_eq!(idx, self.held.len());
+				self.held.push(len);
+			}
+		}
+		Ok(())
+	}
+
+	fn evict_lru(&mut self, store: &impl Chunks) -> Result<(), Fail> {
+		if self.cache.is_empty() {
 			return Ok(());
 		}
-		self.flush(store)?;
+		let lru_index = self.cache[0].index;
+		if self.cache[0].dirty {
+			let to_flush: Vec<u64> = if (lru_index as usize) <= self.held.len() {
+				vec![lru_index]
+			} else {
+				self.cache.iter().filter(|c| c.dirty && c.index <= lru_index).map(|c| c.index).collect()
+			};
+			self.flush_positions(store, to_flush)?;
+		}
+		self.cache.remove(0);
+		Ok(())
+	}
+
+	fn load(&mut self, store: &impl Chunks, index: u64) -> Result<usize, Fail> {
+		if let Some(pos) = self.cache.iter().position(|c| c.index == index) {
+			let last = self.cache.len() - 1;
+			if pos != last {
+				let item = self.cache.remove(pos);
+				self.cache.push(item);
+			}
+			return Ok(last);
+		}
 		let data = match self.held.get(index as usize) {
 			Some(&len) if len > 0 => {
 				let mut data = Vec::with_capacity(CHUNK as usize);
@@ -78,30 +116,21 @@ impl Writer {
 			}
 			_ => Vec::new(),
 		};
-		self.current = Some(Current { index, data, dirty: false });
-		Ok(())
+		if self.cache.len() >= MAX_CACHED_CHUNKS {
+			self.evict_lru(store)?;
+		}
+		self.cache.push(CachedChunk { index, data, dirty: false });
+		Ok(self.cache.len() - 1)
 	}
 
-	/// Sends the chunk in memory if it changed. It stays in memory.
 	pub fn flush(&mut self, store: &impl Chunks) -> Result<(), Fail> {
-		let Some(current) = self.current.as_mut().filter(|c| c.dirty) else { return Ok(()) };
-		let index = current.index as usize;
-		if !current.data.is_empty() {
-			store.put(self.handle, index as u32, &current.data)?;
+		let dirty: Vec<u64> = self.cache.iter().filter(|c| c.dirty).map(|c| c.index).collect();
+		if dirty.is_empty() {
+			return Ok(());
 		}
-		current.dirty = false;
-		let len = current.data.len() as u64;
-		if index < self.held.len() {
-			self.held[index] = len;
-		} else {
-			// Only ever the next one: the gap before it was filled first.
-			debug_assert_eq!(index, self.held.len());
-			self.held.push(len);
-		}
-		Ok(())
+		self.flush_positions(store, dirty)
 	}
 
-	/// Every chunk before `index` made whole, with zeros past the current end: the file is about to reach `index`.
 	fn fill_before(&mut self, store: &impl Chunks, index: u64) -> Result<(), Fail> {
 		if self.size == 0 && index == 0 {
 			return Ok(());
@@ -109,16 +138,14 @@ impl Writer {
 		let last = if self.size == 0 { 0 } else { (self.size - 1) / CHUNK };
 		let from = if self.size == 0 { 0 } else if self.size % CHUNK == 0 { last + 1 } else { last };
 		for i in from..index {
-			self.load(store, i)?;
-			let current = self.current.as_mut().expect("loaded");
-			current.data.resize(CHUNK as usize, 0);
-			current.dirty = true;
+			let pos = self.load(store, i)?;
+			self.cache[pos].data.resize(CHUNK as usize, 0);
+			self.cache[pos].dirty = true;
 			self.size = self.size.max((i + 1) * CHUNK);
 		}
 		Ok(())
 	}
 
-	/// Writes `data` at `offset`.
 	pub fn write(&mut self, store: &impl Chunks, offset: u64, data: &[u8]) -> Result<(), Fail> {
 		let end = offset.checked_add(data.len() as u64).ok_or_else(too_large)?;
 		if end > MAX_CHUNKS * CHUNK {
@@ -131,8 +158,8 @@ impl Writer {
 			let within = (at % CHUNK) as usize;
 			let take = rest.len().min(CHUNK as usize - within);
 			self.fill_before(store, index)?;
-			self.load(store, index)?;
-			let current = self.current.as_mut().expect("loaded");
+			let pos = self.load(store, index)?;
+			let current = &mut self.cache[pos];
 			if current.data.len() < within + take {
 				current.data.resize(within + take, 0);
 			}
@@ -145,7 +172,6 @@ impl Writer {
 		Ok(())
 	}
 
-	/// Up to `length` bytes from `offset`, as the file is now (written but unsent bytes included).
 	pub fn read(&mut self, store: &impl Chunks, offset: u64, length: u64) -> Result<Vec<u8>, Fail> {
 		let end = offset.saturating_add(length).min(self.size);
 		let mut out = Vec::with_capacity(end.saturating_sub(offset) as usize);
@@ -154,15 +180,14 @@ impl Writer {
 			let index = at / CHUNK;
 			let within = at % CHUNK;
 			let take = (end - at).min(CHUNK - within);
-			match &self.current {
-				Some(c) if c.index == index => {
+			match self.cache.iter().find(|c| c.index == index) {
+				Some(c) => {
 					let from = (within as usize).min(c.data.len());
 					let to = ((within + take) as usize).min(c.data.len());
 					out.extend_from_slice(&c.data[from..to]);
-					// Within the size but past what the chunk holds: a hole.
 					out.resize(out.len() + (take as usize - (to - from)), 0);
 				}
-				_ => {
+				None => {
 					let held = self.held.get(index as usize).copied().unwrap_or(0);
 					let to = (within + take).min(held);
 					if within < to {
@@ -185,8 +210,6 @@ impl Writer {
 		Ok(out)
 	}
 
-	/// The file's new size: cut short, or grown with zeros. A cut on the 4 MiB grid (or to nothing) sends no chunk: the
-	/// node cuts the file's chunks at the close, from its origin's when no chunk of it was sent (folder service, close).
 	pub fn truncate(&mut self, store: &impl Chunks, size: u64) -> Result<(), Fail> {
 		if size > MAX_CHUNKS * CHUNK {
 			return Err(too_large());
@@ -195,48 +218,38 @@ impl Writer {
 			if size > self.size {
 				let index = (size - 1) / CHUNK;
 				self.fill_before(store, index)?;
-				self.load(store, index)?;
-				let current = self.current.as_mut().expect("loaded");
-				current.data.resize(chunk_len(size, index) as usize, 0);
-				current.dirty = true;
+				let pos = self.load(store, index)?;
+				self.cache[pos].data.resize(chunk_len(size, index) as usize, 0);
+				self.cache[pos].dirty = true;
 				self.size = size;
 			}
 			return Ok(());
 		}
 		let count = size.div_ceil(CHUNK);
-		// The new last chunk ends inside: it is cut, and sent again. It is loaded before anything changes, so a cut that
-		// fails leaves the file as it was.
 		let inside = count > 0 && size % CHUNK != 0;
 		if inside {
 			self.load(store, count - 1)?;
 		}
-		if self.current.as_ref().is_some_and(|c| c.index >= count) {
-			self.current = None;
-		}
+		self.cache.retain(|c| c.index < count);
 		self.held.truncate(count as usize);
 		self.size = size;
 		if inside {
-			let current = self.current.as_mut().expect("loaded");
-			current.data.truncate(chunk_len(size, count - 1) as usize);
-			current.dirty = true;
+			let pos = self.cache.iter().position(|c| c.index == count - 1).expect("loaded");
+			self.cache[pos].data.truncate(chunk_len(size, count - 1) as usize);
+			self.cache[pos].dirty = true;
 		}
 		Ok(())
 	}
 
-	/// Everything written is with the node: what the close needs.
 	pub fn finish(&mut self, store: &impl Chunks) -> Result<u64, Fail> {
 		self.flush(store)?;
 		Ok(self.size)
 	}
 
-	/// The writer of a file the node closed, for the file opened again (as `handle`) at the version that close made: the
-	/// chunk in memory stays, so the next write does not read it back.
 	pub fn reopened(mut self, handle: u32) -> Writer {
 		let count = self.size.div_ceil(CHUNK);
 		self.held.truncate(count as usize);
-		if self.current.as_ref().is_some_and(|c| c.index >= count) {
-			self.current = None;
-		}
+		self.cache.retain(|c| c.index < count);
 		self.handle = handle;
 		self
 	}
@@ -423,5 +436,25 @@ mod tests {
 		assert_eq!(err.errno(), libc::EFBIG);
 		assert_eq!(w.truncate(&store, MAX_CHUNKS * CHUNK + 1).unwrap_err().errno(), libc::EFBIG);
 		assert!(store.puts.borrow().is_empty());
+	}
+
+	#[test]
+	fn four_chunk_lru_avoids_thrashing_and_preserves_ascending_put_order() {
+		let store = Store::default();
+		let mut w = Writer::new(1, 0);
+		for round in 0..4u64 {
+			for chunk in 0..4u64 {
+				w.write(&store, chunk * CHUNK + round * 16, b"hello-lru-chunk!").unwrap();
+			}
+		}
+		assert!(store.puts.borrow().is_empty(), "4-chunk working set stays dirty in cache");
+		assert_eq!(*store.gets.borrow(), 0);
+		w.write(&store, 2 * CHUNK + 1024, b"touch-2").unwrap();
+		w.write(&store, 0 * CHUNK + 1024, b"touch-0").unwrap();
+		w.write(&store, 4 * CHUNK, b"fifth-chunk").unwrap();
+		let size = w.finish(&store).unwrap();
+		assert_eq!(size, 4 * CHUNK + 11);
+		assert_eq!(*store.puts.borrow(), [0, 1, 2, 3, 4]);
+		assert_eq!(*store.gets.borrow(), 0);
 	}
 }

@@ -32,42 +32,63 @@ The company folder inside a Qorpera machine, and the node side of its link.
 - `qorpera-folder data`: on a company machine, the command `data` (`/usr/local/bin/data` runs it): the company's
   databases as the machine's folder view (company databases slice 8a,
   `deploy/first-node/RUNTIME-COMPANY-DATABASES.md` §9a; `src/data.rs`).
-  `data describe [<database>]`, `data apply <database>`, `data query <database> <question> [name=value ...]`,
-  `data query <database> --sql '<one select>' [name=value ...]` and `data change <database> <change> [name=value ...]`
-  do what the agents' data tools do, with an agent's limits. A value is text; `name:=<JSON>` gives a number, `true`,
-  `false` or `null`. It reads the boot's view from `/run/qorpera-folder/view.json` (root's: the machine gets no new
+  `data describe [<database>]`, `data apply <database> [--dry-run]`, `data query <database> <question> [name=value ...]`,
+  `data query <database> (--sql '<one select>' | --sql - | --sql-file <path>) [name=value ...]`,
+  `data change <database> <change> [--dry-run] [name=value ...]`,
+  `data rows <database> <table> [--limit N] [--offset N] [--order col[:asc|:desc]]`, and
+  `data changes <database>` do what the agents' data tools do, with an agent's limits. `--help`/`-h` prints usage on
+  stdout (exit 0). A value is text; `name:=<JSON>` accepts any JSON value (numbers, booleans, `null`, arrays and objects
+  for `jsonb`/SQL arrays/`pgvector`), and `--params-json <obj>` / `--params-file <path>` supply a JSON parameter object
+  (overridable by positional `name=value` args). `--format json|table|csv|tsv|ndjson` selects output formatting (default
+  one line of JSON). It reads the boot's view from `/run/qorpera-folder/view.json` (root's: the machine gets no new
   secret), says hello to the node's folder service in the `data` role (protocol 5; a mount keeps saying protocol 4,
-  so a node from before the role still serves every mount), sends the call and prints the store's answer as one line
-  of JSON. When the store asks for a file's text, the command reads it under `/company` and sends it by its hash, so
-  nothing it sends is trusted for more; a file written a moment ago is used once it is saved to the folder, and the
-  command asks again for 10 s. Exit 0 is an answer, 1 a refusal (its words on standard error), 2 a command line it
-  cannot read, 3 the databases cannot be reached from this machine now (no `/company`, no answer from the node, or
-  the store) or the answer could not be printed (a reader that left, a full disk): an apply or a change may then have
-  run, and its words say so. Exit 1 always means nothing ran. A round of texts leaves room for the pass the node adds
-  to the call. It holds no lock, mounts
+  so a node from before the role still serves every mount), sends the call and prints the store's answer. When the store
+  asks for a file's text, the command reads it under `/company` and sends it by its hash, so nothing it sends is trusted
+  for more; a file written a moment ago is used once it is saved to the folder, and the command asks again for 10 s. Exit
+  0 is an answer, 1 a refusal (its words on standard error), 2 a command line it cannot read, 3 the databases cannot be
+  reached from this machine now (no `/company`, no answer from the node, or the store) or the answer could not be
+  printed (a reader that left, a full disk): an apply or a change may then have run, and its words say so. Exit 1 always
+  means nothing ran. A round of texts leaves room for the pass the node adds to the call. It holds no lock, mounts
   nothing and writes nothing on the machine. `--view-file`, `--root` and `--connect` before the verb name another
   view file, folder and node address (tests).
-- `qorpera-folder scan-pack --spec-fd <fd>`: on a node host, reads a `git cat-file --batch-all-objects --batch --unordered`
-  stream on standard input, scans each object against the keyed secret-hash specification JSON read from `--spec-fd`
-  (`>= 3`, never argv or environment), and prints one JSON result line on standard output
-  (`{"status":"clean","rebuilt":...}`, `{"status":"secret"}`, or `{"status":"unchecked","reason":...}`). Exit 0 means
-  a result was printed, 1 means invalid specification or I/O failure, and 2 means usage.
+- `qorpera-folder scan-pack --spec-fd <fd> [--exclude-idx <path> ...] [--exclude-oids-fd <fd>]` and
+  `qorpera-folder scan-pack --diff-idx <path> [--exclude-idx <path> ...] [--exclude-oids-fd <fd>]`: on a node host,
+  reads a `git cat-file --batch-all-objects --batch --unordered` stream on standard input, scans each object against the
+  keyed secret-hash specification JSON read from `--spec-fd` (`>= 3`, never argv or environment), and prints one JSON
+  result line on standard output (`{"status":"clean","rebuilt":...}`, `{"status":"secret"}`, or
+  `{"status":"unchecked","reason":...}`). `--exclude-idx` (repeatable, native Git `.idx` v2 parser) and
+  `--exclude-oids-fd` (`>= 3`, newline-separated 40-hex OIDs) skip already-scanned OIDs during incremental pack pushes;
+  `--diff-idx <path>` prints only delta OIDs in `<path>` absent from the exclude set. **Safety invariant for OID
+  exclusion:** callers (`folder-service` `git-objects.ts`, wired after PR #2096) must only pass `--exclude-idx` /
+  `--exclude-oids-fd` for packs already scanned under the exact same or a superset secret specification (matching
+  secret-spec hash/revision); whenever secret values are added or rotated, callers must omit exclusion and scan every
+  object. Exit 0 means a result was printed, 1 means invalid specification or I/O failure, and 2 means usage.
+- `qorpera-folder scan-stream --spec-fd <fd>`: on a node host, streams raw bytes from standard input in 256 KiB chunks
+  with rolling boundary overlap against the keyed secret-hash specification on `--spec-fd` (`>= 3`) off Node's
+  `--jitless` event loop, printing the same JSON outcome line (`clean`/`secret`/`unchecked`). Prepared for follow-up
+  `folder-service` `secret-scan.ts` wiring after PR #2096.
 - `qorpera-folder search-worker --storage-root <dir> [--index-mib <N>] [--threads <N>]`: on a node host, persistent
-  off-event-loop content-addressed trigram + linear-time Thompson NFA regex search worker spawned lazily by
+  off-event-loop content-addressed inverted-trigram + linear-time Thompson NFA regex search worker spawned lazily by
   `folder-service` (`src/search.rs`, `src/re.rs`). Reads 4-byte big-endian length-prefixed JSON requests (`syncTree`,
-  `patchTree`, `dropTree`, `search`) on stdin, verifies objects under `--storage-root` with `O_NOFOLLOW` and SHA-256,
-  budgets arena-packed `CompactTree` synced views (`65%`, `112 + path length` bytes/entry, managed by caller
-  lifetime and `SEARCH_WAIT_MS`-bounded FIFO back-pressure with single-pass `O(N + K)` `patchTree` merges), sharded
-  LRU trigram filters (`25%`), and verified manifests/chunks (`10%`) inside `--index-mib` (default 512, range 1..2048;
-  keyed by `(profile_id, manifest_sha256)`), executes concurrent searches across `--threads` worker threads (default 4,
-  range 1..32), preserves exact `reads` provenance on warm trigram skips, and exits 0 cleanly on stdin EOF.
+  `patchTree`, `dropTree`, `search`) on stdin (offloading tree ops onto a dedicated worker queue), verifies objects
+  under `--storage-root` with `O_NOFOLLOW` and SHA-256 with `SingleFlight` deduplication, budgets `100%` of
+  `--index-mib` (default 512, range 1..2048; keyed by `(profile_id, manifest_sha256)`) across arena-packed `CompactTree`
+  + `DocInfo` synced views (`50%`, `136 + path length` bytes/entry, managed by caller lifetime and
+  `SEARCH_WAIT_MS`-bounded FIFO back-pressure with single-pass `O(N + K)` `patchTree` merges), a globally shared
+  delta-varint inverted trigram index (`15%`, generation-checked across concurrent searches), sharded LRU trigram
+  filters (`15%`), and verified manifests/chunks (`20%`, dynamic 4/2/1 shard sizing >= 4 MiB + local active-chunk reuse),
+  prefetches cold batches across bounded parallel threads, supports `!pattern` exclude globs, quantifier counts up to
+  64, and inline `(?i)`/`(?m)` flags, executes concurrent searches across `--threads` worker threads (default 4,
+  range 1..32), preserves exact `reads` provenance on warm skips, and exits 0 cleanly on stdin EOF.
 
 Design, protocol and rollout: `deploy/first-node/RUNTIME-FOLDER-SERVICE.md`. The node side of the protocol is
 `packages/object-gateway/src/folder-service/`.
 
 Writable mounts on protocol 3 log each file open (including cached and empty files) and each non-root directory open before FUSE
 answers it, with the version and authority receipt the mount showed. A failed append returns EIO. `src/reads.rs`
-keeps one UUID and consecutive sequence in the private state folder, syncing each append. A fixed lock file excludes
+keeps one UUID and consecutive sequence in the private state folder via a persistent `O_APPEND` file descriptor
+(checking `lstat` inode/size for external compaction or appends) and syncs durably on `hand_over`, `publish`,
+`Released` markers, and drop (since `/run` sits in RAM and page cache survives a daemon crash). A fixed lock file excludes
 mount threads and separate publishers across processes. The journal lock covers the same-connection `I`/`i` exchange
 and every subsequent mutation's send, so every earlier completed open is taken before any save derived from it.
 

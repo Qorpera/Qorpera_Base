@@ -179,5 +179,28 @@ describe("event intake", () => {
 		assert.equal((await handleEventIntake(post("x"), store(new IntakeStoreError("08006", "down")).store)).status, 503);
 		assert.equal((await handleEventIntake(post("x"), store(new Error("network")).store)).status, 503);
 		assert.equal((await handleEventIntake(post("x"), store({ outcome: "surprise" }).store)).status, 503);
+		assert.equal((await handleEventIntake(post("x"), store({ outcome: "toString" }).store)).status, 503);
+	});
+
+	it("returns 400 on an errored body stream and 408 on an aborted request", async () => {
+		const fixture = store();
+		const errored = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.error(new Error("socket reset"));
+			},
+		});
+		const erroredRes = await handleEventIntake(
+			new Request(`${URL_BASE}/${ADDRESS}`, { method: "POST", body: errored, duplex: "half" } as RequestInit),
+			fixture.store,
+		);
+		assert.equal(erroredRes.status, 400);
+		const controller = new AbortController();
+		controller.abort(new DOMException("aborted", "AbortError"));
+		const abortedRes = await handleEventIntake(
+			new Request(`${URL_BASE}/${ADDRESS}`, { method: "POST", body: "x", signal: controller.signal }),
+			fixture.store,
+		);
+		assert.equal(abortedRes.status, 408);
+		assert.equal(fixture.calls.length, 0);
 	});
 });

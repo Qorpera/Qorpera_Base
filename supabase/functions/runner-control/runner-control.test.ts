@@ -217,4 +217,26 @@ describe("runner control boundary", () => {
 		assert.equal(cancelled, true);
 		assert.ok(pulled <= 10, `expected early stream cancellation, saw ${pulled} chunks`);
 	});
+
+	it("times out stalled request bodies and cancels the stream", async () => {
+		let cancelled = false;
+		const stalled = new ReadableStream<Uint8Array>({
+			pull() {
+				return new Promise<void>(() => {});
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const request = new Request("https://example.test/functions/v1/runner-control", {
+			method: "POST",
+			body: stalled,
+			duplex: "half",
+		} as RequestInit);
+		await assert.rejects(readRunnerControlRequest(request, 15), (error: unknown) => {
+			assert.equal(error instanceof Error ? error.name : "", "TimeoutError");
+			return true;
+		});
+		assert.equal(cancelled, true);
+	});
 });

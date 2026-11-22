@@ -148,7 +148,7 @@ export function treeOrder(a: string, b: string): number {
 
 /** A compiled glob: its '/'-separated parts, each a name pattern (code points) or `**` (any number of folders). A
  * glob without '/' is matched against a path's name alone. */
-export interface Glob {
+interface SingleGlob {
 	readonly parts: readonly (readonly string[] | "**")[];
 	readonly nameOnly: boolean;
 	readonly simpleName?:
@@ -156,9 +156,14 @@ export interface Glob {
 		| { readonly kind: "affix"; readonly prefix: string; readonly suffix: string };
 }
 
-export function compileGlob(glob: string): Glob {
+export interface Glob {
+	readonly includes: readonly SingleGlob[];
+	readonly excludes: readonly SingleGlob[];
+}
+
+function compileSingleGlob(glob: string): SingleGlob {
 	const nameOnly = !glob.includes("/");
-	let simpleName: Glob["simpleName"];
+	let simpleName: SingleGlob["simpleName"];
 	if (nameOnly && !glob.includes("?") && !SURROGATE.test(glob)) {
 		const firstStar = glob.indexOf("*");
 		if (firstStar < 0) {
@@ -176,6 +181,26 @@ export function compileGlob(glob: string): Glob {
 		nameOnly,
 		...(simpleName === undefined ? {} : { simpleName }),
 	};
+}
+
+export function compileGlob(glob: string): Glob {
+	const includes: SingleGlob[] = [];
+	const excludes: SingleGlob[] = [];
+	if (glob.startsWith("!") || glob.includes(",!")) {
+		for (const raw of glob.split(",")) {
+			const token = raw.trim();
+			if (token.length === 0) continue;
+			if (token.startsWith("!")) {
+				const neg = token.slice(1);
+				if (neg.length > 0) excludes.push(compileSingleGlob(neg));
+			} else {
+				includes.push(compileSingleGlob(token));
+			}
+		}
+	} else if (glob.length > 0) {
+		includes.push(compileSingleGlob(glob));
+	}
+	return { includes, excludes };
 }
 
 /** One name against one pattern: `*` any run of characters (a `**` inside a name is the same), `?` any one, the rest
@@ -203,7 +228,7 @@ function nameMatches(pattern: readonly string[], name: readonly string[]): boole
 
 /** A path (relative to the search) against a glob: the same walk over the path's names, `**` standing for any run of
  * them. */
-export function globMatches(glob: Glob, path: string): boolean {
+function singleGlobMatches(glob: SingleGlob, path: string): boolean {
 	if (glob.nameOnly) {
 		const slash = path.lastIndexOf("/");
 		const name = slash < 0 ? path : path.slice(slash + 1);
@@ -234,6 +259,11 @@ export function globMatches(glob: Glob, path: string): boolean {
 	}
 	while (p < glob.parts.length && glob.parts[p] === "**") p++;
 	return p === glob.parts.length;
+}
+
+export function globMatches(glob: Glob, path: string): boolean {
+	if (glob.includes.length > 0 && !glob.includes.some((g) => singleGlobMatches(g, path))) return false;
+	return !glob.excludes.some((g) => singleGlobMatches(g, path));
 }
 
 /** What a hit shows, as the run lays it out (`path:line: text`, a context line `path-line- text`, a name as its path,

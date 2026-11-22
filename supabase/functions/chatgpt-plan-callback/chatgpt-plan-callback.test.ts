@@ -202,4 +202,21 @@ describe("the ChatGPT plan callback", () => {
 			"https://app.qorpera.com/#?chatgpt_plan=failed&reason=expired",
 		);
 	});
+
+	it("forwards timeout and caller abort signal into resolveTarget", async () => {
+		let receivedSignal: AbortSignal | undefined;
+		const response = await handleChatGptPlanCallback(callback({ state: STATE, code: "c" }), {
+			returnUrl: RETURN,
+			timeoutMs: 15,
+			resolveTarget: (_state, signal) => {
+				receivedSignal = signal;
+				return new Promise((_resolve, reject) => {
+					signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			},
+		});
+		assert.equal(response.status, 303);
+		assert.deepEqual(fragment(response), { chatgpt_plan: "failed", reason: "provider_error" });
+		assert.equal(receivedSignal?.aborted, true);
+	});
 });

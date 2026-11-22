@@ -151,4 +151,44 @@ describe("runner broker request validation", () => {
 			"qorpera_release_native_provider_connection_lease",
 		]);
 	});
+
+	it("rolls back acquired lease via rollbackRpc when model authority throws and bounds stalled request streams", async () => {
+		const rollbackCalls: string[] = [];
+		const outcome = await acquireNativeAuthorityWithRollback(
+			async (fn) => {
+				if (fn === "qorpera_acquire_native_provider_connection_lease") {
+					return { data: { lease_id: leaseId, provider: "openai" }, error: null };
+				}
+				throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+			},
+			{ action: "native_authority", runnerId, jobId, runId, assignmentId, leaseSeconds: 300 },
+			{ sessionTokenSha256: "1".repeat(64), leaseTokenSha256: "2".repeat(64) },
+			async (fn, args) => {
+				rollbackCalls.push(`${fn}:${String(args.p_lease_id)}:${String(args.p_status)}`);
+				return { data: { released: true }, error: null };
+			},
+		);
+		assert.deepEqual(outcome, { ok: false, status: 503, error: "Native provider model authority was rejected" });
+		assert.deepEqual(rollbackCalls, [`qorpera_release_native_provider_connection_lease:${leaseId}:released`]);
+
+		let cancelled = false;
+		const stalled = new ReadableStream<Uint8Array>({
+			pull() {
+				return new Promise<void>(() => {});
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const request = new Request("https://example.test/functions/v1/runner-broker", {
+			method: "POST",
+			body: stalled,
+			duplex: "half",
+		} as RequestInit);
+		await assert.rejects(readRunnerBrokerRequest(request, 15), (error: unknown) => {
+			assert.equal(error instanceof Error ? error.name : "", "TimeoutError");
+			return true;
+		});
+		assert.equal(cancelled, true);
+	});
 });

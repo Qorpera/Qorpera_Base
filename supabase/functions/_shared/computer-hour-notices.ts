@@ -192,21 +192,24 @@ function escapeHtml(value: string): string {
 		.replaceAll("'", "&#39;");
 }
 
+const HOURS_FORMAT = new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 });
+const DAY_FORMAT = new Intl.DateTimeFormat("en-GB", {
+	day: "numeric",
+	month: "long",
+	year: "numeric",
+	timeZone: "Europe/Copenhagen",
+});
+
 /** "12.5 hours", "1 hour", "0 hours": one decimal at most. */
 export function hoursText(standardSeconds: number): string {
 	const hours = Math.max(0, Math.round((standardSeconds / 3600) * 10) / 10);
 	if (hours === 0 && standardSeconds > 0) return "less than 0.1 hours";
-	return `${hours.toLocaleString("en-GB", { maximumFractionDigits: 1 })} ${hours === 1 ? "hour" : "hours"}`;
+	return `${HOURS_FORMAT.format(hours)} ${hours === 1 ? "hour" : "hours"}`;
 }
 
 /** A day in Danish time, as the meter and the months are counted. */
 function dayText(iso: string): string {
-	return new Date(iso).toLocaleDateString("en-GB", {
-		day: "numeric",
-		month: "long",
-		year: "numeric",
-		timeZone: "Europe/Copenhagen",
-	});
+	return DAY_FORMAT.format(new Date(iso));
 }
 
 function page(title: string, paragraphs: string[], appUrl: string, footer: string, extraHtml = ""): string {

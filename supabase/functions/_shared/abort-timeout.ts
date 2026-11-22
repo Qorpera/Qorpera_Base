@@ -7,12 +7,17 @@ export async function withTimeoutScope<T>(
 	const onAbort = (): void => controller.abort(parent?.reason);
 	if (parent?.aborted) onAbort();
 	else parent?.addEventListener("abort", onAbort, { once: true });
-	const timer = controller.signal.aborted
-		? undefined
-		: setTimeout(
-				() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
-				timeoutMs,
-			);
+	// WHY: A non-positive or NaN timeout must abort synchronously instead of deferring to a macrotask timer.
+	if (!controller.signal.aborted && (Number.isNaN(timeoutMs) || timeoutMs <= 0)) {
+		controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+	}
+	const timer =
+		controller.signal.aborted || !Number.isFinite(timeoutMs)
+			? undefined
+			: setTimeout(
+					() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+					timeoutMs,
+				);
 	(timer as { unref?: () => void } | undefined)?.unref?.();
 	try {
 		return await use(controller.signal);

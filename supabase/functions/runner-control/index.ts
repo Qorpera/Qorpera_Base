@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2.112.3";
+import { createTimedFetch, DEFAULT_RPC_TIMEOUT_MS, preferredServiceKey, withAbortSignal } from "../_shared/http-guards.ts";
 import {
 	parseRunnerBearer,
 	readRunnerControlRequest,
@@ -9,38 +10,9 @@ import {
 	type RunnerControlRequest,
 } from "./runner-control.ts";
 
-const RPC_TIMEOUT_MS = 25_000;
 const UTF8_ENCODER = new TextEncoder();
+const timedFetch = createTimedFetch({ timeoutMs: DEFAULT_RPC_TIMEOUT_MS });
 let cachedClient: { readonly key: string; readonly client: SupabaseClient } | undefined;
-
-async function timedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-	const controller = new AbortController();
-	const parent = init?.signal;
-	const onAbort = (): void => controller.abort(parent?.reason);
-	if (parent?.aborted) onAbort();
-	else parent?.addEventListener("abort", onAbort, { once: true });
-	const timer = setTimeout(
-		() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
-		RPC_TIMEOUT_MS,
-	);
-	try {
-		const response = await fetch(input, { ...init, signal: controller.signal });
-		const noBody =
-			response.status === 204 ||
-			response.status === 205 ||
-			response.status === 304 ||
-			init?.method?.toUpperCase() === "HEAD";
-		const body = noBody ? null : await response.arrayBuffer();
-		return new Response(body, {
-			status: response.status,
-			statusText: response.statusText,
-			headers: response.headers,
-		});
-	} finally {
-		clearTimeout(timer);
-		parent?.removeEventListener("abort", onAbort);
-	}
-}
 
 function getClient(supabaseUrl: string, serviceKey: string): SupabaseClient {
 	const key = `${supabaseUrl}\0${serviceKey}`;
@@ -57,26 +29,6 @@ function jsonResponse(value: unknown, status = 200): Response {
 	return Response.json(value, { status, headers: { "cache-control": "no-store" } });
 }
 
-function configuredServiceKey(): string | undefined {
-	/* Prefer the legacy service-role JWT: it is verified locally at the
-	 * gateway, while new-format secret keys resolve through the platform's
-	 * key-management service — a dependency that has shed requests for
-	 * minutes at a time during platform incidents. Both keys address the
-	 * same hosted project. */
-	const legacyServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-	if (legacyServiceRoleKey) return legacyServiceRoleKey;
-	try {
-		const parsed: unknown = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			const key = Object.values(parsed).find((value): value is string => typeof value === "string" && value.length > 20);
-			if (key) return key;
-		}
-	} catch {
-		// No configured service credential.
-	}
-	return undefined;
-}
-
 async function sha256(value: string): Promise<string> {
 	const digest = await crypto.subtle.digest("SHA-256", UTF8_ENCODER.encode(value));
 	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -85,7 +37,7 @@ async function sha256(value: string): Promise<string> {
 Deno.serve(async (request) => {
 	if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
 	const supabaseUrl = Deno.env.get("SUPABASE_URL");
-	const serviceKey = configuredServiceKey();
+	const serviceKey = preferredServiceKey((name) => Deno.env.get(name));
 	if (!supabaseUrl || !serviceKey) return jsonResponse({ error: "Runner control is not configured" }, 503);
 	let action: RunnerControlRequest;
 	let currentToken: string;
@@ -166,11 +118,18 @@ Deno.serve(async (request) => {
 			};
 			break;
 	}
-	const { data, error } = await client.rpc(runnerControlRpcName(action.action), args);
-	if (error) {
-		console.warn(runnerControlRejectionLog(action.action, error));
-		const status = action.action === "start" ? runnerStartRpcStatus(error) : runnerControlRpcStatus(error);
-		return jsonResponse({ error: "Runner request was rejected" }, status);
+	try {
+		const { data, error } = await withAbortSignal(
+			client.rpc(runnerControlRpcName(action.action), args),
+			request.signal,
+		);
+		if (error) {
+			console.warn(runnerControlRejectionLog(action.action, error));
+			const status = action.action === "start" ? runnerStartRpcStatus(error) : runnerControlRpcStatus(error);
+			return jsonResponse({ error: "Runner request was rejected" }, status);
+		}
+		return jsonResponse({ value: data });
+	} catch {
+		return jsonResponse({ error: "Runner control is unavailable" }, 503);
 	}
-	return jsonResponse({ value: data });
 });

@@ -8,7 +8,11 @@ export class HttpIdentityRecoveryService {
 	readonly #authority: CloudIdentityRecoveryAuthority;
 	readonly #operatorCapability: string;
 	#server?: Server;
+	#closing = false;
+	#closePromise?: Promise<void>;
 	#inFlight = 0;
+	readonly #activeAborts = new Set<AbortController>();
+	readonly #drainWaiters = new Set<() => void>();
 
 	constructor(authority: CloudIdentityRecoveryAuthority, operatorCapability: string) {
 		this.#authority = authority;
@@ -17,14 +21,23 @@ export class HttpIdentityRecoveryService {
 
 	async start(port = 0): Promise<string> {
 		if (this.#server) throw new Error("Recovery service is already running");
+		this.#closing = false;
+		this.#closePromise = undefined;
 		const server = createServer((request, response) => {
 			void this.#handle(request, response).catch((error: unknown) => {
 				// Operator diagnostics only: the error class and its bounded generic message; never a body, capability or key.
 				const detail = error instanceof Error ? `${error.name}: ${error.message}` : "Error";
 				console.error(`PHQL_RECOVERY_REQUEST_REFUSED ${request.url ?? ""} ${detail.slice(0, 200)}`);
-				if (!response.headersSent)
-					response.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
-				response.end('{"error":"Recovery operation refused or unavailable"}');
+				if (!response.headersSent) {
+					response.writeHead(503, {
+						"content-type": "application/json",
+						"cache-control": "no-store",
+						...(this.#closing ? { connection: "close" } : {}),
+					});
+					response.end('{"error":"Recovery operation refused or unavailable"}');
+				} else if (!response.writableEnded) {
+					response.destroy();
+				}
 			});
 		});
 		server.requestTimeout = 30_000;
@@ -32,7 +45,6 @@ export class HttpIdentityRecoveryService {
 		server.keepAliveTimeout = 1_000;
 		server.maxHeadersCount = 32;
 		server.maxConnections = 16;
-		this.#server = server;
 		await new Promise<void>((resolve, reject) => {
 			server.once("error", reject);
 			server.listen(port, "127.0.0.1", () => {
@@ -40,20 +52,94 @@ export class HttpIdentityRecoveryService {
 				resolve();
 			});
 		});
+		this.#server = server;
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("Recovery service has no listener");
 		return `http://127.0.0.1:${address.port}`;
 	}
 
-	async close(): Promise<void> {
+	async close(graceMs = 25_000): Promise<void> {
+		if (this.#closePromise) return this.#closePromise;
 		const server = this.#server;
-		this.#server = undefined;
 		if (!server) return;
-		server.closeAllConnections();
-		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+		this.#closing = true;
+		this.#server = undefined;
+		const shuttingDown = (async () => {
+			// WHY: Stop accepting new connections and close idle keep-alives before draining in-flight recovery calls so graceful shutdown finishes without severing active writes.
+			const closed = new Promise<void>((resolve, reject) =>
+				server.close((error) => (error ? reject(error) : resolve())),
+			);
+			const boundedGraceMs = Number.isFinite(graceMs) ? Math.max(0, graceMs) : 25_000;
+			const deadlineAt = Date.now() + boundedGraceMs;
+			server.closeIdleConnections();
+			if (this.#inFlight > 0 && boundedGraceMs > 0) {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				try {
+					await new Promise<void>((resolve) => {
+						const done = () => {
+							this.#drainWaiters.delete(done);
+							resolve();
+						};
+						this.#drainWaiters.add(done);
+						if (this.#inFlight === 0) {
+							done();
+							return;
+						}
+						timer = setTimeout(done, boundedGraceMs);
+						timer.unref?.();
+					});
+				} finally {
+					if (timer) clearTimeout(timer);
+				}
+			}
+			const abortAndCloseAll = (): void => {
+				if (this.#inFlight > 0) {
+					const shutdownError = new Error("Recovery service shutting down");
+					for (const controller of this.#activeAborts) controller.abort(shutdownError);
+				}
+				server.closeAllConnections();
+			};
+			if (this.#inFlight > 0 || boundedGraceMs === 0) {
+				abortAndCloseAll();
+				await closed;
+				return;
+			}
+			server.closeIdleConnections();
+			// WHY: Server.close() stops Node's header/request timeout checker, so bound waiting for half-open or flushing sockets to the remaining grace window.
+			let closeTimer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				await Promise.race([
+					closed,
+					new Promise<void>((resolve) => {
+						closeTimer = setTimeout(
+							() => {
+								abortAndCloseAll();
+								resolve();
+							},
+							Math.max(1, deadlineAt - Date.now()),
+						);
+						closeTimer.unref?.();
+					}),
+				]);
+			} finally {
+				if (closeTimer) clearTimeout(closeTimer);
+			}
+			await closed;
+		})();
+		this.#closePromise = shuttingDown;
+		try {
+			await shuttingDown;
+		} finally {
+			if (this.#closePromise === shuttingDown) this.#closePromise = undefined;
+		}
 	}
 
 	async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+		if (this.#closing) {
+			response.writeHead(503, { connection: "close" });
+			response.end();
+			return;
+		}
 		if (
 			request.method !== "POST" ||
 			request.headers.origin ||
@@ -81,11 +167,18 @@ export class HttpIdentityRecoveryService {
 		if (path === "/operator/target") {
 			const supplied = request.headers.authorization;
 			const expected = Buffer.from(`Bearer ${this.#operatorCapability}`);
-			if (
-				typeof supplied !== "string" ||
-				Buffer.byteLength(supplied) !== expected.byteLength ||
-				!timingSafeEqual(Buffer.from(supplied), expected)
-			) {
+			const suppliedBytes = typeof supplied === "string" ? Buffer.from(supplied) : undefined;
+			let authorized = false;
+			try {
+				authorized =
+					suppliedBytes !== undefined &&
+					suppliedBytes.byteLength === expected.byteLength &&
+					timingSafeEqual(suppliedBytes, expected);
+			} finally {
+				expected.fill(0);
+				suppliedBytes?.fill(0);
+			}
+			if (!authorized) {
 				response.writeHead(403);
 				response.end();
 				return;
@@ -98,6 +191,7 @@ export class HttpIdentityRecoveryService {
 		}
 		this.#inFlight++;
 		const abort = new AbortController();
+		this.#activeAborts.add(abort);
 		const disconnected = (): void => {
 			if (!response.writableEnded) abort.abort(new Error("Recovery peer disconnected"));
 		};
@@ -110,21 +204,27 @@ export class HttpIdentityRecoveryService {
 					};
 					signal.addEventListener("abort", stopReading, { once: true });
 					const chunks: Buffer[] = [];
+					let body: Buffer | undefined;
 					let size = 0;
+					let value: unknown;
 					try {
 						for await (const chunk of request) {
 							signal.throwIfAborted();
 							const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
 							size += bytes.byteLength;
-							if (size > 16_384) throw new Error("Recovery request exceeds its bound");
+							if (size > 16_384) {
+								bytes.fill(0);
+								throw new Error("Recovery request exceeds its bound");
+							}
 							chunks.push(bytes);
 						}
+						body = Buffer.concat(chunks);
+						value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(body));
 					} finally {
 						signal.removeEventListener("abort", stopReading);
+						for (const chunk of chunks) chunk.fill(0);
+						body?.fill(0);
 					}
-					const value: unknown = JSON.parse(
-						new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks)),
-					);
 					let result: unknown;
 					if (path === "/v1/backup/prepare") {
 						const input = recoveryRecord(value, ["loginId", "loginCapability", "keySha256"]);
@@ -222,6 +322,7 @@ export class HttpIdentityRecoveryService {
 						"content-type": "application/json",
 						"cache-control": "no-store",
 						"x-content-type-options": "nosniff",
+						...(this.#closing ? { connection: "close" } : {}),
 					});
 					response.end(JSON.stringify(result));
 				},
@@ -230,8 +331,12 @@ export class HttpIdentityRecoveryService {
 			);
 		} finally {
 			abort.abort(new Error("Recovery request closed"));
+			this.#activeAborts.delete(abort);
 			response.removeListener("close", disconnected);
 			this.#inFlight--;
+			if (this.#inFlight === 0) {
+				for (const notify of [...this.#drainWaiters]) notify();
+			}
 		}
 	}
 }

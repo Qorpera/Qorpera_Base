@@ -38,8 +38,8 @@ use crate::writer::Writer;
 use fuser::{
 	Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
 	KernelConfig, LockOwner, MountOption, Notifier, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
-	ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request, SessionACL,
-	TimeOrNow, WriteFlags,
+	ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite,
+	Request, SessionACL, TimeOrNow, WriteFlags,
 };
 use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::ffi::OsStr;
@@ -133,12 +133,22 @@ pub enum Stop {
 	Ended(std::io::Result<()>),
 }
 
+pub(super) enum DirPlus {
+	Dot,
+	Node { attr: Attr, kept: bool },
+	Local(FileAttr),
+}
+
+pub(super) struct DirItem {
+	pub(super) ino: u64,
+	pub(super) kind: FileType,
+	pub(super) name: String,
+	pub(super) plus: DirPlus,
+}
+
 enum Handle {
-	/// A folder's listing, and the cache's top entry a local folder holds (`Local::hold_dir`).
-	Dir(Vec<(u64, FileType, String)>, Option<u64>),
+	Dir(Arc<Vec<DirItem>>, Option<u64>),
 	File { ino: u64, path: String, version: String, size: u64 },
-	/// Open for writing: the file's writer, which every handle writing it shares, and the process that opened the
-	/// handle.
 	Write { ino: u64, open: Arc<Mutex<Open>>, opener: u32 },
 }
 
@@ -416,9 +426,9 @@ struct Shared {
 	/// target of a rename across the edge between the caches and the folder (`mount/on_disk.rs`).
 	chased: mpsc::Sender<Vec<(u64, String)>>,
 	unpublished: Mutex<Unpublished>,
-	/// The kernel's cache of the caches, and the other programs sharing them (`mount/kernel.rs`).
 	kernel: kernel::Kernel,
 	retries: RetryQueue<RetryJob>,
+	processes: ProcessCache,
 }
 
 impl Shared {
@@ -575,10 +585,23 @@ impl Shared {
 		if !self.writable {
 			return;
 		}
-		let tree = self.tree.lock().unwrap();
+		// WHY: release self.tree before self.versions so version-map disk compaction never stalls FUSE handlers.
+		let current = {
+			let tree = self.tree.lock().unwrap();
+			let its = tree.path(ino) == Some(path) && tree.last_seen(ino).is_some_and(|a| a.version == version);
+			if !its {
+				return;
+			}
+			if tree.current(ino) {
+				true
+			} else if !tree.removed_here(ino) {
+				false
+			} else {
+				return;
+			}
+		};
 		let mut versions = self.versions.lock().unwrap();
-		let its = tree.path(ino) == Some(path) && tree.last_seen(ino).is_some_and(|a| a.version == version);
-		if its && (tree.current(ino) || (!tree.removed_here(ino) && versions.get(path).is_none())) {
+		if current || versions.get(path).is_none() {
 			versions.read(path, version);
 		}
 	}
@@ -669,18 +692,20 @@ impl Shared {
 		let size = writer.finish(&self.link)?;
 		let version = self.link.close_write(writer.handle, size)?;
 		let writer = open.writer.take().expect("held above");
-		{
+		let saved_path = {
 			let mut tree = self.tree.lock().unwrap();
-			// Only for the file its path shows: one removed, or renamed over, while open saved a version no path has.
 			if tree.current(ino) {
-				if let Some(path) = tree.path(ino) {
-					self.versions.lock().unwrap().saved(path, &version);
-				}
-				// Known again if a change had made them unknown: the path shows this mount's pending file.
+				let path = tree.path(ino).map(str::to_string);
 				if let Some(attr) = tree.last_seen(ino) {
 					tree.set_local(ino, Attr { size, version: version.clone(), mtime_ms: now_ms(), ..attr });
 				}
+				path
+			} else {
+				None
 			}
+		};
+		if let Some(path) = saved_path {
+			self.versions.lock().unwrap().saved(&path, &version);
 		}
 		open.closed = Some((version, writer));
 		Ok(())
@@ -778,13 +803,60 @@ fn again(f: &Fail) -> bool {
 	}
 }
 
-/// The process a request came from. The kernel names the thread; a process's threads open and close its files alike.
-/// The thread itself when /proc does not say.
-fn process_of(thread: u32) -> u32 {
+const PROCESS_CACHE_TTL: Duration = Duration::from_secs(5);
+const PROCESS_CACHE_MAX: usize = 4096;
+
+#[derive(Default)]
+struct ProcessCache {
+	map: Mutex<HashMap<u32, (u32, Instant)>>,
+}
+
+impl ProcessCache {
+	fn of(&self, thread: u32) -> u32 {
+		let now = Instant::now();
+		let cached = {
+			let map = self.map.lock().unwrap();
+			map.get(&thread).copied().filter(|(_, at)| now.duration_since(*at) < PROCESS_CACHE_TTL)
+		};
+		if let Some((tgid, _)) = cached {
+			if thread_alive(thread) {
+				return tgid;
+			}
+			self.map.lock().unwrap().remove(&thread);
+		}
+		match read_tgid(thread) {
+			Some(tgid) => {
+				let mut map = self.map.lock().unwrap();
+				if map.len() >= PROCESS_CACHE_MAX && !map.contains_key(&thread) {
+					map.retain(|_, (_, at)| now.duration_since(*at) < PROCESS_CACHE_TTL);
+					if map.len() >= PROCESS_CACHE_MAX {
+						map.clear();
+					}
+				}
+				map.insert(thread, (tgid, now));
+				tgid
+			}
+			None => thread,
+		}
+	}
+}
+
+fn thread_alive(thread: u32) -> bool {
+	if thread == 0 || thread > i32::MAX as u32 {
+		return false;
+	}
+	// SAFETY: signal 0 only checks thread existence without sending any signal.
+	let rc = unsafe { libc::kill(thread as libc::pid_t, 0) };
+	if rc == 0 {
+		return true;
+	}
+	std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+fn read_tgid(thread: u32) -> Option<u32> {
 	std::fs::read_to_string(format!("/proc/{thread}/status"))
 		.ok()
 		.and_then(|status| status.lines().find_map(|l| l.strip_prefix("Tgid:")).and_then(|t| t.trim().parse().ok()))
-		.unwrap_or(thread)
 }
 
 fn now_ms() -> i64 {
@@ -848,7 +920,27 @@ macro_rules! refuse {
 	)*};
 }
 
-refuse!(ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite);
+refuse!(ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite);
+
+fn unprimed_attr(ino: u64, kind: FileType) -> FileAttr {
+	FileAttr {
+		ino: INodeNo(ino),
+		size: 0,
+		blocks: 0,
+		atime: UNIX_EPOCH,
+		mtime: UNIX_EPOCH,
+		ctime: UNIX_EPOCH,
+		crtime: UNIX_EPOCH,
+		kind,
+		perm: 0,
+		nlink: 0,
+		uid: 0,
+		gid: 0,
+		rdev: 0,
+		blksize: 0,
+		flags: 0,
+	}
+}
 
 impl FolderFs {
 	/// The reply to answer, or none once the program is ending: then it is refused with EIO here, before the request
@@ -912,10 +1004,14 @@ impl FolderFs {
 impl Filesystem for FolderFs {
 	fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
 		let _ = config.set_max_readahead(MAX_READ);
+		let _ = config.set_max_write(MAX_READ);
 		let _ = config.set_max_background(64);
 		let _ = config.add_capabilities(InitFlags::FUSE_PARALLEL_DIROPS);
+		let _ = config.add_capabilities(InitFlags::FUSE_BIG_WRITES);
+		let _ = config.add_capabilities(InitFlags::FUSE_MAX_PAGES);
+		let _ = config.add_capabilities(InitFlags::FUSE_DO_READDIRPLUS);
+		let _ = config.add_capabilities(InitFlags::FUSE_READDIRPLUS_AUTO);
 		if self.s.writable {
-			// open(O_TRUNC) comes to `open` whole, so a truncating save is one node open, not a setattr and an open.
 			let _ = config.add_capabilities(InitFlags::FUSE_ATOMIC_O_TRUNC);
 		}
 		eprintln!("qorpera-folder: kernel FUSE ABI {:?}", config.kernel_abi());
@@ -962,7 +1058,7 @@ impl Filesystem for FolderFs {
 		let Some(reply) = self.served(reply) else { return };
 		let Some(reply) = self.noted(ino.0, reply) else { return };
 		let Some(reply) = self.local_opendir(ino.0, reply) else { return };
-		let (children, _) = match self.s.children(ino.0, None) {
+		let (children, kept) = match self.s.children(ino.0, None) {
 			Ok(r) => r,
 			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
@@ -980,24 +1076,94 @@ impl Filesystem for FolderFs {
 		}
 		let parent = self.s.tree.lock().unwrap().parent(ino.0).unwrap_or(ROOT);
 		let mut entries = Vec::with_capacity(children.len() + 2);
-		entries.push((ino.0, FileType::Directory, ".".to_string()));
-		entries.push((parent, FileType::Directory, "..".to_string()));
-		entries.extend(children.iter().map(|c| (c.ino, file_type(c.attr.kind), c.name.clone())));
+		entries.push(DirItem { ino: ino.0, kind: FileType::Directory, name: ".".to_string(), plus: DirPlus::Dot });
+		entries.push(DirItem { ino: parent, kind: FileType::Directory, name: "..".to_string(), plus: DirPlus::Dot });
+		entries.extend(children.iter().map(|c| DirItem {
+			ino: c.ino,
+			kind: file_type(c.attr.kind),
+			name: c.name.clone(),
+			plus: DirPlus::Node { attr: c.attr.clone(), kept },
+		}));
 		if let Err(e) = self.merge_local(ino.0, &path, &mut entries) {
 			return reply.error(Errno::from_i32(e));
 		}
-		// No kernel listing cache (FOPEN_CACHE_DIR): the kernel keeps it while the folder's time is unchanged, and a
-		// folder's time does not change when a file inside it does. The listing is in this program's memory anyway.
-		reply.opened(self.s.handle(Handle::Dir(entries, None)), FopenFlags::empty());
+		reply.opened(self.s.handle(Handle::Dir(Arc::new(entries), None)), FopenFlags::empty());
 	}
 
 	fn readdir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, reply: ReplyDirectory) {
 		let Some(mut reply) = self.served(reply) else { return };
-		let handles = self.s.handles.lock().unwrap();
-		let Some(Handle::Dir(entries, _)) = handles.get(&fh.0) else { return reply.error(Errno::EBADF) };
-		for (i, (ino, kind, name)) in entries.iter().enumerate().skip(offset as usize) {
-			if reply.add(INodeNo(*ino), (i + 1) as u64, *kind, name) {
+		let entries = match self.s.handles.lock().unwrap().get(&fh.0) {
+			Some(Handle::Dir(entries, _)) => entries.clone(),
+			_ => return reply.error(Errno::EBADF),
+		};
+		for (i, item) in entries.iter().enumerate().skip(offset as usize) {
+			if reply.add(INodeNo(item.ino), (i + 1) as u64, item.kind, &item.name) {
 				break;
+			}
+		}
+		reply.ok();
+	}
+
+	fn readdirplus(&self, _req: &Request, dir: INodeNo, fh: FileHandle, offset: u64, reply: ReplyDirectoryPlus) {
+		let Some(mut reply) = self.served(reply) else { return };
+		let entries = match self.s.handles.lock().unwrap().get(&fh.0) {
+			Some(Handle::Dir(entries, _)) => entries.clone(),
+			_ => return reply.error(Errno::EBADF),
+		};
+		let prime_node = !local::is_local(dir.0);
+		let node_ttl = self.s.ttl(true);
+		for (i, item) in entries.iter().enumerate().skip(offset as usize) {
+			let next_off = (i + 1) as u64;
+			match &item.plus {
+				DirPlus::Dot => {
+					if reply.add(
+						INodeNo(item.ino),
+						next_off,
+						&item.name,
+						&Duration::ZERO,
+						&unprimed_attr(item.ino, item.kind),
+						Generation(0),
+					) {
+						break;
+					}
+				}
+				DirPlus::Local(file_attr) => {
+					// WHY: fuser sets dirent.ino = attr.ino so nodeid must stay non-zero; ttl=0 prevents caching dentry/attrs.
+					self.s.kernel.hand(item.ino);
+					if reply.add(INodeNo(item.ino), next_off, &item.name, &Duration::ZERO, file_attr, Generation(0)) {
+						self.s.kernel.forget(item.ino, 1);
+						break;
+					}
+				}
+				DirPlus::Node { attr, kept } => {
+					let (use_attr, ttl) = if prime_node && *kept && !node_ttl.is_zero() {
+						let mut tree = self.s.tree.lock().unwrap();
+						let fresh = self.s.writable && tree.path(item.ino).is_some_and(on_disk::fresh);
+						if !fresh && tree.current(item.ino) && tree.parent(item.ino) == Some(dir.0) {
+							if let Some(current_attr) = tree.attr(item.ino) {
+								tree.hold(item.ino);
+								self.s.answer(dir.0, &item.name, tree.changes());
+								(current_attr, node_ttl)
+							} else {
+								tree.hold(item.ino);
+								(attr.clone(), Duration::ZERO)
+							}
+						} else {
+							tree.hold(item.ino);
+							(tree.attr(item.ino).unwrap_or_else(|| attr.clone()), Duration::ZERO)
+						}
+					} else {
+						let mut tree = self.s.tree.lock().unwrap();
+						tree.hold(item.ino);
+						(tree.attr(item.ino).unwrap_or_else(|| attr.clone()), Duration::ZERO)
+					};
+					let shown = self.s.shown(item.ino, use_attr);
+					let file_attr = self.s.file_attr(item.ino, &shown);
+					if reply.add(INodeNo(item.ino), next_off, &item.name, &ttl, &file_attr, Generation(0)) {
+						self.s.tree.lock().unwrap().forget(item.ino, 1);
+						break;
+					}
+				}
 			}
 		}
 		reply.ok();
@@ -1047,7 +1213,7 @@ impl Filesystem for FolderFs {
 		if write {
 			return match self.s.open_write(ino.0, &path, &attr, flags.0 & libc::O_TRUNC != 0) {
 				Ok(open) => {
-					let handle = Handle::Write { ino: ino.0, open, opener: process_of(req.pid()) };
+					let handle = Handle::Write { ino: ino.0, open, opener: self.s.processes.of(req.pid()) };
 					reply.opened(self.s.handle(handle), FopenFlags::empty())
 				}
 				Err(e) => reply.error(Errno::from_i32(e)),
@@ -1132,7 +1298,7 @@ impl Filesystem for FolderFs {
 				}
 			}
 		}
-		let fh = self.s.handle(Handle::Write { ino, open, opener: process_of(req.pid()) });
+		let fh = self.s.handle(Handle::Write { ino, open, opener: self.s.processes.of(req.pid()) });
 		// Refused here, the file stays made with its handle: the program is ending.
 		let Some(reply) = self.noted(ino, reply) else { return };
 		self.s.kernel.late("create", &name);
@@ -1258,7 +1424,7 @@ impl Filesystem for FolderFs {
 			Some(Handle::Write { ino, open, opener }) => (*ino, open.clone(), *opener),
 			_ => return reply.ok(),
 		};
-		if process_of(req.pid()) != opener {
+		if self.s.processes.of(req.pid()) != opener {
 			return reply.ok();
 		}
 		let mut o = open.lock().unwrap();
@@ -1882,6 +2048,7 @@ pub fn run(mut link: Link, mut options: Options) -> Result<Stop, Failed> {
 		unpublished: Mutex::new(Unpublished::default()),
 		kernel,
 		retries: RetryQueue::new(),
+		processes: ProcessCache::default(),
 	});
 	// Other programs on a shared cache folder can tell this one about their changes before it serves anything.
 	kernel::Kernel::start(&shared)
@@ -2139,5 +2306,14 @@ mod tests {
 		fast_rx.recv_timeout(Duration::from_secs(2)).expect("fast job finishes while slow job blocks");
 		let _ = release_tx.send(());
 		drop(concurrent);
+	}
+
+	#[test]
+	fn process_cache_resolves_current_process_and_bounds_entries() {
+		let cache = ProcessCache::default();
+		let pid = std::process::id();
+		assert_eq!(cache.of(pid), pid);
+		assert_eq!(cache.of(pid), pid);
+		assert_eq!(cache.of(0), 0);
 	}
 }
