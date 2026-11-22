@@ -2,7 +2,7 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regclass('public.qorpera_surfaces') is not null then
-		raise exception 'Surface-First Harness (20260930825000) is already applied';
+		raise exception 'Surface-First Harness (20260930832000) is already applied';
 	end if;
 end $$;
 
@@ -196,7 +196,8 @@ begin
 		on session.machine_id = machine.id
 		and session.state in ('queued', 'running', 'reconciling')
 	where machine.profile_id = p_profile_id
-		and machine.status = 'running'
+		and machine.desired_state = 'running'
+		and machine.removed_at is null
 	group by machine.id
 	having count(session.id) < v_density
 	order by count(session.id) asc, machine.created_at asc

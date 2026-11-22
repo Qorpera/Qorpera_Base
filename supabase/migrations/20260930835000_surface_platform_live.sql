@@ -2,13 +2,13 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regclass('public.qorpera_surface_jobs') is not null then
-		raise exception 'Surface Platform Live (20260930828000) is already applied';
+		raise exception 'Surface Platform Live (20260930835000) is already applied';
 	end if;
 	if to_regclass('public.qorpera_surfaces') is null then
-		raise exception 'Surface Platform Live (20260930828000) requires 20260930825000 first';
+		raise exception 'Surface Platform Live (20260930835000) requires 20260930832000 first';
 	end if;
 	if to_regclass('public.qorpera_surface_session_messages') is null then
-		raise exception 'Surface Platform Live (20260930828000) requires 20260930826000 first';
+		raise exception 'Surface Platform Live (20260930835000) requires 20260930833000 first';
 	end if;
 end $$;
 
@@ -134,7 +134,11 @@ begin
 	end if;
 	v_base_slug := btrim(regexp_replace(v_base_slug, '-+', '-', 'g'), '-');
 	v_slug := v_base_slug;
-	while exists (select 1 from public.qorpera_company_sites where slug = v_slug) loop
+	if not public.qorpera_site_slug_valid(v_slug) then
+		v_base_slug := 's-' || substr(replace(p_surface_id::text, '-', ''), 1, 10);
+		v_slug := v_base_slug;
+	end if;
+	while exists (select 1 from public.qorpera_company_sites where slug = v_slug) or not public.qorpera_site_slug_valid(v_slug) loop
 		v_suffix := v_suffix + 1;
 		v_slug := left(v_base_slug, 38) || '-' || v_suffix::text;
 	end loop;

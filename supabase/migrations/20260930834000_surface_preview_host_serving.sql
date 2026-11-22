@@ -2,12 +2,12 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regprocedure('public.qorpera_spawn_cross_surface_session(uuid,text,text,text,jsonb)') is not null then
-		raise exception 'Surface Preview Host Serving (20260930827000) is already applied';
+		raise exception 'Surface Preview Host Serving (20260930834000) is already applied';
 	end if;
 	if to_regclass('public.qorpera_surface_previews') is null
 		or to_regprocedure('public.qorpera_site_serve_host(text,text,text,text,integer,integer)') is null
 		or to_regprocedure('public.qorpera_site_member_pass_redeem(text,text)') is null then
-		raise exception 'Surface Preview Host Serving (20260930827000) requires 20260930756000, 20260930774000, and 20260930826000 first';
+		raise exception 'Surface Preview Host Serving (20260930834000) requires 20260930756000, 20260930774000, and 20260930833000 first';
 	end if;
 end $$;
 
@@ -127,7 +127,7 @@ begin
 	where session.token_sha256 in (
 		select old.token_sha256 from public.qorpera_company_site_sessions as old
 		where old.site_id = v_site.id and old.member_user_id is not null
-		order by old.created_at desc offset 99
+		order by old.created_at desc offset 49
 	);
 
 	v_token := public.qorpera_site_new_token();

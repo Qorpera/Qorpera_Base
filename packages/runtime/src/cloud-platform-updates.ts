@@ -265,6 +265,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Visual screenshot inspection in coding sessions",
 		text: "Coding sessions can now visually inspect screenshots of web interfaces they build before handing work in. Inside a coding session, the agent can start a local dev or preview server, capture PNG, JPEG, or WebP screenshots with headless Chromium or Playwright across desktop and mobile viewports, and view the rendered images directly in its context to catch layout, styling, and responsive bugs before committing. Ask for visual verification when dispatching coding work on websites or UI changes.",
 	},
+	{
+		id: "surface-first-company-harness",
+		kind: "behaviour",
+		date: "2026-11-22",
+		title: "Surfaces, live previews and shared identity",
+		text: "Your company now runs on live Surfaces instead of ad-hoc files and separate specialist hierarchies. Every product or brand area projects its real codebase or company folder directly into the founder's canvas, where parallel work sessions propose toggleable changes and side-by-side design explorations before anything merges or goes live. Shared identity styling syncs across builds automatically, and recurring work runs as focused automations instead of permanent background roles. Keep the company folder lean by editing live surface files directly rather than creating extra draft or memo documents.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

@@ -2,10 +2,10 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regclass('public.qorpera_surface_session_messages') is not null then
-		raise exception 'Surface Preview and Dispatch (20260930826000) is already applied';
+		raise exception 'Surface Preview and Dispatch (20260930833000) is already applied';
 	end if;
 	if to_regclass('public.qorpera_surfaces') is null then
-		raise exception 'Surface Preview and Dispatch (20260930826000) requires 20260930825000 first';
+		raise exception 'Surface Preview and Dispatch (20260930833000) requires 20260930832000 first';
 	end if;
 end $$;
 
