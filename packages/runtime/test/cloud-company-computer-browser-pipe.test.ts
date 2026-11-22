@@ -68,4 +68,16 @@ describe("broker-only Chromium pipe", () => {
 		expect(() => f.pipe.send({ id: 2 })).toThrow("OFFICE_BROWSER_CHANNEL_CLOSED");
 		expect(f.pipe.onclose).toHaveBeenCalledOnce();
 	});
+	it("reassembles multi-megabyte fragmented frames linearly without pinning backing chunks", async () => {
+		const f = fixture();
+		const payload = "x".repeat(4 * 1024 * 1024);
+		const raw = Buffer.from(`${JSON.stringify({ id: 7, payload })}\0{"id":8}\0`);
+		for (let offset = 0; offset < raw.length; offset += 65536) {
+			f.output.write(raw.subarray(offset, Math.min(offset + 65536, raw.length)));
+		}
+		await vi.waitFor(() => expect(f.pipe.onmessage).toHaveBeenCalledTimes(2));
+		expect(f.pipe.onmessage).toHaveBeenNthCalledWith(1, { id: 7, payload });
+		expect(f.pipe.onmessage).toHaveBeenNthCalledWith(2, { id: 8 });
+		f.pipe.close();
+	});
 });

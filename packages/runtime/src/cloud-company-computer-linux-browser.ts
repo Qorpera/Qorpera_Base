@@ -249,29 +249,38 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 		const close = (): Promise<void> => {
 			closing ??= cloudToolRequest(
 				async () => {
-					await egress?.close();
-					// Stop network effects first. A graceful browser close can flush its
-					// persistent session; confirmed namespace exit is still mandatory.
-					if (browser) {
-						await cloudToolRequest(
-							async () => {
-								const control = await browser!.newBrowserCDPSession();
-								await control.send("Browser.close");
-							},
-							new AbortController().signal,
-							1000,
-						).catch(() => undefined);
-					}
-					if (exited) {
-						await cloudToolRequest(() => exited!, new AbortController().signal, 3000).catch(async () => {
+					let drained = false;
+					try {
+						await egress?.close();
+						// Stop network effects first. A graceful browser close can flush its
+						// persistent session; confirmed namespace exit is still mandatory.
+						if (browser) {
+							await cloudToolRequest(
+								async () => {
+									const control = await browser!.newBrowserCDPSession();
+									await control.send("Browser.close");
+								},
+								new AbortController().signal,
+								1000,
+							).catch(() => undefined);
+						}
+						if (exited) {
+							await cloudToolRequest(() => exited!, new AbortController().signal, 3000).catch(async () => {
+								stop();
+								await cloudToolRequest(() => exited!, new AbortController().signal, 5000);
+							});
+						}
+						drained = true;
+					} finally {
+						if (!drained) {
+							abort.abort();
 							stop();
-							await cloudToolRequest(() => exited!, new AbortController().signal, 5000);
-						});
+						}
+						channel?.close();
+						signal.removeEventListener("abort", onAbort);
+						await Promise.allSettled(files.map((file) => file.close()));
+						if (temporary) await rm(temporary, { recursive: true, force: true }).catch(() => undefined);
 					}
-					channel?.close();
-					signal.removeEventListener("abort", onAbort);
-					await Promise.all(files.map((file) => file.close()));
-					if (temporary) await rm(temporary, { recursive: true, force: true });
 				},
 				new AbortController().signal,
 				15000,
@@ -292,17 +301,18 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 		signal.addEventListener("abort", onAbort, { once: true });
 		try {
 			await cloudToolRequest(check, signal);
-			for (const path of [
-				"/usr/bin/bwrap",
-				"/usr/local/lib/qorpera/qorpera-browser-bwrap",
-				"/usr/bin/tini",
-				"/usr/bin/bash",
-				"/usr/bin/node",
-				"/usr/lib/qorpera-chromium/chrome",
-				"/usr/local/lib/qorpera/office-browser-child.mjs",
-				policyPath,
-			])
-				await assertCompanyComputerImageArtifact(path);
+			await Promise.all(
+				[
+					"/usr/bin/bwrap",
+					"/usr/local/lib/qorpera/qorpera-browser-bwrap",
+					"/usr/bin/tini",
+					"/usr/bin/bash",
+					"/usr/bin/node",
+					"/usr/lib/qorpera-chromium/chrome",
+					"/usr/local/lib/qorpera/office-browser-child.mjs",
+					policyPath,
+				].map((path) => assertCompanyComputerImageArtifact(path)),
+			);
 			if (!isDeepStrictEqual(JSON.parse(await readCompanyComputerLinuxMetadata(policyPath, 4096)), policy))
 				throw new Error("OFFICE_BROWSER_POLICY_MISMATCH");
 			files.push(await openCompanyComputerLinuxDirectory(layout.workbenchRoot, false));
@@ -383,10 +393,13 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 				"--tmpfs",
 				"/home/qorpera",
 			);
-			for (const path of ["/etc/fonts", "/etc/ssl/certs", "/etc/passwd", "/etc/group", "/etc/nsswitch.conf"]) {
-				await assertCompanyComputerImageArtifact(path, ["/etc/fonts", "/etc/ssl/certs"].includes(path));
-				args.push("--ro-bind", path, path);
-			}
+			const roPaths = ["/etc/fonts", "/etc/ssl/certs", "/etc/passwd", "/etc/group", "/etc/nsswitch.conf"];
+			await Promise.all(
+				roPaths.map((path) =>
+					assertCompanyComputerImageArtifact(path, path === "/etc/fonts" || path === "/etc/ssl/certs"),
+				),
+			);
+			for (const path of roPaths) args.push("--ro-bind", path, path);
 			for (const [key, value] of Object.entries({
 				HOME: "/home/qorpera",
 				PATH: "/usr/bin:/bin",
@@ -412,11 +425,17 @@ export function createCompanyComputerLinuxBrowserLaunch(options: {
 				],
 			});
 			exited = new Promise<void>((finished) => launched!.child.once("close", () => finished()));
-			let logs = 0;
+			let logWindowStart = performance.now();
+			let logWindowBytes = 0;
 			for (const stream of [launched.child.stdout!, launched.child.stderr!])
 				stream.on("data", (bytes: Buffer) => {
-					logs += bytes.length;
-					if (logs > 1024 * 1024) abort.abort();
+					const now = performance.now();
+					if (now - logWindowStart > 5000) {
+						logWindowStart = now;
+						logWindowBytes = 0;
+					}
+					logWindowBytes += bytes.length;
+					if (logWindowBytes > 1024 * 1024) abort.abort();
 				});
 			await launched.started;
 			signal.throwIfAborted();
