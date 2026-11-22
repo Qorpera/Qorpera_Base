@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { agentPins, nodeLxd, parseConfig, planImages, planStaging, readHoldDir, tidy } from "./qorpera-node-tidy.mjs";
+import {
+	agentPins,
+	createNodeSystemd,
+	nodeLxd,
+	parseConfig,
+	planImages,
+	planStaging,
+	readBoundedTraceFile,
+	readHoldDir,
+	tidy,
+} from "./qorpera-node-tidy.mjs";
 
 const HOUR = 60 * 60_000;
 const now = Date.parse("2026-09-23T18:00:00.000Z");
@@ -639,6 +650,145 @@ test("nodeLxd rejects truncated socket responses and HTTP 500 errors promptly", 
 		await assert.rejects(() => lxd.images(), /closed|aborted|truncated/i);
 		mode = "error";
 		await assert.rejects(() => lxd.images(), /daemon shutting down/);
+	} finally {
+		server.close();
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("createNodeSystemd keeps reloading, deactivating, and enabled-failed units (including template instances) live while excluding disabled units", async () => {
+	const systemd = createNodeSystemd(async (_bin, args) => {
+		if (args[0] === "list-units") {
+			return {
+				stdout: [
+					"qorpera-a.service loaded active running A",
+					"qorpera-b.service loaded reloading reload B",
+					"qorpera-c.service loaded deactivating stop C",
+					"qorpera-d.service loaded failed failed D",
+					"qorpera-e.service loaded failed failed E",
+					"qorpera-f.service loaded inactive dead F",
+					"qorpera-worker@1.service loaded failed failed Worker 1",
+					"qorpera-worker@node.2.service loaded failed failed Worker 2",
+					"qorpera-off@1.service loaded failed failed Off 1",
+				].join("\n"),
+			};
+		}
+		return {
+			stdout: [
+				"qorpera-a.service enabled",
+				"qorpera-d.service enabled",
+				"qorpera-e.service disabled",
+				"qorpera-f.service enabled",
+				"qorpera-worker@.service enabled",
+				"qorpera-off@.service disabled",
+			].join("\n"),
+		};
+	});
+	assert.deepEqual(await systemd.units("qorpera*"), [
+		"qorpera-a.service",
+		"qorpera-b.service",
+		"qorpera-c.service",
+		"qorpera-d.service",
+		"qorpera-worker@1.service",
+		"qorpera-worker@node.2.service",
+	]);
+});
+
+test("tidy skips symlinked, FIFO, oversized, and missing trace files while reading regular files", async () => {
+	const node = await nodeFixture();
+	try {
+		const target = join(node.root, "target.txt");
+		const linkPath = join(node.root, "symlink.txt");
+		const fifoPath = join(node.root, "pipe.fifo");
+		const oversizedPath = join(node.root, "oversized.txt");
+		const missingPath = join(node.root, "missing.txt");
+		const validPath = join(node.root, "valid.txt");
+		await writeFile(target, `secret=${fp("a")}\n`);
+		await symlink(target, linkPath);
+		execFileSync("mkfifo", [fifoPath]);
+		await writeFile(oversizedPath, `${"x".repeat(2_000_001)}${fp("b")}\n`);
+		await writeFile(validPath, `kept=${fp("c")}\n`);
+
+		const [launcher] = await node.systemd.startPaths();
+		const lxd = {
+			...node.lxd,
+			images: async () => [...(await node.lxd.images()), image("a", 300), image("b", 300), image("c", 300)],
+		};
+		const systemd = {
+			...node.systemd,
+			startPaths: async () => [launcher, linkPath, fifoPath, oversizedPath, missingPath, validPath],
+		};
+		const report = await tidy({ config: node.config, apply: false, lxd, systemd, now });
+		assert.equal(report.refusal, null);
+		const kept = Object.fromEntries(report.keep.map((item) => [item.fingerprint[0], item.reason]));
+		assert.equal(kept.c, "live configuration");
+		assert.equal(kept.a, undefined);
+		assert.equal(kept.b, undefined);
+		const removed = new Set(report.remove.map((item) => item.fingerprint[0]));
+		assert.ok(removed.has("a"));
+		assert.ok(removed.has("b"));
+	} finally {
+		await rm(node.root, { recursive: true, force: true });
+	}
+});
+
+test("tidy preserves full BFS depth from live pins when sharing files with start paths and reads each file once", async () => {
+	const node = await nodeFixture();
+	try {
+		const pinPath = join(node.root, "etc", "provider-env-v53.json");
+		await writeFile(
+			pinPath,
+			`${JSON.stringify({
+				env: { QORPERA_LXD_IMAGE_FINGERPRINT: fp("4"), EXTRA_CONF: "/etc/qorpera-test/x.conf" },
+			})}\n`,
+		);
+		const virtualFiles = new Map([
+			["/etc/qorpera-test/s.sh", "/etc/qorpera-test/l.sh provider-env-v53.json\n"],
+			["/etc/qorpera-test/l.sh", "/etc/qorpera-test/x.conf\n"],
+			["/etc/qorpera-test/x.conf", "/etc/qorpera-test/y.conf\n"],
+			["/etc/qorpera-test/y.conf", "/etc/qorpera-test/z.conf\n"],
+			["/etc/qorpera-test/z.conf", `fingerprint=${fp("e")}\n`],
+		]);
+		const reads = new Map();
+		const readTraceFile = async (path) => {
+			reads.set(path, (reads.get(path) ?? 0) + 1);
+			if (virtualFiles.has(path)) return virtualFiles.get(path);
+			return readBoundedTraceFile(path);
+		};
+		const lxd = {
+			...node.lxd,
+			images: async () => [...(await node.lxd.images()), image("e", 300)],
+		};
+		const systemd = {
+			...node.systemd,
+			startPaths: async () => ["/etc/qorpera-test/s.sh"],
+		};
+		const report = await tidy({ config: node.config, apply: false, lxd, systemd, now, readTraceFile });
+		assert.equal(report.refusal, null);
+		const kept = Object.fromEntries(report.keep.map((item) => [item.fingerprint[0], item.reason]));
+		assert.equal(kept.e, "live configuration");
+		for (const [path, count] of reads) assert.equal(count, 1, `expected ${path} to be read once, got ${count}`);
+	} finally {
+		await rm(node.root, { recursive: true, force: true });
+	}
+});
+
+test("nodeLxd rejects non-array metadata and service sets UMask=0077", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "qorpera-tidy-meta-"));
+	const sock = join(dir, "lxd.sock");
+	const server = createServer((socket) => {
+		socket.once("data", () => {
+			const payload = JSON.stringify({ type: "sync", metadata: { not: "an array" } });
+			socket.end(`HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: ${payload.length}\r\n\r\n${payload}`);
+		});
+	});
+	try {
+		await new Promise((resolve) => server.listen(sock, resolve));
+		const lxd = nodeLxd(sock);
+		await assert.rejects(() => lxd.images(), /non-array metadata/);
+		await assert.rejects(() => lxd.instances(), /non-array metadata/);
+		const unit = await readFile(new URL("qorpera-node-tidy.service", import.meta.url), "utf8");
+		assert.match(unit, /^UMask=0077$/m);
 	} finally {
 		server.close();
 		await rm(dir, { recursive: true, force: true });
