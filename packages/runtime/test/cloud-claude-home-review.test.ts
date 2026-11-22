@@ -313,3 +313,11 @@ it("never sends a hook the host cannot read: a change too big to review whole go
 	expect(cloudClaudeFileCall("")).toBeUndefined();
 	expect(CLAUDE_REPEAT_ELSEWHERE).not.toMatch(/without another review/);
 });
+
+it("reassembles SFTP packets split across 1-byte header boundaries without dropping or duplicating packets", async () => {
+	const { gate, toHome, settle } = filesGate(() => undefined);
+	const pkt = read(42, "handle-split");
+	for (let i = 0; i < pkt.length; i += 1) gate.fromMount(pkt.subarray(i, i + 1));
+	await settle();
+	expect(toHome).toEqual([pkt]);
+});

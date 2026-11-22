@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { folderKey } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import {
 	CLAUDE_BOX_TOOLS,
 	CLAUDE_CODE_PIN,
@@ -246,6 +247,7 @@ export class ClaudeWorkerStream {
 				if (this.init === null) this.beforeInit = true;
 				const tool = typeof block.name === "string" ? block.name : "unknown";
 				this.#open.set(block.id, { tool, what: stepWhat(tool, block.input), at: this.#now() });
+				while (this.#open.size > MAX_OPEN_TOOL_CALLS) this.#open.delete(this.#open.keys().next().value as string);
 				if (this.limit) this.limit.toolsAfter++;
 			}
 			return [];
@@ -455,6 +457,7 @@ export function claudeBoxFailureCode(error: unknown): string {
 	return `box-${claudeBoxStartStage(error) ?? "unknown"}${detail ? `:${detail}` : ""}`;
 }
 
+const MAX_OPEN_TOOL_CALLS = 512;
 const SUMMARY_BYTES = 4000;
 const NEEDS_BYTES = 1000;
 
@@ -463,8 +466,11 @@ const NEEDS_BYTES = 1000;
 export function claudeWorkerReportText(text: string, bytes: number): string {
 	let out = text.replace(/\r\n?/g, "\n").replace(/^## /gm, "### ").trim();
 	if (Buffer.byteLength(out) <= bytes) return out;
-	while (Buffer.byteLength(`${out}…`) > bytes)
-		out = out.slice(0, Math.max(0, out.length - Math.max(1, out.length >> 4)));
+	while (Buffer.byteLength(`${out}…`) > bytes) {
+		let next = Math.max(0, out.length - Math.max(1, out.length >> 4));
+		if (next > 0 && out.charCodeAt(next - 1) >= 0xd800 && out.charCodeAt(next - 1) <= 0xdbff) next -= 1;
+		out = out.slice(0, next);
+	}
 	return `${out.trimEnd()}…`;
 }
 
@@ -550,10 +556,13 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 				while (!watching.signal.aborted && !keepFresh.ended) {
 					await delay(every, undefined, { signal: watching.signal, ref: false }).catch(() => undefined);
 					if (watching.signal.aborted) break;
-					await keepFresh.refresh(AbortSignal.any([signal, watching.signal])).catch(() => undefined);
+					await withAbortScopes([signal, watching.signal], (refreshSignal) =>
+						keepFresh.refresh(refreshSignal),
+					).catch(() => undefined);
 				}
 			})();
 			let toolsWrong = false;
+			let completed = false;
 			try {
 				for await (const line of box.lines) {
 					const hadInit = stream.init !== null;
@@ -572,10 +581,23 @@ export async function runClaudeWorker(options: ClaudeWorkerRunOptions): Promise<
 						options.step?.({ start: { model: stream.init.model, sessionId: stream.init.sessionId } });
 					}
 				}
+				if (!toolsWrong) completed = true;
 			} finally {
-				if (toolsWrong) await box.close();
-				await box.exited;
 				watching.abort();
+				if (toolsWrong || !completed) {
+					await box.close().catch(() => undefined);
+					let exitTimer: ReturnType<typeof setTimeout> | undefined;
+					await Promise.race([
+						box.exited,
+						new Promise<void>((resolve) => {
+							exitTimer = setTimeout(resolve, 5_000);
+							exitTimer.unref();
+						}),
+					]);
+					clearTimeout(exitTimer);
+				} else {
+					await box.exited;
+				}
 				await watch;
 			}
 			signal.throwIfAborted();
@@ -678,7 +700,7 @@ export async function claudeWorkerSettledOutputs(
 	signal: AbortSignal,
 	options: { firstMs?: number; stepMs?: number; untilMs?: number; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<readonly string[]> {
-	const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.()));
+	const sleep = options.sleep ?? ((ms: number) => delay(ms, undefined, { signal, ref: false }));
 	const step = options.stepMs ?? 2_000;
 	const until = options.untilMs ?? 12_000;
 	// A read that fails answers nothing: it neither agrees with the read before it nor replaces it.

@@ -518,3 +518,23 @@ it("releases socket slots after abrupt client disconnects before newline and rej
 	expect(oversized.err).toContain("HOME_REQUEST_INVALID");
 	await shell.close();
 });
+
+it("cancels a hung process/start when the client disconnects and releases its connection slot", async () => {
+	const terminated: string[] = [];
+	const home = fakeHome((message, send) => {
+		if (message.method === "process/start") return;
+		if (message.method === "process/terminate") {
+			terminated.push((message.params as { processId: string }).processId);
+			send({ id: message.id, result: {} });
+		}
+	});
+	const { shell } = await shellWith(home.channel);
+	const sock = createConnection(shell.socketPath);
+	await new Promise<void>((resolve) => sock.once("connect", () => resolve()));
+	sock.write(`${JSON.stringify({ cmd: "echo slow", cwd: "/company", env: {} })}\n`);
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	sock.destroy();
+	await new Promise((resolve) => setTimeout(resolve, 60));
+	expect(terminated).toHaveLength(1);
+	await shell.close();
+});

@@ -4,6 +4,7 @@ import {
 	bankAccountKey,
 	bankTransactionKeys,
 	CloudBankSyncs,
+	CloudBankSyncUpkeep,
 	type KeptBankTransaction,
 } from "@qorpera/runtime/cloud-bank-sync";
 import {
@@ -373,4 +374,81 @@ it("keys an account by the bank's own identity, the same in every session, and t
 	expect(new Set(keys).size).toBe(3);
 	// The same fetch again gives the same keys: nothing is kept twice.
 	expect(bankTransactionKeys("a".repeat(64), [coffee, coffee])).toEqual(keys.slice(0, 2));
+});
+
+it("aborts fetch on vault shutdown without recording a false failure", async () => {
+	const shutdown = new AbortController();
+	const f = fixture({});
+	f.bank.balances.mockImplementation(
+		(async (_uid: string, fetchSignal: AbortSignal) =>
+			await new Promise<EnableBankingBalance[]>((_, reject) => {
+				fetchSignal.addEventListener("abort", () => reject(fetchSignal.reason), { once: true });
+				shutdown.abort(new Error("vault stopping"));
+			})) as never,
+	);
+	await expect(f.syncs.pass(shutdown.signal)).rejects.toThrow();
+	expect(f.finished).toEqual([]);
+});
+
+it("fetches multiple accounts concurrently up to 4 and preserves account order", async () => {
+	const accounts = Array.from({ length: 6 }, (_, i) => ({
+		...account,
+		uid: `uid-${i + 1}`,
+		identificationHash: `hash-${i + 1}`,
+		iban: `DK500040044011624${i}`,
+	}));
+	const f = fixture({
+		fields: {
+			session_id: "sess-multi",
+			bank: "Danske Bank",
+			valid_until: "2027-01-01T00:00:00Z",
+			accounts: JSON.stringify(accounts),
+		},
+	});
+	let active = 0;
+	let peak = 0;
+	f.bank.balances.mockImplementation(async () => {
+		active += 1;
+		peak = Math.max(peak, active);
+		await new Promise((resolve) => setTimeout(resolve, 15));
+		active -= 1;
+		return [{ amount: 100, currency: "DKK", type: "CLBD", referenceDate: "2026-10-21" }];
+	});
+	f.bank.transactions.mockImplementation((async (uid: string) => ({
+		transactions: [booked("2026-10-20", 10, `Party ${uid}`)],
+		complete: true,
+	})) as never);
+	expect(await f.syncs.pass(signal)).toBe("current");
+	expect(peak).toBeGreaterThan(1);
+	expect(peak).toBeLessThanOrEqual(4);
+	expect(f.recorded[0]?.accountKeys).toEqual(accounts.map((a) => bankAccountKey(a)));
+});
+
+it("deduplicates overlapping upkeep pass() calls and awaits in-flight work on close()", async () => {
+	let release!: () => void;
+	let calls = 0;
+	const upkeep = new CloudBankSyncUpkeep({
+		syncs: {
+			pass: async () => {
+				calls += 1;
+				await new Promise<void>((resolve) => {
+					release = resolve;
+				});
+				return "idle";
+			},
+		},
+	});
+	const first = upkeep.pass();
+	const second = upkeep.pass();
+	expect(second).toBe(first);
+	expect(calls).toBe(1);
+	let closed = false;
+	const closing = upkeep.close().then(() => {
+		closed = true;
+	});
+	await Promise.resolve();
+	expect(closed).toBe(false);
+	release();
+	await closing;
+	expect(closed).toBe(true);
 });

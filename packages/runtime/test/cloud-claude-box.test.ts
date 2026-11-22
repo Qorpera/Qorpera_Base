@@ -376,3 +376,30 @@ it("reviews one at a time, and a closed reviewer starts none", async () => {
 	await expect(reviewer.review(input, new AbortController().signal)).rejects.toThrow();
 	expect(run).toHaveBeenCalledTimes(3);
 });
+
+it("rejects an aborted queued review immediately while keeping subsequent waiters serialized", async () => {
+	let releaseFirst!: () => void;
+	const order: string[] = [];
+	const run = vi.fn(async (input: { prompt: string }) => {
+		order.push(`start:${input.prompt}`);
+		if (input.prompt === "first") {
+			await new Promise<void>((resolve) => {
+				releaseFirst = resolve;
+			});
+		}
+		order.push(`end:${input.prompt}`);
+		return { decision: "allow" };
+	});
+	const reviewer = new ClaudeCodeReviewer(run);
+	const base = { instructions: "i", model: "haiku", effort: "low" as const };
+	const first = reviewer.review({ ...base, prompt: "first" }, new AbortController().signal);
+	const abortSecond = new AbortController();
+	const second = reviewer.review({ ...base, prompt: "second" }, abortSecond.signal);
+	const third = reviewer.review({ ...base, prompt: "third" }, new AbortController().signal);
+	abortSecond.abort(new Error("cancelled"));
+	await expect(second).rejects.toThrow("cancelled");
+	expect(order).toEqual(["start:first"]);
+	releaseFirst();
+	await Promise.all([first, third]);
+	expect(order).toEqual(["start:first", "end:first", "start:third", "end:third"]);
+});

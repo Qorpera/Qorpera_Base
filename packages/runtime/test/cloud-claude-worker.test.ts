@@ -1220,4 +1220,58 @@ describe("the box's scratch root on a run host", () => {
 		expect(await readdir(host)).toEqual(["run"]);
 		await rm(host, { recursive: true });
 	});
+
+	it("closes the box instead of deadlocking on box.exited when step callback throws mid-stream", async () => {
+		const runRoot = await root();
+		let closeCalled = 0;
+		let finishExit!: (code: number) => void;
+		const exited = new Promise<number>((resolve) => {
+			finishExit = resolve;
+		});
+		const launch: Parameters<typeof runClaudeWorker>[0]["launch"] = async () =>
+			({
+				lines: (async function* () {
+					yield init();
+					yield use("t1", "Bash", { command: "echo hi" });
+					yield answer("t1");
+				})(),
+				exited,
+				stderr: () => "",
+				shell: {} as ClaudeCodeBox["shell"],
+				close: async () => {
+					closeCalled += 1;
+					finishExit(137);
+				},
+			}) as ClaudeCodeBox;
+		await expect(
+			runClaudeWorker({
+				brief,
+				member: "Ada",
+				logins: vault().logins,
+				launch,
+				root: runRoot,
+				step: () => {
+					throw new Error("step boom");
+				},
+				signal: new AbortController().signal,
+			}),
+		).rejects.toThrow("step boom");
+		expect(closeCalled).toBeGreaterThanOrEqual(1);
+		await rm(runRoot, { recursive: true });
+	});
+
+	it("preserves valid UTF-16 surrogate pairs when truncating report text and aborts settled-output sleep immediately", async () => {
+		const text = `${"a".repeat(20)}${"\u{1d400}".repeat(20)}`;
+		const clipped = claudeWorkerReportText(text, 28);
+		expect(Buffer.byteLength(clipped)).toBeLessThanOrEqual(28);
+		expect(clipped.isWellFormed()).toBe(true);
+
+		const abort = new AbortController();
+		const started = performance.now();
+		setTimeout(() => abort.abort(new Error("stop")), 25);
+		await expect(
+			claudeWorkerSettledOutputs(async () => ["a.txt"], abort.signal, { firstMs: 5_000 }),
+		).rejects.toThrow();
+		expect(performance.now() - started).toBeLessThan(1_000);
+	});
 });
