@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
+import { withTimeoutScope } from "../_shared/abort-timeout.ts";
 import {
 	type ClaimedInvitationDeliveries,
 	deliverProfileInvitationBatch,
@@ -98,40 +99,42 @@ class ResendInvitationEmailProvider implements InvitationEmailProvider {
 		email: ProfileInvitationEmail,
 		idempotencyKey: string,
 	): Promise<{ messageId: string }> {
-		let response: Response;
-		try {
-			response = await fetch("https://api.resend.com/emails", {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${this.apiKey}`,
-					"Content-Type": "application/json",
-					"Idempotency-Key": idempotencyKey,
-				},
-				body: JSON.stringify({
-					from: this.from,
-					to: [job.recipientEmail],
-					subject: email.subject,
-					text: email.text,
-					html: email.html,
-				}),
-				signal: AbortSignal.timeout(15_000),
-			});
-		} catch (error) {
-			throw new InvitationEmailSendError(
-				error instanceof Error ? error.message : "Resend request failed",
-				true,
-			);
-		}
-		if (!response.ok) throw await resendFailure(response);
-		const body: unknown = await response.json();
-		if (!body || typeof body !== "object" || Array.isArray(body)) {
-			throw new InvitationEmailSendError("Resend returned an invalid response", true);
-		}
-		const messageId = (body as Record<string, unknown>).id;
-		if (typeof messageId !== "string" || !messageId.trim() || messageId.length > 256) {
-			throw new InvitationEmailSendError("Resend returned an invalid message id", true);
-		}
-		return { messageId };
+		return withTimeoutScope(15_000, async (signal) => {
+			let response: Response;
+			try {
+				response = await fetch("https://api.resend.com/emails", {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${this.apiKey}`,
+						"Content-Type": "application/json",
+						"Idempotency-Key": idempotencyKey,
+					},
+					body: JSON.stringify({
+						from: this.from,
+						to: [job.recipientEmail],
+						subject: email.subject,
+						text: email.text,
+						html: email.html,
+					}),
+					signal,
+				});
+			} catch (error) {
+				throw new InvitationEmailSendError(
+					error instanceof Error ? error.message : "Resend request failed",
+					true,
+				);
+			}
+			if (!response.ok) throw await resendFailure(response);
+			const body: unknown = await response.json();
+			if (!body || typeof body !== "object" || Array.isArray(body)) {
+				throw new InvitationEmailSendError("Resend returned an invalid response", true);
+			}
+			const messageId = (body as Record<string, unknown>).id;
+			if (typeof messageId !== "string" || !messageId.trim() || messageId.length > 256) {
+				throw new InvitationEmailSendError("Resend returned an invalid message id", true);
+			}
+			return { messageId };
+		});
 	}
 }
 
@@ -179,6 +182,7 @@ Deno.serve(async (request) => {
 		config.invitationUrl,
 		new ResendInvitationEmailProvider(config.resendApiKey, config.from),
 		store,
+		{ paceMs: 600, budgetMs: 45_000 },
 	);
 	return jsonResponse(result);
 });
