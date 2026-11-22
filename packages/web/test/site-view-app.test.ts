@@ -186,7 +186,7 @@ describe("a company's website in the app", () => {
 		expect(passes(f.cloud).map(([, args]) => args)).toEqual([{ p_site: id(81) }, { p_site: id(82) }]);
 	});
 
-	it("disposes the active site view once when membership is revoked", async () => {
+	it("disposes and clears the active site view on revocation so later redraws do not re-dispose it", async () => {
 		const disposeSpy = vi.spyOn(SiteView.prototype, "dispose");
 		const f = await mount(siteHash("wristband-shop"), () => [row("wristband-shop", "Wristband shop")]);
 		expect(disposeSpy).not.toHaveBeenCalled();
@@ -206,12 +206,14 @@ describe("a company's website in the app", () => {
 		expect(disposeSpy).toHaveBeenCalledTimes(afterRevoke);
 	});
 
-	it("coalesces concurrent focus-triggered site reads and skips redundant store churn when unchanged", async () => {
-		let gate = deferred<ReturnType<typeof row>[]>();
+	it("coalesces concurrent focus-triggered site reads into one trailing re-read and skips redundant store churn when unchanged", async () => {
+		const gates: Array<ReturnType<typeof deferred<ReturnType<typeof row>[]>>> = [];
 		let listCalls = 0;
 		await mount(siteHash("wristband-shop"), () => {
 			listCalls += 1;
-			return gate.promise;
+			const next = deferred<ReturnType<typeof row>[]>();
+			gates.push(next);
+			return next.promise;
 		});
 		expect(listCalls).toBe(1);
 		window.dispatchEvent(new Event("focus"));
@@ -221,17 +223,14 @@ describe("a company's website in the app", () => {
 		expect(listCalls).toBe(1);
 
 		const updateSpy = vi.spyOn(SiteView.prototype, "update");
-		gate.resolve([row("wristband-shop", "Wristband shop")]);
-		await draw();
-
-		gate = deferred<ReturnType<typeof row>[]>();
-		window.dispatchEvent(new Event("focus"));
-		window.dispatchEvent(new Event("focus"));
+		gates[0]!.resolve([row("wristband-shop", "Wristband shop")]);
 		await draw();
 		expect(listCalls).toBe(2);
 		updateSpy.mockClear();
-		gate.resolve([row("wristband-shop", "Wristband shop")]);
+
+		gates[1]!.resolve([row("wristband-shop", "Wristband shop")]);
 		await draw();
+		expect(listCalls).toBe(2);
 		expect(updateSpy).not.toHaveBeenCalled();
 	});
 });

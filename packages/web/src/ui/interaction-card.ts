@@ -137,7 +137,7 @@ export interface InteractionCardContext {
 	/** An app of the company by its name, for an option whose preview names one; undefined when the company has no
 	 * such app, or where the apps cannot be reached. */
 	app?: (name: string) => InteractionCardApp | undefined;
-	/** WHY: aborts card-owned background probes and debounce timers when the parent view disposes. */
+	/** WHY: optional per-card signal for callers to abort mail_address probes and timers before rerender. */
 	signal?: AbortSignal;
 	now?: number;
 }

@@ -1901,16 +1901,19 @@ export function mountApplication(
 			sitesRead = controller;
 			const sites = createWebSites(cloud, controller.profile);
 			let sitesInFlight = false;
-			let sitesSeq = 0;
+			let sitesPending = false;
 			const readSites = () => {
-				if (sitesInFlight || controller.signal.aborted) return;
+				if (controller.signal.aborted) return;
+				if (sitesInFlight) {
+					sitesPending = true;
+					return;
+				}
 				sitesInFlight = true;
-				const seq = ++sitesSeq;
 				void sites
 					.list(controller.signal)
 					.then(
 						async (list) => {
-							if (controller.signal.aborted || seq !== sitesSeq) return;
+							if (controller.signal.aborted) return;
 							const prevList = controller.store.get().siteList;
 							if (prevList === undefined || JSON.stringify(prevList) !== JSON.stringify(list))
 								controller.store.set(sitesListed(list));
@@ -1918,7 +1921,7 @@ export function mountApplication(
 							if (list.some((site) => site.kind === "files" && site.state === "live")) {
 								try {
 									const access = await sites.access(controller.signal);
-									if (controller.signal.aborted || seq !== sitesSeq) return;
+									if (controller.signal.aborted) return;
 									const nextTaken = new Set(access.takenDown.keys());
 									const prevTaken = controller.store.get().sitesTakenDown;
 									if (
@@ -1931,16 +1934,16 @@ export function mountApplication(
 							}
 						},
 						() => {
-							if (
-								!controller.signal.aborted &&
-								seq === sitesSeq &&
-								controller.store.get().siteList === undefined
-							)
+							if (!controller.signal.aborted && controller.store.get().siteList === undefined)
 								controller.store.set({ siteList: [] });
 						},
 					)
 					.finally(() => {
 						sitesInFlight = false;
+						if (sitesPending && !controller.signal.aborted) {
+							sitesPending = false;
+							readSites();
+						}
 					});
 			};
 			readSites();
@@ -1954,8 +1957,13 @@ export function mountApplication(
 			releasesRead = controller;
 			const releases = companyReleases(controller).shared;
 			let releasesInFlight = false;
+			let releasesPending = false;
 			const readReleases = () => {
-				if (releasesInFlight || controller.signal.aborted) return;
+				if (controller.signal.aborted) return;
+				if (releasesInFlight) {
+					releasesPending = true;
+					return;
+				}
 				releasesInFlight = true;
 				void releases
 					.list(controller.signal)
@@ -1977,6 +1985,10 @@ export function mountApplication(
 					)
 					.finally(() => {
 						releasesInFlight = false;
+						if (releasesPending && !controller.signal.aborted) {
+							releasesPending = false;
+							readReleases();
+						}
 					});
 			};
 			readReleases();
