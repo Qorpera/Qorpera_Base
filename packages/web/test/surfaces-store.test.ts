@@ -3,12 +3,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseRoute, routeHash, surfaceHash } from "../src/app/router.ts";
 import {
 	approvalOutcome,
+	attachSurfaces,
 	clearLocalSandboxCache,
 	compiledCompanyIdentity,
 	migrationPending,
 	reportsOwnedBy,
 	runningSessionTotal,
 	SURFACE_UNDO_MS,
+	surfacesDisabledOf,
+	surfacesOf,
 	synthesizeMigration,
 	synthesizeSurfaces,
 	unpublishedChanges,
@@ -20,13 +23,16 @@ import {
 	change,
 	fakeClient,
 	MESSAGE_IDS,
+	PREVIEW_IDS,
 	pointTarget,
+	previewFrame,
 	SESSION,
 	SURFACE,
 	session,
 	sessionMessage,
 	storeWith,
 	summary,
+	VALID_PASS,
 	workspace,
 } from "./surface-fixtures.ts";
 
@@ -723,6 +729,95 @@ describe("SurfacesStore", () => {
 
 		await store.rollbackChange(tokenChange.id);
 		expect(store.companyIdentityTokens()?.vars["--q-color-accent"]).toBe("#7c6fd6");
+		store.dispose();
+	});
+
+	it("stays disabled when qorpera_surfaces_enabled returns false or is missing", async () => {
+		const ownerA = {};
+		const listSurfaces = vi.fn(async () => [summary()]);
+		const bootstrapCompanySurfaces = vi.fn(async () => [summary()]);
+		const disabledStore = storeWith(
+			fakeClient({
+				isSurfacesEnabled: vi.fn(async () => false),
+				listSurfaces,
+				bootstrapCompanySurfaces,
+			}),
+		);
+		attachSurfaces(ownerA, disabledStore);
+		expect(surfacesOf(ownerA)).toBeUndefined();
+		await disabledStore.load();
+		expect(disabledStore.state.source).toBe("disabled");
+		expect(disabledStore.state.surfaces).toEqual([]);
+		expect(surfacesOf(ownerA)).toBeUndefined();
+		expect(surfacesDisabledOf(ownerA)).toBe(true);
+		expect(listSurfaces).not.toHaveBeenCalled();
+		expect(bootstrapCompanySurfaces).not.toHaveBeenCalled();
+		disabledStore.dispose();
+
+		const ownerB = {};
+		const missingStore = storeWith(
+			fakeClient({
+				isSurfacesEnabled: vi.fn(async () => Promise.reject(new CloudSurfacesError("missing", "PGRST202"))),
+				listSurfaces,
+			}),
+		);
+		attachSurfaces(ownerB, missingStore);
+		await missingStore.load();
+		expect(missingStore.state.source).toBe("disabled");
+		expect(missingStore.state.error).toBeUndefined();
+		expect(surfacesOf(ownerB)).toBeUndefined();
+		expect(surfacesDisabledOf(ownerB)).toBe(true);
+		missingStore.dispose();
+	});
+
+	it("mints preview passes automatically when ready primary or compare previews arrive without a pass", async () => {
+		const mintPreviewPass = vi.fn(async (previewId: string) => ({
+			previewId,
+			doorActionUrl: `https://thetaband--p${previewId.slice(-8)}.qorpera.com/__qorpera/member`,
+			memberPass: VALID_PASS,
+		}));
+		const client = fakeClient({
+			isSurfacesEnabled: vi.fn(async () => true),
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([session(["staged"])], {
+					previewState: {
+						surfaceId: SURFACE,
+						mode: "compare",
+						primary: previewFrame({
+							previewId: PREVIEW_IDS[0],
+							status: "ready",
+							doorActionUrl: null,
+							memberPass: null,
+						}),
+						compareFrames: [
+							{
+								sessionId: SESSION,
+								label: "Variant B",
+								frame: previewFrame({
+									previewId: PREVIEW_IDS[1],
+									status: "ready",
+									doorActionUrl: null,
+									memberPass: null,
+								}),
+							},
+						],
+					},
+				}),
+			),
+			mintPreviewPass,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		expect(mintPreviewPass).toHaveBeenCalledWith(PREVIEW_IDS[0]);
+		expect(mintPreviewPass).toHaveBeenCalledWith(PREVIEW_IDS[1]);
+		const ws = store.workspace(SURFACE)!;
+		expect(ws.previewState.primary.memberPass).toBe(VALID_PASS);
+		expect(ws.previewState.primary.doorActionUrl).toContain(PREVIEW_IDS[0].slice(-8));
+		expect(ws.previewState.compareFrames[0]?.frame.memberPass).toBe(VALID_PASS);
+		expect(ws.previewState.compareFrames[0]?.frame.doorActionUrl).toContain(PREVIEW_IDS[1].slice(-8));
 		store.dispose();
 	});
 });

@@ -851,6 +851,81 @@ describe("runner provider HTTP service", () => {
 		expect((caught as CloudRunnerProviderRequestError).message).toContain("[code=PROVIDER_SURFACE_SESSION]");
 	});
 
+	it("enforces maxConcurrentSurfaceDeliveries with HTTP 429 and recovers once a slot frees", async () => {
+		const releaseSlots: (() => void)[] = [];
+		const provider = backend();
+		provider.deliverSurfaceSession = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					releaseSlots.push(resolve);
+				}),
+		);
+		const service = new HttpCloudRunnerProviderService(provider, token, "127.0.0.1", 0, {
+			maxConcurrentSurfaceDeliveries: 2,
+		});
+		services.push(service);
+		const port = await service.start();
+		const machineId = "11111111-1111-4111-8111-111111111111";
+		const makeBody = (sessionId: string) =>
+			JSON.stringify({
+				schema: "qorpera.runner-provider/v1",
+				action: "surface_session",
+				adapter_id: "managed",
+				machine_id: machineId,
+				session: {
+					sessionId,
+					surfaceId: "33333333-3333-4333-8333-333333333333",
+					profileId: "44444444-4444-4444-8444-444444444444",
+					state: "queued",
+					prompt: "Run turn",
+					originKind: "member",
+					originRef: null,
+					repositoryKey: null,
+					folderRoot: "identity",
+					surfaceSlug: "identity",
+					surfaceTitle: "Identity",
+					surfaceArchetype: "studio",
+					surfaceSourceKind: "folder",
+					surfaceKind: "identity",
+					explorationId: null,
+					explorationVariantLabel: null,
+					siteSlug: null,
+					identityFolderRoot: "identity",
+					briefSummary: null,
+					retryCount: 0,
+					sponsor: null,
+					leaseToken: "55555555-5555-4555-8555-555555555555",
+					placement: {
+						strategy: "reuse_machine",
+						machineId,
+						activeTurns: 0,
+						targetDensity: 6,
+					},
+				},
+			});
+		const send = (sessionId: string) =>
+			fetch(`http://127.0.0.1:${port}/v1/qorpera-runner-provider`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+				body: makeBody(sessionId),
+			});
+
+		const first = await send("22222222-2222-4222-8222-222222222201");
+		const second = await send("22222222-2222-4222-8222-222222222202");
+		const third = await send("22222222-2222-4222-8222-222222222203");
+		expect(first.status).toBe(202);
+		expect(second.status).toBe(202);
+		expect(third.status).toBe(429);
+		expect(third.headers.get("retry-after")).toBe("5");
+		await expect(third.json()).resolves.toEqual({ error: "Provider surface session capacity reached" });
+
+		releaseSlots[0]?.();
+		await new Promise((resolve) => setTimeout(resolve, 15));
+		const fourth = await send("22222222-2222-4222-8222-222222222204");
+		expect(fourth.status).toBe(202);
+		for (const release of releaseSlots) release();
+	});
+
 	it("decodes multi-byte UTF-8 JSON bodies split across TCP chunks without corruption", async () => {
 		const provider = backend();
 		const service = new HttpCloudRunnerProviderService(provider, token);

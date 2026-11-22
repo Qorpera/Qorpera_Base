@@ -5,6 +5,7 @@ import type { NativeCompanyExecutionRequest } from "../src/cloud-native-provider
 import { type CloudToolContext, CloudToolRefusal } from "../src/cloud-native-tool-boundary.ts";
 import {
 	createControlPlaneSessionCompletionPort,
+	createControlPlaneSessionLeaseRenewalPort,
 	createSurfaceSessionProviderHook,
 	loadSurfaceIdentityContext,
 	loadSurfaceSharedAssets,
@@ -766,5 +767,121 @@ describe("cloud surface session runner", () => {
 		expect(failedResult.state).toBe("failed");
 		expect(failedResult.sourceKind).toBe("code_repo");
 		expect(failedResult.error).toContain("Vault credential missing");
+	});
+
+	it("renews the session lease throughout a turn that outlives the lease TTL and stops renewing on exit", async () => {
+		const sessionId = randomUUID();
+		const surfaceId = randomUUID();
+		const companyId = randomUUID();
+		const leaseToken = randomUUID();
+		const leaseTtlMs = 45;
+		let leaseExpiresAt = Date.now() + leaseTtlMs;
+		let expiredDuringTurn = false;
+		const renewalCalls: { sessionId: string; leaseToken: string; extendSeconds: number }[] = [];
+
+		const renewSessionLease = vi.fn(
+			async (input: { readonly sessionId: string; readonly leaseToken: string; readonly extendSeconds: number }) => {
+				if (Date.now() > leaseExpiresAt) {
+					expiredDuringTurn = true;
+					return { renewed: false };
+				}
+				renewalCalls.push(input);
+				leaseExpiresAt = Date.now() + leaseTtlMs;
+				return { renewed: true };
+			},
+		);
+		const completeSessionTurn = vi.fn(async (completion: { readonly leaseToken?: string | null }) => {
+			if (Date.now() > leaseExpiresAt) {
+				expiredDuringTurn = true;
+				throw new Error("lease mismatch");
+			}
+			expect(completion.leaseToken).toBe(leaseToken);
+		});
+
+		const result = await runSurfaceSessionTurn(
+			{
+				sessionId,
+				surfaceId,
+				companyId,
+				surfaceSlug: "identity",
+				surfaceTitle: "Identity",
+				sourceKind: "folder",
+				folderRoot: "identity",
+				prompt: "Refine design tokens.",
+				leaseToken,
+			},
+			{
+				surfaceTools: {
+					stageSurfacePatch: vi.fn(),
+				},
+				renewSessionLease,
+				leaseRenewIntervalMs: 15,
+				leaseExtendSeconds: 180,
+				executeTurn: async () => {
+					await new Promise((resolve) => setTimeout(resolve, 130));
+					return { state: "ready", replyText: "Completed after long turn." };
+				},
+				completeSessionTurn,
+			},
+		);
+
+		expect(result.state).toBe("ready");
+		expect(expiredDuringTurn).toBe(false);
+		expect(renewalCalls.length).toBeGreaterThanOrEqual(3);
+		expect(renewalCalls[0]).toEqual({ sessionId, leaseToken, extendSeconds: 180 });
+		expect(completeSessionTurn).toHaveBeenCalledTimes(1);
+
+		const renewalsAtExit = renewalCalls.length;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(renewalCalls.length).toBe(renewalsAtExit);
+
+		const rpcCalls: { method: string; args: Record<string, unknown> }[] = [];
+		const rpcClient = {
+			async call(method: string, args: Record<string, unknown>) {
+				rpcCalls.push({ method, args });
+				return { renewed: true };
+			},
+		};
+		const renewalPort = createControlPlaneSessionLeaseRenewalPort(rpcClient);
+		const completionPort = createControlPlaneSessionCompletionPort(rpcClient);
+		const signal = new AbortController().signal;
+		await expect(
+			renewalPort.renewSessionLease({ sessionId, leaseToken, extendSeconds: 300 }, signal),
+		).resolves.toEqual({ renewed: true });
+		await completionPort.completeSessionTurn(
+			{
+				sessionId,
+				state: "ready",
+				replyText: "Done",
+				question: null,
+				notePaths: null,
+				branchHeadSha: null,
+				leaseToken,
+			},
+			signal,
+		);
+		expect(rpcCalls).toEqual([
+			{
+				method: "qorpera_surface_renew_lease",
+				args: {
+					p_kind: "session",
+					p_id: sessionId,
+					p_lease_token: leaseToken,
+					p_extend_seconds: 300,
+				},
+			},
+			{
+				method: "qorpera_surface_complete_session_turn",
+				args: {
+					p_session_id: sessionId,
+					p_state: "ready",
+					p_reply_text: "Done",
+					p_question: null,
+					p_note_paths: null,
+					p_branch_head_sha: null,
+					p_lease_token: leaseToken,
+				},
+			},
+		]);
 	});
 });

@@ -227,6 +227,7 @@ export type SurfaceControlPlaneRpc =
 	| "qorpera_propose_surface"
 	| "qorpera_service_start_surface_session"
 	| "qorpera_record_surface_change"
+	| "qorpera_surface_renew_lease"
 	| "qorpera_surface_complete_session_turn"
 	| "qorpera_surface_describe_company_senses"
 	| "qorpera_service_manage_surface_automation";

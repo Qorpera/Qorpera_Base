@@ -36,6 +36,9 @@ import type {
 
 const ZERO_SHA = "0".repeat(40);
 const DISALLOWED_JSON_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+export const SURFACE_PRE_MERGE_SNAPSHOT_MAX_BYTES = 96 * 1024;
+const MAX_SNAPSHOT_VERSION_CHARS = 128;
+const DEFAULT_COMPLETION_RETRY_DELAYS_MS: readonly number[] = [50, 200, 500];
 
 export interface SurfaceExecutionControlPlane {
 	completeSurfacePreview(input: CompleteSurfacePreviewInput, signal?: AbortSignal): Promise<unknown>;
@@ -55,7 +58,7 @@ export interface SurfaceCompanyFolderCommitOperation {
 }
 
 export type SurfaceCompanyFolderCommitResult =
-	| { readonly status: "saved" }
+	| { readonly status: "saved"; readonly versionsAfter?: Readonly<Record<string, string | null>> }
 	| { readonly status: "conflict"; readonly conflictPaths: readonly string[] };
 
 export interface SurfaceCompanyFolderPort {
@@ -89,6 +92,8 @@ export interface SurfaceFolderUndoSnapshot {
 	readonly folderRoot: string;
 	readonly changeIds: readonly string[];
 	readonly filesBefore: Readonly<Record<string, string | null>>;
+	readonly versionsAfter?: Readonly<Record<string, string | null>>;
+	readonly afterContentSha256?: Readonly<Record<string, string | null>>;
 }
 
 export interface SurfaceFolderSnapshotPort {
@@ -160,6 +165,7 @@ export interface SurfaceExecutionBridgePorts {
 	) => Promise<SurfaceCodeRepoUndoOutcome>;
 	readonly folder?: SurfaceCompanyFolderPort;
 	readonly folderSnapshots?: SurfaceFolderSnapshotPort;
+	readonly completionRetryDelaysMs?: readonly number[];
 	readonly runOpsActionJob?: (
 		job: ClaimedSurfaceMergeJob,
 		signal: AbortSignal,
@@ -224,6 +230,26 @@ function hashFolderFiles(files: Readonly<Record<string, string | null>>): string
 		.sort()
 		.map((path) => [path, files[path] ?? null] as const);
 	return createHash("sha256").update(JSON.stringify(sortedEntries)).digest("hex");
+}
+
+function hashNullableText(value: string | null): string | null {
+	if (value === null) return null;
+	return createHash("sha256").update(value, "utf-8").digest("hex");
+}
+
+function delayWithAbort(ms: number, signal: AbortSignal): Promise<void> {
+	if (ms <= 0 || signal.aborted) return Promise.resolve();
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		const onAbort = (): void => {
+			clearTimeout(timer);
+			resolve();
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
 }
 
 function hasControlOrWindowsChars(value: string): boolean {
@@ -545,6 +571,16 @@ function inferSourceKind(job: ClaimedSurfaceMergeJob): "code_repo" | "folder" | 
 	return "native_ops";
 }
 
+function parseOptionalNullableStringRecord(value: unknown): Record<string, string | null> | undefined {
+	if (!isPlainObject(value)) return undefined;
+	const out: Record<string, string | null> = {};
+	for (const [key, item] of Object.entries(value)) {
+		if (item !== null && typeof item !== "string") return undefined;
+		out[key] = item;
+	}
+	return out;
+}
+
 function parseDurableFolderSnapshot(
 	raw: Readonly<Record<string, unknown>> | null | undefined,
 	fallback: { readonly surfaceId: string; readonly profileId: string; readonly folderRoot: string | null },
@@ -564,6 +600,8 @@ function parseDurableFolderSnapshot(
 	const changeIds = Array.isArray(raw.changeIds)
 		? raw.changeIds.filter((item): item is string => typeof item === "string")
 		: [];
+	const versionsAfter = parseOptionalNullableStringRecord(raw.versionsAfter);
+	const afterContentSha256 = parseOptionalNullableStringRecord(raw.afterContentSha256);
 	return {
 		snapshotId: raw.snapshotId,
 		surfaceId: typeof raw.surfaceId === "string" ? raw.surfaceId : fallback.surfaceId,
@@ -571,6 +609,8 @@ function parseDurableFolderSnapshot(
 		folderRoot,
 		changeIds,
 		filesBefore,
+		...(versionsAfter !== undefined ? { versionsAfter } : {}),
+		...(afterContentSha256 !== undefined ? { afterContentSha256 } : {}),
 	};
 }
 
@@ -768,6 +808,8 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 		job: ClaimedSurfaceMergeJob,
 		signal: AbortSignal,
 		completeMerge: (input: CompleteSurfaceMergeInput, callSignal?: AbortSignal) => Promise<unknown>,
+		completeCommittedMerge: (input: CompleteSurfaceMergeInput, callSignal?: AbortSignal) => Promise<unknown>,
+		markCommitted: () => void,
 	): Promise<void> {
 		if (!ports.folder) {
 			throw new Error("Company folder port is not configured");
@@ -845,6 +887,54 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			}
 		}
 
+		const changeIds = parsedChanges.map((change) => change.changeId);
+		const afterContentSha256: Record<string, string | null> = {};
+		const placeholderVersionsAfter: Record<string, string> = {};
+		for (const path of orderedPaths) {
+			afterContentSha256[path] = hashNullableText(finalFiles[path] ?? null);
+			placeholderVersionsAfter[path] = "v".repeat(MAX_SNAPSHOT_VERSION_CHARS);
+		}
+
+		const useExternalSnapshot = ports.folderSnapshots !== undefined;
+		const preCommitCandidate: Record<string, unknown> = useExternalSnapshot
+			? {
+					snapshotId: applied.mainBefore,
+					folderRoot: normalizedRoot,
+					changeIds,
+					externalSnapshot: true,
+					versionsAfter: placeholderVersionsAfter,
+					afterContentSha256,
+				}
+			: {
+					snapshotId: applied.mainBefore,
+					folderRoot: normalizedRoot,
+					changeIds,
+					filesBefore,
+					versionsAfter: placeholderVersionsAfter,
+					afterContentSha256,
+				};
+		// WHY: Reject oversized pre-merge snapshots before mutating files so commitFiles never runs without a durable record.
+		if (Buffer.byteLength(JSON.stringify(preCommitCandidate), "utf-8") > SURFACE_PRE_MERGE_SNAPSHOT_MAX_BYTES) {
+			throw new Error(
+				useExternalSnapshot
+					? "Pre-merge folder snapshot metadata exceeds 96 KiB limit"
+					: "Pre-merge folder snapshot exceeds 96 KiB inline limit",
+			);
+		}
+
+		const baseSnapshot: SurfaceFolderUndoSnapshot = {
+			snapshotId: applied.mainBefore,
+			surfaceId: job.surfaceId,
+			profileId: job.profileId,
+			folderRoot: normalizedRoot,
+			changeIds,
+			filesBefore,
+			afterContentSha256,
+		};
+		if (ports.folderSnapshots) {
+			await ports.folderSnapshots.saveSnapshot(baseSnapshot, signal);
+		}
+
 		const operations: SurfaceCompanyFolderCommitOperation[] = [...pathsToWrite].sort().map((path) => ({
 			path,
 			expectedVersion: versionsBefore[path] ?? null,
@@ -869,31 +959,63 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			);
 			return;
 		}
+		markCommitted();
 
+		const versionsAfter: Record<string, string | null> = {};
+		if (commitResult.versionsAfter) {
+			for (const path of orderedPaths) {
+				if (Object.hasOwn(commitResult.versionsAfter, path)) {
+					versionsAfter[path] = commitResult.versionsAfter[path] ?? null;
+				} else {
+					versionsAfter[path] = versionsBefore[path] ?? null;
+				}
+			}
+		} else {
+			const postVersioned = await ports.folder.readFilesWithVersions(
+				{ profileId: job.profileId, folderRoot: normalizedRoot, paths: orderedPaths },
+				signal,
+			);
+			for (const path of orderedPaths) {
+				versionsAfter[path] = postVersioned[path]?.version ?? null;
+			}
+		}
+
+		const versionsFitInline = Object.values(versionsAfter).every(
+			(value) => value === null || value.length <= MAX_SNAPSHOT_VERSION_CHARS,
+		);
 		const durableSnapshot: SurfaceFolderUndoSnapshot = {
-			snapshotId: applied.mainBefore,
-			surfaceId: job.surfaceId,
-			profileId: job.profileId,
-			folderRoot: normalizedRoot,
-			changeIds: parsedChanges.map((change) => change.changeId),
-			filesBefore,
+			...baseSnapshot,
+			versionsAfter,
 		};
 		if (ports.folderSnapshots) {
 			await ports.folderSnapshots.saveSnapshot(durableSnapshot, signal);
 		}
 
-		await completeMerge(
+		const preMergeSnapshot: Record<string, unknown> = useExternalSnapshot
+			? {
+					snapshotId: durableSnapshot.snapshotId,
+					folderRoot: durableSnapshot.folderRoot,
+					changeIds: [...durableSnapshot.changeIds],
+					externalSnapshot: true,
+					...(versionsFitInline ? { versionsAfter } : {}),
+					afterContentSha256,
+				}
+			: {
+					snapshotId: durableSnapshot.snapshotId,
+					folderRoot: durableSnapshot.folderRoot,
+					changeIds: [...durableSnapshot.changeIds],
+					filesBefore: { ...durableSnapshot.filesBefore },
+					...(versionsFitInline ? { versionsAfter } : {}),
+					afterContentSha256,
+				};
+
+		await completeCommittedMerge(
 			{
 				jobId: job.jobId,
 				status: "landed",
 				mainBefore: applied.mainBefore,
 				mainAfter,
-				preMergeSnapshot: {
-					snapshotId: durableSnapshot.snapshotId,
-					folderRoot: durableSnapshot.folderRoot,
-					changeIds: [...durableSnapshot.changeIds],
-					filesBefore: { ...durableSnapshot.filesBefore },
-				},
+				preMergeSnapshot,
 			},
 			signal,
 		);
@@ -965,6 +1087,8 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 		job: ClaimedSurfaceMergeJob,
 		signal: AbortSignal,
 		completeMerge: (input: CompleteSurfaceMergeInput, callSignal?: AbortSignal) => Promise<unknown>,
+		completeCommittedMerge: (input: CompleteSurfaceMergeInput, callSignal?: AbortSignal) => Promise<unknown>,
+		markCommitted: () => void,
 	): Promise<void> {
 		if (!ports.folder) {
 			throw new Error("Company folder port is not configured");
@@ -978,7 +1102,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 		}
 		const landedMainBefore = typeof job.payload.landedMainBefore === "string" ? job.payload.landedMainBefore : null;
 		const landedMainAfter = typeof job.payload.landedMainAfter === "string" ? job.payload.landedMainAfter : null;
-		const snapshot =
+		const loadedSnapshot =
 			parseDurableFolderSnapshot(job.preMergeSnapshot, {
 				surfaceId: job.surfaceId,
 				profileId: job.profileId,
@@ -995,9 +1119,22 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 						signal,
 					)
 				: null);
-		if (!snapshot) {
+		if (!loadedSnapshot) {
 			throw new Error(`Pre-merge folder snapshot not found for change ${changeId}`);
 		}
+		const metadataVersionsAfter = parseOptionalNullableStringRecord(job.preMergeSnapshot?.versionsAfter);
+		const metadataAfterSha = parseOptionalNullableStringRecord(job.preMergeSnapshot?.afterContentSha256);
+		const versionsAfter = loadedSnapshot.versionsAfter ?? metadataVersionsAfter;
+		const afterContentSha256 = loadedSnapshot.afterContentSha256 ?? metadataAfterSha;
+		if (!versionsAfter && !afterContentSha256) {
+			throw new Error(`Pre-merge folder snapshot for change ${changeId} is missing post-commit version guards`);
+		}
+		const snapshot: SurfaceFolderUndoSnapshot = {
+			...loadedSnapshot,
+			...(versionsAfter !== undefined ? { versionsAfter } : {}),
+			...(afterContentSha256 !== undefined ? { afterContentSha256 } : {}),
+		};
+
 		const normalizedRoot = normalizeSurfaceFolderRoot(job.folderRoot ?? snapshot.folderRoot);
 		if (!normalizedRoot) {
 			throw new Error("Folder undo job has an invalid folderRoot");
@@ -1016,9 +1153,43 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			},
 			signal,
 		);
+
+		const conflictPaths: string[] = [];
+		for (const entry of restoreEntries) {
+			const current = currentVersioned[entry.path];
+			const currentVersion = current?.version ?? null;
+			const currentContent = current && typeof current.content === "string" ? current.content : null;
+			if (snapshot.versionsAfter && (snapshot.versionsAfter[entry.path] ?? null) !== currentVersion) {
+				conflictPaths.push(entry.path);
+				continue;
+			}
+			if (
+				snapshot.afterContentSha256 &&
+				(snapshot.afterContentSha256[entry.path] ?? null) !== hashNullableText(currentContent)
+			) {
+				conflictPaths.push(entry.path);
+			}
+		}
+		if (conflictPaths.length > 0) {
+			await completeMerge(
+				{
+					jobId: job.jobId,
+					status: "conflicted",
+					conflictChangeId: changeId,
+					conflictPaths,
+					errorDetail: formatConflictDetail(conflictPaths),
+				},
+				signal,
+			);
+			return;
+		}
+
+		// WHY: Pin expectedVersion to post-landing versionsAfter so concurrent edits after landing never get overwritten.
 		const operations: SurfaceCompanyFolderCommitOperation[] = restoreEntries.map((entry) => ({
 			path: entry.path,
-			expectedVersion: currentVersioned[entry.path]?.version ?? null,
+			expectedVersion: snapshot.versionsAfter
+				? (snapshot.versionsAfter[entry.path] ?? null)
+				: (currentVersioned[entry.path]?.version ?? null),
 			content: entry.content,
 		}));
 		const commitResult = await ports.folder.commitFiles(
@@ -1038,7 +1209,8 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			);
 			return;
 		}
-		await completeMerge(
+		markCommitted();
+		await completeCommittedMerge(
 			{
 				jobId: job.jobId,
 				status: "landed",
@@ -1052,9 +1224,31 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 	async function runMergeJob(job: ClaimedSurfaceMergeJob, signal: AbortSignal): Promise<void> {
 		const leaseField = job.leaseToken !== undefined ? { leaseToken: job.leaseToken } : {};
 		let reported = false;
+		let committed = false;
+		const retryDelays = ports.completionRetryDelaysMs ?? DEFAULT_COMPLETION_RETRY_DELAYS_MS;
+		const markCommitted = (): void => {
+			committed = true;
+		};
 		const completeMerge = async (input: CompleteSurfaceMergeInput, callSignal?: AbortSignal) => {
 			reported = true;
 			return await ports.controlPlane.completeSurfaceMerge({ ...input, ...leaseField }, callSignal);
+		};
+		// WHY: Retry transient completion failures after a committed write rather than re-running or marking the landing failed.
+		const completeCommittedMerge = async (input: CompleteSurfaceMergeInput, callSignal?: AbortSignal) => {
+			reported = true;
+			let lastError: unknown;
+			for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+				try {
+					return await ports.controlPlane.completeSurfaceMerge({ ...input, ...leaseField }, callSignal);
+				} catch (error) {
+					lastError = error;
+					if (attempt === retryDelays.length || callSignal?.aborted) {
+						throw error;
+					}
+					await delayWithAbort(retryDelays[attempt] ?? 0, callSignal ?? signal);
+				}
+			}
+			throw lastError;
 		};
 		const sourceKind = inferSourceKind(job);
 		try {
@@ -1064,7 +1258,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 					return;
 				}
 				if (sourceKind === "folder") {
-					await runFolderUndo(job, signal, completeMerge);
+					await runFolderUndo(job, signal, completeMerge, completeCommittedMerge, markCommitted);
 					return;
 				}
 				throw new Error(`Unsupported undo_change sourceKind "${sourceKind}"`);
@@ -1074,7 +1268,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				return;
 			}
 			if (sourceKind === "folder") {
-				await runFolderLand(job, signal, completeMerge);
+				await runFolderLand(job, signal, completeMerge, completeCommittedMerge, markCommitted);
 				return;
 			}
 			if (!ports.runOpsActionJob) {
@@ -1102,7 +1296,7 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				);
 			}
 		} catch (error) {
-			if (!reported) {
+			if (!reported && !committed) {
 				await ports.controlPlane.completeSurfaceMerge(
 					{
 						jobId: job.jobId,

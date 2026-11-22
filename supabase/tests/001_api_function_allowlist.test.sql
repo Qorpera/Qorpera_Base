@@ -423,6 +423,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_get_surface_workspace(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, false); reads sessions, changes, explorations, and previews of one surface (20260930835000)'),
 	('public.qorpera_list_automations(uuid)', false, true, 'member: qorpera_assert_surface_member(company, false); lists company surface automations (20260930835000)'),
 	('public.qorpera_list_surfaces(uuid)', false, true, 'member: qorpera_assert_surface_member(company, false); lists company surfaces (20260930832000)'),
+	('public.qorpera_mint_surface_preview_pass(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, false) + qorpera_assert_surfaces_enabled(); mints one-use preview pass for a ready surface preview (20260930835000)'),
 	('public.qorpera_publish_surface(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); queues live publish of a surface (20260930835000)'),
 	('public.qorpera_reconcile_surface_changes(uuid,uuid[])', false, true, 'member: qorpera_assert_surface_member(profile, true); queues conflict reconciliation for conflicted surface changes (20260930832000)'),
 	('public.qorpera_reply_surface_session(uuid,text,boolean)', false, true, 'member: qorpera_assert_surface_member(profile, true); appends a member reply and wakes a surface session (20260930835000)'),
@@ -432,6 +433,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_spawn_cross_surface_session(uuid,text,text,text,jsonb)', false, true, 'member: qorpera_assert_surface_member(profile, true); spawns a linked follow-up session on a sibling surface (20260930834000)'),
 	('public.qorpera_start_surface_session(uuid,text,text,text,text,jsonb,integer,text,text[])', false, true, 'member: qorpera_assert_surface_member(profile, true); starts a single session or multi-variant exploration on a surface (20260930835000)'),
 	('public.qorpera_surface_migration_checklist(uuid)', false, true, 'member: qorpera_assert_surface_member(company, false); reads surface migration checklist for the company (20260930832000)'),
+	('public.qorpera_surfaces_enabled()', false, true, 'member: reads platform-wide qorpera_surface_settings.enabled switch (20260930835000)'),
 	('public.qorpera_toggle_automation(uuid,boolean)', false, true, 'member: qorpera_assert_surface_member(profile, true); pauses or resumes a surface automation (20260930835000)'),
 	('public.qorpera_undo_surface_change(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); reverses a merged surface change unit (20260930835000)'),
 	('public.qorpera_update_surface_automation(uuid,text,text,text,text,boolean)', false, true, 'member: qorpera_assert_surface_member(profile, true); updates schedule, prompt, or target surface of a surface automation (20260930835000)');

@@ -474,7 +474,9 @@ export class SurfaceWorkerLoop {
 				machineId,
 			});
 		} catch (error) {
-			if (!signal.aborted && this.#ports.reportSessionFailure) {
+			const isCapacityBusy =
+				typeof error === "object" && error !== null && (error as { status?: unknown }).status === 429;
+			if (!signal.aborted && !isCapacityBusy && this.#ports.reportSessionFailure) {
 				const raw = error instanceof Error ? error.message : String(error);
 				const errorDetail = raw.replace(/\0/g, "").trim().slice(0, 1000).trim() || "Session dispatch failed";
 				try {

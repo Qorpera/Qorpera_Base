@@ -108,6 +108,19 @@ export interface SurfaceSessionCompletionPort {
 	completeSessionTurn(completion: SurfaceSessionTurnCompletion, signal: AbortSignal): Promise<void>;
 }
 
+export interface SurfaceSessionLeaseRenewalInput {
+	readonly sessionId: string;
+	readonly leaseToken: string;
+	readonly extendSeconds: number;
+}
+
+export interface SurfaceSessionLeaseRenewalPort {
+	renewSessionLease(
+		input: SurfaceSessionLeaseRenewalInput,
+		signal: AbortSignal,
+	): Promise<{ readonly renewed: boolean } | undefined>;
+}
+
 export interface SurfaceSessionTurnExecutionOutcome {
 	readonly state?: "ready" | "needs_input" | "failed";
 	readonly replyText?: string | null;
@@ -167,6 +180,9 @@ export interface SurfaceSessionRunnerPorts {
 	readonly executeCodeRepoTurn?: (request: SurfaceCodeRepoTurnRequest) => Promise<SurfaceSessionTurnExecutionOutcome>;
 	readonly codingDriver?: SurfaceCodingDriverBinding;
 	readonly completeSessionTurn: SurfaceSessionCompletionPort["completeSessionTurn"];
+	readonly renewSessionLease?: SurfaceSessionLeaseRenewalPort["renewSessionLease"];
+	readonly leaseRenewIntervalMs?: number;
+	readonly leaseExtendSeconds?: number;
 	readonly signal?: AbortSignal;
 }
 
@@ -381,12 +397,48 @@ export function createControlPlaneSessionCompletionPort(
 					p_question: completion.question,
 					p_note_paths: completion.notePaths ? [...completion.notePaths] : null,
 					p_branch_head_sha: completion.branchHeadSha,
+					...(completion.leaseToken !== undefined ? { p_lease_token: completion.leaseToken } : {}),
 				},
 				signal,
 			);
 		},
 	};
 }
+
+export function createControlPlaneSessionLeaseRenewalPort(
+	control: SurfaceToolsRpcClient,
+): SurfaceSessionLeaseRenewalPort;
+export function createControlPlaneSessionLeaseRenewalPort(
+	control: CloudCompanyPathControl,
+): SurfaceSessionLeaseRenewalPort;
+export function createControlPlaneSessionLeaseRenewalPort(
+	control: SurfaceToolsRpcClient | CloudCompanyPathControl,
+): SurfaceSessionLeaseRenewalPort {
+	const rpc = (method: "qorpera_surface_renew_lease", args: Record<string, unknown>, signal: AbortSignal) =>
+		(control as SurfaceToolsRpcClient).call(method, args, signal);
+	return {
+		async renewSessionLease(input, signal) {
+			const result = await rpc(
+				"qorpera_surface_renew_lease",
+				{
+					p_kind: "session",
+					p_id: input.sessionId,
+					p_lease_token: input.leaseToken,
+					p_extend_seconds: input.extendSeconds,
+				},
+				signal,
+			);
+			const renewed =
+				typeof result === "boolean"
+					? result
+					: Boolean(result && typeof result === "object" && (result as { renewed?: unknown }).renewed === true);
+			return { renewed };
+		},
+	};
+}
+
+const DEFAULT_SESSION_LEASE_RENEW_INTERVAL_MS = 60_000;
+const DEFAULT_SESSION_LEASE_EXTEND_SECONDS = 300;
 
 export async function runSurfaceSessionTurn(
 	input: SurfaceSessionTurnInput,
@@ -396,6 +448,49 @@ export async function runSurfaceSessionTurn(
 	const folderReader = ports.folder ?? ports.folderToolsContext?.folder;
 	let identityContext: SurfaceIdentityContext | null = null;
 	let sharedAssets: SurfaceSharedAssetsContext | null = null;
+
+	let leaseTimer: ReturnType<typeof setInterval> | undefined;
+	const leaseAbort = new AbortController();
+	const onSignalAbort = (): void => leaseAbort.abort(signal.reason);
+	if (signal.aborted) {
+		leaseAbort.abort(signal.reason);
+	} else {
+		signal.addEventListener("abort", onSignalAbort, { once: true });
+	}
+	if (input.leaseToken && ports.renewSessionLease) {
+		const renewSessionLease = ports.renewSessionLease;
+		const leaseToken = input.leaseToken;
+		const intervalMs = Math.max(
+			10,
+			Math.floor(ports.leaseRenewIntervalMs ?? DEFAULT_SESSION_LEASE_RENEW_INTERVAL_MS),
+		);
+		const extendSeconds = Math.max(
+			30,
+			Math.min(900, Math.floor(ports.leaseExtendSeconds ?? DEFAULT_SESSION_LEASE_EXTEND_SECONDS)),
+		);
+		let inFlight = false;
+		// WHY: Keep the session lease alive for the full duration of long turns after the provider returns 202.
+		leaseTimer = setInterval(() => {
+			if (inFlight || leaseAbort.signal.aborted) return;
+			inFlight = true;
+			void Promise.resolve()
+				.then(() =>
+					renewSessionLease(
+						{
+							sessionId: input.sessionId,
+							leaseToken,
+							extendSeconds,
+						},
+						leaseAbort.signal,
+					),
+				)
+				.catch(() => undefined)
+				.finally(() => {
+					inFlight = false;
+				});
+		}, intervalMs);
+		leaseTimer.unref?.();
+	}
 
 	try {
 		if (folderReader) {
@@ -635,6 +730,10 @@ export async function runSurfaceSessionTurn(
 			branchHeadSha: null,
 			error: errorMessage,
 		};
+	} finally {
+		if (leaseTimer !== undefined) clearInterval(leaseTimer);
+		leaseAbort.abort();
+		signal.removeEventListener("abort", onSignalAbort);
 	}
 }
 

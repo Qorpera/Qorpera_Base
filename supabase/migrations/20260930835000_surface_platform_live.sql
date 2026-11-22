@@ -48,6 +48,60 @@ alter table public.qorpera_surface_sessions
 	add column lease_token uuid,
 	add column retry_count integer not null default 0 check (retry_count >= 0);
 
+create table public.qorpera_surface_settings (
+	singleton boolean primary key default true check (singleton),
+	enabled boolean not null default false,
+	updated_at timestamptz not null default clock_timestamp()
+);
+insert into public.qorpera_surface_settings(singleton, enabled) values (true, false) on conflict do nothing;
+alter table public.qorpera_surface_settings enable row level security;
+revoke all on public.qorpera_surface_settings from public, anon, authenticated, service_role, qorpera_secret_broker;
+
+create function public.qorpera_surfaces_enabled()
+returns boolean
+language sql stable security definer set search_path = '' as $$
+	select coalesce((select enabled from public.qorpera_surface_settings where singleton = true), false)
+$$;
+revoke all on function public.qorpera_surfaces_enabled() from public, anon;
+grant execute on function public.qorpera_surfaces_enabled() to authenticated, service_role;
+
+create function public.qorpera_assert_surfaces_enabled()
+returns void
+language plpgsql stable security definer set search_path = '' as $$
+begin
+	if not public.qorpera_surfaces_enabled() then
+		raise exception 'Surfaces are not enabled on this platform' using errcode = '0A000';
+	end if;
+end $$;
+revoke all on function public.qorpera_assert_surfaces_enabled()
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
+-- WHY: Gates every editor-mutating surface RPC behind qorpera_surface_settings.enabled while preserving membership checks.
+create or replace function public.qorpera_assert_surface_member(p_profile_id uuid, p_require_editor boolean default false)
+returns uuid
+language plpgsql stable security definer set search_path = '' as $$
+declare
+	v_user_id uuid := auth.uid();
+	v_role public.qorpera_profile_role;
+begin
+	if v_user_id is null then
+		raise exception 'Authentication required' using errcode = '42501';
+	end if;
+	select member.role into v_role
+	from public.qorpera_profile_members member
+	where member.profile_id = p_profile_id and member.user_id = v_user_id;
+	if v_role is null then
+		raise exception 'Company membership required' using errcode = '42501';
+	end if;
+	if p_require_editor and v_role = 'viewer' then
+		raise exception 'Editor membership required' using errcode = '42501';
+	end if;
+	if p_require_editor then
+		perform public.qorpera_assert_surfaces_enabled();
+	end if;
+	return v_user_id;
+end $$;
+
 -- WHY: Wraps qorpera_company_execution_paused safely so surface claims never execute work for paused or deleting companies.
 create function public.qorpera_surface_company_paused(p_company_id uuid)
 returns boolean
@@ -544,6 +598,183 @@ begin
 		)
 	);
 end $$;
+
+create or replace function public.qorpera_set_preview_selection(
+	p_surface_id uuid,
+	p_toggled_change_ids uuid[] default '{}'::uuid[],
+	p_exploration_session_id uuid default null,
+	p_compare_session_ids uuid[] default '{}'::uuid[],
+	p_active_route text default '/'
+)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_surface public.qorpera_surfaces%rowtype;
+	v_site public.qorpera_company_sites%rowtype;
+	v_user_id uuid;
+	v_toggled uuid[] := coalesce(p_toggled_change_ids, '{}'::uuid[]);
+	v_compare uuid[] := coalesce(p_compare_session_ids, '{}'::uuid[]);
+	v_route text := coalesce(nullif(btrim(coalesce(p_active_route, '')), ''), '/');
+	v_preview public.qorpera_surface_previews%rowtype;
+	v_primary_host text;
+	v_primary_pass text;
+	v_compare_frames jsonb := '[]'::jsonb;
+	v_cmp_session record;
+	v_cmp_preview public.qorpera_surface_previews%rowtype;
+	v_cmp_host text;
+	v_cmp_pass text;
+begin
+	select * into v_surface from public.qorpera_surfaces where id = p_surface_id;
+	if v_surface.id is null then raise exception 'Surface not found' using errcode = 'P0002'; end if;
+	v_user_id := public.qorpera_assert_surface_member(v_surface.profile_id, false);
+	perform public.qorpera_assert_surfaces_enabled();
+
+	if cardinality(v_compare) > 3 then
+		raise exception 'Compare supports at most 3 variants' using errcode = '22023';
+	end if;
+
+	if cardinality(v_toggled) > 0 and exists (
+		select 1 from unnest(v_toggled) as cid
+		where not exists (
+			select 1 from public.qorpera_surface_changes ch
+			where ch.id = cid and ch.surface_id = p_surface_id and ch.profile_id = v_surface.profile_id
+		)
+	) then
+		raise exception 'Change does not belong to surface' using errcode = '42501';
+	end if;
+
+	if p_exploration_session_id is not null and not exists (
+		select 1 from public.qorpera_surface_sessions s
+		where s.id = p_exploration_session_id
+			and s.surface_id = p_surface_id
+			and s.profile_id = v_surface.profile_id
+	) then
+		raise exception 'Exploration session does not belong to surface' using errcode = '42501';
+	end if;
+
+	if cardinality(v_compare) > 0 and exists (
+		select 1 from unnest(v_compare) as sid
+		where not exists (
+			select 1 from public.qorpera_surface_sessions s
+			where s.id = sid and s.surface_id = p_surface_id and s.profile_id = v_surface.profile_id
+		)
+	) then
+		raise exception 'Compare session does not belong to surface' using errcode = '42501';
+	end if;
+
+	insert into public.qorpera_member_surface_state(
+		user_id, surface_id, active_exploration_session_id, toggled_change_ids, compare_session_ids, active_route, updated_at
+	)
+	values (v_user_id, p_surface_id, p_exploration_session_id, v_toggled, v_compare, v_route, clock_timestamp())
+	on conflict (user_id, surface_id) do update set
+		active_exploration_session_id = excluded.active_exploration_session_id,
+		toggled_change_ids = excluded.toggled_change_ids,
+		compare_session_ids = excluded.compare_session_ids,
+		active_route = excluded.active_route,
+		updated_at = clock_timestamp();
+
+	if v_surface.site_id is not null then
+		select * into v_site from public.qorpera_company_sites where id = v_surface.site_id;
+	end if;
+
+	if cardinality(v_toggled) > 0 or p_exploration_session_id is not null then
+		v_preview := public.qorpera_surface_upsert_preview(v_surface, v_surface.live_head_sha, v_toggled, p_exploration_session_id);
+		if v_site.id is not null and v_preview.status = 'ready' then
+			v_primary_host := v_site.slug || '--p' || v_preview.short_host_id || '.qorpera.com';
+			v_primary_pass := public.qorpera_surface_mint_preview_pass(v_site.id, v_user_id, v_primary_host);
+		end if;
+	end if;
+
+	if cardinality(v_compare) >= 2 then
+		for v_cmp_session in
+			select s.id, coalesce(s.exploration_variant_label, s.title) as label
+			from public.qorpera_surface_sessions s
+			where s.id = any(v_compare) and s.surface_id = p_surface_id
+			order by array_position(v_compare, s.id)
+		loop
+			v_cmp_preview := public.qorpera_surface_upsert_preview(v_surface, v_surface.live_head_sha, v_toggled, v_cmp_session.id);
+			v_cmp_host := null;
+			v_cmp_pass := null;
+			if v_site.id is not null and v_cmp_preview.status = 'ready' then
+				v_cmp_host := v_site.slug || '--p' || v_cmp_preview.short_host_id || '.qorpera.com';
+				v_cmp_pass := public.qorpera_surface_mint_preview_pass(v_site.id, v_user_id, v_cmp_host);
+			end if;
+			v_compare_frames := v_compare_frames || jsonb_build_array(
+				jsonb_build_object(
+					'sessionId', v_cmp_session.id,
+					'label', v_cmp_session.label,
+					'frame', jsonb_build_object(
+						'previewId', v_cmp_preview.id,
+						'status', v_cmp_preview.status,
+						'doorActionUrl', case when v_cmp_host is not null then 'https://' || v_cmp_host || '/__qorpera/member' else null end,
+						'memberPass', v_cmp_pass,
+						'activeRoute', v_route,
+						'toggledChangeIds', to_jsonb(v_toggled),
+						'conflictReport', v_cmp_preview.conflict_report,
+						'errorDetail', v_cmp_preview.error_detail
+					)
+				)
+			);
+		end loop;
+	end if;
+
+	return jsonb_build_object(
+		'surfaceId', p_surface_id,
+		'mode', case when cardinality(v_compare) >= 2 then 'compare' else 'single' end,
+		'primary', jsonb_build_object(
+			'previewId', v_preview.id,
+			'status', case when v_preview.id is not null then v_preview.status else 'live_baseline' end,
+			'doorActionUrl', case when v_primary_host is not null then 'https://' || v_primary_host || '/__qorpera/member' else null end,
+			'memberPass', v_primary_pass,
+			'activeRoute', v_route,
+			'toggledChangeIds', to_jsonb(v_toggled),
+			'conflictReport', v_preview.conflict_report,
+			'errorDetail', v_preview.error_detail
+		),
+		'compareFrames', v_compare_frames
+	);
+end $$;
+
+-- WHY: Allows authenticated company members to mint a one-use preview pass once a preview transitions to ready without mutating on workspace reads.
+create function public.qorpera_mint_surface_preview_pass(p_preview_id uuid)
+returns jsonb
+language plpgsql volatile security definer set search_path = '' as $$
+declare
+	v_preview public.qorpera_surface_previews%rowtype;
+	v_surface public.qorpera_surfaces%rowtype;
+	v_site public.qorpera_company_sites%rowtype;
+	v_user_id uuid;
+	v_host text;
+	v_pass text;
+begin
+	select * into v_preview from public.qorpera_surface_previews where id = p_preview_id;
+	if v_preview.id is null then raise exception 'Preview not found' using errcode = 'P0002'; end if;
+	select * into v_surface from public.qorpera_surfaces where id = v_preview.surface_id;
+	if v_surface.id is null then raise exception 'Surface not found' using errcode = 'P0002'; end if;
+	v_user_id := public.qorpera_assert_surface_member(v_surface.profile_id, false);
+	perform public.qorpera_assert_surfaces_enabled();
+
+	if v_preview.status <> 'ready' or v_preview.expires_at <= clock_timestamp() then
+		raise exception 'Preview is not ready' using errcode = '55000';
+	end if;
+	if v_surface.site_id is null then
+		raise exception 'Surface preview site not found' using errcode = 'P0002';
+	end if;
+	select * into v_site from public.qorpera_company_sites where id = v_surface.site_id;
+	if v_site.id is null then
+		raise exception 'Surface preview site not found' using errcode = 'P0002';
+	end if;
+
+	v_host := v_site.slug || '--p' || v_preview.short_host_id || '.qorpera.com';
+	v_pass := public.qorpera_surface_mint_preview_pass(v_site.id, v_user_id, v_host);
+	return jsonb_build_object(
+		'previewId', v_preview.id,
+		'doorActionUrl', 'https://' || v_host || '/__qorpera/member',
+		'memberPass', v_pass
+	);
+end $$;
+revoke all on function public.qorpera_mint_surface_preview_pass(uuid) from public, anon;
+grant execute on function public.qorpera_mint_surface_preview_pass(uuid) to authenticated;
 
 create function public.qorpera_create_surface(
 	p_company_id uuid,
@@ -1340,11 +1571,12 @@ returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare
 	v_lookup record;
+	v_exploration public.qorpera_surface_explorations%rowtype;
 	v_change public.qorpera_surface_changes%rowtype;
 	v_surface public.qorpera_surfaces%rowtype;
 	v_session public.qorpera_surface_sessions%rowtype;
 	v_user_id uuid;
-	v_has_other_landed boolean := false;
+	v_chosen_has_landed boolean := false;
 begin
 	select ch.session_id, ch.surface_id, ch.profile_id, s.exploration_id into v_lookup
 	from public.qorpera_surface_changes ch
@@ -1354,7 +1586,7 @@ begin
 	v_user_id := public.qorpera_assert_surface_member(v_lookup.profile_id, true);
 
 	if v_lookup.exploration_id is not null then
-		perform 1 from public.qorpera_surface_explorations where id = v_lookup.exploration_id for update;
+		select * into v_exploration from public.qorpera_surface_explorations where id = v_lookup.exploration_id for update;
 	end if;
 	select * into v_session from public.qorpera_surface_sessions where id = v_lookup.session_id for update;
 	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
@@ -1369,6 +1601,20 @@ begin
 	end if;
 	if v_change.published_at is not null then
 		raise exception 'Published change cannot be rolled back before release; start a new change instead' using errcode = '22023';
+	end if;
+
+	if v_exploration.id is not null
+		and v_exploration.status = 'chosen'
+		and v_exploration.chosen_session_id is not null
+		and v_exploration.chosen_session_id <> v_change.session_id then
+		select exists (
+			select 1 from public.qorpera_surface_changes ch
+			where ch.session_id = v_exploration.chosen_session_id
+				and ch.status in ('merged', 'merging')
+		) into v_chosen_has_landed;
+		if v_chosen_has_landed then
+			raise exception 'Undo the chosen exploration variant before restoring a discarded alternative' using errcode = '22023';
+		end if;
 	end if;
 
 	if v_change.status = 'merged' then
@@ -1403,29 +1649,31 @@ begin
 	set state = 'ready', closed_at = null, updated_at = clock_timestamp()
 	where id = v_change.session_id and state in ('completed', 'discarded');
 
-	-- WHY: Reopen the exploration without touching other merged, merging, or manually discarded changes in the chosen session.
-	if v_session.exploration_id is not null then
-		update public.qorpera_surface_explorations
-		set status = 'open', chosen_session_id = null, resolved_at = null
-		where id = v_session.exploration_id and status = 'chosen';
-
+	-- WHY: Keep a chosen exploration closed while its winning session still has merged or merging changes on main.
+	if v_exploration.id is not null
+		and v_exploration.status = 'chosen'
+		and v_exploration.chosen_session_id is not null then
 		select exists (
 			select 1 from public.qorpera_surface_changes ch
-			where ch.session_id = v_change.session_id
+			where ch.session_id = v_exploration.chosen_session_id
 				and ch.status in ('merged', 'merging')
-		) into v_has_other_landed;
+		) into v_chosen_has_landed;
 
-		if not v_has_other_landed then
+		if not v_chosen_has_landed then
+			update public.qorpera_surface_explorations
+			set status = 'open', chosen_session_id = null, resolved_at = null
+			where id = v_exploration.id;
+
 			update public.qorpera_surface_changes
 			set status = 'staged', resolved_at = null, approved_by_user_id = null, discarded_by_exploration = false
 			where session_id in (
 				select id from public.qorpera_surface_sessions
-				where exploration_id = v_session.exploration_id and id <> v_change.session_id
+				where exploration_id = v_exploration.id and id <> v_exploration.chosen_session_id
 			) and status = 'discarded' and discarded_by_exploration = true and published_at is null;
 
 			update public.qorpera_surface_sessions
 			set state = 'ready', closed_at = null, updated_at = clock_timestamp()
-			where exploration_id = v_session.exploration_id and id <> v_change.session_id and state = 'discarded';
+			where exploration_id = v_exploration.id and id <> v_exploration.chosen_session_id and state = 'discarded';
 		end if;
 	end if;
 
@@ -1750,6 +1998,10 @@ declare
 	v_session_id uuid;
 	v_results jsonb := '[]'::jsonb;
 begin
+	if not public.qorpera_surfaces_enabled() then
+		return '[]'::jsonb;
+	end if;
+
 	for v_auto in
 		with picked as (
 			select a.id
@@ -1836,6 +2088,16 @@ declare
 	v_merges jsonb;
 	v_publishes jsonb;
 begin
+	if not public.qorpera_surfaces_enabled() then
+		return jsonb_build_object(
+			'sessions', '[]'::jsonb,
+			'previews', '[]'::jsonb,
+			'merges', '[]'::jsonb,
+			'publishes', '[]'::jsonb,
+			'automations', '[]'::jsonb
+		);
+	end if;
+
 	for v_expired_session in
 		select s.*
 		from public.qorpera_surface_sessions s
@@ -2816,12 +3078,14 @@ create index if not exists qorpera_surface_automations_due
 	on public.qorpera_surface_automations(next_run_at asc)
 	where enabled = true and next_run_at is not null;
 
--- WHY: Seeds Identity, Ops surfaces, and Co-Founder Pulse atomically when a company's Co-Founder is created so Turn 1 never races the browser.
+-- WHY: Seeds Identity, Ops surfaces, and Co-Founder Pulse atomically on Co-Founder creation only when Surfaces are enabled.
 create function public.qorpera_bootstrap_surfaces_on_cofounder_insert()
 returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
-	perform public.qorpera_service_bootstrap_company_surfaces(new.profile_id, null);
+	if public.qorpera_surfaces_enabled() then
+		perform public.qorpera_service_bootstrap_company_surfaces(new.profile_id, null);
+	end if;
 	return new;
 end $$;
 revoke all on function public.qorpera_bootstrap_surfaces_on_cofounder_insert() from public, anon, authenticated;

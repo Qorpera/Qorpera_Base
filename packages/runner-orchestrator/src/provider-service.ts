@@ -18,6 +18,8 @@ const REQUEST_PATH = "/v1/qorpera-runner-provider";
 const ADAPTER_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_REQUEST_BYTES = 256 * 1024;
+const DEFAULT_MAX_CONCURRENT_SURFACE_DELIVERIES = 32;
+const MAX_CONCURRENT_SURFACE_DELIVERIES_LIMIT = 256;
 
 export interface CloudRunnerProviderServiceBackend {
 	readonly adapterId: string;
@@ -42,6 +44,7 @@ export interface CloudRunnerProviderServiceNetworkOptions {
 	trustedSource?: string;
 	tls?: CloudRunnerProviderServiceTlsConfig;
 	nodeObservations?: ProviderNodeObservability;
+	maxConcurrentSurfaceDeliveries?: number;
 }
 
 type ProviderRequest =
@@ -511,6 +514,7 @@ export class HttpCloudRunnerProviderService {
 	readonly #trustedSource?: string;
 	readonly #tls?: CloudRunnerProviderServiceTlsConfig;
 	readonly #nodeObservations?: ProviderNodeObservability;
+	readonly #maxConcurrentSurfaceDeliveries: number;
 	readonly #surfaceDeliveries = new Set<Promise<void>>();
 	#surfaceController = new AbortController();
 	#nodeObservationsStarted = false;
@@ -539,6 +543,10 @@ export class HttpCloudRunnerProviderService {
 		) {
 			throw new Error("Provider TLS material is invalid");
 		}
+		const maxSurface = options.maxConcurrentSurfaceDeliveries ?? DEFAULT_MAX_CONCURRENT_SURFACE_DELIVERIES;
+		if (!Number.isSafeInteger(maxSurface) || maxSurface < 1 || maxSurface > MAX_CONCURRENT_SURFACE_DELIVERIES_LIMIT) {
+			throw new Error("Provider maxConcurrentSurfaceDeliveries is invalid");
+		}
 		this.#backend = backend;
 		this.#token = token;
 		this.#host = host;
@@ -546,6 +554,7 @@ export class HttpCloudRunnerProviderService {
 		this.#trustedSource = options.trustedSource;
 		this.#tls = options.tls;
 		this.#nodeObservations = options.nodeObservations;
+		this.#maxConcurrentSurfaceDeliveries = maxSurface;
 	}
 
 	async start(): Promise<number> {
@@ -664,6 +673,12 @@ export class HttpCloudRunnerProviderService {
 					response
 						.writeHead(501, { "content-type": "application/json" })
 						.end(`${JSON.stringify({ error: "Surface session execution is not enabled on this provider" })}\n`);
+					return;
+				}
+				if (this.#surfaceDeliveries.size >= this.#maxConcurrentSurfaceDeliveries) {
+					response
+						.writeHead(429, { "content-type": "application/json", "retry-after": "5" })
+						.end(`${JSON.stringify({ error: "Provider surface session capacity reached" })}\n`);
 					return;
 				}
 				// WHY: Acknowledge delivery immediately with 202 so a long surface turn never stalls orchestrator claim ticks.

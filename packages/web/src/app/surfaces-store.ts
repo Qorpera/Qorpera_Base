@@ -3,6 +3,7 @@ import {
 	type ApplySurfaceMigrationInput,
 	type CloudSurfacesClient,
 	isMissingSurfaceRpcError,
+	isSurfacesDisabledError,
 	type StartSurfaceSessionOptions,
 } from "@qorpera/cloud-client/surfaces";
 import {
@@ -63,6 +64,8 @@ export type SurfacesClient = Pick<
 	Partial<
 		Pick<
 			CloudSurfacesClient,
+			| "isSurfacesEnabled"
+			| "mintPreviewPass"
 			| "createSurface"
 			| "bootstrapCompanySurfaces"
 			| "discardExploration"
@@ -72,7 +75,7 @@ export type SurfacesClient = Pick<
 		>
 	>;
 
-export type SurfacesSource = "loading" | "cloud" | "local";
+export type SurfacesSource = "loading" | "disabled" | "cloud" | "local";
 export type SurfacePreviewMode = "live" | "preview" | "compare" | "report";
 export type SurfacePreviewPanelState = "auto" | "open" | "closed";
 export type SurfaceDevice = "desktop" | "mobile";
@@ -653,6 +656,7 @@ export class SurfacesStore {
 	readonly #localCreatedIds = new Set<string>();
 	readonly #studioUndoSnapshots = new Map<string, Readonly<Record<string, string>>>();
 	readonly #cloudFilesLoading = new Set<string>();
+	readonly #mintingPreviewPasses = new Set<string>();
 	#undoTimer: ReturnType<typeof setTimeout> | undefined;
 	#pollTimer: ReturnType<typeof setInterval> | undefined;
 	#hintTimer: ReturnType<typeof setTimeout> | undefined;
@@ -796,6 +800,25 @@ export class SurfacesStore {
 			this.#useLocal();
 			return;
 		}
+		if (client.isSurfacesEnabled) {
+			try {
+				const enabled = await client.isSurfacesEnabled();
+				if (this.#options.signal.aborted) return;
+				if (!enabled) {
+					this.store.set({ source: "disabled", surfaces: [], automations: [], error: undefined });
+					return;
+				}
+			} catch (error) {
+				if (this.#options.signal.aborted) return;
+				this.store.set({
+					source: "disabled",
+					surfaces: [],
+					automations: [],
+					error: isMissingSurfaceRpcError(error) || isSurfacesDisabledError(error) ? undefined : describe(error),
+				});
+				return;
+			}
+		}
 		try {
 			let surfaces = await client.listSurfaces(this.#options.companyId);
 			if (this.#options.signal.aborted) return;
@@ -813,6 +836,10 @@ export class SurfacesStore {
 			else this.store.set({ source: "cloud", surfaces: sortSurfaces(surfaces) });
 		} catch (error) {
 			if (this.#options.signal.aborted) return;
+			if (isSurfacesDisabledError(error)) {
+				this.store.set({ source: "disabled", surfaces: [], automations: [], error: undefined });
+				return;
+			}
 			this.#useLocal(isMissingSurfaceRpcError(error) ? undefined : describe(error));
 			return;
 		}
@@ -1301,26 +1328,45 @@ export class SurfacesStore {
 			}
 		}
 		this.store.set((state) => {
-			const prev = state.workspaces[workspace.surface.id]?.previewState.primary;
-			const nextPrimary = workspace.previewState.primary;
-			const mergedWorkspace =
-				prev?.previewId &&
-				prev.previewId === nextPrimary.previewId &&
-				nextPrimary.status === "ready" &&
-				!nextPrimary.memberPass &&
-				prev.memberPass
-					? {
-							...workspace,
-							previewState: {
-								...workspace.previewState,
-								primary: {
-									...nextPrimary,
-									doorActionUrl: nextPrimary.doorActionUrl ?? prev.doorActionUrl,
-									memberPass: prev.memberPass,
-								},
-							},
-						}
-					: workspace;
+			const prevState = state.workspaces[workspace.surface.id]?.previewState;
+			const prevPasses = new Map<string, { readonly doorActionUrl: string | null; readonly memberPass: string }>();
+			if (prevState?.primary.previewId && prevState.primary.memberPass) {
+				prevPasses.set(prevState.primary.previewId, {
+					doorActionUrl: prevState.primary.doorActionUrl,
+					memberPass: prevState.primary.memberPass,
+				});
+			}
+			for (const entry of prevState?.compareFrames ?? []) {
+				if (entry.frame.previewId && entry.frame.memberPass) {
+					prevPasses.set(entry.frame.previewId, {
+						doorActionUrl: entry.frame.doorActionUrl,
+						memberPass: entry.frame.memberPass,
+					});
+				}
+			}
+			const keepPass = <T extends SurfaceWorkspace["previewState"]["primary"]>(frame: T): T => {
+				if (frame.status !== "ready" || !frame.previewId || frame.memberPass) return frame;
+				const prev = prevPasses.get(frame.previewId);
+				if (!prev) return frame;
+				return {
+					...frame,
+					doorActionUrl: frame.doorActionUrl ?? prev.doorActionUrl,
+					memberPass: prev.memberPass,
+				};
+			};
+			const nextPrimary = keepPass(workspace.previewState.primary);
+			const nextCompare = workspace.previewState.compareFrames.map((entry) => ({
+				...entry,
+				frame: keepPass(entry.frame),
+			}));
+			const mergedWorkspace: SurfaceWorkspace = {
+				...workspace,
+				previewState: {
+					...workspace.previewState,
+					primary: nextPrimary,
+					compareFrames: nextCompare,
+				},
+			};
 			const notes = reconcileNotes(state.notes, sessions);
 			const nextPatches =
 				Object.keys(extractedPatches).length > 0
@@ -1335,6 +1381,15 @@ export class SurfacesStore {
 				...(notes.length !== state.notes.length ? { notes } : {}),
 			};
 		});
+		const stored = this.state.workspaces[workspace.surface.id];
+		if (stored && !isLocalSurfaceId(workspace.surface.id) && this.#options.client?.mintPreviewPass) {
+			const frames = [stored.previewState.primary, ...stored.previewState.compareFrames.map((entry) => entry.frame)];
+			for (const frame of frames) {
+				if (frame.status === "ready" && frame.previewId && !frame.memberPass) {
+					void this.#ensurePreviewPass(workspace.surface.id, frame.previewId);
+				}
+			}
+		}
 		if (
 			this.state.source === "cloud" &&
 			!isLocalSurfaceId(workspace.surface.id) &&
@@ -1344,6 +1399,53 @@ export class SurfacesStore {
 			void this.refreshCloudFiles(workspace.surface);
 		}
 		this.#syncPolling();
+	}
+
+	async #ensurePreviewPass(surfaceId: string, previewId: string): Promise<void> {
+		const mint = this.#options.client?.mintPreviewPass;
+		if (!mint || isLocalSurfaceId(surfaceId) || this.#mintingPreviewPasses.has(previewId)) return;
+		this.#mintingPreviewPasses.add(previewId);
+		try {
+			const grant = await mint.call(this.#options.client, previewId);
+			if (this.#options.signal.aborted) return;
+			this.store.set((state) => {
+				const workspace = state.workspaces[surfaceId];
+				if (!workspace) return {};
+				let changed = false;
+				const patchFrame = <T extends SurfaceWorkspace["previewState"]["primary"]>(frame: T): T => {
+					if (frame.previewId !== grant.previewId) return frame;
+					changed = true;
+					return {
+						...frame,
+						doorActionUrl: grant.doorActionUrl,
+						memberPass: grant.memberPass,
+					};
+				};
+				const primary = patchFrame(workspace.previewState.primary);
+				const compareFrames = workspace.previewState.compareFrames.map((entry) => ({
+					...entry,
+					frame: patchFrame(entry.frame),
+				}));
+				if (!changed) return {};
+				return {
+					workspaces: {
+						...state.workspaces,
+						[surfaceId]: {
+							...workspace,
+							previewState: {
+								...workspace.previewState,
+								primary,
+								compareFrames,
+							},
+						},
+					},
+				};
+			});
+		} catch {
+			/* WHY: A transient preview pass mint failure retries on the next workspace refresh without breaking the stage. */
+		} finally {
+			this.#mintingPreviewPasses.delete(previewId);
+		}
 	}
 
 	async refreshCloudFiles(surface: SurfaceSummary): Promise<void> {
@@ -1418,6 +1520,11 @@ export class SurfacesStore {
 		const running = Object.values(this.state.workspaces).some(
 			(workspace) =>
 				workspace.surface.publishStatus === "publishing" ||
+				workspace.previewState.primary.status === "composing" ||
+				workspace.previewState.primary.status === "building" ||
+				workspace.previewState.compareFrames.some(
+					(entry) => entry.frame.status === "composing" || entry.frame.status === "building",
+				) ||
 				workspace.activeSessions.some(
 					(session) => isRunningSession(session) || session.changes.some((change) => change.status === "merging"),
 				),
@@ -2840,5 +2947,13 @@ export function attachSurfaces(owner: object, store: SurfacesStore): void {
 }
 
 export function surfacesOf(owner: object): SurfacesStore | undefined {
-	return registry.get(owner);
+	const store = registry.get(owner);
+	if (!store) return undefined;
+	const source = store.state.source;
+	if (source === "loading" || source === "disabled") return undefined;
+	return store;
+}
+
+export function surfacesDisabledOf(owner: object): boolean {
+	return registry.get(owner)?.state.source === "disabled";
 }

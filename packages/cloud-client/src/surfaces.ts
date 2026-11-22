@@ -482,6 +482,20 @@ export function isMissingSurfaceRpcError(error: unknown): boolean {
 	return false;
 }
 
+export function isSurfacesDisabledError(error: unknown): boolean {
+	if (error instanceof CloudSurfacesError) return error.code === "0A000";
+	if (error && typeof error === "object" && "code" in error) {
+		return (error as { code?: unknown }).code === "0A000";
+	}
+	return false;
+}
+
+export interface SurfacePreviewPassGrant {
+	readonly previewId: string;
+	readonly doorActionUrl: string;
+	readonly memberPass: string;
+}
+
 export class CloudSurfacesClient {
 	readonly #supabase: SupabaseClient;
 
@@ -495,6 +509,34 @@ export class CloudSurfacesClient {
 			throw new CloudSurfacesError(error.message || `${name} failed`, error.code ?? null);
 		}
 		return data;
+	}
+
+	async isSurfacesEnabled(): Promise<boolean> {
+		const data = await this.#rpc("qorpera_surfaces_enabled", {});
+		return data === true;
+	}
+
+	async mintPreviewPass(previewId: string): Promise<SurfacePreviewPassGrant> {
+		const data = await this.#rpc("qorpera_mint_surface_preview_pass", { p_preview_id: previewId });
+		if (!data || typeof data !== "object" || Array.isArray(data)) {
+			throw new CloudSurfacesError("Invalid qorpera_mint_surface_preview_pass payload");
+		}
+		const record = data as Record<string, unknown>;
+		if (
+			typeof record.previewId !== "string" ||
+			typeof record.doorActionUrl !== "string" ||
+			typeof record.memberPass !== "string" ||
+			!record.previewId ||
+			!record.doorActionUrl ||
+			!record.memberPass
+		) {
+			throw new CloudSurfacesError("Invalid qorpera_mint_surface_preview_pass fields");
+		}
+		return {
+			previewId: record.previewId,
+			doorActionUrl: record.doorActionUrl,
+			memberPass: record.memberPass,
+		};
 	}
 
 	async listSurfaces(companyId: string): Promise<SurfaceSummary[]> {

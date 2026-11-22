@@ -94,6 +94,40 @@ begin
 	insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
 	values (v_other_env, v_other_profile, 'Other Env', 1, v_other_owner);
 
+	perform pg_temp.sf_as(v_owner);
+	set local role authenticated;
+	perform pg_temp.sf_assert(public.qorpera_surfaces_enabled() is false, 'qorpera_surfaces_enabled defaults to false');
+	v_errcode := null;
+	begin
+		perform public.qorpera_bootstrap_company_surfaces(v_profile);
+	exception when others then
+		v_errcode := sqlstate;
+	end;
+	reset role;
+	perform pg_temp.sf_assert(v_errcode = '0A000', 'mutating member RPC refuses with 0A000 while surfaces are disabled');
+
+	perform pg_temp.sf_as(v_owner);
+	set local role authenticated;
+	v_errcode := null;
+	begin
+		perform public.qorpera_create_surface(v_profile, 'Disabled Site', 'disabled-site', 'live_build');
+	exception when others then
+		v_errcode := sqlstate;
+	end;
+	reset role;
+	perform pg_temp.sf_assert(v_errcode = '0A000', 'qorpera_create_surface refuses with 0A000 while surfaces are disabled');
+
+	perform pg_temp.sf_assert(
+		not exists (select 1 from public.qorpera_surfaces where profile_id = v_profile),
+		'Day-0 cofounder trigger does not bootstrap surfaces while disabled'
+	);
+
+	update public.qorpera_surface_settings set enabled = true where singleton = true;
+	perform pg_temp.sf_as(v_owner);
+	set local role authenticated;
+	perform pg_temp.sf_assert(public.qorpera_surfaces_enabled() is true, 'qorpera_surfaces_enabled reflects enabled switch');
+	reset role;
+
 	v_refused := false;
 	perform pg_temp.sf_as(v_outsider);
 	set local role authenticated;
@@ -552,6 +586,22 @@ begin
 		'choose_exploration merges winner open changes and tags only exploration-discarded loser rows'
 	);
 
+	v_errcode := null;
+	perform pg_temp.sf_as(v_owner);
+	set local role authenticated;
+	begin
+		perform public.qorpera_undo_surface_change(v_exp_l_c1);
+	exception when others then
+		v_errcode := sqlstate;
+	end;
+	reset role;
+	perform pg_temp.sf_assert(v_errcode = '22023', 'undoing a discarded loser change is refused while winner is landed');
+	perform pg_temp.sf_assert(
+		(select status from public.qorpera_surface_explorations where id = v_exploration_id) = 'chosen'
+		and (select status from public.qorpera_surface_changes where id = v_exp_l_c1) = 'discarded',
+		'refused loser undo leaves exploration chosen and loser change discarded'
+	);
+
 	perform pg_temp.sf_as(v_owner);
 	set local role authenticated;
 	perform public.qorpera_undo_surface_change(v_exp_w_c1);
@@ -563,8 +613,9 @@ begin
 		and (select status from public.qorpera_surface_changes where id = v_exp_w_manual_disc) = 'discarded'
 		and (select status from public.qorpera_surface_changes where id = v_exp_l_c1) = 'discarded'
 		and (select status from public.qorpera_surface_changes where id = v_exp_l_manual_disc) = 'discarded'
-		and (select status from public.qorpera_surface_explorations where id = v_exploration_id) = 'open',
-		'undoing one exploration change never touches other merged, merging, or discarded rows'
+		and (select status from public.qorpera_surface_explorations where id = v_exploration_id) = 'chosen'
+		and (select chosen_session_id from public.qorpera_surface_explorations where id = v_exploration_id) = v_exp_winner_id,
+		'undoing one winner change keeps exploration chosen while other winner changes remain merged or merging'
 	);
 
 	update public.qorpera_surface_changes set status = 'discarded' where id = v_exp_w_c3;
@@ -573,9 +624,11 @@ begin
 	perform public.qorpera_undo_surface_change(v_exp_w_c2);
 	reset role;
 	perform pg_temp.sf_assert(
-		(select status from public.qorpera_surface_changes where id = v_exp_l_c1) = 'staged'
+		(select status from public.qorpera_surface_explorations where id = v_exploration_id) = 'open'
+		and (select chosen_session_id from public.qorpera_surface_explorations where id = v_exploration_id) is null
+		and (select status from public.qorpera_surface_changes where id = v_exp_l_c1) = 'staged'
 		and (select status from public.qorpera_surface_changes where id = v_exp_l_manual_disc) = 'discarded',
-		'after all winner changes are undone, only exploration-discarded sibling changes restore'
+		'after all winner changes are undone, exploration reopens and only exploration-discarded sibling changes restore'
 	);
 
 	update public.qorpera_surface_automations
@@ -672,6 +725,17 @@ begin
 	reset role;
 	perform pg_temp.sf_assert(v_errcode = '55000', 'complete_preview rejects mismatched lease_token');
 
+	v_errcode := null;
+	perform pg_temp.sf_as(v_viewer);
+	set local role authenticated;
+	begin
+		perform public.qorpera_mint_surface_preview_pass(v_preview_id);
+	exception when others then
+		v_errcode := sqlstate;
+	end;
+	reset role;
+	perform pg_temp.sf_assert(v_errcode = '55000', 'mint_surface_preview_pass refuses non-ready preview');
+
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
 	perform public.qorpera_surface_complete_preview(
@@ -679,13 +743,27 @@ begin
 	);
 	reset role;
 
-	perform pg_temp.sf_as(v_owner);
+	v_errcode := null;
+	perform pg_temp.sf_as(v_outsider);
 	set local role authenticated;
-	v_preview_state := public.qorpera_set_preview_selection(v_surface_id, array[v_change_id], null, '{}'::uuid[], '/');
+	begin
+		perform public.qorpera_mint_surface_preview_pass(v_preview_id);
+	exception when others then
+		v_errcode := sqlstate;
+	end;
 	reset role;
-	v_preview_pass := v_preview_state -> 'primary' ->> 'memberPass';
+	perform pg_temp.sf_assert(v_errcode = '42501', 'outsider refused by qorpera_mint_surface_preview_pass');
+
+	perform pg_temp.sf_as(v_viewer);
+	set local role authenticated;
+	v_preview_state := public.qorpera_mint_surface_preview_pass(v_preview_id);
+	reset role;
+	v_preview_pass := v_preview_state ->> 'memberPass';
 	v_preview_host := v_site_slug || '--p' || (select short_host_id from public.qorpera_surface_previews where id = v_preview_id) || '.qorpera.com';
-	perform pg_temp.sf_assert(v_preview_pass is not null, 'ready preview mints one-use memberPass');
+	perform pg_temp.sf_assert(
+		v_preview_pass is not null and v_preview_state ->> 'doorActionUrl' = 'https://' || v_preview_host || '/__qorpera/member',
+		'viewer mints one-use memberPass for ready preview via qorpera_mint_surface_preview_pass'
+	);
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;

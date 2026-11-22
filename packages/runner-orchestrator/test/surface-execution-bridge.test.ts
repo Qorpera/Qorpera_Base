@@ -162,18 +162,21 @@ function createInMemoryCompanyFolder(initial: Record<string, string> = {}) {
 				operations.map((op) => ({ ...op })),
 			);
 			seq += 1;
+			const versionsAfter: Record<string, string | null> = {};
 			for (const op of operations) {
 				if (op.content === null) {
 					deleteCalls.push(op.path);
 					files.delete(op.path);
 					versions.delete(op.path);
+					versionsAfter[op.path] = null;
 				} else {
 					writeCalls.push({ path: op.path, content: op.content });
 					files.set(op.path, op.content);
 					versions.set(op.path, seq);
+					versionsAfter[op.path] = `v${seq}`;
 				}
 			}
-			return { status: "saved" };
+			return { status: "saved", versionsAfter };
 		},
 	};
 	return { files, writeCalls, deleteCalls, commitCalls, mutateExternal, folder };
@@ -1409,4 +1412,268 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 		);
 		expect(existsSync(join(companyRoot, "code/surfaces/website/main/.qorpera/checks.json"))).toBe(true);
 	}, 20_000);
+
+	it("rejects oversized inline pre-merge snapshots before commitFiles and supports large folders via folderSnapshots", async () => {
+		const bigBody = "A".repeat(100 * 1024);
+		const memInline = createInMemoryCompanyFolder({ "identity/brand.md": bigBody });
+		const completeInline = vi.fn().mockResolvedValue(undefined);
+		const inlineHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: completeInline,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: memInline.folder,
+			completionRetryDelaysMs: [1, 1],
+		});
+
+		const surfaceId = randomUUID();
+		const profileId = randomUUID();
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const jobId = randomUUID();
+		const makeLandJob = (id: string) => ({
+			jobId: id,
+			surfaceId,
+			profileId,
+			sessionId,
+			kind: "land_change" as const,
+			payload: {},
+			repositoryKey: null,
+			folderRoot: "identity",
+			sourceKind: "folder" as const,
+			approvedChanges: [
+				{
+					changeId,
+					title: "Update large brand file",
+					summary: "",
+					kind: "folder_patch" as const,
+					parentSha: null,
+					headSha: null,
+					affectedPaths: ["identity/brand.md"],
+					patchManifest: [{ op: "write_text", path: "identity/brand.md", content: "Updated brief\n" }],
+				},
+			],
+		});
+
+		await inlineHandlers.runMergeJob(makeLandJob(jobId), new AbortController().signal);
+		expect(memInline.commitCalls).toHaveLength(0);
+		expect(memInline.files.get("identity/brand.md")).toBe(bigBody);
+		expect(completeInline).toHaveBeenCalledWith(
+			expect.objectContaining({
+				jobId,
+				status: "failed",
+				errorDetail: expect.stringMatching(/96 KiB/i),
+			}),
+			expect.any(AbortSignal),
+		);
+
+		const memExternal = createInMemoryCompanyFolder({ "identity/brand.md": bigBody });
+		const snapshotStore = new InMemorySurfaceFolderSnapshotStore();
+		const completeExternal = vi.fn().mockResolvedValue(undefined);
+		const externalHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge: completeExternal,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: memExternal.folder,
+			folderSnapshots: snapshotStore,
+			completionRetryDelaysMs: [1, 1],
+		});
+
+		const extJobId = randomUUID();
+		await externalHandlers.runMergeJob(makeLandJob(extJobId), new AbortController().signal);
+		expect(memExternal.commitCalls).toHaveLength(1);
+		expect(memExternal.files.get("identity/brand.md")).toBe("Updated brief\n");
+		const extPayload = completeExternal.mock.calls[0]?.[0] as {
+			status: string;
+			mainBefore: string;
+			mainAfter: string;
+			preMergeSnapshot: Record<string, unknown>;
+		};
+		expect(extPayload.status).toBe("landed");
+		expect(extPayload.preMergeSnapshot.externalSnapshot).toBe(true);
+		expect(extPayload.preMergeSnapshot.filesBefore).toBeUndefined();
+		expect(Buffer.byteLength(JSON.stringify(extPayload.preMergeSnapshot), "utf-8")).toBeLessThan(2048);
+
+		const undoJobId = randomUUID();
+		await externalHandlers.runMergeJob(
+			{
+				jobId: undoJobId,
+				surfaceId,
+				profileId,
+				sessionId,
+				kind: "undo_change",
+				payload: {
+					changeId,
+					landedMainBefore: extPayload.mainBefore,
+					landedMainAfter: extPayload.mainAfter,
+				},
+				repositoryKey: null,
+				folderRoot: "identity",
+				sourceKind: "folder",
+				preMergeSnapshot: extPayload.preMergeSnapshot,
+			},
+			new AbortController().signal,
+		);
+		expect(memExternal.files.get("identity/brand.md")).toBe(bigBody);
+		expect(completeExternal).toHaveBeenLastCalledWith(
+			expect.objectContaining({ jobId: undoJobId, status: "landed" }),
+			expect.any(AbortSignal),
+		);
+	});
+
+	it("retries transient completion errors after folder commit without re-running commitFiles", async () => {
+		const mem = createInMemoryCompanyFolder({ "identity/tokens.json": '{"accent":"#111111"}\n' });
+		let attempts = 0;
+		const completeSurfaceMerge = vi.fn().mockImplementation(async () => {
+			attempts += 1;
+			if (attempts < 3) {
+				throw new Error("Transient 503 from control plane");
+			}
+		});
+		const handlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: mem.folder,
+			completionRetryDelaysMs: [1, 1],
+		});
+
+		const jobId = randomUUID();
+		const changeId = randomUUID();
+		const sessionId = randomUUID();
+		await handlers.runMergeJob(
+			{
+				jobId,
+				surfaceId: randomUUID(),
+				profileId: randomUUID(),
+				sessionId,
+				kind: "land_change",
+				payload: {},
+				repositoryKey: null,
+				folderRoot: "identity",
+				sourceKind: "folder",
+				approvedChanges: [
+					{
+						changeId,
+						title: "Set accent",
+						summary: "",
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						affectedPaths: ["identity/tokens.json"],
+						patchManifest: [{ op: "merge_json", path: "identity/tokens.json", patch: { accent: "#222222" } }],
+					},
+				],
+			},
+			new AbortController().signal,
+		);
+
+		expect(mem.commitCalls).toHaveLength(1);
+		expect(completeSurfaceMerge).toHaveBeenCalledTimes(3);
+		expect(completeSurfaceMerge).toHaveBeenLastCalledWith(
+			expect.objectContaining({ jobId, status: "landed" }),
+			expect.any(AbortSignal),
+		);
+	});
+
+	it("refuses folder undo as conflicted when a later edit changed the file after landing", async () => {
+		const mem = createInMemoryCompanyFolder({ "identity/tokens.json": '{"accent":"#111111"}\n' });
+		const completeSurfaceMerge = vi.fn().mockResolvedValue(undefined);
+		const handlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: mem.folder,
+			completionRetryDelaysMs: [1, 1],
+		});
+
+		const surfaceId = randomUUID();
+		const profileId = randomUUID();
+		const sessionId = randomUUID();
+		const changeA = randomUUID();
+		const landJobId = randomUUID();
+
+		await handlers.runMergeJob(
+			{
+				jobId: landJobId,
+				surfaceId,
+				profileId,
+				sessionId,
+				kind: "land_change",
+				payload: {},
+				repositoryKey: null,
+				folderRoot: "identity",
+				sourceKind: "folder",
+				approvedChanges: [
+					{
+						changeId: changeA,
+						title: "Change A accent",
+						summary: "",
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						affectedPaths: ["identity/tokens.json"],
+						patchManifest: [{ op: "merge_json", path: "identity/tokens.json", patch: { accent: "#aaaaaa" } }],
+					},
+				],
+			},
+			new AbortController().signal,
+		);
+
+		const landedCall = completeSurfaceMerge.mock.calls[0]?.[0] as {
+			status: string;
+			mainBefore: string;
+			mainAfter: string;
+			preMergeSnapshot: Record<string, unknown>;
+		};
+		expect(landedCall.status).toBe("landed");
+		expect(landedCall.preMergeSnapshot.versionsAfter).toMatchObject({
+			"identity/tokens.json": expect.any(String),
+			"identity/tokens.css": expect.any(String),
+		});
+
+		const laterContent = '{"accent":"#bbbbbb","from":"change-b"}\n';
+		mem.mutateExternal("identity/tokens.json", laterContent);
+		const commitsBeforeUndo = mem.commitCalls.length;
+
+		const undoJobId = randomUUID();
+		await handlers.runMergeJob(
+			{
+				jobId: undoJobId,
+				surfaceId,
+				profileId,
+				sessionId,
+				kind: "undo_change",
+				payload: {
+					changeId: changeA,
+					landedMainBefore: landedCall.mainBefore,
+					landedMainAfter: landedCall.mainAfter,
+				},
+				repositoryKey: null,
+				folderRoot: "identity",
+				sourceKind: "folder",
+				preMergeSnapshot: landedCall.preMergeSnapshot,
+			},
+			new AbortController().signal,
+		);
+
+		expect(mem.commitCalls).toHaveLength(commitsBeforeUndo);
+		expect(mem.files.get("identity/tokens.json")).toBe(laterContent);
+		expect(completeSurfaceMerge).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				jobId: undoJobId,
+				status: "conflicted",
+				conflictChangeId: changeA,
+				conflictPaths: ["identity/tokens.json"],
+			}),
+			expect.any(AbortSignal),
+		);
+	});
 });

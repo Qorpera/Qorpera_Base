@@ -67,7 +67,7 @@ import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.t
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
-import { attachSurfaces, isLocalSurfaceId, SurfacesStore, surfacesOf } from "./surfaces-store.ts";
+import { attachSurfaces, isLocalSurfaceId, SurfacesStore, surfacesDisabledOf, surfacesOf } from "./surfaces-store.ts";
 import { showWaitingInTitle } from "./tab-title.ts";
 import { noteReceiver, type TellAccounts, tellAgent } from "./tell-agent.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
@@ -2864,7 +2864,12 @@ export function mountApplication(
 			}
 			case "surface": {
 				const surfaces = surfacesOf(controller);
-				if (!surfaces) return;
+				if (!surfaces) {
+					if (surfacesDisabledOf(controller)) {
+						navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }, true);
+					}
+					return;
+				}
 				if (!surfaceView) {
 					const loadStudioFiles = async (
 						surface: SurfaceSummary,
