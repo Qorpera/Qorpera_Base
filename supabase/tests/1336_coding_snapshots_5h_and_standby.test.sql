@@ -278,4 +278,167 @@ begin
 	perform pg_temp.ok(v_plan ->> 'state' = 'refused' and v_plan ->> 'reason' = 'MACHINE_RETIRING', 'base image rollout retires attached snapshot machine');
 end $$;
 
+do $$
+declare
+	v_aux_node_id uuid := '13360000-0000-4000-8000-000000000099';
+	v_aux_machine text := repeat('9', 64);
+	v_ctx jsonb;
+	v_obs jsonb;
+	v_policy jsonb;
+	v_builder jsonb;
+	v_standby jsonb;
+	v_ready boolean;
+	v_failed boolean := false;
+begin
+	perform public.qorpera_configure_runtime_node(
+		jsonb_build_object(
+			'schema', 'qorpera.runtime-node-policy/v1',
+			'nodeId', v_aux_node_id,
+			'machineIdSha256', v_aux_machine,
+			'label', 'node-aux-1336',
+			'cpuMillis', 32000,
+			'memoryBytes', 68719476736,
+			'headroomCpuMillis', 10000,
+			'headroomMemoryBytes', 17179869184,
+			'standardCpuMillis', 4000,
+			'standardMemoryBytes', 8589934592,
+			'enabled', true
+		),
+		0
+	);
+	v_policy := jsonb_build_object(
+		'schema', 'qorpera.runtime-node-inventory-policy/v1',
+		'nodeId', v_aux_node_id,
+		'host', jsonb_build_object(
+			'machineIdSha256', v_aux_machine,
+			'socketPath', '/var/snap/lxd/common/lxd/unix.socket',
+			'socketGid', 101,
+			'certificateSha256', repeat('e', 64),
+			'serverName', 'node-aux-1336',
+			'serverVersion', '6.9',
+			'architecture', 'x86_64'
+		),
+		'operatingCpuMillis', 4000,
+		'operatingMemoryBytes', 4294967296,
+		'infrastructure', '[]'::jsonb,
+		'codingAuxiliary', jsonb_build_object(
+			'project', 'coding',
+			'storagePool', 'coding-disks',
+			'cpus', 4,
+			'memoryBytes', 8589934592,
+			'rootDiskBytes', 68719476736,
+			'maxBuilders', 1,
+			'maxStandby', 2
+		)
+	);
+	perform public.qorpera_enroll_runtime_node_inventory(v_policy);
+
+	begin
+		perform public.qorpera_enroll_runtime_node_inventory(
+			v_policy || jsonb_build_object(
+				'codingAuxiliary', (v_policy -> 'codingAuxiliary') || jsonb_build_object('maxBuilders', 2)
+			)
+		);
+	exception when others then
+		v_failed := true;
+	end;
+	perform pg_temp.ok(v_failed, 'codingAuxiliary maxBuilders headroom check refuses over-subscribed node');
+
+	v_ctx := public.qorpera_runtime_node_inventory_context(v_aux_node_id);
+	v_builder := jsonb_build_object(
+		'project', 'coding',
+		'name', 'qorpera-coding-snap-' || repeat('a', 24),
+		'physicalId', extensions.gen_random_uuid(),
+		'type', 'virtual-machine',
+		'state', 'running',
+		'configurationSha256', repeat('b', 64),
+		'cpuMillis', 4000,
+		'memoryBytes', 8589934592,
+		'allocation', null,
+		'category', 'coding-snapshot-builder',
+		'reason', null
+	);
+	v_standby := jsonb_build_object(
+		'project', 'coding',
+		'name', 'qorpera-coding-standby-' || repeat('c', 24),
+		'physicalId', extensions.gen_random_uuid(),
+		'type', 'virtual-machine',
+		'state', 'suspended',
+		'configurationSha256', repeat('d', 64),
+		'cpuMillis', 4000,
+		'memoryBytes', 8589934592,
+		'allocation', null,
+		'category', 'coding-standby',
+		'reason', null
+	);
+	v_obs := public.qorpera_observe_runtime_node_inventory(
+		jsonb_build_object(
+			'schema', 'qorpera.runtime-node-observation/v1',
+			'nodeId', v_aux_node_id,
+			'machineIdSha256', v_aux_machine,
+			'observationId', extensions.gen_random_uuid(),
+			'observedAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+			'cpuMillis', 32000,
+			'memoryBytes', 68719476736,
+			'state', 'ready'
+		),
+		v_ctx ->> 'contextSha256',
+		jsonb_build_object(
+			'schema', 'qorpera.runtime-node-inventory/v1',
+			'bootId', extensions.gen_random_uuid(),
+			'entries', jsonb_build_array(v_builder, v_standby)
+		)
+	);
+	select observation ->> 'state' = 'ready' into v_ready
+	from public.qorpera_runtime_node_observations where node_id = v_aux_node_id;
+	perform pg_temp.ok(v_ready, 'node stays ready when registered snapshot builder and stopped standby VM are present');
+
+	v_failed := false;
+	begin
+		perform public.qorpera_observe_runtime_node_inventory(
+			jsonb_build_object(
+				'schema', 'qorpera.runtime-node-observation/v1',
+				'nodeId', v_aux_node_id,
+				'machineIdSha256', v_aux_machine,
+				'observationId', extensions.gen_random_uuid(),
+				'observedAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+				'cpuMillis', 32000,
+				'memoryBytes', 68719476736,
+				'state', 'ready'
+			),
+			v_ctx ->> 'contextSha256',
+			jsonb_build_object(
+				'schema', 'qorpera.runtime-node-inventory/v1',
+				'bootId', extensions.gen_random_uuid(),
+				'entries', jsonb_build_array(v_standby || jsonb_build_object('state', 'running'))
+			)
+		);
+	exception when others then
+		v_failed := true;
+	end;
+	perform pg_temp.ok(v_failed, 'running standby VM refuses ready SQL inventory observation');
+
+	perform public.qorpera_observe_runtime_node_inventory(
+		jsonb_build_object(
+			'schema', 'qorpera.runtime-node-observation/v1',
+			'nodeId', v_aux_node_id,
+			'machineIdSha256', v_aux_machine,
+			'observationId', extensions.gen_random_uuid(),
+			'observedAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+			'cpuMillis', 32000,
+			'memoryBytes', 68719476736,
+			'state', 'unavailable'
+		),
+		v_ctx ->> 'contextSha256',
+		jsonb_build_object(
+			'schema', 'qorpera.runtime-node-inventory/v1',
+			'bootId', extensions.gen_random_uuid(),
+			'entries', jsonb_build_array(v_standby || jsonb_build_object('state', 'running', 'reason', 'INSTANCE_AUTHORITY_DIFFERS'))
+		)
+	);
+	select observation ->> 'state' = 'unavailable' into v_ready
+	from public.qorpera_runtime_node_observations where node_id = v_aux_node_id;
+	perform pg_temp.ok(v_ready, 'running standby VM records unavailable SQL inventory observation');
+end $$;
+
 rollback;

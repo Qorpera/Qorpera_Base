@@ -741,4 +741,94 @@ comment on function public.qorpera_sweep_coding_snapshots(text, text, text) is
 comment on function public.qorpera_fallback_coding_machine_base_image(uuid, uuid, uuid, text) is
 	'20260930854000 (step 5h): atomically rebinds an unstarted snapshot-planned machine to base vm_policy and retires the missing snapshot when absent from local LXD.';
 
+select pg_temp.s5h_patch('public.qorpera_enroll_runtime_node_inventory(jsonb)'::regprocedure, array[
+$a$'infrastructure','buildSpace','codeHosts']<>'{}'::jsonb$a$,
+$b$'infrastructure','buildSpace','codeHosts','codingAuxiliary']<>'{}'::jsonb$b$,
+
+$a$<>6+(p_policy ? 'buildSpace')::integer+(p_policy ? 'codeHosts')::integer$a$,
+$b$<>6+(p_policy ? 'buildSpace')::integer+(p_policy ? 'codeHosts')::integer+(p_policy ? 'codingAuxiliary')::integer$b$,
+
+$a$
+  or p_policy->>'schema' is distinct from 'qorpera.runtime-node-inventory-policy/v1' then$a$,
+$b$
+  -- WHY: 20260930854000 (step 5h): register coding snapshot builders and stopped standby VMs in node inventory headroom.
+  or (p_policy ? 'codingAuxiliary' and (jsonb_typeof(p_policy->'codingAuxiliary') is distinct from 'object'
+   or (p_policy->'codingAuxiliary')-array['project','storagePool','cpus','memoryBytes','rootDiskBytes','maxBuilders','maxStandby']<>'{}'::jsonb
+   or (select count(*) from jsonb_object_keys(p_policy->'codingAuxiliary'))<>7
+   or jsonb_typeof(p_policy->'codingAuxiliary'->'project') is distinct from 'string'
+   or coalesce(p_policy->'codingAuxiliary'->>'project','') !~ '^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$'
+   or coalesce(p_policy->'codingAuxiliary'->>'project','') ~ '^qorpera-codehost-[0-9a-f]{32}$'
+   or jsonb_typeof(p_policy->'codingAuxiliary'->'storagePool') is distinct from 'string'
+   or coalesce(p_policy->'codingAuxiliary'->>'storagePool','') !~ '^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$'
+   or exists(select 1 from (values ('cpus',1::numeric,64::numeric,1::numeric),
+     ('memoryBytes',1073741824,1099511627776,1073741824),('rootDiskBytes',10737418240,2199023255552,1073741824),
+     ('maxBuilders',0,4,1),('maxStandby',0,8,1)) b(k,low,high,unit)
+    where jsonb_typeof(p_policy->'codingAuxiliary'->b.k) is distinct from 'number'
+     or case when coalesce(p_policy->'codingAuxiliary'->>b.k,'') ~ '^(0|[1-9][0-9]{0,15})$'
+      then (p_policy->'codingAuxiliary'->>b.k)::numeric not between b.low and b.high or mod((p_policy->'codingAuxiliary'->>b.k)::numeric,b.unit)<>0
+      else true end)
+   or (p_policy->'codingAuxiliary'->>'maxBuilders')::integer+(p_policy->'codingAuxiliary'->>'maxStandby')::integer<1))
+  or p_policy->>'schema' is distinct from 'qorpera.runtime-node-inventory-policy/v1' then$b$,
+
+$a$ v_memory:=v_memory+coalesce((p_policy->'codeHosts'->>'running')::numeric*(p_policy->'codeHosts'->>'memoryBytes')::numeric,0);$a$,
+$b$ v_memory:=v_memory+coalesce((p_policy->'codeHosts'->>'running')::numeric*(p_policy->'codeHosts'->>'memoryBytes')::numeric,0);
+ v_cpu:=v_cpu+coalesce((p_policy->'codingAuxiliary'->>'maxBuilders')::numeric*(p_policy->'codingAuxiliary'->>'cpus')::numeric*1000,0);
+ v_memory:=v_memory+coalesce((p_policy->'codingAuxiliary'->>'maxBuilders')::numeric*(p_policy->'codingAuxiliary'->>'memoryBytes')::numeric,0);$b$,
+
+$a$ or coalesce(p_policy->'buildSpace'->>'project','') ~ '^qorpera-codehost-[0-9a-f]{32}$' then$a$,
+$b$ or coalesce(p_policy->'buildSpace'->>'project','') ~ '^qorpera-codehost-[0-9a-f]{32}$'
+  or (p_policy ? 'buildSpace' and p_policy ? 'codingAuxiliary'
+   and p_policy->'buildSpace'->>'project'=p_policy->'codingAuxiliary'->>'project') then$b$
+]);
+
+select pg_temp.s5h_patch('public.qorpera_observe_runtime_node_inventory(jsonb,text,jsonb)'::regprocedure, array[
+$a$ v_build_cpu numeric:=0; v_build_memory numeric:=0; v_code_hosts integer:=0;$a$,
+$b$ v_build_cpu numeric:=0; v_build_memory numeric:=0; v_code_hosts integer:=0; v_snap_builders integer:=0; v_standbys integer:=0;$b$,
+
+$a$   +coalesce((v_policy->'codeHosts'->>'running')::numeric*(v_policy->'codeHosts'->>'cpus')::numeric*1000,0)>(v_context->>'headroomCpuMillis')::numeric$a$,
+$b$   +coalesce((v_policy->'codeHosts'->>'running')::numeric*(v_policy->'codeHosts'->>'cpus')::numeric*1000,0)
+   +coalesce((v_policy->'codingAuxiliary'->>'maxBuilders')::numeric*(v_policy->'codingAuxiliary'->>'cpus')::numeric*1000,0)>(v_context->>'headroomCpuMillis')::numeric$b$,
+
+$a$   +coalesce((v_policy->'codeHosts'->>'running')::numeric*(v_policy->'codeHosts'->>'memoryBytes')::numeric,0)>(v_context->>'headroomMemoryBytes')::numeric$a$,
+$b$   +coalesce((v_policy->'codeHosts'->>'running')::numeric*(v_policy->'codeHosts'->>'memoryBytes')::numeric,0)
+   +coalesce((v_policy->'codingAuxiliary'->>'maxBuilders')::numeric*(v_policy->'codingAuxiliary'->>'memoryBytes')::numeric,0)>(v_context->>'headroomMemoryBytes')::numeric$b$,
+
+$a$'infrastructure','build','code-host','unmanaged')$a$,
+$b$'infrastructure','build','code-host','coding-snapshot-builder','coding-standby','unmanaged')$b$,
+
+$a$'BUILD_SPACE_EXCEEDED','INSTANCE_IMAGE_NOT_RELEASED','CODE_HOST_SPACE_EXCEEDED'))$a$,
+$b$'BUILD_SPACE_EXCEEDED','INSTANCE_IMAGE_NOT_RELEASED','CODE_HOST_SPACE_EXCEEDED','CODING_SNAPSHOT_BUILDER_SPACE_EXCEEDED','CODING_STANDBY_SPACE_EXCEEDED'))$b$,
+
+$a$   raise exception 'Node inventory mixes the code hosts with other instances' using errcode='42501'; end if;$a$,
+$b$   raise exception 'Node inventory mixes the code hosts with other instances' using errcode='42501'; end if;
+  if (v_item->>'category'='coding-snapshot-builder' and (not v_policy ? 'codingAuxiliary'
+    or v_item->>'project' is distinct from v_policy->'codingAuxiliary'->>'project'
+    or v_item->>'name' !~ '^qorpera-coding-snap-[0-9a-f]{24}$'))
+   or (v_item->>'category'='coding-standby' and (not v_policy ? 'codingAuxiliary'
+    or v_item->>'project' is distinct from v_policy->'codingAuxiliary'->>'project'
+    or v_item->>'name' !~ '^qorpera-coding-standby-[0-9a-f]{24}$')) then
+   raise exception 'Node inventory mixes coding auxiliary instances with other projects' using errcode='42501'; end if;$b$,
+
+$a$   if v_item->>'state'<>'suspended' then v_code_hosts:=v_code_hosts+1; end if;$a$,
+$b$   if v_item->>'state'<>'suspended' then v_code_hosts:=v_code_hosts+1; end if;
+  elsif v_item->>'category'='coding-snapshot-builder' then
+   if v_item->'allocation'<>'null'::jsonb then raise exception 'A snapshot builder cannot claim an allocation' using errcode='42501'; end if;
+   if v_item->>'type' is distinct from 'virtual-machine'
+    or v_item->>'cpuMillis' is null or (v_item->>'cpuMillis')::numeric>(v_policy->'codingAuxiliary'->>'cpus')::numeric*1000
+    or v_item->>'memoryBytes' is null or (v_item->>'memoryBytes')::numeric>(v_policy->'codingAuxiliary'->>'memoryBytes')::numeric then v_ready:=false; end if;
+   v_snap_builders:=v_snap_builders+1;
+  elsif v_item->>'category'='coding-standby' then
+   if v_item->'allocation'<>'null'::jsonb then raise exception 'A coding standby VM cannot claim an allocation' using errcode='42501'; end if;
+   if v_item->>'type' is distinct from 'virtual-machine'
+    or v_item->>'state' is distinct from 'suspended'
+    or v_item->'cpuMillis' is distinct from to_jsonb((v_policy->'codingAuxiliary'->>'cpus')::numeric*1000)
+    or v_item->'memoryBytes' is distinct from v_policy->'codingAuxiliary'->'memoryBytes' then v_ready:=false; end if;
+   v_standbys:=v_standbys+1;$b$,
+
+$a$ if v_code_hosts>coalesce((v_policy->'codeHosts'->>'running')::integer,0) then v_ready:=false; end if;$a$,
+$b$ if v_code_hosts>coalesce((v_policy->'codeHosts'->>'running')::integer,0) then v_ready:=false; end if;
+ if v_snap_builders>coalesce((v_policy->'codingAuxiliary'->>'maxBuilders')::integer,0) then v_ready:=false; end if;
+ if v_standbys>coalesce((v_policy->'codingAuxiliary'->>'maxStandby')::integer,0) then v_ready:=false; end if;$b$
+]);
+
 drop function pg_temp.s5h_patch(regprocedure, text[]);

@@ -297,8 +297,8 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		id: "coding-prewarmed-snapshots-and-standby",
 		kind: "capability",
 		date: "2026-11-22",
-		title: "Pre-warmed coding environments and fast standby boot",
-		text: "Repositories can now declare a Qorpera, Cursor or devcontainer environment configuration with install, start, background terminal and static non-secret environment settings. Qorpera hashes the setup, builds scrubbed per-node snapshot images in the background so future coding sessions start with dependencies already installed, and runs lifecycle hooks automatically on attach and wake. Nodes can also keep a warm pool of pre-booted standby coding machines and enable stateful sleep so fresh coding sessions attach in seconds instead of waiting for a cold boot.",
+		title: "Pre-warmed coding snapshots and environment hooks",
+		text: "Repositories can now declare a Qorpera, Cursor or devcontainer environment configuration with install, start, background terminal and static non-secret environment settings. Qorpera computes a setup digest, builds scrubbed per-node snapshot images in the background under the company's network exit rules so new coding machines start with base packages pre-warmed, and runs worktree install, start and tracked background terminal hooks automatically on attach with clean teardown on detach.",
 	},
 ]);
 

@@ -292,7 +292,6 @@ export interface LxdCodingExecutorHostOptions {
 	};
 	snapshotBuilder?: CodingSnapshotBuilder;
 	standbyPool?: CodingStandbyPool;
-	statefulSleep?: boolean;
 	setupLifecycle?: CodingSetupLifecycle;
 }
 type FolderOptions = NonNullable<LxdCodingExecutorHostOptions["folder"]>;
@@ -1153,7 +1152,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		starting?: CodingMachineReconcileOptions["starting"],
 		extra?: {
 			claimStandby?: CodingMachineReconcileOptions["claimStandby"];
-			statefulStop?: boolean;
 		},
 	): Promise<"running" | "stopped" | "absent" | "deleted"> {
 		const checked = AbortSignal.any([
@@ -1174,7 +1172,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				stoppedFromOutside,
 				starting,
 				claimStandby: extra?.claimStandby,
-				statefulStop: extra?.statefulStop,
 				// Read before a create with the agent card, so a node not set up for it fails that create, not its machine.
 				projectAllowsAgentCard: (project, read) => this.#options.client.allowsAgentCard(project, read),
 			});
@@ -1641,7 +1638,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				{
 					claim,
 					assertAuthorized: async (checked) => {
-						checked.throwIfAborted();
+						await this.#assertSessionAuthorized(claim, checked);
 					},
 				},
 				claim.baseSha,
@@ -3549,6 +3546,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		// No new command, lease refresh or publication for this turn from here on.
 		if (this.#prepared.get(claim.workerId)?.claim.leaseToken === claim.leaseToken)
 			this.#prepared.delete(claim.workerId);
+		this.#sessionSetups.delete(claim.workerId);
 		try {
 			await this.#takeOff(
 				attached.machine,
@@ -3558,6 +3556,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				signal,
 			);
 		} finally {
+			this.#setupLifecycle.forgetSession(attached.machine.machineId, claim.workerId);
 			if (this.#attached.get(claim.workerId) === attached) this.#attached.delete(claim.workerId);
 		}
 	}
@@ -3573,6 +3572,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		session: { workerId: string; leaseToken: string | null },
 		running: readonly string[],
 		signal: AbortSignal,
+		folderUid?: number,
 	): Promise<void> {
 		const journal = lxdCodingMachineJournalPlan(machine, this.#placement),
 			text = lxdCodingMachinePlan(machine).text,
@@ -3595,6 +3595,22 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				if (awake) {
 					await this.#cancelCommands(machine, session.workerId, running, signal);
 					await this.#custody(journal, text, "detach", signal, session);
+					const uid =
+						folderUid ??
+						this.#attachments.get(session.workerId)?.folder?.uid ??
+						this.#prepared.get(session.workerId)?.folder?.uid;
+					if (
+						uid !== undefined &&
+						this.#setupLifecycle.trackedTerminals(machine.machineId, session.workerId).length > 0
+					) {
+						await this.#setupLifecycle
+							.onDetach(
+								machine.machineId,
+								session.workerId,
+								this.#guestDetachRunner(guest, session.workerId, uid),
+							)
+							.catch(() => undefined);
+					}
 					await guest.quiesce(request, signal);
 				}
 				const end = await folder.views.end(session.workerId, signal);
@@ -3609,6 +3625,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				if (end && !end.saved) throw new Error("CODING_FOLDER_VIEW_UNSAVED");
 				if (end && !end.closed) throw new Error("CODING_FOLDER_VIEW_CLOSE_UNCONFIRMED");
 				if (guestFailure) throw guestFailure;
+				this.#setupLifecycle.forgetSession(machine.machineId, session.workerId);
+				this.#sessionSetups.delete(session.workerId);
 				this.#commandSecrets?.release(machine.machineId, session.workerId);
 				return;
 			}
@@ -3998,6 +4016,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				this.#attachSerials.delete(workerId);
 				this.#samples.delete(workerId);
 				this.#folderUidCache.delete(workerId);
+				if (!this.#releasing.has(workerId)) {
+					this.#setupLifecycle.forgetSession(attachment.machine.machineId, workerId);
+					this.#sessionSetups.delete(workerId);
+				}
 				this.#commandSecrets?.release(attachment.machine.machineId, workerId);
 			}
 		for (const workerId of this.#folderUidCache.keys())
@@ -4362,6 +4384,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	): void {
 		if (this.#releasing.has(workerId)) return;
 		const prepared = this.#prepared.get(workerId);
+		const folderUid = this.#attachments.get(workerId)?.folder?.uid ?? prepared?.folder?.uid;
 		const again = reason === "EXPIRED" && prepared?.machine.machineId === machine.machineId ? prepared : undefined;
 		const step: CodingKeepOutcome["step"] = again ? "keep" : "detach";
 		const report = (state: CodingKeepOutcome["state"], code: string) =>
@@ -4384,6 +4407,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				{ workerId, leaseToken: null },
 				running.map((command) => command.commandId),
 				scoped,
+				folderUid,
 			);
 			await this.#recordDetached(machine, workerId, token, reason, running, scoped);
 			report("done", reason);
@@ -5071,8 +5095,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			budget,
 			// Stopped from outside: each attachment ends as MACHINE_STOPPED, so the SLEEP records below find none.
 			member ? (start, checked) => this.#recordMachineStopped(member, start, checked) : undefined,
-			undefined,
-			{ statefulStop: this.#options.statefulSleep === true && folder !== undefined && member !== null },
 		);
 		if (state === "stopped" && member) {
 			// Stopped, it needs no lease; one left behind lapses all the same.
@@ -5240,7 +5262,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					cwd: ready.folder.cwd,
 					setupDigest: setup.setupDigest,
 					setupSpec: setup.setupSpec,
-					snapshotPreinstalled: planned.snapshotImageFingerprint !== null && diskId === "initial",
 					runner,
 				},
 				signal,
@@ -5264,6 +5285,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			this.#options.snapshotBuilder.enqueue({
 				workerId: claim.workerId,
 				leaseToken: claim.leaseToken,
+				profileId: claim.profileId,
 				environmentId: claim.environmentId,
 				memberUserId: claim.ownerUserId,
 				repository: repositoryKey,
@@ -5276,7 +5298,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 								{
 									claim,
 									assertAuthorized: async (checked) => {
-										checked.throwIfAborted();
+										await this.#run(claim, ready.machine, ready.storage, checked);
 									},
 								},
 								commitSha,
@@ -5285,6 +5307,17 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					: undefined,
 			});
 		}
+	}
+	async #assertSessionAuthorized(claim: CodingSessionClaim, signal: AbortSignal): Promise<void> {
+		await this.#call(
+			"qorpera_heartbeat_coding_session",
+			{
+				p_worker_id: claim.workerId,
+				p_lease_token: claim.leaseToken,
+				p_lease_seconds: 60,
+			},
+			signal,
+		);
 	}
 	#setupCommandRunner(folder: FolderOptions, ready: Prepared): CodingSetupCommandRunner {
 		return {
@@ -5337,6 +5370,51 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				return {
 					exitCode: receipt.state === "succeeded" ? 0 : (receipt.exitCode ?? 1),
 					stdout: collected,
+					stderr: "",
+				};
+			},
+		};
+	}
+	#guestDetachRunner(guest: LxdCodingGuestClient, workerId: string, uid: number): CodingSetupCommandRunner {
+		return {
+			exec: async (input, signal) => {
+				const shellCommand =
+					input.argv.length === 3 && input.argv[0] === "/bin/sh" && input.argv[1] === "-lc"
+						? input.argv[2]
+						: input.argv.map((arg) => `'${arg.replaceAll("'", "'\\''")}'`).join(" ");
+				const commandId = randomUUID();
+				const answer = await guest.run(
+					{
+						schema: "qorpera.coding-guest-run/v1",
+						workerId,
+						commandId,
+						uid,
+						gid: uid,
+						cwd: input.cwd,
+						environment: {},
+						command: shellCommand,
+						timeoutMs: Math.max(1000, Math.min(input.timeoutMs, 10_000)),
+					},
+					signal,
+				);
+				if (answer.state === "running") {
+					await guest
+						.output(
+							{
+								schema: "qorpera.coding-guest-output/v1",
+								workerId,
+								commandId,
+								offset: 0,
+								maxBytes: 1024,
+								waitMs: 2000,
+							},
+							signal,
+						)
+						.catch(() => undefined);
+				}
+				return {
+					exitCode: answer.state === "exited" ? (answer.exit?.code ?? 0) : 0,
+					stdout: "",
 					stderr: "",
 				};
 			},

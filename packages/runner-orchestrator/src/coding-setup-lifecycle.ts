@@ -21,36 +21,84 @@ const PROTECTED_ENV_NAMES = new Set([
 	"PWD",
 	"OLDPWD",
 	"TMPDIR",
-	"LD_PRELOAD",
-	"LD_LIBRARY_PATH",
-	"LD_AUDIT",
-	"DYLD_INSERT_LIBRARIES",
-	"NODE_OPTIONS",
-	"BASH_ENV",
+	"IFS",
 	"ENV",
-	"GIT_SSH_COMMAND",
-	"GIT_ASKPASS",
-	"SSH_ASKPASS",
+	"BASH_ENV",
+	"ZDOTDIR",
+	"CDPATH",
+	"FPATH",
+	"NODE_OPTIONS",
+	"NODE_EXTRA_CA_CERTS",
+	"NODE_TLS_REJECT_UNAUTHORIZED",
+	"NODE_PATH",
+	"PYTHONSTARTUP",
+	"PYTHONPATH",
+	"PYTHONHOME",
+	"PYTHONUSERBASE",
+	"PERL5OPT",
+	"PERL5LIB",
+	"PERLLIB",
+	"RUBYOPT",
+	"RUBYLIB",
+	"JAVA_TOOL_OPTIONS",
+	"_JAVA_OPTIONS",
+	"JDK_JAVA_OPTIONS",
+	"GOPATH",
+	"GOBIN",
+	"GOFLAGS",
+	"GOCACHE",
 	"HTTP_PROXY",
 	"HTTPS_PROXY",
 	"ALL_PROXY",
 	"NO_PROXY",
-	"GITHUB_TOKEN",
-	"GH_TOKEN",
-	"NPM_TOKEN",
-	"AWS_ACCESS_KEY_ID",
-	"AWS_SECRET_ACCESS_KEY",
-	"AWS_SESSION_TOKEN",
+	"SSL_CERT_FILE",
+	"SSL_CERT_DIR",
+	"REQUESTS_CA_BUNDLE",
+	"CURL_CA_BUNDLE",
+	"CURL_HOME",
+	"WGETRC",
+	"NETRC",
 	"OPENAI_API_KEY",
 	"ANTHROPIC_API_KEY",
 	"GOOGLE_API_KEY",
+	"GEMINI_API_KEY",
 	"SUPABASE_SERVICE_ROLE_KEY",
 ]);
 
-function isProtectedEnvName(name: string): boolean {
+const PROTECTED_ENV_PREFIXES = [
+	"QORPERA_",
+	"GIT_",
+	"LD_",
+	"DYLD_",
+	"SSH_",
+	"AWS_",
+	"GITHUB_",
+	"GH_",
+	"NPM_",
+	"YARN_",
+	"PNPM_",
+	"PIP_",
+	"UV_",
+	"CARGO_",
+	"DOCKER_",
+] as const;
+
+const PROTECTED_ENV_SUFFIXES = [
+	"_TOKEN",
+	"_SECRET",
+	"_PASSWORD",
+	"_PASSWD",
+	"_API_KEY",
+	"_PRIVATE_KEY",
+	"_CREDENTIAL",
+	"_CREDENTIALS",
+] as const;
+
+export function isProtectedCodingSetupEnvName(name: string): boolean {
 	const upper = name.toUpperCase();
 	if (PROTECTED_ENV_NAMES.has(upper)) return true;
-	if (upper.startsWith("QORPERA_")) return true;
+	if (PROTECTED_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix))) return true;
+	if (PROTECTED_ENV_SUFFIXES.some((suffix) => upper.endsWith(suffix))) return true;
 	return false;
 }
 
@@ -105,7 +153,7 @@ export function resolveCodingSetupEnvironment(setupSpec: CodingSetup): CodingSet
 
 	const resolved = new Map<string, string>(base);
 	for (const [key, rawValue] of Object.entries(setupSpec.remoteEnv)) {
-		if (isProtectedEnvName(key) || !ENV_NAME.test(key)) {
+		if (isProtectedCodingSetupEnvName(key) || !ENV_NAME.test(key)) {
 			skipped.push(key);
 			continue;
 		}
@@ -133,7 +181,7 @@ export function resolveCodingSetupEnvironment(setupSpec: CodingSetup): CodingSet
 }
 
 function validateEnvPair(key: string, value: string): boolean {
-	if (!ENV_NAME.test(key) || isProtectedEnvName(key)) return false;
+	if (!ENV_NAME.test(key) || isProtectedCodingSetupEnvName(key)) return false;
 	if (value.includes("\0") || Buffer.byteLength(value, "utf8") > CODING_SETUP_MAX_ENV_VALUE_BYTES) return false;
 	return true;
 }
@@ -174,7 +222,6 @@ export interface CodingSetupAttachContext {
 	readonly cwd: string;
 	readonly setupDigest: string;
 	readonly setupSpec: CodingSetup;
-	readonly snapshotPreinstalled?: boolean;
 	readonly runner: CodingSetupCommandRunner;
 	readonly prepareDependency?: CodingSetupDependencyPreparer["prepare"];
 }
@@ -280,8 +327,7 @@ export class CodingSetupLifecycle {
 		const installKey = `${context.diskId}:${context.setupDigest}`;
 		const bootKey = `${context.diskId}:${context.bootId}:${context.setupDigest}`;
 
-		const needsInstall =
-			record.installedKey !== installKey && !context.snapshotPreinstalled && context.setupSpec.install.length > 0;
+		const needsInstall = record.installedKey !== installKey && context.setupSpec.install.length > 0;
 
 		if (record.installedKey !== installKey && context.setupSpec.repositoryDependencies.length > 0) {
 			for (const repository of context.setupSpec.repositoryDependencies) {

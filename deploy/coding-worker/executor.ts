@@ -153,17 +153,15 @@ interface Config {
 	} | null;
 	snapshots: {
 		enabled: boolean;
-		builderNetwork?: string | null;
 		ttlSeconds?: number;
 		housekeepIntervalMs?: number;
 	} | null;
 	standbyPoolSize: number;
-	statefulSleep: boolean;
 }
 interface PinnedFile { path: string; sha256: string }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
-const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "desktopStreams", "folder", "machines", "memberScreens", "memberStreams", "snapshots", "standbyPoolSize", "statefulSleep", "webHosting"]);
+const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "desktopStreams", "folder", "machines", "memberScreens", "memberStreams", "snapshots", "standbyPoolSize", "webHosting"]);
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return value as Record<string, unknown>;
@@ -397,21 +395,14 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 		webHosting: webHostingConfig(config.webHosting),
 		snapshots: snapshotsConfig(config.snapshots),
 		standbyPoolSize: standbyPoolSizeConfig(config.standbyPoolSize),
-		statefulSleep: statefulSleepConfig(config.statefulSleep),
 	};
 }
 
 function snapshotsConfig(value: unknown): Config["snapshots"] {
 	if (value === undefined) return null;
 	const input = object(value);
-	const allowed = new Set(["builderNetwork", "enabled", "housekeepIntervalMs", "ttlSeconds"]);
+	const allowed = new Set(["enabled", "housekeepIntervalMs", "ttlSeconds"]);
 	if (Object.keys(input).some((k) => !allowed.has(k)) || typeof input.enabled !== "boolean")
-		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
-	if (
-		input.builderNetwork !== undefined &&
-		input.builderNetwork !== null &&
-		(typeof input.builderNetwork !== "string" || !/^[a-z][a-z0-9-]{0,62}$/.test(input.builderNetwork))
-	)
 		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	if (
 		input.ttlSeconds !== undefined &&
@@ -427,7 +418,6 @@ function snapshotsConfig(value: unknown): Config["snapshots"] {
 		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return {
 		enabled: input.enabled,
-		...(input.builderNetwork !== undefined ? { builderNetwork: input.builderNetwork as string | null } : {}),
 		...(input.ttlSeconds !== undefined ? { ttlSeconds: Number(input.ttlSeconds) } : {}),
 		...(input.housekeepIntervalMs !== undefined ? { housekeepIntervalMs: Number(input.housekeepIntervalMs) } : {}),
 	};
@@ -438,12 +428,6 @@ function standbyPoolSizeConfig(value: unknown): number {
 	if (!Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > CODING_STANDBY_MAX_POOL_SIZE)
 		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return Number(value);
-}
-
-function statefulSleepConfig(value: unknown): boolean {
-	if (value === undefined) return false;
-	if (typeof value !== "boolean") throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
-	return value;
 }
 
 /** A loggable code for an executor error: fixed identifiers only (they carry
@@ -649,7 +633,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				owner: config.owner,
 				machineIdSha256,
 				vmPolicy: config.vmPolicy,
-				builderNetwork: config.snapshots.builderNetwork ?? null,
+				projectAllowsAgentCard: (project, read) => lxd.allowsAgentCard(project, read),
 				...(config.snapshots.ttlSeconds !== undefined ? { ttlSeconds: config.snapshots.ttlSeconds } : {}),
 				report: (event) => console.log(JSON.stringify(event)),
 			})
@@ -669,7 +653,6 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		...(commandSecrets ? { commandSecrets } : {}),
 		...(snapshotBuilder ? { snapshotBuilder } : {}),
 		...(standbyPool ? { standbyPool } : {}),
-		...(config.statefulSleep ? { statefulSleep: true } : {}),
 		repositoryCredentials: {
 			async withRepositoryToken(scope, repository, use, signal) {
 				signal.throwIfAborted();

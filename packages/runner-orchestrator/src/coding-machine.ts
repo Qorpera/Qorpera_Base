@@ -97,6 +97,12 @@ export function lxdCodingMachineName(machineId: string): string {
 /** The binding in its one canonical key order: `text` is what SQL hashes into
  * the machine's instance digest on its first run authority, so it is the same
  * text every time. */
+export const CODING_MACHINE_BASE_CONFIG: Readonly<Record<string, string>> = Object.freeze({
+	"boot.mode": "uefi-secureboot",
+	"boot.autostart": "false",
+	"security.devlxd": "false",
+});
+
 export function lxdCodingMachinePlan(value: LxdCodingMachineBinding): {
 	binding: Readonly<LxdCodingMachineBinding>;
 	text: string;
@@ -141,9 +147,7 @@ export function lxdCodingMachinePlan(value: LxdCodingMachineBinding): {
 			profiles: [],
 			source: { type: "image", fingerprint: binding.imageFingerprint },
 			config: {
-				"boot.mode": "uefi-secureboot",
-				"boot.autostart": "false",
-				"security.devlxd": "false",
+				...CODING_MACHINE_BASE_CONFIG,
 				"limits.cpu": String(binding.cpus),
 				"limits.memory": String(binding.memoryBytes),
 				"user.qorpera.schema": binding.schema,
@@ -390,7 +394,6 @@ type Client = Pick<LxdTrackedClient, "getInstance" | "submitInstanceOperation" |
 export type CodingMachineDesiredState = "running" | "stopped" | "deleted";
 export interface CodingMachineStandbyClaim {
 	readonly operationId: string;
-	readonly resume?: (signal: AbortSignal) => Promise<string | null>;
 }
 export interface CodingMachineReconcileOptions {
 	plan: CodingMachineJournalPlan;
@@ -404,7 +407,6 @@ export interface CodingMachineReconcileOptions {
 	/** The node's agent plug (default: its plug tool), for a plan with an agent card. */
 	plug?: AgentPlug;
 	claimStandby?: (request: LxdCreateInstanceRequest, signal: AbortSignal) => Promise<CodingMachineStandbyClaim | null>;
-	statefulStop?: boolean;
 	/** A member's machine that LXD shows stopped after its settled start: called
 	 * once that stop is written down and before anything else is done to the
 	 * machine (a start, a delete, or waiting for an operator), each time it is
@@ -1204,105 +1206,21 @@ export async function reconcileCodingMachine(
 					operationId: claimed.operationId,
 					state: "succeeded",
 				});
-				if (!claimed.resume) {
-					options.signal.throwIfAborted();
-					return result("pending");
-				}
-				if (options.starting) {
-					const decision = await options.starting(claimed.operationId, options.signal, "create");
-					options.signal.throwIfAborted();
-					if (decision === "rebuild") return result("pending");
-				}
-				signal = await authorize("run");
-				current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
-				if (current.events.length > MAX_RETAINED_EVENTS - 3) return result("pending");
-				const startDispatched = { segment: current.segment, sequence: current.events.length };
-				if (!(await append({ action: "start", kind: "dispatch", operationId: null, state: null })))
-					return result("pending");
-				try {
-					const resumedId = await claimed.resume(signal);
-					if (resumedId !== null) {
-						if (!UUID.test(resumedId)) throw new Error("CODING_MACHINE_OPERATION_UNBOUND");
-						current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
-						await append({ action: "start", kind: "accepted", operationId: resumedId, state: null });
-						current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
-						await append({ action: "start", kind: "settled", operationId: resumedId, state: "succeeded" });
-						options.signal.throwIfAborted();
-						return result("running");
-					}
-					const fallbackRef = await options.client.submitInstanceOperation(
-						plan.project,
-						{ action: "start", name: plan.name, stateful: false },
-						signal,
-					);
-					if (
-						fallbackRef.project !== plan.project ||
-						fallbackRef.instanceName !== plan.name ||
-						!UUID.test(fallbackRef.operationId)
-					)
-						throw new Error("CODING_MACHINE_OPERATION_UNBOUND");
-					current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
-					await append({ action: "start", kind: "accepted", operationId: fallbackRef.operationId, state: null });
-					options.signal.throwIfAborted();
-					return result("pending");
-				} catch (error) {
-					await recordDispatchError(root, startDispatched.segment, startDispatched.sequence, "start", error).catch(
-						() => undefined,
-					);
-					return error instanceof LxdSubmissionRefused
-						? { ...result("recovery-required"), lxdStatus: error.status }
-						: result("recovery-required");
-				}
+				options.signal.throwIfAborted();
+				return result("pending");
 			}
 		}
-		const submit = async () => {
-			if (action === "create") {
-				return options.client.submitInstanceOperation(
-					plan.project,
-					{ action, request: request as LxdCreateInstanceRequest },
-					signal,
-				);
-			}
-			if (action === "stop") {
-				const tryStateful = options.statefulStop === true && tail?.action !== "stop";
-				if (tryStateful) {
-					try {
-						return await options.client.submitInstanceOperation(
-							plan.project,
-							{ action: "stop", name: plan.name, stateful: true },
-							signal,
-						);
-					} catch (error) {
-						if (!(error instanceof LxdSubmissionRefused)) throw error;
-					}
-				}
-				return options.client.submitInstanceOperation(
-					plan.project,
-					{ action: "stop", name: plan.name, force: true },
-					signal,
-				);
-			}
-			if (action === "rebuild") {
-				return options.client.submitInstanceOperation(
-					plan.project,
-					{ action, name: plan.name, fingerprint: plan.request?.source.fingerprint as string },
-					signal,
-				);
-			}
-			if (action === "start" && instance?.stateful === true && tail?.action !== "start") {
-				try {
-					return await options.client.submitInstanceOperation(
-						plan.project,
-						{ action: "start", name: plan.name, stateful: true },
-						signal,
-					);
-				} catch (error) {
-					if (!(error instanceof LxdSubmissionRefused)) throw error;
-				}
-			}
-			return options.client.submitInstanceOperation(plan.project, { action, name: plan.name }, signal);
-		};
-		const reference = await submit();
+		const reference = await options.client.submitInstanceOperation(
+			plan.project,
+			action === "create"
+				? { action, request: request as LxdCreateInstanceRequest }
+				: action === "stop"
+					? { action, name: plan.name, force: true }
+					: action === "rebuild"
+						? { action, name: plan.name, fingerprint: plan.request?.source.fingerprint as string }
+						: { action, name: plan.name },
+			signal,
+		);
 		if (
 			reference.project !== plan.project ||
 			reference.instanceName !== plan.name ||

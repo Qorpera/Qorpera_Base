@@ -1,6 +1,15 @@
 import { isUuid } from "@qorpera/contracts";
+import { type AgentPlug, agentPlugCard, runAgentPlug, withAgentPlug } from "./agent-plug.ts";
+import { CODING_MACHINE_BASE_CONFIG } from "./coding-machine.ts";
 import type { CodingSetup, CodingSetupStep } from "./coding-setup.ts";
-import type { LxdClient, LxdInstanceExecPipeClient, LxdSnapshotImageClient, LxdStandbyClient } from "./lxd-client.ts";
+import { resolveCodingSetupEnvironment } from "./coding-setup-lifecycle.ts";
+import type {
+	LxdClient,
+	LxdCreateInstanceRequest,
+	LxdInstanceExecPipeClient,
+	LxdSnapshotImageClient,
+	LxdStandbyClient,
+} from "./lxd-client.ts";
 
 export const CODING_SNAPSHOT_RPCS = [
 	"qorpera_begin_coding_snapshot_build",
@@ -16,7 +25,9 @@ export const CODING_SNAPSHOT_RPCS = [
 ] as const;
 
 export const CODING_SNAPSHOT_LOG_MAX_JSON_BYTES = 65536;
+export const CODING_SNAPSHOT_BUILDER_SCHEMA = "qorpera.coding-snapshot-builder/v1";
 export const CODING_SNAPSHOT_BUILDER_VM_PREFIX = "qorpera-coding-snap-";
+export const CODING_SNAPSHOT_BUILDER_VM_NAME = /^qorpera-coding-snap-[0-9a-f]{24}$/;
 export const CODING_SNAPSHOT_DEFAULT_LEASE_SECONDS = 120;
 export const CODING_SNAPSHOT_DEFAULT_TTL_SECONDS = 604800;
 export const CODING_SNAPSHOT_DEFAULT_BUILD_TIMEOUT_MS = 15 * 60_000;
@@ -27,22 +38,6 @@ export const CODING_SNAPSHOT_MAX_QUEUE_SIZE = 64;
 const HEX_64 = /^[0-9a-f]{64}$/;
 const HEX_40 = /^[0-9a-f]{40}$/;
 const BUILDER_SRC_DIR = "/tmp/qorpera-snapshot-src";
-const PROTECTED_BUILDER_ENV = new Set([
-	"PATH",
-	"HOME",
-	"USER",
-	"LOGNAME",
-	"SHELL",
-	"TERM",
-	"LD_PRELOAD",
-	"LD_LIBRARY_PATH",
-	"QORPERA_SECRET_BROKER_TOKEN",
-	"GITHUB_TOKEN",
-	"GH_TOKEN",
-	"AWS_SECRET_ACCESS_KEY",
-	"OPENAI_API_KEY",
-	"ANTHROPIC_API_KEY",
-]);
 
 const SCRUB_BUILDER_SCRIPT = [
 	"set -eu",
@@ -65,7 +60,7 @@ export type CodingSnapshotBuilderLxdClient = Pick<
 > &
 	LxdInstanceExecPipeClient &
 	LxdSnapshotImageClient &
-	Partial<Pick<LxdStandbyClient, "setInstancePowerStateful" | "listInstances">>;
+	Partial<Pick<LxdStandbyClient, "listInstances">>;
 
 export interface CodingSnapshotVmPolicy {
 	readonly project: string;
@@ -80,6 +75,7 @@ export interface CodingSnapshotVmPolicy {
 export interface CodingSnapshotBuildRequest {
 	readonly workerId: string;
 	readonly leaseToken: string;
+	readonly profileId?: string;
 	readonly environmentId: string;
 	readonly memberUserId: string;
 	readonly repository: string;
@@ -116,7 +112,8 @@ export interface CodingSnapshotBuilderOptions {
 	readonly owner: string;
 	readonly machineIdSha256: string;
 	readonly vmPolicy: CodingSnapshotVmPolicy;
-	readonly builderNetwork?: string | null;
+	readonly agentPlug?: AgentPlug;
+	readonly projectAllowsAgentCard?: (project: string, signal: AbortSignal) => Promise<boolean>;
 	readonly builderCpus?: number;
 	readonly builderMemoryBytes?: number;
 	readonly builderRootDiskBytes?: number;
@@ -138,6 +135,8 @@ interface ClaimedBuild {
 	readonly buildId: string;
 	readonly leaseToken: string;
 	readonly leaseUntil: string;
+	readonly profileId: string;
+	readonly memberUserId: string;
 	readonly baseImageFingerprint: string;
 	readonly repository: string;
 	readonly setupDigest: string;
@@ -195,22 +194,7 @@ function shellQuote(value: string): string {
 }
 
 function filteredSetupEnv(setupSpec: CodingSetup): Record<string, string> {
-	const env: Record<string, string> = {};
-	for (const [key, value] of Object.entries(setupSpec.containerEnv)) {
-		if (PROTECTED_BUILDER_ENV.has(key)) continue;
-		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || value.includes("\0")) continue;
-		env[key] = value;
-	}
-	for (const [key, value] of Object.entries(setupSpec.remoteEnv)) {
-		if (PROTECTED_BUILDER_ENV.has(key)) continue;
-		if (value === null) {
-			delete env[key];
-			continue;
-		}
-		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || value.includes("\0")) continue;
-		env[key] = value;
-	}
-	return env;
+	return { ...resolveCodingSetupEnvironment(setupSpec).env };
 }
 
 function failureCodeFromError(error: unknown): string {
@@ -247,7 +231,8 @@ export class CodingSnapshotBuilder {
 	readonly #owner: string;
 	readonly #machineIdSha256: string;
 	readonly #vmPolicy: CodingSnapshotVmPolicy;
-	readonly #builderNetwork: string | null;
+	readonly #agentPlug: AgentPlug;
+	readonly #projectAllowsAgentCard: ((project: string, signal: AbortSignal) => Promise<boolean>) | undefined;
 	readonly #builderCpus: number;
 	readonly #builderMemoryBytes: number;
 	readonly #builderRootDiskBytes: number;
@@ -284,7 +269,8 @@ export class CodingSnapshotBuilder {
 		this.#owner = options.owner;
 		this.#machineIdSha256 = options.machineIdSha256;
 		this.#vmPolicy = options.vmPolicy;
-		this.#builderNetwork = options.builderNetwork ?? null;
+		this.#agentPlug = options.agentPlug ?? runAgentPlug;
+		this.#projectAllowsAgentCard = options.projectAllowsAgentCard;
 		this.#builderCpus = Math.max(1, Math.min(options.builderCpus ?? options.vmPolicy.cpus, options.vmPolicy.cpus));
 		this.#builderMemoryBytes = Math.min(
 			options.builderMemoryBytes ?? options.vmPolicy.memoryBytes,
@@ -469,12 +455,18 @@ export class CodingSnapshotBuilder {
 		}
 		if (record.state !== "claimed") throw new Error("CODING_SNAPSHOT_CLAIM_INVALID");
 		const build = asObject(record.build, "CODING_SNAPSHOT_BUILD");
+		const profileId = typeof build.profileId === "string" ? build.profileId : request.profileId;
+		const memberUserId = typeof build.memberUserId === "string" ? build.memberUserId : request.memberUserId;
 		if (
 			typeof build.buildId !== "string" ||
 			!isUuid(build.buildId) ||
 			typeof build.leaseToken !== "string" ||
 			!isUuid(build.leaseToken) ||
 			typeof build.leaseUntil !== "string" ||
+			typeof profileId !== "string" ||
+			!isUuid(profileId) ||
+			typeof memberUserId !== "string" ||
+			!isUuid(memberUserId) ||
 			typeof build.baseImageFingerprint !== "string" ||
 			!HEX_64.test(build.baseImageFingerprint)
 		)
@@ -485,6 +477,8 @@ export class CodingSnapshotBuilder {
 				buildId: build.buildId,
 				leaseToken: build.leaseToken,
 				leaseUntil: build.leaseUntil,
+				profileId,
+				memberUserId,
 				baseImageFingerprint: build.baseImageFingerprint,
 				repository: typeof build.repository === "string" ? build.repository : request.repository.toLowerCase(),
 				setupDigest: typeof build.setupDigest === "string" ? build.setupDigest : request.setupDigest,
@@ -671,43 +665,55 @@ export class CodingSnapshotBuilder {
 	}
 
 	async #launchBuilderVm(vmName: string, build: ClaimedBuild, signal: AbortSignal): Promise<void> {
-		const devices: Record<string, Record<string, string>> = {
-			root: {
-				type: "disk",
-				path: "/",
-				pool: this.#vmPolicy.storagePool,
-				size: `${this.#builderRootDiskBytes}`,
-			},
-		};
-		if (this.#builderNetwork) {
-			devices.network = {
-				type: "nic",
-				network: this.#builderNetwork,
-			};
+		if (this.#projectAllowsAgentCard && !(await this.#projectAllowsAgentCard(this.#vmPolicy.project, signal))) {
+			throw new SnapshotStepFailure(
+				"PROJECT_REFUSES_AGENT_CARD",
+				"Coding project does not allow the agent exit card for snapshot builder VMs.",
+			);
 		}
-		await this.#lxd.createInstance(
-			this.#vmPolicy.project,
+		const hwaddr = await this.#agentPlug(
 			{
-				name: vmName,
-				type: "virtual-machine",
-				profiles: [],
-				config: {
-					"limits.cpu": String(this.#builderCpus),
-					"limits.memory": `${this.#builderMemoryBytes}`,
-					"security.secureboot": "false",
-					"user.qorpera.role": "coding-snapshot-builder",
-					"user.qorpera.owner": this.#owner,
-					"user.qorpera.build_id": build.buildId,
-					"user.qorpera.setup_digest": build.setupDigest,
-				},
-				devices,
-				source: {
-					type: "image",
-					fingerprint: build.baseImageFingerprint,
-				},
+				kind: "coding",
+				companyId: build.profileId,
+				machineId: build.buildId,
+				memberUserId: build.memberUserId,
+				project: this.#vmPolicy.project,
+				instance: vmName,
 			},
 			signal,
 		);
+		const baseRequest: LxdCreateInstanceRequest = {
+			name: vmName,
+			type: "virtual-machine",
+			profiles: [],
+			config: {
+				...CODING_MACHINE_BASE_CONFIG,
+				"limits.cpu": String(this.#builderCpus),
+				"limits.memory": `${this.#builderMemoryBytes}`,
+				"user.qorpera.schema": CODING_SNAPSHOT_BUILDER_SCHEMA,
+				"user.qorpera.company_id": build.profileId,
+				"user.qorpera.machine_id": build.buildId,
+				"user.qorpera.member_user_id": build.memberUserId,
+				"user.qorpera.owner": this.#owner,
+				"user.qorpera.build_id": build.buildId,
+				"user.qorpera.setup_digest": build.setupDigest,
+			},
+			devices: {
+				root: {
+					type: "disk",
+					path: "/",
+					pool: this.#vmPolicy.storagePool,
+					size: `${this.#builderRootDiskBytes}`,
+				},
+				network: agentPlugCard("eth0"),
+			},
+			source: {
+				type: "image",
+				fingerprint: build.baseImageFingerprint,
+			},
+		};
+		const request = withAgentPlug(baseRequest, "network", hwaddr);
+		await this.#lxd.createInstance(this.#vmPolicy.project, request, signal);
 		await this.#lxd.setInstancePower(this.#vmPolicy.project, vmName, "start", signal);
 	}
 
@@ -943,13 +949,7 @@ export class CodingSnapshotBuilder {
 			const existing = await this.#lxd.getInstance(this.#vmPolicy.project, vmName, cleanupSignal);
 			if (!existing) return;
 			if (existing.status === "Running" || existing.statusCode === 103) {
-				if (this.#lxd.setInstancePowerStateful) {
-					await this.#lxd
-						.setInstancePowerStateful(this.#vmPolicy.project, vmName, "stop", false, cleanupSignal, true)
-						.catch(() => this.#lxd.setInstancePower(this.#vmPolicy.project, vmName, "stop", cleanupSignal));
-				} else {
-					await this.#lxd.setInstancePower(this.#vmPolicy.project, vmName, "stop", cleanupSignal);
-				}
+				await this.#lxd.setInstancePower(this.#vmPolicy.project, vmName, "stop", cleanupSignal);
 			}
 			await this.#lxd.deleteInstance(this.#vmPolicy.project, vmName, cleanupSignal);
 		} catch (error) {
@@ -961,16 +961,20 @@ export class CodingSnapshotBuilder {
 		}
 	}
 
-	#recordPublishedFingerprint(fingerprint: string): void {
+	#prunePublishedFingerprints(): void {
 		const now = Date.now();
-		this.#publishedFingerprints.set(fingerprint, now);
 		for (const [fp, publishedAt] of this.#publishedFingerprints) {
 			if (now - publishedAt > 10 * 60_000) this.#publishedFingerprints.delete(fp);
 		}
 	}
 
+	#recordPublishedFingerprint(fingerprint: string): void {
+		this.#publishedFingerprints.set(fingerprint, Date.now());
+		this.#prunePublishedFingerprints();
+	}
+
 	async #runHousekeep(signal: AbortSignal): Promise<CodingSnapshotSweepResult> {
-		const sweepStartedAt = Date.now();
+		this.#prunePublishedFingerprints();
 		const raw = await this.#control.rpc(
 			"qorpera_sweep_coding_snapshots",
 			{
@@ -1010,6 +1014,7 @@ export class CodingSnapshotBuilder {
 						},
 						signal,
 					);
+					this.#publishedFingerprints.delete(imageFingerprint);
 					prunedImages.push(imageFingerprint);
 				} catch (error) {
 					this.#report({
@@ -1032,7 +1037,7 @@ export class CodingSnapshotBuilder {
 				keepSet.has(image.fingerprint) ||
 				prunedImages.includes(image.fingerprint) ||
 				this.#activePublishedFingerprint === image.fingerprint ||
-				(this.#publishedFingerprints.get(image.fingerprint) ?? 0) >= sweepStartedAt
+				this.#publishedFingerprints.has(image.fingerprint)
 			)
 				continue;
 			const deleted = await this.#lxd

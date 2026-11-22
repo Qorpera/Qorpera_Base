@@ -69,7 +69,6 @@ export interface LxdInstanceRecord {
 	type: "virtual-machine" | "container";
 	status: string;
 	statusCode: number;
-	stateful?: boolean;
 	config: Readonly<Record<string, string>>;
 	profiles: readonly string[];
 	devices: Readonly<Record<string, Readonly<Record<string, string>>>>;
@@ -219,12 +218,11 @@ export interface LxdInspectableClient extends LxdClient {
 
 export type LxdTrackedInstanceAction =
 	| { action: "create"; request: LxdCreateInstanceRequest }
-	| { action: "start"; name: string; stateful?: boolean }
-	| { action: "delete"; name: string }
+	| { action: "start" | "delete"; name: string }
 	/** `force` powers the VM off instead of asking the guest to shut down. Only
 	 * for machines whose state lives outside the VM (coding VMs keep all work on
 	 * the NAS); offices and login machines keep the graceful stop. */
-	| { action: "stop"; name: string; force?: true; stateful?: boolean }
+	| { action: "stop"; name: string; force?: true }
 	/** Gives a stopped VM a new root disk from a local image. The instance keeps
 	 * its name, configuration and devices (F3 5g-5: a coding machine's new disk). */
 	| { action: "rebuild"; name: string; fingerprint: string };
@@ -267,14 +265,6 @@ export interface LxdStandbyClient {
 			readonly devices?: Readonly<Record<string, Readonly<Record<string, string>>>>;
 		},
 		signal: AbortSignal,
-	): Promise<void>;
-	setInstancePowerStateful(
-		project: string,
-		name: string,
-		action: LxdInstancePowerAction,
-		stateful: boolean,
-		signal?: AbortSignal,
-		force?: boolean,
 	): Promise<void>;
 	listInstances(project: string, signal: AbortSignal): Promise<readonly LxdInstanceRecord[]>;
 }
@@ -1364,7 +1354,6 @@ function instance(value: unknown): LxdInstanceRecord {
 		type: input.type,
 		status: input.status,
 		statusCode: input.status_code,
-		...(typeof input.stateful === "boolean" ? { stateful: input.stateful } : {}),
 		config: stringRecord(input.config, "LXD instance config"),
 		profiles: strings(input.profiles, "LXD instance profiles"),
 		devices: devices(input.devices),
@@ -2017,30 +2006,6 @@ export class LxdUnixClient
 		await this.#waitForOperation(result, signal);
 	}
 
-	async setInstancePowerStateful(
-		project: string,
-		name: string,
-		action: LxdInstancePowerAction,
-		stateful: boolean,
-		signal?: AbortSignal,
-		force = false,
-	): Promise<void> {
-		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name)) throw new Error("LXD instance scope is invalid");
-		const forcedStop = action === "stop" && force;
-		const result = await this.#request(
-			"PUT",
-			projectPath(`/1.0/instances/${encodeURIComponent(name)}/state`, project),
-			{
-				action,
-				timeout: this.#operationTimeoutSeconds,
-				force: forcedStop,
-				stateful: stateful && !forcedStop,
-			},
-			signal,
-		);
-		await this.#waitForOperation(result, signal);
-	}
-
 	async listInstances(project: string, signal: AbortSignal): Promise<readonly LxdInstanceRecord[]> {
 		if (!INSTANCE_NAME.test(project)) throw new Error("LXD project name is invalid");
 		const result = await this.#request("GET", projectPath("/1.0/instances?recursion=1", project), undefined, signal);
@@ -2372,15 +2337,14 @@ export class LxdUnixClient
 						checked,
 					);
 				} else if (action.action === "start" || action.action === "stop") {
-					const forcedStop = action.action === "stop" && action.force === true;
 					response = await this.#request(
 						"PUT",
 						projectPath(`/1.0/instances/${name}/state`, project),
 						{
 							action: action.action,
 							timeout: this.#operationTimeoutSeconds,
-							force: forcedStop,
-							stateful: action.stateful === true && !forcedStop,
+							force: action.action === "stop" && action.force === true,
+							stateful: false,
 						},
 						checked,
 					);

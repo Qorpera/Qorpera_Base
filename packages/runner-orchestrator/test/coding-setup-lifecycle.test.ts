@@ -20,6 +20,17 @@ describe("coding setup lifecycle hooks", () => {
 				QORPERA_INTERNAL: "no",
 				GITHUB_TOKEN: "ghp_123",
 				LD_PRELOAD: "/tmp/lib.so",
+				GIT_SSH: "/tmp/evil-ssh",
+				GIT_PROXY_COMMAND: "/tmp/proxy",
+				GIT_CONFIG_COUNT: "1",
+				GIT_CONFIG_KEY_0: "core.fsmonitor",
+				GIT_CONFIG_VALUE_0: "/tmp/pwn",
+				GIT_CONFIG_GLOBAL: "/tmp/gitconfig",
+				GIT_EXEC_PATH: "/tmp/git-exec",
+				PYTHONSTARTUP: "/tmp/pwn.py",
+				PERL5OPT: "-Mevil",
+				RUBYOPT: "-revil",
+				CUSTOM_TOKEN: "secret",
 			},
 			remoteEnv: {
 				BASE_URL: ["http://localhost:$", "{containerEnv:APP_PORT}"].join(""),
@@ -33,11 +44,28 @@ describe("coding setup lifecycle hooks", () => {
 			BASE_URL: "http://localhost:3000",
 		});
 		expect(resolved.skipped).toEqual(
-			expect.arrayContaining(["PATH", "QORPERA_INTERNAL", "GITHUB_TOKEN", "LD_PRELOAD", "OPENAI_API_KEY"]),
+			expect.arrayContaining([
+				"PATH",
+				"QORPERA_INTERNAL",
+				"GITHUB_TOKEN",
+				"LD_PRELOAD",
+				"GIT_SSH",
+				"GIT_PROXY_COMMAND",
+				"GIT_CONFIG_COUNT",
+				"GIT_CONFIG_KEY_0",
+				"GIT_CONFIG_VALUE_0",
+				"GIT_CONFIG_GLOBAL",
+				"GIT_EXEC_PATH",
+				"PYTHONSTARTUP",
+				"PERL5OPT",
+				"RUBYOPT",
+				"CUSTOM_TOKEN",
+				"OPENAI_API_KEY",
+			]),
 		);
 	});
 
-	it("runs install once per disk, start once per boot/wake, skips install on pre-warmed snapshot, and re-runs on new disk", async () => {
+	it("runs install once per disk, start once per boot/wake, and re-runs install on a new disk", async () => {
 		const parsed = await parseCodingSetup({
 			async read(path) {
 				if (path === ".qorpera/environment.json") {
@@ -107,13 +135,10 @@ describe("coding setup lifecycle hooks", () => {
 		expect(afterNewDisk.ranInstall).toBe(true);
 		expect(afterNewDisk.ranStart).toBe(true);
 
-		const snapLifecycle = new CodingSetupLifecycle();
-		const onSnapshot = await snapLifecycle.onAttach(
-			{ ...baseContext, snapshotPreinstalled: true },
-			AbortSignal.timeout(5_000),
-		);
-		expect(onSnapshot.ranInstall).toBe(false);
-		expect(onSnapshot.ranStart).toBe(true);
+		const freshSessionLifecycle = new CodingSetupLifecycle();
+		const onFreshWorktree = await freshSessionLifecycle.onAttach(baseContext, AbortSignal.timeout(5_000));
+		expect(onFreshWorktree.ranInstall).toBe(true);
+		expect(onFreshWorktree.ranStart).toBe(true);
 	});
 
 	it("bounds terminals to max limit, tracks PIDs, and stops them cleanly on detach", async () => {

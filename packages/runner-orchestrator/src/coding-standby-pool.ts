@@ -1,15 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import type { CodingMachineStandbyClaim } from "./coding-machine.ts";
-import type {
-	LxdClient,
-	LxdCreateInstanceRequest,
-	LxdImageClient,
-	LxdInstanceDeviceClient,
-	LxdInstanceExecPipeClient,
-	LxdStandbyClient,
-} from "./lxd-client.ts";
+import { CODING_MACHINE_BASE_CONFIG, type CodingMachineStandbyClaim } from "./coding-machine.ts";
+import type { LxdClient, LxdCreateInstanceRequest, LxdImageClient, LxdStandbyClient } from "./lxd-client.ts";
 
+export const CODING_STANDBY_SCHEMA = "qorpera.coding-standby/v1";
 export const CODING_STANDBY_VM_PREFIX = "qorpera-coding-standby-";
+export const CODING_STANDBY_VM_NAME = /^qorpera-coding-standby-[0-9a-f]{24}$/;
 export const CODING_STANDBY_MAX_POOL_SIZE = 8;
 export const CODING_STANDBY_DEFAULT_MAX_FINGERPRINTS = 4;
 
@@ -19,10 +14,8 @@ export type CodingStandbyLxdClient = Pick<
 	LxdClient,
 	"getInstance" | "createInstance" | "setInstancePower" | "deleteInstance"
 > &
-	Pick<LxdInstanceDeviceClient, "replaceInstanceDevices"> &
 	LxdStandbyClient &
-	Partial<LxdImageClient> &
-	Partial<LxdInstanceExecPipeClient>;
+	Partial<LxdImageClient>;
 
 export interface CodingStandbyVmPolicy {
 	readonly project: string;
@@ -38,12 +31,8 @@ export interface CodingStandbyPoolOptions {
 	readonly vmPolicy: CodingStandbyVmPolicy;
 	readonly standbyPoolSize?: number;
 	readonly maxActiveFingerprints?: number;
-	readonly preferStatefulSuspend?: boolean;
-	readonly bootTimeoutMs?: number;
-	readonly bootPollMs?: number;
 	readonly replenishBackoffMs?: number;
 	readonly cleanupTimeoutMs?: number;
-	readonly waitForBootSettled?: (project: string, instanceName: string, signal: AbortSignal) => Promise<void>;
 	readonly report?: (event: Record<string, unknown>) => void;
 }
 
@@ -53,11 +42,10 @@ interface StandbyEntry {
 	readonly cpus: number;
 	readonly memoryBytes: number;
 	readonly rootDiskBytes: number;
-	readonly stateful: boolean;
 	readonly createdAt: number;
 }
 
-interface WarmupHandle {
+interface ProvisionHandle {
 	readonly name: string;
 	readonly imageFingerprint: string;
 	readonly controller: AbortController;
@@ -69,20 +57,14 @@ export class CodingStandbyPool {
 	readonly #vmPolicy: CodingStandbyVmPolicy;
 	readonly #standbyPoolSize: number;
 	readonly #maxActiveFingerprints: number;
-	readonly #preferStatefulSuspend: boolean;
-	readonly #bootTimeoutMs: number;
-	readonly #bootPollMs: number;
 	readonly #replenishBackoffMs: number;
 	readonly #cleanupTimeoutMs: number;
-	readonly #waitForBootSettled:
-		| ((project: string, instanceName: string, signal: AbortSignal) => Promise<void>)
-		| undefined;
 	readonly #report: (event: Record<string, unknown>) => void;
 
 	readonly #shutdown = new AbortController();
 	readonly #activeFingerprints = new Set<string>();
 	readonly #ready = new Map<string, StandbyEntry[]>();
-	readonly #warmups = new Set<WarmupHandle>();
+	readonly #provisions = new Set<ProvisionHandle>();
 	readonly #ownedNames = new Set<string>();
 	readonly #retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	readonly #failureCounts = new Map<string, number>();
@@ -101,12 +83,8 @@ export class CodingStandbyPool {
 			1,
 			options.maxActiveFingerprints ?? CODING_STANDBY_DEFAULT_MAX_FINGERPRINTS,
 		);
-		this.#preferStatefulSuspend = options.preferStatefulSuspend ?? true;
-		this.#bootTimeoutMs = options.bootTimeoutMs ?? 90_000;
-		this.#bootPollMs = options.bootPollMs ?? 250;
 		this.#replenishBackoffMs = options.replenishBackoffMs ?? 5_000;
 		this.#cleanupTimeoutMs = options.cleanupTimeoutMs ?? 30_000;
-		this.#waitForBootSettled = options.waitForBootSettled;
 		const report = options.report;
 		this.#report = (event) => {
 			try {
@@ -162,16 +140,17 @@ export class CodingStandbyPool {
 		this.#activeFingerprints.delete(imageFingerprint);
 		this.#clearRetryTimer(imageFingerprint);
 		this.#failureCounts.delete(imageFingerprint);
-		const matchingWarmups: Promise<void>[] = [];
-		for (const handle of this.#warmups) {
+		const matching: Promise<void>[] = [];
+		for (const handle of this.#provisions) {
 			if (handle.imageFingerprint === imageFingerprint) {
 				handle.controller.abort(new Error("STANDBY_FINGERPRINT_INVALIDATED"));
-				matchingWarmups.push(handle.done.catch(() => undefined));
+				matching.push(handle.done.catch(() => undefined));
 			}
 		}
 		const entries = this.#ready.get(imageFingerprint) ?? [];
 		this.#ready.delete(imageFingerprint);
-		await Promise.all([...matchingWarmups, ...entries.map((entry) => this.#destroyStandbyVm(entry.name))]);
+		await Promise.all([...matching, ...entries.map((entry) => this.#destroyStandbyVm(entry.name))]);
+		if (!this.#closed && this.#standbyPoolSize > 0) this.#ensureAllReplenished();
 	}
 
 	async claim(request: LxdCreateInstanceRequest, signal: AbortSignal): Promise<CodingMachineStandbyClaim | null> {
@@ -209,7 +188,7 @@ export class CodingStandbyPool {
 				this.#trackDestroy(this.#destroyStandbyVm(entry.name));
 				continue;
 			}
-			if (!existing || (existing.status !== "Stopped" && existing.statusCode !== 102)) {
+			if (!existing || existing.status !== "Stopped" || existing.statusCode !== 102) {
 				this.#trackDestroy(this.#destroyStandbyVm(entry.name));
 				continue;
 			}
@@ -223,35 +202,11 @@ export class CodingStandbyPool {
 			this.#ownedNames.delete(entry.name);
 			this.#ensureReplenished(fingerprint);
 
-			const createOperationId = randomUUID();
-			const isStateful = entry.stateful && existing.stateful !== false;
-			if (!isStateful) {
-				try {
-					await this.#lxd.updateInstanceConfig(
-						this.#vmPolicy.project,
-						request.name,
-						{ config: request.config, devices: request.devices },
-						signal,
-					);
-				} catch (error) {
-					await this.#destroyStandbyVm(request.name);
-					throw error;
-				}
-				this.#report({
-					event: "coding-standby-claimed",
-					standbyName: entry.name,
-					instanceName: request.name,
-					imageFingerprint: fingerprint,
-					stateful: false,
-				});
-				return { operationId: createOperationId };
-			}
-
 			try {
 				await this.#lxd.updateInstanceConfig(
 					this.#vmPolicy.project,
 					request.name,
-					{ config: request.config },
+					{ config: request.config, devices: request.devices },
 					signal,
 				);
 			} catch (error) {
@@ -263,47 +218,8 @@ export class CodingStandbyPool {
 				standbyName: entry.name,
 				instanceName: request.name,
 				imageFingerprint: fingerprint,
-				stateful: true,
 			});
-			return {
-				operationId: createOperationId,
-				resume: async (resumeSignal: AbortSignal): Promise<string | null> => {
-					try {
-						await this.#lxd.setInstancePowerStateful(
-							this.#vmPolicy.project,
-							request.name,
-							"start",
-							true,
-							resumeSignal,
-						);
-						await this.#lxd.replaceInstanceDevices(
-							this.#vmPolicy.project,
-							request.name,
-							request.devices,
-							resumeSignal,
-						);
-						return randomUUID();
-					} catch (error) {
-						if (resumeSignal.aborted) throw error;
-						// WHY: Transparently fall back to a cold start with static NIC config if stateful restore or hot-plug fails.
-						this.#report({
-							event: "coding-standby-stateful-fallback",
-							instanceName: request.name,
-							error: error instanceof Error ? error.message : String(error),
-						});
-						await this.#lxd
-							.setInstancePowerStateful(this.#vmPolicy.project, request.name, "stop", false, resumeSignal, true)
-							.catch(() => undefined);
-						await this.#lxd.updateInstanceConfig(
-							this.#vmPolicy.project,
-							request.name,
-							{ config: request.config, devices: request.devices },
-							resumeSignal,
-						);
-						return null;
-					}
-				},
-			};
+			return { operationId: randomUUID() };
 		}
 
 		this.#ensureReplenished(fingerprint);
@@ -324,9 +240,9 @@ export class CodingStandbyPool {
 	}
 
 	async waitIdle(): Promise<void> {
-		while (this.#warmups.size > 0 || this.#destroyTasks.size > 0) {
+		while (this.#provisions.size > 0 || this.#destroyTasks.size > 0) {
 			await Promise.all([
-				...[...this.#warmups].map((h) => h.done.catch(() => undefined)),
+				...[...this.#provisions].map((h) => h.done.catch(() => undefined)),
 				...[...this.#destroyTasks].map((p) => p.catch(() => undefined)),
 			]);
 		}
@@ -337,10 +253,10 @@ export class CodingStandbyPool {
 		this.#shutdown.abort(new Error("CODING_STANDBY_POOL_CLOSED"));
 		for (const timer of this.#retryTimers.values()) clearTimeout(timer);
 		this.#retryTimers.clear();
-		for (const handle of this.#warmups) {
+		for (const handle of this.#provisions) {
 			handle.controller.abort(new Error("CODING_STANDBY_POOL_CLOSED"));
 		}
-		await Promise.all([...this.#warmups].map((h) => h.done.catch(() => undefined)));
+		await Promise.all([...this.#provisions].map((h) => h.done.catch(() => undefined)));
 		const toDelete: string[] = [];
 		for (const list of this.#ready.values()) {
 			for (const entry of list) toDelete.push(entry.name);
@@ -350,9 +266,17 @@ export class CodingStandbyPool {
 		await Promise.all([...this.#destroyTasks].map((p) => p.catch(() => undefined)));
 	}
 
+	#totalAllocated(): number {
+		return this.readyCount() + this.#provisions.size;
+	}
+
 	#ensureAllReplenished(): void {
-		for (const fp of this.#activeFingerprints) {
+		if (this.#closed || this.#standbyPoolSize === 0) return;
+		if (this.#totalAllocated() >= this.#standbyPoolSize) return;
+		const candidates = [...this.#activeFingerprints].sort((a, b) => this.readyCount(a) - this.readyCount(b));
+		for (const fp of candidates) {
 			this.#ensureReplenished(fp);
+			if (this.#provisions.size >= 1 || this.#totalAllocated() >= this.#standbyPoolSize) break;
 		}
 	}
 
@@ -360,46 +284,41 @@ export class CodingStandbyPool {
 		if (this.#closed || this.#standbyPoolSize === 0) return;
 		if (!this.#activeFingerprints.has(imageFingerprint)) return;
 		if (this.#retryTimers.has(imageFingerprint)) return;
-		const ready = this.#ready.get(imageFingerprint)?.length ?? 0;
-		let inflight = 0;
-		for (const handle of this.#warmups) {
-			if (handle.imageFingerprint === imageFingerprint) inflight++;
-		}
-		if (ready + inflight >= this.#standbyPoolSize) return;
-		if (this.#warmups.size >= 1) return;
-		this.#launchWarmup(imageFingerprint);
+		if (this.#totalAllocated() >= this.#standbyPoolSize) return;
+		if (this.#provisions.size >= 1) return;
+		this.#launchProvision(imageFingerprint);
 	}
 
-	#launchWarmup(imageFingerprint: string): void {
+	#launchProvision(imageFingerprint: string): void {
 		const name = `${CODING_STANDBY_VM_PREFIX}${randomBytes(12).toString("hex")}`;
 		const controller = new AbortController();
 		const onShutdown = () => controller.abort(this.#shutdown.signal.reason ?? new Error("STANDBY_SHUTDOWN"));
 		this.#shutdown.signal.addEventListener("abort", onShutdown, { once: true });
 		this.#ownedNames.add(name);
 
-		const handle: WarmupHandle = {
+		const handle: ProvisionHandle = {
 			name,
 			imageFingerprint,
 			controller,
 			done: Promise.resolve(),
 		};
-		const task = this.#warmOne(name, imageFingerprint, controller.signal)
+		const task = this.#provisionOne(name, imageFingerprint, controller.signal)
 			.then((entry) => {
-				if (entry && !this.#closed && this.#activeFingerprints.has(imageFingerprint)) {
+				if (
+					entry &&
+					!this.#closed &&
+					this.#activeFingerprints.has(imageFingerprint) &&
+					this.readyCount() < this.#standbyPoolSize
+				) {
 					this.#failureCounts.delete(imageFingerprint);
 					const list = this.#ready.get(imageFingerprint) ?? [];
-					if (list.length < this.#standbyPoolSize) {
-						list.push(entry);
-						this.#ready.set(imageFingerprint, list);
-						this.#report({
-							event: "coding-standby-ready",
-							standbyName: entry.name,
-							imageFingerprint,
-							stateful: entry.stateful,
-						});
-					} else {
-						this.#trackDestroy(this.#destroyStandbyVm(entry.name));
-					}
+					list.push(entry);
+					this.#ready.set(imageFingerprint, list);
+					this.#report({
+						event: "coding-standby-ready",
+						standbyName: entry.name,
+						imageFingerprint,
+					});
 				} else if (entry) {
 					this.#trackDestroy(this.#destroyStandbyVm(entry.name));
 				}
@@ -410,7 +329,7 @@ export class CodingStandbyPool {
 					this.#failureCounts.set(imageFingerprint, failures);
 					const backoff = Math.min(60_000, this.#replenishBackoffMs * 2 ** Math.min(failures - 1, 4));
 					this.#report({
-						event: "coding-standby-warmup-failed",
+						event: "coding-standby-provision-failed",
 						standbyName: name,
 						imageFingerprint,
 						backoffMs: backoff,
@@ -421,15 +340,15 @@ export class CodingStandbyPool {
 			})
 			.finally(() => {
 				this.#shutdown.signal.removeEventListener("abort", onShutdown);
-				this.#warmups.delete(handle);
+				this.#provisions.delete(handle);
 				if (!this.#closed) this.#ensureAllReplenished();
 			});
 		const mutableHandle = handle as { done: Promise<void> };
 		mutableHandle.done = task;
-		this.#warmups.add(handle);
+		this.#provisions.add(handle);
 	}
 
-	async #warmOne(name: string, imageFingerprint: string, signal: AbortSignal): Promise<StandbyEntry | null> {
+	async #provisionOne(name: string, imageFingerprint: string, signal: AbortSignal): Promise<StandbyEntry> {
 		let created = false;
 		try {
 			signal.throwIfAborted();
@@ -445,10 +364,10 @@ export class CodingStandbyPool {
 					type: "virtual-machine",
 					profiles: [],
 					config: {
+						...CODING_MACHINE_BASE_CONFIG,
 						"limits.cpu": String(this.#vmPolicy.cpus),
 						"limits.memory": `${this.#vmPolicy.memoryBytes}`,
-						"security.secureboot": "false",
-						"user.qorpera.role": "coding-standby",
+						"user.qorpera.schema": CODING_STANDBY_SCHEMA,
 						"user.qorpera.standby_image": imageFingerprint,
 					},
 					devices: {
@@ -466,21 +385,6 @@ export class CodingStandbyPool {
 				},
 				signal,
 			);
-			await this.#lxd.setInstancePower(this.#vmPolicy.project, name, "start", signal);
-			await this.#awaitBootSettled(name, signal);
-
-			let stateful = false;
-			if (this.#preferStatefulSuspend) {
-				try {
-					await this.#lxd.setInstancePowerStateful(this.#vmPolicy.project, name, "stop", true, signal);
-					stateful = true;
-				} catch {
-					if (signal.aborted) throw signal.reason;
-					await this.#lxd.setInstancePowerStateful(this.#vmPolicy.project, name, "stop", false, signal, true);
-				}
-			} else {
-				await this.#lxd.setInstancePowerStateful(this.#vmPolicy.project, name, "stop", false, signal, true);
-			}
 			signal.throwIfAborted();
 			return {
 				name,
@@ -488,7 +392,6 @@ export class CodingStandbyPool {
 				cpus: this.#vmPolicy.cpus,
 				memoryBytes: this.#vmPolicy.memoryBytes,
 				rootDiskBytes: this.#vmPolicy.rootDiskBytes,
-				stateful,
 				createdAt: Date.now(),
 			};
 		} catch (error) {
@@ -498,50 +401,13 @@ export class CodingStandbyPool {
 		}
 	}
 
-	async #awaitBootSettled(name: string, signal: AbortSignal): Promise<void> {
-		if (this.#waitForBootSettled) {
-			await this.#waitForBootSettled(this.#vmPolicy.project, name, signal);
-			return;
-		}
-		const deadline = Date.now() + this.#bootTimeoutMs;
-		for (;;) {
-			signal.throwIfAborted();
-			if (this.#lxd.execInstancePipe) {
-				try {
-					const probe = await this.#lxd.execInstancePipe(
-						this.#vmPolicy.project,
-						name,
-						{
-							command: ["/bin/true"],
-							environment: {},
-							cwd: "/",
-							maxStdoutBytes: 1024,
-							stderrTailBytes: 1024,
-						},
-						AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
-					);
-					if (probe.exitCode === 0) return;
-				} catch {
-					if (signal.aborted) throw signal.reason;
-				}
-			} else {
-				const inst = await this.#lxd.getInstance(this.#vmPolicy.project, name, signal);
-				if (inst && (inst.status === "Running" || inst.statusCode === 103)) return;
-			}
-			if (Date.now() >= deadline) throw new Error("CODING_STANDBY_BOOT_TIMEOUT");
-			await delayAbortable(this.#bootPollMs, signal);
-		}
-	}
-
 	async #destroyStandbyVm(name: string): Promise<void> {
 		const cleanupSignal = AbortSignal.timeout(this.#cleanupTimeoutMs);
 		try {
 			const existing = await this.#lxd.getInstance(this.#vmPolicy.project, name, cleanupSignal);
 			if (!existing) return;
 			if (existing.status === "Running" || existing.statusCode === 103) {
-				await this.#lxd
-					.setInstancePowerStateful(this.#vmPolicy.project, name, "stop", false, cleanupSignal, true)
-					.catch(() => this.#lxd.setInstancePower(this.#vmPolicy.project, name, "stop", cleanupSignal));
+				await this.#lxd.setInstancePower(this.#vmPolicy.project, name, "stop", cleanupSignal);
 			}
 			await this.#lxd.deleteInstance(this.#vmPolicy.project, name, cleanupSignal);
 		} catch (error) {
@@ -578,23 +444,4 @@ export class CodingStandbyPool {
 		clearTimeout(timer);
 		this.#retryTimers.delete(imageFingerprint);
 	}
-}
-
-function delayAbortable(ms: number, signal: AbortSignal): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal.aborted) {
-			reject(signal.reason ?? new Error("ABORTED"));
-			return;
-		}
-		const onAbort = () => {
-			clearTimeout(timer);
-			reject(signal.reason ?? new Error("ABORTED"));
-		};
-		const timer = setTimeout(() => {
-			signal.removeEventListener("abort", onAbort);
-			resolve();
-		}, ms);
-		timer.unref();
-		signal.addEventListener("abort", onAbort, { once: true });
-	});
 }

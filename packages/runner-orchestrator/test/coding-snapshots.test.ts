@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { AGENT_BRIDGE, type AgentPlugClaim } from "../src/agent-plug.ts";
+import { CODING_MACHINE_BASE_CONFIG } from "../src/coding-machine.ts";
 import { EMPTY_CODING_SETUP, parseCodingSetup } from "../src/coding-setup.ts";
 import {
+	CODING_SNAPSHOT_BUILDER_SCHEMA,
 	CODING_SNAPSHOT_BUILDER_VM_PREFIX,
 	CODING_SNAPSHOT_LOG_MAX_JSON_BYTES,
 	CODING_SNAPSHOT_RPCS,
@@ -23,6 +26,8 @@ const BUILD_ID = "33333333-3333-4333-8333-333333333333";
 const BUILD_LEASE = "44444444-4444-4444-8444-444444444444";
 const ENV_ID = "55555555-5555-4555-8555-555555555555";
 const MEMBER_ID = "66666666-6666-4666-8666-666666666666";
+const PROFILE_ID = "88888888-8888-4888-8888-888888888888";
+const PLUG_MAC = "0e:51:0a:d2:01:02";
 
 function makeFakeLxd(overrides?: {
 	execHandler?: (
@@ -67,15 +72,6 @@ function makeFakeLxd(overrides?: {
 			});
 		},
 		async setInstancePower(_project, name, action) {
-			const inst = instances.get(name);
-			if (!inst) throw new Error("not found");
-			instances.set(name, {
-				...inst,
-				status: action === "start" ? "Running" : "Stopped",
-				statusCode: action === "start" ? 103 : 102,
-			});
-		},
-		async setInstancePowerStateful(_project, name, action) {
 			const inst = instances.get(name);
 			if (!inst) throw new Error("not found");
 			instances.set(name, {
@@ -234,18 +230,25 @@ describe("coding snapshot records and builder (5h)", () => {
 			},
 		};
 
+		const plugClaims: AgentPlugClaim[] = [];
 		const builder = new CodingSnapshotBuilder({
 			control,
 			lxd: fakeLxd.client,
 			owner: "node-1",
 			machineIdSha256: MACHINE_SHA,
 			vmPolicy: baseVmPolicy(),
+			agentPlug: async (claim) => {
+				plugClaims.push(claim);
+				return PLUG_MAC;
+			},
+			projectAllowsAgentCard: async () => true,
 			readyPollMs: 5,
 		});
 
 		const outcome = await builder.buildNow({
 			workerId: WORKER_ID,
 			leaseToken: LEASE_TOKEN,
+			profileId: PROFILE_ID,
 			environmentId: ENV_ID,
 			memberUserId: MEMBER_ID,
 			repository: "acme/app",
@@ -264,9 +267,31 @@ describe("coding snapshot records and builder (5h)", () => {
 		});
 
 		expect(fakeLxd.createRequests).toHaveLength(1);
-		expect(fakeLxd.createRequests[0].name.startsWith(CODING_SNAPSHOT_BUILDER_VM_PREFIX)).toBe(true);
-		expect(Object.keys(fakeLxd.createRequests[0].devices)).toEqual(["root"]);
-		expect(fakeLxd.createRequests[0].source.fingerprint).toBe(BASE_FP);
+		const created = fakeLxd.createRequests[0];
+		expect(created.name.startsWith(CODING_SNAPSHOT_BUILDER_VM_PREFIX)).toBe(true);
+		expect(Object.keys(created.devices).sort()).toEqual(["network", "root"]);
+		expect(created.devices.network.parent).toBe(AGENT_BRIDGE);
+		expect(created.devices.network.hwaddr).toBe(PLUG_MAC);
+		expect(created.config).toMatchObject({
+			...CODING_MACHINE_BASE_CONFIG,
+			"user.qorpera.schema": CODING_SNAPSHOT_BUILDER_SCHEMA,
+			"user.qorpera.company_id": PROFILE_ID,
+			"user.qorpera.machine_id": BUILD_ID,
+			"user.qorpera.member_user_id": MEMBER_ID,
+			"user.qorpera.build_id": BUILD_ID,
+		});
+		expect(created.config).not.toHaveProperty("security.secureboot");
+		expect(plugClaims).toEqual([
+			{
+				kind: "coding",
+				companyId: PROFILE_ID,
+				machineId: BUILD_ID,
+				memberUserId: MEMBER_ID,
+				project: "coding",
+				instance: created.name,
+			},
+		]);
+		expect(created.source.fingerprint).toBe(BASE_FP);
 
 		const installCmd = fakeLxd.commands.find((c) => c.command.includes("npm ci"));
 		expect(installCmd).toBeDefined();
@@ -328,12 +353,14 @@ describe("coding snapshot records and builder (5h)", () => {
 			owner: "node-1",
 			machineIdSha256: MACHINE_SHA,
 			vmPolicy: baseVmPolicy(),
+			agentPlug: async () => PLUG_MAC,
 			readyPollMs: 5,
 		});
 
 		const outcome = await builder.buildNow({
 			workerId: WORKER_ID,
 			leaseToken: LEASE_TOKEN,
+			profileId: PROFILE_ID,
 			environmentId: ENV_ID,
 			memberUserId: MEMBER_ID,
 			repository: "acme/app",
@@ -400,6 +427,7 @@ describe("coding snapshot records and builder (5h)", () => {
 			owner: "node-1",
 			machineIdSha256: MACHINE_SHA,
 			vmPolicy: baseVmPolicy(),
+			agentPlug: async () => PLUG_MAC,
 			readyPollMs: 5,
 		});
 
@@ -407,6 +435,7 @@ describe("coding snapshot records and builder (5h)", () => {
 			{
 				workerId: WORKER_ID,
 				leaseToken: LEASE_TOKEN,
+				profileId: PROFILE_ID,
 				environmentId: ENV_ID,
 				memberUserId: MEMBER_ID,
 				repository: "acme/app",
@@ -483,12 +512,14 @@ describe("coding snapshot records and builder (5h)", () => {
 			owner: "node-1",
 			machineIdSha256: MACHINE_SHA,
 			vmPolicy: baseVmPolicy(),
+			agentPlug: async () => PLUG_MAC,
 			readyPollMs: 5,
 		});
 
 		const req: CodingSnapshotBuildRequest = {
 			workerId: WORKER_ID,
 			leaseToken: LEASE_TOKEN,
+			profileId: PROFILE_ID,
 			environmentId: ENV_ID,
 			memberUserId: MEMBER_ID,
 			repository: "acme/app",
@@ -617,11 +648,13 @@ describe("coding snapshot records and builder (5h)", () => {
 			owner: "node-1",
 			machineIdSha256: MACHINE_SHA,
 			vmPolicy: baseVmPolicy(),
+			agentPlug: async () => PLUG_MAC,
 		});
 
 		const outcome = await builder.buildNow({
 			workerId: WORKER_ID,
 			leaseToken: LEASE_TOKEN,
+			profileId: PROFILE_ID,
 			environmentId: ENV_ID,
 			memberUserId: MEMBER_ID,
 			repository: "acme/app",
@@ -633,6 +666,155 @@ describe("coding snapshot records and builder (5h)", () => {
 		expect(outcome.state).toBe("failed");
 		expect(fakeLxd.deletedInstances).toHaveLength(1);
 		expect(fakeLxd.instances.size).toBe(0);
+		await builder.close();
+	});
+
+	it("refuses to launch a snapshot builder when the LXD project disallows the agent card", async () => {
+		const fakeLxd = makeFakeLxd();
+		const plugSpy = vi.fn(async () => PLUG_MAC);
+		const control: CodingSnapshotRpcControl = {
+			async rpc(method) {
+				if (method === "qorpera_claim_coding_snapshot_build") {
+					return {
+						schema: "qorpera.coding-snapshot-claim/v1",
+						state: "claimed",
+						baseImageFingerprint: BASE_FP,
+						snapshot: null,
+						build: {
+							buildId: BUILD_ID,
+							leaseToken: BUILD_LEASE,
+							leaseUntil: new Date(Date.now() + 120_000).toISOString(),
+							profileId: PROFILE_ID,
+							memberUserId: MEMBER_ID,
+							baseImageFingerprint: BASE_FP,
+							repository: "acme/app",
+							setupDigest: "1".repeat(64),
+							commitSha: COMMIT_SHA,
+							ttlSeconds: 3600,
+						},
+					};
+				}
+				return { schema: "qorpera.coding-snapshot-build/v1", buildId: BUILD_ID, state: "failed" };
+			},
+		};
+		const builder = new CodingSnapshotBuilder({
+			control,
+			lxd: fakeLxd.client,
+			owner: "node-1",
+			machineIdSha256: MACHINE_SHA,
+			vmPolicy: baseVmPolicy(),
+			agentPlug: plugSpy,
+			projectAllowsAgentCard: async () => false,
+		});
+		const outcome = await builder.buildNow({
+			workerId: WORKER_ID,
+			leaseToken: LEASE_TOKEN,
+			profileId: PROFILE_ID,
+			environmentId: ENV_ID,
+			memberUserId: MEMBER_ID,
+			repository: "acme/app",
+			setupDigest: "1".repeat(64),
+			commitSha: COMMIT_SHA,
+			setupSpec: EMPTY_CODING_SETUP,
+		});
+		expect(outcome.state).toBe("failed");
+		if (outcome.state === "failed") expect(outcome.code).toBe("PROJECT_REFUSES_AGENT_CARD");
+		expect(plugSpy).not.toHaveBeenCalled();
+		expect(fakeLxd.createRequests).toHaveLength(0);
+		await builder.close();
+	});
+
+	it("protects a newly published snapshot image when housekeep sweeps before complete commits (F7)", async () => {
+		const fakeLxd = makeFakeLxd();
+		let releaseComplete!: () => void;
+		let completeStarted!: () => void;
+		const completeStartedPromise = new Promise<void>((resolve) => {
+			completeStarted = resolve;
+		});
+		const completeGate = new Promise<void>((resolve) => {
+			releaseComplete = resolve;
+		});
+		let releaseSweep!: () => void;
+		const sweepGate = new Promise<void>((resolve) => {
+			releaseSweep = resolve;
+		});
+		const control: CodingSnapshotRpcControl = {
+			async rpc(method, args) {
+				if (method === "qorpera_claim_coding_snapshot_build") {
+					return {
+						schema: "qorpera.coding-snapshot-claim/v1",
+						state: "claimed",
+						baseImageFingerprint: BASE_FP,
+						snapshot: null,
+						build: {
+							buildId: BUILD_ID,
+							leaseToken: BUILD_LEASE,
+							leaseUntil: new Date(Date.now() + 120_000).toISOString(),
+							profileId: PROFILE_ID,
+							memberUserId: MEMBER_ID,
+							baseImageFingerprint: BASE_FP,
+							repository: "acme/app",
+							setupDigest: "1".repeat(64),
+							commitSha: COMMIT_SHA,
+							ttlSeconds: 3600,
+						},
+					};
+				}
+				if (method === "qorpera_complete_coding_snapshot_build") {
+					completeStarted();
+					await completeGate;
+					return {
+						schema: "qorpera.coding-snapshot-build/v1",
+						buildId: BUILD_ID,
+						state: "ready",
+						imageFingerprint: args.p_image_fingerprint,
+						imageBytes: args.p_image_bytes,
+						expiresAt: null,
+					};
+				}
+				if (method === "qorpera_sweep_coding_snapshots") {
+					const reply = {
+						schema: "qorpera.coding-snapshot-sweep/v1",
+						abandonedBuilds: 0,
+						retiredSnapshots: 0,
+						pruneImages: [],
+						keepImageFingerprints: [],
+					};
+					await sweepGate;
+					return reply;
+				}
+				return {};
+			},
+		};
+		const builder = new CodingSnapshotBuilder({
+			control,
+			lxd: fakeLxd.client,
+			owner: "node-1",
+			machineIdSha256: MACHINE_SHA,
+			vmPolicy: baseVmPolicy(),
+			agentPlug: async () => PLUG_MAC,
+			readyPollMs: 5,
+		});
+		const buildPromise = builder.buildNow({
+			workerId: WORKER_ID,
+			leaseToken: LEASE_TOKEN,
+			profileId: PROFILE_ID,
+			environmentId: ENV_ID,
+			memberUserId: MEMBER_ID,
+			repository: "acme/app",
+			setupDigest: "1".repeat(64),
+			commitSha: COMMIT_SHA,
+			setupSpec: EMPTY_CODING_SETUP,
+		});
+		await completeStartedPromise;
+		const housekeepPromise = builder.housekeep(AbortSignal.timeout(5_000));
+		releaseComplete();
+		const built = await buildPromise;
+		expect(built.state).toBe("ready");
+		releaseSweep();
+		const swept = await housekeepPromise;
+		expect(swept.orphanImagesDeleted).toEqual([]);
+		expect(fakeLxd.images.has(SNAP_FP)).toBe(true);
 		await builder.close();
 	});
 });
