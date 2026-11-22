@@ -1,8 +1,13 @@
-use crate::blob_store::{AcceptedEncodings, BlobError, BlobStore, PutOutcome};
+use crate::blob_store::{
+    stream_file_body, AcceptedEncodings, BlobError, BlobRangeRead, BlobRead, BlobStore, PutOutcome,
+};
 use crate::dns_verify::{default_dns_servers, verify_domains_once};
+use crate::postgres_sync::connect_postgres_client;
 use crate::proxy::{
     full_body, is_websocket_upgrade, proxy_empty_request, proxy_http_or_ws, ActivityTracker, BoxBody,
-    PooledProxyClient, ProxyError, WakeCoordinator, WakeRequest,
+    PooledProxyClient, ProxyError, WakeCoordinator, WakeRequest, WsLimiter,
+    DEFAULT_WS_ACTIVITY_HEARTBEAT, DEFAULT_WS_IDLE_TIMEOUT, MAX_ACTIVE_WS_CONNS,
+    MAX_ACTIVE_WS_PER_DEPLOYMENT, MAX_ACTIVE_WS_PER_IP,
 };
 use crate::ratelimit::RateLimiter;
 use crate::routes::{
@@ -30,10 +35,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
-use crate::postgres_sync::connect_postgres_client;
+use tokio::sync::{watch, Semaphore};
 
 const MAX_FORM_BODY_BYTES: usize = 16 * 1024;
 const MAX_CONTROL_JSON_BYTES: usize = 64 * 1024;
@@ -41,7 +45,9 @@ const MAX_SNAPSHOT_BODY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PUBLIC_CONNS: usize = 4096;
 const MAX_INTERNAL_CONNS: usize = 256;
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const BODY_READ_TIMEOUT: Duration = Duration::from_secs(15);
 const AUTH_DB_TIMEOUT: Duration = Duration::from_secs(5);
+const DB_RECONNECT_BACKOFF: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct RedeemedTicket {
@@ -72,41 +78,118 @@ pub trait EdgeAuthBackend: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Option<RedeemedMemberPass>> + Send>>;
 }
 
+struct DbClientState<T> {
+    client: Option<Arc<T>>,
+    last_failure: Option<Instant>,
+}
+
+impl<T> Default for DbClientState<T> {
+    fn default() -> Self {
+        Self {
+            client: None,
+            last_failure: None,
+        }
+    }
+}
+
+struct DbClientSlot<T> {
+    inner: tokio::sync::Mutex<DbClientState<T>>,
+    backoff: Duration,
+}
+
+impl<T> DbClientSlot<T> {
+    fn new(backoff: Duration) -> Self {
+        Self {
+            inner: tokio::sync::Mutex::new(DbClientState::default()),
+            backoff,
+        }
+    }
+
+    async fn get_or_connect<F, Fut>(
+        &self,
+        deadline: Duration,
+        is_open: impl Fn(&T) -> bool,
+        connect: F,
+    ) -> Option<Arc<T>>
+    where
+        F: FnOnce(Duration) -> Fut,
+        Fut: Future<Output = Option<T>>,
+    {
+        let start = Instant::now();
+        // WHY: Bound mutex wait plus connect within one deadline and fail fast during backoff so PG outages never build a k*5s serial queue.
+        let mut guard = tokio::time::timeout(deadline, self.inner.lock()).await.ok()?;
+        if let Some(ref c) = guard.client {
+            if is_open(c) {
+                return Some(Arc::clone(c));
+            }
+        }
+        if guard.last_failure.is_some_and(|at| at.elapsed() < self.backoff) {
+            return None;
+        }
+        let remaining = deadline.checked_sub(start.elapsed())?;
+        if remaining.is_zero() {
+            return None;
+        }
+        match connect(remaining).await {
+            Some(client) => {
+                guard.last_failure = None;
+                let arc = Arc::new(client);
+                guard.client = Some(Arc::clone(&arc));
+                Some(arc)
+            }
+            None => {
+                guard.client = None;
+                guard.last_failure = Some(Instant::now());
+                None
+            }
+        }
+    }
+
+    async fn clear_if_same(&self, failed: &Arc<T>, timeout: Duration) {
+        let Ok(mut guard) = tokio::time::timeout(timeout, self.inner.lock()).await else {
+            return;
+        };
+        if guard.client.as_ref().is_some_and(|c| Arc::ptr_eq(c, failed)) {
+            guard.client = None;
+        }
+    }
+}
+
 pub struct PostgresAuthBackend {
     database_url: String,
-    client: Arc<tokio::sync::Mutex<Option<Arc<tokio_postgres::Client>>>>,
+    client: Arc<DbClientSlot<tokio_postgres::Client>>,
 }
 
 impl PostgresAuthBackend {
     pub fn new(database_url: String) -> Self {
         Self {
             database_url,
-            client: Arc::new(tokio::sync::Mutex::new(None)),
+            client: Arc::new(DbClientSlot::new(DB_RECONNECT_BACKOFF)),
         }
     }
 
     async fn get_client(
         db_url: &str,
-        slot: &tokio::sync::Mutex<Option<Arc<tokio_postgres::Client>>>,
+        slot: &DbClientSlot<tokio_postgres::Client>,
     ) -> Option<Arc<tokio_postgres::Client>> {
-        {
-            let guard = slot.lock().await;
-            if let Some(ref c) = *guard {
-                if !c.is_closed() {
-                    return Some(Arc::clone(c));
-                }
-            }
-        }
-        let client = connect_postgres_client(db_url, AUTH_DB_TIMEOUT).await.ok()?;
-        let arc = Arc::new(client);
-        let mut guard = slot.lock().await;
-        *guard = Some(Arc::clone(&arc));
-        Some(arc)
+        slot.get_or_connect(
+            AUTH_DB_TIMEOUT,
+            |c| !c.is_closed(),
+            |remaining| async move { connect_postgres_client(db_url, remaining).await.ok() },
+        )
+        .await
+    }
+
+    async fn clear_client_if_same(
+        slot: &DbClientSlot<tokio_postgres::Client>,
+        failed: &Arc<tokio_postgres::Client>,
+    ) {
+        slot.clear_if_same(failed, AUTH_DB_TIMEOUT).await;
     }
 
     async fn query_json(
         db_url: &str,
-        slot: &tokio::sync::Mutex<Option<Arc<tokio_postgres::Client>>>,
+        slot: &DbClientSlot<tokio_postgres::Client>,
         sql: &str,
         arg1: &str,
         arg2: &str,
@@ -115,9 +198,9 @@ impl PostgresAuthBackend {
             let client = Self::get_client(db_url, slot).await?;
             match tokio::time::timeout(AUTH_DB_TIMEOUT, client.query_one(sql, &[&arg1, &arg2])).await {
                 Ok(Ok(row)) => return Some(row.get(0)),
+                Ok(Err(_)) if !client.is_closed() => return None,
                 _ => {
-                    let mut guard = slot.lock().await;
-                    *guard = None;
+                    Self::clear_client_if_same(slot, &client).await;
                     if attempt == 1 {
                         return None;
                     }
@@ -265,7 +348,11 @@ pub struct RouterState {
     pub database_url: Option<String>,
     pub auth_backend: Option<Arc<dyn EdgeAuthBackend>>,
     pub ready: Arc<AtomicBool>,
-    db_slot: Arc<tokio::sync::Mutex<Option<Arc<tokio_postgres::Client>>>>,
+    pub ws_limiter: Arc<WsLimiter>,
+    ws_heartbeat_interval: Duration,
+    ws_idle_timeout: Duration,
+    body_read_timeout: Duration,
+    db_slot: Arc<DbClientSlot<tokio_postgres::Client>>,
 }
 
 impl RouterState {
@@ -306,8 +393,45 @@ impl RouterState {
             database_url: cfg.database_url.clone(),
             auth_backend,
             ready,
-            db_slot: Arc::new(tokio::sync::Mutex::new(None)),
+            ws_limiter: Arc::new(WsLimiter::new(
+                MAX_ACTIVE_WS_CONNS,
+                MAX_ACTIVE_WS_PER_DEPLOYMENT,
+                MAX_ACTIVE_WS_PER_IP,
+            )),
+            ws_heartbeat_interval: DEFAULT_WS_ACTIVITY_HEARTBEAT,
+            ws_idle_timeout: DEFAULT_WS_IDLE_TIMEOUT,
+            body_read_timeout: BODY_READ_TIMEOUT,
+            db_slot: Arc::new(DbClientSlot::new(DB_RECONNECT_BACKOFF)),
         }
+    }
+
+    pub fn with_ws_limit(mut self, max_conns: usize) -> Self {
+        self.ws_limiter = Arc::new(WsLimiter::new(
+            max_conns,
+            MAX_ACTIVE_WS_PER_DEPLOYMENT,
+            MAX_ACTIVE_WS_PER_IP,
+        ));
+        self
+    }
+
+    pub fn with_ws_limits(mut self, global: usize, per_deployment: usize, per_ip: usize) -> Self {
+        self.ws_limiter = Arc::new(WsLimiter::new(global, per_deployment, per_ip));
+        self
+    }
+
+    pub fn with_ws_heartbeat(mut self, interval: Duration) -> Self {
+        self.ws_heartbeat_interval = interval;
+        self
+    }
+
+    pub fn with_ws_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.ws_idle_timeout = timeout;
+        self
+    }
+
+    pub fn with_body_read_timeout(mut self, timeout: Duration) -> Self {
+        self.body_read_timeout = timeout;
+        self
     }
 }
 
@@ -335,13 +459,50 @@ impl BoundServers {
     }
 
     pub fn spawn(self) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
+        self.spawn_inner(None)
+    }
+
+    pub fn spawn_with_shutdown(
+        self,
+        shutdown: watch::Receiver<bool>,
+    ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
+        self.spawn_inner(Some(shutdown))
+    }
+
+    fn spawn_inner(
+        self,
+        shutdown: Option<watch::Receiver<bool>>,
+    ) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
         let pub_state = Arc::clone(&self.state);
         let pub_listener = self.public_listener;
         let pub_sem = Arc::new(Semaphore::new(MAX_PUBLIC_CONNS));
+        let mut pub_shutdown = shutdown.clone();
         let pub_handle = tokio::spawn(async move {
             loop {
-                let Ok((stream, peer)) = pub_listener.accept().await else {
-                    continue;
+                let (stream, peer) = if let Some(rx) = pub_shutdown.as_mut() {
+                    if *rx.borrow() {
+                        break;
+                    }
+                    tokio::select! {
+                        biased;
+                        changed = rx.changed() => {
+                            if changed.is_err() || *rx.borrow() {
+                                break;
+                            }
+                            continue;
+                        }
+                        accepted = pub_listener.accept() => {
+                            match accepted {
+                                Ok(pair) => pair,
+                                Err(_) => continue,
+                            }
+                        }
+                    }
+                } else {
+                    match pub_listener.accept().await {
+                        Ok(pair) => pair,
+                        Err(_) => continue,
+                    }
                 };
                 let Ok(permit) = Arc::clone(&pub_sem).try_acquire_owned() else {
                     drop(stream);
@@ -374,10 +535,33 @@ impl BoundServers {
         let int_state = Arc::clone(&self.state);
         let int_listener = self.internal_listener;
         let int_sem = Arc::new(Semaphore::new(MAX_INTERNAL_CONNS));
+        let mut int_shutdown = shutdown;
         let int_handle = tokio::spawn(async move {
             loop {
-                let Ok((stream, _peer)) = int_listener.accept().await else {
-                    continue;
+                let stream = if let Some(rx) = int_shutdown.as_mut() {
+                    if *rx.borrow() {
+                        break;
+                    }
+                    tokio::select! {
+                        biased;
+                        changed = rx.changed() => {
+                            if changed.is_err() || *rx.borrow() {
+                                break;
+                            }
+                            continue;
+                        }
+                        accepted = int_listener.accept() => {
+                            match accepted {
+                                Ok((stream, _peer)) => stream,
+                                Err(_) => continue,
+                            }
+                        }
+                    }
+                } else {
+                    match int_listener.accept().await {
+                        Ok((stream, _peer)) => stream,
+                        Err(_) => continue,
+                    }
                 };
                 let Ok(permit) = Arc::clone(&int_sem).try_acquire_owned() else {
                     drop(stream);
@@ -410,6 +594,24 @@ pub fn spawn_public_unix_listener(
     path: std::path::PathBuf,
     state: Arc<RouterState>,
 ) -> Result<tokio::task::JoinHandle<()>, std::io::Error> {
+    spawn_public_unix_listener_inner(path, state, None)
+}
+
+#[cfg(unix)]
+pub fn spawn_public_unix_listener_with_shutdown(
+    path: std::path::PathBuf,
+    state: Arc<RouterState>,
+    shutdown: watch::Receiver<bool>,
+) -> Result<tokio::task::JoinHandle<()>, std::io::Error> {
+    spawn_public_unix_listener_inner(path, state, Some(shutdown))
+}
+
+#[cfg(unix)]
+fn spawn_public_unix_listener_inner(
+    path: std::path::PathBuf,
+    state: Arc<RouterState>,
+    mut shutdown: Option<watch::Receiver<bool>>,
+) -> Result<tokio::task::JoinHandle<()>, std::io::Error> {
     if path.exists() {
         let _ = std::fs::remove_file(&path);
     }
@@ -419,14 +621,37 @@ pub fn spawn_public_unix_listener(
     let listener = tokio::net::UnixListener::bind(&path)?;
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666));
+        // WHY: Restrict public.sock to owner/group (qorpera-web + caddy via SupplementaryGroups) instead of world-writable 0666.
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660));
     }
     let sem = Arc::new(Semaphore::new(MAX_PUBLIC_CONNS));
     Ok(tokio::spawn(async move {
         let loopback = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
         loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                continue;
+            let stream = if let Some(rx) = shutdown.as_mut() {
+                if *rx.borrow() {
+                    break;
+                }
+                tokio::select! {
+                    biased;
+                    changed = rx.changed() => {
+                        if changed.is_err() || *rx.borrow() {
+                            break;
+                        }
+                        continue;
+                    }
+                    accepted = listener.accept() => {
+                        match accepted {
+                            Ok((stream, _)) => stream,
+                            Err(_) => continue,
+                        }
+                    }
+                }
+            } else {
+                match listener.accept().await {
+                    Ok((stream, _)) => stream,
+                    Err(_) => continue,
+                }
             };
             let Ok(permit) = Arc::clone(&sem).try_acquire_owned() else {
                 drop(stream);
@@ -468,19 +693,25 @@ struct UpstreamUpdateBody {
 
 enum BodyReadError {
     TooLarge,
+    Timeout,
     Failed,
 }
 
-async fn read_limited_body(body: Incoming, max_bytes: usize) -> Result<Bytes, BodyReadError> {
-    match Limited::new(body, max_bytes).collect().await {
-        Ok(collected) => Ok(collected.to_bytes()),
-        Err(err) => {
+async fn read_limited_body(
+    body: Incoming,
+    max_bytes: usize,
+    timeout: Duration,
+) -> Result<Bytes, BodyReadError> {
+    match tokio::time::timeout(timeout, Limited::new(body, max_bytes).collect()).await {
+        Ok(Ok(collected)) => Ok(collected.to_bytes()),
+        Ok(Err(err)) => {
             if err.downcast_ref::<http_body_util::LengthLimitError>().is_some() {
                 Err(BodyReadError::TooLarge)
             } else {
                 Err(BodyReadError::Failed)
             }
         }
+        Err(_) => Err(BodyReadError::Timeout),
     }
 }
 
@@ -554,7 +785,7 @@ fn check_bearer(req: &Request<Incoming>, expected_token: &str) -> bool {
 
 async fn persist_upstream_to_db(
     db_url: &str,
-    slot: &tokio::sync::Mutex<Option<Arc<tokio_postgres::Client>>>,
+    slot: &DbClientSlot<tokio_postgres::Client>,
     dep_id: &str,
     upstream_addr: &Option<String>,
 ) {
@@ -572,9 +803,9 @@ async fn persist_upstream_to_db(
         .await;
         match res {
             Ok(Ok(_)) => return,
+            Ok(Err(_)) if !client.is_closed() => return,
             _ => {
-                let mut guard = slot.lock().await;
-                *guard = None;
+                PostgresAuthBackend::clear_client_if_same(slot, &client).await;
                 if attempt == 1 {
                     return;
                 }
@@ -628,10 +859,19 @@ async fn handle_internal(state: Arc<RouterState>, req: Request<Incoming>) -> Res
     }
 
     if method == Method::POST && path == "/_internal/routes/snapshot" {
-        let bytes = match read_limited_body(req.into_body(), MAX_SNAPSHOT_BODY_BYTES).await {
+        let bytes = match read_limited_body(
+            req.into_body(),
+            MAX_SNAPSHOT_BODY_BYTES,
+            state.body_read_timeout,
+        )
+        .await
+        {
             Ok(b) => b,
             Err(BodyReadError::TooLarge) => {
                 return text_response(StatusCode::PAYLOAD_TOO_LARGE, "snapshot too large");
+            }
+            Err(BodyReadError::Timeout) => {
+                return text_response(StatusCode::REQUEST_TIMEOUT, "body timeout");
             }
             Err(BodyReadError::Failed) => {
                 return text_response(StatusCode::BAD_REQUEST, "invalid body");
@@ -650,10 +890,19 @@ async fn handle_internal(state: Arc<RouterState>, req: Request<Incoming>) -> Res
         if let Some(rest) = path.strip_prefix("/_internal/deployments/") {
             if let Some(dep_id) = rest.strip_suffix("/upstream") {
                 if !dep_id.is_empty() && !dep_id.contains('/') {
-                    let bytes = match read_limited_body(req.into_body(), MAX_CONTROL_JSON_BYTES).await {
+                    let bytes = match read_limited_body(
+                        req.into_body(),
+                        MAX_CONTROL_JSON_BYTES,
+                        state.body_read_timeout,
+                    )
+                    .await
+                    {
                         Ok(b) => b,
                         Err(BodyReadError::TooLarge) => {
                             return text_response(StatusCode::PAYLOAD_TOO_LARGE, "payload too large");
+                        }
+                        Err(BodyReadError::Timeout) => {
+                            return text_response(StatusCode::REQUEST_TIMEOUT, "body timeout");
                         }
                         Err(BodyReadError::Failed) => {
                             return text_response(StatusCode::BAD_REQUEST, "invalid body");
@@ -702,21 +951,18 @@ async fn handle_internal(state: Arc<RouterState>, req: Request<Incoming>) -> Res
                     return text_response(StatusCode::PAYLOAD_TOO_LARGE, "blob too large");
                 }
             }
-            let body = match read_limited_body(req.into_body(), max_len).await {
-                Ok(b) => b,
-                Err(BodyReadError::TooLarge) => {
-                    return text_response(StatusCode::PAYLOAD_TOO_LARGE, "blob too large");
-                }
-                Err(BodyReadError::Failed) => {
-                    return text_response(StatusCode::BAD_REQUEST, "body read failed");
-                }
-            };
-            return match state.blobs.put(sha, body, true).await {
+            return match state
+                .blobs
+                .put_stream(sha, req.into_body(), true, state.body_read_timeout)
+                .await
+            {
                 Ok(PutOutcome::Stored) => json_response(StatusCode::CREATED, serde_json::json!({"state":"stored"})),
                 Ok(PutOutcome::Exists) => json_response(StatusCode::OK, serde_json::json!({"state":"exists"})),
                 Err(BlobError::InvalidHash) => text_response(StatusCode::BAD_REQUEST, "invalid sha256"),
                 Err(BlobError::HashMismatch) => text_response(StatusCode::BAD_REQUEST, "sha256 mismatch"),
                 Err(BlobError::TooLarge) => text_response(StatusCode::PAYLOAD_TOO_LARGE, "blob too large"),
+                Err(BlobError::Timeout) => text_response(StatusCode::REQUEST_TIMEOUT, "body timeout"),
+                Err(BlobError::BodyRead) => text_response(StatusCode::BAD_REQUEST, "body read failed"),
                 Err(_) => text_response(StatusCode::INTERNAL_SERVER_ERROR, "storage error"),
             };
         }
@@ -1033,8 +1279,26 @@ async fn handle_public(
         None
     };
 
-    match proxy_http_or_ws(&state.proxy_client, &upstream, req, &host_s, &ip_s, !is_public).await {
+    match proxy_http_or_ws(
+        &state.proxy_client,
+        &upstream,
+        req,
+        &host_s,
+        &ip_s,
+        !is_public,
+        &state.ws_limiter,
+        &state.activity,
+        &deployment.id,
+        state.ws_heartbeat_interval,
+        state.ws_idle_timeout,
+    )
+    .await
+    {
         Ok(res) => res,
+        Err(ProxyError::Overloaded) => text_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many websocket connections",
+        ),
         Err(ProxyError::ConnectFailed(_)) => {
             let existing_replacement = state.routes.update(|table| {
                 if table.clear_upstream_if_matches(&deployment.id, &upstream) {
@@ -1147,10 +1411,19 @@ async fn handle_member_pass(
     let Some(backend) = state.auth_backend.as_ref() else {
         return html_response(StatusCode::UNAUTHORIZED, render_password_page("/", true), true);
     };
-    let body_bytes = match read_limited_body(req.into_body(), MAX_FORM_BODY_BYTES).await {
+    let body_bytes = match read_limited_body(
+        req.into_body(),
+        MAX_FORM_BODY_BYTES,
+        state.body_read_timeout,
+    )
+    .await
+    {
         Ok(b) => b,
         Err(BodyReadError::TooLarge) => {
             return text_response(StatusCode::PAYLOAD_TOO_LARGE, "form body too large");
+        }
+        Err(BodyReadError::Timeout) => {
+            return text_response(StatusCode::REQUEST_TIMEOUT, "body timeout");
         }
         Err(BodyReadError::Failed) => {
             return html_response(StatusCode::BAD_REQUEST, render_password_page("/", true), true);
@@ -1203,10 +1476,19 @@ async fn handle_unlock(
             .unwrap();
     }
 
-    let body_bytes = match read_limited_body(req.into_body(), MAX_FORM_BODY_BYTES).await {
+    let body_bytes = match read_limited_body(
+        req.into_body(),
+        MAX_FORM_BODY_BYTES,
+        state.body_read_timeout,
+    )
+    .await
+    {
         Ok(b) => b,
         Err(BodyReadError::TooLarge) => {
             return text_response(StatusCode::PAYLOAD_TOO_LARGE, "form body too large");
+        }
+        Err(BodyReadError::Timeout) => {
+            return text_response(StatusCode::REQUEST_TIMEOUT, "body timeout");
         }
         Err(BodyReadError::Failed) => {
             return html_response(StatusCode::BAD_REQUEST, render_password_page("/", true), true);
@@ -1300,24 +1582,41 @@ async fn serve_static_file(
             if let Some(range) = parse_single_range(range_hdr, file.bytes) {
                 match range {
                     RangeSpec::Valid(start, end) => {
-                        let Ok((slice, total)) = blobs.get_range(&file.sha256, start, end).await else {
+                        let Ok(range_read) = blobs.get_range_or_stream(&file.sha256, start, end).await else {
                             return text_response(StatusCode::SERVICE_UNAVAILABLE, "blob unavailable");
                         };
-                        if slice.is_empty() {
-                            return Response::builder()
-                                .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                                .header("content-range", format!("bytes */{total}"))
-                                .header("cache-control", "no-store, no-transform")
-                                .body(full_body(Bytes::new()))
-                                .unwrap();
-                        }
-                        let content_len = slice.len();
-                        let actual_end = start + content_len - 1;
-                        let body = if *req.method() == Method::HEAD {
-                            full_body(Bytes::new())
-                        } else {
-                            full_body(slice)
+                        let (content_len, total, body) = match range_read {
+                            BlobRangeRead::Buffered(slice, total) => {
+                                if slice.is_empty() {
+                                    return Response::builder()
+                                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                                        .header("content-range", format!("bytes */{total}"))
+                                        .header("cache-control", "no-store, no-transform")
+                                        .body(full_body(Bytes::new()))
+                                        .unwrap();
+                                }
+                                let len = slice.len();
+                                let body = if *req.method() == Method::HEAD {
+                                    full_body(Bytes::new())
+                                } else {
+                                    full_body(slice)
+                                };
+                                (len, total, body)
+                            }
+                            BlobRangeRead::Stream {
+                                file: stream_file,
+                                len,
+                                total,
+                            } => {
+                                let body = if *req.method() == Method::HEAD {
+                                    full_body(Bytes::new())
+                                } else {
+                                    stream_file_body(stream_file, len, None)
+                                };
+                                (len, total, body)
+                            }
                         };
+                        let actual_end = start + content_len - 1;
                         return build_static_response(
                             StatusCode::PARTIAL_CONTENT,
                             Some(content_len),
@@ -1354,24 +1653,66 @@ async fn serve_static_file(
             .map_or(AcceptedEncodings::IDENTITY, AcceptedEncodings::from_header)
     };
 
-    let payload = match blobs.get_encoded(&file.sha256, accepted).await {
-        Ok(p) => p,
+    let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+    if is_preview && is_html {
+        let payload = match blobs.get_encoded(&file.sha256, AcceptedEncodings::IDENTITY).await {
+            Ok(p) => p,
+            Err(_) => return text_response(StatusCode::SERVICE_UNAVAILABLE, "blob unavailable"),
+        };
+        let final_bytes = Bytes::from(inject_preview_banner(&payload.bytes, slug));
+        let len = final_bytes.len();
+        let body = if *req.method() == Method::HEAD {
+            full_body(Bytes::new())
+        } else {
+            full_body(final_bytes)
+        };
+        return build_static_response(
+            status_code,
+            Some(len),
+            None,
+            manifest,
+            resolved_path,
+            file,
+            content_type_hdr,
+            etag_hdr,
+            is_public,
+            None,
+            body,
+        );
+    }
+
+    let read = match blobs.get_or_stream(&file.sha256, accepted).await {
+        Ok(r) => r,
         Err(_) => return text_response(StatusCode::SERVICE_UNAVAILABLE, "blob unavailable"),
     };
 
-    let (final_bytes, encoding) = if is_preview && is_html {
-        (Bytes::from(inject_preview_banner(&payload.bytes, slug)), None)
-    } else {
-        (payload.bytes, payload.encoding.header_value())
+    let (len, encoding, body) = match read {
+        BlobRead::Buffered(payload) => {
+            let len = payload.bytes.len();
+            let enc = payload.encoding.header_value();
+            let body = if *req.method() == Method::HEAD {
+                full_body(Bytes::new())
+            } else {
+                full_body(payload.bytes)
+            };
+            (len, enc, body)
+        }
+        BlobRead::Stream {
+            file: stream_file,
+            len,
+            encoding,
+            expected_sha256,
+            ..
+        } => {
+            let enc = encoding.header_value();
+            let body = if *req.method() == Method::HEAD {
+                full_body(Bytes::new())
+            } else {
+                stream_file_body(stream_file, len, expected_sha256)
+            };
+            (len, enc, body)
+        }
     };
-
-    let len = final_bytes.len();
-    let body = if *req.method() == Method::HEAD {
-        full_body(Bytes::new())
-    } else {
-        full_body(final_bytes)
-    };
-    let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
     build_static_response(
         status_code,
         Some(len),
@@ -1583,4 +1924,83 @@ fn url_decode(input: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[tokio::test]
+    async fn db_client_slot_serializes_connects_backs_off_failures_and_clears_only_matching_arc() {
+        let slot: Arc<DbClientSlot<usize>> = Arc::new(DbClientSlot::new(Duration::from_millis(120)));
+        let connects = Arc::new(AtomicUsize::new(0));
+
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let s = Arc::clone(&slot);
+            let c = Arc::clone(&connects);
+            tasks.push(tokio::spawn(async move {
+                s.get_or_connect(
+                    Duration::from_secs(1),
+                    |_| true,
+                    |_| async move {
+                        let id = c.fetch_add(1, Ordering::SeqCst) + 1;
+                        tokio::time::sleep(Duration::from_millis(30)).await;
+                        Some(id)
+                    },
+                )
+                .await
+            }));
+        }
+        let mut results = Vec::new();
+        for t in tasks {
+            results.push(t.await.unwrap().unwrap());
+        }
+        assert_eq!(connects.load(Ordering::SeqCst), 1);
+        for arc in &results {
+            assert!(Arc::ptr_eq(&results[0], arc));
+        }
+
+        let stale = Arc::new(999usize);
+        slot.clear_if_same(&stale, Duration::from_secs(1)).await;
+        let still_same = slot
+            .get_or_connect(Duration::from_secs(1), |_| true, |_| async { Some(77) })
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(&results[0], &still_same));
+
+        slot.clear_if_same(&still_same, Duration::from_secs(1)).await;
+        let fail_connects = Arc::new(AtomicUsize::new(0));
+        let started = Instant::now();
+        let mut failing = Vec::new();
+        for _ in 0..8 {
+            let s = Arc::clone(&slot);
+            let fc = Arc::clone(&fail_connects);
+            failing.push(tokio::spawn(async move {
+                s.get_or_connect(
+                    Duration::from_millis(200),
+                    |_| true,
+                    |_| async move {
+                        fc.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(40)).await;
+                        None
+                    },
+                )
+                .await
+            }));
+        }
+        for t in failing {
+            assert!(t.await.unwrap().is_none());
+        }
+        assert_eq!(fail_connects.load(Ordering::SeqCst), 1);
+        assert!(started.elapsed() < Duration::from_millis(200));
+
+        tokio::time::sleep(Duration::from_millis(140)).await;
+        let recovered = slot
+            .get_or_connect(Duration::from_secs(1), |_| true, |_| async { Some(42) })
+            .await
+            .unwrap();
+        assert_eq!(*recovered, 42);
+    }
 }
