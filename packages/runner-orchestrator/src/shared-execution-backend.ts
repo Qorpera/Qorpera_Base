@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { chmod, chown, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -463,8 +464,27 @@ async function settleAll<T>(promises: readonly Promise<T>[]): Promise<T[]> {
 	return results.map((result) => (result as PromiseFulfilledResult<T>).value);
 }
 
+function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+	if (!signal) return promise;
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = (): void => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
 async function writePrivateFile(path: string, content: string, owner?: SharedExecutionAccount): Promise<void> {
-	const temporary = `${path}.${process.pid}.tmp`;
+	const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
 	let renamed = false;
 	const handle = await open(temporary, "wx", 0o600);
 	try {
@@ -529,8 +549,9 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 	readonly #identityWaits = new Map<string, number>();
 	/** Set after the first reconcile has swept untracked slots of this service process. */
 	#swept = false;
-	/** Acquisitions whose retirement is in flight; a second retire of the same one is a no-op. */
-	readonly #retiring = new Set<string>();
+	/** WHY: Acquisitions whose retirement is in flight; concurrent callers wait on the promise instead of returning early or retrying in parallel. */
+	readonly #retiring = new Map<string, Promise<void>>();
+	readonly #releasedArchive = new Set<string>();
 	readonly #claimingSlots = new Set<number>();
 	// WHY: strict lock order #runLocks -> #slotLocks -> #serial prevents deadlocks while allowing distinct slots to progress concurrently.
 	readonly #runLocks = new Map<string, Promise<void>>();
@@ -1171,125 +1192,136 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 		signal?: AbortSignal,
 		options: { park?: boolean } = {},
 	): Promise<void> {
-		if (this.#retiring.has(acquisitionId)) return;
-		this.#retiring.add(acquisitionId);
+		const existing = this.#retiring.get(acquisitionId);
+		if (existing) {
+			await awaitWithAbort(existing, signal);
+			return;
+		}
+		const work = this.#retireOnce(acquisitionId, reason, signal, options);
+		this.#retiring.set(acquisitionId, work);
 		try {
-			const marked = await this.#exclusive(async () => {
-				const current = await this.#readJournal(acquisitionId);
-				if (!current || terminal(current.physicalState)) return undefined;
-				const next = { ...current, physicalState: "stopping" as const, stopReason: current.stopReason ?? reason };
-				await this.#writeJournal(next);
-				return next;
-			});
-			if (!marked) return;
-			// Parking keeps the host for the conversation's next run: only the runner stops.
-			const park = options.park === true;
-			const current = await this.#withSlotLock(
-				marked.slot,
-				async (): Promise<SharedExecutionJournal | undefined> => {
-					await this.#units.stop(this.#unit("runner", marked.slot), signal).catch(() => undefined);
-					// A runner unit that exited (its run ended, or it crashed: "idle" covers both) leaves its host nothing to save:
-					// the capsule is resealed inside the run, not after it, and the slot's scratch is wiped below. Such a host
-					// outlives SIGTERM, so waiting out its TimeoutStopSec only kept the slot from the next run (production, 6 Nov
-					// 2026: 11.2 s from a wake's end to its slot's release, 2.1 s for a run that parks). It gets a moment, then the
-					// kill below. A revoked or undelivered run's host keeps the full wait.
-					if (!park)
-						await this.#units
-							.stop(
-								this.#unit("host", marked.slot),
-								signal,
-								marked.stopReason === "idle" ? ENDED_RUN_HOST_STOP_MS : undefined,
-							)
-							.catch(() => undefined);
-					signal?.throwIfAborted();
-					const slotUnits = park
-						? [this.#unit("runner", marked.slot)]
-						: [this.#unit("runner", marked.slot), this.#unit("host", marked.slot)];
-					let stillActive = await this.#units.activeSet(slotUnits, signal);
-					if (stillActive.size > 0) {
-						// A stop the unit ignored is answered with SIGKILL before the slot
-						// can be considered for anything else.
-						for (const unit of stillActive) await this.#units.kill(unit, signal);
-						signal?.throwIfAborted();
-						stillActive = await this.#units.activeSet(slotUnits, signal);
-					}
-					if (stillActive.size > 0) {
-						await this.#exclusive(async () => {
-							const live = await this.#readJournal(acquisitionId);
-							if (!live || terminal(live.physicalState)) return;
-							// Never give the slot up while a process still runs in it: the
-							// journal stays `stopping`, which keeps the slot out of service
-							// (quarantined) until the units are really gone.
-							await this.#writeJournal({ ...live, retireAttempts: (live.retireAttempts ?? 0) + 1 });
-						});
-						throw new Error("Sandbox units are still running; the slot stays quarantined");
-					}
-					const latest = await this.#exclusive(() => this.#readJournal(acquisitionId));
-					if (!latest || terminal(latest.physicalState)) return undefined;
-					// WHY: #slotLocks and the `stopping` journal hold this slot, so wipe runs outside #serial.
-					if (park) await this.#wipeRunner(latest.slot);
-					else await this.#wipeSlot(latest.slot);
-					return latest;
-				},
-			);
-			if (!current) return;
-			try {
-				await this.#releaseMachine(current, signal);
-			} catch (error) {
-				let lost = false;
-				await this.#exclusive(async () => {
-					const latest = await this.#readJournal(acquisitionId);
-					if (!latest || terminal(latest.physicalState)) {
-						lost = true;
-						return;
-					}
-					const attempts = (latest.retireAttempts ?? 0) + 1;
-					if (attempts < MAX_RETIRE_ATTEMPTS) {
-						await this.#writeJournal({ ...latest, retireAttempts: attempts });
-						return;
-					}
-					// The slot is clean and returns to service; the company allocation
-					// is still owed and reconcile keeps retrying it from the archive.
-					await this.#archive({
-						...latest,
-						physicalState: "lost",
-						retireAttempts: attempts,
-						stopReason: `${latest.stopReason ?? reason}: ${error instanceof Error ? error.message : String(error)}`,
-					});
-					lost = true;
-				});
-				if (lost) return;
-				throw error;
+			await work;
+		} finally {
+			if (this.#retiring.get(acquisitionId) === work) this.#retiring.delete(acquisitionId);
+		}
+	}
+
+	async #retireOnce(
+		acquisitionId: string,
+		reason: string,
+		signal?: AbortSignal,
+		options: { park?: boolean } = {},
+	): Promise<void> {
+		const marked = await this.#exclusive(async () => {
+			const current = await this.#readJournal(acquisitionId);
+			if (!current || terminal(current.physicalState)) return undefined;
+			const next = { ...current, physicalState: "stopping" as const, stopReason: current.stopReason ?? reason };
+			await this.#writeJournal(next);
+			return next;
+		});
+		if (!marked) return;
+		// Parking keeps the host for the conversation's next run: only the runner stops.
+		const park = options.park === true;
+		const current = await this.#withSlotLock(marked.slot, async (): Promise<SharedExecutionJournal | undefined> => {
+			await this.#units.stop(this.#unit("runner", marked.slot), signal).catch(() => undefined);
+			// A runner unit that exited (its run ended, or it crashed: "idle" covers both) leaves its host nothing to save:
+			// the capsule is resealed inside the run, not after it, and the slot's scratch is wiped below. Such a host
+			// outlives SIGTERM, so waiting out its TimeoutStopSec only kept the slot from the next run (production, 6 Nov
+			// 2026: 11.2 s from a wake's end to its slot's release, 2.1 s for a run that parks). It gets a moment, then the
+			// kill below. A revoked or undelivered run's host keeps the full wait.
+			if (!park)
+				await this.#units
+					.stop(
+						this.#unit("host", marked.slot),
+						signal,
+						marked.stopReason === "idle" ? ENDED_RUN_HOST_STOP_MS : undefined,
+					)
+					.catch(() => undefined);
+			signal?.throwIfAborted();
+			const slotUnits = park
+				? [this.#unit("runner", marked.slot)]
+				: [this.#unit("runner", marked.slot), this.#unit("host", marked.slot)];
+			let stillActive = await this.#units.activeSet(slotUnits, signal);
+			if (stillActive.size > 0) {
+				// A stop the unit ignored is answered with SIGKILL before the slot
+				// can be considered for anything else.
+				for (const unit of stillActive) await this.#units.kill(unit, signal);
+				signal?.throwIfAborted();
+				stillActive = await this.#units.activeSet(slotUnits, signal);
 			}
+			if (stillActive.size > 0) {
+				await this.#exclusive(async () => {
+					const live = await this.#readJournal(acquisitionId);
+					if (!live || terminal(live.physicalState)) return;
+					// Never give the slot up while a process still runs in it: the
+					// journal stays `stopping`, which keeps the slot out of service
+					// (quarantined) until the units are really gone.
+					await this.#writeJournal({ ...live, retireAttempts: (live.retireAttempts ?? 0) + 1 });
+				});
+				throw new Error("Sandbox units are still running; the slot stays quarantined");
+			}
+			const latest = await this.#exclusive(() => this.#readJournal(acquisitionId));
+			if (!latest || terminal(latest.physicalState)) return undefined;
+			// WHY: #slotLocks and the `stopping` journal hold this slot, so wipe runs outside #serial.
+			if (park) await this.#wipeRunner(latest.slot);
+			else await this.#wipeSlot(latest.slot);
+			return latest;
+		});
+		if (!current) return;
+		try {
+			await this.#releaseMachine(current, signal);
+		} catch (error) {
+			let lost = false;
 			await this.#exclusive(async () => {
 				const latest = await this.#readJournal(acquisitionId);
-				if (!latest || terminal(latest.physicalState)) return;
-				if (
-					park &&
-					latest.warmKey &&
-					latest.warmSessionId &&
-					latest.warmStaffAgentId &&
-					latest.hostIdentity &&
-					this.#config.warmIdleMs !== undefined
-				) {
-					await this.#writeWarm({
-						schema: WARM_SCHEMA,
-						slot: latest.slot,
-						key: latest.warmKey,
-						computeIdentityId: latest.computeIdentityId,
-						sessionId: latest.warmSessionId,
-						staffAgentId: latest.warmStaffAgentId,
-						epoch: latest.hostIdentity.epoch,
-						masterKeySha256: latest.hostIdentity.masterKeySha256,
-						nativeBridgeSha256: latest.credentials.nativeBridgeSha256,
-						warmUntil: new Date(this.#now() + this.#config.warmIdleMs).toISOString(),
-					});
+				if (!latest || terminal(latest.physicalState)) {
+					lost = true;
+					return;
 				}
-				await this.#archive({ ...latest, physicalState: "stopped", capacityReleased: true });
+				const attempts = (latest.retireAttempts ?? 0) + 1;
+				if (attempts < MAX_RETIRE_ATTEMPTS) {
+					await this.#writeJournal({ ...latest, retireAttempts: attempts });
+					return;
+				}
+				// The slot is clean and returns to service; the company allocation
+				// is still owed and reconcile keeps retrying it from the archive.
+				await this.#archive({
+					...latest,
+					physicalState: "lost",
+					retireAttempts: attempts,
+					stopReason: `${latest.stopReason ?? reason}: ${error instanceof Error ? error.message : String(error)}`,
+				});
+				lost = true;
 			});
-		} finally {
-			this.#retiring.delete(acquisitionId);
+			if (lost) return;
+			throw error;
 		}
+		await this.#exclusive(async () => {
+			const latest = await this.#readJournal(acquisitionId);
+			if (!latest || terminal(latest.physicalState)) return;
+			if (
+				park &&
+				latest.warmKey &&
+				latest.warmSessionId &&
+				latest.warmStaffAgentId &&
+				latest.hostIdentity &&
+				this.#config.warmIdleMs !== undefined
+			) {
+				await this.#writeWarm({
+					schema: WARM_SCHEMA,
+					slot: latest.slot,
+					key: latest.warmKey,
+					computeIdentityId: latest.computeIdentityId,
+					sessionId: latest.warmSessionId,
+					staffAgentId: latest.warmStaffAgentId,
+					epoch: latest.hostIdentity.epoch,
+					masterKeySha256: latest.hostIdentity.masterKeySha256,
+					nativeBridgeSha256: latest.credentials.nativeBridgeSha256,
+					warmUntil: new Date(this.#now() + this.#config.warmIdleMs).toISOString(),
+				});
+			}
+			await this.#archive({ ...latest, physicalState: "stopped", capacityReleased: true });
+		});
 	}
 
 	async #reconcileJournal(
@@ -1867,9 +1899,13 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			if ((error as { code?: string }).code === "ENOENT") return;
 			throw error;
 		}
+		const present = new Set(names);
+		for (const remembered of this.#releasedArchive)
+			if (!present.has(remembered)) this.#releasedArchive.delete(remembered);
 		let budget = 4;
 		for (const name of names) {
 			if (budget === 0) return;
+			if (this.#releasedArchive.has(name)) continue;
 			const path = join(archive, name);
 			let owed: SharedExecutionJournal;
 			try {
@@ -1877,14 +1913,18 @@ export class SharedExecutionProviderBackend implements CloudRunnerProviderServic
 			} catch {
 				continue;
 			}
-			if (owed.capacityReleased || (!owed.capacityRequested && !owed.capacityRegistered)) continue;
+			if (owed.capacityReleased || (!owed.capacityRequested && !owed.capacityRegistered)) {
+				this.#releasedArchive.add(name);
+				continue;
+			}
 			budget -= 1;
 			try {
 				await this.#releaseMachine(owed, signal);
 			} catch {
 				continue;
 			}
-			await writeFile(path, `${JSON.stringify({ ...owed, capacityReleased: true }, null, 2)}\n`, { mode: 0o600 });
+			await writePrivateFile(path, `${JSON.stringify({ ...owed, capacityReleased: true }, null, 2)}\n`);
+			this.#releasedArchive.add(name);
 		}
 	}
 

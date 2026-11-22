@@ -599,6 +599,7 @@ export class HttpCloudRunnerProviderService {
 		if (!server) return;
 		await new Promise<void>((resolve, reject) => {
 			server.close((error) => (error ? reject(error) : resolve()));
+			server.closeIdleConnections?.();
 		});
 		await Promise.allSettled([...this.#surfaceDeliveries]);
 		await this.#backend.close?.();

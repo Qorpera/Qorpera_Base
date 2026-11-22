@@ -1,4 +1,4 @@
-import { request as httpRequest } from "node:http";
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NODE_OBSERVATIONS_PATH, ProviderNodeObservability } from "../src/node-observability.ts";
 import type { CloudRunnerAssignmentDelivery, CloudRunnerInstance, CloudRunnerWork } from "../src/orchestrator.ts";
@@ -973,5 +973,101 @@ describe("runner provider HTTP service", () => {
 		expect(status).toBe(200);
 		expect(provider.acquire).toHaveBeenCalledOnce();
 		expect(provider.acquire.mock.calls[0]?.[1]?.payload).toMatchObject({ note: "på maskinen æøå" });
+	});
+
+	it("closes idle keep-alive connections promptly on service shutdown and cancels oversized provider streams early", async () => {
+		const provider = backend();
+		const service = new HttpCloudRunnerProviderService(provider, token);
+		const port = await service.start();
+		const agent = new HttpAgent({ keepAlive: true, keepAliveMsecs: 30_000 });
+		try {
+			const payload = Buffer.from(
+				JSON.stringify({ schema: "qorpera.runner-provider/v1", adapter_id: "managed", action: "reconcile" }),
+				"utf8",
+			);
+			const status = await new Promise<number>((resolve, reject) => {
+				const req = httpRequest(
+					{
+						hostname: "127.0.0.1",
+						port,
+						path: "/v1/qorpera-runner-provider",
+						method: "POST",
+						agent,
+						headers: {
+							authorization: `Bearer ${token}`,
+							"content-type": "application/json",
+							"content-length": String(payload.byteLength),
+							connection: "keep-alive",
+						},
+					},
+					(res) => {
+						res.resume();
+						res.on("end", () => resolve(res.statusCode ?? 0));
+					},
+				);
+				req.on("error", reject);
+				req.end(payload);
+			});
+			expect(status).toBe(200);
+			const startedClose = performance.now();
+			await service.close();
+			expect(performance.now() - startedClose).toBeLessThan(1_000);
+		} finally {
+			agent.destroy();
+		}
+
+		let okPulled = 0;
+		let okCancelled = false;
+		const okOversizedAdapter = new HttpCloudRunnerProviderAdapter(
+			"http://127.0.0.1:1",
+			"managed",
+			token,
+			vi.fn(async () => {
+				const stream = new ReadableStream<Uint8Array>({
+					pull(controller) {
+						okPulled += 1;
+						if (okPulled > 10) {
+							controller.close();
+							return;
+						}
+						controller.enqueue(new Uint8Array(1024 * 1024));
+					},
+					cancel() {
+						okCancelled = true;
+					},
+				});
+				return new Response(stream, { status: 200, headers: { "content-type": "application/json" } });
+			}) as typeof fetch,
+		);
+		await expect(okOversizedAdapter.reconcile()).rejects.toThrow("exceeds its byte limit");
+		expect(okCancelled).toBe(true);
+		expect(okPulled).toBeLessThanOrEqual(4);
+
+		let refusalPulled = 0;
+		let refusalCancelled = false;
+		const refusalOversizedAdapter = new HttpCloudRunnerProviderAdapter(
+			"http://127.0.0.1:1",
+			"managed",
+			token,
+			vi.fn(async () => {
+				const stream = new ReadableStream<Uint8Array>({
+					pull(controller) {
+						refusalPulled += 1;
+						if (refusalPulled > 10) {
+							controller.close();
+							return;
+						}
+						controller.enqueue(new Uint8Array(40 * 1024));
+					},
+					cancel() {
+						refusalCancelled = true;
+					},
+				});
+				return new Response(stream, { status: 422, headers: { "content-type": "application/json" } });
+			}) as typeof fetch,
+		);
+		await expect(refusalOversizedAdapter.reconcile()).rejects.toThrow("422");
+		expect(refusalCancelled).toBe(true);
+		expect(refusalPulled).toBeLessThanOrEqual(3);
 	});
 });

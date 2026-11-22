@@ -615,4 +615,71 @@ describe("reconcile passes with wake-ups", () => {
 			expect(starts[index]! - starts[index - 1]!).toBeGreaterThanOrEqual(550);
 		}
 	});
+
+	it("aborts in-flight WebSocket connect on stop without reporting unreachable and closes stale sockets across stop/start", async () => {
+		const states: Array<[RealtimeOrchestratorWakeState, string?]> = [];
+		let capturedSignal: AbortSignal | undefined;
+		const connectSpy = vi
+			.spyOn(NodeWebSocket, "connect")
+			.mockImplementationOnce((_url, _handlers, _timeout, opts) => {
+				capturedSignal = opts?.signal;
+				return new Promise((_resolve, reject) => {
+					opts?.signal?.addEventListener("abort", () => reject(new Error("WebSocket handshake was stopped")), {
+						once: true,
+					});
+				});
+			});
+		try {
+			const wake = new RealtimeOrchestratorWake({
+				supabaseUrl: "https://example.supabase.co",
+				publishableKey: "publishable-key",
+				topic: () => cloudRunnerOrchestratorWakeTopic(orchestratorId),
+				onState: (state, detail) => states.push([state, detail]),
+			});
+			wake.start();
+			await until(() => capturedSignal !== undefined);
+			wake.stop();
+			await sleep(20);
+			expect(capturedSignal?.aborted).toBe(true);
+			expect(states).toEqual([]);
+
+			let resolveStale!: (ws: NodeWebSocket) => void;
+			const staleClosed = vi.fn();
+			const staleSocket = {
+				closed: false,
+				close: staleClosed,
+				send: vi.fn(),
+			} as unknown as NodeWebSocket;
+			let secondClosed = false;
+			const secondSocket = {
+				closed: false,
+				close: vi.fn(() => {
+					secondClosed = true;
+				}),
+				send: vi.fn(),
+			} as unknown as NodeWebSocket;
+			connectSpy
+				.mockImplementationOnce(
+					() =>
+						new Promise<NodeWebSocket>((resolve) => {
+							resolveStale = resolve;
+						}),
+				)
+				.mockResolvedValueOnce(secondSocket);
+
+			wake.start();
+			await sleep(10);
+			wake.stop();
+			wake.start();
+			await sleep(10);
+			resolveStale(staleSocket);
+			await sleep(20);
+			expect(staleClosed).toHaveBeenCalledOnce();
+			expect(secondClosed).toBe(false);
+			wake.stop();
+			expect(secondClosed).toBe(true);
+		} finally {
+			connectSpy.mockRestore();
+		}
+	});
 });

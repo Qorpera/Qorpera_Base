@@ -150,10 +150,59 @@ export class CloudRunnerProviderRequestError extends Error {
 
 const ADMISSION_BODY_LIMIT_BYTES = 4096;
 
+async function readBoundedProviderText(
+	response: {
+		readonly body?: {
+			getReader?: () => {
+				read(): Promise<{ done: boolean; value?: Uint8Array }>;
+				cancel(): Promise<void>;
+				releaseLock(): void;
+			};
+			cancel?: () => Promise<void>;
+		} | null;
+		text(): Promise<string>;
+	},
+	maxBytes: number,
+	overflowMessage: string,
+): Promise<string> {
+	const getReader = response.body?.getReader;
+	if (typeof getReader !== "function") {
+		const encoded = await response.text();
+		if (Buffer.byteLength(encoded) > maxBytes) throw new Error(overflowMessage);
+		return encoded;
+	}
+	const reader = getReader.call(response.body);
+	const chunks: Buffer[] = [];
+	let bytes = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			bytes += value.byteLength;
+			if (bytes > maxBytes) {
+				await reader.cancel().catch(() => undefined);
+				throw new Error(overflowMessage);
+			}
+			chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return Buffer.concat(chunks, bytes).toString("utf8");
+}
+
 /** Reads a bounded 422 body and keeps only a well-formed admission refusal. */
 async function providerAdmissionRefusal(response: {
 	readonly status: number;
-	readonly body?: { cancel(): Promise<void> } | null;
+	readonly body?: {
+		getReader?: () => {
+			read(): Promise<{ done: boolean; value?: Uint8Array }>;
+			cancel(): Promise<void>;
+			releaseLock(): void;
+		};
+		cancel(): Promise<void>;
+	} | null;
 	text(): Promise<string>;
 }): Promise<CloudRunnerProviderAdmissionRefusal | undefined> {
 	if (response.status !== 422) {
@@ -162,11 +211,14 @@ async function providerAdmissionRefusal(response: {
 	}
 	let encoded: string;
 	try {
-		encoded = await response.text();
+		encoded = await readBoundedProviderText(
+			response,
+			ADMISSION_BODY_LIMIT_BYTES,
+			"Admission refusal exceeds byte limit",
+		);
 	} catch {
 		return undefined;
 	}
-	if (Buffer.byteLength(encoded) > ADMISSION_BODY_LIMIT_BYTES) return undefined;
 	let value: unknown;
 	try {
 		value = JSON.parse(encoded) as unknown;
@@ -301,10 +353,11 @@ export class HttpCloudRunnerProviderAdapter implements CloudRunnerProviderAdapte
 					await providerAdmissionRefusal(response),
 					body.action,
 				);
-			const encoded = await response.text();
-			if (Buffer.byteLength(encoded) > PROVIDER_RESPONSE_LIMIT_BYTES) {
-				throw new Error("Runner provider response exceeds its byte limit");
-			}
+			const encoded = await readBoundedProviderText(
+				response,
+				PROVIDER_RESPONSE_LIMIT_BYTES,
+				"Runner provider response exceeds its byte limit",
+			);
 			let value: unknown;
 			try {
 				value = JSON.parse(encoded) as unknown;
