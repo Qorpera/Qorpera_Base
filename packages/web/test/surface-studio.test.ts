@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { prepareStudioHtmlPreview, SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
 import { PAGE_FRAME_URL } from "../src/ui/page-frame.ts";
+import { deferred } from "./fixtures.ts";
 import { CHANGES, change, fakeClient, SESSION, session, storeWith, summary, workspace } from "./surface-fixtures.ts";
 
 const BRAND_ID = "22222222-2222-4222-8222-222222222229";
@@ -396,6 +397,123 @@ describe("SurfaceStudioView", () => {
 		expect(otherCard.textContent).not.toContain("theme: evening");
 		expect(otherCard.textContent).not.toContain("{not valid json");
 		expect(view.el.querySelector("pre")).toBeNull();
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("renders an updating animation while merging, reloading cloud files, and publishing, then settles cleanly with fresh Base files", async () => {
+		const brand = brandSummary();
+		const patchManifest = [
+			{ op: "merge_json" as const, path: "tokens.json", patch: { colors: { accent: "#2b6cb0" } } },
+		];
+		const stagedChange = change(CHANGES[0], 1, "staged", {
+			surfaceId: BRAND_ID,
+			kind: "folder_patch",
+			affectedPaths: ["brand/tokens.json"],
+			patchManifest,
+		});
+		const mergingChange = change(CHANGES[0], 1, "merging", {
+			surfaceId: BRAND_ID,
+			kind: "folder_patch",
+			affectedPaths: ["brand/tokens.json"],
+			patchManifest,
+		});
+		const mergedChange = change(CHANGES[0], 1, "merged", {
+			surfaceId: BRAND_ID,
+			kind: "folder_patch",
+			affectedPaths: ["brand/tokens.json"],
+			patchManifest,
+		});
+		const stagedSession = session(["staged"], { surfaceId: BRAND_ID, changes: [stagedChange] });
+		const mergingSession = session(["merging"], { surfaceId: BRAND_ID, changes: [mergingChange] });
+		const mergedSession = session(["merged"], { surfaceId: BRAND_ID, state: "completed", changes: [mergedChange] });
+
+		const postMergeLoad = deferred<Record<string, string>>();
+		const postPublishLoad = deferred<Record<string, string>>();
+		let loadCall = 0;
+		const loadCloudFiles = vi.fn(async () => {
+			loadCall += 1;
+			if (loadCall === 1) {
+				return {
+					"brand/tokens.json": JSON.stringify({ colors: { accent: "#d76f45" } }),
+					"brand/old-notes.md": "Stale note",
+				};
+			}
+			if (loadCall === 2) return await postMergeLoad.promise;
+			return await postPublishLoad.promise;
+		});
+		const loadFiles = vi.fn(async () => ({ "brand/old-notes.md": "Should not duplicate" }));
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [brand]),
+			getSurfaceWorkspace: vi
+				.fn()
+				.mockResolvedValueOnce(workspace([stagedSession], { surface: brand }))
+				.mockResolvedValue(
+					workspace([], {
+						surface: { ...brand, hasUnpublishedChanges: true, unpublishedChangeCount: 1 },
+						recentHistory: [mergedSession],
+					}),
+				),
+			approveSessionAll: vi.fn(async () => mergingSession),
+			publishSurface: vi.fn(async () => ({
+				...brand,
+				hasUnpublishedChanges: false,
+				unpublishedChangeCount: 0,
+			})),
+		});
+
+		const store = storeWith(client, { loadCloudFiles });
+		await store.load();
+		await store.openSurface("brand");
+		await Promise.resolve();
+
+		const view = new SurfaceStudioView({
+			store,
+			surface: brand,
+			signal: new AbortController().signal,
+			loadFiles,
+		});
+		document.body.append(view.el);
+		expect(loadFiles).not.toHaveBeenCalled();
+		expect(view.el.classList.contains("is-updating")).toBe(false);
+		expect(view.el.querySelector(".studio-updating-pill")).toBeNull();
+
+		await store.approveAll(SESSION);
+		view.update();
+		expect(view.el.classList.contains("is-updating")).toBe(true);
+		expect(view.el.getAttribute("aria-busy")).toBe("true");
+		expect(view.el.querySelector(".studio-updating-pill")?.textContent).toBe("Applying…");
+		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#2b6cb0");
+
+		await store.refreshWorkspace(BRAND_ID);
+		view.update();
+		expect(view.el.classList.contains("is-updating")).toBe(true);
+		expect(view.el.querySelector(".studio-updating-pill")?.textContent).toBe("Updating…");
+		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#2b6cb0");
+
+		postMergeLoad.resolve({
+			"brand/tokens.json": JSON.stringify({ colors: { accent: "#2b6cb0" } }),
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		view.update();
+		expect(view.el.classList.contains("is-updating")).toBe(false);
+		expect(view.el.classList.contains("is-settled")).toBe(true);
+		expect(view.el.querySelector(".studio-badge")?.textContent).toBe("Base");
+		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#2b6cb0");
+		expect(view.el.querySelector('[data-file="brand/old-notes.md"]')).toBeNull();
+
+		await store.publish(BRAND_ID);
+		view.update();
+		expect(view.el.classList.contains("is-updating")).toBe(true);
+		postPublishLoad.resolve({
+			"brand/tokens.json": JSON.stringify({ colors: { accent: "#2b6cb0" } }),
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		view.update();
+		expect(view.el.classList.contains("is-updating")).toBe(false);
 
 		view.dispose();
 		store.dispose();

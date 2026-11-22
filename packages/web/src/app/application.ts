@@ -69,7 +69,14 @@ import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.t
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
-import { attachSurfaces, isLocalSurfaceId, SurfacesStore, surfacesDisabledOf, surfacesOf } from "./surfaces-store.ts";
+import {
+	attachSurfaces,
+	isLocalSurfaceId,
+	readSurfaceFolderFiles,
+	SurfacesStore,
+	surfacesDisabledOf,
+	surfacesOf,
+} from "./surfaces-store.ts";
 import { showWaitingInTitle } from "./tab-title.ts";
 import { noteReceiver, type TellAccounts, tellAgent } from "./tell-agent.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
@@ -548,6 +555,7 @@ export function mountApplication(
 	let companyDatabases: CompanyDatabases | undefined;
 	/** What the open company's pages read from its folder, its tables and files, followed there (Interfaces step I7). */
 	let interfaceFolder: CompanyInterfaceFolder | undefined;
+	let surfaceFolderHints: { close(): Promise<void> } | undefined;
 	/** The agents' interface apps in the open company's folder, followed there (RUNTIME-INTERFACE-APPS.md §4). */
 	let companyApps: CompanyApps | undefined;
 	/** The agents' next runs for the rail's line under each name (app/agent-notes.ts), while the company is open. */
@@ -802,6 +810,8 @@ export function mountApplication(
 		companyDatabases = undefined;
 		interfaceFolder?.dispose();
 		interfaceFolder = undefined;
+		void surfaceFolderHints?.close();
+		surfaceFolderHints = undefined;
 		companyApps?.dispose();
 		companyApps = undefined;
 		agentNotes?.dispose();
@@ -977,37 +987,7 @@ export function mountApplication(
 							},
 							team.capabilities.write,
 						).folder();
-						const files: Record<string, string> = {};
-						const decoder = new TextDecoder();
-						const textFile = /\.(?:json|md|markdown|txt|toml|ya?ml|css|svg|html?)$/i;
-						const maxBytes = 256 * 1024;
-						const readFolder = async (parent: string, depth: number) => {
-							const page = await folder.list(parent, null, 100, readScope.signal);
-							for (const entry of page.entries) {
-								if (readScope.signal.aborted || Object.keys(files).length >= 32) return;
-								if (entry.kind === "folder" && depth < 1) {
-									await readFolder(entry.path, depth + 1);
-									continue;
-								}
-								if (
-									entry.kind !== "file" ||
-									!entry.file ||
-									!textFile.test(entry.path) ||
-									entry.file.bytes > maxBytes
-								)
-									continue;
-								const bytes = await folder.readFile(entry.file, readScope.signal, maxBytes, { cached: true });
-								files[entry.path] = decoder.decode(bytes);
-							}
-						};
-						for (const root of roots) {
-							try {
-								await readFolder(root, 0);
-							} catch {
-								/* WHY: Optional studio or notes folders may not exist yet on a new surface. */
-							}
-						}
-						return files;
+						return await readSurfaceFolderFiles(folder, roots, readScope.signal);
 					} finally {
 						controller.signal.removeEventListener("abort", forwardAbort);
 						signal.removeEventListener("abort", forwardAbort);
@@ -1964,6 +1944,8 @@ export function mountApplication(
 			controller.store.set({ interfacePages: undefined, companyData: undefined });
 			interfaceFolder.dispose();
 			interfaceFolder = undefined;
+			void surfaceFolderHints?.close();
+			surfaceFolderHints = undefined;
 			companyApps?.dispose();
 			companyApps = undefined;
 			agentNotes?.dispose();
@@ -1992,6 +1974,9 @@ export function mountApplication(
 			);
 			// The pages' reader and the apps' share one hint channel.
 			const hints = sharedFolderHints(files);
+			surfaceFolderHints = hints(() => {
+				surfacesOf(controller)?.onFolderHint();
+			});
 			const shared = {
 				signal: files.signal,
 				current: () => files.current(),
@@ -2361,9 +2346,22 @@ export function mountApplication(
 					slug,
 					AbortSignal.any([controller.signal, signal]),
 				);
+				let wasPublishing = surface.publishStatus === "publishing";
+				let lastUnpublished = surface.unpublishedChangeCount;
 				return {
 					el: h("div", { class: "surface-site" }, view.el),
-					update: () => view.update(),
+					update: () => {
+						view.update();
+						const latest = surfacesOf(controller)?.state.surfaces.find((item) => item.id === surface.id);
+						if (!latest) return;
+						const nowPublishing = latest.publishStatus === "publishing";
+						const publishFinished =
+							(wasPublishing && !nowPublishing && latest.publishStatus !== "failed") ||
+							(!wasPublishing && !nowPublishing && lastUnpublished > 0 && latest.unpublishedChangeCount === 0);
+						wasPublishing = nowPublishing;
+						lastUnpublished = latest.unpublishedChangeCount;
+						if (publishFinished) view.reload();
+					},
 					dispose: () => view.dispose(),
 				};
 			}
@@ -2957,46 +2955,17 @@ export function mountApplication(
 						].filter((item): item is string => Boolean(item));
 						const team = controller.store.get().team;
 						if (!roots.length || !team) return {};
+						const readSignal = AbortSignal.any([controller.signal, signal]);
 						const folder = new WebCompanyFiles(
 							cloud,
 							controller.profile,
 							controller.userId,
 							team.role,
-							AbortSignal.any([controller.signal, signal]),
+							readSignal,
 							companyCurrent,
 							team.capabilities.write,
 						).folder();
-						const files: Record<string, string> = {};
-						const decoder = new TextDecoder();
-						const textFile = /\.(?:json|md|markdown|txt|toml|ya?ml|css|svg|html?)$/i;
-						const maxBytes = 256 * 1024;
-						const readFolder = async (parent: string, depth: number) => {
-							const page = await folder.list(parent, null, 100, signal);
-							for (const entry of page.entries) {
-								if (signal.aborted || Object.keys(files).length >= 32) return;
-								if (entry.kind === "folder" && depth < 1) {
-									await readFolder(entry.path, depth + 1);
-									continue;
-								}
-								if (
-									entry.kind !== "file" ||
-									!entry.file ||
-									!textFile.test(entry.path) ||
-									entry.file.bytes > maxBytes
-								)
-									continue;
-								const bytes = await folder.readFile(entry.file, signal, maxBytes, { cached: true });
-								files[entry.path] = decoder.decode(bytes);
-							}
-						};
-						for (const root of roots) {
-							try {
-								await readFolder(root, 0);
-							} catch {
-								/* WHY: Optional studio or notes folders may not exist yet. */
-							}
-						}
-						return files;
+						return await readSurfaceFolderFiles(folder, roots, readSignal);
 					};
 					const loadSitePassword = async (surface: SurfaceSummary): Promise<string | null> => {
 						if (!managesSites() || !surface.liveUrl || isLocalSurfaceId(surface.id)) return null;

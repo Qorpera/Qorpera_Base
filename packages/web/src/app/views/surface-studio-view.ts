@@ -13,12 +13,19 @@ import {
 } from "@qorpera/contracts";
 import { AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
-import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { markdown } from "../../ui/markdown.ts";
 import { framePage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
-import { formatConflictPaths, isOpenChange, type SurfacesStore } from "../surfaces-store.ts";
-import { surfaceEmblem, surfaceTile } from "./surface-rail.ts";
+import {
+	effectiveStudioBaseFiles,
+	formatConflictPaths,
+	isLocalSurfaceId,
+	isOpenChange,
+	normalizeStudioPatchOps,
+	type SurfacesStore,
+	type SurfaceUpdatePhase,
+} from "../surfaces-store.ts";
+import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
 import { type Studio3DConfig, Studio3DViewer } from "./surface-studio-3d.ts";
 
@@ -453,6 +460,12 @@ export function prepareStudioHtmlPreview(
 	return framePage(`${doctype}${doc.documentElement.outerHTML}`);
 }
 
+function updatingLabel(phase: SurfaceUpdatePhase): string {
+	if (phase === "publishing") return t("Publishing…");
+	if (phase === "merging") return t("Applying…");
+	return t("Updating…");
+}
+
 function sameDeps(prev: readonly unknown[] | undefined, next: readonly unknown[]): boolean {
 	if (!prev || prev.length !== next.length) return false;
 	for (let i = 0; i < next.length; i++) {
@@ -486,18 +499,36 @@ export class SurfaceStudioView {
 	#shownDeps: readonly unknown[] | undefined;
 	#shownOrdered: readonly StudioPatchChange[] | undefined;
 	#appliedIdentityVars: string[] = [];
+	#wasUpdating = false;
+	#settleTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(options: SurfaceStudioOptions) {
 		this.#options = options;
 		this.#baseFiles = options.baseFiles ? { ...options.baseFiles } : {};
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
-		if (options.loadFiles && !options.baseFiles) void this.#load();
+		if (!options.baseFiles) {
+			const cloudManaged =
+				options.store.canLoadCloudFiles &&
+				!isLocalSurfaceId(options.surface.id) &&
+				options.store.state.source === "cloud";
+			if (cloudManaged) {
+				if (!options.store.state.cloudSurfaceFiles[options.surface.id]) {
+					void options.store.refreshCloudFiles(options.surface);
+				}
+			} else if (options.loadFiles) {
+				void this.#load();
+			}
+		}
 		this.update();
 	}
 
 	dispose(): void {
 		this.#disposeHtmlFrames();
+		if (this.#settleTimer) {
+			clearTimeout(this.#settleTimer);
+			this.#settleTimer = undefined;
+		}
 		this.#reportView?.dispose();
 		this.#lifetime.abort();
 	}
@@ -550,7 +581,7 @@ export class SurfaceStudioView {
 		}
 	}
 
-	#orderedChanges(): StudioPatchChange[] {
+	#orderedChanges(folderRoot: string | null | undefined): StudioPatchChange[] {
 		const store = this.#options.store;
 		const state = store.state;
 		if (state.mode === "live") return [];
@@ -559,7 +590,7 @@ export class SurfaceStudioView {
 			for (const change of session.changes) {
 				if (change.kind !== "folder_patch" || !isOpenChange(change) || !store.isChangeShown(change.id)) continue;
 				const ops = this.#options.patches?.[change.id] ?? state.studioPatches[change.id];
-				if (ops?.length) ordered.push({ changeId: change.id, ops });
+				if (ops?.length) ordered.push({ changeId: change.id, ops: normalizeStudioPatchOps(ops, folderRoot) });
 			}
 		}
 		return ordered;
@@ -567,10 +598,9 @@ export class SurfaceStudioView {
 
 	#effectiveBaseFiles(surfaceId: string): Readonly<Record<string, string>> {
 		const state = this.#options.store.state;
-		const cloudBase = state.cloudSurfaceFiles[surfaceId];
-		const localBase = state.localStudioBase[surfaceId];
-		if (!cloudBase && !localBase) return this.#baseFiles;
-		return { ...this.#baseFiles, ...(cloudBase ?? {}), ...(localBase ?? {}) };
+		const storeBase = effectiveStudioBaseFiles(state, surfaceId);
+		if (!storeBase) return this.#baseFiles;
+		return this.#options.baseFiles ? { ...this.#baseFiles, ...storeBase } : storeBase;
 	}
 
 	#applyIdentityVars(isIdentity: boolean, tokens: CompiledIdentityTokens | null): void {
@@ -602,16 +632,39 @@ export class SurfaceStudioView {
 		const identityTokens = store.companyIdentityTokens();
 		this.#applyIdentityVars(isIdentitySurface, identityTokens);
 		const workspace = store.workspace(surface.id);
-		const ordered = this.#orderedChanges();
+		const ordered = this.#orderedChanges(surface.folderRoot);
 		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
+		const updatingPhase = store.surfaceUpdatePhase(surface.id);
+		const updating = updatingPhase !== null;
+		const initialLoading =
+			this.#loading || (!state.cloudSurfaceFiles[surface.id] && store.isCloudFilesLoading(surface.id));
+		this.el.classList.toggle("is-updating", updating);
+		this.el.setAttribute("aria-busy", String(updating));
+		if (updating) {
+			if (this.#settleTimer) {
+				clearTimeout(this.#settleTimer);
+				this.#settleTimer = undefined;
+			}
+			this.el.classList.remove("is-settled");
+		} else if (this.#wasUpdating) {
+			this.el.classList.add("is-settled");
+			if (this.#settleTimer) clearTimeout(this.#settleTimer);
+			this.#settleTimer = setTimeout(() => {
+				this.#settleTimer = undefined;
+				this.el.classList.remove("is-settled");
+			}, 600);
+		}
+		this.#wasUpdating = updating;
 		const activeOtherSurfaces = state.surfaces.filter((item) => item.status === "active" && item.id !== surface.id);
 		const downstreamSurfaces = activeOtherSurfaces.filter((item) => item.group === "products");
 		const deps: readonly unknown[] = [
-			this.#loading,
+			initialLoading,
+			updatingPhase,
 			state.mode,
 			this.#tab,
 			this.#baseFiles,
 			state.cloudSurfaceFiles[surface.id],
+			state.pendingStudioPatches[surface.id],
 			state.localStudioBase[surface.id],
 			surface,
 			lookKind,
@@ -747,6 +800,19 @@ export class SurfaceStudioView {
 					surface.folderRoot ? h("span", { class: "studio-path" }, surface.folderRoot) : null,
 					h("span", { class: badgeClass }, badgeText),
 				),
+				updatingPhase
+					? h(
+							"span",
+							{
+								class: "studio-updating-pill",
+								role: "status",
+								"aria-live": "polite",
+								"data-updating-phase": updatingPhase,
+							},
+							h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
+							h("span", null, updatingLabel(updatingPhase)),
+						)
+					: null,
 			),
 		];
 
@@ -785,10 +851,10 @@ export class SurfaceStudioView {
 				h(
 					"div",
 					{ class: "studio-empty" },
-					this.#loading
+					initialLoading
 						? [h("span", { class: "surface-state is-running" }), h("p", null, t("Opening studio…"))]
 						: [
-								interfaceEmblem(surfaceEmblem(surface), 42),
+								surfaceTile(surface, this.#options.store.lookOf(surface), "is-hero"),
 								h("h2", null, surface.title),
 								workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
 								h(
@@ -1173,7 +1239,7 @@ export class SurfaceStudioView {
 									"data-act": "studio-open-surface",
 									"data-slug": target.slug,
 								},
-								surfaceTile(target, store.lookOf(target), 12, "is-tiny"),
+								surfaceTile(target, store.lookOf(target), "is-tiny"),
 								h("span", null, target.title),
 							),
 						),
@@ -1220,7 +1286,7 @@ export class SurfaceStudioView {
 										"data-act": "studio-open-surface",
 										"data-slug": target.slug,
 									},
-									surfaceTile(target, store.lookOf(target), 11, "is-tiny"),
+									surfaceTile(target, store.lookOf(target), "is-tiny"),
 									h("span", null, target.title),
 								),
 							),
@@ -1253,7 +1319,7 @@ export class SurfaceStudioView {
 										"data-act": "studio-open-surface",
 										"data-slug": target.slug,
 									},
-									surfaceTile(target, store.lookOf(target), 11, "is-tiny"),
+									surfaceTile(target, store.lookOf(target), "is-tiny"),
 									h("span", null, target.title),
 								),
 							),
@@ -1580,7 +1646,7 @@ export class SurfaceStudioView {
 				h(
 					"div",
 					{ class: "studio-empty" },
-					interfaceEmblem(surfaceEmblem(surface), 42),
+					surfaceTile(surface, store.lookOf(surface), "is-hero"),
 					h("h2", null, surface.title),
 					workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
 					h("p", null, t("No studio files yet. Describe a change below to create tokens, specs, or guidelines.")),

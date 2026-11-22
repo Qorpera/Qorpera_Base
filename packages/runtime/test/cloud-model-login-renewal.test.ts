@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelLoginHelperClient, ModelLoginHelperService } from "@qorpera/runtime/cloud-model-login-helper";
@@ -424,4 +425,65 @@ it("refuses a helper answer that is not a clean renewal result", async () => {
 			await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
 		}
 	}
+});
+
+it("cancels helper work on client disconnect, drains active renewals on close, and bounds half-open sockets", async () => {
+	const directory = await temporary("qlh-close-");
+	const socketPath = join(directory, "helper.sock");
+	const token = randomBytes(32).toString("base64url");
+	let disconnectSignal: AbortSignal | undefined;
+	let drainStarted!: () => void;
+	const inDrain = new Promise<void>((resolve) => {
+		drainStarted = resolve;
+	});
+	let releaseDrain!: () => void;
+	const holdDrain = new Promise<void>((resolve) => {
+		releaseDrain = resolve;
+	});
+	const renew = vi
+		.fn<ModelLoginRenewer["renew"]>()
+		.mockImplementationOnce(
+			async (_authJson, signal) =>
+				await new Promise((_resolve, reject) => {
+					disconnectSignal = signal;
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				}),
+		)
+		.mockImplementationOnce(async () => {
+			drainStarted();
+			await holdDrain;
+			return { outcome: "renewed", authJson: LOGIN };
+		});
+	const service = new ModelLoginHelperService({ socketPath, token, renewer: { renew } });
+	services.push(service);
+	await service.start();
+	const client = new ModelLoginHelperClient({ socketPath, token });
+
+	const callerAbort = new AbortController();
+	const disconnectedCall = client.renew(LOGIN, callerAbort.signal);
+	await vi.waitFor(() => expect(disconnectSignal).toBeDefined());
+	expect(disconnectSignal?.aborted).toBe(false);
+	callerAbort.abort(new Error("caller gone"));
+	await expect(disconnectedCall).rejects.toThrow();
+	await vi.waitFor(() => expect(disconnectSignal?.aborted).toBe(true));
+
+	const drainingCall = client.renew(LOGIN, new AbortController().signal);
+	await inDrain;
+	const closing = service.close(5_000);
+	releaseDrain();
+	expect(await drainingCall).toEqual({ outcome: "renewed", authJson: LOGIN });
+	await closing;
+
+	await service.start();
+	const partialSocket = createConnection(socketPath);
+	await new Promise<void>((resolve, reject) => {
+		partialSocket.once("connect", () => resolve());
+		partialSocket.once("error", reject);
+	});
+	partialSocket.write("POST /v1/renew HTTP/1.1\r\n");
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	const startedAt = Date.now();
+	await service.close(50);
+	expect(Date.now() - startedAt).toBeLessThan(1_000);
+	partialSocket.destroy();
 });
