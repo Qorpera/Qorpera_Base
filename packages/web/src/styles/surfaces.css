@@ -345,10 +345,10 @@
 .surface-bar {
 	position: absolute; z-index: 10; top: 0; left: 0; right: 0;
 	display: flex; align-items: flex-start; justify-content: center;
-	padding: 10px 52px 0 10px; background: transparent; pointer-events: none;
+	padding: 10px 64px 0 10px; background: transparent; pointer-events: none;
 }
 .surface-page.has-drawer .surface-bar { padding: 10px 10px 0 10px; }
-.frame.rail-hidden-desktop .surface-bar { padding-inline: 54px; }
+.frame.rail-hidden-desktop .surface-bar { padding-inline: 54px 64px; }
 .frame.rail-hidden-desktop .surface-page.has-drawer .surface-bar { padding: 10px 10px 0 54px; }
 .surface-bar[hidden] { display: none; }
 .surface-pill {
@@ -790,7 +790,7 @@
 	.surface-drawer { position: absolute; top: 0; right: 0; bottom: 0; box-shadow: -12px 0 36px rgb(18 18 17 / 18%); }
 }
 .surface-drawer-head {
-	display: flex; align-items: center; gap: 10px; min-height: 66px; padding: 14px 56px 12px 14px;
+	display: flex; align-items: center; gap: 10px; min-height: 66px; padding: 14px 70px 12px 14px;
 	border-bottom: 1px solid color-mix(in srgb, var(--text) 7%, transparent);
 }
 .surface-drawer-head.is-overview { padding-left: 16px; }

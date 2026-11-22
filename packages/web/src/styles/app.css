@@ -335,9 +335,8 @@ label > input, label > select { font-weight: 400; }
 .rail-reopen-btn {
 	position: absolute; z-index: 24; top: 10px; left: 14px; width: 34px; height: 34px; border-radius: 10px;
 	border: 0; background: transparent; color: var(--text-muted);
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
 }
-.rail-reopen-btn:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); }
+.rail-reopen-btn:hover { color: var(--text); }
 .rail-reopen-btn svg { width: 18px; height: 18px; }
 .rail-reopen-btn[hidden] { display: none; }
 .frame.rail-hidden-desktop :is(.thread-header, .new-conversation-header) { padding-left: 58px; }
