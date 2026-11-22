@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -316,5 +316,66 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 		assert.equal(syntax.status, 0, syntax.stderr);
 	} finally {
 		await rm(outputRoot, { recursive: true, force: true });
+	}
+});
+
+test("hardens ephemeral-runner run-job signal handling, image build script, installer cleanup/timeouts, and service burst windows", async () => {
+	const runJobPath = join(repositoryRoot, "deploy/ephemeral-runner/image/run-job");
+	const buildScriptPath = join(repositoryRoot, "deploy/ephemeral-runner/build-and-sign-image.sh");
+	const installerPath = join(repositoryRoot, "deploy/lxd-runner-guest/install-image-contract.sh");
+	const [runJob, buildScript, installer] = await Promise.all([
+		readFile(runJobPath, "utf-8"),
+		readFile(buildScriptPath, "utf-8"),
+		readFile(installerPath, "utf-8"),
+	]);
+
+	const syntax = spawnSync("/usr/bin/env", ["sh", "-n", runJobPath, buildScriptPath], { encoding: "utf-8" });
+	assert.equal(syntax.status, 0, syntax.stderr);
+	const bashSyntax = spawnSync("/usr/bin/env", ["bash", "-n", installerPath], { encoding: "utf-8" });
+	assert.equal(bashSyntax.status, 0, bashSyntax.stderr);
+
+	const scratch = await mkdtemp(join(tmpdir(), "qorpera-run-job-signal-"));
+	try {
+		const testScript = join(scratch, "run-job");
+		await writeFile(testScript, runJob.replace("/usr/local/bin/node /qorpera/lib/qorpera-sandbox-probe.mjs", "true"));
+		await chmod(testScript, 0o755);
+		const child = spawn("/bin/sh", [testScript], { stdio: "ignore" });
+		const startedAt = Date.now();
+		await new Promise((r) => setTimeout(r, 150));
+		child.kill("SIGTERM");
+		const code = await new Promise((resolveExit, rejectExit) => {
+			const timer = setTimeout(() => {
+				child.kill("SIGKILL");
+				rejectExit(new Error("run-job did not exit promptly on SIGTERM"));
+			}, 3000);
+			child.once("exit", (exitCode) => {
+				clearTimeout(timer);
+				resolveExit(exitCode);
+			});
+		});
+		assert.equal(code, 143);
+		assert.ok(Date.now() - startedAt < 2500);
+	} finally {
+		await rm(scratch, { recursive: true, force: true });
+	}
+
+	assert.match(buildScript, /work_directory=\$\(mktemp -d/);
+	assert.match(buildScript, /trap 'on_signal TERM' TERM/);
+	assert.match(buildScript, /timeout --kill-after=30/);
+	assert.match(installer, /trap cleanup_temp_dirs EXIT/);
+	assert.match(installer, /apt-get update -o DPkg::Lock::Timeout=60/);
+	assert.match(installer, /apt-get install --yes -o DPkg::Lock::Timeout=60/);
+	assert.match(installer, /signal: AbortSignal\.timeout\(120_000\)/);
+
+	for (const rel of [
+		"deploy/ephemeral-runner/qorpera-ephemeral-runner.service",
+		"deploy/lxd-runner-guest/qorpera-native-company-host.service",
+		"deploy/lxd-runner-guest/qorpera-native-provider-host.service",
+		"deploy/lxd-runner-guest/qorpera-native-login-provider-host.service",
+	]) {
+		const unit = await readFile(join(repositoryRoot, rel), "utf-8");
+		const header = unit.slice(0, unit.indexOf("\n[Service]\n"));
+		assert.match(header, /^StartLimitIntervalSec=120s$/m, `${rel} sets StartLimitIntervalSec=120s`);
+		assert.match(header, /^StartLimitBurst=5$/m, `${rel} sets StartLimitBurst=5`);
 	}
 });

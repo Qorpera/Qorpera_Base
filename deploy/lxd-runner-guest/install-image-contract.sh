@@ -11,6 +11,16 @@ CLAUDE_BOX_GROUP="qorpera-claude-box"
 SUBID_START=200000
 SUBID_COUNT=65536
 SELF_UPDATE_UNITS=(apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service)
+TEMP_DIRS=()
+cleanup_temp_dirs() {
+	local dir
+	for dir in "${TEMP_DIRS[@]}"; do
+		if [[ -n ${dir} && -d ${dir} ]]; then
+			rm -rf -- "${dir}"
+		fi
+	done
+}
+trap cleanup_temp_dirs EXIT
 
 if [[ ${EUID} -ne 0 ]]; then
 	echo "Run this installer as root inside the image-builder VM." >&2
@@ -53,9 +63,9 @@ install -d -o root -g root -m 0755 /etc/systemd/journald.conf.d
 printf '[Journal]\nStorage=persistent\nSystemMaxUse=256M\n' > /etc/systemd/journald.conf.d/qorpera-persistent.conf
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
+apt-get update -o DPkg::Lock::Timeout=60
 # sshfs (with fuse3) mounts an agent's home for the Claude Code box, in the run's own namespace (slice C2).
-apt-get install --yes bubblewrap ca-certificates crun dbus-user-session fuse-overlayfs git nodejs npm podman slirp4netns sshfs uidmap
+apt-get install --yes -o DPkg::Lock::Timeout=60 bubblewrap ca-certificates crun dbus-user-session fuse-overlayfs git nodejs npm podman slirp4netns sshfs uidmap
 
 node_version=$(node --version | sed 's/^v//')
 if ! dpkg --compare-versions "${node_version}" ge 22.19.0; then
@@ -285,6 +295,7 @@ fi
 CLAUDE_DIR=/opt/qorpera-harnesses/native-claude
 install -d -o root -g root -m 0755 "${CLAUDE_DIR}"
 claude_fetch=$(mktemp -d /root/qorpera-native-claude.XXXXXX)
+TEMP_DIRS+=("${claude_fetch}")
 claude_version=$(PACKAGE_ROOT=${PACKAGE_ROOT} FETCH_ROOT=${claude_fetch} node <<'NODE'
 const { createHash } = require("node:crypto");
 const { createWriteStream, lstatSync, readFileSync } = require("node:fs");
@@ -308,7 +319,7 @@ if (pin.schema !== "qorpera.native-claude-artifact/v1" || !current || !minimum |
   throw new Error("Claude Code pin is invalid");
 }
 (async () => {
-  const response = await fetch(pin.source.tarball, { redirect: "error" });
+  const response = await fetch(pin.source.tarball, { redirect: "error", signal: AbortSignal.timeout(120_000) });
   if (!response.ok || !response.body) throw new Error(`Claude Code tarball fetch failed: ${response.status}`);
   const digest = createHash("sha512");
   let bytes = 0;
@@ -474,6 +485,7 @@ if (statSync(binary).size !== pin.bytes || createHash("sha256").update(readFileS
 [[ $(readlink -f /usr/local/bin/claude) == "${CLAUDE_DIR}/claude" ]] || claude_box_refuse "/usr/local/bin/claude"
 [[ ! -e /opt/qorpera-harnesses/node_modules/@anthropic-ai ]] || claude_box_refuse "a second Claude Code in the harness packages"
 claude_home=$(mktemp -d /root/qorpera-claude-version.XXXXXX)
+TEMP_DIRS+=("${claude_home}")
 installed_claude=$(env -i HOME="${claude_home}" CLAUDE_CONFIG_DIR="${claude_home}" DISABLE_AUTOUPDATER=1 PATH=/usr/bin:/bin \
 	"${CLAUDE_DIR}/claude" --version)
 rm -rf -- "${claude_home}"
