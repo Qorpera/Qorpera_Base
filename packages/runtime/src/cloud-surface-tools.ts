@@ -805,7 +805,9 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 			const kind =
 				raw.kind === undefined || raw.kind === null ? "custom" : parseEnumArg(raw.kind, SURFACE_KINDS, "kind");
 			const figure =
-				raw.figure === undefined || raw.figure === null ? null : parseEnumArg(raw.figure, SURFACE_FIGURES, "figure");
+				raw.figure === undefined || raw.figure === null
+					? null
+					: parseEnumArg(raw.figure, SURFACE_FIGURES, "figure");
 			const isGlobal = parseBooleanArg(raw.isGlobal, "isGlobal", false);
 			const activateImmediately = parseBooleanArg(raw.activateImmediately, "activateImmediately", false);
 			const icon = figure ? `figure:${figure}` : "page";

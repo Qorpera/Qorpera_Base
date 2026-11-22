@@ -1,7 +1,7 @@
 import { SURFACE_KINDS, type SurfaceKind, type SurfaceSummary } from "@qorpera/contracts";
 import type { Emblem } from "../ui/interface-emblem.ts";
-import { type SurfaceFigureId, surfaceFigureFromIcon } from "../ui/surface-figure.ts";
 import { phrase, t } from "../ui/preferences.ts";
+import { type SurfaceFigureId, surfaceFigureFromIcon } from "../ui/surface-figure.ts";
 
 export { SURFACE_KINDS, type SurfaceKind };
 
@@ -18,7 +18,12 @@ interface KindSpec {
 }
 
 const KIND_SPECS: Readonly<Record<SurfaceKind, KindSpec>> = {
-	identity: { emblem: "spark", figure: "seal", tint: "#d76f45", subtitle: phrase("Brand, voice, design & philosophy") },
+	identity: {
+		emblem: "spark",
+		figure: "seal",
+		tint: "#d76f45",
+		subtitle: phrase("Brand, voice, design & philosophy"),
+	},
 	website: { emblem: "globe", figure: "browser", tint: "#2a9ae0", subtitle: phrase("Marketing site") },
 	web_app: { emblem: "spark", figure: "pointer", tint: "#5a5fe0", subtitle: phrase("Interactive web app") },
 	mobile_app: { emblem: "phone", figure: "phone", tint: "#8b5cf6", subtitle: phrase("iOS & Android app") },

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { readdirSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SURFACE_KINDS, surfaceFigureOf, surfaceKindFigure } from "../src/app/surface-kinds.ts";
@@ -127,11 +128,13 @@ describe("a surface's figure in the rail", () => {
 		expect(keyboard.defaultPrevented).toBe(true);
 		expect(menu()).not.toBeNull();
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-		document.body.querySelectorAll(".context-menu").forEach((node) => node.remove());
+		for (const node of document.body.querySelectorAll(".context-menu")) node.remove();
 
 		vi.useFakeTimers();
 		try {
-			row.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch", clientX: 40, clientY: 40 }));
+			row.dispatchEvent(
+				new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch", clientX: 40, clientY: 40 }),
+			);
 			vi.advanceTimersByTime(600);
 		} finally {
 			vi.useRealTimers();
