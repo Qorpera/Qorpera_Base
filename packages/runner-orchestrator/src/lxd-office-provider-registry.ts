@@ -108,6 +108,10 @@ const ALLOWED: Record<OfficeProviderHttpMethod, true> = {
 const METHODS = new Set(Object.keys(ALLOWED) as OfficeProviderHttpMethod[]);
 const LIMIT = 65536;
 
+function isTransientRpcStatus(status: number | undefined): boolean {
+	return status === 408 || status === 429 || (typeof status === "number" && status >= 500 && status <= 599);
+}
+
 /** Node 22's web Response/Headers load Undici's WASM parser even when fetch
  * is unused. Keep the production transport entirely on native HTTPS so the
  * service can retain --jitless and its memory execution protections. */
@@ -127,19 +131,22 @@ function nativeRpc(
 		const finish = (action: () => void) => {
 			if (settled) return;
 			settled = true;
-			signal.removeEventListener("abort", fail);
+			signal.removeEventListener("abort", onAbort);
 			onSettled?.();
 			action();
 		};
-		const fail = () => {
+		const fail = (
+			code: "OFFICE_PROVIDER_RPC_UNCONFIRMED" | "OFFICE_PROVIDER_RPC_REJECTED" = "OFFICE_PROVIDER_RPC_UNCONFIRMED",
+		) => {
 			finish(() => {
 				activeResponse?.destroy();
 				request?.destroy();
-				reject(new Error("unconfirmed"));
+				reject(new Error(code));
 			});
 		};
+		const onAbort = () => fail("OFFICE_PROVIDER_RPC_UNCONFIRMED");
 		// WHY: Settle on signal abort and premature response/request close so this.#pending can never wedge permanently true.
-		signal.addEventListener("abort", fail, { once: true });
+		signal.addEventListener("abort", onAbort, { once: true });
 		request = httpsRequest(
 			url,
 			{
@@ -156,18 +163,26 @@ function nativeRpc(
 			(response) => {
 				gotResponse = true;
 				activeResponse = response;
-				response.once("error", fail);
-				response.once("aborted", fail);
+				response.once("error", () => fail());
+				response.once("aborted", () => fail());
 				response.once("close", () => {
 					if (!settled) fail();
 				});
 				const length = response.headers["content-length"];
+				if (response.statusCode !== 200) {
+					// WHY: Distinguish definitive non-transient server rejections from transport/5xx uncertainty so fleet custody errors still fail fast.
+					fail(
+						isTransientRpcStatus(response.statusCode)
+							? "OFFICE_PROVIDER_RPC_UNCONFIRMED"
+							: "OFFICE_PROVIDER_RPC_REJECTED",
+					);
+					return;
+				}
 				if (
-					response.statusCode !== 200 ||
 					!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(response.headers["content-type"] ?? "") ||
 					(length !== undefined && (!/^(0|[1-9][0-9]*)$/.test(length) || Number(length) > LIMIT))
 				) {
-					fail();
+					fail("OFFICE_PROVIDER_RPC_REJECTED");
 					return;
 				}
 				const chunks: Buffer[] = [];
@@ -176,26 +191,28 @@ function nativeRpc(
 					if (settled) return;
 					size += chunk.length;
 					if (size > LIMIT) {
-						fail();
+						fail("OFFICE_PROVIDER_RPC_REJECTED");
 						return;
 					}
 					chunks.push(chunk);
 				});
 				response.once("end", () => {
+					if (signal.aborted || !response.complete || (length !== undefined && Number(length) !== size)) {
+						fail("OFFICE_PROVIDER_RPC_UNCONFIRMED");
+						return;
+					}
 					try {
-						signal.throwIfAborted();
-						if (!response.complete || (length !== undefined && Number(length) !== size)) throw new Error();
 						const parsed: unknown = JSON.parse(
 							new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks)),
 						);
 						finish(() => resolve(parsed));
 					} catch {
-						fail();
+						fail("OFFICE_PROVIDER_RPC_REJECTED");
 					}
 				});
 			},
 		);
-		request.once("error", fail);
+		request.once("error", () => fail());
 		request.once("close", () => {
 			if (!settled && !gotResponse) fail();
 		});
@@ -297,14 +314,20 @@ export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry
 			try {
 				signal.throwIfAborted();
 				const length = response.headers.get("content-length");
+				if (response.redirected) throw new Error("OFFICE_PROVIDER_RPC_REJECTED");
+				if (response.status !== 200) {
+					throw new Error(
+						isTransientRpcStatus(response.status)
+							? "OFFICE_PROVIDER_RPC_UNCONFIRMED"
+							: "OFFICE_PROVIDER_RPC_REJECTED",
+					);
+				}
 				if (
-					response.status !== 200 ||
-					response.redirected ||
 					!reader ||
 					!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(response.headers.get("content-type") ?? "") ||
 					(length !== null && (!/^(0|[1-9][0-9]*)$/.test(length) || Number(length) > LIMIT))
 				)
-					throw new Error();
+					throw new Error("OFFICE_PROVIDER_RPC_REJECTED");
 				const chunks: Uint8Array[] = [];
 				let size = 0;
 				for (;;) {
@@ -312,18 +335,23 @@ export class LxdOfficeProviderHttpRegistry implements LxdOfficeLifecycleRegistry
 					signal.throwIfAborted();
 					if (done) break;
 					size += value.byteLength;
-					if (size > LIMIT) throw new Error();
+					if (size > LIMIT) throw new Error("OFFICE_PROVIDER_RPC_REJECTED");
 					chunks.push(value);
 				}
-				if (length !== null && Number(length) !== size) throw new Error();
-				return JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks)));
+				if (length !== null && Number(length) !== size) throw new Error("OFFICE_PROVIDER_RPC_UNCONFIRMED");
+				try {
+					return JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks)));
+				} catch {
+					throw new Error("OFFICE_PROVIDER_RPC_REJECTED");
+				}
 			} finally {
 				signal.removeEventListener("abort", cancelReader);
 				await reader?.cancel().catch(() => {});
 				reader?.releaseLock();
 			}
 		})()
-			.catch(() => {
+			.catch((error) => {
+				if (error instanceof Error && error.message === "OFFICE_PROVIDER_RPC_REJECTED") throw error;
 				throw new Error("OFFICE_PROVIDER_RPC_UNCONFIRMED");
 			})
 			.finally(cleanup);

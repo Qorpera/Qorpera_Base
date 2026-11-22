@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server } from "node:http";
 import type { Socket } from "node:net";
@@ -1592,15 +1593,49 @@ describe("LXD exec stream", () => {
 		expect(waitedPath).toContain("/wait?timeout=2");
 	});
 
-	it("lists instances scoped to a single project and rejects invalid or mismatched project records", async () => {
+	it("lists instances scoped to a single project and rejects missing project, foreign location, or invalid status", async () => {
 		const root = await mkdtemp(join(tmpdir(), "qorpera-lxd-proj-"));
 		roots.push(root);
 		const socket = join(root, "lxd.socket");
+		const certificate = readFileSync(
+			new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
+			"utf8",
+		);
+		const certificateSha = new X509Certificate(certificate).fingerprint256.replaceAll(":", "").toLowerCase();
+		const serverPayload = {
+			type: "sync",
+			status_code: 200,
+			metadata: {
+				auth: "trusted",
+				auth_user_method: "unix",
+				api_version: "1.0",
+				api_status: "stable",
+				public: false,
+				api_extensions: [],
+				environment: {
+					server: "lxd",
+					kernel: "Linux",
+					server_clustered: false,
+					project: "default",
+					driver: "lxc | qemu",
+					instance_types: ["container", "virtual-machine"],
+					certificate,
+					certificate_fingerprint: certificateSha,
+					server_name: "fixture-node",
+					server_version: "6.9",
+					kernel_architecture: "x86_64",
+				},
+			},
+		};
 		const seenUrls: string[] = [];
 		let responseBody: unknown = {};
 		const server = createServer((req, res) => {
 			seenUrls.push(req.url ?? "");
 			res.writeHead(200, { "content-type": "application/json" });
+			if (req.url === "/1.0?project=default") {
+				res.end(JSON.stringify(serverPayload));
+				return;
+			}
 			res.end(JSON.stringify(responseBody));
 		});
 		servers.push(server);
@@ -1614,52 +1649,42 @@ describe("LXD exec stream", () => {
 		);
 		expect(seenUrls).toEqual([]);
 
-		responseBody = {
-			type: "sync",
-			status_code: 200,
-			metadata: [
-				{
-					name: "qorpera-office-1",
-					project: "qprod01",
-					location: "none",
-					type: "virtual-machine",
-					status: "Running",
-					status_code: 103,
-					profiles: [],
-					config: { "user.qorpera.office_id": "id-1" },
-					devices: {},
-					expanded_config: {},
-					expanded_devices: {},
-				},
-			],
+		const validInstance = {
+			name: "qorpera-office-1",
+			project: "qprod01",
+			location: "fixture-node",
+			type: "virtual-machine",
+			status: "Running",
+			status_code: 103,
+			profiles: [],
+			config: { "user.qorpera.office_id": "id-1" },
+			devices: {},
+			expanded_config: {},
+			expanded_devices: {},
 		};
+		responseBody = { type: "sync", status_code: 200, metadata: [validInstance] };
 		const items = await client.listProjectInstances("qprod01", new AbortController().signal);
-		expect(seenUrls).toEqual(["/1.0/instances?project=qprod01&recursion=1"]);
+		expect(seenUrls).toEqual(["/1.0?project=default", "/1.0/instances?project=qprod01&recursion=1"]);
 		expect(items).toHaveLength(1);
 		expect(items[0]?.name).toBe("qorpera-office-1");
 		expect(items[0]?.project).toBe("qprod01");
+		expect(items[0]?.location).toBe("fixture-node");
 
-		responseBody = {
-			type: "sync",
-			status_code: 200,
-			metadata: [
-				{
-					name: "qorpera-office-1",
-					project: "other-proj",
-					location: "none",
-					type: "virtual-machine",
-					status: "Running",
-					status_code: 103,
-					profiles: [],
-					config: {},
-					devices: {},
-					expanded_config: {},
-					expanded_devices: {},
-				},
-			],
-		};
-		await expect(client.listProjectInstances("qprod01", new AbortController().signal)).rejects.toThrow(
-			"LXD_PROJECT_INSTANCES_UNCONFIRMED",
-		);
+		const invalidRecords: Array<Record<string, unknown>> = [
+			{ ...validInstance, project: "other-proj" },
+			(() => {
+				const { project: _omitted, ...rest } = validInstance;
+				return rest;
+			})(),
+			{ ...validInstance, location: "other-node" },
+			{ ...validInstance, status_code: 99 },
+			{ ...validInstance, status: "" },
+		];
+		for (const bad of invalidRecords) {
+			responseBody = { type: "sync", status_code: 200, metadata: [bad] };
+			await expect(client.listProjectInstances("qprod01", new AbortController().signal)).rejects.toThrow(
+				"LXD_PROJECT_INSTANCES_UNCONFIRMED",
+			);
+		}
 	});
 });

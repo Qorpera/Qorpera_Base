@@ -53,6 +53,16 @@ it("uses the real provider HTTP adapter over trusted loopback TLS, with bounded 
 						response.flushHeaders();
 						return;
 					}
+					if (mode === "denied") {
+						response.writeHead(403, { "content-type": "application/json" });
+						response.end('{"message":"Office fleet authority required"}');
+						return;
+					}
+					if (mode === "transient_503") {
+						response.writeHead(503, { "content-type": "application/json" });
+						response.end('{"message":"unavailable"}');
+						return;
+					}
 					response.writeHead(200, { "content-type": "application/json" });
 					if (mode === "premature_close") {
 						response.write('{"partial":');
@@ -90,7 +100,7 @@ it("uses the real provider HTTP adapter over trusted loopback TLS, with bounded 
 			main,
 			`import { LxdOfficeProviderHttpRegistry } from "./registry.mjs";
 const out = [];
-for (const mode of ["success", "redirect", "cancel", "limit", "timeout"]) {
+for (const mode of ["success", "redirect", "denied", "transient_503", "cancel", "limit", "timeout"]) {
  const registry = new LxdOfficeProviderHttpRegistry(${JSON.stringify(`https://127.0.0.1:${address.port}`)}, "synthetic-provider-token-".repeat(3));
  const controller = new AbortController();
  const timer = mode === "cancel" ? setTimeout(() => controller.abort(), 150) : null;
@@ -131,10 +141,15 @@ process.stdout.write(JSON.stringify(out));
 		expect(failure).toBeUndefined();
 		const results = JSON.parse(result.stdout);
 		expect(results[0]).toEqual({ mode: "success", value: { ok: true } });
-		for (const entry of results.slice(1, 5)) expect(entry.error).toBe("OFFICE_PROVIDER_RPC_UNCONFIRMED");
-		expect(results[4].elapsed).toBeGreaterThanOrEqual(4900);
-		expect(results[4].elapsed).toBeLessThan(7000);
-		expect(results.slice(5)).toEqual([
+		expect(results[1].error).toBe("OFFICE_PROVIDER_RPC_REJECTED");
+		expect(results[2].error).toBe("OFFICE_PROVIDER_RPC_REJECTED");
+		expect(results[3].error).toBe("OFFICE_PROVIDER_RPC_UNCONFIRMED");
+		expect(results[4].error).toBe("OFFICE_PROVIDER_RPC_UNCONFIRMED");
+		expect(results[5].error).toBe("OFFICE_PROVIDER_RPC_REJECTED");
+		expect(results[6].error).toBe("OFFICE_PROVIDER_RPC_UNCONFIRMED");
+		expect(results[6].elapsed).toBeGreaterThanOrEqual(4900);
+		expect(results[6].elapsed).toBeLessThan(7000);
+		expect(results.slice(7)).toEqual([
 			{ mode: "shared:premature_close", error: "OFFICE_PROVIDER_RPC_UNCONFIRMED" },
 			{ mode: "shared:cancel", error: "OFFICE_PROVIDER_RPC_UNCONFIRMED" },
 			{ mode: "shared:success", value: { ok: true } },
@@ -142,6 +157,8 @@ process.stdout.write(JSON.stringify(out));
 		expect(seen).toEqual([
 			"success",
 			"redirect",
+			"denied",
+			"transient_503",
 			"cancel",
 			"limit",
 			"timeout",

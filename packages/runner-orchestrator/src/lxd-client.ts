@@ -1786,9 +1786,10 @@ export class LxdUnixClient
 		const namePattern = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
 		if (!namePattern.test(project)) throw new Error("LXD_PROJECT_INSTANCES_UNCONFIRMED");
 		try {
-			// WHY: Scope office passthrough instance lookups to one project instead of dumping all-projects inventory on every refresh.
+			// WHY: Scope office passthrough instance lookups to one project while retaining standalone server, location, and status validation.
 			return await withTimeoutScope(signal, 5000, async (checked) => {
 				checked.throwIfAborted();
+				const server = await this.inspectOfficeServer("default", checked, false);
 				const result = await this.#requestPayload(
 					"GET",
 					`/1.0/instances?project=${encodeURIComponent(project)}&recursion=1`,
@@ -1810,14 +1811,25 @@ export class LxdUnixClient
 				const items = envelope.metadata.map((value) => {
 					const raw = record(value, "project instance");
 					const parsed = instance(raw);
-					const itemProject = typeof raw.project === "string" ? raw.project : project;
-					if (itemProject !== project || !namePattern.test(parsed.name) || seen.has(parsed.name))
+					if (
+						typeof raw.project !== "string" ||
+						raw.project !== project ||
+						!namePattern.test(parsed.name) ||
+						seen.has(parsed.name) ||
+						typeof raw.location !== "string" ||
+						!["", "none", server.serverName].includes(raw.location) ||
+						!Number.isSafeInteger(parsed.statusCode) ||
+						parsed.statusCode < 100 ||
+						parsed.statusCode > 599 ||
+						!parsed.status ||
+						parsed.status.length > 64
+					)
 						throw new Error("invalid project instance");
 					seen.add(parsed.name);
 					return {
 						...parsed,
-						project: itemProject,
-						location: typeof raw.location === "string" ? raw.location : "",
+						project: raw.project,
+						location: raw.location,
 					};
 				});
 				checked.throwIfAborted();

@@ -12,6 +12,7 @@ import {
 } from "../src/lxd-office-fleet.ts";
 import { renderOfficeFleetUnits, writeOfficeFleetArtifactImmutable } from "../src/lxd-office-fleet-installation.ts";
 import { parseOfficeFleetServiceConfig, runOfficeFleetPollLoop } from "../src/lxd-office-fleet-service.ts";
+import { LxdOfficeProviderHttpRegistry } from "../src/lxd-office-provider-registry.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
 
 const nodeId = "77777777-7777-4777-8777-777777777777";
@@ -177,8 +178,9 @@ describe("office fleet service installation", () => {
 		expect(() => parseOfficeFleetServiceConfig({ ...raw, nodeId: "node-2" })).toThrow();
 	});
 
-	it("retries transient RPC errors in runOfficeFleetPollLoop with capped backoff while rethrowing fatal errors and stageOnly failures", async () => {
+	it("retries transient RPC errors in runOfficeFleetPollLoop with capped backoff while rethrowing fatal errors, HTTP 403 rejections, and stageOnly failures", async () => {
 		const waits: number[] = [];
+		const logged: Array<{ code: string; attempt: number; waitMs: number }> = [];
 		let attempts = 0;
 		let selected = 0;
 		await runOfficeFleetPollLoop({
@@ -193,12 +195,44 @@ describe("office fleet service installation", () => {
 			onSelected: async () => {
 				selected += 1;
 			},
+			onTransientFailure: (error, attempt, waitMs) => {
+				logged.push({ code: error.message, attempt, waitMs });
+			},
 			sleep: async (ms) => {
 				waits.push(ms);
 			},
 		});
 		expect(selected).toBe(1);
-		expect(waits).toEqual([1000, 2000, 4000, 8000, 16000, 16000]);
+		expect(waits).toEqual([1000, 2000, 4000, 8000, 16000, 30000]);
+		expect(logged).toHaveLength(6);
+		expect(logged[5]).toEqual({ code: "OFFICE_PROVIDER_RPC_UNCONFIRMED", attempt: 6, waitMs: 30000 });
+
+		const httpStatuses = [503, 403];
+		const registry = new LxdOfficeProviderHttpRegistry(
+			"https://control.example",
+			"k".repeat(40),
+			vi.fn(async () => new Response('{"message":"denied"}', { status: httpStatuses.shift() ?? 403 })),
+		);
+		const httpWaits: number[] = [];
+		let httpAttempts = 0;
+		await expect(
+			runOfficeFleetPollLoop({
+				pollIntervalMs: 1000,
+				stageOnly: false,
+				signal: new AbortController().signal,
+				reconcile: async (scoped) => {
+					httpAttempts += 1;
+					await registry.call("qorpera_runtime_office_fleet_status", {}, scoped);
+					return "waiting";
+				},
+				onSelected: async () => {},
+				sleep: async (ms) => {
+					httpWaits.push(ms);
+				},
+			}),
+		).rejects.toThrow("OFFICE_PROVIDER_RPC_REJECTED");
+		expect(httpAttempts).toBe(2);
+		expect(httpWaits).toEqual([1000]);
 
 		await expect(
 			runOfficeFleetPollLoop({

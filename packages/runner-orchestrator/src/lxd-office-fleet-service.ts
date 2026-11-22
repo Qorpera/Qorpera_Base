@@ -45,6 +45,7 @@ export async function runOfficeFleetPollLoop(options: {
 	signal: AbortSignal;
 	reconcile: (scoped: AbortSignal) => Promise<Awaited<ReturnType<typeof reconcileOfficeFleet>>>;
 	onSelected: () => Promise<void>;
+	onTransientFailure?: (error: Error, attempt: number, waitMs: number) => void;
 	sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }): Promise<void> {
 	const sleep =
@@ -61,10 +62,11 @@ export async function runOfficeFleetPollLoop(options: {
 			consecutiveErrors = 0;
 		} catch (error) {
 			if (options.signal.aborted) return;
-			// WHY: Retry transient registry RPC failures with capped backoff so brief outages do not trip systemd StartLimitBurst=3.
+			// WHY: Retry only transport/5xx uncertainty with capped backoff so brief outages do not trip systemd StartLimitBurst=3 while custody rejections still fail fast.
 			if (options.stageOnly || !isTransientOfficeFleetError(error)) throw error;
 			consecutiveErrors += 1;
-			const waitMs = Math.min(maxBackoffMs, options.pollIntervalMs * 2 ** Math.min(consecutiveErrors - 1, 4));
+			const waitMs = Math.min(maxBackoffMs, options.pollIntervalMs * 2 ** Math.min(consecutiveErrors - 1, 20));
+			options.onTransientFailure?.(error as Error, consecutiveErrors, waitMs);
 			await sleep(waitMs, options.signal);
 			continue;
 		}
@@ -174,6 +176,10 @@ export async function runOfficeFleetService(configPath: string, signal: AbortSig
 			)
 				throw new Error("OFFICE_FLEET_SERVICE_CHANGED");
 			if (!stageOnly) await runLxdOfficeLifecycleService(config.servicePath, signal);
+		},
+		onTransientFailure: (error, attempt, waitMs) => {
+			// WHY: Emit a redacted retry line so sustained registry outages remain observable in systemd journald.
+			process.stderr.write(`OFFICE_FLEET_RETRY ${error.message} attempt=${attempt} waitMs=${waitMs}\n`);
 		},
 	});
 }
