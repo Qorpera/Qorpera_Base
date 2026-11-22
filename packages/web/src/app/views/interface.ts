@@ -26,6 +26,11 @@ import { renderMembers } from "./members.ts";
  * page, so a redraw is skipped only while that element is still the one on screen. */
 const shownIn = new WeakMap<HTMLElement, { key: string; element: Element }>();
 
+export function shownKey(container: HTMLElement, key: string): void {
+	const shown = shownIn.get(container);
+	if (shown && container.firstElementChild === shown.element) shown.key = key;
+}
+
 /** A block's title (`blockFrame`). It takes the focus from a control that went when the page has none left (`show`),
  * so it can be focused, though not tabbed to. */
 const BLOCK_TITLE = ".interface-block > h2";

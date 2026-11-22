@@ -175,6 +175,11 @@ function sameCursor(a: MailMessageCursor | undefined, b: MailMessageCursor): boo
 	return a?.at === b.at && a.kind === b.kind && a.id === b.id;
 }
 
+function sameMailCursor(a: MailCursor | undefined, b: MailCursor | null | undefined): boolean {
+	if (!a && !b) return true;
+	return a !== undefined && b != null && a.lastAt === b.lastAt && a.thread === b.thread;
+}
+
 /** Whether the call reports the thread is not the company's, or not a thread at all. */
 function threadGone(error: unknown): boolean {
 	return error instanceof CloudRpcError && error.code === "22023";
@@ -195,6 +200,8 @@ export class CompanyMail {
 	#state: MailState | undefined;
 	/** The version of the letters index last read: it is read again only when it changed. */
 	#indexVersion: string | undefined;
+	#indexReads = 0;
+	#indexApplied = 0;
 	#disposed = false;
 	#companyTimer: ReturnType<typeof setInterval> | undefined;
 	#pageTimer: ReturnType<typeof setInterval> | undefined;
@@ -305,7 +312,11 @@ export class CompanyMail {
 
 	#set(change: (state: MailState) => MailState): void {
 		if (this.#closed) return;
-		this.#state = change(this.#state ?? EMPTY);
+		const had = this.#state !== undefined;
+		const prev = this.#state ?? EMPTY;
+		const next = change(prev);
+		if (had && next === prev) return;
+		this.#state = next;
 		this.#publish(this.#state);
 	}
 
@@ -320,41 +331,60 @@ export class CompanyMail {
 		}
 	}
 
+	async #fetchAddresses(afterChange = false): Promise<{ read: number; addresses: MailAddress[] } | null> {
+		const read = ++this.#addressReads;
+		if (afterChange) this.#addressesSince = read;
+		try {
+			return { read, addresses: await readMailAddresses(this.#cloud, this.#environmentId) };
+		} catch (error) {
+			// A cloud without the member mail read has no mail to show; another failure keeps what was read.
+			if (!(error instanceof CloudRpcError && (error.missing || error.denied))) return null;
+			return { read, addresses: [] };
+		}
+	}
+
 	/** Reads the addresses, and says whether they were read. Reads may answer out of turn: one begun before another
 	 * whose answer is already in says nothing newer, and is let go. So is one begun before a read asked for after a
 	 * change (`afterChange`), from the moment that read begins: what it says is from before the change. */
 	async #readAddresses(afterChange = false): Promise<boolean> {
-		const read = ++this.#addressReads;
-		if (afterChange) this.#addressesSince = read;
-		const take = (addresses: MailAddress[]) => {
-			if (read < this.#addressesSince) return;
-			this.#addressesSince = read;
-			this.#set((state) => ({ ...state, addresses }));
-		};
-		try {
-			take(await readMailAddresses(this.#cloud, this.#environmentId));
-			return true;
-		} catch (error) {
-			// A cloud without the member mail read has no mail to show; another failure keeps what was read.
-			if (!(error instanceof CloudRpcError && (error.missing || error.denied))) return false;
-			take([]);
-			return true;
-		}
+		const result = await this.#fetchAddresses(afterChange);
+		if (!result) return false;
+		if (result.read < this.#addressesSince) return true;
+		this.#addressesSince = result.read;
+		this.#set((state) => ({ ...state, addresses: result.addresses }));
+		return true;
 	}
 
 	async #refreshCompany(): Promise<void> {
 		await Promise.all([
-			this.#once("addresses", async () => {
-				await this.#readAddresses();
-			}),
-			this.#once("waiting", async () => {
-				try {
-					const waiting = await readMailWaiting(this.#cloud, this.#environmentId);
-					this.#set((state) => ({ ...state, waiting }));
-				} catch {
-					// The badge keeps its last count.
-				}
-			}),
+			(async () => {
+				let addressesResult: { read: number; addresses: MailAddress[] } | null = null;
+				let waitingResult: MailWaitingItem[] | undefined;
+				await Promise.all([
+					this.#once("addresses", async () => {
+						addressesResult = await this.#fetchAddresses();
+					}),
+					this.#once("waiting", async () => {
+						try {
+							waitingResult = await readMailWaiting(this.#cloud, this.#environmentId);
+						} catch {
+							// The badge keeps its last count.
+						}
+					}),
+				]);
+				if (addressesResult === null && waitingResult === undefined) return;
+				this.#set((state) => {
+					let next = state;
+					if (addressesResult !== null && addressesResult.read >= this.#addressesSince) {
+						this.#addressesSince = addressesResult.read;
+						next = { ...next, addresses: addressesResult.addresses };
+					}
+					if (waitingResult !== undefined && JSON.stringify(next.waiting) !== JSON.stringify(waitingResult)) {
+						next = { ...next, waiting: waitingResult };
+					}
+					return next;
+				});
+			})(),
 			this.#readDigitalPost(),
 		]);
 	}
@@ -369,27 +399,41 @@ export class CompanyMail {
 				// A cloud without the call has no Digital Post; another failure keeps what was read.
 				return;
 			}
-			this.#set((state) => ({ ...state, digitalPost: { ...digitalPostOf(state), connection } }));
-			if (connection.connected || connection.letters > 0) await this.#readIndex();
+			this.#set((state) => {
+				const current = digitalPostOf(state);
+				if (JSON.stringify(current.connection) === JSON.stringify(connection)) return state;
+				return { ...state, digitalPost: { ...current, connection } };
+			});
+			if (connection.connected || connection.letters > 0)
+				await this.#once("digital-post-index", () => this.#readIndex());
 		});
 	}
 
 	/** The letters the folder's index lists, read again only when its version changed. */
 	async #readIndex(): Promise<void> {
 		if (!this.#folder || this.#closed) return;
+		const seq = ++this.#indexReads;
 		try {
 			await this.#withFolderDeadline(async (signal) => {
 				const folder = this.#folder!(signal);
 				const read = await folder.read(DIGITAL_POST_INDEX_PATH, signal);
 				const file = read.entry?.kind === "file" ? read.entry.file : null;
 				if (!read.entry || !file || file.bytes > DIGITAL_POST_INDEX_MAX_BYTES) {
+					if (seq < this.#indexApplied) return;
+					this.#indexApplied = seq;
 					this.#indexVersion = undefined;
-					this.#set((state) => ({ ...state, digitalPost: { ...digitalPostOf(state), letters: [] } }));
+					this.#set((state) => {
+						const current = digitalPostOf(state);
+						if (current.letters.length === 0) return state;
+						return { ...state, digitalPost: { ...current, letters: [] } };
+					});
 					return;
 				}
 				if (read.entry.version === this.#indexVersion) return;
 				const bytes = await folder.readFile(file, signal, DIGITAL_POST_INDEX_MAX_BYTES);
 				const letters = parseDigitalPostLetters(new TextDecoder().decode(bytes));
+				if (seq < this.#indexApplied) return;
+				this.#indexApplied = seq;
 				this.#indexVersion = read.entry.version;
 				this.#set((state) => ({ ...state, digitalPost: { ...digitalPostOf(state), letters } }));
 			});
@@ -552,13 +596,22 @@ export class CompanyMail {
 						seen.add(item.thread);
 						threads.push(opened.has(item.thread) ? { ...item, unread: false } : item);
 					}
+					const older = was?.older === "loading" ? "loading" : "idle";
+					if (
+						was?.status === "ready" &&
+						was.pages === pages &&
+						sameMailCursor(was.next, next) &&
+						was.older === older &&
+						JSON.stringify(was.threads) === JSON.stringify(threads)
+					)
+						return state;
 					const list: MailList = {
 						request,
 						threads,
 						...(next ? { next } : {}),
 						pages,
 						status: "ready",
-						older: was?.older === "loading" ? "loading" : "idle",
+						older,
 					};
 					return { ...state, lists: { ...state.lists, [key]: list } };
 				});
