@@ -793,8 +793,8 @@ describe("member-web abort-scope, storage, downloads, and office lifecycle", () 
 					});
 				}
 				if (method === "qorpera_runtime_office_privacy_status") {
-					const body = JSON.parse(String(init?.body ?? "{}")) as { p_company_computer_id?: string };
-					selectedComputer = body.p_company_computer_id ?? selectedComputer;
+					const body = JSON.parse(String(init?.body ?? "{}")) as { p_scope?: { companyComputerId?: string } };
+					selectedComputer = body.p_scope?.companyComputerId ?? selectedComputer;
 					return Response.json({
 						scope: selectedComputer === scopeFixture2.companyComputerId ? scopeFixture2 : scopeFixture,
 						computerGeneration: 1,
@@ -804,8 +804,8 @@ describe("member-web abort-scope, storage, downloads, and office lifecycle", () 
 					});
 				}
 				if (method === "qorpera_member_browser_profiles") {
-					const body = JSON.parse(String(init?.body ?? "{}")) as { p_company_computer_id?: string };
-					const isSecond = body.p_company_computer_id === scopeFixture2.companyComputerId;
+					const body = JSON.parse(String(init?.body ?? "{}")) as { p_scope?: { companyComputerId?: string } };
+					const isSecond = body.p_scope?.companyComputerId === scopeFixture2.companyComputerId;
 					return Response.json({
 						scope: isSecond ? scopeFixture2 : scopeFixture,
 						memberId: id(1),
@@ -889,6 +889,7 @@ describe("member-web abort-scope, storage, downloads, and office lifecycle", () 
 		expect(detailsSection.findAll((node) => node.textContent === "Office One Profile")).toHaveLength(1);
 		computerBtns[1].click();
 		await lastWork;
+		expect(grantCalls).toBe(2);
 		expect(detailsSection.children).toHaveLength(0);
 		disposeRecovery();
 
