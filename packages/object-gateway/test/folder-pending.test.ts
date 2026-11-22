@@ -27,6 +27,7 @@ import {
 import { ProtocolError } from "../src/folder-service/protocol.ts";
 import { CARRIES, UNCHECKED } from "../src/folder-service/secret-scan.ts";
 import { ViewTree } from "../src/folder-service/view-tree.ts";
+import { CreditTags } from "../src/folder-service/windows.ts";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 let versions = 0;
@@ -1679,5 +1680,78 @@ describe("a view's links (protocol 4)", () => {
 		const rootGitBatches = planCommitBatches(rootGitUnits);
 		expect(rootGitBatches.map((b) => b.length)).toEqual([999, 2]);
 		expect(rootGitBatches[1]?.map((u) => u.paths[0]).sort()).toEqual([".git/HEAD", ".git/index"]);
+	});
+
+	it("removes deep and wide ViewTree subtrees iteratively and plans large folder deletes without spreading", () => {
+		const tree = new ViewTree();
+		const ts = "2026-10-01T00:00:00Z";
+		let dir = "deep";
+		tree.put({ path: dir, kind: "folder", version: version(), bytes: 0, executable: false, updatedAt: ts });
+		for (let i = 0; i < 400; i++) {
+			dir = `${dir}/d${i}`;
+			tree.put({ path: dir, kind: "folder", version: version(), bytes: 0, executable: false, updatedAt: ts });
+		}
+		const leafPath = `${dir}/leaf.txt`;
+		const leafVer = version();
+		tree.put({
+			path: leafPath,
+			kind: "file",
+			version: leafVer,
+			bytes: 4,
+			executable: false,
+			updatedAt: ts,
+			manifestSha256: hash("m:leaf"),
+			fileSha256: hash("f:leaf"),
+		});
+		const replaced: string[] = [];
+		const removed = tree.remove("deep", (old) => replaced.push(old.path));
+		expect(removed).toHaveLength(402);
+		expect(removed[0]).toBe(leafPath);
+		expect(removed.at(-1)).toBe("deep");
+		expect(replaced).toEqual([leafPath]);
+		expect(tree.get("deep")).toBeUndefined();
+
+		const wideSeed: Record<string, Content> = { big: null, "big/sub": null };
+		for (let i = 0; i < 1500; i++) wideSeed[`big/sub/f${i}.txt`] = `v${i}`;
+		const f = setup(wideSeed);
+		for (let i = 0; i < 1500; i++) f.view.unlink(`big/sub/f${i}.txt`);
+		f.view.rmdir("big/sub");
+		f.view.rmdir("big");
+		const plan = f.plan();
+		expect(plan.units).toHaveLength(1);
+		expect(plan.units[0]?.unit.op).toBe("delete");
+		expect(plan.units[0]?.paths).toHaveLength(1502);
+	});
+
+	it("maintains PendingView replaces and descendant indexes across release-on-rename and scopes nodesUnder for CreditTags", () => {
+		const f = setup({
+			"live/a.md": "v1",
+			"live/b.md": "v2",
+			"other/keep.md": "k",
+		});
+		const aVer = f.view.get("live/a.md")!.version;
+		write(f.view, "live/tmp.md", "new");
+		f.view.rename("live/tmp.md", "live/a.md", { noReplace: false, toBase: aVer });
+		const draft = f.view.openWrite("live/a.md", { create: true, exclusive: false, truncate: true, draft: true });
+		f.view.rename("live/a.md", "live/moved.md");
+		f.view.settle(new Set(["live/moved.md"]), new Set());
+		f.view.abandon(draft.handle);
+		expect(f.view.get("live/a.md")?.version).toBe(aVer);
+
+		f.view.mkdir("dir");
+		write(f.view, "dir/child.md", "c");
+		f.view.mkdir("dir2");
+		write(f.view, "dir2/sibling.md", "s");
+		const credits = new CreditTags();
+		const before = credits.before(f.view, { from: "dir", to: "dest" });
+		f.view.rename("dir", "dest");
+		credits.after(f.view, before, ["cmd-1"]);
+		expect(f.view.nodesUnder("dest").map(([p]) => p)).toEqual(["dest/child.md"]);
+		const plan = f.plan();
+		const assigned = credits.credits(plan.units, f.view);
+		const destIdx = plan.units.findIndex((u) => u.paths.includes("dest/child.md"));
+		const siblingIdx = plan.units.findIndex((u) => u.paths.includes("dir2/sibling.md"));
+		expect(assigned[destIdx]).toEqual(["cmd-1"]);
+		expect(assigned[siblingIdx]).toBeUndefined();
 	});
 });
