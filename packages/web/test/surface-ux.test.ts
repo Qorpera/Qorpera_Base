@@ -1299,7 +1299,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		company.stop();
 	});
 
-	it("hides the bar on a quiet studio until it has something to publish", async () => {
+	it("shows Publish only when something waits to be published, and hides an empty bar", async () => {
 		const quiet = summary({
 			id: "55555555-5555-4555-8555-555555555589",
 			slug: "identity",
@@ -1345,6 +1345,12 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			publish: true,
 			notch: false,
 			count: "2",
+		});
+		expect(await barOf({ ...quiet, archetype: "live_build", kind: "website", isGlobal: false })).toEqual({
+			hidden: false,
+			publish: false,
+			notch: false,
+			count: null,
 		});
 	});
 
