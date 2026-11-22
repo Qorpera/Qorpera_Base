@@ -156,6 +156,43 @@ begin
 	end if;
 end $$;
 
+create function public.qorpera_surface_prevent_archived_repo()
+returns trigger language plpgsql security definer set search_path = '' as $$
+declare
+	v_owner text;
+	v_name text;
+	v_archived_at timestamptz;
+begin
+	if new.source_kind = 'code_repo' then
+		if new.repository_key is not null and position('/' in new.repository_key) > 0 then
+			v_owner := lower(btrim(split_part(new.repository_key, '/', 1)));
+			v_name := lower(btrim(split_part(new.repository_key, '/', 2)));
+		else
+			v_owner := 'surfaces';
+			v_name := lower(new.slug);
+		end if;
+		-- WHY: FOR KEY SHARE serializes with archive's FOR UPDATE so neither order nor concurrent races can attach a surface to an archived repo.
+		for v_archived_at in
+			select repo.archived_at
+			from public.qorpera_code_repositories repo
+			where repo.profile_id = new.profile_id
+				and repo.owner = v_owner
+				and repo.name = v_name
+			order by repo.environment_id
+			for key share
+		loop
+			if v_archived_at is not null then
+				raise exception 'This repository is archived; unarchive it before attaching a surface' using errcode = '55000';
+			end if;
+		end loop;
+	end if;
+	return new;
+end $$;
+
+create trigger qorpera_surfaces_prevent_archived_repo
+before insert or update of source_kind, repository_key, slug on public.qorpera_surfaces
+for each row execute function public.qorpera_surface_prevent_archived_repo();
+
 create function public.qorpera_code_request_wake_topic(p_owner text, p_machine_id_sha256 text)
 returns text language sql immutable set search_path = '' as $$
 	select 'qorpera-code-requests-wake-' || encode(
@@ -1586,6 +1623,7 @@ revoke all on function
 	public.qorpera_code_glob_overlaps(text, text),
 	public.qorpera_code_paths_overlap(text[], text[]),
 	public.qorpera_code_archived_guard(public.qorpera_runtime_workers),
+	public.qorpera_surface_prevent_archived_repo(),
 	public.qorpera_code_request_wake_topic(text, text),
 	public.qorpera_code_requests_notify_internal(uuid, uuid, text),
 	public.qorpera_code_resolve_ref_internal(uuid, text, text, jsonb),

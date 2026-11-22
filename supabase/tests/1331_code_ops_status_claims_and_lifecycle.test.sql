@@ -512,4 +512,45 @@ begin
 		and (pg_temp.rec_shop()).archived_at is null,
 		'archive refuses custom repository_key backing a code_repo surface: ' || v_res::text
 	);
+
+	insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+	values ((pg_temp.rec_shop()).environment_id, (pg_temp.rec_shop()).profile_id, 'company', 'retired');
+	v_res := public.qorpera_folder_code_lifecycle(
+		pg_temp.c3_alice(),
+		jsonb_build_object('operationKey', 'life-archive-retired', 'op', 'archive', 'owner', 'company', 'name', 'retired')
+	);
+	perform pg_temp.base_assert(
+		v_res ->> 'state' = 'done' and v_res ->> 'result' = 'archived',
+		'standalone repo archives cleanly: ' || v_res::text
+	);
+	perform pg_temp.base_error(
+		format(
+			'insert into public.qorpera_surfaces(profile_id, slug, title, surface_group, archetype, status, source_kind, repository_key) values (%L, ''retired-app'', ''Retired'', ''products'', ''live_build'', ''active'', ''code_repo'', ''company/retired'')',
+			(pg_temp.rec_shop()).profile_id
+		),
+		'55000',
+		'This repository is archived; unarchive it before attaching a surface'
+	);
+	perform pg_temp.base_error(
+		format(
+			'update public.qorpera_surfaces set repository_key = ''company/retired'' where profile_id = %L and slug = ''storefront''',
+			(pg_temp.rec_shop()).profile_id
+		),
+		'55000',
+		'This repository is archived; unarchive it before attaching a surface'
+	);
+	v_res := public.qorpera_folder_code_lifecycle(
+		pg_temp.c3_alice(),
+		jsonb_build_object('operationKey', 'life-unarchive-retired', 'op', 'unarchive', 'owner', 'company', 'name', 'retired')
+	);
+	perform pg_temp.base_assert(
+		v_res ->> 'state' = 'done' and v_res ->> 'result' = 'unarchived',
+		'unarchiving retired repo succeeds: ' || v_res::text
+	);
+	insert into public.qorpera_surfaces(
+		profile_id, slug, title, surface_group, archetype, status, source_kind, repository_key
+	)
+	values (
+		(pg_temp.rec_shop()).profile_id, 'retired-app', 'Retired', 'products', 'live_build', 'active', 'code_repo', 'company/retired'
+	);
 end $$;
