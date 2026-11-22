@@ -18,9 +18,10 @@ create function pg_temp.upgrade(p_user uuid) returns void language sql as $$
 		'Complimentary access')
 $$;
 create function pg_temp.store(p_bytes bigint) returns void language sql as $$
-	insert into public.qorpera_folder_storage_usage(profile_id, bytes, objects)
-	values ('70700000-0000-4000-8000-000000000010', p_bytes, 1)
-	on conflict (profile_id) do update set bytes = excluded.bytes
+	delete from public.qorpera_folder_storage_usage where profile_id = '70700000-0000-4000-8000-000000000010' and bucket <> 0;
+	insert into public.qorpera_folder_storage_usage(profile_id, bucket, bytes, objects)
+	values ('70700000-0000-4000-8000-000000000010', 0, p_bytes, 1)
+	on conflict (profile_id, bucket) do update set bytes = excluded.bytes
 $$;
 create function pg_temp.is(p_got text, p_want text, p_what text) returns void language plpgsql as $$
 begin

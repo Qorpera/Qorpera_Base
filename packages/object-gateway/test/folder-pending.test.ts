@@ -1778,4 +1778,51 @@ describe("a view's links (protocol 4)", () => {
 		expect(assigned[destIdx]).toEqual(["cmd-1"]);
 		expect(assigned[siblingIdx]).toBeUndefined();
 	});
+
+	it("indexes PendingView parent directories for O(log N + limit) children merges and fast rmdir checks", () => {
+		const seed: Record<string, Content> = { wide: null, small: null, "small/a.txt": "a", "small/b.txt": "b" };
+		for (let i = 0; i < 2000; i++) seed[`wide/f${String(i).padStart(4, "0")}.txt`] = `v${i}`;
+		const f = setup(seed);
+
+		const fastMid = f.view.children("wide", "f1500.txt", 4);
+		expect(typeof fastMid !== "string" && fastMid.entries.map((e) => e.name)).toEqual([
+			"f1501.txt",
+			"f1502.txt",
+			"f1503.txt",
+			"f1504.txt",
+		]);
+		expect(typeof fastMid !== "string" && fastMid.next).toBe("f1504.txt");
+
+		write(f.view, "wide/f0500b.txt", "inserted");
+		write(f.view, "wide/f0501.txt", "overwritten", { base: f.view.get("wide/f0501.txt")!.version });
+		f.view.unlink("wide/f0502.txt");
+		f.view.symlink("wide/f0503.link", "f0501.txt");
+		f.view.rename("wide/f0504.txt", "wide/f0504-moved.txt");
+		f.view.mkdir("wide/sub");
+		write(f.view, "wide/sub/inner.txt", "nested");
+
+		const paged: string[] = [];
+		let after: string | undefined;
+		for (;;) {
+			const page = f.view.children("wide", after, 37, true);
+			expect(typeof page).toBe("object");
+			if (typeof page === "string") break;
+			paged.push(...page.entries.map((e) => e.name));
+			if (!page.next) break;
+			after = page.next;
+		}
+		const expected = Array.from({ length: 2000 }, (_, i) => `f${String(i).padStart(4, "0")}.txt`).filter(
+			(name) => name !== "f0502.txt" && name !== "f0504.txt",
+		);
+		expected.push("f0500b.txt", "f0503.link", "f0504-moved.txt", "sub");
+		expected.sort();
+		expect(paged).toEqual(expected);
+
+		expect(() => f.view.rmdir("small")).toThrow("The folder is not empty");
+		f.view.unlink("small/a.txt");
+		expect(() => f.view.rmdir("small")).toThrow("The folder is not empty");
+		f.view.unlink("small/b.txt");
+		f.view.rmdir("small");
+		expect(f.view.get("small")).toBeUndefined();
+	});
 });
