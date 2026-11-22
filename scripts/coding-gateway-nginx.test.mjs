@@ -9,16 +9,18 @@ const NODE_FILES = {
 };
 const FRONTS = Object.keys(NODE_FILES);
 const HOME_OPEN = "\t\tlocation = /v1/home-session {";
+const UPSTREAM_OPEN = "\tupstream coding_executor {";
+const UPSTREAM = "http > upstream coding_executor";
 const HOME = "http > server > location = /v1/home-session";
 const REST = "http > server > location /";
 const SERVER = "http > server";
 const channelSource = readFileSync(new URL("../packages/runtime/src/cloud-home-channel.ts", import.meta.url), "utf8");
 
-function withoutHome(text) {
+function withoutBlock(text, openLine, closeLine, label) {
 	const lines = text.split("\n");
-	const start = lines.indexOf(HOME_OPEN);
-	assert.ok(start >= 0 && lines.lastIndexOf(HOME_OPEN) === start, "one home location");
-	const end = lines.indexOf("\t\t}", start);
+	const start = lines.indexOf(openLine);
+	assert.ok(start >= 0 && lines.lastIndexOf(openLine) === start, label);
+	const end = lines.indexOf(closeLine, start);
 	assert.ok(end > start);
 	lines.splice(start, end - start + 1);
 	return lines.join("\n");
@@ -28,18 +30,36 @@ function at(directives, block, name) {
 	return directives.filter((d) => d.block === block && d.name === name).map((d) => d.value);
 }
 
-test("each front with the home's location taken out and connection-limit directives restored is the node's own file, byte for byte", () => {
+test("each front with the home's location and performance tuning restored is the node's own file, byte for byte", () => {
 	assert.deepEqual(Object.keys(CODING_GATEWAY_FRONTS), FRONTS);
 	for (const front of FRONTS) {
 		const rendered = renderCodingGatewayNginx(front);
 		const nodeFile = readFileSync(NODE_FILES[front]);
 		assert.notEqual(rendered, nodeFile.toString("utf8"));
-		const withoutHomeRoute = withoutHome(rendered);
-		assert.equal(withoutHomeRoute.match(/^worker_rlimit_nofile 4096;$/gm)?.length, 1, front);
-		assert.equal(withoutHomeRoute.match(/^events \{ worker_connections 2048; \}$/gm)?.length, 1, front);
-		const normalized = withoutHomeRoute
-			.replace("worker_rlimit_nofile 4096;\n", "")
-			.replace("events { worker_connections 2048; }", "events { worker_connections 256; }");
+		const stripped = withoutBlock(
+			withoutBlock(rendered, HOME_OPEN, "\t\t}", "one home location"),
+			UPSTREAM_OPEN,
+			"\t}",
+			"one upstream block",
+		);
+		assert.equal(stripped.match(/^worker_processes auto;$/gm)?.length, 1, front);
+		assert.equal(stripped.match(/^worker_rlimit_nofile 16384;$/gm)?.length, 1, front);
+		assert.equal(stripped.match(/^events \{ worker_connections 4096; \}$/gm)?.length, 1, front);
+		assert.equal(stripped.match(/^\t\tssl_session_cache shared:coding_tls:16m;$/gm)?.length, 1, front);
+		assert.equal(stripped.match(/^\t\tssl_session_timeout 10m;$/gm)?.length, 1, front);
+		assert.equal(stripped.match(/^\t\tssl_session_tickets off;$/gm)?.length, 1, front);
+		const normalized = stripped
+			.replace("worker_processes auto;", "worker_processes 1;")
+			.replace("worker_rlimit_nofile 16384;\n", "")
+			.replace("events { worker_connections 4096; }", "events { worker_connections 256; }")
+			.replace(
+				"\t\tssl_session_cache shared:coding_tls:16m;\n\t\tssl_session_timeout 10m;\n\t\tssl_session_tickets off;",
+				"\t\tssl_session_cache off;",
+			)
+			.replace(
+				'\t\t\tproxy_pass http://coding_executor;\n\t\t\tproxy_set_header Host 127.0.0.1;\n\t\t\tproxy_set_header X-Forwarded-For "";\n\t\t\tproxy_set_header Connection "";',
+				"\t\t\tproxy_pass http://127.0.0.1:18789;",
+			);
 		assert.ok(Buffer.from(normalized, "utf8").equals(nodeFile), front);
 	}
 });
@@ -83,7 +103,11 @@ test("only the home's location passes the upgrade, unbuffered, with timeouts its
 			"Connection close",
 			'X-Forwarded-For ""',
 		]);
-		assert.deepEqual(at(directives, REST, "proxy_set_header"), []);
+		assert.deepEqual(at(directives, REST, "proxy_set_header"), [
+			"Host 127.0.0.1",
+			'X-Forwarded-For ""',
+			'Connection ""',
+		]);
 	}
 });
 
@@ -122,17 +146,23 @@ test("both files have balanced blocks and each directive in the block the node h
 		const directives = nginxDirectives(renderCodingGatewayNginx(front));
 		assert.deepEqual(
 			[...new Set(directives.map((d) => d.block))],
-			["", "events", "http", SERVER, `${HOME} > limit_except GET`, HOME, `${REST} > limit_except POST`, REST],
+			["", "events", "http", UPSTREAM, SERVER, `${HOME} > limit_except GET`, HOME, `${REST} > limit_except POST`, REST],
 		);
-		assert.deepEqual(at(directives, "", "worker_rlimit_nofile"), ["4096"]);
+		assert.deepEqual(at(directives, "", "worker_processes"), ["auto"]);
+		assert.deepEqual(at(directives, "", "worker_rlimit_nofile"), ["16384"]);
 		assert.deepEqual(at(directives, "", "pid"), [`/run/${CODING_GATEWAY_FRONTS[front]}/nginx.pid`]);
-		assert.deepEqual(at(directives, "events", "worker_connections"), ["2048"]);
+		assert.deepEqual(at(directives, "events", "worker_connections"), ["4096"]);
+		assert.deepEqual(at(directives, UPSTREAM, "server"), ["127.0.0.1:18789"]);
+		assert.deepEqual(at(directives, UPSTREAM, "keepalive"), ["128"]);
+		assert.deepEqual(at(directives, UPSTREAM, "keepalive_requests"), ["1000"]);
 		assert.deepEqual(at(directives, SERVER, "ssl_protocols"), ["TLSv1.3"]);
-		assert.deepEqual(at(directives, SERVER, "ssl_session_cache"), ["off"]);
+		assert.deepEqual(at(directives, SERVER, "ssl_session_cache"), ["shared:coding_tls:16m"]);
+		assert.deepEqual(at(directives, SERVER, "ssl_session_timeout"), ["10m"]);
+		assert.deepEqual(at(directives, SERVER, "ssl_session_tickets"), ["off"]);
 		assert.deepEqual(at(directives, SERVER, "ssl_certificate"), [
 			`/run/credentials/${CODING_GATEWAY_FRONTS[front]}.service/gateway.crt`,
 		]);
-		assert.deepEqual(at(directives, REST, "proxy_pass"), ["http://127.0.0.1:18789"]);
+		assert.deepEqual(at(directives, REST, "proxy_pass"), ["http://coding_executor"]);
 	}
 	assert.throws(() => nginxDirectives("http {\n\tserver {\n\t}\n"), /unbalanced/);
 	assert.throws(() => nginxDirectives("http {\n}\n}\n"), /unbalanced/);

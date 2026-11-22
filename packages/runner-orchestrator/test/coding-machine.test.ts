@@ -1270,6 +1270,7 @@ describe("a member's coding machine", () => {
 		expect(plan.request.name).toBe(`qorpera-coding-machine-${id(2).replaceAll("-", "")}`);
 		expect(plan.request.config).toMatchObject({
 			"boot.autostart": "false",
+			"security.devlxd": "false",
 			"user.qorpera.schema": "qorpera.lxd-coding-machine/v1",
 			"user.qorpera.allocation_id": id(2),
 			"user.qorpera.member_user_id": id(6),
@@ -1279,6 +1280,26 @@ describe("a member's coding machine", () => {
 		const shuffled = Object.fromEntries(Object.entries(binding()).reverse()) as unknown as LxdCodingMachineBinding;
 		expect(lxdCodingMachinePlan(shuffled).text).toBe(plan.text);
 		expect(plan.instanceSha256).toBe(createHash("sha256").update(plan.text).digest("hex"));
+	});
+	it("refuses coding machine instances with /dev/lxd enabled or missing security.devlxd", async () => {
+		const f = await fixture();
+		for (const expected of ["pending", "pending", "running"]) expect((await f.reconcile()).state).toBe(expected);
+		const instance = f.instance()!;
+		expect(instance.config["security.devlxd"]).toBe("false");
+		const enabled = {
+			...instance,
+			config: { ...instance.config, "security.devlxd": "true" },
+			expandedConfig: { ...instance.expandedConfig, "security.devlxd": "true" },
+		};
+		expect(() => assertLxdCodingMachineInstance(f.value, storage, enabled)).toThrow("CODING_MACHINE_DRIFTED");
+		const withoutDevlxd = {
+			...instance,
+			config: Object.fromEntries(Object.entries(instance.config).filter(([key]) => key !== "security.devlxd")),
+			expandedConfig: Object.fromEntries(
+				Object.entries(instance.expandedConfig).filter(([key]) => key !== "security.devlxd"),
+			),
+		};
+		expect(() => assertLxdCodingMachineInstance(f.value, storage, withoutDevlxd)).toThrow("CODING_MACHINE_DRIFTED");
 	});
 	it.each([
 		{ profiles: ["default"] },

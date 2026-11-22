@@ -57,11 +57,14 @@ class FakeExecPipe {
 	holdInput = false;
 	/** The fd whose upgrade it never answers, as an LXD that stalls the handshake. */
 	withhold?: string;
+	refuse?: string;
+	requireConcurrentUpgrades = false;
 	withheldSeen = false;
 	withheldClosed = false;
 	socket = "";
 	readonly #sockets = new Set<Socket>();
 	readonly #connected = new Map<string, Socket>();
+	readonly #barrier: Array<() => void> = [];
 	readonly #inputWaiters: Array<(input: Buffer) => void> = [];
 	#exitCode?: number;
 	readonly #waiters: Array<(exitCode: number) => void> = [];
@@ -69,6 +72,14 @@ class FakeExecPipe {
 
 	constructor(command: FakeCommand) {
 		this.#command = command;
+	}
+
+	openSockets(): number {
+		let count = 0;
+		for (const socket of this.#sockets) {
+			if (!socket.destroyed) count += 1;
+		}
+		return count;
 	}
 
 	async start(): Promise<void> {
@@ -132,6 +143,10 @@ class FakeExecPipe {
 			socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
 			return;
 		}
+		if (fd === this.refuse) {
+			socket.end("HTTP/1.1 403 Forbidden\r\n\r\n", () => socket.destroy());
+			return;
+		}
 		if (fd === this.withhold) {
 			this.withheldSeen = true;
 			// Reads on, so the client's end of the connection is seen; the server keeps its sockets half open.
@@ -145,58 +160,69 @@ class FakeExecPipe {
 			socket.resume();
 			return;
 		}
-		this.upgrades.push(fd);
-		const accept = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
-		socket.write(
-			`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
-		);
-		this.#connected.set(fd, socket);
-		// The client may drop a connection while this side still writes to it.
-		socket.on("error", () => undefined);
-		if (fd === "0" && this.holdInput) socket.pause();
-		let buffer = Buffer.alloc(0);
-		socket.on("data", (chunk: Buffer) => {
-			buffer = Buffer.concat([buffer, chunk]);
-			for (;;) {
-				if (buffer.byteLength < 2) return;
-				const opcode = buffer[0]! & 0x0f;
-				if ((buffer[1]! & 0x80) === 0) this.unmaskedFrames++;
-				let length = buffer[1]! & 0x7f;
-				let offset = 2;
-				if (length === 126) {
-					if (buffer.byteLength < 4) return;
-					length = buffer.readUInt16BE(2);
-					offset = 4;
-				} else if (length === 127) {
-					if (buffer.byteLength < 10) return;
-					length = buffer.readUInt32BE(6);
-					offset = 10;
+		const complete = (): void => {
+			if (socket.destroyed) return;
+			this.upgrades.push(fd);
+			const accept = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+			socket.write(
+				`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+			);
+			this.#connected.set(fd, socket);
+			// The client may drop a connection while this side still writes to it.
+			socket.on("error", () => undefined);
+			if (fd === "0" && this.holdInput) socket.pause();
+			let buffer = Buffer.alloc(0);
+			socket.on("data", (chunk: Buffer) => {
+				buffer = Buffer.concat([buffer, chunk]);
+				for (;;) {
+					if (buffer.byteLength < 2) return;
+					const opcode = buffer[0]! & 0x0f;
+					if ((buffer[1]! & 0x80) === 0) this.unmaskedFrames++;
+					let length = buffer[1]! & 0x7f;
+					let offset = 2;
+					if (length === 126) {
+						if (buffer.byteLength < 4) return;
+						length = buffer.readUInt16BE(2);
+						offset = 4;
+					} else if (length === 127) {
+						if (buffer.byteLength < 10) return;
+						length = buffer.readUInt32BE(6);
+						offset = 10;
+					}
+					if (buffer.byteLength < offset + 4 + length) return;
+					const mask = buffer.subarray(offset, offset + 4);
+					const payload = Buffer.from(buffer.subarray(offset + 4, offset + 4 + length));
+					for (let index = 0; index < payload.byteLength; index++)
+						payload[index] = payload[index]! ^ mask[index & 3]!;
+					buffer = buffer.subarray(offset + 4 + length);
+					if (opcode === 0x8) {
+						this.#closedEarly(fd);
+						this.#close(socket, payload);
+						return;
+					}
+					if (fd !== "0" || this.inputEnded) continue;
+					if (opcode === 0x2) {
+						this.inputBytes += payload.byteLength;
+						if (this.discardInput) continue;
+						this.inputMessages.push(payload.byteLength);
+						this.input = Buffer.concat([this.input, payload]);
+					} else if (opcode === 0x1) {
+						this.inputEnded = true;
+						for (const waiter of this.#inputWaiters.splice(0)) waiter(this.input);
+					}
 				}
-				if (buffer.byteLength < offset + 4 + length) return;
-				const mask = buffer.subarray(offset, offset + 4);
-				const payload = Buffer.from(buffer.subarray(offset + 4, offset + 4 + length));
-				for (let index = 0; index < payload.byteLength; index++)
-					payload[index] = payload[index]! ^ mask[index & 3]!;
-				buffer = buffer.subarray(offset + 4 + length);
-				if (opcode === 0x8) {
-					this.#closedEarly(fd);
-					this.#close(socket, payload);
-					return;
-				}
-				if (fd !== "0" || this.inputEnded) continue;
-				if (opcode === 0x2) {
-					this.inputBytes += payload.byteLength;
-					if (this.discardInput) continue;
-					this.inputMessages.push(payload.byteLength);
-					this.input = Buffer.concat([this.input, payload]);
-				} else if (opcode === 0x1) {
-					this.inputEnded = true;
-					for (const waiter of this.#inputWaiters.splice(0)) waiter(this.input);
-				}
+			});
+			socket.on("close", () => this.#closedEarly(fd));
+			if (["0", "1", "2"].every((connected) => this.#connected.has(connected))) void this.#run();
+		};
+		if (this.requireConcurrentUpgrades) {
+			this.#barrier.push(complete);
+			if (this.#barrier.length === 3) {
+				for (const release of this.#barrier.splice(0)) release();
 			}
-		});
-		socket.on("close", () => this.#closedEarly(fd));
-		if (["0", "1", "2"].every((connected) => this.#connected.has(connected))) void this.#run();
+			return;
+		}
+		complete();
 	}
 
 	#closedEarly(fd: string): void {
@@ -364,7 +390,7 @@ describe("LXD exec pipe", () => {
 			},
 		]);
 		expect(JSON.stringify(exec.posts)).not.toContain("PACK");
-		expect(exec.upgrades).toEqual(["1", "2", "0"]);
+		expect([...exec.upgrades].sort()).toEqual(["0", "1", "2"]);
 		expect(exec.input.toString()).toBe("PACK-the-bundle");
 		expect(exec.inputEnded).toBe(true);
 		expect(exec.killed).toBe(false);
@@ -588,7 +614,7 @@ describe("LXD exec pipe", () => {
 		stopped.withhold = "2";
 		const controller = new AbortController();
 		const call = run(stopped, {}, controller.signal);
-		await vi.waitFor(() => expect(stopped.withheldSeen).toBe(true));
+		await vi.waitFor(() => expect(stopped.withheldSeen && stopped.upgrades.includes("1")).toBe(true));
 		const abortedAt = Date.now();
 		controller.abort();
 		await expect(call).rejects.toThrow("LXD exec pipe was stopped");
@@ -596,17 +622,45 @@ describe("LXD exec pipe", () => {
 		expect(Date.now() - abortedAt).toBeLessThan(1_000);
 		await vi.waitFor(() => expect(stopped.withheldClosed).toBe(true));
 		// The stdout websocket already connected is closed too.
-		expect(stopped.upgrades).toEqual(["1"]);
+		expect(stopped.upgrades).toContain("1");
+		expect(stopped.upgrades).not.toContain("2");
 		await vi.waitFor(() => expect(stopped.killed).toBe(true));
+		await vi.waitFor(() => expect(stopped.openSockets()).toBe(0));
 		const dropped = await fake(command);
 		dropped.withhold = "2";
 		const ended = run(dropped);
-		await vi.waitFor(() => expect(dropped.withheldSeen).toBe(true));
+		await vi.waitFor(() => expect(dropped.withheldSeen && dropped.upgrades.includes("1")).toBe(true));
 		const droppedAt = Date.now();
 		dropped.drop("1");
 		await expect(ended).rejects.toThrow("LXD exec pipe ended before its output");
 		expect(Date.now() - droppedAt).toBeLessThan(1_000);
 		await vi.waitFor(() => expect(dropped.withheldClosed).toBe(true));
+		await vi.waitFor(() => expect(dropped.openSockets()).toBe(0));
+	});
+
+	it("connects all three exec pipe websockets concurrently and closes every socket on partial failure", async () => {
+		const concurrent = await fake(async (io) => {
+			const input = await io.input();
+			io.print("stdout", Buffer.from(`echo:${input.toString()}`));
+			return 0;
+		});
+		concurrent.requireConcurrentUpgrades = true;
+		const result = await run(concurrent, { stdin: Buffer.from("parallel") });
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout.toString()).toBe("echo:parallel");
+		expect([...concurrent.upgrades].sort()).toEqual(["0", "1", "2"]);
+
+		const partial = await fake(async (io) => {
+			await io.input();
+			return 0;
+		});
+		partial.refuse = "2";
+		partial.withhold = "0";
+		await expect(run(partial, { stdin: Buffer.from("never-sent") })).rejects.toThrow(
+			"WebSocket handshake was refused (403)",
+		);
+		await vi.waitFor(() => expect(partial.openSockets()).toBe(0));
+		expect(partial.inputEnded).toBe(false);
 	});
 
 	it("fails with the source's own error, or on a chunk that is not bytes, and kills the command", async () => {

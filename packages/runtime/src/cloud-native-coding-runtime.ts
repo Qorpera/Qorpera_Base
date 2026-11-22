@@ -78,6 +78,8 @@ export interface CloudNativeCodingDriver {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
+const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+const MAX_SECRET_NAMES = 128;
 /** A finish's picture, as the submit call takes it (20260930720000): a path from the top of the repository to a .png,
  * .jpg, .jpeg or .webp file, at most 300 bytes, with no part that is `.` or `..`. */
 const PICTURE_PATH =
@@ -212,6 +214,7 @@ export interface CloudCodingTurnContext {
 	/** Whether the session's machine got a new disk since the previous turn started (false on a first turn): only
 	 * /company was kept. A kernel from before 20260930515000 does not say, which reads as false. */
 	machine: { newDisk: boolean };
+	secretNames?: string[];
 }
 export interface CloudCodingTurnCommand {
 	commandId: string;
@@ -327,7 +330,7 @@ export function parseCloudCodingTurnContext(
 		value,
 		["schema", "workerId", "sequence", "input", "earlierTurns", "omittedEarlierTurns", "commands"],
 		// 20260930515000 adds `machine`; the runtime rolls before it, so a context without it is read as no new disk.
-		["machine"],
+		["machine", "secretNames"],
 	);
 	if (
 		item.schema !== "qorpera.coding-turn-context/v2" ||
@@ -413,6 +416,18 @@ export function parseCloudCodingTurnContext(
 		throw new Error("CODING_TURN_CONTEXT_INVALID");
 	const machine = Object.hasOwn(item, "machine") ? closedRecord(item.machine, ["newDisk"]) : { newDisk: false };
 	if (typeof machine.newDisk !== "boolean") throw new Error("CODING_TURN_CONTEXT_INVALID");
+	let secretNames: string[] | undefined;
+	if (Object.hasOwn(item, "secretNames")) {
+		if (!Array.isArray(item.secretNames) || item.secretNames.length > MAX_SECRET_NAMES)
+			throw new Error("CODING_TURN_CONTEXT_INVALID");
+		const seen = new Set<string>();
+		secretNames = item.secretNames.map((entry) => {
+			if (typeof entry !== "string" || !SECRET_NAME.test(entry) || seen.has(entry))
+				throw new Error("CODING_TURN_CONTEXT_INVALID");
+			seen.add(entry);
+			return entry;
+		});
+	}
 	return {
 		input: { from: current.from, text: current.text, answers },
 		earlierTurns,
@@ -436,6 +451,7 @@ export function parseCloudCodingTurnContext(
 			omitted: Number(commands.omitted),
 		},
 		machine: { newDisk: machine.newDisk },
+		...(secretNames !== undefined ? { secretNames } : {}),
 	};
 }
 
@@ -556,6 +572,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					omittedEarlierTurns: turn.omittedEarlierTurns + turn.earlierTurns.length - kept.length,
 					commands: turn.commands,
 					machine: turn.machine,
+					...(turn.secretNames !== undefined ? { secretNames: turn.secretNames } : {}),
 					input: turn.input,
 				},
 				// Measured before trimming: the whole reply fits the control's 256 KiB response bound.
