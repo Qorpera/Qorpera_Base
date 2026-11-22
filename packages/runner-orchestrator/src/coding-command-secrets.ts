@@ -171,6 +171,11 @@ export class CodingMachineCommandSecrets {
 		for (const value of values(session.commands.values())) machine.released.add(value);
 	}
 
+	releaseMachine(machineId: string): void {
+		this.#machines.delete(machineId);
+		this.#answered.delete(machineId);
+	}
+
 	/** The session attached (5j-5 (a)): its environment is asked for now, under `scope`, so the machine's values are
 	 * known before a command starts with them, also when there are none. No command takes this answer; the machine's
 	 * masks cover it, as its older values. A failed ask is not kept and fails the call. */

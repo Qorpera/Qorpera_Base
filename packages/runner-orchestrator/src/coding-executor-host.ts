@@ -772,6 +772,47 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 		work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
 	});
 }
+const CODING_OBSERVE_CONCURRENCY = 4;
+const CODING_HOUSEKEEP_CONCURRENCY = 4;
+
+async function mapBounded<T, R>(
+	items: readonly T[],
+	concurrency: number,
+	signal: AbortSignal,
+	work: (item: T, signal: AbortSignal) => Promise<R>,
+): Promise<R[]> {
+	if (items.length === 0) return [];
+	signal.throwIfAborted();
+	const scope = new AbortController();
+	const forward = (): void => scope.abort(signal.reason);
+	signal.addEventListener("abort", forward, { once: true });
+	const results = new Array<R>(items.length);
+	let cursor = 0;
+	let firstError: { value: unknown } | undefined;
+	const worker = async (): Promise<void> => {
+		while (!firstError && !scope.signal.aborted) {
+			const index = cursor++;
+			if (index >= items.length) return;
+			try {
+				results[index] = await work(items[index]!, scope.signal);
+			} catch (error) {
+				if (!firstError) {
+					firstError = { value: error };
+					scope.abort(error);
+				}
+				return;
+			}
+		}
+	};
+	try {
+		await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+	} finally {
+		signal.removeEventListener("abort", forward);
+	}
+	if (firstError) throw firstError.value;
+	signal.throwIfAborted();
+	return results;
+}
 /** A release that failed after its machine was deleted: recorded as `release`. */
 class CodingReleaseFailed extends Error {}
 /** A custody refusal: not now (a turn uses the machine, it is awake, or not due). */
@@ -1333,7 +1374,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			outputRoot: layout.outputRoot,
 			resourceProfile: this.#options.guest.resourceProfile,
 		};
-		const root = await this.#directory("guests"),
+		const root = await this.#directory("guests", signal),
 			journalName = `${claim.workerId}.${bootId}.json`;
 		const encoded = JSON.stringify(configuration);
 		await publish(root, journalName, Buffer.from(encoded));
@@ -1562,7 +1603,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		authorize: () => Promise<void>,
 		signal: AbortSignal,
 	): Promise<{ root: string; baseSha: string }> {
-		const root = await this.#directory("git");
+		const root = await this.#directory("git", signal);
 		const baseName = `${claim.workerId}.base.json`;
 		let baseSha: string;
 		try {
@@ -3175,7 +3216,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		signal: AbortSignal,
 	): Promise<CodingExecutorPublication> {
 		const ready = this.#active(claim);
-		const root = await this.#directory("git"),
+		const root = await this.#directory("git", signal),
 			token = this.#repositoryToken(claim);
 		const folder = this.#options.folder;
 		// Only the folder model keeps repositories in Qorpera (its base came from the code host): never a push to GitHub.
@@ -3393,9 +3434,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				if (end && !end.saved) throw new Error("CODING_FOLDER_VIEW_UNSAVED");
 				if (end && !end.closed) throw new Error("CODING_FOLDER_VIEW_CLOSE_UNCONFIRMED");
 				if (guestFailure) throw guestFailure;
+				this.#commandSecrets?.release(machine.machineId, session.workerId);
 				return;
 			}
-			if (!instance) return;
+			if (!instance) {
+				this.#commandSecrets?.release(machine.machineId, session.workerId);
+				return;
+			}
 			const sessions = assertLxdCodingMachineInstance(machine, this.#placement, instance);
 			let guestFailure: unknown;
 			if (instance.status === "Running" && instance.statusCode === 103) {
@@ -3430,8 +3475,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					throw new Error("CODING_SESSION_DETACH_UNCONFIRMED");
 			}
 			if (guestFailure) throw guestFailure;
+			this.#commandSecrets?.release(machine.machineId, session.workerId);
 		});
-		this.#commandSecrets?.release(machine.machineId, session.workerId);
 	}
 	/** Best effort, bounded: cancels each named command through the pinned
 	 * command helper, which records it cancelled once systemd has stopped it. A
@@ -3499,9 +3544,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			(value.state !== "detached" && value.state !== "unchanged")
 		)
 			throw new Error("CODING_HOST_DETACH_RECORD_UNCONFIRMED");
-		if (this.#attachments.get(workerId)?.token === token) {
+		const current = this.#attachments.get(workerId);
+		if (current?.token === token) {
 			this.#attachments.delete(workerId);
 			this.#attachSerials.delete(workerId);
+		}
+		if (!current || current.token === token || current.machine.machineId !== machine.machineId) {
+			this.#commandSecrets?.release(machine.machineId, workerId);
 		}
 		this.#samples.delete(workerId);
 	}
@@ -3533,8 +3582,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const ended = detachedSessions(value.detached);
 		if (value.schema !== "qorpera.coding-machine-stopped/v1" || value.machineId !== machine.machineId || !ended)
 			throw new Error("CODING_HOST_MACHINE_STOPPED_UNCONFIRMED");
-		this.#forgetDetached(ended);
+		this.#forgetDetached(machine.machineId, ended);
+		this.#commandSecrets?.releaseMachine(machine.machineId);
 		this.#helperBoots.delete(machine.machineId);
+		this.#settledBoots.delete(machine.machineId);
+		this.#folderStartOperations.delete(machine.machineId);
 	}
 	/** SQL marks the machine to restart for the company folder (rule 4), or with `newDisk` for a new disk (rule 4,
 	 * `unreadable`), which marks it to restart too. From then on no coding view opens on it. A mark already there stays. */
@@ -3617,7 +3669,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			!ended
 		)
 			throw new Error("CODING_HOST_FOLDER_RESTART_UNCONFIRMED");
-		this.#forgetDetached(ended);
+		this.#forgetDetached(machine.machineId, ended);
+		if (value.state !== "unmarked") this.#commandSecrets?.releaseMachine(machine.machineId);
 		return value.state === "new-disk";
 	}
 	/** The machine marked for a new disk was rebuilt from its image and is about to start: SQL records the new disk,
@@ -3650,17 +3703,23 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			!ended
 		)
 			throw new Error("CODING_HOST_NEW_DISK_UNCONFIRMED");
-		this.#forgetDetached(ended);
+		this.#forgetDetached(machine.machineId, ended);
+		this.#commandSecrets?.releaseMachine(machine.machineId);
 		this.#helperBoots.delete(machine.machineId);
 		this.#settledBoots.delete(machine.machineId);
+		this.#folderStartOperations.delete(machine.machineId);
 		await this.#recordError(machine.machineId, "wake", null, signal).catch(() => undefined);
 	}
 	/** The sessions SQL detached are no longer attached here. */
-	#forgetDetached(ended: readonly { workerId: string; attachmentToken: string }[]): void {
+	#forgetDetached(machineId: string, ended: readonly { workerId: string; attachmentToken: string }[]): void {
 		for (const { workerId, attachmentToken } of ended) {
-			if (this.#attachments.get(workerId)?.token === attachmentToken) {
+			const current = this.#attachments.get(workerId);
+			if (current?.token === attachmentToken) {
 				this.#attachments.delete(workerId);
 				this.#attachSerials.delete(workerId);
+			}
+			if (!current || current.token === attachmentToken || current.machine.machineId !== machineId) {
+				this.#commandSecrets?.release(machineId, workerId);
 			}
 			this.#samples.delete(workerId);
 		}
@@ -3774,6 +3833,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				this.#attachments.delete(workerId);
 				this.#attachSerials.delete(workerId);
 				this.#samples.delete(workerId);
+				this.#commandSecrets?.release(attachment.machine.machineId, workerId);
 			}
 		const released = this.#released;
 		this.#released = [];
@@ -4267,27 +4327,37 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const bootId = boot.content.toString("utf8").trim();
 		if (boot.uid !== 0 || boot.gid !== 0 || !isUuid(bootId)) throw new Error("CODING_HOST_BOOT_UNCONFIRMED");
 		const guest = new LxdCodingGuestClient({ machine, client: folder.client });
-		const sessions: Observed["sessions"] = new Map();
-		for (const workerId of workerIds) {
-			const status = await guest.status({ schema: "qorpera.coding-guest-session/v1", workerId }, signal);
-			// Read on another boot's clock, it compares with nothing this boot's samples hold.
-			if (status.usage.bootId !== bootId) throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
-			const custody = lxdCodingSessionStorage(machine, this.#placement, workerId).custodySource;
-			const running: ObservedCommand[] = [];
-			for (const { commandId, state } of status.commands) {
-				if (state !== "running" || running.length >= 64) continue;
-				const kept = await this.#storageTask(() => codingFolderKeptCommand(custody, workerId, commandId), signal);
-				if (kept)
-					running.push({
-						commandId,
-						turn: kept.turn,
-						command: clipped(kept.command, CODING_OBSERVED_COMMAND_BYTES),
-					});
-			}
-			const { uptimeMs, cpuUsageUsec, ioBytes, ioComplete } = status.usage;
-			sessions.set(workerId, { uptimeMs, cpuUsageUsec, ioBytes, ioComplete, running, lease: null });
-		}
-		return { bootId, sessions };
+		const entries = await mapBounded(
+			workerIds,
+			CODING_OBSERVE_CONCURRENCY,
+			signal,
+			async (
+				workerId,
+				itemSignal,
+			): Promise<readonly [string, Observed["sessions"] extends Map<string, infer V> ? V : never]> => {
+				const status = await guest.status({ schema: "qorpera.coding-guest-session/v1", workerId }, itemSignal);
+				// Read on another boot's clock, it compares with nothing this boot's samples hold.
+				if (status.usage.bootId !== bootId) throw new Error("CODING_HOST_OBSERVATION_UNCONFIRMED");
+				const custody = lxdCodingSessionStorage(machine, this.#placement, workerId).custodySource;
+				const running: ObservedCommand[] = [];
+				for (const { commandId, state } of status.commands) {
+					if (state !== "running" || running.length >= 64) continue;
+					const kept = await this.#storageTask(
+						() => codingFolderKeptCommand(custody, workerId, commandId),
+						itemSignal,
+					);
+					if (kept)
+						running.push({
+							commandId,
+							turn: kept.turn,
+							command: clipped(kept.command, CODING_OBSERVED_COMMAND_BYTES),
+						});
+				}
+				const { uptimeMs, cpuUsageUsec, ioBytes, ioComplete } = status.usage;
+				return [workerId, { uptimeMs, cpuUsageUsec, ioBytes, ioComplete, running, lease: null }];
+			},
+		);
+		return { bootId, sessions: new Map(entries) };
 	}
 	/** Throws CODING_HOST_GUEST_WATCHDOG_FAILED or _DISABLED for a timer that
 	 * cannot become active; returns while it may still be starting. */
@@ -4470,32 +4540,41 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			signal,
 		);
 		if (!Array.isArray(listed)) throw new Error("CODING_HOST_MACHINE_LIST_INVALID");
-		for (const value of listed) {
-			signal.throwIfAborted();
-			const entry = this.#listed(value);
-			const step: "sleep" | "delete" | null =
-				entry.released || entry.removeDue ? "delete" : entry.sleepDue ? "sleep" : null;
-			if (!step) continue;
-			try {
-				await this.#exclusive(entry.machineId, signal, async () => {
-					if (step === "sleep") await this.#sleep(entry, signal);
-					else await this.#remove(entry, signal);
-				});
-				outcomes.push({ machineId: entry.machineId, step, state: "done" });
-				if (entry.lastError) await this.#recordError(entry.machineId, step, null, signal).catch(() => undefined);
-			} catch (error) {
-				if (error instanceof CodingCustodyRefused) {
-					outcomes.push({ machineId: entry.machineId, step, state: "not-now", code: error.reason });
-					continue;
+		signal.throwIfAborted();
+		const steps = listed
+			.map((value) => this.#listed(value))
+			.flatMap((entry) => {
+				const step: "sleep" | "delete" | null =
+					entry.released || entry.removeDue ? "delete" : entry.sleepDue ? "sleep" : null;
+				return step ? [{ entry, step }] : [];
+			});
+		const stepOutcomes = await mapBounded(
+			steps,
+			CODING_HOUSEKEEP_CONCURRENCY,
+			signal,
+			async ({ entry, step }, stepSignal): Promise<CodingHousekeepingOutcome> => {
+				try {
+					await this.#exclusive(entry.machineId, stepSignal, async () => {
+						if (step === "sleep") await this.#sleep(entry, stepSignal);
+						else await this.#remove(entry, stepSignal);
+					});
+					if (entry.lastError)
+						await this.#recordError(entry.machineId, step, null, stepSignal).catch(() => undefined);
+					return { machineId: entry.machineId, step, state: "done" };
+				} catch (error) {
+					if (error instanceof CodingCustodyRefused) {
+						return { machineId: entry.machineId, step, state: "not-now", code: error.reason };
+					}
+					stepSignal.throwIfAborted();
+					// A release that failed after the delete is its own step: the machine is gone, its capacity is not.
+					const failed = error instanceof CodingReleaseFailed ? "release" : step;
+					const failure = errorCodeOf(error);
+					await this.#recordError(entry.machineId, failed, failure, stepSignal).catch(() => undefined);
+					return { machineId: entry.machineId, step: failed, state: "failed", code: failure };
 				}
-				signal.throwIfAborted();
-				// A release that failed after the delete is its own step: the machine is gone, its capacity is not.
-				const failed = error instanceof CodingReleaseFailed ? "release" : step;
-				const failure = errorCodeOf(error);
-				outcomes.push({ machineId: entry.machineId, step: failed, state: "failed", code: failure });
-				await this.#recordError(entry.machineId, failed, failure, signal).catch(() => undefined);
-			}
-		}
+			},
+		);
+		outcomes.push(...stepOutcomes);
 		return outcomes;
 	}
 	#listed(value: unknown): ListedMachine {
@@ -4687,8 +4766,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (slept.state === "kept") throw new CodingCustodyRefused(String(slept.reason ?? "KEPT"));
 		if (slept.state !== "suspended" || slept.machineId !== entry.machineId)
 			throw new Error("CODING_MACHINE_SLEEP_UNCONFIRMED");
+		this.#commandSecrets?.releaseMachine(entry.machineId);
 		this.#helperBoots.delete(entry.machineId);
 		this.#settledBoots.delete(entry.machineId);
+		this.#folderStartOperations.delete(entry.machineId);
 		// Asleep, no session is attached: each ends with what it stopped. All are recorded; the first failure is reported.
 		for (const { workerId, attachmentToken } of member ? entry.attached : [])
 			try {
@@ -4729,6 +4810,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			}
 			if (released.state !== "released" || released.machineId !== entry.machineId)
 				throw new CodingReleaseFailed("CODING_MACHINE_RELEASE_UNCONFIRMED");
+			this.#forgetMachine(entry.machineId);
 		};
 		if (!entry.instanceSha256) {
 			await release(JSON.stringify(entry.binding));
@@ -4757,6 +4839,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (state !== "deleted" && state !== "absent") throw new Error("CODING_HOST_VM_RECOVERY_REQUIRED");
 		if (entry.kind === "member") await this.#hostLeases.drop(journal).catch(() => undefined);
 		await release(text);
+	}
+	#forgetMachine(machineId: string): void {
+		this.#commandSecrets?.releaseMachine(machineId);
+		this.#helperBoots.delete(machineId);
+		this.#settledBoots.delete(machineId);
+		this.#folderStarts.delete(machineId);
+		this.#folderStartOperations.delete(machineId);
 	}
 	async #recordError(
 		machineId: string,
