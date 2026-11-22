@@ -65,6 +65,7 @@ struct Node {
 	removed: bool,
 	/// Moved into a cache by this program (`mount/on_disk.rs`): the kernel's entry for it names the cache's file now.
 	cached: bool,
+	dir_gen: u64,
 }
 
 /// One entry of a listing as the kernel gets it.
@@ -95,6 +96,7 @@ pub struct Tree {
 	dirs: HashMap<u64, Arc<Vec<Child>>>,
 	next_ino: u64,
 	changes: u64,
+	resync_gen: u64,
 }
 
 impl Default for Tree {
@@ -118,15 +120,26 @@ impl Tree {
 				detached: false,
 				removed: false,
 				cached: false,
+				dir_gen: 0,
 			},
 		);
 		let mut by_path = BTreeMap::new();
 		by_path.insert(String::new(), ROOT);
-		Tree { nodes, by_path, dirs: HashMap::new(), next_ino: ROOT + 1, changes: 0 }
+		Tree { nodes, by_path, dirs: HashMap::new(), next_ino: ROOT + 1, changes: 0, resync_gen: 0 }
 	}
 
 	pub fn changes(&self) -> u64 {
 		self.changes
+	}
+
+	pub fn dir_changes(&self, dir: u64) -> u64 {
+		self.nodes.get(&dir).map_or(self.changes, |n| n.dir_gen.max(self.resync_gen))
+	}
+
+	fn touch_dir(&mut self, dir: u64) {
+		if let Some(n) = self.nodes.get_mut(&dir) {
+			n.dir_gen = self.changes;
+		}
 	}
 
 	pub fn path(&self, ino: u64) -> Option<&str> {
@@ -202,7 +215,7 @@ impl Tree {
 		let Some(dir_path) = self.nodes.get(&dir).filter(|n| !n.detached).map(|n| n.path.clone()) else {
 			return (Arc::new(Vec::new()), false);
 		};
-		let current = started == self.changes;
+		let current = self.dir_changes(dir) <= started;
 		let keep = keep && current;
 		let mut detached = false;
 		let mut children = Vec::with_capacity(entries.len());
@@ -231,6 +244,7 @@ impl Tree {
 							detached: false,
 							removed: false,
 							cached: false,
+							dir_gen: self.changes,
 						},
 					);
 					self.by_path.insert(path, ino);
@@ -304,7 +318,7 @@ impl Tree {
 		let mut out = Vec::new();
 		for path in paths {
 			if path.is_empty() {
-				// The root itself changed: its listing.
+				self.touch_dir(ROOT);
 				if self.dirs.contains_key(&ROOT) {
 					self.drop_listing(ROOT);
 				}
@@ -314,6 +328,7 @@ impl Tree {
 			if let Some(&ino) = self.by_path.get(path) {
 				if let Some(n) = self.nodes.get_mut(&ino) {
 					n.attr = None;
+					n.dir_gen = self.changes;
 				}
 				if self.dirs.contains_key(&ino) {
 					self.drop_listing(ino);
@@ -322,6 +337,7 @@ impl Tree {
 			}
 			let (parent_path, name) = split(path);
 			if let Some(&parent) = self.by_path.get(parent_path) {
+				self.touch_dir(parent);
 				if self.dirs.contains_key(&parent) {
 					self.drop_listing(parent);
 				}
@@ -329,7 +345,6 @@ impl Tree {
 				out.push(Inval::Inode(parent));
 			}
 		}
-		// A node may have gone in a prune above; never ask the kernel about one twice.
 		out.dedup();
 		out
 	}
@@ -355,17 +370,28 @@ impl Tree {
 	/// no names in (`fresh`).
 	pub fn drop_listings(&mut self, path: &str) {
 		self.changes += 1;
-		let dirs: Vec<u64> =
-			self.paths_under(path).into_iter().filter_map(|(_, ino)| self.dirs.contains_key(&ino).then_some(ino)).collect();
-		for dir in dirs {
-			self.drop_listing(dir);
+		if path.is_empty() {
+			self.resync_gen = self.changes;
+			let dirs: Vec<u64> = self.dirs.keys().copied().collect();
+			for dir in dirs {
+				self.drop_listing(dir);
+			}
+			return;
+		}
+		let under: Vec<u64> = self.paths_under(path).into_iter().map(|(_, ino)| ino).collect();
+		for ino in &under {
+			self.touch_dir(*ino);
+		}
+		for dir in under {
+			if self.dirs.contains_key(&dir) {
+				self.drop_listing(dir);
+			}
 		}
 	}
 
-	/// Forget every listing and current attribute. Inode numbers the kernel holds stay valid; detached
-	/// versions keep their frozen attributes.
 	pub fn resync(&mut self) -> Vec<Inval> {
 		self.changes += 1;
+		self.resync_gen = self.changes;
 		let dirs: Vec<u64> = self.dirs.keys().copied().collect();
 		for dir in dirs {
 			self.drop_listing(dir);
@@ -395,6 +421,7 @@ impl Tree {
 	/// The node of a name this program made (a file created or a folder made), held by the kernel's lookup.
 	pub fn add_local(&mut self, dir: u64, name: &str, attr: Attr) -> u64 {
 		self.changes += 1;
+		self.touch_dir(dir);
 		let Some(dir_path) = self.nodes.get(&dir).map(|n| n.path.clone()) else { return 0 };
 		let path = join(&dir_path, name);
 		if let Some(old) = self.by_path.get(&path).copied() {
@@ -417,24 +444,24 @@ impl Tree {
 				detached: false,
 				removed: false,
 				cached: false,
+				dir_gen: self.changes,
 			},
 		);
 		self.by_path.insert(path, ino);
 		ino
 	}
 
-	/// A node's attributes after this program changed it (a version its own save made): kept as current, and as the
-	/// version the next listing is compared with, so it is not taken for someone else's newer version.
 	pub fn set_local(&mut self, ino: u64, attr: Attr) {
 		self.changes += 1;
 		let Some(n) = self.nodes.get_mut(&ino).filter(|n| !n.detached) else { return };
 		n.attr = Some(attr.clone());
 		n.seen = attr.clone();
-		// A lookup answers from the folder's cached listing: it names the inode with what it is now.
+		n.dir_gen = self.changes;
 		let parent = n.parent;
-		let name = split(&n.path).1;
+		let name = split(&n.path).1.to_string();
+		self.touch_dir(parent);
 		if let Some(list) = self.dirs.get_mut(&parent) {
-			if let Ok(idx) = list.binary_search_by(|c| c.name.as_str().cmp(name)) {
+			if let Ok(idx) = list.binary_search_by(|c| c.name.as_str().cmp(name.as_str())) {
 				if list[idx].ino == ino {
 					Arc::make_mut(list)[idx].attr = attr;
 				}
@@ -455,11 +482,13 @@ impl Tree {
 	/// at their new paths; whatever was at `to` is replaced, and both folders list again.
 	pub fn renamed_local(&mut self, from: &str, to: &str, to_dir: u64) {
 		self.changes += 1;
+		self.touch_dir(to_dir);
 		if let Some(old) = self.by_path.get(to).copied() {
 			self.remove_here(old);
 		}
 		for path in [from, to] {
 			if let Some(&parent) = self.by_path.get(split(path).0) {
+				self.touch_dir(parent);
 				if self.dirs.contains_key(&parent) {
 					self.drop_listing(parent);
 				}
@@ -472,12 +501,12 @@ impl Tree {
 			self.by_path.remove(&path);
 			if let Some(n) = self.nodes.get_mut(&ino) {
 				n.path = next.clone();
+				n.dir_gen = self.changes;
 			}
 			self.by_path.insert(next, ino);
 		}
 		if let Some(n) = self.nodes.get_mut(&moved) {
 			n.parent = to_dir;
-			// No longer named by the old folder's listing (dropped above).
 			n.listed = false;
 		}
 	}
@@ -848,5 +877,27 @@ mod tests {
 		t.drop_listings("a");
 		assert!(t.listing(a).is_none());
 		assert!(t.listing(a_other).is_some());
+	}
+
+	#[test]
+	fn unrelated_directory_change_does_not_discard_inflight_listing() {
+		let mut t = Tree::new();
+		let (dirs, _) = t.install(ROOT, vec![folder("alpha"), folder("beta")], t.changes(), true, None);
+		let alpha = ino_of(&dirs, "alpha");
+		let beta = ino_of(&dirs, "beta");
+		t.hold(alpha);
+		t.hold(beta);
+		let started = t.changes();
+		let new_attr = Attr { kind: EntryKind::File, size: 1, mtime_ms: 1, executable: false, version: "v1".into(), authority: None };
+		let _ = t.add_local(beta, "b.txt", new_attr);
+		let (kids, kept) = t.install(alpha, vec![file("a.txt", 2, "v2")], started, true, None);
+		assert!(kept);
+		assert_eq!(kids.len(), 1);
+		assert!(t.listing(alpha).is_some());
+
+		let started_resync = t.changes();
+		t.resync();
+		let (_, kept_after_resync) = t.install(alpha, vec![file("a.txt", 2, "v2")], started_resync, true, None);
+		assert!(!kept_after_resync);
 	}
 }

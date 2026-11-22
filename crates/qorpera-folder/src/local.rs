@@ -627,8 +627,9 @@ pub struct Local {
 	pub folders: Mutex<u64>,
 	/// The `.gitignore` files read for the caches in worktrees (`ignore.rs`), by their paths: the version each was read
 	/// at, and its patterns.
-	pub ignores: Mutex<HashMap<String, (String, Arc<Patterns>)>>,
+	pub ignores: Mutex<HashMap<String, (String, Option<Arc<Patterns>>)>>,
 	pub git_gen: AtomicU64,
+	pub cache_gen: AtomicU64,
 	owner: (u32, u32),
 	/// The folders of the git files and of the caches, held open as places to find what is in them (`folder`).
 	areas: (File, File),
@@ -811,6 +812,7 @@ impl Local {
 			folders: Mutex::new(0),
 			ignores: Mutex::new(HashMap::new()),
 			git_gen: AtomicU64::new(0),
+			cache_gen: AtomicU64::new(0),
 			owner,
 			areas: (git, cache),
 			devs,
@@ -1685,6 +1687,10 @@ impl Local {
 	/// The local entries of a mount folder (`dir`, in `area`), each now known by its inode; not one on another disk
 	/// (`id`).
 	pub fn entries_of(&self, dir: &str, area: Area) -> Vec<(u64, FileType, String)> {
+		self.entries_of_plus(dir, area).into_iter().map(|(ino, kind, name, _)| (ino, kind, name)).collect()
+	}
+
+	pub fn entries_of_plus(&self, dir: &str, area: Area) -> Vec<(u64, FileType, String, FileAttr)> {
 		let mut names = self.names();
 		let Ok(room) = self.folder(area, &room_in(dir, area), false) else { return Vec::new() };
 		let Ok(read) = fs::read_dir(fd_path(&room)) else { return Vec::new() };
@@ -1695,13 +1701,16 @@ impl Local {
 			};
 			let Ok(ino) = self.id(area, &meta) else { continue };
 			known(&mut names, ino, Up::Mount(dir.to_string()), &name, area);
-			out.push((ino, kind(&meta.file_type()), name));
+			out.push((ino, kind(&meta.file_type()), name, self.attr(ino, &meta)));
 		}
 		out
 	}
 
-	/// The entries of a local folder, each now known by its inode; not one on another disk (`id`).
 	pub fn children(&self, ino: u64) -> Result<Vec<(u64, FileType, String)>, i32> {
+		self.children_plus(ino).map(|v| v.into_iter().map(|(ino, kind, name, _)| (ino, kind, name)).collect())
+	}
+
+	pub fn children_plus(&self, ino: u64) -> Result<Vec<(u64, FileType, String, FileAttr)>, i32> {
 		let mut out = Vec::new();
 		let mut names = self.names();
 		let (disk, area) = self.disk_at(&names, ino)?;
@@ -1716,7 +1725,7 @@ impl Local {
 			};
 			let Ok(child) = self.id(area, &meta) else { continue };
 			known(&mut names, child, Up::Local(ino), &name, area);
-			out.push((child, kind(&meta.file_type()), name));
+			out.push((child, kind(&meta.file_type()), name, self.attr(child, &meta)));
 		}
 		Ok(out)
 	}

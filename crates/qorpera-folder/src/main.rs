@@ -16,8 +16,9 @@ const USAGE: &str = "Usage:
   qorpera-folder bridge --service unix:<socket> [--listen vsock:any:5250] [--per-machine 512] [--lxd-socket <path>]
   qorpera-folder relay --listen systemd|unix:<socket> [--connect vsock:2:5250]
   qorpera-folder command --shell-pid <pid> --tree <dir> --network yes|no -- <program> [args]
-  qorpera-folder data [--view-file /run/qorpera-folder/view.json] [--root /company] [--connect vsock:2:5250] describe [<database>] | apply <database> | query <database> <question> [name=value ...] | query <database> --sql '<one select>' [name=value ...] | change <database> <change> [name=value ...]
-  qorpera-folder scan-pack --spec-fd <fd>
+  qorpera-folder data [--view-file /run/qorpera-folder/view.json] [--root /company] [--connect vsock:2:5250] [--format json|table|csv|tsv|ndjson] describe [<database>] | apply <database> [--dry-run] | query <database> (<question> | --sql '<select>'|- | --sql-file <path>) [--params-json '<obj>'] [--params-file <path>] [name=value | name:=<JSON> ...] | change <database> <change> [--dry-run] [--params-json '<obj>'] [--params-file <path>] [name=value | name:=<JSON> ...] | rows <database> <table> [--limit N] [--offset N] [--order col[:asc|:desc]] | changes <database> | --help
+  qorpera-folder scan-pack --spec-fd <fd> [--exclude-idx <path>]... [--exclude-oids-fd <fd>] | --diff-idx <path> [--exclude-idx <path>]... [--exclude-oids-fd <fd>]
+  qorpera-folder scan-stream --spec-fd <fd>
   qorpera-folder search-worker --storage-root <dir> [--index-mib <N>] [--threads <N>]
   qorpera-folder version
 
@@ -59,12 +60,15 @@ does. Exit codes: 0 its end was reported, 1 failed (reported on fd 3), 2 usage o
 
 data: a company machine's command for the company's databases (the folders data/<database>/ of the company folder),
 as the machine's folder view: what the view may read there is what it may ask and change. describe shows the databases
-(or one): tables, steps, questions and changes. apply applies a database's waiting steps; a step that would destroy
-data is held, and its yes is asked from an agent's data_apply, never from a machine. query asks a question by name
-(data/<database>/queries/<question>.sql) or one select of its own; change runs a named change
-(data/<database>/actions/<change>.sql). A value is text; name:=<JSON> gives a number, true, false or null. The answer
-is printed as one line of JSON. When the store asks for a file's text, the command reads it under <root> and sends it
-by its hash; a file written a moment ago is used once it is saved to the folder (the command asks again for 10 s).
+(or one): tables, steps, questions and changes. apply applies a database's waiting steps (--dry-run previews step state
+without applying); a step that would destroy data is held, and its yes is asked from an agent's data_apply, never from
+a machine. query asks a question by name (data/<database>/queries/<question>.sql) or one select of its own (--sql, --sql -
+for stdin, or --sql-file); change runs a named change (data/<database>/actions/<change>.sql; --dry-run previews without
+mutating); rows reads table rows via a bounded select; changes inspects a database's named changes and step status. A
+value is text; name:=<JSON> gives a JSON number, boolean, null, array or object; --params-json and --params-file load
+a JSON object of parameters. --format selects json (default), table, csv, tsv or ndjson. --help/-h prints usage and
+exits 0. When the store asks for a file's text, the command reads it under <root> and sends it by its hash; a file
+written a moment ago is used once it is saved to the folder (the command asks again for 10 s).
 Exit codes: 0 an answer, 1 a refusal (its words on standard error), 2 usage, 3 the databases cannot be reached from
 this machine now, no answer came, or the answer could not be printed (an apply or a change may then have run: look
 before running it again).
@@ -93,6 +97,7 @@ fn main() -> ExitCode {
 		Some("command") => command(&args[1..]),
 		Some("data") => data(&args[1..]),
 		Some("scan-pack") => scan_pack(&args[1..]),
+		Some("scan-stream") => scan_stream(&args[1..]),
 		Some("search-worker") => search_worker(&args[1..]),
 		Some("version" | "--version") => {
 			println!("qorpera-folder {} (protocol {})", env!("CARGO_PKG_VERSION"), proto::PROTOCOL);
@@ -403,15 +408,63 @@ fn command(args: &[String]) -> Result<ExitCode, Usage> {
 const MACHINE_VIEW_FILE: &str = "/run/qorpera-folder/view.json";
 
 fn data(args: &[String]) -> Result<ExitCode, Usage> {
-	let mut split = 0;
-	while args.get(split).is_some_and(|a| a.starts_with("--")) {
-		split += 2;
+	let mut view_file: Option<String> = None;
+	let mut root: Option<String> = None;
+	let mut connect: Option<String> = None;
+	let mut leading_format: Option<data::Format> = None;
+	let mut i = 0;
+	while i < args.len() {
+		match args[i].as_str() {
+			"-h" | "--help" => {
+				println!("{}", data::DATA_USAGE);
+				return Ok(ExitCode::SUCCESS);
+			}
+			"--view-file" => {
+				if view_file.is_some() {
+					return Err(Usage("--view-file given twice".into()));
+				}
+				let val = args.get(i + 1).filter(|v| !v.starts_with("--")).ok_or_else(|| Usage("--view-file needs a value".into()))?;
+				view_file = Some(val.clone());
+				i += 2;
+			}
+			"--root" => {
+				if root.is_some() {
+					return Err(Usage("--root given twice".into()));
+				}
+				let val = args.get(i + 1).filter(|v| !v.starts_with("--")).ok_or_else(|| Usage("--root needs a value".into()))?;
+				root = Some(val.clone());
+				i += 2;
+			}
+			"--connect" => {
+				if connect.is_some() {
+					return Err(Usage("--connect given twice".into()));
+				}
+				let val = args.get(i + 1).filter(|v| !v.starts_with("--")).ok_or_else(|| Usage("--connect needs a value".into()))?;
+				connect = Some(val.clone());
+				i += 2;
+			}
+			"--format" => {
+				if leading_format.is_some() {
+					return Err(Usage("--format given twice".into()));
+				}
+				let val = args.get(i + 1).filter(|v| !v.starts_with("--")).ok_or_else(|| Usage("--format needs a value".into()))?;
+				leading_format = Some(data::Format::parse(val).map_err(Usage)?);
+				i += 2;
+			}
+			other if other.starts_with("--") => return Err(Usage(format!("unknown option {other}"))),
+			_ => break,
+		}
 	}
-	let o = options(&args[..split.min(args.len())], &["view-file", "root", "connect"])?;
-	let call = data::call(&args[split.min(args.len())..]).map_err(Usage)?;
-	let view_file = o.get("view-file").map(String::as_str).unwrap_or(MACHINE_VIEW_FILE);
-	let root = PathBuf::from(o.get("root").map(String::as_str).unwrap_or("/company"));
-	let addr = o.get("connect").cloned().unwrap_or_else(|| format!("vsock:2:{}", proto::VSOCK_PORT));
+	let parsed = match data::parse_cli(&args[i..], leading_format, std::io::stdin().lock()).map_err(Usage)? {
+		data::Command::Help => {
+			println!("{}", data::DATA_USAGE);
+			return Ok(ExitCode::SUCCESS);
+		}
+		data::Command::Execute(parsed) => parsed,
+	};
+	let view_file = view_file.as_deref().unwrap_or(MACHINE_VIEW_FILE);
+	let root = PathBuf::from(root.as_deref().unwrap_or("/company"));
+	let addr = connect.unwrap_or_else(|| format!("vsock:2:{}", proto::VSOCK_PORT));
 	let view = match viewfile::read(std::path::Path::new(view_file)) {
 		Ok(view) => view,
 		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -423,7 +476,80 @@ fn data(args: &[String]) -> Result<ExitCode, Usage> {
 			return Ok(ExitCode::from(data::EXIT_UNREACHABLE));
 		}
 	};
-	Ok(ExitCode::from(data::run(&addr, &view, &root, &call, &data::Waits::default(), &mut std::io::stdout(), &mut std::io::stderr())))
+	Ok(ExitCode::from(data::run_parsed(
+		&addr,
+		&view,
+		&root,
+		&parsed,
+		&data::Waits::default(),
+		&mut std::io::stdout(),
+		&mut std::io::stderr(),
+	)))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ScanPackArgs {
+	spec_fd: Option<RawFd>,
+	diff_idx: Option<PathBuf>,
+	exclude_idx: Vec<PathBuf>,
+	exclude_oids_fd: Option<RawFd>,
+}
+
+fn scan_pack_args(args: &[String]) -> Result<ScanPackArgs, Usage> {
+	let mut spec_fd: Option<RawFd> = None;
+	let mut diff_idx: Option<PathBuf> = None;
+	let mut exclude_idx: Vec<PathBuf> = Vec::new();
+	let mut exclude_oids_fd: Option<RawFd> = None;
+	let mut it = args.iter();
+	while let Some(arg) = it.next() {
+		match arg.as_str() {
+			"--spec-fd" => {
+				if spec_fd.is_some() {
+					return Err(Usage("--spec-fd given twice".into()));
+				}
+				let raw = it.next().filter(|v| !v.starts_with("--")).ok_or_else(|| Usage("--spec-fd needs a value".into()))?;
+				let fd: RawFd = raw.parse().map_err(|_| Usage("--spec-fd must be a file descriptor".into()))?;
+				if fd < 3 {
+					return Err(Usage("--spec-fd must be 3 or higher".into()));
+				}
+				spec_fd = Some(fd);
+			}
+			"--diff-idx" => {
+				if diff_idx.is_some() {
+					return Err(Usage("--diff-idx given twice".into()));
+				}
+				let raw = it.next().filter(|v| !v.starts_with("--") && !v.is_empty()).ok_or_else(|| Usage("--diff-idx needs a path".into()))?;
+				diff_idx = Some(PathBuf::from(raw));
+			}
+			"--exclude-idx" => {
+				let raw = it.next().filter(|v| !v.starts_with("--") && !v.is_empty()).ok_or_else(|| Usage("--exclude-idx needs a path".into()))?;
+				exclude_idx.push(PathBuf::from(raw));
+			}
+			"--exclude-oids-fd" => {
+				if exclude_oids_fd.is_some() {
+					return Err(Usage("--exclude-oids-fd given twice".into()));
+				}
+				let raw = it.next().filter(|v| !v.starts_with("--")).ok_or_else(|| Usage("--exclude-oids-fd needs a value".into()))?;
+				let fd: RawFd = raw.parse().map_err(|_| Usage("--exclude-oids-fd must be a file descriptor".into()))?;
+				if fd < 3 {
+					return Err(Usage("--exclude-oids-fd must be 3 or higher".into()));
+				}
+				exclude_oids_fd = Some(fd);
+			}
+			other => return Err(Usage(format!("unknown option {other}"))),
+		}
+	}
+	match (spec_fd, &diff_idx) {
+		(Some(_), Some(_)) => return Err(Usage("--spec-fd and --diff-idx cannot be combined".into())),
+		(None, None) => return Err(Usage("--spec-fd or --diff-idx is required".into())),
+		_ => {}
+	}
+	if let (Some(a), Some(b)) = (spec_fd, exclude_oids_fd) {
+		if a == b {
+			return Err(Usage("--spec-fd and --exclude-oids-fd must be different descriptors".into()));
+		}
+	}
+	Ok(ScanPackArgs { spec_fd, diff_idx, exclude_idx, exclude_oids_fd })
 }
 
 fn scan_pack_fd(args: &[String]) -> Result<RawFd, Usage> {
@@ -437,8 +563,18 @@ fn scan_pack_fd(args: &[String]) -> Result<RawFd, Usage> {
 }
 
 fn scan_pack(args: &[String]) -> Result<ExitCode, Usage> {
-	let fd = scan_pack_fd(args)?;
-	match scan::run_from_fd(fd) {
+	let parsed = scan_pack_args(args)?;
+	if let Some(target_idx) = parsed.diff_idx {
+		return match scan::run_diff_idx(&target_idx, &parsed.exclude_idx, parsed.exclude_oids_fd) {
+			Ok(_) => Ok(ExitCode::SUCCESS),
+			Err(msg) => {
+				eprintln!("qorpera-folder scan-pack: {msg}");
+				Ok(ExitCode::FAILURE)
+			}
+		};
+	}
+	let fd = parsed.spec_fd.expect("validated");
+	match scan::run_pack_from_fd(fd, &parsed.exclude_idx, parsed.exclude_oids_fd) {
 		Ok(outcome) => {
 			let line = serde_json::to_string(&outcome).expect("a scan outcome serializes");
 			let mut stdout = std::io::stdout().lock();
@@ -449,6 +585,24 @@ fn scan_pack(args: &[String]) -> Result<ExitCode, Usage> {
 		}
 		Err(msg) => {
 			eprintln!("qorpera-folder scan-pack: {msg}");
+			Ok(ExitCode::FAILURE)
+		}
+	}
+}
+
+fn scan_stream(args: &[String]) -> Result<ExitCode, Usage> {
+	let fd = scan_pack_fd(args)?;
+	match scan::run_stream_from_fd(fd) {
+		Ok(outcome) => {
+			let line = serde_json::to_string(&outcome).expect("a scan outcome serializes");
+			let mut stdout = std::io::stdout().lock();
+			if writeln!(stdout, "{line}").is_err() || stdout.flush().is_err() {
+				return Ok(ExitCode::FAILURE);
+			}
+			Ok(ExitCode::SUCCESS)
+		}
+		Err(msg) => {
+			eprintln!("qorpera-folder scan-stream: {msg}");
 			Ok(ExitCode::FAILURE)
 		}
 	}
@@ -597,6 +751,32 @@ mod tests {
 			vec!["--spec-fd", "3", "--other", "1"],
 		] {
 			assert!(parse(&bad).is_err(), "{bad:?}");
+		}
+		let parse_pack = |args: &[&str]| scan_pack_args(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+		assert_eq!(
+			parse_pack(&["--spec-fd", "3", "--exclude-idx", "/a.idx", "--exclude-idx", "/b.idx", "--exclude-oids-fd", "4"]).ok(),
+			Some(ScanPackArgs {
+				spec_fd: Some(3),
+				diff_idx: None,
+				exclude_idx: vec![PathBuf::from("/a.idx"), PathBuf::from("/b.idx")],
+				exclude_oids_fd: Some(4),
+			})
+		);
+		assert_eq!(
+			parse_pack(&["--diff-idx", "/new.idx", "--exclude-idx", "/old.idx"]).ok(),
+			Some(ScanPackArgs {
+				spec_fd: None,
+				diff_idx: Some(PathBuf::from("/new.idx")),
+				exclude_idx: vec![PathBuf::from("/old.idx")],
+				exclude_oids_fd: None,
+			})
+		);
+		for bad in [
+			vec!["--spec-fd", "3", "--exclude-oids-fd", "3"],
+			vec!["--spec-fd", "3", "--diff-idx", "/a.idx"],
+			vec!["--exclude-idx", "/a.idx"],
+		] {
+			assert!(parse_pack(&bad).is_err(), "{bad:?}");
 		}
 	}
 
