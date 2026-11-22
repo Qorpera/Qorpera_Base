@@ -2220,4 +2220,334 @@ describe("cloud surface runtime tools", () => {
 			await rm(tempRoot, { recursive: true, force: true });
 		}
 	});
+
+	it("routes worker-dispatch coding wakes with surfaceSession into CloudNativeCodingDriver with full prompt and refuses code_repo on legacy surface-session wakes", async () => {
+		const tempRoot = await mkdtemp(join(tmpdir(), "qorpera-surface-coding-route-test-"));
+		const binarySha256 = createHash("sha256")
+			.update(await readFile(process.execPath))
+			.digest("hex");
+		const assertBundle = runtimeBundle.assertCloudRuntimeBundle;
+		const bundleSpy = vi
+			.spyOn(runtimeBundle, "assertCloudRuntimeBundle")
+			.mockImplementation((identity) => assertBundle(identity, CLOUD_RUNTIME_NATIVE_BINARY_SHA256));
+
+		try {
+			const f = nativeCompanyContextFixture();
+			f.context = {
+				...f.context,
+				agentKind: "cofounder",
+				identity: { ...f.context.identity, sessionId: null },
+			};
+			f.authority = {
+				...f.authority,
+				identity: { ...f.authority.identity, sessionId: null },
+			};
+			const workerId = randomUUID();
+			const surfaceId = randomUUID();
+			const sessionId = randomUUID();
+			const leaseToken = randomUUID();
+			const fullPrompt = `${"Design the mobile meditation preview flow. ".repeat(65)}FULL_PROMPT_TAIL`;
+			const codingWake = {
+				schema: "qorpera.wake-envelope/v1",
+				id: randomUUID(),
+				runId: f.context.identity.runId,
+				kind: "agent",
+				companyId: f.context.identity.companyId,
+				environmentId: f.context.identity.environmentId,
+				staffAgentId: f.context.identity.staffAgentId,
+				requesterUserId: f.context.identity.requesterUserId,
+				actorStaffId: null,
+				actorUserId: null,
+				audience: {
+					kind: "company",
+					userId: null,
+					sessionId: null,
+				},
+				source: {
+					kind: "worker-dispatch",
+					id: workerId,
+					occurrenceKey: `worker-dispatch:${workerId}:1`,
+				},
+				policy: {
+					schema: "qorpera.wake-policy/v1",
+					kind: "agent",
+					initial: "forbidden",
+					final: "forbidden",
+					silenceAllowed: true,
+					maxPublicSends: 0,
+				},
+				time: {
+					utc: "2026-09-02T08:00:00.000000Z",
+					local: "2026-09-02T10:00:00.000000",
+					timeZone: "Europe/Copenhagen",
+				},
+				pins: {
+					companySnapshotId: null,
+					companySeq: 1,
+					staffVersion: f.context.identity.staffVersion,
+					wakeSchema: "qorpera.wake-envelope/v1",
+					runtimeBundleVersion: null,
+				},
+				routine: null,
+				payload: {
+					schema: "qorpera.worker-dispatch/v1",
+					workerId,
+					workerKey: `surface-${sessionId.replaceAll("-", "")}`,
+					sequence: 1,
+					species: "coding",
+					title: "Meditationsforløbet i Preview",
+					todo: { todoKey: null, title: null, path: null },
+					parentRunId: null,
+					access: "read",
+					outputFolder: null,
+					dispatch: {
+						goal: fullPrompt.slice(0, 2000),
+						definitionOfDone: "Commit and call coding_finish.",
+						context: "",
+						sources: [],
+						followUp: null,
+						authority: "Work only in the Surface repository worktree.",
+						output: "Call coding_record_change and coding_finish.",
+						cancellation: "Stop if cancelled.",
+						completion: "Sync back to surface session.",
+					},
+					coding: {
+						harness: "codex",
+						repository: { host: "qorpera", owner: "surfaces", name: "meditation-app", baseBranch: "main" },
+						branch: `qorpera/coding/${workerId}`,
+						baseSha: "a".repeat(40),
+						harnessSessionRef: null,
+						sequence: 1,
+						vmId: randomUUID(),
+					},
+					surfaceSession: {
+						sessionId,
+						surfaceId,
+						surfaceSlug: "meditation-app",
+						leaseToken,
+					},
+				},
+				parentRunId: null,
+				causal: { rootId: randomUUID(), agentIds: [f.context.identity.staffAgentId] },
+			};
+
+			const recordedRpcs: { method: string; args: Record<string, unknown> }[] = [];
+			let activeWake: Record<string, unknown> = codingWake;
+			const codingExecute = vi.fn(async (_req, _root, _signal, ctx) => {
+				expect(ctx.surfaceSession).toMatchObject({
+					sessionId,
+					surfaceSlug: "meditation-app",
+					surfaceTitle: "Meditationsapp",
+					fullPrompt,
+				});
+				await ctx.surfaceSession!.recordChange(
+					sessionId,
+					{
+						title: "Mobile flow",
+						summary: "Adds interactive meditation preview.",
+						commitSha: "b".repeat(40),
+						dependsOnChangeIds: [],
+					},
+					{ companyId: f.context.identity.companyId, signal: new AbortController().signal } as CloudToolContext,
+				);
+				return {
+					providerSessionId: "native-coding-thread",
+					delivery: { messageCount: 0, finalMessageId: null },
+				};
+			});
+
+			const identityRoot = join(tempRoot, "identity");
+			await mkdir(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
+			await writeFile(join(identityRoot, "codex", "auth.json"), '{"tokens":{"access_token":"SYNTHETIC_SECRET"}}', {
+				mode: 0o600,
+			});
+
+			const runtime = new CloudNativeCompanyRuntime({
+				controlPlane: {
+					describeToolAuthority: vi.fn(async () => ({
+						...structuredClone(f.authority),
+						identity: {
+							...structuredClone(f.authority.identity),
+							audienceKind: "company",
+							audienceUserId: null,
+							sessionId: null,
+						},
+					})),
+					beginToolOperation: vi.fn(async () => {
+						throw new Error("Unexpected");
+					}),
+					completeToolOperation: vi.fn(async () => {
+						throw new Error("Unexpected");
+					}),
+					completeFolderToolOperation: vi.fn(async () => {
+						throw new Error("Unexpected");
+					}),
+					sendMessage: vi.fn(async () => {
+						throw new Error("Unexpected");
+					}),
+				},
+				pathControl: {
+					call: async (method, args) => {
+						recordedRpcs.push({ method, args });
+						if (method === "qorpera_describe_company_run_context") {
+							return {
+								...structuredClone(f.context),
+								identity: {
+									...structuredClone(f.context.identity),
+									audienceKind: "company",
+									audienceUserId: null,
+									sessionId: null,
+								},
+							};
+						}
+						if (method === "qorpera_read_native_wake") return structuredClone(activeWake);
+						if (method === "qorpera_native_surface_complete_turn") {
+							return { id: sessionId, state: args.p_state };
+						}
+						if (method === "qorpera_native_surface_read_session_turn") {
+							return {
+								sessionId,
+								surfaceId,
+								surfaceSlug: "meditation-app",
+								surfaceTitle: "Meditationsapp",
+								sourceKind: "code_repo",
+								prompt: fullPrompt,
+								state: "running",
+								repositoryKey: "surfaces/meditation-app",
+								folderRoot: null,
+								briefSummary: "Mobile meditation app.",
+								explorationVariantLabel: null,
+								originKind: "member",
+								originRef: null,
+								baseSha: "a".repeat(40),
+								branchHeadSha: null,
+								conflictPaths: [],
+							};
+						}
+						if (method === "qorpera_native_surface_record_change") {
+							return { changeId: randomUUID(), seq: 1, session: { openChangeCount: 1 } };
+						}
+						if (method === "qorpera_record_runtime_observation_batch") {
+							const batch = args.p_observations as { attemptId: string; phase: string }[];
+							return {
+								schema: "qorpera.runtime-observation-batch-receipt/v1",
+								runId: f.binding.runId,
+								receipts: batch.map((o) => ({
+									schema: "qorpera.runtime-observation-receipt/v1",
+									runId: f.binding.runId,
+									attemptId: o.attemptId,
+									phase: o.phase,
+									ingestedAt: new Date().toISOString(),
+									replayed: false,
+								})),
+							};
+						}
+						throw new Error(`Unexpected RPC: ${method}`);
+					},
+				},
+				coding: { execute: codingExecute },
+				command: [process.execPath, "-e", "process.exit(0)"],
+				binarySha256,
+				timeoutMs: 10_000,
+				surfaceFirst: true,
+				folderBytes: () => ({
+					put: async () => {
+						throw new Error("No folder writes expected");
+					},
+					get: async () => {
+						throw new Error("No file bytes");
+					},
+					range: async () => {
+						throw new Error("No file bytes");
+					},
+				}),
+			});
+
+			await runtime.execute(
+				{
+					runtime: "company-path-v1",
+					authority: {
+						...f.binding,
+						encryptedCapsuleReference: `native-capsule/${f.binding.credentialCapsuleId}`,
+						attestationPolicySha256: "a".repeat(64),
+						expiresAt: "2099-08-28T12:00:00Z",
+					},
+					job: {
+						jobId: f.binding.jobId,
+						jobType: "agent_turn",
+						requiredCapability: "agent_turn",
+						attemptCount: 1,
+						payload: {},
+					},
+				},
+				identityRoot,
+				new AbortController().signal,
+			);
+
+			expect(codingExecute).toHaveBeenCalledTimes(1);
+			expect(recordedRpcs).toContainEqual({
+				method: "qorpera_native_surface_record_change",
+				args: expect.objectContaining({
+					p_session_id: sessionId,
+					p_kind: "git_range",
+					p_head_sha: "b".repeat(40),
+					p_lease_token: leaseToken,
+				}),
+			});
+
+			activeWake = {
+				...codingWake,
+				id: randomUUID(),
+				source: {
+					kind: "surface-session",
+					id: sessionId,
+					occurrenceKey: `surface-session:${sessionId}:${leaseToken}`,
+				},
+				payload: {
+					schema: "qorpera.surface-session-wake/v1",
+					surfaceSessionId: sessionId,
+					surfaceId,
+					profileId: f.context.identity.companyId,
+					surfaceSlug: "meditation-app",
+					sourceKind: "code_repo",
+					originKind: "member",
+					memberInitiated: true,
+					leaseToken,
+				},
+			};
+			await expect(
+				runtime.execute(
+					{
+						runtime: "company-path-v1",
+						authority: {
+							...f.binding,
+							encryptedCapsuleReference: `native-capsule/${f.binding.credentialCapsuleId}`,
+							attestationPolicySha256: "a".repeat(64),
+							expiresAt: "2099-08-28T12:00:00Z",
+						},
+						job: {
+							jobId: f.binding.jobId,
+							jobType: "agent_turn",
+							requiredCapability: "agent_turn",
+							attemptCount: 1,
+							payload: {},
+						},
+					},
+					identityRoot,
+					new AbortController().signal,
+				),
+			).rejects.toThrow("Code repository surface sessions run through the coding executor; retry this session.");
+			expect(recordedRpcs).toContainEqual({
+				method: "qorpera_native_surface_complete_turn",
+				args: expect.objectContaining({
+					p_session_id: sessionId,
+					p_state: "failed",
+					p_lease_token: leaseToken,
+				}),
+			});
+		} finally {
+			bundleSpy.mockRestore();
+			await rm(tempRoot, { recursive: true, force: true });
+		}
+	});
 });

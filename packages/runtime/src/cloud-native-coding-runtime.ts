@@ -657,11 +657,13 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				operationKey: receipt.operationKey,
 			});
 		};
+		const surfaceSession = context.surfaceSession;
 		const finish: CloudNativeTool = {
 			name: "coding_finish" satisfies CloudRuntimeToolOperation,
 			source: "worker",
-			description:
-				"End the turn with the exact committed head SHA on the session branch and a factual summary of the changes and check results. notice says in one plain sentence what a customer will notice, and picture names a screenshot you committed that shows it; both may be left out. The platform validates that commit and hands it in: in a repository kept in Qorpera it lands on the default branch; on GitHub it is pushed and the draft pull request opened or updated. This is a durable submission, not proof that it landed. Stop modifying the repository after submitting.",
+			description: surfaceSession
+				? "End the turn with the exact committed head SHA on the session branch and a factual summary of what you built and verified. On this Surface session, commits stay staged on the session branch for founder Preview and approval rather than landing directly on main. Make sure you called coding_record_change for each user-visible deliverable before calling coding_finish. Stop modifying the repository after submitting."
+				: "End the turn with the exact committed head SHA on the session branch and a factual summary of the changes and check results. notice says in one plain sentence what a customer will notice, and picture names a screenshot you committed that shows it; both may be left out. The platform validates that commit and hands it in: in a repository kept in Qorpera it lands on the default branch; on GitHub it is pushed and the draft pull request opened or updated. This is a durable submission, not proof that it landed. Stop modifying the repository after submitting.",
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -775,7 +777,6 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				};
 			},
 		};
-		const surfaceSession = context.surfaceSession;
 		const effectivePrompt = surfaceSession ? `${prompt}\n\n${buildSurfaceTurnBrief(surfaceSession)}` : prompt;
 		const effectiveContextSha256 = surfaceSession
 			? createHash("sha256").update(effectivePrompt).digest("hex")
@@ -818,7 +819,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			turnCorrection: async () =>
 				submitted
 					? undefined
-					: "Your turn ended without coding_finish or coding_ask, so nothing of it is handed in. End it now, by your instructions' rules for handing in. When you have a commit they let you hand in, call coding_finish with its SHA and a factual summary that names what is left; in a repository kept in Qorpera that is only work that is whole and passes its checks, since it lands at once. Otherwise call coding_ask with what is unfinished or blocks you and what you need from the member. This is the last turn of this run: if it ends without one of them, the turn fails.",
+					: surfaceSession
+						? "Your turn ended without coding_finish or coding_ask, so nothing of it is staged yet. If your deliverable is committed on the session branch, call coding_record_change for each deliverable (if not already recorded) and call coding_finish with the final headSha and a factual summary. Otherwise call coding_ask with what blocks you and what you need from the founder. This is the last turn of this run: if it ends without coding_finish or coding_ask, the turn fails."
+						: "Your turn ended without coding_finish or coding_ask, so nothing of it is handed in. End it now, by your instructions' rules for handing in. When you have a commit they let you hand in, call coding_finish with its SHA and a factual summary that names what is left; in a repository kept in Qorpera that is only work that is whole and passes its checks, since it lands at once. Otherwise call coding_ask with what is unfinished or blocks you and what you need from the member. This is the last turn of this run: if it ends without one of them, the turn fails.",
 			beginExecution: async (specification, checked) => {
 				const text = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
 				const started = await this.#control.call(
