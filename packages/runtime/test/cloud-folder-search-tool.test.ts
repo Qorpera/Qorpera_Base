@@ -1060,4 +1060,74 @@ describe("company_search", () => {
 			"big.md:1: plan, new\n\nbig.md changed since the last answer: it is searched again from its start.\n\n1 file searched. Nothing more.",
 		);
 	});
+
+	it("reassembles frames split across single-byte socket chunks", async () => {
+		const root = await mkdtemp(join(tmpdir(), "folder-search-frag-"));
+		const path = join(root, "relay.sock");
+		const encodeFrame = (kind: number, body: unknown) => {
+			const payload = Buffer.from(JSON.stringify(body));
+			const head = Buffer.alloc(5);
+			head.writeUInt32BE(payload.byteLength + 1, 0);
+			head[4] = kind;
+			return Buffer.concat([head, payload]);
+		};
+		const writeFragmented = (socket: Socket, bytes: Buffer) => {
+			let offset = 0;
+			const next = () => {
+				if (offset >= bytes.byteLength || socket.destroyed) return;
+				const step = offset < 6 ? 1 : Math.min(7, bytes.byteLength - offset);
+				socket.write(bytes.subarray(offset, offset + step));
+				offset += step;
+				if (offset < bytes.byteLength) setTimeout(next, 1);
+			};
+			next();
+		};
+		const server: Server = await new Promise((resolve) => {
+			const s = createServer((socket: Socket) => {
+				let buffer = Buffer.alloc(0);
+				socket.on("data", (data: Buffer) => {
+					buffer = Buffer.concat([buffer, data]);
+					while (buffer.byteLength >= 5 && buffer.byteLength >= 4 + buffer.readUInt32BE(0)) {
+						const length = buffer.readUInt32BE(0);
+						const kind = buffer[4];
+						const body = JSON.parse(buffer.subarray(5, 4 + length).toString("utf8")) as Record<string, unknown>;
+						buffer = buffer.subarray(4 + length);
+						if (kind === 0x48) {
+							writeFragmented(
+								socket,
+								encodeFrame(0x68, {
+									protocol: body.protocol,
+									viewId: body.viewId,
+									asOfSeq: 1,
+									readOnly: true,
+								}),
+							);
+						} else {
+							writeFragmented(
+								socket,
+								encodeFrame(
+									0x73,
+									found({
+										hits: [hit("frag.md", 3, "split across chunks")],
+										searched: 1,
+										reads: [read("frag.md")],
+									}).body,
+								),
+							);
+						}
+					}
+				});
+				socket.on("error", () => undefined);
+			});
+			s.listen(path, () => resolve(s));
+		});
+		cleanup.push(async () => {
+			server.close();
+			await rm(root, { recursive: true, force: true });
+		});
+		const f = folder();
+		const s = tool(path, f.client);
+		const content = await s.execute(s.parseArguments({ query: "split" }), context());
+		expect(content.value).toBe("frag.md:3: split across chunks\n\n1 file searched. Nothing more.");
+	});
 });
