@@ -60,8 +60,8 @@ export class PairTranscriptView {
 				earlierError: string | undefined;
 				firstName: string;
 				secondName: string;
-				firstAppearance: HostedStaffAgent["appearance"];
-				secondAppearance: HostedStaffAgent["appearance"];
+				firstAppearance: HostedStaffAgent["appearance"] | undefined;
+				secondAppearance: HostedStaffAgent["appearance"] | undefined;
 				locale: string;
 		  }
 		| undefined;

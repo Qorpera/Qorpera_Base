@@ -1665,7 +1665,15 @@ describe("agent execution state", () => {
 				clientRequestId: id(302),
 				text: "",
 				files: [],
-				executionSponsor: { kind: "member_connection", connectionId: id(80) },
+				executionSponsor: {
+					connectionId: id(80),
+					provider: "openai",
+					nativeHarness: "codex-cli",
+					sponsorBindingId: id(81),
+					sponsorVersion: 1,
+					computeIdentityId: id(82),
+					workerClass: "managed_sandbox",
+				},
 			},
 		});
 		controller.conversation(protectedIds.interactionAnswers, false).set({
@@ -1685,13 +1693,7 @@ describe("agent execution state", () => {
 		controller.conversation(protectedIds.earlierLoading, false).set({ earlierLoading: true });
 		controller.conversation(protectedIds.earlierError, false).set({ earlierError: "timeout" });
 		controller.conversation(protectedIds.quoteRecords, false).set({
-			quoteRecords: [
-				{
-					speaker: "Alice",
-					text: "hello",
-					ref: { kind: "message", eventId: id(305), text: "hello" },
-				},
-			],
+			quoteRecords: [{ words: "hello", source: "Alice", ref: id(305) }],
 		});
 		controller.conversation(protectedIds.answering, false).set({ answering: "note line" });
 		controller.conversation(protectedIds.sending, false).set({ sending: true });
@@ -1781,6 +1783,7 @@ describe("agent execution state", () => {
 			sessionId: id(800 + i),
 			staffAgentId: staff.id,
 			actorUserId: userA.id,
+			sequence: i + 1,
 			request: {
 				surface: "question",
 				title: `Q ${i}`,
