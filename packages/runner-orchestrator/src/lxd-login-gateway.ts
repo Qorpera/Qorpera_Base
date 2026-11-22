@@ -1121,8 +1121,8 @@ export class LxdNativeLoginGateway {
 			scanned++;
 			validNames.push(name);
 		}
-		// WHY: Clean up independent login identities concurrently so 1-2 slow VM deletions do not
-		// consume the 30s reconcile loop and starve deleted-identity retirement or execution-host sweep.
+		// WHY: Bound each identity's reconcile cleanup to 20s and run up to 4 independent identities
+		// concurrently so a wedged VM deletion cannot consume the 30s pass and starve retirement/sweep.
 		let next = 0;
 		const reconcileWorker = async (): Promise<void> => {
 			while (next < validNames.length) {
@@ -1135,19 +1135,21 @@ export class LxdNativeLoginGateway {
 						const journal = await LxdLoginJournal.open(this.#config.stateRoot, name, this.#lxd);
 						identity = journal.binding.computeIdentityId;
 						let wasPlaced = false;
-						const releasedAt = await this.#exclusive(journal.binding.computeIdentityId, async () => {
-							const state = await journal.state();
-							wasPlaced = state.nodeId !== null;
-							if (wasPlaced) placed.add(journal.binding.computeIdentityId);
-							if (state.releasedAt) return state.releasedAt;
-							if (!(await this.#retireOrphan(journal, signal))) {
-								const description = await this.#machineDescription(journal.binding, signal);
-								if (!state.closing && !description.cleanupRequired) return null;
-								await this.#cleanup(journal, signal);
-							}
-							// Orphan retirement and cleanup release the journal or throw.
-							return (await journal.state()).releasedAt;
-						});
+						const releasedAt = await this.#exclusive(journal.binding.computeIdentityId, async () =>
+							withTimeoutScope(signal, 20_000, async (entrySignal) => {
+								const state = await journal.state();
+								wasPlaced = state.nodeId !== null;
+								if (wasPlaced) placed.add(journal.binding.computeIdentityId);
+								if (state.releasedAt) return state.releasedAt;
+								if (!(await this.#retireOrphan(journal, entrySignal))) {
+									const description = await this.#machineDescription(journal.binding, entrySignal);
+									if (!state.closing && !description.cleanupRequired) return null;
+									await this.#cleanup(journal, entrySignal);
+								}
+								// Orphan retirement and cleanup release the journal or throw.
+								return (await journal.state()).releasedAt;
+							}),
+						);
 						if (!releasedAt) {
 							live.add(journal.binding.computeIdentityId);
 							continue;
@@ -1165,7 +1167,9 @@ export class LxdNativeLoginGateway {
 				}
 			}
 		};
-		await Promise.all(Array.from({ length: Math.min(4, validNames.length) }, reconcileWorker));
+		const results = await Promise.allSettled(Array.from({ length: Math.min(4, validNames.length) }, reconcileWorker));
+		signal.throwIfAborted();
+		for (const outcome of results) if (outcome.status === "rejected") throw outcome.reason;
 		await this.#retireDeletedIdentities(live, signal);
 		for (const id of this.#retiring) placed.delete(id);
 		await this.#sweepExecutionHost(placed, signal);

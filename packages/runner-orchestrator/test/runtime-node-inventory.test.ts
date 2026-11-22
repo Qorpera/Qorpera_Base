@@ -1704,4 +1704,17 @@ describe("trusted node inventory publisher composition", () => {
 		expect(slow.ports.lxd.inspectHostInventory).toHaveBeenCalledTimes(1);
 		expect(slow.calls.at(-1)?.method).toBe("qorpera_observe_runtime_node");
 	});
+	it("bounds observer measurements without calling AbortSignal.any or AbortSignal.timeout", async () => {
+		const f = observer();
+		const anySpy = vi.spyOn(AbortSignal, "any");
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+		try {
+			await expect(f.observer.observe(signal())).resolves.toMatchObject({ state: "ready" });
+			expect(anySpy).not.toHaveBeenCalled();
+			expect(timeoutSpy).not.toHaveBeenCalled();
+		} finally {
+			anySpy.mockRestore();
+			timeoutSpy.mockRestore();
+		}
+	});
 });

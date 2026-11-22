@@ -9,6 +9,7 @@ import { LxdOfficeInventoryWorker } from "../src/lxd-office-inventory-worker.ts"
 import { readRecord } from "../src/lxd-office-journal-files.ts";
 import { LxdOfficeOperationJournal } from "../src/lxd-office-operations.ts";
 import {
+	inspectOfficeStorage,
 	type OfficeInventoryLimits,
 	type OfficeInventorySource,
 	type OfficeStorageInventory,
@@ -194,6 +195,26 @@ describe("provider office storage observations", () => {
 		await expect(first).rejects.toThrow("OFFICE_INVENTORY_WORKER_ABORTED");
 		await new Promise((resolve) => setImmediate(resolve));
 		expect(await worker.inspect(intentId, signal())).toHaveProperty("observationSha256");
+	});
+	it("bounds storage inventory inspection without calling AbortSignal.any or AbortSignal.timeout", async () => {
+		const f = await fixture();
+		const { policy } = officePhysicalFixture();
+		const anySpy = vi.spyOn(AbortSignal, "any");
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+		try {
+			await expect(
+				inspectOfficeStorage(
+					{ root: join(f.root, "missing-storage"), uid: 0, gid: 0, mount: policy.journal },
+					limits,
+					signal(),
+				),
+			).rejects.toThrow();
+			expect(anySpy).not.toHaveBeenCalled();
+			expect(timeoutSpy).not.toHaveBeenCalled();
+		} finally {
+			anySpy.mockRestore();
+			timeoutSpy.mockRestore();
+		}
 	});
 });
 

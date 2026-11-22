@@ -239,4 +239,17 @@ describe("provider fresh inspection through the activation deadline", () => {
 		await expect(f.run()).rejects.toThrow(/^OFFICE_BOOT_SERVICE_INSPECTION_UNCONFIRMED$/);
 		expect(f.use).not.toHaveBeenCalled();
 	});
+	it("bounds typed inspection without calling AbortSignal.any or AbortSignal.timeout", async () => {
+		const f = await fixture();
+		const anySpy = vi.spyOn(AbortSignal, "any");
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+		try {
+			await expect(f.run()).resolves.toBe("active");
+			expect(anySpy).not.toHaveBeenCalled();
+			expect(timeoutSpy).not.toHaveBeenCalled();
+		} finally {
+			anySpy.mockRestore();
+			timeoutSpy.mockRestore();
+		}
+	});
 });
