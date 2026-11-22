@@ -1771,7 +1771,10 @@ export class SurfacesStore {
 		for (const session of sessions) {
 			for (const change of session.changes) {
 				if (change.patchManifest && change.patchManifest.length > 0) {
-					extractedPatches[change.id] = normalizeStudioPatchOps(change.patchManifest, workspace.surface.folderRoot);
+					extractedPatches[change.id] = normalizeStudioPatchOps(
+						change.patchManifest,
+						workspace.surface.folderRoot,
+					);
 				}
 			}
 		}
