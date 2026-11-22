@@ -1018,6 +1018,37 @@ describe("the page's words for values and refusals", () => {
 
 			await vi.advanceTimersByTimeAsync(500);
 			calls.rows.mockClear();
+			calls.rows.mockImplementation(async (asked) => {
+				const prev = asked.after ? Number(asked.after[0]) : 0;
+				const n = prev === 13 ? 1 : prev + 1;
+				return {
+					...repairs([[n, `Bike ${n}`, n * 10, true]], true),
+					next: [String(n)],
+				};
+			});
+			watchResolves.shift()?.({
+				changed: [
+					{
+						index: 0,
+						answer: {
+							...repairs([[13, "Bike 13 Promoted", 130, true]], true),
+							next: ["13"],
+							etag: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+						},
+					},
+				],
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(calls.rows).toHaveBeenCalledTimes(9);
+			expect(container.querySelectorAll("button.data-row")).toHaveLength(13);
+			const promotedLeads = texts(container, "button.data-row .is-lead");
+			expect(promotedLeads[0]).toBe("Bike 13 Promoted");
+			expect(promotedLeads).toContain("Bike 10");
+			expect(promotedLeads).toContain("Bike 11");
+			expect(promotedLeads).toContain("Bike 12");
+
+			await vi.advanceTimersByTimeAsync(500);
+			calls.rows.mockClear();
 			calls.rows.mockImplementation(async () => ({
 				...repairs([[2, "Bike 2 Loop", 20, true]], true),
 				next: ["1"],

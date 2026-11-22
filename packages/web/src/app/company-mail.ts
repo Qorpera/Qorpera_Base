@@ -160,6 +160,19 @@ const PAGE_POLL_MS = 20_000;
 const MAX_REFRESH_LIST_PAGES = 10;
 const MAX_THREAD_CATCHUP_PAGES = 10;
 
+function compareMailTimestamp(a: string, b: string): number {
+	const msDiff = Date.parse(a) - Date.parse(b);
+	if (msDiff !== 0 && !Number.isNaN(msDiff)) return msDiff;
+	const fracA = /(\.\d+)/.exec(a)?.[1]?.slice(1, 7).padEnd(6, "0") ?? "000000";
+	const fracB = /(\.\d+)/.exec(b)?.[1]?.slice(1, 7).padEnd(6, "0") ?? "000000";
+	return fracA < fracB ? -1 : fracA > fracB ? 1 : 0;
+}
+
+function isAfterMailCursor(item: { lastAt: string; thread: string }, cursor: MailCursor): boolean {
+	const cmp = compareMailTimestamp(item.lastAt, cursor.lastAt);
+	return cmp < 0 || (cmp === 0 && item.thread < cursor.thread);
+}
+
 const EMPTY: MailState = {
 	addresses: [],
 	waiting: [],
@@ -610,19 +623,20 @@ export class CompanyMail {
 						threads.push(opened.has(item.thread) ? { ...item, unread: false } : item);
 					}
 					let preserveTail = false;
-					if (target > cap && pages === cap && next !== undefined && was?.status === "ready") {
-						let lastOverlap = -1;
-						for (let index = 0; index < was.threads.length; index++) {
-							if (seen.has(was.threads[index]!.thread)) lastOverlap = index;
-						}
-						if (lastOverlap >= 0) {
-							// WHY: Preserve threads loaded past MAX_REFRESH_LIST_PAGES when the refreshed head joins cleanly without resurrecting removed head items.
-							preserveTail = true;
-							for (const item of was.threads.slice(lastOverlap + 1)) {
-								if (seen.has(item.thread)) continue;
-								seen.add(item.thread);
-								threads.push(opened.has(item.thread) ? { ...item, unread: false } : item);
-							}
+					if (
+						target > cap &&
+						pages === cap &&
+						next !== undefined &&
+						was?.status === "ready" &&
+						was.threads.length > 0 &&
+						!isAfterMailCursor(was.threads[0]!, next)
+					) {
+						// WHY: Join deep-scroll tails by cursor order (lastAt desc, thread desc) so threads promoted into the head cannot drop intermediate items.
+						preserveTail = true;
+						for (const item of was.threads) {
+							if (!isAfterMailCursor(item, next) || seen.has(item.thread)) continue;
+							seen.add(item.thread);
+							threads.push(opened.has(item.thread) ? { ...item, unread: false } : item);
 						}
 					}
 					const finalNext = preserveTail ? was!.next : next;

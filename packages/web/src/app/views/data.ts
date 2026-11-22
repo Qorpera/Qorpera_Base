@@ -566,16 +566,18 @@ class DataListView {
 		);
 		let keptTail = false;
 		if (sameSchema) {
-			const seenKeys = new Set(freshRows.map((row) => keyOf(first.columns, first.key, row.values)));
-			let lastOverlap = -1;
-			for (let index = 0; index < previousRows.length; index++) {
-				if (seenKeys.has(keyOf(first.columns, first.key, previousRows[index]!.values))) lastOverlap = index;
-			}
-			if (lastOverlap >= 0) {
-				// WHY: Preserve rows loaded past MAX_WATCH_REFETCH_PAGES when the refreshed head joins cleanly without resurrecting deleted head rows.
+			const boundaryRow = freshRows.at(-1);
+			const boundaryKey = boundaryRow ? keyOf(first.columns, first.key, boundaryRow.values) : null;
+			const boundaryIndex =
+				boundaryKey === null
+					? -1
+					: previousRows.findIndex((row) => keyOf(first.columns, first.key, row.values) === boundaryKey);
+			if (boundaryIndex >= 0) {
+				// WHY: Anchor deep-scroll tail joins on the refreshed head's final row so tail rows promoted into the head never hide intermediate rows.
+				const seenKeys = new Set(freshRows.map((row) => keyOf(first.columns, first.key, row.values)));
 				keptTail = true;
 				const tail = previousRows
-					.slice(lastOverlap + 1)
+					.slice(boundaryIndex + 1)
 					.filter((row) => !seenKeys.has(keyOf(first.columns, first.key, row.values)));
 				read.rows = [...freshRows, ...tail];
 				read.next = previousNext;
