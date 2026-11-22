@@ -46,6 +46,7 @@ export async function showRecoveryPanel(options: {
 				button(
 					`Computer ${office.scope.companyComputerId.slice(-12)}`,
 					async () => {
+						details.replaceChildren();
 						await action({ method: "selectOffice", companyComputerId: office.scope.companyComputerId });
 						await profiles();
 					},

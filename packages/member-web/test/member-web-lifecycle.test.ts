@@ -768,23 +768,35 @@ describe("member-web abort-scope, storage, downloads, and office lifecycle", () 
 		expect(failRecoveryRoot.children).toHaveLength(0);
 
 		let grantCalls = 0;
+		const scopeFixture2 = {
+			companyId: id(10),
+			environmentId: id(11),
+			companyComputerId: id(19),
+			logicalComputerId: id(29),
+		};
+		let selectedComputer = scopeFixture.companyComputerId;
 		const partialRecoveryAccount = new WebMemberAccount({
 			config,
 			client: {
 				auth: { getSession: vi.fn(async () => ({ data: { session }, error: null })) },
 			} as unknown as SupabaseClient,
-			fetch: vi.fn(async (input: RequestInfo | URL) => {
+			fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 				const method = String(input).split("/").at(-1)!;
 				if (method === "qorpera_member_browser_recovery") {
 					return Response.json({
 						memberId: id(1),
-						offices: [{ scope: scopeFixture, ownsPrivacy: false }],
+						offices: [
+							{ scope: scopeFixture, ownsPrivacy: false },
+							{ scope: scopeFixture2, ownsPrivacy: false },
+						],
 						nextAfter: null,
 					});
 				}
 				if (method === "qorpera_runtime_office_privacy_status") {
+					const body = JSON.parse(String(init?.body ?? "{}")) as { p_company_computer_id?: string };
+					selectedComputer = body.p_company_computer_id ?? selectedComputer;
 					return Response.json({
-						scope: scopeFixture,
+						scope: selectedComputer === scopeFixture2.companyComputerId ? scopeFixture2 : scopeFixture,
 						computerGeneration: 1,
 						state: "shared",
 						version: 0,
@@ -792,26 +804,38 @@ describe("member-web abort-scope, storage, downloads, and office lifecycle", () 
 					});
 				}
 				if (method === "qorpera_member_browser_profiles") {
+					const body = JSON.parse(String(init?.body ?? "{}")) as { p_company_computer_id?: string };
+					const isSecond = body.p_company_computer_id === scopeFixture2.companyComputerId;
 					return Response.json({
-						scope: scopeFixture,
+						scope: isSecond ? scopeFixture2 : scopeFixture,
 						memberId: id(1),
 						canUse: true,
-						profiles: [
-							{
-								profileId: id(20),
-								label: "Profile A",
-								version: 1,
-								prepared: true,
-								activeStaffAgentId: id(14),
-							},
-							{
-								profileId: id(21),
-								label: "Profile B",
-								version: 1,
-								prepared: true,
-								activeStaffAgentId: id(15),
-							},
-						],
+						profiles: isSecond
+							? [
+									{
+										profileId: id(20),
+										label: "Profile A",
+										version: 1,
+										prepared: true,
+										activeStaffAgentId: id(14),
+									},
+									{
+										profileId: id(21),
+										label: "Profile B",
+										version: 1,
+										prepared: true,
+										activeStaffAgentId: id(15),
+									},
+								]
+							: [
+									{
+										profileId: id(22),
+										label: "Office One Profile",
+										version: 1,
+										prepared: true,
+										activeStaffAgentId: null,
+									},
+								],
 						nextAfter: null,
 					});
 				}
@@ -819,7 +843,7 @@ describe("member-web abort-scope, storage, downloads, and office lifecycle", () 
 					grantCalls += 1;
 					if (grantCalls === 1) {
 						return Response.json({
-							scope: scopeFixture,
+							scope: scopeFixture2,
 							memberId: id(1),
 							staffAgentId: id(14),
 							profile: {
@@ -856,12 +880,15 @@ describe("member-web abort-scope, storage, downloads, and office lifecycle", () 
 			current: () => undefined,
 			status: () => undefined,
 		});
-		const computerBtn = partialRoot.findAll(
+		const computerBtns = partialRoot.findAll(
 			(node) => node.tag === "button" && node.textContent.startsWith("Computer "),
-		)[0];
-		computerBtn.click();
+		);
+		computerBtns[0].click();
 		await lastWork;
 		const detailsSection = partialRoot.findAll((node) => node.tag === "section")[0];
+		expect(detailsSection.findAll((node) => node.textContent === "Office One Profile")).toHaveLength(1);
+		computerBtns[1].click();
+		await lastWork;
 		expect(detailsSection.children).toHaveLength(0);
 		disposeRecovery();
 

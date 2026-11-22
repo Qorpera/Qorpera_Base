@@ -195,16 +195,7 @@ async function explore(seed: number, steps: number, trace = false): Promise<{ lo
 	};
 	const flush = async (hadWork: boolean) => {
 		if (!hadWork) return;
-		let quiet = 0;
-		for (let n = 0; n < 30; n++) {
-			const before = activity;
-			await Promise.resolve();
-			if (activity === before) {
-				if (++quiet >= 10) return;
-			} else {
-				quiet = 0;
-			}
-		}
+		for (let n = 0; n < 30; n++) await Promise.resolve();
 	};
 	const request = (
 		page: number,
