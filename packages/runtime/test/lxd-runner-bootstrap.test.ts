@@ -1113,7 +1113,7 @@ describe("governed native guest for a vault login", () => {
 		);
 		const started: string[] = [];
 		await startCompanyFixture(matching, started);
-		expect(started).toEqual(["qorpera-native-provider-host.service", "qorpera-ephemeral-runner.service"]);
+		expect(started).toEqual(["qorpera-native-company-host.service", "qorpera-company-runner.service"]);
 
 		const envOnly = await vaultCompanyFixture();
 		await writeFile(
