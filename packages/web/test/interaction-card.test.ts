@@ -1125,7 +1125,7 @@ describe("the address card", () => {
 			const abort = new AbortController();
 			const observedSignals: AbortSignal[] = [];
 			let resolveHandles: ((value: { domain: string | null; handles: string[] }) => void) | undefined;
-			const status = vi.fn(async () => ({ status: "free" as const }));
+			const status = vi.fn(async () => "free" as const);
 			const handles = vi.fn(
 				(signal: AbortSignal) =>
 					new Promise<{ domain: string | null; handles: string[] }>((resolve) => {
