@@ -171,7 +171,7 @@ export class CodingMachineCommandSecrets {
 		for (const value of values(session.commands.values())) machine.released.add(value);
 	}
 
-	// WHY: Clear all cached session secrets, history, and answered state when the machine itself stops, restarts, sleeps, or is removed.
+	// WHY: Every attachment on the machine already ended in SQL; like an executor restart, the next attach asks the vault again.
 	releaseMachine(machineId: string): void {
 		this.#machines.delete(machineId);
 		this.#answered.delete(machineId);

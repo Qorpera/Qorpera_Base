@@ -5481,16 +5481,83 @@ describe("a coding machine's secret values for the folder service's save check (
 
 		const fNewDisk = await secretsFixture({ environment: { API_KEY } });
 		await fNewDisk.host.prepareWorkspace(fNewDisk.claim, fNewDisk.turn(), fNewDisk.signal);
-		await fNewDisk.commandSecrets.attached(fNewDisk.machine.machineId, extraScope(fNewDisk), fNewDisk.signal);
 		fNewDisk.host.endTurn(fNewDisk.claim);
 		fNewDisk.state.folderRestart = true;
 		fNewDisk.state.newDisk = true;
 		fNewDisk.lxd.running = false;
+		const baseNewDiskCall = fNewDisk.call.getMockImplementation()!;
+		let sawNewDiskRecord = false;
+		fNewDisk.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_record_coding_machine_new_disk") {
+				sawNewDiskRecord = true;
+				await fNewDisk.commandSecrets.attached(fNewDisk.machine.machineId, extraScope(fNewDisk), fNewDisk.signal);
+				expect(fNewDisk.commandSecrets.values(fNewDisk.machine.machineId)).toEqual([API_KEY]);
+			}
+			return baseNewDiskCall(method, args, signal);
+		});
 		fNewDisk.environment.mockRejectedValueOnce(new Error("CODING_ENVIRONMENT_UNAVAILABLE"));
 		await expect(fNewDisk.host.prepareWorkspace(fNewDisk.claim, fNewDisk.turn(), fNewDisk.signal)).rejects.toThrow(
 			"CODING_ENVIRONMENT_UNAVAILABLE",
 		);
+		expect(sawNewDiskRecord).toBe(true);
 		expect(fNewDisk.commandSecrets.values(fNewDisk.machine.machineId)).toBeUndefined();
+	});
+
+	it("releases secrets inside #takeOff before a queued #exclusive step runs and before detach SQL settles", async () => {
+		const f = await secretsFixture({ environment: { API_KEY } });
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		f.host.endTurn(f.claim);
+		expect(f.commandSecrets.values(f.machine.machineId)).toEqual([API_KEY]);
+
+		let stopEntered!: () => void;
+		let releaseStop!: () => void;
+		const stopStarted = new Promise<void>((resolve) => {
+			stopEntered = resolve;
+		});
+		const stopGate = new Promise<void>((resolve) => {
+			releaseStop = resolve;
+		});
+		mocked.guestStop.mockImplementationOnce(async () => {
+			stopEntered();
+			await stopGate;
+		});
+
+		let releaseDetach!: () => void;
+		const detachGate = new Promise<void>((resolve) => {
+			releaseDetach = resolve;
+		});
+		let stopCustodySeen = false;
+		let secretsAtStopCustody: readonly string[] | undefined = ["UNSET"];
+		const baseCall = f.call.getMockImplementation()!;
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_record_coding_session_detached") {
+				await detachGate;
+			}
+			if (method === "qorpera_authorize_coding_machine_custody" && args.p_intent === "stop") {
+				stopCustodySeen = true;
+				secretsAtStopCustody = f.commandSecrets.values(f.machine.machineId);
+			}
+			return baseCall(method, args, signal);
+		});
+
+		f.state.listed = [f.entry()];
+		f.state.release.set(f.claim.workerId, "ARCHIVED");
+		await f.host.keep(f.signal);
+		await stopStarted;
+		expect(f.commandSecrets.values(f.machine.machineId)).toEqual([API_KEY]);
+
+		f.state.listed = [f.entry({ sleepDue: true, reserved: false, attached: [] })];
+		const sleeping = f.host.housekeep(f.signal);
+		await new Promise<void>((resolve) => setTimeout(resolve, 10));
+		expect(stopCustodySeen).toBe(false);
+
+		releaseStop();
+		expect(await sleeping).toEqual([{ machineId: f.machine.machineId, step: "sleep", state: "done" }]);
+		expect(stopCustodySeen).toBe(true);
+		expect(secretsAtStopCustody).toBeUndefined();
+
+		releaseDetach();
+		await f.host.settled();
 	});
 
 	it("preserves a re-attached session's secrets when a stale detach record for an older token finishes", async () => {
@@ -5641,6 +5708,38 @@ describe("a coding machine's secret values for the folder service's save check (
 		const outcomes = await fHouse.host.housekeep(fHouse.signal);
 		expect(peakDelete).toBe(4);
 		expect(outcomes).toEqual(machines.map((machineId) => ({ machineId, step: "delete", state: "done" })));
+
+		const fAbort = await folderFixture();
+		const abortMachines = Array.from({ length: 6 }, () => randomUUID());
+		fAbort.state.listed = abortMachines.map((machineId) => {
+			const binding = { ...fAbort.machine, machineId };
+			return fAbort.entry({
+				machineId,
+				binding,
+				instanceSha256: lxdCodingMachinePlan(binding).instanceSha256,
+				attached: [],
+				removeDue: true,
+				reserved: false,
+				asleepSince: new Date().toISOString(),
+			});
+		});
+		const controller = new AbortController();
+		const startedMachines = new Set<string>();
+		const reconcileSignals: AbortSignal[] = [];
+		mocked.reconcile.mockImplementation(async (input: CodingMachineReconcileOptions) => {
+			startedMachines.add(input.plan.machineId);
+			reconcileSignals.push(input.signal);
+			if (startedMachines.size === 4) controller.abort(new Error("housekeep-cancelled"));
+			await new Promise<void>((resolve) => {
+				if (input.signal.aborted) resolve();
+				else input.signal.addEventListener("abort", () => resolve(), { once: true });
+			});
+			throw input.signal.reason;
+		});
+		await expect(fAbort.host.housekeep(controller.signal)).rejects.toThrow("housekeep-cancelled");
+		expect(startedMachines.size).toBe(4);
+		expect(reconcileSignals).toHaveLength(4);
+		expect(reconcileSignals.every((sig) => sig.aborted)).toBe(true);
 	});
 });
 
