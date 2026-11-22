@@ -33,6 +33,10 @@ const openViewer = (options: ViewerOptions) =>
 	(window as unknown as { qorperaScreenViewer: { open(options: ViewerOptions): Viewer } }).qorperaScreenViewer.open(
 		options,
 	);
+async function settleAll(tasks: readonly Promise<unknown>[]): Promise<void> {
+	const results = await Promise.allSettled(tasks);
+	for (const result of results) if (result.status === "rejected") throw result.reason;
+}
 
 export async function showOfficePanel(options: {
 	root: HTMLElement;
@@ -226,7 +230,7 @@ export async function showOfficePanel(options: {
 				catalog = next;
 				renderStaff();
 				moreStaff.hidden = !catalog.nextAfter;
-				await Promise.all([grantStatus(), profileChanged()]);
+				await settleAll([grantStatus(), profileChanged()]);
 			},
 			work,
 		);
@@ -433,7 +437,7 @@ export async function showOfficePanel(options: {
 							profileId: profileSelect.value,
 							screenId: screen.binding.screenId,
 						});
-						await Promise.all([refreshScreens(), refreshBrowser()]);
+						await settleAll([refreshScreens(), refreshBrowser()]);
 						live();
 						renderBrowserControls();
 					},
@@ -467,7 +471,7 @@ export async function showOfficePanel(options: {
 						"Finish private sign-in",
 						async () => {
 							await browserAction({ method: "finishPrivate" });
-							await Promise.all([refreshScreens(), refreshBrowser()]);
+							await settleAll([refreshScreens(), refreshBrowser()]);
 							live();
 							renderBrowserControls();
 						},
@@ -502,7 +506,7 @@ export async function showOfficePanel(options: {
 				button(
 					"Refresh browser status",
 					async () => {
-						await Promise.all([refreshScreens(), refreshBrowser()]);
+						await settleAll([refreshScreens(), refreshBrowser()]);
 						live();
 						renderBrowserControls();
 					},

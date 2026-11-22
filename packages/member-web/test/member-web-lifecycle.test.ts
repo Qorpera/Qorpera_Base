@@ -187,6 +187,7 @@ describe("member-web abort-scope, storage, downloads, and office lifecycle", () 
 		const started: string[] = [];
 		const startRequestIds: string[] = [];
 		let failFirstStart = true;
+		let computerGeneration = 1;
 		let intent: null | {
 			schema: string;
 			intentId: string;
@@ -234,7 +235,7 @@ describe("member-web abort-scope, storage, downloads, and office lifecycle", () 
 				if (method === "qorpera_runtime_office_start_status") {
 					return Response.json({
 						scope: scopeFixture,
-						computerGeneration: 1,
+						computerGeneration,
 						officeState: "provisioning",
 						intent,
 					});
@@ -299,7 +300,7 @@ describe("member-web abort-scope, storage, downloads, and office lifecycle", () 
 						schema: "qorpera.office-start-intent/v1",
 						intentId: body.p_request_id,
 						companyComputerId: id(12),
-						computerGeneration: 1,
+						computerGeneration,
 						state: "requested",
 					};
 					return Response.json(intent);
@@ -382,7 +383,230 @@ describe("member-web abort-scope, storage, downloads, and office lifecycle", () 
 		await pendingAction;
 		expect(startRequestIds).toHaveLength(3);
 		expect(startRequestIds[2]).not.toBe(startRequestIds[0]);
+
+		intent = { ...intent!, state: "cancelled" };
+		buttonNamed("Refresh computer status").click();
+		await pendingAction;
+		intent = null;
+		buttonNamed("Refresh computer status").click();
+		await pendingAction;
+		buttonNamed("Start computer").click();
+		await pendingAction;
+		expect(startRequestIds).toHaveLength(4);
+		expect(startRequestIds[3]).not.toBe(startRequestIds[2]);
+
+		computerGeneration = 2;
+		intent = null;
+		buttonNamed("Refresh computer status").click();
+		await pendingAction;
+		buttonNamed("Start computer").click();
+		await pendingAction;
+		expect(startRequestIds).toHaveLength(5);
+		expect(startRequestIds[4]).not.toBe(startRequestIds[3]);
 		dispose();
+	});
+
+	it("aborts panel signal to close viewer and tracked connections, and cancels in-flight panel fetches on nav switch", async () => {
+		const { fakeWindow } = installFakeDom();
+		const viewerClose = vi.fn(async () => undefined);
+		const connectionClose = vi.fn(async () => {
+			throw new Error("close failed");
+		});
+		let capturedRequestConnection:
+			| ((input: {
+					binding: {
+						companyId: string;
+						environmentId: string;
+						companyComputerId: string;
+						logicalComputerId: string;
+						computerGeneration: number;
+						screenId: string;
+						screenOrdinal: number;
+						screenGeneration: number;
+						staffAgentId: string;
+					};
+					mode: "watch" | "control";
+					signal: AbortSignal;
+			  }) => Promise<unknown>)
+			| undefined;
+		fakeWindow.qorperaScreenViewer = {
+			open: (opts: { requestConnection: typeof capturedRequestConnection }) => {
+				capturedRequestConnection = opts.requestConnection;
+				return { close: viewerClose };
+			},
+		};
+		const screenBinding = {
+			...scopeFixture,
+			computerGeneration: 1,
+			screenId: id(16),
+			screenOrdinal: 1,
+			screenGeneration: 1,
+			staffAgentId: id(14),
+		};
+		const session = { user: { id: id(1) }, access_token: "member-1" } as Session;
+		const account = new WebMemberAccount({
+			config,
+			client: {
+				auth: { getSession: vi.fn(async () => ({ data: { session }, error: null })) },
+			} as unknown as SupabaseClient,
+			fetch: vi.fn(async (input: RequestInfo | URL) => {
+				const method = String(input).split("/").at(-1)!;
+				if (method === "qorpera_list_hosted_profiles") {
+					return Response.json([
+						{
+							profile_id: id(10),
+							environment_id: id(11),
+							profile_name: "Alpha",
+							environment_name: "Main",
+							role: "owner",
+							contract_version: 1,
+							created_at: "2026-09-08T00:00:00Z",
+							bootstrap_state: "completed",
+						},
+					]);
+				}
+				if (method === "qorpera_member_office_catalog") {
+					return Response.json({
+						companyId: id(10),
+						environmentId: id(11),
+						canManage: true,
+						scope: scopeFixture,
+						staff: [{ staffAgentId: id(14), name: "Analyst" }],
+						nextAfter: null,
+					});
+				}
+				if (method === "qorpera_runtime_office_start_status") {
+					return Response.json({
+						scope: scopeFixture,
+						computerGeneration: 1,
+						officeState: "active",
+						intent: null,
+					});
+				}
+				if (method === "qorpera_runtime_office_access_status") {
+					return Response.json({
+						schema: "qorpera.office-access-status/v1",
+						scope: scopeFixture,
+						staffAgentId: id(14),
+						grant: null,
+					});
+				}
+				if (method === "qorpera_runtime_office_member_status") {
+					return Response.json({
+						scope: scopeFixture,
+						computerGeneration: 1,
+						state: "active",
+						privacyState: "shared",
+						privacyVersion: 0,
+						screens: [
+							{ binding: screenBinding, drainPending: false, driver: "idle", epoch: 1, takeoverMemberId: null },
+						],
+						viewers: [],
+					});
+				}
+				if (method === "qorpera_runtime_office_privacy_status") {
+					return Response.json({
+						scope: scopeFixture,
+						computerGeneration: 1,
+						state: "shared",
+						version: 0,
+						challenge: null,
+					});
+				}
+				if (method === "qorpera_member_browser_profiles") {
+					return Response.json({
+						scope: scopeFixture,
+						memberId: id(1),
+						canUse: true,
+						profiles: [],
+						nextAfter: null,
+					});
+				}
+				throw new Error(`Unexpected RPC ${method}`);
+			}),
+		});
+		account.setSession(session);
+		await account.companies();
+		const company = account.openCompany(id(11));
+		const realViews = company.views.bind(company);
+		vi.spyOn(company, "views").mockImplementation((scope) => {
+			const views = realViews(scope);
+			vi.spyOn(views, "connectScreen").mockResolvedValue({
+				connectionId: id(99),
+				mode: "watch",
+				binding: screenBinding,
+				close: connectionClose,
+			} as unknown as Awaited<ReturnType<typeof views.connectScreen>>);
+			return views;
+		});
+		const panelStop = new AbortController();
+		const root = new FakeNode("div");
+		let pendingAction: Promise<void> = Promise.resolve();
+		const work = (action: () => Promise<void>) => {
+			pendingAction = action().catch(() => undefined);
+			return pendingAction;
+		};
+		const dispose = await showOfficePanel({
+			root: root as unknown as HTMLElement,
+			company,
+			signal: panelStop.signal,
+			work,
+			status: () => undefined,
+			current: () => undefined,
+		});
+		const watchButton = root.findAll(
+			(node) => node.tag === "button" && node.textContent.startsWith("Watch screen 1"),
+		)[0];
+		watchButton.click();
+		await pendingAction;
+		await capturedRequestConnection!({
+			binding: screenBinding,
+			mode: "watch",
+			signal: new AbortController().signal,
+		});
+		panelStop.abort();
+		expect(viewerClose).toHaveBeenCalledOnce();
+		expect(connectionClose).toHaveBeenCalledOnce();
+		dispose();
+		expect(viewerClose).toHaveBeenCalledOnce();
+
+		const navRoot = new FakeNode("div");
+		let companiesSignal: AbortSignal | undefined;
+		const heldCompanies = deferred<Response>();
+		const mounted = mountMemberWeb(navRoot as unknown as HTMLElement, {
+			config,
+			clearAuth: vi.fn(),
+			reload: vi.fn(),
+			fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const method = String(input).split("/").at(-1)!;
+				if (method === "qorpera_list_hosted_profiles") {
+					companiesSignal = init?.signal ?? undefined;
+					return heldCompanies.promise;
+				}
+				if (method === "qorpera_member_browser_recovery") {
+					return Response.json({ memberId: id(1), offices: [], nextAfter: null });
+				}
+				throw new Error(`Unexpected RPC ${method}`);
+			}),
+			client: {
+				auth: {
+					onAuthStateChange: () => ({ data: { subscription: { unsubscribe: vi.fn() } } }),
+					getSession: vi.fn(async () => ({ data: { session }, error: null })),
+					signInWithOAuth: vi.fn(),
+					signInWithOtp: vi.fn(),
+					signOut: vi.fn(async () => ({ error: null })),
+				},
+			} as unknown as SupabaseClient,
+		});
+		await vi.waitFor(() => expect(companiesSignal).toBeDefined());
+		expect(companiesSignal!.aborted).toBe(false);
+		const cleanupButton = navRoot.findAll(
+			(node) => node.tag === "button" && node.textContent === "Browser access cleanup",
+		)[0];
+		cleanupButton.click();
+		expect(companiesSignal!.aborted).toBe(true);
+		heldCompanies.reject(new DOMException("Aborted", "AbortError"));
+		mounted.close();
 	});
 
 	it("validates email before setting panel inert and skips reload if mountMemberWeb closes during signOut", async () => {
