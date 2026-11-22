@@ -1524,4 +1524,20 @@ describe("LXD exec stream", () => {
 			);
 		}
 	});
+
+	it("bounds un-signalled LXD socket requests with operationTimeoutSeconds instead of hanging indefinitely", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-lxd-stall-"));
+		roots.push(root);
+		const socket = join(root, "lxd.socket");
+		const server = createServer((_req, _res) => {});
+		servers.push(server);
+		await new Promise<void>((resolveListen, reject) => {
+			server.once("error", reject);
+			server.listen(socket, () => resolveListen());
+		});
+		const client = new LxdUnixClient(socket, 1);
+		const started = Date.now();
+		await expect(client.getInstance("qorpera-runners", "stalled")).rejects.toThrow();
+		expect(Date.now() - started).toBeLessThan(3_000);
+	});
 });

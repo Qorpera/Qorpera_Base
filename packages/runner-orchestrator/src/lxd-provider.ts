@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseCompanyComputerNativeRoute } from "@qorpera/contracts";
+import { withTimeoutScope } from "./abort-scope.ts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import {
 	type LxdClient,
@@ -263,6 +264,17 @@ function sameCompanyRuntimeAuthority(
 	return route(recorded) === route(expected);
 }
 
+const RUNTIME_CONFIG_SHA256 = new WeakMap<LxdNativeCompanyRuntimeConfig, string>();
+
+function runtimeConfigurationSha256(runtime: LxdNativeCompanyRuntimeConfig): string {
+	let digest = RUNTIME_CONFIG_SHA256.get(runtime);
+	if (digest === undefined) {
+		digest = sha256(JSON.stringify(canonical(runtime)));
+		RUNTIME_CONFIG_SHA256.set(runtime, digest);
+	}
+	return digest;
+}
+
 function companyRuntimeAuthority(
 	config: LxdCloudRunnerProviderConfig,
 	acquisitionId: string,
@@ -280,7 +292,7 @@ function companyRuntimeAuthority(
 		profileId,
 		recoveryVolume: `${runtime.recoveryVolumePrefix}${acquisitionId}`,
 		recoveryVolumeSize: runtime.recoveryVolumeSize,
-		configurationSha256: sha256(JSON.stringify(canonical(runtime))),
+		configurationSha256: runtimeConfigurationSha256(runtime),
 		...(office
 			? { office: { environmentId: office.environmentId, url: office.url, tokenSha256: sha256(office.token) } }
 			: {}),
@@ -734,26 +746,48 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 			if (signal?.aborted) throw signal.reason;
 			let poweredOff = false;
 			try {
-				const state = await this.#lxd.getInstanceState(project, instanceName, signal);
+				const remaining = Math.max(1, deadline - Date.now());
+				const state = await withTimeoutScope(signal, remaining, (checked) =>
+					this.#lxd.getInstanceState(project, instanceName, checked),
+				);
 				poweredOff = state.status === "Stopped";
 				const instance =
-					state.status === "Running" ? await this.#lxd.getInstance(project, instanceName, signal) : undefined;
+					state.status === "Running"
+						? await withTimeoutScope(signal, Math.max(1, deadline - Date.now()), (checked) =>
+								this.#lxd.getInstance(project, instanceName, checked),
+							)
+						: undefined;
 				const address =
 					instance?.name === instanceName ? lxdGuestIpv4(instance, state, networkInterface) : undefined;
 				if (state.status === "Running" && address) {
-					const response = await this.#fetch(`http://${address}:${port}/healthz`, {
-						redirect: "error",
-						signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(1_000)]) : AbortSignal.timeout(1_000),
-					});
-					void response.body?.cancel().catch(() => undefined);
-					if (response.ok) return address;
+					const ok = await withTimeoutScope(
+						signal,
+						Math.min(1_000, Math.max(1, deadline - Date.now())),
+						async (checked) => {
+							const response = await this.#fetch(`http://${address}:${port}/healthz`, {
+								redirect: "error",
+								signal: checked,
+							});
+							void response.body?.cancel().catch(() => undefined);
+							return response.ok;
+						},
+					);
+					if (ok) return address;
 				}
 			} catch (error) {
 				if (signal?.aborted) throw signal.reason;
 				if (!(error instanceof Error)) throw error;
 			}
 			if (poweredOff) throw new Error("LXD guest powered off before activating its private assignment inbox");
-			await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+			const sleepMs = Math.min(250, Math.max(0, deadline - Date.now()));
+			if (sleepMs > 0) {
+				try {
+					await delay(sleepMs, undefined, { signal });
+				} catch (error) {
+					if (signal?.aborted) throw signal.reason;
+					throw error;
+				}
+			}
 		}
 		throw new Error("LXD guest did not activate its private assignment inbox");
 	}
@@ -774,25 +808,27 @@ export class HttpLxdGuestTransport implements LxdGuestTransport {
 		) {
 			throw new Error("LXD guest assignment destination or token is invalid");
 		}
-		const response = await this.#fetch(`http://${address}:${port}/v1/assignment`, {
-			method: "POST",
-			redirect: "error",
-			headers: {
-				authorization: `Bearer ${assignmentToken}`,
-				"content-type": "application/json",
-			},
-			body: JSON.stringify({
-				schema: "qorpera.runner-assignment-delivery/v1",
-				assignment_id: delivery.assignment.assignmentId,
-				job_id: delivery.assignment.jobId,
-				capability: delivery.capability,
-			}),
-			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
+		await withTimeoutScope(signal, 10_000, async (checked) => {
+			const response = await this.#fetch(`http://${address}:${port}/v1/assignment`, {
+				method: "POST",
+				redirect: "error",
+				headers: {
+					authorization: `Bearer ${assignmentToken}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					schema: "qorpera.runner-assignment-delivery/v1",
+					assignment_id: delivery.assignment.assignmentId,
+					job_id: delivery.assignment.jobId,
+					capability: delivery.capability,
+				}),
+				signal: checked,
+			});
+			void response.body?.cancel().catch(() => undefined);
+			if (response.status !== 200 && response.status !== 202) {
+				throw new Error(`LXD guest rejected assignment delivery (${response.status})`);
+			}
 		});
-		void response.body?.cancel().catch(() => undefined);
-		if (response.status !== 200 && response.status !== 202) {
-			throw new Error(`LXD guest rejected assignment delivery (${response.status})`);
-		}
 	}
 }
 
@@ -945,7 +981,10 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	/** Journals of finished runs stay on disk. Once one is stopped or lost, its guest gone and its capacity
 	 * settled, reconcile has nothing left to do for it: it is skipped for the rest of the process and archived
 	 * a day after its last change (23 Sep 2026: node 1 re-read 76 of them, three LXD calls each, every pass). */
-	readonly #settled = new Map<string, number>();
+	readonly #settled = new Map<
+		string,
+		{ readonly settledAt: number; readonly runId: string; readonly attempt: number }
+	>();
 	/** When each settled journal whose recovery volume could not be retired was last tried, and last named in the log. */
 	readonly #retirementTried = new Map<string, number>();
 	readonly #retirementReported = new Map<string, number>();
@@ -1052,11 +1091,11 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			if (!current) return;
 			await this.#reconcileJournal(current, signal, step);
 			step.stage = "settle";
-			const settledAt = await this.#settledAt(acquisitionId, signal);
-			if (settledAt !== undefined) this.#settled.set(acquisitionId, settledAt);
+			const settled = await this.#settledAt(acquisitionId, signal);
+			if (settled !== undefined) this.#settled.set(acquisitionId, settled);
 		}
-		const settledAt = this.#settled.get(acquisitionId);
-		if (settledAt === undefined || Date.now() - settledAt < SETTLED_JOURNAL_RETENTION_MS) return;
+		const settled = this.#settled.get(acquisitionId);
+		if (settled === undefined || Date.now() - settled.settledAt < SETTLED_JOURNAL_RETENTION_MS) return;
 		// Housekeeping never fails the pass (a failed pass stops the node's claims): a volume that is in use or drifted
 		// keeps its journal for an operator, named in the log at most once an hour, and is tried again each minute.
 		const triedAt = this.#retirementTried.get(acquisitionId);
@@ -1197,6 +1236,8 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				await mkdir(this.#config.stateRoot, { recursive: true, mode: 0o700 });
 				for (const entry of await readdir(this.#config.stateRoot, { withFileTypes: true })) {
 					if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name) || entry.name === acquisitionId) continue;
+					const settled = this.#settled.get(entry.name);
+					if (settled && settled.runId !== work.runId) continue;
 					let prior: LxdProviderJournal | undefined;
 					try {
 						prior = await this.#readJournal(entry.name);
@@ -1474,61 +1515,72 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			throw failure;
 		}
 		const failures: unknown[] = [];
-		for (const journal of asked) {
-			// A journal an acquisition, delivery or stop holds is theirs to move; the next check sees it again.
-			if (!ended.has(journal.runner.runnerId) || this.#journals.held(journal.acquisitionId)) continue;
-			try {
-				await this.#journals.run(journal.acquisitionId, async () => {
-					try {
-						const current = await this.#readJournal(journal.acquisitionId);
-						if (
-							current?.runner.runnerId === journal.runner.runnerId &&
-							(current.physicalState === "registered" || current.physicalState === "assigned")
-						)
-							await this.#stopJournal(current, "revoked", signal);
-					} catch (error) {
-						await this.#reportJournalFailure(journal.acquisitionId, "ended_runner", error, signal);
-					}
-				});
-			} catch (error) {
-				if (signal?.aborted) throw error;
-				failures.push(error);
+		const targets = asked.filter(
+			(journal) => ended.has(journal.runner.runnerId) && !this.#journals.held(journal.acquisitionId),
+		);
+		let next = 0;
+		const lane = async (): Promise<void> => {
+			while (next < targets.length) {
+				signal?.throwIfAborted();
+				const journal = targets[next++]!;
+				// A journal an acquisition, delivery or stop holds is theirs to move; the next check sees it again.
+				if (this.#journals.held(journal.acquisitionId)) continue;
+				try {
+					await this.#journals.run(journal.acquisitionId, async () => {
+						try {
+							const current = await this.#readJournal(journal.acquisitionId);
+							if (
+								current?.runner.runnerId === journal.runner.runnerId &&
+								(current.physicalState === "registered" || current.physicalState === "assigned")
+							)
+								await this.#stopJournal(current, "revoked", signal);
+						} catch (error) {
+							await this.#reportJournalFailure(journal.acquisitionId, "ended_runner", error, signal);
+						}
+					});
+				} catch (error) {
+					if (signal?.aborted) throw error;
+					failures.push(error);
+				}
 			}
-		}
+		};
+		await Promise.all(Array.from({ length: Math.min(RECONCILE_CONCURRENCY, targets.length) }, lane));
 		if (failures.length === 1) throw failures[0];
 		if (failures.length > 1) throw new AggregateError(failures, "Retiring several ended runners failed");
 	}
 
 	async #endedRunners(runnerIds: readonly string[], signal?: AbortSignal): Promise<ReadonlySet<string>> {
-		const response = await this.#fetch(
-			new URL("/rest/v1/rpc/qorpera_runtime_ended_runners", this.#config.supabaseUrl),
-			{
-				method: "POST",
-				redirect: "error",
-				headers: {
-					...supabaseServiceHeaders(this.#config.supabaseServiceKey),
-					"content-type": "application/json",
+		return withTimeoutScope(signal, 30_000, async (checked) => {
+			const response = await this.#fetch(
+				new URL("/rest/v1/rpc/qorpera_runtime_ended_runners", this.#config.supabaseUrl),
+				{
+					method: "POST",
+					redirect: "error",
+					headers: {
+						...supabaseServiceHeaders(this.#config.supabaseServiceKey),
+						"content-type": "application/json",
+					},
+					body: JSON.stringify({ p_runner_ids: runnerIds }),
+					signal: checked,
 				},
-				body: JSON.stringify({ p_runner_ids: runnerIds }),
-				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-			},
-		);
-		if (response.status === 404) {
-			void response.body?.cancel().catch(() => undefined);
-			return new Set();
-		}
-		if (!response.ok) {
-			throw new ProviderRpcFailed(
-				`Ended runners are unavailable (${response.status})`,
-				"qorpera_runtime_ended_runners",
-				response.status,
-				await providerRpcErrorCode(response),
 			);
-		}
-		const answer: unknown = await response.json();
-		if (!Array.isArray(answer) || answer.some((id) => typeof id !== "string" || !runnerIds.includes(id)))
-			throw new Error("Ended runners answer is invalid");
-		return new Set(answer as string[]);
+			if (response.status === 404) {
+				void response.body?.cancel().catch(() => undefined);
+				return new Set();
+			}
+			if (!response.ok) {
+				throw new ProviderRpcFailed(
+					`Ended runners are unavailable (${response.status})`,
+					"qorpera_runtime_ended_runners",
+					response.status,
+					await providerRpcErrorCode(response),
+				);
+			}
+			const answer: unknown = await response.json();
+			if (!Array.isArray(answer) || answer.some((id) => typeof id !== "string" || !runnerIds.includes(id)))
+				throw new Error("Ended runners answer is invalid");
+			return new Set(answer as string[]);
+		});
 	}
 
 	/** A job guest serves exactly one run. Once it is done the guest has no further
@@ -1986,16 +2038,22 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 			throw new Error("LXD guest bootstrap no longer matches its durable journal");
 		}
 		await this.#waitForGuestAgent(journal, signal);
-		for (const file of files) {
-			await this.#lxd.pushInstanceFile(
-				journal.lxd.project,
-				journal.instanceName,
-				file.path,
-				file.content,
-				0o600,
-				signal,
-			);
-		}
+		let next = 0;
+		const pushWorker = async (): Promise<void> => {
+			while (next < files.length) {
+				signal?.throwIfAborted();
+				const file = files[next++]!;
+				await this.#lxd.pushInstanceFile(
+					journal.lxd.project,
+					journal.instanceName,
+					file.path,
+					file.content,
+					0o600,
+					signal,
+				);
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(4, files.length) }, pushWorker));
 	}
 
 	async #waitForGuestAgent(journal: LxdProviderJournal, signal?: AbortSignal): Promise<void> {
@@ -2004,17 +2062,28 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 		while (Date.now() < deadline) {
 			if (signal?.aborted) throw signal.reason;
 			try {
-				await this.#lxd.execInstance(
-					journal.lxd.project,
-					journal.instanceName,
-					["/usr/bin/test", "-d", "/var/lib/qorpera-bootstrap/credentials"],
-					signal,
+				await withTimeoutScope(signal, Math.max(1, deadline - Date.now()), (checked) =>
+					this.#lxd.execInstance(
+						journal.lxd.project,
+						journal.instanceName,
+						["/usr/bin/test", "-d", "/var/lib/qorpera-bootstrap/credentials"],
+						checked,
+					),
 				);
 				return;
 			} catch (error) {
+				if (signal?.aborted) throw signal.reason;
 				lastError = error;
 			}
-			await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+			const sleepMs = Math.min(250, Math.max(0, deadline - Date.now()));
+			if (sleepMs > 0) {
+				try {
+					await delay(sleepMs, undefined, { signal });
+				} catch (error) {
+					if (signal?.aborted) throw signal.reason;
+					throw error;
+				}
+			}
 		}
 		throw new Error("LXD guest agent did not become ready for private bootstrap injection", { cause: lastError });
 	}
@@ -2455,12 +2524,19 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 
 	/** When a journal needs no further reconciliation (stopped or lost, no guest, capacity never registered or
 	 * its release confirmed), the time of its last change. */
-	async #settledAt(acquisitionId: string, signal?: AbortSignal): Promise<number | undefined> {
+	async #settledAt(
+		acquisitionId: string,
+		signal?: AbortSignal,
+	): Promise<{ readonly settledAt: number; readonly runId: string; readonly attempt: number } | undefined> {
 		const journal = await this.#readJournal(acquisitionId);
 		if (!journal || (journal.physicalState !== "stopped" && journal.physicalState !== "lost")) return undefined;
 		if ((journal.capacityRegistered || journal.nodeCapacity) && !this.#capacityReleased(journal)) return undefined;
 		if (await this.#lxd.getInstance(journal.lxd.project, journal.instanceName, signal)) return undefined;
-		return Date.parse(journal.updatedAt);
+		return {
+			settledAt: Date.parse(journal.updatedAt),
+			runId: journal.runId ?? journal.acquisitionId,
+			attempt: journal.attempt ?? 1,
+		};
 	}
 
 	/** Moves a settled journal out of the scanned state root and deletes its credentials: the run is over, so its
@@ -2618,8 +2694,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	}
 
 	async #reserveNodeMachine(current: LxdProviderJournal, caller?: AbortSignal): Promise<AbortSignal> {
-		const signal = AbortSignal.any([...(caller ? [caller] : []), AbortSignal.timeout(5000)]);
-		const host = await readRuntimeNodeHost(signal),
+		const host = await withTimeoutScope(caller, 5000, (checked) => readRuntimeNodeHost(checked)),
 			{ policy, policySha256 } = lxdNativeNodePolicy(this.#config, host.machineIdSha256);
 		const prior = current.nodeCapacity ?? this.#registeredNodeCapacity.get(current.acquisitionId);
 		if (
@@ -2643,7 +2718,7 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 				memoryBytes: policy.memoryBytes,
 			},
 			{ call: (method, args, checked) => this.#rpc(method, args, checked) },
-			signal,
+			caller ?? new AbortController().signal,
 		);
 		// A node refusal (capacity, observation, policy) is an admission answer, not an
 		// infrastructure fault: the control plane defers the job instead of counting a
@@ -2708,55 +2783,59 @@ export class LxdCloudRunnerProviderBackend implements CloudRunnerProviderService
 	 * A database without the check (this build reached a node before its migration) answers 404:
 	 * the login is then on a node, as before. */
 	async #identityLoginInVault(computeIdentityId: string, signal?: AbortSignal): Promise<boolean> {
-		const response = await this.#fetch(
-			new URL("/rest/v1/rpc/qorpera_compute_identity_login_in_vault", this.#config.supabaseUrl),
-			{
+		return withTimeoutScope(signal, 30_000, async (checked) => {
+			const response = await this.#fetch(
+				new URL("/rest/v1/rpc/qorpera_compute_identity_login_in_vault", this.#config.supabaseUrl),
+				{
+					method: "POST",
+					redirect: "error",
+					headers: {
+						...supabaseServiceHeaders(this.#config.supabaseServiceKey),
+						"content-type": "application/json",
+					},
+					body: JSON.stringify({ p_compute_identity_id: computeIdentityId }),
+					signal: checked,
+				},
+			);
+			if (response.status === 404) {
+				void response.body?.cancel().catch(() => undefined);
+				return false;
+			}
+			if (!response.ok) {
+				throw new ProviderRpcFailed(
+					`Native identity login custody is unavailable (${response.status})`,
+					"qorpera_compute_identity_login_in_vault",
+					response.status,
+					await providerRpcErrorCode(response),
+				);
+			}
+			const answer: unknown = await response.json();
+			if (typeof answer !== "boolean") throw new Error("Native identity login custody is invalid");
+			return answer;
+		});
+	}
+
+	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+		return withTimeoutScope(signal, 30_000, async (checked) => {
+			const response = await this.#fetch(new URL(`/rest/v1/rpc/${name}`, this.#config.supabaseUrl), {
 				method: "POST",
 				redirect: "error",
 				headers: {
 					...supabaseServiceHeaders(this.#config.supabaseServiceKey),
 					"content-type": "application/json",
 				},
-				body: JSON.stringify({ p_compute_identity_id: computeIdentityId }),
-				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-			},
-		);
-		if (response.status === 404) {
-			void response.body?.cancel().catch(() => undefined);
-			return false;
-		}
-		if (!response.ok) {
-			throw new ProviderRpcFailed(
-				`Native identity login custody is unavailable (${response.status})`,
-				"qorpera_compute_identity_login_in_vault",
-				response.status,
-				await providerRpcErrorCode(response),
-			);
-		}
-		const answer: unknown = await response.json();
-		if (typeof answer !== "boolean") throw new Error("Native identity login custody is invalid");
-		return answer;
-	}
-
-	async #rpc(name: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-		const response = await this.#fetch(new URL(`/rest/v1/rpc/${name}`, this.#config.supabaseUrl), {
-			method: "POST",
-			redirect: "error",
-			headers: {
-				...supabaseServiceHeaders(this.#config.supabaseServiceKey),
-				"content-type": "application/json",
-			},
-			body: JSON.stringify(body),
-			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+				body: JSON.stringify(body),
+				signal: checked,
+			});
+			if (!response.ok) {
+				throw new ProviderRpcFailed(
+					`Runner provisioning failed (${response.status})`,
+					name,
+					response.status,
+					await providerRpcErrorCode(response),
+				);
+			}
+			return response.json() as Promise<unknown>;
 		});
-		if (!response.ok) {
-			throw new ProviderRpcFailed(
-				`Runner provisioning failed (${response.status})`,
-				name,
-				response.status,
-				await providerRpcErrorCode(response),
-			);
-		}
-		return response.json() as Promise<unknown>;
 	}
 }

@@ -824,4 +824,38 @@ describe("LXD exec pipe", () => {
 			).rejects.toThrow("LXD instance command is invalid");
 		expect(exec.posts).toEqual([]);
 	});
+
+	it("keeps exact stderr tails via bounded chunk queue, skips work when stderrTailBytes is 0, and avoids AbortSignal.any on caller signals", async () => {
+		const bigChunks = Array.from({ length: 120 }, (_, i) =>
+			Buffer.from(`${String(i).padStart(3, "0")}-${"x".repeat(96)}`),
+		);
+		const expectedFull = Buffer.concat(bigChunks);
+		const sendBigChunks: FakeCommand = async (io) => {
+			await io.input();
+			for (const chunk of bigChunks) io.print("stderr", chunk);
+			return 0;
+		};
+		const anySpy = vi.spyOn(AbortSignal, "any");
+		try {
+			const parent = new AbortController();
+			const execZero = await fake(sendBigChunks);
+			const empty = await run(execZero, { stderrTailBytes: 0 }, parent.signal);
+			expect(empty.stderrTail.byteLength).toBe(0);
+
+			const execTail = await fake(sendBigChunks);
+			const tail = await run(execTail, { stderrTailBytes: 1024 }, parent.signal);
+			expect(tail.stderrTail.equals(expectedFull.subarray(expectedFull.byteLength - 1024))).toBe(true);
+
+			const execLargeSingle = await fake(async (io) => {
+				await io.input();
+				io.print("stderr", Buffer.from(`${"a".repeat(2048)}TAIL1234`));
+				return 0;
+			});
+			const single = await run(execLargeSingle, { stderrTailBytes: 8 }, parent.signal);
+			expect(single.stderrTail.toString("utf8")).toBe("TAIL1234");
+			expect(anySpy).not.toHaveBeenCalled();
+		} finally {
+			anySpy.mockRestore();
+		}
+	});
 });
