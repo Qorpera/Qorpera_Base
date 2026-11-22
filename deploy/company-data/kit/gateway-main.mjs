@@ -13,7 +13,15 @@ import cluster from "node:cluster";
 import { readdirSync, readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { join } from "node:path";
-import { Gateway, Platform, serve, serveRuns, startWatcher } from "../gateway/gateway.mjs";
+import {
+	createDirectoryPublicReader,
+	createHttpPublicReader,
+	Gateway,
+	Platform,
+	serve,
+	serveRuns,
+	startWatcher,
+} from "../gateway/gateway.mjs";
 
 const setting = (name) => {
 	const value = process.env[name];
@@ -79,7 +87,87 @@ const workerCount =
 		? Math.max(1, Math.min(4, availableParallelism()))
 		: Math.max(1, Math.min(16, Number.isInteger(Number(rawWorkers)) ? Number(rawWorkers) : 1));
 
-const adminToken = process.env.DATA_ADMIN_TOKEN?.trim() || null;
+const failConfig = (message) => {
+	console.error(`data gateway: ${message}`);
+	process.exit(2);
+};
+
+const readOptionalToken = (envName, fileEnvName, minLength = 32) => {
+	const raw = process.env[envName]?.trim() || "";
+	const file = process.env[fileEnvName]?.trim() || "";
+	if (raw && file) failConfig(`set only one of ${envName} or ${fileEnvName}`);
+	let value = raw;
+	if (file) {
+		try {
+			value = readFileSync(file, "utf8").trim();
+		} catch (error) {
+			failConfig(`${fileEnvName} cannot be read (${error?.code ?? "error"})`);
+		}
+		if (!value) failConfig(`${fileEnvName} is empty`);
+	}
+	if (!value) return null;
+	if (value.length < minLength || /[\r\n\0]/.test(value)) {
+		failConfig(`${file ? fileEnvName : envName} must be at least ${minLength} single-line characters`);
+	}
+	return value;
+};
+
+const readOptionalInt = (envName, min, max, fallback) => {
+	const raw = process.env[envName]?.trim() || "";
+	if (!raw) return fallback;
+	const parsed = Number(raw);
+	if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+		failConfig(`${envName} must be an integer from ${min} to ${max}`);
+	}
+	return parsed;
+};
+
+const buildFolderReader = ({ urlEnv, dirEnv, tokenEnv, tokenFileEnv, cacheEnv }) => {
+	const url = process.env[urlEnv]?.trim() || "";
+	const dir = process.env[dirEnv]?.trim() || "";
+	if (url && dir) failConfig(`set only one of ${urlEnv} or ${dirEnv}`);
+	if (url) {
+		const token = readOptionalToken(tokenEnv, tokenFileEnv, 1);
+		const cacheMs = readOptionalInt(cacheEnv, 0, 60_000, 0);
+		try {
+			return createHttpPublicReader({ url, token, cacheMs });
+		} catch (error) {
+			failConfig(String(error?.message ?? error));
+		}
+	}
+	if (dir) {
+		try {
+			return createDirectoryPublicReader({ rootDir: dir });
+		} catch (error) {
+			failConfig(String(error?.message ?? error));
+		}
+	}
+	return null;
+};
+
+const adminToken = readOptionalToken("DATA_ADMIN_TOKEN", "DATA_ADMIN_TOKEN_FILE");
+const directLoginToken = readOptionalToken("DATA_DIRECT_LOGIN_TOKEN", "DATA_DIRECT_LOGIN_TOKEN_FILE");
+const directHost = process.env.DATA_DIRECT_HOST?.trim() || null;
+const directPort = readOptionalInt("DATA_DIRECT_PORT", 1, 65535, null);
+const hookToken = readOptionalToken("DATA_HOOK_TOKEN", "DATA_HOOK_TOKEN_FILE");
+const publicReader = buildFolderReader({
+	urlEnv: "DATA_PUBLIC_READER_URL",
+	dirEnv: "DATA_PUBLIC_DIR",
+	tokenEnv: "DATA_PUBLIC_READER_TOKEN",
+	tokenFileEnv: "DATA_PUBLIC_READER_TOKEN_FILE",
+	cacheEnv: "DATA_PUBLIC_READER_CACHE_MS",
+});
+const hookReader = buildFolderReader({
+	urlEnv: "DATA_HOOK_READER_URL",
+	dirEnv: "DATA_HOOK_DIR",
+	tokenEnv: "DATA_HOOK_READER_TOKEN",
+	tokenFileEnv: "DATA_HOOK_READER_TOKEN_FILE",
+	cacheEnv: "DATA_HOOK_READER_CACHE_MS",
+});
+const triggerToken = readOptionalToken("DATA_TRIGGER_TOKEN", "DATA_TRIGGER_TOKEN_FILE");
+const triggerWakeUrl = process.env.DATA_TRIGGER_WAKE_URL?.trim() || null;
+const triggerWakeToken = readOptionalToken("DATA_TRIGGER_WAKE_TOKEN", "DATA_TRIGGER_WAKE_TOKEN_FILE", 1);
+const triggerWakeTimeoutMs = readOptionalInt("DATA_TRIGGER_WAKE_TIMEOUT_MS", 500, 30_000, 5_000);
 
 const safeSend = (target, message) => {
 	try {
@@ -87,26 +175,90 @@ const safeSend = (target, message) => {
 	} catch {}
 };
 
-const gateway = new Gateway({
-	store: { host: setting("DATA_STORE_HOST"), port: Number(process.env.DATA_STORE_PORT ?? 5432), logins },
-	platform: new Platform({ url: setting("DATA_PLATFORM_URL"), publishableKey: setting("DATA_PLATFORM_KEY") }),
-	workers: workerCount,
-	...(runs ? { runs: { token: runs.token } } : {}),
-	...(adminToken ? { admin: { token: adminToken } } : {}),
-	...(cluster.isWorker
+const pendingTriggerRpc = new Map();
+let triggerRpcSeq = 0;
+const callPrimaryTriggerRpc = (op, payload) =>
+	new Promise((resolve, reject) => {
+		if (!process.connected) {
+			reject(Object.assign(new Error("The data gateway primary is unavailable"), { status: 503 }));
+			return;
+		}
+		const reqId = `${process.pid}:${++triggerRpcSeq}`;
+		const timer = setTimeout(() => {
+			pendingTriggerRpc.delete(reqId);
+			reject(Object.assign(new Error("Trigger operation timed out"), { status: 503 }));
+		}, 10_000);
+		timer.unref?.();
+		pendingTriggerRpc.set(reqId, { resolve, reject, timer });
+		safeSend(process, { type: "triggerRpc", reqId, op, payload });
+	});
+
+const directLoginConfig =
+	directLoginToken || directHost || directPort !== null
 		? {
-				onAgentRead: ({ pid, delta }) => {
-					if (process.connected) safeSend(process, { type: "agentRead", pid, delta });
-				},
-				onDrop: (event) => {
-					if (process.connected) safeSend(process, { type: "drop", ...event });
-				},
-				onUnsettledTx: (database, txid) => {
-					if (process.connected) safeSend(process, { type: "unsettledTx", database, txid });
-				},
+				...(directLoginToken ? { token: directLoginToken } : {}),
+				...(directHost ? { host: directHost } : {}),
+				...(directPort !== null ? { port: directPort } : {}),
 			}
-		: {}),
-});
+		: null;
+
+const triggerConfig =
+	triggerToken || triggerWakeUrl || cluster.isWorker
+		? {
+				...(triggerToken ? { token: triggerToken } : {}),
+				...(triggerWakeUrl
+					? {
+							wakeUrl: triggerWakeUrl,
+							wakeToken: triggerWakeToken,
+							wakeTimeoutMs: triggerWakeTimeoutMs,
+							onWakeError: (error) =>
+								console.error(`data gateway: trigger wake failed: ${String(error?.message ?? error).slice(0, 200)}`),
+						}
+					: {}),
+				...(cluster.isWorker
+					? {
+							rpc: {
+								register: (payload) => callPrimaryTriggerRpc("register", payload),
+								list: (payload) => callPrimaryTriggerRpc("list", payload),
+								unregister: (payload) => callPrimaryTriggerRpc("unregister", payload),
+							},
+						}
+					: {}),
+			}
+		: null;
+
+let gateway;
+try {
+	gateway = new Gateway({
+		store: { host: setting("DATA_STORE_HOST"), port: Number(process.env.DATA_STORE_PORT ?? 5432), logins },
+		platform: new Platform({ url: setting("DATA_PLATFORM_URL"), publishableKey: setting("DATA_PLATFORM_KEY") }),
+		workers: workerCount,
+		...(runs ? { runs: { token: runs.token } } : {}),
+		...(adminToken ? { admin: { token: adminToken } } : {}),
+		...(directLoginConfig ? { directLogin: directLoginConfig } : {}),
+		...(hookToken ? { hooks: { token: hookToken, ...(hookReader ? { reader: hookReader } : {}) } } : {}),
+		...(publicReader ? { publicReader } : {}),
+		...(triggerConfig ? { triggers: triggerConfig } : {}),
+		...(cluster.isWorker
+			? {
+					onAgentRead: ({ pid, delta }) => {
+						if (process.connected) safeSend(process, { type: "agentRead", pid, delta });
+					},
+					onDrop: (event) => {
+						if (process.connected) safeSend(process, { type: "drop", ...event });
+					},
+					onTestSchemaDrop: (event) => {
+						if (process.connected) safeSend(process, { type: "testSchemaDrop", ...event });
+					},
+					onUnsettledTx: (database, txid) => {
+						if (process.connected) safeSend(process, { type: "unsettledTx", database, txid });
+					},
+				}
+			: {}),
+	});
+} catch (error) {
+	failConfig(String(error?.message ?? error));
+}
 
 if (workerCount > 1 && cluster.isPrimary) {
 	let lastFull = [];
@@ -140,6 +292,47 @@ if (workerCount > 1 && cluster.isPrimary) {
 		worker.on("message", (message) => {
 			if (message?.type === "unsettledTx" && typeof message.database === "string" && typeof message.txid === "string") {
 				gateway.noteUnsettledTx(message.database, message.txid);
+				return;
+			}
+			if (message?.type === "triggerRpc" && typeof message.reqId === "string") {
+				void (async () => {
+					try {
+						let result;
+						if (message.op === "register") {
+							await gateway.registerDataTrigger(message.payload);
+							result =
+								gateway.listDataTriggers(message.payload.environmentId).find((item) => item.id === message.payload.id) ?? {
+									id: message.payload.id,
+									environmentId: message.payload.environmentId,
+									database: message.payload.database,
+								};
+						} else if (message.op === "list") {
+							result = gateway.listDataTriggers(message.payload.environmentId, { database: message.payload.database ?? null });
+						} else if (message.op === "unregister") {
+							result = gateway.unregisterDataTrigger(message.payload.id, message.payload.environmentId);
+						} else {
+							throw Object.assign(new Error("Unknown trigger operation"), { status: 400 });
+						}
+						if (worker.isConnected()) safeSend(worker, { type: "triggerRpcReply", reqId: message.reqId, ok: true, result });
+					} catch (error) {
+						if (worker.isConnected()) {
+							safeSend(worker, {
+								type: "triggerRpcReply",
+								reqId: message.reqId,
+								ok: false,
+								status: Number.isInteger(error?.status) ? error.status : 500,
+								message: typeof error?.message === "string" ? error.message : "The data gateway failed",
+							});
+						}
+					}
+				})();
+				return;
+			}
+			if (message?.type === "testSchemaDrop" && typeof message.database === "string" && typeof message.schema === "string") {
+				void gateway.evictTestSchema(message.database, message.schema);
+				for (const peer of Object.values(cluster.workers ?? {})) {
+					if (peer && peer.id !== worker.id && peer.isConnected()) safeSend(peer, message);
+				}
 				return;
 			}
 			if (message?.type === "drop") {
@@ -219,7 +412,16 @@ if (workerCount > 1 && cluster.isPrimary) {
 		process.on("message", (message) => {
 			if (message?.type === "full") gateway.setFullDatabases(message.databases);
 			else if (message?.type === "signalled" && Array.isArray(message.pids)) gateway.noteSignalled(message.pids);
-			else if (message?.type === "drop") {
+			else if (message?.type === "testSchemaDrop" && typeof message.database === "string" && typeof message.schema === "string") {
+				void gateway.evictTestSchema(message.database, message.schema);
+			} else if (message?.type === "triggerRpcReply" && typeof message.reqId === "string") {
+				const pending = pendingTriggerRpc.get(message.reqId);
+				if (!pending) return;
+				pendingTriggerRpc.delete(message.reqId);
+				clearTimeout(pending.timer);
+				if (message.ok) pending.resolve(message.result);
+				else pending.reject(Object.assign(new Error(message.message ?? "The data gateway failed"), { status: message.status ?? 500 }));
+			} else if (message?.type === "drop") {
 				if (message.kind === "company" && typeof message.database === "string") void gateway.evictCompany(message.database);
 				else if (message.kind === "database" && typeof message.database === "string" && typeof message.schema === "string")
 					void gateway.evictDatabase(message.database, message.schema, message.n ?? null);
@@ -247,12 +449,24 @@ if (workerCount > 1 && cluster.isPrimary) {
 		if (runServer) console.log(`data gateway: run door listening on ${runs.host}:${runs.port} over TLS`);
 		else if (runsOff) console.error(`data gateway: run door: off (${runsOff})`);
 		else console.log("data gateway: no run door");
+		const enabledDoors = [
+			adminToken || directLoginToken ? "direct-login" : null,
+			publicReader ? "public-reader" : null,
+			hookToken ? "hook-data" : null,
+			(adminToken || triggerToken) && triggerWakeUrl ? "triggers" : null,
+		].filter(Boolean);
+		if (enabledDoors.length > 0) console.log(`data gateway: external doors enabled: ${enabledDoors.join(", ")}`);
 	}
 	let stopping = false;
 	const stop = async () => {
 		if (stopping) return;
 		stopping = true;
 		stopWatcher();
+		for (const pending of pendingTriggerRpc.values()) {
+			clearTimeout(pending.timer);
+			pending.reject(Object.assign(new Error("The data gateway is stopping"), { status: 503 }));
+		}
+		pendingTriggerRpc.clear();
 		const closings = [server, runServer].filter(Boolean).map((one) => {
 			one.closeIdleConnections?.();
 			return new Promise((resolve) => {

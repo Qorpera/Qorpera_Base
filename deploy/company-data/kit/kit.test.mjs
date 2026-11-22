@@ -2,9 +2,11 @@
 // stand-in (.gitattributes export-ignore) and keeps everything a machine runs. The test machine's copy of the
 // repository is no git repository, so the kit is committed into a throwaway one here.
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -185,4 +187,129 @@ test("systemd backup service points to base-backup.sh and nginx gives /apply a 1
 	const defaultBlock = /location \/v1\/company-data\/ \{[\s\S]*?\}/.exec(nginx)?.[0];
 	assert.ok(defaultBlock, "nginx config keeps default /v1/company-data/ location");
 	assert.match(defaultBlock, /proxy_read_timeout 35s;/);
+});
+
+test("gateway-main wires all four external doors from env and secret files without leaking secrets", async () => {
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-gateway-main-doors-"));
+	let child = null;
+	try {
+		const loginsDir = join(temporary, "logins");
+		const pubDir = join(temporary, "public");
+		const envId = randomUUID();
+		mkdirSync(loginsDir, { recursive: true });
+		mkdirSync(join(pubDir, envId, "data", "shop", "queries"), { recursive: true });
+		for (const name of ["admin", "keeper", "watch"]) writeFileSync(join(loginsDir, name), "pass-secret\n");
+		writeFileSync(join(loginsDir, "folder-key"), `${"ab".repeat(32)}\n`);
+		writeFileSync(
+			join(pubDir, envId, "data", "shop", "database.toml"),
+			'format = "qorpera.database/v1"\n[public]\nquestions = ["catalog"]\n',
+		);
+		writeFileSync(join(pubDir, envId, "data", "shop", "queries", "catalog.sql"), "select 1;\n");
+
+		const adminTok = randomBytes(32).toString("base64url");
+		const directTok = randomBytes(32).toString("base64url");
+		const hookTok = randomBytes(32).toString("base64url");
+		const trigTok = randomBytes(32).toString("base64url");
+		const wakeTok = randomBytes(24).toString("base64url");
+		writeFileSync(join(temporary, "admin.tok"), `${adminTok}\n`);
+		writeFileSync(join(temporary, "direct.tok"), `${directTok}\n`);
+		writeFileSync(join(temporary, "hook.tok"), `${hookTok}\n`);
+		writeFileSync(join(temporary, "trigger.tok"), `${trigTok}\n`);
+		writeFileSync(join(temporary, "wake.tok"), `${wakeTok}\n`);
+
+		const freePort = await new Promise((resolve, reject) => {
+			const s = net.createServer();
+			s.on("error", reject);
+			s.listen(0, "127.0.0.1", () => {
+				const p = s.address().port;
+				s.close(() => resolve(p));
+			});
+		});
+
+		const baseEnv = {
+			PATH: process.env.PATH,
+			DATA_STORE_HOST: "127.0.0.1",
+			DATA_STORE_PORT: "1",
+			DATA_LOGINS: loginsDir,
+			DATA_PLATFORM_URL: "http://127.0.0.1:1",
+			DATA_PLATFORM_KEY: "test-key",
+			DATA_LISTEN: `127.0.0.1:${freePort}`,
+		};
+		const conflict = spawnSync(process.execPath, [join(kit, "gateway-main.mjs")], {
+			env: { ...baseEnv, DATA_HOOK_TOKEN: hookTok, DATA_HOOK_TOKEN_FILE: join(temporary, "hook.tok") },
+			encoding: "utf8",
+			timeout: 10_000,
+		});
+		assert.equal(conflict.status, 2);
+		assert.match(conflict.stderr, /set only one of DATA_HOOK_TOKEN or DATA_HOOK_TOKEN_FILE/);
+		assert.equal(conflict.stderr.includes(hookTok), false);
+
+		const duplicate = spawnSync(process.execPath, [join(kit, "gateway-main.mjs")], {
+			env: { ...baseEnv, DATA_ADMIN_TOKEN: adminTok, DATA_DIRECT_LOGIN_TOKEN: adminTok },
+			encoding: "utf8",
+			timeout: 10_000,
+		});
+		assert.equal(duplicate.status, 2);
+		assert.match(duplicate.stderr, /distinct/);
+		assert.equal(duplicate.stderr.includes(adminTok), false);
+
+		child = spawn(process.execPath, [join(kit, "gateway-main.mjs")], {
+			stdio: ["ignore", "pipe", "pipe"],
+			env: {
+				...baseEnv,
+				DATA_ADMIN_TOKEN_FILE: join(temporary, "admin.tok"),
+				DATA_DIRECT_LOGIN_TOKEN_FILE: join(temporary, "direct.tok"),
+				DATA_HOOK_TOKEN_FILE: join(temporary, "hook.tok"),
+				DATA_PUBLIC_DIR: pubDir,
+				DATA_TRIGGER_TOKEN_FILE: join(temporary, "trigger.tok"),
+				DATA_TRIGGER_WAKE_URL: "http://127.0.0.1:1/wake",
+				DATA_TRIGGER_WAKE_TOKEN_FILE: join(temporary, "wake.tok"),
+			},
+		});
+		let stdout = "";
+		let stderr = "";
+		child.stdout.on("data", (chunk) => {
+			stdout += chunk;
+		});
+		child.stderr.on("data", (chunk) => {
+			stderr += chunk;
+		});
+		for (let i = 0; i < 100 && !stdout.includes("listening"); i++) await new Promise((r) => setTimeout(r, 50));
+		assert.match(stdout, /external doors enabled: direct-login, public-reader, hook-data, triggers/);
+		for (const secret of [adminTok, directTok, hookTok, trigTok, wakeTok]) {
+			assert.equal(stdout.includes(secret), false);
+			assert.equal(stderr.includes(secret), false);
+		}
+
+		const directUnauth = await fetch(`http://127.0.0.1:${freePort}/v1/admin/company-data/${envId}/direct-login`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ database: "shop" }),
+		});
+		assert.equal(directUnauth.status, 401);
+
+		const hookUnauth = await fetch(`http://127.0.0.1:${freePort}/v1/hook-data/${envId}/change`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ database: "shop", change: "x" }),
+		});
+		assert.equal(hookUnauth.status, 401);
+
+		const triggersOk = await fetch(`http://127.0.0.1:${freePort}/v1/admin/company-data/${envId}/triggers`, {
+			headers: { authorization: `Bearer ${trigTok}` },
+		});
+		assert.equal(triggersOk.status, 200);
+		assert.deepEqual(await triggersOk.json(), { triggers: [] });
+
+		const pubRes = await fetch(`http://127.0.0.1:${freePort}/v1/company-data-public/${envId}/query`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ database: "shop", question: "not-allowed" }),
+		});
+		assert.equal(pubRes.status, 404);
+		assert.equal((await pubRes.json()).error, "No public question shop/not-allowed");
+	} finally {
+		child?.kill("SIGTERM");
+		await rm(temporary, { recursive: true, force: true });
+	}
 });
