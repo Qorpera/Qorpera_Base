@@ -18,6 +18,7 @@ pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 const MAX_CONTROL_BODY_BYTES: usize = 1024 * 1024;
 const MAX_CONNS: usize = 256;
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const BODY_READ_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn full_body(bytes: impl Into<Bytes>) -> BoxBody {
     Full::new(bytes.into())
@@ -30,6 +31,7 @@ pub struct AppHostServer {
     listener: TcpListener,
     manager: Arc<AppLifecycleManager>,
     control_token: String,
+    body_read_timeout: Duration,
 }
 
 impl AppHostServer {
@@ -45,15 +47,57 @@ impl AppHostServer {
             listener,
             manager,
             control_token,
+            body_read_timeout: BODY_READ_TIMEOUT,
         })
     }
 
+    pub fn with_body_read_timeout(mut self, timeout: Duration) -> Self {
+        self.body_read_timeout = timeout;
+        self
+    }
+
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
+        self.spawn_inner(None)
+    }
+
+    pub fn spawn_with_shutdown(
+        self,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        self.spawn_inner(Some(shutdown))
+    }
+
+    fn spawn_inner(
+        self,
+        mut shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+    ) -> tokio::task::JoinHandle<()> {
         let sem = Arc::new(Semaphore::new(MAX_CONNS));
         tokio::spawn(async move {
             loop {
-                let Ok((stream, _peer)) = self.listener.accept().await else {
-                    continue;
+                let stream = if let Some(rx) = shutdown.as_mut() {
+                    if *rx.borrow() {
+                        break;
+                    }
+                    tokio::select! {
+                        biased;
+                        changed = rx.changed() => {
+                            if changed.is_err() || *rx.borrow() {
+                                break;
+                            }
+                            continue;
+                        }
+                        accepted = self.listener.accept() => {
+                            match accepted {
+                                Ok((stream, _peer)) => stream,
+                                Err(_) => continue,
+                            }
+                        }
+                    }
+                } else {
+                    match self.listener.accept().await {
+                        Ok((stream, _peer)) => stream,
+                        Err(_) => continue,
+                    }
                 };
                 let Ok(permit) = Arc::clone(&sem).try_acquire_owned() else {
                     drop(stream);
@@ -62,13 +106,16 @@ impl AppHostServer {
                 let _ = stream.set_nodelay(true);
                 let mgr = Arc::clone(&self.manager);
                 let token = self.control_token.clone();
+                let body_timeout = self.body_read_timeout;
                 tokio::spawn(async move {
                     let _permit = permit;
                     let io = TokioIo::new(stream);
                     let svc = service_fn(move |req| {
                         let m = Arc::clone(&mgr);
                         let t = token.clone();
-                        async move { Ok::<_, hyper::Error>(handle_request(m, &t, req).await) }
+                        async move {
+                            Ok::<_, hyper::Error>(handle_request(m, &t, body_timeout, req).await)
+                        }
                     });
                     let _ = hyper::server::conn::http1::Builder::new()
                         .timer(TokioTimer::new())
@@ -103,25 +150,33 @@ fn check_auth(req: &Request<Incoming>, expected: &str) -> bool {
 
 enum BodyErr {
     TooLarge,
+    Timeout,
     Bad,
 }
 
-async fn read_body(body: Incoming) -> Result<Bytes, BodyErr> {
-    match Limited::new(body, MAX_CONTROL_BODY_BYTES).collect().await {
-        Ok(c) => Ok(c.to_bytes()),
-        Err(err) => {
+async fn read_body(body: Incoming, timeout: Duration) -> Result<Bytes, BodyErr> {
+    match tokio::time::timeout(
+        timeout,
+        Limited::new(body, MAX_CONTROL_BODY_BYTES).collect(),
+    )
+    .await
+    {
+        Ok(Ok(c)) => Ok(c.to_bytes()),
+        Ok(Err(err)) => {
             if err.downcast_ref::<http_body_util::LengthLimitError>().is_some() {
                 Err(BodyErr::TooLarge)
             } else {
                 Err(BodyErr::Bad)
             }
         }
+        Err(_) => Err(BodyErr::Timeout),
     }
 }
 
 async fn handle_request(
     manager: Arc<AppLifecycleManager>,
     expected_token: &str,
+    body_read_timeout: Duration,
     req: Request<Incoming>,
 ) -> Response<BoxBody> {
     let method = req.method().clone();
@@ -136,12 +191,18 @@ async fn handle_request(
     }
 
     if method == Method::POST && path == "/_internal/apps/deploy" {
-        let bytes = match read_body(req.into_body()).await {
+        let bytes = match read_body(req.into_body(), body_read_timeout).await {
             Ok(b) => b,
             Err(BodyErr::TooLarge) => {
                 return json_res(
                     StatusCode::PAYLOAD_TOO_LARGE,
                     serde_json::json!({ "error": "body_too_large" }),
+                );
+            }
+            Err(BodyErr::Timeout) => {
+                return json_res(
+                    StatusCode::REQUEST_TIMEOUT,
+                    serde_json::json!({ "error": "body_timeout" }),
                 );
             }
             Err(BodyErr::Bad) => {
@@ -166,13 +227,19 @@ async fn handle_request(
     if let Some(rest) = path.strip_prefix("/_internal/apps/") {
         if let Some(dep_id) = rest.strip_suffix("/wake") {
             if method == Method::POST {
-                let fallback = match read_body(req.into_body()).await {
+                let fallback = match read_body(req.into_body(), body_read_timeout).await {
                     Ok(bytes) if !bytes.is_empty() => serde_json::from_slice::<DeployRequest>(&bytes).ok(),
                     Ok(_) => None,
                     Err(BodyErr::TooLarge) => {
                         return json_res(
                             StatusCode::PAYLOAD_TOO_LARGE,
                             serde_json::json!({ "error": "body_too_large" }),
+                        );
+                    }
+                    Err(BodyErr::Timeout) => {
+                        return json_res(
+                            StatusCode::REQUEST_TIMEOUT,
+                            serde_json::json!({ "error": "body_timeout" }),
                         );
                     }
                     Err(BodyErr::Bad) => None,

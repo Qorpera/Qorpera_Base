@@ -218,7 +218,7 @@ records what it waits for.
   3. Edge Function secrets: `QORPERA_ARTIFACT_GC_WORKER_KEY` (a new random invocation key, kept only
      there and in Vault), and for NAS-backed Company File objects `QORPERA_OBJECT_GATEWAY_URL` and
      `QORPERA_OBJECT_GATEWAY_CONTROL_TOKEN`. `SUPABASE_URL` and the function's Supabase service
-     credential come from the platform (`SUPABASE_SECRET_KEYS`, else `SUPABASE_SERVICE_ROLE_KEY`), or
+     credential come from the platform (`SUPABASE_SERVICE_ROLE_KEY`, else `SUPABASE_SECRET_KEYS`), or
      `QORPERA_ARTIFACT_GC_SERVICE_KEY` if set.
   4. Vault secrets for the schedule: `qorpera_project_url` and `qorpera_artifact_gc_worker_key` (the same
      invocation key). The schedule posts with pg_net.

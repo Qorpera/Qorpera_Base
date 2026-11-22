@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { withTimeoutScope } from "./abort-timeout.ts";
 
 export const DEFAULT_RPC_TIMEOUT_MS = 25_000;
@@ -5,6 +6,38 @@ export const DEFAULT_RPC_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_BODY_READ_TIMEOUT_MS = 10_000;
 
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+
+export function constantTimeEqual(a: string, b: string): boolean {
+	// WHY: Compare SHA-256 digests with timingSafeEqual so unequal-length secrets never leak length or prefix timing.
+	const digestA = createHash("sha256").update(a, "utf8").digest();
+	const digestB = createHash("sha256").update(b, "utf8").digest();
+	return timingSafeEqual(digestA, digestB) && a.length === b.length;
+}
+
+export function constantTimeIncludes(candidates: readonly string[], presented: string): boolean {
+	let matched = false;
+	for (const candidate of candidates) {
+		if (constantTimeEqual(candidate, presented)) matched = true;
+	}
+	return matched;
+}
+
+export function configuredSecretKeys(readEnv: (name: string) => string | undefined): string[] {
+	const legacyServiceRoleKey = readEnv("SUPABASE_SERVICE_ROLE_KEY");
+	const keys: string[] = [];
+	if (legacyServiceRoleKey) keys.push(legacyServiceRoleKey);
+	try {
+		const parsed: unknown = JSON.parse(readEnv("SUPABASE_SECRET_KEYS") ?? "{}");
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			for (const value of Object.values(parsed)) {
+				if (typeof value === "string" && value.length > 20) keys.push(value);
+			}
+		}
+	} catch {
+		// WHY: Fall back to the legacy key when SUPABASE_SECRET_KEYS is malformed.
+	}
+	return [...new Set(keys)];
+}
 
 export class BodyTooLargeError extends Error {
 	constructor(message = "HTTP body exceeds allowed size") {

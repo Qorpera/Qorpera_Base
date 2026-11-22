@@ -1,7 +1,7 @@
 use crate::lifecycle::AppLifecycleManager;
 use bytes::Bytes;
 use http::{Request, Uri};
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper_util::rt::TokioIo;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -12,11 +12,28 @@ use tracing::{info, warn};
 
 const ROUTER_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 const PRE_HIBERNATE_DRAIN: Duration = Duration::from_millis(250);
+const MAX_ROUTER_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Deserialize)]
 struct ActivityResponse {
     #[serde(default)]
     deployments: HashMap<String, u64>,
+}
+
+async fn restore_running_upstream(
+    manager: &AppLifecycleManager,
+    router_internal_url: &str,
+    control_token: &str,
+    dep_id: &str,
+) {
+    if let Some(st) = manager.status(dep_id) {
+        if st.state == crate::lifecycle::InstanceState::Running {
+            if let Some(addr) = st.upstream_addr {
+                let _ = set_router_upstream(router_internal_url, control_token, dep_id, Some(&addr))
+                    .await;
+            }
+        }
+    }
 }
 
 pub async fn reap_once_with_router(
@@ -28,47 +45,53 @@ pub async fn reap_once_with_router(
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
-    let candidates = manager.idle_candidates(&activity, now_ms);
+    let candidates = manager.idle_candidates_with_generation(&activity, now_ms);
     let mut reaped = Vec::new();
     if !candidates.is_empty() {
         let mut cleared = Vec::new();
-        for (dep_id, started_at) in candidates {
+        for (dep_id, started_at, wake_gen) in candidates {
             if let Err(err) =
                 set_router_upstream(router_internal_url, control_token, &dep_id, None).await
             {
                 warn!(deployment_id = %dep_id, error = %err, "failed clearing idle upstream before freeze");
             } else {
-                cleared.push((dep_id, started_at));
+                cleared.push((dep_id, started_at, wake_gen));
             }
         }
         if !cleared.is_empty() {
             tokio::time::sleep(PRE_HIBERNATE_DRAIN).await;
 
-            let latest_activity = fetch_router_activity(router_internal_url, control_token)
-                .await
-                .unwrap_or(activity);
-            for (dep_id, started_at) in cleared {
+            // WHY: Fail closed if the post-drain activity check fails so a router blip cannot freeze live apps with stale activity data.
+            let latest_activity = match fetch_router_activity(router_internal_url, control_token).await {
+                Ok(map) => map,
+                Err(err) => {
+                    warn!(error = %err, "post-drain activity check failed; restoring cleared upstreams");
+                    for (dep_id, _, _) in &cleared {
+                        restore_running_upstream(manager, router_internal_url, control_token, dep_id)
+                            .await;
+                    }
+                    return Err(err);
+                }
+            };
+            for (dep_id, started_at, wake_gen) in cleared {
                 let saw_new_traffic = latest_activity
                     .get(&dep_id)
                     .copied()
                     .is_some_and(|ts| ts >= now_ms);
                 if saw_new_traffic {
-                    if let Some(st) = manager.status(&dep_id) {
-                        if let Some(addr) = st.upstream_addr {
-                            let _ = set_router_upstream(
-                                router_internal_url,
-                                control_token,
-                                &dep_id,
-                                Some(&addr),
-                            )
-                            .await;
-                        }
-                    }
+                    restore_running_upstream(manager, router_internal_url, control_token, &dep_id)
+                        .await;
                     continue;
                 }
-                if manager.freeze_if_unchanged(&dep_id, started_at, now_ms).await {
+                if manager
+                    .freeze_if_unchanged_generation(&dep_id, started_at, wake_gen, now_ms)
+                    .await
+                {
                     info!(deployment_id = %dep_id, "froze idle deployment after clearing router upstream");
                     reaped.push(dep_id);
+                } else {
+                    restore_running_upstream(manager, router_internal_url, control_token, &dep_id)
+                        .await;
                 }
             }
         }
@@ -143,11 +166,14 @@ async fn fetch_router_activity(
     if !res.status().is_success() {
         return Err(format!("router_status_{}", res.status().as_u16()));
     }
-    let body = tokio::time::timeout(ROUTER_HTTP_TIMEOUT, res.into_body().collect())
-        .await
-        .map_err(|_| "router_body_timeout".to_string())?
-        .map_err(|e| format!("router_body: {e}"))?
-        .to_bytes();
+    let body = tokio::time::timeout(
+        ROUTER_HTTP_TIMEOUT,
+        Limited::new(res.into_body(), MAX_ROUTER_BODY_BYTES).collect(),
+    )
+    .await
+    .map_err(|_| "router_body_timeout".to_string())?
+    .map_err(|e| format!("router_body: {e}"))?
+    .to_bytes();
     let parsed: ActivityResponse =
         serde_json::from_slice(&body).map_err(|e| format!("router_json: {e}"))?;
     Ok(parsed.deployments)

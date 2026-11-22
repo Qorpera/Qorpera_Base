@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
+import { createTimedFetch, preferredServiceKey } from "../_shared/http-guards.ts";
 import {
 	type BillingStore,
 	BillingStoreError,
@@ -14,18 +15,9 @@ function required(name: string): string {
 }
 
 function serviceKey(): string {
-	try {
-		const parsed: unknown = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			const key = Object.values(parsed).find(
-				(value): value is string => typeof value === "string" && value.length > 20,
-			);
-			if (key) return key;
-		}
-	} catch {
-		// Fall back to the legacy service role key.
-	}
-	return required("SUPABASE_SERVICE_ROLE_KEY");
+	const key = preferredServiceKey((name) => Deno.env.get(name));
+	if (!key) throw new Error("SUPABASE_SERVICE_ROLE_KEY is not set");
+	return key;
 }
 
 function allowedOrigins(): string[] {
@@ -41,6 +33,7 @@ const returnUrl = required("QORPERA_BILLING_RETURN_URL");
 if (!new URL(returnUrl).protocol.startsWith("https")) throw new Error("QORPERA_BILLING_RETURN_URL must use HTTPS");
 const supabase = createClient(required("SUPABASE_URL"), serviceKey(), {
 	auth: { persistSession: false, autoRefreshToken: false },
+	global: { fetch: createTimedFetch({ timeoutMs: 15_000 }) },
 });
 
 const store: BillingStore = {

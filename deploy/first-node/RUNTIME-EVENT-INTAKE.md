@@ -214,8 +214,9 @@ Table `qorpera_event_deliveries`:
 | `too_large` | 413 | over the hook's limit |
 | `limited` | 429 | over the hook's minute (`Retry-After: 60`) or the company's budget (`Retry-After: 600`) |
 | `unavailable` | 503 | the intake is switched off (`Retry-After: 300`) |
-| — | 400 | input the database calls malformed |
+| — | 400 | input the database calls malformed, or a request body stream that could not be read |
 | — | 404, 405 | a path that is not a hook address ("This is not a hook address"); a method other than POST |
+| — | 408 | the request body read timed out or was aborted before completing |
 | — | 413, 431 | a body over 256 KiB; kept headers over 8000 bytes |
 | — | 503 | the database cannot be reached; the sender retries |
 
@@ -477,7 +478,10 @@ hourly budget apply as to any delivery. Mail for an address with no live mailbox
 that the provider no longer has is dropped. The door answers the provider 200 when every recipient is
 settled, 429 with the longest `Retry-After` when a mailbox is over its limits, and 503 when mail is
 switched off or something failed, so the provider retries; a message the database calls malformed is
-logged and settled with 200, since a retry would send the same message.
+logged and settled with 200, since a retry would send the same message. Before reaching the database,
+the function answers 405 for non-POST requests, 413 when the webhook body exceeds 64 KiB, 408 when
+reading the body times out or is aborted, 400 when the body stream fails, is not JSON, or lacks a
+valid message id, and 401 when the signature is missing, invalid, or stale.
 
 **Agents.** A routine on a mailbox is an event routine on its hook: `{kind:"event", hookId}`, optionally
 `only: ["mail.received"]`. An agent makes one with `manage_routine`; an owner or admin gives a mailbox to an agent
@@ -928,7 +932,7 @@ anchor with master again (RUNTIME-RELEASE-TRAIN.md). After it is live:
    `supabase/config.toml`). It needs only `SUPABASE_URL` and the service key the platform provides.
    Until the switch is on it answers every delivery that reaches the database, a POST to a
    well-formed address, 503 ("Events are unavailable right now"), before looking the address up. The
-   function's own answers (405, 413, 431) come first either way. A path that is not a 43-character
+   function's own answers (400, 405, 408, 413, 431) come first either way. A path that is not a 43-character
    address gets 404 ("This is not a hook address") from the function itself, by its shape alone;
    an address with no live hook gets 404 ("No hook has this address") once the switch is on.
 2. Schedule retention:

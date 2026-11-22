@@ -1,3 +1,5 @@
+import { constantTimeEqual } from "../_shared/http-guards.ts";
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -40,7 +42,7 @@ export function resolveArtifactGcWorkerAuthorization(options: {
 	serviceKeys: readonly (string | undefined)[];
 }): ArtifactGcWorkerAuthorization {
 	if (!options.workerKey) return { status: "unconfigured" };
-	if (!options.presentedKey || options.presentedKey !== options.workerKey) {
+	if (!options.presentedKey || !constantTimeEqual(options.presentedKey, options.workerKey)) {
 		return { status: "unauthorized" };
 	}
 	const serviceKey = options.serviceKeys.find((value): value is string => Boolean(value));
@@ -50,13 +52,48 @@ export function resolveArtifactGcWorkerAuthorization(options: {
 export function createRoutedArtifactGcStorageProvider(options: {
 	removeSupabase(object: ArtifactGcWorkerObject, leaseId: string): Promise<void>;
 	removeNas(object: ArtifactGcWorkerObject, leaseId: string): Promise<void>;
+	concurrency?: number;
+	hasBudget?: () => boolean;
 }): ArtifactGcStorageProvider {
+	const concurrency = Math.max(1, Math.floor(options.concurrency ?? 1));
+	const checkBudget = (): void => {
+		if (options.hasBudget && !options.hasBudget()) {
+			throw new Error("Artifact cleanup budget exhausted");
+		}
+	};
 	return {
 		remove: async (objects, leaseId) => {
-			for (const object of objects) {
-				if (object.backend === "supabase-storage") await options.removeSupabase(object, leaseId);
-				if (object.backend === "nas-object-gateway") await options.removeNas(object, leaseId);
+			if (concurrency === 1 || objects.length <= 1) {
+				for (const object of objects) {
+					checkBudget();
+					if (object.backend === "supabase-storage") await options.removeSupabase(object, leaseId);
+					if (object.backend === "nas-object-gateway") await options.removeNas(object, leaseId);
+				}
+				return;
 			}
+			let cursor = 0;
+			let firstError: unknown;
+			const workers = Array.from({ length: Math.min(concurrency, objects.length) }, async () => {
+				while (firstError === undefined) {
+					if (options.hasBudget && !options.hasBudget()) {
+						firstError = new Error("Artifact cleanup budget exhausted");
+						break;
+					}
+					const index = cursor;
+					if (index >= objects.length) break;
+					cursor += 1;
+					const object = objects[index]!;
+					try {
+						if (object.backend === "supabase-storage") await options.removeSupabase(object, leaseId);
+						else if (object.backend === "nas-object-gateway") await options.removeNas(object, leaseId);
+					} catch (error) {
+						if (firstError === undefined) firstError = error;
+						break;
+					}
+				}
+			});
+			await Promise.all(workers);
+			if (firstError !== undefined) throw firstError;
 		},
 	};
 }
@@ -141,9 +178,41 @@ export function parseAuthorizedArtifactGcWorkerObjects(value: unknown): Authoriz
 export async function reconcileAuthorizedArtifactGcWorkerObjects(
 	objects: readonly AuthorizedArtifactGcWorkerObject[],
 	remove: (object: AuthorizedArtifactGcWorkerObject) => Promise<void>,
+	options?: { readonly budgetMs?: number; readonly now?: () => number; readonly concurrency?: number },
 ): Promise<number> {
-	for (const object of objects) await remove(object);
-	return objects.length;
+	const now = options?.now ?? Date.now;
+	const deadline = options?.budgetMs !== undefined ? now() + options.budgetMs : undefined;
+	const concurrency = Math.max(1, Math.floor(options?.concurrency ?? 1));
+	if (concurrency === 1 || objects.length <= 1) {
+		let processed = 0;
+		for (const object of objects) {
+			if (deadline !== undefined && now() >= deadline) break;
+			await remove(object);
+			processed += 1;
+		}
+		return processed;
+	}
+	let cursor = 0;
+	let processed = 0;
+	let firstError: unknown;
+	const workers = Array.from({ length: Math.min(concurrency, objects.length) }, async () => {
+		while (firstError === undefined) {
+			if (deadline !== undefined && now() >= deadline) break;
+			const index = cursor;
+			if (index >= objects.length) break;
+			cursor += 1;
+			try {
+				await remove(objects[index]!);
+				processed += 1;
+			} catch (error) {
+				if (firstError === undefined) firstError = error;
+				break;
+			}
+		}
+	});
+	await Promise.all(workers);
+	if (firstError !== undefined) throw firstError;
+	return processed;
 }
 
 export async function runCompanyObjectGcWorkerJob(
@@ -208,13 +277,28 @@ export function parseCompanyStorageDeletions(value: unknown): CompanyStorageDele
 export async function runCompanyStorageDeletions(
 	entries: readonly CompanyStorageDeletion[],
 	store: CompanyStorageDeletionStore,
-): Promise<{ claimed: number; completed: number; failed: number }> {
-	const result = { claimed: entries.length, completed: 0, failed: 0 };
-	for (const entry of entries) {
+	options?: { readonly budgetMs?: number; readonly now?: () => number },
+): Promise<{ claimed: number; completed: number; failed: number; deferred?: number }> {
+	const now = options?.now ?? Date.now;
+	const deadline = options?.budgetMs !== undefined ? now() + options.budgetMs : undefined;
+	const result: { claimed: number; completed: number; failed: number; deferred?: number } = {
+		claimed: entries.length,
+		completed: 0,
+		failed: 0,
+	};
+	for (const [index, entry] of entries.entries()) {
+		if (deadline !== undefined && now() >= deadline) {
+			result.deferred = entries.length - index;
+			break;
+		}
 		try {
 			if (entry.bucket === "qorpera-native-compute-capsules") await store.remove(entry.bucket, [entry.path]);
 			else {
 				for (let round = 0; ; round++) {
+					if (deadline !== undefined && now() >= deadline) {
+						result.deferred = entries.length - index;
+						return result;
+					}
 					const names = await store.list(entry.bucket, entry.path);
 					if (!names.length) break;
 					if (names.some((name) => !RECOVERY_OBJECT.test(name)))
