@@ -4,6 +4,7 @@ Documentation=https://github.com/Qorpera/Qorpera_Base/blob/master/deploy/first-n
 
 [Service]
 Type=oneshot
+TimeoutStartSec=30
 # An unhealthy exit is an answer, not a failure of this unit.
 SuccessExitStatus=1
 ExecStart=/usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit.sh health

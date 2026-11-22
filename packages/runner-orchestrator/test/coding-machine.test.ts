@@ -1581,4 +1581,24 @@ describe("a kept per-session VM from before", () => {
 			).state,
 		).toBe("recovery-required");
 	});
+	it("bounds authorize RPC without calling AbortSignal.any or AbortSignal.timeout", async () => {
+		const f = await fixture();
+		const anySpy = vi.spyOn(AbortSignal, "any");
+		const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+		try {
+			await expect(
+				reconcileCodingMachine({
+					...f.options,
+					authorize: async () => {
+						throw new Error("CODING_MACHINE_AUTH_REFUSED");
+					},
+				}),
+			).rejects.toThrow("CODING_MACHINE_AUTH_REFUSED");
+			expect(anySpy).not.toHaveBeenCalled();
+			expect(timeoutSpy).not.toHaveBeenCalled();
+		} finally {
+			anySpy.mockRestore();
+			timeoutSpy.mockRestore();
+		}
+	});
 });

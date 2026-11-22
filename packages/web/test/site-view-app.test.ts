@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
-import { SITE_DOOR_URL } from "../src/app/views/site-view.ts";
+import { SITE_DOOR_URL, SiteView } from "../src/app/views/site-view.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { deferred, fixture, id, profileA, settle, team, timestamp, userA, userB } from "./fixtures.ts";
 
@@ -184,5 +184,53 @@ describe("a company's website in the app", () => {
 		expect(first.isConnected).toBe(false);
 		expect(second.querySelector(".site-address")?.textContent).toBe("launch-page.qorpera.com");
 		expect(passes(f.cloud).map(([, args]) => args)).toEqual([{ p_site: id(81) }, { p_site: id(82) }]);
+	});
+
+	it("disposes and clears the active site view on revocation so later redraws do not re-dispose it", async () => {
+		const disposeSpy = vi.spyOn(SiteView.prototype, "dispose");
+		const f = await mount(siteHash("wristband-shop"), () => [row("wristband-shop", "Wristband shop")]);
+		expect(disposeSpy).not.toHaveBeenCalled();
+
+		vi.mocked(f.api.getTeam).mockRejectedValue(
+			new CloudRpcError("getTeam", { code: "42501", message: "Access revoked" }),
+		);
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		expect(f.root.querySelector("main")?.textContent).toContain("Your access to this company was revoked");
+		expect(f.root.querySelector(".page.site-page")).toBeNull();
+		const afterRevoke = disposeSpy.mock.calls.length;
+		expect(afterRevoke).toBeGreaterThanOrEqual(1);
+
+		window.dispatchEvent(new Event("resize"));
+		await draw();
+		expect(disposeSpy).toHaveBeenCalledTimes(afterRevoke);
+	});
+
+	it("coalesces concurrent focus-triggered site reads into one trailing re-read and skips redundant store churn when unchanged", async () => {
+		const gates: Array<ReturnType<typeof deferred<ReturnType<typeof row>[]>>> = [];
+		let listCalls = 0;
+		await mount(siteHash("wristband-shop"), () => {
+			listCalls += 1;
+			const next = deferred<ReturnType<typeof row>[]>();
+			gates.push(next);
+			return next.promise;
+		});
+		expect(listCalls).toBe(1);
+		window.dispatchEvent(new Event("focus"));
+		window.dispatchEvent(new Event("focus"));
+		window.dispatchEvent(new Event("focus"));
+		await draw();
+		expect(listCalls).toBe(1);
+
+		const updateSpy = vi.spyOn(SiteView.prototype, "update");
+		gates[0]!.resolve([row("wristband-shop", "Wristband shop")]);
+		await draw();
+		expect(listCalls).toBe(2);
+		updateSpy.mockClear();
+
+		gates[1]!.resolve([row("wristband-shop", "Wristband shop")]);
+		await draw();
+		expect(listCalls).toBe(2);
+		expect(updateSpy).not.toHaveBeenCalled();
 	});
 });

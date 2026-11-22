@@ -9,6 +9,7 @@ import {
 	type CompanyComputerServiceStopRequest,
 	parseCompanyComputerServiceStopInspection,
 } from "@qorpera/contracts";
+import { withTimeoutScope } from "./abort-scope.ts";
 import type { LxdOfficeServiceStopClient } from "./lxd-client.ts";
 import { type LxdOfficeGuestBinding, lxdOfficeGuestPlan } from "./lxd-office-guest.ts";
 import { officeCanonical } from "./lxd-office-image-provenance.ts";
@@ -66,76 +67,96 @@ export async function inspectAndAcknowledgeLxdOfficeStop(
 	const deadline = before + challenge.validForMs;
 	const remaining = Math.floor(deadline - performance.now());
 	if (remaining < 1) throw new Error("stop inspection expired");
-	let authority = AbortSignal.any([caller, AbortSignal.timeout(remaining)]);
-	const fresh = () => {
-		authority.throwIfAborted();
-		if (performance.now() >= deadline) throw new Error("stop inspection expired");
-	};
-	const checked = async () => {
-		fresh();
-		if (!isDeepStrictEqual((await readRecord(join(root, recordName))).value, dispatch))
-			throw new Error("stop inspection dispatch changed");
-		authority = AbortSignal.any([authority, await authorize(authority)]);
-		fresh();
-		return authority;
-	};
-	const name = lxdOfficeGuestPlan(binding).request.name;
-	const reference = await client.submitOfficeServiceStopInspection(
-		binding.project,
-		name,
-		command,
-		inspectionId,
-		await checked(),
-	);
-	if (
-		!isDeepStrictEqual(reference, {
-			project: binding.project,
-			instanceName: name,
-			operationId: reference.operationId,
-		}) ||
-		typeof reference.operationId !== "string" ||
-		!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(reference.operationId)
-	)
-		throw new Error("stop inspection operation differs");
-	// Preserve accepted identity even when cancellation accompanies the reply.
-	if (
-		!(await publish(
-			root,
-			`${prefix}${inspectionId}-accepted.json`,
-			Buffer.from(
-				officeCanonical({
-					schema: "qorpera.lxd-office-stop-inspection-accepted/v1",
-					inspectionId,
-					reference,
-				}),
-			),
-		))
-	)
-		throw new Error("stop inspection acceptance changed");
-	for (;;) {
-		const state = await client.inspectOfficeServiceStop(reference, await checked());
-		fresh();
-		if (state === "succeeded") break;
-		if (state !== "pending") throw new Error("stop inspection failed");
-		await delay(50, undefined, { signal: authority });
-	}
-	const file = await client.readInstanceFile(
-		binding.project,
-		name,
-		`/run/qorpera-office-preparation/service-stop-inspection-${inspectionId}.json`,
-		65536,
-		await checked(),
-	);
-	fresh();
-	if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o600 || file.content.length > 65536)
-		throw new Error("stop inspection custody");
-	const inspection = parseCompanyComputerServiceStopInspection(
-		officeStopDecode(file.content),
-		inspectionId,
-		completion,
-		request,
-	);
-	const receipt = await control.acknowledge(inspection, await checked());
-	fresh();
-	return receipt;
+	return withTimeoutScope(caller, remaining, async (windowSignal) => {
+		const authorityScope = new AbortController();
+		const tracked = new Map<AbortSignal, () => void>();
+		const track = (source: AbortSignal): void => {
+			if (source.aborted) {
+				authorityScope.abort(source.reason);
+				return;
+			}
+			if (tracked.has(source)) return;
+			const onAbort = () => authorityScope.abort(source.reason);
+			source.addEventListener("abort", onAbort, { once: true });
+			tracked.set(source, () => source.removeEventListener("abort", onAbort));
+		};
+		track(windowSignal);
+		const authority = authorityScope.signal;
+		const fresh = () => {
+			authority.throwIfAborted();
+			if (performance.now() >= deadline) throw new Error("stop inspection expired");
+		};
+		const checked = async () => {
+			fresh();
+			if (!isDeepStrictEqual((await readRecord(join(root, recordName))).value, dispatch))
+				throw new Error("stop inspection dispatch changed");
+			track(await authorize(authority));
+			fresh();
+			return authority;
+		};
+		try {
+			const name = lxdOfficeGuestPlan(binding).request.name;
+			const reference = await client.submitOfficeServiceStopInspection(
+				binding.project,
+				name,
+				command,
+				inspectionId,
+				await checked(),
+			);
+			if (
+				!isDeepStrictEqual(reference, {
+					project: binding.project,
+					instanceName: name,
+					operationId: reference.operationId,
+				}) ||
+				typeof reference.operationId !== "string" ||
+				!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(reference.operationId)
+			)
+				throw new Error("stop inspection operation differs");
+			// Preserve accepted identity even when cancellation accompanies the reply.
+			if (
+				!(await publish(
+					root,
+					`${prefix}${inspectionId}-accepted.json`,
+					Buffer.from(
+						officeCanonical({
+							schema: "qorpera.lxd-office-stop-inspection-accepted/v1",
+							inspectionId,
+							reference,
+						}),
+					),
+				))
+			)
+				throw new Error("stop inspection acceptance changed");
+			for (;;) {
+				const state = await client.inspectOfficeServiceStop(reference, await checked());
+				fresh();
+				if (state === "succeeded") break;
+				if (state !== "pending") throw new Error("stop inspection failed");
+				await delay(50, undefined, { signal: authority });
+			}
+			const file = await client.readInstanceFile(
+				binding.project,
+				name,
+				`/run/qorpera-office-preparation/service-stop-inspection-${inspectionId}.json`,
+				65536,
+				await checked(),
+			);
+			fresh();
+			if (file.uid !== 0 || file.gid !== 0 || file.mode !== 0o600 || file.content.length > 65536)
+				throw new Error("stop inspection custody");
+			const inspection = parseCompanyComputerServiceStopInspection(
+				officeStopDecode(file.content),
+				inspectionId,
+				completion,
+				request,
+			);
+			const receipt = await control.acknowledge(inspection, await checked());
+			fresh();
+			return receipt;
+		} finally {
+			for (const cleanup of tracked.values()) cleanup();
+			tracked.clear();
+		}
+	});
 }

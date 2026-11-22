@@ -1,17 +1,5 @@
-/* Mail intake (build step M2a; contract section 19, 2026-09-29 amendment "events wake agents", item 9; design
- * deploy/first-node/RUNTIME-EVENT-INTAKE.md, "Mail (M2)").
- *
- * POST /mail-intake: the mail provider's (Resend's) webhook for a received message. The function checks the
- * webhook's signature (Standard Webhooks, as Svix sends it) with the platform's signing secret, fetches the whole
- * message from the provider's API with the platform's key, writes it as at most 256 KiB of JSON text (the subject,
- * the thread, whether it was sent automatically and the trust results before the bodies) and hands it with all its recipients (To, Cc, Bcc and the envelope) to the
- * database's mail door, qorpera_receive_mail, which stores it once in each live mailbox among them and drops the
- * rest. Answers: 200 when every recipient is settled (stored, a duplicate, unknown or paused; mail to a paused
- * mailbox and mail the provider no longer has are dropped; other event types are ignored), 401 for a bad or stale
- * signature, 400 for a payload that is not JSON or a received-mail event without a valid message id, 405, 413,
- * 429 with Retry-After when a mailbox is over its limits, and 503 when
- * mail is switched off or the provider or database cannot be reached, so the provider retries. A message the
- * database calls malformed is logged and settled: a retry would not change it. */
+import { Buffer } from "node:buffer";
+import { BodyTooLargeError, DEFAULT_BODY_READ_TIMEOUT_MS, readBoundedBytes } from "../_shared/http-guards.ts";
 
 export const MAX_WEBHOOK_BYTES = 64 * 1024;
 export const MAX_MESSAGE_BYTES = 256 * 1024;
@@ -25,12 +13,12 @@ type Json = Record<string, unknown>;
 
 /** The database's mail door: the message's recipients and its JSON text, stored as those exact bytes. */
 export interface MailStore {
-	receive(emailId: string, recipients: string[], message: string): Promise<Json>;
+	receive(emailId: string, recipients: string[], message: string, signal?: AbortSignal): Promise<Json>;
 }
 
 /** The provider's received-message API: the message, or null when the provider has no such message. */
 export interface MailProvider {
-	fetch(emailId: string): Promise<Json | null>;
+	fetch(emailId: string, signal?: AbortSignal): Promise<Json | null>;
 }
 
 export class MailStoreError extends Error {
@@ -59,38 +47,30 @@ function json(body: Json, status: number, headers: Record<string, string> = {}):
 }
 
 const UTF8_ENCODER = new TextEncoder();
+const UTF8_FATAL_DECODER = new TextDecoder("utf-8", { fatal: true });
 const UTF8_LENIENT_DECODER = new TextDecoder("utf-8", { fatal: false });
 
-/** The body, or null when it is over the limit, declared or not. */
-async function readBody(request: Request, limit: number): Promise<Uint8Array | null> {
-	const declared = request.headers.get("content-length");
-	if (declared !== null && /^\d+$/.test(declared) && Number(declared) > limit) {
-		void request.body?.cancel().catch(() => undefined);
-		return null;
-	}
-	if (!request.body) return new Uint8Array(0);
-	const reader = request.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let size = 0;
+function isTimeoutOrAbortError(error: unknown): boolean {
+	if (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError")) return true;
+	return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+}
+
+async function readBody(
+	request: Request,
+	limit: number,
+	timeoutMs = DEFAULT_BODY_READ_TIMEOUT_MS,
+): Promise<{ readonly ok: true; readonly bytes: Uint8Array } | { readonly ok: false; readonly status: 400 | 408 | 413 }> {
 	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			size += value.byteLength;
-			if (size > limit) return null;
-			chunks.push(value);
-		}
-	} finally {
-		void reader.cancel().catch(() => undefined);
+		const bytes = await readBoundedBytes(request, limit, {
+			timeoutMs,
+			signal: request.signal,
+		});
+		return { ok: true, bytes };
+	} catch (error) {
+		if (error instanceof BodyTooLargeError) return { ok: false, status: 413 };
+		if (request.signal.aborted || isTimeoutOrAbortError(error)) return { ok: false, status: 408 };
+		return { ok: false, status: 400 };
 	}
-	if (chunks.length === 1) return chunks[0]!;
-	const body = new Uint8Array(size);
-	let offset = 0;
-	for (const chunk of chunks) {
-		body.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return body;
 }
 
 function fromBase64(value: string): Uint8Array | null {
@@ -105,10 +85,7 @@ function fromBase64(value: string): Uint8Array | null {
 }
 
 function toBase64(bytes: Uint8Array): string {
-	let binary = "";
-	for (let offset = 0; offset < bytes.length; offset += 0x8000)
-		binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-	return btoa(binary);
+	return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 }
 
 function equalStrings(a: string, b: string): boolean {
@@ -116,6 +93,25 @@ function equalStrings(a: string, b: string): boolean {
 	let difference = 0;
 	for (let index = 0; index < a.length; index++) difference |= a.charCodeAt(index) ^ b.charCodeAt(index);
 	return difference === 0;
+}
+
+let cachedWebhookSigningKey: { readonly secret: string; readonly key: Promise<CryptoKey | null> } | undefined;
+
+function webhookSigningKey(secret: string): Promise<CryptoKey | null> {
+	if (!cachedWebhookSigningKey || cachedWebhookSigningKey.secret !== secret) {
+		const keyBytes = fromBase64(secret.startsWith("whsec_") ? secret.slice("whsec_".length) : secret);
+		const key =
+			!keyBytes || keyBytes.length < 16
+				? Promise.resolve(null)
+				: crypto.subtle
+						.importKey("raw", keyBytes as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+						.catch((error) => {
+							if (cachedWebhookSigningKey?.secret === secret) cachedWebhookSigningKey = undefined;
+							throw error;
+						});
+		cachedWebhookSigningKey = { secret, key };
+	}
+	return cachedWebhookSigningKey.key;
 }
 
 /** Standard Webhooks: HMAC-SHA256 over `<id>.<timestamp>.<body>` with the secret's bytes; the header lists
@@ -131,9 +127,8 @@ export async function verifySignature(
 	const signatures = headers.get("svix-signature") ?? headers.get("webhook-signature");
 	if (!id || !timestamp || !signatures || !/^\d{1,12}$/.test(timestamp) || id.length > 256) return false;
 	if (Math.abs(nowSeconds - Number(timestamp)) > TOLERANCE_SECONDS) return false;
-	const key = fromBase64(secret.startsWith("whsec_") ? secret.slice("whsec_".length) : secret);
-	if (!key || key.length < 16) return false;
-	const signingKey = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+	const signingKey = await webhookSigningKey(secret);
+	if (!signingKey) return false;
 	const prefix = UTF8_ENCODER.encode(`${id}.${timestamp}.`);
 	const signed = new Uint8Array(prefix.length + body.length);
 	signed.set(prefix);
@@ -309,10 +304,15 @@ export function normalizeMessage(emailId: string, received: Json): Json {
 		if (typeof value !== "string") continue;
 		message.truncated = true;
 		const room = MAX_MESSAGE_BYTES - bytes({ ...message, [field]: "" }) + 2;
-		let keep = value.length;
-		if (bytes(value) > room) {
+		// WHY: Drop the field immediately when room <= 2 and cap binary search at room - 2 so multi-MB bodies skip wasted JSON.stringify passes.
+		if (room <= 2) {
+			message[field] = null;
+			continue;
+		}
+		let keep = Math.min(value.length, room - 2);
+		if (bytes(cut(value, keep)) > room) {
 			let low = 0;
-			let high = value.length;
+			let high = keep;
 			while (low < high) {
 				const mid = (low + high + 1) >>> 1;
 				if (bytes(cut(value, mid)) <= room) low = mid;
@@ -328,14 +328,19 @@ export function normalizeMessage(emailId: string, received: Json): Json {
 /** The Edge Function. */
 export async function handleMailIntake(request: Request, intake: MailIntake): Promise<Response> {
 	if (request.method !== "POST") return json({ error: "Method not allowed" }, 405, { allow: "POST" });
-	const body = await readBody(request, MAX_WEBHOOK_BYTES);
-	if (!body) return json({ error: "The webhook is too large" }, 413);
+	const read = await readBody(request, MAX_WEBHOOK_BYTES);
+	if (!read.ok) {
+		if (read.status === 413) return json({ error: "The webhook is too large" }, 413);
+		if (read.status === 408) return json({ error: "Request body timed out" }, 408);
+		return json({ error: "The webhook is malformed" }, 400);
+	}
+	const body = read.bytes;
 	const now = intake.now ?? (() => Math.floor(Date.now() / 1000));
 	if (!(await verifySignature(intake.secret, request.headers, body, now())))
 		return json({ error: "The signature does not match" }, 401);
 	let event: Json;
 	try {
-		const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+		const parsed: unknown = JSON.parse(UTF8_FATAL_DECODER.decode(body));
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
 		event = parsed as Json;
 	} catch {
@@ -361,7 +366,7 @@ export async function handleMailIntake(request: Request, intake: MailIntake): Pr
 
 	let received: Json | null;
 	try {
-		received = await intake.provider.fetch(emailId);
+		received = await intake.provider.fetch(emailId, request.signal);
 	} catch (error) {
 		console.error(`mail-intake: fetch ${emailId}: ${error instanceof Error ? error.message : String(error)}`);
 		return json({ error: "Mail is unavailable right now" }, 503);
@@ -371,7 +376,7 @@ export async function handleMailIntake(request: Request, intake: MailIntake): Pr
 
 	let result: Json;
 	try {
-		result = await intake.store.receive(emailId, recipients, message);
+		result = await intake.store.receive(emailId, recipients, message, request.signal);
 	} catch (error) {
 		if (error instanceof MailStoreError && error.code === "22023") {
 			// A retry would send the same message: log it and settle.

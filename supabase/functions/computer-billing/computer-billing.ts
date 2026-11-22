@@ -15,7 +15,9 @@
  * Good will (good-will.ts) shares the function: POST /good-will-card for a founder's card page, POST
  * /good-will-invoices for the database's clock, and its events on /webhook. */
 
+import { createHash, timingSafeEqual } from "node:crypto";
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
+import { BodyTooLargeError, DEFAULT_BODY_READ_TIMEOUT_MS, readBoundedBytes } from "../_shared/http-guards.ts";
 import {
 	applyGoodWillCard,
 	applyGoodWillInvoice,
@@ -31,51 +33,32 @@ const STRIPE_TIMEOUT_MS = 20_000;
 const CREDIT_CHECKOUT_SECONDS = 3600;
 const MAX_WEBHOOK_BODY_BYTES = 512 * 1024;
 const MAX_MEMBER_BODY_BYTES = 16 * 1024;
+const UTF8_ENCODER = new TextEncoder();
 const UTF8_FATAL_DECODER = new TextDecoder("utf-8", { fatal: true });
 const UTF8_LENIENT_DECODER = new TextDecoder("utf-8");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-async function readBoundedText(
-	request: Request | Response,
+function isTimeoutOrAbortError(error: unknown): boolean {
+	if (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError")) return true;
+	return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+}
+
+async function readRequestBodyText(
+	request: Request,
 	maxBytes: number,
 	fatal = true,
-): Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false; readonly status: 400 | 413 }> {
-	const rawLength = request.headers.get("content-length");
-	if (rawLength !== null) {
-		const declared = Number(rawLength);
-		if (!Number.isFinite(declared) || declared < 0 || declared > maxBytes) {
-			void request.body?.cancel().catch(() => undefined);
-			return { ok: false, status: 413 };
-		}
-	}
-	const reader = request.body?.getReader();
-	if (!reader) return { ok: true, text: "" };
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			total += value.byteLength;
-			if (total > maxBytes) {
-				return { ok: false, status: 413 };
-			}
-			chunks.push(value);
-		}
-	} finally {
-		void reader.cancel().catch(() => undefined);
-	}
-	if (chunks.length === 0) return { ok: true, text: "" };
+	timeoutMs = DEFAULT_BODY_READ_TIMEOUT_MS,
+): Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false; readonly status: 400 | 408 | 413 }> {
 	let bytes: Uint8Array;
-	if (chunks.length === 1) {
-		bytes = chunks[0]!;
-	} else {
-		bytes = new Uint8Array(total);
-		let offset = 0;
-		for (const chunk of chunks) {
-			bytes.set(chunk, offset);
-			offset += chunk.byteLength;
-		}
+	try {
+		bytes = await readBoundedBytes(request, maxBytes, {
+			timeoutMs,
+			signal: request.signal,
+		});
+	} catch (error) {
+		if (error instanceof BodyTooLargeError) return { ok: false, status: 413 };
+		if (request.signal.aborted || isTimeoutOrAbortError(error)) return { ok: false, status: 408 };
+		return { ok: false, status: 400 };
 	}
 	try {
 		return { ok: true, text: (fatal ? UTF8_FATAL_DECODER : UTF8_LENIENT_DECODER).decode(bytes) };
@@ -147,14 +130,29 @@ function hex(buffer: ArrayBuffer): string {
 }
 
 export async function sha256Hex(text: string): Promise<string> {
-	return hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+	return hex(await crypto.subtle.digest("SHA-256", UTF8_ENCODER.encode(text)));
 }
 
 function constantTimeEqual(left: string, right: string): boolean {
-	if (left.length !== right.length) return false;
-	let difference = 0;
-	for (let index = 0; index < left.length; index++) difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
-	return difference === 0;
+	// WHY: Compare SHA-256 digests with timingSafeEqual so unequal-length keys cannot leak length timing.
+	const digestLeft = createHash("sha256").update(left, "utf8").digest();
+	const digestRight = createHash("sha256").update(right, "utf8").digest();
+	return timingSafeEqual(digestLeft, digestRight) && left.length === right.length;
+}
+
+let cachedStripeHmacKey: { readonly secret: string; readonly key: Promise<CryptoKey> } | undefined;
+
+function stripeHmacKey(secret: string): Promise<CryptoKey> {
+	if (!cachedStripeHmacKey || cachedStripeHmacKey.secret !== secret) {
+		const key = crypto.subtle
+			.importKey("raw", UTF8_ENCODER.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+			.catch((error) => {
+				if (cachedStripeHmacKey?.secret === secret) cachedStripeHmacKey = undefined;
+				throw error;
+			});
+		cachedStripeHmacKey = { secret, key };
+	}
+	return cachedStripeHmacKey.key;
 }
 
 /** Stripe-Signature: t=<unix>,v1=<hex>[,v1=<hex>...]; HMAC-SHA256 of `${t}.${rawBody}`. */
@@ -174,14 +172,8 @@ export async function verifyStripeSignature(
 	}
 	if (timestamp === undefined || signatures.length === 0 || signatures.length > 20) return false;
 	if (Math.abs(nowSeconds - timestamp) > SIGNATURE_TOLERANCE_SECONDS) return false;
-	const key = await crypto.subtle.importKey(
-		"raw",
-		new TextEncoder().encode(secret),
-		{ name: "HMAC", hash: "SHA-256" },
-		false,
-		["sign"],
-	);
-	const expected = hex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${timestamp}.${rawBody}`)));
+	const key = await stripeHmacKey(secret);
+	const expected = hex(await crypto.subtle.sign("HMAC", key, UTF8_ENCODER.encode(`${timestamp}.${rawBody}`)));
 	return signatures.some((signature) => constantTimeEqual(signature, expected));
 }
 
@@ -193,10 +185,20 @@ export function createStripeApi(secretKey: string, fetchImpl: typeof fetch = fet
 		...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
 	});
 	const MAX_STRIPE_RESPONSE_BYTES = 2 * 1024 * 1024;
-	const answer = async (response: Response): Promise<Json> => {
-		const read = await readBoundedText(response, MAX_STRIPE_RESPONSE_BYTES, false);
-		if (!read.ok) throw new StripeRequestError(502, "Stripe response exceeded size limit");
-		const text = read.text;
+	const answer = async (response: Response, signal: AbortSignal): Promise<Json> => {
+		let bytes: Uint8Array;
+		try {
+			bytes = await readBoundedBytes(response, MAX_STRIPE_RESPONSE_BYTES, {
+				signal,
+				ignoreContentLength: response.headers.has("content-encoding"),
+			});
+		} catch (error) {
+			if (error instanceof BodyTooLargeError) {
+				throw new StripeRequestError(502, "Stripe response exceeded size limit");
+			}
+			throw error;
+		}
+		const text = UTF8_LENIENT_DECODER.decode(bytes);
 		let body: unknown;
 		try {
 			body = JSON.parse(text);
@@ -220,8 +222,10 @@ export function createStripeApi(secretKey: string, fetchImpl: typeof fetch = fet
 				answer(
 					await fetchImpl(`https://api.stripe.com${path}`, {
 						headers: headers(),
+						redirect: "error",
 						signal,
 					}),
+					signal,
 				),
 			);
 		},
@@ -232,8 +236,10 @@ export function createStripeApi(secretKey: string, fetchImpl: typeof fetch = fet
 						method: "POST",
 						headers: { ...headers(idempotencyKey), "content-type": "application/x-www-form-urlencoded" },
 						body: new URLSearchParams(form).toString(),
+						redirect: "error",
 						signal,
 					}),
+					signal,
 				),
 			);
 		},
@@ -311,9 +317,20 @@ async function startCheckout(
 	const token = bearer(request);
 	const member = token ? await deps.auth.member(token) : null;
 	if (!member) return json({ error: "Sign in to buy computer hours" }, 401, cors);
-	const rawBody = await readBoundedText(request, MAX_MEMBER_BODY_BYTES, true);
+	const rawBody = await readRequestBodyText(request, MAX_MEMBER_BODY_BYTES, true);
 	if (!rawBody.ok) {
-		return json({ error: rawBody.status === 413 ? "Request body too large" : "Invalid request body" }, rawBody.status, cors);
+		return json(
+			{
+				error:
+					rawBody.status === 413
+						? "Request body too large"
+						: rawBody.status === 408
+							? "Request body timed out"
+							: "Invalid request body",
+			},
+			rawBody.status,
+			cors,
+		);
 	}
 	let body: Json | undefined;
 	try {
@@ -439,6 +456,7 @@ function fromRefusal(result: Json, detail: string): Outcome {
 interface SubscriptionFacts {
 	subscriptionId: string;
 	status: string;
+	priceId: string;
 	itemKey: string;
 	periodStart: string;
 	periodEnd: string;
@@ -480,6 +498,7 @@ async function syncSubscription(
 	return {
 		subscriptionId,
 		status: string(subscription.status) ?? "unknown",
+		priceId,
 		itemKey,
 		periodStart,
 		periodEnd,
@@ -554,7 +573,9 @@ async function applyInvoice(
 			return ignored(`${reason} invoice ${invoice.status}`);
 		// The service period comes from the plan's line, not the invoice's own window.
 		const line = lines.find((candidate) => candidate.priceId && !candidate.proration && candidate.amount >= 0);
-		const itemKey = (await itemKeyOf(line?.priceId, deps)) ?? facts.itemKey;
+		// WHY: Reuse the catalog item already resolved in syncSubscription when the invoice line carries the same priceId.
+		const itemKey =
+			(line?.priceId === facts.priceId ? facts.itemKey : await itemKeyOf(line?.priceId, deps)) ?? facts.itemKey;
 		const result = await deps.store.call("plan_period", {
 			subscriptionId,
 			itemKey,
@@ -726,8 +747,20 @@ async function applyEvent(event: Json, deps: BillingDependencies): Promise<Outco
 }
 
 async function receiveWebhook(request: Request, deps: BillingDependencies): Promise<Response> {
-	const rawBody = await readBoundedText(request, MAX_WEBHOOK_BODY_BYTES, false);
-	if (!rawBody.ok) return json({ error: rawBody.status === 413 ? "Request body too large" : "Invalid request body" }, rawBody.status);
+	const rawBody = await readRequestBodyText(request, MAX_WEBHOOK_BODY_BYTES, false);
+	if (!rawBody.ok) {
+		return json(
+			{
+				error:
+					rawBody.status === 413
+						? "Request body too large"
+						: rawBody.status === 408
+							? "Request body timed out"
+							: "Invalid request body",
+			},
+			rawBody.status,
+		);
+	}
 	const nowSeconds = deps.options.nowSeconds?.() ?? Math.floor(Date.now() / 1000);
 	if (
 		!(await verifyStripeSignature(
@@ -784,9 +817,20 @@ async function goodWillCard(request: Request, deps: BillingDependencies, cors: R
 	const token = bearer(request);
 	const member = token ? await deps.auth.member(token) : null;
 	if (!member) return json({ error: "Sign in to add a card" }, 401, cors);
-	const rawBody = await readBoundedText(request, MAX_MEMBER_BODY_BYTES, true);
+	const rawBody = await readRequestBodyText(request, MAX_MEMBER_BODY_BYTES, true);
 	if (!rawBody.ok) {
-		return json({ error: rawBody.status === 413 ? "Request body too large" : "Invalid request body" }, rawBody.status, cors);
+		return json(
+			{
+				error:
+					rawBody.status === 413
+						? "Request body too large"
+						: rawBody.status === 408
+							? "Request body timed out"
+							: "Invalid request body",
+			},
+			rawBody.status,
+			cors,
+		);
 	}
 	let body: Json | undefined;
 	try {

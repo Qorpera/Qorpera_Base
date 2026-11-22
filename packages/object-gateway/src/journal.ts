@@ -4,7 +4,7 @@ import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 const MAX_RECORD_BYTES = 1024 * 1024;
-const MAX_RECORDS = 10_000;
+const MAX_RECORDS = 50_000;
 const MAX_TEMP_FILES = 256;
 const MAX_AUDIT_BYTES = 128 * 1024 * 1024;
 
@@ -33,9 +33,15 @@ export class ObjectGatewayJournal {
 		this.#maxRecords = maxRecords;
 	}
 
-	async exclusive<T>(key: string, operation: () => Promise<T>): Promise<T> {
-		const previous = this.#locks.get(key) ?? Promise.resolve();
-		const pending = previous.catch(() => undefined).then(operation);
+	get maxRecords(): number {
+		return this.#maxRecords;
+	}
+
+	async exclusive<T>(key: string, operation: (contended: boolean) => Promise<T>): Promise<T> {
+		const existing = this.#locks.get(key);
+		const contended = existing !== undefined;
+		const previous = existing ?? Promise.resolve();
+		const pending = previous.catch(() => undefined).then(() => operation(contended));
 		this.#locks.set(key, pending);
 		try {
 			return await pending;

@@ -232,12 +232,19 @@ function before(a: readonly number[], b: readonly number[]): boolean {
 export class MemoryCompactLane {
 	readonly #controller = new AbortController();
 	readonly #heap: Waiting[] = [];
+	readonly #signalWaiters = new Map<AbortSignal, { readonly waiters: Set<Waiting>; readonly onAbort: () => void }>();
+	readonly #capacity: number;
 	#free: number;
 	#arrived = 0;
 	#stopped: MemoryCompactStopReason | null = null;
 
 	constructor(jobs: number = JOBS) {
+		this.#capacity = jobs;
 		this.#free = jobs;
+	}
+
+	get capacity(): number {
+		return this.#capacity;
 	}
 
 	get stopped(): MemoryCompactStopReason | null {
@@ -323,18 +330,44 @@ export class MemoryCompactLane {
 		return top;
 	}
 
+	#watchSignal(signal: AbortSignal, waiting: Waiting): void {
+		let entry = this.#signalWaiters.get(signal);
+		if (!entry) {
+			const waiters = new Set<Waiting>();
+			const onAbort = (): void => {
+				this.#signalWaiters.delete(signal);
+				for (const item of [...waiters]) item.cancel();
+			};
+			entry = { waiters, onAbort };
+			this.#signalWaiters.set(signal, entry);
+			signal.addEventListener("abort", onAbort, { once: true });
+		}
+		entry.waiters.add(waiting);
+	}
+
+	#unwatchSignal(signal: AbortSignal, waiting: Waiting): void {
+		const entry = this.#signalWaiters.get(signal);
+		if (!entry) return;
+		entry.waiters.delete(waiting);
+		if (entry.waiters.size === 0) {
+			signal.removeEventListener("abort", entry.onAbort);
+			this.#signalWaiters.delete(signal);
+		}
+	}
+
 	#take(order: readonly number[], signal: AbortSignal): Promise<boolean> {
 		if (this.#free > 0) {
 			this.#free -= 1;
 			return Promise.resolve(true);
 		}
+		if (signal.aborted) return Promise.resolve(false);
 		return new Promise((resolve) => {
 			let settled = false;
 			const cancel = (): void => {
 				if (settled) return;
 				settled = true;
 				waiting.cancelled = true;
-				signal.removeEventListener("abort", cancel);
+				this.#unwatchSignal(signal, waiting);
 				resolve(false);
 			};
 			const waiting: Waiting = {
@@ -343,13 +376,13 @@ export class MemoryCompactLane {
 				start: () => {
 					if (settled) return;
 					settled = true;
-					signal.removeEventListener("abort", cancel);
+					this.#unwatchSignal(signal, waiting);
 					resolve(true);
 				},
 				cancel,
 			};
 			this.#pushHeap(waiting);
-			signal.addEventListener("abort", cancel, { once: true });
+			this.#watchSignal(signal, waiting);
 		});
 	}
 
@@ -537,9 +570,10 @@ export async function memoryCompact(
 	const system = memoryCompactSystem(kind);
 	const lines: MemoryTreeLine[] = [];
 	const events = new Map<number, Promise<MemoryCompactEvent | null>>();
-	const nodes = new Map<string, Promise<string | undefined>>();
+	const values = new Map<string, string>();
 	const scope = new Set<string>();
 	const key = (l: number, k: number) => `${l}:${k}`;
+	const nodeText = (l: number, k: number): string | undefined => values.get(key(l, k)) ?? built(l, k);
 
 	const leaves = [...new Set(source.leaves)].filter((i) => Number.isSafeInteger(i) && i >= 0 && i < T);
 	leaves.sort((a, b) => a - b);
@@ -551,6 +585,76 @@ export async function memoryCompact(
 			scope.add(key(l, k));
 		}
 	}
+
+	interface ReadyNode {
+		readonly l: number;
+		readonly k: number;
+		readonly order: readonly [number, number];
+		unmet: number;
+	}
+	const missing = new Map<string, ReadyNode>();
+	for (const name of scope) {
+		const sep = name.indexOf(":");
+		const l = Number(name.slice(0, sep));
+		const k = Number(name.slice(sep + 1));
+		if (built(l, k) !== undefined) continue;
+		missing.set(name, { l, k, order: [k * 2 ** l, l], unmet: 0 });
+	}
+	const readyHeap: ReadyNode[] = [];
+	const pushReady = (item: ReadyNode): void => {
+		let index = readyHeap.length;
+		readyHeap.push(item);
+		while (index > 0) {
+			const parent = (index - 1) >>> 1;
+			if (!before(item.order, readyHeap[parent]!.order)) break;
+			readyHeap[index] = readyHeap[parent]!;
+			readyHeap[parent] = item;
+			index = parent;
+		}
+	};
+	const popReady = (): ReadyNode | undefined => {
+		if (readyHeap.length === 0) return undefined;
+		const top = readyHeap[0]!;
+		const last = readyHeap.pop()!;
+		if (readyHeap.length > 0) {
+			readyHeap[0] = last;
+			let index = 0;
+			const length = readyHeap.length;
+			for (;;) {
+				const left = (index << 1) + 1;
+				const right = left + 1;
+				let smallest = index;
+				if (left < length && before(readyHeap[left]!.order, readyHeap[smallest]!.order)) smallest = left;
+				if (right < length && before(readyHeap[right]!.order, readyHeap[smallest]!.order)) smallest = right;
+				if (smallest === index) break;
+				const swap = readyHeap[index]!;
+				readyHeap[index] = readyHeap[smallest]!;
+				readyHeap[smallest] = swap;
+				index = smallest;
+			}
+		}
+		return top;
+	};
+	const pendingParents = new Map<string, ReadyNode>();
+	const missingLeaves: number[] = [];
+	for (const [name, item] of missing) {
+		if (item.l === 0) {
+			missingLeaves.push(item.k);
+			pushReady(item);
+			continue;
+		}
+		const leftKey = key(item.l - 1, 2 * item.k);
+		const rightKey = key(item.l - 1, 2 * item.k + 1);
+		const leftMissing = missing.has(leftKey);
+		const rightMissing = missing.has(rightKey);
+		const leftAvailable = leftMissing || built(item.l - 1, 2 * item.k) !== undefined;
+		const rightAvailable = rightMissing || built(item.l - 1, 2 * item.k + 1) !== undefined;
+		if (!leftAvailable || !rightAvailable) continue;
+		item.unmet = (leftMissing ? 1 : 0) + (rightMissing ? 1 : 0);
+		if (item.unmet === 0) pushReady(item);
+		else pendingParents.set(name, item);
+	}
+	missingLeaves.sort((a, b) => a - b);
 
 	const event = (i: number): Promise<MemoryCompactEvent | null> => {
 		let read = events.get(i);
@@ -608,11 +712,7 @@ export async function memoryCompact(
 		return made ? keep({ l: 0, k: i, ...named, free: false, tries: made.tries, text: made.text }) : undefined;
 	};
 
-	const merge = async (l: number, k: number): Promise<string | undefined> => {
-		const [older, newer] = await Promise.all([node(l - 1, 2 * k), node(l - 1, 2 * k + 1)]);
-		if (older === undefined || newer === undefined) return undefined;
-		const free = memoryFreeParent(older, newer);
-		if (free !== null) return keep({ l, k, free: true, text: free });
+	const merge = async (l: number, k: number, older: string, newer: string): Promise<string | undefined> => {
 		const order = [k * 2 ** l, l];
 		const made = await memoryCompactLine(call, system, memoryCompactMergePrompt(older, newer), {
 			lane,
@@ -623,24 +723,95 @@ export async function memoryCompact(
 		return made ? keep({ l, k, free: false, tries: made.tries, text: made.text }) : undefined;
 	};
 
-	const node = (l: number, k: number): Promise<string | undefined> => {
-		const text = built(l, k);
-		if (text !== undefined) return Promise.resolve(text);
-		if (!scope.has(key(l, k))) return Promise.resolve(undefined);
-		let made = nodes.get(key(l, k));
-		if (!made) {
-			made = (l === 0 ? leaf(k) : merge(l, k)).catch(() => undefined);
-			nodes.set(key(l, k), made);
+	const concurrency = Math.max(1, lane.capacity * 2);
+	const inFlightLeaves = new Set<number>();
+	let nextLeafCursor = 0;
+	let inFlight = 0;
+	let finished!: () => void;
+	const done = new Promise<void>((resolve) => {
+		finished = resolve;
+	});
+	const pruneEventCache = (): void => {
+		if (events.size <= 128) return;
+		let minLeaf = nextLeafCursor < missingLeaves.length ? missingLeaves[nextLeafCursor]! : T;
+		for (const active of inFlightLeaves) if (active < minLeaf) minLeaf = active;
+		const keepFrom = minLeaf < T ? memoryWindowStart(minLeaf) : T;
+		for (const idx of events.keys()) {
+			if (idx < keepFrom) {
+				events.delete(idx);
+				cutCache.delete(idx);
+			}
 		}
-		return made;
 	};
-
-	await Promise.all(
-		[...scope].map((name) => {
-			const [l, k] = name.split(":").map(Number);
-			return node(l, k);
-		}),
-	);
+	const complete = (item: ReadyNode, text: string | undefined): void => {
+		if (text === undefined) return;
+		values.set(key(item.l, item.k), text);
+		const parentKey = key(item.l + 1, Math.floor(item.k / 2));
+		const parent = pendingParents.get(parentKey);
+		if (parent) {
+			parent.unmet -= 1;
+			if (parent.unmet === 0) {
+				pendingParents.delete(parentKey);
+				pushReady(parent);
+			}
+		}
+	};
+	const pump = (): void => {
+		while (readyHeap.length > 0) {
+			const next = readyHeap[0]!;
+			if (signal.aborted && next.l === 0) {
+				popReady();
+				nextLeafCursor += 1;
+				continue;
+			}
+			if (next.l > 0) {
+				const older = nodeText(next.l - 1, 2 * next.k);
+				const newer = nodeText(next.l - 1, 2 * next.k + 1);
+				if (older === undefined || newer === undefined) {
+					popReady();
+					continue;
+				}
+				const free = memoryFreeParent(older, newer);
+				if (free !== null) {
+					popReady();
+					complete(next, keep({ l: next.l, k: next.k, free: true, text: free }));
+					continue;
+				}
+				if (signal.aborted || lane.stopped) {
+					popReady();
+					continue;
+				}
+				if (inFlight >= concurrency) break;
+				const item = popReady()!;
+				inFlight += 1;
+				void merge(item.l, item.k, older, newer)
+					.catch(() => undefined)
+					.then((text) => {
+						complete(item, text);
+						inFlight -= 1;
+						pump();
+					});
+				continue;
+			}
+			if (inFlight >= concurrency) break;
+			const item = popReady()!;
+			nextLeafCursor += 1;
+			inFlight += 1;
+			inFlightLeaves.add(item.k);
+			void leaf(item.k)
+				.catch(() => undefined)
+				.then((text) => {
+					inFlightLeaves.delete(item.k);
+					complete(item, text);
+					pruneEventCache();
+					inFlight -= 1;
+					pump();
+				});
+		}
+		if (inFlight === 0 && readyHeap.length === 0) finished();
+	};
+	pump();
+	await done;
 	stats.stopped = lane.stopped;
 	lines.sort((a, b) => a.l - b.l || a.k - b.k);
 	return { lines, stats };

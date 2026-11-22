@@ -1,5 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
+import { withTimeoutScope } from "./abort-scope.ts";
 import { type LxdHostInventoryClient, LxdUnixClient } from "./lxd-client.ts";
 import { inspectLxdHostInventorySocket } from "./lxd-office-physical-host.ts";
 import { assertNodeHealthRecord, NodeHealthRefusal } from "./runtime-node-health-record.ts";
@@ -130,124 +131,126 @@ export class RuntimeNodeInventoryObserver {
 		// The step under way, or the last one started: what a look that is not ready names.
 		let check = "host";
 		try {
-			const signal = AbortSignal.any([caller, AbortSignal.timeout(15000)]),
-				started = this.#now();
-			const observedAt = new Date().toISOString(),
-				observationId = timeOrderedUuid();
-			const before = await this.#host(this.#policy, signal);
-			signal.throwIfAborted();
-			const observation = {
-				schema: "qorpera.runtime-node-observation/v1",
-				nodeId: this.#policy.nodeId,
-				machineIdSha256: before.machineIdSha256,
-				observationId,
-				observedAt,
-				cpuMillis: before.cpuMillis,
-				memoryBytes: before.memoryBytes,
-				state: "unavailable",
-			};
-			let method: RuntimeNodeObserverMethod = "qorpera_observe_runtime_node",
-				args: Record<string, unknown> = { p_observation: observation },
-				reason: RuntimeNodeObserverReason | null = null;
-			try {
-				check = "context";
-				const context = parseRuntimeNodeInventoryContext(
-					await this.#registry.call(
-						"qorpera_runtime_node_inventory_context",
-						{ p_node_id: this.#policy.nodeId },
-						signal,
-					),
-				);
-				check = "policy";
-				if (!isDeepStrictEqual(context.policy, this.#policy)) throw new Error("NODE_OBSERVER_POLICY_DIFFERS");
-				check = "inventory";
-				// WHY: retry fast double-scan VM transition mismatches without burning the publish budget on hung LXD.
-				let inventory = null;
-				for (let attempt = 0; ; attempt++) {
-					const attemptStarted = this.#now();
-					try {
-						inventory = await this.#lxd.inspectHostInventory(signal);
-						break;
-					} catch (error) {
-						const attemptElapsed = this.#now() - attemptStarted;
-						const totalElapsed = this.#now() - started;
-						if (
-							attempt >= this.#inventoryRetries ||
-							signal.aborted ||
-							attemptElapsed >= 2_000 ||
-							totalElapsed + this.#inventoryRetryDelayMs >= 8_000 ||
-							runtimeNodeObserverCode(error) !== "LXD_HOST_INVENTORY_UNCONFIRMED"
-						)
-							throw error;
-						if (this.#inventoryRetryDelayMs > 0) await delay(this.#inventoryRetryDelayMs, undefined, { signal });
+			return await withTimeoutScope(caller, 15000, async (signal) => {
+				const started = this.#now();
+				const observedAt = new Date().toISOString(),
+					observationId = timeOrderedUuid();
+				const before = await this.#host(this.#policy, signal);
+				signal.throwIfAborted();
+				const observation = {
+					schema: "qorpera.runtime-node-observation/v1",
+					nodeId: this.#policy.nodeId,
+					machineIdSha256: before.machineIdSha256,
+					observationId,
+					observedAt,
+					cpuMillis: before.cpuMillis,
+					memoryBytes: before.memoryBytes,
+					state: "unavailable",
+				};
+				let method: RuntimeNodeObserverMethod = "qorpera_observe_runtime_node",
+					args: Record<string, unknown> = { p_observation: observation },
+					reason: RuntimeNodeObserverReason | null = null;
+				try {
+					check = "context";
+					const context = parseRuntimeNodeInventoryContext(
+						await this.#registry.call(
+							"qorpera_runtime_node_inventory_context",
+							{ p_node_id: this.#policy.nodeId },
+							signal,
+						),
+					);
+					check = "policy";
+					if (!isDeepStrictEqual(context.policy, this.#policy)) throw new Error("NODE_OBSERVER_POLICY_DIFFERS");
+					check = "inventory";
+					// WHY: retry fast double-scan VM transition mismatches without burning the publish budget on hung LXD.
+					let inventory = null;
+					for (let attempt = 0; ; attempt++) {
+						const attemptStarted = this.#now();
+						try {
+							inventory = await this.#lxd.inspectHostInventory(signal);
+							break;
+						} catch (error) {
+							const attemptElapsed = this.#now() - attemptStarted;
+							const totalElapsed = this.#now() - started;
+							if (
+								attempt >= this.#inventoryRetries ||
+								signal.aborted ||
+								attemptElapsed >= 2_000 ||
+								totalElapsed + this.#inventoryRetryDelayMs >= 8_000 ||
+								runtimeNodeObserverCode(error) !== "LXD_HOST_INVENTORY_UNCONFIRMED"
+							)
+								throw error;
+							if (this.#inventoryRetryDelayMs > 0)
+								await delay(this.#inventoryRetryDelayMs, undefined, { signal });
+						}
 					}
-				}
-				check = "host-again";
-				const after = await this.#host(this.#policy, signal);
-				if (!isDeepStrictEqual(before, after)) throw new Error("NODE_OBSERVER_HOST_CHANGED");
-				check = "health-record";
-				// A node whose image ships the boot gate takes work only while its node health record says ok.
-				await this.#healthRecord(before.bootId);
-				signal.throwIfAborted();
-				check = "releases";
-				// Only an entry listed by role needs the node's signed releases.
-				const released = this.#policy.infrastructure.some((i) => i.role)
-					? await this.#releases()
-					: new Set<string>();
-				signal.throwIfAborted();
-				check = "reconcile";
-				const reconciled = reconcileRuntimeNodeInventory(inventory, context, released);
-				observation.state = reconciled.state;
-				if (reconciled.state === "unavailable")
+					check = "host-again";
+					const after = await this.#host(this.#policy, signal);
+					if (!isDeepStrictEqual(before, after)) throw new Error("NODE_OBSERVER_HOST_CHANGED");
+					check = "health-record";
+					// A node whose image ships the boot gate takes work only while its node health record says ok.
+					await this.#healthRecord(before.bootId);
+					signal.throwIfAborted();
+					check = "releases";
+					// Only an entry listed by role needs the node's signed releases.
+					const released = this.#policy.infrastructure.some((i) => i.role)
+						? await this.#releases()
+						: new Set<string>();
+					signal.throwIfAborted();
+					check = "reconcile";
+					const reconciled = reconcileRuntimeNodeInventory(inventory, context, released);
+					observation.state = reconciled.state;
+					if (reconciled.state === "unavailable")
+						reason = {
+							check,
+							code: reconciled.headroomValid
+								? "NODE_INVENTORY_ENTRY_UNAVAILABLE"
+								: "NODE_INVENTORY_HEADROOM_EXCEEDED",
+							entries: [
+								...new Set(reconciled.entries.flatMap((e) => (e.reason ? [`${e.category}:${e.reason}`] : []))),
+							].sort(),
+						};
+					method = "qorpera_observe_runtime_node_inventory";
+					args = {
+						p_observation: observation,
+						p_context_sha256: context.contextSha256,
+						p_inventory: {
+							schema: "qorpera.runtime-node-inventory/v1",
+							bootId: before.bootId,
+							entries: reconciled.entries,
+						},
+					};
+				} catch (error) {
+					// A failed scan publishes unavailable, never a fabricated empty
+					// ready host. Cancellation cannot open a new outbound request.
+					observation.state = "unavailable";
 					reason = {
 						check,
-						code: reconciled.headroomValid
-							? "NODE_INVENTORY_ENTRY_UNAVAILABLE"
-							: "NODE_INVENTORY_HEADROOM_EXCEEDED",
-						entries: [
-							...new Set(reconciled.entries.flatMap((e) => (e.reason ? [`${e.category}:${e.reason}`] : []))),
-						].sort(),
+						code: runtimeNodeObserverCode(error),
+						...(error instanceof NodeHealthRefusal && error.entries ? { entries: error.entries } : {}),
 					};
-				method = "qorpera_observe_runtime_node_inventory";
-				args = {
-					p_observation: observation,
-					p_context_sha256: context.contextSha256,
-					p_inventory: {
-						schema: "qorpera.runtime-node-inventory/v1",
-						bootId: before.bootId,
-						entries: reconciled.entries,
-					},
-				};
-			} catch (error) {
-				// A failed scan publishes unavailable, never a fabricated empty
-				// ready host. Cancellation cannot open a new outbound request.
-				observation.state = "unavailable";
-				reason = {
-					check,
-					code: runtimeNodeObserverCode(error),
-					...(error instanceof NodeHealthRefusal && error.entries ? { entries: error.entries } : {}),
-				};
-			}
-			signal.throwIfAborted();
-			if (this.#now() - started >= 15000) throw new Error("NODE_OBSERVER_EXPIRED");
-			check = "publish";
-			// Keep submission outside the scan catch: an ambiguous publication
-			// never retries the same ID with different bytes or a new timestamp.
-			const result = await this.#registry.call(method, args, signal);
-			check = "receipt";
-			signal.throwIfAborted();
-			if (!result || typeof result !== "object" || Array.isArray(result))
-				throw new Error("NODE_OBSERVER_PUBLICATION_UNCONFIRMED");
-			const r = result as Record<string, unknown>;
-			if (
-				Object.keys(r).sort().join() !== "nodeId,observationId,observedAt" ||
-				r.nodeId !== this.#policy.nodeId ||
-				r.observationId !== observationId ||
-				typeof r.observedAt !== "string" ||
-				Date.parse(r.observedAt) !== Date.parse(observedAt)
-			)
-				throw new Error("NODE_OBSERVER_PUBLICATION_UNCONFIRMED");
-			return { state: observation.state as "ready" | "unavailable", observationId, reason };
+				}
+				signal.throwIfAborted();
+				if (this.#now() - started >= 15000) throw new Error("NODE_OBSERVER_EXPIRED");
+				check = "publish";
+				// Keep submission outside the scan catch: an ambiguous publication
+				// never retries the same ID with different bytes or a new timestamp.
+				const result = await this.#registry.call(method, args, signal);
+				check = "receipt";
+				signal.throwIfAborted();
+				if (!result || typeof result !== "object" || Array.isArray(result))
+					throw new Error("NODE_OBSERVER_PUBLICATION_UNCONFIRMED");
+				const r = result as Record<string, unknown>;
+				if (
+					Object.keys(r).sort().join() !== "nodeId,observationId,observedAt" ||
+					r.nodeId !== this.#policy.nodeId ||
+					r.observationId !== observationId ||
+					typeof r.observedAt !== "string" ||
+					Date.parse(r.observedAt) !== Date.parse(observedAt)
+				)
+					throw new Error("NODE_OBSERVER_PUBLICATION_UNCONFIRMED");
+				return { state: observation.state as "ready" | "unavailable", observationId, reason };
+			});
 		} catch (error) {
 			throw new RuntimeNodeObserverFailure("NODE_OBSERVER_UNCONFIRMED", runtimeNodeObserverCode(error), check);
 		} finally {

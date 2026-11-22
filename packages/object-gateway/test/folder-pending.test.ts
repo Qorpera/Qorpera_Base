@@ -20,6 +20,7 @@ import {
 	planBoundary,
 	planCommitBatches,
 	type SecretCheck,
+	STRUCTURED_TOO_LARGE,
 	WAITS_FOR_CHECK,
 	WAITS_FOR_REFUSED,
 	WAITS_FOR_UNCHECKED,
@@ -1533,11 +1534,34 @@ describe("a view's links (protocol 4)", () => {
 		fHuge.view.mkdir("huge");
 		for (let i = 0; i <= MAX_NEW_FOLDER_ENTRIES; i++) write(fHuge.view, `huge/f${i}.txt`, "x");
 		const hugePlan = fHuge.plan();
+		expect(MAX_NEW_FOLDER_ENTRIES).toBe(1_000);
 		expect(hugePlan.units[0]?.unit).toEqual({ op: "mkdir", path: "huge" });
 		expect(hugePlan.units).toHaveLength(MAX_NEW_FOLDER_ENTRIES + 2);
-		expect(planCommitBatches(hugePlan.units).map((b) => b.length)).toEqual([
-			1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 2,
-		]);
+		expect(planCommitBatches(hugePlan.units).map((b) => b.length)).toEqual([1000, 2]);
+	});
+
+	it("fails fast on a single structured file exceeding MAX_COMMIT_STRUCTURED_BYTES while planning valid siblings", () => {
+		const f = setup({ QorperaOS: null, "QorperaOS/rules": null });
+		write(f.view, "QorperaOS/rules/huge.md", "h");
+		write(f.view, "QorperaOS/rules/ok.md", "ok");
+		const hugeRef: FileRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: MAX_COMMIT_STRUCTURED_BYTES + 1,
+			mediaType: "text/markdown",
+			executable: false,
+		};
+		const okRef: FileRef = {
+			manifestSha256: "c".repeat(64),
+			fileSha256: "d".repeat(64),
+			bytes: 2,
+			mediaType: "text/markdown",
+			executable: false,
+		};
+		const plan = planBoundary(f.view, (_node, path) => (path.endsWith("huge.md") ? hugeRef : okRef));
+		expect(plan.refused).toEqual([{ path: "QorperaOS/rules/huge.md", reason: STRUCTURED_TOO_LARGE }]);
+		expect(plan.keep.has("QorperaOS/rules/huge.md")).toBe(true);
+		expect(plan.units.map((u) => u.paths)).toEqual([["QorperaOS/rules/ok.md"]]);
 	});
 
 	it("orders git objects before metadata, keeps git metadata atomic in one batch, and puts object deletes last", () => {

@@ -3,6 +3,7 @@ import { type BigIntStats, constants } from "node:fs";
 import { type FileHandle, link, lstat, mkdir, open, opendir, realpath, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { withTimeoutScope } from "./abort-scope.ts";
 import {
 	type LxdOfficeAdoptionPlan,
 	officeAdoptionRelativePath,
@@ -457,21 +458,22 @@ export async function executeLxdOfficeAdoptionFiles(
 	if (pending) throw new Error("OFFICE_ADOPTION_IO_PENDING");
 	const snapshot = structuredClone(options);
 	pending = true;
-	const signal = AbortSignal.any([caller, AbortSignal.timeout(300000)]);
-	let abort = () => {};
-	const stopped = new Promise<never>((_resolve, reject) => {
-		abort = () => reject(new Error("OFFICE_ADOPTION_IO_ABORTED"));
-		signal.addEventListener("abort", abort, { once: true });
+	return withTimeoutScope(caller, 300000, async (signal) => {
+		let abort = () => {};
+		const stopped = new Promise<never>((_resolve, reject) => {
+			abort = () => reject(new Error("OFFICE_ADOPTION_IO_ABORTED"));
+			signal.addEventListener("abort", abort, { once: true });
+		});
+		const operation = execute(snapshot, guard, signal).finally(() => {
+			pending = false;
+		});
+		try {
+			return await Promise.race([operation, stopped]);
+		} finally {
+			signal.removeEventListener("abort", abort);
+			if (settle) await operation.catch(() => {});
+		}
 	});
-	const operation = execute(snapshot, guard, signal).finally(() => {
-		pending = false;
-	});
-	try {
-		return await Promise.race([operation, stopped]);
-	} finally {
-		signal.removeEventListener("abort", abort);
-		if (settle) await operation.catch(() => {});
-	}
 }
 async function execute(
 	options: LxdOfficeAdoptionFilesOptions,

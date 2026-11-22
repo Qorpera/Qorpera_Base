@@ -1,3 +1,5 @@
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
+import { Readable } from "node:stream";
 import {
 	companyStateFailure,
 	ObjectDependency,
@@ -46,14 +48,113 @@ export interface ObjectGatewayAuthority {
 	};
 }
 
-interface SupabaseObjectAuthorityOptions {
+export type WriteReplicaResult = "created" | "duplicate";
+
+export interface SupabaseObjectAuthorityOptions {
 	projectUrl: string;
 	publishableKey: string;
 	secretKey: string;
 	fetch?: typeof fetch;
+	ca?: string;
 	requestTimeoutMs?: number;
 	circuitCooldownMs?: number;
 	now?: () => number;
+}
+
+function createHttpsCaFetch(ca: string): { readonly fetch: typeof fetch; readonly close: () => void } {
+	if (!ca.includes("-----BEGIN CERTIFICATE-----")) throw new Error("Object authority CA certificate is invalid");
+	const agent = new HttpsAgent({
+		keepAlive: true,
+		keepAliveMsecs: 30_000,
+		maxSockets: 32,
+		maxFreeSockets: 16,
+		ca,
+		minVersion: "TLSv1.2",
+	});
+	const caFetch: typeof fetch = (input, init) =>
+		new Promise<Response>((resolve, reject) => {
+			const signal = init?.signal ?? undefined;
+			if (signal?.aborted) {
+				reject(signal.reason ?? new Error("Aborted"));
+				return;
+			}
+			const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+			if (url.protocol !== "https:") {
+				reject(new Error("Object authority requires an exact HTTPS origin"));
+				return;
+			}
+			const headers: Record<string, string> = {};
+			if (init?.headers) {
+				for (const [name, value] of new Headers(init.headers).entries()) headers[name] = value;
+			}
+			let body: Buffer | undefined;
+			if (typeof init?.body === "string") body = Buffer.from(init.body, "utf8");
+			else if (init?.body instanceof Uint8Array)
+				body = Buffer.from(init.body.buffer, init.body.byteOffset, init.body.byteLength);
+			else if (init?.body instanceof ArrayBuffer) body = Buffer.from(init.body);
+			if (body !== undefined && !("content-length" in headers)) headers["content-length"] = String(body.byteLength);
+			let settled = false;
+			const req = httpsRequest(
+				url,
+				{ method: init?.method ?? "GET", headers, agent, ca, minVersion: "TLSv1.2" },
+				(response) => {
+					const status = response.statusCode ?? 0;
+					const isRedirect =
+						status === 301 ||
+						status === 302 ||
+						status === 303 ||
+						status === 307 ||
+						status === 308 ||
+						(status >= 300 && status < 400 && response.headers.location !== undefined);
+					if (init?.redirect === "error" && isRedirect) {
+						settled = true;
+						response.destroy();
+						reject(new TypeError("Redirect is not allowed"));
+						return;
+					}
+					const responseHeaders = new Headers();
+					for (const [name, value] of Object.entries(response.headers)) {
+						if (Array.isArray(value)) for (const item of value) responseHeaders.append(name, item);
+						else if (value !== undefined) responseHeaders.set(name, value);
+					}
+					const onAbortAfterHeaders = (): void => {
+						response.destroy(signal?.reason instanceof Error ? signal.reason : new Error("Aborted"));
+					};
+					if (signal) {
+						signal.addEventListener("abort", onAbortAfterHeaders, { once: true });
+						response.once("close", () => signal.removeEventListener("abort", onAbortAfterHeaders));
+					}
+					settled = true;
+					if (status === 204 || status === 205 || status === 304) {
+						response.resume();
+						resolve(new Response(null, { status, headers: responseHeaders }));
+						return;
+					}
+					const stream = Readable.toWeb(response) as unknown as ReadableStream<Uint8Array>;
+					resolve(new Response(stream, { status, headers: responseHeaders }));
+				},
+			);
+			const onAbort = (): void => {
+				const reason = signal?.reason instanceof Error ? signal.reason : new Error("Aborted");
+				req.destroy(reason);
+				if (!settled) {
+					settled = true;
+					reject(reason);
+				}
+			};
+			if (signal) signal.addEventListener("abort", onAbort, { once: true });
+			req.once("close", () => {
+				if (signal) signal.removeEventListener("abort", onAbort);
+			});
+			req.once("error", (error) => {
+				if (!settled) {
+					settled = true;
+					reject(error);
+				}
+			});
+			req.end(body);
+		});
+	return { fetch: caFetch, close: () => agent.destroy() };
 }
 
 /** PostgREST answers classes 40 and 55 with 500, and a check violation with 400. From the folder core those are one
@@ -92,6 +193,7 @@ export class SupabaseObjectAuthority
 	readonly #publishableKey: string;
 	readonly #secretKey: string;
 	readonly #fetch: typeof fetch;
+	readonly #closeTransport: (() => void) | undefined;
 	readonly #api: ObjectDependency;
 	readonly #storage: ObjectDependency;
 	readonly #auth: ObjectDependency;
@@ -124,11 +226,18 @@ export class SupabaseObjectAuthority
 		this.#projectUrl = url.origin;
 		this.#publishableKey = options.publishableKey;
 		this.#secretKey = options.secretKey;
-		const transport = options.fetch ?? fetch;
+		const caTransport = options.ca !== undefined ? createHttpsCaFetch(options.ca) : undefined;
+		this.#closeTransport = options.fetch ? undefined : caTransport?.close;
+		if (options.fetch && caTransport) caTransport.close();
+		const transport = options.fetch ?? caTransport?.fetch ?? fetch;
 		this.#fetch = (input, init) => transport(input, { ...init, redirect: "error" });
 		this.#api = new ObjectDependency(options.requestTimeoutMs, options.circuitCooldownMs, options.now);
 		this.#storage = new ObjectDependency(options.requestTimeoutMs, options.circuitCooldownMs, options.now);
 		this.#auth = new ObjectDependency(options.requestTimeoutMs, options.circuitCooldownMs, options.now);
+	}
+
+	close(): void {
+		this.#closeTransport?.();
 	}
 
 	health() {
@@ -488,8 +597,8 @@ export class SupabaseObjectAuthority
 		if (value !== true) throw new ObjectDependencyError(403);
 	}
 
-	async writeReplica(profileId: string, sha256: string, bytes: Uint8Array): Promise<void> {
-		await this.#storage.run(async (signal) => {
+	async writeReplica(profileId: string, sha256: string, bytes: Uint8Array): Promise<WriteReplicaResult> {
+		return await this.#storage.run(async (signal) => {
 			const response = await this.#fetch(
 				`${this.#projectUrl}/storage/v1/object/${OBJECT_BUCKET}/${profileId}/${sha256}`,
 				{
@@ -517,18 +626,18 @@ export class SupabaseObjectAuthority
 			const text = new TextDecoder("utf-8", { fatal: true }).decode(
 				await readBoundedObjectResponse(response, 16 * 1024, signal),
 			);
-			if (!response.ok && response.status !== 409) {
-				// Storage can report an immutable duplicate as HTTP 400 with its own 409 code.
-				let duplicate = false;
-				if (response.status === 400) {
-					try {
-						duplicate = (JSON.parse(text) as { statusCode?: string }).statusCode === "409";
-					} catch {
-						/* Not a duplicate receipt. */
-					}
+			if (response.ok) return "created";
+			if (response.status === 409) return "duplicate";
+			let duplicate = false;
+			if (response.status === 400) {
+				try {
+					duplicate = (JSON.parse(text) as { statusCode?: string }).statusCode === "409";
+				} catch {
+					duplicate = false;
 				}
-				if (!duplicate) throw new ObjectDependencyError(response.status);
 			}
+			if (!duplicate) throw new ObjectDependencyError(response.status);
+			return "duplicate";
 		});
 	}
 

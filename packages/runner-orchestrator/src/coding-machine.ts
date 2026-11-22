@@ -9,6 +9,7 @@ import {
 	cloudCodingSessionLayout,
 	createCloudCodingStorageBinding,
 } from "@qorpera/contracts";
+import { withTimeoutScope } from "./abort-scope.ts";
 import {
 	AGENT_BRIDGE,
 	type AgentPlug,
@@ -902,15 +903,17 @@ export async function reconcileCodingMachine(
 	const authorize = async (effect: CodingMachineIntent = intent): Promise<AbortSignal> => {
 		options.signal.throwIfAborted();
 		const started = performance.now();
-		const timeout = AbortSignal.any([options.signal, AbortSignal.timeout(5000)]);
-		const receipt = await options.authorize(effect, timeout);
-		timeout.throwIfAborted();
+		const receipt = await withTimeoutScope(options.signal, 5000, async (timeout) => {
+			const answer = await options.authorize(effect, timeout);
+			timeout.throwIfAborted();
+			return answer;
+		});
 		const remaining = checkCodingMachineReceipt(
 			receipt,
 			{ machineId: plan.machineId, instanceSha256: plan.instanceSha256, intent: effect },
 			performance.now() - started,
 		);
-		return AbortSignal.any([timeout, AbortSignal.timeout(remaining)]);
+		return AbortSignal.any([options.signal, AbortSignal.timeout(remaining)]);
 	};
 	let signal = await authorize();
 	if (resolve(options.journalRoot) !== options.journalRoot) throw new Error("CODING_MACHINE_JOURNAL_UNSAFE");

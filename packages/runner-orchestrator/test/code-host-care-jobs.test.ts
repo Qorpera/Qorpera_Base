@@ -155,6 +155,7 @@ describe("CodeHostCare with the code host's own jobs", () => {
 			machineIdSha256: "d".repeat(64),
 			report: (event) => events.push(event),
 			now: () => clock.now,
+			gcLooseThreshold: 1,
 		});
 		const pass = async () => {
 			row.steps.length = 0;

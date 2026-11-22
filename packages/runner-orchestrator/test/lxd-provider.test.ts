@@ -3409,4 +3409,79 @@ describe("LXD cloud runner provider", () => {
 		);
 		expect(fetcher).toHaveBeenCalledTimes(2);
 	});
+
+	it("aborts HttpLxdGuestTransport.waitReady immediately mid-sleep, bounds LXD polls by timeoutMs, and avoids AbortSignal.any", async () => {
+		const lxd = new FakeLxd();
+		vi.spyOn(lxd, "getInstanceState").mockResolvedValue({
+			status: "Running",
+			statusCode: 103,
+			network: {
+				eth0: {
+					hwaddr: "00:16:3e:b9:c4:8c",
+					addresses: [{ family: "inet", address: "10.41.0.2", scope: "global" }],
+				},
+			},
+		});
+		vi.spyOn(lxd, "getInstance").mockResolvedValue({
+			name: "guest",
+			type: "virtual-machine",
+			status: "Running",
+			statusCode: 103,
+			config: { "volatile.eth0.hwaddr": "00:16:3e:b9:c4:8c" },
+			profiles: [],
+			devices: {},
+			expandedConfig: {},
+			expandedDevices: { eth0: { type: "nic", name: "eth0" } },
+		});
+		const anySpy = vi.spyOn(AbortSignal, "any");
+		try {
+			const fetcher = vi.fn(async () => new Response("not ready", { status: 503 }));
+			const transport = new HttpLxdGuestTransport(lxd, fetcher);
+			const ac = new AbortController();
+			const reason = new Error("CANCEL_WAIT_READY");
+			const waiting = transport.waitReady("qorpera-runners", "guest", "eth0", 8082, 30_000, ac.signal);
+			await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+			const abortAt = Date.now();
+			ac.abort(reason);
+			await expect(waiting).rejects.toBe(reason);
+			expect(Date.now() - abortAt).toBeLessThan(100);
+			expect(anySpy).not.toHaveBeenCalled();
+
+			const hungTransport = new HttpLxdGuestTransport(
+				{
+					getInstanceState: (_project: string, _name: string, sig?: AbortSignal) =>
+						new Promise<never>((_, reject) => {
+							sig?.addEventListener("abort", () => reject(sig.reason), { once: true });
+						}),
+					getInstance: () => Promise.resolve(undefined),
+				} as never,
+				fetcher,
+			);
+			const started = Date.now();
+			await expect(hungTransport.waitReady("qorpera-runners", "guest", "eth0", 8082, 80)).rejects.toThrow(
+				"LXD guest did not activate its private assignment inbox",
+			);
+			expect(Date.now() - started).toBeLessThan(1_000);
+		} finally {
+			anySpy.mockRestore();
+		}
+	});
+
+	it("skips settled journals of unrelated runs when acquiring attempt 2 under nativeCompanyRuntime", async () => {
+		const stateRoot = join(await root(), "state");
+		const lxd = new FakeLxd();
+		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+		const settings = governedConfig(stateRoot);
+		const fetcher = fetchProvisioner(requests);
+		const backend = new LxdCloudRunnerProviderBackend(settings, lxd, new FakeGuest(), fetcher);
+		const otherRunId = "30000000-0000-4000-8000-000000000099";
+		const first = await backend.acquire(otherRunId, { ...work(), runId: otherRunId }, new AbortController().signal);
+		await backend.stop(first, "idle");
+		await backend.reconcile();
+		await writeFile(join(stateRoot, otherRunId, "journal.json"), "{corrupt-unrelated-settled", { mode: 0o600 });
+
+		const next = await backend.acquire(runId, { ...work(), attempt: 2 }, new AbortController().signal);
+		expect(next.runnerId).toBeTruthy();
+		await backend.stop(next, "idle");
+	});
 });
