@@ -601,7 +601,8 @@ object's key), so they never race. The gateway:
 
 The gateway asks it on start, on each reconcile for each quarantined file, and on the lane's error paths. **The
 quarantine directory is this lane's journal.** No `deleted` tombstone is written, so nothing builds up against the
-journal's 10,000-record limit.
+journal's 10,000-record limit (the deleted-company lane likewise removes its journal entry after writing the
+`object_deleted` audit line, and reconcile prunes any leftover legacy `deleted` entries).
 
 **G3 without a snapshot-v1 change.** Folder GC touches only folder-v2 companies' paths, `<root>/<profileId>/...`,
 and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and their GC are unchanged.
@@ -618,7 +619,8 @@ and §9.7's amendment keeps a put off a marked hash. Snapshot-v1 routes and thei
   dropped the same way.
 - **A deleted company's leftovers:** the deleted-profile GC removes what the catalog lists. A sweep of
   `<root>/<companyId>/` and `<root>/.quarantine/<companyId>/` removes the rest once the company is gone. The
-  deleted-company lane's `deleted` tombstones for folder-v2 objects are dropped there too.
+  deleted-company lane removes its journal entry once the `object_deleted` audit line is written rather than keeping a
+  `deleted` tombstone, and reconcile prunes any leftover legacy `deleted` entries.
 
 ### 9.10 The worker
 

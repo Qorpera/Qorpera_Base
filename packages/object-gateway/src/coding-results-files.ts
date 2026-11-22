@@ -94,7 +94,7 @@ export interface CodingResultsClaim {
 
 const problem = platformFolderProblem;
 const encoder = new TextEncoder();
-const byteLength = (text: string): number => encoder.encode(text).byteLength;
+const byteLength = (text: string): number => Buffer.byteLength(text, "utf8");
 
 /** A commit's reason as a problem code the finish accepts; anything else is `refused`. */
 const reasonCode = (reason: string): string => (/^[a-z][a-z0-9_]{0,63}$/.test(reason) ? reason : "refused");
@@ -186,14 +186,15 @@ export function codingResultsText(text: string): string {
 /** `text` cut to at most `max` bytes, at a character, with an ellipsis when it was cut. */
 function within(text: string, max: number): string {
 	if (byteLength(text) <= max) return text;
-	let kept = "";
-	let bytes = byteLength("…");
+	let end = 0;
+	let bytes = 3;
 	for (const character of text) {
-		bytes += byteLength(character);
+		const codePoint = character.codePointAt(0)!;
+		bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
 		if (bytes > max) break;
-		kept += character;
+		end += character.length;
 	}
-	return `${kept.trimEnd()}…`;
+	return `${text.slice(0, end).trimEnd()}…`;
 }
 
 /** The summary: the turn's, with its pull request on a line of its own below it, within the summary's bound. */
