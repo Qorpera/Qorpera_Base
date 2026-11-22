@@ -8,7 +8,8 @@ export type RealtimeResource =
 	| "company-file"
 	| "sidebar"
 	| "member-chats"
-	| "machines";
+	| "machines"
+	| "surfaces";
 export type RealtimePhase = "connecting" | "connected" | "degraded" | "stopped";
 
 export interface RealtimeSubscription {
@@ -34,6 +35,7 @@ const HINT_EVENTS: readonly RealtimeResource[] = [
 	"sidebar",
 	"member-chats",
 	"machines",
+	"surfaces",
 ];
 
 function refusedJoin(error: string | undefined): boolean {

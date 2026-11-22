@@ -3,6 +3,9 @@ import { describe, it } from "node:test";
 import { withTimeoutScope } from "./abort-timeout.ts";
 import {
 	BodyTooLargeError,
+	configuredSecretKeys,
+	constantTimeEqual,
+	constantTimeIncludes,
 	createTimedFetch,
 	preferredServiceKey,
 	readBoundedBytes,
@@ -174,5 +177,35 @@ describe("createTimedFetch", () => {
 			assert.equal(error instanceof Error ? error.name : "", "TimeoutError");
 			return true;
 		});
+	});
+});
+
+describe("constantTimeEqual, constantTimeIncludes, and configuredSecretKeys", () => {
+	it("compares equal, different, and different-length secrets accurately", () => {
+		assert.equal(constantTimeEqual("secret-token-123", "secret-token-123"), true);
+		assert.equal(constantTimeEqual("secret-token-123", "secret-token-124"), false);
+		assert.equal(constantTimeEqual("secret-token-123", "short"), false);
+		assert.equal(constantTimeEqual("", ""), true);
+		assert.equal(constantTimeIncludes(["alpha", "beta", "gamma"], "beta"), true);
+		assert.equal(constantTimeIncludes(["alpha", "beta", "gamma"], "delta"), false);
+		assert.equal(constantTimeIncludes([], "alpha"), false);
+	});
+
+	it("orders legacy service role key before KMS secret keys and deduplicates", () => {
+		const secretMap = JSON.stringify({
+			a: "sb_secret_123456789012345678901234",
+			b: "short",
+			c: "legacy-jwt-key-1234567890123456",
+		});
+		assert.deepEqual(
+			configuredSecretKeys((name) =>
+				name === "SUPABASE_SERVICE_ROLE_KEY"
+					? "legacy-jwt-key-1234567890123456"
+					: name === "SUPABASE_SECRET_KEYS"
+						? secretMap
+						: undefined,
+			),
+			["legacy-jwt-key-1234567890123456", "sb_secret_123456789012345678901234"],
+		);
 	});
 });

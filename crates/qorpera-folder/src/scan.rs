@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, ErrorKind, Read};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::fd::{FromRawFd, RawFd};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 
 pub const SECRET_MIN_BYTES: usize = 8;
 pub const SECRET_MAX_BYTES: usize = 32 * 1024;
@@ -385,12 +387,278 @@ impl<'a> ObjectScanner<'a> {
 	}
 }
 
-fn parse_batch_header(line: &[u8]) -> Option<u64> {
+const IDX_V2_MAGIC: [u8; 4] = [0xff, 0x74, 0x4f, 0x63];
+const IDX_V2_HEADER_LEN: usize = 8 + 256 * 4;
+const IDX_V2_TRAILER_LEN: usize = 40;
+const MAX_IDX_OBJECTS: usize = 20_000_000;
+const MAX_EXCLUDE_OIDS_BYTES: usize = 64 * 1024 * 1024;
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+#[inline]
+fn hex_nibble(b: u8) -> Option<u8> {
+	match b {
+		b'0'..=b'9' => Some(b - b'0'),
+		b'a'..=b'f' => Some(b - b'a' + 10),
+		_ => None,
+	}
+}
+
+fn parse_hex_oid<const N: usize>(hex: &[u8]) -> Option<[u8; N]> {
+	if hex.len() != N * 2 {
+		return None;
+	}
+	let mut out = [0u8; N];
+	for i in 0..N {
+		let hi = hex_nibble(hex[i * 2])?;
+		let lo = hex_nibble(hex[i * 2 + 1])?;
+		out[i] = (hi << 4) | lo;
+	}
+	Some(out)
+}
+
+fn encode_hex_20(oid: &[u8; 20], out: &mut [u8; 40]) {
+	for i in 0..20 {
+		out[i * 2] = HEX_DIGITS[(oid[i] >> 4) as usize];
+		out[i * 2 + 1] = HEX_DIGITS[(oid[i] & 0x0f) as usize];
+	}
+}
+
+pub struct IdxV2 {
+	fanout: [u32; 256],
+	oids: Vec<u8>,
+}
+
+impl IdxV2 {
+	pub fn from_path(path: &Path) -> Result<Self, String> {
+		let mut file = OpenOptions::new()
+			.read(true)
+			.custom_flags(libc::O_NOFOLLOW)
+			.open(path)
+			.map_err(|e| format!("idx {} could not be opened: {e}", path.display()))?;
+		let meta = file.metadata().map_err(|e| format!("idx {} could not be stated: {e}", path.display()))?;
+		if !meta.file_type().is_file() {
+			return Err(format!("idx {} is not a regular file", path.display()));
+		}
+		Self::from_reader(&mut file, Some(meta.len()))
+	}
+
+	pub fn from_reader<R: Read>(reader: &mut R, known_len: Option<u64>) -> Result<Self, String> {
+		let mut header = [0u8; IDX_V2_HEADER_LEN];
+		reader.read_exact(&mut header).map_err(|_| "idx header is truncated".to_string())?;
+		if header[0..4] != IDX_V2_MAGIC {
+			return Err("idx magic is not git pack idx v2".to_string());
+		}
+		let version = u32::from_be_bytes(header[4..8].try_into().unwrap());
+		if version != 2 {
+			return Err(format!("unsupported idx version {version}"));
+		}
+		let mut fanout = [0u32; 256];
+		let mut prev = 0u32;
+		for i in 0..256 {
+			let off = 8 + i * 4;
+			let count = u32::from_be_bytes(header[off..off + 4].try_into().unwrap());
+			if count < prev {
+				return Err("idx fanout table is not monotonic".to_string());
+			}
+			fanout[i] = count;
+			prev = count;
+		}
+		let total = fanout[255] as usize;
+		if total > MAX_IDX_OBJECTS {
+			return Err("idx object count exceeds limit".to_string());
+		}
+		let min_size = (IDX_V2_HEADER_LEN as u64)
+			.checked_add((total as u64).checked_mul(28).ok_or_else(|| "idx size overflow".to_string())?)
+			.and_then(|v| v.checked_add(IDX_V2_TRAILER_LEN as u64))
+			.ok_or_else(|| "idx size overflow".to_string())?;
+		if let Some(len) = known_len {
+			if len < min_size || (len - min_size) % 8 != 0 {
+				return Err("idx file length does not match fanout count".to_string());
+			}
+		}
+		let mut oids = vec![0u8; total * 20];
+		reader.read_exact(&mut oids).map_err(|_| "idx oid table is truncated".to_string())?;
+		for bucket in 0..256usize {
+			let lo = if bucket == 0 { 0 } else { fanout[bucket - 1] as usize };
+			let hi = fanout[bucket] as usize;
+			for idx in lo..hi {
+				let cur = &oids[idx * 20..(idx + 1) * 20];
+				if cur[0] != bucket as u8 {
+					return Err("idx oid table does not match fanout bucket".to_string());
+				}
+				if idx > lo && &oids[(idx - 1) * 20..idx * 20] >= cur {
+					return Err("idx oid table is not strictly sorted".to_string());
+				}
+			}
+		}
+		Ok(Self { fanout, oids })
+	}
+
+	pub fn len(&self) -> usize {
+		self.fanout[255] as usize
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.len() == 0
+	}
+
+	pub fn contains_sha1(&self, oid: &[u8; 20]) -> bool {
+		let bucket = oid[0] as usize;
+		let mut lo = if bucket == 0 { 0 } else { self.fanout[bucket - 1] as usize };
+		let mut hi = self.fanout[bucket] as usize;
+		while lo < hi {
+			let mid = lo + (hi - lo) / 2;
+			let slot = &self.oids[mid * 20..(mid + 1) * 20];
+			match slot.cmp(oid.as_slice()) {
+				std::cmp::Ordering::Less => lo = mid + 1,
+				std::cmp::Ordering::Greater => hi = mid,
+				std::cmp::Ordering::Equal => return true,
+			}
+		}
+		false
+	}
+
+	pub fn iter_sha1(&self) -> impl Iterator<Item = &[u8; 20]> {
+		self.oids.chunks_exact(20).map(|c| c.try_into().unwrap())
+	}
+}
+
+#[derive(Default)]
+pub struct OidExcludeSet {
+	idx_tables: Vec<IdxV2>,
+	sha1: Vec<[u8; 20]>,
+	sha256: Vec<[u8; 32]>,
+}
+
+impl OidExcludeSet {
+	pub fn is_empty(&self) -> bool {
+		self.idx_tables.is_empty() && self.sha1.is_empty() && self.sha256.is_empty()
+	}
+
+	pub fn add_idx(&mut self, idx: IdxV2) {
+		if !idx.is_empty() {
+			self.idx_tables.push(idx);
+		}
+	}
+
+	pub fn add_oids_reader<R: Read>(&mut self, reader: R) -> Result<(), String> {
+		let mut limited = BufReader::new(reader.take((MAX_EXCLUDE_OIDS_BYTES + 1) as u64));
+		let mut total_bytes = 0usize;
+		let mut line = String::new();
+		loop {
+			line.clear();
+			let n = limited.read_line(&mut line).map_err(|_| "exclude oids could not be read".to_string())?;
+			if n == 0 {
+				break;
+			}
+			total_bytes += n;
+			if total_bytes > MAX_EXCLUDE_OIDS_BYTES {
+				return Err("exclude oids exceed maximum size".to_string());
+			}
+			let trimmed = line.trim();
+			if trimmed.is_empty() {
+				continue;
+			}
+			let raw = trimmed.as_bytes();
+			if raw.len() == 40 {
+				let oid = parse_hex_oid::<20>(raw).ok_or_else(|| "invalid sha1 oid in exclude list".to_string())?;
+				self.sha1.push(oid);
+			} else if raw.len() == 64 {
+				let oid = parse_hex_oid::<32>(raw).ok_or_else(|| "invalid sha256 oid in exclude list".to_string())?;
+				self.sha256.push(oid);
+			} else {
+				return Err("invalid oid length in exclude list".to_string());
+			}
+		}
+		self.sha1.sort_unstable();
+		self.sha1.dedup();
+		self.sha256.sort_unstable();
+		self.sha256.dedup();
+		Ok(())
+	}
+
+	pub fn contains_sha1(&self, oid: &[u8; 20]) -> bool {
+		if self.idx_tables.iter().any(|idx| idx.contains_sha1(oid)) {
+			return true;
+		}
+		self.sha1.binary_search(oid).is_ok()
+	}
+
+	pub fn contains_sha256(&self, oid: &[u8; 32]) -> bool {
+		self.sha256.binary_search(oid).is_ok()
+	}
+
+	pub fn contains_hex(&self, oid_hex: &[u8]) -> bool {
+		if self.is_empty() {
+			return false;
+		}
+		if oid_hex.len() == 40 {
+			parse_hex_oid::<20>(oid_hex).is_some_and(|oid| self.contains_sha1(&oid))
+		} else if oid_hex.len() == 64 {
+			parse_hex_oid::<32>(oid_hex).is_some_and(|oid| self.contains_sha256(&oid))
+		} else {
+			false
+		}
+	}
+
+	pub fn load(idx_paths: &[PathBuf], exclude_oids_fd: Option<RawFd>) -> Result<Self, String> {
+		let mut set = Self::default();
+		for path in idx_paths {
+			set.add_idx(IdxV2::from_path(path)?);
+		}
+		if let Some(fd) = exclude_oids_fd {
+			if fd < 3 {
+				return Err("--exclude-oids-fd must be 3 or higher".to_string());
+			}
+			// SAFETY: fcntl F_GETFD checks whether exclude_oids_fd is open before taking ownership.
+			if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+				return Err("exclude oids fd is not open".to_string());
+			}
+			clear_nonblock(fd).map_err(|_| "exclude oids fd flags could not be updated".to_string())?;
+			// SAFETY: fd is verified open, >= 3, and dedicated to this command.
+			let file = unsafe { File::from_raw_fd(fd) };
+			set.add_oids_reader(file)?;
+		}
+		Ok(set)
+	}
+}
+
+pub fn write_delta_oids<W: Write>(target: &IdxV2, excludes: &OidExcludeSet, writer: &mut W) -> io::Result<usize> {
+	let mut hex = [0u8; 41];
+	hex[40] = b'\n';
+	let mut count = 0usize;
+	for oid in target.iter_sha1() {
+		if !excludes.contains_sha1(oid) {
+			let hex_slice: &mut [u8; 40] = (&mut hex[..40]).try_into().unwrap();
+			encode_hex_20(oid, hex_slice);
+			writer.write_all(&hex)?;
+			count += 1;
+		}
+	}
+	Ok(count)
+}
+
+pub fn run_diff_idx(
+	target_idx: &Path,
+	exclude_idx_paths: &[PathBuf],
+	exclude_oids_fd: Option<RawFd>,
+) -> Result<usize, String> {
+	let target = IdxV2::from_path(target_idx)?;
+	let excludes = OidExcludeSet::load(exclude_idx_paths, exclude_oids_fd)?;
+	let stdout = io::stdout();
+	let mut out = io::BufWriter::with_capacity(64 * 1024, stdout.lock());
+	let count = write_delta_oids(&target, &excludes, &mut out).map_err(|e| format!("stdout write failed: {e}"))?;
+	out.flush().map_err(|e| format!("stdout flush failed: {e}"))?;
+	Ok(count)
+}
+
+fn parse_batch_header(line: &[u8]) -> Option<(&[u8], u64)> {
 	let sp1 = line.iter().position(|&b| b == b' ')?;
 	if sp1 != 40 && sp1 != 64 {
 		return None;
 	}
-	if !line[..sp1].iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+	let oid = &line[..sp1];
+	if !oid.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
 		return None;
 	}
 	let rest = &line[sp1 + 1..];
@@ -404,7 +672,7 @@ fn parse_batch_header(line: &[u8]) -> Option<u64> {
 		return None;
 	}
 	if size_bytes == b"0" {
-		return Some(0);
+		return Some((oid, 0));
 	}
 	if !matches!(size_bytes[0], b'1'..=b'9') {
 		return None;
@@ -416,16 +684,24 @@ fn parse_batch_header(line: &[u8]) -> Option<u64> {
 		}
 		size = size * 10 + (b - b'0') as u64;
 	}
-	Some(size)
+	Some((oid, size))
 }
 
 enum Phase {
 	Header,
-	Content(u64),
-	TrailingNewline,
+	Content { due: u64, skip: bool },
+	TrailingNewline { skip: bool },
 }
 
 pub fn scan_pack_stream<R: Read>(reader: &mut R, spec: &CompiledSpec) -> ScanOutcome {
+	scan_pack_stream_with_excludes(reader, spec, &OidExcludeSet::default())
+}
+
+pub fn scan_pack_stream_with_excludes<R: Read>(
+	reader: &mut R,
+	spec: &CompiledSpec,
+	excludes: &OidExcludeSet,
+) -> ScanOutcome {
 	let mut buf = vec![0u8; READ_BUF_BYTES];
 	let mut line = Vec::with_capacity(BATCH_LINE_MAX);
 	let mut phase = Phase::Header;
@@ -446,22 +722,28 @@ pub fn scan_pack_stream<R: Read>(reader: &mut R, spec: &CompiledSpec) -> ScanOut
 					let max_scan = (BATCH_LINE_MAX - line.len() + 1).min(chunk.len() - at);
 					let search = &chunk[at..at + max_scan];
 					if let Some(rel) = search.iter().position(|&b| b == b'\n') {
-						let size = if line.is_empty() {
-							parse_batch_header(&chunk[at..at + rel])
+						let parsed = if line.is_empty() {
+							parse_batch_header(&chunk[at..at + rel]).map(|(oid, size)| (excludes.contains_hex(oid), size))
 						} else {
 							line.extend_from_slice(&chunk[at..at + rel]);
-							let parsed = parse_batch_header(&line);
+							let res = parse_batch_header(&line).map(|(oid, size)| (excludes.contains_hex(oid), size));
 							line.clear();
-							parsed
+							res
 						};
-						let Some(size) = size else {
+						let Some((skip, size)) = parsed else {
 							return ScanOutcome::Unchecked { reason: "header" };
 						};
-						rebuilt = match rebuilt.checked_add(size) {
-							Some(total) if total <= spec.rebuilt_max => total,
-							_ => return ScanOutcome::Unchecked { reason: "rebuilt_limit" },
+						if !skip {
+							rebuilt = match rebuilt.checked_add(size) {
+								Some(total) if total <= spec.rebuilt_max => total,
+								_ => return ScanOutcome::Unchecked { reason: "rebuilt_limit" },
+							};
+						}
+						phase = if size == 0 {
+							Phase::TrailingNewline { skip }
+						} else {
+							Phase::Content { due: size, skip }
 						};
-						phase = if size == 0 { Phase::TrailingNewline } else { Phase::Content(size) };
 						at += rel + 1;
 					} else {
 						if line.len() + max_scan > BATCH_LINE_MAX {
@@ -471,29 +753,37 @@ pub fn scan_pack_stream<R: Read>(reader: &mut R, spec: &CompiledSpec) -> ScanOut
 						at += max_scan;
 					}
 				}
-				Phase::Content(due) => {
+				Phase::Content { due, skip } => {
 					let avail = (chunk.len() - at) as u64;
 					let take = due.min(avail) as usize;
-					if let Some(scan) = scanner.as_mut() {
-						match scan.push(&chunk[at..at + take]) {
-							Ok(true) => return ScanOutcome::Secret,
-							Ok(false) => {}
-							Err(()) => return ScanOutcome::Unchecked { reason: "budget" },
+					if !skip {
+						if let Some(scan) = scanner.as_mut() {
+							match scan.push(&chunk[at..at + take]) {
+								Ok(true) => return ScanOutcome::Secret,
+								Ok(false) => {}
+								Err(()) => return ScanOutcome::Unchecked { reason: "budget" },
+							}
 						}
 					}
 					at += take;
 					let rem = due - take as u64;
-					phase = if rem == 0 { Phase::TrailingNewline } else { Phase::Content(rem) };
+					phase = if rem == 0 {
+						Phase::TrailingNewline { skip }
+					} else {
+						Phase::Content { due: rem, skip }
+					};
 				}
-				Phase::TrailingNewline => {
+				Phase::TrailingNewline { skip } => {
 					if chunk[at] != b'\n' {
 						return ScanOutcome::Unchecked { reason: "framing" };
 					}
-					if let Some(scan) = scanner.as_mut() {
-						match scan.end() {
-							Ok(true) => return ScanOutcome::Secret,
-							Ok(false) => {}
-							Err(()) => return ScanOutcome::Unchecked { reason: "budget" },
+					if !skip {
+						if let Some(scan) = scanner.as_mut() {
+							match scan.end() {
+								Ok(true) => return ScanOutcome::Secret,
+								Ok(false) => {}
+								Err(()) => return ScanOutcome::Unchecked { reason: "budget" },
+							}
 						}
 					}
 					phase = Phase::Header;
@@ -507,6 +797,66 @@ pub fn scan_pack_stream<R: Read>(reader: &mut R, spec: &CompiledSpec) -> ScanOut
 	} else {
 		ScanOutcome::Unchecked { reason: "truncated" }
 	}
+}
+
+pub fn scan_raw_stream<R: Read>(reader: &mut R, spec: &CompiledSpec) -> ScanOutcome {
+	let mut buf = vec![0u8; READ_BUF_BYTES];
+	let mut rebuilt: u64 = 0;
+	let mut scanner = spec.matcher.as_ref().map(|m| ObjectScanner::new(m, spec.budget));
+	loop {
+		let n = match reader.read(&mut buf) {
+			Ok(0) => break,
+			Ok(n) => n,
+			Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+			Err(_) => return ScanOutcome::Unchecked { reason: "read_error" },
+		};
+		rebuilt = match rebuilt.checked_add(n as u64) {
+			Some(total) if total <= spec.rebuilt_max => total,
+			_ => return ScanOutcome::Unchecked { reason: "rebuilt_limit" },
+		};
+		if let Some(scan) = scanner.as_mut() {
+			match scan.push(&buf[..n]) {
+				Ok(true) => return ScanOutcome::Secret,
+				Ok(false) => {}
+				Err(()) => return ScanOutcome::Unchecked { reason: "budget" },
+			}
+		}
+	}
+	if let Some(scan) = scanner.as_mut() {
+		match scan.end() {
+			Ok(true) => return ScanOutcome::Secret,
+			Ok(false) => {}
+			Err(()) => return ScanOutcome::Unchecked { reason: "budget" },
+		}
+	}
+	ScanOutcome::Clean { rebuilt }
+}
+
+fn load_spec_from_fd(spec_fd: RawFd) -> Result<CompiledSpec, String> {
+	if spec_fd < 3 {
+		return Err("--spec-fd must be 3 or higher".to_string());
+	}
+	// SAFETY: fcntl F_GETFD checks whether spec_fd is open before taking ownership.
+	if unsafe { libc::fcntl(spec_fd, libc::F_GETFD) } < 0 {
+		return Err("spec fd is not open".to_string());
+	}
+	clear_nonblock(spec_fd).map_err(|_| "spec fd flags could not be updated".to_string())?;
+	// SAFETY: spec_fd is verified open, >= 3, and dedicated to this command.
+	let mut spec_file = unsafe { File::from_raw_fd(spec_fd) };
+	let mut spec_bytes = Vec::new();
+	Read::by_ref(&mut spec_file)
+		.take((MAX_SPEC_BYTES + 1) as u64)
+		.read_to_end(&mut spec_bytes)
+		.map_err(|_| "spec could not be read".to_string())?;
+	drop(spec_file);
+	if spec_bytes.len() > MAX_SPEC_BYTES {
+		spec_bytes.fill(0);
+		return Err("spec exceeds maximum size".to_string());
+	}
+	let parsed: Result<ScanSpec, _> = serde_json::from_slice(&spec_bytes);
+	spec_bytes.fill(0);
+	let spec = parsed.map_err(|_| "spec is not valid json".to_string())?;
+	CompiledSpec::from_spec(spec)
 }
 
 fn clear_nonblock(fd: RawFd) -> io::Result<()> {
@@ -525,39 +875,38 @@ fn clear_nonblock(fd: RawFd) -> io::Result<()> {
 }
 
 pub fn run_from_fd(spec_fd: RawFd) -> Result<ScanOutcome, String> {
+	run_pack_from_fd(spec_fd, &[], None)
+}
+
+pub fn run_pack_from_fd(
+	spec_fd: RawFd,
+	exclude_idx_paths: &[PathBuf],
+	exclude_oids_fd: Option<RawFd>,
+) -> Result<ScanOutcome, String> {
 	clear_nonblock(libc::STDIN_FILENO).map_err(|_| "stdin flags could not be updated".to_string())?;
 	let stdin = io::stdin();
 	let mut lock = stdin.lock();
-	run_from_fd_with_reader(spec_fd, &mut lock)
+	let compiled = load_spec_from_fd(spec_fd)?;
+	let excludes = OidExcludeSet::load(exclude_idx_paths, exclude_oids_fd)?;
+	Ok(scan_pack_stream_with_excludes(&mut lock, &compiled, &excludes))
 }
 
+pub fn run_stream_from_fd(spec_fd: RawFd) -> Result<ScanOutcome, String> {
+	clear_nonblock(libc::STDIN_FILENO).map_err(|_| "stdin flags could not be updated".to_string())?;
+	let stdin = io::stdin();
+	let mut lock = stdin.lock();
+	run_stream_from_fd_with_reader(spec_fd, &mut lock)
+}
+
+#[cfg(test)]
 fn run_from_fd_with_reader<R: Read>(spec_fd: RawFd, reader: &mut R) -> Result<ScanOutcome, String> {
-	if spec_fd < 3 {
-		return Err("--spec-fd must be 3 or higher".to_string());
-	}
-	// SAFETY: fcntl F_GETFD checks whether spec_fd is open before taking ownership.
-	if unsafe { libc::fcntl(spec_fd, libc::F_GETFD) } < 0 {
-		return Err("spec fd is not open".to_string());
-	}
-	clear_nonblock(spec_fd).map_err(|_| "spec fd flags could not be updated".to_string())?;
-	// SAFETY: spec_fd is verified open, >= 3, and dedicated to this command.
-	let mut spec_file = unsafe { File::from_raw_fd(spec_fd) };
-	let mut spec_bytes = Vec::new();
-	spec_file
-		.by_ref()
-		.take((MAX_SPEC_BYTES + 1) as u64)
-		.read_to_end(&mut spec_bytes)
-		.map_err(|_| "spec could not be read".to_string())?;
-	drop(spec_file);
-	if spec_bytes.len() > MAX_SPEC_BYTES {
-		spec_bytes.fill(0);
-		return Err("spec exceeds maximum size".to_string());
-	}
-	let parsed: Result<ScanSpec, _> = serde_json::from_slice(&spec_bytes);
-	spec_bytes.fill(0);
-	let spec = parsed.map_err(|_| "spec is not valid json".to_string())?;
-	let compiled = CompiledSpec::from_spec(spec)?;
+	let compiled = load_spec_from_fd(spec_fd)?;
 	Ok(scan_pack_stream(reader, &compiled))
+}
+
+fn run_stream_from_fd_with_reader<R: Read>(spec_fd: RawFd, reader: &mut R) -> Result<ScanOutcome, String> {
+	let compiled = load_spec_from_fd(spec_fd)?;
+	Ok(scan_raw_stream(reader, &compiled))
 }
 
 #[cfg(test)]
@@ -883,5 +1232,144 @@ mod tests {
 		let stream = batch_entry(oid, "blob", b"contains test-value-0001 here");
 		let result = run_from_fd_with_reader(fds[0], &mut Cursor::new(&stream)).unwrap();
 		assert_eq!(result, ScanOutcome::Secret);
+	}
+
+	fn build_synthetic_idx_v2(mut oids: Vec<[u8; 20]>, extra_large_offsets: usize) -> Vec<u8> {
+		oids.sort_unstable();
+		oids.dedup();
+		let mut out = Vec::new();
+		out.extend_from_slice(&IDX_V2_MAGIC);
+		out.extend_from_slice(&2u32.to_be_bytes());
+		let mut fanout = [0u32; 256];
+		let mut count = 0u32;
+		let mut oi = 0usize;
+		for bucket in 0..256u32 {
+			while oi < oids.len() && oids[oi][0] as u32 == bucket {
+				count += 1;
+				oi += 1;
+			}
+			fanout[bucket as usize] = count;
+			out.extend_from_slice(&count.to_be_bytes());
+		}
+		for oid in &oids {
+			out.extend_from_slice(oid);
+		}
+		out.resize(out.len() + oids.len() * 8 + extra_large_offsets * 8 + IDX_V2_TRAILER_LEN, 0);
+		out
+	}
+
+	#[test]
+	fn scan_raw_stream_detects_secrets_across_chunks_and_enforces_limits() {
+		let spec = compiled(&["test-value-0001", "12345678"], 256);
+		assert_eq!(scan_raw_stream(&mut Cursor::new(b""), &spec), ScanOutcome::Clean { rebuilt: 0 });
+		assert_eq!(
+			scan_raw_stream(&mut Cursor::new(b"plain harmless payload"), &spec),
+			ScanOutcome::Clean { rebuilt: 22 }
+		);
+		let payload = b"prefix test-value-0001 suffix";
+		for step in [1usize, 3, 7, 15, 64] {
+			let mut reader = ChunkedReader { data: payload, pos: 0, step };
+			assert_eq!(scan_raw_stream(&mut reader, &spec), ScanOutcome::Secret, "step={step}");
+		}
+		let too_big = vec![b'z'; 257];
+		assert_eq!(scan_raw_stream(&mut Cursor::new(&too_big), &spec), ScanOutcome::Unchecked { reason: "rebuilt_limit" });
+
+		let mut fds = [-1 as RawFd; 2];
+		// SAFETY: pipe writes two valid fds.
+		assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+		let val = secret_value(&TEST_KEY, "test-value-0001");
+		let spec_json = serde_json::json!({
+			"key": encode_b64url(&TEST_KEY),
+			"values": [{ "length": val.length, "start": val.start, "whole": val.whole }],
+			"rebuiltMax": 1024
+		})
+		.to_string();
+		// SAFETY: fds[1] is exclusively owned by this test.
+		let mut writer = unsafe { File::from_raw_fd(fds[1]) };
+		writer.write_all(spec_json.as_bytes()).unwrap();
+		drop(writer);
+		assert_eq!(
+			run_stream_from_fd_with_reader(fds[0], &mut Cursor::new(b"xx test-value-0001 yy")).unwrap(),
+			ScanOutcome::Secret
+		);
+	}
+
+	#[test]
+	fn idx_v2_parses_searches_diffs_and_rejects_malformed_inputs() {
+		let o1 = [0x00u8; 20];
+		let o2 = [0x12u8; 20];
+		let mut o3 = [0x12u8; 20];
+		o3[19] = 0x99;
+		let o4 = [0xffu8; 20];
+		let raw = build_synthetic_idx_v2(vec![o4, o2, o1, o3], 2);
+		let idx = IdxV2::from_reader(&mut Cursor::new(&raw), Some(raw.len() as u64)).unwrap();
+		assert_eq!(idx.len(), 4);
+		assert!(idx.contains_sha1(&o1));
+		assert!(idx.contains_sha1(&o2));
+		assert!(idx.contains_sha1(&o3));
+		assert!(idx.contains_sha1(&o4));
+		assert!(!idx.contains_sha1(&[0x55u8; 20]));
+
+		let empty_raw = build_synthetic_idx_v2(vec![], 0);
+		let empty = IdxV2::from_reader(&mut Cursor::new(&empty_raw), Some(empty_raw.len() as u64)).unwrap();
+		assert!(empty.is_empty());
+
+		let mut bad_magic = raw.clone();
+		bad_magic[0] = 0x00;
+		assert!(IdxV2::from_reader(&mut Cursor::new(&bad_magic), Some(bad_magic.len() as u64)).is_err());
+		let mut bad_ver = raw.clone();
+		bad_ver[7] = 3;
+		assert!(IdxV2::from_reader(&mut Cursor::new(&bad_ver), Some(bad_ver.len() as u64)).is_err());
+		let mut bad_fanout = raw.clone();
+		bad_fanout[8..12].copy_from_slice(&5u32.to_be_bytes());
+		assert!(IdxV2::from_reader(&mut Cursor::new(&bad_fanout), Some(bad_fanout.len() as u64)).is_err());
+		assert!(IdxV2::from_reader(&mut Cursor::new(&raw), Some((raw.len() - 1) as u64)).is_err());
+
+		let base_raw = build_synthetic_idx_v2(vec![o1, o3], 0);
+		let base_idx = IdxV2::from_reader(&mut Cursor::new(&base_raw), Some(base_raw.len() as u64)).unwrap();
+		let mut excludes = OidExcludeSet::default();
+		excludes.add_idx(base_idx);
+		let mut delta_out = Vec::new();
+		let delta_count = write_delta_oids(&idx, &excludes, &mut delta_out).unwrap();
+		assert_eq!(delta_count, 2);
+		let lines: Vec<&str> = std::str::from_utf8(&delta_out).unwrap().lines().collect();
+		assert_eq!(lines, vec!["12".repeat(20), "ff".repeat(20)]);
+	}
+
+	#[test]
+	fn scan_pack_skips_excluded_oids_while_scanning_delta_objects_and_checking_framing() {
+		let spec = compiled(&["test-value-0001"], 64);
+		let published_oid_bytes = [0x11u8; 20];
+		let published_oid = "11".repeat(20);
+		let excluded_list_oid = "22".repeat(20);
+		let delta_oid = "33".repeat(20);
+		let base_raw = build_synthetic_idx_v2(vec![published_oid_bytes], 0);
+		let base_idx = IdxV2::from_reader(&mut Cursor::new(&base_raw), Some(base_raw.len() as u64)).unwrap();
+		let mut excludes = OidExcludeSet::default();
+		excludes.add_idx(base_idx);
+		excludes
+			.add_oids_reader(Cursor::new(format!("{excluded_list_oid}\n").as_bytes()))
+			.unwrap();
+
+		let mut clean_delta = batch_entry(&published_oid, "blob", b"old test-value-0001 skipped");
+		clean_delta.extend_from_slice(&batch_entry(&excluded_list_oid, "blob", &[b'x'; 200]));
+		clean_delta.extend_from_slice(&batch_entry(&delta_oid, "blob", b"new safe delta"));
+		assert_eq!(
+			scan_pack_stream_with_excludes(&mut Cursor::new(&clean_delta), &spec, &excludes),
+			ScanOutcome::Clean { rebuilt: 14 }
+		);
+
+		let mut dirty_delta = batch_entry(&published_oid, "blob", b"old test-value-0001 skipped");
+		dirty_delta.extend_from_slice(&batch_entry(&delta_oid, "blob", b"leaked test-value-0001"));
+		assert_eq!(
+			scan_pack_stream_with_excludes(&mut Cursor::new(&dirty_delta), &spec, &excludes),
+			ScanOutcome::Secret
+		);
+
+		let bad_framing = format!("{published_oid} blob 3\nabcx");
+		assert_eq!(
+			scan_pack_stream_with_excludes(&mut Cursor::new(bad_framing.as_bytes()), &spec, &excludes),
+			ScanOutcome::Unchecked { reason: "framing" }
+		);
 	}
 }

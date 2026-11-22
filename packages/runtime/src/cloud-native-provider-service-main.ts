@@ -531,6 +531,7 @@ export async function runNativeProviderHostServiceMain(environment: NodeJS.Proce
 			binarySha256: runtimeConfiguration.binarySha256,
 			isolation: runtimeConfiguration.isolation,
 			chatGptPlanAuth: runtimeConfiguration.chatGptPlanAuth,
+			surfaceFirst: process.env.QORPERA_SURFACE_FIRST === "1",
 			...(coding ? { coding } : {}),
 			// Company machines ride the same executor ingress and transport credential.
 			...(codingConfiguration && codingToken

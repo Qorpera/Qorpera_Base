@@ -17,6 +17,7 @@ export const MAX_SHARE = 0.44;
 /** Version 5 came with the wider default (443px, then 406px before it shipped): widths stored before it are not carried over,
  * so every member starts once from the new default. */
 export const STORAGE_KEY = "qorpera.web.rail-width.v5";
+export const HIDDEN_STORAGE_KEY = "qorpera.web.rail-hidden.v1";
 
 /** Two fifths of the window, but never below the narrowest expanded rail. */
 function cap(): number {
@@ -52,6 +53,8 @@ export class RailLayout {
 	#max = 0;
 	#scale = 0;
 	#drawer = false;
+	#hidden = false;
+	#appliedHidden = false;
 	#dragging = false;
 	#dragged = false;
 	constructor(frame: HTMLElement, rail: HTMLElement) {
@@ -60,6 +63,7 @@ export class RailLayout {
 		try {
 			const width = Number(localStorage.getItem(STORAGE_KEY));
 			if (Number.isFinite(width) && (width === COMPACT || width >= MIN)) this.#preferred = width;
+			this.#hidden = localStorage.getItem(HIDDEN_STORAGE_KEY) === "1";
 		} catch {
 			/* Browser storage is optional. */
 		}
@@ -144,22 +148,54 @@ export class RailLayout {
 			/* Layout still works for this window. */
 		}
 	}
+	get hidden(): boolean {
+		return this.#hidden;
+	}
+
+	setHidden(hidden: boolean): void {
+		if (this.#hidden === hidden) return;
+		this.#hidden = hidden;
+		try {
+			if (hidden) localStorage.setItem(HIDDEN_STORAGE_KEY, "1");
+			else localStorage.removeItem(HIDDEN_STORAGE_KEY);
+		} catch {
+			/* Layout still works for this window. */
+		}
+		this.#apply();
+	}
+
+	toggleHidden(): void {
+		this.setHidden(!this.#hidden);
+	}
+
 	#apply(): void {
 		const max = cap();
 		const width = Math.min(this.#preferred ?? (uiSizePreference() === "small" ? SMALL_DEFAULT : DEFAULT), max);
 		const drawer = isPhoneLayout();
 		const scale = uiScale();
-		if (width === this.#width && max === this.#max && drawer === this.#drawer && scale === this.#scale) return;
+		const hiddenDesktop = this.#hidden && !drawer;
+		if (
+			width === this.#width &&
+			max === this.#max &&
+			drawer === this.#drawer &&
+			scale === this.#scale &&
+			hiddenDesktop === this.#appliedHidden
+		)
+			return;
 		this.#width = width;
 		this.#max = max;
 		this.#drawer = drawer;
 		this.#scale = scale;
+		this.#appliedHidden = hiddenDesktop;
 		// --rail-width does not inherit (app.css), so each of its two readers carries its own value.
 		const shown = `${width * scale}px`;
 		this.#rail.style.setProperty("--rail-width", shown);
 		this.el.style.setProperty("--rail-width", shown);
 		// Collapsed only where the rail stands beside the page; the drawer always shows it whole.
 		this.#frame.classList.toggle("rail-compact", width === COMPACT && !drawer);
+		this.#frame.classList.toggle("rail-hidden-desktop", hiddenDesktop);
+		this.#rail.inert = hiddenDesktop;
+		this.el.hidden = hiddenDesktop;
 		this.el.setAttribute("aria-valuemax", String(max));
 		this.el.setAttribute("aria-valuenow", String(width));
 		this.el.setAttribute("aria-valuetext", width === COMPACT ? t("Compact") : t("{width} pixels", { width }));
@@ -174,6 +210,7 @@ export class RailLayout {
 	dispose(): void {
 		this.#lifetime.abort();
 		this.el.remove();
-		this.#frame.classList.remove("rail-resizing");
+		this.#frame.classList.remove("rail-resizing", "rail-hidden-desktop");
+		this.#rail.inert = false;
 	}
 }

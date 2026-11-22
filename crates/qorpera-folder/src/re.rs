@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 const FOLD_BUDGET: usize = 4096;
-const MAX_QUANTIFIER_COUNT: usize = 16;
+const MAX_QUANTIFIER_COUNT: usize = 64;
 const MAX_NFA_INSTS: usize = 2048;
 const MAX_TRIGRAM_EXACT: usize = 16;
 const MAX_TRIGRAM_OR: usize = 32;
@@ -96,6 +96,8 @@ fn is_line_terminator(ch: char) -> bool {
 enum AssertKind {
 	StartLine,
 	EndLine,
+	StartText,
+	EndText,
 	WordBoundary,
 	NonWordBoundary,
 }
@@ -225,11 +227,36 @@ impl CharClass {
 			Some(set.into_iter().collect())
 		}
 	}
+
+	fn single_exact_char(&self) -> Option<char> {
+		if self.negated || self.shorthands != 0 {
+			return None;
+		}
+		let mut found: Option<char> = None;
+		for word_idx in 0..2 {
+			let bits = self.ascii_bits[word_idx];
+			if bits != 0 {
+				if bits.count_ones() > 1 || found.is_some() {
+					return None;
+				}
+				let b = (word_idx as u32) * 64 + bits.trailing_zeros();
+				found = char::from_u32(b);
+			}
+		}
+		for &(lo, hi) in &self.ranges {
+			if lo != hi || found.is_some() {
+				return None;
+			}
+			found = char::from_u32(lo);
+		}
+		found
+	}
 }
 
 #[derive(Debug, Clone)]
 enum Expr {
 	Empty,
+	Flag,
 	Char(char),
 	AnyNoNl,
 	Class(CharClass),
@@ -255,7 +282,7 @@ fn escape_err(msg: &str) -> PatternError {
 
 fn too_large_err() -> PatternError {
 	PatternError(
-		"REGEX_TOO_LARGE: a count above 16, or counts inside counts, cannot run in linear time; write a smaller one"
+		"REGEX_TOO_LARGE: a count above 64, or counts inside counts, cannot run in linear time; write a smaller one"
 			.to_string(),
 	)
 }
@@ -351,21 +378,84 @@ fn escape_at(chars: &[char], at: usize, in_class: bool) -> Result<(Escape, usize
 	}
 }
 
+fn expand_unfolded_case(ch: char, out: &mut Vec<u32>) {
+	let code = ch as u32;
+	out.push(code);
+	if ch.is_ascii_alphabetic() {
+		let lo = ch.to_ascii_lowercase();
+		let hi = ch.to_ascii_uppercase();
+		out.push(lo as u32);
+		out.push(hi as u32);
+		if lo == 'k' {
+			out.push(0x212a);
+		}
+		return;
+	}
+	if ch == '\u{212a}' {
+		out.push(b'k' as u32);
+		out.push(b'K' as u32);
+		return;
+	}
+	if matches!(ch, '\u{03a3}' | '\u{03c2}' | '\u{03c3}') {
+		out.push(0x03a3);
+		out.push(0x03c2);
+		out.push(0x03c3);
+		return;
+	}
+	let mut lo = ch.to_lowercase();
+	if let (Some(c), None) = (lo.next(), lo.next()) {
+		out.push(c as u32);
+	}
+	let mut hi = ch.to_uppercase();
+	if let (Some(c), None) = (hi.next(), hi.next()) {
+		out.push(c as u32);
+	}
+}
+
 struct Parser<'a> {
 	chars: &'a [char],
 	pos: usize,
 	case_sensitive: bool,
+	multiline: bool,
+	folded_input: bool,
+	saw_cs: bool,
+	saw_ci: bool,
 	fold_budget: usize,
 }
 
 impl<'a> Parser<'a> {
-	fn parse(chars: &'a [char], case_sensitive: bool) -> Result<Expr, PatternError> {
-		let mut p = Self { chars, pos: 0, case_sensitive, fold_budget: FOLD_BUDGET };
+	fn parse(chars: &'a [char], case_sensitive: bool) -> Result<(Expr, bool), PatternError> {
+		let first_folded = !case_sensitive;
+		let mut p = Self {
+			chars,
+			pos: 0,
+			case_sensitive,
+			multiline: true,
+			folded_input: first_folded,
+			saw_cs: false,
+			saw_ci: false,
+			fold_budget: FOLD_BUDGET,
+		};
 		let expr = p.parse_alt()?;
 		if p.pos < p.chars.len() {
 			return Err(syntax_err("the pattern is not a regular expression (check its brackets)"));
 		}
-		Ok(expr)
+		let want_folded = !p.saw_cs && (p.saw_ci || !case_sensitive);
+		if want_folded != first_folded {
+			let mut p2 = Self {
+				chars,
+				pos: 0,
+				case_sensitive,
+				multiline: true,
+				folded_input: want_folded,
+				saw_cs: false,
+				saw_ci: false,
+				fold_budget: FOLD_BUDGET,
+			};
+			let expr2 = p2.parse_alt()?;
+			return Ok((expr2, want_folded));
+		}
+		Ok((expr, first_folded))
 	}
 
 	fn parse_alt(&mut self) -> Result<Expr, PatternError> {
@@ -385,7 +475,9 @@ impl<'a> Parser<'a> {
 			}
 			let atom = self.parse_atom()?;
 			let quantified = self.parse_quantifier(atom)?;
-			items.push(quantified);
+			if !matches!(quantified, Expr::Flag) {
+				items.push(quantified);
+			}
 		}
 		match items.len() {
 			0 => Ok(Expr::Empty),
@@ -394,20 +486,104 @@ impl<'a> Parser<'a> {
 		}
 	}
 
-	fn literal_expr(&self, ch: char) -> Expr {
+	fn literal_expr(&mut self, ch: char) -> Expr {
 		if self.case_sensitive {
+			self.saw_cs = true;
 			return Expr::Char(ch);
 		}
-		let folded = fold_char(ch);
-		let mut it = folded.chars();
-		let first = it.next().unwrap();
-		if it.clone().next().is_none() {
-			Expr::Char(first)
-		} else {
+		self.saw_ci = true;
+		if self.folded_input {
+			let folded = fold_char(ch);
+			let mut it = folded.chars();
+			let first = it.next().unwrap();
+			if it.clone().next().is_none() {
+				return Expr::Char(first);
+			}
 			let mut v = vec![Expr::Char(first)];
 			v.extend(it.map(Expr::Char));
-			Expr::Concat(v)
+			return Expr::Concat(v);
 		}
+		if matches!(ch, 'ß' | 'ẞ') {
+			return Expr::Class(CharClass::build(false, &[(0x00df, 0x00df), (0x1e9e, 0x1e9e)], 0));
+		}
+		let mut variants = Vec::with_capacity(4);
+		expand_unfolded_case(ch, &mut variants);
+		variants.sort_unstable();
+		variants.dedup();
+		if variants.len() == 1 {
+			Expr::Char(ch)
+		} else {
+			let ranges: Vec<(u32, u32)> = variants.into_iter().map(|c| (c, c)).collect();
+			Expr::Class(CharClass::build(false, &ranges, 0))
+		}
+	}
+
+	fn parse_inline_flags(&mut self) -> Result<Expr, PatternError> {
+		let mut j = self.pos + 2;
+		let mut neg = false;
+		let mut set_cs: Option<bool> = None;
+		let mut set_ml: Option<bool> = None;
+		let mut count = 0usize;
+		while let Some(&ch) = self.chars.get(j) {
+			match ch {
+				'i' => {
+					set_cs = Some(neg);
+					count += 1;
+					j += 1;
+				}
+				'm' => {
+					set_ml = Some(!neg);
+					count += 1;
+					j += 1;
+				}
+				'-' if !neg => {
+					neg = true;
+					j += 1;
+				}
+				')' => {
+					if count == 0 {
+						return Err(syntax_err("the pattern is not a regular expression (check its brackets)"));
+					}
+					if let Some(cs) = set_cs {
+						self.case_sensitive = cs;
+					}
+					if let Some(ml) = set_ml {
+						self.multiline = ml;
+					}
+					self.pos = j + 1;
+					return Ok(Expr::Flag);
+				}
+				':' => {
+					if count == 0 {
+						return Err(syntax_err("the pattern is not a regular expression (check its brackets)"));
+					}
+					let saved_cs = self.case_sensitive;
+					let saved_ml = self.multiline;
+					if let Some(cs) = set_cs {
+						self.case_sensitive = cs;
+					}
+					if let Some(ml) = set_ml {
+						self.multiline = ml;
+					}
+					self.pos = j + 1;
+					let inner = self.parse_alt()?;
+					self.case_sensitive = saved_cs;
+					self.multiline = saved_ml;
+					if self.chars.get(self.pos) != Some(&')') {
+						return Err(syntax_err("the pattern is not a regular expression (check its brackets)"));
+					}
+					self.pos += 1;
+					return Ok(inner);
+				}
+				_ => {
+					return Err(PatternError(
+						"REGEX_FLAGS: only (?i) and (?m) inline flags are supported; write another pattern"
+							.to_string(),
+					));
+				}
+			}
+		}
+		Err(syntax_err("the pattern is not a regular expression (check its brackets)"))
 	}
 
 	fn parse_atom(&mut self) -> Result<Expr, PatternError> {
@@ -451,14 +627,15 @@ impl<'a> Parser<'a> {
 							self.pos = self.skip_named_group(self.pos + 3)?;
 						}
 						_ => {
-							return Err(PatternError(
-								"REGEX_FLAGS: inline flags like (?i) are not taken; say case_sensitive instead, and group with (?:...)"
-									.to_string(),
-							));
+							return self.parse_inline_flags();
 						}
 					}
 				}
+				let saved_cs = self.case_sensitive;
+				let saved_ml = self.multiline;
 				let inner = self.parse_alt()?;
+				self.case_sensitive = saved_cs;
+				self.multiline = saved_ml;
 				if self.chars.get(self.pos) != Some(&')') {
 					return Err(syntax_err("the pattern is not a regular expression (check its brackets)"));
 				}
@@ -471,11 +648,11 @@ impl<'a> Parser<'a> {
 			}
 			'^' => {
 				self.pos += 1;
-				Ok(Expr::Assert(AssertKind::StartLine))
+				Ok(Expr::Assert(if self.multiline { AssertKind::StartLine } else { AssertKind::StartText }))
 			}
 			'$' => {
 				self.pos += 1;
-				Ok(Expr::Assert(AssertKind::EndLine))
+				Ok(Expr::Assert(if self.multiline { AssertKind::EndLine } else { AssertKind::EndText }))
 			}
 			'*' | '+' | '?' => Err(syntax_err("the pattern is not a regular expression (check its brackets)")),
 			'{' => {
@@ -483,7 +660,7 @@ impl<'a> Parser<'a> {
 					return Err(syntax_err("the pattern is not a regular expression (check its brackets)"));
 				}
 				self.pos += 1;
-				Ok(Expr::Char('{'))
+				Ok(self.literal_expr('{'))
 			}
 			_ => {
 				self.pos += 1;
@@ -550,7 +727,7 @@ impl<'a> Parser<'a> {
 			},
 			_ => return Ok(atom),
 		};
-		if matches!(atom, Expr::Assert(_)) {
+		if matches!(atom, Expr::Assert(_) | Expr::Flag) {
 			return Err(syntax_err("the pattern is not a regular expression (check its brackets)"));
 		}
 		if let Some(m) = max {
@@ -619,8 +796,12 @@ impl<'a> Parser<'a> {
 				return Err(syntax_err("a [ has no ]"));
 			}
 		}
-		if !self.case_sensitive {
+		if self.case_sensitive {
+			self.saw_cs = true;
+		} else {
+			self.saw_ci = true;
 			let mut added = Vec::new();
+			let mut variants = Vec::new();
 			for &(lo, hi) in &ranges {
 				let span = (hi - lo + 1) as usize;
 				if span > self.fold_budget {
@@ -629,12 +810,22 @@ impl<'a> Parser<'a> {
 				self.fold_budget -= span;
 				for code in lo..=hi {
 					if let Some(ch) = char::from_u32(code) {
-						let folded = fold_char(ch);
-						let mut it = folded.chars();
-						if let (Some(f), None) = (it.next(), it.next()) {
-							let f_code = f as u32;
-							if f_code != code {
-								added.push((f_code, f_code));
+						if self.folded_input {
+							let folded = fold_char(ch);
+							let mut it = folded.chars();
+							if let (Some(f), None) = (it.next(), it.next()) {
+								let f_code = f as u32;
+								if f_code != code {
+									added.push((f_code, f_code));
+								}
+							}
+						} else {
+							variants.clear();
+							expand_unfolded_case(ch, &mut variants);
+							for &v in &variants {
+								if v != code {
+									added.push((v, v));
+								}
 							}
 						}
 					}
@@ -700,7 +891,7 @@ impl Compiler {
 
 	fn emit(&mut self, expr: &Expr, rep_factor: usize) -> Result<(), PatternError> {
 		match expr {
-			Expr::Empty => Ok(()),
+			Expr::Empty | Expr::Flag => Ok(()),
 			Expr::Char(ch) => {
 				self.push(Inst::Char(*ch))?;
 				Ok(())
@@ -928,9 +1119,9 @@ fn merge_required(mut a: Vec<String>, b: Vec<String>) -> Vec<String> {
 	a
 }
 
-fn analyze(expr: &Expr, case_sensitive: bool) -> AstInfo {
+fn analyze(expr: &Expr) -> AstInfo {
 	match expr {
-		Expr::Empty | Expr::Assert(_) => AstInfo {
+		Expr::Empty | Expr::Flag | Expr::Assert(_) => AstInfo {
 			exact: Some(vec![String::new()]),
 			prefix: vec![String::new()],
 			suffix: vec![String::new()],
@@ -938,7 +1129,7 @@ fn analyze(expr: &Expr, case_sensitive: bool) -> AstInfo {
 			required: Vec::new(),
 		},
 		Expr::Char(ch) => {
-			let s = if case_sensitive { fold_char(*ch) } else { ch.to_string() };
+			let s = fold_char(*ch);
 			let query = trigrams_of_bytes(s.as_bytes());
 			let req = if !s.is_empty() { vec![s.clone()] } else { Vec::new() };
 			AstInfo { exact: Some(vec![s.clone()]), prefix: vec![s.clone()], suffix: vec![s], query, required: req }
@@ -973,7 +1164,7 @@ fn analyze(expr: &Expr, case_sensitive: bool) -> AstInfo {
 				required: Vec::new(),
 			};
 			for part in parts {
-				let b = analyze(part, case_sensitive);
+				let b = analyze(part);
 				let mut query = q_and(acc.query, b.query);
 				let mut required = merge_required(acc.required, b.required);
 				let (exact, prefix, suffix) = match (&acc.exact, &b.exact) {
@@ -1018,7 +1209,7 @@ fn analyze(expr: &Expr, case_sensitive: bool) -> AstInfo {
 			acc
 		}
 		Expr::Alt(branches) => {
-			let infos: Vec<AstInfo> = branches.iter().map(|b| analyze(b, case_sensitive)).collect();
+			let infos: Vec<AstInfo> = branches.iter().map(analyze).collect();
 			let mut query: Option<TrigramQuery> = None;
 			for info in &infos {
 				query = Some(match query {
@@ -1054,7 +1245,7 @@ fn analyze(expr: &Expr, case_sensitive: bool) -> AstInfo {
 		Expr::Repeat { inner, min, max } => {
 			if *min == 0 {
 				if *max == Some(0) {
-					return analyze(&Expr::Empty, case_sensitive);
+					return analyze(&Expr::Empty);
 				}
 				return AstInfo {
 					exact: None,
@@ -1064,7 +1255,7 @@ fn analyze(expr: &Expr, case_sensitive: bool) -> AstInfo {
 					required: Vec::new(),
 				};
 			}
-			let info = analyze(inner, case_sensitive);
+			let info = analyze(inner);
 			if *max == Some(*min) && *min <= 4 {
 				if let Some(xs) = &info.exact {
 					let mut acc = xs.clone();
@@ -1100,13 +1291,192 @@ fn analyze(expr: &Expr, case_sensitive: bool) -> AstInfo {
 	}
 }
 
+struct ExactInfo {
+	exact: Option<String>,
+	prefix: String,
+	suffix: String,
+	required: Vec<String>,
+}
+
+fn analyze_exact(expr: &Expr) -> ExactInfo {
+	match expr {
+		Expr::Empty | Expr::Flag | Expr::Assert(_) => ExactInfo {
+			exact: Some(String::new()),
+			prefix: String::new(),
+			suffix: String::new(),
+			required: Vec::new(),
+		},
+		Expr::Char(ch) => {
+			let s = ch.to_string();
+			ExactInfo { exact: Some(s.clone()), prefix: s.clone(), suffix: s.clone(), required: vec![s] }
+		}
+		Expr::AnyNoNl => ExactInfo {
+			exact: None,
+			prefix: String::new(),
+			suffix: String::new(),
+			required: Vec::new(),
+		},
+		Expr::Class(cc) => match cc.single_exact_char() {
+			Some(ch) => {
+				let s = ch.to_string();
+				ExactInfo { exact: Some(s.clone()), prefix: s.clone(), suffix: s.clone(), required: vec![s] }
+			}
+			None => ExactInfo {
+				exact: None,
+				prefix: String::new(),
+				suffix: String::new(),
+				required: Vec::new(),
+			},
+		},
+		Expr::Concat(parts) => {
+			let mut acc = ExactInfo {
+				exact: Some(String::new()),
+				prefix: String::new(),
+				suffix: String::new(),
+				required: Vec::new(),
+			};
+			for part in parts {
+				let b = analyze_exact(part);
+				let mut required = merge_required(acc.required, b.required);
+				let (exact, prefix, suffix) = match (&acc.exact, &b.exact) {
+					(Some(ax), Some(bx)) if ax.len() + bx.len() <= MAX_EXACT_STR_LEN => {
+						let mut joined = String::with_capacity(ax.len() + bx.len());
+						joined.push_str(ax);
+						joined.push_str(bx);
+						if !joined.is_empty() {
+							required = merge_required(required, vec![joined.clone()]);
+						}
+						(Some(joined.clone()), joined.clone(), joined)
+					}
+					_ => {
+						if !acc.suffix.is_empty()
+							&& !b.prefix.is_empty()
+							&& acc.suffix.len() + b.prefix.len() <= MAX_EXACT_STR_LEN
+						{
+							let mut cross = String::with_capacity(acc.suffix.len() + b.prefix.len());
+							cross.push_str(&acc.suffix);
+							cross.push_str(&b.prefix);
+							required = merge_required(required, vec![cross]);
+						}
+						let prefix = match &acc.exact {
+							Some(ax) if ax.len() + b.prefix.len() <= MAX_EXACT_STR_LEN => {
+								let mut p = String::with_capacity(ax.len() + b.prefix.len());
+								p.push_str(ax);
+								p.push_str(&b.prefix);
+								p
+							}
+							_ => acc.prefix,
+						};
+						let suffix = match &b.exact {
+							Some(bx) if acc.suffix.len() + bx.len() <= MAX_EXACT_STR_LEN => {
+								let mut s = String::with_capacity(acc.suffix.len() + bx.len());
+								s.push_str(&acc.suffix);
+								s.push_str(bx);
+								s
+							}
+							_ => b.suffix,
+						};
+						(None, prefix, suffix)
+					}
+				};
+				acc = ExactInfo { exact, prefix, suffix, required };
+			}
+			acc
+		}
+		Expr::Alt(branches) => {
+			let infos: Vec<ExactInfo> = branches.iter().map(analyze_exact).collect();
+			if let Some(first) = infos.first().and_then(|i| i.exact.as_ref()) {
+				if infos.iter().all(|i| i.exact.as_ref() == Some(first)) {
+					let req = if first.is_empty() { Vec::new() } else { vec![first.clone()] };
+					return ExactInfo {
+						exact: Some(first.clone()),
+						prefix: first.clone(),
+						suffix: first.clone(),
+						required: req,
+					};
+				}
+			}
+			ExactInfo { exact: None, prefix: String::new(), suffix: String::new(), required: Vec::new() }
+		}
+		Expr::Repeat { inner, min, max } => {
+			if *min == 0 {
+				if *max == Some(0) {
+					return analyze_exact(&Expr::Empty);
+				}
+				return ExactInfo { exact: None, prefix: String::new(), suffix: String::new(), required: Vec::new() };
+			}
+			let info = analyze_exact(inner);
+			if *max == Some(*min) {
+				if let Some(s) = &info.exact {
+					if s.len().saturating_mul(*min) <= MAX_EXACT_STR_LEN {
+						let repeated = s.repeat(*min);
+						let req = if repeated.is_empty() { Vec::new() } else { vec![repeated.clone()] };
+						return ExactInfo {
+							exact: Some(repeated.clone()),
+							prefix: repeated.clone(),
+							suffix: repeated,
+							required: req,
+						};
+					}
+				}
+			}
+			let mut required = info.required;
+			if *min >= 2
+				&& !info.suffix.is_empty()
+				&& !info.prefix.is_empty()
+				&& info.suffix.len() + info.prefix.len() <= MAX_EXACT_STR_LEN
+			{
+				let mut cross = String::with_capacity(info.suffix.len() + info.prefix.len());
+				cross.push_str(&info.suffix);
+				cross.push_str(&info.prefix);
+				required = merge_required(required, vec![cross]);
+			}
+			ExactInfo { exact: None, prefix: info.prefix, suffix: info.suffix, required }
+		}
+	}
+}
+
+pub fn find_subslice_ascii_icase(haystack: &[u8], needle_lower: &[u8]) -> Option<usize> {
+	if needle_lower.is_empty() {
+		return Some(0);
+	}
+	if needle_lower.len() > haystack.len() {
+		return None;
+	}
+	let first = needle_lower[0];
+	let last_idx = needle_lower.len() - 1;
+	let last = needle_lower[last_idx];
+	let first_is_alpha = first.is_ascii_lowercase();
+	let limit = haystack.len() - needle_lower.len() + 1;
+	let mut i = 0usize;
+	while i < limit {
+		let rel = if first_is_alpha {
+			haystack[i..limit].iter().position(|&b| (b | 0x20) == first)
+		} else {
+			haystack[i..limit].iter().position(|&b| b == first)
+		};
+		let Some(rel) = rel else {
+			return None;
+		};
+		let pos = i + rel;
+		if haystack[pos + last_idx].to_ascii_lowercase() == last
+			&& haystack[pos..pos + needle_lower.len()].eq_ignore_ascii_case(needle_lower)
+		{
+			return Some(pos);
+		}
+		i = pos + 1;
+	}
+	None
+}
+
 #[derive(Debug, Clone)]
 pub struct Regex {
 	insts: Vec<Inst>,
 	classes: Vec<CharClass>,
 	trigram_query: TrigramQuery,
 	required_folded_literals: Vec<String>,
-	case_sensitive: bool,
+	required_exact_literals: Vec<String>,
+	run_on_folded: bool,
 }
 
 pub struct ExecScratch {
@@ -1144,15 +1514,31 @@ impl Default for ExecScratch {
 impl Regex {
 	pub fn compile(pattern: &str, case_sensitive: bool) -> Result<Self, PatternError> {
 		let chars: Vec<char> = pattern.chars().collect();
-		let expr = Parser::parse(&chars, case_sensitive)?;
+		let (expr, run_on_folded) = Parser::parse(&chars, case_sensitive)?;
 		let (insts, classes) = Compiler::compile(&expr)?;
-		let info = analyze(&expr, case_sensitive);
+		let info = analyze(&expr);
 		let required_folded_literals: Vec<String> = info
 			.required
 			.into_iter()
 			.filter(|s| s.len() >= 2)
 			.collect();
-		Ok(Self { insts, classes, trigram_query: info.query, required_folded_literals, case_sensitive })
+		let required_exact_literals: Vec<String> = if run_on_folded {
+			Vec::new()
+		} else {
+			analyze_exact(&expr)
+				.required
+				.into_iter()
+				.filter(|s| s.len() >= 2)
+				.collect()
+		};
+		Ok(Self {
+			insts,
+			classes,
+			trigram_query: info.query,
+			required_folded_literals,
+			required_exact_literals,
+			run_on_folded,
+		})
 	}
 
 	pub fn trigram_query(&self) -> &TrigramQuery {
@@ -1163,8 +1549,16 @@ impl Regex {
 		&self.required_folded_literals
 	}
 
+	pub fn required_exact_literals(&self) -> &[String] {
+		&self.required_exact_literals
+	}
+
+	pub fn runs_on_folded(&self) -> bool {
+		self.run_on_folded
+	}
+
 	pub fn find_in_folded(&self, folded_text: &str, scratch: &mut ExecScratch) -> Option<usize> {
-		if !self.case_sensitive {
+		if self.run_on_folded {
 			for lit in &self.required_folded_literals {
 				if !folded_text.contains(lit.as_str()) {
 					return None;
@@ -1174,9 +1568,35 @@ impl Regex {
 		self.run_nfa(folded_text, scratch)
 	}
 
+	pub fn find_in_ascii_folded(&self, ascii_bytes: &[u8], scratch: &mut ExecScratch) -> Option<usize> {
+		for lit in &self.required_folded_literals {
+			if !lit.is_ascii() {
+				return None;
+			}
+			if find_subslice_ascii_icase(ascii_bytes, lit.as_bytes()).is_none() {
+				return None;
+			}
+		}
+		self.run_nfa_ascii_folded(ascii_bytes, scratch)
+	}
+
 	pub fn find_in_text(&self, text: &str, scratch: &mut ExecScratch) -> Option<usize> {
-		if self.case_sensitive {
+		if !self.run_on_folded {
+			for lit in &self.required_exact_literals {
+				if !text.contains(lit.as_str()) {
+					return None;
+				}
+			}
+			if text.is_ascii() {
+				for lit in &self.required_folded_literals {
+					if !lit.is_ascii() || find_subslice_ascii_icase(text.as_bytes(), lit.as_bytes()).is_none() {
+						return None;
+					}
+				}
+			}
 			self.run_nfa(text, scratch)
+		} else if text.is_ascii() {
+			self.find_in_ascii_folded(text.as_bytes(), scratch)
 		} else {
 			let folded = fold_text(text);
 			self.find_in_folded(&folded, scratch)
@@ -1215,6 +1635,8 @@ impl Regex {
 					let holds = match kind {
 						AssertKind::StartLine => prev.is_none() || prev == Some('\n'),
 						AssertKind::EndLine => curr.is_none() || curr == Some('\n'),
+						AssertKind::StartText => prev.is_none(),
+						AssertKind::EndText => curr.is_none(),
 						AssertKind::WordBoundary => {
 							prev.is_some_and(is_word_char) != curr.is_some_and(is_word_char)
 						}
@@ -1234,6 +1656,81 @@ impl Regex {
 				}
 			}
 		}
+	}
+
+	fn run_nfa_ascii_folded(&self, bytes: &[u8], scratch: &mut ExecScratch) -> Option<usize> {
+		let n_states = self.insts.len();
+		scratch.curr.clear();
+		scratch.next.clear();
+		let mut best_start: Option<usize> = None;
+		let first_ch = bytes.first().map(|&b| b.to_ascii_lowercase() as char);
+		let gen0 = scratch.next_gen(n_states);
+		self.add_state(
+			0,
+			0,
+			None,
+			first_ch,
+			gen0,
+			&mut scratch.visited,
+			&mut scratch.curr,
+			&mut scratch.stack,
+			&mut best_start,
+		);
+		if best_start == Some(0) {
+			return Some(0);
+		}
+		for pos in 0..bytes.len() {
+			let ch = bytes[pos].to_ascii_lowercase() as char;
+			let next_pos = pos + 1;
+			let peek_next = bytes.get(next_pos).map(|&b| b.to_ascii_lowercase() as char);
+			scratch.next.clear();
+			let gen = scratch.next_gen(n_states);
+			for i in 0..scratch.curr.len() {
+				let (s, st) = scratch.curr[i];
+				if best_start.is_some_and(|best| st >= best) {
+					break;
+				}
+				let matched = match self.insts[s] {
+					Inst::Char(expected) => ch == expected,
+					Inst::AnyNoNl => !is_line_terminator(ch),
+					Inst::Class(idx) => self.classes[idx].matches(ch),
+					_ => false,
+				};
+				if matched {
+					self.add_state(
+						s + 1,
+						st,
+						Some(ch),
+						peek_next,
+						gen,
+						&mut scratch.visited,
+						&mut scratch.next,
+						&mut scratch.stack,
+						&mut best_start,
+					);
+				}
+			}
+			if best_start.is_none() {
+				self.add_state(
+					0,
+					next_pos,
+					Some(ch),
+					peek_next,
+					gen,
+					&mut scratch.visited,
+					&mut scratch.next,
+					&mut scratch.stack,
+					&mut best_start,
+				);
+			}
+			std::mem::swap(&mut scratch.curr, &mut scratch.next);
+			if let Some(best) = best_start {
+				if scratch.curr.first().is_none_or(|&(_, st)| st >= best) {
+					return Some(best);
+				}
+			}
+		}
+		best_start
 	}
 
 	fn run_nfa(&self, text: &str, scratch: &mut ExecScratch) -> Option<usize> {
@@ -1338,10 +1835,11 @@ mod tests {
 			("a(?!b)", "REGEX_LOOKAROUND: "),
 			("(?<=a)b", "REGEX_LOOKAROUND: "),
 			("(?<!a)b", "REGEX_LOOKAROUND: "),
-			("(?i)a", "REGEX_FLAGS: "),
-			("(?m)a", "REGEX_FLAGS: "),
+			("(?s)a", "REGEX_FLAGS: "),
+			("(?u)a", "REGEX_FLAGS: "),
+			("(?x)a", "REGEX_FLAGS: "),
 			("a{1,100}", "REGEX_TOO_LARGE: "),
-			("a{17}", "REGEX_TOO_LARGE: "),
+			("a{65}", "REGEX_TOO_LARGE: "),
 			("(a{1,10}){1,10}", "REGEX_TOO_LARGE: "),
 			("[a", "REGEX_SYNTAX: "),
 			("a)", "REGEX_SYNTAX: "),
@@ -1439,9 +1937,41 @@ mod tests {
 		assert!(matches!(re2.trigram_query(), TrigramQuery::Or(_)));
 		let re3 = Regex::compile("[Ss]earchView", true).unwrap();
 		assert_ne!(*re3.trigram_query(), TrigramQuery::All);
+		assert_eq!(re3.required_exact_literals(), &["earchView".to_string()]);
 		let re4 = Regex::compile("^$", false).unwrap();
 		assert_eq!(*re4.trigram_query(), TrigramQuery::All);
 		let re5 = Regex::compile("foo|a", false).unwrap();
 		assert_eq!(*re5.trigram_query(), TrigramQuery::All);
+	}
+
+	#[test]
+	fn supports_inline_flags_and_quantifiers_up_to_64() {
+		assert!(matches("(?i)hello", "HELLO", true));
+		assert!(matches("(?i)straße", "STRAẞE", true));
+		assert!(matches("foo(?i:bar)baz", "fooBARbaz", true));
+		assert!(!matches("foo(?i:bar)baz", "FOOBARbaz", true));
+		assert!(matches("(?-i:Foo)bar", "FooBAR", false));
+		assert!(!matches("(?-i:Foo)bar", "fooBAR", false));
+		assert!(matches("(?m)^second$", "first\nsecond\nthird", true));
+		assert!(!matches("(?-m)^second$", "first\nsecond\nthird", true));
+		assert!(matches("(?-m)^first", "first\nsecond", true));
+		assert!(matches("(?im)^plan$", "x\nPLAN\ny", true));
+		assert!(matches("a{64}", &"a".repeat(64), true));
+		assert!(!matches("a{64}", &"a".repeat(63), true));
+		assert!(matches("[0-9a-f]{64}", &"a1b2".repeat(16), true));
+		assert!(Regex::compile("a{65}", true).is_err());
+		assert!(Regex::compile("(?i)*", true).is_err());
+	}
+
+	#[test]
+	fn case_sensitive_literal_prefilter_rejects_nonmatching_large_text_fast() {
+		let re = Regex::compile("export\\s+function\\s+searchView\\w+", true).unwrap();
+		assert!(re.required_exact_literals().iter().any(|s| s == "searchView"));
+		assert!(re.required_exact_literals().iter().any(|s| s == "export"));
+		let mut scratch = ExecScratch::new();
+		let subject = "const x = 12345;\n".repeat(100_000);
+		let started = Instant::now();
+		assert_eq!(re.find_in_text(&subject, &mut scratch), None);
+		assert!(started.elapsed().as_millis() < 200, "took {:?}", started.elapsed());
 	}
 }

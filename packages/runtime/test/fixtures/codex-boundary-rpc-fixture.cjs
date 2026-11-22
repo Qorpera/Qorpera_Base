@@ -85,6 +85,26 @@ const companyCalls = mode === "company-office"
 			{ tool: "save_interface", arguments: { operationKey: "pulse", files: [], effect: "internal" } },
 			{ tool: "send_message", arguments: { idempotencyKey: "final", text: "The pages are not mine to change.", phase: "final" } },
 		]
+	: mode === "company-surface-session"
+	? [
+			{
+				tool: "stage_surface_patch",
+				arguments: {
+					title: "Warm terracotta accent",
+					summary: "Updates primary accent color in identity tokens.",
+					ops: [{ op: "merge_json", path: "tokens.json", patch: { accent: "#d76f45" } }],
+					notePaths: ["QorperaOS/surfaces/identity/notes/palette.md"],
+					finishSession: false,
+				},
+			},
+			{
+				tool: "surface_reply",
+				arguments: {
+					replyText: "Staged the warm terracotta accent direction for preview.",
+					notePaths: ["QorperaOS/surfaces/identity/notes/palette.md"],
+				},
+			},
+		]
 	: mode === "company-silent" || mode === "company-no-send" || mode === "company-worker" || mode === "company-corrected"
 	? [{ tool: "company_read", arguments: { path: "note.md", offset: 0, limit: 256 } }]
 	: mode === "company-secret"

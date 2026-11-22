@@ -39,9 +39,9 @@ struct State {
 
 struct Local {
 	lock: File,
+	journal: Option<File>,
+	dirty: bool,
 	state: Option<State>,
-	/// Inode and bytes consumed. Other processes' appended records are read incrementally; compaction replaces the
-	/// inode, so its complete snapshot is read instead. The lock keeps a record whole for every reader.
 	stamp: Option<(u64, u64, u64)>,
 }
 
@@ -51,20 +51,30 @@ pub struct ReadLog {
 	created: bool,
 }
 
+impl Drop for ReadLog {
+	fn drop(&mut self) {
+		if let Ok(mut local) = self.local.lock() {
+			if local.dirty {
+				if let Some(file) = local.journal.as_ref() {
+					let _ = file.sync_data();
+				}
+				local.dirty = false;
+			}
+		}
+	}
+}
+
 pub struct Locked<'a> {
 	dir: &'a Path,
 	local: MutexGuard<'a, Local>,
 }
 
 impl ReadLog {
-	/// `fresh` allows initialization only in a genuinely unused state folder. A publisher passes false: a missing
-	/// journal is missing proof, never an invitation to start a new log. The helper gives each new mount empty state.
 	pub fn open(dir: &Path, fresh: bool) -> io::Result<ReadLog> {
 		if fresh {
 			std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
 		}
 		let meta = std::fs::symlink_metadata(dir)?;
-		// The stable lock and journal names are meaningful only inside a directory the daemon alone can replace.
 		// SAFETY: geteuid has no preconditions.
 		if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
 			return Err(io::Error::new(
@@ -72,19 +82,28 @@ impl ReadLog {
 				"read journal directory must be private to the daemon",
 			));
 		}
-		// The CLI holds its process-lifetime lock before any state or connection mutation. That fixed lock alone
-		// is not prior read proof; a journal lock, version map or view checkpoint is, even if the journal went missing.
 		let unused = std::fs::read_dir(dir)?.try_fold(true, |unused, entry| {
 			Ok::<_, io::Error>(unused && entry?.file_name() == "daemon.lock")
 		})?;
 		let lock = private_file(&dir.join(LOCK), true)?;
-		let mut out = ReadLog { dir: dir.to_path_buf(), local: Mutex::new(Local { lock, state: None, stamp: None }), created: false };
+		let mut out = ReadLog {
+			dir: dir.to_path_buf(),
+			local: Mutex::new(Local { lock, journal: None, dirty: false, state: None, stamp: None }),
+			created: false,
+		};
 		let created;
 		{
 			let mut held = out.acquire()?;
 			created = !dir.join(JOURNAL).exists() && fresh && unused;
 			if created {
-				let state = State { log: uuid()?, last: 0, released: 0, reads: VecDeque::new(), lines: 1, lost: false };
+				let state = State {
+					log: uuid()?,
+					last: 0,
+					released: 0,
+					reads: VecDeque::new(),
+					lines: 1,
+					lost: false,
+				};
 				held.local.state = Some(state);
 				held.rewrite()?;
 			}
@@ -94,14 +113,12 @@ impl ReadLog {
 		Ok(out)
 	}
 
-	/// This instance initialized the journal in empty mount state; missing adjacent proof may only be initialized then.
 	pub fn created(&self) -> bool { self.created }
 
 	fn acquire(&self) -> io::Result<Locked<'_>> {
 		let local = self.local.lock().unwrap();
 		loop {
-			// SAFETY: flock uses the live file descriptor owned by this guard. The in-process mutex is necessary:
-			// threads sharing one open file description do not exclude each other with flock alone.
+			// SAFETY: flock uses the live file descriptor owned by this guard.
 			if unsafe { libc::flock(local.lock.as_raw_fd(), libc::LOCK_EX) } == 0 {
 				return Ok(Locked { dir: &self.dir, local });
 			}
@@ -122,6 +139,9 @@ impl ReadLog {
 		if path.is_empty() {
 			return Ok(());
 		}
+		if !valid_path(path) {
+			return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid logged path"));
+		}
 		let mut held = self.locked()?;
 		if held.lost() {
 			return Err(unproven());
@@ -133,10 +153,7 @@ impl ReadLog {
 			version: version.map(str::to_string),
 			authority: authority.cloned(),
 		};
-		if !valid_path(path) {
-			return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid logged path"));
-		}
-		if let Err(e) = held.append(&Line::Read { read: read.clone() }) {
+		if let Err(e) = held.append(&Line::Read { read: read.clone() }, false) {
 			held.mark_lost();
 			return Err(e);
 		}
@@ -161,15 +178,21 @@ impl Locked<'_> {
 		self.state().lost
 	}
 
-	/// A bounded, consecutive batch after `after`, or an empty poll. Released records are already in the core and
-	/// need not be replayed after the service restarts. Budget actual encoded bytes, including escaped path names.
+	pub fn sync(&mut self) -> io::Result<()> {
+		if self.local.dirty {
+			if let Some(file) = self.local.journal.as_ref() {
+				file.sync_data()?;
+			}
+			self.local.dirty = false;
+		}
+		Ok(())
+	}
+
 	pub fn request(&self, after: u64) -> ReadsRequest {
 		let state = self.state();
 		let mut reads = Vec::new();
 		let mut bytes = 256;
 		if !state.lost {
-			// The deque is consecutive and starts immediately after the released prefix. Jump directly to
-			// the requested suffix instead of rescanning every retained read before every batch or mutation.
 			let start = after.saturating_sub(state.released).min(state.reads.len() as u64) as usize;
 			for read in state.reads.range(start..) {
 				let size = serde_json::to_vec(read).expect("a read serializes").len() + 1;
@@ -183,8 +206,6 @@ impl Locked<'_> {
 		ReadsRequest { log: state.log.clone(), reads, lost: state.lost }
 	}
 
-	/// Only the service's released prefix permits forgetting entries. A restarted service may report a lower
-	/// watermark; that never takes back a durable acknowledgement. Impossible acknowledgements poison this mount.
 	pub fn acknowledge(&mut self, answer: &ReadsAnswer) -> io::Result<()> {
 		let state = self.state();
 		if answer.log != state.log || answer.released > answer.taken || answer.taken > state.last {
@@ -194,14 +215,13 @@ impl Locked<'_> {
 		if answer.released <= state.released {
 			return Ok(());
 		}
-		self.append(&Line::Released { seq: answer.released }).inspect_err(|_| self.mark_lost())?;
+		self.append(&Line::Released { seq: answer.released }, true).inspect_err(|_| self.mark_lost())?;
 		let state = self.local.state.as_mut().unwrap();
 		state.released = answer.released;
 		while state.reads.front().is_some_and(|r| r.seq <= state.released) {
 			state.reads.pop_front();
 		}
 		if state.lines > 2 * state.reads.len() + 1024 {
-			// Compaction failing leaves the already-synced journal and acknowledgement intact.
 			if let Err(e) = self.rewrite() {
 				eprintln!("qorpera-folder: read journal compaction: {e}");
 			}
@@ -219,10 +239,22 @@ impl Locked<'_> {
 	}
 
 	fn load(&mut self) -> io::Result<()> {
-		let mut file = private_file(&self.dir.join(JOURNAL), false)?;
-		let meta = file.metadata()?;
+		let path = self.dir.join(JOURNAL);
+		let meta = std::fs::symlink_metadata(&path)?;
+		// SAFETY: geteuid has no preconditions.
+		if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
+			self.local.journal = None;
+			return Err(io::Error::new(io::ErrorKind::PermissionDenied, "read journal must be private to the daemon"));
+		}
 		let stamp = (meta.dev(), meta.ino(), meta.len());
+		if self.local.stamp == Some(stamp) && self.local.journal.is_some() {
+			return Ok(());
+		}
+		let mut file = private_append_file(&path, false)?;
+		let fmeta = file.metadata()?;
+		let stamp = (fmeta.dev(), fmeta.ino(), fmeta.len());
 		if self.local.stamp == Some(stamp) {
+			self.local.journal = Some(file);
 			return Ok(());
 		}
 		let offset = match self.local.stamp {
@@ -233,7 +265,6 @@ impl Locked<'_> {
 		let mut bytes = Vec::new();
 		file.read_to_end(&mut bytes)?;
 		let complete = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |n| n + 1);
-		// A partial final append never returned its open/ack. Preserve all complete records and trim just that tail.
 		if complete < bytes.len() {
 			file.set_len(offset + complete as u64)?;
 			file.sync_data()?;
@@ -250,8 +281,14 @@ impl Locked<'_> {
 				Line::Start { log, released }
 					if self.local.state.is_none() && valid_id(&log) && released <= MAX_SEQUENCE =>
 				{
-					self.local.state =
-						Some(State { log, last: released, released, reads: VecDeque::new(), lines: 0, lost: false });
+					self.local.state = Some(State {
+						log,
+						last: released,
+						released,
+						reads: VecDeque::new(),
+						lines: 0,
+						lost: false,
+					});
 				}
 				Line::Read { read } => {
 					let state = self.local.state.as_mut().ok_or_else(unproven)?;
@@ -284,18 +321,37 @@ impl Locked<'_> {
 			return Err(unproven());
 		}
 		self.local.stamp = Some((stamp.0, stamp.1, offset + complete as u64));
+		self.local.journal = Some(file);
 		Ok(())
 	}
 
-	fn append(&mut self, line: &Line) -> io::Result<()> {
-		let mut file = private_file(&self.dir.join(JOURNAL), false)?;
-		file.seek(SeekFrom::End(0))?;
+	fn append(&mut self, line: &Line, sync: bool) -> io::Result<()> {
+		if self.local.journal.is_none() {
+			let file = private_append_file(&self.dir.join(JOURNAL), false)?;
+			self.local.journal = Some(file);
+		}
 		let mut bytes = serde_json::to_vec(line)?;
 		bytes.push(b'\n');
-		file.write_all(&bytes)?;
-		file.sync_data()?;
-		let meta = file.metadata()?;
-		self.local.stamp = Some((meta.dev(), meta.ino(), meta.len()));
+		let need_stamp = self.local.stamp.is_none();
+		let new_stamp = {
+			let file = self.local.journal.as_mut().unwrap();
+			file.write_all(&bytes)?;
+			if sync {
+				file.sync_data()?;
+			}
+			if need_stamp {
+				let meta = file.metadata()?;
+				Some((meta.dev(), meta.ino(), meta.len()))
+			} else {
+				None
+			}
+		};
+		self.local.dirty = !sync;
+		if let Some(stamp) = new_stamp {
+			self.local.stamp = Some(stamp);
+		} else if let Some((dev, ino, len)) = self.local.stamp {
+			self.local.stamp = Some((dev, ino, len + bytes.len() as u64));
+		}
 		self.local.state.as_mut().unwrap().lines += 1;
 		Ok(())
 	}
@@ -316,16 +372,26 @@ impl Locked<'_> {
 		File::open(self.dir)?.sync_all()?;
 		let meta = file.metadata()?;
 		self.local.stamp = Some((meta.dev(), meta.ino(), meta.len()));
+		self.local.journal = Some(private_append_file(&self.dir.join(JOURNAL), false)?);
+		self.local.dirty = false;
 		let state = self.local.state.as_mut().unwrap();
 		state.lines = state.reads.len() + 1;
 		Ok(())
 	}
 
 	fn mark_lost(&mut self) {
+		self.local.journal = None;
+		self.local.dirty = false;
 		if self.local.state.is_none() {
-			// The UUID carries no authority. A lost journal needs only a valid id to notify the service permanently.
 			let log = uuid().unwrap_or_else(|_| "00000000-0000-4000-8000-000000000000".into());
-			self.local.state = Some(State { log, last: 0, released: 0, reads: VecDeque::new(), lines: 0, lost: true });
+			self.local.state = Some(State {
+				log,
+				last: 0,
+				released: 0,
+				reads: VecDeque::new(),
+				lines: 0,
+				lost: true,
+			});
 		}
 		self.local.state.as_mut().unwrap().lost = true;
 		let persist = || -> io::Result<()> {
@@ -340,9 +406,25 @@ impl Locked<'_> {
 
 impl Drop for Locked<'_> {
 	fn drop(&mut self) {
-		// SAFETY: the guard still owns the live descriptor and mutex. Closing the process also releases the lock.
+		// SAFETY: the guard still owns the live descriptor and mutex.
 		unsafe { libc::flock(self.local.lock.as_raw_fd(), libc::LOCK_UN) };
 	}
+}
+
+fn private_append_file(path: &Path, create: bool) -> io::Result<File> {
+	let file = OpenOptions::new()
+		.read(true)
+		.append(true)
+		.create(create)
+		.mode(0o600)
+		.custom_flags(libc::O_NOFOLLOW)
+		.open(path)?;
+	let meta = file.metadata()?;
+	// SAFETY: geteuid has no preconditions.
+	if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
+		return Err(io::Error::new(io::ErrorKind::PermissionDenied, "read journal must be private to the daemon"));
+	}
+	Ok(file)
 }
 
 fn private_file(path: &Path, create: bool) -> io::Result<File> {
@@ -575,14 +657,38 @@ mod tests {
 	fn batches_fit_frames_even_for_paths_with_expensive_json_escaping() {
 		let dir = Temp::new();
 		let log = ReadLog::open(&dir.0, true).unwrap();
-		let path = vec!["\u{0001}".repeat(250); 16].join("/");
-		for _ in 0..100 {
-			log.note(&path, None, None).unwrap();
+		let tail = vec!["\u{0001}".repeat(240); 16].join("/");
+		for i in 0..100 {
+			log.note(&format!("{i}/{tail}"), None, None).unwrap();
 		}
 		let held = log.locked().unwrap();
 		let request = held.request(0);
 		assert!(request.reads.len() < 100 && !request.reads.is_empty());
 		assert!(serde_json::to_vec(&request).unwrap().len() <= MAX_PAYLOAD);
 		assert_eq!(held.request(request.reads.last().unwrap().seq).reads.last().unwrap().seq, 100);
+	}
+
+	#[test]
+	fn persistent_append_fd_preserves_every_read_and_syncs_on_handover_and_drop() {
+		let dir = Temp::new();
+		let auth =
+			Authority { resource_id: uuid().unwrap(), resource_revision: 1, grant_id: None, grant_revision: None };
+		{
+			let log = ReadLog::open(&dir.0, true).unwrap();
+			for _ in 0..50 {
+				log.note("docs/plan.md", Some("v1"), Some(&auth)).unwrap();
+			}
+			let mut held = log.locked().unwrap();
+			assert!(held.local.dirty);
+			assert_eq!(held.last(), 50);
+			held.sync().unwrap();
+			assert!(!held.local.dirty);
+			drop(held);
+			log.note("docs/plan.md", Some("v1"), Some(&auth)).unwrap();
+		}
+		let reopened = ReadLog::open(&dir.0, false).unwrap();
+		let held = reopened.locked().unwrap();
+		assert_eq!(held.last(), 51);
+		assert_eq!(held.request(0).reads.len(), 51);
 	}
 }

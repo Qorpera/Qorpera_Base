@@ -143,8 +143,11 @@ The worker has no dry run of its own: its first call already removes. Run `gc/ar
   order by created desc
   limit 24;
   ```
-  A 503 means a phase could not claim or reconcile (a fixed text says which); the next run tries again. `timed_out`
-  means pg_net stopped waiting: that answer is lost, and the dry-run counts show what the run did.
+  A 503 means a phase could not claim or reconcile (a fixed text says which); the next run tries again. Within a 200
+  counts answer, `companyStorage.deferred` / `claimError`, `folderObjects.deferred`, `deletedProfileObjects.deferred` /
+  `claimError`, and `reconciliationFailed` indicate phases skipped for shared run budget or transient claim/reconcile
+  errors that the next run retries. `timed_out` means pg_net stopped waiting: that answer is lost, and the dry-run
+  counts show what the run did.
 - **Failed calls.** The query above only finds the worker's own answers, so read the failures beside it, every
   failure pg_net recorded and the schedule's own runs:
   ```sql
@@ -230,7 +233,7 @@ Then call the worker once by hand (1.3, step 6). Its `folderObjects` answer:
 - `claimed`: objects marked this run (up to 25), each then `removed`, `restored` (something named it again) or
   `stale` (its lease ran out);
 - `failed`: a lane error; the object's mark expires and it is tried again;
-- `stopped: true`: the gateway's NAS lanes were busy (503) or the phase's 60 seconds ran out; the rest waits.
+- `stopped: true`: the gateway's NAS lanes were busy (503) or the phase's 45 seconds (within the run's shared 110 s budget) ran out; the rest waits (`{"deferred": true}` means earlier phases exhausted the shared run budget before the folder phase started).
 
 Run statements 2, 3 and 6 again: 2 is still all 0; 6 fell by `removed`.
 

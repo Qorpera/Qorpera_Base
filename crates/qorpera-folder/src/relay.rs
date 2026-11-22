@@ -4,8 +4,10 @@
 //! kernel reports), and the folder service checks the run's view and its pass, as for any machine.
 
 use crate::transport::{self, Stream};
-use std::io;
+use std::io::{self, Read, Write};
 use std::os::unix::net::UnixListener;
+
+const COPY_BUF_BYTES: usize = 128 * 1024;
 
 /// Serves every connection to `listener`, each over its own connection to `upstream`. An accept that fails for the
 /// moment (no descriptors left, a caller gone before it was taken) is logged and the relay goes on, so the slot's other
@@ -42,6 +44,21 @@ fn listener_broken(e: &io::Error) -> bool {
 }
 
 /// Copies both ways until either side ends, then ends both.
+fn copy_buffered<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<u64> {
+	let mut buf = vec![0u8; COPY_BUF_BYTES];
+	let mut total = 0u64;
+	loop {
+		let n = match reader.read(&mut buf) {
+			Ok(0) => return Ok(total),
+			Ok(n) => n,
+			Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+			Err(e) => return Err(e),
+		};
+		writer.write_all(&buf[..n])?;
+		total += n as u64;
+	}
+}
+
 fn pipe(local: Stream, remote: Stream) {
 	let (mut from_local, mut into_remote) = match (local.try_clone(), remote.try_clone()) {
 		(Ok(a), Ok(b)) => (a, b),
@@ -52,12 +69,12 @@ fn pipe(local: Stream, remote: Stream) {
 		}
 	};
 	let up = std::thread::Builder::new().name("relay-up".into()).spawn(move || {
-		let _ = io::copy(&mut from_local, &mut into_remote);
+		let _ = copy_buffered(&mut from_local, &mut into_remote);
 		from_local.shutdown();
 		into_remote.shutdown();
 	});
 	let (mut from_remote, mut into_local) = (remote, local);
-	let _ = io::copy(&mut from_remote, &mut into_local);
+	let _ = copy_buffered(&mut from_remote, &mut into_local);
 	from_remote.shutdown();
 	into_local.shutdown();
 	if let Ok(up) = up {

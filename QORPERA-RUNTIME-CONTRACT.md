@@ -6812,10 +6812,15 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    folder service, so its catalog has no `company_search` (never a failed run); giving it one is a slice of its own
    (runner image, LXD provider and the folder service's admission).
 2. **What it finds.** Literal text, or with `regex` a regular expression of RE2's kind (no back-references, no
-   lookaround, counts up to 16), run in linear time on the node's shared event loop by V8's linear-time engine, where
-   the node's folder service runs that engine (off as it first ships, 13 Nov 2026: a pattern is then refused in words,
-   `REGEX_OFF`; which engine is the founder's choice); `context` shows up to 5 lines before and after each hit, `files_only` lists each matching file once with its
-   number of matching lines, and a `glob` without a `query` lists every path it matches. `names_only` is as before.
+   lookaround; counts up to 64 and inline `(?i)`/`(?m)` flags on the native `qorpera-folder` search worker, counts up to
+   16 and no inline flags on the legacy V8 linear-time JS fallback), where the node's folder service runs regular
+   expressions (off when neither the native worker nor `--enable-experimental-regexp-engine` is active: a pattern is
+   refused with `REGEX_OFF`, and a literal `whole_word` search with `WHOLE_WORD_UNAVAILABLE`); `smart_case` makes a
+   search case-sensitive only when the query contains an unescaped uppercase literal letter, `whole_word` matches whole
+   words only, `context` shows up to 5 lines before and after each hit, `files_only` lists each matching file once with
+   its number of matching lines, `count_only` returns a cumulative total of matching lines and files across cursor pages
+   together with per-file counts, `exclude_glob` (or `!pattern` in `glob`) skips matching paths, and a `glob` without a
+   `query` lists every path it matches. `names_only` is as before.
 3. **One call answers more.** A call asks the node for pages until about 20 KiB shows, the search ends, six pages were
    asked or about 10 s passed; a page holds about 26 KiB of hits as shown. The answer is fitted to one tool result
    (32 KiB, the 2026-11-08 amendment) and gives a cursor when there is more. Nothing is left out silently: an answer
@@ -6834,10 +6839,11 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    is closed, and its run is refused another while the node is full. At most 4 pages run at once on the node and at
    most 32 wait, each up to 20 s; past either the run is told the folder search is full or busy now. One tree per company per node, shared by
    its runs, is a later step.
-5. **What the provider sees.** `company_search`'s description and input schema change: `regex`, `context` and
-   `files_only` are new, and `query` is no longer required; the description offers a pattern only where the node's
-   search runs them (`REGEX_OFF` otherwise). Nothing else. Turning patterns on later is the folder service unit's
-   flag (`--enable-experimental-regexp-engine`) and its installer pin, with no change the provider sees.
+5. **What the provider sees.** `company_search`'s description and input schema change: `regex`, `context`,
+   `files_only`, `count_only`, `exclude_glob`, `smart_case` and `whole_word` are new, and `query` is no longer required;
+   the description offers a pattern only where the node's search runs them (`REGEX_OFF` otherwise). Nothing else.
+   Turning patterns on later is the folder service unit's flag (`--enable-experimental-regexp-engine`) and its installer
+   pin, with no change the provider sees.
 6. **Rolling.** The folder service on each node first (its unit unchanged, so patterns stay off, and only while no
    company machine runs on the node), then the runtime bundle, then each node's shared execution service after one hello through a
    slot's relay reaches that node's folder service. Either order of runtime and service works: the node says in its

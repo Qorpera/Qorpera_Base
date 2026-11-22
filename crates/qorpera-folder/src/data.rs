@@ -14,6 +14,71 @@ pub const EXIT_ANSWER: u8 = 0;
 pub const EXIT_REFUSED: u8 = 1;
 pub const EXIT_UNREACHABLE: u8 = 3;
 
+pub const DATA_USAGE: &str = "Usage:
+  qorpera-folder data [--view-file <file>] [--root <dir>] [--connect <addr>] [--format json|table|csv|tsv|ndjson] <command>
+
+Commands:
+  describe [<database>]
+  apply <database> [--dry-run]
+  query <database> <question> [--params-json '<obj>'] [--params-file <path>] [name=value | name:=<JSON> ...]
+  query <database> --sql '<select>'|- [--params-json '<obj>'] [--params-file <path>] [name=value | name:=<JSON> ...]
+  query <database> --sql-file <path> [--params-json '<obj>'] [--params-file <path>] [name=value | name:=<JSON> ...]
+  change <database> <change> [--dry-run] [--params-json '<obj>'] [--params-file <path>] [name=value | name:=<JSON> ...]
+  rows <database> <table> [--limit <1..=1000>] [--offset <N>] [--order <col>[:asc|:desc]]
+  changes <database>
+
+Options:
+  --format json|table|csv|tsv|ndjson  Output format (default: json)
+  --dry-run                           Preview a change or inspect pending apply steps without mutating data
+  --params-json '<object>'            JSON object of named parameters
+  --params-file <path>                Path to JSON object file of named parameters
+  --sql-file <path>                   Read query SQL from file (--sql - reads from stdin)
+  -h, --help                          Show this help and exit 0";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Format {
+	#[default]
+	Json,
+	Table,
+	Csv,
+	Tsv,
+	Ndjson,
+}
+
+impl Format {
+	pub fn parse(name: &str) -> Result<Self, String> {
+		match name {
+			"json" => Ok(Self::Json),
+			"table" => Ok(Self::Table),
+			"csv" => Ok(Self::Csv),
+			"tsv" => Ok(Self::Tsv),
+			"ndjson" => Ok(Self::Ndjson),
+			other => Err(format!("--format {other} is not one of json, table, csv, tsv and ndjson")),
+		}
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Transform {
+	#[default]
+	Identity,
+	ApplyDryRun(String),
+	DatabaseChanges(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedCall {
+	pub call: Call,
+	pub format: Format,
+	pub transform: Transform,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Command {
+	Help,
+	Execute(ParsedCall),
+}
+
 const MAX_CALL: usize = 1024 * 1024;
 const PASS_ROOM: usize = 128;
 const MAX_TEXT: u64 = 64 * 1024;
@@ -77,97 +142,412 @@ fn parameter_name(name: &str) -> bool {
 		&& bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
 }
 
-fn parameters(args: &[String]) -> Result<Map<String, Value>, String> {
-	let mut params = Map::new();
-	for arg in args {
-		let (left, text) = arg.split_once('=').ok_or_else(|| format!("{arg} is not name=value"))?;
-		let (name, value) = match left.strip_suffix(':') {
-			None => (left, Value::String(text.to_string())),
-			Some(name) => match serde_json::from_str::<Value>(text) {
-				Ok(value @ (Value::Number(_) | Value::Bool(_) | Value::Null)) => (name, value),
-				_ => return Err(format!("{name}:= takes a number, true, false or null; {name}=<text> gives text")),
-			},
-		};
-		if !parameter_name(name) {
+impl Call {
+	pub fn writes(&self) -> bool {
+		match self.verb {
+			Verb::Apply => true,
+			Verb::Change => self.body.get("preview") != Some(&Value::Bool(true)),
+			Verb::Describe | Verb::Query => false,
+		}
+	}
+}
+
+fn sql_identifier(name: &str) -> bool {
+	let bytes = name.as_bytes();
+	!bytes.is_empty()
+		&& bytes.len() <= 63
+		&& (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+		&& bytes.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+}
+
+fn read_bounded_utf8(mut reader: impl Read, label: &str) -> Result<String, String> {
+	let mut bytes = Vec::new();
+	reader
+		.by_ref()
+		.take(MAX_CALL as u64 + 1)
+		.read_to_end(&mut bytes)
+		.map_err(|e| format!("{label} could not be read: {e}"))?;
+	if bytes.len() > MAX_CALL {
+		return Err(format!("{label} is larger than 1 MiB"));
+	}
+	String::from_utf8(bytes).map_err(|_| format!("{label} is not valid UTF-8"))
+}
+
+fn parse_params_object(raw: &str, source: &str, params: &mut Map<String, Value>) -> Result<(), String> {
+	let parsed: Value = serde_json::from_str(raw).map_err(|e| format!("{source} is not valid JSON: {e}"))?;
+	let Value::Object(obj) = parsed else {
+		return Err(format!("{source} must be a JSON object"));
+	};
+	for (name, value) in obj {
+		if !parameter_name(&name) {
 			return Err(format!("{name} is no value's name (a lower-case letter or _, then letters, digits or _)"));
 		}
-		if params.insert(name.to_string(), value).is_some() {
+		if params.insert(name.clone(), value).is_some() {
 			return Err(format!("{name} is given twice"));
 		}
 	}
-	Ok(params)
+	Ok(())
 }
 
-pub fn call(args: &[String]) -> Result<Call, String> {
-	let (verb, rest) = args.split_first().ok_or("name what to do: describe, apply, query or change")?;
-	let database = |name: &String| -> Result<Value, String> {
-		if database_name(name) {
-			Ok(Value::String(name.clone()))
-		} else {
-			Err(format!("{name} is no database's name (a lower-case letter, then letters, digits or _)"))
-		}
+fn parse_kv_param(arg: &str, params: &mut Map<String, Value>) -> Result<(), String> {
+	let (left, text) = arg.split_once('=').ok_or_else(|| format!("{arg} is not name=value"))?;
+	let (name, value) = match left.strip_suffix(':') {
+		None => (left, Value::String(text.to_string())),
+		Some(name) => match serde_json::from_str::<Value>(text) {
+			Ok(value @ (Value::Number(_) | Value::Bool(_) | Value::Null | Value::Array(_) | Value::Object(_))) => (name, value),
+			_ => return Err(format!("{name}:= takes a JSON number, boolean, null, array or object; {name}=<text> gives text")),
+		},
 	};
-	let named = |what: &str, name: &String| -> Result<Value, String> {
-		if file_name(name) {
-			Ok(Value::String(name.clone()))
-		} else {
-			Err(format!("{name} is no {what}'s name (lower-case letters and digits, in parts joined by -)"))
+	if !parameter_name(name) {
+		return Err(format!("{name} is no value's name (a lower-case letter or _, then letters, digits or _)"));
+	}
+	if params.insert(name.to_string(), value).is_some() {
+		return Err(format!("{name} is given twice"));
+	}
+	Ok(())
+}
+
+fn parse_database(name: &str) -> Result<Value, String> {
+	if database_name(name) {
+		Ok(Value::String(name.to_string()))
+	} else {
+		Err(format!("{name} is no database's name (a lower-case letter, then letters, digits or _)"))
+	}
+}
+
+fn parse_named(what: &str, name: &str) -> Result<Value, String> {
+	if file_name(name) {
+		Ok(Value::String(name.to_string()))
+	} else {
+		Err(format!("{name} is no {what}'s name (lower-case letters and digits, in parts joined by -)"))
+	}
+}
+
+fn parse_param_tail(args: &[String], format: &mut Option<Format>, dry_run: Option<&mut bool>) -> Result<Option<Map<String, Value>>, String> {
+	let mut params = Map::new();
+	let mut saw_params_json = false;
+	let mut saw_params_file = false;
+	let mut dry_run = dry_run;
+	let mut i = 0;
+	while i < args.len() {
+		match args[i].as_str() {
+			"-h" | "--help" => return Ok(None),
+			"--format" => {
+				if format.is_some() {
+					return Err("--format given twice".into());
+				}
+				let val = args.get(i + 1).ok_or("--format needs a value")?;
+				*format = Some(Format::parse(val)?);
+				i += 2;
+			}
+			"--dry-run" => match dry_run.as_deref_mut() {
+				Some(slot) => {
+					if *slot {
+						return Err("--dry-run given twice".into());
+					}
+					*slot = true;
+					i += 1;
+				}
+				None => return Err("--dry-run is only supported on apply and change".into()),
+			},
+			"--params-json" => {
+				if saw_params_json {
+					return Err("--params-json given twice".into());
+				}
+				saw_params_json = true;
+				let raw = args.get(i + 1).ok_or("--params-json needs a JSON object")?;
+				parse_params_object(raw, "--params-json", &mut params)?;
+				i += 2;
+			}
+			"--params-file" => {
+				if saw_params_file {
+					return Err("--params-file given twice".into());
+				}
+				saw_params_file = true;
+				let path = args.get(i + 1).filter(|p| !p.is_empty()).ok_or("--params-file needs a path")?;
+				let file = std::fs::File::open(path).map_err(|e| format!("--params-file {path}: {e}"))?;
+				let raw = read_bounded_utf8(file, &format!("--params-file {path}"))?;
+				parse_params_object(&raw, "--params-file", &mut params)?;
+				i += 2;
+			}
+			other if other.starts_with("--") => return Err(format!("unknown option {other}")),
+			other => {
+				parse_kv_param(other, &mut params)?;
+				i += 1;
+			}
 		}
+	}
+	Ok(Some(params))
+}
+
+pub fn parse_cli(args: &[String], leading_format: Option<Format>, mut stdin: impl Read) -> Result<Command, String> {
+	let Some((verb, rest)) = args.split_first() else {
+		return Err("name what to do: describe, apply, query, change, rows or changes".into());
 	};
+	if verb == "-h" || verb == "--help" {
+		return Ok(Command::Help);
+	}
+	let mut format = leading_format;
 	let mut body = Map::new();
+	let mut transform = Transform::Identity;
 	let verb = match verb.as_str() {
 		"describe" => {
-			match rest {
-				[] => {}
-				[name] => {
-					body.insert("database".into(), database(name)?);
+			let mut db: Option<String> = None;
+			let mut i = 0;
+			while i < rest.len() {
+				match rest[i].as_str() {
+					"-h" | "--help" => return Ok(Command::Help),
+					"--format" => {
+						if format.is_some() {
+							return Err("--format given twice".into());
+						}
+						let val = rest.get(i + 1).ok_or("--format needs a value")?;
+						format = Some(Format::parse(val)?);
+						i += 2;
+					}
+					other if other.starts_with("--") => return Err(format!("unknown option {other}")),
+					name => {
+						if db.is_some() {
+							return Err("describe takes one database, or none for all of them".into());
+						}
+						let _ = parse_database(name)?;
+						db = Some(name.to_string());
+						i += 1;
+					}
 				}
-				_ => return Err("describe takes one database, or none for all of them".into()),
+			}
+			if let Some(name) = db {
+				body.insert("database".into(), Value::String(name));
 			}
 			Verb::Describe
 		}
 		"apply" => {
-			match rest {
-				[name] => body.insert("database".into(), database(name)?),
-				_ => return Err("apply takes one database".into()),
-			};
-			Verb::Apply
+			let mut db: Option<String> = None;
+			let mut dry_run = false;
+			let mut i = 0;
+			while i < rest.len() {
+				match rest[i].as_str() {
+					"-h" | "--help" => return Ok(Command::Help),
+					"--dry-run" => {
+						if dry_run {
+							return Err("--dry-run given twice".into());
+						}
+						dry_run = true;
+						i += 1;
+					}
+					"--format" => {
+						if format.is_some() {
+							return Err("--format given twice".into());
+						}
+						let val = rest.get(i + 1).ok_or("--format needs a value")?;
+						format = Some(Format::parse(val)?);
+						i += 2;
+					}
+					other if other.starts_with("--") => return Err(format!("unknown option {other}")),
+					name => {
+						if db.is_some() {
+							return Err("apply takes one database".into());
+						}
+						let _ = parse_database(name)?;
+						db = Some(name.to_string());
+						i += 1;
+					}
+				}
+			}
+			let db = db.ok_or("apply takes one database")?;
+			body.insert("database".into(), Value::String(db.clone()));
+			if dry_run {
+				transform = Transform::ApplyDryRun(db);
+				Verb::Describe
+			} else {
+				Verb::Apply
+			}
 		}
 		"query" => {
-			let (name, rest) = rest.split_first().ok_or("query takes a database, then a question's name or --sql and one select")?;
-			body.insert("database".into(), database(name)?);
+			if rest.iter().any(|a| a == "-h" || a == "--help") {
+				if rest.first().is_some_and(|a| a == "-h" || a == "--help") {
+					return Ok(Command::Help);
+				}
+			}
+			let (name, rest) = rest.split_first().ok_or("query takes a database, then a question's name, --sql or --sql-file")?;
+			body.insert("database".into(), parse_database(name)?);
 			let values = match rest {
-				[flag] if flag == "--sql" => return Err("--sql takes one select".into()),
+				[flag, ..] if flag == "-h" || flag == "--help" => return Ok(Command::Help),
+				[flag] if flag == "--sql" => return Err("--sql takes one select or - for stdin".into()),
 				[flag, sql, values @ ..] if flag == "--sql" => {
-					body.insert("sql".into(), Value::String(sql.clone()));
+					let text = if sql == "-" { read_bounded_utf8(&mut stdin, "stdin")? } else { sql.clone() };
+					body.insert("sql".into(), Value::String(text));
+					values
+				}
+				[flag] if flag == "--sql-file" => return Err("--sql-file takes a file path".into()),
+				[flag, path, values @ ..] if flag == "--sql-file" => {
+					if path.is_empty() {
+						return Err("--sql-file takes a file path".into());
+					}
+					let file = std::fs::File::open(path).map_err(|e| format!("--sql-file {path}: {e}"))?;
+					let text = read_bounded_utf8(file, &format!("--sql-file {path}"))?;
+					body.insert("sql".into(), Value::String(text));
 					values
 				}
 				[question, values @ ..] => {
-					body.insert("question".into(), named("question", question)?);
+					body.insert("question".into(), parse_named("question", question)?);
 					values
 				}
-				[] => return Err("query takes a question's name, or --sql and one select".into()),
+				[] => return Err("query takes a question's name, --sql or --sql-file".into()),
 			};
-			let params = parameters(values)?;
+			let Some(params) = parse_param_tail(values, &mut format, None)? else {
+				return Ok(Command::Help);
+			};
 			if !params.is_empty() {
 				body.insert("params".into(), Value::Object(params));
 			}
 			Verb::Query
 		}
 		"change" => {
+			if rest.first().is_some_and(|a| a == "-h" || a == "--help") {
+				return Ok(Command::Help);
+			}
 			let (name, rest) = rest.split_first().ok_or("change takes a database, then a change's name")?;
-			body.insert("database".into(), database(name)?);
+			body.insert("database".into(), parse_database(name)?);
+			if rest.first().is_some_and(|a| a == "-h" || a == "--help") {
+				return Ok(Command::Help);
+			}
 			let (change, values) = rest.split_first().ok_or("change takes a change's name")?;
-			body.insert("change".into(), named("change", change)?);
-			let params = parameters(values)?;
+			body.insert("change".into(), parse_named("change", change)?);
+			let mut dry_run = false;
+			let Some(params) = parse_param_tail(values, &mut format, Some(&mut dry_run))? else {
+				return Ok(Command::Help);
+			};
 			if !params.is_empty() {
 				body.insert("params".into(), Value::Object(params));
 			}
+			if dry_run {
+				body.insert("preview".into(), Value::Bool(true));
+			}
 			Verb::Change
 		}
-		other => return Err(format!("{other} is not one of describe, apply, query and change")),
+		"rows" => {
+			if rest.first().is_some_and(|a| a == "-h" || a == "--help") {
+				return Ok(Command::Help);
+			}
+			let (name, rest) = rest.split_first().ok_or("rows takes a database and a table")?;
+			body.insert("database".into(), parse_database(name)?);
+			if rest.first().is_some_and(|a| a == "-h" || a == "--help") {
+				return Ok(Command::Help);
+			}
+			let (table, rest) = rest.split_first().ok_or("rows takes a table name")?;
+			if !sql_identifier(table) {
+				return Err(format!("{table} is no table's name (a letter or _, then up to 62 letters, digits or _)"));
+			}
+			let mut limit: u64 = 50;
+			let mut saw_limit = false;
+			let mut offset: u64 = 0;
+			let mut saw_offset = false;
+			let mut order: Option<(String, &'static str)> = None;
+			let mut i = 0;
+			while i < rest.len() {
+				match rest[i].as_str() {
+					"-h" | "--help" => return Ok(Command::Help),
+					"--format" => {
+						if format.is_some() {
+							return Err("--format given twice".into());
+						}
+						let val = rest.get(i + 1).ok_or("--format needs a value")?;
+						format = Some(Format::parse(val)?);
+						i += 2;
+					}
+					"--limit" => {
+						if saw_limit {
+							return Err("--limit given twice".into());
+						}
+						saw_limit = true;
+						let raw = rest.get(i + 1).ok_or("--limit needs a number")?;
+						limit = raw.parse().map_err(|_| "--limit must be a number between 1 and 1000")?;
+						if !(1..=1000).contains(&limit) {
+							return Err("--limit must be between 1 and 1000".into());
+						}
+						i += 2;
+					}
+					"--offset" => {
+						if saw_offset {
+							return Err("--offset given twice".into());
+						}
+						saw_offset = true;
+						let raw = rest.get(i + 1).ok_or("--offset needs a number")?;
+						offset = raw.parse().map_err(|_| "--offset must be a non-negative integer")?;
+						i += 2;
+					}
+					"--order" => {
+						if order.is_some() {
+							return Err("--order given twice".into());
+						}
+						let raw = rest.get(i + 1).ok_or("--order needs <column>[:asc|:desc]")?;
+						let (col, dir) = match raw.split_once(':') {
+							Some((c, d)) if d.eq_ignore_ascii_case("asc") => (c, "asc"),
+							Some((c, d)) if d.eq_ignore_ascii_case("desc") => (c, "desc"),
+							Some(_) => return Err("--order direction must be asc or desc".into()),
+							None => (raw.as_str(), "asc"),
+						};
+						if !sql_identifier(col) {
+							return Err(format!("{col} is no column's name"));
+						}
+						order = Some((col.to_string(), dir));
+						i += 2;
+					}
+					other => return Err(format!("unknown option {other}")),
+				}
+			}
+			let mut sql = format!("select * from \"{table}\"");
+			if let Some((col, dir)) = order {
+				sql.push_str(&format!(" order by \"{col}\" {dir}"));
+			}
+			sql.push_str(&format!(" limit {limit}"));
+			if offset > 0 {
+				sql.push_str(&format!(" offset {offset}"));
+			}
+			body.insert("sql".into(), Value::String(sql));
+			Verb::Query
+		}
+		"changes" => {
+			let mut db: Option<String> = None;
+			let mut i = 0;
+			while i < rest.len() {
+				match rest[i].as_str() {
+					"-h" | "--help" => return Ok(Command::Help),
+					"--format" => {
+						if format.is_some() {
+							return Err("--format given twice".into());
+						}
+						let val = rest.get(i + 1).ok_or("--format needs a value")?;
+						format = Some(Format::parse(val)?);
+						i += 2;
+					}
+					other if other.starts_with("--") => return Err(format!("unknown option {other}")),
+					name => {
+						if db.is_some() {
+							return Err("changes takes one database".into());
+						}
+						let _ = parse_database(name)?;
+						db = Some(name.to_string());
+						i += 1;
+					}
+				}
+			}
+			let db = db.ok_or("changes takes one database")?;
+			body.insert("database".into(), Value::String(db.clone()));
+			transform = Transform::DatabaseChanges(db);
+			Verb::Describe
+		}
+		other => return Err(format!("{other} is not one of describe, apply, query, change, rows and changes")),
 	};
-	Ok(Call { verb, body })
+	Ok(Command::Execute(ParsedCall { call: Call { verb, body }, format: format.unwrap_or(Format::Json), transform }))
+}
+
+pub fn call(args: &[String]) -> Result<Call, String> {
+	match parse_cli(args, None, std::io::empty())? {
+		Command::Execute(parsed) => Ok(parsed.call),
+		Command::Help => Err("help requested".into()),
+	}
 }
 
 #[derive(Serialize)]
@@ -266,7 +646,7 @@ pub fn ask(addr: &str, view: &View, root: &Path, call: &Call, waits: &Waits) -> 
 		Err(Fail::Remote(e)) => return unreachable(plain(&e.message)),
 		Err(Fail::Link(e)) => return unreachable(e),
 	}
-	let writes = matches!(call.verb, Verb::Apply | Verb::Change);
+	let writes = call.writes();
 	let limit = if call.verb == Verb::Apply { waits.apply } else { waits.call };
 	if let Err(e) = stream.set_timeouts(Some(limit), Some(waits.hello)) {
 		return unreachable(e.to_string());
@@ -348,12 +728,255 @@ pub fn ask(addr: &str, view: &View, root: &Path, call: &Call, waits: &Waits) -> 
 	}
 }
 
-pub fn run(addr: &str, view: &View, root: &Path, call: &Call, waits: &Waits, out: &mut impl Write, err: &mut impl Write) -> u8 {
-	match ask(addr, view, root, call, waits) {
+fn transform_answer(value: Value, transform: &Transform) -> Value {
+	match transform {
+		Transform::Identity => value,
+		Transform::ApplyDryRun(db) => {
+			let entry = value
+				.get("databases")
+				.and_then(Value::as_array)
+				.and_then(|dbs| dbs.iter().find(|d| d.get("database").and_then(Value::as_str) == Some(db.as_str())).or_else(|| dbs.first()));
+			let steps = entry.and_then(|e| e.get("steps")).cloned().unwrap_or_else(|| Value::Object(Map::new()));
+			let mut out = Map::new();
+			out.insert("database".into(), Value::String(db.clone()));
+			out.insert("dryRun".into(), Value::Bool(true));
+			out.insert("steps".into(), steps);
+			Value::Object(out)
+		}
+		Transform::DatabaseChanges(db) => {
+			let entry = value
+				.get("databases")
+				.and_then(Value::as_array)
+				.and_then(|dbs| dbs.iter().find(|d| d.get("database").and_then(Value::as_str) == Some(db.as_str())).or_else(|| dbs.first()));
+			let changes = entry.and_then(|e| e.get("changes")).cloned().unwrap_or_else(|| Value::Array(Vec::new()));
+			let steps = entry.and_then(|e| e.get("steps")).cloned().unwrap_or_else(|| Value::Object(Map::new()));
+			let mut out = Map::new();
+			out.insert("database".into(), Value::String(db.clone()));
+			out.insert("changes".into(), changes);
+			out.insert("steps".into(), steps);
+			Value::Object(out)
+		}
+	}
+}
+
+fn cell_text(value: &Value) -> String {
+	match value {
+		Value::Null => String::new(),
+		Value::String(s) => s.clone(),
+		other => serde_json::to_string(other).expect("a value serializes"),
+	}
+}
+
+fn tabular(value: &Value) -> (Vec<String>, Vec<Vec<String>>) {
+	if let (Some(cols), Some(rows)) = (
+		value.get("columns").and_then(Value::as_array),
+		value.get("rows").and_then(Value::as_array),
+	) {
+		let headers: Vec<String> = cols.iter().map(cell_text).collect();
+		let body = rows
+			.iter()
+			.map(|row| match row.as_array() {
+				Some(cells) => cells.iter().map(cell_text).collect(),
+				None => vec![cell_text(row)],
+			})
+			.collect();
+		return (headers, body);
+	}
+	if value.get("dryRun") == Some(&Value::Bool(true)) {
+		if let Some(steps) = value.get("steps").and_then(Value::as_object) {
+			let headers = vec!["state".into(), "step".into(), "at".into()];
+			let mut rows = Vec::new();
+			if let Some(applied) = steps.get("applied").and_then(Value::as_array) {
+				for item in applied {
+					let step = item.get("name").map(cell_text).unwrap_or_else(|| cell_text(item));
+					let at = item.get("at").map(cell_text).unwrap_or_default();
+					rows.push(vec!["applied".into(), step, at]);
+				}
+			}
+			for state in ["waiting", "changed", "missing"] {
+				if let Some(items) = steps.get(state).and_then(Value::as_array) {
+					for item in items {
+						rows.push(vec![state.into(), cell_text(item), String::new()]);
+					}
+				}
+			}
+			return (headers, rows);
+		}
+	}
+	if let (Some(_), Some(changes)) = (
+		value.get("database").and_then(Value::as_str),
+		value.get("changes").and_then(Value::as_array),
+	) {
+		let headers = vec!["name".into(), "parameters".into(), "words".into(), "problem".into()];
+		let rows = changes
+			.iter()
+			.map(|item| {
+				let name = item.get("name").map(cell_text).unwrap_or_default();
+				let params = item.get("parameters").map(cell_text).unwrap_or_default();
+				let words = item.get("words").map(cell_text).unwrap_or_default();
+				let problem = item.get("problem").map(cell_text).unwrap_or_default();
+				vec![name, params, words, problem]
+			})
+			.collect();
+		return (headers, rows);
+	}
+	if let Some(dbs) = value.get("databases").and_then(Value::as_array) {
+		let headers = vec!["database".into(), "name".into(), "tables".into(), "questions".into(), "changes".into(), "waiting".into()];
+		let rows = dbs
+			.iter()
+			.map(|db| {
+				let id = db.get("database").map(cell_text).unwrap_or_default();
+				let title = db.get("name").map(cell_text).unwrap_or_default();
+				let tables = db.get("tables").and_then(Value::as_array).map_or(0, Vec::len).to_string();
+				let questions = db.get("questions").and_then(Value::as_array).map_or(0, Vec::len).to_string();
+				let changes = db.get("changes").and_then(Value::as_array).map_or(0, Vec::len).to_string();
+				let waiting = db
+					.get("steps")
+					.and_then(|s| s.get("waiting"))
+					.and_then(Value::as_array)
+					.map_or(0, Vec::len)
+					.to_string();
+				vec![id, title, tables, questions, changes, waiting]
+			})
+			.collect();
+		return (headers, rows);
+	}
+	match value {
+		Value::Object(map) => {
+			let headers: Vec<String> = map.keys().cloned().collect();
+			let row: Vec<String> = map.values().map(cell_text).collect();
+			(headers, vec![row])
+		}
+		Value::Array(items) => (vec!["value".into()], items.iter().map(|v| vec![cell_text(v)]).collect()),
+		other => (vec!["value".into()], vec![vec![cell_text(other)]]),
+	}
+}
+
+fn csv_escape(field: &str) -> String {
+	if field.contains([',', '"', '\n', '\r']) {
+		format!("\"{}\"", field.replace('"', "\"\""))
+	} else {
+		field.to_string()
+	}
+}
+
+fn tsv_cell(field: &str) -> String {
+	field.chars().map(|c| if matches!(c, '\t' | '\n' | '\r') { ' ' } else { c }).collect()
+}
+
+fn table_cell(field: &str) -> String {
+	field.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+}
+
+pub fn format_value(value: &Value, format: Format, out: &mut impl Write) -> std::io::Result<()> {
+	match format {
+		Format::Json => {
+			let line = serde_json::to_string(value).expect("an answer serializes");
+			writeln!(out, "{line}")?;
+		}
+		Format::Ndjson => {
+			if let (Some(cols), Some(rows)) = (
+				value.get("columns").and_then(Value::as_array),
+				value.get("rows").and_then(Value::as_array),
+			) {
+				let names: Vec<String> = cols.iter().map(cell_text).collect();
+				for row in rows {
+					if let Some(cells) = row.as_array() {
+						let mut obj = Map::with_capacity(names.len());
+						for (idx, name) in names.iter().enumerate() {
+							obj.insert(name.clone(), cells.get(idx).cloned().unwrap_or(Value::Null));
+						}
+						writeln!(out, "{}", serde_json::to_string(&Value::Object(obj)).expect("row serializes"))?;
+					} else {
+						writeln!(out, "{}", serde_json::to_string(row).expect("row serializes"))?;
+					}
+				}
+			} else if let Some(dbs) = value.get("databases").and_then(Value::as_array) {
+				for db in dbs {
+					writeln!(out, "{}", serde_json::to_string(db).expect("db serializes"))?;
+				}
+			} else if value.get("database").is_some() && value.get("changes").and_then(Value::as_array).is_some() {
+				for item in value.get("changes").and_then(Value::as_array).expect("checked") {
+					writeln!(out, "{}", serde_json::to_string(item).expect("change serializes"))?;
+				}
+			} else if let Value::Array(items) = value {
+				for item in items {
+					writeln!(out, "{}", serde_json::to_string(item).expect("item serializes"))?;
+				}
+			} else {
+				writeln!(out, "{}", serde_json::to_string(value).expect("value serializes"))?;
+			}
+		}
+		Format::Csv => {
+			let (headers, rows) = tabular(value);
+			if !headers.is_empty() {
+				writeln!(out, "{}", headers.iter().map(|h| csv_escape(h)).collect::<Vec<_>>().join(","))?;
+			}
+			for row in rows {
+				writeln!(out, "{}", row.iter().map(|c| csv_escape(c)).collect::<Vec<_>>().join(","))?;
+			}
+		}
+		Format::Tsv => {
+			let (headers, rows) = tabular(value);
+			if !headers.is_empty() {
+				writeln!(out, "{}", headers.iter().map(|h| tsv_cell(h)).collect::<Vec<_>>().join("\t"))?;
+			}
+			for row in rows {
+				writeln!(out, "{}", row.iter().map(|c| tsv_cell(c)).collect::<Vec<_>>().join("\t"))?;
+			}
+		}
+		Format::Table => {
+			let (headers, rows) = tabular(value);
+			let col_count = headers.len().max(rows.iter().map(Vec::len).max().unwrap_or(0));
+			if col_count == 0 {
+				return out.flush();
+			}
+			let clean_headers: Vec<String> = (0..col_count).map(|i| headers.get(i).map(|s| table_cell(s)).unwrap_or_default()).collect();
+			let clean_rows: Vec<Vec<String>> = rows
+				.iter()
+				.map(|row| (0..col_count).map(|i| row.get(i).map(|s| table_cell(s)).unwrap_or_default()).collect())
+				.collect();
+			let mut widths: Vec<usize> = clean_headers.iter().map(|h| h.chars().count()).collect();
+			for row in &clean_rows {
+				for (i, cell) in row.iter().enumerate() {
+					widths[i] = widths[i].max(cell.chars().count());
+				}
+			}
+			let write_row = |out: &mut dyn Write, cells: &[String]| -> std::io::Result<()> {
+				for (i, cell) in cells.iter().enumerate() {
+					if i > 0 {
+						write!(out, " | ")?;
+					}
+					let pad = widths[i].saturating_sub(cell.chars().count());
+					write!(out, "{cell}")?;
+					if i + 1 < cells.len() && pad > 0 {
+						write!(out, "{}", " ".repeat(pad))?;
+					}
+				}
+				writeln!(out)
+			};
+			write_row(out, &clean_headers)?;
+			for (i, &w) in widths.iter().enumerate() {
+				if i > 0 {
+					write!(out, "-+-")?;
+				}
+				write!(out, "{}", "-".repeat(w.max(1)))?;
+			}
+			writeln!(out)?;
+			for row in &clean_rows {
+				write_row(out, row)?;
+			}
+		}
+	}
+	out.flush()
+}
+
+pub fn run_parsed(addr: &str, view: &View, root: &Path, parsed: &ParsedCall, waits: &Waits, out: &mut impl Write, err: &mut impl Write) -> u8 {
+	match ask(addr, view, root, &parsed.call, waits) {
 		Outcome::Answer(value) => {
-			let line = serde_json::to_string(&value).expect("an answer serializes");
-			if let Err(e) = writeln!(out, "{line}").and_then(|()| out.flush()) {
-				let ran = if matches!(call.verb, Verb::Apply | Verb::Change) {
+			let value = transform_answer(value, &parsed.transform);
+			if let Err(e) = format_value(&value, parsed.format, out) {
+				let ran = if parsed.call.writes() {
 					": the call was answered, so what it does may be done: look before you run it again"
 				} else {
 					""
@@ -372,6 +995,11 @@ pub fn run(addr: &str, view: &View, root: &Path, call: &Call, waits: &Waits, out
 			EXIT_UNREACHABLE
 		}
 	}
+}
+
+pub fn run(addr: &str, view: &View, root: &Path, call: &Call, waits: &Waits, out: &mut impl Write, err: &mut impl Write) -> u8 {
+	let parsed = ParsedCall { call: call.clone(), format: Format::Json, transform: Transform::Identity };
+	run_parsed(addr, view, root, &parsed, waits, out, err)
 }
 
 #[cfg(test)]
@@ -452,9 +1080,21 @@ mod tests {
 			vec!["query", "shop", "count", "a=1", "a:=2"],
 			vec!["query", "shop", "count", "n:=seven"],
 			vec!["query", "shop", "count", "n:=\"7\""],
-			vec!["query", "shop", "count", "n:=[1]"],
-			vec!["query", "shop", "count", "n:={}"],
 			vec!["query", "shop", "count", ":=1"],
+			vec!["query", "shop", "--sql-file"],
+			vec!["query", "shop", "count", "--dry-run"],
+			vec!["query", "shop", "count", "--params-json", "[1,2]"],
+			vec!["query", "shop", "count", "--params-json", "{\"Bad\":1}"],
+			vec!["query", "shop", "count", "--params-json", "{\"a\":1}", "a:=2"],
+			vec!["describe", "--format", "yaml"],
+			vec!["rows", "shop"],
+			vec!["rows", "shop", "bad-table"],
+			vec!["rows", "shop", "orders", "--limit", "0"],
+			vec!["rows", "shop", "orders", "--limit", "1001"],
+			vec!["rows", "shop", "orders", "--order", "id:sideways"],
+			vec!["rows", "shop", "orders", "--order", "bad-col:asc"],
+			vec!["changes"],
+			vec!["changes", "shop", "extra"],
 			vec!["change", "shop"],
 			vec!["change", "shop", "../add"],
 			vec!["change", "shop", "add", "id"],
@@ -778,5 +1418,167 @@ mod tests {
 		assert_eq!(saved_text(&root, "data/shop/queries/big.sql", &big), None);
 		let bytes: String = Sha256::digest([0xffu8, 0xfe]).iter().map(|b| format!("{b:02x}")).collect();
 		assert_eq!(saved_text(&root, "data/shop/queries/bytes.sql", &bytes), None);
+	}
+
+	#[test]
+	fn accepts_json_arrays_objects_params_files_sql_files_stdin_dry_run_rows_changes_and_help() {
+		let temp = Temp::new();
+		let parsed = |line: &[&str]| call(&args(line));
+		assert_eq!(
+			parsed(&["query", "shop", "search", "tags:=[\"a\",\"b\"]", "vec:=[0.1,0.2]", "meta:={\"k\":1,\"ok\":true}"]),
+			Ok(Call {
+				verb: Verb::Query,
+				body: body(json!({
+					"database": "shop",
+					"question": "search",
+					"params": { "tags": ["a", "b"], "vec": [0.1, 0.2], "meta": {"k": 1, "ok": true} }
+				})),
+			})
+		);
+
+		let sql_path = temp.0.join("q.sql");
+		std::fs::write(&sql_path, "select * from orders where id = :id").unwrap();
+		let params_path = temp.0.join("p.json");
+		std::fs::write(&params_path, "{\"id\":42,\"tags\":[\"vip\"]}").unwrap();
+		let from_file = parse_cli(
+			&args(&[
+				"query",
+				"shop",
+				"--sql-file",
+				sql_path.to_str().unwrap(),
+				"--params-file",
+				params_path.to_str().unwrap(),
+				"extra=ok",
+				"--format",
+				"table",
+			]),
+			None,
+			std::io::empty(),
+		)
+		.unwrap();
+		assert_eq!(
+			from_file,
+			Command::Execute(ParsedCall {
+				call: Call {
+					verb: Verb::Query,
+					body: body(json!({
+						"database": "shop",
+						"sql": "select * from orders where id = :id",
+						"params": { "id": 42, "tags": ["vip"], "extra": "ok" }
+					})),
+				},
+				format: Format::Table,
+				transform: Transform::Identity,
+			})
+		);
+
+		let from_stdin = parse_cli(
+			&args(&["query", "shop", "--sql", "-", "--params-json", "{\"n\":3}"]),
+			None,
+			"select :n".as_bytes(),
+		)
+		.unwrap();
+		assert_eq!(
+			from_stdin,
+			Command::Execute(ParsedCall {
+				call: Call { verb: Verb::Query, body: body(json!({"database": "shop", "sql": "select :n", "params": {"n": 3}})) },
+				format: Format::Json,
+				transform: Transform::Identity,
+			})
+		);
+
+		let change_dry = parse_cli(&args(&["change", "shop", "add-order", "id:=7", "--dry-run"]), None, std::io::empty()).unwrap();
+		assert_eq!(
+			change_dry,
+			Command::Execute(ParsedCall {
+				call: Call {
+					verb: Verb::Change,
+					body: body(json!({"database": "shop", "change": "add-order", "params": {"id": 7}, "preview": true})),
+				},
+				format: Format::Json,
+				transform: Transform::Identity,
+			})
+		);
+		if let Command::Execute(ref p) = change_dry {
+			assert!(!p.call.writes());
+		}
+
+		let apply_dry = parse_cli(&args(&["apply", "shop", "--dry-run"]), None, std::io::empty()).unwrap();
+		assert_eq!(
+			apply_dry,
+			Command::Execute(ParsedCall {
+				call: Call { verb: Verb::Describe, body: body(json!({"database": "shop"})) },
+				format: Format::Json,
+				transform: Transform::ApplyDryRun("shop".into()),
+			})
+		);
+
+		let rows_cmd = parse_cli(
+			&args(&["rows", "shop", "orders", "--limit", "25", "--offset", "10", "--order", "created_at:desc", "--format", "csv"]),
+			None,
+			std::io::empty(),
+		)
+		.unwrap();
+		assert_eq!(
+			rows_cmd,
+			Command::Execute(ParsedCall {
+				call: Call {
+					verb: Verb::Query,
+					body: body(json!({
+						"database": "shop",
+						"sql": "select * from \"orders\" order by \"created_at\" desc limit 25 offset 10"
+					})),
+				},
+				format: Format::Csv,
+				transform: Transform::Identity,
+			})
+		);
+
+		let changes_cmd = parse_cli(&args(&["changes", "shop"]), None, std::io::empty()).unwrap();
+		assert_eq!(
+			changes_cmd,
+			Command::Execute(ParsedCall {
+				call: Call { verb: Verb::Describe, body: body(json!({"database": "shop"})) },
+				format: Format::Json,
+				transform: Transform::DatabaseChanges("shop".into()),
+			})
+		);
+
+		for help in [vec!["--help"], vec!["-h"], vec!["query", "--help"], vec!["rows", "shop", "-h"]] {
+			assert_eq!(parse_cli(&args(&help), None, std::io::empty()), Ok(Command::Help));
+		}
+	}
+
+	#[test]
+	fn formats_tabular_and_transformed_answers_in_all_formats() {
+		let tabular_val = json!({"columns": ["id", "note"], "rows": [[1, "a, \"b\""], [2, null]], "more": false});
+		let render = |val: &Value, fmt: Format| {
+			let mut buf = Vec::new();
+			format_value(val, fmt, &mut buf).unwrap();
+			String::from_utf8(buf).unwrap()
+		};
+		assert_eq!(render(&tabular_val, Format::Csv), "id,note\n1,\"a, \"\"b\"\"\"\n2,\n");
+		assert_eq!(render(&tabular_val, Format::Tsv), "id\tnote\n1\ta, \"b\"\n2\t\n");
+		assert_eq!(render(&tabular_val, Format::Ndjson), "{\"id\":1,\"note\":\"a, \\\"b\\\"\"}\n{\"id\":2,\"note\":null}\n");
+		let table = render(&tabular_val, Format::Table);
+		assert!(table.contains("id | note\n") && table.contains("---+-------\n") && table.contains("1  | a, \"b\"\n"), "{table}");
+
+		let describe_val = json!({
+			"databases": [{
+				"database": "shop",
+				"steps": { "applied": [{"name": "001-init", "at": "2026-01-01"}], "waiting": ["002-idx"], "changed": [], "missing": [] },
+				"changes": [{"name": "add", "words": "Add order", "parameters": ["id"]}]
+			}]
+		});
+		let dry = transform_answer(describe_val.clone(), &Transform::ApplyDryRun("shop".into()));
+		assert_eq!(dry["dryRun"], Value::Bool(true));
+		assert_eq!(dry["steps"]["waiting"], json!(["002-idx"]));
+		let dry_csv = render(&dry, Format::Csv);
+		assert!(dry_csv.contains("applied,001-init,2026-01-01\n") && dry_csv.contains("waiting,002-idx,\n"), "{dry_csv}");
+
+		let changes = transform_answer(describe_val, &Transform::DatabaseChanges("shop".into()));
+		assert_eq!(changes["database"], json!("shop"));
+		assert_eq!(changes["changes"][0]["name"], json!("add"));
+		assert_eq!(render(&changes, Format::Ndjson), "{\"name\":\"add\",\"parameters\":[\"id\"],\"words\":\"Add order\"}\n");
 	}
 }
