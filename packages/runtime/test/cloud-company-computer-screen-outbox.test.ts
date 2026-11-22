@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { getEventListeners } from "node:events";
 import { chmod, link, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -379,5 +380,13 @@ describe("private durable screen outbox", () => {
 		await link(join(f.root, name), join(f.root, "scope-hardlink"));
 		await expect(f.queue.flush(signal())).rejects.toThrow("SCREEN_OUTBOX_INVENTORY_UNSAFE");
 		expect(f.call).not.toHaveBeenCalled();
+	});
+	it("detaches caller abort listeners after repeated flushes", async () => {
+		const f = await fixture();
+		const parent = new AbortController();
+		for (let i = 0; i < 10; i++) {
+			await f.queue.flush(parent.signal);
+		}
+		expect(getEventListeners(parent.signal, "abort")).toHaveLength(0);
 	});
 });

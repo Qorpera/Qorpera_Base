@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { getEventListeners } from "node:events";
 import type { CompanyPresenceIdentity } from "@qorpera/cloud-client/company-path-presence";
 import { PresenceSignatures } from "@qorpera/cloud-client/presence-signatures";
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
@@ -173,6 +174,7 @@ function fixture() {
 		registrations,
 		hidden,
 		revoked,
+		controller,
 		signal,
 		publish,
 		close: () => Promise.all(agents.map((agent) => agent.close())),
@@ -351,5 +353,17 @@ describe("native Company File presence", () => {
 		} finally {
 			await f.close();
 		}
+	});
+	it("detaches caller abort listeners on observe and parent listeners on close", async () => {
+		const f = fixture();
+		const caller = new AbortController();
+		try {
+			await f.publish(0, "projects/a.md");
+			await f.agents[1].observe("projects/a.md", "object", "reading", caller.signal);
+			expect(getEventListeners(caller.signal, "abort")).toHaveLength(0);
+		} finally {
+			await f.close();
+		}
+		expect(getEventListeners(f.controller.signal, "abort")).toHaveLength(0);
 	});
 });

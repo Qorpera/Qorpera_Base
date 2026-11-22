@@ -88,7 +88,10 @@ export async function startCompanyComputerBrowserEgress(options: {
 		connect: (address: string) => createConnection({ host: address, port: 443, family: 4, localAddress: plug }),
 	};
 	const stop = new AbortController();
-	const signal = AbortSignal.any([options.signal, stop.signal]);
+	const onParentAbort = (): void => stop.abort(options.signal.reason);
+	if (options.signal.aborted) onParentAbort();
+	else options.signal.addEventListener("abort", onParentAbort, { once: true });
+	const signal = stop.signal;
 	const peers = new Set<Socket>();
 	const upstreams = new Set<Socket>();
 	const pending = new Set<Promise<unknown>>();
@@ -122,7 +125,10 @@ export async function startCompanyComputerBrowserEgress(options: {
 		peers.add(peer);
 		track(new Promise<void>((resolve) => peer.once("close", () => resolve())));
 		const attempt = new AbortController();
-		const checked = AbortSignal.any([signal, attempt.signal]);
+		const onSignalAbort = (): void => attempt.abort(signal.reason);
+		if (signal.aborted) onSignalAbort();
+		else signal.addEventListener("abort", onSignalAbort, { once: true });
+		const checked = attempt.signal;
 		const timer = setTimeout(() => attempt.abort(), 5000);
 		let upstream: Socket | undefined;
 		let buffer = Buffer.alloc(0);
@@ -135,6 +141,7 @@ export async function startCompanyComputerBrowserEgress(options: {
 		peer.on("error", end);
 		peer.once("close", () => {
 			clearTimeout(timer);
+			signal.removeEventListener("abort", onSignalAbort);
 			attempt.abort();
 			checked.removeEventListener("abort", end);
 			peers.delete(peer);
@@ -296,6 +303,7 @@ export async function startCompanyComputerBrowserEgress(options: {
 		closing ??= cloudToolRequest(
 			async () => {
 				clearInterval(interval);
+				options.signal.removeEventListener("abort", onParentAbort);
 				stop.abort();
 				signal.removeEventListener("abort", abort);
 				await new Promise<void>((resolve) => server.close(() => resolve()));

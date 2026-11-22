@@ -1237,16 +1237,27 @@ export class CloudMemberFolderClient {
 					await this.#putPieces(`${base}/${opened.uploadId}`, file, prepared, opened.have, options);
 					signal.throwIfAborted();
 					finishing = true;
-					const answer = await this.#retried(
-						(requestSignal) =>
-							this.#send(
-								`${base}/${opened.uploadId}`,
-								"POST",
-								JSON.stringify({ schema: "qorpera.member-program-finish/v1", operationKey }),
-								requestSignal,
-							),
-						AbortSignal.timeout(FINISH_SETTLE_MS),
+					const settle = new AbortController();
+					const settleTimer = setTimeout(
+						() => settle.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+						FINISH_SETTLE_MS,
 					);
+					settleTimer.unref?.();
+					let answer: unknown;
+					try {
+						answer = await this.#retried(
+							(requestSignal) =>
+								this.#send(
+									`${base}/${opened.uploadId}`,
+									"POST",
+									JSON.stringify({ schema: "qorpera.member-program-finish/v1", operationKey }),
+									requestSignal,
+								),
+							settle.signal,
+						);
+					} finally {
+						clearTimeout(settleTimer);
+					}
 					return parseUploadFinish(answer);
 				} catch (error) {
 					if (!(error instanceof UploadGone) || attempt === 2) throw error;
@@ -1277,7 +1288,10 @@ export class CloudMemberFolderClient {
 			return turn;
 		};
 		const failed = new AbortController();
-		const signal = AbortSignal.any([options.signal, failed.signal]);
+		const onAbort = (): void => failed.abort(options.signal.reason);
+		if (options.signal.aborted) onAbort();
+		else options.signal.addEventListener("abort", onAbort, { once: true });
+		const signal = failed.signal;
 		const worker = async (place: number) => {
 			while (next < waiting.length && place < atOnce) {
 				const index = waiting[next++]!;
@@ -1308,7 +1322,13 @@ export class CloudMemberFolderClient {
 				options.onProgress?.(sent, prepared.bytes);
 			}
 		};
-		await Promise.all(Array.from({ length: Math.min(PIECES_AT_ONCE, waiting.length) }, (_, place) => worker(place)));
+		try {
+			await Promise.all(
+				Array.from({ length: Math.min(PIECES_AT_ONCE, waiting.length) }, (_, place) => worker(place)),
+			);
+		} finally {
+			options.signal.removeEventListener("abort", onAbort);
+		}
 	}
 
 	async #retried(
