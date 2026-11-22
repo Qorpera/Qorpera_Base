@@ -385,6 +385,21 @@ describe("surface code_repo parallel work, merge conflicts, previews, and scale 
 		const subCommands = f.log.slice(logCountBeforeSub);
 		expect(subCommands.some((cmd) => cmd.argv.includes("status") || cmd.argv.includes("reset"))).toBe(false);
 
+		const lockedPeer = await f.startSession(baseSha);
+		const lockedHead = await lockedPeer.commit({ "locked.js": "export const l = 1;\n" }, "Locked peer");
+		const lockPath = join(f.repo, "worktrees", lockedPeer.workerId, "index.lock");
+		await writeFile(lockPath, "");
+		const lockedRebase = await rebaseSessionChanges(f.job, {
+			repository: f.repository,
+			workerId: lockedPeer.workerId,
+			ontoSha: landedOther.mainAfter,
+			remainingChanges: [{ changeId: randomUUID(), parentSha: baseSha, headSha: lockedHead, title: "Locked" }],
+			updateBranchRef: true,
+		});
+		expect(lockedRebase).toMatchObject({ status: "deferred", reason: "worktree_dirty" });
+		expect(await f.git(f.repo, "rev-parse", `refs/heads/qorpera/coding/${lockedPeer.workerId}`)).toBe(lockedHead);
+		await rm(lockPath, { force: true });
+
 		await expect(
 			cherryPickChangeUnits(f.job, {
 				repository: f.repository,

@@ -65,7 +65,7 @@ export interface RebaseSessionChangesInput {
 	readonly allowedBranchTips?: readonly string[];
 }
 
-export type RebaseDeferReason = "branch_advanced" | "worktree_dirty" | "worktree_unsafe" | "cas_race";
+export type RebaseDeferReason = "branch_advanced" | "worktree_dirty" | "worktree_unsafe" | "cas_race" | "rebase_failed";
 
 export type RebaseSessionChangesResult =
 	| {
@@ -96,6 +96,7 @@ export type RebaseSessionChangesResult =
 			readonly status: "deferred";
 			readonly ontoSha: string;
 			readonly reason: RebaseDeferReason;
+			readonly errorCode?: string;
 			readonly restored: readonly string[];
 	  };
 
@@ -566,9 +567,23 @@ export async function rebaseSessionChanges(
 				return { status: "deferred" as const, ontoSha, reason: "cas_race" as const, restored: run.restored };
 			}
 			if (hasWorktree) {
-				// WHY: Once the branch ref moved, return clean with worktreeSynced=false rather than throwing so Postgres still records the moved SHAs.
+				// WHY: If reset fails (e.g. concurrent index.lock), roll back the ref via CAS so a stale index never reverts main on the next commit; only mark unsynced if rollback itself fails.
 				const reset = await run.git(wtAdmin, [`--work-tree=${wtTree}`, "reset", "--hard", "--quiet", cursor]);
-				if (reset.status !== 0) worktreeSynced = false;
+				if (reset.status !== 0) {
+					const rollbackArgs = oldTip
+						? ["update-ref", branchRef, oldTip, cursor]
+						: ["update-ref", "-d", branchRef, cursor];
+					const rolledBack = await run.git(run.repo, rollbackArgs);
+					if (rolledBack.status === 0) {
+						return {
+							status: "deferred" as const,
+							ontoSha,
+							reason: "worktree_dirty" as const,
+							restored: run.restored,
+						};
+					}
+					worktreeSynced = false;
+				}
 			}
 		}
 		return {

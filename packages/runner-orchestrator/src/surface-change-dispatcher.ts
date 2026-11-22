@@ -4,7 +4,7 @@ import {
 	type SurfaceChangeStatus,
 	type SurfaceSessionState,
 } from "@qorpera/contracts";
-import type { CodeHostJob } from "./code-host-jobs.ts";
+import { type CodeHostJob, CodeHostJobFailure, CodeHostRefusal } from "./code-host-jobs.ts";
 import {
 	CodeHostChangeConflict,
 	type CodeHostChangeRange,
@@ -55,6 +55,11 @@ export type SurfaceChangeApprovalOutcome =
 			readonly conflictPaths: readonly string[];
 	  };
 
+function rebaseErrorCode(error: unknown): string {
+	if (error instanceof CodeHostRefusal || error instanceof CodeHostJobFailure) return error.code;
+	return error instanceof Error && error.name ? error.name : "UNKNOWN";
+}
+
 // WHY: Runs selective cherry-pick landing, sibling/peer rebasing, lifecycle evaluation, and optional auto-publish in one deterministic workflow.
 export async function approveAndSyncSurfaceChanges(
 	job: CodeHostJob,
@@ -100,7 +105,8 @@ export async function approveAndSyncSurfaceChanges(
 			siblingRebase = {
 				status: "deferred",
 				ontoSha: landed.mainAfter,
-				reason: "worktree_dirty",
+				reason: "rebase_failed",
+				errorCode: rebaseErrorCode(error),
 				restored: [],
 			};
 		}
@@ -124,7 +130,8 @@ export async function approveAndSyncSurfaceChanges(
 			result = {
 				status: "deferred",
 				ontoSha: landed.mainAfter,
-				reason: "worktree_dirty",
+				reason: "rebase_failed",
+				errorCode: rebaseErrorCode(error),
 				restored: [],
 			};
 		}

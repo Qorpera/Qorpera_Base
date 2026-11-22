@@ -861,6 +861,7 @@ export class SurfaceCodeHostWorker {
 				surfaceId,
 				sessionId,
 				reason: result.reason,
+				...(result.errorCode ? { errorCode: result.errorCode } : {}),
 			});
 			return;
 		}
