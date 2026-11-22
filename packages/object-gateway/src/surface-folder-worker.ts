@@ -15,6 +15,7 @@ import {
 	mapBounded,
 	PLATFORM_ACTOR,
 	PLATFORM_STAGE_CONCURRENCY,
+	type PlatformFileReference,
 	PlatformFolderWriter,
 } from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
@@ -60,6 +61,7 @@ interface FolderFileState {
 	readonly content: string | null;
 	readonly version: string | null;
 	readonly isDirectory: boolean;
+	readonly fileRef: PlatformFileReference | null;
 }
 
 interface FolderEntryMeta {
@@ -69,6 +71,7 @@ interface FolderEntryMeta {
 	readonly manifestSha256: string | null;
 	readonly fileSha256: string | null;
 	readonly bytes: number;
+	readonly fileRef: PlatformFileReference | null;
 }
 
 function knownExistingDirs(entries: ReadonlyMap<string, FolderFileState>): Set<string> {
@@ -472,17 +475,18 @@ export class SurfaceFolderWorker {
 			? raw.publishes.map(parseClaimedFolderPublish).filter((j): j is ClaimedFolderPublishJob => j !== null)
 			: [];
 
-		const mergesBySurface = new Map<string, ClaimedFolderMergeJob[]>();
+		const mergesByEnvironment = new Map<string, ClaimedFolderMergeJob[]>();
 		for (const merge of merges) {
-			const bucket = mergesBySurface.get(merge.surfaceId);
+			const bucketKey = merge.environmentId ?? merge.surfaceId;
+			const bucket = mergesByEnvironment.get(bucketKey);
 			if (bucket) bucket.push(merge);
-			else mergesBySurface.set(merge.surfaceId, [merge]);
+			else mergesByEnvironment.set(bucketKey, [merge]);
 		}
 
 		let handled = 0;
-		if (mergesBySurface.size > 0) {
-			await mapBounded([...mergesBySurface.values()], PLATFORM_STAGE_CONCURRENCY, async (surfaceMerges) => {
-				for (const merge of surfaceMerges) {
+		if (mergesByEnvironment.size > 0) {
+			await mapBounded([...mergesByEnvironment.values()], PLATFORM_STAGE_CONCURRENCY, async (envMerges) => {
+				for (const merge of envMerges) {
 					if (signal?.aborted) break;
 					await withAbortScopes(
 						callerSignals,
@@ -562,18 +566,36 @@ export class SurfaceFolderWorker {
 				manifestSha256?: unknown;
 				fileSha256?: unknown;
 				bytes?: unknown;
+				mediaType?: unknown;
+				executable?: unknown;
 			} | null;
 		} | null;
 		if (response?.schema !== "qorpera.folder-read/v1") {
 			throw new Error(`Invalid folder read response for ${path}`);
 		}
 		if (!response.found || !response.entry) {
-			return { found: false, version: null, isDirectory: false, manifestSha256: null, fileSha256: null, bytes: 0 };
+			return {
+				found: false,
+				version: null,
+				isDirectory: false,
+				manifestSha256: null,
+				fileSha256: null,
+				bytes: 0,
+				fileRef: null,
+			};
 		}
 		const entry = response.entry;
 		const version = typeof entry.version === "string" ? entry.version : null;
 		if (entry.kind === "folder" || entry.kind === "dir") {
-			return { found: true, version, isDirectory: true, manifestSha256: null, fileSha256: null, bytes: 0 };
+			return {
+				found: true,
+				version,
+				isDirectory: true,
+				manifestSha256: null,
+				fileSha256: null,
+				bytes: 0,
+				fileRef: null,
+			};
 		}
 		if (
 			typeof entry.manifestSha256 !== "string" ||
@@ -582,6 +604,16 @@ export class SurfaceFolderWorker {
 		) {
 			throw new Error(`Invalid folder entry metadata for ${path}`);
 		}
+		const fileRef: PlatformFileReference | null =
+			typeof entry.mediaType === "string" && typeof entry.executable === "boolean"
+				? {
+						manifestSha256: entry.manifestSha256,
+						fileSha256: entry.fileSha256,
+						bytes: entry.bytes,
+						mediaType: entry.mediaType,
+						executable: entry.executable,
+					}
+				: null;
 		return {
 			found: true,
 			version,
@@ -589,16 +621,17 @@ export class SurfaceFolderWorker {
 			manifestSha256: entry.manifestSha256,
 			fileSha256: entry.fileSha256,
 			bytes: entry.bytes,
+			fileRef,
 		};
 	}
 
 	async #readFolderEntry(environmentId: string, path: string, signal: AbortSignal): Promise<FolderFileState> {
 		const meta = await this.#readFolderMeta(environmentId, path, signal);
 		if (!meta.found) {
-			return { content: null, version: null, isDirectory: false };
+			return { content: null, version: null, isDirectory: false, fileRef: null };
 		}
 		if (meta.isDirectory) {
-			return { content: null, version: meta.version, isDirectory: true };
+			return { content: null, version: meta.version, isDirectory: true, fileRef: null };
 		}
 		const bytes = await raceSignal(
 			this.#folder.read(
@@ -613,7 +646,7 @@ export class SurfaceFolderWorker {
 			),
 			signal,
 		);
-		return { content: UTF8_DECODER.decode(bytes), version: meta.version, isDirectory: false };
+		return { content: UTF8_DECODER.decode(bytes), version: meta.version, isDirectory: false, fileRef: meta.fileRef };
 	}
 
 	async #findMissingDirectories(
@@ -764,15 +797,24 @@ export class SurfaceFolderWorker {
 			readonly content: string;
 			readonly expectedVersion: string | null;
 		}[] = [];
+		const reusedWriteUnits: {
+			readonly path: string;
+			readonly file: PlatformFileReference;
+			readonly expectedVersion: string;
+		}[] = [];
 		const deleteUnits: { readonly path: string; readonly expectedVersion: string }[] = [];
-		const unchangedVersions = new Map<string, string>();
 		for (const [path, nextContent] of working) {
 			const priorState = currentByPath.get(path);
 			if (nextContent === null) {
 				if (!priorState || priorState.version === null) continue;
 				deleteUnits.push({ path, expectedVersion: priorState.version });
-			} else if (priorState && priorState.version !== null && priorState.content === nextContent) {
-				unchangedVersions.set(path, priorState.version);
+			} else if (
+				priorState &&
+				priorState.version !== null &&
+				priorState.content === nextContent &&
+				priorState.fileRef !== null
+			) {
+				reusedWriteUnits.push({ path, file: priorState.fileRef, expectedVersion: priorState.version });
 			} else {
 				writesToStage.push({ path, content: nextContent, expectedVersion: priorState?.version ?? null });
 			}
@@ -812,6 +854,15 @@ export class SurfaceFolderWorker {
 		for (const del of deleteUnits) {
 			units.push({ op: "delete", path: del.path, expectedVersion: del.expectedVersion });
 			unitPaths.push(del.path);
+		}
+		for (const reused of reusedWriteUnits) {
+			units.push({
+				op: "write",
+				path: reused.path,
+				file: reused.file,
+				expectedVersion: reused.expectedVersion,
+			});
+			unitPaths.push(reused.path);
 		}
 		for (let i = 0; i < writesToStage.length; i += 1) {
 			const entry = writesToStage[i]!;
@@ -871,7 +922,7 @@ export class SurfaceFolderWorker {
 		const versionsAfter: Record<string, string | null> = {};
 		const afterContentSha256: Record<string, string | null> = {};
 		for (const [path, content] of working) {
-			versionsAfter[path] = commitResult.versionsAfter[path] ?? unchangedVersions.get(path) ?? null;
+			versionsAfter[path] = commitResult.versionsAfter[path] ?? null;
 			afterContentSha256[path] = content === null ? null : sha256Hex(content);
 		}
 
@@ -1027,13 +1078,25 @@ export class SurfaceFolderWorker {
 			readonly content: string;
 			readonly expectedVersion: string | null;
 		}[] = [];
+		const reusedWriteUnits: {
+			readonly path: string;
+			readonly file: PlatformFileReference;
+			readonly expectedVersion: string;
+		}[] = [];
 		const deleteUnits: { readonly path: string; readonly expectedVersion: string }[] = [];
 		for (const [path, beforeContent] of Object.entries(snapshot.filesBefore)) {
 			const current = currentByPath.get(path);
 			if (beforeContent === null) {
 				if (!current || current.version === null) continue;
 				deleteUnits.push({ path, expectedVersion: current.version });
-			} else if (!current || current.version === null || current.content !== beforeContent) {
+			} else if (
+				current &&
+				current.version !== null &&
+				current.content === beforeContent &&
+				current.fileRef !== null
+			) {
+				reusedWriteUnits.push({ path, file: current.fileRef, expectedVersion: current.version });
+			} else {
 				writesToStage.push({ path, content: beforeContent, expectedVersion: current?.version ?? null });
 			}
 		}
@@ -1072,6 +1135,15 @@ export class SurfaceFolderWorker {
 		for (const del of deleteUnits) {
 			units.push({ op: "delete", path: del.path, expectedVersion: del.expectedVersion });
 			unitPaths.push(del.path);
+		}
+		for (const reused of reusedWriteUnits) {
+			units.push({
+				op: "write",
+				path: reused.path,
+				file: reused.file,
+				expectedVersion: reused.expectedVersion,
+			});
+			unitPaths.push(reused.path);
 		}
 		for (let i = 0; i < writesToStage.length; i += 1) {
 			const entry = writesToStage[i]!;

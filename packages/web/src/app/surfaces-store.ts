@@ -202,10 +202,7 @@ export function normalizeStudioPatchOps(
 	let changed = false;
 	const next = ops.map((op) => {
 		const cleaned = op.path.trim().replace(/^\/+|\/+$/g, "");
-		const target =
-			!cleaned || cleaned === root || cleaned.startsWith(`${root}/`) || cleaned.startsWith("QorperaOS/")
-				? cleaned
-				: `${root}/${cleaned}`;
+		const target = !cleaned || cleaned === root || cleaned.startsWith(`${root}/`) ? cleaned : `${root}/${cleaned}`;
 		if (target === op.path) return op;
 		changed = true;
 		return { ...op, path: target };
@@ -2020,26 +2017,27 @@ export class SurfacesStore {
 		let rerunVisible = false;
 		try {
 			const files = await loadFiles(surface, this.#options.signal);
-			if (this.#options.signal.aborted || files === undefined) return;
-			this.store.set((state) => {
-				const existingPending = state.pendingStudioPatches[surface.id];
-				let nextPendingStudioPatches = state.pendingStudioPatches;
-				if (existingPending && existingPending.length > 0) {
-					const remaining = existingPending.filter((item) => item.rev > fetchStartRev);
-					if (remaining.length !== existingPending.length) {
-						const copy = { ...state.pendingStudioPatches };
-						if (remaining.length > 0) copy[surface.id] = remaining;
-						else delete copy[surface.id];
-						nextPendingStudioPatches = copy;
+			if (!this.#options.signal.aborted && files !== undefined) {
+				this.store.set((state) => {
+					const existingPending = state.pendingStudioPatches[surface.id];
+					let nextPendingStudioPatches = state.pendingStudioPatches;
+					if (existingPending && existingPending.length > 0) {
+						const remaining = existingPending.filter((item) => item.rev > fetchStartRev);
+						if (remaining.length !== existingPending.length) {
+							const copy = { ...state.pendingStudioPatches };
+							if (remaining.length > 0) copy[surface.id] = remaining;
+							else delete copy[surface.id];
+							nextPendingStudioPatches = copy;
+						}
 					}
-				}
-				return {
-					cloudSurfaceFiles: { ...state.cloudSurfaceFiles, [surface.id]: files },
-					...(nextPendingStudioPatches !== state.pendingStudioPatches
-						? { pendingStudioPatches: nextPendingStudioPatches }
-						: {}),
-				};
-			});
+					return {
+						cloudSurfaceFiles: { ...state.cloudSurfaceFiles, [surface.id]: files },
+						...(nextPendingStudioPatches !== state.pendingStudioPatches
+							? { pendingStudioPatches: nextPendingStudioPatches }
+							: {}),
+					};
+				});
+			}
 		} catch {
 			if (!this.#options.signal.aborted) {
 				this.store.set((state) => {

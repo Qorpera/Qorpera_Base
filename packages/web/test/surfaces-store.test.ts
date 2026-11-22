@@ -8,6 +8,7 @@ import {
 	compiledCompanyIdentity,
 	effectiveStudioBaseFiles,
 	migrationPending,
+	normalizeStudioPatchOps,
 	PREVIEW_PASS_TTL_MS,
 	readSurfaceFolderFiles,
 	reportsOwnedBy,
@@ -1315,6 +1316,66 @@ describe("SurfacesStore", () => {
 		await store.refreshWorkspace(SURFACE);
 		expect(await store.discardSession(SESSION)).toBe(false);
 		expect(store.session(SESSION)?.changes[0]?.status).toBe("discarded");
+		store.dispose();
+	});
+
+	it("runs a queued dirty refresh and clears updating flags even when an earlier loadCloudFiles call resolves undefined, and matches worker path normalization", async () => {
+		const identityId = "22222222-2222-4222-8222-222222222279";
+		const identity = summary({
+			id: identityId,
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			sourceKind: "folder",
+			folderRoot: "identity",
+			kind: "identity",
+			isGlobal: true,
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const firstLoad = deferred<Record<string, string> | undefined>();
+		const secondLoad = deferred<Record<string, string> | undefined>();
+		let calls = 0;
+		const loadCloudFiles = vi.fn(() => {
+			calls += 1;
+			return calls === 1 ? firstLoad.promise : secondLoad.promise;
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [identity]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: identity })),
+		});
+		const store = storeWith(client, { loadCloudFiles });
+		await store.load();
+		await store.openSurface("identity");
+		expect(loadCloudFiles).toHaveBeenCalledTimes(1);
+		expect(store.isCloudFilesLoading(identityId)).toBe(true);
+
+		const dirtyRefresh = store.refreshCloudFiles(identity, { visible: true });
+		expect(store.surfaceUpdatePhase(identityId)).toBe("updating");
+
+		firstLoad.resolve(undefined);
+		await dirtyRefresh;
+		await Promise.resolve();
+		expect(loadCloudFiles).toHaveBeenCalledTimes(2);
+		expect(store.surfaceUpdatePhase(identityId)).toBe("updating");
+
+		secondLoad.resolve({ "identity/tokens.json": '{"colors":{"accent":"#336699"}}' });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(store.isCloudFilesLoading(identityId)).toBe(false);
+		expect(store.surfaceUpdatePhase(identityId)).toBeNull();
+		expect(store.state.cloudSurfaceFiles[identityId]?.["identity/tokens.json"]).toContain("#336699");
+
+		expect(
+			normalizeStudioPatchOps(
+				[
+					{ op: "write_text", path: "QorperaOS/surfaces/identity/notes/a.md", content: "note" },
+					{ op: "write_text", path: "identity/tokens.json", content: "{}" },
+					{ op: "write_text", path: "voice.md", content: "hi" },
+				],
+				"identity",
+			).map((op) => op.path),
+		).toEqual(["identity/QorperaOS/surfaces/identity/notes/a.md", "identity/tokens.json", "identity/voice.md"]);
 		store.dispose();
 	});
 });

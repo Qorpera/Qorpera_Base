@@ -24,6 +24,7 @@ function createHarness(
 		readonly leaseRenewIntervalMs?: number;
 		readonly hangStoreGet?: boolean;
 		readonly commitDelayMs?: number;
+		readonly onBeforeCommit?: () => void;
 	},
 ) {
 	const profileId = randomUUID();
@@ -189,6 +190,7 @@ function createHarness(
 				}
 				case "qorpera_folder_commit": {
 					commitCount += 1;
+					options?.onBeforeCommit?.();
 					const preCommitErr = preCommitErrors.shift();
 					if (preCommitErr) {
 						throw preCommitErr;
@@ -1197,10 +1199,175 @@ describe("SurfaceFolderWorker", () => {
 		expect(maxConcurrentStages).toBe(2);
 		expect(readPaths).not.toContain("identity");
 		expect(openUploads).toBe(2);
-		expect(committedUnits[0]?.map((unit) => unit.path)).toEqual(["identity/tokens.json", "identity/tokens.css"]);
+		expect(committedUnits[0]?.map((unit) => unit.path)).toEqual([
+			"identity/voice.md",
+			"identity/tokens.json",
+			"identity/tokens.css",
+		]);
+		expect(committedUnits[0]?.[0]?.expectedVersion).toBe(unchangedVersion);
 		const snapshot = completedMerges[0]?.p_pre_merge_snapshot as {
 			versionsAfter?: Record<string, string | null>;
 		};
-		expect(snapshot?.versionsAfter?.["identity/voice.md"]).toBe(unchangedVersion);
+		expect(typeof snapshot?.versionsAfter?.["identity/voice.md"]).toBe("string");
+	});
+
+	it("preserves CAS guards on unchanged files, saves undo snapshots for all-unchanged patches, and serializes overlapping same-environment surfaces", async () => {
+		const hNoop = createHarness({ "brand/voice.md": "Original voice." });
+		const noopJobId = randomUUID();
+		const noopChangeId = randomUUID();
+		hNoop.setPendingClaim({
+			merges: [
+				{
+					jobId: noopJobId,
+					kind: "land_change",
+					surfaceId: hNoop.surfaceId,
+					profileId: hNoop.profileId,
+					environmentId: hNoop.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "brand",
+					payload: { changeIds: [noopChangeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: noopChangeId,
+							kind: "folder_patch",
+							title: "No-op voice write",
+							summary: "Writes identical content",
+							affectedPaths: ["voice.md"],
+							patchManifest: [{ op: "write_text", path: "voice.md", content: "Original voice." }],
+						},
+					],
+				},
+			],
+		});
+		expect(await hNoop.worker.processDue(8)).toBe(1);
+		expect(hNoop.getCommitCount()).toBe(1);
+		const noopSnapshot = hNoop.completedMerges[0]?.p_pre_merge_snapshot as Record<string, unknown> | null;
+		expect(noopSnapshot).toBeTruthy();
+
+		const noopUndoJobId = randomUUID();
+		hNoop.setPendingClaim({
+			merges: [
+				{
+					jobId: noopUndoJobId,
+					kind: "undo_change",
+					surfaceId: hNoop.surfaceId,
+					profileId: hNoop.profileId,
+					environmentId: hNoop.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "brand",
+					payload: { changeId: noopChangeId },
+					preMergeSnapshot: noopSnapshot,
+					approvedChanges: [],
+				},
+			],
+		});
+		expect(await hNoop.worker.processDue(8)).toBe(1);
+		expect(hNoop.completedMerges[1]).toMatchObject({ p_job_id: noopUndoJobId, p_status: "landed" });
+
+		let mutatedMidFlight = false;
+		const hConflict = createHarness(
+			{ "brand/voice.md": "Original voice." },
+			{
+				onBeforeCommit: () => {
+					if (!mutatedMidFlight) {
+						mutatedMidFlight = true;
+						hConflict.putFile("brand/voice.md", "Concurrent edit before commit.");
+					}
+				},
+			},
+		);
+		const conflictJobId = randomUUID();
+		const conflictChangeId = randomUUID();
+		hConflict.setPendingClaim({
+			merges: [
+				{
+					jobId: conflictJobId,
+					kind: "land_change",
+					surfaceId: hConflict.surfaceId,
+					profileId: hConflict.profileId,
+					environmentId: hConflict.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "brand",
+					payload: { changeIds: [conflictChangeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: conflictChangeId,
+							kind: "folder_patch",
+							title: "No-op voice write racing concurrent edit",
+							summary: "Writes identical content",
+							affectedPaths: ["voice.md"],
+							patchManifest: [{ op: "write_text", path: "voice.md", content: "Original voice." }],
+						},
+					],
+				},
+			],
+		});
+		expect(await hConflict.worker.processDue(8)).toBe(1);
+		expect(hConflict.completedMerges[0]).toMatchObject({
+			p_job_id: conflictJobId,
+			p_status: "conflicted",
+			p_conflict_paths: ["brand/voice.md"],
+		});
+		expect(hConflict.readText("brand/voice.md")).toBe("Concurrent edit before commit.");
+
+		const hOverlap = createHarness({ "site/blog/post.md": "v0" }, { commitDelayMs: 20 });
+		const secondSurfaceId = randomUUID();
+		const jobA = randomUUID();
+		const jobB = randomUUID();
+		const changeA = randomUUID();
+		const changeB = randomUUID();
+		hOverlap.setPendingClaim({
+			merges: [
+				{
+					jobId: jobA,
+					kind: "land_change",
+					surfaceId: hOverlap.surfaceId,
+					profileId: hOverlap.profileId,
+					environmentId: hOverlap.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "site",
+					payload: { changeIds: [changeA] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: changeA,
+							kind: "folder_patch",
+							title: "Root edit",
+							summary: "Edits nested post via parent root",
+							affectedPaths: ["blog/post.md"],
+							patchManifest: [{ op: "write_text", path: "blog/post.md", content: "v1" }],
+						},
+					],
+				},
+				{
+					jobId: jobB,
+					kind: "land_change",
+					surfaceId: secondSurfaceId,
+					profileId: hOverlap.profileId,
+					environmentId: hOverlap.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "site/blog",
+					payload: { changeIds: [changeB] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: changeB,
+							kind: "folder_patch",
+							title: "Nested edit",
+							summary: "Edits same post via nested root",
+							affectedPaths: ["post.md"],
+							patchManifest: [{ op: "write_text", path: "post.md", content: "v2" }],
+						},
+					],
+				},
+			],
+		});
+		expect(await hOverlap.worker.processDue(8)).toBe(2);
+		expect(hOverlap.completedMerges).toHaveLength(2);
+		expect(hOverlap.completedMerges[0]).toMatchObject({ p_job_id: jobA, p_status: "landed" });
+		expect(hOverlap.completedMerges[1]).toMatchObject({ p_job_id: jobB, p_status: "landed" });
+		expect(hOverlap.readText("site/blog/post.md")).toBe("v2");
 	});
 });
