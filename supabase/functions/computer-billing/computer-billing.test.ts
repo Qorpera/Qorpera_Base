@@ -1090,5 +1090,61 @@ describe("Good will", () => {
 		assert.deepEqual(noStarve, { invoiced: 1, failed: 0 });
 		assert.deepEqual(createdAfterOpen, ["in_fresh_1"]);
 		assert.equal(callOrder[0], "POST /v1/invoices");
+		assert.equal(
+			callOrder.filter((entry) => entry.startsWith("GET /v1/invoices/")).length,
+			1,
+			"maxBatch must bound Stripe GET calls for already-open months",
+		);
+
+		let stripeRedirect: RequestRedirect | undefined;
+		const redirectApi = createStripeApi("sk_test_x", async (_url, init) => {
+			stripeRedirect = init?.redirect;
+			return Response.json({ id: "in_ok" });
+		});
+		await redirectApi.get("/v1/invoices/in_ok");
+		assert.equal(stripeRedirect, "error");
+
+		const brokenStream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.error(new Error("reset"));
+			},
+		});
+		const erroredReq = new Request("https://project.example.test/functions/v1/computer-billing/webhook", {
+			method: "POST",
+			body: brokenStream,
+			duplex: "half",
+		} as RequestInit);
+		const erroredRes = await handleComputerBilling(erroredReq, {
+			store: { call: async () => ({}) },
+			stripe: redirectApi,
+			auth: { member: async () => null },
+			options: {
+				livemode: false,
+				webhookSecret: "whsec_test",
+				returnUrl: "https://app.qorpera.com/plan",
+				allowedOrigins: ["https://app.qorpera.com"],
+			},
+		});
+		assert.equal(erroredRes.status, 400);
+
+		const abortedController = new AbortController();
+		abortedController.abort(new DOMException("aborted", "AbortError"));
+		const abortedReq = new Request("https://project.example.test/functions/v1/computer-billing/webhook", {
+			method: "POST",
+			body: "{}",
+			signal: abortedController.signal,
+		});
+		const abortedRes = await handleComputerBilling(abortedReq, {
+			store: { call: async () => ({}) },
+			stripe: redirectApi,
+			auth: { member: async () => null },
+			options: {
+				livemode: false,
+				webhookSecret: "whsec_test",
+				returnUrl: "https://app.qorpera.com/plan",
+				allowedOrigins: ["https://app.qorpera.com"],
+			},
+		});
+		assert.equal(abortedRes.status, 408);
 	});
 });

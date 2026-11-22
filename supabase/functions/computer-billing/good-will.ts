@@ -184,6 +184,8 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 		};
 		const failed = (invoiceId: string, why: string) =>
 			deps.goodWill.call("invoice_failed", { invoiceId, profileId, month: period, livemode: deps.livemode, why });
+		// WHY: Count every valid month that hits Stripe toward maxBatch so open or failing months cannot hammer Stripe until the 45 s budget expires.
+		processed++;
 		try {
 			let invoiceId = string(month?.invoiceId);
 			const created = !invoiceId;
@@ -219,7 +221,6 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 				await record(invoiceId);
 			}
 			if (created || invoice.status === "draft") {
-				processed++;
 				// The company's card now, also when a founder saved another one after the draft was made.
 				if (!created && invoice.default_payment_method !== paymentMethodId)
 					await deps.stripe.post(`/v1/invoices/${encodeURIComponent(invoiceId)}`, {
