@@ -21,6 +21,7 @@ import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
+import { createWebSiteHosting } from "../cloud/site-hosting.ts";
 import { type CompanySite, createWebSites, siteOfLink } from "../cloud/sites.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
@@ -2792,6 +2793,7 @@ export function mountApplication(
 				if (!sitesPage) {
 					const view = new SitesView(createWebSites(cloud, controller.profile), controller.signal, {
 						access: { canManage: managesSites },
+						hosting: createWebSiteHosting(cloud, controller.profile),
 						listed: (list) => controller.store.set(sitesListed(list)),
 						// A site made from a project's code names the version What's new has live, and links there.
 						releases: {

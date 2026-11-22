@@ -40,3 +40,26 @@ export async function withTimeoutScope<T>(
 		parent?.removeEventListener("abort", forward);
 	}
 }
+
+export async function withAbortScopes<T>(
+	parents: readonly (AbortSignal | undefined)[],
+	use: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+	const scope = new AbortController();
+	const listeners: Array<readonly [AbortSignal, () => void]> = [];
+	for (const parent of parents) {
+		if (!parent) continue;
+		if (parent.aborted) {
+			scope.abort(parent.reason);
+			break;
+		}
+		const forward = (): void => scope.abort(parent.reason);
+		parent.addEventListener("abort", forward, { once: true });
+		listeners.push([parent, forward]);
+	}
+	try {
+		return await use(scope.signal);
+	} finally {
+		for (const [parent, forward] of listeners) parent.removeEventListener("abort", forward);
+	}
+}

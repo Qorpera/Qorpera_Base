@@ -601,8 +601,8 @@ export class HttpCloudCodingCommandService {
 		this.#server = server;
 		server.requestTimeout = 15000;
 		server.headersTimeout = 10000;
-		server.keepAliveTimeout = 1000;
-		server.maxRequestsPerSocket = 10;
+		server.keepAliveTimeout = 65_000;
+		server.maxRequestsPerSocket = 1000;
 		try {
 			await new Promise<void>((resolve, reject) => {
 				const onError = (error: Error): void => {

@@ -72,6 +72,7 @@
 
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
+import { withTimeoutScope } from "../_shared/abort-timeout.ts";
 
 export const DEFAULT_SITES_ORIGIN = "https://sites.qorpera.com";
 /** The web's origins when QORPERA_WEB_ORIGINS is not set: the production app. */
@@ -1829,41 +1830,43 @@ export class PostgrestSiteStore implements SiteStore {
 	}
 
 	async #call(name: string, args: Record<string, unknown>, timeoutMs = this.#timeoutMs): Promise<unknown> {
-		const response = await this.#fetch(`${this.#projectUrl}/rest/v1/rpc/${name}`, {
-			method: "POST",
-			redirect: "error",
-			headers: { ...serviceHeaders(this.#secretKey), "content-type": "application/json" },
-			body: JSON.stringify(args),
-			signal: AbortSignal.timeout(timeoutMs),
-		});
-		if (!response.ok) {
-			// PostgREST answers 404 with code PGRST202 for a function it does not have: one whose migration is not applied.
-			if (response.status === 404 && (await errorCode(response)) === "PGRST202") throw new MissingFunction(name);
-			void response.body?.cancel().catch(() => undefined);
-			throw new Error(`The database answered HTTP ${response.status}`);
-		}
-		const declared = response.headers.get("content-length");
-		if (declared !== null && Number(declared) > MAX_STORE_ANSWER_BYTES) {
-			void response.body?.cancel().catch(() => undefined);
-			throw new Error("The database's answer is too large");
-		}
-		const reader = response.body?.getReader();
-		if (!reader) throw new Error("The database answered without a body");
-		const chunks: Uint8Array[] = [];
-		let total = 0;
-		try {
-			for (;;) {
-				const chunk = await reader.read();
-				if (chunk.done) break;
-				total += chunk.value.byteLength;
-				if (total > MAX_STORE_ANSWER_BYTES) throw new Error("The database's answer is too large");
-				chunks.push(chunk.value);
+		return withTimeoutScope(timeoutMs, async (signal) => {
+			const response = await this.#fetch(`${this.#projectUrl}/rest/v1/rpc/${name}`, {
+				method: "POST",
+				redirect: "error",
+				headers: { ...serviceHeaders(this.#secretKey), "content-type": "application/json" },
+				body: JSON.stringify(args),
+				signal,
+			});
+			if (!response.ok) {
+				// PostgREST answers 404 with code PGRST202 for a function it does not have: one whose migration is not applied.
+				if (response.status === 404 && (await errorCode(response)) === "PGRST202") throw new MissingFunction(name);
+				void response.body?.cancel().catch(() => undefined);
+				throw new Error(`The database answered HTTP ${response.status}`);
 			}
-		} finally {
-			void reader.cancel().catch(() => undefined);
-		}
-		const merged = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
-		chunks.length = 0;
-		return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(merged));
+			const declared = response.headers.get("content-length");
+			if (declared !== null && Number(declared) > MAX_STORE_ANSWER_BYTES) {
+				void response.body?.cancel().catch(() => undefined);
+				throw new Error("The database's answer is too large");
+			}
+			const reader = response.body?.getReader();
+			if (!reader) throw new Error("The database answered without a body");
+			const chunks: Uint8Array[] = [];
+			let total = 0;
+			try {
+				for (;;) {
+					const chunk = await reader.read();
+					if (chunk.done) break;
+					total += chunk.value.byteLength;
+					if (total > MAX_STORE_ANSWER_BYTES) throw new Error("The database's answer is too large");
+					chunks.push(chunk.value);
+				}
+			} finally {
+				void reader.cancel().catch(() => undefined);
+			}
+			const merged = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
+			chunks.length = 0;
+			return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(merged));
+		});
 	}
 }

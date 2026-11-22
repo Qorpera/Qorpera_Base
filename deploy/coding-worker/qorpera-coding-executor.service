@@ -61,9 +61,10 @@ ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 CapabilityBoundingSet=
 UMask=0077
-MemoryMax=2G
-TasksMax=512
-CPUQuota=200%
+MemoryMax=4G
+TasksMax=1024
+CPUQuota=400%
+LimitNOFILE=16384
 LimitCORE=0
 
 [Install]

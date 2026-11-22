@@ -24,7 +24,7 @@ import { CodeImportStop, type CodeImportTransports } from "../../packages/runner
 import { fetchGitHubImport } from "../../packages/runner-orchestrator/src/code-import-fetch.ts";
 import { CodeImport } from "../../packages/runner-orchestrator/src/code-import-run.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
-import { readCodeSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
+import { exportCodeSiteSource, readCodeSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { CodeSiteUploads } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
@@ -138,11 +138,21 @@ interface Config {
 	 * `qorpera-desktop-stream.socket` (deploy/coding-worker/), which systemd answers with one instance of
 	 * `qorpera-desktop-stream@.service` per connection. Absent: members' live pictures of this node's desktops are refused. */
 	desktopStreams: { socket: string } | null;
+	webHosting: {
+		routerInternalUrl: string;
+		controlTokenCredential: string;
+		appHostInternalUrl?: string;
+		appHostControlTokenCredential?: string;
+		builderScriptPath?: string;
+		registryPrefix?: string;
+		companyDataUrl?: string;
+		objectStorageUrl?: string;
+	} | null;
 }
 interface PinnedFile { path: string; sha256: string }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
-const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "desktopStreams", "folder", "machines", "memberScreens", "memberStreams"]);
+const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "desktopStreams", "folder", "machines", "memberScreens", "memberStreams", "webHosting"]);
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return value as Record<string, unknown>;
@@ -206,6 +216,67 @@ function desktopStreamsConfig(value: unknown): Config["desktopStreams"] {
 		!/^\/run\/[A-Za-z0-9._-]{1,64}(\/[A-Za-z0-9._-]{1,64})?\.sock$/.test(input.socket))
 		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return { socket: input.socket };
+}
+function internalHttpOrigin(value: unknown): string {
+	if (typeof value !== "string") throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	const url = new URL(value);
+	if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || url.search || url.hash)
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return url.origin;
+}
+function webHostingConfig(value: unknown): Config["webHosting"] {
+	if (value === undefined) return null;
+	const input = object(value);
+	const allowed = new Set([
+		"routerInternalUrl",
+		"controlTokenCredential",
+		"appHostInternalUrl",
+		"appHostControlTokenCredential",
+		"builderScriptPath",
+		"registryPrefix",
+		"companyDataUrl",
+		"objectStorageUrl",
+	]);
+	if (Object.keys(input).some((k) => !allowed.has(k))) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	if (
+		typeof input.controlTokenCredential !== "string" ||
+		!/^qorpera-web-[a-z0-9-]{1,64}$/.test(input.controlTokenCredential)
+	)
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	const routerInternalUrl = internalHttpOrigin(input.routerInternalUrl);
+	const appHostInternalUrl =
+		input.appHostInternalUrl === undefined ? undefined : internalHttpOrigin(input.appHostInternalUrl);
+	const appHostControlTokenCredential =
+		input.appHostControlTokenCredential === undefined
+			? undefined
+			: typeof input.appHostControlTokenCredential === "string" &&
+					/^qorpera-web-[a-z0-9-]{1,64}$/.test(input.appHostControlTokenCredential)
+				? input.appHostControlTokenCredential
+				: (() => {
+						throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+					})();
+	const builderScriptPath =
+		input.builderScriptPath === undefined ? undefined : absolutePath(input.builderScriptPath, 4096);
+	const registryPrefix =
+		input.registryPrefix === undefined
+			? undefined
+			: typeof input.registryPrefix === "string" && /^[a-z0-9._:/-]{3,200}$/.test(input.registryPrefix)
+				? input.registryPrefix
+				: (() => {
+						throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+					})();
+	const companyDataUrl = input.companyDataUrl === undefined ? undefined : internalHttpOrigin(input.companyDataUrl);
+	const objectStorageUrl = input.objectStorageUrl === undefined ? undefined : internalHttpOrigin(input.objectStorageUrl);
+	return {
+		routerInternalUrl,
+		controlTokenCredential: input.controlTokenCredential,
+		...(appHostInternalUrl !== undefined ? { appHostInternalUrl } : {}),
+		...(appHostControlTokenCredential !== undefined ? { appHostControlTokenCredential } : {}),
+		...(builderScriptPath !== undefined ? { builderScriptPath } : {}),
+		...(registryPrefix !== undefined ? { registryPrefix } : {}),
+		...(companyDataUrl !== undefined ? { companyDataUrl } : {}),
+		...(objectStorageUrl !== undefined ? { objectStorageUrl } : {}),
+	};
 }
 /** The file's bytes, refused unless they are the pinned ones. */
 async function readPinned(file: PinnedFile): Promise<Buffer> {
@@ -312,6 +383,7 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 			memberScreensConfig(config.memberScreens, [Number(config.commandPort), Number(config.peerCommandPort)]),
 			[Number(config.commandPort), Number(config.peerCommandPort)]),
 		desktopStreams: desktopStreamsConfig(config.desktopStreams),
+		webHosting: webHostingConfig(config.webHosting),
 	};
 }
 
@@ -444,9 +516,24 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	}) : undefined;
 	// A repository's site (step 4): the tree its landing's checks left in the repository's storage, read in a job that
 	// yields to a turn's and uploaded as a version a member can put live from What's new.
+	const nativeEdge = config.webHosting
+		? {
+				routerInternalUrl: config.webHosting.routerInternalUrl,
+				controlToken: await credential(config.webHosting.controlTokenCredential),
+				...(config.webHosting.appHostInternalUrl ? { appHostInternalUrl: config.webHosting.appHostInternalUrl } : {}),
+				...(config.webHosting.appHostControlTokenCredential
+					? { appHostControlToken: await credential(config.webHosting.appHostControlTokenCredential) }
+					: {}),
+				...(config.webHosting.builderScriptPath ? { builderScriptPath: config.webHosting.builderScriptPath } : {}),
+				...(config.webHosting.registryPrefix ? { registryPrefix: config.webHosting.registryPrefix } : {}),
+				...(config.webHosting.companyDataUrl ? { companyDataUrl: config.webHosting.companyDataUrl } : {}),
+				...(config.webHosting.objectStorageUrl ? { objectStorageUrl: config.webHosting.objectStorageUrl } : {}),
+			}
+		: undefined;
 	const codeSites = codeHostJobs ? new CodeSiteUploads({
 		control, hosts: codeHostJobs, read: readCodeSiteTree, owner: config.owner,
 		machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
+		...(nativeEdge ? { nativeEdge, exportSource: exportCodeSiteSource } : {}),
 	}) : undefined;
 	const codeRequests = codeHostJobs && codeRecords ? codeHostRequestsOf({
 		control, hosts: codeHostJobs, records: codeRecords, bundles: codeBundles,
@@ -535,8 +622,18 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const memberControl = config.memberScreens
 		? new MemberMachineScreenControl({ supabaseUrl: config.supabaseUrl, publishableKey: config.memberScreens.publishableKey })
 		: undefined;
+	const commandToken = await credential("qorpera-coding-command");
+	const peerToken = await credential("qorpera-coding-peer-command");
+	if (commandToken === peerToken) throw new Error("CODING_COMMAND_CREDENTIALS_NOT_SEPARATE");
+	const peerTokens = new Map<string, string>();
+	for (const peer of config.commandPeers) {
+		const remoteToken = await credential(peer.tokenCredential);
+		if (remoteToken === commandToken || remoteToken === peerToken) throw new Error("CODING_COMMAND_CREDENTIALS_NOT_SEPARATE");
+		peerTokens.set(peer.tokenCredential, remoteToken);
+	}
+	const peerCredential = async (name: string): Promise<string> => peerTokens.get(name) ?? credential(name);
 	const machineRouter = new MachineCommandRouter({
-		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
+		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential: peerCredential,
 		...(memberControl ? { memberBegin: (token: string, look: { companyId: string; machineId: string; confirmed: boolean },
 			signal: AbortSignal) => memberControl.begin(token, look, signal),
 		// A member's action (20260930713000) is begun as the member too, recorded without its text.
@@ -579,7 +676,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		} : {}),
 	});
 	const router = new CodingCommandRouter({
-		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
+		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential: peerCredential,
 		async executeLocal(request, signal) {
 			const transport = await host.commandTransport(request.scope, async (action, scope, commandId, inputSha256, checked) => {
 				if (action !== request.action || JSON.stringify(scope) !== JSON.stringify(request.scope) || commandId !== request.input.commandId ||
@@ -592,13 +689,6 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal));
 		},
 	});
-	const commandToken = await credential("qorpera-coding-command");
-	const peerToken = await credential("qorpera-coding-peer-command");
-	if (commandToken === peerToken) throw new Error("CODING_COMMAND_CREDENTIALS_NOT_SEPARATE");
-	for (const peer of config.commandPeers) {
-		const remoteToken = await credential(peer.tokenCredential);
-		if (remoteToken === commandToken || remoteToken === peerToken) throw new Error("CODING_COMMAND_CREDENTIALS_NOT_SEPARATE");
-	}
 	const commands = new HttpCloudCodingCommandService({
 		token: commandToken, port: config.commandPort,
 		// G2-6b: a guest's request proves its run's lease before anything else is asked about its binding.
@@ -665,7 +755,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 					const result = await running.claim(stop.signal);
 					claimed = result.state === "claimed";
 					if (result.state === "claimed")
-						void result.turn.then((status) => console.log(JSON.stringify({ event: "coding-turn", status })));
+						void result.turn.then(
+							(status) => console.log(JSON.stringify({ event: "coding-turn", status })),
+							(error) => console.error(JSON.stringify({ event: "coding-turn-error", stage: "turn", ...loggedError(error) })),
+						);
 				} catch {
 					if (!stop.signal.aborted) console.error("CODING_EXECUTOR_TICK_UNCONFIRMED");
 				}
@@ -811,20 +904,25 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions, caring, requesting, recording, uploading]);
 	} finally {
 		stop.abort();
-		await executor?.drain();
-		// A download or a restore that ran on beside the requests' passes ends on the same abort, finished as busy.
-		await codeRequests?.settled();
-		// A machine step that outlasted its pass ends on the same abort.
-		await machineHost?.settled();
-		// A take-off the keeper started settles before the process ends.
-		for (const outcome of await host.settled())
-			console.log(JSON.stringify({ event: outcome.state === "failed" ? "coding-session-error" : "coding-session", ...outcome }));
-		// Each code host stops once its jobs end.
-		await codeHosts?.close();
-		await commands.close();
-		await peerCommands.close();
-		await memberScreens?.close();
-		await memberStreams?.close();
+		const closeStep = async (stage: string, work: () => Promise<unknown> | undefined): Promise<void> => {
+			try {
+				await work();
+			} catch (error) {
+				console.error(JSON.stringify({ event: "coding-executor-shutdown-error", stage, ...loggedError(error) }));
+			}
+		};
+		await closeStep("executor-drain", () => executor?.drain());
+		await closeStep("code-requests", () => codeRequests?.settled());
+		await closeStep("machine-host", () => machineHost?.settled());
+		await closeStep("host-settled", async () => {
+			for (const outcome of await host.settled())
+				console.log(JSON.stringify({ event: outcome.state === "failed" ? "coding-session-error" : "coding-session", ...outcome }));
+		});
+		await closeStep("code-hosts", () => codeHosts?.close());
+		await closeStep("commands", () => commands.close());
+		await closeStep("peer-commands", () => peerCommands.close());
+		await closeStep("member-screens", () => memberScreens?.close());
+		await closeStep("member-streams", () => memberStreams?.close());
 		process.off("SIGTERM", shutdown);
 		process.off("SIGINT", shutdown);
 	}

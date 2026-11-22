@@ -636,9 +636,9 @@ describe("the site door", () => {
 		expect(directives).toEqual([
 			"default-src 'none'",
 			"script-src 'self'",
-			"frame-src https://*.qorpera.com",
+			"frame-src https://*.qorpera.com https://*.qorpera.site",
 			"base-uri 'none'",
-			"form-action https://*.qorpera.com/__qorpera/member",
+			"form-action https://*.qorpera.com/__qorpera/member https://*.qorpera.site/__qorpera/member",
 			"frame-ancestors 'self'",
 		]);
 		// The app itself keeps sending no referrer, posting only to itself and framing only itself (default-src 'self'): no
@@ -815,5 +815,12 @@ describe("the site door", () => {
 			},
 			previewOrigin,
 		);
+	});
+
+	it("accepts a native qorpera.site own-host member pass action", () => {
+		const { say, submitted } = runDoor();
+		const action = "https://nordic-shop.qorpera.site/__qorpera/member";
+		say({ type: SITE_DOOR_PASS, action, pass: pass().pass, path: "/" });
+		expect(submitted).toEqual([{ action, target: "qorpera-site", fields: { pass: pass().pass, path: "/" } }]);
 	});
 });

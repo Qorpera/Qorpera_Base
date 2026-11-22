@@ -7,6 +7,7 @@ import {
 	parseCloudCodingRepository,
 	SHA256_HEX_PATTERN,
 } from "@qorpera/contracts";
+import { withTimeoutScope } from "./abort-scope.ts";
 import {
 	CODE_BUNDLE_MAXIMUM_BYTES,
 	CODE_BUNDLE_NAME,
@@ -1606,16 +1607,18 @@ export class CodeRestore {
 		signal: AbortSignal,
 		step: RestoreStep | typeof REOPENED = run.step,
 	): Promise<"go" | "busy" | "lost"> {
-		const answer = await this.#control.call(
-			CODE_RESTORE_RPCS[0],
-			{
-				p_owner: this.#owner,
-				p_machine_id_sha256: this.#machineIdSha256,
-				p_request_id: run.request.requestId,
-				p_token: run.request.token,
-				p_progress: { ...run.progress, step },
-			},
-			AbortSignal.any([signal, AbortSignal.timeout(CALL_MS)]),
+		const answer = await withTimeoutScope(signal, CALL_MS, (callSignal) =>
+			this.#control.call(
+				CODE_RESTORE_RPCS[0],
+				{
+					p_owner: this.#owner,
+					p_machine_id_sha256: this.#machineIdSha256,
+					p_request_id: run.request.requestId,
+					p_token: run.request.token,
+					p_progress: { ...run.progress, step },
+				},
+				callSignal,
+			),
 		);
 		if (
 			isRecord(answer) &&
@@ -1638,21 +1641,23 @@ export class CodeRestore {
 		for (let tried = 0; tried < 2; tried += 1) {
 			let answer: unknown;
 			try {
-				answer = await this.#control.call(
-					CODE_RESTORE_RPCS[1],
-					{
-						p_owner: this.#owner,
-						p_machine_id_sha256: this.#machineIdSha256,
-						p_request_id: run.request.requestId,
-						p_token: run.request.token,
-						p_restored: {
-							schema: "qorpera.code-restore-record/v1",
-							bundle,
-							mainSha: place.mainSha,
-							previousMainSha: run.previousMainSha ?? place.previousMainSha,
+				answer = await withTimeoutScope(signal, CALL_MS, (callSignal) =>
+					this.#control.call(
+						CODE_RESTORE_RPCS[1],
+						{
+							p_owner: this.#owner,
+							p_machine_id_sha256: this.#machineIdSha256,
+							p_request_id: run.request.requestId,
+							p_token: run.request.token,
+							p_restored: {
+								schema: "qorpera.code-restore-record/v1",
+								bundle,
+								mainSha: place.mainSha,
+								previousMainSha: run.previousMainSha ?? place.previousMainSha,
+							},
 						},
-					},
-					AbortSignal.any([signal, AbortSignal.timeout(CALL_MS)]),
+						callSignal,
+					),
 				);
 			} catch (error) {
 				failure = error;

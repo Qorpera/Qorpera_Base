@@ -57,10 +57,10 @@ pub fn is_local(ino: u64) -> bool {
 /// at a later open means nothing wrote the file in between.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stamp {
-	mtime: (i64, i64),
-	ctime: (i64, i64),
-	size: u64,
-	generation: u64,
+	pub(crate) mtime: (i64, i64),
+	pub(crate) ctime: (i64, i64),
+	pub(crate) size: u64,
+	pub(crate) generation: u64,
 }
 
 /// Which local files a path is among.
@@ -134,7 +134,7 @@ type Names = HashMap<u64, Vec<(Up, String, Area)>>;
 /// A local file the mount has open: the file, its inode, whether the handle changes its bytes (`Local::seal`), which
 /// then holds the file's lock (`writer`), and the cache's top entry it holds (`Local::hold_top`).
 struct Handle {
-	file: File,
+	file: Arc<File>,
 	ino: u64,
 	writes: bool,
 	top: Option<u64>,
@@ -1369,12 +1369,11 @@ impl Local {
 	/// disk inode number reused after an unlink does not keep (0 where the disk has none).
 	pub fn stamp(&self, fh: u64) -> Result<Stamp, i32> {
 		const FS_IOC_GETVERSION: libc::c_ulong = 0x8008_7601;
-		let handles = self.handles.lock().unwrap();
-		let file = &handles.get(&fh).ok_or(libc::EBADF)?.file;
+		let file = self.handles.lock().unwrap().get(&fh).ok_or(libc::EBADF)?.file.clone();
 		let meta = file.metadata().map_err(errno)?;
 		let mut generation: libc::c_long = 0;
 		// SAFETY: the ioctl writes at most a long to `generation`; on a disk without generations it fails and writes nothing.
-		unsafe { libc::ioctl(std::os::fd::AsRawFd::as_raw_fd(file), FS_IOC_GETVERSION as _, &mut generation) };
+		unsafe { libc::ioctl(std::os::fd::AsRawFd::as_raw_fd(&*file), FS_IOC_GETVERSION as _, &mut generation) };
 		Ok(Stamp {
 			mtime: (meta.mtime(), meta.mtime_nsec()),
 			ctime: (meta.ctime(), meta.ctime_nsec()),
@@ -1644,7 +1643,7 @@ impl Local {
 	/// otherwise of what its name has (with the names held, as `disk_at` says), checked to be `ino` still (ESTALE).
 	pub fn getattr(&self, ino: u64, fh: Option<u64>) -> Result<FileAttr, i32> {
 		if let Some(file) = self.handle_of(fh, ino, false) {
-			return file.and_then(|f| f.metadata()).map(|m| self.attr(ino, &m)).map_err(errno);
+			return file.metadata().map(|m| self.attr(ino, &m)).map_err(errno);
 		}
 		let names = self.names();
 		let (disk, area) = self.disk_at(&names, ino)?;
@@ -2103,11 +2102,11 @@ impl Local {
 		let meta = self.changing(
 			|_| Some(ino),
 			|names, waited| {
-				let (place, truncate) = match self.handle_of(fh, ino, size.is_some()).transpose().map_err(errno)? {
+				let (place, truncate) = match self.handle_of(fh, ino, size.is_some()) {
 					// Its bytes change with the lock it has held since it was opened (`writer`).
-					Some(file) => (file.try_clone().map_err(errno)?, size.map(|size| (file, size))),
+					Some(file) => (file.clone(), size.map(|size| (file, size))),
 					None => {
-						let place = self.place_of(&names, ino).map_err(stale(waited))?;
+						let place = Arc::new(self.place_of(&names, ino).map_err(stale(waited))?);
 						let truncate = match size {
 							Some(size) => {
 								let (disk, area) = self.disk_at(&names, ino)?;
@@ -2117,7 +2116,7 @@ impl Local {
 								if self.id(area, &file.metadata().map_err(errno)?) != Ok(ino) {
 									return Err(Change::Failed(libc::ESTALE));
 								}
-								Some((writer_at(file, &disk)?, size))
+								Some((Arc::new(writer_at(file, &disk)?), size))
 							}
 							None => None,
 						};
@@ -2140,10 +2139,10 @@ impl Local {
 
 	/// The file of the mount's handle `fh`, when it is one of the local inode `ino`'s (and one that changes its bytes,
 	/// for `bytes`).
-	fn handle_of(&self, fh: Option<u64>, ino: u64, bytes: bool) -> Option<io::Result<File>> {
+	fn handle_of(&self, fh: Option<u64>, ino: u64, bytes: bool) -> Option<Arc<File>> {
 		let handles = self.handles.lock().unwrap();
 		let handle = handles.get(&fh?).filter(|h| h.ino == ino && (h.writes || !bytes))?;
-		Some(handle.file.try_clone())
+		Some(handle.file.clone())
 	}
 
 	/// What the local inode `ino`'s name has now (`disk_at`), opened as a place to read or change its attributes on
@@ -2189,7 +2188,7 @@ impl Local {
 	/// handle. With the names held, so a cache move's `seal` sees every handle that changes the file's bytes.
 	fn hold(&self, file: File, ino: u64, flags: i32, top: Option<u64>) -> u64 {
 		let fh = self.next_fh.fetch_add(1, Ordering::SeqCst) | LOCAL;
-		self.handles.lock().unwrap().insert(fh, Handle { file, ino, writes: changes_bytes(flags), top });
+		self.handles.lock().unwrap().insert(fh, Handle { file: Arc::new(file), ino, writes: changes_bytes(flags), top });
 		fh
 	}
 
@@ -2285,9 +2284,7 @@ impl Local {
 
 	pub fn read(&self, fh: u64, offset: u64, size: u32) -> Result<Vec<u8>, i32> {
 		use std::os::unix::fs::FileExt;
-		let handles = self.handles.lock().unwrap();
-		let file = handles.get(&fh).ok_or(libc::EBADF)?.file.try_clone().map_err(errno)?;
-		drop(handles);
+		let file = self.handles.lock().unwrap().get(&fh).ok_or(libc::EBADF)?.file.clone();
 		let mut buf = vec![0; size as usize];
 		let mut read = 0;
 		while read < buf.len() {
@@ -2304,10 +2301,11 @@ impl Local {
 
 	pub fn write(&self, fh: u64, offset: u64, data: &[u8]) -> Result<u32, i32> {
 		use std::os::unix::fs::FileExt;
-		let handles = self.handles.lock().unwrap();
-		let handle = handles.get(&fh).ok_or(libc::EBADF)?;
-		let (file, ino) = (handle.file.try_clone().map_err(errno)?, handle.ino);
-		drop(handles);
+		let (file, ino) = {
+			let handles = self.handles.lock().unwrap();
+			let handle = handles.get(&fh).ok_or(libc::EBADF)?;
+			(handle.file.clone(), handle.ino)
+		};
 		if let Some(size) = records::test_disk_bytes() {
 			self.test_disk_full(&file, ino, offset + data.len() as u64, size)?;
 		}
@@ -2329,8 +2327,8 @@ impl Local {
 	}
 
 	pub fn fsync(&self, fh: u64) -> Result<(), i32> {
-		let handles = self.handles.lock().unwrap();
-		handles.get(&fh).ok_or(libc::EBADF)?.file.sync_data().map_err(errno)
+		let file = self.handles.lock().unwrap().get(&fh).ok_or(libc::EBADF)?.file.clone();
+		file.sync_data().map_err(errno)
 	}
 
 	/// The local inode the handle `fh` has open.
@@ -3949,6 +3947,36 @@ mod tests {
 		l.put_link("code/o/n/repo.git/hooks/pre-commit", b"/bin/false").unwrap();
 		l.put_link("code/o/n/repo.git/hooks/pre-commit", b"../../tools/check").unwrap();
 		assert_eq!(fs::read_link(&disk).unwrap(), Path::new("../../tools/check"));
+		fs::remove_dir_all(&dir).unwrap();
+	}
+
+	#[test]
+	fn concurrent_reads_writes_and_fsync_reuse_shared_handle_without_blocking() {
+		let (l, dir) = local("arc-handle", "v1");
+		let up = Up::Mount("code/o/n/worktrees/w/target".to_string());
+		let (attr, fh) = l.create(up, "blob.bin", Area::Cache, 0o600, libc::O_RDWR, None).unwrap();
+		l.write(fh, 0, b"0123456789abcdef").unwrap();
+		std::thread::scope(|s| {
+			let mut workers = Vec::new();
+			for i in 0..8usize {
+				let l = &l;
+				workers.push(s.spawn(move || {
+					for round in 0..64u64 {
+						let got = l.read(fh, 0, 16).unwrap();
+						assert_eq!(got.len(), 16);
+						let _ = l.getattr(attr.ino.0, Some(fh)).unwrap();
+						let _ = l.stamp(fh).unwrap();
+						if (round as usize + i) % 16 == 0 {
+							l.fsync(fh).unwrap();
+						}
+					}
+				}));
+			}
+			for w in workers {
+				w.join().unwrap();
+			}
+		});
+		l.release(fh);
 		fs::remove_dir_all(&dir).unwrap();
 	}
 }
