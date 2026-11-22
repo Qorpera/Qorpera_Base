@@ -280,48 +280,45 @@ describe("rail selection and grey appearance styles", () => {
 		);
 		expect(greyRail?.style.getPropertyValue("--rail-selection-sub").trim()).toBe("var(--rail-small)");
 
-		const statusCrest = appRules.find((rule) =>
-			rule.selectorText.includes(".rail-agent-hub-row.active") &&
-			rule.selectorText.includes(".rail-surface.active") &&
-			rule.style.getPropertyValue("--status-crest").trim() === "var(--rail-selection-text)",
+		const statusCrest = appRules.find(
+			(rule) =>
+				rule.selectorText.includes(".rail-agent-hub-row.active") &&
+				rule.selectorText.includes(".rail-surface.active") &&
+				rule.style.getPropertyValue("--status-crest").trim() === "var(--rail-selection-text)",
 		);
 		expect(statusCrest).toBeDefined();
 
 		const softDisabled = "color-mix(in srgb, var(--text) 3.5%, transparent)";
 		const conversationRules = cssRulesOf(conversationCss);
 		expect(
-			conversationRules
-				.find((rule) => rule.selectorText === ':root[data-composer-color="grey"] .composer-send:disabled')
-				?.style.background,
+			conversationRules.find(
+				(rule) => rule.selectorText === ':root[data-composer-color="grey"] .composer-send:disabled',
+			)?.style.background,
 		).toBe(softDisabled);
 		expect(
-			conversationRules
-				.find((rule) => rule.selectorText === ':root[data-composer-color="grey"] .interaction-send:disabled')
-				?.style.background,
+			conversationRules.find(
+				(rule) => rule.selectorText === ':root[data-composer-color="grey"] .interaction-send:disabled',
+			)?.style.background,
 		).toBe(softDisabled);
 		expect(
-			cssRulesOf(darkCss)
-				.find(
-					(rule) =>
-						rule.selectorText === ':root[data-theme="dark"][data-composer-color="grey"] .composer-send:disabled',
-				)
-				?.style.background,
+			cssRulesOf(darkCss).find(
+				(rule) =>
+					rule.selectorText === ':root[data-theme="dark"][data-composer-color="grey"] .composer-send:disabled',
+			)?.style.background,
 		).toBe(softDisabled);
 		expect(
-			surfaceRules
-				.find(
-					(rule) =>
-						rule.selectorText ===
-						':root[data-composer-color="grey"] .frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-send:disabled',
-				)
-				?.style.background,
+			surfaceRules.find(
+				(rule) =>
+					rule.selectorText ===
+					':root[data-composer-color="grey"] .frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-send:disabled',
+			)?.style.background,
 		).toBe(softDisabled);
 	});
 
 	it("slides RailSelection between surface routes in renderRail", async () => {
 		stubFigureMotion();
 		const f = fixture();
-		const company = new CompanyController(f.cloud, profileA.profileId, userA.id);
+		const company = new CompanyController(f.api, profileA, userA.id);
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
@@ -362,9 +359,9 @@ describe("rail selection and grey appearance styles", () => {
 				});
 
 			renderAt("website");
-			expect(container.querySelector('.rail-surface[data-surface-slug="website"]')?.classList.contains("active")).toBe(
-				true,
-			);
+			expect(
+				container.querySelector('.rail-surface[data-surface-slug="website"]')?.classList.contains("active"),
+			).toBe(true);
 
 			renderAt("inbox");
 			const nextSurface = container.querySelector<HTMLElement>('.rail-surface[data-surface-slug="inbox"]');
