@@ -137,7 +137,11 @@ const GOOD_WILL_BUDGET_MS = 45_000;
 /** The closed months' invoices, one each (Stripe's idempotency keys and the database's record keep it once). */
 export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<Json> {
 	const due = await deps.goodWill.call("due", { livemode: deps.livemode });
-	const months = Array.isArray(due.months) ? due.months : [];
+	const rawMonths = Array.isArray(due.months) ? due.months : [];
+	// WHY: process un-invoiced months before already-finalized open invoices so open retries cannot starve new months.
+	const months = [...rawMonths].sort(
+		(a, b) => Number(Boolean(string(object(a)?.invoiceUrl))) - Number(Boolean(string(object(b)?.invoiceUrl))),
+	);
 	const maxBatch = deps.maxBatch ?? MAX_GOOD_WILL_BATCH;
 	const now = deps.now ?? Date.now;
 	const deadline = now() + (deps.budgetMs ?? GOOD_WILL_BUDGET_MS);
@@ -164,7 +168,6 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 			!paymentMethodId
 		)
 			continue;
-		processed++;
 		const key = `qorpera-good-will-${profileId}-${period}-${deps.livemode ? "live" : "test"}`;
 		const metadata = { qorpera_kind: GOOD_WILL_KIND, qorpera_profile_id: profileId, qorpera_month: period };
 		// Nothing goes on at Stripe that the database did not record.
@@ -216,6 +219,7 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 				await record(invoiceId);
 			}
 			if (created || invoice.status === "draft") {
+				processed++;
 				// The company's card now, also when a founder saved another one after the draft was made.
 				if (!created && invoice.default_payment_method !== paymentMethodId)
 					await deps.stripe.post(`/v1/invoices/${encodeURIComponent(invoiceId)}`, {

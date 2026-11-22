@@ -566,6 +566,7 @@ export class ResendSender implements MailSender {
 
 	async send(email: ProviderEmail, idempotencyKey: string): Promise<string> {
 		const { body: payload, byteLength } = encodeResendPayload(email);
+		// WHY: allow one extra second per MiB an email with attachments carries.
 		const timeoutMs = SEND_TIMEOUT_MS + Math.floor(byteLength / (1024 * 1024)) * 1000;
 		return withTimeoutScope(timeoutMs, async (signal) => {
 			let response: Response;
@@ -578,7 +579,6 @@ export class ResendSender implements MailSender {
 						"Idempotency-Key": idempotencyKey,
 					},
 					body: payload,
-					// A second more for each MiB an email with attachments carries.
 					signal,
 				});
 			} catch (error) {
@@ -652,13 +652,20 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 		retrying: 0,
 		failed: 0,
 		rejected,
+		deferred: 0,
 		messageIds: 0,
 	};
 	let objects: ObjectReader | undefined;
 	for (const [index, job] of claim.jobs.entries()) {
-		if (now() >= deadline) break;
+		if (now() >= deadline) {
+			counts.deferred = claim.jobs.length - index;
+			break;
+		}
 		if (index > 0 && pace > 0) await sleep(pace);
-		if (now() >= deadline) break;
+		if (now() >= deadline) {
+			counts.deferred = claim.jobs.length - index;
+			break;
+		}
 		let providerMessageId: string;
 		try {
 			// Each file in base64 as soon as it is read, without a copy: its bytes are dropped before the next one.

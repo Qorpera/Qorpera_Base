@@ -1040,5 +1040,51 @@ describe("Good will", () => {
 		});
 		assert.deepEqual(summary, { invoiced: 2, failed: 0 });
 		assert.equal(created.length, 2);
+
+		const createdAfterOpen: string[] = [];
+		const openThenFresh = [
+			...[1, 2, 3].map((n) => ({
+				profileId: `30000000-0000-4000-8000-00000000001${n}`,
+				month: "2026-09",
+				dueOre: 1000,
+				customerId: `cus_open_${n}`,
+				paymentMethodId: `pm_open_${n}`,
+				invoiceId: `in_open_${n}`,
+				invoiceUrl: `https://stripe.test/open_${n}`,
+			})),
+			{
+				profileId: "30000000-0000-4000-8000-000000000020",
+				month: "2026-10",
+				dueOre: 2000,
+				customerId: "cus_fresh",
+				paymentMethodId: "pm_fresh",
+				invoiceId: null,
+				invoiceUrl: null,
+			},
+		];
+		const noStarve = await sendGoodWillInvoices({
+			livemode: false,
+			returnUrl: "https://app.qorpera.com/plan",
+			maxBatch: 2,
+			goodWill: {
+				call: async (method) => {
+					if (method === "due") return { months: openThenFresh };
+					return { recorded: true };
+				},
+			},
+			stripe: {
+				get: async (path) => ({ id: path.split("/").pop(), status: "open", lines: { data: [] } }),
+				post: async (path) => {
+					if (path === "/v1/invoices") {
+						const id = `in_fresh_${createdAfterOpen.length + 1}`;
+						createdAfterOpen.push(id);
+						return { id, status: "draft", lines: { data: [] } };
+					}
+					return { id: "in_fresh_1", status: "open", hosted_invoice_url: "https://stripe.test/fresh" };
+				},
+			},
+		});
+		assert.deepEqual(noStarve, { invoiced: 1, failed: 0 });
+		assert.deepEqual(createdAfterOpen, ["in_fresh_1"]);
 	});
 });

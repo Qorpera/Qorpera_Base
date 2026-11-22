@@ -55,6 +55,7 @@ export interface InvitationDeliveryBatchResult {
 	failed: number;
 	completionPending: number;
 	unreadable: number;
+	deferred: number;
 }
 
 export const SHOWN_NAME_LENGTH = 80;
@@ -260,6 +261,7 @@ export async function deliverProfileInvitationBatch(
 		failed: 0,
 		completionPending: 0,
 		unreadable,
+		deferred: 0,
 	};
 	for (const lease of unusable) {
 		try {
@@ -270,9 +272,15 @@ export async function deliverProfileInvitationBatch(
 		}
 	}
 	for (const [index, job] of jobs.entries()) {
-		if (deadline !== undefined && now() >= deadline) break;
+		if (deadline !== undefined && now() >= deadline) {
+			result.deferred = jobs.length - index;
+			break;
+		}
 		if (index > 0 && paceMs > 0) await sleep(paceMs);
-		if (deadline !== undefined && now() >= deadline) break;
+		if (deadline !== undefined && now() >= deadline) {
+			result.deferred = jobs.length - index;
+			break;
+		}
 		let providerMessageId: string;
 		try {
 			const email = buildProfileInvitationEmail(job, invitationUrlBase);

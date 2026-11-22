@@ -64,6 +64,7 @@ export interface ComputerHourNoticeBatchResult {
 	retrying: number;
 	failed: number;
 	completionPending: number;
+	deferred: number;
 }
 
 export class ComputerHourEmailSendError extends Error {
@@ -292,11 +293,18 @@ export async function deliverComputerHourNoticeBatch(
 		retrying: 0,
 		failed: 0,
 		completionPending: 0,
+		deferred: 0,
 	};
 	for (const [index, job] of jobs.entries()) {
-		if (deadline !== undefined && now() >= deadline) break;
+		if (deadline !== undefined && now() >= deadline) {
+			result.deferred = jobs.length - index;
+			break;
+		}
 		if (index > 0 && paceMs > 0) await sleep(paceMs);
-		if (deadline !== undefined && now() >= deadline) break;
+		if (deadline !== undefined && now() >= deadline) {
+			result.deferred = jobs.length - index;
+			break;
+		}
 		let providerMessageId: string;
 		try {
 			const email = buildComputerHourEmail(job, appUrlBase);

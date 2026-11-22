@@ -147,7 +147,7 @@ describe("mail outbox", () => {
 		const response = await f.handle(post());
 		assert.equal(response.status, 200);
 		assert.equal(response.headers.get("cache-control"), "no-store");
-		assert.deepEqual(await response.json(), { claimed: 3, sent: 3, retrying: 0, failed: 0, rejected: 0, messageIds: 0 });
+		assert.deepEqual(await response.json(), { claimed: 3, sent: 3, retrying: 0, failed: 0, rejected: 0, deferred: 0, messageIds: 0 });
 		assert.deepEqual(sent[0][0], {
 			from: '"Ada at Northwind" <support@mail.example.test>',
 			to: ["bob@acme.test"],
@@ -193,6 +193,7 @@ describe("mail outbox", () => {
 			retrying: 2,
 			failed: 1,
 			rejected: 0,
+			deferred: 0,
 			messageIds: 0,
 		});
 		assert.deepEqual(f.calls.fail, [
@@ -213,6 +214,7 @@ describe("mail outbox", () => {
 			retrying: 0,
 			failed: 0,
 			rejected: 2,
+			deferred: 0,
 			messageIds: 0,
 		});
 		assert.deepEqual(
@@ -256,6 +258,7 @@ describe("mail outbox Message-IDs", () => {
 			retrying: 0,
 			failed: 0,
 			rejected: 0,
+			deferred: 0,
 			messageIds: 1,
 		});
 		assert.deepEqual(recorded, [["73300000-0000-4000-8000-0000000000d1", "provider-a", "<provider-a@ses.example>"]]);
@@ -391,7 +394,7 @@ describe("mail outbox attachments", () => {
 		const files = [companyFile(objects, pdf, "invoice.pdf"), companyFile(objects, csv, "totals.csv")];
 		const { sent, sender } = recording();
 		const f = outbox([job(1, { companyId: COMPANY, attachments: files }), job(2)], sender, reader(objects));
-		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 2, sent: 2, retrying: 0, failed: 0, rejected: 0, messageIds: 0 });
+		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 2, sent: 2, retrying: 0, failed: 0, rejected: 0, deferred: 0, messageIds: 0 });
 		assert.deepEqual(
 			sent[0][0].attachments?.map((file) => {
 				const encoded = typeof file.content === "string" ? file.content : file.content.join("");
@@ -474,7 +477,7 @@ describe("mail outbox attachments", () => {
 		assert.equal(encodedParts.join(""), Buffer.from(shortCarry).toString("base64"));
 		const { sender, sent } = recording();
 		const f = outbox([job(1, { companyId: COMPANY, attachments: [file] })], sender, reader(missing));
-		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 1, sent: 0, retrying: 1, failed: 0, rejected: 0, messageIds: 0 });
+		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 1, sent: 0, retrying: 1, failed: 0, rejected: 0, deferred: 0, messageIds: 0 });
 		assert.equal(sent.length, 0);
 	});
 
@@ -495,7 +498,7 @@ describe("mail outbox attachments", () => {
 			sender,
 			reader(new Map()),
 		);
-		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 7, sent: 0, retrying: 1, failed: 0, rejected: 6, messageIds: 0 });
+		assert.deepEqual(await (await f.handle(post())).json(), { claimed: 7, sent: 0, retrying: 1, failed: 0, rejected: 6, deferred: 0, messageIds: 0 });
 		assert.equal(sent.length, 0);
 	});
 
@@ -638,6 +641,7 @@ describe("mail outbox attachments", () => {
 			retrying: 1,
 			failed: 0,
 			rejected: 0,
+			deferred: 0,
 			messageIds: 0,
 		});
 		assert.equal(sent.length, 1);
@@ -686,6 +690,7 @@ describe("mail outbox attachments", () => {
 			retrying: 0,
 			failed: 0,
 			rejected: 0,
+			deferred: 1,
 			messageIds: 0,
 		});
 		assert.equal(sent.length, 1);

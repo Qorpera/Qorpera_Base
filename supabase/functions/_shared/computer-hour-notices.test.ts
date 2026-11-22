@@ -146,7 +146,7 @@ describe("computer hour notices", () => {
 			},
 		);
 		// The unrecorded failure (b5) comes early: the rest of the batch still goes.
-		assert.deepEqual(result, { claimed: 6, delivered: 2, retrying: 1, failed: 1, completionPending: 2 });
+		assert.deepEqual(result, { claimed: 6, delivered: 2, retrying: 1, failed: 1, completionPending: 2, deferred: 0 });
 		assert.deepEqual(done, ["b1:re_b1", "b6:re_b6"]);
 		assert.deepEqual(failed, [
 			["b2", "Resend 503", true],
@@ -154,5 +154,43 @@ describe("computer hour notices", () => {
 		]);
 		assert.equal(new Set(keys).size, jobs.length);
 		assert.equal(keys[0], "qorpera-computer-hour-notice/71300000-0000-4000-8000-0000000000b1");
+	});
+
+	it("paces sends and reports deferred notices when budgetMs is reached", async () => {
+		const jobs = parseComputerHourNoticeClaim([
+			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000c1" }),
+			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000c2" }),
+			wire("running_low", low, { noticeId: "71300000-0000-4000-8000-0000000000c3" }),
+		]).jobs;
+		const sentIds: string[] = [];
+		const sleeps: number[] = [];
+		let clock = 1_000;
+		const result = await deliverComputerHourNoticeBatch(
+			jobs,
+			"https://app.qorpera.com",
+			{
+				async send(job) {
+					sentIds.push(job.noticeId.slice(-2));
+					if (job.noticeId.endsWith("c2")) clock += 30_000;
+					return { messageId: `re_${job.noticeId.slice(-2)}` };
+				},
+			},
+			{
+				async complete() {},
+				async fail() {},
+			},
+			{
+				paceMs: 600,
+				budgetMs: 20_000,
+				now: () => clock,
+				sleep: async (ms) => {
+					sleeps.push(ms);
+					clock += ms;
+				},
+			},
+		);
+		assert.deepEqual(sentIds, ["c1", "c2"]);
+		assert.deepEqual(sleeps, [600]);
+		assert.deepEqual(result, { claimed: 3, delivered: 2, retrying: 0, failed: 0, completionPending: 0, deferred: 1 });
 	});
 });

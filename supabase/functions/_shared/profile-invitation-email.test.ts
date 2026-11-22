@@ -186,7 +186,7 @@ describe("profile invitation email delivery", () => {
 				provider,
 				store,
 			),
-			{ claimed: 5, delivered: 1, retrying: 1, failed: 2, completionPending: 0, unreadable: 1 },
+			{ claimed: 5, delivered: 1, retrying: 1, failed: 2, completionPending: 0, unreadable: 1, deferred: 0 },
 		);
 		assert.deepEqual(completed, [invitationId]);
 		assert.deepEqual(failures, [
@@ -218,6 +218,7 @@ describe("profile invitation email delivery", () => {
 			failed: 0,
 			completionPending: 1,
 			unreadable: 0,
+			deferred: 0,
 		});
 		assert.equal(failed, false);
 	});
@@ -268,6 +269,7 @@ describe("profile invitation email delivery", () => {
 			failed: 0,
 			completionPending: 2,
 			unreadable: 0,
+			deferred: 1,
 		});
 	});
 });
