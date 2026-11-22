@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+- Active interface and agent rows in the rail now follow the Appearance colour chosen in Settings (`--rail-selection`), matching the Co-Founder card and sliding the highlight between them, and the Settings Grey choice replaces dark `#5b5b5b` with the soft 7% text-mix surface grey (`#efefef` in light, `#2e302f` in dark) with readable dark/light foreground and ink tokens (Jonas, 22 Nov 2026).
+- Surface figures in the rail no longer play the "!" / attention animation when a surface needs attention (they stay their own figure, resting or breathing while sessions run; screen-reader text still notes attention), and every surface with active sessions shows its mini agent figure row as the default subtitle whether open or not, hydrated and refreshed quietly in the background (Jonas, 22 Nov 2026).
+- Removed the Company Files folder reference footer from the bottom of the right surface sidepanel (Jonas, 22 Nov 2026); affected file chips on individual changes still link to Files.
 - Removed the History row under an open surface in the rail (Jonas, 22 Nov 2026); Members still lists its teammates underneath, and merged changes still roll back from Patch notes.
 - An open surface in the rail shows its sessions as a row of small agent figures in place of its subtitle (six at most, then "+n"; each keeps its working, needs-you and merged look), and no longer lists the sessions underneath (Jonas, 22 Nov 2026). The surface page's agents bar opens each session and now carries the hand-off highlight (as does the row); Members keeps its teammates and History keeps Revert. The compact rail shows no session figures any more; the agents bar covers it.
 - A member changes a surface's figure from the rail: right-click it, Figure, and pick (needs migration `20260930856000_surface_set_figure` live). The create sheet and this menu share one picker.

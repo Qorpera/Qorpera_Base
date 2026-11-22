@@ -1205,43 +1205,18 @@ export class SurfaceStudioView {
 				h(
 					"section",
 					{ class: "studio-reach", "data-identity-reach": "true", "data-live-linked": "true" },
-					h(
-						"div",
-						{ class: "studio-reach-head" },
-						h("h2", null, t("Shapes these interfaces")),
-						h("span", { class: "studio-file-tag" }, t("Live-linked via Company Files")),
-					),
-					h(
-						"div",
-						{ class: "studio-link-flow" },
-						h("span", { class: "studio-live-dot", "aria-hidden": "true" }),
-						h("code", { class: "studio-link-path" }, IDENTITY_TOKENS_JSON_PATH),
-						h("span", { class: "studio-link-arrow", "aria-hidden": "true" }, "→"),
-						h("code", { class: "studio-link-path" }, IDENTITY_TOKENS_CSS_PATH),
-						identityVarCount > 0
-							? h("span", { class: "studio-link-count" }, t("{count} CSS vars", { count: identityVarCount }))
-							: null,
-					),
-					h(
-						"p",
-						{ class: "studio-reach-sub" },
-						t("Design tokens, voice rules, and philosophy live here and flow into every surface below."),
-					),
-					h(
-						"div",
-						{ class: "studio-reach-chips" },
-						downstreamSurfaces.map((target) =>
-							h(
-								"button",
-								{
-									type: "button",
-									class: "studio-reach-chip",
-									"data-act": "studio-open-surface",
-									"data-slug": target.slug,
-								},
-								surfaceTile(target, store.lookOf(target), "is-tiny"),
-								h("span", null, target.title),
-							),
+					h("span", { class: "studio-reach-label" }, t("Used by")),
+					downstreamSurfaces.map((target) =>
+						h(
+							"button",
+							{
+								type: "button",
+								class: "studio-reach-chip",
+								"data-act": "studio-open-surface",
+								"data-slug": target.slug,
+							},
+							surfaceTile(target, store.lookOf(target), "is-tiny"),
+							h("span", null, target.title),
 						),
 					),
 				),

@@ -13,7 +13,7 @@
 .rail-apps.is-open .icon rect:nth-of-type(2) { transform: translate(1px, -1px); }
 .rail-apps.is-open .icon rect:nth-of-type(3) { transform: translate(1px, 1px); }
 .rail-apps.is-open .icon rect:nth-of-type(4) { transform: translate(-1px, 1px); }
-.rail-apps:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
+.rail-apps:focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
 /* A page has something waiting while the drawer is closed. */
 .rail-apps-dot {
 	position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%;
@@ -50,7 +50,7 @@
 /* The open page: its tile in a soft wash of its own colour, its emblem kept in that colour (Jonas, 12 Nov 2026: "the
  * icons shouldn't turn white when selected"; before, the tile was the selection colour with a white emblem). */
 .rail-app.active, .rail-app.active:hover { background: color-mix(in srgb, var(--app-colour, var(--text)) 16%, transparent); }
-.rail-app:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
+.rail-app:focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
 /* Reordering by dragging (ui/app-grid-drag.ts): the lifted icon rides above the others, a little larger, and the rest
  * make way. Its tile shows no hover while it moves. */
 .rail-apps-grid.is-sorting { cursor: grabbing; }
@@ -208,9 +208,9 @@ a.interface-item:hover { background: var(--hover); text-decoration: none; }
 .interface-view[aria-selected="true"] { color: var(--text); }
 .interface-view[aria-selected="true"]::after {
 	content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 2px;
-	background: var(--composer-accent);
+	background: var(--composer-accent-ink);
 }
-.interface-view:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: -2px; border-radius: 8px; }
+.interface-view:focus-visible { outline: 2px solid var(--composer-accent-ink); outline-offset: -2px; border-radius: 8px; }
 
 /* A row with buttons, a row that opens, and the buttons themselves. */
 .interface-item-row { display: flex; align-items: center; gap: 8px; }
@@ -226,7 +226,7 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 	text-decoration: none; cursor: pointer;
 }
 .interface-button:disabled { opacity: 0.6; cursor: default; }
-.interface-button:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 1px; }
+.interface-button:focus-visible { outline: 2px solid var(--composer-accent-ink); outline-offset: 1px; }
 .interface-button:hover { text-decoration: none; background: var(--hover); }
 
 /* A table: sortable headings, a filter above, a row that opens. */
@@ -255,7 +255,7 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 .interface-fields dd { margin: 0; overflow-wrap: anywhere; }
 .interface-detail-text { margin-bottom: 10px; font-size: 13.5px; }
 .interface-back {
-	display: none; margin: 0 0 8px; padding: 0; border: 0; background: transparent; color: var(--composer-accent);
+	display: none; margin: 0 0 8px; padding: 0; border: 0; background: transparent; color: var(--composer-accent-ink);
 	font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
 }
 @media (max-width: 760px) {
@@ -283,14 +283,14 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 	display: grid; gap: 6px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg);
 	transition: opacity var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
 }
-.interface-card.is-open { border-color: var(--composer-accent); }
+.interface-card.is-open { border-color: var(--composer-accent-ink); }
 .interface-card-open, .interface-card-body {
 	display: grid; gap: 3px; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit;
 	text-align: left; overflow-wrap: anywhere;
 }
 .interface-card-open { cursor: pointer; }
 .interface-card-open:hover .interface-card-title { text-decoration: underline; }
-.interface-card-open:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 3px; border-radius: 6px; }
+.interface-card-open:focus-visible { outline: 2px solid var(--composer-accent-ink); outline-offset: 3px; border-radius: 6px; }
 .interface-card-title { font-size: 13px; font-weight: 600; }
 .interface-card-line { color: var(--text-muted); font-size: 12.5px; }
 .interface-card-note { color: var(--text-soft); font-size: 11.5px; }
@@ -308,7 +308,7 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 }
 .interface-card.is-settling { transition: transform var(--motion-base) var(--ease-spring), box-shadow var(--motion-fast) ease; }
 .interface-board.is-dragging { user-select: none; }
-.interface-lane.is-drop-target { border-color: var(--composer-accent); border-style: dashed; }
+.interface-lane.is-drop-target { border-color: var(--composer-accent-ink); border-style: dashed; }
 .interface-lane.is-drop-over { background: var(--hover); border-style: solid; }
 /* An offer of a card (step I9c): a quiet line on the card with its answers, and the members it may go to. */
 .interface-card-offers { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
@@ -352,11 +352,11 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 }
 button.interface-number { cursor: pointer; }
 button.interface-number:hover, .interface-number.is-open { background: var(--hover); }
-button.interface-number:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 1px; }
+button.interface-number:focus-visible { outline: 2px solid var(--composer-accent-ink); outline-offset: 1px; }
 .interface-number-label { color: var(--text-muted); font-size: 12px; font-weight: 600; }
 .interface-number-value { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .interface-number-change, .interface-number-target { color: var(--text-muted); font-size: 11.5px; }
-.interface-trend { display: block; width: 100%; height: 32px; margin-top: 4px; color: var(--composer-accent); }
+.interface-trend { display: block; width: 100%; height: 32px; margin-top: 4px; color: var(--composer-accent-ink); }
 .interface-days { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .interface-day h3 { margin: 0 0 2px; color: var(--text-muted); font-size: 12px; font-weight: 600; }
 .interface-day-items { display: grid; margin: 0; padding: 0; list-style: none; }
@@ -377,7 +377,7 @@ button.interface-number:focus-visible { outline: 2px solid var(--composer-accent
 .interface-outside { padding: 0 3px; border-radius: 5px; background: var(--hover); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 .interface-table td.interface-outside { padding: 7px 8px; border-radius: 0; }
 .review-email-body.interface-outside { padding: 13px 16px; border-radius: 0; }
-.interface-unread { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--composer-accent); }
+.interface-unread { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--composer-accent-ink); }
 .interface-mail-list li:not(.is-unread) .interface-item { padding-left: 22px; }
 .interface-mail-list li.is-unread strong { font-weight: 700; }
 .interface-mail-older { display: grid; justify-items: start; gap: 4px; margin-top: 8px; }
@@ -424,7 +424,7 @@ button.interface-number:focus-visible { outline: 2px solid var(--composer-accent
 .app-look-icons { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
 .app-look-icon { display: grid; place-items: center; aspect-ratio: 1; padding: 0; border: 0; border-radius: 9px; background: none; cursor: pointer; }
 .app-look-icon:hover { background: var(--hover); }
-.app-look-icon:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
+.app-look-icon:focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
 .app-look-icon[aria-checked="true"] { background: color-mix(in srgb, var(--app-colour, var(--text)) 12%, transparent); box-shadow: inset 0 0 0 2px var(--app-colour, var(--text)); }
 .app-look-icon .interface-emblem { width: 28px; height: 28px; --emblem-ink: var(--app-colour, var(--text)); }
 .app-look-drawing {
@@ -439,7 +439,7 @@ button.interface-number:focus-visible { outline: 2px solid var(--composer-accent
 }
 .app-look-generate:hover:not(:disabled) { background: var(--hover); }
 .app-look-generate:disabled { cursor: default; opacity: 0.75; }
-.app-look-generate .icon { width: 18px; height: 18px; flex: none; color: var(--rail-selection); }
+.app-look-generate .icon { width: 18px; height: 18px; flex: none; color: var(--rail-selection-ink); }
 .app-look-generate-text { display: grid; gap: 1px; font-size: 13px; }
 .app-look-generate-text small { font-size: 11.5px; line-height: 1.35; color: var(--text-muted); }
 .app-look-problem { margin: 2px; font-size: 12px; color: var(--danger); }

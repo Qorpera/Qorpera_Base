@@ -193,14 +193,6 @@ function rankSessions(sessions: readonly SurfaceSession[]): SurfaceSession[] {
 	return [...sessions].sort((a, b) => score(a) - score(b));
 }
 
-function projectedSourcePath(surface: SurfaceSummary): string | null {
-	const repo = surface.repositoryKey?.trim().replace(/^\/+|\/+$/g, "");
-	if (repo) return repo.startsWith("code/") ? repo : `code/${repo}`;
-	const folder = surface.folderRoot?.trim().replace(/^\/+|\/+$/g, "");
-	if (folder) return `${folder}/`;
-	return null;
-}
-
 function affectedFileChips(store: SurfacesStore, paths: readonly string[]): HTMLElement | null {
 	const files = paths.map((path) => path.trim()).filter((path) => path && !path.startsWith("mailto:"));
 	if (files.length === 0) return null;
@@ -267,7 +259,6 @@ export class SurfaceSessionDrawer {
 	});
 	readonly #head = h("div", { class: "surface-drawer-head" });
 	readonly #body = h("div", { class: "surface-drawer-body" });
-	readonly #sourceFoot = h("div", { class: "surface-drawer-source", hidden: true });
 	readonly #replyTitle = h("span", { class: "surface-drawer-reply-title" });
 	readonly #replyStrip = h(
 		"div",
@@ -321,10 +312,7 @@ export class SurfaceSessionDrawer {
 		} catch {
 			/* WHY: Local browser storage is optional in private/sandboxed contexts. */
 		}
-		this.el.append(
-			this.#resizer,
-			h("div", { class: "surface-drawer-inner" }, this.#head, this.#body, this.#sourceFoot, this.#form),
-		);
+		this.el.append(this.#resizer, h("div", { class: "surface-drawer-inner" }, this.#head, this.#body, this.#form));
 		this.#wireResizer(signal);
 		this.#applyWidth();
 		signal.addEventListener("abort", () => this.#disarm(false), { once: true });
@@ -554,7 +542,6 @@ export class SurfaceSessionDrawer {
 			this.#shown = undefined;
 			this.#sessionId = "";
 			this.#messages = 0;
-			this.#sourceFoot.hidden = true;
 			this.#disarm(false);
 			this.#setQuotedChange(undefined);
 			return;
@@ -562,14 +549,12 @@ export class SurfaceSessionDrawer {
 		if (focusedExploration) {
 			if (this.#quotedChange && this.#quotedChange.sessionId !== state.drawer?.sessionId)
 				this.#setQuotedChange(undefined);
-			this.#sourceFoot.hidden = true;
 			this.#form.hidden = false;
 			this.#renderFocusedExploration(focusedExploration, targetSurface);
 			return;
 		}
 		if (focusedSession) {
 			if (this.#quotedChange && this.#quotedChange.sessionId !== focusedSession.id) this.#setQuotedChange(undefined);
-			this.#sourceFoot.hidden = true;
 			this.#form.hidden = false;
 			this.#renderFocused(focusedSession, targetSurface);
 			return;
@@ -606,7 +591,6 @@ export class SurfaceSessionDrawer {
 		this.#shown = deps;
 		const explorations = openExplorations(workspace);
 		const plainSessions = rankSessions((workspace?.activeSessions ?? []).filter((session) => !session.explorationId));
-		const sourcePath = projectedSourcePath(surface);
 		this.#sessionId = "";
 		this.#messages = 0;
 
@@ -633,30 +617,6 @@ export class SurfaceSessionDrawer {
 		}
 		this.#crew.settle();
 		this.#body.replaceChildren(...parts);
-		if (sourcePath) {
-			const href = surfaceHash(store.companyId, "files");
-			this.#sourceFoot.replaceChildren(
-				h(
-					"a",
-					{
-						class: "surface-source-pill",
-						href,
-						title: t("Open in Files"),
-						onclick: (event: MouseEvent) => {
-							if (!event.metaKey && !event.ctrlKey && !event.shiftKey && event.button === 0)
-								store.navigateSurface("files");
-						},
-					},
-					icon("folder"),
-					h("code", { class: "surface-source-path" }, sourcePath),
-					h("span", { class: "surface-source-link" }, t("Files")),
-				),
-			);
-			this.#sourceFoot.hidden = false;
-		} else {
-			this.#sourceFoot.replaceChildren();
-			this.#sourceFoot.hidden = true;
-		}
 	}
 
 	#explorationCard(
