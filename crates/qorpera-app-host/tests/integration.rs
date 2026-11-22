@@ -576,6 +576,7 @@ async fn lxd_unix_socket_atomic_create_freeze_unfreeze_port_reuse_and_fallback()
         unfreeze_calls: AtomicUsize,
         start_calls: AtomicUsize,
         stop_calls: AtomicUsize,
+        delete_calls: AtomicUsize,
         fail_next_unfreeze: AtomicBool,
         last_create_payload: Mutex<Option<serde_json::Value>>,
     }
@@ -615,6 +616,7 @@ async fn lxd_unix_socket_atomic_create_freeze_unfreeze_port_reuse_and_fallback()
         unfreeze_calls: AtomicUsize::new(0),
         start_calls: AtomicUsize::new(0),
         stop_calls: AtomicUsize::new(0),
+        delete_calls: AtomicUsize::new(0),
         fail_next_unfreeze: AtomicBool::new(false),
         last_create_payload: Mutex::new(None),
     }));
@@ -835,6 +837,31 @@ async fn lxd_unix_socket_atomic_create_freeze_unfreeze_port_reuse_and_fallback()
                                         }),
                                     );
                                 }
+                                if method == Method::DELETE {
+                                    let mut guard = st_req.lock().unwrap();
+                                    guard.delete_calls.fetch_add(1, Ordering::SeqCst);
+                                    if let Some(mut c) = guard.containers.remove(name) {
+                                        if let Some(h) = c.server_handle.take() {
+                                            h.abort();
+                                        }
+                                        return json_reply(
+                                            StatusCode::ACCEPTED,
+                                            serde_json::json!({
+                                                "type": "async",
+                                                "status_code": 100,
+                                                "operation": "/1.0/operations/op-delete-1"
+                                            }),
+                                        );
+                                    }
+                                    return json_reply(
+                                        StatusCode::NOT_FOUND,
+                                        serde_json::json!({
+                                            "type": "error",
+                                            "status_code": 404,
+                                            "error": "Instance not found"
+                                        }),
+                                    );
+                                }
                             }
                         }
 
@@ -967,6 +994,146 @@ async fn lxd_unix_socket_atomic_create_freeze_unfreeze_port_reuse_and_fallback()
     drop(occupant);
 
     let _ = manager.stop_deployment("dep-lxd-1").await;
+    {
+        let guard = state.lock().unwrap();
+        assert_eq!(guard.delete_calls.load(Ordering::SeqCst), 1);
+        assert!(guard.containers.is_empty());
+    }
     srv_task.abort();
     let _ = std::fs::remove_file(&sock_path);
+}
+
+#[tokio::test]
+async fn reaper_fails_closed_on_activity_error_and_already_running_wake_blocks_stale_freeze() {
+    let driver = Arc::new(LocalProcessDriver::new());
+    let logs = Arc::new(LogRingBuffer::new(200, 64 * 1024));
+    let manager = Arc::new(
+        AppLifecycleManager::new(
+            driver,
+            logs,
+            Duration::from_secs(4),
+            Duration::from_millis(20),
+        )
+        .with_deep_hibernate_delay(Some(Duration::from_secs(600))),
+    );
+
+    let deploy = DeployRequest {
+        deployment_id: "dep-guard".to_string(),
+        site_id: "site-guard".to_string(),
+        oci_image_ref: None,
+        command: Some(node_http_script("guard", 200)),
+        health_path: "/health".to_string(),
+        idle_timeout_sec: 1,
+        memory_mb: 256,
+        vcpu_limit: 1.0,
+        pids_limit: 128,
+        env: HashMap::new(),
+    };
+    let status = manager.deploy_blue_green(deploy).await.unwrap();
+    let upstream_addr = status.upstream_addr.clone().unwrap();
+
+    let mut activity = HashMap::new();
+    activity.insert("dep-guard".to_string(), 1_000u64);
+    let candidates = manager.idle_candidates_with_generation(&activity, 120_000);
+    assert_eq!(candidates.len(), 1);
+    let (dep_id, started_at, wake_gen) = candidates[0].clone();
+    let wake_outcome = manager.wake_detailed(&dep_id, None).await.unwrap();
+    assert_eq!(wake_outcome.mode, WakeMode::AlreadyRunning);
+    assert!(
+        !manager
+            .freeze_if_unchanged_generation(&dep_id, started_at, wake_gen, 120_000)
+            .await
+    );
+    assert_eq!(
+        manager.status(&dep_id).unwrap().state,
+        InstanceState::Running
+    );
+
+    let activity_calls = Arc::new(AtomicUsize::new(0));
+    let upstream_updates: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let router_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let router_addr = router_listener.local_addr().unwrap();
+    let calls_ref = Arc::clone(&activity_calls);
+    let updates_ref = Arc::clone(&upstream_updates);
+    let router_task = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = router_listener.accept().await else {
+                break;
+            };
+            let c_ref = Arc::clone(&calls_ref);
+            let u_ref = Arc::clone(&updates_ref);
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
+                let svc = hyper::service::service_fn(move |req: Request<hyper::body::Incoming>| {
+                    let c = Arc::clone(&c_ref);
+                    let u = Arc::clone(&u_ref);
+                    async move {
+                        let path = req.uri().path().to_string();
+                        let bytes = req
+                            .into_body()
+                            .collect()
+                            .await
+                            .map(|b| b.to_bytes())
+                            .unwrap_or_default();
+                        if path == "/_internal/metrics/activity" {
+                            let n = c.fetch_add(1, Ordering::SeqCst);
+                            if n == 0 {
+                                let body = serde_json::json!({ "deployments": { "dep-guard": 1000u64 } })
+                                    .to_string();
+                                return Ok::<_, hyper::Error>(
+                                    http::Response::builder()
+                                        .status(StatusCode::OK)
+                                        .header("content-type", "application/json")
+                                        .body(Full::new(Bytes::from(body)))
+                                        .unwrap(),
+                                );
+                            }
+                            return Ok::<_, hyper::Error>(
+                                http::Response::builder()
+                                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                    .body(Full::new(Bytes::from_static(b"router_error")))
+                                    .unwrap(),
+                            );
+                        }
+                        if path == "/_internal/deployments/dep-guard/upstream" {
+                            let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                            let addr = val["upstream_addr"].as_str().map(|s| s.to_string());
+                            u.lock().unwrap().push(addr);
+                            return Ok::<_, hyper::Error>(
+                                http::Response::builder()
+                                    .status(StatusCode::OK)
+                                    .body(Full::new(Bytes::from_static(b"{\"ok\":true}")))
+                                    .unwrap(),
+                            );
+                        }
+                        Ok::<_, hyper::Error>(
+                            http::Response::builder()
+                                .status(StatusCode::NOT_FOUND)
+                                .body(Full::new(Bytes::new()))
+                                .unwrap(),
+                        )
+                    }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .await;
+            });
+        }
+    });
+
+    let err = reap_once_with_router(&manager, &format!("http://{router_addr}"), "secret")
+        .await
+        .expect_err("second activity failure must abort freeze");
+    assert!(err.contains("router_status_500"), "unexpected error: {err}");
+    assert_eq!(
+        manager.status("dep-guard").unwrap().state,
+        InstanceState::Running
+    );
+    assert_eq!(
+        *upstream_updates.lock().unwrap(),
+        vec![None, Some(upstream_addr)]
+    );
+
+    router_task.abort();
+    let _ = manager.stop_deployment("dep-guard").await;
 }

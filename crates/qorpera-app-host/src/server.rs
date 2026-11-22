@@ -18,6 +18,7 @@ pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 const MAX_CONTROL_BODY_BYTES: usize = 1024 * 1024;
 const MAX_CONNS: usize = 256;
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const BODY_READ_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn full_body(bytes: impl Into<Bytes>) -> BoxBody {
     Full::new(bytes.into())
@@ -49,11 +50,47 @@ impl AppHostServer {
     }
 
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
+        self.spawn_inner(None)
+    }
+
+    pub fn spawn_with_shutdown(
+        self,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        self.spawn_inner(Some(shutdown))
+    }
+
+    fn spawn_inner(
+        self,
+        mut shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+    ) -> tokio::task::JoinHandle<()> {
         let sem = Arc::new(Semaphore::new(MAX_CONNS));
         tokio::spawn(async move {
             loop {
-                let Ok((stream, _peer)) = self.listener.accept().await else {
-                    continue;
+                let stream = if let Some(rx) = shutdown.as_mut() {
+                    if *rx.borrow() {
+                        break;
+                    }
+                    tokio::select! {
+                        biased;
+                        changed = rx.changed() => {
+                            if changed.is_err() || *rx.borrow() {
+                                break;
+                            }
+                            continue;
+                        }
+                        accepted = self.listener.accept() => {
+                            match accepted {
+                                Ok((stream, _peer)) => stream,
+                                Err(_) => continue,
+                            }
+                        }
+                    }
+                } else {
+                    match self.listener.accept().await {
+                        Ok((stream, _peer)) => stream,
+                        Err(_) => continue,
+                    }
                 };
                 let Ok(permit) = Arc::clone(&sem).try_acquire_owned() else {
                     drop(stream);
@@ -103,19 +140,26 @@ fn check_auth(req: &Request<Incoming>, expected: &str) -> bool {
 
 enum BodyErr {
     TooLarge,
+    Timeout,
     Bad,
 }
 
 async fn read_body(body: Incoming) -> Result<Bytes, BodyErr> {
-    match Limited::new(body, MAX_CONTROL_BODY_BYTES).collect().await {
-        Ok(c) => Ok(c.to_bytes()),
-        Err(err) => {
+    match tokio::time::timeout(
+        BODY_READ_TIMEOUT,
+        Limited::new(body, MAX_CONTROL_BODY_BYTES).collect(),
+    )
+    .await
+    {
+        Ok(Ok(c)) => Ok(c.to_bytes()),
+        Ok(Err(err)) => {
             if err.downcast_ref::<http_body_util::LengthLimitError>().is_some() {
                 Err(BodyErr::TooLarge)
             } else {
                 Err(BodyErr::Bad)
             }
         }
+        Err(_) => Err(BodyErr::Timeout),
     }
 }
 
@@ -142,6 +186,12 @@ async fn handle_request(
                 return json_res(
                     StatusCode::PAYLOAD_TOO_LARGE,
                     serde_json::json!({ "error": "body_too_large" }),
+                );
+            }
+            Err(BodyErr::Timeout) => {
+                return json_res(
+                    StatusCode::REQUEST_TIMEOUT,
+                    serde_json::json!({ "error": "body_timeout" }),
                 );
             }
             Err(BodyErr::Bad) => {
@@ -173,6 +223,12 @@ async fn handle_request(
                         return json_res(
                             StatusCode::PAYLOAD_TOO_LARGE,
                             serde_json::json!({ "error": "body_too_large" }),
+                        );
+                    }
+                    Err(BodyErr::Timeout) => {
+                        return json_res(
+                            StatusCode::REQUEST_TIMEOUT,
+                            serde_json::json!({ "error": "body_timeout" }),
                         );
                     }
                     Err(BodyErr::Bad) => None,
