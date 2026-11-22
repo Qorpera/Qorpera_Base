@@ -338,12 +338,7 @@ impl Kernel {
 		};
 		if gone {
 			self.stamps.lock().unwrap().remove(&ino);
-			self.opened.lock().unwrap().remove(&ino);
 		}
-	}
-
-	pub(super) fn forgotten(&self, ino: u64) {
-		self.opened.lock().unwrap().remove(&ino);
 	}
 
 	/// Whether a read-only open of a file now at `stamp` keeps the kernel's pages: only if it is as this mount last
@@ -738,20 +733,5 @@ mod tests {
 		kernel.forget(99, 1);
 		assert!(!kernel.stamps.lock().unwrap().contains_key(&99));
 		assert!(!kernel.keep(99, stamp));
-	}
-
-	#[test]
-	fn forget_and_forgotten_prune_opened_inodes() {
-		let kernel = Kernel::new(None);
-		kernel.hand(77);
-		kernel.opened(77);
-		assert!(kernel.opened.lock().unwrap().contains(&77));
-		kernel.forget(77, 1);
-		assert!(!kernel.opened.lock().unwrap().contains(&77));
-
-		kernel.opened(88);
-		assert!(kernel.opened.lock().unwrap().contains(&88));
-		kernel.forgotten(88);
-		assert!(!kernel.opened.lock().unwrap().contains(&88));
 	}
 }

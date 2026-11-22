@@ -517,17 +517,9 @@ impl Shared {
 		if inodes.is_empty() {
 			return;
 		}
-		let mut dropped = Vec::new();
-		{
-			let mut tree = self.tree.lock().unwrap();
-			for &ino in inodes {
-				if tree.forget(ino, 1) {
-					dropped.push(ino);
-				}
-			}
-		}
-		for ino in dropped {
-			self.kernel.forgotten(ino);
+		let mut tree = self.tree.lock().unwrap();
+		for &ino in inodes {
+			tree.forget(ino, 1);
 		}
 	}
 
@@ -1087,8 +1079,8 @@ impl Filesystem for FolderFs {
 	fn forget(&self, _req: &Request, ino: INodeNo, nlookup: u64) {
 		if local::is_local(ino.0) {
 			self.s.kernel.forget(ino.0, nlookup);
-		} else if self.s.tree.lock().unwrap().forget(ino.0, nlookup) {
-			self.s.kernel.forgotten(ino.0);
+		} else {
+			self.s.tree.lock().unwrap().forget(ino.0, nlookup);
 		}
 	}
 
