@@ -53,20 +53,23 @@ The company folder inside a Qorpera machine, and the node side of its link.
   view file, folder and node address (tests).
 - `qorpera-folder scan-pack --spec-fd <fd> [--exclude-idx <path> ...] [--exclude-oids-fd <fd>]` and
   `qorpera-folder scan-pack --diff-idx <path> [--exclude-idx <path> ...] [--exclude-oids-fd <fd>]`: on a node host,
-  reads a `git cat-file --batch-all-objects --batch --unordered` stream on standard input, scans each object against the
-  keyed secret-hash specification JSON read from `--spec-fd` (`>= 3`, never argv or environment), and prints one JSON
-  result line on standard output (`{"status":"clean","rebuilt":...}`, `{"status":"secret"}`, or
+  reads a `git cat-file --batch` / `--batch-all-objects --batch --unordered` stream on standard input, scans each
+  object against the keyed secret-hash specification JSON read from `--spec-fd` (`>= 3`, never argv or environment),
+  and prints one JSON result line on standard output (`{"status":"clean","rebuilt":...}`, `{"status":"secret"}`, or
   `{"status":"unchecked","reason":...}`). `--exclude-idx` (repeatable, native Git `.idx` v2 parser) and
-  `--exclude-oids-fd` (`>= 3`, newline-separated 40-hex OIDs) skip already-scanned OIDs during incremental pack pushes;
-  `--diff-idx <path>` prints only delta OIDs in `<path>` absent from the exclude set. **Safety invariant for OID
-  exclusion:** callers (`folder-service` `git-objects.ts`, wired after PR #2096) must only pass `--exclude-idx` /
-  `--exclude-oids-fd` for packs already scanned under the exact same or a superset secret specification (matching
-  secret-spec hash/revision); whenever secret values are added or rotated, callers must omit exclusion and scan every
-  object. Exit 0 means a result was printed, 1 means invalid specification or I/O failure, and 2 means usage.
+  `--exclude-oids-fd` (`>= 3`, newline-separated 40-hex SHA-1 or 64-hex SHA-256 OIDs) skip already-scanned OIDs during
+  incremental pack saves; `--diff-idx <path>` prints only delta OIDs in `<path>` absent from the exclude set. Wired in
+  `folder-service` (`git-objects.ts`) with a bounded per-node clean-OID LRU cache keyed strictly by `SecretSet.digest`
+  (pack-offset-sorted `cat-file --batch --buffer | scan-pack --spec-fd 3` for small/moderate deltas, and sequential
+  `cat-file --batch-all-objects --batch --unordered | scan-pack --spec-fd 3 --exclude-oids-fd 4` for larger overlapping
+  deltas). **Safety invariant for OID exclusion:** callers must only skip OIDs already verified clean under the exact
+  same `SecretSet.digest`; whenever secret values are added or the key rotates, the digest changes and every object is
+  re-scanned. Exit 0 means a result was printed, 1 means invalid specification or I/O failure, and 2 means usage.
 - `qorpera-folder scan-stream --spec-fd <fd>`: on a node host, streams raw bytes from standard input in 256 KiB chunks
   with rolling boundary overlap against the keyed secret-hash specification on `--spec-fd` (`>= 3`) off Node's
-  `--jitless` event loop, printing the same JSON outcome line (`clean`/`secret`/`unchecked`). Prepared for follow-up
-  `folder-service` `secret-scan.ts` wiring after PR #2096.
+  `--jitless` event loop, printing the same JSON outcome line (`clean`/`secret`/`unchecked`). Wired in `folder-service`
+  (`git-objects.ts`) for all raw `.pack` streams (in parallel with `git index-pack --stdin`) and for plain files and
+  loose objects (stored and inflated independently) of at least 64 KiB.
 - `qorpera-folder search-worker --storage-root <dir> [--index-mib <N>] [--threads <N>]`: on a node host, persistent
   off-event-loop content-addressed inverted-trigram + linear-time Thompson NFA regex search worker spawned lazily by
   `folder-service` (`src/search.rs`, `src/re.rs`). Reads 4-byte big-endian length-prefixed JSON requests (`syncTree`,
