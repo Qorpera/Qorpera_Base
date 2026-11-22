@@ -1130,4 +1130,72 @@ describe("company_search", () => {
 		const content = await s.execute(s.parseArguments({ query: "split" }), context());
 		expect(content.value).toBe("frag.md:3: split across chunks\n\n1 file searched. Nothing more.");
 	});
+
+	it("translates smart_case, whole_word, exclude_glob, and count_only cleanly onto search v2", async () => {
+		const V2 = { version: 2, regex: true };
+		const n = await node(
+			(req) =>
+				req.filesOnly
+					? found({
+							files: [
+								{ path: "src/a.ts", version: VERSION, count: 3 },
+								{ path: "src/b.ts", version: VERSION, count: 2 },
+							],
+							searched: 5,
+							reads: [read("src/a.ts"), read("src/b.ts")],
+						})
+					: found({ hits: [hit("src/a.ts", 1, "Plan")], searched: 5, reads: [read("src/a.ts")] }),
+			V2,
+		);
+		const f = folder();
+		const s = tool(n.path, f.client);
+
+		await s.execute(
+			s.parseArguments({
+				query: "Plan.v1",
+				glob: "*.ts",
+				exclude_glob: "*.test.ts,dist/**",
+				smart_case: true,
+				whole_word: true,
+			}),
+			context("c1"),
+		);
+		expect(n.searches[0]).toEqual({
+			version: 2,
+			query: "\\b(?:Plan\\.v1)\\b",
+			regex: true,
+			path: "",
+			glob: "*.ts,!*.test.ts,!dist/**",
+			namesOnly: false,
+			filesOnly: false,
+			caseSensitive: true,
+			context: 0,
+			after: null,
+		});
+
+		await s.execute(s.parseArguments({ query: "plan", smart_case: true, exclude_glob: "!*.spec.ts" }), context("c2"));
+		expect(n.searches[1]).toMatchObject({
+			query: "plan",
+			regex: false,
+			glob: "!*.spec.ts",
+			caseSensitive: false,
+		});
+
+		const counted = await s.execute(s.parseArguments({ query: "plan", count_only: true }), context("c3"));
+		expect(n.searches[2]).toMatchObject({ filesOnly: true });
+		expect(counted.value).toBe(
+			"5 matching lines in 2 files\nsrc/a.ts: 3\nsrc/b.ts: 2\n\n5 files searched. Nothing more.",
+		);
+
+		for (const bad of [
+			{ query: "x", exclude_glob: ",,," },
+			{ query: "x", count_only: true, names_only: true },
+			{ query: "x", count_only: true, context: 1 },
+			{ glob: "*.ts", whole_word: true },
+			{ query: "a".repeat(252), whole_word: true },
+		])
+			expect(() => s.parseArguments(bad as unknown as JsonValue), JSON.stringify(bad)).toThrow(
+				CloudToolArgumentRefusal,
+			);
+	});
 });

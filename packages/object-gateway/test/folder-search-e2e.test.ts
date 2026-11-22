@@ -340,13 +340,13 @@ describe.skipIf(!program)("native Rust search-worker E2E", () => {
 		const errorCases: [string, string][] = [
 			["(a)\\1", "REGEX_BACKREFERENCE: "],
 			["(?=a)a", "REGEX_LOOKAROUND: "],
-			["(?i)a", "REGEX_FLAGS: "],
+			["(?s)a", "REGEX_FLAGS: "],
 			["\\p{L}", "REGEX_ESCAPE: "],
 			["[[:alpha:]]", "REGEX_SYNTAX: "],
 			["\\k<x>", "REGEX_BACKREFERENCE: "],
 			["\\q", "REGEX_ESCAPE: "],
 			["[unclosed", "REGEX_SYNTAX: "],
-			["a{17}", "REGEX_TOO_LARGE: "],
+			["a{65}", "REGEX_TOO_LARGE: "],
 			["(a{1,10}){1,10}", "REGEX_TOO_LARGE: "],
 		];
 		for (const [pattern, prefix] of errorCases) {
@@ -914,7 +914,7 @@ describe.skipIf(!program)("native Rust search-worker E2E", () => {
 
 		const compactBytes = (tree: ViewTree): number => {
 			let total = 64;
-			for (const entry of tree.walk("")) total += 112 + Buffer.byteLength(entry.path);
+			for (const entry of tree.walk("")) total += 116 + Buffer.byteLength(entry.path);
 			return total;
 		};
 		expect(worker.liveTreeBytes).toBe(compactBytes(treeA) + compactBytes(treeOther));

@@ -61,39 +61,26 @@ const SLOW_FALL_BACK: Duration = Duration::from_secs(2);
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
 
 pub(super) struct Kernel {
-	/// A writable view, which has caches.
 	caches: bool,
-	/// Why the kernel cache may not be used, known before the mount (the cache folder's times, a test switch).
+	shared: bool,
+	has_epoch: AtomicBool,
 	allowed: Result<(), String>,
-	/// The kernel cache is on: from `init` and `mounted`, whichever comes last, until a fallback.
 	on: AtomicBool,
-	/// Whether the kernel's INIT allows the kernel cache, until the mount is made too (fuser answers INIT before
-	/// `Session::new` returns, so before `mounted`). Also held by a fallback until it has dropped what the kernel holds.
 	init: Mutex<Option<Result<(), String>>>,
-	/// The first fallback's reason, also one heard before the kernel cache was decided.
 	off: OnceLock<String>,
 	told: OnceLock<Told>,
-	/// Local inodes the kernel holds an entry of, and how many lookups it counts for each (absent names aside).
 	handed: Mutex<HashMap<u64, u64>>,
-	/// What each local file was at the last open answered here: an open keeps the kernel's pages only when the file is
-	/// still so (another program's change nobody told, an inode number the disk gave again).
 	stamps: Mutex<HashMap<u64, Stamp>>,
-	/// The names in local folders the kernel may hold an entry of, present or absent (`hold`).
 	names: Mutex<Names>,
-	/// The test switch's name, whose lookups wait between the disk and the reply.
+	names_max: usize,
+	tracked_entries: Mutex<HashSet<(u64, String)>>,
 	slow: Option<String>,
 	peers: OnceLock<Peers>,
-	/// The program is ending: every request is refused, from before the kernel's pages drop (`close`).
 	closing: AtomicBool,
-	/// Every inode opened or created here, never emptied: the kernel may hold pages or attributes of any of them, which a
-	/// fd held past the end would read without asking this program.
 	opened: Mutex<HashSet<u64>>,
-	/// Where the end is (`close`), and its signal when done.
 	ending: Mutex<Ending>,
 	ended: Condvar,
-	/// The end's drop dropped every inode (for the test switches).
 	dropped: Arc<AtomicBool>,
-	/// The test switches' gate file and name (`TEST_CLOSE_GATE`, `TEST_LATE_CREATE`).
 	gate: Option<PathBuf>,
 	late: Option<String>,
 }
@@ -184,13 +171,22 @@ impl Names {
 	}
 }
 
-/// The kernel's side of this mount, from right after it is made.
 struct Told {
 	notifier: Notifier,
-	/// The mount's /dev/fuse, for the notify fuser has no call for (the epoch).
 	fuse: OwnedFd,
-	/// Inodes whose pages drop on the page-drop thread.
 	drops: Mutex<mpsc::Sender<u64>>,
+	entry_invals: Mutex<mpsc::Sender<Vec<(u64, String)>>>,
+}
+
+fn check_abi(abi: (u32, u32), granted: bool, shared: bool) -> Result<bool, String> {
+	if !granted {
+		return Err("the kernel did not grant FUSE_AUTO_INVAL_DATA".to_string());
+	}
+	let has_epoch = abi >= (7, 44);
+	if !has_epoch && shared {
+		return Err(format!("the kernel's FUSE ABI {}.{} has no epoch notify (7.44)", abi.0, abi.1));
+	}
+	Ok(has_epoch)
 }
 
 struct Peers {
@@ -209,8 +205,11 @@ impl Kernel {
 				Err(e) => Err(format!("could not check the cache folder's times: {e}")),
 			},
 		};
+		let names_max = std::env::var(TEST_NAMES).ok().and_then(|n| n.parse().ok()).unwrap_or(NAMES_MAX).max(1);
 		Kernel {
 			caches: local.is_some(),
+			shared: local.is_some_and(Local::shared),
+			has_epoch: AtomicBool::new(false),
 			allowed,
 			on: AtomicBool::new(false),
 			init: Mutex::new(None),
@@ -218,7 +217,9 @@ impl Kernel {
 			told: OnceLock::new(),
 			handed: Mutex::new(HashMap::new()),
 			stamps: Mutex::new(HashMap::new()),
-			names: Mutex::new(Names::new(std::env::var(TEST_NAMES).ok().and_then(|n| n.parse().ok()).unwrap_or(NAMES_MAX))),
+			names: Mutex::new(Names::new(names_max)),
+			names_max,
+			tracked_entries: Mutex::new(HashSet::new()),
 			slow: std::env::var(TEST_SLOW_LOOKUP).ok(),
 			peers: OnceLock::new(),
 			closing: AtomicBool::new(false),
@@ -231,12 +232,16 @@ impl Kernel {
 		}
 	}
 
-	/// Listens for the other programs on a shared cache folder, before anything is served.
 	pub(super) fn start(s: &Arc<Shared>) -> std::io::Result<()> {
 		let Some(dir) = s.local.as_ref().and_then(Local::programs) else { return Ok(()) };
 		let heard = {
 			let s = s.clone();
-			move |h| s.kernel.heard(h)
+			move |h| {
+				if let Some(local) = &s.local {
+					local.cache_gen.fetch_add(1, Ordering::Release);
+				}
+				s.kernel.heard(h)
+			}
 		};
 		let listener = peers::listen(&dir, heard)?;
 		let teller = Teller::new(&dir, listener.name())?;
@@ -244,7 +249,6 @@ impl Kernel {
 		Ok(())
 	}
 
-	/// The mount is made (fuser has answered the kernel's INIT by now): keeps its notifier and /dev/fuse, and starts the page drops.
 	pub(super) fn mounted(&self, notifier: Notifier, fuse: OwnedFd) {
 		let (drops, inos) = mpsc::channel::<u64>();
 		let dropper = notifier.clone();
@@ -262,12 +266,30 @@ impl Kernel {
 				}
 			})
 			.expect("spawn the page-drop thread");
-		let _ = self.told.set(Told { notifier, fuse, drops: Mutex::new(drops) });
+		let (entry_invals, entries_rx) = mpsc::channel::<Vec<(u64, String)>>();
+		let entry_dropper = notifier.clone();
+		std::thread::Builder::new()
+			.name("kernel-entries".into())
+			.spawn(move || {
+				while let Ok(first) = entries_rx.recv() {
+					let mut batch: HashSet<(u64, String)> = first.into_iter().collect();
+					for more in entries_rx.try_iter() {
+						batch.extend(more);
+					}
+					for (parent, name) in batch {
+						if let Err(e) = entry_dropper.inval_entry(INodeNo(parent), OsStr::new(&name)) {
+							if e.raw_os_error() != Some(libc::ENOENT) {
+								eprintln!("qorpera-folder: kernel cache: dropping entry ({parent:#x}, {name:?}): {e}");
+							}
+						}
+					}
+				}
+			})
+			.expect("spawn the entry-drop thread");
+		let _ = self.told.set(Told { notifier, fuse, drops: Mutex::new(drops), entry_invals: Mutex::new(entry_invals) });
 		self.decide();
 	}
 
-	/// The kernel's INIT: the kernel cache is on only if the kernel re-reads attributes before a read through a held
-	/// fd (`FUSE_AUTO_INVAL_DATA`) and has the epoch (7.44), and nothing ruled it out before.
 	pub(super) fn init(&self, config: &mut KernelConfig) {
 		if !self.caches {
 			return;
@@ -275,13 +297,9 @@ impl Kernel {
 		let granted = config.add_capabilities(InitFlags::FUSE_AUTO_INVAL_DATA).is_ok();
 		let abi = config.kernel_abi();
 		let why = self.allowed.clone().and_then(|()| {
-			if !granted {
-				Err("the kernel did not grant FUSE_AUTO_INVAL_DATA".to_string())
-			} else if (abi.0, abi.1) < (7, 44) {
-				Err(format!("the kernel's FUSE ABI {}.{} has no epoch notify (7.44)", abi.0, abi.1))
-			} else {
-				Ok(())
-			}
+			check_abi((abi.0, abi.1), granted, self.shared).map(|has_epoch| {
+				self.has_epoch.store(has_epoch, Ordering::SeqCst);
+			})
 		});
 		*self.init.lock().unwrap() = Some(why);
 		self.decide();
@@ -342,14 +360,49 @@ impl Kernel {
 		self.on() && self.stamps.lock().unwrap().insert(ino, stamp) == Some(stamp)
 	}
 
-	/// Holds `name` in the folder `up` for a request that may hand the kernel an entry of it, present or absent, with the
-	/// time-out `ttl`: from before the request reads or changes the disk, until `ttl` and `HELD_PAST` have passed after
-	/// its reply (the guard dropped). A change told for a name held raises the epoch (`drop_change`). A node folder's
-	/// names are not held: a change told for one always raises it. A full table drops every name and raises the epoch
-	/// before a change told is heard again; one that fails turns the kernel cache off.
+	pub(super) fn track_entry(&self, parent: u64, name: &str) {
+		if self.has_epoch.load(Ordering::Relaxed) || !self.on() {
+			return;
+		}
+		let overflow = {
+			let mut tracked = self.tracked_entries.lock().unwrap();
+			let key = (parent, name.to_string());
+			if tracked.contains(&key) {
+				return;
+			}
+			let drained = if tracked.len() >= self.names_max {
+				Some(tracked.drain().collect::<Vec<_>>())
+			} else {
+				None
+			};
+			tracked.insert(key);
+			drained
+		};
+		if let Some(entries) = overflow {
+			self.queue_entry_invals(entries);
+		}
+	}
+
+	fn queue_entry_invals(&self, entries: Vec<(u64, String)>) {
+		if entries.is_empty() {
+			return;
+		}
+		if let Some(told) = self.told.get() {
+			let _ = told.entry_invals.lock().unwrap().send(entries);
+		}
+	}
+
+	fn drain_tracked_entries(&self) -> Vec<(u64, String)> {
+		self.tracked_entries.lock().unwrap().drain().collect()
+	}
+
 	pub(super) fn hold(&self, up: &Up, name: &str, ttl: Duration) -> Held<'_> {
 		let Up::Local(dir) = up else { return Held { kernel: self, key: None } };
 		if ttl.is_zero() || !self.on() {
+			return Held { kernel: self, key: None };
+		}
+		if !self.has_epoch.load(Ordering::Relaxed) {
+			self.track_entry(*dir, name);
 			return Held { kernel: self, key: None };
 		}
 		let key = key(*dir, name);
@@ -405,13 +458,18 @@ impl Kernel {
 		}
 	}
 
-	/// Every name on this mount is looked up again: a cache top the node's entry may have won over unseen (the feed
-	/// lost or resynced), or caches changed behind the kernel's back.
 	pub(super) fn own(&self) {
-		if self.on() {
+		if !self.on() {
+			return;
+		}
+		if self.has_epoch.load(Ordering::SeqCst) {
 			if let Err(e) = self.epoch() {
 				self.fall_back(&format!("an epoch on this mount failed: {e}"));
 			}
+		} else {
+			// WHY: on FUSE ABI < 7.44, queue targeted inval_entry off-handler to avoid parent i_rwsem deadlocks.
+			self.stamps.lock().unwrap().clear();
+			self.queue_entry_invals(self.drain_tracked_entries());
 		}
 	}
 
@@ -472,7 +530,11 @@ impl Kernel {
 		let told = self.told()?;
 		let inos: Vec<u64> = self.handed.lock().unwrap().keys().copied().collect();
 		self.stamps.lock().unwrap().clear();
-		self.epoch()?;
+		if self.has_epoch.load(Ordering::SeqCst) {
+			self.epoch()?;
+		} else {
+			self.queue_entry_invals(self.drain_tracked_entries());
+		}
 		for ino in inos {
 			told.notifier.inval_inode(INodeNo(ino), -1, 0)?;
 			let _ = told.drops.lock().unwrap().send(ino);
@@ -728,5 +790,26 @@ mod tests {
 		kernel.forget(99, 1);
 		assert!(!kernel.stamps.lock().unwrap().contains_key(&99));
 		assert!(!kernel.keep(99, stamp));
+	}
+
+	#[test]
+	fn abi_below_7_44_enables_targeted_fallback_only_for_unshared_mounts() {
+		assert_eq!(check_abi((7, 44), true, true), Ok(true));
+		assert_eq!(check_abi((7, 44), true, false), Ok(true));
+		assert_eq!(check_abi((7, 39), true, false), Ok(false));
+		assert!(check_abi((7, 39), true, true).is_err());
+		assert!(check_abi((7, 44), false, false).is_err());
+
+		let mut kernel = Kernel::new(None);
+		kernel.on.store(true, Ordering::SeqCst);
+		kernel.has_epoch.store(false, Ordering::SeqCst);
+		kernel.names_max = 3;
+		kernel.track_entry(1, "a");
+		kernel.track_entry(1, "b");
+		kernel.track_entry(1, "c");
+		assert_eq!(kernel.tracked_entries.lock().unwrap().len(), 3);
+		kernel.track_entry(1, "d");
+		let drained = kernel.drain_tracked_entries();
+		assert_eq!(drained, vec![(1, "d".to_string())]);
 	}
 }

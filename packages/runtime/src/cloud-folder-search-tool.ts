@@ -798,10 +798,10 @@ function inFile(file: { readonly path: string; readonly version: string }, curso
 export function folderSearchText(
 	page: SearchPage,
 	seal: (cursor: SearchCursor, carried?: SearchFile, shown?: boolean) => string,
+	countOnly = false,
 ): string {
 	const units = unitsOf(page);
 	const longLines = page.longLines ?? 0;
-	// A file an earlier answer showed part of that is not as that answer saw it: said before the counts, whatever is cut.
 	const restarted = (page.restarted ?? []).map((r) => {
 		const chars = Array.from(r.path);
 		const path = chars.length > 300 ? `${chars.slice(0, 300).join("")}…` : r.path;
@@ -810,14 +810,10 @@ export function folderSearchText(
 			: `${path} is not as the last answer saw it (changed, emptied, gone, or no longer yours to read): what that answer showed of it may not hold.`;
 	});
 	const notes = restarted.length > 0 ? `${restarted.join("\n")}\n\n` : "";
-	// Laid out with a stand-in token of a real token's length (16 characters, nothing to escape), and sealed once.
 	const lay = (shown: number, first?: Unit, token = "x".repeat(16)) => {
 		const lines = joined(units.slice(0, shown).map((u, i) => (i === 0 && first !== undefined ? first : u)));
 		const cut = shown < units.length;
 		const next = cut ? units[shown]!.resume : page.next;
-		// An answer cut short counts no files: the next call searches those after the cut again. Lines a pattern passed
-		// over are named either way: the next call goes on after the cut and would never name those before it (it may
-		// name again one after it).
 		const passed =
 			longLines > 0
 				? `; ${longLines} line${longLines === 1 ? "" : "s"} over 1 MiB not searched by the pattern (search them as text, or read them)`
@@ -828,8 +824,16 @@ export function folderSearchText(
 				(page.binary > 0 ? `, ${page.binary} binary passed over` : "") +
 				passed;
 		const more = next ? `. More: call again with cursor ${token}` : ". Nothing more.";
+		let body = lines.length === 0 ? "No matches here." : lines.join("\n");
+		if (countOnly && lines.length > 0) {
+			const matchingFiles = (page.files ?? []).filter((f) => f.count > 0).slice(0, shown);
+			const total = matchingFiles.reduce((sum, f) => sum + f.count, 0);
+			const partial = cut || next !== null || matchingFiles.some((f) => f.partial === true);
+			const summary = `${total} matching line${total === 1 ? "" : "s"} in ${matchingFiles.length} file${matchingFiles.length === 1 ? "" : "s"}${partial ? " so far" : ""}`;
+			body = `${summary}\n${body}`;
+		}
 		return {
-			text: `${lines.length === 0 ? "No matches here." : lines.join("\n")}\n\n${notes}${counts}${more}`,
+			text: `${body}\n\n${notes}${counts}${more}`,
 			next,
 		};
 	};
@@ -882,7 +886,21 @@ function releaseId(runId: string, callId: string, outputSha256: string, part: nu
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${((Number.parseInt(hex[16] as string, 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-const ARGUMENTS = ["query", "path", "glob", "regex", "context", "files_only", "names_only", "case_sensitive", "cursor"];
+const ARGUMENTS = [
+	"query",
+	"path",
+	"glob",
+	"exclude_glob",
+	"regex",
+	"context",
+	"files_only",
+	"count_only",
+	"names_only",
+	"case_sensitive",
+	"smart_case",
+	"whole_word",
+	"cursor",
+];
 
 function closedArguments(value: JsonValue): Record<string, JsonValue> {
 	if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -903,22 +921,46 @@ function searchText(value: JsonValue | undefined, label: string): string {
 	return value;
 }
 
+function escapeRegexLiteral(text: string): string {
+	return text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+
+function formatExcludeGlob(exclude: string): string {
+	const parts = exclude
+		.split(",")
+		.map((part) => part.trim().replace(/^!+/, ""))
+		.filter((part) => part.length > 0);
+	if (parts.length === 0) throw new CloudToolArgumentRefusal("exclude_glob must name at least one pattern");
+	return parts.map((part) => `!${part}`).join(",");
+}
+
+function mergeWireGlob(glob: string | null, excludeGlob: string | undefined): string | null {
+	if (excludeGlob === undefined) return glob;
+	const negated = formatExcludeGlob(excludeGlob);
+	const merged = glob === null ? negated : `${glob},${negated}`;
+	if (merged.length > MAX_QUERY)
+		throw new CloudToolArgumentRefusal(`glob and exclude_glob together must be at most ${MAX_QUERY} characters`);
+	return merged;
+}
+
 const CURSOR_TOKEN = /^[A-Za-z0-9_-]{16}$/;
 
-/** The arguments as parsed (a type, not an interface: it is the tool's JSON value). */
 type SearchInput = {
 	readonly query: string | null;
 	readonly path: string;
 	readonly glob: string | null;
+	readonly exclude_glob?: string;
 	readonly regex: boolean;
 	readonly context: number;
 	readonly files_only: boolean;
+	readonly count_only?: true;
 	readonly names_only: boolean;
 	readonly case_sensitive: boolean;
+	readonly smart_case?: true;
+	readonly whole_word?: true;
 	readonly cursor: string | null;
 };
 
-/** `company_search`, for a folder-v2 run whose host has the node's folder search. */
 export function cloudFolderSearchTool(options: {
 	search: CloudFolderSearch;
 	folder: CloudCompanyFolderClient;
@@ -929,14 +971,18 @@ export function cloudFolderSearchTool(options: {
 		name: "company_search",
 		description:
 			"Search the company folder like rg: the lines of its text files that contain query, as path:line: text. Only " +
-			"what you may read is searched. Literal text, not case-sensitive unless you say; with regex, query is a " +
-			"regular expression (RE2: no back-references or lookaround, counts up to 16) if the folder's search runs " +
-			"them; REGEX_OFF means it does not, so search for text. context adds up to 5 lines " +
-			"before and after each hit (path-line- text); files_only lists just the matching files, path: matching lines. " +
-			'names_only searches the names of files, folders and links instead (a link as path -> "what it names"; a ' +
-			"link is never searched through); a glob with no query lists every path it matches. One call searches for " +
-			"up to about 10 s and shows up to about 30 KiB; when there is more, it gives a cursor to call again with. " +
-			"Read a file with company_read; work on files (spreadsheets, documents, scripts) on a machine.",
+			"what you may read is searched.\n" +
+			"Literal text, not case-sensitive unless you say (or set smart_case for case-sensitive only when query has " +
+			"uppercase); whole_word matches whole words only. With regex, query is a regular expression (linear-time: no " +
+			"back-references or lookaround, counts up to 64, inline (?i) and (?m) flags) if the folder's search runs " +
+			"them; REGEX_OFF means it does not, so search for text.\n" +
+			"context adds up to 5 lines before and after each hit (path-line- text); files_only lists just the matching " +
+			"files (path: matching lines); count_only totals matching lines across matching files; exclude_glob (or " +
+			"!pattern in glob) skips matching paths. names_only searches the names of files, folders and links instead " +
+			'(a link as path -> "what it names"; a link is never searched through); a glob with no query lists every ' +
+			"path it matches. One call searches for up to about 10 s and shows up to about 30 KiB; when there is more, " +
+			"it gives a cursor to call again with. Read a file with company_read; work on files (spreadsheets, " +
+			"documents, scripts) on a machine.",
 		source: "company_file",
 		inputSchema: {
 			type: "object",
@@ -956,7 +1002,13 @@ export function cloudFolderSearchTool(options: {
 					type: "string",
 					maxLength: MAX_QUERY,
 					description:
-						"Only paths like this: * and ? within a name, ** across folders, e.g. *.md or docs/**/*.csv.",
+						"Only paths like this: * and ? within a name, ** across folders, !pattern to exclude, e.g. *.md or docs/**/*.csv.",
+				},
+				exclude_glob: {
+					type: "string",
+					minLength: 1,
+					maxLength: MAX_QUERY,
+					description: "Skip paths matching this glob (comma-separated for several), e.g. *.test.ts,dist/**.",
 				},
 				regex: { type: "boolean", description: "query is a regular expression." },
 				context: {
@@ -966,8 +1018,11 @@ export function cloudFolderSearchTool(options: {
 					description: "Lines to show before and after each hit.",
 				},
 				files_only: { type: "boolean", description: "Only the matching files, with how many lines match in each." },
+				count_only: { type: "boolean", description: "Return total matching line count and per-file counts." },
 				names_only: { type: "boolean", description: "Search names of files and folders instead of their text." },
 				case_sensitive: { type: "boolean" },
+				smart_case: { type: "boolean", description: "Case-sensitive only when query has uppercase letters." },
+				whole_word: { type: "boolean", description: "Match whole words only." },
 				cursor: { type: "string", description: "Where the last answer said to go on." },
 			},
 		},
@@ -985,7 +1040,17 @@ export function cloudFolderSearchTool(options: {
 				}
 			}
 			const glob = input.glob === undefined ? null : searchText(input.glob, "glob");
-			for (const flag of ["regex", "files_only", "names_only", "case_sensitive"] as const)
+			const excludeGlob =
+				input.exclude_glob === undefined ? undefined : searchText(input.exclude_glob, "exclude_glob");
+			for (const flag of [
+				"regex",
+				"files_only",
+				"count_only",
+				"names_only",
+				"case_sensitive",
+				"smart_case",
+				"whole_word",
+			] as const)
 				if (input[flag] !== undefined && typeof input[flag] !== "boolean")
 					throw new CloudToolArgumentRefusal(`${flag} must be true or false`);
 			const context = input.context ?? 0;
@@ -993,43 +1058,72 @@ export function cloudFolderSearchTool(options: {
 				throw new CloudToolArgumentRefusal(`context must be a whole number from 0 to ${MAX_CONTEXT}`);
 			const regex = input.regex === true;
 			const filesOnly = input.files_only === true;
+			const countOnly = input.count_only === true;
 			const namesOnly = input.names_only === true;
+			const smartCase = input.smart_case === true;
+			const wholeWord = input.whole_word === true;
 			if (query === null && glob === null)
 				throw new CloudToolArgumentRefusal("company_search needs a query, a glob, or both");
-			if (query === null && (regex || filesOnly || context > 0))
+			if (query === null && (regex || filesOnly || countOnly || context > 0 || wholeWord))
 				throw new CloudToolArgumentRefusal("regex, files_only and context need a query; a glob alone lists paths");
-			if (filesOnly && namesOnly) throw new CloudToolArgumentRefusal("files_only counts lines of text, not names");
-			if (context > 0 && (namesOnly || filesOnly))
+			if ((filesOnly || countOnly) && namesOnly)
+				throw new CloudToolArgumentRefusal("files_only counts lines of text, not names");
+			if (context > 0 && (namesOnly || filesOnly || countOnly))
 				throw new CloudToolArgumentRefusal(
 					"context shows lines around text hits, not with names_only or files_only",
 				);
+			if (excludeGlob !== undefined) mergeWireGlob(glob, excludeGlob);
+			if (wholeWord && query !== null) {
+				const wrapped = regex ? `\\b(?:${query})\\b` : `\\b(?:${escapeRegexLiteral(query)})\\b`;
+				if (wrapped.length > MAX_QUERY)
+					throw new CloudToolArgumentRefusal(
+						`whole_word query must fit within ${MAX_QUERY} characters as a pattern`,
+					);
+			}
 			if (input.cursor !== undefined && (typeof input.cursor !== "string" || !CURSOR_TOKEN.test(input.cursor)))
 				throw new CloudToolArgumentRefusal("cursor must be the token an answer of this search gave");
 			return {
 				query,
 				path,
 				glob,
+				...(excludeGlob === undefined ? {} : { exclude_glob: excludeGlob }),
 				regex,
 				context,
 				files_only: filesOnly,
-				// A glob alone is a find: of names.
+				...(countOnly ? { count_only: true as const } : {}),
 				names_only: namesOnly || query === null,
 				case_sensitive: input.case_sensitive === true,
+				...(smartCase ? { smart_case: true as const } : {}),
+				...(wholeWord ? { whole_word: true as const } : {}),
 				cursor: input.cursor === undefined ? null : input.cursor,
 			};
 		},
 		async execute(value, context): Promise<CloudToolContent> {
 			const input = value as SearchInput;
-			// A cursor goes on only with the search that gave it.
+			const wireGlob = mergeWireGlob(input.glob, input.exclude_glob);
+			const wireRegex = input.regex || input.whole_word === true;
+			const wireQuery =
+				input.whole_word === true && input.query !== null
+					? input.regex
+						? `\\b(?:${input.query})\\b`
+						: `\\b(?:${escapeRegexLiteral(input.query)})\\b`
+					: input.query;
+			const wireCaseSensitive =
+				input.case_sensitive || (input.smart_case === true && input.query !== null && /\p{Lu}/u.test(input.query));
+			const wireFilesOnly = input.files_only || input.count_only === true;
 			const asked = JSON.stringify([
 				input.query,
 				input.path,
 				input.glob,
+				input.exclude_glob ?? null,
 				input.regex,
 				input.context,
 				input.files_only,
+				input.count_only ?? false,
 				input.names_only,
 				input.case_sensitive,
+				input.smart_case ?? false,
+				input.whole_word ?? false,
 			]);
 			const opened = input.cursor === null ? null : search.open(input.cursor, asked);
 			if (opened === undefined)
@@ -1044,13 +1138,13 @@ export function cloudFolderSearchTool(options: {
 			try {
 				page = await search.search(
 					{
-						query: input.query,
-						regex: input.regex,
+						query: wireQuery,
+						regex: wireRegex,
 						path: input.path,
-						glob: input.glob,
+						glob: wireGlob,
 						namesOnly: input.names_only,
-						filesOnly: input.files_only,
-						caseSensitive: input.case_sensitive,
+						filesOnly: wireFilesOnly,
+						caseSensitive: wireCaseSensitive,
 						context: input.context,
 						after: opened?.cursor ?? null,
 					},
@@ -1063,7 +1157,6 @@ export function cloudFolderSearchTool(options: {
 				const code = error instanceof FolderLinkError ? error.code : "";
 				const detail = error instanceof FolderLinkError ? error.detail : undefined;
 				if (code === "NOT_FOUND") throw new CloudToolRefusal("NOT_FOUND: no such path in the folder you may read");
-				// The search's own words on a pattern it does not run, or on a node that does not take this yet.
 				if (code === "BAD_REQUEST" && detail) throw new CloudToolRefusal(detail);
 				if (code === "BAD_REQUEST")
 					throw new CloudToolRefusal("BAD_REQUEST: the folder search refused the request");
@@ -1075,18 +1168,17 @@ export function cloudFolderSearchTool(options: {
 					"COMPANY_FOLDER_UNAVAILABLE: the folder could not be searched now; try again, or read with company_read",
 				);
 			}
-			// The text as the model is shown it: the boundary cuts a secret out of every answer (a line of a file may hold a
-			// token), so the release is under the hash of the text after that cut, which is what the context view cites.
-			// The cut only shortens, so the fitted text still fits. A cursor still inside the file an earlier answer showed
-			// part of (at the version it showed) keeps saying so, whether or not this answer shows more of it.
 			const text = redactCloudWebhookSecrets(
-				folderSearchText(page, (cursor, carried, shown) =>
-					search.seal(
-						cursor,
-						asked,
-						carried,
-						shown === true || (opened?.shown === true && inFile(opened.cursor, cursor)),
-					),
+				folderSearchText(
+					page,
+					(cursor, carried, shown) =>
+						search.seal(
+							cursor,
+							asked,
+							carried,
+							shown === true || (opened?.shown === true && inFile(opened.cursor, cursor)),
+						),
+					input.count_only === true,
 				),
 			);
 			// Released before the model sees the answer, under the hash of exactly this text; cited by its first release.

@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
@@ -200,16 +200,15 @@ impl VersionMap {
 		let path = path.clone();
 		let fresh = path.with_extension("jsonl.new");
 		let result = (|| -> io::Result<File> {
-			let mut out = OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&fresh)?;
-			let mut text = String::new();
+			let out = OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&fresh)?;
+			let mut writer = BufWriter::with_capacity(64 * 1024, out);
 			for (p, e) in &self.map {
-				text.push_str(&serde_json::to_string(&Line { p: p.clone(), v: Some(e.version.clone()), m: e.made }).expect("serializes"));
-				text.push('\n');
+				serde_json::to_writer(&mut writer, &Line { p: p.clone(), v: Some(e.version.clone()), m: e.made })
+					.expect("serializes");
+				writer.write_all(b"\n")?;
 			}
-			out.write_all(text.as_bytes())?;
+			let out = writer.into_inner().map_err(|e| e.into_error())?;
 			std::fs::rename(&fresh, &path)?;
-			// The handle written through goes on appending: it is the file now in place, at its end, and the map is its
-			// only writer. Opening it again could fail after the rename, and leave the lines going to the file it replaced.
 			Ok(out)
 		})();
 		match result {
