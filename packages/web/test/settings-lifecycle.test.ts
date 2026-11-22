@@ -663,6 +663,8 @@ describe("settings session lifecycle", () => {
 		exit.focus();
 		vi.mocked(f.api.getTeam).mockResolvedValueOnce({ ...team });
 		f.hints.get("qorpera_profile_access_state")!();
+		// WHY: Back-to-back access hints share a 250ms readOnHint window, so advance past the trailing edge before asserting the rerender.
+		await vi.advanceTimersByTimeAsync(250);
 		await draw();
 		expect(f.root.querySelector(".company-exit")).not.toBe(exit);
 		expect(document.activeElement).toBe(f.root.querySelector(".company-exit"));
