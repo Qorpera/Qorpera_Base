@@ -132,6 +132,29 @@ describe("a surface's figure in the rail", () => {
 		store.dispose();
 	});
 
+	it("turns Auto-publish on from the rail's right-click, where it stays reachable with the bar hidden", async () => {
+		const setSurfaceAutoPublish = vi.fn(async (_id: string, enabled: boolean) => summary({ autoPublish: enabled }));
+		const store = storeWith(fakeClient({ setSurfaceAutoPublish }));
+		await store.load();
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+		const row = rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="website"]')!;
+
+		row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+		const toggle = [...document.querySelectorAll<HTMLElement>(".context-menu-item")].find((item) =>
+			item.textContent?.includes("Auto-publish on Approve"),
+		)!;
+		expect(toggle.getAttribute("aria-checked")).toBe("false");
+		toggle.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(setSurfaceAutoPublish).toHaveBeenCalledWith(SURFACE, true);
+		expect(store.state.surfaces[0]?.autoPublish).toBe(true);
+		for (const node of document.body.querySelectorAll(".context-menu")) node.remove();
+		store.dispose();
+	});
+
 	it("opens the same menu from a long press, under the row from the keyboard, and leaves Shift+right-click to the browser", async () => {
 		const store = storeWith(fakeClient());
 		await store.load();
