@@ -312,12 +312,20 @@ begin
 	));
 	perform pg_temp.t1333_ok(v_mixed -> 'units' -> 0 ->> 'outcome' = 'saved', 'parity move failed: ' || v_mixed::text);
 
+	v_mixed := public.qorpera_folder_commit(v_env, v_run, 't1333-commit-mismatch-unpossessed', jsonb_build_array(
+		jsonb_build_object('op', 'write', 'path', 'shared/parity/mismatch-unpossessed.txt',
+			'file', v_unpossessed || jsonb_build_object('mediaType', 'application/octet-stream'))
+	));
+	perform pg_temp.t1333_ok(
+		v_mixed -> 'units' -> 0 ->> 'outcome' = 'refused' and v_mixed -> 'units' -> 0 ->> 'reason' = 'bytes_unverified',
+		'unpossessed mismatched v2 manifest must return bytes_unverified (security 20260930043000): ' || v_mixed::text);
+
 	begin
-		perform public.qorpera_folder_commit(v_env, v_run, 't1333-commit-mismatch', jsonb_build_array(
-			jsonb_build_object('op', 'write', 'path', 'shared/parity/mismatch.txt',
-				'file', v_unpossessed || jsonb_build_object('mediaType', 'application/octet-stream'))
+		perform public.qorpera_folder_commit(v_env, v_run, 't1333-commit-mismatch-holder', jsonb_build_array(
+			jsonb_build_object('op', 'write', 'path', 'shared/parity/mismatch-holder.txt',
+				'file', v_file || jsonb_build_object('mediaType', 'application/octet-stream'))
 		));
-		raise exception 'mismatched v2 manifest without possession must raise 22023';
+		raise exception 'possessed mismatched v2 manifest must raise 22023';
 	exception when invalid_parameter_value then null;
 	end;
 

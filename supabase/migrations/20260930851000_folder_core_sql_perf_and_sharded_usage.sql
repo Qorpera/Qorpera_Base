@@ -1161,12 +1161,11 @@ $new$	with write_units as materialized (
 	)
 	select coalesce(jsonb_object_agg(wu.unit_no::text,
 		case
-			when p.manifest_sha256 is null then 'bytes_unverified'
-			when p.verifier_version = 2 and (p.media_type is distinct from wu.media_type
-				or p.executable is distinct from wu.executable) then 'mismatch'
-			when not coalesce(ok.objs_ok, false) then 'bytes_unverified'
+			when p.manifest_sha256 is null or not coalesce(ok.objs_ok, false) then 'bytes_unverified'
 			when p.verifier_version = 2 and v_bytes_actor ->> 'kind' is distinct from 'platform'
 				and sm.manifest_sha256 is null and rm.manifest_sha256 is null then 'bytes_unverified'
+			when p.verifier_version = 2 and (p.media_type is distinct from wu.media_type
+				or p.executable is distinct from wu.executable) then 'mismatch'
 			else 'ok'
 		end), '{}'::jsonb)
 	into v_write_proofs
