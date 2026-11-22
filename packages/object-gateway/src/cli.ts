@@ -20,6 +20,7 @@ import { FileSystemObjectStore, resolveObjectStoreLanes } from "./object-store.t
 import { ObjectGatewayReplication } from "./replication.ts";
 import { createObjectGatewayHandler } from "./service.ts";
 import { SupabaseObjectAuthority } from "./supabase-authority.ts";
+import { SurfaceFolderWorker } from "./surface-folder-worker.ts";
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
 	const value = environment[name]?.trim();
@@ -147,6 +148,20 @@ const companyCreation =
 				store,
 				replication,
 				surfaceFirst: process.env.QORPERA_SURFACE_FIRST === "1",
+			})
+		: undefined;
+const surfaceFolderWorker =
+	process.env.QORPERA_SURFACE_FOLDER_WRITER === "1"
+		? new SurfaceFolderWorker({
+				authority: new SupabaseMemberCompanyAuthority({
+					projectUrl: required(process.env, "QORPERA_SUPABASE_URL"),
+					publishableKey: required(process.env, "QORPERA_SUPABASE_PUBLISHABLE_KEY"),
+					secretKey: required(process.env, "QORPERA_SUPABASE_SECRET_KEY"),
+					requestTimeoutMs: 20_000,
+				}),
+				store,
+				replication,
+				readFallback: (profileId, sha256) => authority.readLegacyObject(profileId, sha256),
 			})
 		: undefined;
 const handler = createObjectGatewayHandler({
@@ -328,6 +343,21 @@ if (process.argv[2] === "migrate") {
 	const companyCreations = setInterval(() => {
 		void createCompanies();
 	}, 15_000);
+	let writingSurfaceFolders = false;
+	const writeSurfaceFolders = async (): Promise<void> => {
+		if (!surfaceFolderWorker || writingSurfaceFolders || stopping) return;
+		writingSurfaceFolders = true;
+		try {
+			await withAbortScopes([], (signal) => surfaceFolderWorker.processDue(8, signal), 60_000);
+		} catch {
+			process.stderr.write("Surface folder writer requires operator attention\n");
+		} finally {
+			writingSurfaceFolders = false;
+		}
+	};
+	const surfaceFolderWrites = setInterval(() => {
+		void writeSurfaceFolders();
+	}, 2_000);
 	server.listen(port(process.env), host, () => {
 		process.stdout.write(`Qorpera object gateway listening on ${host}:${port(process.env)}\n`);
 	});
@@ -343,6 +373,7 @@ if (process.argv[2] === "migrate") {
 			clearInterval(digitalPostWrites);
 			clearInterval(memoryErasures);
 			clearInterval(companyCreations);
+			clearInterval(surfaceFolderWrites);
 			stopGateway({
 				close: (done) => server.close(done),
 				flush: () => replication.flushStoredLines(),

@@ -919,6 +919,67 @@ describe("the edge function's route for the one call", () => {
 				p_lease_token: leaseToken,
 			},
 		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { sessions: [], previews: [], merges: [], publishes: [], automations: [] } });
+		const laneClaimRes = await post({
+			action: "surface_claim_jobs",
+			orchestratorId,
+			limit: 12,
+			lane: "sessions",
+		});
+		assert.equal(laneClaimRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_claim_pending_jobs_for_lane",
+			{ p_limit: 12, p_lane: "sessions" },
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { status: "enqueued", wakeId: claimId, runId: null } });
+		const enqueueRes = await post({
+			action: "surface_enqueue_session_run",
+			orchestratorId,
+			sessionId,
+			leaseToken,
+		});
+		assert.equal(enqueueRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_enqueue_session_run",
+			{ p_session_id: sessionId, p_lease_token: leaseToken },
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { status: "started", session: { sessionId } } });
+		const triggerRes = await post({
+			action: "surface_trigger_automation",
+			orchestratorId,
+			automationId: routineId,
+		});
+		assert.equal(triggerRes.status, 200);
+		assert.deepEqual(calls[1], ["qorpera_surface_trigger_automation", { p_automation_id: routineId }]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { updated: 1, sessionId } });
+		const rebaseRes = await post({
+			action: "surface_update_rebased_changes",
+			orchestratorId,
+			surfaceId: assignmentId,
+			sessionId,
+			branchHeadSha: sha2,
+			rebasedChanges: [{ changeId: occurrenceId, parentSha: sha1, headSha: sha2 }],
+		});
+		assert.equal(rebaseRes.status, 200);
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_update_rebased_changes",
+			{
+				p_surface_id: assignmentId,
+				p_session_id: sessionId,
+				p_branch_head_sha: sha2,
+				p_rebased_changes: [{ changeId: occurrenceId, parentSha: sha1, headSha: sha2 }],
+				p_conflicted_change_id: null,
+				p_conflict_paths: null,
+			},
+		]);
 	});
 
 	it("returns 503 on transient control-token validation DB errors instead of 401 and cancels oversized chunked bodies", async () => {

@@ -224,13 +224,13 @@ export interface CloudSurfaceToolsPort {
 }
 
 export type SurfaceControlPlaneRpc =
-	| "qorpera_propose_surface"
-	| "qorpera_service_start_surface_session"
-	| "qorpera_record_surface_change"
-	| "qorpera_surface_renew_lease"
-	| "qorpera_surface_complete_session_turn"
-	| "qorpera_surface_describe_company_senses"
-	| "qorpera_service_manage_surface_automation";
+	| "qorpera_native_surface_propose"
+	| "qorpera_native_surface_start_session"
+	| "qorpera_native_surface_record_change"
+	| "qorpera_native_surface_renew_lease"
+	| "qorpera_native_surface_complete_turn"
+	| "qorpera_native_surface_describe_senses"
+	| "qorpera_native_surface_manage_automation";
 
 export interface SurfaceToolsRpcClient {
 	call(
@@ -244,6 +244,8 @@ export interface SurfaceToolsRpcClient {
 export interface ControlPlaneSurfaceToolsPortOptions {
 	readonly defaultOriginKind?: "cofounder" | "automation";
 	readonly defaultOriginLabel?: string;
+	readonly deferSessionCompletion?: boolean;
+	readonly onNotePaths?: (notePaths: readonly string[]) => void;
 }
 
 function parseEnumArg<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
@@ -481,8 +483,9 @@ export function createControlPlaneSurfaceToolsPort(
 	return {
 		async recordChange(sessionId, request, context) {
 			const response = await rpc(
-				"qorpera_record_surface_change",
+				"qorpera_native_surface_record_change",
 				{
+					p_profile_id: context.companyId,
 					p_session_id: sessionId,
 					p_title: request.title,
 					p_summary: request.summary,
@@ -502,9 +505,9 @@ export function createControlPlaneSurfaceToolsPort(
 
 		async proposeSurface(companyId, request, context) {
 			const response = await rpc(
-				"qorpera_propose_surface",
+				"qorpera_native_surface_propose",
 				{
-					p_company_id: companyId,
+					p_profile_id: companyId,
 					p_slug: request.slug,
 					p_title: request.title,
 					p_group: request.group,
@@ -535,9 +538,9 @@ export function createControlPlaneSurfaceToolsPort(
 
 		async startSurfaceSession(request, context) {
 			const response = await rpc(
-				"qorpera_service_start_surface_session",
+				"qorpera_native_surface_start_session",
 				{
-					p_company_id: context.companyId,
+					p_profile_id: context.companyId,
 					p_surface_id: request.surfaceId,
 					p_prompt: request.prompt,
 					p_title: request.title,
@@ -562,8 +565,9 @@ export function createControlPlaneSurfaceToolsPort(
 		async stageSurfacePatch(sessionId, request, context) {
 			const affectedPaths = [...new Set(request.ops.map((op) => op.path))];
 			const response = await rpc(
-				"qorpera_record_surface_change",
+				"qorpera_native_surface_record_change",
 				{
+					p_profile_id: context.companyId,
 					p_session_id: sessionId,
 					p_title: request.title,
 					p_summary: request.summary,
@@ -574,31 +578,21 @@ export function createControlPlaneSurfaceToolsPort(
 					p_affected_paths: affectedPaths,
 					p_diff_stats: null,
 					p_patch_manifest: [...request.ops],
-					p_finish_session: request.finishSession,
+					p_finish_session: options.deferSessionCompletion ? false : request.finishSession,
 				},
 				context.signal,
 			);
 			if (request.notePaths.length > 0) {
-				await rpc(
-					"qorpera_surface_complete_session_turn",
-					{
-						p_session_id: sessionId,
-						p_state: request.finishSession ? "ready" : "running",
-						p_reply_text: null,
-						p_question: null,
-						p_note_paths: [...request.notePaths],
-						p_branch_head_sha: null,
-					},
-					context.signal,
-				);
+				options.onNotePaths?.(request.notePaths);
 			}
 			return parseRecordChangeResult(response, "stageSurfacePatch");
 		},
 
 		async stageSurfaceOpsAction(sessionId, request, context) {
 			const response = await rpc(
-				"qorpera_record_surface_change",
+				"qorpera_native_surface_record_change",
 				{
+					p_profile_id: context.companyId,
 					p_session_id: sessionId,
 					p_title: request.title,
 					p_summary: request.summary,
@@ -612,7 +606,7 @@ export function createControlPlaneSurfaceToolsPort(
 						actionKind: request.actionKind,
 						actionPayload: request.actionPayload,
 					},
-					p_finish_session: request.finishSession,
+					p_finish_session: options.deferSessionCompletion ? false : request.finishSession,
 				},
 				context.signal,
 			);
@@ -621,8 +615,8 @@ export function createControlPlaneSurfaceToolsPort(
 
 		async listSurfaceSenses(companyId, signal) {
 			const response = await rpc(
-				"qorpera_surface_describe_company_senses",
-				{ p_company_id: companyId },
+				"qorpera_native_surface_describe_senses",
+				{ p_profile_id: companyId },
 				signal ?? new AbortController().signal,
 			);
 			return parseSurfaceCompanySenses(response, "listSurfaceSenses");
@@ -630,9 +624,9 @@ export function createControlPlaneSurfaceToolsPort(
 
 		async manageAutomation(companyId, request, context) {
 			const response = await rpc(
-				"qorpera_service_manage_surface_automation",
+				"qorpera_native_surface_manage_automation",
 				{
-					p_company_id: companyId,
+					p_profile_id: companyId,
 					p_action: request.action,
 					p_automation_id: request.automationId,
 					p_title: request.title,

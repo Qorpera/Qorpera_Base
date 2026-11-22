@@ -64,7 +64,14 @@ export type MemberCompanyPublisherRpc =
 	| "qorpera_memory_message_erase_scrub"
 	// The member erase route (member-message-erases.ts, M3c): a member's request, and where it stands.
 	| "qorpera_memory_message_erase_request"
-	| "qorpera_memory_message_erase_status";
+	| "qorpera_memory_message_erase_status"
+	| "qorpera_folder_read"
+	| "qorpera_surface_claim_pending_jobs_for_lane"
+	| "qorpera_surface_complete_merge"
+	| "qorpera_surface_complete_publish"
+	| "qorpera_surface_renew_lease"
+	| "qorpera_surface_save_folder_snapshot"
+	| "qorpera_surface_load_folder_snapshot";
 
 /** The RPCs whose P0002 names a member's missing conversation, message or erase: 404, not a dependency failure. */
 const NOT_FOUND_RPCS: ReadonlySet<string> = new Set([

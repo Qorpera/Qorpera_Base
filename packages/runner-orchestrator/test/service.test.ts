@@ -311,13 +311,26 @@ describe("runner orchestrator service boundary", () => {
 		const dir = await realpath(await mkdtemp(join(tmpdir(), "orch-default-surface-")));
 		try {
 			const orchestratorId = "11111111-1111-4111-8111-111111111111";
+			const wakeId = "99999999-9999-4999-8999-999999999999";
+			const leaseToken = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 			const events: Record<string, unknown>[] = [];
+			const controlActions: Record<string, unknown>[] = [];
 			const fakeControl = new SupabaseCloudRunnerOrchestratorControlPlane(
 				"https://project.supabase.co",
 				"publishable-key",
 				orchestratorId,
 				"c".repeat(43),
-				vi.fn(async () => Response.json({ value: { jobId: runnerId, status: "failed" } })) as typeof fetch,
+				vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+					const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+					controlActions.push(body);
+					if (body.action === "surface_enqueue_session_run") {
+						return Response.json({ value: { status: "enqueued", wakeId, runId: null } });
+					}
+					if (body.action === "surface_trigger_automation") {
+						return Response.json({ value: { status: "started", session: { sessionId: runnerId } } });
+					}
+					return Response.json({ value: { jobId: runnerId, status: "failed" } });
+				}) as typeof fetch,
 			);
 			const providerCalls: Record<string, unknown>[] = [];
 			const fakeProvider = new HttpCloudRunnerProviderAdapter(
@@ -376,6 +389,11 @@ describe("runner orchestrator service boundary", () => {
 			await expect(
 				defaultConfig.dispatchSessionTurn(sampleSession, runnerId, new AbortController().signal),
 			).rejects.toThrow(/not enabled/);
+			await defaultConfig.dispatchSessionTurn(
+				{ ...sampleSession, leaseToken },
+				"managed-sandbox",
+				new AbortController().signal,
+			);
 			await defaultConfig.runAutomationJob?.(
 				{
 					automationId: runnerId,
@@ -390,6 +408,13 @@ describe("runner orchestrator service boundary", () => {
 				},
 				new AbortController().signal,
 			);
+			expect(defaultConfig.lane).toBe("sessions");
+			expect(controlActions).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ action: "surface_enqueue_session_run", sessionId: runnerId, leaseToken }),
+					expect.objectContaining({ action: "surface_trigger_automation", automationId: runnerId }),
+				]),
+			);
 			expect(events).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
@@ -397,7 +422,8 @@ describe("runner orchestrator service boundary", () => {
 						sessionId: runnerId,
 						status: 501,
 					}),
-					expect.objectContaining({ kind: "automation_dispatch_unconfigured", key: "cofounder-pulse" }),
+					expect.objectContaining({ kind: "session_enqueued", sessionId: runnerId, wakeId }),
+					expect.objectContaining({ kind: "automation_triggered", key: "cofounder-pulse", status: "started" }),
 				]),
 			);
 

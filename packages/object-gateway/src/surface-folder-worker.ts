@@ -1,0 +1,876 @@
+import { createHash, randomUUID } from "node:crypto";
+import {
+	compileIdentityTokensCss,
+	IDENTITY_TOKENS_CSS_PATH,
+	IDENTITY_TOKENS_JSON_PATH,
+	parseStudioPatchOps,
+	type StudioPatchOp,
+} from "@qorpera/contracts";
+import { withDefaultTimeout } from "./abort-scope.ts";
+import type { MemberCompanyAuthority } from "./member-company-authority.ts";
+import { UUID } from "./native-objects.ts";
+import type { FileSystemObjectStore } from "./object-store.ts";
+import { PLATFORM_ACTOR, PlatformFolderWriter } from "./platform-folder-writer.ts";
+import type { ObjectGatewayReplication } from "./replication.ts";
+
+const MAX_READ_BYTES = 2 * 1024 * 1024;
+const MAX_INLINE_SNAPSHOT_BYTES = 96 * 1024;
+const DISALLOWED_JSON_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const CAS_CONFLICT_REASONS = new Set(["conflict", "version_mismatch", "stale_version", "exists", "not_found"]);
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const UTF8_ENCODER = new TextEncoder();
+
+interface ClaimedFolderApprovedChange {
+	readonly changeId: string;
+	readonly kind: string;
+	readonly title: string;
+	readonly summary: string;
+	readonly patchManifest: unknown;
+	readonly affectedPaths: readonly string[];
+}
+
+interface ClaimedFolderMergeJob {
+	readonly jobId: string;
+	readonly kind: "land_change" | "undo_change";
+	readonly surfaceId: string;
+	readonly profileId: string;
+	readonly environmentId: string | null;
+	readonly leaseToken: string | null;
+	readonly folderRoot: string | null;
+	readonly payload: Readonly<Record<string, unknown>>;
+	readonly preMergeSnapshot: Readonly<Record<string, unknown>> | null;
+	readonly approvedChanges: readonly ClaimedFolderApprovedChange[];
+}
+
+interface ClaimedFolderPublishJob {
+	readonly jobId: string;
+	readonly surfaceId: string;
+	readonly profileId: string;
+	readonly environmentId: string | null;
+	readonly leaseToken: string | null;
+}
+
+interface FolderFileState {
+	readonly content: string | null;
+	readonly version: string | null;
+	readonly isDirectory: boolean;
+}
+
+interface FolderUndoSnapshot {
+	readonly snapshotId: string;
+	readonly folderRoot: string;
+	readonly changeIds: readonly string[];
+	readonly filesBefore: Readonly<Record<string, string | null>>;
+	readonly versionsAfter?: Readonly<Record<string, string | null>>;
+	readonly afterContentSha256?: Readonly<Record<string, string | null>>;
+}
+
+export interface SurfaceFolderWorkerOptions {
+	readonly authority: Pick<MemberCompanyAuthority, "publisher">;
+	readonly store: Pick<FileSystemObjectStore, "get">;
+	readonly replication: Pick<ObjectGatewayReplication, "uploadWithAuthority">;
+	readonly readFallback?: (profileId: string, sha256: string) => Promise<Uint8Array>;
+	readonly leaseRenewIntervalMs?: number;
+	readonly leaseExtendSeconds?: number;
+	readonly onEvent?: (event: Record<string, unknown>) => void;
+}
+
+function sha256Hex(text: string): string {
+	return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+function normalizeFolderRoot(folderRoot: string | null): string {
+	const cleaned = (folderRoot ?? "").trim().replace(/^\/+|\/+$/g, "");
+	if (
+		!cleaned ||
+		cleaned.includes("\\") ||
+		cleaned.includes("\0") ||
+		cleaned.split("/").some((p) => p === "" || p === "." || p === "..")
+	) {
+		throw new Error("Surface folder root is invalid");
+	}
+	return cleaned;
+}
+
+function resolveFolderPath(folderRoot: string, rawPath: string): string {
+	const normalized = rawPath.trim().replace(/^\/+|\/+$/g, "");
+	if (!normalized || normalized.includes("\\") || normalized.includes("\0")) {
+		throw new Error(`Invalid studio patch path: ${rawPath}`);
+	}
+	const segments = normalized.split("/");
+	if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+		throw new Error(`Unsafe studio patch path: ${rawPath}`);
+	}
+	const prefixed =
+		normalized === folderRoot || normalized.startsWith(`${folderRoot}/`) ? normalized : `${folderRoot}/${normalized}`;
+	if (!prefixed.startsWith(`${folderRoot}/`)) {
+		throw new Error(`Patch path escapes surface folder root: ${rawPath}`);
+	}
+	return prefixed;
+}
+
+function mediaTypeForPath(path: string): string {
+	const lower = path.toLowerCase();
+	if (lower.endsWith(".json")) return "application/json";
+	if (lower.endsWith(".css")) return "text/css";
+	if (lower.endsWith(".svg")) return "image/svg+xml";
+	if (lower.endsWith(".md")) return "text/markdown";
+	if (lower.endsWith(".html") || lower.endsWith(".htm")) return "text/html";
+	if (lower.endsWith(".js") || lower.endsWith(".mjs")) return "text/javascript";
+	if (lower.endsWith(".ts")) return "text/typescript";
+	if (lower.endsWith(".yaml") || lower.endsWith(".yml")) return "text/yaml";
+	return "text/plain";
+}
+
+function deepMergeJson(base: unknown, patch: Readonly<Record<string, unknown>>): Record<string, unknown> {
+	const target: Record<string, unknown> =
+		base && typeof base === "object" && !Array.isArray(base) ? { ...(base as Record<string, unknown>) } : {};
+	for (const [key, value] of Object.entries(patch)) {
+		if (DISALLOWED_JSON_KEYS.has(key)) continue;
+		if (value === null) {
+			delete target[key];
+		} else if (
+			value &&
+			typeof value === "object" &&
+			!Array.isArray(value) &&
+			target[key] &&
+			typeof target[key] === "object" &&
+			!Array.isArray(target[key])
+		) {
+			target[key] = deepMergeJson(target[key], value as Record<string, unknown>);
+		} else {
+			target[key] = structuredClone(value);
+		}
+	}
+	return target;
+}
+
+function parentDirectoriesOf(paths: Iterable<string>): string[] {
+	const dirs = new Set<string>();
+	for (const path of paths) {
+		const parts = path.split("/");
+		for (let i = 1; i < parts.length; i += 1) {
+			dirs.add(parts.slice(0, i).join("/"));
+		}
+	}
+	return [...dirs].sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b));
+}
+
+function extractStudioOps(manifest: unknown): StudioPatchOp[] {
+	if (Array.isArray(manifest)) {
+		return parseStudioPatchOps(manifest);
+	}
+	if (manifest && typeof manifest === "object" && Array.isArray((manifest as { ops?: unknown }).ops)) {
+		return parseStudioPatchOps((manifest as { ops: unknown[] }).ops);
+	}
+	throw new Error("Folder change patch manifest is missing valid ops");
+}
+
+function parseClaimedFolderMerge(value: unknown): ClaimedFolderMergeJob | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const rec = value as Record<string, unknown>;
+	if (
+		typeof rec.jobId !== "string" ||
+		!UUID.test(rec.jobId) ||
+		(rec.kind !== "land_change" && rec.kind !== "undo_change") ||
+		typeof rec.surfaceId !== "string" ||
+		!UUID.test(rec.surfaceId) ||
+		typeof rec.profileId !== "string" ||
+		!UUID.test(rec.profileId)
+	) {
+		return null;
+	}
+	const approvedChanges: ClaimedFolderApprovedChange[] = Array.isArray(rec.approvedChanges)
+		? rec.approvedChanges
+				.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+				.filter((item) => typeof item.changeId === "string" && UUID.test(item.changeId))
+				.map((item) => ({
+					changeId: item.changeId as string,
+					kind: typeof item.kind === "string" ? item.kind : "folder_patch",
+					title: typeof item.title === "string" ? item.title : "",
+					summary: typeof item.summary === "string" ? item.summary : "",
+					patchManifest: item.patchManifest ?? null,
+					affectedPaths: Array.isArray(item.affectedPaths)
+						? item.affectedPaths.filter((p): p is string => typeof p === "string")
+						: [],
+				}))
+		: [];
+	return {
+		jobId: rec.jobId,
+		kind: rec.kind,
+		surfaceId: rec.surfaceId,
+		profileId: rec.profileId,
+		environmentId: typeof rec.environmentId === "string" && UUID.test(rec.environmentId) ? rec.environmentId : null,
+		leaseToken: typeof rec.leaseToken === "string" && UUID.test(rec.leaseToken) ? rec.leaseToken : null,
+		folderRoot: typeof rec.folderRoot === "string" ? rec.folderRoot : null,
+		payload:
+			rec.payload && typeof rec.payload === "object" && !Array.isArray(rec.payload)
+				? (rec.payload as Record<string, unknown>)
+				: {},
+		preMergeSnapshot:
+			rec.preMergeSnapshot && typeof rec.preMergeSnapshot === "object" && !Array.isArray(rec.preMergeSnapshot)
+				? (rec.preMergeSnapshot as Record<string, unknown>)
+				: null,
+		approvedChanges,
+	};
+}
+
+function parseClaimedFolderPublish(value: unknown): ClaimedFolderPublishJob | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const rec = value as Record<string, unknown>;
+	if (
+		typeof rec.jobId !== "string" ||
+		!UUID.test(rec.jobId) ||
+		typeof rec.surfaceId !== "string" ||
+		!UUID.test(rec.surfaceId) ||
+		typeof rec.profileId !== "string" ||
+		!UUID.test(rec.profileId)
+	) {
+		return null;
+	}
+	return {
+		jobId: rec.jobId,
+		surfaceId: rec.surfaceId,
+		profileId: rec.profileId,
+		environmentId: typeof rec.environmentId === "string" && UUID.test(rec.environmentId) ? rec.environmentId : null,
+		leaseToken: typeof rec.leaseToken === "string" && UUID.test(rec.leaseToken) ? rec.leaseToken : null,
+	};
+}
+
+function parseSnapshotRecord(raw: Record<string, unknown>): FolderUndoSnapshot | null {
+	const filesBeforeRaw = raw.filesBefore;
+	if (!filesBeforeRaw || typeof filesBeforeRaw !== "object" || Array.isArray(filesBeforeRaw)) {
+		return null;
+	}
+	const filesBefore: Record<string, string | null> = {};
+	for (const [path, val] of Object.entries(filesBeforeRaw as Record<string, unknown>)) {
+		if (val !== null && typeof val !== "string") return null;
+		filesBefore[path] = val;
+	}
+	const versionsAfter: Record<string, string | null> | undefined =
+		raw.versionsAfter && typeof raw.versionsAfter === "object" && !Array.isArray(raw.versionsAfter)
+			? Object.fromEntries(
+					Object.entries(raw.versionsAfter as Record<string, unknown>).map(([k, v]) => [
+						k,
+						typeof v === "string" ? v : null,
+					]),
+				)
+			: undefined;
+	const afterContentSha256: Record<string, string | null> | undefined =
+		raw.afterContentSha256 && typeof raw.afterContentSha256 === "object" && !Array.isArray(raw.afterContentSha256)
+			? Object.fromEntries(
+					Object.entries(raw.afterContentSha256 as Record<string, unknown>).map(([k, v]) => [
+						k,
+						typeof v === "string" ? v : null,
+					]),
+				)
+			: undefined;
+	const changeIds = Array.isArray(raw.changeIds)
+		? raw.changeIds.filter((id): id is string => typeof id === "string")
+		: [];
+	return {
+		snapshotId: typeof raw.snapshotId === "string" ? raw.snapshotId : "",
+		folderRoot: typeof raw.folderRoot === "string" ? raw.folderRoot : "",
+		changeIds,
+		filesBefore,
+		...(versionsAfter ? { versionsAfter } : {}),
+		...(afterContentSha256 ? { afterContentSha256 } : {}),
+	};
+}
+
+function formatError(error: unknown): string {
+	const raw = error instanceof Error ? error.message : String(error ?? "Unknown error");
+	return raw.replace(/\0/g, "").replace(/\s+/g, " ").trim().slice(0, 1000) || "Folder surface job failed";
+}
+
+// WHY: Executes folder-backed Studio & Identity Surface merges, undos, and publishes directly on object-gateway using PlatformFolderWriter CAS commits.
+export class SurfaceFolderWorker {
+	readonly #options: SurfaceFolderWorkerOptions;
+	readonly #folder: PlatformFolderWriter;
+	readonly #leaseRenewIntervalMs: number;
+	readonly #leaseExtendSeconds: number;
+
+	constructor(options: SurfaceFolderWorkerOptions) {
+		this.#options = options;
+		this.#folder = new PlatformFolderWriter({
+			authority: options.authority,
+			store: options.store,
+			replication: options.replication,
+			...(options.readFallback ? { readFallback: options.readFallback } : {}),
+		});
+		this.#leaseRenewIntervalMs = Math.max(50, options.leaseRenewIntervalMs ?? 60_000);
+		this.#leaseExtendSeconds = Math.min(Math.max(30, options.leaseExtendSeconds ?? 300), 900);
+	}
+
+	#emit(event: Record<string, unknown>): void {
+		try {
+			this.#options.onEvent?.(event);
+		} catch {}
+	}
+
+	processDue(limit = 8, signal?: AbortSignal): Promise<number> {
+		return withDefaultTimeout(signal, 60_000, (scoped) => this.#processDue(limit, scoped));
+	}
+
+	async #processDue(limit: number, signal: AbortSignal): Promise<number> {
+		const raw = (await this.#options.authority.publisher(
+			"qorpera_surface_claim_pending_jobs_for_lane",
+			{ p_limit: Math.min(Math.max(1, limit), 64), p_lane: "folder" },
+			signal,
+		)) as { merges?: unknown; publishes?: unknown } | null;
+		const merges = Array.isArray(raw?.merges)
+			? raw.merges.map(parseClaimedFolderMerge).filter((j): j is ClaimedFolderMergeJob => j !== null)
+			: [];
+		const publishes = Array.isArray(raw?.publishes)
+			? raw.publishes.map(parseClaimedFolderPublish).filter((j): j is ClaimedFolderPublishJob => j !== null)
+			: [];
+
+		let handled = 0;
+		for (const merge of merges) {
+			if (signal.aborted) break;
+			await this.#withJobLease(merge.jobId, merge.leaseToken, signal, () => this.#handleMerge(merge, signal));
+			handled += 1;
+		}
+		for (const pub of publishes) {
+			if (signal.aborted) break;
+			await this.#withJobLease(pub.jobId, pub.leaseToken, signal, () => this.#handlePublish(pub, signal));
+			handled += 1;
+		}
+		return handled;
+	}
+
+	async #withJobLease<T>(
+		jobId: string,
+		leaseToken: string | null,
+		signal: AbortSignal,
+		work: () => Promise<T>,
+	): Promise<T> {
+		if (!leaseToken) return await work();
+		let renewing = false;
+		const timer = setInterval(() => {
+			if (signal.aborted || renewing) return;
+			renewing = true;
+			void this.#options.authority
+				.publisher(
+					"qorpera_surface_renew_lease",
+					{
+						p_kind: "job",
+						p_id: jobId,
+						p_lease_token: leaseToken,
+						p_extend_seconds: this.#leaseExtendSeconds,
+					},
+					signal,
+				)
+				.catch(() => undefined)
+				.finally(() => {
+					renewing = false;
+				});
+		}, this.#leaseRenewIntervalMs);
+		timer.unref?.();
+		try {
+			return await work();
+		} finally {
+			clearInterval(timer);
+		}
+	}
+
+	async #readFolderEntry(environmentId: string, path: string, signal: AbortSignal): Promise<FolderFileState> {
+		const response = (await this.#options.authority.publisher(
+			"qorpera_folder_read",
+			{ p_environment_id: environmentId, p_actor: PLATFORM_ACTOR, p_path: path },
+			signal,
+		)) as {
+			schema?: unknown;
+			found?: unknown;
+			entry?: {
+				kind?: unknown;
+				version?: unknown;
+				manifestSha256?: unknown;
+				fileSha256?: unknown;
+				bytes?: unknown;
+			} | null;
+		} | null;
+		if (response?.schema !== "qorpera.folder-read/v1") {
+			throw new Error(`Invalid folder read response for ${path}`);
+		}
+		if (!response.found || !response.entry) {
+			return { content: null, version: null, isDirectory: false };
+		}
+		const entry = response.entry;
+		const version = typeof entry.version === "string" ? entry.version : null;
+		if (entry.kind === "folder" || entry.kind === "dir") {
+			return { content: null, version, isDirectory: true };
+		}
+		if (
+			typeof entry.manifestSha256 !== "string" ||
+			typeof entry.fileSha256 !== "string" ||
+			typeof entry.bytes !== "number"
+		) {
+			throw new Error(`Invalid folder entry metadata for ${path}`);
+		}
+		const bytes = await this.#folder.read(
+			environmentId,
+			{ manifestSha256: entry.manifestSha256, fileSha256: entry.fileSha256, bytes: entry.bytes },
+			MAX_READ_BYTES,
+			signal,
+		);
+		return { content: UTF8_DECODER.decode(bytes), version, isDirectory: false };
+	}
+
+	async #handleMerge(job: ClaimedFolderMergeJob, signal: AbortSignal): Promise<void> {
+		try {
+			if (!job.environmentId) {
+				throw new Error("Surface folder job is missing environmentId");
+			}
+			if (job.kind === "undo_change") {
+				await this.#handleUndo(job, job.environmentId, signal);
+				return;
+			}
+			await this.#handleLand(job, job.environmentId, signal);
+		} catch (error) {
+			const errorDetail = formatError(error);
+			this.#emit({ kind: "surface_folder_merge_failed", jobId: job.jobId, error: errorDetail });
+			await this.#completeMerge(job, { status: "failed", errorDetail }, signal);
+		}
+	}
+
+	async #handleLand(job: ClaimedFolderMergeJob, environmentId: string, signal: AbortSignal): Promise<void> {
+		const folderRoot = normalizeFolderRoot(job.folderRoot);
+		if (job.approvedChanges.length === 0) {
+			throw new Error("Folder merge job has no approved changes");
+		}
+
+		const resolvedOps: { readonly path: string; readonly op: StudioPatchOp }[] = [];
+		const touchedPaths = new Set<string>();
+		for (const change of job.approvedChanges) {
+			const ops = extractStudioOps(change.patchManifest);
+			for (const op of ops) {
+				const fullPath = resolveFolderPath(folderRoot, op.path);
+				resolvedOps.push({ path: fullPath, op });
+				touchedPaths.add(fullPath);
+			}
+		}
+		if (touchedPaths.has(IDENTITY_TOKENS_JSON_PATH)) {
+			touchedPaths.add(IDENTITY_TOKENS_CSS_PATH);
+		}
+
+		const currentByPath = new Map<string, FolderFileState>();
+		for (const path of touchedPaths) {
+			currentByPath.set(path, await this.#readFolderEntry(environmentId, path, signal));
+		}
+
+		const working = new Map<string, string | null>();
+		const filesBefore: Record<string, string | null> = {};
+		for (const [path, state] of currentByPath) {
+			if (state.isDirectory) {
+				throw new Error(`Cannot patch folder path as a file: ${path}`);
+			}
+			working.set(path, state.content);
+			filesBefore[path] = state.content;
+		}
+
+		for (const { path, op } of resolvedOps) {
+			if (op.op === "write_text") {
+				working.set(path, op.content);
+			} else if (op.op === "delete") {
+				working.set(path, null);
+			} else if (op.op === "merge_json") {
+				const prior = working.get(path);
+				let parsed: unknown = {};
+				if (prior !== null && prior !== undefined && prior.trim().length > 0) {
+					try {
+						parsed = JSON.parse(prior);
+					} catch {
+						throw new Error(`Existing file is not valid JSON for merge_json: ${path}`);
+					}
+				}
+				const merged = deepMergeJson(parsed, op.patch);
+				working.set(path, `${JSON.stringify(merged, null, 2)}\n`);
+			}
+		}
+
+		if (touchedPaths.has(IDENTITY_TOKENS_JSON_PATH)) {
+			const nextTokens = working.get(IDENTITY_TOKENS_JSON_PATH);
+			if (typeof nextTokens === "string") {
+				const compiledCss = compileIdentityTokensCss(nextTokens);
+				if (compiledCss.trim().length > 0) {
+					working.set(IDENTITY_TOKENS_CSS_PATH, compiledCss);
+				}
+			}
+		}
+
+		const writePaths = [...working.entries()].filter(([, content]) => content !== null).map(([path]) => path);
+		const missingDirs: string[] = [];
+		for (const dir of parentDirectoriesOf(writePaths)) {
+			const dirState = await this.#readFolderEntry(environmentId, dir, signal);
+			if (!dirState.isDirectory && dirState.version === null) {
+				missingDirs.push(dir);
+			}
+		}
+
+		const units: Record<string, unknown>[] = [];
+		const unitPaths: (string | null)[] = [];
+		for (const dir of missingDirs) {
+			units.push({ op: "mkdir", path: dir });
+			unitPaths.push(null);
+		}
+		for (const [path, nextContent] of working) {
+			const priorState = currentByPath.get(path);
+			if (nextContent === null) {
+				if (!priorState || priorState.version === null) continue;
+				units.push({ op: "delete", path, expectedVersion: priorState.version });
+				unitPaths.push(path);
+			} else {
+				const bytes = UTF8_ENCODER.encode(nextContent);
+				const file = await this.#folder.stage(
+					environmentId,
+					bytes,
+					{ mediaType: mediaTypeForPath(path), executable: false },
+					signal,
+					{ profileId: job.profileId },
+				);
+				units.push({
+					op: "write",
+					path,
+					file,
+					...(priorState?.version ? { expectedVersion: priorState.version } : {}),
+				});
+				unitPaths.push(path);
+			}
+		}
+
+		if (units.length === 0) {
+			await this.#completeMerge(job, { status: "landed", preMergeSnapshot: null }, signal);
+			return;
+		}
+
+		const commitResult = await this.#commitUnits(
+			environmentId,
+			`surface-merge:${job.jobId}`,
+			units,
+			unitPaths,
+			signal,
+		);
+		if (commitResult.status === "conflict") {
+			await this.#completeMerge(
+				job,
+				{
+					status: "conflicted",
+					conflictPaths: commitResult.conflictPaths,
+					errorDetail: "One or more files changed while landing this Studio patch",
+				},
+				signal,
+			);
+			return;
+		}
+		if (commitResult.status === "failed") {
+			await this.#completeMerge(job, { status: "failed", errorDetail: commitResult.errorDetail }, signal);
+			return;
+		}
+
+		const versionsAfter: Record<string, string | null> = {};
+		const afterContentSha256: Record<string, string | null> = {};
+		for (const [path, content] of working) {
+			versionsAfter[path] = commitResult.versionsAfter[path] ?? null;
+			afterContentSha256[path] = content === null ? null : sha256Hex(content);
+		}
+
+		const changeIds = job.approvedChanges.map((c) => c.changeId);
+		const inlineSnapshot: Record<string, unknown> = {
+			folderRoot,
+			changeIds,
+			filesBefore,
+			versionsAfter,
+			afterContentSha256,
+		};
+		let preMergeSnapshot: Record<string, unknown> = inlineSnapshot;
+		if (Buffer.byteLength(JSON.stringify(inlineSnapshot), "utf8") > MAX_INLINE_SNAPSHOT_BYTES) {
+			const snapshotId = randomUUID();
+			await this.#options.authority.publisher(
+				"qorpera_surface_save_folder_snapshot",
+				{
+					p_profile_id: job.profileId,
+					p_surface_id: job.surfaceId,
+					p_snapshot_id: snapshotId,
+					p_folder_root: folderRoot,
+					p_change_ids: changeIds,
+					p_files_before: filesBefore,
+					p_versions_after: versionsAfter,
+					p_after_content_sha256: afterContentSha256,
+				},
+				signal,
+			);
+			preMergeSnapshot = {
+				externalSnapshotId: snapshotId,
+				folderRoot,
+				changeIds,
+			};
+		}
+
+		await this.#completeMerge(job, { status: "landed", preMergeSnapshot }, signal);
+		this.#emit({
+			kind: "surface_folder_merge_landed",
+			jobId: job.jobId,
+			surfaceId: job.surfaceId,
+			paths: [...working.keys()],
+		});
+	}
+
+	async #handleUndo(job: ClaimedFolderMergeJob, environmentId: string, signal: AbortSignal): Promise<void> {
+		let snapshot: FolderUndoSnapshot | null = null;
+		const inline = job.preMergeSnapshot;
+		const externalSnapshotId =
+			inline && typeof inline.externalSnapshotId === "string" ? inline.externalSnapshotId : null;
+		const targetChangeId =
+			typeof job.payload.changeId === "string" && UUID.test(job.payload.changeId)
+				? job.payload.changeId
+				: Array.isArray(job.payload.changeIds) &&
+						typeof job.payload.changeIds[0] === "string" &&
+						UUID.test(job.payload.changeIds[0])
+					? job.payload.changeIds[0]
+					: null;
+
+		if (inline && !externalSnapshotId) {
+			snapshot = parseSnapshotRecord(inline);
+		}
+		if (!snapshot && (externalSnapshotId || targetChangeId)) {
+			const loaded = (await this.#options.authority.publisher(
+				"qorpera_surface_load_folder_snapshot",
+				{
+					p_profile_id: job.profileId,
+					p_surface_id: job.surfaceId,
+					p_change_id: targetChangeId,
+					p_snapshot_id: externalSnapshotId,
+				},
+				signal,
+			)) as Record<string, unknown> | null;
+			if (loaded) {
+				snapshot = parseSnapshotRecord(loaded);
+			}
+		}
+		if (!snapshot) {
+			await this.#completeMerge(
+				job,
+				{ status: "failed", errorDetail: "Pre-merge folder snapshot not found for rollback" },
+				signal,
+			);
+			return;
+		}
+
+		const currentByPath = new Map<string, FolderFileState>();
+		const conflictPaths: string[] = [];
+		for (const path of Object.keys(snapshot.filesBefore)) {
+			const current = await this.#readFolderEntry(environmentId, path, signal);
+			currentByPath.set(path, current);
+			if (snapshot.versionsAfter && Object.hasOwn(snapshot.versionsAfter, path)) {
+				const expectedVersion = snapshot.versionsAfter[path] ?? null;
+				if (current.version !== expectedVersion) {
+					conflictPaths.push(path);
+				}
+			} else if (snapshot.afterContentSha256 && Object.hasOwn(snapshot.afterContentSha256, path)) {
+				const expectedSha = snapshot.afterContentSha256[path] ?? null;
+				const currentSha = current.content === null ? null : sha256Hex(current.content);
+				if (currentSha !== expectedSha) {
+					conflictPaths.push(path);
+				}
+			}
+		}
+
+		if (conflictPaths.length > 0) {
+			await this.#completeMerge(
+				job,
+				{
+					status: "conflicted",
+					conflictPaths,
+					errorDetail: "Files changed after this Studio patch landed; rollback requires manual review",
+				},
+				signal,
+			);
+			return;
+		}
+
+		const restoreWritePaths = Object.entries(snapshot.filesBefore)
+			.filter(([, content]) => content !== null)
+			.map(([path]) => path);
+		const missingDirs: string[] = [];
+		for (const dir of parentDirectoriesOf(restoreWritePaths)) {
+			const dirState = await this.#readFolderEntry(environmentId, dir, signal);
+			if (!dirState.isDirectory && dirState.version === null) {
+				missingDirs.push(dir);
+			}
+		}
+
+		const units: Record<string, unknown>[] = [];
+		const unitPaths: (string | null)[] = [];
+		for (const dir of missingDirs) {
+			units.push({ op: "mkdir", path: dir });
+			unitPaths.push(null);
+		}
+		for (const [path, beforeContent] of Object.entries(snapshot.filesBefore)) {
+			const current = currentByPath.get(path);
+			if (beforeContent === null) {
+				if (!current || current.version === null) continue;
+				units.push({ op: "delete", path, expectedVersion: current.version });
+				unitPaths.push(path);
+			} else {
+				const bytes = UTF8_ENCODER.encode(beforeContent);
+				const file = await this.#folder.stage(
+					environmentId,
+					bytes,
+					{ mediaType: mediaTypeForPath(path), executable: false },
+					signal,
+					{ profileId: job.profileId },
+				);
+				units.push({
+					op: "write",
+					path,
+					file,
+					...(current?.version ? { expectedVersion: current.version } : {}),
+				});
+				unitPaths.push(path);
+			}
+		}
+
+		if (units.length === 0) {
+			await this.#completeMerge(job, { status: "landed" }, signal);
+			return;
+		}
+
+		const commitResult = await this.#commitUnits(
+			environmentId,
+			`surface-undo:${job.jobId}`,
+			units,
+			unitPaths,
+			signal,
+		);
+		if (commitResult.status === "conflict") {
+			await this.#completeMerge(
+				job,
+				{
+					status: "conflicted",
+					conflictPaths: commitResult.conflictPaths,
+					errorDetail: "Files changed concurrently during Studio rollback",
+				},
+				signal,
+			);
+			return;
+		}
+		if (commitResult.status === "failed") {
+			await this.#completeMerge(job, { status: "failed", errorDetail: commitResult.errorDetail }, signal);
+			return;
+		}
+
+		await this.#completeMerge(job, { status: "landed" }, signal);
+		this.#emit({ kind: "surface_folder_undo_landed", jobId: job.jobId, surfaceId: job.surfaceId });
+	}
+
+	async #commitUnits(
+		environmentId: string,
+		operationKey: string,
+		units: readonly Record<string, unknown>[],
+		unitPaths: readonly (string | null)[],
+		signal: AbortSignal,
+	): Promise<
+		| { readonly status: "saved"; readonly versionsAfter: Record<string, string | null> }
+		| { readonly status: "conflict"; readonly conflictPaths: string[] }
+		| { readonly status: "failed"; readonly errorDetail: string }
+	> {
+		const raw = (await this.#folder.commit(environmentId, operationKey, units, signal)) as {
+			schema?: unknown;
+			units?: unknown;
+		} | null;
+		if (
+			raw?.schema !== "qorpera.folder-commit/v1" ||
+			!Array.isArray(raw.units) ||
+			raw.units.length !== units.length
+		) {
+			return { status: "failed", errorDetail: "Unexpected folder commit response" };
+		}
+		const versionsAfter: Record<string, string | null> = {};
+		const conflictPaths: string[] = [];
+		const failureReasons: string[] = [];
+		for (let i = 0; i < raw.units.length; i += 1) {
+			const unit = raw.units[i] as { outcome?: unknown; reason?: unknown; version?: unknown };
+			const path = unitPaths[i];
+			if (unit?.outcome === "saved") {
+				if (path) {
+					versionsAfter[path] = typeof unit.version === "string" ? unit.version : null;
+				}
+				continue;
+			}
+			const reason = typeof unit?.reason === "string" ? unit.reason : String(unit?.outcome ?? "refused");
+			if (CAS_CONFLICT_REASONS.has(reason)) {
+				if (path) conflictPaths.push(path);
+			} else {
+				failureReasons.push(path ? `${path}: ${reason}` : reason);
+			}
+		}
+		if (conflictPaths.length > 0) {
+			return { status: "conflict", conflictPaths: [...new Set(conflictPaths)] };
+		}
+		if (failureReasons.length > 0) {
+			return { status: "failed", errorDetail: failureReasons.join("; ").slice(0, 1000) };
+		}
+		return { status: "saved", versionsAfter };
+	}
+
+	async #handlePublish(job: ClaimedFolderPublishJob, signal: AbortSignal): Promise<void> {
+		try {
+			await this.#options.authority.publisher(
+				"qorpera_surface_complete_publish",
+				{
+					p_job_id: job.jobId,
+					p_status: "published",
+					p_published_head_sha: null,
+					p_error_detail: null,
+					p_lease_token: job.leaseToken,
+				},
+				signal,
+			);
+			this.#emit({ kind: "surface_folder_publish_completed", jobId: job.jobId, surfaceId: job.surfaceId });
+		} catch (error) {
+			const errorDetail = formatError(error);
+			this.#emit({ kind: "surface_folder_publish_failed", jobId: job.jobId, error: errorDetail });
+			await this.#options.authority
+				.publisher(
+					"qorpera_surface_complete_publish",
+					{
+						p_job_id: job.jobId,
+						p_status: "failed",
+						p_published_head_sha: null,
+						p_error_detail: errorDetail,
+						p_lease_token: job.leaseToken,
+					},
+					signal,
+				)
+				.catch(() => undefined);
+		}
+	}
+
+	async #completeMerge(
+		job: ClaimedFolderMergeJob,
+		outcome: {
+			readonly status: "landed" | "conflicted" | "failed";
+			readonly conflictPaths?: readonly string[];
+			readonly errorDetail?: string;
+			readonly preMergeSnapshot?: Record<string, unknown> | null;
+		},
+		signal: AbortSignal,
+	): Promise<void> {
+		await this.#options.authority.publisher(
+			"qorpera_surface_complete_merge",
+			{
+				p_job_id: job.jobId,
+				p_status: outcome.status,
+				p_main_before: null,
+				p_main_after: null,
+				p_conflict_change_id: null,
+				p_conflict_paths: outcome.conflictPaths ? [...outcome.conflictPaths] : null,
+				p_error_detail: outcome.errorDetail ?? null,
+				p_pre_merge_snapshot: outcome.preMergeSnapshot ?? null,
+				p_lease_token: job.leaseToken,
+			},
+			signal,
+		);
+	}
+}

@@ -96,6 +96,7 @@ export interface SurfaceSessionTurnInput {
 
 export interface SurfaceSessionTurnCompletion {
 	readonly sessionId: string;
+	readonly companyId?: string;
 	readonly state: "ready" | "needs_input" | "failed";
 	readonly replyText: string | null;
 	readonly question: SurfaceSessionQuestion | null;
@@ -110,6 +111,7 @@ export interface SurfaceSessionCompletionPort {
 
 export interface SurfaceSessionLeaseRenewalInput {
 	readonly sessionId: string;
+	readonly companyId?: string;
 	readonly leaseToken: string;
 	readonly extendSeconds: number;
 }
@@ -379,18 +381,30 @@ function formatSessionFailure(error: unknown): { readonly errorMessage: string; 
 	return { errorMessage, replyText };
 }
 
-export function createControlPlaneSessionCompletionPort(control: SurfaceToolsRpcClient): SurfaceSessionCompletionPort;
-export function createControlPlaneSessionCompletionPort(control: CloudCompanyPathControl): SurfaceSessionCompletionPort;
+export function createControlPlaneSessionCompletionPort(
+	control: SurfaceToolsRpcClient,
+	profileId?: string,
+): SurfaceSessionCompletionPort;
+export function createControlPlaneSessionCompletionPort(
+	control: CloudCompanyPathControl,
+	profileId?: string,
+): SurfaceSessionCompletionPort;
 export function createControlPlaneSessionCompletionPort(
 	control: SurfaceToolsRpcClient | CloudCompanyPathControl,
+	profileId?: string,
 ): SurfaceSessionCompletionPort {
-	const rpc = (method: "qorpera_surface_complete_session_turn", args: Record<string, unknown>, signal: AbortSignal) =>
+	const rpc = (method: "qorpera_native_surface_complete_turn", args: Record<string, unknown>, signal: AbortSignal) =>
 		(control as SurfaceToolsRpcClient).call(method, args, signal);
 	return {
 		async completeSessionTurn(completion, signal) {
+			const resolvedProfileId = completion.companyId ?? profileId;
+			if (!resolvedProfileId) {
+				throw new Error("Surface session completion requires companyId or profileId");
+			}
 			await rpc(
-				"qorpera_surface_complete_session_turn",
+				"qorpera_native_surface_complete_turn",
 				{
+					p_profile_id: resolvedProfileId,
 					p_session_id: completion.sessionId,
 					p_state: completion.state,
 					p_reply_text: completion.replyText,
@@ -407,22 +421,29 @@ export function createControlPlaneSessionCompletionPort(
 
 export function createControlPlaneSessionLeaseRenewalPort(
 	control: SurfaceToolsRpcClient,
+	profileId?: string,
 ): SurfaceSessionLeaseRenewalPort;
 export function createControlPlaneSessionLeaseRenewalPort(
 	control: CloudCompanyPathControl,
+	profileId?: string,
 ): SurfaceSessionLeaseRenewalPort;
 export function createControlPlaneSessionLeaseRenewalPort(
 	control: SurfaceToolsRpcClient | CloudCompanyPathControl,
+	profileId?: string,
 ): SurfaceSessionLeaseRenewalPort {
-	const rpc = (method: "qorpera_surface_renew_lease", args: Record<string, unknown>, signal: AbortSignal) =>
+	const rpc = (method: "qorpera_native_surface_renew_lease", args: Record<string, unknown>, signal: AbortSignal) =>
 		(control as SurfaceToolsRpcClient).call(method, args, signal);
 	return {
 		async renewSessionLease(input, signal) {
+			const resolvedProfileId = input.companyId ?? profileId;
+			if (!resolvedProfileId) {
+				throw new Error("Surface session lease renewal requires companyId or profileId");
+			}
 			const result = await rpc(
-				"qorpera_surface_renew_lease",
+				"qorpera_native_surface_renew_lease",
 				{
-					p_kind: "session",
-					p_id: input.sessionId,
+					p_profile_id: resolvedProfileId,
+					p_session_id: input.sessionId,
 					p_lease_token: input.leaseToken,
 					p_extend_seconds: input.extendSeconds,
 				},
@@ -484,6 +505,7 @@ export async function runSurfaceSessionTurn(
 					renewSessionLease(
 						{
 							sessionId: input.sessionId,
+							companyId: input.companyId,
 							leaseToken,
 							extendSeconds,
 						},
@@ -698,6 +720,7 @@ export async function runSurfaceSessionTurn(
 		await ports.completeSessionTurn(
 			{
 				sessionId: input.sessionId,
+				companyId: input.companyId,
 				state,
 				replyText,
 				question,
@@ -726,6 +749,7 @@ export async function runSurfaceSessionTurn(
 			await ports.completeSessionTurn(
 				{
 					sessionId: input.sessionId,
+					companyId: input.companyId,
 					state: "failed",
 					replyText,
 					question: null,

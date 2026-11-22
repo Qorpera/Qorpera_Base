@@ -26,6 +26,7 @@ import type {
 	ClaimedSurfacePublishJob,
 	ClaimedSurfaceSessionJob,
 	ClaimedSurfaceSessionSponsor,
+	SurfaceClaimLane,
 	SurfaceMachinePlacementHint,
 } from "./surface-worker-loop.ts";
 
@@ -312,6 +313,40 @@ export interface ReleaseSurfaceSessionClaimResult {
 	readonly state: "queued" | "reconciling";
 }
 
+export interface EnqueueSurfaceSessionRunInput {
+	readonly sessionId: string;
+	readonly leaseToken: string;
+}
+
+export type EnqueueSurfaceSessionRunResult =
+	| { readonly status: "enqueued"; readonly wakeId: string; readonly runId: string | null }
+	| { readonly status: "deferred"; readonly reason: string; readonly retryAfterSeconds: number }
+	| { readonly status: "unavailable"; readonly reason: string };
+
+export interface TriggerSurfaceAutomationResult {
+	readonly status: "started" | "skipped";
+	readonly reason?: string;
+	readonly sessionId?: string | null;
+}
+
+export interface UpdateSurfaceRebasedChangesInput {
+	readonly surfaceId: string;
+	readonly sessionId: string;
+	readonly branchHeadSha?: string | null;
+	readonly rebasedChanges?: readonly {
+		readonly changeId: string;
+		readonly parentSha: string;
+		readonly headSha: string;
+	}[];
+	readonly conflictedChangeId?: string | null;
+	readonly conflictPaths?: readonly string[] | null;
+}
+
+export interface UpdateSurfaceRebasedChangesResult {
+	readonly updated: number;
+	readonly sessionId: string;
+}
+
 export interface CompleteSurfacePreviewInput {
 	readonly previewId: string;
 	readonly status: "ready" | "conflicted" | "failed";
@@ -448,7 +483,16 @@ export interface CloudRunnerOrchestratorControlPlane {
 		error: string,
 		signal?: AbortSignal,
 	): Promise<{ deferred: boolean } | undefined>;
-	claimSurfaceJobs?(limit?: number, signal?: AbortSignal): Promise<ClaimedSurfaceJobs>;
+	claimSurfaceJobs?(limit?: number, signal?: AbortSignal, lane?: SurfaceClaimLane): Promise<ClaimedSurfaceJobs>;
+	enqueueSurfaceSessionRun?(
+		input: EnqueueSurfaceSessionRunInput,
+		signal?: AbortSignal,
+	): Promise<EnqueueSurfaceSessionRunResult>;
+	triggerSurfaceAutomation?(automationId: string, signal?: AbortSignal): Promise<TriggerSurfaceAutomationResult>;
+	updateSurfaceRebasedChanges?(
+		input: UpdateSurfaceRebasedChangesInput,
+		signal?: AbortSignal,
+	): Promise<UpdateSurfaceRebasedChangesResult>;
 	renewSurfaceLease?(input: RenewSurfaceLeaseInput, signal?: AbortSignal): Promise<RenewSurfaceLeaseResult>;
 	completeSurfacePreview?(
 		input: CompleteSurfacePreviewInput,
@@ -667,6 +711,28 @@ type CloudRunnerOrchestratorRequest =
 			action: "surface_claim_jobs";
 			orchestratorId: string;
 			limit: number;
+			lane?: SurfaceClaimLane;
+	  }
+	| {
+			action: "surface_enqueue_session_run";
+			orchestratorId: string;
+			sessionId: string;
+			leaseToken: string;
+	  }
+	| {
+			action: "surface_trigger_automation";
+			orchestratorId: string;
+			automationId: string;
+	  }
+	| {
+			action: "surface_update_rebased_changes";
+			orchestratorId: string;
+			surfaceId: string;
+			sessionId: string;
+			branchHeadSha?: string;
+			rebasedChanges?: readonly { changeId: string; parentSha: string; headSha: string }[];
+			conflictedChangeId?: string;
+			conflictPaths?: readonly string[];
 	  }
 	| {
 			action: "surface_renew_lease";
@@ -1486,10 +1552,17 @@ function parseClaimedSurfacePreviewJob(value: unknown): ClaimedSurfacePreviewJob
 			: input.leaseToken === null
 				? null
 				: responseUuid(input.leaseToken, "surface preview lease token");
+	const environmentId =
+		input.environmentId === undefined
+			? undefined
+			: input.environmentId === null
+				? null
+				: responseUuid(input.environmentId, "surface preview environment id");
 	return {
 		previewId: responseUuid(input.previewId, "surface preview id"),
 		surfaceId: responseUuid(input.surfaceId, "surface id"),
 		profileId: responseUuid(input.profileId, "surface profile id"),
+		...(environmentId !== undefined ? { environmentId } : {}),
 		shortHostId: responseText(input.shortHostId, "surface preview host id", 64),
 		baseSha: responseText(input.baseSha, "surface preview base sha", 64),
 		selectedChangeIds: input.selectedChangeIds.map((id) => responseUuid(id, "surface change id")),
@@ -1641,12 +1714,19 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 						string,
 						unknown
 					>);
+	const environmentId =
+		input.environmentId === undefined
+			? undefined
+			: input.environmentId === null
+				? null
+				: responseUuid(input.environmentId, "surface merge environment id");
 	return {
 		jobId: responseUuid(input.jobId, "surface merge job id"),
 		kind: input.kind,
 		surfaceId: responseUuid(input.surfaceId, "surface id"),
 		sessionId,
 		profileId: responseUuid(input.profileId, "surface profile id"),
+		...(environmentId !== undefined ? { environmentId } : {}),
 		...(leaseToken !== undefined ? { leaseToken } : {}),
 		...(sourceKind !== undefined ? { sourceKind } : {}),
 		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
@@ -1679,10 +1759,28 @@ function parseClaimedSurfacePublishJob(value: unknown): ClaimedSurfacePublishJob
 			: input.leaseToken === null
 				? null
 				: responseUuid(input.leaseToken, "surface publish lease token");
+	const environmentId =
+		input.environmentId === undefined
+			? undefined
+			: input.environmentId === null
+				? null
+				: responseUuid(input.environmentId, "surface publish environment id");
+	let sourceKind: SurfaceSourceKind | undefined;
+	if (input.sourceKind !== undefined && input.sourceKind !== null) {
+		if (typeof input.sourceKind !== "string" || !SURFACE_SOURCE_KIND_SET.has(input.sourceKind)) {
+			throw new Error("Runner orchestrator returned invalid surface source kind");
+		}
+		sourceKind = input.sourceKind as SurfaceSourceKind;
+	}
+	const liveHeadSha =
+		input.liveHeadSha === undefined ? undefined : optionalResponseString(input.liveHeadSha, "surface live head sha");
 	return {
 		jobId: responseUuid(input.jobId, "surface publish job id"),
 		surfaceId: responseUuid(input.surfaceId, "surface id"),
 		profileId: responseUuid(input.profileId, "surface profile id"),
+		...(environmentId !== undefined ? { environmentId } : {}),
+		...(sourceKind !== undefined ? { sourceKind } : {}),
+		...(liveHeadSha !== undefined ? { liveHeadSha } : {}),
 		...(leaseToken !== undefined ? { leaseToken } : {}),
 		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
 		siteId,
@@ -1719,7 +1817,7 @@ function parseClaimedSurfaceAutomationJob(value: unknown): ClaimedSurfaceAutomat
 	};
 }
 
-function parseClaimedSurfaceJobs(value: unknown): ClaimedSurfaceJobs {
+export function parseClaimedSurfaceJobs(value: unknown): ClaimedSurfaceJobs {
 	const input = record(value, "claimed surface jobs");
 	if (!Array.isArray(input.sessions) || !Array.isArray(input.previews)) {
 		throw new Error("Runner orchestrator returned invalid claimed surface jobs");
@@ -4099,13 +4197,143 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		return { deferred: (released as { deferred?: unknown } | null)?.deferred === true };
 	}
 
-	async claimSurfaceJobs(limit = 16, signal?: AbortSignal): Promise<ClaimedSurfaceJobs> {
+	async claimSurfaceJobs(limit = 16, signal?: AbortSignal, lane?: SurfaceClaimLane): Promise<ClaimedSurfaceJobs> {
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64) {
 			throw new Error("Surface job claim limit is outside the supported range");
 		}
+		if (lane !== undefined && lane !== "all" && lane !== "sessions" && lane !== "folder" && lane !== "code_repo") {
+			throw new Error("Surface job claim lane is invalid");
+		}
 		return parseClaimedSurfaceJobs(
-			await this.#request({ action: "surface_claim_jobs", orchestratorId: this.#orchestratorId, limit }, signal),
+			await this.#request(
+				{
+					action: "surface_claim_jobs",
+					orchestratorId: this.#orchestratorId,
+					limit,
+					...(lane !== undefined ? { lane } : {}),
+				},
+				signal,
+			),
 		);
+	}
+
+	async enqueueSurfaceSessionRun(
+		input: EnqueueSurfaceSessionRunInput,
+		signal?: AbortSignal,
+	): Promise<EnqueueSurfaceSessionRunResult> {
+		requiredUuid(input.sessionId, "Surface session id");
+		requiredUuid(input.leaseToken, "Surface lease token");
+		const raw = record(
+			await this.#request(
+				{
+					action: "surface_enqueue_session_run",
+					orchestratorId: this.#orchestratorId,
+					sessionId: input.sessionId,
+					leaseToken: input.leaseToken,
+				},
+				signal,
+			),
+			"surface session run enqueue",
+		);
+		if (raw.status === "enqueued") {
+			return {
+				status: "enqueued",
+				wakeId: responseUuid(raw.wakeId, "surface wake id"),
+				runId: raw.runId === null || raw.runId === undefined ? null : responseUuid(raw.runId, "surface run id"),
+			};
+		}
+		if (raw.status === "deferred") {
+			return {
+				status: "deferred",
+				reason: typeof raw.reason === "string" && raw.reason ? raw.reason : "deferred",
+				retryAfterSeconds:
+					typeof raw.retryAfterSeconds === "number" && Number.isFinite(raw.retryAfterSeconds)
+						? raw.retryAfterSeconds
+						: 15,
+			};
+		}
+		if (raw.status === "unavailable") {
+			return {
+				status: "unavailable",
+				reason: typeof raw.reason === "string" && raw.reason ? raw.reason : "unavailable",
+			};
+		}
+		throw new Error("Runner orchestrator returned invalid surface session enqueue status");
+	}
+
+	async triggerSurfaceAutomation(automationId: string, signal?: AbortSignal): Promise<TriggerSurfaceAutomationResult> {
+		requiredUuid(automationId, "Surface automation id");
+		const raw = record(
+			await this.#request(
+				{
+					action: "surface_trigger_automation",
+					orchestratorId: this.#orchestratorId,
+					automationId,
+				},
+				signal,
+			),
+			"surface automation trigger",
+		);
+		if (raw.status === "started") {
+			const session =
+				raw.session && typeof raw.session === "object" ? (raw.session as Record<string, unknown>) : null;
+			const sessionId =
+				session && typeof session.sessionId === "string"
+					? responseUuid(session.sessionId, "surface session id")
+					: null;
+			return { status: "started", sessionId };
+		}
+		if (raw.status === "skipped") {
+			return {
+				status: "skipped",
+				...(typeof raw.reason === "string" ? { reason: raw.reason } : {}),
+			};
+		}
+		throw new Error("Runner orchestrator returned invalid surface automation trigger status");
+	}
+
+	async updateSurfaceRebasedChanges(
+		input: UpdateSurfaceRebasedChangesInput,
+		signal?: AbortSignal,
+	): Promise<UpdateSurfaceRebasedChangesResult> {
+		requiredUuid(input.surfaceId, "Surface id");
+		requiredUuid(input.sessionId, "Surface session id");
+		const branchHeadSha =
+			input.branchHeadSha === null || input.branchHeadSha === undefined
+				? undefined
+				: validateSurfaceShortText(input.branchHeadSha, "Surface branch head sha", 64);
+		let conflictedChangeId: string | undefined;
+		if (input.conflictedChangeId !== null && input.conflictedChangeId !== undefined) {
+			requiredUuid(input.conflictedChangeId, "Conflicted change id");
+			conflictedChangeId = input.conflictedChangeId;
+		}
+		const conflictPaths =
+			input.conflictPaths === null || input.conflictPaths === undefined
+				? undefined
+				: validateSurfaceStringList(input.conflictPaths, "Rebase conflict paths", 256, 512);
+		const raw = record(
+			await this.#request(
+				{
+					action: "surface_update_rebased_changes",
+					orchestratorId: this.#orchestratorId,
+					surfaceId: input.surfaceId,
+					sessionId: input.sessionId,
+					...(branchHeadSha !== undefined ? { branchHeadSha } : {}),
+					...(input.rebasedChanges !== undefined ? { rebasedChanges: [...input.rebasedChanges] } : {}),
+					...(conflictedChangeId !== undefined ? { conflictedChangeId } : {}),
+					...(conflictPaths !== undefined ? { conflictPaths } : {}),
+				},
+				signal,
+			),
+			"surface rebased changes update",
+		);
+		if (typeof raw.updated !== "number" || !Number.isSafeInteger(raw.updated) || raw.updated < 0) {
+			throw new Error("Runner orchestrator returned invalid rebased change count");
+		}
+		return {
+			updated: raw.updated,
+			sessionId: responseUuid(raw.sessionId, "surface session id"),
+		};
 	}
 
 	async renewSurfaceLease(input: RenewSurfaceLeaseInput, signal?: AbortSignal): Promise<RenewSurfaceLeaseResult> {

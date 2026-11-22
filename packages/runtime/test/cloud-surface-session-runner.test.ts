@@ -201,6 +201,7 @@ describe("cloud surface session runner", () => {
 			expect(completeSessionTurn).toHaveBeenCalledWith(
 				{
 					sessionId,
+					companyId: f.identity.companyId,
 					state: "ready",
 					replyText: "Staged warm linen packaging direction.",
 					question: null,
@@ -325,6 +326,7 @@ describe("cloud surface session runner", () => {
 			expect(completeSessionTurn).toHaveBeenCalledWith(
 				{
 					sessionId,
+					companyId: f.identity.companyId,
 					state: "needs_input",
 					replyText: "Should I include the Q3 volume estimate?",
 					question: {
@@ -421,14 +423,14 @@ describe("cloud surface session runner", () => {
 
 		expect(recordChange).toHaveBeenCalledTimes(1);
 		expect(completeSessionTurn).toHaveBeenCalledWith(
-			{
+			expect.objectContaining({
 				sessionId,
 				state: "ready",
 				replyText: "Staged hero CTA contrast update.",
 				question: null,
 				notePaths: null,
 				branchHeadSha: headSha,
-			},
+			}),
 			expect.any(AbortSignal),
 		);
 		expect(result).toMatchObject({
@@ -521,26 +523,30 @@ describe("cloud surface session runner", () => {
 		expect(result.state).toBe("failed");
 		expect(result.error).toContain("Coding VM disconnected mid-build");
 		expect(completeSessionTurn).toHaveBeenCalledWith(
-			{
+			expect.objectContaining({
 				sessionId,
 				state: "failed",
 				replyText: "The surface session could not complete: Coding VM disconnected mid-build",
 				question: null,
 				notePaths: null,
 				branchHeadSha: null,
-			},
+			}),
 			expect.any(AbortSignal),
 		);
 	});
 
-	it("bridges completeSessionTurn onto qorpera_surface_complete_session_turn via createControlPlaneSessionCompletionPort", async () => {
+	it("bridges completeSessionTurn onto qorpera_native_surface_complete_turn via createControlPlaneSessionCompletionPort", async () => {
 		const calls: { method: string; args: Record<string, unknown> }[] = [];
-		const port = createControlPlaneSessionCompletionPort({
-			async call(method, args) {
-				calls.push({ method, args });
-				return {};
+		const profileId = randomUUID();
+		const port = createControlPlaneSessionCompletionPort(
+			{
+				async call(method, args) {
+					calls.push({ method, args });
+					return {};
+				},
 			},
-		});
+			profileId,
+		);
 		const sessionId = randomUUID();
 		await port.completeSessionTurn(
 			{
@@ -555,8 +561,9 @@ describe("cloud surface session runner", () => {
 		);
 		expect(calls).toEqual([
 			{
-				method: "qorpera_surface_complete_session_turn",
+				method: "qorpera_native_surface_complete_turn",
 				args: {
+					p_profile_id: profileId,
 					p_session_id: sessionId,
 					p_state: "ready",
 					p_reply_text: "Done",
@@ -828,7 +835,7 @@ describe("cloud surface session runner", () => {
 		expect(result.state).toBe("ready");
 		expect(expiredDuringTurn).toBe(false);
 		expect(renewalCalls.length).toBeGreaterThanOrEqual(3);
-		expect(renewalCalls[0]).toEqual({ sessionId, leaseToken, extendSeconds: 180 });
+		expect(renewalCalls[0]).toEqual({ sessionId, companyId, leaseToken, extendSeconds: 180 });
 		expect(completeSessionTurn).toHaveBeenCalledTimes(1);
 
 		const renewalsAtExit = renewalCalls.length;
@@ -842,8 +849,8 @@ describe("cloud surface session runner", () => {
 				return { renewed: true };
 			},
 		};
-		const renewalPort = createControlPlaneSessionLeaseRenewalPort(rpcClient);
-		const completionPort = createControlPlaneSessionCompletionPort(rpcClient);
+		const renewalPort = createControlPlaneSessionLeaseRenewalPort(rpcClient, companyId);
+		const completionPort = createControlPlaneSessionCompletionPort(rpcClient, companyId);
 		const signal = new AbortController().signal;
 		await expect(
 			renewalPort.renewSessionLease({ sessionId, leaseToken, extendSeconds: 300 }, signal),
@@ -862,17 +869,18 @@ describe("cloud surface session runner", () => {
 		);
 		expect(rpcCalls).toEqual([
 			{
-				method: "qorpera_surface_renew_lease",
+				method: "qorpera_native_surface_renew_lease",
 				args: {
-					p_kind: "session",
-					p_id: sessionId,
+					p_profile_id: companyId,
+					p_session_id: sessionId,
 					p_lease_token: leaseToken,
 					p_extend_seconds: 300,
 				},
 			},
 			{
-				method: "qorpera_surface_complete_session_turn",
+				method: "qorpera_native_surface_complete_turn",
 				args: {
+					p_profile_id: companyId,
 					p_session_id: sessionId,
 					p_state: "ready",
 					p_reply_text: "Done",

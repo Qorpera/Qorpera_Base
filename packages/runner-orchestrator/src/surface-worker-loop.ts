@@ -5,6 +5,8 @@ import type {
 	SurfaceSourceKind,
 } from "@qorpera/contracts";
 
+export type SurfaceClaimLane = "all" | "sessions" | "folder" | "code_repo";
+
 export interface SurfaceMachinePlacementHint {
 	readonly strategy: "reuse_machine" | "spawn_overflow_machine";
 	readonly machineId: string | null;
@@ -60,6 +62,7 @@ export interface ClaimedSurfacePreviewJob {
 	readonly previewId: string;
 	readonly surfaceId: string;
 	readonly profileId: string;
+	readonly environmentId?: string | null;
 	readonly shortHostId: string;
 	readonly baseSha: string;
 	readonly selectedChangeIds: readonly string[];
@@ -92,6 +95,7 @@ export interface ClaimedSurfaceMergeJob {
 	readonly surfaceId: string;
 	readonly sessionId: string | null;
 	readonly profileId: string;
+	readonly environmentId?: string | null;
 	readonly leaseToken?: string | null;
 	readonly sourceKind?: SurfaceSourceKind;
 	readonly repositoryKey: string | null;
@@ -116,6 +120,9 @@ export interface ClaimedSurfacePublishJob {
 	readonly jobId: string;
 	readonly surfaceId: string;
 	readonly profileId: string;
+	readonly environmentId?: string | null;
+	readonly sourceKind?: SurfaceSourceKind;
+	readonly liveHeadSha?: string | null;
 	readonly leaseToken?: string | null;
 	readonly repositoryKey: string | null;
 	readonly siteId: string | null;
@@ -157,7 +164,7 @@ export interface SurfaceWorkerTickResult {
 
 export interface SurfaceWorkerLoopPorts {
 	claimPendingJobs(limit: number, signal: AbortSignal): Promise<ClaimedSurfaceJobs>;
-	spawnOverflowMachine(profileId: string, signal: AbortSignal): Promise<{ readonly machineId: string }>;
+	spawnOverflowMachine?: (profileId: string, signal: AbortSignal) => Promise<{ readonly machineId: string }>;
 	dispatchSessionTurn(job: ClaimedSurfaceSessionJob, machineId: string, signal: AbortSignal): Promise<void>;
 	runPreviewJob(job: ClaimedSurfacePreviewJob, signal: AbortSignal): Promise<void>;
 	runMergeJob?: (job: ClaimedSurfaceMergeJob, signal: AbortSignal) => Promise<void>;
@@ -462,14 +469,18 @@ export class SurfaceWorkerLoop {
 		try {
 			let machineId = session.placement.machineId;
 			if (session.placement.strategy === "spawn_overflow_machine" || !machineId) {
-				const spawned = await this.#ports.spawnOverflowMachine(session.profileId, signal);
-				machineId = spawned.machineId;
-				this.#emit({
-					kind: "overflow_machine_spawned",
-					profileId: session.profileId,
-					sessionId: session.sessionId,
-					machineId,
-				});
+				if (this.#ports.spawnOverflowMachine) {
+					const spawned = await this.#ports.spawnOverflowMachine(session.profileId, signal);
+					machineId = spawned.machineId;
+					this.#emit({
+						kind: "overflow_machine_spawned",
+						profileId: session.profileId,
+						sessionId: session.sessionId,
+						machineId,
+					});
+				} else {
+					machineId = "managed-sandbox";
+				}
 			}
 			await this.#ports.dispatchSessionTurn(session, machineId, signal);
 			this.#emit({

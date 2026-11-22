@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { cloudAgentFolder } from "@qorpera/cloud-client/cloud-agent-folder";
-import type { JsonValue } from "@qorpera/contracts";
+import type { JsonValue, SurfaceSessionQuestion, SurfaceSourceKind } from "@qorpera/contracts";
 import {
 	CLOUD_ACTION_REVIEW_HOLD_MS,
 	CloudActionReviewChannel,
@@ -197,8 +197,16 @@ import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
 import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import {
+	createControlPlaneSessionCompletionPort,
+	createControlPlaneSessionLeaseRenewalPort,
+	runSurfaceSessionTurn,
+	type SurfaceSessionTurnExecutionOutcome,
+	type SurfaceSessionTurnInput,
+} from "./cloud-surface-session-runner.ts";
+import {
 	type CloudSurfaceToolsPort,
 	type ControlPlaneSurfaceToolsPortOptions,
+	createCodingRecordChangeTool,
 	createControlPlaneSurfaceToolsPort,
 	createManageSurfaceAutomationTool,
 	createProposeSurfaceTool,
@@ -635,6 +643,18 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					wake,
 					observability,
 					serviceTier,
+				});
+			}
+			if (wake.kind === "agent" && wake.source.kind === "surface-session") {
+				stage = "native-tools";
+				composition.finish("succeeded", { outputBytes: 0 });
+				return await this.#surfaceSessionTurn(identityRoot, signal, {
+					binding,
+					context,
+					wake,
+					observability,
+					serviceTier,
+					machinesAvailable: await machinesRequest,
 				});
 			}
 			// A post in a conversation is the run's request (21 October 2026, item 3): the post the wake names, or a card
@@ -1948,6 +1968,487 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		if (usageSignal) await this.#recordUsageSignalKind(binding, usageSignal);
 		this.#spareEfforts.set(identityRoot, { reasoningEffort: identity.reasoningEffort, serviceTier });
 		return { providerSessionId: result.providerSessionId, delivery: { messageCount: 0, finalMessageId: null } };
+	}
+
+	async #surfaceSessionTurn(
+		identityRoot: string,
+		signal: AbortSignal,
+		input: {
+			binding: CloudNativeToolBinding;
+			context: CloudNativeCompanyContext;
+			wake: CloudWakeEnvelope;
+			observability: CloudRuntimeObservability;
+			serviceTier: CloudRuntimeServiceTier;
+			machinesAvailable: boolean;
+		},
+	): Promise<{ providerSessionId: string; delivery: { messageCount: number; finalMessageId: string | null } }> {
+		const { binding, context, wake, observability, serviceTier, machinesAvailable } = input;
+		const identity = context.identity;
+		const payload = wake.payload as Record<string, unknown>;
+		const sessionId = String(payload.surfaceSessionId);
+		const surfaceId = String(payload.surfaceId);
+		const surfaceSlug = String(payload.surfaceSlug);
+		const surfaceTitle = String(payload.surfaceTitle);
+		const sourceKind = payload.sourceKind as SurfaceSourceKind;
+		const prompt = String(payload.prompt);
+		const leaseToken = String(payload.leaseToken);
+		const turnInput: SurfaceSessionTurnInput = {
+			sessionId,
+			surfaceId,
+			companyId: identity.companyId,
+			surfaceSlug,
+			surfaceTitle,
+			sourceKind,
+			prompt,
+			state: payload.state === "reconciling" ? "reconciling" : "queued",
+			repositoryKey: typeof payload.repositoryKey === "string" ? payload.repositoryKey : null,
+			folderRoot: typeof payload.folderRoot === "string" ? payload.folderRoot : null,
+			briefSummary: typeof payload.briefSummary === "string" ? payload.briefSummary : null,
+			explorationVariantLabel:
+				typeof payload.explorationVariantLabel === "string" ? payload.explorationVariantLabel : null,
+			originKind: typeof payload.originKind === "string" ? payload.originKind : "member",
+			originRef: payload.originRef ?? null,
+			leaseToken,
+		};
+
+		const folderClient = new CloudCompanyFolderClient({
+			binding,
+			identity,
+			control: this.#paths,
+			bytes: this.#folderBytes(binding, identity),
+			...(this.#eventHooks ? { signedHooks: this.#eventHooks } : {}),
+		});
+		const stagedNotePaths = new Set<string>();
+		const surfaceTools = createControlPlaneSurfaceToolsPort(this.#paths, {
+			deferSessionCompletion: true,
+			onNotePaths: (paths) => {
+				for (const path of paths) stagedNotePaths.add(path);
+			},
+		});
+		const completionPort = createControlPlaneSessionCompletionPort(this.#paths, identity.companyId);
+		const leaseRenewalPort = createControlPlaneSessionLeaseRenewalPort(this.#paths, identity.companyId);
+		const gateway = new CloudCompanyPathGateway({ binding, identity, control: this.#paths });
+		const isGeminiRun = context.gemini !== undefined;
+		let geminiSession:
+			| {
+					readonly model: NonNullable<CloudNativeCompanyContext["gemini"]>["model"];
+					readonly effort: NonNullable<CloudNativeCompanyContext["gemini"]>["effort"];
+					readonly apiKey: string;
+					readonly apiBaseUrl?: string;
+					readonly allowLoopback?: boolean;
+					readonly fetch?: typeof fetch;
+					readonly initialSpendMicrodollars: number;
+					readonly monthlyCapCents: number | null;
+					readonly onUsage: (
+						usage: {
+							readonly inputTokens: number;
+							readonly cachedTokens: number;
+							readonly outputTokens: number;
+						},
+						requestSignal: AbortSignal,
+					) => Promise<GeminiUsageReceipt | undefined>;
+			  }
+			| undefined;
+		if (context.gemini) {
+			if (!this.#geminiKeys) {
+				throw new Error(
+					"Gemini 4 Neon conversations require the company vault, which this host does not carry; nothing ran on Codex",
+				);
+			}
+			const openedKey = await openGeminiKeyForRun(
+				this.#geminiKeys,
+				{
+					leaseId: binding.leaseId,
+					runId: binding.runId,
+					jobId: binding.jobId,
+					runnerId: binding.runnerId,
+					assignmentId: binding.assignmentId,
+					credentialCapsuleId: binding.credentialCapsuleId,
+					computeIdentityId: binding.computeIdentityId,
+				},
+				signal,
+			);
+			if (openedKey.state === "refused") {
+				if (openedKey.reason === "CAP_REACHED") {
+					throw tagNativeRuntimeFailure(
+						new GeminiCapReachedError(openedKey.monthlyCapCents, openedKey.monthSpendMicrodollars),
+						"native-tools",
+						"budget_exhausted",
+					);
+				}
+				throw tagNativeRuntimeFailure(new GeminiKeyRevokedError(), "native-tools", "authority_unavailable");
+			}
+			geminiSession = {
+				model: context.gemini.model,
+				effort: context.gemini.effort,
+				apiKey: openedKey.apiKey,
+				...(this.#geminiApiBaseUrl ? { apiBaseUrl: this.#geminiApiBaseUrl } : {}),
+				...(this.#geminiAllowLoopback ? { allowLoopback: true } : {}),
+				...(this.#geminiFetch ? { fetch: this.#geminiFetch } : {}),
+				initialSpendMicrodollars: openedKey.monthSpendMicrodollars,
+				monthlyCapCents: openedKey.monthlyCapCents,
+				onUsage: async (usage, requestSignal) => {
+					const recorded = (await this.#paths.call(
+						"qorpera_record_gemini_run_usage",
+						{ p_binding: binding, p_usage: usage },
+						requestSignal,
+					)) as {
+						monthSpendMicrodollars?: unknown;
+						monthlyCapCents?: unknown;
+						capReached?: unknown;
+					} | null;
+					if (
+						!recorded ||
+						typeof recorded.monthSpendMicrodollars !== "number" ||
+						(recorded.monthlyCapCents !== null && typeof recorded.monthlyCapCents !== "number") ||
+						typeof recorded.capReached !== "boolean"
+					) {
+						return undefined;
+					}
+					return {
+						monthSpendMicrodollars: recorded.monthSpendMicrodollars,
+						monthlyCapCents: recorded.monthlyCapCents,
+						capReached: recorded.capReached,
+					};
+				},
+			};
+		}
+
+		let lastProviderSessionId = `surface-session:${sessionId}`;
+		const runModelTurn = async (spec: {
+			instructions: string;
+			turnBrief: string;
+			prompt: string;
+			buildTools: (runIdentity: CloudNativeToolIdentity, operations: CloudNativeToolOperations) => CloudNativeTool[];
+			turnSignal: AbortSignal;
+		}): Promise<SurfaceSessionTurnExecutionOutcome> => {
+			let captured: SurfaceSessionTurnExecutionOutcome | null = null;
+			const surfaceReplyTool: CloudNativeTool = {
+				name: "surface_reply",
+				source: "runtime",
+				description:
+					"Complete this Surface session turn and deliver a concise founder-facing reply summarizing what you staged or verified.",
+				inputSchema: {
+					type: "object",
+					additionalProperties: false,
+					required: ["replyText"],
+					properties: {
+						replyText: { type: "string", minLength: 1, maxLength: 4000 },
+						notePaths: { type: "array", items: { type: "string" }, maxItems: 12 },
+						branchHeadSha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+					},
+				},
+				parseArguments(value) {
+					if (!value || typeof value !== "object" || Array.isArray(value)) {
+						throw new CloudToolArgumentRefusal("surface_reply arguments must be an object");
+					}
+					const rec = value as Record<string, unknown>;
+					const replyText = typeof rec.replyText === "string" ? rec.replyText.trim() : "";
+					if (!replyText || replyText.length > 4000) {
+						throw new CloudToolArgumentRefusal("replyText must be 1..4000 characters");
+					}
+					const notePaths =
+						rec.notePaths === undefined
+							? undefined
+							: Array.isArray(rec.notePaths) &&
+									rec.notePaths.every((p) => typeof p === "string" && p.trim().length > 0)
+								? rec.notePaths.map((p) => (p as string).trim())
+								: null;
+					if (notePaths === null) {
+						throw new CloudToolArgumentRefusal("notePaths must be an array of non-empty paths");
+					}
+					const branchHeadSha =
+						rec.branchHeadSha === undefined
+							? undefined
+							: typeof rec.branchHeadSha === "string" && /^[0-9a-f]{40}$/.test(rec.branchHeadSha)
+								? rec.branchHeadSha
+								: null;
+					if (branchHeadSha === null) {
+						throw new CloudToolArgumentRefusal("branchHeadSha must be a 40-hex commit SHA");
+					}
+					return {
+						replyText,
+						...(notePaths ? { notePaths } : {}),
+						...(branchHeadSha ? { branchHeadSha } : {}),
+					};
+				},
+				async execute(value) {
+					const args = surfaceReplyTool.parseArguments(value) as {
+						replyText: string;
+						notePaths?: string[];
+						branchHeadSha?: string;
+					};
+					captured = {
+						state: "ready",
+						replyText: args.replyText,
+						notePaths: args.notePaths ?? null,
+						branchHeadSha: args.branchHeadSha ?? null,
+					};
+					return { kind: "text", value: JSON.stringify({ ok: true }), completesTurn: true };
+				},
+			};
+			const surfaceAskTool: CloudNativeTool = {
+				name: "surface_ask",
+				source: "runtime",
+				description:
+					"Pause this Surface session turn and ask the founder one concrete clarifying question before staging changes.",
+				inputSchema: {
+					type: "object",
+					additionalProperties: false,
+					required: ["text"],
+					properties: {
+						text: { type: "string", minLength: 1, maxLength: 1000 },
+						replyText: { type: "string", minLength: 1, maxLength: 2000 },
+						options: {
+							type: "array",
+							maxItems: 6,
+							items: { type: "string", minLength: 1, maxLength: 160 },
+						},
+					},
+				},
+				parseArguments(value) {
+					if (!value || typeof value !== "object" || Array.isArray(value)) {
+						throw new CloudToolArgumentRefusal("surface_ask arguments must be an object");
+					}
+					const rec = value as Record<string, unknown>;
+					const questionText = typeof rec.text === "string" ? rec.text.trim() : "";
+					if (!questionText || questionText.length > 1000) {
+						throw new CloudToolArgumentRefusal("text must be 1..1000 characters");
+					}
+					const replyText =
+						rec.replyText === undefined
+							? undefined
+							: typeof rec.replyText === "string" &&
+									rec.replyText.trim().length > 0 &&
+									rec.replyText.trim().length <= 2000
+								? rec.replyText.trim()
+								: null;
+					if (replyText === null) {
+						throw new CloudToolArgumentRefusal("replyText must be 1..2000 characters when supplied");
+					}
+					let options: string[] = [];
+					if (rec.options !== undefined) {
+						if (!Array.isArray(rec.options) || rec.options.length > 6) {
+							throw new CloudToolArgumentRefusal("options must be an array of at most 6 strings");
+						}
+						options = rec.options.map((entry) => {
+							const label = typeof entry === "string" ? entry.trim() : "";
+							if (!label || label.length > 160) {
+								throw new CloudToolArgumentRefusal("Each option must be a string of 1..160 characters");
+							}
+							return label;
+						});
+					}
+					return {
+						text: questionText,
+						options,
+						...(replyText ? { replyText } : {}),
+					};
+				},
+				async execute(value) {
+					const args = surfaceAskTool.parseArguments(value) as unknown as {
+						text: string;
+						replyText?: string;
+						options: string[];
+					};
+					const question: SurfaceSessionQuestion = {
+						text: args.text,
+						options: args.options,
+					};
+					captured = {
+						state: "needs_input",
+						replyText: args.replyText ?? args.text,
+						question,
+					};
+					return { kind: "text", value: JSON.stringify({ ok: true }), completesTurn: true };
+				},
+			};
+
+			const runtimeInstructions = `${spec.instructions}\n\nWhen finished staging changes or inspecting the surface, call surface_reply with a concise founder-facing summary. If a concrete founder decision is required first, call surface_ask.`;
+			const fullPrompt = `${spec.turnBrief}\n\nFounder request:\n${spec.prompt}`;
+			const contextText = `${runtimeInstructions}\n${fullPrompt}`;
+			const contextSha256 = createHash("sha256").update(contextText).digest("hex");
+			const contextBytes = Buffer.byteLength(contextText);
+			let admitted: Record<string, unknown> | undefined;
+
+			const sessionResult = await runCloudNativeRunToolSession({
+				observability,
+				binding,
+				serviceTier,
+				controlPlane: this.#control,
+				...(geminiSession ? { gemini: geminiSession } : {}),
+				beginExecution: async (specification, requestSignal) => {
+					const toolCatalogText = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
+					const answer = await this.#paths.call(
+						"qorpera_begin_native_company_execution_v3",
+						{
+							p_binding: binding,
+							p_binary_sha256: this.#sha256,
+							p_runtime_bundle_sha256: identity.runtimeBundleSha256,
+							p_reasoning_policy_sha256: identity.reasoningPolicySha256,
+							p_tool_catalog_text: toolCatalogText,
+						},
+						requestSignal,
+						CLOUD_RUN_ROW_READ_MS,
+					);
+					const admission = {
+						runId: binding.runId,
+						jobId: binding.jobId,
+						leaseId: binding.leaseId,
+						binarySha256: this.#sha256,
+						runtimeBundleSha256: identity.runtimeBundleSha256,
+						reasoningEffort: identity.reasoningEffort,
+						reasoningPolicySha256: identity.reasoningPolicySha256,
+						toolCatalogSha256: createHash("sha256").update(toolCatalogText).digest("hex"),
+					};
+					confirmNativeAdmission(answer, {
+						schema: "qorpera.native-company-execution-admission/v1",
+						...admission,
+					});
+					admitted = admission;
+				},
+				opening: async (openingSignal) => {
+					const admission = admitted;
+					if (!admission) throw new Error("Native execution admission was not confirmed");
+					const started = await cloudToolRequest(
+						(requestSignal) =>
+							this.#paths.call(
+								"qorpera_bind_native_company_context",
+								{ p_binding: binding, p_context_sha256: contextSha256, p_context_bytes: contextBytes },
+								requestSignal,
+								CLOUD_RUN_ROW_READ_MS,
+							),
+						openingSignal,
+						CLOUD_RUN_ROW_READ_MS,
+					);
+					confirmNativeAdmission(started, {
+						...admission,
+						schema: "qorpera.native-company-execution-start/v1",
+						contextSha256,
+						contextBytes,
+					});
+					return {
+						prompt: fullPrompt,
+						runtimeInstructions,
+						composeContext: cloudNativeContextIdentity,
+					};
+				},
+				turnCorrection: async () =>
+					captured
+						? undefined
+						: "Your turn ended without calling surface_reply or surface_ask. Call surface_reply now with a brief summary of what you staged, or call surface_ask if founder input is needed.",
+				tools: (runIdentity, operations) => ({
+					tools: [...spec.buildTools(runIdentity, operations), surfaceReplyTool, surfaceAskTool],
+					assertContext: (requestSignal, timeoutMs) => gateway.assertReadableContext(requestSignal, timeoutMs),
+					checkRun: (requestSignal, timeoutMs) => gateway.checkRun(requestSignal, timeoutMs),
+					recordContextView: (frame, outputs, requestSignal) =>
+						gateway.recordContextView(frame, outputs, requestSignal),
+					fenceContextView: (frame, outputs, requestSignal) =>
+						gateway.fenceContextView(frame, outputs, requestSignal),
+				}),
+				command: this.#command,
+				binarySha256: this.#sha256,
+				identityRoot,
+				...(this.#spareEfforts.has(identityRoot) ? { reusedIdentityRoot: true } : {}),
+				isolation: this.#isolation,
+				...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
+				signal: spec.turnSignal,
+				timeoutMs: this.#timeoutMs,
+			});
+
+			lastProviderSessionId = sessionResult.providerSessionId;
+			if (sessionResult.usageSignal && !isGeminiRun) {
+				await this.#recordUsageSignalKind(binding, sessionResult.usageSignal);
+			}
+			if (!isGeminiRun) {
+				this.#spareEfforts.set(identityRoot, { reasoningEffort: identity.reasoningEffort, serviceTier });
+			}
+			const outcome = captured as SurfaceSessionTurnExecutionOutcome | null;
+			const mergedNotes = [...new Set([...stagedNotePaths, ...(outcome?.notePaths ?? [])])];
+			const finalOutcome: SurfaceSessionTurnExecutionOutcome = outcome
+				? {
+						...outcome,
+						...(mergedNotes.length > 0 ? { notePaths: mergedNotes } : {}),
+					}
+				: {
+						state: "ready",
+						replyText: "Surface turn completed.",
+						...(mergedNotes.length > 0 ? { notePaths: mergedNotes } : {}),
+					};
+			return finalOutcome;
+		};
+
+		const readOnlyNames = new Set(["company_read", "company_list"]);
+		const machineGateway =
+			this.#machines && machinesAvailable && identity.audienceKind === "company"
+				? this.#machines(binding)
+				: undefined;
+
+		await runSurfaceSessionTurn(turnInput, {
+			folder: folderClient,
+			surfaceTools,
+			executeTurn: async (turnReq) =>
+				runModelTurn({
+					instructions: turnReq.instructions,
+					turnBrief: turnReq.turnBrief,
+					prompt: turnReq.input.prompt,
+					turnSignal: turnReq.signal,
+					buildTools: (runIdentity, operations) => {
+						const folderTools =
+							turnReq.mode === "folder"
+								? cloudFolderFileTools({
+										folder: folderClient,
+										operations,
+										identity: runIdentity,
+										surfaceFilePolicy: { mode: "surface_worker", allowedRoots: turnReq.allowedRoots },
+									})
+								: cloudFolderFileTools({
+										folder: folderClient,
+										operations,
+										identity: runIdentity,
+									}).filter((tool) => readOnlyNames.has(tool.name));
+						return [...turnReq.tools, ...folderTools];
+					},
+				}),
+			executeCodeRepoTurn: async (codeReq) =>
+				runModelTurn({
+					instructions: codeReq.instructions,
+					turnBrief: codeReq.turnBrief,
+					prompt: codeReq.input.prompt,
+					turnSignal: codeReq.signal,
+					buildTools: (runIdentity, operations) => {
+						const readOnlyFolderTools = cloudFolderFileTools({
+							folder: folderClient,
+							operations,
+							identity: runIdentity,
+						}).filter((tool) => readOnlyNames.has(tool.name));
+						const machineTools = machineGateway
+							? cloudMachineTools({
+									binding,
+									identity: runIdentity,
+									control: this.#paths,
+									operations,
+									gateway: machineGateway,
+									worker: true,
+									...(this.#codingValues ? { codingValues: this.#codingValues } : {}),
+									...(this.#companyAccounts ? { accountFills: true } : {}),
+								})
+							: [];
+						return [
+							createCodingRecordChangeTool(codeReq.binding.sessionId, {
+								recordChange: codeReq.binding.recordChange,
+							}),
+							...readOnlyFolderTools,
+							...machineTools,
+						];
+					},
+				}),
+			completeSessionTurn: completionPort.completeSessionTurn,
+			renewSessionLease: leaseRenewalPort.renewSessionLease,
+			signal,
+		});
+
+		return { providerSessionId: lastProviderSessionId, delivery: { messageCount: 0, finalMessageId: null } };
 	}
 
 	async #claudeCodeWorker(
