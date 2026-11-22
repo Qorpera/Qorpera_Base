@@ -887,12 +887,14 @@ export class NativeSearchWorker {
 		if (!proc || this.#closed) return;
 		const frame: DropTreeFrame = { op: "dropTree", id: 0, snapshotId };
 		const payload = Buffer.from(JSON.stringify(frame), "utf8");
-		const header = Buffer.allocUnsafe(4);
-		header.writeUInt32BE(payload.byteLength, 0);
+		const packet = Buffer.allocUnsafe(4 + payload.byteLength);
+		packet.writeUInt32BE(payload.byteLength, 0);
+		payload.copy(packet, 4);
 		try {
-			proc.stdin.write(header);
-			proc.stdin.write(payload);
-		} catch {}
+			proc.stdin.write(packet);
+		} catch (error) {
+			this.#failProc(proc, new ObjectUnavailableError(`Search worker write failed: ${(error as Error).message}`));
+		}
 	}
 
 	#sendFrame(
