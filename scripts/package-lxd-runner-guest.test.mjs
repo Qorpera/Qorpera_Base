@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -316,6 +316,164 @@ test("packages the complete pinned LXD runner guest contract", async (t) => {
 		assert.equal(syntax.status, 0, syntax.stderr);
 	} finally {
 		await rm(outputRoot, { recursive: true, force: true });
+	}
+});
+
+test("hardens ephemeral-runner run-job signal handling, image build script, installer cleanup/timeouts, and service burst windows", async () => {
+	const runJobPath = join(repositoryRoot, "deploy/ephemeral-runner/image/run-job");
+	const buildScriptPath = join(repositoryRoot, "deploy/ephemeral-runner/build-and-sign-image.sh");
+	const installerPath = join(repositoryRoot, "deploy/lxd-runner-guest/install-image-contract.sh");
+	const [runJob, buildScript, installer] = await Promise.all([
+		readFile(runJobPath, "utf-8"),
+		readFile(buildScriptPath, "utf-8"),
+		readFile(installerPath, "utf-8"),
+	]);
+
+	const syntax = spawnSync("/usr/bin/env", ["sh", "-n", runJobPath, buildScriptPath], { encoding: "utf-8" });
+	assert.equal(syntax.status, 0, syntax.stderr);
+	const bashSyntax = spawnSync("/usr/bin/env", ["bash", "-n", installerPath], { encoding: "utf-8" });
+	assert.equal(bashSyntax.status, 0, bashSyntax.stderr);
+
+	const scratch = await mkdtemp(join(tmpdir(), "qorpera-run-job-signal-"));
+	try {
+		const testScript = join(scratch, "run-job");
+		await writeFile(testScript, runJob.replace("/usr/local/bin/node /qorpera/lib/qorpera-sandbox-probe.mjs", "true"));
+		await chmod(testScript, 0o755);
+		const child = spawn("/bin/sh", [testScript], { stdio: "ignore" });
+		const startedAt = Date.now();
+		await new Promise((r) => setTimeout(r, 150));
+		child.kill("SIGTERM");
+		const code = await new Promise((resolveExit, rejectExit) => {
+			const timer = setTimeout(() => {
+				child.kill("SIGKILL");
+				rejectExit(new Error("run-job did not exit promptly on SIGTERM"));
+			}, 3000);
+			child.once("exit", (exitCode) => {
+				clearTimeout(timer);
+				resolveExit(exitCode);
+			});
+		});
+		assert.equal(code, 143);
+		assert.ok(Date.now() - startedAt < 2500);
+	} finally {
+		await rm(scratch, { recursive: true, force: true });
+	}
+
+	assert.match(buildScript, /command -v timeout >\/dev\/null/);
+	assert.match(buildScript, /work_directory=\$\(mktemp -d/);
+	assert.match(buildScript, /trap 'on_signal TERM' TERM/);
+	assert.match(buildScript, /timeout --kill-after=30/);
+	assert.match(buildScript, /active_pid=\$!/);
+	const readme = await readFile(join(repositoryRoot, "deploy/ephemeral-runner/README.md"), "utf-8");
+	assert.match(readme, /PODMAN_BUILD_TIMEOUT_SEC/);
+	assert.match(readme, /PODMAN_PUSH_TIMEOUT_SEC/);
+	assert.match(readme, /COSIGN_TIMEOUT_SEC/);
+
+	const buildScratch = await mkdtemp(join(tmpdir(), "qorpera-build-signal-"));
+	try {
+		const fakeBin = join(buildScratch, "bin");
+		const fakeTmp = join(buildScratch, "tmp");
+		const startedMarker = join(buildScratch, "podman-started");
+		const podmanPidFile = join(buildScratch, "podman-pid");
+		await Promise.all([mkdir(fakeBin, { recursive: true }), mkdir(fakeTmp, { recursive: true })]);
+		const fakePodman = join(fakeBin, "podman");
+		const fakeCosign = join(fakeBin, "cosign");
+		await writeFile(
+			fakePodman,
+			`#!/bin/sh\necho "$$" > "${podmanPidFile}"\ntouch "${startedMarker}"\nexec sleep 60\n`,
+		);
+		await writeFile(fakeCosign, "#!/bin/sh\nexit 0\n");
+		await chmod(fakePodman, 0o755);
+		await chmod(fakeCosign, 0o755);
+
+		const digest = "a".repeat(64);
+		const child = spawn(
+			"/bin/sh",
+			[buildScriptPath, `docker.io/library/node@sha256:${digest}`, "registry.example/qorpera/sandbox-probe:test"],
+			{
+				cwd: repositoryRoot,
+				stdio: ["ignore", "pipe", "pipe"],
+				env: {
+					...runtimeBundlePackagingEnvironment(),
+					PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+					TMPDIR: fakeTmp,
+					COSIGN_CERTIFICATE_IDENTITY_REGEXP: "^https://example\\.invalid$",
+					COSIGN_CERTIFICATE_OIDC_ISSUER: "https://issuer.example.invalid",
+				},
+			},
+		);
+		let childOut = "";
+		child.stdout.on("data", (chunk) => {
+			childOut += chunk.toString("utf-8");
+		});
+		child.stderr.on("data", (chunk) => {
+			childOut += chunk.toString("utf-8");
+		});
+		let earlyExit = null;
+		child.once("exit", (exitCode, exitSignal) => {
+			earlyExit = { exitCode, exitSignal };
+		});
+		const waitDeadline = Date.now() + 20_000;
+		while (Date.now() < waitDeadline && !earlyExit) {
+			try {
+				await stat(startedMarker);
+				break;
+			} catch {
+				await new Promise((r) => setTimeout(r, 50));
+			}
+		}
+		assert.equal(earlyExit, null, `build-and-sign-image.sh exited before podman started: ${JSON.stringify(earlyExit)}\n${childOut}`);
+		await stat(startedMarker);
+		const podmanPid = Number((await readFile(podmanPidFile, "utf-8")).trim());
+		assert.ok(Number.isInteger(podmanPid) && podmanPid > 0);
+		const signalAt = Date.now();
+		child.kill("SIGINT");
+		const exitResult = await new Promise((resolveExit, rejectExit) => {
+			const timer = setTimeout(() => {
+				child.kill("SIGKILL");
+				rejectExit(new Error("build-and-sign-image.sh did not exit promptly on SIGINT"));
+			}, 4000);
+			child.once("exit", (exitCode, exitSignal) => {
+				clearTimeout(timer);
+				resolveExit({ exitCode, exitSignal });
+			});
+		});
+		assert.ok(Date.now() - signalAt < 3500);
+		assert.ok(exitResult.exitSignal === "SIGINT" || exitResult.exitCode === 130);
+		let podmanGone = false;
+		for (let i = 0; i < 20; i++) {
+			try {
+				process.kill(podmanPid, 0);
+				await new Promise((r) => setTimeout(r, 50));
+			} catch {
+				podmanGone = true;
+				break;
+			}
+		}
+		assert.equal(podmanGone, true, "stub podman child must be terminated on SIGINT");
+		assert.deepEqual(await readdir(fakeTmp), [], "temporary build workspace must be removed on SIGINT");
+	} finally {
+		await rm(buildScratch, { recursive: true, force: true });
+	}
+
+	assert.match(installer, /trap cleanup_temp_dirs EXIT/);
+	assert.match(installer, /apt-get update -o DPkg::Lock::Timeout=60/);
+	assert.match(installer, /apt-get install --yes -o DPkg::Lock::Timeout=60/);
+	assert.match(installer, /const resetStall = \(\) =>/);
+	assert.match(installer, /controller\.abort\(new Error\("Claude Code tarball fetch stalled"\)\)/);
+	assert.match(installer, /finally \{\n\s+clearTimeout\(stallTimer\);/);
+
+	const hostUnit = await readFile(join(repositoryRoot, "deploy/ephemeral-runner/qorpera-ephemeral-runner.service"), "utf-8");
+	assert.doesNotMatch(hostUnit, /^StartLimitBurst=/m);
+	for (const rel of [
+		"deploy/lxd-runner-guest/qorpera-native-company-host.service",
+		"deploy/lxd-runner-guest/qorpera-native-provider-host.service",
+		"deploy/lxd-runner-guest/qorpera-native-login-provider-host.service",
+	]) {
+		const unit = await readFile(join(repositoryRoot, rel), "utf-8");
+		const header = unit.slice(0, unit.indexOf("\n[Service]\n"));
+		assert.match(header, /^StartLimitIntervalSec=120s$/m, `${rel} sets StartLimitIntervalSec=120s`);
+		assert.match(header, /^StartLimitBurst=5$/m, `${rel} sets StartLimitBurst=5`);
 	}
 });
 

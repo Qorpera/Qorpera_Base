@@ -4,6 +4,8 @@ Documentation=https://github.com/Qorpera/Qorpera_Base
 Wants=network-online.target
 After=network-online.target
 RequiresMountsFor=/var/lib/qorpera/identity
+StartLimitIntervalSec=120s
+StartLimitBurst=5
 
 [Service]
 Type=exec

@@ -5,6 +5,8 @@ Wants=network-online.target
 After=network-online.target
 Conflicts=qorpera-native-provider-host.service
 RequiresMountsFor=/var/lib/qorpera/identity /var/lib/qorpera-runner
+StartLimitIntervalSec=120s
+StartLimitBurst=5
 
 [Service]
 Type=exec

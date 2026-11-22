@@ -85,25 +85,36 @@ describe("provider-only office HTTP registry", () => {
 		await expect(client.call(value as LxdOfficeProviderMethod, {}, signal())).rejects.toThrow("FORBIDDEN");
 		expect(fetcher).not.toHaveBeenCalled();
 	});
-	it.each(["redirect", "denied", "large", "mime", "invalid_json", "length", "invalid_utf8"])(
-		"rejects %s once and redacts the response",
-		async (kind) => {
-			const fetcher = vi.fn(async () => {
-				if (kind === "redirect")
-					return new Response(key, { status: 307, headers: { location: "https://other.example" } });
-				if (kind === "denied") return new Response(key, { status: 403 });
-				if (kind === "large") return response("x".repeat(65537));
-				if (kind === "mime") return new Response(key);
-				if (kind === "invalid_json") return new Response(key, { headers: { "content-type": "application/json" } });
-				if (kind === "invalid_utf8")
-					return new Response(new Uint8Array([0xff]), { headers: { "content-type": "application/json" } });
-				return new Response("{}", { headers: { "content-type": "application/json", "content-length": "3" } });
-			});
-			const client = new LxdOfficeProviderHttpRegistry("https://control.example", key, fetcher);
-			await expect(client.call(method, {}, signal())).rejects.toThrow(/^OFFICE_PROVIDER_RPC_UNCONFIRMED$/);
-			expect(fetcher).toHaveBeenCalledTimes(1);
-		},
-	);
+	it.each([
+		["redirect", /^OFFICE_PROVIDER_RPC_REJECTED$/],
+		["denied", /^OFFICE_PROVIDER_RPC_REJECTED$/],
+		["large", /^OFFICE_PROVIDER_RPC_REJECTED$/],
+		["mime", /^OFFICE_PROVIDER_RPC_REJECTED$/],
+		["invalid_json", /^OFFICE_PROVIDER_RPC_REJECTED$/],
+		["invalid_utf8", /^OFFICE_PROVIDER_RPC_REJECTED$/],
+		["length", /^OFFICE_PROVIDER_RPC_UNCONFIRMED$/],
+		["transient_408", /^OFFICE_PROVIDER_RPC_UNCONFIRMED$/],
+		["transient_429", /^OFFICE_PROVIDER_RPC_UNCONFIRMED$/],
+		["transient_503", /^OFFICE_PROVIDER_RPC_UNCONFIRMED$/],
+	] as const)("rejects %s once and redacts the response", async (kind, expectedError) => {
+		const fetcher = vi.fn(async () => {
+			if (kind === "redirect")
+				return new Response(key, { status: 307, headers: { location: "https://other.example" } });
+			if (kind === "denied") return new Response(key, { status: 403 });
+			if (kind === "transient_408") return new Response(key, { status: 408 });
+			if (kind === "transient_429") return new Response(key, { status: 429 });
+			if (kind === "transient_503") return new Response(key, { status: 503 });
+			if (kind === "large") return response("x".repeat(65537));
+			if (kind === "mime") return new Response(key);
+			if (kind === "invalid_json") return new Response(key, { headers: { "content-type": "application/json" } });
+			if (kind === "invalid_utf8")
+				return new Response(new Uint8Array([0xff]), { headers: { "content-type": "application/json" } });
+			return new Response("{}", { headers: { "content-type": "application/json", "content-length": "3" } });
+		});
+		const client = new LxdOfficeProviderHttpRegistry("https://control.example", key, fetcher);
+		await expect(client.call(method, {}, signal())).rejects.toThrow(expectedError);
+		expect(fetcher).toHaveBeenCalledTimes(1);
+	});
 	it("bounds a stalled fetch and retains its slot until actual transport settlement", async () => {
 		vi.useFakeTimers();
 		let finish!: (value: Response) => void;
