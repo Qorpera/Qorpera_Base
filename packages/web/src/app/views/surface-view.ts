@@ -667,11 +667,13 @@ export class SurfaceView {
 			plainSessions.reduce((sum, session) => sum + session.changes.filter(isOpenChange).length, 0) +
 			explorations.length;
 		const showViewportSplit = supportsViewportSplit(surface, look);
+		const highlighted = state.highlight?.surfaceId === surface.id ? state.highlight.sessionId : "";
 		const key = JSON.stringify([
 			surface.id,
 			surface.title,
 			surface.archetype,
 			look.kind,
+			highlighted,
 			surface.liveUrl,
 			surface.unpublishedChangeCount,
 			state.mode,
@@ -766,6 +768,7 @@ export class SurfaceView {
 										attention && "is-attention",
 										agent.running && "is-working",
 										!attention && !agent.running && agent.badgeCount > 0 && "is-ready",
+										agent.kind !== "exploration" && agent.id === highlighted && "is-highlighted",
 									]
 										.filter(Boolean)
 										.join(" "),

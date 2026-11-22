@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SURFACE_KINDS, surfaceFigureOf, surfaceKindFigure } from "../src/app/surface-kinds.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
+import { SurfaceView } from "../src/app/views/surface-view.ts";
 import { DANISH } from "../src/ui/danish/index.ts";
 import {
 	SURFACE_FIGURE_IDS,
@@ -13,7 +14,7 @@ import {
 	surfaceFigureFromIcon,
 	surfaceFigureIcon,
 } from "../src/ui/surface-figure.ts";
-import { COMPANY, fakeClient, storeWith, summary } from "./surface-fixtures.ts";
+import { COMPANY, fakeClient, SESSION, SURFACE, session, storeWith, summary, workspace } from "./surface-fixtures.ts";
 
 describe("surface figures", () => {
 	it("ships one picture per figure and nothing else", () => {
@@ -83,6 +84,147 @@ describe("a surface's figure in the rail", () => {
 		expect(state("mail")).toContain("is-attention");
 		expect(row("mail").querySelector(".surface-figure-ask")?.textContent).toBe("!");
 		expect(said("mail")).toBe("Needs your attention");
+		store.dispose();
+	});
+
+	it("opens the figures from a right-click on the rail and saves the one picked", async () => {
+		const setSurfaceFigure = vi.fn(async (_id: string, figure: string) => summary({ icon: `figure:${figure}` }));
+		const store = storeWith(fakeClient({ setSurfaceFigure }));
+		await store.load();
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+		const row = rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="website"]')!;
+		expect(row.querySelector(".surface-figure")?.getAttribute("data-figure")).toBe("browser");
+
+		row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+		const panelRow = [...document.querySelectorAll<HTMLElement>(".context-menu-item")].find((item) =>
+			item.textContent?.includes("Figure"),
+		)!;
+		panelRow.click();
+		const choices = document.querySelector<HTMLElement>(".surface-figure-choices")!;
+		expect(choices.querySelector('[aria-checked="true"]')?.getAttribute("data-figure")).toBe("browser");
+		choices.querySelector<HTMLElement>('[data-figure="shop"]')!.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(setSurfaceFigure).toHaveBeenCalledWith(SURFACE, "shop");
+		expect(store.state.surfaces[0]?.icon).toBe("figure:shop");
+		rail.update("website");
+		expect(rail.el.querySelector(".rail-surface .surface-figure")?.getAttribute("data-figure")).toBe("shop");
+		store.dispose();
+	});
+
+	it("opens the same menu from a long press, under the row from the keyboard, and leaves Shift+right-click to the browser", async () => {
+		const store = storeWith(fakeClient());
+		await store.load();
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+		const row = rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="website"]')!;
+		const menu = () => document.querySelector<HTMLElement>(".context-menu");
+
+		row.dispatchEvent(
+			new MouseEvent("contextmenu", { bubbles: true, cancelable: true, shiftKey: true, clientX: 30, clientY: 30 }),
+		);
+		expect(menu()).toBeNull();
+
+		const keyboard = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+		row.dispatchEvent(keyboard);
+		expect(keyboard.defaultPrevented).toBe(true);
+		expect(menu()).not.toBeNull();
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		for (const node of document.body.querySelectorAll(".context-menu")) node.remove();
+
+		vi.useFakeTimers();
+		try {
+			row.dispatchEvent(
+				new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch", clientX: 40, clientY: 40 }),
+			);
+			vi.advanceTimersByTime(600);
+		} finally {
+			vi.useRealTimers();
+		}
+		expect(menu()?.textContent).toContain("Figure");
+		store.dispose();
+	});
+
+	it("shows an open surface's sessions as a row of small figures, six at most, with no list under it", async () => {
+		const sessions = Array.from({ length: 8 }, (_, index) =>
+			session([], {
+				id: `44444444-4444-4444-8444-4444444444${String(index).padStart(2, "0")}`,
+				title: `Session ${index}`,
+				state: index === 0 ? "needs_input" : "ready",
+			}),
+		);
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => workspace(sessions)) }));
+		await store.load();
+		await store.openSurface("website");
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+		const crew = rail.el.querySelector<HTMLElement>(".rail-surface.active .rail-surface-crew")!;
+
+		expect(crew.getAttribute("aria-label")).toBe("8 sessions active");
+		const figures = [...crew.querySelectorAll<HTMLElement>(".surface-crew.is-mini")];
+		expect(figures).toHaveLength(6);
+		expect(figures[0]?.title).toBe("Session 0");
+		expect(figures[0]?.classList.contains("is-waiting")).toBe(true);
+		expect(crew.querySelector(".rail-surface-crew-more")?.textContent).toBe("+2");
+		expect(rail.el.querySelector(".surface-tree")).toBeNull();
+		store.dispose();
+	});
+
+	it("shows the row only on the open surface, and a surface left behind gets its words back", async () => {
+		const surfaces = [summary({ activeSessionCount: 1 }), summary({ id: "s-mail", slug: "mail", title: "Mail" })];
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => surfaces),
+				getSurfaceWorkspace: vi.fn(async () => workspace([session([])])),
+			}),
+		);
+		await store.load();
+		await store.openSurface("website");
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+		const website = () => rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="website"]')!;
+		expect(website().querySelector(".rail-surface-crew")).not.toBeNull();
+
+		rail.update("mail");
+		expect(website().querySelector(".rail-surface-crew")).toBeNull();
+		expect(website().querySelector(".rail-surface-sub")?.textContent).toBe("1 session active");
+		store.dispose();
+	});
+
+	it("marks a session handed over from another surface until it is opened from the surface's agents", async () => {
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => workspace([session([])])) }));
+		await store.load();
+		await store.openSurface("website");
+		store.store.set({ highlight: { surfaceId: SURFACE, sessionId: SESSION } });
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+		expect(rail.el.querySelector(".rail-surface-crew .surface-crew")?.classList.contains("is-highlighted")).toBe(
+			true,
+		);
+
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		view.update();
+		const agent = view.el.querySelector<HTMLButtonElement>(`.surface-bar-agent[data-session="${SESSION}"]`)!;
+		expect(agent.classList.contains("is-highlighted")).toBe(true);
+		agent.click();
+		expect(store.state.highlight).toBeUndefined();
+		expect(store.state.drawer?.sessionId).toBe(SESSION);
+		rail.update("website");
+		expect(rail.el.querySelector(".rail-surface-crew .surface-crew")?.classList.contains("is-highlighted")).toBe(
+			false,
+		);
+
+		store.closeDrawer();
+		store.store.set({ highlight: { surfaceId: SURFACE, sessionId: SESSION } });
+		store.openDrawer(SURFACE, SESSION);
+		expect(store.state.highlight).toBeUndefined();
 		store.dispose();
 	});
 });

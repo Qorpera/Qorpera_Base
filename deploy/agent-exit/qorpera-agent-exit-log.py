@@ -548,41 +548,59 @@ class Companies:
     def __init__(self, state_dir, clock=time.monotonic):
         self.state_dir = state_dir
         self.clock = clock
+        self._lock = threading.Lock()
         self.files = {}
         self.known = {}
         self.missed = {}
         self.read_at = None
 
-    def entry(self, address):
+    def entry(self, address, files_cache=None):
         seen = os.path.join(self.state_dir, "seen", address)
+        cache = self.files if files_cache is None else files_cache
         try:
             if not os.path.lexists(os.path.join(self.state_dir, "verified", address)):
-                return None
+                return None, None
             st = os.lstat(seen)
             if not stat.S_ISREG(st.st_mode):
-                return None
+                return None, None
             key = (st.st_ino, st.st_mtime_ns)
-            if address in self.files and self.files[address][0] == key:
-                return self.files[address][1]
+            cached = cache.get(address)
+            if cached is not None and cached[0] == key:
+                return key, cached[1]
             with open(seen, encoding="utf-8") as f:
                 company = json.load(f).get("company")
         except (OSError, ValueError, AttributeError):
-            return None
+            return None, None
         company = company if isinstance(company, str) and company else None
-        self.files[address] = (key, company)
-        return company
+        return key, company
 
     def refresh(self):
         now = self.clock()
-        if self.read_at is not None and self.read_at <= now < self.read_at + COMPANIES_EVERY:
-            return
+        with self._lock:
+            if self.read_at is not None and self.read_at <= now < self.read_at + COMPANIES_EVERY:
+                return
+            prev_files = dict(self.files)
         try:
             names = [name for name in os.listdir(os.path.join(self.state_dir, "seen")) if self.agent(name)]
         except OSError:
             names = []
-        self.files = {name: self.files[name] for name in names if name in self.files}
-        self.known = {name: company for name in names for company in [self.entry(name)] if company}
-        self.missed, self.read_at = {}, now
+        new_files = {}
+        new_known = {}
+        for name in names:
+            key, company = self.entry(name, prev_files)
+            if key is not None:
+                new_files[name] = (key, company)
+            if company:
+                new_known[name] = company
+        with self._lock:
+            self.files = new_files
+            self.known = new_known
+            self.missed = {}
+            self.read_at = now
+
+    def snapshot(self):
+        with self._lock:
+            return dict(self.known)
 
     @staticmethod
     def agent(address):
@@ -594,15 +612,23 @@ class Companies:
     def of(self, address):
         self.refresh()
         now = self.clock()
-        company = self.known.get(address)
-        if company is None and isinstance(address, str) and self.agent(address):
+        with self._lock:
+            company = self.known.get(address)
+            if company is not None or not isinstance(address, str) or not self.agent(address):
+                return company
             missed = self.missed.get(address)
-            if missed is None or not missed <= now < missed + 2.0:
-                company = self.entry(address)
-                if company:
-                    self.known[address] = company
-                else:
-                    self.missed[address] = now
+            if missed is not None and missed <= now < missed + 2.0:
+                return None
+            prev_files = dict(self.files)
+        key, company = self.entry(address, prev_files)
+        with self._lock:
+            if key is not None:
+                self.files[address] = (key, company)
+            if company:
+                self.known[address] = company
+                self.missed.pop(address, None)
+            else:
+                self.missed[address] = now
         return company
 
 
@@ -650,10 +676,10 @@ class Guard:
             failed = str(record.get("dst"))
         else:
             return
+        company = self.companies.of(record.get("src"))
+        if company is None:
+            return
         with self.lock:
-            company = self.companies.of(record.get("src"))
-            if company is None:
-                return
             line = self.count_new(company, ts, 1) if failed is None else self.count_failed(company, ts, failed)
         if line:
             self.writer.write(line)
@@ -719,6 +745,8 @@ class Guard:
             kernel = None
         family, table = TABLE
         statements, wanted = [], None
+        self.companies.refresh()
+        known = self.companies.snapshot()
         with self.lock:
             if kernel is not None:
                 self.count_dropped(kernel, now, lines)
@@ -728,9 +756,8 @@ class Guard:
                     del self.braked[company]
                     lines.append({"ts": now, "event": "unbraked", "company": company, "since": brake["since"],
                                   "dropped": max(0, brake["dropped"] - brake["resent"])})
-            self.companies.refresh()
             wanted = {address: (self.braked[company]["number"], self.braked[company]["until"])
-                      for address, company in self.companies.known.items() if company in self.braked}
+                      for address, company in known.items() if company in self.braked}
             if kernel is not None:
                 share = [f"slow {self.levels['slow10s']}"] if self.levels["on"] else []
                 if kernel["share"] != share:
@@ -743,7 +770,7 @@ class Guard:
                                              for address, (number, until) in sorted(wanted.items()))
                         statements.append(f"add element {family} {table} braked {{ {elements} }}")
             self.prune(now)
-            status = self.status_record(now, problems)
+            status = self.status_record(now, problems, known)
         if statements:
             try:
                 self.kernel.write(statements)
@@ -781,9 +808,10 @@ class Guard:
             for company in [c for c, steps in counts.items() if not steps or max(steps) < now // width - 1]:
                 del counts[company]
 
-    def status_record(self, now, problems):
+    def status_record(self, now, problems, known=None):
         machines = {}
-        for address, company in self.companies.known.items():
+        known_map = self.companies.snapshot() if known is None else known
+        for address, company in known_map.items():
             if company in self.braked:
                 machines[company] = machines.get(company, 0) + 1
         return {

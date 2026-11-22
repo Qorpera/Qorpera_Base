@@ -27,6 +27,7 @@ import {
 	type SurfaceWorkspace,
 } from "@qorpera/contracts";
 import { phrase, t } from "../ui/preferences.ts";
+import { type SurfaceFigureId, surfaceFigureIcon } from "../ui/surface-figure.ts";
 import { Store } from "./state.ts";
 import { isOpsKind, type SurfaceKind, type SurfaceLook, surfaceLookOf } from "./surface-kinds.ts";
 import {
@@ -72,6 +73,7 @@ export type SurfacesClient = Pick<
 			| "createAutomation"
 			| "updateAutomation"
 			| "deleteAutomation"
+			| "setSurfaceFigure"
 		>
 	>;
 
@@ -2444,10 +2446,6 @@ export class SurfacesStore {
 		this.store.set({ error: undefined });
 	}
 
-	clearHighlight(): void {
-		if (this.state.highlight) this.store.set({ highlight: undefined });
-	}
-
 	setStudioPatch(changeId: string, ops: readonly StudioPatchOp[]): void {
 		this.store.set((state) => ({ studioPatches: { ...state.studioPatches, [changeId]: ops } }));
 	}
@@ -3438,6 +3436,7 @@ export class SurfacesStore {
 	}
 
 	openDrawer(surfaceId: string, sessionId: string): void {
+		if (this.state.highlight?.sessionId === sessionId) this.store.set({ highlight: undefined });
 		const previous = this.state.drawer;
 		if (previous?.sessionId === sessionId && !previous.explorationId) return;
 		if (previous) this.closeDrawer();
@@ -3673,6 +3672,19 @@ export class SurfacesStore {
 		const surface = await this.#run(`auto:${surfaceId}`, (client) =>
 			client.setSurfaceAutoPublish(surfaceId, enabled),
 		);
+		if (!surface) return false;
+		this.#putSurface(surface);
+		return true;
+	}
+
+	async setFigure(surfaceId: string, figure: SurfaceFigureId): Promise<boolean> {
+		const current = this.state.surfaces.find((item) => item.id === surfaceId);
+		if (!current) return false;
+		if (this.isLocalInteractive && isLocalSurfaceId(surfaceId)) {
+			this.#putSurface({ ...current, icon: surfaceFigureIcon(figure) });
+			return true;
+		}
+		const surface = await this.#run(`figure:${surfaceId}`, (client) => client.setSurfaceFigure!(surfaceId, figure));
 		if (!surface) return false;
 		this.#putSurface(surface);
 		return true;

@@ -4,7 +4,7 @@
 /* ---- rail ----------------------------------------------------------------------- */
 .rail-surfaces { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 4px 0 6px; }
 .rail-surfaces[hidden] { display: none; }
-.rail-surface-group, .surface-session { display: grid; grid-template-columns: minmax(0, 1fr); }
+.rail-surface-group { display: grid; grid-template-columns: minmax(0, 1fr); }
 .rail-surface-title { display: flex; align-items: center; justify-content: space-between; }
 .rail-surface-add {
 	display: grid; place-items: center; width: 22px; height: 22px; margin: -3px -2px -3px 0; padding: 0; border: 0;
@@ -58,23 +58,12 @@
 .rail-compact .rail-surface-proposed,
 .rail-compact .surface-history-toggle,
 .rail-compact .surface-history-row,
-.rail-compact .surface-tree-empty,
-.rail-compact .surface-session-text,
-.rail-compact .surface-approve,
-.rail-compact .surface-reconcile,
 .rail-compact .surface-conflict-paths { display: none; }
 .rail-compact .rail-surface {
 	width: 56px; min-height: 56px; padding: 4px; justify-content: center; gap: 0;
 }
 .rail-compact .surface-tree {
 	margin: 2px 0 6px; padding-left: 0; border-left: 0; width: 100%; justify-items: center; gap: 4px;
-}
-.rail-compact .surface-session { justify-items: center; width: 100%; }
-.rail-compact .surface-session-head {
-	min-height: 40px; width: 44px; padding: 0; justify-content: center; gap: 0;
-}
-.rail-compact .surface-session-main {
-	flex: none; min-height: 40px; width: 40px; padding: 4px; justify-content: center; gap: 0;
 }
 .rail-compact .rail-surface-members { justify-items: center; width: 100%; gap: 4px; padding: 2px 0; }
 .rail-compact .rail-surface-members .rail-row {
@@ -241,35 +230,11 @@
 	display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 2px 0 10px 33px; padding-left: 10px;
 	border-left: 1.5px solid color-mix(in srgb, var(--surface-tint, var(--text)) 18%, transparent);
 }
-.surface-tree-empty { margin: 6px 8px; color: var(--rail-small); font-size: 12px; }
-.surface-session-head {
-	display: flex; align-items: center; gap: 2px; min-height: 44px; padding-right: 6px; border-radius: 10px;
-	transition: background-color var(--motion-fast) ease;
+.rail-surface-sub.rail-surface-crew { display: flex; align-items: center; gap: 2px; min-height: 22px; overflow: visible; }
+.surface-crew.is-mini.is-highlighted { border-radius: 50%; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
+.rail-surface-crew-more {
+	margin-left: 4px; color: var(--rail-small); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums;
 }
-.surface-session-head:hover { background: var(--rail-hover); }
-.surface-session.is-selected > .surface-session-head { background: color-mix(in srgb, var(--rail-selection) 13%, transparent); }
-.surface-session.is-highlighted > .surface-session-head {
-	background: color-mix(in srgb, var(--accent) 13%, transparent);
-	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
-}
-.surface-session-main {
-	flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 5px 4px 5px 4px;
-	border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer;
-	-webkit-font-smoothing: auto;
-}
-span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding-left: 8px; font-size: 12.5px; font-weight: 600; }
-.surface-session-text { display: grid; flex: 1; min-width: 0; gap: 1px; }
-.surface-session-title {
-	flex: 1; min-width: 0; overflow: hidden; font-size: 13px; font-weight: 620; line-height: 18px;
-	text-overflow: ellipsis; white-space: nowrap;
-}
-.surface-session-status {
-	min-width: 0; overflow: hidden; color: var(--rail-small); font-size: 11.5px; font-weight: 500; line-height: 15px;
-	text-overflow: ellipsis; white-space: nowrap;
-}
-.surface-session.is-running .surface-session-status { color: var(--text-muted); }
-.surface-session.is-conflicted .surface-session-status { color: var(--danger); }
-.surface-session-meta { flex: none; color: var(--rail-small); font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
 
 /* An agent figure owns each session: its stand is the row's anchor, the figure itself the live state. */
 .surface-crew { position: relative; display: grid; place-items: center; width: var(--crew-size, 32px); height: var(--crew-size, 32px); flex: none; }
@@ -306,14 +271,6 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-change.is-hidden .surface-change-title, .surface-change.is-merged .surface-change-title { color: var(--rail-small); }
 .surface-change.is-conflicted { align-items: center; }
 .surface-change.is-conflicted .surface-change-title { color: var(--text); }
-.surface-reconcile {
-	flex: none; height: 21px; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-	border-radius: 999px; background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger);
-	font: inherit; font-size: 11px; font-weight: 650; white-space: nowrap; cursor: pointer;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
-}
-.surface-reconcile:hover:not(:disabled) { background: var(--danger); color: #fff; }
-.surface-reconcile:disabled { opacity: 0.5; cursor: default; }
 .surface-change-mark { display: grid; place-items: center; width: 24px; color: var(--agent-active); }
 .surface-change-mark .icon { width: 12px; height: 12px; stroke-width: 2.6; }
 .surface-change-merged { color: var(--agent-active); font-size: 11px; font-weight: 600; }
@@ -342,16 +299,11 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-history-row .surface-mini { opacity: 0; }
 .surface-history-row:hover .surface-mini, .surface-history-row .surface-mini:focus-visible { opacity: 1; }
 
-.surface-approve, .surface-chevron {
+.surface-chevron {
 	display: grid; place-items: center; width: 24px; height: 24px; flex: none; border: 0; border-radius: 50%;
 	background: none; color: var(--rail-small); cursor: pointer;
 }
-.surface-approve.is-action { opacity: 1; background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text); }
-.surface-approve.is-action:hover { background: var(--primary); color: var(--on-primary); }
-.surface-approve { opacity: 0; transition: opacity var(--motion-fast) ease, background-color var(--motion-fast) ease; }
-.surface-session-head:hover .surface-approve, .surface-change:hover .surface-approve, .surface-approve:focus-visible { opacity: 1; }
-.surface-approve:hover { background: var(--agent-active); color: #fff; }
-.surface-approve .icon, .surface-chevron .icon { width: 12px; height: 12px; stroke-width: 2.4; }
+.surface-chevron .icon { width: 12px; height: 12px; stroke-width: 2.4; }
 .surface-chevron { border-radius: 6px; transition: transform var(--motion-base) var(--ease-spring); }
 .surface-chevron[aria-expanded="true"] { transform: rotate(90deg); }
 
@@ -589,6 +541,10 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	animation: surface-agent-nudge 2.2s ease-in-out infinite;
 }
 .surface-bar-agent.is-ready { border-color: color-mix(in srgb, var(--text) 12%, transparent); }
+.surface-bar-agent.is-highlighted {
+	border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+	background: color-mix(in srgb, var(--accent) 13%, var(--bg));
+}
 .surface-bar-agent .surface-crew { --crew-size: 24px; width: 24px; height: 24px; }
 .surface-bar-agent-count {
 	min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--sidebar-selection); color: #fff;
@@ -1318,14 +1274,15 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	background: color-mix(in srgb, var(--text) 2%, var(--bg));
 }
 .surface-create-custom[hidden] { display: none; }
-.surface-create-figures { display: flex; flex-wrap: wrap; gap: 4px; }
-.surface-create-figure {
+.surface-figure-choices { display: flex; flex-wrap: wrap; gap: 4px; }
+.context-panel:has(> .surface-figure-choices) { width: 324px; }
+.surface-figure-choice {
 	display: grid; place-items: center; width: 46px; height: 46px; padding: 3px; border: 1px solid transparent; border-radius: 12px;
 	background: none; cursor: pointer; transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
 }
-.surface-create-figure .surface-tile { --tile-size: 38px; }
-.surface-create-figure[aria-checked="true"] { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
-.surface-create-figure:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.surface-figure-choice .surface-tile { --tile-size: 38px; }
+.surface-figure-choice[aria-checked="true"] { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
+.surface-figure-choice:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .surface-create-seg { justify-self: start; }
 .surface-create-card:hover { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 3.5%, var(--bg)); }
 .surface-create-card.is-selected {
@@ -1888,7 +1845,6 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .studio-compare-cell.is-preview {
 	border-left: 1px solid var(--border); background: color-mix(in srgb, var(--accent) 4%, var(--bg)); color: var(--text);
 }
-.surface-exploration-trigger { cursor: pointer; }
 
 /* Framed thread pages matching the rounded surface canvas with a subtle warm-grey tint and the same floating glass composer. */
 .frame:has(.rail.has-surface-rail) .main { background: var(--bg); }

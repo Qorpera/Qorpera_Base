@@ -3477,7 +3477,8 @@ print(json.dumps({
 		try {
 			const run = spawnSync("python3", ["-c", script, plugTool, dir], { encoding: "utf8" });
 			assert.equal(run.status, 0, run.stderr);
-			assert.deepEqual(JSON.parse(run.stdout), {
+			const lastLine = run.stdout.trim().split("\n").at(-1);
+			assert.deepEqual(JSON.parse(lastLine), {
 				text: "hello-world-short-writes",
 				failed_clean: true,
 				timed_rc: 124,
@@ -3714,7 +3715,8 @@ print(json.dumps({
 		try {
 			const run = spawnSync("python3", ["-c", script, plugTool, dir], { encoding: "utf8" });
 			assert.equal(run.status, 0, run.stderr);
-			assert.deepEqual(JSON.parse(run.stdout), {
+			const lastLine = run.stdout.trim().split("\n").at(-1);
+			assert.deepEqual(JSON.parse(lastLine), {
 				port_list_calls: 1,
 				repaired: true,
 				kept_mixed_case: true,
@@ -3722,6 +3724,311 @@ print(json.dumps({
 				forget_batch_ok: true,
 				main_guarded: true,
 			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("plug unplug releases plug.lock before conntrack flush, parallelizes twin deletes, and crash-retries forget", () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-plug-lock-flush-"));
+		const script = `
+import importlib.util, json, os, subprocess, sys, threading, time
+
+spec = importlib.util.spec_from_file_location("plug", sys.argv[1])
+plug = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(plug)
+
+base = sys.argv[2]
+state_dir = os.path.join(base, "state")
+run_dir = os.path.join(base, "run")
+log_dir = os.path.join(base, "log")
+for d in (state_dir, run_dir, log_dir):
+    os.makedirs(d, exist_ok=True)
+paths = plug.Paths(state_dir, run_dir, log_dir)
+for d in (*paths.root_dirs(), paths.clients, paths.dhcp, log_dir):
+    os.makedirs(d, exist_ok=True)
+
+entry = plug.plug(paths, "machine", "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", None, "qp", "inst-a")
+plug.write_replace(os.path.join(paths.seen, entry["address"]), json.dumps(entry) + "\\n")
+plug.write_replace(os.path.join(paths.verified, entry["address"]), plug.now_iso() + "\\n")
+
+args = type("A", (), {
+    "state_dir": state_dir, "run_dir": run_dir, "log_dir": log_dir, "netns": "qexit",
+    "lxd_socket": "/nonexistent", "lxd_fixture": None, "reload_dns": "true",
+    "flush_log": None, "every": 1, "port_recheck_seconds": 0.0,
+})()
+r = plug.Reconciler(paths, args)
+r.nft = True
+
+in_flush = threading.Event()
+allow_flush = threading.Event()
+concurrent_plug_ok = False
+concurrent_address = None
+active_twins = 0
+max_active_twins = 0
+twin_lock = threading.Lock()
+twin_cmds = []
+forget_calls = []
+forgot_before_history = []
+orig_history = r.history
+def wrapped_history(event, entry_arg, **kw):
+    if event == "unplugged":
+        forgot_before_history.extend(sorted(set(forget_calls)))
+    return orig_history(event, entry_arg, **kw)
+r.history = wrapped_history
+
+def fake_run(cmd, *, input=None):
+    global active_twins, max_active_twins
+    if cmd[:5] == ["ip", "netns", "exec", "qexit", "conntrack"] and cmd[5] == "-L":
+        in_flush.set()
+        allow_flush.wait(5)
+        lines = [
+            f"tcp 6 100 ESTABLISHED src={entry['address']} dst=93.184.216.34 sport={40000+i} dport=443 src=93.184.216.34 dst={plug.UPLINK} sport=443 dport={50000+i}"
+            for i in range(6)
+        ]
+        # Duplicate one line to verify deduplication.
+        lines.append(lines[0])
+        return subprocess.CompletedProcess(cmd, 0, "\\n".join(lines) + "\\n", "")
+    if cmd[0] == "conntrack" and "-p" in cmd:
+        with twin_lock:
+            active_twins += 1
+            max_active_twins = max(max_active_twins, active_twins)
+            twin_cmds.append(cmd)
+        time.sleep(0.05)
+        with twin_lock:
+            active_twins -= 1
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    if cmd[:5] == ["ip", "netns", "exec", "qexit", "nft"] and cmd[5] == "destroy":
+        forget_calls.append(cmd[9])
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    if cmd[:5] == ["ip", "netns", "exec", "qexit", "nft"] and cmd[5] == "-j":
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"nftables": []}), "")
+    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+r.run = fake_run
+t = threading.Thread(target=lambda: r.unplug(entry, "gone"))
+t.start()
+assert in_flush.wait(5), "flush started"
+forgot_before_flush = sorted(set(forget_calls))
+entry_removed_before_flush = not os.path.lexists(paths.entry(entry["address"]))
+# Concurrent plug must succeed while unplug is blocked in flush, and must not reuse the quarantined/unflushed address.
+other = plug.plug(paths, "machine", "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444", None, "qp", "inst-b")
+concurrent_plug_ok = True
+concurrent_address = other["address"]
+allow_flush.set()
+t.join(5)
+
+unflushed_cleared = not os.path.lexists(os.path.join(paths.unflushed, entry["address"]))
+unplug_twin_count = len(twin_cmds)
+
+# Crash-recovery path: an unflushed marker left behind triggers both flush and forget in after_entries().
+forget_calls.clear()
+plug.write_replace(os.path.join(paths.unflushed, "10.210.1.99"), plug.now_iso() + "\\n")
+r.after_entries(time.time(), {})
+retry_cleared = not os.path.lexists(os.path.join(paths.unflushed, "10.210.1.99"))
+
+print(json.dumps({
+    "concurrent_plug_ok": concurrent_plug_ok,
+    "different_address": concurrent_address != entry["address"],
+    "deduped_twin_count": unplug_twin_count,
+    "parallel_twins": max_active_twins >= 2,
+    "entry_removed_before_flush": entry_removed_before_flush,
+    "forgot_before_history": forgot_before_history,
+    "forgot_before_flush": forgot_before_flush,
+    "unflushed_cleared": unflushed_cleared,
+    "retry_cleared": retry_cleared,
+    "retry_forgot": sorted(set(forget_calls)),
+}))
+`;
+		try {
+			const run = spawnSync("python3", ["-c", script, plugTool, dir], { encoding: "utf8" });
+			assert.equal(run.status, 0, run.stderr);
+			const lastLine = run.stdout.trim().split("\n").at(-1);
+			assert.deepEqual(JSON.parse(lastLine), {
+				concurrent_plug_ok: true,
+				different_address: true,
+				deduped_twin_count: 6,
+				parallel_twins: true,
+				entry_removed_before_flush: true,
+				forgot_before_history: ["braked", "dns_port", "reach"],
+				forgot_before_flush: ["braked", "dns_port", "reach"],
+				unflushed_cleared: true,
+				retry_cleared: true,
+				retry_forgot: ["braked", "dns_port", "reach"],
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("names batch flush runs concurrently and writes status heartbeats; logs bounds asked/failed_windows; log refreshes Companies outside Guard.lock; units set StartLimitIntervalSec=0", () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-exit-hardening-"));
+		const script = `
+import importlib.util, json, os, subprocess, sys, threading, time
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+names_mod = load("names_mod", sys.argv[1])
+logs_mod = load("logs_mod", sys.argv[2])
+log_mod = load("log_mod", sys.argv[3])
+base = sys.argv[4]
+
+# 1. Names concurrent batch flushing + heartbeat refresh.
+n_state = os.path.join(base, "n_state")
+n_run = os.path.join(base, "n_run")
+os.makedirs(n_state, exist_ok=True)
+os.makedirs(n_run, exist_ok=True)
+n_args = type("A", (), {
+    "state_dir": n_state, "run_dir": n_run, "rules": os.path.join(n_state, "rules.json"),
+    "upstreams": "1.1.1.1", "netns": "qexit",
+})()
+reconciler = names_mod.Names(n_args)
+with open(reconciler.status_path, "w", encoding="utf-8") as f:
+    json.dump({"schema": names_mod.STATUS_SCHEMA, "at": "2026-01-01T00:00:00Z", "resolvers": {}, "mapped": {}, "reach": {}, "problems": ["existing-fault"]}, f)
+os.utime(reconciler.status_path, (1000, 1000))
+reconciler._heartbeat_at = -100.0
+active = 0
+max_active = 0
+lock = threading.Lock()
+def fake_flush(addr):
+    global active, max_active
+    with lock:
+        active += 1
+        max_active = max(max_active, active)
+    time.sleep(0.03)
+    with lock:
+        active -= 1
+    return True
+res = reconciler._run_address_batch([f"10.210.1.{i}" for i in range(1, 13)], fake_flush)
+names_mtime_bumped = os.stat(reconciler.status_path).st_mtime > 1000
+with open(reconciler.status_path, encoding="utf-8") as f:
+    names_problems_preserved = json.load(f).get("problems") == ["existing-fault"]
+
+# 2. Logs: resolutions max_asked cap + tally failed_windows cap + heartbeat callback.
+dns_file = os.path.join(base, "dns.log")
+with open(dns_file, "w", encoding="utf-8") as f:
+    for i in range(1, 7):
+        f.write(f"Oct 10 12:00:0{i} dnsmasq[1]: {i} 10.210.1.1/1000 query[A] old{i}.example from 10.210.1.1\\n")
+    f.write("Oct 10 12:00:07 dnsmasq[1]: 6 10.210.1.1/1000 reply cname6.example is 93.184.216.34\\n")
+    f.write("Oct 10 12:00:08 dnsmasq[1]: 1 10.210.1.1/1000 reply fallback1.example is 93.184.216.35\\n")
+found, unread = logs_mod.resolutions([(dns_file, 1791633600.0)], {"10.210.1.1"}, {"93.184.216.34", "93.184.216.35"}, max_asked=4)
+recent_kept = found[("10.210.1.1", "93.184.216.34")][0][1] == "old6.example"
+evicted_fell_back = found[("10.210.1.1", "93.184.216.35")][0][1] == "fallback1.example"
+
+orig_kept = logs_mod.DESTINATIONS_KEPT
+orig_hb = logs_mod.COUNT_HEARTBEAT_SECONDS
+flows_file = os.path.join(base, "flows.jsonl")
+with open(flows_file, "w", encoding="utf-8") as f:
+    for i in range(4100):
+        f.write(json.dumps({"ts": 1700000000.0 + (i % 50) * 0.01, "event": "destroy", "src": "10.210.1.1", "dst": f"198.51.{i // 256}.{i % 256}", "packets_in": 0}) + "\\n")
+hb_hits = 0
+def on_hb():
+    global hb_hits
+    hb_hits += 1
+try:
+    logs_mod.DESTINATIONS_KEPT = 5
+    logs_mod.COUNT_HEARTBEAT_SECONDS = 0.0
+    tallied = logs_mod.tally([flows_file], {"10.210.1.1": [(None, None, {"company": "cA", "machine": "mA"})]}, heartbeat=on_hb)
+finally:
+    logs_mod.DESTINATIONS_KEPT = orig_kept
+    logs_mod.COUNT_HEARTBEAT_SECONDS = orig_hb
+peak_capped = tallied["companies"]["cA"]["peakFailedDestinations60s"] == 5
+
+zero_floor_dir = os.path.join(base, "zero_floor_logs")
+os.makedirs(zero_floor_dir, exist_ok=True)
+with open(os.path.join(zero_floor_dir, "dns-2026-10-10T120000Z.log.gz"), "wb") as f:
+    f.write(b"x" * 64)
+zf_deleted, _zf_removed, zf_still = logs_mod.tidy(
+    zero_floor_dir, 1791633600.0, cap=1024 * 1024, floor=0.0, free=lambda _d: 2.0
+)
+zero_floor_preserved = zf_deleted == [] and zf_still is False and os.path.exists(
+    os.path.join(zero_floor_dir, "dns-2026-10-10T120000Z.log.gz")
+)
+
+# 3. Log: Companies.refresh runs disk IO outside Guard.lock.
+l_state = os.path.join(base, "l_state")
+os.makedirs(os.path.join(l_state, "seen"), exist_ok=True)
+os.makedirs(os.path.join(l_state, "verified"), exist_ok=True)
+with open(os.path.join(l_state, "seen", "10.210.1.1"), "w", encoding="utf-8") as f:
+    json.dump({"company": "cA"}, f)
+open(os.path.join(l_state, "verified", "10.210.1.1"), "w").close()
+companies = log_mod.Companies(l_state)
+companies.refresh()
+guard_lock_free_during_entry = False
+writer = type("W", (), {"write": lambda self, rec: None})()
+kernel = type("K", (), {"read": lambda self: {"share": [], "machines": {}, "dropped": {}, "resent": {}}, "write": lambda self, stmts: None})()
+guard = log_mod.Guard(writer, kernel, companies, {"on": True, "new10s": 1000, "failed60s": 100, "minutes": 5, "slow10s": 10}, [], os.path.join(base, "guard.json"))
+orig_entry = companies.entry
+def check_entry(addr, files_cache=None):
+    global guard_lock_free_during_entry
+    if guard.lock.acquire(blocking=False):
+        guard_lock_free_during_entry = True
+        guard.lock.release()
+    return orig_entry(addr, files_cache)
+companies.entry = check_entry
+companies.read_at = None
+guard.see({"event": "new", "ts": 1000.0, "src": "10.210.1.1"})
+with open(os.path.join(l_state, "seen", "10.210.1.2"), "w", encoding="utf-8") as f:
+    json.dump({"company": "cB"}, f)
+open(os.path.join(l_state, "verified", "10.210.1.2"), "w").close()
+guard.braked["cA"] = {"number": 1, "since": 1000.0, "until": 2000.0, "reason": "test", "dropped": 0, "resent": 0}
+class ExplodingDict(dict):
+    def items(self):
+        raise RuntimeError("status_record must iterate snapshot, not companies.known")
+companies.known = ExplodingDict(companies.known)
+step_status = guard.step(now=1005.0)
+status_used_snapshot = step_status["braked"][0]["machines"] == 1
+companies.known = dict(companies.known)
+companies.of("10.210.1.2")
+concurrent_insert_ok = companies.snapshot().get("10.210.1.2") == "cB"
+
+print(json.dumps({
+    "names_batch_len": len(res),
+    "names_parallel": max_active >= 2,
+    "names_mtime_bumped": names_mtime_bumped,
+    "names_problems_preserved": names_problems_preserved,
+    "recent_kept": recent_kept,
+    "evicted_fell_back": evicted_fell_back,
+    "unread": unread,
+    "peak_capped": peak_capped,
+    "zero_floor_preserved": zero_floor_preserved,
+    "hb_hits": hb_hits >= 1,
+    "guard_lock_free_during_entry": guard_lock_free_during_entry,
+    "status_used_snapshot": status_used_snapshot,
+    "concurrent_insert_ok": concurrent_insert_ok,
+}))
+`;
+		try {
+			const run = spawnSync("python3", ["-c", script, namesTool, logsTool, logger, dir], { encoding: "utf8" });
+			assert.equal(run.status, 0, run.stderr);
+			assert.deepEqual(JSON.parse(run.stdout), {
+				names_batch_len: 12,
+				names_parallel: true,
+				names_mtime_bumped: true,
+				names_problems_preserved: true,
+				recent_kept: true,
+				evicted_fell_back: true,
+				unread: [],
+				peak_capped: true,
+				zero_floor_preserved: true,
+				hb_hits: true,
+				guard_lock_free_during_entry: true,
+				status_used_snapshot: true,
+				concurrent_insert_ok: true,
+			});
+			for (const unit of [
+				"qorpera-agent-exit-dns.service",
+				"qorpera-agent-exit-log.service",
+				"qorpera-agent-plug.service",
+				"qorpera-agent-exit-names.service",
+			]) {
+				const content = readFileSync(join(here, unit), "utf8");
+				assert.match(content, /^StartLimitIntervalSec=0$/m, `${unit} sets StartLimitIntervalSec=0`);
+			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

@@ -444,6 +444,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_set_preview_selection(uuid,uuid[],uuid,uuid[],text)', false, true, 'member: qorpera_assert_surface_member(profile, false); stores caller''s own preview toggles and requests composite preview build (20260930843000)'),
 	('public.qorpera_set_session_chat_open(uuid,boolean)', false, true, 'member: qorpera_assert_surface_member(profile, true); toggles chat-open hold state for a surface session (20260930840000)'),
 	('public.qorpera_set_surface_auto_publish(uuid,boolean)', false, true, 'member: qorpera_assert_surface_member(profile, true); toggles surface auto-publish (20260930840000)'),
+	('public.qorpera_set_surface_figure(uuid,text)', false, true, 'member: qorpera_assert_surface_member(profile, true); sets the figure a surface is drawn as (20260930856000)'),
 	('public.qorpera_spawn_cross_surface_session(uuid,text,text,text,jsonb)', false, true, 'member: qorpera_assert_surface_member(profile, true); spawns a linked follow-up session on a sibling surface (20260930842000)'),
 	('public.qorpera_start_surface_session(uuid,text,text,text,text,jsonb,integer,text,text[])', false, true, 'member: qorpera_assert_surface_member(profile, true); starts a single session or multi-variant exploration on a surface (20260930843000)'),
 	('public.qorpera_surface_migration_checklist(uuid)', false, true, 'member: qorpera_assert_surface_member(company, false); reads surface migration checklist for the company (20260930840000)'),

@@ -194,19 +194,14 @@ describe("operational surfaces", () => {
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
 		document.body.append(rail.el);
 		rail.update("inbox");
-		const row = rail.el.querySelector(".surface-session")!;
-		expect(row.classList.contains("is-action")).toBe(true);
-		expect(row.querySelector(".surface-crew .figure")).not.toBeNull();
-		expect(row.querySelector(".surface-crew")?.getAttribute("data-figure")).not.toBe("crown");
-		expect(row.querySelector(".surface-session-status")?.textContent).toBe("Draft ready");
-		expect(row.querySelector(".surface-switch")).toBeNull();
-		expect(row.querySelector('.surface-approve.is-action[aria-label^="Send"]')).not.toBeNull();
+		expect(rail.el.querySelector(".surface-tree")).toBeNull();
+		const crew = rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="inbox"] .rail-surface-crew')!;
+		expect(crew.getAttribute("aria-label")).toBe("1 session active");
+		expect(crew.querySelectorAll(".surface-crew.is-mini .figure")).toHaveLength(1);
+		expect(crew.querySelector(".surface-crew")?.getAttribute("data-figure")).not.toBe("crown");
 		const tile = rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="inbox"] .surface-tile')!;
 		expect(tile.style.getPropertyValue("--surface-tint")).toBe("#2f63d8");
 		expect(tile.querySelector(".surface-figure")?.getAttribute("data-figure")).toBe("envelope");
-		expect(rail.el.querySelector('.rail-surface[data-surface-slug="inbox"] .rail-surface-sub')?.textContent).toBe(
-			"1 session active",
-		);
 
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "inbox");
 		document.body.append(view.el);
@@ -298,14 +293,14 @@ describe("creating surfaces", () => {
 		expect(custom.hidden).toBe(false);
 		expect(sheet.querySelector(".surface-create-swatch")).toBeNull();
 		const picked = () =>
-			sheet.querySelector<HTMLElement>('.surface-create-figure[aria-checked="true"]')?.dataset.figure;
-		expect(sheet.querySelectorAll(".surface-create-figure")).toHaveLength(26);
+			sheet.querySelector<HTMLElement>('.surface-figure-choice[aria-checked="true"]')?.dataset.figure;
+		expect(sheet.querySelectorAll(".surface-figure-choice")).toHaveLength(26);
 		expect(picked()).toBe("gem");
 
 		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
 		expect(custom.hidden).toBe(true);
 		expect(picked()).toBe("phone");
-		sheet.querySelector<HTMLElement>('.surface-create-figure[data-figure="piggy"]')!.click();
+		sheet.querySelector<HTMLElement>('.surface-figure-choice[data-figure="piggy"]')!.click();
 		sheet.querySelector<HTMLElement>('[data-preset="website"]')!.click();
 		expect(picked()).toBe("piggy");
 		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
@@ -383,7 +378,6 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(membersRow.querySelector(".rail-surface-sub")?.textContent).toBe("1 teammate");
 		const tree = membersRow.nextElementSibling!;
 		expect(tree.querySelector('.rail-members [data-member-id="user-marie"]')).toBe(marie);
-		expect(tree.querySelector(".surface-tree-empty")).toBeNull();
 		expect(rail.el.querySelector('[aria-label="Building"]')).toBeNull();
 		store.dispose();
 	});

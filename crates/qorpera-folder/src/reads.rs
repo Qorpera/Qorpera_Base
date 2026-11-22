@@ -358,14 +358,18 @@ impl Locked<'_> {
 
 	fn rewrite(&mut self) -> io::Result<()> {
 		let path = self.dir.join("reads.jsonl.new");
-		let mut file = private_file(&path, true)?;
+		let file = private_file(&path, true)?;
 		file.set_len(0)?;
 		let state = self.state();
-		serde_json::to_writer(&mut file, &Line::Start { log: state.log.clone(), released: state.released })?;
-		file.write_all(b"\n")?;
-		for read in &state.reads {
-			serde_json::to_writer(&mut file, &Line::Read { read: read.clone() })?;
-			file.write_all(b"\n")?;
+		{
+			let mut writer = std::io::BufWriter::new(&file);
+			serde_json::to_writer(&mut writer, &Line::Start { log: state.log.clone(), released: state.released })?;
+			writer.write_all(b"\n")?;
+			for read in &state.reads {
+				serde_json::to_writer(&mut writer, &Line::Read { read: read.clone() })?;
+				writer.write_all(b"\n")?;
+			}
+			writer.flush()?;
 		}
 		file.sync_all()?;
 		std::fs::rename(&path, self.dir.join(JOURNAL))?;
