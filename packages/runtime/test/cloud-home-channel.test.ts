@@ -470,4 +470,92 @@ describe("home channel framing bounds and keep-alive teardown", () => {
 		socket.destroy();
 		await vi.waitFor(() => expect(authorizeSignal!.aborted).toBe(true));
 	});
+
+	it("applies backpressure on fromMachine and exits cleanly when a paused client disconnects mid-drain", async () => {
+		const token = randomBytes(32).toString("base64url");
+		const binding = {
+			leaseId: randomUUID(),
+			runId: randomUUID(),
+			jobId: randomUUID(),
+			runnerId: randomUUID(),
+			assignmentId: randomUUID(),
+			credentialCapsuleId: randomUUID(),
+			computeIdentityId: randomUUID(),
+			provider: "openai" as const,
+			nativeHarness: "codex-cli" as const,
+			model: "gpt-test",
+		};
+		let yielded = 0;
+		let sideClosed = false;
+		const totalLines = 256;
+		const payload = "x".repeat(256 * 1024);
+		const service = new HttpCloudCodingCommandService({
+			token,
+			port: 0,
+			proveBinding: async () => undefined,
+			authorize: async () => {
+				throw new Error("not here");
+			},
+			execute: async () => {
+				throw new Error("not here");
+			},
+			home: {
+				authorize: async (request) => ({
+					state: "authorized",
+					sessionId: request.sessionId,
+					machineId: request.machineId,
+					machine: "dev-box",
+					placementId: randomUUID(),
+					bootId: randomUUID(),
+					executorOwner: "node-a",
+					providerId: "machine-node",
+				}),
+				open: async () => ({
+					write: () => undefined,
+					lines: (async function* () {
+						while (yielded < totalLines && !sideClosed) {
+							yielded += 1;
+							yield payload;
+						}
+					})(),
+					close: async () => {
+						sideClosed = true;
+					},
+				}),
+			},
+		});
+		const port = await service.start();
+		cleanups.push(async () => await service.close());
+
+		const holder = `job.${binding.jobId}.${randomBytes(32).toString("base64url")}`;
+		const socket = connect({ host: "127.0.0.1", port });
+		await new Promise<void>((resolve, reject) => {
+			socket.once("connect", resolve);
+			socket.once("error", reject);
+		});
+		const ready = new Promise<void>((resolve, reject) => {
+			let buffered = "";
+			const onData = (chunk: Buffer) => {
+				buffered += chunk.toString("utf8");
+				const sep = buffered.indexOf("\r\n\r\n");
+				if (sep >= 0 && buffered.slice(sep + 4).includes("\n")) {
+					socket.off("data", onData);
+					socket.pause();
+					resolve();
+				}
+			};
+			socket.on("data", onData);
+			socket.once("error", reject);
+		});
+		socket.write(
+			`GET /v1/home-session HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: Upgrade\r\nupgrade: qorpera-home-session/1\r\nauthorization: Bearer ${token}\r\nx-qorpera-identity: ${holder}\r\n\r\n` +
+				`${JSON.stringify({ schema: "qorpera-home-session/1", binding, machineId: randomUUID(), sessionId: randomUUID() })}\n`,
+		);
+		await ready;
+		await vi.waitFor(() => expect(yielded).toBeGreaterThan(0));
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(yielded).toBeLessThan(totalLines);
+		socket.destroy();
+		await vi.waitFor(() => expect(sideClosed).toBe(true));
+	});
 });

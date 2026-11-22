@@ -512,7 +512,7 @@ export class HttpCloudCodingCommandService {
 				endGracefully(`${JSON.stringify({ ok: false, reason: "unavailable" })}\n`);
 				return;
 			}
-			// WHY: keep reading the upgraded socket during async authorize/open so peer EOF/FIN aborts controller promptly.
+			// WHY: watch the first post-handshake read during async authorize/open so peer EOF/FIN aborts controller promptly; real clients send no lines before ok and RST/close still aborts regardless.
 			const nextRead = reader.next();
 			void nextRead.then(
 				(item) => {
