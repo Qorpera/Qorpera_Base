@@ -294,6 +294,20 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Your company now runs on live Surfaces instead of ad-hoc files and separate specialist hierarchies. Every product or brand area projects its real codebase or company folder directly into the founder's canvas, where parallel work sessions propose toggleable changes and side-by-side design explorations before anything merges or goes live. Shared identity styling syncs across builds automatically, and recurring work runs as focused automations instead of permanent background roles. Keep the company folder lean by editing live surface files directly rather than creating extra draft or memo documents.",
 	},
 	{
+		id: "vault-secrets-and-code-routines",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "App vault secrets and code/ops routine triggers",
+		text: "Coding sessions can now use company-owned OpenAI and Anthropic vault keys and receive sorted secretNames (names only, never values) in their turn context. Owners and admins can scope environment secrets by build, test, or runtime and target environment so production or runtime grants stay out of coding sessions, and manage per-site app secret grants. Routines created with manage_routine now support code-change, app-unhealthy, and database-change listeners plus deterministic checkBeforeWake gates (HTTPS probes and repository checks) that wake an agent only on failure or state change.",
+	},
+	{
+		id: "surface-figures",
+		kind: "behaviour",
+		date: "2026-11-22",
+		title: "Surfaces are drawn as figures",
+		text: "Every surface in the sidebar is now a small figure of the thing it is (a browser for the website, notes and a gold coin for money, a folder for files), in fixed colours. When you propose a surface you may name its figure: leave it out and the surface gets its kind's own figure, or pick another that fits better, such as shop for a web store. Colours are never chosen. Members can change a surface's figure themselves from the sidebar.",
+	},
+	{
 		id: "app-relay-streaming-and-site-rollbacks",
 		kind: "capability",
 		date: "2026-11-22",

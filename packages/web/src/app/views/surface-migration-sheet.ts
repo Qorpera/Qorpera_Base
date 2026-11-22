@@ -2,9 +2,16 @@ import type { ApplySurfaceMigrationInput } from "@qorpera/cloud-client/surfaces"
 import type { SurfaceAutomationSummary, SurfaceMigrationChecklist } from "@qorpera/contracts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { fmtTime, h, icon } from "../../ui/dom.ts";
-import { type Emblem, interfaceEmblem } from "../../ui/interface-emblem.ts";
+import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { phrase, t } from "../../ui/preferences.ts";
-import { SURFACE_ACCENTS, SURFACE_CUSTOM_EMBLEMS, type SurfaceKind, surfaceKindTint } from "../surface-kinds.ts";
+import {
+	markSurfaceFigure,
+	type SurfaceFigureId,
+	surfaceFigure,
+	surfaceFigureChoices,
+	surfaceFigureIcon,
+} from "../../ui/surface-figure.ts";
+import { type SurfaceKind, surfaceKindFigure } from "../surface-kinds.ts";
 import { migrationPending, type SurfacesStore } from "../surfaces-store.ts";
 
 type AgentAction = ApplySurfaceMigrationInput["agentDecisions"][number]["action"];
@@ -174,7 +181,10 @@ function automationLine(automation: SurfaceAutomationSummary): string {
 export function openAutomationsSheet(store: SurfacesStore): void {
 	const list = h("ul", { class: "surface-automations" });
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
+	const toggling = new Set<string>();
+	let closed = false;
 	const draw = () => {
+		if (closed) return;
 		const state = store.state;
 		const rows = state.automations.map((automation) => {
 			const toggle = h("button", {
@@ -183,10 +193,18 @@ export function openAutomationsSheet(store: SurfacesStore): void {
 				role: "switch",
 				"aria-checked": String(automation.enabled),
 				"aria-label": t("Turn {name} on or off", { name: automation.title }),
-				disabled: Boolean(state.busy[`automation:${automation.id}`]),
+				disabled: toggling.has(automation.id) || Boolean(state.busy[`automation:${automation.id}`]),
 			});
 			toggle.addEventListener("click", async () => {
-				await store.toggleAutomation(automation.id, !automation.enabled);
+				if (toggling.has(automation.id)) return;
+				toggling.add(automation.id);
+				toggle.disabled = true;
+				try {
+					await store.toggleAutomation(automation.id, !automation.enabled);
+				} finally {
+					toggling.delete(automation.id);
+				}
+				if (closed) return;
 				status.textContent = store.state.error ?? "";
 				draw();
 			});
@@ -210,7 +228,9 @@ export function openAutomationsSheet(store: SurfacesStore): void {
 					]),
 		);
 	};
-	const dialog = new SurfaceDialog(t("Automations"), "surface-sheet", () => undefined);
+	const dialog = new SurfaceDialog(t("Automations"), "surface-sheet", () => {
+		closed = true;
+	});
 	const sections: HTMLElement[] = [
 		h("h2", null, t("Automations")),
 		h(
@@ -261,7 +281,6 @@ interface SurfacePreset {
 	readonly title: string;
 	readonly description: string;
 	readonly archetype: "live_build" | "studio";
-	readonly icon: Emblem;
 	readonly folderRoot?: string;
 }
 
@@ -273,7 +292,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Identity"),
 		description: phrase("Global branding, voice, design tokens, and philosophy shared across every product."),
 		archetype: "studio",
-		icon: "spark",
 		folderRoot: "identity",
 	},
 	{
@@ -283,7 +301,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Website"),
 		description: phrase("Marketing site or storefront with live preview and publish."),
 		archetype: "live_build",
-		icon: "globe",
 	},
 	{
 		id: "web_app",
@@ -292,7 +309,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Web App"),
 		description: phrase("Interactive product or customer portal built in parallel sessions."),
 		archetype: "live_build",
-		icon: "spark",
 	},
 	{
 		id: "mobile_app",
@@ -301,7 +317,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Mobile App"),
 		description: phrase("iOS and Android app, previewed in a real phone frame."),
 		archetype: "live_build",
-		icon: "phone",
 	},
 	{
 		id: "desktop_app",
@@ -310,7 +325,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Desktop App"),
 		description: phrase("macOS and Windows app in a native window."),
 		archetype: "live_build",
-		icon: "window",
 	},
 	{
 		id: "database",
@@ -319,7 +333,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Database"),
 		description: phrase("Tables, schemas, records, and queries."),
 		archetype: "studio",
-		icon: "database",
 		folderRoot: "database",
 	},
 	{
@@ -329,7 +342,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Financial Dashboard"),
 		description: phrase("MRR, runway, cashflow, P&L, and KPIs at a glance."),
 		archetype: "live_build",
-		icon: "chart",
 	},
 	{
 		id: "product",
@@ -338,7 +350,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Product Studio"),
 		description: phrase("Product specs, colorways, BOM, and design briefs in one place."),
 		archetype: "studio",
-		icon: "box",
 		folderRoot: "product",
 	},
 	{
@@ -348,7 +359,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Report & Analysis"),
 		description: phrase("Long-form essays, vendor analyses, and design notes with inline charts and tables."),
 		archetype: "studio",
-		icon: "book",
 		folderRoot: "reports",
 	},
 	{
@@ -358,21 +368,18 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		title: phrase("Custom Surface"),
 		description: phrase("Anything else: an inventory tracker, investor room, support desk…"),
 		archetype: "live_build",
-		icon: "star",
 	},
 ];
 
-function presetTile(emblem: Emblem, tint: string, size = 20): HTMLElement {
-	const tile = h("span", { class: "surface-tile is-sheet", "aria-hidden": "true" }, interfaceEmblem(emblem, size));
-	tile.style.setProperty("--surface-tint", tint);
-	return tile;
+function figureTile(figure: SurfaceFigureId): HTMLElement {
+	return h("span", { class: "surface-tile is-sheet", "aria-hidden": "true" }, surfaceFigure(figure));
 }
 
 export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string): void {
 	let selected: SurfacePreset = SURFACE_PRESETS[0]!;
 	let customArchetype: "live_build" | "studio" = "live_build";
-	let customAccent = SURFACE_ACCENTS[0]!.hex;
-	let customEmblem: Emblem = SURFACE_CUSTOM_EMBLEMS[0]!;
+	let figure: SurfaceFigureId = surfaceKindFigure(selected.kind);
+	let figureChosen = false;
 	const dialog = new SurfaceDialog(t("New surface"), "surface-sheet surface-create-sheet", () => undefined);
 	const nameInput = h("input", {
 		type: "text",
@@ -396,8 +403,6 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 		placeholder: t("What is this surface for? An agent shapes it from this brief."),
 	});
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
-	const customTile = h("span", { class: "surface-create-custom-tile" });
-	const drawCustomTile = () => customTile.replaceChildren(presetTile(customEmblem, customAccent, 24));
 	const segment = (value: "live_build" | "studio", label: string, hint: string) => {
 		const button = h(
 			"button",
@@ -425,63 +430,13 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 		segment("studio", t("Studio files"), t("Documents, tables, and specs that sessions edit.")),
 	);
 	archetypeRow.setAttribute("aria-label", t("How it is built"));
-	const swatches = h(
-		"div",
-		{ class: "surface-create-swatches", role: "radiogroup", "aria-label": t("Colour") },
-		SURFACE_ACCENTS.map((accent) => {
-			const swatch = h("button", {
-				type: "button",
-				class: "surface-create-swatch",
-				role: "radio",
-				"aria-checked": String(accent.hex === customAccent),
-				"aria-label": t(accent.name),
-				title: t(accent.name),
-			});
-			swatch.style.setProperty("--swatch", accent.hex);
-			swatch.addEventListener("click", () => {
-				customAccent = accent.hex;
-				for (const other of swatches.querySelectorAll("button"))
-					other.setAttribute("aria-checked", String(other === swatch));
-				drawCustomTile();
-			});
-			return swatch;
-		}),
-	);
-	const emblems = h(
-		"div",
-		{ class: "surface-create-emblems", role: "radiogroup", "aria-label": t("Icon") },
-		SURFACE_CUSTOM_EMBLEMS.map((emblem) => {
-			const choice = h(
-				"button",
-				{
-					type: "button",
-					class: "surface-create-emblem-choice",
-					role: "radio",
-					"aria-checked": String(emblem === customEmblem),
-					"data-emblem": emblem,
-				},
-				interfaceEmblem(emblem, 18),
-			);
-			choice.setAttribute("aria-label", t("Icon"));
-			choice.addEventListener("click", () => {
-				customEmblem = emblem;
-				for (const other of emblems.querySelectorAll("button"))
-					other.setAttribute("aria-checked", String(other === choice));
-				drawCustomTile();
-			});
-			return choice;
-		}),
-	);
-	drawCustomTile();
+	const figures = surfaceFigureChoices(figure, (id) => {
+		figure = id;
+		figureChosen = true;
+	});
 	const customPanel = h(
 		"div",
 		{ class: "surface-create-custom", hidden: true },
-		h(
-			"div",
-			{ class: "surface-create-custom-row" },
-			customTile,
-			h("div", { class: "surface-create-custom-picks" }, swatches, emblems),
-		),
 		h("div", { class: "surface-create-field" }, h("span", null, t("How it is built")), archetypeRow),
 		h("label", { class: "surface-create-field" }, h("span", null, t("Brief")), descriptionInput),
 	);
@@ -494,7 +449,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 				"aria-pressed": String(preset.id === selected.id),
 				"data-preset": preset.id,
 			},
-			presetTile(preset.icon, surfaceKindTint(preset.kind)),
+			figureTile(surfaceKindFigure(preset.kind)),
 			h(
 				"span",
 				{ class: "surface-create-card-copy" },
@@ -510,6 +465,10 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 				other.setAttribute("aria-pressed", String(on));
 			}
 			customPanel.hidden = preset.kind !== "custom";
+			if (!figureChosen) {
+				figure = surfaceKindFigure(preset.kind);
+				markSurfaceFigure(figures, figure);
+			}
 			if (!customName) nameInput.value = preset.kind === "custom" ? "" : t(preset.title);
 			if (preset.kind === "custom") nameInput.focus({ preventScroll: true });
 		});
@@ -527,6 +486,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 		),
 		h("div", { class: "surface-create-grid", role: "group", "aria-label": t("Surface type") }, cards),
 		customPanel,
+		h("div", { class: "surface-create-field" }, h("span", null, t("Figure")), figures),
 		h("label", { class: "surface-create-field" }, h("span", null, t("Name")), nameInput),
 		h("label", { class: "surface-create-field" }, h("span", null, t("First session (optional)")), promptInput),
 		store.isLocalInteractive
@@ -566,9 +526,8 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 			title,
 			...(selected.slug ? { slug: selected.slug } : {}),
 			archetype,
-			icon: custom ? customEmblem : selected.icon,
+			icon: surfaceFigureIcon(figure),
 			kind: selected.kind,
-			...(custom ? { accent: customAccent } : {}),
 			folderRoot: custom && archetype === "studio" ? undefined : selected.folderRoot,
 			description: custom ? descriptionInput.value.trim() || undefined : undefined,
 			initialPrompt: promptInput.value.trim() || undefined,
@@ -657,18 +616,23 @@ export function openScheduleAgentSheet(store: SurfacesStore, existing?: SurfaceA
 	);
 	const remove =
 		editing && existing && store.isLocalInteractive && existing.id.startsWith("local-")
-			? h(
-					"button",
-					{
-						type: "button",
-						class: "btn",
-						onclick: async () => {
-							await store.deleteScheduledAgent(existing.id);
+			? (() => {
+					const button = h("button", { type: "button", class: "btn" }, t("Delete"));
+					button.addEventListener("click", async () => {
+						if (button.disabled) return;
+						button.disabled = true;
+						submit.disabled = true;
+						const deleted = await store.deleteScheduledAgent(existing.id);
+						if (deleted) {
 							dialog.close(false);
-						},
-					},
-					t("Delete"),
-				)
+						} else {
+							button.disabled = false;
+							submit.disabled = false;
+							status.textContent = store.state.error ?? t("That didn't work. Try again.");
+						}
+					});
+					return button;
+				})()
 			: null;
 	const form = h(
 		"form",

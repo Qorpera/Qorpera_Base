@@ -220,15 +220,21 @@ for this (`FUSE_NOTIFY_INC_EPOCH`, kernel 6.16), which would also drop every oth
 
 ## Staying current
 
-- The service reads `qorpera_folder_clocks` (service_role select, C1f) every 500 ms for the companies with live
-  views. When a clock moved, each view reads the feed from its position and pushes the changed paths.
+- The service reads `qorpera_folder_clocks` (service_role select, C1f) every 500 ms while any live view has a
+  connected machine. When a clock moved, each view reads the feed from its position and pushes the changed paths.
+  Once no live view has a connection (or on quiet ticks when an explicit `maxPollMs` opts into connected backoff),
+  polling backs off adaptively (1 s → 2 s → 5 s) and resets immediately to 500 ms when a machine connects or activity
+  arrives; a machine reconnecting to an idle kept view therefore resumes 500 ms polling on `hello`, after the kept
+  tree (up to ~5 s behind while disconnected) has been attached.
 - An access change on the feed (`{seq, kind: "authority"}`), or a position the core no longer serves, lists the
   view again; the difference is pushed. Until that listing is done the old tree serves: a path an access change
   took away goes when the new tree replaces it, a few seconds for tens of thousands of paths (P3 would narrow it to
   the changed resource). More than 5,000 changed paths, or a message too large for one frame, are sent as a resync.
-- Grant expiry, member removal and agent archive are on no feed. Each view is listed again every 10 minutes (the
-  due check runs when the work starts, so a long listing is not repeated), and a denial (42501) closes the view on
-  every connection.
+- Grant expiry, member removal and agent archive are on no feed. Every 10 minutes each view checks
+  `qorpera_folder_view_fingerprint` (catching up the feed first if `seq` advanced) and compares `seq`, `authoritySeq`,
+  explicit `entryCount`, and the 128-bit XOR `entriesDigest` against its local `ViewTree` (the due check runs when the
+  work starts, so a long check is not repeated). When everything matches, the full listing is skipped; on any mismatch
+  the view runs a full listing, and a denial (42501) closes the view on every connection.
 - The folder program treats 45 s without a frame as a dead link. While its feed is down it caches nothing and gives
   the kernel nothing to keep, so it never shows an older version than the node's. When the feed is back it drops
   everything once and carries on.

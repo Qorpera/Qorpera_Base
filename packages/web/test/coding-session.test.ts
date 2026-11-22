@@ -1606,6 +1606,60 @@ describe("the element in the thread", () => {
 		]);
 		element.dispose();
 	});
+
+	it("does not tight-loop on duplicate full pages or schedule 0 ms catch-up while hidden", async () => {
+		const session = codingSession({ phase: "running", workerState: "running" });
+		const duplicatePage = Array.from({ length: 200 }, (_, index) =>
+			event(index + 1, "step", { text: `step ${index + 1}`, status: "passed" }, "executor"),
+		);
+		const dupRead = vi.fn(async () => ({
+			session,
+			isOwner: true,
+			events: duplicatePage,
+		}));
+		const dupEl = new CodingSessionElement(session, {
+			names: () => owner,
+			viewerOwns: () => true,
+			api: {
+				read: dupRead,
+				answer: vi.fn(async () => undefined),
+				delegate: vi.fn(async () => undefined),
+				archive: vi.fn(async () => undefined),
+			},
+			signal: disposeAll.signal,
+		});
+		document.body.append(dupEl.el);
+		await settle();
+		await vi.advanceTimersByTimeAsync(100);
+		expect(dupRead).toHaveBeenCalledTimes(2);
+		dupEl.dispose();
+
+		const hiddenSpy = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+		const advancingRead = vi.fn(async (_workerId: string, afterEvent: number) => ({
+			session,
+			isOwner: true,
+			events: Array.from({ length: 200 }, (_, index) =>
+				event(afterEvent + index + 1, "step", { text: `s ${afterEvent + index + 1}` }, "executor"),
+			),
+		}));
+		const hiddenEl = new CodingSessionElement(session, {
+			names: () => owner,
+			viewerOwns: () => true,
+			api: {
+				read: advancingRead,
+				answer: vi.fn(async () => undefined),
+				delegate: vi.fn(async () => undefined),
+				archive: vi.fn(async () => undefined),
+			},
+			signal: disposeAll.signal,
+		});
+		document.body.append(hiddenEl.el);
+		await settle();
+		await vi.advanceTimersByTimeAsync(100);
+		expect(advancingRead).toHaveBeenCalledTimes(1);
+		hiddenSpy.mockRestore();
+		hiddenEl.dispose();
+	});
 });
 
 describe("the sessions' pill above the composer", () => {

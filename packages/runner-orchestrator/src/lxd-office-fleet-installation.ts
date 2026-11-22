@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { chmod, type FileHandle, lstat, mkdir, open, realpath } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { chmod, type FileHandle, link, lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { parseOfficeFleetServiceConfig } from "./lxd-office-fleet-service.ts";
 import { officeSha } from "./lxd-office-image-provenance.ts";
@@ -75,6 +75,41 @@ WantedBy=multi-user.target
 	};
 }
 
+export async function writeOfficeFleetArtifactImmutable(
+	targetPath: string,
+	bytes: Buffer,
+	readExisting: (path: string, maxBytes: number) => Promise<Buffer> = readLxdOfficeProtectedPackageArtifactFile,
+): Promise<void> {
+	// WHY: Stage in a unique temp file and publish with link() so a mid-write crash never bricks retries with a partial file and existing differing targets are never replaced.
+	const tmpPath = `${targetPath}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`;
+	let file: FileHandle | undefined;
+	try {
+		file = await open(tmpPath, "wx", 0o444);
+		await file.writeFile(bytes);
+		await file.sync();
+		await file.close();
+		file = undefined;
+		await chmod(tmpPath, 0o444);
+		try {
+			await link(tmpPath, targetPath);
+		} catch (error) {
+			if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+			const present = await readExisting(targetPath, 2 * 1024 ** 2);
+			if (!present.equals(bytes)) throw new Error("OFFICE_FLEET_INSTALL_CONFLICT");
+			return;
+		}
+		const parent = await open(dirname(targetPath), "r");
+		try {
+			await parent.sync();
+		} finally {
+			await parent.close();
+		}
+	} finally {
+		if (file) await file.close().catch(() => {});
+		await unlink(tmpPath).catch(() => {});
+	}
+}
+
 /** Root operator installation only. Protected host-specific configuration,
  * images, mounts, users and local journal/lock are prepared first. Publish a
  * content-addressed binary and two per-office units, without starting either.
@@ -130,30 +165,9 @@ export async function installOfficeFleetService(
 			)
 				throw new Error("OFFICE_FLEET_INSTALL_PATH_UNPROTECTED");
 		}
-		let file: FileHandle;
-		try {
-			file = await open(target.path, "wx", 0o444);
-		} catch (error) {
-			if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-			const present = await readLxdOfficeProtectedPackageArtifactFile(target.path, 2 * 1024 ** 2);
-			if (!present.equals(target.bytes)) throw new Error("OFFICE_FLEET_INSTALL_CONFLICT");
-			continue;
-		}
-		try {
-			await file.writeFile(target.bytes);
-			await file.sync();
-		} finally {
-			await file.close();
-		}
-		await chmod(target.path, 0o444);
-		const parent = await open(dirname(target.path), "r");
-		try {
-			await parent.sync();
-		} finally {
-			await parent.close();
-		}
+		await writeOfficeFleetArtifactImmutable(target.path, target.bytes);
 	}
-	execFileSync("/usr/bin/systemctl", ["daemon-reload"], { stdio: "pipe" });
+	execFileSync("/usr/bin/systemctl", ["daemon-reload"], { stdio: "pipe", timeout: 30_000 });
 	return {
 		schema: "qorpera.office-fleet-installation/v1",
 		binaryPath,

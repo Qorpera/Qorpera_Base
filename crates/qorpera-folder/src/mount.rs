@@ -147,7 +147,7 @@ pub(super) struct DirItem {
 }
 
 enum Handle {
-	Dir(Arc<Vec<DirItem>>, Option<u64>),
+	Dir(Arc<Vec<DirItem>>, Option<u64>, Vec<u64>),
 	File { ino: u64, path: String, version: String, size: u64 },
 	Write { ino: u64, open: Arc<Mutex<Open>>, opener: u32 },
 }
@@ -443,6 +443,15 @@ impl Shared {
 	/// A folder's entries: from memory, or from the node. One fetch per folder at a time; others wait
 	/// for it. The flag says whether the answer may be cached by the kernel.
 	fn children(&self, dir: u64, hold: Option<&str>) -> Result<(Arc<Vec<Child>>, bool), i32> {
+		let (children, kept, _) = self.children_inner(dir, hold, false)?;
+		Ok((children, kept))
+	}
+
+	fn children_for_dir(&self, dir: u64) -> Result<(Arc<Vec<Child>>, bool, Vec<u64>), i32> {
+		self.children_inner(dir, None, true)
+	}
+
+	fn children_inner(&self, dir: u64, hold: Option<&str>, hold_all: bool) -> Result<(Arc<Vec<Child>>, bool, Vec<u64>), i32> {
 		loop {
 			let (path, started) = {
 				let mut tree = self.tree.lock().unwrap();
@@ -451,12 +460,20 @@ impl Shared {
 					return Err(libc::ENOTDIR);
 				}
 				if let Some(listing) = tree.listing(dir) {
-					if let Some(c) = hold.and_then(|name| find_child(&listing, name)) {
+					let mut held = Vec::new();
+					if hold_all {
+						held.reserve(listing.len());
+						for c in listing.iter() {
+							if tree.hold(c.ino) {
+								held.push(c.ino);
+							}
+						}
+					} else if let Some(c) = hold.and_then(|name| find_child(&listing, name)) {
 						tree.hold(c.ino);
 						// Recorded under the tree's lock, so a change after this read always sees it.
 						self.answer(dir, &c.name, tree.changes());
 					}
-					return Ok((listing, true));
+					return Ok((listing, true, held));
 				}
 				(path, tree.changes())
 			};
@@ -474,21 +491,35 @@ impl Shared {
 				let entries = entries.into_iter().filter(|e| valid_name(&e.name)).collect();
 				let keep = self.feed_up.load(Ordering::SeqCst);
 				let mut tree = self.tree.lock().unwrap();
-				let (children, kept) = tree.install(dir, entries, started, keep, hold);
-				if let Some(name) = hold.filter(|name| kept && find_child(&children, name).is_some()) {
-					self.answer(dir, name, started);
+				if hold_all {
+					tree.install_dir(dir, entries, started, keep)
+				} else {
+					let (children, kept) = tree.install(dir, entries, started, keep, hold);
+					if let Some(name) = hold.filter(|name| kept && find_child(&children, name).is_some()) {
+						self.answer(dir, name, started);
+					}
+					(children, kept, Vec::new())
 				}
-				(children, kept)
 			});
 			// Released only after the listing is in: a second fetch of this folder never overlaps the first's install.
 			{
 				self.listing.lock().unwrap().remove(&dir);
 				self.listed.notify_all();
 			}
-			if let (true, Ok((children, kept))) = (debug(), &fetched) {
+			if let (true, Ok((children, kept, _))) = (debug(), &fetched) {
 				eprintln!("qorpera-folder: listed {path:?}: {} entries, kept {kept}", children.len());
 			}
 			return fetched;
+		}
+	}
+
+	fn release_dir_holds(&self, inodes: &[u64]) {
+		if inodes.is_empty() {
+			return;
+		}
+		let mut tree = self.tree.lock().unwrap();
+		for &ino in inodes {
+			tree.forget(ino, 1);
 		}
 	}
 
@@ -718,7 +749,7 @@ impl Shared {
 				let Some(s) = weak.upgrade() else { return true };
 				match job {
 					RetryJob::Close { ino, open } => s.try_close(*ino, open).is_ok(),
-					RetryJob::Discard { handle } => !matches!(s.link.discard_write(*handle), Err(ref f) if again(f)),
+					RetryJob::Discard { handle } => !matches!(s.link.discard_write(*handle), Err(ref f) if again(f, s.link.reads_lost())),
 				}
 			}
 		});
@@ -751,7 +782,7 @@ impl Shared {
 		}
 		match self.close_at_node(ino, &mut o) {
 			Ok(()) => {}
-			Err(f) if again(&f) => return Err(f),
+			Err(f) if again(&f, self.link.reads_lost()) => return Err(f),
 			Err(f) => {
 				eprintln!("qorpera-folder: a file could not be closed at the node: {f}");
 				o.writer = None;
@@ -787,7 +818,7 @@ impl Shared {
 	/// node does not take it now (`again`), as a close is (`leave`).
 	fn give_up(self: &Arc<Self>, handle: u32) {
 		let Err(f) = self.link.discard_write(handle) else { return };
-		if !again(&f) {
+		if !again(&f, self.link.reads_lost()) {
 			return;
 		}
 		eprintln!("qorpera-folder: the node did not take a draft's discard now ({f}); trying again");
@@ -796,10 +827,14 @@ impl Shared {
 }
 
 /// A failure the node may get past: a request it could not take now.
-fn again(f: &Fail) -> bool {
+fn again(f: &Fail, reads_lost: bool) -> bool {
 	match f {
 		Fail::Link(_) => true,
-		Fail::Remote(e) => [code::BUSY, code::UNAVAILABLE, code::DENIED].contains(&e.code.as_str()),
+		Fail::Remote(e) => match e.code.as_str() {
+			code::BUSY | code::UNAVAILABLE => true,
+			code::DENIED => !reads_lost,
+			_ => false,
+		},
 	}
 }
 
@@ -1044,8 +1079,9 @@ impl Filesystem for FolderFs {
 	fn forget(&self, _req: &Request, ino: INodeNo, nlookup: u64) {
 		if local::is_local(ino.0) {
 			self.s.kernel.forget(ino.0, nlookup);
+		} else {
+			self.s.tree.lock().unwrap().forget(ino.0, nlookup);
 		}
-		self.s.tree.lock().unwrap().forget(ino.0, nlookup);
 	}
 
 	fn getattr(&self, _req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
@@ -1055,13 +1091,26 @@ impl Filesystem for FolderFs {
 	}
 
 	fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+		struct DirHoldGuard<'a> {
+			s: &'a Shared,
+			inodes: Vec<u64>,
+		}
+		impl Drop for DirHoldGuard<'_> {
+			fn drop(&mut self) {
+				if !self.inodes.is_empty() {
+					self.s.release_dir_holds(&self.inodes);
+				}
+			}
+		}
+
 		let Some(reply) = self.served(reply) else { return };
 		let Some(reply) = self.noted(ino.0, reply) else { return };
 		let Some(reply) = self.local_opendir(ino.0, reply) else { return };
-		let (children, kept) = match self.s.children(ino.0, None) {
+		let (children, kept, node_holds) = match self.s.children_for_dir(ino.0) {
 			Ok(r) => r,
 			Err(e) => return reply.error(Errno::from_i32(e)),
 		};
+		let mut holds = DirHoldGuard { s: &self.s, inodes: node_holds };
 		let (attr, _) = match self.s.attr(ino.0) {
 			Ok(attr) => attr,
 			Err(e) => return reply.error(Errno::from_i32(e)),
@@ -1087,13 +1136,14 @@ impl Filesystem for FolderFs {
 		if let Err(e) = self.merge_local(ino.0, &path, &mut entries) {
 			return reply.error(Errno::from_i32(e));
 		}
-		reply.opened(self.s.handle(Handle::Dir(Arc::new(entries), None)), FopenFlags::empty());
+		let held = std::mem::take(&mut holds.inodes);
+		reply.opened(self.s.handle(Handle::Dir(Arc::new(entries), None, held)), FopenFlags::empty());
 	}
 
 	fn readdir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, offset: u64, reply: ReplyDirectory) {
 		let Some(mut reply) = self.served(reply) else { return };
 		let entries = match self.s.handles.lock().unwrap().get(&fh.0) {
-			Some(Handle::Dir(entries, _)) => entries.clone(),
+			Some(Handle::Dir(entries, _, _)) => entries.clone(),
 			_ => return reply.error(Errno::EBADF),
 		};
 		for (i, item) in entries.iter().enumerate().skip(offset as usize) {
@@ -1107,7 +1157,7 @@ impl Filesystem for FolderFs {
 	fn readdirplus(&self, _req: &Request, dir: INodeNo, fh: FileHandle, offset: u64, reply: ReplyDirectoryPlus) {
 		let Some(mut reply) = self.served(reply) else { return };
 		let entries = match self.s.handles.lock().unwrap().get(&fh.0) {
-			Some(Handle::Dir(entries, _)) => entries.clone(),
+			Some(Handle::Dir(entries, _, _)) => entries.clone(),
 			_ => return reply.error(Errno::EBADF),
 		};
 		let prime_node = !local::is_local(dir.0);
@@ -1136,31 +1186,31 @@ impl Filesystem for FolderFs {
 					}
 				}
 				DirPlus::Node { attr, kept } => {
-					let (use_attr, ttl) = if prime_node && *kept && !node_ttl.is_zero() {
+					let (held, use_attr, ttl) = {
 						let mut tree = self.s.tree.lock().unwrap();
-						let fresh = self.s.writable && tree.path(item.ino).is_some_and(on_disk::fresh);
-						if !fresh && tree.current(item.ino) && tree.parent(item.ino) == Some(dir.0) {
-							if let Some(current_attr) = tree.attr(item.ino) {
-								tree.hold(item.ino);
-								self.s.answer(dir.0, &item.name, tree.changes());
-								(current_attr, node_ttl)
+						let held = tree.hold(item.ino);
+						if held && prime_node && *kept && !node_ttl.is_zero() {
+							let fresh = self.s.writable && tree.path(item.ino).is_some_and(on_disk::fresh);
+							if !fresh && tree.current(item.ino) && tree.parent(item.ino) == Some(dir.0) {
+								if let Some(current_attr) = tree.attr(item.ino) {
+									self.s.answer(dir.0, &item.name, tree.changes());
+									(true, current_attr, node_ttl)
+								} else {
+									(true, attr.clone(), Duration::ZERO)
+								}
 							} else {
-								tree.hold(item.ino);
-								(attr.clone(), Duration::ZERO)
+								(true, tree.attr(item.ino).unwrap_or_else(|| attr.clone()), Duration::ZERO)
 							}
 						} else {
-							tree.hold(item.ino);
-							(tree.attr(item.ino).unwrap_or_else(|| attr.clone()), Duration::ZERO)
+							(held, tree.attr(item.ino).unwrap_or_else(|| attr.clone()), Duration::ZERO)
 						}
-					} else {
-						let mut tree = self.s.tree.lock().unwrap();
-						tree.hold(item.ino);
-						(tree.attr(item.ino).unwrap_or_else(|| attr.clone()), Duration::ZERO)
 					};
 					let shown = self.s.shown(item.ino, use_attr);
 					let file_attr = self.s.file_attr(item.ino, &shown);
 					if reply.add(INodeNo(item.ino), next_off, &item.name, &ttl, &file_attr, Generation(0)) {
-						self.s.tree.lock().unwrap().forget(item.ino, 1);
+						if held {
+							self.s.tree.lock().unwrap().forget(item.ino, 1);
+						}
 						break;
 					}
 				}
@@ -1172,8 +1222,11 @@ impl Filesystem for FolderFs {
 	fn releasedir(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, _flags: OpenFlags, reply: ReplyEmpty) {
 		let Some(reply) = self.served(reply) else { return };
 		let handle = self.s.handles.lock().unwrap().remove(&fh.0);
-		if let (Some(Handle::Dir(_, Some(key))), Some(local)) = (handle, &self.s.local) {
-			local.let_go_top(key);
+		if let Some(Handle::Dir(_, local_key, node_holds)) = handle {
+			self.s.release_dir_holds(&node_holds);
+			if let (Some(key), Some(local)) = (local_key, &self.s.local) {
+				local.let_go_top(key);
+			}
 		}
 		reply.ok();
 	}
@@ -1903,13 +1956,15 @@ fn follow(
 	}
 }
 
+const MAX_CHASE_ENTRIES: usize = 8192;
+
 /// Drops raced names from the kernel again at 1, 2, 4 … ms after their change, CHASE_STEPS times: a lookup answered
 /// from before the change lands in the kernel within that, and the next drop after it removes what it made. A drop
 /// of a name the kernel no longer holds does nothing.
 fn chase(notifier: Notifier, names: mpsc::Receiver<Vec<(u64, String)>>) {
-	let mut due: Vec<(Instant, u32, u64, String)> = Vec::new();
+	let mut due: HashMap<(u64, String), (Instant, u32)> = HashMap::new();
 	loop {
-		let next = due.iter().map(|d| d.0).min();
+		let next = due.values().map(|&(at, _)| at).min();
 		let got = match next {
 			Some(at) => names.recv_timeout(at.saturating_duration_since(Instant::now())),
 			None => names.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
@@ -1917,24 +1972,32 @@ fn chase(notifier: Notifier, names: mpsc::Receiver<Vec<(u64, String)>>) {
 		match got {
 			Ok(batch) => {
 				let at = Instant::now() + Duration::from_millis(1);
-				due.extend(batch.into_iter().map(|(parent, name)| (at, 0, parent, name)));
+				for key in batch {
+					if due.contains_key(&key) || due.len() < MAX_CHASE_ENTRIES {
+						due.insert(key, (at, 0));
+					} else {
+						tell_kernel(&notifier, vec![Inval::Entry(key.0, key.1)]);
+					}
+				}
 			}
 			Err(mpsc::RecvTimeoutError::Timeout) => {}
 			Err(mpsc::RecvTimeoutError::Disconnected) => return,
 		}
 		let now = Instant::now();
-		let mut later = Vec::with_capacity(due.len());
-		for (at, step, parent, name) in due.drain(..) {
-			if at > now {
-				later.push((at, step, parent, name));
-				continue;
-			}
-			tell_kernel(&notifier, vec![Inval::Entry(parent, name.clone())]);
-			if step + 1 < CHASE_STEPS {
-				later.push((now + Duration::from_millis(1 << step), step + 1, parent, name));
+		let mut ready = Vec::new();
+		for (key, &(at, step)) in &due {
+			if at <= now {
+				ready.push((key.clone(), step));
 			}
 		}
-		due = later;
+		for (key, step) in ready {
+			tell_kernel(&notifier, vec![Inval::Entry(key.0, key.1.clone())]);
+			if step + 1 < CHASE_STEPS {
+				due.insert(key, (now + Duration::from_millis(1 << step), step + 1));
+			} else {
+				due.remove(&key);
+			}
+		}
 	}
 }
 
@@ -2315,5 +2378,17 @@ mod tests {
 		assert_eq!(cache.of(pid), pid);
 		assert_eq!(cache.of(pid), pid);
 		assert_eq!(cache.of(0), 0);
+	}
+
+	#[test]
+	fn retry_again_retries_denied_during_pause_unless_read_journal_is_lost() {
+		let denied = Fail::Remote(crate::proto::ErrorReply { code: code::DENIED.into(), message: "denied".into() });
+		let busy = Fail::Remote(crate::proto::ErrorReply { code: code::BUSY.into(), message: "busy".into() });
+		let link_err = Fail::Link(std::io::Error::other("broken pipe"));
+		assert!(again(&denied, false));
+		assert!(!again(&denied, true));
+		assert!(again(&busy, false));
+		assert!(again(&busy, true));
+		assert!(again(&link_err, true));
 	}
 }

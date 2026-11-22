@@ -48,19 +48,26 @@ export function applyIdentityTokensToFrame(
 
 // WHY: Matches SiteView's sandbox so previews run scripts and forms on their own origin without touching this app's page.
 const SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox";
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 15_000;
 
 interface DoorSlot {
 	readonly key: string;
+	readonly previewId: string;
 	readonly iframe: HTMLIFrameElement;
 	readonly action: string;
 	readonly pass: string;
 	readonly path: string;
 	sent: boolean;
+	timeout: ReturnType<typeof setTimeout> | undefined;
 }
 
 export interface SurfaceDoorOptions {
 	readonly onPick?: (target: PointToChangeTarget) => void;
 	readonly onShownChange?: () => void;
+	readonly handshakeTimeoutMs?: number;
+	readonly isPassUsable?: (previewId: string, pass: string) => boolean;
+	readonly onPassSent?: (previewId: string, pass: string) => void;
+	readonly onNeedFreshPass?: (previewId: string, stalePass?: string) => Promise<boolean> | undefined;
 }
 
 export function previewStatusText(frame: SurfacePreviewFrameState): string {
@@ -99,6 +106,8 @@ export class SurfaceDoorStage {
 	readonly #options: SurfaceDoorOptions;
 	#active: DoorSlot | undefined;
 	#staging: DoorSlot | undefined;
+	#retriedPreviewId: string | undefined;
+	#requestedPassKey: string | undefined;
 	#inspectorActive = false;
 	#identityTokens: CompiledIdentityTokens | null = null;
 	#identityTokensCss = "";
@@ -116,20 +125,50 @@ export class SurfaceDoorStage {
 
 	sync(frame: SurfacePreviewFrameState, title: string): void {
 		if (this.#lifetime.signal.aborted) return;
-		if (frame.status === "ready" && frame.doorActionUrl && frame.memberPass) {
+		const previewId = frame.previewId ?? "";
+		if (frame.status === "ready" && (previewId || (frame.doorActionUrl && frame.memberPass))) {
 			const path = frame.activeRoute.startsWith("/") ? frame.activeRoute : "/";
-			const key = `${frame.previewId ?? ""}\0${frame.doorActionUrl}\0${frame.memberPass}\0${path}`;
-			if (this.#active?.key === key) {
+			if (
+				this.#active &&
+				this.#active.previewId === previewId &&
+				this.#active.path === path &&
+				(!frame.doorActionUrl || this.#active.action === frame.doorActionUrl)
+			) {
 				this.#active.iframe.title = title;
 				this.#dropStaging();
+				this.#retriedPreviewId = undefined;
+				this.#requestedPassKey = undefined;
 				this.#waiting.hidden = true;
 				this.#pill.hidden = true;
 				return;
 			}
+			if (!frame.doorActionUrl || !frame.memberPass) {
+				this.#dropStaging();
+				const needKey = `${previewId}\0${path}`;
+				if (previewId && this.#options.onNeedFreshPass && this.#requestedPassKey !== needKey) {
+					this.#requestFreshPass(previewId, needKey);
+				}
+				this.#pill.hidden = true;
+				if (!this.#active) this.#showWaiting("running", t("Opening preview…"));
+				return;
+			}
+			const key = `${previewId}\0${frame.doorActionUrl}\0${frame.memberPass}\0${path}`;
 			if (this.#staging?.key === key) {
 				this.#staging.iframe.title = title;
 				return;
 			}
+			if (previewId && this.#options.isPassUsable && !this.#options.isPassUsable(previewId, frame.memberPass)) {
+				this.#dropStaging();
+				const staleKey = `${previewId}\0${frame.memberPass}`;
+				if (this.#options.onNeedFreshPass && this.#requestedPassKey !== staleKey) {
+					this.#requestFreshPass(previewId, staleKey, frame.memberPass);
+				}
+				this.#pill.hidden = true;
+				if (!this.#active) this.#showWaiting("running", t("Opening preview…"));
+				return;
+			}
+			this.#requestedPassKey = undefined;
+			if (this.#retriedPreviewId && this.#retriedPreviewId !== previewId) this.#retriedPreviewId = undefined;
 			this.#dropStaging();
 			const iframe = h("iframe", {
 				class: "surface-frame is-staging",
@@ -137,14 +176,35 @@ export class SurfaceDoorStage {
 				referrerpolicy: "no-referrer",
 				title,
 			});
-			this.#staging = {
+			const slot: DoorSlot = {
 				key,
+				previewId,
 				iframe,
 				action: frame.doorActionUrl,
 				pass: frame.memberPass,
 				path,
 				sent: false,
+				timeout: undefined,
 			};
+			const timeoutMs = this.#options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+			if (timeoutMs > 0) {
+				slot.timeout = setTimeout(() => {
+					slot.timeout = undefined;
+					if (this.#lifetime.signal.aborted || this.#staging !== slot) return;
+					this.#dropStaging();
+					if (previewId && this.#options.onNeedFreshPass && this.#retriedPreviewId !== previewId) {
+						this.#retriedPreviewId = previewId;
+						this.#pill.hidden = true;
+						if (!this.#active) this.#showWaiting("running", t("Reconnecting preview…"));
+						this.#requestFreshPass(previewId, `${previewId}\0${slot.pass}`, slot.pass);
+						return;
+					}
+					this.#pill.hidden = true;
+					this.#dropActive();
+					this.#showWaiting("failed", t("The preview could not be opened."));
+				}, timeoutMs);
+			}
+			this.#staging = slot;
 			this.el.append(iframe);
 			iframe.src = SITE_DOOR_URL;
 			this.#pill.hidden = true;
@@ -155,6 +215,8 @@ export class SurfaceDoorStage {
 			}
 			return;
 		}
+		this.#retriedPreviewId = undefined;
+		this.#requestedPassKey = undefined;
 		this.#dropStaging();
 		if (frame.status === "composing" || frame.status === "building") {
 			const words = previewStatusText(frame);
@@ -202,6 +264,8 @@ export class SurfaceDoorStage {
 			this.#postInspectorMode(false);
 			this.#inspectorActive = false;
 		}
+		this.#retriedPreviewId = undefined;
+		this.#requestedPassKey = undefined;
 		this.#dropStaging();
 		this.#dropActive();
 		this.#waiting.hidden = true;
@@ -214,6 +278,30 @@ export class SurfaceDoorStage {
 		this.el.remove();
 	}
 
+	#requestFreshPass(previewId: string, requestKey: string, stalePass?: string): void {
+		this.#requestedPassKey = requestKey;
+		const onFailure = () => {
+			if (this.#lifetime.signal.aborted || this.#requestedPassKey !== requestKey || this.#staging) return;
+			this.#requestedPassKey = undefined;
+			this.#retriedPreviewId = undefined;
+			this.#pill.hidden = true;
+			this.#dropActive();
+			this.#showWaiting("failed", t("The preview could not be opened."));
+		};
+		let result: Promise<boolean> | undefined;
+		try {
+			result = this.#options.onNeedFreshPass?.(previewId, stalePass);
+		} catch {
+			onFailure();
+			return;
+		}
+		if (result && typeof result.then === "function") {
+			void result.then((minted) => {
+				if (minted === false) onFailure();
+			}, onFailure);
+		}
+	}
+
 	#showWaiting(kind: "running" | "conflicted" | "failed", words: string): void {
 		this.#waitingState.className = `surface-state is-${kind}`;
 		this.#waitingText.textContent = words;
@@ -222,6 +310,10 @@ export class SurfaceDoorStage {
 
 	#dropStaging(): void {
 		if (!this.#staging) return;
+		if (this.#staging.timeout) {
+			clearTimeout(this.#staging.timeout);
+			this.#staging.timeout = undefined;
+		}
 		this.#staging.iframe.remove();
 		this.#staging = undefined;
 	}
@@ -252,6 +344,7 @@ export class SurfaceDoorStage {
 		if (staging && event.source === staging.iframe.contentWindow) {
 			if (data.type === SITE_DOOR_READY && !staging.sent) {
 				staging.sent = true;
+				if (staging.previewId) this.#options.onPassSent?.(staging.previewId, staging.pass);
 				staging.iframe.contentWindow?.postMessage(
 					{
 						type: SITE_DOOR_PASS,
@@ -265,9 +358,15 @@ export class SurfaceDoorStage {
 				return;
 			}
 			if (data.type === SITE_DOOR_SHOWN && staging.sent) {
+				if (staging.timeout) {
+					clearTimeout(staging.timeout);
+					staging.timeout = undefined;
+				}
 				const previous = this.#active;
 				this.#active = staging;
 				this.#staging = undefined;
+				this.#retriedPreviewId = undefined;
+				this.#requestedPassKey = undefined;
 				staging.iframe.classList.remove("is-staging");
 				staging.iframe.classList.add("is-shown");
 				previous?.iframe.remove();

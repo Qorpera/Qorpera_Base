@@ -13,7 +13,7 @@ Use a disposable Linux VM before the NAS. The host must provide:
 - Node.js 22.19 or newer at `/usr/bin/node`.
 - Podman 5 or newer, local rather than remote, with rootless mode, seccomp, and cgroups v2.
 - A dedicated `qorpera-runner` account with subordinate UID/GID ranges and lingering enabled.
-- Cosign and registry authentication only on the image build/signing machine.
+- Cosign, GNU `timeout`, and registry authentication only on the image build/signing machine.
 
 Podman documents that rootless systemd workloads belong in the user unit search path and that Quadlet/rootless operation requires cgroups v2. The worker follows the same dedicated-user model even though the long-running service is Node and it launches one disposable Podman container per job. The worker unit avoids `NoNewPrivileges=` and systemd restrictions that imply it for an unprivileged user service because rootless Podman must establish a user namespace with the account's subordinate UID/GID mappings. Every untrusted job container independently applies Podman's `no-new-privileges` security option in addition to dropping all capabilities. The worker itself retains a strict read-only system filesystem with writes limited to its home and runtime directories.
 
@@ -35,7 +35,7 @@ sh deploy/ephemeral-runner/build-and-sign-image.sh \
   'REGISTRY/qorpera/sandbox-probe:BUILD_TAG'
 ```
 
-Signing is not tested on Windows and requires a real registry plus an OIDC-capable Linux/CI environment.
+Signing is not tested on Windows and requires a real registry plus an OIDC-capable Linux/CI environment. The build, push, and signing steps run under GNU `timeout` with defaults `PODMAN_BUILD_TIMEOUT_SEC=1800`, `PODMAN_PUSH_TIMEOUT_SEC=600`, and `COSIGN_TIMEOUT_SEC=120`.
 
 For the first-node acceptance run, manually dispatching
 `.github/workflows/ephemeral-runner-linux.yml` produces a private workflow

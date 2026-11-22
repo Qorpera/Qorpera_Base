@@ -807,6 +807,12 @@ function routineSchedule(args: Record<string, JsonValue>, fallbackZone: string):
 	if (trigger.kind === "once" && typeof trigger.after === "string") words = `When ${listened(trigger.after)} is done`;
 	else if (trigger.kind === "once") words = "The agent picks each next run";
 	else if (trigger.kind === "listener" && trigger.source === "event") words = eventWhen(trigger.only);
+	else if (trigger.kind === "listener" && trigger.source === "code-change" && typeof trigger.repo === "string")
+		words = `When ${trigger.repo} changes`;
+	else if (trigger.kind === "listener" && trigger.source === "app-unhealthy" && typeof trigger.site === "string")
+		words = `When hosted app ${trigger.site} is unhealthy`;
+	else if (trigger.kind === "listener" && trigger.source === "data-change" && typeof trigger.database === "string")
+		words = `When database ${trigger.database} changes`;
 	else if (trigger.kind === "listener" && typeof trigger.path === "string")
 		words =
 			trigger.match === "subtree"

@@ -285,17 +285,51 @@ async function present(path) {
 	}
 }
 
+export async function readBoundedTraceFile(path) {
+	let handle;
+	try {
+		// WHY: Open traced files with O_NOFOLLOW | O_NONBLOCK and a hard byte cap to avoid lstat->readFile TOCTOU and FIFO stalls.
+		handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	} catch {
+		return null;
+	}
+	try {
+		const info = await handle.stat();
+		if (!info.isFile() || info.size > MAX_TRACED_FILE_BYTES) return null;
+		const chunks = [];
+		let total = 0;
+		const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, Math.max(1, info.size + 1)));
+		for (;;) {
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+			if (bytesRead === 0) break;
+			total += bytesRead;
+			if (total > MAX_TRACED_FILE_BYTES) return null;
+			chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+		}
+		return Buffer.concat(chunks, total).toString("utf8");
+	} catch {
+		return null;
+	} finally {
+		await handle.close();
+	}
+}
+
 /** Reads the files a set of starting paths name, following paths named inside them (three levels). */
-async function trace(starts) {
+async function trace(starts, readCache = new Map(), readTraceFile = readBoundedTraceFile) {
 	const seen = new Map();
 	let frontier = starts;
 	for (let depth = 0; depth < 4 && frontier.length; depth++) {
 		const next = [];
 		for (const path of frontier) {
 			if (seen.has(path)) continue;
-			const info = await lstat(path).catch(() => undefined);
-			if (!info?.isFile() || info.size > MAX_TRACED_FILE_BYTES) continue;
-			const text = await readFile(path, "utf8").catch(() => "");
+			let text;
+			if (readCache.has(path)) {
+				text = readCache.get(path);
+			} else {
+				text = await readTraceFile(path);
+				readCache.set(path, text);
+			}
+			if (text === null) continue;
 			seen.set(path, text);
 			next.push(...(text.match(FILE_PATH) ?? []));
 		}
@@ -368,6 +402,7 @@ export function nodeLxd(socketPath) {
 	return {
 		async images() {
 			const body = await lxdRequest(socketPath, "GET", "/1.0/images?recursion=1&all-projects=true");
+			if (!Array.isArray(body?.metadata)) throw new Error("LXD images response returned non-array metadata");
 			return body.metadata.map((image) => ({
 				fingerprint: image.fingerprint,
 				project: image.project || "default",
@@ -378,6 +413,7 @@ export function nodeLxd(socketPath) {
 		},
 		async instances() {
 			const body = await lxdRequest(socketPath, "GET", "/1.0/instances?recursion=1&all-projects=true");
+			if (!Array.isArray(body?.metadata)) throw new Error("LXD instances response returned non-array metadata");
 			return body.metadata.map((instance) => ({
 				project: instance.project || "default",
 				name: instance.name,
@@ -399,66 +435,96 @@ export function nodeLxd(socketPath) {
 }
 
 const run = promisify(execFile);
-export const nodeSystemd = {
-	async units(pattern) {
-		const { stdout } = await run("/usr/bin/systemctl", ["list-units", "--all", "--plain", "--no-legend", pattern], {
-			timeout: SYSTEMCTL_TIMEOUT_MS,
-		});
-		return stdout
-			.split("\n")
-			.map((line) => line.trim().split(/\s+/))
-			.filter(([name, , active]) => name && (active === "active" || active === "activating"))
-			.map(([name]) => name);
-	},
-	/** Every installed unit file matching the pattern, whatever its state (a disabled unit may not be loaded). */
-	async installedUnits(pattern) {
-		const { stdout } = await run("/usr/bin/systemctl", ["list-unit-files", "--no-legend", "--plain", pattern], {
-			timeout: SYSTEMCTL_TIMEOUT_MS,
-		});
-		return stdout
-			.split("\n")
-			.map((line) => line.trim().split(/\s+/)[0])
-			.filter((name) => name?.endsWith(".service"));
-	},
-	/** The files a live unit really starts from: its effective start commands, environment files and the
-	 * running process's command line. Overridden drop-ins are not followed, so their old pins are not live. */
-	async startPaths(unit) {
-		const { stdout } = await run(
-			"/usr/bin/systemctl",
-			[
-				"show",
-				unit,
-				"-p",
-				"ExecStart",
-				"-p",
-				"ExecStartPre",
-				"-p",
-				"EnvironmentFiles",
-				"-p",
-				"MainPID",
-			],
-			{ timeout: SYSTEMCTL_TIMEOUT_MS },
-		);
-		const paths = stdout.match(FILE_PATH) ?? [];
-		const pid = /^MainPID=(\d+)$/m.exec(stdout)?.[1];
-		if (pid && pid !== "0") {
-			const command = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "");
-			paths.push(...(command.replaceAll("\0", " ").match(FILE_PATH) ?? []));
-		}
-		return paths;
-	},
-};
+export function createNodeSystemd(exec = run) {
+	return {
+		async units(pattern) {
+			const [{ stdout: listOut }, { stdout: filesOut }] = await Promise.all([
+				exec("/usr/bin/systemctl", ["list-units", "--all", "--plain", "--no-legend", pattern], {
+					timeout: SYSTEMCTL_TIMEOUT_MS,
+				}),
+				exec("/usr/bin/systemctl", ["list-unit-files", "--no-legend", "--plain", pattern], {
+					timeout: SYSTEMCTL_TIMEOUT_MS,
+				}),
+			]);
+			const enabled = new Set(
+				filesOut
+					.split("\n")
+					.map((line) => line.trim().split(/\s+/))
+					.filter(([name, state]) => name && (state === "enabled" || state === "enabled-runtime"))
+					.map(([name]) => name),
+			);
+			// WHY: Keep reloading, deactivating, and enabled-but-transiently-failed units (including template instances) live.
+			const liveStates = new Set(["active", "activating", "reloading", "deactivating"]);
+			const isEnabled = (name) => enabled.has(name) || enabled.has(name.replace(/@.+\.([^.]+)$/, "@.$1"));
+			return listOut
+				.split("\n")
+				.map((line) => line.trim().split(/\s+/))
+				.filter(([name, , active]) => name && (liveStates.has(active) || (active === "failed" && isEnabled(name))))
+				.map(([name]) => name);
+		},
+		/** Every installed unit file matching the pattern, whatever its state (a disabled unit may not be loaded). */
+		async installedUnits(pattern) {
+			const { stdout } = await exec("/usr/bin/systemctl", ["list-unit-files", "--no-legend", "--plain", pattern], {
+				timeout: SYSTEMCTL_TIMEOUT_MS,
+			});
+			return stdout
+				.split("\n")
+				.map((line) => line.trim().split(/\s+/)[0])
+				.filter((name) => name?.endsWith(".service"));
+		},
+		/** The files a live unit really starts from: its effective start commands, environment files and the
+		 * running process's command line. Overridden drop-ins are not followed, so their old pins are not live. */
+		async startPaths(unit) {
+			const { stdout } = await exec(
+				"/usr/bin/systemctl",
+				[
+					"show",
+					unit,
+					"-p",
+					"ExecStart",
+					"-p",
+					"ExecStartPre",
+					"-p",
+					"EnvironmentFiles",
+					"-p",
+					"MainPID",
+				],
+				{ timeout: SYSTEMCTL_TIMEOUT_MS },
+			);
+			const paths = stdout.match(FILE_PATH) ?? [];
+			const pid = /^MainPID=(\d+)$/m.exec(stdout)?.[1];
+			if (pid && pid !== "0") {
+				const command = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "");
+				paths.push(...(command.replaceAll("\0", " ").match(FILE_PATH) ?? []));
+			}
+			return paths;
+		},
+	};
+}
 
-export async function tidy({ config, apply, lxd, systemd, now = Date.now(), removeFile = unlink }) {
+export const nodeSystemd = createNodeSystemd();
+
+export async function tidy({
+	config,
+	apply,
+	lxd,
+	systemd,
+	now = Date.now(),
+	removeFile = unlink,
+	readTraceFile = readBoundedTraceFile,
+}) {
 	const units = await systemd.units(config.unitPattern);
 	const starts = [];
 	for (const unit of units) starts.push(...(await systemd.startPaths(unit)));
 	for (const root of config.extraRoots) starts.push(...(await expand(root)));
 	// Launchers name their env file relative to a base folder, so a pin file is live when a live file names it.
 	const pinFiles = await expand(config.pinFiles);
-	const direct = [...(await trace(starts)).values()];
+	// WHY: Share only a file-read cache across both passes so files are read once without shrinking BFS depth from live pins.
+	const readCache = new Map();
+	const firstTrace = await trace(starts, readCache, readTraceFile);
+	const direct = [...firstTrace.values()];
 	const livePins = new Set(pinFiles.filter((path) => direct.some((text) => text.includes(basename(path)))));
-	const traced = await trace([...starts, ...livePins]);
+	const traced = livePins.size > 0 ? await trace([...starts, ...livePins], readCache, readTraceFile) : firstTrace;
 	const referenced = new Set();
 	for (const text of traced.values()) for (const match of text.match(FINGERPRINT) ?? []) referenced.add(match);
 	const envPins = [];
@@ -478,7 +544,7 @@ export async function tidy({ config, apply, lxd, systemd, now = Date.now(), remo
 		const resting = (await systemd.installedUnits(config.unitPattern)).filter((unit) => !units.includes(unit));
 		const restingStarts = [];
 		for (const unit of resting) restingStarts.push(...(await systemd.startPaths(unit)));
-		const restingTexts = [...(await trace(restingStarts)).values()];
+		const restingTexts = [...(await trace(restingStarts, readCache, readTraceFile)).values()];
 		held = envPins
 			.filter((pin) => restingTexts.some((text) => text.includes(basename(pin.path))))
 			.map((pin) => ({ fingerprint: pin.fingerprint, reason: "old lane pin, until archived" }));

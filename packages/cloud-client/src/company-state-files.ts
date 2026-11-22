@@ -141,7 +141,24 @@ export { AGENT_COLOURS, type AgentColour, companyPathKey, osPath, osRelative, QO
 export const AGENT_MODELS = Object.freeze(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] as const);
 /** Effort an agent or a routine may ask for; runs accept these three today. */
 export const COMPANY_STATE_EFFORTS = Object.freeze(["low", "medium", "high"] as const);
-export const ROUTINE_WHEN = Object.freeze(["every", "weekly", "window", "once", "file-change", "event"] as const);
+export const ROUTINE_WHEN = Object.freeze([
+	"every",
+	"weekly",
+	"window",
+	"once",
+	"file-change",
+	"event",
+	"code-change",
+	"app-unhealthy",
+	"data-change",
+] as const);
+export const ROUTINE_CODE_CHANGE_EVENTS = Object.freeze(["landed", "undone", "checks_failed", "conflict"] as const);
+export const ROUTINE_DATA_CHANGE_OPERATIONS = Object.freeze(["insert", "update", "delete"] as const);
+const CODE_CHANGE_REPO = /^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/;
+const APP_SITE_SLUG = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
+const DATA_CHANGE_DB = /^[a-z][a-z0-9_-]{0,63}$/;
+const DATA_CHANGE_TABLE = /^[a-z][a-z0-9_]{0,63}$/;
+const CHECK_PROBE_URL = /^https:\/\/[^/@\s\u0000-\u001f\u007f]+(?:\/[^\s\u0000-\u001f\u007f]*)?$/;
 
 /** A human task's statuses: the agent sets open, accepted, returned and cancelled; the person done
  * and declined (H2). */
@@ -393,6 +410,22 @@ export interface RuleFile {
 	readonly text: string;
 }
 
+export type RoutineCodeChangeEvent = (typeof ROUTINE_CODE_CHANGE_EVENTS)[number];
+export type RoutineDataChangeOperation = (typeof ROUTINE_DATA_CHANGE_OPERATIONS)[number];
+
+export type RoutineCheckBeforeWake =
+	| {
+			readonly kind: "http_probe";
+			readonly url: string;
+			readonly expectStatus?: number;
+			readonly timeoutMs?: number;
+	  }
+	| {
+			readonly kind: "code_checks";
+			readonly repo?: string;
+			readonly timeoutMs?: number;
+	  };
+
 export type RoutineTrigger =
 	| { readonly when: "every"; readonly minutes: number; readonly starts: string | null }
 	| {
@@ -414,7 +447,20 @@ export type RoutineTrigger =
 	| { readonly when: "once"; readonly at: string; readonly after?: string }
 	| { readonly when: "file-change"; readonly watch: string; readonly match: "exact" | "subtree" }
 	/** A delivery to one of the company's hooks or mailboxes (E2): `only` keeps the listed event types. */
-	| { readonly when: "event"; readonly hook: string; readonly only: readonly string[] | null };
+	| { readonly when: "event"; readonly hook: string; readonly only: readonly string[] | null }
+	| {
+			readonly when: "code-change";
+			readonly repo: string;
+			readonly events: readonly RoutineCodeChangeEvent[];
+			readonly paths: readonly string[] | null;
+	  }
+	| { readonly when: "app-unhealthy"; readonly site: string }
+	| {
+			readonly when: "data-change";
+			readonly database: string;
+			readonly tables: readonly string[] | null;
+			readonly operations: readonly RoutineDataChangeOperation[] | null;
+	  };
 
 export interface RoutineFile {
 	readonly kind: "routine";
@@ -422,6 +468,7 @@ export interface RoutineFile {
 	readonly title: string;
 	readonly status: "active" | "paused" | "concluded";
 	readonly trigger: RoutineTrigger;
+	readonly checkBeforeWake?: RoutineCheckBeforeWake;
 	readonly timezone: string | null;
 	readonly ends: string | null;
 	readonly runs: number | null;
@@ -1699,6 +1746,9 @@ const TRIGGER_KEYS = {
 	once: ["at", "after"],
 	"file-change": ["watch", "match"],
 	event: ["hook", "only"],
+	"code-change": ["repo", "events", "paths"],
+	"app-unhealthy": ["site"],
+	"data-change": ["database", "tables", "operations"],
 } as const;
 
 function routine(split: Split, fields: Fields, problems: Problems): RoutineFile | null {
@@ -1796,6 +1846,127 @@ function routine(split: Split, fields: Fields, problems: Problems): RoutineFile 
 			if (items.length > 20) problems.add("value", fields.line("only"), "only", "only lists at most 20 event types");
 		}
 		if (hook) trigger = { when, hook, only };
+	} else if (when === "code-change") {
+		const repo = fields.text("repo", true, 140);
+		if (repo !== null && !CODE_CHANGE_REPO.test(repo))
+			problems.add("value", fields.line("repo"), "repo", "repo is owner/name, like acme/web");
+		const eventItems = fields.list("events", true, false);
+		const events: RoutineCodeChangeEvent[] = [];
+		if (eventItems) {
+			for (const item of eventItems) {
+				if (!ROUTINE_CODE_CHANGE_EVENTS.includes(item.text as RoutineCodeChangeEvent))
+					problems.add(
+						"value",
+						item.line,
+						"events",
+						`events must be landed, undone, checks_failed or conflict, not ${shown(item.text)}`,
+					);
+				else if (events.includes(item.text as RoutineCodeChangeEvent))
+					problems.add("value", item.line, "events", `${shown(item.text)} is listed twice`);
+				else events.push(item.text as RoutineCodeChangeEvent);
+			}
+			if (eventItems.length < 1 || eventItems.length > 4)
+				problems.add("value", fields.line("events"), "events", "events lists 1 to 4 code change kinds");
+		}
+		let paths: string[] | null = null;
+		const pathItems = fields.list("paths", false, false);
+		if (pathItems) {
+			paths = [];
+			for (const item of pathItems) {
+				if (item.text.length < 1 || item.text.length > 256 || NOT_ONE_LINE.test(item.text))
+					problems.add("value", item.line, "paths", "each path glob is 1 to 256 characters on one line");
+				else if (paths.includes(item.text))
+					problems.add("value", item.line, "paths", `${shown(item.text)} is listed twice`);
+				else paths.push(item.text);
+			}
+			if (pathItems.length < 1 || pathItems.length > 20)
+				problems.add("value", fields.line("paths"), "paths", "paths lists 1 to 20 glob patterns");
+		}
+		if (repo && events.length > 0) trigger = { when, repo, events, paths };
+	} else if (when === "app-unhealthy") {
+		const site = fields.text("site", true, 48);
+		if (site !== null && !APP_SITE_SLUG.test(site) && !UUID.test(site))
+			problems.add("value", fields.line("site"), "site", "site is a hosted app slug or UUID");
+		if (site) trigger = { when, site };
+	} else if (when === "data-change") {
+		const database = fields.text("database", true, 64);
+		if (database !== null && !DATA_CHANGE_DB.test(database))
+			problems.add("value", fields.line("database"), "database", "database is a company database name");
+		let tables: string[] | null = null;
+		const tableItems = fields.list("tables", false, false);
+		if (tableItems) {
+			tables = [];
+			for (const item of tableItems) {
+				if (!DATA_CHANGE_TABLE.test(item.text))
+					problems.add("value", item.line, "tables", `invalid table name ${shown(item.text)}`);
+				else if (tables.includes(item.text))
+					problems.add("value", item.line, "tables", `${shown(item.text)} is listed twice`);
+				else tables.push(item.text);
+			}
+			if (tableItems.length < 1 || tableItems.length > 20)
+				problems.add("value", fields.line("tables"), "tables", "tables lists 1 to 20 table names");
+		}
+		let operations: RoutineDataChangeOperation[] | null = null;
+		const opItems = fields.list("operations", false, false);
+		if (opItems) {
+			operations = [];
+			for (const item of opItems) {
+				if (!ROUTINE_DATA_CHANGE_OPERATIONS.includes(item.text as RoutineDataChangeOperation))
+					problems.add("value", item.line, "operations", "operations must be insert, update or delete");
+				else if (operations.includes(item.text as RoutineDataChangeOperation))
+					problems.add("value", item.line, "operations", `${shown(item.text)} is listed twice`);
+				else operations.push(item.text as RoutineDataChangeOperation);
+			}
+			if (opItems.length < 1 || opItems.length > 3)
+				problems.add("value", fields.line("operations"), "operations", "operations lists 1 to 3 values");
+		}
+		if (database) trigger = { when, database, tables, operations };
+	}
+	let checkBeforeWake: RoutineCheckBeforeWake | undefined;
+	const checkKind = fields.has("check_kind")
+		? fields.choice("check_kind", false, ["http_probe", "code_checks"] as const)
+		: null;
+	if (checkKind === "http_probe") {
+		const url = fields.text("check_url", true, 1024);
+		if (url !== null && (url.length < 10 || !CHECK_PROBE_URL.test(url)))
+			problems.add(
+				"value",
+				fields.line("check_url"),
+				"check_url",
+				"check_url must be an https URL without credentials",
+			);
+		const expectStatus = fields.whole("check_expect_status", false, 100, 599);
+		const timeoutMs = fields.whole("check_timeout_ms", false, 500, 30000);
+		if (url) {
+			checkBeforeWake = {
+				kind: "http_probe",
+				url,
+				...(expectStatus === null ? {} : { expectStatus }),
+				...(timeoutMs === null ? {} : { timeoutMs }),
+			};
+		}
+	} else if (checkKind === "code_checks") {
+		const repo = fields.text("check_repo", false, 140);
+		if (repo !== null && !CODE_CHANGE_REPO.test(repo))
+			problems.add("value", fields.line("check_repo"), "check_repo", "check_repo is owner/name in lowercase");
+		const timeoutMs = fields.whole("check_timeout_ms", false, 1000, 300000);
+		checkBeforeWake = {
+			kind: "code_checks",
+			...(repo === null ? {} : { repo: repo.toLowerCase() }),
+			...(timeoutMs === null ? {} : { timeoutMs }),
+		};
+	} else {
+		for (const extra of ["check_url", "check_expect_status", "check_timeout_ms", "check_repo"] as const) {
+			if (fields.values.has(extra)) problems.add("value", fields.line(extra), extra, `${extra} requires check_kind`);
+		}
+	}
+	if (checkBeforeWake !== undefined && when !== null && when !== "every" && when !== "weekly" && when !== "window") {
+		problems.add(
+			"value",
+			fields.line("check_kind"),
+			"check_kind",
+			"check_kind is only supported on recurring scheduled routines",
+		);
 	}
 	const timezone = fields.timeZone("timezone", when !== null && when !== "every");
 	const ends = fields.instant("ends", false);
@@ -1840,6 +2011,7 @@ function routine(split: Split, fields: Fields, problems: Problems): RoutineFile 
 		title,
 		status,
 		trigger,
+		...(checkBeforeWake === undefined ? {} : { checkBeforeWake }),
 		timezone,
 		ends,
 		runs,
@@ -2881,6 +3053,46 @@ export function writeRoutineFile(file: Omit<RoutineFile, "kind">): string {
 		lines.push(["watch", companyStateValue(trigger.watch)], ["match", trigger.match]);
 	if (trigger.when === "event")
 		lines.push(["hook", trigger.hook], ["only", trigger.only ? listValue(trigger.only) : null]);
+	if (trigger.when === "code-change")
+		lines.push(
+			["repo", companyStateValue(trigger.repo)],
+			["events", listValue(trigger.events)],
+			["paths", trigger.paths ? listValue(trigger.paths) : null],
+		);
+	if (trigger.when === "app-unhealthy") lines.push(["site", companyStateValue(trigger.site)]);
+	if (trigger.when === "data-change")
+		lines.push(
+			["database", companyStateValue(trigger.database)],
+			["tables", trigger.tables ? listValue(trigger.tables) : null],
+			["operations", trigger.operations ? listValue(trigger.operations) : null],
+		);
+	if (file.checkBeforeWake) {
+		lines.push(["check_kind", file.checkBeforeWake.kind]);
+		if (file.checkBeforeWake.kind === "http_probe") {
+			lines.push(
+				["check_url", companyStateValue(file.checkBeforeWake.url)],
+				[
+					"check_expect_status",
+					file.checkBeforeWake.expectStatus === undefined ? null : String(file.checkBeforeWake.expectStatus),
+				],
+				[
+					"check_timeout_ms",
+					file.checkBeforeWake.timeoutMs === undefined ? null : String(file.checkBeforeWake.timeoutMs),
+				],
+			);
+		} else {
+			lines.push(
+				[
+					"check_repo",
+					file.checkBeforeWake.repo === undefined ? null : companyStateValue(file.checkBeforeWake.repo),
+				],
+				[
+					"check_timeout_ms",
+					file.checkBeforeWake.timeoutMs === undefined ? null : String(file.checkBeforeWake.timeoutMs),
+				],
+			);
+		}
+	}
 	lines.push(
 		["timezone", file.timezone],
 		["ends", file.ends],

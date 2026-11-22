@@ -106,28 +106,132 @@ docker pull -q "$NODE22_TEST_IMAGE"
 docker pull -q "$ENVOY_TEST_IMAGE"
 docker run --rm hello-world >/dev/null
 
-log "weekly Docker cleanup (stopped containers, unused networks, dangling images, build cache older than a week)"
-cat >/etc/systemd/system/test-machine-docker-prune.service <<'EOF'
+log "hourly disk, container, volume and cache cleanup (test-machine-tidy) + journald cap"
+install -d -m 0755 /etc/systemd/journald.conf.d
+cat >/etc/systemd/journald.conf.d/qorpera-test-machine.conf <<'EOF'
+[Journal]
+SystemMaxUse=200M
+EOF
+systemctl restart systemd-journald || true
+
+cat >/usr/local/sbin/qorpera-test-machine-tidy.sh <<'EOF'
+#!/bin/bash
+set -euo pipefail
+HOME_DIR="${QORPERA_TEST_HOME:-/home/tester}"
+KEEP_TREES="${QORPERA_TIDY_KEEP_TREES:-12}"
+STALE_CONTAINER_AGE_SEC="${QORPERA_TIDY_STALE_CONTAINER_AGE_SEC:-7200}"
+HOSTED_CONTAINER_AGE_SEC="${QORPERA_TIDY_HOSTED_CONTAINER_AGE_SEC:-21600}"
+RUN_AGE_HOURS="${QORPERA_TIDY_RUN_AGE_HOURS:-24}"
+TMP_AGE_MIN="${QORPERA_TIDY_TMP_AGE_MIN:-120}"
+BUILDER_UNTIL="${QORPERA_TIDY_BUILDER_UNTIL:-48h}"
+JOURNAL_MAX="${QORPERA_TIDY_JOURNAL_MAX:-200M}"
+log() { printf '[%s] test-machine-tidy: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+if command -v docker >/dev/null 2>&1; then
+	now=$(date +%s)
+	removed_ct=0
+	reap_older_than() {
+		local max_age="$1"
+		shift
+		local id created ts
+		for id in "$@"; do
+			[ -n "$id" ] || continue
+			created=$(docker inspect -f '{{.Created}}' "$id" 2>/dev/null || true)
+			[ -n "$created" ] || continue
+			ts=$(date -d "$created" +%s 2>/dev/null || echo "$now")
+			if [ $((now - ts)) -gt "$max_age" ]; then
+				if docker rm -f -v "$id" >/dev/null 2>&1; then
+					removed_ct=$((removed_ct + 1))
+				fi
+			fi
+		done
+	}
+	mapfile -t short_ids < <(
+		{
+			docker ps -aq --filter 'name=^cdgateway-' 2>/dev/null || true
+			docker ps -aq --filter 'name=^qext-' 2>/dev/null || true
+			docker ps -aq --filter 'status=exited' 2>/dev/null || true
+		} | sort -u
+	)
+	mapfile -t hosted_ids < <(
+		{
+			docker ps -aq --filter 'name=^qorpera-hosted-db-' 2>/dev/null || true
+			docker ps -aq --filter 'label=qorpera-run' 2>/dev/null || true
+		} | sort -u
+	)
+	reap_older_than "$STALE_CONTAINER_AGE_SEC" ${short_ids[@]+"${short_ids[@]}"}
+	reap_older_than "$HOSTED_CONTAINER_AGE_SEC" ${hosted_ids[@]+"${hosted_ids[@]}"}
+	vol_out=$(docker volume prune -f 2>/dev/null | tail -n 1 || true)
+	# WHY: Avoid `docker image prune --all` so pinned pre-pulled CI images remain cached on disk.
+	img_out=$(docker image prune -f 2>/dev/null | tail -n 1 || true)
+	bld_out=$(docker builder prune -f --filter "until=${BUILDER_UNTIL}" 2>/dev/null | tail -n 1 || true)
+	log "containers_reaped=${removed_ct} volumes='${vol_out}' images='${img_out}' builder='${bld_out}'"
+fi
+if [ -d "${HOME_DIR}/runs" ]; then
+	cutoff=$(date -u -d "-${RUN_AGE_HOURS} hours" +%Y%m%dT%H%M%S)
+	ps_snap=$(ps -ef 2>/dev/null || true)
+	removed_runs=0
+	for d in "${HOME_DIR}/runs"/*/; do
+		[ -d "$d" ] || continue
+		n=$(basename "$d")
+		if [[ "$n" =~ ^[0-9]{8}T[0-9]{6}- && "${n%%-*}" < "$cutoff" ]]; then
+			if ! printf '%s\n' "$ps_snap" | grep -Fq "$n"; then
+				rm -rf -- "$d" && removed_runs=$((removed_runs + 1))
+			fi
+		fi
+	done
+	log "runs_removed=${removed_runs}"
+fi
+if [ -d "${HOME_DIR}/trees" ]; then
+	removed_trees=0
+	while IFS= read -r lock_file; do
+		[ -f "$lock_file" ] || continue
+		if flock -n "$lock_file" rm -rf -- "${lock_file%.lock}" 2>/dev/null; then
+			rm -f -- "$lock_file"
+			removed_trees=$((removed_trees + 1))
+		fi
+	done < <(ls -t "${HOME_DIR}/trees"/*.lock 2>/dev/null | tail -n "+$((KEEP_TREES + 1))" || true)
+	for d in "${HOME_DIR}/trees"/*/; do
+		[ -d "$d" ] || continue
+		base="${d%/}"
+		if [ ! -e "${base}.lock" ] && [ -n "$(find "$base" -maxdepth 0 -mmin "+${TMP_AGE_MIN}" 2>/dev/null)" ]; then
+			rm -rf -- "$base" && removed_trees=$((removed_trees + 1))
+		fi
+	done
+	log "trees_removed=${removed_trees}"
+fi
+find /tmp -maxdepth 1 -mindepth 1 -mmin "+${TMP_AGE_MIN}" \
+	\( -name 'code-site-*' -o -name 'qorpera-runtime-bundle-test-*' -o -name 'qorpera-bench-*' \) \
+	-exec rm -rf -- {} + 2>/dev/null || true
+if command -v journalctl >/dev/null 2>&1; then
+	journalctl --vacuum-size="$JOURNAL_MAX" >/dev/null 2>&1 || true
+fi
+avail_root=$(df -Pm / | awk 'NR==2 {print $4}')
+avail_tmp=$(df -Pm /tmp | awk 'NR==2 {print $4}')
+log "done root_avail_mib=${avail_root} tmp_avail_mib=${avail_tmp}"
+EOF
+chmod 0755 /usr/local/sbin/qorpera-test-machine-tidy.sh
+
+cat >/etc/systemd/system/test-machine-tidy.service <<'EOF'
 [Unit]
-Description=Prune stopped containers, dangling images and old build cache (test machine)
+Description=Hourly disk, container, volume and cache cleanup (test machine)
 [Service]
 Type=oneshot
-# No --all: "until" compares an image's build time, not its last use, so --all would delete the pre-pulled
-# pinned images. Tagged images stay; only dangling ones go.
-ExecStart=/usr/bin/docker system prune --force --filter until=168h
-ExecStart=/usr/bin/docker builder prune --force --filter until=168h
+ExecStart=/usr/local/sbin/qorpera-test-machine-tidy.sh
 EOF
-cat >/etc/systemd/system/test-machine-docker-prune.timer <<'EOF'
+cat >/etc/systemd/system/test-machine-tidy.timer <<'EOF'
 [Unit]
-Description=Weekly Docker prune (test machine)
+Description=Hourly test machine tidy
 [Timer]
-OnCalendar=weekly
+OnCalendar=hourly
+RandomizedDelaySec=120
 Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+systemctl disable --now test-machine-docker-prune.timer 2>/dev/null || true
+rm -f /etc/systemd/system/test-machine-docker-prune.service /etc/systemd/system/test-machine-docker-prune.timer
 systemctl daemon-reload
-systemctl enable --now test-machine-docker-prune.timer fstrim.timer
+systemctl enable --now test-machine-tidy.timer fstrim.timer
 
 log "LXD 6.9 rev 40424 for nested tests; every snap held"
 if ! command -v snap >/dev/null; then apt-get install -yq snapd; fi

@@ -21,9 +21,12 @@ An image stays when any of these holds:
 - On a node agent node, it is named by the env file (`pinFiles`) that an installed but inactive unit still starts from:
   the old lane's disabled unit, kept for its rollback until it is archived. Other old env files hold nothing, and
   archiving the old units frees the rest.
-- A file that a live unit starts from names it. Those files are the effective `ExecStart`/`ExecStartPre`,
-  `EnvironmentFiles`, the running process's command line, the paths named inside those files (three levels) and the
-  `extraRoots`. Overridden drop-ins are not followed, so the pins of earlier cuts do not count as live.
+- A file that a live unit starts from names it. Live units are those in `active`, `activating`, `reloading`, or
+  `deactivating` state, plus `failed` units that are `enabled` or `enabled-runtime` (including instances of an enabled
+  template unit) so transient restart failures do not drop their images. Those files are the effective
+  `ExecStart`/`ExecStartPre`, `EnvironmentFiles`, the running process's command line, the paths named inside those files
+  (three levels) and the `extraRoots`. Overridden drop-ins are not followed, so the pins of earlier cuts do not count as
+  live.
 - It is an Ubuntu base image.
 - It was uploaded in the last `recentHours` (48). That covers an image a cut is importing.
 - A JSON hold file in optional `holdDir` (recommended: `/etc/qorpera-node-tidy.holds.d`, must live under `/etc` or `/opt`, root-owned, not group- or world-writable, e.g. `0755`/`0700` dir and `0644`/`0600` files; schema `qorpera.node-tidy-hold/v1`: `{ schema, fingerprint, reason, stagingFiles? }`) pins its 64-hex `fingerprint` across all projects and keeps any listed `stagingFiles` basenames even past `recentHours` / `stagingMaxAgeHours`. Release lanes or operators write hold files (atomically via `.tmp-*`, which tidy ignores) and must remove them once the cut lands or is abandoned: **holds never expire on their own**, so a forgotten hold keeps a ~1.8 GB image and its transfer tarball until removed.

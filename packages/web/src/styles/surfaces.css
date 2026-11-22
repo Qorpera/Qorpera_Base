@@ -4,7 +4,7 @@
 /* ---- rail ----------------------------------------------------------------------- */
 .rail-surfaces { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 4px 0 6px; }
 .rail-surfaces[hidden] { display: none; }
-.rail-surface-group, .surface-session { display: grid; grid-template-columns: minmax(0, 1fr); }
+.rail-surface-group { display: grid; grid-template-columns: minmax(0, 1fr); }
 .rail-surface-title { display: flex; align-items: center; justify-content: space-between; }
 .rail-surface-add {
 	display: grid; place-items: center; width: 22px; height: 22px; margin: -3px -2px -3px 0; padding: 0; border: 0;
@@ -55,27 +55,13 @@
 .rail-compact .rail-surface-group { justify-items: center; width: 100%; }
 .rail-compact .rail-surface-title,
 .rail-compact .rail-surface-text,
-.rail-compact .rail-surface-meta,
 .rail-compact .rail-surface-proposed,
-.rail-compact .surface-history-toggle,
-.rail-compact .surface-history-row,
-.rail-compact .surface-tree-empty,
-.rail-compact .surface-session-text,
-.rail-compact .surface-approve,
-.rail-compact .surface-reconcile,
 .rail-compact .surface-conflict-paths { display: none; }
 .rail-compact .rail-surface {
 	width: 56px; min-height: 56px; padding: 4px; justify-content: center; gap: 0;
 }
 .rail-compact .surface-tree {
 	margin: 2px 0 6px; padding-left: 0; border-left: 0; width: 100%; justify-items: center; gap: 4px;
-}
-.rail-compact .surface-session { justify-items: center; width: 100%; }
-.rail-compact .surface-session-head {
-	min-height: 40px; width: 44px; padding: 0; justify-content: center; gap: 0;
-}
-.rail-compact .surface-session-main {
-	flex: none; min-height: 40px; width: 40px; padding: 4px; justify-content: center; gap: 0;
 }
 .rail-compact .rail-surface-members { justify-items: center; width: 100%; gap: 4px; padding: 2px 0; }
 .rail-compact .rail-surface-members .rail-row {
@@ -155,35 +141,40 @@
 .rail-surface-members .rail-row-stand { width: 34px; height: 34px; }
 .rail-surface-members .person-avatar { width: 30px; height: 30px; font-size: 11.5px; }
 
-/* A surface's identity tile: a soft squircle in its own colour with a crisp emblem in that colour, deepened on light
- * themes and brightened on dark ones by mixing toward the text colour. */
 .surface-tile {
 	--tile-size: 48px;
 	position: relative; display: grid; place-items: center; width: var(--tile-size); height: var(--tile-size); flex: none;
-	border-radius: 13px; background: color-mix(in srgb, var(--surface-tint, var(--text)) 14%, transparent);
-	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--surface-tint, var(--text)) 22%, transparent);
-	transition: background-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, transform var(--motion-base) var(--ease-spring);
 }
-.surface-tile .interface-emblem { --emblem-ink: color-mix(in srgb, var(--surface-tint, var(--text)) 84%, var(--text)); }
-:root[data-theme="dark"] .surface-tile { background: color-mix(in srgb, var(--surface-tint, var(--text)) 22%, transparent); }
-.surface-tile.is-tiny { --tile-size: 20px; border-radius: 6px; }
-.surface-tile.is-small { --tile-size: 28px; border-radius: 8px; }
-.surface-tile.is-bar { --tile-size: 26px; border-radius: 8px; }
-.surface-tile.is-sheet { --tile-size: 34px; border-radius: 10px; }
-.surface-tile.is-hero { --tile-size: 64px; border-radius: 18px; }
+.surface-tile.is-tiny { --tile-size: 20px; }
+.surface-tile.is-small { --tile-size: 28px; }
+.surface-tile.is-bar { --tile-size: 26px; }
+.surface-tile.is-sheet { --tile-size: 34px; }
+.surface-tile.is-hero { --tile-size: 64px; }
+.surface-figure { position: relative; display: block; width: 100%; height: 100%; }
+.surface-figure-body { position: absolute; inset: 0; transform-origin: 50% 92%; }
+.surface-figure-art { position: absolute; inset: 0; display: block; width: 100%; height: 100%; user-select: none; -webkit-user-drag: none; }
+.surface-figure-eyes { position: absolute; inset: 0; animation: surface-figure-glance 9s var(--figure-phase, 0s) ease-in-out infinite; }
+.surface-figure-eye { position: absolute; transform: translate(-50%, -50%) rotate(var(--turn, 0deg)); }
+.surface-figure-eye > i {
+	display: block; width: 100%; height: 100%; border-radius: 999px; background: #fff;
+	animation: surface-figure-blink 6.4s var(--figure-phase, 0s) infinite;
+}
+.surface-figure.is-working .surface-figure-body { animation: surface-figure-breathe 3.6s ease-in-out infinite; }
+.surface-figure.is-working .surface-figure-eyes { animation: surface-figure-toward 7s var(--figure-phase, 0s) ease-in-out infinite; }
+@keyframes surface-figure-blink { 0%, 94%, 100% { transform: scaleY(1); } 96.5% { transform: scaleY(0.12); } }
+@keyframes surface-figure-glance {
+	0%, 18% { transform: none; } 24%, 52% { transform: translate(3.5%, -1%); } 58%, 74% { transform: translate(-2.5%, 1%); }
+	80%, 100% { transform: none; }
+}
+@keyframes surface-figure-toward { 0%, 10% { transform: none; } 18%, 60% { transform: translate(6%, 0.5%); } 68%, 100% { transform: none; } }
+@keyframes surface-figure-breathe { 50% { transform: scale(1.025, 0.985); } }
 .rail-surface {
 	display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 7px 10px; border-radius: 13px;
 	color: var(--text); text-decoration: none; -webkit-font-smoothing: auto;
 	transition: background-color var(--motion-fast) ease;
 }
 .rail-surface:hover { background: var(--rail-hover); text-decoration: none; }
-.rail-surface:hover .surface-tile { transform: scale(1.04); }
-/* WHY: Selection is a soft wash so the emblem keeps its ink (interfaces.css, Jonas 12 Nov 2026). */
 .rail-surface.active { background: color-mix(in srgb, var(--text) 7%, transparent); }
-.rail-surface.active .surface-tile {
-	background: color-mix(in srgb, var(--surface-tint, var(--text)) 20%, transparent);
-	box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--surface-tint, var(--text)) 38%, transparent);
-}
 .rail-surface-text { display: grid; flex: 1; min-width: 0; gap: 2px; }
 .rail-surface-name {
 	min-width: 0; overflow: hidden; color: var(--text); font-size: 14.5px; font-weight: 660; line-height: 20px;
@@ -192,14 +183,6 @@
 .rail-surface-sub {
 	min-width: 0; overflow: hidden; color: var(--rail-small); font-size: 12.5px; font-weight: 450; line-height: 17px;
 	text-overflow: ellipsis; white-space: nowrap;
-}
-.rail-surface-meta {
-	display: flex; align-items: center; gap: 6px; color: var(--rail-small); font-size: 11.5px; font-weight: 500;
-	font-variant-numeric: tabular-nums;
-}
-.rail-surface-working {
-	width: 8px; height: 8px; border-radius: 50%; background: var(--surface-tint, var(--sidebar-selection));
-	animation: surface-breathe 1.6s ease-in-out infinite;
 }
 @keyframes surface-breathe { 50% { opacity: 0.35; transform: scale(0.8); } }
 .rail-surface-proposed {
@@ -223,41 +206,16 @@
 .rail-proposed-btn.is-approve:hover:not(:disabled) { background: var(--agent-active); color: #fff; }
 .rail-proposed-btn.is-dismiss:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
 .rail-proposed-btn:disabled { opacity: 0.45; cursor: default; }
-.surface-attention { width: 7px; height: 7px; border-radius: 50%; background: var(--rail-waiting); }
 
 .surface-tree {
 	display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 2px 0 10px 33px; padding-left: 10px;
 	border-left: 1.5px solid color-mix(in srgb, var(--surface-tint, var(--text)) 18%, transparent);
 }
-.surface-tree-empty { margin: 6px 8px; color: var(--rail-small); font-size: 12px; }
-.surface-session-head {
-	display: flex; align-items: center; gap: 2px; min-height: 44px; padding-right: 6px; border-radius: 10px;
-	transition: background-color var(--motion-fast) ease;
+.rail-surface-sub.rail-surface-crew { display: flex; align-items: center; gap: 2px; min-height: 22px; overflow: visible; }
+.surface-crew.is-mini.is-highlighted { border-radius: 50%; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
+.rail-surface-crew-more {
+	margin-left: 4px; color: var(--rail-small); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums;
 }
-.surface-session-head:hover { background: var(--rail-hover); }
-.surface-session.is-selected > .surface-session-head { background: color-mix(in srgb, var(--rail-selection) 13%, transparent); }
-.surface-session.is-highlighted > .surface-session-head {
-	background: color-mix(in srgb, var(--accent) 13%, transparent);
-	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
-}
-.surface-session-main {
-	flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 5px 4px 5px 4px;
-	border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer;
-	-webkit-font-smoothing: auto;
-}
-span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding-left: 8px; font-size: 12.5px; font-weight: 600; }
-.surface-session-text { display: grid; flex: 1; min-width: 0; gap: 1px; }
-.surface-session-title {
-	flex: 1; min-width: 0; overflow: hidden; font-size: 13px; font-weight: 620; line-height: 18px;
-	text-overflow: ellipsis; white-space: nowrap;
-}
-.surface-session-status {
-	min-width: 0; overflow: hidden; color: var(--rail-small); font-size: 11.5px; font-weight: 500; line-height: 15px;
-	text-overflow: ellipsis; white-space: nowrap;
-}
-.surface-session.is-running .surface-session-status { color: var(--text-muted); }
-.surface-session.is-conflicted .surface-session-status { color: var(--danger); }
-.surface-session-meta { flex: none; color: var(--rail-small); font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
 
 /* An agent figure owns each session: its stand is the row's anchor, the figure itself the live state. */
 .surface-crew { position: relative; display: grid; place-items: center; width: var(--crew-size, 32px); height: var(--crew-size, 32px); flex: none; }
@@ -276,12 +234,12 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-crew-pip .icon { width: 9px; height: 9px; stroke-width: 3; }
 .surface-crew.is-large .surface-crew-pip { width: 17px; height: 17px; box-shadow: 0 0 0 2px var(--bg); }
 .surface-changes { display: grid; grid-template-columns: minmax(0, 1fr); padding: 1px 0 4px; }
-.surface-change, .surface-variant, .surface-history-row {
+.surface-change, .surface-variant {
 	display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 6px 0 46px; border-radius: 8px;
 	color: var(--text); font-size: 12.5px;
 }
 .surface-change-bullet { width: 6px; height: 6px; flex: none; margin: 0 9px; border-radius: 50%; background: color-mix(in srgb, var(--text) 30%, transparent); }
-.surface-change:hover, .surface-variant:hover, .surface-history-row:hover { background: var(--rail-hover); }
+.surface-change:hover, .surface-variant:hover { background: var(--rail-hover); }
 .surface-change-copy { display: grid; flex: 1; min-width: 0; gap: 1px; padding: 3px 0; }
 .surface-change-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .surface-change-paths {
@@ -294,14 +252,6 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-change.is-hidden .surface-change-title, .surface-change.is-merged .surface-change-title { color: var(--rail-small); }
 .surface-change.is-conflicted { align-items: center; }
 .surface-change.is-conflicted .surface-change-title { color: var(--text); }
-.surface-reconcile {
-	flex: none; height: 21px; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-	border-radius: 999px; background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger);
-	font: inherit; font-size: 11px; font-weight: 650; white-space: nowrap; cursor: pointer;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
-}
-.surface-reconcile:hover:not(:disabled) { background: var(--danger); color: #fff; }
-.surface-reconcile:disabled { opacity: 0.5; cursor: default; }
 .surface-change-mark { display: grid; place-items: center; width: 24px; color: var(--agent-active); }
 .surface-change-mark .icon { width: 12px; height: 12px; stroke-width: 2.6; }
 .surface-change-merged { color: var(--agent-active); font-size: 11px; font-weight: 600; }
@@ -314,32 +264,12 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-variant[aria-checked="true"] .surface-radio { box-shadow: inset 0 0 0 4px var(--rail-selection); }
 .surface-overview-option[aria-checked="true"] .surface-radio { box-shadow: inset 0 0 0 4px var(--sidebar-selection); }
 .surface-variant-foot { display: flex; gap: 2px; padding: 2px 0 2px 40px; }
-.surface-mini {
-	display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border: 0; border-radius: 999px;
-	background: none; color: var(--rail-small); font: inherit; font-size: 11px; font-weight: 600; white-space: nowrap; cursor: pointer;
-}
-.surface-mini:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
-.surface-mini .icon { width: 12px; height: 12px; }
-.surface-history-toggle {
-	display: flex; align-items: center; gap: 7px; width: 100%; height: 32px; padding: 0 8px; border: 0; border-radius: 8px;
-	background: none; color: var(--rail-small); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
-}
-.surface-history-toggle:hover { background: var(--rail-hover); }
-.surface-history-toggle .icon { width: 13px; height: 13px; }
-.surface-history-count { margin-left: auto; font-weight: 500; }
-.surface-history-row .surface-mini { opacity: 0; }
-.surface-history-row:hover .surface-mini, .surface-history-row .surface-mini:focus-visible { opacity: 1; }
 
-.surface-approve, .surface-chevron {
+.surface-chevron {
 	display: grid; place-items: center; width: 24px; height: 24px; flex: none; border: 0; border-radius: 50%;
 	background: none; color: var(--rail-small); cursor: pointer;
 }
-.surface-approve.is-action { opacity: 1; background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text); }
-.surface-approve.is-action:hover { background: var(--primary); color: var(--on-primary); }
-.surface-approve { opacity: 0; transition: opacity var(--motion-fast) ease, background-color var(--motion-fast) ease; }
-.surface-session-head:hover .surface-approve, .surface-change:hover .surface-approve, .surface-approve:focus-visible { opacity: 1; }
-.surface-approve:hover { background: var(--agent-active); color: #fff; }
-.surface-approve .icon, .surface-chevron .icon { width: 12px; height: 12px; stroke-width: 2.4; }
+.surface-chevron .icon { width: 12px; height: 12px; stroke-width: 2.4; }
 .surface-chevron { border-radius: 6px; transition: transform var(--motion-base) var(--ease-spring); }
 .surface-chevron[aria-expanded="true"] { transform: rotate(90deg); }
 
@@ -516,6 +446,9 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-publish-main { padding: 0 5px 0 10px; border-radius: 999px 0 0 999px; }
 .surface-publish-main:disabled { cursor: default; color: var(--text-soft); }
 .surface-publish.has-changes .surface-publish-main:disabled { color: inherit; opacity: 0.7; }
+.surface-publish.has-changes .surface-state.is-running {
+	background: conic-gradient(currentColor 0 28%, color-mix(in srgb, currentColor 24%, transparent) 0);
+}
 .surface-publish-menu { padding: 0 7px 0 2px; border-radius: 0 999px 999px 0; opacity: 0.7; }
 .surface-publish-menu:hover { opacity: 1; }
 .surface-publish-menu .icon { width: 13px; height: 13px; }
@@ -574,6 +507,10 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	animation: surface-agent-nudge 2.2s ease-in-out infinite;
 }
 .surface-bar-agent.is-ready { border-color: color-mix(in srgb, var(--text) 12%, transparent); }
+.surface-bar-agent.is-highlighted {
+	border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+	background: color-mix(in srgb, var(--accent) 13%, var(--bg));
+}
 .surface-bar-agent .surface-crew { --crew-size: 24px; width: 24px; height: 24px; }
 .surface-bar-agent-count {
 	min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--sidebar-selection); color: #fff;
@@ -960,29 +897,6 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	border-color: color-mix(in srgb, var(--text) 18%, transparent); color: var(--text); text-decoration: none;
 }
 .surface-file-chip.is-more { font-family: inherit; font-weight: 620; color: var(--text-soft); }
-.surface-drawer-source {
-	flex: none; padding: 9px 12px 11px; border-top: 1px solid color-mix(in srgb, var(--text) 7%, transparent);
-}
-.surface-drawer-source[hidden] { display: none; }
-.surface-source-pill {
-	display: flex; align-items: center; gap: 7px; width: 100%; min-width: 0; height: 28px; padding: 0 9px;
-	border: 1px solid color-mix(in srgb, var(--text) 8%, transparent); border-radius: 999px;
-	background: color-mix(in srgb, var(--text) 2.5%, var(--bg)); color: var(--text-muted);
-	font-size: 11.5px; text-decoration: none; cursor: pointer;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease;
-}
-.surface-source-pill:hover {
-	background: color-mix(in srgb, var(--text) 5.5%, var(--bg));
-	border-color: color-mix(in srgb, var(--text) 16%, transparent); color: var(--text); text-decoration: none;
-}
-.surface-source-pill .icon { width: 13px; height: 13px; flex: none; color: var(--text-soft); }
-.surface-source-path {
-	flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-	font-family: var(--mono); font-size: 11px; color: var(--text-muted);
-}
-.surface-source-pill:hover .surface-source-path { color: var(--text); }
-.surface-source-link { flex: none; font-size: 11px; font-weight: 600; color: var(--text-soft); }
-.surface-source-pill:hover .surface-source-link { color: var(--text); }
 .surface-overview-change:hover { background: color-mix(in srgb, var(--text) 3.5%, transparent); }
 .surface-overview-change.is-conflicted { background: color-mix(in srgb, var(--danger) 6%, transparent); padding-inline: 6px; }
 .surface-overview-change-title { flex: 1; min-width: 0; line-height: 16.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1303,22 +1217,15 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	background: color-mix(in srgb, var(--text) 2%, var(--bg));
 }
 .surface-create-custom[hidden] { display: none; }
-.surface-create-custom-row { display: flex; align-items: flex-start; gap: 14px; }
-.surface-create-custom-tile .surface-tile { --tile-size: 52px; border-radius: 15px; }
-.surface-create-custom-picks { display: grid; flex: 1; min-width: 0; gap: 10px; }
-.surface-create-swatches, .surface-create-emblems { display: flex; flex-wrap: wrap; gap: 6px; }
-.surface-create-swatch {
-	width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: var(--swatch); cursor: pointer;
-	box-shadow: inset 0 0 0 1px rgb(0 0 0 / 10%); transition: box-shadow var(--motion-fast) ease;
+.surface-figure-choices { display: flex; flex-wrap: wrap; gap: 4px; }
+.context-panel:has(> .surface-figure-choices) { width: 324px; }
+.surface-figure-choice {
+	display: grid; place-items: center; width: 46px; height: 46px; padding: 3px; border: 1px solid transparent; border-radius: 12px;
+	background: none; cursor: pointer; transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
 }
-.surface-create-swatch[aria-checked="true"] { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--swatch); }
-.surface-create-emblem-choice {
-	display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 1px solid transparent; border-radius: 9px;
-	background: color-mix(in srgb, var(--text) 4%, transparent); cursor: pointer;
-}
-.surface-create-emblem-choice .interface-emblem { --emblem-ink: var(--text-muted); }
-.surface-create-emblem-choice[aria-checked="true"] { border-color: var(--border-strong); background: var(--bg); }
-.surface-create-emblem-choice[aria-checked="true"] .interface-emblem { --emblem-ink: var(--text); }
+.surface-figure-choice .surface-tile { --tile-size: 38px; }
+.surface-figure-choice[aria-checked="true"] { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
+.surface-figure-choice:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .surface-create-seg { justify-self: start; }
 .surface-create-card:hover { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 3.5%, var(--bg)); }
 .surface-create-card.is-selected {
@@ -1339,6 +1246,7 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 	gap: 24px;
 }
 .studio-head {
+	position: relative;
 	display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 14px;
 	border-bottom: 1px solid var(--border);
 }
@@ -1353,6 +1261,59 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 }
 .studio-badge.is-live { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
 .studio-badge.is-conflict { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.studio-updating-pill {
+	display: inline-flex; align-items: center; gap: 6px; flex: none; height: 22px; padding: 0 9px; border-radius: 999px;
+	background: color-mix(in srgb, var(--studio-brand-accent, var(--sidebar-selection)) 11%, transparent);
+	color: var(--studio-brand-accent, var(--sidebar-selection)); font-size: 11.5px; font-weight: 600; white-space: nowrap;
+}
+.studio-updating-pill .surface-state.is-running {
+	background: conic-gradient(currentColor 0 28%, color-mix(in srgb, currentColor 18%, transparent) 0);
+}
+.surface-studio.is-updating .studio-head::after,
+.surface-report.is-updating .report-chrome::after {
+	content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; border-radius: 999px;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		color-mix(in srgb, var(--studio-brand-accent, var(--sidebar-selection)) 86%, transparent) 50%,
+		transparent 100%
+	);
+	background-size: 42% 100%; background-repeat: no-repeat; pointer-events: none;
+	animation: studio-progress 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes studio-progress {
+	0% { background-position: -65% 0; }
+	100% { background-position: 165% 0; }
+}
+.studio-grid, .report-layout { transition: opacity var(--motion-base) ease; }
+.surface-studio.is-updating .studio-grid,
+.surface-report.is-updating .report-layout { opacity: 0.8; }
+.surface-studio.is-updating .studio-live-dot { animation: surface-breathe 1.1s ease-in-out infinite; }
+.surface-studio.is-updating :is(.studio-swatch, .studio-doc, .studio-vendor-card) {
+	position: relative; overflow: hidden;
+}
+.surface-studio.is-updating :is(.studio-swatch, .studio-doc, .studio-vendor-card)::after {
+	content: ""; position: absolute; inset: 0; pointer-events: none;
+	background: linear-gradient(
+		105deg,
+		transparent 30%,
+		color-mix(in srgb, var(--bg) 42%, transparent) 50%,
+		transparent 70%
+	);
+	transform: translateX(-100%);
+	animation: studio-shimmer 1.35s ease-in-out infinite;
+}
+@keyframes studio-shimmer {
+	to { transform: translateX(100%); }
+}
+.surface-studio.is-settled .studio-grid,
+.surface-report.is-settled .report-layout {
+	animation: studio-settle 0.36s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes studio-settle {
+	from { opacity: 0.82; transform: translateY(2px); }
+	to { opacity: 1; transform: translateY(0); }
+}
 .studio-sync-btn { display: inline-flex; align-items: center; gap: 6px; }
 .studio-sync-btn .icon { width: 13px; height: 13px; }
 .studio-conflict {
@@ -1419,11 +1380,32 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .studio-doc-body { font-size: 14px; line-height: 1.6; color: var(--text); }
 .studio-doc-body > :first-child { margin-top: 0; }
 .studio-doc-body > :last-child { margin-bottom: 0; }
-.studio-code {
-	margin: 0; padding: 12px 14px; overflow-x: auto; border-radius: 10px;
-	background: color-mix(in srgb, var(--text) 4%, var(--bg)); color: var(--text); font-family: var(--mono);
-	font-size: 12.5px; line-height: 1.5;
+.studio-plain-text { white-space: pre-wrap; }
+.studio-html-card {
+	padding: 18px 20px; border: 1px solid var(--border); border-radius: 16px;
+	background: color-mix(in srgb, var(--text) 1.5%, var(--bg));
 }
+.studio-html-card.is-changed { border-color: color-mix(in srgb, var(--accent) 36%, transparent); }
+.studio-html-frame {
+	display: block; width: 100%; height: min(640px, 68dvh); border: 1px solid var(--border);
+	border-radius: 12px; background: #fff; color-scheme: light;
+}
+.studio-html-frame.is-compare { height: min(440px, 52dvh); }
+.studio-html-fallback { margin: 0; color: var(--text-muted); font-size: 13px; }
+.studio-svg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.studio-svg-card {
+	margin: 0; display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 14px;
+	background: color-mix(in srgb, var(--text) 1.5%, var(--bg));
+}
+.studio-svg-card.is-changed { border-color: color-mix(in srgb, var(--accent) 36%, transparent); }
+.studio-svg-stage {
+	display: grid; place-items: center; min-height: 112px; padding: 16px; border-radius: 10px;
+	background: color-mix(in srgb, var(--text) 3%, var(--bg));
+}
+.studio-svg-img { display: block; max-width: 100%; max-height: 96px; object-fit: contain; }
+.studio-svg-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; }
+.studio-changed-paths { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.studio-changed-paths li { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .studio-empty {
 	display: grid; flex: 1; place-content: center; justify-items: center; gap: 10px; padding: 56px 24px;
 	color: var(--text-muted); text-align: center;
@@ -1446,14 +1428,10 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .studio-tab:hover { color: var(--text); border-color: color-mix(in srgb, var(--text) 20%, transparent); }
 .studio-tab.is-on { background: var(--primary); border-color: transparent; color: var(--on-primary); }
 
-/* Identity studio: global reach strip linking to every downstream surface inheriting tokens, voice & philosophy. */
-.studio-reach {
-	display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 16px;
-	background: color-mix(in srgb, var(--text) 2%, var(--bg));
-}
-.studio-reach-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
-.studio-reach-head h2 { margin: 0; font-size: 13.5px; font-weight: 660; color: var(--text); }
-.studio-reach-sub { margin: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.45; }
+.studio-reach { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 12.5px; }
+.studio-reach-label { color: var(--text-soft); }
+.studio-reach .studio-reach-chip { height: 26px; padding: 0 2px; border: 0; background: none; gap: 7px; }
+.studio-reach .studio-reach-chip:hover { background: none; transform: none; text-decoration: underline; text-underline-offset: 3px; }
 .studio-reach-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .studio-reach-chip {
 	display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px 0 6px;
@@ -1466,9 +1444,6 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 }
 .studio-reach-chip.is-compact {
 	gap: 6px; height: 26px; padding: 0 9px 0 4px; font-size: 11.5px; font-weight: 580;
-}
-.studio-link-flow {
-	display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
 }
 .studio-live-dot {
 	width: 6px; height: 6px; border-radius: 50%; flex: none;
@@ -1806,7 +1781,6 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .studio-compare-cell.is-preview {
 	border-left: 1px solid var(--border); background: color-mix(in srgb, var(--accent) 4%, var(--bg)); color: var(--text);
 }
-.surface-exploration-trigger { cursor: pointer; }
 
 /* Framed thread pages matching the rounded surface canvas with a subtle warm-grey tint and the same floating glass composer. */
 .frame:has(.rail.has-surface-rail) .main { background: var(--bg); }
@@ -1958,6 +1932,11 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .surface-thread-jump-dot.is-attention { background: var(--warning); }
 
 @media (prefers-reduced-motion: reduce) {
-	.surface-state.is-running, .surface-ring, .surface-toast, .rail-surface-working, .surface-bar-agent.is-attention, .surface-thread-jump-dot.is-running { animation: none; }
-	.rail-surface:hover .surface-tile, .surface-bar-agent:hover, .surface-bar-explore:hover, .surface-thread-jump-chip:hover { transform: none; }
+	.surface-state.is-running, .surface-ring, .surface-toast, .surface-bar-agent.is-attention, .surface-thread-jump-dot.is-running,
+	.surface-studio.is-updating .studio-head::after, .surface-report.is-updating .report-chrome::after,
+	.surface-studio.is-updating .studio-live-dot,
+	.surface-studio.is-updating :is(.studio-swatch, .studio-doc, .studio-vendor-card)::after,
+	.surface-studio.is-settled .studio-grid, .surface-report.is-settled .report-layout { animation: none; }
+	.surface-figure-body, .surface-figure-eyes, .surface-figure-eye > i { animation: none; }
+	.surface-bar-agent:hover, .surface-bar-explore:hover, .surface-thread-jump-chip:hover { transform: none; }
 }

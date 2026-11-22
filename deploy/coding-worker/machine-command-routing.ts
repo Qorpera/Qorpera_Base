@@ -215,6 +215,16 @@ function anyTold(asked: readonly Promise<boolean>[]): Promise<boolean> {
 	});
 }
 
+function pointerHoldKey(
+	tokenSha256: string,
+	companyId: string,
+	machineId: string,
+	isPrivate: boolean,
+	generation: number,
+): string {
+	return `${tokenSha256}\0${companyId}\0${machineId}\0${isPrivate ? 1 : 0}\0${generation}`;
+}
+
 /** Like coding commands: SQL names the machine's executor, and only an owner
  * in this deployment's peer allowlist is ever a destination. */
 export class MachineCommandRouter {
@@ -222,11 +232,12 @@ export class MachineCommandRouter {
 	/** What each peer said it takes for a page of a command's log (keyholes S1), learned from its answers. */
 	readonly #pages = new CloudCommandPages();
 	readonly #pointers = new Map<string, MemberPointerPass>();
+	readonly #pointersByHold = new Map<string, Set<MemberPointerPass>>();
 	readonly #streamTickets = new Map<string, MemberStreamTicket>();
 	readonly #streamsOpen = new Set<{ readonly userId: string; readonly machineId: string }>();
 	/** The pointer begins on their way (by the sha-256 of their token), and the current second's count. */
 	readonly #beginsInFlight = new Set<string>();
-	#beginSecond = 0;
+	#beginSecond = -1;
 	#begunInSecond = 0;
 	constructor(options: MachineCommandRouterOptions) {
 		this.#options = { ...options, peers: options.peers.map((peer) => Object.freeze({ ...peer })) };
@@ -590,7 +601,8 @@ export class MachineCommandRouter {
 		if ("begin" in request) {
 			if (!this.#options.memberPointerBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 			const tokenSha256 = sha256(request.token);
-			const second = Math.floor(Date.now() / 1000);
+			// WHY: Use monotonic performance.now() so NTP wall-clock jumps cannot disable rate limiting.
+			const second = Math.floor(performance.now() / 1000);
 			if (second !== this.#beginSecond) {
 				this.#beginSecond = second;
 				this.#begunInSecond = 0;
@@ -609,7 +621,12 @@ export class MachineCommandRouter {
 				if (authority.machineId !== request.machineId) throw new Error("MEMBER_POINTER_AUTHORITY_INVALID");
 				const kept = this.#keepPointer(authority, request.companyId, tokenSha256, askedAt);
 				// What is left of it now, not what SQL said before its answer travelled.
-				return { pass: passId, milliseconds: Math.floor(kept.until - performance.now()) };
+				const remaining = Math.floor(kept.until - performance.now());
+				if (remaining < 1) {
+					this.#deletePointer(authority.passId);
+					throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
+				}
+				return { pass: passId, milliseconds: remaining };
 			} finally {
 				this.#beginsInFlight.delete(tokenSha256);
 			}
@@ -628,7 +645,7 @@ export class MachineCommandRouter {
 				fetch: this.#options.fetch }).memberPointer({ passId: request.pass, x: request.x, y: request.y }, signal);
 		} catch (error) {
 			// The machine's node refused the pass's moves for good: it is forgotten here too, and the window begins another.
-			if (error instanceof CloudMemberMachinePointerRefusal) this.#pointers.delete(request.pass);
+			if (error instanceof CloudMemberMachinePointerRefusal) this.#deletePointer(request.pass);
 			throw error;
 		}
 	}
@@ -652,7 +669,7 @@ export class MachineCommandRouter {
 			return await this.#options.memberPointerLocal(kept.authority, x, y, signal);
 		} catch (error) {
 			// The host refused the pass's moves (a private hold since, the screen off, a restart): forgotten.
-			if (error instanceof CloudMemberMachinePointerRefusal) this.#pointers.delete(kept.authority.passId);
+			if (error instanceof CloudMemberMachinePointerRefusal) this.#deletePointer(kept.authority.passId);
 			throw error;
 		}
 	}
@@ -670,7 +687,7 @@ export class MachineCommandRouter {
 			kept.authority.machineId !== request.machineId || kept.authority.private !== isPrivate ||
 			kept.authority.generation !== ("epoch" in hold ? hold.seat : hold.generation))
 			throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
-		const now = Date.now();
+		const now = performance.now();
 		for (const [ticket, asked] of this.#streamTickets) if (asked.until <= now) this.#streamTickets.delete(ticket);
 		while (this.#streamTickets.size >= MEMBER_STREAM_TICKETS) {
 			const oldest = this.#streamTickets.keys().next().value;
@@ -696,7 +713,7 @@ export class MachineCommandRouter {
 	admitMemberStream(ticket: string, origin: string): CloudMemberMachineStreamRun | null {
 		const asked = this.#streamTickets.get(ticket);
 		this.#streamTickets.delete(ticket);
-		if (!asked || asked.until <= Date.now() || asked.origin !== origin) return null;
+		if (!asked || asked.until <= performance.now() || asked.origin !== origin) return null;
 		const open = [...this.#streamsOpen];
 		if (open.filter((one) => one.userId === asked.userId).length >= MEMBER_STREAMS_PER_MEMBER ||
 			open.filter((one) => one.machineId === asked.machineId).length >= MEMBER_STREAMS_PER_MACHINE)
@@ -711,8 +728,10 @@ export class MachineCommandRouter {
 		}, 10_000);
 		unused.unref?.();
 		return async (sink, signal) => {
-			ran = true;
 			globalThis.clearTimeout(unused);
+			// WHY: If the 10s admission timeout already reclaimed this slot, refuse late execution so concurrency limits cannot be bypassed.
+			if (!this.#streamsOpen.has(opened)) return "STREAM_UNAVAILABLE";
+			ran = true;
 			const stop = new AbortController();
 			let lapsed = false;
 			const forward = (): void => stop.abort(signal.reason);
@@ -769,22 +788,46 @@ export class MachineCommandRouter {
 		return this.#options.memberStreamLocal({ placementId: authority.placementId, bootId: authority.bootId,
 			userId: authority.userId, generation: authority.generation, epoch: request.epoch }, sink, signal);
 	}
+	#deletePointer(passId: string): void {
+		const kept = this.#pointers.get(passId);
+		if (!kept) return;
+		this.#pointers.delete(passId);
+		if (kept.tokenSha256 !== null && kept.companyId !== null) {
+			const key = pointerHoldKey(
+				kept.tokenSha256,
+				kept.companyId,
+				kept.authority.machineId,
+				kept.authority.private,
+				kept.authority.generation,
+			);
+			const bucket = this.#pointersByHold.get(key);
+			if (bucket) {
+				bucket.delete(kept);
+				if (bucket.size === 0) this.#pointersByHold.delete(key);
+			}
+		}
+	}
 	/** The member's newest live pointer pass of the stream's hold, on this executor; none when it ran out. */
 	#streamPass(asked: MemberStreamTicket): MemberPointerPass | undefined {
+		const key = pointerHoldKey(asked.tokenSha256, asked.companyId, asked.machineId, asked.private, asked.generation);
+		const bucket = this.#pointersByHold.get(key);
+		if (!bucket) return undefined;
 		const now = performance.now();
 		let newest: MemberPointerPass | undefined;
-		for (const kept of this.#pointers.values())
-			if (kept.until > now && kept.tokenSha256 === asked.tokenSha256 && kept.companyId === asked.companyId &&
-				kept.authority.machineId === asked.machineId && kept.authority.private === asked.private &&
-				kept.authority.generation === asked.generation && (!newest || kept.until > newest.until))
-				newest = kept;
+		for (const kept of [...bucket]) {
+			if (kept.until <= now) {
+				this.#deletePointer(kept.authority.passId);
+				continue;
+			}
+			if (!newest || kept.until > newest.until) newest = kept;
+		}
 		return newest;
 	}
 	/** The pass, while it lasts. */
 	#pointerPass(passId: string): MemberPointerPass | undefined {
 		const kept = this.#pointers.get(passId);
 		if (kept && kept.until <= performance.now()) {
-			this.#pointers.delete(passId);
+			this.#deletePointer(passId);
 			return undefined;
 		}
 		return kept;
@@ -800,14 +843,31 @@ export class MachineCommandRouter {
 		const now = performance.now();
 		const until = askedAt + authority.milliseconds;
 		if (authority.milliseconds <= 0 || until <= now) throw new CloudMemberMachinePointerRefusal("POINTER_PASS_ENDED");
-		for (const [passId, kept] of this.#pointers) if (kept.until <= now) this.#pointers.delete(passId);
+		if (this.#pointers.has(authority.passId)) this.#deletePointer(authority.passId);
+		// WHY: Prune expired entries lazily from the map head in O(1) amortized time, sweeping fully only at capacity.
+		for (const [passId, kept] of this.#pointers) {
+			if (kept.until > now) break;
+			this.#deletePointer(passId);
+		}
+		if (this.#pointers.size >= MEMBER_POINTER_PASSES) {
+			for (const [passId, kept] of this.#pointers) if (kept.until <= now) this.#deletePointer(passId);
+		}
 		while (this.#pointers.size >= MEMBER_POINTER_PASSES) {
 			const oldest = this.#pointers.keys().next().value;
 			if (oldest === undefined) break;
-			this.#pointers.delete(oldest);
+			this.#deletePointer(oldest);
 		}
 		const kept: MemberPointerPass = { authority, companyId, tokenSha256, until, second: now, moves: 0 };
 		this.#pointers.set(authority.passId, kept);
+		if (tokenSha256 !== null && companyId !== null) {
+			const key = pointerHoldKey(tokenSha256, companyId, authority.machineId, authority.private, authority.generation);
+			let bucket = this.#pointersByHold.get(key);
+			if (!bucket) {
+				bucket = new Set();
+				this.#pointersByHold.set(key, bucket);
+			}
+			bucket.add(kept);
+		}
 		return kept;
 	}
 }
