@@ -77,6 +77,7 @@ function setup(cofounder: boolean) {
 			draftEditor: (draft: OpenDraft) => company.emailDraftEditor(draft.interactionId),
 			draftUnsettled: () => false,
 			unsettledDrafts: () => [],
+			conversationState: (sessionId: string) => company.conversations.get(sessionId)?.get(),
 			mayVote: () => true,
 			viewerId: userA.id,
 			loadDraft: async () => ({

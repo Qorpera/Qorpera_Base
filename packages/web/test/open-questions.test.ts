@@ -241,6 +241,7 @@ function company(
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
+		conversations,
 		conversation,
 		setExecutionSponsor: vi.fn(),
 		answerInteraction: vi.fn(

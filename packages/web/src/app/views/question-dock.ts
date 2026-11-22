@@ -126,16 +126,10 @@ export class QuestionDock {
 		);
 	}
 
-	#peek(sessionId: string): ConversationState | undefined {
-		if (typeof this.#host.questions.conversationState === "function")
-			return this.#host.questions.conversationState(sessionId);
-		return this.#host.conversation(sessionId).get();
-	}
-
 	#answerOf(question: OpenQuestion): InteractionAnswer | undefined {
 		return (
 			this.#held.get(question.interactionId)?.answer ??
-			this.#peek(question.sessionId)?.interactionAnswers?.[question.interactionId]
+			this.#host.questions.conversationState(question.sessionId)?.interactionAnswers?.[question.interactionId]
 		);
 	}
 
@@ -302,7 +296,7 @@ export class QuestionDock {
 		try {
 			await this.#host.questions.answer(question, outcome, value);
 		} catch (error) {
-			const said = this.#peek(question.sessionId)?.interactionError;
+			const said = this.#host.questions.conversationState(question.sessionId)?.interactionError;
 			this.#errors.set(
 				question.interactionId,
 				said ??
@@ -315,7 +309,9 @@ export class QuestionDock {
 			throw error;
 		}
 		// Taken: held on screen answered, as sent, then it goes. The thread's own copy may already be settled and gone.
-		const answer = this.#peek(question.sessionId)?.interactionAnswers?.[question.interactionId] ?? {
+		const answer = this.#host.questions.conversationState(question.sessionId)?.interactionAnswers?.[
+			question.interactionId
+		] ?? {
 			outcome,
 			answer: value,
 			answeredAt: new Date().toISOString(),

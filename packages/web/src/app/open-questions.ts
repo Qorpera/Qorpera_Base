@@ -408,8 +408,7 @@ export class OpenQuestions {
 
 	/** WHY: peeks an already-cached thread without creating or loading a new store so docks do not churn LRU. */
 	conversationState(sessionId: string): ConversationState | undefined {
-		if (this.#company.conversations) return this.#company.conversations.get(sessionId)?.get();
-		return this.#company.conversation(sessionId, false).get();
+		return this.#company.conversations.get(sessionId)?.get();
 	}
 
 	/** Gives the thread the model account the cloud chooses for it now, as the thread does when it opens and as Mailbox
