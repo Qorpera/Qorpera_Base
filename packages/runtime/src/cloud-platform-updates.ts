@@ -284,7 +284,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-22",
 		title: "App vault secrets and code/ops routine triggers",
-		text: "Coding sessions can now use company-owned OpenAI and Anthropic vault keys and receive sorted secretNames (names only, never values) in their turn context. Owners and admins can scope environment secrets to build, test, or runtime and deliver runtime secrets to hosted apps via tmpfs with masked logs. Routines created with manage_routine now support code-change, app-unhealthy, and database-change listeners plus deterministic checkBeforeWake gates (HTTPS probes and repository checks) that wake an agent only on failure or state change.",
+		text: "Coding sessions can now use company-owned OpenAI and Anthropic vault keys and receive sorted secretNames (names only, never values) in their turn context. Owners and admins can scope environment secrets by build, test, or runtime and target environment so production or runtime grants stay out of coding sessions, and manage per-site app secret grants. Routines created with manage_routine now support code-change, app-unhealthy, and database-change listeners plus deterministic checkBeforeWake gates (HTTPS probes and repository checks) that wake an agent only on failure or state change.",
 	},
 ]);
 

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createSocket } from "node:dgram";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -223,6 +223,7 @@ describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", ()
 		expect(NATIVE_WEB_HOSTING_RPCS).toEqual([
 			"qorpera_web_code_deployment_register",
 			"qorpera_code_site_for_auto_redeploy",
+			"qorpera_code_site_auto_redeploy_switch",
 			"qorpera_emit_app_unhealthy_routine_wakes",
 		]);
 		expect(
@@ -373,7 +374,7 @@ describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", ()
 		expect(blueGreen).toEqual({ upstreamAddr: "127.0.0.1:41234" });
 	});
 
-	it("delivers tmpfs runtime secrets, masks fetched logs, restores tmpfs and emits app_unhealthy on deploy failure, and scrubs build secrets", async () => {
+	it("registers server uploads without prematurely deploying ready versions, masks fetched logs, and emits app_unhealthy on deploy failure", async () => {
 		const rootDir = await mkdtemp(join(tmpdir(), "qorpera-webapp-secrets-"));
 		const secretsManager = new CompanyMachineSecretsManager({ rootDir, verifyTmpfs: async () => true });
 		try {
@@ -396,36 +397,17 @@ describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", ()
 					return { schema: "qorpera.app-unhealthy-wakes/v1", state: "emitted", wakes: 1, skipped: 0, wakeIds: [] };
 				}),
 			};
+			const appHostFetch = vi.fn(async () => ({
+				status: 200,
+				body: JSON.stringify({ upstream_addr: "127.0.0.1:41230" }),
+			}));
 
-			const buildSecret = "sk-build-secret-value-123456";
-			let observedBuildPath: string | undefined;
-			let observedBuildContent = "";
-			const brokerFetch = vi.fn(async (input: string | URL, init?: RequestInit) => {
-				const parsedBody = JSON.parse(String(init?.body ?? "{}")) as { scope: string; targetEnv: string };
-				expect(String(input)).toContain(`/v1/app-secrets?company=${COMPANY}`);
-				return new Response(
-					JSON.stringify({
-						schema: "qorpera.app-secrets/v1",
-						siteId: SITE_ID,
-						slug: "booking-app",
-						scope: parsedBody.scope,
-						targetEnv: parsedBody.targetEnv,
-						secrets:
-							parsedBody.scope === "build"
-								? { NPM_TOKEN: buildSecret }
-								: { OPENAI_API_KEY: "sk-runtime-secret-value-999999" },
-					}),
-					{ status: 200, headers: { "content-type": "application/json" } },
-				);
-			}) as unknown as typeof fetch;
-
-			await deployCodeSiteToNativeEdge({
+			const uploaded = await deployCodeSiteToNativeEdge({
 				control,
 				owner: "node-1",
 				machineIdSha256: MACHINE_SHA,
 				target: { companyId: COMPANY, environmentId: ENVIRONMENT, owner: "company", name: "booking" },
 				change: 9,
-				siteId: SITE_ID,
 				spec: parseNativeCodeSiteSpec({
 					schema: "qorpera.code-site/v2",
 					kind: "server",
@@ -442,75 +424,24 @@ describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", ()
 				edge: {
 					routerInternalUrl: "http://127.0.0.1:8094",
 					controlToken: "edge-token",
-					secretsManager,
-					appSecretsBroker: {
-						origin: "https://broker.qorpera.test",
-						executorToken: "exec-tok",
-						executorOwner: "node-1",
-						machineIdSha256: MACHINE_SHA,
-						fetchImpl: brokerFetch,
-					},
 					appHostInternalUrl: "http://127.0.0.1:8096",
 					appHostControlToken: "app-token",
-					appHostFetchImpl: async (_url, init) => {
-						const parsed = JSON.parse(init.body ?? "{}") as { env_path?: string };
-						expect(parsed.env_path).toBe(join(rootDir, "booking-app.env"));
-						return { status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:41230" }) };
-					},
-					buildAppImage: async (input) => {
-						observedBuildPath = input.buildEnvPath;
-						observedBuildContent = await readFile(input.buildEnvPath!, "utf8");
-						return { ociImageRef: IMAGE_REF, builtMs: 12 };
-					},
+					appHostFetchImpl: appHostFetch,
+					buildAppImage: async () => ({ ociImageRef: IMAGE_REF, builtMs: 12 }),
 				},
 				signal: new AbortController().signal,
 			});
-			expect(observedBuildPath).toBeTruthy();
-			expect(observedBuildContent).toContain(buildSecret);
-			expect(existsSync(observedBuildPath!)).toBe(false);
-			expect(await readFile(join(rootDir, "booking-app.env"), "utf8")).toContain("sk-runtime-secret-value-999999");
+			expect(uploaded.state).toBe("ready");
+			expect(appHostFetch).not.toHaveBeenCalled();
 
-			const previousSecret = "sk-old-runtime-secret-111111";
-			const oldDelivered = await secretsManager.deliver({
+			const runtimeSecret = "sk-runtime-secret-value-999999";
+			await secretsManager.deliver({
 				siteId: SITE_ID,
 				slug: "booking-app",
 				scope: "runtime",
 				targetEnv: "prod",
-				secrets: { OPENAI_API_KEY: previousSecret },
+				secrets: { OPENAI_API_KEY: runtimeSecret },
 			});
-			const runtimeSecret = "sk-runtime-secret-value-999999";
-			let sentBody = "";
-			const okDeploy = await triggerBlueGreenAppDeploy({
-				appHostInternalUrl: "http://127.0.0.1:8096",
-				controlToken: "app-token",
-				deploymentId: DEPLOYMENT_ID,
-				siteId: SITE_ID,
-				companyId: COMPANY,
-				environmentId: ENVIRONMENT,
-				control,
-				ociImageRef: IMAGE_REF,
-				healthPath: "/health",
-				idleTimeoutSec: 600,
-				memoryMb: 512,
-				vcpuLimit: 1,
-				env: { PORT: "3000" },
-				secretsManager,
-				appSecretsBroker: {
-					origin: "https://broker.qorpera.test",
-					executorToken: "exec-tok",
-					executorOwner: "node-1",
-					machineIdSha256: MACHINE_SHA,
-					fetchImpl: brokerFetch,
-				},
-				fetchImpl: async (_url, init) => {
-					sentBody = init.body ?? "";
-					return { status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:41234" }) };
-				},
-			});
-			expect(okDeploy.envPath).toBe(oldDelivered.envPath);
-			expect(sentBody).not.toContain(runtimeSecret);
-			expect(JSON.parse(sentBody).env_path).toBe(oldDelivered.envPath);
-
 			const logs = await fetchAppLogs({
 				appHostInternalUrl: "http://127.0.0.1:8096",
 				controlToken: "app-token",
@@ -532,6 +463,7 @@ describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", ()
 					controlToken: "app-token",
 					deploymentId: DEPLOYMENT_ID,
 					siteId: SITE_ID,
+					slug: "booking-app",
 					environmentId: ENVIRONMENT,
 					control,
 					ociImageRef: IMAGE_REF,
@@ -540,19 +472,10 @@ describe("CodeSiteUploads with nativeEdge for static and full-stack webapps", ()
 					memoryMb: 512,
 					vcpuLimit: 1,
 					env: { PORT: "3000" },
-					secretsManager,
-					appSecrets: {
-						siteId: SITE_ID,
-						slug: "booking-app",
-						scope: "runtime",
-						targetEnv: "prod",
-						secrets: { OPENAI_API_KEY: "sk-new-failing-secret-777777" },
-					},
 					fetchImpl: async () => ({ status: 503, body: "unhealthy" }),
 				}),
 			).rejects.toThrow("APP_HOST_DEPLOY_FAILED_503");
 
-			expect(await readFile(oldDelivered.envPath, "utf8")).toContain(runtimeSecret);
 			expect(controlCalls).toContainEqual({
 				method: "qorpera_emit_app_unhealthy_routine_wakes",
 				args: {

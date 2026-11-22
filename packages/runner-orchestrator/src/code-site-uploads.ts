@@ -119,13 +119,14 @@ export interface CodeSiteUploadsOptions {
 	putConcurrency?: number;
 	nativeEdge?: NativeEdgeHostingConfig;
 	exportSource?: CodeSiteSourceExport;
+	serialize?: <T>(repoKey: string, fn: () => Promise<T>) => Promise<T>;
+	shouldSkipNative?: (changeKey: string) => boolean;
 }
 
 interface Due {
 	target: CodeSiteTarget;
 	change: number;
 	site: NativeCodeSiteSpec | null;
-	siteId?: string;
 }
 
 /** What stopped a site: the step, the code the kernel is told, and what the log shows of why. */
@@ -168,6 +169,8 @@ export class CodeSiteUploads {
 	readonly #putConcurrency: number;
 	readonly #nativeEdge: NativeEdgeHostingConfig | undefined;
 	readonly #exportSource: CodeSiteSourceExport | undefined;
+	readonly #serialize: (<T>(repoKey: string, fn: () => Promise<T>) => Promise<T>) | undefined;
+	readonly #shouldSkipNative: ((changeKey: string) => boolean) | undefined;
 	readonly #busy = new Map<string, number>();
 	/** A wake that came while nothing waited: the next wait ends at once. */
 	#woken = false;
@@ -206,6 +209,8 @@ export class CodeSiteUploads {
 		this.#putConcurrency = putConcurrency;
 		this.#nativeEdge = options.nativeEdge;
 		this.#exportSource = options.exportSource;
+		this.#serialize = options.serialize;
+		this.#shouldSkipNative = options.shouldSkipNative;
 	}
 
 	/** A landing kept a site: the wait between passes ends now, or the next one does not begin. */
@@ -270,7 +275,7 @@ export class CodeSiteUploads {
 			throw new Error("CODE_SITE_DUE_UNCONFIRMED");
 		const due: Due[] = [];
 		for (const entry of answer.sites.slice(0, this.#limit)) {
-			const { companyId, environmentId, owner, name, change, site, siteId } = isRecord(entry) ? entry : {};
+			const { companyId, environmentId, owner, name, change, site } = isRecord(entry) ? entry : {};
 			let target: CodeSiteTarget;
 			try {
 				if (!isUuid(companyId) || !isUuid(environmentId) || !whole(change, 1)) throw new Error("not a site");
@@ -282,7 +287,7 @@ export class CodeSiteUploads {
 				continue;
 			}
 			const read = parseNativeCodeSiteSpec(site);
-			due.push({ target, change, site: read, ...(isUuid(siteId) ? { siteId } : {}) });
+			due.push({ target, change, site: read });
 		}
 		return due;
 	}
@@ -378,125 +383,131 @@ export class CodeSiteUploads {
 		started: number,
 		signal: AbortSignal,
 	): Promise<"uploaded" | "failed" | undefined> {
-		const edge = this.#nativeEdge;
-		if (!edge) {
-			return await this.#failed(
-				due,
-				"upload",
-				"NATIVE_WEB_HOSTING_UNCONFIGURED",
-				new Error("NATIVE_WEB_HOSTING_UNCONFIGURED"),
-				signal,
-			);
-		}
-		let files: CodeSiteUploadFile[] = [];
-		let totalBytes = 0;
-		if (site.kind === "static" || (site.kind === "hybrid" && site.files > 0)) {
-			try {
-				const read = treeOf(
-					await this.#hosts.run(
-						due.target.companyId,
-						due.target.environmentId,
-						signal,
-						(job) => this.#read(job, { repository, tree: site.tree }),
-						{ yields: true },
-					),
-				);
-				files = read.files;
-				totalBytes = read.bytes;
-			} catch (error) {
-				if (signal.aborted || (error instanceof CodeHostJobFailure && error.code === YIELDED)) return undefined;
-				const code = codeChangeErrorCode(error);
-				return await this.#failed(due, "read", code === "UNCLASSIFIED" ? READ_FAILED : code, error, signal);
-			}
-		}
-		let exportedSource: { sourceDir: string; cleanup?: () => Promise<void> } | undefined;
-		if (site.kind === "server" || site.kind === "hybrid") {
-			if (this.#exportSource) {
-				const exportFn = this.#exportSource;
-				try {
-					exportedSource = await this.#hosts.run(
-						due.target.companyId,
-						due.target.environmentId,
-						signal,
-						(job) => exportFn(job, { repository, tree: site.tree, kind: site.kind }),
-						{ yields: true },
-					);
-				} catch (error) {
-					if (signal.aborted || (error instanceof CodeHostJobFailure && error.code === YIELDED)) return undefined;
-					const code = codeChangeErrorCode(error);
-					return await this.#failed(due, "export", code === "UNCLASSIFIED" ? READ_FAILED : code, error, signal);
-				}
-			} else if (!edge.buildAppImage) {
+		const repoKey = `${due.target.environmentId}:${due.target.owner.toLowerCase()}/${due.target.name.toLowerCase()}`;
+		const changeKey = `${repoKey}:${due.change}`;
+		const run = async (): Promise<"uploaded" | "failed" | undefined> => {
+			if (this.#shouldSkipNative?.(changeKey)) return undefined;
+			const edge = this.#nativeEdge;
+			if (!edge) {
 				return await this.#failed(
 					due,
-					"export",
-					"APP_SOURCE_EXPORT_UNCONFIGURED",
-					new Error("APP_SOURCE_EXPORT_UNCONFIGURED"),
+					"upload",
+					"NATIVE_WEB_HOSTING_UNCONFIGURED",
+					new Error("NATIVE_WEB_HOSTING_UNCONFIGURED"),
 					signal,
 				);
 			}
-		}
-		const key = `${due.target.environmentId}/${due.target.owner}/${due.target.name}/${due.change}`;
-		try {
-			const registered = await deployCodeSiteToNativeEdge({
-				control: this.#control,
-				owner: this.#owner,
-				machineIdSha256: this.#machineIdSha256,
-				target: due.target,
-				change: due.change,
-				spec: site,
-				files,
-				...(due.siteId ? { siteId: due.siteId } : {}),
-				...(exportedSource ? { sourceDir: exportedSource.sourceDir } : {}),
-				edge,
-				signal,
-			});
-			this.#busy.delete(key);
-			this.#report({
-				event: "code-site",
-				step: "uploaded",
-				...named(due),
-				state: registered.state,
-				versionId: registered.versionId,
-				deploymentId: registered.deploymentId,
-				slug: registered.slug,
-				kind: registered.kind,
-				files: files.length,
-				bytes: totalBytes,
-				uploadedBlobs: registered.uploadedBlobs,
-				deduplicatedBlobs: registered.deduplicatedBlobs,
-				ms: Math.round(performance.now() - started),
-			});
-			return "uploaded";
-		} catch (error) {
-			if (signal.aborted) return undefined;
-			const msg = error instanceof Error ? error.message : "";
-			if (msg === "CODE_SITE_LOST") {
-				this.#report({ event: "code-site-error", step: "upload", ...named(due), error });
-				return "failed";
-			}
-			if (msg === TAKEN_DOWN) {
-				this.#busy.delete(key);
-				this.#report({ event: "code-site", step: "taken-down", ...named(due), at: "native-register" });
-				return undefined;
-			}
-			if (error instanceof CodingControlBusy) {
-				const passes = (this.#busy.get(key) ?? 0) + 1;
-				if (passes < BUSY_PASSES) {
-					if (this.#busy.size >= 200) this.#busy.clear();
-					this.#busy.set(key, passes);
-					this.#report({ event: "code-site", step: "busy", ...named(due), at: "native-register", passes });
-					return undefined;
+			let files: CodeSiteUploadFile[] = [];
+			let totalBytes = 0;
+			if (site.kind === "static" || (site.kind === "hybrid" && site.files > 0)) {
+				try {
+					const read = treeOf(
+						await this.#hosts.run(
+							due.target.companyId,
+							due.target.environmentId,
+							signal,
+							(job) => this.#read(job, { repository, tree: site.tree }),
+							{ yields: true },
+						),
+					);
+					files = read.files;
+					totalBytes = read.bytes;
+				} catch (error) {
+					if (signal.aborted || (error instanceof CodeHostJobFailure && error.code === YIELDED)) return undefined;
+					const code = codeChangeErrorCode(error);
+					return await this.#failed(due, "read", code === "UNCLASSIFIED" ? READ_FAILED : code, error, signal);
 				}
 			}
-			this.#busy.delete(key);
-			const problemCode = PROBLEM.test(msg) ? msg : UPLOAD_FAILED;
-			return await this.#failed(due, "upload", problemCode, error, signal);
-		} finally {
-			if (exportedSource?.cleanup) {
-				await exportedSource.cleanup().catch(() => undefined);
+			let exportedSource: { sourceDir: string; cleanup?: () => Promise<void> } | undefined;
+			if (site.kind === "server" || site.kind === "hybrid") {
+				if (this.#exportSource) {
+					const exportFn = this.#exportSource;
+					try {
+						exportedSource = await this.#hosts.run(
+							due.target.companyId,
+							due.target.environmentId,
+							signal,
+							(job) => exportFn(job, { repository, tree: site.tree, kind: site.kind }),
+							{ yields: true },
+						);
+					} catch (error) {
+						if (signal.aborted || (error instanceof CodeHostJobFailure && error.code === YIELDED))
+							return undefined;
+						const code = codeChangeErrorCode(error);
+						return await this.#failed(due, "export", code === "UNCLASSIFIED" ? READ_FAILED : code, error, signal);
+					}
+				} else if (!edge.buildAppImage) {
+					return await this.#failed(
+						due,
+						"export",
+						"APP_SOURCE_EXPORT_UNCONFIGURED",
+						new Error("APP_SOURCE_EXPORT_UNCONFIGURED"),
+						signal,
+					);
+				}
 			}
-		}
+			const key = `${due.target.environmentId}/${due.target.owner}/${due.target.name}/${due.change}`;
+			try {
+				const registered = await deployCodeSiteToNativeEdge({
+					control: this.#control,
+					owner: this.#owner,
+					machineIdSha256: this.#machineIdSha256,
+					target: due.target,
+					change: due.change,
+					spec: site,
+					files,
+					...(exportedSource ? { sourceDir: exportedSource.sourceDir } : {}),
+					edge,
+					signal,
+				});
+				this.#busy.delete(key);
+				this.#report({
+					event: "code-site",
+					step: "uploaded",
+					...named(due),
+					state: registered.state,
+					versionId: registered.versionId,
+					deploymentId: registered.deploymentId,
+					slug: registered.slug,
+					kind: registered.kind,
+					files: files.length,
+					bytes: totalBytes,
+					uploadedBlobs: registered.uploadedBlobs,
+					deduplicatedBlobs: registered.deduplicatedBlobs,
+					ms: Math.round(performance.now() - started),
+				});
+				return "uploaded";
+			} catch (error) {
+				if (signal.aborted) return undefined;
+				const msg = error instanceof Error ? error.message : "";
+				if (msg === "CODE_SITE_LOST") {
+					this.#report({ event: "code-site-error", step: "upload", ...named(due), error });
+					return "failed";
+				}
+				if (msg === TAKEN_DOWN) {
+					this.#busy.delete(key);
+					this.#report({ event: "code-site", step: "taken-down", ...named(due), at: "native-register" });
+					return undefined;
+				}
+				if (error instanceof CodingControlBusy) {
+					const passes = (this.#busy.get(key) ?? 0) + 1;
+					if (passes < BUSY_PASSES) {
+						if (this.#busy.size >= 200) this.#busy.clear();
+						this.#busy.set(key, passes);
+						this.#report({ event: "code-site", step: "busy", ...named(due), at: "native-register", passes });
+						return undefined;
+					}
+				}
+				this.#busy.delete(key);
+				const problemCode = PROBLEM.test(msg) ? msg : UPLOAD_FAILED;
+				return await this.#failed(due, "upload", problemCode, error, signal);
+			} finally {
+				if (exportedSource?.cleanup) {
+					await exportedSource.cleanup().catch(() => undefined);
+				}
+			}
+		};
+		return this.#serialize ? await this.#serialize(repoKey, run) : await run();
 	}
 
 	/** Begin, list, missing, put and finish, for one read tree. Throws `SiteStopped` or `SiteLost`. */

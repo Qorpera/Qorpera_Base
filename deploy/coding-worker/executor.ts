@@ -46,7 +46,6 @@ import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-c
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
 import { withAbortScope } from "../../packages/runner-orchestrator/src/abort-scope.ts";
 import { desktopRelay, LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
-import { CompanyMachineSecretsManager } from "../../packages/runner-orchestrator/src/company-machine-secrets.ts";
 import {
 	DESKTOP_STREAM_ROLE, type DesktopRelaySpec, desktopStreamProgramVersion, InstanceDesktop, runDesktopStreamInstance,
 } from "../../packages/runner-orchestrator/src/company-machine-stream-process.ts";
@@ -519,7 +518,6 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	// A repository's site (step 4): the tree its landing's checks left in the repository's storage, read in a job that
 	// yields to a turn's and uploaded as a version a member can put live from What's new.
 	const machineIdSha256 = createHash("sha256").update(machine).digest("hex");
-	const appSecretsManager = config.webHosting ? new CompanyMachineSecretsManager() : undefined;
 	const nativeEdge = config.webHosting
 		? {
 				routerInternalUrl: config.webHosting.routerInternalUrl,
@@ -532,23 +530,34 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				...(config.webHosting.registryPrefix ? { registryPrefix: config.webHosting.registryPrefix } : {}),
 				...(config.webHosting.companyDataUrl ? { companyDataUrl: config.webHosting.companyDataUrl } : {}),
 				...(config.webHosting.objectStorageUrl ? { objectStorageUrl: config.webHosting.objectStorageUrl } : {}),
-				...(appSecretsManager ? { secretsManager: appSecretsManager } : {}),
-				...(config.broker
-					? {
-							appSecretsBroker: {
-								origin: config.broker.origin,
-								executorToken: await credential(config.broker.executorTokenCredential),
-								executorOwner: config.owner,
-								machineIdSha256,
-							},
-						}
-					: {}),
 			}
 		: undefined;
+	const repoBuildTails = new Map<string, Promise<unknown>>();
+	const serializeRepoBuild = <T>(repoKey: string, fn: () => Promise<T>): Promise<T> => {
+		const prev = repoBuildTails.get(repoKey) ?? Promise.resolve();
+		const next = prev.catch(() => undefined).then(fn);
+		const tail = next.finally(() => {
+			if (repoBuildTails.get(repoKey) === tail) repoBuildTails.delete(repoKey);
+		});
+		repoBuildTails.set(repoKey, tail);
+		return next;
+	};
+	const registeredAutoRedeploys = new Set<string>();
+	const recordAutoRedeploy = (changeKey: string) => {
+		if (registeredAutoRedeploys.size >= 200) registeredAutoRedeploys.clear();
+		registeredAutoRedeploys.add(changeKey);
+	};
 	const codeSites = codeHostJobs ? new CodeSiteUploads({
 		control, hosts: codeHostJobs, read: readCodeSiteTree, owner: config.owner,
-		machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
-		...(nativeEdge ? { nativeEdge, exportSource: exportCodeSiteSource } : {}),
+		machineIdSha256, report: logCodeRecord,
+		...(nativeEdge
+			? {
+					nativeEdge,
+					exportSource: exportCodeSiteSource,
+					serialize: serializeRepoBuild,
+					shouldSkipNative: (changeKey: string) => registeredAutoRedeploys.has(changeKey),
+				}
+			: {}),
 	}) : undefined;
 	const codeRequests = codeHostJobs && codeRecords ? codeHostRequestsOf({
 		control, hosts: codeHostJobs, records: codeRecords, bundles: codeBundles,
@@ -603,6 +612,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 						machineIdSha256,
 						readDeployConfig: readRepoDeployConfig,
 						exportSource: exportCodeSiteSource,
+						serialize: serializeRepoBuild,
+						onRegistered: recordAutoRedeploy,
 					}),
 				}
 			: {}),
@@ -951,7 +962,6 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		await closeStep("peer-commands", () => peerCommands.close());
 		await closeStep("member-screens", () => memberScreens?.close());
 		await closeStep("member-streams", () => memberStreams?.close());
-		await closeStep("app-secrets", () => appSecretsManager?.scrubAll());
 		process.off("SIGTERM", shutdown);
 		process.off("SIGINT", shutdown);
 	}

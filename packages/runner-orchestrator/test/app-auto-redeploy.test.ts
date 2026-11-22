@@ -284,9 +284,8 @@ describe("app-auto-redeploy", () => {
 		}
 	});
 
-	it("wires createNativeEdgeAutoRedeploy from .qorpera/deploy.json through build, broker secrets, blue-green reload, and rollback", async () => {
+	it("wires createNativeEdgeAutoRedeploy through build, DB live switch, and DB + app-host rollback on smoke failure", async () => {
 		const root = await mkdtemp(join(tmpdir(), "qorpera-native-auto-redeploy-"));
-		const secretsManager = new CompanyMachineSecretsManager({ rootDir: root, verifyTmpfs: async () => true });
 		const companyId = randomUUID();
 		const environmentId = randomUUID();
 		const siteId = randomUUID();
@@ -295,8 +294,25 @@ describe("app-auto-redeploy", () => {
 		const machineSha = "f".repeat(64);
 		const oldImage = `127.0.0.1:5000/qorpera-apps/billing@sha256:${"a".repeat(64)}`;
 		const newImage = `127.0.0.1:5000/qorpera-apps/billing@sha256:${"b".repeat(64)}`;
+		const rawDeployConfig = JSON.stringify({
+			autoRedeploy: true,
+			site: "billing-app",
+			paths: ["src/**"],
+			buildCommand: "npm run build",
+			reloadCommand: "reload",
+			healthUrl: "http://127.0.0.1:3000/health",
+			healthAttempts: 1,
+			healthIntervalMs: 0,
+		});
+		const claim = {
+			profileId: companyId,
+			environmentId,
+			repository: { host: "qorpera", owner: "acme", name: "billing", baseBranch: "main" },
+		} as never;
 		try {
 			const controlCalls: { method: string; args: Record<string, unknown> }[] = [];
+			const switchCalls: { deploymentId: string; upstreamAddr: string }[] = [];
+			let appHostSeq = 0;
 			const control = {
 				call: vi.fn(async (method: string, args: Record<string, unknown>) => {
 					controlCalls.push({ method, args });
@@ -308,8 +324,12 @@ describe("app-auto-redeploy", () => {
 							siteId,
 							slug: "billing-app",
 							kind: "server",
+							tree: SHA_AFTER,
+							dockerfile: null,
 							currentDeploymentId: oldDepId,
 							currentImageRef: oldImage,
+							existingDeploymentId: null,
+							existingImageRef: null,
 							appPort: 3000,
 							healthPath: "/health",
 							idleTimeoutSec: 600,
@@ -329,12 +349,26 @@ describe("app-auto-redeploy", () => {
 							kind: "server",
 						};
 					}
+					if (method === "qorpera_code_site_auto_redeploy_switch") {
+						switchCalls.push({
+							deploymentId: String(args.p_deployment_id),
+							upstreamAddr: String(args.p_upstream_addr),
+						});
+						return {
+							schema: "qorpera.code-site-auto-redeploy-switch/v1",
+							state: "live",
+							siteId,
+							deploymentId: args.p_deployment_id,
+							versionId: randomUUID(),
+							upstreamAddr: args.p_upstream_addr,
+						};
+					}
 					throw new Error(`unexpected rpc ${method}`);
 				}),
 			};
 			const appHostBodies: Record<string, unknown>[] = [];
-			const brokerCalls: Record<string, unknown>[] = [];
-			const buildCalls: { buildEnvPath?: string }[] = [];
+			const buildCalls = vi.fn(async () => ({ ociImageRef: newImage, builtMs: 15 }));
+			const registeredKeys: string[] = [];
 			const autoRedeploy = createNativeEdgeAutoRedeploy({
 				control,
 				codeHostJobs: {
@@ -345,66 +379,33 @@ describe("app-auto-redeploy", () => {
 					controlToken: "edge-tok",
 					appHostInternalUrl: "http://127.0.0.1:8096",
 					appHostControlToken: "app-tok",
-					secretsManager,
-					appSecretsBroker: {
-						origin: "https://broker.qorpera.test",
-						executorToken: "exec-tok",
-						executorOwner: "node-1",
-						machineIdSha256: machineSha,
-						fetchImpl: (async (_url: string | URL, init?: RequestInit) => {
-							const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-							brokerCalls.push(body);
-							return new Response(
-								JSON.stringify({
-									schema: "qorpera.app-secrets/v1",
-									siteId,
-									slug: "billing-app",
-									scope: body.scope,
-									targetEnv: body.targetEnv,
-									secrets:
-										body.scope === "build"
-											? { NPM_TOKEN: "npm-build-secret-123456" }
-											: { OPENAI_API_KEY: "sk-runtime-secret-123456" },
-								}),
-								{ status: 200, headers: { "content-type": "application/json" } },
-							);
-						}) as unknown as typeof fetch,
-					},
-					buildAppImage: async (input) => {
-						buildCalls.push({ buildEnvPath: input.buildEnvPath });
-						expect(input.buildEnvPath).toBeTruthy();
-						expect(await readFile(input.buildEnvPath!, "utf8")).toContain("npm-build-secret-123456");
-						return { ociImageRef: newImage, builtMs: 15 };
-					},
+					buildAppImage: buildCalls,
 					appHostFetchImpl: async (_url, init) => {
+						appHostSeq += 1;
 						appHostBodies.push(JSON.parse(init.body ?? "{}") as Record<string, unknown>);
-						return { status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:44444" }) };
+						return {
+							status: 200,
+							body: JSON.stringify({ upstream_addr: `127.0.0.1:${44440 + appHostSeq}` }),
+						};
 					},
 				},
 				owner: "node-1",
 				machineIdSha256: machineSha,
-				readDeployConfig: async () => ({
-					rawConfig: JSON.stringify({
-						autoRedeploy: true,
-						site: "billing-app",
-						paths: ["src/**"],
-						buildCommand: "npm run build",
-						reloadCommand: "reload",
-						healthUrl: "http://127.0.0.1:3000/health",
-						healthAttempts: 1,
-						healthIntervalMs: 0,
-					}),
-					paths: ["src/server.ts"],
-				}),
+				readDeployConfig: async () => ({ rawConfig: rawDeployConfig, paths: ["src/server.ts"] }),
 				exportSource: async () => ({ sourceDir: root }),
+				onRegistered: (k) => registeredKeys.push(k),
 			});
 
+			expect(
+				await autoRedeploy(
+					claim,
+					{ state: "fast-forward", mainBefore: SHA_BEFORE, mainSha: SHA_AFTER, filesChanged: 1, change: null },
+					new AbortController().signal,
+				),
+			).toBeNull();
+
 			const ctx = await autoRedeploy(
-				{
-					profileId: companyId,
-					environmentId,
-					repository: { host: "qorpera", owner: "acme", name: "billing", baseBranch: "main" },
-				} as never,
+				claim,
 				{ state: "fast-forward", mainBefore: SHA_BEFORE, mainSha: SHA_AFTER, filesChanged: 1, change: 4 },
 				new AbortController().signal,
 			);
@@ -420,7 +421,6 @@ describe("app-auto-redeploy", () => {
 					mainAfter: SHA_AFTER,
 					paths: ctx!.paths ?? [],
 				},
-				secretsManager: ctx!.secretsManager,
 				hooks: {
 					...ctx!.hooks,
 					probeHealth: async () => ({ ok: false, status: 503, error: "smoke failed" }),
@@ -428,19 +428,231 @@ describe("app-auto-redeploy", () => {
 				signal: new AbortController().signal,
 			});
 			expect(result.status).toBe("rolled_back");
-			expect(buildCalls).toHaveLength(1);
-			expect(brokerCalls.map((c) => c.scope)).toEqual(["build", "runtime"]);
-			expect(brokerCalls[1]?.deploymentId).toBe(newDepId);
-			expect(appHostBodies.map((b) => [b.deployment_id, b.oci_image_ref, b.env_path])).toEqual([
-				[newDepId, newImage, join(root, "billing-app.env")],
-				[oldDepId, oldImage, undefined],
+			expect(buildCalls).toHaveBeenCalledTimes(1);
+			expect(registeredKeys).toEqual([`${environmentId}:acme/billing:4`]);
+			expect(appHostBodies.map((b) => [b.deployment_id, b.oci_image_ref])).toEqual([
+				[newDepId, newImage],
+				[oldDepId, oldImage],
+			]);
+			expect(switchCalls).toEqual([
+				{ deploymentId: newDepId, upstreamAddr: "127.0.0.1:44441" },
+				{ deploymentId: oldDepId, upstreamAddr: "127.0.0.1:44442" },
 			]);
 			expect(controlCalls.map((c) => c.method)).toEqual([
 				"qorpera_code_site_for_auto_redeploy",
+				"qorpera_code_site_for_auto_redeploy",
 				"qorpera_web_code_deployment_register",
+				"qorpera_code_site_auto_redeploy_switch",
+				"qorpera_code_site_auto_redeploy_switch",
 			]);
 		} finally {
-			await secretsManager.scrubAll();
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("fails build cleanly on refused register, refuses static sites, and reuses already-built deployments without duplicate builds", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-native-auto-redeploy-edge-"));
+		const companyId = randomUUID();
+		const environmentId = randomUUID();
+		const siteId = randomUUID();
+		const oldDepId = randomUUID();
+		const existingDepId = randomUUID();
+		const machineSha = "e".repeat(64);
+		const oldImage = `127.0.0.1:5000/qorpera-apps/billing@sha256:${"a".repeat(64)}`;
+		const newImage = `127.0.0.1:5000/qorpera-apps/billing@sha256:${"c".repeat(64)}`;
+		const rawDeployConfig = JSON.stringify({
+			autoRedeploy: true,
+			site: "billing-app",
+			paths: ["src/**"],
+			buildCommand: "npm run build",
+			reloadCommand: "reload",
+			healthUrl: "http://127.0.0.1:3000/health",
+			healthAttempts: 1,
+			healthIntervalMs: 0,
+		});
+		const claim = {
+			profileId: companyId,
+			environmentId,
+			repository: { host: "qorpera", owner: "acme", name: "billing", baseBranch: "main" },
+		} as never;
+		const landed = {
+			state: "fast-forward" as const,
+			mainBefore: SHA_BEFORE,
+			mainSha: SHA_AFTER,
+			filesChanged: 1,
+			change: 7,
+		};
+		try {
+			const staticRedeploy = createNativeEdgeAutoRedeploy({
+				control: {
+					call: vi.fn(async () => ({
+						schema: "qorpera.code-site-auto-redeploy/v1",
+						found: true,
+						companyId,
+						siteId,
+						slug: "billing-app",
+						kind: "static",
+						currentDeploymentId: oldDepId,
+						currentImageRef: oldImage,
+					})),
+				},
+				codeHostJobs: { run: async (_c, _e, _s, fn) => await fn({} as never, {} as never) },
+				nativeEdge: {
+					routerInternalUrl: "http://127.0.0.1:8094",
+					controlToken: "edge-tok",
+					appHostInternalUrl: "http://127.0.0.1:8096",
+					appHostControlToken: "app-tok",
+				},
+				owner: "node-1",
+				machineIdSha256: machineSha,
+				readDeployConfig: async () => ({ rawConfig: rawDeployConfig, paths: ["src/server.ts"] }),
+				exportSource: async () => ({ sourceDir: root }),
+			});
+			expect(await staticRedeploy(claim, landed, new AbortController().signal)).toBeNull();
+
+			const refusedAppHost = vi.fn();
+			const refusedRedeploy = createNativeEdgeAutoRedeploy({
+				control: {
+					call: vi.fn(async (method: string) => {
+						if (method === "qorpera_code_site_for_auto_redeploy") {
+							return {
+								schema: "qorpera.code-site-auto-redeploy/v1",
+								found: true,
+								companyId,
+								siteId,
+								slug: "billing-app",
+								kind: "server",
+								tree: SHA_AFTER,
+								currentDeploymentId: oldDepId,
+								currentImageRef: oldImage,
+								existingDeploymentId: null,
+								existingImageRef: null,
+								appPort: 3000,
+								healthPath: "/health",
+								idleTimeoutSec: 600,
+								memoryMb: 512,
+								vcpuLimit: 1,
+							};
+						}
+						if (method === "qorpera_web_code_deployment_register") {
+							return { schema: "qorpera.web-code-deployment/v1", state: "refused", code: "SITE_ROW_GONE" };
+						}
+						throw new Error(`unexpected rpc ${method}`);
+					}),
+				},
+				codeHostJobs: { run: async (_c, _e, _s, fn) => await fn({} as never, {} as never) },
+				nativeEdge: {
+					routerInternalUrl: "http://127.0.0.1:8094",
+					controlToken: "edge-tok",
+					appHostInternalUrl: "http://127.0.0.1:8096",
+					appHostControlToken: "app-tok",
+					buildAppImage: async () => ({ ociImageRef: newImage, builtMs: 5 }),
+					appHostFetchImpl: refusedAppHost,
+				},
+				owner: "node-1",
+				machineIdSha256: machineSha,
+				readDeployConfig: async () => ({ rawConfig: rawDeployConfig, paths: ["src/server.ts"] }),
+				exportSource: async () => ({ sourceDir: root }),
+			});
+			const refusedCtx = await refusedRedeploy(claim, landed, new AbortController().signal);
+			expect(refusedCtx).not.toBeNull();
+			const refusedRes = await runPostLandAppAutoRedeploy({
+				config: parseAppDeployConfig(refusedCtx!.rawConfig),
+				event: {
+					kind: "landed",
+					repo: "acme/billing",
+					change: "7",
+					mainBefore: SHA_BEFORE,
+					mainAfter: SHA_AFTER,
+					paths: ["src/server.ts"],
+				},
+				hooks: refusedCtx!.hooks,
+				signal: new AbortController().signal,
+			});
+			expect(refusedRes).toMatchObject({
+				status: "build_failed",
+				error: "AUTO_REDEPLOY_REGISTER_FAILED_SITE_ROW_GONE",
+			});
+			expect(refusedAppHost).not.toHaveBeenCalled();
+
+			const reuseBuildSpy = vi.fn();
+			const reuseSwitches: string[] = [];
+			const reuseRedeploy = createNativeEdgeAutoRedeploy({
+				control: {
+					call: vi.fn(async (method: string, args: Record<string, unknown>) => {
+						if (method === "qorpera_code_site_for_auto_redeploy") {
+							return {
+								schema: "qorpera.code-site-auto-redeploy/v1",
+								found: true,
+								companyId,
+								siteId,
+								slug: "billing-app",
+								kind: "server",
+								tree: SHA_AFTER,
+								currentDeploymentId: oldDepId,
+								currentImageRef: oldImage,
+								existingDeploymentId: existingDepId,
+								existingImageRef: newImage,
+								appPort: 3000,
+								healthPath: "/health",
+								idleTimeoutSec: 600,
+								memoryMb: 512,
+								vcpuLimit: 1,
+							};
+						}
+						if (method === "qorpera_code_site_auto_redeploy_switch") {
+							reuseSwitches.push(String(args.p_deployment_id));
+							return {
+								schema: "qorpera.code-site-auto-redeploy-switch/v1",
+								state: "live",
+								siteId,
+								deploymentId: args.p_deployment_id,
+								versionId: randomUUID(),
+								upstreamAddr: args.p_upstream_addr,
+							};
+						}
+						throw new Error(`unexpected rpc ${method}`);
+					}),
+				},
+				codeHostJobs: { run: async (_c, _e, _s, fn) => await fn({} as never, {} as never) },
+				nativeEdge: {
+					routerInternalUrl: "http://127.0.0.1:8094",
+					controlToken: "edge-tok",
+					appHostInternalUrl: "http://127.0.0.1:8096",
+					appHostControlToken: "app-tok",
+					buildAppImage: reuseBuildSpy,
+					appHostFetchImpl: async () => ({
+						status: 200,
+						body: JSON.stringify({ upstream_addr: "127.0.0.1:45555" }),
+					}),
+				},
+				owner: "node-1",
+				machineIdSha256: machineSha,
+				readDeployConfig: async () => ({ rawConfig: rawDeployConfig, paths: ["src/server.ts"] }),
+				exportSource: async () => ({ sourceDir: root }),
+			});
+			const reuseCtx = await reuseRedeploy(claim, landed, new AbortController().signal);
+			expect(reuseCtx).not.toBeNull();
+			const reuseRes = await runPostLandAppAutoRedeploy({
+				config: parseAppDeployConfig(reuseCtx!.rawConfig),
+				event: {
+					kind: "landed",
+					repo: "acme/billing",
+					change: "7",
+					mainBefore: SHA_BEFORE,
+					mainAfter: SHA_AFTER,
+					paths: ["src/server.ts"],
+				},
+				hooks: {
+					...reuseCtx!.hooks,
+					probeHealth: async () => ({ ok: true, status: 200 }),
+				},
+				signal: new AbortController().signal,
+			});
+			expect(reuseRes).toMatchObject({ status: "deployed", releaseId: existingDepId });
+			expect(reuseBuildSpy).not.toHaveBeenCalled();
+			expect(reuseSwitches).toEqual([existingDepId]);
+		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
 	});

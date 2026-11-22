@@ -1816,8 +1816,10 @@ leave, as their other secrets do.
 ### Hosted-app vault secrets (20260930850000_app_vault_secrets_and_code_routines)
 
 Company environment secrets may also be granted to hosted app sites scoped by `scope` (`build`, `test`, `runtime`) and
-`target_env` (`dev`, `prod`). Runtime secrets are delivered only into tmpfs (`/run/qorpera-apps/<slug>.env`, mode `0400`)
-and masked in app logs; values are never returned to member clients.
+`target_env` (`dev`, `prod`). Values are never returned to member clients; broker custody authorization
+(`/v1/app-secrets`) and executor-side tmpfs file preparation (`/run/qorpera-apps/<slug>.env`, mode `0400`) plus
+`CodingSecretMask` log masking are provided for app-host container integration (app-host container consumption and
+wake-path injection ship in a separate `crates/` change).
 
 - `qorpera_set_coding_environment_grant_scope(profile, grant, scope, target_env, site = null)`: owner or admin updates
   the `scope` (`all`, `build`, `test`, `runtime`), `target_env` (`all`, `dev`, `test`, `prod`), and optional `site_id`
