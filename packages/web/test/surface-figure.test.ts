@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { readdirSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SURFACE_KINDS, surfaceFigureOf, surfaceKindFigure } from "../src/app/surface-kinds.ts";

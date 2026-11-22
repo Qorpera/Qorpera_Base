@@ -297,7 +297,8 @@ describe("creating surfaces", () => {
 		sheet.querySelector<HTMLElement>('[data-preset="custom"]')!.click();
 		expect(custom.hidden).toBe(false);
 		expect(sheet.querySelector(".surface-create-swatch")).toBeNull();
-		const picked = () => sheet.querySelector<HTMLElement>('.surface-create-figure[aria-checked="true"]')?.dataset.figure;
+		const picked = () =>
+			sheet.querySelector<HTMLElement>('.surface-create-figure[aria-checked="true"]')?.dataset.figure;
 		expect(sheet.querySelectorAll(".surface-create-figure")).toHaveLength(26);
 		expect(picked()).toBe("gem");
 
