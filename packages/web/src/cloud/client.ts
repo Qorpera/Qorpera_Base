@@ -156,12 +156,18 @@ async function answeredWithin(ms: number, input: string | URL | Request, init?: 
 	const onAbort = () => controller.abort(parent?.reason);
 	if (parent?.aborted) onAbort();
 	else parent?.addEventListener("abort", onAbort, { once: true });
-	const timer = setTimeout(() => controller.abort(new DOMException(NO_ANSWER, "TimeoutError")), ms);
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const armTimer = (): void => {
+		clearTimeout(timer);
+		timer = setTimeout(() => controller.abort(new DOMException(NO_ANSWER, "TimeoutError")), ms);
+	};
+	armTimer();
 	let done = false;
 	const finish = (): void => {
 		if (done) return;
 		done = true;
 		clearTimeout(timer);
+		timer = undefined;
 		parent?.removeEventListener("abort", onAbort);
 	};
 	let response: Response;
@@ -171,7 +177,9 @@ async function answeredWithin(ms: number, input: string | URL | Request, init?: 
 		finish();
 		throw error;
 	}
-	// WHY: Keep timeout and caller abort active through body streaming so half-open stalls cannot hang RPCs or cross-tab auth locks.
+	// WHY: Clear the headers deadline on headers arrival and use a resettable per-chunk inactivity timer for body streaming.
+	clearTimeout(timer);
+	timer = undefined;
 	if (
 		!(response instanceof Response) ||
 		!response.body ||
@@ -209,6 +217,7 @@ async function answeredWithin(ms: number, input: string | URL | Request, init?: 
 				return;
 			}
 			controller.signal.addEventListener("abort", onBodyAbort, { once: true });
+			armTimer();
 		},
 		async pull(ctrl) {
 			try {
@@ -218,6 +227,7 @@ async function answeredWithin(ms: number, input: string | URL | Request, init?: 
 					ctrl.close();
 					return;
 				}
+				if (!done) armTimer();
 				if (value) ctrl.enqueue(value);
 			} catch (error) {
 				release();

@@ -726,26 +726,113 @@ describe("an app's note waiting in the member's own shared draft", () => {
 		expect(put.mock.calls.at(-1)?.[3]).toBe("> app:orders#1043 · Lund\n\nEarlier words\n\nGet a quote.");
 	});
 
-	it("bounds subscribeRoomDrafts stop() when removeChannel hangs on a dropped socket", async () => {
-		const channel = {
-			on: vi.fn().mockReturnThis(),
-			subscribe: vi.fn(),
-		};
+	it("waits until a leaving room-draft channel clears from getChannels before subscribing a replacement, and bounds stop()", async () => {
+		interface HeldChannel {
+			topic: string;
+			leaving: boolean;
+			subscribed: number;
+			handler?: (msg: { payload?: unknown }) => void;
+			on: (kind: string, filter: { event: string }, cb: (msg: { payload?: unknown }) => void) => HeldChannel;
+			subscribe: (cb: (status: string) => void) => HeldChannel;
+		}
+		const held: HeldChannel[] = [];
+		const created: HeldChannel[] = [];
+		let hangRemove = true;
+		let finishRemove: (() => void) | undefined;
 		const cloud = {
 			supabase: {
-				channel: vi.fn(() => channel),
-				removeChannel: vi.fn(() => new Promise(() => {})),
+				getChannels: () => [...held],
+				channel: vi.fn((topic: string) => {
+					const full = `realtime:${topic}`;
+					const existing = held.find((each) => each.topic === full);
+					if (existing) return existing;
+					const ch: HeldChannel = {
+						topic: full,
+						leaving: false,
+						subscribed: 0,
+						on(_kind, _filter, cb) {
+							this.handler = cb;
+							return this;
+						},
+						subscribe(cb) {
+							if (this.leaving) return this;
+							this.subscribed++;
+							cb("SUBSCRIBED");
+							return this;
+						},
+					};
+					held.push(ch);
+					created.push(ch);
+					return ch;
+				}),
+				removeChannel: vi.fn(async (ch: HeldChannel) => {
+					ch.leaving = true;
+					if (hangRemove) {
+						await new Promise<void>((resolve) => {
+							const prev = finishRemove;
+							finishRemove = () => {
+								prev?.();
+								resolve();
+							};
+						});
+					}
+					const idx = held.indexOf(ch);
+					if (idx >= 0) held.splice(idx, 1);
+					return "ok";
+				}),
 			},
 		} as unknown as Cloud;
-		const subscription = subscribeRoomDrafts(cloud, roomId, vi.fn(), vi.fn());
-		let stopped = false;
-		const done = subscription.stop().then(() => {
-			stopped = true;
+
+		const first = subscribeRoomDrafts(cloud, roomId, vi.fn(), vi.fn());
+		expect(created).toHaveLength(1);
+		let firstStopped = false;
+		const stoppingFirst = first.stop().then(() => {
+			firstStopped = true;
 		});
 		await vi.advanceTimersByTimeAsync(1_999);
-		expect(stopped).toBe(false);
+		expect(firstStopped).toBe(false);
 		await vi.advanceTimersByTimeAsync(1);
-		await done;
-		expect(stopped).toBe(true);
+		await stoppingFirst;
+		expect(firstStopped).toBe(true);
+
+		const phases: string[] = [];
+		const received: RoomDraft[] = [];
+		const second = subscribeRoomDrafts(
+			cloud,
+			roomId,
+			(value) => received.push(value),
+			(phase) => phases.push(phase),
+		);
+		await vi.advanceTimersByTimeAsync(2_100);
+		expect(created).toHaveLength(1);
+		expect(phases).toEqual(["connecting", "degraded"]);
+
+		hangRemove = false;
+		finishRemove?.();
+		await vi.advanceTimersByTimeAsync(1_100);
+		expect(created).toHaveLength(2);
+		expect(phases.at(-1)).toBe("connected");
+		created[1]!.handler?.({
+			payload: {
+				schema: "qorpera.room-draft/v1",
+				roomId,
+				ownerUserId: userB.id,
+				body: "Recovered live draft",
+				revision: 2,
+				editorUserId: userB.id,
+				contributors: [],
+				updatedAt: timestamp,
+			},
+		});
+		expect(received.map((item) => item.body)).toEqual(["Recovered live draft"]);
+
+		hangRemove = true;
+		let secondStopped = false;
+		const stoppingSecond = second.stop().then(() => {
+			secondStopped = true;
+		});
+		await vi.advanceTimersByTimeAsync(2_000);
+		await stoppingSecond;
+		expect(secondStopped).toBe(true);
 	});
 });

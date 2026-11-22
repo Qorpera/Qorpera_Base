@@ -60,19 +60,31 @@ const IDENTITY_TTL_MS = 60_000;
 const LEAVE_WAIT_MS = 2_000;
 const MAX_TRACKED_CLIENTS = 512;
 
-async function leaveChannelWithin(supabase: Cloud["supabase"], active: RealtimeChannel): Promise<void> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	try {
-		// WHY: Bound removeChannel so a dropped Realtime WebSocket cannot deadlock founding presence reconnect or stop.
-		await Promise.race([
-			supabase.removeChannel(active).catch(() => undefined),
-			new Promise<void>((resolve) => {
-				timer = setTimeout(resolve, LEAVE_WAIT_MS);
-			}),
-		]);
-	} finally {
-		clearTimeout(timer);
-	}
+function heldChannels(supabase: Cloud["supabase"], topic: string): RealtimeChannel[] {
+	return (supabase.getChannels?.() ?? []).filter((each) => each.topic === `realtime:${topic}` || each.topic === topic);
+}
+
+async function freeTopicWithin(
+	supabase: Cloud["supabase"],
+	topic: string,
+	active: RealtimeChannel | undefined,
+): Promise<boolean> {
+	const leaving = [...new Set([...(active ? [active] : []), ...heldChannels(supabase, topic)])];
+	await Promise.all(
+		leaving.map((each) => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			// WHY: Bound removeChannel per held channel so a dropped Realtime socket cannot deadlock reconnect or stop.
+			return Promise.race([
+				supabase.removeChannel(each).catch(() => undefined),
+				new Promise<void>((resolve) => {
+					timer = setTimeout(resolve, LEAVE_WAIT_MS);
+				}),
+			]).finally(() => {
+				clearTimeout(timer);
+			});
+		}),
+	);
+	return heldChannels(supabase, topic).length === 0;
 }
 
 function capMap<K, V>(map: Map<K, V>, max: number): void {
@@ -140,6 +152,7 @@ export function joinFoundingPresence(
 	listener: FoundingPresenceListener,
 ): FoundingPresenceHandle {
 	const clientId = crypto.randomUUID();
+	const topic = `qorpera-founding-${profileId}`;
 	const signatures = new PresenceSignatures();
 	let stopped = false;
 	let channel: RealtimeChannel | undefined;
@@ -173,7 +186,7 @@ export function joinFoundingPresence(
 	const finalRefusal = (error: unknown): boolean =>
 		error instanceof CloudRpcError && (error.missing || error.code === "42501");
 
-	const end = (health: FoundingPresenceHealth): void => {
+	const end = (health: FoundingPresenceHealth, leave = true): void => {
 		stopped = true;
 		subscribed = false;
 		// WHY: Abort in-flight presence RPCs and release cached client maps when presence stops.
@@ -183,7 +196,9 @@ export function joinFoundingPresence(
 		clearInterval(heartbeat);
 		const active = channel;
 		channel = undefined;
-		if (active) void leaveChannelWithin(cloud.supabase, active);
+		if (leave && (active || heldChannels(cloud.supabase, topic).length > 0)) {
+			void freeTopicWithin(cloud.supabase, topic, active);
+		}
 		identities.clear();
 		lookups.clear();
 		lastState.clear();
@@ -247,7 +262,14 @@ export function joinFoundingPresence(
 							.map((who) => [who.clientId, who] as const),
 					);
 					const at = Date.now();
-					for (const remote of unknown) identities.set(remote, { identity: found.get(remote), at });
+					for (const remote of unknown) {
+						const knownIdentity = found.get(remote);
+						identities.set(remote, { identity: knownIdentity, at });
+						if (!knownIdentity) {
+							lastState.delete(remote);
+							lastLive.delete(remote);
+						}
+					}
 					capMap(identities, MAX_TRACKED_CLIENTS);
 					return found;
 				});
@@ -332,11 +354,6 @@ export function joinFoundingPresence(
 					if (!prior || prior.number < tab.number) newest.set(tab.remote, tab);
 				}
 				for (const tab of newest.values()) lastState.set(tab.remote, tab.number);
-				const presentRemotes = new Set(candidates.map((candidate) => candidate.remote));
-				for (const remote of lastState.keys()) {
-					if (!presentRemotes.has(remote)) lastState.delete(remote);
-				}
-				capMap(lastState, MAX_TRACKED_CLIENTS);
 				report(
 					[...newest.values()].map((tab) => ({
 						clientId: tab.remote,
@@ -393,7 +410,6 @@ export function joinFoundingPresence(
 				if (!(await PresenceSignatures.verify(person.publicKey, bytes, signature))) return;
 				if (source !== channel || stopped || number <= (lastLive.get(remote) ?? 0)) return;
 				lastLive.set(remote, number);
-				capMap(lastLive, MAX_TRACKED_CLIENTS);
 				listener.live({ clientId: remote, userId: person.userId, field: at, text, caret, typing, own });
 			})
 			.catch(() => undefined);
@@ -406,7 +422,7 @@ export function joinFoundingPresence(
 		syncTimer = undefined;
 		if (failed && failed === channel) {
 			channel = undefined;
-			removal = leaveChannelWithin(cloud.supabase, failed);
+			removal = freeTopicWithin(cloud.supabase, topic, failed).then(() => undefined);
 		}
 		report([]);
 		listener.health("degraded");
@@ -423,14 +439,18 @@ export function joinFoundingPresence(
 		const generation = ++connectGeneration;
 		listener.health("connecting");
 		Promise.all([removal, register()])
-			.then(() => {
+			.then(async () => {
 				if (stopped || generation !== connectGeneration) return;
 				const previous = channel;
-				if (previous) {
-					channel = undefined;
-					void leaveChannelWithin(cloud.supabase, previous);
+				channel = undefined;
+				// WHY: Wait until no leaving channel holds the topic before calling channel(topic), or subscribe() becomes a no-op.
+				const freed = await freeTopicWithin(cloud.supabase, topic, previous);
+				if (stopped || generation !== connectGeneration) return;
+				if (!freed) {
+					retry(undefined);
+					return;
 				}
-				const next = cloud.supabase.channel(`qorpera-founding-${profileId}`, {
+				const next = cloud.supabase.channel(topic, {
 					config: { private: true, presence: { key: clientId }, broadcast: { self: false } },
 				});
 				channel = next;
@@ -487,8 +507,10 @@ export function joinFoundingPresence(
 			if (stopped) return;
 			const active = channel;
 			channel = undefined;
-			end("stopped");
-			if (active) await leaveChannelWithin(cloud.supabase, active);
+			end("stopped", false);
+			if (active || heldChannels(cloud.supabase, topic).length > 0) {
+				await freeTopicWithin(cloud.supabase, topic, active);
+			}
 			await registration?.catch(() => undefined);
 			await cloud
 				.rpc("qorpera_unregister_founding_presence", { p_profile_id: profileId, p_client_id: clientId })
