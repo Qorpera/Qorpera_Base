@@ -1655,7 +1655,12 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 					}),
 					f.context,
 				);
-				return { providerSessionId: "native-surface-thread", toolCalls: 2, codexVersion: "pinned", fencedRequests: 2 };
+				return {
+					providerSessionId: "native-surface-thread",
+					toolCalls: 2,
+					codexVersion: "pinned",
+					fencedRequests: 2,
+				};
 			} finally {
 				run.close();
 			}
