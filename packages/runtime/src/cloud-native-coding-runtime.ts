@@ -42,6 +42,12 @@ import {
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import type { CloudRuntimeObservability, CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import { SITE_NAME_RULE } from "./cloud-site-tools.ts";
+import { createCodingRecordChangeTool } from "./cloud-surface-tools.ts";
+import {
+	buildSurfaceTurnBrief,
+	SURFACE_STAGED_CODING_INSTRUCTIONS,
+	type SurfaceCodingTurnBinding,
+} from "./cloud-surface-turn-context.ts";
 import type { CloudWakeEnvelope } from "./cloud-wake-bus.ts";
 
 export const CLOUD_CODING_NATIVE_RPCS = [
@@ -65,6 +71,7 @@ export interface CloudNativeCodingTurnContext {
 	identity: CloudNativeToolIdentity;
 	wake: CloudWakeEnvelope;
 	observability?: CloudRuntimeObservability;
+	surfaceSession?: SurfaceCodingTurnBinding;
 }
 export interface CloudNativeCodingDriver {
 	execute(
@@ -749,6 +756,15 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				};
 			},
 		};
+		const surfaceSession = context.surfaceSession;
+		const effectivePrompt = surfaceSession ? `${prompt}\n\n${buildSurfaceTurnBrief(surfaceSession)}` : prompt;
+		const effectiveContextSha256 = surfaceSession
+			? createHash("sha256").update(effectivePrompt).digest("hex")
+			: contextSha256;
+		const baseInstructions = turn.machine.newDisk ? `${INSTRUCTIONS} ${NEW_DISK}` : INSTRUCTIONS;
+		const runtimeInstructions = surfaceSession
+			? `${baseInstructions} ${SURFACE_STAGED_CODING_INSTRUCTIONS}`
+			: baseInstructions;
 		const gateway = this.#gateway(binding);
 		const result = await runCloudNativeRunToolSession({
 			binding,
@@ -771,8 +787,8 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			identityRoot,
 			isolation: this.#isolation,
 			...(this.#chatGptPlanAuth ? { chatGptPlanAuth: this.#chatGptPlanAuth } : {}),
-			prompt,
-			runtimeInstructions: turn.machine.newDisk ? `${INSTRUCTIONS} ${NEW_DISK}` : INSTRUCTIONS,
+			prompt: effectivePrompt,
+			runtimeInstructions,
 			signal,
 			timeoutMs: this.#timeoutMs,
 			observability: context.observability,
@@ -794,8 +810,8 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 						p_runtime_bundle_sha256: initial.identity.runtimeBundleSha256,
 						p_reasoning_policy_sha256: initial.identity.reasoningPolicySha256,
 						p_tool_catalog_text: text,
-						p_context_sha256: contextSha256,
-						p_context_bytes: Buffer.byteLength(prompt),
+						p_context_sha256: effectiveContextSha256,
+						p_context_bytes: Buffer.byteLength(effectivePrompt),
 					},
 					checked,
 				);
@@ -809,8 +825,8 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					reasoningEffort: initial.identity.reasoningEffort,
 					reasoningPolicySha256: initial.identity.reasoningPolicySha256,
 					toolCatalogSha256: createHash("sha256").update(text).digest("hex"),
-					contextSha256,
-					contextBytes: Buffer.byteLength(prompt),
+					contextSha256: effectiveContextSha256,
+					contextBytes: Buffer.byteLength(effectivePrompt),
 				};
 				if (cloudToolJsonText(started) !== cloudToolJsonText(expected))
 					throw new Error("CODING_EXECUTION_ADMISSION_UNCONFIRMED");
@@ -829,8 +845,16 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					read: (...input) => gateway.read(...input),
 					cancel: (...input) => gateway.cancel(...input),
 				};
+				const recordChangeTool = surfaceSession
+					? [createCodingRecordChangeTool(surfaceSession.sessionId, { recordChange: surfaceSession.recordChange })]
+					: [];
 				return {
-					tools: [...cloudCodingCommandTools({ scope, identity, operations, gateway: guarded }), finish, ask],
+					tools: [
+						...cloudCodingCommandTools({ scope, identity, operations, gateway: guarded }),
+						...recordChangeTool,
+						finish,
+						ask,
+					],
 					assertContext,
 					recordContextView: async (frame, outputs, checked) => {
 						const view = {

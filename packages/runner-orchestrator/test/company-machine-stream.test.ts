@@ -1421,4 +1421,51 @@ describe("a desktop's live picture (20260930745000)", () => {
 	it("runs nothing else from its relay: no subprocess, shell, exec, eval or file open", () => {
 		expect(COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM).not.toMatch(/subprocess|os\.system|exec\(|eval\(|open\(/);
 	});
+
+	it.skipIf(process.platform !== "linux" || spawnSync("python3", ["-c", "0"]).status !== 0)(
+		"exits with 96 when send_vnc stalls against an open server that stops reading",
+		async () => {
+			const accepted: Socket[] = [];
+			const server = createServer((socket: Socket) => {
+				socket.pause();
+				accepted.push(socket);
+			});
+			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+			try {
+				const port = (server.address() as { port: number }).port;
+				const program = COMPANY_MACHINE_DESKTOP_VIEW_PROGRAM.replace(
+					"('127.0.0.1', 5901)",
+					`('127.0.0.1', ${port})`,
+				)
+					.replace("/run/qorpera-desktop/last-use", "/nonexistent/last-use")
+					.replace("select.select([], [vnc], [], 10)", "select.select([], [vnc], [], 0.2)");
+				const relay = spawn("python3", ["-c", program], { stdio: ["pipe", "pipe", "ignore"] });
+				const exited = new Promise<number | null>((resolve) => relay.on("exit", resolve));
+				relay.stdin.on("error", () => {});
+				relay.stdin.write(Buffer.concat([RFB_VERSION, Buffer.from([1]), Buffer.from([1])]));
+				const req = rfbUpdateRequest(true, 64, 40);
+				const batch = Buffer.concat(Array.from({ length: 4096 }, () => req));
+				let done = false;
+				void exited.then(() => {
+					done = true;
+				});
+				const feed = async () => {
+					for (let i = 0; i < 512 && !done; i++) {
+						if (!relay.stdin.write(batch)) {
+							await Promise.race([new Promise<void>((resolve) => relay.stdin.once("drain", resolve)), exited]);
+						}
+					}
+				};
+				await Promise.race([feed(), exited]);
+				const code = await exited;
+				expect(code).toBe(96);
+				expect(accepted.length).toBe(1);
+				expect(accepted[0]?.destroyed).toBe(false);
+			} finally {
+				for (const socket of accepted) socket.destroy();
+				server.close();
+			}
+		},
+		15_000,
+	);
 });

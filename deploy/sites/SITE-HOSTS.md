@@ -23,6 +23,13 @@ visitor ──https──▶ Cloudflare (*.qorpera.com: the proxied wildcard rec
   `.qorpera.com`; take the one label before it; a label ending `--next` is a next host and its slug is the label without
   that ending, else an own host; the slug matches `^[a-z0-9]+(-[a-z0-9]+)*$`, is 3 to 48 long and passes the name rule
   below. As one regex: `^([a-z0-9]+(?:-[a-z0-9]+)*)(--next)?\.qorpera\.com$`, the length checked apart.
+- **Surface preview hosts (`20260930842000`).** The Surface-First Company Harness adds isolated preview hosts of the form
+  `<slug>--p<8chars>.<hosts_domain>` (regex `^([a-z0-9]+(?:-[a-z0-9]+)*)(--next|--p[a-z0-9]{8})?\.<hosts_domain>$`) in
+  SQL (`qorpera_site_host`, `qorpera_site_serve_host`, `qorpera_site_member_pass_redeem`) and `site-serve`. The native
+  web router (`crates/qorpera-web-router` under `deploy/web-hosting`) currently routes only live (`<slug>`) and `--next`
+  hosts, and `qorpera_web_edge_tls_allow` denies `--p<8chars>` hosts to stay aligned with it. Accordingly, turning
+  `qorpera_surface_settings.enabled = true` requires `site-serve` to remain the front for `--p<8chars>` preview hosts on
+  the active `hosts_domain` (or a follow-up PR adding `--p` preview routing and session checks to `qorpera-web-router`).
 - **One domain, written in four places.** `qorpera.com` is in site-serve (`SITE_HOST`, its old host's `moved`), the
   web (`SITE_HOST` of `cloud/sites.ts`, which `cloud/releases.ts` reads Look first's link by) and the executor's change
   record, so SQL takes no other: `qorpera_site_settings.hosts_domain` is null or `qorpera.com`, nothing else (a check

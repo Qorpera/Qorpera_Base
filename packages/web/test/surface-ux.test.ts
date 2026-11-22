@@ -1,0 +1,1404 @@
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AuthController } from "../src/app/auth.ts";
+import { CompanyController } from "../src/app/company.ts";
+import { inferSurfaceKind, opsComposerPlaceholder } from "../src/app/surface-kinds.ts";
+import { recipientOf, renderLocalSitePreviewHtml } from "../src/app/surface-local-sandbox.ts";
+import {
+	activeTaskSessions,
+	attachSurfaces,
+	clearLocalSandboxCache,
+	synthesizeSurfaces,
+} from "../src/app/surfaces-store.ts";
+import { ConversationView } from "../src/app/views/conversation.ts";
+import { HubController } from "../src/app/views/hub.ts";
+import { renderNewCompany } from "../src/app/views/new-company.ts";
+import { renderRail } from "../src/app/views/shell.ts";
+import { SITE_DOOR_READY, SITE_DOOR_SHOWN } from "../src/app/views/site-view.ts";
+import { CrewFigures, crewLook, sessionCrew } from "../src/app/views/surface-crew.ts";
+import { IDENTITY_TOKENS_CSS_MESSAGE, SurfaceDoorStage } from "../src/app/views/surface-door.ts";
+import { openCreateSurfaceSheet, openScheduleAgentSheet } from "../src/app/views/surface-migration-sheet.ts";
+import { openPublishPatchnotesSheet } from "../src/app/views/surface-publish-sheet.ts";
+import { SurfaceRail } from "../src/app/views/surface-rail.ts";
+import { SurfaceView } from "../src/app/views/surface-view.ts";
+import { linkHref } from "../src/ui/dom.ts";
+import { RailLayout } from "../src/ui/rail-layout.ts";
+import { session as chatSession, fixture, id, profileA, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
+import {
+	CHANGES,
+	COMPANY,
+	change,
+	fakeClient,
+	MESSAGE_IDS,
+	previewFrame,
+	SESSION,
+	SURFACE,
+	session,
+	sessionMessage,
+	storeWith,
+	summary,
+	workspace,
+} from "./surface-fixtures.ts";
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+afterEach(() => {
+	clearLocalSandboxCache();
+	document.body.replaceChildren();
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
+});
+
+const inbox = summary({
+	id: "55555555-5555-4555-8555-555555555501",
+	slug: "inbox",
+	title: "Inbox",
+	group: "operations",
+	archetype: "ops",
+	icon: "mail",
+	siteSlug: null,
+	liveUrl: null,
+	activeSessionCount: 1,
+});
+
+describe("surface kinds", () => {
+	it("tells every surface's kind from its slug, icon and archetype", () => {
+		expect(inferSurfaceKind(inbox)).toBe("inbox");
+		expect(inferSurfaceKind({ slug: "money", icon: "coin", archetype: "ops" })).toBe("money");
+		expect(inferSurfaceKind({ slug: "members", icon: "members", archetype: "ops" })).toBe("members");
+		expect(inferSurfaceKind({ slug: "data", icon: "database", archetype: "ops" })).toBe("data");
+		expect(inferSurfaceKind({ slug: "files", icon: "drawers", archetype: "ops" })).toBe("files");
+		expect(inferSurfaceKind({ slug: "thetaband", icon: "globe", archetype: "live_build" })).toBe("website");
+		expect(inferSurfaceKind({ slug: "mobile", icon: "phone", archetype: "live_build" })).toBe("mobile_app");
+		expect(inferSurfaceKind({ slug: "desktop", icon: "window", archetype: "live_build" })).toBe("desktop_app");
+		expect(inferSurfaceKind({ slug: "dashboard", icon: "chart", archetype: "live_build" })).toBe("dashboard");
+		expect(inferSurfaceKind({ slug: "brand", icon: "spark", archetype: "studio" })).toBe("brand");
+		expect(inferSurfaceKind({ slug: "headband", icon: "box", archetype: "studio" })).toBe("product");
+		expect(inferSurfaceKind({ slug: "database", icon: "database", archetype: "studio" })).toBe("database");
+		expect(opsComposerPlaceholder("inbox")).toBe("Ask an agent to draft, follow up, or summarize mail…");
+		expect(opsComposerPlaceholder("files")).toBe("Ask an agent to organize, summarize, or create files…");
+	});
+
+	it("brings Members and Databases into Running when the company has those pages", () => {
+		const surfaces = synthesizeSurfaces({
+			companyId: COMPANY,
+			sites: [],
+			pages: ["mailbox", "bank", "members", "data"],
+		});
+		expect(surfaces.map((item) => item.slug)).toEqual(["inbox", "money", "members", "data", "files"]);
+		expect(surfaces.every((item) => item.group === "operations")).toBe(true);
+	});
+});
+
+describe("session crew", () => {
+	it("gives every session a stable staff figure, never the Co-Founder's crown, and maps its state to motion", () => {
+		const ids = Array.from(
+			{ length: 40 },
+			(_, index) => `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+		);
+		const figures = ids.map((id) => sessionCrew(id).figure);
+		expect(figures).not.toContain("crown");
+		expect(new Set(figures).size).toBeGreaterThan(4);
+		expect(sessionCrew(ids[3]!)).toEqual(sessionCrew(ids[3]!));
+		expect(crewLook(session([], { state: "running" }))).toMatchObject({ tone: "working", activity: "Working" });
+		expect(crewLook(session([], { state: "needs_input" }))).toMatchObject({ activity: "Waiting", ask: "question" });
+		expect(crewLook(session(["conflicted"]))).toMatchObject({ tone: "attention", ask: "bang" });
+		expect(crewLook(session(["staged"]))).toMatchObject({ tone: "ready", activity: "Idle", alive: true });
+		expect(crewLook(session(["merged"]))).toMatchObject({ tone: "merged" });
+	});
+
+	it("hands back the same figure element across redraws until the session's look changes", () => {
+		const crew = new CrewFigures();
+		const ready = session(["staged"]);
+		const first = crew.take(ready, 32);
+		crew.settle();
+		expect(crew.take(ready, 32)).toBe(first);
+		crew.settle();
+		const working = crew.take({ ...ready, state: "running" }, 32);
+		expect(working).not.toBe(first);
+		expect(working.classList.contains("is-working")).toBe(true);
+		expect(working.querySelector(".figure")).not.toBeNull();
+	});
+});
+
+describe("operational surfaces", () => {
+	it("drafts one email on Inbox in local preview, with no preview toggles or diffs", async () => {
+		vi.useFakeTimers();
+		const store = storeWith(undefined, {
+			companyName: "Brooks",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const local = store.state.surfaces.find((item) => item.slug === "inbox")!;
+		await store.openSurface("inbox");
+		const started = await store.startSession(
+			local.id,
+			"could we reach out to asger again, and ask him to elaborate?",
+		);
+		vi.advanceTimersByTime(700);
+		const ready = store.session(started!.id)!;
+		expect(ready.changes).toHaveLength(1);
+		const draft = ready.changes[0]!;
+		expect(draft.kind).toBe("ops_action");
+		expect(draft.diffStats).toBeNull();
+		expect(draft.affectedPaths).toEqual(["mailto:asger"]);
+		expect(draft.title).toBe("Could you elaborate?");
+		expect(draft.summary).toContain("Hi Asger,");
+		expect(draft.summary).toContain("Brooks");
+		expect(await store.approveChange(ready.id, draft.id)).toBe("history");
+		expect(store.state.undo?.verb).toBe("sent");
+		expect(store.state.surfaces.find((item) => item.id === local.id)?.unpublishedChangeCount).toBe(0);
+		store.dispose();
+	});
+
+	it("finds who an email is for in plain words", () => {
+		expect(recipientOf("could we reach out to asger again, and ask him to elaborate?")).toBe("Asger");
+		expect(recipientOf("Reply to Mette about the Safari bug")).toBe("Mette");
+		expect(recipientOf("ask him to elaborate")).toBeNull();
+	});
+
+	it("shows an ops session as an agent-owned task in the rail and an email card in the drawer", async () => {
+		const actionSession = session([], {
+			surfaceId: inbox.id,
+			title: "could we reach out to asger again",
+			changes: [
+				change("44444444-4444-4444-8444-444444444491", 1, "staged", {
+					surfaceId: inbox.id,
+					kind: "ops_action",
+					title: "Could you elaborate?",
+					summary: "Hi Asger,\n\nCould you elaborate a little?",
+					affectedPaths: ["mailto:asger"],
+					diffStats: { filesChanged: 2, additions: 38, deletions: 12 },
+				}),
+			],
+		});
+		const approveSurfaceChange = vi.fn(async () =>
+			session(["merged"], {
+				...actionSession,
+				changes: [{ ...actionSession.changes[0]!, status: "merged" }],
+				state: "completed",
+			}),
+		);
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [summary(), inbox]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([actionSession], { surface: inbox })),
+				approveSurfaceChange,
+			}),
+		);
+		await store.load();
+		await store.openSurface("inbox");
+
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("inbox");
+		const row = rail.el.querySelector(".surface-session")!;
+		expect(row.classList.contains("is-action")).toBe(true);
+		expect(row.querySelector(".surface-crew .figure")).not.toBeNull();
+		expect(row.querySelector(".surface-crew")?.getAttribute("data-figure")).not.toBe("crown");
+		expect(row.querySelector(".surface-session-status")?.textContent).toBe("Draft ready");
+		expect(row.querySelector(".surface-switch")).toBeNull();
+		expect(row.querySelector('.surface-approve.is-action[aria-label^="Send"]')).not.toBeNull();
+		const tile = rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="inbox"] .surface-tile')!;
+		expect(tile.style.getPropertyValue("--surface-tint")).toBe("#2f63d8");
+		expect(rail.el.querySelector('.rail-surface[data-surface-slug="inbox"] .rail-surface-sub')?.textContent).toBe(
+			"1 session active",
+		);
+
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "inbox");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		expect(view.el.querySelector<HTMLTextAreaElement>(".surface-input")?.placeholder).toBe(
+			"Ask an agent to draft, follow up, or summarize mail…",
+		);
+		store.openDrawer(inbox.id, actionSession.id);
+		view.update();
+		const drawer = view.el.querySelector(".surface-drawer")!;
+		expect(drawer.querySelector(".surface-drawer-head .surface-crew.is-large")).not.toBeNull();
+		const card = drawer.querySelector(".surface-action-card.is-email")!;
+		expect(card.querySelector(".surface-email-meta")?.textContent).toContain("Asger");
+		expect(card.querySelector(".surface-email-meta")?.textContent).toContain("Could you elaborate?");
+		expect(drawer.querySelector(".surface-switch")).toBeNull();
+		expect(drawer.textContent).not.toContain("toggle to preview");
+		expect(drawer.textContent).not.toContain("+38");
+		card.querySelector<HTMLButtonElement>('[data-act="approve"]')!.click();
+		const confirmSend = drawer.querySelector<HTMLButtonElement>('.surface-action-card [data-act="approve"]')!;
+		expect(confirmSend.classList.contains("is-confirming")).toBe(true);
+		expect(confirmSend.textContent).toBe("Confirm");
+		confirmSend.click();
+		await flush();
+		await flush();
+		view.update();
+		expect(approveSurfaceChange).toHaveBeenCalledWith(actionSession.changes[0]!.id);
+		expect(view.el.querySelector(".surface-toast")?.textContent).toContain("Sent “Could you elaborate?”");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("keeps preview switches and diffs on visual surfaces", async () => {
+		const store = storeWith(fakeClient());
+		await store.load();
+		await store.openSurface("website");
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		store.openDrawer(SURFACE, SESSION);
+		view.update();
+		const drawer = view.el.querySelector(".surface-drawer")!;
+		expect(drawer.querySelectorAll(".surface-switch")).toHaveLength(3);
+		expect(drawer.querySelector(".surface-action-card")).toBeNull();
+		expect(view.el.querySelector<HTMLTextAreaElement>(".surface-input")?.placeholder).toBe(
+			"Describe a change — it runs as its own session",
+		);
+		view.dispose();
+		store.dispose();
+	});
+});
+
+describe("creating surfaces", () => {
+	it("offers nine kinds, a custom surface with colour, icon and brief, and opens a Mobile App in the phone frame", async () => {
+		const navigated: string[] = [];
+		const store = storeWith(undefined, {
+			companyName: "Brooks",
+			localInteractive: true,
+			onNavigateSurface: (slug) => navigated.push(slug),
+		});
+		await store.load();
+		const dialog = HTMLDialogElement.prototype;
+		dialog.showModal ??= function (this: HTMLDialogElement) {
+			this.open = true;
+		};
+		dialog.close ??= function (this: HTMLDialogElement) {
+			this.open = false;
+		};
+		openCreateSurfaceSheet(store, COMPANY);
+		const sheet = document.querySelector(".surface-create-sheet")!;
+		const presets = [...sheet.querySelectorAll<HTMLElement>(".surface-create-card")].map(
+			(card) => card.dataset.preset,
+		);
+		expect(presets).toEqual([
+			"identity",
+			"website",
+			"web_app",
+			"mobile_app",
+			"desktop_app",
+			"database",
+			"dashboard",
+			"product",
+			"report",
+			"custom",
+		]);
+		const custom = sheet.querySelector<HTMLElement>(".surface-create-custom")!;
+		expect(custom.hidden).toBe(true);
+		sheet.querySelector<HTMLElement>('[data-preset="custom"]')!.click();
+		expect(custom.hidden).toBe(false);
+		expect(custom.querySelectorAll(".surface-create-swatch").length).toBeGreaterThan(5);
+
+		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
+		expect(custom.hidden).toBe(true);
+		expect(sheet.querySelector<HTMLInputElement>(".surface-create-input")?.value).toBe("Mobile App");
+		sheet
+			.querySelector<HTMLFormElement>(".surface-create-form")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		const mobile = store.state.surfaces.find((item) => item.slug === "mobile")!;
+		expect(store.lookOf(mobile).kind).toBe("mobile_app");
+		expect(store.state.device).toBe("mobile");
+		expect(navigated).toEqual(["mobile"]);
+
+		const investor = await store.createSurface({
+			title: "Investor Room",
+			archetype: "studio",
+			icon: "book",
+			kind: "custom",
+			accent: "#e0559b",
+			description: "Data room for the seed round.",
+		});
+		expect(store.lookOf(investor!)).toEqual({ kind: "custom", accent: "#e0559b" });
+		expect(store.workspace(investor!.id)?.briefSummary).toBe("Data room for the seed round.");
+		expect(store.state.localStudioBase[investor!.id]?.["investor-room/brief.md"]).toContain(
+			"Data room for the seed round.",
+		);
+		const database = await store.createSurface({
+			title: "Database",
+			slug: "database",
+			archetype: "studio",
+			kind: "database",
+		});
+		expect(store.state.localStudioBase[database!.id]?.["database/tables.json"]).toContain("customers");
+		store.dispose();
+	});
+
+	it("renders a tailored local preview for every buildable kind", () => {
+		const surface = summary({ title: "Brooks" });
+		expect(renderLocalSitePreviewHtml("Brooks", surface, [], "live", "mobile_app")).toContain(
+			'data-component="TabBar"',
+		);
+		expect(renderLocalSitePreviewHtml("Brooks", surface, [], "live", "desktop_app")).toContain(
+			'data-component="TitleBar"',
+		);
+		expect(renderLocalSitePreviewHtml("Brooks", surface, [], "live", "dashboard")).toContain(
+			'data-component="KpiRow"',
+		);
+		expect(renderLocalSitePreviewHtml("Brooks", surface, [], "live", "web_app")).toContain(
+			'data-component="AppSidebar"',
+		);
+		expect(renderLocalSitePreviewHtml("Brooks", surface, [], "live", "website", "A calm brief.")).toContain(
+			"A calm brief.",
+		);
+	});
+});
+
+describe("unified agents, nested members, and Thetaband orchestration", () => {
+	it("nests human member threads directly under the Members surface with teammate count", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Brooks",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox", "members"] }),
+		});
+		await store.load();
+		await store.openSurface("members");
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		const marie = document.createElement("a");
+		marie.className = "rail-row";
+		marie.dataset.memberId = "user-marie";
+		marie.textContent = "Marie Malling";
+		rail.update("members", false, { rows: [marie], unread: 0, active: false });
+
+		const membersRow = rail.el.querySelector('.rail-surface[data-surface-slug="members"]')!;
+		expect(membersRow.querySelector(".rail-surface-sub")?.textContent).toBe("1 teammate");
+		const tree = membersRow.nextElementSibling!;
+		expect(tree.querySelector('.rail-members [data-member-id="user-marie"]')).toBe(marie);
+		expect(tree.querySelector(".surface-tree-empty")).toBeNull();
+		expect(rail.el.querySelector('[aria-label="Building"]')).toBeNull();
+		store.dispose();
+	});
+
+	it("creates and edits a prompt + schedule agent without HR persona charters", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Brooks",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const dialog = HTMLDialogElement.prototype;
+		dialog.showModal ??= function (this: HTMLDialogElement) {
+			this.open = true;
+		};
+		dialog.close ??= function (this: HTMLDialogElement) {
+			this.open = false;
+		};
+		openScheduleAgentSheet(store);
+		const sheet = document.querySelector(".surface-schedule-sheet")!;
+		const [nameInput, scheduleInput] = sheet.querySelectorAll<HTMLInputElement>("input.surface-create-input");
+		const promptInput = sheet.querySelector<HTMLTextAreaElement>("textarea.surface-create-prompt")!;
+		nameInput!.value = "Morning inbox triage";
+		promptInput.value = "Summarize urgent customer replies and draft follow-ups.";
+		scheduleInput!.value = "Every day · 09:00";
+		sheet.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		expect(store.state.automations).toHaveLength(1);
+		const created = store.state.automations[0]!;
+		expect(created.title).toBe("Morning inbox triage");
+		expect(store.state.scheduledAgentPrompts[created.id]).toBe(
+			"Summarize urgent customer replies and draft follow-ups.",
+		);
+		await store.updateScheduledAgent(created.id, { scheduleSummary: "Every Monday · 09:00" });
+		expect(store.state.automations[0]?.scheduleSummary).toBe("Every Monday · 09:00");
+		await store.deleteScheduledAgent(created.id);
+		expect(store.state.automations).toHaveLength(0);
+		store.dispose();
+	});
+
+	it("lets the left sidepanel close completely and reopen without disturbing stored width", () => {
+		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+		const aside = document.createElement("aside");
+		aside.className = "rail";
+		const frame = document.createElement("div");
+		frame.className = "frame";
+		frame.append(aside);
+		document.body.append(frame);
+		const layout = new RailLayout(frame, aside);
+		expect(layout.hidden).toBe(false);
+		expect(frame.classList.contains("rail-hidden-desktop")).toBe(false);
+		layout.toggleHidden();
+		expect(layout.hidden).toBe(true);
+		expect(frame.classList.contains("rail-hidden-desktop")).toBe(true);
+		expect(aside.inert).toBe(true);
+		expect(layout.el.hidden).toBe(true);
+		layout.toggleHidden();
+		expect(layout.hidden).toBe(false);
+		expect(frame.classList.contains("rail-hidden-desktop")).toBe(false);
+		expect(aside.inert).toBe(false);
+		expect(layout.el.hidden).toBe(false);
+		layout.dispose();
+		vi.unstubAllGlobals();
+	});
+
+	it("centralizes the spacious white pill header with agent-owned explorations, Notes inside the owning agent, expandable drawer, and 2nd-row Approve/Change/Discard", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox", "bank", "members"] }),
+		});
+		await store.load();
+		const productSlugs = store.state.surfaces
+			.filter((surface) => surface.group === "products")
+			.map((surface) => surface.slug);
+		expect(productSlugs).toEqual(["identity", "website", "phone-app", "product", "financials"]);
+		expect(activeTaskSessions(store.state)).toHaveLength(5);
+		expect(store.state.automations.length).toBeGreaterThanOrEqual(2);
+
+		const productSurface = store.state.surfaces.find((surface) => surface.slug === "product")!;
+		expect(store.state.localStudioBase[productSurface.id]?.["product/specs.json"]).toContain("BrainBit");
+
+		const website = store.state.surfaces.find((surface) => surface.slug === "website")!;
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		expect(view.el.querySelector(".surface-bar-lead")).toBeNull();
+		expect(view.el.querySelector(".surface-pill.is-spacious")).not.toBeNull();
+		const modeLabels = [...view.el.querySelectorAll(".surface-pill-modes button")].map((btn) => btn.textContent);
+		expect(modeLabels).toEqual(["Live", "Preview"]);
+		expect(view.el.querySelector(".surface-pill-device")).not.toBeNull();
+
+		const headerAgents = [...view.el.querySelectorAll<HTMLButtonElement>(".surface-pill .surface-bar-agent")];
+		expect(headerAgents).toHaveLength(2);
+		expect(headerAgents[0]?.querySelector(".surface-crew .figure")).not.toBeNull();
+		expect(headerAgents[0]?.querySelector(".surface-bar-agent-count")?.textContent).toBe("3");
+		expect(headerAgents[1]?.querySelector(".surface-crew .figure")).not.toBeNull();
+		expect(headerAgents[1]?.querySelector(".surface-bar-agent-count")?.textContent).toBe("2");
+
+		const stage = view.el.querySelector(".surface-stage")!;
+		expect(stage.children[0]?.classList.contains("surface-canvas")).toBe(true);
+		expect(stage.children[1]?.classList.contains("surface-drawer")).toBe(true);
+		const drawer = view.el.querySelector<HTMLElement>(".surface-drawer")!;
+		expect(drawer.classList.contains("is-open")).toBe(true);
+		expect(drawer.classList.contains("is-overview")).toBe(true);
+		expect(drawer.querySelector(".surface-drawer-resizer")).not.toBeNull();
+		expect(drawer.querySelector(".surface-overview-compare")).toBeNull();
+
+		const explorationCard = drawer.querySelector<HTMLElement>(".surface-overview-card.is-exploration")!;
+		expect(explorationCard.querySelector(".surface-overview-agent-head .surface-crew .figure")).not.toBeNull();
+		const ownedNote = explorationCard.querySelector<HTMLButtonElement>(".surface-agent-note")!;
+		expect(ownedNote.textContent).toContain("How Thetaband Presents Itself at First Visit");
+		const optionsBox = explorationCard.querySelector(".surface-overview-options")!;
+		expect(ownedNote.compareDocumentPosition(optionsBox) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+		ownedNote.click();
+		view.update();
+		expect(view.el.querySelector<HTMLElement>(".surface-report-slot")?.hidden).toBe(false);
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe(
+			"How Thetaband Presents Itself at First Visit",
+		);
+		expect(drawer.classList.contains("is-open")).toBe(true);
+
+		drawer.querySelectorAll<HTMLButtonElement>(".surface-overview-option")[1]!.click();
+		await flush();
+		view.update();
+		expect(view.el.querySelector<HTMLElement>(".surface-report-slot")?.hidden).toBe(true);
+		const switchedFrame = view.el.querySelector<HTMLIFrameElement>(".surface-mount iframe.surface-local-frame")!;
+		expect(switchedFrame.srcdoc).toContain("Portræt og telefon");
+
+		drawer.querySelector<HTMLButtonElement>('[data-act="focus-exploration"]')!.click();
+		view.update();
+		expect(drawer.classList.contains("is-overview")).toBe(false);
+		expect(drawer.querySelector(".surface-drawer-head h2")?.textContent).toBe("Forsidens udtryk");
+		expect(drawer.querySelector(".surface-drawer-body > .surface-agent-note")).not.toBeNull();
+		expect(drawer.querySelectorAll(".surface-drawer-option-row")).toHaveLength(3);
+
+		drawer.querySelector<HTMLButtonElement>('[data-act="choose-variant"]')!.click();
+		const confirmVariant = drawer.querySelector<HTMLButtonElement>('[data-act="choose-variant"]')!;
+		expect(confirmVariant.classList.contains("is-confirming")).toBe(true);
+		expect(confirmVariant.textContent).toBe("Confirm");
+		expect(store.workspace(website.id)?.explorations[0]?.status).toBe("open");
+		confirmVariant.click();
+		await flush();
+		view.update();
+		expect(store.workspace(website.id)?.explorations[0]?.status).toBe("chosen");
+		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(1);
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="collapse-pill"]')!.click();
+		expect(view.el.querySelector(".surface-pill")).toBeNull();
+		const notch = view.el.querySelector<HTMLButtonElement>(".surface-notch")!;
+		expect(notch).not.toBeNull();
+		notch.click();
+		expect(view.el.querySelector(".surface-pill")).not.toBeNull();
+		expect(view.el.querySelector(".surface-notch")).toBeNull();
+
+		const dialog = HTMLDialogElement.prototype;
+		dialog.showModal ??= function (this: HTMLDialogElement) {
+			this.open = true;
+		};
+		dialog.close ??= function (this: HTMLDialogElement) {
+			this.open = false;
+		};
+
+		drawer.querySelector<HTMLButtonElement>('[data-act="focus-session"]')!.click();
+		view.update();
+		expect(drawer.classList.contains("is-overview")).toBe(false);
+		expect(drawer.querySelector(".surface-message.is-session")).not.toBeNull();
+		expect(drawer.querySelector<HTMLFormElement>(".surface-drawer-foot")?.hidden).toBe(false);
+		const firstChange = drawer.querySelector<HTMLElement>(".surface-drawer-change")!;
+		expect(firstChange.querySelector(".surface-drawer-change-title")?.textContent).toBe(
+			"Tydelig pris: 1.995 kr. inkl. fragt",
+		);
+		const rowActions = [...firstChange.querySelectorAll<HTMLButtonElement>(".surface-drawer-change-acts button")].map(
+			(btn) => btn.textContent,
+		);
+		expect(rowActions).toEqual(["Approve", "Change", "Discard"]);
+
+		firstChange.querySelector<HTMLButtonElement>('[data-act="approve"]')!.click();
+		const confirmFirst = drawer.querySelector<HTMLButtonElement>('.surface-drawer-change [data-act="approve"]')!;
+		expect(confirmFirst.classList.contains("is-confirming")).toBe(true);
+		confirmFirst.click();
+		await flush();
+		view.update();
+		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(2);
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="publish"]')!.click();
+		const patchSheet = document.querySelector(".surface-publish-sheet")!;
+		expect(patchSheet).not.toBeNull();
+		expect(patchSheet.querySelectorAll(".surface-patchnote-item")).toHaveLength(2);
+		patchSheet.querySelector<HTMLButtonElement>('[data-act="rollback"]')!.click();
+		await flush();
+		expect(patchSheet.querySelectorAll(".surface-patchnote-item")).toHaveLength(1);
+		patchSheet.querySelector<HTMLButtonElement>('[data-act="confirm-publish"]')!.click();
+		await flush();
+		expect(document.querySelector(".surface-publish-sheet")).toBeNull();
+		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(0);
+
+		const remainingChange = drawer.querySelector<HTMLElement>(".surface-drawer-change:not(.is-closed)")!;
+		remainingChange.querySelector<HTMLButtonElement>('[data-act="quote-change"]')!.click();
+		const replyStrip = drawer.querySelector<HTMLElement>(".surface-drawer-reply")!;
+		expect(replyStrip.hidden).toBe(false);
+		const drawerInput = drawer.querySelector<HTMLInputElement>(".surface-drawer-input")!;
+		expect(document.activeElement).toBe(drawerInput);
+		drawerInput.value = "Gør prisen endnu mere rolig";
+		drawer
+			.querySelector<HTMLFormElement>(".surface-drawer-foot")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		view.update();
+		expect(replyStrip.hidden).toBe(true);
+		expect(drawer.querySelector(".surface-message-ref")).not.toBeNull();
+
+		drawer.querySelector<HTMLButtonElement>('[data-act="discard-change"]')!.click();
+		await flush();
+		view.update();
+		expect(drawer.querySelectorAll(".surface-drawer-change")).toHaveLength(1);
+		expect(drawer.querySelector('[data-act="toggle-expand"]')).toBeNull();
+
+		drawer.querySelector<HTMLButtonElement>('[data-act="back-overview"]')!.click();
+		view.update();
+		expect(drawer.classList.contains("is-open")).toBe(true);
+		expect(drawer.classList.contains("is-overview")).toBe(true);
+		expect(drawer.querySelector(".surface-drawer-title h2")?.textContent).toBe("Changes");
+		expect(drawer.querySelector(".surface-drawer-title p")).toBeNull();
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!.click();
+		view.update();
+		expect(drawer.classList.contains("is-open")).toBe(false);
+		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!.click();
+		view.update();
+		expect(drawer.classList.contains("is-open")).toBe(true);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("renders Phone App without a desktop/mobile toggle and opens Design Notes from the owning agent", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "phone-app");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		expect(view.el.querySelector(".surface-pill-device")).toBeNull();
+		expect(view.el.querySelector<HTMLElement>(".surface-viewport")?.dataset.device).toBe("mobile");
+		expect(view.el.querySelector(".surface-mount iframe.surface-local-frame")?.getAttribute("srcdoc")).toContain(
+			"Thetaband",
+		);
+
+		const agentNote = view.el.querySelector<HTMLButtonElement>(".surface-drawer .surface-agent-note")!;
+		expect(agentNote.textContent).toContain("Designing the Thetaband App for Quiet Evenings");
+		agentNote.click();
+		view.update();
+		expect(view.el.querySelector<HTMLElement>(".surface-report-slot")?.hidden).toBe(false);
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe(
+			"Designing the Thetaband App for Quiet Evenings",
+		);
+		expect(view.el.querySelector(".report-line-svg")).not.toBeNull();
+		expect(view.el.querySelector(".report-quote")).not.toBeNull();
+		expect(view.el.querySelector(".report-figure-panels")).not.toBeNull();
+		expect(view.el.querySelector<HTMLElement>(".surface-viewport")?.dataset.device).toBe("desktop");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("organizes Product Studio with folded Vendor Analysis tab, charts, tables, and no Internal/Public lens toggle", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "product");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		expect(view.el.querySelector(".studio-3d-canvas")).not.toBeNull();
+		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(0);
+		expect(view.el.querySelector(".studio-diff-prev")?.textContent).toBe("Prototype v2 (BrainBit evaluering)");
+		expect(view.el.querySelector(".studio-diff-next")?.textContent).toBe("Klar til Batch 1 (BrainBit låst)");
+
+		const explodeBtn = view.el.querySelector<HTMLButtonElement>('[data-act="3d-explode"]')!;
+		explodeBtn.click();
+		expect(view.el.querySelector<HTMLElement>(".studio-3d-callouts")?.hidden).toBe(false);
+
+		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")];
+		expect(tabs.map((tab) => tab.textContent)).toEqual([
+			"Overview",
+			"Specs & BOM",
+			"Production & Vendors",
+			"Analysis",
+			"Brief & Files",
+		]);
+
+		tabs[2]!.click();
+		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(4);
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="analysis"]')!.click();
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Why BrainBit OEM for Batch 1");
+		expect(view.el.querySelectorAll(".report-bar-row")).toHaveLength(3);
+		expect(view.el.querySelector(".report-table")).not.toBeNull();
+		expect(view.el.querySelector(".report-callout.is-decision")).not.toBeNull();
+		expect(view.el.querySelector('[data-act="report-lens"]')).toBeNull();
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="mode"][data-mode="live"]')!.click();
+		view.update();
+		expect(view.el.querySelector(".studio-diff-prev")).toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("unifies sidebar Agents into Working, Scheduled, and Ready with no Move button, no Other agents drawer, and no duplicate agents", async () => {
+		stubFigureMotion();
+		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+		const f = fixture();
+		const cofounder = { ...staff, id: id(10), displayName: "Co-Founder", templateId: "co-founder" };
+		const working = { ...staff, id: id(11), displayName: "Strategi", role: "Strategy" };
+		const scheduled = { ...staff, id: id(12), displayName: "Marked", role: "Market research" };
+		const idle = { ...staff, id: id(13), displayName: "Webdesign", role: "Site craft" };
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({
+			loading: false,
+			staff: [cofounder, working, scheduled, idle],
+			activity: [
+				{
+					staffAgentId: working.id,
+					runId: id(80),
+					sourceKind: "session_turn",
+					activity: "working",
+					jobStatus: "leased",
+					updatedAt: "2026-11-21T10:00:00Z",
+				},
+			],
+			agentNotes: {
+				[scheduled.id]: { next: { title: "Hold markedsoverblik", at: "2026-11-22T08:00:00Z" } },
+			},
+		});
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: profileA.profileId, sites: [], pages: ["mailbox", "members"] }),
+		});
+		await store.load();
+		attachSurfaces(company, store);
+
+		const container = document.createElement("aside");
+		const frame = document.createElement("div");
+		frame.className = "frame";
+		frame.append(container);
+		document.body.append(frame);
+		const auth = new AuthController(f.cloud);
+		renderRail(container, company, {
+			profiles: [profileA],
+			user: userA,
+			route: { name: "company", profileId: profileA.profileId, section: "surface", id: "website" },
+			auth,
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			openFriends: () => {},
+			agentActions: {},
+		});
+
+		const hub = container.querySelector<HTMLElement>(".rail-agents-hub");
+		expect(hub).not.toBeNull();
+		expect(hub?.querySelector(".rail-legacy-migrate")).toBeNull();
+		expect(hub?.querySelector(".rail-agents-legacy")).toBeNull();
+		expect(hub?.textContent).not.toContain("Other agents");
+
+		const subheads = [...hub!.querySelectorAll<HTMLElement>(".rail-agents-subhead")].map((el) => el.textContent);
+		expect(subheads).toEqual(["Working", "Scheduled", "Ready"]);
+
+		const staffHrefs = [...hub!.querySelectorAll<HTMLAnchorElement>("a.rail-agent-hub-row")]
+			.map((a) => linkHref(a))
+			.filter((href): href is string => Boolean(href?.includes("/staff/")));
+		expect(staffHrefs).toEqual([
+			`#/c/${profileA.profileId}/staff/${working.id}`,
+			`#/c/${profileA.profileId}/staff/${scheduled.id}`,
+			`#/c/${profileA.profileId}/staff/${idle.id}`,
+		]);
+		expect(new Set(staffHrefs).size).toBe(3);
+		expect(hub?.querySelector("[data-hub-exploration]")).not.toBeNull();
+
+		auth.dispose();
+		store.dispose();
+		company.stop();
+		vi.unstubAllGlobals();
+	});
+
+	it("keeps the header pill balanced into three flex groups with collapse nested in the right tools", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const pill = view.el.querySelector<HTMLElement>(".surface-pill");
+		expect(pill?.classList.contains("is-spacious")).toBe(true);
+		expect([...(pill?.children ?? [])].map((child) => child.className)).toEqual([
+			"surface-pill-modes",
+			"surface-bar-crew",
+			"surface-pill-right",
+		]);
+		expect(pill?.querySelector(".surface-pill-right .surface-pill-collapse")).not.toBeNull();
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("renders the foundational Identity interface with global reach chips, Design System, Philosophy, and Voice & Files", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "identity");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
+		expect(tabs).toEqual(["Overview", "Design System", "Philosophy", "Voice & Files"]);
+
+		const reachChips = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-reach-chip")].map(
+			(chip) => chip.dataset.slug,
+		);
+		expect(reachChips).toEqual(["website", "phone-app", "product", "financials"]);
+		expect(view.el.querySelector('[data-token="colors.Aften Lavendel"] code')?.textContent).toBe("#6f61cf");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="analysis"]')!.click();
+		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Calm Technology You Actually Put On");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+		expect(view.el.querySelector('[data-file="identity/voice.md"]')?.textContent).toContain(
+			"Vi siger / Vi siger aldrig",
+		);
+
+		const panelToggle = view.el.querySelector<HTMLButtonElement>(":scope > .surface-panel-toggle");
+		expect(panelToggle).not.toBeNull();
+		expect(view.el.querySelector(".surface-canvas .surface-panel-toggle")).toBeNull();
+		expect(view.el.querySelector('.surface-drawer [data-act="close-panel"]')).toBeNull();
+		expect(view.el.querySelector('.surface-drawer [data-act="close"]')).toBeNull();
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("lets mobile previews switch between exact phone models and updates logical viewport dimensions", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "phone-app");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const viewport = view.el.querySelector<HTMLElement>(".surface-viewport")!;
+		expect(viewport.dataset.device).toBe("mobile");
+		expect(viewport.style.getPropertyValue("--phone-w")).toBe("393px");
+		expect(viewport.style.getPropertyValue("--phone-h")).toBe("852px");
+		expect(viewport.dataset.phoneCutout).toBe("island");
+
+		view.el.querySelector<HTMLButtonElement>('[data-phone-model="iphone-se"]')!.click();
+		expect(viewport.style.getPropertyValue("--phone-w")).toBe("375px");
+		expect(viewport.style.getPropertyValue("--phone-h")).toBe("667px");
+		expect(viewport.dataset.phoneCutout).toBe("none");
+
+		view.el.querySelector<HTMLButtonElement>('[data-phone-model="pixel-9"]')!.click();
+		expect(viewport.style.getPropertyValue("--phone-w")).toBe("412px");
+		expect(viewport.style.getPropertyValue("--phone-h")).toBe("915px");
+		expect(viewport.dataset.phoneCutout).toBe("punch");
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("renders multiplayer surface presence in the header pill and teammate attribution in drawer chat and patch notes", async () => {
+		stubFigureMotion();
+		const madsId = "99999999-9999-4999-8999-999999999999";
+		const site = summary({
+			id: SURFACE,
+			slug: "website",
+			title: "Website",
+			unpublishedChangeCount: 1,
+			hasUnpublishedChanges: true,
+		});
+		const approved = change(CHANGES[0], 1, "merged", {
+			title: "Update pricing hero",
+			summary: "Clarifies all-in DKK pricing.",
+			approvedByUserId: madsId,
+			publishedAt: null,
+			resolvedAt: "2026-11-21T19:30:00Z",
+		});
+		const open = change(CHANGES[1], 2, "staged", { title: "Refine Danish FAQ" });
+		const activeSess = session(["merged", "staged"], {
+			id: SESSION,
+			surfaceId: site.id,
+			title: "Launch polish",
+			changes: [approved, open],
+			messages: [
+				sessionMessage(MESSAGE_IDS[0], "member", "Please clarify Batch 1 delivery.", {
+					authorUserId: madsId,
+				}),
+			],
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn().mockResolvedValue([site]),
+			getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([activeSess], { surface: site })),
+		});
+		const store = storeWith(client, {
+			memberName: (id) => (id === madsId ? "Mads" : undefined),
+			peopleAtSurface: (slug) => (slug === "website" ? [{ userId: madsId, name: "Mads" }] : []),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const presence = view.el.querySelector<HTMLElement>(".surface-pill-presence");
+		expect(presence).not.toBeNull();
+		expect(presence?.title).toBe("Mads is here");
+
+		store.openDrawer(site.id, activeSess.id);
+		view.update();
+		expect(view.el.querySelector(".surface-message-author")?.textContent).toBe("Mads");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="publish"]')!.click();
+		expect(document.querySelector(".surface-patchnote-approver")?.textContent).toBe("Approved by Mads");
+		document.querySelector<HTMLButtonElement>('.surface-publish-sheet [data-act="cancel"]')?.click();
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("renders affected file chips and projected Company Files source footer in the Changes drawer", async () => {
+		stubFigureMotion();
+		const navigated: string[] = [];
+		const site = summary({
+			id: SURFACE,
+			slug: "website",
+			title: "Website",
+			repositoryKey: "website",
+			folderRoot: null,
+			activeSessionCount: 1,
+			pendingChangeCount: 1,
+		});
+		const identitySurface = summary({
+			id: "55555555-5555-4555-8555-555555555588",
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			repositoryKey: null,
+			folderRoot: "identity",
+			liveUrl: null,
+			siteSlug: null,
+			activeSessionCount: 0,
+			pendingChangeCount: 0,
+		});
+		const multiFileChange = change(CHANGES[0], 1, "staged", {
+			title: "Refine hero & tokens",
+			affectedPaths: ["identity/tokens.json", "src/Hero.tsx", "src/Footer.tsx", "src/Nav.tsx"],
+		});
+		const activeSess = session(["staged"], {
+			id: SESSION,
+			surfaceId: site.id,
+			title: "Hero polish",
+			changes: [multiFileChange],
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn().mockResolvedValue([site, identitySurface]),
+			getSurfaceWorkspace: vi
+				.fn()
+				.mockImplementation(async (surfaceId: string) =>
+					surfaceId === site.id
+						? workspace([activeSess], { surface: site })
+						: workspace([], { surface: identitySurface }),
+				),
+		});
+		const store = storeWith(client, {
+			onNavigateSurface: (slug) => navigated.push(slug),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const chips = [...view.el.querySelectorAll<HTMLAnchorElement>(".surface-overview-change .surface-file-chip")];
+		expect(chips.map((chip) => chip.textContent)).toEqual([
+			"identity/tokens.json",
+			"src/Hero.tsx",
+			"src/Footer.tsx",
+			"+1",
+		]);
+		expect(linkHref(chips[0]!)).toBe(`#/c/${COMPANY}/s/files`);
+		chips[0]!.click();
+		expect(navigated).toEqual(["files"]);
+		expect(location.hash).toBe(`#/c/${COMPANY}/s/files`);
+
+		const sourcePill = view.el.querySelector<HTMLAnchorElement>(".surface-drawer-source .surface-source-pill");
+		expect(sourcePill).not.toBeNull();
+		expect(sourcePill?.querySelector(".surface-source-path")?.textContent).toBe("code/website");
+		expect(linkHref(sourcePill!)).toBe(`#/c/${COMPANY}/s/files`);
+
+		view.dispose();
+
+		store.openPreviewPanel();
+		const identityView = new SurfaceView(
+			{ store, mount: () => undefined, openMigration: () => undefined },
+			"identity",
+		);
+		document.body.append(identityView.el);
+		await flush();
+		identityView.update();
+		expect(identityView.el.querySelector(".surface-drawer-source .surface-source-path")?.textContent).toBe(
+			"identity/",
+		);
+		expect(linkHref(identityView.el.querySelector(".surface-drawer-source .surface-source-pill")!)).toBe(
+			`#/c/${COMPANY}/s/files`,
+		);
+
+		identityView.dispose();
+		store.dispose();
+	});
+
+	it("renders Share live link bar inside Patch notes sheet, copies link and optional password", async () => {
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, "clipboard", {
+			configurable: true,
+			value: { writeText },
+		});
+		HTMLDialogElement.prototype.showModal = function () {
+			this.open = true;
+		};
+		HTMLDialogElement.prototype.close = function () {
+			this.open = false;
+			this.dispatchEvent(new Event("close"));
+		};
+		const site = summary({
+			id: SURFACE,
+			slug: "website",
+			title: "Website",
+			liveUrl: "https://thetaband.qorpera.com",
+			unpublishedChangeCount: 1,
+			hasUnpublishedChanges: true,
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn().mockResolvedValue([site]),
+			getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([], { surface: site })),
+		});
+		const store = storeWith(client);
+		await store.load();
+
+		const loadSitePassword = vi.fn().mockResolvedValue("nordic-pass-42");
+		const dialog = openPublishPatchnotesSheet(store, site, { loadSitePassword });
+		await flush();
+
+		const shareBar = document.querySelector<HTMLElement>(".surface-share-bar")!;
+		expect(shareBar).not.toBeNull();
+		expect(shareBar.querySelector(".surface-share-url")?.textContent).toBe("https://thetaband.qorpera.com");
+		const openLink = shareBar.querySelector<HTMLAnchorElement>(".surface-share-btn.is-open")!;
+		expect(openLink.getAttribute("href")).toBe("https://thetaband.qorpera.com");
+		expect(openLink.target).toBe("_blank");
+		expect(openLink.rel).toContain("noopener");
+
+		const copyLinkBtn = shareBar.querySelector<HTMLButtonElement>('[data-act="copy-link"]')!;
+		copyLinkBtn.click();
+		await flush();
+		expect(writeText).toHaveBeenCalledWith("https://thetaband.qorpera.com");
+		expect(document.querySelector('[data-act="copy-link"]')?.textContent).toBe("Copied");
+
+		const copyPassBtn = document.querySelector<HTMLButtonElement>('[data-act="copy-password"]')!;
+		expect(copyPassBtn).not.toBeNull();
+		copyPassBtn.click();
+		await flush();
+		expect(writeText).toHaveBeenCalledWith("nordic-pass-42");
+		expect(document.querySelector('[data-act="copy-password"]')?.textContent).toBe("Copied");
+		dialog.close();
+
+		const dialogWithoutPass = openPublishPatchnotesSheet(store, site);
+		await flush();
+		expect(document.querySelector(".surface-share-bar")).not.toBeNull();
+		expect(document.querySelector('[data-act="copy-password"]')).toBeNull();
+		dialogWithoutPass.close();
+		store.dispose();
+	});
+
+	it("folds optional starting surfaces and reference URL into NewCompanyView submissions without affecting blank ones", () => {
+		const f = fixture();
+		const hub = new HubController(f.api, userA.id);
+		const start = vi.spyOn(hub, "startFromIdea").mockResolvedValue(false);
+		const host = document.createElement("div");
+		document.body.append(host);
+		renderNewCompany(hub, host, { userId: userA.id, name: "Anna" });
+
+		expect(host.querySelector("label")).toBeNull();
+		const idea = host.querySelector<HTMLTextAreaElement>(".hero-idea")!;
+		const form = host.querySelector<HTMLFormElement>(".hero-box")!;
+		const url = host.querySelector<HTMLInputElement>(".hero-starter-url")!;
+
+		idea.value = "Calm wearable for meditation";
+		idea.dispatchEvent(new Event("input"));
+		form.requestSubmit();
+		expect(start).toHaveBeenLastCalledWith("Calm wearable for meditation", "start", "", { spectators: [] });
+
+		const websitePill = host.querySelector<HTMLButtonElement>('[data-starter-surface="website"]')!;
+		const mobilePill = host.querySelector<HTMLButtonElement>('[data-starter-surface="mobile-app"]')!;
+		websitePill.click();
+		mobilePill.click();
+		expect(websitePill.getAttribute("aria-pressed")).toBe("true");
+		expect(mobilePill.getAttribute("aria-pressed")).toBe("true");
+		url.value = "https://thetaband.dk";
+		form.requestSubmit();
+		expect(start).toHaveBeenLastCalledWith(
+			"Calm wearable for meditation\n\nStarting surfaces: Website, Mobile App\nReference URL: https://thetaband.dk",
+			"start",
+			"",
+			{ spectators: [] },
+		);
+
+		start.mockClear();
+		idea.value = "";
+		form.requestSubmit();
+		expect(start).not.toHaveBeenCalled();
+
+		hub.dispose();
+	});
+
+	it("renders the Active Surfaces Jump Strip in Co-Founder's thread and opens Changes on click", async () => {
+		stubFigureMotion();
+		const f = fixture();
+		const cofounder = { ...staff, id: id(10), templateId: "co-founder", displayName: "Co-Founder" };
+		const specialist = { ...staff, id: id(11), templateId: "designer", displayName: "Maja" };
+		const cofounderSession = { ...chatSession, sessionId: id(20), staffAgentId: cofounder.id };
+		const specialistSession = { ...chatSession, sessionId: id(21), staffAgentId: specialist.id };
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({
+			team,
+			staff: [cofounder, specialist],
+			sessions: [cofounderSession, specialistSession],
+			loading: false,
+		});
+
+		const identitySurf = summary({
+			id: "55555555-5555-4555-8555-555555555571",
+			slug: "identity",
+			title: "Identity",
+			group: "products",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			activeSessionCount: 0,
+			pendingChangeCount: 0,
+			sortOrder: 0,
+		});
+		const websiteSurf = summary({
+			id: "55555555-5555-4555-8555-555555555572",
+			slug: "website",
+			title: "Website",
+			group: "products",
+			archetype: "live_build",
+			activeSessionCount: 3,
+			pendingChangeCount: 3,
+			sortOrder: 1,
+		});
+		const appSurf = summary({
+			id: "55555555-5555-4555-8555-555555555573",
+			slug: "mobile-app",
+			title: "Meditation App",
+			group: "products",
+			archetype: "live_build",
+			kind: "mobile_app",
+			activeSessionCount: 1,
+			runningSessionCount: 1,
+			pendingChangeCount: 0,
+			sortOrder: 2,
+		});
+		const quietSurf = summary({
+			id: "55555555-5555-4555-8555-555555555574",
+			slug: "headband",
+			title: "Headband",
+			group: "products",
+			archetype: "studio",
+			activeSessionCount: 0,
+			runningSessionCount: 0,
+			pendingChangeCount: 0,
+			sortOrder: 3,
+		});
+
+		const variantIds = [
+			"44444444-4444-4444-8444-444444444401",
+			"44444444-4444-4444-8444-444444444402",
+			"44444444-4444-4444-8444-444444444403",
+		];
+		const exp = {
+			id: "88888888-8888-4888-8888-888888888801",
+			surfaceId: websiteSurf.id,
+			title: "Landing directions",
+			status: "open" as const,
+			chosenSessionId: null,
+			variantSessionIds: variantIds,
+			createdAt: "2026-11-21T10:00:00.000Z",
+			resolvedAt: null,
+		};
+		const variantSessions = variantIds.map((variantId, index) =>
+			session(["staged"], {
+				id: variantId,
+				surfaceId: websiteSurf.id,
+				explorationId: exp.id,
+				explorationVariantLabel: `Direction ${index + 1}`,
+			}),
+		);
+		const navigated: string[] = [];
+		const client = fakeClient({
+			listSurfaces: vi.fn().mockResolvedValue([identitySurf, websiteSurf, appSurf, quietSurf, inbox]),
+			getSurfaceWorkspace: vi
+				.fn()
+				.mockResolvedValue(workspace(variantSessions, { surface: websiteSurf, explorations: [exp] })),
+		});
+		const store = storeWith(client, {
+			companyId: profileA.profileId,
+			onNavigateSurface: (slug) => navigated.push(slug),
+		});
+		await store.load();
+		await store.openSurface("website");
+		attachSurfaces(company, store);
+
+		const cofounderView = new ConversationView(company, cofounderSession.sessionId, { surfaces: store });
+		document.body.append(cofounderView.el);
+		const strip = cofounderView.el.querySelector<HTMLElement>(".surface-thread-jump")!;
+		expect(strip.hidden).toBe(false);
+		const chips = [...strip.querySelectorAll<HTMLAnchorElement>(".surface-thread-jump-chip")];
+		expect(chips.map((chip) => chip.dataset.surfaceJump)).toEqual(["identity", "website", "mobile-app"]);
+		expect(chips[0]?.querySelector(".surface-thread-jump-pill")?.textContent).toBe("Ready");
+		expect(chips[1]?.querySelector(".surface-thread-jump-pill")?.textContent).toBe("3 directions ready");
+		expect(chips[2]?.querySelector(".surface-thread-jump-pill")?.textContent).toBe("Working");
+		expect(chips[2]?.querySelector(".surface-thread-jump-dot.is-running")).not.toBeNull();
+		expect(linkHref(chips[1]!)).toBe(`#/c/${profileA.profileId}/s/website`);
+
+		store.closePanel();
+		store.setMode("live");
+		chips[1]!.click();
+		expect(navigated).toEqual(["website"]);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/s/website`);
+		expect(store.state.mode).toBe("preview");
+		expect(store.state.previewPanel).toBe("open");
+		cofounderView.dispose();
+
+		const specialistView = new ConversationView(company, specialistSession.sessionId, { surfaces: store });
+		document.body.append(specialistView.el);
+		expect(specialistView.el.querySelector(".surface-thread-jump")).toBeNull();
+		specialistView.dispose();
+
+		store.dispose();
+		company.stop();
+	});
+
+	it("renders Live-linked via Company Files strips on Identity and Product and applies live Identity CSS vars to Product", async () => {
+		stubFigureMotion();
+		const navigated: string[] = [];
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			onNavigateSurface: (slug) => navigated.push(slug),
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const identitySurface = store.state.surfaces.find((item) => item.slug === "identity")!;
+		await store.openSurface("identity");
+
+		const identityView = new SurfaceView(
+			{ store, mount: () => undefined, openMigration: () => undefined },
+			"identity",
+		);
+		document.body.append(identityView.el);
+		await flush();
+		identityView.update();
+
+		const identityReach = identityView.el.querySelector<HTMLElement>(
+			'[data-identity-reach="true"][data-live-linked="true"]',
+		)!;
+		expect(identityReach).not.toBeNull();
+		expect(identityReach.textContent).toContain("Live-linked via Company Files");
+		expect(identityReach.textContent).toContain("identity/tokens.json");
+		expect(identityReach.textContent).toContain("identity/tokens.css");
+		identityView.dispose();
+
+		const productView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "product");
+		document.body.append(productView.el);
+		await flush();
+		productView.update();
+
+		const productStudio = productView.el.querySelector<HTMLElement>(".surface-studio")!;
+		expect(productStudio.classList.contains("has-identity-tokens")).toBe(true);
+		expect(productStudio.style.getPropertyValue("--q-color-accent")).toBe("#6f61cf");
+
+		const sharedStrip = productView.el.querySelector<HTMLElement>('.studio-shared-links[data-live-linked="true"]')!;
+		expect(sharedStrip).not.toBeNull();
+		expect(sharedStrip.textContent).toContain("Live-linked via Company Files");
+		expect(sharedStrip.querySelector('[data-link-dir="in"]')?.textContent).toContain("identity/tokens.css");
+		expect(sharedStrip.querySelector('[data-link-dir="out"]')?.textContent).toContain("product/specs.json");
+
+		const outSlugs = [
+			...sharedStrip.querySelectorAll<HTMLButtonElement>('[data-link-dir="out"] .studio-reach-chip'),
+		].map((chip) => chip.dataset.slug);
+		expect(outSlugs).toContain("website");
+		expect(outSlugs).toContain("phone-app");
+
+		sharedStrip.querySelector<HTMLButtonElement>('[data-link-dir="in"] [data-slug="identity"]')!.click();
+		expect(navigated).toEqual(["identity"]);
+
+		const identityTokenChange = store.workspace(identitySurface.id)!.activeSessions[0]!.changes[0]!;
+		await store.toggleChange(identitySurface.id, identityTokenChange.id);
+		productView.update();
+		expect(productStudio.style.getPropertyValue("--q-color-accent")).toBe("#7c6fd6");
+
+		productView.dispose();
+		store.dispose();
+	});
+
+	it("injects live compiled Identity CSS tokens into local live_build iframes and posts them to SurfaceDoorStage", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const identitySurface = store.state.surfaces.find((item) => item.slug === "identity")!;
+		await store.openSurface("identity");
+		const identityTokenChange = store.workspace(identitySurface.id)!.activeSessions[0]!.changes[0]!;
+
+		const websiteView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(websiteView.el);
+		await flush();
+		websiteView.update();
+
+		const localFrame = websiteView.el.querySelector<HTMLIFrameElement>("iframe.surface-local-frame")!;
+		expect(localFrame).not.toBeNull();
+		expect(localFrame.srcdoc).toContain("data-qorpera-identity-tokens");
+		expect(localFrame.srcdoc).toContain("--q-color-accent: #6f61cf;");
+		expect(
+			localFrame.contentDocument?.head.querySelector("style[data-qorpera-identity-tokens]")?.textContent,
+		).toContain("--q-color-accent: #6f61cf;");
+
+		await store.toggleChange(identitySurface.id, identityTokenChange.id);
+		websiteView.update();
+		const updatedFrame = websiteView.el.querySelector<HTMLIFrameElement>("iframe.surface-local-frame")!;
+		expect(updatedFrame.srcdoc).toContain("--q-color-accent: #7c6fd6;");
+		expect(
+			updatedFrame.contentDocument?.head.querySelector("style[data-qorpera-identity-tokens]")?.textContent,
+		).toContain("--q-color-accent: #7c6fd6;");
+		websiteView.dispose();
+
+		const controller = new AbortController();
+		const stage = new SurfaceDoorStage(controller.signal);
+		document.body.append(stage.el);
+		const tokensBefore = store.companyIdentityTokens()!;
+		stage.setIdentityTokens(tokensBefore);
+		stage.sync(
+			previewFrame({
+				previewId: "66666666-6666-4666-8666-666666666601",
+				doorActionUrl: "https://thetaband--p1111aaaa.qorpera.com/__qorpera/member",
+				memberPass: "A".repeat(43),
+			}),
+			"Preview of Website",
+		);
+		const doorFrame = stage.el.querySelector<HTMLIFrameElement>("iframe.surface-frame")!;
+		const posted: { message: unknown; origin: string }[] = [];
+		const mockWin = {
+			postMessage(message: unknown, origin: string) {
+				posted.push({ message, origin });
+			},
+		} as unknown as Window;
+		Object.defineProperty(doorFrame, "contentWindow", { configurable: true, get: () => mockWin });
+		window.dispatchEvent(
+			new MessageEvent("message", { data: { type: SITE_DOOR_READY }, source: mockWin, origin: location.origin }),
+		);
+		window.dispatchEvent(
+			new MessageEvent("message", { data: { type: SITE_DOOR_SHOWN }, source: mockWin, origin: location.origin }),
+		);
+		expect(posted.at(-1)).toEqual({
+			message: {
+				type: IDENTITY_TOKENS_CSS_MESSAGE,
+				css: tokensBefore.css,
+				vars: tokensBefore.vars,
+			},
+			origin: "*",
+		});
+
+		await store.toggleChange(identitySurface.id, identityTokenChange.id);
+		const tokensAfter = store.companyIdentityTokens()!;
+		stage.setIdentityTokens(tokensAfter);
+		expect(posted.at(-1)).toEqual({
+			message: {
+				type: IDENTITY_TOKENS_CSS_MESSAGE,
+				css: tokensAfter.css,
+				vars: tokensAfter.vars,
+			},
+			origin: "*",
+		});
+
+		controller.abort();
+		store.dispose();
+	});
+});

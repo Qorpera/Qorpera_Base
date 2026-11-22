@@ -32,6 +32,15 @@ const KINDS = [
 	{ id: "app", example: phrase("An app for dog walkers") },
 ] as const;
 
+const STARTER_SURFACES = [
+	{ id: "website", label: phrase("Website"), value: "Website" },
+	{ id: "web-app", label: phrase("Web App"), value: "Web App" },
+	{ id: "mobile-app", label: phrase("Mobile App"), value: "Mobile App" },
+	{ id: "product", label: phrase("Product"), value: "Product" },
+] as const;
+
+type StarterSurfaceId = (typeof STARTER_SURFACES)[number]["id"];
+
 /** What qorpera.com's box handed over: the idea typed there, and the kind of company picked. */
 export interface WebsiteHandoff {
 	idea?: string;
@@ -79,6 +88,10 @@ class NewCompanyView {
 	readonly #invite: HTMLButtonElement;
 	readonly #inviteFace = h("span", { class: "hero-invite-face" });
 	readonly #inviteLabel = h("span", null, t("Invite friends"));
+	readonly #starterSurfaces = new Set<StarterSurfaceId>();
+	readonly #starterButtons = new Map<StarterSurfaceId, HTMLButtonElement>();
+	readonly #referenceUrl: HTMLInputElement;
+	readonly #starterHints: HTMLElement;
 	readonly #sheet = h("div", {
 		class: "hero-invite-sheet",
 		role: "dialog",
@@ -146,6 +159,40 @@ class NewCompanyView {
 			h("span", { class: "hero-plus", "aria-hidden": "true" }, icon("plus")),
 			this.#inviteLabel,
 		);
+		const pills = STARTER_SURFACES.map((item) => {
+			const pill = h(
+				"button",
+				{
+					type: "button",
+					class: "hero-starter-pill",
+					"data-starter-surface": item.id,
+					"aria-pressed": "false",
+					onclick: () => this.#toggleStarterSurface(item.id),
+				},
+				t(item.label),
+			);
+			this.#starterButtons.set(item.id, pill);
+			return pill;
+		});
+		this.#referenceUrl = h("input", {
+			type: "url",
+			class: "hero-starter-url",
+			autocomplete: "off",
+			spellcheck: "false",
+			placeholder: t("Existing site or inspiration URL (optional)"),
+			"aria-label": t("Existing site or inspiration URL (optional)"),
+			onkeydown: (event: KeyboardEvent) => {
+				if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+				event.preventDefault();
+				this.#start();
+			},
+		});
+		this.#starterHints = h(
+			"div",
+			{ class: "hero-starter-hints" },
+			h("div", { class: "hero-starter-pills", role: "group", "aria-label": t("Starting surfaces") }, ...pills),
+			h("div", { class: "hero-starter-url-wrap" }, icon("link"), this.#referenceUrl),
+		);
 		this.el = h(
 			"div",
 			{ class: "hero" },
@@ -164,6 +211,7 @@ class NewCompanyView {
 				h("div", { class: "hero-row" }, this.#invite, this.#go),
 				this.#sheet,
 			),
+			this.#starterHints,
 			this.#status,
 			this.#invitations,
 		);
@@ -191,6 +239,10 @@ class NewCompanyView {
 	adopt(other: NewCompanyView): void {
 		this.#idea.value = other.#idea.value;
 		this.#name.value = other.#name.value;
+		this.#referenceUrl.value = other.#referenceUrl.value;
+		this.#starterSurfaces.clear();
+		for (const id of other.#starterSurfaces) this.#starterSurfaces.add(id);
+		this.#syncStarterPills();
 		this.#carried = other.#carried;
 		if (document.activeElement === other.#idea) this.#caret = caretOf(other.#idea);
 		this.#guests = new Map(other.#guests);
@@ -206,6 +258,8 @@ class NewCompanyView {
 		if (busy && document.activeElement === this.#idea) this.#refocus = true;
 		this.#idea.disabled = busy;
 		this.#name.disabled = busy;
+		this.#referenceUrl.disabled = busy;
+		for (const pill of this.#starterButtons.values()) pill.disabled = busy;
 		if (!busy && this.#refocus) {
 			// An opening that failed hands the box back to the founder, caret at the end.
 			this.#refocus = false;
@@ -265,6 +319,32 @@ class NewCompanyView {
 		this.#from.hidden = this.#carried === undefined;
 	}
 
+	#toggleStarterSurface(id: StarterSurfaceId): void {
+		if (this.#starterSurfaces.has(id)) this.#starterSurfaces.delete(id);
+		else this.#starterSurfaces.add(id);
+		this.#syncStarterPills();
+	}
+
+	#syncStarterPills(): void {
+		for (const [id, pill] of this.#starterButtons) {
+			const selected = this.#starterSurfaces.has(id);
+			pill.classList.toggle("is-selected", selected);
+			pill.setAttribute("aria-pressed", String(selected));
+		}
+	}
+
+	#composeVision(rawIdea: string): string {
+		const base = rawIdea.trim();
+		const chosen = STARTER_SURFACES.filter((item) => this.#starterSurfaces.has(item.id)).map((item) => item.value);
+		const url = this.#referenceUrl.value.trim();
+		const lines: string[] = [];
+		if (chosen.length > 0) lines.push(`Starting surfaces: ${chosen.join(", ")}`);
+		if (url) lines.push(`Reference URL: ${url}`);
+		if (lines.length === 0) return base;
+		const suffix = lines.join("\n");
+		return base ? `${base}\n\n${suffix}` : suffix;
+	}
+
 	#start(): void {
 		const idea = this.#idea.value.trim();
 		const guests = [...this.#guests.values()];
@@ -272,7 +352,7 @@ class NewCompanyView {
 		const spectators = guests.filter((guest) => guest.role === "spectator").map((guest) => guest.email);
 		if (founders.length) {
 			this.#toggleSheet(false);
-			void this.#hub.startFromIdea(idea, "friends", this.#name.value, { founders, spectators });
+			void this.#hub.startFromIdea(this.#composeVision(idea), "friends", this.#name.value, { founders, spectators });
 			return;
 		}
 		if (!idea) {
@@ -281,7 +361,7 @@ class NewCompanyView {
 		}
 		this.#toggleSheet(false);
 		cheerStartCrown();
-		void this.#hub.startFromIdea(idea, "start", this.#name.value, { spectators });
+		void this.#hub.startFromIdea(this.#composeVision(idea), "start", this.#name.value, { spectators });
 	}
 
 	#toggleSheet(open = this.#sheet.hidden): void {
@@ -431,10 +511,13 @@ class NewCompanyView {
 	}
 
 	#opened(idea: string): void {
-		if (this.#idea.value.trim() !== idea.trim()) return;
+		if (this.#composeVision(this.#idea.value).trim() !== idea.trim()) return;
 		this.#refocus = false;
 		this.#idea.value = "";
 		this.#name.value = "";
+		this.#referenceUrl.value = "";
+		this.#starterSurfaces.clear();
+		this.#syncStarterPills();
 		this.#carried = undefined;
 		this.#guests.clear();
 		this.#toggleSheet(false);
