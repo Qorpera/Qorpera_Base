@@ -447,7 +447,7 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 				}
 			}
 			if (ordered.length > 0) {
-				effectiveFiles = composeStudioPreview(baseFiles, ordered).files;
+				effectiveFiles = composeStudioPreview(baseFiles, ordered, identity.folderRoot ?? "identity").files;
 			}
 		}
 	}
@@ -2118,7 +2118,7 @@ export class SurfacesStore {
 					.filter((item) => item.ops.length > 0);
 				if (ordered.length > 0) {
 					for (const item of ordered) this.#studioUndoSnapshots.set(item.changeId, currentBase);
-					const composed = composeStudioPreview(currentBase, ordered);
+					const composed = composeStudioPreview(currentBase, ordered, workspace.surface.folderRoot);
 					this.store.set((state) => ({
 						localStudioBase: { ...state.localStudioBase, [surfaceId]: composed.files },
 					}));

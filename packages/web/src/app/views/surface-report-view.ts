@@ -594,13 +594,14 @@ export class SurfaceReportView {
 			baseFiles,
 			ordered,
 			surface.title,
+			surface.folderRoot,
 			workspace?.briefSummary,
 			busyReconcile,
 		]);
 		if (key === this.#shown) return;
 		this.#shown = key;
 
-		const composition = composeStudioPreview(baseFiles, ordered);
+		const composition = composeStudioPreview(baseFiles, ordered, surface.folderRoot);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();

@@ -473,6 +473,10 @@ describe("cloud surface runtime tools", () => {
 		});
 		expect(identitySelf).toContain("## Live Shared Company Files");
 		expect(identitySelf).toContain("automatically recompile `identity/tokens.css`");
+		expect(identitySelf).toContain("`identity/voice.md` and `identity/brief.md`");
+		expect(identitySelf).toContain(
+			"do not hand-edit `identity/tokens.css` or create standalone HTML/CSS showcase pages",
+		);
 	});
 
 	it("bridges Surface tools to control-plane RPCs via createControlPlaneSurfaceToolsPort", async () => {

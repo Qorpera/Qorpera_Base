@@ -1419,11 +1419,30 @@ span.surface-session-main { cursor: default; gap: 8px; min-height: 32px; padding
 .studio-doc-body { font-size: 14px; line-height: 1.6; color: var(--text); }
 .studio-doc-body > :first-child { margin-top: 0; }
 .studio-doc-body > :last-child { margin-bottom: 0; }
-.studio-code {
-	margin: 0; padding: 12px 14px; overflow-x: auto; border-radius: 10px;
-	background: color-mix(in srgb, var(--text) 4%, var(--bg)); color: var(--text); font-family: var(--mono);
-	font-size: 12.5px; line-height: 1.5;
+.studio-plain-text { white-space: pre-wrap; }
+.studio-html-card {
+	padding: 18px 20px; border: 1px solid var(--border); border-radius: 16px;
+	background: color-mix(in srgb, var(--text) 1.5%, var(--bg));
 }
+.studio-html-card.is-changed { border-color: color-mix(in srgb, var(--accent) 36%, transparent); }
+.studio-html-frame {
+	display: block; width: 100%; height: min(640px, 68dvh); border: 1px solid var(--border);
+	border-radius: 12px; background: #fff; color-scheme: light;
+}
+.studio-html-frame.is-compare { height: min(440px, 52dvh); }
+.studio-html-fallback { margin: 0; color: var(--text-muted); font-size: 13px; }
+.studio-svg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.studio-svg-card {
+	margin: 0; display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 14px;
+	background: color-mix(in srgb, var(--text) 1.5%, var(--bg));
+}
+.studio-svg-card.is-changed { border-color: color-mix(in srgb, var(--accent) 36%, transparent); }
+.studio-svg-stage {
+	display: grid; place-items: center; min-height: 112px; padding: 16px; border-radius: 10px;
+	background: color-mix(in srgb, var(--text) 3%, var(--bg));
+}
+.studio-svg-img { display: block; max-width: 100%; max-height: 96px; object-fit: contain; }
+.studio-svg-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; }
 .studio-empty {
 	display: grid; flex: 1; place-content: center; justify-items: center; gap: 10px; padding: 56px 24px;
 	color: var(--text-muted); text-align: center;

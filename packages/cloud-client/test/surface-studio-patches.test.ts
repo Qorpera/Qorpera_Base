@@ -61,4 +61,49 @@ describe("studio surface folder_patch overlay engine", () => {
 			colors: { accent: "#c9643b" },
 		});
 	});
+
+	it("resolves folder-relative patch paths against folderRoot so they merge into prefixed base files and detect conflicts", () => {
+		const c1 = randomUUID();
+		const c2 = randomUUID();
+		const merged = composeStudioPreview(
+			{
+				"identity/tokens.json": JSON.stringify({ colors: { primary: "#18181b", accent: "#2563eb" } }),
+				"identity/voice.md": "Base voice.\n",
+			},
+			[
+				{
+					changeId: c1,
+					ops: [
+						{ op: "merge_json", path: "tokens.json", patch: { colors: { accent: "#c9643b" } } },
+						{ op: "write_text", path: "./voice.md", content: "Warm Danish voice.\n" },
+					],
+				},
+			],
+			"identity",
+		);
+		expect(merged.status).toBe("ready");
+		expect(Object.keys(merged.files).sort()).toEqual(["identity/tokens.json", "identity/voice.md"]);
+		expect(JSON.parse(merged.files["identity/tokens.json"]!)).toEqual({
+			colors: { primary: "#18181b", accent: "#c9643b" },
+		});
+		expect(merged.files["identity/voice.md"]).toBe("Warm Danish voice.\n");
+
+		const conflicted = composeStudioPreview(
+			{ "identity/tokens.json": JSON.stringify({ colors: { accent: "#2563eb" } }) },
+			[
+				{
+					changeId: c1,
+					ops: [{ op: "merge_json", path: "tokens.json", patch: { colors: { accent: "#c9643b" } } }],
+				},
+				{
+					changeId: c2,
+					ops: [{ op: "merge_json", path: "identity/tokens.json", patch: { colors: { accent: "#1f5e5b" } } }],
+				},
+			],
+			"identity",
+		);
+		expect(conflicted.status).toBe("conflicted");
+		if (conflicted.status !== "conflicted") throw new Error("expected studio conflict");
+		expect(conflicted.conflictReport.paths).toEqual(["identity/tokens.json"]);
+	});
 });

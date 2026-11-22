@@ -979,7 +979,7 @@ export function mountApplication(
 						).folder();
 						const files: Record<string, string> = {};
 						const decoder = new TextDecoder();
-						const textFile = /\.(?:json|md|markdown|txt|toml|ya?ml|css)$/i;
+						const textFile = /\.(?:json|md|markdown|txt|toml|ya?ml|css|svg|html?)$/i;
 						const maxBytes = 256 * 1024;
 						const readFolder = async (parent: string, depth: number) => {
 							const page = await folder.list(parent, null, 100, readScope.signal);
@@ -2968,7 +2968,7 @@ export function mountApplication(
 						).folder();
 						const files: Record<string, string> = {};
 						const decoder = new TextDecoder();
-						const textFile = /\.(?:json|md|markdown|txt|toml|ya?ml|css)$/i;
+						const textFile = /\.(?:json|md|markdown|txt|toml|ya?ml|css|svg|html?)$/i;
 						const maxBytes = 256 * 1024;
 						const readFolder = async (parent: string, depth: number) => {
 							const page = await folder.list(parent, null, 100, signal);
