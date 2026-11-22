@@ -576,6 +576,48 @@ test("keeps the agent's explicit previous rollback image even when an abandoned 
 	}
 });
 
+test("agentPins rejects malformed previous links and falls back when previous has no provider fingerprint", async () => {
+	const root = await mkdtemp(join(tmpdir(), "qorpera-tidy-prev-"));
+	try {
+		const badRoot = await agentLayout(root, { 10: "a", 11: "b" }, { current: 11, provider: 11 });
+		await symlink("../releases/10", join(badRoot, "previous"));
+		await assert.rejects(() => agentPins(badRoot), /previous link is unexpected/);
+
+		const fallbackRoot = join(root, "fallback-agent");
+		await mkdir(join(fallbackRoot, "roles"), { recursive: true });
+		await mkdir(join(fallbackRoot, "releases", "10"), { recursive: true });
+		await mkdir(join(fallbackRoot, "releases", "11"), { recursive: true });
+		await mkdir(join(fallbackRoot, "releases", "12"), { recursive: true });
+		await writeFile(
+			join(fallbackRoot, "releases", "10", "release.json"),
+			JSON.stringify({ roles: { provider: { env: { QORPERA_LXD_IMAGE_FINGERPRINT: fp("a") } } } }),
+		);
+		await writeFile(join(fallbackRoot, "releases", "11", "release.json"), JSON.stringify({ roles: {} }));
+		await writeFile(
+			join(fallbackRoot, "releases", "12", "release.json"),
+			JSON.stringify({ roles: { provider: { env: { QORPERA_LXD_IMAGE_FINGERPRINT: fp("c") } } } }),
+		);
+		await symlink("releases/12", join(fallbackRoot, "current"));
+		await symlink("../releases/12", join(fallbackRoot, "roles", "provider"));
+		await symlink("releases/11", join(fallbackRoot, "previous"));
+		const pins = await agentPins(fallbackRoot);
+		const plan = planImages({
+			images: [image("a", 300), image("c", 100)],
+			instances: [],
+			referenced: new Set(),
+			pins,
+			now,
+			config: config({ keepFingerprints: [] }),
+		});
+		assert.deepEqual(
+			Object.fromEntries(plan.keep.map((kept) => [kept.fingerprint[0], kept.reason])),
+			{ a: "previous runtime pin", c: "live runtime pin" },
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("nodeLxd rejects truncated socket responses and HTTP 500 errors promptly", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "qorpera-tidy-lxd-"));
 	const sock = join(dir, "lxd.sock");
