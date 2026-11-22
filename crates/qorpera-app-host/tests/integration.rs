@@ -28,11 +28,79 @@ async fn http_call(addr: SocketAddr, req: Request<Full<Bytes>>) -> (StatusCode, 
     (status, body)
 }
 
+fn test_http_server_bin() -> &'static PathBuf {
+    static BIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!(
+            "qorpera-app-host-test-bin-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("server.rs");
+        let bin = dir.join("server");
+        std::fs::write(
+            &src,
+            r#"use std::io::{Read, Write};
+use std::net::TcpListener;
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let label = args.get(1).cloned().unwrap_or_default();
+    let health_status: u16 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(200);
+    let port: u16 = std::env::var("PORT").unwrap().parse().unwrap();
+    let greeting = std::env::var("APP_GREETING").unwrap_or_default();
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    println!("boot:{}", label);
+    let _ = std::io::stdout().flush();
+    for stream in listener.incoming().flatten() {
+        let label = label.clone();
+        let greeting = greeting.clone();
+        std::thread::spawn(move || {
+            let mut stream = stream;
+            let mut buf = [0u8; 4096];
+            let Ok(n) = stream.read(&mut buf) else { return };
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .unwrap_or("/");
+            let (status, body) = match path {
+                "/health" => (health_status, label),
+                "/pid" => (200, std::process::id().to_string()),
+                _ => (200, format!("{}:{}", label, greeting)),
+            };
+            let reason = if status == 200 { "OK" } else { "ERR" };
+            let resp = format!(
+                "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status,
+                reason,
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+    }
+}
+"#,
+        )
+        .unwrap();
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+        let status = std::process::Command::new(rustc)
+            .args([src.to_str().unwrap(), "-o", bin.to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to compile test http server");
+        bin
+    })
+}
+
 fn node_http_script(label: &str, health_status: u16) -> Vec<String> {
-    let script = format!(
-        "const http=require('http');const port=Number(process.env.PORT);console.log('boot:{label}');const s=http.createServer((req,res)=>{{if(req.url==='/health'){{res.writeHead({health_status});res.end('{label}');return;}}if(req.url==='/pid'){{res.writeHead(200);res.end(String(process.pid));return;}}res.writeHead(200);res.end('{label}:'+process.env.APP_GREETING);}});s.listen(port,'127.0.0.1');"
-    );
-    vec!["node".to_string(), "-e".to_string(), script]
+    vec![
+        test_http_server_bin().to_string_lossy().into_owned(),
+        label.to_string(),
+        health_status.to_string(),
+    ]
 }
 
 #[tokio::test]
