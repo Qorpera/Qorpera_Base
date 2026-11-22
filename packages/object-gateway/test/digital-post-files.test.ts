@@ -17,7 +17,6 @@ const workerId = "98700000-0000-4000-8000-0000000000e1";
 const environmentId = "92400000-0000-4000-8000-000000000020";
 const profileId = "92400000-0000-4000-8000-000000000010";
 const letterId = "98700000-0000-4000-8000-0000000000a1";
-const intentId = "98700000-0000-4000-8000-0000000000f0";
 const version = "98700000-0000-4000-8000-0000000000c1";
 const folderPath = "digital-post/2026/2026-10-22 Skattestyrelsen - Årsopgørelse (6f1d3c2a-9b8e-4d7c-8a6b-5e4f3d2c1b0a)";
 const digest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
@@ -68,7 +67,8 @@ function folder(
 	const calls: { method: string; args: Record<string, unknown> }[] = [];
 	const claims = [...(options.claims ?? [])];
 	const content = options.content ?? staged;
-	let manifest = "";
+	const manifests = new Map<string, string>();
+	let intentSeq = 0;
 	const authority = {
 		async publisher(method: string, args: Record<string, unknown>) {
 			calls.push({ method, args });
@@ -87,27 +87,32 @@ function folder(
 				}
 				case "qorpera_finish_digital_post_letter_file":
 					return { schema: "qorpera.digital-post-letter-finish/v1", finished: true };
-				case "qorpera_folder_open_upload":
-					manifest = args.p_manifest as string;
+				case "qorpera_folder_open_upload": {
+					const id = `98700000-0000-4000-8000-${String(++intentSeq).padStart(12, "0")}`;
+					const text = args.p_manifest as string;
+					manifests.set(id, text);
 					return {
 						schema: "qorpera.folder-upload/v1",
-						intentId,
-						manifestSha256: digest(manifest),
+						intentId: id,
+						manifestSha256: digest(text),
 						expiresAt: "x",
 						present: [],
 					};
+				}
 				case "qorpera_folder_authorize_object_upload":
 					return { schema: "qorpera.folder-object-upload/v1", profileId };
 				case "qorpera_folder_confirm_object":
 					return { schema: "qorpera.folder-object/v1", sha256: args.p_sha256, bytes: args.p_bytes };
 				case "qorpera_folder_seal_upload": {
-					const sealed = JSON.parse(manifest);
+					const id = args.p_intent as string;
+					const text = manifests.get(id) ?? "";
+					const sealed = JSON.parse(text);
 					return {
 						schema: "qorpera.folder-seal/v1",
 						state: "sealed",
-						intentId,
+						intentId: id,
 						file: {
-							manifestSha256: digest(manifest),
+							manifestSha256: digest(text),
 							fileSha256: sealed.fileSha256,
 							bytes: sealed.bytes,
 							mediaType: sealed.mediaType,
@@ -275,5 +280,7 @@ describe("digitalPostIndexText", () => {
 		expect(kept.length).toBeLessThan(400);
 		expect(kept[0]?.title.startsWith("0 ")).toBe(true);
 		expect(text.endsWith("\n")).toBe(true);
+		const oneMore = `${JSON.stringify({ schema: "qorpera.digital-post-letters/v1", letters: letters.slice(0, kept.length + 1) })}\n`;
+		expect(Buffer.byteLength(oneMore, "utf8")).toBeGreaterThan(DIGITAL_POST_INDEX_MAX_BYTES);
 	});
 });

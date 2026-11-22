@@ -1,3 +1,4 @@
+import type { IncomingMessage } from "node:http";
 import { withAbortScopes } from "./abort-scope.ts";
 
 export class ObjectDependencyError extends Error {
@@ -156,6 +157,84 @@ export async function boundedObjectOperation<T>(operation: () => Promise<T>, tim
 	} finally {
 		if (timer) clearTimeout(timer);
 	}
+}
+
+async function consumeBoundedIncomingBody(
+	request: IncomingMessage,
+	expectedBytes: number,
+	timeoutMs: number,
+	options: { readonly signal?: AbortSignal; readonly onBytes?: (count: number) => void } | undefined,
+	collect: boolean,
+): Promise<Buffer | undefined> {
+	if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000)
+		throw new Error("Object operation deadline is invalid");
+	if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0) throw new Error("Object request bound is invalid");
+	const bodyController = new AbortController();
+	const abortBody = (): void => {
+		if (!request.complete) request.destroy();
+	};
+	const onParentAbort = (): void => bodyController.abort(options?.signal?.reason);
+	const bodyTimer = setTimeout(() => bodyController.abort(new ObjectDependencyError(503)), timeoutMs);
+	bodyController.signal.addEventListener("abort", abortBody, { once: true });
+	if (options?.signal?.aborted) onParentAbort();
+	else options?.signal?.addEventListener("abort", onParentAbort, { once: true });
+	try {
+		bodyController.signal.throwIfAborted();
+		const chunks: Buffer[] | undefined = collect ? [] : undefined;
+		let count = 0;
+		for await (const part of request) {
+			bodyController.signal.throwIfAborted();
+			if (chunks) {
+				const chunk = Buffer.isBuffer(part) ? part : Buffer.from(part);
+				count += chunk.length;
+				options?.onBytes?.(count);
+				if (count > expectedBytes) {
+					abortBody();
+					throw new ObjectDependencyError(413);
+				}
+				chunks.push(chunk);
+			} else {
+				count += Buffer.isBuffer(part) ? part.length : Buffer.byteLength(part);
+				options?.onBytes?.(count);
+				if (count > expectedBytes) {
+					abortBody();
+					throw new ObjectDependencyError(413);
+				}
+			}
+		}
+		bodyController.signal.throwIfAborted();
+		if (count !== expectedBytes) throw new ObjectDependencyError(400);
+		if (!chunks) return undefined;
+		return chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, count);
+	} catch (error) {
+		if (bodyController.signal.aborted) {
+			const reason = bodyController.signal.reason;
+			throw reason instanceof ObjectDependencyError ? reason : new ObjectDependencyError(503);
+		}
+		throw error;
+	} finally {
+		clearTimeout(bodyTimer);
+		options?.signal?.removeEventListener("abort", onParentAbort);
+		bodyController.signal.removeEventListener("abort", abortBody);
+	}
+}
+
+export async function readBoundedIncomingBody(
+	request: IncomingMessage,
+	expectedBytes: number,
+	timeoutMs = 5_000,
+	options?: { readonly signal?: AbortSignal; readonly onBytes?: (count: number) => void },
+): Promise<Buffer> {
+	return (await consumeBoundedIncomingBody(request, expectedBytes, timeoutMs, options, true))!;
+}
+
+export async function drainBoundedIncomingBody(
+	request: IncomingMessage,
+	expectedBytes: number,
+	timeoutMs = 5_000,
+	options?: { readonly signal?: AbortSignal },
+): Promise<void> {
+	await consumeBoundedIncomingBody(request, expectedBytes, timeoutMs, options, false);
 }
 
 /** A bounded circuit, not an authorization cache. */

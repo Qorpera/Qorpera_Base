@@ -1,11 +1,10 @@
-import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isDeepStrictEqual } from "node:util";
-import { ObjectDependencyError } from "./dependency.ts";
+import { ObjectDependencyError, readBoundedIncomingBody } from "./dependency.ts";
 import type { MemberCompanyAuthority } from "./member-company-authority.ts";
 import { memberFolderWriter } from "./member-folder-commits.ts";
 import { UUID } from "./native-objects.ts";
-import type { FileSystemObjectStore } from "./object-store.ts";
+import { type FileSystemObjectStore, type VerifiedObjectBytes, verifyObjectBytes } from "./object-store.ts";
 import { PlatformFolderWriter } from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
 
@@ -171,46 +170,17 @@ export async function serveMemberSessionAttachment(
 					signal,
 				),
 			);
-			const bodyController = new AbortController();
-			const abortBody = () => {
-				if (!request.complete) request.destroy();
-			};
-			const onParentAbort = () => bodyController.abort(signal.reason);
-			const bodyTimer = setTimeout(
-				() => bodyController.abort(new ObjectDependencyError(503)),
-				options.bodyTimeoutMs ?? 5_000,
-			);
-			bodyController.signal.addEventListener("abort", abortBody, { once: true });
-			if (signal.aborted) onParentAbort();
-			else signal.addEventListener("abort", onParentAbort, { once: true });
-			let bytes: Buffer;
+			const bytes = await readBoundedIncomingBody(request, size, options.bodyTimeoutMs ?? 5_000, { signal });
+			let verified: VerifiedObjectBytes;
 			try {
-				bodyController.signal.throwIfAborted();
-				const chunks: Buffer[] = [];
-				let count = 0;
-				for await (const part of request) {
-					bodyController.signal.throwIfAborted();
-					const chunk = Buffer.isBuffer(part) ? part : Buffer.from(part);
-					count += chunk.length;
-					if (count > size) throw new ObjectDependencyError(413);
-					chunks.push(chunk);
-				}
-				bodyController.signal.throwIfAborted();
-				if (count !== size) throw new ObjectDependencyError(400);
-				bytes = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, count);
-			} catch (error) {
-				if (bodyController.signal.aborted) {
-					const reason = bodyController.signal.reason;
-					throw reason instanceof ObjectDependencyError ? reason : new ObjectDependencyError(503);
-				}
-				throw error;
-			} finally {
-				clearTimeout(bodyTimer);
-				signal.removeEventListener("abort", onParentAbort);
-				bodyController.signal.removeEventListener("abort", abortBody);
+				verified = verifyObjectBytes(sha256, bytes);
+			} catch {
+				throw new ObjectDependencyError(400);
 			}
-			if (createHash("sha256").update(bytes).digest("hex") !== sha256) throw new ObjectDependencyError(400);
-			const file = await folder.stage(environmentId, bytes, { mediaType, executable: false }, signal);
+			const file = await folder.stage(environmentId, bytes, { mediaType, executable: false }, signal, {
+				profileId: member.profileId,
+				verified,
+			});
 			answer(
 				await options.authority.publisher(
 					"qorpera_room_image_commit",

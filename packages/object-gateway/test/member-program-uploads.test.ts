@@ -31,6 +31,7 @@ async function gateway(
 		write?: () => Record<string, unknown>;
 		renewRefused?: boolean;
 		commitHold?: Promise<unknown>;
+		onPublisher?: (method: string) => Promise<void>;
 	} = {},
 ) {
 	forgetMemberProgramUploads();
@@ -78,6 +79,7 @@ async function gateway(
 		},
 		async publisher(method: string, args: Record<string, unknown>) {
 			calls.push({ side: "publisher", method, args });
+			if (options.onPublisher) await options.onPublisher(method);
 			switch (method) {
 				case "qorpera_folder_open_upload": {
 					const intentId = `35000000-0000-4000-8000-${String(++intents).padStart(12, "0")}`;
@@ -592,5 +594,67 @@ describe("a member's program file put into the company's place for programs", ()
 			expect((await g.finish(id, tok)).status).toBe(200);
 		}
 		expect((await g.open(file, path, "fin-000000000099")).status).toBe(200);
+	});
+
+	it("rejects overlapping open() calls for the same member immediately without opening a second intent", async () => {
+		let releaseOpen!: () => void;
+		let openCalls = 0;
+		const g = await gateway({
+			onPublisher: async (method) => {
+				if (method === "qorpera_folder_open_upload") {
+					openCalls++;
+					if (openCalls === 1) {
+						await new Promise<void>((resolve) => {
+							releaseOpen = resolve;
+						});
+					}
+				}
+			},
+		});
+		const file = program(16);
+		const first = g.open(file);
+		await new Promise<void>((resolve) => setTimeout(resolve, 25));
+		const second = await g.open(program(20));
+		expect(second.status).toBe(429);
+		expect(openCalls).toBe(1);
+		releaseOpen();
+		expect((await first).status).toBe(200);
+	});
+
+	it("serializes concurrent finish() calls and avoids redundant pre-upload authorize RPCs", async () => {
+		let sealCount = 0;
+		let commitInFlight = 0;
+		let peakCommits = 0;
+		let releaseCommit!: () => void;
+		const commitGate = new Promise<void>((resolve) => {
+			releaseCommit = resolve;
+		});
+		const g = await gateway({
+			onPublisher: async (method) => {
+				if (method === "qorpera_folder_seal_upload") sealCount++;
+				if (method === "qorpera_folder_commit") {
+					commitInFlight++;
+					peakCommits = Math.max(peakCommits, commitInFlight);
+					if (peakCommits === 1) await commitGate;
+					commitInFlight--;
+				}
+			},
+		});
+		const file = program(16);
+		const id = await uploadOf(await g.open(file));
+		expect((await g.piece(id, 0, file.pieces[0]!)).status).toBe(200);
+		const authorizeCalls = g.methods().filter((m) => m === "qorpera_folder_authorize_object_upload").length;
+		expect(authorizeCalls).toBe(2);
+
+		const firstFinish = g.finish(id);
+		await new Promise<void>((resolve) => setTimeout(resolve, 25));
+		const secondFinish = g.finish(id);
+		await new Promise<void>((resolve) => setTimeout(resolve, 25));
+		expect(sealCount).toBe(1);
+		releaseCommit();
+		const [r1, r2] = await Promise.all([firstFinish, secondFinish]);
+		expect(r1.status).toBe(200);
+		expect(r2.status).toBe(200);
+		expect(peakCommits).toBe(1);
 	});
 });
