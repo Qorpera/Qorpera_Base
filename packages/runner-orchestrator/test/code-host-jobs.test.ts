@@ -4051,6 +4051,40 @@ describe("read-only git queries, conflict messages, v2 undo, tags, and prune", (
 		});
 		expect(gitPhase.retiredWorktrees.sort()).toEqual([sMerged.workerId, sUnmerged.workerId].sort());
 		expect(gitPhase.deletedBranches).toEqual([`qorpera/coding/${sMerged.workerId}`]);
-		expect(await f.git(c.repo, "--git-dir=.", "show-ref", "--verify", `refs/heads/qorpera/coding/${sUnmerged.workerId}`)).toBeTruthy();
+		expect(
+			await f.git(c.repo, "--git-dir=.", "show-ref", "--verify", `refs/heads/qorpera/coding/${sUnmerged.workerId}`),
+		).toBeTruthy();
+
+		const sLater = await session(f, c, landed.mainSha);
+		const hLater = await sLater.commit({ "later.txt": "later\n" }, "later work");
+		const landedLater = await landCodeBranch(c.job, {
+			repository: kept,
+			workerId: sLater.workerId,
+			headSha: hLater,
+		});
+
+		const reopenedMerged = await addCodeWorktree(c.job, {
+			repository: kept,
+			workerId: sMerged.workerId,
+			baseSha,
+			preferCurrentBase: true,
+		});
+		expect(reopenedMerged).toMatchObject({ state: "added", headSha: landedLater.mainSha });
+		expect(await readFile(join(sMerged.tree, "merged.txt"), "utf8")).toBe("ok\n");
+		expect(await readFile(join(sMerged.tree, "later.txt"), "utf8")).toBe("later\n");
+
+		const reopenedUnmerged = await addCodeWorktree(c.job, {
+			repository: kept,
+			workerId: sUnmerged.workerId,
+			baseSha: landed.mainSha,
+			preferCurrentBase: true,
+		});
+		expect(reopenedUnmerged.state).toBe("added");
+		expect(await readFile(join(sUnmerged.tree, "unmerged.txt"), "utf8")).toBe("wip\n");
+		expect(await exists(join(sUnmerged.tree, "later.txt"))).toBe(false);
+
+		const freshAtOldBase = randomUUID();
+		const addedOld = await addCodeWorktree(c.job, { repository: kept, workerId: freshAtOldBase, baseSha });
+		expect(addedOld).toMatchObject({ state: "added", headSha: baseSha });
 	});
 });

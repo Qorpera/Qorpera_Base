@@ -29,6 +29,7 @@ import {
 	CodeWorktreeNamesRefused,
 	exportCodeBranch,
 	landCodeBranch,
+	pruneCodeArea,
 	retireCodeWorktrees,
 	startCodeArea,
 	writeCodeChangeRecords,
@@ -3268,5 +3269,75 @@ describe("per-repository landing queue and inline record batching", () => {
 		const refCalls = commands.filter((command) => command.argv.includes("for-each-ref"));
 		expect(repairCalls).toHaveLength(1);
 		expect(refCalls).toHaveLength(1);
+	});
+
+	it("resumes a reopened follow-up turn from current main when prune deleted its merged branch", async () => {
+		resetMocks();
+		const f = await fixture();
+		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const shell = localShell([]);
+		const unused = async (): Promise<never> => {
+			throw new Error("CODE_HOST_GC_UNUSED");
+		};
+		const gc: CodeHostGcBlock = { begin: unused, end: unused };
+		const jobs: Pick<CodeHostJobs, "run"> = {
+			async run(_companyId, _environmentId, given, job) {
+				return await job(
+					{
+						shell,
+						layout: { companyRoot: f.companyRoot, scratchRoot: join(f.root, "scratch"), git: GIT },
+						signal: given,
+					},
+					gc,
+				);
+			},
+		};
+		const repositories = new CodeHostRepositories(jobs);
+		const claim = { ...f.session.claim, repository: repo, baseSha: null };
+		const { baseSha } = await repositories.start({ claim, assertAuthorized: f.authorized }, signal());
+
+		const workerId = randomUUID();
+		const firstTurn: CodingFolderRepositorySession = {
+			...f.session,
+			claim: { ...claim, workerId, sequence: 1, branch: `qorpera/coding/${workerId}` },
+			baseSha,
+		};
+		await repositories.prepare(firstTurn, signal());
+		const tree = join(f.companyRoot, "code/qorpera/example/worktrees", workerId);
+		const head1 = await f.commit(tree, "first.js");
+		const landed1 = await repositories.land(firstTurn, head1, signal());
+
+		const otherId = randomUUID();
+		const otherSession: CodingFolderRepositorySession = {
+			...f.session,
+			claim: { ...claim, workerId: otherId, sequence: 1, branch: `qorpera/coding/${otherId}` },
+			baseSha: landed1.mainSha,
+		};
+		await repositories.prepare(otherSession, signal());
+		const head2 = await f.commit(join(f.companyRoot, "code/qorpera/example/worktrees", otherId), "second.js");
+		const landed2 = await repositories.land(otherSession, head2, signal());
+
+		await jobs.run(COMPANY, ENVIRONMENT, signal(), async (job) => {
+			await pruneCodeArea(job, { repository: repo, workerIds: [workerId], phase: "files" });
+		});
+		await jobs.run(COMPANY, ENVIRONMENT, signal(), async (job) => {
+			const result = await pruneCodeArea(job, {
+				repository: repo,
+				workerIds: [workerId],
+				phase: "git-folder",
+				deleteMergedBranches: true,
+			});
+			expect(result.deletedBranches).toEqual([`qorpera/coding/${workerId}`]);
+		});
+
+		const followUp: CodingFolderRepositorySession = {
+			...f.session,
+			claim: { ...claim, workerId, sequence: 2, branch: `qorpera/coding/${workerId}` },
+			baseSha,
+		};
+		await repositories.prepare(followUp, signal());
+		expect(await f.git(tree, "rev-parse", "HEAD")).toBe(landed2.mainSha);
+		expect(await readFile(join(tree, "first.js"), "utf8")).toBe("first.js\n");
+		expect(await readFile(join(tree, "second.js"), "utf8")).toBe("second.js\n");
 	});
 });

@@ -1142,6 +1142,7 @@ export interface CodeWorktree {
 	repository: CloudCodingRepository;
 	workerId: string;
 	baseSha: string;
+	preferCurrentBase?: boolean;
 }
 export interface CodeWorktreeAdded {
 	/** `present`: the session's worktree was already there, and is locked. */
@@ -1159,10 +1160,13 @@ export interface CodeWorktreeAdded {
  * whose names the code host's rules or the company folder's refuse where it stands is not added (`CodeWorktreeNamesRefused`,
  * with the paths), and nothing is written for it. */
 export async function addCodeWorktree(job: CodeHostJob, value: CodeWorktree): Promise<CodeWorktreeAdded> {
-	const input = closed(value, ["repository", "workerId", "baseSha"]);
+	const input = closedWith(value, ["repository", "workerId", "baseSha"], ["preferCurrentBase"]);
 	const repository = repositoryOf(input.repository),
 		workerId = workerIdOf(input.workerId),
-		baseSha = sha(input.baseSha);
+		baseSha = sha(input.baseSha),
+		preferCurrentBase = input.preferCurrentBase === true;
+	if (input.preferCurrentBase !== undefined && typeof input.preferCurrentBase !== "boolean")
+		throw new Error("INVALID_CODE_HOST_JOB");
 	const branch = `qorpera/coding/${workerId}`;
 	return withJob(job, repository, async (run) => {
 		const area = await run.prepare(workerId);
@@ -1192,14 +1196,27 @@ export async function addCodeWorktree(job: CodeHostJob, value: CodeWorktree): Pr
 				...(treeType === "none" ? [] : [run.relative(tree)]),
 				...(adminType === "none" ? [] : [run.relative(admin)]),
 			]);
-		if (!head && !(await run.isCommit(run.repo, baseSha)))
-			throw new CodeHostRefusal("CODE_HOST_BASE_UNKNOWN", [baseSha]);
+		let startSha = baseSha;
+		if (!head) {
+			if (!(await run.isCommit(run.repo, baseSha))) throw new CodeHostRefusal("CODE_HOST_BASE_UNKNOWN", [baseSha]);
+			// WHY: a follow-up reopened after prune deleted its merged branch must start from current main
+			// rather than its stale initial baseSha, so it sees its own landed work and later main changes.
+			if (preferCurrentBase && repository.host === "qorpera") {
+				const currentBase = await run.ref(`refs/heads/${repository.baseBranch}`);
+				if (currentBase && currentBase !== baseSha) {
+					const ancestor = await run.git(run.repo, ["merge-base", "--is-ancestor", baseSha, currentBase]);
+					if (ancestor.status !== 0 && ancestor.status !== 1)
+						throw new CodeHostJobFailure("CODE_HOST_WORKTREE_FAILED", tail(ancestor.stderr));
+					if (ancestor.status === 0) startSha = currentBase;
+				}
+			}
+		}
 		// The names of what the worktree would hold, by the code host's rules and then the company folder's where this
 		// worktree holds them, before anything is written: the folder would refuse the checkout's whole change set (or
 		// the mount a name over 255 bytes) once it was written, the same at every follow-up. The refusal says whose names
 		// they are: the session's branch, or the base a new worktree starts at.
 		const of = head ? "branch" : "base";
-		const records = await run.checkNames(run.repo, head ?? baseSha).catch((error: unknown) => {
+		const records = await run.checkNames(run.repo, head ?? startSha).catch((error: unknown) => {
 			throw error instanceof CodeHostRefusal ? new CodeWorktreeNamesRefused(error.code, error.paths, of) : error;
 		});
 		const refused = codeFolderRefuses(run.area, records, `worktrees/${workerId}`);
@@ -1214,7 +1231,7 @@ export async function addCodeWorktree(job: CodeHostJob, value: CodeWorktree): Pr
 			run.repo,
 			head
 				? ["worktree", "add", "--quiet", "--lock", "--reason", WORKTREE_LOCK, tree, branch]
-				: ["worktree", "add", "--quiet", "--lock", "--reason", WORKTREE_LOCK, "-b", branch, tree, baseSha],
+				: ["worktree", "add", "--quiet", "--lock", "--reason", WORKTREE_LOCK, "-b", branch, tree, startSha],
 			"CODE_HOST_WORKTREE_FAILED",
 		);
 		if (!(await run.read(`${tree}/.git`))?.equals(Buffer.from(`gitdir: ${admin}\n`)))

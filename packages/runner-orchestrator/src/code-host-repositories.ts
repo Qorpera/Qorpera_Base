@@ -242,7 +242,12 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			await this.#job(session, signal, async (job) => {
 				// A repository kept in Qorpera holds its sessions' bases (start made it): only the worktree is added.
 				if (repository.host === "qorpera") {
-					const added = await addCodeWorktree(job, { repository, workerId, baseSha: session.baseSha });
+					const added = await addCodeWorktree(job, {
+						repository,
+						workerId,
+						baseSha: session.baseSha,
+						...(session.claim.sequence > 1 ? { preferCurrentBase: true } : {}),
+					});
 					if (!added.headSha)
 						throw new CodeHostRefusal("CODE_HOST_WORKTREE_NO_BRANCH", [
 							`${codeAreaPath(repository)}/worktrees/${workerId}`,

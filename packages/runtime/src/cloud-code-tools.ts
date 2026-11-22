@@ -1692,7 +1692,11 @@ export function cloudCodeTools(options: {
 				mode: { type: "string", enum: [...TAG_MODES] },
 				tag: { type: "string", minLength: 1, maxLength: 120 },
 				message: { type: "string", minLength: 1, maxLength: 1000 },
-				deleteMergedBranches: { type: "boolean" },
+				deleteMergedBranches: {
+					type: "boolean",
+					description:
+						"With prune: also delete fully-merged qorpera/coding/* branches whose worktrees are gone; a later follow-up on such a session resumes from current main.",
+				},
 			},
 		},
 		parseArguments: (value) => parse(value) as never,
