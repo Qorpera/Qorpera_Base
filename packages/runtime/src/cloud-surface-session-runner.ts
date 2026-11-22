@@ -484,11 +484,9 @@ function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
 function isAlreadyCompletedSessionError(error: unknown): boolean {
 	if (!error || typeof error !== "object") return false;
 	const text = error instanceof Error ? error.message : String(error);
-	if (/session is not running|not running/i.test(text)) return true;
-	const status = (error as { status?: unknown }).status;
-	if (status === 423) return true;
+	if (/session is not running/i.test(text)) return true;
 	const code = (error as { code?: unknown }).code;
-	return code === "55000" && /running/i.test(text);
+	return code === "55000" && /not running/i.test(text);
 }
 
 export async function runSurfaceSessionTurn(

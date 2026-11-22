@@ -1107,5 +1107,33 @@ describe("cloud surface session runner", () => {
 		);
 		expect(swallowed.state).toBe("failed");
 		expect(swallowed.error).toContain("model error");
+
+		let opaqueAttempt = 0;
+		const opaqueStates: string[] = [];
+		const opaque423 = await runSurfaceSessionTurn(
+			{
+				sessionId,
+				surfaceId,
+				companyId,
+				surfaceSlug: "studio-a",
+				surfaceTitle: "Studio A",
+				sourceKind: "folder",
+				folderRoot: "studio-a",
+				prompt: "Opaque 423 retry test",
+			},
+			{
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				completionRetryDelaysMs: [5],
+				executeTurn: async () => ({ state: "ready", replyText: "Done." }),
+				completeSessionTurn: async (completion) => {
+					opaqueStates.push(completion.state);
+					opaqueAttempt += 1;
+					if (opaqueAttempt === 1) throw new Error("transient 503");
+					throw Object.assign(new Error("Request failed with status 423"), { status: 423 });
+				},
+			},
+		);
+		expect(opaque423.state).toBe("failed");
+		expect(opaqueStates).toEqual(["ready", "ready"]);
 	});
 });

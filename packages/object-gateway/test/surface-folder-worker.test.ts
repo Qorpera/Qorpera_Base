@@ -51,6 +51,8 @@ function createHarness(
 	let commitCount = 0;
 	let leaseRenewCount = 0;
 	let completeMergeAttemptErrors: Error[] = [];
+	let loadSnapshotAttemptErrors: Error[] = [];
+	let saveSnapshotAttemptErrors: Error[] = [];
 	let preCommitErrors: Error[] = [];
 	let postCommitErrors: Error[] = [];
 
@@ -282,6 +284,8 @@ function createHarness(
 					return result;
 				}
 				case "qorpera_surface_save_folder_snapshot": {
+					const saveErr = saveSnapshotAttemptErrors.shift();
+					if (saveErr) throw saveErr;
 					const snapshotId = String(args.p_snapshot_id);
 					externalSnapshots.set(snapshotId, {
 						snapshotId,
@@ -294,6 +298,8 @@ function createHarness(
 					return { saved: true, snapshotId };
 				}
 				case "qorpera_surface_load_folder_snapshot": {
+					const loadErr = loadSnapshotAttemptErrors.shift();
+					if (loadErr) throw loadErr;
 					const snapshotId = typeof args.p_snapshot_id === "string" ? args.p_snapshot_id : null;
 					if (snapshotId && externalSnapshots.has(snapshotId)) {
 						return externalSnapshots.get(snapshotId);
@@ -369,6 +375,12 @@ function createHarness(
 		getLeaseRenewCount: () => leaseRenewCount,
 		setFailCompleteMergeAttempts(count: number) {
 			completeMergeAttemptErrors = Array.from({ length: count }, () => new Error("transient complete merge 503"));
+		},
+		setFailLoadSnapshotAttempts(count: number) {
+			loadSnapshotAttemptErrors = Array.from({ length: count }, () => new Error("transient load snapshot 503"));
+		},
+		setFailSaveSnapshotAttempts(count: number) {
+			saveSnapshotAttemptErrors = Array.from({ length: count }, () => new Error("transient save snapshot 503"));
 		},
 		setCompleteMergeAttemptErrors(errors: Error[]) {
 			completeMergeAttemptErrors = [...errors];
@@ -1029,6 +1041,15 @@ describe("SurfaceFolderWorker", () => {
 		expect(h.completedMerges).toHaveLength(0);
 
 		h.setFailCompleteMergeAttempts(0);
+		h.setFailLoadSnapshotAttempts(10);
+		h.setPendingClaim({ merges: [{ ...mergeJob, leaseToken: randomUUID() }] });
+		expect(await h.worker.processDue(8)).toBe(1);
+		expect(h.completedMerges).toHaveLength(0);
+		expect(h.externalSnapshots.get(`merge:${jobId}`)?.filesBefore).toEqual({
+			"brand/voice.md": "Original pre-merge voice.",
+		});
+
+		h.setFailLoadSnapshotAttempts(1);
 		h.setPendingClaim({ merges: [{ ...mergeJob, leaseToken: randomUUID() }] });
 		expect(await h.worker.processDue(8)).toBe(1);
 		expect(h.completedMerges).toHaveLength(1);
@@ -1038,6 +1059,39 @@ describe("SurfaceFolderWorker", () => {
 		};
 		expect(snap?.snapshotId).toBe(`merge:${jobId}`);
 		expect(snap?.filesBefore).toEqual({ "brand/voice.md": "Original pre-merge voice." });
+
+		const hSaveBlip = createHarness({ "brand/voice.md": "Initial voice." });
+		hSaveBlip.setFailSaveSnapshotAttempts(1);
+		hSaveBlip.setPendingClaim({
+			merges: [
+				{
+					...mergeJob,
+					jobId: randomUUID(),
+					surfaceId: hSaveBlip.surfaceId,
+					profileId: hSaveBlip.profileId,
+					environmentId: hSaveBlip.environmentId,
+				},
+			],
+		});
+		expect(await hSaveBlip.worker.processDue(8)).toBe(1);
+		expect(hSaveBlip.completedMerges).toHaveLength(1);
+		expect(hSaveBlip.completedMerges[0]?.p_status).toBe("landed");
+
+		const hSaveDown = createHarness({ "brand/voice.md": "Initial voice." });
+		hSaveDown.setFailSaveSnapshotAttempts(10);
+		hSaveDown.setPendingClaim({
+			merges: [
+				{
+					...mergeJob,
+					jobId: randomUUID(),
+					surfaceId: hSaveDown.surfaceId,
+					profileId: hSaveDown.profileId,
+					environmentId: hSaveDown.environmentId,
+				},
+			],
+		});
+		expect(await hSaveDown.worker.processDue(8)).toBe(1);
+		expect(hSaveDown.completedMerges).toHaveLength(0);
 	});
 
 	it("aborts in-flight jobs when lease renewal returns renewed:false, retries transient publishes, and runs distinct surfaces concurrently", async () => {

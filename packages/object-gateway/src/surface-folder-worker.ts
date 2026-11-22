@@ -637,8 +637,12 @@ export class SurfaceFolderWorker {
 		isLeaseLost: () => boolean,
 	): Promise<void> {
 		let committed = false;
+		let preserveRetryable = false;
 		const markCommitted = () => {
 			committed = true;
+		};
+		const markPreserveRetryable = () => {
+			preserveRetryable = true;
 		};
 		try {
 			if (!job.environmentId) {
@@ -648,7 +652,7 @@ export class SurfaceFolderWorker {
 				await this.#handleUndo(job, job.environmentId, signal, shutdownSignal, markCommitted);
 				return;
 			}
-			await this.#handleLand(job, job.environmentId, signal, shutdownSignal, markCommitted);
+			await this.#handleLand(job, job.environmentId, signal, shutdownSignal, markCommitted, markPreserveRetryable);
 		} catch (error) {
 			const errorDetail = formatError(error);
 			if (committed) {
@@ -661,6 +665,9 @@ export class SurfaceFolderWorker {
 				return;
 			}
 			this.#emit({ kind: "surface_folder_merge_failed", jobId: job.jobId, error: errorDetail });
+			if (preserveRetryable && !isDefiniteCommitRejection(error)) {
+				return;
+			}
 			if (!shutdownSignal?.aborted && !isLeaseLost()) {
 				await withAbortScopes(
 					shutdownSignal ? [shutdownSignal] : [],
@@ -677,6 +684,7 @@ export class SurfaceFolderWorker {
 		signal: AbortSignal,
 		shutdownSignal: AbortSignal | undefined,
 		markCommitted: () => void,
+		markPreserveRetryable: () => void,
 	): Promise<void> {
 		const folderRoot = normalizeFolderRoot(job.folderRoot);
 		if (job.approvedChanges.length === 0) {
@@ -700,19 +708,26 @@ export class SurfaceFolderWorker {
 		const snapshotId = `merge:${job.jobId}`;
 		const changeIds = job.approvedChanges.map((c) => c.changeId);
 		const orderedTouchedPaths = [...touchedPaths];
-		const [existingRaw, readStates] = await Promise.all([
-			this.#options.authority
-				.publisher(
-					"qorpera_surface_load_folder_snapshot",
-					{
-						p_profile_id: job.profileId,
-						p_surface_id: job.surfaceId,
-						p_change_id: null,
-						p_snapshot_id: snapshotId,
-					},
-					signal,
-				)
-				.catch(() => null),
+		const [loadedSnapshot, readStates] = await Promise.all([
+			retryCommittedRpc(
+				(attemptSignal) =>
+					this.#options.authority.publisher(
+						"qorpera_surface_load_folder_snapshot",
+						{
+							p_profile_id: job.profileId,
+							p_surface_id: job.surfaceId,
+							p_change_id: null,
+							p_snapshot_id: snapshotId,
+						},
+						attemptSignal,
+					),
+				signal,
+				this.#completionRetryDelaysMs,
+			).catch((error) => {
+				// WHY: Never fall through as if no snapshot exists when loading merge:<jobId> fails, or a retry could overwrite durable filesBefore with post-merge contents.
+				markPreserveRetryable();
+				throw error;
+			}),
 			mapBounded(
 				orderedTouchedPaths,
 				PLATFORM_STAGE_CONCURRENCY,
@@ -720,6 +735,7 @@ export class SurfaceFolderWorker {
 				signal,
 			),
 		]);
+		const existingRaw: unknown = loadedSnapshot.outcome === "confirmed" ? loadedSnapshot.value : null;
 		const currentByPath = new Map<string, FolderFileState>();
 		for (let i = 0; i < orderedTouchedPaths.length; i += 1) {
 			currentByPath.set(orderedTouchedPaths[i] as string, readStates[i] as FolderFileState);
@@ -912,20 +928,30 @@ export class SurfaceFolderWorker {
 		}
 
 		// WHY: Persist filesBefore durably before qorpera_folder_commit so crash retries never capture post-merge contents as filesBefore.
-		await this.#options.authority.publisher(
-			"qorpera_surface_save_folder_snapshot",
-			{
-				p_profile_id: job.profileId,
-				p_surface_id: job.surfaceId,
-				p_snapshot_id: snapshotId,
-				p_folder_root: folderRoot,
-				p_change_ids: changeIds,
-				p_files_before: filesBefore,
-				p_versions_after: null,
-				p_after_content_sha256: afterContentSha256,
-			},
-			signal,
-		);
+		try {
+			await retryCommittedRpc(
+				(attemptSignal) =>
+					this.#options.authority.publisher(
+						"qorpera_surface_save_folder_snapshot",
+						{
+							p_profile_id: job.profileId,
+							p_surface_id: job.surfaceId,
+							p_snapshot_id: snapshotId,
+							p_folder_root: folderRoot,
+							p_change_ids: changeIds,
+							p_files_before: filesBefore,
+							p_versions_after: null,
+							p_after_content_sha256: afterContentSha256,
+						},
+						attemptSignal,
+					),
+				signal,
+				this.#completionRetryDelaysMs,
+			);
+		} catch (error) {
+			markPreserveRetryable();
+			throw error;
+		}
 
 		// WHY: Refuse to start qorpera_folder_commit if the job deadline already fired, then decouple the in-flight commit and operation-key replays from jobSignal so an abort never marks a committed write failed.
 		signal.throwIfAborted();
