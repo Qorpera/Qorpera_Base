@@ -825,7 +825,7 @@ describe("runCloudGeminiToolSession", () => {
 		expect((error as DOMException).name).toBe("TimeoutError");
 	});
 
-	it("fails with provider_failed when maxTurns is exceeded and prunes folded inlineData from history", async () => {
+	it("bounds unbounded tool loops with budget_exhausted, excludes turnCorrection and timeout-bounded runs, and prunes folded inlineData", async () => {
 		const loopBoundary = makeBoundary([
 			{
 				name: "spin_tool",
@@ -869,7 +869,87 @@ describe("runCloudGeminiToolSession", () => {
 			signal: new AbortController().signal,
 		}).catch((failure: unknown) => failure);
 		expect(spinRequests).toBe(3);
-		expect(nativeRuntimeFailureMetadata(capError)).toMatchObject({ category: "provider_failed" });
+		expect(nativeRuntimeFailureMetadata(capError)).toMatchObject({ category: "budget_exhausted" });
+
+		let correctionRequests = 0;
+		const correctionFetch: typeof fetch = async () => {
+			correctionRequests += 1;
+			return new Response(
+				JSON.stringify({
+					candidates: [
+						{
+							content: {
+								role: "model",
+								parts: [{ text: correctionRequests === 1 ? "Draft." : "Final." }],
+							},
+						},
+					],
+					usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 10 },
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		};
+		const corrected = await runCloudGeminiToolSession({
+			boundary: makeBoundary([]),
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: correctionFetch,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Draft then fix",
+			maxTurns: 1,
+			turnCorrection: async () => "Send your final reply.",
+			signal: new AbortController().signal,
+		});
+		expect(correctionRequests).toBe(2);
+		expect(corrected.fencedRequests).toBe(2);
+
+		let boundedRequests = 0;
+		const boundedFetch: typeof fetch = async () => {
+			boundedRequests += 1;
+			if (boundedRequests <= 201) {
+				return new Response(
+					JSON.stringify({
+						candidates: [
+							{
+								content: {
+									role: "model",
+									parts: [{ functionCall: { id: `long_${boundedRequests}`, name: "spin_tool", args: {} } }],
+								},
+							},
+						],
+						usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			return new Response(
+				JSON.stringify({
+					candidates: [{ content: { role: "model", parts: [{ text: "Completed after 201 tool turns." }] } }],
+					usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		};
+		const longBounded = await runCloudGeminiToolSession({
+			boundary: loopBoundary,
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: boundedFetch,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			timeoutMs: 60_000,
+			prompt: "Long timeout-bounded run",
+			signal: new AbortController().signal,
+		});
+		expect(longBounded.toolCalls).toBe(201);
+		expect(boundedRequests).toBe(202);
 
 		const pngBytes = Buffer.from(TINY_PNG_BASE64, "base64");
 		const pngSha256 = createHash("sha256").update(pngBytes).digest("hex");

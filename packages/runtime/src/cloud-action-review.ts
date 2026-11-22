@@ -47,8 +47,8 @@ const REQUEST_BYTES = 4096;
 const DETAIL_BYTES = 600;
 /** Text the member approves (a file's content, an issue's body, an agent's or worker's instructions): an excerpt. */
 const CONTENT_BYTES = 1200;
-/** A hold that ends early (the run stops, or the kernel refuses the wait) parks its card, asking again through lost
- * or late answers for up to this long. Best effort: the kernel's heartbeat covers a crash. */
+/** WHY: A hold that ends early or times out retries parking for at most this long; once exhausted, #leave is skipped
+ * and the call fails with REVIEW_UNAVAILABLE, relying on the server's held_until heartbeat to wake the agent later. */
 const PARK_ON_EXIT_MS = 30_000;
 
 /** Plain titles for connector writes, by tool name; others show their tool name. */
@@ -2139,12 +2139,9 @@ export class CloudActionReviewGate {
 							signal,
 						);
 			} catch (error) {
-				// A lost or late answer does not end the hold (production pass 2, 16 Oct 2026: one poll in about 150
-				// waited past the lock timeout behind a same-run step, and the held call was told its review was
-				// unavailable). A wait is idempotent (asked again, it finds the approval it used or the park it made),
-				// so it is asked again: at the poll's pace until the hold runs out, then until the card parks. If a
-				// wait uses the approval after its answer woke the agent, however long after, the woken run is told
-				// it was used (20260930489000). A refusal or a stopped run ends the hold.
+				// WHY: Lost or late wait answers are idempotent, so #poll retries at the poll pace until the hold runs out,
+				// then retries parking for at most PARK_ON_EXIT_MS. Once that 30 s bound is exhausted, #leave is skipped and
+				// the call fails with REVIEW_UNAVAILABLE, relying on the server's held_until heartbeat to wake the agent later.
 				if (park && !signal.aborted && Date.now() >= (parkUntil ?? now)) {
 					pollState.parkExhausted = true;
 					throw error;
