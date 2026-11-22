@@ -1271,19 +1271,25 @@ describe("the row's value for a run that passed", () => {
 		]);
 
 		const withTests = codeChecksFailedSummary(
-			failedRun({
-				tail: "FAIL src/cart.test.ts\nexpected 80",
-				persistedLog: "code/acme/shop/_check-runs/0000000001-0001-abcdef123456/2-test.log",
-				failedTests: [
-					{
-						suite: "Cart",
-						name: "applies discount",
-						file: "src/cart.test.ts",
-						line: 42,
-						message: "expected 90 to equal 80",
-					},
+			failedRun(
+				{
+					tail: "FAIL src/cart.test.ts\nexpected 80",
+					persistedLog: "code/acme/shop/_check-runs/0000000001-0001-abcdef123456/2-test.log",
+					failedTests: [
+						{
+							suite: "Cart",
+							name: "applies discount",
+							file: "src/cart.test.ts",
+							line: 42,
+							message: "expected 90 to equal 80",
+						},
+					],
+				},
+				[
+					{ name: "lint", ms: 500 },
+					{ name: "docs", ms: 0, skipped: "paths_unmatched" },
 				],
-			}),
+			),
 			"fast-forward",
 		);
 		expect(bytes(withTests)).toBeLessThanOrEqual(3500);
@@ -1292,6 +1298,9 @@ describe("the row's value for a run that passed", () => {
 		expect(withTests).toContain(
 			"Full masked log saved at code/acme/shop/_check-runs/0000000001-0001-abcdef123456/2-test.log.",
 		);
+		expect(withTests).toContain("Checks that passed: lint.");
+		expect(withTests).toContain("Checks skipped (no matching changes): docs.");
+		expect(withTests).not.toContain("Checks that passed: lint, docs.");
 		expect(unseenIn(withTests)).toBe(false);
 	});
 });

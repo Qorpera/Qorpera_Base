@@ -397,6 +397,7 @@ function serializePreflightOutcome(
 		readonly autoIncludedNeeds?: readonly string[];
 		readonly cleanCopy?: { readonly commit: string; readonly uncommittedChangesIgnored: boolean };
 		readonly siteValidation?: PreflightSiteValidation;
+		readonly notices?: readonly string[];
 	},
 	tailCap: number,
 ): string {
@@ -445,6 +446,7 @@ function serializePreflightOutcome(
 			...(payload.siteValidation !== undefined
 				? { siteValidation: payload.siteValidation as unknown as JsonValue }
 				: {}),
+			...(payload.notices && payload.notices.length > 0 ? { notices: [...payload.notices] } : {}),
 		},
 		MAX_COMMAND_JSON_BYTES,
 	);
@@ -1163,6 +1165,13 @@ export async function runCodingPreflightChecks(options: {
 			}
 		}
 
+		const checksWithSecrets = selected.filter((check) => check.secrets !== undefined).map((check) => check.name);
+		const notices =
+			checksWithSecrets.length > 0
+				? [
+						`Per-check secrets allow-lists are enforced at landing; pre-flight runs with the session environment (checks with secrets: ${checksWithSecrets.join(", ")}).`,
+					]
+				: undefined;
 		const totalMs = Math.max(0, Date.now() - runStartedAt);
 		const payload = {
 			state: overallState,
@@ -1175,6 +1184,7 @@ export async function runCodingPreflightChecks(options: {
 			...(autoIncludedNeeds.length > 0 ? { autoIncludedNeeds } : {}),
 			...(cleanCopyMeta !== undefined ? { cleanCopy: cleanCopyMeta } : {}),
 			...(siteValidation !== undefined ? { siteValidation } : {}),
+			...(notices !== undefined ? { notices } : {}),
 		};
 		for (const tailCap of [MAX_TAIL_BYTES, 800, 400, 200, 0]) {
 			const candidate = redactCloudWebhookSecrets(serializePreflightOutcome(payload, tailCap));

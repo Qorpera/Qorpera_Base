@@ -524,11 +524,11 @@ function parseCaches(value: unknown, at: string, refuse: Refuse): CodeCheckCache
 					for (const [pathIndex, entry] of field.entries()) {
 						const pathAt = pointer(fieldAt, pathIndex);
 						if (typeof entry !== "string") refuse(pathAt, "WRONG_TYPE", "Must be a string.");
-						else if (!isWorkspaceRelativePath(entry, false))
+						else if (!isWorkspaceRelativePath(entry, false) || entry.split("/")[0]?.toLowerCase() === ".qorpera")
 							refuse(
 								pathAt,
 								"INVALID_PATH",
-								"Must be a relative path inside the repository without '.', '..', '.git' or glob characters.",
+								"Must be a relative path inside the repository without '.', '..', '.git', '.qorpera' or glob characters.",
 							);
 						else if (seen.has(entry)) refuse(pathAt, "DUPLICATE", `The path "${entry}" is listed twice.`);
 						else {
@@ -766,7 +766,7 @@ function parseChecksArray(
 	const checks: CodeCheck[] = [];
 	const parsed: {
 		name: string | null;
-		timeoutSeconds: number;
+		effectiveSeconds: number;
 		hasNeeds: boolean;
 		needs: readonly { name: string; at: string }[];
 	}[] = [];
@@ -886,8 +886,9 @@ function parseChecksArray(
 		}
 		if (!("name" in item)) refuse(itemAt, "MISSING_KEY", "Needs name.");
 		if (!("run" in item)) refuse(itemAt, "MISSING_KEY", "Needs run.");
-		total += timeoutSeconds;
-		parsed.push({ name, timeoutSeconds, hasNeeds: "needs" in item, needs: needsEntries });
+		const effectiveSeconds = timeoutSeconds * (1 + (retries ?? 0));
+		total += effectiveSeconds;
+		parsed.push({ name, effectiveSeconds, hasNeeds: "needs" in item, needs: needsEntries });
 		if (name !== null && run !== null) {
 			checks.push({
 				name,
@@ -918,7 +919,7 @@ function parseChecksArray(
 		}
 		if (entry.name !== null) {
 			edges.set(entry.name, validDeps);
-			durations.set(entry.name, entry.timeoutSeconds);
+			durations.set(entry.name, entry.effectiveSeconds);
 		}
 	}
 	const cycle = findCheckCycle(edges);

@@ -281,10 +281,11 @@ describe("the coding composition of a native turn", () => {
 					// repository's checks file before a landing; the session writes the file and runs the same checks first.
 					"In a repository kept in Qorpera: never hand in half-done or failing work: it would not pass its checks, or would go in unfinished; hand in what is whole and passes its checks and name what is left, or, with nothing whole yet, call coding_ask.",
 					"In a repository kept in Qorpera, Qorpera runs the repository's checks before your commit goes into its default branch: the commands in .qorpera/checks.json, each from the top of a clean copy of what would go in (your commit, or your commit merged with the default branch when it moved), on this machine, with CI=true and stdin closed.",
-					"Only work whose every check passes goes in; otherwise nothing goes in and the turn fails with the check that failed and the end of its output.",
+					"Only work whose every check passes goes in; otherwise nothing goes in and the turn fails with the check that failed and the end of its output (plus parsed failed tests when artifacts are configured; full masked logs and declared artifacts are saved in the advisory folder code/<owner>/<name>/_check-runs/<runId>/ with the last 20 runs retained).",
 					'When the repository has no checks file, add one in this change: {"checks":[{"name":"install","run":"npm ci"},{"name":"test","run":"npm test"},{"name":"build","run":"npm run build"}]} for a Node project, or the commands that install, test and build yours;',
-					"each check has a name (lower case, digits, . _ -), a run command, and may have timeoutSeconds (10 to 1800, 600 when left out; at most 3600 in all) and cwd (a folder of the repository).",
-					'Checks run sequentially unless any check lists "needs" (an array of check names that must pass first), in which case ready checks run in parallel up to 4 at once (e.g. install first, then lint, typecheck and test with "needs":["install"], then build with "needs":["lint","typecheck","test"]); parallel checks share one copy, so do not let two of them write the same files.',
+					'each check has a name (lower case, digits, . _ -), a run command, and may have timeoutSeconds (10 to 1800, 600 when left out; counted with retries as timeoutSeconds * (1 + retries), at most 3600 s on the critical path and 7200 s total CPU), cwd (a folder of the repository), needs, exclusive, retries (0 to 2), paths, pathsIgnore, alwaysRun, env (non-reserved variables), secrets (least-privilege vault allow-list enforced at landing), and artifacts ({paths, when: "on_failure"|"always", format: "junit"|"tap"|"vitest-json"|"raw"}).',
+					"Top-level fields may also set maxParallel (1 to 8, default 4), failFast (default true), and caches ([{key, paths, restoreKeys}] using hash('<file>') templates, restored via CoW for untracked paths only without overwriting committed files and saved only after passing landings).",
+					'Checks run sequentially unless any check lists "needs" (an array of check names that must pass first), in which case ready checks run in parallel up to maxParallel at once (e.g. install first, then lint, typecheck and test with "needs":["install"], then build with "needs":["lint","typecheck","test"]); parallel checks share one copy, so do not let two of them write the same files (mark mutually-conflicting steps exclusive:true).',
 					// Own code storage, step 4 (20260930729000): a website's built folder, named in the checks file, is the
 					// change's site for What's new, within a site's limits and with none of the session's secret values.
 					'When the project is a website, add "site": {"folder": "dist"} to the checks file, with the folder your build writes:',
@@ -301,7 +302,7 @@ describe("the coding composition of a native turn", () => {
 					"Make checks fast and honest: they must not need servers or ports your own commands hold, or files git does not track.",
 					// The session's copy is in its home, on the machine's disk, and is removed first, so a second run after a
 					// fix works.
-					'Before coding_finish, run them yourself the same way: rm -rf ~/qorpera-check && git clone --quiet --shared --no-checkout "$(git rev-parse --path-format=absolute --git-common-dir)" ~/qorpera-check && git -C ~/qorpera-check checkout --quiet --detach <commit>, then each command in ~/qorpera-check with CI=true.',
+					"Before coding_finish, run them yourself via coding_run_command with runChecks:true, cleanCopy:true, and (for websites) validateSite:true to test HEAD inside a clean git clone matching landing without landing on main; mid-session you can also call runChecks:true (with optional checkNames, auto-including transitive needs, and failFast) in the current worktree with CI=true QORPERA_CHECKS=1 (note: per-check secrets allow-lists are enforced at landing, whereas pre-flight runs with the session environment).",
 					"Never remove or weaken a check or a test to make it pass: the record of your change shows every change to the checks.",
 					"Never commit test output or logs as proof; the record says which checks passed. Write tests with a change that can be tested. Keep a README that says how to install, test, build and start the project.",
 					"the landing merges your commit with it, and the checks run on that merge; if the two conflict, the turn fails and says so",
@@ -841,7 +842,7 @@ describe("the coding composition of a native turn", () => {
 		expect(instructions).toContain("a new disk keeps only /company, which holds the repository");
 		// Own code storage, step 6: the machine's package caches, which its sessions and the checks share.
 		expect(instructions).toContain(
-			"start fresh. Packages you download with npm, pnpm, pip, uv and Playwright are kept on this machine for later sessions and for Qorpera's checks. ",
+			"start fresh. Packages you download with npm, pnpm, pip, uv, Playwright, Cargo, Go, Bun, Turborepo and sccache are kept on this machine for later sessions and for Qorpera's checks. ",
 		);
 		expect(f.gateway.start).not.toHaveBeenCalled();
 		expect(f.coding.submission).toMatchObject({

@@ -415,9 +415,14 @@ export function codeChecksFailedSummary(
 		`${how === "merged" ? " merged with main as it is now" : ""}. It ran ${code(failed.run, MAX_PASSED_RUN_BYTES)} ` +
 		`and ${exit} after ${Math.round(millis(failed.ms) / 1000)} s${limit}${killed}.`;
 	const persisted = failed.persistedLog ? ` Full masked log saved at ${shown(failed.persistedLog, 200)}.` : "";
-	const passed = run.passed.length > 0 ? ` Checks that passed: ${namesOf(run.passed)}.` : "";
+	const ranPassed = run.passed.filter((entry) => entry.skipped === undefined);
+	const skippedChecks = run.passed.filter((entry) => entry.skipped !== undefined);
+	const nameBudget = ranPassed.length > 0 && skippedChecks.length > 0 ? 300 : 600;
+	const passed = ranPassed.length > 0 ? ` Checks that passed: ${namesOf(ranPassed, nameBudget)}.` : "";
+	const skipped =
+		skippedChecks.length > 0 ? ` Checks skipped (no matching changes): ${namesOf(skippedChecks, nameBudget)}.` : "";
 	const foot =
-		`Its whole output is in ${shown(failed.log, 200)} on the session's machine.${persisted}${passed} Fix the cause in the code, ` +
+		`Its whole output is in ${shown(failed.log, 200)} on the session's machine.${persisted}${passed}${skipped} Fix the cause in the code, ` +
 		"never by removing or weakening the check or its tests; run the checks yourself from a clean copy, commit and " +
 		"finish again. [code=CODING_CHECKS_FAILED]";
 	const tail = codeChecksTail(failed.tail);
@@ -440,12 +445,12 @@ export function codeChecksFailedSummary(
 	return `${head}${before}${block}${after}${foot}`;
 }
 
-function namesOf(checks: readonly { name: string }[]): string {
+function namesOf(checks: readonly { name: string }[], maxBytes = 600): string {
 	const names: string[] = [];
 	let used = 0;
 	for (const check of checks) {
 		const name = shown(check.name, 40);
-		if (used + bytes(name) + 2 > 600) break;
+		if (used + bytes(name) + 2 > maxBytes) break;
 		names.push(name);
 		used += bytes(name) + 2;
 	}

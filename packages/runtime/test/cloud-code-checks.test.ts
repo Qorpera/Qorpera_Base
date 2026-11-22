@@ -1324,9 +1324,34 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 			const res = JSON.parse((await artFail.invoke({ operationKey: "pf-art", runChecks: true })).text);
 			expect(res.state).toBe("failed");
 			expect(res.checks[0].failedTests).toEqual([{ suite: "ui", name: "renders", message: "boom" }]);
+			expect(res.notices).toBeUndefined();
 		} finally {
 			artFail.boundary.close();
 			artFail.run.close();
+		}
+
+		const withSecrets = await preflightFixture({
+			onStart: (input, ctx) => {
+				if (input.command.includes(".qorpera/checks.json")) {
+					return receiptOf(ctx.workerId, input.commandId, input.inputSha256, {
+						state: "succeeded",
+						output: JSON.stringify({
+							checks: [{ name: "deploy-check", run: "echo ok", secrets: ["API_TOKEN"] }],
+						}),
+					});
+				}
+				return receiptOf(ctx.workerId, input.commandId, input.inputSha256, { state: "succeeded", output: "ok\n" });
+			},
+		});
+		try {
+			const res = JSON.parse((await withSecrets.invoke({ operationKey: "pf-sec", runChecks: true })).text);
+			expect(res.state).toBe("passed");
+			expect(res.notices).toEqual([
+				"Per-check secrets allow-lists are enforced at landing; pre-flight runs with the session environment (checks with secrets: deploy-check).",
+			]);
+		} finally {
+			withSecrets.boundary.close();
+			withSecrets.run.close();
 		}
 	});
 });

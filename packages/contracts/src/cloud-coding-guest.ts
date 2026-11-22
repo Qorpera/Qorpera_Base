@@ -138,7 +138,9 @@ export const CODING_PACKAGE_CACHES = /* @__PURE__ */ Object.freeze({
 });
 export const CODING_CHECK_CACHES = /* @__PURE__ */ Object.freeze({
 	root: "/var/cache/qorpera-check-caches",
-	group: "qorpera-coding",
+	owner: "root",
+	group: "root",
+	mode: "0755",
 	limitBytes: 8_589_934_592,
 	ageDays: 30,
 });

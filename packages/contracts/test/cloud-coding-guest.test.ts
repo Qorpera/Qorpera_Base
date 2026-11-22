@@ -309,7 +309,9 @@ describe("coding guest answers", () => {
 		});
 		expect(CODING_CHECK_CACHES).toEqual({
 			root: "/var/cache/qorpera-check-caches",
-			group: "qorpera-coding",
+			owner: "root",
+			group: "root",
+			mode: "0755",
 			limitBytes: 8_589_934_592,
 			ageDays: 30,
 		});

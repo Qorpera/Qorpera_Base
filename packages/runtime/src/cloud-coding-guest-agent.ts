@@ -537,8 +537,8 @@ export function codingPackageCachesTmpfiles(
 			`d ${path} 2775 root ${group} ${ageDays}d`,
 			`a ${path} - - - - ${acl}`,
 		]),
-		`d ${checkCachesRoot} 2775 root ${CODING_CHECK_CACHES.group} ${CODING_CHECK_CACHES.ageDays}d`,
-		`a ${checkCachesRoot} - - - - ${acl}`,
+		// WHY: Blessed check caches are root-owned 0755 so unprivileged session commands can read them but never poison them.
+		`d ${checkCachesRoot} ${CODING_CHECK_CACHES.mode} ${CODING_CHECK_CACHES.owner} ${CODING_CHECK_CACHES.group} ${CODING_CHECK_CACHES.ageDays}d`,
 		...tools.flatMap(({ folder, trees }) => trees.map((tree) => `x ${root}/${folder}/${tree}`)),
 		`x ${checkCachesRoot}/*/*`,
 		"",

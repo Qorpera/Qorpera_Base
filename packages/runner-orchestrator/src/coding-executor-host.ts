@@ -615,27 +615,42 @@ const CODE_CHECKS_COPY = [
 	'test "$(git -C "$d/src" rev-parse HEAD)" = "$QORPERA_CHECKS_COMMIT"',
 	`if [ -n "\${QORPERA_CHECKS_CACHES:-}" ] && [ -n "\${QORPERA_CHECKS_CACHE_ROOT:-}" ]; then`,
 	'python3 -I - "$d/src" <<\x27QORPERA_CACHE_RESTORE_EOF\x27 || true',
-	"import hashlib,json,os,re,shutil,subprocess,sys",
+	"import hashlib,json,os,re,stat,subprocess,sys",
 	"TOK=re.compile(r\"\\$\\{hash\\('([^']*)'\\)\\}|hash\\('([^']*)'\\)\")",
 	'KEY=re.compile(r"[A-Za-z0-9._:-]{1,200}")',
 	"def safe_rel(p):",
 	'\tif not isinstance(p,str) or not p or p=="." or p.startswith("/") or p.endswith("/") or "\\\\" in p or "\\0" in p:return False',
 	"\tif any(ord(c)<32 or ord(c)==127 for c in p):return False",
 	'\treturn all(x not in ("",".","..") and x.lower()!=".git" for x in p.split("/"))',
+	"def safe_cache_path(p):",
+	'\treturn safe_rel(p) and p.split("/")[0].lower()!=".qorpera"',
 	"def no_link(root,rel):",
 	"\tcur=root",
 	'\tfor part in rel.split("/"):',
 	"\t\tcur=os.path.join(cur,part)",
 	"\t\tif os.path.islink(cur):return None",
 	"\treturn cur",
+	"def parent_ok(root,rel):",
+	"\tcur=root",
+	'\tfor part in rel.split("/")[:-1]:',
+	"\t\tcur=os.path.join(cur,part)",
+	"\t\tif os.path.islink(cur):return False",
+	"\t\tif os.path.lexists(cur) and not os.path.isdir(cur):return False",
+	"\treturn True",
+	"def is_tracked(src,rel):",
+	'\tr=subprocess.run(["git","-C",src,"ls-tree","--name-only","HEAD","--",rel],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,check=False)',
+	"\treturn r.returncode!=0 or len(r.stdout)>0",
 	"def eval_key(tpl,src):",
 	"\tdef rep(m):",
 	"\t\trel=m.group(1) if m.group(1) is not None else m.group(2)",
 	'\t\tif not safe_rel(rel):raise ValueError("bad")',
 	"\t\tfp=no_link(src,rel)",
-	'\t\tif not fp or not os.path.isfile(fp) or os.path.islink(fp):return "missing"',
+	'\t\tif not fp:return "missing"',
+	"\t\ttry:fd=os.open(fp,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))",
+	'\t\texcept OSError:return "missing"',
 	"\t\th=hashlib.sha256();rem=16*1024*1024",
-	'\t\twith open(fp,"rb") as f:',
+	"\t\twith os.fdopen(fd,'rb') as f:",
+	"\t\t\tif not stat.S_ISREG(os.fstat(f.fileno()).st_mode):return 'missing'",
 	"\t\t\twhile rem>0:",
 	"\t\t\t\tc=f.read(min(65536,rem))",
 	"\t\t\t\tif not c:break",
@@ -669,22 +684,14 @@ const CODE_CHECKS_COPY = [
 	"\t\t\t\t\tif ms:",
 	"\t\t\t\t\t\tms.sort(key=used_t,reverse=True);hit=ms[0];break",
 	"\t\t\tif not hit:continue",
-	'\t\t\tlu=os.path.join(hit,".last-used")',
-	'\t\t\ttry:open(lu,"wb").close();os.utime(lu,None)',
-	"\t\t\texcept OSError:pass",
 	'\t\t\tfor rel in spec.get("paths") or []:',
-	"\t\t\t\tif not safe_rel(rel):continue",
+	"\t\t\t\tif not safe_cache_path(rel):continue",
 	'\t\t\t\tsp=no_link(os.path.join(hit,"data"),rel)',
 	"\t\t\t\tif not sp or not os.path.lexists(sp):continue",
 	"\t\t\t\tdp=no_link(src,rel)",
-	"\t\t\t\tif not dp:continue",
+	"\t\t\t\tif not dp or os.path.lexists(dp) or not parent_ok(src,rel) or is_tracked(src,rel):continue",
 	"\t\t\t\tos.makedirs(os.path.dirname(dp),exist_ok=True)",
-	"\t\t\t\tif os.path.lexists(dp):",
-	"\t\t\t\t\tif os.path.isdir(dp) and not os.path.islink(dp):shutil.rmtree(dp,ignore_errors=True)",
-	"\t\t\t\t\telse:",
-	"\t\t\t\t\t\ttry:os.unlink(dp)",
-	"\t\t\t\t\t\texcept OSError:pass",
-	'\t\t\t\tsubprocess.run(["cp","-a","--reflink=auto","--",sp,dp],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)',
+	'\t\t\t\tsubprocess.run(["cp","-R","-P","--preserve=mode,timestamps","--reflink=auto","--",sp,dp],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)',
 	"except Exception:",
 	"\tpass",
 	"QORPERA_CACHE_RESTORE_EOF",
@@ -695,34 +702,42 @@ const CODE_CHECKS_DIFF = [
 	"set -eu",
 	...CODE_CHECKS_NEWER_RUN,
 	"printf 'QORPERA_DIFF_OK\\n'",
-	'git -C "$QORPERA_CHECKS_REPOSITORY" -c core.quotePath=false diff --name-only --no-renames "refs/heads/$QORPERA_CHECKS_BASE_BRANCH" "$QORPERA_CHECKS_COMMIT"',
+	'git -C "$QORPERA_CHECKS_REPOSITORY" diff -z --name-only --no-renames "refs/heads/$QORPERA_CHECKS_BASE_BRANCH" "$QORPERA_CHECKS_COMMIT"',
 ].join("\n");
 
 const CODE_CHECKS_CACHE_SAVE = [
 	"set -eu",
 	...CODE_CHECKS_NEWER_RUN,
 	'python3 -I - "$QORPERA_CHECKS_ROOT/$QORPERA_CHECKS_NAME/src" <<\x27QORPERA_CACHE_SAVE_EOF\x27',
-	"import hashlib,json,os,re,secrets,shutil,subprocess,sys,time",
+	"import hashlib,json,os,re,secrets,shutil,stat,subprocess,sys,time",
 	"TOK=re.compile(r\"\\$\\{hash\\('([^']*)'\\)\\}|hash\\('([^']*)'\\)\")",
 	'KEY=re.compile(r"[A-Za-z0-9._:-]{1,200}")',
 	"def safe_rel(p):",
 	'\tif not isinstance(p,str) or not p or p=="." or p.startswith("/") or p.endswith("/") or "\\\\" in p or "\\0" in p:return False',
 	"\tif any(ord(c)<32 or ord(c)==127 for c in p):return False",
 	'\treturn all(x not in ("",".","..") and x.lower()!=".git" for x in p.split("/"))',
+	"def safe_cache_path(p):",
+	'\treturn safe_rel(p) and p.split("/")[0].lower()!=".qorpera"',
 	"def no_link(root,rel):",
 	"\tcur=root",
 	'\tfor part in rel.split("/"):',
 	"\t\tcur=os.path.join(cur,part)",
 	"\t\tif os.path.islink(cur):return None",
 	"\treturn cur",
+	"def is_tracked_index(src,rel):",
+	'\tr=subprocess.run(["git","-c",f"safe.directory={src}","-C",src,"ls-files","-z","--",rel],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,check=False)',
+	"\treturn r.returncode!=0 or len(r.stdout)>0",
 	"def eval_key(tpl,src):",
 	"\tdef rep(m):",
 	"\t\trel=m.group(1) if m.group(1) is not None else m.group(2)",
 	'\t\tif not safe_rel(rel):raise ValueError("bad")',
 	"\t\tfp=no_link(src,rel)",
-	'\t\tif not fp or not os.path.isfile(fp) or os.path.islink(fp):return "missing"',
+	'\t\tif not fp:return "missing"',
+	"\t\ttry:fd=os.open(fp,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))",
+	'\t\texcept OSError:return "missing"',
 	"\t\th=hashlib.sha256();rem=16*1024*1024",
-	'\t\twith open(fp,"rb") as f:',
+	"\t\twith os.fdopen(fd,'rb') as f:",
+	"\t\t\tif not stat.S_ISREG(os.fstat(f.fileno()).st_mode):return 'missing'",
 	"\t\t\twhile rem>0:",
 	"\t\t\t\tc=f.read(min(65536,rem))",
 	"\t\t\t\tif not c:break",
@@ -730,13 +745,35 @@ const CODE_CHECKS_CACHE_SAVE = [
 	"\t\treturn h.hexdigest()[:16]",
 	"\tout=TOK.sub(rep,tpl)",
 	'\treturn out if KEY.fullmatch(out) and not out.startswith(".") else None',
-	'src=sys.argv[1];root=os.environ.get("QORPERA_CHECKS_CACHE_ROOT","")',
+	"def lock_down(top):",
+	"\tis_root=(os.geteuid()==0)",
+	"\tdef fix(p):",
+	"\t\tst=os.lstat(p)",
+	"\t\tif is_root:os.lchown(p,0,0)",
+	"\t\tif stat.S_ISLNK(st.st_mode):return",
+	"\t\tif stat.S_ISDIR(st.st_mode):os.chmod(p,0o755)",
+	"\t\telif stat.S_ISREG(st.st_mode):os.chmod(p,0o755 if (st.st_mode&0o100) else 0o644)",
+	"\t\telse:os.unlink(p)",
+	"\tfor dp,dns,fns in os.walk(top,topdown=False,followlinks=False):",
+	"\t\tfor f in fns:fix(os.path.join(dp,f))",
+	"\t\tfor d in dns:fix(os.path.join(dp,d))",
+	"\tfix(top)",
+	'chk_root=os.environ.get("QORPERA_CHECKS_ROOT","");chk_name=os.environ.get("QORPERA_CHECKS_NAME","")',
+	"run_dir=os.path.join(chk_root,chk_name);src=sys.argv[1]",
+	'root=os.environ.get("QORPERA_CHECKS_CACHE_ROOT","")',
 	'groot=os.environ.get("QORPERA_CHECKS_CACHE_GLOBAL_ROOT","")',
 	'limit=int(os.environ.get("QORPERA_CHECKS_CACHE_LIMIT_BYTES","8589934592"))',
 	'specs=json.loads(os.environ.get("QORPERA_CHECKS_CACHES","[]"))',
 	"if not root or not groot or os.path.islink(groot) or not os.path.isdir(groot):sys.exit(0)",
+	"if os.geteuid()==0 and os.lstat(groot).st_uid!=0:sys.exit(0)",
+	"for p in (chk_root,run_dir,src):",
+	"\tif not p or os.path.islink(p) or not os.path.isdir(p):sys.exit(0)",
 	"if os.path.islink(root):sys.exit(0)",
-	"os.makedirs(root,mode=0o2775,exist_ok=True)",
+	"if os.geteuid()==0:",
+	"\tos.chown(groot,0,0);os.chmod(groot,0o755)",
+	"os.makedirs(root,mode=0o755,exist_ok=True)",
+	"if os.geteuid()==0:",
+	"\tos.chown(root,0,0);os.chmod(root,0o755)",
 	"for spec in specs:",
 	'\tkey=eval_key(spec.get("key",""),src)',
 	"\tif not key:continue",
@@ -748,19 +785,20 @@ const CODE_CHECKS_CACHE_SAVE = [
 	"\t\tcontinue",
 	"\texisting=[]",
 	'\tfor rel in spec.get("paths") or []:',
-	"\t\tif not safe_rel(rel):continue",
+	"\t\tif not safe_cache_path(rel) or is_tracked_index(src,rel):continue",
 	"\t\tsp=no_link(src,rel)",
 	"\t\tif sp and os.path.lexists(sp) and not os.path.islink(sp):existing.append((rel,sp))",
 	"\tif not existing:continue",
 	'\tstaging=os.path.join(root,f".staging-{os.getpid()}-{secrets.token_hex(6)}")',
-	'\tos.makedirs(os.path.join(staging,"data"),mode=0o2775,exist_ok=True)',
+	'\tos.makedirs(os.path.join(staging,"data"),mode=0o700,exist_ok=True)',
 	"\ttry:",
 	"\t\tfor rel,sp in existing:",
 	'\t\t\tdp=os.path.join(staging,"data",rel)',
 	"\t\t\tos.makedirs(os.path.dirname(dp),exist_ok=True)",
-	'\t\t\tsubprocess.run(["cp","-a","--reflink=auto","--",sp,dp],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True)',
+	'\t\t\tsubprocess.run(["cp","-R","-P","--preserve=mode,timestamps","--reflink=auto","--",sp,dp],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True)',
 	'\t\topen(os.path.join(staging,".complete"),"wb").close()',
 	'\t\topen(os.path.join(staging,".last-used"),"wb").close()',
+	"\t\tlock_down(staging)",
 	"\t\ttry:os.rename(staging,dest)",
 	"\t\texcept OSError:shutil.rmtree(staging,ignore_errors=True)",
 	"\texcept Exception:",
@@ -818,7 +856,7 @@ const CODE_CHECKS_PERSIST = [
 	"set -eu",
 	...CODE_CHECKS_NEWER_RUN,
 	'python3 -I - "$QORPERA_CHECKS_ROOT/$QORPERA_CHECKS_NAME/src" <<\x27QORPERA_PERSIST_EOF\x27',
-	"import fnmatch,json,os,re,sys",
+	"import fnmatch,json,os,re,shutil,sys",
 	"E=os.environb",
 	'src=sys.argv[1];pdir=os.environ["QORPERA_CHECKS_PERSIST_DIR"];prel=os.environ["QORPERA_CHECKS_PERSIST_REL"]',
 	'nonce=os.environ["QORPERA_CHECKS_ARTIFACT_NONCE"];spec=json.loads(os.environ["QORPERA_CHECKS_PERSIST_SPEC"])',
@@ -902,6 +940,23 @@ const CODE_CHECKS_PERSIST = [
 	'\t\t\t\t\tsys.stdout.write(f"\\nQORPERA_ARTIFACT_END:{nonce}\\n")',
 	"\t\t\texcept OSError:pass",
 	"if written>0:",
+	"\ttry:",
+	'\t\tkeep=max(1,int(os.environ.get("QORPERA_CHECKS_PERSIST_KEEP_RUNS","20")))',
+	"\t\truns_root=os.path.dirname(pdir);cur=os.path.basename(pdir)",
+	"\t\tif not os.path.islink(runs_root) and os.path.isdir(runs_root):",
+	"\t\t\told=[]",
+	"\t\t\tfor nm in os.listdir(runs_root):",
+	"\t\t\t\tif nm==cur:continue",
+	"\t\t\t\tep=os.path.join(runs_root,nm)",
+	"\t\t\t\ttry:old.append((os.lstat(ep).st_mtime,nm,ep))",
+	"\t\t\t\texcept OSError:pass",
+	"\t\t\told.sort(key=lambda x:(x[0],x[1]),reverse=True)",
+	"\t\t\tfor _,_,ep in old[keep-1:]:",
+	"\t\t\t\tif os.path.islink(ep) or not os.path.isdir(ep):",
+	"\t\t\t\t\ttry:os.unlink(ep)",
+	"\t\t\t\t\texcept OSError:pass",
+	"\t\t\t\telse:shutil.rmtree(ep,ignore_errors=True)",
+	"\texcept Exception:pass",
 	'\tsys.stdout.write(f"QORPERA_PERSISTED:{nonce}:"+json.dumps({"dir":prel,"log":first_log,"files":written,"bytes":total_b})+"\\n")',
 	"QORPERA_PERSIST_EOF",
 ].join("\n");
@@ -3121,9 +3176,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				AbortSignal.any([signal, bounded]),
 			);
 			if (full.truncated) return undefined;
-			const lines = full.text.replaceAll("\r\n", "\n").split("\n");
-			if (lines[0] !== "QORPERA_DIFF_OK") return undefined;
-			return lines.slice(1).filter((line) => line.length > 0);
+			const marker = "QORPERA_DIFF_OK\n";
+			if (!full.text.startsWith(marker)) return undefined;
+			const body = full.text.slice(marker.length);
+			if (body.length === 0) return [];
+			if (!body.endsWith("\0")) return undefined;
+			return body.split("\0").filter((entry) => entry.length > 0);
 		} catch (error) {
 			if (signal.aborted) throw signal.reason;
 			this.#checksReport({ event: "code-checks-error", step: "diff", ...run.step, error });
@@ -3147,31 +3205,48 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	): Promise<void> {
 		if (run.budget.aborted || signal.aborted) return;
 		try {
-			const transport = this.#folderTransport(folder, ready, {
-				cwd: run.home,
-				environment: {
-					...run.base,
-					QORPERA_CHECKS_CACHES: JSON.stringify(run.caches),
-					QORPERA_CHECKS_CACHE_ROOT: run.repoCacheRoot,
-					QORPERA_CHECKS_CACHE_GLOBAL_ROOT: CODING_CHECK_CACHES.root,
-					QORPERA_CHECKS_CACHE_LIMIT_BYTES: String(CODING_CHECK_CACHES.limitBytes),
+			const inputSha256 = digest(
+				JSON.stringify({
+					schema: "qorpera.code-checks-cache-save/v1",
+					caches: run.caches,
+					root: run.repoCacheRoot,
+				}),
+			);
+			const bounded = AbortSignal.any([signal, run.budget, AbortSignal.timeout(CODE_CHECKS_CACHE_SAVE_MS + 30_000)]);
+			await run.authorize("start", ready.scope, run.commandId, inputSha256, bounded);
+			// WHY: Save check caches via host-owned root exec so /var/cache/qorpera-check-caches stays 0755 root:root (read-only to sessions).
+			const result = await folder.client.execInstanceStream(
+				ready.machine.project,
+				lxdCodingMachineName(ready.machine.machineId),
+				{
+					command: [
+						"/usr/bin/env",
+						`QORPERA_CHECKS_ROOT=${run.base.QORPERA_CHECKS_ROOT ?? ""}`,
+						`QORPERA_CHECKS_NAME=${run.base.QORPERA_CHECKS_NAME ?? ""}`,
+						`QORPERA_CHECKS_CACHES=${JSON.stringify(run.caches)}`,
+						`QORPERA_CHECKS_CACHE_ROOT=${run.repoCacheRoot}`,
+						`QORPERA_CHECKS_CACHE_GLOBAL_ROOT=${CODING_CHECK_CACHES.root}`,
+						`QORPERA_CHECKS_CACHE_LIMIT_BYTES=${CODING_CHECK_CACHES.limitBytes}`,
+						"/bin/bash",
+						"--noprofile",
+						"--norc",
+						"-s",
+					],
+					stdin: Buffer.from(CODE_CHECKS_CACHE_SAVE),
+					maxStdoutBytes: 16384,
+					maxStderrBytes: 16384,
+					timeoutMs: CODE_CHECKS_CACHE_SAVE_MS,
 				},
-				authorize: run.authorize,
-			});
-			const command = {
-				commandId: run.commandId,
-				inputSha256: digest(
-					JSON.stringify({
-						schema: "qorpera.code-checks-cache-save/v1",
-						caches: run.caches,
-						root: run.repoCacheRoot,
-					}),
-				),
-				command: CODE_CHECKS_CACHE_SAVE,
-				timeoutMs: CODE_CHECKS_CACHE_SAVE_MS,
-			};
-			const bounded = AbortSignal.any([run.budget, AbortSignal.timeout(CODE_CHECKS_CACHE_SAVE_MS + 30_000)]);
-			await this.#checksCommand(transport, ready.scope, command, true, bounded, signal, folder);
+				bounded,
+			);
+			if (result.exitCode !== 0 && result.exitCode !== 91) {
+				this.#checksReport({
+					event: "code-checks-error",
+					step: "cache-save",
+					...run.step,
+					exitCode: result.exitCode,
+				});
+			}
 		} catch (error) {
 			if (signal.aborted) throw signal.reason;
 			this.#checksReport({ event: "code-checks-error", step: "cache-save", ...run.step, error });
@@ -3205,6 +3280,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		readonly artifactsDir?: string;
 	}> {
 		if (run.budget.aborted || signal.aborted || (run.logs.length === 0 && run.artifacts.length === 0)) return {};
+		// WHY: _check-runs/ is advisory diagnostic storage (sessions may write there; landing gates never read it); retains the latest 20 runs.
 		const persistRel = `${run.areaPath}/_check-runs/${run.runId}`;
 		const persistDir = `${CODING_FOLDER_COMPANY_ROOT}/${persistRel}`;
 		const nonce = randomBytes(12).toString("hex");
@@ -3214,6 +3290,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			QORPERA_CHECKS_PERSIST_DIR: persistDir,
 			QORPERA_CHECKS_PERSIST_REL: persistRel,
 			QORPERA_CHECKS_PERSIST_SPEC: specJson,
+			QORPERA_CHECKS_PERSIST_KEEP_RUNS: "20",
 			QORPERA_CHECKS_ARTIFACT_NONCE: nonce,
 		};
 		let secretNames: string[] = [];

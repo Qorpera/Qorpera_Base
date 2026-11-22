@@ -67,6 +67,45 @@ describe("cloud-code-checks canonical parser and v2 schema", () => {
 			expect(longChain.problems[0]?.code).toBe("TOO_LONG");
 			expect(longChain.problems[0]?.message).toContain("critical-path time limit is 3610 s");
 		}
+
+		const retryCritical = parseCodeChecksText(
+			JSON.stringify({
+				checks: [{ name: "flaky", run: "true", timeoutSeconds: 1800, retries: 2, needs: [] }],
+			}),
+		);
+		expect(retryCritical.ok).toBe(false);
+		if (!retryCritical.ok) {
+			expect(retryCritical.problems[0]?.code).toBe("TOO_LONG");
+			expect(retryCritical.problems[0]?.message).toContain("critical-path time limit is 5400 s");
+		}
+
+		const retryCpuCap = parseCodeChecksText(
+			JSON.stringify({
+				checks: Array.from({ length: 5 }, (_, i) => ({
+					name: `p${i}`,
+					run: "true",
+					timeoutSeconds: 600,
+					retries: 2,
+					needs: [],
+				})),
+			}),
+		);
+		expect(retryCpuCap.ok).toBe(false);
+		if (!retryCpuCap.ok) {
+			expect(retryCpuCap.problems[0]?.code).toBe("TOO_LONG");
+			expect(retryCpuCap.problems[0]?.message).toContain("add up to 9000 s");
+		}
+
+		const retryWithinCap = parseCodeChecksText(
+			JSON.stringify({
+				checks: [{ name: "ok", run: "true", timeoutSeconds: 1200, retries: 2, needs: [] }],
+			}),
+		);
+		expect(retryWithinCap.ok).toBe(true);
+		if (retryWithinCap.ok) {
+			expect(retryWithinCap.criticalPathSeconds).toBe(3600);
+			expect(retryWithinCap.totalTimeoutSeconds).toBe(3600);
+		}
 	});
 
 	it("parses and validates v2 top-level and per-check fields", () => {
@@ -141,7 +180,7 @@ describe("cloud-code-checks canonical parser and v2 schema", () => {
 				caches: [
 					{
 						key: "../escape",
-						paths: ["../outside", ".git/objects"],
+						paths: ["../outside", ".git/objects", ".qorpera", ".qorpera/checks.json"],
 						restoreKeys: ["hash('../secret')"],
 					},
 				],
@@ -169,6 +208,8 @@ describe("cloud-code-checks canonical parser and v2 schema", () => {
 			expect(codes).toContain("INVALID_VALUE /caches/0/key");
 			expect(codes).toContain("INVALID_PATH /caches/0/paths/0");
 			expect(codes).toContain("INVALID_PATH /caches/0/paths/1");
+			expect(codes).toContain("INVALID_PATH /caches/0/paths/2");
+			expect(codes).toContain("INVALID_PATH /caches/0/paths/3");
 			expect(codes).toContain("INVALID_VALUE /caches/0/restoreKeys/0");
 			expect(codes).toContain("WRONG_TYPE /checks/0/exclusive");
 			expect(codes).toContain("INVALID_VALUE /checks/0/retries");
@@ -246,6 +287,9 @@ describe("DAG budget, transitive needs, and path filtering", () => {
 
 		const webCode = filterCodeChecksByPaths(checks, ["web/src/index.ts"], false);
 		expect([...webCode.entries()]).toEqual([["api", "paths_unmatched"]]);
+
+		const quotedWeb = filterCodeChecksByPaths(checks, ['web/a"b".html'], false);
+		expect([...quotedWeb.entries()]).toEqual([["api", "paths_unmatched"]]);
 
 		expect(filterCodeChecksByPaths(checks, ["web/README.md"], true).size).toBe(0);
 		expect(filterCodeChecksByPaths(checks, undefined, false).size).toBe(0);
