@@ -5503,7 +5503,7 @@ describe("a coding machine's secret values for the folder service's save check (
 		expect(fNewDisk.commandSecrets.values(fNewDisk.machine.machineId)).toBeUndefined();
 	});
 
-	it("releases secrets inside #takeOff before a queued #exclusive step runs and before detach SQL settles", async () => {
+	it("releases secrets during take-off before detach SQL settles and even if detach SQL fails", async () => {
 		const f = await secretsFixture({ environment: { API_KEY } });
 		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
 		f.host.endTurn(f.claim);
@@ -5522,15 +5522,20 @@ describe("a coding machine's secret values for the folder service's save check (
 			await stopGate;
 		});
 
-		let releaseDetach!: () => void;
-		const detachGate = new Promise<void>((resolve) => {
-			releaseDetach = resolve;
+		let detachEntered!: () => void;
+		let failDetach!: (error: Error) => void;
+		const detachStarted = new Promise<void>((resolve) => {
+			detachEntered = resolve;
+		});
+		const detachGate = new Promise<void>((_resolve, reject) => {
+			failDetach = reject;
 		});
 		let stopCustodySeen = false;
 		let secretsAtStopCustody: readonly string[] | undefined = ["UNSET"];
 		const baseCall = f.call.getMockImplementation()!;
 		f.call.mockImplementation(async (method, args, signal) => {
 			if (method === "qorpera_record_coding_session_detached") {
+				detachEntered();
 				await detachGate;
 			}
 			if (method === "qorpera_authorize_coding_machine_custody" && args.p_intent === "stop") {
@@ -5552,12 +5557,15 @@ describe("a coding machine's secret values for the folder service's save check (
 		expect(stopCustodySeen).toBe(false);
 
 		releaseStop();
+		await detachStarted;
+		expect(f.commandSecrets.values(f.machine.machineId)).toBeUndefined();
 		expect(await sleeping).toEqual([{ machineId: f.machine.machineId, step: "sleep", state: "done" }]);
 		expect(stopCustodySeen).toBe(true);
 		expect(secretsAtStopCustody).toBeUndefined();
 
-		releaseDetach();
+		failDetach(new Error("CODING_HOST_DETACH_UNAVAILABLE"));
 		await f.host.settled();
+		expect(f.commandSecrets.values(f.machine.machineId)).toBeUndefined();
 	});
 
 	it("preserves a re-attached session's secrets when a stale detach record for an older token finishes", async () => {
@@ -5736,7 +5744,11 @@ describe("a coding machine's secret values for the folder service's save check (
 			});
 			throw input.signal.reason;
 		});
-		await expect(fAbort.host.housekeep(controller.signal)).rejects.toThrow("housekeep-cancelled");
+		try {
+			await expect(fAbort.host.housekeep(controller.signal)).rejects.toThrow("housekeep-cancelled");
+		} finally {
+			mocked.reconcile.mockImplementation(baseReconcile);
+		}
 		expect(startedMachines.size).toBe(4);
 		expect(reconcileSignals).toHaveLength(4);
 		expect(reconcileSignals.every((sig) => sig.aborted)).toBe(true);
