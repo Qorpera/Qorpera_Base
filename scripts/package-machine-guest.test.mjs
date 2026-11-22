@@ -458,7 +458,10 @@ test("the image carries save_coding_value's clipboard helper as its own file, wi
 	assert.match(helperSource, /timeout: timeoutMs,\n\t\t\tkillSignal: "SIGKILL",/);
 	assert.match(helperSource, /return Promise\.all\(\[clipboard\.clear\("clipboard"\), clipboard\.clear\("primary"\)\]\);/);
 	// The executor's own clear runs on a deadline of its own, never the request's signal.
-	assert.match(hostSource, /AbortSignal\.timeout\(this\.#options\.codingValueClearTimeoutMs \?\? CODING_VALUE_CLEAR_MS\)/);
+	assert.match(
+		hostSource,
+		/withTimeoutScope\(\s*undefined,\s*this\.#options\.codingValueClearTimeoutMs \?\? CODING_VALUE_CLEAR_MS,/,
+	);
 	// The executor runs it where the image put it.
 	assert.match(
 		read("packages/runner-orchestrator/src/company-machine-host.ts"),

@@ -3842,7 +3842,22 @@ export class LxdCompanyMachineHost {
 				},
 			);
 			const superseded = this.#streams.get(placementId);
-			if (superseded && superseded.stream !== desktop && !superseded.stream.ended) superseded.stream.close?.();
+			const currentBoot = this.#guests.get(placementId)?.bootId ?? this.#folders.get(placementId)?.bootId;
+			if (superseded && superseded.stream !== desktop && !superseded.stream.ended) {
+				if (currentBoot !== undefined && superseded.bootId === currentBoot && bootId !== currentBoot) {
+					// WHY: A stale-boot reconnect must not displace or close the live relay for the current boot.
+					try {
+						return await desktop.watch(
+							(cycleSignal) => this.#streamCycle(pipe, stream, cycleSignal),
+							sink,
+							signal,
+						);
+					} finally {
+						desktop.close?.();
+					}
+				}
+				if (currentBoot !== undefined && bootId === currentBoot) superseded.stream.close?.();
+			}
 			kept = { bootId, stream: desktop };
 			this.#streams.set(placementId, kept);
 		}
@@ -4630,9 +4645,16 @@ export class LxdCompanyMachineHost {
 				},
 			);
 			created.sha.catch(() => undefined);
-			if (entry && !entry.settled) entry.controller.abort();
-			this.#homeCodexes.set(placementId, created);
-			entry = created;
+			const currentBoot = this.#guests.get(placementId)?.bootId ?? this.#folders.get(placementId)?.bootId;
+			if (entry && currentBoot !== undefined && entry.bootId === currentBoot && bootId !== currentBoot) {
+				// WHY: A stale-boot request must not abort or overwrite the current boot's in-flight Codex hash.
+				entry = created;
+			} else {
+				if (entry && !entry.settled && currentBoot !== undefined && bootId === currentBoot)
+					entry.controller.abort();
+				this.#homeCodexes.set(placementId, created);
+				entry = created;
+			}
 		}
 		if (entry.settled) return await entry.sha;
 		entry.waiters += 1;
