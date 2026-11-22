@@ -1024,7 +1024,7 @@ describe("conversation lifecycle regressions", () => {
 		expect(api.readSessionEvents).toHaveBeenCalledTimes(1);
 		first.resolve([event(1)]);
 		await settle();
-		expect(api.readSessionEvents).toHaveBeenNthCalledWith(2, session.sessionId, 1, 500);
+		expect(api.readSessionEvents).toHaveBeenNthCalledWith(2, session.sessionId, 1, 500, controller.signal);
 		second.resolve([event(2)]);
 		await Promise.all([load, reload]);
 		expect(controller.conversation(session.sessionId).get().projection.lastSequence).toBe(2);
@@ -1044,7 +1044,7 @@ describe("conversation lifecycle regressions", () => {
 		expect(state.pending).toHaveLength(101);
 		expect(state.projection.items).toHaveLength(101);
 		expect(state.complete).toBe(true);
-		expect(api.listSessionInputs).toHaveBeenNthCalledWith(2, session.sessionId, 100, 100);
+		expect(api.listSessionInputs).toHaveBeenNthCalledWith(2, session.sessionId, 100, 100, controller.signal);
 	});
 
 	it("reads the history, the waiting inputs and the coding sessions side by side and draws once", async () => {
@@ -1072,7 +1072,7 @@ describe("conversation lifecycle regressions", () => {
 		firstPage.resolve(history.slice(0, 500));
 		await settle();
 		// The next page follows the first; nothing is drawn halfway through the history.
-		expect(api.readSessionEvents).toHaveBeenNthCalledWith(2, session.sessionId, 500, 500);
+		expect(api.readSessionEvents).toHaveBeenNthCalledWith(2, session.sessionId, 500, 500, controller.signal);
 		expect(drawn).toEqual([]);
 		lastPage.resolve(history.slice(500));
 		await load;
@@ -1095,7 +1095,7 @@ describe("conversation lifecycle regressions", () => {
 		expect(store.get().events).toHaveLength(500);
 		expect(store.get().projection.lastSequence).toBe(500);
 		await controller.loadConversation(session.sessionId);
-		expect(api.readSessionEvents).toHaveBeenLastCalledWith(session.sessionId, 500, 500);
+		expect(api.readSessionEvents).toHaveBeenLastCalledWith(session.sessionId, 500, 500, controller.signal);
 		expect(store.get()).toMatchObject({ complete: true, error: undefined });
 		expect(store.get().events).toHaveLength(501);
 	});
@@ -1813,5 +1813,151 @@ describe("agent execution state", () => {
 		expect(controller.conversations.has(evictableId)).toBe(true);
 		expect(controller.conversations.has(id(810))).toBe(false);
 		expect(controller.conversations.has(id(834))).toBe(false);
+	});
+
+	it("forwards controller.signal to CloudApi reads so stop() aborts in-flight requests", async () => {
+		const { api, controller } = company();
+		controller.store.set({
+			team,
+			staff: [staff],
+			sessions: [{ ...session, staffAgentId: staff.id }],
+			loading: false,
+		});
+		const signals: (AbortSignal | undefined)[] = [];
+		vi.spyOn(api, "getTeam").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "listStaff").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "getOrganization").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "readCompanySidebar").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "readMemberAppLayout").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "listStaffActivity").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "readSessionEventsTail").mockImplementation((_id, _before, _limit, signal) => {
+			signals.push(signal);
+			return new Promise((_resolve, reject) => {
+				signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+			});
+		});
+		vi.spyOn(api, "listSessionInputs").mockImplementation((_id, _after, _limit, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "listCodingSessions").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "listAgentProposals").mockImplementation((_env, _agent, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "readSessionMemoryGeneration").mockImplementation((_id, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "readCodingSession").mockImplementation((_worker, _after, _limit, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "listCodingSessionLogins").mockImplementation((_worker, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+		vi.spyOn(api, "listSecretConnections").mockImplementation((_profile, _env, signal) => {
+			signals.push(signal);
+			return new Promise(() => {});
+		});
+
+		void controller.refreshTeam();
+		void controller.refreshStaff();
+		void controller.refreshOrganization();
+		void controller.refreshSidebar();
+		void controller.refreshAppLayout();
+		void controller.refreshActivity();
+		const load = controller.loadConversation(session.sessionId);
+		void controller.readCodingSession(id(901));
+		void controller.listCodingSessionLogins(id(901));
+		void controller.provideSecret(
+			session.sessionId,
+			id(902),
+			{
+				surface: "secret",
+				title: "API key",
+				payload: { name: "API_KEY", connectorId: "vault", purpose: "auth" },
+			},
+			"secret-value",
+		);
+
+		expect(signals).toHaveLength(14);
+		for (const signal of signals) {
+			expect(signal).toBe(controller.signal);
+			expect(signal?.aborted).toBe(false);
+		}
+		controller.stop();
+		await load;
+		for (const signal of signals) expect(signal?.aborted).toBe(true);
+		// WHY: Aborting loadConversation via stop() must not write an AbortError back into the cleared store.
+		expect(controller.conversation(session.sessionId, false).get().error).toBeUndefined();
+	});
+
+	it("forwards controller.signal on sidebar reset app-layout reload and group-chat image capability check", async () => {
+		const { api, controller } = company();
+		const ownSidebar = {
+			sections: [],
+			placements: {},
+			pinned: [],
+			hidden: [],
+			own: { changes: 1, moved: [], sections: [], pinned: 0, hidden: 0, contacts: 0, pages: 0, apps: 0 },
+			groupChats: true,
+		};
+		controller.store.set({
+			team,
+			staff: [staff],
+			sessions: [
+				{
+					...session,
+					staffAgentId: undefined,
+					executionScope: { roomId: id(903), groupChat: true },
+				},
+			],
+			loading: false,
+		});
+		const sidebarSignals: (AbortSignal | undefined)[] = [];
+		vi.spyOn(api, "readCompanySidebar").mockImplementation(async (_id, signal) => {
+			sidebarSignals.push(signal);
+			return ownSidebar;
+		});
+		const image = new File(["x"], "a.png", { type: "image/png" });
+		controller.conversation(session.sessionId, false).set({ draft: "Look", attachments: [image] });
+		await controller.sendPrompt(session.sessionId, "Look").catch(() => {});
+		expect(sidebarSignals[0]).toBe(controller.signal);
+
+		const layoutSignals: (AbortSignal | undefined)[] = [];
+		vi.spyOn(api, "manageCompanySidebar").mockResolvedValue(ownSidebar);
+		vi.spyOn(api, "readMemberAppLayout").mockImplementation(async (_id, signal) => {
+			layoutSignals.push(signal);
+			return {
+				layout: { schema: "qorpera.member-app-layout/v1" as const, places: {}, groups: {} },
+				updatedAt: "2026-09-05T10:00:00Z",
+			};
+		});
+		controller.store.set({ sidebar: ownSidebar });
+		await controller.resetSidebar();
+		expect(layoutSignals).toContain(controller.signal);
 	});
 });

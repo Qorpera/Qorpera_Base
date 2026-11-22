@@ -297,6 +297,40 @@ describe("LXD provider concurrency", () => {
 		await f.backend.stop(runner2, "idle");
 		expect(f.lxd.unexpected).toEqual([]);
 	});
+
+	it("retires ended runners concurrently during reconcile instead of serially", async () => {
+		const f = await fixture({ timings: { stop: 250, delete: 250 } });
+		const runners = await Promise.all(
+			runIds.map((runId) => f.backend.acquire(runId, fakeWork(runId), new AbortController().signal)),
+		);
+		for (const runId of runIds) {
+			const journalPath = join(f.stateRoot, runId, "journal.json");
+			const journal = JSON.parse(await readFile(journalPath, "utf8")) as Record<string, unknown>;
+			journal.updatedAt = "2026-01-01T00:00:00.000Z";
+			await writeFile(journalPath, JSON.stringify(journal, null, 2), { mode: 0o600 });
+		}
+		for (const runner of runners) f.lxd.endedRunners.add(runner.runnerId);
+		const started = Date.now();
+		await f.backend.reconcile();
+		const elapsed = Date.now() - started;
+		expect(f.lxd.instances.size).toBe(0);
+		expect(f.releases()).toBe(4);
+		expect(elapsed).toBeLessThan(1_500);
+		expect(f.lxd.unexpected).toEqual([]);
+	});
+
+	it("aborts waitForGuestAgent immediately when caller signal aborts mid-boot", async () => {
+		const f = await fixture({ timings: { agent: 60_000 } });
+		const [first] = runIds as [string];
+		const ac = new AbortController();
+		const reason = new Error("ABORT_GUEST_AGENT_WAIT");
+		const acquiring = f.backend.acquire(first, fakeWork(first), ac.signal);
+		await until(() => f.lxd.events.some((event) => event.instance === instance(first) && event.event === "start"));
+		const abortAt = Date.now();
+		ac.abort(reason);
+		await expect(acquiring).rejects.toThrow();
+		expect(Date.now() - abortAt).toBeLessThan(1_000);
+	});
 });
 
 describe("orchestrator over the LXD provider", () => {
