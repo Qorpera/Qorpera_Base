@@ -12,11 +12,12 @@ use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 
 pub const DEFAULT_LXD_SOCKET_PATH: &str = "/var/snap/lxd/common/lxd/unix.socket";
 const MAX_LXD_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CAPTURED_LOG_LINE_BYTES: usize = 4096;
 const LXD_CONTROL_TIMEOUT: Duration = Duration::from_secs(15);
 const LXD_CREATE_WAIT_SECS: u64 = 120;
 const LXD_STATE_WAIT_SECS: u64 = 30;
@@ -54,6 +55,9 @@ pub trait AppRuntimeDriver: Send + Sync {
         logs: Arc<LogRingBuffer>,
     ) -> BoxFuture<'_, Result<AppInstanceHandle, String>>;
     fn stop(&self, deployment_id: &str) -> BoxFuture<'_, Result<(), String>>;
+    fn delete(&self, deployment_id: &str) -> BoxFuture<'_, Result<(), String>> {
+        self.stop(deployment_id)
+    }
     fn is_running(&self, deployment_id: &str) -> BoxFuture<'_, bool>;
     fn freeze(&self, _deployment_id: &str) -> BoxFuture<'_, Result<(), String>> {
         Box::pin(async { Err("freeze_unsupported".to_string()) })
@@ -102,6 +106,56 @@ impl LocalProcessDriver {
         Self {
             children: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+}
+
+async fn drain_bounded_lines<R: AsyncRead + Unpin>(
+    mut reader: R,
+    deployment_id: String,
+    stream: &'static str,
+    logs: Arc<LogRingBuffer>,
+) {
+    // WHY: Cap buffered bytes per line so a child writing gigabytes without newlines cannot OOM app-host.
+    let mut chunk = [0u8; 4096];
+    let mut line = Vec::with_capacity(256);
+    let mut discarding = false;
+    loop {
+        let Ok(n) = reader.read(&mut chunk).await else {
+            break;
+        };
+        if n == 0 {
+            break;
+        }
+        for &byte in &chunk[..n] {
+            if byte == b'\n' {
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                logs.push(
+                    &deployment_id,
+                    stream,
+                    String::from_utf8_lossy(&line).into_owned(),
+                );
+                line.clear();
+                discarding = false;
+            } else if !discarding {
+                if line.len() < MAX_CAPTURED_LOG_LINE_BYTES {
+                    line.push(byte);
+                } else {
+                    discarding = true;
+                }
+            }
+        }
+    }
+    if !line.is_empty() {
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        logs.push(
+            &deployment_id,
+            stream,
+            String::from_utf8_lossy(&line).into_owned(),
+        );
     }
 }
 
@@ -169,22 +223,12 @@ impl AppRuntimeDriver for LocalProcessDriver {
             if let Some(stdout) = child.stdout.take() {
                 let dep_id = spec.deployment_id.clone();
                 let log_ref = Arc::clone(&logs);
-                tokio::spawn(async move {
-                    let mut lines = BufReader::new(stdout).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        log_ref.push(&dep_id, "stdout", line);
-                    }
-                });
+                tokio::spawn(drain_bounded_lines(stdout, dep_id, "stdout", log_ref));
             }
             if let Some(stderr) = child.stderr.take() {
                 let dep_id = spec.deployment_id.clone();
                 let log_ref = Arc::clone(&logs);
-                tokio::spawn(async move {
-                    let mut lines = BufReader::new(stderr).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        log_ref.push(&dep_id, "stderr", line);
-                    }
-                });
+                tokio::spawn(drain_bounded_lines(stderr, dep_id, "stderr", log_ref));
             }
 
             let displaced = {
@@ -567,6 +611,31 @@ impl LxdUnixClient {
         }
         Ok(())
     }
+
+    async fn delete_instance(&self, project: &str, name: &str, wait_secs: u64) -> Result<(), String> {
+        let path = project_path(&format!("/1.0/instances/{name}"), project);
+        let (status, env) = self
+            .request_json(Method::DELETE, &path, None, LXD_CONTROL_TIMEOUT)
+            .await?;
+        if status == StatusCode::NOT_FOUND || env.status_code == 404 {
+            return Ok(());
+        }
+        if status.as_u16() >= 400 || env.kind == "error" {
+            if env.error.to_ascii_lowercase().contains("not found") {
+                return Ok(());
+            }
+            return Err(format!("lxd_delete_error: {}", env.error));
+        }
+        if env.kind == "async" {
+            if let Err(err) = self.wait_operation(&env.operation, wait_secs).await {
+                if err.to_ascii_lowercase().contains("not found") {
+                    return Ok(());
+                }
+                return Err(format!("lxd_delete_op_error: {err}"));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn is_idempotent_state_error(action: &str, err: &str) -> bool {
@@ -912,6 +981,20 @@ impl AppRuntimeDriver for LxdAppDriver {
         })
     }
 
+    fn delete(&self, deployment_id: &str) -> BoxFuture<'_, Result<(), String>> {
+        let project = self.project.clone();
+        let client = LxdUnixClient::new(self.socket_path.clone());
+        let cname = Self::container_name(deployment_id);
+        Box::pin(async move {
+            client
+                .set_instance_state(&project, &cname, "stop", true, LXD_FREEZE_WAIT_SECS)
+                .await?;
+            client
+                .delete_instance(&project, &cname, LXD_STATE_WAIT_SECS)
+                .await
+        })
+    }
+
     fn freeze(&self, deployment_id: &str) -> BoxFuture<'_, Result<(), String>> {
         let project = self.project.clone();
         let client = LxdUnixClient::new(self.socket_path.clone());
@@ -997,5 +1080,19 @@ mod tests {
 
         let local = parse_lxd_image_source("qorpera-node22", None);
         assert_eq!(local["alias"], "qorpera-node22");
+    }
+
+    #[tokio::test]
+    async fn drain_bounded_lines_caps_newline_free_output() {
+        let logs = Arc::new(LogRingBuffer::new(16, 64 * 1024));
+        let mut payload = vec![b'x'; 64 * 1024];
+        payload.extend_from_slice(b"\r\nsecond-line\npartial");
+        drain_bounded_lines(&payload[..], "dep-huge".to_string(), "stdout", Arc::clone(&logs))
+            .await;
+        let entries = logs.tail("dep-huge", 10);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].line.len(), MAX_CAPTURED_LOG_LINE_BYTES);
+        assert_eq!(entries[1].line, "second-line");
+        assert_eq!(entries[2].line, "partial");
     }
 }
