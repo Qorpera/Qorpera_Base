@@ -18,6 +18,7 @@ import {
 } from "@qorpera/cloud-client/company-path-presence";
 import { PresenceSignatures } from "@qorpera/cloud-client/presence-signatures";
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "./cloud-company-path-gateway.ts";
 import {
 	type CloudNativeToolBinding,
@@ -98,11 +99,12 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 	readonly #control: CloudCompanyPathControl;
 	readonly #client: PresenceClient;
 	readonly #stop = new AbortController();
+	readonly #parentSignal: AbortSignal;
 	readonly #signal: AbortSignal;
 	readonly #signatures = new PresenceSignatures();
 	readonly #clientId = crypto.randomUUID();
 	readonly #timer: ReturnType<typeof setInterval>;
-	readonly #abort: () => void;
+	readonly #onParentAbort: () => void;
 	#channel: RealtimeChannel | undefined;
 	#connected = false;
 	#closed = false;
@@ -129,11 +131,17 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 		this.#identity = Object.freeze({ ...options.identity });
 		this.#control = options.control;
 		this.#client = options.client;
-		this.#signal = AbortSignal.any([options.signal, this.#stop.signal]);
-		this.#abort = () => {
+		this.#parentSignal = options.signal;
+		this.#signal = this.#stop.signal;
+		this.#onParentAbort = () => {
+			this.#stop.abort(this.#parentSignal.reason);
 			void this.close();
 		};
-		this.#signal.addEventListener("abort", this.#abort, { once: true });
+		if (this.#parentSignal.aborted) {
+			this.#stop.abort(this.#parentSignal.reason);
+		} else {
+			this.#parentSignal.addEventListener("abort", this.#onParentAbort, { once: true });
+		}
 		this.#timer = setInterval(() => {
 			void this.#refresh();
 		}, RENEWAL_MS);
@@ -319,110 +327,115 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 			this.#claims = [{ path, extent, activity }];
 			this.#revision++;
 			await this.#refresh();
-			// Own scope is a separate transaction from every publisher lookup.
-			const scoped = await this.#scope(paths, AbortSignal.any([signal, this.#signal]));
-			const channel = this.#channel;
-			if (!channel || !this.#connected || this.#closed) return result;
-			const routes = scoped[0].routes;
-			// Verify the newest statement even when it no longer overlaps this path.
-			// Filtering first could revive an older signed claim after the agent moved.
-			const candidates = this.#statements.filter((value) => this.#current(value));
-			let partial = this.#truncated || candidates.length > 32;
-			const newest = new Map<
-				string,
-				{
-					statement: CompanyPathPresenceWire;
-					identity: CompanyPresenceIdentity;
-					allowed: CompanyPresencePathRoutes[];
-				}
-			>();
-			// Bound parallel lookups. Each authenticates one publisher and releases its
-			// SQL locks before another RPC; no transaction locks a pair of native runs.
-			for (let index = 0; index < Math.min(32, candidates.length); index += 4) {
-				await Promise.all(
-					candidates.slice(index, index + 4).map(async (statement) => {
-						try {
-							const value = await this.#call(
-								"qorpera_native_presence_subject",
-								{
-									p_environment_id: this.#identity.environmentId,
-									p_client_id: statement.clientId,
-									p_paths: paths,
-								},
-								AbortSignal.any([signal, this.#signal]),
-							);
-							if (value === null) return;
-							const row = closed(value, "identity,paths,schema");
-							if (row.schema !== "qorpera.native-presence-subject/v1")
-								throw new Error("INVALID_NATIVE_PRESENCE_SUBJECT");
-							const identity = parseCompanyPresenceIdentity(row.identity);
-							const allowed = parseCompanyPresenceRoutes(row.paths, paths);
-							if (
-								identity.companyId !== this.#identity.companyId ||
-								identity.environmentId !== this.#identity.environmentId ||
-								identity.clientId !== statement.clientId ||
-								identity.runId === this.#binding.runId ||
-								identity.expiresAt < statement.expiresAt ||
-								!this.#current(statement)
-							)
-								return;
-							if (
-								!(await PresenceSignatures.verify(
-									identity.publicKey,
-									companyPresenceBytes(statement),
-									statement.signature,
-								))
-							)
-								return;
-							if (statement.sequence < (this.#seen.get(statement.clientId) ?? 0) || !this.#current(statement))
-								return;
-							const previous = newest.get(statement.clientId);
-							if (!previous || previous.statement.sequence < statement.sequence)
-								newest.set(statement.clientId, { statement, identity, allowed });
-						} catch {
-							partial = true;
-						}
-					}),
-				);
-			}
-			if (this.#closed || channel !== this.#channel || !this.#connected) return result;
-			for (const { statement, identity, allowed } of newest.values()) {
-				if (!this.#current(statement) || statement.sequence < (this.#seen.get(statement.clientId) ?? 0)) continue;
-				this.#seen.set(statement.clientId, statement.sequence);
-				if (this.#seen.size > 256) this.#seen.delete(this.#seen.keys().next().value!);
-				for (const claim of statement.routes) {
-					const route = routes.find(
-						(route) =>
-							route.token === claim.token &&
-							allowed[0].routes.some((item) => item.path === route.path && item.token === route.token),
+			return await withAbortScopes([signal, this.#signal], async (combined) => {
+				// Own scope is a separate transaction from every publisher lookup.
+				const scoped = await this.#scope(paths, combined);
+				const channel = this.#channel;
+				if (!channel || !this.#connected || this.#closed) return result;
+				const routes = scoped[0].routes;
+				// Verify the newest statement even when it no longer overlaps this path.
+				// Filtering first could revive an older signed claim after the agent moved.
+				const candidates = this.#statements.filter((value) => this.#current(value));
+				let partial = this.#truncated || candidates.length > 32;
+				const newest = new Map<
+					string,
+					{
+						statement: CompanyPathPresenceWire;
+						identity: CompanyPresenceIdentity;
+						allowed: CompanyPresencePathRoutes[];
+					}
+				>();
+				// Bound parallel lookups. Each authenticates one publisher and releases its
+				// SQL locks before another RPC; no transaction locks a pair of native runs.
+				for (let index = 0; index < Math.min(32, candidates.length); index += 4) {
+					await Promise.all(
+						candidates.slice(index, index + 4).map(async (statement) => {
+							try {
+								const value = await this.#call(
+									"qorpera_native_presence_subject",
+									{
+										p_environment_id: this.#identity.environmentId,
+										p_client_id: statement.clientId,
+										p_paths: paths,
+									},
+									combined,
+								);
+								if (value === null) return;
+								const row = closed(value, "identity,paths,schema");
+								if (row.schema !== "qorpera.native-presence-subject/v1")
+									throw new Error("INVALID_NATIVE_PRESENCE_SUBJECT");
+								const identity = parseCompanyPresenceIdentity(row.identity);
+								const allowed = parseCompanyPresenceRoutes(row.paths, paths);
+								if (
+									identity.companyId !== this.#identity.companyId ||
+									identity.environmentId !== this.#identity.environmentId ||
+									identity.clientId !== statement.clientId ||
+									identity.runId === this.#binding.runId ||
+									identity.expiresAt < statement.expiresAt ||
+									!this.#current(statement)
+								)
+									return;
+								if (
+									!(await PresenceSignatures.verify(
+										identity.publicKey,
+										companyPresenceBytes(statement),
+										statement.signature,
+									))
+								)
+									return;
+								if (statement.sequence < (this.#seen.get(statement.clientId) ?? 0) || !this.#current(statement))
+									return;
+								const previous = newest.get(statement.clientId);
+								if (!previous || previous.statement.sequence < statement.sequence)
+									newest.set(statement.clientId, { statement, identity, allowed });
+							} catch {
+								partial = true;
+							}
+						}),
 					);
-					const overlap = route && companyPresenceOverlap(claim, route.path, path);
-					if (
-						overlap &&
-						!result.paths[0].participants.some(
-							(item) =>
-								item.runId === identity.runId && item.overlap === overlap && item.activity === claim.activity,
-						)
-					)
-						result.paths[0].participants.push({
-							staffAgentId: identity.staffAgentId,
-							runId: identity.runId,
-							activity: claim.activity,
-							overlap,
-							expiresAt: statement.expiresAt,
-						});
 				}
-			}
-			// Refresh receiver authorization after all asynchronous subject lookups.
-			const current = await this.#scope(paths, AbortSignal.any([signal, this.#signal]));
-			if (JSON.stringify(current) !== JSON.stringify(scoped) || this.#closed || channel !== this.#channel)
-				return { ...result, paths: [{ path, participants: [] }] };
-			result.observedAt = Date.now();
-			result.paths[0].participants = result.paths[0].participants.filter(
-				(item) => item.expiresAt > result.observedAt,
-			);
-			result.state = partial ? "partial" : "available";
-			return result;
+				if (this.#closed || channel !== this.#channel || !this.#connected) return result;
+				for (const { statement, identity, allowed } of newest.values()) {
+					if (!this.#current(statement) || statement.sequence < (this.#seen.get(statement.clientId) ?? 0))
+						continue;
+					this.#seen.set(statement.clientId, statement.sequence);
+					if (this.#seen.size > 256) this.#seen.delete(this.#seen.keys().next().value!);
+					for (const claim of statement.routes) {
+						const route = routes.find(
+							(route) =>
+								route.token === claim.token &&
+								allowed[0].routes.some((item) => item.path === route.path && item.token === route.token),
+						);
+						const overlap = route && companyPresenceOverlap(claim, route.path, path);
+						if (
+							overlap &&
+							!result.paths[0].participants.some(
+								(item) =>
+									item.runId === identity.runId &&
+									item.overlap === overlap &&
+									item.activity === claim.activity,
+							)
+						)
+							result.paths[0].participants.push({
+								staffAgentId: identity.staffAgentId,
+								runId: identity.runId,
+								activity: claim.activity,
+								overlap,
+								expiresAt: statement.expiresAt,
+							});
+					}
+				}
+				// Refresh receiver authorization after all asynchronous subject lookups.
+				const current = await this.#scope(paths, combined);
+				if (JSON.stringify(current) !== JSON.stringify(scoped) || this.#closed || channel !== this.#channel)
+					return { ...result, paths: [{ path, participants: [] }] };
+				result.observedAt = Date.now();
+				result.paths[0].participants = result.paths[0].participants.filter(
+					(item) => item.expiresAt > result.observedAt,
+				);
+				result.state = partial ? "partial" : "available";
+				return result;
+			});
 		} catch {
 			return { ...result, paths: [{ path, participants: [] }] };
 		}
@@ -430,7 +443,7 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 	close(): Promise<void> {
 		if (this.#closing) return this.#closing;
 		this.#closed = true;
-		this.#signal.removeEventListener("abort", this.#abort);
+		this.#parentSignal.removeEventListener("abort", this.#onParentAbort);
 		this.#stop.abort();
 		clearInterval(this.#timer);
 		const channel = this.#channel;
@@ -446,7 +459,7 @@ export class CloudNativeCompanyPresence implements CloudCompanyPathPresence {
 				this.#call(
 					"qorpera_native_presence_forget",
 					{ p_binding: this.#binding, p_client_id: this.#clientId },
-					AbortSignal.timeout(3000),
+					new AbortController().signal,
 				),
 			]);
 		})();

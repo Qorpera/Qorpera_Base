@@ -5,7 +5,7 @@ import {
 	parseCloudCodingPullRequest,
 	parseCloudCodingRepository,
 } from "@qorpera/contracts";
-import { withAbortScope } from "./abort-scope.ts";
+import { withAbortScope, withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA40 = /^[0-9a-f]{40}$/;
@@ -625,11 +625,11 @@ export class CloudCodingExecutor {
 		signal: AbortSignal,
 	): Promise<{ state: "idle" } | { state: "claimed"; turn: Promise<CodingTurnOutcome> }> {
 		const sent = Date.now();
-		const value = await withAbortScope(signal, (asking) =>
+		const value = await withTimeoutScope(signal, 10000, (asking) =>
 			this.#control.call(
 				"qorpera_claim_coding_session",
 				{ p_owner: this.#owner, p_lease_seconds: LEASE_SECONDS },
-				AbortSignal.any([asking, AbortSignal.timeout(10000)]),
+				asking,
 			),
 		);
 		if (value === null) return { state: "idle" };
@@ -659,432 +659,434 @@ export class CloudCodingExecutor {
 	async #turn(claim: CodingSessionClaim, claimSent: number, signal: AbortSignal): Promise<CodingTurnOutcome> {
 		const stop = new AbortController();
 		const heartbeatStop = new AbortController();
-		const active = AbortSignal.any([signal, stop.signal]);
-		let heartbeat: Promise<void> | undefined;
-		let watchdog: ReturnType<typeof globalThis.setTimeout> | undefined;
-		const arm = (deadline: string) => {
-			const milliseconds = Date.parse(deadline) - Date.now();
-			if (!Number.isFinite(milliseconds) || milliseconds < 1 || milliseconds > 305000)
-				throw new Error("Invalid coding lease deadline");
-			clearTimeout(watchdog);
-			// Coded reasons: whatever the abort interrupts reports why (errorCode).
-			watchdog = globalThis.setTimeout(() => stop.abort(new Error("CODING_EXECUTOR_LEASE_EXPIRED")), milliseconds);
-		};
-		// Each call under a scope of its own: the turn's signals last as long as the turn, and a turn of hours polls
-		// thousands of times (abort-scope.ts).
-		const call = (
-			method: (typeof CODING_EXECUTOR_RPCS)[number],
-			args: Record<string, unknown>,
-			checked = active,
-			ms = 10000,
-		) =>
-			withAbortScope(checked, (scoped) =>
-				this.#control.call(method, args, AbortSignal.any([scoped, AbortSignal.timeout(ms)])),
-			);
-		try {
-			const claimed = claim;
-			const args = { p_worker_id: claim.workerId, p_lease_token: claim.leaseToken };
-			arm(claim.leaseUntil);
-			// The lease's renewals, one at a time with the same token: the next waits for the last to settle. An answer
-			// lost or late is asked again, every attempt and pause ending by the margin before the lease's end as the
-			// turn counts it; there the turn gives the lease up. A refusal gives it up at once (R2, 31 Oct 2026). The
-			// watchdog keeps the database's deadline.
-			heartbeat = (async () => {
-				const checked = AbortSignal.any([active, heartbeatStop.signal]);
-				const leaseEnd = (deadline: string, sent: number) =>
-					Math.min(Date.parse(deadline), sent + LEASE_SECONDS * 1000);
-				let held = leaseEnd(claim.leaseUntil, claimSent);
-				try {
-					for (let failures = 0; !checked.aborted; ) {
-						const by = held - CODING_LEASE_MARGIN_MS;
-						const pause = failures ? CODING_RETRY_PAUSES_MS[Math.min(failures, 3) - 1] : 15000;
-						await setTimeout(Math.max(0, Math.min(pause, by - Date.now())), undefined, { signal: checked });
-						const sent = Date.now();
-						const left = by - sent;
-						if (left < 1) throw new Error("Coding lease renewal ran out of time");
-						let until: unknown;
-						try {
-							until = await withAbortScope(checked, (scoped) => {
-								const attempt = AbortSignal.any([scoped, AbortSignal.timeout(Math.min(10000, left))]);
-								return answerBefore(
-									() =>
-										this.#control.call(
-											"qorpera_heartbeat_coding_session",
-											{ ...args, p_lease_seconds: LEASE_SECONDS },
-											attempt,
-										),
-									attempt,
+		return withAbortScopes([signal, stop.signal], async (active) => {
+			let heartbeat: Promise<void> | undefined;
+			let watchdog: ReturnType<typeof globalThis.setTimeout> | undefined;
+			const arm = (deadline: string) => {
+				const milliseconds = Date.parse(deadline) - Date.now();
+				if (!Number.isFinite(milliseconds) || milliseconds < 1 || milliseconds > 305000)
+					throw new Error("Invalid coding lease deadline");
+				clearTimeout(watchdog);
+				// Coded reasons: whatever the abort interrupts reports why (errorCode).
+				watchdog = globalThis.setTimeout(
+					() => stop.abort(new Error("CODING_EXECUTOR_LEASE_EXPIRED")),
+					milliseconds,
+				);
+			};
+			// Each call under a scope of its own: the turn's signals last as long as the turn, and a turn of hours polls
+			// thousands of times (abort-scope.ts).
+			const call = (
+				method: (typeof CODING_EXECUTOR_RPCS)[number],
+				args: Record<string, unknown>,
+				checked = active,
+				ms = 10000,
+			) => withTimeoutScope(checked, ms, (scoped) => this.#control.call(method, args, scoped));
+			try {
+				const claimed = claim;
+				const args = { p_worker_id: claim.workerId, p_lease_token: claim.leaseToken };
+				arm(claim.leaseUntil);
+				// The lease's renewals, one at a time with the same token: the next waits for the last to settle. An answer
+				// lost or late is asked again, every attempt and pause ending by the margin before the lease's end as the
+				// turn counts it; there the turn gives the lease up. A refusal gives it up at once (R2, 31 Oct 2026). The
+				// watchdog keeps the database's deadline.
+				heartbeat = withAbortScopes([active, heartbeatStop.signal], async (checked) => {
+					const leaseEnd = (deadline: string, sent: number) =>
+						Math.min(Date.parse(deadline), sent + LEASE_SECONDS * 1000);
+					let held = leaseEnd(claim.leaseUntil, claimSent);
+					try {
+						for (let failures = 0; !checked.aborted; ) {
+							const by = held - CODING_LEASE_MARGIN_MS;
+							const pause = failures ? CODING_RETRY_PAUSES_MS[Math.min(failures, 3) - 1] : 15000;
+							await setTimeout(Math.max(0, Math.min(pause, by - Date.now())), undefined, { signal: checked });
+							const sent = Date.now();
+							const left = by - sent;
+							if (left < 1) throw new Error("Coding lease renewal ran out of time");
+							let until: unknown;
+							try {
+								until = await withTimeoutScope(checked, Math.min(10000, left), (attempt) =>
+									answerBefore(
+										() =>
+											this.#control.call(
+												"qorpera_heartbeat_coding_session",
+												{ ...args, p_lease_seconds: LEASE_SECONDS },
+												attempt,
+											),
+										attempt,
+									),
 								);
-							});
+							} catch (error) {
+								if (checked.aborted || error instanceof CodingControlRefused) throw error;
+								failures++;
+								continue;
+							}
+							// An answer after the turn gave its lease up renews nothing.
+							if (checked.aborted) return;
+							if (typeof until !== "string") throw new Error("Coding heartbeat unconfirmed");
+							arm(until);
+							held = leaseEnd(until, sent);
+							claimed.leaseUntil = until;
+							failures = 0;
+						}
+					} catch (error) {
+						// A refusal is the kernel's answer, and stays with the reason as its cause: the turn then ends as
+						// released. Renewals that ran out of time lost the lease without one.
+						if (!heartbeatStop.signal.aborted)
+							stop.abort(
+								new Error(
+									"CODING_EXECUTOR_LEASE_LOST",
+									error instanceof CodingControlRefused ? { cause: error } : undefined,
+								),
+							);
+					}
+				});
+				// The turn as the kernel sees it, asked again while its answer is lost or late, within its own budget; the
+				// turn's end cancels it. A refusal, or an answer that is not the turn, is not asked again (R2).
+				const describe = async () => {
+					const by = Date.now() + CODING_DESCRIBE_BUDGET_MS;
+					for (let failures = 0; ; failures++) {
+						const attemptMs = Math.max(1, Math.min(10000, by - Date.now()));
+						let value: unknown;
+						try {
+							value = await call("qorpera_describe_coding_turn", args, active, attemptMs);
 						} catch (error) {
-							if (checked.aborted || error instanceof CodingControlRefused) throw error;
-							failures++;
+							const pause = CODING_RETRY_PAUSES_MS[Math.min(failures, 2)];
+							if (active.aborted || error instanceof CodingControlRefused || Date.now() + pause >= by)
+								throw error;
+							await setTimeout(pause, undefined, { signal: active });
 							continue;
 						}
-						// An answer after the turn gave its lease up renews nothing.
-						if (checked.aborted) return;
-						if (typeof until !== "string") throw new Error("Coding heartbeat unconfirmed");
-						arm(until);
-						held = leaseEnd(until, sent);
-						claimed.leaseUntil = until;
-						failures = 0;
+						return parseCodingTurnState(value, claimed);
 					}
-				} catch (error) {
-					// A refusal is the kernel's answer, and stays with the reason as its cause: the turn then ends as
-					// released. Renewals that ran out of time lost the lease without one.
-					if (!heartbeatStop.signal.aborted)
-						stop.abort(
-							new Error(
-								"CODING_EXECUTOR_LEASE_LOST",
-								error instanceof CodingControlRefused ? { cause: error } : undefined,
-							),
-						);
-				}
-			})();
-			// The turn as the kernel sees it, asked again while its answer is lost or late, within its own budget; the
-			// turn's end cancels it. A refusal, or an answer that is not the turn, is not asked again (R2).
-			const describe = async () => {
-				const by = Date.now() + CODING_DESCRIBE_BUDGET_MS;
-				for (let failures = 0; ; failures++) {
-					const attemptMs = Math.max(1, Math.min(10000, by - Date.now()));
-					let value: unknown;
-					try {
-						value = await call("qorpera_describe_coding_turn", args, active, attemptMs);
-					} catch (error) {
-						const pause = CODING_RETRY_PAUSES_MS[Math.min(failures, 2)];
-						if (active.aborted || error instanceof CodingControlRefused || Date.now() + pause >= by) throw error;
-						await setTimeout(pause, undefined, { signal: active });
-						continue;
-					}
-					return parseCodingTurnState(value, claimed);
-				}
-			};
-			// A call the kernel rolled back whole (CodingControlBusy: a busy row, or a statement out of time) wrote nothing:
-			// it is made again after a short pause, until `by`, the end of the lease the turn held at its first try unless
-			// the caller says. With `lost`, a call whose answer was lost or late is made again too, that many times: only
-			// for a call that may run twice.
-			const again = async (
-				method: (typeof CODING_EXECUTOR_RPCS)[number],
-				sent: Record<string, unknown>,
-				by = Date.parse(claimed.leaseUntil),
-				lost = 0,
-			): Promise<unknown> => {
-				for (let busy = 0, failures = 0; ; ) {
-					try {
-						return await call(method, sent);
-					} catch (error) {
-						if (active.aborted) throw error;
-						const pause =
-							error instanceof CodingControlBusy
-								? Math.min(2000, 250 * 2 ** busy++) * (0.5 + Math.random() / 2)
-								: failures < lost
-									? CODING_RETRY_PAUSES_MS[Math.min(failures++, 2)]
-									: undefined;
-						if (pause === undefined || Date.now() + pause >= by) throw error;
-						await setTimeout(pause, undefined, { signal: active });
-					}
-				}
-			};
-			// A note of where the turn is. Writing it twice changes nothing but a second line in the session's log.
-			const progress = (extra: Record<string, unknown>) =>
-				again("qorpera_record_coding_progress", { ...args, ...extra }, undefined, 2);
-			// The turn's report. Its answer lost or late (10 Nov 2026), the turn as the kernel describes it says whether
-			// the report went through: a lease the kernel no longer holds for this turn means it did (a completion gives
-			// the lease up), or that the session was cancelled meanwhile, and either way nothing is left to report; a
-			// turn still described is reported again, three times in all.
-			const complete = async (
-				outcome: "succeeded" | "blocked" | "failed",
-				summary: string,
-				extra: Record<string, unknown> = {},
-			) => {
-				active.throwIfAborted();
-				const report = {
-					...args,
-					p_outcome: outcome,
-					// By bytes, as the kernel counts them: a longer summary is refused, and the report would never land.
-					p_summary: withinBytes(summary, SUMMARY_BYTES),
-					p_needs: null,
-					p_pull_request: null,
-					p_checks: null,
-					p_artifacts: null,
-					p_harness_session_ref: null,
-					p_files_changed: null,
-					p_options: null,
-					...extra,
 				};
-				for (let attempt = 1; ; attempt++) {
-					let answer: unknown;
-					try {
-						answer = await again("qorpera_complete_coding_turn", report);
-					} catch (error) {
-						if (active.aborted || attempt === 3) throw error;
+				// A call the kernel rolled back whole (CodingControlBusy: a busy row, or a statement out of time) wrote nothing:
+				// it is made again after a short pause, until `by`, the end of the lease the turn held at its first try unless
+				// the caller says. With `lost`, a call whose answer was lost or late is made again too, that many times: only
+				// for a call that may run twice.
+				const again = async (
+					method: (typeof CODING_EXECUTOR_RPCS)[number],
+					sent: Record<string, unknown>,
+					by = Date.parse(claimed.leaseUntil),
+					lost = 0,
+				): Promise<unknown> => {
+					for (let busy = 0, failures = 0; ; ) {
 						try {
-							await describe();
-						} catch (described) {
-							if (described instanceof CodingControlRefused && !active.aborted) return;
-							throw error;
+							return await call(method, sent);
+						} catch (error) {
+							if (active.aborted) throw error;
+							const pause =
+								error instanceof CodingControlBusy
+									? Math.min(2000, 250 * 2 ** busy++) * (0.5 + Math.random() / 2)
+									: failures < lost
+										? CODING_RETRY_PAUSES_MS[Math.min(failures++, 2)]
+										: undefined;
+							if (pause === undefined || Date.now() + pause >= by) throw error;
+							await setTimeout(pause, undefined, { signal: active });
 						}
-						continue;
 					}
-					const view = record(answer, "Coding completion unconfirmed");
-					if (view.workerId !== claimed.workerId) throw new Error("Coding completion unconfirmed");
-					return;
-				}
-			};
-			// The end of every turn: nothing more starts or publishes for it. The
-			// session stays attached with whatever its commands left running.
-			const end = () => this.#host.endTurn(claimed);
+				};
+				// A note of where the turn is. Writing it twice changes nothing but a second line in the session's log.
+				const progress = (extra: Record<string, unknown>) =>
+					again("qorpera_record_coding_progress", { ...args, ...extra }, undefined, 2);
+				// The turn's report. Its answer lost or late (10 Nov 2026), the turn as the kernel describes it says whether
+				// the report went through: a lease the kernel no longer holds for this turn means it did (a completion gives
+				// the lease up), or that the session was cancelled meanwhile, and either way nothing is left to report; a
+				// turn still described is reported again, three times in all.
+				const complete = async (
+					outcome: "succeeded" | "blocked" | "failed",
+					summary: string,
+					extra: Record<string, unknown> = {},
+				) => {
+					active.throwIfAborted();
+					const report = {
+						...args,
+						p_outcome: outcome,
+						// By bytes, as the kernel counts them: a longer summary is refused, and the report would never land.
+						p_summary: withinBytes(summary, SUMMARY_BYTES),
+						p_needs: null,
+						p_pull_request: null,
+						p_checks: null,
+						p_artifacts: null,
+						p_harness_session_ref: null,
+						p_files_changed: null,
+						p_options: null,
+						...extra,
+					};
+					for (let attempt = 1; ; attempt++) {
+						let answer: unknown;
+						try {
+							answer = await again("qorpera_complete_coding_turn", report);
+						} catch (error) {
+							if (active.aborted || attempt === 3) throw error;
+							try {
+								await describe();
+							} catch (described) {
+								if (described instanceof CodingControlRefused && !active.aborted) return;
+								throw error;
+							}
+							continue;
+						}
+						const view = record(answer, "Coding completion unconfirmed");
+						if (view.workerId !== claimed.workerId) throw new Error("Coding completion unconfirmed");
+						return;
+					}
+				};
+				// The end of every turn: nothing more starts or publishes for it. The
+				// session stays attached with whatever its commands left running.
+				const end = () => this.#host.endTurn(claimed);
 
-			// 1. The workspace: the member's machine, the session's NAS folders, pinned base, seeded checkout.
-			let turn = await describe();
-			if (turn.phase !== "preparing") throw new Error("Coding turn is not preparing");
-			let workspace: CodingWorkspace;
-			try {
-				workspace = await this.#host.prepareWorkspace(claimed, turn, active);
-			} catch (error) {
-				if (error instanceof CodingWorkspaceFailed && !active.aborted) {
-					// The model never ran: unplug whatever was attached, then fail the turn with its reason while it holds
-					// its lease. Should the report not go through, the lease lapses and the session fails all the same.
-					this.#reported("turn", error);
-					end();
-					try {
-						await this.#host.detachSession(claimed, active);
-					} catch (detachError) {
-						this.#reported("stop", detachError);
-					}
-					await complete("failed", error.summary);
-					return "failed";
-				}
-				if (!(error instanceof CodingMachineUnavailable) && !active.aborted && !recoveryRequired(error)) {
-					// Any other failure before the model ran (8 Nov 2026, Lærdom: the vault refused the session's
-					// environment) fails the turn now, saying so with its code, instead of leaving the lease to lapse as "the
-					// executor stopped responding". Only once what the turn attached came off: a machine that could not be
-					// unplugged, or one the host says needs recovery, still lapses (the recovery path).
-					this.#reported("turn", error);
-					end();
-					try {
-						await this.#host.detachSession(claimed, active);
-					} catch (detachError) {
-						this.#reported("stop", detachError);
-						return "recovery-required";
-					}
-					await complete("failed", prepareUnfinished(error));
-					return "failed";
-				}
-				if (!(error instanceof CodingMachineUnavailable) || active.aborted) throw error;
-				// Nothing ran yet: unplug whatever was attached, then wait in the queue.
+				// 1. The workspace: the member's machine, the session's NAS folders, pinned base, seeded checkout.
+				let turn = await describe();
+				if (turn.phase !== "preparing") throw new Error("Coding turn is not preparing");
+				let workspace: CodingWorkspace;
 				try {
-					await this.#host.detachSession(claimed, active);
-				} catch (detachError) {
-					this.#reported("stop", detachError);
-				}
-				try {
-					await call("qorpera_defer_coding_session", { ...args, p_reason: error.reason });
-				} catch (deferError) {
-					// The lease lapses; the session then fails visibly, never silently.
-					this.#reported("defer", deferError);
-					return "recovery-required";
-				}
-				return "deferred";
-			}
-			// 2. The model turn: admitted through the wake bus under the owner's sponsor.
-			// Wake admission never waits for its company's row, and every agent tool
-			// call holds that row for its whole transaction, so begin is refused as
-			// busy while one runs. A busy refusal wrote nothing: begin again after a
-			// short pause, until the lease this turn held at the first try ends.
-			// An admission that still fails (the kernel refused it, or its answer was lost or late) is read back first:
-			// a turn the kernel describes as running began, and goes on. One that did not begin fails now, saying so,
-			// while the turn holds its lease, instead of leaving the lease to lapse as "the executor stopped responding"
-			// (10 Nov 2026). The note before it is the same: without it the turn has no base to begin from.
-			const admission = { ...args, p_coding: { vmId: workspace.vmId, turnId: turn.turnId } };
-			const admitBy = Date.parse(claimed.leaseUntil);
-			let begun: Record<string, unknown> | undefined;
-			let hours = false;
-			try {
-				await progress({
-					p_last_step: "Workspace ready",
-					p_vm_allocation_id: workspace.vmId,
-					p_base_sha: workspace.baseSha,
-					p_events: [
-						{
-							kind: "step",
-							actor: "executor",
-							body: { text: `Prepared the repository at ${workspace.baseSha.slice(0, 7)}` },
-						},
-					],
-				});
-				begun = record(
-					await again("qorpera_begin_coding_turn", admission, admitBy),
-					"Coding turn admission unconfirmed",
-				);
-				hours = begun.state === "refused" && begun.reason === "COMPUTER_HOURS_EXHAUSTED";
-				if (!hours && (begun.workerId !== claimed.workerId || begun.sequence !== claimed.sequence))
-					throw new Error("Coding turn admission unconfirmed");
-			} catch (error) {
-				if (active.aborted) throw error;
-				turn = await describe();
-				if (turn.phase !== "running") {
-					this.#reported("turn", error);
-					end();
-					await complete("failed", TURN_START_UNFINISHED);
-					return "failed";
-				}
-			}
-			if (hours) {
-				// The company ran out of computer hours after the machine step: nothing began. The session
-				// waits in the queue; an attached one stays with the keeper.
-				end();
-				try {
-					await call("qorpera_defer_coding_session", { ...args, p_reason: begun?.reason });
-				} catch (deferError) {
-					this.#reported("defer", deferError);
-					return "recovery-required";
-				}
-				return "deferred";
-			}
-			// One describe at a time: the next poll's pause starts once the last describe, retries and all, settled.
-			// The turn runs whether or not the executor can read it: a describe that stays lost past its budget is asked
-			// again at the next poll for as long as the lease is renewed, and said once (10 Nov 2026). A lease that can
-			// no longer be renewed ends the turn, as before; so does a refusal, which is the kernel's answer.
-			for (let unread = false; ; ) {
-				await setTimeout(this.#turnPollMs, undefined, { signal: active });
-				try {
-					turn = await describe();
+					workspace = await this.#host.prepareWorkspace(claimed, turn, active);
 				} catch (error) {
-					if (active.aborted || error instanceof CodingControlRefused) throw error;
-					if (!unread) this.#reported("watch", error);
-					unread = true;
-					continue;
-				}
-				unread = false;
-				if (turnEnded(turn)) break;
-			}
-			// 3. What the harness left behind decides the outcome; prose never does.
-			const submission = turn.submission;
-			if (submission?.kind === "finish" && turn.jobStatus === "completed") {
-				await progress({
-					p_phase: "publishing",
-					// A repository kept in Qorpera has no pull request: its work lands (own code storage), once its checks
-					// passed (step 3). The founder's card reads exactly these words (CODING_LANDING_STEP).
-					p_last_step:
-						claimed.repository.host === "qorpera" ? CODING_LANDING_STEP : "Publishing the draft pull request",
-				});
-				let publication: CodingExecutorPublication;
-				try {
-					publication = await this.#host.publish(claimed, submission, active);
-				} catch (error) {
-					if (active.aborted) throw error;
-					end();
-					if (error instanceof CodingLandConflict) {
-						// Nothing landed: the session merges the default branch itself and finishes again.
-						await complete("failed", landConflict(claimed.repository.baseBranch, error.paths));
-						return "failed";
-					}
-					if (error instanceof CodingLandRefused) {
-						// Nothing landed, and the same work would be refused again: the turn fails with what to change.
-						this.#reported("publish", error);
+					if (error instanceof CodingWorkspaceFailed && !active.aborted) {
+						// The model never ran: unplug whatever was attached, then fail the turn with its reason while it holds
+						// its lease. Should the report not go through, the lease lapses and the session fails all the same.
+						this.#reported("turn", error);
+						end();
+						try {
+							await this.#host.detachSession(claimed, active);
+						} catch (detachError) {
+							this.#reported("stop", detachError);
+						}
 						await complete("failed", error.summary);
 						return "failed";
 					}
-					if (error instanceof CodingPushRefused || error instanceof CodingSaveRefused) {
-						// Nothing went out, and the same work would be refused again (but for a check the node was too busy
-						// for): the turn fails with what to change, and the session's next turn can finish again.
-						await complete(
-							"failed",
-							error instanceof CodingSaveRefused
-								? error.unchecked
-									? SAVE_UNCHECKED
-									: SAVE_REFUSAL
-								: pushRefusal(error),
-						);
+					if (!(error instanceof CodingMachineUnavailable) && !active.aborted && !recoveryRequired(error)) {
+						// Any other failure before the model ran (8 Nov 2026, Lærdom: the vault refused the session's
+						// environment) fails the turn now, saying so with its code, instead of leaving the lease to lapse as "the
+						// executor stopped responding". Only once what the turn attached came off: a machine that could not be
+						// unplugged, or one the host says needs recovery, still lapses (the recovery path).
+						this.#reported("turn", error);
+						end();
+						try {
+							await this.#host.detachSession(claimed, active);
+						} catch (detachError) {
+							this.#reported("stop", detachError);
+							return "recovery-required";
+						}
+						await complete("failed", prepareUnfinished(error));
 						return "failed";
 					}
-					// Any other publication failure while the turn still holds its lease (8 Nov 2026, session 27038e92: a
-					// push GitHub had not shown yet) fails the turn now, saying so, instead of leaving the lease to lapse
-					// as "the executor stopped responding". The work stays on the session's branch, and every publication
-					// step checks what an earlier one did, so a later finish hands the same commit in again.
-					this.#reported("publish", error);
-					await complete("failed", PUBLICATION_UNFINISHED);
-					return "failed";
+					if (!(error instanceof CodingMachineUnavailable) || active.aborted) throw error;
+					// Nothing ran yet: unplug whatever was attached, then wait in the queue.
+					try {
+						await this.#host.detachSession(claimed, active);
+					} catch (detachError) {
+						this.#reported("stop", detachError);
+					}
+					try {
+						await call("qorpera_defer_coding_session", { ...args, p_reason: error.reason });
+					} catch (deferError) {
+						// The lease lapses; the session then fails visibly, never silently.
+						this.#reported("defer", deferError);
+						return "recovery-required";
+					}
+					return "deferred";
 				}
-				if (!publication.pullRequest && !publication.noChange && !publication.landed)
-					throw new Error("Coding publication unconfirmed");
+				// 2. The model turn: admitted through the wake bus under the owner's sponsor.
+				// Wake admission never waits for its company's row, and every agent tool
+				// call holds that row for its whole transaction, so begin is refused as
+				// busy while one runs. A busy refusal wrote nothing: begin again after a
+				// short pause, until the lease this turn held at the first try ends.
+				// An admission that still fails (the kernel refused it, or its answer was lost or late) is read back first:
+				// a turn the kernel describes as running began, and goes on. One that did not begin fails now, saying so,
+				// while the turn holds its lease, instead of leaving the lease to lapse as "the executor stopped responding"
+				// (10 Nov 2026). The note before it is the same: without it the turn has no base to begin from.
+				const admission = { ...args, p_coding: { vmId: workspace.vmId, turnId: turn.turnId } };
+				const admitBy = Date.parse(claimed.leaseUntil);
+				let begun: Record<string, unknown> | undefined;
+				let hours = false;
+				try {
+					await progress({
+						p_last_step: "Workspace ready",
+						p_vm_allocation_id: workspace.vmId,
+						p_base_sha: workspace.baseSha,
+						p_events: [
+							{
+								kind: "step",
+								actor: "executor",
+								body: { text: `Prepared the repository at ${workspace.baseSha.slice(0, 7)}` },
+							},
+						],
+					});
+					begun = record(
+						await again("qorpera_begin_coding_turn", admission, admitBy),
+						"Coding turn admission unconfirmed",
+					);
+					hours = begun.state === "refused" && begun.reason === "COMPUTER_HOURS_EXHAUSTED";
+					if (!hours && (begun.workerId !== claimed.workerId || begun.sequence !== claimed.sequence))
+						throw new Error("Coding turn admission unconfirmed");
+				} catch (error) {
+					if (active.aborted) throw error;
+					turn = await describe();
+					if (turn.phase !== "running") {
+						this.#reported("turn", error);
+						end();
+						await complete("failed", TURN_START_UNFINISHED);
+						return "failed";
+					}
+				}
+				if (hours) {
+					// The company ran out of computer hours after the machine step: nothing began. The session
+					// waits in the queue; an attached one stays with the keeper.
+					end();
+					try {
+						await call("qorpera_defer_coding_session", { ...args, p_reason: begun?.reason });
+					} catch (deferError) {
+						this.#reported("defer", deferError);
+						return "recovery-required";
+					}
+					return "deferred";
+				}
+				// One describe at a time: the next poll's pause starts once the last describe, retries and all, settled.
+				// The turn runs whether or not the executor can read it: a describe that stays lost past its budget is asked
+				// again at the next poll for as long as the lease is renewed, and said once (10 Nov 2026). A lease that can
+				// no longer be renewed ends the turn, as before; so does a refusal, which is the kernel's answer.
+				for (let unread = false; ; ) {
+					await setTimeout(this.#turnPollMs, undefined, { signal: active });
+					try {
+						turn = await describe();
+					} catch (error) {
+						if (active.aborted || error instanceof CodingControlRefused) throw error;
+						if (!unread) this.#reported("watch", error);
+						unread = true;
+						continue;
+					}
+					unread = false;
+					if (turnEnded(turn)) break;
+				}
+				// 3. What the harness left behind decides the outcome; prose never does.
+				const submission = turn.submission;
+				if (submission?.kind === "finish" && turn.jobStatus === "completed") {
+					await progress({
+						p_phase: "publishing",
+						// A repository kept in Qorpera has no pull request: its work lands (own code storage), once its checks
+						// passed (step 3). The founder's card reads exactly these words (CODING_LANDING_STEP).
+						p_last_step:
+							claimed.repository.host === "qorpera" ? CODING_LANDING_STEP : "Publishing the draft pull request",
+					});
+					let publication: CodingExecutorPublication;
+					try {
+						publication = await this.#host.publish(claimed, submission, active);
+					} catch (error) {
+						if (active.aborted) throw error;
+						end();
+						if (error instanceof CodingLandConflict) {
+							// Nothing landed: the session merges the default branch itself and finishes again.
+							await complete("failed", landConflict(claimed.repository.baseBranch, error.paths));
+							return "failed";
+						}
+						if (error instanceof CodingLandRefused) {
+							// Nothing landed, and the same work would be refused again: the turn fails with what to change.
+							this.#reported("publish", error);
+							await complete("failed", error.summary);
+							return "failed";
+						}
+						if (error instanceof CodingPushRefused || error instanceof CodingSaveRefused) {
+							// Nothing went out, and the same work would be refused again (but for a check the node was too busy
+							// for): the turn fails with what to change, and the session's next turn can finish again.
+							await complete(
+								"failed",
+								error instanceof CodingSaveRefused
+									? error.unchecked
+										? SAVE_UNCHECKED
+										: SAVE_REFUSAL
+									: pushRefusal(error),
+							);
+							return "failed";
+						}
+						// Any other publication failure while the turn still holds its lease (8 Nov 2026, session 27038e92: a
+						// push GitHub had not shown yet) fails the turn now, saying so, instead of leaving the lease to lapse
+						// as "the executor stopped responding". The work stays on the session's branch, and every publication
+						// step checks what an earlier one did, so a later finish hands the same commit in again.
+						this.#reported("publish", error);
+						await complete("failed", PUBLICATION_UNFINISHED);
+						return "failed";
+					}
+					if (!publication.pullRequest && !publication.noChange && !publication.landed)
+						throw new Error("Coding publication unconfirmed");
+					end();
+					const landed = publication.landed;
+					// How many files the landing changed on the default branch, for the session's card: only for a landing that
+					// moved it, and only a count the kernel takes.
+					const filesChanged =
+						landed &&
+						landed.state !== "unchanged" &&
+						Number.isSafeInteger(landed.filesChanged) &&
+						landed.filesChanged >= 0 &&
+						landed.filesChanged <= 2_147_483_647
+							? landed.filesChanged
+							: null;
+					await complete("succeeded", submission.summary, {
+						p_pull_request: publication.pullRequest,
+						p_harness_session_ref: claimed.harnessSessionRef,
+						// Where a repository kept in Qorpera got the commit: the session's record, and its agent's report.
+						...(landed
+							? {
+									p_artifacts: [
+										{
+											kind: "landed",
+											state: landed.state,
+											branch: claimed.repository.baseBranch,
+											headSha: submission.headSha,
+											mainSha: landed.mainSha,
+										},
+									],
+									p_files_changed: filesChanged,
+								}
+							: {}),
+					});
+					return "completed";
+				}
 				end();
-				const landed = publication.landed;
-				// How many files the landing changed on the default branch, for the session's card: only for a landing that
-				// moved it, and only a count the kernel takes.
-				const filesChanged =
-					landed &&
-					landed.state !== "unchanged" &&
-					Number.isSafeInteger(landed.filesChanged) &&
-					landed.filesChanged >= 0 &&
-					landed.filesChanged <= 2_147_483_647
-						? landed.filesChanged
-						: null;
-				await complete("succeeded", submission.summary, {
-					p_pull_request: publication.pullRequest,
-					p_harness_session_ref: claimed.harnessSessionRef,
-					// Where a repository kept in Qorpera got the commit: the session's record, and its agent's report.
-					...(landed
-						? {
-								p_artifacts: [
-									{
-										kind: "landed",
-										state: landed.state,
-										branch: claimed.repository.baseBranch,
-										headSha: submission.headSha,
-										mainSha: landed.mainSha,
-									},
-								],
-								p_files_changed: filesChanged,
-							}
-						: {}),
-				});
-				return "completed";
+				if (submission?.kind === "ask" && turn.jobStatus === "completed") {
+					await complete("blocked", submission.summary, {
+						p_needs: submission.question,
+						p_options: submission.options.length ? submission.options : null,
+						p_harness_session_ref: claimed.harnessSessionRef,
+					});
+					return "blocked";
+				}
+				const reason =
+					turn.jobStatus === "completed"
+						? "The coding turn ended without a submission."
+						: turn.jobStatus === "cancelled"
+							? "The coding turn was stopped before it finished."
+							: `The coding turn did not finish${turn.jobError ? `: ${turn.jobError.slice(0, 500)}` : "."}`;
+				await complete("failed", reason);
+				return "failed";
+			} catch (error) {
+				// A lost or expired lease, or shutdown, is the cause, whatever await
+				// it interrupted.
+				const cause = active.aborted ? active.reason : error;
+				stop.abort();
+				this.#host.endTurn(claim);
+				this.#reported("turn", cause);
+				// A session hot-plugged by this turn but never attached is unplugged
+				// under separate custody after work authority disappears; an attached
+				// one stays for the keeper. Never claim completion.
+				try {
+					await withTimeoutScope(undefined, CLEANUP_STOP_BUDGET_MS, (cleanupSignal) =>
+						this.#host.detachSession(claim, cleanupSignal),
+					);
+				} catch (stopError) {
+					/* recovery still required */
+					this.#reported("stop", stopError);
+				}
+				// A refused describe or renewal is the kernel's answer: the session was cancelled or archived, or the lease
+				// is no longer this turn's, and the kernel wrote which.
+				return cause instanceof CodingControlRefused ||
+					(cause instanceof Error && cause.cause instanceof CodingControlRefused)
+					? "released"
+					: "recovery-required";
+			} finally {
+				heartbeatStop.abort();
+				clearTimeout(watchdog);
+				await heartbeat;
 			}
-			end();
-			if (submission?.kind === "ask" && turn.jobStatus === "completed") {
-				await complete("blocked", submission.summary, {
-					p_needs: submission.question,
-					p_options: submission.options.length ? submission.options : null,
-					p_harness_session_ref: claimed.harnessSessionRef,
-				});
-				return "blocked";
-			}
-			const reason =
-				turn.jobStatus === "completed"
-					? "The coding turn ended without a submission."
-					: turn.jobStatus === "cancelled"
-						? "The coding turn was stopped before it finished."
-						: `The coding turn did not finish${turn.jobError ? `: ${turn.jobError.slice(0, 500)}` : "."}`;
-			await complete("failed", reason);
-			return "failed";
-		} catch (error) {
-			// A lost or expired lease, or shutdown, is the cause, whatever await
-			// it interrupted.
-			const cause = active.aborted ? active.reason : error;
-			stop.abort();
-			this.#host.endTurn(claim);
-			this.#reported("turn", cause);
-			// A session hot-plugged by this turn but never attached is unplugged
-			// under separate custody after work authority disappears; an attached
-			// one stays for the keeper. Never claim completion.
-			try {
-				await this.#host.detachSession(claim, AbortSignal.timeout(CLEANUP_STOP_BUDGET_MS));
-			} catch (stopError) {
-				/* recovery still required */
-				this.#reported("stop", stopError);
-			}
-			// A refused describe or renewal is the kernel's answer: the session was cancelled or archived, or the lease
-			// is no longer this turn's, and the kernel wrote which.
-			return cause instanceof CodingControlRefused ||
-				(cause instanceof Error && cause.cause instanceof CodingControlRefused)
-				? "released"
-				: "recovery-required";
-		} finally {
-			heartbeatStop.abort();
-			clearTimeout(watchdog);
-			await heartbeat;
-		}
+		});
 	}
 }

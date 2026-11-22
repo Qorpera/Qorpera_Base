@@ -1,4 +1,8 @@
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { CloudCodingRepository } from "@qorpera/contracts";
 import {
 	CODE_AREA_IN_QORPERA_REF,
@@ -236,4 +240,77 @@ export async function pinCodeSiteTree(
 		await run.gitOk(run.repo, ["update-ref", "--no-deref", ref, tree], "CODE_HOST_SITE_PIN_FAILED");
 		return { pinned: true, ref };
 	});
+}
+
+const MAX_APP_SOURCE_TAR_BYTES = 128 * 1024 * 1024;
+const EXPORT_FAILED = "CODE_HOST_SITE_EXPORT_FAILED";
+
+async function extractTarBuffer(tarBytes: Buffer, targetDir: string): Promise<void> {
+	await new Promise<void>((resolve, reject) => {
+		const child = spawn("tar", ["-xf", "-", "-C", targetDir], { stdio: ["pipe", "ignore", "pipe"] });
+		let errText = "";
+		child.stderr?.on("data", (chunk: Buffer) => {
+			if (errText.length < 1024) errText += chunk.toString("utf8");
+		});
+		child.on("error", (err) => reject(new CodeHostJobFailure(EXPORT_FAILED, err.message)));
+		child.on("close", (code) => {
+			if (code === 0) resolve();
+			else reject(new CodeHostJobFailure(EXPORT_FAILED, errText.trim() || `tar exited ${String(code)}`));
+		});
+		child.stdin?.on("error", () => undefined);
+		child.stdin?.end(tarBytes);
+	});
+}
+
+export async function exportCodeSiteSource(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; tree: string; kind?: "static" | "server" | "hybrid" },
+): Promise<{ sourceDir: string; cleanup: () => Promise<void> }> {
+	const hasKind = typeof value === "object" && value !== null && "kind" in value && value.kind !== undefined;
+	let rawRepo: unknown;
+	let tree: unknown;
+	let kind: unknown;
+	if (hasKind) {
+		const input = closed(value, ["repository", "tree", "kind"]);
+		rawRepo = input.repository;
+		tree = input.tree;
+		kind = input.kind;
+	} else {
+		const input = closed(value, ["repository", "tree"]);
+		rawRepo = input.repository;
+		tree = input.tree;
+	}
+	const repository = keptRepositoryOf(rawRepo);
+	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
+	if (kind !== undefined && kind !== "static" && kind !== "server" && kind !== "hybrid") {
+		throw new Error("INVALID_CODE_HOST_JOB");
+	}
+	const tarBytes = await withJob(job, repository, async (run) => {
+		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null) {
+			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		}
+		let target = tree;
+		if (kind === "hybrid") {
+			const mainRef = await run.ref(`refs/heads/${repository.baseBranch}`);
+			if (mainRef === null) throw new CodeHostRefusal("CODE_HOST_SITE_TREE_UNKNOWN", [tree]);
+			target = mainRef;
+		}
+		return await run.gitOk(run.repo, ["archive", "--format=tar", target], EXPORT_FAILED, {
+			maximumOutputBytes: MAX_APP_SOURCE_TAR_BYTES,
+		});
+	});
+	const sourceDir = await mkdtemp(join(tmpdir(), "qorpera-app-src-"));
+	try {
+		await extractTarBuffer(tarBytes, sourceDir);
+	} catch (error) {
+		await rm(sourceDir, { recursive: true, force: true }).catch(() => undefined);
+		throw error;
+	}
+	return {
+		sourceDir,
+		cleanup: async () => {
+			await rm(sourceDir, { recursive: true, force: true });
+		},
+	};
 }

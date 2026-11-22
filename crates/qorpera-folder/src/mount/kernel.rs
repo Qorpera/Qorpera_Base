@@ -316,12 +316,23 @@ impl Kernel {
 
 	/// The kernel forgot `count` lookups of `ino`.
 	pub(super) fn forget(&self, ino: u64, count: u64) {
-		let mut handed = self.handed.lock().unwrap();
-		if let Some(n) = handed.get_mut(&ino) {
-			*n = n.saturating_sub(count);
-			if *n == 0 {
-				handed.remove(&ino);
+		let gone = {
+			let mut handed = self.handed.lock().unwrap();
+			match handed.get_mut(&ino) {
+				Some(n) => {
+					*n = n.saturating_sub(count);
+					if *n == 0 {
+						handed.remove(&ino);
+						true
+					} else {
+						false
+					}
+				}
+				None => false,
 			}
+		};
+		if gone {
+			self.stamps.lock().unwrap().remove(&ino);
 		}
 	}
 
@@ -701,5 +712,21 @@ mod tests {
 			names.hold(k, at(2), at(10));
 			assert!(names.held.len() <= 4);
 		}
+	}
+
+	#[test]
+	fn forget_drops_cached_stamp_when_last_lookup_goes() {
+		let kernel = Kernel::new(None);
+		kernel.on.store(true, Ordering::SeqCst);
+		let stamp = Stamp { mtime: (1, 2), ctime: (1, 2), size: 42, generation: 7 };
+		kernel.hand(99);
+		kernel.hand(99);
+		assert!(!kernel.keep(99, stamp));
+		assert!(kernel.keep(99, stamp));
+		kernel.forget(99, 1);
+		assert!(kernel.stamps.lock().unwrap().contains_key(&99));
+		kernel.forget(99, 1);
+		assert!(!kernel.stamps.lock().unwrap().contains_key(&99));
+		assert!(!kernel.keep(99, stamp));
 	}
 }

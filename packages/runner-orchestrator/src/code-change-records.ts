@@ -702,7 +702,7 @@ const SITE_LINK = /^https:\/\/[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?\/[a-z0-9][a-z
  * `20260930756000`), by the one host rule (STEP5-BUILD.md): one label before `.qorpera.com`, of runs of a-z and 0-9
  * joined by single hyphens (so never a next host, `<name>--next`), whose name is 3 to 48 long and one a site may have
  * (`codeSiteNameValid`), then `/`. */
-const SITE_HOST_LINK = /^https:\/\/([a-z0-9]+(?:-[a-z0-9]+)*)\.qorpera\.com\/$/;
+const SITE_HOST_LINK = /^https:\/\/([a-z0-9]+(?:-[a-z0-9]+)*)\.qorpera\.(?:com|site)\/$/;
 
 /** Whether `url` is a site's link as the list shows one: today's form, or a site's own host. */
 function siteLink(url: unknown): url is string {

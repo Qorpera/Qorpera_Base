@@ -537,4 +537,10 @@ describe("isolated coding command HTTP gateway", () => {
 		await f.service.close();
 		await expect(fetch(`http://127.0.0.1:${port}`)).rejects.toThrow();
 	});
+	it("advertises a 65s keep-alive pool supporting 1000 requests per socket", async () => {
+		const f = await fixture();
+		const response = await raw(f, f.request);
+		expect(response.status).toBe(200);
+		expect(response.headers.get("keep-alive")).toBe("timeout=65, max=1000");
+	});
 });

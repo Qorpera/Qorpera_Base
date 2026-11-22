@@ -6,7 +6,7 @@ begin
 	for i in 1..cardinality(p_edits) / 2 loop
 		v_found := (length(v_definition) - length(replace(v_definition, p_edits[2 * i - 1], ''))) / length(p_edits[2 * i - 1]);
 		if v_found <> 1 then
-			raise exception '20260930833000 anchor found % time(s) in %, expected 1: %', v_found, p_target, left(p_edits[2 * i - 1], 80);
+			raise exception '20260930838000 anchor found % time(s) in %, expected 1: %', v_found, p_target, left(p_edits[2 * i - 1], 80);
 		end if;
 		v_definition := replace(v_definition, p_edits[2 * i - 1], p_edits[2 * i]);
 	end loop;
@@ -113,24 +113,24 @@ revoke all on function public.qorpera_folder_git_index(text),
 grant execute on function public.qorpera_code_change_archive(text, text, uuid, text, text, integer, integer)
 	to service_role;
 comment on function public.qorpera_folder_git_index(text) is
-	'Platform-only Git acceleration index allow-list under repo.git/objects (20260930833000).';
+	'Platform-only Git acceleration index allow-list under repo.git/objects (20260930838000).';
 comment on function public.qorpera_code_change_checks_valid(jsonb) is
-	'Validates v2/v3 change-report checks: null for non-landed states; none, off, passed (on mainAfter), or not_run (intermediate batch commit, not release-ready) for landings (20260930833000).';
+	'Validates v2/v3 change-report checks: null for non-landed states; none, off, passed (on mainAfter), or not_run (intermediate batch commit, not release-ready) for landings (20260930838000).';
 comment on function public.qorpera_code_change_archive(text, text, uuid, text, text, integer, integer) is
-	'Bounded slice of compact change-index lines (at most 250 rows) for writing immutable changes/archive rollups (20260930833000).';
+	'Bounded slice of compact change-index lines (at most 250 rows) for writing immutable changes/archive rollups (20260930838000).';
 
 do $guard$
 begin
 	if position('multi-pack-index' in pg_get_functiondef('public.qorpera_folder_git_index(text)'::regprocedure)) = 0 then
-		raise exception '20260930833000 missing from qorpera_folder_git_index'; end if;
+		raise exception '20260930838000 missing from qorpera_folder_git_index'; end if;
 	if position('qorpera_folder_git_index' in pg_get_functiondef('public.qorpera_folder_git_refusal(text,text,text,uuid)'::regprocedure)) = 0 then
-		raise exception '20260930833000 missing from qorpera_folder_git_refusal'; end if;
+		raise exception '20260930838000 missing from qorpera_folder_git_refusal'; end if;
 	if position('not_run' in pg_get_functiondef('public.qorpera_code_change_checks_valid(jsonb)'::regprocedure)) = 0 then
-		raise exception '20260930833000 missing from qorpera_code_change_checks_valid'; end if;
+		raise exception '20260930838000 missing from qorpera_code_change_checks_valid'; end if;
 	if position('combined batch tip' in pg_get_functiondef('public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)'::regprocedure)) = 0 then
-		raise exception '20260930833000 missing from qorpera_complete_coding_turn'; end if;
+		raise exception '20260930838000 missing from qorpera_complete_coding_turn'; end if;
 	if position('not between 1 and 200' in pg_get_functiondef('public.qorpera_code_change_files(text,text,uuid,text,text,integer)'::regprocedure)) = 0 then
-		raise exception '20260930833000 missing from qorpera_code_change_files'; end if;
+		raise exception '20260930838000 missing from qorpera_code_change_files'; end if;
 	if position('<= 200' in pg_get_functiondef('public.qorpera_code_change_files_written_valid(jsonb)'::regprocedure)) = 0 then
-		raise exception '20260930833000 missing from qorpera_code_change_files_written_valid'; end if;
+		raise exception '20260930838000 missing from qorpera_code_change_files_written_valid'; end if;
 end $guard$;

@@ -36,7 +36,7 @@ visitor ──https──▶ Cloudflare (*.qorpera.com: the proxied wildcard rec
   other first-level name lands on `site-hosts`. There every path goes to the site-serve function
   (`/functions/v1/site-serve/<path>`), with `x-forwarded-host` set to the name the request asked for (port and trailing
   dot taken off, a visitor's own value dropped), and nothing else of the stack is reachable: `/rest/v1/` on a site host
-  is the site's path, not the API. A WebSocket upgrade on a site host is refused by Envoy itself (403). Proven in a real
+  is the site's path, not the API. A WebSocket upgrade on `sites.qorpera.com` or a site host is refused by Envoy itself (403). Proven in a real
   Envoy with api-front's image: `deploy/sites/envoy-front-sites.test.mjs`.
 - **site-serve decides what a name shows**, through SQL (`qorpera_site_serve_host`): a site's files, its password page,
   its 410 page, or `none`. While `hosts_enabled` is false every site host answers `none`, so the front can change before

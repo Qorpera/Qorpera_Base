@@ -1,12 +1,19 @@
+import { withTimeoutScope } from "../_shared/abort-timeout.ts";
 import { forwardMemberCompanyGateway } from "./member-company-gateway.ts";
+
+let cachedOriginsRaw: string | undefined;
+let cachedOrigins: readonly string[] | undefined;
 
 function allowedOrigins(): readonly string[] | undefined {
 	const raw = Deno.env.get("QORPERA_WEB_ORIGINS");
 	if (!raw) return undefined;
+	if (raw === cachedOriginsRaw) return cachedOrigins;
 	const value: unknown = JSON.parse(raw);
 	if (!Array.isArray(value) || value.length < 1 || value.length > 8 || value.some((item) => typeof item !== "string"))
 		throw new Error("QORPERA_WEB_ORIGINS must contain one to eight origins");
-	return value as string[];
+	cachedOriginsRaw = raw;
+	cachedOrigins = value as string[];
+	return cachedOrigins;
 }
 
 /** The auth service's own check of the member's token (GoTrue `/auth/v1/user`): yes, no (401/403), or a throw. */
@@ -14,15 +21,21 @@ async function memberSignedIn(authorization: string, signal: AbortSignal): Promi
 	const base = Deno.env.get("SUPABASE_URL");
 	const key = Deno.env.get("SUPABASE_ANON_KEY");
 	if (!base || !key) throw new Error("Auth is not configured");
-	const response = await fetch(new URL("/auth/v1/user", base), {
-		headers: { apikey: key, authorization },
-		redirect: "error",
-		signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
-	});
-	await response.body?.cancel();
-	if (response.ok) return true;
-	if (response.status === 401 || response.status === 403) return false;
-	throw new Error(`Auth answered ${response.status}`);
+	return withTimeoutScope(
+		5_000,
+		async (scopedSignal) => {
+			const response = await fetch(new URL("/auth/v1/user", base), {
+				headers: { apikey: key, authorization },
+				redirect: "error",
+				signal: scopedSignal,
+			});
+			void response.body?.cancel().catch(() => undefined);
+			if (response.ok) return true;
+			if (response.status === 401 || response.status === 403) return false;
+			throw new Error(`Auth answered ${response.status}`);
+		},
+		signal,
+	);
 }
 
 /**
@@ -34,9 +47,13 @@ async function memberSignedIn(authorization: string, signal: AbortSignal): Promi
  * that for the issuer would refuse every real member token (review r1 F2). Unset, the pointer route still serves and
  * only the issuer goes unchecked.
  */
+let cachedIssuerRaw: string | undefined;
+let cachedIssuer: string | undefined;
+
 function memberTokenIssuer(): string | undefined {
 	const issuer = Deno.env.get("QORPERA_MEMBER_TOKEN_ISSUER");
 	if (!issuer) return undefined;
+	if (issuer === cachedIssuerRaw) return cachedIssuer;
 	// Whatever the auth service states, with or without a path (`https://host` and `https://host/auth/v1` are both
 	// real issuers on different configurations): an exact https URL, nothing guessed and no path demanded.
 	const url = new URL(issuer);
@@ -49,7 +66,9 @@ function memberTokenIssuer(): string | undefined {
 		issuer.replace(/\/$/, "") !== `${url.origin}${url.pathname}`.replace(/\/$/, "")
 	)
 		throw new Error("QORPERA_MEMBER_TOKEN_ISSUER must be the exact https issuer the auth service states");
-	return issuer;
+	cachedIssuerRaw = issuer;
+	cachedIssuer = issuer;
+	return cachedIssuer;
 }
 
 Deno.serve((request) =>

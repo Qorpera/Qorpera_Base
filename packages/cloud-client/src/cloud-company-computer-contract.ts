@@ -194,8 +194,13 @@ export function companyComputerRequest<T>(
 	if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
 		return Promise.reject(new Error("INVALID_COMPUTER_TIMEOUT"));
 	}
+	if (signal.aborted) {
+		return Promise.reject(new Error("COMPUTER_REQUEST_STOPPED"));
+	}
 	const stop = new AbortController();
-	const combined = AbortSignal.any([signal, stop.signal]);
+	const onParentAbort = (): void => stop.abort(signal.reason);
+	signal.addEventListener("abort", onParentAbort, { once: true });
+	const combined = stop.signal;
 	const timer = setTimeout(() => stop.abort(), timeoutMs);
 	let abort = (): void => {};
 	return new Promise<T>((resolve, reject) => {
@@ -211,6 +216,7 @@ export function companyComputerRequest<T>(
 				.then(resolve, reject);
 	}).finally(() => {
 		clearTimeout(timer);
+		signal.removeEventListener("abort", onParentAbort);
 		combined.removeEventListener("abort", abort);
 	});
 }

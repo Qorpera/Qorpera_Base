@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
+import { withTimeoutScope } from "./abort-scope.ts";
 import type { LxdCodeHostClient, LxdCreateInstanceRequest, LxdInstanceRecord, LxdProjectRecord } from "./lxd-client.ts";
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
@@ -179,10 +180,12 @@ export function controlCodeHostDeletions(options: {
 		const deleting: string[] = [];
 		for (let start = 0; start < companyIds.length; start += 500) {
 			const asked = companyIds.slice(start, start + 500);
-			const value = await options.control.call(
-				CODE_HOST_DELETION_RPCS[0],
-				{ p_owner: options.owner, p_machine_id_sha256: options.machineIdSha256, p_company_ids: asked },
-				AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+			const value = await withTimeoutScope(signal, 10_000, (callSignal) =>
+				options.control.call(
+					CODE_HOST_DELETION_RPCS[0],
+					{ p_owner: options.owner, p_machine_id_sha256: options.machineIdSha256, p_company_ids: asked },
+					callSignal,
+				),
 			);
 			if (!Array.isArray(value) || !value.every((id) => typeof id === "string" && asked.includes(id)))
 				throw new Error("CODE_HOST_DELETIONS_UNCONFIRMED");
@@ -316,8 +319,8 @@ export class LxdCodeHosts {
 	 * of time is logged and goes on a later pass, as does one a job made again after its removal. Returns how many
 	 * went. */
 	async removeDeleting(deleting: CodeHostDeletions, signal: AbortSignal): Promise<number> {
-		const listed = await this.#client.listProjectNames(
-			AbortSignal.any([signal, AbortSignal.timeout(this.#agentWaitMs)]),
+		const listed = await withTimeoutScope(signal, this.#agentWaitMs, (listSignal) =>
+			this.#client.listProjectNames(listSignal),
 		);
 		const companies = listed.flatMap((name) => codeHostCompany(name) ?? []);
 		if (companies.length === 0) return 0;
@@ -326,7 +329,9 @@ export class LxdCodeHosts {
 		for (const companyId of companies) {
 			if (!deleted.has(companyId)) continue;
 			try {
-				if (await this.remove(companyId, AbortSignal.any([signal, AbortSignal.timeout(this.#agentWaitMs)])))
+				if (
+					await withTimeoutScope(signal, this.#agentWaitMs, (removeSignal) => this.remove(companyId, removeSignal))
+				)
 					removed += 1;
 			} catch (error) {
 				if (signal.aborted) throw error;
@@ -419,7 +424,10 @@ export class LxdCodeHosts {
 		} catch (error) {
 			// Started for this job only: stop it again rather than hold a start until it idles out, unless its project
 			// was refused meanwhile (it then keeps the start, and its idle stop tries again).
-			if (fresh) await this.#stopChecked(host, AbortSignal.timeout(this.#agentWaitMs)).catch(() => undefined);
+			if (fresh)
+				await withTimeoutScope(undefined, this.#agentWaitMs, (stopSignal) =>
+					this.#stopChecked(host, stopSignal),
+				).catch(() => undefined);
 			throw error;
 		}
 	}
@@ -498,22 +506,23 @@ export class LxdCodeHosts {
 
 	/** Polls until the agent runs a command: LXD answers exec only once the VM's agent is up. */
 	async #agent(host: Host, signal: AbortSignal): Promise<void> {
-		const deadline = AbortSignal.any([signal, AbortSignal.timeout(this.#agentWaitMs)]);
 		const backoffMs = [100, 200, 500] as const;
 		let attempt = 0;
-		for (;;) {
-			try {
-				await this.#client.execInstance(host.project, CODE_HOST_INSTANCE, ["/bin/true"], deadline);
-				return;
-			} catch (error) {
-				signal.throwIfAborted();
-				if (deadline.aborted) throw new Error("CODE_HOST_AGENT_UNAVAILABLE");
-				if (!(error instanceof Error) || error.message !== "LXD instance agent not running") throw error;
+		await withTimeoutScope(signal, this.#agentWaitMs, async (deadline) => {
+			for (;;) {
+				try {
+					await this.#client.execInstance(host.project, CODE_HOST_INSTANCE, ["/bin/true"], deadline);
+					return;
+				} catch (error) {
+					signal.throwIfAborted();
+					if (deadline.aborted) throw new Error("CODE_HOST_AGENT_UNAVAILABLE");
+					if (!(error instanceof Error) || error.message !== "LXD instance agent not running") throw error;
+				}
+				const waitMs = backoffMs[Math.min(attempt, backoffMs.length - 1)] as number;
+				attempt += 1;
+				await delay(waitMs, undefined, { signal: deadline }).catch(() => undefined);
 			}
-			const waitMs = backoffMs[Math.min(attempt, backoffMs.length - 1)] as number;
-			attempt += 1;
-			await delay(waitMs, undefined, { signal: deadline }).catch(() => undefined);
-		}
+		});
 	}
 
 	/** An idle host's stop, `idleStopMs` after its last job or for another company's start. */
@@ -522,7 +531,7 @@ export class LxdCodeHosts {
 		clearTimeout(host.idle);
 		host.idle = undefined;
 		try {
-			await this.#stopChecked(host, AbortSignal.timeout(this.#agentWaitMs));
+			await withTimeoutScope(undefined, this.#agentWaitMs, (stopSignal) => this.#stopChecked(host, stopSignal));
 		} catch (error) {
 			this.#log({ event: "code-host-error", step: "stop", project: host.project, error });
 			if (!this.#closed) this.#rest(host);

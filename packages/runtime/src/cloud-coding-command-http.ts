@@ -417,6 +417,32 @@ export class HttpCloudCodingCommandService {
 		this.#options = Object.freeze({ ...options });
 		this.#token = Buffer.from(`Bearer ${options.token}`);
 	}
+	#waitForWritableDrain(socket: Socket, signal: AbortSignal): Promise<boolean> {
+		if (socket.destroyed || !socket.writable || signal.aborted) return Promise.resolve(false);
+		return new Promise<boolean>((resolve) => {
+			const done = (ok: boolean): void => {
+				socket.removeListener("drain", onDrain);
+				socket.removeListener("close", onEnd);
+				socket.removeListener("error", onEnd);
+				signal.removeEventListener("abort", onEnd);
+				resolve(ok);
+			};
+			const onDrain = (): void => done(true);
+			const onEnd = (): void => done(false);
+			socket.once("drain", onDrain);
+			socket.once("close", onEnd);
+			socket.once("error", onEnd);
+			signal.addEventListener("abort", onEnd, { once: true });
+		});
+	}
+
+	#scheduleSocketDestroy(socket: Socket): void {
+		if (socket.destroyed) return;
+		const timer = setTimeout(() => socket.destroy(), 2000);
+		timer.unref();
+		socket.once("close", () => clearTimeout(timer));
+	}
+
 	/**
 	 * One run's channel to its home (slice 1), on an upgraded socket: the transport token, then the run's holder
 	 * proven as every other route proves it, then the handshake line, then SQL's authority for this session, and only
@@ -428,6 +454,8 @@ export class HttpCloudCodingCommandService {
 		const prove = this.#options.proveBinding;
 		const controller = new AbortController();
 		this.#controllers.add(controller);
+		const onSocketClose = (): void => controller.abort();
+		socket.once("close", onSocketClose);
 		const bearer = Buffer.from(String(request.headers.authorization ?? ""));
 		const header = request.headers["x-qorpera-identity"];
 		// The run's ingress proves the run's holder; a peer listener takes none, as for a machine command: only
@@ -436,9 +464,14 @@ export class HttpCloudCodingCommandService {
 		socket.on("error", () => undefined);
 		// Bytes that came in behind the request's own head belong to the channel.
 		if (head.byteLength > 0) socket.unshift(head);
+		let endedGracefully = false;
+		const endGracefully = (payload: string): void => {
+			endedGracefully = true;
+			socket.end(payload);
+		};
 		const refuse = (reason: string): void => {
 			// Before the upgrade is completed there is no channel to answer on, so the socket simply ends.
-			socket.end(
+			endGracefully(
 				`HTTP/1.1 403 Forbidden\r\nconnection: close\r\ncontent-length: 0\r\nx-qorpera-home: ${reason}\r\n\r\n`,
 			);
 		};
@@ -461,17 +494,32 @@ export class HttpCloudCodingCommandService {
 				`HTTP/1.1 101 Switching Protocols\r\nupgrade: ${CLOUD_HOME_CHANNEL_PROTOCOL}\r\nconnection: Upgrade\r\n\r\n`,
 			);
 			const reader = cloudHomeChannelLines(socket);
-			const first = await Promise.race([
-				reader.next(),
-				new Promise<never>((_resolve, reject) =>
-					setTimeout(() => reject(new Error(ERROR)), CLOUD_HOME_CHANNEL_HANDSHAKE_MS).unref(),
-				),
-			]);
+			let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
+			let first: IteratorResult<string>;
+			try {
+				first = await Promise.race([
+					reader.next(),
+					new Promise<never>((_resolve, reject) => {
+						handshakeTimer = setTimeout(() => reject(new Error(ERROR)), CLOUD_HOME_CHANNEL_HANDSHAKE_MS);
+						handshakeTimer.unref();
+					}),
+				]);
+			} finally {
+				clearTimeout(handshakeTimer);
+			}
 			const handshake = first.done ? undefined : parseCloudHomeChannelHandshake(first.value);
 			if (!handshake) {
-				socket.end(`${JSON.stringify({ ok: false, reason: "unavailable" })}\n`);
+				endGracefully(`${JSON.stringify({ ok: false, reason: "unavailable" })}\n`);
 				return;
 			}
+			// WHY: watch the first post-handshake read during async authorize/open so peer EOF/FIN aborts controller promptly; real clients send no lines before ok and RST/close still aborts regardless.
+			const nextRead = reader.next();
+			void nextRead.then(
+				(item) => {
+					if (item.done) controller.abort();
+				},
+				() => controller.abort(),
+			);
 			const binding = parseCloudNativeToolBinding(handshake.binding);
 			if (prove && holder !== undefined) await prove(binding, holder, controller.signal);
 			const authority = await home.authorize(
@@ -479,7 +527,7 @@ export class HttpCloudCodingCommandService {
 				controller.signal,
 			);
 			if (authority.state !== "authorized") {
-				socket.end(`${JSON.stringify({ ok: false, reason: authority.reason })}\n`);
+				endGracefully(`${JSON.stringify({ ok: false, reason: authority.reason })}\n`);
 				return;
 			}
 			// One session's authority for every kind of channel (slice C1): the kind only says what runs on the machine.
@@ -498,15 +546,24 @@ export class HttpCloudCodingCommandService {
 			const fromMachine = (async () => {
 				try {
 					for await (const line of machine.lines) {
-						if (!socket.writable) break;
-						socket.write(`${line}\n`);
+						if (!socket.writable || socket.destroyed) break;
+						if (!socket.write(`${line}\n`)) {
+							if (!(await this.#waitForWritableDrain(socket, controller.signal))) break;
+						}
 					}
 				} finally {
 					socket.destroy();
 				}
 			})();
+			const clientLines = (async function* () {
+				const resumed = await nextRead;
+				if (!resumed.done) {
+					yield resumed.value;
+					yield* reader;
+				}
+			})();
 			try {
-				for await (const line of cloudHomeChannelWithoutKeepAlive(reader)) machine.write(line);
+				for await (const line of cloudHomeChannelWithoutKeepAlive(clientLines)) machine.write(line);
 			} finally {
 				await side.close().catch(() => undefined);
 				side = undefined;
@@ -519,13 +576,15 @@ export class HttpCloudCodingCommandService {
 				error instanceof CloudHomeChannelRefused && CLOUD_HOME_CHANNEL_REASON.test(error.reason)
 					? error.reason
 					: "unavailable";
-			if (socket.writable) socket.end(`${JSON.stringify({ ok: false, reason })}\n`);
+			if (socket.writable) endGracefully(`${JSON.stringify({ ok: false, reason })}\n`);
 		} finally {
 			stopKeepAlive();
+			socket.removeListener("close", onSocketClose);
 			this.#controllers.delete(controller);
 			controller.abort();
 			await side?.close().catch(() => undefined);
-			socket.destroy();
+			if (endedGracefully) this.#scheduleSocketDestroy(socket);
+			else socket.destroy();
 		}
 	}
 
@@ -542,8 +601,8 @@ export class HttpCloudCodingCommandService {
 		this.#server = server;
 		server.requestTimeout = 15000;
 		server.headersTimeout = 10000;
-		server.keepAliveTimeout = 1000;
-		server.maxRequestsPerSocket = 10;
+		server.keepAliveTimeout = 65_000;
+		server.maxRequestsPerSocket = 1000;
 		try {
 			await new Promise<void>((resolve, reject) => {
 				const onError = (error: Error): void => {

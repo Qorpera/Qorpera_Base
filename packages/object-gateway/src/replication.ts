@@ -40,6 +40,7 @@ const HASH = /^[0-9a-f]{64}$/;
 const MAX_STORED_LINES = 1000;
 const RECONCILE_CONCURRENCY = 4;
 const STATUS_CONCURRENCY = 16;
+const MAX_LEGACY_TOMBSTONE_PRUNE = 500;
 
 interface AuditWaiter {
 	readonly events: readonly Record<string, unknown>[];
@@ -243,12 +244,23 @@ export class ObjectGatewayReplication {
 		const names = (await this.#journal.list("pending")).filter((name) => after === undefined || name > after);
 		const objects: BlockedObject[] = [];
 		let read = 0;
+		let last: string | undefined;
 		for (const name of names) {
-			if (objects.length >= limit || read >= 500) return { objects, next: names[read - 1] };
+			if (objects.length >= limit || read >= 500) return { objects, next: last };
+			if (this.#deletedKeys.has(name)) {
+				last = name;
+				continue;
+			}
 			read++;
-			const stored = await this.#journal.read(name);
+			last = name;
+			const version = this.#keyVersions.get(name);
+			const stored = await this.#journal.read(name, { skipDirectoryCheck: true });
 			if (stored === undefined) continue;
 			const entry = pendingObject(stored, name);
+			if (entry.state === "deleted") {
+				this.#rememberDeletedIfUnchanged(name, version);
+				continue;
+			}
 			if (entry.state !== "blocked") continue;
 			objects.push({
 				profileId: entry.profileId,
@@ -350,7 +362,7 @@ export class ObjectGatewayReplication {
 			while (cursor < toRead.length) {
 				const name = toRead[cursor++]!;
 				const version = this.#keyVersions.get(name);
-				const stored = await this.#journal.read(name);
+				const stored = await this.#journal.read(name, { skipDirectoryCheck: true });
 				if (stored === undefined) continue;
 				const entry = pendingObject(stored, name);
 				if (entry.state === "deleted") this.#rememberDeletedIfUnchanged(name, version);
@@ -394,7 +406,9 @@ export class ObjectGatewayReplication {
 			for (let offset = 0; offset < candidates.length && selected.length < limit; offset += STATUS_CONCURRENCY) {
 				const slice = candidates.slice(offset, offset + STATUS_CONCURRENCY);
 				const versions = slice.map((name) => this.#keyVersions.get(name));
-				const records = await Promise.all(slice.map((name) => this.#journal.read(name)));
+				const records = await Promise.all(
+					slice.map((name) => this.#journal.read(name, { skipDirectoryCheck: true })),
+				);
 				for (let i = 0; i < slice.length && selected.length < limit; i++) {
 					const name = slice[i]!;
 					const stored = records[i];
@@ -487,7 +501,40 @@ export class ObjectGatewayReplication {
 			await Promise.allSettled(
 				Array.from({ length: Math.min(RECONCILE_CONCURRENCY, discovered.length) }, () => discoveredWorker()),
 			);
-			if (!discoveredAborted) this.#scanCursor = discovered.length < limit ? undefined : discovered.at(-1);
+			if (!discoveredAborted) {
+				this.#scanCursor = discovered.length < limit ? undefined : discovered.at(-1);
+				// WHY: Prune legacy state="deleted" tombstones so pending/ cannot lock out at MAX_RECORDS.
+				const staleDeleted = names
+					.filter((name) => this.#deletedKeys.has(name))
+					.slice(0, MAX_LEGACY_TOMBSTONE_PRUNE);
+				let pruneIndex = 0;
+				const pruneWorker = async (): Promise<void> => {
+					while (pruneIndex < staleDeleted.length) {
+						const name = staleDeleted[pruneIndex++]!;
+						await this.#journal
+							.exclusive(name, async () => {
+								const stored = await this.#journal.read(name);
+								if (stored === undefined) {
+									this.#deletedKeys.delete(name);
+									this.#keyVersions.delete(name);
+									return;
+								}
+								if (pendingObject(stored, name).state !== "deleted") return;
+								await this.#journal.remove(name);
+								this.#deletedKeys.delete(name);
+								this.#keyVersions.delete(name);
+								this.#statusInFlight = undefined;
+							})
+							.catch(() => {
+								this.#lastError = true;
+								this.#statusInFlight = undefined;
+							});
+					}
+				};
+				await Promise.allSettled(
+					Array.from({ length: Math.min(RECONCILE_CONCURRENCY, staleDeleted.length) }, () => pruneWorker()),
+				);
+			}
 		} catch {
 			this.#lastError = true;
 			this.#statusInFlight = undefined;
@@ -540,9 +587,6 @@ export class ObjectGatewayReplication {
 			await this.#authority.finalizeDelete(object.authorizationId, object.profileId, object.sha256, object.bytes);
 		}
 		const name = key(object);
-		await this.#journal.write(name, { ...object, state: "deleted" });
-		this.#deletedKeys.add(name);
-		this.#statusInFlight = undefined;
 		await this.audit({
 			event: "object_deleted",
 			at: new Date().toISOString(),
@@ -550,5 +594,9 @@ export class ObjectGatewayReplication {
 			sha256: object.sha256,
 			authorizationId: object.authorizationId,
 		});
+		await this.#journal.remove(name);
+		this.#deletedKeys.delete(name);
+		this.#keyVersions.delete(name);
+		this.#statusInFlight = undefined;
 	}
 }

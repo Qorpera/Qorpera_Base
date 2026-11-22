@@ -22,6 +22,8 @@ type Stage =
 	| "jpeg_scan";
 type Destination = "messages" | "rectangle_done" | "tile_done" | "tight_data" | "jpeg_marker" | "jpeg_scan";
 
+const RFB_VERSION = Buffer.from("RFB 003.008\n");
+
 /**
  * Server-side RFB 3.8 framing, following the unchanged vendored noVNC decoders.
  * Only ServerCutText is removed. Pixel/compressed payloads are streamed unchanged,
@@ -31,6 +33,10 @@ type Destination = "messages" | "rectangle_done" | "tile_done" | "tight_data" | 
  */
 export class CompanyComputerRfbServerParser {
 	#buffer = Buffer.alloc(0);
+	#base: Buffer | undefined;
+	#cursor = 0;
+	#spanStart = -1;
+	#spanEnd = -1;
 	#output: Buffer[] = [];
 	#stage: Stage = "version";
 	#remaining = 0;
@@ -48,21 +54,42 @@ export class CompanyComputerRfbServerParser {
 
 	push(chunk: Uint8Array): Buffer[] {
 		if (this.#buffer.length + chunk.length > 256 * 1024) throw new Error("RFB_SERVER_BUFFER_LIMIT");
-		this.#buffer = Buffer.concat([this.#buffer, chunk]);
+		const base = this.#buffer.length === 0 ? Buffer.from(chunk) : Buffer.concat([this.#buffer, chunk]);
+		this.#buffer = base;
+		this.#base = base;
+		this.#cursor = 0;
+		this.#spanStart = -1;
+		this.#spanEnd = -1;
 		this.#output = [];
 		let steps = 0;
-		while (this.#buffer.length > 0) {
-			if (++steps > 65_536) throw new Error("RFB_SERVER_MESSAGE_LIMIT");
-			if (this.#remaining > 0) {
-				const count = Math.min(this.#remaining, this.#buffer.length);
-				this.#take(count, !this.#discard);
-				this.#remaining -= count;
-				if (this.#remaining === 0) this.#advance();
-			} else if (!this.#header()) break;
+		try {
+			while (this.#buffer.length > 0) {
+				if (++steps > 65_536) throw new Error("RFB_SERVER_MESSAGE_LIMIT");
+				if (this.#remaining > 0) {
+					const count = Math.min(this.#remaining, this.#buffer.length);
+					this.#take(count, !this.#discard);
+					this.#remaining -= count;
+					if (this.#remaining === 0) this.#advance();
+				} else if (!this.#header()) break;
+			}
+			this.#flushSpan();
+			if (this.#buffer.length === 0) this.#buffer = Buffer.alloc(0);
+			else if (this.#buffer.length < base.byteLength / 4) this.#buffer = Buffer.from(this.#buffer);
+			return this.#output;
+		} finally {
+			this.#base = undefined;
+			this.#spanStart = -1;
+			this.#spanEnd = -1;
+			this.#output = [];
 		}
-		const output = this.#output;
-		this.#output = [];
-		return output;
+	}
+
+	#flushSpan(): void {
+		if (this.#spanStart >= 0 && this.#spanEnd > this.#spanStart && this.#base) {
+			this.#output.push(this.#base.subarray(this.#spanStart, this.#spanEnd));
+		}
+		this.#spanStart = -1;
+		this.#spanEnd = -1;
 	}
 
 	#take(length: number, forward = true): void {
@@ -70,7 +97,21 @@ export class CompanyComputerRfbServerParser {
 			this.#frameBytes += length;
 			if (this.#frameBytes > 64 * 1024 * 1024) throw new Error("RFB_FRAMEBUFFER_LIMIT");
 		}
-		if (forward && length > 0) this.#output.push(Buffer.from(this.#buffer.subarray(0, length)));
+		if (forward && length > 0) {
+			if (this.#spanStart < 0) {
+				this.#spanStart = this.#cursor;
+				this.#spanEnd = this.#cursor + length;
+			} else if (this.#spanEnd === this.#cursor) {
+				this.#spanEnd += length;
+			} else {
+				this.#flushSpan();
+				this.#spanStart = this.#cursor;
+				this.#spanEnd = this.#cursor + length;
+			}
+		} else if (!forward && length > 0) {
+			this.#flushSpan();
+		}
+		this.#cursor += length;
 		this.#buffer = this.#buffer.subarray(length);
 	}
 
@@ -105,7 +146,7 @@ export class CompanyComputerRfbServerParser {
 		const bytes = this.#buffer;
 		if (this.#stage === "version") {
 			if (bytes.length < 12) return false;
-			if (!bytes.subarray(0, 12).equals(Buffer.from("RFB 003.008\n"))) throw new Error("RFB_VERSION_UNSUPPORTED");
+			if (!bytes.subarray(0, 12).equals(RFB_VERSION)) throw new Error("RFB_VERSION_UNSUPPORTED");
 			this.#take(12);
 			this.#stage = "security";
 		} else if (this.#stage === "security") {

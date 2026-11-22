@@ -614,7 +614,7 @@ describe(
 					],
 					{ upgrade: true },
 				);
-			for (const host of [SITE, "webshop--next.qorpera.com", `${SITE}:443`])
+			for (const host of [SITES, `${SITES}:443`, SITE, "webshop--next.qorpera.com", `${SITE}:443`])
 				for (const path of ["/", "/.qorpera/connect", "/realtime/v1/websocket"]) {
 					const answer = await upgrade(host, path);
 					assert.equal(answer.status, 403, `${host} ${path}: ${answer.head}`);

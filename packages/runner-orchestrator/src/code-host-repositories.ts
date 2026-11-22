@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type { CloudCodingRepository } from "@qorpera/contracts";
+import { withTimeoutScope } from "./abort-scope.ts";
 import {
 	answeredBefore,
 	type CodeChangeRecords,
@@ -701,7 +702,9 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 				const confirm = record.confirm;
 				if (confirm)
 					try {
-						await answeredBefore(confirm, AbortSignal.timeout(Math.ceil(this.#recordMs / 2)));
+						await withTimeoutScope(undefined, Math.ceil(this.#recordMs / 2), (confirmSignal) =>
+							answeredBefore(confirm, confirmSignal),
+						);
 					} catch (error) {
 						this.#failed(session, "written", error);
 					}
@@ -770,45 +773,47 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			return;
 		}
 		// One deadline for the report and the files: the company's line is held meanwhile.
-		const bounded = AbortSignal.any([job.signal, AbortSignal.timeout(this.#recordMs)]);
-		try {
-			record.change = await this.#reported(session, report, bounded);
-		} catch (error) {
-			record.owed = report;
-			this.#failed(session, "report", error);
-			return;
-		}
-		if (record.change !== null && checks.state === "passed" && checks.site?.state === "made") {
-			await pinCodeSiteTree(
-				{
-					shell: job.shell,
-					layout: job.layout,
-					signal: bounded,
-					preparedKeptArea: codeAreaPath(session.claim.repository),
-				},
-				{ repository: session.claim.repository, change: record.change, tree: checks.site.tree },
-			).catch(() => undefined);
-		}
-		const records = this.#records;
-		if (!records) return;
-		try {
-			record.confirm = await answeredBefore(
-				() =>
-					records.inJob(
-						{
-							shell: job.shell,
-							layout: job.layout,
-							signal: bounded,
-							preparedKeptArea: codeAreaPath(session.claim.repository),
-						},
-						targetOf(session),
-						bounded,
-					),
-				bounded,
-			);
-		} catch (error) {
-			this.#failed(session, "files", error);
-		}
+		await withTimeoutScope(job.signal, this.#recordMs, async (bounded) => {
+			try {
+				record.change = await this.#reported(session, report, bounded);
+			} catch (error) {
+				// The kernel may have the row all the same: the same report again answers it.
+				record.owed = report;
+				this.#failed(session, "report", error);
+				return;
+			}
+			if (record.change !== null && checks.state === "passed" && checks.site?.state === "made") {
+				await pinCodeSiteTree(
+					{
+						shell: job.shell,
+						layout: job.layout,
+						signal: bounded,
+						preparedKeptArea: codeAreaPath(session.claim.repository),
+					},
+					{ repository: session.claim.repository, change: record.change, tree: checks.site.tree },
+				).catch(() => undefined);
+			}
+			const records = this.#records;
+			if (!records) return;
+			try {
+				record.confirm = await answeredBefore(
+					() =>
+						records.inJob(
+							{
+								shell: job.shell,
+								layout: job.layout,
+								signal: bounded,
+								preparedKeptArea: codeAreaPath(session.claim.repository),
+							},
+							targetOf(session),
+							bounded,
+						),
+					bounded,
+				);
+			} catch (error) {
+				this.#failed(session, "files", error);
+			}
+		});
 	}
 
 	/** A report the job could not make, made once more now that the job has ended: not in line any more. It never
@@ -818,10 +823,8 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 		if (!owed) return;
 		record.owed = undefined;
 		try {
-			record.change = await this.#reported(
-				session,
-				{ ...owed, inLine: false },
-				AbortSignal.timeout(Math.ceil(this.#recordMs / 2)),
+			record.change = await withTimeoutScope(undefined, Math.ceil(this.#recordMs / 2), (reportSignal) =>
+				this.#reported(session, { ...owed, inLine: false }, reportSignal),
 			);
 		} catch (error) {
 			this.#failed(session, "report-again", error);
@@ -838,24 +841,26 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	): Promise<void> {
 		if (!session.recordChange) return;
 		try {
-			await this.#reported(
-				session,
-				{
-					schema: "qorpera.code-change-report/v2",
-					state,
-					inLine: false,
-					how: null,
-					headSha,
-					mainBefore: null,
-					mainAfter: null,
-					filesChanged: null,
-					paths: null,
-					pathsMore: 0,
-					picture: null,
-					refusal: { code, paths: codeChangeRefusalPaths(paths) },
-					checks: null,
-				},
-				AbortSignal.timeout(Math.ceil(this.#recordMs / 2)),
+			await withTimeoutScope(undefined, Math.ceil(this.#recordMs / 2), (reportSignal) =>
+				this.#reported(
+					session,
+					{
+						schema: "qorpera.code-change-report/v2",
+						state,
+						inLine: false,
+						how: null,
+						headSha,
+						mainBefore: null,
+						mainAfter: null,
+						filesChanged: null,
+						paths: null,
+						pathsMore: 0,
+						picture: null,
+						refusal: { code, paths: codeChangeRefusalPaths(paths) },
+						checks: null,
+					},
+					reportSignal,
+				),
 			);
 		} catch (error) {
 			this.#failed(session, "report", error);
@@ -962,8 +967,11 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			for (const entry of unchangedRecords) {
 				await this.#reportOwed(entry.waiter.session, entry.record);
 				if (entry.record.confirm) {
+					const confirm = entry.record.confirm;
 					try {
-						await answeredBefore(entry.record.confirm, AbortSignal.timeout(Math.ceil(this.#recordMs / 2)));
+						await withTimeoutScope(undefined, Math.ceil(this.#recordMs / 2), (confirmSignal) =>
+							answeredBefore(confirm, confirmSignal),
+						);
 					} catch (error) {
 						this.#failed(entry.waiter.session, "written", error);
 					}
@@ -1183,94 +1191,95 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 								...(waiter.options.picture === undefined ? {} : { picture: waiter.options.picture }),
 							})),
 						});
-						const bounded = AbortSignal.any([job.signal, AbortSignal.timeout(this.#recordMs)]);
-						for (let i = 0; i < landed.steps.length; i += 1) {
-							const step = landed.steps[i] as (typeof landed.steps)[number];
-							const waiter = (chain[i] as BatchChainStep).waiter;
-							const record = records[i] as LandingRecord;
-							record.landed = true;
-							const isTip = i === landed.steps.length - 1;
-							const stepChecks: LandingChecks =
-								gate !== null && passedRun !== null
-									? isTip
-										? {
-												state: "passed",
-												result: codeChecksPassed({
-													commit: step.mainSha,
-													how: step.state,
-													blob: gate.blob,
-													run: passedRun,
-													changed: chain.length === 1 ? gate.changed : null,
-													tries: waiter.staleTries,
-												}),
-												site: passedRun.site,
-											}
-										: { state: "not_run" }
-									: { state: "none" };
-							let report: CodeChangeReport | undefined;
-							try {
-								const diff = codeChangeDiffOf(step.diff);
-								record.filesChanged = diff?.filesChanged ?? 0;
-								if (waiter.session.recordChange) {
-									report = landingReport(
-										{
-											state: step.state,
-											mainSha: step.mainSha,
-											mainBefore: step.mainBefore,
-											containedAt: null,
-											diff: step.diff,
-											picture: step.picture,
-											restored: landed.restored,
-										},
-										step.headSha,
-										diff,
-										stepChecks,
-									);
-								}
-							} catch (error) {
-								this.#failed(waiter.session, "report", error);
-							}
-							if (report) {
+						await withTimeoutScope(job.signal, this.#recordMs, async (bounded) => {
+							for (let i = 0; i < landed.steps.length; i += 1) {
+								const step = landed.steps[i] as (typeof landed.steps)[number];
+								const waiter = (chain[i] as BatchChainStep).waiter;
+								const record = records[i] as LandingRecord;
+								record.landed = true;
+								const isTip = i === landed.steps.length - 1;
+								const stepChecks: LandingChecks =
+									gate !== null && passedRun !== null
+										? isTip
+											? {
+													state: "passed",
+													result: codeChecksPassed({
+														commit: step.mainSha,
+														how: step.state,
+														blob: gate.blob,
+														run: passedRun,
+														changed: chain.length === 1 ? gate.changed : null,
+														tries: waiter.staleTries,
+													}),
+													site: passedRun.site,
+												}
+											: { state: "not_run" }
+										: { state: "none" };
+								let report: CodeChangeReport | undefined;
 								try {
-									record.change = await this.#reported(waiter.session, report, bounded);
+									const diff = codeChangeDiffOf(step.diff);
+									record.filesChanged = diff?.filesChanged ?? 0;
+									if (waiter.session.recordChange) {
+										report = landingReport(
+											{
+												state: step.state,
+												mainSha: step.mainSha,
+												mainBefore: step.mainBefore,
+												containedAt: null,
+												diff: step.diff,
+												picture: step.picture,
+												restored: landed.restored,
+											},
+											step.headSha,
+											diff,
+											stepChecks,
+										);
+									}
 								} catch (error) {
-									record.owed = report;
 									this.#failed(waiter.session, "report", error);
 								}
+								if (report) {
+									try {
+										record.change = await this.#reported(waiter.session, report, bounded);
+									} catch (error) {
+										record.owed = report;
+										this.#failed(waiter.session, "report", error);
+									}
+								}
+								if (isTip && record.change !== null && passedRun?.site?.state === "made") {
+									await pinCodeSiteTree(
+										{
+											shell: job.shell,
+											layout: job.layout,
+											signal: bounded,
+											preparedKeptArea: codeAreaPath(repository),
+										},
+										{ repository, change: record.change, tree: passedRun.site.tree },
+									).catch(() => undefined);
+								}
 							}
-							if (isTip && record.change !== null && passedRun?.site?.state === "made") {
-								await pinCodeSiteTree(
-									{
-										shell: job.shell,
-										layout: job.layout,
-										signal: bounded,
-										preparedKeptArea: codeAreaPath(repository),
-									},
-									{ repository, change: record.change, tree: passedRun.site.tree },
-								).catch(() => undefined);
+							const changeRecords = this.#records;
+							if (changeRecords) {
+								try {
+									batchConfirm = await answeredBefore(
+										() =>
+											changeRecords.inJob(
+												{
+													shell: job.shell,
+													layout: job.layout,
+													signal: bounded,
+													preparedKeptArea: codeAreaPath(repository),
+												},
+												targetOf(last.session),
+												bounded,
+											),
+										bounded,
+									);
+								} catch (error) {
+									this.#failed(last.session, "files", error);
+								}
 							}
-						}
-						const changeRecords = this.#records;
-						if (changeRecords) {
-							try {
-								batchConfirm = await answeredBefore(
-									() =>
-										changeRecords.inJob(
-											{
-												shell: job.shell,
-												layout: job.layout,
-												signal: bounded,
-												preparedKeptArea: codeAreaPath(repository),
-											},
-											targetOf(last.session),
-											bounded,
-										),
-									bounded,
-								);
-							} catch (error) {
-								this.#failed(last.session, "files", error);
-							}
-						}
+						});
 						return landed;
 					},
 				);
@@ -1279,8 +1288,11 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 				await this.#reportOwed((chain[i] as BatchChainStep).waiter.session, records[i] as LandingRecord);
 			}
 			if (batchConfirm) {
+				const confirm = batchConfirm;
 				try {
-					await answeredBefore(batchConfirm, AbortSignal.timeout(Math.ceil(this.#recordMs / 2)));
+					await withTimeoutScope(undefined, Math.ceil(this.#recordMs / 2), (confirmSignal) =>
+						answeredBefore(confirm, confirmSignal),
+					);
 				} catch (error) {
 					this.#failed(last.session, "written", error);
 				}

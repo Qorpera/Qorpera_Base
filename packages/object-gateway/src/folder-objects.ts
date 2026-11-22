@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { boundedObjectOperation, ObjectDependencyError } from "./dependency.ts";
+import { ObjectDependencyError, readBoundedIncomingBody } from "./dependency.ts";
 import { assertNativeToken, type NativeBindingProof, nativeBinding, nativeHolder, UUID } from "./native-objects.ts";
 import { type FileSystemObjectStore, type VerifiedObjectBytes, verifyObjectBytes } from "./object-store.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
@@ -144,18 +144,7 @@ export async function putFolderObject(
 		throw new ObjectDependencyError(413);
 	const length = Number(declared);
 	const { profileId } = await authority.authorizeFolderUpload(environmentId, actor, intent, sha256, length);
-	const bytes = await boundedObjectOperation(async () => {
-		const chunks: Uint8Array[] = [];
-		let count = 0;
-		for await (const part of request) {
-			const chunk = typeof part === "string" ? Buffer.from(part) : Buffer.from(part);
-			count += chunk.byteLength;
-			if (count > length) throw new ObjectDependencyError(413);
-			chunks.push(chunk);
-		}
-		if (count !== length) throw new ObjectDependencyError(400);
-		return Buffer.concat(chunks);
-	});
+	const bytes = await readBoundedIncomingBody(request, length);
 	let verified: VerifiedObjectBytes;
 	try {
 		verified = verifyObjectBytes(sha256, bytes);

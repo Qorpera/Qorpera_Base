@@ -7,6 +7,7 @@ import {
 	writeAgentFile,
 } from "@qorpera/cloud-client/company-state-files";
 import { isStaffCharacterId, type StaffCharacterId } from "@qorpera/cloud-client/staff-characters";
+import { withAbortScopes } from "./abort-scope.ts";
 import { agentFileColour } from "./agent-colours.ts";
 import type { WebCompanyFiles } from "./company-files.ts";
 import {
@@ -117,99 +118,109 @@ export function createWebCompanyAgents(
 ): WebCompanyAgents {
 	const saved = options.saved ?? rosterDraft;
 	const native = options.native;
-	const scope = (signal: AbortSignal) => {
-		const lifetime = AbortSignal.any([files.signal, signal]);
-		const check = () => {
-			lifetime.throwIfAborted();
-			files.current();
-		};
-		check();
-		return { lifetime, check, folder: files.folder() };
-	};
-	return {
-		async create(draft, signal) {
-			const { lifetime, check, folder } = scope(signal);
-			// A retry of a draft whose answer was lost: its agent is there under the draft's id.
-			const existing = await agentFile(folder, draft.id, lifetime);
+	const withScope = <T>(
+		signal: AbortSignal,
+		use: (context: {
+			lifetime: AbortSignal;
+			check: () => void;
+			folder: ReturnType<WebCompanyFiles["folder"]>;
+		}) => Promise<T>,
+	): Promise<T> =>
+		withAbortScopes([files.signal, signal], async (lifetime) => {
+			const check = () => {
+				lifetime.throwIfAborted();
+				files.current();
+			};
 			check();
-			if (existing !== null) return draft.id;
-			await createStateFolder(
-				folder,
-				{
-					parent: osPath("agents"),
-					name: draft.displayName,
-					fallback: "agent",
-					reserved: COMPANY_STATE_RESERVED_AGENT_NAMES,
-					key: (handle) => `web:staff-create:${draft.id}:${handle}`,
-					contents: [
-						{ path: "agent.md", kind: "file", text: agentText(draft, native) },
-						...AGENT_FOLDERS.map((path) => ({ path, kind: "folder" as const })),
-					],
-					failure: "The agent could not be created.",
-				},
-				lifetime,
-				check,
-			);
-			return draft.id;
-		},
-		async update(agent, draft, signal) {
-			const { lifetime, check, folder } = scope(signal);
-			const before = saved(agent);
-			const written = await rewriteStateFile(
-				folder,
-				{
-					locate: () => agentFile(folder, agent.id, lifetime),
-					rewrite: (text, path) => {
-						const parsed = parseStateFile(path, text);
-						if (!parsed.ok || parsed.file.kind !== "agent" || parsed.file.id !== agent.id)
-							throw new Error("This agent's file has changed. Reopen it before saving.");
-						const file = parsed.file;
-						const changes: Record<string, CompanyStateSetting> = {};
-						const name = draft.displayName.trim();
-						if (name !== before.displayName && name !== file.name) changes.name = name;
-						const role = draft.role.trim();
-						if (role !== before.role && role !== file.role) changes.role = role;
-						const figure = isStaffCharacterId(draft.figure) ? draft.figure : null;
-						if (draft.figure !== before.figure && figure !== file.figure) changes.figure = figure;
-						// A colour kept through a change of figure counts as chosen when the file has none: it was the
-						// old figure's own shade, and the new figure is to wear it.
-						if (draft.color !== before.color || (draft.figure !== before.figure && file.colour === null)) {
-							const colour = agentFileColour(draft.color, figure ? native?.(figure) : undefined);
-							if (colour !== file.colour) changes.colour = colour;
-						}
-						let next = Object.keys(changes).length ? setCompanyStateSettings(text, changes) : text;
-						// An emptied description keeps the instructions: an agent always has some.
-						const charter = draft.charter.trim();
-						if (charter && charter !== before.charter.trim() && charter !== file.instructions)
-							next = withStateBody(next, charter);
-						return next === text ? null : next;
+			return await use({ lifetime, check, folder: files.folder() });
+		});
+	return {
+		create(draft, signal) {
+			return withScope(signal, async ({ lifetime, check, folder }) => {
+				// A retry of a draft whose answer was lost: its agent is there under the draft's id.
+				const existing = await agentFile(folder, draft.id, lifetime);
+				check();
+				if (existing !== null) return draft.id;
+				await createStateFolder(
+					folder,
+					{
+						parent: osPath("agents"),
+						name: draft.displayName,
+						fallback: "agent",
+						reserved: COMPANY_STATE_RESERVED_AGENT_NAMES,
+						key: (handle) => `web:staff-create:${draft.id}:${handle}`,
+						contents: [
+							{ path: "agent.md", kind: "file", text: agentText(draft, native) },
+							...AGENT_FOLDERS.map((path) => ({ path, kind: "folder" as const })),
+						],
+						failure: "The agent could not be created.",
 					},
-					key: () => `web:staff-update:${agent.id}:${crypto.randomUUID()}`,
-					gone: "This agent is no longer available.",
-					failure: "The agent's changes could not be saved.",
-				},
-				lifetime,
-				check,
-			);
-			// Each change to agent.md raises the roster's version by one.
-			return written ? agent.version + 1 : agent.version;
+					lifetime,
+					check,
+				);
+				return draft.id;
+			});
+		},
+		update(agent, draft, signal) {
+			return withScope(signal, async ({ lifetime, check, folder }) => {
+				const before = saved(agent);
+				const written = await rewriteStateFile(
+					folder,
+					{
+						locate: () => agentFile(folder, agent.id, lifetime),
+						rewrite: (text, path) => {
+							const parsed = parseStateFile(path, text);
+							if (!parsed.ok || parsed.file.kind !== "agent" || parsed.file.id !== agent.id)
+								throw new Error("This agent's file has changed. Reopen it before saving.");
+							const file = parsed.file;
+							const changes: Record<string, CompanyStateSetting> = {};
+							const name = draft.displayName.trim();
+							if (name !== before.displayName && name !== file.name) changes.name = name;
+							const role = draft.role.trim();
+							if (role !== before.role && role !== file.role) changes.role = role;
+							const figure = isStaffCharacterId(draft.figure) ? draft.figure : null;
+							if (draft.figure !== before.figure && figure !== file.figure) changes.figure = figure;
+							// A colour kept through a change of figure counts as chosen when the file has none: it was the
+							// old figure's own shade, and the new figure is to wear it.
+							if (draft.color !== before.color || (draft.figure !== before.figure && file.colour === null)) {
+								const colour = agentFileColour(draft.color, figure ? native?.(figure) : undefined);
+								if (colour !== file.colour) changes.colour = colour;
+							}
+							let next = Object.keys(changes).length ? setCompanyStateSettings(text, changes) : text;
+							// An emptied description keeps the instructions: an agent always has some.
+							const charter = draft.charter.trim();
+							if (charter && charter !== before.charter.trim() && charter !== file.instructions)
+								next = withStateBody(next, charter);
+							return next === text ? null : next;
+						},
+						key: () => `web:staff-update:${agent.id}:${crypto.randomUUID()}`,
+						gone: "This agent is no longer available.",
+						failure: "The agent's changes could not be saved.",
+					},
+					lifetime,
+					check,
+				);
+				// Each change to agent.md raises the roster's version by one.
+				return written ? agent.version + 1 : agent.version;
+			});
 		},
 		async delete(agent, signal) {
 			if (agent.templateId === "co-founder") throw new Error("The Co-Founder cannot be deleted.");
-			const { lifetime, check, folder } = scope(signal);
-			await deleteStateFolder(
-				folder,
-				{
-					locate: async () => {
-						const file = await agentFile(folder, agent.id, lifetime);
-						return file === null ? null : parentPath(file);
+			await withScope(signal, async ({ lifetime, check, folder }) => {
+				await deleteStateFolder(
+					folder,
+					{
+						locate: async () => {
+							const file = await agentFile(folder, agent.id, lifetime);
+							return file === null ? null : parentPath(file);
+						},
+						key: () => `web:staff-delete:${agent.id}:${crypto.randomUUID()}`,
+						failure: "The agent could not be deleted.",
 					},
-					key: () => `web:staff-delete:${agent.id}:${crypto.randomUUID()}`,
-					failure: "The agent could not be deleted.",
-				},
-				lifetime,
-				check,
-			);
+					lifetime,
+					check,
+				);
+			});
 		},
 	};
 }

@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { type FileHandle, lstat, open } from "node:fs/promises";
 import { dirname } from "node:path";
+import { performance } from "node:perf_hooks";
 import {
 	type CloudCodingCommandRead,
 	type CloudCodingCommandReceipt,
@@ -8,6 +9,13 @@ import {
 } from "@qorpera/contracts";
 
 const UTF8_DECODER = new TextDecoder("utf8", { ignoreBOM: true });
+const DEFAULT_FLUSH_BYTES = 65_536;
+const DEFAULT_FLUSH_INTERVAL_MS = 250;
+
+export interface CollectCodingCommandOutputOptions {
+	readonly flushBytes?: number;
+	readonly flushIntervalMs?: number;
+}
 
 function asciiEscapedSize(byte: number): number {
 	if (byte >= 0x20 && byte !== 0x22 && byte !== 0x5c) return 1;
@@ -24,38 +32,132 @@ function asciiEscapedSize(byte: number): number {
 	return 6;
 }
 
-/** At most one buffered chunk per pipe awaits a durable serialized write.
- * Excess output is drained after retaining a single overflow marker. */
+async function writeAll(handle: FileHandle, chunk: Buffer): Promise<void> {
+	let offset = 0;
+	while (offset < chunk.length) {
+		const written = await handle.write(chunk, offset, chunk.length - offset);
+		if (!written.bytesWritten) throw new Error("CODING_LOG_WRITE_FAILED");
+		offset += written.bytesWritten;
+	}
+}
+
 export async function collectCodingCommandOutput(
 	streams: readonly NodeJS.ReadableStream[],
 	handle: FileHandle,
 	maxBytes: number,
+	options: CollectCodingCommandOutputOptions = {},
 ): Promise<void> {
-	let bytes = 0,
-		pending = Promise.resolve();
-	await Promise.all(
+	const flushBytes = options.flushBytes ?? DEFAULT_FLUSH_BYTES;
+	const flushIntervalMs = options.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
+	if (
+		!Number.isSafeInteger(flushBytes) ||
+		flushBytes < 1 ||
+		!Number.isSafeInteger(flushIntervalMs) ||
+		flushIntervalMs < 1
+	)
+		throw new Error("INVALID_CODING_LOG_FLUSH_OPTIONS");
+	let acceptedBytes = 0;
+	let queuedChunks: Buffer[] = [];
+	let queuedBytes = 0;
+	let flushTimer: ReturnType<typeof setTimeout> | undefined;
+	let closed = false;
+	let lastSyncAt = performance.now();
+	let dirtySinceSync = false;
+	let writeChain = Promise.resolve();
+	let failure: unknown;
+	let rejectOnFailure: ((error: unknown) => void) | undefined;
+	const failed = new Promise<never>((_resolve, reject) => {
+		rejectOnFailure = reject;
+	});
+	failed.catch(() => undefined);
+
+	const clearTimer = (): void => {
+		if (flushTimer !== undefined) {
+			clearTimeout(flushTimer);
+			flushTimer = undefined;
+		}
+	};
+	const recordFailure = (error: unknown): void => {
+		if (failure === undefined) {
+			failure = error;
+			clearTimer();
+			rejectOnFailure?.(error);
+		}
+	};
+	const drainBatch = async (batch: Buffer[], syncMode: "ifDue" | "datasync" | "sync"): Promise<void> => {
+		if (failure !== undefined) throw failure;
+		const data = batch.length === 0 ? undefined : batch.length === 1 ? batch[0]! : Buffer.concat(batch);
+		if (data !== undefined && data.length > 0) {
+			await writeAll(handle, data);
+			dirtySinceSync = true;
+		}
+		if (syncMode === "sync") {
+			await handle.sync();
+			dirtySinceSync = false;
+			lastSyncAt = performance.now();
+		} else if (dirtySinceSync && (syncMode === "datasync" || performance.now() - lastSyncAt >= flushIntervalMs)) {
+			await handle.datasync();
+			dirtySinceSync = false;
+			lastSyncAt = performance.now();
+		}
+	};
+	const armTimer = (): void => {
+		if (closed || flushTimer !== undefined || failure !== undefined) return;
+		flushTimer = setTimeout(() => {
+			flushTimer = undefined;
+			void scheduleFlush("datasync").catch(() => undefined);
+		}, flushIntervalMs);
+		flushTimer.unref();
+	};
+	const scheduleFlush = (syncMode: "ifDue" | "datasync" | "sync"): Promise<void> => {
+		clearTimer();
+		const batch = queuedChunks;
+		queuedChunks = [];
+		queuedBytes = 0;
+		const next = writeChain.then(async () => {
+			await drainBatch(batch, syncMode);
+			if (!closed && dirtySinceSync && flushTimer === undefined && failure === undefined && syncMode !== "sync") {
+				armTimer();
+			}
+		});
+		writeChain = next.catch((error: unknown) => {
+			recordFailure(error);
+		});
+		return next;
+	};
+
+	const collect = Promise.all(
 		streams.map(async (stream) => {
 			for await (const value of stream) {
-				const remaining = maxBytes + 1 - bytes;
+				if (failure !== undefined) throw failure;
+				const remaining = maxBytes + 1 - acceptedBytes;
 				if (remaining <= 0) continue;
 				const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
 				const part = chunk.length <= remaining ? chunk : chunk.subarray(0, remaining);
-				bytes += part.length;
-				if (part.length) {
-					pending = pending.then(async () => {
-						let offset = 0;
-						while (offset < part.length) {
-							const written = await handle.write(part, offset, part.length - offset);
-							if (!written.bytesWritten) throw new Error("CODING_LOG_WRITE_FAILED");
-							offset += written.bytesWritten;
-						}
-						await handle.sync();
-					});
-					await pending;
+				acceptedBytes += part.length;
+				if (part.length === 0) continue;
+				queuedChunks.push(part);
+				queuedBytes += part.length;
+				if (queuedBytes >= flushBytes) {
+					await scheduleFlush("ifDue");
+				} else if (flushTimer === undefined) {
+					armTimer();
 				}
 			}
 		}),
 	);
+	collect.catch(() => undefined);
+	try {
+		await Promise.race([collect, failed]);
+		if (failure !== undefined) throw failure;
+		await scheduleFlush("sync");
+		if (failure !== undefined) throw failure;
+	} finally {
+		closed = true;
+		clearTimer();
+		await writeChain;
+		clearTimer();
+	}
 }
 
 /** Raw-byte cursors, bounded UTF-8 pages. Output remains untrusted; these

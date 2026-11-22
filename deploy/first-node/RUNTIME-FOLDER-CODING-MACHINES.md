@@ -700,7 +700,9 @@ The limits:
 
 Since 5j-4, the executor asks the company's secret broker for the session's environment once for each command it
 starts, and masks that command's output, `output.log` and receipts with those values and the values of every other
-session on the machine. A session's values stay in the masks until the machine's last session is released. When the
+session on the machine. A session's values stay in the masks until the machine's last session is released, or until the
+machine stops, restarts for the folder, gets a new disk, sleeps or is removed (in each case SQL has already ended every
+attachment, so this behaves like an executor restart and the next attach asks the vault again). When the
 executor does not know the values a command runs with (it restarted after the start, or the guest did not confirm that
 it took this start's environment), none of that command's output is kept: the bytes are counted lost.
 

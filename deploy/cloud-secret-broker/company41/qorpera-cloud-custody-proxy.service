@@ -4,7 +4,7 @@ Wants=network-online.target tailscaled.service qorpera-identity-recovery.service
 After=network-online.target tailscaled.service qorpera-cloud-secret-broker-canary.service qorpera-identity-recovery.service
 Requires=qorpera-cloud-secret-broker-canary.service
 StartLimitIntervalSec=300
-StartLimitBurst=3
+StartLimitBurst=15
 
 [Service]
 Type=exec

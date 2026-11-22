@@ -167,3 +167,27 @@ it("reads due usage rechecks in a pass until none is due, and stops on a failure
 	);
 	log.mockRestore();
 });
+
+it("aborts an in-flight upkeep call promptly when close() is called", async () => {
+	const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		const logins = vault(["none"]);
+		let receivedSignal: AbortSignal | undefined;
+		logins.recordAccounts.mockImplementationOnce(
+			(signal: AbortSignal) =>
+				new Promise<number>((_resolve, reject) => {
+					receivedSignal = signal;
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				}),
+		);
+		const upkeep = new CloudModelLoginUpkeep({ vault: logins, firstPassMs: 5, passEveryMs: 60_000 });
+		upkeep.start();
+		await vi.waitFor(() => expect(receivedSignal).toBeDefined());
+		expect(receivedSignal!.aborted).toBe(false);
+		await upkeep.close();
+		expect(receivedSignal!.aborted).toBe(true);
+		expect(logins.switchOffReplacedNodeLogins).not.toHaveBeenCalled();
+	} finally {
+		log.mockRestore();
+	}
+});

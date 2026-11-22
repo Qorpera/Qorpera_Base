@@ -1115,13 +1115,32 @@ async function startBox(
 			if (filesGate?.broken) void files.close();
 		})();
 		void (async () => {
+			const waitForDrain = (): Promise<boolean> => {
+				if (toMount.destroyed || toMount.writableEnded || signal.aborted) return Promise.resolve(false);
+				return new Promise<boolean>((resolve) => {
+					const done = (ok: boolean): void => {
+						toMount.removeListener("drain", onDrain);
+						toMount.removeListener("close", onEnd);
+						toMount.removeListener("error", onEnd);
+						signal.removeEventListener("abort", onEnd);
+						resolve(ok);
+					};
+					const onDrain = (): void => done(true);
+					const onEnd = (): void => done(false);
+					toMount.once("drain", onDrain);
+					toMount.once("close", onEnd);
+					toMount.once("error", onEnd);
+					signal.addEventListener("abort", onEnd, { once: true });
+				});
+			};
 			try {
 				for await (const line of files.lines) {
 					if (!line || !BASE64.test(line)) break;
 					const bytes = Buffer.from(line, "base64");
 					if (filesGate) filesGate.fromHome(bytes);
-					if (filesGate ? toMount.writableNeedDrain : !toMount.write(bytes))
-						await new Promise<void>((resolve) => toMount.once("drain", resolve));
+					if (filesGate ? toMount.writableNeedDrain : !toMount.write(bytes)) {
+						if (!(await waitForDrain())) break;
+					}
 					if (filesGate?.broken) break;
 				}
 			} catch {
@@ -1143,13 +1162,16 @@ async function startBox(
 			let rest = "";
 			for await (const chunk of stdout) {
 				rest += chunk as string;
-				let end = rest.indexOf("\n");
+				let start = 0;
+				let end = rest.indexOf("\n", start);
 				while (end >= 0) {
-					filesGate?.notice(rest.slice(0, end));
-					yield rest.slice(0, end);
-					rest = rest.slice(end + 1);
-					end = rest.indexOf("\n");
+					const line = rest.slice(start, end);
+					filesGate?.notice(line);
+					yield line;
+					start = end + 1;
+					end = rest.indexOf("\n", start);
 				}
+				if (start > 0) rest = rest.slice(start);
 			}
 			if (rest) yield rest;
 		}

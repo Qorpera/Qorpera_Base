@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2.112.3";
+import { withTimeoutScope } from "../_shared/abort-timeout.ts";
 import {
 	type ComputerHourEmail,
 	type ComputerHourEmailProvider,
@@ -95,31 +96,33 @@ class ResendProvider implements ComputerHourEmailProvider {
 	}
 
 	async send(job: ComputerHourNoticeJob, email: ComputerHourEmail, idempotencyKey: string): Promise<{ messageId: string }> {
-		let response: Response;
-		try {
-			response = await fetch("https://api.resend.com/emails", {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${this.apiKey}`,
-					"Content-Type": "application/json",
-					"Idempotency-Key": idempotencyKey,
-				},
-				body: JSON.stringify({ from: this.from, to: [job.recipientEmail], subject: email.subject, text: email.text, html: email.html }),
-				signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
-			});
-		} catch (error) {
-			throw new ComputerHourEmailSendError(error instanceof Error ? error.message : "Resend request failed", true);
-		}
-		if (!response.ok) throw await resendFailure(response);
-		const body: unknown = await response.json();
-		if (!body || typeof body !== "object" || Array.isArray(body)) {
-			throw new ComputerHourEmailSendError("Resend returned an invalid response", true);
-		}
-		const messageId = (body as Record<string, unknown>).id;
-		if (typeof messageId !== "string" || !messageId.trim() || messageId.length > 256) {
-			throw new ComputerHourEmailSendError("Resend returned an invalid message id", true);
-		}
-		return { messageId };
+		return withTimeoutScope(SEND_TIMEOUT_MS, async (signal) => {
+			let response: Response;
+			try {
+				response = await fetch("https://api.resend.com/emails", {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${this.apiKey}`,
+						"Content-Type": "application/json",
+						"Idempotency-Key": idempotencyKey,
+					},
+					body: JSON.stringify({ from: this.from, to: [job.recipientEmail], subject: email.subject, text: email.text, html: email.html }),
+					signal,
+				});
+			} catch (error) {
+				throw new ComputerHourEmailSendError(error instanceof Error ? error.message : "Resend request failed", true);
+			}
+			if (!response.ok) throw await resendFailure(response);
+			const body: unknown = await response.json();
+			if (!body || typeof body !== "object" || Array.isArray(body)) {
+				throw new ComputerHourEmailSendError("Resend returned an invalid response", true);
+			}
+			const messageId = (body as Record<string, unknown>).id;
+			if (typeof messageId !== "string" || !messageId.trim() || messageId.length > 256) {
+				throw new ComputerHourEmailSendError("Resend returned an invalid message id", true);
+			}
+			return { messageId };
+		});
 	}
 }
 
@@ -175,6 +178,7 @@ Deno.serve(async (request) => {
 		config.appUrl,
 		new ResendProvider(config.resendApiKey, config.from),
 		store,
+		{ paceMs: 600, budgetMs: 45_000 },
 	);
 	return jsonResponse({ ...result, rejected });
 });

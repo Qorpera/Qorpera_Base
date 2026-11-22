@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { pipeline } from "node:stream/promises";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import type { JsonValue } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import { CHATGPT_PLAN_CONFIRM_ROUTE_MS, ChatGptPlanSignInError } from "./cloud-chatgpt-plan-sign-in.ts";
 import {
 	type ClaudeLoginFileName,
@@ -823,7 +824,7 @@ export class HttpCloudSecretBrokerService {
 			};
 		}
 		if (companyId === undefined || !UUID.test(companyId)) return undefined;
-		return companies.resolve(companyId, AbortSignal.timeout(10_000));
+		return withAbortScopes([], (signal) => companies.resolve(companyId, signal), 10_000);
 	}
 
 	/** G2-6a: the request holds its binding's run lease, or it is refused (the caller's catch answers 403, and nothing
@@ -858,12 +859,17 @@ export class HttpCloudSecretBrokerService {
 			response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" });
 			return;
 		}
-		const signIn: CodingRelaySignIn =
-			shape.kind === "mcp"
-				? await scope.broker.codingMcpSignIn(shape.binding, AbortSignal.timeout(10_000), scope.companyId)
-				: await scope.broker.codingRepositoryFetch(shape.binding, AbortSignal.timeout(10_000), scope.companyId);
+		const signIn: CodingRelaySignIn = await withAbortScopes(
+			[controller.signal],
+			(signal) =>
+				shape.kind === "mcp"
+					? scope.broker.codingMcpSignIn(shape.binding, signal, scope.companyId)
+					: scope.broker.codingRepositoryFetch(shape.binding, signal, scope.companyId),
+			10_000,
+		);
 		const idleMs = shape.kind === "mcp" ? MCP_RELAY_IDLE_MS : GIT_RELAY_IDLE_MS;
 		const onRequestTimeout = () => controller.abort();
+		const onReplyTimeout = () => reply.destroy();
 		request.setTimeout(idleMs, onRequestTimeout);
 		try {
 			const answer = await openCloudSecretRelay(
@@ -896,10 +902,12 @@ export class HttpCloudSecretBrokerService {
 				...(session === undefined ? {} : { "mcp-session-id": session }),
 			});
 			reply.flushHeaders();
-			reply.setTimeout(idleMs, () => reply.destroy());
+			reply.setTimeout(idleMs, onReplyTimeout);
 			await pipeline(answer, reply);
 		} finally {
 			request.off("timeout", onRequestTimeout);
+			reply.off("timeout", onReplyTimeout);
+			reply.setTimeout(0);
 		}
 	}
 
@@ -977,10 +985,8 @@ export class HttpCloudSecretBrokerService {
 				return;
 			}
 			if (capture && UUID.test(capture[1])) {
-				const descriptor = await scope.broker.capture(
-					parseCapture(await readRequest(request), capture[1]),
-					AbortSignal.timeout(15_000),
-				);
+				const parsed = parseCapture(await readRequest(request), capture[1]);
+				const descriptor = await withAbortScopes([], (signal) => scope.broker.capture(parsed, signal), 15_000);
 				response(reply, 200, descriptor as unknown as JsonValue, cors);
 				return;
 			}
@@ -989,11 +995,10 @@ export class HttpCloudSecretBrokerService {
 					response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" }, cors);
 					return;
 				}
+				const geminiKeys = scope.geminiKeys;
 				try {
-					const saved = await scope.geminiKeys.saveFromTicket(
-						parseGeminiKeySaveRequest(await readRequest(request), geminiKeySave[1]),
-						AbortSignal.timeout(20_000),
-					);
+					const parsed = parseGeminiKeySaveRequest(await readRequest(request), geminiKeySave[1]);
+					const saved = await withAbortScopes([], (signal) => geminiKeys.saveFromTicket(parsed, signal), 20_000);
 					response(reply, 200, { ...saved }, cors);
 				} catch (error) {
 					if (error instanceof GeminiKeyInvalidError) {
@@ -1009,10 +1014,12 @@ export class HttpCloudSecretBrokerService {
 				exact(input, ["schema", "capability"], "Email draft action");
 				if (input.schema !== "qorpera.email-draft-action/v1" || typeof input.capability !== "string")
 					throw new Error("Email draft action invalid");
-				const state = await scope.broker.executeEmailDraft(
-					emailDraft[1],
-					input.capability,
-					AbortSignal.timeout(60_000),
+				const draftId = emailDraft[1];
+				const capability = input.capability;
+				const state = await withAbortScopes(
+					[],
+					(signal) => scope.broker.executeEmailDraft(draftId, capability, signal),
+					60_000,
 				);
 				response(reply, 200, state, cors);
 				return;
@@ -1022,12 +1029,15 @@ export class HttpCloudSecretBrokerService {
 					response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" }, cors);
 					return;
 				}
+				const oauth = this.#oauth;
 				if (oauthStart) {
 					const start = parseOAuthStart(await readRequest(request));
 					const ticketId = oauthStart[1].toLowerCase();
-					const summary = await scope.broker.describeCapture(
-						{ ticketId, captureCapability: start.captureCapability },
-						AbortSignal.timeout(10_000),
+					const summary = await withAbortScopes(
+						[],
+						(signal) =>
+							scope.broker.describeCapture({ ticketId, captureCapability: start.captureCapability }, signal),
+						10_000,
 					);
 					// Connectors are company first: a sign-in fills only a company-owned
 					// connection, never a member's own secret.
@@ -1045,12 +1055,14 @@ export class HttpCloudSecretBrokerService {
 					// Only a bank ticket names a bank, and a bank ticket always does.
 					if ((summary.connectorId === BANK_CONNECTOR_ID) !== (start.bank !== undefined))
 						throw new Error("Connector authorization start is invalid");
-					const started = start.bank
-						? await this.#oauth.beginBank(
-								{ ...begin, bank: start.bank, ticketExpiresAt: summary.expiresAt },
-								AbortSignal.timeout(20_000),
+					const bank = start.bank;
+					const started = bank
+						? await withAbortScopes(
+								[],
+								(signal) => oauth.beginBank({ ...begin, bank, ticketExpiresAt: summary.expiresAt }, signal),
+								20_000,
 							)
-						: this.#oauth.begin(begin);
+						: oauth.begin(begin);
 					response(
 						reply,
 						200,
@@ -1069,13 +1081,18 @@ export class HttpCloudSecretBrokerService {
 				// inside the web app's 45 s confirm deadline and nginx's 60 s read timeout.
 				let completion: Awaited<ReturnType<CloudConnectorOAuthFlows["confirm"]>>;
 				try {
-					completion = await this.#oauth.confirm(
-						{
-							ticketId: (oauthConfirm as RegExpExecArray)[1],
-							...confirm,
-							...(scope.companyId === undefined ? {} : { companyId: scope.companyId }),
-						},
-						AbortSignal.timeout(20_000),
+					completion = await withAbortScopes(
+						[],
+						(signal) =>
+							oauth.confirm(
+								{
+									ticketId: (oauthConfirm as RegExpExecArray)[1],
+									...confirm,
+									...(scope.companyId === undefined ? {} : { companyId: scope.companyId }),
+								},
+								signal,
+							),
+						20_000,
 					);
 				} catch (error) {
 					response(
@@ -1090,19 +1107,24 @@ export class HttpCloudSecretBrokerService {
 					return;
 				}
 				try {
-					await scope.broker.capture(
-						{
-							ticketId: completion.ticketId,
-							captureCapability: completion.captureCapability,
-							fields: completion.fields,
-						},
-						AbortSignal.timeout(15_000),
-						completion.accountLabel,
+					await withAbortScopes(
+						[],
+						(signal) =>
+							scope.broker.capture(
+								{
+									ticketId: completion.ticketId,
+									captureCapability: completion.captureCapability,
+									fields: completion.fields,
+								},
+								signal,
+								completion.accountLabel,
+							),
+						15_000,
 					);
 				} catch {
 					// A bank session that could not be sealed is closed again rather than left open, after the answer:
 					// the member's confirm does not wait for it.
-					void this.#oauth.abandon(completion, AbortSignal.timeout(20_000));
+					void withAbortScopes([], (signal) => oauth.abandon(completion, signal), 20_000).catch(() => undefined);
 					response(reply, 403, { schema: "qorpera.cloud-connector-oauth-failed/v1", reason: "expired" }, cors);
 					return;
 				}
@@ -1121,7 +1143,7 @@ export class HttpCloudSecretBrokerService {
 			if (path === "/v1/operations" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
 				const operation = parseOperation(await readRequest(request));
 				await this.#proven(request, operation.binding);
-				const result = await scope.broker.execute(operation, AbortSignal.timeout(35_000));
+				const result = await withAbortScopes([], (signal) => scope.broker.execute(operation, signal), 35_000);
 				response(reply, 200, result as unknown as JsonValue);
 				return;
 			}
@@ -1130,7 +1152,11 @@ export class HttpCloudSecretBrokerService {
 			if (path === "/v1/company-accounts" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
 				const accountRequest = parseCompanyAccountRequest(await readRequest(request));
 				await this.#proven(request, accountRequest.binding);
-				const answer = await scope.broker.companyAccount(accountRequest, AbortSignal.timeout(35_000));
+				const answer = await withAbortScopes(
+					[],
+					(signal) => scope.broker.companyAccount(accountRequest, signal),
+					35_000,
+				);
 				response(reply, 200, answer as unknown as JsonValue);
 				return;
 			}
@@ -1139,7 +1165,11 @@ export class HttpCloudSecretBrokerService {
 			if (path === "/v1/company-account-fills" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
 				const fillRequest = parseCompanyAccountFillRequest(await readRequest(request));
 				await this.#proven(request, fillRequest.binding);
-				const answer = await scope.broker.companyAccountFill(fillRequest, AbortSignal.timeout(35_000));
+				const answer = await withAbortScopes(
+					[],
+					(signal) => scope.broker.companyAccountFill(fillRequest, signal),
+					35_000,
+				);
 				response(reply, 200, answer as unknown as JsonValue);
 				return;
 			}
@@ -1148,7 +1178,7 @@ export class HttpCloudSecretBrokerService {
 			if (path === "/v1/event-hooks" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
 				const hookRequest = parseEventHookRequest(await readRequest(request));
 				await this.#proven(request, hookRequest.binding);
-				const answer = await scope.broker.eventHook(hookRequest, AbortSignal.timeout(12_000));
+				const answer = await withAbortScopes([], (signal) => scope.broker.eventHook(hookRequest, signal), 12_000);
 				response(reply, 200, answer as unknown as JsonValue);
 				return;
 			}
@@ -1157,7 +1187,11 @@ export class HttpCloudSecretBrokerService {
 			if (path === "/v1/event-hook-fills" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
 				const fillRequest = parseEventHookFillRequest(await readRequest(request));
 				await this.#proven(request, fillRequest.binding);
-				const answer = await scope.broker.eventHookFill(fillRequest, AbortSignal.timeout(15_000));
+				const answer = await withAbortScopes(
+					[],
+					(signal) => scope.broker.eventHookFill(fillRequest, signal),
+					15_000,
+				);
 				response(reply, 200, answer as unknown as JsonValue);
 				return;
 			}
@@ -1166,7 +1200,11 @@ export class HttpCloudSecretBrokerService {
 			if (path === "/v1/event-hook-captures" && tokenMatches(this.#runtimeToken, request.headers.authorization)) {
 				const captureRequest = parseEventHookCaptureRequest(await readRequest(request));
 				await this.#proven(request, captureRequest.binding);
-				const answer = await scope.broker.eventHookCapture(captureRequest, AbortSignal.timeout(15_000));
+				const answer = await withAbortScopes(
+					[],
+					(signal) => scope.broker.eventHookCapture(captureRequest, signal),
+					15_000,
+				);
 				response(reply, 200, answer as unknown as JsonValue);
 				return;
 			}
@@ -1179,10 +1217,14 @@ export class HttpCloudSecretBrokerService {
 					request,
 					"prepare" in valueRequest ? valueRequest.prepare.binding : valueRequest.capture.binding,
 				);
-				const answer =
-					"prepare" in valueRequest
-						? await scope.broker.codingValuePrepare(valueRequest.prepare, AbortSignal.timeout(15_000))
-						: await scope.broker.codingValueCapture(valueRequest.capture, AbortSignal.timeout(15_000));
+				const answer = await withAbortScopes(
+					[],
+					async (signal) =>
+						"prepare" in valueRequest
+							? await scope.broker.codingValuePrepare(valueRequest.prepare, signal)
+							: await scope.broker.codingValueCapture(valueRequest.capture, signal),
+					15_000,
+				);
 				response(reply, 200, answer as unknown as JsonValue);
 				return;
 			}
@@ -1195,13 +1237,14 @@ export class HttpCloudSecretBrokerService {
 				const authorization = request.headers.authorization;
 				if (typeof authorization !== "string" || !authorization.startsWith("Bearer "))
 					throw new Error("Vault sign-in capability is missing");
-				const answer = await scope.modelLoginSignIns.signIn(
-					{
-						companyId: signIn[1],
-						capability: authorization.slice("Bearer ".length),
-						body: await readRequest(request),
-					},
-					AbortSignal.timeout(25_000),
+				const modelLoginSignIns = scope.modelLoginSignIns;
+				const body = await readRequest(request);
+				const companyIdValue = signIn[1];
+				const capability = authorization.slice("Bearer ".length);
+				const answer = await withAbortScopes(
+					[],
+					(signal) => modelLoginSignIns.signIn({ companyId: companyIdValue, capability, body }, signal),
+					25_000,
 				);
 				// Only a sign-in the database accepted puts its company on the frequent collection.
 				this.#companies?.signingIn(signIn[1]);
@@ -1248,16 +1291,18 @@ export class HttpCloudSecretBrokerService {
 				const authorization = request.headers.authorization;
 				if (typeof authorization !== "string" || !authorization.startsWith("Bearer "))
 					throw new Error("Vault sign-in capability is missing");
+				const modelLoginSignIns = scope.modelLoginSignIns;
+				const body = await readRequest(request);
+				const companyIdValue = planConfirm[1];
+				const capability = authorization.slice("Bearer ".length);
 				let answer: JsonValue;
 				try {
 					answer = {
-						...(await scope.modelLoginSignIns.confirmChatGptPlan(
-							{
-								companyId: planConfirm[1],
-								capability: authorization.slice("Bearer ".length),
-								body: await readRequest(request),
-							},
-							AbortSignal.timeout(CHATGPT_PLAN_CONFIRM_ROUTE_MS),
+						...(await withAbortScopes(
+							[],
+							(signal) =>
+								modelLoginSignIns.confirmChatGptPlan({ companyId: companyIdValue, capability, body }, signal),
+							CHATGPT_PLAN_CONFIRM_ROUTE_MS,
 						)),
 					};
 				} catch (error) {
@@ -1277,14 +1322,16 @@ export class HttpCloudSecretBrokerService {
 				const authorization = request.headers.authorization;
 				if (typeof authorization !== "string" || !authorization.startsWith("Bearer "))
 					throw new Error("Vault sign-in capability is missing");
+				const modelLoginSignIns = scope.modelLoginSignIns;
+				const body = await readRequest(request);
+				const companyIdValue = claudeCode[1];
+				const capability = authorization.slice("Bearer ".length);
 				try {
-					const answer = await scope.modelLoginSignIns.submitClaudeCode(
-						{
-							companyId: claudeCode[1],
-							capability: authorization.slice("Bearer ".length),
-							body: await readRequest(request),
-						},
-						AbortSignal.timeout(34_000),
+					const answer = await withAbortScopes(
+						[],
+						(signal) =>
+							modelLoginSignIns.submitClaudeCode({ companyId: companyIdValue, capability, body }, signal),
+						34_000,
 					);
 					response(reply, 200, { ...answer });
 				} catch (error) {
@@ -1300,13 +1347,14 @@ export class HttpCloudSecretBrokerService {
 				const authorization = request.headers.authorization;
 				if (typeof authorization !== "string" || !authorization.startsWith("Bearer "))
 					throw new Error("Vault account refresh capability is missing");
-				const answer = await scope.modelLoginUsage.refresh(
-					{
-						companyId: accountRefresh[1],
-						capability: authorization.slice("Bearer ".length),
-						body: await readRequest(request),
-					},
-					AbortSignal.timeout(25_000),
+				const modelLoginUsage = scope.modelLoginUsage;
+				const body = await readRequest(request);
+				const companyIdValue = accountRefresh[1];
+				const capability = authorization.slice("Bearer ".length);
+				const answer = await withAbortScopes(
+					[],
+					(signal) => modelLoginUsage.refresh({ companyId: companyIdValue, capability, body }, signal),
+					25_000,
 				);
 				response(reply, 200, { ...answer });
 				return;
@@ -1320,9 +1368,10 @@ export class HttpCloudSecretBrokerService {
 				scope.modelLogins !== undefined &&
 				tokenMatches(this.#runtimeToken, request.headers.authorization)
 			) {
+				const modelLogins = scope.modelLogins;
 				const loginRequest = parseModelLoginRequest(await readRequest(request));
 				await this.#proven(request, loginRequest.binding);
-				const login = await scope.modelLogins.issue(loginRequest, AbortSignal.timeout(60_000));
+				const login = await withAbortScopes([], (signal) => modelLogins.issue(loginRequest, signal), 60_000);
 				response(reply, 200, { ...login });
 				return;
 			}
@@ -1334,14 +1383,19 @@ export class HttpCloudSecretBrokerService {
 				scope.claudeLogins !== undefined &&
 				tokenMatches(this.#runtimeToken, request.headers.authorization)
 			) {
+				const claudeLogins = scope.claudeLogins;
 				if (path === "/v1/claude-logins/open") {
 					const open = parseClaudeLoginOpenRequest(await readRequest(request));
 					await this.#proven(request, open.binding);
-					response(reply, 200, { ...(await scope.claudeLogins.open(open, AbortSignal.timeout(20_000))) });
+					response(reply, 200, {
+						...(await withAbortScopes([], (signal) => claudeLogins.open(open, signal), 20_000)),
+					});
 				} else {
 					const seal = parseClaudeLoginSealRequest(await readRequest(request));
 					await this.#proven(request, seal.binding);
-					response(reply, 200, { ...(await scope.claudeLogins.sealBack(seal, AbortSignal.timeout(20_000))) });
+					response(reply, 200, {
+						...(await withAbortScopes([], (signal) => claudeLogins.sealBack(seal, signal), 20_000)),
+					});
 				}
 				return;
 			}
@@ -1350,9 +1404,12 @@ export class HttpCloudSecretBrokerService {
 				scope.geminiKeys !== undefined &&
 				tokenMatches(this.#runtimeToken, request.headers.authorization)
 			) {
+				const geminiKeys = scope.geminiKeys;
 				const binding = parseGeminiKeyOpenRequest(await readRequest(request));
 				await this.#proven(request, binding);
-				response(reply, 200, { ...(await scope.geminiKeys.open(binding, AbortSignal.timeout(20_000))) });
+				response(reply, 200, {
+					...(await withAbortScopes([], (signal) => geminiKeys.open(binding, signal), 20_000)),
+				});
 				return;
 			}
 			// The coding executor's repository token (bundle v88): only the
@@ -1365,9 +1422,11 @@ export class HttpCloudSecretBrokerService {
 				this.#codingExecutorToken !== undefined &&
 				tokenMatches(this.#codingExecutorToken, request.headers.authorization)
 			) {
-				const credential = await scope.broker.repositoryCredential(
-					parseRepositoryCredentialRequest(await readRequest(request)),
-					AbortSignal.timeout(10_000),
+				const parsed = parseRepositoryCredentialRequest(await readRequest(request));
+				const credential = await withAbortScopes(
+					[],
+					(signal) => scope.broker.repositoryCredential(parsed, signal),
+					10_000,
 				);
 				response(reply, 200, { schema: credential.schema, token: credential.token });
 				return;
@@ -1380,9 +1439,11 @@ export class HttpCloudSecretBrokerService {
 				this.#codingExecutorToken !== undefined &&
 				tokenMatches(this.#codingExecutorToken, request.headers.authorization)
 			) {
-				const environment = await scope.broker.codingEnvironment(
-					parseCodingEnvironmentHttpRequest(await readRequest(request)),
-					AbortSignal.timeout(10_000),
+				const parsed = parseCodingEnvironmentHttpRequest(await readRequest(request));
+				const environment = await withAbortScopes(
+					[],
+					(signal) => scope.broker.codingEnvironment(parsed, signal),
+					10_000,
 				);
 				response(reply, 200, {
 					schema: environment.schema,
@@ -1396,9 +1457,11 @@ export class HttpCloudSecretBrokerService {
 				this.#codingExecutorToken !== undefined &&
 				tokenMatches(this.#codingExecutorToken, request.headers.authorization)
 			) {
-				const answer = await scope.broker.companyAccountMachineFill(
-					parseCompanyAccountMachineFillRequest(await readRequest(request)),
-					AbortSignal.timeout(12_000),
+				const parsed = parseCompanyAccountMachineFillRequest(await readRequest(request));
+				const answer = await withAbortScopes(
+					[],
+					(signal) => scope.broker.companyAccountMachineFill(parsed, signal),
+					12_000,
 				);
 				response(reply, 200, answer as unknown as JsonValue);
 				return;

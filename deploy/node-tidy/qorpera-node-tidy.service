@@ -6,6 +6,8 @@ ConditionPathExists=/etc/qorpera-node-tidy.json
 
 [Service]
 Type=oneshot
+# WHY: cap a wedged oneshot run so /run/lock/qorpera-node-update.lock cannot stay held indefinitely while leaving ample time for normal deletions.
+TimeoutStartSec=15min
 # Root: it reads root-only provider env files and talks to the LXD socket.
 # A held update lock means an update lane is transferring or importing: skip this run (exit 75), never wait.
 ExecStart=/usr/bin/flock --nonblock --conflict-exit-code 75 /run/lock/qorpera-node-update.lock /usr/bin/node /opt/qorpera-node-tidy/qorpera-node-tidy.mjs --apply --config /etc/qorpera-node-tidy.json

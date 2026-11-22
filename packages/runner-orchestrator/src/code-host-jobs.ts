@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type CloudCodingRepository, folderKey, isUuid, parseCloudCodingRepository } from "@qorpera/contracts";
+import { withTimeoutScope } from "./abort-scope.ts";
 import { CODE_FOLDER_ANY_SESSION, codeFolderRefuses } from "./code-folder-names.ts";
 
 /** The code host's jobs (5e, RUNTIME-FOLDER-CODING-MACHINES.md "The code host"): every git command that must not run as
@@ -895,12 +896,12 @@ export async function withJob<T>(job: CodeHostJob, repository: CloudCodingReposi
 	try {
 		return await use(run);
 	} finally {
-		await run
-			.command(["/usr/bin/rm", "-rf", "--", run.directory], {
+		await withTimeoutScope(undefined, 60_000, (cleanupSignal) =>
+			run.command(["/usr/bin/rm", "-rf", "--", run.directory], {
 				cwd: layout.scratchRoot,
-				signal: AbortSignal.timeout(60_000),
-			})
-			.catch(() => {});
+				signal: cleanupSignal,
+			}),
+		).catch(() => {});
 	}
 }
 
@@ -2255,7 +2256,7 @@ export async function collectCodeGarbage(
 			);
 			return { state: "collected", restored: run.restored };
 		};
-		const end = () => block.end(run.area, AbortSignal.timeout(30_000));
+		const end = () => withTimeoutScope(undefined, 30_000, (endSignal) => block.end(run.area, endSignal));
 		let result: CodeGarbageCollected;
 		try {
 			result = await collect();

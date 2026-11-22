@@ -1,5 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { companyStatePath } from "@qorpera/cloud-client/company-state-files";
+import { withAbortScopes } from "../abort-scope.ts";
 import { memberFolderStructured } from "../member-folder-commits.ts";
 import {
 	COMMAND_ENDED,
@@ -1255,74 +1256,77 @@ export class FolderService {
 		const database = named as string | null;
 		const actor = view.actor;
 		if (actor.kind !== "view") throw new ProtocolError(ErrorCode.viewRefused, "The view is no machine's", true);
-		const stop = AbortSignal.any([
-			signal,
-			AbortSignal.timeout(verb === "apply" ? this.#dataApplyMs : this.#dataCallMs),
-		]);
-		let pass: MachineDataPass;
-		try {
-			pass = await this.#core.machineDataPass(view.environmentId, actor, database, stop);
-		} catch (error) {
-			if (!(error instanceof CoreRefusal)) {
-				this.#log(`folder-service: ${view.key}: no data pass now: ${(error as Error).message}`);
-				return dataRefusal(503, DATA_UNREACHABLE);
-			}
-			if (error.reason === "stopped")
-				return dataRefusal(423, "The company is stopped now, so its databases take no call from a machine");
-			if (error.forbidden) return dataRefusal(403, "This machine may not reach the company's databases now");
-			if (error.said === NO_SUCH_DATABASE)
-				return dataRefusal(
-					404,
-					`No database ${database} that this machine may read: it needs data/${database}/database.toml (format = "qorpera.database/v1")`,
-				);
-			if (error.said === TOO_MANY_DATA_FOLDERS)
-				return dataRefusal(413, "data/ holds more than 5,000 folders to look through: name one database");
-			if (error.said === TOO_MANY_DATA_FILES)
-				return dataRefusal(
-					413,
-					database === null
-						? "The company's databases hold more than 1,000 files together: name one database"
-						: `data/${database}/ holds more than 1,000 files in database.toml, tables/, queries/ and actions/`,
-				);
-			return dataRefusal(400, "The company's databases did not take this call");
-		}
-		const sent = Buffer.from(JSON.stringify({ ...body, pass: pass.pass }));
-		if (sent.byteLength > DATA_MAX_PAYLOAD) return dataRefusal(413, "The call is larger than 1 MiB");
-		const unknown =
-			verb === "apply" && body.check === undefined
-				? DATA_UNKNOWN.apply
-				: verb === "change" && body.preview !== true
-					? DATA_UNKNOWN.change
-					: undefined;
-		const unanswered = (): DataAnswer =>
-			unknown === undefined ? dataRefusal(503, DATA_UNREACHABLE) : dataRefusal(504, unknown);
-		let answer: DoorAnswer;
-		try {
-			answer = await door.call(verb, sent, stop);
-		} catch (error) {
-			this.#log(`folder-service: ${view.key}: the data door gave no answer: ${(error as Error).message}`);
-			return unanswered();
-		}
-		if (this.#stopping) return unanswered();
-		this.#dataReads(view, request, pass.entries);
-		if (answer === "too_large") return dataRefusal(413, "The answer is larger than 1 MiB: name one database");
-		let value: unknown;
-		try {
-			value = JSON.parse(answer.body.toString("utf8"));
-		} catch {
-			this.#log(`folder-service: ${view.key}: the data door's answer (${answer.status}) is not JSON`);
-			return unanswered();
-		}
-		if (!Number.isInteger(answer.status) || answer.status < 200 || answer.status > 599) return unanswered();
-		if (answer.status === 401) {
-			this.#log(`folder-service: ${view.key}: the data door refused the node's token or the pass`);
-			return dataRefusal(503, DATA_UNREACHABLE);
-		}
-		if (unknown !== undefined && answer.status >= 500 && answer.status !== 507) return dataRefusal(504, unknown);
-		const given: DataAnswer = { status: answer.status, value };
-		if (Buffer.byteLength(JSON.stringify(given)) > DATA_MAX_PAYLOAD)
-			return dataRefusal(413, "The answer is larger than 1 MiB: name one database");
-		return given;
+		return withAbortScopes(
+			[signal],
+			async (stop) => {
+				let pass: MachineDataPass;
+				try {
+					pass = await this.#core.machineDataPass(view.environmentId, actor, database, stop);
+				} catch (error) {
+					if (!(error instanceof CoreRefusal)) {
+						this.#log(`folder-service: ${view.key}: no data pass now: ${(error as Error).message}`);
+						return dataRefusal(503, DATA_UNREACHABLE);
+					}
+					if (error.reason === "stopped")
+						return dataRefusal(423, "The company is stopped now, so its databases take no call from a machine");
+					if (error.forbidden) return dataRefusal(403, "This machine may not reach the company's databases now");
+					if (error.said === NO_SUCH_DATABASE)
+						return dataRefusal(
+							404,
+							`No database ${database} that this machine may read: it needs data/${database}/database.toml (format = "qorpera.database/v1")`,
+						);
+					if (error.said === TOO_MANY_DATA_FOLDERS)
+						return dataRefusal(413, "data/ holds more than 5,000 folders to look through: name one database");
+					if (error.said === TOO_MANY_DATA_FILES)
+						return dataRefusal(
+							413,
+							database === null
+								? "The company's databases hold more than 1,000 files together: name one database"
+								: `data/${database}/ holds more than 1,000 files in database.toml, tables/, queries/ and actions/`,
+						);
+					return dataRefusal(400, "The company's databases did not take this call");
+				}
+				const sent = Buffer.from(JSON.stringify({ ...body, pass: pass.pass }));
+				if (sent.byteLength > DATA_MAX_PAYLOAD) return dataRefusal(413, "The call is larger than 1 MiB");
+				const unknown =
+					verb === "apply" && body.check === undefined
+						? DATA_UNKNOWN.apply
+						: verb === "change" && body.preview !== true
+							? DATA_UNKNOWN.change
+							: undefined;
+				const unanswered = (): DataAnswer =>
+					unknown === undefined ? dataRefusal(503, DATA_UNREACHABLE) : dataRefusal(504, unknown);
+				let answer: DoorAnswer;
+				try {
+					answer = await door.call(verb, sent, stop);
+				} catch (error) {
+					this.#log(`folder-service: ${view.key}: the data door gave no answer: ${(error as Error).message}`);
+					return unanswered();
+				}
+				if (this.#stopping) return unanswered();
+				this.#dataReads(view, request, pass.entries);
+				if (answer === "too_large") return dataRefusal(413, "The answer is larger than 1 MiB: name one database");
+				let value: unknown;
+				try {
+					value = JSON.parse(answer.body.toString("utf8"));
+				} catch {
+					this.#log(`folder-service: ${view.key}: the data door's answer (${answer.status}) is not JSON`);
+					return unanswered();
+				}
+				if (!Number.isInteger(answer.status) || answer.status < 200 || answer.status > 599) return unanswered();
+				if (answer.status === 401) {
+					this.#log(`folder-service: ${view.key}: the data door refused the node's token or the pass`);
+					return dataRefusal(503, DATA_UNREACHABLE);
+				}
+				if (unknown !== undefined && answer.status >= 500 && answer.status !== 507)
+					return dataRefusal(504, unknown);
+				const given: DataAnswer = { status: answer.status, value };
+				if (Buffer.byteLength(JSON.stringify(given)) > DATA_MAX_PAYLOAD)
+					return dataRefusal(413, "The answer is larger than 1 MiB: name one database");
+				return given;
+			},
+			verb === "apply" ? this.#dataApplyMs : this.#dataCallMs,
+		);
 	}
 
 	#dataReads(view: View, request: DataCall, entries: MachineDataPass["entries"]): void {

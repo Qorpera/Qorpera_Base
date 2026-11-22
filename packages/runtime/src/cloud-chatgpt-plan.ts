@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, type JsonWebKey, type KeyObject, verify as verifySignature } from "node:crypto";
 import { isUuid, parseRecord } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import { connectorRequest, jsonRecord, jsonString, parseJsonResponse } from "./cloud-connector-http.ts";
 
 /**
@@ -389,8 +390,11 @@ export class ChatGptPlanOAuth {
 	/** Ends a refresh token OpenAI issued in an answer this vault will not keep. Nothing waits on it: the
 	 * caller's answer does not depend on OpenAI's. */
 	#endIssued(answer: Record<string, unknown>): void {
-		if (typeof answer.refresh_token === "string" && answer.refresh_token.length > 0)
-			void this.revoke(answer.refresh_token, AbortSignal.timeout(REQUEST_DEADLINE_MS)).catch(() => undefined);
+		const refreshToken = answer.refresh_token;
+		if (typeof refreshToken === "string" && refreshToken.length > 0)
+			void withAbortScopes([], (signal) => this.revoke(refreshToken, signal), REQUEST_DEADLINE_MS).catch(
+				() => undefined,
+			);
 	}
 
 	/** One renewal: the refresh token is spent and replaced. The renewed login keeps its owner.
@@ -648,15 +652,20 @@ export class ChatGptPlanOAuth {
 		const known = this.#endpoints;
 		if (known && this.#now() - known.at < DISCOVERY_TTL_MS) return abortable(known.value, signal);
 		const value = (async (): Promise<Endpoints> => {
-			const response = await connectorRequest({
-				fetch: this.#fetch,
-				origin: CHATGPT_PLAN_ISSUER,
-				path: DISCOVERY_PATH,
-				headers: {},
-				signal: AbortSignal.timeout(REQUEST_DEADLINE_MS),
-				maximumBytes: 64 * 1024,
-				deadlineMs: REQUEST_DEADLINE_MS,
-			});
+			const response = await withAbortScopes(
+				[],
+				(deadline) =>
+					connectorRequest({
+						fetch: this.#fetch,
+						origin: CHATGPT_PLAN_ISSUER,
+						path: DISCOVERY_PATH,
+						headers: {},
+						signal: deadline,
+						maximumBytes: 64 * 1024,
+						deadlineMs: REQUEST_DEADLINE_MS,
+					}),
+				REQUEST_DEADLINE_MS,
+			);
 			if (response.status !== 200) throw new DiscoveryUnusable("ChatGPT plan discovery is unavailable");
 			try {
 				const document = jsonRecord(parseJsonResponse(response));
@@ -694,38 +703,42 @@ export class ChatGptPlanOAuth {
 	/** Fetches OpenAI's key set once for every caller waiting on it, under its own deadline: a caller
 	 * whose time ends gives up alone, and the fetch goes on for the others. */
 	#loadKeys(signal: AbortSignal): Promise<void> {
-		this.#keysLoading ??= (async () => {
-			this.#keysAt = this.#now();
-			const deadline = AbortSignal.timeout(REQUEST_DEADLINE_MS);
-			const endpoints = await this.#discover(deadline);
-			const response = await connectorRequest({
-				fetch: this.#fetch,
-				origin: endpoints.keys.origin,
-				path: endpoints.keys.pathname,
-				headers: {},
-				signal: deadline,
-				maximumBytes: 256 * 1024,
-				deadlineMs: REQUEST_DEADLINE_MS,
-			});
-			if (response.status !== 200) throw new Error("ChatGPT plan signing keys are unavailable");
-			const set = jsonRecord(parseJsonResponse(response));
-			if (!Array.isArray(set.keys) || set.keys.length > 32) throw new Error("ChatGPT plan signing keys are invalid");
-			const keys = new Map<string, { key: KeyObject; alg: string | undefined }>();
-			for (const entry of set.keys) {
-				try {
-					const jwk = parseRecord(entry, "ChatGPT plan signing key");
-					if (typeof jwk.kid !== "string" || (jwk.use !== undefined && jwk.use !== "sig")) continue;
-					if (jwk.kty !== "RSA" && jwk.kty !== "EC") continue;
-					keys.set(jwk.kid, {
-						key: createPublicKey({ key: jwk as JsonWebKey, format: "jwk" }),
-						alg: typeof jwk.alg === "string" ? jwk.alg : undefined,
-					});
-				} catch {
-					// A key this vault cannot read is skipped; a token signed with it is refused.
+		this.#keysLoading ??= withAbortScopes(
+			[],
+			async (deadline) => {
+				this.#keysAt = this.#now();
+				const endpoints = await this.#discover(deadline);
+				const response = await connectorRequest({
+					fetch: this.#fetch,
+					origin: endpoints.keys.origin,
+					path: endpoints.keys.pathname,
+					headers: {},
+					signal: deadline,
+					maximumBytes: 256 * 1024,
+					deadlineMs: REQUEST_DEADLINE_MS,
+				});
+				if (response.status !== 200) throw new Error("ChatGPT plan signing keys are unavailable");
+				const set = jsonRecord(parseJsonResponse(response));
+				if (!Array.isArray(set.keys) || set.keys.length > 32)
+					throw new Error("ChatGPT plan signing keys are invalid");
+				const keys = new Map<string, { key: KeyObject; alg: string | undefined }>();
+				for (const entry of set.keys) {
+					try {
+						const jwk = parseRecord(entry, "ChatGPT plan signing key");
+						if (typeof jwk.kid !== "string" || (jwk.use !== undefined && jwk.use !== "sig")) continue;
+						if (jwk.kty !== "RSA" && jwk.kty !== "EC") continue;
+						keys.set(jwk.kid, {
+							key: createPublicKey({ key: jwk as JsonWebKey, format: "jwk" }),
+							alg: typeof jwk.alg === "string" ? jwk.alg : undefined,
+						});
+					} catch {
+						// A key this vault cannot read is skipped; a token signed with it is refused.
+					}
 				}
-			}
-			this.#keys = keys;
-		})().finally(() => {
+				this.#keys = keys;
+			},
+			REQUEST_DEADLINE_MS,
+		).finally(() => {
 			this.#keysLoading = undefined;
 		});
 		return abortable(this.#keysLoading, signal);

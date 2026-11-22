@@ -15,6 +15,7 @@
  * Good will (good-will.ts) shares the function: POST /good-will-card for a founder's card page, POST
  * /good-will-invoices for the database's clock, and its events on /webhook. */
 
+import { withTimeoutScope } from "../_shared/abort-timeout.ts";
 import {
 	applyGoodWillCard,
 	applyGoodWillInvoice,
@@ -35,7 +36,7 @@ const UTF8_LENIENT_DECODER = new TextDecoder("utf-8");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 async function readBoundedText(
-	request: Request,
+	request: Request | Response,
 	maxBytes: number,
 	fatal = true,
 ): Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false; readonly status: 400 | 413 }> {
@@ -51,20 +52,18 @@ async function readBoundedText(
 	if (!reader) return { ok: true, text: "" };
 	const chunks: Uint8Array[] = [];
 	let total = 0;
-	let overflow = false;
 	try {
 		for (;;) {
 			const { done, value } = await reader.read();
 			if (done) break;
 			total += value.byteLength;
 			if (total > maxBytes) {
-				overflow = true;
 				return { ok: false, status: 413 };
 			}
 			chunks.push(value);
 		}
 	} finally {
-		if (overflow) void reader.cancel().catch(() => undefined);
+		void reader.cancel().catch(() => undefined);
 	}
 	if (chunks.length === 0) return { ok: true, text: "" };
 	let bytes: Uint8Array;
@@ -193,8 +192,11 @@ export function createStripeApi(secretKey: string, fetchImpl: typeof fetch = fet
 		"stripe-version": STRIPE_API_VERSION,
 		...(idempotencyKey ? { "idempotency-key": idempotencyKey } : {}),
 	});
+	const MAX_STRIPE_RESPONSE_BYTES = 2 * 1024 * 1024;
 	const answer = async (response: Response): Promise<Json> => {
-		const text = await response.text();
+		const read = await readBoundedText(response, MAX_STRIPE_RESPONSE_BYTES, false);
+		if (!read.ok) throw new StripeRequestError(502, "Stripe response exceeded size limit");
+		const text = read.text;
 		let body: unknown;
 		try {
 			body = JSON.parse(text);
@@ -214,21 +216,25 @@ export function createStripeApi(secretKey: string, fetchImpl: typeof fetch = fet
 	return {
 		// A request Stripe does not answer in time is a passing failure (a webhook is retried).
 		async get(path) {
-			return answer(
-				await fetchImpl(`https://api.stripe.com${path}`, {
-					headers: headers(),
-					signal: AbortSignal.timeout(STRIPE_TIMEOUT_MS),
-				}),
+			return withTimeoutScope(STRIPE_TIMEOUT_MS, async (signal) =>
+				answer(
+					await fetchImpl(`https://api.stripe.com${path}`, {
+						headers: headers(),
+						signal,
+					}),
+				),
 			);
 		},
 		async post(path, form, idempotencyKey) {
-			return answer(
-				await fetchImpl(`https://api.stripe.com${path}`, {
-					method: "POST",
-					headers: { ...headers(idempotencyKey), "content-type": "application/x-www-form-urlencoded" },
-					body: new URLSearchParams(form).toString(),
-					signal: AbortSignal.timeout(STRIPE_TIMEOUT_MS),
-				}),
+			return withTimeoutScope(STRIPE_TIMEOUT_MS, async (signal) =>
+				answer(
+					await fetchImpl(`https://api.stripe.com${path}`, {
+						method: "POST",
+						headers: { ...headers(idempotencyKey), "content-type": "application/x-www-form-urlencoded" },
+						body: new URLSearchParams(form).toString(),
+						signal,
+					}),
+				),
 			);
 		},
 	};
