@@ -462,6 +462,83 @@ describe("company-data snapshots and lifecycle cleanup", { skip: !dockerUsable }
 		}
 	});
 
+	it("partitions PK-less TOAST tables by main fork size, backs off dump retries, and trims row_changes in bounded set-based SQL", async () => {
+		const database = companyDatabase(envId);
+		await asSuperuser(database, "create schema if not exists toast_snap");
+		await asSuperuser(
+			database,
+			"create table toast_snap.notes (note text); alter table toast_snap.notes alter column note set storage external;",
+		);
+		await asSuperuser(
+			database,
+			"insert into toast_snap.notes (note) select repeat(md5(g::text), 4096) from generate_series(1, 4) g",
+		);
+		const sizes = (
+			await asSuperuser(
+				database,
+				"select pg_table_size('toast_snap.notes')::bigint as total, pg_relation_size('toast_snap.notes', 'main')::bigint as main",
+			)
+		)[0];
+		assert.ok(Number(sizes.total) > 64 * 1024, `expected TOASTed total size > 64 KiB, got ${sizes.total}`);
+		assert.ok(Number(sizes.main) <= 32 * 1024, `expected tiny main fork <= 32 KiB, got ${sizes.main}`);
+
+		const toastDir = join(workDir, "snap-toast");
+		const dumpAt = [];
+		const exported = await exportDatabaseSnapshot({
+			store: { host: "127.0.0.1", port, logins },
+			user: "postgres",
+			password: "test-password",
+			database,
+			schema: "toast_snap",
+			outDir: toastDir,
+			partBytes: 64 * 1024,
+			retryDelayMs: 60,
+			dumpSchema: (opts) => {
+				dumpAt.push(Date.now());
+				if (dumpAt.length === 1) throw new Error("transient lock wait");
+				return dockerDumpSchema(opts);
+			},
+		});
+		assert.equal(dumpAt.length, 2);
+		assert.ok(dumpAt[1] - dumpAt[0] >= 50, `expected backoff gap >= 50ms between dump attempts, got ${dumpAt[1] - dumpAt[0]}ms`);
+		const noteMeta = exported.manifest.tables.find((t) => t.name === "notes");
+		assert.equal(noteMeta.parts.length, 1, `expected 1 ctid part based on main fork, got ${noteMeta.parts.length}`);
+		assert.equal(noteMeta.rows, 4);
+
+		// WHY: Verify set-based keep_record trims > 5,000 rows across multiple batches until under record_limit and matches update.sql.
+		const trimDb = `trim_${randomBytes(4).toString("hex")}`;
+		await asSuperuser("postgres", `create database ${trimDb}`);
+		try {
+			for (const file of ["template.sql", "update.sql"]) {
+				const res = spawnSync("docker", ["exec", "-i", container, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", trimDb], {
+					input: storeFile(file),
+					encoding: "utf8",
+				});
+				assert.equal(res.status, 0, `${file} failed: ${res.stderr}`);
+			}
+			await asSuperuser(trimDb, "update qorpera_data.record_limit set bytes = 50000");
+			await asSuperuser(
+				trimDb,
+				`insert into qorpera_data.row_changes (txid, schema, relation, op, rows, bytes)
+				select 100 + g, 's', 't', 'add', 1, 100 from generate_series(1, 6500) g;
+				insert into qorpera_data.record_bytes (pid, bytes) values (pg_backend_pid(), 650000)
+					on conflict (pid) do update set bytes = excluded.bytes;
+				select qorpera_data.keep_record(100);`,
+			);
+			const afterTrim = (
+				await asSuperuser(
+					trimDb,
+					"select count(*)::int as rows, coalesce(sum(bytes), 0)::int as held, (select coalesce(sum(bytes), 0)::int from qorpera_data.record_bytes) as counted from qorpera_data.row_changes",
+				)
+			)[0];
+			assert.equal(afterTrim.rows, 499, `expected 499 remaining rows after multi-batch trim, got ${afterTrim.rows}`);
+			assert.ok(afterTrim.held <= 50000, `expected trimmed held bytes <= 50000, got ${afterTrim.held}`);
+			assert.equal(afterTrim.counted, afterTrim.held + 100);
+		} finally {
+			await asSuperuser("postgres", `drop database if exists ${trimDb} with (force)`);
+		}
+	});
+
 	it("drops a single database folder cleanly (schema, roles, metadata) while preserving sibling databases, allows clean re-creation, then drops the whole company database", async () => {
 		const database = companyDatabase(envId);
 		const denied = await post(`/v1/admin/company-data/${envId}/drop-database`, { database: "crm" }, "Bearer wrong");

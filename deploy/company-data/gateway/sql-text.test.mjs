@@ -210,4 +210,19 @@ describe("one statement", () => {
 		refused("select (1", /parenthesis is not closed/);
 		refused("select count(*) from t where (a = 1", /parenthesis is not closed/);
 	});
+
+	it("parses large dense : and $ SQL inputs linearly without losing non-parameter colons or dollar quotes", () => {
+		const repeated = Array.from({ length: 4000 }, (_, i) => (i % 2 === 0 ? ":a" : "1::int")).join(" + ");
+		const payload = `select ${repeated}, $tag$body$tag$, 'x:1', ':' as c, :123_literal, a$b from t where x = :b`;
+		const started = performance.now();
+		const parsed = readStatement(payload);
+		const elapsedMs = performance.now() - started;
+		assert.equal(parsed.ok, true);
+		assert.deepEqual(parsed.parameters, ["a", "b"]);
+		assert.ok(parsed.sql.includes("$1 + 1::int"));
+		assert.ok(parsed.sql.includes("$tag$body$tag$"));
+		assert.ok(parsed.sql.includes(":123_literal"));
+		assert.ok(parsed.sql.includes("a$b"));
+		assert.ok(elapsedMs < 500, `expected linear parse time, took ${elapsedMs.toFixed(1)}ms`);
+	});
 });
