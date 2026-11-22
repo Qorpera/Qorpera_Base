@@ -3340,6 +3340,15 @@ describe("company sites (20260930550000)", () => {
 		expect(cloudActionEffect(tool("publish_site"), prepared("new"))).toBe("external");
 		expect(cloudActionEffect(tool("publish_site"), prepared("update"))).toBe("external");
 		expect(cloudActionEffect(tool("unpublish_site"), { slug: "wristband-shop" })).toBe("destructive");
+		expect(cloudActionEffect(tool("manage_site"), { action: "list_versions", slug: "wristband-shop" })).toBe("read");
+		expect(cloudActionEffect(tool("manage_site"), { action: "app_logs", slug: "wristband-shop" })).toBe("read");
+		expect(
+			cloudActionEffect(tool("manage_site"), {
+				action: "rollback",
+				slug: "wristband-shop",
+				versionId: "00000000-0000-4000-8000-000000000001",
+			}),
+		).toBe("external");
 	});
 
 	it("names the link, the files and their size, and what a first publish or an update does", () => {
@@ -3454,6 +3463,21 @@ describe("company sites (20260930550000)", () => {
 			details: {
 				effect:
 					"Its link stops working. A website's published copy and password are deleted, and its files stay in the company folder; an app link keeps its password for its next share, and the app keeps running on its machine",
+			},
+		});
+		expect(
+			describeCloudAction(tool("manage_site"), {
+				action: "rollback",
+				slug: "wristband-shop",
+				versionId: "00000000-0000-4000-8000-000000000001",
+			}),
+		).toEqual({
+			title: "Roll back a company website to a previous version",
+			target: "wristband-shop",
+			details: {
+				version: "00000000-0000-4000-8000-000000000001",
+				effect:
+					"Switches the live website immediately back to the selected previously published version and keeps the current version in version history",
 			},
 		});
 	});

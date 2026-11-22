@@ -104,6 +104,17 @@ interface Database {
 	/** How the machine's executor answers the program's start: a running command (default), one that ended at once,
 	 * one whose start is unconfirmed, a refusal, or a failure. */
 	start?: "running" | "failed" | "unconfirmed" | "MACHINE_NOT_RUNNING" | "throw";
+	siteVersions?: Record<string, unknown>;
+	siteActivate?: Record<string, unknown>;
+	appLogs?:
+		| "MACHINE_NOT_RUNNING"
+		| "unavailable"
+		| {
+				lines: { ts: string; seq: number; stream: "stdout" | "stderr"; line: string }[];
+				totalMatched: number;
+				truncated: boolean;
+				crashSummary: Record<string, unknown> | null;
+		  };
 }
 
 /** The site tools behind the boundary, with a review that lets every call run (recording what it read). */
@@ -213,6 +224,52 @@ async function fixture(
 				...options.shared,
 			};
 		}
+		if (method === "qorpera_site_agent_list_versions") {
+			const requestedSlug = args.p_slug as string;
+			return {
+				schema: "qorpera.site-versions/v1",
+				siteId: randomUUID(),
+				slug: requestedSlug,
+				kind: "files",
+				machine: null,
+				machineId: null,
+				port: null,
+				appAuthMode: "password",
+				url: URL_OF(requestedSlug),
+				currentVersionId: versionId,
+				versions: [
+					{
+						id: versionId,
+						state: "live",
+						isCurrent: true,
+						title: "Wristbands",
+						sourcePath: "product/webshop",
+						fileCount: 3,
+						totalBytes: 120,
+						manifestSha256: "a".repeat(64),
+						origin: "publish_site",
+						change: null,
+						createdAt: "2026-11-22T06:00:00Z",
+						publishedAt: "2026-11-22T06:00:00Z",
+					},
+				],
+				...options.siteVersions,
+			};
+		}
+		if (method === "qorpera_site_agent_activate_version") {
+			const requestedSlug = args.p_slug as string;
+			const targetVersionId = args.p_version_id as string;
+			return {
+				schema: "qorpera.site-version-activate/v1",
+				siteId: randomUUID(),
+				slug: requestedSlug,
+				versionId: targetVersionId,
+				previousVersionId: versionId,
+				url: URL_OF(requestedSlug),
+				activatedAt: "2026-11-22T07:00:00Z",
+				...options.siteActivate,
+			};
+		}
 		throw new Error(`unexpected ${method}`);
 	});
 	const reviewed: unknown[] = [];
@@ -246,12 +303,31 @@ async function fixture(
 			})
 		).content;
 	});
+	const appLogs = vi.fn<NonNullable<CloudMachineCommandGateway["appLogs"]>>(async (_scope, input) => {
+		if (options.appLogs === "MACHINE_NOT_RUNNING") throw new CloudMachineCommandRefusal("MACHINE_NOT_RUNNING");
+		const configured = typeof options.appLogs === "object" ? options.appLogs : null;
+		return {
+			schema: "qorpera.machine-app-logs/v1",
+			slug: input.slug,
+			lines: configured?.lines ?? [],
+			totalMatched: configured?.totalMatched ?? 0,
+			truncated: configured?.truncated ?? false,
+			crashSummary: configured?.crashSummary ?? null,
+		};
+	});
 	const tools = cloudSiteTools({
 		binding,
 		identity: run.identity,
 		control: { call },
 		folder: folder.client,
-		...(options.noMachines ? {} : { machines: { gateway: { start } as never, operations: { execute: operations } } }),
+		...(options.noMachines
+			? {}
+			: {
+					machines: {
+						gateway: (options.appLogs === "unavailable" ? { start } : { start, appLogs }) as never,
+						operations: { execute: operations },
+					},
+				}),
 	});
 	const boundary = new CloudNativeToolBoundary({
 		companyId: run.identity.companyId,
@@ -279,7 +355,7 @@ async function fixture(
 				}),
 	});
 	const calls = (method: string) => call.mock.calls.filter(([name]) => name === method).map(([, args]) => args);
-	return { binding, boundary, call, calls, folder, reviewed, contents, reviewId, tools, start, operations };
+	return { binding, boundary, call, calls, folder, reviewed, contents, reviewId, tools, start, appLogs, operations };
 }
 
 function outcome(response: Awaited<ReturnType<CloudNativeToolBoundary["invoke"]>>) {
@@ -295,7 +371,7 @@ const SHOP = {
 	"product/webshop/index.html": "<h1>Wristbands</h1><a href='about.html'>About</a>",
 	"product/webshop/about.html": "<p>About us</p>",
 	"product/webshop/img/logo.png": new Uint8Array([137, 80, 78, 71, 1, 2, 3]),
-	"product/webshop/notes.md": "# internal notes",
+	"product/webshop/notes.bak": "# internal notes",
 	"product/webshop/.DS_Store": "x",
 };
 
@@ -322,13 +398,13 @@ describe("publish_site", () => {
 			liveSource: null,
 			files: 3,
 			paths: ["about.html", "img/logo.png", "index.html"],
-			skipped: [".DS_Store", "notes.md"],
+			skipped: [".DS_Store", "notes.bak"],
 		});
 		// The reviewer reads every path that goes out, and what is left out.
 		expect(f.contents[0]).toEqual({
 			files: ["about.html", "img/logo.png", "index.html"],
 			filesNotListed: 0,
-			leftOut: [".DS_Store", "notes.md"],
+			leftOut: [".DS_Store", "notes.bak"],
 			leftOutNotListed: 0,
 		});
 		const [check] = f.calls("qorpera_site_publish_check");
@@ -359,7 +435,7 @@ describe("publish_site", () => {
 		expect(Buffer.from(logo?.content ?? "", "base64")).toEqual(Buffer.from([137, 80, 78, 71, 1, 2, 3]));
 		expect(f.calls("qorpera_site_publish_finish")).toHaveLength(1);
 		expect(result.answer).toMatchObject({ state: "live", url: URL_OF("wristband-shop"), mode: "new" });
-		expect(result.answer.leftOut).toEqual([".DS_Store", "notes.md"]);
+		expect(result.answer.leftOut).toEqual([".DS_Store", "notes.bak"]);
 		// One answer names one set of people: owners and admins (review r1 of #1851).
 		expect(result.answer.password).toBe(
 			"The site has a new password. You never see it: owners and admins find, copy and change it on the Sites page in the apps drawer.",
@@ -542,7 +618,39 @@ describe("publish_site", () => {
 			"img/logo.png",
 			"index.html",
 		]);
-		expect(result.answer.leftOut).toEqual([".DS_Store", ".git/config", "notes.md", "run.php", "shortcut.html"]);
+		expect(result.answer.leftOut).toEqual([".DS_Store", ".git/config", "notes.bak", "run.php", "shortcut.html"]);
+	});
+
+	it("publishes expanded static web file types including wasm, glb, gltf, vtt, md, rss, and atom", async () => {
+		const f = await fixture({
+			"product/webshop/index.html": "<h1>App</h1>",
+			"product/webshop/engine.wasm": new Uint8Array([0, 97, 115, 109]),
+			"product/webshop/scene.glb": new Uint8Array([103, 108, 84, 70]),
+			"product/webshop/scene.gltf": '{"asset":{"version":"2.0"}}',
+			"product/webshop/captions.vtt": "WEBVTT\n\n00:00.000 --> 00:01.000\nHello",
+			"product/webshop/docs.md": "# Documentation",
+			"product/webshop/feed.rss": "<rss version='2.0'/>",
+			"product/webshop/feed.atom": "<feed xmlns='http://www.w3.org/2005/Atom'/>",
+		});
+		const result = outcome(
+			await f.boundary.invoke("call_mime", "qorpera", "publish_site", {
+				slug: "wristband-shop",
+				source: "product/webshop",
+			}),
+		);
+		expect(result.status, result.text).toBe("ok");
+		const [begin] = f.calls("qorpera_site_publish_begin") as Array<{ p_request: { files: { path: string }[] } }>;
+		expect(begin?.p_request.files.map((file) => file.path).sort()).toEqual([
+			"captions.vtt",
+			"docs.md",
+			"engine.wasm",
+			"feed.atom",
+			"feed.rss",
+			"index.html",
+			"scene.glb",
+			"scene.gltf",
+		]);
+		expect(result.answer.leftOut).toBeUndefined();
 	});
 
 	it("relays the database's refusal of the check before the review", async () => {
@@ -1073,7 +1181,7 @@ describe("share_app", () => {
 
 	it("is registered beside publish_site, with a description that says when to use it", async () => {
 		const { tools } = await fixture({});
-		expect(tools.map((tool) => tool.name)).toEqual(["publish_site", "unpublish_site", "share_app"]);
+		expect(tools.map((tool) => tool.name)).toEqual(["publish_site", "unpublish_site", "share_app", "manage_site"]);
 		const share = tools.find((tool) => tool.name === "share_app")!;
 		expect(share.description).toContain("always-on");
 		expect(share.description).toContain("/company/code/<owner>/<name>/worktrees/<workerId>");
@@ -1081,6 +1189,10 @@ describe("share_app", () => {
 		expect(share.description).toContain("The platform starts the link program");
 		expect(share.description).toContain("only that program can use it again");
 		expect(share.description).toContain("put the address in your message as a link");
+		expect(share.description).not.toContain("not WebSockets");
+		expect(share.description).toContain("WebSockets");
+		expect(share.description).toContain("SSE");
+		expect(share.description).toContain("company_member");
 		expect(Buffer.byteLength(share.description)).toBeLessThanOrEqual(4096);
 		// Sites left Settings for the apps drawer (9 November 2026); since site hosts (v247) the row under a message that
 		// links a site copies its password too (web #1848).
@@ -1111,5 +1223,192 @@ describe("share_app", () => {
 				.properties.slug.description;
 		expect(slug("publish_site")).toBe(`The name in its address, https://<slug>.qorpera.com/. ${SITE_NAME_RULE}`);
 		expect(slug("share_app")).toBe(`The name in its address, https://<slug>-preview.qorpera.com/. ${SITE_NAME_RULE}`);
+	});
+});
+
+describe("manage_site", () => {
+	it("lists retained versions without triggering an action review", async () => {
+		const f = await fixture({});
+		const result = outcome(
+			await f.boundary.invoke("call_list", "qorpera", "manage_site", {
+				action: "list_versions",
+				slug: "wristband-shop",
+			}),
+		);
+		expect(result.status, result.text).toBe("ok");
+		expect(f.reviewed).toEqual([]);
+		expect(f.calls("qorpera_site_agent_list_versions")).toEqual([{ p_binding: f.binding, p_slug: "wristband-shop" }]);
+		expect(result.answer).toMatchObject({
+			schema: "qorpera.site-versions/v1",
+			slug: "wristband-shop",
+			kind: "files",
+		});
+		expect(result.answer.versions).toHaveLength(1);
+	});
+
+	it("reviews rollback as an outside effect and activates the requested version atomically", async () => {
+		const targetVersion = randomUUID();
+		const f = await fixture({});
+		const result = outcome(
+			await f.boundary.invoke("call_rb", "qorpera", "manage_site", {
+				action: "rollback",
+				slug: "wristband-shop",
+				versionId: targetVersion,
+			}),
+		);
+		expect(result.status, result.text).toBe("ok");
+		expect(f.reviewed).toEqual([{ action: "rollback", slug: "wristband-shop", versionId: targetVersion }]);
+		expect(f.calls("qorpera_site_agent_activate_version")).toEqual([
+			{ p_binding: f.binding, p_slug: "wristband-shop", p_version_id: targetVersion },
+		]);
+		expect(result.answer).toMatchObject({
+			schema: "qorpera.site-version-activate/v1",
+			slug: "wristband-shop",
+			versionId: targetVersion,
+		});
+	});
+
+	it("queries structured app_logs with grep, tail, stream, since, and crashSummary", async () => {
+		const crashSummary = {
+			schema: "qorpera.machine-app-crash/v1",
+			slug: "saml-shop",
+			oomKilled: true,
+			oomKill: 1,
+			exitCode: 137,
+			signal: "SIGKILL",
+			restartCount: 2,
+			lastStderrLines: ["Fatal JavaScript out of memory"],
+		};
+		const f = await fixture(
+			{},
+			{
+				siteVersions: {
+					kind: "app",
+					machine: "shop-server",
+					machineId: MACHINE_IDS["shop-server"],
+					port: 3000,
+					appAuthMode: "company_member",
+					url: APP_URL_OF("saml-shop"),
+					currentVersionId: null,
+					versions: [],
+				},
+				appLogs: {
+					lines: [
+						{ ts: "2026-11-22T06:50:00.000Z", seq: 42, stream: "stderr", line: "ERROR: OOM near heap limit" },
+					],
+					totalMatched: 1,
+					truncated: false,
+					crashSummary,
+				},
+			},
+		);
+		const result = outcome(
+			await f.boundary.invoke("call_logs", "qorpera", "manage_site", {
+				action: "app_logs",
+				slug: "saml-shop",
+				grep: "OOM",
+				tail: 50,
+				stream: "stderr",
+				since: "2026-11-22T06:00:00Z",
+			}),
+		);
+		expect(result.status, result.text).toBe("ok");
+		expect(f.reviewed).toEqual([]);
+		expect(f.appLogs).toHaveBeenCalledTimes(1);
+		expect(f.appLogs.mock.calls[0]?.[0]).toEqual({ machineId: MACHINE_IDS["shop-server"] });
+		expect(f.appLogs.mock.calls[0]?.[1]).toEqual({
+			slug: "saml-shop",
+			grep: "OOM",
+			tail: 50,
+			stream: "stderr",
+			since: "2026-11-22T06:00:00Z",
+		});
+		expect(result.answer).toEqual({
+			schema: "qorpera.site-app-logs/v1",
+			slug: "saml-shop",
+			machine: "shop-server",
+			port: 3000,
+			lines: [{ ts: "2026-11-22T06:50:00.000Z", seq: 42, stream: "stderr", line: "ERROR: OOM near heap limit" }],
+			totalMatched: 1,
+			truncated: false,
+			crashSummary,
+		});
+	});
+
+	it("refuses app_logs for static sites, missing machines, unavailable gateway, or stopped machines", async () => {
+		const staticSite = await fixture({});
+		const notApp = outcome(
+			await staticSite.boundary.invoke("call_1", "qorpera", "manage_site", {
+				action: "app_logs",
+				slug: "wristband-shop",
+			}),
+		);
+		expect(notApp.status).toBe("denied");
+		expect(notApp.text).toContain("REFUSED: APP_SITE_REQUIRED");
+
+		const stopped = await fixture(
+			{},
+			{
+				siteVersions: {
+					kind: "app",
+					machine: "shop-server",
+					machineId: MACHINE_IDS["shop-server"],
+					port: 3000,
+					versions: [],
+				},
+				appLogs: "MACHINE_NOT_RUNNING",
+			},
+		);
+		const stoppedResult = outcome(
+			await stopped.boundary.invoke("call_2", "qorpera", "manage_site", {
+				action: "app_logs",
+				slug: "saml-shop",
+			}),
+		);
+		expect(stoppedResult.status).toBe("denied");
+		expect(stoppedResult.text).toContain("REFUSED: MACHINE_NOT_RUNNING");
+
+		const noGateway = await fixture(
+			{},
+			{
+				siteVersions: {
+					kind: "app",
+					machine: "shop-server",
+					machineId: MACHINE_IDS["shop-server"],
+					port: 3000,
+					versions: [],
+				},
+				appLogs: "unavailable",
+			},
+		);
+		const unavailableResult = outcome(
+			await noGateway.boundary.invoke("call_3", "qorpera", "manage_site", {
+				action: "app_logs",
+				slug: "saml-shop",
+			}),
+		);
+		expect(unavailableResult.status).toBe("denied");
+		expect(unavailableResult.text).toContain("REFUSED: APP_LOGS_UNAVAILABLE");
+	});
+
+	it.each([
+		["unknown action", { action: "delete", slug: "wristband-shop" }],
+		["bad slug", { action: "list_versions", slug: "../x" }],
+		["list_versions with versionId", { action: "list_versions", slug: "wristband-shop", versionId: randomUUID() }],
+		["rollback without versionId", { action: "rollback", slug: "wristband-shop" }],
+		["rollback with non-uuid versionId", { action: "rollback", slug: "wristband-shop", versionId: "v1" }],
+		["rollback with grep", { action: "rollback", slug: "wristband-shop", versionId: randomUUID(), grep: "err" }],
+		["app_logs with versionId", { action: "app_logs", slug: "saml-shop", versionId: randomUUID() }],
+		["app_logs with tail 0", { action: "app_logs", slug: "saml-shop", tail: 0 }],
+		["app_logs with tail 501", { action: "app_logs", slug: "saml-shop", tail: 501 }],
+		["app_logs with bad stream", { action: "app_logs", slug: "saml-shop", stream: "stdin" }],
+		["app_logs with bad since", { action: "app_logs", slug: "saml-shop", since: "not-a-date" }],
+		["app_logs with multiline grep", { action: "app_logs", slug: "saml-shop", grep: "a\nb" }],
+	])("refuses invalid manage_site arguments (%s) without calling the cloud", async (_label, args) => {
+		const f = await fixture({});
+		const result = outcome(await f.boundary.invoke("bad", "qorpera", "manage_site", args));
+		expect(result.status).toBe("denied");
+		expect(result.text).toMatch(/^INVALID_ARGUMENTS/);
+		expect(f.call).not.toHaveBeenCalled();
 	});
 });

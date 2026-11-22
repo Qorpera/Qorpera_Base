@@ -121,6 +121,7 @@ const INDEX_LINES: Readonly<Record<string, string>> = {
 	publish_site: "publish a static website from the company folder at a private link",
 	unpublish_site: "take a website or app link offline",
 	share_app: "share a server app on a machine at a private link",
+	manage_site: "list site versions, roll back a static site, or query structured app logs",
 	update_memory: "write a fact in your notebook",
 	search_skills: "search the skill libraries",
 	update_skill: "save, change or delete a skill",

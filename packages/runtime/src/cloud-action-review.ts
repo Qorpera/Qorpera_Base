@@ -368,6 +368,8 @@ export function cloudActionEffect(
 		// app link goes off and its visitors' sessions end.
 		case "unpublish_site":
 			return "destructive";
+		case "manage_site":
+			return args.action === "rollback" ? "external" : "read";
 		// A new hook or mailbox lets the outside reach the company (E3a); pausing or resuming one only changes what the
 		// company takes in. Removing one ends it for good, and a removed mailbox's address is free for any company.
 		case "manage_hook":
@@ -1101,6 +1103,14 @@ export function describeCloudAction(
 		add(
 			"effect",
 			"Its link stops working. A website's published copy and password are deleted, and its files stay in the company folder; an app link keeps its password for its next share, and the app keeps running on its machine",
+		);
+	} else if (tool.name === "manage_site") {
+		title = "Roll back a company website to a previous version";
+		target = text(args.slug) || null;
+		add("version", args.versionId);
+		add(
+			"effect",
+			"Switches the live website immediately back to the selected previously published version and keeps the current version in version history",
 		);
 	} else if (tool.name === "company_account") {
 		title =

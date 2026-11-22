@@ -154,6 +154,8 @@ const PERMITTED_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_site_unpublish",
 	"qorpera_site_share_check",
 	"qorpera_site_share_app",
+	"qorpera_site_agent_list_versions",
+	"qorpera_site_agent_activate_version",
 ]);
 
 /** No end-user token, arbitrary URL, redirect, provider credential or retry. */

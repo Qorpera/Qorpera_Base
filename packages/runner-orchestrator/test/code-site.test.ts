@@ -56,8 +56,17 @@ const SITES_SQL = readFileSync(
 	new URL("../../../supabase/migrations/20260930550000_company_sites.sql", import.meta.url),
 	"utf8",
 );
-/** One body of a function of the sites' migration. */
 const sqlFunction = (name: string) => {
+	const folder = new URL("../../../supabase/migrations/", import.meta.url);
+	const pattern = new RegExp(`create(?: or replace)? function public\\.${name}\\(`);
+	const files = readdirSync(folder)
+		.filter((fileName) => fileName.endsWith(".sql"))
+		.sort();
+	for (let index = files.length - 1; index >= 0; index -= 1) {
+		const text = readFileSync(new URL(files[index], folder), "utf8");
+		const match = pattern.exec(text);
+		if (match) return text.slice(match.index, text.indexOf("$$;", match.index));
+	}
 	const start = SITES_SQL.indexOf(`create function public.${name}(`);
 	return SITES_SQL.slice(start, SITES_SQL.indexOf("$$;", start));
 };
@@ -83,12 +92,15 @@ const RESERVED_SQL = () => {
 };
 
 describe("the site's rules, as the database's", () => {
-	it("serves exactly the 30 extensions qorpera_site_content_type maps, and its path rule", () => {
+	it("serves exactly the 37 extensions qorpera_site_content_type maps, and its path rule", () => {
 		const mapped = [...sqlFunction("qorpera_site_content_type").matchAll(/when '([a-z0-9]+)' then/g)].map(
 			(m) => m[1],
 		);
-		expect(mapped).toHaveLength(30);
+		expect(mapped).toHaveLength(37);
 		expect([...CODE_SITE_EXTENSIONS].sort()).toEqual([...mapped].sort());
+		for (const ext of ["wasm", "glb", "gltf", "vtt", "md", "rss", "atom"]) {
+			expect(CODE_SITE_EXTENSIONS).toContain(ext);
+		}
 		const rule = /p_path ~ '([^']+)'/.exec(sqlFunction("qorpera_site_path_valid"))?.[1];
 		expect(CODE_SITE_PATH.source.replaceAll("\\/", "/")).toBe(rule);
 		expect(sqlFunction("qorpera_site_path_valid")).toContain("char_length(p_path) <= 512");
@@ -207,7 +219,20 @@ const problem = (code: CodeSiteProblem["code"], path: string | null = null): Cod
 
 describe("the tree's rules (codeSiteTreeProblem), for the upload pass", () => {
 	it("takes a site and names the first problem in C order, a rule at a time", () => {
-		expect(codeSiteTreeProblem([file("index.html"), file("a/b.css"), file("A.JS")])).toBeNull();
+		expect(
+			codeSiteTreeProblem([
+				file("index.html"),
+				file("a/b.css"),
+				file("A.JS"),
+				file("engine.wasm"),
+				file("model.glb"),
+				file("scene.gltf"),
+				file("subs.vtt"),
+				file("docs/readme.md"),
+				file("feed.rss"),
+				file("feed.atom"),
+			]),
+		).toBeNull();
 		expect(codeSiteTreeProblem([file("a.css")])).toEqual(problem("SITE_NO_INDEX"));
 		expect(codeSiteTreeProblem([file("x/index.html")])).toEqual(problem("SITE_NO_INDEX"));
 		expect(codeSiteTreeProblem([])).toEqual(problem("SITE_NO_INDEX"));
@@ -216,7 +241,7 @@ describe("the tree's rules (codeSiteTreeProblem), for the upload pass", () => {
 			file("index.html", 1, "160000"),
 			file(".well-known/a.json"),
 			file("a b.html"),
-			file("notes.md"),
+			file("notes.bak"),
 			file("LICENSE"),
 			file("-a.js"),
 		])
@@ -770,7 +795,7 @@ describe("the collect on the machine", { timeout: 120_000 }, () => {
 			".env": "SECRET=1\n",
 			".cache/x.js": "hidden\n",
 			"a/.hidden/y.css": "hidden\n",
-			"notes.md": "not served\n",
+			"notes.bak": "not served\n",
 			"server.php": "<?php\n",
 			LICENSE: "no extension\n",
 			"x.tar.gz": "gz",
@@ -1338,7 +1363,7 @@ describe("the collect's rules on the machine, as the tree's", { timeout: 180_000
 			"js/app.js": `const key = "${value}";\n`,
 			"a.txt": `before\n${multiline}after\n`,
 			".env": "HIDDEN_ONLY_VALUE=yes\n",
-			"notes.md": "UNSERVED_VALUE_HERE\n",
+			"notes.bak": "UNSERVED_VALUE_HERE\n",
 			"b.txt": "short 1234567 seven\n",
 		};
 		const names = "UNSET_NAME 1BAD HIDDEN HIDDEN_FILE NOT_SERVED SEVEN MULTI STRIPE_KEY";

@@ -150,7 +150,9 @@ export type CloudCompanyPathRpc =
 	| "qorpera_site_unpublish"
 	// Private app links (v195, 20260930562000): the check before the review, and the share with its one-time claim.
 	| "qorpera_site_share_check"
-	| "qorpera_site_share_app";
+	| "qorpera_site_share_app"
+	| "qorpera_site_agent_list_versions"
+	| "qorpera_site_agent_activate_version";
 
 /** Service-only transport. Never exposed as an arbitrary RPC tool. */
 export interface CloudCompanyPathControl {

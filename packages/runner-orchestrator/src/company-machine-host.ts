@@ -1063,6 +1063,68 @@ export interface CompanyMachineCommandAuthority {
 	/** Why the machine lost the command, when SQL ended it lost for the machine's folder (6e-2a): a key of CLOUD_MACHINE_FOLDER_LOST. */
 	folderLost?: string | null;
 }
+
+export interface CompanyMachineAppAuthority {
+	readonly machineId: string;
+	readonly placementId: string;
+	readonly bootId?: string | null;
+	readonly runId?: string;
+}
+
+export interface CompanyMachineAppHealthResult {
+	readonly schema: "qorpera.machine-app-health/v1";
+	readonly slug: string;
+	readonly unit: string;
+	readonly activeState: string;
+	readonly subState: string;
+	readonly restarts: number;
+	readonly port: number | null;
+	readonly healthy: boolean;
+	readonly lastStatus: number | null;
+	readonly lastLatencyMs: number | null;
+	readonly crashSummary: Record<string, unknown> | null;
+}
+
+export interface CompanyMachineAppReloadRequest {
+	readonly slug: string;
+	readonly port?: number;
+	readonly healthPath?: string;
+}
+
+export interface CompanyMachineAppReloadResult {
+	readonly schema: "qorpera.machine-app-reload/v1";
+	readonly slug: string;
+	readonly previousPort: number | null;
+	readonly activePort: number;
+	readonly healthy: boolean;
+	readonly restarted: boolean;
+}
+
+export interface CompanyMachineAppLogsRequest {
+	readonly slug: string;
+	readonly grep?: string;
+	readonly tail?: number;
+	readonly stream?: "stdout" | "stderr" | "all";
+	readonly since?: string;
+}
+
+export interface CompanyMachineAppLogLine {
+	readonly ts: string;
+	readonly seq: number;
+	readonly stream: "stdout" | "stderr";
+	readonly line: string;
+}
+
+export interface CompanyMachineAppLogsResult {
+	readonly schema: "qorpera.machine-app-logs/v1";
+	readonly slug: string;
+	readonly lines: readonly CompanyMachineAppLogLine[];
+	readonly totalMatched: number;
+	readonly truncated: boolean;
+	readonly crashSummary: Record<string, unknown> | null;
+}
+
+const APP_SLUG = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
 /** save_coding_value's run on a machine of this node (20260930705000), as SQL authorized it
  * (qorpera_authorize_machine_coding_value): where it runs, and the helper's target, given to the helper as SQL wrote it. */
 export interface CompanyMachineCodingValue {
@@ -5013,9 +5075,166 @@ export class LxdCompanyMachineHost {
 				: HELD.untaken;
 		}
 	}
-	/** A start waits for its boot's folder to settle (opened and handed over, or known to be none), for at most 20 s
-	 * (the gateway's request is bounded at 30 s): a boot still unsettled refuses the start, which so never runs
-	 * unfenced, and so does a boot whose folder ended (its guest restarts, or its placement was retired, 6d-2). */
+	async appHealth(
+		authority: CompanyMachineAppAuthority,
+		slug: string,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAppHealthResult> {
+		if (!UUID.test(authority.machineId) || !UUID.test(authority.placementId) || !APP_SLUG.test(slug))
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		const value = await this.#runAppGuestCommand(authority.placementId, ["app-health", slug], null, signal);
+		if (
+			value.schema !== "qorpera.machine-app-health/v1" ||
+			value.slug !== slug ||
+			typeof value.unit !== "string" ||
+			typeof value.activeState !== "string" ||
+			typeof value.subState !== "string" ||
+			!Number.isSafeInteger(value.restarts) ||
+			typeof value.healthy !== "boolean"
+		)
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		return value as unknown as CompanyMachineAppHealthResult;
+	}
+
+	async appReload(
+		authority: CompanyMachineAppAuthority,
+		request: CompanyMachineAppReloadRequest,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAppReloadResult> {
+		if (!UUID.test(authority.machineId) || !UUID.test(authority.placementId) || !APP_SLUG.test(request.slug))
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		if (request.port !== undefined && (!Number.isInteger(request.port) || request.port < 1 || request.port > 65535))
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		if (
+			request.healthPath !== undefined &&
+			(typeof request.healthPath !== "string" ||
+				(request.healthPath !== "" &&
+					(!request.healthPath.startsWith("/") ||
+						request.healthPath.length > 256 ||
+						/[\x00-\x1f\x7f\s]/.test(request.healthPath))))
+		)
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		const hasOptions = request.port !== undefined || request.healthPath !== undefined;
+		const payload = hasOptions
+			? {
+					...(request.port !== undefined ? { port: request.port } : {}),
+					...(request.healthPath !== undefined ? { healthPath: request.healthPath } : {}),
+				}
+			: null;
+		const value = await this.#runAppGuestCommand(
+			authority.placementId,
+			["app-reload", request.slug],
+			payload,
+			signal,
+		);
+		if (
+			value.schema !== "qorpera.machine-app-reload/v1" ||
+			value.slug !== request.slug ||
+			!Number.isInteger(value.activePort) ||
+			typeof value.healthy !== "boolean" ||
+			typeof value.restarted !== "boolean"
+		)
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		return value as unknown as CompanyMachineAppReloadResult;
+	}
+
+	async appLogs(
+		authority: CompanyMachineAppAuthority,
+		request: CompanyMachineAppLogsRequest,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAppLogsResult> {
+		if (!UUID.test(authority.machineId) || !UUID.test(authority.placementId) || !APP_SLUG.test(request.slug))
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		if (request.stream !== undefined && !["stdout", "stderr", "all"].includes(request.stream))
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		if (request.tail !== undefined && (!Number.isInteger(request.tail) || request.tail < 1 || request.tail > 500))
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		if (request.grep !== undefined && (typeof request.grep !== "string" || request.grep.length > 256))
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		if (
+			request.since !== undefined &&
+			(typeof request.since !== "string" || request.since.length > 64 || Number.isNaN(Date.parse(request.since)))
+		)
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		const folder = this.#options.folder;
+		if (folder) {
+			const f = this.#folders.get(authority.placementId);
+			const boot = f?.bootId === authority.bootId ? f : undefined;
+			const at: FolderRelease = {
+				placementId: authority.placementId,
+				bootId: authority.bootId ?? undefined,
+				runId: authority.runId,
+			};
+			const already = this.#heldAlready(at, boot);
+			if (already !== undefined) throw new Error("COMPANY_MACHINE_FOLDER_HELD");
+			const heldBack = await this.#release(folder, at, boot, BOUNDARY_MS, signal);
+			if (heldBack !== undefined) throw new Error("COMPANY_MACHINE_FOLDER_HELD");
+		}
+		const payload = {
+			...(request.grep !== undefined ? { grep: request.grep } : {}),
+			...(request.tail !== undefined ? { tail: request.tail } : {}),
+			...(request.stream !== undefined ? { stream: request.stream } : {}),
+			...(request.since !== undefined ? { since: request.since } : {}),
+		};
+		const value = await this.#runAppGuestCommand(authority.placementId, ["app-logs", request.slug], payload, signal);
+		if (
+			value.schema !== "qorpera.machine-app-logs/v1" ||
+			value.slug !== request.slug ||
+			!Array.isArray(value.lines) ||
+			!Number.isSafeInteger(value.totalMatched) ||
+			typeof value.truncated !== "boolean"
+		)
+			throw new Error("COMPANY_MACHINE_APP_INVALID");
+		return value as unknown as CompanyMachineAppLogsResult;
+	}
+
+	async #runAppGuestCommand(
+		placementId: string,
+		commandArgs: readonly string[],
+		inboxPayload: Record<string, unknown> | null,
+		signal: AbortSignal,
+	): Promise<Record<string, unknown>> {
+		const name = lxdCompanyMachineName(placementId);
+		const nonce = randomUUID();
+		const args = [...commandArgs];
+		if (inboxPayload !== null) {
+			const inboxId = randomUUID();
+			await this.#options.client.pushInstanceFile(
+				this.#policy.project,
+				name,
+				`${PATHS.state}/inbox/${inboxId}.json`,
+				JSON.stringify(inboxPayload),
+				0o400,
+				signal,
+			);
+			args.push(inboxId);
+		}
+		await this.#options.client.execInstance(
+			this.#policy.project,
+			name,
+			["/usr/bin/node", PATHS.helper, nonce, ...args],
+			signal,
+		);
+		const file = await this.#options.client.readInstanceFile(
+			this.#policy.project,
+			name,
+			`${PATHS.runtime}/replies/${nonce}.json`,
+			65536,
+			signal,
+		);
+		const value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(file.content)) as Record<
+			string,
+			unknown
+		>;
+		if (value?.schema === "qorpera.machine-guest-refusal/v1")
+			throw new Error(
+				typeof value.code === "string" && /^[A-Z][A-Z0-9_:]{2,120}$/.test(value.code)
+					? value.code
+					: "MACHINE_GUEST_REFUSED",
+			);
+		return value;
+	}
+
 	async #settled(
 		authority: Pick<CompanyMachineCommandAuthority, "placementId" | "bootId">,
 		signal: AbortSignal,

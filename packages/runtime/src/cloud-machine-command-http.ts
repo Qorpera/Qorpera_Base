@@ -693,7 +693,30 @@ export function cloudMachineVaultWords(value: unknown): string | undefined {
 		: undefined;
 }
 
-/** Host-side: the fixed gateway to the executor of the machine's node. */
+export interface CloudMachineAppLogsInput {
+	readonly slug: string;
+	readonly grep?: string;
+	readonly tail?: number;
+	readonly stream?: "stdout" | "stderr" | "all";
+	readonly since?: string;
+}
+
+export interface CloudMachineAppLogEntry {
+	readonly ts: string;
+	readonly seq: number;
+	readonly stream: "stdout" | "stderr";
+	readonly line: string;
+}
+
+export interface CloudMachineAppLogsAnswer {
+	readonly schema: "qorpera.machine-app-logs/v1";
+	readonly slug: string;
+	readonly lines: readonly CloudMachineAppLogEntry[];
+	readonly totalMatched: number;
+	readonly truncated: boolean;
+	readonly crashSummary: Record<string, unknown> | null;
+}
+
 export interface CloudMachineCommandGateway {
 	start(
 		scope: CloudMachineCommandScope,
@@ -729,6 +752,11 @@ export interface CloudMachineCommandGateway {
 		input: CloudMachineScreenInput,
 		signal: AbortSignal,
 	): Promise<CloudMachineScreenAnswer>;
+	appLogs?(
+		scope: CloudMachineCommandScope,
+		input: CloudMachineAppLogsInput,
+		signal: AbortSignal,
+	): Promise<CloudMachineAppLogsAnswer>;
 }
 
 /** How long a wake with `wait` stays open at the executor, well inside the gateway's and the client's bounds. */

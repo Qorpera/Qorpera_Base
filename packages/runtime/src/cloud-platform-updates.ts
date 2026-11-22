@@ -279,6 +279,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Higher parallel worker limits per member",
 		text: "Operators can now raise the global or per-member Claude Code parallel worker limit up to 64 (the default stays unchanged until raised), and extra workers wait in the queue until a slot frees. Split work into as many independent parallel workers or coding sessions as the task benefits from rather than assuming a fixed cap of four; coding sessions automatically spread across additional machines when one is busy.",
 	},
+	{
+		id: "app-relay-streaming-and-site-rollbacks",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "App link WebSockets, SSE streaming, logs and site rollbacks",
+		text: "Shared app links (share_app) now carry HTTP, long-lived SSE streaming and WebSockets cleanly with per-stream flow control, active health probing, zero-downtime swaps, and password, company-member or public auth modes. Static websites published with publish_site now keep their last ten versions and accept WebAssembly, glTF/GLB, WebVTT, Markdown, and RSS/Atom files. Use manage_site to list retained versions, roll back a static site atomically, or query structured app logs and crash summaries.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
