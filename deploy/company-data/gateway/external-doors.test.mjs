@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
@@ -20,6 +20,7 @@ import {
 	parsePublicConfig,
 	serve,
 	serveRuns,
+	startWatcher,
 	TEST_SCHEMA_NAME,
 } from "./gateway.mjs";
 
@@ -394,6 +395,168 @@ describe("parsePublicConfig and DataChangeNotifier", () => {
 			wakeServer.close();
 			wakeServer.closeAllConnections?.();
 			rmSync(dirRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("coalesces in-flight trigger wakes, caps wake dispatcher concurrency, coalesces public reader calls, skips FIFOs, decouples watcher housekeeping, and bounds pending test reservations", async () => {
+		const notifier = new DataChangeNotifier();
+		let inFlight = 0;
+		let peakInFlight = 0;
+		const wakeBatches = [];
+		let releaseFirst;
+		const firstStarted = new Promise((resolve) => {
+			notifier.register({
+				id: "slow-wake",
+				environmentId: "env-inflight",
+				database: "shop",
+				minIntervalMs: 15,
+				onWake: async (ev) => {
+					inFlight++;
+					peakInFlight = Math.max(peakInFlight, inFlight);
+					wakeBatches.push(ev.tables);
+					if (wakeBatches.length === 1) {
+						resolve();
+						await new Promise((done) => {
+							releaseFirst = done;
+						});
+					}
+					inFlight--;
+				},
+			});
+		});
+		notifier.notify("env-inflight", { schema: "shop", table: "orders" });
+		await firstStarted;
+		notifier.notify("env-inflight", { schema: "shop", table: "items" });
+		notifier.notify("env-inflight", { schema: "shop", table: "payments" });
+		await new Promise((r) => setTimeout(r, 40));
+		assert.equal(wakeBatches.length, 1);
+		assert.equal(peakInFlight, 1);
+		releaseFirst();
+		for (let i = 0; i < 40 && wakeBatches.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+		assert.equal(wakeBatches.length, 2);
+		assert.deepEqual([...wakeBatches[1]].sort(), ["items", "payments"]);
+		assert.equal(peakInFlight, 1);
+		notifier.notifyTrigger("slow-wake", "*");
+		for (let i = 0; i < 40 && wakeBatches.length < 3; i++) await new Promise((r) => setTimeout(r, 10));
+		assert.equal(wakeBatches.length, 3);
+		assert.deepEqual(wakeBatches[2], ["*"]);
+		notifier.close();
+
+		let activeDispatches = 0;
+		let peakDispatches = 0;
+		const dispatchErrors = [];
+		const releases = [];
+		const boundedDispatch = createTriggerWakeDispatcher({
+			url: "http://127.0.0.1:9/wake",
+			maxConcurrent: 2,
+			maxQueued: 2,
+			fetch: async () => {
+				activeDispatches++;
+				peakDispatches = Math.max(peakDispatches, activeDispatches);
+				await new Promise((done) => releases.push(done));
+				activeDispatches--;
+				return new Response('{"ok":true}', { status: 200 });
+			},
+			onError: (err) => dispatchErrors.push(err.message),
+		});
+		const calls = [];
+		for (let i = 0; i < 6; i++) calls.push(boundedDispatch({ id: `t-${i}` }));
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(peakDispatches, 2);
+		assert.equal(dispatchErrors.filter((m) => /queue is full/i.test(m)).length, 2);
+		while (releases.length > 0) {
+			releases.shift()();
+			await new Promise((r) => setTimeout(r, 5));
+		}
+		await Promise.all(calls);
+		assert.equal(peakDispatches, 2);
+
+		let readerFetchCalls = 0;
+		const sfEnv = randomUUID();
+		const sfReader = createHttpPublicReader({
+			url: "http://127.0.0.1:9/files",
+			cacheMs: 1_000,
+			fetch: async (_url, init) => {
+				readerFetchCalls++;
+				await new Promise((r) => setTimeout(r, 30));
+				const reqBody = JSON.parse(init.body);
+				return new Response(JSON.stringify({ files: Object.fromEntries(reqBody.paths.map((p) => [p, "select 1;\n"])) }), { status: 200 });
+			},
+		});
+		const parallelReads = await Promise.all(
+			Array.from({ length: 5 }, () => sfReader(sfEnv, ["data/shop/queries/q.sql", "data/shop/queries/q.sql"])),
+		);
+		assert.equal(readerFetchCalls, 1);
+		for (const map of parallelReads) assert.equal(map.get("data/shop/queries/q.sql"), "select 1;\n");
+
+		const fifoRoot = mkdtempSync(join(tmpdir(), "qorpera-pub-fifo-"));
+		try {
+			const fifoEnv = randomUUID();
+			mkdirSync(join(fifoRoot, fifoEnv, "data", "shop", "queries"), { recursive: true });
+			const fifoPath = join(fifoRoot, fifoEnv, "data", "shop", "queries", "pipe.sql");
+			execFileSync("mkfifo", [fifoPath]);
+			const dirReader = createDirectoryPublicReader({ rootDir: fifoRoot });
+			const fifoResult = await dirReader(fifoEnv, ["data/shop/queries/pipe.sql"]);
+			assert.equal(fifoResult.get("data/shop/queries/pipe.sql"), null);
+		} finally {
+			rmSync(fifoRoot, { recursive: true, force: true });
+		}
+
+		let fastLooks = 0;
+		let housekeeps = 0;
+		let releaseHousekeep;
+		const fakeGw = {
+			watchOnce: async ({ housekeeping }) => {
+				assert.equal(housekeeping, false);
+				fastLooks++;
+				return { ended: [], full: [], near: [], unforgotten: [], databases: ["c_0123456789abcdef0123456789abcdef"] };
+			},
+			housekeepOnce: async () => {
+				housekeeps++;
+				await new Promise((done) => {
+					releaseHousekeep = done;
+				});
+				return { unforgotten: [] };
+			},
+		};
+		const stopFakeWatcher = startWatcher(fakeGw, { everyMs: 20 });
+		try {
+			for (let i = 0; i < 40 && fastLooks < 3; i++) await new Promise((r) => setTimeout(r, 15));
+			assert.ok(fastLooks >= 3, `expected >= 3 fast watchOnce ticks while housekeeping is busy, got ${fastLooks}`);
+			assert.equal(housekeeps, 1);
+		} finally {
+			stopFakeWatcher();
+			releaseHousekeep?.();
+		}
+
+		const baseStore = { host: "127.0.0.1", port: 1, logins: { admin: "a", keeper: "k", watch: "w", folderKey: "0".repeat(64) } };
+		const reserveGw = new Gateway({
+			store: baseStore,
+			platform: {},
+			limits: { applyMs: 1_000 },
+			testSchemas: { reaper: false },
+		});
+		try {
+			const db = companyDatabase(randomUUID());
+			const schema = "qorpera_test_0123456789abcdef";
+			const now = Date.now();
+			const oneHourLater = now + 3_600_000;
+			await reserveGw.reserveTestSchema({
+				database: db,
+				schema,
+				environmentId: randomUUID(),
+				sourceDatabase: "shop",
+				ttlMs: 3_600_000,
+				createdAt: now,
+				expiresAt: oneHourLater,
+				readLive: false,
+			});
+			const pendingCheck = reserveGw.checkTestSchema(db, schema);
+			assert.ok(pendingCheck.expiresAt !== null && pendingCheck.expiresAt <= now + 30_000, "pending reservation must stay bounded");
+			reserveGw.touchTestSchema({ database: db, schema, expiresAt: oneHourLater, activate: true });
+			assert.equal(reserveGw.checkTestSchema(db, schema).expiresAt, oneHourLater);
+		} finally {
+			await reserveGw.close();
 		}
 	});
 });

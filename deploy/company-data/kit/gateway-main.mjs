@@ -295,6 +295,12 @@ try {
 					onTestSchemaDrop: (event) => {
 						if (process.connected) safeSend(process, { type: "testSchemaDrop", ...event });
 					},
+					onSchemaChange: (event) => {
+						if (process.connected) safeSend(process, { type: "schemaChange", ...event });
+					},
+					onMakeRoom: (event) => {
+						if (process.connected) safeSend(process, { type: "makeRoom", ...event });
+					},
 					onUnsettledTx: (database, txid) => {
 						if (process.connected) safeSend(process, { type: "unsettledTx", database, txid });
 					},
@@ -407,6 +413,20 @@ if (workerCount > 1 && cluster.isPrimary) {
 				}
 				return;
 			}
+			if (message?.type === "schemaChange" && typeof message.database === "string" && typeof message.schema === "string") {
+				gateway.notifySchemaChange(message.database, message.schema);
+				for (const peer of Object.values(cluster.workers ?? {})) {
+					if (peer && peer.id !== worker.id && peer.isConnected()) safeSend(peer, message);
+				}
+				return;
+			}
+			if (message?.type === "makeRoom" && typeof message.database === "string") {
+				void gateway.reclaimIdlePools(message.database);
+				for (const peer of Object.values(cluster.workers ?? {})) {
+					if (peer && peer.id !== worker.id && peer.isConnected()) safeSend(peer, message);
+				}
+				return;
+			}
 			if (message?.type === "drop") {
 				if (message.kind === "company" && typeof message.database === "string") void gateway.evictCompany(message.database);
 				else if (message.kind === "database" && typeof message.database === "string" && typeof message.schema === "string")
@@ -442,7 +462,9 @@ if (workerCount > 1 && cluster.isPrimary) {
 			stopping = true;
 			stopWatcher();
 			for (const timer of restartTimers) clearTimeout(timer);
-			gateway.close().finally(() => process.exit(1));
+			Promise.race([gateway.close().catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 5_000).unref?.())]).finally(() =>
+				process.exit(1),
+			);
 			return;
 		}
 		const delay = Math.min(5_000, 200 * 2 ** Math.min(5, crashTimes.length - 1));
@@ -473,8 +495,8 @@ if (workerCount > 1 && cluster.isPrimary) {
 					}),
 			),
 		);
-		await Promise.race([drained, new Promise((resolve) => setTimeout(resolve, 5_000))]);
-		await gateway.close();
+		await Promise.race([drained, new Promise((resolve) => setTimeout(resolve, 5_000).unref?.())]);
+		await Promise.race([gateway.close().catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 5_000).unref?.())]);
 		process.exit(0);
 	};
 	process.on("SIGTERM", stop);
@@ -486,6 +508,10 @@ if (workerCount > 1 && cluster.isPrimary) {
 			else if (message?.type === "signalled" && Array.isArray(message.pids)) gateway.noteSignalled(message.pids);
 			else if (message?.type === "testSchemaDrop" && typeof message.database === "string" && typeof message.schema === "string") {
 				void gateway.evictTestSchema(message.database, message.schema);
+			} else if (message?.type === "schemaChange" && typeof message.database === "string" && typeof message.schema === "string") {
+				gateway.notifySchemaChange(message.database, message.schema);
+			} else if (message?.type === "makeRoom" && typeof message.database === "string") {
+				void gateway.reclaimIdlePools(message.database);
 			} else if (message?.type === "triggerRpcReply" && typeof message.reqId === "string") {
 				const pending = pendingTriggerRpc.get(message.reqId);
 				if (!pending) return;
@@ -557,11 +583,13 @@ if (workerCount > 1 && cluster.isPrimary) {
 				one.close(() => resolve());
 			});
 		});
-		await Promise.race([Promise.all(closings), new Promise((resolve) => setTimeout(resolve, 4_000))]);
+		await Promise.race([Promise.all(closings), new Promise((resolve) => setTimeout(resolve, 4_000).unref?.())]);
 		for (const one of [server, runServer]) one?.closeAllConnections?.();
-		await gateway.close();
+		await Promise.race([gateway.close().catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 5_000).unref?.())]);
 		process.exit(0);
 	};
 	process.on("SIGTERM", stop);
 	process.on("SIGINT", stop);
+	// WHY: Drain and exit orphaned cluster workers promptly if the primary process terminates unexpectedly.
+	if (cluster.isWorker) process.on("disconnect", () => void stop());
 }

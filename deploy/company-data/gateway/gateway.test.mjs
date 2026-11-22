@@ -4307,4 +4307,78 @@ create trigger nap before update on slowed for each row execute function nap();
 			remove(ENV_A, "data/stepiso/queries/slow-watch.sql");
 		}
 	});
+
+	it("recovers from stale relation cache after peer ALTER TABLE, serializes concurrent live apply calls, and drops store-persisted test schemas on dropDatabase", async () => {
+		const companyDb = companyDatabase(ENV_A);
+		put(ENV_A, {
+			"data/clusterrace/database.toml": 'title = "Cluster Race"\n',
+			"data/clusterrace/tables/001-init.sql":
+				"create table items (id int primary key, title text not null);\ninsert into items values (1, 'alpha');\n",
+		});
+		const peerEvents = [];
+		const gwA = new Gateway({
+			store: { host: "127.0.0.1", port: storePort, logins },
+			platform: new Platform({ url: "http://platform", publishableKey: "publishable", fetch: platformFetch }),
+			limits: LIMITS_HERE,
+		});
+		const gwB = new Gateway({
+			store: { host: "127.0.0.1", port: storePort, logins },
+			platform: new Platform({ url: "http://platform", publishableKey: "publishable", fetch: platformFetch }),
+			limits: LIMITS_HERE,
+			onSchemaChange: (event) => peerEvents.push(event),
+		});
+		const ownerCaller = { userId: OWNER, key: `u:${OWNER}`, token: owner };
+		const viewerCaller = { userId: VIEWER, key: `u:${VIEWER}`, token: viewer };
+		const clusterTexts = () => Object.fromEntries([...FOLDERS[ENV_A].values()].map((t) => [sha256(t), t]));
+		try {
+			const [applyA, applyB] = await Promise.all([
+				gwA.apply(ownerCaller, ENV_A, { database: "clusterrace", texts: clusterTexts() }),
+				gwB.apply(ownerCaller, ENV_A, { database: "clusterrace", texts: clusterTexts() }),
+			]);
+			assert.equal(applyA.applied, true, JSON.stringify(applyA));
+			assert.equal(applyB.applied, true, JSON.stringify(applyB));
+			const states = [applyA.results[0].state, applyB.results[0].state].sort();
+			assert.deepEqual(states, ["already", "applied"]);
+
+			const beforePage = await gwA.rows(viewerCaller, ENV_A, {
+				database: "clusterrace",
+				table: "items",
+				texts: clusterTexts(),
+			});
+			assert.deepEqual(beforePage.columns, ["id", "title"]);
+			assert.equal(beforePage.rows.length, 1);
+
+			put(ENV_A, {
+				"data/clusterrace/tables/002-add-note.sql": "alter table items add column note text not null default 'fresh';\n",
+			});
+			const added = await gwB.apply(ownerCaller, ENV_A, { database: "clusterrace", texts: clusterTexts() });
+			assert.equal(added.applied, true, JSON.stringify(added));
+			assert.ok(peerEvents.some((ev) => ev.database === companyDb && ev.schema === "clusterrace"));
+
+			const afterPage = await gwA.rows(viewerCaller, ENV_A, {
+				database: "clusterrace",
+				table: "items",
+				texts: clusterTexts(),
+			});
+			assert.deepEqual(afterPage.columns, ["id", "title", "note"]);
+			assert.deepEqual(afterPage.rows[0].values, [1, "alpha", "fresh"]);
+
+			const createdTest = await gwB.createTestSchema(ownerCaller, ENV_A, {
+				database: "clusterrace",
+				texts: clusterTexts(),
+				ttlSeconds: 60,
+			});
+			assert.match(createdTest.schema, /^qorpera_test_[0-9a-f]{16}$/);
+			const dropped = await gwA.dropDatabase(ENV_A, "clusterrace");
+			assert.equal(dropped.dropped, true);
+			const remaining = await asAdmin(companyDb, "select nspname from pg_namespace where nspname = $1", [createdTest.schema]);
+			assert.equal(remaining.length, 0);
+		} finally {
+			await gwA.close();
+			await gwB.close();
+			remove(ENV_A, "data/clusterrace/database.toml");
+			remove(ENV_A, "data/clusterrace/tables/001-init.sql");
+			remove(ENV_A, "data/clusterrace/tables/002-add-note.sql");
+		}
+	});
 });

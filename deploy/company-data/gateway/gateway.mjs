@@ -45,6 +45,20 @@ const APPROX_BYTES = Symbol("approxBytes");
 const WATCH_CACHE_BYTES_TOTAL = 32 * 1024 * 1024;
 const TEXT_CACHE_BYTES_TOTAL = 32 * 1024 * 1024;
 const WATCH_QUERY_TIMEOUT_MS = 20_000;
+const ADMIN_QUERY_TIMEOUT_MS = 60_000;
+const POOL_END_TIMEOUT_MS = 5_000;
+const METADATA_CACHE_MAX = 5_000;
+
+function raceTimeout(promise, ms) {
+	return new Promise((resolve) => {
+		const timer = setTimeout(resolve, ms);
+		timer.unref?.();
+		Promise.resolve(promise).finally(() => {
+			clearTimeout(timer);
+			resolve();
+		});
+	});
+}
 
 async function withFetchTimeout(timeoutMs, use) {
 	const controller = new AbortController();
@@ -474,6 +488,7 @@ export class DataChangeNotifier {
 	#timers = new Map();
 	#lastFired = new Map();
 	#pending = new Map();
+	#inFlight = new Map();
 
 	register({ id, environmentId, database, tables = null, minIntervalMs = 60_000, onWake }) {
 		if (typeof id !== "string" || !id || typeof onWake !== "function") throw new Error("Invalid data-change trigger");
@@ -505,6 +520,7 @@ export class DataChangeNotifier {
 		this.#timers.delete(id);
 		this.#pending.delete(id);
 		this.#lastFired.delete(id);
+		this.#inFlight.delete(id);
 	}
 
 	notify(environmentId, notice) {
@@ -516,42 +532,74 @@ export class DataChangeNotifier {
 			if (this.#triggers.get(trigger.id) !== trigger) continue;
 			if (notice !== null && notice.schema !== trigger.database) continue;
 			if (notice !== null && notice.table !== null && trigger.tables && !trigger.tables.has(notice.table.toLowerCase())) continue;
-			const tableName = notice?.table ?? "*";
-			let batch = this.#pending.get(trigger.id);
-			if (!batch) {
-				batch = new Set();
-				this.#pending.set(trigger.id, batch);
-			}
-			batch.add(tableName);
-			const last = this.#lastFired.get(trigger.id);
-			const elapsed = last === undefined ? trigger.minIntervalMs : Math.max(0, now - last);
-			if (elapsed >= trigger.minIntervalMs) {
-				this.#flush(trigger);
-			} else if (!this.#timers.has(trigger.id)) {
-				const timer = setTimeout(() => {
-					this.#timers.delete(trigger.id);
-					if (this.#triggers.has(trigger.id)) this.#flush(trigger);
-				}, trigger.minIntervalMs - elapsed);
-				timer.unref?.();
-				this.#timers.set(trigger.id, timer);
-			}
+			this.#enqueue(trigger, notice?.table ?? "*", now);
+		}
+	}
+
+	notifyTrigger(id, tableName = "*") {
+		const trigger = this.#triggers.get(id);
+		if (!trigger) return;
+		this.#enqueue(trigger, tableName, performance.now());
+	}
+
+	#enqueue(trigger, tableName, now) {
+		let batch = this.#pending.get(trigger.id);
+		if (!batch) {
+			batch = new Set();
+			this.#pending.set(trigger.id, batch);
+		}
+		batch.add(tableName);
+		// WHY: Coalesce updates arriving while an onWake call is still running so slow webhooks cannot pile up concurrent wakes per trigger.
+		if (this.#inFlight.get(trigger.id) === trigger) return;
+		this.#scheduleOrFlush(trigger, now);
+	}
+
+	#scheduleOrFlush(trigger, now) {
+		const last = this.#lastFired.get(trigger.id);
+		const elapsed = last === undefined ? trigger.minIntervalMs : Math.max(0, now - last);
+		if (elapsed >= trigger.minIntervalMs) {
+			this.#flush(trigger);
+		} else if (!this.#timers.has(trigger.id)) {
+			const timer = setTimeout(() => {
+				this.#timers.delete(trigger.id);
+				if (this.#triggers.get(trigger.id) === trigger && this.#inFlight.get(trigger.id) !== trigger) {
+					this.#flush(trigger);
+				}
+			}, trigger.minIntervalMs - elapsed);
+			timer.unref?.();
+			this.#timers.set(trigger.id, timer);
 		}
 	}
 
 	#flush(trigger) {
+		if (this.#inFlight.get(trigger.id) === trigger) return;
 		const tables = [...(this.#pending.get(trigger.id) ?? [])];
 		this.#pending.delete(trigger.id);
 		if (tables.length === 0) return;
 		this.#lastFired.set(trigger.id, performance.now());
-		Promise.resolve(trigger.onWake({ id: trigger.id, environmentId: trigger.environmentId, database: trigger.database, tables, at: isoNow() })).catch(
-			() => undefined,
-		);
+		this.#inFlight.set(trigger.id, trigger);
+		let pending;
+		try {
+			pending = Promise.resolve(
+				trigger.onWake({ id: trigger.id, environmentId: trigger.environmentId, database: trigger.database, tables, at: isoNow() }),
+			);
+		} catch {
+			pending = Promise.resolve();
+		}
+		pending
+			.catch(() => undefined)
+			.finally(() => {
+				if (this.#inFlight.get(trigger.id) === trigger) this.#inFlight.delete(trigger.id);
+				if (this.#triggers.get(trigger.id) !== trigger) return;
+				if (this.#pending.has(trigger.id)) this.#scheduleOrFlush(trigger, performance.now());
+			});
 	}
 
 	close() {
 		for (const timer of this.#timers.values()) clearTimeout(timer);
 		this.#timers.clear();
 		this.#pending.clear();
+		this.#inFlight.clear();
 		this.#triggers.clear();
 		this.#byEnv.clear();
 		this.#lastFired.clear();
@@ -881,70 +929,98 @@ export function createHttpPublicReader({
 	const ttl = Number.isInteger(cacheMs) ? Math.max(0, Math.min(60_000, cacheMs)) : 0;
 	const timeout = Number.isInteger(timeoutMs) ? Math.max(500, Math.min(30_000, timeoutMs)) : 8_000;
 	const cache = new Map();
+	const inFlight = new Map();
 	return async (environmentId, paths) => {
 		if (!ENVIRONMENT.test(environmentId) || !Array.isArray(paths) || paths.length === 0) return new Map();
-		const validPaths = paths.filter((p) => typeof p === "string" && KEPT_PATH.test(p));
+		const validPaths = [...new Set(paths.filter((p) => typeof p === "string" && KEPT_PATH.test(p)))];
 		if (validPaths.length === 0) return new Map();
 		const result = new Map();
+		const waiting = [];
 		const missing = [];
 		const now = Date.now();
 		for (const p of validPaths) {
+			const cacheKey = `${environmentId}\0${p}`;
 			if (ttl > 0) {
-				const hit = cache.get(`${environmentId}\0${p}`);
+				const hit = cache.get(cacheKey);
 				if (hit && now - hit.at < ttl) {
+					cache.delete(cacheKey);
+					cache.set(cacheKey, hit);
 					result.set(p, hit.value);
 					continue;
 				}
 			}
+			const pending = inFlight.get(cacheKey);
+			if (pending) {
+				waiting.push([p, pending]);
+				continue;
+			}
 			missing.push(p);
 		}
-		if (missing.length === 0) return result;
-		const maxResponseBytes = Math.max(256 * 1024, missing.length * (maxBytes + 2048));
-		const parsed = await withFetchTimeout(timeout, async (signal) => {
-			let response;
-			try {
-				response = await fetch(endpoint, {
-					method: "POST",
-					headers: {
-						"content-type": "application/json",
-						...(token ? { authorization: `Bearer ${token}` } : {}),
-					},
-					body: JSON.stringify({ environmentId, paths: missing }),
-					redirect: "error",
-					signal,
-				});
-			} catch {
-				refuse(503, "Public data reader did not answer");
-			}
-			if (response.status === 404) {
-				void response.body?.cancel().catch(() => undefined);
-				return {};
-			}
-			if (!response.ok) {
-				void response.body?.cancel().catch(() => undefined);
-				refuse(503, "Public data reader refused the read");
-			}
-			const raw = await readBoundedResponseText(response, maxResponseBytes);
-			try {
-				const decoded = JSON.parse(raw);
-				if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+		if (missing.length > 0) {
+			const maxResponseBytes = Math.max(256 * 1024, missing.length * (maxBytes + 2048));
+			const batch = withFetchTimeout(timeout, async (signal) => {
+				let response;
+				try {
+					response = await fetch(endpoint, {
+						method: "POST",
+						headers: {
+							"content-type": "application/json",
+							...(token ? { authorization: `Bearer ${token}` } : {}),
+						},
+						body: JSON.stringify({ environmentId, paths: missing }),
+						redirect: "error",
+						signal,
+					});
+				} catch {
+					refuse(503, "Public data reader did not answer");
+				}
+				if (response.status === 404) {
+					void response.body?.cancel().catch(() => undefined);
+					return {};
+				}
+				if (!response.ok) {
+					void response.body?.cancel().catch(() => undefined);
+					refuse(503, "Public data reader refused the read");
+				}
+				const raw = await readBoundedResponseText(response, maxResponseBytes);
+				try {
+					const decoded = JSON.parse(raw);
+					if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+						refuse(503, "Public data reader returned an unreadable answer");
+					}
+					return decoded.files && typeof decoded.files === "object" && !Array.isArray(decoded.files) ? decoded.files : decoded;
+				} catch (error) {
+					if (error instanceof Refusal) throw error;
 					refuse(503, "Public data reader returned an unreadable answer");
 				}
-				return decoded.files && typeof decoded.files === "object" && !Array.isArray(decoded.files) ? decoded.files : decoded;
-			} catch (error) {
-				if (error instanceof Refusal) throw error;
-				refuse(503, "Public data reader returned an unreadable answer");
+			});
+			for (const p of missing) {
+				const cacheKey = `${environmentId}\0${p}`;
+				const entry = batch.then((parsed) => {
+					const val = Object.hasOwn(parsed, p) ? parsed[p] : null;
+					const safeVal = typeof val === "string" && Buffer.byteLength(val, "utf8") <= maxBytes ? val : null;
+					if (ttl > 0) {
+						cache.delete(cacheKey);
+						if (cache.size >= 1_024) cache.delete(cache.keys().next().value);
+						cache.set(cacheKey, { at: Date.now(), value: safeVal });
+					}
+					return safeVal;
+				});
+				entry.catch(() => undefined);
+				inFlight.set(cacheKey, entry);
+				waiting.push([
+					p,
+					entry.finally(() => {
+						if (inFlight.get(cacheKey) === entry) inFlight.delete(cacheKey);
+					}),
+				]);
 			}
-		});
-		const storedAt = Date.now();
-		for (const p of missing) {
-			const val = Object.hasOwn(parsed, p) ? parsed[p] : null;
-			const safeVal = typeof val === "string" && Buffer.byteLength(val, "utf8") <= maxBytes ? val : null;
-			result.set(p, safeVal);
-			if (ttl > 0) {
-				if (cache.size >= 1_024) cache.delete(cache.keys().next().value);
-				cache.set(`${environmentId}\0${p}`, { at: storedAt, value: safeVal });
-			}
+		}
+		if (waiting.length > 0) {
+			const resolved = await Promise.all(waiting.map(([, pending]) => pending));
+			waiting.forEach(([p], index) => {
+				result.set(p, resolved[index]);
+			});
 		}
 		return result;
 	};
@@ -956,6 +1032,7 @@ export function createDirectoryPublicReader({ rootDir, maxBytes = LIMITS.questio
 	}
 	const baseRoot = resolve(rootDir);
 	const noFollowFlag = fsConstants.O_NOFOLLOW ?? 0;
+	const nonBlockFlag = fsConstants.O_NONBLOCK ?? 0;
 	return async (environmentId, paths) => {
 		const result = new Map();
 		if (!ENVIRONMENT.test(environmentId) || !Array.isArray(paths) || paths.length === 0) return result;
@@ -984,7 +1061,8 @@ export function createDirectoryPublicReader({ rootDir, maxBytes = LIMITS.questio
 			}
 			let handle = null;
 			try {
-				handle = await open(fullPath, fsConstants.O_RDONLY | noFollowFlag);
+				// WHY: Include O_NONBLOCK so a FIFO in a public folder fails stat/isFile immediately instead of stalling open().
+				handle = await open(fullPath, fsConstants.O_RDONLY | noFollowFlag | nonBlockFlag);
 				const st = await handle.stat();
 				if (!st.isFile() || st.size > maxBytes) {
 					result.set(relPath, null);
@@ -1011,6 +1089,8 @@ export function createTriggerWakeDispatcher({
 	url,
 	token = null,
 	timeoutMs = 5_000,
+	maxConcurrent = 32,
+	maxQueued = 256,
 	fetch = globalThis.fetch,
 	onError = () => undefined,
 }) {
@@ -1019,7 +1099,34 @@ export function createTriggerWakeDispatcher({
 		throw new Error("Trigger wake token is invalid");
 	}
 	const timeout = Number.isInteger(timeoutMs) ? Math.max(500, Math.min(30_000, timeoutMs)) : 5_000;
+	const concurrency = Number.isInteger(maxConcurrent) ? Math.max(1, Math.min(256, maxConcurrent)) : 32;
+	const queueLimit = Number.isInteger(maxQueued) ? Math.max(0, Math.min(4_096, maxQueued)) : 256;
+	let active = 0;
+	const queue = [];
+	const acquire = () => {
+		if (active < concurrency) {
+			active++;
+			return Promise.resolve(true);
+		}
+		if (queue.length >= queueLimit) return Promise.resolve(false);
+		return new Promise((resolve) => {
+			queue.push(resolve);
+		});
+	};
+	const release = () => {
+		const next = queue.shift();
+		if (next) {
+			next(true);
+		} else {
+			active = Math.max(0, active - 1);
+		}
+	};
 	return async (event) => {
+		const acquired = await acquire();
+		if (!acquired) {
+			onError(new Error("Trigger wake queue is full"), event);
+			return;
+		}
 		try {
 			await withFetchTimeout(timeout, async (signal) => {
 				const response = await fetch(endpoint, {
@@ -1039,6 +1146,8 @@ export function createTriggerWakeDispatcher({
 			});
 		} catch (error) {
 			onError(error, event);
+		} finally {
+			release();
 		}
 	};
 }
@@ -1118,6 +1227,7 @@ function inTime(connecting, until) {
 			},
 			Math.max(0, until - Date.now()),
 		);
+		timer.unref?.();
 		connecting.then(
 			(client) => {
 				clearTimeout(timer);
@@ -1150,6 +1260,7 @@ export class Gateway {
 	#watchInFlight = new Map();
 	#tagSalt = randomBytes(16);
 	#schemaEpoch = new Map();
+	#schemaEpochSeq = 0;
 	#relations = new Map();
 	#prepared = new WeakMap();
 	#askPlans = new Map();
@@ -1170,6 +1281,8 @@ export class Gateway {
 	#beforeCancel;
 	#onAgentRead;
 	#onDrop;
+	#onSchemaChange;
+	#onMakeRoom;
 	#onUnsettledTx;
 	/** Backends that were sent a cancel, by pid, with when: such a backend's connection is never used again, since a
 	 * cancel that arrives late would stop whatever runs on it then. */
@@ -1234,6 +1347,8 @@ export class Gateway {
 		onAgentRead = () => undefined,
 		onDrop = () => undefined,
 		onTestSchemaDrop = () => undefined,
+		onSchemaChange = () => undefined,
+		onMakeRoom = () => undefined,
 		onUnsettledTx = null,
 	}) {
 		this.#store = store;
@@ -1299,7 +1414,32 @@ export class Gateway {
 		this.#onAgentRead = onAgentRead;
 		this.#onDrop = onDrop;
 		this.#onTestSchemaDrop = onTestSchemaDrop;
+		this.#onSchemaChange = onSchemaChange;
+		this.#onMakeRoom = onMakeRoom;
 		this.#onUnsettledTx = typeof onUnsettledTx === "function" ? onUnsettledTx : null;
+	}
+
+	#rememberMap(map, key, value, max = METADATA_CACHE_MAX) {
+		if (map.has(key)) map.delete(key);
+		else if (map.size >= max) map.delete(map.keys().next().value);
+		map.set(key, value);
+	}
+
+	#rememberSet(set, value, max = METADATA_CACHE_MAX) {
+		if (set.has(value)) set.delete(value);
+		else if (set.size >= max) set.delete(set.values().next().value);
+		set.add(value);
+	}
+
+	notifySchemaChange(database, schema) {
+		if (typeof database !== "string" || typeof schema !== "string") return;
+		if (TEST_SCHEMA_NAME.test(schema)) this.#bumpSchemaEpoch(database, schema);
+		else this.#notifySchema(database, schema);
+	}
+
+	reclaimIdlePools(database, asking = "") {
+		if (typeof database !== "string") return Promise.resolve();
+		return this.#makeRoomLocal(database, asking);
 	}
 
 	noteUnsettledTx(database, txid) {
@@ -1363,13 +1503,22 @@ export class Gateway {
 					keepAliveInitialDelayMillis: 10_000,
 					...(door === "qorpera_data_watch" || door === "qorpera_data_keeper"
 						? { query_timeout: WATCH_QUERY_TIMEOUT_MS, statement_timeout: WATCH_QUERY_TIMEOUT_MS }
-						: {}),
+						: door === "qorpera_data_admin"
+							? { query_timeout: ADMIN_QUERY_TIMEOUT_MS, statement_timeout: ADMIN_QUERY_TIMEOUT_MS }
+							: {}),
 					idleTimeoutMillis: kind === "o" || kind === "to" ? 1_000 : testKind ? 2_000 : 5_000,
 					connectionTimeoutMillis: CONNECT_MS,
 					application_name: `qorpera-data-gateway ${kind ?? user.slice("qorpera_data_".length)}`,
 				});
 				pool.on("error", () => undefined);
 				entry = { pool, active: 0 };
+				// WHY: Remove empty idle pools once pg-pool evicts their last client so churned tenants and test schemas do not leak entries.
+				pool.on("remove", () => {
+					if (this.#pools.get(key) === entry && entry.active === 0 && pool.totalCount === 0 && pool.waitingCount === 0) {
+						this.#pools.delete(key);
+						pool.end().catch(() => undefined);
+					}
+				});
 				this.#pools.set(key, entry);
 			}
 			return entry;
@@ -1399,10 +1548,15 @@ export class Gateway {
 		};
 		// A connection whose backend was sent a cancel is let go, never handed out.
 		const connect = async (deadline) => {
-			for (;;) {
+			for (let attempts = 0; ; attempts++) {
+				if (this.#closed) throw new Refusal(503, "The data store did not answer");
+				if (deadline !== undefined && Date.now() >= deadline) {
+					throw new Refusal(408, "No connection to the data store was free in time");
+				}
 				const client = await roomy((pool) => pool.connect(), deadline);
 				if (!this.#signalled.has(client.processID)) return client;
 				this.#letGo(client);
+				if (attempts >= 32) throw new Refusal(503, "No healthy connection to the data store was available");
 			}
 		};
 		return { query: (...args) => roomy((pool) => pool.query(...args)), connect };
@@ -1435,6 +1589,11 @@ export class Gateway {
 	}
 
 	async #makeRoom(database, asking) {
+		this.#onMakeRoom({ database });
+		await this.#makeRoomLocal(database, asking);
+	}
+
+	async #makeRoomLocal(database, asking) {
 		const reclaim = (filter) => {
 			const ending = [];
 			for (const [key, entry] of this.#pools) {
@@ -1455,7 +1614,7 @@ export class Gateway {
 		};
 		let ending = reclaim((key) => key.endsWith(`@${database}`));
 		if (ending.length === 0) ending = reclaim(() => true);
-		await Promise.all(ending);
+		await raceTimeout(Promise.all(ending), POOL_END_TIMEOUT_MS);
 	}
 
 	#tag(key) {
@@ -1464,7 +1623,8 @@ export class Gateway {
 
 	#bumpSchemaEpoch(database, schema) {
 		const key = `${database}/${schema}`;
-		this.#schemaEpoch.set(key, (this.#schemaEpoch.get(key) ?? 0) + 1);
+		// WHY: Use a monotonic counter with bounded storage so evicted schema keys can never reuse an older epoch value.
+		this.#rememberMap(this.#schemaEpoch, key, ++this.#schemaEpochSeq);
 		const prefix = `${key}/`;
 		for (const relKey of this.#relations.keys()) if (relKey.startsWith(prefix)) this.#relations.delete(relKey);
 	}
@@ -1626,6 +1786,7 @@ export class Gateway {
 	}
 
 	#setListenerCache(listener, baseKey, entry) {
+		if (listener.stopped || listener.dropped) return;
 		const budget = Math.max(1024 * 1024, Math.floor(WATCH_CACHE_BYTES_TOTAL / this.#workers));
 		const bytes = Number(entry.answer?.[APPROX_BYTES]) || 1024;
 		if (bytes > budget) return;
@@ -1737,7 +1898,7 @@ export class Gateway {
 				.query("select n from qorpera_data.databases where name = $1", [name])
 				.then((row) => {
 					if (!row.rows[0]) return null;
-					this.#folders.set(key, row.rows[0].n);
+					this.#rememberMap(this.#folders, key, row.rows[0].n);
 					return row.rows[0].n;
 				})
 				.catch((error) => {
@@ -2280,11 +2441,26 @@ export class Gateway {
 						values: built.values,
 					};
 				});
-				options.onShape?.({ kind: cachedShape[0].kind, rls: cachedShape[0].rls === "t" });
-				return this.#formatPageResult(ready, built, ran.result, ran.maxBytes, options.raw !== false);
+				const expectedFields = built.columns.length + 4 + built.placed.length;
+				const actualFields = ran.result.fields?.length ?? 0;
+				const shapeMatches =
+					actualFields === expectedFields && built.columns.every((col, index) => ran.result.fields[index]?.name === col.name);
+				if (shapeMatches) {
+					options.onShape?.({ kind: cachedShape[0].kind, rls: cachedShape[0].rls === "t" });
+					return this.#formatPageResult(ready, built, ran.result, ran.maxBytes, options.raw !== false);
+				}
+				// WHY: Evict stale cached table shape when a peer worker added, dropped, or renamed columns and retry uncached.
+				this.#relations.delete(relKey);
+				this.#bumpSchemaEpoch(ready.database, schema);
 			} catch (error) {
 				if (error instanceof Refusal) throw error;
-				if (error?.code === "42P01" || error?.code === "42703" || error?.code === "0A000") {
+				if (
+					error?.code === "42P01" ||
+					error?.code === "42703" ||
+					error?.code === "0A000" ||
+					error?.code === "42883" ||
+					error?.code === "42804"
+				) {
 					this.#relations.delete(relKey);
 					this.#bumpSchemaEpoch(ready.database, schema);
 				} else {
@@ -3044,7 +3220,12 @@ export class Gateway {
 					client.on("notification", (message) => {
 						const payload = typeof message?.payload === "string" ? message.payload : "";
 						const dot = payload.indexOf(".");
-						if (dot > 0 && dot < payload.length - 1 && TEST_SCHEMA_NAME.test(payload.slice(0, dot))) return;
+						if (dot > 0 && dot < payload.length - 1 && TEST_SCHEMA_NAME.test(payload.slice(0, dot))) {
+							const schema = payload.slice(0, dot);
+							const table = payload.slice(dot + 1);
+							if (table === "*" || table === "!drop") this.#bumpSchemaEpoch(database, schema);
+							return;
+						}
 						listener.gen++;
 						let notice = null;
 						if (dot > 0 && dot < payload.length - 1) {
@@ -3473,7 +3654,7 @@ export class Gateway {
 					"select 1 from pg_catalog.pg_namespace where nspname = 'qorpera_data'",
 				);
 				if (ready.rowCount !== 1) refuse(503, "The company's database is not ready");
-				this.#provisioned.add(database);
+				this.#rememberSet(this.#provisioned, database);
 			} finally {
 				await admin.query("select pg_advisory_unlock(hashtext('qorpera_data.company'), hashtext($1))", [database]).catch((unlockError) => {
 					lost ??= unlockError;
@@ -3524,7 +3705,7 @@ export class Gateway {
 					`alter default privileges for role ${owner} in schema ${schema} grant usage, select on sequences to ${write}`,
 			);
 			await client.query("commit");
-			this.#folders.set(`${database}/${name}`, n);
+			this.#rememberMap(this.#folders, `${database}/${name}`, n);
 			return n;
 		} catch (error) {
 			if (error instanceof Refusal || (error?.code && !/^(57P0[123]|08...)$/.test(error.code)))
@@ -3704,6 +3885,24 @@ export class Gateway {
 						detail: "It was changed after it was applied: put its applied text back from the folder's history and write a new step",
 					};
 				}
+			} else if (!dry) {
+				// WHY: Serialize live step application per schema and re-check qorpera_data.steps via keeper so concurrent applies settle cleanly.
+				await client.query("select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('qorpera_step_apply'), pg_catalog.hashtext($1))", [name]);
+				const recorded = (
+					await this.#pool(database, "qorpera_data_keeper").query("select sha256 from qorpera_data.steps where database = $1 and name = $2", [
+						name,
+						step.name,
+					])
+				).rows[0];
+				if (recorded) {
+					await rollback();
+					if (recorded.sha256 === step.sha256) return { name: step.name, state: "already" };
+					return {
+						name: step.name,
+						state: "changed",
+						detail: "It was changed after it was applied: put its applied text back from the folder's history and write a new step",
+					};
+				}
 			}
 			if (!dry && !isTest) await this.#actorLine(database, (await client.query("select pg_catalog.txid_current()::text as txid")).rows[0].txid, actor);
 			try {
@@ -3803,8 +4002,10 @@ export class Gateway {
 				testSchema.expiresAt = nextTestExpiresAt;
 				testSchema.persistedExpiresAt = Math.max(testSchema.persistedExpiresAt ?? 0, nextTestExpiresAt);
 				this.#bumpSchemaEpoch(database, schema);
+				this.#onSchemaChange({ database, schema });
 			} else {
 				this.#notifySchema(database, name);
+				this.#onSchemaChange({ database, schema: name });
 			}
 			return { name: step.name, state: "applied", ...(ticket ? { destroyed: destroys } : {}) };
 		} catch (error) {
@@ -4268,7 +4469,7 @@ export class Gateway {
 				throw storeProblem(error);
 			});
 		if (found.rowCount === 0) return false;
-		this.#exists.add(database);
+		this.#rememberSet(this.#exists, database);
 		return true;
 	}
 
@@ -4394,7 +4595,7 @@ export class Gateway {
 	 * statement can change. A
 	 * statement still running at the next look (its code caught the cancel) has its backend ended. It reads every company database's size, and a company at its limit gets no more steps until it
 	 * makes room; its questions still answer. */
-	async watchOnce() {
+	async watchOnce({ housekeeping = true } = {}) {
 		const watch = this.#pool("postgres", "qorpera_data_watch");
 		try {
 			const ended = await watch.query(
@@ -4432,15 +4633,7 @@ export class Gateway {
 			}
 			this.#full = full;
 			const companyDbs = sizes.rows.map((row) => row.database);
-			const unforgotten = await this.#settle(companyDbs);
-			const now = Date.now();
-			const dueTestDbs = companyDbs.filter(
-				(db) => this.#testSchemaDbs.has(db) || now - (this.#testSchemaOrphanSwept.get(db) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs,
-			);
-			await this.reapExpiredTestSchemas({ databases: dueTestDbs, trackSwept: true }).catch(() => undefined);
-			const liveDbs = new Set(companyDbs);
-			for (const db of this.#testSchemaOrphanSwept.keys()) if (!liveDbs.has(db)) this.#testSchemaOrphanSwept.delete(db);
-			for (const db of this.#testSchemaDbs) if (!liveDbs.has(db)) this.#testSchemaDbs.delete(db);
+			const unforgotten = housekeeping ? (await this.housekeepOnce(companyDbs)).unforgotten : [];
 			return {
 				ended: ended.rows
 					.filter((row) => row.ended)
@@ -4448,10 +4641,34 @@ export class Gateway {
 				full: [...this.#full],
 				near,
 				unforgotten,
+				databases: companyDbs,
 			};
 		} catch (error) {
 			throw storeProblem(error);
 		}
+	}
+
+	async housekeepOnce(databases = null) {
+		let companyDbs = Array.isArray(databases) ? databases : null;
+		if (companyDbs === null) {
+			const watch = this.#pool("postgres", "qorpera_data_watch");
+			try {
+				const found = await watch.query("select datname::text as database from pg_catalog.pg_database where datname ~ '^c_[0-9a-f]{32}$'");
+				companyDbs = found.rows.map((row) => row.database);
+			} catch (error) {
+				throw storeProblem(error);
+			}
+		}
+		const unforgotten = await this.#settle(companyDbs);
+		const now = Date.now();
+		const dueTestDbs = companyDbs.filter(
+			(db) => this.#testSchemaDbs.has(db) || now - (this.#testSchemaOrphanSwept.get(db) ?? Number.NEGATIVE_INFINITY) >= this.#limits.sweepMs,
+		);
+		await this.reapExpiredTestSchemas({ databases: dueTestDbs, trackSwept: true }).catch(() => undefined);
+		const liveDbs = new Set(companyDbs);
+		for (const db of this.#testSchemaOrphanSwept.keys()) if (!liveDbs.has(db)) this.#testSchemaOrphanSwept.delete(db);
+		for (const db of this.#testSchemaDbs) if (!liveDbs.has(db)) this.#testSchemaDbs.delete(db);
+		return { unforgotten };
 	}
 
 	async #settle(databases) {
@@ -4558,14 +4775,18 @@ export class Gateway {
 
 		const scheduleReconnect = () => {
 			if (stopped || this.#closed || reconnectTimer) return;
-			const delay = Math.min(10_000, 100 * 2 ** Math.min(6, attempts++));
+			const baseDelay = Math.min(10_000, 100 * 2 ** Math.min(6, attempts++));
+			const delay = Math.max(10, Math.floor(baseDelay * (0.5 + Math.random() * 0.5)));
 			reconnectTimer = setTimeout(() => {
 				reconnectTimer = null;
 				if (stopped || this.#closed) return;
 				const next = attach();
 				next.ready
 					.then(() => {
+						if (stopped || this.#closed || listening !== next) return;
 						attempts = 0;
+						// WHY: Synthesize a catch-up wake after LISTEN reconnect so writes committed during the drop are not silently missed.
+						this.#notifier.notifyTrigger(id, "*");
 					})
 					.catch(() => {
 						if (listening === next) {
@@ -5142,7 +5363,8 @@ export class Gateway {
 			refuse(429, "Too many active test schemas on the gateway");
 		}
 		const roles = this.#testSchemaRoles(database, schema);
-		const reserveUntil = Math.max(expiresAt, now + this.#limits.applyMs + 10_000);
+		// WHY: Keep pending reservations bounded to the creation window so an RPC timeout or worker crash cannot pin a slot for an hour.
+		const reserveUntil = now + this.#limits.applyMs + 15_000;
 		this.#testSchemas.set(`${database}/${schema}`, {
 			...roles,
 			environmentId,
@@ -5411,7 +5633,13 @@ export class Gateway {
 			readLive,
 		};
 		if (this.#testSchemaRpc) {
-			await this.#runTriggerRpc(() => this.#testSchemaRpc.reserve(reservePayload));
+			try {
+				await this.#runTriggerRpc(() => this.#testSchemaRpc.reserve(reservePayload));
+			} catch (error) {
+				// WHY: Release the reservation on RPC failure/timeout in case the primary applied it before the worker timed out.
+				void this.#testSchemaRpc.release({ database, schema: testSchema }).catch(() => undefined);
+				throw error;
+			}
 		} else {
 			await this.reserveTestSchema(reservePayload);
 		}
@@ -5693,6 +5921,7 @@ export class Gateway {
 				entry.expiresAt = fresh.expiresAt;
 				entry.persistedExpiresAt = Math.max(entry.persistedExpiresAt ?? 0, fresh.expiresAt);
 				entry.appliedSteps = fresh.appliedSteps;
+				entry.pending = false;
 				this.#scheduleTestReaper();
 				continue;
 			}
@@ -5761,7 +5990,7 @@ export class Gateway {
 			this.#pools.delete(key);
 			ending.push(pool.end().catch(() => undefined));
 		}
-		return Promise.all(ending);
+		return raceTimeout(Promise.all(ending), POOL_END_TIMEOUT_MS);
 	}
 
 	async #closePools(match) {
@@ -5841,8 +6070,17 @@ export class Gateway {
 			refuse(400, "Name a database");
 		const database = companyDatabase(environmentId);
 		if (!(await this.#companyExists(database))) return { dropped: false, database, schema: name, rolesDropped: [] };
-		const testEntries = [...this.#testSchemas.values()].filter((entry) => entry.database === database && entry.sourceDatabase === name);
-		for (const entry of testEntries) {
+		const testEntriesBySchema = new Map();
+		for (const entry of this.#testSchemas.values()) {
+			if (entry.database === database && entry.sourceDatabase === name) testEntriesBySchema.set(entry.testSchema, entry);
+		}
+		// WHY: Include store-persisted test schemas from peer workers or prior restarts so dropDatabase leaves no orphaned test schemas.
+		for (const loaded of await this.#listStoreTestSchemas(database).catch(() => [])) {
+			if (loaded.sourceDatabase === name && !testEntriesBySchema.has(loaded.testSchema)) {
+				testEntriesBySchema.set(loaded.testSchema, loaded);
+			}
+		}
+		for (const entry of testEntriesBySchema.values()) {
 			await this.#dropTestSchemaInternal(entry, { broadcast: true }).catch(() => undefined);
 		}
 		const watch = this.#pool("postgres", "qorpera_data_watch");
@@ -6387,29 +6625,54 @@ export class Gateway {
 		this.#provenInFlight.clear();
 		this.#mayWriteInFlight.clear();
 		this.#folderInFlight.clear();
-		await Promise.all([...this.#pools.values()].map(({ pool }) => pool.end().catch(() => undefined)));
+		const poolsToEnd = [...this.#pools.values()];
 		this.#pools.clear();
+		await raceTimeout(
+			Promise.all(poolsToEnd.map(({ pool }) => pool.end().catch(() => undefined))),
+			POOL_END_TIMEOUT_MS,
+		);
 	}
 }
 
 /** The watcher's timer: one look every `everyMs`, never two at once. Gives the function that stops it. */
 export function startWatcher(gateway, { everyMs = 10_000, failed = () => undefined, onLook = () => undefined } = {}) {
+	let stopped = false;
 	let looking = false;
+	let housekeeping = false;
 	const timer = setInterval(async () => {
-		if (looking) return;
+		if (stopped || looking) return;
 		looking = true;
+		let looked = null;
 		try {
-			const looked = await gateway.watchOnce();
-			onLook(looked);
-			if (looked.unforgotten.length > 0) failed(new Error(`the record kept lines past their days in ${looked.unforgotten.length} company databases`));
+			// WHY: Run fast query cancellation and size checks independently of slow hourly sweeps so sweeps cannot starve query kills.
+			looked = await gateway.watchOnce({ housekeeping: false });
+			if (!stopped) onLook(looked);
 		} catch (error) {
-			failed(error);
+			if (!stopped) failed(error);
 		} finally {
 			looking = false;
 		}
+		if (stopped || !looked || housekeeping || typeof gateway.housekeepOnce !== "function") return;
+		housekeeping = true;
+		void gateway
+			.housekeepOnce(looked.databases)
+			.then(({ unforgotten }) => {
+				if (!stopped && unforgotten.length > 0) {
+					failed(new Error(`the record kept lines past their days in ${unforgotten.length} company databases`));
+				}
+			})
+			.catch((error) => {
+				if (!stopped) failed(error);
+			})
+			.finally(() => {
+				housekeeping = false;
+			});
 	}, everyMs);
 	timer.unref();
-	return () => clearInterval(timer);
+	return () => {
+		stopped = true;
+		clearInterval(timer);
+	};
 }
 
 const BODY_READ_TIMEOUT_MS = 15_000;
