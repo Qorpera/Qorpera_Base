@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
+	buildAppSecretMask,
 	type CodingCommandSecretRequest,
 	type CodingCommandSecrets,
 	type CodingEnvironmentAnswer,
 	type CodingEnvironmentScope,
 	type CodingEnvironmentSource,
 	CodingMachineCommandSecrets,
+	filterScopedSecrets,
 } from "../src/coding-command-secrets.ts";
 
 // 5j-4: each session attached to an executor's machine gets its vault environment from the broker, asked once for
@@ -488,5 +490,45 @@ describe("a coding machine's values for the folder service's save check (5j-5 (a
 			"CODING_COMMAND_SECRETS_RELEASED",
 		);
 		expect(f.secrets.values(machineA)).toBeUndefined();
+	});
+
+	it("filters scoped secrets cleanly and allows short explicit non-sensitive config without weakening secret masking", async () => {
+		const filtered = filterScopedSecrets(
+			[
+				{ name: "OPENAI_API_KEY", value: "sk-proj-scoped-12345678", scope: "runtime", targetEnv: "prod" },
+				{ name: "BUILD_KEY", value: "build-secret-value-12345", scope: "build", targetEnv: "prod" },
+				{ name: "DEV_KEY", value: "dev-secret-value-123456", scope: "runtime", targetEnv: "dev" },
+				{ name: "NODE_ENV", value: "prod", scope: "all", targetEnv: "all", sensitive: false },
+				{ name: "PORT", value: "3000", scope: "runtime", targetEnv: "prod", sensitive: false },
+			],
+			"runtime",
+			"prod",
+		);
+		expect(filtered.secrets).toEqual({ OPENAI_API_KEY: "sk-proj-scoped-12345678" });
+		expect(filtered.config).toEqual({ NODE_ENV: "prod", PORT: "3000" });
+
+		expect(() =>
+			filterScopedSecrets(
+				[{ name: "SHORT_SECRET", value: "tiny", scope: "runtime", targetEnv: "prod" }],
+				"runtime",
+				"prod",
+			),
+		).toThrow(RangeError);
+
+		const appMask = buildAppSecretMask(filtered.secrets, [OLDER_KEY]);
+		expect(masked(appMask.stream(), "sk-proj-scoped-12345678 prod 3000")).toBe("*** prod 3000");
+
+		const workerId = randomUUID();
+		const machineId = randomUUID();
+		const f = fixture();
+		f.environment.mockResolvedValueOnce({
+			environment: { API_KEY },
+			mask: [],
+			config: { NODE_ENV: "test", PORT: "3000" },
+		});
+		const scope = f.scope(workerId);
+		const resolved = await f.secrets.session(machineId, scope).resolve(f.request(machineId, scope), signal());
+		expect(resolved.environment).toEqual({ NODE_ENV: "test", PORT: "3000", API_KEY });
+		expect(masked(resolved.mask(), `PORT=3000 KEY=${API_KEY}`)).toBe("PORT=3000 KEY=***");
 	});
 });

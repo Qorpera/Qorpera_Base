@@ -52,6 +52,7 @@ begin
 	if v_functions is distinct from array[
 		'qorpera_account_model_logins_without_account(uuid,text)',
 		'qorpera_add_company_account_version(uuid,text,jsonb,uuid,text,text,uuid,bigint,text,text,bytea,text)',
+		'qorpera_authorize_app_secrets(uuid,text,uuid,text,text)',
 		'qorpera_authorize_cloud_secret_operation(uuid,text,jsonb,uuid,text,text,uuid,text,text,bigint,text,text)',
 		'qorpera_authorize_coding_environment(uuid,text,uuid,uuid,text)',
 		'qorpera_authorize_coding_mcp_sign_in(uuid,text,uuid,uuid,text,text)',

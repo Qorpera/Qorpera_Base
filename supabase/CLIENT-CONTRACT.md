@@ -1780,14 +1780,17 @@ like any other (`qorpera_begin_cloud_secret_capture`, the broker's screen, compl
 variable's name in lower case: `npm_token` for `NPM_TOKEN`. A name is `[a-z][a-z0-9_]{0,63}`, never one the coding
 machine sets itself (`home`, `path`, `tmpdir`, `user`, `shell`, `lang`, `tz`, the proxy and certificate variables, and
 any name that starts `lc_`, `git_`, `ld_`, `dyld_`, `ssh_`, `xdg_`, `docker_` or `qorpera_`), and never one that names
-a harness's login or provider (`anthropic_`, `claude_`, `codex_`, `openai_`), so no secret changes who pays for a
-session. The begin refuses any other name with 22023 "That name is not available for an environment variable". A
+a harness's internal runtime credentials (`claude_`, `codex_`). Company-owned `openai_*` and `anthropic_*` variables
+(such as `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`) are allowed since `20260930850000_app_vault_secrets_and_code_routines`.
+The begin refuses any other name with 22023 "That name is not available for an environment variable". A
 value never comes back to a client. The broker's screen seals only the one field `value`, at least 8 UTF-8 bytes long
 and without a NUL, so the coding machine can mask it in its output; it refuses any other capture for `environment`.
 
 A coding session gets its member's own environment secrets and the company's that an owner or administrator granted on
-its repository; a company secret with no grant reaches no session. When the member's and a granted company secret have
-the same name, the company's wins.
+its repository with `scope in ('all', 'build', 'test')`; a company secret with no grant (or granted only for `runtime`)
+reaches no coding session. When the member's and a granted company secret have the same name, the company's wins.
+`qorpera_read_coding_turn_context` also surfaces `secretNames` (sorted uppercase variable names only, never values) so
+coding agents know which secrets are present without guessing or inspecting `env`.
 
 - `qorpera_list_coding_environment(profile, environment)`: `[{schema: "qorpera.coding-environment-secret/v1",
   secretId, name, ownerKind, purpose, version, grants, createdAt, updatedAt}]`, the company's environment secrets and
@@ -1808,6 +1811,23 @@ A grant also ends when its secret is disconnected (`qorpera_revoke_cloud_secret`
 gave it stops being an owner or administrator or leaves: promoting them again revives none, so another owner or
 administrator grants it again. Rotating the secret keeps its grants. A member's own environment secrets end when they
 leave, as their other secrets do.
+
+### Hosted-app vault secrets and routine coding dispatch opt-in (20260930850000_app_vault_secrets_and_code_routines)
+
+Company environment secrets may also be granted to hosted app sites scoped by `scope` (`build`, `test`, `runtime`) and
+`target_env` (`dev`, `prod`). Runtime secrets are delivered only into tmpfs (`/run/qorpera-apps/<slug>.env`, mode `0400`)
+and masked in app logs; values are never returned to member clients.
+
+- `qorpera_grant_app_secret(profile, secret, site, scope = 'runtime', target_env = 'prod')`: owner or admin grants a
+  company environment secret to a hosted app site. Answers `{schema: "qorpera.app-secret-grant/v1", grantId, secretId,
+  siteId, slug, name, scope, targetEnv, issuedByUserId, status, createdAt}`; idempotent on duplicate active grants.
+- `qorpera_revoke_app_secret_grant(profile, grant)`: owner or admin revokes a hosted app secret grant. Grants also end
+  when the underlying secret is revoked or when the issuer stops being an owner or admin or leaves.
+- `qorpera_list_app_secrets(profile, site)`: any company member (including viewers) lists active grants for `site`
+  (names, scopes, target environments, versions, grant IDs; never values). Non-members receive `[]`.
+- `qorpera_set_routine_coding_dispatch(profile, connection, allow)`: the connection owner opts in or out of allowing
+  unattended routines to dispatch coding sessions on that connection (requires `allow_autonomous = true` first; turning
+  off `allow_autonomous` automatically resets `allow_routine_coding_dispatch` to `false`).
 
 ### Coding MCP sign-ins (20260928559210_coding_mcp_sign_ins)
 

@@ -15,7 +15,7 @@ const EXECUTOR_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 /** The vault's name rule in upper case (`qorpera_coding_environment_name_allowed`, 5j-1), kept equal by hand: names
  * the session's own setup, its shell and its tools read are not the vault's. */
 const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
-const RESERVED_PREFIX = /^(LC|GIT|LD|DYLD|QORPERA|SSH|XDG|DOCKER|ANTHROPIC|CLAUDE|CODEX|OPENAI)_/;
+const RESERVED_PREFIX = /^(LC|GIT|LD|DYLD|QORPERA|SSH|XDG|DOCKER|CLAUDE|CODEX)_/;
 const RESERVED = new Set([
 	"HOME",
 	"PATH",

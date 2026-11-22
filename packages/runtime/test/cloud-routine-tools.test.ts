@@ -370,7 +370,7 @@ describe("agent routine tool", () => {
 	});
 	// What the model is told about a bad trigger: the argument's name and a good value ("" is no reason).
 	const because = {
-		kind: 'trigger is an object whose kind is dynamic, when_done, every, weekly, file_change or event, like {"kind":"dynamic","timeZone":"Europe/Copenhagen"}',
+		kind: 'trigger is an object whose kind is dynamic, when_done, every, weekly, file_change, event, code_change, app_unhealthy or data_change, like {"kind":"dynamic","timeZone":"Europe/Copenhagen"}',
 		everyKeys:
 			'a trigger of kind every takes minutes, and optionally firstRunAt and report, nothing else, like {"kind":"every","minutes":60}',
 		dynamicKeys:
@@ -996,6 +996,119 @@ describe("a folder-v2 dynamic routine's decision", () => {
 			expect(decided).not.toHaveBeenCalled();
 		} finally {
 			run.close();
+		}
+	});
+
+	it("compiles code_change, app_unhealthy, data_change triggers and checkBeforeWake gates", async () => {
+		const f = await fixture();
+		try {
+			const codeRes = await f.boundary.invoke("r_code", "qorpera", "manage_routine", {
+				action: "upsert",
+				operationKey: "op-code",
+				routineKey: "watch-code",
+				title: "Watch landed code",
+				intent: "Review landed changes.",
+				trigger: {
+					kind: "code_change",
+					owner: "Acme",
+					name: "Web",
+					events: ["landed", "checks_failed"],
+					paths: ["src/**/*.ts"],
+					timeZone: "UTC",
+				},
+			});
+			expect(codeRes.success, JSON.stringify(codeRes)).toBe(true);
+			expect(f.saved().at(-1)?.trigger).toEqual({
+				kind: "listener",
+				source: "code-change",
+				repo: "acme/web",
+				events: ["landed", "checks_failed"],
+				paths: ["src/**/*.ts"],
+				timeZone: "UTC",
+				replyPolicy: "optional",
+			});
+
+			const appRes = await f.boundary.invoke("r_app", "qorpera", "manage_routine", {
+				action: "upsert",
+				operationKey: "op-app",
+				routineKey: "watch-app",
+				title: "Watch app health",
+				intent: "Diagnose unhealthy app.",
+				trigger: {
+					kind: "app_unhealthy",
+					site: "billing-app",
+					timeZone: "UTC",
+				},
+			});
+			expect(appRes.success, JSON.stringify(appRes)).toBe(true);
+			expect(f.saved().at(-1)?.trigger).toEqual({
+				kind: "listener",
+				source: "app-unhealthy",
+				site: "billing-app",
+				timeZone: "UTC",
+				replyPolicy: "optional",
+			});
+
+			const dataRes = await f.boundary.invoke("r_data", "qorpera", "manage_routine", {
+				action: "upsert",
+				operationKey: "op-data",
+				routineKey: "watch-data",
+				title: "Watch invoices",
+				intent: "Process new invoices.",
+				trigger: {
+					kind: "data_change",
+					database: "billing",
+					tables: ["invoices"],
+					operations: ["insert"],
+					timeZone: "UTC",
+				},
+			});
+			expect(dataRes.success, JSON.stringify(dataRes)).toBe(true);
+			expect(f.saved().at(-1)?.trigger).toEqual({
+				kind: "listener",
+				source: "data-change",
+				database: "billing",
+				tables: ["invoices"],
+				operations: ["insert"],
+				timeZone: "UTC",
+				replyPolicy: "optional",
+			});
+
+			const probeRes = await f.boundary.invoke("r_probe", "qorpera", "manage_routine", {
+				action: "upsert",
+				operationKey: "op-probe",
+				routineKey: "health-watchdog",
+				title: "Health watchdog",
+				intent: "Respond when probe fails.",
+				trigger: { kind: "every", minutes: 15 },
+				checkBeforeWake: {
+					kind: "http_probe",
+					url: "https://billing.example.com/health",
+					expectStatus: 200,
+					timeoutMs: 5000,
+				},
+			});
+			expect(probeRes.success, JSON.stringify(probeRes)).toBe(true);
+			expect(f.saved().at(-1)?.checkBeforeWake).toEqual({
+				kind: "http_probe",
+				url: "https://billing.example.com/health",
+				expectStatus: 200,
+				timeoutMs: 5000,
+			});
+
+			const badProbeOnListener = await f.boundary.invoke("r_bad", "qorpera", "manage_routine", {
+				action: "upsert",
+				operationKey: "op-bad",
+				routineKey: "bad-watchdog",
+				title: "Invalid",
+				intent: "Should be refused.",
+				trigger: { kind: "app_unhealthy", site: "billing-app", timeZone: "UTC" },
+				checkBeforeWake: { kind: "http_probe", url: "https://billing.example.com/health" },
+			});
+			expect(badProbeOnListener.success).toBe(false);
+			expect(badProbeOnListener.contentItems[0]?.text).toContain("checkBeforeWake is only supported");
+		} finally {
+			f.run.close();
 		}
 	});
 });

@@ -108,14 +108,14 @@ declare
 	v_refused text := '22023:That name is not available for an environment variable';
 begin
 	foreach v_name in array array['npm_token', 'sentry_dsn', 'a', 'node_env', 'github_token', 'dockerhub_token', 'lcd',
-		'database_url', 'x' || repeat('1', 63)] loop
+		'database_url', 'anthropic_api_key', 'openai_api_key', 'x' || repeat('1', 63)] loop
 		perform pg_temp.base_assert(public.qorpera_coding_environment_name_allowed(v_name), 'allowed: ' || v_name);
 	end loop;
 	-- What the machine sets itself, a harness's login or provider, and what is not a lower-case variable name.
 	foreach v_name in array array['home', 'path', 'tmpdir', 'user', 'shell', 'pwd', 'lang', 'tz', 'bash_env', 'ifs',
 		'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy', 'ssl_cert_file', 'node_extra_ca_certs', 'lc_all', 'git_dir',
 		'ld_preload', 'dyld_insert_libraries', 'ssh_auth_sock', 'xdg_config_home', 'docker_host', 'qorpera_token',
-		'anthropic_api_key', 'claude_code_oauth_token', 'codex_home', 'openai_api_key', 'NPM_TOKEN', 'npm-token', '1abc',
+		'claude_code_oauth_token', 'codex_home', 'NPM_TOKEN', 'npm-token', '1abc',
 		'_x', '', 'x' || repeat('1', 64)] loop
 		perform pg_temp.base_assert(not public.qorpera_coding_environment_name_allowed(v_name), 'refused: ' || v_name);
 	end loop;

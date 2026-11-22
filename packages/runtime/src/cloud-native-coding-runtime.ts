@@ -96,7 +96,7 @@ const INSTRUCTIONS =
 	"The read-only sandbox your harness describes covers only its own built-in tools, which this session does not use; it says nothing about the repository VM. In the VM the selected repository and branch are writable: edit files, install, build, test and commit there through coding_run_command. Never stop, ask or hand in because of that read-only notice; only a command the VM actually refuses shows the repository is not writable, and then name that command and its error. " +
 	// 10 Nov 2026 (audit): "do not look for credentials" read as "use none", although a session is given its
 	// repository's secret values to work with.
-	"Handing your commit in is the platform's work, through coding_finish: never push or publish with credentials in the shell. The secret values this session was given, when it was given any, are environment variables of every command, under the names the company saved them with: use them for what the work needs, such as installing private packages or calling a service, and look for no others. Keep operation keys stable after unknown outcomes. " +
+	"Handing your commit in is the platform's work, through coding_finish: never push or publish with credentials in the shell. The secret values this session was given, when it was given any, are environment variables of every command, under the names the company saved them with: use them for what the work needs, such as installing private packages or calling a service, and look for no others. secretNames in the context lists those exact variable names (never values), so check secretNames instead of guessing or printing env. Keep operation keys stable after unknown outcomes. " +
 	"Keep the session's secret values out of the files and commits you make in /company: the company folder refuses to save them. " +
 	"Commands in this VM can reach the company's databases under /company/data/ with the data CLI (no database credentials on disk; scoped to what both this session's coding agent and member may read, never a member's private folder, with :viewer defaulting to that member unless viewer=<member id> is passed): data describe [<database>], data apply <database>, data query <database> <question> [name=value ...] (or --sql '<one select>'), and data change <database> <change> [name=value ...] print JSON (use name:=<JSON> for numbers, booleans, or null; destructive schema steps stay held for a member's yes through data_apply; never store secrets in steps, queries, actions, or rows). " +
 	"When only the member who owns this session can decide something, call coding_ask with the exact question (and short choices when there are natural ones) and stop; the session pauses until they answer, and your next turn continues from their answer. " +
@@ -212,6 +212,7 @@ export interface CloudCodingTurnContext {
 	/** Whether the session's machine got a new disk since the previous turn started (false on a first turn): only
 	 * /company was kept. A kernel from before 20260930515000 does not say, which reads as false. */
 	machine: { newDisk: boolean };
+	readonly secretNames: readonly string[];
 }
 export interface CloudCodingTurnCommand {
 	commandId: string;
@@ -318,6 +319,8 @@ function contextPullRequest(value: unknown, repository: CloudCodingRepository): 
 }
 
 /** Strict: the context must be this turn's, contiguous and bounded. */
+const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+
 export function parseCloudCodingTurnContext(
 	value: unknown,
 	scope: { workerId: string; sequence: number },
@@ -326,8 +329,7 @@ export function parseCloudCodingTurnContext(
 	const item = closedRecord(
 		value,
 		["schema", "workerId", "sequence", "input", "earlierTurns", "omittedEarlierTurns", "commands"],
-		// 20260930515000 adds `machine`; the runtime rolls before it, so a context without it is read as no new disk.
-		["machine"],
+		["machine", "secretNames"],
 	);
 	if (
 		item.schema !== "qorpera.coding-turn-context/v2" ||
@@ -413,6 +415,21 @@ export function parseCloudCodingTurnContext(
 		throw new Error("CODING_TURN_CONTEXT_INVALID");
 	const machine = Object.hasOwn(item, "machine") ? closedRecord(item.machine, ["newDisk"]) : { newDisk: false };
 	if (typeof machine.newDisk !== "boolean") throw new Error("CODING_TURN_CONTEXT_INVALID");
+	let secretNames: readonly string[] = [];
+	if (Object.hasOwn(item, "secretNames")) {
+		if (!Array.isArray(item.secretNames) || item.secretNames.length > 256)
+			throw new Error("CODING_TURN_CONTEXT_INVALID");
+		const seen = new Set<string>();
+		const parsedNames: string[] = [];
+		for (const name of item.secretNames) {
+			if (typeof name !== "string" || !SECRET_NAME.test(name) || seen.has(name))
+				throw new Error("CODING_TURN_CONTEXT_INVALID");
+			seen.add(name);
+			parsedNames.push(name);
+		}
+		parsedNames.sort();
+		secretNames = Object.freeze(parsedNames);
+	}
 	return {
 		input: { from: current.from, text: current.text, answers },
 		earlierTurns,
@@ -436,6 +453,7 @@ export function parseCloudCodingTurnContext(
 			omitted: Number(commands.omitted),
 		},
 		machine: { newDisk: machine.newDisk },
+		secretNames,
 	};
 }
 
@@ -556,6 +574,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					omittedEarlierTurns: turn.omittedEarlierTurns + turn.earlierTurns.length - kept.length,
 					commands: turn.commands,
 					machine: turn.machine,
+					secretNames: [...turn.secretNames],
 					input: turn.input,
 				},
 				// Measured before trimming: the whole reply fits the control's 256 KiB response bound.

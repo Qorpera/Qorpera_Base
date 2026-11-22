@@ -6,6 +6,21 @@ import { CODING_SECRET_MASK_MINIMUM_BYTES, CodingSecretMask } from "./coding-sec
 
 /** What runs: a model's command, a terminal (5g-7) or a setup step (5h). */
 export type CodingCommandKind = "command" | "terminal" | "install";
+export type CodingSecretScope = "all" | "build" | "test" | "runtime";
+export type CodingSecretTargetEnv = "all" | "dev" | "test" | "prod";
+
+export interface ScopedEnvironmentEntry {
+	readonly name: string;
+	readonly value: string;
+	readonly scope: CodingSecretScope;
+	readonly targetEnv: CodingSecretTargetEnv;
+	readonly sensitive?: boolean;
+}
+
+export interface FilteredScopedEnvironment {
+	readonly secrets: Readonly<Record<string, string>>;
+	readonly config: Readonly<Record<string, string>>;
+}
 
 /** One byte stream's masking (a `CodingSecretMaskStream`): `push` holds back the tail that could still start a
  * value (`pending` raw bytes), and `end` lets it through. A new stream takes over at that tail with `resume` and what
@@ -66,6 +81,7 @@ export interface CodingEnvironmentScope {
 export interface CodingEnvironmentAnswer {
 	readonly environment: Readonly<Record<string, string>>;
 	readonly mask: readonly string[];
+	readonly config?: Readonly<Record<string, string>>;
 }
 
 /** Where a session's environment secrets come from: the company's secret broker (deploy/coding-worker). Each call
@@ -221,26 +237,27 @@ export class CodingMachineCommandSecrets {
 		this.#check(machineId, scope, request);
 		signal.throwIfAborted();
 		let answer = session.commands.get(request.commandId);
+		let secretValues: readonly string[] = [];
 		let history: readonly string[] = [];
 		const fresh = !answer;
 		if (!answer) {
 			const asked = await this.#source.environment(scope, signal);
-			answer = Object.freeze({ ...asked.environment });
+			const config = asked.config ?? {};
+			checkConfigValues(Object.values(config));
+			secretValues = Object.values(asked.environment);
+			answer = Object.freeze({ ...config, ...asked.environment });
 			history = [...asked.mask];
 		}
 		signal.throwIfAborted();
 		const machine = this.#activeMachine(machineId, scope, session);
-		// A value the mask refuses fails the call before the answer is kept.
 		if (fresh) {
-			const envValues = Object.values(answer);
-			checkMaskValues(envValues);
+			checkMaskValues(secretValues);
 			checkMaskValues(history);
-			// The older values stay in the machine's masks, never in an environment.
 			for (const value of history) {
 				machine.history.add(value);
 				machine.mask.add(value);
 			}
-			for (const value of envValues) machine.mask.add(value);
+			for (const value of secretValues) machine.mask.add(value);
 		}
 		let environment = session.commands.get(request.commandId);
 		if (!environment) {
@@ -310,6 +327,51 @@ function checkMaskValues(candidates: Iterable<string>): void {
 			throw new RangeError(`a coding secret shorter than ${CODING_SECRET_MASK_MINIMUM_BYTES} bytes can't be masked`);
 		}
 	}
+}
+
+function checkConfigValues(candidates: Iterable<string>): void {
+	for (const value of candidates) {
+		if (typeof value !== "string" || value.includes("\0") || Buffer.byteLength(value, "utf8") > 32 * 1024) {
+			throw new RangeError("a coding config value is invalid");
+		}
+	}
+}
+
+export function filterScopedSecrets(
+	entries: readonly ScopedEnvironmentEntry[],
+	scope: Exclude<CodingSecretScope, "all">,
+	targetEnv: Exclude<CodingSecretTargetEnv, "all">,
+): FilteredScopedEnvironment {
+	const secrets: Record<string, string> = {};
+	const config: Record<string, string> = {};
+	for (const entry of entries) {
+		if (entry.scope !== "all" && entry.scope !== scope) continue;
+		if (entry.targetEnv !== "all" && entry.targetEnv !== targetEnv) continue;
+		if (entry.sensitive === false) {
+			checkConfigValues([entry.value]);
+			config[entry.name] = entry.value;
+		} else {
+			checkMaskValues([entry.value]);
+			secrets[entry.name] = entry.value;
+		}
+	}
+	return Object.freeze({
+		secrets: Object.freeze(secrets),
+		config: Object.freeze(config),
+	});
+}
+
+export function buildAppSecretMask(
+	secrets: Readonly<Record<string, string>>,
+	history: readonly string[] = [],
+): CodingSecretMask {
+	const secretValues = Object.values(secrets);
+	checkMaskValues(secretValues);
+	checkMaskValues(history);
+	const mask = new CodingSecretMask();
+	for (const value of secretValues) mask.add(value);
+	for (const value of history) mask.add(value);
+	return mask;
 }
 
 /** Every value of the environments, once. */

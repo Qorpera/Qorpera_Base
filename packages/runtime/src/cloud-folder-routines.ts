@@ -4,6 +4,9 @@ import {
 	canonicalCompanyStateInstant,
 	osPath,
 	parseCompanyStateFile,
+	type RoutineCheckBeforeWake,
+	type RoutineCodeChangeEvent,
+	type RoutineDataChangeOperation,
 	type RoutineDay,
 	type RoutineFile,
 	type RoutineTrigger,
@@ -117,6 +120,31 @@ export type CloudFolderRoutineTrigger =
 			readonly only?: readonly string[];
 			readonly timeZone: string;
 			readonly replyPolicy: Reply;
+	  }
+	| {
+			readonly kind: "listener";
+			readonly source: "code-change";
+			readonly repo: string;
+			readonly events: readonly RoutineCodeChangeEvent[];
+			readonly paths?: readonly string[];
+			readonly timeZone: string;
+			readonly replyPolicy: Reply;
+	  }
+	| {
+			readonly kind: "listener";
+			readonly source: "app-unhealthy";
+			readonly site: string;
+			readonly timeZone: string;
+			readonly replyPolicy: Reply;
+	  }
+	| {
+			readonly kind: "listener";
+			readonly source: "data-change";
+			readonly database: string;
+			readonly tables?: readonly string[];
+			readonly operations?: readonly RoutineDataChangeOperation[];
+			readonly timeZone: string;
+			readonly replyPolicy: Reply;
 	  };
 
 export interface CloudFolderRoutineListing {
@@ -132,6 +160,7 @@ export interface CloudFolderRoutineUpsert {
 	readonly title: string;
 	readonly intent: string;
 	readonly trigger: CloudFolderRoutineTrigger;
+	readonly checkBeforeWake?: RoutineCheckBeforeWake;
 	readonly expiresAt?: string;
 	readonly maxOccurrences?: number;
 	readonly quietHours?: { readonly start: string; readonly end: string; readonly timeZone: string };
@@ -170,12 +199,27 @@ function upsertFile(request: CloudFolderRoutineUpsert, id: string, current: Rout
 		trigger = given.after === undefined ? { when: "once", at } : { when: "once", at, after: given.after };
 		timezone = given.timeZone;
 	} else if (given.kind === "listener") {
-		trigger =
-			given.source === "event"
-				? // The save's rules check that the hook is a live one of this company (E2).
-					{ when: "event", hook: given.hookId, only: given.only ? [...given.only] : null }
-				: // The path as given: the folder core folds it into the key it watches (P29).
-					{ when: "file-change", watch: given.path, match: given.match };
+		if (given.source === "event") {
+			trigger = { when: "event", hook: given.hookId, only: given.only ? [...given.only] : null };
+		} else if (given.source === "code-change") {
+			trigger = {
+				when: "code-change",
+				repo: given.repo,
+				events: [...given.events],
+				paths: given.paths ? [...given.paths] : null,
+			};
+		} else if (given.source === "app-unhealthy") {
+			trigger = { when: "app-unhealthy", site: given.site };
+		} else if (given.source === "data-change") {
+			trigger = {
+				when: "data-change",
+				database: given.database,
+				tables: given.tables ? [...given.tables] : null,
+				operations: given.operations ? [...given.operations] : null,
+			};
+		} else {
+			trigger = { when: "file-change", watch: given.path, match: given.match };
+		}
 		timezone = given.timeZone;
 	} else if (given.weekdays) {
 		trigger = {
@@ -199,6 +243,7 @@ function upsertFile(request: CloudFolderRoutineUpsert, id: string, current: Rout
 		title: request.title,
 		status: "active",
 		trigger,
+		...(request.checkBeforeWake === undefined ? {} : { checkBeforeWake: request.checkBeforeWake }),
 		timezone,
 		ends: request.expiresAt === undefined ? null : instant(request.expiresAt),
 		runs: request.maxOccurrences ?? null,
