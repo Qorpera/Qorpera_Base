@@ -15,7 +15,7 @@ const activationRequires = Object.freeze([
 	[
 		"20260930860000_surface_preview_reconcile_and_merge_hardening",
 		"#2199 (surface preview, reconcile, and merge hardening): bundle 277 uses hardened surface preview composition, merge serialization, and session lease handling",
-		"to_regprocedure('public.qorpera_surface_preview_composition_key(uuid,uuid[],uuid)') is not null",
+		"to_regprocedure('public.qorpera_surface_preview_composition_key(uuid,text,uuid[],uuid)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires
