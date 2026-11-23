@@ -15,7 +15,11 @@ import {
 } from "../src/code-host-jobs.ts";
 import { cherryPickChangeUnits } from "../src/code-host-surfaces.ts";
 import { approveAndSyncSurfaceChanges } from "../src/surface-change-dispatcher.ts";
-import { buildCompositeSurfacePreview, readSurfacePreviewRecipe } from "../src/surface-preview-runner.ts";
+import {
+	buildCompositeSurfacePreview,
+	previewBuildOutcome,
+	readSurfacePreviewRecipe,
+} from "../src/surface-preview-runner.ts";
 import { localShell } from "./helpers/code-host-shell.ts";
 
 const exec = promisify(execFile);
@@ -136,6 +140,23 @@ describe("surface preview runner and change dispatcher", () => {
 		expect(invalid.kind).toBe("invalid");
 		expect(invalid.kind === "invalid" && invalid.detail.split("\n")[0]).toBe("PREVIEW_BUILD_FAILED");
 		expect(invalid.kind === "invalid" && invalid.detail).toContain("/preview/folder");
+	});
+
+	it("words a build whose commands were refused for computer hours with the no-hours code", () => {
+		const recipe = { run: "npm ci && npm run build", cwd: ".", folder: "dist", timeoutSeconds: 180 };
+		const hours = previewBuildOutcome(
+			{ state: "not_run", why: "authority", code: "CODING_MACHINE_UNAVAILABLE:COMPUTER_HOURS_EXHAUSTED" },
+			recipe,
+		);
+		expect(hours.outcome).toBe("failed");
+		const detail = hours.outcome === "failed" ? hours.errorDetail : "";
+		expect(detail.split("\n")[0]).toBe("PREVIEW_BUILD_NO_HOURS");
+		expect(detail).toContain("the company ran out of computer hours");
+		const machine = previewBuildOutcome(
+			{ state: "not_run", why: "authority", code: "CODING_MACHINE_UNAVAILABLE:MACHINE_RETIRING" },
+			recipe,
+		);
+		expect(machine.outcome === "failed" && machine.errorDetail.split("\n")[0]).toBe("PREVIEW_BUILD_NO_MACHINE");
 	});
 
 	it("builds clean composite previews and skips building on toggle conflicts", async () => {
