@@ -314,6 +314,13 @@ describe("creating surfaces", () => {
 		avatar.click();
 		expect(figures.hidden).toBe(false);
 		expect(avatar.getAttribute("aria-expanded")).toBe("true");
+		sheet
+			.querySelector<HTMLElement>('.surface-figure-choice[data-figure="jar"]')!
+			.dispatchEvent(new MouseEvent("pointerenter"));
+		expect(hero()).toBe("jar");
+		expect(picked()).toBe("phone");
+		sheet.querySelector<HTMLElement>(".surface-figure-choices")!.dispatchEvent(new MouseEvent("pointerleave"));
+		expect(hero()).toBe("phone");
 		sheet.querySelector<HTMLElement>('.surface-figure-choice[data-figure="piggy"]')!.click();
 		expect(figures.hidden).toBe(true);
 		expect(hero()).toBe("piggy");

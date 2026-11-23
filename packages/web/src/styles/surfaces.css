@@ -86,12 +86,12 @@
 .rail-agents-count[hidden] { display: none; }
 .rail-agents-chevron { display: grid; transform: rotate(-90deg); transition: transform var(--motion-base) var(--ease-spring); }
 .rail-agents-chevron .icon { width: 14px; height: 14px; }
-.rail-agents-hub.is-open .rail-agents-chevron { transform: none; }
+:is(.rail-agents-hub.is-open, .rail-members.is-open) .rail-agents-chevron { transform: none; }
 .rail-agents-body {
 	display: grid; grid-template-rows: 0fr; opacity: 0;
 	transition: grid-template-rows var(--motion-base) var(--ease-in-out), opacity var(--motion-fast) ease;
 }
-.rail-agents-hub.is-open .rail-agents-body {
+:is(.rail-agents-hub, .rail-members).is-open .rail-agents-body {
 	grid-template-rows: 1fr; opacity: 1;
 	transition: grid-template-rows var(--motion-slow) var(--ease-out), opacity var(--motion-base) ease;
 }
@@ -101,15 +101,15 @@
 	display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px;
 	opacity: 0; transform: translateY(10px); transition: opacity var(--motion-fast) ease, transform var(--motion-fast) var(--ease-in);
 }
-.rail-agents-hub.is-open .rail-agents-sub {
+:is(.rail-agents-hub, .rail-members).is-open .rail-agents-sub {
 	opacity: 1; transform: none;
 	transition: opacity var(--motion-base) ease, transform var(--motion-spring) var(--ease-spring);
 }
-.rail-agents-hub.is-open .rail-agents-sub:nth-child(1) { transition-delay: 60ms; }
-.rail-agents-hub.is-open .rail-agents-sub:nth-child(2) { transition-delay: 120ms; }
-.rail-agents-hub.is-open .rail-agents-sub:nth-child(3) { transition-delay: 180ms; }
+:is(.rail-agents-hub, .rail-members).is-open .rail-agents-sub:nth-child(1) { transition-delay: 60ms; }
+:is(.rail-agents-hub, .rail-members).is-open .rail-agents-sub:nth-child(2) { transition-delay: 120ms; }
+:is(.rail-agents-hub, .rail-members).is-open .rail-agents-sub:nth-child(3) { transition-delay: 180ms; }
 @media (prefers-reduced-motion: reduce) {
-	.rail-agents-body, .rail-agents-hub.is-open .rail-agents-body, .rail-agents-sub, .rail-agents-hub.is-open .rail-agents-sub,
+	.rail-agents-body, :is(.rail-agents-hub, .rail-members).is-open .rail-agents-body, .rail-agents-sub, :is(.rail-agents-hub, .rail-members).is-open .rail-agents-sub,
 	.rail-agents-chevron { transition: none; }
 }
 .rail-agents-sub[hidden] { display: none; }

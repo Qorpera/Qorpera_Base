@@ -2,7 +2,14 @@ import type { SurfaceChangeUnit, SurfaceSession, SurfaceSummary } from "@qorpera
 import { menuPoint, openContextMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { confirmDialog, h, icon } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
-import { type SurfaceFigureState, surfaceFigure, surfaceFigureChoices } from "../../ui/surface-figure.ts";
+import {
+	type SurfaceFigureId,
+	type SurfaceFigurePaint,
+	type SurfaceFigureState,
+	surfaceFigure,
+	surfaceFigureChoices,
+	surfaceFigureIcon,
+} from "../../ui/surface-figure.ts";
 import { surfaceHash } from "../router.ts";
 import {
 	type SurfaceLook,
@@ -26,11 +33,12 @@ export function surfaceTile(
 	look: SurfaceLook,
 	className = "",
 	state: SurfaceFigureState = "rest",
+	paint: SurfaceFigurePaint = "lazy",
 ): HTMLElement {
 	const tile = h(
 		"span",
 		{ class: ["surface-tile", className].filter(Boolean).join(" "), "aria-hidden": "true" },
-		surfaceFigure(surfaceFigureOf(surface, look), state),
+		surfaceFigure(surfaceFigureOf(surface, look), state, paint),
 	);
 	tile.style.setProperty("--surface-tint", surfaceTint(look));
 	return tile;
@@ -150,6 +158,22 @@ function rowNotice(surface: SurfaceSummary, notes: number): string | null {
 	return notice || null;
 }
 
+function syncRowTile(
+	entry: SurfaceRowEntry,
+	surface: SurfaceSummary,
+	look: SurfaceLook,
+	notes: number,
+	paint: SurfaceFigurePaint = "lazy",
+): void {
+	const state: SurfaceFigureState = surface.runningSessionCount > 0 ? "working" : "rest";
+	const tileKey = JSON.stringify([surfaceFigureOf(surface, look), state, surfaceTint(look), notes > 0]);
+	if (entry.tileKey === tileKey) return;
+	const nextTile = noteMark(surfaceTile(surface, look, "", state, paint), notes);
+	entry.tileEl.replaceWith(nextTile);
+	entry.tileEl = nextTile;
+	entry.tileKey = tileKey;
+}
+
 function createSurfaceRow(
 	surface: SurfaceSummary,
 	look: SurfaceLook,
@@ -202,14 +226,7 @@ function syncSurfaceRow(
 	const tint = surfaceTint(look);
 	if (entry.el.style.getPropertyValue("--surface-tint") !== tint) entry.el.style.setProperty("--surface-tint", tint);
 	setRowActive(entry.el, active);
-	const state: SurfaceFigureState = surface.runningSessionCount > 0 ? "working" : "rest";
-	const tileKey = JSON.stringify([surfaceFigureOf(surface, look), state, tint, notes > 0]);
-	if (entry.tileKey !== tileKey) {
-		const nextTile = noteMark(surfaceTile(surface, look, "", state), notes);
-		entry.tileEl.replaceWith(nextTile);
-		entry.tileEl = nextTile;
-		entry.tileKey = tileKey;
-	}
+	syncRowTile(entry, surface, look, notes);
 	if (entry.nameEl.textContent !== surface.title) entry.nameEl.textContent = surface.title;
 	if (crew) {
 		entry.subEl.replaceWith(crew);
@@ -293,6 +310,8 @@ export class SurfaceRail {
 	readonly #rows = new Map<string, SurfaceRowEntry>();
 	readonly #proposedRows = new Map<string, { readonly el: HTMLElement; readonly key: string }>();
 	readonly #deleting = new Set<string>();
+	readonly #savingFigures = new Map<string, SurfaceFigureId>();
+	#hoveredFigure: { readonly surfaceId: string; readonly figure: SurfaceFigureId } | undefined;
 	#activeSlug: string | undefined;
 	#shown: readonly unknown[] | undefined;
 
@@ -319,7 +338,7 @@ export class SurfaceRail {
 		const surface = this.#store.state.surfaces.find((item) => item.slug === row?.dataset.surfaceSlug);
 		if (!row || !surface) return;
 		event.preventDefault();
-		const chosen = surfaceFigureOf(surface, this.#store.lookOf(surface));
+		const chosen = surfaceFigureOf(this.#withShownFigure(surface), this.#store.lookOf(surface));
 		openContextMenu({
 			label: surface.title,
 			...menuPoint(event, row),
@@ -334,10 +353,15 @@ export class SurfaceRail {
 					label: t("Figure"),
 					icon: "palette",
 					panel: (close) => ({
-						el: surfaceFigureChoices(chosen, (figure) => {
-							close();
-							if (figure !== chosen) void this.#store.setFigure(surface.id, figure);
-						}),
+						el: surfaceFigureChoices(
+							chosen,
+							(figure) => {
+								if (figure !== chosen) void this.#saveFigure(surface.id, figure);
+								close();
+							},
+							(figure) => this.#hoverFigure(surface.id, figure),
+						),
+						dispose: () => this.#hoverFigure(surface.id, undefined),
 					}),
 				},
 				...(surface.archetype === "ops"
@@ -360,6 +384,50 @@ export class SurfaceRail {
 						]),
 			],
 		});
+	}
+
+	#hoverFigure(surfaceId: string, figure: SurfaceFigureId | undefined): void {
+		this.#hoveredFigure = figure ? { surfaceId, figure } : undefined;
+		this.#redrawFigure(surfaceId);
+	}
+
+	async #saveFigure(surfaceId: string, figure: SurfaceFigureId): Promise<void> {
+		const saving = this.#savingFigures.has(surfaceId);
+		this.#savingFigures.set(surfaceId, figure);
+		this.#redrawFigure(surfaceId);
+		if (saving) return;
+		try {
+			let sent: SurfaceFigureId | undefined;
+			while (sent !== this.#savingFigures.get(surfaceId)) {
+				sent = this.#savingFigures.get(surfaceId);
+				if (!sent || !(await this.#store.setFigure(surfaceId, sent))) break;
+			}
+		} finally {
+			this.#savingFigures.delete(surfaceId);
+			this.#redrawFigure(surfaceId);
+		}
+	}
+
+	#withShownFigure(surface: SurfaceSummary): SurfaceSummary {
+		const figure =
+			this.#hoveredFigure?.surfaceId === surface.id
+				? this.#hoveredFigure.figure
+				: this.#savingFigures.get(surface.id);
+		return figure ? { ...surface, icon: surfaceFigureIcon(figure) } : surface;
+	}
+
+	#redrawFigure(surfaceId: string): void {
+		const state = this.#store.state;
+		const entry = this.#rows.get(surfaceId);
+		const surface = state.surfaces.find((item) => item.id === surfaceId);
+		if (!entry || !surface) return;
+		syncRowTile(
+			entry,
+			this.#withShownFigure(surface),
+			surfaceLookOf(surface, state.surfaceLooks),
+			this.#store.unseenNotesOn(surfaceId),
+			"now",
+		);
 	}
 
 	async #delete(surfaceId: string): Promise<void> {
@@ -487,12 +555,13 @@ export class SurfaceRail {
 					? null
 					: crewRow(state, surface, this.#crew, (session) => this.#store.turnHolder(session));
 				const notes = this.#store.unseenNotesOn(surface.id);
+				const shown = this.#withShownFigure(surface);
 				let entry = this.#rows.get(surface.id);
 				if (!entry) {
-					entry = createSurfaceRow(surface, look, this.#profileId, active, crew, notes);
+					entry = createSurfaceRow(shown, look, this.#profileId, active, crew, notes);
 					this.#rows.set(surface.id, entry);
 				} else {
-					syncSurfaceRow(entry, surface, look, this.#profileId, active, crew, notes);
+					syncSurfaceRow(entry, shown, look, this.#profileId, active, crew, notes);
 				}
 				groupChildren.push(entry.el);
 			}
