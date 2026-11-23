@@ -831,7 +831,7 @@ export class SurfaceView {
 				agent.conflicted,
 				agent.running,
 				agent.badgeCount,
-				agent.kind === "session" ? (store.turnHolder(agent.session)?.userId ?? "") : "",
+				agent.kind === "session" ? JSON.stringify(store.turnHolder(agent.session) ?? null) : "",
 				state.unseenNotes[agent.id]?.count ?? 0,
 			]),
 			this.#pillCollapsed,
@@ -893,11 +893,13 @@ export class SurfaceView {
 									? h("span", { class: "surface-bar-agent-badge is-danger" }, t("Failed"))
 									: agent.conflicted
 										? h("span", { class: "surface-bar-agent-badge is-danger" }, t("Conflict"))
-										: agent.running
-											? h("span", { class: "surface-bar-agent-badge is-working" }, t("Working"))
-											: agent.badgeCount > 0
-												? h("span", { class: "surface-bar-agent-count" }, String(agent.badgeCount))
-												: null;
+										: agent.running && agent.kind === "session" && agent.session.waitingOnUsage
+											? h("span", { class: "surface-bar-agent-badge is-waiting" }, t("Waiting"))
+											: agent.running
+												? h("span", { class: "surface-bar-agent-badge is-working" }, t("Working"))
+												: agent.badgeCount > 0
+													? h("span", { class: "surface-bar-agent-count" }, String(agent.badgeCount))
+													: null;
 							return h(
 								"button",
 								{

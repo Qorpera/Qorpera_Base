@@ -106,7 +106,7 @@ function usageRing(done: boolean): SVGSVGElement {
 	return ring;
 }
 
-function usageCard(
+export function usageCard(
 	title: string,
 	detail: string | undefined,
 	done: boolean,

@@ -222,6 +222,35 @@ describe("cloud-client surface session images", () => {
 		).rejects.toThrow();
 	});
 
+	it("reads whose full login a session waits on and continues it", async () => {
+		const sofie = "29600000-0000-4000-8000-000000000006";
+		const waitingOnUsage = {
+			userId: sofie,
+			until: "2026-11-23T03:33:00.000Z",
+			continueWith: { account: "sofie@lund.dk" },
+		};
+		const { rpc, client } = fixture({ ...session, waitingOnUsage });
+		const continued = await client.continueSurfaceSession(sessionId);
+		expect(rpc).toHaveBeenCalledWith("qorpera_surface_session_continue", { p_session_id: sessionId });
+		expect(continued.waitingOnUsage).toEqual(waitingOnUsage);
+		expect(
+			(await fixture({ ...session, waitingOnUsage: null }).client.continueSurfaceSession(sessionId)).waitingOnUsage,
+		).toBeNull();
+		expect(
+			(
+				await fixture({
+					...session,
+					waitingOnUsage: { userId: sofie, until: null, continueWith: null },
+				}).client.continueSurfaceSession(sessionId)
+			).waitingOnUsage,
+		).toEqual({ userId: sofie, until: null, continueWith: null });
+		await expect(
+			fixture({ ...session, waitingOnUsage: { ...waitingOnUsage, userId: "x" } }).client.continueSurfaceSession(
+				sessionId,
+			),
+		).rejects.toThrow();
+	});
+
 	it("lists the member's unseen notes and marks a session's seen", async () => {
 		const unseen = [{ surfaceId, sessionId, count: 2 }];
 		const { rpc, client } = fixture(unseen);

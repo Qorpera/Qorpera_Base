@@ -1835,6 +1835,17 @@ starter; null for an agent-started session nobody replied to). Its messages may 
 - `qorpera_surface_notes_seen(p_session_id)` (any member) marks the caller's own notes in that session seen and
   answers how many.
 
+### Interface turns waiting on a usage limit (20260930873000_surface_turn_waits_on_usage)
+
+A session's JSON carries `waitingOnUsage` while its turn waits for a full login to reset: `{userId, until,
+continueWith}` (else null). `userId` is the member whose login is full, `until` the reset (null when unknown).
+`continueWith` is `{account}` (the email of one of the caller's own logins with room, or null) only for that member
+while the turn waits in the queue, else null.
+
+- `qorpera_surface_session_continue(p_session_id)` (the waiting member, not a viewer) lets the waiting turn try again
+  at once, so it runs on their login with room, and answers the session. Refuses another member (42501), a turn that
+  already runs or a member with no login with room (55000) and a missing session (P0002).
+
 ### Coding environment secrets (20260928549440_coding_environment_secrets)
 
 The environment variables of a coding session's commands (an npm token, a Sentry DSN). Each is a vault secret captured

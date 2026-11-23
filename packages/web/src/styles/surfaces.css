@@ -539,6 +539,9 @@
 .surface-bar-agent-badge.is-working {
 	background: color-mix(in srgb, var(--sidebar-selection) 14%, transparent); color: var(--sidebar-selection);
 }
+.surface-bar-agent-badge.is-waiting {
+	background: color-mix(in srgb, var(--warning) 22%, transparent); color: color-mix(in srgb, var(--warning) 45%, var(--text));
+}
 .surface-bar-agent-more { padding: 0 10px; color: var(--text-muted); }
 @keyframes surface-agent-nudge {
 	0%, 100% { transform: translateY(0); opacity: 1; }
@@ -2037,6 +2040,20 @@
 .rail-surface.active .surface-tile > .rail-mention {
 	background: var(--rail-selection-text); color: var(--rail-selection); box-shadow: 0 0 0 2px var(--rail-selection);
 }
+.surface-crew > .surface-crew-turn.is-waiting,
+.surface-message-group.is-waiting > .surface-message-face { background: var(--warning); }
+.surface-crew > .surface-crew-turn.is-waiting {
+	box-shadow: 0 0 0 1.5px var(--bg), 0 0 0 3px color-mix(in srgb, var(--warning) 45%, transparent);
+}
+.rail .surface-crew > .surface-crew-turn.is-waiting {
+	box-shadow: 0 0 0 1.5px var(--rail), 0 0 0 3px color-mix(in srgb, var(--warning) 45%, transparent);
+}
+.surface-message-group.is-waiting > .surface-message-face {
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 35%, transparent);
+}
+.surface-message-group.is-waiting > .surface-message.is-member { color: var(--text-muted); }
+.surface-drawer-usage { padding: 0 4px 10px; }
+.surface-drawer-usage[hidden] { display: none; }
 .surface-patchnote-approver { color: var(--text-muted); }
 
 .surface-door-retry { margin-top: 4px; }

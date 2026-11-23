@@ -417,6 +417,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_surface_session_note(uuid,text,uuid[])', false, true, 'member: qorpera_assert_surface_member(profile, true); a note to teammates who are members of the company, never wakes the session (20260930866000)'),
 	('public.qorpera_surface_unseen_notes(uuid)', false, true, 'member: qorpera_assert_surface_member(company); the caller''s own unseen notes, read only (20260930866000)'),
 	('public.qorpera_surface_notes_seen(uuid)', false, true, 'member: qorpera_assert_surface_member(profile); marks only the caller''s own notes in one session seen (20260930866000)'),
+	('public.qorpera_surface_session_continue(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); only the member whose login a waiting turn is used up on, and only when one of their own logins has room (20260930873000)'),
 	('public.qorpera_unpublish_company_site(uuid)', false, true, 'member: auth.uid() + owner or admin of the site''s company (20260930550000)'),
 	('public.qorpera_unregister_founding_presence(uuid,uuid)', false, true, 'member: deletes only auth.uid()''s own device (20260930531000)'),
 	('public.qorpera_unregister_presence_device(uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),

@@ -27,6 +27,7 @@ import {
 	type SurfaceSessionImages,
 	type SurfaceSummary,
 	type SurfaceUnseenNote,
+	type SurfaceUsageWait,
 	type SurfaceWorkspace,
 } from "@qorpera/contracts";
 import { phrase, t } from "../ui/preferences.ts";
@@ -81,6 +82,7 @@ export type SurfacesClient = Pick<
 			| "noteSurfaceSession"
 			| "unseenSurfaceNotes"
 			| "markSurfaceNotesSeen"
+			| "continueSurfaceSession"
 		>
 	>;
 
@@ -332,6 +334,10 @@ export interface SurfaceNote {
 export interface SurfaceTeammate {
 	readonly userId: string;
 	readonly name: string;
+}
+
+export interface SurfaceTurnHolder extends SurfaceTeammate {
+	readonly waiting?: true;
 }
 
 export interface CreateSurfaceInput {
@@ -984,6 +990,7 @@ export interface SurfacesStoreOptions {
 	readonly realtimeLive?: () => boolean;
 	readonly memberName?: (userId: string) => string | undefined;
 	readonly teammates?: () => readonly SurfaceTeammate[];
+	readonly selfUserId?: string;
 	readonly peopleAtSurface?: (slug: string) => readonly { readonly userId: string; readonly name: string }[];
 	readonly loadCloudFiles?: (
 		surface: SurfaceSummary,
@@ -1189,11 +1196,17 @@ export class SurfacesStore {
 		return this.#options.teammates?.() ?? [];
 	}
 
-	turnHolder(session: SurfaceSession): SurfaceTeammate | undefined {
+	turnHolder(session: SurfaceSession): SurfaceTurnHolder | undefined {
 		if (!this.teammates().length || !(isRunningSession(session) || session.state === "needs_input")) return undefined;
-		const userId = session.turnRequestedByUserId;
+		const waiting = session.waitingOnUsage?.userId;
+		const userId = waiting ?? session.turnRequestedByUserId;
 		const name = this.memberName(userId);
-		return userId && name ? { userId, name } : undefined;
+		return userId && name ? { userId, name, ...(waiting ? { waiting: true } : {}) } : undefined;
+	}
+
+	myUsageWait(session: SurfaceSession): SurfaceUsageWait | undefined {
+		const wait = session.waitingOnUsage;
+		return wait && this.#options.selfUserId && wait.userId === this.#options.selfUserId ? wait : undefined;
 	}
 
 	unseenNotesOn(surfaceId: string): number {
@@ -3908,6 +3921,14 @@ export class SurfacesStore {
 		if (this.state.workspaces[updated.surfaceId]) this.#applySession(updated, "open");
 		else this.store.set((state) => ({ notes: reconcileNotes(state.notes, [updated]) }));
 		return true;
+	}
+
+	async continueWaiting(sessionId: string): Promise<void> {
+		const updated = await this.#run(`continue:${sessionId}`, (client) => {
+			if (!client.continueSurfaceSession) throw new Error(t("This session cannot continue here yet."));
+			return client.continueSurfaceSession(sessionId);
+		});
+		if (updated && this.state.workspaces[updated.surfaceId]) this.#applySession(updated, "open");
 	}
 
 	async noteTo(sessionId: string, text: string, to: readonly string[]): Promise<boolean> {

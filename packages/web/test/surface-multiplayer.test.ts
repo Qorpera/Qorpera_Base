@@ -194,6 +194,64 @@ describe("two people in one interface session", () => {
 		store.dispose();
 	});
 
+	it("shows the member whose login is full the usage card, and everyone else their face in amber", async () => {
+		const until = new Date(Date.now() + 2 * 3_600_000).toISOString();
+		const waiting = session([], {
+			state: "queued",
+			createdByUserId: JONAS,
+			turnRequestedByUserId: SOFIE,
+			messages: [
+				sessionMessage(MESSAGE_IDS[0]!, "member", "Can the prices be bold on mobile too?", { authorUserId: SOFIE }),
+			],
+			waitingOnUsage: { userId: SOFIE, until, continueWith: null },
+		});
+		const jonas = await opened(waiting, {}, false, { selfUserId: JONAS });
+		const face = jonas.drawer.querySelector<HTMLElement>(".surface-drawer-head .surface-crew > .surface-crew-turn")!;
+		expect(face.textContent).toBe("SL");
+		expect(face.classList.contains("is-waiting")).toBe(true);
+		expect(face.title).toBe("Waiting for Sofie's usage to reset");
+		expect(jonas.view.el.querySelector(".surface-bar-agent .surface-crew-turn.is-waiting")).not.toBeNull();
+		const rail = new SurfaceRail(jonas.store, COMPANY, new AbortController().signal);
+		rail.update("website");
+		expect(rail.el.querySelector(".rail-surface-crew .surface-crew-turn.is-waiting")?.textContent).toBe("SL");
+		expect(jonas.drawer.querySelector(".surface-message-group.is-waiting .surface-message-face")?.textContent).toBe(
+			"SL",
+		);
+		expect(jonas.drawer.querySelector<HTMLElement>(".surface-drawer-usage")!.hidden).toBe(true);
+		expect(jonas.drawer.querySelector(".usage-wall")).toBeNull();
+		expect(jonas.drawer.querySelector(".surface-drawer-working")).toBeNull();
+		jonas.view.dispose();
+		jonas.store.dispose();
+
+		const sofie = await opened(waiting, {}, false, { selfUserId: SOFIE });
+		const card = sofie.drawer.querySelector<HTMLElement>(".surface-drawer-usage .usage-wall")!;
+		expect(card.querySelector(".usage-wall-title")?.textContent).toMatch(/^Out of usage until /);
+		expect(card.querySelector(".usage-wall-sub")?.textContent).toBe("Your turn goes on by itself when it resets.");
+		expect(card.querySelector("button")).toBeNull();
+		sofie.view.dispose();
+		sofie.store.dispose();
+
+		const continued = { ...waiting, waitingOnUsage: null };
+		const continueSurfaceSession = vi.fn(async () => continued);
+		const other = await opened(
+			{ ...waiting, waitingOnUsage: { userId: SOFIE, until: null, continueWith: { account: "sofie@lund.dk" } } },
+			{ continueSurfaceSession },
+			false,
+			{ selfUserId: SOFIE },
+		);
+		const wall = other.drawer.querySelector<HTMLElement>(".surface-drawer-usage .usage-wall")!;
+		expect(wall.querySelector(".usage-wall-title")?.textContent).toBe("Out of usage");
+		expect(wall.querySelector(".usage-wall-sub")?.textContent).toBe("Keep going with sofie@lund.dk");
+		wall.querySelector<HTMLButtonElement>("button")!.click();
+		await flush();
+		other.view.update();
+		expect(continueSurfaceSession).toHaveBeenCalledWith(SESSION);
+		expect(other.drawer.querySelector<HTMLElement>(".surface-drawer-usage")!.hidden).toBe(true);
+		expect(other.drawer.querySelector(".surface-crew-turn.is-waiting")).toBeNull();
+		other.view.dispose();
+		other.store.dispose();
+	});
+
 	it("marks the interface and the session for the teammate a note names until they open it", async () => {
 		const markSurfaceNotesSeen = vi.fn(async () => undefined);
 		const client = fakeClient({

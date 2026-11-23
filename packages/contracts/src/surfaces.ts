@@ -270,6 +270,12 @@ export interface SurfaceSessionQuestion {
 	readonly options: readonly string[];
 }
 
+export interface SurfaceUsageWait {
+	readonly userId: string;
+	readonly until: string | null;
+	readonly continueWith: { readonly account: string | null } | null;
+}
+
 export interface SurfaceSession {
 	readonly id: string;
 	readonly surfaceId: string;
@@ -281,6 +287,7 @@ export interface SurfaceSession {
 	readonly originLabel: string | null;
 	readonly createdByUserId?: string | null;
 	readonly turnRequestedByUserId?: string | null;
+	readonly waitingOnUsage?: SurfaceUsageWait | null;
 	readonly explorationId: string | null;
 	readonly explorationVariantLabel: string | null;
 	readonly branchHeadSha?: string | null;
@@ -661,6 +668,21 @@ export function parseSurfaceUnseenNotes(value: unknown, label = "unseenNotes"): 
 	});
 }
 
+function parseSurfaceUsageWait(value: unknown, label: string): SurfaceUsageWait | null {
+	if (value === null) return null;
+	const raw = parseRecord(value, label);
+	let continueWith: SurfaceUsageWait["continueWith"] = null;
+	if (raw.continueWith !== null && raw.continueWith !== undefined) {
+		const next = parseRecord(raw.continueWith, `${label}.continueWith`);
+		continueWith = { account: parseOptionalText(next.account, `${label}.continueWith.account`, 320) };
+	}
+	return {
+		userId: parseUuid(raw.userId, `${label}.userId`),
+		until: parseOptionalTimestamp(raw.until, `${label}.until`),
+		continueWith,
+	};
+}
+
 export function parseSurfaceSession(value: unknown, label = "session"): SurfaceSession {
 	const raw = parseRecord(value, label);
 	if (typeof raw.hasActiveChat !== "boolean") throw new WireValueError(`${label}.hasActiveChat`);
@@ -685,6 +707,10 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		raw.turnRequestedByUserId === undefined
 			? undefined
 			: parseOptionalUuid(raw.turnRequestedByUserId, `${label}.turnRequestedByUserId`);
+	const waitingOnUsage =
+		raw.waitingOnUsage === undefined
+			? undefined
+			: parseSurfaceUsageWait(raw.waitingOnUsage, `${label}.waitingOnUsage`);
 	const notePaths =
 		raw.notePaths === undefined || raw.notePaths === null
 			? undefined
@@ -702,6 +728,7 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		originLabel: parseOptionalText(raw.originLabel, `${label}.originLabel`, 160),
 		...(createdByUserId !== undefined ? { createdByUserId } : {}),
 		...(turnRequestedByUserId !== undefined ? { turnRequestedByUserId } : {}),
+		...(waitingOnUsage !== undefined ? { waitingOnUsage } : {}),
 		explorationId: parseOptionalUuid(raw.explorationId, `${label}.explorationId`),
 		explorationVariantLabel: parseOptionalText(raw.explorationVariantLabel, `${label}.explorationVariantLabel`, 80),
 		...(branchHeadSha !== undefined ? { branchHeadSha } : {}),

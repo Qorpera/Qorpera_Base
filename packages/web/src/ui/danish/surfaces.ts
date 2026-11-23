@@ -334,4 +334,10 @@ export const SURFACES: Record<string, string> = {
 	"Teammates to write to": "Kolleger at skrive til",
 	"A teammate left you a note": "En kollega har skrevet en note til dig",
 	"Notes to teammates are not available here yet.": "Noter til kolleger er ikke tilgængelige her endnu.",
+	Waiting: "Venter",
+	"Waiting for usage to reset": "Venter på, at forbruget nulstilles",
+	"Waiting for {name}'s usage to reset": "Venter på, at {name}s forbrug nulstilles",
+	"Your turn goes on by itself when it resets.": "Din tur fortsætter af sig selv, når grænsen nulstilles.",
+	"your other login": "dit andet login",
+	"This session cannot continue here yet.": "Sessionen kan ikke fortsætte her endnu.",
 };

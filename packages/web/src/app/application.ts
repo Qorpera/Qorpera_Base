@@ -1081,6 +1081,7 @@ export function mountApplication(
 						(controller.store.get().team?.members ?? [])
 							.filter((member) => member.userId !== controller.userId)
 							.map((member) => ({ userId: member.userId, name: member.displayName || member.email })),
+					selfUserId: controller.userId,
 					peopleAtSurface: (slug) => controller.peopleByPlace().get(`surface:${slug.toLowerCase()}`) ?? [],
 					loadCloudFiles: loadSurfaceCloudFiles,
 					uploadImage: async (surfaceId, clientInputId, file, signal) => {
