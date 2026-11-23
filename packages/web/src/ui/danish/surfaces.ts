@@ -248,7 +248,9 @@ export const SURFACES: Record<string, string> = {
 	"Preview panel": "Forhåndsvisningspanel",
 	"All changes": "Alle ændringer",
 	"View responses": "Se svar",
-	"Approve {label}": "Godkend {label}",
+	"Use this one": "Brug denne",
+	"None of these": "Ingen af dem",
+	"What should it be instead?": "Hvad skal det være i stedet?",
 	"No open changes yet. Describe a change below to start an agent.":
 		"Ingen åbne ændringer endnu. Beskriv en ændring nedenfor for at starte en agent.",
 	"Open {host}": "Åbn {host}",

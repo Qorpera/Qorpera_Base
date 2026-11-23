@@ -392,6 +392,7 @@ export interface SurfacesState {
 	readonly publishedChangeIds: Readonly<Record<string, true>>;
 	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly variantPick: Readonly<Record<string, string>>;
+	readonly insteadOf?: { readonly surfaceId: string; readonly explorationId: string };
 	readonly collapsed: Readonly<Record<string, true>>;
 	readonly notes: readonly SurfaceNote[];
 	readonly sessionImages: Readonly<Record<string, SurfaceSessionImages>>;
@@ -897,9 +898,15 @@ export function reportsOwnedBy(
 		if (list) list.push(session);
 		else variantsByExploration.set(session.explorationId, [session]);
 	}
+	const chosen = workspace.explorations.filter(
+		(exp) => exp.status === "chosen" && plainSessions.some((sess) => sess.id === exp.chosenSessionId),
+	);
 	const ownerKeyFor = (report: SurfaceReportSummary): string | undefined => {
 		for (const exp of explorations) {
 			if (exp.notePaths?.includes(report.path)) return `exploration:${exp.id}`;
+		}
+		for (const exp of chosen) {
+			if (exp.notePaths?.includes(report.path)) return `session:${exp.chosenSessionId}`;
 		}
 		for (const sess of plainSessions) {
 			if (sess.notePaths?.includes(report.path)) return `session:${sess.id}`;
@@ -908,6 +915,8 @@ export function reportsOwnedBy(
 			const wanted = report.ownerTitle.toLowerCase();
 			const exp = explorations.find((item) => item.title.toLowerCase() === wanted);
 			if (exp) return `exploration:${exp.id}`;
+			const kept = chosen.find((item) => item.title.toLowerCase() === wanted);
+			if (kept) return `session:${kept.chosenSessionId}`;
 			const sess = plainSessions.find((item) => item.title.toLowerCase() === wanted);
 			if (sess) return `session:${sess.id}`;
 		}
@@ -3596,6 +3605,7 @@ export class SurfacesStore {
 	}
 
 	async discardExploration(exploration: SurfaceExplorationSet): Promise<boolean> {
+		if (this.state.insteadOf?.explorationId === exploration.id) this.store.set({ insteadOf: undefined });
 		if (this.isLocalInteractive && isLocalSurfaceId(exploration.surfaceId)) {
 			const workspace = this.workspace(exploration.surfaceId);
 			if (!workspace) return false;
@@ -3802,89 +3812,56 @@ export class SurfacesStore {
 	}
 
 	async chooseVariant(exploration: SurfaceExplorationSet, sessionId: string): Promise<boolean> {
+		const focusChosen = (state: SurfacesState): Partial<SurfacesState> => ({
+			mode: state.mode === "compare" ? "preview" : state.mode,
+			...(state.insteadOf?.explorationId === exploration.id ? { insteadOf: undefined } : {}),
+			...(state.drawer?.explorationId === exploration.id
+				? { drawer: { surfaceId: exploration.surfaceId, sessionId } }
+				: {}),
+		});
 		if (this.isLocalInteractive && isLocalSurfaceId(exploration.surfaceId)) {
 			const workspace = this.workspace(exploration.surfaceId);
-			if (!workspace) return false;
+			if (!workspace?.activeSessions.some((item) => item.id === sessionId)) return false;
 			const now = new Date().toISOString();
 			const variantIds = new Set(exploration.variantSessionIds);
-			const chosen = workspace.activeSessions.find((item) => item.id === sessionId);
-			if (!chosen) return false;
-			const mergedIds = chosen.changes.filter(isOpenChange).map((change) => change.id);
-			const closedVariants: SurfaceSession[] = [];
+			const dropped: SurfaceSession[] = [];
 			const remainingActive: SurfaceSession[] = [];
 			for (const session of workspace.activeSessions) {
-				if (!variantIds.has(session.id)) {
+				if (!variantIds.has(session.id) || session.id === sessionId) {
 					remainingActive.push(session);
 					continue;
 				}
-				if (session.id === sessionId) {
-					closedVariants.push({
-						...session,
-						state: "completed",
-						changes: session.changes.map((change) =>
-							isOpenChange(change)
-								? { ...change, status: "merged" as const, canUndo: true, resolvedAt: now }
-								: change,
-						),
-						openChangeCount: 0,
-						updatedAt: now,
-						closedAt: now,
-					});
-				} else {
-					closedVariants.push({
-						...session,
-						state: "discarded",
-						changes: session.changes.map((change) =>
-							isOpenChange(change) ? { ...change, status: "discarded" as const } : change,
-						),
-						openChangeCount: 0,
-						updatedAt: now,
-						closedAt: now,
-					});
-				}
+				dropped.push({
+					...session,
+					state: "discarded",
+					changes: session.changes.map((change) =>
+						isOpenChange(change) ? { ...change, status: "discarded" as const, resolvedAt: now } : change,
+					),
+					openChangeCount: 0,
+					updatedAt: now,
+					closedAt: now,
+				});
 			}
-			const nextExplorations = workspace.explorations.map((item) =>
-				item.id === exploration.id
-					? { ...item, status: "chosen" as const, chosenSessionId: sessionId, resolvedAt: now }
-					: item,
-			);
-			this.#commitLocalChangesToBase(exploration.surfaceId, mergedIds);
-			const refreshedSurface =
-				this.state.surfaces.find((item) => item.id === exploration.surfaceId) ?? workspace.surface;
 			const nextWorkspace: SurfaceWorkspace = {
 				...workspace,
-				surface: refreshedSurface,
 				activeSessions: remainingActive,
-				recentHistory: [...closedVariants, ...workspace.recentHistory],
-				explorations: nextExplorations,
+				recentHistory: [...dropped, ...workspace.recentHistory],
+				explorations: workspace.explorations.map((item) =>
+					item.id === exploration.id
+						? { ...item, status: "chosen" as const, chosenSessionId: sessionId, resolvedAt: now }
+						: item,
+				),
 			};
 			this.#putWorkspace({ ...nextWorkspace, surface: this.#syncLocalSurfaceCounts(nextWorkspace) });
-			this.store.set((state) => ({
-				mode: state.mode === "compare" ? "preview" : state.mode,
-				...(state.drawer?.explorationId === exploration.id || state.drawer?.sessionId === sessionId
-					? { drawer: undefined }
-					: {}),
-			}));
-			if (mergedIds.length > 0) this.#offerUndo(chosen.explorationVariantLabel ?? chosen.title, mergedIds);
+			this.store.set(focusChosen);
 			return true;
 		}
 		const chosen = await this.#run(`exploration:${exploration.id}`, (client) =>
 			client.chooseExploration(exploration.id, sessionId),
 		);
 		if (!chosen) return false;
-		this.store.set((state) => ({
-			mode: state.mode === "compare" ? "preview" : state.mode,
-			...(state.drawer?.explorationId === exploration.id || state.drawer?.sessionId === sessionId
-				? { drawer: undefined }
-				: {}),
-		}));
+		this.store.set(focusChosen);
 		await this.refreshWorkspace(exploration.surfaceId);
-		const label = chosen.explorationVariantLabel ?? chosen.title;
-		const verb = this.#undoVerbFor(exploration.surfaceId);
-		const mergedIds = chosen.changes.filter((change) => change.status === "merged").map((change) => change.id);
-		const mergingIds = chosen.changes.filter((change) => change.status === "merging").map((change) => change.id);
-		if (mergedIds.length > 0) this.#offerUndo(label, mergedIds, verb);
-		else if (mergingIds.length > 0) this.#offerPendingMerge(exploration.surfaceId, label, mergingIds, verb);
 		void this.refreshSurfaces();
 		return true;
 	}
@@ -4089,6 +4066,20 @@ export class SurfacesStore {
 			void this.#options.client?.setSessionChatOpen(sessionId, true).catch(() => undefined);
 		}
 		await this.#syncPreview(surfaceId);
+	}
+
+	askInstead(surfaceId: string, explorationId: string): void {
+		this.store.set({ insteadOf: { surfaceId, explorationId } });
+	}
+
+	keepOptions(): void {
+		if (this.state.insteadOf) this.store.set({ insteadOf: undefined });
+	}
+
+	insteadOf(surfaceId: string): SurfaceExplorationSet | undefined {
+		const asked = this.state.insteadOf;
+		if (asked?.surfaceId !== surfaceId) return undefined;
+		return openExplorations(this.workspace(surfaceId)).find((item) => item.id === asked.explorationId);
 	}
 
 	pickedVariant(exploration: SurfaceExplorationSet): string | undefined {
