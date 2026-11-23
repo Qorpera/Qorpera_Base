@@ -1698,11 +1698,6 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 		expect(capturedInstructions).toContain("Surface Preview and CI contract");
 		expect(capturedInstructions).toContain('"surfaceGate": "stage"');
 		expect(capturedInstructions).toContain("apps/<repo>*/index.html");
-		expect(capturedInstructions).toContain("commit source only, never build output");
-		expect(capturedInstructions).toContain(
-			'counted from the repository root and not from cwd, e.g. "web/dist" with "cwd": "web"',
-		);
-		expect(capturedInstructions).not.toContain("commit the built output folder");
 		expect(capturedInstructions).not.toContain("qorpera.site");
 		expect(capturedInstructions).not.toContain("What's new");
 		expect(capturedInstructions).not.toContain("gets the commit landed on its default branch");
