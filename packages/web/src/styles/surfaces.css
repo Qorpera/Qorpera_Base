@@ -493,6 +493,7 @@
 .surface-address-go:hover { background: var(--primary-hover); }
 .surface-address-go.is-confirming { background: #16a34a; color: #fff; box-shadow: 0 2px 10px -3px rgb(22 163 74 / 45%); }
 .surface-address-go.is-confirming:hover { background: #15803d; }
+.surface-address-go.is-going, .surface-address-go.is-going:hover { background: #16a34a; color: #fff; box-shadow: none; opacity: 0.8; }
 .surface-address-go:focus-visible, .surface-address-pill:focus-visible { outline-offset: 2px; }
 .surface-address-quiet { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.4; }
 .surface-address-problem { margin: 0; color: var(--danger); font-size: 12.5px; line-height: 1.4; overflow-wrap: anywhere; }
@@ -611,8 +612,15 @@ a.surface-address-row:hover { text-decoration: none; }
 	.surface-pill > .surface-pill-address + .surface-pill-divider { margin-left: 2px; }
 }
 @container (max-width: 30em) {
-	.surface-pill > .surface-pill-address:not(.is-unknown) { width: 32px; padding: 0; }
-	.surface-pill > .surface-pill-address:not(.is-unknown) .surface-address-host { display: none; }
+	.surface-pill:has(> :is([data-toggle="mode"], .surface-publish)) > .surface-pill-address:not(.is-unknown) {
+		width: 32px;
+		padding: 0;
+	}
+	.surface-pill:has(> :is([data-toggle="mode"], .surface-publish))
+		> .surface-pill-address:not(.is-unknown)
+		.surface-address-host {
+		display: none;
+	}
 	.surface-toggle > button { padding: 0 8px; }
 	.surface-publish.is-asked .surface-publish-word { display: none; }
 	.surface-pill > .surface-pill-presence:not(:only-child),
@@ -622,6 +630,7 @@ a.surface-address-row:hover { text-decoration: none; }
 @container (max-width: 33em) {
 	.surface-pill > .surface-toggle[data-toggle="device"],
 	.surface-pill > .surface-pill-divider:has(+ .surface-toggle[data-toggle="device"]) { display: none; }
+	.surface-notch:has(> .surface-pill > .surface-toggle[data-toggle="device"]:only-child) { display: none; }
 }
 .surface-pill.is-cut-end { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
 .surface-pill.is-cut-start { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }

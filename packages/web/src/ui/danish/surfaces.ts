@@ -71,6 +71,19 @@ export const SURFACES: Record<string, string> = {
 	"These changes conflict. Turn one off to preview the rest.":
 		"Ændringerne er i konflikt. Slå én fra for at se resten.",
 	"The preview could not be built.": "Forhåndsvisningen kunne ikke bygges.",
+	"The company is out of computer hours, so the preview could not be built.":
+		"Virksomheden har ikke flere computertimer, så forhåndsvisningen kunne ikke bygges.",
+	"No machine was free to build the preview. Try again in a moment.":
+		"Ingen maskine var ledig til at bygge forhåndsvisningen. Prøv igen om lidt.",
+	"The built preview does not fit within the limits of a site.":
+		"Den byggede forhåndsvisning er større end det, en hjemmeside kan rumme.",
+	"The site could not be built, so nothing was published.": "Hjemmesiden kunne ikke bygges, så intet blev udgivet.",
+	"The company is out of computer hours, so nothing was published.":
+		"Virksomheden har ikke flere computertimer, så intet blev udgivet.",
+	"No machine was free to build the site. Try publishing again in a moment.":
+		"Ingen maskine var ledig til at bygge hjemmesiden. Prøv at udgive igen om lidt.",
+	"The built site does not fit within the limits of a site, so nothing was published.":
+		"Den byggede hjemmeside er større end det, en hjemmeside kan rumme, så intet blev udgivet.",
 	"The preview could not be opened.": "Forhåndsvisningen kunne ikke åbnes.",
 	"Reconnecting preview…": "Genopretter forhåndsvisning…",
 	"Preview appears here when a change is ready.": "Forhåndsvisningen vises her, når en ændring er klar.",
@@ -335,6 +348,7 @@ export const SURFACES: Record<string, string> = {
 	"Could you add these lines to the DNS for {domain}? They connect it to our website.":
 		"Kan du tilføje disse linjer til DNS for {domain}? De forbinder domænet med vores hjemmeside.",
 	"Go live": "Gå live",
+	"Going live…": "Går live…",
 	"It can go live once its first version is ready.": "Den kan gå live, når dens første version er klar.",
 	"Make it not live": "Slå live fra",
 	"No longer points here": "Peger ikke hertil længere",

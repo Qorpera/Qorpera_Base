@@ -305,6 +305,7 @@ export interface CompanyState {
 	/** The company's sites as last read, with `siteCount`: each live website is an owed view, first in the apps drawer,
 	 * opening the site with its numbers (company views step 4; views/shell.ts owedViews). */
 	siteList?: readonly CompanySite[];
+	siteListUnread?: boolean;
 	/** The company's sites Qorpera's operators took down, by id, as the access read last said
 	 * (`qorpera_company_site_access`): the owed row leaves them out. Unset until read, and on a cloud without it. */
 	sitesTakenDown?: ReadonlySet<string>;
@@ -328,6 +329,17 @@ export interface CompanyState {
 	loading: boolean;
 	error?: string;
 	accessLost?: boolean;
+}
+
+export function siteServed(
+	state: Pick<CompanyState, "siteList" | "siteListUnread">,
+	surface: { readonly archetype: string; readonly siteSlug?: string | null },
+): boolean | undefined {
+	if (surface.archetype !== "live_build" || !surface.siteSlug) return false;
+	if (state.siteList === undefined || state.siteListUnread) return undefined;
+	return state.siteList.some(
+		(site) => site.slug === surface.siteSlug && site.kind === "files" && site.state === "live",
+	);
 }
 
 export interface ConversationState {

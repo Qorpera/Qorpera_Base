@@ -5,6 +5,7 @@ import {
 	ADDRESS_RECHECK_GAP_MS,
 	type AddressMark,
 	SurfaceAddress,
+	type SurfaceAddressSetup,
 } from "../src/app/views/surface-address-sheet.ts";
 import { APPROVE_ARM_MS } from "../src/app/views/surface-session-drawer.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
@@ -21,7 +22,11 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-function mount(world: Partial<HostingWorld> = {}, manage = true) {
+function mount(
+	world: Partial<HostingWorld> = {},
+	manage = true,
+	hooks: Pick<SurfaceAddressSetup, "beforePublic" | "publicChanged"> = {},
+) {
 	const container = h("div", { class: "surface-canvas" });
 	document.body.append(container);
 	const controller = new AbortController();
@@ -35,6 +40,7 @@ function mount(world: Partial<HostingWorld> = {}, manage = true) {
 			if (shown && next) shown.replaceWith(next);
 		},
 		signal: controller.signal,
+		...hooks,
 	});
 	const target = { siteId: HOSTED_SITE, client: hosting.client };
 	address.sync(true, target, LIVE_URL);
@@ -80,8 +86,12 @@ const changing = () =>
 		".surface-address-go, .surface-address-input, [data-key='add'], [data-key='remove'], [data-key='not-live']",
 	).length;
 
-async function opened(world: Partial<HostingWorld> = {}, manage = true) {
-	const mounted = mount(world, manage);
+async function opened(
+	world: Partial<HostingWorld> = {},
+	manage = true,
+	hooks: Pick<SurfaceAddressSetup, "beforePublic" | "publicChanged"> = {},
+) {
+	const mounted = mount(world, manage, hooks);
 	await settle();
 	mounted.address.open();
 	await settle();
@@ -133,6 +143,60 @@ describe("the address card before the site is public", () => {
 		expect(go()).toBeNull();
 		expect(groups()).toEqual([["Open the site", "Copy link"], ["Use your own domain"], ["Make it not live"]]);
 		expect(bar().classList.contains("is-live")).toBe(true);
+	});
+
+	it("waits for what must happen first, then goes public and says so; a refusal first keeps it private", async () => {
+		const steps: string[] = [];
+		let finish: (ready: boolean) => void = () => undefined;
+		const beforePublic = vi.fn(
+			() =>
+				new Promise<boolean>((resolve) => {
+					steps.push("before");
+					finish = resolve;
+				}),
+		);
+		const publicChanged = vi.fn((isPublic: boolean) => steps.push(`changed:${isPublic}`));
+		const { address, client, world } = await opened({}, true, { beforePublic, publicChanged });
+		client.setPublic.mockImplementation(async (_siteId: string, isPublic: boolean) => {
+			steps.push(`public:${isPublic}`);
+			if (world.entry) world.entry.isPublic = isPublic;
+			return isPublic;
+		});
+		const confirm = go()!.className;
+		await goLive();
+		expect(steps).toEqual(["before"]);
+		expect(address.mark()).toBe("private");
+		expect(address.isWriting).toBe(true);
+		expect(bar().classList.contains("is-private")).toBe(true);
+		const going = go()!;
+		expect(going.textContent).toBe("Going live…");
+		expect(going.disabled).toBe(true);
+		expect(going.className).toBe(`${confirm} is-going`);
+		going.click();
+		address.close();
+		expect(beforePublic).toHaveBeenCalledTimes(1);
+		finish(true);
+		await settle();
+		expect(steps).toEqual(["before", "public:true", "changed:true"]);
+		expect(address.mark()).toBe("live");
+		expect(address.isWriting).toBe(false);
+		address.open();
+		await settle();
+		press("Make it not live");
+		await settle();
+		expect(steps).toEqual(["before", "public:true", "changed:true", "public:false", "changed:false"]);
+		expect(beforePublic).toHaveBeenCalledTimes(1);
+
+		await goLive();
+		finish(false);
+		await settle();
+		expect(client.setPublic).toHaveBeenCalledTimes(2);
+		expect(publicChanged).toHaveBeenCalledTimes(2);
+		expect(address.mark()).toBe("private");
+		expect(problem()).toBe("The site did not go live. Try again.");
+		expect(go()?.textContent).toBe("Go live");
+		expect(go()?.disabled).toBe(false);
+		expect(address.isWriting).toBe(false);
 	});
 
 	it("lets go of Confirm on its own after a while and on a press anywhere else", async () => {

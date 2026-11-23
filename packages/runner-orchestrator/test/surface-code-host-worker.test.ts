@@ -909,3 +909,296 @@ describe("SurfaceCodeHostWorker", () => {
 		expect(builtIndex ? Buffer.from(builtIndex.content).toString("utf8") : "").toContain("Built");
 	});
 });
+
+type RpcCall = { method: SurfaceCodeHostRpc; args: Record<string, unknown> };
+
+function buildHarness(f: Awaited<ReturnType<typeof createCodeHostFixture>>, buildAnswers: Record<string, unknown>[]) {
+	const calls: RpcCall[] = [];
+	const uploads = new Map<string, Map<string, Buffer>>();
+	let pendingClaim: Record<string, unknown> = {
+		sessions: [],
+		previews: [],
+		merges: [],
+		publishes: [],
+		automations: [],
+	};
+	const control = {
+		async call(method: SurfaceCodeHostRpc, args: Record<string, unknown>): Promise<unknown> {
+			expect(SURFACE_CODE_HOST_RPCS).toContain(method);
+			calls.push({ method, args });
+			switch (method) {
+				case "qorpera_surface_claim_pending_jobs_for_lane": {
+					const res = pendingClaim;
+					pendingClaim = { sessions: [], previews: [], merges: [], publishes: [], automations: [] };
+					return res;
+				}
+				case "qorpera_surface_request_build": {
+					const answer = buildAnswers.shift();
+					if (!answer) throw new Error("No build answer left");
+					return answer;
+				}
+				case "qorpera_surface_site_version_begin": {
+					const versionId = randomUUID();
+					uploads.set(versionId, new Map());
+					return { state: "uploading", versionId, siteId: randomUUID(), siteSlug: "shop", listed: false };
+				}
+				case "qorpera_surface_site_version_list":
+					return { state: "listed", missing: 0 };
+				case "qorpera_surface_site_version_put": {
+					const store = uploads.get(String(args.p_version_id))!;
+					for (const part of (args.p_parts as { parts: { path: string; contentBase64: string }[] }).parts) {
+						store.set(
+							part.path,
+							Buffer.concat([
+								store.get(part.path) ?? Buffer.alloc(0),
+								Buffer.from(part.contentBase64, "base64"),
+							]),
+						);
+					}
+					return { state: "kept" };
+				}
+				case "qorpera_surface_site_version_finish":
+					return { state: args.p_promote_live === true ? "live" : "ready" };
+				case "qorpera_surface_complete_preview":
+				case "qorpera_surface_complete_publish":
+					return {};
+				case "qorpera_surface_renew_lease":
+					return { renewed: true };
+				case "qorpera_surface_shared_product_folder_roots":
+					return [];
+				default:
+					throw new Error(`Unexpected RPC ${method}`);
+			}
+		},
+	};
+	const hosts = {
+		async run<T>(
+			_c: string,
+			_e: string,
+			_s: AbortSignal,
+			fn: (job: CodeHostJob, gc: never) => Promise<T>,
+		): Promise<T> {
+			return await fn(f.job, undefined as never);
+		},
+	};
+	return {
+		calls,
+		uploads,
+		worker: new SurfaceCodeHostWorker({ control, hosts }),
+		claim(value: Record<string, unknown>) {
+			pendingClaim = { sessions: [], previews: [], merges: [], publishes: [], automations: [], ...value };
+		},
+	};
+}
+
+async function commitFiles(
+	f: Awaited<ReturnType<typeof createCodeHostFixture>>,
+	files: Record<string, string>,
+	message: string,
+): Promise<{ commit: string; tree: string }> {
+	const mainWorktree = join(f.code, "main");
+	for (const [path, text] of Object.entries(files)) {
+		await mkdir(join(mainWorktree, path, ".."), { recursive: true });
+		await writeFile(join(mainWorktree, path), text);
+		await f.git(mainWorktree, "add", path);
+	}
+	await f.git(mainWorktree, "commit", "-m", message);
+	const commit = await f.git(mainWorktree, "rev-parse", "HEAD");
+	await f.git(join(f.code, "repo.git"), "update-ref", "refs/heads/main", commit);
+	return { commit, tree: await f.git(join(f.code, "repo.git"), "rev-parse", `${commit}^{tree}`) };
+}
+
+const RECIPE_CHECKS = JSON.stringify({
+	checks: [{ name: "build", run: "npm run build" }],
+	preview: { run: "npm ci && npm run build", folder: "dist", timeoutSeconds: 120 },
+});
+
+function previewClaim(baseSha: string, previewId: string, lease: string) {
+	return {
+		previews: [
+			{
+				previewId,
+				surfaceId: randomUUID(),
+				profileId: randomUUID(),
+				environmentId: randomUUID(),
+				shortHostId: "ab12cd34",
+				baseSha,
+				selectedChangeIds: [],
+				repositoryKey: "thetaband/website",
+				leaseToken: lease,
+				changes: [],
+			},
+		],
+	};
+}
+
+describe("SurfaceCodeHostWorker previews built by the platform", () => {
+	it("keeps a repository without a real recipe on the static path and asks for no build", async () => {
+		const f = await createCodeHostFixture();
+		const committed = await commitFiles(
+			f,
+			{
+				".qorpera/checks.json": JSON.stringify({ checks: [], preview: { run: "true", folder: "." } }),
+				"package.json": "{}\n",
+			},
+			"Starter recipe",
+		);
+		const h = buildHarness(f, []);
+		h.claim(previewClaim(committed.commit, randomUUID(), randomUUID()));
+		expect(await h.worker.pass(new AbortController().signal)).toEqual({
+			previews: 1,
+			merges: 0,
+			publishes: 0,
+			failed: 0,
+		});
+		expect(h.calls.some((c) => c.method === "qorpera_surface_request_build")).toBe(false);
+		const done = h.calls.find((c) => c.method === "qorpera_surface_complete_preview");
+		expect(done?.args).toMatchObject({ p_status: "ready", p_composite_tree_sha: committed.tree });
+		const [files] = [...h.uploads.values()];
+		expect(files?.get("index.html")?.toString("utf8")).toContain("Original");
+
+		const e = await createCodeHostFixture();
+		const noPackage = await commitFiles(e, { ".qorpera/checks.json": RECIPE_CHECKS }, "Recipe without package.json");
+		const g = buildHarness(e, []);
+		g.claim(previewClaim(noPackage.commit, randomUUID(), randomUUID()));
+		await g.worker.pass(new AbortController().signal);
+		expect(g.calls.some((c) => c.method === "qorpera_surface_request_build")).toBe(false);
+		expect(g.calls.find((c) => c.method === "qorpera_surface_complete_preview")?.args.p_status).toBe("ready");
+	});
+
+	it("parks a preview on its build, then serves the build's output, asking again for a built tree that is gone", async () => {
+		const f = await createCodeHostFixture();
+		const output = await commitFiles(
+			f,
+			{ "dist/index.html": "<!doctype html><h1>Built</h1>\n", "dist/assets/app-Ab12_x.js": "console.log(1);\n" },
+			"Output",
+		);
+		const builtTree = await f.git(join(f.code, "repo.git"), "rev-parse", `${output.commit}:dist`);
+		const source = await commitFiles(
+			f,
+			{ ".qorpera/checks.json": RECIPE_CHECKS, "package.json": "{}\n", "src/main.tsx": "export {};\n" },
+			"Source",
+		);
+		const buildId = randomUUID();
+		const previewId = randomUUID();
+		const lease = randomUUID();
+		const h = buildHarness(f, [
+			{ state: "waiting", buildId },
+			{ state: "built", buildId, builtTreeSha: "f".repeat(40) },
+			{ state: "built", buildId, builtTreeSha: builtTree },
+		]);
+		h.claim(previewClaim(source.commit, previewId, lease));
+		expect(await h.worker.pass(new AbortController().signal)).toEqual({
+			previews: 1,
+			merges: 0,
+			publishes: 0,
+			failed: 0,
+		});
+		const asked = h.calls.filter((c) => c.method === "qorpera_surface_request_build");
+		expect(asked).toHaveLength(1);
+		expect(asked[0]?.args).toMatchObject({
+			p_kind: "preview",
+			p_id: previewId,
+			p_lease_token: lease,
+			p_tree_sha: source.tree,
+			p_recipe: { run: "npm ci && npm run build", cwd: ".", folder: "dist", timeoutSeconds: 120 },
+			p_stale_built_tree: null,
+		});
+		expect(h.calls.some((c) => c.method === "qorpera_surface_complete_preview")).toBe(false);
+
+		h.claim(previewClaim(source.commit, previewId, lease));
+		await h.worker.pass(new AbortController().signal);
+		const again = h.calls.filter((c) => c.method === "qorpera_surface_request_build");
+		expect(again.map((c) => c.args.p_stale_built_tree)).toEqual([null, null, "f".repeat(40)]);
+		const done = h.calls.find((c) => c.method === "qorpera_surface_complete_preview");
+		expect(done?.args).toMatchObject({ p_status: "ready", p_composite_tree_sha: source.tree, p_lease_token: lease });
+		const begin = h.calls.find((c) => c.method === "qorpera_surface_site_version_begin");
+		expect(begin?.args.p_main_sha).toBe(source.commit);
+		const [files] = [...h.uploads.values()];
+		expect(
+			[...(files?.keys() ?? [])]
+				.filter((path) => !path.startsWith("public/") && !path.startsWith("qorpera-"))
+				.sort(),
+		).toEqual(["assets/app-Ab12_x.js", "index.html"]);
+		expect(files?.get("index.html")?.toString("utf8")).toContain("Built");
+	});
+
+	it("leaves a preview the build request already failed (a company out of computer hours) without completing it again", async () => {
+		const f = await createCodeHostFixture();
+		const source = await commitFiles(f, { ".qorpera/checks.json": RECIPE_CHECKS, "package.json": "{}\n" }, "Source");
+		const h = buildHarness(f, [
+			{
+				state: "failed",
+				buildId: null,
+				errorDetail: "PREVIEW_BUILD_NO_HOURS\nThe company has no computer hours left.",
+			},
+		]);
+		h.claim(previewClaim(source.commit, randomUUID(), randomUUID()));
+		expect(await h.worker.pass(new AbortController().signal)).toEqual({
+			previews: 1,
+			merges: 0,
+			publishes: 0,
+			failed: 0,
+		});
+		expect(h.calls.some((c) => c.method === "qorpera_surface_complete_preview")).toBe(false);
+		expect(h.calls.some((c) => c.method === "qorpera_surface_site_version_begin")).toBe(false);
+	});
+
+	it("publishes main's built tree from the same plan and fails a checks file that declares a build but is not valid", async () => {
+		const f = await createCodeHostFixture();
+		const output = await commitFiles(f, { "dist/index.html": "<!doctype html><h1>Live</h1>\n" }, "Output");
+		const builtTree = await f.git(join(f.code, "repo.git"), "rev-parse", `${output.commit}:dist`);
+		const source = await commitFiles(f, { ".qorpera/checks.json": RECIPE_CHECKS, "package.json": "{}\n" }, "Source");
+		const jobId = randomUUID();
+		const lease = randomUUID();
+		const h = buildHarness(f, [{ state: "built", buildId: randomUUID(), builtTreeSha: builtTree }]);
+		h.claim({
+			publishes: [
+				{
+					jobId,
+					surfaceId: randomUUID(),
+					profileId: randomUUID(),
+					environmentId: randomUUID(),
+					sourceKind: "code_repo",
+					liveHeadSha: source.commit,
+					leaseToken: lease,
+					repositoryKey: "thetaband/website",
+					siteId: randomUUID(),
+					payload: {},
+				},
+			],
+		});
+		expect(await h.worker.pass(new AbortController().signal)).toEqual({
+			previews: 0,
+			merges: 0,
+			publishes: 1,
+			failed: 0,
+		});
+		expect(h.calls.find((c) => c.method === "qorpera_surface_request_build")?.args).toMatchObject({
+			p_kind: "publish",
+			p_id: jobId,
+			p_commit_sha: source.commit,
+			p_tree_sha: source.tree,
+		});
+		expect(h.calls.find((c) => c.method === "qorpera_surface_site_version_finish")?.args.p_promote_live).toBe(true);
+		expect(h.calls.find((c) => c.method === "qorpera_surface_complete_publish")?.args).toMatchObject({
+			p_status: "published",
+			p_published_head_sha: source.commit,
+		});
+		const [files] = [...h.uploads.values()];
+		expect(files?.get("index.html")?.toString("utf8")).toContain("Live");
+
+		const broken = await commitFiles(
+			f,
+			{ ".qorpera/checks.json": JSON.stringify({ preview: { run: "vite build", folder: "../out" } }) },
+			"Broken checks",
+		);
+		const g = buildHarness(f, []);
+		g.claim(previewClaim(broken.commit, randomUUID(), randomUUID()));
+		await g.worker.pass(new AbortController().signal);
+		const failed = g.calls.find((c) => c.method === "qorpera_surface_complete_preview");
+		expect(failed?.args.p_status).toBe("failed");
+		expect(String(failed?.args.p_error_detail).split("\n")[0]).toBe("PREVIEW_BUILD_FAILED");
+		expect(g.calls.some((c) => c.method === "qorpera_surface_request_build")).toBe(false);
+	});
+});

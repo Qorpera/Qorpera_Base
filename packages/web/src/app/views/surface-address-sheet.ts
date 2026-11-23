@@ -24,6 +24,8 @@ export interface SurfaceAddressSetup {
 	readonly canManage: () => boolean;
 	readonly changed: () => void;
 	readonly signal: AbortSignal;
+	readonly beforePublic?: () => Promise<boolean>;
+	readonly publicChanged?: (isPublic: boolean) => void;
 }
 
 export type AddressMark = "unknown" | "private" | "live";
@@ -72,6 +74,7 @@ const REFUSALS: Readonly<Record<string, string>> = {
 	SITE_TAKEN_DOWN: phrase("Qorpera took this site down, so this cannot change now."),
 };
 const MANAGERS_ONLY = phrase("Only founders and admins can change this.");
+const NOT_GONE_LIVE = phrase("The site did not go live. Try again.");
 
 export function addressRefusal(error: unknown, fallback: string): string {
 	if (!(error instanceof CloudRpcError)) return t(fallback);
@@ -148,6 +151,7 @@ export class SurfaceAddress {
 	#open = false;
 	#page: Page = MAIN;
 	#armed = false;
+	#going = false;
 	#armTimer: ReturnType<typeof setTimeout> | undefined;
 	#reads = 0;
 	#writing = 0;
@@ -168,6 +172,14 @@ export class SurfaceAddress {
 
 	get isOpen(): boolean {
 		return this.#open;
+	}
+
+	get isWriting(): boolean {
+		return this.#writing > 0 || this.#going;
+	}
+
+	get readFailed(): boolean {
+		return this.#failed;
 	}
 
 	sync(shown: boolean, target: SurfaceSiteHosting | undefined, liveUrl: string | null): string {
@@ -429,17 +441,40 @@ export class SurfaceAddress {
 				};
 			},
 			(client, siteId) => client.setPublic(siteId, next, this.#setup.signal),
-			next ? phrase("The site did not go live. Try again.") : phrase("The site is still live. Try again."),
+			next ? NOT_GONE_LIVE : phrase("The site is still live. Try again."),
+			() => this.#setup.publicChanged?.(next),
 		);
 	}
 
 	#goLive(): void {
+		if (this.#going) return;
 		if (!this.#armed) {
 			this.#arm();
 			return;
 		}
 		this.#disarm(false);
-		this.#setPublic(true);
+		const before = this.#setup.beforePublic;
+		if (!before) {
+			this.#setPublic(true);
+			return;
+		}
+		const target = this.#target;
+		this.#going = true;
+		this.#problem = undefined;
+		this.#swapGo();
+		this.#changed();
+		void before()
+			.catch(() => false)
+			.then((ready) => {
+				this.#going = false;
+				if (this.#setup.signal.aborted || target !== this.#target) return;
+				if (ready) {
+					this.#setPublic(true);
+					return;
+				}
+				this.#problem = t(NOT_GONE_LIVE);
+				this.#changed();
+			});
 	}
 
 	#arm(): void {
@@ -464,7 +499,7 @@ export class SurfaceAddress {
 		const next = this.#goButton();
 		shown.replaceWith(next);
 		this.#painted = this.#paintKey();
-		if (focused) next.focus();
+		if (focused) (next.disabled ? this.#sheet : next).focus();
 	}
 
 	#go(page: Page): void {
@@ -612,6 +647,7 @@ export class SurfaceAddress {
 			this.#problem ?? "",
 			this.#page,
 			this.#armed,
+			this.#going,
 			known === undefined
 				? "unknown"
 				: known === null
@@ -754,16 +790,18 @@ export class SurfaceAddress {
 
 	#goButton(): HTMLButtonElement {
 		const armed = this.#armed;
+		const going = this.#going;
 		return h(
 			"button",
 			{
 				type: "button",
-				class: `surface-address-go${armed ? " is-confirming" : ""}`,
+				class: `surface-address-go${armed ? " is-confirming" : ""}${going ? " is-going" : ""}`,
 				"data-key": "go",
+				disabled: going,
 				...(armed ? { "data-armed": "true" } : {}),
 				onclick: () => this.#goLive(),
 			},
-			approveLabel(t("Go live"), armed),
+			going ? h("span", { class: "surface-approve-label" }, t("Going live…")) : approveLabel(t("Go live"), armed),
 		);
 	}
 
