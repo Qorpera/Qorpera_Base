@@ -1,4 +1,4 @@
-import { easing, reducedMotion } from "./motion.ts";
+import { reducedMotion } from "./motion.ts";
 
 export interface Box {
 	left: number;
@@ -17,6 +17,7 @@ export interface HoverGlideOptions {
 }
 
 const GAP_WAIT = 100;
+const FOLLOW_MS = 38;
 const LIT_CLASS = "hover-lit";
 
 export class HoverGlide {
@@ -24,7 +25,8 @@ export class HoverGlide {
 	#list: HTMLElement;
 	#options: HoverGlideOptions;
 	#target: HTMLElement | undefined;
-	#animation: Animation | undefined;
+	#frame = 0;
+	#shown: Box | undefined;
 	#to: Box | undefined;
 	#leaving = 0;
 	#lighting = 0;
@@ -53,8 +55,7 @@ export class HoverGlide {
 			window.clearTimeout(this.#leaving);
 			window.clearTimeout(this.#lighting);
 			window.clearTimeout(this.#removing);
-			this.#animation?.cancel();
-			this.#animation = undefined;
+			this.#stop();
 			this.#target = undefined;
 			this.#lit = undefined;
 			this.#to = undefined;
@@ -110,13 +111,12 @@ export class HoverGlide {
 			if (item.classList.contains("active")) item.classList.remove(LIT_CLASS);
 			return;
 		}
-		const from = this.#target && this.attached ? this.#currentBox() : undefined;
+		const from = this.#target && this.attached ? this.#shown : undefined;
 		const lit = this.#lit === item && item.classList.contains(LIT_CLASS);
 		this.#target = item;
-		this.#animation?.cancel();
-		this.#animation = undefined;
 		this.#to = to;
-		Object.assign(this.tint.style, frame(to));
+		Object.assign(this.tint.style, { width: `${to.width}px`, height: `${to.height}px`, borderRadius: to.radius });
+		this.#show(from ?? to);
 		const tone = getComputedStyle(item).getPropertyValue("--glide-tint").trim();
 		if (tone) this.tint.style.setProperty("--glide-tint", tone);
 		else this.tint.style.removeProperty("--glide-tint");
@@ -129,33 +129,53 @@ export class HoverGlide {
 		window.clearTimeout(this.#removing);
 		this.tint.classList.add("is-on");
 		if (!from || reducedMotion() || typeof this.tint.animate !== "function" || sameBox(from, to)) {
+			this.#stop();
+			this.#show(to);
 			this.#light(item, 0);
 			return;
 		}
-		const distance = Math.hypot(to.left - from.left, to.top - from.top);
-		const duration = Math.min(230, 150 + distance * 0.12);
-		this.#light(item, lit ? 0 : duration * 0.55);
-		const animation = this.tint.animate([motionFrame(from, to), motionFrame(to, to)], {
-			duration,
-			easing: easing("--ease-out"),
-		});
-		this.#animation = animation;
-		const done = () => {
-			if (this.#animation === animation) this.#animation = undefined;
+		this.#light(item, lit ? 0 : FOLLOW_MS * 1.6);
+		if (!this.#frame) this.#follow();
+	}
+
+	#follow(): void {
+		let last: number | undefined;
+		const step = (now: number) => {
+			const to = this.#to;
+			const shown = this.#shown;
+			if (!to || !shown) {
+				this.#frame = 0;
+				return;
+			}
+			const elapsed = last === undefined ? 1000 / 60 : Math.min(64, now - last);
+			last = now;
+			const next = between(shown, to, 1 - Math.exp(-elapsed / FOLLOW_MS));
+			if (sameBox(next, to)) {
+				this.#show(to);
+				this.#frame = 0;
+				return;
+			}
+			this.#show(next);
+			this.#frame = window.requestAnimationFrame(step);
 		};
-		animation.finished.then(done, done);
+		this.#frame = window.requestAnimationFrame(step);
+	}
+
+	#show(box: Box): void {
+		this.#shown = box;
+		Object.assign(this.tint.style, motionFrame(box, this.#to ?? box));
+	}
+
+	#stop(): void {
+		window.cancelAnimationFrame(this.#frame);
+		this.#frame = 0;
 	}
 
 	#hide(now = false): void {
 		window.clearTimeout(this.#leaving);
 		this.#leaving = 0;
 		if (!this.#target) return;
-		if (this.#animation) {
-			const box = this.#currentBox();
-			this.#animation.cancel();
-			this.#animation = undefined;
-			Object.assign(this.tint.style, frame(box));
-		}
+		this.#stop();
 		this.#target = undefined;
 		this.tint.classList.remove("is-on");
 		window.clearTimeout(this.#removing);
@@ -179,10 +199,6 @@ export class HoverGlide {
 
 	#boxOf(item: HTMLElement): Box {
 		return boxWithin(this.#list, item.getBoundingClientRect(), getComputedStyle(item).borderRadius);
-	}
-
-	#currentBox(): Box {
-		return boxWithin(this.#list, this.tint.getBoundingClientRect(), getComputedStyle(this.tint).borderRadius);
 	}
 }
 
@@ -209,21 +225,23 @@ function sameBox(a: Box, b: Box): boolean {
 	);
 }
 
-function frame(box: Box): Keyframe & Record<string, string> {
-	return {
-		translate: `${box.left}px ${box.top}px`,
-		width: `${box.width}px`,
-		height: `${box.height}px`,
-		borderRadius: box.radius,
-	};
-}
-
-function motionFrame(box: Box, target: Box): Keyframe {
+function motionFrame(box: Box, target: Box): { translate: string; scale: string } {
 	const sx = target.width > 0 ? box.width / target.width : 1;
 	const sy = target.height > 0 ? box.height / target.height : 1;
 	return {
 		translate: `${box.left}px ${box.top}px`,
-		scale: `${sx} ${sy}`,
+		scale: sx === 1 && sy === 1 ? "none" : `${sx} ${sy}`,
+	};
+}
+
+function between(from: Box, to: Box, k: number): Box {
+	const at = (a: number, b: number) => a + (b - a) * k;
+	return {
+		left: at(from.left, to.left),
+		top: at(from.top, to.top),
+		width: at(from.width, to.width),
+		height: at(from.height, to.height),
+		radius: to.radius,
 	};
 }
 
