@@ -563,6 +563,17 @@ describe("the site's view", () => {
 	});
 });
 
+describe("the site as its interface's page", () => {
+	it("draws the site alone: no address bar, no tools, no numbers", () => {
+		open({}, { siteAlone: true });
+		expect(document.querySelector(".site-view")?.classList.contains("is-alone")).toBe(true);
+		expect(document.querySelector(".site-window iframe.site-frame")).not.toBeNull();
+		expect(document.querySelector(".site-bar")).toBeNull();
+		expect(document.querySelector(".site-tools")).toBeNull();
+		expect(document.querySelector(".site-side")).toBeNull();
+	});
+});
+
 describe("reading the site's numbers", () => {
 	it("reads only the site's own rows, and refuses an answer of another shape", () => {
 		const both = answer(

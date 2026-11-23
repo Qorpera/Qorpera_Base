@@ -52,6 +52,7 @@ export interface SurfaceViewHost {
 	mount(surface: SurfaceSummary, signal: AbortSignal): SurfaceMount | undefined;
 	openMigration(): void;
 	readonly isMountLoading?: (surface: SurfaceSummary) => boolean;
+	readonly isSiteLive?: (surface: SurfaceSummary) => boolean;
 	readonly loadStudioFiles?: (
 		surface: SurfaceSummary,
 		signal: AbortSignal,
@@ -808,7 +809,9 @@ export class SurfaceView {
 			explorations.length;
 		const showViewportSplit = supportsViewportSplit(surface, look);
 		const highlighted = state.highlight?.surfaceId === surface.id ? state.highlight.sessionId : "";
+		const siteLive = this.#host.isSiteLive?.(surface) === true;
 		const key = JSON.stringify([
+			siteLive,
 			surface.id,
 			surface.title,
 			surface.archetype,
@@ -871,9 +874,26 @@ export class SurfaceView {
 		const modeNav = live
 			? h(
 					"div",
-					{ class: "surface-pill-modes", role: "group", "aria-label": t("What the surface shows") },
-					seg("live", t("Live"), t("What visitors see right now")),
-					seg("preview", t("Preview"), t("Base with the changes you have turned on")),
+					{ class: "surface-pill-modes" },
+					siteLive && surface.liveUrl
+						? h(
+								"a",
+								{
+									class: "surface-pill-address",
+									href: surface.liveUrl,
+									target: "_blank",
+									rel: "noopener noreferrer",
+									title: t("Open in a new tab"),
+								},
+								hostOf(surface.liveUrl),
+							)
+						: null,
+					h(
+						"div",
+						{ class: "surface-pill-mode-set", role: "group", "aria-label": t("What the surface shows") },
+						seg("live", t("Live"), t("What visitors see right now")),
+						seg("preview", t("Preview"), t("Base with the changes you have turned on")),
+					),
 				)
 			: studioHasChanges || (surface.archetype === "studio" && state.mode === "report")
 				? h(
