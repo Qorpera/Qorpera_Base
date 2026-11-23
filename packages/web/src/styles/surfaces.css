@@ -81,10 +81,14 @@
 .frame:has(.rail.has-surface-rail) .rail-reopen-btn { top: 16px; left: 16px; }
 
 /* Unified Agents hub: Working task-driven agents at the top, Scheduled agents underneath, idle agents under Ready. */
+/* Jonas, 23 Nov 2026: the hub sits at the foot of the list, right above the profile, not under the last interface. */
+.rail.has-surface-rail .rail-scroll { display: flex; flex-direction: column; }
+.rail.has-surface-rail .rail-scroll > * { flex: none; }
 .rail-agents-hub {
-	display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: 8px; padding-top: 8px;
+	display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: auto; padding-top: 8px;
 	border-top: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
 }
+.rail-scroll > :has(+ .rail-agents-hub) { margin-bottom: 8px; }
 .rail-agents-head {
 	display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent;
 	font-family: inherit; text-align: left; cursor: default;
