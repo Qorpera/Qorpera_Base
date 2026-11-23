@@ -237,7 +237,6 @@ export const SURFACES: Record<string, string> = {
 	"Fold into a scheduled agent": "Gør til en planlagt agent",
 	"New scheduled agent": "Ny planlagt agent",
 	"Scheduled agent": "Planlagt agent",
-	"New conversation": "Ny samtale",
 	Scheduled: "Planlagte",
 	Prompt: "Prompt",
 	Schedule: "Tidsplan",
