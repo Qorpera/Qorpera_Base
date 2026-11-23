@@ -626,7 +626,9 @@
 .surface-mount > .surface-ops, .surface-mount > .surface-local-site { height: 100%; }
 .surface-mount .site-view, .surface-site > * { height: 100%; }
 .surface-ops .mailbox-scroll { padding-bottom: 108px; }
-.surface-ops > .page, .surface-files, .surface-files .files-page { padding-bottom: 120px; }
+.surface-ops > .page { padding-bottom: 120px; }
+.surface-mount > .surface-files { width: 100%; max-width: 1120px; margin-inline: auto; padding: 58px clamp(20px, 4.5%, 48px) 120px; }
+.surface-files .storage-columns { top: 0; }
 .surface-local-site { position: relative; width: 100%; height: 100%; overflow: hidden; }
 .surface-local-site > .surface-frame { position: absolute; inset: 0; }
 .surface-page.is-pointing .surface-local-site::after {
