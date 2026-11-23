@@ -180,22 +180,33 @@ function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
 
 function agentStatusLine(session: SurfaceSession): string | null {
 	if (session.state === "needs_input") return t("Needs you");
+	if (session.state === "failed") return t("Failed");
 	if (isRunningSession(session)) return t("Working");
 	if (hasConflictedChange(session)) return t("Conflict");
 	return null;
+}
+
+function failedSessionDetail(session: SurfaceSession): string {
+	const detail = [...session.messages]
+		.reverse()
+		.find((message) => (message.authorKind === "system" || message.authorKind === "session") && message.text.trim())
+		?.text.trim();
+	return detail || t("This session failed. Retry to try again.");
 }
 
 function rankSessions(sessions: readonly SurfaceSession[]): SurfaceSession[] {
 	const score = (session: SurfaceSession): number =>
 		session.state === "needs_input"
 			? 0
-			: hasConflictedChange(session)
+			: session.state === "failed"
 				? 1
-				: isRunningSession(session)
+				: hasConflictedChange(session)
 					? 2
-					: session.changes.some(isOpenChange)
+					: isRunningSession(session)
 						? 3
-						: 4;
+						: session.changes.some(isOpenChange)
+							? 4
+							: 5;
 	return [...sessions].sort((a, b) => score(a) - score(b));
 }
 
@@ -749,7 +760,8 @@ export class SurfaceSessionDrawer {
 			surface.archetype === "ops" ||
 			(listed.length > 0 && listed.every((change) => isActionChange(change, surface)));
 		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
-		const attention = session.state === "needs_input" || hasConflictedChange(session);
+		const failed = session.state === "failed";
+		const attention = session.state === "needs_input" || hasConflictedChange(session) || failed;
 		const ownedNotes = reportsOwnedBy(state, surface.id, { kind: "session", id: session.id });
 		const noteNodes = this.#noteButtons(ownedNotes);
 		const statusLine = agentStatusLine(session);
@@ -774,6 +786,26 @@ export class SurfaceSessionDrawer {
 		);
 
 		const bodyItems: HTMLElement[] = [...noteNodes];
+		if (failed) {
+			bodyItems.push(
+				h(
+					"div",
+					{ class: "surface-failed is-compact", role: "alert" },
+					h("p", null, failedSessionDetail(session)),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "surface-overview-act is-danger",
+							disabled: Boolean(state.busy[`reply:${session.id}`]),
+							"data-act": "retry-session",
+							"data-session": session.id,
+						},
+						t("Retry"),
+					),
+				),
+			);
+		}
 		if (session.question) {
 			bodyItems.push(
 				h(
@@ -901,7 +933,9 @@ export class SurfaceSessionDrawer {
 		return h(
 			"section",
 			{
-				class: ["surface-overview-card", "is-agent", attention && "is-attention"].filter(Boolean).join(" "),
+				class: ["surface-overview-card", "is-agent", attention && "is-attention", failed && "is-failed"]
+					.filter(Boolean)
+					.join(" "),
 				"data-act": "focus-session",
 				"data-session": session.id,
 			},
@@ -1163,6 +1197,25 @@ export class SurfaceSessionDrawer {
 							},
 							t("Close"),
 						),
+					),
+				),
+			);
+		if (session.state === "failed")
+			parts.push(
+				h(
+					"div",
+					{ class: "surface-failed", role: "alert" },
+					h("p", null, failedSessionDetail(session)),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "btn btn-small",
+							disabled: Boolean(store.state.busy[`reply:${session.id}`]),
+							"data-act": "retry-session",
+							"data-session": session.id,
+						},
+						t("Retry"),
 					),
 				),
 			);
@@ -1533,6 +1586,9 @@ export class SurfaceSessionDrawer {
 				if (ids.length) void store.reconcileChanges(surfaceId, ids);
 				return;
 			}
+			case "retry-session":
+				if (sessionId) void store.retrySession(sessionId);
+				return;
 			case "quote-change": {
 				if (sessionId && change && changeTitle) {
 					this.#setQuotedChange({ sessionId, changeId: change, title: changeTitle });

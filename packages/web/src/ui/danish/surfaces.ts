@@ -323,4 +323,10 @@ export const SURFACES: Record<string, string> = {
 	"The selected image changed.": "Det valgte billede er ændret.",
 	"Show all {count} rows": "Vis alle {count} rækker",
 	"Show full file": "Vis hele filen",
+	"Retry preview": "Prøv forhåndsvisning igen",
+	"Retry and complete the requested changes.": "Prøv igen og fuldfør de ønskede ændringer.",
+	"Publish failed. Try again.": "Udgivelsen mislykkedes. Prøv igen.",
+	"The last publish failed. Try again.": "Den seneste udgivelse mislykkedes. Prøv igen.",
+	"This session failed. Retry to try again.": "Denne session mislykkedes. Prøv igen for at fortsætte.",
+	"Merging “{title}”…": "Fletter “{title}”…",
 };

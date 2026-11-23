@@ -230,7 +230,7 @@ import {
 	type SurfaceCompanySenses,
 	type SurfaceToolsRpcClient,
 } from "./cloud-surface-tools.ts";
-import type { SurfaceCodingTurnBinding } from "./cloud-surface-turn-context.ts";
+import { parseSurfaceConflictDetails, type SurfaceCodingTurnBinding } from "./cloud-surface-turn-context.ts";
 import {
 	CLOUD_ASK_MEMBER_INPUT_SCHEMA,
 	cloudAskMemberFinalKey,
@@ -2080,6 +2080,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const conflictPaths = Array.isArray(sessionTurnRaw.conflictPaths)
 			? sessionTurnRaw.conflictPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
+		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
+		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
 		const folderClient = new CloudCompanyFolderClient({
 			binding,
 			identity,
@@ -2129,6 +2131,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			sharedAssets: sharedSnapshot,
 			pointToChangeTarget,
 			conflictPaths,
+			conflictDetails,
+			mainSha,
 			recordChange: surfaceTools.recordChange,
 			memberImages,
 			viewAttachment: (image, readSignal) => readSurfaceMemberImage(folderClient, image, readSignal),
@@ -2190,6 +2194,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const conflictPaths = Array.isArray(sessionTurnRaw.conflictPaths)
 			? sessionTurnRaw.conflictPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
+		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
+		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
 		const memberImagesSection = surfaceMemberImagesSection(
 			await this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal),
 			"company_read",
@@ -2212,6 +2218,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				typeof sessionTurnRaw.originKind === "string" ? sessionTurnRaw.originKind : String(payload.originKind),
 			originRef: sessionTurnRaw.originRef ?? null,
 			...(conflictPaths.length > 0 ? { conflictPaths } : {}),
+			...(conflictDetails.length > 0 ? { conflictDetails } : {}),
+			...(mainSha ? { mainSha } : {}),
 			leaseToken,
 		};
 

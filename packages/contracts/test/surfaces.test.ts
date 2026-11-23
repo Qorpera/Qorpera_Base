@@ -250,4 +250,60 @@ describe("surfaces contracts", () => {
 		expect(session.changes[0]?.publishedAt).toBeNull();
 		expect(session.messages[0]?.authorUserId).toBe(userId);
 	});
+
+	it("parses optional lastPublishError, liveHeadSha, and branchHeadSha metadata", () => {
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const now = "2026-11-21T03:00:00Z";
+		const summary = parseSurfaceSummary({
+			id: surfaceId,
+			slug: "website",
+			title: "Website",
+			group: "products",
+			archetype: "live_build",
+			status: "active",
+			icon: "globe",
+			sourceKind: "code_repo",
+			repositoryKey: "surfaces/website",
+			folderRoot: null,
+			siteSlug: "website",
+			previewMode: "static_site",
+			autoPublish: false,
+			publishStatus: "failed",
+			lastPublishError: "Build failed on index.html",
+			liveHeadSha: "a".repeat(40),
+			liveUrl: "https://website.qorpera.com/",
+			hasUnpublishedChanges: true,
+			unpublishedChangeCount: 1,
+			activeSessionCount: 1,
+			runningSessionCount: 0,
+			pendingChangeCount: 0,
+			needsAttentionCount: 0,
+			sortOrder: 0,
+		});
+		expect(summary.lastPublishError).toBe("Build failed on index.html");
+		expect(summary.liveHeadSha).toBe("a".repeat(40));
+
+		const session = parseSurfaceSession({
+			id: sessionId,
+			surfaceId,
+			workerId: null,
+			title: "Variant A",
+			prompt: "Try layout A",
+			state: "ready",
+			originKind: "member",
+			originLabel: null,
+			explorationId: null,
+			explorationVariantLabel: "Minimal",
+			branchHeadSha: "b".repeat(40),
+			hasActiveChat: false,
+			question: null,
+			changes: [],
+			messages: [],
+			createdAt: now,
+			updatedAt: now,
+			closedAt: null,
+		});
+		expect(session.branchHeadSha).toBe("b".repeat(40));
+	});
 });
