@@ -71,13 +71,13 @@ export function prepareModule(
 							path: indexPath,
 							title: heading || readableName(block.from),
 							files,
-							className: "studio-module-frame",
+							className: fits ? "studio-module-frame is-fitted" : "studio-module-frame",
 							...(fits
 								? {
 										listen: (data: unknown) => {
 											if (!isPlainRecord(data) || data.type !== MODULE_HEIGHT_MESSAGE) return;
 											if (typeof data.height !== "number" || !Number.isFinite(data.height)) return;
-											frame.style.height = `${fittedHeight(data.height)}px`;
+											frame.style.setProperty("--studio-module-fit", `${fittedHeight(data.height)}px`);
 										},
 									}
 								: {}),

@@ -1102,14 +1102,14 @@ describe("The module block", () => {
 		expect(html).toContain("qorpera-module-height");
 
 		sayHeight(frame, 2400);
-		expect(frame.style.height).toBe("1600px");
+		expect(frame.style.getPropertyValue("--studio-module-fit")).toBe("1600px");
 		sayHeight(frame, 40.2);
-		expect(frame.style.height).toBe("120px");
+		expect(frame.style.getPropertyValue("--studio-module-fit")).toBe("120px");
 		sayHeight(frame, 512.3);
-		expect(frame.style.height).toBe("513px");
+		expect(frame.style.getPropertyValue("--studio-module-fit")).toBe("513px");
 		sayHeight(frame, "tall");
 		sayHeight(frame, 900, window);
-		expect(frame.style.height).toBe("513px");
+		expect(frame.style.getPropertyValue("--studio-module-fit")).toBe("513px");
 
 		const cell = view.el.querySelectorAll(".studio-row-cell")[1]!;
 		const price = cell.querySelector<HTMLIFrameElement>('[data-module="modules/price"] iframe.studio-module-frame')!;
