@@ -9,8 +9,17 @@ const GEMINI_API_KEY = /^(?:AIza[A-Za-z0-9_-]{20,200}|AQ\.[A-Za-z0-9._-]{20,200}
 const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 const GEMINI_API_KEY_FIELD = "gemini_api_key";
 const GEMINI_VERIFY_URL = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1";
-const GEMINI_CHECK_MODEL_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-neon";
+const GEMINI_CHECK_GENERATE_URL =
+	"https://generativelanguage.googleapis.com/v1beta/models/gemini-4-neon:generateContent";
+const GEMINI_CHECK_REQUEST_BODY = JSON.stringify({
+	contents: [{ role: "user", parts: [{ text: "Reply with ok." }] }],
+	generationConfig: {
+		maxOutputTokens: 32,
+		thinkingConfig: { thinkingLevel: "low" },
+	},
+});
 const MAX_GEMINI_ERROR_BYTES = 8 * 1024;
+const MAX_RETRY_AFTER_MS = 120_000;
 
 export const GEMINI_PROVIDER_ERROR_CODES = Object.freeze([
 	"key_rejected",
@@ -23,6 +32,31 @@ export const GEMINI_PROVIDER_ERROR_CODES = Object.freeze([
 ] as const);
 
 export type GeminiProviderErrorCode = (typeof GEMINI_PROVIDER_ERROR_CODES)[number];
+
+export const GEMINI_PROVIDER_ERROR_DETAILS = Object.freeze([
+	"api_key_invalid",
+	"api_key_expired",
+	"api_key_blocked",
+	"service_disabled",
+	"billing_disabled",
+	"free_tier_limit_zero",
+	"quota_limit_zero",
+	"rate_limited",
+	"daily_quota_exhausted",
+	"spend_limit_reached",
+	"region_unsupported",
+	"model_not_found",
+	"overloaded",
+] as const);
+
+export type GeminiProviderErrorDetail = (typeof GEMINI_PROVIDER_ERROR_DETAILS)[number];
+
+export interface GeminiHttpErrorClassification {
+	readonly code: GeminiProviderErrorCode;
+	readonly providerStatus: string | null;
+	readonly detailCode: GeminiProviderErrorDetail | null;
+	readonly retryAfterMs: number | null;
+}
 
 const GOOGLE_RPC_STATUSES = new Set([
 	"INVALID_ARGUMENT",
@@ -41,17 +75,68 @@ const BILLING_REASONS = new Set([
 	"BILLING_NOT_ENABLED",
 	"BILLING_ACCOUNT_DISABLED",
 	"BILLING_ACCOUNT_CLOSED",
+	"BILLING_REQUIRED",
 ]);
 
-const KEY_REJECTED_REASONS = new Set(["API_KEY_INVALID", "API_KEY_EXPIRED", "API_KEY_SERVICE_BLOCKED"]);
+const KEY_INVALID_REASONS = new Set(["API_KEY_INVALID", "ACCESS_TOKEN_TYPE_UNSUPPORTED"]);
+const KEY_EXPIRED_REASONS = new Set(["API_KEY_EXPIRED"]);
+const KEY_BLOCKED_REASONS = new Set([
+	"API_KEY_SERVICE_BLOCKED",
+	"API_KEY_HTTP_REFERRER_BLOCKED",
+	"API_KEY_IP_ADDRESS_BLOCKED",
+	"API_KEY_ANDROID_APP_BLOCKED",
+	"API_KEY_IOS_APP_BLOCKED",
+]);
+const REGION_REASONS = new Set(["LOCATION_NOT_SUPPORTED", "REGION_NOT_SUPPORTED"]);
+
+const FREE_TIER_PATTERN = /free[_\s-]?tier/i;
+const ZERO_LIMIT_PATTERN = /\blimit\s*:\s*0\b/i;
+const BILLING_MESSAGE_PATTERN =
+	/billing(?:\s+account)?\s+(?:is\s+)?(?:not\s+enabled|disabled|required|closed)|enable\s+billing|prepaid\s+(?:balance|billing|credit)|claim\s+(?:your\s+)?credits?/i;
+const SPEND_LIMIT_PATTERN = /spend(?:ing)?\s*(?:cap|limit)|monthly\s+(?:spend|budget)/i;
+const SPEND_METRIC_PATTERN = /spend|budget|credit/i;
+const DAILY_QUOTA_PATTERN = /per[_\s-]?day|daily\s+(?:quota|limit)|requests\s+per\s+day|perday/i;
+const REGION_MESSAGE_PATTERN =
+	/user\s+location\s+is\s+not\s+supported|location\s+is\s+not\s+supported|not\s+available\s+in\s+your\s+(?:region|country)/i;
+const KEY_INVALID_MESSAGE_PATTERN = /api\s+key\s+(?:not\s+valid|invalid)|api_key_invalid/i;
+const KEY_EXPIRED_MESSAGE_PATTERN = /api\s+key\s+expired|api_key_expired/i;
+const SERVICE_DISABLED_MESSAGE_PATTERN = /generative\s+language\s+api\s+has\s+not\s+been\s+used|service\s+disabled/i;
+const GOOGLE_DURATION_PATTERN = /^(\d+(?:\.\d+)?)(ms|s)$/;
+
+function parseGoogleRetryDelayMs(value: unknown): number | null {
+	if (typeof value !== "string") return null;
+	const match = GOOGLE_DURATION_PATTERN.exec(value.trim());
+	if (!match) return null;
+	const amount = Number(match[1]);
+	if (!Number.isFinite(amount) || amount <= 0) return null;
+	const ms = match[2] === "ms" ? Math.ceil(amount) : Math.ceil(amount * 1_000);
+	return Math.max(1, Math.min(MAX_RETRY_AFTER_MS, ms));
+}
+
+function parseRetryAfterHeaderMs(value: string | null | undefined): number | null {
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	if (!/^\d{1,6}$/.test(trimmed)) return null;
+	const seconds = Number(trimmed);
+	if (!Number.isSafeInteger(seconds) || seconds <= 0) return null;
+	return Math.min(MAX_RETRY_AFTER_MS, seconds * 1_000);
+}
 
 export function classifyGeminiHttpError(
 	status: number,
 	bodyBytes?: Uint8Array,
-): { readonly code: GeminiProviderErrorCode; readonly providerStatus: string | null } {
+	retryAfterHeader?: string | null,
+): GeminiHttpErrorClassification {
 	let providerStatus: string | null = null;
 	let billingReason = false;
-	let keyRejectedReason = false;
+	let keyDetail: GeminiProviderErrorDetail | null = null;
+	let regionUnsupported = false;
+	let hasFreeTierQuota = false;
+	let hasZeroQuotaLimit = false;
+	let hasSpendQuota = false;
+	let hasDailyQuota = false;
+	let retryAfterMs: number | null = null;
+	let message = "";
 	if (bodyBytes && bodyBytes.byteLength > 0 && bodyBytes.byteLength <= MAX_GEMINI_ERROR_BYTES) {
 		try {
 			const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: false }).decode(bodyBytes)) as unknown;
@@ -64,34 +149,121 @@ export function classifyGeminiHttpError(
 				if (typeof errObj.status === "string" && GOOGLE_RPC_STATUSES.has(errObj.status)) {
 					providerStatus = errObj.status;
 				}
+				if (typeof errObj.message === "string") {
+					message = errObj.message.slice(0, 2048);
+				}
 				if (Array.isArray(errObj.details)) {
-					for (const detail of errObj.details.slice(0, 8)) {
-						if (
-							detail &&
-							typeof detail === "object" &&
-							!Array.isArray(detail) &&
-							typeof (detail as Record<string, unknown>).reason === "string"
-						) {
-							const reason = (detail as Record<string, unknown>).reason as string;
+					for (const detail of errObj.details.slice(0, 12)) {
+						if (!detail || typeof detail !== "object" || Array.isArray(detail)) continue;
+						const detailObj = detail as Record<string, unknown>;
+						if (typeof detailObj.reason === "string") {
+							const reason = detailObj.reason;
 							if (BILLING_REASONS.has(reason)) {
 								billingReason = true;
-								break;
+							} else if (KEY_INVALID_REASONS.has(reason)) {
+								keyDetail = "api_key_invalid";
+							} else if (KEY_EXPIRED_REASONS.has(reason)) {
+								keyDetail = "api_key_expired";
+							} else if (KEY_BLOCKED_REASONS.has(reason)) {
+								keyDetail = "api_key_blocked";
+							} else if (reason === "SERVICE_DISABLED") {
+								keyDetail = "service_disabled";
+							} else if (REGION_REASONS.has(reason)) {
+								regionUnsupported = true;
 							}
-							if (KEY_REJECTED_REASONS.has(reason)) {
-								keyRejectedReason = true;
+						}
+						if (Array.isArray(detailObj.violations)) {
+							for (const violation of detailObj.violations.slice(0, 16)) {
+								if (!violation || typeof violation !== "object" || Array.isArray(violation)) continue;
+								const v = violation as Record<string, unknown>;
+								const metric = typeof v.quotaMetric === "string" ? v.quotaMetric.slice(0, 256) : "";
+								const quotaId = typeof v.quotaId === "string" ? v.quotaId.slice(0, 256) : "";
+								const description = typeof v.description === "string" ? v.description.slice(0, 512) : "";
+								const combined = `${metric} ${quotaId} ${description}`;
+								if (FREE_TIER_PATTERN.test(combined)) hasFreeTierQuota = true;
+								if (v.quotaValue === "0" || v.quotaValue === 0 || ZERO_LIMIT_PATTERN.test(description)) {
+									hasZeroQuotaLimit = true;
+								}
+								if (
+									SPEND_METRIC_PATTERN.test(metric) ||
+									SPEND_METRIC_PATTERN.test(quotaId) ||
+									SPEND_LIMIT_PATTERN.test(description)
+								) {
+									hasSpendQuota = true;
+								}
+								if (DAILY_QUOTA_PATTERN.test(combined)) hasDailyQuota = true;
 							}
+						}
+						if (retryAfterMs === null && detailObj.retryDelay !== undefined) {
+							retryAfterMs = parseGoogleRetryDelayMs(detailObj.retryDelay);
 						}
 					}
 				}
 			}
 		} catch {}
 	}
-	if (status === 402 || billingReason) return { code: "billing_required", providerStatus };
-	if (keyRejectedReason || status === 401 || status === 403) return { code: "key_rejected", providerStatus };
-	if (status === 429) return { code: "quota_exhausted", providerStatus };
-	if (status === 404) return { code: "model_unavailable", providerStatus };
-	if (status >= 500 && status <= 599) return { code: "provider_outage", providerStatus };
-	return { code: "invalid_request", providerStatus };
+	if (retryAfterMs === null) retryAfterMs = parseRetryAfterHeaderMs(retryAfterHeader);
+
+	const freeTierMessage = FREE_TIER_PATTERN.test(message);
+	const zeroLimitMessage = ZERO_LIMIT_PATTERN.test(message);
+	const billingMessage = BILLING_MESSAGE_PATTERN.test(message);
+	const spendMessage = SPEND_LIMIT_PATTERN.test(message);
+	const dailyMessage = DAILY_QUOTA_PATTERN.test(message);
+	const regionMessage = REGION_MESSAGE_PATTERN.test(message);
+	const keyInvalidMessage = KEY_INVALID_MESSAGE_PATTERN.test(message);
+	const keyExpiredMessage = KEY_EXPIRED_MESSAGE_PATTERN.test(message);
+	const serviceDisabledMessage = SERVICE_DISABLED_MESSAGE_PATTERN.test(message);
+
+	if (status === 402 || billingReason || ((status === 400 || status === 403 || status === 429) && billingMessage)) {
+		return { code: "billing_required", providerStatus, detailCode: "billing_disabled", retryAfterMs: null };
+	}
+	if (status === 429 && (hasFreeTierQuota || freeTierMessage)) {
+		return { code: "billing_required", providerStatus, detailCode: "free_tier_limit_zero", retryAfterMs: null };
+	}
+	if (status === 429 && (hasZeroQuotaLimit || zeroLimitMessage)) {
+		return { code: "billing_required", providerStatus, detailCode: "quota_limit_zero", retryAfterMs: null };
+	}
+	if (regionUnsupported || ((status === 400 || status === 403) && regionMessage)) {
+		return { code: "model_unavailable", providerStatus, detailCode: "region_unsupported", retryAfterMs: null };
+	}
+	if (
+		keyDetail !== null ||
+		status === 401 ||
+		status === 403 ||
+		(status === 400 && (keyInvalidMessage || keyExpiredMessage || serviceDisabledMessage))
+	) {
+		const resolvedKeyDetail =
+			keyDetail ??
+			(keyExpiredMessage
+				? "api_key_expired"
+				: serviceDisabledMessage
+					? "service_disabled"
+					: keyInvalidMessage
+						? "api_key_invalid"
+						: null);
+		return { code: "key_rejected", providerStatus, detailCode: resolvedKeyDetail, retryAfterMs: null };
+	}
+	if (status === 429) {
+		if (hasSpendQuota || spendMessage) {
+			return { code: "quota_exhausted", providerStatus, detailCode: "spend_limit_reached", retryAfterMs: null };
+		}
+		if (hasDailyQuota || dailyMessage) {
+			return { code: "quota_exhausted", providerStatus, detailCode: "daily_quota_exhausted", retryAfterMs: null };
+		}
+		return { code: "quota_exhausted", providerStatus, detailCode: "rate_limited", retryAfterMs };
+	}
+	if (status === 404 || providerStatus === "NOT_FOUND") {
+		return { code: "model_unavailable", providerStatus, detailCode: "model_not_found", retryAfterMs: null };
+	}
+	if (status >= 500 && status <= 599) {
+		return {
+			code: "provider_outage",
+			providerStatus,
+			detailCode: status === 503 || providerStatus === "UNAVAILABLE" ? "overloaded" : null,
+			retryAfterMs,
+		};
+	}
+	return { code: "invalid_request", providerStatus, detailCode: null, retryAfterMs: null };
 }
 
 export async function readGeminiErrorSnippet(reply: Response): Promise<Uint8Array | undefined> {
@@ -189,8 +361,17 @@ export interface GeminiKeyChecked {
 	readonly schema: "qorpera.gemini-key-checked/v1";
 	readonly ok: boolean;
 	readonly errorCode: GeminiProviderErrorCode | null;
+	readonly errorDetail?: GeminiProviderErrorDetail | null;
 	readonly checkedAt: string;
 }
+
+export type GeminiKeyCheckOutcome =
+	| { readonly ok: true }
+	| {
+			readonly ok: false;
+			readonly errorCode: GeminiProviderErrorCode;
+			readonly errorDetail?: GeminiProviderErrorDetail | null;
+	  };
 
 export interface GeminiKeySaved {
 	readonly schema: "qorpera.gemini-key-saved/v1";
@@ -276,46 +457,46 @@ export async function checkGeminiApiKey(
 	apiKey: string,
 	signal: AbortSignal,
 	fetcher: typeof fetch = fetch,
-): Promise<{ readonly ok: true } | { readonly ok: false; readonly errorCode: GeminiProviderErrorCode }> {
-	if (!isGeminiApiKeyFormat(apiKey)) return { ok: false, errorCode: "key_rejected" };
+): Promise<GeminiKeyCheckOutcome> {
+	if (!isGeminiApiKeyFormat(apiKey)) {
+		return { ok: false, errorCode: "key_rejected", errorDetail: "api_key_invalid" };
+	}
 	let answer: Response;
 	try {
-		answer = await fetcher(GEMINI_CHECK_MODEL_URL, {
-			method: "GET",
+		answer = await fetcher(GEMINI_CHECK_GENERATE_URL, {
+			method: "POST",
 			redirect: "error",
-			headers: { "x-goog-api-key": apiKey },
+			headers: {
+				"content-type": "application/json",
+				"x-goog-api-key": apiKey,
+			},
+			body: GEMINI_CHECK_REQUEST_BODY,
 			signal,
 		});
 	} catch (error) {
 		if (signal.aborted) throw error;
-		return { ok: false, errorCode: "transport_unavailable" };
+		return { ok: false, errorCode: "transport_unavailable", errorDetail: null };
 	}
 	if (answer.ok) {
 		void answer.body?.cancel().catch(() => undefined);
 		return { ok: true };
 	}
 	const snippet = await readGeminiErrorSnippet(answer);
-	const classified = classifyGeminiHttpError(answer.status, snippet);
-	return { ok: false, errorCode: classified.code };
+	const classified = classifyGeminiHttpError(answer.status, snippet, answer.headers.get("retry-after"));
+	return { ok: false, errorCode: classified.code, errorDetail: classified.detailCode };
 }
 
 export class CloudGeminiKeyVault {
 	readonly #authority: GeminiKeyVaultAuthority;
 	readonly #keys: CloudSecretKeyring;
 	readonly #verifyKey: (apiKey: string, signal: AbortSignal) => Promise<void>;
-	readonly #checkKey: (
-		apiKey: string,
-		signal: AbortSignal,
-	) => Promise<{ readonly ok: true } | { readonly ok: false; readonly errorCode: GeminiProviderErrorCode }>;
+	readonly #checkKey: (apiKey: string, signal: AbortSignal) => Promise<GeminiKeyCheckOutcome>;
 
 	constructor(options: {
 		authority: GeminiKeyVaultAuthority;
 		keyring: CloudSecretKeyring;
 		verifyKey?: (apiKey: string, signal: AbortSignal) => Promise<void>;
-		checkKey?: (
-			apiKey: string,
-			signal: AbortSignal,
-		) => Promise<{ readonly ok: true } | { readonly ok: false; readonly errorCode: GeminiProviderErrorCode }>;
+		checkKey?: (apiKey: string, signal: AbortSignal) => Promise<GeminiKeyCheckOutcome>;
 	}) {
 		this.#authority = options.authority;
 		this.#keys = options.keyring;
@@ -448,7 +629,7 @@ export class CloudGeminiKeyVault {
 		const keyId = described.keyId;
 		if (!this.#keys.hasMemberKey(keyId)) throw new Error("The vault does not keep member Gemini keys");
 		const envelope = Buffer.from(described.encryptedEnvelopeBase64, "base64");
-		let outcome: { readonly ok: true } | { readonly ok: false; readonly errorCode: GeminiProviderErrorCode };
+		let outcome: GeminiKeyCheckOutcome;
 		try {
 			if (
 				envelope.byteLength < 1 ||
@@ -491,10 +672,12 @@ export class CloudGeminiKeyVault {
 					!(GEMINI_PROVIDER_ERROR_CODES as readonly string[]).includes(completed.errorCode)))
 		)
 			throw new Error(`${label} is invalid`);
+		const errorDetail = !outcome.ok && outcome.errorDetail ? outcome.errorDetail : null;
 		return {
 			schema: "qorpera.gemini-key-checked/v1",
 			ok: completed.ok,
 			errorCode: completed.errorCode as GeminiProviderErrorCode | null,
+			...(errorDetail ? { errorDetail } : {}),
 			checkedAt: completed.checkedAt,
 		};
 	}

@@ -1131,7 +1131,47 @@ describe("runCloudGeminiToolSession", () => {
 					},
 				},
 				expectedCode: "billing_required",
+				expectedDetail: "billing_disabled",
 				expectedFailure: "GEMINI_API:BILLING_REQUIRED",
+				expectedAttempts: 1,
+			},
+			{
+				status: 429,
+				body: {
+					error: {
+						status: "RESOURCE_EXHAUSTED",
+						message: "Quota exceeded for secret project free_tier_requests, limit: 0",
+						details: [
+							{
+								violations: [
+									{
+										quotaMetric: "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+										quotaValue: "0",
+									},
+								],
+							},
+						],
+					},
+				},
+				expectedCode: "billing_required",
+				expectedDetail: "free_tier_limit_zero",
+				expectedFailure: "GEMINI_API:BILLING_REQUIRED",
+				expectedAttempts: 1,
+			},
+			{
+				status: 429,
+				body: {
+					error: {
+						status: "RESOURCE_EXHAUSTED",
+						message: "Daily quota exceeded for secret project",
+						details: [
+							{ violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel", quotaValue: "100" }] },
+						],
+					},
+				},
+				expectedCode: "quota_exhausted",
+				expectedDetail: "daily_quota_exhausted",
+				expectedFailure: "GEMINI_API:QUOTA_EXHAUSTED",
 				expectedAttempts: 1,
 			},
 			{
@@ -1143,6 +1183,7 @@ describe("runCloudGeminiToolSession", () => {
 					},
 				},
 				expectedCode: "invalid_request",
+				expectedDetail: null,
 				expectedFailure: "GEMINI_API:REQUEST_REJECTED",
 				expectedAttempts: 1,
 			},
@@ -1155,6 +1196,7 @@ describe("runCloudGeminiToolSession", () => {
 					},
 				},
 				expectedCode: "model_unavailable",
+				expectedDetail: "model_not_found",
 				expectedFailure: "GEMINI_API:MODEL_UNAVAILABLE",
 				expectedAttempts: 1,
 			},
@@ -1167,6 +1209,7 @@ describe("runCloudGeminiToolSession", () => {
 					},
 				},
 				expectedCode: "quota_exhausted",
+				expectedDetail: "rate_limited",
 				expectedFailure: "GEMINI_API:QUOTA_EXHAUSTED",
 				expectedAttempts: 3,
 			},
@@ -1179,6 +1222,7 @@ describe("runCloudGeminiToolSession", () => {
 					},
 				},
 				expectedCode: "provider_outage",
+				expectedDetail: "overloaded",
 				expectedFailure: "GEMINI_API:PROVIDER_OUTAGE",
 				expectedAttempts: 3,
 			},
@@ -1213,6 +1257,7 @@ describe("runCloudGeminiToolSession", () => {
 			expect(geminiProviderFailureCode(err)).toBe(item.expectedFailure);
 			const diag = geminiProviderDiagnostic(err) ?? "";
 			expect(diag).toContain(`geminiCode=${item.expectedCode}`);
+			if (item.expectedDetail) expect(diag).toContain(`geminiDetail=${item.expectedDetail}`);
 			expect(diag).toContain(`httpStatus=${item.status}`);
 			expect(diag).not.toContain("secret");
 		}
