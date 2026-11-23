@@ -66,7 +66,21 @@ select pg_temp.stp_patch('public.qorpera_reply_surface_session(uuid,text,boolean
 $old$	v_user_id := public.qorpera_assert_surface_member(v_peek.profile_id, true);
 $old$,
 $new$	v_user_id := public.qorpera_assert_surface_member(v_peek.profile_id, true);
-	if nullif(public.qorpera_surface_resolve_sponsor(v_peek.profile_id, v_user_id) ->> 'sponsorBindingId', '') is null then
+	if exists (
+		select 1 from public.qorpera_surfaces surf
+		where surf.id = v_peek.surface_id and surf.source_kind = 'code_repo'
+	) then
+		if coalesce(public.qorpera_surface_resolve_coding_sponsor(
+			v_peek.profile_id,
+			(select c.environment_id from public.qorpera_company_cofounders c where c.profile_id = v_peek.profile_id limit 1),
+			v_user_id,
+			true,
+			(select cs.harness from public.qorpera_coding_sessions cs where cs.worker_id = v_peek.worker_id),
+			v_peek.worker_id is not null
+		) ->> 'status', '') <> 'ok' then
+			raise exception 'Connect a model account in Settings → AI subscriptions to reply' using errcode = '42501';
+		end if;
+	elsif nullif(public.qorpera_surface_resolve_sponsor(v_peek.profile_id, v_user_id) ->> 'sponsorBindingId', '') is null then
 		raise exception 'Connect a model account in Settings → AI subscriptions to reply' using errcode = '42501';
 	end if;
 $new$,

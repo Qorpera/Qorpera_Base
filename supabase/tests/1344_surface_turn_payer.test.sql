@@ -217,3 +217,159 @@ begin
 		'the turn helpers are not callable from the API'
 	);
 end $$;
+
+do $$
+declare
+	v_claim jsonb := current_setting('qorpera_test.claim')::jsonb;
+	v_anna constant uuid := '85600000-0000-4000-8000-000000000001';
+	v_bo constant uuid := '85600000-0000-4000-8000-000000000002';
+	v_company uuid := (v_claim ->> 'profileId')::uuid;
+	v_env uuid;
+	v_surface uuid;
+	v_session uuid;
+	v_claimed jsonb;
+	v_lease uuid;
+	v_enq jsonb;
+	v_worker_id uuid;
+	v_worker public.qorpera_runtime_workers%rowtype;
+	v_coding_claim jsonb;
+	v_begin jsonb;
+	v_wake public.qorpera_wake_occurrences%rowtype;
+	v_run public.qorpera_execution_runs%rowtype;
+	v_errcode text;
+begin
+	select environment_id into strict v_env from public.qorpera_company_cofounders where profile_id = v_company;
+	perform pg_temp.as_service();
+	perform public.qorpera_configure_coding_executor(v_env, 'exec-1344', true, array['codex', 'claude-code']);
+
+	perform pg_temp.stp_as(v_anna);
+	set local role authenticated;
+	v_surface := (public.qorpera_create_surface(
+		v_company, 'Website', 'website', 'live_build', 'website', 'globe', '#0a84ff', null, null, false
+	) ->> 'id')::uuid;
+	v_session := (public.qorpera_start_surface_session(v_surface, 'Build the landing page', 'Landing') ->> 'id')::uuid;
+	reset role;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed := public.qorpera_surface_claim_pending_jobs_for_lane(16, 'sessions');
+	select (elem ->> 'leaseToken')::uuid into strict v_lease
+	from jsonb_array_elements(v_claimed -> 'sessions') elem
+	where (elem ->> 'sessionId')::uuid = v_session;
+	v_enq := public.qorpera_surface_enqueue_session_run(v_session, v_lease);
+	v_worker_id := (v_enq ->> 'workerId')::uuid;
+	reset role;
+	set local session_replication_role = replica;
+	insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner, machine_id_sha256, binding)
+	values ('13440000-0000-4000-8000-0000000000d0', 'member', v_company, v_env, v_anna, 'exec-1344', repeat('7', 64), '{}');
+	set local session_replication_role = origin;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_coding_claim := public.qorpera_claim_coding_session('exec-1344', 60);
+	if v_coding_claim is null then
+		raise exception 'surface_turn_payer: no coding claim for the starter''s turn: %', v_enq;
+	end if;
+	perform public.qorpera_complete_coding_turn(
+		p_worker_id => v_worker_id,
+		p_lease_token => (v_coding_claim ->> 'leaseToken')::uuid,
+		p_outcome => 'succeeded',
+		p_summary => 'Staged the landing page.',
+		p_artifacts => jsonb_build_array(jsonb_build_object(
+			'kind', 'staged', 'branch', 'qorpera/coding/' || v_worker_id::text,
+			'baseSha', repeat('a', 40), 'headSha', repeat('c', 40)
+		))
+	);
+	reset role;
+	select * into strict v_worker from public.qorpera_runtime_workers where id = v_worker_id;
+	perform pg_temp.stp_assert(
+		v_worker.owner_user_id = v_anna and pg_temp.stp_payer(v_worker.owner_sponsor_binding_id) = v_anna
+			and (select state from public.qorpera_surface_sessions where id = v_session) = 'ready',
+		'the starter''s coding turn runs on the starter''s login: ' || coalesce(v_enq::text, 'null')
+	);
+
+	update public.qorpera_coding_sessions set harness = 'claude-code' where worker_id = v_worker_id;
+	v_errcode := null;
+	perform pg_temp.stp_as(v_bo);
+	set local role authenticated;
+	begin
+		perform public.qorpera_reply_surface_session(v_session, 'Add pricing too', true);
+	exception when others then
+		v_errcode := sqlstate;
+	end;
+	reset role;
+	perform pg_temp.stp_assert(
+		v_errcode = '42501'
+			and (select state from public.qorpera_surface_sessions where id = v_session) = 'ready'
+			and (select turn_requested_by_user_id from public.qorpera_surface_sessions where id = v_session) is null
+			and (select state from public.qorpera_runtime_workers where id = v_worker_id) = 'succeeded',
+		'a replier with no login for the session''s coding harness is refused before anything changes'
+	);
+	update public.qorpera_coding_sessions set harness = 'codex' where worker_id = v_worker_id;
+
+	perform pg_temp.stp_as(v_bo);
+	set local role authenticated;
+	perform public.qorpera_reply_surface_session(v_session, 'Add pricing too', true);
+	reset role;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed := public.qorpera_surface_claim_pending_jobs_for_lane(16, 'sessions');
+	select (elem ->> 'leaseToken')::uuid into strict v_lease
+	from jsonb_array_elements(v_claimed -> 'sessions') elem
+	where (elem ->> 'sessionId')::uuid = v_session;
+	v_enq := public.qorpera_surface_enqueue_session_run(v_session, v_lease);
+	reset role;
+	select * into strict v_worker from public.qorpera_runtime_workers where id = v_worker_id;
+	perform pg_temp.stp_assert(
+		(v_enq ->> 'workerId')::uuid = v_worker_id
+			and v_worker.owner_user_id = v_bo and v_worker.requested_by_user_id = v_bo
+			and pg_temp.stp_payer(v_worker.owner_sponsor_binding_id) = v_bo
+			and exists (
+				select 1 from public.qorpera_coding_session_turns t
+				where t.worker_id = v_worker_id and t.sequence = 2 and t.input_from = 'member'
+			),
+		'the teammate''s coding follow-up moves the worker''s owner, requester and payer to the teammate: ' || v_enq::text
+	);
+
+	set local session_replication_role = replica;
+	insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner, machine_id_sha256, binding)
+	values ('13440000-0000-4000-8000-0000000000d1', 'member', v_company, v_env, v_bo, 'exec-1344', repeat('8', 64), '{}');
+	update public.qorpera_execution_sponsor_versions
+	set allow_autonomous = false
+	where binding_id in (select id from public.qorpera_execution_sponsor_bindings where profile_id = v_company);
+	update public.qorpera_provider_connection_versions
+	set allow_autonomous = false
+	where connection_id in (select id from public.qorpera_provider_connections where profile_id = v_company);
+	set local session_replication_role = origin;
+
+	select * into strict v_worker from public.qorpera_runtime_workers where id = v_worker_id;
+	perform pg_temp.stp_assert(
+		public.qorpera_coding_session_login_state(v_worker) = 'ready',
+		'the teammate''s coding turn is ready on the teammate''s login without unattended permission'
+	);
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_coding_claim := public.qorpera_claim_coding_session('exec-1344', 60);
+	v_begin := public.qorpera_begin_coding_turn(v_worker_id, (v_coding_claim ->> 'leaseToken')::uuid, '{}');
+	reset role;
+	select * into strict v_wake from public.qorpera_wake_occurrences where id = (v_begin ->> 'occurrenceId')::uuid;
+	perform pg_temp.stp_assert(
+		v_wake.requested_by_user_id = v_bo and pg_temp.stp_payer(v_wake.sponsor_binding_id) = v_bo,
+		'the teammate''s coding wake is requested by and paid with the teammate''s login'
+	);
+	perform pg_temp.stp_materialize(v_company);
+	select * into strict v_wake from public.qorpera_wake_occurrences where id = v_wake.id;
+	perform pg_temp.stp_assert(
+		v_wake.status = 'materialized' and v_wake.run_id is not null,
+		'the teammate''s coding wake runs as a member turn without unattended permission'
+	);
+	select * into strict v_run from public.qorpera_execution_runs where id = v_wake.run_id;
+	perform pg_temp.stp_assert(
+		public.qorpera_run_autonomous_authority(v_run)
+			and not public.qorpera_run_autonomous_authority(
+				jsonb_populate_record(v_run, jsonb_build_object('requested_by_user_id', v_anna))
+			),
+		'the coding run''s member-turn authority belongs to the teammate only'
+	);
+end $$;

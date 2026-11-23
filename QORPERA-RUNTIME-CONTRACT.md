@@ -2679,7 +2679,8 @@ turn was requested by and paid with the session's starter. Now:
   (`turn_requested_by_user_id`). The next turn, and the follow-up work it starts,
   is requested by that member and paid by their own login, as for posts in an
   agent's thread above. A session nobody has replied to keeps its starter.
-- A member with no login that can pay is refused at the reply ("Connect a model
+- A member with no login that can pay (in a coding-backed session: none for the
+  session's coding harness) is refused at the reply ("Connect a model
   account in Settings → AI subscriptions to reply"); the reply is not kept and
   nobody else's login is used.
 - A reply makes the turn a member turn even in a session an agent started, so it
