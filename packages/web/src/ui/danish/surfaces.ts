@@ -204,12 +204,6 @@ export const SURFACES: Record<string, string> = {
 		"Alt andet: lagerstyring, investorrum, kundeservice…",
 	"What is this surface for? An agent shapes it from this brief.":
 		"Hvad skal denne surface bruges til? En agent former den ud fra denne brief.",
-	"Live preview": "Live forhåndsvisning",
-	"Built and previewed live, like a website or app.": "Bygges og vises live, som en hjemmeside eller app.",
-	"Studio files": "Studiefiler",
-	"Documents, tables, and specs that sessions edit.":
-		"Dokumenter, tabeller og specifikationer, som sessioner redigerer.",
-	"How it is built": "Sådan bygges den",
 	Brief: "Brief",
 	"Fold into a scheduled agent": "Gør til en planlagt agent",
 	"New scheduled agent": "Ny planlagt agent",
