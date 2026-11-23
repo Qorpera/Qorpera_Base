@@ -141,7 +141,8 @@ export interface SurfaceFolderOrOpsTurnRequest {
 	readonly tools: readonly CloudNativeTool[];
 	readonly identityContext: SurfaceIdentityContext | null;
 	readonly sharedAssets?: SurfaceSharedAssetsContext | null;
-	readonly allowedRoots: readonly string[];
+	readonly writableRoots: readonly string[];
+	readonly stagedRoots: readonly string[];
 	readonly signal: AbortSignal;
 }
 
@@ -411,7 +412,7 @@ function buildFolderSurfaceInstructions(input: SurfaceSessionTurnInput, folderRo
 		`Use stage_surface_patch to stage cohesive folder_patch operations (write_text, merge_json, delete) relative to ${folderRoot}/, keeping each change atomic and conflict-minimizing. ` +
 		"Studio renders structured JSON (tokens, specs, vendors, *.report.json), Markdown prose (voice.md, brief.md), and SVG marks natively — do not create standalone HTML/CSS code pages inside Studio folders. " +
 		(schemaGuidance ? `${schemaGuidance} ` : "") +
-		`Any file writes are strictly confined to ${folderRoot}/ and ${notesRoot}/; attach concise supporting analyses as notePaths under ${notesRoot}/ rather than creating loose markdown files elsewhere.`
+		`Files in ${folderRoot}/ change only through stage_surface_patch; direct file writes are for notes under ${notesRoot}/ only. Attach concise supporting analyses as notePaths under ${notesRoot}/ rather than creating loose markdown files elsewhere.`
 	);
 }
 
@@ -697,13 +698,14 @@ export async function runSurfaceSessionTurn(
 			}
 			const folderRoot = normalizedFolderRoot || input.surfaceSlug;
 			const notesRoot = `QorperaOS/surfaces/${input.surfaceSlug}/notes`;
-			const allowedRoots = [...new Set([folderRoot, notesRoot])];
+			const writableRoots = [notesRoot];
+			const stagedRoots = [folderRoot];
 			const folderTools = ports.folderToolsContext
 				? cloudFolderFileTools({
 						folder: ports.folderToolsContext.folder,
 						operations: ports.folderToolsContext.operations,
 						identity: ports.folderToolsContext.identity,
-						surfaceFilePolicy: { mode: "surface_worker", allowedRoots },
+						surfaceFilePolicy: { mode: "surface_worker", writableRoots, stagedRoots },
 					})
 				: [];
 			const tools: CloudNativeTool[] = [
@@ -721,7 +723,8 @@ export async function runSurfaceSessionTurn(
 				tools,
 				identityContext,
 				sharedAssets,
-				allowedRoots,
+				writableRoots,
+				stagedRoots,
 				signal,
 			});
 		} else if (input.sourceKind === "native_ops") {
@@ -754,7 +757,8 @@ export async function runSurfaceSessionTurn(
 				tools,
 				identityContext,
 				sharedAssets,
-				allowedRoots: [],
+				writableRoots: [],
+				stagedRoots: [],
 				signal,
 			});
 		} else {

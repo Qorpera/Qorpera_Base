@@ -83,6 +83,7 @@ describe("cloud surface session runner", () => {
 				"identity/voice.md": "Clear and calm.",
 				"identity/tokens.json": '{"accent":"#d76f45"}',
 				"QorperaOS/surfaces/product-studio/brief.md": "Showcase tactile headband ergonomics.",
+				"product/specs.json": '{"overview":{"weight":"38 g"}}',
 			},
 		});
 		try {
@@ -124,23 +125,40 @@ describe("cloud surface session runner", () => {
 						expect(req.turnBrief).toContain("Exploration direction: Warm Linen");
 						expect(req.turnBrief).toContain("## Exploration Direction: Warm Linen");
 						expect(req.turnBrief).toContain("Showcase tactile headband ergonomics.");
-						expect(req.allowedRoots).toEqual(["product", "QorperaOS/surfaces/product-studio/notes"]);
+						expect(req.writableRoots).toEqual(["QorperaOS/surfaces/product-studio/notes"]);
+						expect(req.stagedRoots).toEqual(["product"]);
+						expect(req.instructions).toContain(
+							"Files in product/ change only through stage_surface_patch; direct file writes are for notes under QorperaOS/surfaces/product-studio/notes/ only.",
+						);
+						expect(req.instructions).not.toContain("strictly confined");
 
 						const writeTool = req.tools.find((t) => t.name === "company_write")!;
 						const patchTool = req.tools.find((t) => t.name === "stage_surface_patch")!;
 						expect(writeTool).toBeDefined();
 						expect(patchTool).toBeDefined();
 
-						const allowedWrite = await writeTool.execute(
-							writeTool.parseArguments({
-								path: "product/box.md",
-								operationKey: "studio-ok-1",
-								expectedVersion: null,
-								text: "# Linen Box",
-							}),
+						await expect(
+							writeTool.execute(
+								writeTool.parseArguments({
+									path: "product/box.md",
+									operationKey: "studio-staged-only-1",
+									expectedVersion: null,
+									text: "# Linen Box",
+								}),
+								f.context,
+							),
+						).rejects.toSatisfy(
+							(error: unknown) =>
+								error instanceof CloudToolRefusal &&
+								error.message.includes("is in this Studio's folder product/") &&
+								error.message.includes("Stage this change with stage_surface_patch"),
+						);
+						const readTool = req.tools.find((t) => t.name === "company_read")!;
+						const studioRead = await readTool.execute(
+							readTool.parseArguments({ path: "product/specs.json" }),
 							f.context,
 						);
-						expect(JSON.parse(String(allowedWrite.value)).state).toBe("applied");
+						expect(String(studioRead.value)).toContain("38 g");
 
 						const allowedNote = await writeTool.execute(
 							writeTool.parseArguments({
@@ -250,7 +268,8 @@ describe("cloud surface session runner", () => {
 				async executeTurn(req) {
 					expect(req.identityContext).toBeNull();
 					expect(req.turnBrief).not.toContain("## Global Company Identity");
-					expect(req.allowedRoots).toEqual(["identity", "QorperaOS/surfaces/identity/notes"]);
+					expect(req.writableRoots).toEqual(["QorperaOS/surfaces/identity/notes"]);
+					expect(req.stagedRoots).toEqual(["identity"]);
 					return { state: "ready", replyText: "Identity direction staged." };
 				},
 			},

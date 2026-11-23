@@ -363,6 +363,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Pre-warmed coding snapshots and environment hooks",
 		text: "Repositories can now declare a Qorpera, Cursor or devcontainer environment configuration with install, start, background terminal and static non-secret environment settings. Qorpera computes a setup digest, builds scrubbed per-node snapshot images in the background under the company's network exit rules so new coding machines start with base packages pre-warmed, and runs worktree install, start and tracked background terminal hooks automatically on attach with clean teardown on detach.",
 	},
+	{
+		id: "studio-files-change-only-through-staging",
+		kind: "behaviour",
+		date: "2026-11-23",
+		title: "Studio files change only through staged changes",
+		text: "An interface's Studio files now change only through staged changes that the member previews, toggles and approves. In a Studio or Identity session, company_write, company_edit, company_mkdir, moves and deletions inside the Studio folder are refused, and the session stages the change for the member instead. When you start a Studio session, ask for staged changes, not direct edits. Notes under the interface's notes folder are unaffected and can still be written directly.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

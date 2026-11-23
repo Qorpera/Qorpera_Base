@@ -1129,12 +1129,15 @@ describe("cloud surface runtime tools", () => {
 				"QorperaOS/surfaces",
 				"QorperaOS/surfaces/website",
 				"QorperaOS/surfaces/website/notes",
+				"QorperaOS/surfaces/identity",
+				"QorperaOS/surfaces/identity/notes",
 				"strategy",
 				"reports",
 			],
 			files: {
 				"identity/tokens.json": '{"accent":"#d76f45"}',
 				"QorperaOS/surfaces/website/notes/existing.md": "# Existing note\n",
+				"QorperaOS/surfaces/identity/notes/existing.md": "# Identity note\n",
 				"strategy/existing.md": "# Legacy strategy\n",
 			},
 		});
@@ -1223,15 +1226,107 @@ describe("cloud surface runtime tools", () => {
 
 			const workerCaller = makeCaller({
 				mode: "surface_worker",
-				allowedRoots: ["identity", "QorperaOS/surfaces/identity"],
+				writableRoots: ["QorperaOS/surfaces/identity/notes"],
+				stagedRoots: ["identity"],
 			});
-			const workerOk = await workerCaller("company_write", {
-				path: "identity/palette.json",
-				operationKey: "worker-write-ok",
+			const stagedOnly = (error: unknown) =>
+				error instanceof CloudToolRefusal &&
+				error.message.includes("SURFACE_FILE_POLICY_REFUSED: nothing was written;") &&
+				error.message.includes("is in this Studio's folder identity/") &&
+				error.message.includes("Stage this change with stage_surface_patch") &&
+				error.message.includes("notes under QorperaOS/surfaces/identity/notes/ only");
+			await expect(
+				workerCaller("company_write", {
+					path: "identity/palette.json",
+					operationKey: "worker-write-studio",
+					expectedVersion: null,
+					text: '{"paper":"#f7f5f2"}',
+				}),
+			).rejects.toSatisfy(stagedOnly);
+			await expect(
+				workerCaller("company_mkdir", {
+					path: "identity/drafts",
+					operationKey: "worker-mkdir-studio",
+					expectedVersion: null,
+				}),
+			).rejects.toSatisfy(stagedOnly);
+			await expect(
+				workerCaller("company_mkdir", {
+					path: "identity",
+					operationKey: "worker-mkdir-studio-root",
+					expectedVersion: null,
+				}),
+			).rejects.toSatisfy(stagedOnly);
+			expect(await f.folder.read("identity/palette.json", new AbortController().signal)).toMatchObject({
+				entry: null,
+			});
+
+			const tokensBefore = await f.folder.read("identity/tokens.json", new AbortController().signal);
+			expect(tokensBefore.entry).not.toBeNull();
+			await expect(
+				workerCaller("company_edit", {
+					path: "identity/tokens.json",
+					operationKey: "worker-edit-studio",
+					expectedVersion: tokensBefore.entry!.version,
+					oldText: "#d76f45",
+					newText: "#c85a32",
+				}),
+			).rejects.toSatisfy(stagedOnly);
+			const tokensRead = await workerCaller("company_read", { path: "identity/tokens.json" });
+			expect(String(tokensRead.value)).toContain("#d76f45");
+			expect(String(tokensRead.value)).not.toContain("#c85a32");
+
+			const noteOk = await workerCaller("company_write", {
+				path: "QorperaOS/surfaces/identity/notes/palette.md",
+				operationKey: "worker-write-note",
 				expectedVersion: null,
-				text: '{"paper":"#f7f5f2"}',
+				text: "# Palette rationale",
 			});
-			expect(JSON.parse(String(workerOk.value)).state).toBe("applied");
+			expect(JSON.parse(String(noteOk.value)).state).toBe("applied");
+			const noteFolderOk = await workerCaller("company_mkdir", {
+				path: "QorperaOS/surfaces/identity/notes/drafts",
+				operationKey: "worker-mkdir-note",
+				expectedVersion: null,
+			});
+			expect(JSON.parse(String(noteFolderOk.value)).state).toBe("applied");
+			const existingNote = await f.folder.read(
+				"QorperaOS/surfaces/identity/notes/existing.md",
+				new AbortController().signal,
+			);
+			const noteEditOk = await workerCaller("company_edit", {
+				path: "QorperaOS/surfaces/identity/notes/existing.md",
+				operationKey: "worker-edit-note",
+				expectedVersion: existingNote.entry!.version,
+				oldText: "# Identity note",
+				newText: "# Identity note, revised",
+			});
+			expect(JSON.parse(String(noteEditOk.value)).state).toBe("applied");
+
+			const nestedCaller = makeCaller({
+				mode: "surface_worker",
+				writableRoots: ["QorperaOS/surfaces/website/notes"],
+				stagedRoots: ["QorperaOS/surfaces/website"],
+			});
+			const nestedNote = await nestedCaller("company_write", {
+				path: "QorperaOS/surfaces/website/notes/hero.md",
+				operationKey: "nested-write-note",
+				expectedVersion: null,
+				text: "# Hero",
+			});
+			expect(JSON.parse(String(nestedNote.value)).state).toBe("applied");
+			await expect(
+				nestedCaller("company_write", {
+					path: "QorperaOS/surfaces/website/hero.json",
+					operationKey: "nested-write-studio",
+					expectedVersion: null,
+					text: "{}",
+				}),
+			).rejects.toSatisfy(
+				(error: unknown) =>
+					error instanceof CloudToolRefusal &&
+					error.message.includes("is in this Studio's folder QorperaOS/surfaces/website/") &&
+					error.message.includes("stage_surface_patch"),
+			);
 
 			await expect(
 				workerCaller("company_write", {
@@ -1240,7 +1335,13 @@ describe("cloud surface runtime tools", () => {
 					expectedVersion: null,
 					text: "<h1>Nope</h1>",
 				}),
-			).rejects.toThrow(CloudToolRefusal);
+			).rejects.toSatisfy(
+				(error: unknown) =>
+					error instanceof CloudToolRefusal &&
+					error.message.includes(
+						"outside this Surface worker's writable roots (QorperaOS/surfaces/identity/notes/)",
+					),
+			);
 			await expect(
 				workerCaller("company_write", {
 					path: "identity-extra/escape.txt",
@@ -1256,17 +1357,6 @@ describe("cloud surface runtime tools", () => {
 					expectedVersion: null,
 				}),
 			).rejects.toThrow(CloudToolRefusal);
-
-			const existingIdentity = await f.folder.read("identity/tokens.json", new AbortController().signal);
-			expect(existingIdentity.entry).not.toBeNull();
-			const workerEditOk = await workerCaller("company_edit", {
-				path: "identity/tokens.json",
-				operationKey: "worker-edit-ok",
-				expectedVersion: existingIdentity.entry!.version,
-				oldText: "#d76f45",
-				newText: "#c85a32",
-			});
-			expect(JSON.parse(String(workerEditOk.value)).state).toBe("applied");
 
 			const existingStrategy = await f.folder.read("strategy/existing.md", new AbortController().signal);
 			expect(existingStrategy.entry).not.toBeNull();
