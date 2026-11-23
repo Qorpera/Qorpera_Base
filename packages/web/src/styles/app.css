@@ -500,6 +500,17 @@ label > input, label > select { font-weight: 400; }
  * member puts it (a card in the pinned row); until then it stands in the Members group at the foot of the list. That
  * group takes contacts only: with nobody in it, it shows only while a contact is dragged, as the place to drop one
  * back (ui/rail-drag.ts says what is dragged). */
+/* WHY: sticky inside the list, so Agents and People stay in view while the interfaces scroll under them. */
+.rail-dock {
+	position: sticky; z-index: 3; bottom: 0; margin-top: auto;
+	display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 4px;
+	max-height: 50%; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+	padding: 6px; border-radius: 16px; background: var(--rail);
+	border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+	box-shadow: 0 1px 2px rgb(0 0 0 / 4%), 0 4px 14px rgb(0 0 0 / 5%);
+}
+.rail-scroll > :has(+ .rail-dock) { margin-bottom: 10px; }
+.rail-compact .rail-dock { padding: 4px; border-radius: 14px; }
 .rail-members.is-empty { display: none; }
 .rail-scroll[data-dragging="member"] .rail-members.is-empty { display: block; }
 .rail-row-member { --rail-row-figure: 50px; min-height: 63.75px; }
