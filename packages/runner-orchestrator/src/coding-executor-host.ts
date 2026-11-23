@@ -60,6 +60,7 @@ import type {
 	CodingExecutorPublication,
 	CodingHousekeepingOutcome,
 	CodingKeepOutcome,
+	CodingPreviewBuild,
 	CodingSessionClaim,
 	CodingSubmission,
 	CodingTurnState,
@@ -148,6 +149,7 @@ import type {
 	LxdTrackedClient,
 } from "./lxd-client.ts";
 import { checkDirectory, code, publish, readRecord } from "./lxd-office-journal-files.ts";
+import { previewBuildOutcome, type SurfacePreviewBuildOutcome } from "./surface-preview-runner.ts";
 
 export const CODING_HOST_RPCS = [
 	"qorpera_plan_coding_machine",
@@ -1265,6 +1267,7 @@ function siteBoundaryJudged(boundary: CodingFolderBoundary): string {
 }
 /** The copy's own time limit. */
 const CODE_CHECKS_COPY_MS = 300_000;
+const PREVIEW_BUILD_CHECK_NAME = "preview";
 const CODE_CHECKS_WAIT_MS = 5_000;
 const CODE_CHECKS_DIFF_MS = 30_000;
 const CODE_CHECKS_CACHE_SAVE_MS = 120_000;
@@ -2836,6 +2839,35 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		} catch {
 			/* not heard */
 		}
+	}
+	async buildPreview(
+		claim: CodingSessionClaim,
+		build: CodingPreviewBuild,
+		signal: AbortSignal,
+	): Promise<SurfacePreviewBuildOutcome> {
+		const run = await this.#runChecks(
+			claim,
+			{
+				commit: build.commitSha,
+				checks: [
+					{
+						name: PREVIEW_BUILD_CHECK_NAME,
+						run: build.recipe.run,
+						cwd: build.recipe.cwd,
+						timeoutSeconds: build.recipe.timeoutSeconds,
+						secrets: [],
+					},
+				],
+				attempt: build.attempt,
+				site: { folder: build.recipe.folder, name: null, title: null },
+				rootLinks: true,
+				maxParallel: 1,
+				failFast: true,
+				caches: [],
+			},
+			signal,
+		);
+		return previewBuildOutcome(run, build.recipe);
 	}
 	/** One run of a repository's checks on a clean copy of `commit` in the turn's session's machine (own code storage,
 	 * step 3; STEP3-CHECKS-PLAN.md 6.2 to 6.4). Each command (the copy, then each check in the file's order) is one of the

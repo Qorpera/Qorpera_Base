@@ -1,4 +1,5 @@
 import { type CloudCodingRepository, parseCodeChecksText, type SurfacePreviewConflict } from "@qorpera/contracts";
+import { type CodeChecksRun, codeChecksTail } from "./code-checks.ts";
 import { type CodeHostJob, CodeHostJobFailure } from "./code-host-jobs.ts";
 import { type CodeHostChangeRange, composePreviewTree } from "./code-host-surfaces.ts";
 import { CODE_SITE_MAX_FILES, CODE_SITE_MAX_FOLDERS, type CodeSiteProblem } from "./code-site.ts";
@@ -87,6 +88,67 @@ export function previewSiteProblemDetail(problem: CodeSiteProblem, folder: strin
 		SITE_LIMIT_PROBLEMS.has(problem.code) ? PREVIEW_BUILD_TOO_LARGE : PREVIEW_BUILD_FAILED,
 		`${where} ${what}. [code=${problem.code}]`,
 	);
+}
+
+export type SurfacePreviewBuildOutcome =
+	| { readonly outcome: "built"; readonly builtTreeSha: string }
+	| { readonly outcome: "failed"; readonly errorDetail: string };
+
+const PREVIEW_BUILD_RUN_SHOWN = 200;
+const NOT_RUN_FOR_THE_MACHINE: ReadonlySet<string> = new Set(["machine", "transport", "authority", "budget"]);
+
+function withTail(head: string, tail: string): string {
+	const room = PREVIEW_BUILD_DETAIL_CHARS - [...head].length - 1;
+	if (tail === "" || room < 40) return head;
+	const lines = tail.split("\n");
+	const kept: string[] = [];
+	let used = 0;
+	for (let index = lines.length - 1; index >= 0; index--) {
+		const size = [...(lines[index] as string)].length + 1;
+		if (used + size > room) break;
+		kept.unshift(lines[index] as string);
+		used += size;
+	}
+	return kept.length === 0 ? head : `${head}\n${kept.join("\n")}`;
+}
+
+export function previewBuildOutcome(run: CodeChecksRun, recipe: SurfacePreviewRecipe): SurfacePreviewBuildOutcome {
+	const command = [...recipe.run.replace(/\s+/g, " ").trim()];
+	const shownRun =
+		command.length <= PREVIEW_BUILD_RUN_SHOWN
+			? command.join("")
+			: `${command.slice(0, PREVIEW_BUILD_RUN_SHOWN).join("")}…`;
+	if (run.state === "passed") {
+		if (run.site?.state === "made") return { outcome: "built", builtTreeSha: run.site.tree };
+		return {
+			outcome: "failed",
+			errorDetail: previewBuildDetail(
+				PREVIEW_BUILD_FAILED,
+				`The build "${shownRun}" passed, but its output in "${recipe.folder}" could not be taken. [code=${run.site?.state === "missed" ? run.site.code : "CODE_SITE_NONE"}]`,
+			),
+		};
+	}
+	if (run.state === "site_refused")
+		return { outcome: "failed", errorDetail: previewSiteProblemDetail(run.problem, recipe.folder) };
+	if (run.state === "not_run") {
+		return {
+			outcome: "failed",
+			errorDetail: previewBuildDetail(
+				NOT_RUN_FOR_THE_MACHINE.has(run.why) ? PREVIEW_BUILD_NO_MACHINE : PREVIEW_BUILD_FAILED,
+				`The build "${shownRun}" did not run: ${run.why === "copy" ? "the composed commit could not be copied into the coding machine" : "the coding machine could not run it"}. [code=${run.code}]`,
+			),
+		};
+	}
+	const failed = run.failed;
+	const exit = failed.exitCode === null ? "ended without an exit code" : `exited with code ${failed.exitCode}`;
+	const limit = failed.atLimit ? `, at its limit of ${recipe.timeoutSeconds} s` : "";
+	const killed = failed.exitCode === 137 && !failed.atLimit ? " (killed, often for lack of memory)" : "";
+	const log = failed.persistedLog ? ` Full log: ${failed.persistedLog}.` : "";
+	const text = `The build "${shownRun}" in "${recipe.cwd}" ${exit} after ${Math.round(failed.ms / 1000)} s${limit}${killed}.${log} End of its output:`;
+	return {
+		outcome: "failed",
+		errorDetail: withTail(previewBuildDetail(PREVIEW_BUILD_FAILED, text), codeChecksTail(failed.tail)),
+	};
 }
 
 function declaresBuild(checksText: string): boolean {
