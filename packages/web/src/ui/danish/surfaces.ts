@@ -408,6 +408,7 @@ export const SURFACES: Record<string, string> = {
 	"Your own domain": "Dit eget domæne",
 	"Your own domain cannot be added yet.": "Dit eget domæne kan ikke tilføjes endnu.",
 	"yourdomain.com": "ditdomæne.dk",
+	"{domain} is kept for when the site is live.": "{domain} er gemt, til hjemmesiden er live.",
 	"{domain} no longer points here.": "{domain} peger ikke hertil længere.",
 	"{domain} points here.": "{domain} peger hertil.",
 };

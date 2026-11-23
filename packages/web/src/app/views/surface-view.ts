@@ -1820,7 +1820,7 @@ export class SurfaceView {
 				return;
 			}
 			case "address":
-				this.#address.toggle();
+				this.#address.toggle(event.detail === 0);
 				return;
 			case "collapse-pill":
 				this.#pillCollapsed = true;

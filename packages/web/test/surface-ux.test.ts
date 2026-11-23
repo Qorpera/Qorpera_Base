@@ -1092,6 +1092,25 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(address()?.className).toBe("surface-pill-address is-live");
 		expect(address()?.textContent).toBe("www.thetaband.dk");
 
+		address()!.click();
+		await flush();
+		address()!.focus();
+		address()!.click();
+		expect(sheet.hidden).toBe(false);
+		expect(document.activeElement).toBe(sheet);
+		await flush();
+		expect(document.activeElement).toBe(sheet);
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(sheet.hidden).toBe(true);
+		expect(document.activeElement).toBe(address());
+
+		const composer = view.el.querySelector<HTMLTextAreaElement>(".surface-input")!;
+		composer.focus();
+		address()!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+		expect(sheet.hidden).toBe(false);
+		expect(document.activeElement).toBe(composer);
+		address()!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+
 		live = false;
 		view.update();
 		expect(address()).toBeNull();

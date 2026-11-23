@@ -103,7 +103,7 @@ function linesLabel(count: number): string {
 
 export class SurfaceAddress {
 	readonly #setup: SurfaceAddressSetup;
-	readonly #sheet = h("div", { class: "surface-address-sheet", role: "dialog", hidden: true });
+	readonly #sheet = h("div", { class: "surface-address-sheet", role: "dialog", tabindex: "-1", hidden: true });
 	readonly #field = h("input", {
 		type: "text",
 		class: "surface-address-input",
@@ -181,7 +181,10 @@ export class SurfaceAddress {
 	}
 
 	#openUrl(): string {
-		const primary = this.#known?.domains.find((domain) => domain.isPrimary && verified(domain));
+		const known = this.#known;
+		const primary = known?.isPublic
+			? known.domains.find((domain) => domain.isPrimary && verified(domain))
+			: undefined;
 		return primary ? `https://${primary.hostname}/` : this.#liveUrl;
 	}
 
@@ -215,13 +218,14 @@ export class SurfaceAddress {
 		);
 	}
 
-	toggle(): void {
+	toggle(fromKeyboard = false): void {
 		if (this.#open) this.close(true);
-		else this.open();
+		else this.open(fromKeyboard);
 	}
 
-	open(): void {
+	open(fromKeyboard = false): void {
 		if (this.#open || !this.#liveUrl || this.#setup.signal.aborted) return;
+		const takeFocus = fromKeyboard || document.activeElement === this.#addressButton();
 		this.#open = true;
 		this.#problem = undefined;
 		const listeners = new AbortController();
@@ -250,6 +254,7 @@ export class SurfaceAddress {
 		window.addEventListener("hashchange", () => this.close(), { signal: listeners.signal });
 		this.#paint();
 		this.#setup.changed();
+		if (takeFocus) this.#sheet.focus();
 		void this.#read().then(() => this.#recheck());
 	}
 
@@ -302,7 +307,8 @@ export class SurfaceAddress {
 	}
 
 	#waitingDomains(): SiteCustomDomain[] {
-		return (this.#known?.domains ?? []).filter((domain) => domain.id && !verified(domain));
+		const known = this.#known;
+		return known?.isPublic ? known.domains.filter((domain) => domain.id && !verified(domain)) : [];
 	}
 
 	#schedule(): void {
@@ -328,7 +334,7 @@ export class SurfaceAddress {
 	}
 
 	#changed(): void {
-		if (this.#open) this.#paint();
+		if (this.#open && this.#paintKey() !== this.#painted) this.#paint();
 		this.#setup.changed();
 	}
 
@@ -478,7 +484,17 @@ export class SurfaceAddress {
 							known.isPublic,
 							known.hosting.publicEnabled,
 							known.hosting.domainsEnabled,
-							known.domains.map((domain) => [domain.id, domain.hostname, domain.status, domain.isPrimary]),
+							known.hosting.edgeIpv4,
+							known.hosting.edgeIpv6,
+							known.hosting.edgeCnameTarget,
+							known.domains.map((domain) => [
+								domain.id,
+								domain.hostname,
+								domain.status,
+								domain.isPrimary,
+								domain.isApex,
+								domain.verificationToken,
+							]),
 						],
 		]);
 	}
@@ -610,7 +626,9 @@ export class SurfaceAddress {
 		const name = domain.hostname;
 		const parts: HTMLElement[] = [];
 		const block = (text: string) => h("p", { class: "surface-address-line", dataset: { domain: name } }, text);
-		if (verified(domain)) {
+		if (!known.isPublic) {
+			parts.push(block(t("{domain} is kept for when the site is live.", { domain: name })));
+		} else if (verified(domain)) {
 			parts.push(
 				block(
 					domain.isPrimary

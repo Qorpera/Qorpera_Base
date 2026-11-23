@@ -228,6 +228,47 @@ describe("the address sheet's stops", () => {
 		expect(client.recheckDomain).not.toHaveBeenCalled();
 	});
 
+	it("keeps a private site's verified primary domain for when the site is live", async () => {
+		const primary = siteDomain("thetaband.dk", "tls_active", { isPrimary: true });
+		const { address } = await opened({ entry: { isPublic: false, domains: [primary] } });
+		expect(address.mark()).toBe("private");
+		expect(address.name()).toBe("thetaband.qorpera.com");
+		expect(bar().classList.contains("is-private")).toBe(true);
+		expect(bar().querySelector(".surface-address-lock")).not.toBeNull();
+		expect(stops()[0]).toEqual(["Only you", "is-now"]);
+		expect(lines()).toEqual([
+			"Only you and your team can open it.",
+			"thetaband.dk is kept for when the site is live.",
+		]);
+		expect(sheet().textContent).not.toContain("Live at");
+		expect(buttons()).toEqual(["Put it live", "Remove thetaband.dk"]);
+		expect(sheet().querySelector<HTMLAnchorElement>(".surface-address-open")?.href).toBe(LIVE_URL);
+	});
+
+	it("words a live site's domains as kept once it goes back to only you, with no lines and no recheck", async () => {
+		const primary = siteDomain("thetaband.dk", "tls_active", { isPrimary: true });
+		const { client } = await opened({ entry: { isPublic: true, domains: [primary] } });
+		expect(lines()).toEqual(["Live at thetaband.dk, with the lock."]);
+		press("Back to only you");
+		expect(lines()).toEqual([
+			"Only you and your team can open it.",
+			"thetaband.dk is kept for when the site is live.",
+		]);
+		await settle();
+		expect(bar().classList.contains("is-private")).toBe(true);
+		expect(bar().textContent).toBe("thetaband.qorpera.com");
+		document.body.replaceChildren();
+
+		const waiting = await opened({ entry: { isPublic: false, domains: [siteDomain("www.thetaband.dk")] } });
+		expect(lines()).toEqual([
+			"Only you and your team can open it.",
+			"www.thetaband.dk is kept for when the site is live.",
+		]);
+		expect(buttons()).toEqual(["Put it live", "Remove www.thetaband.dk"]);
+		expect(waiting.client.recheckDomain).not.toHaveBeenCalled();
+		expect(client.recheckDomain).not.toHaveBeenCalled();
+	});
+
 	it("says plainly when sites cannot go live or take a domain yet", async () => {
 		await opened({ publicEnabled: false });
 		expect(buttons()).toEqual([]);
@@ -335,6 +376,58 @@ describe("the address sheet while a domain waits", () => {
 		await vi.advanceTimersByTimeAsync(ADDRESS_POLL_MS * 5);
 		expect(client.read).toHaveBeenCalledTimes(before);
 		expect(sheet().hidden).toBe(true);
+	});
+
+	it("keeps a refused copy's selection through a read that changes nothing", async () => {
+		vi.useFakeTimers();
+		const { client, address } = mount({ entry: { isPublic: true, domains: [siteDomain("www.thetaband.dk")] } });
+		await vi.advanceTimersByTimeAsync(0);
+		address.open();
+		await vi.advanceTimersByTimeAsync(0);
+		press("Show the two lines to paste where you bought it");
+		const writeText = vi.fn(async (_text: string) => {
+			throw new Error("denied");
+		});
+		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+		const value = sheet().querySelectorAll(".surface-address-value")[1]!;
+		sheet().querySelectorAll<HTMLButtonElement>(".surface-address-copy")[1]!.click();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(problem()).toMatch(/^Press (⌘|Ctrl\+)C to copy\.$/);
+		expect(window.getSelection()?.toString()).toBe("qorpera-verify=9f3a1c");
+		const selected = sheet().querySelectorAll(".surface-address-value")[1]!;
+		expect(selected).not.toBe(value);
+
+		const reads = client.read.mock.calls.length;
+		await vi.advanceTimersByTimeAsync(ADDRESS_POLL_MS);
+		expect(client.read).toHaveBeenCalledTimes(reads + 1);
+		expect(sheet().querySelectorAll(".surface-address-value")[1]).toBe(selected);
+		expect(window.getSelection()?.toString()).toBe("qorpera-verify=9f3a1c");
+		expect(problem()).toMatch(/^Press (⌘|Ctrl\+)C to copy\.$/);
+	});
+
+	it("moves the focus into the sheet when the address had it, and Escape gives it back", async () => {
+		const { address } = mount();
+		await settle();
+		bar().focus();
+		address.open();
+		expect(document.activeElement).toBe(sheet());
+		expect(sheet().getAttribute("tabindex")).toBe("-1");
+		await settle();
+		expect(document.activeElement).toBe(sheet());
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(document.activeElement).toBe(bar());
+	});
+
+	it("leaves the focus where the member types when the address is opened with the pointer", async () => {
+		const { address, container } = mount();
+		await settle();
+		const typing = h("textarea");
+		container.append(typing);
+		typing.focus();
+		address.open();
+		await settle();
+		expect(address.isOpen).toBe(true);
+		expect(document.activeElement).toBe(typing);
 	});
 
 	it("closes on a press outside and on Escape, which gives the focus back to the address", async () => {

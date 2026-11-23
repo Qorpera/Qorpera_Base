@@ -463,6 +463,7 @@
 	font-family: var(--font-sans); font-size: 13px; -webkit-font-smoothing: antialiased;
 }
 .surface-address-sheet[hidden] { display: none; }
+.surface-address-sheet:focus { outline: none; }
 .surface-address-sheet.is-placed { translate: none; }
 .surface-address-sheet.is-entering { transform-origin: top left; animation: menu-in var(--motion-base) var(--ease-spring) both; }
 .surface-address-name {
