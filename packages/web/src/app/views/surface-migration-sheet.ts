@@ -432,7 +432,12 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 	);
 
 	const heroTile = h("span", { class: "surface-tile is-stage", "aria-hidden": "true" }, surfaceFigure(figure));
-	const showFigure = () => heroTile.replaceChildren(surfaceFigure(figure));
+	let heroFigure = figure;
+	const showFigure = (shown: SurfaceFigureId) => {
+		if (shown === heroFigure) return;
+		heroFigure = shown;
+		heroTile.replaceChildren(surfaceFigure(shown, "rest", "now"));
+	};
 	const avatar = h(
 		"button",
 		{
@@ -445,17 +450,21 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 		heroTile,
 		h("span", { class: "surface-create-avatar-edit", "aria-hidden": "true" }, icon("edit")),
 	);
-	const figures = surfaceFigureChoices(figure, (id) => {
-		figure = id;
-		figureChosen = true;
-		showFigure();
-		setPicker(false);
-		avatar.focus({ preventScroll: true });
-	});
+	const figures = surfaceFigureChoices(
+		figure,
+		(id) => {
+			figure = id;
+			figureChosen = true;
+			setPicker(false);
+			avatar.focus({ preventScroll: true });
+		},
+		(id) => showFigure(id ?? figure),
+	);
 	const picker = h("div", { class: "surface-create-figures", hidden: true }, figures);
 	const setPicker = (open: boolean) => {
 		picker.hidden = !open;
 		avatar.setAttribute("aria-expanded", String(open));
+		if (!open) showFigure(figure);
 		if (open) figures.querySelector<HTMLElement>('[aria-checked="true"]')?.focus({ preventScroll: true });
 	};
 	avatar.addEventListener("click", () => setPicker(picker.hidden));
@@ -480,7 +489,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 		if (!figureChosen) {
 			figure = surfaceKindFigure(preset.kind);
 			markSurfaceFigure(figures, figure);
-			showFigure();
+			showFigure(figure);
 		}
 		if (!customName) nameInput.value = preset.kind === "custom" ? "" : t(preset.title);
 	};

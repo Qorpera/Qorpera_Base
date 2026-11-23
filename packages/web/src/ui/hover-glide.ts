@@ -261,6 +261,7 @@ const GLIDE_ITEMS = [
 	".surface-overview-option",
 	".surface-change",
 	".surface-variant",
+	".surface-figure-choice",
 	".account-picture-item",
 	".founding-friends li",
 	".mailbox-pick",
