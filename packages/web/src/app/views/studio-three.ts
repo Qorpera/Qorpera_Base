@@ -84,7 +84,6 @@ export interface StudioThree {
 		readonly canvas: HTMLCanvasElement;
 		readonly alpha: boolean;
 		readonly antialias: boolean;
-		readonly powerPreference: string;
 	}) => ThreeRenderer;
 	readonly Scene: new () => ThreeScene;
 	readonly Group: new () => ThreeObject3D;

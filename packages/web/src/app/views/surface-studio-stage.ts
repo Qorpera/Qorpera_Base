@@ -268,12 +268,7 @@ export class StudioModelStage {
 		});
 		let renderer: ThreeRenderer;
 		try {
-			renderer = new three.WebGLRenderer({
-				canvas,
-				alpha: true,
-				antialias: true,
-				powerPreference: "high-performance",
-			});
+			renderer = new three.WebGLRenderer({ canvas, alpha: true, antialias: true });
 		} catch {
 			this.#failed = true;
 			return undefined;
