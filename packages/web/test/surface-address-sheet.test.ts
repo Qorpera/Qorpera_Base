@@ -194,9 +194,8 @@ describe("the address sheet's stops", () => {
 	it("copies the site's link from under its name, and its password while only the team can open it", async () => {
 		const writeText = vi.fn(async (_text: string) => undefined);
 		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-		const password = vi.fn(async () => "nordic-pass-42");
+		const password = vi.fn(async (): Promise<string | null> => "nordic-pass-42");
 		const { client } = await opened({}, true, password);
-		expect(password).toHaveBeenCalledTimes(1);
 		expect(links()).toEqual(["Open the site", "Copy link", "Copy password"]);
 
 		press("Copy link");
@@ -211,7 +210,37 @@ describe("the address sheet's stops", () => {
 		await settle();
 		expect(client.setPublic).toHaveBeenCalledWith(HOSTED_SITE, true, expect.any(AbortSignal));
 		expect(links()).toEqual(["Open the site", "Copy link"]);
-		expect(password).toHaveBeenCalledTimes(1);
+	});
+
+	it("copies the password as it is at the press, and drops the offer once it can no longer be read", async () => {
+		const writeText = vi.fn(async (_text: string) => undefined);
+		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+		const password = vi.fn(async (): Promise<string | null> => "nordic-pass-42");
+		const { address } = await opened({}, true, password);
+		press("Copy password");
+		await settle();
+		expect(writeText).toHaveBeenLastCalledWith("nordic-pass-42");
+
+		password.mockResolvedValue("changed-pass-43");
+		address.close();
+		address.open();
+		await settle();
+		press("Copy password");
+		await settle();
+		expect(writeText).toHaveBeenLastCalledWith("changed-pass-43");
+
+		password.mockResolvedValue(null);
+		press("Copy password");
+		await settle();
+		expect(writeText).toHaveBeenCalledTimes(2);
+		expect(problem()).toBe("That didn't work. Try again.");
+		expect(links()).toEqual(["Open the site", "Copy link"]);
+
+		password.mockResolvedValue("back-again-44");
+		address.close();
+		address.open();
+		await settle();
+		expect(links()).toEqual(["Open the site", "Copy link", "Copy password"]);
 	});
 
 	it("offers no password to a member who cannot read one, and says what to press when a copy is refused", async () => {

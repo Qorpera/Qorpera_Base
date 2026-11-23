@@ -996,7 +996,7 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
-	it("renders Retry preview button on failed door frames, Failed session badges & Retry action, pending merge toast, and publish errors in patch notes", async () => {
+	it("renders Retry preview button on failed door frames, Failed session badges & Retry action, pending merge toast, and publish errors in the publish window", async () => {
 		const controller = new AbortController();
 		const onRetry = vi.fn();
 		const door = new SurfaceDoorStage(controller.signal, { onRetry });

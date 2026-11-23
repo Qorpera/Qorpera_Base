@@ -1225,7 +1225,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
-	it("renders multiplayer surface presence in the header pill and teammate attribution in drawer chat and patch notes", async () => {
+	it("renders multiplayer surface presence in the header pill and teammate attribution in drawer chat and the publish window", async () => {
 		stubFigureMotion();
 		const madsId = "99999999-9999-4999-8999-999999999999";
 		const site = summary({

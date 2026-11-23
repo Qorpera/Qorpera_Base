@@ -116,7 +116,7 @@ export class SurfaceAddress {
 	#target: SurfaceSiteHosting | undefined;
 	#liveUrl = "";
 	#known: Known | null | undefined;
-	#password: string | null | undefined;
+	#hasPassword = false;
 	#failed = false;
 	#problem: string | undefined;
 	#open = false;
@@ -151,7 +151,7 @@ export class SurfaceAddress {
 			this.#shut();
 			this.#target = next;
 			this.#known = undefined;
-			this.#password = undefined;
+			this.#hasPassword = false;
 			this.#failed = false;
 			this.#problem = undefined;
 			this.#linesShown.clear();
@@ -259,7 +259,7 @@ export class SurfaceAddress {
 		this.#setup.changed();
 		if (takeFocus) this.#sheet.focus();
 		void this.#read().then(() => this.#recheck());
-		this.#readPassword();
+		this.#checkPassword();
 	}
 
 	close(focusAddress = false): void {
@@ -310,20 +310,22 @@ export class SurfaceAddress {
 		this.#schedule();
 	}
 
-	#readPassword(): void {
+	#checkPassword(): void {
 		const target = this.#target;
-		if (this.#password !== undefined || !this.#setup.password) return;
-		void this.#setup
-			.password()
+		const read = this.#setup.password;
+		if (!read) return;
+		void read()
 			.catch(() => null)
 			.then((password) => {
 				if (this.#setup.signal.aborted || target !== this.#target) return;
-				this.#password = password?.trim() || null;
+				const has = Boolean(password?.trim());
+				if (has === this.#hasPassword) return;
+				this.#hasPassword = has;
 				if (this.#open) this.#paint();
 			});
 	}
 
-	#copy(control: HTMLButtonElement, text: string, refused: () => void): void {
+	#copy(control: HTMLButtonElement, text: string | Promise<string>, refused: () => void): void {
 		void toClipboard(text).then((copied) => {
 			if (!copied) return refused();
 			const label = control.textContent;
@@ -503,7 +505,7 @@ export class SurfaceAddress {
 			this.#setup.canManage(),
 			this.#failed,
 			this.#problem ?? "",
-			Boolean(this.#password),
+			this.#hasPassword,
 			[...this.#linesShown],
 			known === undefined
 				? "unknown"
@@ -558,15 +560,24 @@ export class SurfaceAddress {
 				selection.addRange(range);
 			}),
 		);
-		const password = this.#known?.isPublic ? null : this.#password;
-		const copyPassword = password
+		const readPassword = this.#known?.isPublic || !this.#hasPassword ? undefined : this.#setup.password;
+		const copyPassword = readPassword
 			? h("button", { type: "button", class: "surface-address-link is-password" }, t("Copy password"))
 			: null;
 		copyPassword?.addEventListener("click", () =>
-			this.#copy(copyPassword, password!, () => {
-				this.#problem = t("That didn't work. Try again.");
-				this.#paint();
-			}),
+			this.#copy(
+				copyPassword,
+				readPassword!().then((password) => {
+					const now = password?.trim();
+					if (!now) throw new Error("no site password");
+					return now;
+				}),
+				() => {
+					this.#problem = t("That didn't work. Try again.");
+					this.#checkPassword();
+					this.#paint();
+				},
+			),
 		);
 		replace(
 			this.#sheet,
