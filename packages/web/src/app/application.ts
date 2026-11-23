@@ -1079,6 +1079,10 @@ export function mountApplication(
 						const found = controller.store.get().team?.members.find((member) => member.userId === memberId);
 						return found?.displayName || found?.email;
 					},
+					teammates: () =>
+						(controller.store.get().team?.members ?? [])
+							.filter((member) => member.userId !== controller.userId)
+							.map((member) => ({ userId: member.userId, name: member.displayName || member.email })),
 					peopleAtSurface: (slug) => controller.peopleByPlace().get(`surface:${slug.toLowerCase()}`) ?? [],
 					userId,
 					publishers: () =>

@@ -833,6 +833,8 @@ export class SurfaceView {
 				agent.conflicted,
 				agent.running,
 				agent.badgeCount,
+				agent.kind === "session" ? (store.turnHolder(agent.session)?.userId ?? "") : "",
+				state.unseenNotes[agent.id]?.count ?? 0,
 			]),
 			this.#pillCollapsed,
 			Boolean(state.busy[`publish:${surface.id}`]),
@@ -930,8 +932,15 @@ export class SurfaceView {
 								},
 								agent.kind === "exploration"
 									? this.#headerCrew.takeExploration(agent.exploration, agent.variants, 26)
-									: this.#headerCrew.take(agent.session, 26),
+									: this.#headerCrew.take(agent.session, 26, "", store.turnHolder(agent.session)),
 								badge,
+								state.unseenNotes[agent.id]
+									? h(
+											"span",
+											{ class: "surface-bar-agent-count is-note", title: t("A teammate left you a note") },
+											"@",
+										)
+									: null,
 							);
 						}),
 						overflowAgents > 0

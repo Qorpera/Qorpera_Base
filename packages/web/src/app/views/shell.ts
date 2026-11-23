@@ -2083,6 +2083,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			running,
 			session.openChangeCount,
 			hasConflictedChange(session),
+			store.turnHolder(session)?.userId ?? "",
 		]),
 	]);
 	if (workingKey !== hub.workingKey) {
@@ -2167,7 +2168,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 							store.openDrawer(surface.id, session.id);
 						},
 					},
-					hub!.workingCrew.take(session, 32),
+					hub!.workingCrew.take(session, 32, "", store.turnHolder(session)),
 					h("span", { class: "rail-agent-hub-copy" }, h("strong", null, session.title), h("small", null, status)),
 					h("span", { class: "rail-agent-surface-tag" }, surface.title),
 				);

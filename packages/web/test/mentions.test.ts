@@ -6,7 +6,14 @@ import { ConversationView } from "../src/app/views/conversation.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import type { GroupChatDetails } from "../src/cloud/group-details.ts";
 import type { HostedProfileMember, HostedSession, HostedStaffAgent } from "../src/cloud/types.ts";
-import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../src/ui/mentions.ts";
+import {
+	findMentions,
+	leadingMentions,
+	type MentionTarget,
+	matchTargets,
+	mentionParts,
+	mentionQuery,
+} from "../src/ui/mentions.ts";
 import { fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
 
 const bo: MentionTarget = { kind: "agent", id: "a", name: "Bo" };
@@ -15,6 +22,15 @@ const sofie: MentionTarget = { kind: "member", id: "c", name: "Sofie Lund" };
 const soren: MentionTarget = { kind: "member", id: "d", name: "Søren Ask" };
 
 describe("the mention rule", () => {
+	it("reads whom a text is addressed to from the mentions it starts with", () => {
+		const to = (text: string) => leadingMentions(text, [sofie, soren]).map((target) => target.id);
+		expect(to("@Sofie Lund does it look right?")).toEqual(["c"]);
+		expect(to("  @Søren Ask, @sofie lund @Søren Ask look")).toEqual(["d", "c"]);
+		expect(to("Ask @Sofie Lund about it")).toEqual([]);
+		expect(to("@Sofie Lund and @Søren Ask")).toEqual(["c"]);
+		expect(to("@Sofie look")).toEqual([]);
+	});
+
 	it("reads '@' and a name at a word start, before a space or punctuation, in any case", () => {
 		const names = (text: string) => findMentions(text, [bo, sofie]).map((mention) => mention.target.name);
 		expect(names("@Bo check this")).toEqual(["Bo"]);

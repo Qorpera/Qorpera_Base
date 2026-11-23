@@ -192,6 +192,48 @@ describe("cloud-client surface session images", () => {
 		])
 			await expect(fixture(bad).client.surfaceSessionImages(sessionId)).rejects.toThrow();
 	});
+
+	it("writes a note to teammates, reads its recipients and whose turn the session is on", async () => {
+		const jonas = "29600000-0000-4000-8000-000000000005";
+		const sofie = "29600000-0000-4000-8000-000000000006";
+		const note = {
+			id: messageId,
+			sessionId,
+			authorKind: "note",
+			authorUserId: sofie,
+			text: "@Jonas does it look right?",
+			changeId: null,
+			noteTo: [jonas],
+			createdAt: "2026-11-23T10:01:00.000Z",
+		};
+		const { rpc, client } = fixture({ ...session, turnRequestedByUserId: sofie, messages: [note] });
+		const answered = await client.noteSurfaceSession(sessionId, "@Jonas does it look right?", [jonas]);
+		expect(rpc).toHaveBeenCalledWith("qorpera_surface_session_note", {
+			p_session_id: sessionId,
+			p_message: "@Jonas does it look right?",
+			p_to: [jonas],
+		});
+		expect(answered.turnRequestedByUserId).toBe(sofie);
+		expect(answered.messages[0]).toMatchObject({ authorKind: "note", noteTo: [jonas] });
+		await expect(
+			fixture({ ...session, messages: [{ ...note, noteTo: ["x"] }] }).client.noteSurfaceSession(sessionId, "Hi", [
+				jonas,
+			]),
+		).rejects.toThrow();
+	});
+
+	it("lists the member's unseen notes and marks a session's seen", async () => {
+		const unseen = [{ surfaceId, sessionId, count: 2 }];
+		const { rpc, client } = fixture(unseen);
+		expect(await client.unseenSurfaceNotes(surfaceId)).toEqual(unseen);
+		expect(rpc).toHaveBeenCalledWith("qorpera_surface_unseen_notes", { p_profile_id: surfaceId });
+		await client.markSurfaceNotesSeen(sessionId);
+		expect(rpc).toHaveBeenLastCalledWith("qorpera_surface_notes_seen", { p_session_id: sessionId });
+		await expect(
+			fixture([{ surfaceId, sessionId, count: 0 }]).client.unseenSurfaceNotes(surfaceId),
+		).rejects.toThrow();
+		await expect(fixture({}).client.unseenSurfaceNotes(surfaceId)).rejects.toThrow();
+	});
 });
 
 describe("cloud-client surface publish asks", () => {
