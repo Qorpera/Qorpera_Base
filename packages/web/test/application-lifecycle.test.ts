@@ -120,7 +120,7 @@ function withInterfacesTab(f: ReturnType<typeof mounted>): void {
 		if (name !== "qorpera_member_interface_pages") throw new Error("Unexpected RPC");
 		const pages = [
 			{ page: "mailbox", on: false },
-			{ page: "members", on: true },
+			{ page: "bank", on: true },
 		];
 		return { schema: "qorpera.member-interface-pages/v1", pages, mayChange: true };
 	});

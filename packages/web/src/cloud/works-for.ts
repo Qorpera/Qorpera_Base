@@ -1,9 +1,6 @@
 import type { Cloud } from "./client.ts";
 import { array, boundedInteger, CloudShapeError, oneOf, record, timestamp, uuid } from "./parse.ts";
 
-/* Who each agent works for (supabase/CLIENT-CONTRACT.md "Who each agent works for", migration
- * 20260930700000_agent_works_for): the Members page's live read, and the ask and answer that move an agent. */
-
 export type LoginState = "ready" | "full" | "sign_in" | "none";
 
 export interface WorksForLogin {

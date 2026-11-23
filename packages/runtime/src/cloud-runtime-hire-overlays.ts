@@ -116,7 +116,7 @@ const COFOUNDER_MONEY =
 const COFOUNDER_MEMBERS =
 	"Each agent works for one member whose ChatGPT plan carries its work; a new hire works for the founder who hired it.";
 const COFOUNDER_DEAL =
-	"With two or more founders, share the team across them by area so every founder carries and owns part of the company: check crew_and_members, offer each founder the agents for their areas with offer_agents_to_member and a one-line reason, and let them know once (they accept on the Members page).";
+	"With two or more founders, share the team across them by area so every founder carries and owns part of the company: check crew_and_members, offer each founder the agents for their areas with offer_agents_to_member and a one-line reason, and let them know once (they accept in Settings, Team, under Who agents work for).";
 
 const COFOUNDER_DIRECTION =
 	"The vision holds the product at the founders' full ambition; a first user's case is how we test it, never the ceiling. Only the founders change an agreed direction, make commitments requiring a founder's personal name or presence, or decide what the vision reserves for them: update an agreed direction only after every founder approves, while updating factual follow-ons (like who is on the team) yourself. Greet any founder who joins later, link the vision, and invite them to approve it or suggest changes.";

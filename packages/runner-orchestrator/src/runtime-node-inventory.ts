@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { cloudCodingSessionLayout } from "@qorpera/contracts";
+import { agentPlugCard, isAgentPlugCard } from "./agent-plug.ts";
 import {
 	CODE_HOST_PROJECT,
 	type CodeHostPolicy,
@@ -7,6 +8,9 @@ import {
 	codeHostReservation,
 	parseCodeHostPolicy,
 } from "./code-host.ts";
+import { CODING_MACHINE_BASE_CONFIG } from "./coding-machine.ts";
+import { CODING_SNAPSHOT_BUILDER_SCHEMA, CODING_SNAPSHOT_BUILDER_VM_NAME } from "./coding-snapshots.ts";
+import { CODING_STANDBY_SCHEMA, CODING_STANDBY_VM_NAME } from "./coding-standby-pool.ts";
 import {
 	type ExecutionHostIdentityVolumes,
 	executionHostIdentityDevices,
@@ -66,6 +70,59 @@ export interface RuntimeNodeBuildSpace {
 	cpuMillis: number;
 	memoryBytes: number;
 }
+export interface CodingAuxiliaryPolicy {
+	project: string;
+	storagePool: string;
+	cpus: number;
+	memoryBytes: number;
+	rootDiskBytes: number;
+	maxBuilders: number;
+	maxStandby: number;
+}
+const CODING_AUXILIARY_KEYS = [
+	"project",
+	"storagePool",
+	"cpus",
+	"memoryBytes",
+	"rootDiskBytes",
+	"maxBuilders",
+	"maxStandby",
+] as const;
+const GIB = 1024 ** 3;
+export function parseCodingAuxiliaryPolicy(value: unknown): Readonly<CodingAuxiliaryPolicy> {
+	const input = record(value, CODING_AUXILIARY_KEYS.join(","));
+	const whole = (n: unknown, min: number, max: number, unit = 1) =>
+		Number.isSafeInteger(n) && (n as number) >= min && (n as number) <= max && (n as number) % unit === 0;
+	const project = text(input.project, NAME);
+	const storagePool = text(input.storagePool, NAME);
+	if (
+		CODE_HOST_PROJECT.test(project) ||
+		!whole(input.cpus, 1, 64) ||
+		!whole(input.memoryBytes, GIB, 1024 * GIB, GIB) ||
+		!whole(input.rootDiskBytes, 10 * GIB, 2048 * GIB, GIB) ||
+		!whole(input.maxBuilders, 0, 4) ||
+		!whole(input.maxStandby, 0, 8) ||
+		(input.maxBuilders as number) + (input.maxStandby as number) < 1
+	)
+		throw new Error("INVALID_NODE_INVENTORY_POLICY");
+	return Object.freeze({
+		project,
+		storagePool,
+		cpus: input.cpus as number,
+		memoryBytes: input.memoryBytes as number,
+		rootDiskBytes: input.rootDiskBytes as number,
+		maxBuilders: input.maxBuilders as number,
+		maxStandby: input.maxStandby as number,
+	});
+}
+export function codingAuxiliaryReservation(policy: CodingAuxiliaryPolicy | undefined): {
+	cpuMillis: number;
+	memoryBytes: number;
+} {
+	return policy
+		? { cpuMillis: policy.maxBuilders * policy.cpus * 1000, memoryBytes: policy.maxBuilders * policy.memoryBytes }
+		: { cpuMillis: 0, memoryBytes: 0 };
+}
 export interface RuntimeNodeInventoryPolicy {
 	schema: "qorpera.runtime-node-inventory-policy/v1";
 	nodeId: string;
@@ -86,29 +143,34 @@ export interface RuntimeNodeInventoryPolicy {
 	 * executor under the same policy. `running` of them are always reserved, like the build space; a code host
 	 * is accepted only exactly as the executor makes it. Without it, anything in such a project is unregistered. */
 	codeHosts?: CodeHostPolicy;
+	codingAuxiliary?: CodingAuxiliaryPolicy;
 }
 /** What the policy holds back from the node's headroom whether anything runs or not. */
 export function runtimeNodeReserved(p: RuntimeNodeInventoryPolicy): { cpuMillis: number; memoryBytes: number } {
 	const hosts = codeHostReservation(p.codeHosts);
+	const aux = codingAuxiliaryReservation(p.codingAuxiliary);
 	return {
 		cpuMillis:
 			p.operatingCpuMillis +
 			p.infrastructure.reduce((sum, i) => sum + i.cpuMillis, 0) +
 			(p.buildSpace?.cpuMillis ?? 0) +
-			hosts.cpuMillis,
+			hosts.cpuMillis +
+			aux.cpuMillis,
 		memoryBytes:
 			p.operatingMemoryBytes +
 			p.infrastructure.reduce((sum, i) => sum + i.memoryBytes, 0) +
 			(p.buildSpace?.memoryBytes ?? 0) +
-			hosts.memoryBytes,
+			hosts.memoryBytes +
+			aux.memoryBytes,
 	};
 }
 export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInventoryPolicy {
 	const building = !!value && typeof value === "object" && Object.hasOwn(value, "buildSpace");
 	const coding = !!value && typeof value === "object" && Object.hasOwn(value, "codeHosts");
+	const auxiliary = !!value && typeof value === "object" && Object.hasOwn(value, "codingAuxiliary");
 	const p = record(
 		value,
-		`schema,nodeId,host,operatingCpuMillis,operatingMemoryBytes,infrastructure${building ? ",buildSpace" : ""}${coding ? ",codeHosts" : ""}`,
+		`schema,nodeId,host,operatingCpuMillis,operatingMemoryBytes,infrastructure${building ? ",buildSpace" : ""}${coding ? ",codeHosts" : ""}${auxiliary ? ",codingAuxiliary" : ""}`,
 	);
 	const h = record(
 		p.host,
@@ -168,10 +230,13 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 	} catch {
 		throw new Error("INVALID_NODE_INVENTORY_POLICY");
 	}
+	let codingAuxiliary: CodingAuxiliaryPolicy | undefined;
+	if (auxiliary) codingAuxiliary = parseCodingAuxiliaryPolicy(p.codingAuxiliary);
 	if (
 		new Set(infrastructure.map((i) => JSON.stringify([i.project, i.name]))).size !== infrastructure.length ||
 		new Set(infrastructure.map((i) => i.physicalId)).size !== infrastructure.length ||
 		(buildSpace && infrastructure.some((i) => i.project === buildSpace.project)) ||
+		(buildSpace && codingAuxiliary && buildSpace.project === codingAuxiliary.project) ||
 		// A code host project holds its code host and nothing else.
 		infrastructure.some((i) => CODE_HOST_PROJECT.test(i.project)) ||
 		(buildSpace && CODE_HOST_PROJECT.test(buildSpace.project))
@@ -194,6 +259,7 @@ export function parseRuntimeNodeInventoryPolicy(value: unknown): RuntimeNodeInve
 		infrastructure,
 		...(buildSpace ? { buildSpace } : {}),
 		...(codeHosts ? { codeHosts } : {}),
+		...(codingAuxiliary ? { codingAuxiliary } : {}),
 	};
 }
 export interface RuntimeNodeInventoryAllocation {
@@ -281,7 +347,14 @@ export interface RuntimeNodeInventoryEntry {
 	cpuMillis: number | null;
 	memoryBytes: number | null;
 	allocation: RuntimeNodeInventoryAllocation | null;
-	category: "managed" | "infrastructure" | "build" | "code-host" | "unmanaged";
+	category:
+		| "managed"
+		| "infrastructure"
+		| "build"
+		| "code-host"
+		| "coding-snapshot-builder"
+		| "coding-standby"
+		| "unmanaged";
 	reason:
 		| "UNREGISTERED_INSTANCE"
 		| "INSTANCE_AUTHORITY_DIFFERS"
@@ -289,6 +362,8 @@ export interface RuntimeNodeInventoryEntry {
 		| "BUILD_SPACE_EXCEEDED"
 		| "INSTANCE_IMAGE_NOT_RELEASED"
 		| "CODE_HOST_SPACE_EXCEEDED"
+		| "CODING_SNAPSHOT_BUILDER_SPACE_EXCEEDED"
+		| "CODING_STANDBY_SPACE_EXCEEDED"
 		| null;
 	/** Only on an infrastructure entry whose policy declares identityVolumes:
 	 * the identities of its identity devices, sorted. */
@@ -515,6 +590,118 @@ function allocation(
 		return null;
 	return expected;
 }
+const AUXILIARY_OWNER = /^[A-Za-z0-9_.:-]{1,120}$/;
+const AUXILIARY_SHA256 = /^[0-9a-f]{64}$/;
+const AUXILIARY_BUILDER_KEYS = new Set([
+	"boot.mode",
+	"boot.autostart",
+	"security.devlxd",
+	"limits.cpu",
+	"limits.memory",
+	"user.qorpera.schema",
+	"user.qorpera.company_id",
+	"user.qorpera.machine_id",
+	"user.qorpera.member_user_id",
+	"user.qorpera.owner",
+	"user.qorpera.build_id",
+	"user.qorpera.setup_digest",
+]);
+const AUXILIARY_STANDBY_KEYS = new Set([
+	"boot.mode",
+	"boot.autostart",
+	"security.devlxd",
+	"limits.cpu",
+	"limits.memory",
+	"user.qorpera.schema",
+	"user.qorpera.standby_image",
+]);
+
+function auxiliaryRootDiskMatches(
+	device: Readonly<Record<string, string>> | undefined,
+	policy: CodingAuxiliaryPolicy,
+	exactSize: boolean,
+): boolean {
+	if (!device || Object.keys(device).some((k) => !["type", "path", "pool", "size"].includes(k))) return false;
+	if (device.type !== "disk" || device.path !== "/" || device.pool !== policy.storagePool) return false;
+	if (!/^[1-9][0-9]{0,15}$/.test(device.size ?? "")) return false;
+	const bytes = Number(device.size);
+	if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > policy.rootDiskBytes) return false;
+	return exactSize ? bytes === policy.rootDiskBytes : true;
+}
+
+export function codingSnapshotBuilderInstanceMatches(
+	policy: CodingAuxiliaryPolicy,
+	i: LxdHostInventoryInstance,
+): boolean {
+	if (
+		i.type !== "virtual-machine" ||
+		!CODING_SNAPSHOT_BUILDER_VM_NAME.test(i.name) ||
+		!isDeepStrictEqual(i.profiles, [])
+	)
+		return false;
+	for (const config of [i.config, i.expandedConfig]) {
+		for (const [key, value] of Object.entries(CODING_MACHINE_BASE_CONFIG)) {
+			if (config[key] !== value) return false;
+		}
+		if (
+			config["user.qorpera.schema"] !== CODING_SNAPSHOT_BUILDER_SCHEMA ||
+			!UUID.test(config["user.qorpera.company_id"] ?? "") ||
+			!UUID.test(config["user.qorpera.machine_id"] ?? "") ||
+			!UUID.test(config["user.qorpera.member_user_id"] ?? "") ||
+			!UUID.test(config["user.qorpera.build_id"] ?? "") ||
+			config["user.qorpera.machine_id"] !== config["user.qorpera.build_id"] ||
+			!AUXILIARY_SHA256.test(config["user.qorpera.setup_digest"] ?? "") ||
+			!AUXILIARY_OWNER.test(config["user.qorpera.owner"] ?? "")
+		)
+			return false;
+		const cpu = config["limits.cpu"] ?? "";
+		const mem = config["limits.memory"] ?? "";
+		if (!/^[1-9][0-9]{0,3}$/.test(cpu) || Number(cpu) > policy.cpus) return false;
+		if (!/^[1-9][0-9]{0,15}$/.test(mem) || Number(mem) > policy.memoryBytes) return false;
+		for (const key of Object.keys(config)) {
+			if (key.startsWith("volatile.") || key.startsWith("image.")) continue;
+			if (!AUXILIARY_BUILDER_KEYS.has(key)) return false;
+			if (i.config[key] !== i.expandedConfig[key]) return false;
+		}
+	}
+	const cardTemplate = agentPlugCard("eth0");
+	for (const devMap of [i.devices, i.expandedDevices]) {
+		const keys = Object.keys(devMap).sort();
+		if (keys.length !== 2 || keys[0] !== "network" || keys[1] !== "root") return false;
+		if (!auxiliaryRootDiskMatches(devMap.root, policy, false)) return false;
+		if (!isAgentPlugCard(devMap.network, cardTemplate)) return false;
+	}
+	return isDeepStrictEqual(i.devices, i.expandedDevices);
+}
+
+export function codingStandbyInstanceMatches(policy: CodingAuxiliaryPolicy, i: LxdHostInventoryInstance): boolean {
+	if (i.type !== "virtual-machine" || !CODING_STANDBY_VM_NAME.test(i.name) || !isDeepStrictEqual(i.profiles, []))
+		return false;
+	for (const config of [i.config, i.expandedConfig]) {
+		for (const [key, value] of Object.entries(CODING_MACHINE_BASE_CONFIG)) {
+			if (config[key] !== value) return false;
+		}
+		if (
+			config["limits.cpu"] !== String(policy.cpus) ||
+			config["limits.memory"] !== String(policy.memoryBytes) ||
+			config["user.qorpera.schema"] !== CODING_STANDBY_SCHEMA ||
+			!AUXILIARY_SHA256.test(config["user.qorpera.standby_image"] ?? "")
+		)
+			return false;
+		for (const key of Object.keys(config)) {
+			if (key.startsWith("volatile.") || key.startsWith("image.")) continue;
+			if (!AUXILIARY_STANDBY_KEYS.has(key)) return false;
+			if (i.config[key] !== i.expandedConfig[key]) return false;
+		}
+	}
+	for (const devMap of [i.devices, i.expandedDevices]) {
+		const keys = Object.keys(devMap);
+		if (keys.length !== 1 || keys[0] !== "root") return false;
+		if (!auxiliaryRootDiskMatches(devMap.root, policy, true)) return false;
+	}
+	return isDeepStrictEqual(i.devices, i.expandedDevices);
+}
+
 /** `releasedImages`: the runner images the node's signed releases pin
  * (readNodeReleaseImages). Only entries listed by role consult it. */
 export function reconcileRuntimeNodeInventory(
@@ -618,6 +805,29 @@ export function reconcileRuntimeNodeInventory(
 						)
 					? "INSTANCE_IMAGE_NOT_RELEASED"
 					: null;
+		} else if (p.codingAuxiliary && i.project === p.codingAuxiliary.project) {
+			if (CODING_SNAPSHOT_BUILDER_VM_NAME.test(i.name)) {
+				category = "coding-snapshot-builder";
+				reason =
+					physicalId &&
+					resources.cpuMillis !== null &&
+					resources.memoryBytes !== null &&
+					codingSnapshotBuilderInstanceMatches(p.codingAuxiliary, i) &&
+					i.statusCode !== 110
+						? null
+						: "INSTANCE_AUTHORITY_DIFFERS";
+			} else if (CODING_STANDBY_VM_NAME.test(i.name)) {
+				category = "coding-standby";
+				reason =
+					physicalId &&
+					resources.cpuMillis !== null &&
+					resources.memoryBytes !== null &&
+					codingStandbyInstanceMatches(p.codingAuxiliary, i) &&
+					i.statusCode === 102 &&
+					i.status === "Stopped"
+						? null
+						: "INSTANCE_AUTHORITY_DIFFERS";
+			}
 		}
 		if (!reason && s === "unavailable") reason = "INSTANCE_STATE_UNAVAILABLE";
 		return {
@@ -646,6 +856,12 @@ export function reconcileRuntimeNodeInventory(
 	const hosts = entries.filter((e) => e.category === "code-host" && e.state !== "suspended");
 	if (p.codeHosts && hosts.length > p.codeHosts.running)
 		for (const e of hosts) if (e.reason === null) e.reason = "CODE_HOST_SPACE_EXCEEDED";
+	const snapshotBuilders = entries.filter((e) => e.category === "coding-snapshot-builder");
+	if (p.codingAuxiliary && snapshotBuilders.length > p.codingAuxiliary.maxBuilders)
+		for (const e of snapshotBuilders) if (e.reason === null) e.reason = "CODING_SNAPSHOT_BUILDER_SPACE_EXCEEDED";
+	const standbys = entries.filter((e) => e.category === "coding-standby");
+	if (p.codingAuxiliary && standbys.length > p.codingAuxiliary.maxStandby)
+		for (const e of standbys) if (e.reason === null) e.reason = "CODING_STANDBY_SPACE_EXCEEDED";
 	const reserved = runtimeNodeReserved(p);
 	const headroomValid = reserved.cpuMillis <= c.headroomCpuMillis && reserved.memoryBytes <= c.headroomMemoryBytes;
 	return {

@@ -17,6 +17,7 @@ import { afterPaint } from "../../ui/time-slice.ts";
 import { opsComposerPlaceholder, supportsViewportSplit } from "../surface-kinds.ts";
 import { renderLocalSitePreviewHtml } from "../surface-local-sandbox.ts";
 import {
+	askedToPublish,
 	formatConflictPaths,
 	hasConflictedChange,
 	isLocalSurfaceId,
@@ -33,7 +34,7 @@ import {
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { CrewFigures } from "./surface-crew.ts";
 import { applyIdentityTokensToFrame, SurfaceDoorStage } from "./surface-door.ts";
-import { openPublishPatchnotesSheet } from "./surface-publish-sheet.ts";
+import { firstName, openPublishPatchnotesSheet } from "./surface-publish-sheet.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
 import { SurfaceSessionDrawer } from "./surface-session-drawer.ts";
@@ -204,6 +205,7 @@ export class SurfaceView {
 	#mountedFor = "";
 	#lastSurfaceId = "";
 	#barShown = "";
+	#askShown = "";
 	#framesShown = "";
 	#chromeShown = "";
 	#toastShown = "";
@@ -838,9 +840,17 @@ export class SurfaceView {
 			Boolean(state.busy[`publish:${surface.id}`]),
 			surface.publishStatus ?? "idle",
 			store.peopleAtSurface(surface.slug).map((person) => [person.userId, person.name]),
+			surface.publishAsk ?? null,
+			Boolean(state.busy[`publish-ask:${surface.id}`]),
 		]);
 		if (key === this.#barShown) return;
 		this.#barShown = key;
+		const ask = surface.publishAsk ?? null;
+		const askedMe = askedToPublish(surface, store.userId);
+		const myAsk = ask && ask.askedByUserId === store.userId ? ask : null;
+		const askKey = askedMe ? `${surface.id}:${ask!.askedAt}` : "";
+		if (askKey && askKey !== this.#askShown && state.mode === "live") queueMicrotask(() => store.setMode("preview"));
+		this.#askShown = askKey;
 
 		const live = surface.archetype === "live_build";
 		const effectiveMode: SurfacePreviewMode = state.mode === "compare" ? "preview" : state.mode;
@@ -1002,7 +1012,50 @@ export class SurfaceView {
 			);
 		}
 		const publishBusy = Boolean(state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
-		if (surface.archetype !== "ops" && (count > 0 || publishBusy)) {
+		const askBusy = Boolean(state.busy[`publish-ask:${surface.id}`]);
+		const personName = (userId: string) => store.memberName(userId) ?? t("A teammate");
+		if (askedMe && surface.archetype !== "ops" && count > 0 && !publishBusy) {
+			const asker = personName(ask!.askedByUserId);
+			const label = t("{name} asks you to publish", { name: firstName(asker) });
+			rightTools.push(
+				h(
+					"div",
+					{ class: "surface-publish has-changes is-asked", role: "group", "aria-label": label },
+					h(
+						"button",
+						{ type: "button", class: "surface-publish-main", title: label, "data-act": "publish" },
+						personAvatar(asker, ask!.askedByUserId),
+						h("span", { class: "surface-publish-word" }, t("Publish")),
+					),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "surface-publish-yes",
+							disabled: askBusy,
+							"aria-label": t("Yes, publish"),
+							title: t("Yes, publish"),
+							"data-act": "ask-yes",
+						},
+						icon("check"),
+					),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "surface-publish-no",
+							disabled: askBusy,
+							"aria-label": t("No"),
+							title: t("No"),
+							"data-act": "ask-no",
+						},
+						icon("close"),
+					),
+				),
+			);
+		} else if (surface.archetype !== "ops" && (count > 0 || publishBusy)) {
+			const askedUser = myAsk && !publishBusy ? myAsk.askedUserId : null;
+			const saidNo = askedUser && myAsk?.status === "declined" ? firstName(personName(askedUser)) : null;
 			rightTools.push(
 				h(
 					"div",
@@ -1017,8 +1070,19 @@ export class SurfaceView {
 							"data-act": "publish",
 						},
 						publishBusy ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
-						publishBusy ? t("Publishing…") : t("Publish"),
-						!publishBusy && count ? h("span", { class: "surface-count" }, String(count)) : null,
+						saidNo && askedUser ? personAvatar(personName(askedUser), askedUser) : null,
+						publishBusy ? t("Publishing…") : saidNo ? t("{name} said no", { name: saidNo }) : t("Publish"),
+						!publishBusy && !saidNo && count ? h("span", { class: "surface-count" }, String(count)) : null,
+						askedUser && !saidNo
+							? h(
+									"span",
+									{
+										class: "surface-publish-waiting",
+										title: t("Waiting for {name}", { name: firstName(personName(askedUser)) }),
+									},
+									personAvatar(personName(askedUser), askedUser),
+								)
+							: null,
 					),
 					h(
 						"button",
@@ -1731,6 +1795,12 @@ export class SurfaceView {
 				if (ids.length) void store.reconcileChanges(surface.id, ids);
 				return;
 			}
+			case "ask-yes":
+				void store.publish(surface.id);
+				return;
+			case "ask-no":
+				void store.declinePublishAsk(surface.id);
+				return;
 			case "publish":
 			case "open-publish":
 				openPublishPatchnotesSheet(store, surface, { loadSitePassword: this.#host.loadSitePassword });

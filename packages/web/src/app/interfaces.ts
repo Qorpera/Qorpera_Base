@@ -87,7 +87,8 @@ function shippedInterfaces(): readonly CompanyInterface[] {
 		{ name: "bank", interface: BANK_INTERFACE },
 		{ name: DATA_PAGE, interface: DATA_INTERFACE },
 	].flatMap((entry) => {
-		if (!(INTERFACE_PAGES as readonly string[]).includes(entry.name)) return [];
+		// WHY: The cloud still lists the retired Members page; Settings → Team and the rail's People carry what it gave.
+		if (entry.name === "members" || !(INTERFACE_PAGES as readonly string[]).includes(entry.name)) return [];
 		const parsed = parseInterfaceFile(entry.interface);
 		return parsed.ok ? [{ name: entry.name, file: withoutHiddenSources(parsed.file) }] : [];
 	});

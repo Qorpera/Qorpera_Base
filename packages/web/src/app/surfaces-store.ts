@@ -83,6 +83,9 @@ export type SurfacesClient = Pick<
 			| "noteSurfaceSession"
 			| "unseenSurfaceNotes"
 			| "markSurfaceNotesSeen"
+			| "askSurfacePublish"
+			| "declineSurfacePublishAsk"
+			| "withdrawSurfacePublishAsk"
 		>
 	>;
 
@@ -465,7 +468,6 @@ function localSurface(
 const OPS_SURFACES = [
 	{ slug: "inbox", title: phrase("Inbox"), icon: "mail", page: "mailbox" },
 	{ slug: "money", title: phrase("Money"), icon: "coin", page: "bank" },
-	{ slug: "members", title: phrase("Members"), icon: "members", page: "members" },
 	{ slug: "data", title: phrase("Databases"), icon: "database", page: "data" },
 	{ slug: "files", title: phrase("Files"), icon: "drawers", page: null },
 ] as const;
@@ -611,6 +613,10 @@ export interface UnpublishedChangeEntry {
 	readonly change: SurfaceChangeUnit;
 	readonly session: SurfaceSession;
 	readonly exploration?: SurfaceExplorationSet;
+}
+
+export function askedToPublish(surface: SurfaceSummary, userId: string | undefined): boolean {
+	return Boolean(userId) && surface.publishAsk?.status === "open" && surface.publishAsk.askedUserId === userId;
 }
 
 export function unpublishedChanges(
@@ -988,6 +994,8 @@ export interface SurfacesStoreOptions {
 	readonly memberName?: (userId: string) => string | undefined;
 	readonly teammates?: () => readonly SurfaceTeammate[];
 	readonly peopleAtSurface?: (slug: string) => readonly { readonly userId: string; readonly name: string }[];
+	readonly userId?: string;
+	readonly publishers?: () => readonly { readonly userId: string; readonly name: string }[];
 	readonly loadCloudFiles?: (
 		surface: SurfaceSummary,
 		signal: AbortSignal,
@@ -1216,6 +1224,14 @@ export class SurfacesStore {
 
 	peopleAtSurface(slug: string): readonly { readonly userId: string; readonly name: string }[] {
 		return this.#options.peopleAtSurface?.(slug) ?? [];
+	}
+
+	get userId(): string | undefined {
+		return this.#options.userId;
+	}
+
+	publishTeammates(): readonly { readonly userId: string; readonly name: string }[] {
+		return (this.#options.publishers?.() ?? []).filter((person) => person.userId !== this.#options.userId);
 	}
 
 	lookOf(surface: Pick<SurfaceSummary, "id" | "slug" | "icon" | "archetype" | "kind" | "accentHex">): SurfaceLook {
@@ -4289,6 +4305,32 @@ export class SurfacesStore {
 		return true;
 	}
 
+	askToPublish(surfaceId: string, userId: string): Promise<boolean> {
+		return this.#publishAsk(surfaceId, (client) => client.askSurfacePublish?.(surfaceId, userId));
+	}
+
+	declinePublishAsk(surfaceId: string): Promise<boolean> {
+		return this.#publishAsk(surfaceId, (client) => client.declineSurfacePublishAsk?.(surfaceId));
+	}
+
+	withdrawPublishAsk(surfaceId: string): Promise<boolean> {
+		return this.#publishAsk(surfaceId, (client) => client.withdrawSurfacePublishAsk?.(surfaceId));
+	}
+
+	async #publishAsk(
+		surfaceId: string,
+		call: (client: SurfacesClient) => Promise<SurfaceSummary> | undefined,
+	): Promise<boolean> {
+		const surface = await this.#run(`publish-ask:${surfaceId}`, async (client) => {
+			const pending = call(client);
+			if (!pending) throw new Error(this.#options.unavailableMessage);
+			return await pending;
+		});
+		if (!surface) return false;
+		this.#putSurface(surface);
+		return true;
+	}
+
 	async setAutoPublish(surfaceId: string, enabled: boolean): Promise<boolean> {
 		if (this.isLocalInteractive && isLocalSurfaceId(surfaceId)) {
 			const surface = this.state.surfaces.find((item) => item.id === surfaceId);
@@ -4475,9 +4517,12 @@ function surfaceCountsChanged(prev: SurfaceSummary | undefined, next: SurfaceSum
 }
 
 function sortSurfaces(surfaces: readonly SurfaceSummary[]): SurfaceSummary[] {
-	return surfaces
-		.filter((surface) => surface.status !== "archived")
-		.sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title));
+	return (
+		surfaces
+			// WHY: The cloud lists the retired Members surface until migration 20260930869000 archives it.
+			.filter((surface) => surface.status !== "archived" && surface.kind !== "members")
+			.sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title))
+	);
 }
 
 const registry = new WeakMap<object, SurfacesStore>();

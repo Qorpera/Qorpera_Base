@@ -7,6 +7,7 @@ import {
 	EMPTY_CODING_SETUP_DIGEST,
 	MAX_CODING_SETUP_DOCKERFILE_BYTES,
 	MAX_CODING_SETUP_FILE_BYTES,
+	parseCodingSetup,
 	readCodingSetup,
 } from "../src/coding-setup.ts";
 
@@ -627,5 +628,32 @@ describe("the setup digest", () => {
 			frame,
 		);
 		expect(result.digest).toBe(createHash("sha256").update(Buffer.concat(framed)).digest("hex"));
+	});
+
+	it("parses static env in .qorpera/environment.json via parseCodingSetup while keeping .cursor strict", async () => {
+		const qorperaParsed = await parseCodingSetup(
+			source({
+				".qorpera/environment.json": JSON.stringify({
+					install: "npm ci",
+					env: { NODE_ENV: "development", APP_MODE: "fast" },
+				}),
+			}),
+		);
+		expect(qorperaParsed.refused).toBe(false);
+		expect(qorperaParsed.file).toBe(".qorpera/environment.json");
+		expect(qorperaParsed.setupSpec.containerEnv).toEqual({ APP_MODE: "fast", NODE_ENV: "development" });
+		expect(qorperaParsed.setupDigest).toMatch(/^[0-9a-f]{64}$/);
+		expect(qorperaParsed.setupDigest).not.toBe(EMPTY_CODING_SETUP_DIGEST);
+
+		const cursorRefused = await parseCodingSetup(
+			source({
+				".cursor/environment.json": JSON.stringify({
+					install: "npm ci",
+					env: { NODE_ENV: "development" },
+				}),
+			}),
+		);
+		expect(cursorRefused.refused).toBe(true);
+		expect(cursorRefused.problems.map((p) => `${p.effect} ${p.code} ${p.at}`)).toEqual(["refused UNKNOWN_KEY /env"]);
 	});
 });

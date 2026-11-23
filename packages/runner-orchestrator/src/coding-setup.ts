@@ -225,6 +225,27 @@ export async function readCodingSetup(source: CodingSetupSource): Promise<Coding
 	};
 }
 
+export interface ParsedCodingSetup {
+	readonly file: string | null;
+	readonly refused: boolean;
+	readonly setupDigest: string;
+	readonly setupSpec: CodingSetup;
+	readonly dockerfiles: readonly CodingSetupDockerfile[];
+	readonly problems: readonly CodingSetupProblem[];
+}
+
+export async function parseCodingSetup(source: CodingSetupSource): Promise<ParsedCodingSetup> {
+	const result = await readCodingSetup(source);
+	return {
+		file: result.file ? result.file.path : null,
+		refused: result.refused,
+		setupDigest: result.digest,
+		setupSpec: result.setup,
+		dockerfiles: result.dockerfiles,
+		problems: result.problems,
+	};
+}
+
 const DIGEST_SCHEMA = "qorpera.coding-setup-digest/v1";
 
 /** SHA-256 over length-framed parts (each an 8-byte big-endian length, then its bytes): the schema, the setup's
@@ -621,6 +642,26 @@ function cursorSetup(format: "qorpera" | "cursor", root: JsonObject, problems: P
 			case "terminals":
 				setup.terminals = terminalsOf(value, at, problems);
 				break;
+			case "env": {
+				if (format !== "qorpera") {
+					problems.refuse(at, "UNKNOWN_KEY", UNKNOWN);
+					break;
+				}
+				const env = objectOf(value, at, problems);
+				if (!env) break;
+				const entries = new Map<string, string>();
+				for (const [envKey, entry] of Object.entries(env)) {
+					const entryAt = pointer(at, envKey);
+					if (!ENV_NAME.test(envKey)) {
+						problems.refuse(entryAt, "INVALID_KEY", "Must be a shell variable name.");
+						continue;
+					}
+					const text = textOf(entry, entryAt, problems);
+					if (text !== null) entries.set(envKey, text);
+				}
+				setup.containerEnv = Object.fromEntries([...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+				break;
+			}
 			default:
 				problems.refuse(at, "UNKNOWN_KEY", UNKNOWN);
 		}

@@ -11,7 +11,7 @@ import {
 	surfaceLookOf,
 	surfaceTint,
 } from "../surface-kinds.ts";
-import { openExplorations, type SurfacesState, type SurfacesStore, type SurfaceTeammate } from "../surfaces-store.ts";
+import { askedToPublish, openExplorations, type SurfacesState, type SurfacesStore, type SurfaceTeammate } from "../surfaces-store.ts";
 import { CrewFigures } from "./surface-crew.ts";
 
 export function surfaceTile(
@@ -34,12 +34,6 @@ export function isActionChange(
 	surface: Pick<SurfaceSummary, "archetype">,
 ): boolean {
 	return change.kind === "ops_action" || surface.archetype === "ops";
-}
-
-export interface SurfaceRailMembers {
-	readonly rows: readonly HTMLElement[];
-	readonly unread: number;
-	readonly active: boolean;
 }
 
 function reconcileChildren(parent: HTMLElement, children: readonly HTMLElement[]): void {
@@ -103,14 +97,10 @@ function crewRow(
 	);
 }
 
-function surfaceSubtitle(surface: SurfaceSummary, look: SurfaceLook, members?: SurfaceRailMembers): string {
+function surfaceSubtitle(surface: SurfaceSummary, look: SurfaceLook): string {
 	if (surface.needsAttentionCount > 0) return t("Needs you");
 	if (surface.activeSessionCount === 1) return t("1 session active");
 	if (surface.activeSessionCount > 1) return t("{count} sessions active", { count: surface.activeSessionCount });
-	if (look.kind === "members" && members && members.rows.length > 0) {
-		if (members.unread > 0) return t("{count} unread", { count: members.unread });
-		return members.rows.length === 1 ? t("1 teammate") : t("{count} teammates", { count: members.rows.length });
-	}
 	if (surface.archetype === "live_build" && surface.liveUrl)
 		return t("Live · {host}", { host: hostOf(surface.liveUrl) });
 	return surfaceKindSubtitle(look.kind);
@@ -160,14 +150,13 @@ function createSurfaceRow(
 	active: boolean,
 	crew: HTMLElement | null,
 	notes: number,
-	members?: SurfaceRailMembers,
 ): SurfaceRowEntry {
 	const state: SurfaceFigureState = surface.runningSessionCount > 0 ? "working" : "rest";
 	const tint = surfaceTint(look);
 	const tileKey = JSON.stringify([surfaceFigureOf(surface, look), state, tint, notes > 0]);
 	const tileEl = noteMark(surfaceTile(surface, look, "", state), notes);
 	const nameEl = h("span", { class: "rail-surface-name" }, surface.title);
-	const subEl = crew ?? h("span", { class: "rail-surface-sub" }, surfaceSubtitle(surface, look, members));
+	const subEl = crew ?? h("span", { class: "rail-surface-sub" }, surfaceSubtitle(surface, look));
 	const noticeText = rowNotice(surface, notes);
 	const noticeEl = noticeText ? h("span", { class: "visually-hidden" }, noticeText) : null;
 	const el = h(
@@ -197,7 +186,6 @@ function syncSurfaceRow(
 	active: boolean,
 	crew: HTMLElement | null,
 	notes: number,
-	members?: SurfaceRailMembers,
 ): void {
 	const href = surfaceHash(profileId, surface.slug);
 	if (entry.el.getAttribute("href") !== href) entry.el.setAttribute("href", href);
@@ -220,7 +208,7 @@ function syncSurfaceRow(
 		entry.subEl.replaceWith(crew);
 		entry.subEl = crew;
 	} else {
-		const subtitle = surfaceSubtitle(surface, look, members);
+		const subtitle = surfaceSubtitle(surface, look);
 		if (entry.subEl.classList.contains("rail-surface-crew")) {
 			const nextSub = h("span", { class: "rail-surface-sub" }, subtitle);
 			entry.subEl.replaceWith(nextSub);
@@ -288,8 +276,6 @@ function proposedSurfaceRow(surface: SurfaceSummary, look: SurfaceLook, busy: bo
 
 export class SurfaceRail {
 	readonly el = h("div", { class: "rail-surfaces" });
-	readonly #membersList = h("div", { class: "rail-members rail-surface-members" });
-	readonly #membersTree = h("div", { class: "surface-tree" }, this.#membersList);
 	readonly #store: SurfacesStore;
 	readonly #profileId: string;
 	readonly #onAddSurface: (() => void) | undefined;
@@ -351,15 +337,10 @@ export class SurfaceRail {
 		});
 	}
 
-	update(activeSlug: string | undefined, canAddProgram = false, members?: SurfaceRailMembers): void {
-		const memberRows = members?.rows ?? [];
-		reconcileChildren(this.#membersList, memberRows);
+	update(activeSlug: string | undefined, canAddProgram = false): void {
 		const state = this.#store.state;
 		const deps: readonly unknown[] = [
 			canAddProgram,
-			memberRows.length,
-			members?.unread ?? 0,
-			members?.active ?? false,
 			presentationLocale(),
 			state.source,
 			state.surfaces,
@@ -443,45 +424,25 @@ export class SurfaceRail {
 				);
 			}
 			const groupChildren: HTMLElement[] = [groupEntry.head];
-			for (const surface of activeSurfaces) {
+			for (const listed of activeSurfaces) {
+				const asksMe = askedToPublish(listed, this.#store.userId);
+				const surface = asksMe ? { ...listed, needsAttentionCount: listed.needsAttentionCount + 1 } : listed;
 				seenActive.add(surface.id);
 				const look = surfaceLookOf(surface, state.surfaceLooks);
 				const active = surface.slug === activeSlug;
-				const hasMembers = look.kind === "members" && memberRows.length > 0;
 				if (surface.activeSessionCount > 0 && !state.workspaces[surface.id]) {
 					this.#store.hydrateWorkspace(surface.id);
 				}
-				const crew = crewRow(state, surface, this.#crew, (session) => this.#store.turnHolder(session));
+				const crew = asksMe ? null : crewRow(state, surface, this.#crew, (session) => this.#store.turnHolder(session));
 				const notes = this.#store.unseenNotesOn(surface.id);
 				let entry = this.#rows.get(surface.id);
 				if (!entry) {
-					entry = createSurfaceRow(
-						surface,
-						look,
-						this.#profileId,
-						active,
-						crew,
-						notes,
-						hasMembers ? members : undefined,
-					);
+					entry = createSurfaceRow(surface, look, this.#profileId, active, crew, notes);
 					this.#rows.set(surface.id, entry);
 				} else {
-					syncSurfaceRow(
-						entry,
-						surface,
-						look,
-						this.#profileId,
-						active,
-						crew,
-						notes,
-						hasMembers ? members : undefined,
-					);
+					syncSurfaceRow(entry, surface, look, this.#profileId, active, crew, notes);
 				}
 				groupChildren.push(entry.el);
-				if (hasMembers) {
-					this.#membersTree.style.setProperty("--surface-tint", surfaceTint(look));
-					groupChildren.push(this.#membersTree);
-				}
 			}
 			for (const surface of proposedSurfaces) {
 				seenProposed.add(surface.id);

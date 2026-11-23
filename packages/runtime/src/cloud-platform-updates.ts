@@ -322,6 +322,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Non-Identity Studio surfaces now default to an isolated folder under surfaces/<slug> instead of legacy top-level company folders like product or reports, so each new Studio surface starts blank and holds only its own work (Identity stays in the identity folder). Product Studio sessions now receive the structured Studio layout directly in their turn instructions for interactive 3D models, key specs, colorways, BOM tables, production plans, supplier cards, and editorial competitor or vendor analysis reports with charts and tables. Report surfaces receive the same structured report format.",
 	},
 	{
+		id: "people-in-the-rail",
+		kind: "behaviour",
+		date: "2026-11-23",
+		title: "No Members page: People in the sidebar",
+		text: "The Members page and the Members interface are gone. Teammates now stand under People at the foot of the sidebar, with where each one is right now, and owners invite from there or from the company menu. Who each agent works for, each member's ChatGPT, and the offers of agents you make with offer_agents_to_member are in Settings, Team, under Who agents work for: send a member there to say yes, never to a Members page.",
+	},
+	{
 		id: "surface-stage-ci-gate",
 		kind: "capability",
 		date: "2026-11-23",
@@ -348,6 +355,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		date: "2026-11-22",
 		title: "App WebSockets, SSE, supervision and site rollbacks",
 		text: "Shared app links (share_app) now carry HTTP, long-lived SSE streaming and WebSockets with per-stream flow control, active health probing, and zero-downtime port swaps. Static websites published with publish_site now keep up to ten versions within a per-company kept-version budget and accept WebAssembly, glTF/GLB, WebVTT, Markdown, and RSS/Atom files. Use manage_site to list versions, roll back a published static website atomically, or start, check health, reload, stop, and read structured logs and crash summaries for a hosted app.",
+	},
+	{
+		id: "coding-prewarmed-snapshots-and-standby",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "Pre-warmed coding snapshots and environment hooks",
+		text: "Repositories can now declare a Qorpera, Cursor or devcontainer environment configuration with install, start, background terminal and static non-secret environment settings. Qorpera computes a setup digest, builds scrubbed per-node snapshot images in the background under the company's network exit rules so new coding machines start with base packages pre-warmed, and runs worktree install, start and tracked background terminal hooks automatically on attach with clean teardown on detach.",
 	},
 ]);
 

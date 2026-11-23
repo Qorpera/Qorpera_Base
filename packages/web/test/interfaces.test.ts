@@ -65,10 +65,10 @@ afterEach(() => {
 });
 
 /** Which of the shipped pages are switched on. */
-const pages = (mailbox: boolean, members: boolean): InterfacePagesState => ({
+const pages = (mailbox: boolean, bank: boolean): InterfacePagesState => ({
 	pages: [
 		{ page: "mailbox", on: mailbox },
-		{ page: "members", on: members },
+		{ page: "bank", on: bank },
 	],
 	mayChange: true,
 });
@@ -101,9 +101,9 @@ function company(
 
 describe("interface routes", () => {
 	it("reads and writes #/c/{id}/i/{name}", () => {
-		const route = parseRoute(`#/c/${profileA.profileId}/i/members`);
-		expect(route).toEqual({ name: "company", profileId: profileA.profileId, section: "interface", id: "members" });
-		expect(routeHash(route)).toBe(`#/c/${profileA.profileId}/i/members`);
+		const route = parseRoute(`#/c/${profileA.profileId}/i/bank`);
+		expect(route).toEqual({ name: "company", profileId: profileA.profileId, section: "interface", id: "bank" });
+		expect(routeHash(route)).toBe(`#/c/${profileA.profileId}/i/bank`);
 		for (const bad of ["i", "i/Members", "i/../x", `i/${"a".repeat(65)}`]) {
 			expect(parseRoute(`#/c/${profileA.profileId}/${bad}`)).toMatchObject({ section: "home" });
 		}
@@ -111,15 +111,14 @@ describe("interface routes", () => {
 });
 
 describe("which interfaces a company lists", () => {
-	it("lists only the pages that are on: Members once there is a team, Mailbox once there is a mailbox (C6a)", () => {
+	it("lists only the pages that are on, and never the retired Members page (C6a)", () => {
 		const names = (extra: Parameters<typeof company>[1]) =>
 			companyInterfaces(company([], extra).controller).map((entry) => entry.name);
 		// Until the company's pages are read, there are none.
 		expect(names({ members: 3 })).toEqual([]);
-		// Without its folder tables, Members still draws its People view from the members themselves.
-		expect(names({ members: 3, pages: pages(true, true) })).toEqual(["members"]);
-		expect(names({ members: 1, pages: pages(true, true) })).toEqual([]);
+		expect(names({ members: 3, pages: pages(true, true) })).toEqual(["bank"]);
 		expect(names({ members: 3, pages: pages(true, false) })).toEqual([]);
+		expect(names({ members: 3, pages: { pages: [{ page: "members", on: true }], mayChange: true } })).toEqual([]);
 	});
 });
 
@@ -130,57 +129,31 @@ describe("the shipped pages (C6a)", () => {
 		expect(main.querySelector(".interface-block")).toBeNull();
 	};
 
-	it("draws Members while it is on, and leaves an unchanged page alone", () => {
-		const { controller } = company([], { members: 3, pages: pages(false, true) });
-		const main = h("main");
-		document.body.append(main);
-		renderInterface(main, controller, "members");
-		// The Members page draws itself (views/members.ts, test/members.test.ts): no header, no tabs, no blocks.
-		expect(main.querySelector("section.members > h1.visually-hidden")?.textContent).toBe("Members");
-		expect(main.querySelector(".interface-title, [role=tablist]")).toBeNull();
-		expect(main.querySelector(".members-page")).not.toBeNull();
-		const page = main.firstElementChild;
-		renderInterface(main, controller, "members");
-		expect(main.firstElementChild).toBe(page);
-		const current = controller.store.get().team!;
-		const members = current.members.map((member) =>
-			member.displayName === "Ben" ? { ...member, displayName: "Bea" } : member,
-		);
-		controller.store.set({ team: { ...current, members } });
-		renderInterface(main, controller, "members");
-		expect(main.firstElementChild).not.toBe(page);
-		// Switched off, the page is gone at its own address too.
-		controller.store.set({ interfacePages: pages(false, false) });
-		renderInterface(main, controller, "members");
-		missing(main);
-	});
-
 	it("waits while the company cannot be reached, and never calls a page missing for it", () => {
 		const { controller } = company([], { members: 3, pages: pages(false, true) });
 		controller.store.set({ connectionLost: true, team: undefined, staff: [] });
 		const main = h("main");
 		document.body.append(main);
-		renderInterface(main, controller, "members");
+		renderInterface(main, controller, "bank");
 		expect(main.textContent).toBe("Can't reach Qorpera. Trying again…");
 		controller.store.set({ staff: [cofounder, ada], team: { ...team, members: [] } });
-		renderInterface(main, controller, "members");
+		renderInterface(main, controller, "bank");
 		expect(main.textContent).not.toContain("Can't reach Qorpera");
 	});
 
-	it("never shows Pulse, a page that is off, or one whose needs aren't met", () => {
+	it("never shows Pulse, a page that is off, or the retired Members page", () => {
 		const main = h("main");
 		renderInterface(main, company([], { members: 3, pages: pages(true, true) }).controller, "pulse");
 		missing(main);
-		renderInterface(main, company([], { members: 3 }).controller, "members");
+		renderInterface(main, company([], { members: 3 }).controller, "bank");
 		missing(main);
-		// Members needs a team.
-		renderInterface(main, company([], { members: 1, pages: pages(true, true) }).controller, "members");
+		const members = { pages: [{ page: "members" as const, on: true }], mayChange: true };
+		renderInterface(main, company([], { members: 3, pages: members }).controller, "members");
 		missing(main);
 	});
 });
 
 describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 Nov 2026)", () => {
-	/** A company that shows Members, so the rail has the four windows; unless `read` is false and its pages aren't read yet. */
 	function rail(route: Route, read = true, extra: Partial<ShellContext> = {}) {
 		const { f, controller } = company([], { members: 3, ...(read ? { pages: pages(false, true) } : {}) });
 		const element = h("aside", { class: "rail" });
@@ -205,7 +178,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		return { element, draw, controller, other };
 	}
 	const home: Route = { name: "company", profileId: profileA.profileId, section: "home" };
-	const membersPage: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "members" };
+	const bankPage: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "bank" };
 	const apps = (element: HTMLElement) => element.querySelector<HTMLButtonElement>(".rail-apps")!;
 	const drawer = (element: HTMLElement) => element.querySelector<HTMLElement>(".rail-apps-drawer")!;
 	const icons = (element: HTMLElement) =>
@@ -263,7 +236,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(button.getAttribute("aria-expanded")).toBe("false");
 		expect(drawer(element).classList.contains("is-open")).toBe(false);
 		expect(drawer(element).inert).toBe(true);
-		expect(icons(element)).toEqual([["Members", `#/c/${profileA.profileId}/i/members`]]);
+		expect(icons(element)).toEqual([["Bank", `#/c/${profileA.profileId}/i/bank`]]);
 		const before = location.hash;
 		button.click();
 		expect(location.hash).toBe(before);
@@ -280,32 +253,31 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 	});
 
 	it("opens the drawer once for a page's route, marks the open page, and leaves the member's choice after", () => {
-		const { element, draw } = rail(membersPage);
+		const { element, draw } = rail(bankPage);
 		expect(drawer(element).classList.contains("is-open")).toBe(true);
 		expect(element.querySelector(".rail-app")?.getAttribute("aria-current")).toBe("page");
 		apps(element).click();
-		draw(membersPage);
+		draw(bankPage);
 		expect(drawer(element).classList.contains("is-open")).toBe(false);
 		draw({ name: "company", profileId: profileA.profileId, section: "staff", id: ada.id });
 		expect(element.querySelector(".rail-app")?.hasAttribute("aria-current")).toBe(false);
 	});
 
 	it("shows the four windows for a page's route once its page is read (C6a)", () => {
-		// A reload of the Members page: the route opens before the pages are read.
-		const { element, draw, controller } = rail(membersPage, false);
+		const { element, draw, controller } = rail(bankPage, false);
 		expect(apps(element).hidden).toBe(true);
 		expect(drawer(element).hidden).toBe(true);
 		controller.store.set({ interfacePages: pages(false, true) });
 		draw();
 		expect(apps(element).hidden).toBe(false);
 		expect(drawer(element).classList.contains("is-open")).toBe(true);
-		expect(icons(element).map(([name]) => name)).toEqual(["Members"]);
+		expect(icons(element).map(([name]) => name)).toEqual(["Bank"]);
 	});
 
 	it("has no four windows while no page is on (C6a)", () => {
 		const { element, draw, controller } = rail(home);
 		controller.store.set({ interfacePages: pages(false, false) });
-		draw(membersPage);
+		draw(bankPage);
 		expect(apps(element).hidden).toBe(true);
 		expect(drawer(element).hidden).toBe(true);
 		expect(element.querySelector(".rail-app")).toBeNull();
@@ -325,12 +297,12 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(drawer(element).classList.contains("is-open")).toBe(true);
 		// It is ordered like every other entry: it carries its key, and an order the member kept puts it first.
 		expect(entry.dataset.appKey).toBe("sites");
-		expect(icons(element).map(([name]) => name)).toEqual(["Members", "Sites"]);
+		expect(icons(element).map(([name]) => name)).toEqual(["Bank", "Sites"]);
 		localStorage.setItem(`qorpera.web.rail-apps-order:${profileA.profileId}`, JSON.stringify(["sites"]));
 		const ordered = rail(home);
 		ordered.controller.store.set({ siteCount: 2 });
 		ordered.draw();
-		expect(icons(ordered.element).map(([name]) => name)).toEqual(["Sites", "Members"]);
+		expect(icons(ordered.element).map(([name]) => name)).toEqual(["Sites", "Bank"]);
 		controller.store.set({ siteCount: 0 });
 		draw();
 		expect(element.querySelector(".rail-sites")).toBeNull();
@@ -343,7 +315,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		controller.store.set({ siteCount: 1, whatsNew: { ready: 3 } });
 		draw();
 		expect(icons(element)).toEqual([
-			["Members", `#/c/${profileA.profileId}/i/members`],
+			["Bank", `#/c/${profileA.profileId}/i/bank`],
 			["Sites", `#/c/${profileA.profileId}/sites`],
 			["What's new", `#/c/${profileA.profileId}/whats-new`],
 		]);
@@ -447,7 +419,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			]);
 			// The row stands above the member's own arrangement, which keeps the rest: Sites among them.
 			expect(owedRow(element).nextElementSibling?.classList.contains("rail-apps-grid")).toBe(true);
-			expect(gridIcons(element)).toEqual(["Members", "Sites"]);
+			expect(gridIcons(element)).toEqual(["Bank", "Sites"]);
 			// Its tiles are the platform's: no key the member drags or groups by, but the place other members are seen in.
 			const shopTile = owedRow(element).querySelector<HTMLElement>(".rail-website")!;
 			expect(shopTile.dataset.appKey).toBeUndefined();
@@ -487,7 +459,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 				["Ads", `#/c/${profileA.profileId}/a/ads`],
 			]);
 			// Products is not made yet: nothing stands for it. The rest keeps the member's arrangement.
-			expect(gridIcons(element)).toEqual(["Members", "Trips"]);
+			expect(gridIcons(element)).toEqual(["Bank", "Trips"]);
 			const ads = owedRow(element).querySelector<HTMLElement>("[data-owed-place='app:ads']")!;
 			expect(ads.style.getPropertyValue("--app-colour")).toBe(colourNameHex("orange"));
 			draw({ name: "company", profileId: profileA.profileId, section: "app", id: "money" });
@@ -501,7 +473,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			controller.store.set({ apps: [app("money", "Money", { kit: "program" })] });
 			draw();
 			expect(owedRow(element).hidden).toBe(true);
-			expect(gridIcons(element)).toEqual(["Members", "Money"]);
+			expect(gridIcons(element)).toEqual(["Bank", "Money"]);
 		});
 
 		it("shows the four windows for an owed view alone", () => {
@@ -549,18 +521,12 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 
 	it("hides a page from the member's own rail with a right-click, and shows it again from Hidden", async () => {
 		const { element, controller } = rail(home);
-		// A cloud that answers each member's own choice: Bank hidden, Members shown though the company's switch for it is
-		// off: the member's own choice decides. (Mailbox has no mail to draw here.)
 		const own = (hidden: readonly string[]): InterfacePagesState => ({
-			pages: (["mailbox", "members", "bank"] as const).map((page) => ({
-				page,
-				on: page !== "members",
-				hidden: hidden.includes(page),
-			})),
+			pages: (["mailbox", "bank"] as const).map((page) => ({ page, on: false, hidden: hidden.includes(page) })),
 			mayChange: false,
 			personal: true,
 		});
-		controller.store.set({ interfacePages: own(["bank"]) });
+		controller.store.set({ interfacePages: own([]) });
 		const hideInterfacePage = vi.fn(async (page: string, hidden: boolean) => {
 			const now = controller.store.get().interfacePages!;
 			controller.store.set({
@@ -595,21 +561,16 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 				row.querySelector("strong")?.textContent,
 				row.querySelector("small")?.textContent,
 			]);
-		expect(icons(element).map(([name]) => name)).toEqual(["Members"]);
-		element.querySelector<HTMLButtonElement>(".rail-hidden-toggle")!.click();
-		expect(hiddenPages()).toEqual([["Bank", "Hidden for you"]]);
-		// Right-click on Members in the drawer: Hide from sidebar, for this member only (no owner needed).
-		expect(rightClick(element.querySelector(".rail-apps-drawer [data-interface-page='members']")!)).toBe(true);
+		expect(icons(element).map(([name]) => name)).toEqual(["Bank"]);
+		expect(rightClick(element.querySelector(".rail-apps-drawer [data-interface-page='bank']")!)).toBe(true);
 		expect(menuItems()).toEqual([["Hide from sidebar", null]]);
 		document.querySelector<HTMLElement>(".context-menu [role^=menuitem]")!.click();
-		expect(hideInterfacePage).toHaveBeenCalledExactlyOnceWith("members", true);
+		expect(hideInterfacePage).toHaveBeenCalledExactlyOnceWith("bank", true);
 		await settle();
 		redraw();
 		expect(icons(element)).toEqual([]);
-		expect(hiddenPages()).toEqual([
-			["Members", "Hidden for you"],
-			["Bank", "Hidden for you"],
-		]);
+		element.querySelector<HTMLButtonElement>(".rail-hidden-toggle")!.click();
+		expect(hiddenPages()).toEqual([["Bank", "Hidden for you"]]);
 		// A press on a hidden page offers to show it again.
 		element.querySelector<HTMLButtonElement>(".rail-hidden-list [data-interface-page='bank']")!.click();
 		expect(menuItems()).toEqual([["Show in sidebar", null]]);
@@ -621,8 +582,8 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		// A cloud from before each member's own choice: the company's switch decides, and no menu or hidden page.
 		controller.store.set({ interfacePages: pages(false, true) });
 		redraw();
-		expect(icons(element).map(([name]) => name)).toEqual(["Members"]);
-		expect(rightClick(element.querySelector(".rail-apps-drawer [data-interface-page='members']")!)).toBe(false);
+		expect(icons(element).map(([name]) => name)).toEqual(["Bank"]);
+		expect(rightClick(element.querySelector(".rail-apps-drawer [data-interface-page='bank']")!)).toBe(false);
 		expect(hiddenPages()).toEqual([]);
 	});
 
@@ -657,7 +618,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		});
 		draw();
 		expect(icons(element)).toEqual([
-			["Members", `#/c/${profileA.profileId}/i/members`],
+			["Bank", `#/c/${profileA.profileId}/i/bank`],
 			["Sales board", `#/c/${profileA.profileId}/a/sales-board`],
 		]);
 		const app = () => element.querySelector<HTMLAnchorElement>(`.rail-app[data-href$="/a/sales-board"]`)!;
@@ -711,7 +672,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		draw();
 		// Not one icon per concept: one entry for them all, after the posted apps.
 		expect(icons(element)).toEqual([
-			["Members", `#/c/${profileA.profileId}/i/members`],
+			["Bank", `#/c/${profileA.profileId}/i/bank`],
 			["Sales board", `#/c/${profileA.profileId}/a/sales-board`],
 			["Concepts", `#/c/${profileA.profileId}/concepts`],
 		]);
@@ -744,9 +705,9 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		input.value = "ada";
 		input.dispatchEvent(new Event("input"));
 		expect(titles()).toEqual(["Ada"]);
-		input.value = "members";
+		input.value = "bank";
 		input.dispatchEvent(new Event("input"));
-		expect(titles()).toContain("Members");
+		expect(titles()).toContain("Bank");
 		input.value = "dark";
 		input.dispatchEvent(new Event("input"));
 		expect(titles()).toEqual(["Appearance"]);
@@ -782,39 +743,13 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 });
 
 describe("review round 1 (web)", () => {
-	it("draws Members again after another page took the area, and follows the company", () => {
-		const { controller } = company([], { members: 3, pages: pages(false, true) });
-		const main = h("main");
-		document.body.append(main);
-		renderInterface(main, controller, "members");
-		const members = main.firstElementChild;
-		main.replaceChildren(h("section", null, "a thread"));
-		renderInterface(main, controller, "members");
-		expect(main.firstElementChild).not.toBe(members);
-		expect(main.querySelector("section.members > h1.visually-hidden")?.textContent).toBe("Members");
-	});
-
-	it("waits while the company loads, and draws Members with no live note", () => {
-		const { controller } = company([], { members: 3, pages: pages(false, true) });
-		controller.store.set({ loading: true, staff: [] });
-		const main = h("main");
-		renderInterface(main, controller, "members");
-		expect(main.querySelector(".interface-waiting")).not.toBeNull();
-		expect(main.textContent).not.toContain("This page isn't available here yet.");
-		controller.store.set({ loading: false, staff: [cofounder, ada, bo, cy], realtime: "connecting" });
-		renderInterface(main, controller, "members");
-		// Members is pictures only: it has no header, so no live note either (as the Mailbox and the Bank page).
-		expect(main.querySelector(".members-page")).not.toBeNull();
-		expect(main.querySelector(".interface-live")).toBeNull();
-	});
-
 	it("labels the search and names each page's icon with what it is for", () => {
 		const { f, controller } = company([], { members: 3, pages: pages(false, true) });
 		const element = h("aside", { class: "rail" });
 		document.body.append(h("div", { class: "frame" }, element));
 		const auth = new AuthController(f.cloud);
 		cleanup.push(() => auth.dispose());
-		const route: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "members" };
+		const route: Route = { name: "company", profileId: profileA.profileId, section: "interface", id: "bank" };
 		renderRail(element, controller, {
 			profiles: [profileA],
 			user: userA,
@@ -961,18 +896,18 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 	it("draws a group as one tile in its first app's colour, and opens it into the grid", () => {
 		localStorage.clear();
 		const { element } = drawer();
-		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		expect(tiles(element)).toEqual(["Market", "Bank", "Trips"]);
 		expect(group(element).style.getPropertyValue("--app-colour")).toBe(colourNameHex("coral"));
 		const trips = element.querySelector<HTMLElement>("[data-app-key='app:trips']")!;
 		expect(trips.style.getPropertyValue("--app-colour")).toBe(colourNameHex("teal"));
 		group(element).click();
-		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Bank", "Trips"]);
 		expect(element.querySelector("[data-app-key='app:brand']")?.getAttribute("data-in-group")).toBe("market");
 		expect(JSON.parse(localStorage.getItem(`qorpera.web.rail-app-groups-open:${profileA.profileId}`)!)).toEqual([
 			"market",
 		]);
 		group(element).click();
-		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		expect(tiles(element)).toEqual(["Market", "Bank", "Trips"]);
 		localStorage.clear();
 	});
 
@@ -980,7 +915,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		localStorage.clear();
 		const { element } = drawer();
 		group(element).click();
-		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Bank", "Trips"]);
 		// jsdom lays nothing out: each tile has a box by its name, the group at the row's end and its apps wrapped onto
 		// the next row, Brand the farther of them (review F3 on #1729). Animations are recorded.
 		const at: Record<string, [number, number]> = { Market: [210, 0], Brand: [0, 70], Plan: [140, 70] };
@@ -1005,7 +940,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		vi.useFakeTimers();
 		try {
 			group(element).click();
-			expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+			expect(tiles(element)).toEqual(["Market", "Bank", "Trips"]);
 			const folding = [...element.querySelectorAll<HTMLElement>(".rail-app.is-leaving.is-folding")];
 			const name = (tile: Element) => tile.querySelector(".rail-app-name")?.textContent;
 			expect(folding.map(name)).toEqual(["Brand", "Plan"]);
@@ -1016,14 +951,14 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			]);
 			// Opened again while they fold: the same tiles come back whole, their folds cancelled (review F1 on #1729).
 			group(element).click();
-			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Bank", "Trips"]);
 			for (const entry of into) {
 				expect(entry.cancel).toHaveBeenCalledOnce();
 				expect((entry.element as HTMLElement).classList.contains("is-folding")).toBe(false);
 				expect((entry.element as HTMLElement).classList.contains("is-leaving")).toBe(false);
 			}
 			vi.advanceTimersByTime(400);
-			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Bank", "Trips"]);
 			// Folded, opened again and folded again at once: the first fold's end leaves the second alone (review F1, round 2).
 			group(element).click();
 			vi.advanceTimersByTime(100);
@@ -1046,7 +981,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 				expect(entry.element.isConnected).toBe(false);
 			}
 			group(element).click();
-			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Bank", "Trips"]);
 			for (const tile of element.querySelectorAll(".rail-apps-grid > [data-app-key]"))
 				expect(tile.classList.contains("is-folding") || tile.classList.contains("is-leaving")).toBe(false);
 		} finally {
@@ -1070,7 +1005,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		const groupNamed = (name: string) =>
 			element.querySelector<HTMLButtonElement>(`.rail-apps-grid > .rail-app-group[data-app-key='group:${name}']`)!;
 		groupNamed("market").click();
-		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Trips", "Members"]);
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Trips", "Bank"]);
 		const folds: { element: Element; cancel: ReturnType<typeof vi.fn> }[] = [];
 		const own = Element.prototype.animate;
 		Element.prototype.animate = vi.fn(function (this: Element, frames: Keyframe[]) {
@@ -1090,7 +1025,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			expect(folds).toHaveLength(2);
 			vi.advanceTimersByTime(50);
 			groupNamed("trips").click();
-			expect(tiles(element)).toEqual(["Market", "Trips+", "Trips", "Members"]);
+			expect(tiles(element)).toEqual(["Market", "Trips+", "Trips", "Bank"]);
 			// Market's apps are still on their first way out, in the grid: no second one, their folds still running.
 			expect(folds).toHaveLength(2);
 			expect(folds.every((fold) => fold.cancel.mock.calls.length === 0)).toBe(true);
@@ -1105,7 +1040,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 				expect(fold.element.isConnected).toBe(false);
 			}
 			groupNamed("market").click();
-			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Trips+", "Trips", "Members"]);
+			expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Trips+", "Trips", "Bank"]);
 			for (const tile of element.querySelectorAll(".rail-apps-grid > [data-app-key]"))
 				expect(tile.classList.contains("is-folding") || tile.classList.contains("is-leaving")).toBe(false);
 		} finally {
@@ -1122,7 +1057,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		const { element, controller } = drawer();
 		controller.store.set({ whatsNew: { ready: 2 } });
 		await settle();
-		expect(tiles(element)).toEqual(["Market", "Members", "Trips", "What's new"]);
+		expect(tiles(element)).toEqual(["Market", "Bank", "Trips", "What's new"]);
 		const tile = element.querySelector<HTMLElement>("[data-app-key='whats-new']")!;
 		expect(tile.style.getPropertyValue("--app-colour")).toBe(colourNameHex("orange"));
 		expect(tile.querySelector(".rail-count")?.textContent).toBe("2");
@@ -1150,7 +1085,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			whatsNew: { ready: 3 },
 		});
 		await settle();
-		expect(tiles(element)).toEqual(["Launch", "Members", "Plan", "Trips"]);
+		expect(tiles(element)).toEqual(["Launch", "Bank", "Plan", "Trips"]);
 		// The group carries what waits inside it, and the colour of its first entry.
 		expect(group(element).querySelector(".rail-count")?.textContent).toBe("3");
 		expect(group(element).getAttribute("aria-label")).toBe("Group Launch, 3 waiting");
@@ -1160,13 +1095,13 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		expect(element.querySelector(".rail-apps")?.getAttribute("aria-label")).toBe("Apps, 3 waiting");
 		element.querySelector<HTMLButtonElement>(".rail-apps")!.click();
 		group(element).click();
-		expect(tiles(element)).toEqual(["Launch+", "What's new", "Brand", "Members", "Plan", "Trips"]);
+		expect(tiles(element)).toEqual(["Launch+", "What's new", "Brand", "Bank", "Plan", "Trips"]);
 		expect(element.querySelector("[data-app-key='whats-new']")?.getAttribute("data-in-group")).toBe("launch");
 		expect(element.querySelector("[data-app-key='app:whats-new']")).toBeNull();
 		// Without the platform's page, the agent's app is back, in the group the file names.
 		controller.store.set({ whatsNew: undefined });
 		await settle();
-		expect(tiles(element)).toEqual(["Launch+", "Old notes", "Brand", "Members", "Plan", "Trips"]);
+		expect(tiles(element)).toEqual(["Launch+", "Old notes", "Brand", "Bank", "Plan", "Trips"]);
 		localStorage.clear();
 	});
 
@@ -1181,10 +1116,10 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		const { element, controller, set } = drawer();
 		controller.store.set({ appLayout: { layout, updatedAt: "2026-11-11T12:00:00Z" }, whatsNew: { ready: 1 } });
 		await settle();
-		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		expect(tiles(element)).toEqual(["Market", "Bank", "Trips"]);
 		expect(group(element).querySelector(".rail-count")?.textContent).toBe("1");
 		group(element).click();
-		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "What's new", "Members", "Trips"]);
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "What's new", "Bank", "Trips"]);
 		expect(set).not.toHaveBeenCalled();
 		localStorage.clear();
 	});
@@ -1211,7 +1146,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			null,
 		);
 		await settle();
-		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		expect(tiles(element)).toEqual(["Market", "Bank", "Trips"]);
 		expect(group(element).querySelector(".rail-count")?.textContent).toBe("1");
 		localStorage.clear();
 	});
@@ -1239,7 +1174,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			expect.objectContaining({ groups: { market: { removed: true } } }),
 			null,
 		);
-		expect(tiles(element)).toEqual(["Brand", "Plan", "Members", "Trips"]);
+		expect(tiles(element)).toEqual(["Brand", "Plan", "Bank", "Trips"]);
 		const trips = element.querySelector<HTMLElement>("[data-app-key='app:trips']")!;
 		trips.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }));
 		expect(labels()[0]).toBe("Move to");
@@ -1247,7 +1182,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 	it("makes a new group folded, its two apps going into its tile (Jonas, 14 Nov 2026)", async () => {
 		localStorage.clear();
 		const { element, set } = drawer();
-		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		expect(tiles(element)).toEqual(["Market", "Bank", "Trips"]);
 		// jsdom lays nothing out: the tiles stand in one row, 50 × 60 each, measured from the grid. Animations are recorded.
 		const grid = element.querySelector<HTMLElement>(".rail-apps-grid")!;
 		vi.spyOn(grid, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 200, 120));
@@ -1279,12 +1214,10 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			);
 		vi.useFakeTimers();
 		try {
-			// Trips, lifted and let go over Members' middle.
 			pointer("pointerdown", 125, element.querySelector<HTMLElement>("[data-app-key='app:trips']")!);
 			pointer("pointermove", 110);
 			pointer("pointermove", 75);
 			pointer("pointerup", 75);
-			// One tile where Members stood, folded: nothing of it is kept as open.
 			expect(tiles(element)).toEqual(["Market", "Group"]);
 			expect(
 				JSON.parse(localStorage.getItem(`qorpera.web.rail-app-groups-open:${profileA.profileId}`) ?? "[]"),
@@ -1311,14 +1244,14 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			// Its two apps go into its tile, as a folding group's do.
 			const name = (tile: Element) => tile.querySelector(".rail-app-name")?.textContent;
 			expect([...element.querySelectorAll(".rail-app.is-leaving.is-folding")].map(name).sort()).toEqual([
-				"Members",
+				"Bank",
 				"Trips",
 			]);
 			vi.advanceTimersByTime(500);
 			expect(element.querySelectorAll(".rail-app.is-leaving")).toHaveLength(0);
 			// A press opens it.
 			element.querySelector<HTMLButtonElement>(`[data-app-key='group:${id}']`)!.click();
-			expect(tiles(element)).toEqual(["Market", "Group+", "Members", "Trips"]);
+			expect(tiles(element)).toEqual(["Market", "Group+", "Bank", "Trips"]);
 		} finally {
 			vi.useRealTimers();
 			if (own) Element.prototype.animate = own;
