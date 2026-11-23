@@ -10,7 +10,7 @@ import {
 	PRODUCT_SPECS_PATH,
 	parseCloudCodingRepository,
 	parseStudioPatchOps,
-	type StudioPatchOp,
+	type StudioTextPatchOp,
 	SURFACE_IDENTITY_CSS_MOUNT_PATH,
 	SURFACE_SHARED_DIR,
 	type SurfaceSessionState,
@@ -364,7 +364,7 @@ function mergeJsonPatch(
 
 export function applyStudioFolderPatches(
 	baseFiles: Readonly<Record<string, string | null>>,
-	changes: readonly { readonly changeId: string; readonly ops: readonly StudioPatchOp[] }[],
+	changes: readonly { readonly changeId: string; readonly ops: readonly StudioTextPatchOp[] }[],
 	folderRoot: string,
 ): ApplyStudioFolderPatchesResult {
 	const normalizedRoot = normalizeSurfaceFolderRoot(folderRoot);
@@ -864,13 +864,19 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			throw new Error("No approved folder patches were provided to land");
 		}
 
-		const parsedChanges: { readonly changeId: string; readonly ops: readonly StudioPatchOp[] }[] = [];
+		const parsedChanges: { readonly changeId: string; readonly ops: readonly StudioTextPatchOp[] }[] = [];
 		const targetPaths = new Set<string>();
 		for (const change of approvedRaw) {
 			if (change.patchManifest === null || change.patchManifest === undefined) {
 				throw new Error(`Approved folder change ${change.changeId} has no patchManifest`);
 			}
-			const ops = parseStudioPatchOps(change.patchManifest, `change[${change.changeId}].patchManifest`);
+			const parsedOps = parseStudioPatchOps(change.patchManifest, `change[${change.changeId}].patchManifest`);
+			const ops = parsedOps.map((op) => {
+				if (op.op === "write_file") {
+					throw new Error(`Approved folder change ${change.changeId} cannot land write_file yet: ${op.path}`);
+				}
+				return op;
+			});
 			if (ops.length === 0) {
 				throw new Error(`Approved folder change ${change.changeId} has an empty patchManifest`);
 			}
