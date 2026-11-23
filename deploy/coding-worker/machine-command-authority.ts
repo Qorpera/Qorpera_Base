@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { isCloudMachineFolderLost } from "../../packages/contracts/src/cloud-machine.ts";
 import {
-	type CloudMachineAccountFillHttpRequest, CloudMachineAccountFillRefusal, CLOUD_MACHINE_TOOL_VERSION,
+	type CloudMachineAccountFillHttpRequest, CloudMachineAccountFillRefusal, type CloudMachineAppHttpRequest,
+	CloudMachineAppRefusal, CLOUD_MACHINE_TOOL_VERSION,
 	type CloudMachineCodingValueHttpRequest, CloudMachineCodingValueRefusal, type CloudMachineCommandHttpRequest,
 	cloudMachineCommandHead, CloudMachineCommandRefusal, type CloudMachineScreenHttpRequest, CloudMachineScreenRefusal,
 	CloudMemberMachineActRefusal, CloudMemberMachinePointerRefusal, type CloudMemberMachinePointerRefusalCode,
@@ -200,6 +201,93 @@ export interface MachineScreenAuthority {
  * envelope, and a running machine of its company, all in SQL (qorpera_authorize_machine_screen). A machine that is not
  * running is the agent's refusal; anything else SQL refuses fails the request. An action is what SQL read from the
  * receipted envelope, checked again here as the helper checks it, and its settle time and look must be the request's. */
+export interface MachineAppAuthority {
+	readonly machineId: string;
+	readonly placementId: string;
+	readonly bootId: string;
+	readonly executorOwner: string;
+	readonly providerId: string;
+	readonly runId: string;
+	readonly slug: string;
+	readonly appPort: number;
+}
+
+export async function authorizeMachineAppOp(
+	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },
+	request: CloudMachineAppHttpRequest,
+	signal: AbortSignal,
+): Promise<MachineAppAuthority> {
+	const inp = request.input;
+	const receiptId = "receiptId" in inp ? inp.receiptId : null;
+	const envelope = "envelope" in inp ? inp.envelope : null;
+	const value = await control.call(
+		"qorpera_authorize_machine_app_op",
+		{
+			p_binding: request.binding,
+			p_scope: request.scope,
+			p_slug: inp.slug,
+			p_op: inp.op,
+			p_receipt_id: receiptId,
+			p_envelope: envelope,
+		},
+		signal,
+	);
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MACHINE_APP_AUTHORITY_INVALID");
+	const result = value as Record<string, unknown>;
+	if (result.schema !== "qorpera.machine-app-authority/v1") throw new Error("MACHINE_APP_AUTHORITY_INVALID");
+	if (
+		result.state === "refused" &&
+		(result.reason === "MACHINE_NOT_RUNNING" || result.reason === "MACHINE_NEEDS_COMPANY_VIEW")
+	)
+		throw new CloudMachineAppRefusal(result.reason);
+	if (
+		result.state !== "authorized" ||
+		result.machineId !== request.scope.machineId ||
+		result.slug !== inp.slug ||
+		result.receiptId !== receiptId ||
+		typeof result.placementId !== "string" ||
+		!UUID.test(result.placementId) ||
+		typeof result.bootId !== "string" ||
+		!UUID.test(result.bootId) ||
+		typeof result.runId !== "string" ||
+		!UUID.test(result.runId) ||
+		typeof result.executorOwner !== "string" ||
+		!/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
+		typeof result.providerId !== "string" ||
+		!/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
+		!Number.isInteger(result.appPort) ||
+		Number(result.appPort) < 1 ||
+		Number(result.appPort) > 65535
+	)
+		throw new Error("MACHINE_APP_AUTHORITY_INVALID");
+	if (receiptId !== null) {
+		const args = result.arguments as Record<string, unknown> | null;
+		if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("MACHINE_APP_AUTHORITY_INVALID");
+		if (args.action !== `app_${inp.op}` || args.slug !== inp.slug) throw new Error("MACHINE_APP_AUTHORITY_INVALID");
+		if (
+			inp.op === "start" &&
+			(args.command !== inp.command ||
+				args.port !== inp.port ||
+				args.healthPath !== inp.healthPath ||
+				args.cwd !== inp.cwd)
+		)
+			throw new Error("MACHINE_APP_AUTHORITY_INVALID");
+		if (inp.op === "reload" && (args.port !== inp.port || args.healthPath !== inp.healthPath))
+			throw new Error("MACHINE_APP_AUTHORITY_INVALID");
+	}
+	signal.throwIfAborted();
+	return {
+		machineId: result.machineId,
+		placementId: result.placementId,
+		bootId: result.bootId,
+		executorOwner: result.executorOwner,
+		providerId: result.providerId,
+		runId: result.runId,
+		slug: result.slug,
+		appPort: Number(result.appPort),
+	};
+}
+
 export async function authorizeMachineScreen(
 	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },
 	request: CloudMachineScreenHttpRequest,

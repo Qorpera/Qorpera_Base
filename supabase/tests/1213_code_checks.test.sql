@@ -656,3 +656,20 @@ begin
 		and public.qorpera_coding_turn_failure(w, '[code=CODING_CHECKS_MAIN_MOVED]')
 			= '{"reason":"CODING_CHECKS_MAIN_MOVED","summary":"[code=CODING_CHECKS_MAIN_MOVED]"}', 'the code not at the end');
 end $$;
+
+do $$
+declare h text := pg_temp.rec_sha('sp-h'); a text := pg_temp.rec_sha('sp-a'); b text := pg_temp.rec_sha('sp-b');
+	v_skip_ok jsonb := pg_temp.chk_passed('sp-a', 'fast-forward',
+		'{"checks":[{"name":"lint","run":"npm run lint","ms":1200},{"name":"web","run":"npm test","ms":0,"skipped":"paths_unmatched"}]}'::jsonb);
+	v_skip_bad_val jsonb := pg_temp.chk_passed('sp-a', 'fast-forward',
+		'{"checks":[{"name":"web","run":"npm test","ms":0,"skipped":"manual"}]}'::jsonb);
+	v_skip_bad_type jsonb := pg_temp.chk_passed('sp-a', 'fast-forward',
+		'{"checks":[{"name":"web","run":"npm test","ms":0,"skipped":true}]}'::jsonb);
+begin
+	perform pg_temp.base_assert(public.qorpera_code_change_report_valid(
+		pg_temp.chk_report('landed', h, b, a, pg_temp.chk_ok(v_skip_ok))), 'skipped paths_unmatched is valid');
+	perform pg_temp.base_assert(not public.qorpera_code_change_report_valid(
+		pg_temp.chk_report('landed', h, b, a, pg_temp.chk_ok(v_skip_bad_val))), 'unknown skipped reason rejected');
+	perform pg_temp.base_assert(not public.qorpera_code_change_report_valid(
+		pg_temp.chk_report('landed', h, b, a, pg_temp.chk_ok(v_skip_bad_type))), 'non-string skipped rejected');
+end $$;

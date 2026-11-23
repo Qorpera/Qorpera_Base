@@ -338,4 +338,11 @@ export const SURFACES: Record<string, string> = {
 	"{name} said no": "{name} sagde nej",
 	"Yes, publish": "Ja, udgiv",
 	OK: "OK",
+	"Hand to {name}": "Giv til {name}",
+	"Take it": "Tag den",
+	"Take the offer back": "Træk tilbuddet tilbage",
+	"Offered to {name}": "Tilbudt til {name}",
+	"You said no": "Du sagde nej",
+	"Yes, take {title} from {name}": "Ja, overtag {title} fra {name}",
+	"No, leave {title} with {name}": "Nej, lad {title} blive hos {name}",
 };

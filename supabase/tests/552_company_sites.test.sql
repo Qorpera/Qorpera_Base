@@ -341,10 +341,11 @@ begin
 	perform pg_temp.base_assert(v_finish ->> 'mode' = 'update' and v_finish ->> 'state' = 'live', 'Updated: ' || v_finish::text);
 	perform pg_temp.base_assert(convert_from(decode(public.qorpera_site_serve('wristband-shop', '',
 		current_setting('qorpera_test.cs_token'), null, 0, 10485760) ->> 'content', 'base64'), 'utf8') = '<h1>Wristbands 2</h1>'
-		and (select count(*) from public.qorpera_company_site_versions) = 1
-		and (select count(*) from public.qorpera_company_site_files) = 3
+		and (select count(*) from public.qorpera_company_site_versions where state = 'live') = 1
+		and (select count(*) from public.qorpera_company_site_versions where state = 'kept') = 1
+		and (select count(*) from public.qorpera_company_site_files where version_id = (v_begin ->> 'versionId')::uuid) = 3
 		and (select title from public.qorpera_company_sites where slug = 'wristband-shop') = 'Wristbands',
-		'The new version replaced the old one whole');
+		'The new version went live and retained the prior version as kept');
 	-- From another folder, the live site is published only on an approval.
 	perform pg_temp.base_assert(public.qorpera_site_publish_check(v_binding, 'wristband-shop') ->> 'liveSource' = 'product/webshop',
 		'The check names the live source');

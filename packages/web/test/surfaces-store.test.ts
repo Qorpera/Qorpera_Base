@@ -645,6 +645,9 @@ describe("SurfacesStore", () => {
 			lastRunAt: null,
 			lastOutcomeSummary: null,
 			nextRunAt: null,
+			ownable: true,
+			ownerUserId: null,
+			offer: null,
 		});
 		const deleteAutomation = vi.fn().mockResolvedValue(true);
 		const client = fakeClient({
