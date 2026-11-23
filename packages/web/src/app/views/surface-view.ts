@@ -4,11 +4,9 @@ import {
 	parsePointToChangeTarget,
 	SURFACE_INSPECTOR_MODE_MESSAGE,
 	SURFACE_INSPECTOR_PICK_MESSAGE,
-	type SurfaceExplorationSet,
-	type SurfaceSession,
 	type SurfaceSummary,
 } from "@qorpera/contracts";
-import { openContextMenu } from "../../ui/context-menu.ts";
+import { openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { growToText, h, icon, personAvatar } from "../../ui/dom.ts";
 import { playOnce } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
@@ -19,11 +17,9 @@ import { renderLocalSitePreviewHtml } from "../surface-local-sandbox.ts";
 import {
 	askedToPublish,
 	formatConflictPaths,
-	hasConflictedChange,
 	isLocalSurfaceId,
 	isOpenChange,
 	isOpenVariant,
-	isRunningSession,
 	migrationPending,
 	openExplorations,
 	runningSessionTotal,
@@ -34,7 +30,6 @@ import {
 } from "../surfaces-store.ts";
 import { SurfaceAddress, type SurfaceSiteHosting } from "./surface-address-sheet.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
-import { CrewFigures } from "./surface-crew.ts";
 import { applyIdentityTokensToFrame, SurfaceDoorStage } from "./surface-door.ts";
 import { firstName, openPublishSheet } from "./surface-publish-sheet.ts";
 import { surfaceTile } from "./surface-rail.ts";
@@ -71,7 +66,6 @@ interface CompareColumn {
 	readonly abort: AbortController;
 }
 
-const NOTCH_POS_KEY = "qorpera.web.surface-notch-x.v1";
 const PHONE_MODEL_KEY = "qorpera.web.surface-phone-model.v1";
 
 interface PhoneModelSpec {
@@ -134,6 +128,10 @@ function targetOriginLabel(target: PointToChangeTarget): string {
 	return label.slice(0, 160);
 }
 
+function barFocusKey(element: HTMLElement): string {
+	return `${element.dataset.act ?? ""}:${element.dataset.mode ?? element.dataset.device ?? ""}`;
+}
+
 function isEditableTarget(target: EventTarget | null): boolean {
 	if (!(target instanceof Element)) return false;
 	if (
@@ -152,6 +150,15 @@ export class SurfaceView {
 	readonly #active = new AbortController();
 	readonly #lifetime = new AbortController();
 	readonly #bar = h("header", { class: "surface-bar" });
+	readonly #barTitle = h("h1", { class: "visually-hidden surface-title" });
+	readonly #notchPill = h("button", {
+		type: "button",
+		class: "surface-notch-pill",
+		"aria-expanded": "false",
+		"data-act": "expand-pill",
+	});
+	readonly #notchBar = h("nav", { class: "surface-pill" });
+	readonly #notch = h("div", { class: "surface-notch" }, this.#notchPill, this.#notchBar);
 	readonly #panelToggle = h("button", {
 		type: "button",
 		class: "surface-panel-toggle",
@@ -190,7 +197,6 @@ export class SurfaceView {
 	readonly #toast = h("div", { class: "surface-toast-host", role: "status" });
 	readonly #drawer: SurfaceSessionDrawer;
 	readonly #primaryDoor: SurfaceDoorStage;
-	readonly #headerCrew = new CrewFigures();
 	readonly #address: SurfaceAddress;
 	readonly #compareDoors = new Map<string, CompareColumn>();
 	#framesMode: "none" | "primary" | "compare" = "none";
@@ -216,19 +222,18 @@ export class SurfaceView {
 	#chromeShown = "";
 	#insteadShown: string | undefined;
 	#toastShown = "";
-	#pillCollapsed = false;
-	#notchRatio = 0.5;
-	#suppressNotchClick = false;
+	#barOpen = false;
+	#barPinned = false;
+	readonly #thumbAt = new Map<string, readonly [number, number]>();
 	#phoneModelId = PHONE_MODELS[0]!.id;
 	#phoneBarShown = "";
 	#viewportResizeObserver: ResizeObserver | undefined;
+	#notchResizeObserver: ResizeObserver | undefined;
 
 	constructor(host: SurfaceViewHost, slug: string) {
 		this.#host = host;
 		this.slug = slug;
 		try {
-			const stored = Number(localStorage.getItem(NOTCH_POS_KEY));
-			if (Number.isFinite(stored) && stored >= 0.08 && stored <= 0.92) this.#notchRatio = stored;
 			const storedModel = localStorage.getItem(PHONE_MODEL_KEY);
 			if (storedModel) this.#phoneModelId = phoneModelById(storedModel).id;
 		} catch {
@@ -264,6 +269,7 @@ export class SurfaceView {
 		});
 		this.#topSlot.append(this.#banner);
 		this.#viewport.append(this.#phoneBar, this.#loadingSlot, this.#mountSlot, this.#reportSlot, this.#frames);
+		this.#bar.append(this.#barTitle, this.#notch);
 		this.#canvas.append(this.#bar, this.#topSlot, this.#viewport, this.#composer, this.#toast);
 		this.#address = new SurfaceAddress({
 			container: this.#canvas,
@@ -280,19 +286,14 @@ export class SurfaceView {
 		});
 		this.#stage.append(this.#canvas, this.#drawer.el);
 		this.el.append(this.#stage, this.#panelToggle);
-		this.#wireNotchDrag(signal);
+		this.#wireBar(signal);
 		if (typeof ResizeObserver !== "undefined") {
 			this.#viewportResizeObserver = new ResizeObserver(() => this.#syncPhoneViewport());
 			this.#viewportResizeObserver.observe(this.#viewport);
+			this.#notchResizeObserver = new ResizeObserver(() => this.#fitNotch());
+			for (const box of [this.#bar, this.#notchPill, this.#notchBar]) this.#notchResizeObserver.observe(box);
 		}
-		window.addEventListener(
-			"resize",
-			() => {
-				this.#applyNotchPosition();
-				this.#syncPhoneViewport();
-			},
-			{ signal },
-		);
+		window.addEventListener("resize", () => this.#syncPhoneViewport(), { signal });
 		window.addEventListener(
 			"message",
 			(event: MessageEvent) => {
@@ -412,88 +413,98 @@ export class SurfaceView {
 		return surfaceBySlug(this.#host.store.state, this.slug);
 	}
 
-	#applyNotchPosition(pixelX?: number): void {
-		const notch = this.#bar.querySelector<HTMLElement>(".surface-notch");
-		if (!notch) return;
-		const barRect = this.#bar.getBoundingClientRect();
-		if (barRect.width <= 0) {
-			notch.style.setProperty("--notch-x", `${Math.round(this.#notchRatio * 100)}%`);
-			return;
-		}
-		const half = Math.max(48, notch.getBoundingClientRect().width / 2);
-		const pad = Math.max(half + 58, 72);
-		const minX = Math.min(pad, barRect.width / 2);
-		const maxX = Math.max(barRect.width - pad, barRect.width / 2);
-		const raw = pixelX ?? this.#notchRatio * barRect.width;
-		const clamped = Math.max(minX, Math.min(maxX, raw));
-		this.#notchRatio = clamped / barRect.width;
-		notch.style.setProperty("--notch-x", `${Math.round(clamped)}px`);
-	}
-
-	#wireNotchDrag(signal: AbortSignal): void {
-		let draggingEl: HTMLElement | undefined;
-		let pointerId = -1;
-		let startX = 0;
-		let startCenter = 0;
-		let moved = false;
-
-		this.#bar.addEventListener(
+	#wireBar(signal: AbortSignal): void {
+		this.#notchBar.addEventListener("scroll", () => this.#markNotchCut(), { passive: true, signal });
+		document.addEventListener(
 			"pointerdown",
 			(event) => {
-				if (event.button !== 0) return;
-				const notch = (event.target as Element).closest<HTMLElement>(".surface-notch");
-				if (!notch) return;
-				const barRect = this.#bar.getBoundingClientRect();
-				const notchRect = notch.getBoundingClientRect();
-				draggingEl = notch;
-				pointerId = event.pointerId;
-				startX = event.clientX;
-				startCenter = notchRect.left + notchRect.width / 2 - barRect.left;
-				moved = false;
-				notch.setPointerCapture?.(event.pointerId);
+				if (event.target instanceof Node && this.#bar.contains(event.target)) return;
+				this.#closeBar();
 			},
-			{ signal },
+			{ capture: true, signal },
 		);
-
 		this.#bar.addEventListener(
-			"pointermove",
+			"focusout",
 			(event) => {
-				if (!draggingEl || event.pointerId !== pointerId) return;
-				const dx = event.clientX - startX;
-				if (!moved && Math.abs(dx) <= 4) return;
-				if (!moved) {
-					moved = true;
-					draggingEl.classList.add("is-dragging");
-					this.#canvas.classList.add("is-dragging-notch");
-				}
-				this.#applyNotchPosition(startCenter + dx);
+				const next = event.relatedTarget;
+				if (!(next instanceof Element) || this.#bar.contains(next)) return;
+				if (next.closest(".context-menu, dialog, .surface-address-sheet")) return;
+				this.#closeBar();
 			},
 			{ signal },
 		);
-
-		const finish = (event: PointerEvent) => {
-			if (!draggingEl || event.pointerId !== pointerId) return;
-			const wasMoved = moved;
-			draggingEl.classList.remove("is-dragging");
-			this.#canvas.classList.remove("is-dragging-notch");
-			draggingEl = undefined;
-			pointerId = -1;
-			moved = false;
-			if (wasMoved) {
-				this.#suppressNotchClick = true;
+		window.addEventListener(
+			"blur",
+			() => {
 				setTimeout(() => {
-					this.#suppressNotchClick = false;
+					const focused = document.activeElement;
+					if (!this.#deactivated && focused instanceof HTMLIFrameElement && this.el.contains(focused))
+						this.#closeBar();
 				}, 0);
-				try {
-					localStorage.setItem(NOTCH_POS_KEY, String(Number(this.#notchRatio.toFixed(4))));
-				} catch {
-					/* WHY: Local browser storage is optional in private/sandboxed contexts. */
-				}
-			}
-		};
+			},
+			{ signal },
+		);
+	}
 
-		this.#bar.addEventListener("pointerup", finish, { signal });
-		this.#bar.addEventListener("pointercancel", finish, { signal });
+	#barHeld(): boolean {
+		return this.#address.isOpen || openMenu() !== undefined || document.querySelector("dialog[open]") !== null;
+	}
+
+	#closeBar(): boolean {
+		if (!this.#barOpen || this.#barPinned || this.#barHeld()) return false;
+		this.#setBarOpen(false);
+		return true;
+	}
+
+	#setBarOpen(open: boolean): void {
+		this.#barOpen = open;
+		this.#paintNotch();
+	}
+
+	#paintNotch(): void {
+		const open = this.#barOpen || this.#barPinned;
+		this.#notch.classList.toggle("is-open", open);
+		this.#notchPill.hidden = this.#barPinned;
+		this.#notchPill.inert = open;
+		this.#notchPill.setAttribute("aria-expanded", String(open));
+		this.#notchBar.inert = !open;
+		this.#fitNotch();
+	}
+
+	#fitNotch(): void {
+		const layer = this.#notch.classList.contains("is-open") ? this.#notchBar : this.#notchPill;
+		const width = layer.offsetWidth;
+		const height = layer.offsetHeight;
+		if (width > 0 && height > 0) {
+			this.#notch.style.width = `${width}px`;
+			this.#notch.style.height = `${height}px`;
+		}
+		for (const toggle of this.#notchBar.querySelectorAll<HTMLElement>(".surface-toggle")) this.#placeThumb(toggle);
+		this.#markNotchCut();
+	}
+
+	#markNotchCut(): void {
+		const bar = this.#notchBar;
+		const hidden = bar.scrollWidth - bar.clientWidth;
+		bar.classList.toggle("is-cut-start", hidden > 1 && bar.scrollLeft > 1);
+		bar.classList.toggle("is-cut-end", hidden > 1 && bar.scrollLeft < hidden - 1);
+	}
+
+	#placeThumb(toggle: HTMLElement): void {
+		const thumb = toggle.querySelector<HTMLElement>(".surface-toggle-thumb");
+		const on = toggle.querySelector<HTMLElement>("button.is-on");
+		if (!thumb || !on || on.offsetWidth === 0) return;
+		const name = toggle.dataset.toggle ?? "";
+		const next = [on.offsetLeft, on.offsetWidth] as const;
+		const was = this.#thumbAt.get(name);
+		if (!thumb.style.width && was && (was[0] !== next[0] || was[1] !== next[1])) {
+			thumb.style.left = `${was[0]}px`;
+			thumb.style.width = `${was[1]}px`;
+			void thumb.offsetWidth;
+		}
+		thumb.style.left = `${next[0]}px`;
+		thumb.style.width = `${next[1]}px`;
+		this.#thumbAt.set(name, next);
 	}
 
 	focus(): void {
@@ -509,6 +520,8 @@ export class SurfaceView {
 		this.#clearLocalLoadTimer();
 		this.#viewportResizeObserver?.disconnect();
 		this.#viewportResizeObserver = undefined;
+		this.#notchResizeObserver?.disconnect();
+		this.#notchResizeObserver = undefined;
 		this.#mount?.deactivate?.();
 		this.#attachedReport?.deactivate();
 		this.#active.abort();
@@ -540,7 +553,7 @@ export class SurfaceView {
 		const state = store.state;
 		const surface = this.surface;
 		if (!surface) {
-			this.#bar.replaceChildren();
+			this.#notchBar.replaceChildren();
 			this.#bar.hidden = true;
 			this.#panelToggle.hidden = true;
 			this.#phoneBar.hidden = true;
@@ -750,74 +763,6 @@ export class SurfaceView {
 		const workspace = state.workspaces[surface.id];
 		const explorations = openExplorations(workspace);
 		const plainSessions = (workspace?.activeSessions ?? []).filter((session) => !isOpenVariant(session, workspace));
-		type HeaderAgent =
-			| {
-					readonly kind: "exploration";
-					readonly id: string;
-					readonly title: string;
-					readonly exploration: SurfaceExplorationSet;
-					readonly variants: readonly SurfaceSession[];
-					readonly needsInput: boolean;
-					readonly failed: boolean;
-					readonly conflicted: boolean;
-					readonly running: boolean;
-					readonly badgeCount: number;
-			  }
-			| {
-					readonly kind: "session";
-					readonly id: string;
-					readonly title: string;
-					readonly session: SurfaceSession;
-					readonly needsInput: boolean;
-					readonly failed: boolean;
-					readonly conflicted: boolean;
-					readonly running: boolean;
-					readonly badgeCount: number;
-			  };
-		const headerAgents: HeaderAgent[] = [
-			...explorations.map((exploration) => {
-				const variants = exploration.variantSessionIds
-					.map((id) => workspace?.activeSessions.find((session) => session.id === id))
-					.filter((session): session is SurfaceSession => Boolean(session));
-				return {
-					kind: "exploration" as const,
-					id: exploration.id,
-					title: exploration.title,
-					exploration,
-					variants,
-					needsInput: variants.some((v) => v.state === "needs_input"),
-					failed: variants.some((v) => v.state === "failed"),
-					conflicted: variants.some(hasConflictedChange),
-					running: variants.some(isRunningSession),
-					badgeCount: variants.length,
-				};
-			}),
-			...plainSessions.map((session) => ({
-				kind: "session" as const,
-				id: session.id,
-				title: session.title,
-				session,
-				needsInput: session.state === "needs_input",
-				failed: session.state === "failed",
-				conflicted: hasConflictedChange(session),
-				running: isRunningSession(session),
-				badgeCount: session.changes.filter(isOpenChange).length,
-			})),
-		].sort((a, b) => {
-			const rank = (agent: HeaderAgent) =>
-				agent.needsInput
-					? 0
-					: agent.failed
-						? 1
-						: agent.conflicted
-							? 2
-							: agent.running
-								? 3
-								: agent.badgeCount > 0
-									? 4
-									: 5;
-			return rank(a) - rank(b);
-		});
 		const studioHasChanges =
 			surface.archetype === "studio" &&
 			Boolean(
@@ -825,15 +770,12 @@ export class SurfaceView {
 					session.changes.some((change) => change.kind === "folder_patch" && isOpenChange(change)),
 				),
 			);
-		const activeDrawerSession =
-			state.drawer?.surfaceId === surface.id && !state.drawer.explorationId ? state.drawer.sessionId : "";
-		const activeDrawerExploration = state.drawer?.surfaceId === surface.id ? (state.drawer.explorationId ?? "") : "";
 		const panelOpen = store.isPreviewPanelOpen(surface.id);
 		const openWorkCount =
 			plainSessions.reduce((sum, session) => sum + session.changes.filter(isOpenChange).length, 0) +
 			explorations.length;
+		const hasAgents = explorations.length + plainSessions.length > 0;
 		const showViewportSplit = supportsViewportSplit(surface, look);
-		const highlighted = state.highlight?.surfaceId === surface.id ? state.highlight.sessionId : "";
 		const siteLive = this.#host.isSiteLive?.(surface) === true;
 		const addressShown = surface.archetype === "live_build" && siteLive;
 		const addressKey = this.#address.sync(
@@ -848,30 +790,15 @@ export class SurfaceView {
 			surface.title,
 			surface.archetype,
 			look.kind,
-			highlighted,
 			surface.liveUrl,
 			surface.unpublishedChangeCount,
 			state.mode,
 			state.device,
 			showViewportSplit,
 			studioHasChanges,
-			activeDrawerSession,
-			activeDrawerExploration,
 			panelOpen,
 			openWorkCount,
-			headerAgents.map((agent) => [
-				agent.kind,
-				agent.id,
-				agent.title,
-				agent.needsInput,
-				agent.failed,
-				agent.conflicted,
-				agent.running,
-				agent.badgeCount,
-				agent.kind === "session" ? (store.turnHolder(agent.session)?.userId ?? "") : "",
-				state.unseenNotes[agent.id]?.count ?? 0,
-			]),
-			this.#pillCollapsed,
+			hasAgents,
 			Boolean(state.busy[`publish:${surface.id}`]),
 			surface.publishStatus ?? "idle",
 			store.peopleAtSurface(surface.slug).map((person) => [person.userId, person.name]),
@@ -884,12 +811,22 @@ export class SurfaceView {
 		const askedMe = askedToPublish(surface, store.userId);
 		const myAsk = ask && ask.askedByUserId === store.userId ? ask : null;
 		const askKey = askedMe ? `${surface.id}:${ask!.askedAt}` : "";
-		if (askKey && askKey !== this.#askShown && state.mode === "live") queueMicrotask(() => store.setMode("preview"));
+		if (askKey && askKey !== this.#askShown) {
+			this.#barOpen = true;
+			if (state.mode === "live") queueMicrotask(() => store.setMode("preview"));
+		}
 		this.#askShown = askKey;
 
 		const live = surface.archetype === "live_build";
 		const effectiveMode: SurfacePreviewMode = state.mode === "compare" ? "preview" : state.mode;
-		const seg = (mode: SurfacePreviewMode, label: string, title: string) =>
+		const toggle = (name: string, label: string, ...segments: HTMLElement[]) =>
+			h(
+				"div",
+				{ class: "surface-toggle", role: "group", "aria-label": label, "data-toggle": name },
+				h("i", { class: "surface-toggle-thumb", "aria-hidden": "true" }),
+				...segments,
+			);
+		const modeSegment = (mode: SurfacePreviewMode, label: string, title: string) =>
 			h(
 				"button",
 				{
@@ -902,113 +839,61 @@ export class SurfaceView {
 				},
 				label,
 			);
+		const deviceSegment = (device: "desktop" | "mobile", label: string, glyph: Element) =>
+			h(
+				"button",
+				{
+					type: "button",
+					class: state.device === device ? "is-on" : "",
+					"aria-pressed": String(state.device === device),
+					"aria-label": label,
+					"data-act": "device",
+					"data-device": device,
+				},
+				glyph,
+			);
 
-		const modeNav = live
-			? h(
-					"div",
-					{ class: "surface-pill-modes" },
-					this.#address.button(),
-					h(
-						"div",
-						{ class: "surface-pill-mode-set", role: "group", "aria-label": t("What the surface shows") },
-						seg("live", t("Live"), t("What visitors see right now")),
-						seg("preview", t("Preview"), t("Base with the changes you have turned on")),
-					),
-				)
-			: studioHasChanges || (surface.archetype === "studio" && state.mode === "report")
-				? h(
-						"div",
-						{ class: "surface-pill-modes", role: "group", "aria-label": t("What the surface shows") },
-						seg("live", t("Base"), t("Saved studio files without open changes")),
-						seg("preview", t("Preview"), t("Base with the changes you have turned on")),
-					)
-				: null;
-
-		const visibleAgents = headerAgents.slice(0, 3);
-		const overflowAgents = headerAgents.length - visibleAgents.length;
-		const headerCrew =
-			visibleAgents.length > 0
-				? h(
-						"div",
-						{ class: "surface-bar-crew", role: "group", "aria-label": t("Active agents on this surface") },
-						...visibleAgents.map((agent) => {
-							const active =
-								agent.kind === "exploration"
-									? activeDrawerExploration === agent.id
-									: activeDrawerSession === agent.id;
-							const attention = agent.needsInput || agent.conflicted || agent.failed;
-							const badge = agent.needsInput
-								? h("span", { class: "surface-bar-agent-badge is-attention" }, t("Needs you"))
-								: agent.failed
-									? h("span", { class: "surface-bar-agent-badge is-danger" }, t("Failed"))
-									: agent.conflicted
-										? h("span", { class: "surface-bar-agent-badge is-danger" }, t("Conflict"))
-										: agent.running
-											? h("span", { class: "surface-bar-agent-badge is-working" }, t("Working"))
-											: agent.badgeCount > 0
-												? h("span", { class: "surface-bar-agent-count" }, String(agent.badgeCount))
-												: null;
-							return h(
-								"button",
-								{
-									type: "button",
-									class: [
-										"surface-bar-agent",
-										active && "is-active",
-										attention && "is-attention",
-										agent.running && "is-working",
-										!attention && !agent.running && agent.badgeCount > 0 && "is-ready",
-										agent.kind !== "exploration" && agent.id === highlighted && "is-highlighted",
-									]
-										.filter(Boolean)
-										.join(" "),
-									"aria-pressed": String(active),
-									"aria-label": agent.title,
-									title: agent.title,
-									"data-act": agent.kind === "exploration" ? "bar-exploration" : "bar-agent",
-									...(agent.kind === "exploration"
-										? { "data-exploration": agent.id }
-										: { "data-session": agent.id }),
-								},
-								agent.kind === "exploration"
-									? this.#headerCrew.takeExploration(agent.exploration, agent.variants, 26)
-									: this.#headerCrew.take(agent.session, 26, "", store.turnHolder(agent.session)),
-								badge,
-								state.unseenNotes[agent.id]
-									? h(
-											"span",
-											{ class: "surface-bar-agent-count is-note", title: t("A teammate left you a note") },
-											"@",
-										)
-									: null,
-							);
-						}),
-						overflowAgents > 0
-							? h(
-									"button",
-									{
-										type: "button",
-										class: "surface-bar-agent-more",
-										"aria-haspopup": "menu",
-										"aria-label": t("More active agents"),
-										"data-act": "bar-agents-more",
-									},
-									`+${overflowAgents}`,
-								)
-							: null,
-					)
-				: null;
+		const groups: HTMLElement[] = [];
+		const address = live ? this.#address.button() : null;
+		if (address) groups.push(address);
+		if (live) {
+			groups.push(
+				toggle(
+					"mode",
+					t("What the surface shows"),
+					modeSegment("live", t("Live"), t("What visitors see right now")),
+					modeSegment("preview", t("Preview"), t("Base with the changes you have turned on")),
+				),
+			);
+		} else if (studioHasChanges || (surface.archetype === "studio" && state.mode === "report")) {
+			groups.push(
+				toggle(
+					"mode",
+					t("What the surface shows"),
+					modeSegment("live", t("Base"), t("Saved studio files without open changes")),
+					modeSegment("preview", t("Preview"), t("Base with the changes you have turned on")),
+				),
+			);
+		}
+		if (showViewportSplit) {
+			groups.push(
+				toggle(
+					"device",
+					t("Viewport"),
+					deviceSegment("desktop", t("Desktop"), icon("computer")),
+					deviceSegment("mobile", t("Mobile"), h("span", { class: "surface-phone-icon", "aria-hidden": "true" })),
+				),
+			);
+		}
 
 		const count = surface.unpublishedChangeCount;
-
-		const rightTools: HTMLElement[] = [];
 		const presentHere = store.peopleAtSurface(surface.slug);
 		if (presentHere.length > 0) {
 			const presentLabel =
 				presentHere.length === 1
 					? t("{name} is here", { name: presentHere[0]!.name })
 					: t("{names} are here", { names: presentHere.map((person) => person.name).join(", ") });
-			rightTools.push(
+			groups.push(
 				h(
 					"span",
 					{ class: "surface-pill-presence", title: presentLabel, "aria-label": presentLabel },
@@ -1019,45 +904,13 @@ export class SurfaceView {
 				),
 			);
 		}
-		if (showViewportSplit) {
-			rightTools.push(
-				h(
-					"div",
-					{ class: "surface-pill-device", role: "group", "aria-label": t("Viewport") },
-					h(
-						"button",
-						{
-							type: "button",
-							class: state.device === "desktop" ? "is-on" : "",
-							"aria-pressed": String(state.device === "desktop"),
-							"aria-label": t("Desktop"),
-							"data-act": "device",
-							"data-device": "desktop",
-						},
-						icon("computer"),
-					),
-					h(
-						"button",
-						{
-							type: "button",
-							class: state.device === "mobile" ? "is-on" : "",
-							"aria-pressed": String(state.device === "mobile"),
-							"aria-label": t("Mobile"),
-							"data-act": "device",
-							"data-device": "mobile",
-						},
-						h("span", { class: "surface-phone-icon", "aria-hidden": "true" }),
-					),
-				),
-			);
-		}
 		const publishBusy = Boolean(state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
 		const askBusy = Boolean(state.busy[`publish-ask:${surface.id}`]);
 		const personName = (userId: string) => store.memberName(userId) ?? t("A teammate");
 		if (askedMe && surface.archetype !== "ops" && count > 0 && !publishBusy) {
 			const asker = personName(ask!.askedByUserId);
 			const label = t("{name} asks you to publish", { name: firstName(asker) });
-			rightTools.push(
+			groups.push(
 				h(
 					"div",
 					{ class: "surface-publish has-changes is-asked", role: "group", "aria-label": label },
@@ -1096,10 +949,10 @@ export class SurfaceView {
 		} else if (surface.archetype !== "ops" && (count > 0 || publishBusy)) {
 			const askedUser = myAsk && !publishBusy ? myAsk.askedUserId : null;
 			const saidNo = askedUser && myAsk?.status === "declined" ? firstName(personName(askedUser)) : null;
-			rightTools.push(
+			groups.push(
 				h(
 					"div",
-					{ class: `surface-publish${count ? " has-changes" : ""}` },
+					{ class: `surface-publish${count ? " has-changes" : ""}${publishBusy ? " is-busy" : ""}` },
 					h(
 						"button",
 						{
@@ -1112,7 +965,7 @@ export class SurfaceView {
 						publishBusy ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
 						saidNo && askedUser ? personAvatar(personName(askedUser), askedUser) : null,
 						publishBusy ? t("Publishing…") : saidNo ? t("{name} said no", { name: saidNo }) : t("Publish"),
-						!publishBusy && !saidNo && count ? h("span", { class: "surface-count" }, String(count)) : null,
+						!publishBusy && !saidNo && count ? h("span", { class: "surface-notch-count" }, String(count)) : null,
 						askedUser && !saidNo
 							? h(
 									"span",
@@ -1139,32 +992,8 @@ export class SurfaceView {
 			);
 		}
 
-		const showPanelToggle = surface.archetype !== "ops" || headerAgents.length > 0;
-		const collapseBtn = h(
-			"button",
-			{
-				type: "button",
-				class: "surface-pill-collapse",
-				"aria-label": t("Collapse bar"),
-				title: t("Collapse bar"),
-				"data-act": "collapse-pill",
-			},
-			icon("chevron-down"),
-		);
-		const pillParts: HTMLElement[] = [];
-		if (modeNav) pillParts.push(modeNav);
-		if (headerCrew) pillParts.push(headerCrew);
-		const spacious = Boolean(modeNav && rightTools.length > 0);
-		if (rightTools.length > 0) {
-			pillParts.push(h("div", { class: "surface-pill-right" }, ...rightTools, collapseBtn));
-		} else if (pillParts.length > 0) {
-			pillParts.push(collapseBtn);
-		}
-
-		this.#bar.hidden = pillParts.length === 0;
-		this.#bar.classList.toggle("is-collapsed", this.#pillCollapsed && pillParts.length > 0);
 		const panelLabel = panelOpen ? t("Close panel") : t("Preview panel");
-		this.#panelToggle.hidden = !showPanelToggle;
+		this.#panelToggle.hidden = !(surface.archetype !== "ops" || hasAgents);
 		this.#panelToggle.setAttribute("aria-pressed", String(panelOpen));
 		this.#panelToggle.setAttribute("aria-label", panelLabel);
 		this.#panelToggle.title = panelLabel;
@@ -1174,6 +1003,9 @@ export class SurfaceView {
 				? [h("span", { class: "surface-panel-toggle-dot", "aria-hidden": "true" }, String(openWorkCount))]
 				: []),
 		);
+
+		this.#bar.hidden = groups.length === 0;
+		this.#barTitle.textContent = surface.title;
 		const notchLabel =
 			effectiveMode === "live"
 				? live
@@ -1183,36 +1015,26 @@ export class SurfaceView {
 					? t("Notes")
 					: t("Preview");
 		const notchCount = count > 0 ? count : openWorkCount;
-		const centerControl =
-			pillParts.length > 0
-				? this.#pillCollapsed
-					? h(
-							"button",
-							{
-								type: "button",
-								class: "surface-notch",
-								"aria-label": t("Expand bar"),
-								title: t("Drag along top or click to expand"),
-								"data-act": "expand-pill",
-							},
-							h("span", { class: "surface-notch-grip", "aria-hidden": "true" }),
-							h("span", { class: "surface-notch-label" }, notchLabel),
-							notchCount > 0 ? h("span", { class: "surface-notch-count" }, String(notchCount)) : null,
-							icon("chevron-down"),
-						)
-					: h(
-							"nav",
-							{ class: `surface-pill${spacious ? " is-spacious" : ""}`, "aria-label": surface.title },
-							...pillParts,
-						)
-				: null;
-
-		this.#bar.replaceChildren(
-			h("h1", { class: "visually-hidden surface-title" }, surface.title),
-			...(centerControl ? [centerControl] : []),
+		this.#notchPill.replaceChildren(
+			h("span", { class: "surface-notch-label" }, notchLabel),
+			notchCount > 0 ? h("span", { class: "surface-notch-count" }, String(notchCount)) : null,
 		);
-		if (this.#pillCollapsed) this.#applyNotchPosition();
-		this.#headerCrew.settle();
+		const focused = document.activeElement;
+		const focusKey =
+			focused instanceof HTMLElement && this.#notchBar.contains(focused) ? barFocusKey(focused) : undefined;
+		this.#notchBar.setAttribute("aria-label", surface.title);
+		this.#notchBar.replaceChildren(
+			...groups.flatMap((group, index) =>
+				index === 0 ? [group] : [h("span", { class: "surface-pill-divider", "aria-hidden": "true" }), group],
+			),
+		);
+		if (focusKey !== undefined)
+			[...this.#notchBar.querySelectorAll<HTMLElement>("[data-act]")]
+				.find((item) => barFocusKey(item) === focusKey)
+				?.focus({ preventScroll: true });
+		this.#barPinned = Boolean(address) && this.#address.mark() === "private";
+		if (this.#barPinned) this.#barOpen = true;
+		this.#paintNotch();
 	}
 
 	#drawMount(surface: SurfaceSummary): void {
@@ -1704,6 +1526,11 @@ export class SurfaceView {
 			this.#setPointing(false);
 			return;
 		}
+		if (event.key === "Escape") {
+			const inside = this.#bar.contains(document.activeElement);
+			if (this.#closeBar() && inside) this.#notchPill.focus();
+			return;
+		}
 		if (event.key !== "p" && event.key !== "P") return;
 		if (isEditableTarget(event.target)) return;
 		if (this.#host.store.state.drawer || document.querySelector("dialog.surface-dialog[open], .settings-overlay"))
@@ -1824,14 +1651,13 @@ export class SurfaceView {
 			case "address":
 				this.#address.toggle(event.detail === 0);
 				return;
-			case "collapse-pill":
-				this.#pillCollapsed = true;
-				this.#drawBar(surface);
-				return;
 			case "expand-pill":
-				if (this.#suppressNotchClick) return;
-				this.#pillCollapsed = false;
-				this.#drawBar(surface);
+				this.#setBarOpen(true);
+				if (event.detail === 0)
+					(
+						this.#notchBar.querySelector<HTMLElement>("button.is-on") ??
+						this.#notchBar.querySelector<HTMLElement>("button:not(:disabled)")
+					)?.focus();
 				return;
 			case "toggle-panel":
 				store.togglePreviewPanel(surface.id);
@@ -1882,47 +1708,6 @@ export class SurfaceView {
 					y: box.bottom + 4,
 					opener: target,
 					items,
-				});
-				return;
-			}
-			case "bar-exploration": {
-				const explorationId = target.dataset.exploration;
-				if (!explorationId) return;
-				if (store.state.drawer?.explorationId === explorationId) store.openPreviewPanel();
-				else store.openExplorationDrawer(surface.id, explorationId);
-				return;
-			}
-			case "bar-agent": {
-				const sessionId = target.dataset.session;
-				if (!sessionId) return;
-				if (store.state.drawer?.sessionId === sessionId && !store.state.drawer.explorationId)
-					store.openPreviewPanel();
-				else store.openDrawer(surface.id, sessionId);
-				return;
-			}
-			case "bar-agents-more": {
-				const workspace = store.workspace(surface.id);
-				const explorations = openExplorations(workspace);
-				const sessions = (workspace?.activeSessions ?? []).filter((s) => !isOpenVariant(s, workspace));
-				if (!explorations.length && !sessions.length) return;
-				const box = target.getBoundingClientRect();
-				openContextMenu({
-					label: t("Active agents on this surface"),
-					x: box.left,
-					y: box.bottom + 4,
-					opener: target,
-					items: [
-						...explorations.map((exp) => ({
-							label: exp.title,
-							checked: store.state.drawer?.explorationId === exp.id,
-							select: () => store.openExplorationDrawer(surface.id, exp.id),
-						})),
-						...sessions.map((s) => ({
-							label: s.title,
-							checked: store.state.drawer?.sessionId === s.id && !store.state.drawer.explorationId,
-							select: () => store.openDrawer(surface.id, s.id),
-						})),
-					],
 				});
 				return;
 			}
