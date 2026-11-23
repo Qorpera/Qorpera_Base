@@ -348,11 +348,14 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 				if (switched.checks) {
 					const told = (step: string, extra: Record<string, unknown> = {}) =>
 						this.#report({ event: "code-checks", step, staged: true, ...named(session), ...extra });
+					const drill = switched.drill;
+					if (drill !== undefined) told("drill", { drill });
 					if (gate.gate === "refused") {
 						told("refused");
 						throw new CodingLandRefused("CODING_CHECKS_REFUSED", gate.summary);
 					}
-					const input = { commit: verified.headSha, checks: gate.checks, site: null };
+					const checks = drill === "check" ? [...gate.checks, CODE_CHECKS_DRILL] : gate.checks;
+					const input = { commit: verified.headSha, checks, site: null };
 					let run = await session.runChecks({ ...input, attempt: 1 }, signal);
 					if (run.state === "not_run") {
 						told("not-run", { why: run.why, code: run.code, attempt: 1 });
@@ -366,10 +369,18 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 						);
 					}
 					if (run.state === "failed") {
-						told("failed", { exitCode: run.failed.exitCode, atLimit: run.failed.atLimit });
+						const drilled =
+							drill === "check" && run.notRun.length === 0 && run.failed.name === CODE_CHECKS_DRILL.name;
+						told("failed", {
+							exitCode: run.failed.exitCode,
+							atLimit: run.failed.atLimit,
+							...(drilled ? { drill } : {}),
+						});
 						throw new CodingLandRefused(
 							"CODING_CHECKS_FAILED",
-							codeChecksFailedSummary(run, "fast-forward", "", { staged: true }),
+							codeChecksFailedSummary(run, "fast-forward", drilled ? `${CODE_DRILL_WORDS} ` : "", {
+								staged: true,
+							}),
 						);
 					}
 					if (run.state === "site_refused") throw new Error("CODE_HOST_LANDING_INVALID");

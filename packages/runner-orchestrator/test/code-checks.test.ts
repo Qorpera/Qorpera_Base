@@ -1327,6 +1327,23 @@ describe("surfaceStageChecksGate and surfaceGate schema", () => {
 			expect(refusedDeleted.summary).toContain("Nothing was staged for Preview:");
 			expect(refusedDeleted.summary).toContain("is gone in this change");
 		}
+
+		const explicitNoneFile = fileOf('{"surfaceGate":"none","checks":[{"name":"test","run":"npm test"}]}');
+		const baseStageHeadNone = surfaceStageChecksGate(
+			readCodeChecks(stageFile),
+			readCodeChecks(explicitNoneFile),
+			explicitNoneFile,
+		);
+		expect(baseStageHeadNone.gate).toBe("run");
+		if (baseStageHeadNone.gate === "run") expect(baseStageHeadNone.checks.map((c) => c.name)).toEqual(["test"]);
+
+		const baseStageHeadOmitted = surfaceStageChecksGate(
+			readCodeChecks(stageFile),
+			readCodeChecks(noneFile),
+			noneFile,
+		);
+		expect(baseStageHeadOmitted.gate).toBe("run");
+		if (baseStageHeadOmitted.gate === "run") expect(baseStageHeadOmitted.checks.map((c) => c.name)).toEqual(["test"]);
 	});
 
 	it("formats staged failure and not_run summaries with Preview wording", () => {

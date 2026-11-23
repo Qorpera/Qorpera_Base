@@ -817,7 +817,7 @@ export type SurfaceStageChecksGate =
 
 const SURFACE_STAGE_GATE_HINT = /"surfaceGate"\s*:\s*"stage"/;
 
-// WHY: Opt-in stage gate fails closed when a repo declares "surfaceGate":"stage" (or base already opted in) and stays zero-overhead otherwise.
+// WHY: Enforces stage CI when base or head opts into "stage", preventing gate bypass via deletion, corruption, or opt-out edits.
 export function surfaceStageChecksGate(
 	baseChecks: CodeChecksRead,
 	headChecks: CodeChecksRead,
@@ -825,7 +825,7 @@ export function surfaceStageChecksGate(
 ): SurfaceStageChecksGate {
 	const baseOptedIn = baseChecks.state === "ok" && baseChecks.surfaceGate === "stage";
 	if (headChecks.state === "ok") {
-		if (headChecks.surfaceGate === "stage") {
+		if (baseOptedIn || headChecks.surfaceGate === "stage") {
 			return { gate: "run", checks: headChecks.checks, blob: headChecks.blob };
 		}
 		return { gate: "skip" };
