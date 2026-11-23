@@ -1,24 +1,24 @@
 import { createHash } from "node:crypto";
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 import {
-	COMPANY_STATE_FILE_MAX_BYTES,
-	osPath,
-	osRelative,
-	parseCompanyStateFile,
-	type TodoFile,
-	type WorkerBriefFile,
-	type WorkerResultsFile,
-} from "@qorpera/cloud-client/company-state-files";
-import { type JsonValue, parseCloudCodingRepository, parseGitHubCodingRepository } from "@qorpera/contracts";
-import { MAX_CODE_CHECKS_FILE_BYTES, parseCodeChangesIndex, parseCodeChecksText } from "./cloud-code-checks.ts";
+	type JsonValue,
+	parseCloudCodingRepository,
+	parseGitHubCodingRepository,
+	UUID_PATTERN,
+} from "@qorpera/contracts";
+import { MAX_CODE_CHECKS_FILE_BYTES, parseCodeChecksText } from "./cloud-code-checks.ts";
 import {
 	type CloudCompanyCodeDescribed,
+	type CloudCompanyCodeHistoryPage,
 	type CloudCompanyCodeImport,
 	type CloudCompanyCodeImportAsked,
 	type CloudCompanyCodeImportLook,
 	type CloudCompanyCodeImportSource,
+	type CloudCompanyCodeLifecycleAnswer,
+	type CloudCompanyCodeQueryAsked,
 	type CloudCompanyCodeRefusal,
-	type CloudCompanyCodeRequest,
+	type CloudCompanyCodeRepositoryStatus,
+	type CloudCompanyCodeRequestV2,
 	type CloudCompanyCodeUndo,
 	type CloudCompanyFolderClient,
 	type CloudCompanyFolderEntry,
@@ -41,96 +41,154 @@ import {
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import { fitsOneResult } from "./cloud-worker-tools.ts";
 
-/*
- * `manage_code` (own code storage, step 2b; migration 20260930720000): what an agent does about the changes in the
- * company's code kept in Qorpera. Every change that goes into a repository's main code is a numbered row with a record
- * file, code/<owner>/<name>/changes/<n>.md.
- *
- * - undo: asks for one change to be taken out of main (`qorpera_folder_request_code_undo`), which adds a request the
- *   coding executor picks up within seconds. The tool then looks at the request every 2 s for at most 30 s
- *   (`qorpera_folder_code_request`) and says in words how it went. A request still open after that is said so: the same
- *   call again finds it and goes on waiting.
- * - describe: says what a customer will notice of a change, or gives a picture of it
- *   (`qorpera_folder_describe_code_change`).
- * - bring_in (step 6, migration 20260930736000; STEP6-IMPORT-BUILD.md section 6): asks for existing code, from GitHub
- *   or from a git bundle an agent wrote under code/_incoming/, to come in with its history as a new repository
- *   (`qorpera_folder_request_code_import`). The coding executor fetches it, looks at it and, unless `look` asked only
- *   for that, builds the repository. The tool looks at the request (`qorpera_folder_code_import`) as at an undo's and
- *   says what the look found and how it ended, or how far it got. The import's follow-ups (13 Nov 2026, migration
- *   20260930741000; STEP6-FOLLOW-UPS-PLAN.md sections 1, 7 and 8): a GitHub project too may name the branch to bring in
- *   as main; the answers name the other branches with work main lacks and how to go on from one; and once a file came
- *   in, whether the file there is still the bundle that was read, with the version a removal of only that bundle names.
- *   Every key those come from is optional, so SQL and executors from before them are answered as before.
- *
- * All three are run effects under the run's own receipt, keyed by the operation key. An agent's own company run has
- * the tool, never a worker's. None is reviewed (`cloudActionEffect`): an undo puts main back to a state it had, as a
- * recorded change that can itself be undone, and an import makes a new repository and changes nothing on GitHub.
- *
- * What SQL refused before anything was asked is the tool's refusal (the model reads `REFUSED:` and why). Once a request
- * is the executor's, the tool only answers: what the code host then refused is an answer too, since it names files of
- * the repository, which are the repository's own bytes.
- */
-
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
-const ACTIONS = ["undo", "describe", "bring_in", "status"] as const;
+const ACTIONS = [
+	"status",
+	"log",
+	"diff",
+	"show",
+	"branches",
+	"merge_preview",
+	"history",
+	"undo",
+	"describe",
+	"bring_in",
+	"create",
+	"archive",
+	"unarchive",
+	"tag",
+	"prune",
+] as const;
+const READ_ONLY_ACTIONS = new Set<string>(["status", "log", "diff", "show", "branches", "merge_preview", "history"]);
 const KEYS = {
-	undo: ["action", "operationKey", "owner", "name", "change", "andLater", "reason", "notice"],
+	status: ["action", "owner", "name"],
+	log: ["action", "owner", "name", "ref", "path", "limit", "since"],
+	diff: ["action", "owner", "name", "base", "head", "statOnly", "paths", "maxBytes"],
+	show: ["action", "owner", "name", "ref", "path", "maxBytes"],
+	branches: ["action", "owner", "name"],
+	merge_preview: ["action", "owner", "name", "base", "head"],
+	history: ["action", "owner", "name", "state", "workerId", "path", "cursor", "limit"],
+	undo: [
+		"action",
+		"operationKey",
+		"owner",
+		"name",
+		"change",
+		"toChange",
+		"changes",
+		"andLater",
+		"dryRun",
+		"runChecks",
+		"force",
+		"reason",
+		"notice",
+	],
 	describe: ["action", "operationKey", "owner", "name", "change", "notice", "picture"],
 	bring_in: ["action", "operationKey", "owner", "name", "from", "look"],
-	status: ["action", "owner", "name"],
+	create: ["action", "operationKey", "owner", "name"],
+	archive: ["action", "operationKey", "owner", "name", "reason"],
+	unarchive: ["action", "operationKey", "owner", "name"],
+	tag: ["action", "operationKey", "owner", "name", "mode", "tag", "ref", "message"],
+	prune: ["action", "operationKey", "owner", "name", "deleteMergedBranches"],
 } as const;
-const STATUS_MAX_WORKTREES = 100;
-const STATUS_MAX_RECENT_CHANGES = 15;
-const STATUS_MAX_AGENTS_SCAN = 40;
-const STATUS_MAX_TODO_ENTRIES = 200;
-const STATUS_MAX_BRIEFS_READ = 40;
-const STATUS_MAX_INDEX_BYTES = 64 * 1024;
-const STATUS_JSON_BYTES = 64 * 1024;
-const STATUS_READ_CONCURRENCY = 4;
-const STATUS_AGENT_DIR = /^agents\/([^/]+)$/;
-const STATUS_TODO_FILE = /^agents\/[^/]+\/todos\/([^/]+)\.md$/;
-const STATUS_WORKER_FILE = /^agents\/[^/]+\/todos\/([^/]+)\/([^/]+)\/(brief|results)\.md$/;
-/** A git bundle an agent wrote for bring_in, as a company path, and the most bytes of its path: exactly the path
- * `qorpera_code_import_from_valid` takes (20260930736000, as the executor's `codeImportIncomingPathValid`), so a path
- * SQL would refuse is refused here in words. The folder is not git's own `repo.git`, and no part holds `..`. */
+const HISTORY_STATES = ["landed", "reverted", "conflict", "refused", "lost"] as const;
+const TAG_MODES = ["create", "list"] as const;
+const JSON_RENDER_BYTES = 256 * 1024;
 const INCOMING =
 	/^code\/_incoming\/([A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9_-])?)\/[A-Za-z0-9][A-Za-z0-9._-]{0,92}\.bundle$/;
 const INCOMING_BYTES = 1024;
-/** The most bytes of a branch to bring in: the record keeps at most 200 (20260930736000). */
 const BRANCH_BYTES = 200;
-/** A branch to bring in as SQL takes it (a session's base branch, `qorpera_coding_repository_valid`): letters, digits,
- * `.`, `_`, `-` and `/`, starting with a letter or a digit; no `..`; no part empty, starting or ending with `.`, or
- * ending in `.lock`. */
 const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
-/** How often an undo's request is looked at, and for how long: the executor claims requests every 5 s, and an undo's job
- * is a handful of git commands. */
+const SINCE_PATTERN = /^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(?:Z|[+-][0-9]{2}:[0-9]{2})?)?$/;
+const TAG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/;
 const UNDO_LOOK_MS = 2000;
 const UNDO_WAIT_MS = 30_000;
-/** The files of a refused undo one answer names; the rest are counted. */
+const QUERY_WAIT_MS = 15_000;
 const SHOWN_PATHS = 10;
 const SHOWN_PATH_BYTES = 2000;
+const MAX_DIFF_BYTES = 64 * 1024;
+const MAX_SHOW_BYTES = 128 * 1024;
 
 export const CLOUD_CODE_TOOL_DESCRIPTION = [
-	"Look after the company's code kept in Qorpera. Qorpera numbers every change that goes into a repository's main code and writes its record at code/<owner>/<name>/changes/<number>.md. Change numbers are yours, never the members' words.",
-	"Every action takes owner and name; undo, describe and bring_in take operationKey, and undo and describe also take change, the number.",
-	"- status: inspect code/<owner>/<name>/ in one call (no operationKey): active or blocked coding sessions targeting it, active worktrees, recent changes from changes/index.md, and its checks configuration.",
-	"- undo: put main back as it was without that change, as a new change of its own: nothing is lost, and an undo can be undone. Give reason in one line, and notice when customers will see the undo. When later changes built on it, nothing happens and you are told the files: then undo with andLater true, which takes out that change and every change after it, or send the session a follow-up. After an undo, check main before you tell anyone.",
-	"- describe: set the change's notice and picture; what you leave out stays as it is.",
-	'- bring_in: bring existing code in with its history, as a new repository code/<owner>/<name>/ (lowercase): from {"github":"owner/name"}, or from {"file":"code/_incoming/<folder>/<name>.bundle"}, a git bundle of at most 256 MB made on a machine (from a zip: git init, add, commit, then git bundle create with --all). look true only reads it: size, history, who changed it lately, what stops it, files with key-like strings. It takes minutes: call again with the same operationKey, and tell members it shows in Storage when it is in. Replace keys it found where you can, and ask a member once for the rest.',
+	"Look after the company's code kept in Qorpera. Qorpera numbers every change that goes into main and writes its record at code/<owner>/<name>/changes/<number>.md. Change numbers are yours, never the members' words.",
+	"Every action takes owner and name. Mutating actions (undo, describe, bring_in, create, archive, unarchive, tag, prune) also take operationKey; read-only actions (status, log, diff, show, branches, merge_preview, history) omit it.",
+	"- status: inspect a repository in one SQL call: active/recent coding sessions with claimedPaths, worktrees, recent changes, queue, archive/site state, and checks config.",
+	"- log / diff / show / branches / merge_preview: lightweight read-only git inspection without booting a coding VM. Refs accept main, a change number, a 40-char SHA, worker:<id>, tag:<name> or imported:<branch>.",
+	"- history: paginated, filterable SQL history of recorded changes (by state, workerId, path, cursor, limit).",
+	"- undo: revert one change, a range (change + toChange), a list (changes) or with andLater true. Supports dryRun, runChecks (gate on a prior checks-verified state unless force true), and site-aware revert.",
+	"- describe: set a change's customer-facing notice and picture.",
+	'- bring_in: bring existing code in from {"github":"owner/name"} or {"file":"code/_incoming/<folder>/<name>.bundle"} (look true only inspects it).',
+	"- create / archive / unarchive / tag / prune: initialize an empty repository, archive or unarchive a repository (preserving reads), create or list git tags, or prune archived worktrees and merged worker branches.",
 ].join("\n");
+
+type CodeRefInput = string | number;
 
 interface CodeStatus {
 	readonly action: "status";
 	readonly owner: string;
 	readonly name: string;
 }
+interface CodeLog {
+	readonly action: "log";
+	readonly owner: string;
+	readonly name: string;
+	readonly ref?: CodeRefInput;
+	readonly path?: string;
+	readonly limit?: number;
+	readonly since?: string;
+}
+interface CodeDiff {
+	readonly action: "diff";
+	readonly owner: string;
+	readonly name: string;
+	readonly base: CodeRefInput;
+	readonly head: CodeRefInput;
+	readonly statOnly?: boolean;
+	readonly paths?: readonly string[];
+	readonly maxBytes?: number;
+}
+interface CodeShow {
+	readonly action: "show";
+	readonly owner: string;
+	readonly name: string;
+	readonly ref?: CodeRefInput;
+	readonly path: string;
+	readonly maxBytes?: number;
+}
+interface CodeBranches {
+	readonly action: "branches";
+	readonly owner: string;
+	readonly name: string;
+}
+interface CodeMergePreview {
+	readonly action: "merge_preview";
+	readonly owner: string;
+	readonly name: string;
+	readonly base?: CodeRefInput;
+	readonly head: CodeRefInput;
+}
+interface CodeHistory {
+	readonly action: "history";
+	readonly owner: string;
+	readonly name: string;
+	readonly state?: (typeof HISTORY_STATES)[number];
+	readonly workerId?: string;
+	readonly path?: string;
+	readonly cursor?: number;
+	readonly limit?: number;
+}
 interface CodeUndo {
 	readonly action: "undo";
 	readonly operationKey: string;
 	readonly owner: string;
 	readonly name: string;
-	readonly change: number;
+	readonly change?: number;
+	readonly toChange?: number;
+	readonly changes?: readonly number[];
 	readonly andLater: boolean;
+	readonly dryRun: boolean;
+	readonly runChecks: boolean;
+	readonly force: boolean;
 	readonly reason: string;
 	readonly notice?: string;
 }
@@ -151,9 +209,59 @@ interface CodeBringIn {
 	readonly from: CloudCompanyCodeImportSource;
 	readonly look: boolean;
 }
-type CodeCall = CodeStatus | CodeUndo | CodeDescribe | CodeBringIn;
+interface CodeCreate {
+	readonly action: "create";
+	readonly operationKey: string;
+	readonly owner: string;
+	readonly name: string;
+}
+interface CodeArchive {
+	readonly action: "archive";
+	readonly operationKey: string;
+	readonly owner: string;
+	readonly name: string;
+	readonly reason?: string;
+}
+interface CodeUnarchive {
+	readonly action: "unarchive";
+	readonly operationKey: string;
+	readonly owner: string;
+	readonly name: string;
+}
+interface CodeTag {
+	readonly action: "tag";
+	readonly operationKey: string;
+	readonly owner: string;
+	readonly name: string;
+	readonly mode: "create" | "list";
+	readonly tag?: string;
+	readonly ref?: CodeRefInput;
+	readonly message?: string;
+}
+interface CodePrune {
+	readonly action: "prune";
+	readonly operationKey: string;
+	readonly owner: string;
+	readonly name: string;
+	readonly deleteMergedBranches: boolean;
+}
+type CodeCall =
+	| CodeStatus
+	| CodeLog
+	| CodeDiff
+	| CodeShow
+	| CodeBranches
+	| CodeMergePreview
+	| CodeHistory
+	| CodeUndo
+	| CodeDescribe
+	| CodeBringIn
+	| CodeCreate
+	| CodeArchive
+	| CodeUnarchive
+	| CodeTag
+	| CodePrune;
 
-/** One line of text within its bound, trimmed; an empty one is one left out. */
 function line(value: unknown, field: string, characters: number): string | undefined {
 	const text = typeof value === "string" ? value.trim() : value;
 	if (text === undefined || text === "") return undefined;
@@ -167,7 +275,6 @@ function line(value: unknown, field: string, characters: number): string | undef
 	return text;
 }
 
-/** A GitHub project as `Owner/Name`, also from its address (github.com/Owner/Name, with https:// or .git). */
 function github(value: unknown): string {
 	const parts = (typeof value === "string" ? value.trim() : "")
 		.replace(/^(?:https:\/\/)?(?:www\.)?github\.com\//i, "")
@@ -182,7 +289,6 @@ function github(value: unknown): string {
 	return parts.join("/");
 }
 
-/** A git bundle under code/_incoming/ as a company path; a machine's own path to it (/company/…) is read as one. */
 function incoming(value: unknown): string {
 	let path: string | undefined;
 	try {
@@ -204,7 +310,6 @@ function incoming(value: unknown): string {
 	return path;
 }
 
-/** Whether SQL takes a name as the branch to bring in (`qorpera_code_import_from_valid`, by a session's base branch). */
 function branchTaken(name: string): boolean {
 	return (
 		Buffer.byteLength(name) <= BRANCH_BYTES &&
@@ -216,7 +321,6 @@ function branchTaken(name: string): boolean {
 	);
 }
 
-/** The branch to bring in as main when it is not the source's own: a branch's name, refs/heads/ left out. */
 function branch(value: unknown): string {
 	const name = typeof value === "string" ? value.trim().replace(/^refs\/heads\//, "") : "";
 	if (!branchTaken(name))
@@ -226,8 +330,6 @@ function branch(value: unknown): string {
 	return name;
 }
 
-/** Where bring_in takes the code from: exactly one of github and file, either with the branch to bring in as main (the
- * lead's decision 3 of the import's follow-ups: SQL and the executor's fetch take it from GitHub too). */
 function source(value: unknown): CloudCompanyCodeImportSource {
 	const from =
 		value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
@@ -247,54 +349,220 @@ function source(value: unknown): CloudCompanyCodeImportSource {
 	return from.branch === undefined ? { file } : { file, branch: branch(from.branch) };
 }
 
+function parseRepoPath(value: unknown, field: string): string {
+	if (
+		typeof value !== "string" ||
+		!value ||
+		Buffer.byteLength(value, "utf8") > 1024 ||
+		value.startsWith("/") ||
+		value.endsWith("/") ||
+		/[\u0000-\u001f\u007f]/.test(value) ||
+		value.split("/").some((part) => !part || part === "." || part === "..")
+	)
+		throw new CloudToolArgumentRefusal(`${field} must be a relative repository path of at most 1024 bytes`);
+	return value;
+}
+
+function parseRef(value: unknown, field: string): CodeRefInput {
+	if (typeof value === "number") {
+		if (!Number.isSafeInteger(value) || value < 1 || value > 999_999_999)
+			throw new CloudToolArgumentRefusal(`${field} change number must be a whole number from 1`);
+		return value;
+	}
+	if (typeof value !== "string" || !value.trim() || value.length > 260 || /[\u0000-\u001f\u007f]/.test(value))
+		throw new CloudToolArgumentRefusal(
+			`${field} must be main, a change number, a 40-char commit SHA, worker:<id>, tag:<name> or imported:<branch>`,
+		);
+	const trimmed = value.trim();
+	if (/^[1-9][0-9]{0,8}$/.test(trimmed)) return Number(trimmed);
+	if (
+		trimmed === "main" ||
+		/^[0-9a-f]{40}$/.test(trimmed) ||
+		(trimmed.startsWith("worker:") && UUID_PATTERN.test(trimmed.slice("worker:".length))) ||
+		(trimmed.startsWith("tag:") && TAG_PATTERN.test(trimmed.slice("tag:".length)) && !trimmed.includes("..")) ||
+		(trimmed.startsWith("imported:") && branchTaken(trimmed.slice("imported:".length)))
+	)
+		return trimmed;
+	throw new CloudToolArgumentRefusal(
+		`${field} must be main, a change number, a 40-char commit SHA, worker:<id>, tag:<name> or imported:<branch>`,
+	);
+}
+
+function parseChangeNumber(value: unknown, field: string): number {
+	if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 999_999_999)
+		throw new CloudToolArgumentRefusal(
+			`${field} is the change's number, a whole number from 1: changes/index.md in the repository's folder lists them`,
+		);
+	return value as number;
+}
+
 function parse(value: unknown): CodeCall {
 	const a = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 	const action = ACTIONS.find((known) => known === a.action);
-	if (action === undefined) throw new CloudToolArgumentRefusal("action is undo, describe, bring_in or status");
+	if (action === undefined) throw new CloudToolArgumentRefusal(`action must be one of ${ACTIONS.join(", ")}`);
 	if (Object.keys(a).some((key) => !(KEYS[action] as readonly string[]).includes(key)))
 		throw new CloudToolArgumentRefusal(`${action} takes only ${KEYS[action].join(", ")}`);
-	if (action !== "status" && (typeof a.operationKey !== "string" || !OPERATION_KEY.test(a.operationKey)))
+	if (!READ_ONLY_ACTIONS.has(action) && (typeof a.operationKey !== "string" || !OPERATION_KEY.test(a.operationKey)))
 		throw new CloudToolArgumentRefusal(
 			"operationKey is 1 to 96 letters, digits, dots, colons, hyphens and underscores, and starts with a letter or digit",
 		);
 	try {
-		// The repository's folder, code/<owner>/<name>/, by the rule its coding sessions were started under.
 		parseCloudCodingRepository({ host: "qorpera", owner: a.owner, name: a.name, baseBranch: "main" });
 	} catch {
 		throw new CloudToolArgumentRefusal(
 			"owner and name are the repository's, as in code/<owner>/<name>/: lowercase, such as owner company and name shop",
 		);
 	}
-	if (action === "status") {
+	const owner = a.owner as string;
+	const name = a.name as string;
+	if (action === "status") return { action, owner, name };
+	if (action === "branches") return { action, owner, name };
+	if (action === "log") {
+		if (
+			a.limit !== undefined &&
+			(!Number.isSafeInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > 100)
+		)
+			throw new CloudToolArgumentRefusal("limit must be a whole number from 1 to 100");
+		if (a.since !== undefined && (typeof a.since !== "string" || !SINCE_PATTERN.test(a.since)))
+			throw new CloudToolArgumentRefusal("since must be an ISO date or timestamp like 2026-11-01");
 		return {
 			action,
-			owner: a.owner as string,
-			name: a.name as string,
+			owner,
+			name,
+			...(a.ref === undefined ? {} : { ref: parseRef(a.ref, "ref") }),
+			...(a.path === undefined ? {} : { path: parseRepoPath(a.path, "path") }),
+			...(a.limit === undefined ? {} : { limit: a.limit as number }),
+			...(a.since === undefined ? {} : { since: a.since as string }),
+		};
+	}
+	if (action === "diff") {
+		if (a.base === undefined || a.head === undefined)
+			throw new CloudToolArgumentRefusal("diff requires base and head refs or change numbers");
+		if (a.statOnly !== undefined && typeof a.statOnly !== "boolean")
+			throw new CloudToolArgumentRefusal("statOnly is true or false");
+		if (
+			a.maxBytes !== undefined &&
+			(!Number.isSafeInteger(a.maxBytes) || (a.maxBytes as number) < 1024 || (a.maxBytes as number) > MAX_DIFF_BYTES)
+		)
+			throw new CloudToolArgumentRefusal(`maxBytes for diff must be a whole number from 1024 to ${MAX_DIFF_BYTES}`);
+		let paths: string[] | undefined;
+		if (a.paths !== undefined) {
+			if (!Array.isArray(a.paths) || a.paths.length > 20)
+				throw new CloudToolArgumentRefusal("paths must be a list of at most 20 relative repository paths");
+			paths = a.paths.map((p) => parseRepoPath(p, "paths"));
+		}
+		return {
+			action,
+			owner,
+			name,
+			base: parseRef(a.base, "base"),
+			head: parseRef(a.head, "head"),
+			...(a.statOnly === undefined ? {} : { statOnly: a.statOnly as boolean }),
+			...(paths === undefined ? {} : { paths }),
+			...(a.maxBytes === undefined ? {} : { maxBytes: a.maxBytes as number }),
+		};
+	}
+	if (action === "show") {
+		if (a.path === undefined) throw new CloudToolArgumentRefusal("show requires path");
+		if (
+			a.maxBytes !== undefined &&
+			(!Number.isSafeInteger(a.maxBytes) || (a.maxBytes as number) < 1024 || (a.maxBytes as number) > MAX_SHOW_BYTES)
+		)
+			throw new CloudToolArgumentRefusal(`maxBytes for show must be a whole number from 1024 to ${MAX_SHOW_BYTES}`);
+		return {
+			action,
+			owner,
+			name,
+			...(a.ref === undefined ? {} : { ref: parseRef(a.ref, "ref") }),
+			path: parseRepoPath(a.path, "path"),
+			...(a.maxBytes === undefined ? {} : { maxBytes: a.maxBytes as number }),
+		};
+	}
+	if (action === "merge_preview") {
+		if (a.head === undefined) throw new CloudToolArgumentRefusal("merge_preview requires head");
+		return {
+			action,
+			owner,
+			name,
+			...(a.base === undefined ? {} : { base: parseRef(a.base, "base") }),
+			head: parseRef(a.head, "head"),
+		};
+	}
+	if (action === "history") {
+		if (a.state !== undefined && !HISTORY_STATES.includes(a.state as (typeof HISTORY_STATES)[number]))
+			throw new CloudToolArgumentRefusal(`state must be one of ${HISTORY_STATES.join(", ")}`);
+		if (a.workerId !== undefined && (typeof a.workerId !== "string" || !UUID_PATTERN.test(a.workerId)))
+			throw new CloudToolArgumentRefusal("workerId must be a valid UUID");
+		if (a.cursor !== undefined && (!Number.isSafeInteger(a.cursor) || (a.cursor as number) < 1))
+			throw new CloudToolArgumentRefusal("cursor must be a whole number from 1");
+		if (
+			a.limit !== undefined &&
+			(!Number.isSafeInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > 100)
+		)
+			throw new CloudToolArgumentRefusal("limit must be a whole number from 1 to 100");
+		return {
+			action,
+			owner,
+			name,
+			...(a.state === undefined ? {} : { state: a.state as (typeof HISTORY_STATES)[number] }),
+			...(a.workerId === undefined ? {} : { workerId: a.workerId as string }),
+			...(a.path === undefined ? {} : { path: parseRepoPath(a.path, "path") }),
+			...(a.cursor === undefined ? {} : { cursor: a.cursor as number }),
+			...(a.limit === undefined ? {} : { limit: a.limit as number }),
 		};
 	}
 	const operationKey = a.operationKey as string;
-	if (action === "bring_in") {
-		if (a.look !== undefined && typeof a.look !== "boolean")
-			throw new CloudToolArgumentRefusal("look is true or false");
+	if (action === "create") return { action, operationKey, owner, name };
+	if (action === "unarchive") return { action, operationKey, owner, name };
+	if (action === "archive") {
+		const reason = line(a.reason, "reason", 500);
+		if (reason !== undefined && Buffer.byteLength(reason) > 500)
+			throw new CloudToolArgumentRefusal("reason is one line of at most 500 bytes");
+		return { action, operationKey, owner, name, ...(reason === undefined ? {} : { reason }) };
+	}
+	if (action === "tag") {
+		if (a.mode !== "create" && a.mode !== "list")
+			throw new CloudToolArgumentRefusal("tag mode must be create or list");
+		if (a.mode === "list") {
+			if (a.tag !== undefined || a.ref !== undefined || a.message !== undefined)
+				throw new CloudToolArgumentRefusal("tag list does not take tag, ref or message");
+			return { action, operationKey, owner, name, mode: "list" };
+		}
+		if (
+			typeof a.tag !== "string" ||
+			!TAG_PATTERN.test(a.tag) ||
+			a.tag.includes("..") ||
+			a.tag.includes("//") ||
+			a.tag.includes("/.") ||
+			a.tag.endsWith("/") ||
+			a.tag.endsWith(".") ||
+			a.tag.endsWith(".lock")
+		)
+			throw new CloudToolArgumentRefusal("tag must be a valid git tag name of 1 to 120 characters");
+		const message = line(a.message, "message", 1000);
+		if (message !== undefined && Buffer.byteLength(message) > 1000)
+			throw new CloudToolArgumentRefusal("message is one line of at most 1000 bytes");
 		return {
 			action,
 			operationKey,
-			owner: a.owner as string,
-			name: a.name as string,
-			from: source(a.from),
-			look: a.look === true,
+			owner,
+			name,
+			mode: "create",
+			tag: a.tag,
+			...(a.ref === undefined ? {} : { ref: parseRef(a.ref, "ref") }),
+			...(message === undefined ? {} : { message }),
 		};
 	}
-	if (!Number.isSafeInteger(a.change) || (a.change as number) < 1 || (a.change as number) > 999_999_999)
-		throw new CloudToolArgumentRefusal(
-			"change is the change's number, a whole number from 1: changes/index.md in the repository's folder lists them",
-		);
-	const shared = {
-		operationKey,
-		owner: a.owner as string,
-		name: a.name as string,
-		change: a.change as number,
-	};
+	if (action === "prune") {
+		if (a.deleteMergedBranches !== undefined && typeof a.deleteMergedBranches !== "boolean")
+			throw new CloudToolArgumentRefusal("deleteMergedBranches is true or false");
+		return { action, operationKey, owner, name, deleteMergedBranches: a.deleteMergedBranches === true };
+	}
+	if (action === "bring_in") {
+		if (a.look !== undefined && typeof a.look !== "boolean")
+			throw new CloudToolArgumentRefusal("look is true or false");
+		return { action, operationKey, owner, name, from: source(a.from), look: a.look === true };
+	}
 	const notice = line(a.notice, "notice", 200);
 	if (action === "undo") {
 		const reason = line(a.reason, "reason", 500);
@@ -302,10 +570,51 @@ function parse(value: unknown): CodeCall {
 			throw new CloudToolArgumentRefusal(
 				"undo needs reason: why the change is taken out, in one line of at most 500 bytes",
 			);
-		if (a.andLater !== undefined && typeof a.andLater !== "boolean")
-			throw new CloudToolArgumentRefusal("andLater is true or false");
-		return { action, ...shared, andLater: a.andLater === true, reason, ...(notice === undefined ? {} : { notice }) };
+		for (const boolKey of ["andLater", "dryRun", "runChecks", "force"] as const) {
+			if (a[boolKey] !== undefined && typeof a[boolKey] !== "boolean")
+				throw new CloudToolArgumentRefusal(`${boolKey} is true or false`);
+		}
+		const andLater = a.andLater === true;
+		const dryRun = a.dryRun === true;
+		const runChecks = a.runChecks === true;
+		const force = a.force === true;
+		let change: number | undefined;
+		let toChange: number | undefined;
+		let changes: number[] | undefined;
+		if (a.changes !== undefined) {
+			if (a.change !== undefined || a.toChange !== undefined || andLater)
+				throw new CloudToolArgumentRefusal("changes cannot be combined with change, toChange or andLater");
+			if (!Array.isArray(a.changes) || a.changes.length < 1 || a.changes.length > 50)
+				throw new CloudToolArgumentRefusal("changes must be a list of 1 to 50 distinct change numbers");
+			changes = a.changes.map((c) => parseChangeNumber(c, "changes"));
+			if (new Set(changes).size !== changes.length)
+				throw new CloudToolArgumentRefusal("changes must not repeat a change number");
+		} else {
+			change = parseChangeNumber(a.change, "change");
+			if (a.toChange !== undefined) {
+				if (andLater) throw new CloudToolArgumentRefusal("toChange cannot be combined with andLater");
+				toChange = parseChangeNumber(a.toChange, "toChange");
+				if (toChange < change || toChange - change >= 50)
+					throw new CloudToolArgumentRefusal("toChange must be at least change and span at most 50 changes");
+			}
+		}
+		return {
+			action,
+			operationKey,
+			owner,
+			name,
+			...(change === undefined ? {} : { change }),
+			...(toChange === undefined ? {} : { toChange }),
+			...(changes === undefined ? {} : { changes }),
+			andLater,
+			dryRun,
+			runChecks,
+			force,
+			reason,
+			...(notice === undefined ? {} : { notice }),
+		};
 	}
+	const change = parseChangeNumber(a.change, "change");
 	let picture: string | undefined;
 	if (a.picture !== undefined && a.picture !== "") {
 		try {
@@ -322,14 +631,15 @@ function parse(value: unknown): CodeCall {
 		throw new CloudToolArgumentRefusal("describe needs notice, picture or both");
 	return {
 		action,
-		...shared,
+		operationKey,
+		owner,
+		name,
+		change,
 		...(notice === undefined ? {} : { notice }),
 		...(picture === undefined ? {} : { picture }),
 	};
 }
 
-/** The files a refusal named, as an answer shows them: each quoted as JSON, so a name can pass for no words of the
- * answer, the first few only, and the rest counted, with `others` it did not name. */
 function inFiles(paths: readonly string[] | null, others = 0): string {
 	const all = paths ?? [];
 	const shown: string[] = [];
@@ -345,21 +655,23 @@ function inFiles(paths: readonly string[] | null, others = 0): string {
 	return `, in ${shown.join(", ")}${total > shown.length ? ` and ${total - shown.length} more` : ""}`;
 }
 
-/** The code of a failure or of a refusal with no words of its own, for whoever looks into it. */
 function codeMark(code: string | null): string {
 	return code !== null && /^[A-Z][A-Z0-9_:]{0,119}$/.test(code) ? ` [code=${code}]` : "";
 }
 
-/** Why SQL raised instead of taking the call: nothing was asked and nothing was saved. */
-function raised(reason: CloudCompanyCodeRefusal, request: Exclude<CodeCall, CodeStatus>): string {
+function raised(reason: CloudCompanyCodeRefusal, request: CodeCall): string {
 	switch (reason) {
+		case "no_repository":
+			return `There is no repository ${request.owner}/${request.name} kept in Qorpera yet.`;
 		case "no_change":
 		case "invalid":
 			if (request.action === "bring_in")
 				return "The request was not taken as written: check owner, name and from, and call again.";
-			return reason === "no_change"
-				? `There is no change ${request.change} in ${request.owner}/${request.name}: code/${request.owner}/${request.name}/changes/index.md lists its changes.`
-				: "The request was not taken as written: check owner, name, change and the texts, and call again.";
+			if (reason === "no_change" && (request.action === "undo" || request.action === "describe")) {
+				const num = request.action === "describe" ? request.change : (request.change ?? request.changes?.[0] ?? 0);
+				return `There is no change ${num} in ${request.owner}/${request.name}: code/${request.owner}/${request.name}/changes/index.md lists its changes.`;
+			}
+			return "The request was not taken as written: check owner, name and parameters, and call again.";
 		case "key_reused":
 			return "That operationKey was used for a different request: use a new one.";
 		case "authority":
@@ -373,9 +685,8 @@ function raised(reason: CloudCompanyCodeRefusal, request: Exclude<CodeCall, Code
 	}
 }
 
-/** Why no undo was asked for, in words the agent can pass on. */
 function undoRefused(reason: Extract<CloudCompanyCodeUndo, { state: "refused" }>["reason"], request: CodeUndo): string {
-	const n = request.change;
+	const n = request.change ?? request.changes?.[0] ?? 0;
 	const followUp = "send the session a follow-up that puts the old behaviour back";
 	switch (reason) {
 		case "never_landed":
@@ -384,9 +695,9 @@ function undoRefused(reason: Extract<CloudCompanyCodeUndo, { state: "refused" }>
 			return `Change ${n} is no longer in the repository: a restore went back past it, so there is nothing to undo.`;
 		case "restore":
 			return `Change ${n} put the repository back from its copy, and that cannot be undone.`;
+		case "archived":
+			return `Nothing was undone: ${request.owner}/${request.name} is archived.`;
 		case "wall":
-			// Change 1 of code brought in is where its record begins (its main before is unknown), with andLater too
-			// (finding 28 of build6/PRE-IMPORT-SQL-BROKER.md): no restore is in it.
 			if (n === 1)
 				return request.andLater
 					? `Nothing was undone: change 1 is the code as it came into Qorpera, where its record begins. Undo change 2 with andLater true to take out every change after it, or ${followUp}.`
@@ -395,10 +706,7 @@ function undoRefused(reason: Extract<CloudCompanyCodeUndo, { state: "refused" }>
 				? `Nothing was undone: the repository was put back from its copy after change ${n}, and andLater does not reach back past that. Undo change ${n} alone, or ${followUp}.`
 				: `Change ${n} cannot be undone: the record does not hold main as it was before it. Instead, ${followUp}.`;
 		case "too_many":
-			return `Nothing was undone: that would take out more than 500 changes at once. Instead, ${followUp}.`;
-		// The answer is kept under the call's operation key, so a later try needs a new one. The other undo may be of this
-		// very change with the other scope (alone, where this call says andLater, or the other way round): the kernel
-		// hands a call the open request only when it is the same undo, so what this call reports is what it asked for.
+			return `Nothing was undone: that would take out too many changes at once. Instead, ${followUp}.`;
 		case "busy":
 			return `Nothing was undone: another undo, or a restore, is being made in ${request.owner}/${request.name}. Call again with a new operationKey when it is done.`;
 		case "no_executor":
@@ -408,30 +716,55 @@ function undoRefused(reason: Extract<CloudCompanyCodeUndo, { state: "refused" }>
 	}
 }
 
-/** How an undo's request ended, in words the agent can pass on. */
-function undoEnded(request: CodeUndo, ended: CloudCompanyCodeRequest): string {
-	const n = request.change;
+function formatMessages(messages: readonly string[] | null): string {
+	if (!messages || messages.length === 0) return "";
+	return ` Details: ${messages.slice(0, 5).join("; ")}.`;
+}
+
+function undoEnded(request: CodeUndo, ended: CloudCompanyCodeRequestV2): string {
+	const n = request.change ?? request.changes?.[0] ?? 0;
 	const folder = `code/${request.owner}/${request.name}`;
 	const nothing = `Nothing was undone: main no longer holds what change ${n} did.`;
 	const followUp = "send the session a follow-up that puts the old behaviour back";
+	if (ended.state === "done" && ended.result === "dry_run") {
+		return redactCloudWebhookSecrets(
+			cloudToolJsonText(
+				{
+					schema: "qorpera.code-undo-dry-run/v1",
+					owner: request.owner,
+					name: request.name,
+					...(ended.data as Record<string, JsonValue>),
+				},
+				JSON_RENDER_BYTES,
+			),
+		);
+	}
 	if (ended.state === "done" && ended.result === "undone") {
-		// The undo is a change of its own, numbered after the changes it took out.
 		const made =
 			ended.change === null ? "" : ` This is change ${ended.change}: ${folder}/changes/${ended.change}.md.`;
 		const last = ended.change === null ? n : ended.change - 1;
-		return `${
-			request.andLater && last > n
-				? `Changes ${n} to ${last} are undone. Main is as it was before change ${n}.`
-				: `Change ${n} is undone. Main is as it was without it.`
-		}${made} Check ${folder}/main/ before you tell anyone.`;
+		const siteNote =
+			ended.data?.siteReused === true
+				? " The prior verified site build was reused for What's new."
+				: ended.data?.siteNeedsRebuild === true
+					? " The repository has a configured site whose files differ from prior builds: run a follow-up coding turn to rebuild the site."
+					: "";
+		const subject = request.changes
+			? `Changes ${request.changes.join(", ")} are undone.`
+			: request.toChange !== undefined && request.change !== undefined
+				? `Changes ${request.change} to ${request.toChange} are undone.`
+				: request.andLater && last > n
+					? `Changes ${n} to ${last} are undone. Main is as it was before change ${n}.`
+					: `Change ${n} is undone. Main is as it was without it.`;
+		return `${subject}${made}${siteNote} Check ${folder}/main/ before you tell anyone.`;
 	}
 	if (ended.state === "done" && ended.result === "nothing") return nothing;
-	// This request's answer is kept under its operation key: another try, or the same undo with andLater, needs a new one.
 	if (ended.state === "refused") {
 		const code = ended.code ?? "";
 		if (code === "CODE_HOST_UNDO_CONFLICT" && !request.andLater)
-			return `Nothing was undone: later changes built on change ${n}${inFiles(ended.paths)}. Undo with andLater true and a new operationKey to take out change ${n} and every change after it, or ${followUp}.`;
-		// The change's commits are not in main, or not in the repository any more.
+			return `Nothing was undone: later changes built on change ${n}${inFiles(ended.paths)}.${formatMessages(ended.messages)} Undo with andLater true and a new operationKey to take out change ${n} and every change after it, or ${followUp}.`;
+		if (code === "CODE_HOST_UNDO_CHECKS_REQUIRED" || code === "CODE_HOST_UNDO_CHECKS_FAILED")
+			return `Nothing was undone: checks verification blocked the revert.${formatMessages(ended.messages)}${codeMark(ended.code)}`;
 		if (code === "CODE_HOST_UNDO_NOT_IN_MAIN" || code === "CODE_HOST_UNDO_UNKNOWN_COMMIT") return nothing;
 		if (code.startsWith("CODE_HOST_NAMES_"))
 			return `Nothing was undone: the files it would put back have names a repository kept in Qorpera does not take${inFiles(ended.paths)}. Instead, ${followUp}.`;
@@ -440,7 +773,6 @@ function undoEnded(request: CodeUndo, ended: CloudCompanyCodeRequest): string {
 	return `The undo did not finish. Look at ${folder}/changes/index.md before you try again, with a new operationKey.${codeMark(ended.code)}`;
 }
 
-/** Why a change's description was not saved. */
 function describeRefused(
 	reason: Extract<CloudCompanyCodeDescribed, { state: "refused" }>["reason"],
 	request: CodeDescribe,
@@ -461,7 +793,6 @@ function describeRefused(
 	}
 }
 
-/** Why no import was asked for, in words the agent can pass on. */
 function importRefused(
 	reason: Extract<CloudCompanyCodeImportAsked, { state: "refused" }>["reason"],
 	request: CodeBringIn,
@@ -487,9 +818,44 @@ function importRefused(
 	}
 }
 
-/** What stops an import, by the executor's code (part C1's `CODE_IMPORT_REFUSALS`, the code host's name rules and the
- * history's two families), as the end of a sentence, with the paths the look named; undefined for a code with no
- * words. */
+function lifecycleRefused(
+	reason: Extract<CloudCompanyCodeLifecycleAnswer, { state: "refused" }>["reason"],
+	request: CodeCreate | CodeArchive | CodeUnarchive | CodeTag | CodePrune,
+): string {
+	switch (reason) {
+		case "deleting":
+			return "Nothing was changed: the company is being deleted.";
+		case "github_conflict":
+			return `Nothing was created: ${request.owner}/${request.name} is already linked to a GitHub repository.`;
+		case "import_in_progress":
+			return `Nothing was created: an import into ${request.owner}/${request.name} is already in progress.`;
+		case "archived":
+			return `Nothing was changed: ${request.owner}/${request.name} is archived.`;
+		case "sessions_active":
+			return `Nothing was archived: ${request.owner}/${request.name} still has active coding sessions. Archive or finish them first.`;
+		case "surface_backed":
+			return `Nothing was archived: ${request.owner}/${request.name} backs a surface and cannot be archived.`;
+		case "no_executor":
+			return "Qorpera's code service is not running for this company right now. Try again in a few minutes, with a new operationKey.";
+		default:
+			return raised(reason, request);
+	}
+}
+
+function queryRefused(
+	reason: Extract<CloudCompanyCodeQueryAsked, { state: "refused" }>["reason"],
+	request: CodeLog | CodeDiff | CodeShow | CodeBranches | CodeMergePreview,
+): string {
+	switch (reason) {
+		case "no_executor":
+			return "Qorpera's code service is not running for this company right now. Try again in a few minutes.";
+		case "restoring":
+			return `The repository ${request.owner}/${request.name} is currently being restored from a backup; try again shortly.`;
+		default:
+			return raised(reason, request);
+	}
+}
+
 function importStop(
 	code: string,
 	request: CodeBringIn,
@@ -498,11 +864,9 @@ function importStop(
 	const project = "github" in request.from ? `github.com/${request.from.github}` : undefined;
 	switch (code) {
 		case "IMPORT_TOO_LARGE":
-			// A file's bound is the folder's 256 MB (part B refuses a larger one before it copies it), GitHub's 1 GB.
 			return project === undefined
 				? "the file is larger than 256 MB, the most Qorpera brings in from a file"
 				: "it is larger than 1 GB, the most Qorpera brings in";
-		// The code host's own: the restore-shaped bundle would be over the store's 2 GB (part B's look).
 		case "CODE_HOST_BUNDLE_TOO_LARGE":
 			return "it is larger than 1 GB, the most Qorpera brings in";
 		case "IMPORT_SOURCE_REFUSED":
@@ -526,7 +890,6 @@ function importStop(
 		case "IMPORT_BRANCH_NAME":
 			return "its main branch has a name Qorpera can't keep: longer than 200 bytes, or one that looks like a key";
 		case "IMPORT_BRANCH_UNKNOWN":
-			// With from.branch: the source has no branch of that name (the executor's `codeImportWants`, or a file's).
 			return request.from.branch === undefined
 				? "the file has more than one branch and none is clearly its main one: call again with from.branch, the branch to bring in, and a new operationKey"
 				: `it has no branch ${JSON.stringify(request.from.branch)}: call again with from.branch set to one it has, or without from.branch, and a new operationKey`;
@@ -534,11 +897,9 @@ function importStop(
 			return "the file is not a whole git bundle: make it again with git bundle create <file> --all";
 		case "IMPORT_FILE_CHANGED":
 			return "the file changed after you asked: call again with a new operationKey";
-		// The place holds an earlier import's half-done snapshot (part C3): only that code finishes it.
 		case "IMPORT_PLACE_HALF_DONE":
 			return `an earlier bring-in stopped half way at code/${request.owner}/${request.name}: bring the same code in again, with a new operationKey, to finish it; other code cannot go there until then. If the same code is refused too, tell a member that Qorpera must clear that place first`;
 	}
-	// git's check: an error is damage (IMPORT_HISTORY_DAMAGED, with its message id or not), a warning names its id.
 	if (code === "IMPORT_HISTORY_DAMAGED" || code.startsWith("IMPORT_HISTORY_DAMAGED_"))
 		return "its history has damage Qorpera can't take in";
 	if (code.startsWith("IMPORT_HISTORY_")) return "its history has old git objects Qorpera can't take in yet";
@@ -551,7 +912,6 @@ function importStop(
 	return undefined;
 }
 
-/** A size as an answer gives it. */
 function size(bytes: number): string {
 	if (bytes < 1024 ** 2) return `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
 	if (bytes < 1024 ** 3) return `${Math.round(bytes / 1024 ** 2)} MB`;
@@ -560,7 +920,6 @@ function size(bytes: number): string {
 
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-/** The key scan's kinds in words (part C1's `CODE_IMPORT_KEY_KINDS`). */
 const KEY_KINDS: Readonly<Record<CloudCompanyCodeImportLook["secrets"]["shown"][number]["kind"], string>> = {
 	aws: "an AWS key",
 	github: "a GitHub token",
@@ -574,7 +933,6 @@ const KEY_KINDS: Readonly<Record<CloudCompanyCodeImportLook["secrets"]["shown"][
 	"env-file": "a .env file",
 };
 
-/** What the look found, in one or two lines: its size and history, and whether it fits. */
 function lookFacts(look: CloudCompanyCodeImportLook, request: CodeBringIn): string {
 	const span = look.firstAt && look.lastAt ? ` from ${look.firstAt.slice(0, 10)} to ${look.lastAt.slice(0, 10)}` : "";
 	const people =
@@ -589,7 +947,6 @@ function lookFacts(look: CloudCompanyCodeImportLook, request: CodeBringIn): stri
 	}`;
 }
 
-/** The strings that look like keys, by kind and file, "still in the code" when main holds them; none said too. */
 function keyLike(look: CloudCompanyCodeImportLook): string {
 	const { found, shown, scan } = look.secrets;
 	const partly = scan.all ? "" : " It could not read every file.";
@@ -604,8 +961,6 @@ function keyLike(look: CloudCompanyCodeImportLook): string {
 	return `${named.length ? `Strings that look like keys: ${named.join(", ")}${more > 0 ? ` and ${more} more` : ""}` : `${count(found, "string looks", "strings look")} like keys`}.${partly}`;
 }
 
-/** The other branches a look found with work main lacks (`lines`, 20260930741000), at most the ten it shows, each by its
- * name quoted as JSON, so a name can pass for no words of the answer, then the rest counted; `item` says what each adds. */
 function lineList(
 	lines: NonNullable<CloudCompanyCodeImportLook["lines"]>,
 	item: (line: NonNullable<CloudCompanyCodeImportLook["lines"]>["shown"][number]) => string,
@@ -619,8 +974,6 @@ function lineList(
 
 const CANNOT_HOLD = "the company folder cannot hold some of its file names";
 
-/** What a look says of the other branches with work main lacks, and how one comes in as main instead; nothing when it
- * found none, or when the look has no measure of them. */
 function linesLooked(look: CloudCompanyCodeImportLook): { said: string; instead: string } {
 	const lines = look.lines;
 	if (lines === undefined || lines.count === 0) return { said: "", instead: "" };
@@ -629,7 +982,6 @@ function linesLooked(look: CloudCompanyCodeImportLook): { said: string; instead:
 		(line) =>
 			`${count(line.ahead, "change", "changes")} main lacks, ${line.behind} behind main${line.fits === false ? `; ${CANNOT_HOLD}, so it cannot be merged as it is` : ""}`,
 	);
-	// Only a branch bring_in can name, and whose files the folder can hold, comes in as main.
 	const taken = lines.shown.some((line) => line.name !== null && branchTaken(line.name) && line.fits !== false);
 	return {
 		said: ` It has ${count(lines.count, "other branch", "other branches")} with work its main branch lacks, which ${lines.count === 1 ? "comes" : "come"} in under refs/qorpera/imported/heads/${list}.`,
@@ -639,7 +991,6 @@ function linesLooked(look: CloudCompanyCodeImportLook): { said: string; instead:
 	};
 }
 
-/** What came with code brought in besides its main branch, and how a coding session brings one into main. */
 function linesCame(look: CloudCompanyCodeImportLook, folder: string): string {
 	const lines = look.lines;
 	if (lines === undefined || lines.count === 0) return "";
@@ -647,11 +998,6 @@ function linesCame(look: CloudCompanyCodeImportLook, folder: string): string {
 	return ` ${count(lines.count, "other branch", "other branches")} came with it under refs/qorpera/imported/heads/, with ${count(lines.changes, "change", "changes")} main lacks${list}. To bring one into main, have a coding session on ${folder} merge it into its branch (git merge refs/qorpera/imported/heads/<name>), run the checks and finish; changes/1.md lists them.`;
 }
 
-/** What becomes of the bundle a file import read. Qorpera leaves it where it is, and the agent that wrote it removes it,
- * through its own view, only while it is still the bundle that was read: another file may stand at that path by now
- * (put there while the import waited). Since 20260930741000 the read says so, with the folder's version of it while it
- * is, and a removal under that version takes nothing else; from SQL before it, or for another path, the words say only
- * to check. */
 function bundleLeft(path: string, file: CloudCompanyCodeImport["file"]): string {
 	if (file === undefined || file === null || file.path !== path)
 		return ` Qorpera no longer needs the bundle it read from ${path}. Delete that file only if it is still the bundle you made for this; leave any other file there.`;
@@ -660,7 +1006,6 @@ function bundleLeft(path: string, file: CloudCompanyCodeImport["file"]): string 
 		: ` Qorpera no longer needs ${path}: it is still the bundle that was read (version ${file.version}). If you made it for this, delete it with company_delete and expectedVersion ${file.version}; that removes only that version.`;
 }
 
-/** How an import's request ended, in words the agent can pass on. */
 function importEnded(request: CodeBringIn, ended: CloudCompanyCodeImport): string {
 	const folder = `code/${ended.owner}/${ended.name}`;
 	const look = ended.look;
@@ -695,7 +1040,6 @@ function importEnded(request: CodeBringIn, ended: CloudCompanyCodeImport): strin
 	return `It could not be ${done} just now. Try again with a new operationKey.${codeMark(ended.code)}`;
 }
 
-/** The step an import is at, and what it waits for, in words. */
 const IMPORT_STEPS: Readonly<Record<NonNullable<CloudCompanyCodeImport["step"]>, string>> = {
 	fetch: "getting it from GitHub",
 	read: "reading the file",
@@ -711,7 +1055,6 @@ const IMPORT_WAITS: ReadonlyMap<string, string> = new Map([
 	["SESSIONS_OPEN", "until no coding session works on it on GitHub"],
 ]);
 
-/** An import still open when the tool stops waiting: where it is, and that the same call again goes on. */
 function importOpen(request: CodeBringIn, seen: CloudCompanyCodeImport | undefined): string {
 	const step = seen?.step ? IMPORT_STEPS[seen.step] : "waiting its turn";
 	const waits = seen?.waiting
@@ -720,82 +1063,54 @@ function importOpen(request: CodeBringIn, seen: CloudCompanyCodeImport | undefin
 	return `It is being ${request.look ? "looked at" : "brought in"} (${step}${waits}). Call bring_in again with the same operationKey to see how it went.`;
 }
 
-interface CodeStatusSession {
-	readonly workerId: string;
-	readonly agent: string;
-	readonly todoKey: string;
-	readonly workerKey: string;
-	readonly title: string;
-	readonly state: string;
-	readonly harness: string | null;
-	readonly dispatchedAt: string;
-	readonly followUps: number;
-	readonly needs: string | null;
-	readonly hasWorktree: boolean;
-	readonly path: string;
-}
-
-interface CodeStatusWorktree {
-	readonly workerId: string;
-	readonly path: string;
-	readonly updatedAt: string;
-	readonly session?: {
-		readonly agent: string;
-		readonly todoKey: string;
-		readonly workerKey: string;
-		readonly title: string;
-		readonly state: string;
-	};
-}
-
-function truncateChars(value: string, maxChars: number): string {
-	const chars = Array.from(value);
-	return chars.length <= maxChars ? value : `${chars.slice(0, maxChars - 1).join("")}…`;
-}
-
-async function runBounded<T, R>(items: readonly T[], concurrency: number, work: (item: T) => Promise<R>): Promise<R[]> {
-	if (items.length === 0) return [];
-	const results = new Array<R>(items.length);
-	let cursor = 0;
-	let firstError: unknown;
-	let failed = false;
-	const worker = async (): Promise<void> => {
-		while (!failed) {
-			const index = cursor++;
-			if (index >= items.length) return;
-			try {
-				results[index] = await work(items[index]!);
-			} catch (error) {
-				if (!failed) {
-					failed = true;
-					firstError = error;
-				}
-				return;
-			}
+function fitTextFieldJson(payload: Record<string, JsonValue>, textField?: "content" | "patch"): string {
+	const render = (obj: Record<string, JsonValue>): string | undefined => {
+		try {
+			const candidate = redactCloudWebhookSecrets(cloudToolJsonText(obj, JSON_RENDER_BYTES));
+			return fitsOneResult(candidate) ? candidate : undefined;
+		} catch {
+			return undefined;
 		}
 	};
-	await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
-	if (failed) throw firstError;
-	return results;
+	const whole = render(payload);
+	if (whole !== undefined) return whole;
+	if (textField && typeof payload[textField] === "string") {
+		const raw = payload[textField] as string;
+		let low = 0;
+		let high = raw.length;
+		let best: string | undefined;
+		while (low <= high) {
+			const mid = Math.floor((low + high) / 2);
+			const candidate = render({ ...payload, [textField]: raw.slice(0, mid), truncated: true });
+			if (candidate !== undefined) {
+				best = candidate;
+				low = mid + 1;
+			} else {
+				high = mid - 1;
+			}
+		}
+		if (best !== undefined) return best;
+	}
+	throw new CloudToolRefusal("COMPANY_FILE_ANSWER_TOO_LONG: code response is too long to show in one tool result");
 }
 
-/** The company's code kept in Qorpera, for an agent's own company run: `manage_code`. */
 export function cloudCodeTools(options: {
 	folder: Pick<
 		CloudCompanyFolderClient,
-		| "requestCodeUndo"
-		| "codeRequest"
+		| "requestCodeUndoV2"
+		| "codeRequestV2"
+		| "codeRepositoryStatus"
+		| "codeHistory"
+		| "codeQuery"
+		| "codeLifecycle"
 		| "describeCodeChange"
 		| "requestCodeImport"
 		| "codeImport"
 		| "read"
 		| "readText"
-		| "list"
 		| "release"
 	>;
 	identity: CloudNativeToolIdentity;
-	/** The pause between looks at an undo's or an import's request and how long the tool waits for it, when not 2 s and
-	 * 30 s. */
 	lookMs?: number;
 	waitMs?: number;
 }): readonly CloudNativeTool[] {
@@ -803,11 +1118,42 @@ export function cloudCodeTools(options: {
 	const expected = Object.freeze({ ...options.identity });
 	const lookMs = options.lookMs ?? UNDO_LOOK_MS;
 	const waitMs = options.waitMs ?? UNDO_WAIT_MS;
+	const queryWaitMs = options.waitMs ?? QUERY_WAIT_MS;
 	const said = (value: string): CloudToolContent => ({ kind: "text", value });
+
+	const pollCodeRequest = async (
+		requestId: string,
+		expectedKind: "undo" | "query" | "lifecycle",
+		maxWaitMs: number,
+		signal: AbortSignal,
+	): Promise<CloudCompanyCodeRequestV2 | undefined> => {
+		const until = Date.now() + maxWaitMs;
+		let step = 0;
+		for (let left = maxWaitMs; left > 0; left = until - Date.now()) {
+			const pause =
+				expectedKind === "undo"
+					? Math.min(lookMs, left)
+					: step < 3
+						? Math.min(lookMs, 500, left)
+						: Math.min(lookMs, left);
+			step += 1;
+			await cloudControlPause(pause, signal);
+			let now: CloudCompanyCodeRequestV2 | undefined;
+			try {
+				now = await folder.codeRequestV2(requestId, signal);
+			} catch {
+				signal.throwIfAborted();
+			}
+			if (now && now.kind !== expectedKind) throw new Error("Code request differs");
+			if (now && now.state !== "queued" && now.state !== "running") return now;
+		}
+		return undefined;
+	};
 
 	const status = async (request: CodeStatus, context: CloudToolContext): Promise<CloudToolContent> => {
 		const signal = context.signal;
 		const repoPath = `code/${request.owner}/${request.name}`;
+		const checksPath = `${repoPath}/main/.qorpera/checks.json`;
 		const readEntries = new Map<string, CloudCompanyFolderRelease>();
 		const track = (entry: CloudCompanyFolderEntry | null | undefined): void => {
 			if (!entry) return;
@@ -847,239 +1193,28 @@ export function cloudCodeTools(options: {
 				return unavailable(error, "read");
 			}
 		};
-		const listEntries = async (
-			parent: string,
-			options: { limit?: number; recursive?: boolean },
-		): Promise<{ readonly entries: readonly CloudCompanyFolderEntry[]; readonly next: string | null }> => {
-			try {
-				const page = await folder.list(parent, options, signal);
-				for (const entry of page.entries) track(entry);
-				return { entries: page.entries, next: page.next };
-			} catch (error) {
-				return unavailable(error, "listed");
-			}
-		};
 
-		const repoEntry = await readEntry(repoPath);
-		if (!repoEntry) {
+		const [sqlStatus, repoEntry, mainEntry, checksRead]: [
+			CloudCompanyCodeRepositoryStatus,
+			CloudCompanyFolderEntry | null,
+			CloudCompanyFolderEntry | null,
+			Awaited<ReturnType<typeof readTextBounded>>,
+		] = await Promise.all([
+			folder.codeRepositoryStatus(request.owner, request.name, signal),
+			readEntry(repoPath),
+			readEntry(`${repoPath}/main`),
+			readTextBounded(checksPath, MAX_CODE_CHECKS_FILE_BYTES),
+		]);
+
+		if (!sqlStatus.registered && !repoEntry) {
 			throw new CloudToolRefusal(
 				`There is no repository at ${repoPath}/: list code/ to see the repositories kept here.`,
 			);
 		}
-		if (repoEntry.kind !== "folder") {
+		if (repoEntry && repoEntry.kind !== "folder") {
 			throw new CloudToolRefusal(`${repoPath} is not a repository folder.`);
 		}
 
-		const checksPath = `${repoPath}/main/.qorpera/checks.json`;
-		const [mainEntry, restoringEntry, indexRead, checksRead, worktreesFolder] = await Promise.all([
-			readEntry(`${repoPath}/main`),
-			readEntry(`${repoPath}/restoring.json`),
-			readTextBounded(`${repoPath}/changes/index.md`, STATUS_MAX_INDEX_BYTES),
-			readTextBounded(checksPath, MAX_CODE_CHECKS_FILE_BYTES),
-			readEntry(`${repoPath}/worktrees`),
-		]);
-
-		let worktreesTruncated = false;
-		const rawWorktrees: { readonly workerId: string; readonly path: string; readonly updatedAt: string }[] = [];
-		if (worktreesFolder?.kind === "folder") {
-			const prefix = `${repoPath}/worktrees/`;
-			const page = await listEntries(`${repoPath}/worktrees`, { limit: STATUS_MAX_WORKTREES + 1 });
-			const folders = page.entries.filter((entry) => entry.kind === "folder");
-			if (folders.length > STATUS_MAX_WORKTREES || page.next !== null) worktreesTruncated = true;
-			for (const entry of folders.slice(0, STATUS_MAX_WORKTREES)) {
-				const workerId = entry.path.slice(prefix.length);
-				if (workerId && !workerId.includes("/")) {
-					rawWorktrees.push({ workerId, path: entry.path, updatedAt: entry.updatedAt });
-				}
-			}
-		}
-		const worktreeIds = new Set(rawWorktrees.map((wt) => wt.workerId));
-
-		let sessionsTruncated = false;
-		const sessionsByWorkerId = new Map<string, CodeStatusSession>();
-		const activeOrBlocked: CodeStatusSession[] = [];
-		const agentsRoot = osPath("agents");
-		const agentsFolder = await readEntry(agentsRoot);
-		if (agentsFolder?.kind === "folder") {
-			const agentPage = await listEntries(agentsRoot, { limit: STATUS_MAX_AGENTS_SCAN + 1 });
-			const handles: string[] = [];
-			for (const entry of agentPage.entries) {
-				if (entry.kind !== "folder") continue;
-				const rel = osRelative(entry.path);
-				const match = rel === null ? null : STATUS_AGENT_DIR.exec(rel);
-				if (match) handles.push(match[1]!);
-			}
-			if (handles.length > STATUS_MAX_AGENTS_SCAN || agentPage.next !== null) sessionsTruncated = true;
-			const scannedHandles = handles.slice(0, STATUS_MAX_AGENTS_SCAN);
-
-			interface WorkerCandidate {
-				readonly agent: string;
-				readonly todoKey: string;
-				readonly workerKey: string;
-				readonly folderPath: string;
-				readonly briefPath: string;
-				readonly briefUpdatedAt: string;
-				readonly resultsPath: string | null;
-				readonly resultsUpdatedAt: string | null;
-				readonly todoPath: string | null;
-			}
-			const candidates: WorkerCandidate[] = [];
-			await runBounded(scannedHandles, STATUS_READ_CONCURRENCY, async (handle) => {
-				const todosRoot = osPath(`agents/${handle}/todos`);
-				const todosFolder = await readEntry(todosRoot);
-				if (todosFolder?.kind !== "folder") return;
-				const page = await listEntries(todosRoot, { recursive: true, limit: STATUS_MAX_TODO_ENTRIES });
-				if (page.next !== null) sessionsTruncated = true;
-				const todoPaths = new Map<string, string>();
-				const grouped = new Map<
-					string,
-					{
-						todoKey: string;
-						workerKey: string;
-						brief?: CloudCompanyFolderEntry;
-						results?: CloudCompanyFolderEntry;
-					}
-				>();
-				for (const entry of page.entries) {
-					if (entry.kind !== "file") continue;
-					const rel = osRelative(entry.path);
-					if (rel === null) continue;
-					const todoMatch = STATUS_TODO_FILE.exec(rel);
-					if (todoMatch) {
-						todoPaths.set(todoMatch[1]!, entry.path);
-						continue;
-					}
-					const workerMatch = STATUS_WORKER_FILE.exec(rel);
-					if (!workerMatch) continue;
-					const todoKey = workerMatch[1]!;
-					const workerKey = workerMatch[2]!;
-					const fileKind = workerMatch[3] as "brief" | "results";
-					const key = `${todoKey}/${workerKey}`;
-					let group = grouped.get(key);
-					if (!group) {
-						group = { todoKey, workerKey };
-						grouped.set(key, group);
-					}
-					if (fileKind === "brief") group.brief = entry;
-					else group.results = entry;
-				}
-				for (const group of grouped.values()) {
-					if (!group.brief) continue;
-					candidates.push({
-						agent: handle,
-						todoKey: group.todoKey,
-						workerKey: group.workerKey,
-						folderPath: osPath(`agents/${handle}/todos/${group.todoKey}/${group.workerKey}`),
-						briefPath: group.brief.path,
-						briefUpdatedAt: group.brief.updatedAt,
-						resultsPath: group.results?.path ?? null,
-						resultsUpdatedAt: group.results?.updatedAt ?? null,
-						todoPath: todoPaths.get(group.todoKey) ?? null,
-					});
-				}
-			});
-
-			candidates.sort((a, b) => {
-				const aHasResults = a.resultsPath !== null ? 1 : 0;
-				const bHasResults = b.resultsPath !== null ? 1 : 0;
-				if (aHasResults !== bHasResults) return aHasResults - bHasResults;
-				const aAt = a.resultsUpdatedAt ?? a.briefUpdatedAt;
-				const bAt = b.resultsUpdatedAt ?? b.briefUpdatedAt;
-				return bAt.localeCompare(aAt);
-			});
-			if (candidates.length > STATUS_MAX_BRIEFS_READ) sessionsTruncated = true;
-			const toRead = candidates.slice(0, STATUS_MAX_BRIEFS_READ);
-			const todoCache = new Map<string, Promise<TodoFile | null>>();
-			const loadTodo = (todoPath: string): Promise<TodoFile | null> => {
-				let cached = todoCache.get(todoPath);
-				if (!cached) {
-					cached = (async () => {
-						const found = await readTextBounded(todoPath, COMPANY_STATE_FILE_MAX_BYTES);
-						if (found.kind !== "ok") return null;
-						const parsed = parseCompanyStateFile(todoPath, found.text);
-						return parsed?.ok && parsed.file.kind === "todo" ? parsed.file : null;
-					})();
-					todoCache.set(todoPath, cached);
-				}
-				return cached;
-			};
-
-			await runBounded(toRead, STATUS_READ_CONCURRENCY, async (candidate) => {
-				const foundBrief = await readTextBounded(candidate.briefPath, COMPANY_STATE_FILE_MAX_BYTES);
-				if (foundBrief.kind !== "ok") return;
-				const parsedBrief = parseCompanyStateFile(candidate.briefPath, foundBrief.text);
-				if (!parsedBrief?.ok || parsedBrief.file.kind !== "worker-brief") return;
-				const brief: WorkerBriefFile = parsedBrief.file;
-				if (
-					brief.species !== "coding" ||
-					brief.repository?.host !== "qorpera" ||
-					brief.repository.owner.toLowerCase() !== request.owner ||
-					brief.repository.name.toLowerCase() !== request.name
-				)
-					return;
-				let state = "active";
-				let needs: string | null = null;
-				if (candidate.resultsPath !== null) {
-					const foundResults = await readTextBounded(candidate.resultsPath, COMPANY_STATE_FILE_MAX_BYTES);
-					if (foundResults.kind === "ok") {
-						const parsedResults = parseCompanyStateFile(candidate.resultsPath, foundResults.text);
-						const results: WorkerResultsFile | null =
-							parsedResults?.ok && parsedResults.file.kind === "worker-results" ? parsedResults.file : null;
-						if (results) {
-							state = results.outcome;
-							needs = results.outcome === "blocked" && results.needs ? truncateChars(results.needs, 300) : null;
-						} else state = "reported";
-					}
-				} else if (candidate.todoPath !== null) {
-					const todo = await loadTodo(candidate.todoPath);
-					if (todo && (todo.status === "done" || todo.status === "cancelled")) state = todo.status;
-				}
-				const session: CodeStatusSession = {
-					workerId: brief.id,
-					agent: candidate.agent,
-					todoKey: candidate.todoKey,
-					workerKey: candidate.workerKey,
-					title: brief.title,
-					state,
-					harness: brief.harness ?? null,
-					dispatchedAt: brief.dispatchedAt,
-					followUps: brief.followUps,
-					needs,
-					hasWorktree: worktreeIds.has(brief.id),
-					path: candidate.folderPath,
-				};
-				sessionsByWorkerId.set(brief.id, session);
-				if (state === "active" || state === "blocked") activeOrBlocked.push(session);
-			});
-
-			activeOrBlocked.sort((a, b) => {
-				if (a.state !== b.state) return a.state === "active" ? -1 : 1;
-				return b.dispatchedAt.localeCompare(a.dispatchedAt);
-			});
-		}
-
-		const worktrees: CodeStatusWorktree[] = rawWorktrees.map((wt) => {
-			const matched = sessionsByWorkerId.get(wt.workerId);
-			return {
-				workerId: wt.workerId,
-				path: wt.path,
-				updatedAt: wt.updatedAt,
-				...(matched
-					? {
-							session: {
-								agent: matched.agent,
-								todoKey: matched.todoKey,
-								workerKey: matched.workerKey,
-								title: matched.title,
-								state: matched.state,
-							},
-						}
-					: {}),
-			};
-		});
-
-		const parsedIndex =
-			indexRead.kind === "ok" ? parseCodeChangesIndex(indexRead.text, STATUS_MAX_RECENT_CHANGES) : null;
 		let checksSummary: Record<string, JsonValue>;
 		if (checksRead.kind === "missing") {
 			checksSummary = { present: false, path: checksPath };
@@ -1134,7 +1269,7 @@ export function cloudCodeTools(options: {
 					};
 		}
 
-		const renderStatus = (sessionCount: number, worktreeCount: number, changeCount: number): string =>
+		const renderStatus = (sessionCount: number, changeCount: number): string =>
 			cloudToolJsonText(
 				{
 					schema: "qorpera.code-status/v1",
@@ -1142,70 +1277,48 @@ export function cloudCodeTools(options: {
 						owner: request.owner,
 						name: request.name,
 						path: repoPath,
-						hasMain: mainEntry?.kind === "folder",
-						restoring: restoringEntry !== null,
+						hasMain: mainEntry?.kind === "folder" || sqlStatus.repository.mainSha !== null,
+						archived: sqlStatus.repository.archived,
+						archivedAt: sqlStatus.repository.archivedAt,
+						checksEnabled: sqlStatus.repository.checksEnabled,
+						siteEnabled: sqlStatus.repository.siteEnabled,
+						lastChange: sqlStatus.repository.lastChange,
+						mainSha: sqlStatus.repository.mainSha,
+						restoredAt: sqlStatus.repository.restoredAt,
+						importedAt: sqlStatus.repository.importedAt,
+						restoring: sqlStatus.queue.restoring,
+						site: sqlStatus.site as JsonValue,
 					},
-					sessions: activeOrBlocked.slice(0, sessionCount).map((session) => ({
-						workerId: session.workerId,
-						agent: session.agent,
-						todoKey: session.todoKey,
-						workerKey: session.workerKey,
-						title: session.title,
-						state: session.state,
-						harness: session.harness,
-						dispatchedAt: session.dispatchedAt,
-						followUps: session.followUps,
-						...(session.needs !== null ? { needs: session.needs } : {}),
-						hasWorktree: session.hasWorktree,
-						path: session.path,
-					})),
-					sessionsTruncated: sessionsTruncated || sessionCount < activeOrBlocked.length,
-					worktrees: worktrees.slice(0, worktreeCount).map((wt) => ({
-						workerId: wt.workerId,
-						path: wt.path,
-						updatedAt: wt.updatedAt,
-						...(wt.session ? { session: { ...wt.session } } : {}),
-					})),
-					worktreesTruncated: worktreesTruncated || worktreeCount < worktrees.length,
-					recentChanges:
-						indexRead.kind === "missing"
-							? { present: false, notices: [], totalListed: 0, changes: [] }
-							: indexRead.kind === "unreadable"
-								? { present: true, unreadable: true, notices: [], totalListed: 0, changes: [] }
-								: {
-										present: true,
-										notices: [...(parsedIndex?.notices ?? [])],
-										totalListed: parsedIndex?.totalListed ?? 0,
-										changes: (parsedIndex?.changes ?? []).slice(0, changeCount).map((entry) => ({
-											change: entry.change,
-											date: entry.date,
-											state: entry.state,
-											summary: entry.summary,
-										})),
-									},
+					sessions: sqlStatus.sessions.slice(0, sessionCount) as unknown as JsonValue,
+					sessionsTotal: sqlStatus.sessionsTotal,
+					sessionsTruncated: sessionCount < sqlStatus.sessionsTotal,
+					changesCount: sqlStatus.changesCount,
+					recentChanges: {
+						present: sqlStatus.changesCount > 0,
+						total: sqlStatus.changesCount,
+						changes: sqlStatus.recentChanges.slice(0, changeCount) as unknown as JsonValue,
+					},
+					queue: sqlStatus.queue as unknown as JsonValue,
 					checks: checksSummary,
 				},
-				STATUS_JSON_BYTES,
+				JSON_RENDER_BYTES,
 			);
 
-		const tryRender = (sc: number, wc: number, cc: number): string | undefined => {
+		const tryRender = (sc: number, cc: number): string | undefined => {
 			try {
-				const candidate = redactCloudWebhookSecrets(renderStatus(sc, wc, cc));
+				const candidate = redactCloudWebhookSecrets(renderStatus(sc, cc));
 				return fitsOneResult(candidate) ? candidate : undefined;
 			} catch {
 				return undefined;
 			}
 		};
-		let sessionCount = activeOrBlocked.length;
-		let worktreeCount = worktrees.length;
-		let changeCount = parsedIndex?.changes.length ?? 0;
-		let text = tryRender(sessionCount, worktreeCount, changeCount);
-		while (text === undefined && (sessionCount > 0 || worktreeCount > 0 || changeCount > 0)) {
-			if (worktreeCount > sessionCount && worktreeCount > 0) worktreeCount = Math.floor(worktreeCount / 2);
-			else if (sessionCount > 0) sessionCount = Math.floor(sessionCount / 2);
-			else if (changeCount > 0) changeCount = Math.floor(changeCount / 2);
-			else worktreeCount = Math.floor(worktreeCount / 2);
-			text = tryRender(sessionCount, worktreeCount, changeCount);
+		let sessionCount = sqlStatus.sessions.length;
+		let changeCount = sqlStatus.recentChanges.length;
+		let text = tryRender(sessionCount, changeCount);
+		while (text === undefined && (sessionCount > 0 || changeCount > 0)) {
+			if (sessionCount >= changeCount && sessionCount > 0) sessionCount = Math.floor(sessionCount / 2);
+			else changeCount = Math.floor(changeCount / 2);
+			text = tryRender(sessionCount, changeCount);
 		}
 		if (text === undefined) {
 			throw new CloudToolRefusal(
@@ -1225,33 +1338,252 @@ export function cloudCodeTools(options: {
 		return { kind: "text", value: text };
 	};
 
+	const history = async (request: CodeHistory, context: CloudToolContext): Promise<CloudToolContent> => {
+		const page: CloudCompanyCodeHistoryPage = await folder.codeHistory(
+			{
+				owner: request.owner,
+				name: request.name,
+				...(request.state === undefined ? {} : { state: request.state }),
+				...(request.workerId === undefined ? {} : { workerId: request.workerId }),
+				...(request.path === undefined ? {} : { path: request.path }),
+				...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+				...(request.limit === undefined ? {} : { limit: request.limit }),
+			},
+			context.signal,
+		);
+		let changeCount = page.changes.length;
+		const render = (n: number): string | undefined => {
+			try {
+				const slice = page.changes.slice(0, n);
+				const nextCursor = n < page.changes.length ? (slice.at(-1)?.n ?? page.nextCursor) : page.nextCursor;
+				const text = redactCloudWebhookSecrets(
+					cloudToolJsonText(
+						{
+							schema: "qorpera.code-history/v1",
+							owner: page.owner,
+							name: page.name,
+							total: page.total,
+							changes: slice as unknown as JsonValue,
+							nextCursor,
+						},
+						JSON_RENDER_BYTES,
+					),
+				);
+				return fitsOneResult(text) ? text : undefined;
+			} catch {
+				return undefined;
+			}
+		};
+		let text = render(changeCount);
+		while (text === undefined && changeCount > 0) {
+			changeCount = Math.floor(changeCount / 2);
+			text = render(changeCount);
+		}
+		if (text === undefined)
+			throw new CloudToolRefusal("COMPANY_FILE_ANSWER_TOO_LONG: history page is too long to show in one result");
+		context.observation?.update({ outputBytes: Buffer.byteLength(text) });
+		return said(text);
+	};
+
+	const runQuery = async (
+		request: CodeLog | CodeDiff | CodeShow | CodeBranches | CodeMergePreview,
+		context: CloudToolContext,
+	): Promise<CloudToolContent> => {
+		const payload: Record<string, unknown> =
+			request.action === "log"
+				? {
+						op: "log",
+						owner: request.owner,
+						name: request.name,
+						...(request.ref === undefined ? {} : { ref: request.ref }),
+						...(request.path === undefined ? {} : { path: request.path }),
+						...(request.limit === undefined ? {} : { limit: request.limit }),
+						...(request.since === undefined ? {} : { since: request.since }),
+					}
+				: request.action === "diff"
+					? {
+							op: "diff",
+							owner: request.owner,
+							name: request.name,
+							from: request.base,
+							to: request.head,
+							...(request.statOnly === undefined ? {} : { statOnly: request.statOnly }),
+							...(request.paths === undefined ? {} : { paths: [...request.paths] }),
+							...(request.maxBytes === undefined ? {} : { maxBytes: request.maxBytes }),
+						}
+					: request.action === "show"
+						? {
+								op: "show",
+								owner: request.owner,
+								name: request.name,
+								...(request.ref === undefined ? {} : { ref: request.ref }),
+								path: request.path,
+								...(request.maxBytes === undefined ? {} : { maxBytes: request.maxBytes }),
+							}
+						: request.action === "branches"
+							? { op: "branches", owner: request.owner, name: request.name }
+							: {
+									op: "merge_preview",
+									owner: request.owner,
+									name: request.name,
+									...(request.base === undefined ? {} : { base: request.base }),
+									head: request.head,
+								};
+		const asked = await folder.codeQuery(payload, context.signal);
+		if (asked.state === "refused") throw new CloudToolRefusal(queryRefused(asked.reason, request));
+		const ended = await pollCodeRequest(asked.requestId, "query", queryWaitMs, context.signal);
+		if (!ended) {
+			return said(
+				cloudToolJsonText({
+					schema: "qorpera.code-query-pending/v1",
+					requestId: asked.requestId,
+					action: request.action,
+					state: "pending",
+					message: "The git query is still running on the code host; call again shortly.",
+				}),
+			);
+		}
+		if (ended.state === "refused") {
+			throw new CloudToolRefusal(
+				`Code query refused${inFiles(ended.paths)}.${formatMessages(ended.messages)}${codeMark(ended.code)}`,
+			);
+		}
+		if (ended.state !== "done" || ended.data === null) {
+			throw new CloudToolRefusal(`Code query failed.${codeMark(ended.code)}`);
+		}
+		const textField = request.action === "show" ? "content" : request.action === "diff" ? "patch" : undefined;
+		const text = fitTextFieldJson(
+			{
+				schema: `qorpera.code-${request.action}/v1`,
+				owner: request.owner,
+				name: request.name,
+				...(ended.data as Record<string, JsonValue>),
+			},
+			textField,
+		);
+		context.observation?.update({ outputBytes: Buffer.byteLength(text) });
+		return said(text);
+	};
+
+	const runLifecycle = async (
+		request: CodeCreate | CodeArchive | CodeUnarchive | CodeTag | CodePrune,
+		context: CloudToolContext,
+	): Promise<CloudToolContent> => {
+		const payload: Record<string, unknown> & { readonly operationKey: string } =
+			request.action === "create"
+				? { operationKey: request.operationKey, op: "create", owner: request.owner, name: request.name }
+				: request.action === "unarchive"
+					? { operationKey: request.operationKey, op: "unarchive", owner: request.owner, name: request.name }
+					: request.action === "archive"
+						? {
+								operationKey: request.operationKey,
+								op: "archive",
+								owner: request.owner,
+								name: request.name,
+								...(request.reason === undefined ? {} : { reason: request.reason }),
+							}
+						: request.action === "tag"
+							? request.mode === "list"
+								? {
+										operationKey: request.operationKey,
+										op: "tag",
+										owner: request.owner,
+										name: request.name,
+										mode: "list",
+									}
+								: {
+										operationKey: request.operationKey,
+										op: "tag",
+										owner: request.owner,
+										name: request.name,
+										mode: "create",
+										tag: request.tag,
+										...(request.ref === undefined ? {} : { target: request.ref }),
+										...(request.message === undefined ? {} : { message: request.message }),
+									}
+							: {
+									operationKey: request.operationKey,
+									op: "prune",
+									owner: request.owner,
+									name: request.name,
+									deleteMergedBranches: request.deleteMergedBranches,
+								};
+		const asked = await folder.codeLifecycle(payload, context.signal);
+		if (asked.state === "refused") throw new CloudToolRefusal(lifecycleRefused(asked.reason, request));
+		if (asked.state === "done") {
+			return said(
+				cloudToolJsonText({
+					schema: "qorpera.code-lifecycle/v1",
+					action: request.action,
+					state: "done",
+					result: asked.result,
+					owner: asked.owner,
+					name: asked.name,
+					archivedAt: asked.archivedAt,
+				}),
+			);
+		}
+		if (asked.state === "already") {
+			return said(
+				cloudToolJsonText({
+					schema: "qorpera.code-lifecycle/v1",
+					action: request.action,
+					state: "already",
+					owner: asked.owner,
+					name: asked.name,
+					...(asked.archivedAt === undefined ? {} : { archivedAt: asked.archivedAt }),
+				}),
+			);
+		}
+		const ended = await pollCodeRequest(asked.requestId, "lifecycle", queryWaitMs, context.signal);
+		if (!ended) {
+			return said(
+				cloudToolJsonText({
+					schema: "qorpera.code-lifecycle-pending/v1",
+					requestId: asked.requestId,
+					action: request.action,
+					state: "pending",
+					message: `The ${request.action} operation is still running; call again with the same operationKey.`,
+				}),
+			);
+		}
+		if (ended.state === "refused") {
+			throw new CloudToolRefusal(
+				`${request.action} refused${inFiles(ended.paths)}.${formatMessages(ended.messages)}${codeMark(ended.code)}`,
+			);
+		}
+		if (ended.state !== "done") {
+			throw new CloudToolRefusal(`${request.action} failed.${codeMark(ended.code)}`);
+		}
+		const text = fitTextFieldJson({
+			schema: "qorpera.code-lifecycle/v1",
+			action: request.action,
+			state: "done",
+			result: ended.result ?? "ok",
+			owner: request.owner,
+			name: request.name,
+			...((ended.data ?? {}) as Record<string, JsonValue>),
+		});
+		context.observation?.update({ outputBytes: Buffer.byteLength(text) });
+		return said(text);
+	};
+
 	const undo = async (request: CodeUndo, signal: AbortSignal): Promise<CloudToolContent> => {
 		const { action: _action, ...asked } = request;
-		const answer = await folder.requestCodeUndo(asked, signal);
-		if (answer.state === "already")
-			return said(`Change ${request.change} is already undone, by change ${answer.undoneBy}.`);
-		if (answer.state === "refused") throw new CloudToolRefusal(undoRefused(answer.reason, request));
-		// The request is the executor's now. From here the tool only looks and says what it saw: a look that fails is
-		// only a failed look, and the next one comes after the pause.
-		const until = Date.now() + waitMs;
-		for (let left = waitMs; left > 0; left = until - Date.now()) {
-			await cloudControlPause(Math.min(lookMs, left), signal);
-			let now: CloudCompanyCodeRequest | undefined;
-			try {
-				now = await folder.codeRequest(answer.requestId, signal);
-			} catch {
-				signal.throwIfAborted();
-			}
-			if (now && now.kind !== "undo") throw new Error("Code request differs");
-			if (now && now.state !== "queued" && now.state !== "running") return said(undoEnded(request, now));
+		const answer = await folder.requestCodeUndoV2(asked, signal);
+		if (answer.state === "already") {
+			const n = request.change ?? request.changes?.[0] ?? 0;
+			return said(`Change ${n} is already undone, by change ${answer.undoneBy}.`);
 		}
+		if (answer.state === "refused") throw new CloudToolRefusal(undoRefused(answer.reason, request));
+		const ended = await pollCodeRequest(answer.requestId, "undo", waitMs, signal);
+		if (ended) return said(undoEnded(request, ended));
+		const n = request.change ?? request.changes?.[0] ?? 0;
 		return said(
-			`The undo of change ${request.change} is still being made. Call manage_code undo for it again to see how it went.`,
+			`The undo of change ${n} is still being made. Call manage_code undo for it again to see how it went.`,
 		);
 	};
 
-	// As an undo: once the request is the executor's, the tool only looks and says what it saw. An import takes minutes,
-	// so most calls end with where it is, and the same call again (the kernel answers the same request) goes on.
 	const bringIn = async (request: CodeBringIn, signal: AbortSignal): Promise<CloudToolContent> => {
 		const { action: _action, ...asked } = request;
 		const answer = await folder.requestCodeImport(asked, signal);
@@ -1282,6 +1614,11 @@ export function cloudCodeTools(options: {
 		);
 	};
 
+	const refSchema: JsonValue = {
+		type: ["string", "integer"],
+		description: "main, change number, 40-char SHA, worker:<id>, tag:<name> or imported:<branch>.",
+	};
+
 	const code: CloudNativeTool = {
 		name: "manage_code" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
@@ -1295,28 +1632,38 @@ export function cloudCodeTools(options: {
 				operationKey: {
 					type: "string",
 					pattern: OPERATION_KEY.source,
-					description: "Required for undo, describe and bring_in; omit for status.",
+					description: "Required for undo, describe, bring_in, create, archive, unarchive, tag and prune.",
 				},
 				owner: { type: "string", minLength: 1, maxLength: 39 },
 				name: { type: "string", minLength: 1, maxLength: 100 },
 				change: { type: "integer", minimum: 1 },
+				toChange: { type: "integer", minimum: 1, description: "With undo: end of a change range." },
+				changes: {
+					type: "array",
+					minItems: 1,
+					maxItems: 50,
+					uniqueItems: true,
+					items: { type: "integer", minimum: 1 },
+					description: "With undo: list of 1 to 50 distinct change numbers.",
+				},
 				from: {
 					type: "object",
 					additionalProperties: false,
 					properties: {
 						github: { type: "string", minLength: 3, maxLength: 200 },
 						file: { type: "string", minLength: 1, maxLength: INCOMING_BYTES },
-						branch: {
-							type: "string",
-							minLength: 1,
-							maxLength: BRANCH_BYTES,
-							description:
-								"The branch to bring in as main when it is not the source's own: one a look named, or a file's when its main branch is not clear.",
-						},
+						branch: { type: "string", minLength: 1, maxLength: BRANCH_BYTES },
 					},
 				},
 				look: { type: "boolean" },
 				andLater: { type: "boolean" },
+				dryRun: { type: "boolean", description: "With undo: preview without moving main." },
+				runChecks: {
+					type: "boolean",
+					description:
+						"With undo: require the reverted tree to match a prior checks-verified state (or have no checks); refuses unverified trees unless force is true.",
+				},
+				force: { type: "boolean", description: "With undo: bypass checks verification gate in an emergency." },
 				reason: { type: "string", minLength: 1, maxLength: 500 },
 				notice: {
 					type: "string",
@@ -1328,14 +1675,36 @@ export function cloudCodeTools(options: {
 					type: "string",
 					minLength: 1,
 					maxLength: 1024,
+					description: "Company path to a .png, .jpg, .jpeg or .webp file of at most 4 MB.",
+				},
+				ref: refSchema,
+				base: refSchema,
+				head: refSchema,
+				path: { type: "string", minLength: 1, maxLength: 1024 },
+				paths: {
+					type: "array",
+					maxItems: 20,
+					items: { type: "string", minLength: 1, maxLength: 1024 },
+					description: "With diff: up to 20 relative repository paths.",
+				},
+				statOnly: { type: "boolean" },
+				maxBytes: { type: "integer", minimum: 1024, maximum: MAX_SHOW_BYTES },
+				limit: { type: "integer", minimum: 1, maximum: 100 },
+				since: { type: "string", minLength: 10, maxLength: 40 },
+				state: { type: "string", enum: [...HISTORY_STATES] },
+				workerId: { type: "string", pattern: UUID_PATTERN.source },
+				cursor: { type: "integer", minimum: 1 },
+				mode: { type: "string", enum: [...TAG_MODES] },
+				tag: { type: "string", minLength: 1, maxLength: 120 },
+				message: { type: "string", minLength: 1, maxLength: 1000 },
+				deleteMergedBranches: {
+					type: "boolean",
 					description:
-						"A .png, .jpg, .jpeg or .webp file of at most 4 MB that shows it, where everyone in the company can read it, such as product/screens/new-price.png.",
+						"With prune: also delete fully-merged qorpera/coding/* branches whose worktrees are gone; a later follow-up on such a session resumes from current main.",
 				},
 			},
 		},
 		parseArguments: (value) => parse(value) as never,
-		// An undo the code host refused, or one that found nothing to take out, changed nothing: main was not as an undo
-		// of that change needs it.
 		refused: (content) =>
 			content.kind === "text" && content.value.startsWith("Nothing was undone") ? "stale_version" : undefined,
 		async execute(value, context) {
@@ -1351,6 +1720,23 @@ export function cloudCodeTools(options: {
 			context.signal.throwIfAborted();
 			const request = value as unknown as CodeCall;
 			if (request.action === "status") return status(request, context);
+			if (request.action === "history") return history(request, context);
+			if (
+				request.action === "log" ||
+				request.action === "diff" ||
+				request.action === "show" ||
+				request.action === "branches" ||
+				request.action === "merge_preview"
+			)
+				return runQuery(request, context);
+			if (
+				request.action === "create" ||
+				request.action === "archive" ||
+				request.action === "unarchive" ||
+				request.action === "tag" ||
+				request.action === "prune"
+			)
+				return runLifecycle(request, context);
 			if (request.action === "bring_in") return bringIn(request, context.signal);
 			return request.action === "undo" ? undo(request, context.signal) : describe(request, context.signal);
 		},

@@ -116,7 +116,14 @@ export type CloudCompanyPathRpc =
 	// The company's code kept in Qorpera (20260930720000): an agent's undo of a change, how that request stands, and
 	// what a customer will notice of a change, with a picture of it.
 	| "qorpera_folder_request_code_undo"
+	| "qorpera_folder_request_code_undo_v2"
 	| "qorpera_folder_code_request"
+	| "qorpera_folder_code_request_v2"
+	| "qorpera_folder_code_status"
+	| "qorpera_folder_code_claim_overlaps"
+	| "qorpera_folder_code_history"
+	| "qorpera_folder_code_query"
+	| "qorpera_folder_code_lifecycle"
 	| "qorpera_folder_describe_code_change"
 	// Existing code brought in as a repository kept in Qorpera (20260930736000): an agent's ask, and how it stands.
 	| "qorpera_folder_request_code_import"

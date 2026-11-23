@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodingCommandRouter, codingCommandRoutes } from "../../../deploy/coding-worker/command-routing.ts";
+import { CodingCommandRouter } from "../../../deploy/coding-worker/command-routing.ts";
 import {
 	type CloudCodingCommandHttpRequest,
 	type CloudCodingCommandServiceOptions,
@@ -162,6 +162,59 @@ describe("coding commands follow SQL machine placement", () => {
 		expect(f.fetcher).not.toHaveBeenCalled();
 		expect(f.credential).not.toHaveBeenCalled();
 	});
+	it("reuses pre-authorized route without extra auth or route RPCs and collapses consolidated HTTP auth", async () => {
+		const f = fixture();
+		Object.assign(f.route, { executorOwner: "node-one", providerId: "coding-one" });
+		const preAuth = {
+			inputSha256: f.receipt.inputSha256,
+			route: {
+				schema: "qorpera.coding-command-route/v1" as const,
+				executorOwner: "node-one",
+				providerId: "coding-one",
+				machineId: f.request.scope.vmId,
+			},
+			rebuildDue: false,
+			diskEpoch: null,
+			vaultEnvVersion: "a".repeat(64),
+		};
+		const executed = await f.router.execute(f.request, f.signal, true, preAuth);
+		expect(executed.receipt).toEqual(f.receipt);
+		expect(f.call).not.toHaveBeenCalled();
+		expect(f.executeLocal).toHaveBeenCalledWith(f.request, f.signal, preAuth);
+
+		const token = randomBytes(32).toString("base64url");
+		const holder = `job.${f.request.binding.jobId}.${"H".repeat(43)}`;
+		const proveBinding = vi.fn(async () => undefined);
+		const authorize = vi.fn(async (_req, _sig, seenHolder) => {
+			expect(seenHolder).toBe(holder);
+			return { ...preAuth };
+		});
+		const service = new HttpCloudCodingCommandService({
+			token,
+			proveBinding,
+			consolidatedCodingAuth: true,
+			authorize,
+			execute: async (request, signal, authority) => {
+				if (authority) authority.postAuthority = { ...preAuth };
+				return f.router.execute(request, signal, true, authority);
+			},
+		});
+		const url = `http://127.0.0.1:${await service.start()}`;
+		cleanups.push(() => service.close());
+		const gateway = createHttpCloudCodingCommandGateway({
+			url,
+			token,
+			binding: f.request.binding,
+			holder: () => holder,
+			authorize: async () => undefined,
+			allowLoopback: true,
+		});
+		if (f.request.action !== "start") throw new Error("fixture");
+		const receipt = await gateway.start(f.request.scope, f.request.input, f.signal);
+		expect(receipt).toEqual(f.receipt);
+		expect(proveBinding).not.toHaveBeenCalled();
+		expect(authorize).toHaveBeenCalledTimes(1);
+	});
 	it("never forwards requests received on the peer listener", async () => {
 		const f = fixture();
 		await expect(f.router.execute(f.request, f.signal, true)).rejects.toThrow("WRONG_EXECUTOR");
@@ -272,18 +325,5 @@ describe("coding commands follow SQL machine placement", () => {
 		expect(body).not.toContain("secret");
 		expect(f.fetcher).toHaveBeenCalledOnce();
 		expect(authorize).toHaveBeenCalledTimes(2);
-	});
-	it("codingCommandRoutes reuses pre-authorized authority once between authorize and execute", async () => {
-		const f = fixture();
-		Object.assign(f.route, { executorOwner: "node-one", providerId: "coding-one" });
-		const routes = codingCommandRoutes(f.router, { call: f.call }, true);
-		await routes.authorize(f.request, f.signal);
-		expect((await routes.execute(f.request, f.signal)).receipt).toEqual(f.receipt);
-		const authCalls = f.call.mock.calls.filter(([method]) => method === "qorpera_authorize_coding_command");
-		expect(authCalls).toHaveLength(1);
-		// WHY: The handoff must be single-use so a second execute() on the same object still re-authorizes.
-		await routes.execute(f.request, f.signal);
-		const authCallsAfter = f.call.mock.calls.filter(([method]) => method === "qorpera_authorize_coding_command");
-		expect(authCallsAfter).toHaveLength(2);
 	});
 });

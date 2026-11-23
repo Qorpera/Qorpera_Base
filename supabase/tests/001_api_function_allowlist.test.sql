@@ -88,6 +88,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_close_shared_session(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_code_download(uuid,uuid)', false, true, 'member: auth.uid() + owner or admin of the request''s company; how a code download they asked for stands (20260930720000)'),
 	('public.qorpera_code_release_back(uuid,text,text,jsonb)', false, true, 'member: auth.uid() + owner or admin of a folder-v2 company; goes back to the version live before, only as What''s new showed it (20260930729000)'),
+	('public.qorpera_code_repository_status(uuid,text,text)', false, true, 'member: auth.uid() + membership of the environment''s folder-v2 company (or service_role); read-only status of one repository kept in Qorpera (20260930849000)'),
 	('public.qorpera_company_founding_available()', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_company_good_will(uuid)', false, true, 'member: auth.uid() + membership; founders alone add the card (20260930566000)'),
 	('public.qorpera_company_is_folder_v2(uuid)', false, true, 'member: any signed-in user, a per-company flag with no membership check (low: one boolean per company id); the Storage policies that run as the member call it'),

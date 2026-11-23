@@ -648,6 +648,48 @@ describe("agent todo and worker tools", () => {
 		}
 	});
 
+	it("accepts validated claimedPaths on coding dispatch and rejects invalid or non-coding claimedPaths", async () => {
+		const f = await fixture();
+		try {
+			const coding = {
+				...dispatch,
+				workerKey: "edit-cart",
+				access: "read",
+				species: "coding",
+				harness: "codex",
+				repository: { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" },
+			};
+			const ok = await f.boundary.invoke("cp-ok", "qorpera", "manage_worker", {
+				...coding,
+				operationKey: "cp-ok",
+				claimedPaths: ["src/cart/**", "package.json"],
+			});
+			expect(body(ok).status).toBe("ok");
+			expect(f.folderWorkers.change.mock.calls.at(-1)?.[0]).toMatchObject({
+				species: "coding",
+				claimedPaths: ["src/cart/**", "package.json"],
+			});
+			const calls = f.writerCalls();
+			for (const [idx, bad] of [
+				{ ...dispatch, claimedPaths: ["src/a.ts"] },
+				{ ...coding, claimedPaths: [""] },
+				{ ...coding, claimedPaths: Array.from({ length: 33 }, (_, i) => `src/f${i}.ts`) },
+				{ ...coding, claimedPaths: ["/abs/path.ts"] },
+				{ ...coding, claimedPaths: ["../escape.ts"] },
+				{ ...coding, claimedPaths: ["src/a.ts", "src/a.ts"] },
+			].entries()) {
+				const refused = await f.boundary.invoke(`cp-bad-${idx}`, "qorpera", "manage_worker", {
+					...bad,
+					operationKey: `cp-bad-${idx}`,
+				});
+				expect(body(refused).status).toBe("denied");
+			}
+			expect(f.writerCalls()).toBe(calls);
+		} finally {
+			f.run.close();
+		}
+	});
+
 	it("names a plain worker's harness only when the model names it, claude-code or codex", async () => {
 		const f = await fixture();
 		try {

@@ -321,6 +321,20 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Clean Studio folders and Product/Report Studio schemas",
 		text: "Non-Identity Studio surfaces now default to an isolated folder under surfaces/<slug> instead of legacy top-level company folders like product or reports, so each new Studio surface starts blank and holds only its own work (Identity stays in the identity folder). Product Studio sessions now receive the structured Studio layout directly in their turn instructions for interactive 3D models, key specs, colorways, BOM tables, production plans, supplier cards, and editorial competitor or vendor analysis reports with charts and tables. Report surfaces receive the same structured report format.",
 	},
+	{
+		id: "surface-stage-ci-gate",
+		kind: "capability",
+		date: "2026-11-23",
+		title: "Opt-in CI checks before staging Surface commits",
+		text: 'Code-backed Surface repositories can now set surfaceGate to "stage" in their checks file so Qorpera automatically runs the repository checks in the session machine before staging commits for Preview (default "none" keeps Preview staging instant for simple static Surfaces). Once a repository base opts into "stage", sessions must pass checks to stage and cannot bypass the gate by deleting, breaking, or clearing the checks file.',
+	},
+	{
+		id: "code-ops-git-read-claims-revert-and-lifecycle",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "Faster code inspection, path claims and safer undos",
+		text: "manage_code now supports fast read-only git inspection without booting a coding machine (commit log, diffs, file show at any ref, branch ahead/behind counts, merge previews and paginated change history) plus repository create, archive, unarchive, tag and prune actions, SQL-backed status, and dry-run, verification-gated or range undos that reuse prior verified site builds. When dispatching parallel coding sessions with manage_worker, declare claimedPaths to receive immediate overlap warnings against active sessions. company_read also batches up to 24 files with parallel reads and per-file line ranges.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
