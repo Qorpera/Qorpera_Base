@@ -1,12 +1,13 @@
 [Unit]
 Description=Qorpera Production Web App Host
-After=network-online.target snap.lxd.daemon.unix.socket qorpera-web-router.service
+After=network-online.target snap.lxd.daemon.unix.socket qorpera-web-router.service qorpera-web-registry.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=qorpera-apphost
 Group=lxd
+StateDirectory=qorpera-app-host
 LoadCredentialEncrypted=control_token:/etc/credstore.encrypted/qorpera-web-control-token
 Environment=QORPERA_APP_HOST_BIND=127.0.0.1:8096
 Environment=QORPERA_APP_HOST_CONTROL_TOKEN_FILE=%d/control_token
@@ -17,21 +18,18 @@ Environment=QORPERA_APP_HOST_LXD_PROFILE=qorpera-web-apps-egress
 Environment=QORPERA_APP_HOST_LXD_SOCKET=/var/snap/lxd/common/lxd/unix.socket
 Environment=QORPERA_APP_HOST_CONTAINER_BIND_IP=127.0.0.1
 Environment=QORPERA_APP_HOST_DEEP_HIBERNATE_SEC=3600
+Environment=QORPERA_APP_HOST_STAGING_DIR=/var/lib/qorpera-app-host/oci-staging
+Environment=QORPERA_APP_HOST_OCI_INIT_PATH=/usr/local/libexec/qorpera-web-hosting/qorpera-oci-init
 ExecStart=/usr/local/bin/qorpera-app-host
 Restart=always
 RestartSec=2
-TimeoutStopSec=30
-LimitCORE=0
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=-/var/snap/lxd/common/lxd -/var/lib/lxd
 ProtectHome=yes
 PrivateTmp=yes
-LockPersonality=yes
-RestrictSUIDSGID=yes
 LimitNOFILE=65536
-MemoryMax=512M
-MemorySwapMax=0
+MemoryMax=1G
 TasksMax=512
 
 [Install]

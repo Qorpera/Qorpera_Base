@@ -1489,3 +1489,342 @@ async fn server_returns_408_on_stalled_deploy_and_wake_bodies_and_exits_on_shutd
         .expect("accept loop must exit promptly on shutdown signal")
         .unwrap();
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn lxd_driver_imports_oci_image_from_registry_and_caches_by_alias() {
+    use http::{Method, Request, Response, StatusCode};
+    use http_body_util::{BodyExt, Full};
+    use hyper::body::Incoming;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use qorpera_app_host::oci::{sha256_hex, OciImportConfig};
+    use std::process::Command;
+
+    let tmp_root = std::env::temp_dir().join(format!(
+        "qorpera-oci-e2e-{}-{}",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    ));
+    std::fs::create_dir_all(&tmp_root).unwrap();
+
+    let layer_src = tmp_root.join("layer-src");
+    std::fs::create_dir_all(layer_src.join("app")).unwrap();
+    std::fs::write(layer_src.join("app/hello.txt"), "hello-oci").unwrap();
+    let layer_tar = tmp_root.join("layer.tar");
+    assert!(Command::new("tar")
+        .args(["-cf", layer_tar.to_str().unwrap(), "-C", layer_src.to_str().unwrap(), "."])
+        .status()
+        .unwrap()
+        .success());
+    let layer_bytes = std::fs::read(&layer_tar).unwrap();
+    let layer_digest = format!("sha256:{}", sha256_hex(&layer_bytes));
+
+    let cfg_bytes = serde_json::to_vec(&serde_json::json!({
+        "architecture": "amd64",
+        "os": "linux",
+        "config": {
+            "Env": ["PORT=3000"],
+            "WorkingDir": "/app",
+            "Cmd": ["/bin/sh", "-c", "sleep 60"]
+        }
+    }))
+    .unwrap();
+    let cfg_digest = format!("sha256:{}", sha256_hex(&cfg_bytes));
+
+    let manifest_bytes = serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": { "digest": cfg_digest, "size": cfg_bytes.len() },
+        "layers": [{ "digest": layer_digest, "size": layer_bytes.len() }]
+    }))
+    .unwrap();
+    let manifest_digest = format!("sha256:{}", sha256_hex(&manifest_bytes));
+
+    let reg_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let reg_addr = reg_listener.local_addr().unwrap();
+    let reg_manifest_hits = Arc::new(AtomicUsize::new(0));
+    let reg_blob_hits = Arc::new(AtomicUsize::new(0));
+    {
+        let m_bytes = Bytes::from(manifest_bytes.clone());
+        let m_digest = manifest_digest.clone();
+        let c_bytes = Bytes::from(cfg_bytes.clone());
+        let c_digest = cfg_digest.clone();
+        let l_bytes = Bytes::from(layer_bytes.clone());
+        let l_digest = layer_digest.clone();
+        let m_hits = Arc::clone(&reg_manifest_hits);
+        let b_hits = Arc::clone(&reg_blob_hits);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = reg_listener.accept().await {
+                let io = TokioIo::new(stream);
+                let mb = m_bytes.clone();
+                let md = m_digest.clone();
+                let cb = c_bytes.clone();
+                let cd = c_digest.clone();
+                let lb = l_bytes.clone();
+                let ld = l_digest.clone();
+                let mh = Arc::clone(&m_hits);
+                let bh = Arc::clone(&b_hits);
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: Request<Incoming>| {
+                        let path = req.uri().path().to_string();
+                        let mb = mb.clone();
+                        let md = md.clone();
+                        let cb = cb.clone();
+                        let cd = cd.clone();
+                        let lb = lb.clone();
+                        let ld = ld.clone();
+                        let mh = Arc::clone(&mh);
+                        let bh = Arc::clone(&bh);
+                        async move {
+                            if path == format!("/v2/qorpera-apps/demo/manifests/{md}") {
+                                mh.fetch_add(1, Ordering::SeqCst);
+                                return Ok::<_, hyper::Error>(
+                                    Response::builder()
+                                        .status(StatusCode::OK)
+                                        .header("docker-content-digest", md)
+                                        .body(Full::new(mb))
+                                        .unwrap(),
+                                );
+                            }
+                            if path == format!("/v2/qorpera-apps/demo/blobs/{cd}") {
+                                bh.fetch_add(1, Ordering::SeqCst);
+                                return Ok(Response::builder()
+                                    .status(StatusCode::OK)
+                                    .body(Full::new(cb))
+                                    .unwrap());
+                            }
+                            if path == format!("/v2/qorpera-apps/demo/blobs/{ld}") {
+                                bh.fetch_add(1, Ordering::SeqCst);
+                                return Ok(Response::builder()
+                                    .status(StatusCode::OK)
+                                    .body(Full::new(lb))
+                                    .unwrap());
+                            }
+                            Ok(Response::builder()
+                                .status(StatusCode::NOT_FOUND)
+                                .body(Full::new(Bytes::new()))
+                                .unwrap())
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await;
+                });
+            }
+        });
+    }
+
+    let sock_path = tmp_root.join("lxd.sock");
+    let lxd_listener = tokio::net::UnixListener::bind(&sock_path).unwrap();
+    let aliases: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let instances: Arc<Mutex<HashMap<String, serde_json::Value>>> = Arc::new(Mutex::new(HashMap::new()));
+    let upload_count = Arc::new(AtomicUsize::new(0));
+    let last_create_source: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+    let uploaded_fp = "b".repeat(64);
+    {
+        let aliases = Arc::clone(&aliases);
+        let instances = Arc::clone(&instances);
+        let upload_count = Arc::clone(&upload_count);
+        let last_create_source = Arc::clone(&last_create_source);
+        let uploaded_fp = uploaded_fp.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = lxd_listener.accept().await {
+                let io = TokioIo::new(stream);
+                let aliases = Arc::clone(&aliases);
+                let instances = Arc::clone(&instances);
+                let upload_count = Arc::clone(&upload_count);
+                let last_create_source = Arc::clone(&last_create_source);
+                let uploaded_fp = uploaded_fp.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: Request<Incoming>| {
+                        let method = req.method().clone();
+                        let path = req.uri().path().to_string();
+                        let aliases = Arc::clone(&aliases);
+                        let instances = Arc::clone(&instances);
+                        let upload_count = Arc::clone(&upload_count);
+                        let last_create_source = Arc::clone(&last_create_source);
+                        let uploaded_fp = uploaded_fp.clone();
+                        async move {
+                            let body_bytes = req
+                                .into_body()
+                                .collect()
+                                .await
+                                .map(|c| c.to_bytes())
+                                .unwrap_or_default();
+                            let reply = |status: StatusCode, val: serde_json::Value| {
+                                Ok::<_, hyper::Error>(
+                                    Response::builder()
+                                        .status(status)
+                                        .header("content-type", "application/json")
+                                        .body(Full::new(Bytes::from(serde_json::to_vec(&val).unwrap())))
+                                        .unwrap(),
+                                )
+                            };
+
+                            if method == Method::GET && path.starts_with("/1.0/images/aliases/") {
+                                let name = path.trim_start_matches("/1.0/images/aliases/");
+                                if let Some(target) = aliases.lock().unwrap().get(name).cloned() {
+                                    return reply(
+                                        StatusCode::OK,
+                                        serde_json::json!({
+                                            "type": "sync",
+                                            "status_code": 200,
+                                            "metadata": { "name": name, "target": target }
+                                        }),
+                                    );
+                                }
+                                return reply(
+                                    StatusCode::NOT_FOUND,
+                                    serde_json::json!({ "type": "error", "status_code": 404, "error": "not found" }),
+                                );
+                            }
+                            if method == Method::POST && path == "/1.0/images" {
+                                assert!(body_bytes.len() > 512, "uploaded LXD tarball must be non-empty");
+                                upload_count.fetch_add(1, Ordering::SeqCst);
+                                return reply(
+                                    StatusCode::ACCEPTED,
+                                    serde_json::json!({
+                                        "type": "async",
+                                        "status_code": 100,
+                                        "operation": "/1.0/operations/op-img-1"
+                                    }),
+                                );
+                            }
+                            if method == Method::GET && path == "/1.0/operations/op-img-1/wait" {
+                                return reply(
+                                    StatusCode::OK,
+                                    serde_json::json!({
+                                        "type": "sync",
+                                        "status_code": 200,
+                                        "metadata": {
+                                            "status_code": 200,
+                                            "err": "",
+                                            "metadata": { "fingerprint": uploaded_fp }
+                                        }
+                                    }),
+                                );
+                            }
+                            if method == Method::POST && path == "/1.0/images/aliases" {
+                                let v: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+                                aliases.lock().unwrap().insert(
+                                    v["name"].as_str().unwrap().to_string(),
+                                    v["target"].as_str().unwrap().to_string(),
+                                );
+                                return reply(
+                                    StatusCode::CREATED,
+                                    serde_json::json!({ "type": "sync", "status_code": 200, "metadata": {} }),
+                                );
+                            }
+                            if method == Method::GET && path.starts_with("/1.0/instances/") && !path.ends_with("/state") {
+                                let name = path.trim_start_matches("/1.0/instances/");
+                                if let Some(inst) = instances.lock().unwrap().get(name).cloned() {
+                                    return reply(
+                                        StatusCode::OK,
+                                        serde_json::json!({ "type": "sync", "status_code": 200, "metadata": inst }),
+                                    );
+                                }
+                                return reply(
+                                    StatusCode::NOT_FOUND,
+                                    serde_json::json!({ "type": "error", "status_code": 404, "error": "not found" }),
+                                );
+                            }
+                            if method == Method::POST && path == "/1.0/instances" {
+                                let v: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+                                *last_create_source.lock().unwrap() = Some(v["source"].clone());
+                                let name = v["name"].as_str().unwrap().to_string();
+                                instances.lock().unwrap().insert(
+                                    name,
+                                    serde_json::json!({
+                                        "status": "Stopped",
+                                        "config": v["config"],
+                                        "devices": v["devices"],
+                                    }),
+                                );
+                                return reply(
+                                    StatusCode::OK,
+                                    serde_json::json!({ "type": "sync", "status_code": 200, "metadata": {} }),
+                                );
+                            }
+                            if method == Method::PUT && path.ends_with("/state") {
+                                return reply(
+                                    StatusCode::OK,
+                                    serde_json::json!({ "type": "sync", "status_code": 200, "metadata": {} }),
+                                );
+                            }
+                            reply(
+                                StatusCode::NOT_FOUND,
+                                serde_json::json!({ "type": "error", "status_code": 404, "error": "not found" }),
+                            )
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await;
+                });
+            }
+        });
+    }
+
+    let driver = LxdAppDriver::with_socket_path(
+        "qorpera-web-apps".to_string(),
+        "qorpera-web-apps-egress".to_string(),
+        "127.0.0.1".to_string(),
+        sock_path.clone(),
+    )
+    .with_oci_import(OciImportConfig {
+        staging_dir: tmp_root.join("staging"),
+        init_binary_path: tmp_root.join("missing-init-uses-fallback"),
+    });
+    let logs = Arc::new(LogRingBuffer::new(32, 8 * 1024));
+    let image_ref = format!("{reg_addr}/qorpera-apps/demo@{manifest_digest}");
+
+    let handle1 = driver
+        .start(
+            AppLaunchSpec {
+                deployment_id: "dep-oci-1".to_string(),
+                site_id: "site-oci".to_string(),
+                oci_image_ref: Some(image_ref.clone()),
+                command: None,
+                port: 19001,
+                health_path: "/".to_string(),
+                memory_mb: 256,
+                vcpu_limit: 1.0,
+                pids_limit: 128,
+                env: HashMap::new(),
+            },
+            Arc::clone(&logs),
+        )
+        .await
+        .unwrap();
+    assert_eq!(handle1.upstream_addr, "127.0.0.1:19001");
+    assert_eq!(upload_count.load(Ordering::SeqCst), 1);
+    assert_eq!(reg_blob_hits.load(Ordering::SeqCst), 2);
+    let src1 = last_create_source.lock().unwrap().clone().unwrap();
+    assert_eq!(src1["type"], "image");
+    assert_eq!(src1["fingerprint"], uploaded_fp);
+
+    let handle2 = driver
+        .start(
+            AppLaunchSpec {
+                deployment_id: "dep-oci-2".to_string(),
+                site_id: "site-oci".to_string(),
+                oci_image_ref: Some(image_ref),
+                command: None,
+                port: 19002,
+                health_path: "/".to_string(),
+                memory_mb: 256,
+                vcpu_limit: 1.0,
+                pids_limit: 128,
+                env: HashMap::new(),
+            },
+            logs,
+        )
+        .await
+        .unwrap();
+    assert_eq!(handle2.upstream_addr, "127.0.0.1:19002");
+    assert_eq!(upload_count.load(Ordering::SeqCst), 1);
+    assert_eq!(reg_blob_hits.load(Ordering::SeqCst), 2);
+
+    let _ = std::fs::remove_dir_all(&tmp_root);
+}

@@ -3,6 +3,7 @@ use qorpera_app_host::driver::{
 };
 use qorpera_app_host::lifecycle::AppLifecycleManager;
 use qorpera_app_host::logs::LogRingBuffer;
+use qorpera_app_host::oci::OciImportConfig;
 use qorpera_app_host::reaper::spawn_idle_reaper;
 use qorpera_app_host::server::AppHostServer;
 use std::env;
@@ -60,7 +61,34 @@ async fn async_main() {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_LXD_SOCKET_PATH));
-        Arc::new(LxdAppDriver::with_socket_path(project, profile, bind_ip, socket_path))
+        let oci_import_enabled = !matches!(
+            env::var("QORPERA_APP_HOST_OCI_IMPORT")
+                .ok()
+                .as_deref()
+                .map(str::trim),
+            Some("0" | "false" | "FALSE" | "no")
+        );
+        let mut lxd = LxdAppDriver::with_socket_path(project, profile, bind_ip, socket_path);
+        if oci_import_enabled {
+            let defaults = OciImportConfig::default();
+            let staging_dir = env::var("QORPERA_APP_HOST_STAGING_DIR")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or(defaults.staging_dir);
+            let init_binary_path = env::var("QORPERA_APP_HOST_OCI_INIT_PATH")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or(defaults.init_binary_path);
+            lxd = lxd.with_oci_import(OciImportConfig {
+                staging_dir,
+                init_binary_path,
+            });
+        }
+        Arc::new(lxd)
     };
 
     let health_timeout_ms: u64 = env::var("QORPERA_APP_HOST_HEALTH_TIMEOUT_MS")

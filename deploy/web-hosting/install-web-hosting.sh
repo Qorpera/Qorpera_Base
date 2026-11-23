@@ -24,17 +24,25 @@ if ! id -u qorpera-apphost >/dev/null 2>&1; then
 	useradd --system --no-create-home --shell /usr/sbin/nologin --groups lxd qorpera-apphost
 fi
 if ! id -u caddy >/dev/null 2>&1; then
-	useradd --system --no-create-home --shell /usr/sbin/nologin caddy
+	if ! getent group caddy >/dev/null 2>&1; then
+		groupadd --system --gid 20050 caddy 2>/dev/null || groupadd --system caddy
+	fi
+	useradd --system --uid 20050 --gid caddy --no-create-home --shell /usr/sbin/nologin caddy 2>/dev/null \
+		|| useradd --system --gid caddy --no-create-home --shell /usr/sbin/nologin caddy
 fi
 usermod -aG qorpera-web caddy
 
 install -d -m 0755 /etc/qorpera-web
 install -d -m 0750 -o qorpera-web -g qorpera-web /var/lib/qorpera-web-blobs 2>/dev/null || install -d -m 0755 /var/lib/qorpera-web-blobs
 install -d -m 0750 -o caddy -g caddy /var/lib/qorpera-web-certs 2>/dev/null || install -d -m 0755 /var/lib/qorpera-web-certs
+install -d -m 0750 -o qorpera-web -g qorpera-web /var/lib/qorpera-web-registry 2>/dev/null || install -d -m 0755 /var/lib/qorpera-web-registry
 install -d -m 0755 /usr/local/libexec/qorpera-web-hosting
 
 install -m 0755 "$BIN_DIR/qorpera-web-router" /usr/local/bin/qorpera-web-router
 install -m 0755 "$BIN_DIR/qorpera-app-host" /usr/local/bin/qorpera-app-host
+if [ -x "$BIN_DIR/qorpera-oci-init" ]; then
+	install -m 0755 "$BIN_DIR/qorpera-oci-init" /usr/local/libexec/qorpera-web-hosting/qorpera-oci-init
+fi
 if [ -x "$BIN_DIR/caddy" ]; then
 	install -m 0755 "$BIN_DIR/caddy" /usr/bin/caddy
 fi
@@ -44,6 +52,9 @@ install -m 0644 "$KIT_DIR/nftables-edge.nft" /etc/qorpera-web/nftables-edge.nft
 install -m 0644 "$KIT_DIR/qorpera-web-router.service" /etc/systemd/system/qorpera-web-router.service
 install -m 0644 "$KIT_DIR/qorpera-app-host.service" /etc/systemd/system/qorpera-app-host.service
 install -m 0644 "$KIT_DIR/qorpera-web-caddy.service" /etc/systemd/system/qorpera-web-caddy.service
+if [ -f "$KIT_DIR/qorpera-web-registry.service" ]; then
+	install -m 0644 "$KIT_DIR/qorpera-web-registry.service" /etc/systemd/system/qorpera-web-registry.service
+fi
 
 if [ ! -f /etc/qorpera-web/edge.env ]; then
 	LAN_IP="$(ip -4 -o addr show scope global | awk '$2 != "tailscale0" && $2 !~ /^(docker|lxd|qweb|qorpera|qdb|br-|veth)/ {sub(/\/.*/, "", $4); print $4; exit}' || true)"
@@ -80,7 +91,10 @@ if command -v lxc >/dev/null 2>&1; then
 			-c features.storage.volumes=true \
 			-c restricted=true \
 			-c restricted.containers.nesting=block \
-			-c restricted.containers.privilege=unprivileged
+			-c restricted.containers.privilege=unprivileged \
+			-c restricted.devices.proxy=allow
+	else
+		lxc project set qorpera-web-apps restricted.devices.proxy=allow
 	fi
 	if ! lxc --project qorpera-web-apps profile show qorpera-web-apps-egress >/dev/null 2>&1; then
 		lxc --project qorpera-web-apps profile create qorpera-web-apps-egress

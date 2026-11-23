@@ -8,7 +8,8 @@ Self-hosted static sites, full-stack/SSR apps, and custom domains (both apex `ex
 | :--- | :--- | :--- |
 | **Caddy** | `Caddyfile` + `qorpera-web-caddy.service` | Public ports `80`/`443`, HTTP/3 QUIC, On-Demand ACME TLS (Let's Encrypt + ZeroSSL fallback), trusted `X-Qorpera-Client-IP`. |
 | **`qorpera-web-router`** | `crates/qorpera-web-router` + `qorpera-web-router.service` | Content-addressed NVMe/NAS static blob store (`512 MiB` / `10,000` files), zero-DB in-memory routing synced via Postgres `LISTEN qorpera_web_route_changes`, Caddy `ask` gate (`/_internal/tls/allow`), L7 rate limits, private password gate, instant `<50 ms` takedown, hybrid static fast-path, single-flight scale-to-zero wake-on-request, and bounded bidirectional WebSockets (`2048` global, `128` per deployment, `64` per client IP; `300 s` idle cutoff requiring app-level ping/pong for quiet long-lived sockets). |
-| **`qorpera-app-host`** | `crates/qorpera-app-host` + `qorpera-app-host.service` | Dedicated unprivileged LXD `qorpera-web-apps` production app slice, zero-downtime blue/green deploys, health-checked swaps, scale-to-zero idle hibernation, and ring-buffer log capture. |
+| **`qorpera-app-host`** | `crates/qorpera-app-host` + `qorpera-app-host.service` + `qorpera-oci-init` | Dedicated unprivileged LXD `qorpera-web-apps` production app slice with native OCI→LXD import, static `qorpera-oci-init` PID-1 (DHCPv4/DNS/signals/USER), zero-downtime blue/green deploys, scale-to-zero cgroup freeze/wake, and ring-buffer log capture. |
+| **Loopback OCI Registry & Builder** | `qorpera-web-registry.service` + `builder-railpack.sh` | Daemonless `buildah` + `crun` OCI builder (Dockerfile or zero-Dockerfile Node/Python) pushing to loopback-only `127.0.0.1:5000` backed by shared Synology NAS `/var/lib/qorpera-web-registry`. |
 | **Kernel Shield** | `nftables-edge.nft` | `SYNPROXY` on ports `80`/`443` plus `qorpera_web_apps_egress` blocking customer app containers from RFC1918 LAN, node hosts, LXD sockets, and sibling tenants. |
 | **HA Failover** | `keepalived-ha.conf` | VRRP failover between `company41-node-01` (`MASTER`, `192.168.1.27`) and `company41-node-02` (`BACKUP`, `192.168.1.42`) on floating IP `192.168.1.250`. |
 
@@ -28,11 +29,11 @@ Self-hosted static sites, full-stack/SSR apps, and custom domains (both apex `ex
    - `/etc/credstore.encrypted/qorpera-web-database-url` (Postgres connection string with `service_role` access for `qorpera_web_edge_*` RPCs and `LISTEN qorpera_web_route_changes`; if using a custom/Supabase CA bundle, copy it to `/etc/qorpera-web/db-ca.pem` with mode `0644` and set `QORPERA_WEB_ROUTER_DATABASE_CA_FILE=/etc/qorpera-web/db-ca.pem` in `/etc/qorpera-web/router.env`)
    - Verify `/etc/qorpera-web/edge.env` sets `QORPERA_EDGE_BIND` to the node's LAN IP + floating VIP (`192.168.1.27 192.168.1.250` on `node-01`, `192.168.1.42 192.168.1.250` on `node-02`) so Caddy never collides with `tailscale0:443`.
    - For Keepalived HA, use `interface enp8s0` on `company41-node-01` and `interface enp7s0` (`state BACKUP`, `priority 90`, `unicast_src_ip 192.168.1.42`, peer `192.168.1.27`) on `company41-node-02`.
-4. Configure `webHosting` in the `coding-worker` executor config JSON so self-hosted codebase landings publish directly to the native edge:
+4. Configure `webHosting` in `/etc/qorpera/coding-executor.json` with an encrypted systemd credential drop-in (`LoadCredentialEncrypted=qorpera-web-control-token:/etc/credstore.encrypted/qorpera-coding-web-control-token` and `ReadWritePaths=/var/lib/qorpera-coding-executor`) so self-hosted codebase landings publish directly to the native edge:
    ```json
    "webHosting": {
      "routerInternalUrl": "http://127.0.0.1:8094",
-     "controlToken": "<shared-control-token>",
+     "controlTokenCredential": "qorpera-web-control-token",
      "appHostInternalUrl": "http://127.0.0.1:8096",
      "builderScriptPath": "/usr/local/libexec/qorpera-web-hosting/builder-railpack.sh",
      "registryPrefix": "127.0.0.1:5000/qorpera-apps"

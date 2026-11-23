@@ -16,8 +16,9 @@ const outDir = resolve(args[1]);
 mkdirSync(outDir, { recursive: true });
 
 const CRATES = [
-	{ name: "qorpera-web-router", dir: "crates/qorpera-web-router" },
-	{ name: "qorpera-app-host", dir: "crates/qorpera-app-host" },
+	{ name: "qorpera-web-router", dir: "crates/qorpera-web-router", bin: "qorpera-web-router", staticLink: false },
+	{ name: "qorpera-app-host", dir: "crates/qorpera-app-host", bin: "qorpera-app-host", staticLink: false },
+	{ name: "qorpera-oci-init", dir: "crates/qorpera-app-host", bin: "qorpera-oci-init", staticLink: true },
 ];
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -26,6 +27,13 @@ const records = {};
 for (const crate of CRATES) {
 	const work = mkdtempSync(join(tmpdir(), `${crate.name}-build-`));
 	try {
+		const buildEnvArgs = crate.staticLink
+			? ["-e", "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C target-feature=+crt-static"]
+			: [];
+		const targetArgs = crate.staticLink ? "--target x86_64-unknown-linux-gnu" : "";
+		const builtBin = crate.staticLink
+			? `/tmp/target/x86_64-unknown-linux-gnu/release/${crate.bin}`
+			: `/tmp/target/release/${crate.bin}`;
 		const built = spawnSync(
 			"docker",
 			[
@@ -37,12 +45,13 @@ for (const crate of CRATES) {
 				`${work}:/out`,
 				"-e",
 				"CARGO_TARGET_DIR=/tmp/target",
+				...buildEnvArgs,
 				"-w",
 				"/src",
 				RUST_IMAGE,
 				"sh",
 				"-c",
-				`cargo build --locked --release && install -m 0755 /tmp/target/release/${crate.name} /out/${crate.name}`,
+				`cargo build --locked --release ${targetArgs} --bin ${crate.bin} && install -m 0755 ${builtBin} /out/${crate.name}`,
 			],
 			{ stdio: "inherit" },
 		);
