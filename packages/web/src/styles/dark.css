@@ -28,7 +28,6 @@
 :root[data-theme="dark"] .rail-add, :root[data-theme="dark"] .rail-apps { color: #a9a8a3; }
 :root[data-theme="dark"] .rail-toolbar.is-searching .rail-search { box-shadow: 0 0 0 1px rgb(255 255 255 / 10%); }
 :root[data-theme="dark"] .rail-search input::placeholder { color: var(--text-muted); }
-:root[data-theme="dark"] .cofounder-stand::before { background: rgba(0, 0, 0, 0.5); }
 :root[data-theme="dark"] :is(.rail-row-copy, .concepts-item-copy) small { color: #adaca7; }
 :root[data-theme="dark"] :is(.rail-row.active, .concepts-item[aria-current]) :is(.rail-row-copy, .concepts-item-copy) small { color: var(--rail-selection-sub); }
 :root[data-theme="dark"] .rail-row:not(.active) .rail-row-copy small.is-failed { color: #ff6961; }
