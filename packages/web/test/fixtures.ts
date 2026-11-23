@@ -265,6 +265,7 @@ export function fixture() {
 	// Presence joins the company's live channel; the fixture's tabs see nobody else.
 	vi.spyOn(api, "joinPresence").mockReturnValue({
 		setOpenThread: vi.fn(),
+		setPresent: vi.fn(),
 		sendTyping: vi.fn(),
 		sendActivity: vi.fn(),
 		stop: vi.fn(async () => {}),

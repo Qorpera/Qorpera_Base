@@ -30,7 +30,8 @@ export function memberPresence(
 	userId: string,
 	now = Date.now(),
 ): { online: boolean; text: string } | null {
-	if (state.here?.some((member) => member.userId === userId)) return { online: true, text: t("Online now") };
+	if (state.here?.some((member) => member.userId === userId && member.staffAgentId !== null))
+		return { online: true, text: t("Online now") };
 	return lastOnline(state.memberChats?.[userId]?.lastSeenAt, now);
 }
 

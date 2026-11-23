@@ -65,5 +65,6 @@ export function joinCompanyPresence(
 		() => {},
 		() => {},
 		onHealth,
+		{ present: false },
 	);
 }
