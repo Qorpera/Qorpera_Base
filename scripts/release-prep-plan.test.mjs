@@ -161,6 +161,21 @@ test("claude-box, claude-worker, or codex-home diffs re-enable C4c and targeted 
 	assert.equal(guestPlan.runC4c, true);
 });
 
+test("folder-service and runner-orchestrator code/surface changes trigger node release instead of no-release", () => {
+	for (const file of [
+		"packages/object-gateway/src/folder-service/mounts.ts",
+		"packages/runner-orchestrator/src/surface-code-host-worker.ts",
+		"packages/runner-orchestrator/src/code-host-views.ts",
+		"packages/runner-orchestrator/src/coding-executor.ts",
+	]) {
+		const classification = classifyReleaseDiff([file]);
+		assert.equal(classification.noRelease, false, file);
+		assert.equal(classification.sqlOnly, false, file);
+		const plan = buildReleasePrepPlan(classification, { thinRuntimeEnabled: true });
+		assert.equal(plan.needsNodeRelease, true, file);
+	}
+});
+
 test("parseCliArgs rejects missing values, flag-like values, and unknown flags", () => {
 	assert.deepEqual(parseCliArgs(["--from", "abc123", "--to", "HEAD", "--thin-runtime", "--json"]), {
 		from: "abc123",

@@ -243,12 +243,10 @@ describe("code host seed", () => {
 			packs: (await readdir(join(c.repo, "objects/pack"))).sort(),
 			main: (await readdir(join(c.code, "main"))).sort(),
 		};
-		// 4,029 bytes: 4,055 where main/ holds it, which the folder takes, and 4,097 where a session's worktree does
-		// (`code/qorpera/example/worktrees/<36>/`), one past its 4,096: no session could check it out.
-		const deep = [...Array.from({ length: 20 }, () => "d".repeat(200)), "e".repeat(9)].join("/");
-		expect(Buffer.byteLength(deep)).toBe(4029);
-		expect(Buffer.byteLength(`code/qorpera/example/main/${deep}`)).toBe(4055);
-		expect(Buffer.byteLength(`code/qorpera/example/${CODE_FOLDER_ANY_SESSION}/${deep}`)).toBe(4097);
+		const deep = [...Array.from({ length: 12 }, () => "d".repeat(200)), "e".repeat(121)].join("/");
+		expect(Buffer.byteLength(deep)).toBe(2533);
+		expect(Buffer.byteLength(`code/qorpera/example/main/${deep}`)).toBe(2559);
+		expect(Buffer.byteLength(`code/qorpera/example/${CODE_FOLDER_ANY_SESSION}/${deep}`)).toBe(2601);
 		for (const [paths, refused] of [
 			[["bad."], ["bad."]],
 			[[deep], [deep]],
@@ -605,9 +603,7 @@ describe("code host worktrees", () => {
 			await rm(s.tree, { recursive: true });
 			return { ...s, head, input: { repository: kept, workerId: s.workerId, baseSha } };
 		};
-		// 4,029 bytes: 4,055 where main/ holds it, and 4,097 where the session's worktree holds it
-		// (`code/qorpera/example/worktrees/<36>/`), one past the folder's 4,096.
-		const deep = [...Array.from({ length: 20 }, () => "d".repeat(200)), "e".repeat(9)].join("/");
+		const deep = [...Array.from({ length: 12 }, () => "d".repeat(200)), "e".repeat(121)].join("/");
 		for (const [paths, refused] of [
 			[["bad."], ["bad."]],
 			[["x /file", "x /y/z.txt"], ["x "]],
@@ -682,17 +678,15 @@ describe("the company folder's names where a place holds them", () => {
 		const workerId = randomUUID();
 		expect(CODE_FOLDER_ANY_SESSION).toHaveLength(`worktrees/${workerId}`.length);
 		expect(`${area}/${CODE_FOLDER_ANY_SESSION}/`.length - `${area}/main/`.length).toBe(42);
-		for (const bytes of [4028, 4029, 4070, 4071]) expect(Buffer.byteLength(long(bytes))).toBe(bytes);
-		// main/: 26 bytes before the path, so 4,070 is the longest.
-		expect(codeFolderRefuses(area, records(long(4070)))).toEqual([]);
-		expect(codeFolderRefuses(area, records(long(4071)))).toEqual([long(4071)]);
-		expect(codeFolderRefuses(area, records(long(4071)), "main")).toEqual([long(4071)]);
-		// A session's worktree: 68 bytes before the path, so 4,028 is the longest, for any session.
+		for (const bytes of [2532, 2533, 2574, 2575]) expect(Buffer.byteLength(long(bytes))).toBe(bytes);
+		expect(codeFolderRefuses(area, records(long(2574)))).toEqual([]);
+		expect(codeFolderRefuses(area, records(long(2575)))).toEqual([long(2575)]);
+		expect(codeFolderRefuses(area, records(long(2575)), "main")).toEqual([long(2575)]);
 		for (const under of [CODE_FOLDER_ANY_SESSION, `worktrees/${workerId}`]) {
-			expect(codeFolderRefuses(area, records(long(4028)), under)).toEqual([]);
-			expect(codeFolderRefuses(area, records(long(4029)), under)).toEqual([long(4029)]);
+			expect(codeFolderRefuses(area, records(long(2532)), under)).toEqual([]);
+			expect(codeFolderRefuses(area, records(long(2533)), under)).toEqual([long(2533)]);
 		}
-		expect(codeFolderRefuses(area, records(long(4029)))).toEqual([]);
+		expect(codeFolderRefuses(area, records(long(2533)))).toEqual([]);
 		// What the folder refuses wherever it stands is refused in both.
 		for (const under of ["main", CODE_FOLDER_ANY_SESSION])
 			expect(
@@ -1155,14 +1149,10 @@ describe("code host: a repository kept in Qorpera (own code storage, slice 1)", 
 			return { s, head: await f.git(s.tree, "rev-parse", "HEAD") };
 		};
 		const long = "n".repeat(256);
-		// 4,071 bytes, every name within 255: 4,097 where main/ holds it (`code/qorpera/example/main/`), one past the
-		// folder's 4,096 bytes.
-		const deep = [...Array.from({ length: 20 }, () => "d".repeat(200)), "e".repeat(51)].join("/");
-		expect(Buffer.byteLength(`code/qorpera/example/main/${deep}`)).toBe(4097);
-		// 4,029 bytes: 4,055 where main/ holds it, which the folder takes, but 4,097 where a session's worktree holds it
-		// (`code/qorpera/example/worktrees/<36>/`): nothing goes into main that no session could check out.
-		const edge = [...Array.from({ length: 20 }, () => "d".repeat(200)), "e".repeat(9)].join("/");
-		expect(Buffer.byteLength(`code/qorpera/example/main/${edge}`)).toBe(4055);
+		const deep = [...Array.from({ length: 12 }, () => "d".repeat(200)), "e".repeat(163)].join("/");
+		expect(Buffer.byteLength(`code/qorpera/example/main/${deep}`)).toBe(2601);
+		const edge = [...Array.from({ length: 12 }, () => "d".repeat(200)), "e".repeat(121)].join("/");
+		expect(Buffer.byteLength(`code/qorpera/example/main/${edge}`)).toBe(2559);
 		for (const [paths, refused] of [
 			[["bad."], ["bad."]],
 			// A folder is named once, at the highest part the folder refuses.

@@ -13,7 +13,7 @@ import {
 	SURFACE_SHARED_DIR,
 	type SurfaceSessionState,
 } from "@qorpera/contracts";
-import { type CodeHostJob, CodeHostRefusal, undoCodeChange } from "./code-host-jobs.ts";
+import { type CodeHostJob, CodeHostJobFailure, CodeHostRefusal, undoCodeChange } from "./code-host-jobs.ts";
 import {
 	type CodeHostChangeRange,
 	type EnsureSurfaceStarterRepositoryResult,
@@ -168,6 +168,7 @@ export interface SurfaceExecutionBridgePorts {
 	readonly folder?: SurfaceCompanyFolderPort;
 	readonly folderSnapshots?: SurfaceFolderSnapshotPort;
 	readonly completionRetryDelaysMs?: readonly number[];
+	readonly rethrowOnCodeHostFailure?: boolean;
 	readonly runOpsActionJob?: (
 		job: ClaimedSurfaceMergeJob,
 		signal: AbortSignal,
@@ -493,35 +494,42 @@ export async function undoSurfaceCodeRepoChange(
 		readonly andLater?: boolean;
 	},
 ): Promise<SurfaceCodeRepoUndoOutcome> {
-	try {
-		const undone = await undoCodeChange(codeHostJob, {
-			repository: input.repository,
-			requestId: input.jobId,
-			change: {
-				n: 1,
-				mainBefore: input.landedMainBefore,
-				mainAfter: input.landedMainAfter,
-			},
-			andLater: input.andLater ?? false,
-			message: `Undo surface change ${input.changeId}`,
-		});
-		if (undone.state === "nothing") {
-			return { status: "landed", mainBefore: undone.mainSha, mainAfter: undone.mainSha };
-		}
-		return { status: "landed", mainBefore: undone.mainBefore, mainAfter: undone.mainAfter };
-	} catch (error) {
-		if (error instanceof CodeHostRefusal && error.code === "CODE_HOST_UNDO_CONFLICT") {
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		try {
+			await prepareSurfaceRepository(codeHostJob, { repository: input.repository, slug: input.repository.name });
+			const undone = await undoCodeChange(codeHostJob, {
+				repository: input.repository,
+				requestId: input.jobId,
+				change: {
+					n: 1,
+					mainBefore: input.landedMainBefore,
+					mainAfter: input.landedMainAfter,
+				},
+				andLater: input.andLater ?? false,
+				message: `Undo surface change ${input.changeId}`,
+			});
+			if (undone.state === "nothing") {
+				return { status: "landed", mainBefore: undone.mainSha, mainAfter: undone.mainSha };
+			}
+			return { status: "landed", mainBefore: undone.mainBefore, mainAfter: undone.mainAfter };
+		} catch (error) {
+			if (attempt === 0 && error instanceof CodeHostJobFailure && error.code === "CODE_HOST_BASE_MOVED") {
+				continue;
+			}
+			if (error instanceof CodeHostRefusal && error.code === "CODE_HOST_UNDO_CONFLICT") {
+				return {
+					status: "conflicted",
+					conflictPaths: error.paths,
+					errorDetail: formatConflictDetail(error.paths),
+				};
+			}
 			return {
-				status: "conflicted",
-				conflictPaths: error.paths,
-				errorDetail: formatConflictDetail(error.paths),
+				status: "failed",
+				errorDetail: formatErrorDetail(error, "Code-repository undo failed"),
 			};
 		}
-		return {
-			status: "failed",
-			errorDetail: formatErrorDetail(error, "Code-repository undo failed"),
-		};
 	}
+	return { status: "failed", errorDetail: "Code-repository undo failed after concurrent branch update" };
 }
 
 export async function collectSharedCompanyAssets(
@@ -654,6 +662,9 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			);
 			await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
 		} catch (error) {
+			if ((error instanceof CodeHostJobFailure && error.code === "CODE_HOST_JOB_YIELDED") || signal.aborted) {
+				throw error;
+			}
 			await ports.controlPlane.completeSurfacePreview(
 				{
 					previewId: job.previewId,
@@ -1366,6 +1377,9 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				);
 			}
 		} catch (error) {
+			if (ports.rethrowOnCodeHostFailure && sourceKind === "code_repo" && !reported && !committed) {
+				throw error;
+			}
 			if (!reported && !committed) {
 				await ports.controlPlane.completeSurfaceMerge(
 					{
@@ -1419,6 +1433,9 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				signal,
 			);
 		} catch (error) {
+			if ((error instanceof CodeHostJobFailure && error.code === "CODE_HOST_JOB_YIELDED") || signal.aborted) {
+				throw error;
+			}
 			await ports.controlPlane.completeSurfacePublish(
 				{
 					jobId: job.jobId,

@@ -213,7 +213,8 @@ export class MountGrants {
 			const project = `qorpera-codehost-${identity.companyId.replaceAll("-", "")}`;
 			const admits = (bridge: BridgeInfo): boolean =>
 				bridge.lookup === "found" && bridge.machine !== undefined && bridge.machine.project === project;
-			return { write: true, quietMs: DESKTOP_QUIET_MS, admits };
+			// WHY: Code host views publish explicitly at end of job (or via git ref leases) so partial mid-job or yielded writes never leak into the live folder.
+			return { write: true, admits };
 		}
 		return undefined;
 	}

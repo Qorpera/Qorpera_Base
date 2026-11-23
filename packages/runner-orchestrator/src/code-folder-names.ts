@@ -13,6 +13,9 @@ const utf8 = (text: string) => Buffer.byteLength(text, "utf8");
 /** No lone surrogate: the text is its UTF-8 bytes exactly. */
 const wellFormed = (text: string) => Buffer.from(text, "utf8").toString("utf8") === text;
 
+// WHY: SQL qorpera_folder_commit enforces c_key_bound = 2600 on folded keys; codeFolderRefuses checks it alongside 255-byte names.
+export const CODE_FOLDER_KEY_BYTES = 2600;
+
 /** The company folder's rule for a path under `code/` (`qorpera_company_path_valid`, migration 20260928569110, whose
  * code/ branch takes `%`, `:` and device names): 1 to 4,096 bytes, NFC; and the path, its folder key and its key by full
  * case mapping (stricter than the database's simple mapping wherever the two differ) each have as many parts as the
@@ -66,8 +69,10 @@ export function codeFolderRefuses(
 			if (record.type === "tree") below.add(path);
 			continue;
 		}
+		const full = `${area}/${under}/${path}`;
 		if (
-			codeImportFolderPathValid(`${area}/${under}/${path}`) &&
+			codeImportFolderPathValid(full) &&
+			utf8(folderKey(full)) <= CODE_FOLDER_KEY_BYTES &&
 			path.split("/").every((part) => utf8(part) <= CODE_FOLDER_NAME_BYTES)
 		)
 			continue;

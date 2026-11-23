@@ -120,13 +120,20 @@ export function classifyReleaseDiff(files, options = {}) {
 		if (/^packages\/runtime\/src\/(?:cloud-secret-broker|cloud-model-login-vault|shared-vault)/.test(file)) {
 			vaultChanged = true;
 		}
-		if (/^deploy\/coding-worker\//.test(file) || /^packages\/runner-orchestrator\/src\/coding-/.test(file)) {
+		if (
+			/^deploy\/coding-worker\//.test(file) ||
+			/^packages\/runner-orchestrator\/src\/(?:coding-|code-|surface-)/.test(file)
+		) {
 			executorChanged = true;
 		}
 		if (/^packages\/runner-orchestrator\/src\//.test(file)) {
 			orchestratorChanged = true;
 		}
-		if (/^crates\/qorpera-folder\//.test(file) || /^deploy\/folder-service\//.test(file)) {
+		if (
+			/^crates\/qorpera-folder\//.test(file) ||
+			/^deploy\/folder-service\//.test(file) ||
+			/^packages\/object-gateway\/src\/folder-service\//.test(file)
+		) {
 			folderServiceChanged = true;
 		}
 		if (/^packages\/object-gateway\/src\//.test(file)) {
