@@ -17,6 +17,7 @@ const profileId = "29600000-0000-4000-8000-000000000010";
 const environmentId = "29600000-0000-4000-8000-000000000020";
 const userId = "29600000-0000-4000-8000-000000000030";
 const sessionId = "29600000-0000-4000-8000-000000000060";
+const surfaceId = "29600000-0000-4000-8000-0000000000a0";
 /** The id the web gives a message before it posts it; the upload names it. */
 const clientInputId = "29600000-0000-4000-8000-000000000070";
 /** The posted message's id; the read names it. */
@@ -27,6 +28,7 @@ const digest = (value: Uint8Array | string) => createHash("sha256").update(value
 const sha256 = digest(bytes);
 const token = "synthetic-member-jwt";
 const imagePath = (id: string) => `group-chats/launch/images/${id}/${sha256}.png`;
+const surfacePath = (id: string) => `QorperaOS/surfaces/site/images/${id}/${sha256}.png`;
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0)) await cleanup();
@@ -79,6 +81,35 @@ async function fixture() {
 					actor: state.platformWriter ? { kind: "platform" } : { kind: "member", userId },
 					profileId,
 				};
+			case "qorpera_surface_image_begin":
+				if (args.p_surface_id !== surfaceId) throw new ObjectDependencyError(403);
+				return {
+					schema: "qorpera.surface-image-begin/v1",
+					environmentId,
+					surfaceId: args.p_surface_id,
+					clientInputId: args.p_client_input_id,
+					sha256: args.p_sha256,
+					bytes: args.p_bytes,
+					mediaType: args.p_media_type,
+					path: surfacePath(args.p_client_input_id as string),
+				};
+			case "qorpera_surface_image_download": {
+				const file = files.get(surfacePath(clientInputId));
+				if (!state.posted || args.p_session_id !== sessionId || args.p_client_input_id !== clientInputId || !file)
+					throw new ObjectDependencyError(403);
+				return {
+					schema: "qorpera.surface-image-download/v1",
+					environmentId,
+					sessionId,
+					clientInputId,
+					sha256: args.p_sha256,
+					bytes: file.bytes,
+					mediaType: file.mediaType,
+					manifestSha256: file.manifestSha256,
+					fileSha256: file.fileSha256,
+					path: surfacePath(clientInputId),
+				};
+			}
 			case "qorpera_room_image_download": {
 				// One image of a posted message, found under the id it was uploaded with.
 				const file = files.get(imagePath(clientInputId));
@@ -103,7 +134,8 @@ async function fixture() {
 	});
 	const publisher: MemberCompanyAuthority["publisher"] = vi.fn(async (method, args) => {
 		// The bytes move as the platform; only the save names the member.
-		if (method !== "qorpera_room_image_commit") expect(args.p_actor).toEqual({ kind: "platform" });
+		if (method !== "qorpera_room_image_commit" && method !== "qorpera_surface_image_commit")
+			expect(args.p_actor).toEqual({ kind: "platform" });
 		switch (method) {
 			case "qorpera_folder_open_upload": {
 				const intentId = `29600000-0000-4000-8000-${String(++intents).padStart(12, "0")}`;
@@ -142,6 +174,18 @@ async function fixture() {
 				const size = confirmed.get(args.p_sha256 as string);
 				if (size === undefined) throw new ObjectDependencyError(403);
 				return { schema: "qorpera.folder-object-download/v1", profileId, bytes: size };
+			}
+			case "qorpera_surface_image_commit": {
+				const file = args.p_file as Record<string, unknown>;
+				const path = surfacePath(args.p_client_input_id as string);
+				files.set(path, file);
+				return {
+					schema: "qorpera.surface-image/v1",
+					sha256: file.fileSha256,
+					bytes: file.bytes,
+					mediaType: file.mediaType,
+					path,
+				};
 			}
 			case "qorpera_room_image_commit": {
 				if (state.refuseCommit) throw new ObjectDependencyError(403);
@@ -184,9 +228,10 @@ async function fixture() {
 		publisher,
 		replication,
 		async request(kind = "upload", body: Buffer | null = bytes, bearer = token, id?: string) {
-			const input = id ?? (kind === "upload" ? clientInputId : inputId);
+			const input = id ?? (kind.endsWith("upload") ? clientInputId : inputId);
+			const owner = kind === "surface-upload" ? surfaceId : sessionId;
 			return fetch(
-				`http://127.0.0.1:${address.port}/v1/member-session-attachments/${kind}/${sessionId}/${input}/${sha256}`,
+				`http://127.0.0.1:${address.port}/v1/member-session-attachments/${kind}/${owner}/${input}/${sha256}`,
 				{
 					method: body ? "PUT" : "GET",
 					headers: {
@@ -250,6 +295,45 @@ describe("a member's chat images on folder-v2", () => {
 		expect(Buffer.from(await download.arrayBuffer())).toEqual(bytes);
 		// The image and its manifest wait for their replica.
 		expect(await service.replication.status()).toMatchObject({ pending: 2, blocked: 0 });
+	});
+	it("saves an interface session image under its surface and serves it by its session's message", async () => {
+		const service = await fixture();
+		const upload = await service.request("surface-upload");
+		expect(upload.status).toBe(200);
+		expect(await upload.json()).toEqual({ sha256, bytes: bytes.length, mediaType: "image/png" });
+		expect(vi.mocked(service.member).mock.calls[0]).toEqual([
+			"qorpera_surface_image_begin",
+			token,
+			{
+				p_surface_id: surfaceId,
+				p_client_input_id: clientInputId,
+				p_sha256: sha256,
+				p_bytes: bytes.length,
+				p_media_type: "image/png",
+			},
+			expect.any(AbortSignal),
+		]);
+		const commit = vi
+			.mocked(service.publisher)
+			.mock.calls.find(([method]) => method === "qorpera_surface_image_commit");
+		expect(commit?.[1]).toMatchObject({
+			p_user_id: userId,
+			p_surface_id: surfaceId,
+			p_client_input_id: clientInputId,
+		});
+		expect([...service.files.keys()]).toEqual([surfacePath(clientInputId)]);
+		expect((await service.request("surface-input", null, token, clientInputId)).status).toBe(403);
+		service.state.posted = true;
+		const download = await service.request("surface-input", null, token, clientInputId);
+		expect(download.status).toBe(200);
+		expect(Buffer.from(await download.arrayBuffer())).toEqual(bytes);
+		expect(vi.mocked(service.member).mock.calls.at(-1)?.slice(0, 3)).toEqual([
+			"qorpera_surface_image_download",
+			token,
+			{ p_session_id: sessionId, p_client_input_id: clientInputId, p_sha256: sha256 },
+		]);
+		expect((await service.request("surface-input", null, token, otherInputId)).status).toBe(403);
+		expect((await service.request("surface-upload", null)).status).toBe(405);
 	});
 	it("cannot turn possession of a hash into possession of bytes", async () => {
 		const service = await fixture();
