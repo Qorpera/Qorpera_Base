@@ -1772,6 +1772,46 @@ whole folder of an input never posted, and the images a posted input does not li
 M3) deletes that message's images (its input's folder) with its lines. The memory zoom's `attachments` stay `{mediaType, bytes}` for
 now; an image's path comes to the zoom with the runtime that opens it.
 
+### Interface session images (20260930865000_surface_message_images)
+
+Folder-v2 companies only. A member's image in an interface (surface) session composer is a folder file in the surface's
+own folder, `QorperaOS/surfaces/<slug>/images/<clientInputId>/<sha256>.<png|jpg|gif|webp>`, written by the platform.
+The limits are chat images': PNG, JPEG, GIF or WebP, at most 5 images and 8 MiB per input. An input is keyed by the
+surface, since a start has no session yet. Other writers can reach the folder; every read checks the file's hash, so a
+changed or removed file only makes that image unavailable.
+
+1. The client picks the input's `clientInputId`; every image and the message use it.
+2. `PUT /v1/member-session-attachments/surface-upload/<surfaceId>/<clientInputId>/<sha256>`: the gateway calls
+   `qorpera_surface_image_begin(surface, clientInputId, sha256, bytes, mediaType)` with the member's token (a member who
+   is not a viewer), which answers `{schema: "qorpera.surface-image-begin/v1", environmentId, surfaceId, clientInputId,
+   sha256, bytes, mediaType, path}`, stages the bytes as the platform and calls `qorpera_surface_image_commit(userId,
+   surface, clientInputId, file)` as the service role, which makes the folders still missing and writes the file, and
+   answers `{schema: "qorpera.surface-image/v1", sha256, bytes, mediaType, path}`. The same image again commits nothing.
+3. `qorpera_start_surface_session_with_images(<qorpera_start_surface_session's arguments>, p_client_input_id, p_images)`
+   and `qorpera_reply_surface_session_with_images(p_session_id, p_message, p_keep_open, p_client_input_id, p_images)`
+   call the plain RPC and, in the same transaction, attach the images (each `{objectSha256, bytes, mediaType}`, a live
+   file this member uploaded for this input, 42501 "Attachment bytes must be uploaded for this exact member input"
+   otherwise) to each member message it inserted, every variant's of an exploration. A replay with the same input id
+   answers the session and inserts nothing; an input id another session's message holds refuses (42501 "Submitted
+   input attachments cannot change"). No images is the plain call. A reply's text stays required.
+4. `qorpera_surface_session_images(sessionId)` (any member, a viewer too) answers `{schema:
+   "qorpera.surface-session-images/v1", sessionId, messages: [{messageId, clientInputId, images: [{sha256, bytes,
+   mediaType}]}]}` in message order.
+5. `GET /v1/member-session-attachments/surface-input/<sessionId>/<clientInputId>/<sha256>`: the gateway calls
+   `qorpera_surface_image_download(session, clientInputId, sha256)` with the member's token (a viewer too), which
+   answers `{schema: "qorpera.surface-image-download/v1", environmentId, sessionId, clientInputId, sha256, bytes,
+   mediaType, manifestSha256, fileSha256, path}`, and serves that file.
+
+The begin's refusals: 42501 "Member attachment authority is required", 22023 "Member attachment is invalid", 42501 for a
+missing surface or a member who may not edit it, 42501 "Submitted input attachments cannot change", 55000 "Attachment
+folder is unavailable", 23505 "Attachment input id is bound to another member" and 54000 "Member attachment capacity is
+reached". The download's: 42501 "Surface attachment access is unavailable", "Attachment does not belong to this input",
+and 55000 "Attachment object is unavailable". The runtime reads a session's images by its lease
+(`qorpera_native_surface_session_images`, service role), each with its path and the latest member message marked, and
+only live ones. A day after an input's last upload `qorpera_surface_image_orphan_sweep` (pg_cron job
+`qorpera-surface-image-sweep`, every minute, one folder commit a call) deletes the folder of an input no message holds,
+or the images a held input does not list, then the row.
+
 ### Coding environment secrets (20260928549440_coding_environment_secrets)
 
 The environment variables of a coding session's commands (an npm token, a Sentry DSN). Each is a vault secret captured
@@ -2385,6 +2425,8 @@ only after durable storage.
   against its hash and the whole against the file's.
 - `PUT /v1/member-session-attachments/upload/<sessionId>/<clientInputId>/<sha256>` and
   `GET /v1/member-session-attachments/input/<sessionId>/<inputId>/<sha256>` — a member's chat images (§2 "Chat images").
+  `PUT …/surface-upload/<surfaceId>/<clientInputId>/<sha256>` and `GET …/surface-input/<sessionId>/<clientInputId>/<sha256>`
+  — a member's interface session images (§2 "Interface session images").
   On folder-v2 the routes move onto `qorpera_room_image_begin`, `qorpera_room_image_commit` and
   `qorpera_room_image_download` with the gateway change that follows 20260930260000; until it deploys they serve
   snapshot-v1 sessions only.
