@@ -163,6 +163,9 @@ function buildDeviceScene(shellRgb: [number, number, number], explode: number): 
 	return polys;
 }
 
+const HOME_YAW = -0.52;
+const HOME_PITCH = 0.34;
+
 export class Studio3DViewer {
 	readonly el: HTMLElement;
 	readonly #canvas: HTMLCanvasElement;
@@ -170,12 +173,10 @@ export class Studio3DViewer {
 	readonly #callouts: HTMLElement;
 	readonly #signal: AbortSignal;
 	#config: Studio3DConfig;
-	#yaw = -0.52;
-	#pitch = 0.34;
-	#zoom = 1;
+	#yaw = HOME_YAW;
+	#pitch = HOME_PITCH;
 	#exploded = false;
 	#explodeProgress = 0;
-	#wireframe = false;
 	#activeColorIndex = 0;
 	#dragging = false;
 	#lastX = 0;
@@ -192,29 +193,16 @@ export class Studio3DViewer {
 			"aria-label": t("Interactive 3D model — drag to rotate"),
 		});
 		this.#callouts = h("div", { class: "studio-3d-callouts", hidden: true });
-		this.#controls = h("div", { class: "studio-3d-toolbar" });
-		const stage = h(
+		this.#controls = h("div", { class: "studio-3d-view", role: "radiogroup", "aria-label": t("View") });
+		this.el = h(
 			"div",
-			{ class: "studio-3d-stage" },
+			{ class: `studio-3d${config.changed ? " is-changed" : ""}` },
 			this.#canvas,
 			this.#callouts,
-			h("span", { class: "studio-3d-hint" }, t("Drag to orbit 360°")),
-		);
-		this.el = h(
-			"section",
-			{ class: `studio-section studio-3d${config.changed ? " is-changed" : ""}` },
-			h(
-				"div",
-				{ class: "studio-section-head" },
-				h("h2", null, t("3D Studio")),
-				h("span", { class: "studio-3d-dims" }, config.dimensions),
-				config.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
-			),
-			stage,
 			this.#controls,
 		);
 		this.#bindPointer();
-		this.#drawToolbar();
+		this.#drawControls();
 		this.#scheduleRender();
 		signal.addEventListener(
 			"abort",
@@ -223,6 +211,16 @@ export class Studio3DViewer {
 			},
 			{ once: true },
 		);
+	}
+
+	get colorwayIndex(): number {
+		return this.#activeColorIndex;
+	}
+
+	setColorway(index: number): void {
+		if (index < 0 || index >= this.#config.colorways.length || index === this.#activeColorIndex) return;
+		this.#activeColorIndex = index;
+		this.#scheduleRender();
 	}
 
 	#scheduleRender(): void {
@@ -241,9 +239,8 @@ export class Studio3DViewer {
 	update(config: Studio3DConfig): void {
 		this.#config = config;
 		if (this.#activeColorIndex >= config.colorways.length) this.#activeColorIndex = 0;
-		const dims = this.el.querySelector(".studio-3d-dims");
-		if (dims) dims.textContent = config.dimensions;
-		this.#drawToolbar();
+		this.el.classList.toggle("is-changed", config.changed === true);
+		this.#drawControls();
 		this.#scheduleRender();
 	}
 
@@ -255,7 +252,6 @@ export class Studio3DViewer {
 				this.#dragging = true;
 				this.#lastX = event.clientX;
 				this.#lastY = event.clientY;
-				canvas.classList.add("is-dragging");
 				if (typeof canvas.setPointerCapture === "function") canvas.setPointerCapture(event.pointerId);
 			},
 			{ signal: this.#signal },
@@ -276,10 +272,18 @@ export class Studio3DViewer {
 		);
 		const end = () => {
 			this.#dragging = false;
-			canvas.classList.remove("is-dragging");
 		};
 		canvas.addEventListener("pointerup", end, { signal: this.#signal });
 		canvas.addEventListener("pointercancel", end, { signal: this.#signal });
+		canvas.addEventListener(
+			"dblclick",
+			() => {
+				this.#yaw = HOME_YAW;
+				this.#pitch = HOME_PITCH;
+				this.#scheduleRender();
+			},
+			{ signal: this.#signal },
+		);
 	}
 
 	#animateExplode(): void {
@@ -305,85 +309,26 @@ export class Studio3DViewer {
 		}
 	}
 
-	#drawToolbar(): void {
-		const colorways = this.#config.colorways;
-		const swatches = h(
-			"div",
-			{ class: "studio-3d-swatches", role: "radiogroup", "aria-label": t("Colorways") },
-			colorways.map((cw, index) => {
-				const dot = h("span", { class: "studio-3d-dot", "aria-hidden": "true" });
-				dot.style.backgroundColor = cw.hex;
-				return h(
-					"button",
-					{
-						type: "button",
-						role: "radio",
-						class: `studio-3d-swatch${index === this.#activeColorIndex ? " is-on" : ""}`,
-						"aria-checked": String(index === this.#activeColorIndex),
-						"data-colorway": cw.name,
-						onclick: () => {
-							this.#activeColorIndex = index;
-							this.#drawToolbar();
-							this.#render();
-						},
-					},
-					dot,
-					h("span", null, cw.name),
-				);
-			}),
-		);
-		const actions = h(
-			"div",
-			{ class: "studio-3d-actions" },
+	#drawControls(): void {
+		const option = (exploded: boolean, label: string) =>
 			h(
 				"button",
 				{
 					type: "button",
-					class: `studio-3d-btn${this.#exploded ? " is-on" : ""}`,
-					"aria-pressed": String(this.#exploded),
-					"data-act": "3d-explode",
+					role: "radio",
+					class: `studio-3d-view-btn${this.#exploded === exploded ? " is-on" : ""}`,
+					"aria-checked": String(this.#exploded === exploded),
+					"data-view": exploded ? "apart" : "whole",
 					onclick: () => {
-						this.#exploded = !this.#exploded;
-						this.#drawToolbar();
+						if (this.#exploded === exploded) return;
+						this.#exploded = exploded;
+						this.#drawControls();
 						this.#animateExplode();
 					},
 				},
-				t("Exploded view"),
-			),
-			h(
-				"button",
-				{
-					type: "button",
-					class: `studio-3d-btn${this.#wireframe ? " is-on" : ""}`,
-					"aria-pressed": String(this.#wireframe),
-					"data-act": "3d-wireframe",
-					onclick: () => {
-						this.#wireframe = !this.#wireframe;
-						this.#drawToolbar();
-						this.#render();
-					},
-				},
-				t("Wireframe"),
-			),
-			h(
-				"button",
-				{
-					type: "button",
-					class: "studio-3d-btn",
-					onclick: () => {
-						this.#yaw = -0.52;
-						this.#pitch = 0.34;
-						this.#zoom = 1;
-						this.#exploded = false;
-						this.#wireframe = false;
-						this.#drawToolbar();
-						this.#animateExplode();
-					},
-				},
-				t("Reset view"),
-			),
-		);
-		this.#controls.replaceChildren(swatches, actions);
+				label,
+			);
+		this.#controls.replaceChildren(option(false, t("Whole")), option(true, t("Apart")));
 		this.#callouts.hidden = !this.#exploded;
 		if (this.#exploded) {
 			this.#callouts.replaceChildren(
@@ -403,16 +348,10 @@ export class Studio3DViewer {
 		const height = this.#canvas.height;
 		ctx.clearRect(0, 0, width, height);
 
-		const grad = ctx.createRadialGradient(width / 2, height * 0.42, 20, width / 2, height / 2, width * 0.6);
-		grad.addColorStop(0, "rgba(124, 111, 214, 0.08)");
-		grad.addColorStop(1, "rgba(24, 23, 29, 0.02)");
-		ctx.fillStyle = grad;
-		ctx.fillRect(0, 0, width, height);
-
 		ctx.save();
 		ctx.fillStyle = "rgba(18, 18, 22, 0.09)";
 		ctx.beginPath();
-		ctx.ellipse(width / 2, height * 0.78, 148 * this.#zoom, 24 * this.#zoom, 0, 0, Math.PI * 2);
+		ctx.ellipse(width / 2, height * 0.78, 148, 24, 0, 0, Math.PI * 2);
 		ctx.fill();
 		ctx.restore();
 
@@ -424,7 +363,7 @@ export class Studio3DViewer {
 				: buildDeviceScene(shellRgb, this.#explodeProgress);
 
 		const light = normalize({ x: -0.45, y: 0.78, z: 0.55 });
-		const fov = 420 * this.#zoom;
+		const fov = 420;
 		const cameraZ = 5.4;
 
 		const projected = polys
@@ -454,12 +393,10 @@ export class Studio3DViewer {
 			ctx.moveTo(first.x, first.y);
 			for (let i = 1; i < item.screen.length; i++) ctx.lineTo(item.screen[i]!.x, item.screen[i]!.y);
 			ctx.closePath();
-			if (!this.#wireframe) {
-				ctx.fillStyle = item.fill;
-				ctx.fill();
-			}
-			ctx.strokeStyle = this.#wireframe ? "rgba(65, 62, 82, 0.55)" : "rgba(20, 20, 24, 0.08)";
-			ctx.lineWidth = this.#wireframe ? 1.1 : 0.6;
+			ctx.fillStyle = item.fill;
+			ctx.fill();
+			ctx.strokeStyle = "rgba(20, 20, 24, 0.08)";
+			ctx.lineWidth = 0.6;
 			ctx.stroke();
 		}
 	}
