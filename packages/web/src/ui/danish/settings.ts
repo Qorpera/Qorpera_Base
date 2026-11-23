@@ -372,6 +372,8 @@ export const SETTINGS: Record<string, string> = {
 		"Google returnerede kvotegrænse 0 for Gemini 4 Neon på denne nøgles projekt. Indløs din AI Ultra-kredit, eller knyt en faktureringskonto til projektet i Google AI Studio, og klik på Tjek nøgle.",
 	"Google reported that billing or AI Ultra credits are not enabled for this key's project. Claim your monthly credits or enable billing in Google AI Studio, then click Check key.":
 		"Google meldte, at fakturering eller AI Ultra-kredit ikke er slået til for denne nøgles projekt. Indløs din månedlige kredit, eller slå fakturering til i Google AI Studio, og klik på Tjek nøgle.",
+	"Google returned Payment Required (402) for this key's billing account. Even when AI Ultra credits are claimed, Google AI Studio requires a prepay credit balance above $0 to resume service (eligible credits apply first). Top up in Google AI Studio Billing, then click Check key.":
+		"Google returnerede Payment Required (402) for denne nøgles faktureringskonto. Selv når AI Ultra-kredit er indløst, kræver Google AI Studio en forudbetalt saldo over $0 for at genoptage tjenesten (berettiget kredit bruges først). Tank op under Billing i Google AI Studio, og klik på Tjek nøgle.",
 	"This key's Google AI Studio spending cap or credit balance was reached. Check your spend limit and credits in Google AI Studio.":
 		"Denne nøgles forbrugsgrænse eller kreditsaldo i Google AI Studio er nået. Tjek din forbrugsgrænse og kredit i Google AI Studio.",
 	"This key's Google project reached its daily Gemini API quota. Check your usage tier in Google AI Studio or wait for the daily reset.":
@@ -390,8 +392,8 @@ export const SETTINGS: Record<string, string> = {
 		"Google afviste denne API-nøgle som ugyldig. Tjek den i Google AI Studio, eller udskift den her.",
 	"Google's Gemini API is temporarily overloaded. Try again in a moment.":
 		"Googles Gemini-API er midlertidigt overbelastet. Prøv igen om lidt.",
-	"Google reported that billing or AI Ultra credits are not active for this key's project (Gemini 4 Neon requires paid billing or claimed credits). Claim your monthly credits and link billing in Google AI Studio, then click Check key.":
-		"Google meldte, at fakturering eller AI Ultra-kredit ikke er aktiv for denne nøgles projekt (Gemini 4 Neon kræver fakturering eller indløst kredit). Indløs din månedlige kredit, knyt fakturering til projektet i Google AI Studio, og klik på Tjek nøgle.",
+	"Google reported that billing or AI Ultra credits are not active for this key's project (Gemini 4 Neon requires paid billing, claimed credits, and a prepay balance above $0 in Google AI Studio). Check Billing in Google AI Studio, then click Check key.":
+		"Google meldte, at fakturering eller AI Ultra-kredit ikke er aktiv for denne nøgles projekt (Gemini 4 Neon kræver fakturering, indløst kredit og en forudbetalt saldo over $0 i Google AI Studio). Tjek Billing i Google AI Studio, og klik på Tjek nøgle.",
 	"Google returned a quota or rate limit for this key's project. Check your rate limits and spend cap in Google AI Studio, or try again shortly.":
 		"Google returnerede en kvote- eller hastighedsgrænse for denne nøgles projekt. Tjek dine grænser og forbrugsgrænse i Google AI Studio, eller prøv igen om lidt.",
 	"Google rejected this API key. Check that it is active and allowed to use the Generative Language API in Google AI Studio, or replace it here.":

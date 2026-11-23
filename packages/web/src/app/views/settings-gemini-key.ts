@@ -31,6 +31,10 @@ function geminiErrorDetailMessage(detail: GeminiKeyErrorDetail): string {
 			return t(
 				"Google reported that billing or AI Ultra credits are not enabled for this key's project. Claim your monthly credits or enable billing in Google AI Studio, then click Check key.",
 			);
+		case "prepay_balance_empty":
+			return t(
+				"Google returned Payment Required (402) for this key's billing account. Even when AI Ultra credits are claimed, Google AI Studio requires a prepay credit balance above $0 to resume service (eligible credits apply first). Top up in Google AI Studio Billing, then click Check key.",
+			);
 		case "spend_limit_reached":
 			return t(
 				"This key's Google AI Studio spending cap or credit balance was reached. Check your spend limit and credits in Google AI Studio.",
@@ -69,7 +73,7 @@ function geminiErrorMessage(code: GeminiKeyErrorCode, detail: GeminiKeyErrorDeta
 	switch (code) {
 		case "billing_required":
 			return t(
-				"Google reported that billing or AI Ultra credits are not active for this key's project (Gemini 4 Neon requires paid billing or claimed credits). Claim your monthly credits and link billing in Google AI Studio, then click Check key.",
+				"Google reported that billing or AI Ultra credits are not active for this key's project (Gemini 4 Neon requires paid billing, claimed credits, and a prepay balance above $0 in Google AI Studio). Check Billing in Google AI Studio, then click Check key.",
 			);
 		case "quota_exhausted":
 			return t(

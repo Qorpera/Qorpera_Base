@@ -316,6 +316,33 @@ describe("Gemini Neon pricing and key formatting", () => {
 			errorDetail: "billing_disabled",
 		});
 
+		const prepayFetch = (async () =>
+			Response.json({ error: { code: 402, message: "Payment Required" } }, { status: 402 })) as typeof fetch;
+		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), prepayFetch)).toEqual({
+			ok: false,
+			errorCode: "billing_required",
+			errorDetail: "prepay_balance_empty",
+		});
+
+		expect(
+			classifyGeminiHttpError(
+				403,
+				new TextEncoder().encode(
+					JSON.stringify({
+						error: {
+							status: "PERMISSION_DENIED",
+							message: "Prepay credits depleted for this billing account.",
+						},
+					}),
+				),
+			),
+		).toEqual({
+			code: "billing_required",
+			providerStatus: "PERMISSION_DENIED",
+			detailCode: "prepay_balance_empty",
+			retryAfterMs: null,
+		});
+
 		const rejectedFetch = (async () =>
 			Response.json(
 				{ error: { status: "INVALID_ARGUMENT", details: [{ reason: "API_KEY_INVALID" }] } },
