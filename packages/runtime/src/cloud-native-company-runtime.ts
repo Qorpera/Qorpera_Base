@@ -205,6 +205,12 @@ import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
 import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
 import {
+	parseNativeSurfaceSessionImages,
+	readSurfaceMemberImage,
+	type SurfaceMemberImage,
+	surfaceMemberImagesSection,
+} from "./cloud-surface-images.ts";
+import {
 	createControlPlaneSessionCompletionPort,
 	createControlPlaneSessionLeaseRenewalPort,
 	extractPointToChangeTarget,
@@ -2091,7 +2097,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				return null;
 			}
 		};
-		const [briefMarkdown, identityContext, sharedSnapshot] = await Promise.all([
+		const [briefMarkdown, identityContext, sharedSnapshot, memberImages] = await Promise.all([
 			readBrief(),
 			loadSurfaceIdentityContext(folderClient, signal).catch((error) => {
 				if (signal.aborted) throw error;
@@ -2101,6 +2107,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				if (signal.aborted) throw error;
 				return null;
 			}),
+			this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal),
 		]);
 		const surfaceTools = createControlPlaneSurfaceToolsPort(this.#paths, {
 			leaseToken,
@@ -2123,7 +2130,25 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			pointToChangeTarget,
 			conflictPaths,
 			recordChange: surfaceTools.recordChange,
+			memberImages,
+			viewAttachment: (image, readSignal) => readSurfaceMemberImage(folderClient, image, readSignal),
 		};
+	}
+
+	async #surfaceMemberImages(
+		companyId: string,
+		sessionId: string,
+		leaseToken: string,
+		signal: AbortSignal,
+	): Promise<SurfaceMemberImage[]> {
+		return parseNativeSurfaceSessionImages(
+			await this.#paths.call(
+				"qorpera_native_surface_session_images",
+				{ p_profile_id: companyId, p_session_id: sessionId, p_lease_token: leaseToken },
+				signal,
+			),
+			sessionId,
+		);
 	}
 
 	async #surfaceSessionTurn(
@@ -2165,6 +2190,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const conflictPaths = Array.isArray(sessionTurnRaw.conflictPaths)
 			? sessionTurnRaw.conflictPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
+		const memberImagesSection = surfaceMemberImagesSection(
+			await this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal),
+			"company_read",
+		);
 		const turnInput: SurfaceSessionTurnInput = {
 			sessionId,
 			surfaceId,
@@ -2441,7 +2470,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			};
 
 			const runtimeInstructions = `${spec.instructions}\n\nWhen finished staging changes or inspecting the surface, call surface_reply with a concise founder-facing summary. If a concrete founder decision is required first, call surface_ask.`;
-			const fullPrompt = `${spec.turnBrief}\n\nFounder request:\n${spec.prompt}`;
+			const fullPrompt = `${spec.turnBrief}${memberImagesSection ? `\n\n${memberImagesSection}` : ""}\n\nFounder request:\n${spec.prompt}`;
 			const contextText = `${runtimeInstructions}\n${fullPrompt}`;
 			const contextSha256 = createHash("sha256").update(contextText).digest("hex");
 			const contextBytes = Buffer.byteLength(contextText);
