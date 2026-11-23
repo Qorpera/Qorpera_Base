@@ -1153,7 +1153,15 @@ describe("the store's import writer", () => {
 			await expect(store.begin(TARGET, options as { kind: "import" })).rejects.toThrow("INVALID_CODE_BUNDLE");
 		expect(existsSync(folder)).toBe(false);
 		// The store's own cap is the most an operator may set.
-		await (await store.begin(TARGET, { kind: "import", maximumBytes: 2 * 1024 ** 3 })).abort();
+		// WHY: an import at the cap needs twice it free; a busy test machine may not have that, which is not a refusal.
+		const capped = await store.begin(TARGET, { kind: "import", maximumBytes: 2 * 1024 ** 3 }).then(
+			async (writer) => {
+				await writer.abort();
+				return "opened";
+			},
+			(error: Error) => error.message,
+		);
+		expect(["opened", "CODE_BUNDLE_NO_SPACE"]).toContain(capped);
 		for (const name of [codeBundleName(at(0), MAIN), "x"])
 			await expect(store.readImport(TARGET, name)).rejects.toThrow("INVALID_CODE_BUNDLE");
 		await expect(store.readImport({ ...TARGET, owner: ".." }, codeImportBundleName(at(0), MAIN))).rejects.toThrow(
