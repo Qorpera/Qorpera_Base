@@ -99,7 +99,8 @@ import type { CardFootActions } from "./card-foot.ts";
 import { personFace } from "./friends.ts";
 import { type InviteCalls, openInviteSheet } from "./invite-sheet.ts";
 import { memberPresence } from "./member-chat.ts";
-import { type SearchHit, type SearchSources, SearchWindow } from "./search-window.ts";
+import { type FoundFile, fileHit, isPlumbing, oneCopyEach, settledPath } from "./search-files.ts";
+import { type SearchHit, type SearchMark, type SearchSources, SearchWindow } from "./search-window.ts";
 import { markSettingsPlace, type SettingsTab, settingsPlaces } from "./settings.ts";
 import { CrewFigures, crewWave } from "./surface-crew.ts";
 import { openCreateSurfaceSheet, openScheduleAgentSheet } from "./surface-migration-sheet.ts";
@@ -4354,9 +4355,8 @@ function nudgeItem(company: CompanyController, element: HTMLElement, item: RailI
 }
 
 const SEARCH_SHORTCUT = "Meta+K Control+K";
-const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp|svg|avif|heic)$/i;
-const CODE_FILE = /\.(?:[cm]?[jt]sx?|py|rs|go|rb|java|kt|swift|c|h|cpp|cs|php|sh|sql|css|scss|html?|json|ya?ml|toml)$/i;
-const RECENT_FILES = 4;
+const RECENT_FILES = 20;
+const FILE_SEARCH_MOST = 50;
 
 let searchWindow: SearchWindow | undefined;
 let searchTarget: { company: CompanyController; parts: RailParts } | undefined;
@@ -4366,26 +4366,19 @@ function shortcutLabel(): string {
 	return /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘K" : "Ctrl+K";
 }
 
-function fileHit(context: ShellContext, path: string, kind: string): SearchHit {
-	const slash = path.lastIndexOf("/");
-	const name = path.slice(slash + 1);
-	const folder = slash < 0 ? t("Company File") : path.slice(0, slash).split("/").join(" / ");
-	const glyph =
-		kind === "folder" ? "folder" : IMAGE_FILE.test(name) ? "image" : CODE_FILE.test(name) ? "code" : "file";
-	return {
-		key: `file:${kind}:${path}`,
-		kind: "files",
-		title: name,
-		detail: kind === "folder" ? `${t("Folder")} · ${folder}` : folder,
-		lead: () => icon(glyph),
-		open: () => context.openInFiles?.(path),
-	};
-}
-
 function searchSources(company: CompanyController, context: ShellContext): SearchSources {
 	const profileId = company.profile.profileId;
 	const go = (href: string) => () => {
 		location.hash = href;
+	};
+	const surfaceTitle = (slug: string) =>
+		surfacesOf(company)?.state.surfaces.find((surface) => surface.slug === slug)?.title;
+	const openFile = (path: string) => context.openInFiles?.(path);
+	const marks = (needsYou: boolean, working: boolean): { marks?: SearchMark[] } => {
+		const held: SearchMark[] = [];
+		if (needsYou) held.push("needs-you");
+		if (working) held.push("working");
+		return held.length ? { marks: held } : {};
 	};
 	const hits = (): SearchHit[] => {
 		const state = company.store.get();
@@ -4394,36 +4387,55 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 		const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
 		const sectionName = new Map(sidebar?.sections.map((section) => [section.sectionId, section.name]));
 		const placedIn = (itemId: string) => sectionName.get(sidebar?.placements[itemId]?.sectionId ?? "") ?? "";
+		const lastTalk = new Map<string, string>();
+		for (const session of state.sessions) {
+			const staffId = session.staffAgentId;
+			if (staffId && session.updatedAt > (lastTalk.get(staffId) ?? "")) lastTalk.set(staffId, session.updatedAt);
+		}
 		for (const agent of state.staff) {
 			if (agent.employmentStatus !== "active") continue;
 			const href = agent.id === cofounderId ? `#/c/${profileId}` : `#/c/${profileId}/staff/${agent.id}`;
+			const activity = company.agentState(agent.id);
+			const at = lastTalk.get(agent.id);
 			found.push({
 				key: `agent:${agent.id}`,
 				kind: "people",
 				title: agent.displayName,
 				detail: agent.role || t("Agent"),
 				words: `${t("Agent")} ${placedIn(agent.id)}`,
-				lead: () => agentFigure(agent, agent.displayName, { size: 30 }),
+				...(at ? { at } : {}),
+				...marks(
+					activity === "decision",
+					activity === "working" || activity === "writing" || activity === "computer",
+				),
+				lead: () => agentFigure(agent, agent.displayName, { size: 28 }),
 				open: go(href),
 			});
 		}
 		const { others } = companyContacts(company);
-		for (const [userId, member] of others)
+		const memberChats = state.memberChatsUnavailable ? undefined : state.memberChats;
+		for (const [userId, member] of others) {
+			const chat = memberChats?.[userId];
 			found.push({
 				key: `member:${userId}`,
 				kind: "people",
 				title: member.displayName,
 				detail: t("Member"),
+				...(chat?.last ? { at: chat.last.createdAt } : {}),
+				...marks((chat?.unread ?? 0) > 0, false),
 				lead: () => personAvatar(member.displayName, userId),
 				open: go(`#/c/${profileId}/member/${userId}`),
 			});
+		}
 		for (const session of company.groupChatRooms().values())
 			found.push({
 				key: `chat:${session.sessionId}`,
 				kind: "people",
 				title: session.title,
 				detail: t("Group chat"),
-				lead: () => groupChatAvatar(company.groupAgents(session.sessionId), { width: 30, height: 28 }),
+				at: session.updatedAt,
+				...marks(Boolean(state.mentions?.[session.sessionId]), false),
+				lead: () => groupChatAvatar(company.groupAgents(session.sessionId), { width: 28, height: 26 }),
 				open: go(`#/c/${profileId}/chat/${session.sessionId}`),
 			});
 		const store = surfacesOf(company);
@@ -4466,9 +4478,9 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 				key: `setting:${place.tab}:${place.label}`,
 				kind: "settings",
 				title: place.label,
-				detail: `${t("Settings")} · ${place.area}`,
-				words: place.words,
-				lead: () => icon("settings"),
+				detail: place.area,
+				words: `${t("Settings")} ${place.words}`,
+				lead: () => icon(place.icon),
 				open: () => {
 					context.openSettings(place.tab);
 					if (place.mark) markSettingsPlace(place.mark);
@@ -4484,32 +4496,37 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 		revive: (key) => {
 			const [, kind, path] = /^file:(file|folder|symlink):(.+)$/.exec(key) ?? [];
 			const readable = company.store.get().team?.capabilities.read === true;
-			return kind && path && readable && context.openInFiles ? fileHit(context, path, kind) : undefined;
+			return kind && path && readable && context.openInFiles
+				? fileHit({ path, kind }, openFile, surfaceTitle)
+				: undefined;
 		},
 		...(folder && company.store.get().team?.capabilities.read
 			? {
 					files: {
 						search: async (query, limit, signal) => {
-							const answer = await folder().search(query, limit, signal);
+							const answer = await folder().search(query, Math.min(FILE_SEARCH_MOST, limit * 3), signal);
+							const files = oneCopyEach(
+								answer.entries.map((entry) => ({ path: entry.path, kind: entry.kind, at: entry.updatedAt })),
+							);
 							return {
-								hits: answer.entries.map((entry) => fileHit(context, entry.path, entry.kind)),
-								more: answer.more,
+								hits: files.slice(0, limit).map((file) => fileHit(file, openFile, surfaceTitle)),
+								more: answer.more || files.length > limit,
 							};
 						},
 						recent: async (signal) => {
 							const page = await folder().history(null, 20, signal);
 							const decided = new Set<string>();
-							const recent: SearchHit[] = [];
+							const recent: FoundFile[] = [];
 							for (const item of page.items)
 								for (const change of item.paths) {
-									if (decided.has(change.path)) continue;
-									decided.add(change.path);
+									const settled = settledPath(change.path);
+									if (decided.has(settled)) continue;
+									decided.add(settled);
 									if (change.op === "delete" || change.op === "move_out" || change.kind !== "file") continue;
-									if (change.path.split("/", 1)[0] === "QorperaOS") continue;
-									recent.push(fileHit(context, change.path, change.kind));
-									if (recent.length === RECENT_FILES) return recent;
+									if (change.path.split("/", 1)[0] === "QorperaOS" || isPlumbing(change.path)) continue;
+									recent.push({ path: change.path, kind: change.kind, at: item.at });
 								}
-							return recent;
+							return recent.slice(0, RECENT_FILES).map((file) => fileHit(file, openFile, surfaceTitle));
 						},
 					},
 				}

@@ -180,6 +180,7 @@ describe("asking a teammate to publish", () => {
 		view.update();
 		await flush();
 		expect(store.state.mode).toBe("preview");
+		expect(view.el.querySelector(".surface-notch")?.classList.contains("is-open")).toBe(true);
 		const control = view.el.querySelector<HTMLElement>(".surface-publish.is-asked")!;
 		expect(control.getAttribute("aria-label")).toBe("Jonas asks you to publish");
 		expect(control.querySelector('[data-act="ask-yes"]')).not.toBeNull();

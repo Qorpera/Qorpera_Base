@@ -570,18 +570,13 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 
 		expect(view.el.querySelector(".surface-bar-lead")).toBeNull();
-		expect(view.el.querySelector(".surface-pill.is-spacious")).not.toBeNull();
-		const modeLabels = [...view.el.querySelectorAll(".surface-pill-modes button")].map((btn) => btn.textContent);
+		const modeLabels = [...view.el.querySelectorAll('.surface-pill [data-toggle="mode"] button')].map(
+			(btn) => btn.textContent,
+		);
 		expect(modeLabels).toEqual(["Live", "Preview"]);
-		expect(view.el.querySelector(".surface-pill-device")).not.toBeNull();
+		expect(view.el.querySelector('.surface-pill [data-toggle="device"]')).not.toBeNull();
 		expect(view.el.querySelector(".surface-pill-address")).toBeNull();
-
-		const headerAgents = [...view.el.querySelectorAll<HTMLButtonElement>(".surface-pill .surface-bar-agent")];
-		expect(headerAgents).toHaveLength(2);
-		expect(headerAgents[0]?.querySelector(".surface-crew .figure")).not.toBeNull();
-		expect(headerAgents[0]?.querySelector(".surface-bar-agent-count")?.textContent).toBe("3");
-		expect(headerAgents[1]?.querySelector(".surface-crew .figure")).not.toBeNull();
-		expect(headerAgents[1]?.querySelector(".surface-bar-agent-count")?.textContent).toBe("2");
+		expect(view.el.querySelector(".surface-bar .surface-crew")).toBeNull();
 
 		const stage = view.el.querySelector(".surface-stage")!;
 		expect(stage.children[0]?.classList.contains("surface-canvas")).toBe(true);
@@ -669,13 +664,11 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(1);
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="collapse-pill"]')!.click();
-		expect(view.el.querySelector(".surface-pill")).toBeNull();
-		const notch = view.el.querySelector<HTMLButtonElement>(".surface-notch")!;
-		expect(notch).not.toBeNull();
-		notch.click();
-		expect(view.el.querySelector(".surface-pill")).not.toBeNull();
-		expect(view.el.querySelector(".surface-notch")).toBeNull();
+		expect(view.el.querySelector('[data-act="collapse-pill"]')).toBeNull();
+		const notch = view.el.querySelector<HTMLElement>(".surface-notch")!;
+		expect(notch.classList.contains("is-open")).toBe(false);
+		view.el.querySelector<HTMLButtonElement>(".surface-notch-pill")!.click();
+		expect(notch.classList.contains("is-open")).toBe(true);
 
 		const dialog = HTMLDialogElement.prototype;
 		dialog.showModal ??= function (this: HTMLDialogElement) {
@@ -816,7 +809,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		view.update();
 
-		expect(view.el.querySelector(".surface-pill-device")).toBeNull();
+		expect(view.el.querySelector('[data-toggle="device"]')).toBeNull();
 		expect(view.el.querySelector<HTMLElement>(".surface-viewport")?.dataset.device).toBe("mobile");
 		expect(view.el.querySelector(".surface-mount iframe.surface-local-frame")?.getAttribute("srcdoc")).toContain(
 			"Thetaband",
@@ -1026,7 +1019,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		view.update();
 
-		const address = view.el.querySelector<HTMLButtonElement>(".surface-pill-modes > button.surface-pill-address");
+		const address = view.el.querySelector<HTMLButtonElement>(".surface-pill > button.surface-pill-address");
 		expect(address?.textContent).toBe("thetaband.dk");
 		expect(address?.getAttribute("aria-expanded")).toBe("false");
 		expect(address?.closest('[role="group"]')).toBeNull();
@@ -1038,7 +1031,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(view.el.querySelector(".surface-pill-address")?.getAttribute("aria-expanded")).toBe("true");
 		view.el.querySelector<HTMLButtonElement>(".surface-pill-address")!.click();
 		expect(sheet.hidden).toBe(true);
-		const modes = view.el.querySelector('.surface-pill-mode-set[role="group"]');
+		const modes = view.el.querySelector('.surface-toggle[data-toggle="mode"][role="group"]');
 		expect([...(modes?.querySelectorAll("button") ?? [])].map((button) => button.textContent)).toEqual([
 			"Live",
 			"Preview",
@@ -1047,7 +1040,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		live = false;
 		view.update();
 		expect(view.el.querySelector(".surface-pill-address")).toBeNull();
-		expect(view.el.querySelector(".surface-pill-mode-set button")).not.toBeNull();
+		expect(view.el.querySelector('[data-toggle="mode"] button')).not.toBeNull();
 
 		view.dispose();
 		store.dispose();
@@ -1149,7 +1142,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
-	it("keeps the header pill balanced into three flex groups with collapse nested in the right tools", async () => {
+	it("rests the bar closed as a small pill that opens into one bar of toggles, with no agents in it", async () => {
 		stubFigureMotion();
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
@@ -1162,14 +1155,136 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		view.update();
 
-		const pill = view.el.querySelector<HTMLElement>(".surface-pill");
-		expect(pill?.classList.contains("is-spacious")).toBe(true);
-		expect([...(pill?.children ?? [])].map((child) => child.className)).toEqual([
-			"surface-pill-modes",
-			"surface-bar-crew",
-			"surface-pill-right",
-		]);
-		expect(pill?.querySelector(".surface-pill-right .surface-pill-collapse")).not.toBeNull();
+		const notch = view.el.querySelector<HTMLElement>(".surface-bar > .surface-notch")!;
+		const pill = notch.querySelector<HTMLButtonElement>(":scope > .surface-notch-pill")!;
+		const bar = notch.querySelector<HTMLElement>(":scope > .surface-pill")!;
+		expect(notch.classList.contains("is-open")).toBe(false);
+		expect(pill.getAttribute("aria-expanded")).toBe("false");
+		expect(pill.querySelector(".surface-notch-label")?.textContent).toBe("Preview");
+		expect(pill.querySelector(".surface-notch-count")).not.toBeNull();
+		expect(pill.querySelector(".icon, .surface-notch-grip")).toBeNull();
+		expect(bar.inert).toBe(true);
+		const parts = [...bar.children];
+		expect(parts[0]?.getAttribute("data-toggle")).toBe("mode");
+		expect(parts[2]?.getAttribute("data-toggle")).toBe("device");
+		expect(
+			parts.filter((_, index) => index % 2 === 1).every((part) => part.className === "surface-pill-divider"),
+		).toBe(true);
+		expect(bar.querySelector(".surface-crew, [data-act='bar-agent'], [data-act='collapse-pill']")).toBeNull();
+		expect(bar.querySelector('[data-toggle="mode"] > .surface-toggle-thumb')).not.toBeNull();
+
+		pill.click();
+		expect(notch.classList.contains("is-open")).toBe(true);
+		expect(pill.getAttribute("aria-expanded")).toBe("true");
+		expect(pill.inert).toBe(true);
+		expect(bar.inert).toBe(false);
+
+		bar.querySelector<HTMLButtonElement>('[data-act="mode"]')!.dispatchEvent(
+			new Event("pointerdown", { bubbles: true }),
+		);
+		expect(notch.classList.contains("is-open")).toBe(true);
+		document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		expect(notch.classList.contains("is-open")).toBe(false);
+		expect(bar.inert).toBe(true);
+
+		pill.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+		expect(notch.classList.contains("is-open")).toBe(true);
+		expect(document.activeElement).toBe(bar.querySelector('[data-toggle="mode"] > button.is-on'));
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(notch.classList.contains("is-open")).toBe(false);
+		expect(document.activeElement).toBe(pill);
+
+		pill.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+		view.el.querySelector<HTMLTextAreaElement>(".surface-input")!.focus();
+		expect(notch.classList.contains("is-open")).toBe(false);
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("slides the toggle's thumb under the segment that is on", async () => {
+		stubFigureMotion();
+		vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(60);
+		vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(40);
+		vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(function (this: HTMLElement) {
+			return this.parentElement ? [...this.parentElement.children].indexOf(this) * 60 : 0;
+		});
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		store.setMode("preview");
+		view.update();
+		const thumb = () => view.el.querySelector<HTMLElement>('[data-toggle="mode"] > .surface-toggle-thumb')!;
+		expect([thumb().style.left, thumb().style.width]).toEqual(["120px", "60px"]);
+		expect(view.el.querySelector<HTMLElement>(".surface-notch")?.style.width).toBe("60px");
+
+		view.el.querySelector<HTMLButtonElement>(".surface-notch-pill")!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="mode"][data-mode="live"]')!.click();
+		view.update();
+		expect(view.el.querySelector('[data-toggle="mode"] > button.is-on')?.textContent).toBe("Live");
+		expect([thumb().style.left, thumb().style.width]).toEqual(["60px", "60px"]);
+		expect(view.el.querySelector(".surface-notch-pill .surface-notch-label")?.textContent).toBe("Live");
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("keeps the bar open while the website is private, and while the address sheet is open", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const hosting = fakeSiteHosting();
+		const view = new SurfaceView(
+			{
+				store,
+				mount: () => undefined,
+				openMigration: () => undefined,
+				isSiteLive: () => true,
+				siteHosting: () => ({ siteId: HOSTED_SITE, client: hosting.client }),
+				managesSites: () => true,
+			},
+			"website",
+		);
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		await flush();
+		const notch = view.el.querySelector<HTMLElement>(".surface-notch")!;
+		const pill = notch.querySelector<HTMLButtonElement>(".surface-notch-pill")!;
+		const address = () => view.el.querySelector<HTMLButtonElement>(".surface-pill > .surface-pill-address")!;
+		const outside = () => document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		expect(address().className).toBe("surface-pill-address is-private");
+		expect(notch.classList.contains("is-open")).toBe(true);
+		expect(pill.hidden).toBe(true);
+		outside();
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(notch.classList.contains("is-open")).toBe(true);
+
+		hosting.world.entry!.isPublic = true;
+		address().click();
+		address().click();
+		await flush();
+		expect(address().className).toBe("surface-pill-address is-live");
+		expect(pill.hidden).toBe(false);
+		expect(notch.classList.contains("is-open")).toBe(true);
+
+		address().click();
+		await flush();
+		outside();
+		expect(view.el.querySelector<HTMLElement>(".surface-address-sheet")?.hidden).toBe(true);
+		expect(notch.classList.contains("is-open")).toBe(true);
+		outside();
+		expect(notch.classList.contains("is-open")).toBe(false);
 
 		view.dispose();
 		store.dispose();
