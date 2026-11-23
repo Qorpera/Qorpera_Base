@@ -236,9 +236,16 @@ const CODING_LAND_FILE_TOO_LARGE = "CODING_LAND_FILE_TOO_LARGE";
 /** What to change after a landing the code host refused by rule (its code, and the paths it named, a null for one not
  * to be named), or whose refs it could not read, or undefined for a code this does not know. Never a plain "finish
  * again" for work that would be refused the same way. A refusal for the files' names or size ends with its code. */
-export function landRefusal(baseBranch: string, code: string, paths: readonly (string | null)[]): string | undefined {
+export function landRefusal(
+	baseBranch: string,
+	code: string,
+	paths: readonly (string | null)[],
+	options?: { readonly staged?: boolean },
+): string | undefined {
 	const named = paths.length ? `: ${namedPaths(paths)}` : "";
-	const not = `The change was not landed, and nothing changed on ${baseBranch}`;
+	const not = options?.staged
+		? "The change was not staged for preview"
+		: `The change was not landed, and nothing changed on ${baseBranch}`;
 	switch (code) {
 		case "CODE_HOST_FILE_TOO_LARGE":
 			return `${not}: it holds files larger than 256 MiB, which a repository kept in Qorpera does not take${named}. Take them out, commit and finish again. [code=${CODING_LAND_FILE_TOO_LARGE}]`;
@@ -250,10 +257,12 @@ export function landRefusal(baseBranch: string, code: string, paths: readonly (s
 		case "CODE_HOST_NAMES_FOLDER_REFUSES":
 			// git takes such names; the company folder, which holds the repository's files, does not. The landing asks its
 			// rule where any session's worktree would hold a path (CODE_FOLDER_ANY_SESSION), 42 bytes deeper than main/.
-			return `${not}: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session's workspace holds it)${named}. Rename them, commit and finish again. [code=${CODING_LAND_NAMES_REFUSED}]`;
+			return `${not}: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 2,600 bytes where a session's workspace holds it)${named}. Rename them, commit and finish again. [code=${CODING_LAND_NAMES_REFUSED}]`;
 		case "CODE_HOST_EXPORT_MOVED":
 		case "CODE_HOST_EXPORT_NO_BRANCH":
 			return `${not}: the commit handed in is not on this session's own branch. Commit the work on the branch the session's workspace has checked out, and finish with that commit.`;
+		case "CODE_HOST_BASE_UNKNOWN":
+			return `${not}: the session's base commit is no longer present in the repository. Start a fresh session from ${baseBranch}.`;
 		case "CODE_HOST_REF_UNREADABLE":
 			// git could not read the repository's refs: once is a hiccup, twice is a file that is not git's any more.
 			return `${not}: the repository's own record of its branches could not be read. Finish again once; if that fails the same way, nothing can go into ${baseBranch} until Qorpera has repaired the repository, so say so in your report. The work is kept on the session's branch.`;

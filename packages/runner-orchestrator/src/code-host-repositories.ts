@@ -305,15 +305,13 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			return { baseSha: started.baseSha };
 		} catch (error) {
 			if (signal.aborted || !(error instanceof CodeHostJobFailure || error instanceof CodeHostRefusal)) throw error;
-			throw new CodingWorkspaceFailed(
-				error.code,
+			const startSummary =
 				error.code === "CODE_HOST_AREA_FROM_GITHUB"
 					? CODE_AREA_TAKEN
 					: error.code === RESTORING
 						? CODE_RESTORING
-						: CODE_START_FAILED,
-				{ cause: error },
-			);
+						: (namesRefused(session, error) ?? formatStartFailure(error));
+			throw new CodingWorkspaceFailed(error.code, startSummary, { cause: error });
 		}
 	}
 
@@ -341,9 +339,14 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 				filesChanged: verified.filesChanged,
 			};
 		} catch (error) {
-			if (signal.aborted || !(error instanceof CodeHostRefusal)) throw error;
-			const summary = landRefusal(repository.baseBranch, error.code, error.paths);
-			if (summary) throw new CodingLandRefused(error.code, summary, { cause: error });
+			if (signal.aborted) throw error;
+			if (error instanceof CodeHostRefusal) {
+				const summary = landRefusal(repository.baseBranch, error.code, error.paths, { staged: true });
+				if (summary) throw new CodingLandRefused(error.code, summary, { cause: error });
+			} else if (error instanceof CodeHostJobFailure && error.code === "CODE_HOST_REF_UNREADABLE") {
+				const summary = landRefusal(repository.baseBranch, error.code, [], { staged: true });
+				if (summary) throw new CodingLandRefused(error.code, summary, { cause: error });
+			}
 			throw error;
 		}
 	}
@@ -1684,6 +1687,36 @@ function namedPaths(paths: readonly string[]): string {
 	return `${shown.join(", ")}${more ? ` and ${more} more` : ""}`;
 }
 
+function formatStartFailure(error: CodeHostJobFailure | CodeHostRefusal): string {
+	if (!(error instanceof CodeHostJobFailure) || error.code !== "CODE_HOST_PUBLISH_REFUSED" || !error.detail) {
+		return CODE_START_FAILED;
+	}
+	// WHY: Surface a sanitized, bounded refusal diagnostic (excluding key-like paths) so publish refusals during repo open are actionable instead of opaque.
+	const parts: string[] = [];
+	for (const rawPart of error.detail.split(", ").slice(0, 3)) {
+		const trimmed = rawPart.trim();
+		if (!trimmed) continue;
+		if (trimmed.startsWith("refused: ")) {
+			const reason = trimmed
+				.slice("refused: ".length)
+				.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+				.slice(0, 80);
+			if (reason) parts.push(`refused: ${reason}`);
+			continue;
+		}
+		const colon = trimmed.indexOf(": ");
+		if (colon > 0) {
+			const path = codeImportShown(trimmed.slice(0, colon));
+			const rest = trimmed
+				.slice(colon + 2)
+				.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+				.slice(0, 80);
+			parts.push(`${path ?? "<path>"}: ${rest}`);
+		}
+	}
+	return parts.length > 0 ? `${CODE_START_FAILED} (${parts.join("; ").slice(0, 240)})` : CODE_START_FAILED;
+}
+
 /** The words of a session's workspace refused for the names of what it would hold, or for a file too large (the code
  * host's `CODE_HOST_NAMES_*`, `CODE_HOST_FILE_TOO_LARGE`), or undefined for any other failure. The same names are
  * refused the same way at every follow-up, so the words never say one tries again. Whose names they are says what to
@@ -1691,7 +1724,7 @@ function namedPaths(paths: readonly string[]): string {
  * GitHub's default branch (a seed, or a new worktree at GitHub's base) is a member's to fix on GitHub; the default
  * branch of a repository kept in Qorpera can be fixed by no session. */
 function namesRefused(
-	session: CodingFolderRepositorySession,
+	session: Pick<CodingFolderRepositorySession, "claim">,
 	error: CodeHostJobFailure | CodeHostRefusal,
 ): string | undefined {
 	if (!(error instanceof CodeHostRefusal) || !(error.code.startsWith("CODE_HOST_NAMES_") || error.code === TOO_LARGE))

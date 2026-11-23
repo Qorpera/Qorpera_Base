@@ -26,7 +26,7 @@ import { CodeImportStop, type CodeImportTransports } from "../../packages/runner
 import { fetchGitHubImport } from "../../packages/runner-orchestrator/src/code-import-fetch.ts";
 import { CodeImport } from "../../packages/runner-orchestrator/src/code-import-run.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
-import { exportCodeSiteSource, pinCodeSiteTree, readCodeSiteTree, readRepoDeployConfig } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
+import { exportCodeSiteSource, pinCodeSiteTree, readCodeSiteTree, readRepoDeployConfig, readSurfaceSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { CodeSiteUploads } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
 import { RealtimeOrchestratorWake } from "../../packages/runner-orchestrator/src/orchestrator-wake.ts";
@@ -572,7 +572,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		? new SurfaceCodeHostWorker({
 			control,
 			hosts: codeHostJobs,
-			readTree: readCodeSiteTree,
+			readTree: readSurfaceSiteTree,
 			report: logCodeRecord,
 		})
 		: undefined;
@@ -986,18 +986,26 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		})();
 		const surfacing = (async () => {
 			if (!surfaceCodeHost) return;
+			// WHY: Drain bursty preview toggles and merge approvals immediately with adaptive backoff instead of adding a fixed 2s stall per pass.
+			let idleDelayMs = 250;
 			while (!stop.signal.aborted) {
+				let worked = false;
 				try {
 					const passed = await surfaceCodeHost.pass(stop.signal);
-					if (passed.previews + passed.merges + passed.publishes + passed.failed > 0) {
+					const total = passed.previews + passed.merges + passed.publishes;
+					worked = total > 0;
+					if (total + passed.failed > 0) {
 						console.log(JSON.stringify({ event: "surface-code-host", step: "pass", ...passed }));
 					}
 				} catch (error) {
+					idleDelayMs = 2_000;
 					if (!stop.signal.aborted) {
 						console.error(JSON.stringify({ event: "surface-code-host-error", step: "pass", ...loggedError(error) }));
 					}
 				}
-				await setTimeout(2_000, undefined, { signal: stop.signal }).catch(() => undefined);
+				const delayMs = worked ? 50 : idleDelayMs;
+				idleDelayMs = worked ? 250 : Math.min(2_000, idleDelayMs * 2);
+				await setTimeout(delayMs, undefined, { signal: stop.signal }).catch(() => undefined);
 			}
 		})();
 		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions, caring, requesting, recording, uploading, surfacing]);

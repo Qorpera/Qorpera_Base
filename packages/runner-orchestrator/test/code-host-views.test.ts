@@ -1235,6 +1235,44 @@ describe("codeHostPublishAnswer", () => {
 			answer: "waiting",
 			detail: "code/a/b/repo.git/HEAD: waiting",
 		});
+		expect(codeHostPublishAnswer(4, Buffer.from(waiting))).toEqual({
+			answer: "waiting",
+			detail: "code/a/b/repo.git/HEAD: waiting",
+		});
+		const retryableNotApplied = `${JSON.stringify({
+			paths: [
+				{ path: "code/a/b/repo.git/HEAD", outcome: "not_applied", reason: "the save did not get through yet" },
+			],
+		})}\n`;
+		expect(codeHostPublishAnswer(4, Buffer.from(retryableNotApplied))).toEqual({
+			answer: "waiting",
+			detail: "code/a/b/repo.git/HEAD: not_applied (the save did not get through yet)",
+		});
+		expect(codeHostPublishAnswer(1, Buffer.from(retryableNotApplied))).toEqual({
+			answer: "waiting",
+			detail: "code/a/b/repo.git/HEAD: not_applied (the save did not get through yet)",
+		});
+		const batchLimit = `${JSON.stringify({
+			paths: [
+				{
+					path: "code/a/b/repo.git/pack",
+					outcome: "not_applied",
+					reason: "the boundary split reached its batch limit; remaining changes stay pending",
+				},
+			],
+		})}\n`;
+		expect(codeHostPublishAnswer(4, Buffer.from(batchLimit))).toEqual({
+			answer: "waiting",
+			detail:
+				"code/a/b/repo.git/pack: not_applied (the boundary split reached its batch limit; remaining changes stay pending)",
+		});
+		const tooLong = `${JSON.stringify({
+			paths: [{ path: "code/a/b/deep", outcome: "refused", reason: "too_long" }],
+		})}\n`;
+		expect(codeHostPublishAnswer(4, Buffer.from(tooLong))).toEqual({
+			answer: "refused",
+			detail: "code/a/b/deep: refused (too_long)",
+		});
 	});
 });
 

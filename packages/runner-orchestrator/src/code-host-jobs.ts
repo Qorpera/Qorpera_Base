@@ -1389,7 +1389,12 @@ export async function startCodeArea(
 		const at =
 			area.main === "present" &&
 			(await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${head}\n`)) === true;
-		if (!at) await moveBase(run, area.main, base, head, head);
+		if (!at) {
+			const records = await run.checkNames(run.repo, head);
+			const refused = codeFolderRefuses(run.area, records, "main");
+			if (refused.length) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+			await moveBase(run, area.main, base, head, head);
+		}
 		return { state: "present", baseSha: head, restored: run.restored };
 	});
 }
@@ -2627,7 +2632,7 @@ export async function bundleCodeArea(
 }
 
 /** What git keeps in its folder for a worktree while a merge, a pick, a revert, a bisect or a rebase is under way. */
-const WORKTREE_IN_PROGRESS = [
+export const WORKTREE_IN_PROGRESS = [
 	"MERGE_HEAD",
 	"CHERRY_PICK_HEAD",
 	"REVERT_HEAD",
@@ -3360,7 +3365,10 @@ export async function undoCodeChange(job: CodeHostJob, value: CodeChangeUndoInpu
 			.toString("latin1")
 			.trim();
 		if (!SHA.test(next)) throw new CodeHostJobFailure("CODE_HOST_UNDO_FAILED", "no undo commit");
-		await run.checkNames(run.repo, next);
+		// A file put back may differ from a newer one only by case.
+		const undoRecords = await run.checkNames(run.repo, next);
+		const undoRefused = codeFolderRefuses(run.area, undoRecords, CODE_FOLDER_ANY_SESSION);
+		if (undoRefused.length) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", undoRefused);
 		const diff = await changeDiff(run, mainSha, next, "CODE_HOST_UNDO_FAILED");
 		if (verifyChecks) {
 			await verifyChecks({ commitSha: next, mainBefore: mainSha, matchesBeforeTree, checksFilePresent });

@@ -215,6 +215,8 @@ export interface SurfaceSummary {
 	readonly previewMode: SurfacePreviewMode;
 	readonly autoPublish: boolean;
 	readonly publishStatus?: SurfacePublishStatus;
+	readonly lastPublishError?: string | null;
+	readonly liveHeadSha?: string | null;
 	readonly liveUrl: string | null;
 	readonly hasUnpublishedChanges: boolean;
 	readonly unpublishedChangeCount: number;
@@ -273,6 +275,7 @@ export interface SurfaceSession {
 	readonly createdByUserId?: string | null;
 	readonly explorationId: string | null;
 	readonly explorationVariantLabel: string | null;
+	readonly branchHeadSha?: string | null;
 	readonly hasActiveChat: boolean;
 	readonly question: SurfaceSessionQuestion | null;
 	readonly notePaths?: readonly string[];
@@ -518,6 +521,12 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		raw.publishStatus === undefined || raw.publishStatus === null
 			? undefined
 			: parseEnum(raw.publishStatus, SURFACE_PUBLISH_STATUSES, `${label}.publishStatus`);
+	const lastPublishError =
+		raw.lastPublishError === undefined
+			? undefined
+			: parseOptionalText(raw.lastPublishError, `${label}.lastPublishError`, 1000);
+	const liveHeadSha =
+		raw.liveHeadSha === undefined ? undefined : parseOptionalText(raw.liveHeadSha, `${label}.liveHeadSha`, 64);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		slug: parseSurfaceSlug(raw.slug, `${label}.slug`),
@@ -536,6 +545,8 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		previewMode: parseEnum(raw.previewMode, SURFACE_PREVIEW_MODES, `${label}.previewMode`),
 		autoPublish: raw.autoPublish,
 		...(publishStatus !== undefined ? { publishStatus } : {}),
+		...(lastPublishError !== undefined ? { lastPublishError } : {}),
+		...(liveHeadSha !== undefined ? { liveHeadSha } : {}),
 		liveUrl: parseOptionalText(raw.liveUrl, `${label}.liveUrl`, 512),
 		hasUnpublishedChanges: raw.hasUnpublishedChanges,
 		unpublishedChangeCount: parseInteger(
@@ -651,6 +662,8 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		raw.notePaths === undefined || raw.notePaths === null
 			? undefined
 			: parseStringArray(raw.notePaths, `${label}.notePaths`, 64, 512);
+	const branchHeadSha =
+		raw.branchHeadSha === undefined ? undefined : parseOptionalText(raw.branchHeadSha, `${label}.branchHeadSha`, 64);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		surfaceId: parseUuid(raw.surfaceId, `${label}.surfaceId`),
@@ -663,6 +676,7 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		...(createdByUserId !== undefined ? { createdByUserId } : {}),
 		explorationId: parseOptionalUuid(raw.explorationId, `${label}.explorationId`),
 		explorationVariantLabel: parseOptionalText(raw.explorationVariantLabel, `${label}.explorationVariantLabel`, 80),
+		...(branchHeadSha !== undefined ? { branchHeadSha } : {}),
 		hasActiveChat: raw.hasActiveChat,
 		question,
 		...(notePaths !== undefined ? { notePaths } : {}),

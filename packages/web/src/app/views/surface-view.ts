@@ -206,7 +206,7 @@ export class SurfaceView {
 	#barShown = "";
 	#framesShown = "";
 	#chromeShown = "";
-	#toastShown: number | undefined;
+	#toastShown = "";
 	#pillCollapsed = false;
 	#notchRatio = 0.5;
 	#suppressNotchClick = false;
@@ -242,6 +242,10 @@ export class SurfaceView {
 				if (this.#deactivated) return;
 				const surface = this.surface;
 				if (surface) this.#drawChrome(surface);
+			},
+			onRetry: () => {
+				const surface = this.surface;
+				if (surface) void host.store.retryPreview(surface.id);
 			},
 			isPassUsable: (previewId, pass) => host.store.isPreviewPassUsable(previewId, pass),
 			onPassSent: (previewId, pass) => host.store.markPreviewPassConsumed(previewId, pass),
@@ -526,7 +530,7 @@ export class SurfaceView {
 			this.#mountedFor = "";
 			this.#barShown = "";
 			this.#chromeShown = "";
-			this.#toastShown = undefined;
+			this.#toastShown = "";
 			this.el.classList.remove("has-drawer", "has-banner", "is-pointing");
 			this.#drawer.update(undefined);
 			if (state.source === "loading") {
@@ -726,6 +730,7 @@ export class SurfaceView {
 					readonly exploration: SurfaceExplorationSet;
 					readonly variants: readonly SurfaceSession[];
 					readonly needsInput: boolean;
+					readonly failed: boolean;
 					readonly conflicted: boolean;
 					readonly running: boolean;
 					readonly badgeCount: number;
@@ -736,6 +741,7 @@ export class SurfaceView {
 					readonly title: string;
 					readonly session: SurfaceSession;
 					readonly needsInput: boolean;
+					readonly failed: boolean;
 					readonly conflicted: boolean;
 					readonly running: boolean;
 					readonly badgeCount: number;
@@ -752,6 +758,7 @@ export class SurfaceView {
 					exploration,
 					variants,
 					needsInput: variants.some((v) => v.state === "needs_input"),
+					failed: variants.some((v) => v.state === "failed"),
 					conflicted: variants.some(hasConflictedChange),
 					running: variants.some(isRunningSession),
 					badgeCount: variants.length,
@@ -763,13 +770,24 @@ export class SurfaceView {
 				title: session.title,
 				session,
 				needsInput: session.state === "needs_input",
+				failed: session.state === "failed",
 				conflicted: hasConflictedChange(session),
 				running: isRunningSession(session),
 				badgeCount: session.changes.filter(isOpenChange).length,
 			})),
 		].sort((a, b) => {
 			const rank = (agent: HeaderAgent) =>
-				agent.needsInput ? 0 : agent.conflicted ? 1 : agent.running ? 2 : agent.badgeCount > 0 ? 3 : 4;
+				agent.needsInput
+					? 0
+					: agent.failed
+						? 1
+						: agent.conflicted
+							? 2
+							: agent.running
+								? 3
+								: agent.badgeCount > 0
+									? 4
+									: 5;
 			return rank(a) - rank(b);
 		});
 		const studioHasChanges =
@@ -809,6 +827,7 @@ export class SurfaceView {
 				agent.id,
 				agent.title,
 				agent.needsInput,
+				agent.failed,
 				agent.conflicted,
 				agent.running,
 				agent.badgeCount,
@@ -865,16 +884,18 @@ export class SurfaceView {
 								agent.kind === "exploration"
 									? activeDrawerExploration === agent.id
 									: activeDrawerSession === agent.id;
-							const attention = agent.needsInput || agent.conflicted;
+							const attention = agent.needsInput || agent.conflicted || agent.failed;
 							const badge = agent.needsInput
 								? h("span", { class: "surface-bar-agent-badge is-attention" }, t("Needs you"))
-								: agent.conflicted
-									? h("span", { class: "surface-bar-agent-badge is-danger" }, t("Conflict"))
-									: agent.running
-										? h("span", { class: "surface-bar-agent-badge is-working" }, t("Working"))
-										: agent.badgeCount > 0
-											? h("span", { class: "surface-bar-agent-count" }, String(agent.badgeCount))
-											: null;
+								: agent.failed
+									? h("span", { class: "surface-bar-agent-badge is-danger" }, t("Failed"))
+									: agent.conflicted
+										? h("span", { class: "surface-bar-agent-badge is-danger" }, t("Conflict"))
+										: agent.running
+											? h("span", { class: "surface-bar-agent-badge is-working" }, t("Working"))
+											: agent.badgeCount > 0
+												? h("span", { class: "surface-bar-agent-count" }, String(agent.badgeCount))
+												: null;
 							return h(
 								"button",
 								{
@@ -1317,6 +1338,7 @@ export class SurfaceView {
 					const abort = new AbortController();
 					const head = buildHead();
 					const stage = new SurfaceDoorStage(abort.signal, {
+						onRetry: () => void store.retryPreview(surface.id),
 						isPassUsable: (previewId, pass) => store.isPreviewPassUsable(previewId, pass),
 						onPassSent: (previewId, pass) => store.markPreviewPassConsumed(previewId, pass),
 						onNeedFreshPass: (previewId, stalePass) => store.remintPreviewPass(surface.id, previewId, stalePass),
@@ -1572,37 +1594,45 @@ export class SurfaceView {
 
 	#drawToast(): void {
 		const undo = this.#host.store.state.undo;
-		if (undo?.id === this.#toastShown) return;
-		this.#toastShown = undo?.id;
+		const key = undo ? `${undo.id}:${undo.pending ? "p" : "r"}` : "";
+		if (key === this.#toastShown) return;
+		this.#toastShown = key;
 		this.#toast.replaceChildren(
 			undo
-				? h(
-						"div",
-						{ class: "surface-toast" },
-						icon("check"),
-						h(
-							"span",
-							null,
-							undo.verb === "sent"
-								? t("Sent “{title}”", { title: undo.label })
-								: undo.verb === "done"
-									? t("Done: “{title}”", { title: undo.label })
-									: t("Merged “{title}” into Base", { title: undo.label }),
-						),
-						undo.verb === "merged"
-							? h(
-									"button",
-									{ type: "button", class: "surface-toast-review", "data-act": "open-publish" },
-									t("Patch notes"),
-								)
-							: null,
-						h(
-							"button",
-							{ type: "button", "data-act": "undo" },
-							h("span", { class: "surface-ring", "aria-hidden": "true" }),
-							t("Undo"),
-						),
-					)
+				? undo.pending
+					? h(
+							"div",
+							{ class: "surface-toast is-pending" },
+							h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
+							h("span", null, t("Merging “{title}”…", { title: undo.label })),
+						)
+					: h(
+							"div",
+							{ class: "surface-toast" },
+							icon("check"),
+							h(
+								"span",
+								null,
+								undo.verb === "sent"
+									? t("Sent “{title}”", { title: undo.label })
+									: undo.verb === "done"
+										? t("Done: “{title}”", { title: undo.label })
+										: t("Merged “{title}” into Base", { title: undo.label }),
+							),
+							undo.verb === "merged"
+								? h(
+										"button",
+										{ type: "button", class: "surface-toast-review", "data-act": "open-publish" },
+										t("Patch notes"),
+									)
+								: null,
+							h(
+								"button",
+								{ type: "button", "data-act": "undo" },
+								h("span", { class: "surface-ring", "aria-hidden": "true" }),
+								t("Undo"),
+							),
+						)
 				: "",
 		);
 	}

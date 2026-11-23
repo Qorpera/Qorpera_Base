@@ -602,7 +602,11 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			this.open = false;
 		};
 
-		drawer.querySelector<HTMLButtonElement>('[data-act="focus-session"]')!.click();
+		drawer
+			.querySelector<HTMLElement>(
+				".surface-overview-card.is-agent:not(.is-exploration) .surface-overview-change-title",
+			)!
+			.click();
 		view.update();
 		expect(drawer.classList.contains("is-overview")).toBe(false);
 		expect(drawer.querySelector(".surface-message.is-session")).not.toBeNull();
@@ -612,9 +616,11 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			"Tydelig pris: 1.995 kr. inkl. fragt",
 		);
 		const rowActions = [...firstChange.querySelectorAll<HTMLButtonElement>(".surface-drawer-change-acts button")].map(
-			(btn) => btn.textContent,
+			(btn) => btn.getAttribute("role") ?? btn.textContent,
 		);
-		expect(rowActions).toEqual(["Approve", "Change", "Discard"]);
+		expect(rowActions).toEqual(["switch", "Approve", "Change", "Discard"]);
+		expect(drawer.querySelector(".surface-drawer-title p")).toBeNull();
+		expect(drawer.textContent).not.toContain("toggle to preview");
 
 		firstChange.querySelector<HTMLButtonElement>('[data-act="approve"]')!.click();
 		const confirmFirst = drawer.querySelector<HTMLButtonElement>('.surface-drawer-change [data-act="approve"]')!;
@@ -1101,9 +1107,11 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			"+1",
 		]);
 		expect(linkHref(chips[0]!)).toBe(`#/c/${COMPANY}/s/files`);
+		expect(store.state.drawer).toBeUndefined();
 		chips[0]!.click();
 		expect(navigated).toEqual(["files"]);
 		expect(location.hash).toBe(`#/c/${COMPANY}/s/files`);
+		expect(store.state.drawer).toBeUndefined();
 
 		expect(view.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
 		expect(view.el.querySelector(".surface-drawer-source")).toBeNull();

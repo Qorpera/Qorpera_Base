@@ -64,6 +64,13 @@ export interface CodeSiteRecipe {
 	readonly spaFallback?: string | null;
 }
 
+export interface CodePreviewRecipe {
+	readonly run: string;
+	readonly folder: string | null;
+	readonly cwd: string;
+	readonly timeoutSeconds: number;
+}
+
 export type CodeChecksRead =
 	| { readonly state: "missing" }
 	/** `site` is the file's recipe, null without one. */
@@ -72,6 +79,7 @@ export type CodeChecksRead =
 			readonly blob: string;
 			readonly checks: readonly CodeCheck[];
 			readonly site: CodeSiteRecipe | null;
+			readonly preview?: CodePreviewRecipe;
 	  }
 	/** `blob` is null when the path holds no regular file (a folder, a link or a submodule). */
 	| { readonly state: "refused"; readonly blob: string | null; readonly problems: readonly CodeChecksProblem[] };
@@ -165,10 +173,19 @@ export function readCodeChecks(file: CodeCommitFile): CodeChecksRead {
 	const problems: CodeChecksProblem[] = [];
 	const parsed = parseChecks(entry.bytes, (at, code, message) => problems.push({ at, code, message }));
 	if (problems.length > 0 || parsed === null) return { state: "refused", blob, problems };
-	return { state: "ok", blob, checks: parsed.checks, site: parsed.site };
+	return {
+		state: "ok",
+		blob,
+		checks: parsed.checks,
+		site: parsed.site,
+		...(parsed.preview !== undefined ? { preview: parsed.preview } : {}),
+	};
 }
 
-function parseChecks(bytes: Uint8Array, refuse: Refuse): { checks: CodeCheck[]; site: CodeSiteRecipe | null } | null {
+function parseChecks(
+	bytes: Uint8Array,
+	refuse: Refuse,
+): { checks: CodeCheck[]; site: CodeSiteRecipe | null; preview?: CodePreviewRecipe } | null {
 	if (bytes.byteLength > MAX_CODE_CHECKS_FILE_BYTES) {
 		refuse("", "TOO_LARGE", "The checks file is over 16 KiB.");
 		return null;
@@ -197,16 +214,76 @@ function parseChecks(bytes: Uint8Array, refuse: Refuse): { checks: CodeCheck[]; 
 	}
 	let checks: CodeCheck[] = [];
 	let site: CodeSiteRecipe | null = null;
+	let preview: CodePreviewRecipe | undefined;
 	for (const [key, value] of Object.entries(root)) {
 		const at = pointer("", key);
 		if (key === "$schema") {
 			if (typeof value !== "string") refuse(at, "WRONG_TYPE", "Must be a string.");
 		} else if (key === "checks") checks = checksOf(value, at, refuse);
 		else if (key === "site") site = siteOf(value, at, refuse);
+		else if (key === "preview") preview = previewOf(value, at, refuse);
 		else refuse(at, "UNKNOWN_KEY", UNKNOWN);
 	}
 	if (!("checks" in root)) refuse("", "MISSING_KEY", "Needs checks.");
-	return { checks, site };
+	return { checks, site, ...(preview !== undefined ? { preview } : {}) };
+}
+
+const PREVIEW_DEFAULT_SECONDS = 180;
+const PREVIEW_MAX_SECONDS = 600;
+
+function previewOf(value: unknown, at: string, refuse: Refuse): CodePreviewRecipe | undefined {
+	if (!isObject(value)) {
+		refuse(at, "WRONG_TYPE", "Must be an object.");
+		return undefined;
+	}
+	let run: string | null = null;
+	let folder: string | null = null;
+	let cwd = ".";
+	let timeoutSeconds = PREVIEW_DEFAULT_SECONDS;
+	for (const [key, field] of Object.entries(value)) {
+		const fieldAt = pointer(at, key);
+		if (key === "run") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (field.trim() === "" || bytes(field) > MAX_RUN_BYTES || field.includes("\0"))
+				refuse(fieldAt, "INVALID_VALUE", `Must be 1 to ${MAX_RUN_BYTES} bytes, without a NUL character.`);
+			else run = field;
+		} else if (key === "folder") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (codeSiteFolderValid(field)) folder = field;
+			else
+				refuse(
+					fieldAt,
+					"INVALID_PATH",
+					'Must be "." or a folder of the repository: a relative path without . or .. parts, at most 300 bytes.',
+				);
+		} else if (key === "cwd") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (!isFolder(field))
+				refuse(
+					fieldAt,
+					"INVALID_PATH",
+					`Must be a folder of the repository: a relative path without . or .. parts, at most ${MAX_CWD_BYTES} bytes.`,
+				);
+			else cwd = field;
+		} else if (key === "timeoutSeconds") {
+			if (
+				typeof field !== "number" ||
+				!Number.isInteger(field) ||
+				field < CODE_CHECK_MIN_SECONDS ||
+				field > PREVIEW_MAX_SECONDS
+			)
+				refuse(
+					fieldAt,
+					"INVALID_VALUE",
+					`Must be a whole number of seconds from ${CODE_CHECK_MIN_SECONDS} to ${PREVIEW_MAX_SECONDS}.`,
+				);
+			else timeoutSeconds = field;
+		} else {
+			refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN);
+		}
+	}
+	if (!("run" in value)) refuse(at, "MISSING_KEY", "Needs run.");
+	return run === null ? undefined : { run, folder, cwd, timeoutSeconds };
 }
 
 /** The `site` key (STEP4-RELEASES-PLAN.md 5.1): what the kernel keeps of a made site, so that a recipe this reads is
