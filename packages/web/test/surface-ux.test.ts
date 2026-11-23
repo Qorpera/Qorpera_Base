@@ -1033,9 +1033,8 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		address!.click();
 		const sheet = view.el.querySelector<HTMLElement>(".surface-address-sheet")!;
 		expect(sheet.hidden).toBe(false);
-		expect(sheet.querySelector<HTMLAnchorElement>(".surface-address-open")?.getAttribute("href")).toBe(
-			"https://thetaband.dk",
-		);
+		expect(sheet.querySelector(".surface-address-name")?.textContent).toBe("thetaband.dk");
+		expect(sheet.querySelector(".surface-address-row")).toBeNull();
 		expect(view.el.querySelector(".surface-pill-address")?.getAttribute("aria-expanded")).toBe("true");
 		view.el.querySelector<HTMLButtonElement>(".surface-pill-address")!.click();
 		expect(sheet.hidden).toBe(true);
@@ -1090,19 +1089,20 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		expect(hosting.client.read).toHaveBeenCalledTimes(1);
 		expect(address()?.className).toBe("surface-pill-address is-private");
-		expect(address()?.title).toBe("Only your team can open it");
-		expect(address()?.querySelector(".surface-address-lock svg")).not.toBeNull();
+		expect(address()?.title).toBe("Not live yet");
+		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
 		expect(address()?.textContent).toBe("thetaband.dk");
 
 		address()!.click();
 		await flush();
 		const sheet = view.el.querySelector<HTMLElement>(".surface-canvas > .surface-address-sheet")!;
 		expect(sheet.hidden).toBe(false);
-		[...sheet.querySelectorAll<HTMLButtonElement>("button")]
-			.find((item) => item.textContent === "Put it live")!
-			.click();
+		sheet.querySelector<HTMLButtonElement>(".surface-address-go")!.click();
+		expect(address()?.className).toBe("surface-pill-address is-private");
+		expect(sheet.querySelector(".surface-address-go")?.textContent).toBe("Confirm");
+		sheet.querySelector<HTMLButtonElement>(".surface-address-go")!.click();
 		expect(address()?.className).toBe("surface-pill-address is-live");
-		expect(address()?.title).toBe("Anyone can open it");
+		expect(address()?.title).toBe("Live");
 		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
 		await flush();
 
@@ -1110,9 +1110,9 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		address()!.click();
 		address()!.click();
 		await flush();
-		expect(address()?.className).toBe("surface-pill-address is-waiting");
-		expect(address()?.title).toBe("Waiting for your domain");
-		expect(address()?.textContent).toBe("www.thetaband.dk");
+		expect(address()?.className).toBe("surface-pill-address is-live");
+		expect(address()?.title).toBe("Live");
+		expect(address()?.textContent).toBe("thetaband.dk");
 
 		hosting.world.entry!.domains = [siteDomain("www.thetaband.dk", "tls_active", { isPrimary: true })];
 		address()!.click();

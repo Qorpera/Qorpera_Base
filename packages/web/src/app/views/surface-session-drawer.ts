@@ -38,7 +38,7 @@ const DRAWER_DEFAULT = 296;
 const DRAWER_MIN = 260;
 const DRAWER_MAX = 560;
 const DRAWER_MAX_SHARE = 0.56;
-const APPROVE_ARM_MS = 4_500;
+export const APPROVE_ARM_MS = 4_500;
 
 interface QuotedChangeRef {
 	readonly sessionId: string;
@@ -71,7 +71,7 @@ function approveFace(text: string, shown: boolean, confirm: boolean, glyph?: str
 	);
 }
 
-function approveLabel(rest: string, armed: boolean, glyph?: string): HTMLElement {
+export function approveLabel(rest: string, armed: boolean, glyph?: string): HTMLElement {
 	return h(
 		"span",
 		{ class: "surface-approve-label" },
