@@ -1842,6 +1842,25 @@ only live ones. A day after an input's last upload `qorpera_surface_image_orphan
 `qorpera-surface-image-sweep`, every minute, one folder commit a call) deletes the folder of an input no message holds,
 or the images a held input does not list, then the row.
 
+### Asking a teammate to publish (20260930867000_surface_publish_ask)
+
+A surface's summary (`qorpera_list_surfaces`, the workspace's `surface` and every call that answers a summary) carries
+`publishAsk`: null, or `{askedByUserId, askedUserId, askedAt, changeCount, status: "open" | "declined", answeredAt}`.
+A surface holds at most one ask. Each call answers the surface's summary.
+
+- `qorpera_ask_surface_publish(p_surface_id, p_user_id)`: a member who may publish (not a viewer) asks another member
+  who may publish; a new ask replaces the surface's ask. `changeCount` is what waited to publish then. Refuses 22023
+  for oneself or nobody, 42501 when the caller or the asked member may not publish, 55000 "This surface publishes on
+  Approve" (Auto-publish on), "A publish is already running" and "Nothing to publish".
+- `qorpera_decline_surface_publish_ask(p_surface_id)`: the asked member says no; the ask stays as `declined`, with
+  `answeredAt`, for the asker to read. P0002 when no open ask names the caller.
+- `qorpera_withdraw_surface_publish_ask(p_surface_id)`: the asker takes the ask back, open or declined. P0002 when the
+  caller asked nothing there.
+
+Yes is the asked member's own `qorpera_publish_surface`, with their own authority. An ask goes when anyone's publish
+starts (a job's publish when it starts), when nothing is left to publish, and when the asked member leaves the
+company or becomes a viewer (the asker leaving closes it too). Each change sends the `surfaces` hint.
+
 ### Coding environment secrets (20260928549440_coding_environment_secrets)
 
 The environment variables of a coding session's commands (an npm token, a Sentry DSN). Each is a vault secret captured

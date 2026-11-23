@@ -194,6 +194,58 @@ describe("cloud-client surface session images", () => {
 	});
 });
 
+describe("cloud-client surface publish asks", () => {
+	const surfaceId = "13490000-0000-4000-8000-000000000001";
+	const userId = "13490000-0000-4000-8000-000000000002";
+	const ask = {
+		askedByUserId: "13490000-0000-4000-8000-000000000003",
+		askedUserId: userId,
+		askedAt: "2026-11-23T01:06:00Z",
+		changeCount: 1,
+		status: "open",
+		answeredAt: null,
+	};
+	const summary = {
+		id: surfaceId,
+		slug: "website",
+		title: "Website",
+		group: "products",
+		archetype: "live_build",
+		status: "active",
+		icon: "globe",
+		sourceKind: "code_repo",
+		repositoryKey: "surfaces/website",
+		folderRoot: null,
+		siteSlug: "website",
+		previewMode: "static_site",
+		autoPublish: false,
+		liveUrl: "https://website.qorpera.com/",
+		hasUnpublishedChanges: true,
+		unpublishedChangeCount: 1,
+		publishAsk: ask,
+	};
+
+	it("asks, declines and takes back through their RPCs and parses the ask", async () => {
+		const rpc = vi.fn(async () => ({ data: summary, error: null }));
+		const client = new CloudSurfacesClient({ rpc } as unknown as SupabaseClient);
+		expect((await client.askSurfacePublish(surfaceId, userId)).publishAsk).toEqual(ask);
+		await client.declineSurfacePublishAsk(surfaceId);
+		await client.withdrawSurfacePublishAsk(surfaceId);
+		expect(rpc.mock.calls).toEqual([
+			["qorpera_ask_surface_publish", { p_surface_id: surfaceId, p_user_id: userId }],
+			["qorpera_decline_surface_publish_ask", { p_surface_id: surfaceId }],
+			["qorpera_withdraw_surface_publish_ask", { p_surface_id: surfaceId }],
+		]);
+		const bad = vi.fn(async () => ({
+			data: { ...summary, publishAsk: { ...ask, askedUserId: "sofie" } },
+			error: null,
+		}));
+		await expect(
+			new CloudSurfacesClient({ rpc: bad } as unknown as SupabaseClient).askSurfacePublish(surfaceId, userId),
+		).rejects.toThrow("surface.publishAsk.askedUserId");
+	});
+});
+
 describe("cloud-client surface automation owners", () => {
 	const automationId = "13500000-0000-4000-8000-000000000001";
 	const offerId = "13500000-0000-4000-8000-000000000002";

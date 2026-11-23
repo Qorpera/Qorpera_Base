@@ -516,6 +516,44 @@
 	min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--sidebar-selection); color: #fff;
 	font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums;
 }
+.surface-publish .person-avatar { width: 18px; height: 18px; font-size: 7.5px; font-weight: 650; box-shadow: 0 0 0 1.5px var(--primary); }
+.surface-publish-waiting { display: inline-flex; margin-left: 1px; }
+.surface-publish.is-asked .surface-publish-main { padding: 0 6px 0 6px; gap: 6px; }
+.surface-publish .surface-publish-yes, .surface-publish .surface-publish-no { justify-content: center; padding: 0; }
+.surface-publish .surface-publish-yes {
+	width: 24px; height: 24px; margin: 3px 3px 3px 0; border-radius: 50%; background: var(--on-primary); color: var(--primary);
+}
+.surface-publish .surface-publish-no { width: 30px; padding-right: 3px; border-radius: 0 999px 999px 0; opacity: 0.8; }
+.surface-publish .surface-publish-no:hover:not(:disabled) { opacity: 1; }
+.surface-publish :is(.surface-publish-yes, .surface-publish-no):disabled { opacity: 0.5; }
+.surface-publish :is(.surface-publish-yes, .surface-publish-no) .icon { width: 13px; height: 13px; }
+@media (max-width: 640px) {
+	.surface-pill-right:has(.surface-publish.is-asked) .surface-pill-device { display: none; }
+	.surface-publish.is-asked .surface-publish-word { display: none; }
+}
+.surface-publish-ask-line {
+	display: flex; align-items: center; gap: 9px; padding: 8px 10px 8px 12px; border-radius: 12px;
+	background: color-mix(in srgb, var(--text) 4%, transparent); color: var(--text); font-size: 13px; font-weight: 560;
+}
+.surface-publish-ask-line > .person-avatar { width: 24px; height: 24px; font-size: 9.5px; font-weight: 650; }
+.surface-publish-ask-text { flex: 1; min-width: 0; }
+.surface-publish-ask-act {
+	flex: none; height: 26px; padding: 0 11px; border: 1px solid color-mix(in srgb, var(--text) 14%, transparent);
+	border-radius: 999px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; font-weight: 600; cursor: default;
+}
+.surface-publish-ask-act:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
+.surface-publish-ask-act:disabled { opacity: 0.5; }
+.btn.surface-publish-ask-btn { display: inline-flex; align-items: center; gap: 8px; }
+.surface-publish-sheet .surface-sheet-actions { flex-wrap: wrap; }
+.surface-publish-ask-pick { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.surface-publish-ask-person {
+	display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px 0 5px; border: 1px solid var(--border);
+	border-radius: 999px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; font-weight: 560; cursor: default;
+}
+.surface-publish-ask-person:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
+.surface-publish-ask-person:disabled { opacity: 0.5; }
+.surface-publish-ask-person > .person-avatar { width: 24px; height: 24px; font-size: 9.5px; font-weight: 650; }
+.btn.surface-publish-ask-btn > .person-avatar { width: 22px; height: 22px; font-size: 9px; font-weight: 650; }
 
 /* Right sidepanel toggle pinned statically to the top-right corner of the page (never pushed by the drawer). */
 .surface-panel-toggle {
@@ -606,6 +644,8 @@
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-publish button { height: 26px; font-size: 11px; }
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-publish-main { padding: 0 3px 0 7px; }
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-publish-menu { padding: 0 5px 0 1px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-publish .surface-publish-yes { width: 20px; height: 20px; }
+	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-publish .surface-publish-no { width: 26px; }
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar-crew { gap: 3px; }
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar-agent { height: 26px; padding: 0 4px 0 2px; gap: 3px; }
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar-agent .surface-crew { --crew-size: 20px; width: 20px; height: 20px; }

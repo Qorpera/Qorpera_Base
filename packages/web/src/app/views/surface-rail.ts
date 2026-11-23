@@ -11,7 +11,7 @@ import {
 	surfaceLookOf,
 	surfaceTint,
 } from "../surface-kinds.ts";
-import { openExplorations, type SurfacesState, type SurfacesStore } from "../surfaces-store.ts";
+import { askedToPublish, openExplorations, type SurfacesState, type SurfacesStore } from "../surfaces-store.ts";
 import { CrewFigures } from "./surface-crew.ts";
 
 export function surfaceTile(
@@ -429,7 +429,9 @@ export class SurfaceRail {
 				);
 			}
 			const groupChildren: HTMLElement[] = [groupEntry.head];
-			for (const surface of activeSurfaces) {
+			for (const listed of activeSurfaces) {
+				const asksMe = askedToPublish(listed, this.#store.userId);
+				const surface = asksMe ? { ...listed, needsAttentionCount: listed.needsAttentionCount + 1 } : listed;
 				seenActive.add(surface.id);
 				const look = surfaceLookOf(surface, state.surfaceLooks);
 				const active = surface.slug === activeSlug;
@@ -437,7 +439,7 @@ export class SurfaceRail {
 				if (surface.activeSessionCount > 0 && !state.workspaces[surface.id]) {
 					this.#store.hydrateWorkspace(surface.id);
 				}
-				const crew = crewRow(state, surface, this.#crew);
+				const crew = asksMe ? null : crewRow(state, surface, this.#crew);
 				let entry = this.#rows.get(surface.id);
 				if (!entry) {
 					entry = createSurfaceRow(surface, look, this.#profileId, active, crew, hasMembers ? members : undefined);

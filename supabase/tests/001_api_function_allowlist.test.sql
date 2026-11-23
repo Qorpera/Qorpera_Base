@@ -439,10 +439,12 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_approve_session_all(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); approves all open changes in a surface session (20260930843000)'),
 	('public.qorpera_approve_surface_change(uuid,boolean)', false, true, 'member: qorpera_assert_surface_member(profile, true); approves a surface change unit and queues merge (20260930843000)'),
 	('public.qorpera_archive_surface(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); archives a surface in the caller''s company (20260930840000)'),
+	('public.qorpera_ask_surface_publish(uuid,uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); asks one teammate who may publish to publish the surface, one open ask per surface (20260930867000)'),
 	('public.qorpera_bootstrap_company_surfaces(uuid)', false, true, 'member: qorpera_assert_surface_member(company, true); idempotently seeds starter surfaces and pulse automation (20260930843000)'),
 	('public.qorpera_choose_exploration(uuid,uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); chooses a winning exploration option (20260930840000)'),
 	('public.qorpera_create_surface(uuid,text,text,text,text,text,text,text,text,boolean)', false, true, 'member: qorpera_assert_surface_member(company, true); creates a company surface and optional initial session (20260930843000)'),
 	('public.qorpera_create_surface_automation(uuid,text,text,text,text)', false, true, 'member: qorpera_assert_surface_member(company, true); creates a scheduled surface automation (20260930843000)'),
+	('public.qorpera_decline_surface_publish_ask(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, false); only the asked member says no to an open ask (20260930867000)'),
 	('public.qorpera_delete_surface_automation(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); deletes a surface automation (20260930843000)'),
 	('public.qorpera_discard_exploration(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); discards an open surface exploration (20260930843000)'),
 	('public.qorpera_discard_surface_change(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); discards an open surface change unit (20260930840000)'),
@@ -463,6 +465,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_surfaces_enabled()', false, true, 'member: reads platform-wide qorpera_surface_settings.enabled switch (20260930843000)'),
 	('public.qorpera_toggle_automation(uuid,boolean)', false, true, 'member: qorpera_assert_surface_member(profile, true); pauses or resumes a surface automation (20260930843000)'),
 	('public.qorpera_undo_surface_change(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); reverses a merged surface change unit (20260930843000)'),
+	('public.qorpera_withdraw_surface_publish_ask(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, false); only the asker takes their ask back (20260930867000)'),
 	('public.qorpera_update_surface_automation(uuid,text,text,text,text,boolean)', false, true, 'member: qorpera_assert_surface_member(profile, true); updates schedule, prompt, or target surface of a surface automation (20260930843000)');
 
 do $$

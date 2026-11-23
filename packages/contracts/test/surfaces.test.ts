@@ -306,4 +306,40 @@ describe("surfaces contracts", () => {
 		});
 		expect(session.branchHeadSha).toBe("b".repeat(40));
 	});
+
+	it("parses a surface's ask to publish", () => {
+		const base = {
+			id: randomUUID(),
+			slug: "website",
+			title: "Website",
+			group: "products",
+			archetype: "live_build",
+			status: "active",
+			icon: "globe",
+			sourceKind: "code_repo",
+			repositoryKey: "surfaces/website",
+			folderRoot: null,
+			siteSlug: "website",
+			previewMode: "static_site",
+			autoPublish: false,
+			liveUrl: "https://website.qorpera.com/",
+			hasUnpublishedChanges: true,
+			unpublishedChangeCount: 1,
+			sortOrder: 0,
+		};
+		const ask = {
+			askedByUserId: randomUUID(),
+			askedUserId: randomUUID(),
+			askedAt: "2026-11-23T01:06:00Z",
+			changeCount: 1,
+			status: "declined",
+			answeredAt: "2026-11-23T01:09:00Z",
+		};
+		expect(parseSurfaceSummary({ ...base, publishAsk: ask }).publishAsk).toEqual(ask);
+		expect(parseSurfaceSummary({ ...base, publishAsk: null }).publishAsk).toBeNull();
+		expect("publishAsk" in parseSurfaceSummary(base)).toBe(false);
+		expect(() => parseSurfaceSummary({ ...base, publishAsk: { ...ask, status: "accepted" } })).toThrow(
+			"surface.publishAsk.status",
+		);
+	});
 });

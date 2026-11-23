@@ -79,6 +79,9 @@ export type SurfacesClient = Pick<
 			| "answerAutomationOffer"
 			| "setSurfaceFigure"
 			| "surfaceSessionImages"
+			| "askSurfacePublish"
+			| "declineSurfacePublishAsk"
+			| "withdrawSurfacePublishAsk"
 		>
 	>;
 
@@ -601,6 +604,10 @@ export interface UnpublishedChangeEntry {
 	readonly exploration?: SurfaceExplorationSet;
 }
 
+export function askedToPublish(surface: SurfaceSummary, userId: string | undefined): boolean {
+	return Boolean(userId) && surface.publishAsk?.status === "open" && surface.publishAsk.askedUserId === userId;
+}
+
 export function unpublishedChanges(
 	state: Pick<SurfacesState, "workspaces" | "publishedChangeIds">,
 	surfaceId: string,
@@ -975,6 +982,8 @@ export interface SurfacesStoreOptions {
 	readonly realtimeLive?: () => boolean;
 	readonly memberName?: (userId: string) => string | undefined;
 	readonly peopleAtSurface?: (slug: string) => readonly { readonly userId: string; readonly name: string }[];
+	readonly userId?: string;
+	readonly publishers?: () => readonly { readonly userId: string; readonly name: string }[];
 	readonly loadCloudFiles?: (
 		surface: SurfaceSummary,
 		signal: AbortSignal,
@@ -1176,6 +1185,14 @@ export class SurfacesStore {
 
 	peopleAtSurface(slug: string): readonly { readonly userId: string; readonly name: string }[] {
 		return this.#options.peopleAtSurface?.(slug) ?? [];
+	}
+
+	get userId(): string | undefined {
+		return this.#options.userId;
+	}
+
+	publishTeammates(): readonly { readonly userId: string; readonly name: string }[] {
+		return (this.#options.publishers?.() ?? []).filter((person) => person.userId !== this.#options.userId);
 	}
 
 	lookOf(surface: Pick<SurfaceSummary, "id" | "slug" | "icon" | "archetype" | "kind" | "accentHex">): SurfaceLook {
@@ -4181,6 +4198,32 @@ export class SurfacesStore {
 		) {
 			void this.refreshCloudFiles(surface, { visible: true });
 		}
+		return true;
+	}
+
+	askToPublish(surfaceId: string, userId: string): Promise<boolean> {
+		return this.#publishAsk(surfaceId, (client) => client.askSurfacePublish?.(surfaceId, userId));
+	}
+
+	declinePublishAsk(surfaceId: string): Promise<boolean> {
+		return this.#publishAsk(surfaceId, (client) => client.declineSurfacePublishAsk?.(surfaceId));
+	}
+
+	withdrawPublishAsk(surfaceId: string): Promise<boolean> {
+		return this.#publishAsk(surfaceId, (client) => client.withdrawSurfacePublishAsk?.(surfaceId));
+	}
+
+	async #publishAsk(
+		surfaceId: string,
+		call: (client: SurfacesClient) => Promise<SurfaceSummary> | undefined,
+	): Promise<boolean> {
+		const surface = await this.#run(`publish-ask:${surfaceId}`, async (client) => {
+			const pending = call(client);
+			if (!pending) throw new Error(this.#options.unavailableMessage);
+			return await pending;
+		});
+		if (!surface) return false;
+		this.#putSurface(surface);
 		return true;
 	}
 
