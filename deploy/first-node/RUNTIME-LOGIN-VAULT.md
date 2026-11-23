@@ -970,8 +970,13 @@ refused it goes on with the token it holds; it reads a replaced `.credentials.js
 A member saves their own Gemini API key directly from the web client to the shared vault (two-hop save: the web client
 calls `qorpera_begin_gemini_key_save` for a short-lived ticket, then posts the key directly to the vault so it never
 passes through Supabase). The vault verifies the key against Google via `x-goog-api-key`, seals it under the member's
-vault key (`qorpera_gemini_keys`), and opens it only for an active attended run whose lease is pinned to that key
-(`qorpera_open_gemini_key_for_run`).
+vault key (`qorpera_gemini_keys`), and opens it (`qorpera_open_gemini_key_for_run`) only for an active run whose lease
+is pinned to that key and whose requester owns it (`owner_user_id = coalesce(requested_by_user_id, created_by_user_id)`):
+attended runs (`session_turn`, `room_delivery`), and — since `20260930877000` — return-trip mediation `wake` runs of
+kinds `worker-completion`, `machine-event`, `machine-checkin`, and `office-activation` chained via `origin_run_id` from
+that member's Gemini-pinned run in the same company, environment, and staff agent (excluding `worker-dispatch` and all
+other wake kinds; unattended wakes of those four kinds, including repeated machine check-ins, spend the member's own
+API key under their monthly spend cap).
 
 - **nginx (`:10000` server block on node 1):** callers send `?company=<profileId>` (browser save and key check at
   `packages/web/src/cloud/gemini-key.ts` and runner open at `packages/runtime/src/cloud-secret-broker-http.ts`), so
