@@ -382,7 +382,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-23",
 		title: "Interface previews and publishes are built for you",
-		text: "A code interface's Preview and its publish are now built by Qorpera itself: the platform runs the project's preview recipe (the preview block of the repository's checks file: run, folder, cwd and timeout) in a coding machine and serves what the build wrote. Ask coding sessions to commit source only, never build output, and to give every project that needs a build a real preview recipe. A project without one is served as its committed files, as before. When a build fails, the member sees a plain sentence, and the end of the build log is kept with the preview for the session.",
+		text: "A code interface's Preview and its publish are now built by Qorpera itself: the platform runs the project's preview recipe (the preview block of the repository's checks file: run, cwd, timeout, and the folder the build writes, counted from the repository root) in a coding machine and serves what the build wrote. Ask coding sessions to commit source only, never build output, and to give every project that needs a build a real preview recipe. A project without one is served as its committed files, as before. When a build fails, the member sees a plain sentence, and the end of the build log is kept with the preview for the session.",
 	},
 ]);
 

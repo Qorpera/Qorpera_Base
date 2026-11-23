@@ -477,6 +477,10 @@ describe("cloud surface runtime tools", () => {
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain('"preview": { "run"');
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).not.toContain("commit the built output folder");
 		expect(text).toContain("commit source only, never build output");
+		expect(text).toContain("`folder` is counted from the repository root");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain(
+			'counted from the repository root and not from cwd, such as "dist", or "web/dist" with "cwd": "web"',
+		);
 		expect(text).not.toContain("commit the built output folder");
 		expect(text).toContain("surfaceGate");
 		expect(text).toContain("runChecks: true");
