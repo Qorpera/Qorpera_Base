@@ -943,6 +943,7 @@ describe("SurfaceStudioView", () => {
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
 		expect(view.el.querySelectorAll(".studio-kv.is-empty")).toHaveLength(1);
+		expect(view.el.querySelector(".studio-file-tag")).toBeNull();
 		expect(view.el.querySelector('[data-block="table"] .studio-section-head h2')?.textContent).toBe("Parts");
 		expect(view.el.querySelector('[data-block="table"] .studio-table.is-empty')).not.toBeNull();
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="vendors"]')!.click();

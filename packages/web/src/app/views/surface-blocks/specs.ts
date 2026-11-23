@@ -203,7 +203,9 @@ export function prepareSpecList(block: SurfaceSpecListBlock, ctx: SurfaceBlockCo
 							class: `studio-section${filled && read.changed ? " is-changed" : ""}`,
 							"data-block": "spec_list",
 						},
-						heading ? sectionHead(heading, filled && read.changed, fileTag(block.from, ctx)) : null,
+						heading
+							? sectionHead(heading, filled && read.changed, filled ? fileTag(block.from, ctx) : null)
+							: null,
 						filled
 							? [entries.length ? renderSpecEntries(entries) : null, ...renderSpecTables(tables, ctx.signal)]
 							: h(
