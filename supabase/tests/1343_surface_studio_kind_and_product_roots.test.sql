@@ -85,10 +85,14 @@ begin
 		v_roots = array['surfaces/thetabands', 'surfaces/travel-case'],
 		'returns only active product studio folder roots for the tenant in sort order, got ' || coalesce(array_to_string(v_roots, ','), 'null')
 	);
+	reset role;
 
 	update public.qorpera_surface_sessions set state = 'running', lease_token = v_lease_product where id = v_session_product;
 	update public.qorpera_surface_sessions set state = 'running', lease_token = v_lease_report where id = v_session_report;
 	update public.qorpera_surface_sessions set state = 'running', lease_token = v_lease_db where id = v_session_db;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
 
 	v_turn := public.qorpera_native_surface_read_session_turn(v_company_a, v_session_product, v_lease_product);
 	perform pg_temp.spkr_assert(v_turn ->> 'surfaceKind' = 'product', 'product turn returns surfaceKind=product');

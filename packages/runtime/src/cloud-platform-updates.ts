@@ -312,7 +312,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-23",
 		title: "Clean Studio folders and Product/Report Studio schemas",
-		text: "Non-Identity Studio surfaces now default to an isolated surfaces/<slug> folder instead of top-level company folders like product/ or reports/, so each new Studio surface starts blank and only holds its own work (Identity stays at identity/). Product Studio sessions now receive the structured Studio file layout directly: specs.json (3D model, key specs, colorways, BOM), vendors.json (production plan and supplier cards), <slug>.report.json (competitor, strategy, and vendor analyses with charts and tables), and brief.md. Report surfaces receive the same <slug>.report.json format.",
+		text: "Non-Identity Studio surfaces now default to an isolated folder under surfaces/<slug> instead of legacy top-level company folders like product or reports, so each new Studio surface starts blank and holds only its own work (Identity stays in the identity folder). Product Studio sessions now receive the structured Studio layout directly in their turn instructions for interactive 3D models, key specs, colorways, BOM tables, production plans, supplier cards, and editorial competitor or vendor analysis reports with charts and tables. Report surfaces receive the same structured report format.",
 	},
 ]);
 

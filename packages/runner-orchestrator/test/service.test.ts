@@ -486,6 +486,7 @@ describe("runner orchestrator service boundary", () => {
 	});
 
 	it("enriches fallback deliverSurfaceSession jobs with shared productFolderRoots", async () => {
+		const orchestratorId = "11111111-1111-4111-8111-111111111111";
 		const controlActions: Record<string, unknown>[] = [];
 		const profileId = "88888888-8888-4888-8888-888888888888";
 		const fakeControl = new SupabaseCloudRunnerOrchestratorControlPlane(
