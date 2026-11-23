@@ -1798,7 +1798,7 @@ export class SurfacesStore {
 		}
 	}
 
-	async #loadAutomations(client: SurfacesClient): Promise<void> {
+	async #loadAutomations(client: SurfacesClient): Promise<boolean> {
 		try {
 			const automations = await client.listAutomations(this.#options.companyId);
 			if (!this.#options.signal.aborted) {
@@ -1819,9 +1819,16 @@ export class SurfacesStore {
 					};
 				});
 			}
+			return true;
 		} catch {
 			/* WHY: Automations are a quiet extra; a failed read must not block the surfaces themselves. */
+			return false;
 		}
+	}
+
+	async refreshAutomations(): Promise<boolean> {
+		const client = this.#options.client;
+		return this.state.source === "cloud" && client ? this.#loadAutomations(client) : true;
 	}
 
 	async #loadMigration(client: SurfacesClient): Promise<void> {
@@ -3106,6 +3113,20 @@ export class SurfacesStore {
 		if (!archived) return false;
 		remove();
 		return true;
+	}
+
+	async deleteSurface(
+		surfaceId: string,
+	): Promise<{ readonly deleted: boolean; readonly scheduledAgentsDeleted: number }> {
+		const surface = this.state.surfaces.find((item) => item.id === surfaceId);
+		let scheduledAgentsDeleted = 0;
+		if (!surface || !(await this.refreshAutomations())) return { deleted: false, scheduledAgentsDeleted };
+		for (const automation of this.state.automations) {
+			if (automation.targetSurfaceSlug !== surface.slug) continue;
+			if (!(await this.deleteScheduledAgent(automation.id))) return { deleted: false, scheduledAgentsDeleted };
+			scheduledAgentsDeleted += 1;
+		}
+		return { deleted: await this.archiveSurface(surfaceId), scheduledAgentsDeleted };
 	}
 
 	async spawnCrossSurfaceSession(request: CrossSurfaceHandoffRequest): Promise<SurfaceSession | undefined> {

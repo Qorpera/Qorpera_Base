@@ -2,14 +2,18 @@
 import {
 	SURFACE_INSPECTOR_MODE_MESSAGE,
 	SURFACE_INSPECTOR_PICK_MESSAGE,
+	type SurfaceAutomationSummary,
 	type SurfaceExplorationSet,
+	type SurfaceSummary,
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SurfacesClient } from "../src/app/surfaces-store.ts";
 import { SITE_DOOR_PASS, SITE_DOOR_READY, SITE_DOOR_SHOWN, SITE_DOOR_URL } from "../src/app/views/site-view.ts";
 import { SurfaceDoorStage } from "../src/app/views/surface-door.ts";
 import { openPublishPatchnotesSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
+import { openMenu } from "../src/ui/context-menu.ts";
 import { linkHref } from "../src/ui/dom.ts";
 import { deferred } from "./fixtures.ts";
 import {
@@ -143,6 +147,291 @@ describe("the surface rail", () => {
 		expect(archiveSurface).toHaveBeenCalledWith(proposedPress.id);
 		expect(rail.el.querySelectorAll(".rail-surface-proposed")).toHaveLength(0);
 		store.dispose();
+	});
+
+	describe("Delete in the right-click menu", () => {
+		const inbox = summary({
+			id: "55555555-5555-4555-8555-555555555555",
+			slug: "inbox",
+			title: "Inbox",
+			group: "operations",
+			archetype: "ops",
+			icon: "mail",
+			siteSlug: null,
+			activeSessionCount: 0,
+		});
+		const quiet = { activeSessionCount: 0, pendingChangeCount: 0, liveUrl: null };
+		const railRow = (rail: SurfaceRail, slug: string) =>
+			rail.el.querySelector<HTMLElement>(`.rail-surface[data-surface-slug="${slug}"]`);
+		const menuRow = (label: string) =>
+			[...document.querySelectorAll<HTMLElement>(".context-menu-item")].find(
+				(item) => item.textContent?.trim() === label,
+			);
+		const openRowMenu = (rail: SurfaceRail, slug: string) =>
+			railRow(rail, slug)!.dispatchEvent(
+				new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+			);
+		const chooseDelete = async (rail: SurfaceRail, slug: string) => {
+			openRowMenu(rail, slug);
+			menuRow("Delete")!.click();
+			await flush();
+		};
+		const dialog = () => document.querySelector<HTMLElement>('[role="alertdialog"]');
+		const dialogButton = (label: string) =>
+			[...dialog()!.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === label)!;
+		const dialogLines = () => [...dialog()!.querySelectorAll(".modal-list li")].map((item) => item.textContent);
+		const scheduled = (id: string, targetSurfaceSlug: string | null): SurfaceAutomationSummary => ({
+			id,
+			key: id,
+			title: "Weekly check",
+			scheduleSummary: "Mondays 08:00",
+			targetSurfaceSlug,
+			outputMode: targetSurfaceSlug ? "surface_session" : "decision_card",
+			enabled: true,
+			status: "idle",
+			lastRunAt: null,
+			lastOutcomeSummary: null,
+			nextRunAt: null,
+			ownable: true,
+			ownerUserId: null,
+			offer: null,
+		});
+		const railOf = async (
+			surfaces: readonly SurfaceSummary[],
+			client: Partial<SurfacesClient> = {},
+			open = "website",
+		) => {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [...surfaces]),
+					getSurfaceWorkspace: vi.fn(async (id: string) =>
+						workspace([], { surface: surfaces.find((item) => item.id === id)! }),
+					),
+					...client,
+				}),
+			);
+			await store.load();
+			const reportError = vi.fn();
+			const rail = new SurfaceRail(store, COMPANY, new AbortController().signal, undefined, reportError);
+			document.body.append(rail.el);
+			rail.update(open);
+			return { store, rail, reportError };
+		};
+
+		afterEach(async () => {
+			openMenu()?.close();
+			await flush();
+			history.replaceState(null, "", location.pathname);
+		});
+
+		it("asks first, deletes on the dialog's Delete, and leaves the deleted surface's page", async () => {
+			const archiveSurface = vi.fn(async (id: string) => summary({ id, status: "archived" }));
+			const { store, rail, reportError } = await railOf([summary(quiet), inbox], { archiveSurface });
+
+			openRowMenu(rail, "website");
+			const remove = menuRow("Delete")!;
+			expect(remove.classList.contains("danger")).toBe(true);
+			expect(remove.previousElementSibling?.getAttribute("role")).toBe("separator");
+			remove.click();
+			expect(openMenu()).toBeUndefined();
+			await flush();
+			expect(dialog()?.querySelector("p")?.textContent).toBe(
+				"Delete Website? It is removed for everyone in the company.",
+			);
+			expect(dialog()!.querySelector(".modal-list")).toBeNull();
+			dialogButton("Cancel").click();
+			await flush();
+			expect(dialog()).toBeNull();
+			expect(archiveSurface).not.toHaveBeenCalled();
+			expect(railRow(rail, "website")).not.toBeNull();
+
+			await chooseDelete(rail, "website");
+			expect(dialogButton("Delete").classList.contains("btn-danger")).toBe(true);
+			dialogButton("Delete").click();
+			await flush();
+			rail.update("website");
+			expect(archiveSurface).toHaveBeenCalledWith(SURFACE);
+			expect(railRow(rail, "website")).toBeNull();
+			expect(railRow(rail, "inbox")).not.toBeNull();
+			expect(location.hash).toBe(`#/c/${COMPANY}`);
+			expect(reportError).not.toHaveBeenCalled();
+			store.dispose();
+		});
+
+		it("stays on the page that is open when another surface is deleted", async () => {
+			const shop = summary({ ...quiet, id: "55555555-5555-4555-8555-555555555577", slug: "shop", title: "Shop" });
+			const { store, rail } = await railOf([summary(), shop]);
+
+			await chooseDelete(rail, "shop");
+			dialogButton("Delete").click();
+			await flush();
+			rail.update("website");
+			expect(railRow(rail, "shop")).toBeNull();
+			expect(location.hash).toBe("");
+			store.dispose();
+		});
+
+		it("says what goes with it and what stays, read fresh, and deletes its scheduled agents before the surface", async () => {
+			const calls: string[] = [];
+			const listAutomations = vi.fn(async () => [scheduled("a-2", "inbox"), scheduled("a-3", null)]);
+			const { store, rail } = await railOf(
+				[summary({ activeSessionCount: 3, runningSessionCount: 2, pendingChangeCount: 1 }), inbox],
+				{
+					listAutomations,
+					deleteAutomation: vi.fn(async (id: string) => {
+						calls.push(`agent ${id}`);
+						return true;
+					}),
+					archiveSurface: vi.fn(async (id: string) => {
+						calls.push("surface");
+						return summary({ id, status: "archived" });
+					}),
+				},
+				"inbox",
+			);
+			listAutomations.mockImplementation(async () => [
+				scheduled("a-1", "website"),
+				scheduled("a-2", "inbox"),
+				scheduled("a-3", null),
+			]);
+
+			await chooseDelete(rail, "website");
+			expect(dialogLines()).toEqual([
+				"Its scheduled agent is deleted too.",
+				"Its 3 active sessions go with it.",
+				"The 2 still working run to their end.",
+				"Its unpublished changes go with it.",
+				"Its site stays online. Settings → Sites takes it offline.",
+			]);
+			listAutomations.mockImplementation(async () => [
+				scheduled("a-1", "website"),
+				scheduled("a-2", "inbox"),
+				scheduled("a-3", null),
+				scheduled("a-4", "website"),
+			]);
+			dialogButton("Delete").click();
+			await flush();
+			expect(calls).toEqual(["agent a-1", "agent a-4", "surface"]);
+			expect(store.state.automations.map((item) => item.id)).toEqual(["a-2", "a-3"]);
+			expect(store.state.surfaces.map((item) => item.slug)).toEqual(["inbox"]);
+			store.dispose();
+		});
+
+		it("counts several scheduled agents, one session waiting and changes approved but not published", async () => {
+			const { store, rail } = await railOf(
+				[summary({ ...quiet, activeSessionCount: 1, unpublishedChangeCount: 2 })],
+				{
+					listAutomations: vi.fn(async () => [scheduled("a-1", "website"), scheduled("a-2", "website")]),
+				},
+			);
+
+			await chooseDelete(rail, "website");
+			expect(dialogLines()).toEqual([
+				"Its 2 scheduled agents are deleted too.",
+				"Its active session goes with it.",
+				"Its unpublished changes go with it.",
+			]);
+			dialogButton("Cancel").click();
+			store.dispose();
+		});
+
+		it("names the one session still working", async () => {
+			const { store, rail } = await railOf([summary({ ...quiet, activeSessionCount: 1, runningSessionCount: 1 })]);
+
+			await chooseDelete(rail, "website");
+			expect(dialogLines()).toEqual(["Its active session goes with it.", "The one still working runs to its end."]);
+			dialogButton("Cancel").click();
+			store.dispose();
+		});
+
+		it("asks nothing and deletes nothing when the scheduled agents cannot be read", async () => {
+			const listAutomations = vi.fn(async () => [scheduled("a-1", "website")]);
+			const deleteAutomation = vi.fn(async () => true);
+			const archiveSurface = vi.fn(async (id: string) => summary({ id, status: "archived" }));
+			const { store, rail, reportError } = await railOf([summary()], {
+				listAutomations,
+				deleteAutomation,
+				archiveSurface,
+			});
+			listAutomations.mockImplementation(async () => Promise.reject(new Error("offline")));
+
+			await chooseDelete(rail, "website");
+			expect(dialog()).toBeNull();
+			expect(reportError).toHaveBeenCalledWith("Website could not be deleted.");
+
+			listAutomations.mockImplementationOnce(async () => [scheduled("a-1", "website")]);
+			await chooseDelete(rail, "website");
+			dialogButton("Delete").click();
+			await flush();
+			expect(reportError).toHaveBeenCalledTimes(2);
+			expect(deleteAutomation).not.toHaveBeenCalled();
+			expect(archiveSurface).not.toHaveBeenCalled();
+			expect(railRow(rail, "website")).not.toBeNull();
+			store.dispose();
+		});
+
+		it("keeps the surface and says how many scheduled agents went when one cannot be deleted", async () => {
+			const archiveSurface = vi.fn(async (id: string) => summary({ id, status: "archived" }));
+			const { store, rail, reportError } = await railOf([summary()], {
+				listAutomations: vi.fn(async () => [scheduled("a-1", "website"), scheduled("a-2", "website")]),
+				deleteAutomation: vi.fn(async (id: string) =>
+					id === "a-1" ? true : Promise.reject(new Error("permission denied")),
+				),
+				archiveSurface,
+			});
+
+			await chooseDelete(rail, "website");
+			dialogButton("Delete").click();
+			await flush();
+			rail.update("website");
+			expect(archiveSurface).not.toHaveBeenCalled();
+			expect(reportError).toHaveBeenCalledWith(
+				"Website could not be deleted. One of its scheduled agents was deleted before that.",
+			);
+			expect(railRow(rail, "website")).not.toBeNull();
+			expect(store.state.automations.map((item) => item.id)).toEqual(["a-2"]);
+			store.dispose();
+		});
+
+		it("says so in the rail and keeps the surface when the delete itself fails", async () => {
+			const { store, rail, reportError } = await railOf([summary()], {
+				listAutomations: vi.fn(async () => [scheduled("a-1", "website"), scheduled("a-2", "website")]),
+				deleteAutomation: vi.fn(async () => true),
+				archiveSurface: vi.fn(async () => Promise.reject(new Error("permission denied"))),
+			});
+
+			await chooseDelete(rail, "website");
+			dialogButton("Delete").click();
+			await flush();
+			rail.update("website");
+			expect(reportError).toHaveBeenCalledWith(
+				"Website could not be deleted. 2 of its scheduled agents were deleted before that.",
+			);
+			expect(railRow(rail, "website")).not.toBeNull();
+			expect(location.hash).toBe("");
+			store.dispose();
+		});
+
+		it("opens one dialog for a surface however often Delete is chosen", async () => {
+			const { store, rail } = await railOf([summary()]);
+
+			openRowMenu(rail, "website");
+			menuRow("Delete")!.click();
+			await chooseDelete(rail, "website");
+			expect(document.querySelectorAll('[role="alertdialog"]')).toHaveLength(1);
+			dialogButton("Cancel").click();
+			store.dispose();
+		});
+
+		it("offers no Delete on a built-in surface, which nothing can bring back", async () => {
+			const { store, rail } = await railOf([summary(), inbox]);
+
+			openRowMenu(rail, "inbox");
+			expect(menuRow("Figure")).toBeDefined();
+			expect(menuRow("Delete")).toBeUndefined();
+			expect(openMenu()!.el.querySelector('[role="separator"]')).toBeNull();
+			store.dispose();
+		});
 	});
 });
 
