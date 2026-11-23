@@ -18,6 +18,7 @@ import {
 	formatConflictPaths,
 	hasConflictedChange,
 	isOpenChange,
+	isOpenVariant,
 	isRunningSession,
 	openExplorations,
 	reportsOwnedBy,
@@ -820,7 +821,9 @@ export class SurfaceSessionDrawer {
 		if (sameDeps(this.#shown, deps)) return;
 		this.#shown = deps;
 		const explorations = openExplorations(workspace);
-		const plainSessions = rankSessions((workspace?.activeSessions ?? []).filter((session) => !session.explorationId));
+		const plainSessions = rankSessions(
+			(workspace?.activeSessions ?? []).filter((session) => !isOpenVariant(session, workspace)),
+		);
 		this.#sessionId = "";
 		this.#messages = 0;
 
@@ -900,6 +903,7 @@ export class SurfaceSessionDrawer {
 				...variants.map((variant) => {
 					const label = variant.explorationVariantLabel ?? variant.title;
 					const checked = variant.id === picked?.id;
+					const line = variant.changes.find(isOpenChange)?.summary.trim() ?? "";
 					return h(
 						"button",
 						{
@@ -912,7 +916,12 @@ export class SurfaceSessionDrawer {
 							"data-session": variant.id,
 						},
 						h("span", { class: "surface-radio", "aria-hidden": "true" }),
-						h("span", { class: "surface-overview-option-label" }, label),
+						h(
+							"span",
+							{ class: "surface-overview-option-copy" },
+							h("span", { class: "surface-overview-option-label" }, label),
+							line ? h("span", { class: "surface-overview-option-line" }, line) : null,
+						),
 					);
 				}),
 			),

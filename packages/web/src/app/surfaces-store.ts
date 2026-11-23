@@ -594,7 +594,7 @@ export function activeTaskSessions(state: Pick<SurfacesState, "surfaces" | "work
 		const workspace = state.workspaces[surface.id];
 		if (!workspace) continue;
 		for (const session of workspace.activeSessions) {
-			if (session.explorationId) continue;
+			if (isOpenVariant(session, workspace)) continue;
 			items.push({ surface, session, running: isRunningSession(session) });
 		}
 	}
@@ -607,6 +607,16 @@ export function activeTaskSessions(state: Pick<SurfacesState, "surfaces" | "work
 
 export function openExplorations(workspace: SurfaceWorkspace | undefined): SurfaceExplorationSet[] {
 	return workspace?.explorations.filter((set) => set.status === "open") ?? [];
+}
+
+export function isOpenVariant(
+	session: Pick<SurfaceSession, "explorationId">,
+	workspace: Pick<SurfaceWorkspace, "explorations"> | undefined,
+): boolean {
+	return (
+		Boolean(session.explorationId) &&
+		(workspace?.explorations.some((set) => set.id === session.explorationId && set.status === "open") ?? false)
+	);
 }
 
 export interface UnpublishedChangeEntry {
@@ -737,7 +747,7 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 		);
 		const ordered: StudioPatchChange[] = [];
 		for (const session of workspace.activeSessions) {
-			if (session.explorationId && !pickedVariants.has(session.id)) continue;
+			if (isOpenVariant(session, workspace) && !pickedVariants.has(session.id)) continue;
 			for (const change of session.changes) {
 				if (change.kind !== "folder_patch" || !isOpenChange(change) || state.hiddenChanges[change.id]) continue;
 				const ops = state.studioPatches[change.id] ?? change.patchManifest;
@@ -879,10 +889,10 @@ export function reportsOwnedBy(
 		return cached.byOwner.get(wantedKey) ?? EMPTY_REPORTS;
 	}
 	const explorations = openExplorations(workspace);
-	const plainSessions = workspace.activeSessions.filter((session) => !session.explorationId);
+	const plainSessions = workspace.activeSessions.filter((session) => !isOpenVariant(session, workspace));
 	const variantsByExploration = new Map<string, SurfaceSession[]>();
 	for (const session of workspace.activeSessions) {
-		if (!session.explorationId) continue;
+		if (!session.explorationId || !isOpenVariant(session, workspace)) continue;
 		const list = variantsByExploration.get(session.explorationId);
 		if (list) list.push(session);
 		else variantsByExploration.set(session.explorationId, [session]);
@@ -4094,7 +4104,7 @@ export class SurfacesStore {
 		);
 		const sessions: SurfaceSession[] = [];
 		for (const session of workspace?.activeSessions ?? []) {
-			if (session.explorationId && !pickedExplorationSessions.has(session.id)) continue;
+			if (isOpenVariant(session, workspace) && !pickedExplorationSessions.has(session.id)) continue;
 			sessions.push(session);
 		}
 		return sessions;

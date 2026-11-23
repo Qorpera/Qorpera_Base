@@ -658,6 +658,50 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
+	it("says each option's first open change under its name in the Changes panel", async () => {
+		const explorationId = "88888888-8888-4888-8888-888888888883";
+		const secondSessionId = "33333333-3333-4333-8333-333333333336";
+		const variantA = session(["staged"], {
+			id: SESSION,
+			explorationId,
+			explorationVariantLabel: "Aftenlys",
+			changes: [change(CHANGES[0], 1, "staged", { summary: "Warm evening light on the hero." })],
+		});
+		const variantB = session([], { id: secondSessionId, explorationId, explorationVariantLabel: "Varmt studie" });
+		const ws = workspace([variantA, variantB], {
+			explorations: [
+				{
+					id: explorationId,
+					surfaceId: SURFACE,
+					title: "Forsidens udtryk",
+					status: "open",
+					chosenSessionId: null,
+					variantSessionIds: [SESSION, secondSessionId],
+					createdAt: "2026-11-21T10:00:00.000Z",
+					resolvedAt: null,
+				},
+			],
+		});
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => ws) }));
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		store.openPreviewPanel();
+		view.update();
+
+		const options = [...view.el.querySelectorAll(".surface-drawer .surface-overview-option")];
+		expect(options.map((option) => option.querySelector(".surface-overview-option-label")?.textContent)).toEqual([
+			"Aftenlys",
+			"Varmt studie",
+		]);
+		expect(
+			options.map((option) => option.querySelector(".surface-overview-option-line")?.textContent ?? null),
+		).toEqual(["Warm evening light on the hero.", null]);
+		view.dispose();
+		store.dispose();
+	});
+
 	it("supports Point-to-Change mode, validates picked targets, and starts a targeted session", async () => {
 		const target = pointTarget();
 		const ws = workspace([session(["staged"])], {
