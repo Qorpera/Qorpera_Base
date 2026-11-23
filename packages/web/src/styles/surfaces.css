@@ -81,7 +81,6 @@
 .frame:has(.rail.has-surface-rail) .rail-reopen-btn { top: 16px; left: 16px; }
 
 /* Unified Agents hub: Working task-driven agents at the top, Scheduled agents underneath, idle agents under Ready. */
-/* Jonas, 23 Nov 2026: the hub sits at the foot of the list, right above the profile, not under the last interface. */
 .rail.has-surface-rail .rail-scroll { display: flex; flex-direction: column; }
 .rail.has-surface-rail .rail-scroll > * { flex: none; }
 .rail-agents-hub {
@@ -100,7 +99,6 @@
 .rail-agents-chevron { display: grid; transform: rotate(-90deg); transition: transform var(--motion-base) var(--ease-spring); }
 .rail-agents-chevron .icon { width: 14px; height: 14px; }
 .rail-agents-hub.is-open .rail-agents-chevron { transform: none; }
-/* Jonas, 23 Nov 2026: more of an animation opening and closing, and a little more room open. */
 .rail-agents-body {
 	display: grid; grid-template-rows: 0fr; opacity: 0;
 	transition: grid-template-rows var(--motion-base) var(--ease-in-out), opacity var(--motion-fast) ease;

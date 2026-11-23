@@ -2290,10 +2290,23 @@ function keepOpeningHubInView(hub: HTMLElement): void {
 	const list = hub.closest<HTMLElement>(".rail-scroll");
 	if (!list) return;
 	const until = performance.now() + 520;
+	let stopped = false;
+	const stop = (): void => {
+		stopped = true;
+	};
+	list.addEventListener("wheel", stop, { once: true, passive: true });
+	list.addEventListener("touchstart", stop, { once: true, passive: true });
 	const follow = (): void => {
-		const below = hub.getBoundingClientRect().bottom - list.getBoundingClientRect().bottom;
+		if (stopped) return;
+		const h = hub.getBoundingClientRect();
+		const l = list.getBoundingClientRect();
+		const below = Math.min(h.bottom - l.bottom, h.top - l.top);
 		if (below > 0) list.scrollTop += below;
 		if (performance.now() < until) requestAnimationFrame(follow);
+		else {
+			list.removeEventListener("wheel", stop);
+			list.removeEventListener("touchstart", stop);
+		}
 	};
 	requestAnimationFrame(follow);
 }
