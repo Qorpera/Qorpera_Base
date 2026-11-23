@@ -481,7 +481,11 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 				"aria-pressed": String(preset.id === selected.id),
 				"data-preset": preset.id,
 			},
-			h("span", { class: "surface-tile is-kind", "aria-hidden": "true" }, surfaceFigure(surfaceKindFigure(preset.kind))),
+			h(
+				"span",
+				{ class: "surface-tile is-kind", "aria-hidden": "true" },
+				surfaceFigure(surfaceKindFigure(preset.kind)),
+			),
 			h("span", { class: "surface-create-kind-name" }, t(preset.title)),
 		);
 		row.addEventListener("click", () => {
@@ -493,7 +497,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 	const kinds = h("div", { class: "surface-create-kinds", role: "group", "aria-label": t("Surface type") }, rows);
 	kinds.addEventListener("keydown", (event) => {
 		if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-		const at = rows.findIndex((row) => row === document.activeElement);
+		const at = rows.indexOf(document.activeElement as HTMLButtonElement);
 		if (at < 0) return;
 		event.preventDefault();
 		const next = rows[(at + (event.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length]!;
