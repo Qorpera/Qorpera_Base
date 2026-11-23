@@ -365,9 +365,10 @@ export class SurfaceSessionDrawer {
 		} catch {
 			/* WHY: Local browser storage is optional in private/sandboxed contexts. */
 		}
-		this.#images = new SurfaceComposerImages(this.#form, signal, () =>
-			this.#send.classList.toggle("is-ready", !this.#images.problem),
-		);
+		this.#images = new SurfaceComposerImages(this.#form, signal, () => {
+			this.#send.classList.toggle("is-ready", !this.#images.problem);
+			this.#syncNoteMode();
+		});
 		this.#compose.insertBefore(this.#images.button, this.#input);
 		this.#form.insertBefore(this.#images.tray.el, this.#compose);
 		this.#form.append(this.#images.tray.status);
@@ -408,9 +409,9 @@ export class SurfaceSessionDrawer {
 				event.preventDefault();
 				const sessionId = store.state.drawer?.sessionId;
 				const text = this.#input.value.trim();
-				if (!sessionId || !text || this.#images.problem) return;
+				if (!sessionId || !text) return;
 				const quoted = this.#quotedChange?.sessionId === sessionId ? this.#quotedChange : undefined;
-				const to = quoted ? [] : leadingMentions(text, this.#teammates());
+				const to = this.#noteTo(quoted);
 				if (to.length) {
 					this.#input.value = "";
 					this.#syncNoteMode();
@@ -428,6 +429,7 @@ export class SurfaceSessionDrawer {
 						});
 					return;
 				}
+				if (this.#images.problem) return;
 				const payload = quoted ? `Re: [${quoted.title}]\n${text}` : text;
 				const files = this.#images.files;
 				this.#input.value = "";
@@ -471,8 +473,14 @@ export class SurfaceSessionDrawer {
 		return this.#store.teammates().map((member) => ({ kind: "member", id: member.userId, name: member.name }));
 	}
 
+	#noteTo(quoted: QuotedChangeRef | undefined): MentionTarget[] {
+		return quoted || this.#images.files.length ? [] : leadingMentions(this.#input.value, this.#teammates());
+	}
+
 	#syncNoteMode(): void {
-		const note = leadingMentions(this.#input.value, this.#teammates()).length > 0;
+		const sessionId = this.#store.state.drawer?.sessionId;
+		const note =
+			this.#noteTo(this.#quotedChange?.sessionId === sessionId ? this.#quotedChange : undefined).length > 0;
 		this.#form.classList.toggle("is-note", note);
 		this.#images.button.hidden = note || !this.#store.canAttachImages;
 	}
@@ -666,6 +674,7 @@ export class SurfaceSessionDrawer {
 
 	#setQuotedChange(ref: QuotedChangeRef | undefined): void {
 		this.#quotedChange = ref;
+		this.#syncNoteMode();
 		if (!ref) {
 			this.#replyStrip.hidden = true;
 			this.#replyTitle.textContent = "";

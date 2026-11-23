@@ -28,11 +28,17 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-async function opened(shown: SurfaceSession, overrides: Parameters<typeof fakeClient>[0] = {}, alone = false) {
+async function opened(
+	shown: SurfaceSession,
+	overrides: Parameters<typeof fakeClient>[0] = {},
+	alone = false,
+	extra: Parameters<typeof storeWith>[1] = {},
+) {
 	const client = fakeClient({ getSurfaceWorkspace: vi.fn(async () => workspace([shown])), ...overrides });
 	const store = storeWith(client, {
 		memberName: (userId) => NAMES[userId],
 		teammates: () => (alone ? [] : [{ userId: SOFIE, name: "Sofie Lund" }]),
+		...extra,
 	});
 	await store.load();
 	await store.openSurface("website");
@@ -144,6 +150,46 @@ describe("two people in one interface session", () => {
 		expect(replySurfaceSession).not.toHaveBeenCalled();
 		view.update();
 		expect(drawer.querySelector(".surface-message.is-note")?.textContent).toContain("@Sofie Lund is this right?");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("sends a message with images as a reply even when it starts with a teammate, since notes carry no images", async () => {
+		const ready = session([], { turnRequestedByUserId: JONAS });
+		const image = { sha256: "a".repeat(64), bytes: 5, mediaType: "image/png" };
+		const noteSurfaceSession = vi.fn();
+		const replySurfaceSession = vi.fn(async () => ready);
+		const { store, view, drawer } = await opened(
+			ready,
+			{
+				noteSurfaceSession,
+				replySurfaceSession,
+				surfaceSessionImages: vi.fn(async () => ({ sessionId: SESSION, messages: [] })),
+			},
+			false,
+			{ uploadImage: vi.fn(async () => image) },
+		);
+		const input = drawer.querySelector<HTMLInputElement>(".surface-drawer-input")!;
+		input.value = "@Sofie Lund is this right?";
+		input.dispatchEvent(new Event("input", { bubbles: true }));
+		const attach = drawer.querySelector<HTMLElement>(".surface-attach")!;
+		expect(attach.hidden).toBe(true);
+		const paste = new Event("paste", { bubbles: true, cancelable: true });
+		Object.defineProperty(paste, "clipboardData", {
+			value: { files: [new File(["image"], "shot.png", { type: "image/png" })] },
+		});
+		drawer.querySelector("form")!.dispatchEvent(paste);
+		await flush();
+		expect(attach.hidden).toBe(false);
+		expect(drawer.querySelector(".surface-drawer-foot")?.classList.contains("is-note")).toBe(false);
+		drawer.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+		await flush();
+		await flush();
+		expect(noteSurfaceSession).not.toHaveBeenCalled();
+		expect(replySurfaceSession).toHaveBeenCalledWith(SESSION, "@Sofie Lund is this right?", true, {
+			clientInputId: expect.any(String),
+			images: [image],
+		});
 		view.dispose();
 		store.dispose();
 	});

@@ -32,6 +32,7 @@ declare
 	v_anna constant uuid := '85600000-0000-4000-8000-000000000001';
 	v_bo constant uuid := '85600000-0000-4000-8000-000000000002';
 	v_eve constant uuid := '13480000-0000-4000-8000-000000000005';
+	v_vic constant uuid := '13480000-0000-4000-8000-000000000006';
 	v_company uuid := (v_claim ->> 'profileId')::uuid;
 	v_surface uuid;
 	v_session_id uuid;
@@ -43,7 +44,9 @@ declare
 	v_claimed jsonb;
 begin
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
-	insert into auth.users(id, email) values (v_eve, 'eve-ssn@example.test');
+	insert into auth.users(id, email) values (v_eve, 'eve-ssn@example.test'), (v_vic, 'vic-ssn@example.test');
+	insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
+	values (v_company, v_vic, 'vic-ssn@example.test', 'Vic', 'viewer');
 
 	perform pg_temp.ssn_as(v_anna);
 	set local role authenticated;
@@ -155,6 +158,14 @@ begin
 	perform pg_temp.ssn_assert(
 		pg_temp.ssn_refusal(v_eve, format('select public.qorpera_surface_session_note(%L, %L, array[%L]::uuid[])', v_session_id, 'Hi', v_anna)) = '42501',
 		'someone outside the company cannot write a note'
+	);
+	perform pg_temp.ssn_assert(
+		pg_temp.ssn_refusal(v_vic, format('select public.qorpera_surface_session_note(%L, %L, array[%L]::uuid[])', v_session_id, 'Hi', v_anna)) = '42501',
+		'a viewer cannot write a note'
+	);
+	perform pg_temp.ssn_assert(
+		pg_temp.ssn_refusal(v_vic, format('select public.qorpera_surface_unseen_notes(%L)', v_company)) = 'ok',
+		'a viewer reads their own unseen notes'
 	);
 	perform pg_temp.ssn_assert(
 		pg_temp.ssn_refusal(v_eve, format('select public.qorpera_surface_unseen_notes(%L)', v_company)) = '42501'
