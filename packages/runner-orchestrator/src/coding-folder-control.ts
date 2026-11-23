@@ -50,6 +50,11 @@ export interface CodingFolderBoundary {
 	readonly views: readonly CodingFolderBoundaryView[];
 }
 
+export interface CodingFolderReadsRelease {
+	readonly machine: string;
+	readonly reads: CodingFolderReads;
+}
+
 /** One view at a boundary: the code of the error it had instead of a report; or, from its report, how many of its
  * changed paths are not saved (`unsaved`: a commit with no answer yet, waiting on an open file, refused, denied, a
  * conflict, parked for review; a final boundary keeps none of them pending), the outcome of the first of them
@@ -245,6 +250,28 @@ export class CodingFolderControl {
 		});
 		if (new Set(views.map((view) => view.viewId)).size !== views.length) throw new Error(INVALID);
 		return Object.freeze({ machine, reads: answer.reads as CodingFolderReads, views: Object.freeze(views) });
+	}
+
+	async releaseReads(machine: string, signal: AbortSignal): Promise<CodingFolderReadsRelease> {
+		if (!isUuid(machine)) throw new Error("CODING_FOLDER_CONTROL_REQUEST_INVALID");
+		let answer: Record<string, unknown> | undefined;
+		try {
+			answer = objectOf(await this.#ask({ op: "release-reads", machine }, "reads", signal));
+		} catch (error) {
+			if (error instanceof CodingFolderControlRefused && error.code === "BAD_REQUEST") {
+				const boundary = await this.boundary(machine, [], signal);
+				return Object.freeze({ machine: boundary.machine, reads: boundary.reads });
+			}
+			throw error;
+		}
+		if (
+			!answer ||
+			Object.keys(answer).sort().join() !== "machine,reads" ||
+			answer.machine !== machine ||
+			!READS.includes(answer.reads as string)
+		)
+			throw new Error(INVALID);
+		return Object.freeze({ machine, reads: answer.reads as CodingFolderReads });
 	}
 
 	/** Says the machine is stopped and starts again, so a read it lost no longer leaves the views it opens from now on

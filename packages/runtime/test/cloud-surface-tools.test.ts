@@ -453,6 +453,10 @@ describe("cloud surface runtime tools", () => {
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("direct live projection");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("toggled on or off simultaneously in Preview");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("atomic, self-contained, and conflict-minimizing");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("surfaceGate");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("apps/<repo>*/index.html");
+		expect(text).toContain("surfaceGate");
+		expect(text).toContain("runChecks: true");
 	});
 
 	it("formats structured conflictDetails and mainSha in buildSurfaceTurnBrief", () => {

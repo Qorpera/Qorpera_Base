@@ -673,11 +673,16 @@ function say(page: Page, text: string, agent: string | null, moveFocus?: string)
 	const id = ++toastIds;
 	page.ui.toast = { text, agent, id };
 	page.redraw(moveFocus);
-	setTimeout(() => {
+	const { signal } = page.company;
+	if (signal.aborted) return;
+	const timer = setTimeout(() => {
+		signal.removeEventListener("abort", stop);
 		if (page.ui.toast?.id !== id) return;
 		page.ui.toast = null;
 		page.redraw();
 	}, TOAST_MS);
+	const stop = () => clearTimeout(timer);
+	signal.addEventListener("abort", stop, { once: true });
 }
 
 // The page --------------------------------------------------------------------------------------------------------

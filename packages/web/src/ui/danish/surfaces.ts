@@ -200,10 +200,7 @@ export const SURFACES: Record<string, string> = {
 	Philosophy: "Filosofi",
 	"Voice & Files": "Stemme og filer",
 	"Used by": "Bruges af",
-	"Live-linked via Company Files": "Live-forbundet via Virksomhedsfiler",
-	Inherits: "Arver",
-	Feeds: "Føder",
-	"{count} CSS vars": "{count} CSS-variabler",
+	"Builds on": "Bygger på",
 	"Product Studio": "Produktstudie",
 	"Custom Surface": "Egen surface",
 	"Anything else: an inventory tracker, investor room, support desk…":
