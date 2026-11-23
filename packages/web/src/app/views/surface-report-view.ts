@@ -728,13 +728,8 @@ export class SurfaceReportView {
 					? t("1 live change applied")
 					: composition.appliedChangeIds.length > 1
 						? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
-						: t("Base");
-		const badgeClass =
-			composition.status === "conflicted"
-				? "studio-badge is-conflict"
-				: composition.appliedChangeIds.length > 0
-					? "studio-badge is-live"
-					: "studio-badge";
+						: null;
+		const badgeClass = composition.status === "conflicted" ? "studio-badge is-conflict" : "studio-badge is-live";
 
 		const showChrome = reports.length > 1 || !this.#options.embedded;
 		const chrome = showChrome
@@ -779,7 +774,7 @@ export class SurfaceReportView {
 											h("span", null, updatingLabel(updatingPhase)),
 										)
 									: null,
-								h("span", { class: badgeClass }, badgeText),
+								badgeText ? h("span", { class: badgeClass }, badgeText) : null,
 							)
 						: null,
 				)

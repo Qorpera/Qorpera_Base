@@ -125,8 +125,6 @@ export const SURFACES: Record<string, string> = {
 	"Dismiss {title}": "Afvis {title}",
 	"Dismiss proposed surface": "Afvis foreslået surface",
 	"Target surface": "Mål-surface",
-	"Send to {target}…": "Send til {target}…",
-	"Send to…": "Send til…",
 	Base: "Base",
 	"Saved studio files without open changes": "Gemte studiefiler uden åbne ændringer",
 	"1 live change applied": "1 aktiv ændring vist",

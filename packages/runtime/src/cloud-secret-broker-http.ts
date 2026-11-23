@@ -497,6 +497,18 @@ function parseGeminiKeySaveRequest(
 	return { ticketId: ticketId.toLowerCase(), capability: input.capability, apiKey: input.apiKey };
 }
 
+function parseGeminiKeyCheckRequest(value: unknown, ticketId: string): { ticketId: string; capability: string } {
+	const input = record(value, "Gemini key check request");
+	exact(input, ["schema", "capability"], "Gemini key check request");
+	if (
+		input.schema !== "qorpera.gemini-key-check-request/v1" ||
+		typeof input.capability !== "string" ||
+		!/^[A-Za-z0-9_-]{32,256}$/.test(input.capability)
+	)
+		throw new Error("Gemini key check request is invalid");
+	return { ticketId: ticketId.toLowerCase(), capability: input.capability };
+}
+
 function parseGeminiKeyOpenRequest(value: unknown): ModelLoginRunBinding {
 	const input = record(value, "Gemini key open request");
 	exact(input, ["schema", "binding"], "Gemini key open request");
@@ -1070,6 +1082,7 @@ export class HttpCloudSecretBrokerService {
 			const path = url.pathname;
 			const capture = /^\/v1\/captures\/([0-9a-f-]{36})$/i.exec(path);
 			const geminiKeySave = /^\/v1\/gemini-keys\/([0-9a-f-]{36})$/i.exec(path);
+			const geminiKeyCheck = /^\/v1\/gemini-keys\/([0-9a-f-]{36})\/check$/i.exec(path);
 			const emailDraft = /^\/v1\/email-drafts\/([0-9a-f-]{36})$/i.exec(path);
 			const oauthStart = /^\/v1\/oauth\/([0-9a-f-]{36})\/start$/i.exec(path);
 			const oauthConfirm = /^\/v1\/oauth\/([0-9a-f-]{36})\/confirm$/i.exec(path);
@@ -1081,6 +1094,7 @@ export class HttpCloudSecretBrokerService {
 			const memberRoute = Boolean(
 				(capture && UUID.test(capture[1])) ||
 					(geminiKeySave && UUID.test(geminiKeySave[1])) ||
+					(geminiKeyCheck && UUID.test(geminiKeyCheck[1])) ||
 					(emailDraft && UUID.test(emailDraft[1])) ||
 					(oauthStart && UUID.test(oauthStart[1])) ||
 					(oauthConfirm && UUID.test(oauthConfirm[1])),
@@ -1160,6 +1174,17 @@ export class HttpCloudSecretBrokerService {
 					}
 					throw error;
 				}
+				return;
+			}
+			if (geminiKeyCheck && UUID.test(geminiKeyCheck[1])) {
+				if (!scope.geminiKeys) {
+					response(reply, 404, { schema: "qorpera.cloud-secret-error/v1", error: "not_found" }, cors);
+					return;
+				}
+				const geminiKeys = scope.geminiKeys;
+				const parsed = parseGeminiKeyCheckRequest(await readRequest(request), geminiKeyCheck[1]);
+				const checked = await withAbortScopes([], (signal) => geminiKeys.checkFromTicket(parsed, signal), 20_000);
+				response(reply, 200, { ...checked }, cors);
 				return;
 			}
 			if (emailDraft && UUID.test(emailDraft[1])) {

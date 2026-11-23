@@ -778,23 +778,13 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(count.hidden).toBe(false);
 		const rows = hub!.querySelectorAll(".rail-agent-hub-row").length;
 		expect(Number(count.textContent)).toBe(rows);
-		const waiting = hub!.querySelector<HTMLElement>(".rail-agents-head .rail-hidden-unread")!;
-		const asking = [...hub!.querySelectorAll<HTMLElement>("[data-hub-session], [data-hub-exploration]")].filter(
-			(row) => {
-				const status = row.querySelector("small");
-				return status !== null && status.childElementCount === 0 && status.textContent !== "Ready";
-			},
-		).length;
-		expect(asking).toBeGreaterThan(0);
-		expect(waiting.hidden).toBe(false);
-		expect(waiting.textContent).toBe(String(asking));
-		expect(toggle.getAttribute("aria-label")).toBe(`Agents: ${rows} · Waiting for you: ${asking}`);
+		expect(hub!.querySelector(".rail-agents-head .rail-hidden-unread")).toBeNull();
+		expect(toggle.getAttribute("aria-label")).toBe(`Agents: ${rows}`);
 		toggle.click();
 		expect(toggle.getAttribute("aria-expanded")).toBe("true");
 		expect(body.hidden).toBe(false);
 		expect(count.hidden).toBe(true);
 		expect(localStorage.getItem("qorpera.web.rail-agents-open")).toBe("1");
-		expect(waiting.hidden).toBe(true);
 		expect(toggle.getAttribute("aria-label")).toBe("Agents");
 		toggle.click();
 		expect(body.hidden).toBe(true);
@@ -1299,7 +1289,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		company.stop();
 	});
 
-	it("hides the bar on a quiet studio until it has something to publish", async () => {
+	it("shows Publish only when something waits to be published, and hides an empty bar", async () => {
 		const quiet = summary({
 			id: "55555555-5555-4555-8555-555555555589",
 			slug: "identity",
@@ -1345,6 +1335,12 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			publish: true,
 			notch: false,
 			count: "2",
+		});
+		expect(await barOf({ ...quiet, archetype: "live_build", kind: "website", isGlobal: false })).toEqual({
+			hidden: false,
+			publish: false,
+			notch: false,
+			count: null,
 		});
 	});
 

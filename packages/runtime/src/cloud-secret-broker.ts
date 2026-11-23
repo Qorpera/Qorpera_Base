@@ -2796,6 +2796,35 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	describeGeminiKeyCheck(
+		request: Parameters<NonNullable<GeminiKeyVaultAuthority["describeGeminiKeyCheck"]>>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_describe_gemini_key_check($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, request.ticketId, request.capabilitySha256],
+			signal,
+		);
+	}
+
+	completeGeminiKeyCheck(
+		completion: Parameters<NonNullable<GeminiKeyVaultAuthority["completeGeminiKeyCheck"]>>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_complete_gemini_key_check($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				completion.ticketId,
+				completion.capabilitySha256,
+				completion.status,
+				completion.errorCode,
+			],
+			signal,
+		);
+	}
+
 	/** Sign in with ChatGPT (20260928329830): a plan sign-in's completion, with OpenAI's earliest renewal. */
 	completeChatGptPlanSignIn(
 		completion: Parameters<ModelLoginSignInAuthority["completeChatGptPlanSignIn"]>[0],

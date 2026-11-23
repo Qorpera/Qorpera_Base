@@ -35,7 +35,7 @@
 .mailbox-write {
 	display: inline-flex; align-items: center; align-self: flex-start; gap: 12px; min-height: 52px;
 	padding: 0 22px 0 16px; border: 0; border-radius: 16px; background: var(--mailbox-tint-strong); color: var(--text);
-	font-size: 15px; font-weight: 600; cursor: pointer;
+	font-size: 15px; font-weight: 600; cursor: default;
 	transition: box-shadow var(--motion-fast) ease, transform var(--motion-fast) var(--ease-out);
 }
 .mailbox-write:hover { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2), 0 4px 10px rgba(0, 0, 0, 0.1); }
@@ -45,7 +45,7 @@
 .mailbox-tab {
 	position: relative; display: flex; align-items: center; gap: 12px; width: 100%; min-height: 34px;
 	padding: 0 14px 0 16px; border: 0; border-radius: var(--radius-pill); background: none; color: var(--text);
-	font-size: 14.5px; text-align: left; cursor: pointer; transition: background var(--motion-fast) ease;
+	font-size: 14.5px; text-align: left; cursor: default; transition: background var(--motion-fast) ease;
 }
 .mailbox-tab:hover { background: var(--hover); }
 .mailbox-tab[aria-selected="true"] { background: var(--mailbox-tint-strong); font-weight: 650; }
@@ -73,13 +73,13 @@
 }
 .mailbox-search input:focus-visible { outline: none; }
 .mailbox-search input::placeholder { color: var(--text-muted); }
-.mailbox-search input::-webkit-search-cancel-button { cursor: pointer; }
+.mailbox-search input::-webkit-search-cancel-button { cursor: default; }
 
 /* ---- buttons ------------------------------------------------------------------ */
 .mailbox-text {
 	display: inline-flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 12px; border: 0;
 	border-radius: var(--radius-pill); background: none; color: var(--text); font-size: 14px; font-weight: 600;
-	white-space: nowrap; cursor: pointer; transition: background var(--motion-fast) ease, color var(--motion-fast) ease;
+	white-space: nowrap; cursor: default; transition: background var(--motion-fast) ease, color var(--motion-fast) ease;
 }
 .mailbox-text svg { width: 16px; height: 16px; }
 .mailbox-text:hover:not(:disabled) { background: var(--hover); }
@@ -90,7 +90,7 @@
 .mailbox-text.is-send:hover:not(:disabled) { background: var(--composer-accent-hover); }
 .mailbox-icon {
 	flex: none; display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%;
-	background: none; color: var(--text-muted); cursor: pointer;
+	background: none; color: var(--text-muted); cursor: default;
 	transition: background var(--motion-fast) ease, color var(--motion-fast) ease;
 }
 .mailbox-icon:hover:not(:disabled) { background: var(--hover); color: var(--text); }
@@ -98,7 +98,7 @@
 .mailbox-primary {
 	flex: none; min-height: 38px; padding: 0 20px; border: 0; border-radius: var(--radius-pill);
 	background: var(--mailbox-accent); color: var(--mailbox-on-accent); font-size: 14.5px; font-weight: 600;
-	white-space: nowrap; cursor: pointer; transition: background var(--motion-fast) ease;
+	white-space: nowrap; cursor: default; transition: background var(--motion-fast) ease;
 }
 .mailbox-primary:hover:not(:disabled) { background: var(--composer-accent-hover); }
 .mailbox-primary:disabled { opacity: 0.5; cursor: default; }
@@ -115,7 +115,7 @@
 .mailbox-row {
 	position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 26px 64px; align-items: center;
 	column-gap: 12px; min-height: 42px; padding: 0 var(--mailbox-gutter) 0 8px; border-bottom: 1px solid var(--border);
-	cursor: pointer; animation: mailbox-up var(--motion-slow) var(--ease-out) both;
+	cursor: default; animation: mailbox-up var(--motion-slow) var(--ease-out) both;
 }
 /* A line lifts under the pointer, as a mail app's does. */
 .mailbox-row:hover { z-index: 1; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16), 0 1px 4px 1px rgba(0, 0, 0, 0.08); }
@@ -127,7 +127,7 @@
 	grid-column: 1; grid-row: 1; display: grid;
 	grid-template-columns: 20px minmax(0, var(--mailbox-who)) minmax(0, 1fr); align-items: center; min-width: 0;
 	min-height: 42px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left;
-	cursor: pointer;
+	cursor: default;
 }
 a.mailbox-open { text-decoration: none; }
 span.mailbox-open { cursor: default; }
@@ -234,7 +234,7 @@ span.mailbox-open { cursor: default; }
 .mailbox-fold {
 	display: grid; grid-template-columns: 40px minmax(0, 168px) minmax(0, 1fr) auto; align-items: center;
 	column-gap: 16px; width: 100%; min-height: 60px; padding: 0; border: 0; background: none; color: inherit;
-	font: inherit; text-align: left; cursor: pointer;
+	font: inherit; text-align: left; cursor: default;
 }
 .mailbox-fold strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14.5px; font-weight: 650; }
 .mailbox-fold .mailbox-snippet { white-space: nowrap; font-size: 14.5px; transition: color var(--motion-fast) ease; }
@@ -249,7 +249,7 @@ span.mailbox-open { cursor: default; }
 .mailbox-message-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .mailbox-message-head {
 	display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; width: 100%; min-height: 40px;
-	padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+	padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: default;
 }
 .mailbox-from { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; min-width: 0; font-size: 14.5px; }
 .mailbox-from strong { font-weight: 650; }
@@ -289,7 +289,7 @@ span.mailbox-open { cursor: default; }
 .mailbox-answer {
 	display: inline-flex; align-items: center; gap: 9px; min-height: 38px; padding: 0 20px 0 15px;
 	border: 1px solid var(--border-strong); border-radius: var(--radius-pill); background: none; color: var(--text);
-	font-size: 14.5px; font-weight: 600; cursor: pointer; transition: background var(--motion-fast) ease;
+	font-size: 14.5px; font-weight: 600; cursor: default; transition: background var(--motion-fast) ease;
 }
 .mailbox-answer:hover { background: var(--hover); }
 .mailbox-answer svg { width: 17px; height: 17px; color: var(--text-muted); }
@@ -343,7 +343,7 @@ span.mailbox-open { cursor: default; }
 .mailbox-composer .mailbox-icon:disabled { opacity: 0.5; cursor: default; }
 .mailbox-composer .mailbox-agent-pick {
 	flex: none; max-width: 160px; min-height: 34px; padding: 0 8px; border: 0; border-radius: var(--radius-pill);
-	background: var(--hover); color: var(--text); font-size: 13.5px; font-weight: 600; cursor: pointer;
+	background: var(--hover); color: var(--text); font-size: 13.5px; font-weight: 600; cursor: default;
 }
 
 /* ---- a Digital Post letter ---------------------------------------------------- */
@@ -392,7 +392,7 @@ span.mailbox-open { cursor: default; }
 .mailbox-pick {
 	display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 13px 0 5px;
 	border: 1px solid var(--border-strong); border-radius: var(--radius-pill); background: none; color: var(--text);
-	font-size: 14px; font-weight: 500; cursor: pointer;
+	font-size: 14px; font-weight: 500; cursor: default;
 	transition: background var(--motion-fast) ease, border-color var(--motion-fast) ease;
 }
 .mailbox-pick:hover { background: var(--hover); }
@@ -581,7 +581,7 @@ span.mailbox-open { cursor: default; }
 .mailbox-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mailbox-chip-remove {
 	flex: none; display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%;
-	background: none; color: inherit; cursor: pointer; transition: background var(--motion-fast) ease;
+	background: none; color: inherit; cursor: default; transition: background var(--motion-fast) ease;
 }
 .mailbox-chip-remove:hover { background: var(--hover); }
 .mailbox-chip-remove svg { width: 12px; height: 12px; }

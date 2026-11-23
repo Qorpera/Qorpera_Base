@@ -1,6 +1,7 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
 import { WebCompanyFiles } from "../../cloud/company-files.ts";
+import { createWebDefaultModels } from "../../cloud/default-models.ts";
 import { createWebGeminiKey } from "../../cloud/gemini-key.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
@@ -24,6 +25,7 @@ import { LeaderboardView } from "./leaderboard.ts";
 import { AccountSubscriptionsView } from "./settings-ai-subscriptions.ts";
 import { CompanyBrandView } from "./settings-brand.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
+import { DefaultModelsView } from "./settings-default-models.ts";
 import { GeminiKeyView } from "./settings-gemini-key.ts";
 import { GoodWillView, MyGoodWillView } from "./settings-good-will.ts";
 import { RulesView } from "./settings-rules.ts";
@@ -57,7 +59,7 @@ const TABS = [
 		label: phrase("AI subscriptions"),
 		icon: "key",
 		keywords:
-			"ai subscriptions my connections model accounts providers sign in openai chatgpt codex anthropic claude google gemini neon api key usage ai-abonnementer mine forbindelser modelkonti udbydere abonnementer log ind forbrug",
+			"ai subscriptions default models conversational coding effort credits my connections model accounts providers sign in openai chatgpt codex anthropic claude google gemini neon api key usage ai-abonnementer standardmodeller mine forbindelser modelkonti udbydere abonnementer log ind forbrug kredit",
 	},
 ] as const;
 type SettingsCategory = (typeof TABS)[number]["id"];
@@ -166,6 +168,7 @@ export class SettingsView {
 				hash: string;
 		  }
 		| undefined;
+	#defaultModels: DefaultModelsView | undefined;
 	#connections: ConnectionsView | undefined;
 	#geminiKey: GeminiKeyView | undefined;
 	/** AI subscriptions with no company open: the member's account logins. */
@@ -463,6 +466,7 @@ export class SettingsView {
 		this.#lifetime.abort();
 		this.#companyLifetime.abort();
 		this.#unsubscribe?.();
+		this.#defaultModels?.dispose();
 		this.#connections?.dispose();
 		this.#geminiKey?.dispose();
 		this.#accountSubscriptions?.dispose();
@@ -766,6 +770,11 @@ export class SettingsView {
 					if (this.#auth.userId !== memberId || this.#company !== company || company.store.get().accessLost)
 						throw new Error("The account or company changed.");
 				};
+				this.#defaultModels = new DefaultModelsView(
+					createWebDefaultModels(this.#api.cloud, company.profile.profileId, memberId, lifetime, checkCurrent),
+					lifetime,
+				);
+				const refreshDefaults = () => void this.#defaultModels?.refresh();
 				this.#connections = new ConnectionsView(
 					createWebNativeSubscription(
 						this.#api.cloud,
@@ -780,14 +789,23 @@ export class SettingsView {
 					undefined,
 					undefined,
 					memberPlanSignIn(memberId, company.profile.profileId),
+					undefined,
+					refreshDefaults,
 				);
 				this.#geminiKey = new GeminiKeyView(
 					createWebGeminiKey(this.#api.cloud, company.profile.profileId, memberId, lifetime, checkCurrent),
 					lifetime,
+					refreshDefaults,
 				);
 				this.#panels.set(
 					tab,
-					connectionsPage(t("AI subscriptions"), subscriptionsLead(), this.#connections.el, this.#geminiKey.el),
+					connectionsPage(
+						t("AI subscriptions"),
+						subscriptionsLead(),
+						this.#defaultModels.el,
+						this.#connections.el,
+						this.#geminiKey.el,
+					),
 				);
 			}
 		}
@@ -833,6 +851,7 @@ export class SettingsView {
 					client: createWebNativeSubscription(cloud, profileId, memberId, lifetime, checkCurrent),
 					signIns: memberProviderSignIns(memberId, profileId),
 					begin: (input) => signIn.beginProviderLogin(input),
+					defaultModels: createWebDefaultModels(cloud, profileId, memberId, lifetime, checkCurrent),
 					gemini: createWebGeminiKey(cloud, profileId, memberId, lifetime, checkCurrent),
 				};
 			},
@@ -896,6 +915,8 @@ export class SettingsView {
 			};
 		}
 		this.#unsubscribe?.();
+		this.#defaultModels?.dispose();
+		this.#defaultModels = undefined;
 		this.#connections?.dispose();
 		this.#connections = undefined;
 		this.#geminiKey?.dispose();

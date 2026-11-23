@@ -2520,4 +2520,52 @@ describe("several Claude logins, one In use", () => {
 		});
 		expect(reads).toEqual([id(70), id(72)]);
 	});
+
+	it("renders provider-reported API credits under ChatGPT and Claude cards", async () => {
+		const now = new Date().toISOString();
+		const chatgptWithCredits: NativeMemberConnection = {
+			...connected,
+			sponsorBindingId: id(82),
+			sponsorVersion: 1,
+			providerAccountUsage: {
+				observedAt: now,
+				windows: [{ id: "primary", label: "5 hours", usedPercent: 20 }],
+				credits: { hasCredits: true, unlimited: false, balance: 42.5, currency: "USD" },
+			},
+		};
+		const claudeWithCredits: WebClaudeLogin = {
+			loginId: id(75),
+			clientConnectionId: id(175),
+			createdAt: timestamp,
+			providerAccountEmail: "claude@example.com",
+			inUse: true,
+			usage: {
+				observedAt: now,
+				windows: [{ id: "seven_day", label: "Weekly", usedPercent: 10 }],
+				credits: { hasCredits: true, used: 12.5, limit: 50, balance: 37.5, currency: "USD" },
+			},
+		};
+		const { client } = await setup(true, observed(chatgptWithCredits));
+		client.listClaudeLogins = vi.fn(async () => ({
+			signInOpen: true,
+			readable: true,
+			logins: [claudeWithCredits],
+		}));
+		view.dispose();
+		document.body.replaceChildren();
+		view = new ConnectionsView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+
+		const openaiCard = view.el.querySelector<HTMLElement>(`[data-connection-id="${id(81)}"]`)!;
+		expect(openaiCard.textContent).toContain("API credits");
+		expect(openaiCard.textContent).toContain("$42.50 available");
+
+		const claudeCard = view.el.querySelector<HTMLElement>(`[data-claude-login-id="${id(75)}"]`)!;
+		expect(claudeCard.textContent).toContain("API credits");
+		expect(claudeCard.textContent).toContain("$37.50 left of $50");
+		expect(claudeCard.querySelector('.connection-usage-credits [role="meter"]')?.getAttribute("aria-valuenow")).toBe(
+			"75",
+		);
+	});
 });
