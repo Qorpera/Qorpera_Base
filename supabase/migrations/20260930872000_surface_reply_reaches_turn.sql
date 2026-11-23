@@ -48,18 +48,10 @@ $new$	v_prompt := v_session.prompt;
 	-- WHY: code_repo turns get the latest reply as dispatch.followUp and their earlier turns from the coding session.
 	if v_surface.source_kind is distinct from 'code_repo' then
 		with said as (
-			select m.id, m.created_at,
-				case when m.author_kind = 'session' then 'You'
-					else coalesce(nullif(left(regexp_replace(btrim(coalesce(pm.display_name, '')), '\s+', ' ', 'g'), 80), ''),
-						'A teammate') end
-					|| E':\n' || public.qorpera_surface_utf8_left(btrim(m.body), 4000)
-					|| case when coalesce(jsonb_array_length(r.images), 0) = 1 then E'\n[1 image attached]'
-						when coalesce(jsonb_array_length(r.images), 0) > 1 then E'\n[' || jsonb_array_length(r.images) || ' images attached]'
-						else '' end as line
+			select m.id, m.created_at, m.author_kind, m.author_user_id, m.profile_id, btrim(m.body) as body,
+				row_number() over (order by m.created_at desc, m.id desc) as n,
+				count(*) over () as total
 			from public.qorpera_surface_session_messages m
-			left join public.qorpera_profile_members pm
-				on m.author_kind = 'member' and pm.profile_id = m.profile_id and pm.user_id = m.author_user_id
-			left join public.qorpera_surface_message_images r on r.message_id = m.id
 			where m.session_id = v_session.id
 				and m.author_kind in ('member', 'session')
 				and nullif(btrim(m.body), '') is not null
@@ -74,16 +66,32 @@ $new$	v_prompt := v_session.prompt;
 				)
 		),
 		newest as (
-			select s.line, s.created_at, s.id,
-				sum(octet_length(s.line) + 2) over (order by s.created_at desc, s.id desc rows unbounded preceding) as running,
-				row_number() over (order by s.created_at desc, s.id desc) as n
+			select s.id, s.created_at, s.total,
+				case when s.author_kind = 'session' then 'You'
+					else coalesce(nullif(left(regexp_replace(btrim(coalesce(pm.display_name, '')), '\s+', ' ', 'g'), 80), ''),
+						'A teammate') end
+					|| E':\n'
+					|| case when octet_length(s.body) > 4000
+						then public.qorpera_surface_utf8_left(s.body, 3980) || E'\n[message cut]'
+						else s.body end
+					|| case when coalesce(jsonb_array_length(r.images), 0) = 1 then E'\n[1 image attached]'
+						when coalesce(jsonb_array_length(r.images), 0) > 1 then E'\n[' || jsonb_array_length(r.images) || ' images attached]'
+						else '' end as line
 			from said s
+			left join public.qorpera_profile_members pm
+				on s.author_kind = 'member' and pm.profile_id = s.profile_id and pm.user_id = s.author_user_id
+			left join public.qorpera_surface_message_images r on r.message_id = s.id
+			where s.n <= 40
+		),
+		kept as (
+			select k.*, sum(octet_length(k.line) + 2) over (order by k.created_at desc, k.id desc rows unbounded preceding) as running
+			from newest k
 		)
-		select (select count(*) from said)::integer, count(*)::integer,
+		select coalesce(max(k.total), 0)::integer, count(*)::integer,
 			string_agg(k.line, E'\n\n' order by k.created_at, k.id)
 		into v_said, v_kept, v_conversation
-		from newest k
-		where k.n <= 40 and k.running <= 24000;
+		from kept k
+		where k.running <= 24000;
 		v_question := nullif(btrim(coalesce(v_session.question ->> 'text', '')), '');
 		if v_question is not null and jsonb_typeof(v_session.question -> 'options') = 'array'
 			and jsonb_array_length(v_session.question -> 'options') > 0 then

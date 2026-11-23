@@ -147,13 +147,30 @@ begin
 	v_prompt := pg_temp.srrt_turn(v_company, v_session, v_lease_5);
 	v_conversation := substr(v_prompt, position(E'\n\n' || 'Bo:' in v_prompt));
 	perform pg_temp.srrt_assert(position('Long 10' in v_prompt) > 0, 'the newest message is kept under the byte cap');
-	perform pg_temp.srrt_assert(position('Long 05' in v_prompt) = 0 and position('Line ' in v_prompt) = 0,
+	perform pg_temp.srrt_assert(position('Long 04' in v_prompt) = 0 and position('Line ' in v_prompt) = 0,
 		'the oldest messages go first under the byte cap');
 	perform pg_temp.srrt_assert(octet_length(v_conversation) <= 24000,
 		'the conversation stays under the byte cap, got ' || octet_length(v_conversation) || ' bytes');
 	perform pg_temp.srrt_assert(octet_length(v_prompt) <= 24500,
 		'the whole prompt stays bounded, got ' || octet_length(v_prompt) || ' bytes');
-	perform pg_temp.srrt_assert(position(E'Bo:\nLong 06' in v_prompt) > 0
-		and position(E'Bo:\nLong 06' in v_prompt) < position(E'Bo:\nLong 10' in v_prompt),
-		'the five newest long messages fit (each clipped to 4000 bytes), oldest first');
+	perform pg_temp.srrt_assert(position(E'Bo:\nLong 05' in v_prompt) > 0
+		and position(E'Bo:\nLong 05' in v_prompt) < position(E'Bo:\nLong 10' in v_prompt),
+		'the six newest long messages fit, oldest first');
+	perform pg_temp.srrt_assert(
+		(length(v_prompt) - length(replace(v_prompt, E'\u00e9\n[message cut]', ''))) / length(E'\u00e9\n[message cut]') = 6,
+		'each clipped message says it was cut');
+
+	perform pg_temp.srrt_as(v_anna);
+	set local role authenticated;
+	v_surface := (public.qorpera_create_surface(v_company, 'Site', 'site', 'studio', 'report', 'figure:book', null,
+		'surfaces/site', null, false) ->> 'id')::uuid;
+	v_session := (public.qorpera_start_surface_session(v_surface, 'Add a pricing section', 'Pricing') ->> 'id')::uuid;
+	reset role;
+	update public.qorpera_surfaces set source_kind = 'code_repo', repository_key = 'site' where id = v_surface;
+	insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, author_user_id, body)
+	values (v_company, v_session, 'session', null, 'Which plans should it list?'),
+		(v_company, v_session, 'member', v_anna, 'Only the two paid plans');
+	v_prompt := pg_temp.srrt_turn(v_company, v_session, '13540000-0000-4000-8000-000000000106');
+	perform pg_temp.srrt_assert(v_prompt = 'Add a pricing section',
+		'a code_repo turn keeps the request alone (its reply comes as dispatch.followUp), got ' || coalesce(v_prompt, 'null'));
 end $$;
