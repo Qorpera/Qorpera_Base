@@ -81,7 +81,9 @@
 .storage-browser .files-name { display: block; min-width: 0; }
 .storage-browser .files-target { display: block; width: 100%; max-width: 100%; padding-top: 1px; }
 .storage-grid-meta { color: var(--text-soft); font-size: 11.5px; line-height: 1.4; font-variant-numeric: tabular-nums; }
-.storage-count { margin: 14px 0 0; color: var(--text-soft); font-size: 12px; }
+.storage-foot { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 14px 0 0; color: var(--text-soft); font-size: 12px; }
+.storage-foot > p { margin: 0; }
+.storage-usage:empty { display: none; }
 
 /* The icon view's glyphs (tileGlyph): a two-tone folder, and a page whose tag takes the category's colour. */
 .storage-glyph { display: block; width: 100%; height: 100%; overflow: visible; }

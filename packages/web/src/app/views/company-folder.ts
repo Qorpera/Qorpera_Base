@@ -64,6 +64,7 @@ export interface CompanyFolderBrowserOptions {
 	 * changes the folder is reachable: no preview (so no history, Restore or download), no Recents, no code download or
 	 * import, and a link is shown but not picked. Told every pick, null at the top with nothing picked. */
 	readonly choose?: (pick: CompanyFolderPick | null) => void;
+	readonly usage?: () => Promise<{ readonly storageUsedBytes: number }>;
 }
 
 /** What choose mode picked: a file, or the folder open. */
@@ -302,6 +303,7 @@ export class CompanyFolderBrowser {
 		h("span", null, t("Kind")),
 	);
 	readonly #count = h("p", { class: "storage-count", role: "status" });
+	readonly #usage = h("p", { class: "storage-usage" });
 	readonly #filter = h("select", { class: "storage-select", "aria-label": t("File type") });
 	readonly #sort = h("select", { class: "storage-select", "aria-label": t("Sort files") });
 	readonly #views = h("div", { class: "storage-view-toggle", role: "group", "aria-label": t("File view") });
@@ -533,6 +535,12 @@ export class CompanyFolderBrowser {
 		replace(this.#status, h("span", { class: "visually-hidden" }, t("Opening Company File")));
 		replace(this.#root, listSkeleton(t("Opening Company File"), 4));
 		this.#client = this.#source.folder();
+		void this.#options.usage?.().then(
+			(file) => {
+				if (!this.#disposed) this.#usage.textContent = t("{used} in total", { used: fmtBytes(file.storageUsedBytes) });
+			},
+			() => undefined,
+		);
 		this.#downloads ??= new WebFileDownloads({ signal: this.#signal(), current: () => this.#live() });
 		const downloads = this.#downloads;
 		const client = this.#client;
@@ -581,7 +589,7 @@ export class CompanyFolderBrowser {
 					this.#columns,
 					this.#list,
 					h("div", { class: "files-list-more" }, this.#more),
-					this.#count,
+					h("div", { class: "storage-foot" }, this.#count, this.#usage),
 				),
 				this.#viewer ?? this.#preview,
 			),

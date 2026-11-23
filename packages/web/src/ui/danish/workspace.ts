@@ -34,7 +34,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Attachment access changed.": "Adgangen til den vedhæftede fil er ændret.",
 	"This attachment is not available for preview.": "Denne vedhæftede fil kan ikke vises.",
 	"Opening conversation": "Åbner samtale",
-	"Company File access changed.": "Adgangen til Virksomhedsfilen er ændret.",
 
 	// app/auth.ts
 	"Sign-in could not be completed. Try again.": "Du kunne ikke logges ind. Prøv igen.",
@@ -597,7 +596,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Watching only": "Ser kun med",
 	"You control this cloud screen": "Du styrer skærmen",
 	"Opening Company File": "Åbner Virksomhedsfilen",
-	"Your membership in this company could not be read.": "Dit medlemskab af virksomheden kunne ikke læses.",
 	"The cloud could not be reached. {error}": "Skyen kunne ikke nås. {error}",
 	"Loading agents": "Henter agenter",
 	// app/views/shell.ts: sections, pins and the right-click menu

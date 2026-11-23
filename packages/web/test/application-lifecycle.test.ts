@@ -1645,17 +1645,16 @@ describe("account and route ownership", () => {
 		}
 	});
 
-	it("keeps Reload and Show in Storage in a concept's row menu, where the panel's foot had them", async () => {
+	it("keeps Reload and Show in Files in a concept's row menu, where the panel's foot had them", async () => {
 		withConcepts();
 		const f = mounted(`#/c/${profileA.profileId}/concepts`);
 		await draw();
 		await draw();
 		endsWithItsList(f.root);
-		// The open concept's row: Reload and Show in Storage, in the rail's own menu.
 		const open = rowMenu(f.root, "shop-b");
 		expect(open.menu.classList.contains("context-menu")).toBe(true);
 		expect(open.row.classList.contains("menu-open")).toBe(true);
-		expect(open.labels).toEqual(["Reload", "Show in Storage"]);
+		expect(open.labels).toEqual(["Reload", "Show in Files"]);
 		// Reload reads the concept again, in a new frame (which also lets it ask again after three Not nows).
 		const before = conceptFrame(f.root);
 		open.choose("Reload");
@@ -1663,19 +1662,17 @@ describe("account and route ownership", () => {
 		await draw();
 		expect(conceptFrame(f.root)).not.toBe(before);
 		expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
-		// Another concept's row: Show in Storage; a press opens it, read fresh.
-		expect(rowMenu(f.root, "shop-a").labels).toEqual(["Show in Storage"]);
+		expect(rowMenu(f.root, "shop-a").labels).toEqual(["Show in Files"]);
 		document
 			.querySelector<HTMLElement>(".context-menu")!
 			.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		// From the keyboard (Shift+F10 or the menu key on the focused row): the browser's contextmenu has no point.
 		const keyed = rowMenu(f.root, "shop-b", { clientX: 0, clientY: 0 });
-		expect(keyed.labels).toEqual(["Reload", "Show in Storage"]);
-		// Show in Storage opens Storage at the concept's folder.
-		keyed.choose("Show in Storage");
+		expect(keyed.labels).toEqual(["Reload", "Show in Files"]);
+		keyed.choose("Show in Files");
 		await draw();
 		await draw();
-		expect(f.root.querySelector('.settings-mode[data-mode="storage"]')?.getAttribute("aria-pressed")).toBe("true");
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/s/files`);
 	});
 
 	it("keeps who made a concept in its row, with no strip and no controls under the list, in any layout", () => {
@@ -1774,16 +1771,15 @@ describe("account and route ownership", () => {
 		expect(describeError(lost)).toBe("Qorpera can't be reached right now. Check your connection and try again.");
 	});
 
-	it("waits in Storage and the rail while the company cannot be reached, with no error and no empty list", async () => {
+	it("sends an old Company File link to the Files page, and waits in the rail while the company cannot be reached", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/file`);
 		const lost = new CloudRpcError("qorpera_get_team", { message: "TypeError: Failed to fetch" }, 0);
 		vi.mocked(f.api.getTeam).mockRejectedValue(lost);
 		vi.mocked(f.api.listStaff).mockRejectedValue(lost);
 		await draw();
 		await draw();
-		const storage = f.root.querySelector(".settings-dialog")!;
-		expect(storage.querySelector(".notice-neutral")?.textContent).toBe("Can't reach Qorpera. Trying again…");
-		expect(storage.querySelector(".notice-danger")).toBeNull();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/s/files`);
+		expect(f.root.querySelector(".settings-dialog")).toBeNull();
 		const rail = f.root.querySelector(".rail")!;
 		expect(rail.textContent).not.toContain("No agents yet.");
 		expect(rail.querySelector(".notice-danger")).toBeNull();
@@ -1792,23 +1788,7 @@ describe("account and route ownership", () => {
 		window.dispatchEvent(new Event("online"));
 		await draw();
 		await draw();
-		expect(storage.textContent).not.toContain("Can't reach Qorpera");
 		expect(rail.textContent).not.toContain("Can't reach Qorpera");
-	});
-
-	it("shows a membership read failure and retry in Storage when a Company File link cannot open", async () => {
-		const f = mounted(`#/c/${profileA.profileId}/file`);
-		vi.mocked(f.api.getTeam).mockRejectedValue(new Error("Membership unavailable"));
-		await draw();
-		await draw();
-		const storage = f.root.querySelector(".settings-dialog")!;
-		expect(storage.querySelector(".skeleton")).toBeNull();
-		expect(storage.textContent).toContain("Membership unavailable");
-		vi.mocked(f.api.getTeam).mockResolvedValue(team);
-		const calls = vi.mocked(f.api.getTeam).mock.calls.length;
-		[...storage.querySelectorAll("button")].find((button) => button.textContent === "Retry company")!.click();
-		await draw();
-		expect(vi.mocked(f.api.getTeam).mock.calls.length).toBe(calls + 1);
 	});
 
 	it("shows an error with a way to try again when the cloud session cannot be read", async () => {

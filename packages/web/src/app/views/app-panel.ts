@@ -83,7 +83,7 @@ export interface AppPanelHost extends AppBridgeHost {
 	readonly agentName: (agentId: string | null) => string | null;
 	/** Calls `listener` after each change in the company's folder; answers the call that stops it. */
 	readonly onFolderChange: (listener: () => void) => () => void;
-	readonly openInStorage: (path: string) => void;
+	readonly openInFiles: (path: string) => void;
 	/** Opens an app of the company where apps open: its own page, or the Concepts viewer for a concept. */
 	readonly openApp: (name: string) => void;
 	/** Where the app's call budget is kept in this tab: the company. */
@@ -202,8 +202,8 @@ export class AppPanel {
 					this.#emblem,
 					h("span", { class: "side-panel-copy" }, this.#title, this.#by),
 					control("reload", t("Reload"), () => void this.reload(true)),
-					control("folder", t("Show in Storage"), () => {
-						if (this.#path) host.openInStorage(this.#path);
+					control("folder", t("Show in Files"), () => {
+						if (this.#path) host.openInFiles(this.#path);
 					}),
 					this.#first,
 				),
@@ -353,8 +353,8 @@ export class AppPanel {
 					path
 						? h(
 								"button",
-								{ type: "button", class: "side-panel-way", onclick: () => this.#host.openInStorage(path) },
-								t("Show in Storage"),
+								{ type: "button", class: "side-panel-way", onclick: () => this.#host.openInFiles(path) },
+								t("Show in Files"),
 							)
 						: null,
 				),
@@ -368,7 +368,7 @@ export class AppPanel {
 	#follow(link: AppLink): void {
 		if (this.#lifetime.signal.aborted) return;
 		if (link.kind === "app") this.#host.openApp(link.name);
-		else if (link.kind === "file") this.#host.openInStorage(link.path);
+		else if (link.kind === "file") this.#host.openInFiles(link.path);
 		else if (!openTab(link.href)) this.#offer(link.href);
 	}
 

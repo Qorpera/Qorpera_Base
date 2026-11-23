@@ -111,7 +111,7 @@ function openFriendsWindow(root: Element): HTMLDialogElement {
 }
 /** The settings pages the nav shows, by id. */
 function navTabs(root: Element): string[] {
-	return [...root.querySelectorAll<HTMLElement>('.settings-nav:not(.settings-storage-nav) [role="tab"]')]
+	return [...root.querySelectorAll<HTMLElement>('.settings-nav [role="tab"]')]
 		.filter((tab) => !tab.hidden)
 		.map((tab) => tab.id.replace("settings-tab-", ""));
 }
@@ -413,7 +413,7 @@ describe("settings session lifecycle", () => {
 		expect(selectedTab(f.root)).toBe("general");
 		expect(vi.mocked(f.api.getTeam).mock.calls.length).toBe(teams);
 	});
-	it("shows only the account's pages and no Storage with no company open, and every page inside one", async () => {
+	it("shows only the account's pages with no company open, and every page inside one", async () => {
 		history.replaceState(null, "", "/#/");
 		const fixtureState = fixture();
 		vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([profileA, profileB]);
@@ -422,7 +422,6 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(navTabs(f.root)).toEqual(ACCOUNT_TABS);
 		expect(selectedTab(f.root)).toBe("general");
-		expect(f.root.querySelector<HTMLElement>(".settings-modes")!.hidden).toBe(true);
 		// A search never brings a company page back (inside a company, "agents" finds Company and Leaderboard too).
 		const search = f.root.querySelector<HTMLInputElement>('.settings-header input[aria-label="Search settings"]')!;
 		search.value = "ranking";
@@ -430,17 +429,16 @@ describe("settings session lifecycle", () => {
 		expect(navTabs(f.root)).toEqual(["leaderboard"]);
 		expect(selectedTab(f.root)).toBe("leaderboard");
 		click(f.root, ".settings-close");
-		// Inside a company, its pages and Storage are there as before.
 		location.hash = `#/c/${profileA.profileId}/chat/${session.sessionId}`;
 		await draw();
 		open(f.root);
 		await draw();
 		expect(navTabs(f.root)).toEqual(ALL_TABS);
-		expect(f.root.querySelector<HTMLElement>(".settings-modes")!.hidden).toBe(false);
+		expect(f.root.querySelector(".settings-modes")).toBeNull();
+		expect(f.root.querySelector(".settings-storage-content")).toBeNull();
 	});
 	it.each([
 		["company", "general"],
-		["storage", "general"],
 		["my-connections", "ai-subscriptions"],
 	] as const)("opens %s with no company open on %s", async (asked, opened) => {
 		history.replaceState(null, "", "/#/");
@@ -467,10 +465,8 @@ describe("settings session lifecycle", () => {
 		await settle();
 		expect(selectedTab(view.el)).toBe(opened);
 		expect(view.el.querySelector<HTMLElement>("#settings-content")!.hidden).toBe(false);
-		expect(view.el.querySelector<HTMLElement>("#settings-storage-content")!.hidden).toBe(true);
 		const text = view.el.querySelector(".settings-dialog")!.textContent;
 		expect(text).not.toContain("Open a company to see these settings.");
-		expect(text).not.toContain("Open a company to see its storage.");
 	});
 	it("lists the member's AI subscriptions with no company open, read through the first company that shares them", async () => {
 		history.replaceState(null, "", "/#/");
@@ -572,14 +568,13 @@ describe("settings session lifecycle", () => {
 		expect(brand.querySelector("input[type=text]")).toBeNull();
 		expect(brand.querySelector(".settings-brand-logo .company-logo")).not.toBeNull();
 	});
-	it("opens the Friends window over Settings from the button beside Settings | Storage", async () => {
+	it("opens the Friends window over Settings from the button beside Close", async () => {
 		const f = await setup();
 		open(f.root);
 		await draw();
 		const header = f.root.querySelector(".settings-header")!;
 		const friends = header.querySelector<HTMLButtonElement>(".settings-friends")!;
-		// Inside a company it stands left of the Settings | Storage switch.
-		expect(friends.nextElementSibling?.classList.contains("settings-modes")).toBe(true);
+		expect(friends.nextElementSibling?.classList.contains("settings-close")).toBe(true);
 		friends.click();
 		await draw();
 		// Settings stay open behind the window (Jonas, 9 Nov 2026), and get the focus back when it closes.
@@ -599,11 +594,11 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		await draw();
 		expect(
-			[...f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]')].map(
+			[...f.root.querySelectorAll('.settings-nav [role="tab"]')].map(
 				(tab) => tab.textContent,
 			),
 		).toEqual(["General", "Company", "Leaderboard", "AI subscriptions"]);
-		for (const tab of f.root.querySelectorAll('.settings-nav:not(.settings-storage-nav) [role="tab"]'))
+		for (const tab of f.root.querySelectorAll('.settings-nav [role="tab"]'))
 			expect(tab.querySelector("svg.icon")).not.toBeNull();
 		// Appearance is part of General, under the account's settings; the agent rules are not.
 		expect(f.root.querySelector("#settings-content .settings-appearance h2")?.textContent).toBe("Appearance");
@@ -634,7 +629,7 @@ describe("settings session lifecycle", () => {
 		search.value = "time zone";
 		search.dispatchEvent(new Event("input"));
 		const shownTabs = [
-			...f.root.querySelectorAll<HTMLElement>(".settings-nav:not(.settings-storage-nav) [role=tab]"),
+			...f.root.querySelectorAll<HTMLElement>(".settings-nav [role=tab]"),
 		].filter((tab) => !tab.hidden);
 		expect(shownTabs.map((tab) => tab.id)).toEqual(["settings-tab-general"]);
 		search.value = "team";
@@ -655,7 +650,7 @@ describe("settings session lifecycle", () => {
 		search.value = "Delete company";
 		search.dispatchEvent(new Event("input"));
 		expect(
-			[...f.root.querySelectorAll<HTMLElement>(".settings-nav:not(.settings-storage-nav) [role=tab]")]
+			[...f.root.querySelectorAll<HTMLElement>(".settings-nav [role=tab]")]
 				.filter((tab) => !tab.hidden)
 				.map((tab) => tab.id),
 		).toEqual(["settings-tab-company"]);
@@ -675,111 +670,6 @@ describe("settings session lifecycle", () => {
 			.querySelector("#settings-tab-general")!
 			.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
 		expect(document.activeElement).toBe(f.root.querySelector("#settings-tab-company"));
-	});
-	it("shares one header between Settings and Storage while preserving each search and the conversation draft", async () => {
-		const folder = storageFixture();
-		const f = await setup();
-		const composer = f.root.querySelector<HTMLTextAreaElement>("textarea")!;
-		composer.value = "Keep this draft while browsing company storage";
-		composer.dispatchEvent(new Event("input", { bubbles: true }));
-		open(f.root);
-		await draw();
-		const dialog = f.root.querySelector(".settings-dialog")!;
-		const settingsSearch = dialog.querySelector<HTMLInputElement>(
-			'.settings-header input[aria-label="Search settings"]',
-		)!;
-		const storageSearch = dialog.querySelector<HTMLInputElement>(
-			'.settings-header input[aria-label="Search this folder"]',
-		)!;
-		expect(dialog.firstElementChild?.classList.contains("settings-header")).toBe(true);
-		expect(dialog.querySelector(".settings-nav input[type='search']")).toBeNull();
-		settingsSearch.value = "time zone";
-		settingsSearch.dispatchEvent(new Event("input"));
-		click(dialog, '.settings-mode[data-mode="storage"]');
-		await draw();
-		expect(settingsSearch.hidden).toBe(true);
-		expect(storageSearch.hidden).toBe(false);
-		expect(dialog.querySelector('.settings-mode[data-mode="storage"]')?.getAttribute("aria-pressed")).toBe("true");
-		expect(dialog.querySelector("#settings-storage-documents")?.getAttribute("aria-selected")).toBe("true");
-		expect([...dialog.querySelectorAll(".settings-storage-nav [role=tab]")].map((tab) => tab.textContent)).toEqual([
-			"Documents",
-			"Recents",
-		]);
-		storageSearch.value = "notes";
-		storageSearch.dispatchEvent(new Event("input"));
-		expect([...dialog.querySelectorAll(".files-name")].map((name) => name.textContent)).toEqual(["notes"]);
-		click(dialog, '.settings-mode[data-mode="settings"]');
-		expect(settingsSearch.hidden).toBe(false);
-		expect(storageSearch.hidden).toBe(true);
-		expect(settingsSearch.value).toBe("time zone");
-		expect(dialog.querySelector("#settings-tab-general")?.getAttribute("aria-selected")).toBe("true");
-		click(dialog, '.settings-mode[data-mode="storage"]');
-		expect(storageSearch.value).toBe("notes");
-		expect(folder.list).toHaveBeenCalledOnce();
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		click(dialog, ".settings-close");
-		expect(f.root.querySelector("textarea")).toBe(composer);
-		expect(composer.value).toBe("Keep this draft while browsing company storage");
-		expect(folder.source.at(-1)?.signal.aborted).toBe(true);
-	});
-	it("draws Storage's dates again in a time zone chosen in Settings meanwhile", async () => {
-		const folder = storageFixture();
-		expect(setTimeZonePreference("UTC")).toBe(true);
-		try {
-			const f = await setup();
-			open(f.root);
-			click(f.root, '.settings-mode[data-mode="storage"]');
-			await draw();
-			const modified = () =>
-				f.root.querySelector<HTMLElement>(".settings-storage-content time")?.title.replace(/\s/g, " ");
-			expect(modified()).toBe("Sep 5, 2026, 10:00 AM");
-			click(f.root, '.settings-mode[data-mode="settings"]');
-			expect(setTimeZonePreference("Pacific/Auckland")).toBe(true);
-			await draw();
-			click(f.root, '.settings-mode[data-mode="storage"]');
-			expect(modified()).toBe("Sep 5, 2026, 10:00 PM");
-			expect(folder.list).toHaveBeenCalledOnce();
-		} finally {
-			setTimeZonePreference("system");
-		}
-	});
-	it("keeps a focused Storage file row when an unrelated company refresh arrives", async () => {
-		const folder = storageFixture();
-		const f = await setup();
-		open(f.root);
-		click(f.root, '.settings-mode[data-mode="storage"]');
-		await draw();
-		const notes = [...f.root.querySelectorAll<HTMLElement>(".settings-storage-content .files-row-main")].find(
-			(row) => row.querySelector(".files-name")?.textContent === "notes",
-		)!;
-		notes.focus();
-		const teamReads = vi.mocked(f.api.getTeam).mock.calls.length;
-		f.hints.get("qorpera_profile_access_state")!();
-		await draw();
-		expect(vi.mocked(f.api.getTeam).mock.calls.length).toBeGreaterThan(teamReads);
-		expect(notes.isConnected).toBe(true);
-		expect(document.activeElement).toBe(notes);
-		expect(folder.list).toHaveBeenCalledOnce();
-	});
-	it("opens Storage from the header in the same dialog and reaches Recents by keyboard", async () => {
-		const folder = storageFixture();
-		const f = await setup();
-		open(f.root);
-		click(f.root, "#settings-tab-company");
-		await draw();
-		const dialog = f.root.querySelector(".settings-dialog");
-		click(f.root, '.settings-mode[data-mode="storage"]');
-		await draw();
-		expect(f.root.querySelector(".settings-dialog")).toBe(dialog);
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		const documents = f.root.querySelector<HTMLElement>("#settings-storage-documents")!;
-		documents.focus();
-		documents.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-		await draw();
-		expect(document.activeElement).toBe(f.root.querySelector("#settings-storage-recents"));
-		expect(f.root.querySelector("#settings-storage-recents")?.getAttribute("aria-selected")).toBe("true");
-		expect(f.root.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(false);
-		expect(folder.history).toHaveBeenCalledOnce();
 	});
 	/** A Storage folder that also reads: `operations` is a folder, any other path an HTML page. */
 	function linkedFolder() {
@@ -820,228 +710,29 @@ describe("settings session lifecycle", () => {
 		const [dashboard, operations] = prose.querySelectorAll<HTMLButtonElement>(".folder-link");
 		return { prose, dashboard: dashboard!, operations: operations! };
 	}
-	/** The dashboard's link opens the page beside the chat (interface apps, 5 Nov 2026); its Show in Storage opens it
-	 * in Storage, over the conversation, as a folder link to any other file does. */
-	async function dashboardInStorage(root: Element) {
-		const links = linksInMessage(root);
-		links.dashboard.click();
-		await draw();
-		root.querySelector<HTMLButtonElement>('.side-panel [aria-label="Show in Storage"]')!.click();
-		return links;
-	}
-	it("opens Storage at a folder link's file or folder, over the conversation", async () => {
+	it("opens the Files page at a folder link's file or folder, and an HTML page beside the chat first", async () => {
 		const folder = linkedFolder();
 		const f = await setup();
-		const { prose, dashboard, operations } = linksInMessage(f.root);
+		const { dashboard } = linksInMessage(f.root);
 		const followed = new MouseEvent("click", { bubbles: true, cancelable: true });
 		dashboard.dispatchEvent(followed);
 		expect(followed.defaultPrevented).toBe(true);
 		await draw();
-		// An HTML page opens beside the chat, which stays as it is; its Show in Storage opens Storage there.
 		expect(f.root.querySelector(".thread-body.has-beside .side-panel .side-panel-title")?.textContent).toBe(
 			"dashboard.html",
 		);
+		f.root.querySelector<HTMLButtonElement>('.side-panel [aria-label="Show in Files"]')!.click();
+		await draw();
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/s/files`);
 		expect(f.root.querySelector(".settings-dialog")).toBeNull();
-		f.root.querySelector<HTMLButtonElement>('.side-panel [aria-label="Show in Storage"]')!.click();
-		await draw();
-		await draw();
-		expect(f.root.querySelector('.settings-mode[data-mode="storage"]')?.getAttribute("aria-pressed")).toBe("true");
-		expect(f.root.querySelector("#settings-storage-documents")?.getAttribute("aria-selected")).toBe("true");
 		expect(folder.read).toHaveBeenCalledWith("notes/dashboard.html", expect.any(AbortSignal));
-		expect(folder.list).toHaveBeenLastCalledWith("notes", null, 200, expect.any(AbortSignal));
-		expect(f.root.querySelector(".settings-storage-content .files-preview-head h2")?.textContent).toBe(
-			"dashboard.html",
-		);
-		expect(f.root.querySelector(".settings-storage-content iframe.files-page-frame")?.getAttribute("sandbox")).toBe(
-			"allow-scripts",
-		);
-		// The conversation stays where it was, below Settings.
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		expect(prose.isConnected).toBe(true);
-		// Closed and followed again, a folder link opens the folder it names.
-		click(f.root, ".settings-close");
-		operations.click();
+		expect(f.root.querySelector(".surface-files .files-preview-head h2")?.textContent).toBe("dashboard.html");
+		linksInMessage(f.root).operations.click();
 		await draw();
 		await draw();
 		expect(folder.read).toHaveBeenLastCalledWith("operations", expect.any(AbortSignal));
-		expect(folder.list).toHaveBeenLastCalledWith("operations", null, 200, expect.any(AbortSignal));
-		expect(f.root.querySelector(".settings-storage-content .storage-title")?.textContent).toBe("operations");
-		expect(f.root.querySelector(".settings-storage-content .files-preview")?.hasAttribute("hidden")).toBe(true);
-	});
-	it("still shows a folder link's file when the Company File opens only at Retry", async () => {
-		const folder = linkedFolder();
-		folder.list.mockRejectedValueOnce(new Error("The cloud is away"));
-		const f = await setup();
-		await dashboardInStorage(f.root);
-		await draw();
-		await draw();
-		expect(f.root.querySelector(".settings-storage-content .files-preview-head h2")).toBeNull();
-		const retry = [...f.root.querySelectorAll<HTMLButtonElement>(".settings-storage-content button")].find(
-			(control) => control.textContent === "Retry opening Company File",
-		);
-		retry!.click();
-		await draw();
-		await draw();
-		expect(folder.read).toHaveBeenCalledWith("notes/dashboard.html", expect.any(AbortSignal));
-		expect(f.root.querySelector(".settings-storage-content .files-preview-head h2")?.textContent).toBe(
-			"dashboard.html",
-		);
-		// Once shown, it is not shown again: Documents goes to the top.
-		click(f.root, "#settings-storage-documents");
-		await draw();
-		expect(f.root.querySelector(".settings-storage-content .storage-title")?.textContent).toBe("Documents");
-		expect(f.root.querySelector(".settings-storage-content .files-preview")?.hasAttribute("hidden")).toBe(true);
-	});
-	it("lets the keyboard into a page shown across the window, over Settings", async () => {
-		const dialog = HTMLDialogElement.prototype;
-		const { showModal, close } = dialog;
-		dialog.showModal = function () {
-			this.open = true;
-		};
-		dialog.close = function () {
-			this.open = false;
-		};
-		// jsdom lays nothing out; the dialog counts only controls that are drawn.
-		vi.spyOn(Element.prototype, "getClientRects").mockReturnValue([{}] as unknown as DOMRectList);
-		try {
-			linkedFolder();
-			const f = await setup();
-			await dashboardInStorage(f.root);
-			await draw();
-			await draw();
-			f.root
-				.querySelector<HTMLButtonElement>('.files-preview-head [aria-label="Show dashboard.html large"]')!
-				.click();
-			const large = document.querySelector<HTMLDialogElement>("dialog.page-preview-dialog")!;
-			const frame = large.querySelector<HTMLIFrameElement>("iframe.page-preview-frame")!;
-			const closeLarge = large.querySelector<HTMLButtonElement>(".surface-close")!;
-			expect(document.activeElement).toBe(closeLarge);
-			// Tab goes on from Close into the page: neither the dialog nor Settings holds it back.
-			const forwards = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
-			closeLarge.dispatchEvent(forwards);
-			expect(forwards.defaultPrevented).toBe(false);
-			// Shift+Tab from Close, the first control, goes round to the page.
-			const backwards = new KeyboardEvent("keydown", {
-				key: "Tab",
-				shiftKey: true,
-				bubbles: true,
-				cancelable: true,
-			});
-			closeLarge.dispatchEvent(backwards);
-			expect(backwards.defaultPrevented).toBe(true);
-			expect(document.activeElement).toBe(frame);
-			// Escape closes the page and leaves Settings open.
-			closeLarge.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-			expect(document.querySelector("dialog.page-preview-dialog")).toBeNull();
-			expect(f.root.querySelector(".settings-dialog")).not.toBeNull();
-			// Tab in the file's own window over Settings is the window's: Settings' trap leaves it alone.
-			const viewer = f.root.querySelector<HTMLDialogElement>(".settings-storage-content dialog.storage-viewer")!;
-			expect(viewer.open).toBe(true);
-			const history = [...viewer.querySelectorAll<HTMLButtonElement>(".files-preview-actions button")].at(-1)!;
-			history.focus();
-			const onwards = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
-			history.dispatchEvent(onwards);
-			expect(onwards.defaultPrevented).toBe(false);
-			expect(document.activeElement).toBe(history);
-			// Escape again closes the window, and Settings still stays.
-			(document.activeElement ?? document.body).dispatchEvent(
-				new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
-			);
-			expect(viewer.open).toBe(false);
-			expect(f.root.querySelector(".settings-dialog")).not.toBeNull();
-		} finally {
-			dialog.showModal = showModal;
-			dialog.close = close;
-		}
-	});
-	it("closes a page shown across the window on Escape pressed inside it, then Settings, and the composer has focus", async () => {
-		const dialog = HTMLDialogElement.prototype;
-		const { showModal, close } = dialog;
-		dialog.showModal = function () {
-			this.open = true;
-		};
-		dialog.close = function () {
-			this.open = false;
-		};
-		try {
-			linkedFolder();
-			const f = await setup();
-			await draw();
-			const composer = f.root.querySelector<HTMLTextAreaElement>(".composer textarea")!;
-			expect(composer).not.toBeNull();
-			await dashboardInStorage(f.root);
-			await draw();
-			await draw();
-			const expand = f.root.querySelector<HTMLButtonElement>(
-				'.files-preview-head [aria-label="Show dashboard.html large"]',
-			)!;
-			expand.focus();
-			expand.click();
-			const large = document.querySelector<HTMLDialogElement>("dialog.page-preview-dialog")!;
-			const frame = large.querySelector<HTMLIFrameElement>("iframe.page-preview-frame")!;
-			frame.focus();
-			// 3 Nov 2026: with focus in the page, Escape went to the page and the preview stayed. The frame document
-			// passes it on (public/page-preview/index.html); only a frame of this view is heard.
-			const escapeFrom = (source: Window | null) => {
-				const event = new MessageEvent("message", { data: { type: "qorpera-page-escape" } });
-				Object.defineProperty(event, "source", { value: source });
-				window.dispatchEvent(event);
-			};
-			escapeFrom(document.createElement("iframe").contentWindow);
-			escapeFrom(null);
-			expect(document.querySelector("dialog.page-preview-dialog")).not.toBeNull();
-			escapeFrom(frame.contentWindow);
-			expect(document.querySelector("dialog.page-preview-dialog")).toBeNull();
-			expect(document.activeElement).toBe(expand);
-			expect(f.root.querySelector(".settings-dialog")).not.toBeNull();
-			// Escape again closes the file, then Settings, opened from the conversation's link: typing goes on in the
-			// composer.
-			const press = () =>
-				(document.activeElement ?? document.body).dispatchEvent(
-					new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
-				);
-			press();
-			expect(f.root.querySelector(".files-preview-head")?.closest("[hidden]")).not.toBeNull();
-			expect(f.root.querySelector(".settings-dialog")).not.toBeNull();
-			press();
-			expect(f.root.querySelector(".settings-dialog")).toBeNull();
-			expect(document.activeElement).toBe(composer);
-		} finally {
-			dialog.showModal = showModal;
-			dialog.close = close;
-		}
-	});
-	it("keeps Tab inside the available Settings controls while a storage folder read is pending", async () => {
-		const folder = storageFixture();
-		const f = await setup();
-		open(f.root);
-		click(f.root, '.settings-mode[data-mode="storage"]');
-		await draw();
-		const files = f.root.querySelector<HTMLElement>(".files-root")!;
-		// jsdom does not reflect HTMLElement.inert to its attribute as browsers do.
-		Object.defineProperty(files, "inert", {
-			configurable: true,
-			get: () => files.hasAttribute("inert"),
-			set: (value: boolean) => files.toggleAttribute("inert", value),
-		});
-		const loading = deferred<Awaited<ReturnType<typeof folder.list>>>();
-		folder.list.mockReturnValueOnce(loading.promise);
-		click(files, '.files-row-main[data-path="notes"]');
-		expect(files.inert).toBe(true);
-		const content = f.root.querySelector<HTMLElement>("#settings-storage-content")!;
-		content.focus();
-		const forwards = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
-		content.dispatchEvent(forwards);
-		expect(forwards.defaultPrevented).toBe(true);
-		expect(document.activeElement?.closest(".settings-header")).not.toBeNull();
-		expect(document.activeElement?.closest("[inert]")).toBeNull();
-		const backwards = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
-		document.activeElement!.dispatchEvent(backwards);
-		expect(backwards.defaultPrevented).toBe(true);
-		expect(document.activeElement).toBe(content);
-		loading.resolve({ asOfSeq: 1, entries: [], next: null });
-		await draw();
-		expect(files.inert).toBe(false);
+		expect(f.root.querySelector(".surface-files .storage-title")?.textContent).toBe("operations");
 	});
 	it("closes the Friends window over Settings when access to the company is lost", async () => {
 		const f = await setup();
@@ -1059,26 +750,6 @@ describe("settings session lifecycle", () => {
 		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 		expect(f.root.querySelector(".friends-window")).toBeNull();
 	});
-	it.each(["revocation", "sign out"])("ends Storage reads and removes the dialog on %s", async (change) => {
-		const folder = storageFixture();
-		const f = await setup();
-		open(f.root);
-		click(f.root, '.settings-mode[data-mode="storage"]');
-		await draw();
-		const current = folder.source.at(-1)!;
-		expect(current.signal.aborted).toBe(false);
-		if (change === "sign out") f.auth(null);
-		else {
-			vi.mocked(f.api.getTeam).mockRejectedValue(
-				new CloudRpcError("getTeam", { code: "42501", message: "Access revoked" }),
-			);
-			f.hints.get("qorpera_profile_access_state")!();
-		}
-		await draw();
-		expect(current.signal.aborted).toBe(true);
-		expect(() => current.current()).toThrow();
-		expect(f.root.querySelector(".settings-overlay")).toBeNull();
-	});
 	it("selects the top matching tab when a search hides the open one", async () => {
 		const f = await setup();
 		open(f.root);
@@ -1088,7 +759,7 @@ describe("settings session lifecycle", () => {
 		search.value = "sales";
 		search.dispatchEvent(new Event("input"));
 		const shown = [
-			...f.root.querySelectorAll<HTMLElement>('.settings-nav:not(.settings-storage-nav) [role="tab"]'),
+			...f.root.querySelectorAll<HTMLElement>('.settings-nav [role="tab"]'),
 		].filter((tab) => !tab.hidden);
 		expect(shown.map((tab) => tab.id)).toEqual(["settings-tab-company", "settings-tab-leaderboard"]);
 		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
@@ -1147,7 +818,7 @@ describe("settings session lifecycle", () => {
 		const shown = (words: string) => {
 			search.value = words;
 			search.dispatchEvent(new Event("input"));
-			return [...f.root.querySelectorAll<HTMLElement>('.settings-nav:not(.settings-storage-nav) [role="tab"]')]
+			return [...f.root.querySelectorAll<HTMLElement>('.settings-nav [role="tab"]')]
 				.filter((tab) => !tab.hidden)
 				.map((tab) => tab.id);
 		};
@@ -1793,29 +1464,6 @@ describe("settings session lifecycle", () => {
 		expect(rows[0]?.textContent).toContain("Your Visa ending 4242");
 		expect(rows[1]?.textContent).toContain("No sales yet");
 		expect(rows[1]?.textContent).toContain("No card yet");
-	});
-	it("says under Storage's navigation when the company's storage can't be read, and reads it again", async () => {
-		const f = await setup();
-		vi.mocked(f.api.getCompanyFile).mockRejectedValueOnce(new Error("Storage offline"));
-		open(f.root);
-		click(f.root, '.settings-mode[data-mode="storage"]');
-		await draw();
-		const usage = () => f.root.querySelector(".settings-storage-usage")!;
-		expect(usage().textContent).toContain("Storage information unavailable");
-		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(1);
-		// Retry reads it again.
-		vi.mocked(f.api.getCompanyFile).mockRejectedValueOnce(new Error("Storage offline"));
-		[...usage().querySelectorAll("button")].find((button) => button.textContent === "Retry")!.click();
-		await draw();
-		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(2);
-		expect(usage().textContent).toContain("Storage information unavailable");
-		// Settings shown and Storage opened again read it again too.
-		click(f.root, '.settings-mode[data-mode="settings"]');
-		click(f.root, '.settings-mode[data-mode="storage"]');
-		await draw();
-		expect(f.api.getCompanyFile).toHaveBeenCalledTimes(3);
-		expect(usage().textContent).not.toContain("Storage information unavailable");
-		expect(usage().querySelector("button")).toBeNull();
 	});
 	it("shows the open company's agent rules on the Company tab, and none when no company is open", async () => {
 		const fixtureState = fixture();

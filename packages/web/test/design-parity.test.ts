@@ -4,9 +4,7 @@ import { dayLabel } from "../src/app/agent-line.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import type { Route } from "../src/app/router.ts";
-import { HubController } from "../src/app/views/hub.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
-import { SettingsView } from "../src/app/views/settings.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { projectTranscript, type TranscriptMessage } from "../src/cloud/transcript.ts";
 import type { HostedStaffExecutionActivity } from "../src/cloud/types.ts";
@@ -26,11 +24,9 @@ import { ReceivedAttachments } from "../src/ui/received-attachments.ts";
 import {
 	deferred,
 	event,
-	file,
 	fixture,
 	id,
 	profileA,
-	profileB,
 	session,
 	settle,
 	staff,
@@ -325,44 +321,6 @@ describe("shell presentation lifecycle", () => {
 		expect(setThemePreference("dark")).toBe(false);
 		expect(themePreference()).toBe("system");
 		expect(theme()).toBe("light");
-	});
-	it("ignores storage totals returned after settings moves to another company", async () => {
-		const f = companyFixture(),
-			auth = new AuthController(f.cloud);
-		await auth.start();
-		cleanup.push(() => auth.dispose());
-		const pending = deferred<typeof file>();
-		vi.mocked(f.api.getCompanyFile)
-			.mockReturnValueOnce(pending.promise)
-			.mockResolvedValue({ ...file, storageUsedBytes: 40 });
-		const hub = new HubController(f.api);
-		cleanup.push(() => hub.dispose());
-		// On the company list, settings follow the account's only company.
-		const view = new SettingsView(
-			f.api,
-			auth,
-			hub,
-			[],
-			undefined,
-			() => {},
-			() => {},
-		);
-		cleanup.push(() => view.dispose());
-		document.body.append(view.el);
-		view.updateProfiles([profileA]);
-		view.el.querySelector<HTMLButtonElement>('.settings-mode[data-mode="storage"]')!.click();
-		const usage = () => view.el.querySelector(".settings-storage-usage");
-		expect(usage()?.textContent).toContain("Loading storage");
-		expect(usage()?.querySelector("progress")).toBeNull();
-		// The company is removed and another one takes its place.
-		view.updateProfiles([]);
-		view.updateProfiles([profileB]);
-		await settle();
-		expect(usage()?.textContent).toContain("40 B in total");
-		pending.resolve({ ...file, storageUsedBytes: 99 });
-		await settle();
-		expect(usage()?.textContent).not.toContain("99 B");
-		expect(usage()?.textContent).toContain("40 B in total");
 	});
 	it("draws each agent state, with a red disc on an idle agent whose run did not finish", () => {
 		const mount = stubFigureMotion();

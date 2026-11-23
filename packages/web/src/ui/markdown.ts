@@ -436,7 +436,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true, s
 								type: "button",
 								class: "folder-link",
 								"data-folder-path": path,
-								title: t("Open {path} in Storage", { path }),
+								title: t("Open {path} in Files", { path }),
 							},
 							content,
 						),

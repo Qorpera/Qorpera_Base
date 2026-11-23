@@ -61,12 +61,6 @@ export const SETTINGS: Record<string, string> = {
 	"No matches": "Ingen resultater",
 	"Clear search": "Ryd søgning",
 
-	// Storage (app/views/storage-summary.ts)
-	"{used} in total": "{used} i alt",
-	"Loading storage…": "Henter lager…",
-	"Storage information unavailable": "Lageroplysninger ikke tilgængelige",
-	"Open a company to see its storage.": "Åbn en virksomhed for at se dens lager.",
-
 	// Good will (app/views/settings-good-will.ts). The name is one key: change "Goodwill" here to rename it.
 	"Good will": "Goodwill",
 	"We lend you our machines for free as an investment in your company. In exchange, {company} pays a good will tax to Qorpera. The more you earn, the smaller the tax rate.":

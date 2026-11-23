@@ -37,7 +37,7 @@ function company(files: Record<string, string> = {}) {
 		apps: () => read,
 		agentName: () => null,
 		onFolderChange: () => () => {},
-		openInStorage: vi.fn<(path: string) => void>(),
+		openInFiles: vi.fn<(path: string) => void>(),
 		openApp: vi.fn<(name: string) => void>(),
 		budgetKey: crypto.randomUUID(),
 	} satisfies AppPanelHost;
@@ -90,19 +90,19 @@ async function opened(host: AppPanelHost, target: AppPanelTarget = { kind: "app"
 }
 
 describe("a link in an app's page", () => {
-	it("opens another app where apps open, and a file of the company in Storage", async () => {
+	it("opens another app where apps open, and a file of the company in Files", async () => {
 		const { host } = company();
 		const app = await opened(host);
 		expect(await app.clicked("app:hiring")).toEqual({ type: "qorpera-app-answer", id: 1, ok: true, value: null });
 		expect(host.openApp).toHaveBeenCalledExactlyOnceWith("hiring");
 		expect(await app.clicked("folder:strategy/plan%202027.md")).toMatchObject({ ok: true });
-		expect(host.openInStorage).toHaveBeenCalledExactlyOnceWith("strategy/plan 2027.md");
+		expect(host.openInFiles).toHaveBeenCalledExactlyOnceWith("strategy/plan 2027.md");
 		// Anything else opens nothing, and the page's own calls are answered as before.
 		const open = vi.spyOn(window, "open").mockReturnValue(null);
 		for (const bad of ["other.html", "folder:QorperaOS/vision/vision.md", "javascript:alert(1)", "mailto:a@b.dk", 7])
 			expect(await app.clicked(bad), String(bad)).toMatchObject({ ok: false });
 		expect(host.openApp).toHaveBeenCalledOnce();
-		expect(host.openInStorage).toHaveBeenCalledOnce();
+		expect(host.openInFiles).toHaveBeenCalledOnce();
 		expect(open).not.toHaveBeenCalled();
 		expect(app.panel.el.querySelector(".side-panel-link")).toBeNull();
 		expect(await app.call("read", { path: "apps/sales/index.html" })).toMatchObject({ ok: true });
@@ -227,7 +227,7 @@ describe("a link in an app's page", () => {
 				error: "Only an app in apps/ reads the company's data",
 			});
 		expect(host.openApp).not.toHaveBeenCalled();
-		expect(host.openInStorage).not.toHaveBeenCalled();
+		expect(host.openInFiles).not.toHaveBeenCalled();
 		expect(open).not.toHaveBeenCalled();
 		expect(page.html).toBe('<!doctype html><html><head></head><body><a href="app:sales">Sales</a></body></html>');
 	});

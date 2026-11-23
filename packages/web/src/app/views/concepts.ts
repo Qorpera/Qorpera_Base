@@ -452,7 +452,7 @@ export class ConceptsView {
 			...(name === this.#selected()?.name
 				? [{ label: t("Reload"), icon: "reload", select: () => this.reload() }]
 				: []),
-			{ label: t("Show in Storage"), icon: "folder", select: () => this.#host.panel.openInStorage(concept.path) },
+			{ label: t("Show in Files"), icon: "folder", select: () => this.#host.panel.openInFiles(concept.path) },
 		];
 		const point = menuPoint(event, row);
 		openContextMenu({
