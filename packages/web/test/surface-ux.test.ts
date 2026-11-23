@@ -1392,7 +1392,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 			hasUnpublishedChanges: true,
 		});
 		const landed = session([], {
-			state: "closed",
+			state: "completed",
 			changes: [
 				change(CHANGES[0], 1, "merged", { title: "Price on the front page", summary: "Shows 1.995 kr." }),
 				change(CHANGES[1], 2, "merged", { title: "Questions", undoBatchSize: 3 }),
