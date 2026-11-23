@@ -57,6 +57,7 @@ import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { RAIL_ITEM, RailDrag, type RailDrop, railItemId } from "../../ui/rail-drag.ts";
 import { glideRows, measureRows } from "../../ui/rail-flip.ts";
+import { RailHover } from "../../ui/rail-hover.ts";
 import { RailSelection } from "../../ui/rail-selection.ts";
 import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type IdleLine, idleLine } from "../agent-line.ts";
@@ -460,6 +461,7 @@ interface RailParts {
 	readonly presenceElements: Set<HTMLElement>;
 	/** The highlight that slides to the conversation opened (ui/rail-selection.ts). */
 	readonly selection: RailSelection;
+	readonly hover: RailHover;
 	/** Where every agent and conversation the company has listed leads: a row that comes back
 	 * (a search cleared, Hidden opened, a pin) is not new, so only a link never seen arrives. */
 	readonly known: Set<string>;
@@ -748,6 +750,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			layoutKey: undefined,
 			presenceElements: new Set(),
 			selection: new RailSelection(),
+			hover: new RailHover(list, company.signal),
 			known: new Set(),
 			settled: false,
 			mentionsRead: false,
@@ -1990,13 +1993,13 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			!hasMembersSurface && (memberRows.length || (placing && !railQuery)) ? parts.members.el : null,
 			hiddenCount ? hiddenGroup.el : null,
 			empty && !surfaceRail ? parts.empty : null,
+			parts.hover.attached ?? null,
 			parts.selection.moving ?? null,
 		].filter((element) => element !== null),
 	);
-	if (shouldMeasure) {
-		parts.selection.move(parts.list);
-		glideRows(parts.list, places);
-	}
+	if (shouldMeasure) parts.selection.move(parts.list);
+	parts.hover.settle();
+	if (shouldMeasure) glideRows(parts.list, places);
 	parts.layoutKey = layoutKey;
 	parts.rows = rows;
 	// Everything the company lists now is known from here on, drawn or not (hidden, filtered out).
