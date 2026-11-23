@@ -9,6 +9,7 @@ import {
 	SURFACE_BLOCK_TYPES,
 	SURFACE_BLOCKS,
 	SURFACE_LAYOUT_MAX_BYTES,
+	SURFACE_LAYOUT_MAX_KEYS,
 	SURFACE_LAYOUT_PATH,
 	SURFACE_LAYOUT_SCHEMA,
 	SURFACE_STARTER_KINDS,
@@ -802,7 +803,13 @@ describe("the block registry", () => {
 		}
 		expect(text).not.toMatch(/parse|registry|\.ts\b|function/i);
 		expect(text).toContain("A source may be a list of 2-6 sources tried in order; the first found wins.");
-		expect(text).toContain("- spec_list: labelled values; nested objects as groups; found but empty, or skip with nothing left, draws nothing.");
+		expect(text).toContain(
+			"- spec_list: labelled values, objects as groups, lists of objects as tables; nothing if found empty or skip leaves nothing.",
+		);
+		expect(text).toContain("- facts: short key figures (with from, only values of <=18 chars); ? where missing.");
+		expect(text).toContain(
+			"- files: working files no other block shows, .json too; its empty line only alone on a tab or with a heading.",
+		);
 	});
 });
 
@@ -870,15 +877,23 @@ describe("starter layouts", () => {
 			],
 		});
 		expect(product.tabs[0]?.blocks[3]).toMatchObject({ from: "specs.json#/overview", take: 4 });
-		expect(product.tabs[1]?.blocks.map((node) => node.type)).toEqual(["spec_list", "table", "spec_list"]);
-		expect(product.tabs[1]?.blocks[2]).toEqual({
-			type: "spec_list",
-			from: "specs.json",
-			skip: ["overview", "bom", "model", "colorways", "tagline", "summary", "description"],
-			heading: "Other details",
+		expect(product.tabs[0]?.blocks[2]).toEqual({
+			type: "swatch_row",
+			from: ["specs.json#/colorways", "specs.json#/colors", "specs.json#/palette", "specs.json#/swatches"],
+			tints: "stage",
 		});
+		expect(product.tabs[1]?.blocks.map((node) => node.type)).toEqual(["spec_list", "table", "spec_list", "files"]);
+		const otherDetails = product.tabs[1]?.blocks[2];
+		expect(otherDetails).toMatchObject({ type: "spec_list", from: "specs.json", heading: "Other details" });
+		const skip = otherDetails?.type === "spec_list" ? (otherDetails.skip ?? []) : [];
+		expect(skip.length).toBeLessThanOrEqual(SURFACE_LAYOUT_MAX_KEYS);
+		for (const key of ["overview", "bom", "tagline", "model", "colorways", "colors", "palette", "typography"]) {
+			expect(skip).toContain(key);
+		}
+		expect(product.tabs[1]?.blocks[3]).toEqual({ type: "files", match: ["**/*.json"] });
 		expect(product.tabs[2]?.blocks.map((node) => node.type)).toEqual(["spec_list", "cards"]);
 		expect(product.tabs[2]?.blocks[1]).toMatchObject({
+			from: ["vendors.json#/vendors", "vendors.json#/suppliers"],
 			lines: ["component", "unitPrice", "moq", "leadTime", "region", "certifications"],
 		});
 		expect(product.tabs[3]?.blocks).toEqual([{ type: "report", match: "**/*.report.json" }]);
