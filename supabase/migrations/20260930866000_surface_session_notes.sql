@@ -40,7 +40,7 @@ alter table public.qorpera_surface_session_messages
 
 create table public.qorpera_surface_note_recipients (
 	message_id uuid not null references public.qorpera_surface_session_messages(id) on delete cascade,
-	user_id uuid not null references auth.users(id) on delete cascade,
+	user_id uuid not null,
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
 	surface_id uuid not null references public.qorpera_surfaces(id) on delete cascade,
 	session_id uuid not null references public.qorpera_surface_sessions(id) on delete cascade,
