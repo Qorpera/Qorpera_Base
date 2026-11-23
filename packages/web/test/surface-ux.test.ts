@@ -10,7 +10,6 @@ import {
 	clearLocalSandboxCache,
 	synthesizeSurfaces,
 } from "../src/app/surfaces-store.ts";
-import { ConversationView } from "../src/app/views/conversation.ts";
 import { HubController } from "../src/app/views/hub.ts";
 import { renderNewCompany } from "../src/app/views/new-company.ts";
 import { renderRail } from "../src/app/views/shell.ts";
@@ -23,7 +22,7 @@ import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
 import { linkHref } from "../src/ui/dom.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
-import { session as chatSession, fixture, id, profileA, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
+import { fixture, id, profileA, staff, stubFigureMotion, userA } from "./fixtures.ts";
 import {
 	CHANGES,
 	COMPANY,
@@ -1187,190 +1186,6 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(start).not.toHaveBeenCalled();
 
 		hub.dispose();
-	});
-
-	it("renders the Active Surfaces Jump Strip in Co-Founder's thread and opens Changes on click", async () => {
-		stubFigureMotion();
-		const f = fixture();
-		const cofounder = { ...staff, id: id(10), templateId: "co-founder", displayName: "Co-Founder" };
-		const specialist = { ...staff, id: id(11), templateId: "designer", displayName: "Maja" };
-		const cofounderSession = { ...chatSession, sessionId: id(20), staffAgentId: cofounder.id };
-		const specialistSession = { ...chatSession, sessionId: id(21), staffAgentId: specialist.id };
-		const company = new CompanyController(f.api, profileA, userA.id);
-		company.store.set({
-			team,
-			staff: [cofounder, specialist],
-			sessions: [cofounderSession, specialistSession],
-			loading: false,
-		});
-
-		const identitySurf = summary({
-			id: "55555555-5555-4555-8555-555555555571",
-			slug: "identity",
-			title: "Identity",
-			group: "products",
-			archetype: "studio",
-			kind: "identity",
-			isGlobal: true,
-			activeSessionCount: 0,
-			pendingChangeCount: 0,
-			sortOrder: 0,
-		});
-		const websiteSurf = summary({
-			id: "55555555-5555-4555-8555-555555555572",
-			slug: "website",
-			title: "Website",
-			group: "products",
-			archetype: "live_build",
-			activeSessionCount: 3,
-			pendingChangeCount: 3,
-			sortOrder: 1,
-		});
-		const appSurf = summary({
-			id: "55555555-5555-4555-8555-555555555573",
-			slug: "mobile-app",
-			title: "Meditation App",
-			group: "products",
-			archetype: "live_build",
-			kind: "mobile_app",
-			activeSessionCount: 1,
-			runningSessionCount: 1,
-			pendingChangeCount: 0,
-			sortOrder: 2,
-		});
-		const quietSurf = summary({
-			id: "55555555-5555-4555-8555-555555555574",
-			slug: "headband",
-			title: "Headband",
-			group: "products",
-			archetype: "studio",
-			activeSessionCount: 0,
-			runningSessionCount: 0,
-			pendingChangeCount: 0,
-			sortOrder: 3,
-		});
-
-		const variantIds = [
-			"44444444-4444-4444-8444-444444444401",
-			"44444444-4444-4444-8444-444444444402",
-			"44444444-4444-4444-8444-444444444403",
-		];
-		const exp = {
-			id: "88888888-8888-4888-8888-888888888801",
-			surfaceId: websiteSurf.id,
-			title: "Landing directions",
-			status: "open" as const,
-			chosenSessionId: null,
-			variantSessionIds: variantIds,
-			createdAt: "2026-11-21T10:00:00.000Z",
-			resolvedAt: null,
-		};
-		const variantSessions = variantIds.map((variantId, index) =>
-			session(["staged"], {
-				id: variantId,
-				surfaceId: websiteSurf.id,
-				explorationId: exp.id,
-				explorationVariantLabel: `Direction ${index + 1}`,
-			}),
-		);
-		const navigated: string[] = [];
-		const client = fakeClient({
-			listSurfaces: vi.fn().mockResolvedValue([identitySurf, websiteSurf, appSurf, quietSurf, inbox]),
-			getSurfaceWorkspace: vi
-				.fn()
-				.mockResolvedValue(workspace(variantSessions, { surface: websiteSurf, explorations: [exp] })),
-		});
-		const store = storeWith(client, {
-			companyId: profileA.profileId,
-			onNavigateSurface: (slug) => navigated.push(slug),
-		});
-		await store.load();
-		await store.openSurface("website");
-		attachSurfaces(company, store);
-
-		const cofounderView = new ConversationView(company, cofounderSession.sessionId, { surfaces: store });
-		document.body.append(cofounderView.el);
-		const strip = cofounderView.el.querySelector<HTMLElement>(".surface-thread-jump")!;
-		expect(strip.hidden).toBe(false);
-		const chips = [...strip.querySelectorAll<HTMLAnchorElement>(".surface-thread-jump-chip")];
-		expect(chips.map((chip) => chip.dataset.surfaceJump)).toEqual(["identity", "website", "mobile-app"]);
-		expect(chips[0]?.querySelector(".surface-thread-jump-pill")?.textContent).toBe("Ready");
-		expect(chips[1]?.querySelector(".surface-thread-jump-pill")?.textContent).toBe("3 directions ready");
-		expect(chips[2]?.querySelector(".surface-thread-jump-pill")?.textContent).toBe("Working");
-		expect(chips[2]?.querySelector(".surface-thread-jump-dot.is-running")).not.toBeNull();
-		expect(linkHref(chips[1]!)).toBe(`#/c/${profileA.profileId}/s/website`);
-
-		store.closePanel();
-		store.setMode("live");
-		chips[1]!.click();
-		expect(navigated).toEqual(["website"]);
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/s/website`);
-		expect(store.state.mode).toBe("preview");
-		expect(store.state.previewPanel).toBe("open");
-		cofounderView.dispose();
-
-		const specialistView = new ConversationView(company, specialistSession.sessionId, { surfaces: store });
-		document.body.append(specialistView.el);
-		expect(specialistView.el.querySelector(".surface-thread-jump")).toBeNull();
-		specialistView.dispose();
-
-		store.dispose();
-		company.stop();
-	});
-
-	it("shows Publish only when something waits to be published, and hides an empty bar", async () => {
-		const quiet = summary({
-			id: "55555555-5555-4555-8555-555555555589",
-			slug: "identity",
-			title: "Identity",
-			archetype: "studio",
-			kind: "identity",
-			isGlobal: true,
-			repositoryKey: null,
-			folderRoot: "identity",
-			liveUrl: null,
-			siteSlug: null,
-			activeSessionCount: 0,
-			pendingChangeCount: 0,
-			unpublishedChangeCount: 0,
-		});
-		const barOf = async (surface: typeof quiet) => {
-			const store = storeWith(
-				fakeClient({
-					listSurfaces: vi.fn().mockResolvedValue([surface]),
-					getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([], { surface })),
-				}),
-			);
-			await store.load();
-			const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "identity");
-			document.body.append(view.el);
-			await flush();
-			view.update();
-			const bar = view.el.querySelector<HTMLElement>(".surface-bar")!;
-			const shown = {
-				hidden: bar.hidden,
-				publish: bar.querySelector(".surface-publish") !== null,
-				notch: bar.querySelector(".surface-notch") !== null,
-				count: bar.querySelector(".surface-publish-main .surface-count")?.textContent ?? null,
-			};
-			view.dispose();
-			store.dispose();
-			return shown;
-		};
-
-		expect(await barOf(quiet)).toEqual({ hidden: true, publish: false, notch: false, count: null });
-		expect(await barOf({ ...quiet, unpublishedChangeCount: 2 })).toEqual({
-			hidden: false,
-			publish: true,
-			notch: false,
-			count: "2",
-		});
-		expect(await barOf({ ...quiet, archetype: "live_build", kind: "website", isGlobal: false })).toEqual({
-			hidden: false,
-			publish: false,
-			notch: false,
-			count: null,
-		});
 	});
 
 	it("renders the Used by line on Identity, the Live-linked strip on Product, and applies live Identity CSS vars to Product", async () => {

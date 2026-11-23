@@ -120,6 +120,7 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"hire_team",
 	"narrate_app",
 	"coding_record_change",
+	"coding_view_attachment",
 	"propose_surface",
 	"start_surface_session",
 	"stage_surface_patch",

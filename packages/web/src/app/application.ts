@@ -31,6 +31,7 @@ import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
 import { companyInSentence, companyNameText } from "../ui/company-name.ts";
 import { button, h, icon, notice, replace } from "../ui/dom.ts";
+import { installHoverGlides } from "../ui/hover-glide.ts";
 import { disposeCardPictures, type InteractionCardApp, refreshAppPreviews } from "../ui/interaction-card.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
@@ -38,6 +39,7 @@ import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
 import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
+import { deferOffFrame } from "../ui/time-slice.ts";
 import { AgentNotes } from "./agent-notes.ts";
 import type { AppTellSource, HeldNote } from "./app-actions.ts";
 import { AuthController, accountName, displayName, needsPassword } from "./auth.ts";
@@ -113,7 +115,7 @@ import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
 import { SitesView } from "./views/settings-sites.ts";
-import { appLook, renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
+import { appLook, installSearchShortcut, renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderNameAsk, renderPasswordAsk, renderSignIn } from "./views/signin.ts";
 import { SiteView } from "./views/site-view.ts";
 import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
@@ -244,6 +246,7 @@ export function mountApplication(
 		reopenRailBtn.setAttribute("aria-expanded", String(!railLayout.hidden));
 	}
 	window.addEventListener("qorpera-rail-resize", syncRailReopen, { signal: versionWatch.signal });
+	installHoverGlides(versionWatch.signal);
 	syncRailReopen();
 	applyLanguage();
 	// Interface text and times are read when they are drawn: a new language or
@@ -422,6 +425,7 @@ export function mountApplication(
 		if (settings && settings !== open) settingsFromConversation = fromConversation;
 	}
 	root.addEventListener("click", onFolderLink);
+	installSearchShortcut();
 	// An app's card in a message names it by its folder; once the company's apps are read it shows the app as the drawer
 	// does (its emblem in its colour there, views/shell.ts `appLook`) and what it is about in one line, whole on a
 	// hover (ui/markdown.ts draws the card plain, as it has no company). The card a note from an app opens with keeps
@@ -590,6 +594,22 @@ export function mountApplication(
 		| undefined;
 	let newProgramPage: { readonly company: CompanyController; readonly view: NewProgramPage } | undefined;
 	let surfaceView: { readonly company: CompanyController; readonly view: SurfaceView } | undefined;
+	const pendingSurfaceDisposals = new Set<() => void>();
+	const flushPendingSurfaceDisposals = (): void => {
+		for (const run of [...pendingSurfaceDisposals]) run();
+	};
+	const deferSurfaceDisposal = (view: SurfaceView): void => {
+		view.deactivate();
+		let cancel: (() => void) | undefined;
+		const finish = () => {
+			if (!pendingSurfaceDisposals.delete(finish)) return;
+			cancel?.();
+			cancel = undefined;
+			view.dispose();
+		};
+		pendingSurfaceDisposals.add(finish);
+		cancel = deferOffFrame(finish);
+	};
 	let releasesRead: CompanyController | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
@@ -793,6 +813,7 @@ export function mountApplication(
 		newProgramPage = undefined;
 		surfaceView?.view.dispose();
 		surfaceView = undefined;
+		flushPendingSurfaceDisposals();
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
@@ -830,6 +851,7 @@ export function mountApplication(
 		newProgramPage = undefined;
 		surfaceView?.view.dispose();
 		surfaceView = undefined;
+		flushPendingSurfaceDisposals();
 		conceptsView?.dispose();
 		conceptsView = undefined;
 		mail?.dispose();
@@ -1837,17 +1859,38 @@ export function mountApplication(
 						}
 					}),
 				refreshInterfacePages: () => void interfacePages?.refresh(),
+				searchFolder: () => {
+					const role = controller.store.get().team?.role;
+					const current = () => {
+						if (
+							disposed ||
+							company !== controller ||
+							auth.userId !== controller.userId ||
+							controller.store.get().accessLost
+						)
+							throw new Error(t("Company access changed."));
+					};
+					current();
+					if (!role) throw new Error(t("Company access changed."));
+					return new WebCompanyFiles(
+						cloud,
+						controller.profile,
+						controller.userId,
+						role,
+						controller.signal,
+						current,
+					).folder();
+				},
+				openStorage: (path) => openSettings("storage", path),
+				searchBlocked: () => Boolean(settings || feedback || friendsWindow),
 			});
 		// The drawer may draw an app otherwise now (the member's icon or colour for it, its group's colour): its cards
 		// in the messages follow.
 		decorateAppCards();
 		if (navigationFocus) {
-			// The drawer opens on its first control: the company's name, or the search field when it is open (the
-			// name is inert under it).
 			const target =
 				navigationFocus === "rail"
-					? (rail.querySelector<HTMLElement>(".rail-toolbar:not(.is-searching) .rail-company") ??
-						rail.querySelector<HTMLInputElement>(".rail-search input"))
+					? rail.querySelector<HTMLElement>(".rail-toolbar .rail-company")
 					: (frame.querySelector<HTMLButtonElement>(".main .mobile-navigation-toggle:not([hidden])") ??
 						topbar.querySelector<HTMLButtonElement>(".mobile-navigation-toggle"));
 			target?.focus();
@@ -2271,7 +2314,7 @@ export function mountApplication(
 			newProgramPage = undefined;
 		}
 		if (route.section !== "surface" || surfaceView?.company !== controller || surfaceView.view.slug !== route.id) {
-			surfaceView?.view.dispose();
+			if (surfaceView) deferSurfaceDisposal(surfaceView.view);
 			surfaceView = undefined;
 		}
 		if (route.section !== "new") {
@@ -2667,7 +2710,6 @@ export function mountApplication(
 							folderImage: cardImage,
 							folderApp: cardApp,
 							decisions: questionsHost(),
-							surfaces: surfacesOf(controller),
 							// A change of this agent's ready to go live, as a card below the thread; a site a message links, as
 							// the Sites page's row under the words.
 							codeReleases: releaseDesk(true),

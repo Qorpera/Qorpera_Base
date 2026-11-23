@@ -1072,6 +1072,30 @@ describe("public member Company File gateway", () => {
 		});
 		assert.equal(wrongMethod.status, 405);
 	});
+	it("forwards an interface session image upload and its read like a chat image's", async () => {
+		const sha = "c".repeat(64);
+		const upload = `/v1/member-session-attachments/surface-upload/${id}/${id}/${sha}`;
+		const input = `/v1/member-session-attachments/surface-input/${id}/${id}/${sha}`;
+		const seen: string[] = [];
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			seen.push(`${init?.method} ${new URL(String(url)).pathname}`);
+			return init?.method === "PUT"
+				? Response.json({ sha256: sha, bytes: 3, mediaType: "image/png" })
+				: new Response(new Uint8Array(3));
+		};
+		const put = await forward(
+			request(upload, { method: "PUT", body: new Uint8Array(3), headers: { "content-type": "image/png" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(put.status, 200);
+		assert.equal((await forward(request(input), { upstreamUrl, fetchImplementation })).status, 200);
+		assert.deepEqual(seen, [`PUT ${upload}`, `GET ${input}`]);
+		const wrongMethod = await forward(request(input, { method: "PUT", body: "x" }), {
+			upstreamUrl,
+			fetchImplementation: async () => assert.fail("wrong method forwarded"),
+		});
+		assert.equal(wrongMethod.status, 405);
+	});
 	it("forwards a member's program upload: its open, finish and stop up to 16 KiB, each piece up to 4 MiB", async () => {
 		const open = `/v1/member-program-uploads/${id}`;
 		const finish = `${open}/${id}`;

@@ -308,6 +308,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Every surface in the sidebar is now a small figure of the thing it is (a browser for the website, notes and a gold coin for money, a folder for files), in fixed colours. When you propose a surface you may name its figure: leave it out and the surface gets its kind's own figure, or pick another that fits better, such as shop for a web store. Colours are never chosen. Members can change a surface's figure themselves from the sidebar.",
 	},
 	{
+		id: "surface-session-images",
+		kind: "capability",
+		date: "2026-11-23",
+		title: "Screenshots in interface sessions",
+		text: "Members can now attach screenshots and other images to the messages they send in an interface's sessions, when they start one and when they reply. The session's agent sees them: a folder or operations session gets their paths under Images the member attached and opens each with company_read; a code session opens each with coding_view_attachment. The images of the latest message are marked, so the agent knows which ones the member means now.",
+	},
+	{
 		id: "studio-surface-isolation-and-schemas",
 		kind: "behaviour",
 		date: "2026-11-23",

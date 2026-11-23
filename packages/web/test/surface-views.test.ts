@@ -954,4 +954,59 @@ describe("the surface page", () => {
 		expect(brandRow.querySelector(".surface-tile")).toBe(brandTile);
 		store.dispose();
 	});
+
+	it("deactivates an outgoing SurfaceView immediately while keeping heavy mount disposal deferred until dispose()", async () => {
+		const inbox = summary({
+			id: "22222222-2222-4222-8222-222222222244",
+			slug: "inbox",
+			title: "Inbox",
+			archetype: "ops",
+			icon: "mail",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [inbox]),
+				getSurfaceWorkspace: vi.fn(async () =>
+					workspace([session(["staged"], { surfaceId: inbox.id })], { surface: inbox }),
+				),
+			}),
+		);
+		await store.load();
+
+		const clearActiveSpy = vi.spyOn(store, "clearActiveSurface");
+		const mountEl = document.createElement("div");
+		const mountDeactivate = vi.fn();
+		const mountDispose = vi.fn();
+		const mountUpdate = vi.fn();
+		const view = new SurfaceView(
+			{
+				store,
+				mount: () => ({ el: mountEl, update: mountUpdate, deactivate: mountDeactivate, dispose: mountDispose }),
+				openMigration: () => undefined,
+			},
+			"inbox",
+		);
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		store.openDrawer(inbox.id, SESSION);
+		expect(store.state.drawer?.surfaceId).toBe(inbox.id);
+
+		const updatesBefore = mountUpdate.mock.calls.length;
+		view.deactivate();
+		expect(mountDeactivate).toHaveBeenCalledTimes(1);
+		expect(mountDispose).not.toHaveBeenCalled();
+		expect(clearActiveSpy).toHaveBeenCalledWith(inbox.id);
+		expect(store.state.drawer).toBeUndefined();
+
+		view.update();
+		expect(mountUpdate).toHaveBeenCalledTimes(updatesBefore);
+
+		view.dispose();
+		view.dispose();
+		expect(mountDispose).toHaveBeenCalledTimes(1);
+		store.dispose();
+	});
 });
