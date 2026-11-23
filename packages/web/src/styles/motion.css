@@ -5,7 +5,8 @@
  *
  * The language: what arrives springs in from where it came from (your message from
  * the composer, a menu from its button), what leaves is quicker and quieter, agents
- * are characters (they hop when they start work), and a press always answers.
+ * are characters (they hop when they start work), and a button press always answers;
+ * rail items open without a squeeze.
  */
 
 /* ---- the thread ---- */
@@ -86,21 +87,16 @@
 /* ---- the rail ---- */
 
 /* Above the travelling highlight. (:where keeps any other position, the drag ghost's, in charge.) */
-:where(.rail-row, .rail-pin, .cofounder-home) { position: relative; z-index: 1; }
-/* The hover tint fades in; leaving it, or losing the selection to the travelling
- * highlight, lets go at once, so two highlights never show. */
-.rail-row, .rail-pin, .cofounder-home {
-	transition:
-		color var(--motion-base) ease,
-		transform var(--motion-base) var(--ease-spring);
+:where(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row, .rail-agent-sched) { position: relative; z-index: 1; }
+.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row {
+	transition: color var(--motion-base) ease;
 }
-:is(.rail-row, .rail-pin, .cofounder-home):hover:not(.active) {
-	transition:
-		background-color var(--motion-fast) ease,
-		color var(--motion-base) ease,
-		transform var(--motion-base) var(--ease-spring);
+.rail-hover-tint {
+	position: absolute; z-index: 0; left: 0; top: 0; pointer-events: none;
+	background: var(--rail-hover); opacity: 0;
+	transition: opacity 120ms ease;
 }
-.rail-row:active, .rail-pin:active, .cofounder-home:active { transform: scale(0.975); }
+.rail-hover-tint.is-on { opacity: 1; transition: opacity 90ms ease; }
 /* The drag ghost follows the pointer exactly. */
 .rail-drag-ghost, .rail-drag-ghost * { transition: none !important; animation: none !important; }
 :is(.rail-row-status, .cofounder-status) { transition: border-color var(--motion-fast) ease; }
@@ -111,9 +107,10 @@
 	position: absolute; z-index: 0; pointer-events: none;
 	background: var(--rail-selection);
 }
-:is(.rail-row, .rail-pin, .cofounder-home).active.selection-arriving,
-:is(.rail-row, .rail-pin, .cofounder-home).active.selection-arriving:hover { background: transparent; }
-:is(.rail-row, .rail-pin, .cofounder-home).selection-arriving :is(.rail-row-status, .cofounder-status) { border-color: transparent; }
+:is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row).active.selection-arriving,
+:is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row).active.selection-arriving:hover { background: transparent; }
+:is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row).selection-arriving :is(.rail-row-status, .cofounder-status) { border-color: transparent; }
+.rail-surface.selection-arriving .surface-crew-pip { box-shadow: none; }
 
 /* An agent's state: quiet and exact. The figure's own motion already says it is working;
  * the rail only brings in the dot and the new line. */

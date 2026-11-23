@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, get as httpGet } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { stopGateway } from "../src/gateway-stop.ts";
+import { createGatewaySignalHandler, stopGateway } from "../src/gateway-stop.ts";
 import { ObjectGatewayJournal } from "../src/journal.ts";
 import { FileSystemObjectStore } from "../src/object-store.ts";
 import { ObjectGatewayReplication, type ObjectReplicationAuthority } from "../src/replication.ts";
@@ -106,5 +107,97 @@ describe("the gateway's clean stop", () => {
 			said: ["Object gateway audit lines were not written at stop\n"],
 		});
 		expect(Date.now() - started).toBeLessThan(2_000);
+	});
+
+	it("runs first-signal cleanup once and escalates a repeat signal to close active connections", async () => {
+		const at = await gateway();
+		const streaming = createServer((_request, response) => {
+			response.writeHead(200);
+			response.flushHeaders();
+		});
+		await new Promise<void>((resolve) => streaming.listen(0, "127.0.0.1", resolve));
+		const { port } = streaming.address() as AddressInfo;
+		const req = httpGet(`http://127.0.0.1:${port}/stream`);
+		req.on("error", () => {});
+		await new Promise<void>((resolve) => req.once("response", () => resolve()));
+
+		let firstSignals = 0;
+		let authorityClosed = 0;
+		let exitedCode: number | undefined;
+		let resolveExit!: () => void;
+		const exited = new Promise<void>((resolve) => {
+			resolveExit = resolve;
+		});
+		const onSignal = createGatewaySignalHandler({
+			onFirstSignal: () => {
+				firstSignals += 1;
+			},
+			stop: {
+				close: (done) =>
+					streaming.close(() => {
+						authorityClosed += 1;
+						done();
+					}),
+				forceClose: () => streaming.closeAllConnections(),
+				flush: () => at.replication.flushStoredLines(),
+				say: () => {},
+				exit: (code) => {
+					exitedCode = code;
+					resolveExit();
+				},
+			},
+		});
+
+		onSignal();
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(firstSignals).toBe(1);
+		expect(authorityClosed).toBe(0);
+		expect(exitedCode).toBeUndefined();
+
+		onSignal();
+		onSignal();
+		await exited;
+		expect(firstSignals).toBe(1);
+		expect(authorityClosed).toBe(1);
+		expect(exitedCode).toBe(0);
+		expect(streaming.listening).toBe(false);
+		expect(await readFile(join(at.root, "state", "audit.jsonl"), "utf-8")).toContain(
+			"object_stored_replication_pending",
+		);
+		at.server.close();
+		req.destroy();
+	});
+
+	it("escalates a repeat signal directly to flush and exit when no forceClose hook is provided", async () => {
+		const at = await gateway();
+		let closeCalls = 0;
+		let exitedCode: number | undefined;
+		let resolveExit!: () => void;
+		const exited = new Promise<void>((resolve) => {
+			resolveExit = resolve;
+		});
+		const onSignal = createGatewaySignalHandler({
+			onFirstSignal: () => {},
+			stop: {
+				close: () => {
+					closeCalls += 1;
+				},
+				flush: () => at.replication.flushStoredLines(),
+				say: () => {},
+				exit: (code) => {
+					exitedCode = code;
+					resolveExit();
+				},
+			},
+		});
+
+		onSignal();
+		expect(closeCalls).toBe(1);
+		expect(exitedCode).toBeUndefined();
+		onSignal();
+		await exited;
+		expect(closeCalls).toBe(1);
+		expect(exitedCode).toBe(0);
+		at.server.close();
 	});
 });

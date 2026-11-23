@@ -6,9 +6,9 @@
 
 import { easing, reducedMotion } from "./motion.ts";
 
-const SELECTED = ":is(.rail-row, .rail-pin, .cofounder-home).active";
+const SELECTED = ":is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row).active";
 
-interface Box {
+export interface Box {
 	left: number;
 	top: number;
 	width: number;
@@ -17,7 +17,7 @@ interface Box {
 }
 
 /** A box in the list's scrolled content, so it holds while the list scrolls. */
-function boxIn(list: HTMLElement, rect: DOMRect, radius: string): Box {
+export function boxIn(list: HTMLElement, rect: DOMRect, radius: string): Box {
 	const frame = list.getBoundingClientRect();
 	return {
 		left: rect.left - frame.left + list.scrollLeft,

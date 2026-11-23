@@ -30,12 +30,13 @@ export function startGatewayMaintenance(options: GatewayMaintenanceOptions): {
 	readonly stop: () => void;
 } {
 	const intervalMs = options.intervalMs ?? 15_000;
+	let stopped = false;
 	let probingAuthority = false;
 	let probingStore = false;
 	let maintaining = false;
 
 	const probeAuthority = async (): Promise<void> => {
-		if (probingAuthority) return;
+		if (stopped || probingAuthority) return;
 		probingAuthority = true;
 		try {
 			await options.probeAuthority();
@@ -47,7 +48,7 @@ export function startGatewayMaintenance(options: GatewayMaintenanceOptions): {
 	};
 
 	const probeStore = async (): Promise<void> => {
-		if (probingStore) return;
+		if (stopped || probingStore) return;
 		probingStore = true;
 		try {
 			// WHY: Share one serial NAS gate with folderGc and reconcile NAS I/O so maintenance never takes both NAS lanes.
@@ -60,15 +61,17 @@ export function startGatewayMaintenance(options: GatewayMaintenanceOptions): {
 	};
 
 	const probe = async (): Promise<void> => {
+		if (stopped) return;
 		await Promise.all([probeAuthority(), probeStore()]);
 	};
 
 	const maintain = async (): Promise<void> => {
-		if (maintaining) return;
+		if (stopped || maintaining) return;
 		maintaining = true;
 		try {
 			// WHY: recoverGc and reconcile gate only leaf NAS calls under per-key locks so they never invert with request-path locks.
 			await options.recoverGc();
+			if (stopped) return;
 			await options.reconcile();
 		} catch {
 			options.onMaintainError?.();
@@ -83,12 +86,16 @@ export function startGatewayMaintenance(options: GatewayMaintenanceOptions): {
 	const maintainTimer = setInterval(() => {
 		void maintain();
 	}, intervalMs);
-	void probe().then(() => maintain());
+	// WHY: Skip the initial post-probe maintenance pass if stop() was called while probe() was in flight.
+	void probe().then(() => {
+		if (!stopped) return maintain();
+	});
 
 	return {
 		probe,
 		maintain,
 		stop: () => {
+			stopped = true;
 			clearInterval(probeTimer);
 			clearInterval(maintainTimer);
 		},

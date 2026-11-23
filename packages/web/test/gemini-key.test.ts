@@ -36,6 +36,9 @@ function sampleState(patch: Partial<NonNullable<GeminiKeyState["key"]>> = {}): G
 			monthCachedTokens: 1_000_000,
 			monthOutputTokens: 400_000,
 			capReached: false,
+			lastErrorCode: null,
+			lastErrorAt: null,
+			lastCheckedAt: null,
 			version: 1,
 			createdAt: timestamp,
 			updatedAt: timestamp,
@@ -163,28 +166,100 @@ describe("Gemini key helpers and transport", () => {
 
 		expect(await client.revoke()).toEqual({ vaultAvailable: true, key: null });
 	});
+
+	it("checks a saved Gemini key through the vault broker and parses health metadata", async () => {
+		const f = fixture();
+		const ticketId = id(84);
+		const capability = "c".repeat(64);
+		const requests: { url: string; body: Record<string, unknown> }[] = [];
+		const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+			const url = String(input);
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			requests.push({ url, body });
+			if (url.endsWith("/rpc/qorpera_begin_gemini_key_check")) {
+				return Response.json({
+					schema: "qorpera.gemini-key-ticket/v1",
+					ticketId,
+					capability,
+					serviceOrigin: "https://vault.example",
+					profileId: profileA.profileId,
+				});
+			}
+			if (url.endsWith(`/v1/gemini-keys/${ticketId}/check?company=${profileA.profileId.toLowerCase()}`)) {
+				return Response.json({
+					schema: "qorpera.gemini-key-checked/v1",
+					ok: false,
+					errorCode: "billing_required",
+					checkedAt: timestamp,
+				});
+			}
+			if (url.endsWith("/rpc/qorpera_get_gemini_key")) {
+				return Response.json({
+					schema: "qorpera.gemini-key/v1",
+					...sampleState({
+						lastErrorCode: "billing_required",
+						lastErrorAt: timestamp,
+						lastCheckedAt: timestamp,
+					}),
+				});
+			}
+			throw new Error(`Unexpected url: ${url}`);
+		}) as unknown as typeof fetch;
+
+		const client = createWebGeminiKey(
+			f.cloud,
+			profileA.profileId,
+			userA.id,
+			new AbortController().signal,
+			() => undefined,
+			fetchImpl,
+		);
+		const checked = await client.check!();
+		expect(checked.ok).toBe(false);
+		expect(checked.errorCode).toBe("billing_required");
+		expect(checked.state.key?.lastErrorCode).toBe("billing_required");
+		expect(checked.state.key?.lastCheckedAt).toBe(timestamp);
+		expect(requests).toHaveLength(3);
+		expect(requests[1]?.body).toEqual({
+			schema: "qorpera.gemini-key-check-request/v1",
+			capability,
+		});
+	});
 });
 
 describe("GeminiKeyView", () => {
-	it("connects a key, toggles default for chats, updates spend cap, shows cap warning, and removes the key", async () => {
+	it("connects a key, shows remaining budget and health errors, checks key, updates cap, and removes the key", async () => {
 		let state: GeminiKeyState = { vaultAvailable: true, key: null };
+		const onChanged = vi.fn();
 		const client: WebGeminiKey = {
 			read: vi.fn(async () => state),
 			save: vi.fn(async (input) => {
 				state = sampleState({
 					defaultForChats: input.defaultForChats,
 					monthlyCapCents: input.monthlyCapCents,
+					lastErrorCode: "billing_required",
+					lastErrorAt: timestamp,
 				});
 				return state;
 			}),
 			updateSettings: vi.fn(async (input) => {
 				state = sampleState({
-					defaultForChats: input.defaultForChats,
+					defaultForChats: input.defaultForChats ?? state.key?.defaultForChats ?? false,
 					monthlyCapCents: input.monthlyCapCents,
 					version: input.expectedVersion + 1,
 					capReached: input.monthlyCapCents !== null && input.monthlyCapCents * 10_000 <= 12_340_000,
 				});
 				return state;
+			}),
+			check: vi.fn(async () => {
+				state = sampleState({
+					monthlyCapCents: state.key?.monthlyCapCents ?? 10_000,
+					version: state.key?.version ?? 1,
+					lastErrorCode: null,
+					lastErrorAt: null,
+					lastCheckedAt: timestamp,
+				});
+				return { ok: true, errorCode: null, checkedAt: timestamp, state };
 			}),
 			revoke: vi.fn(async () => {
 				state = { vaultAvailable: true, key: null };
@@ -192,7 +267,7 @@ describe("GeminiKeyView", () => {
 			}),
 		};
 		const controller = new AbortController();
-		const view = new GeminiKeyView(client, controller.signal);
+		const view = new GeminiKeyView(client, controller.signal, onChanged);
 		document.body.append(view.el);
 		await settle();
 
@@ -203,28 +278,30 @@ describe("GeminiKeyView", () => {
 		const keyInput = view.el.querySelector<HTMLInputElement>('input[type="password"]')!;
 		keyInput.value = CANARY_KEY;
 		keyInput.dispatchEvent(new Event("input"));
-		const defaultCheckbox = view.el.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
-		defaultCheckbox.checked = true;
-		defaultCheckbox.dispatchEvent(new Event("change"));
+		expect(view.el.querySelector('input[type="checkbox"]')).toBeNull();
 		view.el.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
 		await settle();
 
 		expect(client.save).toHaveBeenCalledWith(
-			{ apiKey: CANARY_KEY, defaultForChats: true, monthlyCapCents: 10_000 },
+			{ apiKey: CANARY_KEY, defaultForChats: false, monthlyCapCents: 10_000 },
 			expect.any(AbortSignal),
 		);
+		expect(onChanged).toHaveBeenCalledTimes(1);
 		expect(view.el.textContent).toContain("Key AIza...cdef");
-		expect(view.el.textContent).toContain("$12.34 of $100");
+		expect(view.el.textContent).toContain("$87.66 left of $100 ($12.34 spent)");
+		expect(view.el.textContent).toContain("billing or AI Ultra credits are not active");
+		expect(view.el.querySelector<HTMLAnchorElement>(".gemini-billing-link")?.href).toBe(
+			"https://aistudio.google.com/spend",
+		);
+		expect(view.el.querySelector('[role="switch"]')).toBeNull();
 		expect(view.el.textContent).not.toContain(CANARY_KEY);
 
-		const toggle = view.el.querySelector<HTMLButtonElement>('[role="switch"]')!;
-		expect(toggle.getAttribute("aria-checked")).toBe("true");
-		toggle.click();
+		const checkButton = [...view.el.querySelectorAll("button")].find((btn) => btn.textContent === "Check key")!;
+		checkButton.click();
 		await settle();
-		expect(client.updateSettings).toHaveBeenLastCalledWith(
-			{ defaultForChats: false, monthlyCapCents: 10_000, expectedVersion: 1 },
-			expect.any(AbortSignal),
-		);
+		expect(client.check).toHaveBeenCalledOnce();
+		expect(view.el.textContent).toContain("Key verified for Gemini 4 Neon.");
+		expect(view.el.textContent).not.toContain("billing or AI Ultra credits are not active");
 
 		const capInput = view.el.querySelector<HTMLInputElement>(".gemini-cap-input")!;
 		capInput.value = "10";
@@ -234,7 +311,7 @@ describe("GeminiKeyView", () => {
 			.dispatchEvent(new Event("submit", { cancelable: true }));
 		await settle();
 		expect(client.updateSettings).toHaveBeenLastCalledWith(
-			{ defaultForChats: false, monthlyCapCents: 1_000, expectedVersion: 2 },
+			{ defaultForChats: null, monthlyCapCents: 1_000, expectedVersion: 1 },
 			expect.any(AbortSignal),
 		);
 		expect(view.el.textContent).toContain("Cap reached");
@@ -244,6 +321,7 @@ describe("GeminiKeyView", () => {
 		removeButton.click();
 		await settle();
 		expect(client.revoke).toHaveBeenCalledOnce();
+		expect(onChanged).toHaveBeenCalledTimes(2);
 		expect(view.el.textContent).toContain("Add API key");
 		controller.abort();
 	});

@@ -41,6 +41,13 @@ const BRIDGE_MS = 5_000;
 const HELLO_MS = 15_000;
 /** A feed connection whose machine leaves this much unread is ended; the machine reconnects and drops its caches. */
 const FEED_BACKLOG = 4 * 1024 * 1024;
+const DEFAULT_DRAIN_MS = 30_000;
+const DEFAULT_CLOSE_GRACE_MS = 2_000;
+
+export interface FolderServerOptions {
+	readonly drainMs?: number;
+	readonly closeGraceMs?: number;
+}
 
 /** Serves the folder protocol on the node's Unix socket. Only the vsock bridge can open that socket (systemd gives it
  * the bridge's group, mode 0660); its first frame names the machine, and no other frame may.
@@ -51,11 +58,22 @@ const FEED_BACKLOG = 4 * 1024 * 1024;
  *
  * A `notices` connection (F3 4f-2b-2) holds no view: after its hello it only asks for the view's notices (Q), and any
  * other frame, or any error, ends it. */
-export function createFolderServer(service: FolderService, log: (line: string) => void): Server {
-	return createServer((socket) => serve(service, socket, log));
+export function createFolderServer(
+	service: FolderService,
+	log: (line: string) => void,
+	options?: FolderServerOptions,
+): Server {
+	return createServer((socket) => serve(service, socket, log, options));
 }
 
-function serve(service: FolderService, socket: Socket, log: (line: string) => void): void {
+function serve(
+	service: FolderService,
+	socket: Socket,
+	log: (line: string) => void,
+	options?: FolderServerOptions,
+): void {
+	const drainMs = Math.max(1, options?.drainMs ?? DEFAULT_DRAIN_MS);
+	const closeGraceMs = Math.max(1, options?.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS);
 	const reader = new FrameReader(HELLO_MAX_PAYLOAD);
 	let bridge: BridgeInfo | undefined;
 	let handle: ViewHandle | undefined;
@@ -94,11 +112,21 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 	const drained = (): Promise<void> =>
 		new Promise((resolve) => {
 			if (ended || !socket.writableNeedDrain) return resolve();
+			let settled = false;
 			const done = (): void => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
 				socket.off("drain", done);
 				socket.off("close", done);
 				resolve();
 			};
+			// WHY: Bound backpressure drain waits so a wedged guest VM cannot pin the connection loop and view handle indefinitely.
+			const timer = setTimeout(() => {
+				done();
+				end(true);
+			}, drainMs);
+			timer.unref();
 			socket.once("drain", done);
 			socket.once("close", done);
 		});
@@ -112,14 +140,35 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 			}),
 		);
 	};
-	const end = (): void => {
-		if (ended) return;
+	let closeTimer: ReturnType<typeof setTimeout> | undefined;
+	const end = (immediate = false): void => {
+		if (ended) {
+			if (immediate) {
+				clearTimeout(closeTimer);
+				closeTimer = undefined;
+				socket.destroy();
+			}
+			return;
+		}
 		ended = true;
 		clearTimeout(deadline);
 		gone.abort();
 		handle?.release();
+		// WHY: Force-destroy stalled or backpressured sockets instead of destroySoon(), which waits forever when the peer stops reading.
+		if (immediate) {
+			socket.destroy();
+			return;
+		}
 		socket.end();
-		socket.destroySoon();
+		closeTimer = setTimeout(() => {
+			closeTimer = undefined;
+			socket.destroy();
+		}, closeGraceMs);
+		closeTimer.unref();
+		socket.once("close", () => {
+			clearTimeout(closeTimer);
+			closeTimer = undefined;
+		});
 	};
 
 	const next = async (): Promise<void> => {
@@ -222,7 +271,7 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 					change: (message: ChangeMessage) => {
 						if (socket.writableLength > FEED_BACKLOG) {
 							log(`folder-service: machine ${bridge?.cid} is not reading its feed; ending the connection`);
-							end();
+							end(true);
 							return;
 						}
 						send(encodeJson(Kind.change, message));
@@ -345,8 +394,8 @@ function serve(service: FolderService, socket: Socket, log: (line: string) => vo
 		if (queue.length > 0) socket.pause();
 		void next();
 	});
-	socket.on("error", () => end());
-	socket.on("close", () => end());
+	socket.on("error", () => end(true));
+	socket.on("close", () => end(true));
 }
 
 /** Errors about one request; the connection carries on. */

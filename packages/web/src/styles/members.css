@@ -66,12 +66,12 @@
 .members-agent {
 	position: relative; display: grid; justify-items: center; align-content: start; gap: 1px; width: var(--tile);
 	padding: 8px 2px 7px; border: 0; border-radius: 14px; background: transparent; color: var(--text); font: inherit;
-	cursor: pointer; transition: background-color var(--motion-fast) ease, transform var(--motion-fast) var(--ease-spring);
+	cursor: default; transition: background-color var(--motion-fast) ease, transform var(--motion-fast) var(--ease-spring);
 }
 .members-agent:disabled { cursor: default; }
 .members-agent:not(:disabled):hover, .members-agent.menu-open { background: var(--hover); }
 .members-agent:not(:disabled):hover { transform: translateY(-2px); }
-.members-agent:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 1px; }
+.members-agent:focus-visible { outline: 2px solid var(--composer-accent-ink); outline-offset: 1px; }
 .members-pic { position: relative; display: grid; transition: transform var(--motion-fast) var(--ease-spring); }
 .members-pic .figure { width: var(--pic); height: var(--pic); }
 .members-agent-name { margin-top: 5px; font-size: 13px; font-weight: 650; line-height: 1.3; text-align: center; }
@@ -90,13 +90,13 @@
 .members-answer { display: flex; gap: 8px; padding: 1px 0 6px; }
 .members-answer button {
 	display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 1px solid var(--border-strong);
-	border-radius: 50%; background: var(--bg); color: var(--text); cursor: pointer;
+	border-radius: 50%; background: var(--bg); color: var(--text); cursor: default;
 	transition: transform var(--motion-fast) var(--ease-spring), background-color var(--motion-fast) ease;
 }
 .members-answer button.is-yes { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
 .members-answer button:not(:disabled):hover { transform: scale(1.08); }
 .members-answer button:disabled { opacity: 0.5; cursor: default; }
-.members-answer button:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 2px; }
+.members-answer button:focus-visible { outline: 2px solid var(--composer-accent-ink); outline-offset: 2px; }
 .members-answer .icon { width: 15px; height: 15px; }
 
 /* An empty place: all an empty line shows, and where a dragged agent lands. */
@@ -128,10 +128,10 @@
 .members-agent.is-dragging .members-pic { transform: scale(1.12); filter: drop-shadow(0 10px 12px rgb(0 0 0 / 22%)); }
 .members-agent.is-dragging :is(.members-agent-name, .members-to) { visibility: hidden; }
 .members-agent.is-settling { transition: transform var(--motion-base) var(--ease-spring); }
-.members-row.is-drop-target .members-slot i { border-color: var(--composer-accent); }
-.members-row.is-drop-over { background: color-mix(in srgb, var(--composer-accent) 7%, transparent); }
+.members-row.is-drop-target .members-slot i { border-color: var(--composer-accent-ink); }
+.members-row.is-drop-over { background: color-mix(in srgb, var(--composer-accent-ink) 7%, transparent); }
 .members-row.is-drop-over .members-slot i {
-	border-style: solid; background: color-mix(in srgb, var(--composer-accent) 16%, transparent); transform: scale(1.06);
+	border-style: solid; background: color-mix(in srgb, var(--composer-accent-ink) 16%, transparent); transform: scale(1.06);
 }
 
 /* A narrow page: the member beside their face, their agents under them. */
