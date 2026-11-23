@@ -2,7 +2,7 @@
 import type { SurfacePublishAsk, SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SurfacesClient } from "../src/app/surfaces-store.ts";
-import { openPublishPatchnotesSheet } from "../src/app/views/surface-publish-sheet.ts";
+import { openPublishSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
 import { COMPANY, fakeClient, SURFACE, storeWith, summary, workspace } from "./surface-fixtures.ts";
@@ -90,7 +90,7 @@ describe("asking a teammate to publish", () => {
 	it("offers the one teammate who may publish, asks, and lets the asker take it back", async () => {
 		const { store, calls } = await setUp(JONAS, site());
 		expect(store.publishTeammates()).toEqual([{ userId: SOFIE, name: "Sofie Lund" }]);
-		openPublishPatchnotesSheet(store, site());
+		openPublishSheet(store, site());
 		const askButton = sheetButton("ask")!;
 		expect(askButton.textContent).toBe("SLAsk Sofie");
 		expect(askButton.querySelector(".person-avatar")).not.toBeNull();
@@ -116,7 +116,7 @@ describe("asking a teammate to publish", () => {
 			[site(), [JONAS]],
 		] as const) {
 			const { store } = await setUp(JONAS, shown, {}, [...team]);
-			const dialog = openPublishPatchnotesSheet(store, shown);
+			const dialog = openPublishSheet(store, shown);
 			expect(sheetButton("ask")).toBeNull();
 			expect(sheetButton("ask-menu")).toBeNull();
 			dialog.close();
@@ -127,7 +127,7 @@ describe("asking a teammate to publish", () => {
 	it("shows a teammate's open ask to others without asking over it", async () => {
 		const shown = site({ publishAsk: ask() });
 		const { store } = await setUp(MADS, shown, {}, [JONAS, SOFIE, MADS]);
-		openPublishPatchnotesSheet(store, shown);
+		openPublishSheet(store, shown);
 		expect(sheetText()).toContain("Jonas asked Sofie to publish.");
 		expect(sheetButton("ask-menu")).toBeNull();
 		expect(sheetButton("confirm-publish")).not.toBeNull();
@@ -136,7 +136,7 @@ describe("asking a teammate to publish", () => {
 
 	it("lets the asker pick one of several teammates by face", async () => {
 		const { store, calls } = await setUp(JONAS, site(), {}, [JONAS, SOFIE, MADS]);
-		openPublishPatchnotesSheet(store, site());
+		openPublishSheet(store, site());
 		expect(document.querySelector(".surface-publish-ask-pick")).toBeNull();
 		sheetButton("ask-menu")!.click();
 		const people = [...document.querySelectorAll<HTMLElement>(".surface-publish-ask-person")];
@@ -158,7 +158,7 @@ describe("asking a teammate to publish", () => {
 		view.update();
 		expect(view.el.querySelector(".surface-publish-main")?.textContent).toBe("SLSofie said no");
 
-		openPublishPatchnotesSheet(store, shown);
+		openPublishSheet(store, shown);
 		expect(sheetText()).toContain("Sofie said no.");
 		expect(sheetButton("ask")).not.toBeNull();
 		sheetButton("withdraw-ask")!.click();
@@ -211,7 +211,7 @@ describe("asking a teammate to publish", () => {
 	it("gives the asked member No in the sheet beside her Publish", async () => {
 		const shown = site({ publishAsk: ask() });
 		const { store, calls } = await setUp(SOFIE, shown);
-		const dialog = openPublishPatchnotesSheet(store, shown);
+		const dialog = openPublishSheet(store, shown);
 		expect(sheetText()).toContain("Jonas asks you to publish.");
 		expect(sheetButton("ask")).toBeNull();
 		sheetButton("decline-ask")!.click();
