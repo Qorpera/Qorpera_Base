@@ -108,15 +108,11 @@ export const SURFACES: Record<string, string> = {
 	"Its {count} scheduled agents are deleted too.": "Dens {count} planlagte agenter slettes også.",
 	"Its active session goes with it.": "Dens aktive session forsvinder med den.",
 	"Its {count} active sessions go with it.": "Dens {count} aktive sessioner forsvinder med den.",
-	"The one still working runs to its end.": "Den, der stadig arbejder, kører færdig.",
-	"The {count} still working run to their end.": "De {count}, der stadig arbejder, kører færdig.",
+	"The one still working is stopped.": "Den, der stadig arbejder, stoppes.",
+	"The {count} still working are stopped.": "De {count}, der stadig arbejder, stoppes.",
 	"Its unpublished changes go with it.": "Dens uudgivne ændringer forsvinder med den.",
 	"Its site stays online. Settings → Sites takes it offline.":
 		"Dens hjemmeside forbliver online. Tag den offline under Hjemmesider i Indstillinger.",
-	"{name} could not be deleted. One of its scheduled agents was deleted before that.":
-		"{name} kunne ikke slettes. En af dens planlagte agenter blev slettet inden da.",
-	"{name} could not be deleted. {count} of its scheduled agents were deleted before that.":
-		"{name} kunne ikke slettes. {count} af dens planlagte agenter blev slettet inden da.",
 	"{path} and {count} more": "{path} og {count} flere",
 	"Opening preview…": "Åbner forhåndsvisning…",
 	Reconcile: "Løs konflikt",

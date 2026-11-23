@@ -3125,18 +3125,13 @@ export class SurfacesStore {
 		return true;
 	}
 
-	async deleteSurface(
-		surfaceId: string,
-	): Promise<{ readonly deleted: boolean; readonly scheduledAgentsDeleted: number }> {
+	async deleteSurface(surfaceId: string): Promise<boolean> {
 		const surface = this.state.surfaces.find((item) => item.id === surfaceId);
-		let scheduledAgentsDeleted = 0;
-		if (!surface || !(await this.refreshAutomations())) return { deleted: false, scheduledAgentsDeleted };
-		for (const automation of this.state.automations) {
-			if (automation.targetSurfaceSlug !== surface.slug) continue;
-			if (!(await this.deleteScheduledAgent(automation.id))) return { deleted: false, scheduledAgentsDeleted };
-			scheduledAgentsDeleted += 1;
-		}
-		return { deleted: await this.archiveSurface(surfaceId), scheduledAgentsDeleted };
+		if (!surface || !(await this.archiveSurface(surfaceId))) return false;
+		this.store.set((state) => ({
+			automations: state.automations.filter((item) => item.targetSurfaceSlug !== surface.slug),
+		}));
+		return true;
 	}
 
 	async spawnCrossSurfaceSession(request: CrossSurfaceHandoffRequest): Promise<SurfaceSession | undefined> {

@@ -271,22 +271,13 @@ describe("the surface rail", () => {
 			store.dispose();
 		});
 
-		it("says what goes with it and what stays, read fresh, and deletes its scheduled agents before the surface", async () => {
-			const calls: string[] = [];
+		it("says what goes with it and what stays, read fresh, and deletes it all with the one call", async () => {
 			const listAutomations = vi.fn(async () => [scheduled("a-2", "inbox"), scheduled("a-3", null)]);
+			const deleteAutomation = vi.fn(async () => true);
+			const archiveSurface = vi.fn(async (id: string) => summary({ id, status: "archived" }));
 			const { store, rail } = await railOf(
 				[summary({ activeSessionCount: 3, runningSessionCount: 2, pendingChangeCount: 1 }), inbox],
-				{
-					listAutomations,
-					deleteAutomation: vi.fn(async (id: string) => {
-						calls.push(`agent ${id}`);
-						return true;
-					}),
-					archiveSurface: vi.fn(async (id: string) => {
-						calls.push("surface");
-						return summary({ id, status: "archived" });
-					}),
-				},
+				{ listAutomations, deleteAutomation, archiveSurface },
 				"inbox",
 			);
 			listAutomations.mockImplementation(async () => [
@@ -299,19 +290,16 @@ describe("the surface rail", () => {
 			expect(dialogLines()).toEqual([
 				"Its scheduled agent is deleted too.",
 				"Its 3 active sessions go with it.",
-				"The 2 still working run to their end.",
+				"The 2 still working are stopped.",
 				"Its unpublished changes go with it.",
 				"Its site stays online. Settings → Sites takes it offline.",
 			]);
-			listAutomations.mockImplementation(async () => [
-				scheduled("a-1", "website"),
-				scheduled("a-2", "inbox"),
-				scheduled("a-3", null),
-				scheduled("a-4", "website"),
-			]);
+			expect(store.state.automations.map((item) => item.id)).toEqual(["a-1", "a-2", "a-3"]);
 			dialogButton("Delete").click();
 			await flush();
-			expect(calls).toEqual(["agent a-1", "agent a-4", "surface"]);
+			expect(archiveSurface).toHaveBeenCalledTimes(1);
+			expect(archiveSurface).toHaveBeenCalledWith(SURFACE);
+			expect(deleteAutomation).not.toHaveBeenCalled();
 			expect(store.state.automations.map((item) => item.id)).toEqual(["a-2", "a-3"]);
 			expect(store.state.surfaces.map((item) => item.slug)).toEqual(["inbox"]);
 			store.dispose();
@@ -339,64 +327,28 @@ describe("the surface rail", () => {
 			const { store, rail } = await railOf([summary({ ...quiet, activeSessionCount: 1, runningSessionCount: 1 })]);
 
 			await chooseDelete(rail, "website");
-			expect(dialogLines()).toEqual(["Its active session goes with it.", "The one still working runs to its end."]);
+			expect(dialogLines()).toEqual(["Its active session goes with it.", "The one still working is stopped."]);
 			dialogButton("Cancel").click();
 			store.dispose();
 		});
 
 		it("asks nothing and deletes nothing when the scheduled agents cannot be read", async () => {
 			const listAutomations = vi.fn(async () => [scheduled("a-1", "website")]);
-			const deleteAutomation = vi.fn(async () => true);
 			const archiveSurface = vi.fn(async (id: string) => summary({ id, status: "archived" }));
-			const { store, rail, reportError } = await railOf([summary()], {
-				listAutomations,
-				deleteAutomation,
-				archiveSurface,
-			});
+			const { store, rail, reportError } = await railOf([summary()], { listAutomations, archiveSurface });
 			listAutomations.mockImplementation(async () => Promise.reject(new Error("offline")));
 
 			await chooseDelete(rail, "website");
 			expect(dialog()).toBeNull();
 			expect(reportError).toHaveBeenCalledWith("Website could not be deleted.");
-
-			listAutomations.mockImplementationOnce(async () => [scheduled("a-1", "website")]);
-			await chooseDelete(rail, "website");
-			dialogButton("Delete").click();
-			await flush();
-			expect(reportError).toHaveBeenCalledTimes(2);
-			expect(deleteAutomation).not.toHaveBeenCalled();
 			expect(archiveSurface).not.toHaveBeenCalled();
 			expect(railRow(rail, "website")).not.toBeNull();
 			store.dispose();
 		});
 
-		it("keeps the surface and says how many scheduled agents went when one cannot be deleted", async () => {
-			const archiveSurface = vi.fn(async (id: string) => summary({ id, status: "archived" }));
+		it("says so in the rail and keeps the surface and its scheduled agents when the delete fails", async () => {
 			const { store, rail, reportError } = await railOf([summary()], {
 				listAutomations: vi.fn(async () => [scheduled("a-1", "website"), scheduled("a-2", "website")]),
-				deleteAutomation: vi.fn(async (id: string) =>
-					id === "a-1" ? true : Promise.reject(new Error("permission denied")),
-				),
-				archiveSurface,
-			});
-
-			await chooseDelete(rail, "website");
-			dialogButton("Delete").click();
-			await flush();
-			rail.update("website");
-			expect(archiveSurface).not.toHaveBeenCalled();
-			expect(reportError).toHaveBeenCalledWith(
-				"Website could not be deleted. One of its scheduled agents was deleted before that.",
-			);
-			expect(railRow(rail, "website")).not.toBeNull();
-			expect(store.state.automations.map((item) => item.id)).toEqual(["a-2"]);
-			store.dispose();
-		});
-
-		it("says so in the rail and keeps the surface when the delete itself fails", async () => {
-			const { store, rail, reportError } = await railOf([summary()], {
-				listAutomations: vi.fn(async () => [scheduled("a-1", "website"), scheduled("a-2", "website")]),
-				deleteAutomation: vi.fn(async () => true),
 				archiveSurface: vi.fn(async () => Promise.reject(new Error("permission denied"))),
 			});
 
@@ -404,9 +356,8 @@ describe("the surface rail", () => {
 			dialogButton("Delete").click();
 			await flush();
 			rail.update("website");
-			expect(reportError).toHaveBeenCalledWith(
-				"Website could not be deleted. 2 of its scheduled agents were deleted before that.",
-			);
+			expect(reportError).toHaveBeenCalledWith("Website could not be deleted.");
+			expect(store.state.automations.map((item) => item.id)).toEqual(["a-1", "a-2"]);
 			expect(railRow(rail, "website")).not.toBeNull();
 			expect(location.hash).toBe("");
 			store.dispose();

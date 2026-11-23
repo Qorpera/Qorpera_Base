@@ -370,7 +370,7 @@ export class SurfaceRail {
 			const surface = this.#store.state.surfaces.find((item) => item.id === surfaceId);
 			if (!surface) return;
 			if (!read) {
-				this.#reportNotDeleted(surface.title, 0);
+				this.#reportNotDeleted(surface.title);
 				return;
 			}
 			const scheduled = this.#store.state.automations.filter(
@@ -389,8 +389,8 @@ export class SurfaceRail {
 					...(scheduled > 1 ? [t("Its {count} scheduled agents are deleted too.", { count: scheduled })] : []),
 					...(active === 1 ? [t("Its active session goes with it.")] : []),
 					...(active > 1 ? [t("Its {count} active sessions go with it.", { count: active })] : []),
-					...(working === 1 ? [t("The one still working runs to its end.")] : []),
-					...(working > 1 ? [t("The {count} still working run to their end.", { count: working })] : []),
+					...(working === 1 ? [t("The one still working is stopped.")] : []),
+					...(working > 1 ? [t("The {count} still working are stopped.", { count: working })] : []),
 					...(surface.pendingChangeCount + surface.unpublishedChangeCount > 0
 						? [t("Its unpublished changes go with it.")]
 						: []),
@@ -400,26 +400,15 @@ export class SurfaceRail {
 				],
 			);
 			if (!confirmed) return;
-			const outcome = await this.#store.deleteSurface(surfaceId);
-			if (!outcome.deleted) this.#reportNotDeleted(surface.title, outcome.scheduledAgentsDeleted);
+			if (!(await this.#store.deleteSurface(surfaceId))) this.#reportNotDeleted(surface.title);
 			else if (this.#activeSlug === surface.slug) location.hash = `#/c/${this.#profileId}`;
 		} finally {
 			this.#deleting.delete(surfaceId);
 		}
 	}
 
-	#reportNotDeleted(name: string, scheduledAgentsDeleted: number): void {
-		if (this.#signal.aborted) return;
-		this.#reportError?.(
-			scheduledAgentsDeleted === 0
-				? t("{name} could not be deleted.", { name })
-				: scheduledAgentsDeleted === 1
-					? t("{name} could not be deleted. One of its scheduled agents was deleted before that.", { name })
-					: t("{name} could not be deleted. {count} of its scheduled agents were deleted before that.", {
-							name,
-							count: scheduledAgentsDeleted,
-						}),
-		);
+	#reportNotDeleted(name: string): void {
+		if (!this.#signal.aborted) this.#reportError?.(t("{name} could not be deleted.", { name }));
 	}
 
 	update(activeSlug: string | undefined, canAddProgram = false): void {
