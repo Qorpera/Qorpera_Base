@@ -592,13 +592,24 @@ begin
 	reset role;
 
 	perform pg_temp.sf_assert(
-		(select status from public.qorpera_surface_changes where id = v_exp_w_c1) = 'merged'
-		and (select status from public.qorpera_surface_changes where id = v_exp_w_c2) = 'merged'
+		(select status from public.qorpera_surface_changes where id = v_exp_w_c1) = 'staged'
+		and (select status from public.qorpera_surface_changes where id = v_exp_w_c2) = 'staged'
 		and (select status from public.qorpera_surface_changes where id = v_exp_w_c3) = 'merging'
 		and (select status from public.qorpera_surface_changes where id = v_exp_w_manual_disc) = 'discarded'
 		and (select discarded_by_exploration from public.qorpera_surface_changes where id = v_exp_l_c1) is true
 		and (select discarded_by_exploration from public.qorpera_surface_changes where id = v_exp_l_manual_disc) is false,
-		'choose_exploration merges winner open changes and tags only exploration-discarded loser rows'
+		'choose_exploration keeps winner open changes staged and tags only exploration-discarded loser rows'
+	);
+
+	perform pg_temp.sf_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_approve_session_all(v_exp_winner_id);
+	reset role;
+	perform pg_temp.sf_assert(
+		(select status from public.qorpera_surface_changes where id = v_exp_w_c1) = 'merged'
+		and (select status from public.qorpera_surface_changes where id = v_exp_w_c2) = 'merged'
+		and (select status from public.qorpera_surface_changes where id = v_exp_w_c3) = 'merging',
+		'the chosen variant''s staged changes merge only when the member approves them'
 	);
 
 	v_errcode := null;
@@ -639,11 +650,12 @@ begin
 	perform public.qorpera_undo_surface_change(v_exp_w_c2);
 	reset role;
 	perform pg_temp.sf_assert(
-		(select status from public.qorpera_surface_explorations where id = v_exploration_id) = 'open'
-		and (select chosen_session_id from public.qorpera_surface_explorations where id = v_exploration_id) is null
-		and (select status from public.qorpera_surface_changes where id = v_exp_l_c1) = 'staged'
+		(select status from public.qorpera_surface_explorations where id = v_exploration_id) = 'chosen'
+		and (select chosen_session_id from public.qorpera_surface_explorations where id = v_exploration_id) = v_exp_winner_id
+		and (select status from public.qorpera_surface_changes where id = v_exp_w_c2) = 'staged'
+		and (select status from public.qorpera_surface_changes where id = v_exp_l_c1) = 'discarded'
 		and (select status from public.qorpera_surface_changes where id = v_exp_l_manual_disc) = 'discarded',
-		'after all winner changes are undone, exploration reopens and only exploration-discarded sibling changes restore'
+		'after all winner changes are undone, the exploration stays chosen and the other options stay discarded'
 	);
 
 	update public.qorpera_surface_automations
