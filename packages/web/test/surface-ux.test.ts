@@ -602,7 +602,11 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			this.open = false;
 		};
 
-		drawer.querySelector<HTMLElement>(".surface-overview-card.is-agent:not(.is-exploration) .surface-overview-change-title")!.click();
+		drawer
+			.querySelector<HTMLElement>(
+				".surface-overview-card.is-agent:not(.is-exploration) .surface-overview-change-title",
+			)!
+			.click();
 		view.update();
 		expect(drawer.classList.contains("is-overview")).toBe(false);
 		expect(drawer.querySelector(".surface-message.is-session")).not.toBeNull();

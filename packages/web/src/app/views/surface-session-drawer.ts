@@ -1290,53 +1290,53 @@ export class SurfaceSessionDrawer {
 										? []
 										: [
 												conflicted
-											? h(
-												"button",
-												{
-													type: "button",
-													class: "surface-change-btn is-danger",
-													"data-act": "reconcile",
-													"data-change": change.id,
-													disabled: busyReconcile,
-												},
-												t("Reconcile"),
-											)
-										: h(
-												"button",
-												{
-													type: "button",
-													class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
-													"data-act": "approve",
-													"data-change": change.id,
-													...(armed ? { "data-armed": "true" } : {}),
-													disabled: busyChange,
-												},
-												armed ? t("Confirm") : t("Approve"),
-											),
-									h(
-										"button",
-										{
-											type: "button",
-											class: "surface-change-btn",
-											"data-act": "quote-change",
-											"data-session": session.id,
-											"data-change": change.id,
-											"data-change-title": change.title,
-										},
-										t("Change"),
-									),
-									h(
-										"button",
-										{
-											type: "button",
-											class: "surface-change-btn is-muted",
-											"data-act": "discard-change",
-											"data-change": change.id,
-											disabled: busyChange,
-										},
-										t("Discard"),
-									),
-										]),
+													? h(
+															"button",
+															{
+																type: "button",
+																class: "surface-change-btn is-danger",
+																"data-act": "reconcile",
+																"data-change": change.id,
+																disabled: busyReconcile,
+															},
+															t("Reconcile"),
+														)
+													: h(
+															"button",
+															{
+																type: "button",
+																class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
+																"data-act": "approve",
+																"data-change": change.id,
+																...(armed ? { "data-armed": "true" } : {}),
+																disabled: busyChange,
+															},
+															armed ? t("Confirm") : t("Approve"),
+														),
+												h(
+													"button",
+													{
+														type: "button",
+														class: "surface-change-btn",
+														"data-act": "quote-change",
+														"data-session": session.id,
+														"data-change": change.id,
+														"data-change-title": change.title,
+													},
+													t("Change"),
+												),
+												h(
+													"button",
+													{
+														type: "button",
+														class: "surface-change-btn is-muted",
+														"data-act": "discard-change",
+														"data-change": change.id,
+														disabled: busyChange,
+													},
+													t("Discard"),
+												),
+											]),
 								)
 							: null,
 					),
