@@ -376,26 +376,15 @@ export class SurfaceRail {
 				this.#signal,
 			);
 			if (!confirmed) return;
-			const outcome = await this.#store.deleteSurface(surfaceId);
-			if (!outcome.deleted) this.#reportNotDeleted(surface.title, outcome.scheduledAgentsDeleted);
+			if (!(await this.#store.deleteSurface(surfaceId))) this.#reportNotDeleted(surface.title);
 			else if (this.#activeSlug === surface.slug) location.hash = `#/c/${this.#profileId}`;
 		} finally {
 			this.#deleting.delete(surfaceId);
 		}
 	}
 
-	#reportNotDeleted(name: string, scheduledAgentsDeleted: number): void {
-		if (this.#signal.aborted) return;
-		this.#reportError?.(
-			scheduledAgentsDeleted === 0
-				? t("{name} could not be deleted.", { name })
-				: scheduledAgentsDeleted === 1
-					? t("{name} could not be deleted. One of its scheduled agents was deleted before that.", { name })
-					: t("{name} could not be deleted. {count} of its scheduled agents were deleted before that.", {
-							name,
-							count: scheduledAgentsDeleted,
-						}),
-		);
+	#reportNotDeleted(name: string): void {
+		if (!this.#signal.aborted) this.#reportError?.(t("{name} could not be deleted.", { name }));
 	}
 
 	update(activeSlug: string | undefined, canAddProgram = false): void {

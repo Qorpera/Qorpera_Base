@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type SitesAccess, SitesView, shownLink } from "../src/app/views/settings-sites.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
+import type { CompanySiteHostingState, SiteDnsSetup, WebSiteHosting } from "../src/cloud/site-hosting.ts";
 import {
 	type CompanySite,
 	type CompanySitePassword,
@@ -98,7 +99,7 @@ function setup(
 	sites: CompanySite[] = [],
 	access: SitesAccess = admin,
 	configure?: (client: SitesClientMock) => void,
-	options: { versions?: Record<string, number>; mascot?: () => HTMLElement } = {},
+	options: { versions?: Record<string, number>; mascot?: () => HTMLElement; hosting?: WebSiteHosting } = {},
 ) {
 	const state = { sites: structuredClone(sites), password: PASSWORD, versions: options.versions ?? {} };
 	const answer = (siteId: string): CompanySitePassword => ({ siteId, password: state.password, changedAt: timestamp });
@@ -120,6 +121,7 @@ function setup(
 		access,
 		releases: { href: "#/c/company/whats-new", version: (site) => state.versions[site.slug] },
 		...(options.mascot ? { mascot: options.mascot } : {}),
+		...(options.hosting ? { hosting: options.hosting } : {}),
 	});
 	document.body.append(view.el);
 	return { client, state };
@@ -1296,6 +1298,96 @@ describe("Sites and What's new's live row at every width", () => {
 	it("keeps still under reduced motion", () => {
 		const still = css.match(/@media \(prefers-reduced-motion: reduce\) \{([^@]*?)\n\}/)?.[1] ?? "";
 		expect(still).toContain(".site-row.is-new, .site-row.is-leaving, .sites-empty, .sites-toast");
+	});
+});
+
+describe("Sites: a custom domain's DNS lines", () => {
+	const hostingWith = (dns: (hostname: string, isApex: boolean) => SiteDnsSetup): WebSiteHosting => {
+		const state: CompanySiteHostingState = {
+			hostsDomain: "qorpera.com",
+			hostsEnabled: true,
+			publicEnabled: true,
+			domainsEnabled: true,
+			edgeIpv4: "203.0.113.7",
+			edgeIpv6: "2001:db8::7",
+			edgeCnameTarget: "edge.qorpera.com",
+			sites: new Map(),
+		};
+		return {
+			read: vi.fn(async () => state),
+			setPublic: vi.fn(async () => true),
+			addDomain: vi.fn(async (siteId: string, hostname: string, isApex: boolean) => ({
+				id: id(71),
+				siteId,
+				hostname,
+				isApex,
+				isPrimary: false,
+				status: "pending_dns" as const,
+				verificationToken: "9f3a1c",
+				dns: dns(hostname, isApex),
+			})),
+			removeDomain: vi.fn(async () => true),
+			setPrimaryDomain: vi.fn(async () => ""),
+			recheckDomain: vi.fn(async () => "pending_dns" as const),
+		};
+	};
+	const setupDns = (hostname: string, recordType: "A" | "CNAME", ipv4: string | null) => ({
+		recordType,
+		ipv4,
+		ipv6: "2001:db8::7",
+		cnameTarget: "edge.qorpera.com",
+		txtHost: `_qorpera.${hostname}`,
+		txtValue: "qorpera-verify=9f3a1c",
+	});
+	const addDomain = async (hosting: WebSiteHosting, domain: string) => {
+		setup([shop], admin, undefined, { hosting });
+		await settle();
+		press(shop.id, "more");
+		choose("Custom domain");
+		const form = question()!;
+		form.querySelector<HTMLInputElement>("input")!.value = domain;
+		form.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		await settle();
+		return [...form.querySelectorAll(".site-dns-guide > div")].map((line) => line.textContent);
+	};
+
+	it("lists an apex domain's A, AAAA and TXT lines as before", async () => {
+		const lines = await addDomain(
+			hostingWith((hostname) => setupDns(hostname, "A", "203.0.113.7")),
+			"thetaband.dk",
+		);
+		expect(lines).toEqual([
+			"Domain added. Point your DNS records below:",
+			"Record A · @ · 203.0.113.7",
+			"Record AAAA · @ · 2001:db8::7",
+			"Record TXT · _qorpera.thetaband.dk · qorpera-verify=9f3a1c",
+		]);
+	});
+
+	it("lists a subdomain's CNAME and TXT lines as before, and a CNAME when an apex has no IPv4", async () => {
+		expect(
+			await addDomain(
+				hostingWith((hostname) => setupDns(hostname, "CNAME", null)),
+				"www.thetaband.dk",
+			),
+		).toEqual([
+			"Domain added. Point your DNS records below:",
+			"Record CNAME · www.thetaband.dk · edge.qorpera.com",
+			"Record TXT · _qorpera.www.thetaband.dk · qorpera-verify=9f3a1c",
+		]);
+		openMenu()?.close();
+		question()?.closest(".modal-backdrop")?.remove();
+		view?.dispose();
+		expect(
+			await addDomain(
+				hostingWith((hostname) => setupDns(hostname, "A", null)),
+				"thetaband.dk",
+			),
+		).toEqual([
+			"Domain added. Point your DNS records below:",
+			"Record CNAME · thetaband.dk · edge.qorpera.com",
+			"Record TXT · _qorpera.thetaband.dk · qorpera-verify=9f3a1c",
+		]);
 	});
 });
 

@@ -151,6 +151,14 @@ export interface PlatformFileReference {
 	readonly executable: boolean;
 }
 
+export interface PlatformFileManifest {
+	readonly fileSha256: string;
+	readonly bytes: number;
+	readonly mediaType: string;
+	readonly executable: boolean;
+	readonly chunks: readonly { readonly sha256: string; readonly bytes: number }[];
+}
+
 export type PlatformFolderRpc = Extract<
 	MemberCompanyPublisherRpc,
 	| "qorpera_folder_authorize_object_download"
@@ -411,6 +419,53 @@ export class PlatformFolderWriter {
 		if (bytes.byteLength !== file.bytes || contentHash(bytes) !== file.fileSha256)
 			platformFolderProblem("file_unreadable");
 		return bytes;
+	}
+
+	async manifest(environmentId: string, manifestSha256: string, signal: AbortSignal): Promise<PlatformFileManifest> {
+		const manifestBytes = await this.#object(environmentId, manifestSha256, MAX_MANIFEST_BYTES, signal);
+		let manifest: {
+			schema?: unknown;
+			fileSha256?: unknown;
+			bytes?: unknown;
+			mediaType?: unknown;
+			executable?: unknown;
+			chunks?: unknown;
+		} | null;
+		try {
+			manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes));
+		} catch {
+			return platformFolderProblem("file_unreadable");
+		}
+		if (!manifest || typeof manifest !== "object") return platformFolderProblem("file_unreadable");
+		const { fileSha256, bytes, mediaType, executable, chunks } = manifest;
+		if (
+			manifest.schema !== "qorpera.cloud-file-manifest/v2" ||
+			typeof fileSha256 !== "string" ||
+			!SHA256.test(fileSha256) ||
+			typeof bytes !== "number" ||
+			!Number.isSafeInteger(bytes) ||
+			bytes < 0 ||
+			typeof mediaType !== "string" ||
+			typeof executable !== "boolean" ||
+			!Array.isArray(chunks) ||
+			chunks.length > MAX_CHUNKS
+		)
+			return platformFolderProblem("file_unreadable");
+		const parts: { sha256: string; bytes: number }[] = [];
+		for (const chunk of chunks as { sha256?: unknown; bytes?: unknown }[]) {
+			if (
+				typeof chunk?.sha256 !== "string" ||
+				!SHA256.test(chunk.sha256) ||
+				typeof chunk.bytes !== "number" ||
+				!Number.isSafeInteger(chunk.bytes) ||
+				chunk.bytes < 1 ||
+				chunk.bytes > CHUNK_BYTES
+			)
+				return platformFolderProblem("file_unreadable");
+			parts.push({ sha256: chunk.sha256, bytes: chunk.bytes });
+		}
+		if (parts.reduce((sum, part) => sum + part.bytes, 0) !== bytes) platformFolderProblem("file_unreadable");
+		return { fileSha256, bytes, mediaType, executable, chunks: parts };
 	}
 
 	/** Commits `units` as the writer's actor under `operationKey`; the answer is the commit's (`qorpera.folder-commit/v1`). */
