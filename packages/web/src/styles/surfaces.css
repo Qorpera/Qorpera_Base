@@ -184,12 +184,18 @@
 @keyframes surface-figure-toward { 0%, 10% { transform: none; } 18%, 60% { transform: translate(6%, 0.5%); } 68%, 100% { transform: none; } }
 @keyframes surface-figure-breathe { 50% { transform: scale(1.025, 0.985); } }
 .rail-surface {
-	display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 7px 10px; border-radius: 13px;
+	position: relative; display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 7px 10px; border-radius: 13px;
 	color: var(--text); text-decoration: none; -webkit-font-smoothing: auto;
 }
 .rail-surface:hover { text-decoration: none; }
 .rail-surface.active, .rail-surface.active:hover { background: var(--rail-selection); color: var(--rail-selection-text); }
 .rail-surface:focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
+.rail-surface > .rail-here { top: 50%; right: 10px; transform: translateY(-50%); }
+.rail-surface:has(> .rail-here) { padding-right: calc(20px + var(--here-size, 22px) * (1 + (var(--here-count, 1) - 1) * 0.82)); }
+.rail-surface.hover-lit > .rail-here { --here-ring: var(--rail-hover); }
+.rail-surface.active > .rail-here { --here-ring: var(--rail-selection); }
+.rail-compact .rail-surface > .rail-here { --here-size: 18px; top: 2px; right: 2px; transform: none; }
+.rail-compact .rail-surface:has(> .rail-here) { padding-right: 4px; }
 .rail-surface-text { display: grid; flex: 1; min-width: 0; gap: 2px; }
 .rail-surface-name {
 	min-width: 0; overflow: hidden; color: var(--text); font-size: 14.5px; font-weight: 660; line-height: 20px;
@@ -1862,11 +1868,11 @@
 .surface-pill-presence {
 	display: inline-flex; align-items: center; padding: 0 2px;
 }
-.surface-pill-presence .avatar {
-	width: 20px; height: 20px; font-size: 9px;
-	box-shadow: 0 0 0 1.5px var(--bg);
+.surface-pill-presence .person-avatar {
+	width: 22px; height: 22px; font-size: 9.5px; font-weight: 650;
+	box-shadow: 0 0 0 2px var(--bg);
 }
-.surface-pill-presence .avatar + .avatar { margin-left: -6px; }
+.surface-pill-presence .person-avatar + .person-avatar { margin-left: -4px; }
 .surface-pill-presence-more {
 	margin-left: 4px; font-size: 11px; font-weight: 600; color: var(--text-muted);
 }
