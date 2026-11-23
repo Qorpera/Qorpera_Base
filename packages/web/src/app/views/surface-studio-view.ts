@@ -1256,7 +1256,21 @@ export class SurfaceStudioView {
 				);
 			}
 			const cleanFolderRoot = surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
+			const primaryProductRoot = state.surfaces
+				.filter(
+					(item) =>
+						item.status === "active" &&
+						item.archetype === "studio" &&
+						store.lookOf(item).kind === "product" &&
+						Boolean(item.folderRoot?.replace(/^\/+|\/+$/g, "")),
+				)
+				.sort((a, b) => (a.group < b.group ? -1 : a.group > b.group ? 1 : 0) || a.sortOrder - b.sortOrder)
+				.at(0)
+				?.folderRoot?.replace(/^\/+|\/+$/g, "");
 			for (const link of produced) {
+				if (link.id === "product-catalog" && primaryProductRoot && primaryProductRoot !== cleanFolderRoot) {
+					continue;
+				}
 				const consumers = activeOtherSurfaces
 					.filter((item) => link.consumedBy.includes(store.lookOf(item).kind))
 					.sort((a, b) => (a.group === "products" ? 0 : 1) - (b.group === "products" ? 0 : 1));

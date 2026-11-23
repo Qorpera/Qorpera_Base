@@ -116,6 +116,20 @@ export function createDefaultSurfaceWorkerConfig(
 		...(overrides.undoCodeRepoChange ? { undoCodeRepoChange: overrides.undoCodeRepoChange } : {}),
 		...(overrides.folder ? { folder: overrides.folder } : {}),
 		...(overrides.folderSnapshots ? { folderSnapshots: overrides.folderSnapshots } : {}),
+		...(overrides.resolveProductFolderRoots
+			? { resolveProductFolderRoots: overrides.resolveProductFolderRoots }
+			: typeof context.controlPlane.resolveSharedProductFolderRoots === "function"
+				? {
+						resolveProductFolderRoots: async (profileId: string, signal?: AbortSignal) => {
+							try {
+								return await context.controlPlane.resolveSharedProductFolderRoots!(profileId, signal);
+							} catch (error) {
+								if (signal?.aborted) throw error;
+								return [];
+							}
+						},
+					}
+				: {}),
 		runOpsActionJob: overrides.runOpsActionJob ?? defaultRunOpsActionJob,
 		...(overrides.publishSurface ? { publishSurface: overrides.publishSurface } : {}),
 	});
@@ -163,8 +177,25 @@ export function createDefaultSurfaceWorkerConfig(
 					throw new Error(`Surface session could not start (${enqueued.reason})`);
 				}
 				if (typeof context.providerAdapter.deliverSurfaceSession === "function") {
+					let deliveryJob = job;
+					if (
+						deliveryJob.productFolderRoots === undefined &&
+						typeof context.controlPlane.resolveSharedProductFolderRoots === "function"
+					) {
+						try {
+							const productFolderRoots = await context.controlPlane.resolveSharedProductFolderRoots(
+								deliveryJob.profileId,
+								signal,
+							);
+							if (productFolderRoots.length > 0) {
+								deliveryJob = { ...deliveryJob, productFolderRoots };
+							}
+						} catch (error) {
+							if (signal?.aborted) throw error;
+						}
+					}
 					try {
-						await context.providerAdapter.deliverSurfaceSession(job, machineId, signal);
+						await context.providerAdapter.deliverSurfaceSession(deliveryJob, machineId, signal);
 						return;
 					} catch (error) {
 						if (error instanceof CloudRunnerProviderRequestError && error.status === 501) {

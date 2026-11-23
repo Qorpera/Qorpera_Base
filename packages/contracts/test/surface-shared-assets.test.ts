@@ -83,7 +83,7 @@ describe("surface shared assets & live Identity CSS compiler", () => {
 		);
 	});
 
-	it("resolves shared product asset candidates from active product folder roots with fallback to product/", () => {
+	it("resolves shared product assets from the primary product root with fallback to product/", () => {
 		expect(sharedProductAssetCandidates()).toEqual({
 			specsPaths: [PRODUCT_SPECS_PATH],
 			catalogPaths: [PRODUCT_CATALOG_PATH],
@@ -91,8 +91,8 @@ describe("surface shared assets & live Identity CSS compiler", () => {
 		expect(
 			sharedProductAssetCandidates(["/surfaces/thetabands/", "surfaces/travel-case", "surfaces/thetabands"]),
 		).toEqual({
-			specsPaths: ["surfaces/thetabands/specs.json", "surfaces/travel-case/specs.json"],
-			catalogPaths: ["surfaces/thetabands/catalog.json", "surfaces/travel-case/catalog.json"],
+			specsPaths: ["surfaces/thetabands/specs.json"],
+			catalogPaths: ["surfaces/thetabands/catalog.json"],
 		});
 	});
 });

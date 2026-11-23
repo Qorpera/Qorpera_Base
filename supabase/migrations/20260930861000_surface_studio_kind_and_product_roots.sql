@@ -7,19 +7,27 @@ language sql stable security definer set search_path = '' as $$
 		array(
 			select root
 			from (
-				select
-					nullif(btrim(coalesce(s.folder_root, ''), '/ '), '') as root,
-					min(s.sort_order) as first_sort_order,
-					min(s.created_at) as first_created_at
-				from public.qorpera_surfaces s
-				where s.profile_id = p_profile_id
-					and s.status = 'active'
-					and s.archetype = 'studio'
-					and s.surface_kind = 'product'
-				group by nullif(btrim(coalesce(s.folder_root, ''), '/ '), '')
+				select distinct on (root)
+					root,
+					surface_group,
+					sort_order,
+					created_at
+				from (
+					select
+						nullif(btrim(coalesce(s.folder_root, ''), '/ '), '') as root,
+						s.surface_group,
+						s.sort_order,
+						s.created_at
+					from public.qorpera_surfaces s
+					where s.profile_id = p_profile_id
+						and s.status = 'active'
+						and s.archetype = 'studio'
+						and s.surface_kind = 'product'
+				) candidates
+				where root is not null
+				order by root, surface_group asc, sort_order asc, created_at asc
 			) ranked
-			where root is not null
-			order by first_sort_order asc, first_created_at asc, root asc
+			order by surface_group asc, sort_order asc, created_at asc, root asc
 		),
 		'{}'::text[]
 	);

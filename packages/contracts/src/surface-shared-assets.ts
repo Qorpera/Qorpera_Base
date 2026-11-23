@@ -37,23 +37,17 @@ export interface SharedProductAssetCandidates {
 export function sharedProductAssetCandidates(
 	productFolderRoots?: readonly string[] | null,
 ): SharedProductAssetCandidates {
-	const roots: string[] = [];
-	const seen = new Set<string>();
 	for (const raw of productFolderRoots ?? []) {
 		const cleaned = raw.trim().replace(/^\/+|\/+$/g, "");
-		if (!cleaned || seen.has(cleaned)) continue;
-		seen.add(cleaned);
-		roots.push(cleaned);
-	}
-	if (roots.length === 0) {
+		if (!cleaned) continue;
 		return {
-			specsPaths: [PRODUCT_SPECS_PATH],
-			catalogPaths: [PRODUCT_CATALOG_PATH],
+			specsPaths: [`${cleaned}/specs.json`],
+			catalogPaths: [`${cleaned}/catalog.json`],
 		};
 	}
 	return {
-		specsPaths: roots.map((root) => `${root}/specs.json`),
-		catalogPaths: roots.map((root) => `${root}/catalog.json`),
+		specsPaths: [PRODUCT_SPECS_PATH],
+		catalogPaths: [PRODUCT_CATALOG_PATH],
 	};
 }
 

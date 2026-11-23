@@ -38,6 +38,7 @@ export interface ClaimedSurfaceSessionJob {
 	readonly explorationVariantLabel?: string | null;
 	readonly siteSlug?: string | null;
 	readonly identityFolderRoot?: string | null;
+	readonly productFolderRoots?: readonly string[];
 	readonly briefSummary?: string | null;
 	readonly retryCount?: number;
 	readonly sponsor?: ClaimedSurfaceSessionSponsor | null;
