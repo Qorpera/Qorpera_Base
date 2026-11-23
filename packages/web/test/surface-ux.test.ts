@@ -1107,6 +1107,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			"+1",
 		]);
 		expect(linkHref(chips[0]!)).toBe(`#/c/${COMPANY}/s/files`);
+		expect(store.state.drawer).toBeUndefined();
 		chips[0]!.click();
 		expect(navigated).toEqual(["files"]);
 		expect(location.hash).toBe(`#/c/${COMPANY}/s/files`);
