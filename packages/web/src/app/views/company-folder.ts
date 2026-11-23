@@ -63,9 +63,9 @@ export interface CompanyFolderPick {
 	readonly kind: "file" | "folder";
 }
 
-type FileCategory = "folder" | "document" | "spreadsheet" | "image" | "pdf" | "link" | "other";
+export type FileCategory = "folder" | "document" | "spreadsheet" | "image" | "pdf" | "link" | "other";
 
-function fileCategory(item: Pick<CloudMemberFolderEntry, "kind" | "path">): FileCategory {
+export function fileCategory(item: Pick<CloudMemberFolderEntry, "kind" | "path">): FileCategory {
 	if (item.kind === "folder") return "folder";
 	if (item.kind === "symlink") return "link";
 	const ext = extension(item.path);
@@ -97,7 +97,11 @@ function svgNode(name: string, attributes: Record<string, string | number>, text
 
 /** The icon view's large glyphs, drawn as one family: a two-tone folder, and a page with a folded corner whose coloured
  * tag names the file's type, the way a desktop file manager draws them. Colours come from the category's CSS. */
-function tileGlyph(item: CloudMemberFolderEntry, category: FileCategory): SVGSVGElement {
+export function tileGlyph(
+	item: Pick<CloudMemberFolderEntry, "path">,
+	category: FileCategory,
+	tagged = true,
+): SVGSVGElement {
 	const svg = svgNode("svg", { class: "storage-glyph", viewBox: "0 0 64 64", "aria-hidden": "true" }) as SVGSVGElement;
 	if (category === "folder") {
 		svg.append(
@@ -132,7 +136,7 @@ function tileGlyph(item: CloudMemberFolderEntry, category: FileCategory): SVGSVG
 			}),
 		);
 	else svg.append(svgNode("path", { class: "storage-glyph-line", d: "M20 26h18M20 32h24M20 38h14" }));
-	const tag = category === "link" ? "" : extension(item.path).slice(0, 4).toUpperCase();
+	const tag = category === "link" || !tagged ? "" : extension(item.path).slice(0, 4).toUpperCase();
 	if (tag) {
 		const width = Math.max(22, tag.length * 7 + 10);
 		svg.append(

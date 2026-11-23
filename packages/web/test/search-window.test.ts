@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fileHit, filePlace, newestCopies } from "../src/app/views/search-files.ts";
 import {
 	rankHits,
 	type SearchFiles,
@@ -7,25 +8,34 @@ import {
 	type SearchKind,
 	type SearchSources,
 	SearchWindow,
+	shortAge,
+	sortHits,
 } from "../src/app/views/search-window.ts";
 import { markSettingsPlace } from "../src/app/views/settings.ts";
 import { h } from "../src/ui/dom.ts";
 import { stubDialogs } from "./search-window-helpers.ts";
 
 const opened: string[] = [];
-const hit = (kind: SearchKind, title: string, detail = "", words = ""): SearchHit => ({
+const hit = (
+	kind: SearchKind,
+	title: string,
+	detail = "",
+	words = "",
+	more: Partial<Pick<SearchHit, "at" | "marks">> = {},
+): SearchHit => ({
 	key: `${kind}:${title}`,
 	kind,
 	title,
 	detail,
 	words,
+	...more,
 	lead: () => h("span"),
 	open: () => opened.push(title),
 });
 const HITS = [
-	hit("people", "Designer", "Drawing the logo"),
-	hit("people", "Brand review", "Group chat"),
-	hit("people", "Co-Founder", "Hiring a brand designer"),
+	hit("people", "Designer", "Drawing the logo", "", { at: "2026-11-23T08:00:00Z", marks: ["working"] }),
+	hit("people", "Brand review", "Group chat", "", { at: "2026-11-23T11:00:00Z", marks: ["needs-you"] }),
+	hit("people", "Co-Founder", "Hiring a brand designer", "", { at: "2026-11-22T11:00:00Z" }),
 	hit("apps", "Brand identity", "Studio"),
 	hit("settings", "Appearance", "Settings · General", "theme dark light"),
 	hit("settings", "Language & region", "Settings · General", "sprog dansk"),
@@ -59,7 +69,15 @@ function mount(files?: SearchFiles) {
 	const groups = () => [...window.el.querySelectorAll(".search-window-group")].map((group) => group.textContent);
 	const picked = () =>
 		window.el.querySelector('.search-window-hit[aria-selected="true"] .search-window-title')?.textContent;
-	return { window, opener, input, type, key, titles, groups, picked };
+	const choose = (button: string, label: string) => {
+		window.el.querySelector<HTMLElement>(button)!.click();
+		const items = [...window.el.querySelectorAll<HTMLElement>(".context-menu:not(.is-leaving) .context-menu-item")];
+		const offered = items.map((item) => item.textContent);
+		items.find((item) => item.textContent === label)?.click();
+		return offered;
+	};
+	const kind = () => window.el.querySelector(".search-window-pick")?.textContent;
+	return { window, opener, input, type, key, titles, groups, picked, choose, kind };
 }
 
 beforeEach(() => {
@@ -110,29 +128,102 @@ describe("the search window", () => {
 		expect(opened).toEqual(["Brand identity", "Appearance"]);
 	});
 
-	it("narrows to one kind with Tab or a chip, and Esc widens before it closes", () => {
-		const { window, opener, type, key, titles, groups } = mount();
+	it("narrows to one kind with Tab or the picker, and Esc widens before it closes", () => {
+		const { window, opener, input, type, key, titles, groups, choose, kind } = mount();
+		expect(kind()).toBe("All");
 		type("brand");
 		key("Tab");
-		expect(groups()).toEqual(["Agents and people"]);
-		expect(window.el.querySelector('.search-window-kind[aria-pressed="true"]')?.textContent).toBe(
-			"Agents and people",
-		);
+		expect(kind()).toBe("Agents and people");
+		expect(input.placeholder).toBe("Search agents and people");
+		expect(groups()).toEqual([]);
+		expect(titles()).toEqual(["Brand review", "Co-Founder"]);
 		key("Tab");
 		expect(titles()).toEqual(["Brand identity"]);
 		key("Tab", { shiftKey: true });
 		key("Tab", { shiftKey: true });
 		expect(groups()).toEqual(["Agents and people", "Apps"]);
-		[...window.el.querySelectorAll<HTMLElement>(".search-window-kind")]
-			.find((chip) => chip.textContent === "Apps")!
-			.click();
-		expect(groups()).toEqual(["Apps"]);
+		expect(choose(".search-window-pick", "Apps")).toEqual(["All", "Agents and people", "Apps", "Files", "Settings"]);
+		expect(kind()).toBe("Apps");
+		expect(titles()).toEqual(["Brand identity"]);
+		expect(document.activeElement).toBe(input);
 		window.el.dispatchEvent(new Event("cancel", { cancelable: true }));
 		expect(window.isOpen).toBe(true);
 		expect(groups()).toEqual(["Agents and people", "Apps"]);
 		window.el.dispatchEvent(new Event("cancel", { cancelable: true }));
 		expect(window.isOpen).toBe(false);
 		expect(document.activeElement).toBe(opener);
+	});
+
+	it("lists a whole kind without a word typed, newest first, each with how long ago", () => {
+		vi.useFakeTimers({ now: new Date("2026-11-23T12:00:00Z") });
+		const { window, choose, titles } = mount();
+		choose(".search-window-pick", "Agents and people");
+		expect(titles()).toEqual(["Brand review", "Designer", "Co-Founder"]);
+		expect([...window.el.querySelectorAll(".search-window-time")].map((time) => time.textContent)).toEqual([
+			"1h",
+			"4h",
+			"1d",
+		]);
+		choose(".search-window-pick", "Files");
+		expect(window.el.querySelector(".search-window-empty")?.textContent).toBe("Nothing here yet.");
+	});
+
+	it("sorts by name and shows only what a filter keeps, with the filters of the kind picked", () => {
+		const { window, type, choose, titles, groups } = mount();
+		const filter = window.el.querySelector<HTMLElement>(".search-window-filter")!;
+		expect(choose(".search-window-filter", "Needs you")).toEqual([
+			"Latest",
+			"Name",
+			"Needs you",
+			"Working",
+			"Images",
+			"Documents",
+			"Folders",
+		]);
+		expect(groups()).toEqual(["Agents and people"]);
+		expect(titles()).toEqual(["Brand review"]);
+		expect(filter.classList.contains("is-on")).toBe(true);
+		choose(".search-window-filter", "Needs you");
+		expect(filter.classList.contains("is-on")).toBe(false);
+		expect(groups()).toEqual([]);
+		type("brand");
+		expect(choose(".search-window-filter", "Name").slice(0, 3)).toEqual(["Best match", "Latest", "Name"]);
+		expect(titles()).toEqual(["Brand review", "Co-Founder", "Brand identity"]);
+		choose(".search-window-filter", "Latest");
+		expect(titles()).toEqual(["Brand review", "Co-Founder", "Brand identity"]);
+		choose(".search-window-pick", "Settings");
+		expect(choose(".search-window-filter", "Name")).toEqual(["Best match", "Latest", "Name"]);
+	});
+
+	it("opens a menu on the press, and the press that closes it does not open it again", () => {
+		const { window } = mount();
+		const pick = window.el.querySelector<HTMLElement>(".search-window-pick")!;
+		const menus = () => window.el.querySelectorAll(".context-menu:not(.is-leaving)").length;
+		const press = () => pick.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+		press();
+		expect(menus()).toBe(1);
+		press();
+		expect(menus()).toBe(0);
+		press();
+		expect(menus()).toBe(1);
+		window.close();
+		expect(menus()).toBe(0);
+	});
+
+	it("picks the row under a pointer that moved, never one a scroll brought under it", () => {
+		const { window, type, picked } = mount();
+		type("brand");
+		const rows = [...window.el.querySelectorAll<HTMLElement>(".search-window-hit")];
+		const move = (row: HTMLElement, y: number) =>
+			row.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 40, clientY: y }));
+		move(rows[1]!, 80);
+		expect(picked()).toBe("Co-Founder");
+		move(rows[2]!, 80);
+		expect(picked()).toBe("Co-Founder");
+		move(rows[2]!, 120);
+		expect(picked()).toBe("Brand identity");
+		rows[0]!.click();
+		expect(opened).toEqual(["Brand review"]);
 	});
 
 	it("says when nothing matches, and offers what was opened lately when empty", () => {
@@ -216,6 +307,85 @@ describe("the search window", () => {
 		window.reset();
 		expect(window.isOpen).toBe(false);
 		expect(titles()).toEqual([]);
+	});
+});
+
+describe("times and order", () => {
+	it("writes how long ago in a few characters, then the day", () => {
+		const now = Date.parse("2026-11-23T12:00:00Z");
+		expect(shortAge("2026-11-23T11:59:40Z", now)).toBe("now");
+		expect(shortAge("2026-11-23T11:48:00Z", now)).toBe("12m");
+		expect(shortAge("2026-11-23T09:10:00Z", now)).toBe("2h");
+		expect(shortAge("2026-11-20T12:00:00Z", now)).toBe("3d");
+		expect(shortAge("2026-11-02T12:00:00Z", now)).toBe("3w");
+		expect(shortAge("2026-07-04T12:00:00Z", now)).toBe("Jul 4");
+		expect(shortAge("2025-07-04T12:00:00Z", now)).toBe("Jul 4, 2025");
+		expect(shortAge(undefined, now)).toBe("");
+		expect(shortAge("not a time", now)).toBe("");
+	});
+
+	it("puts the newest first and what has no time last, or orders by name", () => {
+		expect(sortHits(HITS.slice(0, 4), "latest").map((one) => one.title)).toEqual([
+			"Brand review",
+			"Designer",
+			"Co-Founder",
+			"Brand identity",
+		]);
+		expect(sortHits(HITS.slice(0, 4), "name").map((one) => one.title)).toEqual([
+			"Brand identity",
+			"Brand review",
+			"Co-Founder",
+			"Designer",
+		]);
+	});
+});
+
+describe("files in the search window", () => {
+	const title = (slug: string) => (slug === "website" ? "Hjemmeside" : undefined);
+
+	it("says where a file is in a few words, never an agent's working folder", () => {
+		expect(filePlace("notes.md", title)).toBe("Company File");
+		expect(filePlace("brand/logo/logo-dark.svg", title)).toBe("brand / logo");
+		expect(filePlace("research/2026/q4/names/shop-names.md", title)).toBe("q4 / names");
+		expect(filePlace("code/surfaces/website/styles.css", title)).toBe("Hjemmeside");
+		expect(filePlace("code/surfaces/website/src/assets/product.png", title)).toBe("Hjemmeside / assets");
+		expect(filePlace("code/surfaces/shop/index.html", title)).toBe("shop");
+		expect(filePlace("code/acme/storefront/src/app.ts", title)).toBe("storefront / src");
+		expect(filePlace("code/surfaces/website/worktrees/533ab75c-8957-408f-ab6e-5d1f6c2a9e10/styles.css", title)).toBe(
+			"Hjemmeside · draft",
+		);
+	});
+
+	it("keeps the newest of a file's copies, in the order they came", () => {
+		const copies = [
+			{ path: "code/surfaces/website/worktrees/aaa/styles.css", kind: "file", at: "2026-11-23T10:00:00Z" },
+			{ path: "brand/logo.svg", kind: "file", at: "2026-11-20T10:00:00Z" },
+			{ path: "code/surfaces/website/styles.css", kind: "file", at: "2026-11-22T10:00:00Z" },
+			{ path: "code/surfaces/website/worktrees/bbb/styles.css", kind: "file", at: "2026-11-23T11:00:00Z" },
+		];
+		expect(newestCopies(copies).map((file) => file.path)).toEqual([
+			"brand/logo.svg",
+			"code/surfaces/website/worktrees/bbb/styles.css",
+		]);
+	});
+
+	it("draws a file as the Files page does and opens it where it is", () => {
+		const shown: string[] = [];
+		const logo = fileHit({ path: "brand/logo.svg", kind: "file", at: "2026-11-20T10:00:00Z" }, (path) =>
+			shown.push(path),
+		);
+		expect([logo.title, logo.detail, logo.at, logo.marks]).toEqual([
+			"logo.svg",
+			"brand",
+			"2026-11-20T10:00:00Z",
+			["image"],
+		]);
+		expect(logo.lead().querySelector(".storage-glyph")).not.toBeNull();
+		expect((logo.lead() as HTMLElement).className).toBe("files-kind is-image");
+		logo.open();
+		expect(shown).toEqual(["brand/logo.svg"]);
+		expect(fileHit({ path: "brand", kind: "folder" }, () => {}).marks).toEqual(["folder"]);
+		expect(fileHit({ path: "code/surfaces/website/styles.css", kind: "file" }, () => {}).marks).toBeUndefined();
 	});
 });
 
