@@ -1414,7 +1414,7 @@ describe("members as contacts in the rail", () => {
 	});
 
 	it("marks the open chat's row, and finds a member by name", async () => {
-		const { controller, element, draw } = rail(
+		const { controller, element } = rail(
 			{},
 			{ name: "company", profileId: profileA.profileId, section: "member", id: sofie },
 		);

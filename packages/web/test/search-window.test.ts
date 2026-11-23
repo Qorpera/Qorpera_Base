@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	rankHits,
@@ -7,6 +8,7 @@ import {
 	type SearchSources,
 	SearchWindow,
 } from "../src/app/views/search-window.ts";
+import { markSettingsPlace } from "../src/app/views/settings.ts";
 import { h } from "../src/ui/dom.ts";
 import { stubDialogs } from "./search-window-helpers.ts";
 
@@ -29,8 +31,16 @@ const HITS = [
 	hit("settings", "Language & region", "Settings · General", "sprog dansk"),
 ];
 
+const LOGO = hit("files", "logo.svg", "brand");
+
 function sources(files?: SearchFiles): SearchSources {
-	return { profileId: "p1", companyName: "Dekora", hits: () => HITS, ...(files ? { files } : {}) };
+	return {
+		profileId: "p1",
+		companyName: "Dekora",
+		hits: () => HITS,
+		revive: (key) => (key === LOGO.key ? LOGO : undefined),
+		...(files ? { files } : {}),
+	};
 }
 
 function mount(files?: SearchFiles) {
@@ -47,7 +57,8 @@ function mount(files?: SearchFiles) {
 		input.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true, ...init }));
 	const titles = () => [...window.el.querySelectorAll(".search-window-title")].map((title) => title.textContent);
 	const groups = () => [...window.el.querySelectorAll(".search-window-group")].map((group) => group.textContent);
-	const picked = () => window.el.querySelector('.search-window-hit[aria-selected="true"] .search-window-title')?.textContent;
+	const picked = () =>
+		window.el.querySelector('.search-window-hit[aria-selected="true"] .search-window-title')?.textContent;
 	return { window, opener, input, type, key, titles, groups, picked };
 }
 
@@ -112,7 +123,9 @@ describe("the search window", () => {
 		key("Tab", { shiftKey: true });
 		key("Tab", { shiftKey: true });
 		expect(groups()).toEqual(["Agents and people", "Apps"]);
-		[...window.el.querySelectorAll<HTMLElement>(".search-window-kind")].find((chip) => chip.textContent === "Apps")!.click();
+		[...window.el.querySelectorAll<HTMLElement>(".search-window-kind")]
+			.find((chip) => chip.textContent === "Apps")!
+			.click();
 		expect(groups()).toEqual(["Apps"]);
 		window.el.dispatchEvent(new Event("cancel", { cancelable: true }));
 		expect(window.isOpen).toBe(true);
@@ -173,5 +186,40 @@ describe("the search window", () => {
 		refuse();
 		await vi.runAllTimersAsync();
 		expect(window.el.querySelector(".search-window-note")?.textContent).toBe("Files could not be searched just now.");
+	});
+
+	it("keeps a file opened from it in Recent, and reads the recent changes again on every open", async () => {
+		let reads = 0;
+		const files: SearchFiles = {
+			search: async () => ({ hits: [LOGO], more: false }),
+			recent: async () => {
+				reads++;
+				return [];
+			},
+		};
+		const { window, type, key, titles } = mount(files);
+		type("logo");
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		expect(titles()).toEqual(["logo.svg"]);
+		key("Enter");
+		expect(opened).toEqual(["logo.svg"]);
+		window.open(sources(files));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(titles()).toEqual(["logo.svg"]);
+		expect(reads).toBe(2);
+	});
+});
+
+describe("lighting a setting", () => {
+	it("lights the group whose heading names the place once its tab draws", async () => {
+		stubDialogs();
+		const content = h("div", { class: "settings-content" });
+		document.body.append(content);
+		markSettingsPlace("Appearance");
+		const group = h("section", { class: "settings-group" }, h("h2", null, "Appearance"));
+		content.append(h("section", { class: "settings-group" }, h("h2", null, "Account")), group);
+		await new Promise((resolve) => setTimeout(resolve, 80));
+		expect(group.classList.contains("is-found")).toBe(true);
+		expect(content.querySelectorAll(".is-found")).toHaveLength(1);
 	});
 });

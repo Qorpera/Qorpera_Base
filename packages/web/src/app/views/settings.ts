@@ -81,24 +81,85 @@ export interface SettingsPlace {
 	readonly mark?: string;
 }
 
-export function settingsPlaces(): SettingsPlace[] {
+export function settingsPlaces(deletes: boolean): SettingsPlace[] {
 	const general = phrase("General");
 	const company = phrase("Company");
 	const subscriptions = phrase("AI subscriptions");
+	const place = (tab: SettingsTab, label: string, area: string, words: string, mark?: string): SettingsPlace => ({
+		tab,
+		label,
+		area,
+		words,
+		...(mark ? { mark } : {}),
+	});
+	const exit = deletes ? t("Delete company") : t("Leave company");
 	return [
-		{ tab: "general", label: uiText("Account"), area: general, words: "name email password picture konto navn adgangskode billede", mark: uiText("Account") },
-		{ tab: "general", label: uiText("Language & region"), area: general, words: "language region time zone timezone sprog dansk english tidszone område", mark: uiText("Language & region") },
-		{ tab: "general", label: uiText("Appearance"), area: general, words: "theme dark light mode colour color composer interface size tema mørk lys farve størrelse", mark: uiText("Appearance") },
-		{ tab: "general", label: goodWillName(), area: general, words: "goodwill good will tax skat", mark: goodWillName() },
-		{ tab: "company", label: uiText("Staff at work"), area: company, words: "members people team invitations invite staff medlemmer personer invitationer inviter", mark: uiText("Staff at work") },
-		{ tab: "company", label: t("Agent rules"), area: company, words: "rules approve approval ask first allow permissions safety regler godkend tilladelser", mark: t("Agent rules") },
-		{ tab: "company", label: t("Delete company"), area: company, words: "delete leave remove slet forlad", mark: t("Delete company") },
-		{ tab: "company", label: t("Invoices and card"), area: company, words: "invoices card payment billing good will tax fakturaer kort betaling skat", mark: goodWillName() },
-		{ tab: "leaderboard", label: phrase("Leaderboard"), area: t("Settings"), words: "friends compare ranking awards streak venner rangliste" },
-		{ tab: "ai-subscriptions", label: t("Model accounts"), area: subscriptions, words: "chatgpt openai codex claude anthropic gemini google sign in login log ind", mark: t("Model accounts") },
-		{ tab: "ai-subscriptions", label: t("Default models"), area: subscriptions, words: "model effort coding conversational standardmodeller", mark: t("Default models") },
-		{ tab: "ai-subscriptions", label: t("Gemini API key"), area: subscriptions, words: "google gemini api key nøgle", mark: t("Gemini API key") },
-		{ tab: "storage", label: t("Storage"), area: t("Company File"), words: "files storage documents company file filer dokumenter lager" },
+		place(
+			"general",
+			uiText("Account"),
+			general,
+			"name email password picture konto navn adgangskode billede",
+			uiText("Account"),
+		),
+		place(
+			"general",
+			uiText("Language & region"),
+			general,
+			"language region time zone timezone sprog dansk english tidszone område",
+			uiText("Language & region"),
+		),
+		place(
+			"general",
+			uiText("Appearance"),
+			general,
+			"theme dark light mode colour color composer interface size tema mørk lys farve størrelse",
+			uiText("Appearance"),
+		),
+		place("general", goodWillName(), general, "goodwill good will tax skat", goodWillName()),
+		place(
+			"company",
+			uiText("Staff at work"),
+			company,
+			"members people team invitations invite staff medlemmer personer invitationer inviter",
+			uiText("Staff at work"),
+		),
+		place(
+			"company",
+			t("Agent rules"),
+			company,
+			"rules approve approval ask first allow permissions safety regler godkend tilladelser",
+			t("Agent rules"),
+		),
+		place("company", exit, company, "delete leave remove slet forlad", exit),
+		place(
+			"company",
+			t("Invoices and card"),
+			company,
+			"invoices card payment billing good will tax fakturaer kort betaling skat",
+			goodWillName(),
+		),
+		place(
+			"leaderboard",
+			phrase("Leaderboard"),
+			t("Settings"),
+			"friends compare ranking awards streak venner rangliste",
+		),
+		place(
+			"ai-subscriptions",
+			t("Model accounts"),
+			subscriptions,
+			"chatgpt openai codex claude anthropic gemini google sign in login log ind",
+			t("Model accounts"),
+		),
+		place(
+			"ai-subscriptions",
+			t("Default models"),
+			subscriptions,
+			"model effort coding conversational standardmodeller",
+			t("Default models"),
+		),
+		place("ai-subscriptions", t("Gemini API key"), subscriptions, "google gemini api key nøgle", t("Gemini API key")),
+		place("storage", t("Storage"), t("Company File"), "files storage documents company file filer dokumenter lager"),
 	];
 }
 

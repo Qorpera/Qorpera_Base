@@ -754,6 +754,11 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(window.open).toBe(false);
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`);
 		installSearchShortcut();
+		const frame = element.closest<HTMLElement>(".frame")!;
+		frame.inert = true;
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+		expect(window.open).toBe(false);
+		frame.inert = false;
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
 		expect(window.open).toBe(true);
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));

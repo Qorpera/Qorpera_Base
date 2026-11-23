@@ -11,8 +11,9 @@ declare
 	v_more boolean;
 begin
 	v_auth := public.qorpera_folder_read_actor(p_environment_id, v_actor);
-	v_words := array(select distinct word from regexp_split_to_table(lower(btrim(coalesce(p_query, ''))), '\s+') as word
-		where word <> '');
+	v_words := array(select part.word
+		from regexp_split_to_table(lower(btrim(coalesce(p_query, ''))), '\s+') with ordinality as part(word, position)
+		where part.word <> '' group by part.word order by min(part.position));
 	if p_query is null or char_length(p_query) > 200 or cardinality(v_words) not between 1 and 8
 		or p_limit is null or p_limit not between 1 and 50 then
 		raise exception 'Search is invalid' using errcode = '22023'; end if;
@@ -30,7 +31,7 @@ begin
 	),
 	named as materialized (
 		select e.path, e.key_text, e.kind, e.version, e.commit_id, e.manifest_sha256, e.file_sha256, e.bytes,
-			e.media_type, e.executable, e.updated_at,
+			e.media_type, e.executable, e.updated_at, e.target,
 			case when starts_with(lower(regexp_replace(e.path, '^.*/', '')), v_words[1]) then 0
 				when not exists (select 1 from unnest(v_words) as w(word)
 					where strpos(lower(regexp_replace(e.path, '^.*/', '')), w.word) = 0) then 1
@@ -40,6 +41,8 @@ begin
 			and not exists (select 1 from unnest(v_words) as w(word) where strpos(lower(e.path), w.word) = 0)
 			and split_part(e.key_text, '/', 1) not in ('credentials', 'secrets')
 			and (not v_code_host or e.key_text = 'code' or (e.key_text >= 'code/' collate "C" and e.key_text < 'code0' collate "C"))
+		order by e.key_text collate "C"
+		limit 20000
 	),
 	readable as materialized (
 		select n.*
@@ -65,10 +68,11 @@ begin
 	select coalesce((
 			select jsonb_agg(public.qorpera_folder_entry_json(p.path, p.kind, p.version, c.seq, p.manifest_sha256,
 				p.file_sha256, p.bytes, p.media_type, p.executable, p.updated_at)
+				|| case when p.kind = 'symlink' then jsonb_build_object('target', p.target) else '{}'::jsonb end
 				order by p.rank, char_length(p.path), p.key_text collate "C")
 			from (select * from readable order by rank, char_length(path), key_text collate "C" limit p_limit) p
 			join public.qorpera_folder_commits c on c.id = p.commit_id), '[]'::jsonb),
-		(select count(*) from readable) > p_limit
+		(select count(*) from readable) > p_limit or (select count(*) from named) = 20000
 	into v_entries, v_more;
 
 	return jsonb_build_object('schema', 'qorpera.folder-search/v1', 'asOfSeq', v_last_seq, 'entries', v_entries,

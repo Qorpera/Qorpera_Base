@@ -22,6 +22,7 @@ export interface SearchSources {
 	readonly profileId: string;
 	readonly companyName: string;
 	hits(): readonly SearchHit[];
+	revive?(key: string): SearchHit | undefined;
 	readonly files?: SearchFiles;
 }
 
@@ -58,15 +59,10 @@ export function rankHits(hits: readonly SearchHit[], words: readonly string[]): 
 		const title = hit.title.toLocaleLowerCase();
 		const all = `${title} ${hit.detail.toLocaleLowerCase()} ${hit.words?.toLocaleLowerCase() ?? ""}`;
 		if (!words.every((word) => all.includes(word))) continue;
-		const score = words.reduce(
-			(sum, word) => sum + (title.startsWith(word) ? 3 : title.includes(word) ? 2 : 1),
-			0,
-		);
+		const score = words.reduce((sum, word) => sum + (title.startsWith(word) ? 3 : title.includes(word) ? 2 : 1), 0);
 		scored.push({ hit, score });
 	}
-	return scored
-		.sort((a, b) => b.score - a.score || a.hit.title.length - b.hit.title.length)
-		.map(({ hit }) => hit);
+	return scored.sort((a, b) => b.score - a.score || a.hit.title.length - b.hit.title.length).map(({ hit }) => hit);
 }
 
 function storedRecent(profileId: string): string[] {
@@ -256,7 +252,7 @@ export class SearchWindow {
 
 	#loadRecentFiles(): void {
 		const files = this.#sources?.files;
-		if (!files || this.#recentFiles.length) return;
+		if (!files) return;
 		const sources = this.#sources;
 		const stop = new AbortController();
 		this.el.addEventListener("close", () => stop.abort(), { once: true });
@@ -298,8 +294,9 @@ export class SearchWindow {
 
 	#recentHits(all: readonly SearchHit[]): SearchHit[] {
 		const byKey = new Map(all.map((hit) => [hit.key, hit]));
-		const kept = storedRecent(this.#sources!.profileId)
-			.map((key) => byKey.get(key))
+		const sources = this.#sources!;
+		const kept = storedRecent(sources.profileId)
+			.map((key) => byKey.get(key) ?? sources.revive?.(key))
 			.filter((hit): hit is SearchHit => Boolean(hit));
 		const keys = new Set(kept.map((hit) => hit.key));
 		return [...kept, ...this.#recentFiles.filter((hit) => !keys.has(hit.key))].slice(0, 8);
@@ -365,7 +362,12 @@ export class SearchWindow {
 		const chips = ([null, ...KINDS] as (SearchKind | null)[]).map((kind) => {
 			const chip = h(
 				"button",
-				{ type: "button", class: "search-window-kind", "aria-pressed": String(this.#only === kind), tabindex: "-1" },
+				{
+					type: "button",
+					class: "search-window-kind",
+					"aria-pressed": String(this.#only === kind),
+					tabindex: "-1",
+				},
 				kind ? kindLabel(kind) : t("All"),
 			);
 			chip.addEventListener("mousedown", (event) => event.preventDefault());
@@ -406,7 +408,7 @@ export class SearchWindow {
 
 	#mark(scroll = true): void {
 		const rows = this.#results.querySelectorAll<HTMLElement>(".search-window-hit");
-		rows.forEach((row, index) => row.setAttribute("aria-selected", String(index === this.#picked)));
+		for (const [index, row] of rows.entries()) row.setAttribute("aria-selected", String(index === this.#picked));
 		const picked = rows[this.#picked];
 		if (picked) {
 			this.#input.setAttribute("aria-activedescendant", picked.id);

@@ -1,4 +1,5 @@
 export function stubDialogs(): void {
+	Element.prototype.scrollIntoView ??= () => {};
 	const dialog = HTMLDialogElement.prototype;
 	dialog.showModal = function (this: HTMLDialogElement) {
 		this.open = true;

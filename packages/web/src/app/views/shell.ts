@@ -1,5 +1,5 @@
-import { type AppManifest, OWED_APPS } from "@qorpera/cloud-client/interface-apps";
 import type { CloudMemberFolderClient } from "@qorpera/cloud-client/cloud-member-folder";
+import { type AppManifest, OWED_APPS } from "@qorpera/cloud-client/interface-apps";
 import type { User } from "@supabase/supabase-js";
 import {
 	APP_GROUP_NAME_LIMIT,
@@ -76,6 +76,7 @@ import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
 import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
 import { appHash, conceptsHash, type Route, siteHash, surfaceHash } from "../router.ts";
+import { surfaceKindSubtitle, surfaceLookOf } from "../surface-kinds.ts";
 import {
 	activeTaskSessions,
 	hasConflictedChange,
@@ -84,14 +85,13 @@ import {
 	openExplorations,
 	surfacesOf,
 } from "../surfaces-store.ts";
-import { surfaceKindSubtitle, surfaceLookOf } from "../surface-kinds.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
 import { personFace } from "./friends.ts";
 import { memberPresence } from "./member-chat.ts";
-import { markSettingsPlace, type SettingsTab, settingsPlaces } from "./settings.ts";
 import { type SearchHit, type SearchSources, SearchWindow } from "./search-window.ts";
+import { markSettingsPlace, type SettingsTab, settingsPlaces } from "./settings.ts";
 import { CrewFigures, crewWave } from "./surface-crew.ts";
 import { openCreateSurfaceSheet, openScheduleAgentSheet } from "./surface-migration-sheet.ts";
 import { isActionChange, SurfaceRail, surfaceTile } from "./surface-rail.ts";
@@ -931,7 +931,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				const item = railItemOf(element);
 				if (!event.altKey || !delta || !item) return;
 				event.preventDefault();
-				nudgeItem(company, created, element, item, delta);
+				nudgeItem(company, element, item, delta);
 			},
 			{ signal: company.signal },
 		);
@@ -1448,20 +1448,19 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		};
 	};
 	const surfaceRail = surfaceRailFor(company);
-	const cofounderElement =
-		cofounder
-			? row(
-					`#/c/${profileId}`,
-					`#/c/${profileId}`,
-					agentModel(cofounder),
-					Boolean(
-						section === "home" ||
-							(cofounderSessionId && activeSessionId === cofounderSessionId) ||
-							isActive(cofounder.id),
-					),
-					cofounderCard,
-				)
-			: null;
+	const cofounderElement = cofounder
+		? row(
+				`#/c/${profileId}`,
+				`#/c/${profileId}`,
+				agentModel(cofounder),
+				Boolean(
+					section === "home" ||
+						(cofounderSessionId && activeSessionId === cofounderSessionId) ||
+						isActive(cofounder.id),
+				),
+				cofounderCard,
+			)
+		: null;
 	// The sidebar: this member's pins and hidden agents and group chats, the company's
 	// sections. A cloud without it shows every agent in one list, as before; one that
 	// places agents only lists the group chats after them.
@@ -1703,10 +1702,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const waiting = (state.loading || state.connectionLost) && !state.staff.length;
 	if (!waiting) parts.loading = undefined;
 	else parts.loading ??= railListSkeleton();
-	const empty =
-		!state.loading && !state.connectionLost && !cofounderElement && !anyRows
-			? t("No agents yet.")
-			: null;
+	const empty = !state.loading && !state.connectionLost && !cofounderElement && !anyRows ? t("No agents yet.") : null;
 	const listNotices = [
 		connectionNotice(),
 		errorNotice("sessions", state.sessionsError, () =>
@@ -1873,16 +1869,15 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	);
 	const activeAgentId =
 		context.route.name === "company" && context.route.section === "staff" ? context.route.id : undefined;
-	const agentsHub =
-		surfaceRail
-			? syncAgentsHub(company, {
-					profileId,
-					activeAgentId,
-					workingStaff,
-					scheduledStaff,
-					idleStaff,
-				})
-			: null;
+	const agentsHub = surfaceRail
+		? syncAgentsHub(company, {
+				profileId,
+				activeAgentId,
+				workingStaff,
+				scheduledStaff,
+				idleStaff,
+			})
+		: null;
 	reconcile(
 		parts.list,
 		[
@@ -3967,7 +3962,7 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 	};
 	return {
 		canDrag: (itemId: string) =>
-			(placedChats(company)?.[itemId] ? true : Boolean(sidebarOf()) && company.sidebarRoster().includes(itemId)),
+			placedChats(company)?.[itemId] ? true : Boolean(sidebarOf()) && company.sidebarRoster().includes(itemId),
 		accepts: (zone: string, itemId: string) => {
 			// The pinned row holds so many cards, whatever is dragged: one that is in it already moves within it.
 			const pinnable = () => keptOrder(company, "pinned").includes(itemId) || !pinnedRowFull(company);
@@ -4083,13 +4078,7 @@ function heldOrder(company: CompanyController, zone: string): string[] {
  * pinned row (the member's own order) or a section (the company's order of agents and group chats; hidden and pinned
  * ones keep their places). A contact's step, and a step over a contact, change only where the contact stands, which
  * is its member's own. */
-function nudgeItem(
-	company: CompanyController,
-	parts: RailParts,
-	element: HTMLElement,
-	item: RailItem,
-	delta: number,
-): void {
+function nudgeItem(company: CompanyController, element: HTMLElement, item: RailItem, delta: number): void {
 	const itemId = item.id;
 	// What the member sees in the row's zone. A row in Hidden stands in no zone: it has no place to move from.
 	const zoneElement = element.closest<HTMLElement>("[data-drop-zone]");
@@ -4154,13 +4143,14 @@ function shortcutLabel(): string {
 	return /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘K" : "Ctrl+K";
 }
 
-function fileHit(company: CompanyController, context: ShellContext, path: string, kind: string): SearchHit {
+function fileHit(context: ShellContext, path: string, kind: string): SearchHit {
 	const slash = path.lastIndexOf("/");
 	const name = path.slice(slash + 1);
 	const folder = slash < 0 ? t("Company File") : path.slice(0, slash).split("/").join(" / ");
-	const glyph = kind === "folder" ? "folder" : IMAGE_FILE.test(name) ? "image" : CODE_FILE.test(name) ? "code" : "file";
+	const glyph =
+		kind === "folder" ? "folder" : IMAGE_FILE.test(name) ? "image" : CODE_FILE.test(name) ? "code" : "file";
 	return {
-		key: `file:${company.profile.profileId}:${path}`,
+		key: `file:${kind}:${path}`,
 		kind: "files",
 		title: name,
 		detail: kind === "folder" ? `${t("Folder")} · ${folder}` : folder,
@@ -4246,7 +4236,9 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 				open: go(appHash(profileId, app.name)),
 			});
 		}
-		for (const place of settingsPlaces())
+		const team = state.team;
+		const deletes = Boolean(team && (team.capabilities.deleteCompany ?? team.role === "owner"));
+		for (const place of settingsPlaces(deletes))
 			found.push({
 				key: `setting:${place.tab}:${place.label}`,
 				kind: "settings",
@@ -4266,13 +4258,17 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 		profileId,
 		companyName: company.profile.profileName,
 		hits,
+		revive: (key) => {
+			const [, kind, path] = /^file:(file|folder|symlink):(.+)$/.exec(key) ?? [];
+			return kind && path && context.openStorage ? fileHit(context, path, kind) : undefined;
+		},
 		...(folder && company.store.get().team?.capabilities.read
 			? {
 					files: {
 						search: async (query, limit, signal) => {
 							const answer = await folder().search(query, limit, signal);
 							return {
-								hits: answer.entries.map((entry) => fileHit(company, context, entry.path, entry.kind)),
+								hits: answer.entries.map((entry) => fileHit(context, entry.path, entry.kind)),
 								more: answer.more,
 							};
 						},
@@ -4286,7 +4282,7 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 									decided.add(change.path);
 									if (change.op === "delete" || change.op === "move_out" || change.kind !== "file") continue;
 									if (change.path.split("/", 1)[0] === "QorperaOS") continue;
-									recent.push(fileHit(company, context, change.path, change.kind));
+									recent.push(fileHit(context, change.path, change.kind));
 									if (recent.length === RECENT_FILES) return recent;
 								}
 							return recent;
@@ -4316,6 +4312,7 @@ export function installSearchShortcut(): void {
 		}
 		const target = searchTarget;
 		if (!target?.parts.context || target.company.signal.aborted) return;
+		if (document.querySelector<HTMLElement>(".frame")?.inert) return;
 		event.preventDefault();
 		openSearchWindow(target.company, target.parts.context, target.parts.searchToggle);
 	});

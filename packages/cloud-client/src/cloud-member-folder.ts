@@ -235,11 +235,14 @@ export function parseCloudMemberFolderSearch(value: unknown, limit: number): Clo
 		page.schema !== "qorpera.folder-search/v1" ||
 		!Array.isArray(page.entries) ||
 		page.entries.length > limit ||
-		typeof page.more !== "boolean" ||
-		(page.more && page.entries.length !== limit)
+		typeof page.more !== "boolean"
 	)
 		invalid("search");
-	return { asOfSeq: seq(page.asOfSeq, "search"), entries: page.entries.map(parseCloudMemberFolderEntry), more: page.more };
+	return {
+		asOfSeq: seq(page.asOfSeq, "search"),
+		entries: page.entries.map(parseCloudMemberFolderEntry),
+		more: page.more,
+	};
 }
 
 export type CloudMemberFolderBy =

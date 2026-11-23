@@ -18,9 +18,9 @@ import {
 	parseCloudMemberFolderHint,
 	parseCloudMemberFolderHistory,
 	parseCloudMemberFolderList,
-	parseCloudMemberFolderSearch,
 	parseCloudMemberFolderPathHistory,
 	parseCloudMemberFolderRead,
+	parseCloudMemberFolderSearch,
 } from "../src/cloud-member-folder.ts";
 
 const env = "63000000-0000-4000-8000-000000000020";
@@ -492,15 +492,30 @@ describe("the member folder client", () => {
 		);
 		const found = await folder.search("logo brand", 10, new AbortController().signal);
 		expect(calls[0]!.url).toBe("https://cloud.test/rest/v1/rpc/qorpera_member_folder_search");
-		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ p_environment_id: env, p_query: "logo brand", p_limit: 10 });
+		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+			p_environment_id: env,
+			p_query: "logo brand",
+			p_limit: 10,
+		});
 		expect(found.entries.map((one) => one.path)).toEqual(["brand/logo.svg"]);
 		expect(found.more).toBe(false);
 		expect(() =>
-			parseCloudMemberFolderSearch({ schema: "qorpera.folder-search/v1", asOfSeq: 4, entries: [entry], more: true }, 2),
+			parseCloudMemberFolderSearch(
+				{ schema: "qorpera.folder-search/v1", asOfSeq: 4, entries: [entry, entry], more: false },
+				1,
+			),
+		).toThrow("Invalid company folder search");
+		expect(() =>
+			parseCloudMemberFolderSearch(
+				{ schema: "qorpera.folder-search/v1", asOfSeq: 4, entries: [entry], more: "no" },
+				2,
+			),
 		).toThrow("Invalid company folder search");
 		expect(
-			parseCloudMemberFolderSearch({ schema: "qorpera.folder-search/v1", asOfSeq: 4, entries: [entry], more: true }, 1)
-				.more,
+			parseCloudMemberFolderSearch(
+				{ schema: "qorpera.folder-search/v1", asOfSeq: 4, entries: [entry], more: true },
+				2,
+			).more,
 		).toBe(true);
 		for (const query of ["", "   ", "a".repeat(201), "a b c d e f g h i"])
 			expect(() => folder.search(query, 10, new AbortController().signal)).toThrow("Invalid company folder search");

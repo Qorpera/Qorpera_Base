@@ -39,6 +39,10 @@ insert into auth.users(id, email) values ('63000000-0000-4000-8000-000000000005'
 do $$ begin
 	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'search-1', jsonb_build_array(jsonb_build_object(
 		'op', 'write', 'path', 'locked/diary.txt', 'file', pg_temp.stage('dear diary')))), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(pg_temp.platform(), 'search-2', jsonb_build_array(
+		jsonb_build_object('op', 'mkdir', 'path', 'secret'),
+		jsonb_build_object('op', 'write', 'path', 'secret/notes', 'file', pg_temp.stage('n')),
+		jsonb_build_object('op', 'symlink', 'path', 'notes/latest', 'target', 'secret.txt'))), 3, 'saved');
 end $$;
 
 do $$ begin
@@ -53,7 +57,7 @@ declare v jsonb;
 begin
 	v := pg_temp.search('SECRET');
 	perform pg_temp.same(v ->> 'schema', 'qorpera.folder-search/v1', 'the schema');
-	perform pg_temp.same(pg_temp.paths(v), 'notes/secret.txt', 'a name in any case');
+	perform pg_temp.same(pg_temp.paths(v), 'secret,notes/secret.txt,secret/notes', 'a name in any case');
 	perform pg_temp.same(v ->> 'more', 'false', 'all found');
 	perform pg_temp.same(pg_temp.paths(pg_temp.search('diary')), '', 'another member''s private file');
 	perform pg_temp.same(pg_temp.paths(pg_temp.search('locked')), '', 'another member''s private folder');
@@ -65,6 +69,15 @@ begin
 	perform pg_temp.same((v -> 'entries' -> 1)::text,
 		(public.qorpera_member_folder_read('63000000-0000-4000-8000-000000000020', 'big/f01.txt') -> 'entry')::text,
 		'an entry as the read gives it');
+	v := pg_temp.search('latest');
+	perform pg_temp.same(pg_temp.paths(v), 'notes/latest', 'a link');
+	perform pg_temp.same((v -> 'entries' -> 0)::text,
+		(public.qorpera_member_folder_read('63000000-0000-4000-8000-000000000020', 'notes/latest') -> 'entry')::text,
+		'a link as the read gives it, with its target');
+	perform pg_temp.same(pg_temp.paths(pg_temp.search('secret notes')), 'notes/secret.txt,secret/notes',
+		'a name that starts with the first word typed comes first');
+	perform pg_temp.same(pg_temp.paths(pg_temp.search('notes secret')), 'secret/notes,notes/secret.txt',
+		'the first word typed decides, not the alphabet');
 end $$;
 
 select pg_temp.as_member(2);

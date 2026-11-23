@@ -1841,12 +1841,24 @@ export function mountApplication(
 				searchFolder: () => {
 					const role = controller.store.get().team?.role;
 					const current = () => {
-						if (disposed || company !== controller || auth.userId !== controller.userId || controller.store.get().accessLost)
+						if (
+							disposed ||
+							company !== controller ||
+							auth.userId !== controller.userId ||
+							controller.store.get().accessLost
+						)
 							throw new Error(t("Company access changed."));
 					};
 					current();
 					if (!role) throw new Error(t("Company access changed."));
-					return new WebCompanyFiles(cloud, controller.profile, controller.userId, role, controller.signal, current).folder();
+					return new WebCompanyFiles(
+						cloud,
+						controller.profile,
+						controller.userId,
+						role,
+						controller.signal,
+						current,
+					).folder();
 				},
 				openStorage: (path) => openSettings("storage", path),
 			});
