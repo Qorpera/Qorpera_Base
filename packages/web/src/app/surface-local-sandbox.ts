@@ -1,5 +1,6 @@
 import {
 	type CompiledIdentityTokens,
+	type StudioBinaryRef,
 	type StudioPatchOp,
 	SURFACE_INSPECTOR_MODE_MESSAGE,
 	SURFACE_INSPECTOR_PICK_MESSAGE,
@@ -427,6 +428,65 @@ function thetabandPhilosophyReport(): string {
 	);
 }
 
+function thetabandHeadbandObject(): Record<string, unknown> {
+	return {
+		lang: "da",
+		line: "Illustrativ model af pandebåndet",
+		model: "headband.glb",
+		view: { yaw: 30, pitch: 14 },
+		tint: ["BandFabric", "Shell"],
+		parts: [
+			{ id: "strap", name: "Vævet rem", state: "known", node: "Strap" },
+			{ id: "shell", name: "Fast front", state: "known", node: "Shell", pull: [0, 0, 0.45] },
+			{ id: "liner", name: "Polstring", state: "assumed", node: "Liner", pull: [0, 0, -0.15] },
+			{ id: "fore", name: "Pandesensorer", state: "known", node: "Sensors_Front", pull: [0, -0.05, -0.32] },
+			{ id: "temple", name: "Tindingesensorer", state: "known", node: "Sensors_Temple", pull: [0, 0.22, 0] },
+			{ id: "battery", name: "Batteri", state: "assumed", node: "Battery" },
+		],
+	};
+}
+
+export const SAMPLE_HEADBAND: StudioBinaryRef = Object.freeze({
+	manifestSha256: "5762d4aec6fd9fe32fd6c919f43dd489aea3a181bc37d6ab0e8b0c9fb9aee258",
+	fileSha256: "5762d4aec6fd9fe32fd6c919f43dd489aea3a181bc37d6ab0e8b0c9fb9aee258",
+	bytes: 97164,
+	mediaType: "model/gltf-binary",
+});
+export const SAMPLE_HEADBAND_PATH = "./assets/surfaces/samples/headband.glb";
+
+let sampleHeadband: Promise<Uint8Array> | undefined;
+
+function sampleHeadbandBytes(): Promise<Uint8Array> {
+	sampleHeadband ??= (async () => {
+		const address = new URL(`${SAMPLE_HEADBAND_PATH}?v=${SAMPLE_HEADBAND.fileSha256.slice(0, 12)}`, document.baseURI);
+		const response = await fetch(address);
+		if (!response.ok) throw new Error(`${response.status}`);
+		const bytes = new Uint8Array(await response.arrayBuffer());
+		if (bytes.byteLength !== SAMPLE_HEADBAND.bytes) throw new Error("The sample model changed");
+		return bytes;
+	})();
+	sampleHeadband.catch(() => {
+		sampleHeadband = undefined;
+	});
+	return sampleHeadband;
+}
+
+export function starterStudioBinaries(
+	surface: Pick<SurfaceSummary, "slug" | "folderRoot">,
+	companyName: string,
+	kind?: SurfaceKind,
+): Record<string, StudioBinaryRef> {
+	if (!isSpecSurface(surface, kind) || !isThetabandCompany(companyName.trim())) return {};
+	const root = (surface.folderRoot || surface.slug || "studio").replace(/^\/+|\/+$/g, "");
+	return {
+		[`${root}/headband.glb`]: SAMPLE_HEADBAND,
+	};
+}
+
+export function localStudioBinaryBytes(ref: StudioBinaryRef): Promise<Uint8Array> | undefined {
+	return ref.fileSha256 === SAMPLE_HEADBAND.fileSha256 ? sampleHeadbandBytes() : undefined;
+}
+
 export function starterStudioFiles(
 	surface: Pick<SurfaceSummary, "slug" | "title" | "folderRoot">,
 	companyName: string,
@@ -608,6 +668,7 @@ export function starterStudioFiles(
 				),
 				[`${root}/brief.md`]: `# Thetaband Pandebånd\n\n${description?.trim() || "Blødt EEG-pandebånd til daglig meditation, bygget omkring **BrainBit**-elektronik for hurtig vej til første produktionsbatch uden at gå på kompromis med kontakt og komfort."}\n\n- **Pris:** 1.995 kr. inkl. moms og standardfragt i Danmark\n- **Landed COGS (Batch 1, 500 stk.):** 410 kr. pr. enhed\n- **Komfortmål:** Under 45 g, vaskbart ydertøj, stabil kontakt på 20 sek.\n`,
 				[`${root}/vendor-selection-brainbit.report.json`]: thetabandVendorAnalysisReport(),
+				[`${root}/object.json`]: JSON.stringify(thetabandHeadbandObject(), null, 2),
 			};
 		}
 		return {

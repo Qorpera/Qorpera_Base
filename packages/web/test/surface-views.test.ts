@@ -376,10 +376,12 @@ describe("the surface page", () => {
 		const drawer = view.el.querySelector(".surface-drawer")!;
 		expect(drawer.classList.contains("is-open")).toBe(true);
 		const approveBtn = drawer.querySelector<HTMLElement>(`[data-act="approve"][data-change="${CHANGES[2]}"]`)!;
+		expect(approveBtn.querySelector(".surface-approve-face.is-ghost")?.getAttribute("data-text")).toBe("Confirm");
 		approveBtn.click();
 		const confirmBtn = drawer.querySelector<HTMLElement>(`[data-act="approve"][data-change="${CHANGES[2]}"]`)!;
 		expect(confirmBtn.classList.contains("is-confirming")).toBe(true);
 		expect(confirmBtn.textContent).toBe("Confirm");
+		expect(confirmBtn.querySelector(".surface-approve-face.is-ghost")?.getAttribute("data-text")).toBe("Approve");
 		confirmBtn.click();
 		await flush();
 		await flush();

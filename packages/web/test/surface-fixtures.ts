@@ -1,5 +1,6 @@
 import type {
 	PointToChangeTarget,
+	StudioBinaryRef,
 	SurfaceChangeUnit,
 	SurfacePreviewFrameState,
 	SurfaceSession,
@@ -9,6 +10,7 @@ import type {
 } from "@qorpera/contracts";
 import { vi } from "vitest";
 import {
+	type SurfaceFolderContents,
 	type SurfacesClient,
 	SurfacesStore,
 	type SurfacesStoreOptions,
@@ -23,6 +25,13 @@ import type {
 } from "../src/cloud/site-hosting.ts";
 
 export const COMPANY = "11111111-1111-4111-8111-111111111111";
+
+export function folderContents(
+	files: Readonly<Record<string, string>>,
+	binaries: Readonly<Record<string, StudioBinaryRef>> = {},
+): SurfaceFolderContents {
+	return { files, binaries };
+}
 export const SURFACE = "22222222-2222-4222-8222-222222222222";
 export const SESSION = "33333333-3333-4333-8333-333333333333";
 export const CHANGES = [

@@ -15,6 +15,9 @@ import {
 	nextSurfaceSessionLifecycleState,
 	OPEN_SURFACE_CHANGE_STATUSES,
 	RUNNING_SURFACE_SESSION_STATES,
+	STUDIO_BINARY_MAX_BYTES,
+	STUDIO_BINARY_MEDIA_TYPES,
+	type StudioBinaryRef,
 	type StudioPatchChange,
 	type StudioPatchOp,
 	type SurfaceAutomationSummary,
@@ -35,8 +38,10 @@ import { Store } from "./state.ts";
 import { isOpsKind, type SurfaceKind, type SurfaceLook, surfaceLookOf } from "./surface-kinds.ts";
 import {
 	isThetabandCompany,
+	localStudioBinaryBytes,
 	slugifySurfaceTitle,
 	starterOrchestrationPlan,
+	starterStudioBinaries,
 	starterStudioFiles,
 	synthesizeLocalChanges,
 } from "./surface-local-sandbox.ts";
@@ -137,7 +142,17 @@ export interface SurfaceFolderReader<TFile extends SurfaceFolderReadableFile = S
 	): Promise<Uint8Array>;
 }
 
+export interface SurfaceFolderContents {
+	readonly files: Readonly<Record<string, string>>;
+	readonly binaries: Readonly<Record<string, StudioBinaryRef>>;
+}
+
 const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css|svg|html?)$/i;
+const STUDIO_BINARY_FILE = /\.(?:glb|webp|png|jpe?g)$/i;
+const STUDIO_BINARY_TYPES = new Set<string>([...STUDIO_BINARY_MEDIA_TYPES, "application/octet-stream"]);
+const STUDIO_MAX_BINARIES = 32;
+export const MAX_CACHED_BINARY_BYTES = 64 * 1024 * 1024;
+const EMPTY_FOLDER: SurfaceFolderContents = { files: {}, binaries: {} };
 const STUDIO_IGNORED_DIR = new Set([
 	"node_modules",
 	".git",
@@ -177,13 +192,13 @@ function sameFileMap(
 	return true;
 }
 
-function pruneCloudSurfaceFiles(
-	current: Readonly<Record<string, Readonly<Record<string, string>>>>,
+function pruneCloudSurfaceFiles<T>(
+	current: Readonly<Record<string, T>>,
 	surfaceId: string,
-	files: Readonly<Record<string, string>>,
+	files: T,
 	keepIds: ReadonlySet<string>,
-): Record<string, Readonly<Record<string, string>>> {
-	const next: Record<string, Readonly<Record<string, string>>> = {};
+): Record<string, T> {
+	const next: Record<string, T> = {};
 	for (const [id, entry] of Object.entries(current)) {
 		if (id !== surfaceId) next[id] = entry;
 	}
@@ -201,6 +216,32 @@ function pruneCloudSurfaceFiles(
 	return next;
 }
 
+function isStudioBinaryRef(file: SurfaceFolderReadableFile): file is SurfaceFolderReadableFile & StudioBinaryRef {
+	const record = file as Partial<StudioBinaryRef>;
+	return (
+		typeof record.manifestSha256 === "string" &&
+		typeof record.fileSha256 === "string" &&
+		typeof record.mediaType === "string" &&
+		STUDIO_BINARY_TYPES.has(record.mediaType)
+	);
+}
+
+function sameBinaryMap(
+	a: Readonly<Record<string, StudioBinaryRef>> | undefined,
+	b: Readonly<Record<string, StudioBinaryRef>> | undefined,
+): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	const aKeys = Object.keys(a);
+	if (aKeys.length !== Object.keys(b).length) return false;
+	return aKeys.every(
+		(key) =>
+			Object.hasOwn(b, key) &&
+			a[key]!.fileSha256 === b[key]!.fileSha256 &&
+			a[key]!.manifestSha256 === b[key]!.manifestSha256,
+	);
+}
+
 function studioFilePriority(path: string): number {
 	const lower = path.toLowerCase();
 	if (lower.endsWith(".json")) return 0;
@@ -214,9 +255,9 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 	folder: SurfaceFolderReader<TFile>,
 	roots: readonly string[],
 	signal: AbortSignal,
-): Promise<Record<string, string>> {
+): Promise<SurfaceFolderContents> {
 	const uniqueRoots = [...new Set(roots.map((root) => root.replace(/^\/+|\/+$/g, "")).filter(Boolean))];
-	if (!uniqueRoots.length || signal.aborted) return {};
+	if (!uniqueRoots.length || signal.aborted) return EMPTY_FOLDER;
 	const listFolder = async (parent: string): Promise<readonly SurfaceFolderEntry<TFile>[]> => {
 		try {
 			return (await folder.list(parent, null, 100, signal)).entries;
@@ -225,15 +266,32 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 		}
 	};
 	const rootPages = await Promise.all(uniqueRoots.map((root) => listFolder(root)));
-	if (signal.aborted) return {};
+	if (signal.aborted) return EMPTY_FOLDER;
 	const subfolders: string[] = [];
 	const candidates: { readonly path: string; readonly file: TFile }[] = [];
+	const binaries: Record<string, StudioBinaryRef> = {};
+	let binaryCount = 0;
 	const seenPaths = new Set<string>();
 	const collectEntries = (entries: readonly SurfaceFolderEntry<TFile>[], allowSubfolders: boolean) => {
 		for (const entry of entries) {
 			if (allowSubfolders && entry.kind === "folder") {
 				const base = entry.path.split("/").at(-1)?.toLowerCase() ?? "";
 				if (!STUDIO_IGNORED_DIR.has(base)) subfolders.push(entry.path);
+				continue;
+			}
+			if (
+				entry.kind === "file" &&
+				entry.file &&
+				!seenPaths.has(entry.path) &&
+				binaryCount < STUDIO_MAX_BINARIES &&
+				STUDIO_BINARY_FILE.test(entry.path) &&
+				entry.file.bytes > 0 &&
+				entry.file.bytes <= STUDIO_BINARY_MAX_BYTES &&
+				isStudioBinaryRef(entry.file)
+			) {
+				seenPaths.add(entry.path);
+				binaries[entry.path] = entry.file;
+				binaryCount++;
 				continue;
 			}
 			if (
@@ -264,7 +322,7 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 		await Promise.all(
 			Array.from({ length: Math.min(STUDIO_LIST_CONCURRENCY, uniqueSubs.length) }, () => listWorker()),
 		);
-		if (signal.aborted) return {};
+		if (signal.aborted) return EMPTY_FOLDER;
 		for (const entries of subPages) if (entries) collectEntries(entries, false);
 	}
 	candidates.sort((a, b) => studioFilePriority(a.path) - studioFilePriority(b.path) || a.file.bytes - b.file.bytes);
@@ -276,7 +334,7 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 		selected.push(item);
 		totalBytes += item.file.bytes;
 	}
-	if (selected.length === 0) return {};
+	if (selected.length === 0) return { files: {}, binaries };
 	const decoder = new TextDecoder();
 	const files: Record<string, string> = {};
 	let next = 0;
@@ -295,7 +353,7 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 	};
 	const workers = Math.min(STUDIO_READ_CONCURRENCY, selected.length);
 	await Promise.all(Array.from({ length: workers }, () => worker()));
-	return files;
+	return { files, binaries };
 }
 
 export function normalizeStudioPatchOps(
@@ -375,6 +433,8 @@ export interface SurfacesState {
 	readonly foldedAgentIds: Readonly<Record<string, true>>;
 	readonly localStudioBase: Readonly<Record<string, Readonly<Record<string, string>>>>;
 	readonly cloudSurfaceFiles: Readonly<Record<string, Readonly<Record<string, string>>>>;
+	readonly localStudioBinaries: Readonly<Record<string, Readonly<Record<string, StudioBinaryRef>>>>;
+	readonly cloudSurfaceBinaries: Readonly<Record<string, Readonly<Record<string, StudioBinaryRef>>>>;
 	readonly pendingStudioPatches: Readonly<Record<string, readonly PendingStudioPatch[]>>;
 	readonly loadingCloudFiles: Readonly<Record<string, true>>;
 	readonly updatingCloudFiles: Readonly<Record<string, true>>;
@@ -690,6 +750,24 @@ export function effectiveStudioBaseFiles(
 		).files;
 	}
 	return base;
+}
+
+export function effectiveStudioBaseBinaries(
+	state: Partial<Pick<SurfacesState, "localStudioBinaries" | "cloudSurfaceBinaries" | "pendingStudioPatches">>,
+	surfaceId: string,
+): Readonly<Record<string, StudioBinaryRef>> {
+	const cloud = state.cloudSurfaceBinaries?.[surfaceId];
+	const local = state.localStudioBinaries?.[surfaceId];
+	const pending = state.pendingStudioPatches?.[surfaceId];
+	const base: Readonly<Record<string, StudioBinaryRef>> =
+		cloud && local ? { ...cloud, ...local } : (cloud ?? local ?? {});
+	if (!pending?.some((item) => item.ops.some((op) => op.op === "write_file" || op.op === "delete"))) return base;
+	return composeStudioPreview(
+		{},
+		pending.map((item) => ({ changeId: item.changeId, ops: item.ops })),
+		undefined,
+		base,
+	).binaries;
 }
 
 const compiledIdentityByState = new WeakMap<SurfacesState, CompiledIdentityTokens | null>();
@@ -1018,7 +1096,8 @@ export interface SurfacesStoreOptions {
 	readonly loadCloudFiles?: (
 		surface: SurfaceSummary,
 		signal: AbortSignal,
-	) => Promise<Readonly<Record<string, string>> | undefined>;
+	) => Promise<SurfaceFolderContents | undefined>;
+	readonly readCloudBinary?: (file: StudioBinaryRef, signal: AbortSignal) => Promise<Uint8Array>;
 	readonly uploadImage?: (
 		surfaceId: string,
 		clientInputId: string,
@@ -1042,6 +1121,7 @@ interface LocalSandboxCacheEntry {
 	readonly migrationDismissed: boolean;
 	readonly foldedAgentIds: Readonly<Record<string, true>>;
 	readonly localStudioBase: Readonly<Record<string, Readonly<Record<string, string>>>>;
+	readonly localStudioBinaries: Readonly<Record<string, Readonly<Record<string, StudioBinaryRef>>>>;
 	readonly surfaceLooks: Readonly<Record<string, SurfaceLook>>;
 	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly hiddenChanges: Readonly<Record<string, true>>;
@@ -1110,6 +1190,7 @@ export class SurfacesStore {
 	#noteSeq = 0;
 	#localSeq = 0;
 	readonly #imageReads = new Map<string, string>();
+	readonly #binaryReads = new Map<string, { readonly read: Promise<Uint8Array>; readonly bytes: number }>();
 	#loaded: Promise<void> | undefined;
 
 	constructor(options: SurfacesStoreOptions) {
@@ -1124,6 +1205,8 @@ export class SurfacesStore {
 			foldedAgentIds: {},
 			localStudioBase: {},
 			cloudSurfaceFiles: {},
+			localStudioBinaries: {},
+			cloudSurfaceBinaries: {},
 			pendingStudioPatches: {},
 			loadingCloudFiles: {},
 			updatingCloudFiles: {},
@@ -1180,6 +1263,7 @@ export class SurfacesStore {
 			migrationDismissed: state.migrationDismissed,
 			foldedAgentIds: state.foldedAgentIds,
 			localStudioBase: state.localStudioBase,
+			localStudioBinaries: state.localStudioBinaries,
 			surfaceLooks: state.surfaceLooks,
 			studioPatches: state.studioPatches,
 			hiddenChanges: state.hiddenChanges,
@@ -1265,6 +1349,53 @@ export class SurfacesStore {
 		return Boolean(this.#options.loadCloudFiles);
 	}
 
+	readStudioBinary(file: StudioBinaryRef, signal: AbortSignal): Promise<Uint8Array> {
+		signal.throwIfAborted();
+		const read = localStudioBinaryBytes(file) ?? this.#binaryRead(file);
+		if (!read) return Promise.reject(new Error("No folder to read from"));
+		return new Promise<Uint8Array>((resolve, reject) => {
+			const stop = () => reject(signal.reason);
+			signal.addEventListener("abort", stop, { once: true });
+			read.then(
+				(bytes) => {
+					signal.removeEventListener("abort", stop);
+					resolve(bytes);
+				},
+				(error: unknown) => {
+					signal.removeEventListener("abort", stop);
+					reject(error);
+				},
+			);
+		});
+	}
+
+	#binaryRead(file: StudioBinaryRef): Promise<Uint8Array> | undefined {
+		const key = file.fileSha256;
+		const kept = this.#binaryReads.get(key);
+		if (kept) {
+			this.#binaryReads.delete(key);
+			this.#binaryReads.set(key, kept);
+			return kept.read;
+		}
+		const readCloudBinary = this.#options.readCloudBinary;
+		if (!readCloudBinary) return undefined;
+		const read = readCloudBinary(file, this.#options.signal);
+		if (file.bytes > MAX_CACHED_BINARY_BYTES / 2) return read;
+		const entry = { read, bytes: file.bytes };
+		this.#binaryReads.set(key, entry);
+		read.catch(() => {
+			if (this.#binaryReads.get(key) === entry) this.#binaryReads.delete(key);
+		});
+		let held = 0;
+		for (const item of this.#binaryReads.values()) held += item.bytes;
+		for (const [oldest, item] of this.#binaryReads) {
+			if (held <= MAX_CACHED_BINARY_BYTES || oldest === key) break;
+			this.#binaryReads.delete(oldest);
+			held -= item.bytes;
+		}
+		return read;
+	}
+
 	isCloudFilesLoading(surfaceId: string): boolean {
 		return Boolean(this.state.loadingCloudFiles[surfaceId]);
 	}
@@ -1313,6 +1444,7 @@ export class SurfacesStore {
 		for (const timer of this.#localTimers) clearTimeout(timer);
 		this.#localTimers.clear();
 		this.#studioUndoSnapshots.clear();
+		this.#binaryReads.clear();
 		this.#hydratedAttempted.clear();
 		this.#previewPassMeta.clear();
 		this.#previewSyncDirty.clear();
@@ -1448,6 +1580,7 @@ export class SurfacesStore {
 				migrationDismissed: cached.migrationDismissed,
 				foldedAgentIds: cached.foldedAgentIds,
 				localStudioBase: cached.localStudioBase,
+				localStudioBinaries: cached.localStudioBinaries,
 				surfaceLooks: cached.surfaceLooks,
 				studioPatches: cached.studioPatches,
 				hiddenChanges: cached.hiddenChanges,
@@ -1482,6 +1615,9 @@ export class SurfacesStore {
 		const nextWorkspaces: Record<string, SurfaceWorkspace> = { ...this.state.workspaces };
 		const nextLooks: Record<string, SurfaceLook> = { ...this.state.surfaceLooks };
 		const nextStudioBase: Record<string, Readonly<Record<string, string>>> = { ...this.state.localStudioBase };
+		const nextStudioBinaries: Record<string, Readonly<Record<string, StudioBinaryRef>>> = {
+			...this.state.localStudioBinaries,
+		};
 		const nextStudioPatches: Record<string, readonly StudioPatchOp[]> = { ...this.state.studioPatches };
 
 		for (const [index, spec] of plan.surfaces.entries()) {
@@ -1503,6 +1639,8 @@ export class SurfacesStore {
 					...starterStudioFiles(surface, this.companyName, spec.kind, spec.brief),
 					...(spec.attachedReports ?? {}),
 				};
+				const binaries = starterStudioBinaries(surface, this.companyName, spec.kind);
+				if (Object.keys(binaries).length > 0) nextStudioBinaries[surface.id] = binaries;
 			} else if (spec.attachedReports && Object.keys(spec.attachedReports).length > 0) {
 				nextStudioBase[surface.id] = { ...spec.attachedReports };
 			}
@@ -1669,6 +1807,7 @@ export class SurfacesStore {
 			workspaces: nextWorkspaces,
 			surfaceLooks: nextLooks,
 			localStudioBase: nextStudioBase,
+			localStudioBinaries: nextStudioBinaries,
 			studioPatches: nextStudioPatches,
 			automations: nextAutomations,
 			scheduledAgentPrompts: nextPrompts,
@@ -2356,8 +2495,9 @@ export class SurfacesStore {
 		let shouldRerun = false;
 		let rerunVisible = false;
 		try {
-			const files = await loadFiles(surface, this.#options.signal);
-			if (!this.#options.signal.aborted && files !== undefined) {
+			const contents = await loadFiles(surface, this.#options.signal);
+			if (!this.#options.signal.aborted && contents !== undefined) {
+				const { files, binaries } = contents;
 				this.store.set((state) => {
 					const existingPending = state.pendingStudioPatches[surface.id];
 					let nextPendingStudioPatches = state.pendingStudioPatches;
@@ -2371,7 +2511,11 @@ export class SurfacesStore {
 						}
 					}
 					const filesUnchanged = sameFileMap(state.cloudSurfaceFiles[surface.id], files);
-					if (filesUnchanged && nextPendingStudioPatches === state.pendingStudioPatches) return {};
+					const hadBinaries = state.cloudSurfaceBinaries[surface.id];
+					const binariesUnchanged =
+						sameBinaryMap(hadBinaries, binaries) || (!hadBinaries && Object.keys(binaries).length === 0);
+					if (filesUnchanged && binariesUnchanged && nextPendingStudioPatches === state.pendingStudioPatches)
+						return {};
 					const keepIds = new Set<string>();
 					if (this.#activeSurfaceId) keepIds.add(this.#activeSurfaceId);
 					if (state.drawer?.surfaceId) keepIds.add(state.drawer.surfaceId);
@@ -2385,6 +2529,16 @@ export class SurfacesStore {
 										state.cloudSurfaceFiles,
 										surface.id,
 										files,
+										keepIds,
+									),
+								}),
+						...(binariesUnchanged
+							? {}
+							: {
+									cloudSurfaceBinaries: pruneCloudSurfaceFiles(
+										state.cloudSurfaceBinaries,
+										surface.id,
+										binaries,
 										keepIds,
 									),
 								}),
@@ -2669,11 +2823,16 @@ export class SurfacesStore {
 			input.archetype === "studio"
 				? starterStudioFiles(created, this.companyName, look.kind, description ?? undefined)
 				: undefined;
+		const starterBinaries =
+			input.archetype === "studio" ? starterStudioBinaries(created, this.companyName, look.kind) : {};
 		this.store.set((state) => ({
 			surfaces: sortSurfaces([...state.surfaces, created]),
 			workspaces: { ...state.workspaces, [created.id]: { ...localWorkspace(created), briefSummary: description } },
 			surfaceLooks: { ...state.surfaceLooks, [created.id]: look },
 			...(starterFiles ? { localStudioBase: { ...state.localStudioBase, [created.id]: starterFiles } } : {}),
+			...(Object.keys(starterBinaries).length > 0
+				? { localStudioBinaries: { ...state.localStudioBinaries, [created.id]: starterBinaries } }
+				: {}),
 			...(look.kind === "mobile_app" ? { device: "mobile" as const } : {}),
 			error: undefined,
 		}));
@@ -3098,6 +3257,10 @@ export class SurfacesStore {
 				delete cloudSurfaceFiles[surfaceId];
 				const localStudioBase = { ...state.localStudioBase };
 				delete localStudioBase[surfaceId];
+				const cloudSurfaceBinaries = { ...state.cloudSurfaceBinaries };
+				delete cloudSurfaceBinaries[surfaceId];
+				const localStudioBinaries = { ...state.localStudioBinaries };
+				delete localStudioBinaries[surfaceId];
 				const pendingStudioPatches = { ...state.pendingStudioPatches };
 				delete pendingStudioPatches[surfaceId];
 				const loadingCloudFiles = { ...state.loadingCloudFiles };
@@ -3109,6 +3272,8 @@ export class SurfacesStore {
 					workspaces,
 					cloudSurfaceFiles,
 					localStudioBase,
+					cloudSurfaceBinaries,
+					localStudioBinaries,
 					pendingStudioPatches,
 					loadingCloudFiles,
 					updatingCloudFiles,
