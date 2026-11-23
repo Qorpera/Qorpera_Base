@@ -229,6 +229,9 @@ describe("the address sheet's stops", () => {
 		await settle();
 		expect(writeText).toHaveBeenLastCalledWith("changed-pass-43");
 
+		address.close();
+		address.open();
+		await settle();
 		password.mockResolvedValue(null);
 		press("Copy password");
 		await settle();
