@@ -356,3 +356,75 @@ begin
 		'a session of an automation never falls to another member''s login: ' || v_enq::text
 	);
 end $$;
+
+do $$
+declare
+	v_claim jsonb := current_setting('qorpera_test.claim')::jsonb;
+	v_anna constant uuid := '85600000-0000-4000-8000-000000000001';
+	v_company uuid := (v_claim ->> 'profileId')::uuid;
+	v_env uuid;
+	v_automation uuid;
+	v_due jsonb;
+	v_result jsonb;
+	v_row public.qorpera_surface_automations%rowtype;
+	v_last_run timestamptz;
+begin
+	select environment_id into strict v_env from public.qorpera_company_cofounders where profile_id = v_company;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	perform public.qorpera_configure_coding_executor(v_env, 'exec-1350', true, array['codex']);
+	reset role;
+
+	perform pg_temp.sao_as(v_anna);
+	set local role authenticated;
+	perform public.qorpera_create_surface(v_company, 'Website', 'website', 'live_build', 'website', 'globe', '#0a84ff', null, null, false);
+	v_automation := (public.qorpera_create_surface_automation(v_company, 'Fix links', 'Fix broken links', 'Every day · 09:00', 'website')
+		->> 'id')::uuid;
+	reset role;
+	perform pg_temp.sao_assert(
+		(select source_kind from public.qorpera_surfaces where profile_id = v_company and slug = 'website') = 'code_repo',
+		'the Website is a coding-backed surface'
+	);
+
+	v_due := pg_temp.sao_due(v_automation);
+	perform pg_temp.sao_assert(
+		v_due ->> 'sessionId' is not null,
+		'an owner whose coding login may work while away runs a coding-backed automation: ' || coalesce(v_due::text, 'none')
+	);
+
+	set local session_replication_role = replica;
+	update public.qorpera_provider_connection_versions
+	set allow_autonomous = false
+	where connection_id in (select id from public.qorpera_provider_connections where profile_id = v_company);
+	update public.qorpera_execution_sponsor_versions
+	set allow_autonomous = false
+	where binding_id in (select id from public.qorpera_execution_sponsor_bindings where profile_id = v_company);
+	set local session_replication_role = origin;
+
+	select last_run_at into v_last_run from public.qorpera_surface_automations where id = v_automation;
+	v_due := pg_temp.sao_due(v_automation);
+	select * into strict v_row from public.qorpera_surface_automations where id = v_automation;
+	perform pg_temp.sao_assert(
+		v_due is null and v_row.status = 'needs_attention' and v_row.last_run_at is not distinct from v_last_run,
+		'an owner whose coding login may not work while away gets no coding-backed run'
+	);
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_result := public.qorpera_surface_trigger_automation(v_automation);
+	reset role;
+	perform pg_temp.sao_assert(v_result ->> 'reason' = 'no_login', 'a direct start refuses it too: ' || v_result::text);
+
+	update public.qorpera_surface_automations set owner_user_id = null, status = 'idle' where id = v_automation;
+	v_result := pg_temp.sao_offer(v_anna, v_automation, v_anna);
+	perform pg_temp.sao_assert(
+		(v_result -> 'automation' ->> 'ownerUserId')::uuid = v_anna and v_result -> 'automation' ->> 'status' = 'needs_attention',
+		'taking it with no login that pays shows that it needs attention at once: ' || v_result::text
+	);
+
+	update public.qorpera_coding_executors set enabled = false where environment_id = v_env;
+	v_due := pg_temp.sao_due(v_automation);
+	perform pg_temp.sao_assert(
+		v_due ->> 'sessionId' is not null,
+		'with no coding executor the run goes ahead as before: ' || coalesce(v_due::text, 'none')
+	);
+end $$;

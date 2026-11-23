@@ -404,22 +404,36 @@ $new$		return public.qorpera_surface_automation_json(v_auto);$new$
 ]);
 
 select pg_temp.sao_patch('public.qorpera_surface_claim_due_automations(integer)'::regprocedure, array[
+$old$	v_results jsonb := '[]'::jsonb;
+begin$old$,
+$new$	v_results jsonb := '[]'::jsonb;
+	v_problem text;
+begin$new$,
 $old$			select a.id
 			from public.qorpera_surface_automations a
 			where a.enabled = true$old$,
-$new$			select a.id, public.qorpera_surface_automation_payer_problem(a.profile_id, a.owner_user_id, a.target_surface_slug) as problem
+$new$			select a.id, a.last_run_at as prior_run_at
 			from public.qorpera_surface_automations a
 			where a.enabled = true$new$,
-$old$			last_run_at = v_now,
-			next_run_at = public.qorpera_compute_next_automation_run(a.schedule_summary, v_now),
-			status = 'idle',$old$,
-$new$			last_run_at = case when picked.problem is null then v_now else a.last_run_at end,
-			next_run_at = public.qorpera_compute_next_automation_run(a.schedule_summary, v_now),
-			status = case when picked.problem is null then 'idle' else 'needs_attention' end,$new$,
-$old$	loop
+$old$		returning a.*
+	loop
 		v_session_id := null;$old$,
-$new$	loop
-		continue when v_auto.status = 'needs_attention';
+$new$		returning a.*, picked.prior_run_at
+	loop
+		begin
+			v_problem := public.qorpera_surface_automation_payer_problem(
+				v_auto.profile_id, v_auto.owner_user_id, v_auto.target_surface_slug
+			);
+		exception when unique_violation then
+			-- WHY: a concurrent enqueue recorded the same owner's coding sponsor first, so a login pays.
+			v_problem := null;
+		end;
+		if v_problem is not null then
+			update public.qorpera_surface_automations
+			set status = 'needs_attention', last_run_at = v_auto.prior_run_at
+			where id = v_auto.id;
+			continue;
+		end if;
 		v_session_id := null;$new$,
 $old$					origin_kind, origin_label, state, base_sha
 				)
