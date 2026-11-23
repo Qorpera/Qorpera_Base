@@ -31,6 +31,15 @@ export type NativeMemberComputeIdentity = NativeComputeIdentity & {
 	ownerScopeKey?: never;
 };
 
+export interface NativeProviderAccountCredits {
+	readonly hasCredits?: boolean;
+	readonly unlimited?: boolean;
+	readonly balance?: number;
+	readonly used?: number;
+	readonly limit?: number;
+	readonly currency?: string;
+}
+
 export interface NativeProviderAccountUsage {
 	observedAt: string;
 	windows: readonly {
@@ -40,6 +49,7 @@ export interface NativeProviderAccountUsage {
 		resetAt?: string;
 		windowSeconds?: number;
 	}[];
+	credits?: NativeProviderAccountCredits;
 }
 
 export interface NativeMemberConnection {
@@ -252,6 +262,29 @@ function optionalText(value: unknown, label: string, maximum = 512): string | un
 	return value === null || value === undefined ? undefined : text(value, label, maximum);
 }
 
+function parseAccountCredits(value: unknown): NativeProviderAccountCredits | undefined {
+	if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const input = value as Record<string, unknown>;
+	const amount = (raw: unknown): number | undefined =>
+		typeof raw === "number" && Number.isFinite(raw) && raw >= 0 && raw <= 1_000_000_000 ? raw : undefined;
+	const hasCredits = typeof input.hasCredits === "boolean" ? input.hasCredits : undefined;
+	const unlimited = typeof input.unlimited === "boolean" ? input.unlimited : undefined;
+	const balance = amount(input.balance);
+	const used = amount(input.used);
+	const limit = amount(input.limit);
+	const currency =
+		typeof input.currency === "string" && /^[A-Z]{3}$/.test(input.currency) ? input.currency : undefined;
+	if (unlimited === undefined && balance === undefined && used === undefined && limit === undefined) return undefined;
+	return {
+		...(hasCredits !== undefined ? { hasCredits } : {}),
+		...(unlimited !== undefined ? { unlimited } : {}),
+		...(balance !== undefined ? { balance } : {}),
+		...(used !== undefined ? { used } : {}),
+		...(limit !== undefined ? { limit } : {}),
+		...(currency !== undefined ? { currency } : {}),
+	};
+}
+
 /** Display telemetry is optional and never changes connection authority. */
 function parseAccountUsage(value: unknown): NativeProviderAccountUsage | undefined {
 	if (value === null || value === undefined) return undefined;
@@ -281,7 +314,12 @@ function parseAccountUsage(value: unknown): NativeProviderAccountUsage | undefin
 					: { windowSeconds: integer(window.windowSeconds, "usage window duration") }),
 			} satisfies NativeProviderAccountUsage["windows"][number];
 		});
-		return { observedAt: timestamp(usage.observedAt, "usage observation time"), windows };
+		const credits = parseAccountCredits(usage.credits);
+		return {
+			observedAt: timestamp(usage.observedAt, "usage observation time"),
+			windows,
+			...(credits ? { credits } : {}),
+		};
 	} catch {
 		return undefined;
 	}

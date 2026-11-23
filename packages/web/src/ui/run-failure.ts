@@ -11,6 +11,12 @@ export type RunFailureKind =
 	| "rate_limited"
 	| "sign_in_refused"
 	| "provider_refused"
+	| "gemini_cap"
+	| "gemini_billing"
+	| "gemini_quota"
+	| "gemini_key"
+	| "gemini_outage"
+	| "gemini_rejected"
 	| "connection"
 	| "login_unavailable"
 	| "credential"
@@ -44,6 +50,16 @@ export function classifyRunFailure(
 	// is unknown (30 October 2026). The runner fails it at once with this code; it used to go silent and read as lost
 	// contact minutes later.
 	if ((lastError ?? "").includes("[code=RUN_COMPLETION_REFUSED]")) return "completion_refused";
+	if ((lastError ?? "").includes("[code=GEMINI_API:CAP_REACHED]")) return "gemini_cap";
+	if ((lastError ?? "").includes("[code=GEMINI_API:BILLING_REQUIRED]")) return "gemini_billing";
+	if ((lastError ?? "").includes("[code=GEMINI_API:QUOTA_EXHAUSTED]")) return "gemini_quota";
+	if ((lastError ?? "").includes("[code=GEMINI_API:KEY_REJECTED]")) return "gemini_key";
+	if ((lastError ?? "").includes("[code=GEMINI_API:PROVIDER_OUTAGE]")) return "gemini_outage";
+	if (
+		(lastError ?? "").includes("[code=GEMINI_API:MODEL_UNAVAILABLE]") ||
+		(lastError ?? "").includes("[code=GEMINI_API:REQUEST_REJECTED]")
+	)
+		return "gemini_rejected";
 	// The agent's turn ended without its final send_message, so the member got no reply (10 November 2026). Nothing was
 	// refused: the runtime's own code says so, and older runs carry the stage's code with the category "unknown", which
 	// only that ending produces. A member's stop stays a stop; any other category at that stage reads as below.
@@ -115,6 +131,24 @@ const REASONS: Record<RunFailureKind, string> = {
 	provider_refused: phrase(
 		"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.",
 	),
+	gemini_cap: phrase(
+		"Your monthly Gemini spend cap was reached, so the work stopped. Raise the cap in Settings → AI subscriptions or switch models to continue.",
+	),
+	gemini_billing: phrase(
+		"Google reported that billing or AI Ultra credits are not active for your Gemini API key. Check your credits in Google AI Studio or switch models.",
+	),
+	gemini_quota: phrase(
+		"Google turned this Gemini request away due to a quota or rate limit. Check your credits in Google AI Studio, or wait a moment.",
+	),
+	gemini_key: phrase(
+		"Google rejected your Gemini API key, so the work stopped. Replace the key in Settings → AI subscriptions.",
+	),
+	gemini_outage: phrase(
+		"Google's Gemini service had a temporary server error while this run was working. This is usually brief.",
+	),
+	gemini_rejected: phrase(
+		"Google's Gemini service rejected this request. Check the key in Settings → AI subscriptions, or choose another model for this conversation.",
+	),
 	// Try again is offered as for lost contact; the words never ask for it, since the cloud refuses it once work took
 	// effect.
 	connection: phrase("The run lost its connection while it was working. This is usually brief."),
@@ -144,6 +178,21 @@ const REASONS_FOR_OTHERS: Partial<Record<RunFailureKind, string>> = {
 	),
 	provider_refused: phrase(
 		"ChatGPT refused or could not answer this run's request. The member whose login pays for it can check that login in Settings → AI subscriptions.",
+	),
+	gemini_cap: phrase(
+		"The monthly Gemini spend cap paying for this run was reached, so the work stopped. The member whose Gemini key pays for it can raise the cap in Settings → AI subscriptions.",
+	),
+	gemini_billing: phrase(
+		"Google reported that billing or credits are not active for the Gemini API key paying for this run. The member whose key it is can check it in Settings → AI subscriptions.",
+	),
+	gemini_quota: phrase(
+		"Google turned this Gemini request away due to a quota or rate limit. The member whose Gemini key pays for it can check it in Settings → AI subscriptions.",
+	),
+	gemini_key: phrase(
+		"Google rejected the Gemini API key paying for this run, so the work stopped. The member whose key it is can replace it in Settings → AI subscriptions.",
+	),
+	gemini_rejected: phrase(
+		"Google's Gemini service rejected this request. The member whose Gemini key pays for it can check it in Settings → AI subscriptions.",
 	),
 	login_unavailable: phrase(
 		"The run could not load the login that pays for it. The member whose login it is can check it in Settings → AI subscriptions.",
@@ -283,6 +332,24 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 	),
 	provider_refused: phrase(
 		"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+	),
+	gemini_cap: phrase(
+		"Your monthly Gemini spend cap was reached. Raise the cap in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+	),
+	gemini_billing: phrase(
+		"Google reported that billing or credits are not active for the Gemini API key. Check Google AI Studio. The workspace is kept; a follow-up continues it.",
+	),
+	gemini_quota: phrase(
+		"Google turned this Gemini request away due to a quota or rate limit. The workspace is kept; a follow-up continues it.",
+	),
+	gemini_key: phrase(
+		"Google rejected the Gemini API key. Replace the key in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.",
+	),
+	gemini_outage: phrase(
+		"Google's Gemini service had a temporary server error while the session worked. The workspace is kept; a follow-up continues it.",
+	),
+	gemini_rejected: phrase(
+		"Google's Gemini service rejected the session's request. The workspace is kept; a follow-up continues it.",
 	),
 	connection: phrase(
 		"The session lost its connection while it was working. The workspace is kept; a follow-up continues it.",
@@ -460,6 +527,8 @@ export function runFailureInterrupted(
 	return (
 		kind === "lost" ||
 		kind === "rate_limited" ||
+		kind === "gemini_quota" ||
+		kind === "gemini_outage" ||
 		kind === "completion_refused" ||
 		kind === "step_timeout" ||
 		kind === "connection" ||
