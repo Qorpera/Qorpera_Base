@@ -441,7 +441,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_approve_proposed_surface(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); activates a proposed surface in the caller''s company (20260930840000)'),
 	('public.qorpera_approve_session_all(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); approves all open changes in a surface session (20260930843000)'),
 	('public.qorpera_approve_surface_change(uuid,boolean)', false, true, 'member: qorpera_assert_surface_member(profile, true); approves a surface change unit and queues merge (20260930843000)'),
-	('public.qorpera_archive_surface(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); archives a surface in the caller''s company (20260930840000)'),
+	('public.qorpera_archive_surface(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); deletes a surface in the caller''s company: its scheduled agents, open sessions and jobs go with it (20260930875000)'),
 	('public.qorpera_ask_surface_publish(uuid,uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); asks one teammate who may publish to publish the surface, one open ask per surface (20260930867000)'),
 	('public.qorpera_bootstrap_company_surfaces(uuid)', false, true, 'member: qorpera_assert_surface_member(company, true); idempotently seeds starter surfaces and pulse automation (20260930843000)'),
 	('public.qorpera_choose_exploration(uuid,uuid)', false, true, 'member: qorpera_assert_surface_member(profile, true); chooses a winning exploration option (20260930840000)'),
