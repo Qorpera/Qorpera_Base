@@ -7,11 +7,21 @@ export interface ClaudeUsageWindow {
 	readonly resetAt?: string;
 }
 
+export interface ClaudeUsageCredits {
+	readonly hasCredits?: boolean;
+	readonly unlimited?: boolean;
+	readonly balance?: number;
+	readonly used?: number;
+	readonly limit?: number;
+	readonly currency?: string;
+}
+
 export interface ClaudeLoginUsage {
 	readonly observedAt: string;
 	readonly windows: readonly ClaudeUsageWindow[];
 	readonly limitResetAt?: string;
 	readonly limitType?: string;
+	readonly credits?: ClaudeUsageCredits;
 }
 
 export type ClaudeResetKind = "session" | "weekly" | "fable" | "full";
@@ -103,6 +113,107 @@ function modelName(value: unknown): string | undefined {
 	return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9 .-]{0,31}$/.test(value) ? value : undefined;
 }
 
+function claudeCurrency(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const upper = value.trim().toUpperCase();
+	return /^[A-Z]{3}$/.test(upper) ? upper : undefined;
+}
+
+function claudeMoney(value: unknown): { amount: number; currency?: string } | undefined {
+	const money = fields(value);
+	if (!money) return undefined;
+	const minor = money.amount_minor;
+	if (typeof minor !== "number" || !Number.isFinite(minor) || minor < 0) return undefined;
+	const rawExp = money.exponent;
+	const exponent =
+		typeof rawExp === "number" && Number.isSafeInteger(rawExp) && rawExp >= 0 && rawExp <= 6 ? rawExp : 2;
+	const amount = Math.round((minor / 10 ** exponent) * 100) / 100;
+	if (!Number.isFinite(amount) || amount < 0 || amount > 1_000_000_000) return undefined;
+	const currency = claudeCurrency(money.currency);
+	return { amount, ...(currency ? { currency } : {}) };
+}
+
+function claudeCreditsFromLimits(limits: Record<string, unknown>): ClaudeUsageCredits | undefined {
+	const spend = fields(limits.spend);
+	if (spend) {
+		const balance = claudeMoney(spend.balance);
+		const used = claudeMoney(spend.used);
+		const limit = claudeMoney(spend.limit) ?? claudeMoney(spend.cap);
+		const enabled = spend.enabled === true;
+		if (balance || (enabled && (used || limit))) {
+			const currency = balance?.currency ?? limit?.currency ?? used?.currency;
+			const computedBalance =
+				balance?.amount ??
+				(limit !== undefined && used !== undefined
+					? Math.max(0, Math.round((limit.amount - used.amount) * 100) / 100)
+					: undefined);
+			if (computedBalance !== undefined || used !== undefined || limit !== undefined) {
+				return {
+					hasCredits: true,
+					...(computedBalance !== undefined ? { balance: computedBalance } : {}),
+					...(used !== undefined ? { used: used.amount } : {}),
+					...(limit !== undefined ? { limit: limit.amount } : {}),
+					...(currency ? { currency } : {}),
+				};
+			}
+		}
+	}
+	const extra = fields(limits.extra_usage);
+	if (extra && extra.is_enabled === true) {
+		const rawPlaces = extra.decimal_places;
+		const places =
+			typeof rawPlaces === "number" && Number.isSafeInteger(rawPlaces) && rawPlaces >= 0 && rawPlaces <= 6
+				? rawPlaces
+				: 2;
+		const scale = 10 ** places;
+		const toMajor = (raw: unknown): number | undefined => {
+			if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) return undefined;
+			const amount = Math.round((raw / scale) * 100) / 100;
+			return amount >= 0 && amount <= 1_000_000_000 ? amount : undefined;
+		};
+		const used = toMajor(extra.used_credits);
+		const limit = toMajor(extra.monthly_limit);
+		const balance =
+			limit !== undefined && used !== undefined ? Math.max(0, Math.round((limit - used) * 100) / 100) : undefined;
+		const currency = claudeCurrency(extra.currency);
+		if (balance !== undefined || used !== undefined || limit !== undefined) {
+			return {
+				hasCredits: true,
+				...(balance !== undefined ? { balance } : {}),
+				...(used !== undefined ? { used } : {}),
+				...(limit !== undefined ? { limit } : {}),
+				...(currency ? { currency } : {}),
+			};
+		}
+	}
+	const promo = fields(limits.promo_credits);
+	if (promo) {
+		const balance = claudeMoney(promo.balance) ?? claudeMoney(promo.remaining) ?? claudeMoney(promo);
+		if (balance && balance.amount > 0) {
+			return {
+				hasCredits: true,
+				balance: balance.amount,
+				...(balance.currency ? { currency: balance.currency } : {}),
+			};
+		}
+		const numeric =
+			typeof promo.balance === "number"
+				? promo.balance
+				: typeof promo.remaining === "number"
+					? promo.remaining
+					: undefined;
+		if (numeric !== undefined && Number.isFinite(numeric) && numeric > 0 && numeric <= 1_000_000_000) {
+			const currency = claudeCurrency(promo.currency);
+			return {
+				hasCredits: true,
+				balance: Math.round(numeric * 100) / 100,
+				...(currency ? { currency } : {}),
+			};
+		}
+	}
+	return undefined;
+}
+
 export function claudeUsageFromGetUsage(value: unknown, now = new Date()): ClaudeLoginUsage | undefined {
 	const answer = fields(value);
 	const limits = fields(answer?.rate_limits);
@@ -119,7 +230,9 @@ export function claudeUsageFromGetUsage(value: unknown, now = new Date()): Claud
 		if (models.length >= MAX_MODEL_WINDOWS) break;
 	}
 	const read = [...window("seven_day", "Weekly", percent(week?.utilization, 1), week?.resets_at), ...models];
-	return read.length ? { observedAt: now.toISOString(), windows: read } : undefined;
+	if (!read.length) return undefined;
+	const credits = claudeCreditsFromLimits(limits);
+	return { observedAt: now.toISOString(), windows: read, ...(credits ? { credits } : {}) };
 }
 
 export class ClaudeTerminal {

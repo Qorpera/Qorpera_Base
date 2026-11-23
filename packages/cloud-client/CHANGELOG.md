@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `cloud-native-subscription-control.ts`: added optional `credits` (`hasCredits`, `unlimited`, `balance`, `used`, `limit`, `currency`) normalization on `NativeProviderUsageWindowSet` for ChatGPT and Claude subscription API/extra credits.
 - `setSurfaceFigure(surfaceId, figure)` calls `qorpera_set_surface_figure` (needs migration `20260930856000_surface_set_figure` live).
 - `COMPANY_STATE_COFOUNDER_INSTRUCTIONS`: aligned the seeded Co-Founder `agent.md` with starting momentum from the first conversation and warm, plain-language founder communication.
 - `APP_READS` takes `money` and `site`, the platform's own numbers of the company (company views step 3, slice W1; migration `20260930767000`): an app asks them as questions of the reserved database `APP_NUMBERS_DATABASE` (`qorpera`), and `appNumbersRead(question)` names the read each needs (`money` for `money-*`, `site` for `sites` and `site-*`, null for any other). A web from before this marks an app that reads them as having a problem, so the web goes live first. The runtime's `save_app` takes them from its next bundle (`reads`' enum is `APP_READS`).

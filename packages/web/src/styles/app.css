@@ -289,11 +289,17 @@ label > input, label > select { font-weight: 400; }
 :is(.rail, .concepts-side) {
 	--rail: var(--sidebar-surface); --rail-line: #c4c2c2; --rail-hover: var(--sidebar-hover);
 	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
-	--rail-selection: var(--composer-accent); --rail-small: #71716b; --rail-status: var(--agent-active);
+	--rail-selection: var(--composer-accent); --rail-selection-ink: var(--composer-accent-ink);
+	--rail-selection-text: var(--composer-on-accent); --rail-selection-sub: var(--composer-on-accent-muted);
+	--rail-small: #71716b; --rail-status: var(--agent-active);
 	--rail-status-failed: #ff3b30;
 	/* Stopped at the member: the line's text (4.5:1 on the rail at 11px). */
 	--rail-waiting: #8f5000;
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+:root[data-composer-color="grey"] :is(.rail, .concepts-side, .rail-drag-ghost) {
+	--rail-selection: color-mix(in srgb, var(--text) 7%, var(--rail));
+	--rail-selection-sub: var(--rail-small);
 }
 .rail {
 	display: flex; flex-direction: column; min-height: 0;
@@ -343,7 +349,7 @@ label > input, label > select { font-weight: 400; }
 	transition: background-color var(--motion-fast) ease, opacity var(--motion-fast) ease 80ms;
 }
 .rail-company:hover, .rail-company[aria-expanded="true"] { background: var(--rail-hover); }
-.rail-company:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
+.rail-company:focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
 .rail-company-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
 .rail-company-name.company-unnamed { color: var(--rail-small); font-style: italic; font-weight: 550; }
 .rail-company-chevron { flex: none; display: grid; color: var(--rail-small); }
@@ -384,7 +390,7 @@ label > input, label > select { font-weight: 400; }
 .rail-toolbar:not(.is-searching) .rail-search input { visibility: hidden; opacity: 0; }
 /* The open field's ring and caret show where typing goes; the buttons show keyboard focus themselves. */
 .rail-search input::-webkit-search-cancel-button { appearance: none; display: none; }
-.rail-search :is(.rail-search-toggle, .rail-search-close):focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
+.rail-search :is(.rail-search-toggle, .rail-search-close):focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
 .rail-search input::placeholder { color: #777772; }
 .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; margin-top: -16px; padding-top: 16px; }
 /* The list reaches 16px up under the top row (Jonas, 5 Nov 2026: half the space above the Co-Founder),
@@ -409,7 +415,7 @@ label > input, label > select { font-weight: 400; }
 	background: transparent; color: var(--text); text-align: center;
 }
 .cofounder-home:hover { background: var(--rail-hover); text-decoration: none; }
-.cofounder-home.active, .cofounder-home.active:hover { background: var(--rail-selection); color: #fff; }
+.cofounder-home.active, .cofounder-home.active:hover { background: var(--rail-selection); color: var(--rail-selection-text); }
 .cofounder-home strong { position: relative; z-index: 2; max-width: 100%; font-size: 13px; font-weight: 650; line-height: 16px; }
 .cofounder-stand { position: absolute; left: 50%; top: calc(-1 * var(--lift)); width: var(--figure); height: var(--figure); transform: translateX(-50%); }
 .cofounder-stand::before {
@@ -438,7 +444,7 @@ label > input, label > select { font-weight: 400; }
 	-webkit-touch-callout: none;
 }
 .rail-pin:hover { background: var(--rail-hover); text-decoration: none; }
-.rail-pin.active, .rail-pin.active:hover { background: var(--rail-selection); color: #fff; }
+.rail-pin.active, .rail-pin.active:hover { background: var(--rail-selection); color: var(--rail-selection-text); }
 .rail-pin-stand { position: relative; display: grid; place-items: center; width: 52px; height: 52px; }
 .rail-pin .figure { width: 52px; height: 52px; }
 .rail-pin-name { max-width: 100%; font-size: 11.5px; font-weight: 600; line-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -480,9 +486,9 @@ label > input, label > select { font-weight: 400; }
 .rail-hidden-chevron .icon { width: 14px; height: 14px; }
 :is(.rail-hidden-count, .rail-hidden-unread, .rail-hidden-chevron, .rail-hidden-list)[hidden] { display: none; }
 .rail-scroll > :is(.rail-section, .rail-pinned):first-child { margin-top: 14px; }
-.rail-row, .rail-pin, .cofounder-home { -webkit-touch-callout: none; }
-.rail-row.menu-open, .rail-pin.menu-open, .cofounder-home.menu-open { background: var(--rail-hover); }
-.rail-row.active.menu-open, .rail-pin.active.menu-open, .cofounder-home.active.menu-open { background: var(--rail-selection); }
+.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row { -webkit-touch-callout: none; }
+.rail-row.menu-open, .rail-pin.menu-open, .cofounder-home.menu-open, .rail-surface.menu-open, .rail-agent-hub-row.menu-open { background: var(--rail-hover); }
+.rail-row.active.menu-open, .rail-pin.active.menu-open, .cofounder-home.active.menu-open, .rail-surface.active.menu-open, .rail-agent-hub-row.active.menu-open { background: var(--rail-selection); }
 /* Dragging an agent: the rows make way for it, as the apps drawer's icons do (ui/rail-drag.ts). The row
  * lifts off as an image under the pointer, an empty space of its shape stands where it would land, and
  * the row itself is out of the list until it is let go (then unseen until the image reaches it). */
@@ -502,6 +508,8 @@ label > input, label > select { font-weight: 400; }
 .rail-drop-gap.is-pin { width: 86px; height: 86px; }
 .rail-drag-ghost {
 	--rail: var(--sidebar-surface); --rail-hover: var(--sidebar-hover); --rail-selection: var(--composer-accent);
+	--rail-selection-ink: var(--composer-accent-ink); --rail-selection-text: var(--composer-on-accent);
+	--rail-selection-sub: var(--composer-on-accent-muted); --rail-small: #71716b;
 	--rail-status: var(--agent-active); --rail-status-failed: #ff3b30;
 	--rail-waiting: #8f5000;
 	position: fixed; left: 0; top: 0; z-index: 600; margin: 0; pointer-events: none;
@@ -532,7 +540,7 @@ label > input, label > select { font-weight: 400; }
 :is(.rail-row-member, .rail-pin-member):hover .person-online-dot { box-shadow: 0 0 0 2px var(--rail-hover); }
 :is(.rail-row-member, .rail-pin-member).active .person-online-dot { box-shadow: 0 0 0 2px var(--rail-selection); }
 :is(.rail-row-member, .rail-pin-member) .rail-mention { top: 0; right: 0; }
-:is(.rail-row-member, .rail-pin-member).active .rail-mention { background: #fff; color: var(--rail-selection); box-shadow: 0 0 0 2px var(--rail-selection); }
+:is(.rail-row-member, .rail-pin-member).active .rail-mention { background: var(--rail-selection-text); color: var(--rail-selection); box-shadow: 0 0 0 2px var(--rail-selection); }
 .rail-pin-member .person-avatar { width: 48px; height: 48px; font-size: 16px; }
 /* A page hidden from the rail, in Hidden: a button that opens its menu. */
 .rail-row-page { width: 100%; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; }
@@ -564,7 +572,7 @@ label > input, label > select { font-weight: 400; }
 .whats-new-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .whats-new-site > .service-outcome { margin: 12px 0 0; font-size: 13px; }
 .rail-row:hover { background: var(--rail-hover); text-decoration: none; }
-.rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: #fff; }
+.rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: var(--rail-selection-text); }
 .rail-row .figure { width: var(--rail-row-figure); height: var(--rail-row-figure); }
 /* Keep the tracks within the stand so larger group canvases overflow symmetrically. */
 .rail-row-stand { position: relative; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; width: var(--rail-row-figure); height: var(--rail-row-figure); }
@@ -607,7 +615,7 @@ label > input, label > select { font-weight: 400; }
 :is(.rail-row-copy, .concepts-item-copy), .rail-pin-name, .cofounder-home strong { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }
 /* Every rail label is one line; it shortens with the rail instead of wrapping. */
 .cofounder-home strong, :is(.rail-row-copy, .concepts-item-copy) :is(strong, small) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-:is(.rail-row.active, .concepts-item[aria-current]) :is(.rail-row-copy, .concepts-item-copy) small { color: rgba(255, 255, 255, 0.92); }
+:is(.rail-row.active, .concepts-item[aria-current]) :is(.rail-row-copy, .concepts-item-copy) small { color: var(--rail-selection-sub); }
 /* A run that did not finish says so in red under the name; the selected row keeps its white. */
 .rail-row:not(.active) .rail-row-copy small.is-failed { color: #c4161c; }
 /* Stopped at the member ("Stopped: …", or "Needs you"): in the warning colour; the selected row keeps its white. */
@@ -618,7 +626,7 @@ label > input, label > select { font-weight: 400; }
 .status-wave-word { display: inline-block; max-width: 100%; }
 .status-wave-letter { position: relative; display: inline-block; color: inherit; }
 .status-wave-letter::after { content: attr(data-letter); content: attr(data-letter) / ""; position: absolute; top: 0; left: 0; color: var(--status-crest, var(--text)); text-shadow: -.18px 0 0 currentColor, .18px 0 0 currentColor; opacity: 0; pointer-events: none; animation: status-ink-wave 1400ms ease-in-out infinite; animation-delay: var(--wave-delay, 0ms); }
-.rail-row.active, .rail-pin.active, .cofounder-home.active { --status-crest: #fff; }
+.rail-row.active, .rail-pin.active, .cofounder-home.active, .rail-surface.active, .rail-agent-hub-row.active { --status-crest: var(--rail-selection-text); }
 @keyframes status-ink-wave {
 	0%, 10%, 50%, 100% { opacity: 0; }
 	30% { opacity: 1; }
@@ -698,7 +706,7 @@ label > input, label > select { font-weight: 400; }
 .figure-air { position: absolute; inset: -34%; z-index: 2; display: block; width: 168%; height: 168%; pointer-events: none; }
 .figure-air.is-behind { z-index: -1; }
 @media (forced-colors: active) {
-	.cofounder-home.active, .rail-row.active, .rail-pin.active { outline: 2px solid Highlight; }
+	.cofounder-home.active, .rail-row.active, .rail-pin.active, .rail-surface.active, .rail-agent-hub-row.active { outline: 2px solid Highlight; }
 	/* Forced colours empty the disc into a ring; a failed run's "!" stays filled. */
 	:is(.rail, .rail-drag-ghost) .alert-mark::before, :is(.rail, .rail-drag-ghost) .alert-mark::after { forced-color-adjust: none; background: CanvasText; }
 }

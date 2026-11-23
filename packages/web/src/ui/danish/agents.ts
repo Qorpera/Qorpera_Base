@@ -282,6 +282,18 @@ export const AGENTS: Record<string, string> = {
 		"ChatGPT godtager ikke længere det login, der betaler for sessionen. Log ind igen under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"ChatGPT refused or could not answer the session's request. Check the login that pays for it in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
 		"ChatGPT afviste eller kunne ikke besvare sessionens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"Your monthly Gemini spend cap was reached. Raise the cap in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"Din månedlige forbrugsgrænse for Gemini blev nået. Hæv grænsen under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"Google reported that billing or credits are not active for the Gemini API key. Check Google AI Studio. The workspace is kept; a follow-up continues it.":
+		"Google meldte, at fakturering eller kredit ikke er aktiv for Gemini-API-nøglen. Tjek Google AI Studio. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"Google turned this Gemini request away due to a quota or rate limit. The workspace is kept; a follow-up continues it.":
+		"Google afviste denne Gemini-forespørgsel på grund af en kvote- eller hastighedsgrænse. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"Google rejected the Gemini API key. Replace the key in Settings → AI subscriptions. The workspace is kept; a follow-up continues it.":
+		"Google afviste Gemini-API-nøglen. Udskift nøglen under Indstillinger → AI-abonnementer. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"Google's Gemini service had a temporary server error while the session worked. The workspace is kept; a follow-up continues it.":
+		"Googles Gemini-tjeneste havde en midlertidig serverfejl, mens sessionen arbejdede. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	"Google's Gemini service rejected the session's request. The workspace is kept; a follow-up continues it.":
+		"Googles Gemini-tjeneste afviste sessionens forespørgsel. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"ChatGPT was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.":
 		"ChatGPT var overbelastet eller havde en serverfejl, mens sessionen arbejdede. Det går som regel hurtigt over, og loginnet er i orden. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The session lost its connection while it was working. The workspace is kept; a follow-up continues it.":

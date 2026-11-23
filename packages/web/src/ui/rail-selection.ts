@@ -6,7 +6,7 @@
 
 import { easing, reducedMotion } from "./motion.ts";
 
-const SELECTED = ":is(.rail-row, .rail-pin, .cofounder-home).active";
+const SELECTED = ":is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row).active";
 
 interface Box {
 	left: number;

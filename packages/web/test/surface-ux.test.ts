@@ -736,17 +736,19 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		frame.append(container);
 		document.body.append(frame);
 		const auth = new AuthController(f.cloud);
-		renderRail(container, company, {
-			profiles: [profileA],
-			user: userA,
-			route: { name: "company", profileId: profileA.profileId, section: "surface", id: "website" },
-			auth,
-			invitations: 0,
-			openSettings: () => {},
-			openFeedback: () => {},
-			openFriends: () => {},
-			agentActions: {},
-		});
+		const draw = (section: "surface" | "staff", routeId: string) =>
+			renderRail(container, company, {
+				profiles: [profileA],
+				user: userA,
+				route: { name: "company", profileId: profileA.profileId, section, id: routeId },
+				auth,
+				invitations: 0,
+				openSettings: () => {},
+				openFeedback: () => {},
+				openFriends: () => {},
+				agentActions: {},
+			});
+		draw("surface", "website");
 
 		const hub = container.querySelector<HTMLElement>(".rail-agents-hub");
 		expect(hub).not.toBeNull();
@@ -767,6 +769,50 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		]);
 		expect(new Set(staffHrefs).size).toBe(3);
 		expect(hub?.querySelector("[data-hub-exploration]")).not.toBeNull();
+
+		const toggle = hub!.querySelector<HTMLButtonElement>("button.rail-agents-head")!;
+		const body = hub!.querySelector<HTMLElement>(".rail-agents-body")!;
+		const count = hub!.querySelector<HTMLElement>(".rail-agents-count")!;
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(body.hidden).toBe(true);
+		expect(count.hidden).toBe(false);
+		const rows = hub!.querySelectorAll(".rail-agent-hub-row").length;
+		expect(Number(count.textContent)).toBe(rows);
+		const waiting = hub!.querySelector<HTMLElement>(".rail-agents-head .rail-hidden-unread")!;
+		const asking = [...hub!.querySelectorAll<HTMLElement>("[data-hub-session], [data-hub-exploration]")].filter(
+			(row) => {
+				const status = row.querySelector("small");
+				return status !== null && status.childElementCount === 0 && status.textContent !== "Ready";
+			},
+		).length;
+		expect(asking).toBeGreaterThan(0);
+		expect(waiting.hidden).toBe(false);
+		expect(waiting.textContent).toBe(String(asking));
+		expect(toggle.getAttribute("aria-label")).toBe(`Agents: ${rows} · Waiting for you: ${asking}`);
+		toggle.click();
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(body.hidden).toBe(false);
+		expect(count.hidden).toBe(true);
+		expect(localStorage.getItem("qorpera.web.rail-agents-open")).toBe("1");
+		expect(waiting.hidden).toBe(true);
+		expect(toggle.getAttribute("aria-label")).toBe("Agents");
+		toggle.click();
+		expect(body.hidden).toBe(true);
+
+		draw("staff", idle.id);
+		expect(body.hidden).toBe(false);
+		expect(hub!.querySelector(`a[data-agent-id="${idle.id}"]`)?.classList.contains("active")).toBe(true);
+		expect(localStorage.getItem("qorpera.web.rail-agents-open")).toBe("0");
+		toggle.click();
+		expect(body.hidden).toBe(true);
+		draw("staff", idle.id);
+		expect(body.hidden).toBe(true);
+		draw("surface", "website");
+		draw("staff", scheduled.id);
+		expect(body.hidden).toBe(false);
+		draw("surface", "website");
+		expect(body.hidden).toBe(true);
+		localStorage.removeItem("qorpera.web.rail-agents-open");
 
 		auth.dispose();
 		store.dispose();
@@ -1251,6 +1297,61 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 
 		store.dispose();
 		company.stop();
+	});
+
+	it("shows Publish only when something waits to be published, and hides an empty bar", async () => {
+		const quiet = summary({
+			id: "55555555-5555-4555-8555-555555555589",
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			repositoryKey: null,
+			folderRoot: "identity",
+			liveUrl: null,
+			siteSlug: null,
+			activeSessionCount: 0,
+			pendingChangeCount: 0,
+			unpublishedChangeCount: 0,
+		});
+		const barOf = async (surface: typeof quiet) => {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn().mockResolvedValue([surface]),
+					getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([], { surface })),
+				}),
+			);
+			await store.load();
+			const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "identity");
+			document.body.append(view.el);
+			await flush();
+			view.update();
+			const bar = view.el.querySelector<HTMLElement>(".surface-bar")!;
+			const shown = {
+				hidden: bar.hidden,
+				publish: bar.querySelector(".surface-publish") !== null,
+				notch: bar.querySelector(".surface-notch") !== null,
+				count: bar.querySelector(".surface-publish-main .surface-count")?.textContent ?? null,
+			};
+			view.dispose();
+			store.dispose();
+			return shown;
+		};
+
+		expect(await barOf(quiet)).toEqual({ hidden: true, publish: false, notch: false, count: null });
+		expect(await barOf({ ...quiet, unpublishedChangeCount: 2 })).toEqual({
+			hidden: false,
+			publish: true,
+			notch: false,
+			count: "2",
+		});
+		expect(await barOf({ ...quiet, archetype: "live_build", kind: "website", isGlobal: false })).toEqual({
+			hidden: false,
+			publish: false,
+			notch: false,
+			count: null,
+		});
 	});
 
 	it("renders the Used by line on Identity, the Live-linked strip on Product, and applies live Identity CSS vars to Product", async () => {
