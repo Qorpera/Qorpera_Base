@@ -10,7 +10,7 @@ import type { InterfacePagesState } from "../src/app/interface-pages.ts";
 import { companyInterfaces } from "../src/app/interfaces.ts";
 import { parseRoute, type Route, routeHash } from "../src/app/router.ts";
 import { messageText, renderInterface } from "../src/app/views/interface.ts";
-import { renderRail } from "../src/app/views/shell.ts";
+import { installSearchShortcut, renderRail, type ShellContext } from "../src/app/views/shell.ts";
 import {
 	EMPTY_APP_LAYOUT,
 	type MemberAppLayout,
@@ -21,7 +21,7 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import type { CompanySite } from "../src/cloud/sites.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { colourNameHex } from "../src/ui/avatar.ts";
-import { h } from "../src/ui/dom.ts";
+import { confirmDialog, h } from "../src/ui/dom.ts";
 import { interfaceEmblem } from "../src/ui/interface-emblem.ts";
 import { nameDialog } from "../src/ui/name-dialog.ts";
 import {
@@ -37,6 +37,7 @@ import {
 	timestamp,
 	userA,
 } from "./fixtures.ts";
+import { stubDialogs } from "./search-window-helpers.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
 	...staff,
@@ -180,7 +181,7 @@ describe("the shipped pages (C6a)", () => {
 
 describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 Nov 2026)", () => {
 	/** A company that shows Members, so the rail has the four windows; unless `read` is false and its pages aren't read yet. */
-	function rail(route: Route, read = true) {
+	function rail(route: Route, read = true, extra: Partial<ShellContext> = {}) {
 		const { f, controller } = company([], { members: 3, ...(read ? { pages: pages(false, true) } : {}) });
 		const element = h("aside", { class: "rail" });
 		document.body.append(h("div", { class: "frame" }, element));
@@ -197,6 +198,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			openFeedback: () => {},
 			openFriends: () => {},
 			agentActions: {},
+			...extra,
 		};
 		const draw = (next: Route = route) => renderRail(element, controller, { ...context, route: next });
 		draw();
@@ -724,78 +726,58 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(element.querySelector(".rail-concepts")).toBeNull();
 	});
 
-	it("folds the search out over the name and back on Esc or its close button, clearing it", () => {
-		const { element } = rail(home);
-		const toolbar = element.querySelector<HTMLElement>(".rail-toolbar")!;
+	it("opens the search window from its button and ⌘K, and goes where a hit leads", async () => {
+		stubDialogs();
+		let blocked = false;
+		const { element } = rail(home, true, { searchBlocked: () => blocked });
 		const toggle = element.querySelector<HTMLButtonElement>(".rail-search-toggle")!;
-		const input = element.querySelector<HTMLInputElement>(".rail-search input")!;
-		const closeButton = element.querySelector<HTMLButtonElement>(".rail-search-close")!;
-		const name = element.querySelector<HTMLButtonElement>(".rail-company")!;
-		// Folded: only the button, which names what it searches; the text box is out of the Tab order.
-		expect(toolbar.classList.contains("is-searching")).toBe(false);
-		expect(toggle.getAttribute("aria-label")).toBe("Search agents");
-		expect(toggle.getAttribute("aria-expanded")).toBe("false");
-		expect(input.tabIndex).toBe(-1);
-		expect(closeButton.hidden).toBe(true);
+		expect(element.querySelector(".rail-search input")).toBeNull();
+		expect(toggle.getAttribute("aria-label")).toBe("Search");
+		expect(toggle.getAttribute("aria-haspopup")).toBe("dialog");
 		toggle.click();
-		expect(toolbar.classList.contains("is-searching")).toBe(true);
-		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		const window = document.querySelector<HTMLDialogElement>("dialog.search-window")!;
+		const input = window.querySelector<HTMLInputElement>(".search-window-input")!;
+		expect(window.open).toBe(true);
 		expect(document.activeElement).toBe(input);
-		expect(input.placeholder).toBe("Search agents");
-		expect(closeButton.hidden).toBe(false);
-		expect(name.inert).toBe(true);
-		expect(apps(element).inert).toBe(true);
-		input.value = "zzz";
-		input.dispatchEvent(new Event("input"));
-		expect(element.textContent).toContain("No matching conversations.");
-		input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-		expect(toolbar.classList.contains("is-searching")).toBe(false);
-		expect(input.value).toBe("");
-		expect(element.textContent).not.toContain("No matching conversations.");
-		expect(document.activeElement).toBe(toggle);
-		expect(name.inert).toBe(false);
-		// The close button does the same.
-		toggle.click();
+		expect(input.placeholder).toBe("Search agents, files and settings");
+		const titles = () => [...window.querySelectorAll(".search-window-title")].map((title) => title.textContent);
 		input.value = "ada";
 		input.dispatchEvent(new Event("input"));
-		closeButton.click();
-		expect(toolbar.classList.contains("is-searching")).toBe(false);
-		expect(input.value).toBe("");
-		expect(document.activeElement).toBe(toggle);
-		// Esc folds it from its buttons too, and a press on a button keeps focus where it is.
-		toggle.click();
-		const press = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
-		closeButton.dispatchEvent(press);
-		expect(press.defaultPrevented).toBe(true);
-		closeButton.focus();
-		closeButton.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-		expect(toolbar.classList.contains("is-searching")).toBe(false);
-		expect(document.activeElement).toBe(toggle);
-		// Open, the button leaves the Tab order; folded, it is the way in.
-		expect(toggle.tabIndex).toBe(0);
-		toggle.click();
-		expect(toggle.tabIndex).toBe(-1);
-		closeButton.click();
-		// Left empty, it folds back when focus moves on; with text it stays open.
-		toggle.click();
-		input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
-		expect(toolbar.classList.contains("is-searching")).toBe(false);
-		toggle.click();
+		expect(titles()).toEqual(["Ada"]);
+		input.value = "members";
+		input.dispatchEvent(new Event("input"));
+		expect(titles()).toContain("Members");
+		input.value = "dark";
+		input.dispatchEvent(new Event("input"));
+		expect(titles()).toEqual(["Appearance"]);
 		input.value = "ada";
 		input.dispatchEvent(new Event("input"));
-		input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
-		expect(toolbar.classList.contains("is-searching")).toBe(true);
-	});
-
-	it("never filters from a folded field: text in it keeps it open", () => {
-		const { element, draw } = rail(home);
-		const toolbar = element.querySelector<HTMLElement>(".rail-toolbar")!;
-		const input = element.querySelector<HTMLInputElement>(".rail-search input")!;
-		input.value = "zzz";
-		draw();
-		expect(toolbar.classList.contains("is-searching")).toBe(true);
-		expect(input.tabIndex).toBe(0);
-		expect(element.textContent).toContain("No matching conversations.");
+		input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		expect(window.open).toBe(false);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`);
+		installSearchShortcut();
+		blocked = true;
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+		expect(window.open).toBe(false);
+		blocked = false;
+		const viewer = h("dialog", { class: "storage-viewer", "aria-modal": "true" });
+		document.body.append(viewer);
+		viewer.showModal();
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+		expect(window.open).toBe(false);
+		viewer.close();
+		const confirm = confirmDialog("Delete Research?", "Delete");
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+		expect(window.open).toBe(false);
+		document.querySelector<HTMLButtonElement>(".modal button")!.click();
+		expect(await confirm).toBe(false);
+		const card = h("dialog", { class: "agent-card", "aria-modal": "false" });
+		document.body.append(card);
+		card.open = true;
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+		expect(window.open).toBe(true);
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+		expect(window.open).toBe(false);
 	});
 });
 
@@ -844,10 +826,7 @@ describe("review round 1 (web)", () => {
 			openFriends: () => {},
 			agentActions: {},
 		});
-		// The search looks through the agents only; the pages have their own icons.
-		expect(element.querySelector(".rail-search input")?.getAttribute("aria-label")).toBe("Search agents");
-		expect(element.querySelector(".rail-search input")?.getAttribute("placeholder")).toBe("Search agents");
-		expect(element.querySelector(".rail-search-toggle")?.getAttribute("aria-label")).toBe("Search agents");
+		expect(element.querySelector(".rail-search-toggle")?.getAttribute("aria-label")).toBe("Search");
 		// The icon's name is under it; no hover popup repeats it (Jonas, 9 Nov 2026).
 		expect(element.querySelector(".rail-app")?.hasAttribute("title")).toBe(false);
 	});
