@@ -39,7 +39,7 @@ export function facesOf(value: unknown, base: unknown, prefix: string): Face[] {
 		if (!stack) return [];
 		return [
 			{
-				key: `${prefix}.${role}`,
+				key: prefix ? `${prefix}.${role}` : role,
 				label: readableName(role),
 				name: firstFamily(stack),
 				stack,

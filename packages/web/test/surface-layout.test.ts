@@ -979,6 +979,7 @@ describe("Custom interfaces on the layout renderer", () => {
 				[`${ROOT}/data.json`]: JSON.stringify({
 					colors: { accent: "#c9643b" },
 					typography: { display: "Newsreader, Georgia, serif" },
+					font: "Inter, system-ui, sans-serif",
 					overview: { weight: "44 g" },
 					vendors: [{ vendor: "Nordic Knit", region: "DK" }],
 				}),
@@ -995,6 +996,7 @@ describe("Custom interfaces on the layout renderer", () => {
 		const data = view.el.querySelector('[data-file="surfaces/lamp/data.json"]')!;
 		expect(data.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#c9643b");
 		expect(data.querySelector('[data-token="typography.display"] code')?.textContent).toBe("Newsreader");
+		expect(data.querySelector('[data-token="font"] .studio-type-meta')?.textContent).toBe("FontInter");
 		expect([...data.querySelectorAll(".studio-kv dt")].map((item) => item.textContent)).toEqual([
 			"Overview · Weight",
 		]);

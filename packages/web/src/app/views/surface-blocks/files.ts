@@ -189,6 +189,8 @@ function jsonCard(path: string, content: string, baseContent: string | undefined
 		const lower = key.toLowerCase();
 		if (COLOR_GROUPS.has(lower) || (typeof value === "string" && COLOR_VALUE.test(value.trim())))
 			collectColors(value, base, [key], colours);
+		else if (TYPE_GROUPS.has(lower) && typeof value === "string")
+			faces.push(...facesOf({ [key]: value }, { [key]: base?.[key] }, ""));
 		else if (TYPE_GROUPS.has(lower)) faces.push(...facesOf(value, base?.[key], key));
 	}
 	const entries: SpecEntry[] = [];
