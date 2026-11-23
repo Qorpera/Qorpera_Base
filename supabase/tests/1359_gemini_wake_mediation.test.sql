@@ -97,6 +97,7 @@ declare
 	v_rotated_key uuid;
 	v_other_user uuid := '92400000-0000-4000-8000-000000000002';
 	v_bob uuid := '92400000-0000-4000-8000-000000000031';
+	v_bob_wakes jsonb;
 	v_bob_run uuid;
 	v_refused boolean := false;
 begin
@@ -198,18 +199,20 @@ begin
 		pg_temp.gwm_carried(v_comp_run.id, 'worker-completion', null) is null,
 		'3: null origin carries none');
 
-	select id into v_bob_run from public.qorpera_execution_runs where staff_agent_id = v_bob limit 1;
-	if v_bob_run is not null then
-		set local session_replication_role = replica;
-		update public.qorpera_execution_runs
-		set gemini_model = 'gemini-4-neon', gemini_effort = 'low', gemini_key_id = v_key_id,
-			claude_model = null, claude_effort = null
-		where id = v_bob_run;
-		set local session_replication_role = origin;
-		perform pg_temp.base_assert(
-			pg_temp.gwm_carried(v_comp_run.id, 'worker-completion', v_bob_run) is null,
-			'3: another agent origin carries none');
-	end if;
+	v_bob_wakes := pg_temp.base_post(pg_temp.gwm_owner(), v_bob, 'Bob check.');
+	perform pg_temp.base_materialize();
+	select wake.run_id into v_bob_run from public.qorpera_wake_occurrences wake
+	where wake.id = (v_bob_wakes ->> 0)::uuid;
+	perform pg_temp.base_assert(v_bob_run is not null, '3: fixture created a Bob run');
+	set local session_replication_role = replica;
+	update public.qorpera_execution_runs
+	set gemini_model = 'gemini-4-neon', gemini_effort = 'low', gemini_key_id = v_key_id,
+		claude_model = null, claude_effort = null
+	where id = v_bob_run;
+	set local session_replication_role = origin;
+	perform pg_temp.base_assert(
+		pg_temp.gwm_carried(v_comp_run.id, 'worker-completion', v_bob_run) is null,
+		'3: another agent origin carries none');
 
 	v_rotated_key := pg_temp.gwm_save_key('AQ...gwm2', '{"sealed":"gwm-key-2"}');
 	perform pg_temp.base_assert(
@@ -233,6 +236,13 @@ begin
 	perform pg_temp.base_assert(
 		pg_temp.gwm_carried(v_comp_run.id, 'worker-completion', v_alice_run) is null,
 		'4: revoked Gemini key cleanly falls back to null');
+
+	set local session authorization qorpera_secret_broker;
+	v_opened := public.qorpera_open_gemini_key_for_run(v_authority.id, v_authority.capability_sha256, v_comp_model_binding);
+	reset session authorization;
+	perform pg_temp.base_assert(
+		v_opened ->> 'state' = 'refused' and v_opened ->> 'reason' = 'REVOKED',
+		'5: binding is still valid before switching wake kind (returns REVOKED without exception): ' || v_opened::text);
 
 	set local session_replication_role = replica;
 	update public.qorpera_wake_occurrences set source_kind = 'worker-dispatch' where id = v_comp_wake.id;
