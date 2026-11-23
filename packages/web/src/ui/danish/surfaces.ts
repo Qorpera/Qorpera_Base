@@ -237,7 +237,6 @@ export const SURFACES: Record<string, string> = {
 	"Fold into a scheduled agent": "Gør til en planlagt agent",
 	"New scheduled agent": "Ny planlagt agent",
 	"Scheduled agent": "Planlagt agent",
-	"New conversation": "Ny samtale",
 	Scheduled: "Planlagte",
 	Prompt: "Prompt",
 	Schedule: "Tidsplan",
@@ -337,4 +336,6 @@ export const SURFACES: Record<string, string> = {
 	"Vector assets": "Vektorfiler",
 	"Other changed files": "Andre ændrede filer",
 	Removed: "Fjernet",
+	"Show all {count} rows": "Vis alle {count} rækker",
+	"Show full file": "Vis hele filen",
 };

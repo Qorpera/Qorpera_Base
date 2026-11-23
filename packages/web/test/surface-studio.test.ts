@@ -645,6 +645,122 @@ describe("SurfaceStudioView", () => {
 		view.dispose();
 		store.dispose();
 	});
+
+	it("streams studio sections and HTML frames across slices and aborts cleanly on deactivate", async () => {
+		const product = summary({
+			id: BRAND_ID,
+			slug: "thetabands",
+			title: "Thetabands",
+			archetype: "studio",
+			folderRoot: "product",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [summary(), product]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: product })),
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("thetabands");
+
+		const files: Record<string, string> = {
+			"product/spec.json": JSON.stringify({ model: "Theta-1", weight: "18g" }),
+			"product/brief.md": "# Brief\nCalm acoustic wristband.\n",
+			"product/a.html":
+				"<!doctype html><html><head><title>Theta &amp; Sound &#8212; Hero</title></head><body><h1>Hero</h1></body></html>",
+			"product/b.html":
+				"<!doctype html><html><head><title>Checkout</title></head><body><h1>Checkout</h1></body></html>",
+		};
+
+		const aborted = new SurfaceStudioView({
+			store,
+			surface: product,
+			signal: new AbortController().signal,
+			baseFiles: files,
+			timeSlice: true,
+		});
+		document.body.append(aborted.el);
+		expect(aborted.el.querySelector(".skeleton-surface-studio")).not.toBeNull();
+		expect(aborted.el.querySelectorAll("iframe.studio-html-frame")).toHaveLength(0);
+		aborted.deactivate();
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(aborted.el.querySelectorAll("iframe.studio-html-frame")).toHaveLength(0);
+		expect(aborted.el.querySelector(".studio-grid")).toBeNull();
+		aborted.dispose();
+
+		const view = new SurfaceStudioView({
+			store,
+			surface: product,
+			signal: new AbortController().signal,
+			baseFiles: files,
+			timeSlice: true,
+		});
+		document.body.append(view.el);
+		expect(view.el.querySelector(".skeleton-surface-studio")).not.toBeNull();
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(view.el.querySelector(".skeleton-surface-studio")).toBeNull();
+		const htmlCards = [...view.el.querySelectorAll<HTMLElement>(".studio-html-card")];
+		expect(htmlCards).toHaveLength(2);
+		expect(htmlCards[0]?.querySelector("h2")?.textContent).toBe("Theta & Sound — Hero");
+		expect(view.el.querySelectorAll("iframe.studio-html-frame")).toHaveLength(2);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("caps oversized spec tables and plain-text documents with on-demand expand buttons", async () => {
+		const product = summary({
+			id: BRAND_ID,
+			slug: "thetabands",
+			title: "Thetabands",
+			archetype: "studio",
+			folderRoot: "product",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [summary(), product]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: product })),
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("thetabands");
+
+		const bom = Array.from({ length: 135 }, (_, i) => ({ part: `P-${i + 1}`, cost: `$${i + 1}` }));
+		const bigText = `${"alpha-line\n".repeat(3_600)}TAIL-MARKER`;
+		const view = new SurfaceStudioView({
+			store,
+			surface: product,
+			signal: new AbortController().signal,
+			baseFiles: {
+				"product/spec.json": JSON.stringify({ bom }),
+				"product/build.txt": bigText,
+			},
+		});
+		document.body.append(view.el);
+
+		const tableWrap = view.el.querySelector(".studio-table-wrap")!;
+		expect(tableWrap.querySelectorAll("tbody tr")).toHaveLength(100);
+		const rowsBtn = tableWrap.querySelector<HTMLButtonElement>(".studio-more-btn")!;
+		expect(rowsBtn.textContent).toBe("Show all 135 rows");
+		rowsBtn.click();
+		expect(tableWrap.querySelectorAll("tbody tr")).toHaveLength(135);
+		expect(tableWrap.querySelector(".studio-more-btn")).toBeNull();
+
+		const docCard = view.el.querySelector<HTMLElement>('.studio-doc[data-file="product/build.txt"]')!;
+		const textBody = docCard.querySelector<HTMLElement>(".studio-plain-text")!;
+		expect(textBody.textContent?.length).toBeLessThan(bigText.length);
+		expect(textBody.textContent).not.toContain("TAIL-MARKER");
+		const fileBtn = docCard.querySelector<HTMLButtonElement>(".studio-more-btn")!;
+		expect(fileBtn.textContent).toBe("Show full file");
+		fileBtn.click();
+		expect(textBody.textContent).toContain("TAIL-MARKER");
+		expect(textBody.textContent?.length).toBe(bigText.length);
+		expect(docCard.querySelector(".studio-more-btn")).toBeNull();
+
+		view.dispose();
+		store.dispose();
+	});
 });
 
 describe("SurfaceReportView", () => {
@@ -694,6 +810,68 @@ describe("SurfaceReportView", () => {
 		view.update();
 		expect(view.el.querySelector(".studio-badge")).toBeNull();
 		expect(view.el.querySelector(".report-chrome")).not.toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("streams report sections across slices and cancels cleanly on deactivate", async () => {
+		const report = summary({
+			id: BRAND_ID,
+			slug: "brand",
+			title: "Brand",
+			archetype: "studio",
+			icon: "book",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "brand",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [summary(), report]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: report })),
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("brand");
+
+		const reportJson = JSON.stringify({
+			headline: "Architecture Analysis",
+			sections: [
+				{ id: "s1", heading: "One", paragraphs: ["First section."] },
+				{ id: "s2", heading: "Two", paragraphs: ["Second section."] },
+				{ id: "s3", heading: "Three", paragraphs: ["Third section."] },
+				{ id: "s4", heading: "Four", paragraphs: ["Fourth section."] },
+			],
+		});
+
+		const cancelled = new SurfaceReportView({
+			store,
+			surface: report,
+			signal: new AbortController().signal,
+			baseFiles: { "brand/arch.report.json": reportJson },
+			timeSlice: true,
+		});
+		document.body.append(cancelled.el);
+		expect(cancelled.el.querySelector(".skeleton-surface-report")).not.toBeNull();
+		cancelled.deactivate();
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(cancelled.el.querySelectorAll(".report-section")).toHaveLength(0);
+		cancelled.dispose();
+
+		const view = new SurfaceReportView({
+			store,
+			surface: report,
+			signal: new AbortController().signal,
+			baseFiles: { "brand/arch.report.json": reportJson },
+			timeSlice: true,
+		});
+		document.body.append(view.el);
+		expect(view.el.querySelector(".skeleton-surface-report")).not.toBeNull();
+		await new Promise((resolve) => setTimeout(resolve, 35));
+		expect(view.el.querySelector(".skeleton-surface-report")).toBeNull();
+		expect(view.el.querySelectorAll(".report-section")).toHaveLength(4);
 		view.dispose();
 		store.dispose();
 	});

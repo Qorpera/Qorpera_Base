@@ -110,7 +110,10 @@ export class RailHover {
 		const duration = Math.min(230, 150 + distance * 0.12);
 		if (lit) this.#light(item, 0);
 		else this.#light(item, duration * 0.55);
-		const animation = this.tint.animate([frame(from), frame(to)], { duration, easing: easing("--ease-out") });
+		const animation = this.tint.animate([motionFrame(from, to), motionFrame(to, to)], {
+			duration,
+			easing: easing("--ease-out"),
+		});
 		this.#animation = animation;
 		const done = () => {
 			if (this.#animation === animation) this.#animation = undefined;
@@ -173,5 +176,14 @@ function frame(box: Box): Keyframe & Record<string, string> {
 		width: `${box.width}px`,
 		height: `${box.height}px`,
 		borderRadius: box.radius,
+	};
+}
+
+function motionFrame(box: Box, target: Box): Keyframe {
+	const sx = target.width > 0 ? box.width / target.width : 1;
+	const sy = target.height > 0 ? box.height / target.height : 1;
+	return {
+		translate: `${box.left}px ${box.top}px`,
+		scale: `${sx} ${sy}`,
 	};
 }
