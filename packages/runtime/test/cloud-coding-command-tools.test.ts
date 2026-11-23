@@ -1240,7 +1240,7 @@ describe("coding_run_command preflightLand dry-run check", () => {
 				),
 			).toBe(true);
 
-			// WHY: code/qorpera/site/worktrees/<36-char-uuid>/ is 64 bytes, leaving 2,536 bytes for the repo path.
+			// WHY: code/qorpera/site/worktrees/<36-char-uuid>/ is 65 bytes, leaving 2,535 bytes for the repo path.
 			const prefix12 = Array.from(
 				{ length: 12 },
 				(_, i) => `p${String(i).padStart(2, "0")}_${"b".repeat(191)}`,
