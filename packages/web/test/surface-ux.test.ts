@@ -269,10 +269,11 @@ describe("creating surfaces", () => {
 		dialog.close ??= function (this: HTMLDialogElement) {
 			this.open = false;
 		};
-		openCreateSurfaceSheet(store, COMPANY);
+		openCreateSurfaceSheet(store);
 		const sheet = document.querySelector(".surface-create-sheet")!;
 		const presets = [...sheet.querySelectorAll<HTMLElement>(".surface-create-kind")].map((row) => row.dataset.preset);
 		expect(presets).toEqual([
+			"custom",
 			"identity",
 			"website",
 			"web_app",
@@ -282,12 +283,12 @@ describe("creating surfaces", () => {
 			"dashboard",
 			"product",
 			"report",
-			"custom",
 		]);
 		const custom = sheet.querySelector<HTMLElement>(".surface-create-custom")!;
-		expect(custom.hidden).toBe(true);
-		sheet.querySelector<HTMLElement>('[data-preset="custom"]')!.click();
 		expect(custom.hidden).toBe(false);
+		expect(sheet.querySelector('[data-preset="custom"]')?.getAttribute("aria-pressed")).toBe("true");
+		expect(sheet.querySelector<HTMLInputElement>(".surface-create-name")?.value).toBe("");
+		expect(sheet.querySelector(".surface-sheet-link")).toBeNull();
 		expect(sheet.querySelector(".surface-create-swatch")).toBeNull();
 		const picked = () =>
 			sheet.querySelector<HTMLElement>('.surface-figure-choice[aria-checked="true"]')?.dataset.figure;
@@ -303,12 +304,13 @@ describe("creating surfaces", () => {
 		expect(hero()).toBe("phone");
 		expect(line()).toBe("iOS & Android app");
 		expect(sheet.querySelector('[data-preset="mobile_app"]')?.getAttribute("aria-pressed")).toBe("true");
-		const swap = sheet.querySelector<HTMLButtonElement>(".surface-create-swap")!;
+		const avatar = sheet.querySelector<HTMLButtonElement>(".surface-create-avatar")!;
 		const figures = sheet.querySelector<HTMLElement>(".surface-create-figures")!;
+		expect(sheet.querySelector(".surface-create-swap")).toBeNull();
 		expect(figures.hidden).toBe(true);
-		swap.click();
+		avatar.click();
 		expect(figures.hidden).toBe(false);
-		expect(swap.getAttribute("aria-expanded")).toBe("true");
+		expect(avatar.getAttribute("aria-expanded")).toBe("true");
 		sheet.querySelector<HTMLElement>('.surface-figure-choice[data-figure="piggy"]')!.click();
 		expect(figures.hidden).toBe(true);
 		expect(hero()).toBe("piggy");
@@ -359,7 +361,7 @@ describe("creating surfaces", () => {
 		dialog.close ??= function (this: HTMLDialogElement) {
 			this.open = false;
 		};
-		openCreateSurfaceSheet(store, COMPANY);
+		openCreateSurfaceSheet(store);
 		const sheet = document.querySelector<HTMLDialogElement>(".surface-create-sheet")!;
 		const row = (id: string) => sheet.querySelector<HTMLElement>(`[data-preset="${id}"]`)!;
 		const press = (target: HTMLElement, key: string) =>
@@ -376,16 +378,16 @@ describe("creating surfaces", () => {
 		press(row("identity"), "ArrowLeft");
 		expect(document.activeElement).toBe(row("custom"));
 
-		const swap = sheet.querySelector<HTMLButtonElement>(".surface-create-swap")!;
+		const avatar = sheet.querySelector<HTMLButtonElement>(".surface-create-avatar")!;
 		const figures = sheet.querySelector<HTMLElement>(".surface-create-figures")!;
-		swap.click();
-		swap.focus();
-		press(swap, "Escape");
+		avatar.click();
+		avatar.focus();
+		press(avatar, "Escape");
 		expect(figures.hidden).toBe(true);
 		expect(sheet.open).toBe(true);
 		expect(sheet.isConnected).toBe(true);
 
-		swap.click();
+		avatar.click();
 		expect(figures.hidden).toBe(false);
 		const name = sheet.querySelector<HTMLElement>(".surface-create-name")!;
 		name.dispatchEvent(new Event("pointerdown", { bubbles: true }));

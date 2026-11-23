@@ -863,7 +863,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				const store = surfacesOf(company);
 				if (!store) return;
 				event.preventDefault();
-				openCreateSurfaceSheet(store, company.profile.profileId);
+				openCreateSurfaceSheet(store);
 			},
 			{ signal: company.signal },
 		);
@@ -2302,7 +2302,7 @@ function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
 	let rail = surfaceRails.get(company);
 	if (!rail) {
 		rail = new SurfaceRail(store, company.profile.profileId, company.signal, () =>
-			openCreateSurfaceSheet(store, company.profile.profileId),
+			openCreateSurfaceSheet(store),
 		);
 		surfaceRails.set(company, rail);
 	}

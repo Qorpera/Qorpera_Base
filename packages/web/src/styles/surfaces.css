@@ -1130,8 +1130,6 @@
 .surface-automations-empty { color: var(--text-muted); }
 .surface-sheet-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding-top: 8px; }
 .surface-sheet-status { flex: 1; margin: 0; color: var(--text-muted); font-size: 12.5px; }
-.surface-sheet-link { color: var(--text-muted); font-size: 12.5px; white-space: nowrap; }
-.surface-sheet-link:hover { color: var(--text); }
 .surface-local-note {
 	margin: 2px 0 0; padding: 7px 11px; border-radius: 10px;
 	background: color-mix(in srgb, var(--text) 4%, transparent); color: var(--text-muted); font-size: 12px;
@@ -1235,15 +1233,21 @@
 	position: relative; display: grid; place-items: center; height: 170px; margin: 14px 14px 0; border-radius: 14px;
 	background: radial-gradient(120% 90% at 50% 100%, color-mix(in srgb, var(--text) 7%, var(--overlay)), color-mix(in srgb, var(--text) 2%, var(--overlay)));
 }
-.surface-create-swap {
-	position: absolute; right: 11px; bottom: 11px; height: 25px; padding: 0 10px; border: 0; border-radius: 8px;
-	background: var(--overlay); box-shadow: 0 1px 3px rgb(0 0 0 / 12%), 0 0 0 1px var(--border);
-	color: var(--text-muted); font: inherit; font-size: 11.5px; font-weight: 500; cursor: default;
+.surface-create-avatar {
+	position: relative; display: grid; place-items: center; width: 116px; height: 116px; padding: 0; border: 0;
+	border-radius: 30px; background: transparent; cursor: default; transition: background-color var(--motion-fast) ease;
 }
-.surface-create-swap:hover, .surface-create-swap[aria-expanded="true"] { color: var(--text); }
-.surface-create-swap:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.surface-create-avatar:hover, .surface-create-avatar[aria-expanded="true"] { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.surface-create-avatar:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.surface-create-avatar-edit {
+	position: absolute; right: 2px; bottom: 2px; display: grid; place-items: center; width: 26px; height: 26px;
+	border-radius: 50%; background: var(--overlay); box-shadow: 0 1px 3px rgb(0 0 0 / 16%), 0 0 0 1px var(--border);
+	color: var(--text-muted); transition: color var(--motion-fast) ease;
+}
+.surface-create-avatar-edit svg { width: 13px; height: 13px; }
+.surface-create-avatar:hover .surface-create-avatar-edit, .surface-create-avatar[aria-expanded="true"] .surface-create-avatar-edit { color: var(--text); }
 .surface-create-figures {
-	position: absolute; z-index: 4; top: calc(100% - 8px); right: 11px; padding: 8px; border: 1px solid var(--border-strong);
+	position: absolute; z-index: 4; top: calc(50% + 62px); left: 50%; transform: translateX(-50%); padding: 8px; border: 1px solid var(--border-strong);
 	border-radius: 13px; background: var(--overlay); box-shadow: 0 12px 34px rgb(0 0 0 / 16%);
 }
 .surface-create-figures[hidden] { display: none; }

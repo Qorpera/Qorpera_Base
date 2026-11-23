@@ -286,6 +286,14 @@ interface SurfacePreset {
 
 const SURFACE_PRESETS: readonly SurfacePreset[] = [
 	{
+		id: "custom",
+		slug: null,
+		kind: "custom",
+		title: phrase("Custom Surface"),
+		line: phrase("Anything else: an inventory tracker, investor room, support desk…"),
+		archetype: "live_build",
+	},
+	{
 		id: "identity",
 		slug: "identity",
 		kind: "identity",
@@ -352,14 +360,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		archetype: "studio",
 		folderRoot: "reports",
 	},
-	{
-		id: "custom",
-		slug: null,
-		kind: "custom",
-		title: phrase("Custom Surface"),
-		line: phrase("Anything else: an inventory tracker, investor room, support desk…"),
-		archetype: "live_build",
-	},
 ];
 
 const KIND_STEPS: Readonly<Record<string, number>> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
@@ -368,7 +368,7 @@ function kindLine(preset: SurfacePreset): string {
 	return preset.line ? t(preset.line) : surfaceKindSubtitle(preset.kind);
 }
 
-export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string): void {
+export function openCreateSurfaceSheet(store: SurfacesStore): void {
 	let selected: SurfacePreset = SURFACE_PRESETS[0]!;
 	let customArchetype: "live_build" | "studio" = "live_build";
 	let figure: SurfaceFigureId = surfaceKindFigure(selected.kind);
@@ -378,7 +378,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 	const nameInput = h("input", {
 		type: "text",
 		class: "surface-create-name",
-		value: t(selected.title),
+		value: selected.kind === "custom" ? "" : t(selected.title),
 		placeholder: t("Surface name"),
 		"aria-label": t("Name"),
 		autocomplete: "off",
@@ -427,36 +427,48 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 		segment("studio", t("Studio files"), t("Documents, tables, and specs that sessions edit.")),
 	);
 	archetypeRow.setAttribute("aria-label", t("How it is built"));
-	const customPanel = h("div", { class: "surface-create-custom", hidden: true }, archetypeRow, descriptionInput);
+	const customPanel = h(
+		"div",
+		{ class: "surface-create-custom", hidden: selected.kind !== "custom" },
+		archetypeRow,
+		descriptionInput,
+	);
 
-	const hero = h("span", { class: "surface-tile is-stage", "aria-hidden": "true" }, surfaceFigure(figure));
-	const showFigure = () => hero.replaceChildren(surfaceFigure(figure));
-	const swap = h(
+	const heroTile = h("span", { class: "surface-tile is-stage", "aria-hidden": "true" }, surfaceFigure(figure));
+	const showFigure = () => heroTile.replaceChildren(surfaceFigure(figure));
+	const avatar = h(
 		"button",
-		{ type: "button", class: "surface-create-swap", "aria-expanded": "false" },
-		t("Change figure"),
+		{
+			type: "button",
+			class: "surface-create-avatar",
+			"aria-label": t("Change figure"),
+			"aria-expanded": "false",
+			title: t("Change figure"),
+		},
+		heroTile,
+		h("span", { class: "surface-create-avatar-edit", "aria-hidden": "true" }, icon("edit")),
 	);
 	const figures = surfaceFigureChoices(figure, (id) => {
 		figure = id;
 		figureChosen = true;
 		showFigure();
 		setPicker(false);
-		swap.focus({ preventScroll: true });
+		avatar.focus({ preventScroll: true });
 	});
 	const picker = h("div", { class: "surface-create-figures", hidden: true }, figures);
 	const setPicker = (open: boolean) => {
 		picker.hidden = !open;
-		swap.setAttribute("aria-expanded", String(open));
+		avatar.setAttribute("aria-expanded", String(open));
 		if (open) figures.querySelector<HTMLElement>('[aria-checked="true"]')?.focus({ preventScroll: true });
 	};
-	swap.addEventListener("click", () => setPicker(picker.hidden));
-	const stage = h("div", { class: "surface-create-stage" }, hero, swap, picker);
+	avatar.addEventListener("click", () => setPicker(picker.hidden));
+	const stage = h("div", { class: "surface-create-stage" }, avatar, picker);
 	stage.addEventListener("keydown", (event) => {
 		if (event.key !== "Escape" || picker.hidden) return;
 		event.preventDefault();
 		event.stopPropagation();
 		setPicker(false);
-		swap.focus({ preventScroll: true });
+		avatar.focus({ preventScroll: true });
 	});
 
 	const choose = (preset: SurfacePreset) => {
@@ -542,15 +554,6 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 			h(
 				"div",
 				{ class: "surface-sheet-actions" },
-				h(
-					"a",
-					{
-						class: "surface-sheet-link",
-						href: `#/c/${profileId}/new-program`,
-						onclick: () => dialog.close(false),
-					},
-					t("Import a program instead"),
-				),
 				status,
 				submit,
 			),
@@ -558,7 +561,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 	);
 	form.addEventListener("pointerdown", (event) => {
 		if (picker.hidden || !(event.target instanceof Node)) return;
-		if (picker.contains(event.target) || swap.contains(event.target)) return;
+		if (picker.contains(event.target) || avatar.contains(event.target)) return;
 		setPicker(false);
 	});
 	form.addEventListener("submit", async (event) => {

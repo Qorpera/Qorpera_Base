@@ -145,7 +145,6 @@ export const SURFACES: Record<string, string> = {
 	"Optional: describe the first change to start right away…":
 		"Valgfrit: beskriv den første ændring for at gå i gang med det samme…",
 	"Create surface": "Opret surface",
-	"Import a program instead": "Importér et program i stedet",
 	Website: "Hjemmeside",
 	"Web App": "Webapp",
 	"Local preview — changes stay in this browser until Surfaces migrations are deployed.":
