@@ -1970,9 +1970,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 		const body = h(
 			"div",
 			{ class: "rail-agents-body", id: "rail-agents-body" },
-			workingWrap,
-			scheduledWrap,
-			idleWrap,
+			h("div", { class: "rail-agents-inner" }, workingWrap, scheduledWrap, idleWrap),
 		);
 		const el = h("div", { class: "rail-agents-hub", role: "group", "aria-label": t("Agents") }, toggle, body);
 		let open = false;
@@ -2017,6 +2015,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 				// WHY: storage can be blocked; the choice then lasts this visit.
 			}
 			paintAgentsFold(made);
+			if (made.open) keepOpeningHubInView(made.el);
 		});
 		hub = made;
 		agentsHubs.set(company, hub);
@@ -2285,11 +2284,25 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 	return hub.el;
 }
 
+// WHY: the hub sits at the foot of the list, so in a list that scrolls it would open below the fold; the list
+// follows it while it grows, so it rises into view.
+function keepOpeningHubInView(hub: HTMLElement): void {
+	const list = hub.closest<HTMLElement>(".rail-scroll");
+	if (!list) return;
+	const until = performance.now() + 520;
+	const follow = (): void => {
+		const below = hub.getBoundingClientRect().bottom - list.getBoundingClientRect().bottom;
+		if (below > 0) list.scrollTop += below;
+		if (performance.now() < until) requestAnimationFrame(follow);
+	};
+	requestAnimationFrame(follow);
+}
+
 function paintAgentsFold(hub: AgentsHubParts): void {
 	const shown = hub.open || hub.held;
 	hub.el.classList.toggle("is-open", shown);
 	hub.toggle.setAttribute("aria-expanded", String(shown));
-	hub.body.hidden = !shown;
+	hub.body.toggleAttribute("inert", !shown);
 	hub.count.textContent = String(hub.rowCount);
 	hub.count.hidden = shown;
 	hub.toggle.setAttribute("aria-label", shown ? t("Agents") : t("Agents: {count}", { count: hub.rowCount }));

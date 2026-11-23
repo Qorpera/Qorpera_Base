@@ -838,7 +838,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		const body = hub!.querySelector<HTMLElement>(".rail-agents-body")!;
 		const count = hub!.querySelector<HTMLElement>(".rail-agents-count")!;
 		expect(toggle.getAttribute("aria-expanded")).toBe("false");
-		expect(body.hidden).toBe(true);
+		expect(body.hasAttribute("inert")).toBe(true);
 		expect(count.hidden).toBe(false);
 		const rows = hub!.querySelectorAll(".rail-agent-hub-row").length;
 		expect(Number(count.textContent)).toBe(rows);
@@ -846,26 +846,26 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(toggle.getAttribute("aria-label")).toBe(`Agents: ${rows}`);
 		toggle.click();
 		expect(toggle.getAttribute("aria-expanded")).toBe("true");
-		expect(body.hidden).toBe(false);
+		expect(body.hasAttribute("inert")).toBe(false);
 		expect(count.hidden).toBe(true);
 		expect(localStorage.getItem("qorpera.web.rail-agents-open")).toBe("1");
 		expect(toggle.getAttribute("aria-label")).toBe("Agents");
 		toggle.click();
-		expect(body.hidden).toBe(true);
+		expect(body.hasAttribute("inert")).toBe(true);
 
 		draw("staff", idle.id);
-		expect(body.hidden).toBe(false);
+		expect(body.hasAttribute("inert")).toBe(false);
 		expect(hub!.querySelector(`a[data-agent-id="${idle.id}"]`)?.classList.contains("active")).toBe(true);
 		expect(localStorage.getItem("qorpera.web.rail-agents-open")).toBe("0");
 		toggle.click();
-		expect(body.hidden).toBe(true);
+		expect(body.hasAttribute("inert")).toBe(true);
 		draw("staff", idle.id);
-		expect(body.hidden).toBe(true);
+		expect(body.hasAttribute("inert")).toBe(true);
 		draw("surface", "website");
 		draw("staff", scheduled.id);
-		expect(body.hidden).toBe(false);
+		expect(body.hasAttribute("inert")).toBe(false);
 		draw("surface", "website");
-		expect(body.hidden).toBe(true);
+		expect(body.hasAttribute("inert")).toBe(true);
 		localStorage.removeItem("qorpera.web.rail-agents-open");
 
 		const dialog = HTMLDialogElement.prototype;
