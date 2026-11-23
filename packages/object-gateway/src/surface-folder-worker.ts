@@ -17,7 +17,9 @@ import {
 	mapBounded,
 	PLATFORM_ACTOR,
 	PLATFORM_STAGE_CONCURRENCY,
+	type PlatformFileManifest,
 	type PlatformFileReference,
+	PlatformFolderProblem,
 	PlatformFolderWriter,
 } from "./platform-folder-writer.ts";
 import type { ObjectGatewayReplication } from "./replication.ts";
@@ -467,6 +469,14 @@ function parseSnapshotRecord(raw: Record<string, unknown>): FolderUndoSnapshot |
 		...(versionsAfter ? { versionsAfter } : {}),
 		...(afterContentSha256 ? { afterContentSha256 } : {}),
 	};
+}
+
+function refusalDetail(lead: string, failureDetail: string | null, savedPaths: readonly string[]): string {
+	const parts = [lead, ...(failureDetail ? [failureDetail] : [])];
+	if (savedPaths.length > 0) {
+		parts.push(`Only part of this change was saved; these files did change: ${savedPaths.join(", ")}`);
+	}
+	return parts.join(". ").slice(0, 1000);
 }
 
 function formatError(error: unknown): string {
@@ -1005,20 +1015,11 @@ export class SurfaceFolderWorker {
 
 		const newStoredFiles: { readonly path: string; readonly file: PlatformFileReference }[] = [];
 		for (const [path, value] of working) {
-			if (value === null || typeof value !== "object") continue;
-			if (currentByPath.get(path)?.fileRef?.manifestSha256 === value.file.manifestSha256) continue;
-			newStoredFiles.push({ path, file: value.file });
+			if (value !== null && typeof value === "object") newStoredFiles.push({ path, file: value.file });
 		}
-		const missingStoredPaths = await this.#missingStoredFiles(environmentId, newStoredFiles, signal);
-		if (missingStoredPaths.length > 0) {
-			await this.#completeMerge(
-				job,
-				{
-					status: "failed",
-					errorDetail: `Stored file not found in the company folder: ${missingStoredPaths.join(", ")}`,
-				},
-				signal,
-			);
+		const storedProblem = await this.#storedFilesProblem(environmentId, newStoredFiles, signal);
+		if (storedProblem) {
+			await this.#completeMerge(job, { status: "failed", errorDetail: storedProblem }, signal);
 			return;
 		}
 
@@ -1079,7 +1080,11 @@ export class SurfaceFolderWorker {
 						{
 							status: "conflicted",
 							conflictPaths: commitResult.conflictPaths,
-							errorDetail: "One or more files changed while landing this Studio patch",
+							errorDetail: refusalDetail(
+								"One or more files changed while landing this Studio patch",
+								commitResult.failureDetail,
+								commitResult.savedPaths,
+							),
 						},
 						outcomeSignal,
 					),
@@ -1091,7 +1096,14 @@ export class SurfaceFolderWorker {
 			await withAbortScopes(
 				shutdownSignal ? [shutdownSignal] : [],
 				(outcomeSignal) =>
-					this.#completeMerge(job, { status: "failed", errorDetail: commitResult.errorDetail }, outcomeSignal),
+					this.#completeMerge(
+						job,
+						{
+							status: "failed",
+							errorDetail: refusalDetail(commitResult.errorDetail, null, commitResult.savedPaths),
+						},
+						outcomeSignal,
+					),
 				10_000,
 			);
 			return;
@@ -1279,7 +1291,11 @@ export class SurfaceFolderWorker {
 						{
 							status: "conflicted",
 							conflictPaths: commitResult.conflictPaths,
-							errorDetail: "Files changed concurrently during Studio rollback",
+							errorDetail: refusalDetail(
+								"Files changed concurrently during Studio rollback",
+								commitResult.failureDetail,
+								commitResult.savedPaths,
+							),
 						},
 						outcomeSignal,
 					),
@@ -1291,7 +1307,14 @@ export class SurfaceFolderWorker {
 			await withAbortScopes(
 				shutdownSignal ? [shutdownSignal] : [],
 				(outcomeSignal) =>
-					this.#completeMerge(job, { status: "failed", errorDetail: commitResult.errorDetail }, outcomeSignal),
+					this.#completeMerge(
+						job,
+						{
+							status: "failed",
+							errorDetail: refusalDetail(commitResult.errorDetail, null, commitResult.savedPaths),
+						},
+						outcomeSignal,
+					),
 				10_000,
 			);
 			return;
@@ -1420,31 +1443,69 @@ export class SurfaceFolderWorker {
 		return { units, unitPaths };
 	}
 
-	async #missingStoredFiles(
+	async #storedFilesProblem(
 		environmentId: string,
 		files: readonly { readonly path: string; readonly file: PlatformFileReference }[],
 		signal: AbortSignal,
-	): Promise<string[]> {
-		const found = await mapBounded(
+	): Promise<string | null> {
+		const states = await mapBounded(
 			files,
 			PLATFORM_STAGE_CONCURRENCY,
-			async (entry, _index, stepSignal) => {
+			(entry, _index, stepSignal) => this.#storedFileState(environmentId, entry.file, stepSignal),
+			signal,
+		);
+		const missing = files.filter((_entry, index) => states[index] === "missing").map((entry) => entry.path);
+		const mismatched = files.filter((_entry, index) => states[index] === "mismatch").map((entry) => entry.path);
+		const problems = [
+			...(missing.length > 0 ? [`Stored file not found in the company folder: ${missing.join(", ")}`] : []),
+			...(mismatched.length > 0 ? [`Stored file does not match its reference: ${mismatched.join(", ")}`] : []),
+		];
+		return problems.length > 0 ? problems.join(". ") : null;
+	}
+
+	async #storedFileState(
+		environmentId: string,
+		file: PlatformFileReference,
+		signal: AbortSignal,
+	): Promise<"ok" | "missing" | "mismatch"> {
+		const isMissing = (error: unknown): boolean =>
+			error instanceof ObjectDependencyError && (error.status === 403 || error.status === 404);
+		let manifest: PlatformFileManifest;
+		try {
+			manifest = await raceSignal(this.#folder.manifest(environmentId, file.manifestSha256, signal), signal);
+		} catch (error) {
+			if (isMissing(error)) return "missing";
+			if (error instanceof PlatformFolderProblem) return "mismatch";
+			throw error;
+		}
+		if (
+			manifest.fileSha256 !== file.fileSha256 ||
+			manifest.bytes !== file.bytes ||
+			manifest.mediaType !== file.mediaType ||
+			manifest.executable !== file.executable
+		) {
+			return "mismatch";
+		}
+		const chunksPresent = await mapBounded(
+			manifest.chunks,
+			PLATFORM_STAGE_CONCURRENCY,
+			async (chunk, _index, stepSignal) => {
 				try {
-					await this.#options.authority.publisher(
+					const answer = (await this.#options.authority.publisher(
 						"qorpera_folder_authorize_object_download",
-						{ p_environment_id: environmentId, p_actor: PLATFORM_ACTOR, p_sha256: entry.file.manifestSha256 },
+						{ p_environment_id: environmentId, p_actor: PLATFORM_ACTOR, p_sha256: chunk.sha256 },
 						stepSignal,
-					);
-					return true;
+					)) as { bytes?: unknown } | null;
+					return answer?.bytes === chunk.bytes ? "ok" : "mismatch";
 				} catch (error) {
-					if (error instanceof ObjectDependencyError && (error.status === 403 || error.status === 404))
-						return false;
+					if (isMissing(error)) return "missing";
 					throw error;
 				}
 			},
 			signal,
 		);
-		return files.filter((_entry, index) => !found[index]).map((entry) => entry.path);
+		if (chunksPresent.includes("missing")) return "missing";
+		return chunksPresent.includes("mismatch") ? "mismatch" : "ok";
 	}
 
 	async #commitUnits(
@@ -1456,8 +1517,13 @@ export class SurfaceFolderWorker {
 		markCommitUncertain: () => void,
 	): Promise<
 		| { readonly status: "saved"; readonly versionsAfter: Record<string, string | null> }
-		| { readonly status: "conflict"; readonly conflictPaths: string[] }
-		| { readonly status: "failed"; readonly errorDetail: string }
+		| {
+				readonly status: "conflict";
+				readonly conflictPaths: string[];
+				readonly savedPaths: string[];
+				readonly failureDetail: string | null;
+		  }
+		| { readonly status: "failed"; readonly errorDetail: string; readonly savedPaths: string[] }
 	> {
 		// WHY: qorpera_folder_commit replays idempotently by operationKey, so retry uncertain transport/timeout errors under a fresh 20 s signal while failing immediately on definite 4xx/SQLSTATE rollbacks.
 		let raw: { schema?: unknown; units?: unknown } | null = null;
@@ -1474,7 +1540,7 @@ export class SurfaceFolderWorker {
 				break;
 			} catch (error) {
 				if (!sawUncertainError && isDefiniteCommitRejection(error)) {
-					return { status: "failed", errorDetail: formatError(error) };
+					return { status: "failed", errorDetail: formatError(error), savedPaths: [] };
 				}
 				if (!isLockConflictRollback(error)) {
 					sawUncertainError = true;
@@ -1496,17 +1562,19 @@ export class SurfaceFolderWorker {
 			!Array.isArray(raw.units) ||
 			raw.units.length !== units.length
 		) {
-			return { status: "failed", errorDetail: "Unexpected folder commit response" };
+			return { status: "failed", errorDetail: "Unexpected folder commit response", savedPaths: [] };
 		}
 		const versionsAfter: Record<string, string | null> = {};
 		const conflictPaths: string[] = [];
 		const failureReasons: string[] = [];
+		const savedPaths: string[] = [];
 		for (let i = 0; i < raw.units.length; i += 1) {
 			const unit = raw.units[i] as { outcome?: unknown; reason?: unknown; version?: unknown };
 			const path = unitPaths[i];
 			if (unit?.outcome === "saved") {
 				if (path) {
 					versionsAfter[path] = typeof unit.version === "string" ? unit.version : null;
+					savedPaths.push(path);
 				}
 				continue;
 			}
@@ -1519,11 +1587,12 @@ export class SurfaceFolderWorker {
 				failureReasons.push(path ? `${path}: ${reason}` : reason);
 			}
 		}
+		const failureDetail = failureReasons.length > 0 ? failureReasons.join("; ") : null;
 		if (conflictPaths.length > 0) {
-			return { status: "conflict", conflictPaths: [...new Set(conflictPaths)] };
+			return { status: "conflict", conflictPaths: [...new Set(conflictPaths)], savedPaths, failureDetail };
 		}
-		if (failureReasons.length > 0) {
-			return { status: "failed", errorDetail: failureReasons.join("; ").slice(0, 1000) };
+		if (failureDetail !== null) {
+			return { status: "failed", errorDetail: failureDetail, savedPaths };
 		}
 		return { status: "saved", versionsAfter };
 	}

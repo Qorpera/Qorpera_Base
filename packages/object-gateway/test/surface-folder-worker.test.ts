@@ -67,6 +67,21 @@ function createHarness(
 	const unverifiedManifests = new Set<string>();
 	const storeGets: string[] = [];
 
+	const hasProof = (file: { manifestSha256: string; fileSha256: string; bytes: number }): boolean => {
+		const manifestBytes = objects.get(file.manifestSha256);
+		if (!manifestBytes) return false;
+		const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as {
+			fileSha256: string;
+			bytes: number;
+			chunks: { sha256: string }[];
+		};
+		return (
+			manifest.fileSha256 === file.fileSha256 &&
+			manifest.bytes === file.bytes &&
+			manifest.chunks.every((chunk) => objects.has(chunk.sha256))
+		);
+	};
+
 	const ensureParents = (path: string): void => {
 		const parts = path.split("/");
 		for (let i = 1; i < parts.length; i += 1) {
@@ -257,76 +272,60 @@ function createHarness(
 							file?: { manifestSha256: string; fileSha256: string; bytes: number; mediaType: string };
 						}[];
 						const outcomes: Record<string, unknown>[] = [];
-						const stagedMutations: (() => void)[] = [];
-						let hasFailure = false;
 						for (const unit of units) {
 							const existing = entries.get(unit.path);
 							if (unit.op === "mkdir") {
 								const nextVersion = randomUUID();
-								stagedMutations.push(() => {
-									if (!entries.has(unit.path)) {
-										entries.set(unit.path, {
-											kind: "folder",
-											version: nextVersion,
-											content: null,
-											manifestSha256: null,
-											fileSha256: null,
-											mediaType: "inode/directory",
-										});
-									}
-								});
+								if (!entries.has(unit.path)) {
+									entries.set(unit.path, {
+										kind: "folder",
+										version: nextVersion,
+										content: null,
+										manifestSha256: null,
+										fileSha256: null,
+										mediaType: "inode/directory",
+									});
+								}
 								outcomes.push({ outcome: "saved", version: nextVersion });
 								continue;
 							}
 							if (unit.op === "write") {
 								if (unit.expectedVersion && existing?.version !== unit.expectedVersion) {
-									hasFailure = true;
 									outcomes.push({ outcome: "refused", reason: "version_mismatch" });
 									continue;
 								}
 								if (!unit.expectedVersion && existing) {
-									hasFailure = true;
 									outcomes.push({ outcome: "refused", reason: "exists" });
 									continue;
 								}
 								const fileRef = unit.file!;
-								if (!objects.has(fileRef.manifestSha256) || unverifiedManifests.has(fileRef.manifestSha256)) {
-									hasFailure = true;
+								if (!hasProof(fileRef) || unverifiedManifests.has(fileRef.manifestSha256)) {
 									outcomes.push({ outcome: "refused", reason: "bytes_unverified" });
 									continue;
 								}
-								const content = objects.get(fileRef.fileSha256) ?? new Uint8Array();
 								const nextVersion = randomUUID();
-								stagedMutations.push(() => {
-									entries.set(unit.path, {
-										kind: "file",
-										version: nextVersion,
-										content,
-										manifestSha256: fileRef.manifestSha256,
-										fileSha256: fileRef.fileSha256,
-										mediaType: fileRef.mediaType,
-									});
+								entries.set(unit.path, {
+									kind: "file",
+									version: nextVersion,
+									content: objects.get(fileRef.fileSha256) ?? new Uint8Array(),
+									manifestSha256: fileRef.manifestSha256,
+									fileSha256: fileRef.fileSha256,
+									mediaType: fileRef.mediaType,
 								});
 								outcomes.push({ outcome: "saved", version: nextVersion });
 								continue;
 							}
 							if (unit.op === "delete") {
 								if (!existing || existing.version !== unit.expectedVersion) {
-									hasFailure = true;
 									outcomes.push({ outcome: "refused", reason: "version_mismatch" });
 									continue;
 								}
-								stagedMutations.push(() => {
-									entries.delete(unit.path);
-								});
+								entries.delete(unit.path);
 								outcomes.push({ outcome: "saved", version: null });
 							}
 						}
-						if (!hasFailure) {
-							for (const apply of stagedMutations) apply();
-						}
 						result = { schema: "qorpera.folder-commit/v1", units: outcomes };
-						if (opKey && !hasFailure) {
+						if (opKey) {
 							committedByOpKey.set(opKey, result);
 						}
 					}
@@ -450,6 +449,9 @@ function createHarness(
 		storeFile,
 		unverifiedManifests,
 		storeGets,
+		dropObject(hash: string) {
+			objects.delete(hash);
+		},
 		setPendingClaim(next: { merges?: unknown[]; publishes?: unknown[] }) {
 			pendingClaim = next;
 		},
@@ -1488,7 +1490,6 @@ describe("SurfaceFolderWorker", () => {
 			expect(h.readText("product/spec.md")).toBe("New spec.\n");
 			expect(JSON.parse(h.readText("product/meta.json") ?? "{}")).toEqual({ model: "models/chair.glb" });
 			expect(h.storeGets).not.toContain(model.fileSha256);
-			expect(h.storeGets).not.toContain(model.manifestSha256);
 			const snapshot = landed.p_pre_merge_snapshot as {
 				filesBefore: Record<string, unknown>;
 				afterContentSha256: Record<string, unknown>;
@@ -1658,7 +1659,45 @@ describe("SurfaceFolderWorker", () => {
 			expect(h.getCommitCount()).toBe(0);
 		});
 
-		it("fails with a plain reason naming the path when the folder commit refuses the reference", async () => {
+		it("fails a reference that does not match its stored file, naming the path, before saving or committing anything", async () => {
+			const h = createHarness({ "product/spec.md": "Spec.\n" });
+			const model = h.storeFile(bytesOf("model"), "model/gltf-binary");
+			const poster = h.storeFile(bytesOf("poster"), "image/png");
+			const landed = await land(h, randomUUID(), [
+				{ op: "write_text", path: "spec.md", content: "New spec.\n" },
+				{ op: "write_file", path: "wrong-hash.glb", file: { ...model, fileSha256: "c".repeat(64) } },
+				{ op: "write_file", path: "wrong-size.glb", file: { ...model, bytes: model.bytes + 1 } },
+				{ op: "write_file", path: "wrong-type.png", file: { ...model, mediaType: "image/png" } },
+				{ op: "write_file", path: "poster.png", file: poster },
+			]);
+
+			expect(landed.p_status).toBe("failed");
+			expect(landed.p_error_detail).toBe(
+				"Stored file does not match its reference: product/wrong-hash.glb, product/wrong-size.glb, product/wrong-type.png",
+			);
+			expect(h.getCommitCount()).toBe(0);
+			expect(h.externalSnapshots.size).toBe(0);
+			expect(h.readText("product/spec.md")).toBe("Spec.\n");
+			expect(h.storeGets).not.toContain(model.fileSha256);
+			expect(h.storeGets).not.toContain(poster.fileSha256);
+		});
+
+		it("fails a reference whose stored file lost a chunk, naming the path, before committing anything", async () => {
+			const h = createHarness({ "product/spec.md": "Spec.\n" });
+			const model = h.storeFile(bytesOf("model"), "model/gltf-binary");
+			h.dropObject(model.fileSha256);
+			const landed = await land(h, randomUUID(), [
+				{ op: "write_text", path: "spec.md", content: "New spec.\n" },
+				{ op: "write_file", path: "model.glb", file: model },
+			]);
+
+			expect(landed.p_status).toBe("failed");
+			expect(landed.p_error_detail).toBe("Stored file not found in the company folder: product/model.glb");
+			expect(h.getCommitCount()).toBe(0);
+			expect(h.readText("product/spec.md")).toBe("Spec.\n");
+		});
+
+		it("names the files a commit saved when it refuses a reference that passed the check", async () => {
 			const h = createHarness({ "product/spec.md": "Spec.\n" });
 			const model = h.storeFile(bytesOf("model"), "model/gltf-binary");
 			h.unverifiedManifests.add(model.manifestSha256);
@@ -1668,8 +1707,11 @@ describe("SurfaceFolderWorker", () => {
 			]);
 
 			expect(landed.p_status).toBe("failed");
-			expect(landed.p_error_detail).toBe("Stored file not found in the company folder: product/model.glb");
-			expect(h.readText("product/spec.md")).toBe("Spec.\n");
+			expect(landed.p_error_detail).toBe(
+				"Stored file not found in the company folder: product/model.glb. Only part of this change was saved; these files did change: product/spec.md",
+			);
+			expect(h.getCommitCount()).toBe(1);
+			expect(h.readText("product/spec.md")).toBe("New spec.\n");
 			expect(h.entries.has("product/model.glb")).toBe(false);
 		});
 
