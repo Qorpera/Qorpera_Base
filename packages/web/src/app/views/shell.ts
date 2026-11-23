@@ -2290,12 +2290,13 @@ function keepOpeningHubInView(hub: HTMLElement): void {
 	const list = hub.closest<HTMLElement>(".rail-scroll");
 	if (!list) return;
 	const until = performance.now() + 520;
+	const interruptions = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
 	let stopped = false;
 	const stop = (): void => {
 		stopped = true;
+		for (const type of interruptions) list.removeEventListener(type, stop);
 	};
-	list.addEventListener("wheel", stop, { once: true, passive: true });
-	list.addEventListener("touchstart", stop, { once: true, passive: true });
+	for (const type of interruptions) list.addEventListener(type, stop, { passive: true });
 	const follow = (): void => {
 		if (stopped) return;
 		const h = hub.getBoundingClientRect();
@@ -2303,10 +2304,7 @@ function keepOpeningHubInView(hub: HTMLElement): void {
 		const below = Math.min(h.bottom - l.bottom, h.top - l.top);
 		if (below > 0) list.scrollTop += below;
 		if (performance.now() < until) requestAnimationFrame(follow);
-		else {
-			list.removeEventListener("wheel", stop);
-			list.removeEventListener("touchstart", stop);
-		}
+		else stop();
 	};
 	requestAnimationFrame(follow);
 }
