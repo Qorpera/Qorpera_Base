@@ -42,6 +42,7 @@ export const GEMINI_KEY_ERROR_DETAILS = [
 	"api_key_blocked",
 	"service_disabled",
 	"billing_disabled",
+	"prepay_balance_empty",
 	"free_tier_limit_zero",
 	"quota_limit_zero",
 	"rate_limited",
