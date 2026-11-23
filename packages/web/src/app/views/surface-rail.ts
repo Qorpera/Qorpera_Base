@@ -338,7 +338,7 @@ export class SurfaceRail {
 		const surface = this.#store.state.surfaces.find((item) => item.slug === row?.dataset.surfaceSlug);
 		if (!row || !surface) return;
 		event.preventDefault();
-		const chosen = surfaceFigureOf(surface, this.#store.lookOf(surface));
+		const chosen = surfaceFigureOf(this.#withShownFigure(surface), this.#store.lookOf(surface));
 		openContextMenu({
 			label: surface.title,
 			...menuPoint(event, row),
@@ -392,12 +392,18 @@ export class SurfaceRail {
 	}
 
 	async #saveFigure(surfaceId: string, figure: SurfaceFigureId): Promise<void> {
+		const saving = this.#savingFigures.has(surfaceId);
 		this.#savingFigures.set(surfaceId, figure);
 		this.#redrawFigure(surfaceId);
+		if (saving) return;
 		try {
-			await this.#store.setFigure(surfaceId, figure);
+			let sent: SurfaceFigureId | undefined;
+			while (sent !== this.#savingFigures.get(surfaceId)) {
+				sent = this.#savingFigures.get(surfaceId);
+				if (!sent || !(await this.#store.setFigure(surfaceId, sent))) break;
+			}
 		} finally {
-			if (this.#savingFigures.get(surfaceId) === figure) this.#savingFigures.delete(surfaceId);
+			this.#savingFigures.delete(surfaceId);
 			this.#redrawFigure(surfaceId);
 		}
 	}

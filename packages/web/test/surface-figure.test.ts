@@ -202,6 +202,46 @@ describe("a surface's figure in the rail", () => {
 		store.dispose();
 	});
 
+	it("saves the last figure picked when a second pick lands while the first is saving", async () => {
+		const answers: ((surface: ReturnType<typeof summary>) => void)[] = [];
+		const setSurfaceFigure = vi.fn(
+			(_id: string, _figure: string) =>
+				new Promise<ReturnType<typeof summary>>((resolve) => {
+					answers.push(resolve);
+				}),
+		);
+		const store = storeWith(fakeClient({ setSurfaceFigure }));
+		await store.load();
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+		const shown = () =>
+			rail.el.querySelector<HTMLElement>('.rail-surface[data-surface-slug="website"] .surface-figure')?.dataset
+				.figure;
+		const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+		openFigures(rail).querySelector<HTMLElement>('[data-figure="shop"]')!.click();
+		const again = openFigures(rail);
+		expect(again.querySelector('[aria-checked="true"]')?.getAttribute("data-figure")).toBe("shop");
+		again.querySelector<HTMLElement>('[data-figure="jar"]')!.click();
+		expect(shown()).toBe("jar");
+		expect(setSurfaceFigure).toHaveBeenCalledTimes(1);
+
+		answers[0]!(summary({ icon: "figure:shop" }));
+		await settle();
+		rail.update("website");
+		expect(shown()).toBe("jar");
+		expect(setSurfaceFigure).toHaveBeenLastCalledWith(SURFACE, "jar");
+
+		answers[1]!(summary({ icon: "figure:jar" }));
+		await settle();
+		rail.update("website");
+		expect(shown()).toBe("jar");
+		expect(store.state.surfaces[0]?.icon).toBe("figure:jar");
+		expect(setSurfaceFigure).toHaveBeenCalledTimes(2);
+		store.dispose();
+	});
+
 	it("turns Auto-publish on from the rail's right-click, where it stays reachable with the bar hidden", async () => {
 		const setSurfaceAutoPublish = vi.fn(async (_id: string, enabled: boolean) => summary({ autoPublish: enabled }));
 		const store = storeWith(fakeClient({ setSurfaceAutoPublish }));
