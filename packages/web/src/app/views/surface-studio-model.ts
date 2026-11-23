@@ -88,7 +88,7 @@ function folderOf(path: string): string {
 	return index < 0 ? "" : path.slice(0, index);
 }
 
-function joinStudioPath(folder: string, relative: string): string | undefined {
+export function joinStudioPath(folder: string, relative: string): string | undefined {
 	const parts = folder ? folder.split("/") : [];
 	for (const part of relative.replace(/^\.\//, "").split("/")) {
 		if (!part || part === ".") continue;
