@@ -189,8 +189,9 @@ describe("the surface rail", () => {
 			offer: null,
 		});
 
-		afterEach(() => {
+		afterEach(async () => {
 			openMenu()?.close();
+			await flush();
 			history.replaceState(null, "", location.pathname);
 		});
 
