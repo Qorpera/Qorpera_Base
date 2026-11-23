@@ -12,7 +12,6 @@
 	--storage-folder-back: #4d8ae0; --storage-folder-front: #74a9f2;
 	--storage-selected: color-mix(in srgb, #6ea4ff 18%, transparent);
 }
-.storage-browser.is-embedded { max-width: none; padding: 0; }
 .storage-browser [hidden] { display: none !important; }
 
 /* ---- title row ---- */
