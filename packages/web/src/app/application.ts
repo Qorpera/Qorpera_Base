@@ -1078,6 +1078,11 @@ export function mountApplication(
 						return found?.displayName || found?.email;
 					},
 					peopleAtSurface: (slug) => controller.peopleByPlace().get(`surface:${slug.toLowerCase()}`) ?? [],
+					userId,
+					publishers: () =>
+						(controller.store.get().team?.members ?? [])
+							.filter((member) => member.role !== "viewer")
+							.map((member) => ({ userId: member.userId, name: member.displayName || member.email })),
 					loadCloudFiles: loadSurfaceCloudFiles,
 					uploadImage: async (surfaceId, clientInputId, file, signal) => {
 						const current = () => {

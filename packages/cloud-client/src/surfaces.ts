@@ -741,6 +741,21 @@ export class CloudSurfacesClient {
 		return parseSurfaceSummary(data, "surface");
 	}
 
+	async askSurfacePublish(surfaceId: string, userId: string): Promise<SurfaceSummary> {
+		const data = await this.#rpc("qorpera_ask_surface_publish", { p_surface_id: surfaceId, p_user_id: userId });
+		return parseSurfaceSummary(data, "surface");
+	}
+
+	async declineSurfacePublishAsk(surfaceId: string): Promise<SurfaceSummary> {
+		const data = await this.#rpc("qorpera_decline_surface_publish_ask", { p_surface_id: surfaceId });
+		return parseSurfaceSummary(data, "surface");
+	}
+
+	async withdrawSurfacePublishAsk(surfaceId: string): Promise<SurfaceSummary> {
+		const data = await this.#rpc("qorpera_withdraw_surface_publish_ask", { p_surface_id: surfaceId });
+		return parseSurfaceSummary(data, "surface");
+	}
+
 	async listAutomations(companyId: string): Promise<SurfaceAutomationSummary[]> {
 		const data = await this.#rpc("qorpera_list_automations", { p_company_id: companyId });
 		if (!Array.isArray(data)) throw new CloudSurfacesError("Invalid qorpera_list_automations payload");

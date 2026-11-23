@@ -7410,6 +7410,19 @@ the founder there was no way forward but Qorpera's support.
    sentence that a card's answer never lets the agent repeat the action goes: the denial's last sentence already says
    so. Not retrying, rewording or reaching it another way stands.
 
+### 2026-11-23 amendment: asking a teammate to publish
+
+> The founder, 23 November 2026, on the multiplayer-in-place design ("Ask Sofie" before publishing): "yes to all five,
+> build it". It goes live with migration `20260930867000`; no runtime bundle.
+
+1. **An ask grants nothing.** A member who may publish a surface (not a viewer) may ask one other member who may
+   publish it. The ask is a request on the surface, not authority: the asked member's yes is her own publish, checked
+   as her own Publish is, and never runs as the asker.
+2. **One at a time.** A surface holds one ask; a new one replaces it. The asked member's no keeps it, marked, for the
+   asker to read until the asker clears it or asks again.
+3. **It closes by itself.** Anyone's publish closes it when it starts, and so does a surface with nothing left to
+   publish. With Auto-publish on there is nothing to ask.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
