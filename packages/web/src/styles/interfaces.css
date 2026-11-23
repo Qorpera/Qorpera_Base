@@ -63,10 +63,6 @@
 .rail-app:hover .interface-emblem { transform: translateY(-2px) scale(1.06); }
 .rail-app-stand .rail-mention { top: -5px; right: -10px; box-shadow: 0 0 0 2px var(--rail); }
 .rail-app-name { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; font-weight: 600; line-height: 1.2; }
-/* The field opening: it widens with a spring, its text box fades in just after; folding back runs the other way. */
-.rail-search { transition: width var(--motion-slow) var(--ease-spring), background-color var(--motion-base) ease, box-shadow var(--motion-base) ease; }
-.rail-search input { transition: opacity var(--motion-base) ease 80ms, visibility 0s; }
-.rail-toolbar:not(.is-searching) .rail-search input { transition: opacity var(--motion-fast) ease, visibility 0s var(--motion-fast); }
 /* Every emblem in its app's colour, no tile (Jonas, 11 Nov 2026: black only had "little distinction and contrast"), the
  * open page's too; an app in a group is drawn in the group's (12 Nov 2026). */
 .rail-app-stand .interface-emblem { --emblem-ink: var(--app-colour, var(--text)); }

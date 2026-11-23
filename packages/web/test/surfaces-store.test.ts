@@ -1693,4 +1693,56 @@ describe("SurfacesStore", () => {
 		expect(store.state.pendingStudioPatches[studioId]).toBeUndefined();
 		store.dispose();
 	});
+
+	it("skips generated directories, caps subfolder walks, and enforces a byte budget in readSurfaceFolderFiles", async () => {
+		const listedPaths: string[] = [];
+		const readPaths: string[] = [];
+		const chunk = "x".repeat(250_000);
+		const tokens = JSON.stringify({ colors: { accent: "#2563eb" } });
+		const folder = {
+			list: vi.fn(async (path: string) => {
+				listedPaths.push(path);
+				if (path === "repo") {
+					return {
+						entries: [
+							{ path: "repo/node_modules", kind: "folder" as const, file: null },
+							{ path: "repo/.git", kind: "folder" as const, file: null },
+							{ path: "repo/dist", kind: "folder" as const, file: null },
+							{
+								path: "repo/tokens.json",
+								kind: "file" as const,
+								file: { path: "repo/tokens.json", bytes: tokens.length },
+							},
+							...["a", "b", "c", "d", "e"].map((name) => ({
+								path: `repo/${name}.txt`,
+								kind: "file" as const,
+								file: { path: `repo/${name}.txt`, bytes: chunk.length },
+							})),
+							...Array.from({ length: 16 }, (_, idx) => ({
+								path: `repo/sub-${String(idx + 1).padStart(2, "0")}`,
+								kind: "folder" as const,
+								file: null,
+							})),
+						],
+					};
+				}
+				return { entries: [] };
+			}),
+			readFile: vi.fn(async (file: { readonly path: string; readonly bytes: number }) => {
+				readPaths.push(file.path);
+				return new TextEncoder().encode(file.path === "repo/tokens.json" ? tokens : chunk);
+			}),
+		};
+
+		const files = await readSurfaceFolderFiles(folder, ["repo"], new AbortController().signal);
+		expect(listedPaths).not.toContain("repo/node_modules");
+		expect(listedPaths).not.toContain("repo/.git");
+		expect(listedPaths).not.toContain("repo/dist");
+		expect(listedPaths.filter((path) => path.startsWith("repo/sub-"))).toHaveLength(12);
+		expect(files["repo/tokens.json"]).toContain("#2563eb");
+		expect(readPaths[0]).toBe("repo/tokens.json");
+		const totalBytes = Object.values(files).reduce((sum, text) => sum + text.length, 0);
+		expect(totalBytes).toBeLessThanOrEqual(1024 * 1024);
+		expect(Object.keys(files).filter((path) => path.endsWith(".txt")).length).toBeLessThan(5);
+	});
 });

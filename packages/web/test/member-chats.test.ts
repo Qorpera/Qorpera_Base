@@ -35,6 +35,7 @@ import {
 	timestamp,
 	userA,
 } from "./fixtures.ts";
+import { searchFromRail } from "./search-window-helpers.ts";
 
 /* Members of a company message each other (Jonas, 10 Nov 2026): the cloud's shapes (cloud/member-chats.ts), the chats'
  * state (app/member-chats.ts), the chat on screen (app/views/member-chat.ts) and the members as contacts in the rail. */
@@ -1413,7 +1414,7 @@ describe("members as contacts in the rail", () => {
 	});
 
 	it("marks the open chat's row, and finds a member by name", async () => {
-		const { controller, element, draw } = rail(
+		const { controller, element } = rail(
 			{},
 			{ name: "company", profileId: profileA.profileId, section: "member", id: sofie },
 		);
@@ -1422,10 +1423,7 @@ describe("members as contacts in the rail", () => {
 		const active = element.querySelector(".rail-members a.active");
 		expect(active?.getAttribute("data-member-id")).toBe(sofie);
 		expect(active?.getAttribute("aria-current")).toBe("page");
-		const search = element.querySelector<HTMLInputElement>("#rail-search-input")!;
-		search.value = "mads";
-		draw();
-		expect(rows(element).map((row) => row.name)).toEqual(["Mads Berg"]);
+		expect(searchFromRail(element, "mads")).toEqual(["Mads Berg"]);
 	});
 
 	it("keeps a bigger team as rows, in the order the members joined", async () => {

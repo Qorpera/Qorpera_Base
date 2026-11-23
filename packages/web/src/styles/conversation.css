@@ -34,7 +34,7 @@
 .thread-body { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; container: thread-body / inline-size; }
 .thread-conversation { position: relative; display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; container: thread-conversation / inline-size; }
 /* Bubbles and code wrap and tables scroll on their own, so the thread never scrolls sideways. */
-.messages { flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: 16px 16px calc(40px + var(--thread-foot, 0px)); scroll-padding-bottom: var(--thread-foot, 0px); display: flex; flex-direction: column; gap: 4px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; font-optical-sizing: auto; font-synthesis: none; text-rendering: optimizeLegibility; }
+.messages { flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: 16px clamp(16px, 4.5%, 56px) calc(40px + var(--thread-foot, 0px)); scroll-padding-bottom: var(--thread-foot, 0px); display: flex; flex-direction: column; gap: 4px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; font-optical-sizing: auto; font-synthesis: none; text-rendering: optimizeLegibility; }
 /* A thread shows a slim scrollbar like Claude Code's: a thin grey pill with no track, inset from the edge, running past
  * the composer, which stands over the thread with no background (Jonas, 10 Nov 2026). Other quiet scrollers keep no
  * bar. Browsers with the WebKit scrollbar parts take the drawn pill (Chrome and Safari ignore those parts once

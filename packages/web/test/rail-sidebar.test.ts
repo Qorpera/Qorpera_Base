@@ -21,6 +21,7 @@ import { openMenu } from "../src/ui/context-menu.ts";
 import { h } from "../src/ui/dom.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 import { folderFake } from "./folder-fake.ts";
+import { searchFromRail } from "./search-window-helpers.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
 	...staff,
@@ -355,37 +356,20 @@ describe("rail sections and pins", () => {
 		expect(rail.querySelector("[data-drop-zone]")).toBeNull();
 		expect(rail.querySelector(".rail-pinned")?.isConnected).toBeFalsy();
 	});
-	it("leaves hidden agents out until a search asks for them", async () => {
-		const { rail, draw, ready } = companyWith({ ...demo(), hidden: [cy.id] });
+	it("leaves hidden agents out of the list, and the search window still finds them", async () => {
+		const { rail, ready } = companyWith({ ...demo(), hidden: [cy.id] });
 		await ready;
 		await settle();
 		expect(groups(rail).at(-1)).toEqual(["Unassigned", "Fixture conversation"]);
-		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
-		const input = rail.querySelector<HTMLInputElement>(".rail-search input")!;
-		input.value = "cy";
-		draw();
-		expect(groups(rail)).toEqual([["Unassigned", "Cy"]]);
+		expect(searchFromRail(rail, "cy")).toEqual(["Cy"]);
 	});
-	it("lists everyone in a section, pinned and hidden ones too, when a search names it", async () => {
+	it("finds everyone in a section, pinned and hidden ones too, when a search names it", async () => {
 		const placements = { ...demo().placements, [dee.id]: { sectionId: research, position: 2 } };
-		const { rail, draw, ready } = companyWith({ ...demo(), placements, hidden: [ada.id] });
+		const { rail, ready } = companyWith({ ...demo(), placements, hidden: [ada.id] });
 		await ready;
 		await settle();
-		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
-		const input = rail.querySelector<HTMLInputElement>(".rail-search input")!;
-		input.value = "resea";
-		draw();
-		expect(groups(rail)).toEqual([["Research", "Bo", "Ada"]]);
-		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Dee"]);
-		// "Unassigned" names what is in no section.
-		input.value = "unassigned";
-		draw();
-		expect(groups(rail)).toEqual([["Unassigned", "Cy", "Fixture conversation"]]);
-		expect(rail.querySelectorAll(".rail-pin")).toHaveLength(0);
-		// A name still finds one agent, wherever it sits.
-		input.value = "bo";
-		draw();
-		expect(groups(rail)).toEqual([["Research", "Bo"]]);
+		expect(searchFromRail(rail, "resea").sort()).toEqual(["Ada", "Bo", "Dee"]);
+		expect(searchFromRail(rail, "bo")[0]).toBe("Bo");
 	});
 	it("folds hidden agents at the foot of the list, where they can be shown again", async () => {
 		localStorage.removeItem("qorpera.web.rail-hidden-open");
@@ -995,11 +979,11 @@ describe("dragging agents in the rail", () => {
 		});
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
-	it("does not pick an agent up while searching, and Escape puts a drag back", async () => {
-		const { rail, manage, draw, ready } = companyWith(demo());
+	it("puts a drag back on Escape", async () => {
+		const { rail, manage, ready } = companyWith(demo());
 		await ready;
 		await settle();
-		let boxes = layout(rail);
+		const boxes = layout(rail);
 		const row = rowOf(rail, "Cy");
 		row.dispatchEvent(pointer("pointerdown", 20, boxes.get(row)!.top + 20));
 		document.dispatchEvent(pointer("pointermove", 20, boxes.get(row)!.top + 60));
@@ -1007,13 +991,6 @@ describe("dragging agents in the rail", () => {
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 		expect(rail.querySelector(".rail-scroll")!.classList.contains("rail-dragging")).toBe(false);
 		document.dispatchEvent(pointer("pointerup", 20, 0));
-		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
-		const input = rail.querySelector<HTMLInputElement>(".rail-search input")!;
-		input.value = "c";
-		draw();
-		boxes = layout(rail);
-		drag(rowOf(rail, "Cy"), boxes.get(rowOf(rail, "Cy"))!, rail);
-		expect(document.querySelector(".rail-drag-ghost")).toBeNull();
 		await ready;
 		await settle();
 		expect(manage).not.toHaveBeenCalled();

@@ -11,7 +11,7 @@ import { companyLogos } from "../../ui/company-logos.ts";
 import { showCompanyName } from "../../ui/company-name.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
 import { friendsCount } from "../../ui/friends-count.ts";
-import { leave } from "../../ui/motion.ts";
+import { leave, reducedMotion } from "../../ui/motion.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
@@ -27,7 +27,7 @@ import { CompanyBrandView } from "./settings-brand.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
 import { DefaultModelsView } from "./settings-default-models.ts";
 import { GeminiKeyView } from "./settings-gemini-key.ts";
-import { GoodWillView, MyGoodWillView } from "./settings-good-will.ts";
+import { GoodWillView, goodWillName, MyGoodWillView } from "./settings-good-will.ts";
 import { RulesView } from "./settings-rules.ts";
 import { storageSummary } from "./storage-summary.ts";
 import { renderTeam, type TeamFeedback } from "./team.ts";
@@ -72,6 +72,117 @@ export type SettingsTab = SettingsCategory | "storage" | "recents" | "my-connect
 /** Pages of the open company. Settings with no company open (from the company list with several) show only the
  * account's pages: these are hidden, and one asked for shows General until a company is open. Storage too. */
 const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company"]);
+
+export interface SettingsPlace {
+	readonly tab: SettingsTab;
+	readonly label: string;
+	readonly area: string;
+	readonly words: string;
+	readonly mark?: string;
+}
+
+export function settingsPlaces(deletes: boolean): SettingsPlace[] {
+	const general = phrase("General");
+	const company = phrase("Company");
+	const subscriptions = phrase("AI subscriptions");
+	const place = (tab: SettingsTab, label: string, area: string, words: string, mark?: string): SettingsPlace => ({
+		tab,
+		label,
+		area,
+		words,
+		...(mark ? { mark } : {}),
+	});
+	const exit = deletes ? t("Delete company") : t("Leave company");
+	return [
+		place(
+			"general",
+			t("Account"),
+			general,
+			"name email password picture konto navn adgangskode billede",
+			t("Account"),
+		),
+		place(
+			"general",
+			t("Language & region"),
+			general,
+			"language region time zone timezone sprog dansk english tidszone område",
+			t("Language & region"),
+		),
+		place(
+			"general",
+			t("Appearance"),
+			general,
+			"theme dark light mode colour color composer interface size tema mørk lys farve størrelse",
+			t("Appearance"),
+		),
+		place("general", goodWillName(), general, "goodwill good will tax skat", goodWillName()),
+		place(
+			"company",
+			t("Staff at work"),
+			company,
+			"members people team invitations invite staff medlemmer personer invitationer inviter",
+			t("Staff at work"),
+		),
+		place(
+			"company",
+			t("Agent rules"),
+			company,
+			"rules approve approval ask first allow permissions safety regler godkend tilladelser",
+			t("Agent rules"),
+		),
+		place("company", exit, company, "delete leave remove slet forlad", exit),
+		place(
+			"company",
+			t("Invoices and card"),
+			company,
+			"invoices card payment billing good will tax fakturaer kort betaling skat",
+			goodWillName(),
+		),
+		place(
+			"leaderboard",
+			phrase("Leaderboard"),
+			t("Settings"),
+			"friends compare ranking awards streak venner rangliste",
+		),
+		place(
+			"ai-subscriptions",
+			t("Model accounts"),
+			subscriptions,
+			"chatgpt openai codex claude anthropic gemini google sign in login log ind",
+			t("Model accounts"),
+		),
+		place(
+			"ai-subscriptions",
+			t("Default models"),
+			subscriptions,
+			"model effort coding conversational standardmodeller",
+			t("Default models"),
+		),
+		place("ai-subscriptions", t("Gemini API key"), subscriptions, "google gemini api key nøgle", t("Gemini API key")),
+		place("storage", t("Storage"), t("Company File"), "files storage documents company file filer dokumenter lager"),
+	];
+}
+
+export function markSettingsPlace(text: string): void {
+	const until = performance.now() + 2500;
+	const look = () => {
+		const content = document.querySelector<HTMLElement>(".settings-content:not([hidden])");
+		const found = [...(content?.querySelectorAll<HTMLElement>("h2, button, summary") ?? [])].find(
+			(element) => element.textContent?.trim() === text && !element.closest("[hidden]"),
+		);
+		if (!found) {
+			if (performance.now() < until) requestAnimationFrame(look);
+			return;
+		}
+		const target = found.closest<HTMLElement>(".settings-group") ?? found;
+		target.scrollIntoView({ block: "center", behavior: reducedMotion() ? "auto" : "smooth" });
+		target.classList.remove("is-found");
+		void target.offsetWidth;
+		target.classList.add("is-found");
+		target.addEventListener("animationend", () => target.classList.remove("is-found"), { once: true });
+	};
+	requestAnimationFrame(look);
+}
 
 /** AI subscriptions' lead, with or without a company open. */
 const subscriptionsLead = () =>
