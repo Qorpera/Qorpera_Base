@@ -10,7 +10,8 @@ do $$ begin
 		or to_regprocedure('public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)') is null
 		or to_regprocedure('public.qorpera_surface_resolve_coding_sponsor(uuid,uuid,uuid,boolean,text,boolean)') is null
 		or to_regprocedure('public.qorpera_surface_preview_composition_key(uuid,text,uuid[],uuid)') is null
-		or to_regprocedure('public.qorpera_surface_cancel_coding_workers(uuid[],text)') is null then
+		or to_regprocedure('public.qorpera_surface_cancel_coding_workers(uuid[],text)') is null
+		or to_regprocedure('public.qorpera_surface_remove(uuid,boolean)') is null then
 		raise exception 'Surface preview builds (20260930876000) requires 20260930857000, 20260930860000 and 20260930875000 first';
 	end if;
 	if to_regclass('public.qorpera_surface_preview_builds') is not null then
@@ -441,6 +442,71 @@ begin
 	end loop;
 end $$;
 
+create function public.qorpera_surface_build_waiter_fail(p_kind text, p_id uuid, p_detail text)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+	v_now timestamptz := clock_timestamp();
+	v_job public.qorpera_surface_jobs%rowtype;
+begin
+	if p_kind = 'preview' then
+		update public.qorpera_surface_previews
+		set status = 'failed', error_detail = p_detail, lease_token = null, lease_expires_at = null, updated_at = v_now
+		where id = p_id and status = 'building';
+		return;
+	end if;
+	update public.qorpera_surface_jobs
+	set status = 'failed', error_detail = p_detail, lease_token = null, lease_expires_at = null, completed_at = v_now,
+		updated_at = v_now
+	where id = p_id and kind = 'publish_surface' and status = 'running'
+	returning * into v_job;
+	if v_job.id is not null then
+		update public.qorpera_surfaces
+		set publish_status = 'failed', last_publish_error = p_detail, updated_at = v_now
+		where id = v_job.surface_id;
+	end if;
+end $$;
+
+-- WHY: Whether a builder's turn may take a build now: never for a deleted interface or a company out of computer hours
+-- (its waiting builds end, in plain words), and not while two builds of the company run, when its waiting builds count
+-- their ten minutes without a machine again from now.
+create function public.qorpera_surface_preview_builder_hold(p_builder_id uuid, p_now timestamptz)
+returns text language plpgsql security definer set search_path = '' as $$
+declare
+	v_builder public.qorpera_surface_preview_builders%rowtype;
+	v_surface public.qorpera_surfaces%rowtype;
+	v_id uuid;
+begin
+	select * into v_builder from public.qorpera_surface_preview_builders where id = p_builder_id;
+	select * into v_surface from public.qorpera_surfaces where id = v_builder.surface_id;
+	if v_surface.id is null or v_surface.status = 'archived' then
+		for v_id in select id from public.qorpera_surface_preview_builds
+			where builder_id = p_builder_id and state = 'queued' order by queued_at, id for update loop
+			update public.qorpera_surface_preview_builds set state = 'dropped', finished_at = p_now, updated_at = p_now where id = v_id;
+			perform public.qorpera_surface_preview_build_settle(v_id);
+		end loop;
+		return 'none';
+	end if;
+	if public.qorpera_company_coding_at_zero(v_builder.profile_id, p_now) then
+		for v_id in select id from public.qorpera_surface_preview_builds
+			where builder_id = p_builder_id and state = 'queued' order by queued_at, id for update loop
+			perform public.qorpera_surface_preview_build_fail(v_id, public.qorpera_surface_preview_build_detail(
+				'PREVIEW_BUILD_NO_HOURS', 'The company has no computer hours left, so the build did not run.'));
+		end loop;
+		return 'none';
+	end if;
+	if not exists (select 1 from public.qorpera_surface_preview_builds where builder_id = p_builder_id and state = 'queued') then
+		return 'none';
+	end if;
+	perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('qorpera.surface-builds-running:' || v_builder.profile_id::text, 0));
+	if (select count(*) from public.qorpera_surface_preview_builds b
+		where b.profile_id = v_builder.profile_id and b.state = 'running') >= 2 then
+		update public.qorpera_surface_preview_builds set queued_at = p_now, updated_at = p_now
+		where builder_id = p_builder_id and state = 'queued';
+		return 'wait';
+	end if;
+	return 'go';
+end $$;
+
 -- WHY: One build per (interface, tree, recipe): the first ask queues it on the asker's builder, later asks share it, a
 -- failed or dropped build is queued again, and the asker's other queued builds that only unselected previews wait on are
 -- dropped so toggling never stacks builds.
@@ -465,6 +531,7 @@ declare
 	v_old public.qorpera_surface_preview_builds%rowtype;
 	v_now timestamptz := clock_timestamp();
 	v_kick text;
+	v_detail text;
 begin
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Surface code host authority required' using errcode = '42501';
@@ -525,6 +592,12 @@ begin
 			update public.qorpera_surface_jobs set build_id = v_build.id where id = v_job.id;
 		end if;
 		return jsonb_build_object('state', 'built', 'buildId', v_build.id, 'builtTreeSha', v_build.built_tree_sha);
+	end if;
+
+	if public.qorpera_company_coding_at_zero(v_surface.profile_id, v_now) then
+		v_detail := public.qorpera_surface_preview_build_detail('PREVIEW_BUILD_NO_HOURS', 'The company has no computer hours left, so the build did not run.');
+		perform public.qorpera_surface_build_waiter_fail(p_kind, p_id, v_detail);
+		return jsonb_build_object('state', 'failed', 'buildId', v_build.id, 'errorDetail', v_detail);
 	end if;
 
 	insert into public.qorpera_surface_preview_builders(profile_id, surface_id, member_user_id)
@@ -594,8 +667,6 @@ begin
 	return jsonb_build_object('state', 'waiting', 'buildId', v_build.id);
 end $$;
 
--- WHY: A builder turn takes its build only once its machine is ready, at most two builds run per company, and a company
--- out of computer hours fails its waiting builds instead of holding them.
 create function public.qorpera_begin_surface_preview_build(p_worker_id uuid, p_lease_token uuid)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
@@ -605,7 +676,7 @@ declare
 	v_surface public.qorpera_surfaces%rowtype;
 	v_build public.qorpera_surface_preview_builds%rowtype;
 	v_now timestamptz := clock_timestamp();
-	v_id uuid;
+	v_hold text;
 begin
 	v_worker := public.qorpera_lock_coding_worker(p_worker_id);
 	v_session := public.qorpera_coding_leased_session(p_worker_id, p_lease_token);
@@ -621,25 +692,10 @@ begin
 	set state = 'queued', worker_id = null, worker_sequence = null, started_at = null, queued_at = v_now, updated_at = v_now
 	where builder_id = v_builder.id and state = 'running';
 
-	select * into v_surface from public.qorpera_surfaces where id = v_builder.surface_id;
-	if v_surface.id is null or v_surface.status = 'archived' then
-		for v_id in select id from public.qorpera_surface_preview_builds
-			where builder_id = v_builder.id and state = 'queued' for update loop
-			update public.qorpera_surface_preview_builds set state = 'dropped', finished_at = v_now, updated_at = v_now where id = v_id;
-			perform public.qorpera_surface_preview_build_settle(v_id);
-		end loop;
-		return jsonb_build_object('state', 'none');
+	v_hold := public.qorpera_surface_preview_builder_hold(v_builder.id, v_now);
+	if v_hold <> 'go' then
+		return jsonb_build_object('state', v_hold);
 	end if;
-
-	if public.qorpera_company_coding_at_zero(v_builder.profile_id, v_now) then
-		for v_id in select id from public.qorpera_surface_preview_builds
-			where builder_id = v_builder.id and state = 'queued' order by queued_at, id for update loop
-			perform public.qorpera_surface_preview_build_fail(v_id, public.qorpera_surface_preview_build_detail(
-				'PREVIEW_BUILD_NO_HOURS', 'The company has no computer hours left, so the build did not run.'));
-		end loop;
-		return jsonb_build_object('state', 'none');
-	end if;
-
 	select * into v_build from public.qorpera_surface_preview_builds
 	where builder_id = v_builder.id and state = 'queued'
 	order by queued_at, id
@@ -647,12 +703,6 @@ begin
 	for update skip locked;
 	if v_build.id is null then
 		return jsonb_build_object('state', 'none');
-	end if;
-
-	perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('qorpera.surface-builds-running:' || v_builder.profile_id::text, 0));
-	if (select count(*) from public.qorpera_surface_preview_builds b
-		where b.profile_id = v_builder.profile_id and b.state = 'running') >= 2 then
-		return jsonb_build_object('state', 'wait');
 	end if;
 
 	update public.qorpera_surface_preview_builds
@@ -673,6 +723,25 @@ begin
 			'attempt', v_build.attempts
 		)
 	);
+end $$;
+
+create function public.qorpera_check_surface_preview_build(p_worker_id uuid, p_lease_token uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+	v_worker public.qorpera_runtime_workers%rowtype;
+	v_session public.qorpera_coding_sessions%rowtype;
+	v_builder public.qorpera_surface_preview_builders%rowtype;
+begin
+	v_worker := public.qorpera_lock_coding_worker(p_worker_id);
+	v_session := public.qorpera_coding_leased_session(p_worker_id, p_lease_token);
+	select * into v_builder from public.qorpera_surface_preview_builders where worker_id = p_worker_id for update;
+	if v_builder.id is null then
+		raise exception 'Coding session is not a preview builder' using errcode = '42501';
+	end if;
+	if v_session.phase <> 'preparing' or v_worker.state <> 'active' then
+		raise exception 'Preview build turn is not preparing' using errcode = '55000';
+	end if;
+	return jsonb_build_object('state', public.qorpera_surface_preview_builder_hold(v_builder.id, clock_timestamp()));
 end $$;
 
 create function public.qorpera_complete_surface_preview_build(
@@ -796,6 +865,7 @@ begin
 	limit 1
 	for update skip locked;
 	if v_builder_id is not null then
+		update public.qorpera_surface_preview_builders set updated_at = p_now where id = v_builder_id;
 		begin
 			v_kick := public.qorpera_surface_preview_builder_kick(v_builder_id);
 			perform public.qorpera_surface_preview_kick_failed(v_builder_id, v_kick);
@@ -804,6 +874,47 @@ begin
 		end;
 	end if;
 end $$;
+
+-- WHY: Deleting an interface stops its builds as it stops its sessions: the builders' coding workers are cancelled (their
+-- turns end at the next heartbeat) and every build still waiting or running is dropped.
+create function public.qorpera_surface_preview_builds_stop(p_surface_id uuid)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+	v_worker_ids uuid[];
+	v_worker public.qorpera_runtime_workers%rowtype;
+	v_now timestamptz := clock_timestamp();
+begin
+	select coalesce(array_agg(w.id order by w.id), '{}'::uuid[]) into v_worker_ids
+	from public.qorpera_surface_preview_builders b
+	join public.qorpera_runtime_workers w on w.id = b.worker_id
+	where b.surface_id = p_surface_id and w.state = 'active';
+	if cardinality(v_worker_ids) > 0 then
+		perform public.qorpera_lock_coding_workers(v_worker_ids);
+		for v_worker in
+			select w.* from public.qorpera_runtime_workers w
+			where w.id = any(v_worker_ids) and w.state = 'active'
+			order by w.id
+		loop
+			perform 1 from public.qorpera_coding_sessions cs where cs.worker_id = v_worker.id for update;
+			perform public.qorpera_cancel_worker(v_worker, null, 'surface_discarded');
+		end loop;
+	end if;
+	update public.qorpera_surface_preview_builds
+	set state = 'dropped', worker_id = null, worker_sequence = null, started_at = null, finished_at = v_now, updated_at = v_now
+	where surface_id = p_surface_id and state in ('queued', 'running');
+end $$;
+
+select pg_temp.spb_patch('public.qorpera_surface_remove(uuid,boolean)'::regprocedure, array[
+$old$		 where s.surface_id = p_surface_id),
+		'surface_discarded'
+	);
+$old$,
+$new$		 where s.surface_id = p_surface_id),
+		'surface_discarded'
+	);
+	perform public.qorpera_surface_preview_builds_stop(p_surface_id);
+$new$
+]);
 
 select pg_temp.spb_patch('public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)'::regprocedure, array[
 $old$	if v_lane in ('all', 'code_repo') then
@@ -840,6 +951,10 @@ revoke all on function
 	public.qorpera_surface_preview_builder_kick(uuid),
 	public.qorpera_surface_preview_kick_failed(uuid, text),
 	public.qorpera_surface_preview_builds_sweep(timestamptz),
+	public.qorpera_surface_build_waiter_fail(text, uuid, text),
+	public.qorpera_surface_preview_builder_hold(uuid, timestamptz),
+	public.qorpera_surface_preview_builds_stop(uuid),
+	public.qorpera_check_surface_preview_build(uuid, uuid),
 	public.qorpera_surface_request_build(text, uuid, uuid, text, text, jsonb, text),
 	public.qorpera_begin_surface_preview_build(uuid, uuid),
 	public.qorpera_complete_surface_preview_build(uuid, uuid, uuid, text, text, text)
@@ -847,6 +962,7 @@ revoke all on function
 
 grant execute on function
 	public.qorpera_surface_request_build(text, uuid, uuid, text, text, jsonb, text),
+	public.qorpera_check_surface_preview_build(uuid, uuid),
 	public.qorpera_begin_surface_preview_build(uuid, uuid),
 	public.qorpera_complete_surface_preview_build(uuid, uuid, uuid, text, text, text)
 	to service_role;
@@ -861,12 +977,13 @@ begin
 		where oid = any(array[
 			'public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)'::regprocedure,
 			'public.qorpera_claim_coding_session(text,integer)'::regprocedure,
-			'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)'::regprocedure
+			'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)'::regprocedure,
+			'public.qorpera_surface_remove(uuid,boolean)'::regprocedure
 		])
 	loop
 		if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
 			raise exception 'Patched surface build function has an API owner: %', v_owner;
 		end if;
-		execute format('grant execute on function public.qorpera_surface_preview_builds_sweep(timestamptz), public.qorpera_surface_is_preview_builder(uuid) to %I', v_owner);
+		execute format('grant execute on function public.qorpera_surface_preview_builds_sweep(timestamptz), public.qorpera_surface_is_preview_builder(uuid), public.qorpera_surface_preview_builds_stop(uuid) to %I', v_owner);
 	end loop;
 end $$;

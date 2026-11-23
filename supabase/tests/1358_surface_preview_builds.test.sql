@@ -121,9 +121,13 @@ declare
 	v_job uuid;
 	v_job_lease uuid;
 	v_function text;
+	v_member_builder public.qorpera_surface_preview_builders%rowtype;
+	v_b8 uuid;
+	v_surface2 uuid;
 begin
 	foreach v_function in array array[
 		'public.qorpera_surface_request_build(text,uuid,uuid,text,text,jsonb,text)',
+		'public.qorpera_check_surface_preview_build(uuid,uuid)',
 		'public.qorpera_begin_surface_preview_build(uuid,uuid)',
 		'public.qorpera_complete_surface_preview_build(uuid,uuid,uuid,text,text,text)'
 	] loop
@@ -138,7 +142,10 @@ begin
 		'public.qorpera_surface_preview_builder_kick(uuid)',
 		'public.qorpera_surface_preview_builds_sweep(timestamptz)',
 		'public.qorpera_surface_preview_build_settle(uuid)',
-		'public.qorpera_surface_preview_selected(uuid)'
+		'public.qorpera_surface_preview_selected(uuid)',
+		'public.qorpera_surface_preview_builder_hold(uuid,timestamptz)',
+		'public.qorpera_surface_preview_builds_stop(uuid)',
+		'public.qorpera_surface_build_waiter_fail(text,uuid,text)'
 	] loop
 		perform pg_temp.spb_assert(
 			not has_function_privilege('service_role', v_function, 'EXECUTE')
@@ -364,9 +371,20 @@ begin
 		'running', extensions.gen_random_uuid(), 1, clock_timestamp()
 	from unnest(array['6', '7']) x
 	join public.qorpera_surface_preview_builders b on b.surface_id = v_surface and b.member_user_id = v_member;
+	update public.qorpera_surface_preview_builds set queued_at = clock_timestamp() - interval '9 minutes' where id = v_b4;
+	v_result := pg_temp.spb_service(format('select public.qorpera_check_surface_preview_build(%L, %L)', v_worker.id, v_lease));
+	perform pg_temp.spb_assert(
+		v_result ->> 'state' = 'wait'
+		and (select queued_at > clock_timestamp() - interval '1 minute' from public.qorpera_surface_preview_builds where id = v_b4),
+		'a third build of a company waits before its machine is prepared, its ten minutes counted again: ' || v_result::text
+	);
 	v_result := pg_temp.spb_service(format('select public.qorpera_begin_surface_preview_build(%L, %L)', v_worker.id, v_lease));
 	perform pg_temp.spb_assert(v_result ->> 'state' = 'wait', 'a third build of a company waits: ' || v_result::text);
 	delete from public.qorpera_surface_preview_builds where tree_sha in (repeat('6', 40), repeat('7', 40));
+	perform pg_temp.spb_assert(
+		pg_temp.spb_service(format('select public.qorpera_check_surface_preview_build(%L, %L)', v_worker.id, v_lease)) ->> 'state' = 'go',
+		'with room the builder turn goes on to prepare its machine'
+	);
 	v_result := pg_temp.spb_service(format('select public.qorpera_begin_surface_preview_build(%L, %L)', v_worker.id, v_lease));
 	perform pg_temp.spb_assert(v_result #>> '{build,buildId}' = v_b4::text, 'with room the build runs: ' || v_result::text);
 	perform pg_temp.spb_service(format(
@@ -379,6 +397,102 @@ begin
 			from public.qorpera_surface_previews where id = v_p4)
 		and (select state from public.qorpera_runtime_workers where id = v_worker.id) = 'failed',
 		'a failed build fails its rows with its bounded detail and ends its turn failed'
+	);
+
+	select * into strict v_member_builder from public.qorpera_surface_preview_builders
+	where surface_id = v_surface and member_user_id = v_member;
+	insert into public.qorpera_surface_preview_builds(
+		profile_id, surface_id, builder_id, repository_key, commit_sha, tree_sha, recipe, recipe_sha256
+	)
+	values (v_company_a, v_surface, v_member_builder.id, 'surfaces/shop', repeat('c', 40), repeat('8', 40), v_recipe, repeat('0', 64))
+	returning id into v_b8;
+	update public.qorpera_surface_preview_builders set updated_at = clock_timestamp() - interval '1 hour' where id = v_member_builder.id;
+	insert into public.qorpera_company_execution_pauses(profile_id, paused_by_user_id) values (v_company_a, v_owner);
+	perform pg_temp.spb_lane();
+	perform pg_temp.spb_assert(
+		(select updated_at > clock_timestamp() - interval '1 minute' and worker_id is null
+			from public.qorpera_surface_preview_builders where id = v_member_builder.id)
+		and (select state from public.qorpera_surface_preview_builds where id = v_b8) = 'queued',
+		'the sweep moves a builder it could not wake to the back of the line, so the next pass takes another'
+	);
+	delete from public.qorpera_company_execution_pauses where profile_id = v_company_a;
+	delete from public.qorpera_surface_preview_builds where id = v_b8;
+
+	v_p3 := pg_temp.spb_select(v_owner, v_surface, array[v_c3]);
+	v_claimed := pg_temp.spb_lane();
+	v_result := pg_temp.spb_request('preview', v_p3, pg_temp.spb_lease(v_claimed, v_p3), v_t3, v_recipe);
+	v_b3 := (v_result ->> 'buildId')::uuid;
+	v_coding_claim := pg_temp.spb_service($q$select public.qorpera_claim_coding_session('exec-1358', 60)$q$);
+	v_lease := (v_coding_claim ->> 'leaseToken')::uuid;
+	v_result := pg_temp.spb_service(format('select public.qorpera_begin_surface_preview_build(%L, %L)', v_worker.id, v_lease));
+	perform pg_temp.spb_assert(v_result #>> '{build,buildId}' = v_b3::text, 'a build runs before the delete: ' || v_result::text);
+	insert into public.qorpera_surface_preview_builds(
+		profile_id, surface_id, builder_id, repository_key, commit_sha, tree_sha, recipe, recipe_sha256
+	)
+	values (v_company_a, v_surface, v_builder.id, 'surfaces/shop', repeat('c', 40), repeat('9', 40), v_recipe, repeat('0', 64))
+	returning id into v_b8;
+	perform pg_temp.spb_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_archive_surface(v_surface);
+	reset role;
+	perform pg_temp.spb_assert(
+		(select state from public.qorpera_surface_preview_builds where id = v_b3) = 'dropped'
+		and (select state from public.qorpera_surface_preview_builds where id = v_b8) = 'dropped'
+		and (select state from public.qorpera_runtime_workers where id = v_worker.id) = 'cancelled'
+		and (select phase from public.qorpera_coding_sessions where worker_id = v_worker.id) = 'cancelled',
+		'deleting an interface cancels its builder and drops its running and queued builds'
+	);
+
+	perform pg_temp.spb_as(v_owner);
+	set local role authenticated;
+	v_surface2 := (public.qorpera_create_surface(
+		v_company_a, 'Blog', 'blog', 'live_build', 'website', 'globe', '#0a84ff', null, null, false
+	) ->> 'id')::uuid;
+	v_session := (public.qorpera_start_surface_session(v_surface2, 'Make a blog', 'Blog') ->> 'id')::uuid;
+	reset role;
+	update public.qorpera_surfaces set live_head_sha = repeat('1', 40) where id = v_surface2;
+	v_c1 := (public.qorpera_record_surface_change(v_session, 'Post', 'Post', 'git_range',
+		repeat('1', 40), repeat('2', 40), '{}'::uuid[], array['src/post.tsx'], null, null, false) ->> 'changeId')::uuid;
+	v_c2 := (public.qorpera_record_surface_change(v_session, 'List', 'List', 'git_range',
+		repeat('1', 40), repeat('3', 40), '{}'::uuid[], array['src/list.tsx'], null, null, false) ->> 'changeId')::uuid;
+	v_p1 := pg_temp.spb_select(v_owner, v_surface2, array[v_c1]);
+	v_claimed := pg_temp.spb_lane();
+	v_result := pg_temp.spb_request('preview', v_p1, pg_temp.spb_lease(v_claimed, v_p1), v_t1, v_recipe);
+	select * into strict v_builder from public.qorpera_surface_preview_builders where surface_id = v_surface2 and member_user_id = v_owner;
+	select * into strict v_worker from public.qorpera_runtime_workers where id = v_builder.worker_id;
+	perform pg_temp.spb_assert(v_result ->> 'state' = 'waiting', 'a build waits before the company runs out: ' || v_result::text);
+
+	update public.qorpera_computer_hour_billing set live_since = clock_timestamp() - interval '1 second';
+	insert into public.qorpera_computer_hour_usage(profile_id, metered_at, run_seconds, standard_seconds)
+	values (v_company_a, clock_timestamp(), 100000000, 100000000);
+	update public.qorpera_computer_hour_billing set zero_rule_since = clock_timestamp() - interval '1 second';
+	perform public.qorpera_computer_hour_zero_sweep(clock_timestamp());
+	update public.qorpera_computer_hour_billing set coding_zero_rule_since = clock_timestamp() - interval '1 second';
+	perform pg_temp.spb_assert(public.qorpera_company_coding_at_zero(v_company_a, clock_timestamp()), 'the company is at zero');
+
+	v_coding_claim := pg_temp.spb_service($q$select public.qorpera_claim_coding_session('exec-1358', 60)$q$);
+	v_lease := (v_coding_claim ->> 'leaseToken')::uuid;
+	perform pg_temp.spb_assert(v_coding_claim ->> 'workerId' = v_worker.id::text, 'the builder is claimed at zero: ' || coalesce(v_coding_claim::text, 'null'));
+	v_result := pg_temp.spb_service(format('select public.qorpera_check_surface_preview_build(%L, %L)', v_worker.id, v_lease));
+	perform pg_temp.spb_assert(
+		v_result ->> 'state' = 'none'
+		and (select state = 'failed' and error_detail like E'PREVIEW_BUILD_NO_HOURS\n%'
+			from public.qorpera_surface_preview_builds b where b.builder_id = v_builder.id)
+		and (select status = 'failed' and error_detail like E'PREVIEW_BUILD_NO_HOURS\n%'
+			from public.qorpera_surface_previews where id = v_p1),
+		'at zero the builder''s waiting build fails with the no-hours code before any machine is prepared: ' || v_result::text
+	);
+
+	v_p2 := pg_temp.spb_select(v_owner, v_surface2, array[v_c2]);
+	v_claimed := pg_temp.spb_lane();
+	v_result := pg_temp.spb_request('preview', v_p2, pg_temp.spb_lease(v_claimed, v_p2), v_t4, v_recipe);
+	perform pg_temp.spb_assert(
+		v_result ->> 'state' = 'failed' and v_result ->> 'buildId' is null
+		and v_result ->> 'errorDetail' like E'PREVIEW_BUILD_NO_HOURS\n%'
+		and (select status = 'failed' and error_detail like E'PREVIEW_BUILD_NO_HOURS\n%' and lease_token is null
+			from public.qorpera_surface_previews where id = v_p2)
+		and not exists (select 1 from public.qorpera_surface_preview_builds where surface_id = v_surface2 and tree_sha = v_t4),
+		'at zero a request is refused at once with the no-hours code and queues nothing: ' || v_result::text
 	);
 end $$;
 
