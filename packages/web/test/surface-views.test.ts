@@ -365,7 +365,7 @@ describe("the surface page", () => {
 		await flush();
 		view.update();
 		expect(view.el.querySelector(".surface-title")?.textContent).toBe("Website");
-		expect(view.el.querySelector(".surface-publish .surface-count")?.textContent).toBe("2");
+		expect(view.el.querySelector(".surface-publish .surface-notch-count")?.textContent).toBe("2");
 		expect(view.el.querySelector(".surface-mount .real-site-view")).toBe(mounted);
 		expect(update).toHaveBeenCalled();
 		expect(view.el.querySelector<HTMLTextAreaElement>(".surface-input")?.disabled).toBe(false);
@@ -829,7 +829,7 @@ describe("the surface page", () => {
 		await flush();
 		inboxView.update();
 		expect(inboxView.el.querySelector(".surface-handoff-btn")).toBeNull();
-		expect(inboxView.el.querySelector(".surface-notch, .surface-pill")).toBeNull();
+		expect(inboxView.el.querySelector<HTMLElement>(".surface-bar")?.hidden).toBe(true);
 		inboxView.dispose();
 		store.dispose();
 	});
@@ -1068,8 +1068,7 @@ describe("the surface page", () => {
 		await flush();
 		view.update();
 
-		const failedBarBadge = view.el.querySelector(".surface-bar-agent-badge.is-danger");
-		expect(failedBarBadge?.textContent).toBe("Failed");
+		expect(view.el.querySelector(".surface-bar")?.textContent).not.toContain("Failed");
 
 		const cards = [...view.el.querySelectorAll<HTMLElement>(".surface-overview-card.is-agent")];
 		expect(cards[0]?.dataset.session).toBe(failedSession.id);
