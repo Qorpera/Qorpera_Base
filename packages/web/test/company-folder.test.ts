@@ -361,6 +361,17 @@ describe("a folder-v2 company's Company File", () => {
 		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
 	});
 
+	it("says under the list what the company's storage holds in total, and nothing when that can't be read", async () => {
+		const { host } = await opened({ usage: async () => ({ storageUsedBytes: 40 }) });
+		expect(host.querySelector(".storage-foot .storage-usage")?.textContent).toBe("40 B in total");
+		const failed = await opened({
+			usage: async () => {
+				throw new Error("Storage offline");
+			},
+		});
+		expect(failed.host.querySelector(".storage-usage")?.textContent).toBe("");
+	});
+
 	it("shows a link among the files with the target it names, and opens its page with the target, reading no bytes", async () => {
 		const { fake, host } = await opened();
 		fake.links.set("notes/latest", "../readme.txt");

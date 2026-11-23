@@ -71,6 +71,7 @@ import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.t
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
+import { inferSurfaceKind } from "./surface-kinds.ts";
 import {
 	attachSurfaces,
 	isLocalSurfaceId,
@@ -296,23 +297,38 @@ export function mountApplication(
 		root.append(feedback.el);
 		feedback.open();
 	}
-	/** Settings was opened from a folder link in the open conversation: closing it gives the composer focus again,
-	 * so what the founder types next goes into their message. */
-	let settingsFromConversation = false;
 	function closeSettings(restoreFocus = true): void {
 		// A Friends window over Settings uses their friends list: it closes with them (access to the company lost).
 		if (settings) closeFriends(false);
 		settings?.dispose();
 		settings = undefined;
 		frame.inert = false;
-		const toComposer = settingsFromConversation;
-		settingsFromConversation = false;
-		if (!restoreFocus) return;
-		if (toComposer && conversation?.el.isConnected) conversation.focus();
-		else frame.querySelector<HTMLElement>(".account-trigger")?.focus();
+		if (restoreFocus) frame.querySelector<HTMLElement>(".account-trigger")?.focus();
 	}
-	/** `folderPath`: a folder link's path (ui/folder-links.ts), shown in Storage. */
-	function openSettings(tab?: SettingsTab, folderPath?: string): void {
+	let filesShown: { owner: CompanyController; browser: CompanyFolderBrowser } | undefined;
+	let filesPending: { owner: CompanyController; path: string } | undefined;
+	function filesSlug(controller: CompanyController): string {
+		return (
+			surfacesOf(controller)?.state.surfaces.find(
+				(surface) => surface.archetype === "ops" && inferSurfaceKind(surface) === "files",
+			)?.slug ?? "files"
+		);
+	}
+	function openInFiles(path: string): void {
+		const controller = company;
+		if (!controller) return;
+		if (settings) closeSettings(false);
+		const shown = filesShown?.owner === controller ? filesShown.browser : undefined;
+		shown?.reveal(path);
+		filesPending = shown?.opened || surfacesDisabledOf(controller) ? undefined : { owner: controller, path };
+		navigate({
+			name: "company",
+			profileId: controller.profile.profileId,
+			section: "surface",
+			id: filesSlug(controller),
+		});
+	}
+	function openSettings(tab?: SettingsTab): void {
 		if (settings || feedback || !auth.userId) return;
 		closeFriends(false);
 		settings = new SettingsView(
@@ -328,7 +344,6 @@ export function mountApplication(
 		);
 		frame.inert = true;
 		root.append(settings.el);
-		if (folderPath !== undefined) settings.openFolderPath(folderPath);
 		settings.focus();
 	}
 	/** Shows a Company File page beside the open chat. Again on what is shown already, it reads it again. */
@@ -379,9 +394,6 @@ export function mountApplication(
 	function isConcept(controller: CompanyController, name: string): boolean {
 		return companyConcepts(controller.store.get().apps ?? []).some((app) => app.name === name);
 	}
-	// A folder link in an agent's message opens Storage at what it names, over the page it is on: the conversation
-	// stays where it was below Settings. Storage answers the links in the documents it shows itself. An app's link or
-	// card, in a message or in a choice, opens the app's page.
 	function onFolderLink(event: MouseEvent): void {
 		const page = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-open-page]") : null;
 		if (page?.dataset.openPage && company && !event.defaultPrevented) {
@@ -420,9 +432,7 @@ export function mountApplication(
 			openSide({ kind: "page", path });
 			return;
 		}
-		const open = settings;
-		openSettings("storage", path);
-		if (settings && settings !== open) settingsFromConversation = fromConversation;
+		openInFiles(path);
 	}
 	root.addEventListener("click", onFolderLink);
 	installSearchShortcut();
@@ -1713,7 +1723,7 @@ export function mountApplication(
 			},
 			cofounder: () => cofounderFigure("program-say-figure"),
 		});
-		const panelHost = (beside: boolean): AppPanelHost => ({
+		const panelHost = (): AppPanelHost => ({
 			programs: { userId: controller.userId, memberName: memberFirstName, adds: programAdds() },
 			folder: () => memberFolder(companyCurrent, t("Company access changed.")),
 			agents: () =>
@@ -1733,12 +1743,7 @@ export function mountApplication(
 			apps: () => companyApps?.apps ?? [],
 			agentName: (agentId) => (agentId ? (controller.staffById(agentId)?.displayName ?? null) : null),
 			onFolderChange: (listener) => companyApps?.onChange(listener) ?? (() => {}),
-			// Beside the chat, as a folder link in it: closing Storage gives the composer focus again.
-			openInStorage: (path) => {
-				const open = settings;
-				openSettings("storage", path);
-				if (settings && settings !== open) settingsFromConversation = beside && conversation !== undefined;
-			},
+			openInFiles,
 			// A link to an app in an app's page, as its card in a message.
 			openApp,
 			budgetKey: controller.profile.profileId,
@@ -1751,7 +1756,7 @@ export function mountApplication(
 			tell: appNotes(),
 		});
 		sidePanel = (target) =>
-			new AppPanel(panelHost(true), target, { kind: "beside", onClose: () => conversation?.closeBeside(true) });
+			new AppPanel(panelHost(), target, { kind: "beside", onClose: () => conversation?.closeBeside(true) });
 		// The member's erases of single messages under a caller's checks (summary trees M3c).
 		const messageErases = (current: () => void) => {
 			current();
@@ -1924,7 +1929,7 @@ export function mountApplication(
 						current,
 					).folder();
 				},
-				openStorage: (path) => openSettings("storage", path),
+				openInFiles,
 				searchBlocked: () => Boolean(settings || feedback || friendsWindow),
 			});
 		// The drawer may draw an app otherwise now (the member's icon or colour for it, its group's colour): its cards
@@ -2474,28 +2479,57 @@ export function mountApplication(
 					},
 				};
 			}
-			const team = controller.store.get().team;
-			if (!team) return undefined;
+			if (!controller.store.get().team) return undefined;
 			const el = h("div", { class: "surface-files" });
-			const browser = new CompanyFolderBrowser(
-				el,
-				new WebCompanyFiles(
-					cloud,
-					controller.profile,
-					controller.userId,
-					team.role,
-					AbortSignal.any([controller.signal, signal]),
-					companyCurrent,
-					team.capabilities.write,
-				),
-				() => ({
-					me: controller.userId,
-					members: controller.store.get().team?.members ?? [],
-					staff: controller.store.get().staff,
-				}),
-			);
-			void browser.open().catch(() => undefined);
-			return { el, update: () => undefined, dispose: () => browser.dispose() };
+			let shown: { browser: CompanyFolderBrowser; stop: AbortController; authority: string } | undefined;
+			const close = () => {
+				if (!shown) return;
+				if (filesShown?.browser === shown.browser) filesShown = undefined;
+				shown.stop.abort();
+				shown.browser.dispose();
+				shown = undefined;
+			};
+			const draw = () => {
+				const team = controller.store.get().team;
+				const authority =
+					team && !controller.store.get().accessLost
+						? JSON.stringify([team.role, team.capabilities.read, team.capabilities.write])
+						: "";
+				if (shown?.authority === authority) return;
+				close();
+				el.replaceChildren();
+				if (!team || !authority) return;
+				const stop = new AbortController();
+				const browser = new CompanyFolderBrowser(
+					el,
+					new WebCompanyFiles(
+						cloud,
+						controller.profile,
+						controller.userId,
+						team.role,
+						AbortSignal.any([controller.signal, signal, stop.signal]),
+						companyCurrent,
+						team.capabilities.write,
+					),
+					() => ({
+						me: controller.userId,
+						members: controller.store.get().team?.members ?? [],
+						staff: controller.store.get().staff,
+					}),
+					{ usage: () => api.getCompanyFile(controller.profile.environmentId) },
+				);
+				shown = { browser, stop, authority };
+				filesShown = { owner: controller, browser };
+				if (filesPending?.owner === controller) browser.reveal(filesPending.path);
+				void browser.open().then(
+					() => {
+						if (filesPending?.owner === controller) filesPending = undefined;
+					},
+					() => undefined,
+				);
+			};
+			draw();
+			return { el, update: draw, dispose: close };
 		};
 		switch (route.section) {
 			case "new": {
@@ -2844,7 +2878,7 @@ export function mountApplication(
 				}
 				appPage?.dispose();
 				appPage = new AppPanel(
-					panelHost(false),
+					panelHost(),
 					{ kind: "app", name: route.id ?? "" },
 					{
 						kind: "page",
@@ -2895,7 +2929,7 @@ export function mountApplication(
 				const reader = cardImage;
 				conceptsView = new ConceptsView(
 					{
-						panel: panelHost(false),
+						panel: panelHost(),
 						profileId: controller.profile.profileId,
 						companyName: () => controller.profile.profileName,
 						back: () => appReturn ?? home,
@@ -2922,10 +2956,15 @@ export function mountApplication(
 				return;
 			}
 			case "file": {
-				// Existing Company File links open Storage in Settings. Resolve the company's
-				// home first, so its redirect cannot close the new Settings session.
-				navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }, true);
-				settingsAfterHome = "storage";
+				navigate(
+					{
+						name: "company",
+						profileId: controller.profile.profileId,
+						section: "surface",
+						id: filesSlug(controller),
+					},
+					true,
+				);
 				return;
 			}
 			case "meet":

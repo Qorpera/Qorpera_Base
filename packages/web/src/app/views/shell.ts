@@ -135,7 +135,7 @@ export interface ShellContext {
 	refreshInterfacePages?: () => void;
 	searchFolder?: () => Pick<CloudMemberFolderClient, "search" | "history">;
 	searchBlocked?: () => boolean;
-	openStorage?: (path: string) => void;
+	openInFiles?: (path: string) => void;
 }
 
 /* The account menu is one long-lived element: the shell re-renders on every
@@ -4104,7 +4104,7 @@ function fileHit(context: ShellContext, path: string, kind: string): SearchHit {
 		title: name,
 		detail: kind === "folder" ? `${t("Folder")} · ${folder}` : folder,
 		lead: () => icon(glyph),
-		open: () => context.openStorage?.(path),
+		open: () => context.openInFiles?.(path),
 	};
 }
 
@@ -4210,7 +4210,7 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 		revive: (key) => {
 			const [, kind, path] = /^file:(file|folder|symlink):(.+)$/.exec(key) ?? [];
 			const readable = company.store.get().team?.capabilities.read === true;
-			return kind && path && readable && context.openStorage ? fileHit(context, path, kind) : undefined;
+			return kind && path && readable && context.openInFiles ? fileHit(context, path, kind) : undefined;
 		},
 		...(folder && company.store.get().team?.capabilities.read
 			? {
