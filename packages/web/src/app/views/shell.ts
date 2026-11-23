@@ -453,6 +453,7 @@ interface RailParts {
 	/** The company's other members, each a contact (this member's chat with them): those the member has not put
 	 * elsewhere in the rail, after everything the company arranges. */
 	readonly members: SectionParts;
+	readonly membersFold: MembersFold;
 	readonly invite: HTMLButtonElement;
 	readonly dock: HTMLElement;
 	readonly dockHover: RailHover;
@@ -487,6 +488,15 @@ interface RailParts {
 	readonly drag: RailDrag;
 	redraw: () => void;
 }
+interface MembersFold {
+	readonly label: HTMLElement;
+	readonly count: HTMLElement;
+	readonly body: HTMLElement;
+	open: boolean;
+	holdKey: string;
+	releasedFor: string | undefined;
+	rowCount: number;
+}
 interface HiddenParts {
 	readonly el: HTMLElement;
 	readonly toggle: HTMLButtonElement;
@@ -500,6 +510,7 @@ interface HiddenParts {
 }
 const HIDDEN_OPEN_KEY = "qorpera.web.rail-hidden-open";
 const AGENTS_OPEN_KEY = "qorpera.web.rail-agents-open";
+const MEMBERS_OPEN_KEY = "qorpera.web.rail-members-open";
 const APPS_OPEN_KEY = "qorpera.web.rail-apps-open";
 /** The drawer's order is kept per company on this device, as whether it is open is (Jonas, 9 Nov 2026). */
 const APPS_ORDER_KEY = "qorpera.web.rail-apps-order";
@@ -609,6 +620,69 @@ function sectionParts(zone: string, sectionId?: string): SectionParts {
 		list,
 	};
 }
+function membersSection(): { section: SectionParts; fold: MembersFold } {
+	const titleId = `rail-section-title-${++sectionTitles}`;
+	const label = h("span", { class: "rail-agents-label" });
+	const count = h("span", { class: "rail-agents-count" });
+	const title = h(
+		"button",
+		{
+			type: "button",
+			class: "rail-section-title rail-agents-head",
+			id: titleId,
+			"aria-controls": "rail-members-body",
+		},
+		label,
+		count,
+		h("span", { class: "rail-agents-chevron", "aria-hidden": "true" }, icon("chevron-down")),
+	);
+	const list = h("div", { class: "rail-section-list" });
+	const body = h(
+		"div",
+		{ class: "rail-agents-body", id: "rail-members-body" },
+		h("div", { class: "rail-agents-inner" }, list),
+	);
+	let open = false;
+	try {
+		open = localStorage.getItem(MEMBERS_OPEN_KEY) === "1";
+	} catch {
+		// WHY: storage can be blocked; the section then starts folded.
+	}
+	return {
+		section: {
+			el: h(
+				"div",
+				{
+					class: "rail-section rail-members",
+					role: "group",
+					"aria-labelledby": titleId,
+					"data-zone": MEMBERS_ZONE,
+				},
+				title,
+				body,
+			),
+			title,
+			list,
+		},
+		fold: { label, count, body, open, holdKey: "", releasedFor: undefined, rowCount: 0 },
+	};
+}
+
+function paintMembersFold(parts: RailParts): void {
+	const fold = parts.membersFold;
+	const held = fold.holdKey !== "" && fold.releasedFor !== fold.holdKey;
+	const shown = fold.open || held || parts.collapsed;
+	parts.members.el.classList.toggle("is-open", shown);
+	parts.members.title.setAttribute("aria-expanded", String(shown));
+	fold.body.toggleAttribute("inert", !shown);
+	fold.count.textContent = String(fold.rowCount);
+	fold.count.hidden = shown || fold.rowCount === 0;
+	parts.members.title.setAttribute(
+		"aria-label",
+		shown || fold.rowCount === 0 ? t("Members") : t("Members: {count}", { count: fold.rowCount }),
+	);
+}
+
 const railParts = new WeakMap<CompanyController, RailParts>();
 
 /** The rail collapsed to its figure column (RailLayout, desktop only), where the search field is hidden. */
@@ -707,6 +781,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			{ class: "rail-apps-drawer", id: "rail-apps-drawer", role: "group" },
 			h("div", null, appsOwed, appsGrid),
 		);
+		const members = membersSection();
 		const created: RailParts = {
 			company: companyButton,
 			companyName,
@@ -745,7 +820,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			),
 			sections: new Map(),
 			unassigned: sectionParts("unassigned"),
-			members: sectionParts(MEMBERS_ZONE),
+			members: members.section,
+			membersFold: members.fold,
 			invite: h(
 				"button",
 				{ type: "button", class: "rail-row rail-row-invite" },
@@ -776,7 +852,21 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			drag: undefined as unknown as RailDrag,
 			redraw,
 		};
-		created.members.el.classList.add("rail-members");
+		created.members.title.addEventListener(
+			"click",
+			() => {
+				const fold = created.membersFold;
+				fold.open = !(fold.open || (fold.holdKey !== "" && fold.releasedFor !== fold.holdKey));
+				fold.releasedFor = fold.holdKey;
+				try {
+					localStorage.setItem(MEMBERS_OPEN_KEY, fold.open ? "1" : "0");
+				} catch {
+					// WHY: storage can be blocked; the choice then lasts this visit.
+				}
+				paintMembersFold(created);
+			},
+			{ signal: company.signal },
+		);
 		created.invite.addEventListener(
 			"click",
 			() => {
@@ -963,7 +1053,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		parts.appsDrawer.setAttribute("aria-label", t("Apps"));
 		parts.interfaceRows = new Map();
 		parts.pinnedGroup.setAttribute("aria-label", t("Pinned"));
-		parts.members.title.textContent = t("People");
+		parts.membersFold.label.textContent = t("Members");
 		parts.invite.querySelector("strong")!.textContent = t("Invite");
 		const slot = parts.pinnedGroup.querySelector<HTMLElement>(".rail-drop-slot");
 		if (slot) slot.textContent = t("Drop here to pin");
@@ -1561,9 +1651,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				return shown(agent) ? [agentElement(agent)] : [];
 			});
 	// The Members group: the contacts their member has put nowhere else, the dragged ones first, then as they joined.
-	const memberRows = weave([], contactsIn(MEMBERS_ZONE)).flatMap((userId) =>
-		contactShown(contactOf.get(userId)!) ? [memberElement(userId)] : [],
-	);
+	const memberIds = weave([], contactsIn(MEMBERS_ZONE)).filter((userId) => contactShown(contactOf.get(userId)!));
+	const memberRows = memberIds.map((userId) => memberElement(userId));
 	const sectionGroups = (sidebar?.sections ?? []).map((item) => {
 		let group = parts.sections.get(item.sectionId);
 		if (!group) {
@@ -1824,6 +1913,13 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	zone(parts.members.el, placing);
 	parts.members.el.classList.toggle("is-empty", !people);
 	reconcile(parts.members.list, canInvite ? [...memberRows, parts.invite] : memberRows);
+	const membersFold = parts.membersFold;
+	membersFold.rowCount = memberRows.length;
+	membersFold.holdKey = memberIds
+		.filter((userId) => userId === activeMemberId || (memberChats?.[userId]?.unread ?? 0) > 0)
+		.join(",");
+	if (membersFold.holdKey === "") membersFold.releasedFor = undefined;
+	paintMembersFold(parts);
 	surfaceRail?.update(activeSurfaceSlug, false);
 	// Collapsed, where section titles hide, a short line parts each group of agents from the
 	// group above it: never under the Co-Founder, never around a section with no one in it.

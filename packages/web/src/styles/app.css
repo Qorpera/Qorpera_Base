@@ -514,6 +514,7 @@ label > input, label > select { font-weight: 400; }
 .rail-dock:not(:has(> :not(.rail-members.is-empty, .rail-hover-tint))) { display: none; }
 /* WHY: as specific as the rule above, so it must stay after it. */
 .rail-scroll[data-dragging="member"] > .rail-dock { display: grid; }
+.rail-scroll[data-dragging="member"] .rail-members .rail-agents-body { grid-template-rows: 1fr; opacity: 1; }
 .rail-compact .rail-dock { padding: 4px; border-radius: 14px; }
 .rail-members.is-empty { display: none; }
 .rail-scroll[data-dragging="member"] .rail-members.is-empty { display: block; }
