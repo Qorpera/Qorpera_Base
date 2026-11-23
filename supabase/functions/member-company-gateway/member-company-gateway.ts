@@ -5,7 +5,7 @@ const FOLDER_OBJECT = new RegExp(`^/v1/member-folder-objects/${UUID}/[0-9a-f]{64
 const FOLDER_COMMIT = new RegExp(`^/v1/member-folder-commits/${UUID}$`);
 const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);
 /** A chat image: its upload for one pending input, or a canonical input's bytes (the gateway's attachment route). */
-const ATTACHMENT = new RegExp(`^/v1/member-session-attachments/(upload|input)/${UUID}/${UUID}/[0-9a-f]{64}$`);
+const ATTACHMENT = new RegExp(`^/v1/member-session-attachments/(upload|input|surface-upload|surface-input)/${UUID}/${UUID}/[0-9a-f]{64}$`);
 /** A member's erase of one message: its request (an event id after the session) or where it stands (M3c). */
 const ERASE = new RegExp(`^/v1/member-message-erases/${UUID}/${UUID}(/${UUID})?$`);
 const PROGRAM_UPLOAD = new RegExp(`^/v1/member-program-uploads/${UUID}(/${UUID}(/(0|[1-9]|[1-5][0-9]|6[0-3]|stop))?)?$`);
@@ -189,7 +189,7 @@ function route(path: string): RoutePolicy | undefined {
 	const attachment = ATTACHMENT.exec(path);
 	// An upload is one image of at most 8 MiB, as the gateway takes it.
 	if (attachment)
-		return attachment[1] === "upload"
+		return attachment[1].endsWith("upload")
 			? {
 					method: "PUT",
 					headers: ["authorization", "content-type"],
