@@ -306,6 +306,23 @@ begin
 	);
 	update public.qorpera_coding_sessions set harness = 'codex' where worker_id = v_worker_id;
 
+	update public.qorpera_coding_executors set enabled = false where environment_id = v_env;
+	v_errcode := null;
+	perform pg_temp.stp_as(v_bo);
+	set local role authenticated;
+	begin
+		perform public.qorpera_reply_surface_session(v_session, 'Add pricing too', true);
+	exception when others then
+		v_errcode := sqlstate || ':' || sqlerrm;
+	end;
+	reset role;
+	perform pg_temp.stp_assert(
+		v_errcode like '55000:Coding is not available%'
+			and (select turn_requested_by_user_id from public.qorpera_surface_sessions where id = v_session) is null,
+		'with coding switched off the reply says so instead of asking for a login: ' || coalesce(v_errcode, 'accepted')
+	);
+	update public.qorpera_coding_executors set enabled = true where environment_id = v_env;
+
 	perform pg_temp.stp_as(v_bo);
 	set local role authenticated;
 	perform public.qorpera_reply_surface_session(v_session, 'Add pricing too', true);

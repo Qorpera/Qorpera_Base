@@ -70,16 +70,20 @@ $new$	v_user_id := public.qorpera_assert_surface_member(v_peek.profile_id, true)
 		select 1 from public.qorpera_surfaces surf
 		where surf.id = v_peek.surface_id and surf.source_kind = 'code_repo'
 	) then
-		if coalesce(public.qorpera_surface_resolve_coding_sponsor(
+		case coalesce(public.qorpera_surface_resolve_coding_sponsor(
 			v_peek.profile_id,
 			(select c.environment_id from public.qorpera_company_cofounders c where c.profile_id = v_peek.profile_id limit 1),
 			v_user_id,
 			true,
 			(select cs.harness from public.qorpera_coding_sessions cs where cs.worker_id = v_peek.worker_id),
 			v_peek.worker_id is not null
-		) ->> 'status', '') <> 'ok' then
-			raise exception 'Connect a model account in Settings → AI subscriptions to reply' using errcode = '42501';
-		end if;
+		) ->> 'status', '')
+			when 'ok' then null;
+			when 'no_coding_executor' then
+				raise exception 'Coding is not available for this surface right now' using errcode = '55000';
+			else
+				raise exception 'Connect a model account in Settings → AI subscriptions to reply' using errcode = '42501';
+		end case;
 	elsif nullif(public.qorpera_surface_resolve_sponsor(v_peek.profile_id, v_user_id) ->> 'sponsorBindingId', '') is null then
 		raise exception 'Connect a model account in Settings → AI subscriptions to reply' using errcode = '42501';
 	end if;
