@@ -356,6 +356,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "App WebSockets, SSE, supervision and site rollbacks",
 		text: "Shared app links (share_app) now carry HTTP, long-lived SSE streaming and WebSockets with per-stream flow control, active health probing, and zero-downtime port swaps. Static websites published with publish_site now keep up to ten versions within a per-company kept-version budget and accept WebAssembly, glTF/GLB, WebVTT, Markdown, and RSS/Atom files. Use manage_site to list versions, roll back a published static website atomically, or start, check health, reload, stop, and read structured logs and crash summaries for a hosted app.",
 	},
+	{
+		id: "coding-prewarmed-snapshots-and-standby",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "Pre-warmed coding snapshots and environment hooks",
+		text: "Repositories can now declare a Qorpera, Cursor or devcontainer environment configuration with install, start, background terminal and static non-secret environment settings. Qorpera computes a setup digest, builds scrubbed per-node snapshot images in the background under the company's network exit rules so new coding machines start with base packages pre-warmed, and runs worktree install, start and tracked background terminal hooks automatically on attach with clean teardown on detach.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

@@ -97,6 +97,12 @@ export function lxdCodingMachineName(machineId: string): string {
 /** The binding in its one canonical key order: `text` is what SQL hashes into
  * the machine's instance digest on its first run authority, so it is the same
  * text every time. */
+export const CODING_MACHINE_BASE_CONFIG: Readonly<Record<string, string>> = Object.freeze({
+	"boot.mode": "uefi-secureboot",
+	"boot.autostart": "false",
+	"security.devlxd": "false",
+});
+
 export function lxdCodingMachinePlan(value: LxdCodingMachineBinding): {
 	binding: Readonly<LxdCodingMachineBinding>;
 	text: string;
@@ -141,9 +147,7 @@ export function lxdCodingMachinePlan(value: LxdCodingMachineBinding): {
 			profiles: [],
 			source: { type: "image", fingerprint: binding.imageFingerprint },
 			config: {
-				"boot.mode": "uefi-secureboot",
-				"boot.autostart": "false",
-				"security.devlxd": "false",
+				...CODING_MACHINE_BASE_CONFIG,
 				"limits.cpu": String(binding.cpus),
 				"limits.memory": String(binding.memoryBytes),
 				"user.qorpera.schema": binding.schema,
@@ -388,6 +392,9 @@ interface Event {
 type Client = Pick<LxdTrackedClient, "getInstance" | "submitInstanceOperation" | "inspectInstanceOperation"> &
 	Partial<LxdImageClient>;
 export type CodingMachineDesiredState = "running" | "stopped" | "deleted";
+export interface CodingMachineStandbyClaim {
+	readonly operationId: string;
+}
 export interface CodingMachineReconcileOptions {
 	plan: CodingMachineJournalPlan;
 	/** Existing persistent service-owned physical 0700 root, outside the VM. */
@@ -399,6 +406,11 @@ export interface CodingMachineReconcileOptions {
 	signal: AbortSignal;
 	/** The node's agent plug (default: its plug tool), for a plan with an agent card. */
 	plug?: AgentPlug;
+	claimStandby?: (
+		project: string,
+		request: LxdCreateInstanceRequest,
+		signal: AbortSignal,
+	) => Promise<CodingMachineStandbyClaim | null>;
 	/** A member's machine that LXD shows stopped after its settled start: called
 	 * once that stop is written down and before anything else is done to the
 	 * machine (a start, a delete, or waiting for an operator), each time it is
@@ -1182,11 +1194,28 @@ export async function reconcileCodingMachine(
 	let operationId: string;
 	try {
 		signal.throwIfAborted();
+		if (action === "create" && options.claimStandby && request) {
+			const claimed = await options.claimStandby(plan.project, request, signal);
+			if (claimed) {
+				if (!UUID.test(claimed.operationId)) throw new Error("CODING_MACHINE_OPERATION_UNBOUND");
+				current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
+				tail = current.events.at(-1);
+				if (tail?.kind !== "dispatch" || tail.action !== "create")
+					throw new Error("CODING_MACHINE_JOURNAL_CONFLICT");
+				await append({ action: "create", kind: "accepted", operationId: claimed.operationId, state: null });
+				current = await readEvents(root, plan.binding, plan.disposable === true, plan.selfStops === true);
+				await append({
+					action: "create",
+					kind: "settled",
+					operationId: claimed.operationId,
+					state: "succeeded",
+				});
+				options.signal.throwIfAborted();
+				return result("pending");
+			}
+		}
 		const reference = await options.client.submitInstanceOperation(
 			plan.project,
-			// The machine holds no state of its own (every session's work is on the
-			// NAS): power it off; a guest that ignores the shutdown request would
-			// otherwise keep its place on the node until an operator stepped in.
 			action === "create"
 				? { action, request: request as LxdCreateInstanceRequest }
 				: action === "stop"

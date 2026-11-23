@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
@@ -126,6 +126,14 @@ import {
 	recordCodingMachineDisk,
 	undropCodingMachineStart,
 } from "./coding-machine.ts";
+import { EMPTY_CODING_SETUP_DIGEST, type ParsedCodingSetup } from "./coding-setup.ts";
+import {
+	type CodingSetupCommandRunner,
+	CodingSetupLifecycle,
+	CodingSetupLifecycleError,
+} from "./coding-setup-lifecycle.ts";
+import type { CodingSnapshotBuilder } from "./coding-snapshots.ts";
+import type { CodingStandbyPool } from "./coding-standby-pool.ts";
 import { type CodingNasStorage, createCodingNasStorage } from "./coding-storage.ts";
 import { type LxdCodingVmBinding, lxdCodingVmPlan, lxdLegacyCodingMachineJournalPlan } from "./coding-vm.ts";
 import { publishCloudCodingDraftPullRequest } from "./coding-workspace.ts";
@@ -166,6 +174,7 @@ export const CODING_HOST_RPCS = [
 	"qorpera_record_coding_machine_new_disk",
 	"qorpera_record_code_change",
 	"qorpera_code_checks_switch",
+	"qorpera_fallback_coding_machine_base_image",
 	"qorpera_record_coding_worktree_created",
 ] as const;
 
@@ -329,6 +338,9 @@ export interface LxdCodingExecutorHostOptions {
 		 * read's pace (`checksPollMs`) when that is shorter. */
 		checksBoundaryMs?: number;
 	};
+	snapshotBuilder?: CodingSnapshotBuilder;
+	standbyPool?: CodingStandbyPool;
+	setupLifecycle?: CodingSetupLifecycle;
 }
 type FolderOptions = NonNullable<LxdCodingExecutorHostOptions["folder"]>;
 /** A session this process hot-plugged into its member's machine during a turn,
@@ -1555,6 +1567,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * provisional, and the start may land at any time), a stop not confirmed, a receipt or a `hidden` that says
 	 * `unconfirmed`. Looked at again after the next run's fence stands, before its first check (#checksLookAgain). */
 	readonly #checksUncertain = new Map<string, Set<string>>();
+	readonly #setupLifecycle: CodingSetupLifecycle;
+	readonly #sessionSetups = new Map<string, { env: Readonly<Record<string, string>>; digest: string }>();
 	#archiveScanAt = Number.NEGATIVE_INFINITY;
 	constructor(options: LxdCodingExecutorHostOptions) {
 		if (
@@ -1600,6 +1614,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#commandSecrets =
 			options.commandSecrets ??
 			(options.commandEnvironment ? new CodingMachineCommandSecrets(options.commandEnvironment) : undefined);
+		this.#setupLifecycle = options.setupLifecycle ?? new CodingSetupLifecycle();
 	}
 	#call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		signal.throwIfAborted();
@@ -1793,6 +1808,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		signal: AbortSignal,
 		stoppedFromOutside?: (startOperationId: string, signal: AbortSignal) => Promise<void>,
 		starting?: CodingMachineReconcileOptions["starting"],
+		extra?: {
+			claimStandby?: CodingMachineReconcileOptions["claimStandby"];
+		},
 	): Promise<"running" | "stopped" | "absent" | "deleted"> {
 		const checked = AbortSignal.any([
 			signal,
@@ -1811,6 +1829,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				plug: this.#options.agentPlug,
 				stoppedFromOutside,
 				starting,
+				claimStandby: extra?.claimStandby,
 				projectAllowsAgentCard: (project, read) => this.#options.client.allowsAgentCard(project, read),
 			});
 			checked.throwIfAborted();
@@ -1835,18 +1854,23 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	}
 	/** The member's machine for this turn, as SQL planned it from the policy the
 	 * executor itself runs with. */
-	async #plan(claim: CodingSessionClaim, signal: AbortSignal): Promise<Readonly<LxdCodingMachineBinding>> {
-		const value = record(
-			await this.#call(
-				"qorpera_plan_coding_machine",
-				{
-					p_worker_id: claim.workerId,
-					p_lease_token: claim.leaseToken,
-					p_machine_id_sha256: this.#options.machineIdSha256,
-				},
-				signal,
-			),
-		);
+	async #plan(
+		claim: CodingSessionClaim,
+		signal: AbortSignal,
+		setupDigest?: string,
+	): Promise<{
+		machine: Readonly<LxdCodingMachineBinding>;
+		snapshotId: string | null;
+		snapshotImageFingerprint: string | null;
+		snapshotBuildNeeded: boolean;
+	}> {
+		const planArgs: Record<string, unknown> = {
+			p_worker_id: claim.workerId,
+			p_lease_token: claim.leaseToken,
+			p_machine_id_sha256: this.#options.machineIdSha256,
+		};
+		if (setupDigest !== undefined) planArgs.p_setup_digest = setupDigest;
+		const value = record(await this.#call("qorpera_plan_coding_machine", planArgs, signal));
 		if (value.state === "refused") {
 			const reason = String(value.reason ?? "");
 			if (WAITABLE.has(reason)) throw new CodingMachineUnavailable(reason);
@@ -1854,17 +1878,86 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		}
 		if (value.schema !== "qorpera.coding-machine-plan/v1" || value.state !== "planned")
 			throw new Error("CODING_HOST_MACHINE_PLAN_INVALID");
+		const parsed = this.#validatePlannedMachine(claim, value, true);
+		if (parsed.snapshotImageFingerprint !== null) {
+			const hasLocalImage = this.#options.client.hasImage
+				? await this.#options.client.hasImage(parsed.machine.project, parsed.snapshotImageFingerprint, signal)
+				: false;
+			if (!hasLocalImage) {
+				const existing = await this.#options.client.getInstance(
+					parsed.machine.project,
+					lxdCodingMachineName(parsed.machine.machineId),
+					signal,
+				);
+				if (!existing) {
+					// WHY: Fail closed to the pinned base image when a SQL-selected snapshot image is absent from local LXD.
+					const fallbackRaw = record(
+						await this.#call(
+							"qorpera_fallback_coding_machine_base_image",
+							{
+								p_worker_id: claim.workerId,
+								p_lease_token: claim.leaseToken,
+								p_machine_id: parsed.machine.machineId,
+								p_machine_id_sha256: this.#options.machineIdSha256,
+							},
+							signal,
+						),
+					);
+					if (fallbackRaw.schema !== "qorpera.coding-machine-plan/v1" || fallbackRaw.state !== "planned")
+						throw new Error("CODING_HOST_MACHINE_PLAN_INVALID");
+					return this.#validatePlannedMachine(claim, fallbackRaw, false);
+				}
+			}
+		}
+		return parsed;
+	}
+	#validatePlannedMachine(
+		claim: CodingSessionClaim,
+		value: Record<string, unknown>,
+		allowSnapshot: boolean,
+	): {
+		machine: Readonly<LxdCodingMachineBinding>;
+		snapshotId: string | null;
+		snapshotImageFingerprint: string | null;
+		snapshotBuildNeeded: boolean;
+	} {
 		const machine = lxdCodingMachinePlan(value.binding as LxdCodingMachineBinding).binding;
-		const { schema: _schema, machineId, companyId, environmentId, memberUserId, ...policy } = machine;
+		const {
+			schema: _schema,
+			machineId,
+			companyId,
+			environmentId,
+			memberUserId,
+			imageFingerprint,
+			...restPolicy
+		} = machine;
+		const { imageFingerprint: baseImageFingerprint, ...restVmPolicy } = this.#options.vmPolicy;
+		const snapshotId = typeof value.snapshotId === "string" && UUID.test(value.snapshotId) ? value.snapshotId : null;
+		const snapshotImageFingerprint =
+			typeof value.snapshotImageFingerprint === "string" && SHA.test(value.snapshotImageFingerprint)
+				? value.snapshotImageFingerprint
+				: null;
+		const isValidBase = imageFingerprint === baseImageFingerprint;
+		const isValidSnapshot =
+			allowSnapshot &&
+			snapshotId !== null &&
+			snapshotImageFingerprint !== null &&
+			imageFingerprint === snapshotImageFingerprint;
 		if (
 			machineId !== value.machineId ||
 			companyId !== claim.profileId ||
 			environmentId !== claim.environmentId ||
 			memberUserId !== claim.ownerUserId ||
-			!isDeepStrictEqual(policy, { ...this.#options.vmPolicy })
+			!isDeepStrictEqual(restPolicy, restVmPolicy) ||
+			(!isValidBase && !isValidSnapshot)
 		)
 			throw new Error("CODING_HOST_MACHINE_POLICY_DIFFERS");
-		return machine;
+		return {
+			machine,
+			snapshotId: isValidSnapshot ? snapshotId : null,
+			snapshotImageFingerprint: isValidSnapshot ? snapshotImageFingerprint : null,
+			snapshotBuildNeeded: value.snapshotBuildNeeded === true,
+		};
 	}
 	/** Hot-plugs the session's two NAS folders into the running machine and
 	 * waits until its agent has mounted both. An uncertain update is judged from
@@ -2191,11 +2284,52 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	): Promise<CodingWorkspace> {
 		if (turn.workerId !== claim.workerId || turn.sequence !== claim.sequence)
 			throw new Error("CODING_HOST_TURN_CHANGED");
-		const machine = await this.#plan(claim, signal);
+		const folder = this.#options.folder;
+		let discoveredSetup: ParsedCodingSetup | null = null;
+		if (
+			folder?.repositories?.readSetup &&
+			typeof claim.baseSha === "string" &&
+			/^[0-9a-f]{40}$/.test(claim.baseSha)
+		) {
+			discoveredSetup = await folder.repositories.readSetup(
+				{
+					claim,
+					assertAuthorized: async (checked) => {
+						await this.#assertSessionAuthorized(claim, checked);
+					},
+				},
+				claim.baseSha,
+				signal,
+			);
+			if (discoveredSetup.refused) {
+				const detail = discoveredSetup.problems
+					.filter((problem) => problem.effect === "refused")
+					.slice(0, 5)
+					.map((problem) => `${problem.at || "/"}: ${problem.message}`)
+					.join("; ");
+				throw new CodingWorkspaceFailed(
+					"CODING_SETUP_REFUSED",
+					`Repository environment setup file (${discoveredSetup.file ?? "environment.json"}) is invalid: ${detail || "refused"}`,
+				);
+			}
+		}
+		const planned = await this.#plan(claim, signal, discoveredSetup?.setupDigest);
+		const machine = planned.machine;
 		const storage = lxdCodingSessionStorage(machine, this.#placement, claim.workerId);
 		const journal = lxdCodingMachineJournalPlan(machine, this.#placement);
-		if (this.#options.folder)
-			return this.#prepareFolder(this.#options.folder, claim, turn, machine, storage, journal, signal);
+		if (folder) {
+			const workspace = await this.#prepareFolder(folder, claim, turn, machine, storage, journal, signal);
+			try {
+				await this.#afterFolderAttach(folder, claim, planned, journal, discoveredSetup, signal);
+			} catch (error) {
+				if (this.#prepared.get(claim.workerId)?.claim.leaseToken === claim.leaseToken) {
+					this.#prepared.delete(claim.workerId);
+				}
+				this.#sessionSetups.delete(claim.workerId);
+				throw error;
+			}
+			return workspace;
+		}
 		const bootId = await this.#exclusive(machine.machineId, signal, async () => {
 			await this.#run(claim, machine, storage, signal, true);
 			// SQL reserves it on this node now: its lease comes before its start, and the keeper renews it.
@@ -2498,6 +2632,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				} else if (await this.#recordFolderRestart(machine, afterOperationId, checked)) return "rebuild";
 				this.#folderStarts.set(machine.machineId, (this.#folderStarts.get(machine.machineId) ?? 0) + 1);
 			},
+			this.#options.standbyPool
+				? {
+						claimStandby: (project, request, checked) =>
+							this.#options.standbyPool!.claim(project, request, checked),
+					}
+				: undefined,
 		).catch(async (error: unknown) => {
 			// The machine's image is no longer on the node: it stays stopped and marked, with its own error, and each turn
 			// on it fails so until the image is back or the machine is removed.
@@ -4738,6 +4878,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		// No new command, lease refresh or publication for this turn from here on.
 		if (this.#prepared.get(claim.workerId)?.claim.leaseToken === claim.leaseToken)
 			this.#prepared.delete(claim.workerId);
+		this.#sessionSetups.delete(claim.workerId);
 		try {
 			await this.#takeOff(
 				attached.machine,
@@ -4747,6 +4888,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				signal,
 			);
 		} finally {
+			this.#setupLifecycle.forgetSession(attached.machine.machineId, claim.workerId);
 			if (this.#attached.get(claim.workerId) === attached) this.#attached.delete(claim.workerId);
 		}
 	}
@@ -4762,6 +4904,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		session: { workerId: string; leaseToken: string | null },
 		running: readonly string[],
 		signal: AbortSignal,
+		folderUid?: number,
 	): Promise<void> {
 		const journal = lxdCodingMachineJournalPlan(machine, this.#placement),
 			text = lxdCodingMachinePlan(machine).text,
@@ -4784,6 +4927,22 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				if (awake) {
 					await this.#cancelCommands(machine, session.workerId, running, signal);
 					await this.#custody(journal, text, "detach", signal, session);
+					const uid =
+						folderUid ??
+						this.#attachments.get(session.workerId)?.folder?.uid ??
+						this.#prepared.get(session.workerId)?.folder?.uid;
+					if (
+						uid !== undefined &&
+						this.#setupLifecycle.trackedTerminals(machine.machineId, session.workerId).length > 0
+					) {
+						await this.#setupLifecycle
+							.onDetach(
+								machine.machineId,
+								session.workerId,
+								this.#guestDetachRunner(guest, session.workerId, uid),
+							)
+							.catch(() => undefined);
+					}
 					await guest.quiesce(request, signal);
 				}
 				const end = await folder.views.end(session.workerId, signal);
@@ -4798,6 +4957,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				if (end && !end.saved) throw new Error("CODING_FOLDER_VIEW_UNSAVED");
 				if (end && !end.closed) throw new Error("CODING_FOLDER_VIEW_CLOSE_UNCONFIRMED");
 				if (guestFailure) throw guestFailure;
+				this.#setupLifecycle.forgetSession(machine.machineId, session.workerId);
+				this.#sessionSetups.delete(session.workerId);
 				this.#commandSecrets?.release(machine.machineId, session.workerId);
 				return;
 			}
@@ -4918,6 +5079,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		}
 		this.#samples.delete(workerId);
 		this.#folderUidCache.delete(workerId);
+		this.#sessionSetups.delete(workerId);
+		this.#setupLifecycle.forgetSession(machine.machineId, workerId);
 		this.#deleteKeptCommandsForWorker(workerId);
 	}
 	/** A member's machine LXD shows stopped after its settled start (the
@@ -4954,6 +5117,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#settledBoots.delete(machine.machineId);
 		this.#folderStartOperations.delete(machine.machineId);
 		this.#cpuHighSamples.delete(machine.machineId);
+		this.#setupLifecycle.onMachineStopped(machine.machineId);
 	}
 	/** SQL marks the machine to restart for the company folder (rule 4), or with `newDisk` for a new disk (rule 4,
 	 * `unreadable`), which marks it to restart too. From then on no coding view opens on it. A mark already there stays. */
@@ -5076,6 +5240,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#settledBoots.delete(machine.machineId);
 		this.#folderStartOperations.delete(machine.machineId);
 		this.#cpuHighSamples.delete(machine.machineId);
+		this.#setupLifecycle.onMachineNewDisk(machine.machineId);
 		await this.#recordError(machine.machineId, "wake", null, signal).catch(() => undefined);
 	}
 	/** The sessions SQL detached are no longer attached here. */
@@ -5088,6 +5253,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			}
 			if (!current || current.token === attachmentToken || current.machine.machineId !== machineId) {
 				this.#commandSecrets?.release(machineId, workerId);
+				this.#setupLifecycle.forgetSession(machineId, workerId);
+				this.#sessionSetups.delete(workerId);
 			}
 			this.#samples.delete(workerId);
 			this.#folderUidCache.delete(workerId);
@@ -5212,6 +5379,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				this.#attachSerials.delete(workerId);
 				this.#samples.delete(workerId);
 				this.#folderUidCache.delete(workerId);
+				if (!this.#releasing.has(workerId)) {
+					this.#setupLifecycle.forgetSession(attachment.machine.machineId, workerId);
+					this.#sessionSetups.delete(workerId);
+				}
 				this.#commandSecrets?.release(attachment.machine.machineId, workerId);
 			}
 		for (const workerId of this.#folderUidCache.keys())
@@ -5579,6 +5750,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	): void {
 		if (this.#releasing.has(workerId)) return;
 		const prepared = this.#prepared.get(workerId);
+		const folderUid = this.#attachments.get(workerId)?.folder?.uid ?? prepared?.folder?.uid;
 		const again = reason === "EXPIRED" && prepared?.machine.machineId === machine.machineId ? prepared : undefined;
 		const step: CodingKeepOutcome["step"] = again ? "keep" : "detach";
 		const report = (state: CodingKeepOutcome["state"], code: string) =>
@@ -5601,6 +5773,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				{ workerId, leaseToken: null },
 				running.map((command) => command.commandId),
 				scoped,
+				folderUid,
 			);
 			await this.#recordDetached(machine, workerId, token, reason, running, scoped);
 			report("done", reason);
@@ -6023,13 +6196,19 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			await host(action, checkedScope, commandId, inputSha256, checked);
 			await authorize(action, checkedScope, commandId, inputSha256, checked);
 		};
-		if (folder && ready.folder)
+		if (folder && ready.folder) {
+			const setupEnv = this.#sessionSetups.get(ready.claim.workerId)?.env;
 			return this.#folderTransport(folder, ready, {
 				cwd: ready.folder.cwd,
-				environment: { ...codingFolderGitEnvironment(ready.claim.workerId), ...packageCacheEnvironment(ready) },
+				environment: {
+					...setupEnv,
+					...codingFolderGitEnvironment(ready.claim.workerId),
+					...packageCacheEnvironment(ready),
+				},
 				authorize: checkedAuthorize,
 				...(preAuthorized ? { context: preAuthorized } : {}),
 			});
+		}
 		return new LxdCodingCommandTransport({
 			machine: ready.machine,
 			storage: this.#placement,
@@ -6405,6 +6584,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#settledBoots.delete(entry.machineId);
 		this.#folderStartOperations.delete(entry.machineId);
 		this.#cpuHighSamples.delete(entry.machineId);
+		this.#setupLifecycle.onMachineStopped(entry.machineId);
 		// Asleep, no session is attached: each ends with what it stopped. All are recorded; the first failure is reported.
 		for (const { workerId, attachmentToken } of member ? entry.attached : [])
 			try {
@@ -6482,6 +6662,221 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		this.#folderStarts.delete(machineId);
 		this.#folderStartOperations.delete(machineId);
 		this.#cpuHighSamples.delete(machineId);
+		this.#setupLifecycle.forgetMachine(machineId);
+	}
+	async #afterFolderAttach(
+		folder: FolderOptions,
+		claim: CodingSessionClaim,
+		planned: {
+			machine: Readonly<LxdCodingMachineBinding>;
+			snapshotId: string | null;
+			snapshotImageFingerprint: string | null;
+			snapshotBuildNeeded: boolean;
+		},
+		journal: CodingMachineJournalPlan,
+		discovered: ParsedCodingSetup | null,
+		signal: AbortSignal,
+	): Promise<void> {
+		const ready = this.#prepared.get(claim.workerId);
+		if (!ready?.folder) return;
+		let setup = discovered;
+		if (!setup && folder.repositories?.readSetup && /^[0-9a-f]{40}$/.test(ready.baseSha)) {
+			setup = await folder.repositories.readSetup(
+				{
+					claim,
+					assertAuthorized: async (checked) => {
+						await this.#run(claim, ready.machine, ready.storage, checked);
+					},
+				},
+				ready.baseSha,
+				signal,
+			);
+			if (setup.refused) {
+				const detail = setup.problems
+					.filter((problem) => problem.effect === "refused")
+					.slice(0, 5)
+					.map((problem) => `${problem.at || "/"}: ${problem.message}`)
+					.join("; ");
+				throw new CodingWorkspaceFailed(
+					"CODING_SETUP_REFUSED",
+					`Repository environment setup file (${setup.file ?? "environment.json"}) is invalid: ${detail || "refused"}`,
+				);
+			}
+		}
+		if (!setup || setup.file === null) {
+			this.#sessionSetups.delete(claim.workerId);
+			return;
+		}
+		const diskId = (await codingMachineDisk(await this.#directory("machines", signal), journal)) ?? "initial";
+		const bootId = this.#folderStartOperations.get(planned.machine.machineId) ?? ready.bootId;
+		const runner = this.#setupCommandRunner(folder, ready);
+		try {
+			const attached = await this.#setupLifecycle.onAttach(
+				{
+					machineId: planned.machine.machineId,
+					workerId: claim.workerId,
+					diskId,
+					bootId,
+					cwd: ready.folder.cwd,
+					setupDigest: setup.setupDigest,
+					setupSpec: setup.setupSpec,
+					runner,
+				},
+				signal,
+			);
+			this.#sessionSetups.set(claim.workerId, { env: attached.env, digest: setup.setupDigest });
+		} catch (error) {
+			if (error instanceof CodingSetupLifecycleError) {
+				throw new CodingWorkspaceFailed(error.code, error.message, { cause: error });
+			}
+			throw error;
+		}
+		if (
+			this.#options.snapshotBuilder &&
+			setup.setupDigest !== EMPTY_CODING_SETUP_DIGEST &&
+			/^[0-9a-f]{40}$/.test(ready.baseSha) &&
+			(planned.snapshotBuildNeeded || planned.snapshotImageFingerprint === null)
+		) {
+			const repositories = folder.repositories;
+			const commitSha = ready.baseSha;
+			const repositoryKey = `${claim.repository.owner}/${claim.repository.name}`.toLowerCase();
+			this.#options.snapshotBuilder.enqueue({
+				workerId: claim.workerId,
+				leaseToken: claim.leaseToken,
+				profileId: claim.profileId,
+				environmentId: claim.environmentId,
+				memberUserId: claim.ownerUserId,
+				repository: repositoryKey,
+				setupDigest: setup.setupDigest,
+				commitSha,
+				setupSpec: setup.setupSpec,
+				readArchive: repositories?.archiveCommit
+					? (archiveSignal) =>
+							repositories.archiveCommit!(
+								{
+									claim,
+									assertAuthorized: async (checked) => {
+										await this.#assertSessionAuthorized(claim, checked);
+									},
+								},
+								commitSha,
+								archiveSignal,
+							)
+					: undefined,
+			});
+		}
+	}
+	async #assertSessionAuthorized(claim: CodingSessionClaim, signal: AbortSignal): Promise<void> {
+		await this.#call(
+			"qorpera_heartbeat_coding_session",
+			{
+				p_worker_id: claim.workerId,
+				p_lease_token: claim.leaseToken,
+				p_lease_seconds: 60,
+			},
+			signal,
+		);
+	}
+	#setupCommandRunner(folder: FolderOptions, ready: Prepared): CodingSetupCommandRunner {
+		return {
+			exec: async (input, signal) => {
+				const shellCommand =
+					input.argv.length === 3 && input.argv[0] === "/bin/sh" && input.argv[1] === "-lc"
+						? input.argv[2]
+						: input.argv.map((arg) => `'${arg.replaceAll("'", "'\\''")}'`).join(" ");
+				const commandId = randomUUID();
+				const inputSha256 = digest(shellCommand);
+				const transport = this.#folderTransport(folder, ready, {
+					cwd: input.cwd,
+					environment: {
+						...input.env,
+						...codingFolderGitEnvironment(ready.claim.workerId),
+						...packageCacheEnvironment(ready),
+					},
+					authorize: this.#commandAuthority(ready),
+				});
+				const timeoutMs = Math.max(1000, Math.min(input.timeoutMs, 3_600_000));
+				let receipt: CloudCodingCommandReceipt;
+				let collected = "";
+				const append = (chunk: string) => {
+					if (!chunk) return;
+					collected += chunk;
+					if (collected.length > 65536) collected = collected.slice(-65536);
+				};
+				try {
+					receipt = await transport.start(
+						ready.scope,
+						{ commandId, inputSha256, command: shellCommand, timeoutMs },
+						signal,
+					);
+					append(receipt.output);
+					let delay = 150;
+					while (receipt.state === "running") {
+						await setTimeout(delay, undefined, { signal });
+						delay = Math.min(500, delay + 100);
+						receipt = await transport.read(
+							ready.scope,
+							{ commandId, offset: receipt.log.nextOffset, limit: 8192 },
+							signal,
+						);
+						append(receipt.output);
+					}
+				} catch (error) {
+					await transport.cancel(ready.scope, commandId, AbortSignal.timeout(10_000)).catch(() => undefined);
+					throw error;
+				}
+				return {
+					exitCode: receipt.state === "succeeded" ? 0 : (receipt.exitCode ?? 1),
+					stdout: collected,
+					stderr: "",
+				};
+			},
+		};
+	}
+	#guestDetachRunner(guest: LxdCodingGuestClient, workerId: string, uid: number): CodingSetupCommandRunner {
+		return {
+			exec: async (input, signal) => {
+				const shellCommand =
+					input.argv.length === 3 && input.argv[0] === "/bin/sh" && input.argv[1] === "-lc"
+						? input.argv[2]
+						: input.argv.map((arg) => `'${arg.replaceAll("'", "'\\''")}'`).join(" ");
+				const commandId = randomUUID();
+				const answer = await guest.run(
+					{
+						schema: "qorpera.coding-guest-run/v1",
+						workerId,
+						commandId,
+						uid,
+						gid: uid,
+						cwd: input.cwd,
+						environment: {},
+						command: shellCommand,
+						timeoutMs: Math.max(1000, Math.min(input.timeoutMs, 10_000)),
+					},
+					signal,
+				);
+				if (answer.state === "running") {
+					await guest
+						.output(
+							{
+								schema: "qorpera.coding-guest-output/v1",
+								workerId,
+								commandId,
+								offset: 0,
+								maxBytes: 1024,
+								waitMs: 2000,
+							},
+							signal,
+						)
+						.catch(() => undefined);
+				}
+				return {
+					exitCode: answer.state === "exited" ? (answer.exit?.code ?? 0) : 0,
+					stdout: "",
+					stderr: "",
+				};
+			},
+		};
 	}
 	async #recordError(
 		machineId: string,
