@@ -137,3 +137,14 @@ export function matchTargets(query: string, targets: readonly MentionTarget[], l
 		.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "agent" ? -1 : 1))
 		.slice(0, limit);
 }
+
+export function leadingMentions(text: string, targets: readonly MentionTarget[]): MentionTarget[] {
+	const named: MentionTarget[] = [];
+	let at = text.length - text.trimStart().length;
+	for (const mention of findMentions(text, targets)) {
+		if (mention.start < at || text.slice(at, mention.start).replace(/[\s,]/g, "")) break;
+		if (!named.some((item) => item.id === mention.target.id)) named.push(mention.target);
+		at = mention.end;
+	}
+	return named;
+}

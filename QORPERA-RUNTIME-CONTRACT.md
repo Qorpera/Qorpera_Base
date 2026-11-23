@@ -2670,6 +2670,24 @@ used-up login until its reset, with nothing in the thread to say so. Now:
 - This replaces the 2026-11-05 amendment's "one already waiting stays on its
   login" for the member's own posts.
 
+2026-11-23 amendment: notes between members in a surface session (founder, 23
+November 2026: "yes to all five, build it"; migration 20260930866000). Members
+who share a session can now write to each other there without waking its agent:
+
+- A note (`qorpera_surface_session_note`) is a session message of the kind
+  `note`, from its member to one to sixteen named members of the same company,
+  never the author. It never changes the session: no queue, no wake, no lease,
+  no turn requester, so no login pays for it.
+- A note is never part of a turn's input. Every reader of member messages for a
+  turn (the coding follow-up, the images of a turn) reads the kind `member` only,
+  and the conversation `qorpera_native_surface_read_session_turn` gives a folder
+  turn (20260930872000) reads the kinds `member` and `session` only.
+- Each member named has it unseen until they open that session
+  (`qorpera_surface_unseen_notes`, `qorpera_surface_notes_seen`); only the
+  member's own notes are listed or marked.
+- Session reads show whose turn the session is on (`turnRequestedByUserId`, the
+  turn requester of the amendment below) and each note's recipients (`noteTo`).
+
 2026-11-23 amendment: a member's reply in a surface session is their own turn
 (founder, 23 November 2026: "it runs on each members login"; migration
 20260930862000). Any member may reply in any surface session, and until now every
