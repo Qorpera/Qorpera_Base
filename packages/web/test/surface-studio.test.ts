@@ -973,6 +973,10 @@ describe("SurfaceStudioView", () => {
 			]),
 		).toEqual([["Specs", true]]);
 		expect(view.el.querySelector(".studio-file-tag")).toBeNull();
+		expect([...view.el.querySelectorAll(".studio-grid > *")].map((item) => item.getAttribute("data-block"))).toEqual([
+			"spec_list",
+			"table",
+		]);
 		expect(view.el.querySelector('[data-block="table"] .studio-section-head h2')?.textContent).toBe("Parts");
 		expect(view.el.querySelector('[data-block="table"] .studio-table.is-empty')).not.toBeNull();
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="vendors"]')!.click();
@@ -988,7 +992,7 @@ describe("SurfaceStudioView", () => {
 		store.dispose();
 	});
 
-	it("draws a Product Studio as one column: the model, its name and line, colour dots and its first four figures", async () => {
+	it("draws a Product Studio as one column: the model, its name and line, colour dots and four short figures", async () => {
 		const thetabands = summary({
 			id: HEADBAND_ID,
 			slug: "thetabands",
@@ -1032,9 +1036,9 @@ describe("SurfaceStudioView", () => {
 		expect(view.el.querySelector(".studio-product-line")?.textContent).toBe("Calm, measured.");
 		expect([...view.el.querySelectorAll(".studio-fact")].map((fact) => fact.textContent)).toEqual([
 			"Sensors4 dry EEG",
-			"MaterialsMoulded PC-ABS with a soft-touch coat and a woven strap",
 			"Battery14 h",
 			"Weight44 g",
+			"Price1.995 kr.",
 		]);
 		expect(view.el.querySelector(".studio-kv")).toBeNull();
 		expect(view.el.querySelector(".studio-swatches")).toBeNull();

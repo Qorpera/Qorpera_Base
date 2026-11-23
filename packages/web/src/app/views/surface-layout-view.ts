@@ -20,15 +20,17 @@ import { type ColorToken, prepareSwatchRow, readSwatches } from "./surface-block
 import {
 	cleanFolderRoot,
 	createBlockContext,
+	isPlainRecord,
 	type StudioSectionTask,
 	type SurfaceBlockContext,
 	type SurfaceBlockPrepared,
 	type SurfaceFileLayer,
+	sourceFile,
 } from "./surface-blocks/context.ts";
 import { prepareFacts } from "./surface-blocks/facts.ts";
 import { prepareFiles, type StudioHtmlPages } from "./surface-blocks/files.ts";
 import { preparePalette } from "./surface-blocks/palette.ts";
-import { SurfaceReports } from "./surface-blocks/report.ts";
+import { reportFiles, SurfaceReports } from "./surface-blocks/report.ts";
 import { prepareSpecList, prepareTable } from "./surface-blocks/specs.ts";
 import { type LegacyStudioModel, SurfaceStages } from "./surface-blocks/stage.ts";
 import { prepareTitle } from "./surface-blocks/title.ts";
@@ -79,6 +81,7 @@ interface SwatchLink {
 interface TabScope {
 	readonly ctx: SurfaceBlockContext;
 	readonly input: SurfaceLayoutInput;
+	readonly claimed: ReadonlySet<string>;
 	readonly swatches: ReadonlyMap<string, readonly ColorToken[]>;
 	readonly tinting: ReadonlyMap<string, string>;
 	readonly stageIds: ReadonlyMap<string, string>;
@@ -87,6 +90,41 @@ interface TabScope {
 export function surfaceLayoutPath(folderRoot: string | null | undefined): string {
 	const root = cleanFolderRoot(folderRoot);
 	return root ? `${root}/${SURFACE_LAYOUT_PATH}` : SURFACE_LAYOUT_PATH;
+}
+
+const SOURCE_FIELDS = new Set(["from", "model", "tint", "name", "line"]);
+
+function bindingsOf(value: unknown): string[] {
+	if (typeof value === "string") return [value];
+	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function claimedFiles(layout: SurfaceLayoutRead, ctx: SurfaceBlockContext, layoutPath: string): Set<string> {
+	const claimed = new Set([layoutPath]);
+	const leaves = layout.tabs.flatMap((tab) =>
+		tab.blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node])),
+	);
+	for (const block of leaves) {
+		if (block.type === "unknown" || block.type === "files") continue;
+		if (block.type === "report") {
+			const { include } = reportFiles(block, ctx);
+			for (const path of Object.keys(ctx.files)) if (include(path)) claimed.add(path);
+			continue;
+		}
+		const bindings = Object.entries(block).flatMap(([field, value]) =>
+			field === "items" && Array.isArray(value)
+				? value.flatMap((item: unknown) => (isPlainRecord(item) ? bindingsOf(item.from) : []))
+				: SOURCE_FIELDS.has(field)
+					? bindingsOf(value)
+					: [],
+		);
+		for (const binding of bindings) {
+			const file = sourceFile(binding);
+			const path = file ? ctx.companyPath(file) : undefined;
+			if (path) claimed.add(path);
+		}
+	}
+	return claimed;
 }
 
 function isRow(node: PreparedNode): node is PreparedRow {
@@ -150,7 +188,8 @@ export class SurfaceLayoutView {
 	}
 
 	plan(input: SurfaceLayoutInput): SurfaceLayoutPlan {
-		const text = input.files[surfaceLayoutPath(input.surface.folderRoot)];
+		const layoutPath = surfaceLayoutPath(input.surface.folderRoot);
+		const text = input.files[layoutPath];
 		const read = text === undefined ? undefined : readSurfaceLayout(text);
 		const own = read && "layout" in read ? read.layout : undefined;
 		const layout: SurfaceLayoutRead = own ?? starterSurfaceLayout(input.starter);
@@ -167,7 +206,8 @@ export class SurfaceLayoutView {
 		});
 		this.#swatches = new Map();
 		const stageKeys = new Set<string>();
-		const tabs = layout.tabs.map((tab) => ({ tab, nodes: this.#prepareTab(tab, ctx, input, stageKeys) }));
+		const claimed = claimedFiles(layout, ctx, layoutPath);
+		const tabs = layout.tabs.map((tab) => ({ tab, nodes: this.#prepareTab(tab, ctx, input, claimed, stageKeys) }));
 		this.#stages.keep(stageKeys);
 		const current = tabs.find((item) => item.tab.id === input.tab) ?? tabs[0]!;
 		const tabBar =
@@ -198,6 +238,7 @@ export class SurfaceLayoutView {
 		tab: SurfaceTab<SurfaceReadNode>,
 		ctx: SurfaceBlockContext,
 		input: SurfaceLayoutInput,
+		claimed: ReadonlySet<string>,
 		stageKeys: Set<string>,
 	): PreparedNode[] {
 		const places = tab.blocks.flatMap((node, index) =>
@@ -218,15 +259,16 @@ export class SurfaceLayoutView {
 				if (block.tints) tinting.set(block.tints, key);
 			}
 		}
-		const scope: TabScope = { ctx, input, swatches, tinting, stageIds: ids };
+		const scope: TabScope = { ctx, input, claimed, swatches, tinting, stageIds: ids };
+		const alone = tab.blocks.length === 1;
 		return tab.blocks.map((node, index) =>
 			node.type === "row"
 				? {
 						cells: node.blocks.map((block, slot) =>
-							this.#prepareBlock(block, nodeKey(block, `${tab.id}/${index}.${slot}`), scope),
+							this.#prepareBlock(block, nodeKey(block, `${tab.id}/${index}.${slot}`), scope, false),
 						),
 					}
-				: this.#prepareBlock(node, nodeKey(node, `${tab.id}/${index}`), scope),
+				: this.#prepareBlock(node, nodeKey(node, `${tab.id}/${index}`), scope, alone),
 		);
 	}
 
@@ -237,7 +279,7 @@ export class SurfaceLayoutView {
 		return 0;
 	}
 
-	#prepareBlock(block: SurfaceReadBlock, key: string, scope: TabScope): SurfaceBlockPrepared {
+	#prepareBlock(block: SurfaceReadBlock, key: string, scope: TabScope, alone: boolean): SurfaceBlockPrepared {
 		const { ctx } = scope;
 		switch (block.type) {
 			case "stage_3d": {
@@ -276,7 +318,7 @@ export class SurfaceLayoutView {
 			case "report":
 				return this.#reports.prepare(block, ctx);
 			case "files":
-				return prepareFiles(block, ctx, scope.input.htmlPages);
+				return prepareFiles(block, ctx, scope.input.htmlPages, { claimed: scope.claimed, alone });
 			default:
 				return prepareUnknown();
 		}

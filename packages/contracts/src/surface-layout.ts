@@ -25,6 +25,7 @@ export const SURFACE_CARDS_MAX = 6;
 export const SURFACE_SOURCE_MIN_CHOICES = 2;
 export const SURFACE_SOURCE_MAX_CHOICES = 6;
 export const SURFACE_FACTS_DEFAULT_TAKE = 4;
+export const SURFACE_FACT_FIGURE_CHARS = 18;
 export const SURFACE_STAGE_DEFAULT_MODEL = "object.json";
 export const SURFACE_MODULE_MIN_HEIGHT = 120;
 export const SURFACE_MODULE_MAX_HEIGHT = 1600;
@@ -301,18 +302,15 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		family: "colours",
 		summary: "a row of colour dots",
 		fields: [
-			{ name: "from", kind: "source", required: true, note: "a list of {name, hex} or an object of name to colour" },
-			{ name: "tints", kind: "stage", required: false, note: "a stage_3d on this tab to tint" },
+			{ name: "from", kind: "source", required: true, note: "[{name, hex}] or {name: colour}" },
+			{ name: "tints", kind: "stage", required: false, note: "a stage_3d on this tab" },
 		],
 	},
 	{
 		type: "palette",
 		family: "colours",
 		summary: "a palette of named colours",
-		fields: [
-			{ name: "from", kind: "source", required: true, note: "an object of name to colour, or a list" },
-			HEADING_FIELD,
-		],
+		fields: [{ name: "from", kind: "source", required: true, note: "{name: colour} or a list" }, HEADING_FIELD],
 	},
 	{
 		type: "brand_mark",
@@ -339,12 +337,12 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 	{
 		type: "facts",
 		family: "facts",
-		summary: "key figures; ? where a value is missing",
+		summary: `short key figures (with from, only values of <=${SURFACE_FACT_FIGURE_CHARS} chars); ? where missing`,
 		fields: [
-			{ name: "items", kind: "items", required: false, note: "each figure named; or use from" },
+			{ name: "items", kind: "items", required: false, note: "each figure named" },
 			{ name: "from", kind: "source", required: false, note: "an object, or a list of {label, value}" },
-			{ name: "take", kind: "take", required: false, note: "with from: how many, default 4" },
-			{ name: "skip", kind: "keys", required: false, note: "with from: keys to leave out" },
+			{ name: "take", kind: "take", required: false, note: "default 4" },
+			{ name: "skip", kind: "keys", required: false, note: "keys to leave out" },
 			HEADING_FIELD,
 		],
 	},
@@ -352,7 +350,7 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		type: "spec_list",
 		family: "specs",
 		summary:
-			"labelled values; nested objects as groups, lists of objects as tables; nothing if found empty or all skipped",
+			"labelled values, objects as groups, lists of objects as tables; nothing if found empty or skip leaves nothing",
 		fields: [
 			{ name: "from", kind: "source", required: true, note: "an object" },
 			{ name: "skip", kind: "keys", required: false, note: "keys to leave out" },
@@ -375,9 +373,9 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		family: "cards",
 		summary: "one card per item, or named cards",
 		fields: [
-			{ name: "items", kind: "cards", required: false, note: "each card's text; or use from" },
+			{ name: "items", kind: "cards", required: false, note: "each card named" },
 			{ name: "from", kind: "source", required: false, note: "a list of objects" },
-			{ name: "title", kind: "key", required: false, note: "with from: the key cards are titled by" },
+			{ name: "title", kind: "key", required: false, note: "the key cards are titled by" },
 			{ name: "lines", kind: "keys", required: false, note: "keys shown as lines" },
 			{ name: "badge", kind: "key", required: false, note: "a key shown as a badge" },
 			HEADING_FIELD,
@@ -402,7 +400,7 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 	{
 		type: "files",
 		family: "files",
-		summary: "working files, notes and downloads",
+		summary: "working files no other block shows, .json too; its empty line only alone on a tab or with a heading",
 		fields: [
 			{ name: "match", kind: "globs", required: false, note: "default every file" },
 			{ name: "skip", kind: "globs", required: false, note: "files to leave out" },
@@ -451,7 +449,7 @@ export function describeSurfaceBlocks(): string {
 	const lines = [
 		`${SURFACE_LAYOUT_PATH} at the interface folder's root sets the page: {"schema":"${SURFACE_LAYOUT_SCHEMA}","tabs":[{"id","title","blocks":[...]}]}.`,
 		`1-${SURFACE_LAYOUT_MAX_TABS} tabs; at most ${SURFACE_LAYOUT_MAX_TAB_NODES} blocks a tab (a row and its blocks each count) and ${SURFACE_LAYOUT_MAX_BLOCKS} in all. Tab title <=${SURFACE_LAYOUT_TAB_TITLE_CHARS} chars, label <=${SURFACE_LAYOUT_LABEL_CHARS}.`,
-		'A source is "file.json#/json/pointer", "file" for a whole file, or {"value": ...} for a value held here; a plain string is never a literal. Paths are relative to the interface folder; a leading / names a company file such as /identity/tokens.json.',
+		'A source is "file.json#/pointer", "file" for a whole file, or {"value": ...} held in the layout; a string always names a file, never a literal. Paths are relative to the interface folder; a leading / names a company file, e.g. /identity/tokens.json.',
 		`A source may be a list of ${SURFACE_SOURCE_MIN_CHOICES}-${SURFACE_SOURCE_MAX_CHOICES} sources tried in order; the first found wins.`,
 		"Ids are lower-case slugs, unique in the layout; a row has none. Labels, headings, titles and keys are plain text, never sources. Every block draws its own empty home, so name homes before their files exist.",
 		"Blocks (field?: optional):",
@@ -1108,7 +1106,11 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 						"specs.json#/description",
 					],
 				},
-				{ type: "swatch_row", from: "specs.json#/colorways", tints: "stage" },
+				{
+					type: "swatch_row",
+					from: ["specs.json#/colorways", "specs.json#/colors", "specs.json#/palette", "specs.json#/swatches"],
+					tints: "stage",
+				},
 				{
 					type: "facts",
 					from: "specs.json#/overview",
@@ -1126,9 +1128,27 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 				{
 					type: "spec_list",
 					from: "specs.json",
-					skip: ["overview", "bom", "model", "colorways", "tagline", "summary", "description"],
+					skip: [
+						"overview",
+						"bom",
+						"tagline",
+						"summary",
+						"description",
+						"model",
+						"geometry",
+						"colorways",
+						"colors",
+						"color",
+						"palette",
+						"swatches",
+						"typography",
+						"type",
+						"fonts",
+						"font",
+					],
 					heading: "Other details",
 				},
+				{ type: "files", match: ["**/*.json"] },
 			],
 		},
 		{
@@ -1138,7 +1158,7 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 				{ type: "spec_list", from: "vendors.json#/production", heading: "Production plan" },
 				{
 					type: "cards",
-					from: "vendors.json#/vendors",
+					from: ["vendors.json#/vendors", "vendors.json#/suppliers"],
 					title: "vendor",
 					lines: ["component", "unitPrice", "moq", "leadTime", "region", "certifications"],
 					badge: "status",
@@ -1256,7 +1276,18 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 					type: "spec_list",
 					id: "tokens",
 					from: "/identity/tokens.json",
-					skip: ["colors", "palette", "color", "typography", "fonts", "brand", "voice"],
+					skip: [
+						"colors",
+						"color",
+						"palette",
+						"swatches",
+						"typography",
+						"type",
+						"fonts",
+						"font",
+						"brand",
+						"voice",
+					],
 					heading: "Other details",
 				},
 				{
@@ -1265,6 +1296,7 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 					from: "/identity/design-system.json",
 					heading: "Design system",
 				},
+				{ type: "files", id: "data", match: ["/identity/**/*.json"] },
 			],
 		},
 		{
@@ -1282,7 +1314,7 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 						"/identity/**/*.html",
 						"/identity/**/*.htm",
 					],
-					skip: ["/identity/voice.md", "/identity/brief.md", "/identity/logo.svg", "/identity/wordmark.svg"],
+					skip: ["/identity/voice.md", "/identity/brief.md"],
 				},
 			],
 		},

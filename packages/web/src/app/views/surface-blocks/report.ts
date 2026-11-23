@@ -23,6 +23,28 @@ export interface SurfaceReportsOptions {
 	readonly timeSlice?: boolean;
 }
 
+export function reportFiles(
+	block: SurfaceReportBlock,
+	ctx: SurfaceBlockContext,
+): { readonly signature: string; readonly include: (path: string) => boolean } {
+	if ("match" in block) {
+		const glob = block.match;
+		const root = ctx.folderRoot;
+		return {
+			signature: `match:${glob}`,
+			include: (path) => {
+				const relative = folderRelative(root, path);
+				return (
+					REPORT_FILE_RE.test(path) &&
+					surfaceGlobFinds(glob, relative === undefined ? { path } : { path, relative })
+				);
+			},
+		};
+	}
+	const file = ctx.companyPath(block.from);
+	return { signature: `from:${file ?? ""}`, include: (path) => path === file };
+}
+
 export class SurfaceReports {
 	readonly #options: SurfaceReportsOptions;
 	readonly #views = new Map<string, SurfaceReportView>();
@@ -32,24 +54,7 @@ export class SurfaceReports {
 	}
 
 	prepare(block: SurfaceReportBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
-		const root = ctx.folderRoot;
-		let signature: string;
-		let include: (path: string) => boolean;
-		if ("match" in block) {
-			const glob = block.match;
-			signature = `match:${glob}`;
-			include = (path) => {
-				const relative = folderRelative(root, path);
-				return (
-					REPORT_FILE_RE.test(path) &&
-					surfaceGlobFinds(glob, relative === undefined ? { path } : { path, relative })
-				);
-			};
-		} else {
-			const file = ctx.companyPath(block.from);
-			signature = `from:${file ?? ""}`;
-			include = (path) => path === file;
-		}
+		const { signature, include } = reportFiles(block, ctx);
 		const filled = Object.keys(ctx.files).some(include);
 		const pieces: StudioSectionTask[] = [];
 		if (block.heading) {
