@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,7 +21,10 @@ import {
 	createSurfaceExecutionHandlers,
 	InMemorySurfaceFolderSnapshotStore,
 	parseSurfaceRepositoryKey,
+	type SurfaceCompanyFolderCommitOperation,
 	type SurfaceCompanyFolderPort,
+	type SurfaceCompanyFolderStoredFile,
+	type SurfaceCompanyFolderVersionedFile,
 	undoSurfaceCodeRepoChange,
 } from "../src/surface-execution-bridge.ts";
 import { SurfaceWorkerLoop } from "../src/surface-worker-loop.ts";
@@ -110,18 +113,22 @@ async function createGitSurfaceFixture() {
 
 function createInMemoryCompanyFolder(initial: Record<string, string> = {}) {
 	const files = new Map<string, string>(Object.entries(initial));
+	const storedFiles = new Map<string, SurfaceCompanyFolderStoredFile>();
+	const storage = new Set<string>();
 	const versions = new Map<string, number>();
 	for (const key of files.keys()) versions.set(key, 1);
 	let seq = 1;
 	const writeCalls: { path: string; content: string }[] = [];
+	const storedWriteCalls: { path: string; manifestSha256: string }[] = [];
 	const deleteCalls: string[] = [];
-	const commitCalls: readonly { path: string; expectedVersion: string | null; content: string | null }[][] = [];
+	const commitCalls: SurfaceCompanyFolderCommitOperation[][] = [];
 	const versionOf = (path: string): string | null => {
 		const ver = versions.get(path);
 		return ver === undefined ? null : `v${ver}`;
 	};
 	const mutateExternal = (path: string, content: string | null): void => {
 		seq += 1;
+		storedFiles.delete(path);
 		if (content === null) {
 			files.delete(path);
 			versions.delete(path);
@@ -129,6 +136,25 @@ function createInMemoryCompanyFolder(initial: Record<string, string> = {}) {
 			files.set(path, content);
 			versions.set(path, seq);
 		}
+	};
+	const storeFile = (seed: string, mediaType: string): SurfaceCompanyFolderStoredFile => {
+		const manifestSha256 = createHash("sha256").update(`manifest:${seed}`).digest("hex");
+		storage.add(manifestSha256);
+		return {
+			manifestSha256,
+			fileSha256: createHash("sha256").update(`file:${seed}`).digest("hex"),
+			bytes: 4096 + seed.length,
+			mediaType,
+			executable: false,
+		};
+	};
+	const putStoredFile = (path: string, seed: string, mediaType: string): SurfaceCompanyFolderStoredFile => {
+		const file = storeFile(seed, mediaType);
+		seq += 1;
+		files.delete(path);
+		storedFiles.set(path, file);
+		versions.set(path, seq);
+		return file;
 	};
 	const folder: SurfaceCompanyFolderPort = {
 		async readFiles({ paths }) {
@@ -139,11 +165,13 @@ function createInMemoryCompanyFolder(initial: Record<string, string> = {}) {
 			return out;
 		},
 		async readFilesWithVersions({ paths }) {
-			const out: Record<string, { readonly content: string | null; readonly version: string | null }> = {};
+			const out: Record<string, SurfaceCompanyFolderVersionedFile> = {};
 			for (const path of paths) {
+				const stored = storedFiles.get(path);
 				out[path] = {
 					content: files.has(path) ? (files.get(path) as string) : null,
 					version: versionOf(path),
+					...(stored ? { file: stored } : {}),
 				};
 			}
 			return out;
@@ -158,20 +186,30 @@ function createInMemoryCompanyFolder(initial: Record<string, string> = {}) {
 			if (conflictPaths.length > 0) {
 				return { status: "conflict", conflictPaths };
 			}
-			(commitCalls as { path: string; expectedVersion: string | null; content: string | null }[][]).push(
-				operations.map((op) => ({ ...op })),
-			);
+			const missing = operations.filter((op) => "file" in op && !storage.has(op.file.manifestSha256));
+			if (missing.length > 0) {
+				return { status: "missing_files", paths: missing.map((op) => op.path) };
+			}
+			commitCalls.push(operations.map((op) => ({ ...op })));
 			seq += 1;
 			const versionsAfter: Record<string, string | null> = {};
 			for (const op of operations) {
-				if (op.content === null) {
+				if ("file" in op) {
+					storedWriteCalls.push({ path: op.path, manifestSha256: op.file.manifestSha256 });
+					files.delete(op.path);
+					storedFiles.set(op.path, op.file);
+					versions.set(op.path, seq);
+					versionsAfter[op.path] = `v${seq}`;
+				} else if (op.content === null) {
 					deleteCalls.push(op.path);
 					files.delete(op.path);
+					storedFiles.delete(op.path);
 					versions.delete(op.path);
 					versionsAfter[op.path] = null;
 				} else {
 					writeCalls.push({ path: op.path, content: op.content });
 					files.set(op.path, op.content);
+					storedFiles.delete(op.path);
 					versions.set(op.path, seq);
 					versionsAfter[op.path] = `v${seq}`;
 				}
@@ -179,7 +217,18 @@ function createInMemoryCompanyFolder(initial: Record<string, string> = {}) {
 			return { status: "saved", versionsAfter };
 		},
 	};
-	return { files, writeCalls, deleteCalls, commitCalls, mutateExternal, folder };
+	return {
+		files,
+		storedFiles,
+		writeCalls,
+		storedWriteCalls,
+		deleteCalls,
+		commitCalls,
+		mutateExternal,
+		storeFile,
+		putStoredFile,
+		folder,
+	};
 }
 
 describe("surface execution bridge helpers", () => {
@@ -787,71 +836,292 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 		expect(mem.files.get("identity/deprecated.md")).toBe("Legacy copy\n");
 	});
 
-	it("refuses to land a write_file change, naming its path, and writes nothing", async () => {
-		const mem = createInMemoryCompanyFolder({ "identity/voice.md": "Calm.\n" });
-		const completeSurfaceMerge = vi.fn().mockResolvedValue(undefined);
-		const handlers = createSurfaceExecutionHandlers({
-			controlPlane: {
-				completeSurfacePreview: vi.fn(),
-				completeSurfaceMerge,
-				completeSurfacePublish: vi.fn(),
-			},
-			folder: mem.folder,
-			folderSnapshots: new InMemorySurfaceFolderSnapshotStore(),
-		});
-		const jobId = randomUUID();
-		const changeId = randomUUID();
-		await handlers.runMergeJob(
-			{
-				jobId,
-				kind: "land_change",
-				surfaceId: randomUUID(),
-				sessionId: randomUUID(),
-				profileId: randomUUID(),
-				sourceKind: "folder",
-				repositoryKey: null,
-				folderRoot: "identity",
-				payload: { changeIds: [changeId] },
-				approvedChanges: [
+	describe("write_file", () => {
+		type Folder = ReturnType<typeof createInMemoryCompanyFolder>;
+		type MergeReport = {
+			readonly status: string;
+			readonly mainBefore?: string;
+			readonly mainAfter?: string;
+			readonly conflictPaths?: readonly string[];
+			readonly errorDetail?: string;
+		};
+
+		const setup = (initial: Record<string, string> = {}) => {
+			const mem = createInMemoryCompanyFolder(initial);
+			const completeSurfaceMerge = vi.fn().mockResolvedValue(undefined);
+			const handlers = createSurfaceExecutionHandlers({
+				controlPlane: {
+					completeSurfacePreview: vi.fn(),
+					completeSurfaceMerge,
+					completeSurfacePublish: vi.fn(),
+				},
+				folder: mem.folder,
+				folderSnapshots: new InMemorySurfaceFolderSnapshotStore(),
+			});
+			const profileId = randomUUID();
+			const surfaceId = randomUUID();
+			const lastReport = (): MergeReport => completeSurfaceMerge.mock.calls.at(-1)?.[0] as MergeReport;
+			const land = async (changeId: string, patchManifest: unknown[]): Promise<MergeReport> => {
+				await handlers.runMergeJob(
 					{
-						changeId,
-						kind: "folder_patch",
-						parentSha: null,
-						headSha: null,
-						title: "Add model",
-						summary: "",
-						patchManifest: [
-							{ op: "write_text", path: "identity/voice.md", content: "Warm.\n" },
+						jobId: randomUUID(),
+						kind: "land_change",
+						surfaceId,
+						sessionId: randomUUID(),
+						profileId,
+						sourceKind: "folder",
+						repositoryKey: null,
+						folderRoot: "product",
+						payload: { changeIds: [changeId] },
+						approvedChanges: [
 							{
-								op: "write_file",
-								path: "identity/model.glb",
-								file: {
-									manifestSha256: "a".repeat(64),
-									fileSha256: "b".repeat(64),
-									bytes: 2048,
-									mediaType: "model/gltf-binary",
-								},
+								changeId,
+								kind: "folder_patch",
+								parentSha: null,
+								headSha: null,
+								title: "Stage files",
+								summary: "",
+								patchManifest,
+								affectedPaths: [],
 							},
 						],
-						affectedPaths: ["identity/voice.md", "identity/model.glb"],
 					},
-				],
-			},
-			new AbortController().signal,
-		);
+					new AbortController().signal,
+				);
+				return lastReport();
+			};
+			const undo = async (changeId: string, landed: MergeReport): Promise<MergeReport> => {
+				await handlers.runMergeJob(
+					{
+						jobId: randomUUID(),
+						kind: "undo_change",
+						surfaceId,
+						sessionId: randomUUID(),
+						profileId,
+						sourceKind: "folder",
+						repositoryKey: null,
+						folderRoot: "product",
+						payload: { changeId, landedMainBefore: landed.mainBefore, landedMainAfter: landed.mainAfter },
+					},
+					new AbortController().signal,
+				);
+				return lastReport();
+			};
+			return { mem, handlers, profileId, surfaceId, land, undo, completeSurfaceMerge };
+		};
 
-		expect(completeSurfaceMerge).toHaveBeenCalledTimes(1);
-		expect(completeSurfaceMerge).toHaveBeenCalledWith(
-			expect.objectContaining({
-				jobId,
+		const manifestAt = (mem: Folder, path: string): string | null =>
+			mem.storedFiles.get(path)?.manifestSha256 ?? null;
+
+		it("lands a stored file beside text ops by reference, and undo removes it", async () => {
+			const t = setup({ "product/spec.md": "Spec.\n" });
+			const model = t.mem.storeFile("model", "model/gltf-binary");
+			const changeId = randomUUID();
+			const landed = await t.land(changeId, [
+				{ op: "write_text", path: "product/spec.md", content: "New spec.\n" },
+				{
+					op: "write_file",
+					path: "product/models/chair.glb",
+					file: {
+						manifestSha256: model.manifestSha256,
+						fileSha256: model.fileSha256,
+						bytes: model.bytes,
+						mediaType: model.mediaType,
+					},
+				},
+				{ op: "merge_json", path: "product/meta.json", patch: { model: "models/chair.glb" } },
+			]);
+
+			expect(landed.status).toBe("landed");
+			expect(t.mem.storedFiles.get("product/models/chair.glb")).toEqual(model);
+			expect(t.mem.files.get("product/spec.md")).toBe("New spec.\n");
+			expect(JSON.parse(t.mem.files.get("product/meta.json") ?? "{}")).toEqual({ model: "models/chair.glb" });
+			expect(t.mem.commitCalls).toHaveLength(1);
+
+			const undone = await t.undo(changeId, landed);
+			expect(undone.status).toBe("landed");
+			expect(t.mem.storedFiles.has("product/models/chair.glb")).toBe(false);
+			expect(t.mem.files.has("product/meta.json")).toBe(false);
+			expect(t.mem.files.get("product/spec.md")).toBe("Spec.\n");
+		});
+
+		it("lands over text and over stored files, records each before-state by reference, and undo restores them exactly", async () => {
+			const t = setup({ "product/cover.webp": "placeholder" });
+			const oldModel = t.mem.putStoredFile("product/model.glb", "old-model", "model/gltf-binary");
+			const oldPoster = t.mem.putStoredFile("product/poster.png", "old-poster", "image/png");
+			const oldPhoto = t.mem.putStoredFile("product/photo.jpg", "old-photo", "image/jpeg");
+			const cover = t.mem.storeFile("cover", "image/webp");
+			const model = t.mem.storeFile("new-model", "model/gltf-binary");
+			const ref = (file: SurfaceCompanyFolderStoredFile) => ({
+				manifestSha256: file.manifestSha256,
+				fileSha256: file.fileSha256,
+				bytes: file.bytes,
+				mediaType: file.mediaType,
+			});
+			const changeId = randomUUID();
+			const landed = await t.land(changeId, [
+				{ op: "write_file", path: "product/cover.webp", file: ref(cover) },
+				{ op: "write_file", path: "product/model.glb", file: ref(model) },
+				{ op: "write_text", path: "product/poster.png", content: "No poster yet.\n" },
+				{ op: "delete", path: "product/photo.jpg" },
+			]);
+
+			expect(landed.status).toBe("landed");
+			expect(manifestAt(t.mem, "product/cover.webp")).toBe(cover.manifestSha256);
+			expect(manifestAt(t.mem, "product/model.glb")).toBe(model.manifestSha256);
+			expect(t.mem.files.get("product/poster.png")).toBe("No poster yet.\n");
+			expect(t.mem.storedFiles.has("product/poster.png")).toBe(false);
+			expect(t.mem.storedFiles.has("product/photo.jpg")).toBe(false);
+
+			const undone = await t.undo(changeId, landed);
+			expect(undone.status).toBe("landed");
+			expect(t.mem.files.get("product/cover.webp")).toBe("placeholder");
+			expect(t.mem.storedFiles.has("product/cover.webp")).toBe(false);
+			expect(t.mem.storedFiles.get("product/model.glb")).toEqual(oldModel);
+			expect(t.mem.storedFiles.get("product/poster.png")).toEqual(oldPoster);
+			expect(t.mem.files.has("product/poster.png")).toBe(false);
+			expect(t.mem.storedFiles.get("product/photo.jpg")).toEqual(oldPhoto);
+		});
+
+		it("follows the ops in order as composeStudioPreview does: a later delete or write_text wins", async () => {
+			const t = setup();
+			const a = t.mem.storeFile("a", "image/png");
+			const b = t.mem.storeFile("b", "image/png");
+			const c = t.mem.storeFile("c", "image/webp");
+			const ref = (file: SurfaceCompanyFolderStoredFile) => ({
+				manifestSha256: file.manifestSha256,
+				fileSha256: file.fileSha256,
+				bytes: file.bytes,
+				mediaType: file.mediaType,
+			});
+			const changeId = randomUUID();
+			const landed = await t.land(changeId, [
+				{ op: "write_file", path: "product/a.png", file: ref(a) },
+				{ op: "delete", path: "product/a.png" },
+				{ op: "write_file", path: "product/b.png", file: ref(b) },
+				{ op: "write_text", path: "product/b.png", content: "text now\n" },
+				{ op: "write_text", path: "product/c.webp", content: "text first\n" },
+				{ op: "write_file", path: "product/c.webp", file: ref(c) },
+			]);
+
+			expect(landed.status).toBe("landed");
+			expect(t.mem.files.has("product/a.png")).toBe(false);
+			expect(t.mem.storedFiles.has("product/a.png")).toBe(false);
+			expect(t.mem.files.get("product/b.png")).toBe("text now\n");
+			expect(t.mem.storedFiles.has("product/b.png")).toBe(false);
+			expect(t.mem.storedFiles.get("product/c.webp")).toEqual(c);
+			expect(t.mem.files.has("product/c.webp")).toBe(false);
+
+			const undone = await t.undo(changeId, landed);
+			expect(undone.status).toBe("landed");
+			expect(t.mem.files.has("product/b.png")).toBe(false);
+			expect(t.mem.storedFiles.has("product/c.webp")).toBe(false);
+		});
+
+		it("refuses merge_json on a path that is or becomes a stored file as a conflict and commits nothing", async () => {
+			const t = setup({ "product/spec.md": "Spec.\n" });
+			t.mem.putStoredFile("product/model.glb", "model", "model/gltf-binary");
+			const swatch = t.mem.storeFile("swatch", "image/png");
+			const landed = await t.land(randomUUID(), [
+				{ op: "write_text", path: "product/spec.md", content: "New spec.\n" },
+				{
+					op: "write_file",
+					path: "product/swatch.json",
+					file: {
+						manifestSha256: swatch.manifestSha256,
+						fileSha256: swatch.fileSha256,
+						bytes: swatch.bytes,
+						mediaType: swatch.mediaType,
+					},
+				},
+				{ op: "merge_json", path: "product/swatch.json", patch: { color: "#c84b31" } },
+				{ op: "merge_json", path: "product/model.glb", patch: { scale: 2 } },
+			]);
+
+			expect(landed).toMatchObject({
+				status: "conflicted",
+				conflictPaths: ["product/swatch.json", "product/model.glb"],
+				errorDetail: "merge_json cannot change a stored file: product/swatch.json, product/model.glb",
+			});
+			expect(t.mem.commitCalls).toHaveLength(0);
+			expect(t.mem.files.get("product/spec.md")).toBe("Spec.\n");
+			expect(t.mem.storedFiles.has("product/swatch.json")).toBe(false);
+		});
+
+		it("fails a change naming a file the folder does not hold, naming its path, and commits nothing", async () => {
+			const t = setup({ "product/spec.md": "Spec.\n" });
+			const landed = await t.land(randomUUID(), [
+				{ op: "write_text", path: "product/spec.md", content: "New spec.\n" },
+				{
+					op: "write_file",
+					path: "product/model.glb",
+					file: {
+						manifestSha256: "a".repeat(64),
+						fileSha256: "b".repeat(64),
+						bytes: 2048,
+						mediaType: "model/gltf-binary",
+					},
+				},
+			]);
+
+			expect(landed).toMatchObject({
 				status: "failed",
-				errorDetail: expect.stringContaining("cannot land write_file yet: identity/model.glb"),
-			}),
-			expect.any(AbortSignal),
-		);
-		expect(mem.writeCalls).toHaveLength(0);
-		expect(mem.files.get("identity/voice.md")).toBe("Calm.\n");
-		expect(mem.files.has("identity/model.glb")).toBe(false);
+				errorDetail: "Stored file not found in the company folder: product/model.glb",
+			});
+			expect(t.mem.commitCalls).toHaveLength(0);
+			expect(t.mem.files.get("product/spec.md")).toBe("Spec.\n");
+			expect(t.mem.storedFiles.has("product/model.glb")).toBe(false);
+		});
+
+		it("refuses a reference that fails the contract's parse before reading the folder", async () => {
+			const t = setup({ "product/spec.md": "Spec.\n" });
+			const landed = await t.land(randomUUID(), [
+				{
+					op: "write_file",
+					path: "product/model.glb",
+					file: {
+						manifestSha256: "a".repeat(64),
+						fileSha256: "b".repeat(64),
+						bytes: 2048,
+						mediaType: "text/html",
+					},
+				},
+			]);
+
+			expect(landed.status).toBe("failed");
+			expect(landed.errorDetail).toContain("file.mediaType");
+			expect(t.mem.commitCalls).toHaveLength(0);
+		});
+
+		it("still undoes an old text-only snapshot", async () => {
+			const t = setup({ "product/spec.md": "Edited.\n", "product/notes.md": "Added.\n" });
+			const changeId = randomUUID();
+			await t.handlers.runMergeJob(
+				{
+					jobId: randomUUID(),
+					kind: "undo_change",
+					surfaceId: t.surfaceId,
+					sessionId: randomUUID(),
+					profileId: t.profileId,
+					sourceKind: "folder",
+					repositoryKey: null,
+					folderRoot: "product",
+					payload: { changeId, landedMainBefore: "a".repeat(64), landedMainAfter: "b".repeat(64) },
+					preMergeSnapshot: {
+						snapshotId: "a".repeat(64),
+						folderRoot: "product",
+						changeIds: [changeId],
+						filesBefore: { "product/spec.md": "Spec.\n", "product/notes.md": null },
+						versionsAfter: { "product/spec.md": "v1", "product/notes.md": "v1" },
+					},
+				},
+				new AbortController().signal,
+			);
+
+			expect(t.completeSurfaceMerge.mock.calls.at(-1)?.[0]).toMatchObject({ status: "landed" });
+			expect(t.mem.files.get("product/spec.md")).toBe("Spec.\n");
+			expect(t.mem.files.has("product/notes.md")).toBe(false);
+		});
 	});
 
 	it("recompiles existing identity/tokens.css on tokens.json folder_patch and restores prior CSS on undo_change", async () => {
