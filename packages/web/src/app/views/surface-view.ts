@@ -31,6 +31,7 @@ import {
 	surfaceBySlug,
 	surfaceHasReports,
 } from "../surfaces-store.ts";
+import { SurfaceAddress, type SurfaceSiteHosting } from "./surface-address-sheet.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { CrewFigures } from "./surface-crew.ts";
 import { applyIdentityTokensToFrame, SurfaceDoorStage } from "./surface-door.ts";
@@ -58,6 +59,8 @@ export interface SurfaceViewHost {
 		signal: AbortSignal,
 	) => Promise<Readonly<Record<string, string>>>;
 	readonly loadSitePassword?: (surface: SurfaceSummary) => Promise<string | null>;
+	readonly siteHosting?: (surface: SurfaceSummary) => SurfaceSiteHosting | undefined;
+	readonly managesSites?: () => boolean;
 }
 
 interface CompareColumn {
@@ -187,6 +190,7 @@ export class SurfaceView {
 	readonly #drawer: SurfaceSessionDrawer;
 	readonly #primaryDoor: SurfaceDoorStage;
 	readonly #headerCrew = new CrewFigures();
+	readonly #address: SurfaceAddress;
 	readonly #compareDoors = new Map<string, CompareColumn>();
 	#framesMode: "none" | "primary" | "compare" = "none";
 	#pointing = false;
@@ -261,6 +265,15 @@ export class SurfaceView {
 		this.#topSlot.append(this.#banner);
 		this.#viewport.append(this.#phoneBar, this.#loadingSlot, this.#mountSlot, this.#reportSlot, this.#frames);
 		this.#canvas.append(this.#bar, this.#topSlot, this.#viewport, this.#composer, this.#toast);
+		this.#address = new SurfaceAddress({
+			container: this.#canvas,
+			canManage: () => host.managesSites?.() === true,
+			changed: () => {
+				const surface = this.surface;
+				if (surface && !this.#deactivated) this.#drawBar(surface);
+			},
+			signal,
+		});
 		this.#stage.append(this.#canvas, this.#drawer.el);
 		this.el.append(this.#stage, this.#panelToggle);
 		this.#wireNotchDrag(signal);
@@ -481,6 +494,7 @@ export class SurfaceView {
 		this.#deactivated = true;
 		this.#cancelReady?.();
 		this.#cancelReady = undefined;
+		this.#address.close();
 		this.#clearLocalLoadTimer();
 		this.#viewportResizeObserver?.disconnect();
 		this.#viewportResizeObserver = undefined;
@@ -810,8 +824,15 @@ export class SurfaceView {
 		const showViewportSplit = supportsViewportSplit(surface, look);
 		const highlighted = state.highlight?.surfaceId === surface.id ? state.highlight.sessionId : "";
 		const siteLive = this.#host.isSiteLive?.(surface) === true;
+		const addressShown = surface.archetype === "live_build" && siteLive;
+		const addressKey = this.#address.sync(
+			addressShown,
+			addressShown ? this.#host.siteHosting?.(surface) : undefined,
+			surface.liveUrl,
+		);
 		const key = JSON.stringify([
 			siteLive,
+			addressKey,
 			surface.id,
 			surface.title,
 			surface.archetype,
@@ -875,19 +896,7 @@ export class SurfaceView {
 			? h(
 					"div",
 					{ class: "surface-pill-modes" },
-					siteLive && surface.liveUrl
-						? h(
-								"a",
-								{
-									class: "surface-pill-address",
-									href: surface.liveUrl,
-									target: "_blank",
-									rel: "noopener noreferrer",
-									title: t("Open in a new tab"),
-								},
-								hostOf(surface.liveUrl),
-							)
-						: null,
+					this.#address.button(),
 					h(
 						"div",
 						{ class: "surface-pill-mode-set", role: "group", "aria-label": t("What the surface shows") },
@@ -1791,6 +1800,9 @@ export class SurfaceView {
 				this.#syncPhoneViewport();
 				return;
 			}
+			case "address":
+				this.#address.toggle();
+				return;
 			case "collapse-pill":
 				this.#pillCollapsed = true;
 				this.#drawBar(surface);

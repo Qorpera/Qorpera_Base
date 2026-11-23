@@ -441,13 +441,95 @@
 .surface-canvas.is-dragging-notch { user-select: none; cursor: grabbing; }
 .surface-canvas.is-dragging-notch iframe { pointer-events: none; }
 .surface-pill::-webkit-scrollbar { display: none; }
-.surface-pill-address {
-	display: block; flex: none; max-width: 220px; height: 30px; margin-right: 4px; padding: 0 10px; border-radius: 999px;
-	overflow: hidden; color: var(--text); font-size: 12px; font-weight: 600; line-height: 30px; text-decoration: none;
-	text-overflow: ellipsis; white-space: nowrap; cursor: default;
+.surface-pill-modes .surface-pill-address {
+	display: inline-flex; align-items: center; gap: 7px; flex: none; min-width: 0; max-width: 240px; height: 30px;
+	margin-right: 4px; padding: 0 10px 0 9px; border: 0; border-radius: 999px; background: none;
+	color: var(--text); font: inherit; font-size: 12px; font-weight: 600; white-space: nowrap; cursor: default;
 	transition: background-color var(--motion-fast) ease;
 }
-.surface-pill-address:hover { background: color-mix(in srgb, var(--text) 5%, transparent); text-decoration: none; }
+.surface-pill-modes .surface-pill-address:hover,
+.surface-pill-modes .surface-pill-address[aria-expanded="true"] { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.surface-address-host { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.surface-address-lock { display: grid; flex: none; color: var(--text-soft); }
+.surface-address-lock .icon { width: 12px; height: 12px; }
+.surface-address-dot {
+	flex: none; width: 7px; height: 7px; margin: 0 1px; border-radius: 50%;
+	background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft);
+}
+.surface-pill-address.is-waiting .surface-address-dot {
+	background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft); animation: surface-breathe 1.4s ease-in-out infinite;
+}
+.surface-address-sheet {
+	position: absolute; z-index: 12; top: 58px; left: 50%; translate: -50% 0; width: min(340px, calc(100% - 24px));
+	display: grid; gap: 12px; justify-items: start; padding: 16px 16px 14px;
+	border: 1px solid var(--border-strong); border-radius: 12px; background: var(--overlay); color: var(--text);
+	box-shadow: 0 16px 44px rgb(0 0 0 / 14%), 0 2px 8px rgb(0 0 0 / 6%);
+	font-family: var(--font-sans); font-size: 13px; -webkit-font-smoothing: antialiased;
+}
+.surface-address-sheet[hidden] { display: none; }
+.surface-address-sheet.is-placed { translate: none; }
+.surface-address-sheet.is-entering { transform-origin: top left; animation: menu-in var(--motion-base) var(--ease-spring) both; }
+.surface-address-name {
+	max-width: 100%; font-size: 21px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.15; overflow-wrap: anywhere;
+}
+.surface-address-name span { color: var(--text-soft); }
+.surface-address-open {
+	display: inline-flex; align-items: center; gap: 4px; margin-top: -8px; color: var(--text-muted);
+	font-size: 12.5px; text-decoration: none; cursor: default;
+}
+.surface-address-open:hover { color: var(--text); text-decoration: none; }
+.surface-address-open .icon { width: 12px; height: 12px; }
+.surface-address-stops {
+	display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0; padding: 0; list-style: none;
+	color: var(--text-soft); font-size: 12px;
+}
+.surface-address-stops li { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.surface-address-stops li + li::before {
+	content: ""; width: 14px; height: 1.5px; margin-right: 2px; background: var(--border-strong);
+}
+.surface-address-step { width: 9px; height: 9px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--border-strong); }
+.surface-address-stops .is-now { color: var(--text); font-weight: 650; }
+.surface-address-stops .is-now .surface-address-step { background: var(--text); box-shadow: none; }
+.surface-address-stops .is-done .surface-address-step { background: var(--ok); box-shadow: none; }
+.surface-address-stops .is-waiting .surface-address-step {
+	background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft); animation: surface-breathe 1.4s ease-in-out infinite;
+}
+.surface-address-line { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.surface-address-quiet { margin: 0; color: var(--text-soft); font-size: 12px; line-height: 1.45; }
+.surface-address-problem { margin: 0; color: var(--danger); font-size: 12.5px; line-height: 1.45; }
+.surface-address-pill {
+	height: 32px; padding: 0 14px; border: 0; border-radius: 999px; font: inherit; font-size: 13px; font-weight: 600;
+	white-space: nowrap; cursor: default; transition: background-color var(--motion-fast) ease;
+}
+.surface-address-pill.is-dark { background: var(--primary); color: var(--on-primary); }
+.surface-address-pill.is-dark:hover { background: var(--primary-hover); }
+.surface-address-quiet-button {
+	margin: -4px 0 -4px -8px; padding: 5px 8px; border: 0; border-radius: 8px; background: none;
+	color: var(--text-muted); font: inherit; font-size: 12.5px; text-align: left; cursor: default;
+}
+.surface-address-quiet-button:hover { background: var(--hover); color: var(--text); }
+.surface-address-form { display: flex; gap: 6px; width: 100%; }
+.surface-address-input {
+	flex: 1; min-width: 0; height: 32px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 999px;
+	background: transparent; color: var(--text); font: inherit; font-size: 13px; outline: 0;
+}
+.surface-address-input:focus { border-color: var(--text-soft); }
+.surface-address-records { display: grid; width: 100%; font: 11.5px var(--font-mono); }
+.surface-address-record {
+	display: grid; grid-template-columns: 44px minmax(0, 0.8fr) minmax(0, 1fr) 24px; align-items: center; gap: 6px;
+	padding: 6px 0; border-top: 1px solid var(--border);
+}
+.surface-address-record b { font-weight: 600; }
+.surface-address-record-host, .surface-address-value { overflow-wrap: anywhere; user-select: all; }
+.surface-address-value { color: var(--text-muted); }
+.surface-address-copy {
+	display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px;
+	background: none; color: var(--text-soft); cursor: default;
+}
+.surface-address-copy:hover { background: var(--hover); color: var(--text); }
+.surface-address-copy .icon { width: 13px; height: 13px; grid-area: 1 / 1; }
+.surface-address-copy .icon + .icon, .surface-address-copy.is-copied .icon:first-child { display: none; }
+.surface-address-copy.is-copied .icon + .icon { display: block; color: var(--ok); }
 .surface-pill-modes, .surface-pill-mode-set { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .surface-pill-modes button {
 	display: inline-flex; align-items: center; height: 30px; padding: 0 10px; border: 0; border-radius: 999px;

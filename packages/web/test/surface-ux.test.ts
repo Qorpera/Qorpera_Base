@@ -28,12 +28,15 @@ import {
 	COMPANY,
 	change,
 	fakeClient,
+	fakeSiteHosting,
+	HOSTED_SITE,
 	MESSAGE_IDS,
 	previewFrame,
 	SESSION,
 	SURFACE,
 	session,
 	sessionMessage,
+	siteDomain,
 	storeWith,
 	summary,
 	workspace,
@@ -916,10 +919,19 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		view.update();
 
-		const address = view.el.querySelector<HTMLAnchorElement>(".surface-pill-modes > .surface-pill-address");
-		expect(address?.getAttribute("href")).toBe("https://thetaband.dk");
+		const address = view.el.querySelector<HTMLButtonElement>(".surface-pill-modes > button.surface-pill-address");
 		expect(address?.textContent).toBe("thetaband.dk");
+		expect(address?.getAttribute("aria-expanded")).toBe("false");
 		expect(address?.closest('[role="group"]')).toBeNull();
+		address!.click();
+		const sheet = view.el.querySelector<HTMLElement>(".surface-address-sheet")!;
+		expect(sheet.hidden).toBe(false);
+		expect(sheet.querySelector<HTMLAnchorElement>(".surface-address-open")?.getAttribute("href")).toBe(
+			"https://thetaband.dk",
+		);
+		expect(view.el.querySelector(".surface-pill-address")?.getAttribute("aria-expanded")).toBe("true");
+		view.el.querySelector<HTMLButtonElement>(".surface-pill-address")!.click();
+		expect(sheet.hidden).toBe(true);
 		const modes = view.el.querySelector('.surface-pill-mode-set[role="group"]');
 		expect([...(modes?.querySelectorAll("button") ?? [])].map((button) => button.textContent)).toEqual([
 			"Live",
@@ -930,6 +942,82 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 		expect(view.el.querySelector(".surface-pill-address")).toBeNull();
 		expect(view.el.querySelector(".surface-pill-mode-set button")).not.toBeNull();
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("draws the address as a button that marks where the site lives and opens its sheet", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const hosting = fakeSiteHosting();
+		let site: { siteId: string; client: typeof hosting.client } | undefined;
+		let live = true;
+		const view = new SurfaceView(
+			{
+				store,
+				mount: () => undefined,
+				openMigration: () => undefined,
+				isSiteLive: () => live,
+				siteHosting: () => site,
+				managesSites: () => true,
+			},
+			"website",
+		);
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		const address = () => view.el.querySelector<HTMLButtonElement>(".surface-pill-address");
+
+		expect(address()?.className).toBe("surface-pill-address is-unknown");
+		expect(address()?.dataset.act).toBe("address");
+		expect(hosting.client.read).not.toHaveBeenCalled();
+
+		site = { siteId: HOSTED_SITE, client: hosting.client };
+		view.update();
+		await flush();
+		expect(hosting.client.read).toHaveBeenCalledTimes(1);
+		expect(address()?.className).toBe("surface-pill-address is-private");
+		expect(address()?.title).toBe("Only your team can open it");
+		expect(address()?.querySelector(".surface-address-lock svg")).not.toBeNull();
+		expect(address()?.textContent).toBe("thetaband.dk");
+
+		address()!.click();
+		await flush();
+		const sheet = view.el.querySelector<HTMLElement>(".surface-canvas > .surface-address-sheet")!;
+		expect(sheet.hidden).toBe(false);
+		[...sheet.querySelectorAll<HTMLButtonElement>("button")]
+			.find((item) => item.textContent === "Put it live")!
+			.click();
+		expect(address()?.className).toBe("surface-pill-address is-live");
+		expect(address()?.title).toBe("Anyone can open it");
+		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
+		await flush();
+
+		hosting.world.entry!.domains = [siteDomain("www.thetaband.dk")];
+		address()!.click();
+		address()!.click();
+		await flush();
+		expect(address()?.className).toBe("surface-pill-address is-waiting");
+		expect(address()?.title).toBe("Waiting for your domain");
+		expect(address()?.textContent).toBe("www.thetaband.dk");
+
+		hosting.world.entry!.domains = [siteDomain("www.thetaband.dk", "tls_active", { isPrimary: true })];
+		address()!.click();
+		address()!.click();
+		await flush();
+		expect(address()?.className).toBe("surface-pill-address is-live");
+		expect(address()?.textContent).toBe("www.thetaband.dk");
+
+		live = false;
+		view.update();
+		expect(address()).toBeNull();
+		expect(sheet.hidden).toBe(true);
 
 		view.dispose();
 		store.dispose();
