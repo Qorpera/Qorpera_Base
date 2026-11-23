@@ -1672,6 +1672,10 @@ export class SurfacesStore {
 		return this.state.workspaces[surfaceId];
 	}
 
+	isWorkspaceLoading(surfaceId: string): boolean {
+		return this.#inFlightWorkspaceRefreshes.has(surfaceId);
+	}
+
 	setActiveSurface(surfaceId: string | undefined): void {
 		this.#activeSurfaceId = surfaceId;
 	}

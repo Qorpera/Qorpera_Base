@@ -14,8 +14,10 @@ import {
 import { AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
+import { playOnce } from "../../ui/motion.ts";
 import { framePage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
+import { surfaceSkeleton } from "../../ui/skeleton.ts";
 import {
 	effectiveStudioBaseFiles,
 	formatConflictPaths,
@@ -491,6 +493,7 @@ export class SurfaceStudioView {
 	readonly #lifetime = new AbortController();
 	#baseFiles: Readonly<Record<string, string>>;
 	#loading = false;
+	#showingSkeleton = false;
 	#lastConflict: SurfacePreviewConflict | null = null;
 	#viewer3d: Studio3DViewer | undefined;
 	#reportView: SurfaceReportView | undefined;
@@ -513,7 +516,10 @@ export class SurfaceStudioView {
 				!isLocalSurfaceId(options.surface.id) &&
 				options.store.state.source === "cloud";
 			if (cloudManaged) {
-				if (!options.store.state.cloudSurfaceFiles[options.surface.id]) {
+				if (
+					!options.store.state.cloudSurfaceFiles[options.surface.id] &&
+					!options.store.isCloudFilesLoading(options.surface.id)
+				) {
 					void options.store.refreshCloudFiles(options.surface);
 				}
 			} else if (options.loadFiles) {
@@ -623,7 +629,8 @@ export class SurfaceStudioView {
 		const state = store.state;
 		const surface = state.surfaces.find((item) => item.id === this.#options.surface.id) ?? this.#options.surface;
 		const baseFiles = this.#effectiveBaseFiles(surface.id);
-		const lookKind = store.lookOf(surface).kind;
+		const look = store.lookOf(surface);
+		const lookKind = look.kind;
 		const isIdentitySurface =
 			surface.isGlobal === true ||
 			lookKind === "identity" ||
@@ -657,6 +664,21 @@ export class SurfaceStudioView {
 		this.#wasUpdating = updating;
 		const activeOtherSurfaces = state.surfaces.filter((item) => item.status === "active" && item.id !== surface.id);
 		const downstreamSurfaces = activeOtherSurfaces.filter((item) => item.group === "products");
+		const linkedSurfacesKey = JSON.stringify(
+			activeOtherSurfaces.map((item) => {
+				const itemLook = store.lookOf(item);
+				return [
+					item.id,
+					item.slug,
+					item.title,
+					item.group,
+					item.isGlobal === true,
+					item.icon,
+					itemLook.kind,
+					itemLook.accent ?? "",
+				];
+			}),
+		);
 		const deps: readonly unknown[] = [
 			initialLoading,
 			updatingPhase,
@@ -666,12 +688,17 @@ export class SurfaceStudioView {
 			state.cloudSurfaceFiles[surface.id],
 			state.pendingStudioPatches[surface.id],
 			state.localStudioBase[surface.id],
-			surface,
+			surface.id,
+			surface.slug,
+			surface.title,
+			surface.folderRoot,
+			surface.isGlobal === true,
+			surface.icon,
 			lookKind,
+			look.accent ?? "",
 			identityTokens?.css ?? "",
-			workspace?.briefSummary,
-			state.surfaces,
-			state.surfaceLooks,
+			workspace?.briefSummary ?? "",
+			linkedSurfacesKey,
 			busyReconcile,
 		];
 		if (sameDeps(this.#shownDeps, deps) && sameOrderedChanges(this.#shownOrdered, ordered)) return;
@@ -847,25 +874,25 @@ export class SurfaceStudioView {
 			.filter((path) => baseFiles[path] !== files[path]);
 
 		if (filePaths.length === 0 && (state.mode !== "compare" || allChangedPaths.length === 0)) {
+			if (initialLoading) {
+				this.#showingSkeleton = true;
+				this.el.replaceChildren(surfaceSkeleton(t("Opening studio…"), "studio"));
+				return;
+			}
+			const leavingSkeleton = this.#showingSkeleton;
+			this.#showingSkeleton = false;
 			children.push(
 				h(
 					"div",
 					{ class: "studio-empty" },
-					initialLoading
-						? [h("span", { class: "surface-state is-running" }), h("p", null, t("Opening studio…"))]
-						: [
-								surfaceTile(surface, this.#options.store.lookOf(surface), "is-hero"),
-								h("h2", null, surface.title),
-								workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
-								h(
-									"p",
-									null,
-									t("No studio files yet. Describe a change below to create tokens, specs, or guidelines."),
-								),
-							],
+					surfaceTile(surface, look, "is-hero"),
+					h("h2", null, surface.title),
+					workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
+					h("p", null, t("No studio files yet. Describe a change below to create tokens, specs, or guidelines.")),
 				),
 			);
 			this.el.replaceChildren(...children);
+			if (leavingSkeleton) playOnce(this.el, "is-entering");
 			return;
 		}
 
@@ -1616,6 +1643,8 @@ export class SurfaceStudioView {
 			}
 		}
 
+		const leavingSkeleton = this.#showingSkeleton;
+		this.#showingSkeleton = false;
 		if (sections.length === 0) {
 			children.push(
 				h(
@@ -1628,11 +1657,13 @@ export class SurfaceStudioView {
 				),
 			);
 			this.el.replaceChildren(...children);
+			if (leavingSkeleton) playOnce(this.el, "is-entering");
 			return;
 		}
 
 		children.push(h("div", { class: "studio-grid" }, sections));
 		this.el.replaceChildren(...children);
+		if (leavingSkeleton) playOnce(this.el, "is-entering");
 	}
 
 	#click(event: MouseEvent): void {

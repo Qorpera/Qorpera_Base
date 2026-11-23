@@ -605,20 +605,25 @@
 .surface-phone-dims {
 	color: var(--text-soft); font-size: 11px; font-weight: 580; font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-.surface-mount, .surface-frames, .surface-report-slot { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: auto; }
-.surface-mount[hidden], .surface-frames[hidden], .surface-report-slot[hidden] { display: none; }
+.surface-mount, .surface-frames, .surface-report-slot, .surface-loading { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+.surface-loading { overflow: hidden; background: var(--bg); }
+.surface-mount[hidden], .surface-frames[hidden], .surface-report-slot[hidden], .surface-loading[hidden] { display: none; }
+:is(.surface-mount, .surface-frames, .surface-report-slot, .surface-studio, .surface-report).is-entering {
+	animation: surface-content-in var(--motion-base) var(--ease-out) both;
+}
+@keyframes surface-content-in { from { opacity: 0; } }
 /* WHY: Phone dimensions come from JS CSS custom properties (--phone-w/--phone-h/--phone-r) so design-px scaling never distorts real device CSS viewports. */
-.surface-viewport[data-device="mobile"]:not(.is-compare-mobile) :is(.surface-mount, .surface-frames) {
+.surface-viewport[data-device="mobile"]:not(.is-compare-mobile) :is(.surface-mount, .surface-frames, .surface-loading) {
 	flex: none; width: var(--phone-w); height: var(--phone-h); border-radius: var(--phone-r);
 	overflow: hidden; transform: scale(var(--phone-scale, 1)); transform-origin: center center;
 	background: var(--bg);
 	box-shadow: 0 0 0 9px #141413, 0 28px 64px -20px rgb(18 18 17 / 42%);
 }
-.surface-viewport[data-device="mobile"][data-phone-cutout="island"]:not(.is-compare-mobile) :is(.surface-mount, .surface-frames)::after {
+.surface-viewport[data-device="mobile"][data-phone-cutout="island"]:not(.is-compare-mobile) :is(.surface-mount, .surface-frames, .surface-loading)::after {
 	content: ""; position: absolute; z-index: 6; top: 10px; left: 50%; width: 96px; height: 24px;
 	transform: translateX(-50%); border-radius: 999px; background: #141413; pointer-events: none;
 }
-.surface-viewport[data-device="mobile"][data-phone-cutout="punch"]:not(.is-compare-mobile) :is(.surface-mount, .surface-frames)::after {
+.surface-viewport[data-device="mobile"][data-phone-cutout="punch"]:not(.is-compare-mobile) :is(.surface-mount, .surface-frames, .surface-loading)::after {
 	content: ""; position: absolute; z-index: 6; top: 12px; left: 50%; width: 12px; height: 12px;
 	transform: translateX(-50%); border-radius: 50%; background: #141413; pointer-events: none;
 }
@@ -627,8 +632,38 @@
 .surface-mount .site-view, .surface-site > * { height: 100%; }
 .surface-ops .mailbox-scroll { padding-bottom: 108px; }
 .surface-ops > .page, .surface-files, .surface-files .files-page { padding-bottom: 120px; }
-.surface-local-site { position: relative; width: 100%; height: 100%; overflow: hidden; }
+.surface-local-site { position: relative; width: 100%; height: 100%; overflow: hidden; background: var(--bg); }
 .surface-local-site > .surface-frame { position: absolute; inset: 0; }
+.surface-local-site.is-opening > .surface-local-frame { opacity: 0; }
+.surface-local-site.is-shown > .surface-local-frame { opacity: 1; transition: opacity var(--motion-base) var(--ease-out); }
+.surface-local-cover { position: absolute; inset: 0; z-index: 2; background: var(--bg); overflow: hidden; pointer-events: none; }
+.surface-local-cover[hidden] { display: none; }
+.skeleton-surface {
+	display: flex; flex-direction: column; gap: 22px; width: 100%; height: 100%;
+	padding: 72px 32px 116px; overflow: hidden;
+}
+.surface-viewport[data-device="mobile"] .skeleton-surface { padding: 52px 20px 84px; gap: 16px; }
+.skeleton-surface-studio, .skeleton-surface-live { max-width: 1040px; margin-inline: auto; }
+.skeleton-surface-ops { max-width: 820px; margin-inline: auto; padding-top: 32px; gap: 18px; }
+.skeleton-surface-report { max-width: 760px; margin-inline: auto; }
+.skeleton-surface-nav, .skeleton-surface-studio-head {
+	display: flex; align-items: center; justify-content: space-between; gap: 16px;
+}
+.skeleton-surface-pills { display: flex; align-items: center; gap: 8px; }
+.skeleton-surface-pill { width: 72px; height: 26px; border-radius: 999px; }
+.skeleton-surface-hero { width: 100%; height: clamp(180px, 34vh, 300px); border-radius: 18px; }
+.skeleton-surface-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.surface-viewport[data-device="mobile"] .skeleton-surface-grid { grid-template-columns: minmax(0, 1fr); }
+.skeleton-surface-panel { width: 100%; height: 148px; border-radius: 16px; }
+.skeleton-surface-card {
+	display: flex; flex-direction: column; gap: 10px; padding: 18px;
+	border: 1px solid color-mix(in srgb, var(--text) 7%, transparent); border-radius: 16px;
+}
+.skeleton-surface-article { display: flex; flex-direction: column; gap: 18px; }
+.skeleton-surface-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.skeleton-surface-metric { width: 100%; height: 74px; border-radius: 14px; }
+.skeleton-surface-rows { display: flex; flex-direction: column; gap: 6px; }
+.surface-studio > .skeleton-surface, .surface-report > .skeleton-surface { padding: 24px 0 96px; }
 .surface-page.is-pointing .surface-local-site::after {
 	content: ""; position: absolute; z-index: 4; inset: 0; border-radius: inherit;
 	box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 44%, transparent); pointer-events: none;
@@ -1958,7 +1993,9 @@
 	.surface-studio.is-updating .studio-head::after, .surface-report.is-updating .report-chrome::after,
 	.surface-studio.is-updating .studio-live-dot,
 	.surface-studio.is-updating :is(.studio-swatch, .studio-doc, .studio-vendor-card)::after,
-	.surface-studio.is-settled .studio-grid, .surface-report.is-settled .report-layout { animation: none; }
+	.surface-studio.is-settled .studio-grid, .surface-report.is-settled .report-layout,
+	:is(.surface-mount, .surface-frames, .surface-report-slot, .surface-studio, .surface-report).is-entering { animation: none; }
+	.surface-local-site.is-shown > .surface-local-frame { transition: none; }
 	.surface-figure-body, .surface-figure-eyes, .surface-figure-eye > i { animation: none; }
 	.surface-bar-agent:hover, .surface-bar-explore:hover, .surface-thread-jump-chip:hover { transform: none; }
 }
