@@ -7,15 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929027699_runtime_bundle_activation_v276.sql";
-const activationVersion = 276;
-const previousActivationVersion = 275;
-const previousActivationSha256 = "7587f80b896c520e234d93404bfbc9ba09f932f26055de194b52907ec8a025c1";
+const activation = "supabase/migrations/20260929027799_runtime_bundle_activation_v277.sql";
+const activationVersion = 277;
+const previousActivationVersion = 276;
+const previousActivationSha256 = "cfae66f2acddf87c86f2b8445279158dde2ab74a216561eb294e35fa75f9da05";
 const activationRequires = Object.freeze([
 	[
-		"20260930865000_surface_message_images",
-		"#2214 (images on interface session messages): bundle 276 reads a surface session's images through qorpera_native_surface_session_images",
-		"to_regprocedure('public.qorpera_native_surface_session_images(uuid,uuid,uuid)') is not null and to_regclass('public.qorpera_surface_message_images') is not null",
+		"20260930860000_surface_preview_reconcile_and_merge_hardening",
+		"#2199 (surface preview, reconcile, and merge hardening): bundle 277 uses hardened surface preview composition, merge serialization, and session lease handling",
+		"to_regprocedure('public.qorpera_surface_preview_composition_key(uuid,text,uuid[],uuid)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

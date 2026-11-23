@@ -322,6 +322,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Non-Identity Studio surfaces now default to an isolated folder under surfaces/<slug> instead of legacy top-level company folders like product or reports, so each new Studio surface starts blank and holds only its own work (Identity stays in the identity folder). Product Studio sessions now receive the structured Studio layout directly in their turn instructions for interactive 3D models, key specs, colorways, BOM tables, production plans, supplier cards, and editorial competitor or vendor analysis reports with charts and tables. Report surfaces receive the same structured report format.",
 	},
 	{
+		id: "surface-stage-ci-gate",
+		kind: "capability",
+		date: "2026-11-23",
+		title: "Opt-in CI checks before staging Surface commits",
+		text: 'Code-backed Surface repositories can now set surfaceGate to "stage" in their checks file so Qorpera automatically runs the repository checks in the session machine before staging commits for Preview (default "none" keeps Preview staging instant for simple static Surfaces). Once a repository base opts into "stage", sessions must pass checks to stage and cannot bypass the gate by deleting, breaking, or clearing the checks file.',
+	},
+	{
 		id: "code-ops-git-read-claims-revert-and-lifecycle",
 		kind: "capability",
 		date: "2026-11-22",
