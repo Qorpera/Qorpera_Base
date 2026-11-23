@@ -126,6 +126,8 @@ const SVG_FILE_RE = /\.svg$/i;
 const MARKDOWN_FILE_RE = /\.(?:md|markdown)$/i;
 const PROSE_TEXT_FILE_RE = /\.txt$/i;
 const TOKEN_STYLESHEET_RE = /(?:^|\/)(?:tokens|qorpera-identity)\.css$/i;
+const PRODUCT_LINE_KEY = /^(?:tagline|one line|oneliner|one liner|summary|description)$/i;
+const MAX_FACT_CHARS = 18;
 const MAX_INITIAL_TABLE_ROWS = 100;
 const MAX_INITIAL_TEXT_CHARS = 32_000;
 const NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
@@ -171,6 +173,10 @@ function formatScalar(value: unknown): string {
 	if (value === null || value === undefined) return "–";
 	if (Array.isArray(value)) return value.map(formatScalar).join(", ");
 	return JSON.stringify(value);
+}
+
+function specLabel(key: string): string {
+	return key.split(" · ").at(-1) ?? key;
 }
 
 function lookupPath(root: Record<string, unknown> | undefined, segments: readonly string[]): unknown {
@@ -630,6 +636,7 @@ export class SurfaceStudioView {
 	#reportView: SurfaceReportView | undefined;
 	readonly #htmlFrames: AppFrame[] = [];
 	#tab: StudioTab = "overview";
+	#colorway = 0;
 	#shownDeps: readonly unknown[] | undefined;
 	#shownOrdered: readonly StudioPatchChange[] | undefined;
 	#appliedIdentityVars: string[] = [];
@@ -1146,19 +1153,25 @@ export class SurfaceStudioView {
 				this.#showingSkeleton = true;
 				return { children: [surfaceSkeleton(t("Opening studio…"), "studio")], leavingSkeleton: false };
 			}
-			const leavingSkeleton = this.#showingSkeleton;
-			this.#showingSkeleton = false;
-			children.push(
-				h(
-					"div",
-					{ class: "studio-empty" },
-					surfaceTile(surface, look, "is-hero"),
-					h("h2", null, surface.title),
-					workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
-					h("p", null, t("No studio files yet. Describe a change below to create tokens, specs, or guidelines.")),
-				),
-			);
-			return { children, leavingSkeleton };
+			if (isIdentitySurface || lookKind !== "product" || mode === "compare") {
+				const leavingSkeleton = this.#showingSkeleton;
+				this.#showingSkeleton = false;
+				children.push(
+					h(
+						"div",
+						{ class: "studio-empty" },
+						surfaceTile(surface, look, "is-hero"),
+						h("h2", null, surface.title),
+						workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
+						h(
+							"p",
+							null,
+							t("No studio files yet. Describe a change below to create tokens, specs, or guidelines."),
+						),
+					),
+				);
+				return { children, leavingSkeleton };
+			}
 		}
 
 		const renderPlainDoc = (content: string, bodyClass: string): HTMLElement[] => {
@@ -1397,9 +1410,10 @@ export class SurfaceStudioView {
 			detailSpecs.some((spec) => spec.tables.length > 0 || spec.entries.length > 0) || typography.length > 0;
 		const hasVendorsTab = vendors.length > 0 || vendorSpecs.length > 0;
 		const hasAnalysisTab = reportPaths.length > 0;
-		const hasFilesTab = docs.length > 0;
-		const hasPagesTab = htmlPages.length > 0;
 		const isProduct = !isIdentity && lookKind === "product";
+		const productPage = isProduct || (!isIdentity && modelConfig !== undefined);
+		const hasFilesTab = docs.length > 0 || (productPage && svgs.length > 0);
+		const hasPagesTab = htmlPages.length > 0;
 		const hasOverviewContent = Boolean(
 			(isIdentity && downstreamSurfaces.length > 0) ||
 				modelConfig ||
@@ -1409,18 +1423,44 @@ export class SurfaceStudioView {
 				(!isIdentity && primarySpec && primarySpec.entries.length > 0),
 		);
 		const tabbed = Boolean(modelConfig || vendors.length || reportPaths.length || isIdentity || isProduct);
-		const availableTabs: { readonly id: StudioTab; readonly label: string }[] = [];
+		const availableTabs: { readonly id: StudioTab; readonly label: string; readonly filled: boolean }[] = [];
 		if (tabbed) {
-			if (hasOverviewContent || (!hasSpecsTab && !hasVendorsTab && !hasAnalysisTab && !hasFilesTab && !hasPagesTab))
-				availableTabs.push({ id: "overview", label: t("Overview") });
-			if (hasSpecsTab)
-				availableTabs.push({ id: "specs", label: isIdentity ? t("Design System") : t("Specs & BOM") });
-			if (hasVendorsTab) availableTabs.push({ id: "vendors", label: t("Production & Vendors") });
-			if (hasAnalysisTab)
-				availableTabs.push({ id: "analysis", label: isIdentity ? t("Philosophy") : t("Analysis") });
-			if (hasFilesTab)
-				availableTabs.push({ id: "files", label: isIdentity ? t("Voice & Files") : t("Brief & Files") });
-			if (hasPagesTab) availableTabs.push({ id: "pages", label: htmlPages.length === 1 ? t("Page") : t("Pages") });
+			if (productPage) {
+				availableTabs.push(
+					{ id: "overview", label: t("Overview"), filled: true },
+					{ id: "specs", label: t("Specs"), filled: hasSpecsTab },
+					{ id: "vendors", label: t("Vendors"), filled: hasVendorsTab },
+					{ id: "analysis", label: t("Reports"), filled: hasAnalysisTab },
+					{ id: "files", label: t("Files"), filled: hasFilesTab },
+				);
+			} else {
+				if (
+					hasOverviewContent ||
+					(!hasSpecsTab && !hasVendorsTab && !hasAnalysisTab && !hasFilesTab && !hasPagesTab)
+				)
+					availableTabs.push({ id: "overview", label: t("Overview"), filled: true });
+				if (hasSpecsTab)
+					availableTabs.push({
+						id: "specs",
+						label: isIdentity ? t("Design System") : t("Specs & BOM"),
+						filled: true,
+					});
+				if (hasVendorsTab) availableTabs.push({ id: "vendors", label: t("Production & Vendors"), filled: true });
+				if (hasAnalysisTab)
+					availableTabs.push({
+						id: "analysis",
+						label: isIdentity ? t("Philosophy") : t("Analysis"),
+						filled: true,
+					});
+				if (hasFilesTab)
+					availableTabs.push({
+						id: "files",
+						label: isIdentity ? t("Voice & Files") : t("Brief & Files"),
+						filled: true,
+					});
+			}
+			if (hasPagesTab)
+				availableTabs.push({ id: "pages", label: htmlPages.length === 1 ? t("Page") : t("Pages"), filled: true });
 			if (!availableTabs.some((tab) => tab.id === this.#tab)) this.#tab = availableTabs[0]!.id;
 			children.push(
 				h(
@@ -1432,7 +1472,7 @@ export class SurfaceStudioView {
 							{
 								type: "button",
 								role: "tab",
-								class: `studio-tab${this.#tab === tab.id ? " is-on" : ""}`,
+								class: `studio-tab${this.#tab === tab.id ? " is-on" : ""}${tab.filled ? "" : " is-empty"}`,
 								"aria-selected": String(this.#tab === tab.id),
 								"data-act": "studio-tab",
 								"data-tab": tab.id,
@@ -1633,7 +1673,37 @@ export class SurfaceStudioView {
 			if (built) gridTasks.push({ build: () => built });
 		}
 
-		if (modelConfig && showOverview) {
+		if (productPage && showOverview) {
+			const lineEntry = primarySpec?.entries.find((entry) => PRODUCT_LINE_KEY.test(specLabel(entry.key)));
+			const facts = (primarySpec?.entries ?? [])
+				.filter((entry) => entry !== lineEntry && entry.value !== "–" && entry.value.length <= MAX_FACT_CHARS)
+				.slice(0, 4);
+			gridTasks.push({
+				build: () =>
+					this.#productOverview(
+						surface.title,
+						lineEntry?.value ?? workspace?.briefSummary ?? "",
+						modelConfig,
+						colors,
+						facts,
+					),
+			});
+		}
+		if (productPage && tabbed && !showOverview) {
+			const emptyLine =
+				this.#tab === "specs" && !hasSpecsTab
+					? t("Every part, what it is made of and who makes it.")
+					: this.#tab === "vendors" && !hasVendorsTab
+						? t("Who can make it, side by side.")
+						: this.#tab === "analysis" && !hasAnalysisTab
+							? t("Reports and posts about the product.")
+							: this.#tab === "files" && !hasFilesTab
+								? t("Working files. Models, pictures and notes live here.")
+								: null;
+			if (emptyLine) gridTasks.push({ build: () => h("p", { class: "studio-home-empty" }, emptyLine) });
+		}
+
+		if (modelConfig && showOverview && !productPage) {
 			gridTasks.push({
 				build: () => {
 					if (!this.#viewer3d) this.#viewer3d = new Studio3DViewer(modelConfig, this.#lifetime.signal);
@@ -1643,7 +1713,7 @@ export class SurfaceStudioView {
 			});
 		}
 
-		if (svgs.length && showOverview) {
+		if (svgs.length && (productPage ? showFiles : showOverview)) {
 			gridTasks.push({
 				build: () =>
 					h(
@@ -1684,7 +1754,7 @@ export class SurfaceStudioView {
 			});
 		}
 
-		if (colors.length && showOverview) {
+		if (colors.length && showOverview && !productPage) {
 			gridTasks.push({
 				build: () =>
 					h(
@@ -1717,7 +1787,7 @@ export class SurfaceStudioView {
 			});
 		}
 
-		if (tabbed && showOverview && primarySpec && primarySpec.entries.length > 0 && !isIdentity) {
+		if (tabbed && showOverview && primarySpec && primarySpec.entries.length > 0 && !isIdentity && !productPage) {
 			gridTasks.push({
 				build: () =>
 					h(
@@ -1975,10 +2045,93 @@ export class SurfaceStudioView {
 		return { children, gridTasks, leavingSkeleton };
 	}
 
+	#productOverview(
+		title: string,
+		line: string,
+		model: Studio3DConfig | undefined,
+		colors: readonly ColorToken[],
+		facts: readonly SpecEntry[],
+	): HTMLElement {
+		if (this.#colorway >= colors.length) this.#colorway = 0;
+		let stage: HTMLElement;
+		if (model) {
+			if (!this.#viewer3d) this.#viewer3d = new Studio3DViewer(model, this.#lifetime.signal);
+			else this.#viewer3d.update(model);
+			this.#viewer3d.setColorway(this.#colorway);
+			stage = this.#viewer3d.el;
+		} else {
+			stage = h("div", { class: "studio-stage-floor", "aria-hidden": "true" });
+		}
+		const dots = colors.length
+			? h(
+					"div",
+					{ class: "studio-dots", role: "radiogroup", "aria-label": t("Colorways") },
+					colors.map((color, index) => {
+						const dot = h("button", {
+							type: "button",
+							role: "radio",
+							class: `studio-dot${index === this.#colorway ? " is-on" : ""}`,
+							"aria-checked": String(index === this.#colorway),
+							"aria-label": color.label,
+							title: color.label,
+							"data-act": "studio-colorway",
+							"data-index": String(index),
+							"data-token": color.key,
+						});
+						dot.style.backgroundColor = color.value;
+						return dot;
+					}),
+				)
+			: h(
+					"div",
+					{ class: "studio-dots is-empty", "aria-hidden": "true" },
+					[0, 1, 2, 3].map(() => h("span", { class: "studio-dot" })),
+				);
+		const figures = facts.length
+			? facts.map((fact) =>
+					h(
+						"div",
+						{ class: `studio-fact${fact.changed ? " is-changed" : ""}` },
+						h("dt", null, specLabel(fact.key)),
+						h("dd", null, fact.value),
+					),
+				)
+			: [t("Size"), t("Weight"), t("Made of"), t("Price")].map((label) =>
+					h("div", { class: "studio-fact" }, h("dt", null, label), h("dd", null, "?")),
+				);
+		return h(
+			"section",
+			{ class: "studio-product" },
+			h("div", { class: model ? "studio-stage" : "studio-stage is-empty" }, stage),
+			h(
+				"div",
+				{ class: "studio-product-head" },
+				h("h2", null, title),
+				line
+					? h("p", { class: "studio-product-line" }, line)
+					: h("p", { class: "studio-product-line is-empty" }, t("One line about what it is")),
+				dots,
+			),
+			h("dl", { class: `studio-facts${facts.length ? "" : " is-empty"}` }, figures),
+		);
+	}
+
 	#click(event: MouseEvent): void {
 		const target = (event.target as Element).closest<HTMLElement>("[data-act]");
 		if (!target || !this.el.contains(target)) return;
 		const { act } = target.dataset;
+		if (act === "studio-colorway") {
+			const index = Number(target.dataset.index);
+			if (!Number.isInteger(index) || index === this.#colorway) return;
+			this.#colorway = index;
+			this.#viewer3d?.setColorway(index);
+			for (const dot of this.el.querySelectorAll<HTMLElement>('[data-act="studio-colorway"]')) {
+				const on = dot === target;
+				dot.classList.toggle("is-on", on);
+				dot.setAttribute("aria-checked", String(on));
+			}
+			return;
+		}
 		if (act === "studio-tab") {
 			const next = target.dataset.tab as StudioTab | undefined;
 			if (next && next !== this.#tab) {
