@@ -580,18 +580,18 @@
 .surface-publish > :is(.surface-publish-yes, .surface-publish-no):disabled { opacity: 0.5; }
 .surface-publish :is(.surface-publish-yes, .surface-publish-no) .icon { width: 13px; height: 13px; }
 @container (max-width: 40em) {
-	.surface-pill { padding-right: 12px; }
-	.surface-pill > .surface-toggle:last-child { margin-right: -8px; }
-	.surface-toggle > button { padding: 0 11px; }
-	.surface-toggle[data-toggle="device"] > button { padding: 0 8px; }
-	.surface-pill-divider { margin: 0 8px; }
-	.surface-pill > .surface-pill-address { max-width: 150px; padding: 0 10px; }
+	.surface-pill { padding-right: 10px; }
+	.surface-pill > .surface-toggle:last-child { margin-right: -6px; }
+	.surface-toggle > button { padding: 0 10px; font-size: 12.5px; }
+	.surface-toggle[data-toggle="device"] > button { padding: 0 7px; }
+	.surface-pill-divider { margin: 0 6px; }
+	.surface-pill > .surface-pill-address { max-width: 150px; padding: 0 8px; }
 	.surface-pill > .surface-pill-address + .surface-pill-divider { margin-left: 2px; }
 }
 @container (max-width: 30em) {
 	.surface-pill > .surface-pill-address:not(.is-unknown) { width: 32px; padding: 0; }
 	.surface-pill > .surface-pill-address:not(.is-unknown) .surface-address-host { display: none; }
-	.surface-toggle > button { padding: 0 9px; font-size: 12.5px; }
+	.surface-toggle > button { padding: 0 8px; }
 	.surface-publish.is-asked .surface-publish-word { display: none; }
 	.surface-pill > .surface-toggle[data-toggle="device"],
 	.surface-pill > .surface-pill-divider:has(+ .surface-toggle[data-toggle="device"]) { display: none; }
@@ -917,6 +917,7 @@
 .surface-drawer-inner { display: flex; flex-direction: column; width: var(--drawer-width, 296px); max-width: 100%; height: 100%; min-height: 0; }
 @media (max-width: 780px) {
 	.surface-drawer { position: absolute; top: 0; right: 0; bottom: 0; box-shadow: -12px 0 36px rgb(18 18 17 / 18%); }
+	.surface-page.has-drawer .surface-bar { right: var(--surface-drawer-shown, 0px); }
 }
 .surface-drawer-head {
 	display: flex; align-items: center; gap: 10px; min-height: 66px; padding: 14px 70px 12px 14px;

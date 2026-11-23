@@ -290,8 +290,12 @@ export class SurfaceView {
 		if (typeof ResizeObserver !== "undefined") {
 			this.#viewportResizeObserver = new ResizeObserver(() => this.#syncPhoneViewport());
 			this.#viewportResizeObserver.observe(this.#viewport);
-			this.#notchResizeObserver = new ResizeObserver(() => this.#fitNotch());
-			for (const box of [this.#bar, this.#notchPill, this.#notchBar]) this.#notchResizeObserver.observe(box);
+			this.#notchResizeObserver = new ResizeObserver(() => {
+				this.el.style.setProperty("--surface-drawer-shown", `${this.#drawer.el.offsetWidth}px`);
+				this.#fitNotch();
+			});
+			for (const box of [this.#bar, this.#notchPill, this.#notchBar, this.#drawer.el])
+				this.#notchResizeObserver.observe(box);
 		}
 		window.addEventListener("resize", () => this.#syncPhoneViewport(), { signal });
 		window.addEventListener(
