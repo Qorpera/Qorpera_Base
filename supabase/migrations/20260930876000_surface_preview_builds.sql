@@ -196,6 +196,11 @@ begin
 		update public.qorpera_surface_previews
 		set status = 'failed', error_detail = v_build.error_detail, lease_expires_at = null, lease_token = null, updated_at = v_now
 		where build_id = v_build.id and status = 'building' and lease_token is null;
+	elsif exists (select 1 from public.qorpera_surfaces where id = v_build.surface_id and status = 'archived') then
+		update public.qorpera_surface_previews
+		set status = 'failed', error_detail = 'The interface was deleted', lease_expires_at = null, lease_token = null,
+			updated_at = v_now
+		where build_id = v_build.id and status = 'building' and lease_token is null;
 	else
 		update public.qorpera_surface_previews p
 		set
@@ -875,14 +880,14 @@ begin
 	end if;
 end $$;
 
--- WHY: Deleting an interface stops its builds as it stops its sessions: the builders' coding workers are cancelled (their
--- turns end at the next heartbeat) and every build still waiting or running is dropped.
+-- WHY: Deleting an interface stops its builds as it stops its sessions, in qorpera_surface_remove's lock order: the
+-- builders' workers first (their turns end at the next heartbeat), then its jobs and sessions, and only then its builds,
+-- each dropped and settled, as qorpera_surface_request_build takes a job before a build.
 create function public.qorpera_surface_preview_builds_stop(p_surface_id uuid)
 returns void language plpgsql security definer set search_path = '' as $$
 declare
 	v_worker_ids uuid[];
 	v_worker public.qorpera_runtime_workers%rowtype;
-	v_now timestamptz := clock_timestamp();
 begin
 	select coalesce(array_agg(w.id order by w.id), '{}'::uuid[]) into v_worker_ids
 	from public.qorpera_surface_preview_builders b
@@ -899,9 +904,25 @@ begin
 			perform public.qorpera_cancel_worker(v_worker, null, 'surface_discarded');
 		end loop;
 	end if;
-	update public.qorpera_surface_preview_builds
-	set state = 'dropped', worker_id = null, worker_sequence = null, started_at = null, finished_at = v_now, updated_at = v_now
-	where surface_id = p_surface_id and state in ('queued', 'running');
+end $$;
+
+create function public.qorpera_surface_preview_builds_drop(p_surface_id uuid)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+	v_id uuid;
+	v_now timestamptz := clock_timestamp();
+begin
+	for v_id in
+		select id from public.qorpera_surface_preview_builds
+		where surface_id = p_surface_id and state in ('queued', 'running')
+		order by id
+		for update
+	loop
+		update public.qorpera_surface_preview_builds
+		set state = 'dropped', worker_id = null, worker_sequence = null, started_at = null, finished_at = v_now, updated_at = v_now
+		where id = v_id;
+		perform public.qorpera_surface_preview_build_settle(v_id);
+	end loop;
 end $$;
 
 select pg_temp.spb_patch('public.qorpera_surface_remove(uuid,boolean)'::regprocedure, array[
@@ -913,6 +934,11 @@ $new$		 where s.surface_id = p_surface_id),
 		'surface_discarded'
 	);
 	perform public.qorpera_surface_preview_builds_stop(p_surface_id);
+$new$,
+$old$	where surface_id = p_surface_id and status in ('queued', 'running');
+$old$,
+$new$	where surface_id = p_surface_id and status in ('queued', 'running');
+	perform public.qorpera_surface_preview_builds_drop(p_surface_id);
 $new$
 ]);
 
@@ -954,6 +980,7 @@ revoke all on function
 	public.qorpera_surface_build_waiter_fail(text, uuid, text),
 	public.qorpera_surface_preview_builder_hold(uuid, timestamptz),
 	public.qorpera_surface_preview_builds_stop(uuid),
+	public.qorpera_surface_preview_builds_drop(uuid),
 	public.qorpera_check_surface_preview_build(uuid, uuid),
 	public.qorpera_surface_request_build(text, uuid, uuid, text, text, jsonb, text),
 	public.qorpera_begin_surface_preview_build(uuid, uuid),
@@ -984,6 +1011,6 @@ begin
 		if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
 			raise exception 'Patched surface build function has an API owner: %', v_owner;
 		end if;
-		execute format('grant execute on function public.qorpera_surface_preview_builds_sweep(timestamptz), public.qorpera_surface_is_preview_builder(uuid), public.qorpera_surface_preview_builds_stop(uuid) to %I', v_owner);
+		execute format('grant execute on function public.qorpera_surface_preview_builds_sweep(timestamptz), public.qorpera_surface_is_preview_builder(uuid), public.qorpera_surface_preview_builds_stop(uuid), public.qorpera_surface_preview_builds_drop(uuid) to %I', v_owner);
 	end loop;
 end $$;

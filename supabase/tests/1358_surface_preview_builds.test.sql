@@ -145,6 +145,7 @@ begin
 		'public.qorpera_surface_preview_selected(uuid)',
 		'public.qorpera_surface_preview_builder_hold(uuid,timestamptz)',
 		'public.qorpera_surface_preview_builds_stop(uuid)',
+		'public.qorpera_surface_preview_builds_drop(uuid)',
 		'public.qorpera_surface_build_waiter_fail(text,uuid,text)'
 	] loop
 		perform pg_temp.spb_assert(
@@ -431,10 +432,19 @@ begin
 	)
 	values (v_company_a, v_surface, v_builder.id, 'surfaces/shop', repeat('c', 40), repeat('9', 40), v_recipe, repeat('0', 64))
 	returning id into v_b8;
+	update public.qorpera_surface_previews
+	set status = 'building', lease_token = null, lease_expires_at = null, build_id = v_b8
+	where id = v_p4;
 	perform pg_temp.spb_as(v_owner);
 	set local role authenticated;
 	perform public.qorpera_archive_surface(v_surface);
 	reset role;
+	perform pg_temp.spb_assert(
+		(select status = 'failed' and error_detail = 'The interface was deleted' and lease_token is null
+			from public.qorpera_surface_previews where id = v_p4)
+		and (select status from public.qorpera_surface_previews where id = v_p3) <> 'building',
+		'a preview parked on a build of a deleted interface ends instead of staying building'
+	);
 	perform pg_temp.spb_assert(
 		(select state from public.qorpera_surface_preview_builds where id = v_b3) = 'dropped'
 		and (select state from public.qorpera_surface_preview_builds where id = v_b8) = 'dropped'
