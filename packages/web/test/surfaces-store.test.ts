@@ -6,12 +6,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseRoute, routeHash, surfaceHash } from "../src/app/router.ts";
 import { Store } from "../src/app/state.ts";
 import {
+	activeTaskSessions,
 	approvalOutcome,
 	attachSurfaces,
 	clearLocalSandboxCache,
 	compiledCompanyIdentity,
 	effectiveStudioBaseBinaries,
 	effectiveStudioBaseFiles,
+	isOpenVariant,
 	migrationPending,
 	normalizeStudioPatchOps,
 	PREVIEW_PASS_TTL_MS,
@@ -110,6 +112,98 @@ describe("the multi-change lifecycle", () => {
 });
 
 describe("SurfacesStore", () => {
+	it("treats a session as an option only while its exploration is open, and as a plain session once chosen", async () => {
+		const explorationId = "66666666-6666-4666-8666-666666666621";
+		const variantA = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333321",
+			explorationId,
+			explorationVariantLabel: "Calm",
+		});
+		const variantB = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333322",
+			explorationId,
+			explorationVariantLabel: "Bold",
+		});
+		const baseSession = session(["staged"]);
+		const exploration = (status: "open" | "chosen") => ({
+			id: explorationId,
+			surfaceId: SURFACE,
+			title: "Hero explorations",
+			status,
+			chosenSessionId: status === "chosen" ? variantB.id : null,
+			variantSessionIds: [variantA.id, variantB.id],
+			createdAt: "2026-10-16T09:00:00.000Z",
+			resolvedAt: status === "chosen" ? "2026-10-16T09:05:00.000Z" : null,
+		});
+		let current = workspace([baseSession, variantA, variantB], { explorations: [exploration("open")] });
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => current) }));
+		await store.load();
+		await store.openSurface("website");
+
+		const taskIds = () => activeTaskSessions(store.state).map((entry) => entry.session.id);
+		const previewIds = () => store.activePreviewSessions(SURFACE).map((item) => item.id);
+		expect(isOpenVariant(variantB, store.workspace(SURFACE))).toBe(true);
+		expect(isOpenVariant(baseSession, store.workspace(SURFACE))).toBe(false);
+		expect(taskIds()).toEqual([baseSession.id]);
+		expect(previewIds()).toEqual([baseSession.id, variantA.id]);
+
+		current = workspace([baseSession, variantB], { explorations: [exploration("chosen")] });
+		await store.refreshWorkspace(SURFACE);
+		expect(isOpenVariant(variantB, store.workspace(SURFACE))).toBe(false);
+		expect(taskIds()).toEqual([baseSession.id, variantB.id]);
+		expect(previewIds()).toEqual([baseSession.id, variantB.id]);
+		store.dispose();
+	});
+
+	it("keeps a chosen option's changes waiting: no undo, the panel moves to the chosen session", async () => {
+		const explorationId = "66666666-6666-4666-8666-666666666631";
+		const variantA = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333331",
+			explorationId,
+			explorationVariantLabel: "Calm",
+		});
+		const variantB = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333332",
+			explorationId,
+			explorationVariantLabel: "Bold",
+		});
+		const exploration = (status: "open" | "chosen") => ({
+			id: explorationId,
+			surfaceId: SURFACE,
+			title: "Hero explorations",
+			status,
+			chosenSessionId: status === "chosen" ? variantB.id : null,
+			variantSessionIds: [variantA.id, variantB.id],
+			createdAt: "2026-10-16T09:00:00.000Z",
+			resolvedAt: status === "chosen" ? "2026-10-16T09:05:00.000Z" : null,
+		});
+		let current = workspace([variantA, variantB], { explorations: [exploration("open")] });
+		const chooseExploration = vi.fn(async () => {
+			current = workspace([variantB], { explorations: [exploration("chosen")] });
+			return variantB;
+		});
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => current), chooseExploration }));
+		await store.load();
+		await store.openSurface("website");
+		await store.pickVariant(SURFACE, explorationId, variantB.id);
+		store.openExplorationDrawer(SURFACE, explorationId);
+		store.askInstead(SURFACE, explorationId);
+		expect(store.insteadOf(SURFACE)?.id).toBe(explorationId);
+
+		expect(await store.chooseVariant(store.workspace(SURFACE)!.explorations[0]!, variantB.id)).toBe(true);
+		expect(chooseExploration).toHaveBeenCalledWith(explorationId, variantB.id);
+		expect(store.state.drawer).toEqual({ surfaceId: SURFACE, sessionId: variantB.id });
+		expect(store.state.undo).toBeUndefined();
+		expect(store.state.insteadOf).toBeUndefined();
+		expect(store.insteadOf(SURFACE)).toBeUndefined();
+		expect(activeTaskSessions(store.state).map((entry) => entry.session.id)).toEqual([variantB.id]);
+		expect(store.previewSelection(SURFACE)).toEqual({
+			toggledChangeIds: variantB.changes.map((change) => change.id),
+			explorationSessionId: null,
+		});
+		store.dispose();
+	});
+
 	it("synthesizes surfaces when the cloud has no surface calls yet", async () => {
 		const store = storeWith(
 			fakeClient({ listSurfaces: vi.fn(async () => Promise.reject(new CloudSurfacesError("missing", "PGRST202"))) }),

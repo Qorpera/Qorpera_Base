@@ -454,6 +454,8 @@ interface RailParts {
 	 * elsewhere in the rail, after everything the company arranges. */
 	readonly members: SectionParts;
 	readonly invite: HTMLButtonElement;
+	readonly dock: HTMLElement;
+	readonly dockHover: RailHover;
 	/** Grok Bot's "Hidden Bots": this member's hidden agents and contacts, folded at the foot of the list. */
 	readonly hiddenGroup: HiddenParts;
 	/** The list's placeholder, built when first shown so it breathes with the page's. */
@@ -679,6 +681,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		const add = h("a", { class: "rail-add icon-button", href: `#/c/${company.profile.profileId}/new` }, icon("plus"));
 		const connection = h("div", { class: "rail-connection", role: "status", hidden: true });
 		const list = h("div", { class: "rail-scroll", id: "rail-list-agents" });
+		const dock = h("div", { class: "rail-dock" });
 		const companyName = h("span", { class: "rail-company-name" });
 		const companyButton = h(
 			"button",
@@ -765,6 +768,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			presenceElements: new Set(),
 			selection: new RailSelection(),
 			hover: new RailHover(list, company.signal),
+			dock,
+			dockHover: new RailHover(dock, company.signal, list),
 			known: new Set(),
 			settled: false,
 			mentionsRead: false,
@@ -1868,14 +1873,20 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			...(agentsHub || surfaceRail ? [] : legacyNodes),
 			hiddenCount ? hiddenGroup.el : null,
 			empty && !surfaceRail ? parts.empty : null,
-			agentsHub,
-			people || placing ? parts.members.el : null,
+			agentsHub || people || placing ? parts.dock : null,
 			parts.hover.attached ?? null,
 			parts.selection.moving ?? null,
 		].filter((element) => element !== null),
 	);
+	reconcile(
+		parts.dock,
+		[agentsHub, people || placing ? parts.members.el : null, parts.dockHover.attached ?? null].filter(
+			(element) => element !== null,
+		),
+	);
 	if (shouldMeasure) parts.selection.move(parts.list);
 	parts.hover.settle();
+	parts.dockHover.settle();
 	if (shouldMeasure) glideRows(parts.list, places);
 	parts.layoutKey = layoutKey;
 	parts.rows = rows;
@@ -2051,7 +2062,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 				// WHY: storage can be blocked; the choice then lasts this visit.
 			}
 			paintAgentsFold(made);
-			if (made.open) keepOpeningHubInView(made.el);
 		});
 		hub = made;
 		agentsHubs.set(company, hub);
@@ -2374,31 +2384,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 		(hub.offersKey !== "" && hub.releasedOffers !== hub.offersKey);
 	paintAgentsFold(hub);
 	return hub.el;
-}
-
-// WHY: the hub sits at the foot of the list, so in a list that scrolls it would open below the fold; the list
-// follows it while it grows, so it rises into view.
-function keepOpeningHubInView(hub: HTMLElement): void {
-	const list = hub.closest<HTMLElement>(".rail-scroll");
-	if (!list) return;
-	const until = performance.now() + 520;
-	const interruptions = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
-	let stopped = false;
-	const stop = (): void => {
-		stopped = true;
-		for (const type of interruptions) list.removeEventListener(type, stop);
-	};
-	for (const type of interruptions) list.addEventListener(type, stop, { passive: true });
-	const follow = (): void => {
-		if (stopped) return;
-		const h = hub.getBoundingClientRect();
-		const l = list.getBoundingClientRect();
-		const below = Math.min(h.bottom - l.bottom, h.top - l.top);
-		if (below > 0) list.scrollTop += below;
-		if (performance.now() < until) requestAnimationFrame(follow);
-		else stop();
-	};
-	requestAnimationFrame(follow);
 }
 
 function automationFace(face: AutomationPerson | "nobody"): HTMLElement {

@@ -22,6 +22,7 @@ import {
 	hasConflictedChange,
 	isLocalSurfaceId,
 	isOpenChange,
+	isOpenVariant,
 	isRunningSession,
 	migrationPending,
 	openExplorations,
@@ -209,6 +210,7 @@ export class SurfaceView {
 	#askShown = "";
 	#framesShown = "";
 	#chromeShown = "";
+	#insteadShown: string | undefined;
 	#toastShown = "";
 	#pillCollapsed = false;
 	#notchRatio = 0.5;
@@ -300,6 +302,13 @@ export class SurfaceView {
 			() => {
 				growToText(this.#input);
 				this.#syncSend();
+			},
+			{ signal },
+		);
+		this.#input.addEventListener(
+			"blur",
+			() => {
+				if (!this.#input.value.trim()) this.#host.store.keepOptions();
 			},
 			{ signal },
 		);
@@ -724,7 +733,7 @@ export class SurfaceView {
 		const look = store.lookOf(surface);
 		const workspace = state.workspaces[surface.id];
 		const explorations = openExplorations(workspace);
-		const plainSessions = (workspace?.activeSessions ?? []).filter((session) => !session.explorationId);
+		const plainSessions = (workspace?.activeSessions ?? []).filter((session) => !isOpenVariant(session, workspace));
 		type HeaderAgent =
 			| {
 					readonly kind: "exploration";
@@ -1292,7 +1301,7 @@ export class SurfaceView {
 			mode === "live"
 				? []
 				: (workspace?.activeSessions ?? []).flatMap((session) => {
-						if (session.explorationId && session.id !== pickedId) return [];
+						if (isOpenVariant(session, workspace) && session.id !== pickedId) return [];
 						return session.changes.filter((change) => isOpenChange(change) && store.isChangeShown(change.id));
 					});
 		const key = JSON.stringify([
@@ -1424,7 +1433,7 @@ export class SurfaceView {
 								"data-exploration": targetExploration.id,
 								"data-session": session.id,
 							},
-							t("Approve"),
+							t("Use this one"),
 						),
 					);
 				if (!entry) {
@@ -1497,6 +1506,7 @@ export class SurfaceView {
 		}
 		const running = runningSessionTotal(state);
 		const pending = migrationPending(state.migration) && !state.migrationDismissed;
+		const instead = store.insteadOf(surface.id);
 		const key = JSON.stringify([
 			surface.id,
 			canStart,
@@ -1511,15 +1521,22 @@ export class SurfaceView {
 			busyReconcile,
 			state.migration?.specialistAgents.length,
 			state.migration?.legacyBoards.length,
+			instead?.id,
 		]);
 		if (key === this.#chromeShown) return;
 		this.#chromeShown = key;
 		this.#input.disabled = !canStart;
 		this.#input.placeholder = !canStart
 			? t("Sessions start once Surfaces are enabled for this company")
-			: surface.archetype === "ops"
-				? opsComposerPlaceholder(store.lookOf(surface).kind)
-				: t("Describe a change — it runs as its own session");
+			: instead
+				? t("What should it be instead?")
+				: surface.archetype === "ops"
+					? opsComposerPlaceholder(store.lookOf(surface).kind)
+					: t("Describe a change — it runs as its own session");
+		if (instead?.id !== this.#insteadShown) {
+			this.#insteadShown = instead?.id;
+			if (instead && canStart) this.#input.focus({ preventScroll: true });
+		}
 		this.#input.setAttribute("aria-label", surface.archetype === "ops" ? t("Ask an agent") : t("Describe a change"));
 		this.#send.setAttribute("aria-label", t("Start session"));
 		this.#send.disabled = !canStart;
@@ -1743,10 +1760,12 @@ export class SurfaceView {
 			? { target, originKind: "point_to_change", originLabel: targetOriginLabel(target) }
 			: {};
 		const files = this.#images.files;
+		const instead = this.#host.store.insteadOf(surface.id);
 		this.#input.value = "";
 		growToText(this.#input);
 		this.#images.set([]);
 		const session = await this.#host.store.startSession(surface.id, text, options, files);
+		if (session && instead) void this.#host.store.discardExploration(instead);
 		if (!session) {
 			if (!this.#input.value) {
 				this.#input.value = text;
@@ -1876,7 +1895,7 @@ export class SurfaceView {
 			case "bar-agents-more": {
 				const workspace = store.workspace(surface.id);
 				const explorations = openExplorations(workspace);
-				const sessions = (workspace?.activeSessions ?? []).filter((s) => !s.explorationId);
+				const sessions = (workspace?.activeSessions ?? []).filter((s) => !isOpenVariant(s, workspace));
 				if (!explorations.length && !sessions.length) return;
 				const box = target.getBoundingClientRect();
 				openContextMenu({

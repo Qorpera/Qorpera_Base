@@ -179,7 +179,6 @@ describe("the surface rail", () => {
 		const dialog = () => document.querySelector<HTMLElement>('[role="alertdialog"]');
 		const dialogButton = (label: string) =>
 			[...dialog()!.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === label)!;
-		const dialogLines = () => [...dialog()!.querySelectorAll(".modal-list li")].map((item) => item.textContent);
 		const scheduled = (id: string, targetSurfaceSlug: string | null): SurfaceAutomationSummary => ({
 			id,
 			key: id,
@@ -271,9 +270,13 @@ describe("the surface rail", () => {
 			store.dispose();
 		});
 
-		it("says what goes with it and what stays, read fresh, and deletes its scheduled agents before the surface", async () => {
+		it("asks the one question whatever the surface holds, and deletes its scheduled agents before the surface", async () => {
 			const calls: string[] = [];
-			const listAutomations = vi.fn(async () => [scheduled("a-2", "inbox"), scheduled("a-3", null)]);
+			const listAutomations = vi.fn(async () => [
+				scheduled("a-1", "website"),
+				scheduled("a-2", "inbox"),
+				scheduled("a-3", null),
+			]);
 			const { store, rail } = await railOf(
 				[summary({ activeSessionCount: 3, runningSessionCount: 2, pendingChangeCount: 1 }), inbox],
 				{
@@ -289,20 +292,13 @@ describe("the surface rail", () => {
 				},
 				"inbox",
 			);
-			listAutomations.mockImplementation(async () => [
-				scheduled("a-1", "website"),
-				scheduled("a-2", "inbox"),
-				scheduled("a-3", null),
-			]);
 
 			await chooseDelete(rail, "website");
-			expect(dialogLines()).toEqual([
-				"Its scheduled agent is deleted too.",
-				"Its 3 active sessions go with it.",
-				"The 2 still working run to their end.",
-				"Its unpublished changes go with it.",
-				"Its site stays online. Settings → Sites takes it offline.",
-			]);
+			expect(dialog()!.classList.contains("confirm-dialog")).toBe(true);
+			expect([...dialog()!.children].map((item) => item.tagName)).toEqual(["P", "DIV"]);
+			expect(dialog()!.querySelector("p")?.textContent).toBe(
+				"Delete Website? It is removed for everyone in the company.",
+			);
 			listAutomations.mockImplementation(async () => [
 				scheduled("a-1", "website"),
 				scheduled("a-2", "inbox"),
@@ -317,34 +313,7 @@ describe("the surface rail", () => {
 			store.dispose();
 		});
 
-		it("counts several scheduled agents, one session waiting and changes approved but not published", async () => {
-			const { store, rail } = await railOf(
-				[summary({ ...quiet, activeSessionCount: 1, unpublishedChangeCount: 2 })],
-				{
-					listAutomations: vi.fn(async () => [scheduled("a-1", "website"), scheduled("a-2", "website")]),
-				},
-			);
-
-			await chooseDelete(rail, "website");
-			expect(dialogLines()).toEqual([
-				"Its 2 scheduled agents are deleted too.",
-				"Its active session goes with it.",
-				"Its unpublished changes go with it.",
-			]);
-			dialogButton("Cancel").click();
-			store.dispose();
-		});
-
-		it("names the one session still working", async () => {
-			const { store, rail } = await railOf([summary({ ...quiet, activeSessionCount: 1, runningSessionCount: 1 })]);
-
-			await chooseDelete(rail, "website");
-			expect(dialogLines()).toEqual(["Its active session goes with it.", "The one still working runs to its end."]);
-			dialogButton("Cancel").click();
-			store.dispose();
-		});
-
-		it("asks nothing and deletes nothing when the scheduled agents cannot be read", async () => {
+		it("deletes nothing when the scheduled agents cannot be read", async () => {
 			const listAutomations = vi.fn(async () => [scheduled("a-1", "website")]);
 			const deleteAutomation = vi.fn(async () => true);
 			const archiveSurface = vi.fn(async (id: string) => summary({ id, status: "archived" }));
@@ -356,14 +325,9 @@ describe("the surface rail", () => {
 			listAutomations.mockImplementation(async () => Promise.reject(new Error("offline")));
 
 			await chooseDelete(rail, "website");
-			expect(dialog()).toBeNull();
-			expect(reportError).toHaveBeenCalledWith("Website could not be deleted.");
-
-			listAutomations.mockImplementationOnce(async () => [scheduled("a-1", "website")]);
-			await chooseDelete(rail, "website");
 			dialogButton("Delete").click();
 			await flush();
-			expect(reportError).toHaveBeenCalledTimes(2);
+			expect(reportError).toHaveBeenCalledWith("Website could not be deleted.");
 			expect(deleteAutomation).not.toHaveBeenCalled();
 			expect(archiveSurface).not.toHaveBeenCalled();
 			expect(railRow(rail, "website")).not.toBeNull();
@@ -654,6 +618,50 @@ describe("the surface page", () => {
 		sendFromFrame(frames[0]!, { type: SITE_DOOR_SHOWN });
 		sendFromFrame(frames[1]!, { type: SITE_DOOR_SHOWN });
 		expect(frames.every((item) => item.classList.contains("is-shown"))).toBe(true);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("says each option's first open change under its name in the Changes panel", async () => {
+		const explorationId = "88888888-8888-4888-8888-888888888883";
+		const secondSessionId = "33333333-3333-4333-8333-333333333336";
+		const variantA = session(["staged"], {
+			id: SESSION,
+			explorationId,
+			explorationVariantLabel: "Aftenlys",
+			changes: [change(CHANGES[0], 1, "staged", { summary: "Warm evening light on the hero." })],
+		});
+		const variantB = session([], { id: secondSessionId, explorationId, explorationVariantLabel: "Varmt studie" });
+		const ws = workspace([variantA, variantB], {
+			explorations: [
+				{
+					id: explorationId,
+					surfaceId: SURFACE,
+					title: "Forsidens udtryk",
+					status: "open",
+					chosenSessionId: null,
+					variantSessionIds: [SESSION, secondSessionId],
+					createdAt: "2026-11-21T10:00:00.000Z",
+					resolvedAt: null,
+				},
+			],
+		});
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => ws) }));
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		store.openPreviewPanel();
+		view.update();
+
+		const options = [...view.el.querySelectorAll(".surface-drawer .surface-overview-option")];
+		expect(options.map((option) => option.querySelector(".surface-overview-option-label")?.textContent)).toEqual([
+			"Aftenlys",
+			"Varmt studie",
+		]);
+		expect(
+			options.map((option) => option.querySelector(".surface-overview-option-line")?.textContent ?? null),
+		).toEqual(["Warm evening light on the hero.", null]);
 		view.dispose();
 		store.dispose();
 	});
