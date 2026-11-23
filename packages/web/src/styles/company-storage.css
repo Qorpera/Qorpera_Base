@@ -1,5 +1,3 @@
-/* The company folder inside the shared Settings / Storage window (company-folder.ts, embedded): a title row with the
- * type filter, sort and view switch; an icon or list view; a file's preview in its own window over Settings; and Recents, grouped by day. Rules that size by room use the `storage` container, in em of its 14px text so they follow the UI size. */
 .storage-browser, .files-page.storage-browser {
 	--files-folder: #4a8ef0;
 	--storage-doc: #3f78d8; --storage-pdf: #d8473e; --storage-sheet: #23955a; --storage-image: #8460d4; --storage-other: #7d7d78;

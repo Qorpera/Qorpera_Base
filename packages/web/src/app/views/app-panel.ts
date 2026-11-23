@@ -28,16 +28,11 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  * - A Company File page linked in a message stands beside the conversation (Jonas, 5 November 2026: PR #1430's agent
  *   sheet, standing beside the thread instead of over it). The thread stays as it is, usable; Escape, in the panel or
  *   in its page, and Close put it away.
- * - A concept of the company's product fills the Concepts viewer's stage (views/concepts.ts; Jonas, 8 November 2026:
- *   "a fullscreen view of the selected concept"). It has no header at all: the concept's own design owns the whole
- *   area, and the viewer's side panel lists it with who made it; its row's menu has Reload and Show in Storage.
  * Either way:
  * - Beside the chat, the header is drawn outside the frame, and says whose page it is and that Qorpera never asks for
  *   a password in it, so a page that draws a sign-in can't pass for this app's own (security review r1, H2). An app's
  *   own page says neither since it lost its header, and a concept neither since its viewer's strip went (Jonas,
  *   13 November 2026): what Qorpera draws there is the bar of a request and the questions dock.
- * - When an app's page can't be shown, the line that says why carries the ways on a header had: Reload, the app's
- *   folder in Storage, and the way back when the app is gone.
  * - On an app's page, the agents' open questions about the app stand in a dock over the page's corner, drawn by Qorpera
  *   outside the frame (views/question-dock.ts, Jonas, 10 November 2026): one tap answers, as in the chat.
  * - An app's page may ask the member to change something (an answer to such a question, a row of a table), or to send
@@ -51,10 +46,6 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  * - An app's page starts from Qorpera's base style in the company's colours (app/interface-app-style.ts), read when the
  *   app opens and on Reload; a page that follows the app's light and dark is shown afresh when that changes. A concept
  *   and a page of the Company File are shown exactly as written.
- * - A link the member clicks in an app's page opens here, never in the frame (§4): another app on its page, a file of
- *   the company in Storage, or a web page in a new tab, which opens only after the member has seen its whole address
- *   on the bar and pressed Open there (Jonas, 13 November 2026: "Show the address first"; views/app-ask-bar.ts). A tab
- *   the browser still stops is offered in a line of Qorpera's own above the frame, where the member's click opens it.
  *   A page of the Company File opens no links. */
 
 /** What is shown: an app by its name, or a page of the Company File by its path. */
@@ -317,8 +308,6 @@ export class AppPanel {
 		this.#by.textContent = `${made} · ${t("Qorpera never asks for passwords here")}`;
 	}
 
-	/** Says why nothing is shown. An app's own page has no header, so the line carries the ways on: Reload, the app's
-	 * folder in Storage when it has one, and the way back when the app is `gone`. */
 	#status(text: string, gone = false): void {
 		this.#frame?.dispose();
 		this.#frame = undefined;
@@ -362,9 +351,6 @@ export class AppPanel {
 		);
 	}
 
-	/** Opens what a link in the app's page leads to, already checked (app/interface-apps.ts `appLink`): another app
-	 * where apps open, a file or folder of the company in Storage, as a folder link in a message opens there, or a web
-	 * page in a new tab. */
 	#follow(link: AppLink): void {
 		if (this.#lifetime.signal.aborted) return;
 		if (link.kind === "app") this.#host.openApp(link.name);

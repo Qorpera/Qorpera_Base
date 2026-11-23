@@ -315,8 +315,9 @@ export function mountApplication(
 		const controller = company;
 		if (!controller) return;
 		if (settings) closeSettings(false);
-		if (filesShown?.owner === controller) filesShown.browser.reveal(path);
-		else filesPending = { owner: controller, path };
+		const shown = filesShown?.owner === controller ? filesShown.browser : undefined;
+		shown?.reveal(path);
+		filesPending = shown?.opened || surfacesDisabledOf(controller) ? undefined : { owner: controller, path };
 		navigate({
 			name: "company",
 			profileId: controller.profile.profileId,
@@ -2426,9 +2427,14 @@ export function mountApplication(
 				);
 				shown = { browser, stop, authority };
 				filesShown = { owner: controller, browser };
-				if (filesPending?.owner === controller) browser.reveal(filesPending.path);
-				filesPending = undefined;
-				void browser.open().catch(() => undefined);
+				const pending = filesPending?.owner === controller ? filesPending : undefined;
+				if (pending) browser.reveal(pending.path);
+				void browser.open().then(
+					() => {
+						if (filesPending === pending) filesPending = undefined;
+					},
+					() => undefined,
+				);
 			};
 			draw();
 			return { el, update: draw, dispose: close };

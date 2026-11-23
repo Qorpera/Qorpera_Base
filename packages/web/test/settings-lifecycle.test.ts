@@ -745,6 +745,19 @@ describe("settings session lifecycle", () => {
 		expect(folder.read).toHaveBeenLastCalledWith("operations", expect.any(AbortSignal));
 		expect(f.root.querySelector(".surface-files .storage-title")?.textContent).toBe("operations");
 	});
+	it("leaves a folder link on the company's page when Surfaces are off, with no Files page to open", async () => {
+		const folder = linkedFolder();
+		vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(false);
+		const f = await setup();
+		linksInMessage(f.root).operations.click();
+		await draw();
+		await draw();
+		expect(location.hash).not.toContain("/s/");
+		expect(location.hash).toContain(`#/c/${profileA.profileId}`);
+		expect(f.root.querySelector(".surface-files")).toBeNull();
+		expect(f.root.querySelector(".settings-dialog")).toBeNull();
+		expect(folder.read).not.toHaveBeenCalledWith("operations", expect.any(AbortSignal));
+	});
 	it("closes the Friends window over Settings when access to the company is lost", async () => {
 		const f = await setup();
 		open(f.root);

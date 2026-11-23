@@ -1,9 +1,5 @@
 import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema";
 
-/* Agents link a file or folder of their Company File in a message as a Markdown link with the `folder:` scheme and a
- * company-relative path: `[sales-dashboard.html](folder:designs/sales-dashboard.html)`. ui/markdown.ts draws one as a
- * link-styled button carrying the path, and the app opens Storage there (app/application.ts, views/settings.ts). */
-
 /** The scheme, exactly as written: no other spelling counts. */
 const SCHEME = "folder:";
 
