@@ -1528,8 +1528,6 @@ export class SurfaceStudioView {
 		const showFiles = !tabbed || this.#tab === "files";
 		const showPages = !tabbed || this.#tab === "pages";
 
-		const identityVarCount = identityTokens ? Object.keys(identityTokens.vars).length : 0;
-
 		if (isIdentity && showOverview && downstreamSurfaces.length > 0) {
 			gridTasks.push({
 				build: () =>
@@ -1556,7 +1554,7 @@ export class SurfaceStudioView {
 			const consumed = sharedAssetsConsumedBy(lookKind);
 			const produced = sharedAssetsProducedBy(lookKind);
 			const buildSharedLinks = (): HTMLElement | null => {
-				const linkRows: HTMLElement[] = [];
+				const builtOn = new Map<string, (typeof activeOtherSurfaces)[number]>();
 				const seenIncomingProducers = new Set<string>();
 				for (const link of consumed) {
 					if (
@@ -1574,35 +1572,7 @@ export class SurfaceStudioView {
 					});
 					if (!producers.length) continue;
 					for (const k of link.producedBy) seenIncomingProducers.add(k);
-					const primaryPath =
-						link.liveSyncMode === "css_variables" && link.sourcePaths.includes(IDENTITY_TOKENS_CSS_PATH)
-							? IDENTITY_TOKENS_CSS_PATH
-							: (link.sourcePaths[0] ?? "");
-					linkRows.push(
-						h(
-							"div",
-							{ class: "studio-shared-link-row", "data-link-dir": "in", "data-link-id": link.id },
-							h("span", { class: "studio-shared-link-dir" }, t("Inherits")),
-							h("code", { class: "studio-link-path" }, primaryPath),
-							h(
-								"div",
-								{ class: "studio-reach-chips" },
-								producers.map((target) =>
-									h(
-										"button",
-										{
-											type: "button",
-											class: "studio-reach-chip is-compact",
-											"data-act": "studio-open-surface",
-											"data-slug": target.slug,
-										},
-										surfaceTile(target, store.lookOf(target), "is-tiny"),
-										h("span", null, target.title),
-									),
-								),
-							),
-						),
-					);
+					for (const target of producers) builtOn.set(target.slug, target);
 				}
 				const cleanFolderRoot = surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
 				const primaryProductRoot = store.state.surfaces
@@ -1616,6 +1586,7 @@ export class SurfaceStudioView {
 					.sort((a, b) => (a.group < b.group ? -1 : a.group > b.group ? 1 : 0) || a.sortOrder - b.sortOrder)
 					.at(0)
 					?.folderRoot?.replace(/^\/+|\/+$/g, "");
+				const usedBy = new Map<string, (typeof activeOtherSurfaces)[number]>();
 				for (const link of produced) {
 					if (link.id === "product-catalog" && primaryProductRoot && primaryProductRoot !== cleanFolderRoot) {
 						continue;
@@ -1623,27 +1594,22 @@ export class SurfaceStudioView {
 					const consumers = activeOtherSurfaces
 						.filter((item) => link.consumedBy.includes(store.lookOf(item).kind))
 						.sort((a, b) => (a.group === "products" ? 0 : 1) - (b.group === "products" ? 0 : 1));
-					if (!consumers.length) continue;
-					const primaryPath =
-						link.id === "product-catalog" && cleanFolderRoot
-							? `${cleanFolderRoot}/specs.json`
-							: (link.sourcePaths[0] ?? "");
-					linkRows.push(
-						h(
-							"div",
-							{ class: "studio-shared-link-row", "data-link-dir": "out", "data-link-id": link.id },
-							h("span", { class: "studio-shared-link-dir" }, t("Feeds")),
-							h("code", { class: "studio-link-path" }, primaryPath),
-							h("span", { class: "studio-link-arrow", "aria-hidden": "true" }, "→"),
-							h(
-								"div",
-								{ class: "studio-reach-chips" },
-								consumers.map((target) =>
+					for (const target of consumers) usedBy.set(target.slug, target);
+				}
+				if (builtOn.size === 0 && usedBy.size === 0) return null;
+				const group = (dir: "in" | "out", label: string, targets: Map<string, (typeof activeOtherSurfaces)[number]>) =>
+					targets.size === 0
+						? null
+						: h(
+								"span",
+								{ class: "studio-reach-group", "data-link-dir": dir },
+								h("span", { class: "studio-reach-label" }, label),
+								[...targets.values()].map((target) =>
 									h(
 										"button",
 										{
 											type: "button",
-											class: "studio-reach-chip is-compact",
+											class: "studio-reach-chip",
 											"data-act": "studio-open-surface",
 											"data-slug": target.slug,
 										},
@@ -1651,24 +1617,12 @@ export class SurfaceStudioView {
 										h("span", null, target.title),
 									),
 								),
-							),
-						),
-					);
-				}
-				if (linkRows.length === 0) return null;
+							);
 				return h(
 					"section",
-					{ class: "studio-shared-links", "data-live-linked": "true" },
-					h(
-						"div",
-						{ class: "studio-shared-links-head" },
-						h("span", { class: "studio-live-dot", "aria-hidden": "true" }),
-						h("span", { class: "studio-shared-links-title" }, t("Live-linked via Company Files")),
-						identityVarCount > 0
-							? h("span", { class: "studio-link-count" }, t("{count} CSS vars", { count: identityVarCount }))
-							: null,
-					),
-					h("div", { class: "studio-shared-links-list" }, ...linkRows),
+					{ class: "studio-reach", "data-live-linked": "true" },
+					group("in", t("Builds on"), builtOn),
+					group("out", t("Used by"), usedBy),
 				);
 			};
 			const built = buildSharedLinks();
