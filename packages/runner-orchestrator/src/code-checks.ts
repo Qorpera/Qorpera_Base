@@ -71,6 +71,8 @@ export interface CodePreviewRecipe {
 	readonly timeoutSeconds: number;
 }
 
+export type CodeSurfaceGate = "none" | "stage";
+
 export type CodeChecksRead =
 	| { readonly state: "missing" }
 	/** `site` is the file's recipe, null without one. */
@@ -80,6 +82,7 @@ export type CodeChecksRead =
 			readonly checks: readonly CodeCheck[];
 			readonly site: CodeSiteRecipe | null;
 			readonly preview?: CodePreviewRecipe;
+			readonly surfaceGate?: CodeSurfaceGate;
 	  }
 	/** `blob` is null when the path holds no regular file (a folder, a link or a submodule). */
 	| { readonly state: "refused"; readonly blob: string | null; readonly problems: readonly CodeChecksProblem[] };
@@ -179,13 +182,19 @@ export function readCodeChecks(file: CodeCommitFile): CodeChecksRead {
 		checks: parsed.checks,
 		site: parsed.site,
 		...(parsed.preview !== undefined ? { preview: parsed.preview } : {}),
+		...(parsed.surfaceGate !== undefined ? { surfaceGate: parsed.surfaceGate } : {}),
 	};
 }
 
 function parseChecks(
 	bytes: Uint8Array,
 	refuse: Refuse,
-): { checks: CodeCheck[]; site: CodeSiteRecipe | null; preview?: CodePreviewRecipe } | null {
+): {
+	checks: CodeCheck[];
+	site: CodeSiteRecipe | null;
+	preview?: CodePreviewRecipe;
+	surfaceGate?: CodeSurfaceGate;
+} | null {
 	if (bytes.byteLength > MAX_CODE_CHECKS_FILE_BYTES) {
 		refuse("", "TOO_LARGE", "The checks file is over 16 KiB.");
 		return null;
@@ -215,6 +224,7 @@ function parseChecks(
 	let checks: CodeCheck[] = [];
 	let site: CodeSiteRecipe | null = null;
 	let preview: CodePreviewRecipe | undefined;
+	let surfaceGate: CodeSurfaceGate | undefined;
 	for (const [key, value] of Object.entries(root)) {
 		const at = pointer("", key);
 		if (key === "$schema") {
@@ -222,10 +232,19 @@ function parseChecks(
 		} else if (key === "checks") checks = checksOf(value, at, refuse);
 		else if (key === "site") site = siteOf(value, at, refuse);
 		else if (key === "preview") preview = previewOf(value, at, refuse);
-		else refuse(at, "UNKNOWN_KEY", UNKNOWN);
+		else if (key === "surfaceGate") {
+			if (typeof value !== "string") refuse(at, "WRONG_TYPE", "Must be a string.");
+			else if (value === "none" || value === "stage") surfaceGate = value;
+			else refuse(at, "INVALID_VALUE", 'Must be "none" or "stage".');
+		} else refuse(at, "UNKNOWN_KEY", UNKNOWN);
 	}
 	if (!("checks" in root)) refuse("", "MISSING_KEY", "Needs checks.");
-	return { checks, site, ...(preview !== undefined ? { preview } : {}) };
+	return {
+		checks,
+		site,
+		...(preview !== undefined ? { preview } : {}),
+		...(surfaceGate !== undefined ? { surfaceGate } : {}),
+	};
 }
 
 const PREVIEW_DEFAULT_SECONDS = 180;
@@ -791,6 +810,42 @@ function endOf(text: string, max: number): string {
 	return `…${characters.slice(from).join("")}`;
 }
 
+export type SurfaceStageChecksGate =
+	| { readonly gate: "skip" }
+	| { readonly gate: "run"; readonly checks: readonly CodeCheck[]; readonly blob: string }
+	| { readonly gate: "refused"; readonly summary: string };
+
+const SURFACE_STAGE_GATE_HINT = /"surfaceGate"\s*:\s*"stage"/;
+
+// WHY: Opt-in stage gate fails closed when a repo declares "surfaceGate":"stage" (or base already opted in) and stays zero-overhead otherwise.
+export function surfaceStageChecksGate(
+	baseChecks: CodeChecksRead,
+	headChecks: CodeChecksRead,
+	rawHeadFile: CodeCommitFile,
+): SurfaceStageChecksGate {
+	const baseOptedIn = baseChecks.state === "ok" && baseChecks.surfaceGate === "stage";
+	if (headChecks.state === "ok") {
+		if (headChecks.surfaceGate === "stage") {
+			return { gate: "run", checks: headChecks.checks, blob: headChecks.blob };
+		}
+		return { gate: "skip" };
+	}
+	if (headChecks.state === "missing") {
+		return baseOptedIn
+			? { gate: "refused", summary: codeChecksRefusedSummary(headChecks, true, { staged: true }) }
+			: { gate: "skip" };
+	}
+	let rawDeclaresStage = false;
+	if (rawHeadFile.entry.kind === "file") {
+		const text = new TextDecoder("utf-8", { fatal: false }).decode(rawHeadFile.entry.bytes);
+		rawDeclaresStage = SURFACE_STAGE_GATE_HINT.test(text);
+	}
+	if (baseOptedIn || rawDeclaresStage) {
+		return { gate: "refused", summary: codeChecksRefusedSummary(headChecks, baseOptedIn, { staged: true }) };
+	}
+	return { gate: "skip" };
+}
+
 /** `CODING_CHECKS_FAILED`: a check of the repository failed on the candidate, so nothing went into main. At most 3,500
  * bytes: the output's end gives up its first lines when the rest needs the room. `opening` (an operator's drill's
  * words and a space) comes first and takes its room from the output's end. */
@@ -798,13 +853,15 @@ export function codeChecksFailedSummary(
 	run: Extract<CodeChecksRun, { state: "failed" }>,
 	how: "fast-forward" | "merged",
 	opening = "",
+	options: { readonly staged?: boolean } = {},
 ): string {
 	const failed = run.failed;
 	const exit = failed.exitCode === null ? "ended without an exit code" : `ended with exit code ${failed.exitCode}`;
 	const limit = failed.atLimit ? ", at its time limit" : "";
 	const killed = failed.exitCode === 137 && !failed.atLimit ? " (killed, often for lack of memory)" : "";
+	const action = options.staged ? "Nothing was staged for Preview" : "Nothing went into main";
 	const head =
-		`${opening}Nothing went into main: the check "${shown(failed.name, 40)}" failed on this change` +
+		`${opening}${action}: the check "${shown(failed.name, 40)}" failed on this change` +
 		`${how === "merged" ? " merged with main as it is now" : ""}. It ran ${code(failed.run, MAX_PASSED_RUN_BYTES)} ` +
 		`and ${exit} after ${Math.round(millis(failed.ms) / 1000)} s${limit}${killed}.`;
 	const passed = run.passed.length > 0 ? ` Checks that passed: ${namesOf(run.passed)}.` : "";
@@ -838,7 +895,11 @@ function namesOf(checks: readonly { name: string }[]): string {
 
 /** `CODING_CHECKS_REFUSED`: the candidate's checks file is not one Qorpera reads, or is gone from a repository whose
  * main has one. At most 5 problems are named. */
-export function codeChecksRefusedSummary(candidate: CodeChecksRead, mainHadFile: boolean): string {
+export function codeChecksRefusedSummary(
+	candidate: CodeChecksRead,
+	mainHadFile: boolean,
+	options: { readonly staged?: boolean } = {},
+): string {
 	let what: string;
 	if (mainHadFile && (candidate.state === "missing" || (candidate.state === "refused" && candidate.blob === null)))
 		what = "is gone in this change, and a repository that has checks keeps them";
@@ -850,7 +911,8 @@ export function codeChecksRefusedSummary(candidate: CodeChecksRead, mainHadFile:
 		const more = candidate.problems.length - named.length;
 		what = `is not as Qorpera reads it: ${[...named, ...(more > 0 ? [`and ${more} more`] : [])].join("; ")}`;
 	} else throw new Error("CODE_CHECKS_NOT_REFUSED");
-	return `Nothing went into main: the repository's checks file, ${CODE_CHECKS_FILE}, ${what}. Fix the file, commit and finish again. [code=CODING_CHECKS_REFUSED]`;
+	const action = options.staged ? "Nothing was staged for Preview" : "Nothing went into main";
+	return `${action}: the repository's checks file, ${CODE_CHECKS_FILE}, ${what}. Fix the file, commit and finish again. [code=CODING_CHECKS_REFUSED]`;
 }
 
 /** The code of a run that was not started because a command of an earlier run of the session's checks was not seen to
@@ -862,7 +924,10 @@ export const CODE_CHECKS_EARLIER_RUN_NOT_STOPPED = "CODE_CHECKS_EARLIER_RUN_NOT_
 export const CODE_CHECKS_COPY_NOT_NEWEST = "CODE_CHECKS_COPY_EXIT_91";
 
 /** `CODING_CHECKS_DID_NOT_RUN`: the checks could not run, which is never the code's fault. */
-export function codeChecksNotRunSummary(run: Extract<CodeChecksRun, { state: "not_run" }>): string {
+export function codeChecksNotRunSummary(
+	run: Extract<CodeChecksRun, { state: "not_run" }>,
+	options: { readonly staged?: boolean } = {},
+): string {
 	let why: string;
 	switch (run.why) {
 		case "machine":
@@ -883,7 +948,8 @@ export function codeChecksNotRunSummary(run: Extract<CodeChecksRun, { state: "no
 		default:
 			why = "the session's machine did not answer";
 	}
-	return `Nothing went into main: Qorpera could not run the repository's checks on this change (${why}). This is not a fault in the code. The work is kept on the session's branch; finishing again runs the checks again. [code=CODING_CHECKS_DID_NOT_RUN]`;
+	const action = options.staged ? "Nothing was staged for Preview" : "Nothing went into main";
+	return `${action}: Qorpera could not run the repository's checks on this change (${why}). This is not a fault in the code. The work is kept on the session's branch; finishing again runs the checks again. [code=CODING_CHECKS_DID_NOT_RUN]`;
 }
 
 /** `CODING_CHECKS_MAIN_MOVED`: main moved during the run and again during the run made once more. */

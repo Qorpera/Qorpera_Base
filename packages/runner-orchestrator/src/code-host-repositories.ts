@@ -18,6 +18,7 @@ import {
 	codeChecksNotRunSummary,
 	codeChecksPassed,
 	readCodeChecks,
+	surfaceStageChecksGate,
 } from "./code-checks.ts";
 import {
 	addCodeWorktree,
@@ -309,8 +310,9 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	): Promise<CodingStaged> {
 		const { repository, workerId } = session.claim;
 		if (repository.host !== "qorpera") throw new Error("CODE_HOST_REPOSITORY_NOT_HERE");
+		let verified: Awaited<ReturnType<typeof verifyStagedSurfaceBranch>>;
 		try {
-			const verified = await this.#job(session, signal, (job) =>
+			verified = await this.#job(session, signal, (job) =>
 				verifyStagedSurfaceBranch(job, {
 					repository,
 					workerId,
@@ -318,13 +320,6 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 					headSha,
 				}),
 			);
-			return {
-				branch: verified.branch,
-				baseSha: verified.baseSha,
-				headSha: verified.headSha,
-				changed: verified.changed,
-				filesChanged: verified.filesChanged,
-			};
 		} catch (error) {
 			if (signal.aborted) throw error;
 			if (error instanceof CodeHostRefusal) {
@@ -336,6 +331,59 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			}
 			throw error;
 		}
+		if (
+			verified.changed &&
+			verified.checksFile &&
+			verified.baseChecksFile &&
+			session.checksSwitch &&
+			session.runChecks
+		) {
+			const gate = surfaceStageChecksGate(
+				readCodeChecks(verified.baseChecksFile),
+				readCodeChecks(verified.checksFile),
+				verified.checksFile,
+			);
+			if (gate.gate !== "skip") {
+				const switched = await session.checksSwitch(signal);
+				if (switched.checks) {
+					const told = (step: string, extra: Record<string, unknown> = {}) =>
+						this.#report({ event: "code-checks", step, staged: true, ...named(session), ...extra });
+					if (gate.gate === "refused") {
+						told("refused");
+						throw new CodingLandRefused("CODING_CHECKS_REFUSED", gate.summary);
+					}
+					const input = { commit: verified.headSha, checks: gate.checks, site: null };
+					let run = await session.runChecks({ ...input, attempt: 1 }, signal);
+					if (run.state === "not_run") {
+						told("not-run", { why: run.why, code: run.code, attempt: 1 });
+						run = await session.runChecks({ ...input, attempt: 2 }, signal);
+					}
+					if (run.state === "not_run") {
+						told("not-run", { why: run.why, code: run.code, attempt: 2 });
+						throw new CodingLandRefused(
+							"CODING_CHECKS_DID_NOT_RUN",
+							codeChecksNotRunSummary(run, { staged: true }),
+						);
+					}
+					if (run.state === "failed") {
+						told("failed", { exitCode: run.failed.exitCode, atLimit: run.failed.atLimit });
+						throw new CodingLandRefused(
+							"CODING_CHECKS_FAILED",
+							codeChecksFailedSummary(run, "fast-forward", "", { staged: true }),
+						);
+					}
+					if (run.state === "site_refused") throw new Error("CODE_HOST_LANDING_INVALID");
+					told("passed", { ms: run.ms });
+				}
+			}
+		}
+		return {
+			branch: verified.branch,
+			baseSha: verified.baseSha,
+			headSha: verified.headSha,
+			changed: verified.changed,
+			filesChanged: verified.filesChanged,
+		};
 	}
 
 	/** The session's submitted commit landed on the default branch of its repository kept in Qorpera. A landing that

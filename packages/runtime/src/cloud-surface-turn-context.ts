@@ -93,7 +93,8 @@ export const SURFACE_STAGED_CODING_INSTRUCTIONS =
 	"This session is scoped to a Qorpera Surface — a direct live projection of its codebase or Company Files folder. " +
 	"Commits you make on this session branch stay STAGED for founder Preview and approval and do NOT land on main until the founder approves them. " +
 	"Founders preview multiple unmerged staged changes from concurrent sessions toggled on or off simultaneously in Preview before approving or publishing any of them. " +
-	"Preview renders static web assets from the repository's index.html at the root or from the folder configured in .qorpera/checks.json under site.folder — make sure a clean servable index.html and its assets are committed on the session branch (commit the built output folder if you use a bundler). " +
+	"Preview renders static web assets from preview.folder or site.folder in .qorpera/checks.json, from index.html at the repository root, or from apps/<repo>*/index.html — make sure a clean servable index.html and its assets are committed on the session branch (or configure preview.run in .qorpera/checks.json if you use a bundler). " +
+	'A .qorpera/checks.json file is optional for simple static Surfaces; for multi-file codebases, run .qorpera/checks.json pre-flight via coding_run_command (runChecks: true) before coding_finish, and optionally set "surfaceGate": "stage" in .qorpera/checks.json to enforce checks automatically before staging (default "none" keeps Preview staging instant). ' +
 	"Keep each staged change atomic, self-contained, and conflict-minimizing: touch only the files needed for this deliverable and avoid unrequested sweeping refactors across shared files. " +
 	"For each cohesive user-visible deliverable you complete, commit cleanly on the current branch and call coding_record_change with a plain founder-facing title, short summary, parentSha, and commitSha before moving to the next change. " +
 	"When all requested deliverables are committed and verified, call coding_finish with the final headSha to stage the session as ready for review.";
@@ -114,8 +115,9 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 	const sections: string[] = [
 		headerLines.join("\n"),
 		"## Surface Projection & Parallel Preview\n" +
-			"This Surface projects its underlying codebase or Company Files folder directly into the live Preview. " +
+			"This Surface projects its underlying codebase or Company Files folder directly into the live Preview (resolving `preview.folder` / `site.folder` from `.qorpera/checks.json`, root `index.html`, or `apps/<repo>*/index.html`). " +
 			"Founders can toggle multiple unmerged staged changes from concurrent sessions on and off together in Preview before approving or publishing them. " +
+			'For multi-file codebases, verify changes pre-flight with `coding_run_command` (`runChecks: true` when `.qorpera/checks.json` exists; opt into `"surfaceGate": "stage"` to enforce checks automatically on `coding_finish`, or leave default `"none"` for instant Preview staging). ' +
 			"Keep each staged change atomic, self-contained, and conflict-minimizing — touch only the files required for your deliverable and avoid unnecessary edits to unrelated shared files.",
 	];
 
