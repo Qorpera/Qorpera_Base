@@ -501,22 +501,28 @@ label > input, label > select { font-weight: 400; }
  * member puts it (a card in the pinned row); until then it stands in the Members group at the foot of the list. That
  * group takes contacts only: with nobody in it, it shows only while a contact is dragged, as the place to drop one
  * back (ui/rail-drag.ts says what is dragged). */
-/* WHY: sticky inside the list, so Agents and Members stay in view while the interfaces scroll under them. */
+/* WHY: sticky inside the list, so Agents and Members stay in view while the interfaces scroll under them. No frame:
+ * the mask fades the list out under its top 20px; its own rows fade at the foot under ::after, which stays opaque
+ * to the list (a mask there would show the list through). */
 .rail-dock {
+	--dock-fade: linear-gradient(to bottom, transparent, #000 20px);
 	position: sticky; z-index: 3; bottom: 0; margin-top: auto;
-	display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 4px;
+	display: grid; grid-template-columns: minmax(0, 1fr); align-content: start;
 	max-height: 50%; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
-	padding: 6px; border-radius: 16px; background: var(--rail);
-	border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
-	box-shadow: 0 1px 2px rgb(0 0 0 / 4%), 0 4px 14px rgb(0 0 0 / 5%);
+	padding-top: 20px; background: var(--rail);
+	-webkit-mask-image: var(--dock-fade); mask-image: var(--dock-fade);
 }
-.rail-scroll > :has(+ .rail-dock:has(> :not(.rail-members.is-empty, .rail-hover-tint))),
-.rail-scroll[data-dragging="member"] > :has(+ .rail-dock) { margin-bottom: 10px; }
+.rail-dock::after {
+	content: ""; position: sticky; z-index: 4; bottom: 0; height: 12px; margin-top: -6px; pointer-events: none;
+	background: var(--rail);
+	-webkit-mask-image: linear-gradient(to bottom, transparent, #000 8px); mask-image: linear-gradient(to bottom, transparent, #000 8px);
+}
+.rail-dock .rail-agents-head { padding: 6px 8px; border-radius: 8px; }
+.rail-dock .rail-agents-chevron { opacity: 0.6; }
 .rail-dock:not(:has(> :not(.rail-members.is-empty, .rail-hover-tint))) { display: none; }
 /* WHY: as specific as the rule above, so it must stay after it. */
 .rail-scroll[data-dragging="member"] > .rail-dock { display: grid; }
 .rail-scroll[data-dragging="member"] .rail-members .rail-agents-body { grid-template-rows: 1fr; opacity: 1; }
-.rail-compact .rail-dock { padding: 4px; border-radius: 14px; }
 .rail-members.is-empty { display: none; }
 .rail-scroll[data-dragging="member"] .rail-members.is-empty { display: block; }
 .rail-row-member { --rail-row-figure: 50px; min-height: 63.75px; }
