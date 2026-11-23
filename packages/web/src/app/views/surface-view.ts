@@ -1045,8 +1045,8 @@ export class SurfaceView {
 				),
 			);
 		} else if (surface.archetype !== "ops" && (count > 0 || publishBusy)) {
-			const answeredBy = myAsk && !publishBusy ? myAsk.askedUserId : null;
-			const saidNo = answeredBy && myAsk?.status === "declined" ? firstName(personName(answeredBy)) : null;
+			const askedUser = myAsk && !publishBusy ? myAsk.askedUserId : null;
+			const saidNo = askedUser && myAsk?.status === "declined" ? firstName(personName(askedUser)) : null;
 			rightTools.push(
 				h(
 					"div",
@@ -1061,17 +1061,17 @@ export class SurfaceView {
 							"data-act": "publish",
 						},
 						publishBusy ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
-						saidNo && answeredBy ? personAvatar(personName(answeredBy), answeredBy) : null,
+						saidNo && askedUser ? personAvatar(personName(askedUser), askedUser) : null,
 						publishBusy ? t("Publishing…") : saidNo ? t("{name} said no", { name: saidNo }) : t("Publish"),
 						!publishBusy && !saidNo && count ? h("span", { class: "surface-count" }, String(count)) : null,
-						answeredBy && !saidNo
+						askedUser && !saidNo
 							? h(
 									"span",
 									{
 										class: "surface-publish-waiting",
-										title: t("Waiting for {name}", { name: firstName(personName(answeredBy)) }),
+										title: t("Waiting for {name}", { name: firstName(personName(askedUser)) }),
 									},
-									personAvatar(personName(answeredBy), answeredBy),
+									personAvatar(personName(askedUser), askedUser),
 								)
 							: null,
 					),
