@@ -64,6 +64,13 @@ import { railListSkeleton } from "../../ui/skeleton.ts";
 import { type IdleLine, idleLine } from "../agent-line.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import {
+	type AutomationPerson,
+	automationChoices,
+	automationOwnerView,
+	firstName,
+	offerWaitsOn,
+} from "../automation-owner.ts";
+import {
 	type AgentState,
 	agentWorks,
 	type CompanyController,
@@ -1898,6 +1905,8 @@ interface AgentsHubParts {
 	held: boolean;
 	activeAgentId: string | undefined;
 	releasedFor: string | undefined;
+	offersKey: string;
+	releasedOffers: string | undefined;
 	rowCount: number;
 	readonly workingWrap: HTMLElement;
 	readonly workingTitle: HTMLElement;
@@ -1989,6 +1998,8 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			held: false,
 			activeAgentId: undefined,
 			releasedFor: undefined,
+			offersKey: "",
+			releasedOffers: undefined,
 			rowCount: 0,
 			workingWrap,
 			workingTitle,
@@ -2009,6 +2020,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			made.open = !(made.open || made.held);
 			made.held = false;
 			made.releasedFor = made.activeAgentId;
+			made.releasedOffers = made.offersKey;
 			try {
 				localStorage.setItem(AGENTS_OPEN_KEY, made.open ? "1" : "0");
 			} catch {
@@ -2144,15 +2156,24 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 	hub.scheduledTitle.textContent = t("Scheduled");
 	hub.scheduledWrap.hidden = !hasScheduled;
 	const companyState = company.store.get();
+	const viewer = company.userId;
+	const role = companyState.team?.role;
+	const members = companyState.team?.members ?? [];
 	const surfaceTitleBySlug = new Map(state.surfaces.map((surface) => [surface.slug, surface.title]));
 	const scheduledKey = JSON.stringify([
 		locale,
+		viewer,
+		role,
+		members.map((member) => [member.userId, member.displayName, member.role]),
 		automations.map((item) => [
 			item.id,
 			item.title,
 			item.scheduleSummary,
 			item.enabled,
 			item.targetSurfaceSlug,
+			item.status,
+			item.ownerUserId,
+			item.offer,
 			Boolean(state.busy[`automation:${item.id}`]),
 		]),
 		input.scheduledStaff.map((agent) => [agent.id, agent.displayName, companyState.agentNotes?.[agent.id]?.next]),
@@ -2164,6 +2185,50 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 				const targetTitle = automation.targetSurfaceSlug
 					? surfaceTitleBySlug.get(automation.targetSurfaceSlug)
 					: undefined;
+				const busy = Boolean(state.busy[`automation:${automation.id}`]);
+				const owned = automationOwnerView(automation, viewer, role, members);
+				const when = targetTitle ? `${targetTitle} · ${automation.scheduleSummary}` : automation.scheduleSummary;
+				const line = owned.note ? `${owned.note} · ${when}` : when;
+				const stand = hub!.scheduledCrew.takeScheduled(automation.id, automation.enabled, 32, automation.title);
+				const offered = owned.offeredToYou;
+				const answer = offered
+					? h(
+							"span",
+							{ class: "rail-automation-answer" },
+							...([true, false] as const).map((yes) =>
+								h(
+									"button",
+									{
+										type: "button",
+										class: yes ? "is-yes" : "",
+										disabled: busy,
+										"aria-label": yes
+											? t("Yes, take {title} from {name}", {
+													title: automation.title,
+													name: firstName(offered.from.name),
+												})
+											: t("No, leave {title} with {name}", {
+													title: automation.title,
+													name: firstName(offered.from.name),
+												}),
+										onclick: () => void store.answerAutomationOffer(automation.id, offered.offerId, yes),
+									},
+									icon(yes ? "check" : "close"),
+								),
+							),
+						)
+					: owned.mayTake
+						? h(
+								"button",
+								{
+									type: "button",
+									class: "rail-automation-take",
+									disabled: busy,
+									onclick: () => void store.offerAutomation(automation.id, viewer),
+								},
+								t("Take it"),
+							)
+						: null;
 				const toggle = h("button", {
 					type: "button",
 					class: "surface-switch",
@@ -2179,7 +2244,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 				return h(
 					"div",
 					{
-						class: `rail-agent-sched${automation.enabled ? "" : " is-paused"}`,
+						class: `rail-agent-sched${automation.enabled ? "" : " is-paused"}${offered ? " is-offered" : ""}`,
 						"data-scheduled-agent": automation.id,
 					},
 					h(
@@ -2189,18 +2254,15 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 							class: "rail-agent-hub-row",
 							onclick: () => openScheduleAgentSheet(store, automation),
 						},
-						hub!.scheduledCrew.takeScheduled(automation.id, automation.enabled, 32, automation.title),
+						owned.face ? h("span", { class: "rail-automation-fig" }, stand, automationFace(owned.face)) : stand,
 						h(
 							"span",
 							{ class: "rail-agent-hub-copy" },
 							h("strong", null, automation.title),
-							h(
-								"small",
-								{ title: automation.scheduleSummary },
-								targetTitle ? `${targetTitle} · ${automation.scheduleSummary}` : automation.scheduleSummary,
-							),
+							h("small", { title: line }, line),
 						),
 					),
+					answer,
 					toggle,
 				);
 			}),
@@ -2279,7 +2341,12 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 		);
 	if (input.activeAgentId !== hub.activeAgentId) hub.releasedFor = undefined;
 	hub.activeAgentId = input.activeAgentId;
-	hub.held = activeInside && hub.releasedFor !== input.activeAgentId;
+	hub.offersKey = automations
+		.flatMap((automation) => (offerWaitsOn(automation, viewer) && automation.offer ? [automation.offer.id] : []))
+		.join(",");
+	hub.held =
+		(activeInside && hub.releasedFor !== input.activeAgentId) ||
+		(hub.offersKey !== "" && hub.releasedOffers !== hub.offersKey);
 	paintAgentsFold(hub);
 	return hub.el;
 }
@@ -2307,6 +2374,35 @@ function keepOpeningHubInView(hub: HTMLElement): void {
 		else stop();
 	};
 	requestAnimationFrame(follow);
+}
+
+function automationFace(face: AutomationPerson | "nobody"): HTMLElement {
+	if (face === "nobody") return h("span", { class: "rail-automation-face is-nobody", title: t("Nobody") }, "?");
+	const avatar = personAvatar(face.name, face.userId);
+	avatar.classList.add("rail-automation-face");
+	avatar.title = face.name;
+	return avatar;
+}
+
+function automationMenu(company: CompanyController, automationId: string): MenuEntry[] {
+	const store = surfacesOf(company);
+	const automation = store?.state.automations.find((item) => item.id === automationId);
+	if (!store || !automation) return [];
+	const team = company.store.get().team;
+	return automationChoices(automation, company.userId, team?.role, team?.members ?? []).map((choice): MenuEntry => {
+		if (choice.kind === "hand")
+			return {
+				label: t("Hand to {name}", { name: firstName(choice.to.name) }),
+				lead: personAvatar(choice.to.name, choice.to.userId),
+				select: () => void store.offerAutomation(automationId, choice.to.userId),
+			};
+		if (choice.kind === "take")
+			return { label: t("Take it"), select: () => void store.offerAutomation(automationId, company.userId) };
+		return {
+			label: t("Take the offer back"),
+			select: () => void store.answerAutomationOffer(automationId, choice.offerId, false),
+		};
+	});
 }
 
 function paintAgentsFold(hub: AgentsHubParts): void {
@@ -3592,11 +3688,18 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	const titleElement = target.closest<HTMLElement>(".rail-section-title[data-section-id]");
 	const pageElement = target.closest<HTMLElement>("[data-interface-page]");
 	const memberElement = target.closest<HTMLElement>("[data-member-id]");
+	const scheduledElement = target.closest<HTMLElement>("[data-scheduled-agent]");
 	let items: MenuEntry[] = [];
 	let label = t("Sidebar");
 	let opener: HTMLElement = parts.list;
 	let findOpener: (() => HTMLElement | null) | undefined;
-	if (memberElement?.dataset.memberId) {
+	if (scheduledElement?.dataset.scheduledAgent) {
+		const automationId = scheduledElement.dataset.scheduledAgent;
+		items = automationMenu(company, automationId);
+		label = t("{name} actions", { name: scheduledElement.querySelector("strong")?.textContent ?? t("Scheduled") });
+		opener = scheduledElement;
+		findOpener = () => parts.list.querySelector<HTMLElement>(`[data-scheduled-agent="${automationId}"]`);
+	} else if (memberElement?.dataset.memberId) {
 		const userId = memberElement.dataset.memberId;
 		// The row is rebuilt when a message arrives; focus goes back to the new one, in the zone it was opened from.
 		const prefix = memberElement.closest(".rail-hidden") ? ".rail-hidden " : "";
