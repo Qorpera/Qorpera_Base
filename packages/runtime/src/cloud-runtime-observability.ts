@@ -87,8 +87,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	// Company sites (20260930550000): a static website at a private, password-protected link, and taking one offline.
 	"publish_site",
 	"unpublish_site",
-	// Private app links (v195, 20260930562000): one port of an always-on machine at a password-protected link.
 	"share_app",
+	"manage_site",
 	// Interface apps (5 November 2026): making or changing one, and posting it for every member.
 	"save_app",
 	"post_app",

@@ -88,10 +88,9 @@ describe("envoy-front-sites.yaml: what the file says", () => {
 		assert.match(cluster, /^ {4}- name: app_relay\n {6}type: STRICT_DNS\n {6}connect_timeout: 5s\n/);
 		assert.match(cluster, /cluster_name: app_relay\n/);
 		assert.match(cluster, /socket_address: \{ address: app-relay, port_value: 8090 \}$/);
-		// Envoy drops an idle connection to the relay before the relay does (its keep-alive is 75 s).
-		assert.match(cluster, /common_http_protocol_options: \{ idle_timeout: 60s \}/);
+		assert.match(cluster, /common_http_protocol_options: \{ idle_timeout: 360s \}/);
 		const relay = readFileSync(new URL("./app-relay/relay.mjs", import.meta.url), "utf8");
-		assert.match(relay, /server\.keepAliveTimeout = 75_000;/);
+		assert.match(relay, /server\.keepAliveTimeout = 375_000;/);
 		// Every cluster the block routes to: the kit's api_gw and this one.
 		const clusters = new Set([...virtualHosts().matchAll(/cluster: ([a-z_]+)/g)].map((match) => match[1]));
 		assert.deepEqual([...clusters].sort(), ["api_gw", "app_relay"]);

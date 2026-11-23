@@ -342,6 +342,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Smarter repository checks with caches and artifacts",
 		text: "Repository checks now support path filters (paths, pathsIgnore, alwaysRun), blessed build caches (caches with restoreKeys), structured failure reports (artifacts in junit, tap, or vitest-json format), and finer controls: maxParallel up to 8, failFast, exclusive steps, retries, static env variables, and least-privilege secrets allow-lists. DAG suites are budgeted by critical path rather than total sum, and preflight runs support cleanCopy to test a clean clone matching landing plus validateSite before hand-in. Failed landing runs also persist full masked logs in the company folder.",
 	},
+	{
+		id: "app-relay-streaming-and-site-rollbacks",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "App WebSockets, SSE, supervision and site rollbacks",
+		text: "Shared app links (share_app) now carry HTTP, long-lived SSE streaming and WebSockets with per-stream flow control, active health probing, and zero-downtime port swaps. Static websites published with publish_site now keep up to ten versions within a per-company kept-version budget and accept WebAssembly, glTF/GLB, WebVTT, Markdown, and RSS/Atom files. Use manage_site to list versions, roll back a published static website atomically, or start, check health, reload, stop, and read structured logs and crash summaries for a hosted app.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

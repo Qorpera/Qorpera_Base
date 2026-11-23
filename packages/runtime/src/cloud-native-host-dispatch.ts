@@ -169,6 +169,8 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_send_agent_mail", "standard"],
 	["qorpera_send_coworker_message", "standard"],
 	["qorpera_send_native_agent_message", "standard"],
+	["qorpera_site_agent_activate_version", "standard"],
+	["qorpera_site_agent_list_versions", "standard"],
 	["qorpera_site_publish_begin", "standard"],
 	["qorpera_site_publish_check", "standard"],
 	["qorpera_site_publish_finish", "standard"],
