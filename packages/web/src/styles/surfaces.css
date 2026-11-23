@@ -593,6 +593,8 @@
 	.surface-pill > .surface-pill-address:not(.is-unknown) .surface-address-host { display: none; }
 	.surface-toggle > button { padding: 0 8px; }
 	.surface-publish.is-asked .surface-publish-word { display: none; }
+}
+@container (max-width: 33em) {
 	.surface-pill > .surface-toggle[data-toggle="device"],
 	.surface-pill > .surface-pill-divider:has(+ .surface-toggle[data-toggle="device"]) { display: none; }
 }
