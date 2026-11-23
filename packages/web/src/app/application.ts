@@ -31,6 +31,7 @@ import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
 import { companyInSentence, companyNameText } from "../ui/company-name.ts";
 import { button, h, icon, notice, replace } from "../ui/dom.ts";
+import { installHoverGlides } from "../ui/hover-glide.ts";
 import { disposeCardPictures, type InteractionCardApp, refreshAppPreviews } from "../ui/interaction-card.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
@@ -244,6 +245,7 @@ export function mountApplication(
 		reopenRailBtn.setAttribute("aria-expanded", String(!railLayout.hidden));
 	}
 	window.addEventListener("qorpera-rail-resize", syncRailReopen, { signal: versionWatch.signal });
+	installHoverGlides(versionWatch.signal);
 	syncRailReopen();
 	applyLanguage();
 	// Interface text and times are read when they are drawn: a new language or
