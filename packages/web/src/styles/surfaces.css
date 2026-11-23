@@ -526,6 +526,7 @@
 .surface-stage.is-resizing .surface-canvas iframe { pointer-events: none; }
 .surface-canvas {
 	position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+	contain: layout style paint;
 	margin: 8px 8px 8px 2px; border-radius: 16px;
 	border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
 	background: var(--bg);
@@ -552,7 +553,7 @@
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-bar-agent-count { min-width: 14px; height: 14px; padding: 0 3px; font-size: 9px; line-height: 14px; }
 	.frame:not(.rail-hidden-desktop):not(.rail-compact) .surface-page.has-drawer .surface-pill-collapse { width: 22px; height: 22px; margin-left: -1px; }
 }
-.surface-viewport { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; }
+.surface-viewport { position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; contain: strict; }
 .surface-viewport[data-device="mobile"] {
 	align-items: center; justify-content: center; padding: 98px 16px 86px; overflow: hidden;
 	background: color-mix(in srgb, var(--text) 2.5%, var(--bg));
@@ -577,7 +578,7 @@
 .surface-phone-dims {
 	color: var(--text-soft); font-size: 11px; font-weight: 580; font-variant-numeric: tabular-nums; white-space: nowrap;
 }
-.surface-mount, .surface-frames, .surface-report-slot, .surface-loading { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+.surface-mount, .surface-frames, .surface-report-slot, .surface-loading { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: auto; contain: layout style paint; }
 .surface-loading { overflow: hidden; background: var(--bg); }
 .surface-mount[hidden], .surface-frames[hidden], .surface-report-slot[hidden], .surface-loading[hidden] { display: none; }
 :is(.surface-mount, .surface-frames, .surface-report-slot, .surface-studio, .surface-report).is-entering {
@@ -1325,6 +1326,10 @@
 .studio-conflict > span:not(.surface-state) { flex: 1; min-width: 0; }
 .studio-grid { display: grid; gap: 28px; }
 .studio-section { display: grid; gap: 12px; }
+.studio-section:not(.studio-3d) { content-visibility: auto; contain-intrinsic-size: auto 240px; }
+.studio-vendor-card, .studio-doc, .studio-html-card, .studio-svg-card { content-visibility: auto; contain-intrinsic-size: auto 220px; }
+.studio-swatch, .studio-type-row { content-visibility: auto; contain-intrinsic-size: auto 56px; }
+.studio-more-btn { justify-self: start; margin-top: 8px; }
 .studio-section-head { display: flex; align-items: center; gap: 10px; }
 .studio-section-head h2 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -0.01em; color: var(--text); }
 .studio-file-tag { color: var(--text-soft); font-family: var(--mono); font-size: 11.5px; }
@@ -1643,7 +1648,7 @@
 .report-metric strong { font-size: 21px; font-weight: 700; letter-spacing: -0.025em; color: var(--text); font-variant-numeric: tabular-nums; }
 .report-metric span { font-size: 12px; color: var(--text-muted); }
 
-.report-section { display: grid; gap: 16px; scroll-margin-top: 76px; }
+.report-section { display: grid; gap: 16px; scroll-margin-top: 76px; content-visibility: auto; contain-intrinsic-size: auto 260px; }
 .report-section.is-changed {
 	padding-left: 16px; border-left: 2.5px solid color-mix(in srgb, var(--accent) 55%, transparent);
 }
@@ -1897,45 +1902,6 @@
 }
 .surface-patchnote-approver { color: var(--text-muted); }
 
-.surface-thread-jump {
-	display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px;
-	width: min(640px, 100%); margin: 0 auto 8px;
-}
-.surface-thread-jump[hidden] { display: none; }
-.surface-thread-jump-chip {
-	pointer-events: auto; display: inline-flex; align-items: center; gap: 7px; max-width: 100%; height: 32px;
-	padding: 0 9px 0 5px; border: 1px solid var(--glass-edge); border-radius: 999px;
-	background: var(--glass-bg); box-shadow: var(--glass-shadow);
-	-webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
-	color: var(--text); text-decoration: none; font-size: 12.5px; cursor: default;
-	transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, transform var(--motion-fast) ease;
-}
-.surface-thread-jump-chip:hover {
-	background: color-mix(in srgb, var(--bg) 84%, transparent);
-	border-color: color-mix(in srgb, var(--text) 18%, transparent);
-	transform: translateY(-1px); text-decoration: none;
-}
-.surface-thread-jump-title {
-	max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600;
-}
-.surface-thread-jump-pill {
-	display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: 999px;
-	background: color-mix(in srgb, var(--text) 5.5%, transparent); color: var(--text-muted);
-	font-size: 11px; font-weight: 600; white-space: nowrap;
-}
-.surface-thread-jump-pill.is-running {
-	background: color-mix(in srgb, var(--sidebar-selection) 12%, transparent); color: var(--sidebar-selection);
-}
-.surface-thread-jump-pill.is-attention {
-	background: color-mix(in srgb, var(--warning) 18%, transparent);
-	color: color-mix(in srgb, var(--warning) 60%, var(--text));
-}
-.surface-thread-jump-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--agent-active); }
-.surface-thread-jump-dot.is-running {
-	background: var(--sidebar-selection); animation: surface-breathe 1.6s ease-in-out infinite;
-}
-.surface-thread-jump-dot.is-attention { background: var(--warning); }
-
 .surface-door-retry { margin-top: 4px; }
 .surface-door-retry[hidden] { display: none; }
 .surface-failed {
@@ -1951,9 +1917,8 @@
 	font-size: 12.5px; line-height: 18px;
 }
 .surface-toast.is-pending { padding-right: 14px; }
-
 @media (prefers-reduced-motion: reduce) {
-	.surface-state.is-running, .surface-ring, .surface-toast, .surface-bar-agent.is-attention, .surface-thread-jump-dot.is-running,
+	.surface-state.is-running, .surface-ring, .surface-toast, .surface-bar-agent.is-attention,
 	.surface-studio.is-updating .studio-head::after, .surface-report.is-updating .report-chrome::after,
 	.surface-studio.is-updating .studio-live-dot,
 	.surface-studio.is-updating :is(.studio-swatch, .studio-doc, .studio-vendor-card)::after,
@@ -1961,5 +1926,5 @@
 	:is(.surface-mount, .surface-frames, .surface-report-slot, .surface-studio, .surface-report).is-entering { animation: none; }
 	.surface-local-site.is-shown > .surface-local-frame { transition: none; }
 	.surface-figure-body, .surface-figure-eyes, .surface-figure-eye > i { animation: none; }
-	.surface-bar-agent:hover, .surface-bar-explore:hover, .surface-thread-jump-chip:hover { transform: none; }
+	.surface-bar-agent:hover, .surface-bar-explore:hover { transform: none; }
 }

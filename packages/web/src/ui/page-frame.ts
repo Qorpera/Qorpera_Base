@@ -59,18 +59,19 @@ function unfit(page: Document): Element[] {
 	return found;
 }
 
-/** The page as the frame is handed it, or null when it can't be shown live. A page with nothing unfit is handed over
- * exactly as written. Otherwise it is handed over as this check parsed it, with its noscript and hint links taken
- * out and its declarative shadow roots left as plain templates, but only if that text, parsed again, has nothing
- * unfit either (writing a parsed page out and parsing it again need not give the same page). */
-export function framePage(html: string): string | null {
-	const parse = (text: string) => new DOMParser().parseFromString(text, "text/html");
-	const page = parse(html);
+export function frameParsedPage(page: Document, rawHtml?: string): string | null {
 	const found = unfit(page);
-	if (found.length === 0) return html;
+	if (found.length === 0) {
+		if (rawHtml !== undefined) return rawHtml;
+		return `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
+	}
 	for (const element of found)
 		if (element.localName === "template") for (const name of DECLARATIVE_SHADOW_ROOT) element.removeAttribute(name);
 		else element.remove();
 	const handed = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
-	return unfit(parse(handed)).length === 0 ? handed : null;
+	return unfit(new DOMParser().parseFromString(handed, "text/html")).length === 0 ? handed : null;
+}
+
+export function framePage(html: string): string | null {
+	return frameParsedPage(new DOMParser().parseFromString(html, "text/html"), html);
 }
