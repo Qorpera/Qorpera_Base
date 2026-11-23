@@ -142,8 +142,8 @@ export class SearchWindow {
 			{ class: "search-window-keys", "aria-hidden": "true" },
 			h("span", null, h("kbd", null, "↑"), h("kbd", null, "↓"), t("move")),
 			h("span", null, h("kbd", null, "↵"), t("open")),
-			h("span", null, h("kbd", null, "tab"), t("one kind")),
-			h("span", null, h("kbd", null, "esc"), t("close")),
+			h("span", null, h("kbd", null, t("tab")), t("one kind")),
+			h("span", null, h("kbd", null, t("esc")), t("close")),
 		);
 		const close = h(
 			"button",

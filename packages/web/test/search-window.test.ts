@@ -198,7 +198,7 @@ describe("the search window", () => {
 			},
 		};
 		const { window, type, key, titles } = mount(files);
-		type("logo");
+		type("svg");
 		await new Promise((resolve) => setTimeout(resolve, 150));
 		expect(titles()).toEqual(["logo.svg"]);
 		key("Enter");

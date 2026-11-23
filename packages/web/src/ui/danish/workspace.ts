@@ -318,6 +318,8 @@ export const WORKSPACE: Record<string, string> = {
 	move: "flyt",
 	open: "åbn",
 	"one kind": "én slags",
+	tab: "tab",
+	esc: "esc",
 	close: "luk",
 	"Files could not be searched just now.": "Filerne kunne ikke gennemsøges lige nu.",
 	"Nothing in {company} matches “{query}”.": "Intet i {company} matcher “{query}”.",

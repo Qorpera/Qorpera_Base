@@ -1826,7 +1826,7 @@ describe("account and route ownership", () => {
 		expect(root.textContent).toContain("The cloud could not be reached. Network unavailable");
 	});
 
-	it("keeps rail searches bound to the current company and current route", () => {
+	it("keeps the rail bound to the current company and current route", () => {
 		const f = fixture();
 		const a = new CompanyController(f.api, profileA, userA.id),
 			b = new CompanyController(f.api, profileB, userA.id);
@@ -1848,9 +1848,7 @@ describe("account and route ownership", () => {
 		renderRail(rail, a, { ...context, route: { name: "company", profileId: profileA.profileId, section: "file" } });
 		renderRail(rail, b, { ...context, route: { name: "company", profileId: profileB.profileId, section: "file" } });
 		renderRail(rail, b, { ...context, route: { name: "company", profileId: profileB.profileId, section: "team" } });
-		const search = rail.querySelector("input")!;
-		search.value = "Fixture";
-		search.dispatchEvent(new Event("input"));
+		expect(rail.querySelector("input")).toBeNull();
 		expect(rail.querySelector(".account-trigger")?.textContent).toContain("Account A");
 		expect(rail.textContent).not.toContain("Company A PRIVATE");
 		expect(rail.querySelector('a[data-href$="/team"]')).toBeNull();
