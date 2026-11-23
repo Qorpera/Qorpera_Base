@@ -331,4 +331,12 @@ export const SURFACES: Record<string, string> = {
 	"Teammates to write to": "Kolleger at skrive til",
 	"A teammate left you a note": "En kollega har skrevet en note til dig",
 	"Notes to teammates are not available here yet.": "Noter til kolleger er ikke tilgængelige her endnu.",
+	"Hand to {name}": "Giv til {name}",
+	"Take it": "Tag den",
+	"Take the offer back": "Træk tilbuddet tilbage",
+	"Offered to {name}": "Tilbudt til {name}",
+	"You said no": "Du sagde nej",
+	"{name} said no": "{name} sagde nej",
+	"Yes, take {title} from {name}": "Ja, overtag {title} fra {name}",
+	"No, leave {title} with {name}": "Nej, lad {title} blive hos {name}",
 };

@@ -9,7 +9,7 @@ import type { CloudSecretKeyring } from "./cloud-secret-crypto.ts";
 
 export type ClaudeLoginFileName = (typeof CLAUDE_LOGIN_FILES)[number];
 export type ClaudeLoginFiles = Readonly<Partial<Record<ClaudeLoginFileName, string>>>;
-export type ClaudeRenewalPurpose = "open" | "poll";
+export type ClaudeRenewalPurpose = "open" | "poll" | "read";
 
 export type ClaudeLoginCheck =
 	| { readonly outcome: "renewed"; readonly credentials: string }

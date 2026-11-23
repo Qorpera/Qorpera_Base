@@ -916,7 +916,10 @@ refused it goes on with the token it holds; it reads a replaced `.credentials.js
   (`/v1/claude-logins/open` with `knownVersion`; the vault answers `current`, or the newer files) and replaces the
   run's `.credentials.json` with a newer one. Nothing is read back from the run.
 - **The vault renews, by the official Claude Code.** At a run's open (when the login was last checked more than 30 s
-  ago) and at a run's poll (more than 90 s ago), while a live lease holds that login, and in the upkeep pass for any
+  ago) and at a run's poll (more than 90 s ago), while a live lease holds that login; before a Settings read or reset
+  of the login (purpose `read`, more than 30 s ago, while the login's owner has a pending account refresh request for
+  it that reads usage or resets or uses a reset, `20260930871000`; the read waits up to 5 s for the check, bounded by
+  the route, and reads the renewed version or else the one it had); and in the upkeep pass for any
   active login not checked for 20 hours (In use or not), the shared vault takes the login's renewal lock
   (`qorpera_take_claude_login_renewal` / `qorpera_take_idle_claude_login_renewal`, its principal's own calls; one vault
   host at a time, 2 minutes; another host's poll waits up to 8 s for it and opens again, a run's first open up to 15 s,
@@ -957,6 +960,10 @@ refused it goes on with the token it holds; it reads a replaced `.credentials.js
   Never 3 before 2: runs that cannot renew with nothing renewing for them end at their token's end.
 - **Rollback:** `update public.qorpera_claude_parallel_runs set cap = 1;` (one run per member again). The renewer
   stays right for one run as for four. A later cleanup drops the seal-back route and functions.
+- **A Settings read renews first (23 November 2026, `20260930871000`):** apply the migration and deploy the
+  `qorpera-shared-vault` build that asks for the `read` purpose, in either order. A vault without it never asks; a
+  vault that asks before the migration is refused (22023), its check answers `keep`, and the read runs as before.
+  No helper or web change.
 
 ## Gemini 4 Neon member API keys in the vault (20260930823000)
 

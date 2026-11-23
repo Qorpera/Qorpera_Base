@@ -1,5 +1,5 @@
 import type { CloudCodingRepository } from "@qorpera/contracts";
-import type { CodeCheck, CodeChecksRun, CodeSiteRecipe } from "./code-checks.ts";
+import type { CodeCheck, CodeCheckCache, CodeChecksRun, CodeSiteRecipe } from "./code-checks.ts";
 import type { CodeChangePath, CodePictureChecked } from "./code-host-jobs.ts";
 import type { CodingSessionClaim } from "./coding-executor.ts";
 import type { CodingBrokerGitRunner } from "./coding-git.ts";
@@ -56,6 +56,11 @@ export interface CodingFolderRepositorySession {
 			attempt: number;
 			site: CodeSiteRecipe | null;
 			rootLinks?: boolean;
+			maxParallel?: number;
+			failFast?: boolean;
+			caches?: readonly CodeCheckCache[];
+			changedPaths?: readonly string[];
+			checksChanged?: boolean;
 		},
 		signal: AbortSignal,
 	): Promise<CodeChecksRun>;

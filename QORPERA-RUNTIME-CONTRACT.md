@@ -2840,6 +2840,34 @@ Routines follow the same rule (migration 20260930095000):
 Still open: a coding worker's payer still chooses among the member's logins
 (until coding runs on folder-v2, C3, the 2026-10-01 coding rule above holds).
 
+2026-11-23 amendment: a surface automation is paid by its owner (founder, 23
+November 2026, multiplayer in place: "yes to all five, build it"; migration
+20260930868000). Until now an automation's run had no requester and fell to the
+Co-Founder's creator, then the company's oldest owner. Now:
+
+- Each surface automation is owned by one member who is not a viewer, or by
+  nobody. A member's new automation is theirs; one an agent or the platform
+  makes is the member's who started the company, who paid for it before.
+- A run it starts (its surface session) is requested by its owner and paid by
+  the owner's login, the one the first-choice order picks for new work of
+  theirs. That session keeps that requester until it ends: a later hand-over
+  does not move it, and when its member leaves or becomes a viewer before it is
+  queued to run, it does not run on anyone else's login.
+- An automation nobody owns, or whose owner has no login that can pay, does not
+  run: its time passes, it shows that it needs attention, and no other login
+  is used.
+- Its owner, or an owner or admin, hands it over by an offer the teammate
+  answers; one open offer at a time, which its owner or the offerer can take
+  back. Yes moves it; no leaves it. Anyone who is not a viewer takes an
+  automation nobody owns at once. A member who leaves or becomes a viewer
+  leaves their automations with nobody, and the open offers that name them are
+  void.
+- An automation aimed at a coding-backed surface pays with its owner's coding
+  login that may work while they are away; with none, it does not run either.
+- A member's reply in an automation's session follows the surface-session
+  rule for replies (20260930862000): it is requested by and paid with the
+  replier's own login. Legacy routines keep their payer as above.
+
 ## 18. Short constitution
 
 The cached constitution is written after the kernel behavior it describes has

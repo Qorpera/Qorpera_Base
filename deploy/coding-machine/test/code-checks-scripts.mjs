@@ -36,16 +36,32 @@ const declaration = (name, end) => {
 const guard =
 	declaration("CODE_CHECKS_NEWER_RUN", "\n];") ??
 	`const CODE_CHECKS_NEWER_RUN = ${JSON.stringify(CODE_CHECKS_NEWER_RUN)};`;
-const copyDeclaration = declaration("CODE_CHECKS_COPY", '\n].join("\\n");');
-if (copyDeclaration === null) throw new Error("CODE_CHECKS_COPY is not in coding-executor-host.ts as this reads it");
-const copy = runInNewContext(`${guard}\n${copyDeclaration}\nCODE_CHECKS_COPY`);
-if (typeof copy !== "string" || !copy.startsWith("set -eu\n") || !copy.includes(CODE_CHECKS_NEWER_RUN.join("\n")))
-	throw new Error("CODE_CHECKS_COPY did not read as the copy");
+const extract = (name) => {
+	const text = declaration(name, '\n].join("\\n");');
+	if (text === null) throw new Error(`${name} is not in coding-executor-host.ts as this reads it`);
+	const value = runInNewContext(`${guard}\n${text}\n${name}`);
+	if (typeof value !== "string" || !value.startsWith("set -eu\n") || !value.includes(CODE_CHECKS_NEWER_RUN.join("\n")))
+		throw new Error(`${name} did not read as a checks script`);
+	return value;
+};
+const copy = extract("CODE_CHECKS_COPY");
+const diff = extract("CODE_CHECKS_DIFF");
+const cacheTracked = extract("CODE_CHECKS_CACHE_TRACKED");
+const cacheSave = extract("CODE_CHECKS_CACHE_SAVE");
+const persist = extract("CODE_CHECKS_PERSIST");
+const persistDrop = extract("CODE_CHECKS_PERSIST_DROP");
 mkdirSync(out, { recursive: true });
 for (const [name, text] of [
 	["copy.sh", copy],
+	["diff.sh", diff],
+	["cache-tracked.sh", cacheTracked],
+	["cache-save.sh", cacheSave],
+	["persist.sh", persist],
+	["persist-drop.sh", persistDrop],
 	["collect.sh", CODE_SITE_COLLECT],
 	["drop.sh", CODE_SITE_DROP],
 ])
 	writeFileSync(join(out, name), `${text}\n`, { mode: 0o644 });
-console.log(`wrote copy.sh, collect.sh and drop.sh to ${out}`);
+console.log(
+	`wrote copy.sh, diff.sh, cache-tracked.sh, cache-save.sh, persist.sh, persist-drop.sh, collect.sh and drop.sh to ${out}`,
+);

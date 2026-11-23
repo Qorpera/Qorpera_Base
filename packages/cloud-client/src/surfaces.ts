@@ -509,6 +509,12 @@ function surfaceImageRows(
 	return images.map((image) => ({ objectSha256: image.sha256, bytes: image.bytes, mediaType: image.mediaType }));
 }
 
+function automationOf(data: unknown, name: string): SurfaceAutomationSummary {
+	if (!data || typeof data !== "object" || Array.isArray(data))
+		throw new CloudSurfacesError(`Invalid ${name} payload`);
+	return parseSurfaceAutomationSummary((data as Record<string, unknown>).automation, "automation");
+}
+
 export class CloudSurfacesClient {
 	readonly #supabase: SupabaseClient;
 
@@ -799,6 +805,19 @@ export class CloudSurfacesClient {
 			p_clear_target: input.targetSurfaceSlug === null,
 		});
 		return parseSurfaceAutomationSummary(data, "automation");
+	}
+
+	async offerAutomation(automationId: string, toUserId: string): Promise<SurfaceAutomationSummary> {
+		const data = await this.#rpc("qorpera_offer_surface_automation", {
+			p_automation_id: automationId,
+			p_to_user_id: toUserId,
+		});
+		return automationOf(data, "qorpera_offer_surface_automation");
+	}
+
+	async answerAutomationOffer(offerId: string, yes: boolean): Promise<SurfaceAutomationSummary> {
+		const data = await this.#rpc("qorpera_answer_surface_automation_offer", { p_offer_id: offerId, p_yes: yes });
+		return automationOf(data, "qorpera_answer_surface_automation_offer");
 	}
 
 	async deleteAutomation(automationId: string): Promise<boolean> {
