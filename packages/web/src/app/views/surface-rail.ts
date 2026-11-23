@@ -273,6 +273,7 @@ export class SurfaceRail {
 	readonly #groups = new Map<"products" | "operations", SurfaceGroupEntry>();
 	readonly #rows = new Map<string, SurfaceRowEntry>();
 	readonly #proposedRows = new Map<string, { readonly el: HTMLElement; readonly key: string }>();
+	readonly #deleting = new Set<string>();
 	#activeSlug: string | undefined;
 	#shown: readonly unknown[] | undefined;
 
@@ -335,38 +336,71 @@ export class SurfaceRail {
 								label: t("Delete"),
 								icon: "trash",
 								danger: true,
-								select: () => void this.#delete(surface),
+								select: () => void this.#delete(surface.id),
 							},
 						]),
 			],
 		});
 	}
 
-	async #delete(surface: SurfaceSummary): Promise<void> {
-		const scheduled = this.#store.state.automations.filter((item) => item.targetSurfaceSlug === surface.slug).length;
-		const working = surface.runningSessionCount;
-		const confirmed = await confirmDialog(
-			t("Delete {name}? It is removed for everyone in the company.", { name: surface.title }),
-			t("Delete"),
-			true,
-			undefined,
-			this.#signal,
-			[
-				...(scheduled === 1 ? [t("Its scheduled agent is deleted too.")] : []),
-				...(scheduled > 1 ? [t("Its {count} scheduled agents are deleted too.", { count: scheduled })] : []),
-				...(working === 1 ? [t("The session working in it runs to its end.")] : []),
-				...(working > 1 ? [t("The {count} sessions working in it run to their end.", { count: working })] : []),
-				...(surface.archetype === "live_build" && surface.liveUrl
-					? [t("Its site stays online. Settings → Sites takes it offline.")]
-					: []),
-			],
-		);
-		if (!confirmed) return;
-		if (!(await this.#store.deleteSurface(surface.id))) {
-			if (!this.#signal.aborted) this.#reportError?.(t("{name} could not be deleted.", { name: surface.title }));
-			return;
+	async #delete(surfaceId: string): Promise<void> {
+		if (this.#deleting.has(surfaceId)) return;
+		this.#deleting.add(surfaceId);
+		try {
+			const read = await this.#store.refreshAutomations();
+			const surface = this.#store.state.surfaces.find((item) => item.id === surfaceId);
+			if (!surface) return;
+			if (!read) {
+				this.#reportNotDeleted(surface.title, 0);
+				return;
+			}
+			const scheduled = this.#store.state.automations.filter(
+				(item) => item.targetSurfaceSlug === surface.slug,
+			).length;
+			const active = surface.activeSessionCount;
+			const working = surface.runningSessionCount;
+			const confirmed = await confirmDialog(
+				t("Delete {name}? It is removed for everyone in the company.", { name: surface.title }),
+				t("Delete"),
+				true,
+				undefined,
+				this.#signal,
+				[
+					...(scheduled === 1 ? [t("Its scheduled agent is deleted too.")] : []),
+					...(scheduled > 1 ? [t("Its {count} scheduled agents are deleted too.", { count: scheduled })] : []),
+					...(active === 1 ? [t("Its active session goes with it.")] : []),
+					...(active > 1 ? [t("Its {count} active sessions go with it.", { count: active })] : []),
+					...(working === 1 ? [t("The one still working runs to its end.")] : []),
+					...(working > 1 ? [t("The {count} still working run to their end.", { count: working })] : []),
+					...(surface.pendingChangeCount + surface.unpublishedChangeCount > 0
+						? [t("Its unpublished changes go with it.")]
+						: []),
+					...(surface.archetype === "live_build" && surface.liveUrl
+						? [t("Its site stays online. Settings → Sites takes it offline.")]
+						: []),
+				],
+			);
+			if (!confirmed) return;
+			const outcome = await this.#store.deleteSurface(surfaceId);
+			if (!outcome.deleted) this.#reportNotDeleted(surface.title, outcome.scheduledAgentsDeleted);
+			else if (this.#activeSlug === surface.slug) location.hash = `#/c/${this.#profileId}`;
+		} finally {
+			this.#deleting.delete(surfaceId);
 		}
-		if (this.#activeSlug === surface.slug) location.hash = `#/c/${this.#profileId}`;
+	}
+
+	#reportNotDeleted(name: string, scheduledAgentsDeleted: number): void {
+		if (this.#signal.aborted) return;
+		this.#reportError?.(
+			scheduledAgentsDeleted === 0
+				? t("{name} could not be deleted.", { name })
+				: scheduledAgentsDeleted === 1
+					? t("{name} could not be deleted. One of its scheduled agents was deleted before that.", { name })
+					: t("{name} could not be deleted. {count} of its scheduled agents were deleted before that.", {
+							name,
+							count: scheduledAgentsDeleted,
+						}),
+		);
 	}
 
 	update(activeSlug: string | undefined, canAddProgram = false): void {
