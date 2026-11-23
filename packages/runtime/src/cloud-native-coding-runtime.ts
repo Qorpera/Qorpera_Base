@@ -918,9 +918,10 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					surfaceSession?.viewAttachment && attachments.length > 0
 						? [createCodingViewAttachmentTool(attachments, surfaceSession.viewAttachment)]
 						: [];
+				const repositoryArea = `code/${initial.repository.owner.toLowerCase()}/${initial.repository.name.toLowerCase()}`;
 				return {
 					tools: [
-						...cloudCodingCommandTools({ scope, identity, operations, gateway: guarded }),
+						...cloudCodingCommandTools({ scope, identity, operations, gateway: guarded, repositoryArea }),
 						...recordChangeTool,
 						...viewAttachmentTool,
 						finish,

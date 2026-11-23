@@ -110,7 +110,12 @@ export class CodingExecutorHttpControl {
 	async call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		if (!CODING_CONTROL_METHODS.has(method)) throw new Error("CODING_CONTROL_METHOD_INVALID");
 		const body = JSON.stringify(args);
-		const maxRequestBytes = method === "qorpera_web_code_deployment_register" ? 4 * 1024 * 1024 : 128 * 1024;
+		const maxRequestBytes =
+			method === "qorpera_web_code_deployment_register"
+				? 4 * 1024 * 1024
+				: method === "qorpera_code_request_finish"
+					? 512 * 1024
+					: 128 * 1024;
 		if (Buffer.byteLength(body) > maxRequestBytes) throw new Error("CODING_CONTROL_REQUEST_TOO_LARGE");
 		const refusals = VIEW_REFUSALS.get(method);
 		let failure: Error = unconfirmed(method, "no answer");

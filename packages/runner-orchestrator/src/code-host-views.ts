@@ -190,6 +190,7 @@ export interface CodeHostSession {
  * (two downloads of one company) would end each other for ever. */
 export interface CodeHostJobOptions {
 	yields?: boolean;
+	readOnly?: boolean;
 }
 
 /** The jobs of the executor's code hosts: `run` gives a job its company's code host, with the company folder mounted
@@ -252,22 +253,26 @@ export class CodeHostJobs {
 		job: (job: CodeHostJob, gc: CodeHostGcBlock) => Promise<T>,
 		options: CodeHostJobOptions = {},
 	): Promise<T> {
-		if (!isUuid(companyId) || !isUuid(environmentId) || ![undefined, false, true].includes(options?.yields))
+		if (
+			!isUuid(companyId) ||
+			!isUuid(environmentId) ||
+			![undefined, false, true].includes(options?.yields) ||
+			![undefined, false, true].includes(options?.readOnly)
+		)
 			throw new Error("INVALID_CODE_HOST_JOB");
-		// A job that yields waits and runs under what cancels it as well, until its steps are done.
+		const readOnly = options?.readOnly === true;
 		const yielding = options?.yields ? new AbortController() : undefined;
 		const until = yielding ? AbortSignal.any([signal, yielding.signal]) : signal;
 		try {
 			const done = await this.#turn(companyId, until, yielding);
 			try {
 				return await this.#hosts.use(companyId, until, (host) =>
-					this.#run(host, environmentId, until, job, yielding && { yielding, caller: signal }),
+					this.#run(host, environmentId, until, job, yielding && { yielding, caller: signal }, readOnly),
 				);
 			} finally {
 				done();
 			}
 		} catch (error) {
-			// Whatever a cancelled step threw, the job yielded: nothing cancels it once it publishes.
 			if (yielding?.signal.aborted && !signal.aborted) throw yielding.signal.reason;
 			throw error;
 		}
@@ -341,6 +346,7 @@ export class CodeHostJobs {
 		signal: AbortSignal,
 		job: (job: CodeHostJob, gc: CodeHostGcBlock) => Promise<T>,
 		yields?: { yielding: AbortController; caller: AbortSignal },
+		readOnly = false,
 	): Promise<T> {
 		const shell = lxdCodeHostShell(this.#client, host);
 		const prior = this.#takeWarm(host.companyId);
@@ -369,17 +375,19 @@ export class CodeHostJobs {
 				yields.yielding.signal.throwIfAborted();
 				this.#yielded(host.companyId, yields.yielding);
 			}
-			const published = await this.#publish(shell, yields?.caller ?? signal);
-			if (published.answer === "closed") throw new CodeHostJobFailure("CODE_HOST_VIEW_CLOSED", "the view closed");
-			if (published.answer === "refused")
-				throw new CodeHostJobFailure("CODE_HOST_PUBLISH_REFUSED", published.detail);
-			if (published.answer === "waiting")
-				throw new CodeHostJobFailure(
-					"CODE_HOST_PUBLISH_UNANSWERED",
-					published.detail || "the node did not prove the publish complete",
-				);
-			if (published.answer === "unanswered")
-				throw new CodeHostJobFailure("CODE_HOST_PUBLISH_UNANSWERED", "the node did not answer the publish");
+			if (!readOnly) {
+				const published = await this.#publish(shell, yields?.caller ?? signal);
+				if (published.answer === "closed") throw new CodeHostJobFailure("CODE_HOST_VIEW_CLOSED", "the view closed");
+				if (published.answer === "refused")
+					throw new CodeHostJobFailure("CODE_HOST_PUBLISH_REFUSED", published.detail);
+				if (published.answer === "waiting")
+					throw new CodeHostJobFailure(
+						"CODE_HOST_PUBLISH_UNANSWERED",
+						published.detail || "the node did not prove the publish complete",
+					);
+				if (published.answer === "unanswered")
+					throw new CodeHostJobFailure("CODE_HOST_PUBLISH_UNANSWERED", "the node did not answer the publish");
+			}
 		} catch (error) {
 			failure = { error };
 		}

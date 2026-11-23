@@ -32,10 +32,18 @@ import {
 	CodeWorktreeNamesRefused,
 	codeAreaPath,
 	commitCodeBranchBatch,
+	diffCodeArea,
 	exportCodeBranch,
 	landCodeBranch,
 	landCodeBranchBatch,
+	listCodeBranches,
+	logCodeArea,
+	previewCodeMerge,
+	pruneCodeArea,
+	showCodeFile,
 	startCodeArea,
+	tagCodeArea,
+	undoCodeChange,
 } from "./code-host-jobs.ts";
 import { attachCodeSession, type CodeAreaBroker } from "./code-host-seed.ts";
 import { pinCodeSiteTree } from "./code-host-sites.ts";
@@ -237,7 +245,12 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			await this.#job(session, signal, async (job) => {
 				// A repository kept in Qorpera holds its sessions' bases (start made it): only the worktree is added.
 				if (repository.host === "qorpera") {
-					const added = await addCodeWorktree(job, { repository, workerId, baseSha: session.baseSha });
+					const added = await addCodeWorktree(job, {
+						repository,
+						workerId,
+						baseSha: session.baseSha,
+						...(session.claim.sequence > 1 ? { preferCurrentBase: true } : {}),
+					});
 					if (!added.headSha)
 						throw new CodeHostRefusal("CODE_HOST_WORKTREE_NO_BRANCH", [
 							`${codeAreaPath(repository)}/worktrees/${workerId}`,
@@ -1555,7 +1568,7 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 		if (waiter.settled) return;
 		if (error.code === "CODE_HOST_LAND_CONFLICT") {
 			await this.#reportRefused(waiter.session, waiter.headSha, "conflict", error.code, error.paths);
-			settleReject(waiter, new CodingLandConflict(error.paths));
+			settleReject(waiter, new CodingLandConflict(error.paths, error.messages));
 			return;
 		}
 		const summary = landRefusal(
@@ -1608,6 +1621,91 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			const result = await steps(job);
 			await session.assertAuthorized(signal);
 			return result;
+		});
+	}
+
+	async runReadOnly<T>(
+		companyId: string,
+		environmentId: string,
+		signal: AbortSignal,
+		steps: (job: CodeHostJob) => Promise<T>,
+	): Promise<T> {
+		return await this.#jobs.run(companyId, environmentId, signal, steps, { readOnly: true });
+	}
+
+	async log(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof logCodeArea>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof logCodeArea>> {
+		return await this.runReadOnly(companyId, environmentId, signal, (job) => logCodeArea(job, value));
+	}
+
+	async diff(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof diffCodeArea>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof diffCodeArea>> {
+		return await this.runReadOnly(companyId, environmentId, signal, (job) => diffCodeArea(job, value));
+	}
+
+	async show(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof showCodeFile>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof showCodeFile>> {
+		return await this.runReadOnly(companyId, environmentId, signal, (job) => showCodeFile(job, value));
+	}
+
+	async branches(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof listCodeBranches>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof listCodeBranches>> {
+		return await this.runReadOnly(companyId, environmentId, signal, (job) => listCodeBranches(job, value));
+	}
+
+	async mergePreview(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof previewCodeMerge>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof previewCodeMerge>> {
+		return await this.runReadOnly(companyId, environmentId, signal, (job) => previewCodeMerge(job, value));
+	}
+
+	async tag(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof tagCodeArea>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof tagCodeArea>> {
+		return await this.#jobs.run(companyId, environmentId, signal, (job) => tagCodeArea(job, value), {
+			readOnly: value.mode === "list",
+		});
+	}
+
+	async prune(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof pruneCodeArea>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof pruneCodeArea>> {
+		return await this.#jobs.run(companyId, environmentId, signal, (job) => pruneCodeArea(job, value));
+	}
+
+	async undo(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof undoCodeChange>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof undoCodeChange>> {
+		return await this.#jobs.run(companyId, environmentId, signal, (job) => undoCodeChange(job, value), {
+			readOnly: value.dryRun === true,
 		});
 	}
 }

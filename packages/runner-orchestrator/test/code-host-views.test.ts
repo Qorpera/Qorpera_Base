@@ -331,6 +331,18 @@ describe("CodeHostJobs", () => {
 		expect(host.view).toBeUndefined();
 	});
 
+	it("skips publish on readOnly jobs while still mounting, running, and closing the view cleanly", async () => {
+		const { lxd, control, jobs, host } = setup();
+		const answer = await jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand, { readOnly: true });
+		expect(answer).toBe("ok");
+		expect(lxd.labels()).toEqual(["clean", "view", "start", "state", "/usr/local/bin/git --version", "clean"]);
+		expect(lxd.labels()).not.toContain("publish");
+		expect(control.methods()).toEqual(["qorpera_folder_view_open", "qorpera_folder_view_close"]);
+		expect(host.unit).toBeUndefined();
+		expect(host.mounted).toBe(false);
+		expect(host.view).toBeUndefined();
+	});
+
 	it("publishes nothing for a job that fails, and still takes the mount and the view down; the job's error wins", async () => {
 		const { lxd, control, jobs } = setup();
 		const failure = new Error("the job broke");
