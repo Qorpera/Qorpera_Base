@@ -2670,6 +2670,29 @@ used-up login until its reset, with nothing in the thread to say so. Now:
 - This replaces the 2026-11-05 amendment's "one already waiting stays on its
   login" for the member's own posts.
 
+2026-11-23 amendment: a member's reply in a surface session is their own turn
+(founder, 23 November 2026: "it runs on each members login"; migration
+20260930862000). Any member may reply in any surface session, and until now every
+turn was requested by and paid with the session's starter. Now:
+
+- A reply records its member as the session's turn requester
+  (`turn_requested_by_user_id`). The next turn, and the follow-up work it starts,
+  is requested by that member and paid by their own login, as for posts in an
+  agent's thread above. A session nobody has replied to keeps its starter.
+- A member with no login that can pay is refused at the reply ("Connect a model
+  account in Settings → AI subscriptions to reply"); the reply is not kept and
+  nobody else's login is used.
+- A reply makes the turn a member turn even in a session an agent started, so it
+  runs without unattended permission, like the member's own posts.
+- A coding-backed session's worker follows the replier: its owner, requester and
+  sponsor move to the replier for that turn. A worker that is running is
+  cancelled by the reply first (20260930860000), so no running work changes payer.
+- A run's member-turn authority is read from its own wake (`memberInitiated` and
+  its requester, fixed when the wake was made), never from the session's latest
+  reply.
+- An agent-started session with no reply still falls back to the Co-Founder's
+  creator, then the owner. That is unchanged and open.
+
 2026-11-18 amendment: a full reading holds an account by itself (founder, 18
 November 2026: "Yes, build it"; migration 20260930807000). On 18 Nov a member
 deleted a company, and with it the only usage-limit signals of their account
