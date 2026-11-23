@@ -1,6 +1,7 @@
 import { CloudSurfacesError } from "@qorpera/cloud-client/surfaces";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseRoute, routeHash, surfaceHash } from "../src/app/router.ts";
+import { Store } from "../src/app/state.ts";
 import {
 	approvalOutcome,
 	attachSurfaces,
@@ -1776,5 +1777,68 @@ describe("SurfacesStore", () => {
 		const totalBytes = Object.values(files).reduce((sum, text) => sum + text.length, 0);
 		expect(totalBytes).toBeLessThanOrEqual(1024 * 1024);
 		expect(Object.keys(files).filter((path) => path.endsWith(".txt")).length).toBeLessThan(5);
+	});
+
+	it("skips Store.set notifications when a patch changes no fields", async () => {
+		const store = new Store({ count: 1, label: "idle" });
+		const updates = vi.fn();
+		store.subscribe(updates);
+		const initial = store.get();
+		store.set({});
+		store.set({ count: 1 });
+		store.set((state) => ({ label: state.label }));
+		await Promise.resolve();
+		expect(updates).not.toHaveBeenCalled();
+		expect(store.get()).toBe(initial);
+		store.set({ count: 2 });
+		await Promise.resolve();
+		expect(updates).toHaveBeenCalledTimes(1);
+		expect(store.get().count).toBe(2);
+	});
+
+	it("avoids re-emitting identical cloud files and caps cached cloud surface files", async () => {
+		const extra = Array.from({ length: 8 }, (_, idx) =>
+			summary({
+				id: `11111111-1111-4111-8111-11111111110${idx}`,
+				slug: `surface-${idx}`,
+				title: `Surface ${idx}`,
+				folderRoot: `surfaces/s-${idx}`,
+				archetype: "studio",
+				siteSlug: null,
+				liveUrl: null,
+			}),
+		);
+		const loadCloudFiles = vi.fn(async (surface: { readonly id: string }) => ({
+			"tokens.json": `{"id":"${surface.id}"}`,
+		}));
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => extra),
+				getSurfaceWorkspace: vi.fn(async (id: string) =>
+					workspace([], { surface: extra.find((item) => item.id === id) ?? extra[0]! }),
+				),
+			}),
+			{ loadCloudFiles },
+		);
+		await store.load();
+		await store.openSurface(extra[0]!.slug);
+		const firstMap = store.state.cloudSurfaceFiles[extra[0]!.id];
+		expect(firstMap).toEqual({ "tokens.json": `{"id":"${extra[0]!.id}"}` });
+
+		const notifications = vi.fn();
+		const unsubscribe = store.store.subscribe(notifications);
+		await store.refreshCloudFiles(extra[0]!);
+		unsubscribe();
+		expect(notifications).not.toHaveBeenCalled();
+		expect(store.state.cloudSurfaceFiles[extra[0]!.id]).toBe(firstMap);
+
+		for (let idx = 1; idx < extra.length; idx++) {
+			await store.refreshCloudFiles(extra[idx]!);
+		}
+		const cachedIds = Object.keys(store.state.cloudSurfaceFiles);
+		expect(cachedIds.length).toBeLessThanOrEqual(6);
+		expect(cachedIds).toContain(extra[0]!.id);
+		expect(cachedIds).toContain(extra.at(-1)!.id);
+		store.dispose();
 	});
 });

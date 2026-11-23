@@ -35,6 +35,7 @@ function signed(event: "typing" | "open_thread", sequence: number, staff = "lega
 }
 class Channel {
 	readonly tracked: Array<Record<string, unknown>> = [];
+	untracked = 0;
 	readonly sent: Array<Record<string, unknown>> = [];
 	state: Record<string, Array<Record<string, unknown>>> = {};
 	status: (value: "SUBSCRIBED" | "CLOSED") => void = () => {};
@@ -52,6 +53,10 @@ class Channel {
 	}
 	track(value: Record<string, unknown>) {
 		this.tracked.push(value);
+		return Promise.resolve("ok");
+	}
+	untrack() {
+		this.untracked += 1;
 		return Promise.resolve("ok");
 	}
 	send(value: Record<string, unknown>) {
@@ -90,7 +95,15 @@ function fixture() {
 		unregisterPresenceDevice: unregister,
 	} as unknown as PresenceDevices;
 	const client = { channel, removeChannel: remove } as unknown as SupabaseClient;
-	const join = () => new SupabaseCloudPresenceTransport(client, primary).join(profileId, members, typing, () => {});
+	const join = (options?: { present?: boolean }) =>
+		new SupabaseCloudPresenceTransport(client, primary).join(
+			profileId,
+			members,
+			typing,
+			() => {},
+			undefined,
+			options,
+		);
 	return { channels, channel, remove, register, list, unregister, members, typing, join };
 }
 afterEach(() => {
@@ -487,5 +500,58 @@ describe("shared browser presence", () => {
 		} finally {
 			await handle.stop();
 		}
+	});
+	it("observes remote members without registering or tracking when started inactive", async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+		const handle = f.join({ present: false });
+		try {
+			await vi.waitFor(() => expect(f.channels).toHaveLength(1));
+			const c = f.channels[0];
+			c.status("SUBSCRIBED");
+			handle.setOpenThread("legal-agent");
+			await vi.advanceTimersByTimeAsync(180_000);
+			expect(f.register).not.toHaveBeenCalled();
+			expect(c.tracked).toEqual([]);
+			c.state = { [remoteId]: [signed("open_thread", 1)] };
+			c.sync();
+			await vi.waitFor(() => expect(f.members).toHaveBeenCalledOnce());
+			expect(f.members.mock.calls[0]?.[0]).toEqual([
+				{ clientId: remoteId, userId: identity.userId, name: identity.name, staffAgentId: "legal-agent" },
+			]);
+		} finally {
+			await handle.stop();
+		}
+		expect(f.unregister).not.toHaveBeenCalled();
+	});
+	it("registers before tracking when becoming active and untracks without heartbeats when inactive", async () => {
+		vi.useFakeTimers();
+		const f = fixture();
+		const handle = f.join({ present: false });
+		try {
+			await vi.waitFor(() => expect(f.channels).toHaveLength(1));
+			const c = f.channels[0];
+			c.status("SUBSCRIBED");
+			handle.setOpenThread("legal-agent");
+			handle.setPresent?.(true);
+			await vi.waitFor(() => expect(c.tracked).toHaveLength(1));
+			expect(f.register).toHaveBeenCalledTimes(1);
+			expect(c.tracked[0]).toMatchObject({ staff_agent_id: "legal-agent" });
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(f.register).toHaveBeenCalledTimes(2);
+			handle.setPresent?.(false);
+			await vi.waitFor(() => expect(c.untracked).toBe(1));
+			handle.setOpenThread("sales-agent");
+			await vi.advanceTimersByTimeAsync(180_000);
+			expect(f.register).toHaveBeenCalledTimes(2);
+			expect(c.tracked).toHaveLength(1);
+			handle.setPresent?.(true);
+			await vi.waitFor(() => expect(c.tracked).toHaveLength(2));
+			expect(f.register).toHaveBeenCalledTimes(3);
+			expect(c.tracked[1]).toMatchObject({ staff_agent_id: "sales-agent" });
+		} finally {
+			await handle.stop();
+		}
+		expect(f.unregister).toHaveBeenCalledTimes(1);
 	});
 });
