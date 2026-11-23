@@ -54,7 +54,7 @@ import {
 } from "../../packages/runner-orchestrator/src/company-machine-stream-process.ts";
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
-import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
+import { authorizeCodingCommand, authorizeCodingCommandV2, proveNativeBinding } from "./command-authority.ts";
 import { authorizeHomeSession } from "./home-session-authority.ts";
 import { BrokerMachineAccountFill } from "./machine-account-fill-broker.ts";
 import {
@@ -63,7 +63,7 @@ import {
 	MachineCommandRouter, machineCommandRoutes,
 } from "./machine-command-routing.ts";
 import { MemberMachineScreenControl } from "./member-control.ts";
-import { CodingCommandRouter, codingCommandRoutes, type CodingCommandPeer } from "./command-routing.ts";
+import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
 import { BrokerRepositoryCredentials, REPOSITORY_TOKEN } from "./repository-credentials.ts";
@@ -740,26 +740,38 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	});
 	const router = new CodingCommandRouter({
 		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential: peerCredential,
-		async executeLocal(request, signal) {
+		async executeLocal(request, signal, authority) {
 			const transport = await host.commandTransport(request.scope, async (action, scope, commandId, inputSha256, checked) => {
 				if (action !== request.action || JSON.stringify(scope) !== JSON.stringify(request.scope) || commandId !== request.input.commandId ||
 					(request.action === "start" && inputSha256 !== request.input.inputSha256)) throw new Error("CODING_COMMAND_REQUEST_CHANGED");
-				await authorizeCodingCommand(control, request, checked);
-			}, signal);
+				if (authority) {
+					authority.postAuthority = await authorizeCodingCommandV2(
+						control,
+						request,
+						null,
+						host.localRunBinding(request.scope),
+						checked,
+					);
+				} else {
+					await authorizeCodingCommand(control, request, checked);
+				}
+			}, signal, authority);
 			// F3 5g-5: the command service asks the folder model's transport what the receipt shows, after its final authorization,
 			// and only then answers what the transport held of the call.
 			return codingCommandExecution(transport, request.input.commandId, request.action === "start" ? transport.start(request.scope, request.input, signal) :
 				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal));
 		},
 	});
-	const ingressCoding = codingCommandRoutes(router, control, false);
-	const peerCoding = codingCommandRoutes(router, control, true);
 	const commands = new HttpCloudCodingCommandService({
 		token: commandToken, port: config.commandPort,
 		// G2-6b: a guest's request proves its run's lease before anything else is asked about its binding.
 		proveBinding: (binding, holder, signal) => proveNativeBinding(control, binding, holder, signal),
-		authorize: ingressCoding.authorize,
-		execute: ingressCoding.execute,
+		consolidatedCodingAuth: true,
+		authorize: (request, signal, holder) => {
+			if (!holder) throw new Error("CODING_COMMAND_UNPROVEN");
+			return authorizeCodingCommandV2(control, request, holder, host.localRunBinding(request.scope), signal);
+		},
+		execute: (request, signal, authority) => router.execute(request, signal, false, authority),
 		machines: machineCommandRoutes(machineRouter, control, false),
 		// The agent's home (slice 1): one channel per run, opened on this node's machine or forwarded to the peer that
 		// holds it, as a machine command is.
@@ -772,8 +784,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		token: peerToken, port: config.peerCommandPort,
 		// Only executors hold the peer token, and the forwarding one proved the guest's holder at its own ingress.
 		proveBinding: null,
-		authorize: peerCoding.authorize,
-		execute: peerCoding.execute,
+		consolidatedCodingAuth: true,
+		authorize: (request, signal) =>
+			authorizeCodingCommandV2(control, request, null, host.localRunBinding(request.scope), signal),
+		execute: (request, signal, authority) => router.execute(request, signal, true, authority),
 		machines: machineCommandRoutes(machineRouter, control, true),
 		// A home channel a peer forwarded: SQL authorizes the same session again, and it opens only on this node.
 		home: {
@@ -1031,6 +1045,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			for (const outcome of await host.settled())
 				console.log(JSON.stringify({ event: outcome.state === "failed" ? "coding-session-error" : "coding-session", ...outcome }));
 		});
+		await closeStep("code-host-jobs", () => codeHostJobs?.close());
 		await closeStep("code-hosts", () => codeHosts?.close());
 		await closeStep("commands", () => commands.close());
 		await closeStep("peer-commands", () => peerCommands.close());

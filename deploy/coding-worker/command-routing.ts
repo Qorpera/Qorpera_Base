@@ -1,5 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
-import { createHttpCloudCodingCommandGateway, type CloudCodingCommandExecution, type CloudCodingCommandHttpRequest } from "../../packages/runtime/src/cloud-coding-command-http.ts";
+import {
+	type CloudCodingCommandAuthority,
+	type CloudCodingCommandExecution,
+	type CloudCodingCommandHttpRequest,
+	type CloudCodingCommandRoute,
+	createHttpCloudCodingCommandGateway,
+} from "../../packages/runtime/src/cloud-coding-command-http.ts";
 import { CloudCommandPages } from "../../packages/runtime/src/cloud-command-pages.ts";
 import { authorizeCodingCommand } from "./command-authority.ts";
 
@@ -18,7 +24,11 @@ interface CodingCommandRouterOptions {
 	peers: readonly CodingCommandPeer[];
 	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> };
 	credential(name: string): Promise<string>;
-	executeLocal(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<CloudCodingCommandExecution>;
+	executeLocal(
+		request: CloudCodingCommandHttpRequest,
+		signal: AbortSignal,
+		authority?: CloudCodingCommandAuthority,
+	): Promise<CloudCodingCommandExecution>;
 	fetch?: typeof fetch;
 }
 export class CodingCommandRouter {
@@ -32,22 +42,35 @@ export class CodingCommandRouter {
 		request: CloudCodingCommandHttpRequest,
 		signal: AbortSignal,
 		localOnly = false,
-		preauthorized = false,
+		authority?: CloudCodingCommandAuthority,
 	): Promise<CloudCodingCommandExecution> {
-		if (!preauthorized) await authorizeCodingCommand(this.#options.control, request, signal);
-		const value = await this.#options.control.call("qorpera_route_coding_command", {
-			p_binding: request.binding, p_scope: request.scope, p_action: request.action,
-			p_command_id: request.input.commandId,
-			p_input_sha256: request.action === "start" ? request.input.inputSha256 : null,
-		}, signal);
-		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_COMMAND_ROUTE_INVALID");
-		const route = value as Record<string, unknown>;
-		if (Object.keys(route).sort().join() !== "executorOwner,machineId,providerId,schema" ||
-			route.schema !== "qorpera.coding-command-route/v1" || route.machineId !== request.scope.vmId ||
-			typeof route.executorOwner !== "string" || typeof route.providerId !== "string") throw new Error("CODING_COMMAND_ROUTE_INVALID");
+		let route: CloudCodingCommandRoute;
+		if (authority?.route) {
+			if (
+				authority.route.schema !== "qorpera.coding-command-route/v1" ||
+				authority.route.machineId !== request.scope.vmId ||
+				typeof authority.route.executorOwner !== "string" ||
+				typeof authority.route.providerId !== "string"
+			)
+				throw new Error("CODING_COMMAND_ROUTE_INVALID");
+			route = authority.route;
+		} else {
+			await authorizeCodingCommand(this.#options.control, request, signal);
+			const value = await this.#options.control.call("qorpera_route_coding_command", {
+				p_binding: request.binding, p_scope: request.scope, p_action: request.action,
+				p_command_id: request.input.commandId,
+				p_input_sha256: request.action === "start" ? request.input.inputSha256 : null,
+			}, signal);
+			if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_COMMAND_ROUTE_INVALID");
+			const parsed = value as Record<string, unknown>;
+			if (Object.keys(parsed).sort().join() !== "executorOwner,machineId,providerId,schema" ||
+				parsed.schema !== "qorpera.coding-command-route/v1" || parsed.machineId !== request.scope.vmId ||
+				typeof parsed.executorOwner !== "string" || typeof parsed.providerId !== "string") throw new Error("CODING_COMMAND_ROUTE_INVALID");
+			route = parsed as unknown as CloudCodingCommandRoute;
+		}
 		signal.throwIfAborted();
 		if (route.executorOwner === this.#options.owner && route.providerId === this.#options.providerId)
-			return this.#options.executeLocal(request, signal);
+			return this.#options.executeLocal(request, signal, authority);
 		if (localOnly) throw new Error("CODING_COMMAND_WRONG_EXECUTOR");
 		const peer = this.#options.peers.find((entry) => entry.owner === route.executorOwner && entry.providerId === route.providerId);
 		if (!peer) throw new Error("CODING_COMMAND_ROUTE_UNAVAILABLE");
@@ -70,32 +93,4 @@ export class CodingCommandRouter {
 		// the node that holds the machine and its disk. This executor's checks after it can only refuse the receipt.
 		return { receipt, hidden: async () => undefined };
 	}
-}
-
-export function codingCommandRoutes(
-	router: CodingCommandRouter,
-	control: CodingCommandRouterOptions["control"],
-	localOnly: boolean,
-): {
-	authorize(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<{ inputSha256: string }>;
-	execute(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<CloudCodingCommandExecution>;
-} {
-	// WHY: Single-use handoff avoids a duplicate serial qorpera_authorize_coding_command RPC between ingress authorize and execute.
-	const authorized = new WeakSet<CloudCodingCommandHttpRequest>();
-	const seen = new WeakSet<CloudCodingCommandHttpRequest>();
-	return {
-		authorize: async (request, signal) => {
-			const authority = await authorizeCodingCommand(control, request, signal);
-			if (!seen.has(request)) {
-				seen.add(request);
-				authorized.add(request);
-			}
-			return authority;
-		},
-		execute: (request, signal) => {
-			const pre = authorized.has(request);
-			if (pre) authorized.delete(request);
-			return router.execute(request, signal, localOnly, pre);
-		},
-	};
 }

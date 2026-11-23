@@ -340,6 +340,7 @@ export interface CodingSessionClaim {
 	repository: CloudCodingRepository;
 	branch: string;
 	baseSha: string | null;
+	worktreeCreatedAt?: string | null;
 	harnessSessionRef: string | null;
 	pullRequest: CloudCodingPullRequest | null;
 	title: string;
@@ -515,6 +516,7 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		repository: parseCloudCodingRepository(item.repository),
 		branch: item.branch,
 		baseSha: item.baseSha === undefined ? null : (item.baseSha as string | null),
+		...(item.worktreeCreatedAt === undefined ? {} : { worktreeCreatedAt: optionalText(item.worktreeCreatedAt, 64) }),
 		harnessSessionRef: optionalText(item.harnessSessionRef, 512),
 		pullRequest:
 			item.pullRequest === null || item.pullRequest === undefined
