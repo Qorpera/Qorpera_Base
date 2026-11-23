@@ -29,6 +29,7 @@ import {
 	cloudControlTransientCode,
 	cloudPostgrestError,
 } from "./cloud-control-errors.ts";
+import { geminiProviderDiagnostic, geminiProviderFailureCode } from "./cloud-gemini-tool-session.ts";
 import { nativeRuntimeFailureMetadata } from "./cloud-native-failure.ts";
 import {
 	isNativeHostPublishableKey,
@@ -180,6 +181,8 @@ export function nativeProviderFailureCode(error: unknown): string {
 		if (current instanceof CloudAgentNoFinalSend) return CLOUD_AGENT_NO_FINAL_SEND_CODE;
 		current = current.cause;
 	}
+	const geminiCode = geminiProviderFailureCode(error);
+	if (geminiCode) return coded(geminiCode);
 	const failure = nativeRuntimeFailureMetadata(error);
 	if (failure) return coded(`NATIVE_${upper(failure.stage)}:${upper(failure.category)}`);
 	const message = (error instanceof Error ? error.message : "").replace(MOUTH_STATE, "");
@@ -194,10 +197,12 @@ export function nativeProviderFailureCode(error: unknown): string {
 }
 function safeRequestDiagnostic(error: unknown): string {
 	const failure = nativeRuntimeFailureMetadata(error);
+	const gemini = geminiProviderDiagnostic(error);
 	// Codex's error discriminant, as a fixed name, goes to this journal line only: the stored code keeps its two parts,
 	// which the runner and older runners check exactly (bridgeRefusalCode).
 	if (failure)
-		return `Native provider execution failed (stage=${failure.stage}, category=${failure.category}${failure.codexError === null ? "" : `, codexError=${failure.codexError}`})`;
+		return `Native provider execution failed (stage=${failure.stage}, category=${failure.category}${failure.codexError === null ? "" : `, codexError=${failure.codexError}`}${gemini ? `, ${gemini}` : ""})`;
+	if (gemini) return `Gemini provider execution failed (${gemini})`;
 	const message = error instanceof Error ? error.message : "";
 	const diagnostic = message.replace(MOUTH_STATE, "");
 	if (

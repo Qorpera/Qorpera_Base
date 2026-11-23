@@ -68,6 +68,7 @@ const PERMITTED_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_record_claude_run_usage",
 	"qorpera_record_gemini_run_usage",
 	"qorpera_record_gemini_cap_reached",
+	"qorpera_record_gemini_key_error",
 	"qorpera_describe_company_run_context",
 	"qorpera_list_native_connector_tools",
 	"qorpera_assert_native_connector_operation",

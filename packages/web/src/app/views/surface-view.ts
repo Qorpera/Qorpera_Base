@@ -871,8 +871,8 @@ export class SurfaceView {
 				),
 			);
 		}
-		if (surface.archetype !== "ops") {
-			const publishBusy = Boolean(state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
+		const publishBusy = Boolean(state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
+		if (surface.archetype !== "ops" && (count > 0 || publishBusy)) {
 			rightTools.push(
 				h(
 					"div",
@@ -882,12 +882,8 @@ export class SurfaceView {
 						{
 							type: "button",
 							class: "surface-publish-main",
-							disabled: !count || publishBusy,
-							title: publishBusy
-								? t("Publishing…")
-								: count
-									? t("Publish Base to the live surface")
-									: t("Live matches Base"),
+							disabled: publishBusy,
+							title: publishBusy ? t("Publishing…") : t("Publish Base to the live surface"),
 							"data-act": "publish",
 						},
 						publishBusy ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
