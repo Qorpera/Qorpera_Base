@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { CloudSurfacesError } from "@qorpera/cloud-client/surfaces";
+import { STUDIO_BINARY_MAX_BYTES, type StudioBinaryRef } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseRoute, routeHash, surfaceHash } from "../src/app/router.ts";
 import { Store } from "../src/app/state.ts";
@@ -7,6 +10,7 @@ import {
 	attachSurfaces,
 	clearLocalSandboxCache,
 	compiledCompanyIdentity,
+	effectiveStudioBaseBinaries,
 	effectiveStudioBaseFiles,
 	migrationPending,
 	normalizeStudioPatchOps,
@@ -27,6 +31,7 @@ import {
 	COMPANY,
 	change,
 	fakeClient,
+	folderContents,
 	MESSAGE_IDS,
 	PREVIEW_IDS,
 	pointTarget,
@@ -658,14 +663,16 @@ describe("SurfacesStore", () => {
 			deleteAutomation,
 			getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([activeSess], { surface: identity })),
 		});
-		const loadCloudFiles = vi.fn().mockResolvedValue({
-			"QorperaOS/surfaces/identity/notes/brand-notes.report.json": JSON.stringify({
-				slug: "brand-notes",
-				headline: "Calm Danish Brand Voice",
-				category: "Identity",
-				readingTime: "2 min",
+		const loadCloudFiles = vi.fn().mockResolvedValue(
+			folderContents({
+				"QorperaOS/surfaces/identity/notes/brand-notes.report.json": JSON.stringify({
+					slug: "brand-notes",
+					headline: "Calm Danish Brand Voice",
+					category: "Identity",
+					readingTime: "2 min",
+				}),
 			}),
-		});
+		);
 		let realtimeConnected = true;
 		const store = storeWith(client, {
 			realtimeLive: () => realtimeConnected,
@@ -1079,9 +1086,11 @@ describe("SurfacesStore", () => {
 				getSurfaceWorkspace: vi.fn(async () => workspace([idSession], { surface: identity })),
 			}),
 			{
-				loadCloudFiles: vi.fn(async () => ({
-					"identity/tokens.json": JSON.stringify({ colors: { primary: "#18181b", accent: "#2563eb" } }),
-				})),
+				loadCloudFiles: vi.fn(async () =>
+					folderContents({
+						"identity/tokens.json": JSON.stringify({ colors: { primary: "#18181b", accent: "#2563eb" } }),
+					}),
+				),
 			},
 		);
 		await store.load();
@@ -1142,10 +1151,10 @@ describe("SurfacesStore", () => {
 		let loadCount = 0;
 		const loadCloudFiles = vi.fn(async () => {
 			loadCount += 1;
-			if (loadCount === 1) return { "identity/tokens.json": oldTokens };
-			if (loadCount === 2) return await postMergeFiles.promise;
-			if (loadCount === 3) return await postPublishFiles.promise;
-			return { "identity/tokens.json": JSON.stringify({ colors: { accent: "#00aa66" } }) };
+			if (loadCount === 1) return folderContents({ "identity/tokens.json": oldTokens });
+			if (loadCount === 2) return folderContents(await postMergeFiles.promise);
+			if (loadCount === 3) return folderContents(await postPublishFiles.promise);
+			return folderContents({ "identity/tokens.json": JSON.stringify({ colors: { accent: "#00aa66" } }) });
 		});
 
 		const getSurfaceWorkspace = vi
@@ -1269,11 +1278,128 @@ describe("SurfacesStore", () => {
 		readGates[0]!.resolve();
 		readGates[1]!.resolve();
 
-		const files = await promise;
-		expect(files).toEqual({
-			"identity/tokens.json": '{"accent":"#fff"}',
-			"identity/voice.md": "Calm voice",
+		expect(await promise).toEqual({
+			files: {
+				"identity/tokens.json": '{"accent":"#fff"}',
+				"identity/voice.md": "Calm voice",
+			},
+			binaries: {},
 		});
+	});
+
+	it("lists a studio's models and pictures beside its text files, by reference, without reading them", async () => {
+		const file = (seed: string, bytes: number, mediaType: string) => ({
+			manifestSha256: seed.repeat(64).slice(0, 64),
+			fileSha256: `f${seed.repeat(63)}`,
+			bytes,
+			mediaType,
+			executable: false,
+		});
+		const entries: Record<string, { path: string; kind: string; file: ReturnType<typeof file> | null }[]> = {
+			product: [
+				{ path: "product/specs.json", kind: "file", file: file("1", 20, "application/json") },
+				{ path: "product/headband.glb", kind: "file", file: file("2", 4000, "model/gltf-binary") },
+				{ path: "product/scan.glb", kind: "file", file: file("3", 9000, "application/octet-stream") },
+				{
+					path: "product/huge.glb",
+					kind: "file",
+					file: file("4", STUDIO_BINARY_MAX_BYTES + 1, "model/gltf-binary"),
+				},
+				{ path: "product/odd.glb", kind: "file", file: file("5", 10, "text/plain") },
+				{ path: "product/firmware.bin", kind: "file", file: file("6", 10, "application/octet-stream") },
+				{ path: "product/renders", kind: "folder", file: null },
+				{ path: "product/node_modules", kind: "folder", file: null },
+			],
+			"product/renders": [
+				{ path: "product/renders/front.webp", kind: "file", file: file("7", 300, "image/webp") },
+				{ path: "product/renders/deep", kind: "folder", file: null },
+			],
+		};
+		const folder = {
+			list: vi.fn(async (parent: string | null) => ({ entries: entries[parent ?? ""] ?? [] })),
+			readFile: vi.fn(async () => new TextEncoder().encode('{"overview":{"weight":"44 g"}}')),
+		};
+		const read = await readSurfaceFolderFiles(folder, ["product"], new AbortController().signal);
+		expect(read.files).toEqual({ "product/specs.json": '{"overview":{"weight":"44 g"}}' });
+		expect(read.binaries).toEqual({
+			"product/headband.glb": file("2", 4000, "model/gltf-binary"),
+			"product/scan.glb": file("3", 9000, "application/octet-stream"),
+			"product/renders/front.webp": file("7", 300, "image/webp"),
+		});
+		expect(folder.readFile).toHaveBeenCalledTimes(1);
+		expect(folder.list.mock.calls.map(([parent]) => parent)).toEqual(["product", "product/renders"]);
+	});
+
+	it("keeps a studio's binaries beside its files and reads each one's bytes once", async () => {
+		const studioId = "22222222-2222-4222-8222-222222222240";
+		const studio = summary({
+			id: studioId,
+			slug: "product",
+			title: "Product",
+			archetype: "studio",
+			kind: "product",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "product",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const model: StudioBinaryRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 3,
+			mediaType: "model/gltf-binary",
+		};
+		const other: StudioBinaryRef = { ...model, fileSha256: "c".repeat(64) };
+		const readCloudBinary = vi.fn(async (ref: StudioBinaryRef) =>
+			ref === other ? Promise.reject(new Error("gone")) : new Uint8Array([1, 2, 3]),
+		);
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [studio]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: studio })),
+			}),
+			{
+				loadCloudFiles: vi.fn(async () =>
+					folderContents({ "product/specs.json": "{}" }, { "product/model.glb": model }),
+				),
+				readCloudBinary,
+			},
+		);
+		await store.load();
+		await store.refreshCloudFiles(studio);
+		expect(store.state.cloudSurfaceBinaries[studioId]).toEqual({ "product/model.glb": model });
+		expect(effectiveStudioBaseBinaries(store.state, studioId)).toEqual({ "product/model.glb": model });
+
+		const signal = new AbortController().signal;
+		expect([...(await store.readStudioBinary(model, signal))]).toEqual([1, 2, 3]);
+		expect([...(await store.readStudioBinary({ ...model }, signal))]).toEqual([1, 2, 3]);
+		expect(readCloudBinary).toHaveBeenCalledTimes(1);
+		await expect(store.readStudioBinary(other, signal)).rejects.toThrow("gone");
+		await expect(store.readStudioBinary(other, signal)).rejects.toThrow("gone");
+		expect(readCloudBinary).toHaveBeenCalledTimes(3);
+		const stopped = new AbortController();
+		stopped.abort();
+		expect(() => store.readStudioBinary(model, stopped.signal)).toThrow();
+
+		store.dispose();
+	});
+
+	it("gives the local sandbox's Product a real headband model, its bytes held in memory", async () => {
+		const store = storeWith(undefined, { companyName: "Thetaband", localInteractive: true });
+		await store.load();
+		const product = store.state.surfaces.find((surface) => surface.slug === "product")!;
+		const binaries = store.state.localStudioBinaries[product.id]!;
+		const glb = binaries["product/headband.glb"]!;
+		expect(glb.mediaType).toBe("model/gltf-binary");
+		const fixture = readFileSync(new URL("./fixtures/headband.glb", import.meta.url));
+		expect(glb.bytes).toBe(fixture.byteLength);
+		expect(glb.fileSha256).toBe(createHash("sha256").update(fixture).digest("hex"));
+		const bytes = await store.readStudioBinary(glb, new AbortController().signal);
+		expect(Buffer.from(bytes).equals(fixture)).toBe(true);
+		expect(JSON.parse(store.state.localStudioBase[product.id]!["product/object.json"]!).model).toBe("headband.glb");
+		store.dispose();
 	});
 
 	it("polls composing/building previews, deduplicates in-flight polls, and pauses when the tab is hidden", async () => {
@@ -1574,7 +1700,7 @@ describe("SurfacesStore", () => {
 		let calls = 0;
 		const loadCloudFiles = vi.fn(() => {
 			calls += 1;
-			return calls === 1 ? firstLoad.promise : secondLoad.promise;
+			return (calls === 1 ? firstLoad.promise : secondLoad.promise).then((files) => files && folderContents(files));
 		});
 		const client = fakeClient({
 			listSurfaces: vi.fn(async () => [identity]),
@@ -1662,9 +1788,8 @@ describe("SurfacesStore", () => {
 			changes: [mergedChange],
 		});
 		let folderTokens = mergedTokens;
-		const loadCloudFiles = vi.fn(
-			async (surface: ReturnType<typeof summary>): Promise<Record<string, string>> =>
-				surface.id === studioId ? { "brand/tokens.json": folderTokens } : {},
+		const loadCloudFiles = vi.fn(async (surface: ReturnType<typeof summary>) =>
+			folderContents(surface.id === studioId ? { "brand/tokens.json": folderTokens } : {}),
 		);
 		const getSurfaceWorkspace = vi.fn(async (surfaceId: string) =>
 			surfaceId === studioId ? workspace([studioSession], { surface: studio }) : workspace([], { surface: other }),
@@ -2009,7 +2134,7 @@ describe("SurfacesStore", () => {
 			}),
 		};
 
-		const files = await readSurfaceFolderFiles(folder, ["repo"], new AbortController().signal);
+		const { files } = await readSurfaceFolderFiles(folder, ["repo"], new AbortController().signal);
 		expect(listedPaths).not.toContain("repo/node_modules");
 		expect(listedPaths).not.toContain("repo/.git");
 		expect(listedPaths).not.toContain("repo/dist");
@@ -2050,9 +2175,9 @@ describe("SurfacesStore", () => {
 				liveUrl: null,
 			}),
 		);
-		const loadCloudFiles = vi.fn(async (surface: { readonly id: string }) => ({
-			"tokens.json": `{"id":"${surface.id}"}`,
-		}));
+		const loadCloudFiles = vi.fn(async (surface: { readonly id: string }) =>
+			folderContents({ "tokens.json": `{"id":"${surface.id}"}` }),
+		);
 		const store = storeWith(
 			fakeClient({
 				listSurfaces: vi.fn(async () => extra),

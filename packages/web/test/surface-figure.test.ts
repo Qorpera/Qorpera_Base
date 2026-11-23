@@ -17,6 +17,7 @@ import {
 import {
 	COMPANY,
 	fakeClient,
+	folderContents,
 	PREVIEW_IDS,
 	previewFrame,
 	SESSION,
@@ -237,7 +238,7 @@ describe("a surface's figure in the rail", () => {
 		const site = summary({ activeSessionCount: 1 });
 		const mintPreviewPass = vi.fn();
 		const setPreviewSelection = vi.fn();
-		const loadCloudFiles = vi.fn(async () => ({}));
+		const loadCloudFiles = vi.fn(async () => folderContents({}));
 		const getSurfaceWorkspace = vi.fn(async (id: string) =>
 			id === site.id
 				? workspace([session(["staged"])], {
