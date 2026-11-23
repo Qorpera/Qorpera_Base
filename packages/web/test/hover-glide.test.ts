@@ -13,12 +13,31 @@ function item(label: string, top: number, attributes: Record<string, string | bo
 	return element;
 }
 
+let frames = new Map<number, FrameRequestCallback>();
+let frameIds = 0;
+let clock = 0;
+
+function play(ms: number): void {
+	for (const end = clock + ms; clock < end; ) {
+		clock += 16;
+		const due = [...frames.values()];
+		frames.clear();
+		for (const callback of due) callback(clock);
+	}
+}
+
 describe("hover glide in menus", () => {
 	let controller: AbortController;
 	let menu: HTMLElement;
 
 	beforeEach(() => {
 		vi.useFakeTimers();
+		frames = new Map();
+		vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+			frames.set(++frameIds, callback);
+			return frameIds;
+		});
+		vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
 		controller = new AbortController();
 		installHoverGlides(controller.signal);
 		menu = h("div", { class: "context-menu" });
@@ -29,6 +48,7 @@ describe("hover glide in menus", () => {
 	afterEach(() => {
 		controller.abort();
 		menu.remove();
+		vi.unstubAllGlobals();
 		vi.useRealTimers();
 	});
 
@@ -46,6 +66,7 @@ describe("hover glide in menus", () => {
 
 		point(second, "pointerover");
 		expect(menu.querySelectorAll(".hover-glide-tint")).toHaveLength(1);
+		play(400);
 		expect(tint?.style.translate).toBe("6px 38px");
 
 		point(menu, "pointerleave");
