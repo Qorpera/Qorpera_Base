@@ -639,7 +639,7 @@ export class SurfaceStudioView {
 	constructor(options: SurfaceStudioOptions) {
 		this.#options = options;
 		this.#baseFiles = options.baseFiles ? { ...options.baseFiles } : {};
-		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
+		options.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
 		if (!options.baseFiles) {
 			const cloudManaged =

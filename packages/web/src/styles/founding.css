@@ -93,8 +93,8 @@ textarea.founding-vision:focus-visible { outline: none; }
 	animation: founding-peek var(--motion-spring) var(--ease-spring) both, founding-live 1.8s ease-in-out infinite;
 }
 @keyframes founding-live {
-	0%, 100% { box-shadow: 0 0 0 2px var(--overlay), 0 0 0 4px var(--line-color); }
-	50% { box-shadow: 0 0 0 2px var(--overlay), 0 0 0 7px color-mix(in srgb, var(--line-color) 30%, transparent); }
+	0%, 100% { transform: scale(1); opacity: 1; }
+	50% { transform: scale(1.06); opacity: 0.88; }
 }
 .founding-writing { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 0 auto; padding: 0 8px; color: var(--text-soft); font-size: 14px; }
 .founding-dots { display: inline-flex; align-items: center; gap: 3px; color: var(--line-color, var(--text-soft)); }

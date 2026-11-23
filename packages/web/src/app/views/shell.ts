@@ -863,7 +863,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				const store = surfacesOf(company);
 				if (!store) return;
 				event.preventDefault();
-				openCreateSurfaceSheet(store, company.profile.profileId);
+				openCreateSurfaceSheet(store);
 			},
 			{ signal: company.signal },
 		);
@@ -1834,10 +1834,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			cofounderElement ? parts.cofounderGroup : null,
 			surfaceRail ? surfaceRail.el : null,
 			parts.loading ?? null,
-			...(agentsHub ? [agentsHub] : surfaceRail ? [] : legacyNodes),
+			...(agentsHub || surfaceRail ? [] : legacyNodes),
 			!hasMembersSurface && (memberRows.length || placing) ? parts.members.el : null,
 			hiddenCount ? hiddenGroup.el : null,
 			empty && !surfaceRail ? parts.empty : null,
+			agentsHub,
 			parts.hover.attached ?? null,
 			parts.selection.moving ?? null,
 		].filter((element) => element !== null),
@@ -2029,7 +2030,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 	hub.workingWrap.hidden = !hasWorking;
 	const workingKey = JSON.stringify([
 		locale,
-		input.activeAgentId,
 		input.workingStaff.map((agent) => [agent.id, agent.displayName, company.agentState(agent.id)]),
 		explorations.map(({ surface, exploration, variants }) => [
 			surface.slug,
@@ -2058,9 +2058,10 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 				return h(
 					"a",
 					{
-						class: `rail-agent-hub-row is-working${input.activeAgentId === agent.id ? " active" : ""}`,
+						class: "rail-agent-hub-row is-working",
 						href: `#/c/${input.profileId}/staff/${agent.id}`,
 						draggable: "false",
+						"data-agent-id": agent.id,
 					},
 					h(
 						"span",
@@ -2147,7 +2148,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 	const surfaceTitleBySlug = new Map(state.surfaces.map((surface) => [surface.slug, surface.title]));
 	const scheduledKey = JSON.stringify([
 		locale,
-		input.activeAgentId,
 		automations.map((item) => [
 			item.id,
 			item.title,
@@ -2214,7 +2214,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 				return h(
 					"a",
 					{
-						class: `rail-agent-hub-row${input.activeAgentId === agent.id ? " active" : ""}`,
+						class: "rail-agent-hub-row",
 						href: `#/c/${input.profileId}/staff/${agent.id}`,
 						draggable: "false",
 						"data-agent-id": agent.id,
@@ -2239,18 +2239,14 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 
 	hub.idleTitle.textContent = t("Ready");
 	hub.idleWrap.hidden = !hasIdle;
-	const idleKey = JSON.stringify([
-		locale,
-		input.activeAgentId,
-		input.idleStaff.map((agent) => [agent.id, agent.displayName, agent.role]),
-	]);
+	const idleKey = JSON.stringify([locale, input.idleStaff.map((agent) => [agent.id, agent.displayName, agent.role])]);
 	if (idleKey !== hub.idleKey) {
 		hub.idleKey = idleKey;
 		const idleRows = input.idleStaff.map((agent) =>
 			h(
 				"a",
 				{
-					class: `rail-agent-hub-row${input.activeAgentId === agent.id ? " active" : ""}`,
+					class: "rail-agent-hub-row",
 					href: `#/c/${input.profileId}/staff/${agent.id}`,
 					draggable: "false",
 					"data-agent-id": agent.id,
@@ -2269,6 +2265,10 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			),
 		);
 		hub.idleList.replaceChildren(...idleRows);
+	}
+
+	for (const row of hub.body.querySelectorAll<HTMLElement>("[data-agent-id]")) {
+		row.classList.toggle("active", row.dataset.agentId === input.activeAgentId);
 	}
 
 	hub.rowCount =
@@ -2301,9 +2301,7 @@ function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
 	if (!store) return undefined;
 	let rail = surfaceRails.get(company);
 	if (!rail) {
-		rail = new SurfaceRail(store, company.profile.profileId, company.signal, () =>
-			openCreateSurfaceSheet(store, company.profile.profileId),
-		);
+		rail = new SurfaceRail(store, company.profile.profileId, company.signal, () => openCreateSurfaceSheet(store));
 		surfaceRails.set(company, rail);
 	}
 	return rail;
@@ -4256,6 +4254,17 @@ function anotherModalOpen(): boolean {
 			!element.closest(".is-leaving") &&
 			(!(element instanceof HTMLDialogElement) || element.open),
 	);
+}
+
+export function clearShellCompanyState(company?: CompanyController): void {
+	if (!company || searchTarget?.company === company) {
+		searchTarget = undefined;
+		searchWindow?.reset();
+	}
+	if (!company) {
+		accountContext = undefined;
+		setAccountMenuOpen(false);
+	}
 }
 
 export function installSearchShortcut(): void {

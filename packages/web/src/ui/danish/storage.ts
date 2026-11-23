@@ -27,6 +27,7 @@ export const STORAGE: Record<string, string> = {
 	"{shown} of {count} items": "{shown} af {count} elementer",
 	Yesterday: "I går",
 	"No recent changes match your search.": "Ingen seneste ændringer matcher din søgning.",
+	"Search recent changes": "Søg i seneste ændringer",
 
 	// HTML pages and folder links (app/views/company-folder.ts, ui/markdown.ts)
 	Page: "Side",

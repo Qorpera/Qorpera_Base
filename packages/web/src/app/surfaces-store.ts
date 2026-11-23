@@ -150,6 +150,46 @@ const STUDIO_MAX_FILES = 32;
 const STUDIO_MAX_SUBFOLDERS = 12;
 const STUDIO_LIST_CONCURRENCY = 4;
 const STUDIO_READ_CONCURRENCY = 6;
+const MAX_CACHED_CLOUD_FILES = 6;
+
+function sameFileMap(
+	a: Readonly<Record<string, string>> | undefined,
+	b: Readonly<Record<string, string>> | undefined,
+): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	const aKeys = Object.keys(a);
+	const bKeys = Object.keys(b);
+	if (aKeys.length !== bKeys.length) return false;
+	for (const key of aKeys) {
+		if (!Object.hasOwn(b, key) || a[key] !== b[key]) return false;
+	}
+	return true;
+}
+
+function pruneCloudSurfaceFiles(
+	current: Readonly<Record<string, Readonly<Record<string, string>>>>,
+	surfaceId: string,
+	files: Readonly<Record<string, string>>,
+	keepIds: ReadonlySet<string>,
+): Record<string, Readonly<Record<string, string>>> {
+	const next: Record<string, Readonly<Record<string, string>>> = {};
+	for (const [id, entry] of Object.entries(current)) {
+		if (id !== surfaceId) next[id] = entry;
+	}
+	next[surfaceId] = files;
+	const keys = Object.keys(next);
+	let excess = keys.length - MAX_CACHED_CLOUD_FILES;
+	if (excess > 0) {
+		for (const id of keys) {
+			if (excess <= 0) break;
+			if (id === surfaceId || keepIds.has(id)) continue;
+			delete next[id];
+			excess--;
+		}
+	}
+	return next;
+}
 
 function studioFilePriority(path: string): number {
 	const lower = path.toLowerCase();
@@ -1219,6 +1259,7 @@ export class SurfacesStore {
 		this.#hintTimer = undefined;
 		this.#folderHintTimer = undefined;
 		this.#retryLoadTimer = undefined;
+		lastCompiledIdentity = undefined;
 		this.store.dispose();
 	}
 
@@ -1693,10 +1734,18 @@ export class SurfacesStore {
 				for (const item of automations) {
 					if (item.prompt) prompts[item.id] = item.prompt;
 				}
-				this.store.set((state) => ({
-					automations,
-					scheduledAgentPrompts: { ...state.scheduledAgentPrompts, ...prompts },
-				}));
+				this.store.set((state) => {
+					const mergedPrompts = { ...state.scheduledAgentPrompts, ...prompts };
+					const promptsUnchanged = sameFileMap(state.scheduledAgentPrompts, mergedPrompts);
+					const automationsUnchanged =
+						state.automations.length === automations.length &&
+						JSON.stringify(state.automations) === JSON.stringify(automations);
+					if (automationsUnchanged && promptsUnchanged) return {};
+					return {
+						...(automationsUnchanged ? {} : { automations }),
+						...(promptsUnchanged ? {} : { scheduledAgentPrompts: mergedPrompts }),
+					};
+				});
 			}
 		} catch {
 			/* WHY: Automations are a quiet extra; a failed read must not block the surfaces themselves. */
@@ -2019,10 +2068,33 @@ export class SurfacesStore {
 				else delete copy[surfaceId];
 				nextPendingStudioPatches = copy;
 			}
+			const existingWorkspace = state.workspaces[surfaceId];
+			const workspaceUnchanged =
+				existingWorkspace !== undefined && JSON.stringify(existingWorkspace) === JSON.stringify(mergedWorkspace);
+			const existingSurface = state.surfaces.find((surface) => surface.id === surfaceId);
+			const surfaceUnchanged =
+				existingSurface !== undefined && JSON.stringify(existingSurface) === JSON.stringify(workspace.surface);
+			const patchesChanged =
+				nextPatches !== state.studioPatches && JSON.stringify(nextPatches) !== JSON.stringify(state.studioPatches);
+			if (
+				workspaceUnchanged &&
+				surfaceUnchanged &&
+				!patchesChanged &&
+				nextPendingStudioPatches === state.pendingStudioPatches &&
+				notes.length === state.notes.length
+			) {
+				return {};
+			}
 			return {
-				workspaces: { ...state.workspaces, [surfaceId]: mergedWorkspace },
-				surfaces: state.surfaces.map((surface) => (surface.id === surfaceId ? workspace.surface : surface)),
-				...(nextPatches !== state.studioPatches ? { studioPatches: nextPatches } : {}),
+				...(workspaceUnchanged ? {} : { workspaces: { ...state.workspaces, [surfaceId]: mergedWorkspace } }),
+				...(surfaceUnchanged
+					? {}
+					: {
+							surfaces: state.surfaces.map((surface) =>
+								surface.id === surfaceId ? workspace.surface : surface,
+							),
+						}),
+				...(patchesChanged ? { studioPatches: nextPatches } : {}),
 				...(nextPendingStudioPatches !== state.pendingStudioPatches
 					? { pendingStudioPatches: nextPendingStudioPatches }
 					: {}),
@@ -2179,14 +2251,17 @@ export class SurfacesStore {
 		}
 		this.#cloudFilesLoading.add(surface.id);
 		const fetchStartRev = this.#cloudFilesRev.get(surface.id) ?? 0;
-		this.store.set((state) => ({
-			loadingCloudFiles: state.loadingCloudFiles[surface.id]
-				? state.loadingCloudFiles
-				: { ...state.loadingCloudFiles, [surface.id]: true },
-			...(visible && !state.updatingCloudFiles[surface.id]
-				? { updatingCloudFiles: { ...state.updatingCloudFiles, [surface.id]: true } }
-				: {}),
-		}));
+		const hadCachedFiles = this.state.cloudSurfaceFiles[surface.id] !== undefined;
+		if (!hadCachedFiles || visible) {
+			this.store.set((state) => ({
+				...(!hadCachedFiles && !state.loadingCloudFiles[surface.id]
+					? { loadingCloudFiles: { ...state.loadingCloudFiles, [surface.id]: true } }
+					: {}),
+				...(visible && !state.updatingCloudFiles[surface.id]
+					? { updatingCloudFiles: { ...state.updatingCloudFiles, [surface.id]: true } }
+					: {}),
+			}));
+		}
 		let shouldRerun = false;
 		let rerunVisible = false;
 		try {
@@ -2204,8 +2279,24 @@ export class SurfacesStore {
 							nextPendingStudioPatches = copy;
 						}
 					}
+					const filesUnchanged = sameFileMap(state.cloudSurfaceFiles[surface.id], files);
+					if (filesUnchanged && nextPendingStudioPatches === state.pendingStudioPatches) return {};
+					const keepIds = new Set<string>();
+					if (this.#activeSurfaceId) keepIds.add(this.#activeSurfaceId);
+					if (state.drawer?.surfaceId) keepIds.add(state.drawer.surfaceId);
+					const identity = findIdentitySurface(state);
+					if (identity) keepIds.add(identity.id);
 					return {
-						cloudSurfaceFiles: { ...state.cloudSurfaceFiles, [surface.id]: files },
+						...(filesUnchanged
+							? {}
+							: {
+									cloudSurfaceFiles: pruneCloudSurfaceFiles(
+										state.cloudSurfaceFiles,
+										surface.id,
+										files,
+										keepIds,
+									),
+								}),
 						...(nextPendingStudioPatches !== state.pendingStudioPatches
 							? { pendingStudioPatches: nextPendingStudioPatches }
 							: {}),
@@ -2316,7 +2407,15 @@ export class SurfacesStore {
 				return;
 			}
 			if (this.state.source === "cloud") {
+				const retryHydrate = [...this.#hydratedAttempted].filter(
+					(id) =>
+						!this.state.workspaces[id] &&
+						this.state.surfaces.some(
+							(surface) => surface.id === id && surface.status === "active" && surface.activeSessionCount > 0,
+						),
+				);
 				this.#hydratedAttempted.clear();
+				for (const id of retryHydrate) this.hydrateWorkspace(id);
 				void this.refreshSurfaces();
 				const client = this.#options.client;
 				if (client) void this.#loadAutomations(client);
@@ -2901,9 +3000,24 @@ export class SurfacesStore {
 			this.store.set((state) => {
 				const workspaces = { ...state.workspaces };
 				delete workspaces[surfaceId];
+				const cloudSurfaceFiles = { ...state.cloudSurfaceFiles };
+				delete cloudSurfaceFiles[surfaceId];
+				const localStudioBase = { ...state.localStudioBase };
+				delete localStudioBase[surfaceId];
+				const pendingStudioPatches = { ...state.pendingStudioPatches };
+				delete pendingStudioPatches[surfaceId];
+				const loadingCloudFiles = { ...state.loadingCloudFiles };
+				delete loadingCloudFiles[surfaceId];
+				const updatingCloudFiles = { ...state.updatingCloudFiles };
+				delete updatingCloudFiles[surfaceId];
 				return {
 					surfaces: state.surfaces.filter((surface) => surface.id !== surfaceId),
 					workspaces,
+					cloudSurfaceFiles,
+					localStudioBase,
+					pendingStudioPatches,
+					loadingCloudFiles,
+					updatingCloudFiles,
 					...(state.drawer?.surfaceId === surfaceId ? { drawer: undefined } : {}),
 					...(state.highlight?.surfaceId === surfaceId ? { highlight: undefined } : {}),
 				};
@@ -4123,7 +4237,12 @@ export class SurfacesStore {
 			) {
 				const prevById = new Map(this.state.surfaces.map((surface) => [surface.id, surface]));
 				const next = sortSurfaces(surfaces);
-				this.store.set({ surfaces: next });
+				if (
+					this.state.surfaces.length !== next.length ||
+					JSON.stringify(this.state.surfaces) !== JSON.stringify(next)
+				) {
+					this.store.set({ surfaces: next });
+				}
 				for (const surface of next) {
 					if (surface.status !== "active" || isLocalSurfaceId(surface.id)) continue;
 					const prev = prevById.get(surface.id);

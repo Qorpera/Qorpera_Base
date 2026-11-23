@@ -361,6 +361,11 @@ export class SurfaceRail {
 			this.#shown.length === deps.length &&
 			deps.every((value, index) => Object.is(this.#shown![index], value))
 		) {
+			for (const surface of state.surfaces) {
+				if (surface.status === "active" && surface.activeSessionCount > 0 && !state.workspaces[surface.id]) {
+					this.#store.hydrateWorkspace(surface.id);
+				}
+			}
 			if (this.#activeSlug !== activeSlug) {
 				this.#activeSlug = activeSlug;
 				for (const entry of this.#rows.values()) {
