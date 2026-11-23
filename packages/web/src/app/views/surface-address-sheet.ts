@@ -11,7 +11,7 @@ import {
 } from "../../cloud/site-hosting.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
-import { pressToCopy } from "./settings-sites.ts";
+import { pressToCopy, toClipboard } from "./settings-sites.ts";
 
 export interface SurfaceSiteHosting {
 	readonly siteId: string;
@@ -21,6 +21,7 @@ export interface SurfaceSiteHosting {
 export interface SurfaceAddressSetup {
 	readonly container: HTMLElement;
 	readonly canManage: () => boolean;
+	readonly password?: () => Promise<string | null>;
 	readonly changed: () => void;
 	readonly signal: AbortSignal;
 }
@@ -115,6 +116,7 @@ export class SurfaceAddress {
 	#target: SurfaceSiteHosting | undefined;
 	#liveUrl = "";
 	#known: Known | null | undefined;
+	#password: string | null | undefined;
 	#failed = false;
 	#problem: string | undefined;
 	#open = false;
@@ -149,6 +151,7 @@ export class SurfaceAddress {
 			this.#shut();
 			this.#target = next;
 			this.#known = undefined;
+			this.#password = undefined;
 			this.#failed = false;
 			this.#problem = undefined;
 			this.#linesShown.clear();
@@ -256,6 +259,7 @@ export class SurfaceAddress {
 		this.#setup.changed();
 		if (takeFocus) this.#sheet.focus();
 		void this.#read().then(() => this.#recheck());
+		this.#readPassword();
 	}
 
 	close(focusAddress = false): void {
@@ -304,6 +308,30 @@ export class SurfaceAddress {
 		}
 		this.#changed();
 		this.#schedule();
+	}
+
+	#readPassword(): void {
+		const target = this.#target;
+		if (this.#password !== undefined || !this.#setup.password) return;
+		void this.#setup
+			.password()
+			.catch(() => null)
+			.then((password) => {
+				if (this.#setup.signal.aborted || target !== this.#target) return;
+				this.#password = password?.trim() || null;
+				if (this.#open) this.#paint();
+			});
+	}
+
+	#copy(control: HTMLButtonElement, text: string, refused: () => void): void {
+		void toClipboard(text).then((copied) => {
+			if (!copied) return refused();
+			const label = control.textContent;
+			control.textContent = t("Copied");
+			setTimeout(() => {
+				if (control.textContent === t("Copied")) control.textContent = label;
+			}, COPIED_MS);
+		});
 	}
 
 	#waitingDomains(): SiteCustomDomain[] {
@@ -475,6 +503,7 @@ export class SurfaceAddress {
 			this.#setup.canManage(),
 			this.#failed,
 			this.#problem ?? "",
+			Boolean(this.#password),
 			[...this.#linesShown],
 			known === undefined
 				? "unknown"
@@ -509,24 +538,55 @@ export class SurfaceAddress {
 		const name = this.name();
 		const cut = name.endsWith(".qorpera.com") ? name.length - ".qorpera.com".length : name.lastIndexOf(".");
 		this.#sheet.setAttribute("aria-label", t("Where the site lives"));
+		const shownName = h(
+			"div",
+			{ class: "surface-address-name" },
+			cut > 0 ? name.slice(0, cut) : name,
+			cut > 0 ? h("span", null, name.slice(cut)) : null,
+		);
+		const copyLink = h("button", { type: "button", class: "surface-address-link is-link" }, t("Copy link"));
+		copyLink.addEventListener("click", () =>
+			this.#copy(copyLink, this.#openUrl(), () => {
+				this.#problem = pressToCopy();
+				this.#paint();
+				const shown = this.#sheet.querySelector(".surface-address-name");
+				const selection = window.getSelection();
+				if (!shown || !selection) return;
+				const range = document.createRange();
+				range.selectNodeContents(shown);
+				selection.removeAllRanges();
+				selection.addRange(range);
+			}),
+		);
+		const password = this.#known?.isPublic ? null : this.#password;
+		const copyPassword = password
+			? h("button", { type: "button", class: "surface-address-link is-password" }, t("Copy password"))
+			: null;
+		copyPassword?.addEventListener("click", () =>
+			this.#copy(copyPassword, password!, () => {
+				this.#problem = t("That didn't work. Try again.");
+				this.#paint();
+			}),
+		);
 		replace(
 			this.#sheet,
+			shownName,
 			h(
 				"div",
-				{ class: "surface-address-name" },
-				cut > 0 ? name.slice(0, cut) : name,
-				cut > 0 ? h("span", null, name.slice(cut)) : null,
-			),
-			h(
-				"a",
-				{
-					class: "surface-address-open",
-					href: this.#openUrl(),
-					target: "_blank",
-					rel: "noopener noreferrer",
-				},
-				t("Open the site"),
-				icon("external"),
+				{ class: "surface-address-links" },
+				h(
+					"a",
+					{
+						class: "surface-address-open",
+						href: this.#openUrl(),
+						target: "_blank",
+						rel: "noopener noreferrer",
+					},
+					t("Open the site"),
+					icon("external"),
+				),
+				copyLink,
+				copyPassword,
 			),
 			this.#stops(),
 			...this.#body(),

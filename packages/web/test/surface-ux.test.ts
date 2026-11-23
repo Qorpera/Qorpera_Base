@@ -17,7 +17,7 @@ import { SITE_DOOR_READY, SITE_DOOR_SHOWN } from "../src/app/views/site-view.ts"
 import { CrewFigures, crewLook, sessionCrew } from "../src/app/views/surface-crew.ts";
 import { IDENTITY_TOKENS_CSS_MESSAGE, SurfaceDoorStage } from "../src/app/views/surface-door.ts";
 import { openCreateSurfaceSheet, openScheduleAgentSheet } from "../src/app/views/surface-migration-sheet.ts";
-import { openPublishPatchnotesSheet } from "../src/app/views/surface-publish-sheet.ts";
+import { openPublishSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
 import { linkHref } from "../src/ui/dom.ts";
@@ -697,10 +697,10 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.el.querySelector<HTMLButtonElement>('[data-act="publish"]')!.click();
 		const patchSheet = document.querySelector(".surface-publish-sheet")!;
 		expect(patchSheet).not.toBeNull();
-		expect(patchSheet.querySelectorAll(".surface-patchnote-item")).toHaveLength(2);
+		expect(patchSheet.querySelectorAll(".surface-publish-change")).toHaveLength(2);
 		patchSheet.querySelector<HTMLButtonElement>('[data-act="rollback"]')!.click();
 		await flush();
-		expect(patchSheet.querySelectorAll(".surface-patchnote-item")).toHaveLength(1);
+		expect(patchSheet.querySelectorAll(".surface-publish-change")).toHaveLength(1);
 		patchSheet.querySelector<HTMLButtonElement>('[data-act="confirm-publish"]')!.click();
 		await flush();
 		expect(document.querySelector(".surface-publish-sheet")).toBeNull();
@@ -1277,8 +1277,8 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(view.el.querySelector(".surface-message-author")?.textContent).toBe("Mads");
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="publish"]')!.click();
-		expect(document.querySelector(".surface-patchnote-approver")?.textContent).toBe("Approved by Mads");
-		document.querySelector<HTMLButtonElement>('.surface-publish-sheet [data-act="cancel"]')?.click();
+		expect(document.querySelector(".surface-publish-change-by")?.textContent).toBe("Approved by Mads");
+		document.querySelector<HTMLButtonElement>(".surface-publish-sheet .surface-close")?.click();
 
 		view.dispose();
 		store.dispose();
@@ -1375,12 +1375,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
-	it("renders Share live link bar inside Patch notes sheet, copies link and optional password", async () => {
-		const writeText = vi.fn().mockResolvedValue(undefined);
-		Object.defineProperty(navigator, "clipboard", {
-			configurable: true,
-			value: { writeText },
-		});
+	it("asks one question in the publish sheet, lists what goes live, and shares no link there", async () => {
 		HTMLDialogElement.prototype.showModal = function () {
 			this.open = true;
 		};
@@ -1393,48 +1388,62 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 			slug: "website",
 			title: "Website",
 			liveUrl: "https://thetaband.qorpera.com",
-			unpublishedChangeCount: 1,
+			unpublishedChangeCount: 2,
 			hasUnpublishedChanges: true,
+		});
+		const landed = session([], {
+			state: "closed",
+			changes: [
+				change(CHANGES[0], 1, "merged", { title: "Price on the front page", summary: "Shows 1.995 kr." }),
+				change(CHANGES[1], 2, "merged", { title: "Questions", undoBatchSize: 3 }),
+			],
 		});
 		const client = fakeClient({
 			listSurfaces: vi.fn().mockResolvedValue([site]),
-			getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([], { surface: site })),
+			getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([], { surface: site, recentHistory: [landed] })),
 		});
 		const store = storeWith(client);
 		await store.load();
+		await store.openSurface("website");
 
-		const loadSitePassword = vi.fn().mockResolvedValue("nordic-pass-42");
-		const dialog = openPublishPatchnotesSheet(store, site, { loadSitePassword });
-		await flush();
-
-		const shareBar = document.querySelector<HTMLElement>(".surface-share-bar")!;
-		expect(shareBar).not.toBeNull();
-		expect(shareBar.querySelector(".surface-share-url")?.textContent).toBe("https://thetaband.qorpera.com");
-		const openLink = shareBar.querySelector<HTMLAnchorElement>(".surface-share-btn.is-open")!;
-		expect(openLink.getAttribute("href")).toBe("https://thetaband.qorpera.com");
-		expect(openLink.target).toBe("_blank");
-		expect(openLink.rel).toContain("noopener");
-
-		const copyLinkBtn = shareBar.querySelector<HTMLButtonElement>('[data-act="copy-link"]')!;
-		copyLinkBtn.click();
-		await flush();
-		expect(writeText).toHaveBeenCalledWith("https://thetaband.qorpera.com");
-		expect(document.querySelector('[data-act="copy-link"]')?.textContent).toBe("Copied");
-
-		const copyPassBtn = document.querySelector<HTMLButtonElement>('[data-act="copy-password"]')!;
-		expect(copyPassBtn).not.toBeNull();
-		copyPassBtn.click();
-		await flush();
-		expect(writeText).toHaveBeenCalledWith("nordic-pass-42");
-		expect(document.querySelector('[data-act="copy-password"]')?.textContent).toBe("Copied");
+		const dialog = openPublishSheet(store, site);
+		const sheet = dialog.el;
+		expect(sheet.getAttribute("aria-label")).toBe("Publish");
+		expect(sheet.querySelector(".surface-publish-heading h2")?.textContent).toBe("Publish 2 changes?");
+		expect(sheet.querySelector(".surface-publish-heading p")?.textContent).toBe("Website · thetaband.qorpera.com");
+		expect([...sheet.querySelectorAll(".surface-publish-change")].map((item) => item.textContent)).toEqual([
+			"Price on the front pageUndoShows 1.995 kr.",
+			"QuestionsUndo with 2 others",
+		]);
+		expect(sheet.querySelector('[data-act="rollback"][title]')?.getAttribute("title")).toBe(
+			"They were approved together, so they are undone together.",
+		);
+		expect(
+			[...sheet.querySelectorAll<HTMLButtonElement>(".surface-sheet-actions button")].map(
+				(item) => item.textContent,
+			),
+		).toEqual(["Publish"]);
+		expect(sheet.querySelector("a[href]")).toBeNull();
+		expect(sheet.textContent).not.toContain("Copy");
 		dialog.close();
 
-		const dialogWithoutPass = openPublishPatchnotesSheet(store, site);
-		await flush();
-		expect(document.querySelector(".surface-share-bar")).not.toBeNull();
-		expect(document.querySelector('[data-act="copy-password"]')).toBeNull();
-		dialogWithoutPass.close();
+		const quiet = { ...site, unpublishedChangeCount: 0, hasUnpublishedChanges: false };
+		const empty = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn().mockResolvedValue([quiet]),
+				getSurfaceWorkspace: vi.fn().mockResolvedValue(workspace([], { surface: quiet })),
+			}),
+		);
+		await empty.load();
+		const nothing = openPublishSheet(empty, quiet);
+		expect(nothing.el.querySelector(".surface-publish-heading h2")?.textContent).toBe("Nothing to publish");
+		expect(nothing.el.querySelector('[data-act="confirm-publish"]')).toBeNull();
+		const done = nothing.el.querySelector<HTMLButtonElement>('[data-act="cancel"]')!;
+		expect(done.textContent).toBe("Done");
+		done.click();
+		expect(nothing.el.open).toBe(false);
 		store.dispose();
+		empty.dispose();
 	});
 
 	it("folds optional starting surfaces and reference URL into NewCompanyView submissions without affecting blank ones", () => {

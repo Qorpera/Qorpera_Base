@@ -30,7 +30,7 @@ import {
 } from "../surfaces-store.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { CrewFigures } from "./surface-crew.ts";
-import { openPublishPatchnotesSheet, type PublishPatchnotesOptions } from "./surface-publish-sheet.ts";
+import { openPublishSheet } from "./surface-publish-sheet.ts";
 import { isActionChange } from "./surface-rail.ts";
 
 const DRAWER_WIDTH_KEY = "qorpera.web.surface-drawer-width.v1";
@@ -342,7 +342,6 @@ export class SurfaceSessionDrawer {
 	readonly #sentImages = new Map<string, ReceivedAttachments>();
 	readonly #localImageUrls = new Map<File, string>();
 	readonly #store: SurfacesStore;
-	readonly #loadSitePassword: PublishPatchnotesOptions["loadSitePassword"];
 	readonly #crew = new CrewFigures();
 	#preferredWidth: number | undefined;
 	#width = DRAWER_DEFAULT;
@@ -357,9 +356,8 @@ export class SurfaceSessionDrawer {
 	#armTimer: ReturnType<typeof setTimeout> | undefined;
 	#mention: { options: MentionTarget[]; active: number } | undefined;
 
-	constructor(store: SurfacesStore, signal: AbortSignal, options: PublishPatchnotesOptions = {}) {
+	constructor(store: SurfacesStore, signal: AbortSignal) {
 		this.#store = store;
-		this.#loadSitePassword = options.loadSitePassword;
 		try {
 			const stored = Number(localStorage.getItem(DRAWER_WIDTH_KEY));
 			if (Number.isFinite(stored) && stored >= DRAWER_MIN) this.#preferredWidth = stored;
@@ -1798,8 +1796,7 @@ export class SurfaceSessionDrawer {
 				return;
 			case "open-publish": {
 				const targetSurface = store.state.surfaces.find((item) => item.id === surfaceId);
-				if (targetSurface)
-					openPublishPatchnotesSheet(store, targetSurface, { loadSitePassword: this.#loadSitePassword });
+				if (targetSurface) openPublishSheet(store, targetSurface);
 				return;
 			}
 			case "reconcile":
