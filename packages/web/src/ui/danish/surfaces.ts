@@ -357,10 +357,8 @@ export const SURFACES: Record<string, string> = {
 	"No longer points here": "Peger ikke hertil længere",
 	"Use your own domain": "Brug dit eget domæne",
 	"A site can have five domains at most.": "En hjemmeside kan højst have fem domæner.",
-	"Anyone can open it": "Alle kan åbne den",
 	"Copy {value}": "Kopiér {value}",
 	"Only founders and admins can change this.": "Kun stiftere og administratorer kan ændre det.",
-	"Only your team can open it": "Kun dit team kan åbne den",
 	"Qorpera took this site down, so this cannot change now.":
 		"Qorpera har taget hjemmesiden ned, så det kan ikke ændres nu.",
 	"Remove {domain}": "Fjern {domain}",
@@ -370,8 +368,8 @@ export const SURFACES: Record<string, string> = {
 	"The domain does not point here yet.": "Domænet peger ikke hertil endnu.",
 	"The domain is still there. Try again.": "Domænet er der stadig. Prøv igen.",
 	"The site did not go live. Try again.": "Hjemmesiden gik ikke live. Prøv igen.",
-	"The site has a place to sign in or type a password, so it stays with only you for now.":
-		"Hjemmesiden har et sted at logge ind eller skrive en adgangskode, så den bliver hos kun jer indtil videre.",
+	"The site has a place to sign in or type a password, so it cannot go live yet.":
+		"Hjemmesiden har et sted at logge ind eller skrive en adgangskode, så den kan ikke gå live endnu.",
 	"The site is still live. Try again.": "Hjemmesiden er stadig live. Prøv igen.",
 	"Where the site lives": "Hvor hjemmesiden bor",
 	"Where the site lives could not be read just now.": "Det kunne ikke læses lige nu, hvor hjemmesiden bor.",

@@ -435,7 +435,7 @@ describe("the address card's refusals", () => {
 		[
 			"SITE_CONTAINS_CREDENTIAL_INPUTS",
 			"22023",
-			"The site has a place to sign in or type a password, so it stays with only you for now.",
+			"The site has a place to sign in or type a password, so it cannot go live yet.",
 		],
 		["SITE_TAKEN_DOWN", "42501", "Qorpera took this site down, so this cannot change now."],
 		["Only founders and admins manage site visibility", "42501", "Only founders and admins can change this."],

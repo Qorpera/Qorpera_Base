@@ -63,7 +63,7 @@ const MAIN = { kind: "main" } as const;
 const REFUSALS: Readonly<Record<string, string>> = {
 	PUBLIC_SITES_DISABLED: phrase("Sites cannot go live for everyone yet."),
 	SITE_CONTAINS_CREDENTIAL_INPUTS: phrase(
-		"The site has a place to sign in or type a password, so it stays with only you for now.",
+		"The site has a place to sign in or type a password, so it cannot go live yet.",
 	),
 	CUSTOM_DOMAINS_DISABLED: phrase("Your own domain cannot be added yet."),
 	SITE_DOMAIN_LIMIT_REACHED: phrase("A site can have five domains at most."),
@@ -214,8 +214,7 @@ export class SurfaceAddress {
 	button(): HTMLButtonElement | null {
 		if (!this.#liveUrl) return null;
 		const mark = this.mark();
-		const title =
-			mark === "private" ? t("Only your team can open it") : mark === "live" ? t("Anyone can open it") : undefined;
+		const title = mark === "private" ? t("Not live yet") : mark === "live" ? t("Live") : undefined;
 		return h(
 			"button",
 			{
