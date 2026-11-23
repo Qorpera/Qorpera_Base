@@ -245,7 +245,7 @@ function vaultWorld(options: { reset?: "full" | null; resetState?: string | null
 			refresh_capability: capability,
 		},
 	};
-	return { keyring, authority, request, requestId, capabilitySha256, state };
+	return { keyring, authority, request, requestId, capabilitySha256, state, claudeLoginId };
 }
 
 describe("the vault's Claude read and reset", () => {
@@ -267,6 +267,79 @@ describe("the vault's Claude read and reset", () => {
 		);
 		expect(w.authority.completeModelLoginAccountRefresh).toHaveBeenCalledTimes(1);
 		expect(reads.useClaudeReset).not.toHaveBeenCalled();
+	});
+
+	it("has the vault renew the login before the read, and reads the renewed sign-in when it was renewed", async () => {
+		const w = vaultWorld();
+		const renewedCredentials = '{"claudeAiOauth":{"accessToken":"renewed-fixture"}}';
+		const renewedEnvelope = w.keyring.sealMember(
+			{
+				[CLAUDE_LOGIN_FIELD]: JSON.stringify({
+					schema: CLAUDE_LOGIN_FILES_SCHEMA,
+					files: { ".credentials.json": b64(renewedCredentials), ".claude.json": b64(SETTINGS) },
+				}),
+			},
+			{ memberId: w.request.body.requested_by_user_id, loginId: w.claudeLoginId, version: 3, keyId: "vault-root-1" },
+		);
+		const first = (await w.authority.describeClaudeLoginRead()) as Record<string, unknown>;
+		const renewClaude = vi.fn(async () => {
+			w.authority.describeClaudeLoginRead.mockResolvedValue({
+				...first,
+				version: 3,
+				envelopeSha256: createHash("sha256").update(renewedEnvelope).digest("hex"),
+				encryptedEnvelopeBase64: Buffer.from(renewedEnvelope).toString("base64"),
+			} as Awaited<ReturnType<typeof w.authority.describeClaudeLoginRead>>);
+			return "reopen" as const;
+		});
+		w.authority.describeClaudeLoginRead.mockClear();
+		const reads = {
+			readClaudeLogin: vi.fn(async () => ({ usage: USAGE, resets: RESETS })),
+			useClaudeReset: vi.fn(),
+		};
+		const usage = new CloudModelLoginUsage({ authority: w.authority, keyring: w.keyring, claude: reads, renewClaude });
+		expect((await usage.refresh(w.request, AbortSignal.timeout(5_000))).status).toBe("completed");
+		expect(renewClaude).toHaveBeenCalledExactlyOnceWith(w.claudeLoginId);
+		expect(w.authority.describeClaudeLoginRead).toHaveBeenCalledTimes(2);
+		expect(reads.readClaudeLogin).toHaveBeenCalledExactlyOnceWith(
+			{ credentials: b64(renewedCredentials), usage: true, resets: true },
+			expect.any(AbortSignal),
+		);
+		expect(w.authority.recordClaudeLoginRead).toHaveBeenCalledTimes(1);
+
+		const kept = vaultWorld();
+		const keep = vi.fn(async () => "keep" as const);
+		const keptReads = { readClaudeLogin: vi.fn(async () => ({ usage: USAGE, resets: RESETS })), useClaudeReset: vi.fn() };
+		await new CloudModelLoginUsage({
+			authority: kept.authority,
+			keyring: kept.keyring,
+			claude: keptReads,
+			renewClaude: keep,
+		}).refresh(kept.request, AbortSignal.timeout(5_000));
+		expect(keep).toHaveBeenCalledTimes(1);
+		expect(kept.authority.describeClaudeLoginRead).toHaveBeenCalledTimes(1);
+		expect(keptReads.readClaudeLogin).toHaveBeenCalledWith(
+			{ credentials: b64(CREDENTIALS), usage: true, resets: true },
+			expect.any(AbortSignal),
+		);
+
+		const failing = vaultWorld();
+		const failingReads = {
+			readClaudeLogin: vi.fn(async () => ({ usage: USAGE, resets: RESETS })),
+			useClaudeReset: vi.fn(),
+		};
+		expect(
+			(
+				await new CloudModelLoginUsage({
+					authority: failing.authority,
+					keyring: failing.keyring,
+					claude: failingReads,
+					renewClaude: vi.fn(async () => {
+						throw new Error("the renewal could not be taken");
+					}),
+				}).refresh(failing.request, AbortSignal.timeout(5_000))
+			).status,
+		).toBe("completed");
+		expect(failingReads.readClaudeLogin).toHaveBeenCalledTimes(1);
 	});
 
 	it("still completes the refresh when the read fails", async () => {
