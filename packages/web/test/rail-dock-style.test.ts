@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
 import appCss from "../src/styles/app.css?raw";
+import surfacesCss from "../src/styles/surfaces.css?raw";
 import { h } from "../src/ui/dom.ts";
 
 afterEach(() => {
@@ -50,6 +51,29 @@ describe("the rail's Agents and Members dock", () => {
 		const dock = /\.rail-dock \{([^}]*)\}/.exec(appCss)?.[1] ?? "";
 		expect(dock).toMatch(/box-shadow: 0 -\d+px \d+px var\(--rail\);/);
 		expect(dock).not.toMatch(/mask-image|padding|border/);
+	});
+});
+
+describe("the Agents and Members folds", () => {
+	const declarations = (selector: string) =>
+		new RegExp(`^${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{([^}]*)\\}`, "m").exec(surfacesCss)?.[1] ?? "";
+	const px = (selector: string, property: string) =>
+		Number(new RegExp(`${property}: (\\d+)px`).exec(declarations(selector))?.[1]);
+
+	it("hold their first row close under the title and keep more room after the last", () => {
+		expect(px(".rail-agents-inner::before", "height")).toBeLessThanOrEqual(4);
+		expect(px(".rail-agents-inner::after", "height")).toBeGreaterThan(px(".rail-agents-inner::before", "height"));
+	});
+
+	it("make that room from empty boxes, since padding would stay when a section folds", () => {
+		expect(declarations(".rail-agents-inner")).toContain("overflow: hidden");
+		expect(declarations(".rail-agents-inner")).not.toMatch(/padding|border/);
+	});
+
+	it("space the groups of agents apart only after a group that shows", () => {
+		expect(px(".rail-agents-sub:not([hidden]) ~ .rail-agents-sub", "margin-top")).toBeGreaterThan(
+			px(".rail-agents-inner::before", "height"),
+		);
 	});
 });
 

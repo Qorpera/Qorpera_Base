@@ -95,8 +95,11 @@
 	grid-template-rows: 1fr; opacity: 1;
 	transition: grid-template-rows var(--motion-slow) var(--ease-out), opacity var(--motion-base) ease;
 }
-.rail-agents-inner { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-height: 0; overflow: hidden; }
+.rail-agents-inner { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; overflow: hidden; }
 .rail-agents-inner::before, .rail-agents-inner::after { content: ""; }
+.rail-agents-inner::before { height: 2px; }
+.rail-agents-inner::after { height: 12px; }
+.rail-agents-sub:not([hidden]) ~ .rail-agents-sub { margin-top: 12px; }
 .rail-agents-sub {
 	display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px;
 	opacity: 0; transform: translateY(10px); transition: opacity var(--motion-fast) ease, transform var(--motion-fast) var(--ease-in);
