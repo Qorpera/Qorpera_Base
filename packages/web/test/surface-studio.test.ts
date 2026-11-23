@@ -1,11 +1,21 @@
 // @vitest-environment jsdom
-import type { SurfaceSummary } from "@qorpera/contracts";
+import type { StudioBinaryRef, SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SurfaceReportView } from "../src/app/views/surface-report-view.ts";
 import { prepareStudioHtmlPreview, SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
 import { PAGE_FRAME_URL } from "../src/ui/page-frame.ts";
 import { deferred } from "./fixtures.ts";
-import { CHANGES, change, fakeClient, SESSION, session, storeWith, summary, workspace } from "./surface-fixtures.ts";
+import {
+	CHANGES,
+	change,
+	fakeClient,
+	folderContents,
+	SESSION,
+	session,
+	storeWith,
+	summary,
+	workspace,
+} from "./surface-fixtures.ts";
 
 const BRAND_ID = "22222222-2222-4222-8222-222222222229";
 const HEADBAND_ID = "22222222-2222-4222-8222-222222222230";
@@ -30,7 +40,235 @@ function brandSummary() {
 afterEach(() => {
 	document.body.replaceChildren();
 	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
 });
+
+const MODEL_REF: StudioBinaryRef = {
+	manifestSha256: "a".repeat(64),
+	fileSha256: "b".repeat(64),
+	bytes: 3,
+	mediaType: "model/gltf-binary",
+};
+
+function productStudio() {
+	return summary({
+		id: HEADBAND_ID,
+		slug: "thetabands",
+		title: "Thetabands",
+		archetype: "studio",
+		kind: "product",
+		sourceKind: "folder",
+		repositoryKey: null,
+		folderRoot: "surfaces/thetabands",
+		siteSlug: null,
+		previewMode: "studio_overlay",
+		liveUrl: null,
+	});
+}
+
+async function productStoreWithFolder(
+	binaries: () => Readonly<Record<string, StudioBinaryRef>>,
+	colorways: readonly { readonly name: string; readonly hex: string }[] = [
+		{ name: "Lavendel", hex: "#c3bbea" },
+		{ name: "Skifer", hex: "#4a5963" },
+	],
+) {
+	const surface = productStudio();
+	const readCloudBinary = vi.fn(async () => new Uint8Array([1, 2, 3]));
+	const store = storeWith(
+		fakeClient({
+			listSurfaces: vi.fn(async () => [surface]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface })),
+		}),
+		{
+			loadCloudFiles: vi.fn(async () =>
+				folderContents(
+					{
+						"surfaces/thetabands/specs.json": JSON.stringify({
+							model: { kind: "headband", dimensions: "168 x 38 mm", layers: ["Cover", "Board"] },
+							colorways,
+						}),
+						"surfaces/thetabands/object.json": JSON.stringify({ model: "model.glb", tint: ["Shell"] }),
+					},
+					binaries(),
+				),
+			),
+			readCloudBinary,
+		},
+	);
+	await store.load();
+	await store.refreshCloudFiles(surface);
+	return { store, surface, readCloudBinary };
+}
+
+function fakeThree(options: { readonly webgl: boolean; readonly model?: boolean }) {
+	const renderer = { dispose: vi.fn(), forceContextLoss: vi.fn() };
+	const renderers: { readonly domElement: HTMLCanvasElement; readonly setSize: ReturnType<typeof vi.fn> }[] = [];
+	const materials: { name: string; color: FakeColor; dispose(): void }[] = [];
+	class FakeColor {
+		hex = "#ffffff";
+		set(value: string) {
+			this.hex = value;
+			return this;
+		}
+		copy(color: FakeColor) {
+			this.hex = color.hex;
+			return this;
+		}
+		lerp(color: FakeColor) {
+			this.hex = color.hex;
+			return this;
+		}
+	}
+	class Vector3 {
+		x: number;
+		y: number;
+		z: number;
+		constructor(x = 0, y = 0, z = 0) {
+			this.x = x;
+			this.y = y;
+			this.z = z;
+		}
+		set(x: number, y: number, z: number) {
+			this.x = x;
+			this.y = y;
+			this.z = z;
+			return this;
+		}
+	}
+	class Object3D {
+		name = "";
+		children: Object3D[] = [];
+		parent: Object3D | null = null;
+		position = new Vector3();
+		rotation = { x: 0, y: 0, z: 0 };
+		scale = new Vector3(1, 1, 1);
+		userData: Record<string, unknown> = {};
+		material?: (typeof materials)[number];
+		add(...objects: Object3D[]) {
+			for (const object of objects) object.parent = this;
+			this.children.push(...objects);
+			return this;
+		}
+		remove() {
+			return this;
+		}
+		traverse(callback: (object: Object3D) => void) {
+			callback(this);
+			for (const child of this.children) child.traverse(callback);
+		}
+		updateMatrixWorld() {}
+		getWorldPosition(target: Vector3) {
+			return target.set(this.position.x, this.position.y, this.position.z);
+		}
+		worldToLocal(vector: Vector3) {
+			return vector;
+		}
+	}
+	return {
+		renderer,
+		renderers,
+		materials,
+		library: {
+			WebGLRenderer: class {
+				readonly domElement: HTMLCanvasElement;
+				readonly setSize = vi.fn();
+				constructor(init: { readonly canvas: HTMLCanvasElement }) {
+					if (!options.webgl) throw new Error("no WebGL");
+					this.domElement = init.canvas;
+					renderers.push(this);
+				}
+				setClearColor() {}
+				setPixelRatio() {}
+				render() {}
+				dispose() {
+					renderer.dispose();
+				}
+				forceContextLoss() {
+					renderer.forceContextLoss();
+					const canvas = this.domElement;
+					setTimeout(() => canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true })), 0);
+				}
+			},
+			Scene: class extends Object3D {
+				environment = null;
+			},
+			Group: Object3D,
+			PerspectiveCamera: class extends Object3D {
+				updateProjectionMatrix() {}
+				lookAt() {}
+			},
+			Box3: class {
+				min = new Vector3(-1, -1, -1);
+				max = new Vector3(1, 1, 1);
+				setFromObject() {
+					return this;
+				}
+				isEmpty() {
+					return false;
+				}
+				getCenter(target: Vector3) {
+					return target.set(0, 0, 0);
+				}
+				getSize(target: Vector3) {
+					return target.set(2, 2, 2);
+				}
+			},
+			Vector3,
+			Color: FakeColor,
+			PMREMGenerator: class {
+				fromScene() {
+					return { texture: { isTexture: true, dispose() {} } };
+				}
+				dispose() {}
+			},
+			RoomEnvironment: class extends Object3D {
+				dispose() {}
+			},
+			GLTFLoader: class {
+				parse(
+					_data: ArrayBuffer,
+					_path: string,
+					ok: (gltf: { scene: Object3D }) => void,
+					fail: (error: unknown) => void,
+				) {
+					if (!options.model) {
+						fail(new Error("not a model"));
+						return;
+					}
+					const scene = new Object3D();
+					const mesh = new Object3D();
+					mesh.name = "Body";
+					const material = { name: "Shell", color: new FakeColor(), dispose() {} };
+					materials.push(material);
+					mesh.material = material;
+					scene.add(mesh);
+					ok({ scene });
+				}
+			},
+			AgXToneMapping: 7,
+			SRGBColorSpace: "srgb",
+		},
+	};
+}
+
+function sizeBox(stage: HTMLElement): void {
+	const box = stage.querySelector<HTMLElement>(".studio-model-box")!;
+	box.getBoundingClientRect = () => ({ width: 640, height: 300 }) as DOMRect;
+}
+
+function reopenOverview(view: SurfaceStudioView): void {
+	view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
+	view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="overview"]')!.click();
+}
+
+async function laterTasks(): Promise<void> {
+	for (let index = 0; index < 3; index++) await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function settle(): Promise<void> {
+	for (let index = 0; index < 6; index++) await Promise.resolve();
+}
 
 describe("SurfaceStudioView", () => {
 	it("composes toggled folder_patch ChangeUnits live over Brand palette, typography, and voice docs", async () => {
@@ -451,13 +689,13 @@ describe("SurfaceStudioView", () => {
 		const loadCloudFiles = vi.fn(async () => {
 			loadCall += 1;
 			if (loadCall === 1) {
-				return {
+				return folderContents({
 					"brand/tokens.json": JSON.stringify({ colors: { accent: "#d76f45" } }),
 					"brand/old-notes.md": "Stale note",
-				};
+				});
 			}
-			if (loadCall === 2) return await postMergeLoad.promise;
-			return await postPublishLoad.promise;
+			if (loadCall === 2) return folderContents(await postMergeLoad.promise);
+			return folderContents(await postPublishLoad.promise);
 		});
 		const loadFiles = vi.fn(async () => ({ "brand/old-notes.md": "Should not duplicate" }));
 		const client = fakeClient({
@@ -779,6 +1017,169 @@ describe("SurfaceStudioView", () => {
 		store.dispose();
 	});
 
+	it("draws the real model on the stage when the folder holds a .glb, and the 2D drawing once it is gone", async () => {
+		let binaries: Readonly<Record<string, StudioBinaryRef>> = { "surfaces/thetabands/model.glb": MODEL_REF };
+		const { store, surface, readCloudBinary } = await productStoreWithFolder(() => binaries);
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		const stage = view.el.querySelector<HTMLElement>(".studio-stage .studio-model");
+		expect(stage).not.toBeNull();
+		expect(view.el.querySelector(".studio-stage.is-empty")).toBeNull();
+		expect(view.el.querySelector(".studio-3d-canvas")).toBeNull();
+		expect(stage?.querySelector(".studio-stage-floor")).not.toBeNull();
+		expect(stage?.querySelector("canvas")).toBeNull();
+		expect(stage?.querySelector<HTMLElement>(".studio-3d-view")?.hidden).toBe(true);
+		expect(stage?.dataset.tint).toBe("#c3bbea");
+		view.el.querySelectorAll<HTMLButtonElement>('[data-act="studio-colorway"]')[1]!.click();
+		expect(stage?.dataset.tint).toBe("#4a5963");
+		await settle();
+		expect(readCloudBinary).not.toHaveBeenCalled();
+
+		binaries = {};
+		await store.refreshCloudFiles(surface);
+		view.update();
+		expect(view.el.querySelector(".studio-model")).toBeNull();
+		expect(view.el.querySelector(".studio-stage .studio-3d-canvas")).not.toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("keeps the stage an empty floor where the browser cannot draw 3D", async () => {
+		vi.stubGlobal("QORPERA_THREE", fakeThree({ webgl: false }).library);
+		const { store, surface, readCloudBinary } = await productStoreWithFolder(() => ({
+			"surfaces/thetabands/model.glb": MODEL_REF,
+		}));
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		await settle();
+		const stage = view.el.querySelector<HTMLElement>(".studio-model");
+		expect(stage?.querySelector("canvas")).toBeNull();
+		expect(stage?.classList.contains("is-ready")).toBe(false);
+		expect(readCloudBinary).not.toHaveBeenCalled();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("reads the model once, shows nothing technical when it cannot be opened, and frees the drawing on close", async () => {
+		const three = fakeThree({ webgl: true });
+		vi.stubGlobal("QORPERA_THREE", three.library);
+		const { store, surface, readCloudBinary } = await productStoreWithFolder(() => ({
+			"surfaces/thetabands/model.glb": MODEL_REF,
+		}));
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		await vi.waitFor(() => expect(readCloudBinary).toHaveBeenCalledTimes(1));
+		await settle();
+		const stage = view.el.querySelector<HTMLElement>(".studio-model")!;
+		expect(stage.querySelector("canvas.studio-model-canvas")).not.toBeNull();
+		expect(stage.classList.contains("is-ready")).toBe(false);
+		expect(stage.textContent).toBe("WholeApart");
+		expect(stage.querySelector<HTMLElement>(".studio-3d-view")?.hidden).toBe(true);
+		view.update();
+		await settle();
+		expect(readCloudBinary).toHaveBeenCalledTimes(1);
+		view.dispose();
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(1);
+		expect(three.renderer.forceContextLoss).toHaveBeenCalledTimes(1);
+		expect(stage.querySelector("canvas")).toBeNull();
+		store.dispose();
+	});
+
+	it("tints the named materials with every colour form a dot takes, and gives them back their own colour for one it cannot read", async () => {
+		const three = fakeThree({ webgl: true, model: true });
+		vi.stubGlobal("QORPERA_THREE", three.library);
+		vi.stubGlobal("matchMedia", () => ({ matches: true }));
+		const { store, surface } = await productStoreWithFolder(
+			() => ({ "surfaces/thetabands/model.glb": MODEL_REF }),
+			[
+				{ name: "Lavendel", hex: "oklch(0.7 0.1 290)" },
+				{ name: "Skifer", hex: "#4a5963cc" },
+				{ name: "Uklar", hex: "rgb(nope)" },
+			],
+		);
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		const stage = view.el.querySelector<HTMLElement>(".studio-model")!;
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		const shell = three.materials[0]!;
+		expect(stage.dataset.tint).toBe("#9d94d9");
+		expect(shell.color.hex).toBe("#9d94d9");
+		const dots = view.el.querySelectorAll<HTMLButtonElement>('[data-act="studio-colorway"]');
+		dots[1]!.click();
+		expect(shell.color.hex).toBe("#4a5963");
+		dots[2]!.click();
+		expect(stage.dataset.tint).toBeUndefined();
+		expect(shell.color.hex).toBe("#ffffff");
+		dots[0]!.click();
+		expect(shell.color.hex).toBe("#9d94d9");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("draws the model again on a new context after the browser gives its graphics back, whatever the old context does later", async () => {
+		const three = fakeThree({ webgl: true, model: true });
+		vi.stubGlobal("QORPERA_THREE", three.library);
+		const { store, surface, readCloudBinary } = await productStoreWithFolder(() => ({
+			"surfaces/thetabands/model.glb": MODEL_REF,
+		}));
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		document.body.append(view.el);
+		const stage = view.el.querySelector<HTMLElement>(".studio-model")!;
+		sizeBox(stage);
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		const first = stage.querySelector("canvas")!;
+		expect(three.renderers[0]!.setSize).toHaveBeenCalledWith(640, 300, false);
+		const lost = new Event("webglcontextlost", { cancelable: true });
+		first.dispatchEvent(lost);
+		expect(lost.defaultPrevented).toBe(true);
+		expect(three.renderer.dispose).not.toHaveBeenCalled();
+		first.dispatchEvent(new Event("webglcontextrestored"));
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(1);
+		expect(first.isConnected).toBe(false);
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		await laterTasks();
+		const second = stage.querySelector("canvas")!;
+		expect(second).not.toBe(first);
+		expect(second).toBe(three.renderers[1]!.domElement);
+		expect(three.renderers[1]!.setSize).toHaveBeenCalledWith(640, 300, false);
+		reopenOverview(view);
+		expect(three.renderers).toHaveLength(2);
+		expect(second.isConnected).toBe(true);
+		expect(stage.classList.contains("is-ready")).toBe(true);
+		expect(three.materials).toHaveLength(2);
+		expect(readCloudBinary).toHaveBeenCalledTimes(1);
+		view.dispose();
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(2);
+		store.dispose();
+	});
+
+	it("rebuilds a lost stage on its next update, and a late restore of the old context changes nothing", async () => {
+		const three = fakeThree({ webgl: true, model: true });
+		vi.stubGlobal("QORPERA_THREE", three.library);
+		const { store, surface } = await productStoreWithFolder(() => ({
+			"surfaces/thetabands/model.glb": MODEL_REF,
+		}));
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		document.body.append(view.el);
+		const stage = view.el.querySelector<HTMLElement>(".studio-model")!;
+		sizeBox(stage);
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		const first = stage.querySelector("canvas")!;
+		first.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+		reopenOverview(view);
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(1);
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		await laterTasks();
+		const second = stage.querySelector("canvas")!;
+		expect(second).toBe(three.renderers[1]!.domElement);
+		expect(three.renderers[1]!.setSize).toHaveBeenCalledWith(640, 300, false);
+		first.dispatchEvent(new Event("webglcontextrestored"));
+		first.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+		reopenOverview(view);
+		expect(three.renderers).toHaveLength(2);
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(1);
+		expect(second.isConnected).toBe(true);
+		expect(stage.classList.contains("is-ready")).toBe(true);
+		view.dispose();
+		store.dispose();
+	});
+
 	it("shows the shared product Feeds link only on the primary Product Studio when multiple exist", async () => {
 		const thetabands = summary({
 			id: HEADBAND_ID,
@@ -850,7 +1251,9 @@ describe("SurfaceStudioView", () => {
 		});
 		const website = summary();
 		const filesDeferred = deferred<Record<string, string>>();
-		const loadCloudFiles = vi.fn((_surface: SurfaceSummary) => filesDeferred.promise);
+		const loadCloudFiles = vi.fn((_surface: SurfaceSummary) =>
+			filesDeferred.promise.then((files) => folderContents(files)),
+		);
 		const client = fakeClient({
 			listSurfaces: vi.fn(async () => [website, brand]),
 			getSurfaceWorkspace: vi.fn(async (id: string) =>

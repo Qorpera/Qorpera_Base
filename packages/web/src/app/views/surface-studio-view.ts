@@ -4,6 +4,7 @@ import {
 	compileIdentityTokensCss,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
+	type StudioBinaryRef,
 	type StudioPatchChange,
 	type StudioPatchOp,
 	type SurfacePreviewConflict,
@@ -20,6 +21,7 @@ import { t } from "../../ui/preferences.ts";
 import { surfaceSkeleton } from "../../ui/skeleton.ts";
 import { createFrameBudget, hasBrowserCompositor, yieldToMain } from "../../ui/time-slice.ts";
 import {
+	effectiveStudioBaseBinaries,
 	effectiveStudioBaseFiles,
 	formatConflictPaths,
 	isLocalSurfaceId,
@@ -31,6 +33,8 @@ import {
 import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
 import { type Studio3DConfig, Studio3DViewer } from "./surface-studio-3d.ts";
+import { pickStudioModel, type StudioModelSource } from "./surface-studio-model.ts";
+import { StudioModelStage } from "./surface-studio-stage.ts";
 
 export interface SurfaceStudioOptions {
 	readonly store: SurfacesStore;
@@ -120,6 +124,7 @@ const COLOR_VALUE = /^(?:#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?
 const COLOR_GROUPS = new Set(["colors", "color", "palette", "swatches", "colorways"]);
 const TYPE_GROUPS = new Set(["font", "fonts", "typography", "type", "typeface"]);
 const MODEL_GROUPS = new Set(["model", "3d", "geometry"]);
+const OBJECT_JSON_RE = /(?:^|\/)object\.json$/i;
 const VENDOR_GROUPS = new Set(["vendors", "suppliers"]);
 const HTML_FILE_RE = /\.html?$/i;
 const SVG_FILE_RE = /\.svg$/i;
@@ -559,6 +564,7 @@ function parseSingleStudioFile(
 	const content = files[path] ?? "";
 	const baseContent = baseFiles[path];
 	const changed = baseContent !== content;
+	if (OBJECT_JSON_RE.test(path)) return;
 	if (/\.report\.json$/i.test(path)) {
 		out.reportPaths.push(path);
 		return;
@@ -633,6 +639,8 @@ export class SurfaceStudioView {
 	#renderSeq = 0;
 	#lastConflict: SurfacePreviewConflict | null = null;
 	#viewer3d: Studio3DViewer | undefined;
+	#stage: StudioModelStage | undefined;
+	#colorValues: readonly string[] = [];
 	#reportView: SurfaceReportView | undefined;
 	readonly #htmlFrames: AppFrame[] = [];
 	#tab: StudioTab = "overview";
@@ -833,6 +841,8 @@ export class SurfaceStudioView {
 			state.cloudSurfaceFiles[surface.id],
 			state.pendingStudioPatches[surface.id],
 			state.localStudioBase[surface.id],
+			state.cloudSurfaceBinaries[surface.id],
+			state.localStudioBinaries[surface.id],
 			surface.id,
 			surface.slug,
 			surface.title,
@@ -869,6 +879,7 @@ export class SurfaceStudioView {
 			identityTokens,
 			workspace,
 			baseFiles,
+			baseBinaries: effectiveStudioBaseBinaries(state, surface.id),
 			ordered,
 			initialLoading,
 			updatingPhase,
@@ -904,6 +915,7 @@ export class SurfaceStudioView {
 		readonly identityTokens: CompiledIdentityTokens | null;
 		readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 		readonly baseFiles: Readonly<Record<string, string>>;
+		readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
 		readonly ordered: readonly StudioPatchChange[];
 		readonly initialLoading: boolean;
 		readonly updatingPhase: SurfaceUpdatePhase | null;
@@ -917,7 +929,12 @@ export class SurfaceStudioView {
 		if (!(await yieldToMain(signal).then(() => this.#isRenderActive(params.seq)))) return;
 		budget.reset();
 
-		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot);
+		const composition = composeStudioPreview(
+			params.baseFiles,
+			params.ordered,
+			params.surface.folderRoot,
+			params.baseBinaries,
+		);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();
@@ -987,6 +1004,7 @@ export class SurfaceStudioView {
 		readonly identityTokens: CompiledIdentityTokens | null;
 		readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 		readonly baseFiles: Readonly<Record<string, string>>;
+		readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
 		readonly ordered: readonly StudioPatchChange[];
 		readonly initialLoading: boolean;
 		readonly updatingPhase: SurfaceUpdatePhase | null;
@@ -995,7 +1013,12 @@ export class SurfaceStudioView {
 		readonly downstreamSurfaces: readonly SurfaceSummary[];
 		readonly mode: SurfacesStore["state"]["mode"];
 	}): void {
-		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot);
+		const composition = composeStudioPreview(
+			params.baseFiles,
+			params.ordered,
+			params.surface.folderRoot,
+			params.baseBinaries,
+		);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();
@@ -1401,6 +1424,7 @@ export class SurfaceStudioView {
 		}
 
 		const isIdentity = isIdentitySurface || filePaths.some((path) => path.startsWith("identity/"));
+		const modelFile = isIdentity ? undefined : pickStudioModel(files, composition.binaries, surface.folderRoot);
 		this.#applyIdentityVars(isIdentity, identityTokens);
 		const isVendorSpec = (spec: SpecSection) => /vendor|supplier/i.test(spec.path);
 		const primarySpec = specs.find((spec) => !isVendorSpec(spec));
@@ -1411,18 +1435,21 @@ export class SurfaceStudioView {
 		const hasVendorsTab = vendors.length > 0 || vendorSpecs.length > 0;
 		const hasAnalysisTab = reportPaths.length > 0;
 		const isProduct = !isIdentity && lookKind === "product";
-		const productPage = isProduct || (!isIdentity && modelConfig !== undefined);
+		const productPage = isProduct || (!isIdentity && (modelConfig !== undefined || modelFile !== undefined));
 		const hasFilesTab = docs.length > 0 || (productPage && svgs.length > 0);
 		const hasPagesTab = htmlPages.length > 0;
 		const hasOverviewContent = Boolean(
 			(isIdentity && downstreamSurfaces.length > 0) ||
 				modelConfig ||
+				modelFile ||
 				svgs.length ||
 				colors.length ||
 				(isIdentity && typography.length) ||
 				(!isIdentity && primarySpec && primarySpec.entries.length > 0),
 		);
-		const tabbed = Boolean(modelConfig || vendors.length || reportPaths.length || isIdentity || isProduct);
+		const tabbed = Boolean(
+			modelConfig || modelFile || vendors.length || reportPaths.length || isIdentity || isProduct,
+		);
 		const availableTabs: { readonly id: StudioTab; readonly label: string; readonly filled: boolean }[] = [];
 		if (tabbed) {
 			if (productPage) {
@@ -1683,6 +1710,7 @@ export class SurfaceStudioView {
 					this.#productOverview(
 						surface.title,
 						lineEntry?.value ?? workspace?.briefSummary ?? "",
+						modelFile,
 						modelConfig,
 						colors,
 						facts,
@@ -2048,13 +2076,23 @@ export class SurfaceStudioView {
 	#productOverview(
 		title: string,
 		line: string,
+		modelFile: StudioModelSource | undefined,
 		model: Studio3DConfig | undefined,
 		colors: readonly ColorToken[],
 		facts: readonly SpecEntry[],
 	): HTMLElement {
 		if (this.#colorway >= colors.length) this.#colorway = 0;
+		this.#colorValues = colors.map((color) => color.value);
 		let stage: HTMLElement;
-		if (model) {
+		if (modelFile) {
+			this.#stage ??= new StudioModelStage(
+				(file, signal) => this.#options.store.readStudioBinary(file, signal),
+				this.#lifetime.signal,
+			);
+			this.#stage.update(modelFile);
+			this.#stage.setColorway(this.#colorValues[this.#colorway]);
+			stage = this.#stage.el;
+		} else if (model) {
 			if (!this.#viewer3d) this.#viewer3d = new Studio3DViewer(model, this.#lifetime.signal);
 			else this.#viewer3d.update(model);
 			this.#viewer3d.setColorway(this.#colorway);
@@ -2102,7 +2140,7 @@ export class SurfaceStudioView {
 		return h(
 			"section",
 			{ class: "studio-product" },
-			h("div", { class: model ? "studio-stage" : "studio-stage is-empty" }, stage),
+			h("div", { class: modelFile || model ? "studio-stage" : "studio-stage is-empty" }, stage),
 			h(
 				"div",
 				{ class: "studio-product-head" },
@@ -2125,6 +2163,7 @@ export class SurfaceStudioView {
 			if (!Number.isInteger(index) || index === this.#colorway) return;
 			this.#colorway = index;
 			this.#viewer3d?.setColorway(index);
+			this.#stage?.setColorway(this.#colorValues[index]);
 			for (const dot of this.el.querySelectorAll<HTMLElement>('[data-act="studio-colorway"]')) {
 				const on = dot === target;
 				dot.classList.toggle("is-on", on);

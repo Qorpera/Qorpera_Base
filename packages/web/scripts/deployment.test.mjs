@@ -28,7 +28,7 @@ test("release configuration and CSP admit the same exact HTTPS/WSS origins", t =
 	assert.deepEqual(deployment.config, config);
 	assert.equal(deployment.manifest.configOverrideAllowed, false);
 	const sources = deployment.headers.match(/; connect-src ([^;]+);/)[1].split(" ");
-	assert.deepEqual(sources, ["'self'", config.projectUrl, config.projectUrl.replace("https:", "wss:"), config.objectGatewayUrl, config.officeViewerOrigin]);
+	assert.deepEqual(sources, ["'self'", "blob:", config.projectUrl, config.projectUrl.replace("https:", "wss:"), config.objectGatewayUrl, config.officeViewerOrigin]);
 	assert.equal(deployment.manifest.headersSha256, createHash("sha256").update(deployment.headers).digest("hex"));
 	assert.ok(!deployment.headers.includes("__QORPERA"));
 });

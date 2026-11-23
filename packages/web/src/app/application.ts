@@ -1,5 +1,5 @@
 import { CloudSurfacesClient } from "@qorpera/cloud-client/surfaces";
-import type { SurfaceSummary } from "@qorpera/contracts";
+import type { StudioBinaryRef, SurfaceSummary } from "@qorpera/contracts";
 import type { User } from "@supabase/supabase-js";
 import { withAbortScopes } from "../cloud/abort-scope.ts";
 import { CloudApi } from "../cloud/api.ts";
@@ -78,6 +78,7 @@ import {
 	attachSurfaces,
 	isLocalSurfaceId,
 	readSurfaceFolderFiles,
+	type SurfaceFolderContents,
 	SurfacesStore,
 	surfacesDisabledOf,
 	surfacesOf,
@@ -997,14 +998,14 @@ export function mountApplication(
 				const loadSurfaceCloudFiles = async (
 					surface: SurfaceSummary,
 					signal: AbortSignal,
-				): Promise<Readonly<Record<string, string>> | undefined> => {
+				): Promise<SurfaceFolderContents | undefined> => {
 					const team = controller.store.get().team;
 					if (!team) return undefined;
 					const roots = [
 						surface.folderRoot?.replace(/^\/+|\/+$/g, ""),
 						`QorperaOS/surfaces/${surface.slug}/notes`,
 					].filter((item): item is string => Boolean(item));
-					if (!roots.length) return {};
+					if (!roots.length) return { files: {}, binaries: {} };
 					const readScope = new AbortController();
 					const forwardAbort = () => readScope.abort();
 					if (controller.signal.aborted || signal.aborted) {
@@ -1036,6 +1037,37 @@ export function mountApplication(
 						controller.signal.removeEventListener("abort", forwardAbort);
 						signal.removeEventListener("abort", forwardAbort);
 					}
+				};
+				const readSurfaceCloudBinary = async (file: StudioBinaryRef, signal: AbortSignal): Promise<Uint8Array> => {
+					const team = controller.store.get().team;
+					const current = () => {
+						if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
+							throw new Error(t("Company access changed."));
+					};
+					current();
+					if (!team) throw new Error(t("Company access changed."));
+					const readSignal = AbortSignal.any([controller.signal, signal]);
+					const folder = new WebCompanyFiles(
+						cloud,
+						controller.profile,
+						controller.userId,
+						team.role,
+						readSignal,
+						current,
+						team.capabilities.write,
+					).folder();
+					const bytes = new Uint8Array(file.bytes);
+					let offset = 0;
+					await folder.readFilePieces(
+						{ ...file, executable: (file as { readonly executable?: unknown }).executable === true },
+						readSignal,
+						(piece) => {
+							bytes.set(piece, offset);
+							offset += piece.byteLength;
+						},
+					);
+					current();
+					return bytes;
 				};
 				const surfaces = new SurfacesStore({
 					companyId: profile.profileId,
@@ -1090,6 +1122,7 @@ export function mountApplication(
 							.filter((member) => member.role !== "viewer")
 							.map((member) => ({ userId: member.userId, name: member.displayName || member.email })),
 					loadCloudFiles: loadSurfaceCloudFiles,
+					readCloudBinary: readSurfaceCloudBinary,
 					uploadImage: async (surfaceId, clientInputId, file, signal) => {
 						const current = () => {
 							signal.throwIfAborted();
@@ -3118,7 +3151,7 @@ export function mountApplication(
 							companyCurrent,
 							team.capabilities.write,
 						).folder();
-						return await readSurfaceFolderFiles(folder, roots, readSignal);
+						return (await readSurfaceFolderFiles(folder, roots, readSignal)).files;
 					};
 					const loadSitePassword = async (surface: SurfaceSummary): Promise<string | null> => {
 						if (!managesSites() || !surface.liveUrl || isLocalSurfaceId(surface.id)) return null;
