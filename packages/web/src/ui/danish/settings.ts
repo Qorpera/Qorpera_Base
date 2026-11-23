@@ -343,8 +343,60 @@ export const SETTINGS: Record<string, string> = {
 	"your weekly reset day stays {day}": "din ugentlige nulstillingsdag er stadig {day}",
 	"Use a reset": "Brug en nulstilling",
 	"Keep going now with a reset": "Fortsæt nu med en nulstilling",
+	"Default models": "Standardmodeller",
+	"Your default models could not be read.": "Dine standardmodeller kunne ikke hentes.",
+	"Default models saved.": "Standardmodeller er gemt.",
+	"Default models changed elsewhere. Refreshed to latest.":
+		"Standardmodeller blev ændret et andet sted. Opdateret til seneste.",
+	"Connect that subscription below before choosing it as a default.":
+		"Forbind abonnementet nedenfor, før du vælger det som standard.",
+	"Default models could not be saved. Try again.": "Standardmodeller kunne ikke gemmes. Prøv igen.",
+	Conversational: "Samtale",
+	"Conversational model": "Samtalemodel",
+	"Conversational effort": "Indsats til samtale",
+	"Default for chats and rooms without a chosen model.": "Standard til chats og rum uden en valgt model.",
+	"Coding & working": "Kodning og arbejde",
+	"Coding and working model": "Model til kodning og arbejde",
+	"Coding and working effort": "Indsats til kodning og arbejde",
+	"Default for background workers and coding sessions. Routines keep using your ChatGPT login.":
+		"Standard til baggrundsmedarbejdere og kodesessioner. Rutiner bruger fortsat dit ChatGPT-login.",
+	"Connect Claude or add a Gemini API key below to choose their models here.":
+		"Forbind Claude eller tilføj en Gemini-API-nøgle nedenfor for at vælge deres modeller her.",
+	"{model} (unavailable here)": "{model} (ikke tilgængelig her)",
+	"API credits": "API-kredit",
+	Unlimited: "Ubegrænset",
+	"{balance} left of {limit}": "{balance} tilbage af {limit}",
+	"{used} of {limit} used": "{used} af {limit} brugt",
+	"{balance} available": "{balance} tilgængelig",
+	"No credits available": "Ingen kredit tilgængelig",
+	"Credits active": "Kredit aktiv",
 	"Gemini API key": "Gemini-API-nøgle",
 	"Gemini 4 Neon": "Gemini 4 Neon",
+	"Google reported that billing or AI Ultra credits are not active for this key. Claim your monthly credits or check billing in Google AI Studio.":
+		"Google meldte, at fakturering eller AI Ultra-kredit ikke er aktiv for denne nøgle. Indløs din månedlige kredit, eller tjek fakturering i Google AI Studio.",
+	"Google returned a quota or rate limit for this key. Check your credits and billing in Google AI Studio, or try again shortly.":
+		"Google returnerede en kvote- eller hastighedsgrænse for denne nøgle. Tjek din kredit og fakturering i Google AI Studio, eller prøv igen om lidt.",
+	"Google rejected this API key. Check it in Google AI Studio or replace it here.":
+		"Google afviste denne API-nøgle. Tjek den i Google AI Studio, eller udskift den her.",
+	"Google reported that Gemini 4 Neon is unavailable for this key.":
+		"Google meldte, at Gemini 4 Neon ikke er tilgængelig for denne nøgle.",
+	"Google rejected the last Gemini request made with this key.":
+		"Google afviste den seneste Gemini-forespørgsel med denne nøgle.",
+	"Google's Gemini API had a temporary server error on the last run.":
+		"Googles Gemini-API havde en midlertidig serverfejl ved den seneste kørsel.",
+	"Qorpera could not reach Google's Gemini API on the last run.":
+		"Qorpera kunne ikke nå Googles Gemini-API ved den seneste kørsel.",
+	"Key verified for Gemini 4 Neon. Google checks billing and credits when a reply runs.":
+		"Nøglen er bekræftet for Gemini 4 Neon. Google tjekker fakturering og kredit, når et svar kører.",
+	"The Gemini API key could not be checked. Try again.": "Gemini-API-nøglen kunne ikke tjekkes. Prøv igen.",
+	"Check key": "Tjek nøgle",
+	"Manage credits in Google AI Studio": "Administrer kredit i Google AI Studio",
+	"{message} ({time})": "{message} ({time})",
+	"Used in all your companies · Checked {time}": "Bruges i alle dine virksomheder · Tjekket {time}",
+	"Tracked budget in {month}": "Registreret budget i {month}",
+	"{remaining} left of {cap} ({spent} spent)": "{remaining} tilbage af {cap} ({spent} brugt)",
+	"Google does not expose AI Studio credit balances over the API, so Qorpera tracks spend made here.":
+		"Google viser ikke AI Studio-kreditsaldo via API'et, så Qorpera sporer forbruget herfra.",
 	"Enter a valid Gemini API key from Google AI Studio (starting with AQ. or AIza).":
 		"Skriv en gyldig Gemini-API-nøgle fra Google AI Studio (der begynder med AQ. eller AIza).",
 	"Enter a monthly cap between $1 and $100,000, or leave it blank for no limit.":
@@ -356,15 +408,12 @@ export const SETTINGS: Record<string, string> = {
 	"Gemini settings changed elsewhere. Refresh and try again.":
 		"Gemini-indstillingerne blev ændret et andet sted. Opdater, og prøv igen.",
 	"Gemini settings could not be saved. Try again.": "Gemini-indstillingerne kunne ikke gemmes. Prøv igen.",
-	"Gemini 4 Neon is now the default for your chats.": "Gemini 4 Neon er nu standard for dine chats.",
-	"Gemini 4 Neon is no longer the default for your chats.": "Gemini 4 Neon er ikke længere standard for dine chats.",
 	"Monthly spend cap saved.": "Månedlig forbrugsgrænse gemt.",
 	"Gemini API key removed.": "Gemini-API-nøglen er fjernet.",
 	"The Gemini API key could not be removed. Try again.": "Gemini-API-nøglen kunne ikke fjernes. Prøv igen.",
 	"Paste your Gemini API key": "Indsæt din Gemini-API-nøgle",
 	"No limit": "Ingen grænse",
 	"Monthly spend cap (USD)": "Månedlig forbrugsgrænse (USD)",
-	"Use Gemini 4 Neon by default for my chats": "Brug Gemini 4 Neon som standard til mine chats",
 	"Encrypted in the shared vault. Qorpera verifies the key with Google before saving and never shows it again.":
 		"Krypteret i den delte boks. Qorpera bekræfter nøglen hos Google, før den gemmes, og viser den aldrig igen.",
 	"Your Gemini API key could not be read.": "Din Gemini-API-nøgle kunne ikke hentes.",
@@ -376,12 +425,9 @@ export const SETTINGS: Record<string, string> = {
 	"Key {hint}": "Nøgle {hint}",
 	"Spend in {month}": "Forbrug i {month}",
 	"{spent} of {cap} · Cap reached": "{spent} af {cap} · Grænse nået",
-	"{spent} of {cap}": "{spent} af {cap}",
 	"{spent} · No monthly cap": "{spent} · Ingen månedlig grænse",
 	"Gemini conversations are paused until next month or until you raise the cap.":
 		"Gemini-samtaler er sat på pause indtil næste måned, eller indtil du hæver grænsen.",
-	"New conversations without a chosen model use Gemini 4 Neon. Background workers and routines keep using your other logins.":
-		"Nye samtaler uden en valgt model bruger Gemini 4 Neon. Baggrundsmedarbejdere og rutiner bruger fortsat dine andre logins.",
 	"Leave empty for no cap. Conversations pause instead of switching to another account when the cap is reached.":
 		"Lad feltet være tomt for ingen grænse. Samtaler sættes på pause i stedet for at skifte til en anden konto, når grænsen nås.",
 	"Removing…": "Fjerner…",

@@ -1,6 +1,6 @@
 /* Conversation chrome follows Messages; figures use the original artwork and 2D Motion Studio. */
 .icon { width: 18px; height: 18px; flex: none; }
-.icon-button { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex: none; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.icon-button { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex: none; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: default; }
 .icon-button:hover:not(:disabled) { background: var(--hover); }
 .icon-button:disabled { opacity: .45; cursor: default; }
 .icon-button[hidden] { display: none; }
@@ -9,7 +9,7 @@
 /* An agent's own chat and a group chat have no header on a wide screen: the rail names them and right-clicking opens their card.
  * A phone keeps the header for its navigation button and the card. */
 @media (min-width: 761px) { .thread-header:is(.is-agent, .is-group, .is-member) { display: none; } }
-.thread-identity { display: flex; align-items: center; gap: 9px; min-width: 0; max-width: calc(100% - 42px); padding: 3px 5px; border: 0; border-radius: 7px; background: transparent; text-align: left; cursor: pointer; }
+.thread-identity { display: flex; align-items: center; gap: 9px; min-width: 0; max-width: calc(100% - 42px); padding: 3px 5px; border: 0; border-radius: 7px; background: transparent; text-align: left; cursor: default; }
 .thread-identity:hover:not(:disabled), .thread-identity[aria-expanded=true] { background: var(--hover); }
 .thread-identity:disabled { cursor: default; }
 .thread-identity h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; letter-spacing: 0; }
@@ -137,7 +137,7 @@
 .status-caption { visibility: hidden; min-width: 0; overflow: hidden; font-size: 14px; line-height: 1.4; color: var(--text-muted); white-space: nowrap; text-overflow: ellipsis; pointer-events: none; }
 .status-caption-name { color: var(--text); }
 .thread-activity:hover .status-caption, .thread-activity:focus-visible .status-caption { visibility: visible; }
-.thread-fold { flex: none; align-self: flex-start; display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; margin: 0; padding: 3px 9px 3px 5px; border: 0; border-radius: 9px; background: none; color: var(--text-muted); font: inherit; font-size: 13px; line-height: 1.4; text-align: left; cursor: pointer; }
+.thread-fold { flex: none; align-self: flex-start; display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; margin: 0; padding: 3px 9px 3px 5px; border: 0; border-radius: 9px; background: none; color: var(--text-muted); font: inherit; font-size: 13px; line-height: 1.4; text-align: left; cursor: default; }
 .thread-fold:hover { background: var(--hover); color: var(--text); }
 .thread-fold:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .thread-fold-mark { flex: none; display: grid; place-items: center; width: 16px; height: 16px; transition: transform 0.15s ease; }
@@ -195,7 +195,7 @@
 .message-prose a { color: var(--blue); text-decoration: none; }
 .message-prose a:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
 /* A folder link (ui/folder-links.ts) reads as a link and opens Storage in the app. */
-.message-prose .folder-link { display: inline; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--blue); text-align: inherit; cursor: pointer; }
+.message-prose .folder-link { display: inline; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--blue); text-align: inherit; cursor: default; }
 .message-prose .folder-link:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
 .message-prose .folder-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .message-prose code { font-family: var(--font-mono); font-size: 12px; border: 1px solid var(--border); background: rgb(255 255 255 / 4%); border-radius: var(--radius-sm); padding: 1px 5px; overflow-wrap: anywhere; }
@@ -225,7 +225,7 @@
 .session-execution select { width: 100%; min-width: 0; font-size: 12px; }
 .session-execution > p, .session-execution > .notice, .session-execution > details { flex-basis: 100%; margin: 0; overflow-wrap: anywhere; }
 .session-execution details { max-height: 180px; overflow-y: auto; }
-.session-execution summary { cursor: pointer; }
+.session-execution summary { cursor: default; }
 .usage-wall { display: flex; align-items: center; gap: 10px; flex-basis: 100%; min-width: 0; padding: 2px 0; }
 .usage-wall-ring { flex: none; width: 22px; height: 22px; }
 .usage-wall-ring circle { fill: none; stroke-width: 2.4; }
@@ -240,7 +240,7 @@
 .usage-wall-actions { display: flex; flex: none; gap: 6px; }
 .usage-wall-actions .btn { justify-content: center; }
 .session-execution > .usage-wall-more { padding-left: 32px; font-size: 12px; color: var(--text-muted); }
-.usage-wall-link { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; overflow-wrap: anywhere; }
+.usage-wall-link { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: default; overflow-wrap: anywhere; }
 .usage-wall-link:hover:not(:disabled) { color: var(--text); }
 .usage-wall-link:disabled { opacity: .6; cursor: default; }
 @media (max-width: 520px) {
@@ -316,7 +316,7 @@
 .mine .message-skill { color: inherit; padding: 0 4px; border-radius: 5px; background: color-mix(in srgb, var(--composer-on-accent) 22%, transparent); font-weight: 600; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 .skill-menu { position: absolute; z-index: 30; left: 0; bottom: calc(100% + 8px); width: min(420px, 100%); max-height: min(340px, 50dvh); overflow-y: auto; padding: 5px; border: 1px solid var(--border); border-radius: 12px; background: var(--overlay); box-shadow: 0 12px 30px rgb(0 0 0 / 14%); }
 .skill-menu[hidden], .skill-menu [hidden] { display: none; }
-.skill-option { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 2px 12px; padding: 8px 10px; border-radius: 7px; cursor: pointer; }
+.skill-option { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 2px 12px; padding: 8px 10px; border-radius: 7px; cursor: default; }
 .skill-option[aria-selected="true"] { background: var(--hover); }
 .skill-option-name { color: var(--blue); font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
 .skill-option-scope { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
@@ -339,7 +339,7 @@
 @keyframes composer-listening { 50% { box-shadow: 0 0 0 4px rgb(255 59 48 / 22%); } }
 .composer-dictation-note { margin: 6px 6px 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
 .composer-dictation-note[hidden] { display: none; }
-.composer-send { right: 3px; display: grid; place-items: center; padding: 0; border: 0; background: var(--composer-accent); color: var(--composer-on-accent); cursor: pointer; }
+.composer-send { right: 3px; display: grid; place-items: center; padding: 0; border: 0; background: var(--composer-accent); color: var(--composer-on-accent); cursor: default; }
 .composer-send:disabled { background: #e8e8e8; color: #aaa; cursor: default; }
 :root[data-composer-color="grey"] .composer-send:disabled { background: color-mix(in srgb, var(--text) 3.5%, transparent); color: color-mix(in srgb, var(--text) 32%, transparent); }
 .composer-send:not(:disabled):hover { background: var(--composer-accent-hover); }
@@ -374,7 +374,7 @@
  * line on who will answer in a group chat, and names set apart in messages. */
 .mention-picker { position: absolute; z-index: 30; left: 0; bottom: calc(100% + 8px); width: 290px; max-width: calc(100vw - 48px); max-height: min(300px, 50dvh); overflow-y: auto; padding: 5px; border: 1px solid var(--border); border-radius: 12px; background: var(--overlay); box-shadow: 0 12px 30px rgb(0 0 0 / 14%); animation: mention-in 140ms cubic-bezier(.2,.7,.2,1) both; }
 .mention-picker[hidden] { display: none; }
-.mention-option { display: flex; align-items: center; gap: 9px; min-height: 38px; padding: 5px 8px; border-radius: 7px; cursor: pointer; font-size: 14px; }
+.mention-option { display: flex; align-items: center; gap: 9px; min-height: 38px; padding: 5px 8px; border-radius: 7px; cursor: default; font-size: 14px; }
 .mention-option[aria-selected=true] { background: var(--hover); }
 .mention-option > .person-avatar, .mention-option > .figure { width: 26px; height: 26px; flex: none; font-size: 10px; }
 .mention-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -392,7 +392,7 @@
 .composer-drafts[hidden] { display: none; }
 .draft-notches { display: flex; flex-wrap: wrap; gap: 6px; }
 .draft-notches:empty { display: none; }
-.draft-notch { position: relative; display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 3px 12px 3px 3px; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--bg); color: var(--text-muted); cursor: pointer; }
+.draft-notch { position: relative; display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 3px 12px 3px 3px; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--bg); color: var(--text-muted); cursor: default; }
 .draft-notch:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .draft-notch > .person-avatar, .draft-panel-head > .person-avatar, .draft-helpers > .person-avatar { width: 24px; height: 24px; font-size: 9.5px; }
 .draft-dots { display: inline-flex; align-items: center; gap: 3px; }
@@ -457,7 +457,7 @@
 .composer-model-list { display: grid; margin: 8px 0 0; padding: 4px; border: 1px solid var(--border); border-radius: 10px; animation: composer-model-list-in 160ms cubic-bezier(.2, .7, .2, 1) both; }
 .composer-menu .composer-model-list button { justify-content: space-between; padding: 6px 8px; font-size: 14px; }
 @keyframes composer-model-list-in { from { opacity: 0; translate: 0 -4px; } }
-.composer-effort { --at: 0; position: relative; height: 34px; margin: 12px 2px 4px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--text) 9%, transparent); outline: 0; cursor: pointer; touch-action: none; }
+.composer-effort { --at: 0; position: relative; height: 34px; margin: 12px 2px 4px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--text) 9%, transparent); outline: 0; cursor: default; touch-action: none; }
 .composer-effort[hidden] { display: none; }
 .composer-effort[aria-disabled="true"] { cursor: default; opacity: .55; }
 .composer-effort-fill { position: absolute; inset: 0 auto 0 0; width: calc(var(--at) * (100% - 34px) + 34px); border-radius: inherit; background: var(--composer-accent-ink); transition: width 220ms cubic-bezier(.2, .7, .2, 1); }
@@ -472,7 +472,7 @@
 .attachment-tray { display: flex; gap: 8px; overflow-x: auto; padding: 3px 0 9px; }
 .attachment-tray[hidden] { display: none; }
 .attachment-chip { position: relative; flex: none; width: 112px; border: 1px solid var(--border); border-radius: 10px; background: #f5f4f2; }
-.attachment-preview { display: grid; gap: 5px; justify-items: center; width: 100%; border: 0; padding: 8px; background: none; cursor: pointer; }
+.attachment-preview { display: grid; gap: 5px; justify-items: center; width: 100%; border: 0; padding: 8px; background: none; cursor: default; }
 .attachment-preview > img { width: 94px; height: 58px; object-fit: cover; border-radius: 6px; }
 .attachment-preview > .icon { width: 34px; height: 58px; }
 .attachment-preview > span { display: block; width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 10px; }
@@ -536,7 +536,7 @@
 .decision-details .kv dd { margin-bottom: 8px; }
 .received-attachments { display: flex; flex-wrap: wrap; gap: 8px; max-width: 100%; }
 .mine .received-attachments { justify-content: flex-end; }
-.received-file { display: flex; align-items: center; gap: 12px; max-width: 100%; width: 258px; border: 1px solid #ddddda; border-radius: 14px; background: #f6f6f4; padding: 12px; cursor: pointer; color: var(--text); text-align: left; }
+.received-file { display: flex; align-items: center; gap: 12px; max-width: 100%; width: 258px; border: 1px solid #ddddda; border-radius: 14px; background: #f6f6f4; padding: 12px; cursor: default; color: var(--text); text-align: left; }
 .received-file:hover { background: #eeeeeb; }
 .received-file-visual { display: grid; place-items: center; width: 40px; height: 48px; flex: none; color: #8c8c88; }
 .received-file-visual .icon { width: 32px; height: 32px; }
@@ -598,7 +598,7 @@
 .agent-figure-area { position: relative; display: grid; place-items: center; }
 /* The figure edits like the desktop's: on hover it darkens inside a pale
  * outline of itself, a pencil sits on it and a label names the action. */
-.agent-figure-button { position: relative; display: grid; place-items: center; width: 112px; height: 112px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.agent-figure-button { position: relative; display: grid; place-items: center; width: 112px; height: 112px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: default; }
 .agent-figure-button:disabled { cursor: default; }
 .agent-figure-button:focus-visible { outline: none; }
 .agent-figure-stage { display: grid; place-items: center; }
@@ -615,7 +615,7 @@
 .agent-figure-picker { position: absolute; z-index: 20; top: calc(100% + 12px); left: -8px; width: 356px; max-width: calc(100vw - 56px); padding: 44px 16px 18px; border: 1px solid #d5d5d0; border-radius: 13px; background: #fff; box-shadow: 0 18px 44px rgb(25 25 23 / 18%), 0 2px 7px rgb(25 25 23 / 8%); animation: agent-picker-in 140ms ease both; }
 .agent-figure-picker::before { content: ""; position: absolute; top: -7px; left: 57px; width: 13px; height: 13px; border-top: 1px solid #d5d5d0; border-left: 1px solid #d5d5d0; background: #fff; rotate: 45deg; }
 @keyframes agent-picker-in { from { opacity: 0; transform: translateY(-4px); } }
-.agent-figure-reset { position: absolute; top: 10px; right: 13px; min-height: 27px; padding: 0 4px; border: 0; background: transparent; color: #676763; font-size: 11.5px; cursor: pointer; }
+.agent-figure-reset { position: absolute; top: 10px; right: 13px; min-height: 27px; padding: 0 4px; border: 0; background: transparent; color: #676763; font-size: 11.5px; cursor: default; }
 .agent-figure-reset:hover { color: #171716; }
 .agent-figure-picker .figure-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 15px; width: 261px; max-width: 100%; margin: 0 auto; }
 .agent-figure-picker .figure-choice { width: 54px; height: 54px; padding: 3px; }
@@ -704,14 +704,14 @@
 .agent-inline-reading .message-prose pre { padding: 8px 10px; border-radius: 8px; }
 .agent-inline-reading .message-prose hr { margin: 10px 0; }
 .agent-card-links { display: grid; margin: 8px -6px 0; }
-.agent-card-link { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 0 6px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer; }
+.agent-card-link { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 0 6px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: default; }
 .agent-card-link:hover, .agent-card-link:focus-visible { background: var(--hover); outline: none; }
 .agent-card-link > .icon { flex: none; width: 16px; height: 16px; }
 .agent-card-link > .icon:last-child { width: 11px; height: 11px; margin-left: auto; color: var(--text-soft); }
 .agent-card-link[hidden] { display: none; }
 /* Copy, Hide and Delete: plain icons at the card's right edge, named by their tooltips. */
 .agent-card-squares { display: flex; justify-content: flex-end; gap: 2px; margin: 8px -6px 0 0; }
-.agent-card-square { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-soft); cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }
+.agent-card-square { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-soft); cursor: default; transition: background-color 120ms ease, color 120ms ease; }
 .agent-card-square:hover, .agent-card-square:focus-visible { background: var(--hover); color: var(--text); outline: none; }
 .agent-card-square.is-danger:hover, .agent-card-square.is-danger:focus-visible { background: var(--danger-soft); color: var(--danger); }
 .agent-card-square.is-done { color: #0f7a55; }
@@ -743,7 +743,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 @keyframes image-viewer-from-previous { from { opacity: 0; transform: translateX(-36px); } }
 .image-viewer-note { margin: 0; color: rgb(255 255 255 / 72%); font-size: 13px; text-align: center; }
 .image-viewer-dialog .surface-tools { top: 14px; right: 14px; }
-.image-viewer-dialog .surface-close, .image-viewer-nav { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; background: rgb(255 255 255 / 12%); color: #fff; cursor: pointer; transition: background var(--motion-fast) ease, opacity var(--motion-fast) ease; }
+.image-viewer-dialog .surface-close, .image-viewer-nav { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; background: rgb(255 255 255 / 12%); color: #fff; cursor: default; transition: background var(--motion-fast) ease, opacity var(--motion-fast) ease; }
 .image-viewer-dialog .surface-close { width: 36px; height: 36px; }
 .image-viewer-dialog .surface-close:hover, .image-viewer-nav:hover:not(:disabled) { background: rgb(255 255 255 / 22%); color: #fff; }
 .image-viewer-nav { position: absolute; top: 50%; width: 44px; height: 44px; margin-top: -22px; padding: 0; }
@@ -796,12 +796,12 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-loading { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px 28px; overflow: auto; text-align: center; }
 .computer-loading[hidden], .computer-loading-spinner[hidden], .computer-retry[hidden] { display: none; }
 .computer-loading p { margin: 0; max-width: 280px; color: #b9bbc1; font-size: 12px; line-height: 1.5; }
-.computer-panel .computer-retry { min-height: 28px; padding: 3px 12px; border: 1px solid rgb(255 255 255 / 20%); border-radius: 6px; color: #fff; background: rgb(255 255 255 / 8%); font-size: 12px; cursor: pointer; }
+.computer-panel .computer-retry { min-height: 28px; padding: 3px 12px; border: 1px solid rgb(255 255 255 / 20%); border-radius: 6px; color: #fff; background: rgb(255 255 255 / 8%); font-size: 12px; cursor: default; }
 /* The canvas fills the popover. Controls float over it only when needed. */
 .computer-panel .screen-viewer-embedded { position: absolute; inset: 0; z-index: 2; background: #24262a; }
 .computer-panel:not(.is-entered) .screen-viewer-frame { display: block; padding: 0; }
 .computer-panel:not(.is-entered) .screen-viewer-stage { pointer-events: none; }
-.computer-panel .screen-viewer-enter { position: absolute; top: 50%; left: 50%; z-index: 4; transform: translate(-50%, -50%); min-width: 80px; min-height: 34px; padding: 6px 18px; border: 1px solid rgb(255 255 255 / 35%); border-radius: 999px; color: #18191b; background: rgb(250 250 250 / 94%); box-shadow: 0 2px 12px rgb(0 0 0 / 28%); font-size: 13px; font-weight: 500; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
+.computer-panel .screen-viewer-enter { position: absolute; top: 50%; left: 50%; z-index: 4; transform: translate(-50%, -50%); min-width: 80px; min-height: 34px; padding: 6px 18px; border: 1px solid rgb(255 255 255 / 35%); border-radius: 999px; color: #18191b; background: rgb(250 250 250 / 94%); box-shadow: 0 2px 12px rgb(0 0 0 / 28%); font-size: 13px; font-weight: 500; cursor: default; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
 .computer-panel .screen-viewer-enter:hover { background: #fff; }
 /* Hovered, a shade sits along the edges of the preview, under the Enter button and the controls. */
 .computer-panel:not(.is-entered) .screen-viewer-embedded::after { content: ""; position: absolute; inset: 0; z-index: 2; box-shadow: inset 0 0 72px 14px var(--computer-hover-shade); opacity: 0; pointer-events: none; transition: opacity 160ms ease; }
@@ -810,7 +810,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 	.computer-panel:not(.is-entered):hover .screen-viewer-embedded::after { opacity: 1; }
 }
 /* The X top right closes the preview for good, as Escape does; the entered frame has its compress button instead. */
-.computer-panel .computer-close { position: absolute; top: 6px; right: 6px; z-index: 3; display: grid; place-items: center; width: 24px; height: 24px; min-height: 24px; padding: 0; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); font-size: 0; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
+.computer-panel .computer-close { position: absolute; top: 6px; right: 6px; z-index: 3; display: grid; place-items: center; width: 24px; height: 24px; min-height: 24px; padding: 0; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); font-size: 0; cursor: default; opacity: 0; pointer-events: none; transition: opacity 120ms ease, background 120ms ease; }
 .computer-panel .computer-close::before { content: ""; width: 16px; height: 16px; background: currentColor; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6 6 18'/%3E%3C/svg%3E") center / contain no-repeat; }
 .computer-panel .computer-close:hover { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
 .computer-panel:hover .computer-close, .computer-panel:focus-within:not(.is-pointer-focus) .computer-close { opacity: 1; pointer-events: auto; }
@@ -878,12 +878,12 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-panel .machine-screen-control-words { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .computer-panel .machine-screen-control-text:empty, .computer-panel .machine-screen-control-note:empty { display: none; }
 .computer-panel .machine-screen-control-note { color: #f0c27a; }
-.computer-panel .machine-screen-control-button { flex: none; height: 24px; min-height: 24px; padding: 0 12px; border: 0; border-radius: 12px; color: #1d1d1f; background: #fff; box-shadow: none; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.computer-panel .machine-screen-control-button { flex: none; height: 24px; min-height: 24px; padding: 0 12px; border: 0; border-radius: 12px; color: #1d1d1f; background: #fff; box-shadow: none; font: inherit; font-size: 12px; font-weight: 600; cursor: default; }
 .computer-panel .machine-screen-control-button:hover { background: #e9e9ec; }
 .computer-panel .machine-screen-control-button:disabled { opacity: 0.6; cursor: default; }
 /* The member holds the desktop in another window (review r14): what that means, and Done. */
 .computer-panel .machine-screen-control.is-elsewhere { padding-left: 10px; }
-.computer-panel .machine-screen-control-hand-back { flex: none; height: 24px; min-height: 24px; padding: 0 12px; border: 0; border-radius: 12px; color: #fff; background: rgb(255 255 255 / 16%); box-shadow: none; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.computer-panel .machine-screen-control-hand-back { flex: none; height: 24px; min-height: 24px; padding: 0 12px; border: 0; border-radius: 12px; color: #fff; background: rgb(255 255 255 / 16%); box-shadow: none; font: inherit; font-size: 12px; font-weight: 600; cursor: default; }
 .computer-panel .machine-screen-control-hand-back[hidden] { display: none; }
 .computer-panel .machine-screen-control-hand-back:hover { background: rgb(255 255 255 / 26%); }
 /* Shared control (20260930734000): who else uses the computer, in a quieter line; a private hold keeps the white Done. */
@@ -901,7 +901,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .computer-loading p.computer-loading-detail[hidden] { display: none; }
 /* Open (20260930758000): on the preview top right before the close, shown with the other hover controls; entered,
    beside the title. It opens a menu of the company's apps. */
-.computer-panel .computer-opener { display: inline-flex; align-items: center; gap: 2px; height: 24px; min-height: 24px; padding: 0 4px 0 8px; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); font: inherit; font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.computer-panel .computer-opener { display: inline-flex; align-items: center; gap: 2px; height: 24px; min-height: 24px; padding: 0 4px 0 8px; border: 0; border-radius: 4px; color: var(--computer-hover-ink); background: transparent; box-shadow: none; filter: var(--computer-hover-ink-shadow); font: inherit; font-size: 12px; font-weight: 500; white-space: nowrap; cursor: default; }
 .computer-panel .computer-opener[hidden] { display: none; }
 .computer-panel .computer-opener:hover, .computer-panel .computer-opener.menu-open { color: var(--computer-hover-ink-strong); background: var(--computer-hover-button-bg); }
 .computer-panel .computer-opener .icon { flex: none; width: 14px; height: 14px; }
@@ -933,7 +933,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .recipient-entry > input:focus-visible { outline: none; }
 .recipient-chips { display: contents; }
 .recipient-chips[hidden] { display: none; }
-.recipient-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 28px; padding: 0 9px 0 4px; border: 0; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--sidebar-selection) 12%, var(--bg)); font-size: 13px; white-space: nowrap; cursor: pointer; }
+.recipient-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; height: 28px; padding: 0 9px 0 4px; border: 0; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--sidebar-selection) 12%, var(--bg)); font-size: 13px; white-space: nowrap; cursor: default; }
 .recipient-chip .icon { width: 12px; height: 12px; flex: none; color: var(--text-muted); }
 .recipient-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .recipient-menu {
@@ -945,7 +945,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 }
 .recipient-menu[hidden] { display: none; }
 .recipient-list { display: flex; flex-direction: column; gap: 1px; }
-.recipient-option { display: flex; align-items: center; gap: 16px; min-height: 60px; padding: 8px 15px 8px 12px; border-radius: 9px; cursor: pointer; user-select: none; }
+.recipient-option { display: flex; align-items: center; gap: 16px; min-height: 60px; padding: 8px 15px 8px 12px; border-radius: 9px; cursor: default; user-select: none; }
 .recipient-option.active { background: var(--hover); }
 .recipient-option[aria-disabled="true"] { color: var(--text-soft); cursor: default; }
 .recipient-option[aria-disabled="true"] .recipient-mark { opacity: 0.6; }
@@ -1025,7 +1025,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .group-edit-fields textarea { resize: vertical; }
 .group-member-options > legend { padding: 0; font-weight: 600; }
 .group-member-options > p { margin: 4px 0 8px; color: var(--text-muted); font-size: 12px; }
-.group-member-choice { display: flex; flex-direction: row; align-items: center; gap: 12px; padding: 8px 0; cursor: pointer; }
+.group-member-choice { display: flex; flex-direction: row; align-items: center; gap: 12px; padding: 8px 0; cursor: default; }
 .group-member-choice > input { flex: none; width: 16px; min-height: 16px; margin: 0; }
 .group-member-choice > .person-avatar { width: 32px; height: 32px; flex: none; }
 .group-member-choice > span:not(.figure, .person-avatar) { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
@@ -1141,7 +1141,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .coding-pill.is-single:not([data-folded="true"]):is(:hover, :focus-within) .coding-pill-label { max-width: 60%; }
 /* Five lines show at once; more scroll inside the pill, so every session stays reachable and the summary stays put. */
 .coding-pill-rows { display: flex; flex-direction: column; flex: none; max-height: calc(5 * 36px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
-.coding-pill-summary, .coding-pill-row { display: flex; align-items: center; gap: 9px; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.coding-pill-summary, .coding-pill-row { display: flex; align-items: center; gap: 9px; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: default; }
 .coding-pill-summary { flex: none; height: 32px; padding: 0 9px 0 6px; font-size: 12.5px; }
 .coding-pill-summary > .icon { flex: none; width: 12px; height: 12px; margin-left: auto; color: var(--text-soft); rotate: -90deg; transition: rotate 300ms ease; }
 .coding-pill:is(:not([data-folded="true"]):is(:hover, :focus-within), [data-open="true"]) .coding-pill-summary > .icon { rotate: 90deg; }
@@ -1175,7 +1175,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
  * beside it. The bar itself lets clicks through to what scrolls under its empty sides. */
 .coding-thread-header { position: absolute; top: 10px; left: 12px; right: 12px; z-index: 3; display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(0, 1fr); align-items: center; gap: 8px; pointer-events: none; }
 .coding-thread-header > * { pointer-events: auto; }
-.coding-thread-back { justify-self: start; display: inline-flex; align-items: center; gap: 4px; max-width: 220px; height: 34px; padding: 0 14px 0 10px; border: 0; border-radius: 17px; background: var(--overlay); box-shadow: 0 4px 16px rgb(18 18 17 / 10%), 0 0 0 1px var(--border); color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: background-color 120ms ease, box-shadow 160ms ease; }
+.coding-thread-back { justify-self: start; display: inline-flex; align-items: center; gap: 4px; max-width: 220px; height: 34px; padding: 0 14px 0 10px; border: 0; border-radius: 17px; background: var(--overlay); box-shadow: 0 4px 16px rgb(18 18 17 / 10%), 0 0 0 1px var(--border); color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: default; transition: background-color 120ms ease, box-shadow 160ms ease; }
 .coding-thread-back:hover, .coding-thread-back:focus-visible { background: color-mix(in srgb, var(--text) 5%, var(--overlay)); box-shadow: 0 6px 20px rgb(18 18 17 / 14%), 0 0 0 1px var(--border-strong); outline: none; }
 .coding-thread-back .icon { flex: none; width: 16px; height: 16px; }
 @media (forced-colors: active) {
@@ -1203,7 +1203,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 
 /* A message between two agents: a chip in each agent's thread, the transcript behind it (contract 14.6). */
 .peer-link { display: flex; flex: none; align-self: center; justify-content: center; max-width: 100%; margin: 6px 0; }
-.peer-chip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; padding: 3px 6px; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); font: inherit; font-size: 12px; font-weight: 500; line-height: 16px; cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }
+.peer-chip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; padding: 3px 6px; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); font: inherit; font-size: 12px; font-weight: 500; line-height: 16px; cursor: default; transition: background-color 120ms ease, color 120ms ease; }
 .peer-chip:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
 .peer-chip:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .peer-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1218,7 +1218,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 /* An agent's change to the interfaces or tables (I10): a note's line, with a small Undo beside it. */
 .interface-change { display: flex; flex: none; flex-wrap: wrap; align-self: center; align-items: baseline; justify-content: center; gap: 2px 8px; max-width: min(80%, 560px); margin: 10px 0; color: var(--text-muted); font-size: 12px; line-height: 1.45; text-align: center; overflow-wrap: anywhere; outline: none; }
 .interface-change:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 4px; }
-.interface-change-undo { padding: 1px 7px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--text); font: inherit; font-size: 12px; font-weight: 500; line-height: 16px; cursor: pointer; transition: background-color 120ms ease; }
+.interface-change-undo { padding: 1px 7px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--text); font: inherit; font-size: 12px; font-weight: 500; line-height: 16px; cursor: default; transition: background-color 120ms ease; }
 .interface-change-undo:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 8%, transparent); }
 .interface-change-undo:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .interface-change-undo:disabled { color: var(--text-muted); cursor: default; }
@@ -1239,7 +1239,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .side-panel-title { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 /* Whose app it is and the password line are the panel's own words: they wrap rather than be cut (review r1, H2). */
 .side-panel-by { color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
-.side-panel-button { flex: none; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); cursor: pointer; }
+.side-panel-button { flex: none; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); cursor: default; }
 .side-panel-button .icon { width: 15px; height: 15px; }
 .side-panel-button:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
 .side-panel-button:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
@@ -1268,7 +1268,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .side-panel-ways { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 0 24px 24px; }
 .side-panel-way {
 	display: inline-flex; align-items: center; min-height: 32px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
-	background: var(--bg); color: var(--text); font: inherit; font-size: 13px; font-weight: 600; text-decoration: none; cursor: pointer;
+	background: var(--bg); color: var(--text); font: inherit; font-size: 13px; font-weight: 600; text-decoration: none; cursor: default;
 }
 .side-panel-way:hover { background: var(--hover); text-decoration: none; }
 .side-panel-way:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
@@ -1313,7 +1313,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .concepts-button {
 	display: grid; flex: none; place-items: center; padding: 0;
 	width: 36px; height: 36px; width: round(down, 36px, calc(1px + 1px)); height: round(down, 36px, calc(1px + 1px));
-	border: 0; border-radius: 10px; background: transparent; color: var(--rail-small); cursor: pointer;
+	border: 0; border-radius: 10px; background: transparent; color: var(--rail-small); cursor: default;
 }
 .concepts-button .icon { width: 16px; height: 16px; width: round(down, 16px, 1px); height: round(down, 16px, 1px); }
 .concepts-button:hover { background: var(--rail-hover); color: var(--text); }
@@ -1377,7 +1377,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .bubble:has(> .app-cards) { padding: 0; border-radius: 0; background: none; box-shadow: none; }
 .app-card {
 	display: flex; align-items: center; gap: 12px; width: 360px; min-width: 0; max-width: 100%; padding: 11px 12px 11px 13px;
-	border: 1px solid var(--border); border-radius: 18px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+	border: 1px solid var(--border); border-radius: 18px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: default;
 	transition: border-color var(--motion-fast) ease, background-color var(--motion-fast) ease;
 }
 /* A card where no row holds it: in a list's item or a table's cell. */
@@ -1466,7 +1466,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .pair-footer { display: flex; flex: none; align-items: center; justify-content: center; gap: 12px; padding: 12px 16px 16px; }
 .pair-readonly { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; }
 .pair-readonly .icon { width: 12px; height: 12px; }
-.pair-close { flex: none; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text-muted); cursor: pointer; }
+.pair-close { flex: none; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text-muted); cursor: default; }
 .pair-close .icon { width: 15px; height: 15px; }
 .pair-close:hover { background: color-mix(in srgb, var(--text) 12%, transparent); color: var(--text); }
 .pair-close:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
@@ -1494,7 +1494,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 }
 .card-fold-wrap { margin: 0 0 8px; }
 .card-fold-wrap > .card-fold { margin-bottom: 2px; }
-.card-more { padding: 0; border: 0; background: none; color: var(--blue); font: 600 12px/1.4 var(--font-sans); cursor: pointer; }
+.card-more { padding: 0; border: 0; background: none; color: var(--blue); font: 600 12px/1.4 var(--font-sans); cursor: default; }
 .card-more:hover { text-decoration: underline; text-underline-offset: 3px; }
 .card-more:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px; }
 .interaction-subject { font-weight: 600; }
@@ -1520,7 +1520,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .interaction-choices { display: grid; grid-template-columns: repeat(var(--choices, 2), minmax(0, 1fr)); align-items: start; gap: 10px; margin: 8px 0 10px; }
 .choice-box {
 	display: grid; grid-template-rows: auto auto auto; gap: 4px; align-content: start; min-width: 0; padding: 8px 8px 10px;
-	border: 1px solid var(--border); border-radius: 14px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: pointer;
+	border: 1px solid var(--border); border-radius: 14px; background: var(--bg); color: var(--text); font: inherit; text-align: left; cursor: default;
 	transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, transform var(--motion-base) var(--ease-spring);
 }
 .choice-box:hover:not(:disabled) { border-color: var(--border-strong); box-shadow: 0 8px 22px rgb(18 18 17 / 8%); transform: translateY(-2px); }
@@ -1597,7 +1597,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .interaction-own > .interaction-field { flex: 1; padding-right: 42px; }
 .interaction-send {
 	position: absolute; top: 50%; right: 4px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0;
-	border: 0; border-radius: 50%; background: var(--composer-accent); color: var(--composer-on-accent); cursor: pointer; transform: translateY(-50%);
+	border: 0; border-radius: 50%; background: var(--composer-accent); color: var(--composer-on-accent); cursor: default; transform: translateY(-50%);
 }
 .interaction-send .icon { width: 16px; height: 16px; stroke-width: 2.2; }
 .interaction-send:disabled { background: var(--pane-strong); color: var(--text-muted); cursor: default; }
@@ -1709,7 +1709,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 [data-theme="dark"] .email-draft-card[data-email-state="sent"] .email-draft-status { color: var(--ok); }
 .email-sent-to, .email-sent-cc { margin: 0 0 4px; font-size: 14px; line-height: 1.5; color: var(--text-muted); overflow-wrap: anywhere; }
 .email-sent-subject { margin: 8px 0 12px; font-size: 17px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
-.email-sent-details summary { width: fit-content; cursor: pointer; color: var(--text-muted); font-size: 13px; line-height: 1.5; border-radius: 4px; }
+.email-sent-details summary { width: fit-content; cursor: default; color: var(--text-muted); font-size: 13px; line-height: 1.5; border-radius: 4px; }
 .email-sent-details summary:hover { color: var(--text); }
 .email-sent-details summary:focus-visible { outline: 2px solid var(--text-muted); outline-offset: 4px; }
 .email-sent-from { display: flex; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 13px; line-height: 1.5; }
@@ -1772,7 +1772,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .app-ask-held { margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
 .app-ask-held[hidden] { display: none; }
 .app-ask-held[role="alert"] { color: var(--danger); }
-.app-ask-link { color: var(--text); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.app-ask-link { color: var(--text); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: default; }
 .app-ask-field:read-only { color: var(--text-muted); }
 /* A web page a link in the app leads to (Jonas, 13 Nov 2026: "Show the address first"). The site first, a size up, its
  * registered part in the bar's ink and any labels before it quieter; then the whole address in the house monospace (0
@@ -1790,7 +1790,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .app-ask-buttons { display: flex; flex: none; gap: 8px; margin-left: auto; }
 .app-ask-button {
 	min-height: 32px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
-	background: var(--bg); color: var(--text); font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer;
+	background: var(--bg); color: var(--text); font: inherit; font-weight: 600; white-space: nowrap; cursor: default;
 }
 .app-ask-button:hover:not(:disabled) { background: var(--hover); }
 .app-ask-button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
@@ -1847,7 +1847,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .question-dock-steps { display: flex; flex: none; align-items: center; gap: 2px; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .question-dock-button {
 	display: grid; flex: none; place-items: center; width: 28px; height: 28px; padding: 0;
-	border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); cursor: pointer;
+	border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); cursor: default;
 	transition: background-color var(--motion-fast) ease, transform var(--motion-fast) var(--ease-spring);
 }
 .question-dock-button .icon { width: 15px; height: 15px; }
@@ -1868,7 +1868,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .question-dock.is-folded { width: auto; max-width: calc(100% - 40px); padding: 0; border-radius: 999px; overflow: visible; }
 .question-dock-pill {
 	display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 14px 5px 6px;
-	border: 0; border-radius: 999px; background: transparent; color: var(--text); font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer;
+	border: 0; border-radius: 999px; background: transparent; color: var(--text); font: inherit; font-size: 13.5px; font-weight: 600; cursor: default;
 }
 .question-dock-pill-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .question-dock-badge {
@@ -1921,10 +1921,10 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .decision-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .decision-pick:empty { display: none; }
 .decision-pick-words { flex: 1 1 260px; margin: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
-.decision-pick-send { flex: none; max-width: 100%; min-height: 34px; padding: 6px 14px; border: 0; border-radius: 999px; background: var(--text); color: var(--bg); font: inherit; font-size: 13px; font-weight: 600; line-height: 1.3; text-align: left; cursor: pointer; }
+.decision-pick-send { flex: none; max-width: 100%; min-height: 34px; padding: 6px 14px; border: 0; border-radius: 999px; background: var(--text); color: var(--bg); font: inherit; font-size: 13px; font-weight: 600; line-height: 1.3; text-align: left; cursor: default; }
 .decision-pick-send:hover { filter: brightness(1.15); }
 .decision-pick-send:focus-visible, .decision-pick-back:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.decision-pick-back { flex: none; min-height: 34px; padding: 6px 14px; border: 1px solid var(--border-strong); border-radius: 999px; background: transparent; color: var(--text); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; }
+.decision-pick-back { flex: none; min-height: 34px; padding: 6px 14px; border: 1px solid var(--border-strong); border-radius: 999px; background: transparent; color: var(--text); font: inherit; font-size: 13px; font-weight: 500; cursor: default; }
 .decision-tab.is-others:not([aria-selected="true"]) { border-style: dashed; color: var(--text-muted); }
 .decision-figure { display: grid; flex: none; place-items: end center; width: 132px; }
 .decision-dock.is-narrow .decision-stage { position: relative; display: block; padding: 50px 0 0; }
@@ -1934,7 +1934,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .decision-tab {
 	display: flex; flex: none; align-items: center; gap: 6px; box-sizing: border-box; max-width: 160px; height: 44px; padding: 0 14px 0 7px;
 	border: 1px solid var(--border); border-radius: 999px; background: var(--popover, var(--bg)); color: var(--text);
-	font: inherit; font-size: 13.5px; font-weight: 550; cursor: pointer;
+	font: inherit; font-size: 13.5px; font-weight: 550; cursor: default;
 	transition: max-width 260ms var(--ease-spring), background-color var(--motion-fast) ease, color var(--motion-fast) ease, transform var(--motion-fast) var(--ease-spring);
 }
 .decision-tab:hover, .decision-tab:focus-visible { max-width: 280px; }
@@ -1952,7 +1952,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .decided-figure { display: grid; flex: none; place-items: center; }
 .decided-answer { max-width: min(100%, 560px); color: var(--text); font-size: 20px; font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
 .decided-by { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 10px; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
-.decided-undo { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 12px 0 6px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.decided-undo { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 12px 0 6px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600; cursor: default; }
 .decided-undo:hover { background: var(--hover); }
 .decided-undo:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .decided-ring { width: 16px; height: 16px; border-radius: 50%; background: conic-gradient(var(--text) var(--decided-gone, 0%), color-mix(in srgb, var(--text) 16%, transparent) 0); mask: radial-gradient(circle, transparent 5px, #000 5.5px); animation: decided-ring linear both; }

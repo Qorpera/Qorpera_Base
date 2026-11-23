@@ -830,3 +830,25 @@ describe("a landing refused for its files (migration 20260930743000)", () => {
 		);
 	});
 });
+
+describe("Gemini API run failures", () => {
+	it.each([
+		["GEMINI_API:CAP_REACHED", "gemini_cap", /monthly Gemini spend cap was reached/i, false],
+		["GEMINI_API:BILLING_REQUIRED", "gemini_billing", /billing or AI Ultra credits are not active/i, false],
+		["GEMINI_API:QUOTA_EXHAUSTED", "gemini_quota", /quota or rate limit/i, true],
+		["GEMINI_API:KEY_REJECTED", "gemini_key", /rejected your Gemini API key/i, false],
+		["GEMINI_API:PROVIDER_OUTAGE", "gemini_outage", /temporary server error/i, true],
+		["GEMINI_API:MODEL_UNAVAILABLE", "gemini_rejected", /Gemini service rejected this request/i, false],
+		["GEMINI_API:REQUEST_REJECTED", "gemini_rejected", /Gemini service rejected this request/i, false],
+		["GEMINI_API:TRANSPORT_UNAVAILABLE", "connection", /lost its connection/i, true],
+	] as const)("%s", (code, expectedKind, expectedPattern, expectedRetryable) => {
+		const error = BRIDGE(code);
+		expect(classifyRunFailure(error, "failed")).toBe(expectedKind);
+		expect(runFailureInterrupted(error, "failed")).toBe(expectedRetryable);
+		const own = runFailureReason(error, "failed", false, { own: true });
+		expect(own).toMatch(expectedPattern);
+		expect(own).not.toMatch(/\d{3}|runner|provider|bridge|lease|dispatch|try again/i);
+		const other = runFailureReason(error, "failed", false, { own: false });
+		expect(other).not.toMatch(/\d{3}|runner|provider|bridge|lease|dispatch|try again/i);
+	});
+});

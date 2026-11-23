@@ -536,12 +536,6 @@ export function surfaceBySlug(state: Pick<SurfacesState, "surfaces">, slug: stri
 	return state.surfaces.find((surface) => surface.slug === slug);
 }
 
-export function productBuildSurfaces(state: Pick<SurfacesState, "surfaces">, excludeId?: string): SurfaceSummary[] {
-	return state.surfaces.filter(
-		(surface) => surface.status === "active" && surface.archetype === "live_build" && surface.id !== excludeId,
-	);
-}
-
 function findIdentitySurface(state: Pick<SurfacesState, "surfaces" | "surfaceLooks">): SurfaceSummary | undefined {
 	return state.surfaces.find(
 		(surface) =>
@@ -1670,6 +1664,10 @@ export class SurfacesStore {
 
 	workspace(surfaceId: string): SurfaceWorkspace | undefined {
 		return this.state.workspaces[surfaceId];
+	}
+
+	isWorkspaceLoading(surfaceId: string): boolean {
+		return this.#inFlightWorkspaceRefreshes.has(surfaceId);
 	}
 
 	setActiveSurface(surfaceId: string | undefined): void {
