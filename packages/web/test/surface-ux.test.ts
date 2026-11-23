@@ -351,10 +351,10 @@ describe("creating surfaces", () => {
 		expect(database!.folderRoot).toBe("surfaces/database");
 		expect(store.state.localStudioBase[database!.id]?.["surfaces/database/tables.json"]).toContain("customers");
 
-		openCreateSurfaceSheet(store, COMPANY);
+		openCreateSurfaceSheet(store);
 		const productSheet = document.querySelector(".surface-create-sheet")!;
 		productSheet.querySelector<HTMLElement>('[data-preset="product"]')!.click();
-		const nameField = productSheet.querySelector<HTMLInputElement>(".surface-create-input")!;
+		const nameField = productSheet.querySelector<HTMLInputElement>(".surface-create-name")!;
 		nameField.value = "Thetabands";
 		nameField.dispatchEvent(new Event("input", { bubbles: true }));
 		productSheet
