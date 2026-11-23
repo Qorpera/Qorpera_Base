@@ -210,6 +210,50 @@ $new$	v_user_id := public.qorpera_assert_surface_member(v_surface.profile_id, tr
 	if v_surface.source_kind = 'code_repo' and v_surface.repository_key is not null then$new$
 ]);
 
+select pg_temp.sds_patch('public.qorpera_surface_migration_checklist(uuid)'::regprocedure, array[
+$old$	into v_sites
+	from public.qorpera_company_sites s
+	where s.profile_id = p_company_id;$old$,
+$new$	into v_sites
+	from public.qorpera_company_sites s
+	where s.profile_id = p_company_id
+		and not exists (
+			select 1 from public.qorpera_surfaces surface
+			where surface.profile_id = s.profile_id and surface.status = 'archived'
+				and (surface.site_id = s.id or surface.slug = s.slug)
+		);$new$
+]);
+
+select pg_temp.sds_patch('public.qorpera_apply_surface_migration(uuid,text[],jsonb,text[])'::regprocedure, array[
+$old$			and (cardinality(coalesce(p_activate_surface_slugs, '{}'::text[])) = 0 or s.slug = any(p_activate_surface_slugs))
+$old$,
+$new$			and (cardinality(coalesce(p_activate_surface_slugs, '{}'::text[])) = 0 or s.slug = any(p_activate_surface_slugs))
+			and not exists (
+				select 1 from public.qorpera_surfaces surface
+				where surface.profile_id = s.profile_id and surface.status = 'archived'
+					and (surface.site_id = s.id or surface.slug = s.slug)
+			)
+$new$,
+$old$		on conflict (profile_id, slug) do update set status = 'active', updated_at = clock_timestamp();$old$,
+$new$		on conflict (profile_id, slug) do update set status = 'active', updated_at = clock_timestamp()
+		where public.qorpera_surfaces.status = 'proposed';$new$
+]);
+
+select pg_temp.sds_patch(
+	'public.qorpera_propose_surface(uuid,text,text,text,text,text,text,text,text,text,text,text,text,boolean,boolean)'::regprocedure,
+	array[
+$old$		brief_summary = coalesce(excluded.brief_summary, public.qorpera_surfaces.brief_summary),
+		updated_at = clock_timestamp()
+	returning * into v_surface;$old$,
+$new$		brief_summary = coalesce(excluded.brief_summary, public.qorpera_surfaces.brief_summary),
+		updated_at = clock_timestamp()
+	where public.qorpera_surfaces.status <> 'archived'
+	returning * into v_surface;
+	if v_surface.id is null then
+		raise exception 'An interface with this slug was deleted; propose it under another slug' using errcode = '55000';
+	end if;$new$
+]);
+
 revoke all on function
 	public.qorpera_surface_remove(uuid, boolean),
 	public.qorpera_surface_refuse_removed()

@@ -117,6 +117,8 @@ declare
 	v_auto_late uuid;
 	v_errcode text;
 	v_count integer;
+	v_site_row uuid;
+	v_site_slug text;
 begin
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
 	insert into auth.users(id, email) values
@@ -346,6 +348,50 @@ begin
 			where id in (v_site, v_note) and status = 'archived' and unpublished_change_count = 1) = 2
 			and not exists (select 1 from public.qorpera_surface_publish_asks where surface_id in (v_site, v_note)),
 		'a deleted interface cannot be approved back, published or asked about'
+	);
+
+	select surface.site_id, site.slug into v_site_row, v_site_slug
+	from public.qorpera_surfaces surface
+	left join public.qorpera_company_sites site on site.id = surface.site_id
+	where surface.id = v_site;
+	perform pg_temp.sdel_assert(v_site_row is not null, 'the deleted website has a site of its own');
+	perform pg_temp.sdel_as(v_anna);
+	set local role authenticated;
+	v_result := public.qorpera_surface_migration_checklist(v_company);
+	perform public.qorpera_apply_surface_migration(v_company, '{}'::text[], '[]'::jsonb, '{}'::text[]);
+	perform public.qorpera_apply_surface_migration(v_company, array[v_site_slug, 'website'], '[]'::jsonb, '{}'::text[]);
+	reset role;
+	perform pg_temp.sdel_assert(
+		not exists (
+			select 1 from jsonb_array_elements(v_result -> 'proposedSurfaces') elem
+			where elem ->> 'slug' in (v_site_slug, 'website')
+		)
+			and (select status from public.qorpera_surfaces where id = v_site) = 'archived'
+			and (select count(*) from public.qorpera_surfaces where site_id = v_site_row) = 1
+			and not exists (
+				select 1 from public.qorpera_surfaces
+				where profile_id = v_company and slug = v_site_slug and id <> v_site
+			),
+		'the move-to-surfaces sheet neither lists a deleted interface''s site nor brings the interface back'
+	);
+	perform pg_temp.sdel_refused(null,
+		format('select public.qorpera_native_surface_propose(%L, %L, %L, %L, %L, %L, p_activate_immediately => true)',
+			v_company, 'website', 'Website again', 'products', 'live_build', 'code_repo'),
+		'55000', 'An interface with this slug was deleted; propose it under another slug');
+	perform pg_temp.sdel_refused(null,
+		format('select public.qorpera_native_surface_propose(%L, %L, %L, %L, %L, %L)',
+			v_company, 'launch-note', 'Launch Note', 'products', 'studio', 'folder'),
+		'55000', 'An interface with this slug was deleted; propose it under another slug');
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_result := public.qorpera_native_surface_propose(
+		v_company, 'shop', 'Shop', 'products', 'studio', 'folder', p_activate_immediately => true
+	);
+	reset role;
+	perform pg_temp.sdel_assert(
+		v_result ->> 'status' = 'active'
+			and (select count(*) from public.qorpera_surfaces where id in (v_site, v_note) and status = 'archived') = 2,
+		'an agent cannot propose a deleted interface back, and still proposes one under a new slug: ' || v_result::text
 	);
 
 	perform pg_temp.sdel_as(v_anna);
