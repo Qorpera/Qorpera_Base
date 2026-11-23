@@ -26,6 +26,7 @@ export interface SurfaceReportOptions {
 	readonly loadFiles?: (surface: SurfaceSummary, signal: AbortSignal) => Promise<Readonly<Record<string, string>>>;
 	readonly embedded?: boolean;
 	readonly timeSlice?: boolean;
+	readonly include?: (path: string) => boolean;
 }
 
 interface ReportMetric {
@@ -793,7 +794,10 @@ export class SurfaceReportView {
 		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
-		const filePaths = Object.keys(files).sort();
+		const include = this.#options.include;
+		const filePaths = Object.keys(files)
+			.filter((path) => !include || include(path))
+			.sort();
 
 		const reports: ReportDocument[] = [];
 		const markdownDocs: ReportMarkdownDoc[] = [];
@@ -824,7 +828,10 @@ export class SurfaceReportView {
 		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
-		const filePaths = Object.keys(files).sort();
+		const include = this.#options.include;
+		const filePaths = Object.keys(files)
+			.filter((path) => !include || include(path))
+			.sort();
 
 		const reports: ReportDocument[] = [];
 		const markdownDocs: ReportMarkdownDoc[] = [];

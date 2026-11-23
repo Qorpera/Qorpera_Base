@@ -380,7 +380,7 @@ export function extractPointToChangeTarget(originRef: unknown): PointToChangeTar
 }
 
 const STUDIO_REPORT_SCHEMA =
-	"`<slug>.report.json` (one or more files for deep-dive vendor audits, competitor analyses, strategy essays, or product blog posts — rendered in the Analysis tab with charts, tables, and article switcher): " +
+	"`<slug>.report.json` (one or more files for deep-dive vendor audits, competitor analyses, strategy essays, or product blog posts — rendered with charts, tables, and an article switcher): " +
 	'JSON object `{ "category", "headline", "subtitle", "author", "date", "readingTime", "keyMetrics": [{ "label", "value", "delta" }], "sections": [{ "id", "kicker", "heading", "paragraphs": ["..."], "blocks": [...] }] }`. ' +
 	'Supported section `blocks`: `bar_chart` (`heading`, `subtitle`, `max`, `items: [{ label, value, display, note, highlight }]`), `line_chart` (`heading`, `subtitle`, `xLabels`, `series: [{ name, color, values }]`), `table` (`heading`, `caption`, `columns`, `rows`, `highlightRow`), `callout` (`tone: "thesis" | "decision" | "tradeoff"`, `heading`, `body`, `bullets`), `quote` (`text`, `attribution`), `figure` (`heading`, `caption`, `panels: [{ label, heading, body, accent }]`).';
 
