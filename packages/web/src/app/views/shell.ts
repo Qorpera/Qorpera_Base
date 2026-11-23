@@ -4315,6 +4315,7 @@ export function installSearchShortcut(): void {
 		const target = searchTarget;
 		if (!target?.parts.context || target.company.signal.aborted) return;
 		if (target.parts.context.searchBlocked?.()) return;
+		if (document.querySelector('dialog[open][aria-modal="true"]:not(.search-window)')) return;
 		event.preventDefault();
 		openSearchWindow(target.company, target.parts.context, target.parts.searchToggle);
 	});

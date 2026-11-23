@@ -153,7 +153,7 @@ export class SearchWindow {
 		close.addEventListener("click", () => this.close());
 		this.el = h(
 			"dialog",
-			{ class: "search-window", "aria-label": t("Search") },
+			{ class: "search-window", "aria-label": t("Search"), "aria-modal": "true" },
 			h(
 				"div",
 				{ class: "search-window-box" },

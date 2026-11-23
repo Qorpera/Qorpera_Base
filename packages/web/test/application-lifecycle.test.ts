@@ -848,6 +848,10 @@ describe("account and route ownership", () => {
 		f.root.querySelector<HTMLButtonElement>("#settings-tab-company")!.click();
 		await draw();
 		expect(f.root.querySelector(".settings-dialog")?.textContent).toContain("Delete company");
+		document.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }),
+		);
+		expect(document.querySelector("dialog.search-window[open]")).toBeNull();
 		f.root.querySelector<HTMLButtonElement>(".settings-close")!.click();
 		f.root.querySelector<HTMLButtonElement>(".rail .account-trigger")!.click();
 		f.root.querySelector<HTMLButtonElement>('.account-popover [data-account-action="friends"]')!.click();
