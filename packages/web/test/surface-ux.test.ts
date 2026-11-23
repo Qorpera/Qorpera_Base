@@ -349,6 +349,50 @@ describe("creating surfaces", () => {
 		store.dispose();
 	});
 
+	it("moves the kind with the arrow keys and folds the figure picker without closing the window", async () => {
+		const store = storeWith(undefined, { companyName: "Brooks", localInteractive: true });
+		await store.load();
+		const dialog = HTMLDialogElement.prototype;
+		dialog.showModal ??= function (this: HTMLDialogElement) {
+			this.open = true;
+		};
+		dialog.close ??= function (this: HTMLDialogElement) {
+			this.open = false;
+		};
+		openCreateSurfaceSheet(store, COMPANY);
+		const sheet = document.querySelector<HTMLDialogElement>(".surface-create-sheet")!;
+		const row = (id: string) => sheet.querySelector<HTMLElement>(`[data-preset="${id}"]`)!;
+		const press = (target: HTMLElement, key: string) =>
+			target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+
+		row("report").focus();
+		press(row("report"), "ArrowDown");
+		expect(document.activeElement).toBe(row("custom"));
+		expect(row("custom").getAttribute("aria-pressed")).toBe("true");
+		expect(sheet.querySelector<HTMLElement>(".surface-create-custom")!.hidden).toBe(false);
+		press(row("custom"), "ArrowRight");
+		expect(document.activeElement).toBe(row("identity"));
+		expect(row("identity").getAttribute("aria-pressed")).toBe("true");
+		press(row("identity"), "ArrowLeft");
+		expect(document.activeElement).toBe(row("custom"));
+
+		const swap = sheet.querySelector<HTMLButtonElement>(".surface-create-swap")!;
+		const figures = sheet.querySelector<HTMLElement>(".surface-create-figures")!;
+		swap.click();
+		swap.focus();
+		press(swap, "Escape");
+		expect(figures.hidden).toBe(true);
+		expect(sheet.open).toBe(true);
+		expect(sheet.isConnected).toBe(true);
+
+		swap.click();
+		expect(figures.hidden).toBe(false);
+		const name = sheet.querySelector<HTMLElement>(".surface-create-name")!;
+		name.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		expect(figures.hidden).toBe(true);
+		store.dispose();
+	});
+
 	it("renders a tailored local preview for every buildable kind", () => {
 		const surface = summary({ title: "Brooks" });
 		expect(renderLocalSitePreviewHtml("Brooks", surface, [], "live", "mobile_app")).toContain(

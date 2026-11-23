@@ -362,6 +362,8 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 	},
 ];
 
+const KIND_STEPS: Readonly<Record<string, number>> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
+
 function kindLine(preset: SurfacePreset): string {
 	return preset.line ? t(preset.line) : surfaceKindSubtitle(preset.kind);
 }
@@ -448,8 +450,9 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 		if (open) figures.querySelector<HTMLElement>('[aria-checked="true"]')?.focus({ preventScroll: true });
 	};
 	swap.addEventListener("click", () => setPicker(picker.hidden));
-	picker.addEventListener("keydown", (event) => {
-		if (event.key !== "Escape") return;
+	const stage = h("div", { class: "surface-create-stage" }, hero, swap, picker);
+	stage.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape" || picker.hidden) return;
 		event.preventDefault();
 		event.stopPropagation();
 		setPicker(false);
@@ -496,13 +499,14 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 	});
 	const kinds = h("div", { class: "surface-create-kinds", role: "group", "aria-label": t("Surface type") }, rows);
 	kinds.addEventListener("keydown", (event) => {
-		if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+		const step = KIND_STEPS[event.key];
+		if (!step) return;
 		const at = rows.indexOf(document.activeElement as HTMLButtonElement);
 		if (at < 0) return;
 		event.preventDefault();
-		const next = rows[(at + (event.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length]!;
-		next.focus();
-		next.click();
+		const index = (at + step + rows.length) % rows.length;
+		choose(SURFACE_PRESETS[index]!);
+		rows[index]!.focus();
 	});
 
 	const submit = h("button", { type: "submit", class: "btn btn-primary" }, t("Create surface"));
@@ -519,7 +523,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 		h(
 			"div",
 			{ class: "surface-create-main" },
-			h("div", { class: "surface-create-stage" }, hero, swap, picker),
+			stage,
 			h(
 				"div",
 				{ class: "surface-create-body" },
@@ -552,6 +556,11 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 			),
 		),
 	);
+	form.addEventListener("pointerdown", (event) => {
+		if (picker.hidden || !(event.target instanceof Node)) return;
+		if (picker.contains(event.target) || swap.contains(event.target)) return;
+		setPicker(false);
+	});
 	form.addEventListener("submit", async (event) => {
 		event.preventDefault();
 		const title = nameInput.value.trim();
