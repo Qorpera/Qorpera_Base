@@ -226,6 +226,10 @@ describe("operational surfaces", () => {
 		const confirmSend = drawer.querySelector<HTMLButtonElement>('.surface-action-card [data-act="approve"]')!;
 		expect(confirmSend.classList.contains("is-confirming")).toBe(true);
 		expect(confirmSend.textContent).toBe("Confirm");
+		const sendGhost = confirmSend.querySelector(".surface-approve-face.is-ghost")!;
+		expect(sendGhost.getAttribute("data-text")).toBe("Send");
+		expect(sendGhost.querySelector(".icon")).not.toBeNull();
+		expect(confirmSend.querySelector(".surface-approve-face:not(.is-ghost) .icon")).toBeNull();
 		confirmSend.click();
 		await flush();
 		await flush();
