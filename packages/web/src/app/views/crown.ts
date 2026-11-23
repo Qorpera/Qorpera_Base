@@ -72,6 +72,19 @@ function sample(points: readonly (readonly number[])[], time: number): number[] 
 	return last.slice(1);
 }
 
+function nextGazeChangeMs(points: readonly (readonly number[])[], time: number): number {
+	for (let index = 1; index < points.length; index++) {
+		const right = points[index]!;
+		if (time > right[0]!) continue;
+		const left = points[index - 1]!;
+		for (let axis = 1; axis < left.length; axis++) {
+			if (left[axis] !== right[axis]) return 0;
+		}
+		return Math.max(0, right[0]! - time);
+	}
+	return 0;
+}
+
 function svg<K extends keyof SVGElementTagNameMap>(
 	tag: K,
 	attributes: Record<string, string | number>,
@@ -140,14 +153,18 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 	wrap.append(shadow, body);
 	host.replaceChildren(wrap);
 
-	// Animation state. The body has none: only the eyes move.
 	const startedAt = performance.now();
 	let nextBlinkAt = startedAt + 1800 + Math.random() * 2500;
 	let blinkStartedAt = -1;
 	let frame = 0;
+	let wakeTimer = 0;
 	let disposed = false;
+	let lastPoseKey = "";
 
 	const setEyes = (pose: { x: number; y: number; turn: number; open: number; width: number }) => {
+		const poseKey = `${pose.x.toFixed(2)}|${pose.y.toFixed(2)}|${pose.turn.toFixed(3)}|${pose.open.toFixed(3)}|${pose.width.toFixed(3)}`;
+		if (poseKey === lastPoseKey) return;
+		lastPoseKey = poseKey;
 		for (const [index, eye] of EYES.entries()) {
 			const rect = eyeRects[index];
 			if (!rect) continue;
@@ -168,7 +185,6 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 		}
 	};
 
-	// The resting pose, used before the first frame and under reduced motion.
 	const form = options.gaze === "form";
 	const gaze = form ? FORM_GAZE : SCREEN_GAZE;
 	const period = form ? FORM_PERIOD : GAZE_PERIOD;
@@ -191,9 +207,8 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 			still();
 			return;
 		}
-		// Eyes: the approved gaze sequence, blinking on its own tempo. Nothing
-		// here reads the pointer, and the crown itself never moves.
-		const [gx = 0, gy = 0, gturn = 0, gopen = 1, gwidth = 1] = sample(gaze, elapsed % period);
+		const phase = elapsed % period;
+		const [gx = 0, gy = 0, gturn = 0, gopen = 1, gwidth = 1] = sample(gaze, phase);
 		let open = gopen;
 		if (blinkStartedAt < 0 && now >= nextBlinkAt) blinkStartedAt = now;
 		if (blinkStartedAt >= 0) {
@@ -213,14 +228,39 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 			}
 		}
 		setEyes({ x: gx, y: gy, turn: gturn, open, width: gwidth });
-		if (!document.hidden) frame = requestAnimationFrame(tick);
+		if (document.hidden) return;
+		const holdMs = blinkStartedAt >= 0 ? 0 : nextGazeChangeMs(gaze, phase);
+		if (holdMs <= 0) {
+			frame = requestAnimationFrame(tick);
+			return;
+		}
+		const waitMs = Math.min(holdMs, Math.max(0, nextBlinkAt - now));
+		if (waitMs <= 24) {
+			frame = requestAnimationFrame(tick);
+			return;
+		}
+		wakeTimer = window.setTimeout(() => {
+			wakeTimer = 0;
+			schedule();
+		}, Math.ceil(waitMs));
 	};
 
 	const schedule = () => {
-		if (!frame && !disposed) frame = requestAnimationFrame(tick);
+		if (wakeTimer) {
+			window.clearTimeout(wakeTimer);
+			wakeTimer = 0;
+		}
+		if (!frame && !disposed && !document.hidden) frame = requestAnimationFrame(tick);
 	};
 	const onVisibility = () => {
-		if (!document.hidden) schedule();
+		if (document.hidden) {
+			if (frame) cancelAnimationFrame(frame);
+			frame = 0;
+			if (wakeTimer) {
+				window.clearTimeout(wakeTimer);
+				wakeTimer = 0;
+			}
+		} else schedule();
 	};
 	document.addEventListener("visibilitychange", onVisibility);
 	reduced.addEventListener("change", schedule);
@@ -228,6 +268,10 @@ export function mountCrown(host: HTMLElement, options: CrownOptions = {}): Crown
 	function dispose(): void {
 		if (disposed) return;
 		disposed = true;
+		if (wakeTimer) {
+			window.clearTimeout(wakeTimer);
+			wakeTimer = 0;
+		}
 		if (frame) cancelAnimationFrame(frame);
 		document.removeEventListener("visibilitychange", onVisibility);
 		reduced.removeEventListener("change", schedule);

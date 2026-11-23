@@ -132,6 +132,8 @@ describe("member browser CORS", () => {
 		[`/v1/member-folder-commits/${id(7)}`, "POST"],
 		[`/v1/member-session-attachments/upload/${id(7)}/${id(8)}/${sha256}`, "PUT"],
 		[`/v1/member-session-attachments/input/${id(7)}/${id(8)}/${sha256}`, "GET"],
+		[`/v1/member-session-attachments/surface-upload/${id(7)}/${id(8)}/${sha256}`, "PUT"],
+		[`/v1/member-session-attachments/surface-input/${id(7)}/${id(8)}/${sha256}`, "GET"],
 	])("allows the existing %s %s transport contract", async (route, method) => {
 		const service = await fixture(),
 			response = await service.request(route, preflight(method, "authorization,content-type"));

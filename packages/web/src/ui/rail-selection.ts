@@ -8,7 +8,7 @@ import { easing, reducedMotion } from "./motion.ts";
 
 const SELECTED = ":is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row).active";
 
-interface Box {
+export interface Box {
 	left: number;
 	top: number;
 	width: number;
@@ -17,7 +17,7 @@ interface Box {
 }
 
 /** A box in the list's scrolled content, so it holds while the list scrolls. */
-function boxIn(list: HTMLElement, rect: DOMRect, radius: string): Box {
+export function boxIn(list: HTMLElement, rect: DOMRect, radius: string): Box {
 	const frame = list.getBoundingClientRect();
 	return {
 		left: rect.left - frame.left + list.scrollLeft,
@@ -28,13 +28,12 @@ function boxIn(list: HTMLElement, rect: DOMRect, radius: string): Box {
 	};
 }
 
-function frame(box: Box): Keyframe {
+function motionFrame(box: Box, target: Box): Keyframe {
+	const sx = target.width > 0 ? box.width / target.width : 1;
+	const sy = target.height > 0 ? box.height / target.height : 1;
 	return {
-		left: `${box.left}px`,
-		top: `${box.top}px`,
-		width: `${box.width}px`,
-		height: `${box.height}px`,
-		borderRadius: box.radius,
+		translate: `${box.left}px ${box.top}px`,
+		scale: `${sx} ${sy}`,
 	};
 }
 
@@ -92,11 +91,17 @@ export class RailSelection {
 		this.#target = target;
 		this.#to = to;
 		target.classList.add("selection-arriving");
+		Object.assign(this.ghost.style, {
+			translate: `${to.left}px ${to.top}px`,
+			width: `${to.width}px`,
+			height: `${to.height}px`,
+			borderRadius: to.radius,
+		});
 		if (this.ghost.parentElement !== list) list.append(this.ghost);
 		const distance = Math.hypot(to.top - from.top, to.left - from.left);
 		// Farther goes a little longer, but never drags.
 		const duration = Math.min(460, 300 + distance * 0.25);
-		const keyframes = [frame(from), frame(to)];
+		const keyframes = [motionFrame(from, to), motionFrame(to, to)];
 		const animation = this.ghost.animate(keyframes, { duration, easing: easing("--ease-spring"), fill: "both" });
 		this.#animation = animation;
 		// Ended or cancelled from outside: either way the row gets its own background back.

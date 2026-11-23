@@ -69,7 +69,7 @@
 	border-radius: 50%;
 	background: none;
 	color: var(--text-muted);
-	cursor: pointer;
+	cursor: default;
 	transition:
 		background var(--motion-fast) ease,
 		color var(--motion-fast) ease;
@@ -239,7 +239,7 @@
 	font-weight: 600;
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
-	cursor: pointer;
+	cursor: default;
 	transition: background var(--motion-fast) ease;
 }
 .program-download:hover:not(:disabled) {
@@ -285,7 +285,7 @@
 	border-style: solid;
 	color: var(--text);
 	background: color-mix(in srgb, var(--bg) 72%, transparent);
-	cursor: pointer;
+	cursor: default;
 	transition: background var(--motion-fast) ease;
 }
 .program-kind.is-made:hover:not(:disabled) {
@@ -315,7 +315,7 @@
 	font-size: 13.5px;
 	text-decoration: underline;
 	text-underline-offset: 3px;
-	cursor: pointer;
+	cursor: default;
 }
 .program-back-button:hover {
 	color: var(--text);
@@ -406,7 +406,7 @@
 		border-color var(--motion-fast) ease;
 }
 button.program-drop-area {
-	cursor: pointer;
+	cursor: default;
 }
 .program-drop.is-over .program-drop-area {
 	border-color: var(--composer-accent-ink);
@@ -426,7 +426,7 @@ button.program-drop-area {
 	color: var(--text-muted);
 	font: inherit;
 	font-size: 16px;
-	cursor: pointer;
+	cursor: default;
 }
 .program-drop-choose:hover {
 	color: var(--text);
@@ -480,7 +480,7 @@ button.program-drop-area {
 	border-style: solid;
 	color: var(--text);
 	background: color-mix(in srgb, var(--bg) 72%, transparent);
-	cursor: pointer;
+	cursor: default;
 }
 .program-kind.is-choice:hover,
 .program-kind.is-choice:focus-visible {

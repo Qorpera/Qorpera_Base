@@ -566,7 +566,9 @@ describe("the coding pill above the composer", () => {
 	const conversation = readFileSync(resolve("src/styles/conversation.css"), "utf8");
 
 	it("lays the thread's foot over the messages, with everything its bands hold taking the pointer", () => {
-		expect(conversation).toMatch(/\.messages \{[^}]*padding: 16px 16px calc\(40px \+ var\(--thread-foot, 0px\)\);/);
+		expect(conversation).toMatch(
+			/\.messages \{[^}]*padding: 16px clamp\(16px, 4\.5%, 56px\) calc\(40px \+ var\(--thread-foot, 0px\)\);/,
+		);
 		// Every band passes the pointer through; whatever a band holds (a notice, the execution line's buttons, the pill,
 		// the composer's parts) takes it back, so no control is left out by a list.
 		expect(conversation).toContain(".thread-foot > * { pointer-events: none; }");

@@ -5,7 +5,8 @@
  *
  * The language: what arrives springs in from where it came from (your message from
  * the composer, a menu from its button), what leaves is quicker and quieter, agents
- * are characters (they hop when they start work), and a press always answers.
+ * are characters (they hop when they start work), and a button press always answers;
+ * rail items open without a squeeze.
  */
 
 /* ---- the thread ---- */
@@ -86,21 +87,32 @@
 /* ---- the rail ---- */
 
 /* Above the travelling highlight. (:where keeps any other position, the drag ghost's, in charge.) */
-:where(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row) { position: relative; z-index: 1; }
-/* The hover tint fades in; leaving it, or losing the selection to the travelling
- * highlight, lets go at once, so two highlights never show. */
+:where(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row, .rail-agent-sched) { position: relative; z-index: 1; }
 .rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row {
-	transition:
-		color var(--motion-base) ease,
-		transform var(--motion-base) var(--ease-spring);
+	transition: color var(--motion-base) ease;
 }
-:is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row):hover:not(.active) {
-	transition:
-		background-color var(--motion-fast) ease,
-		color var(--motion-base) ease,
-		transform var(--motion-base) var(--ease-spring);
+.rail-hover-tint {
+	position: absolute; z-index: 0; left: 0; top: 0; pointer-events: none;
+	transform-origin: 0 0; will-change: transform;
+	background: var(--rail-hover); opacity: 0;
+	transition: opacity 120ms ease;
 }
-.rail-row:active, .rail-pin:active, .cofounder-home:active, .rail-surface:active, .rail-agent-hub-row:active { transform: scale(0.975); }
+.rail-hover-tint.is-on { opacity: 1; transition: opacity 90ms ease; }
+/* The same travelling tint in every menu and list of rows (ui/hover-glide.ts): the rows sharing a parent share one tint. */
+.hover-glide-group { isolation: isolate; }
+.hover-glide-anchor { position: relative; }
+.hover-glide-tint {
+	position: absolute; z-index: -1; left: 0; top: 0; pointer-events: none;
+	transform-origin: 0 0; will-change: transform;
+	background: var(--glide-tint, var(--hover)); opacity: 0;
+	transition: opacity 120ms ease;
+}
+.hover-glide-tint.is-on { opacity: 1; transition: opacity 90ms ease; }
+.glide-item:hover:not([aria-selected="true"], [aria-pressed="true"], [aria-current]:not([aria-current="false"]), .active, .is-active, .is-open, .is-picked, .is-current, .menu-open, [aria-expanded="true"]) { background-color: transparent !important; }
+:is(.concepts-item, .surface-change, .surface-variant) { --glide-tint: var(--rail-hover); }
+.settings-nav :is([role=tab], .settings-back) { --glide-tint: #e8e8e5; }
+:root[data-theme="dark"] .settings-nav :is([role=tab], .settings-back) { --glide-tint: rgba(255, 255, 255, 0.06); }
+:root .settings-dialog.settings-unified .settings-nav :is([role=tab], .settings-back) { --glide-tint: var(--hover); }
 /* The drag ghost follows the pointer exactly. */
 .rail-drag-ghost, .rail-drag-ghost * { transition: none !important; animation: none !important; }
 :is(.rail-row-status, .cofounder-status) { transition: border-color var(--motion-fast) ease; }
@@ -108,7 +120,8 @@
 /* The highlight travelling to the conversation opened (ui/rail-selection.ts). The row it
  * goes to keeps its own background off until it lands, and its text turns white as it comes. */
 .rail-selection-ghost {
-	position: absolute; z-index: 0; pointer-events: none;
+	position: absolute; z-index: 0; left: 0; top: 0; pointer-events: none;
+	transform-origin: 0 0; will-change: transform;
 	background: var(--rail-selection);
 }
 :is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row).active.selection-arriving,

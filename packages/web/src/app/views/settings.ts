@@ -1,33 +1,31 @@
 import type { CloudApi } from "../../cloud/api.ts";
-import { describeError } from "../../cloud/client.ts";
 import { WebCompanyFiles } from "../../cloud/company-files.ts";
+import { createWebDefaultModels } from "../../cloud/default-models.ts";
 import { createWebGeminiKey } from "../../cloud/gemini-key.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
-import type { HostedCompanyFile, HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
+import type { HostedProfile, HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { companyLogos } from "../../ui/company-logos.ts";
-import { showCompanyName } from "../../ui/company-name.ts";
-import { button, h, icon, notice, replace } from "../../ui/dom.ts";
+import { h, icon, notice, replace } from "../../ui/dom.ts";
 import { friendsCount } from "../../ui/friends-count.ts";
-import { leave } from "../../ui/motion.ts";
+import { leave, reducedMotion } from "../../ui/motion.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
 import { currentRoute } from "../router.ts";
 import { type AccountViewState, renderAccount } from "./account.ts";
 import { renderAppearance } from "./appearance.ts";
-import { CompanyFolderBrowser } from "./company-folder.ts";
 import { FriendsController } from "./friends.ts";
 import type { HubController } from "./hub.ts";
 import { LeaderboardView } from "./leaderboard.ts";
 import { AccountSubscriptionsView } from "./settings-ai-subscriptions.ts";
 import { CompanyBrandView } from "./settings-brand.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
+import { DefaultModelsView } from "./settings-default-models.ts";
 import { GeminiKeyView } from "./settings-gemini-key.ts";
-import { GoodWillView, MyGoodWillView } from "./settings-good-will.ts";
+import { GoodWillView, goodWillName, MyGoodWillView } from "./settings-good-will.ts";
 import { RulesView } from "./settings-rules.ts";
-import { storageSummary } from "./storage-summary.ts";
 import { renderTeam, type TeamFeedback } from "./team.ts";
 
 const TABS = [
@@ -57,7 +55,7 @@ const TABS = [
 		label: phrase("AI subscriptions"),
 		icon: "key",
 		keywords:
-			"ai subscriptions my connections model accounts providers sign in openai chatgpt codex anthropic claude google gemini neon api key usage ai-abonnementer mine forbindelser modelkonti udbydere abonnementer log ind forbrug",
+			"ai subscriptions default models conversational coding effort credits my connections model accounts providers sign in openai chatgpt codex anthropic claude google gemini neon api key usage ai-abonnementer standardmodeller mine forbindelser modelkonti udbydere abonnementer log ind forbrug kredit",
 	},
 ] as const;
 type SettingsCategory = (typeof TABS)[number]["id"];
@@ -66,10 +64,118 @@ type SettingsCategory = (typeof TABS)[number]["id"];
  * 2026): Sites is a page of the apps drawer, webhooks are under an agent's routines, and the Mailbox makes its own
  * addresses and connects Digital Post. Company connections (Gmail, Google Drive, GitHub) left too (Jonas, 10 Nov 2026:
  * companies are fully Qorpera-hosted; back only if it is needed). */
-export type SettingsTab = SettingsCategory | "storage" | "recents" | "my-connections" | "appearance";
-/** Pages of the open company. Settings with no company open (from the company list with several) show only the
- * account's pages: these are hidden, and one asked for shows General until a company is open. Storage too. */
+export type SettingsTab = SettingsCategory | "my-connections" | "appearance";
 const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company"]);
+
+export interface SettingsPlace {
+	readonly tab: SettingsTab;
+	readonly label: string;
+	readonly area: string;
+	readonly words: string;
+	readonly mark?: string;
+}
+
+export function settingsPlaces(deletes: boolean): SettingsPlace[] {
+	const general = phrase("General");
+	const company = phrase("Company");
+	const subscriptions = phrase("AI subscriptions");
+	const place = (tab: SettingsTab, label: string, area: string, words: string, mark?: string): SettingsPlace => ({
+		tab,
+		label,
+		area,
+		words,
+		...(mark ? { mark } : {}),
+	});
+	const exit = deletes ? t("Delete company") : t("Leave company");
+	return [
+		place(
+			"general",
+			t("Account"),
+			general,
+			"name email password picture konto navn adgangskode billede",
+			t("Account"),
+		),
+		place(
+			"general",
+			t("Language & region"),
+			general,
+			"language region time zone timezone sprog dansk english tidszone område",
+			t("Language & region"),
+		),
+		place(
+			"general",
+			t("Appearance"),
+			general,
+			"theme dark light mode colour color composer interface size tema mørk lys farve størrelse",
+			t("Appearance"),
+		),
+		place("general", goodWillName(), general, "goodwill good will tax skat", goodWillName()),
+		place(
+			"company",
+			t("Staff at work"),
+			company,
+			"members people team invitations invite staff medlemmer personer invitationer inviter",
+			t("Staff at work"),
+		),
+		place(
+			"company",
+			t("Agent rules"),
+			company,
+			"rules approve approval ask first allow permissions safety regler godkend tilladelser",
+			t("Agent rules"),
+		),
+		place("company", exit, company, "delete leave remove slet forlad", exit),
+		place(
+			"company",
+			t("Invoices and card"),
+			company,
+			"invoices card payment billing good will tax fakturaer kort betaling skat",
+			goodWillName(),
+		),
+		place(
+			"leaderboard",
+			phrase("Leaderboard"),
+			t("Settings"),
+			"friends compare ranking awards streak venner rangliste",
+		),
+		place(
+			"ai-subscriptions",
+			t("Model accounts"),
+			subscriptions,
+			"chatgpt openai codex claude anthropic gemini google sign in login log ind",
+			t("Model accounts"),
+		),
+		place(
+			"ai-subscriptions",
+			t("Default models"),
+			subscriptions,
+			"model effort coding conversational standardmodeller",
+			t("Default models"),
+		),
+		place("ai-subscriptions", t("Gemini API key"), subscriptions, "google gemini api key nøgle", t("Gemini API key")),
+	];
+}
+
+export function markSettingsPlace(text: string): void {
+	const until = performance.now() + 2500;
+	const look = () => {
+		const content = document.querySelector<HTMLElement>(".settings-content:not([hidden])");
+		const found = [...(content?.querySelectorAll<HTMLElement>("h2, button, summary") ?? [])].find(
+			(element) => element.textContent?.trim() === text && !element.closest("[hidden]"),
+		);
+		if (!found) {
+			if (performance.now() < until) requestAnimationFrame(look);
+			return;
+		}
+		const target = found.closest<HTMLElement>(".settings-group") ?? found;
+		target.scrollIntoView({ block: "center", behavior: reducedMotion() ? "auto" : "smooth" });
+		target.classList.remove("is-found");
+		void target.offsetWidth;
+		target.classList.add("is-found");
+		target.addEventListener("animationend", () => target.classList.remove("is-found"), { once: true });
+	};
+	requestAnimationFrame(look);
+}
 
 /** AI subscriptions' lead, with or without a company open. */
 const subscriptionsLead = () =>
@@ -102,34 +208,8 @@ export class SettingsView {
 		placeholder: t("Search settings"),
 		"aria-label": t("Search settings"),
 	});
-	readonly #storageSearch = h("input", {
-		type: "search",
-		class: "settings-search-input",
-		placeholder: t("Search this folder"),
-		"aria-label": t("Search this folder"),
-		autocomplete: "off",
-		spellcheck: "false",
-		hidden: true,
-	});
 	readonly #nav = h("nav", { class: "settings-nav", "aria-label": t("Settings sections") });
 	readonly #empty = h("p", { class: "muted small", hidden: true }, t("No settings found."));
-	readonly #modes = h("div", { class: "settings-modes", role: "group", "aria-label": t("Settings and storage") });
-	readonly #storageNav = h("nav", {
-		class: "settings-nav settings-storage-nav",
-		"aria-label": t("Storage"),
-		hidden: true,
-	});
-	readonly #storageCompany = h("div", { class: "settings-nav-heading" });
-	readonly #storageUsage = h("div", { class: "settings-storage-usage" });
-	readonly #storageContent = h("div", {
-		class: "settings-storage-content",
-		id: "settings-storage-content",
-		role: "tabpanel",
-		tabindex: "0",
-		hidden: true,
-	});
-	readonly #modeButtons = new Map<"settings" | "storage", HTMLButtonElement>();
-	readonly #storageTabs = new Map<"documents" | "recents", HTMLButtonElement>();
 	readonly #panels = new Map<SettingsCategory, HTMLElement>();
 	readonly #tabs = new Map<SettingsCategory, HTMLButtonElement>();
 	readonly #borrowedCompany: CompanyController | undefined;
@@ -137,14 +217,6 @@ export class SettingsView {
 	readonly #overCompany: boolean;
 	#profiles: HostedProfile[] = [];
 	#tab: SettingsCategory = "general";
-	#mode: "settings" | "storage" = "settings";
-	#storageSection: "documents" | "recents" = "documents";
-	#folder: CompanyFolderBrowser | undefined;
-	/** A folder link's path, shown once Storage has its browser (openFolderPath). */
-	#folderPath: string | undefined;
-	#folderStop = new AbortController();
-	#unlinkFolderStop: (() => void) | undefined;
-	#folderAuthority: string | undefined;
 	#account: AccountViewState = {};
 	#company: CompanyController | undefined;
 	#ownsCompany = false;
@@ -166,6 +238,7 @@ export class SettingsView {
 				hash: string;
 		  }
 		| undefined;
+	#defaultModels: DefaultModelsView | undefined;
 	#connections: ConnectionsView | undefined;
 	#geminiKey: GeminiKeyView | undefined;
 	/** AI subscriptions with no company open: the member's account logins. */
@@ -180,9 +253,6 @@ export class SettingsView {
 	readonly #accountPanel = h("div");
 	readonly #myGoodWillSlot = h("div");
 	#feedback: TeamFeedback = {};
-	#file: HostedCompanyFile | undefined;
-	#fileLoading = false;
-	#fileError: string | undefined;
 
 	constructor(
 		api: CloudApi,
@@ -221,10 +291,7 @@ export class SettingsView {
 					role: "tab",
 					id: `settings-tab-${tab.id}`,
 					"aria-controls": "settings-content",
-					onclick: () => {
-						this.#mode = "settings";
-						this.#select(tab.id);
-					},
+					onclick: () => this.#select(tab.id),
 				},
 				icon(tab.icon),
 				uiText(tab.label),
@@ -281,60 +348,6 @@ export class SettingsView {
 		};
 		countInvitations();
 		this.#lifetime.signal.addEventListener("abort", hub.store.subscribe(countInvitations));
-		const modes = this.#modes;
-		for (const [mode, label] of [
-			["settings", phrase("Settings")],
-			["storage", phrase("Storage")],
-		] as const) {
-			const control = h(
-				"button",
-				{
-					type: "button",
-					class: "settings-mode",
-					"data-mode": mode,
-					"aria-pressed": String(mode === "settings"),
-					onclick: () => this.#switchMode(mode),
-				},
-				uiText(label),
-			);
-			this.#modeButtons.set(mode, control);
-			modes.append(control);
-		}
-		const storageTabs = h("div", { role: "tablist", "aria-label": t("Storage"), "aria-orientation": "vertical" });
-		for (const [section, label, glyph] of [
-			["documents", phrase("Documents"), "folder"],
-			["recents", phrase("Recents"), "clock"],
-		] as const) {
-			const control = h(
-				"button",
-				{
-					type: "button",
-					role: "tab",
-					id: `settings-storage-${section}`,
-					"aria-controls": "settings-storage-content",
-					onclick: () => this.#selectStorage(section),
-				},
-				icon(glyph),
-				uiText(label),
-			);
-			this.#storageTabs.set(section, control);
-			storageTabs.append(control);
-		}
-		storageTabs.onkeydown = (event: KeyboardEvent) => {
-			if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-			event.preventDefault();
-			const section =
-				event.key === "Home"
-					? "documents"
-					: event.key === "End"
-						? "recents"
-						: this.#storageSection === "documents"
-							? "recents"
-							: "documents";
-			this.#selectStorage(section);
-			this.#storageTabs.get(section)?.focus();
-		};
-		this.#storageNav.append(this.#storageCompany, storageTabs, this.#storageUsage);
 		this.el = h(
 			"div",
 			{
@@ -355,36 +368,27 @@ export class SettingsView {
 				h(
 					"header",
 					{ class: "settings-header" },
-					h("div", { class: "settings-search", role: "search" }, icon("search"), search, this.#storageSearch),
+					h("div", { class: "settings-search", role: "search" }, icon("search"), search),
 					friendsButton,
-					modes,
 					h(
 						"button",
 						{ type: "button", class: "settings-close", "aria-label": t("Close settings"), onclick: close },
 						icon("close"),
 					),
 				),
-				h("div", { class: "settings-body" }, nav, this.#storageNav, this.#content, this.#storageContent),
+				h("div", { class: "settings-body" }, nav, this.#content),
 			),
 		);
 		document.addEventListener("keydown", this.#onKey, { signal: this.#lifetime.signal });
 		// The tab asked for is drawn first: the Company tab's rules load only if Settings opens on it.
-		this.#tab =
-			tab === "storage" || tab === "recents" || tab === "appearance"
-				? "general"
-				: tab === "my-connections"
-					? "ai-subscriptions"
-					: tab;
-		this.#mode = tab === "storage" || tab === "recents" ? "storage" : "settings";
-		this.#storageSection = tab === "recents" ? "recents" : "documents";
+		this.#tab = tab === "appearance" ? "general" : tab === "my-connections" ? "ai-subscriptions" : tab;
 		this.#setCompany(company, false);
 		this.updateProfiles(profiles);
 		// The friends list feeds the Company tab's invitation picker.
 		this.#friends.store.subscribe(() => {
-			if (this.#mode === "settings" && this.#tab === "company") this.#drawCompany();
+			if (this.#tab === "company") this.#drawCompany();
 		});
 		void this.#friends.refresh();
-		this.#switchMode(this.#mode);
 	}
 
 	/** The account's friends: the Friends window opened over Settings shares this list with the invitation picker. */
@@ -394,21 +398,11 @@ export class SettingsView {
 
 	/** The open tab, so a language change can reopen Settings where it was. */
 	get tab(): SettingsTab {
-		return this.#mode === "storage" ? (this.#storageSection === "recents" ? "recents" : "storage") : this.#tab;
+		return this.#tab;
 	}
 
 	focus(): void {
-		(this.#storageShown() ? this.#storageTabs.get(this.#storageSection) : this.#tabs.get(this.#shownTab()))?.focus();
-	}
-
-	/** A folder link (ui/folder-links.ts): Storage shows what it names, a folder in the list or a file in the preview,
-	 * once the company's folder is open. */
-	openFolderPath(path: string): void {
-		if (this.#lifetime.signal.aborted) return;
-		this.#folderPath = path;
-		this.#storageSection = "documents";
-		if (this.#mode === "storage") this.#drawStorage();
-		else this.#switchMode("storage");
+		this.#tabs.get(this.#shownTab())?.focus();
 	}
 
 	/** Settings opened on a company's page show the company that page has open
@@ -436,7 +430,7 @@ export class SettingsView {
 				this.#accountSubscriptions.dispose();
 				this.#accountSubscriptions = undefined;
 				this.#panels.delete("ai-subscriptions");
-				if (!this.#storageShown() && this.#shownTab() === "ai-subscriptions") this.#select(this.#tab);
+				if (this.#shownTab() === "ai-subscriptions") this.#select(this.#tab);
 			}
 			return;
 		}
@@ -454,15 +448,12 @@ export class SettingsView {
 	}
 
 	dispose(): void {
-		this.#unlinkFolderStop?.();
-		this.#unlinkFolderStop = undefined;
-		this.#folderStop.abort();
-		this.#folder?.dispose();
 		this.#unlinkCompanyLifetime?.();
 		this.#unlinkCompanyLifetime = undefined;
 		this.#lifetime.abort();
 		this.#companyLifetime.abort();
 		this.#unsubscribe?.();
+		this.#defaultModels?.dispose();
 		this.#connections?.dispose();
 		this.#geminiKey?.dispose();
 		this.#accountSubscriptions?.dispose();
@@ -477,7 +468,6 @@ export class SettingsView {
 	#onKey = (event: KeyboardEvent): void => {
 		if (event.defaultPrevented || event.isComposing) return;
 		if (document.querySelector("[role=alertdialog]:not([data-leaving], [data-leaving] *)")) return;
-		// A dialog opened over Settings (a page shown across the window, or Storage's file window) keeps its own keys.
 		if (event.target instanceof Element && event.target.closest("dialog")?.open) return;
 		if (event.key === "Escape") {
 			if (document.activeElement === this.#search && this.#search.value) {
@@ -513,11 +503,6 @@ export class SettingsView {
 		}
 	};
 
-	/** Storage is the open company's: with none open, Settings show their pages instead and offer no Storage. */
-	#storageShown(): boolean {
-		return this.#mode === "storage" && Boolean(this.#company);
-	}
-
 	/** The tab Settings show: the one chosen, or General while a company page is chosen and no company is open. */
 	#shownTab(): SettingsCategory {
 		return this.#company || !COMPANY_TABS.has(this.#tab) ? this.#tab : "general";
@@ -535,201 +520,6 @@ export class SettingsView {
 		const first = [...this.#tabs.entries()].find(([, button]) => !button.hidden);
 		this.#empty.hidden = Boolean(first);
 		return first?.[0];
-	}
-
-	#switchMode(mode: "settings" | "storage"): void {
-		this.#mode = mode;
-		const storage = this.#storageShown();
-		this.#modes.hidden = !this.#company;
-		this.#nav.hidden = storage;
-		this.#content.hidden = storage;
-		this.#search.hidden = storage;
-		this.#storageNav.hidden = !storage;
-		this.#storageContent.hidden = !storage;
-		this.#storageSearch.hidden = !storage;
-		for (const [value, control] of this.#modeButtons)
-			control.setAttribute("aria-pressed", String((storage ? "storage" : "settings") === value));
-		if (storage) this.#drawStorage(true);
-		else this.#select(this.#tab);
-	}
-
-	#selectStorage(section: "documents" | "recents"): void {
-		this.#storageSection = section;
-		this.#markStorageSection(section);
-		if (section === "documents") this.#folder?.showDocuments();
-		else this.#folder?.showRecents();
-	}
-
-	#markStorageSection(section: "documents" | "recents"): void {
-		this.#storageSection = section;
-		for (const [value, control] of this.#storageTabs) {
-			control.setAttribute("aria-selected", String(value === section));
-			control.tabIndex = value === section ? 0 : -1;
-		}
-		this.#storageContent.setAttribute("aria-labelledby", `settings-storage-${section}`);
-	}
-
-	/** The modal owns the browser, but company membership remains its authority. A role or capability change
-	 * tears down in-flight reads and downloads before a browser with the new authority is opened. `shown`: Storage is
-	 * being shown again, so its dates are drawn again in the time zone chosen meanwhile; a company update alone redraws
-	 * nothing in an open browser, so a focused file row keeps its focus. */
-	#drawStorage(shown = false): void {
-		if (this.#lifetime.signal.aborted) return;
-		const company = this.#company;
-		const state = company?.store.get();
-		const team = state?.team;
-		const authority =
-			company && team?.capabilities.read && !state?.accessLost
-				? JSON.stringify([company.profile.profileId, team.role, team.capabilities.read, team.capabilities.write])
-				: undefined;
-		if (authority !== this.#folderAuthority || !authority) {
-			this.#unlinkFolderStop?.();
-			this.#unlinkFolderStop = undefined;
-			this.#folderStop.abort();
-			this.#folder?.dispose();
-			this.#folder = undefined;
-			this.#folderAuthority = undefined;
-			const folderStop = new AbortController();
-			this.#folderStop = folderStop;
-			const stopFolder = () => folderStop.abort();
-			if (this.#companyLifetime.signal.aborted) folderStop.abort();
-			else {
-				this.#companyLifetime.signal.addEventListener("abort", stopFolder, { once: true });
-				this.#unlinkFolderStop = () => this.#companyLifetime.signal.removeEventListener("abort", stopFolder);
-			}
-			replace(this.#storageContent);
-		}
-		if (this.#mode !== "storage") return;
-		if (company) showCompanyName(this.#storageCompany, company.profile.profileName);
-		else this.#storageCompany.textContent = t("Storage");
-		this.#drawStorageUsage();
-		// Shown again after a failed read, Storage reads its usage again.
-		if (shown && this.#fileError && !this.#fileLoading) this.#fileError = undefined;
-		if (company && !this.#file && !this.#fileLoading && !this.#fileError) void this.#loadFile();
-		this.#markStorageSection(this.#storageSection);
-		if (!company) {
-			replace(this.#storageContent, notice("neutral", t("Open a company to see its storage.")));
-			return;
-		}
-		if (!authority || !team) {
-			replace(
-				this.#storageContent,
-				state?.connectionLost
-					? notice("neutral", t("Can't reach Qorpera. Trying again…"))
-					: state?.loading
-						? notice("neutral", t("Opening Company File"))
-						: h(
-								"div",
-								null,
-								notice("danger", state?.error ?? t("Your membership in this company could not be read.")),
-								button(t("Retry company"), () => {
-									if (!company.store.get().loading) void company.refreshAll();
-								}),
-							),
-			);
-			return;
-		}
-		if (this.#folder) {
-			// Settings may have changed the time zone while Storage was hidden.
-			if (shown) this.#folder.redraw();
-			this.#revealFolderPath(this.#folder);
-			return;
-		}
-		const signal = this.#folderStop.signal;
-		const source = new WebCompanyFiles(
-			this.#api.cloud,
-			company.profile,
-			company.userId,
-			team.role,
-			signal,
-			() => {
-				const current = company.store.get();
-				const membership = current.team;
-				if (
-					this.#company !== company ||
-					this.#auth.userId !== company.userId ||
-					current.accessLost ||
-					!membership?.capabilities.read ||
-					JSON.stringify([
-						company.profile.profileId,
-						membership.role,
-						membership.capabilities.read,
-						membership.capabilities.write,
-					]) !== authority
-				)
-					throw new Error(t("Company File access changed."));
-			},
-			team.capabilities.write,
-		);
-		const host = h("section", { class: "settings-storage-browser" });
-		replace(this.#storageContent, host);
-		const section = this.#storageSection;
-		const browser = new CompanyFolderBrowser(
-			host,
-			source,
-			() => ({
-				me: company.userId,
-				members: company.store.get().team?.members ?? [],
-				staff: company.store.get().staff,
-			}),
-			{
-				search: this.#storageSearch,
-				embedded: true,
-				onSectionChange: (value) => this.#markStorageSection(value),
-			},
-		);
-		this.#folder = browser;
-		this.#folderAuthority = authority;
-		void browser.open().then(
-			() => {
-				// The browser has taken the link's path: it shows it from here, or says why it can't.
-				if (this.#folder === browser) this.#folderPath = undefined;
-			},
-			() => {
-				if (signal.aborted || this.#folder !== browser) return;
-				browser.dispose();
-				this.#folder = undefined;
-				replace(
-					this.#storageContent,
-					notice("danger", t("The Company File could not be read just now.")),
-					button(t("Retry opening Company File"), () => this.#drawStorage()),
-				);
-			},
-		);
-		if (section === "recents") browser.showRecents();
-		this.#revealFolderPath(browser);
-	}
-
-	/** Hands a folder link's path to the browser. It is kept until a browser has opened, so Retry after a failed open
-	 * still shows what the link names. */
-	#revealFolderPath(browser: CompanyFolderBrowser): void {
-		const path = this.#folderPath;
-		if (path === undefined) return;
-		browser.reveal(path);
-		if (browser.opened) this.#folderPath = undefined;
-	}
-
-	/** The company's storage under Storage's navigation: what it holds in total. */
-	#drawStorageUsage(): void {
-		if (!this.#company) {
-			replace(this.#storageUsage);
-			return;
-		}
-		replace(
-			this.#storageUsage,
-			h("small", null, storageSummary(this.#file, this.#fileError)),
-			this.#fileError
-				? button(
-						uiText("Retry"),
-						() => {
-							this.#fileError = undefined;
-							void this.#loadFile();
-							this.#drawStorageUsage();
-						},
-						{ small: true },
-					)
-				: null,
-		);
 	}
 
 	#select(choice: SettingsCategory): void {
@@ -766,6 +556,11 @@ export class SettingsView {
 					if (this.#auth.userId !== memberId || this.#company !== company || company.store.get().accessLost)
 						throw new Error("The account or company changed.");
 				};
+				this.#defaultModels = new DefaultModelsView(
+					createWebDefaultModels(this.#api.cloud, company.profile.profileId, memberId, lifetime, checkCurrent),
+					lifetime,
+				);
+				const refreshDefaults = () => void this.#defaultModels?.refresh();
 				this.#connections = new ConnectionsView(
 					createWebNativeSubscription(
 						this.#api.cloud,
@@ -780,14 +575,23 @@ export class SettingsView {
 					undefined,
 					undefined,
 					memberPlanSignIn(memberId, company.profile.profileId),
+					undefined,
+					refreshDefaults,
 				);
 				this.#geminiKey = new GeminiKeyView(
 					createWebGeminiKey(this.#api.cloud, company.profile.profileId, memberId, lifetime, checkCurrent),
 					lifetime,
+					refreshDefaults,
 				);
 				this.#panels.set(
 					tab,
-					connectionsPage(t("AI subscriptions"), subscriptionsLead(), this.#connections.el, this.#geminiKey.el),
+					connectionsPage(
+						t("AI subscriptions"),
+						subscriptionsLead(),
+						this.#defaultModels.el,
+						this.#connections.el,
+						this.#geminiKey.el,
+					),
 				);
 			}
 		}
@@ -833,6 +637,7 @@ export class SettingsView {
 					client: createWebNativeSubscription(cloud, profileId, memberId, lifetime, checkCurrent),
 					signIns: memberProviderSignIns(memberId, profileId),
 					begin: (input) => signIn.beginProviderLogin(input),
+					defaultModels: createWebDefaultModels(cloud, profileId, memberId, lifetime, checkCurrent),
 					gemini: createWebGeminiKey(cloud, profileId, memberId, lifetime, checkCurrent),
 				};
 			},
@@ -870,15 +675,6 @@ export class SettingsView {
 	}
 
 	#setCompany(company: CompanyController | undefined, owned: boolean): void {
-		// A folder link names a path in the company Settings showed when it was followed.
-		if (company !== this.#company) this.#folderPath = undefined;
-		this.#unlinkFolderStop?.();
-		this.#unlinkFolderStop = undefined;
-		this.#folderStop.abort();
-		this.#folder?.dispose();
-		this.#folder = undefined;
-		this.#folderAuthority = undefined;
-		this.#storageSearch.value = "";
 		this.#unlinkCompanyLifetime?.();
 		this.#unlinkCompanyLifetime = undefined;
 		this.#companyLifetime.abort();
@@ -896,6 +692,8 @@ export class SettingsView {
 			};
 		}
 		this.#unsubscribe?.();
+		this.#defaultModels?.dispose();
+		this.#defaultModels = undefined;
 		this.#connections?.dispose();
 		this.#connections = undefined;
 		this.#geminiKey?.dispose();
@@ -916,9 +714,6 @@ export class SettingsView {
 		this.#staffRef = undefined;
 		this.#staffSnap = undefined;
 		this.#teamSnap = undefined;
-		this.#file = undefined;
-		this.#fileLoading = false;
-		this.#fileError = undefined;
 		for (const tab of ["company", "ai-subscriptions"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
@@ -927,13 +722,12 @@ export class SettingsView {
 					return;
 				}
 				this.#rules?.update();
-				if (this.#mode === "settings" && this.#tab === "company") this.#drawCompany();
-				if (this.#folder || this.#mode === "storage") this.#drawStorage();
+				if (this.#tab === "company") this.#drawCompany();
 			});
 			if (owned) void company.start();
 		}
 		this.#filterTabs();
-		this.#switchMode(this.#mode);
+		this.#select(this.#tab);
 	}
 
 	#drawCompany(): void {
@@ -1110,28 +904,6 @@ export class SettingsView {
 					},
 				},
 			);
-		}
-	}
-
-	/** The company's file, for the storage it uses under Storage's navigation. */
-	async #loadFile(): Promise<void> {
-		const company = this.#company;
-		if (!company || this.#fileLoading) return;
-		const signal = this.#companyLifetime.signal;
-		this.#fileLoading = true;
-		try {
-			const file = await this.#api.getCompanyFile(company.profile.environmentId);
-			if (signal.aborted || this.#lifetime.signal.aborted) return;
-			this.#file = file;
-			this.#fileError = undefined;
-		} catch (error) {
-			if (signal.aborted || this.#lifetime.signal.aborted) return;
-			this.#fileError = describeError(error);
-		} finally {
-			if (!signal.aborted && !this.#lifetime.signal.aborted) {
-				this.#fileLoading = false;
-				if (this.#mode === "storage") this.#drawStorageUsage();
-			}
 		}
 	}
 }

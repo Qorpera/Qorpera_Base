@@ -108,6 +108,46 @@ describe("native provider account usage", () => {
 		]);
 	});
 
+	it("projects provider-reported numeric and unlimited credits while dropping non-numeric values", async () => {
+		const paid = await readNativeProviderAccountUsage(
+			credentials,
+			undefined,
+			respond({
+				...available,
+				credits: { has_credits: true, unlimited: false, balance: "42.50", currency: "usd" },
+			}),
+		);
+		expect(paid?.credits).toEqual({
+			hasCredits: true,
+			unlimited: false,
+			balance: 42.5,
+			currency: "USD",
+		});
+
+		const unlimited = await readNativeProviderAccountUsage(
+			credentials,
+			undefined,
+			respond({
+				...available,
+				credits: { has_credits: true, unlimited: true, balance: null },
+			}),
+		);
+		expect(unlimited?.credits).toEqual({
+			hasCredits: true,
+			unlimited: true,
+		});
+
+		const invalid = await readNativeProviderAccountUsage(
+			credentials,
+			undefined,
+			respond({
+				...available,
+				credits: { balance: "private-credit", currency: "not-a-currency" },
+			}),
+		);
+		expect(invalid?.credits).toBeUndefined();
+	});
+
 	it.each([
 		"not-json",
 		"null",

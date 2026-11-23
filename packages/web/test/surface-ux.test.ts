@@ -10,7 +10,6 @@ import {
 	clearLocalSandboxCache,
 	synthesizeSurfaces,
 } from "../src/app/surfaces-store.ts";
-import { ConversationView } from "../src/app/views/conversation.ts";
 import { HubController } from "../src/app/views/hub.ts";
 import { renderNewCompany } from "../src/app/views/new-company.ts";
 import { renderRail } from "../src/app/views/shell.ts";
@@ -23,7 +22,7 @@ import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
 import { linkHref } from "../src/ui/dom.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
-import { session as chatSession, fixture, id, profileA, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
+import { fixture, id, profileA, staff, stubFigureMotion, userA } from "./fixtures.ts";
 import {
 	CHANGES,
 	COMPANY,
@@ -270,12 +269,11 @@ describe("creating surfaces", () => {
 		dialog.close ??= function (this: HTMLDialogElement) {
 			this.open = false;
 		};
-		openCreateSurfaceSheet(store, COMPANY);
+		openCreateSurfaceSheet(store);
 		const sheet = document.querySelector(".surface-create-sheet")!;
-		const presets = [...sheet.querySelectorAll<HTMLElement>(".surface-create-card")].map(
-			(card) => card.dataset.preset,
-		);
+		const presets = [...sheet.querySelectorAll<HTMLElement>(".surface-create-kind")].map((row) => row.dataset.preset);
 		expect(presets).toEqual([
+			"custom",
 			"identity",
 			"website",
 			"web_app",
@@ -285,26 +283,42 @@ describe("creating surfaces", () => {
 			"dashboard",
 			"product",
 			"report",
-			"custom",
 		]);
 		const custom = sheet.querySelector<HTMLElement>(".surface-create-custom")!;
-		expect(custom.hidden).toBe(true);
-		sheet.querySelector<HTMLElement>('[data-preset="custom"]')!.click();
 		expect(custom.hidden).toBe(false);
+		expect(sheet.querySelector('[data-preset="custom"]')?.getAttribute("aria-pressed")).toBe("true");
+		expect(sheet.querySelector<HTMLInputElement>(".surface-create-name")?.value).toBe("");
+		expect(sheet.querySelector(".surface-sheet-link")).toBeNull();
 		expect(sheet.querySelector(".surface-create-swatch")).toBeNull();
 		const picked = () =>
 			sheet.querySelector<HTMLElement>('.surface-figure-choice[aria-checked="true"]')?.dataset.figure;
 		expect(sheet.querySelectorAll(".surface-figure-choice")).toHaveLength(26);
 		expect(picked()).toBe("gem");
+		const hero = () => sheet.querySelector<HTMLElement>(".surface-create-stage .surface-figure")?.dataset.figure;
+		const line = () => sheet.querySelector(".surface-create-line")?.textContent;
+		expect(hero()).toBe("gem");
 
 		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
 		expect(custom.hidden).toBe(true);
 		expect(picked()).toBe("phone");
+		expect(hero()).toBe("phone");
+		expect(line()).toBe("iOS & Android app");
+		expect(sheet.querySelector('[data-preset="mobile_app"]')?.getAttribute("aria-pressed")).toBe("true");
+		const avatar = sheet.querySelector<HTMLButtonElement>(".surface-create-avatar")!;
+		const figures = sheet.querySelector<HTMLElement>(".surface-create-figures")!;
+		expect(sheet.querySelector(".surface-create-swap")).toBeNull();
+		expect(figures.hidden).toBe(true);
+		avatar.click();
+		expect(figures.hidden).toBe(false);
+		expect(avatar.getAttribute("aria-expanded")).toBe("true");
 		sheet.querySelector<HTMLElement>('.surface-figure-choice[data-figure="piggy"]')!.click();
+		expect(figures.hidden).toBe(true);
+		expect(hero()).toBe("piggy");
 		sheet.querySelector<HTMLElement>('[data-preset="website"]')!.click();
 		expect(picked()).toBe("piggy");
+		expect(hero()).toBe("piggy");
 		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
-		expect(sheet.querySelector<HTMLInputElement>(".surface-create-input")?.value).toBe("Mobile App");
+		expect(sheet.querySelector<HTMLInputElement>(".surface-create-name")?.value).toBe("Mobile App");
 		sheet
 			.querySelector<HTMLFormElement>(".surface-create-form")!
 			.dispatchEvent(new Event("submit", { cancelable: true }));
@@ -334,6 +348,50 @@ describe("creating surfaces", () => {
 			kind: "database",
 		});
 		expect(store.state.localStudioBase[database!.id]?.["database/tables.json"]).toContain("customers");
+		store.dispose();
+	});
+
+	it("moves the kind with the arrow keys and folds the figure picker without closing the window", async () => {
+		const store = storeWith(undefined, { companyName: "Brooks", localInteractive: true });
+		await store.load();
+		const dialog = HTMLDialogElement.prototype;
+		dialog.showModal ??= function (this: HTMLDialogElement) {
+			this.open = true;
+		};
+		dialog.close ??= function (this: HTMLDialogElement) {
+			this.open = false;
+		};
+		openCreateSurfaceSheet(store);
+		const sheet = document.querySelector<HTMLDialogElement>(".surface-create-sheet")!;
+		const row = (id: string) => sheet.querySelector<HTMLElement>(`[data-preset="${id}"]`)!;
+		const press = (target: HTMLElement, key: string) =>
+			target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+
+		row("report").focus();
+		press(row("report"), "ArrowDown");
+		expect(document.activeElement).toBe(row("custom"));
+		expect(row("custom").getAttribute("aria-pressed")).toBe("true");
+		expect(sheet.querySelector<HTMLElement>(".surface-create-custom")!.hidden).toBe(false);
+		press(row("custom"), "ArrowRight");
+		expect(document.activeElement).toBe(row("identity"));
+		expect(row("identity").getAttribute("aria-pressed")).toBe("true");
+		press(row("identity"), "ArrowLeft");
+		expect(document.activeElement).toBe(row("custom"));
+
+		const avatar = sheet.querySelector<HTMLButtonElement>(".surface-create-avatar")!;
+		const figures = sheet.querySelector<HTMLElement>(".surface-create-figures")!;
+		avatar.click();
+		avatar.focus();
+		press(avatar, "Escape");
+		expect(figures.hidden).toBe(true);
+		expect(sheet.open).toBe(true);
+		expect(sheet.isConnected).toBe(true);
+
+		avatar.click();
+		expect(figures.hidden).toBe(false);
+		const name = sheet.querySelector<HTMLElement>(".surface-create-name")!;
+		name.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		expect(figures.hidden).toBe(true);
 		store.dispose();
 	});
 
@@ -736,17 +794,19 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		frame.append(container);
 		document.body.append(frame);
 		const auth = new AuthController(f.cloud);
-		renderRail(container, company, {
-			profiles: [profileA],
-			user: userA,
-			route: { name: "company", profileId: profileA.profileId, section: "surface", id: "website" },
-			auth,
-			invitations: 0,
-			openSettings: () => {},
-			openFeedback: () => {},
-			openFriends: () => {},
-			agentActions: {},
-		});
+		const draw = (section: "surface" | "staff", routeId: string) =>
+			renderRail(container, company, {
+				profiles: [profileA],
+				user: userA,
+				route: { name: "company", profileId: profileA.profileId, section, id: routeId },
+				auth,
+				invitations: 0,
+				openSettings: () => {},
+				openFeedback: () => {},
+				openFriends: () => {},
+				agentActions: {},
+			});
+		draw("surface", "website");
 
 		const hub = container.querySelector<HTMLElement>(".rail-agents-hub");
 		expect(hub).not.toBeNull();
@@ -767,6 +827,52 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		]);
 		expect(new Set(staffHrefs).size).toBe(3);
 		expect(hub?.querySelector("[data-hub-exploration]")).not.toBeNull();
+
+		const toggle = hub!.querySelector<HTMLButtonElement>("button.rail-agents-head")!;
+		const body = hub!.querySelector<HTMLElement>(".rail-agents-body")!;
+		const count = hub!.querySelector<HTMLElement>(".rail-agents-count")!;
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(body.hidden).toBe(true);
+		expect(count.hidden).toBe(false);
+		const rows = hub!.querySelectorAll(".rail-agent-hub-row").length;
+		expect(Number(count.textContent)).toBe(rows);
+		expect(hub!.querySelector(".rail-agents-head .rail-hidden-unread")).toBeNull();
+		expect(toggle.getAttribute("aria-label")).toBe(`Agents: ${rows}`);
+		toggle.click();
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(body.hidden).toBe(false);
+		expect(count.hidden).toBe(true);
+		expect(localStorage.getItem("qorpera.web.rail-agents-open")).toBe("1");
+		expect(toggle.getAttribute("aria-label")).toBe("Agents");
+		toggle.click();
+		expect(body.hidden).toBe(true);
+
+		draw("staff", idle.id);
+		expect(body.hidden).toBe(false);
+		expect(hub!.querySelector(`a[data-agent-id="${idle.id}"]`)?.classList.contains("active")).toBe(true);
+		expect(localStorage.getItem("qorpera.web.rail-agents-open")).toBe("0");
+		toggle.click();
+		expect(body.hidden).toBe(true);
+		draw("staff", idle.id);
+		expect(body.hidden).toBe(true);
+		draw("surface", "website");
+		draw("staff", scheduled.id);
+		expect(body.hidden).toBe(false);
+		draw("surface", "website");
+		expect(body.hidden).toBe(true);
+		localStorage.removeItem("qorpera.web.rail-agents-open");
+
+		const dialog = HTMLDialogElement.prototype;
+		dialog.showModal ??= function (this: HTMLDialogElement) {
+			this.open = true;
+		};
+		const add = container.querySelector<HTMLAnchorElement>(".rail-add")!;
+		expect(add.getAttribute("aria-label")).toBe("New surface");
+		const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+		add.dispatchEvent(click);
+		expect(click.defaultPrevented).toBe(true);
+		expect(document.querySelector(".context-menu")).toBeNull();
+		expect(document.querySelector(".surface-create-sheet")).not.toBeNull();
 
 		auth.dispose();
 		store.dispose();
@@ -1122,135 +1228,6 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(start).not.toHaveBeenCalled();
 
 		hub.dispose();
-	});
-
-	it("renders the Active Surfaces Jump Strip in Co-Founder's thread and opens Changes on click", async () => {
-		stubFigureMotion();
-		const f = fixture();
-		const cofounder = { ...staff, id: id(10), templateId: "co-founder", displayName: "Co-Founder" };
-		const specialist = { ...staff, id: id(11), templateId: "designer", displayName: "Maja" };
-		const cofounderSession = { ...chatSession, sessionId: id(20), staffAgentId: cofounder.id };
-		const specialistSession = { ...chatSession, sessionId: id(21), staffAgentId: specialist.id };
-		const company = new CompanyController(f.api, profileA, userA.id);
-		company.store.set({
-			team,
-			staff: [cofounder, specialist],
-			sessions: [cofounderSession, specialistSession],
-			loading: false,
-		});
-
-		const identitySurf = summary({
-			id: "55555555-5555-4555-8555-555555555571",
-			slug: "identity",
-			title: "Identity",
-			group: "products",
-			archetype: "studio",
-			kind: "identity",
-			isGlobal: true,
-			activeSessionCount: 0,
-			pendingChangeCount: 0,
-			sortOrder: 0,
-		});
-		const websiteSurf = summary({
-			id: "55555555-5555-4555-8555-555555555572",
-			slug: "website",
-			title: "Website",
-			group: "products",
-			archetype: "live_build",
-			activeSessionCount: 3,
-			pendingChangeCount: 3,
-			sortOrder: 1,
-		});
-		const appSurf = summary({
-			id: "55555555-5555-4555-8555-555555555573",
-			slug: "mobile-app",
-			title: "Meditation App",
-			group: "products",
-			archetype: "live_build",
-			kind: "mobile_app",
-			activeSessionCount: 1,
-			runningSessionCount: 1,
-			pendingChangeCount: 0,
-			sortOrder: 2,
-		});
-		const quietSurf = summary({
-			id: "55555555-5555-4555-8555-555555555574",
-			slug: "headband",
-			title: "Headband",
-			group: "products",
-			archetype: "studio",
-			activeSessionCount: 0,
-			runningSessionCount: 0,
-			pendingChangeCount: 0,
-			sortOrder: 3,
-		});
-
-		const variantIds = [
-			"44444444-4444-4444-8444-444444444401",
-			"44444444-4444-4444-8444-444444444402",
-			"44444444-4444-4444-8444-444444444403",
-		];
-		const exp = {
-			id: "88888888-8888-4888-8888-888888888801",
-			surfaceId: websiteSurf.id,
-			title: "Landing directions",
-			status: "open" as const,
-			chosenSessionId: null,
-			variantSessionIds: variantIds,
-			createdAt: "2026-11-21T10:00:00.000Z",
-			resolvedAt: null,
-		};
-		const variantSessions = variantIds.map((variantId, index) =>
-			session(["staged"], {
-				id: variantId,
-				surfaceId: websiteSurf.id,
-				explorationId: exp.id,
-				explorationVariantLabel: `Direction ${index + 1}`,
-			}),
-		);
-		const navigated: string[] = [];
-		const client = fakeClient({
-			listSurfaces: vi.fn().mockResolvedValue([identitySurf, websiteSurf, appSurf, quietSurf, inbox]),
-			getSurfaceWorkspace: vi
-				.fn()
-				.mockResolvedValue(workspace(variantSessions, { surface: websiteSurf, explorations: [exp] })),
-		});
-		const store = storeWith(client, {
-			companyId: profileA.profileId,
-			onNavigateSurface: (slug) => navigated.push(slug),
-		});
-		await store.load();
-		await store.openSurface("website");
-		attachSurfaces(company, store);
-
-		const cofounderView = new ConversationView(company, cofounderSession.sessionId, { surfaces: store });
-		document.body.append(cofounderView.el);
-		const strip = cofounderView.el.querySelector<HTMLElement>(".surface-thread-jump")!;
-		expect(strip.hidden).toBe(false);
-		const chips = [...strip.querySelectorAll<HTMLAnchorElement>(".surface-thread-jump-chip")];
-		expect(chips.map((chip) => chip.dataset.surfaceJump)).toEqual(["identity", "website", "mobile-app"]);
-		expect(chips[0]?.querySelector(".surface-thread-jump-pill")?.textContent).toBe("Ready");
-		expect(chips[1]?.querySelector(".surface-thread-jump-pill")?.textContent).toBe("3 directions ready");
-		expect(chips[2]?.querySelector(".surface-thread-jump-pill")?.textContent).toBe("Working");
-		expect(chips[2]?.querySelector(".surface-thread-jump-dot.is-running")).not.toBeNull();
-		expect(linkHref(chips[1]!)).toBe(`#/c/${profileA.profileId}/s/website`);
-
-		store.closePanel();
-		store.setMode("live");
-		chips[1]!.click();
-		expect(navigated).toEqual(["website"]);
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/s/website`);
-		expect(store.state.mode).toBe("preview");
-		expect(store.state.previewPanel).toBe("open");
-		cofounderView.dispose();
-
-		const specialistView = new ConversationView(company, specialistSession.sessionId, { surfaces: store });
-		document.body.append(specialistView.el);
-		expect(specialistView.el.querySelector(".surface-thread-jump")).toBeNull();
-		specialistView.dispose();
-
-		store.dispose();
-		company.stop();
 	});
 
 	it("renders the Used by line on Identity, the Live-linked strip on Product, and applies live Identity CSS vars to Product", async () => {

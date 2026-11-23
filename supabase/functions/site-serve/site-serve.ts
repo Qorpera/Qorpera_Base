@@ -1028,6 +1028,7 @@ function hostHeaders(): Record<string, string> {
 		"x-frame-options": "SAMEORIGIN",
 		"x-robots-tag": "noindex, nofollow, noarchive",
 		"cross-origin-resource-policy": "same-origin",
+		"origin-agent-cluster": "?1",
 		"cdn-cache-control": "no-store",
 		"strict-transport-security": STRICT_TRANSPORT_SECURITY,
 	};

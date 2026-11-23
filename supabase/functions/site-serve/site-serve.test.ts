@@ -329,6 +329,7 @@ function assertHostHeaders(response: Response, what = "", origins: readonly stri
 	assert.equal(headers.get("x-frame-options"), own ? null : "SAMEORIGIN", what);
 	assert.equal(headers.get("x-robots-tag"), "noindex, nofollow, noarchive", what);
 	assert.equal(headers.get("cross-origin-resource-policy"), "same-origin", what);
+	assert.equal(headers.get("origin-agent-cluster"), "?1", what);
 	assert.equal(headers.get("cdn-cache-control"), "no-store", what);
 	assert.equal(headers.get("strict-transport-security"), "max-age=31536000", what);
 	assert.equal(headers.get("access-control-allow-origin"), null, what);

@@ -115,7 +115,7 @@ function company(questions: OpenQuestion[] = []) {
 		apps: () => read,
 		agentName: () => null,
 		onFolderChange: () => () => {},
-		openInStorage: vi.fn<(path: string) => void>(),
+		openInFiles: vi.fn<(path: string) => void>(),
 		openApp: vi.fn<(name: string) => void>(),
 		budgetKey: crypto.randomUUID(),
 	} satisfies AppPanelHost;
@@ -225,14 +225,14 @@ describe("the Concepts viewer's side panel", () => {
 			await vi.advanceTimersByTimeAsync(600);
 			const menu = document.querySelector<HTMLElement>(".context-menu");
 			expect([...(menu?.querySelectorAll("[role=menuitem]") ?? [])].map((item) => item.textContent)).toEqual([
-				"Show in Storage",
+				"Show in Files",
 			]);
 			// The tap that ends the press neither follows the row's link nor closes the phone's list.
 			const tap = new MouseEvent("click", { bubbles: true, cancelable: true });
 			row.dispatchEvent(tap);
 			expect(tap.defaultPrevented).toBe(true);
 			menu?.querySelector<HTMLButtonElement>("[role=menuitem]")?.click();
-			expect(panel.openInStorage).toHaveBeenCalledExactlyOnceWith("apps/udtryk");
+			expect(panel.openInFiles).toHaveBeenCalledExactlyOnceWith("apps/udtryk");
 		} finally {
 			vi.useRealTimers();
 		}
@@ -257,7 +257,7 @@ describe("a long press on a concept's row (review r1 of #1767, F1)", () => {
 			view.dispose();
 			await vi.advanceTimersByTimeAsync(600);
 			expect(document.querySelector(".context-menu")).toBeNull();
-			expect(panel.openInStorage).not.toHaveBeenCalled();
+			expect(panel.openInFiles).not.toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
 		}

@@ -54,6 +54,7 @@ import type { AppAnswer, AppCall, FramedPage } from "../ui/app-frame.ts";
 import { folderLinkPath } from "../ui/folder-links.ts";
 import { webHref } from "../ui/markdown.ts";
 import { framePage, PAGE_FRAME_URL } from "../ui/page-frame.ts";
+import { hasBrowserCompositor, yieldToMain } from "../ui/time-slice.ts";
 import {
 	AppActionRefused,
 	type AppGate,
@@ -2279,8 +2280,15 @@ export async function warmApps(folder: Folder, apps: readonly CompanyApp[], sign
 		);
 	}
 	let next = 0;
+	const yieldBetween = hasBrowserCompositor();
 	const worker = async () => {
-		while (next < reads.length && !signal.aborted) await reads[next++]!().catch(() => undefined);
+		while (next < reads.length && !signal.aborted) {
+			if (yieldBetween) {
+				await yieldToMain(signal);
+				if (signal.aborted) return;
+			}
+			await reads[next++]!().catch(() => undefined);
+		}
 	};
 	await Promise.all(Array.from({ length: WARM_AT_ONCE }, worker));
 }
@@ -2367,6 +2375,7 @@ export class CompanyApps {
 		void this.#hints?.close().catch(() => undefined);
 		this.#listeners.clear();
 		this.#readers.clear();
+		this.#icons.clear();
 	}
 
 	/** The apps as last read. */
@@ -2460,6 +2469,10 @@ export class CompanyApps {
 		if (!this.#last.some((app) => app.manifest)) return;
 		this.#warming = setTimeout(() => {
 			if (this.#stop.signal.aborted) return;
+			if (typeof document !== "undefined" && document.hidden) {
+				this.#warming = undefined;
+				return;
+			}
 			void Promise.resolve()
 				.then(() => warmApps(this.#source.folder(), this.#last, this.#stop.signal))
 				.catch(() => undefined)

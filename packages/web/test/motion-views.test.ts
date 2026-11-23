@@ -83,7 +83,7 @@ describe("rail rows that come back", () => {
 		return { rail, draw };
 	}
 
-	it("are not hired again after a search; only an agent the company never listed is", () => {
+	it("are not hired again on a redraw; only an agent the company never listed is", () => {
 		stubFigureMotion();
 		const f = fixture();
 		const company = new CompanyController(f.api, profileA, userA.id);
@@ -92,10 +92,6 @@ describe("rail rows that come back", () => {
 		company.store.set({ loading: false, staff: [staff, second], sessions: [session], team });
 		const { rail, draw } = mount(company);
 		draw();
-		const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
-		search.value = "Second";
-		draw();
-		search.value = "";
 		draw();
 		expect(rail.querySelector(".is-hired, .is-arriving")).toBeNull();
 		const hired = { ...staff, id: "33333333-3333-4333-8333-000000000098", displayName: "New hire" };

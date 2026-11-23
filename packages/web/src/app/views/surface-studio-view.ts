@@ -14,8 +14,11 @@ import {
 import { AppFrame } from "../../ui/app-frame.ts";
 import { h } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
-import { framePage } from "../../ui/page-frame.ts";
+import { playOnce } from "../../ui/motion.ts";
+import { frameParsedPage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
+import { surfaceSkeleton } from "../../ui/skeleton.ts";
+import { createFrameBudget, hasBrowserCompositor, yieldToMain } from "../../ui/time-slice.ts";
 import {
 	effectiveStudioBaseFiles,
 	formatConflictPaths,
@@ -36,6 +39,7 @@ export interface SurfaceStudioOptions {
 	readonly baseFiles?: Readonly<Record<string, string>>;
 	readonly patches?: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly loadFiles?: (surface: SurfaceSummary, signal: AbortSignal) => Promise<Readonly<Record<string, string>>>;
+	readonly timeSlice?: boolean;
 }
 
 interface ColorToken {
@@ -122,6 +126,16 @@ const SVG_FILE_RE = /\.svg$/i;
 const MARKDOWN_FILE_RE = /\.(?:md|markdown)$/i;
 const PROSE_TEXT_FILE_RE = /\.txt$/i;
 const TOKEN_STYLESHEET_RE = /(?:^|\/)(?:tokens|qorpera-identity)\.css$/i;
+const MAX_INITIAL_TABLE_ROWS = 100;
+const MAX_INITIAL_TEXT_CHARS = 32_000;
+const NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
+	amp: "&",
+	lt: "<",
+	gt: ">",
+	quot: '"',
+	apos: "'",
+	nbsp: " ",
+};
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -340,9 +354,19 @@ function svgDataUrl(svg: string): string {
 function htmlDocumentTitle(html: string, fallbackPath: string): string {
 	const match = html.match(/<title\b[^>]*>([\s\S]{1,200}?)<\/title>/i);
 	if (!match) return readableName(fallbackPath);
-	const title = new DOMParser()
-		.parseFromString(`<title>${match[1]}</title>`, "text/html")
-		.title.trim()
+	const title = match[1]!
+		.replace(/&(?:#x([0-9a-f]+)|#([0-9]+)|([a-z]+));/gi, (full, hex, dec, named) => {
+			if (hex) {
+				const code = Number.parseInt(hex, 16);
+				return Number.isFinite(code) ? String.fromCodePoint(code) : full;
+			}
+			if (dec) {
+				const code = Number.parseInt(dec, 10);
+				return Number.isFinite(code) ? String.fromCodePoint(code) : full;
+			}
+			return NAMED_HTML_ENTITIES[String(named).toLowerCase()] ?? full;
+		})
+		.trim()
 		.replace(/\s+/g, " ");
 	return title && title.length <= 80 ? title : readableName(fallbackPath);
 }
@@ -455,9 +479,8 @@ export function prepareStudioHtmlPreview(
 		img.setAttribute("src", svgDataUrl(svg));
 		modified = true;
 	}
-	if (!modified) return framePage(html);
-	const doctype = doc.doctype ? new XMLSerializer().serializeToString(doc.doctype) : "<!doctype html>";
-	return framePage(`${doctype}${doc.documentElement.outerHTML}`);
+	if (!modified) return frameParsedPage(doc, html);
+	return frameParsedPage(doc);
 }
 
 function updatingLabel(phase: SurfaceUpdatePhase): string {
@@ -485,12 +508,123 @@ function sameOrderedChanges(
 	return true;
 }
 
+interface StudioSectionTask {
+	readonly heavy?: boolean;
+	readonly build: () => HTMLElement;
+}
+
+interface ParsedStudioFiles {
+	readonly colors: ColorToken[];
+	readonly typography: TypeToken[];
+	readonly specs: SpecSection[];
+	readonly vendors: VendorCard[];
+	readonly docs: StudioDoc[];
+	readonly htmlPages: StudioHtmlPage[];
+	readonly svgs: StudioSvgAsset[];
+	readonly reportPaths: string[];
+	rawModel:
+		| { readonly value: unknown; readonly base: Record<string, unknown> | undefined; readonly key: string }
+		| undefined;
+}
+
+function emptyParsedStudioFiles(): ParsedStudioFiles {
+	return {
+		colors: [],
+		typography: [],
+		specs: [],
+		vendors: [],
+		docs: [],
+		htmlPages: [],
+		svgs: [],
+		reportPaths: [],
+		rawModel: undefined,
+	};
+}
+
+function parseSingleStudioFile(
+	path: string,
+	files: Readonly<Record<string, string>>,
+	baseFiles: Readonly<Record<string, string>>,
+	previewTokensCss: string,
+	baseTokensCss: string,
+	checkHtmlDeps: boolean,
+	out: ParsedStudioFiles,
+): void {
+	const content = files[path] ?? "";
+	const baseContent = baseFiles[path];
+	const changed = baseContent !== content;
+	if (/\.report\.json$/i.test(path)) {
+		out.reportPaths.push(path);
+		return;
+	}
+	if (path.toLowerCase().endsWith(".json")) {
+		const parsed = parseJsonObject(content);
+		if (parsed) {
+			const baseParsed = parseJsonObject(baseContent);
+			for (const [k, v] of Object.entries(parsed)) {
+				const lower = k.toLowerCase();
+				if (COLOR_GROUPS.has(lower)) collectColors(v, baseParsed, [k], out.colors);
+				else if (TYPE_GROUPS.has(lower)) collectTypography(v, baseParsed, [k], out.typography);
+				else if (VENDOR_GROUPS.has(lower)) collectVendors(v, baseParsed, k, out.vendors);
+				else if (MODEL_GROUPS.has(lower) && !out.rawModel) out.rawModel = { value: v, base: baseParsed, key: k };
+				else if (typeof v === "string" && COLOR_VALUE.test(v.trim())) collectColors(v, baseParsed, [k], out.colors);
+			}
+			const entries: SpecEntry[] = [];
+			const tables: SpecTable[] = [];
+			collectSpecs(parsed, baseParsed, [], entries, tables);
+			if (entries.length || tables.length)
+				out.specs.push({ path, title: readableName(path), changed, entries, tables });
+		}
+		return;
+	}
+	if (HTML_FILE_RE.test(path)) {
+		const dependencyChanged =
+			checkHtmlDeps && !changed
+				? studioHtmlDependencyChanged(content, path, files, baseFiles, previewTokensCss, baseTokensCss)
+				: false;
+		out.htmlPages.push({
+			path,
+			title: htmlDocumentTitle(content, path),
+			html: content,
+			...(baseContent !== undefined ? { baseHtml: baseContent } : {}),
+			changed: changed || dependencyChanged,
+		});
+		return;
+	}
+	if (SVG_FILE_RE.test(path)) {
+		const trimmed = content.trim();
+		if (/<svg[\s>]/i.test(trimmed)) {
+			const baseTrimmed = baseContent?.trim();
+			out.svgs.push({
+				path,
+				title: readableName(path),
+				svg: trimmed,
+				...(baseTrimmed && /<svg[\s>]/i.test(baseTrimmed) ? { baseSvg: baseTrimmed } : {}),
+				changed,
+			});
+		}
+		return;
+	}
+	if (MARKDOWN_FILE_RE.test(path) || PROSE_TEXT_FILE_RE.test(path)) {
+		out.docs.push({
+			path,
+			title: readableName(path),
+			content,
+			...(baseContent !== undefined ? { baseContent } : {}),
+			isMarkdown: MARKDOWN_FILE_RE.test(path),
+			changed,
+		});
+	}
+}
+
 export class SurfaceStudioView {
 	readonly el = h("div", { class: "surface-studio" });
 	readonly #options: SurfaceStudioOptions;
 	readonly #lifetime = new AbortController();
 	#baseFiles: Readonly<Record<string, string>>;
 	#loading = false;
+	#showingSkeleton = false;
+	#renderSeq = 0;
 	#lastConflict: SurfacePreviewConflict | null = null;
 	#viewer3d: Studio3DViewer | undefined;
 	#reportView: SurfaceReportView | undefined;
@@ -505,7 +639,7 @@ export class SurfaceStudioView {
 	constructor(options: SurfaceStudioOptions) {
 		this.#options = options;
 		this.#baseFiles = options.baseFiles ? { ...options.baseFiles } : {};
-		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
+		options.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
 		if (!options.baseFiles) {
 			const cloudManaged =
@@ -513,7 +647,10 @@ export class SurfaceStudioView {
 				!isLocalSurfaceId(options.surface.id) &&
 				options.store.state.source === "cloud";
 			if (cloudManaged) {
-				if (!options.store.state.cloudSurfaceFiles[options.surface.id]) {
+				if (
+					!options.store.state.cloudSurfaceFiles[options.surface.id] &&
+					!options.store.isCloudFilesLoading(options.surface.id)
+				) {
 					void options.store.refreshCloudFiles(options.surface);
 				}
 			} else if (options.loadFiles) {
@@ -523,7 +660,13 @@ export class SurfaceStudioView {
 		this.update();
 	}
 
+	deactivate(): void {
+		this.#renderSeq++;
+		this.#reportView?.deactivate();
+	}
+
 	dispose(): void {
+		this.#renderSeq += 1;
 		this.#disposeHtmlFrames();
 		if (this.#settleTimer) {
 			clearTimeout(this.#settleTimer);
@@ -619,11 +762,13 @@ export class SurfaceStudioView {
 	}
 
 	update(): void {
+		if (this.#lifetime.signal.aborted) return;
 		const store = this.#options.store;
 		const state = store.state;
 		const surface = state.surfaces.find((item) => item.id === this.#options.surface.id) ?? this.#options.surface;
 		const baseFiles = this.#effectiveBaseFiles(surface.id);
-		const lookKind = store.lookOf(surface).kind;
+		const look = store.lookOf(surface);
+		const lookKind = look.kind;
 		const isIdentitySurface =
 			surface.isGlobal === true ||
 			lookKind === "identity" ||
@@ -657,6 +802,21 @@ export class SurfaceStudioView {
 		this.#wasUpdating = updating;
 		const activeOtherSurfaces = state.surfaces.filter((item) => item.status === "active" && item.id !== surface.id);
 		const downstreamSurfaces = activeOtherSurfaces.filter((item) => item.group === "products");
+		const linkedSurfacesKey = JSON.stringify(
+			activeOtherSurfaces.map((item) => {
+				const itemLook = store.lookOf(item);
+				return [
+					item.id,
+					item.slug,
+					item.title,
+					item.group,
+					item.isGlobal === true,
+					item.icon,
+					itemLook.kind,
+					itemLook.accent ?? "",
+				];
+			}),
+		);
 		const deps: readonly unknown[] = [
 			initialLoading,
 			updatingPhase,
@@ -666,111 +826,253 @@ export class SurfaceStudioView {
 			state.cloudSurfaceFiles[surface.id],
 			state.pendingStudioPatches[surface.id],
 			state.localStudioBase[surface.id],
-			surface,
+			surface.id,
+			surface.slug,
+			surface.title,
+			surface.folderRoot,
+			surface.isGlobal === true,
+			surface.icon,
 			lookKind,
+			look.accent ?? "",
 			identityTokens?.css ?? "",
-			workspace?.briefSummary,
-			state.surfaces,
-			state.surfaceLooks,
+			workspace?.briefSummary ?? "",
+			linkedSurfacesKey,
 			busyReconcile,
 		];
 		if (sameDeps(this.#shownDeps, deps) && sameOrderedChanges(this.#shownOrdered, ordered)) return;
 		this.#shownDeps = deps;
 		this.#shownOrdered = ordered;
-		this.#disposeHtmlFrames();
+		const seq = ++this.#renderSeq;
 
-		const composition = composeStudioPreview(baseFiles, ordered, surface.folderRoot);
+		const sliced = this.#options.timeSlice ?? hasBrowserCompositor();
+		if (initialLoading && Object.keys(baseFiles).length === 0 && ordered.length === 0 && state.mode !== "compare") {
+			this.#disposeHtmlFrames();
+			this.#showingSkeleton = true;
+			this.el.replaceChildren(surfaceSkeleton(t("Opening studio…"), "studio"));
+			return;
+		}
+
+		const renderParams = {
+			seq,
+			sliced,
+			surface,
+			look,
+			lookKind,
+			isIdentitySurface,
+			identityTokens,
+			workspace,
+			baseFiles,
+			ordered,
+			initialLoading,
+			updatingPhase,
+			busyReconcile,
+			activeOtherSurfaces,
+			downstreamSurfaces,
+			mode: state.mode,
+		};
+		if (sliced) {
+			if (this.el.childElementCount === 0 || this.#showingSkeleton) {
+				this.#showingSkeleton = true;
+				if (!this.el.querySelector(".skeleton-surface-studio")) {
+					this.el.replaceChildren(surfaceSkeleton(t("Opening studio…"), "studio"));
+				}
+			}
+			void this.#renderSliced(renderParams);
+			return;
+		}
+		this.#renderSync(renderParams);
+	}
+
+	#isRenderActive(seq: number): boolean {
+		return seq === this.#renderSeq && !this.#lifetime.signal.aborted;
+	}
+
+	async #renderSliced(params: {
+		readonly seq: number;
+		readonly sliced: boolean;
+		readonly surface: SurfaceSummary;
+		readonly look: ReturnType<SurfacesStore["lookOf"]>;
+		readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
+		readonly isIdentitySurface: boolean;
+		readonly identityTokens: CompiledIdentityTokens | null;
+		readonly workspace: ReturnType<SurfacesStore["workspace"]>;
+		readonly baseFiles: Readonly<Record<string, string>>;
+		readonly ordered: readonly StudioPatchChange[];
+		readonly initialLoading: boolean;
+		readonly updatingPhase: SurfaceUpdatePhase | null;
+		readonly busyReconcile: boolean;
+		readonly activeOtherSurfaces: readonly SurfaceSummary[];
+		readonly downstreamSurfaces: readonly SurfaceSummary[];
+		readonly mode: SurfacesStore["state"]["mode"];
+	}): Promise<void> {
+		const signal = this.#lifetime.signal;
+		const budget = createFrameBudget(6);
+		if (!(await yieldToMain(signal).then(() => this.#isRenderActive(params.seq)))) return;
+		budget.reset();
+
+		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();
-		const previewTokensCss = compiledTokensCssFrom(files, surface.folderRoot, identityTokens?.css ?? "");
-		const baseTokensCss = compiledTokensCssFrom(baseFiles, surface.folderRoot, identityTokens?.css ?? "");
-
-		const colors: ColorToken[] = [];
-		const typography: TypeToken[] = [];
-		const specs: SpecSection[] = [];
-		const vendors: VendorCard[] = [];
-		const docs: StudioDoc[] = [];
-		const htmlPages: StudioHtmlPage[] = [];
-		const svgs: StudioSvgAsset[] = [];
-		const reportPaths: string[] = [];
-		let rawModel:
-			| { readonly value: unknown; readonly base: Record<string, unknown> | undefined; readonly key: string }
-			| undefined;
-
+		const previewTokensCss = compiledTokensCssFrom(
+			files,
+			params.surface.folderRoot,
+			params.identityTokens?.css ?? "",
+		);
+		const baseTokensCss = compiledTokensCssFrom(
+			params.baseFiles,
+			params.surface.folderRoot,
+			params.identityTokens?.css ?? "",
+		);
+		const checkHtmlDeps = params.mode === "compare" || this.#tab === "pages";
+		const parsed = emptyParsedStudioFiles();
 		for (const path of filePaths) {
-			const content = files[path] ?? "";
-			const baseContent = baseFiles[path];
-			const changed = baseContent !== content;
-			if (/\.report\.json$/i.test(path)) {
-				reportPaths.push(path);
-				continue;
-			}
-			if (path.toLowerCase().endsWith(".json")) {
-				const parsed = parseJsonObject(content);
-				if (parsed) {
-					const baseParsed = parseJsonObject(baseContent);
-					for (const [k, v] of Object.entries(parsed)) {
-						const lower = k.toLowerCase();
-						if (COLOR_GROUPS.has(lower)) collectColors(v, baseParsed, [k], colors);
-						else if (TYPE_GROUPS.has(lower)) collectTypography(v, baseParsed, [k], typography);
-						else if (VENDOR_GROUPS.has(lower)) collectVendors(v, baseParsed, k, vendors);
-						else if (MODEL_GROUPS.has(lower) && !rawModel) rawModel = { value: v, base: baseParsed, key: k };
-						else if (typeof v === "string" && COLOR_VALUE.test(v.trim()))
-							collectColors(v, baseParsed, [k], colors);
-					}
-					const entries: SpecEntry[] = [];
-					const tables: SpecTable[] = [];
-					collectSpecs(parsed, baseParsed, [], entries, tables);
-					if (entries.length || tables.length)
-						specs.push({ path, title: readableName(path), changed, entries, tables });
-				}
-				continue;
-			}
-			if (HTML_FILE_RE.test(path)) {
-				const dependencyChanged = studioHtmlDependencyChanged(
-					content,
-					path,
-					files,
-					baseFiles,
-					previewTokensCss,
-					baseTokensCss,
-				);
-				htmlPages.push({
-					path,
-					title: htmlDocumentTitle(content, path),
-					html: content,
-					...(baseContent !== undefined ? { baseHtml: baseContent } : {}),
-					changed: changed || dependencyChanged,
-				});
-				continue;
-			}
-			if (SVG_FILE_RE.test(path)) {
-				const trimmed = content.trim();
-				if (/<svg[\s>]/i.test(trimmed)) {
-					const baseTrimmed = baseContent?.trim();
-					svgs.push({
-						path,
-						title: readableName(path),
-						svg: trimmed,
-						...(baseTrimmed && /<svg[\s>]/i.test(baseTrimmed) ? { baseSvg: baseTrimmed } : {}),
-						changed,
-					});
-				}
-				continue;
-			}
-			if (MARKDOWN_FILE_RE.test(path) || PROSE_TEXT_FILE_RE.test(path)) {
-				docs.push({
-					path,
-					title: readableName(path),
-					content,
-					...(baseContent !== undefined ? { baseContent } : {}),
-					isMarkdown: MARKDOWN_FILE_RE.test(path),
-					changed,
-				});
-			}
+			parseSingleStudioFile(path, files, params.baseFiles, previewTokensCss, baseTokensCss, checkHtmlDeps, parsed);
+			if (!(await budget.yieldIfNeeded(signal)) || !this.#isRenderActive(params.seq)) return;
 		}
-		docs.sort((a, b) => docPriority(a.path) - docPriority(b.path) || a.path.localeCompare(b.path));
+		parsed.docs.sort((a, b) => docPriority(a.path) - docPriority(b.path) || a.path.localeCompare(b.path));
+		const plan = this.#buildRenderPlan(
+			params,
+			composition,
+			files,
+			filePaths,
+			previewTokensCss,
+			baseTokensCss,
+			parsed,
+		);
+		if (!this.#isRenderActive(params.seq)) return;
+		this.#disposeHtmlFrames();
+		if (!plan.gridTasks) {
+			this.el.replaceChildren(...plan.children);
+			if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
+			return;
+		}
+		const grid = h("div", { class: "studio-grid" });
+		const tasks = plan.gridTasks;
+		let start = 0;
+		if (tasks[0] && !tasks[0].heavy) {
+			grid.append(tasks[0].build());
+			start = 1;
+		}
+		this.el.replaceChildren(...plan.children, grid);
+		if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
+		budget.reset();
+		for (let i = start; i < tasks.length; i++) {
+			const task = tasks[i]!;
+			if (task.heavy) {
+				await yieldToMain(signal);
+				if (!this.#isRenderActive(params.seq)) return;
+				budget.reset();
+			} else if (!(await budget.yieldIfNeeded(signal)) || !this.#isRenderActive(params.seq)) {
+				return;
+			}
+			grid.append(task.build());
+		}
+	}
+
+	#renderSync(params: {
+		readonly seq: number;
+		readonly sliced: boolean;
+		readonly surface: SurfaceSummary;
+		readonly look: ReturnType<SurfacesStore["lookOf"]>;
+		readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
+		readonly isIdentitySurface: boolean;
+		readonly identityTokens: CompiledIdentityTokens | null;
+		readonly workspace: ReturnType<SurfacesStore["workspace"]>;
+		readonly baseFiles: Readonly<Record<string, string>>;
+		readonly ordered: readonly StudioPatchChange[];
+		readonly initialLoading: boolean;
+		readonly updatingPhase: SurfaceUpdatePhase | null;
+		readonly busyReconcile: boolean;
+		readonly activeOtherSurfaces: readonly SurfaceSummary[];
+		readonly downstreamSurfaces: readonly SurfaceSummary[];
+		readonly mode: SurfacesStore["state"]["mode"];
+	}): void {
+		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot);
+		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
+		const files = composition.files;
+		const filePaths = Object.keys(files).sort();
+		const previewTokensCss = compiledTokensCssFrom(
+			files,
+			params.surface.folderRoot,
+			params.identityTokens?.css ?? "",
+		);
+		const baseTokensCss = compiledTokensCssFrom(
+			params.baseFiles,
+			params.surface.folderRoot,
+			params.identityTokens?.css ?? "",
+		);
+		const checkHtmlDeps = params.mode === "compare" || this.#tab === "pages";
+		const parsed = emptyParsedStudioFiles();
+		for (const path of filePaths) {
+			parseSingleStudioFile(path, files, params.baseFiles, previewTokensCss, baseTokensCss, checkHtmlDeps, parsed);
+		}
+		parsed.docs.sort((a, b) => docPriority(a.path) - docPriority(b.path) || a.path.localeCompare(b.path));
+		const plan = this.#buildRenderPlan(
+			params,
+			composition,
+			files,
+			filePaths,
+			previewTokensCss,
+			baseTokensCss,
+			parsed,
+		);
+		this.#disposeHtmlFrames();
+		if (!plan.gridTasks) {
+			this.el.replaceChildren(...plan.children);
+			if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
+			return;
+		}
+		const grid = h("div", { class: "studio-grid" });
+		for (const task of plan.gridTasks) grid.append(task.build());
+		this.el.replaceChildren(...plan.children, grid);
+		if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
+	}
+
+	#buildRenderPlan(
+		params: {
+			readonly surface: SurfaceSummary;
+			readonly look: ReturnType<SurfacesStore["lookOf"]>;
+			readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
+			readonly isIdentitySurface: boolean;
+			readonly identityTokens: CompiledIdentityTokens | null;
+			readonly workspace: ReturnType<SurfacesStore["workspace"]>;
+			readonly baseFiles: Readonly<Record<string, string>>;
+			readonly initialLoading: boolean;
+			readonly updatingPhase: SurfaceUpdatePhase | null;
+			readonly busyReconcile: boolean;
+			readonly activeOtherSurfaces: readonly SurfaceSummary[];
+			readonly downstreamSurfaces: readonly SurfaceSummary[];
+			readonly mode: SurfacesStore["state"]["mode"];
+		},
+		composition: ReturnType<typeof composeStudioPreview>,
+		files: Readonly<Record<string, string>>,
+		filePaths: readonly string[],
+		previewTokensCss: string,
+		baseTokensCss: string,
+		parsed: ParsedStudioFiles,
+	): {
+		readonly children: HTMLElement[];
+		readonly gridTasks?: readonly StudioSectionTask[];
+		readonly leavingSkeleton: boolean;
+	} {
+		const store = this.#options.store;
+		const {
+			surface,
+			look,
+			lookKind,
+			isIdentitySurface,
+			identityTokens,
+			workspace,
+			baseFiles,
+			initialLoading,
+			updatingPhase,
+			busyReconcile,
+			activeOtherSurfaces,
+			downstreamSurfaces,
+			mode,
+		} = params;
+		const { colors, typography, specs, vendors, docs, htmlPages, svgs, reportPaths, rawModel } = parsed;
 		const modelConfig = rawModel
 			? extractModelConfig(rawModel.value, rawModel.base, rawModel.key, surface.title, colors)
 			: undefined;
@@ -782,39 +1084,32 @@ export class SurfaceStudioView {
 					? t("1 live change applied")
 					: composition.appliedChangeIds.length > 1
 						? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
-						: t("Base");
-		const badgeClass =
-			composition.status === "conflicted"
-				? "studio-badge is-conflict"
-				: composition.appliedChangeIds.length > 0
-					? "studio-badge is-live"
-					: "studio-badge";
+						: null;
+		const badgeClass = composition.status === "conflicted" ? "studio-badge is-conflict" : "studio-badge is-live";
 
-		const children: HTMLElement[] = [
-			h(
-				"div",
-				{ class: "studio-head" },
+		const children: HTMLElement[] = [];
+		if (badgeText || updatingPhase) {
+			children.push(
 				h(
 					"div",
-					{ class: "studio-head-meta" },
-					surface.folderRoot ? h("span", { class: "studio-path" }, surface.folderRoot) : null,
-					h("span", { class: badgeClass }, badgeText),
+					{ class: "studio-head" },
+					badgeText ? h("span", { class: badgeClass }, badgeText) : h("span"),
+					updatingPhase
+						? h(
+								"span",
+								{
+									class: "studio-updating-pill",
+									role: "status",
+									"aria-live": "polite",
+									"data-updating-phase": updatingPhase,
+								},
+								h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
+								h("span", null, updatingLabel(updatingPhase)),
+							)
+						: null,
 				),
-				updatingPhase
-					? h(
-							"span",
-							{
-								class: "studio-updating-pill",
-								role: "status",
-								"aria-live": "polite",
-								"data-updating-phase": updatingPhase,
-							},
-							h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
-							h("span", null, updatingLabel(updatingPhase)),
-						)
-					: null,
-			),
-		];
+			);
+		}
 
 		if (composition.status === "conflicted") {
 			const paths = formatConflictPaths(composition.conflictReport.paths);
@@ -846,32 +1141,46 @@ export class SurfaceStudioView {
 			.sort()
 			.filter((path) => baseFiles[path] !== files[path]);
 
-		if (filePaths.length === 0 && (state.mode !== "compare" || allChangedPaths.length === 0)) {
+		if (filePaths.length === 0 && (mode !== "compare" || allChangedPaths.length === 0)) {
+			if (initialLoading) {
+				this.#showingSkeleton = true;
+				return { children: [surfaceSkeleton(t("Opening studio…"), "studio")], leavingSkeleton: false };
+			}
+			const leavingSkeleton = this.#showingSkeleton;
+			this.#showingSkeleton = false;
 			children.push(
 				h(
 					"div",
 					{ class: "studio-empty" },
-					initialLoading
-						? [h("span", { class: "surface-state is-running" }), h("p", null, t("Opening studio…"))]
-						: [
-								surfaceTile(surface, this.#options.store.lookOf(surface), "is-hero"),
-								h("h2", null, surface.title),
-								workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
-								h(
-									"p",
-									null,
-									t("No studio files yet. Describe a change below to create tokens, specs, or guidelines."),
-								),
-							],
+					surfaceTile(surface, look, "is-hero"),
+					h("h2", null, surface.title),
+					workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
+					h("p", null, t("No studio files yet. Describe a change below to create tokens, specs, or guidelines.")),
 				),
 			);
-			this.el.replaceChildren(...children);
-			return;
+			return { children, leavingSkeleton };
 		}
 
-		const sections: HTMLElement[] = [];
+		const renderPlainDoc = (content: string, bodyClass: string): HTMLElement[] => {
+			if (content.length <= MAX_INITIAL_TEXT_CHARS) {
+				return [h("div", { class: bodyClass }, content)];
+			}
+			const textEl = h("div", { class: bodyClass }, `${content.slice(0, MAX_INITIAL_TEXT_CHARS)}…`);
+			const moreBtn = h("button", { type: "button", class: "btn btn-small studio-more-btn" }, t("Show full file"));
+			moreBtn.addEventListener(
+				"click",
+				() => {
+					textEl.textContent = content;
+					moreBtn.remove();
+				},
+				{ once: true, signal: this.#lifetime.signal },
+			);
+			return [textEl, moreBtn];
+		};
 
-		if (state.mode === "compare") {
+		const gridTasks: StudioSectionTask[] = [];
+
+		if (mode === "compare") {
 			const changedSpecs = specs.filter((spec) => spec.changed);
 			const changedDocs = docs.filter((doc) => doc.changed);
 			const changedSvgs = svgs.filter((asset) => asset.changed);
@@ -881,192 +1190,201 @@ export class SurfaceStudioView {
 				const diffs = spec.entries.filter((entry) => entry.changed);
 				if (!diffs.length) continue;
 				renderedPaths.add(spec.path);
-				sections.push(
-					h(
-						"section",
-						{ class: "studio-section studio-compare-card", "data-compare-file": spec.path },
+				gridTasks.push({
+					build: () =>
 						h(
-							"div",
-							{ class: "studio-section-head" },
-							h("h2", null, spec.title),
-							h("code", { class: "studio-file-tag" }, spec.path),
+							"section",
+							{ class: "studio-section studio-compare-card", "data-compare-file": spec.path },
+							h(
+								"div",
+								{ class: "studio-section-head" },
+								h("h2", null, spec.title),
+								h("code", { class: "studio-file-tag" }, spec.path),
+							),
+							h(
+								"div",
+								{ class: "studio-compare-grid" },
+								h("div", { class: "studio-compare-col-head" }, t("Base")),
+								h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+								...diffs.flatMap((entry) => [
+									h(
+										"div",
+										{ class: "studio-compare-cell is-base" },
+										h("small", null, entry.key),
+										h("span", null, entry.prev ?? t("Not set")),
+									),
+									h(
+										"div",
+										{ class: "studio-compare-cell is-preview" },
+										h("small", null, entry.key),
+										h("strong", null, entry.value),
+									),
+								]),
+							),
 						),
+				});
+			}
+			for (const asset of changedSvgs) {
+				renderedPaths.add(asset.path);
+				gridTasks.push({
+					build: () =>
 						h(
-							"div",
-							{ class: "studio-compare-grid" },
-							h("div", { class: "studio-compare-col-head" }, t("Base")),
-							h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
-							...diffs.flatMap((entry) => [
+							"section",
+							{ class: "studio-section studio-compare-card", "data-compare-file": asset.path },
+							h(
+								"div",
+								{ class: "studio-section-head" },
+								h("h2", null, asset.title),
+								h("code", { class: "studio-file-tag" }, asset.path),
+							),
+							h(
+								"div",
+								{ class: "studio-compare-grid" },
+								h("div", { class: "studio-compare-col-head" }, t("Base")),
+								h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+								h(
+									"div",
+									{ class: "studio-compare-cell is-base studio-svg-stage" },
+									asset.baseSvg
+										? h("img", { class: "studio-svg-img", src: svgDataUrl(asset.baseSvg), alt: asset.title })
+										: h("em", null, t("Not in Base")),
+								),
+								h(
+									"div",
+									{ class: "studio-compare-cell is-preview studio-svg-stage" },
+									h("img", { class: "studio-svg-img", src: svgDataUrl(asset.svg), alt: asset.title }),
+								),
+							),
+						),
+				});
+			}
+			for (const doc of changedDocs) {
+				renderedPaths.add(doc.path);
+				gridTasks.push({
+					build: () =>
+						h(
+							"section",
+							{ class: "studio-section studio-compare-card", "data-compare-file": doc.path },
+							h(
+								"div",
+								{ class: "studio-section-head" },
+								h("h2", null, doc.title),
+								h("code", { class: "studio-file-tag" }, doc.path),
+							),
+							h(
+								"div",
+								{ class: "studio-compare-grid" },
+								h("div", { class: "studio-compare-col-head" }, t("Base")),
+								h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
+								h(
+									"div",
+									{ class: "studio-compare-cell is-base studio-doc-body" },
+									...(doc.baseContent
+										? doc.isMarkdown
+											? [markdown(doc.baseContent)]
+											: renderPlainDoc(doc.baseContent, "studio-plain-text")
+										: [h("em", null, t("Not in Base"))]),
+								),
+								h(
+									"div",
+									{ class: "studio-compare-cell is-preview studio-doc-body" },
+									...(doc.isMarkdown
+										? [markdown(doc.content)]
+										: renderPlainDoc(doc.content, "studio-plain-text")),
+								),
+							),
+						),
+				});
+			}
+			for (const page of changedHtmlPages) {
+				renderedPaths.add(page.path);
+				gridTasks.push({
+					heavy: true,
+					build: () =>
+						h(
+							"section",
+							{ class: "studio-section studio-compare-card", "data-compare-file": page.path },
+							h(
+								"div",
+								{ class: "studio-section-head" },
+								h("h2", null, page.title),
+								h("code", { class: "studio-file-tag" }, page.path),
+							),
+							h(
+								"div",
+								{ class: "studio-compare-grid" },
+								h("div", { class: "studio-compare-col-head" }, t("Base")),
+								h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
 								h(
 									"div",
 									{ class: "studio-compare-cell is-base" },
-									h("small", null, entry.key),
-									h("span", null, entry.prev ?? t("Not set")),
+									page.baseHtml
+										? this.#createHtmlFrame(
+												page.baseHtml,
+												page.path,
+												page.title,
+												baseFiles,
+												baseTokensCss,
+												"studio-html-frame is-compare",
+											)
+										: h("em", null, t("Not in Base")),
 								),
 								h(
 									"div",
 									{ class: "studio-compare-cell is-preview" },
-									h("small", null, entry.key),
-									h("strong", null, entry.value),
-								),
-							]),
-						),
-					),
-				);
-			}
-			for (const asset of changedSvgs) {
-				renderedPaths.add(asset.path);
-				sections.push(
-					h(
-						"section",
-						{ class: "studio-section studio-compare-card", "data-compare-file": asset.path },
-						h(
-							"div",
-							{ class: "studio-section-head" },
-							h("h2", null, asset.title),
-							h("code", { class: "studio-file-tag" }, asset.path),
-						),
-						h(
-							"div",
-							{ class: "studio-compare-grid" },
-							h("div", { class: "studio-compare-col-head" }, t("Base")),
-							h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
-							h(
-								"div",
-								{ class: "studio-compare-cell is-base studio-svg-stage" },
-								asset.baseSvg
-									? h("img", { class: "studio-svg-img", src: svgDataUrl(asset.baseSvg), alt: asset.title })
-									: h("em", null, t("Not in Base")),
-							),
-							h(
-								"div",
-								{ class: "studio-compare-cell is-preview studio-svg-stage" },
-								h("img", { class: "studio-svg-img", src: svgDataUrl(asset.svg), alt: asset.title }),
-							),
-						),
-					),
-				);
-			}
-			for (const doc of changedDocs) {
-				renderedPaths.add(doc.path);
-				sections.push(
-					h(
-						"section",
-						{ class: "studio-section studio-compare-card", "data-compare-file": doc.path },
-						h(
-							"div",
-							{ class: "studio-section-head" },
-							h("h2", null, doc.title),
-							h("code", { class: "studio-file-tag" }, doc.path),
-						),
-						h(
-							"div",
-							{ class: "studio-compare-grid" },
-							h("div", { class: "studio-compare-col-head" }, t("Base")),
-							h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
-							h(
-								"div",
-								{ class: "studio-compare-cell is-base studio-doc-body" },
-								doc.baseContent
-									? doc.isMarkdown
-										? markdown(doc.baseContent)
-										: h("div", { class: "studio-plain-text" }, doc.baseContent)
-									: h("em", null, t("Not in Base")),
-							),
-							h(
-								"div",
-								{ class: "studio-compare-cell is-preview studio-doc-body" },
-								doc.isMarkdown ? markdown(doc.content) : h("div", { class: "studio-plain-text" }, doc.content),
-							),
-						),
-					),
-				);
-			}
-			for (const page of changedHtmlPages) {
-				renderedPaths.add(page.path);
-				sections.push(
-					h(
-						"section",
-						{ class: "studio-section studio-compare-card", "data-compare-file": page.path },
-						h(
-							"div",
-							{ class: "studio-section-head" },
-							h("h2", null, page.title),
-							h("code", { class: "studio-file-tag" }, page.path),
-						),
-						h(
-							"div",
-							{ class: "studio-compare-grid" },
-							h("div", { class: "studio-compare-col-head" }, t("Base")),
-							h("div", { class: "studio-compare-col-head is-preview" }, t("Preview")),
-							h(
-								"div",
-								{ class: "studio-compare-cell is-base" },
-								page.baseHtml
-									? this.#createHtmlFrame(
-											page.baseHtml,
-											page.path,
-											page.title,
-											baseFiles,
-											baseTokensCss,
-											"studio-html-frame is-compare",
-										)
-									: h("em", null, t("Not in Base")),
-							),
-							h(
-								"div",
-								{ class: "studio-compare-cell is-preview" },
-								this.#createHtmlFrame(
-									page.html,
-									page.path,
-									page.title,
-									files,
-									previewTokensCss,
-									"studio-html-frame is-compare",
-								),
-							),
-						),
-					),
-				);
-			}
-			const otherChangedPaths = allChangedPaths.filter((path) => !renderedPaths.has(path));
-			if (otherChangedPaths.length > 0) {
-				sections.push(
-					h(
-						"section",
-						{ class: "studio-section studio-compare-card", "data-compare-other": "true" },
-						h("div", { class: "studio-section-head" }, h("h2", null, t("Other changed files"))),
-						h(
-							"ul",
-							{ class: "studio-changed-paths" },
-							otherChangedPaths.map((path) =>
-								h(
-									"li",
-									{ "data-compare-file": path },
-									h("code", { class: "studio-file-tag" }, path),
-									h(
-										"span",
-										{ class: "studio-changed-pill" },
-										files[path] === undefined ? t("Removed") : t("Updated"),
+									this.#createHtmlFrame(
+										page.html,
+										page.path,
+										page.title,
+										files,
+										previewTokensCss,
+										"studio-html-frame is-compare",
 									),
 								),
 							),
 						),
-					),
-				);
+				});
 			}
-			if (sections.length === 0) {
-				sections.push(
-					h(
-						"section",
-						{ class: "studio-section studio-compare-empty" },
-						h("p", null, t("No open changes to compare against Base.")),
-					),
-				);
+			const otherChangedPaths = allChangedPaths.filter((path) => !renderedPaths.has(path));
+			if (otherChangedPaths.length > 0) {
+				gridTasks.push({
+					build: () =>
+						h(
+							"section",
+							{ class: "studio-section studio-compare-card", "data-compare-other": "true" },
+							h("div", { class: "studio-section-head" }, h("h2", null, t("Other changed files"))),
+							h(
+								"ul",
+								{ class: "studio-changed-paths" },
+								otherChangedPaths.map((path) =>
+									h(
+										"li",
+										{ "data-compare-file": path },
+										h("code", { class: "studio-file-tag" }, path),
+										h(
+											"span",
+											{ class: "studio-changed-pill" },
+											files[path] === undefined ? t("Removed") : t("Updated"),
+										),
+									),
+								),
+							),
+						),
+				});
 			}
-			children.push(h("div", { class: "studio-grid" }, sections));
-			this.el.replaceChildren(...children);
-			return;
+			if (gridTasks.length === 0) {
+				gridTasks.push({
+					build: () =>
+						h(
+							"section",
+							{ class: "studio-section studio-compare-empty" },
+							h("p", null, t("No open changes to compare against Base.")),
+						),
+				});
+			}
+			const leavingSkeleton = this.#showingSkeleton;
+			this.#showingSkeleton = false;
+			return { children, gridTasks, leavingSkeleton };
 		}
 
 		const isIdentity = isIdentitySurface || filePaths.some((path) => path.startsWith("identity/"));
@@ -1158,9 +1476,44 @@ export class SurfaceStudioView {
 				]),
 			);
 
+		const renderSpecRow = (columns: readonly string[], row: Readonly<Record<string, string>>) =>
+			h(
+				"tr",
+				null,
+				columns.map((col) => h("td", null, row[col] ?? "–")),
+			);
+
 		const renderSpecTables = (tables: readonly SpecTable[]) =>
-			tables.map((table) =>
-				h(
+			tables.map((table) => {
+				const truncated = table.rows.length > MAX_INITIAL_TABLE_ROWS;
+				const initialRows = truncated ? table.rows.slice(0, MAX_INITIAL_TABLE_ROWS) : table.rows;
+				const tbody = h(
+					"tbody",
+					null,
+					initialRows.map((row) => renderSpecRow(table.columns, row)),
+				);
+				const moreBtn = truncated
+					? h(
+							"button",
+							{ type: "button", class: "btn btn-small studio-more-btn" },
+							t("Show all {count} rows", { count: table.rows.length }),
+						)
+					: null;
+				if (moreBtn) {
+					moreBtn.addEventListener(
+						"click",
+						() => {
+							const frag = document.createDocumentFragment();
+							for (let i = MAX_INITIAL_TABLE_ROWS; i < table.rows.length; i++) {
+								frag.append(renderSpecRow(table.columns, table.rows[i]!));
+							}
+							tbody.append(frag);
+							moreBtn.remove();
+						},
+						{ once: true, signal: this.#lifetime.signal },
+					);
+				}
+				return h(
 					"div",
 					{ class: "studio-table-wrap" },
 					h("h3", { class: "studio-subhead" }, table.title),
@@ -1176,20 +1529,11 @@ export class SurfaceStudioView {
 								table.columns.map((col) => h("th", null, readableName(col))),
 							),
 						),
-						h(
-							"tbody",
-							null,
-							table.rows.map((row) =>
-								h(
-									"tr",
-									null,
-									table.columns.map((col) => h("td", null, row[col] ?? "–")),
-								),
-							),
-						),
+						tbody,
 					),
-				),
-			);
+					moreBtn,
+				);
+			});
 
 		const showOverview = !tabbed || this.#tab === "overview";
 		const showSpecs = !tabbed || this.#tab === "specs";
@@ -1201,422 +1545,460 @@ export class SurfaceStudioView {
 		const identityVarCount = identityTokens ? Object.keys(identityTokens.vars).length : 0;
 
 		if (isIdentity && showOverview && downstreamSurfaces.length > 0) {
-			sections.push(
-				h(
-					"section",
-					{ class: "studio-reach", "data-identity-reach": "true", "data-live-linked": "true" },
-					h("span", { class: "studio-reach-label" }, t("Used by")),
-					downstreamSurfaces.map((target) =>
-						h(
-							"button",
-							{
-								type: "button",
-								class: "studio-reach-chip",
-								"data-act": "studio-open-surface",
-								"data-slug": target.slug,
-							},
-							surfaceTile(target, store.lookOf(target), "is-tiny"),
-							h("span", null, target.title),
+			gridTasks.push({
+				build: () =>
+					h(
+						"section",
+						{ class: "studio-reach", "data-identity-reach": "true", "data-live-linked": "true" },
+						h("span", { class: "studio-reach-label" }, t("Used by")),
+						downstreamSurfaces.map((target) =>
+							h(
+								"button",
+								{
+									type: "button",
+									class: "studio-reach-chip",
+									"data-act": "studio-open-surface",
+									"data-slug": target.slug,
+								},
+								surfaceTile(target, store.lookOf(target), "is-tiny"),
+								h("span", null, target.title),
+							),
 						),
 					),
-				),
-			);
+			});
 		} else if (!isIdentity && showOverview) {
 			const consumed = sharedAssetsConsumedBy(lookKind);
 			const produced = sharedAssetsProducedBy(lookKind);
-			const linkRows: HTMLElement[] = [];
-			const seenIncomingProducers = new Set<string>();
-			for (const link of consumed) {
-				if (link.liveSyncMode === "prompt_context" && link.producedBy.every((k) => seenIncomingProducers.has(k))) {
-					continue;
-				}
-				const producers = activeOtherSurfaces.filter((item) => {
-					const targetKind = store.lookOf(item).kind;
-					return (
-						link.producedBy.includes(targetKind) ||
-						(link.producedBy.includes("identity") && item.isGlobal === true)
+			const buildSharedLinks = (): HTMLElement | null => {
+				const linkRows: HTMLElement[] = [];
+				const seenIncomingProducers = new Set<string>();
+				for (const link of consumed) {
+					if (
+						link.liveSyncMode === "prompt_context" &&
+						link.producedBy.every((k) => seenIncomingProducers.has(k))
+					) {
+						continue;
+					}
+					const producers = activeOtherSurfaces.filter((item) => {
+						const targetKind = store.lookOf(item).kind;
+						return (
+							link.producedBy.includes(targetKind) ||
+							(link.producedBy.includes("identity") && item.isGlobal === true)
+						);
+					});
+					if (!producers.length) continue;
+					for (const k of link.producedBy) seenIncomingProducers.add(k);
+					const primaryPath =
+						link.liveSyncMode === "css_variables" && link.sourcePaths.includes(IDENTITY_TOKENS_CSS_PATH)
+							? IDENTITY_TOKENS_CSS_PATH
+							: (link.sourcePaths[0] ?? "");
+					linkRows.push(
+						h(
+							"div",
+							{ class: "studio-shared-link-row", "data-link-dir": "in", "data-link-id": link.id },
+							h("span", { class: "studio-shared-link-dir" }, t("Inherits")),
+							h("code", { class: "studio-link-path" }, primaryPath),
+							h(
+								"div",
+								{ class: "studio-reach-chips" },
+								producers.map((target) =>
+									h(
+										"button",
+										{
+											type: "button",
+											class: "studio-reach-chip is-compact",
+											"data-act": "studio-open-surface",
+											"data-slug": target.slug,
+										},
+										surfaceTile(target, store.lookOf(target), "is-tiny"),
+										h("span", null, target.title),
+									),
+								),
+							),
+						),
 					);
-				});
-				if (!producers.length) continue;
-				for (const k of link.producedBy) seenIncomingProducers.add(k);
-				const primaryPath =
-					link.liveSyncMode === "css_variables" && link.sourcePaths.includes(IDENTITY_TOKENS_CSS_PATH)
-						? IDENTITY_TOKENS_CSS_PATH
-						: (link.sourcePaths[0] ?? "");
-				linkRows.push(
-					h(
-						"div",
-						{ class: "studio-shared-link-row", "data-link-dir": "in", "data-link-id": link.id },
-						h("span", { class: "studio-shared-link-dir" }, t("Inherits")),
-						h("code", { class: "studio-link-path" }, primaryPath),
+				}
+				for (const link of produced) {
+					const consumers = activeOtherSurfaces
+						.filter((item) => link.consumedBy.includes(store.lookOf(item).kind))
+						.sort((a, b) => (a.group === "products" ? 0 : 1) - (b.group === "products" ? 0 : 1));
+					if (!consumers.length) continue;
+					const primaryPath = link.sourcePaths[0] ?? "";
+					linkRows.push(
 						h(
 							"div",
-							{ class: "studio-reach-chips" },
-							producers.map((target) =>
-								h(
-									"button",
-									{
-										type: "button",
-										class: "studio-reach-chip is-compact",
-										"data-act": "studio-open-surface",
-										"data-slug": target.slug,
-									},
-									surfaceTile(target, store.lookOf(target), "is-tiny"),
-									h("span", null, target.title),
+							{ class: "studio-shared-link-row", "data-link-dir": "out", "data-link-id": link.id },
+							h("span", { class: "studio-shared-link-dir" }, t("Feeds")),
+							h("code", { class: "studio-link-path" }, primaryPath),
+							h("span", { class: "studio-link-arrow", "aria-hidden": "true" }, "→"),
+							h(
+								"div",
+								{ class: "studio-reach-chips" },
+								consumers.map((target) =>
+									h(
+										"button",
+										{
+											type: "button",
+											class: "studio-reach-chip is-compact",
+											"data-act": "studio-open-surface",
+											"data-slug": target.slug,
+										},
+										surfaceTile(target, store.lookOf(target), "is-tiny"),
+										h("span", null, target.title),
+									),
 								),
 							),
 						),
-					),
-				);
-			}
-			for (const link of produced) {
-				const consumers = activeOtherSurfaces
-					.filter((item) => link.consumedBy.includes(store.lookOf(item).kind))
-					.sort((a, b) => (a.group === "products" ? 0 : 1) - (b.group === "products" ? 0 : 1));
-				if (!consumers.length) continue;
-				const primaryPath = link.sourcePaths[0] ?? "";
-				linkRows.push(
+					);
+				}
+				if (linkRows.length === 0) return null;
+				return h(
+					"section",
+					{ class: "studio-shared-links", "data-live-linked": "true" },
 					h(
 						"div",
-						{ class: "studio-shared-link-row", "data-link-dir": "out", "data-link-id": link.id },
-						h("span", { class: "studio-shared-link-dir" }, t("Feeds")),
-						h("code", { class: "studio-link-path" }, primaryPath),
-						h("span", { class: "studio-link-arrow", "aria-hidden": "true" }, "→"),
-						h(
-							"div",
-							{ class: "studio-reach-chips" },
-							consumers.map((target) =>
-								h(
-									"button",
-									{
-										type: "button",
-										class: "studio-reach-chip is-compact",
-										"data-act": "studio-open-surface",
-										"data-slug": target.slug,
-									},
-									surfaceTile(target, store.lookOf(target), "is-tiny"),
-									h("span", null, target.title),
-								),
-							),
-						),
+						{ class: "studio-shared-links-head" },
+						h("span", { class: "studio-live-dot", "aria-hidden": "true" }),
+						h("span", { class: "studio-shared-links-title" }, t("Live-linked via Company Files")),
+						identityVarCount > 0
+							? h("span", { class: "studio-link-count" }, t("{count} CSS vars", { count: identityVarCount }))
+							: null,
 					),
+					h("div", { class: "studio-shared-links-list" }, ...linkRows),
 				);
-			}
-			if (linkRows.length > 0) {
-				sections.push(
-					h(
-						"section",
-						{ class: "studio-shared-links", "data-live-linked": "true" },
-						h(
-							"div",
-							{ class: "studio-shared-links-head" },
-							h("span", { class: "studio-live-dot", "aria-hidden": "true" }),
-							h("span", { class: "studio-shared-links-title" }, t("Live-linked via Company Files")),
-							identityVarCount > 0
-								? h("span", { class: "studio-link-count" }, t("{count} CSS vars", { count: identityVarCount }))
-								: null,
-						),
-						h("div", { class: "studio-shared-links-list" }, ...linkRows),
-					),
-				);
+			};
+			if (hasNonIdentitySharedLinks) {
+				const built = buildSharedLinks();
+				if (built) gridTasks.push({ build: () => built });
 			}
 		}
 
 		if (modelConfig && showOverview) {
-			if (!this.#viewer3d) this.#viewer3d = new Studio3DViewer(modelConfig, this.#lifetime.signal);
-			else this.#viewer3d.update(modelConfig);
-			sections.push(this.#viewer3d.el);
+			gridTasks.push({
+				build: () => {
+					if (!this.#viewer3d) this.#viewer3d = new Studio3DViewer(modelConfig, this.#lifetime.signal);
+					else this.#viewer3d.update(modelConfig);
+					return this.#viewer3d.el;
+				},
+			});
 		}
 
 		if (svgs.length && showOverview) {
-			sections.push(
-				h(
-					"section",
-					{ class: "studio-section" },
+			gridTasks.push({
+				build: () =>
 					h(
-						"div",
-						{ class: "studio-section-head" },
-						h("h2", null, isIdentity ? t("Brand mark") : t("Vector assets")),
-					),
-					h(
-						"div",
-						{ class: "studio-svg-grid" },
-						svgs.map((asset) =>
-							h(
-								"figure",
-								{ class: `studio-svg-card${asset.changed ? " is-changed" : ""}`, "data-file": asset.path },
+						"section",
+						{ class: "studio-section" },
+						h(
+							"div",
+							{ class: "studio-section-head" },
+							h("h2", null, isIdentity ? t("Brand mark") : t("Vector assets")),
+						),
+						h(
+							"div",
+							{ class: "studio-svg-grid" },
+							svgs.map((asset) =>
 								h(
-									"div",
-									{ class: "studio-svg-stage" },
-									h("img", {
-										class: "studio-svg-img",
-										src: svgDataUrl(asset.svg),
-										alt: asset.title,
-									}),
-								),
-								h(
-									"figcaption",
-									{ class: "studio-svg-meta" },
-									h("strong", null, asset.title),
-									h("code", { class: "studio-file-tag" }, asset.path),
-									asset.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+									"figure",
+									{ class: `studio-svg-card${asset.changed ? " is-changed" : ""}`, "data-file": asset.path },
+									h(
+										"div",
+										{ class: "studio-svg-stage" },
+										h("img", {
+											class: "studio-svg-img",
+											src: svgDataUrl(asset.svg),
+											alt: asset.title,
+										}),
+									),
+									h(
+										"figcaption",
+										{ class: "studio-svg-meta" },
+										h("strong", null, asset.title),
+										h("code", { class: "studio-file-tag" }, asset.path),
+										asset.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+									),
 								),
 							),
 						),
 					),
-				),
-			);
+			});
 		}
 
 		if (colors.length && showOverview) {
-			sections.push(
-				h(
-					"section",
-					{ class: "studio-section" },
-					h("div", { class: "studio-section-head" }, h("h2", null, t("Palette"))),
+			gridTasks.push({
+				build: () =>
 					h(
-						"div",
-						{ class: "studio-swatches" },
-						colors.map((swatch) => {
-							const chip = h("span", { class: "studio-swatch-chip", "aria-hidden": "true" });
-							chip.style.backgroundColor = swatch.value;
-							return h(
-								"div",
-								{
-									class: `studio-swatch${swatch.changed ? " is-changed" : ""}`,
-									"data-token": swatch.key,
-								},
-								chip,
-								h(
+						"section",
+						{ class: "studio-section" },
+						h("div", { class: "studio-section-head" }, h("h2", null, t("Palette"))),
+						h(
+							"div",
+							{ class: "studio-swatches" },
+							colors.map((swatch) => {
+								const chip = h("span", { class: "studio-swatch-chip", "aria-hidden": "true" });
+								chip.style.backgroundColor = swatch.value;
+								return h(
 									"div",
-									{ class: "studio-swatch-meta" },
-									h("strong", null, swatch.label),
-									h("code", null, swatch.value),
-								),
-							);
-						}),
+									{
+										class: `studio-swatch${swatch.changed ? " is-changed" : ""}`,
+										"data-token": swatch.key,
+									},
+									chip,
+									h(
+										"div",
+										{ class: "studio-swatch-meta" },
+										h("strong", null, swatch.label),
+										h("code", null, swatch.value),
+									),
+								);
+							}),
+						),
 					),
-				),
-			);
+			});
 		}
 
 		if (tabbed && showOverview && primarySpec && primarySpec.entries.length > 0 && !isIdentity) {
-			sections.push(
-				h(
-					"section",
-					{ class: `studio-section${primarySpec.changed ? " is-changed" : ""}`, "data-file": primarySpec.path },
+			gridTasks.push({
+				build: () =>
 					h(
-						"div",
-						{ class: "studio-section-head" },
-						h("h2", null, t("Key specs")),
-						h("code", { class: "studio-file-tag" }, primarySpec.path),
-						primarySpec.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+						"section",
+						{ class: `studio-section${primarySpec.changed ? " is-changed" : ""}`, "data-file": primarySpec.path },
+						h(
+							"div",
+							{ class: "studio-section-head" },
+							h("h2", null, t("Key specs")),
+							h("code", { class: "studio-file-tag" }, primarySpec.path),
+							primarySpec.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+						),
+						renderSpecEntries(primarySpec.entries),
 					),
-					renderSpecEntries(primarySpec.entries),
-				),
-			);
+			});
 		}
 
 		if (typography.length && (showSpecs || (isIdentity && showOverview))) {
-			sections.push(
-				h(
-					"section",
-					{ class: "studio-section" },
-					h("div", { class: "studio-section-head" }, h("h2", null, t("Typography"))),
+			gridTasks.push({
+				build: () =>
 					h(
-						"div",
-						{ class: "studio-type-list" },
-						typography.map((item) => {
-							const sample = h("p", { class: "studio-type-sample" }, t("Aa Bb Cc · 123"));
-							sample.style.fontFamily = item.value;
-							return h(
-								"div",
-								{ class: `studio-type-row${item.changed ? " is-changed" : ""}`, "data-token": item.key },
-								h(
+						"section",
+						{ class: "studio-section" },
+						h("div", { class: "studio-section-head" }, h("h2", null, t("Typography"))),
+						h(
+							"div",
+							{ class: "studio-type-list" },
+							typography.map((item) => {
+								const sample = h("p", { class: "studio-type-sample" }, t("Aa Bb Cc · 123"));
+								sample.style.fontFamily = item.value;
+								return h(
 									"div",
-									{ class: "studio-type-meta" },
-									h("strong", null, item.label),
-									h("code", null, item.value),
-								),
-								sample,
-							);
-						}),
+									{ class: `studio-type-row${item.changed ? " is-changed" : ""}`, "data-token": item.key },
+									h(
+										"div",
+										{ class: "studio-type-meta" },
+										h("strong", null, item.label),
+										h("code", null, item.value),
+									),
+									sample,
+								);
+							}),
+						),
 					),
-				),
-			);
+			});
 		}
 
 		if (showVendors && (vendors.length || vendorSpecs.length)) {
 			for (const spec of vendorSpecs) {
 				if (!spec.entries.length) continue;
-				sections.push(
-					h(
-						"section",
-						{ class: `studio-section${spec.changed ? " is-changed" : ""}`, "data-file": spec.path },
+				gridTasks.push({
+					build: () =>
 						h(
-							"div",
-							{ class: "studio-section-head" },
-							h("h2", null, t("Production plan")),
-							h("code", { class: "studio-file-tag" }, spec.path),
-							spec.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+							"section",
+							{ class: `studio-section${spec.changed ? " is-changed" : ""}`, "data-file": spec.path },
+							h(
+								"div",
+								{ class: "studio-section-head" },
+								h("h2", null, t("Production plan")),
+								h("code", { class: "studio-file-tag" }, spec.path),
+								spec.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+							),
+							renderSpecEntries(spec.entries),
 						),
-						renderSpecEntries(spec.entries),
-					),
-				);
+				});
 			}
 			if (vendors.length) {
-				sections.push(
-					h(
-						"section",
-						{ class: "studio-section studio-vendors" },
+				gridTasks.push({
+					build: () =>
 						h(
-							"div",
-							{ class: "studio-section-head" },
-							h("h2", null, t("Production & Vendors")),
-							h("span", { class: "studio-file-tag" }, t("{count} suppliers", { count: vendors.length })),
-						),
-						h(
-							"div",
-							{ class: "studio-vendor-grid" },
-							vendors.map((item) =>
-								h(
-									"article",
-									{ class: `studio-vendor-card${item.changed ? " is-changed" : ""}` },
+							"section",
+							{ class: "studio-section studio-vendors" },
+							h(
+								"div",
+								{ class: "studio-section-head" },
+								h("h2", null, t("Production & Vendors")),
+								h("span", { class: "studio-file-tag" }, t("{count} suppliers", { count: vendors.length })),
+							),
+							h(
+								"div",
+								{ class: "studio-vendor-grid" },
+								vendors.map((item) =>
 									h(
-										"div",
-										{ class: "studio-vendor-top" },
-										h("strong", null, item.vendor),
-										item.status ? h("span", { class: "studio-vendor-status" }, item.status) : null,
+										"article",
+										{ class: `studio-vendor-card${item.changed ? " is-changed" : ""}` },
+										h(
+											"div",
+											{ class: "studio-vendor-top" },
+											h("strong", null, item.vendor),
+											item.status ? h("span", { class: "studio-vendor-status" }, item.status) : null,
+										),
+										item.component ? h("p", { class: "studio-vendor-comp" }, item.component) : null,
+										h(
+											"div",
+											{ class: "studio-vendor-meta" },
+											item.unitPrice ? h("span", null, item.unitPrice) : null,
+											item.moq ? h("span", null, t("MOQ {moq}", { moq: item.moq })) : null,
+											item.leadTime ? h("span", null, item.leadTime) : null,
+											item.region ? h("span", null, item.region) : null,
+										),
+										item.certifications
+											? h("div", { class: "studio-vendor-certs" }, item.certifications)
+											: null,
 									),
-									item.component ? h("p", { class: "studio-vendor-comp" }, item.component) : null,
-									h(
-										"div",
-										{ class: "studio-vendor-meta" },
-										item.unitPrice ? h("span", null, item.unitPrice) : null,
-										item.moq ? h("span", null, t("MOQ {moq}", { moq: item.moq })) : null,
-										item.leadTime ? h("span", null, item.leadTime) : null,
-										item.region ? h("span", null, item.region) : null,
-									),
-									item.certifications ? h("div", { class: "studio-vendor-certs" }, item.certifications) : null,
 								),
 							),
 						),
-					),
-				);
+				});
 			}
 			if (reportPaths.length > 0) {
-				sections.push(
-					h(
-						"div",
-						{ class: "studio-report-link" },
+				gridTasks.push({
+					build: () =>
 						h(
 							"div",
-							{ class: "studio-report-link-copy" },
-							h("strong", null, t("Deep-dive vendor analysis")),
+							{ class: "studio-report-link" },
 							h(
-								"p",
-								null,
-								t("Read the full rationale, score comparison, and cost curves right here in {surface}.", {
-									surface: surface.title,
-								}),
+								"div",
+								{ class: "studio-report-link-copy" },
+								h("strong", null, t("Deep-dive vendor analysis")),
+								h(
+									"p",
+									null,
+									t("Read the full rationale, score comparison, and cost curves right here in {surface}.", {
+										surface: surface.title,
+									}),
+								),
+							),
+							h(
+								"button",
+								{
+									type: "button",
+									class: "btn btn-small",
+									"data-act": "studio-tab",
+									"data-tab": "analysis",
+								},
+								t("Read analysis"),
 							),
 						),
-						h(
-							"button",
-							{
-								type: "button",
-								class: "btn btn-small",
-								"data-act": "studio-tab",
-								"data-tab": "analysis",
-							},
-							t("Read analysis"),
-						),
-					),
-				);
+				});
 			}
 		}
 
 		if (showAnalysis && reportPaths.length > 0) {
-			if (!this.#reportView) {
-				this.#reportView = new SurfaceReportView({
-					store,
-					surface,
-					signal: this.#lifetime.signal,
-					baseFiles: this.#baseFiles,
-					patches: this.#options.patches,
-					embedded: true,
-				});
-			} else {
-				this.#reportView.setBaseFiles(this.#baseFiles);
-			}
-			this.#reportView.update();
-			sections.push(this.#reportView.el);
+			gridTasks.push({
+				build: () => {
+					if (!this.#reportView) {
+						this.#reportView = new SurfaceReportView({
+							store,
+							surface,
+							signal: this.#lifetime.signal,
+							baseFiles: this.#baseFiles,
+							patches: this.#options.patches,
+							embedded: true,
+							...(this.#options.timeSlice !== undefined ? { timeSlice: this.#options.timeSlice } : {}),
+						});
+					} else {
+						this.#reportView.setBaseFiles(this.#baseFiles);
+					}
+					this.#reportView.update();
+					return this.#reportView.el;
+				},
+			});
 		}
 
 		if (showSpecs) {
 			for (const spec of detailSpecs) {
-				sections.push(
-					h(
-						"section",
-						{ class: `studio-section${spec.changed ? " is-changed" : ""}`, "data-file": spec.path },
+				gridTasks.push({
+					build: () =>
 						h(
-							"div",
-							{ class: "studio-section-head" },
-							h("h2", null, spec.title),
-							h("code", { class: "studio-file-tag" }, spec.path),
-							spec.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+							"section",
+							{ class: `studio-section${spec.changed ? " is-changed" : ""}`, "data-file": spec.path },
+							h(
+								"div",
+								{ class: "studio-section-head" },
+								h("h2", null, spec.title),
+								h("code", { class: "studio-file-tag" }, spec.path),
+								spec.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+							),
+							spec.entries.length ? renderSpecEntries(spec.entries) : null,
+							...renderSpecTables(spec.tables),
 						),
-						spec.entries.length ? renderSpecEntries(spec.entries) : null,
-						...renderSpecTables(spec.tables),
-					),
-				);
+				});
 			}
 		}
 
 		if (showFiles) {
 			for (const doc of docs) {
-				sections.push(
-					h(
-						"section",
-						{ class: `studio-section studio-doc${doc.changed ? " is-changed" : ""}`, "data-file": doc.path },
+				gridTasks.push({
+					build: () =>
 						h(
-							"div",
-							{ class: "studio-section-head" },
-							h("h2", null, doc.title),
-							h("code", { class: "studio-file-tag" }, doc.path),
-							doc.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+							"section",
+							{ class: `studio-section studio-doc${doc.changed ? " is-changed" : ""}`, "data-file": doc.path },
+							h(
+								"div",
+								{ class: "studio-section-head" },
+								h("h2", null, doc.title),
+								h("code", { class: "studio-file-tag" }, doc.path),
+								doc.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+							),
+							...(doc.isMarkdown
+								? [h("div", { class: "studio-doc-body" }, markdown(doc.content))]
+								: renderPlainDoc(doc.content, "studio-doc-body studio-plain-text")),
 						),
-						doc.isMarkdown
-							? h("div", { class: "studio-doc-body" }, markdown(doc.content))
-							: h("div", { class: "studio-doc-body studio-plain-text" }, doc.content),
-					),
-				);
+				});
 			}
 		}
 
 		if (showPages) {
 			for (const page of htmlPages) {
-				sections.push(
-					h(
-						"section",
-						{
-							class: `studio-section studio-html-card${page.changed ? " is-changed" : ""}`,
-							"data-file": page.path,
-						},
+				gridTasks.push({
+					heavy: true,
+					build: () =>
 						h(
-							"div",
-							{ class: "studio-section-head" },
-							h("h2", null, page.title),
-							h("code", { class: "studio-file-tag" }, page.path),
-							page.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+							"section",
+							{
+								class: `studio-section studio-html-card${page.changed ? " is-changed" : ""}`,
+								"data-file": page.path,
+							},
+							h(
+								"div",
+								{ class: "studio-section-head" },
+								h("h2", null, page.title),
+								h("code", { class: "studio-file-tag" }, page.path),
+								page.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+							),
+							this.#createHtmlFrame(
+								page.html,
+								page.path,
+								page.title,
+								files,
+								previewTokensCss,
+								"studio-html-frame",
+							),
 						),
-						this.#createHtmlFrame(page.html, page.path, page.title, files, previewTokensCss, "studio-html-frame"),
-					),
-				);
+				});
 			}
 		}
 
-		if (sections.length === 0) {
+		const leavingSkeleton = this.#showingSkeleton;
+		this.#showingSkeleton = false;
+		if (gridTasks.length === 0) {
 			children.push(
 				h(
 					"div",
@@ -1627,12 +2009,10 @@ export class SurfaceStudioView {
 					h("p", null, t("No studio files yet. Describe a change below to create tokens, specs, or guidelines.")),
 				),
 			);
-			this.el.replaceChildren(...children);
-			return;
+			return { children, leavingSkeleton };
 		}
 
-		children.push(h("div", { class: "studio-grid" }, sections));
-		this.el.replaceChildren(...children);
+		return { children, gridTasks, leavingSkeleton };
 	}
 
 	#click(event: MouseEvent): void {
