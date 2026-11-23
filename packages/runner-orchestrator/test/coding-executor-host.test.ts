@@ -9425,6 +9425,35 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			});
 		});
 
+		it("builds a preview as one check without the session's secrets and fails it with the end of its output", async () => {
+			const f = await checksFixture({ secrets: { SHOP_KEY: "secret-shop-333333" } });
+			f.ending((run) =>
+				checkOf(run) === "npm run build" ? { code: 2, printed: "src/main.tsx: Cannot find module './App'\n" } : {},
+			);
+			const result = await f.host.buildPreview(
+				f.claim,
+				{
+					buildId: randomUUID(),
+					commitSha: COMMIT,
+					treeSha: "d".repeat(40),
+					recipe: { run: "npm run build", cwd: "web", folder: "dist", timeoutSeconds: 120 },
+					attempt: 1,
+				},
+				f.signal,
+			);
+			expect(result.outcome).toBe("failed");
+			const detail = result.outcome === "failed" ? result.errorDetail : "";
+			expect(detail.split("\n")[0]).toBe("PREVIEW_BUILD_FAILED");
+			expect(detail).toContain('The build "npm run build" in "web" exited with code 2');
+			expect(detail).toContain("Cannot find module './App'");
+			expect([...detail].length).toBeLessThanOrEqual(1000);
+			const builds = f.ran().filter((run) => checkOf(run) !== undefined);
+			expect(builds.map((run) => checkOf(run))).toEqual(["npm run build"]);
+			expect(builds[0]?.environment.QORPERA_CHECK_CWD).toBe("web");
+			expect(builds[0]?.environment.SHOP_KEY).toBeUndefined();
+			expect(Object.values(builds[0]?.environment ?? {})).not.toContain("secret-shop-333333");
+		});
+
 		it("applies incremental path filters, runs downstream checks whose needs were skipped, and bypasses when checks file changed", async () => {
 			const f = await checksFixture();
 			const checks: readonly CodeCheck[] = [

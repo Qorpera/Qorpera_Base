@@ -26,6 +26,7 @@ import {
 	codeSiteTreeProblem,
 } from "./code-site.ts";
 import { parseCodingJson } from "./coding-setup.ts";
+import { readSurfacePreviewRecipe, type SurfacePreviewPlan } from "./surface-preview-runner.ts";
 
 /** A repository's website as the code host reads it (own code storage, step 4, part B; STEP4-RELEASES-PLAN.md 8.2).
  * Once a change's checks passed, the executor's collect writes the web files of the folder the checks file names into
@@ -305,10 +306,7 @@ async function resolveTreeFolder(run: Run, rootTreeId: string, folder: string): 
 	return currentId;
 }
 
-async function readSurfaceChecksSiteFolder(
-	run: Run,
-	rootEntries: readonly ParsedGitTreeEntry[],
-): Promise<string | null> {
+async function readSurfaceChecksText(run: Run, rootEntries: readonly ParsedGitTreeEntry[]): Promise<string | null> {
 	const qorperaDir = rootEntries.find((entry) => entry.mode === "40000" && entry.name === ".qorpera");
 	if (!qorperaDir) return null;
 	const dirTrees = await readObjects(run, "tree", [qorperaDir.id], MAX_LISTING, () => ".qorpera");
@@ -331,9 +329,18 @@ async function readSurfaceChecksSiteFolder(
 		`${checksEntry.id} blob ${size}\n`.length + size + 1,
 		() => ".qorpera/checks.json",
 	);
+	return (blobs.get(checksEntry.id) as Buffer).toString("utf8");
+}
+
+async function readSurfaceChecksSiteFolder(
+	run: Run,
+	rootEntries: readonly ParsedGitTreeEntry[],
+): Promise<string | null> {
+	const text = await readSurfaceChecksText(run, rootEntries);
+	if (text === null) return null;
 	let parsed: unknown;
 	try {
-		parsed = parseCodingJson((blobs.get(checksEntry.id) as Buffer).toString("utf8"), false);
+		parsed = parseCodingJson(text, false);
 	} catch {
 		return null;
 	}
@@ -525,6 +532,36 @@ export async function readSurfaceSiteTree(
 			};
 		});
 		return { files, manifestSha256: codeSiteManifest(files) };
+	});
+}
+
+export async function readSurfacePreviewPlan(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; tree: string },
+): Promise<SurfacePreviewPlan> {
+	const input = closed(value, ["repository", "tree"]);
+	const repository = keptRepositoryOf(input.repository),
+		tree = input.tree;
+	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
+	return withJob(job, repository, async (run) => {
+		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
+			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		const rootTrees = await readObjects(run, "tree", [tree], MAX_LISTING, () => tree);
+		const rootEntries = parseGitTreeEntries(rootTrees.get(tree) as Buffer, tree);
+		const read = readSurfacePreviewRecipe(await readSurfaceChecksText(run, rootEntries));
+		if (read.kind === "none") return { kind: "static" };
+		if (read.kind === "invalid") return read;
+		let cwdEntries = rootEntries;
+		if (read.recipe.cwd !== ".") {
+			const cwdTree = await resolveTreeFolder(run, tree, read.recipe.cwd);
+			if (!cwdTree) return { kind: "static" };
+			const cwdTrees = await readObjects(run, "tree", [cwdTree], MAX_LISTING, () => read.recipe.cwd);
+			cwdEntries = parseGitTreeEntries(cwdTrees.get(cwdTree) as Buffer, read.recipe.cwd);
+		}
+		return cwdEntries.some((entry) => entry.name === "package.json" && isRegularBlobMode(entry.mode))
+			? { kind: "build", recipe: read.recipe }
+			: { kind: "static" };
 	});
 }
 
