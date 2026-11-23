@@ -741,13 +741,12 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		view.update();
 
-		expect(view.el.querySelector(".studio-stage .studio-3d-canvas")).not.toBeNull();
+		expect(view.el.querySelector(".studio-stage .studio-model")).not.toBeNull();
+		expect(view.el.querySelector(".studio-3d-canvas")).toBeNull();
+		expect(view.el.querySelector<HTMLElement>(".studio-model .studio-3d-view")?.hidden).toBe(true);
 		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(0);
 		expect(view.el.querySelector(".studio-diff-prev")).toBeNull();
 		expect(view.el.querySelector(".studio-fact.is-changed")).not.toBeNull();
-
-		view.el.querySelector<HTMLButtonElement>('.studio-3d-view [data-view="apart"]')!.click();
-		expect(view.el.querySelector<HTMLElement>(".studio-3d-callouts")?.hidden).toBe(false);
 
 		const tabLabels = () =>
 			[...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);

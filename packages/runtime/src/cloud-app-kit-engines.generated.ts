@@ -223,9 +223,8 @@ facts under it. You write only \`object.json\` and make the model or pictures on
 \`model\`: a \`.glb\` in the app's folder, which the member's browser draws live in real light, turned and tilted by
 hand. Make it in Blender (metres, real materials, each part a named object) and export it:
 \`blender -b thing.blend --python-exit-code 1 --python-expr "import bpy; bpy.ops.export_scene.gltf(filepath='/company/apps/<app>/thing.glb', export_format='GLB', export_apply=True)"\`.
-No Draco or meshopt compression. Keep it light enough to open quickly on a phone (a test machine, not a phone, drew
-5 and 32 MB models in 2 and 3 s). \`view\` \`{"yaw", "pitch"}\` in degrees: where it opens, else three-quarter;
-\`environment\`: your own \`.hdr\` light in the folder.
+No Draco or meshopt compression. Keep it light for a phone. \`view\` \`{"yaw", "pitch"}\` in degrees: where it opens,
+else three-quarter; \`environment\`: your own \`.hdr\` light in the folder.
 
 ## Pictures
 
@@ -249,9 +248,11 @@ No Draco or meshopt compression. Keep it light enough to open quickly on a phone
     \`source\` (optional).
   - \`state\`: \`known\` (solid dot), \`assumed\` (hollow dashed dot and a tag), \`unknown\` (dashed "?" dot, no value).
   - \`node\`: with \`model\`, the part's object name in Blender; the page finds it.
+  - \`pull\`: optional \`[x, y, z]\` (shares of its size, y up): where it moves apart.
   - \`track\`, for pictures: one \`[x, y, v]\` per frame: x and y as fractions (0 to 1, from the top left), v 1 when the
     part faces the viewer unhidden, else 0 (x and y also then). A still has one. Compute them in your render script
     (project each part's point, a facing test and a ray test); never type them.
+- \`tint\`: the materials a studio's colour dots recolour.
 - \`facts\`: up to 5 figures that describe it, each \`{"label"\` up to 18, \`"value"\` up to 14, \`"state"\`, \`"source"\`?\`}\`.
   An unknown fact has no value: it draws a hatched "?".
 - \`variants\`: up to 6 other candidates or colours, each \`{"id", "name", "line"?, "model"?, "turntable" or "picture",
@@ -271,7 +272,6 @@ part faces the viewer best, and shows its note. Never invent a value: a figure t
   "lang": "en",
   "title": "The box",
   "line": "Illustrative model of the proposed box",
-  "source": "folder:product/packaging.md",
   "name": "Box A",
   "model": "box.glb",
   "turntable": { "picture": "pictures/box.webp", "frames": 4, "columns": 4, "frameWidth": 560, "frameHeight": 560 },
