@@ -13,6 +13,8 @@
 :root[data-theme="dark"] .btn-primary { background: var(--primary); }
 :root[data-theme="dark"] .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
 :root[data-theme="dark"] .btn-danger:hover:not(:disabled) { background: var(--danger-soft); }
+:root[data-theme="dark"] .confirm-dialog .btn-danger { background: var(--danger-solid); }
+:root[data-theme="dark"] .confirm-dialog .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger-solid) 88%, #ffffff); }
 /* The black provider marks (GitHub, OpenAI) turn to white; Google's and Claude's
  * colours stay. */
 :root[data-theme="dark"] :is(img[src$="provider-github.svg"], img[src$="provider-openai.svg"]) { filter: invert(1); }

@@ -1105,6 +1105,13 @@ a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, 
 .modal-backdrop { position: fixed; inset: 0; background: rgba(18, 18, 17, 0.35); display: grid; place-items: center; z-index: 500; }
 .modal { width: min(440px, 92vw); background: var(--overlay); border-radius: var(--radius-xl); padding: 20px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.confirm-dialog { gap: 18px; }
+.confirm-dialog > p { font-size: 17px; line-height: 1.4; text-wrap: balance; }
+.confirm-dialog .modal-list { margin-top: -10px; }
+.confirm-dialog .modal-actions .btn { min-height: 36px; padding: 0 16px; font-size: 15px; }
+.confirm-dialog .btn-danger, .confirm-dialog .btn-danger:hover:not(:disabled) { border-color: transparent; color: #ffffff; }
+.confirm-dialog .btn-danger { background: var(--danger-solid); }
+.confirm-dialog .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger-solid) 88%, #000000); }
 
 .mobile-navigation-toggle, .navigation-backdrop { display: none; }
 /* The phone layout; scripts ask the same query through isPhoneLayout (src/ui/layout.ts). */

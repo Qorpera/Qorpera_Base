@@ -615,7 +615,7 @@ export function confirmDialog(
 			{ class: "modal-backdrop", onclick: (event: MouseEvent) => event.target === dialog && close(false) },
 			h(
 				"div",
-				{ class: "modal", role: "alertdialog", "aria-modal": "true" },
+				{ class: "modal confirm-dialog", role: "alertdialog", "aria-modal": "true" },
 				h("p", null, message),
 				details?.length ? h("ul", { class: "modal-list" }, ...details.map((line) => h("li", null, line))) : null,
 				input ?? null,
