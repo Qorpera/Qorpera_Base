@@ -157,6 +157,7 @@ export function surfaceFigureFromIcon(icon: string | null | undefined): SurfaceF
 }
 
 export type SurfaceFigureState = "rest" | "working";
+export type SurfaceFigurePaint = "lazy" | "now";
 
 function phase(figure: string): number {
 	let hash = 0;
@@ -164,13 +165,17 @@ function phase(figure: string): number {
 	return Math.abs(hash % 6000) / 1000;
 }
 
-export function surfaceFigure(figure: SurfaceFigureId, state: SurfaceFigureState = "rest"): HTMLElement {
+export function surfaceFigure(
+	figure: SurfaceFigureId,
+	state: SurfaceFigureState = "rest",
+	paint: SurfaceFigurePaint = "lazy",
+): HTMLElement {
 	const image = h("img", {
 		class: "surface-figure-art",
 		alt: "",
 		draggable: "false",
-		loading: "lazy",
-		decoding: "async",
+		loading: paint === "now" ? "eager" : "lazy",
+		decoding: paint === "now" ? "sync" : "async",
 		src: new URL(`./assets/surfaces/figures-v1/${figure}.png`, document.baseURI).href,
 	});
 	const eyes = h(
@@ -200,7 +205,11 @@ export function markSurfaceFigure(choices: HTMLElement, figure: SurfaceFigureId)
 		choice.setAttribute("aria-checked", String(choice.dataset.figure === figure));
 }
 
-export function surfaceFigureChoices(chosen: SurfaceFigureId, pick: (figure: SurfaceFigureId) => void): HTMLElement {
+export function surfaceFigureChoices(
+	chosen: SurfaceFigureId,
+	pick: (figure: SurfaceFigureId) => void,
+	preview?: (figure: SurfaceFigureId | undefined) => void,
+): HTMLElement {
 	const choices: HTMLElement = h(
 		"div",
 		{ class: "surface-figure-choices", role: "radiogroup", "aria-label": t("Figure") },
@@ -222,8 +231,13 @@ export function surfaceFigureChoices(chosen: SurfaceFigureId, pick: (figure: Sur
 				markSurfaceFigure(choices, id);
 				pick(id);
 			});
+			if (preview)
+				choice.addEventListener("pointerenter", (event) => {
+					if (event.pointerType !== "touch") preview(id);
+				});
 			return choice;
 		}),
 	);
+	if (preview) choices.addEventListener("pointerleave", () => preview(undefined));
 	return choices;
 }
