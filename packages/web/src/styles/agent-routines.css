@@ -7,7 +7,7 @@
 }
 .agent-routines > .surface-status { margin: 0 0 10px; font-size: 12.5px; }
 /* A text button: words only. Blue for the one action in its place, muted for a way back or out. */
-.routine-text { display: inline-flex; align-items: center; gap: 4px; min-height: 0; padding: 0; border: 0; background: none; color: var(--text-muted); font-size: 13px; line-height: 1.4; cursor: pointer; }
+.routine-text { display: inline-flex; align-items: center; gap: 4px; min-height: 0; padding: 0; border: 0; background: none; color: var(--text-muted); font-size: 13px; line-height: 1.4; cursor: default; }
 .routine-text:hover:not(:disabled) { color: var(--text); }
 .routine-text:disabled { opacity: .45; cursor: default; }
 .routine-edit, .routine-choose, .routine-change, .routine-login-use { color: var(--blue); font-weight: 600; }
@@ -31,10 +31,10 @@
 .routine-quiet { margin: 0; color: var(--text-muted); font-size: 13px; }
 .routine-list { display: grid; gap: 1px; margin: 0 -10px; }
 .routine-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; column-gap: 12px; padding: 8px 10px; border-radius: 10px; transition: background-color 120ms ease; }
-.routine-row { cursor: pointer; }
+.routine-row { cursor: default; }
 .routine-row:hover { background: var(--hover); }
 .routine-row-main { display: grid; gap: 2px; min-width: 0; min-height: 0; padding: 0; border: 0; background: none; color: inherit; text-align: left; }
-button.routine-row-main { cursor: pointer; }
+button.routine-row-main { cursor: default; }
 button.routine-row-main:disabled { cursor: default; }
 button.routine-row-main:focus-visible { outline: 2px solid var(--ring); outline-offset: 6px; border-radius: 4px; }
 .routine-row-main strong { font-size: 14px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; transition: color 160ms ease; }
@@ -47,7 +47,7 @@ button.routine-row-main:focus-visible { outline: 2px solid var(--ring); outline-
 .routine-login select { max-width: 100%; min-width: 0; font-size: 13px; }
 .routine-login small, .routine-login p { display: block; margin: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.45; }
 .routine-login-actions { display: flex; flex-wrap: wrap; gap: 18px; }
-.routine-switch { position: relative; flex: none; width: 38px; height: 22px; min-height: 0; padding: 0; border: 0; border-radius: var(--radius-pill); background: var(--border-strong); cursor: pointer; transition: background-color 180ms ease, opacity 160ms ease; }
+.routine-switch { position: relative; flex: none; width: 38px; height: 22px; min-height: 0; padding: 0; border: 0; border-radius: var(--radius-pill); background: var(--border-strong); cursor: default; transition: background-color 180ms ease, opacity 160ms ease; }
 .routine-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 2px rgb(0 0 0 / 22%); transition: translate 200ms cubic-bezier(.2, .7, .2, 1), background-color 180ms ease; }
 .routine-switch[aria-checked="true"] { background: var(--primary); }
 .routine-switch[aria-checked="true"]::after { translate: 16px 0; background: var(--on-primary); }
@@ -79,7 +79,7 @@ button.routine-row-main:focus-visible { outline: 2px solid var(--ring); outline-
 .routine-weekly { display: grid; justify-items: start; gap: 6px; }
 .routine-week { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
 .routine-days { display: flex; gap: 4px; }
-.routine-day { width: 26px; height: 26px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--text-soft); font-size: 12px; font-weight: 600; cursor: pointer; transition: background-color 140ms ease, color 140ms ease; }
+.routine-day { width: 26px; height: 26px; min-height: 0; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--text-soft); font-size: 12px; font-weight: 600; cursor: default; transition: background-color 140ms ease, color 140ms ease; }
 .routine-day:hover { color: var(--text); }
 .routine-day[aria-pressed="true"] { background: var(--text); color: var(--on-primary); }
 .routine-at { display: inline-flex; align-items: baseline; gap: 8px; color: var(--text-muted); }
@@ -91,12 +91,12 @@ button.routine-row-main:focus-visible { outline: 2px solid var(--ring); outline-
 .routine-every { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
 .routine-editor .routine-every-count { width: 4ch; padding: 0 0 1px; border-bottom: 1px dotted var(--text-soft); color: var(--text); font-size: 13px; text-align: center; -moz-appearance: textfield; appearance: textfield; }
 .routine-every-count::-webkit-inner-spin-button, .routine-every-count::-webkit-outer-spin-button { margin: 0; -webkit-appearance: none; }
-.routine-editor .routine-unit { padding: 0 0 1px; border-bottom: 1px dotted var(--text-soft); color: var(--text); font-size: 13px; cursor: pointer; -webkit-appearance: none; appearance: none; }
+.routine-editor .routine-unit { padding: 0 0 1px; border-bottom: 1px dotted var(--text-soft); color: var(--text); font-size: 13px; cursor: default; -webkit-appearance: none; appearance: none; }
 .routine-kind { font-size: 12.5px; color: var(--text-soft); }
 .routine-wait { display: flex; flex-direction: row; align-items: center; gap: 8px; color: var(--text-muted); font-size: 12.5px; font-weight: 400; }
 .routine-wait input[type=checkbox] { width: 14px; height: 14px; margin: 0; padding: 0; }
 .routine-choices { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -10px; }
-.routine-choice { min-height: 0; padding: 3px 10px; border: 0; border-radius: 999px; background: none; color: var(--text-soft); font-size: 13px; cursor: pointer; transition: color 140ms ease, background-color 140ms ease; }
+.routine-choice { min-height: 0; padding: 3px 10px; border: 0; border-radius: 999px; background: none; color: var(--text-soft); font-size: 13px; cursor: default; transition: color 140ms ease, background-color 140ms ease; }
 .routine-choice:hover { color: var(--text); }
 .routine-choice[aria-checked="true"] { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); font-weight: 600; }
 .routine-account-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
@@ -108,7 +108,7 @@ button.routine-row-main:focus-visible { outline: 2px solid var(--ring); outline-
 .routine-editor.is-reading .routine-name { margin: 0; overflow-wrap: anywhere; }
 .routine-editor.is-reading .routine-prompt { white-space: pre-wrap; overflow-wrap: anywhere; overflow: visible; }
 .routine-actions { display: flex; align-items: center; gap: 16px; margin: 18px 0 0; }
-.routine-save { height: 32px; min-height: 0; padding: 0 18px; border: 0; border-radius: 16px; background: var(--primary); color: var(--on-primary); font-size: 13px; font-weight: 600; cursor: pointer; transition: background-color 140ms ease, opacity 140ms ease; }
+.routine-save { height: 32px; min-height: 0; padding: 0 18px; border: 0; border-radius: 16px; background: var(--primary); color: var(--on-primary); font-size: 13px; font-weight: 600; cursor: default; transition: background-color 140ms ease, opacity 140ms ease; }
 .routine-save:hover:not(:disabled) { background: var(--primary-hover); }
 .routine-save:disabled { opacity: .5; cursor: default; }
 .routine-editor > .surface-status { margin: 10px 0 0; font-size: 12.5px; }

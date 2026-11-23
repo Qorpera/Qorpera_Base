@@ -2,19 +2,20 @@
  * for #386, read only. A breadcrumb, one list of folders and files, a preview beside it with the file's history, and
  * the company's recent changes. */
 .files-page { position: relative; max-width: 1120px; --files-folder: #c0872a; --files-code: rgba(18, 18, 17, 0.035); }
-.files-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 12px; }
-.files-head h1 { flex: 1; margin: 0; white-space: nowrap; }
-.files-tools { display: flex; align-items: center; gap: 8px; }
+.files-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin-bottom: 12px; }
+.files-head h1 { flex: none; margin: 0; white-space: nowrap; }
+.files-tools { display: flex; flex: 1; align-items: center; gap: 8px; }
+.files-tools > .files-tool { margin-left: auto; }
 .files-search { position: relative; display: flex; align-items: center; }
 .files-search .icon { position: absolute; top: 50%; left: 10px; width: 15px; height: 15px; transform: translateY(-50%); color: var(--text-soft); pointer-events: none; }
 .files-search-input {
-	width: 220px; height: 32px; padding: 0 10px 0 32px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+	width: 280px; height: 32px; padding: 0 10px 0 32px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
 	background: var(--bg); color: var(--text); font: inherit; font-size: 13.5px;
 }
 .files-search-input::placeholder { color: var(--text-soft); }
 .files-tool {
 	display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0;
-	border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-muted); cursor: pointer;
+	border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-muted); cursor: default;
 }
 .files-tool:hover { background: var(--hover); color: var(--text); }
 .files-tool .icon { width: 16px; height: 16px; }
@@ -26,7 +27,7 @@
 .files-crumb-trail { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; min-width: 0; font-size: 14px; }
 .files-crumb {
 	padding: 3px 6px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-muted);
-	font: inherit; cursor: pointer; overflow-wrap: anywhere;
+	font: inherit; cursor: default; overflow-wrap: anywhere;
 }
 button.files-crumb:hover { background: var(--hover); color: var(--text); }
 .files-crumb.is-current { color: var(--text); font-weight: 600; cursor: default; }
@@ -42,7 +43,7 @@ button.files-crumb:hover { background: var(--hover); color: var(--text); }
 .files-row.is-open { background: var(--pane-strong); }
 .files-row-main {
 	display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; padding: 9px 10px;
-	border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: var(--radius-sm);
+	border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: default; border-radius: var(--radius-sm);
 }
 .files-kind { display: inline-flex; flex: none; color: var(--text-muted); }
 .files-kind .icon { width: 18px; height: 18px; }
@@ -52,7 +53,7 @@ button.files-crumb:hover { background: var(--hover); color: var(--text); }
 .files-target { flex: 0 1 auto; min-width: 0; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-soft); }
 .files-icon-button {
 	display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
-	border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-muted); cursor: pointer;
+	border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-muted); cursor: default;
 }
 .files-icon-button:hover { background: var(--hover); color: var(--text); }
 .files-icon-button .icon { width: 16px; height: 16px; }
@@ -92,7 +93,7 @@ button.files-crumb:hover { background: var(--hover); color: var(--text); }
 .folder-history-paths { list-style: none; margin: 2px 0 0; padding: 0; }
 .folder-history-path {
 	padding: 1px 0; border: 0; background: none; color: var(--text); font: inherit; font-size: 13px; text-align: left;
-	cursor: pointer; overflow-wrap: anywhere;
+	cursor: default; overflow-wrap: anywhere;
 }
 button.folder-history-path:hover { text-decoration: underline; }
 .folder-history-path.is-gone { color: var(--text-soft); cursor: default; }

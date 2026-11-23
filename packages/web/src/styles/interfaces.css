@@ -76,7 +76,7 @@
 .group-emblem .group-card-front { fill: var(--emblem-ink); }
 .rail-app-group.is-open .group-card-front { transform: translate(-2.2px, -2.5px) rotate(-12deg) scaleX(0.786); }
 .rail-app-group.is-open .group-card-back { transform: translate(2.2px, 2.5px) rotate(12deg) scaleX(0.786); }
-.rail-app-group { border: 0; background: none; font: inherit; cursor: pointer; }
+.rail-app-group { border: 0; background: none; font: inherit; cursor: default; }
 .rail-app-group.is-open .rail-mention { display: none; }
 /* Tiles a group brings grow in after it; tiles it takes away fade where they stood, out of the grid's flow. */
 .rail-apps-drawer.is-open .rail-app.is-entering {
@@ -202,7 +202,7 @@ a.interface-item:hover { background: var(--hover); text-decoration: none; }
 }
 .interface-view {
 	position: relative; padding: 8px 10px 10px; border: 0; background: transparent; color: var(--text-muted);
-	font: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer;
+	font: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: default;
 	transition: color var(--motion-base) ease;
 }
 .interface-view[aria-selected="true"] { color: var(--text); }
@@ -215,7 +215,7 @@ a.interface-item:hover { background: var(--hover); text-decoration: none; }
 /* A row with buttons, a row that opens, and the buttons themselves. */
 .interface-item-row { display: flex; align-items: center; gap: 8px; }
 .interface-item-row > .interface-item { flex: 1; min-width: 0; }
-button.interface-item { width: 100%; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; }
+button.interface-item { width: 100%; border: 0; background: transparent; font: inherit; text-align: left; cursor: default; }
 button.interface-item:hover, .interface-item.is-open { background: var(--hover); }
 .interface-cards .interface-item-row { border-radius: 12px; background: var(--warning-soft); padding-right: 10px; }
 .interface-cards .interface-item-row > .interface-item { background: transparent; }
@@ -223,7 +223,7 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 .interface-button {
 	display: inline-flex; align-items: center; height: 28px; padding: 0 10px; border: 0; border-radius: 8px;
 	background: var(--pane-strong); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600;
-	text-decoration: none; cursor: pointer;
+	text-decoration: none; cursor: default;
 }
 .interface-button:disabled { opacity: 0.6; cursor: default; }
 .interface-button:focus-visible { outline: 2px solid var(--composer-accent-ink); outline-offset: 1px; }
@@ -239,13 +239,13 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 .interface-table th { padding: 0; border-bottom: 1px solid var(--border); color: var(--text-muted); font-weight: 600; text-align: left; }
 .interface-sort {
 	width: 100%; padding: 6px 8px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left;
-	cursor: pointer;
+	cursor: default;
 }
 .interface-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .interface-table tr.is-open td { background: var(--hover); }
 .interface-row-open {
 	padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-weight: 600;
-	text-align: left; cursor: pointer;
+	text-align: left; cursor: default;
 }
 .interface-row-open:hover { text-decoration: underline; }
 
@@ -256,7 +256,7 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 .interface-detail-text { margin-bottom: 10px; font-size: 13.5px; }
 .interface-back {
 	display: none; margin: 0 0 8px; padding: 0; border: 0; background: transparent; color: var(--composer-accent-ink);
-	font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+	font: inherit; font-size: 13px; font-weight: 600; cursor: default;
 }
 @media (max-width: 760px) {
 	.interface-page.has-open > .interface-block:not(.interface-detail.is-open) { display: none; }
@@ -288,7 +288,7 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 	display: grid; gap: 3px; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit;
 	text-align: left; overflow-wrap: anywhere;
 }
-.interface-card-open { cursor: pointer; }
+.interface-card-open { cursor: default; }
 .interface-card-open:hover .interface-card-title { text-decoration: underline; }
 .interface-card-open:focus-visible { outline: 2px solid var(--composer-accent-ink); outline-offset: 3px; border-radius: 6px; }
 .interface-card-title { font-size: 13px; font-weight: 600; }
@@ -350,7 +350,7 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 	display: grid; gap: 2px; width: 100%; height: 100%; padding: 9px 10px; border: 1px solid var(--border);
 	border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; text-align: left;
 }
-button.interface-number { cursor: pointer; }
+button.interface-number { cursor: default; }
 button.interface-number:hover, .interface-number.is-open { background: var(--hover); }
 button.interface-number:focus-visible { outline: 2px solid var(--composer-accent-ink); outline-offset: 1px; }
 .interface-number-label { color: var(--text-muted); font-size: 12px; font-weight: 600; }
@@ -422,7 +422,7 @@ button.interface-number:focus-visible { outline: 2px solid var(--composer-accent
 .app-look .color-choice.is-default { background: none; box-shadow: inset 0 0 0 1.5px var(--text-muted); }
 .app-look .color-choice[aria-checked="true"]::after { inset: -3px; }
 .app-look-icons { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
-.app-look-icon { display: grid; place-items: center; aspect-ratio: 1; padding: 0; border: 0; border-radius: 9px; background: none; cursor: pointer; }
+.app-look-icon { display: grid; place-items: center; aspect-ratio: 1; padding: 0; border: 0; border-radius: 9px; background: none; cursor: default; }
 .app-look-icon:hover { background: var(--hover); }
 .app-look-icon:focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
 .app-look-icon[aria-checked="true"] { background: color-mix(in srgb, var(--app-colour, var(--text)) 12%, transparent); box-shadow: inset 0 0 0 2px var(--app-colour, var(--text)); }
@@ -435,7 +435,7 @@ button.interface-number:focus-visible { outline: 2px solid var(--composer-accent
 .app-look-empty { grid-column: 1 / -1; padding: 2px; font-size: 12px; color: var(--text-muted); }
 .app-look-generate {
 	display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 9px 11px; border: 1px solid var(--border-strong);
-	border-radius: 9px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer;
+	border-radius: 9px; background: none; color: var(--text); font: inherit; text-align: left; cursor: default;
 }
 .app-look-generate:hover:not(:disabled) { background: var(--hover); }
 .app-look-generate:disabled { cursor: default; opacity: 0.75; }
@@ -443,7 +443,7 @@ button.interface-number:focus-visible { outline: 2px solid var(--composer-accent
 .app-look-generate-text { display: grid; gap: 1px; font-size: 13px; }
 .app-look-generate-text small { font-size: 11.5px; line-height: 1.35; color: var(--text-muted); }
 .app-look-problem { margin: 2px; font-size: 12px; color: var(--danger); }
-.app-look-own { justify-self: start; margin: 4px 2px 0; padding: 0; border: 0; background: none; color: var(--text-muted); font: inherit; font-size: 12.5px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.app-look-own { justify-self: start; margin: 4px 2px 0; padding: 0; border: 0; background: none; color: var(--text-muted); font: inherit; font-size: 12.5px; text-decoration: underline; text-underline-offset: 2px; cursor: default; }
 /* An app whose agent draws new icons breathes until they come. */
 .rail-app.is-drawing .interface-emblem { animation: app-drawing 1.2s ease-in-out infinite; }
 @keyframes app-drawing { 50% { opacity: 0.45; } }
