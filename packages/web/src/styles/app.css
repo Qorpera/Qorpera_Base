@@ -418,11 +418,6 @@ label > input, label > select { font-weight: 400; }
 .cofounder-home.active, .cofounder-home.active:hover { background: var(--rail-selection); color: var(--rail-selection-text); }
 .cofounder-home strong { position: relative; z-index: 2; max-width: 100%; font-size: 13px; font-weight: 650; line-height: 16px; }
 .cofounder-stand { position: absolute; left: 50%; top: calc(-1 * var(--lift)); width: var(--figure); height: var(--figure); transform: translateX(-50%); }
-.cofounder-stand::before {
-	content: ""; position: absolute; left: 7%; right: 7%; bottom: -1px; height: 12px; border-radius: 50%;
-	background: rgba(0, 30, 80, 0.3); filter: blur(5px);
-}
-/* The figure stands sharp on the card: only the ground shadow above sits under it (Jonas, 20 Oct). */
 .cofounder-stand .figure { position: relative; z-index: 1; width: var(--figure); height: var(--figure); }
 .cofounder-status {
 	position: absolute; z-index: 2; right: -4px; bottom: -6px; width: 22px; height: 22px; border-radius: 50%;
