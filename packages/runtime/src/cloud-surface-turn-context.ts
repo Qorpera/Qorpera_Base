@@ -11,6 +11,11 @@ import {
 	SURFACE_IDENTITY_CSS_MOUNT_PATH,
 	SURFACE_SHARED_DIR,
 } from "@qorpera/contracts";
+import {
+	type SurfaceAttachmentReader,
+	type SurfaceMemberImage,
+	surfaceMemberImagesSection,
+} from "./cloud-surface-images.ts";
 import type { CloudSurfaceToolsPort } from "./cloud-surface-tools.ts";
 
 export interface SurfaceIdentityContext {
@@ -75,6 +80,8 @@ export interface SurfaceTurnBriefInput {
 	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;
 	readonly mainSha?: string | null;
 	readonly recordChange?: CloudSurfaceToolsPort["recordChange"];
+	readonly memberImages?: readonly SurfaceMemberImage[] | null;
+	readonly viewAttachment?: SurfaceAttachmentReader;
 }
 
 export interface SurfaceCodingTurnBinding extends SurfaceTurnBriefInput {
@@ -267,6 +274,12 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		);
 		sections.push(lines.join("\n"));
 	}
+
+	const images = surfaceMemberImagesSection(
+		binding.memberImages ?? [],
+		binding.viewAttachment ? "coding_view_attachment" : "company_read",
+	);
+	if (images) sections.push(images);
 
 	return sections.join("\n\n");
 }

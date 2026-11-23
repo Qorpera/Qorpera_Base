@@ -1761,6 +1761,9 @@ describe("cloud surface runtime tools", () => {
 
 			let nativeAdmission: Record<string, unknown> | undefined;
 			const surfaceCalls: { method: string; args: Record<string, unknown> }[] = [];
+			const memberMessageId = randomUUID();
+			const memberInputId = randomUUID();
+			const memberImagePath = `QorperaOS/surfaces/identity/images/${memberInputId}/${"e".repeat(64)}.png`;
 			const control = {
 				describeToolAuthority: vi.fn(async () => structuredClone(f.authority)),
 				beginToolOperation: vi.fn<CloudNativeToolOperationControlPlane["beginToolOperation"]>(async () => {
@@ -1885,6 +1888,26 @@ describe("cloud surface runtime tools", () => {
 						conflictPaths: [],
 					};
 				}
+				if (method === "qorpera_native_surface_session_images") {
+					expect(args).toEqual({
+						p_profile_id: f.context.identity.companyId,
+						p_session_id: sessionId,
+						p_lease_token: leaseToken,
+					});
+					return {
+						schema: "qorpera.native-surface-session-images/v1",
+						sessionId,
+						latestMemberMessageId: memberMessageId,
+						messages: [
+							{
+								messageId: memberMessageId,
+								clientInputId: memberInputId,
+								latest: true,
+								images: [{ sha256: "e".repeat(64), bytes: 9, mediaType: "image/png", path: memberImagePath }],
+							},
+						],
+					};
+				}
 				if (method === "qorpera_native_surface_record_change") {
 					surfaceCalls.push({ method, args });
 					return { changeId, seq: 1, session: { openChangeCount: 1 } };
@@ -1957,6 +1980,10 @@ describe("cloud surface runtime tools", () => {
 				};
 			};
 			const offeredNames = evidence.threadParameters.dynamicTools[0].tools.map((tool) => tool.name);
+			expect(JSON.stringify(evidence)).toContain(
+				"Images the member attached (open each with company_read on its path)",
+			);
+			expect(JSON.stringify(evidence)).toContain(`- ${memberImagePath}`);
 			expect(offeredNames).toContain("stage_surface_patch");
 			expect(offeredNames).toContain("surface_reply");
 			expect(offeredNames).toContain("surface_ask");
@@ -2185,6 +2212,14 @@ describe("cloud surface runtime tools", () => {
 						baseSha: null,
 						branchHeadSha: null,
 						conflictPaths: [],
+					};
+				}
+				if (method === "qorpera_native_surface_session_images") {
+					return {
+						schema: "qorpera.native-surface-session-images/v1",
+						sessionId,
+						latestMemberMessageId: null,
+						messages: [],
 					};
 				}
 				if (method === "qorpera_begin_native_company_execution_v3") {
@@ -2459,13 +2494,27 @@ describe("cloud surface runtime tools", () => {
 
 			const recordedRpcs: { method: string; args: Record<string, unknown> }[] = [];
 			let activeWake: Record<string, unknown> = codingWake;
+			const codingMessageId = randomUUID();
+			const codingInputId = randomUUID();
+			const codingImagePath = `QorperaOS/surfaces/meditation-app/images/${codingInputId}/${"e".repeat(64)}.png`;
 			const codingExecute = vi.fn(async (_req, _root, _signal, ctx) => {
 				expect(ctx.surfaceSession).toMatchObject({
 					sessionId,
 					surfaceSlug: "meditation-app",
 					surfaceTitle: "Meditationsapp",
 					fullPrompt,
+					memberImages: [
+						{
+							clientInputId: codingInputId,
+							sha256: "e".repeat(64),
+							bytes: 9,
+							mediaType: "image/png",
+							path: codingImagePath,
+							latest: true,
+						},
+					],
 				});
+				expect(typeof ctx.surfaceSession!.viewAttachment).toBe("function");
 				await ctx.surfaceSession!.recordChange(
 					sessionId,
 					{
@@ -2548,6 +2597,23 @@ describe("cloud surface runtime tools", () => {
 								baseSha: "a".repeat(40),
 								branchHeadSha: null,
 								conflictPaths: [],
+							};
+						}
+						if (method === "qorpera_native_surface_session_images") {
+							return {
+								schema: "qorpera.native-surface-session-images/v1",
+								sessionId,
+								latestMemberMessageId: codingMessageId,
+								messages: [
+									{
+										messageId: codingMessageId,
+										clientInputId: codingInputId,
+										latest: true,
+										images: [
+											{ sha256: "e".repeat(64), bytes: 9, mediaType: "image/png", path: codingImagePath },
+										],
+									},
+								],
 							};
 						}
 						if (method === "qorpera_native_surface_record_change") {

@@ -305,7 +305,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Profile: {name}": "Profil: {name}",
 	"← Companies": "← Virksomheder",
 	"Search agents": "Søg efter agenter",
-	"New conversation or agent": "Ny samtale eller agent",
 	company: "virksomhed",
 	"No matching conversations.": "Ingen samtaler matcher.",
 	"No agents yet.": "Ingen agenter endnu.",
