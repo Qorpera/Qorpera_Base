@@ -327,6 +327,7 @@ describe("Product studio on the layout renderer", () => {
 		const { view, tab, store } = await open({
 			...productFiles(),
 			[`${ROOT}/object.json`]: JSON.stringify({ model: "lamp.glb" }),
+			[`${ROOT}/parts/shade/object.json`]: JSON.stringify({ model: "shade.glb", parts: [{ name: "Shade" }] }),
 			[`${ROOT}/pricing.json`]: JSON.stringify({ retail: "900 kr.", tiers: [{ name: "Early", price: "750 kr." }] }),
 			[`${ROOT}/sales.report.json`]: REPORT,
 		});

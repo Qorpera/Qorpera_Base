@@ -18,6 +18,7 @@ export const SVG_FILE_RE = /\.svg$/i;
 export const MARKDOWN_FILE_RE = /\.(?:md|markdown)$/i;
 export const PROSE_TEXT_FILE_RE = /\.txt$/i;
 const JSON_FILE_RE = /\.json$/i;
+const OWN_BLOCK_JSON_RE = /(?:^|\/)object\.json$|\.report\.json$/i;
 const MAX_INITIAL_TEXT_CHARS = 32_000;
 const NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
 	amp: "&",
@@ -201,7 +202,7 @@ export function prepareFiles(
 		const baseContent = ctx.baseFiles[path];
 		const changed = baseContent !== content;
 		if (JSON_FILE_RE.test(path)) {
-			const card = jsonCard(path, content, baseContent);
+			const card = OWN_BLOCK_JSON_RE.test(path) ? undefined : jsonCard(path, content, baseContent);
 			if (card) cards.push(card);
 		} else if (SVG_FILE_RE.test(path)) {
 			const trimmed = content.trim();
