@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- A studio patch can write a binary file: `StudioPatchOp` gains `write_file` (`StudioWriteFileOp`), whose `file` (`StudioBinaryRef`) names a file already in the company folder's storage by `manifestSha256`, `fileSha256`, `bytes` and `mediaType`, never its bytes. `parseStudioPatchOps` checks it closed with `parseStudioBinaryRef`: lower-case SHA-256 hashes, 1 byte to `STUDIO_BINARY_MAX_BYTES` (64 MiB), a media type of `STUDIO_BINARY_MEDIA_TYPES` (`model/gltf-binary`, `image/webp`, `image/png`, `image/jpeg`). `StudioTextPatchOp` is the three text ops. Nothing stages or lands a `write_file` yet: the runtime's `stage_surface_patch` refuses it, and the object gateway's and the runner's landings fail the job with a plain reason.
 - `SurfaceAutomationSummary` carries `ownable`, `ownerUserId` (null: nobody) and `offer` (`SurfaceAutomationOffer`, open or turned down in the last day), as migration `20260930868000` answers them.
 - `SurfaceImageRef`, `SurfaceMessageImages`, `SurfaceSessionImages` and `parseSurfaceSessionImages`: the images of an interface session's messages, as `qorpera_surface_session_images` answers them (migration `20260930865000`).
 - `SURFACE_FIGURES`: the figures a surface can be drawn as; the web draws them and the agents' `propose_surface` picks from them.

@@ -84,6 +84,29 @@ describe("rail hover tint", () => {
 		expect(list.querySelector(".rail-hover-tint")).toBeNull();
 	});
 
+	it("leaves the rows of the dock to the dock's own tint, which stays in the dock", () => {
+		const above = row("Website", 20);
+		const dock = h("div", { class: "rail-dock" });
+		dock.getBoundingClientRect = () => new DOMRect(0, 400, 300, 200);
+		const person = row("Sofie", 420);
+		dock.append(person);
+		list.append(above, dock);
+		const dockHover = new RailHover(dock, controller.signal, list);
+
+		point(person, "pointerover");
+		expect(hover.attached).toBeUndefined();
+		expect(dockHover.attached).toBe(dockHover.tint);
+		expect(dockHover.tint.style.translate).toBe("10px 20px");
+
+		point(above, "pointerover");
+		expect(hover.attached).toBe(hover.tint);
+		expect(dock.contains(hover.tint)).toBe(false);
+
+		list.classList.add("rail-dragging");
+		point(person, "pointermove");
+		expect(dockHover.tint.classList.contains("is-on")).toBe(false);
+	});
+
 	it("moves to the row that replaced the hovered one when the rail redraws", () => {
 		const old = row("Bo", 20);
 		list.append(old);

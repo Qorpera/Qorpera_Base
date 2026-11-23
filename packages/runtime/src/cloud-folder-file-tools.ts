@@ -561,7 +561,11 @@ export function wallCheck(path: string, text: string): void {
 
 export type SurfaceFilePolicy =
 	| { readonly mode: "cofounder"; readonly allowExplicitMemberDoc?: boolean }
-	| { readonly mode: "surface_worker"; readonly allowedRoots: readonly string[] };
+	| {
+			readonly mode: "surface_worker";
+			readonly writableRoots: readonly string[];
+			readonly stagedRoots: readonly string[];
+	  };
 
 const COFOUNDER_DOC_SPRAWL_ROOTS = new Set([
 	"strategy",
@@ -593,13 +597,23 @@ function enforceSurfaceFilePolicy(policy: SurfaceFilePolicy | undefined, targetP
 		}
 		return;
 	}
-	const allowed = policy.allowedRoots.map((root) => normalizePolicyPath(root)).filter((root) => root.length > 0);
-	const permitted = allowed.some((root) => normalized === root || normalized.startsWith(`${root}/`));
-	if (!permitted) {
+	const roots = (paths: readonly string[]) =>
+		paths
+			.map((root) => ({ key: normalizePolicyPath(root), shown: root.replace(/^\/+|\/+$/g, "") }))
+			.filter((root) => root.key.length > 0);
+	const within = (root: { readonly key: string }) => normalized === root.key || normalized.startsWith(`${root.key}/`);
+	const writable = roots(policy.writableRoots);
+	if (writable.some(within)) return;
+	const notes = writable.map((root) => `${root.shown}/`).join(", ") || "none";
+	const staged = roots(policy.stagedRoots).find(within);
+	if (staged !== undefined) {
 		throw new CloudToolRefusal(
-			`SURFACE_FILE_POLICY_REFUSED: path "${targetPath}" is outside this Surface worker's allowed roots (${allowed.join(", ") || "none"}). Keep file changes strictly inside your assigned Surface folder.`,
+			`SURFACE_FILE_POLICY_REFUSED: nothing was written; "${targetPath}" is in this Studio's folder ${staged.shown}/, which changes only through staged changes the member previews and approves. Stage this change with stage_surface_patch (paths relative to ${staged.shown}/). Direct file writes are for notes under ${notes} only.`,
 		);
 	}
+	throw new CloudToolRefusal(
+		`SURFACE_FILE_POLICY_REFUSED: path "${targetPath}" is outside this Surface worker's writable roots (${notes}). Change Studio files with stage_surface_patch and write directly only notes under ${notes}.`,
+	);
 }
 
 /** The five tools for a folder-v2 run. `operations` takes the receipts of its changes. */

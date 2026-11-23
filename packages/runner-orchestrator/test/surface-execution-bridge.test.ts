@@ -787,6 +787,73 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 		expect(mem.files.get("identity/deprecated.md")).toBe("Legacy copy\n");
 	});
 
+	it("refuses to land a write_file change, naming its path, and writes nothing", async () => {
+		const mem = createInMemoryCompanyFolder({ "identity/voice.md": "Calm.\n" });
+		const completeSurfaceMerge = vi.fn().mockResolvedValue(undefined);
+		const handlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn(),
+				completeSurfaceMerge,
+				completeSurfacePublish: vi.fn(),
+			},
+			folder: mem.folder,
+			folderSnapshots: new InMemorySurfaceFolderSnapshotStore(),
+		});
+		const jobId = randomUUID();
+		const changeId = randomUUID();
+		await handlers.runMergeJob(
+			{
+				jobId,
+				kind: "land_change",
+				surfaceId: randomUUID(),
+				sessionId: randomUUID(),
+				profileId: randomUUID(),
+				sourceKind: "folder",
+				repositoryKey: null,
+				folderRoot: "identity",
+				payload: { changeIds: [changeId] },
+				approvedChanges: [
+					{
+						changeId,
+						kind: "folder_patch",
+						parentSha: null,
+						headSha: null,
+						title: "Add model",
+						summary: "",
+						patchManifest: [
+							{ op: "write_text", path: "identity/voice.md", content: "Warm.\n" },
+							{
+								op: "write_file",
+								path: "identity/model.glb",
+								file: {
+									manifestSha256: "a".repeat(64),
+									fileSha256: "b".repeat(64),
+									bytes: 2048,
+									mediaType: "model/gltf-binary",
+								},
+							},
+						],
+						affectedPaths: ["identity/voice.md", "identity/model.glb"],
+					},
+				],
+			},
+			new AbortController().signal,
+		);
+
+		expect(completeSurfaceMerge).toHaveBeenCalledTimes(1);
+		expect(completeSurfaceMerge).toHaveBeenCalledWith(
+			expect.objectContaining({
+				jobId,
+				status: "failed",
+				errorDetail: expect.stringContaining("cannot land write_file yet: identity/model.glb"),
+			}),
+			expect.any(AbortSignal),
+		);
+		expect(mem.writeCalls).toHaveLength(0);
+		expect(mem.files.get("identity/voice.md")).toBe("Calm.\n");
+		expect(mem.files.has("identity/model.glb")).toBe(false);
+	});
+
 	it("recompiles existing identity/tokens.css on tokens.json folder_patch and restores prior CSS on undo_change", async () => {
 		const profileId = randomUUID();
 		const surfaceId = randomUUID();

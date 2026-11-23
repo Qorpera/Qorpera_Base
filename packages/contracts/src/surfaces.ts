@@ -192,10 +192,28 @@ export interface SurfaceSessionImages {
 	readonly messages: readonly SurfaceMessageImages[];
 }
 
-export type StudioPatchOp =
+export const STUDIO_BINARY_MEDIA_TYPES = ["model/gltf-binary", "image/webp", "image/png", "image/jpeg"] as const;
+export const STUDIO_BINARY_MAX_BYTES = 64 * 1024 * 1024;
+
+export interface StudioBinaryRef {
+	readonly manifestSha256: string;
+	readonly fileSha256: string;
+	readonly bytes: number;
+	readonly mediaType: string;
+}
+
+export type StudioTextPatchOp =
 	| { readonly op: "write_text"; readonly path: string; readonly content: string }
 	| { readonly op: "delete"; readonly path: string }
 	| { readonly op: "merge_json"; readonly path: string; readonly patch: Readonly<Record<string, unknown>> };
+
+export interface StudioWriteFileOp {
+	readonly op: "write_file";
+	readonly path: string;
+	readonly file: StudioBinaryRef;
+}
+
+export type StudioPatchOp = StudioTextPatchOp | StudioWriteFileOp;
 
 export interface StudioPatchChange {
 	readonly changeId: string;
@@ -527,8 +545,21 @@ export function parseStudioPatchOps(value: unknown, label = "patchManifest"): St
 			const patch = parseRecord(raw.patch, `${label}[${index}].patch`);
 			return { op: "merge_json", path, patch };
 		}
+		if (raw.op === "write_file") {
+			return { op: "write_file", path, file: parseStudioBinaryRef(raw.file, `${label}[${index}].file`) };
+		}
 		throw new WireValueError(`${label}[${index}].op`);
 	});
+}
+
+export function parseStudioBinaryRef(value: unknown, label = "file"): StudioBinaryRef {
+	const raw = parseClosedRecord(value, label, ["manifestSha256", "fileSha256", "bytes", "mediaType"]);
+	return {
+		manifestSha256: parseSha256Hex(raw.manifestSha256, `${label}.manifestSha256`),
+		fileSha256: parseSha256Hex(raw.fileSha256, `${label}.fileSha256`),
+		bytes: parseInteger(raw.bytes, `${label}.bytes`, 1, STUDIO_BINARY_MAX_BYTES),
+		mediaType: parseEnum(raw.mediaType, STUDIO_BINARY_MEDIA_TYPES, `${label}.mediaType`),
+	};
 }
 
 export function isSurfaceSlug(value: unknown): value is string {

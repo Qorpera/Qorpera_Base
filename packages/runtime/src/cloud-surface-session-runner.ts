@@ -141,7 +141,8 @@ export interface SurfaceFolderOrOpsTurnRequest {
 	readonly tools: readonly CloudNativeTool[];
 	readonly identityContext: SurfaceIdentityContext | null;
 	readonly sharedAssets?: SurfaceSharedAssetsContext | null;
-	readonly allowedRoots: readonly string[];
+	readonly writableRoots: readonly string[];
+	readonly stagedRoots: readonly string[];
 	readonly signal: AbortSignal;
 }
 
@@ -384,12 +385,12 @@ const STUDIO_REPORT_SCHEMA =
 	'Supported section `blocks`: `bar_chart` (`heading`, `subtitle`, `max`, `items: [{ label, value, display, note, highlight }]`), `line_chart` (`heading`, `subtitle`, `xLabels`, `series: [{ name, color, values }]`), `table` (`heading`, `caption`, `columns`, `rows`, `highlightRow`), `callout` (`tone: "thesis" | "decision" | "tradeoff"`, `heading`, `body`, `bullets`), `quote` (`text`, `attribution`), `figure` (`heading`, `caption`, `panels: [{ label, heading, body, accent }]`).';
 
 const PRODUCT_STUDIO_SCHEMA =
-	"Product Studio file layout (write files directly at the root of the surface folder, not scattered in nested markdown folders): " +
-	'(1) `specs.json` — `{ "model": { "kind": "headband" | "device", "dimensions": "...", "layers": ["..."] }, "overview": { ...key-value specs... }, "colorways": [{ "name": "...", "hex": "#rrggbb" }], "bom": [{ "part": "...", "supplier": "...", "unitCost": "..." }] }`. `model` renders the interactive 3D Studio viewer with drag-to-orbit, exploded layers, and colorway switching (use `"headband"` for wearable bands/headbands, `"device"` for other physical hardware); `overview` renders Key specs; `colorways` drives Palette swatches and 3D variants; `bom` renders the BOM table under Specs & BOM. ' +
-	'(2) `vendors.json` — `{ "production": { "targetBatch", "landedCogs", "criticalPath", "compliance" }, "vendors": [{ "vendor", "component", "region", "moq", "leadTime", "unitPrice", "status", "certifications" }] }` (renders Production & Vendors cards). ' +
-	`(3) ${STUDIO_REPORT_SCHEMA} ` +
-	"(4) `brief.md` — concise product brief (renders under Brief & Files). " +
-	"Prefer structured JSON (`specs.json`, `vendors.json`, `<slug>.report.json`) over loose markdown prose so the founder gets the 3D stage, specs/variants, vendor cards, and tabbed analysis views.";
+	"Product Studio file layout (files sit at the root of the surface folder, not scattered in nested markdown folders, and are staged with stage_surface_patch): " +
+	'(1) `specs.json` — `{ "model": { "kind": "headband" | "device", "dimensions": "...", "layers": ["..."] }, "overview": { "tagline": "one line saying what the product is", ...key-value specs... }, "colorways": [{ "name": "...", "hex": "#rrggbb" }], "bom": [{ "part": "...", "supplier": "...", "unitCost": "..." }] }`. The Overview tab is one column: `model` draws the product alone on its row with a Whole / Apart view of its `layers` (use `"headband"` for wearable bands/headbands, `"device"` for other physical hardware); `overview.tagline` is the one line under the product name; the first four other `overview` values of at most 18 characters are the figures under it, so put the four that matter most first and keep them short (for example "14 h", "44 g", "1.995 kr."); `colorways` are the colour dots that recolour the model. Every `overview` entry and the `bom` table show under the Specs tab. ' +
+	'(2) `vendors.json` — `{ "production": { "targetBatch", "landedCogs", "criticalPath", "compliance" }, "vendors": [{ "vendor", "component", "region", "moq", "leadTime", "unitPrice", "status", "certifications" }] }` (the Vendors tab). ' +
+	`(3) ${STUDIO_REPORT_SCHEMA} In a Product Studio these are the Reports tab. ` +
+	"(4) `brief.md` — concise product brief (the Files tab, with any other documents and vector files). " +
+	"The five tabs (Overview, Specs, Vendors, Reports, Files) are always there, so a Product Studio that holds only Markdown shows an empty Overview: prefer structured JSON (`specs.json`, `vendors.json`, `<slug>.report.json`) over loose markdown prose so the founder gets the model, the line, the figures, vendor cards and reports in their homes.";
 
 function buildFolderSurfaceInstructions(input: SurfaceSessionTurnInput, folderRoot: string, notesRoot: string): string {
 	const isIdentity = input.surfaceKind === "identity" || input.surfaceSlug === "identity" || folderRoot === "identity";
@@ -411,7 +412,7 @@ function buildFolderSurfaceInstructions(input: SurfaceSessionTurnInput, folderRo
 		`Use stage_surface_patch to stage cohesive folder_patch operations (write_text, merge_json, delete) relative to ${folderRoot}/, keeping each change atomic and conflict-minimizing. ` +
 		"Studio renders structured JSON (tokens, specs, vendors, *.report.json), Markdown prose (voice.md, brief.md), and SVG marks natively — do not create standalone HTML/CSS code pages inside Studio folders. " +
 		(schemaGuidance ? `${schemaGuidance} ` : "") +
-		`Any file writes are strictly confined to ${folderRoot}/ and ${notesRoot}/; attach concise supporting analyses as notePaths under ${notesRoot}/ rather than creating loose markdown files elsewhere.`
+		`Files in ${folderRoot}/ change only through stage_surface_patch; direct file writes are for notes under ${notesRoot}/ only. Attach concise supporting analyses as notePaths under ${notesRoot}/ rather than creating loose markdown files elsewhere.`
 	);
 }
 
@@ -697,13 +698,14 @@ export async function runSurfaceSessionTurn(
 			}
 			const folderRoot = normalizedFolderRoot || input.surfaceSlug;
 			const notesRoot = `QorperaOS/surfaces/${input.surfaceSlug}/notes`;
-			const allowedRoots = [...new Set([folderRoot, notesRoot])];
+			const writableRoots = [notesRoot];
+			const stagedRoots = [folderRoot];
 			const folderTools = ports.folderToolsContext
 				? cloudFolderFileTools({
 						folder: ports.folderToolsContext.folder,
 						operations: ports.folderToolsContext.operations,
 						identity: ports.folderToolsContext.identity,
-						surfaceFilePolicy: { mode: "surface_worker", allowedRoots },
+						surfaceFilePolicy: { mode: "surface_worker", writableRoots, stagedRoots },
 					})
 				: [];
 			const tools: CloudNativeTool[] = [
@@ -721,7 +723,8 @@ export async function runSurfaceSessionTurn(
 				tools,
 				identityContext,
 				sharedAssets,
-				allowedRoots,
+				writableRoots,
+				stagedRoots,
 				signal,
 			});
 		} else if (input.sourceKind === "native_ops") {
@@ -754,7 +757,8 @@ export async function runSurfaceSessionTurn(
 				tools,
 				identityContext,
 				sharedAssets,
-				allowedRoots: [],
+				writableRoots: [],
+				stagedRoots: [],
 				signal,
 			});
 		} else {

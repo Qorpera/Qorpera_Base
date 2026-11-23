@@ -586,6 +586,21 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		const switchedFrame = view.el.querySelector<HTMLIFrameElement>(".surface-mount iframe.surface-local-frame")!;
 		expect(switchedFrame.srcdoc).toContain("Portræt og telefon");
 
+		const ask = view.el.querySelector<HTMLTextAreaElement>(".surface-composer .surface-input")!;
+		const foot = explorationCard.ownerDocument.querySelector(".surface-overview-card.is-exploration .is-options")!;
+		expect([...foot.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+			"Use this one",
+			"None of these",
+		]);
+		foot.querySelector<HTMLButtonElement>('[data-act="instead-of"]')!.click();
+		view.update();
+		expect(ask.placeholder).toBe("What should it be instead?");
+		expect(document.activeElement).toBe(ask);
+		ask.blur();
+		view.update();
+		expect(ask.placeholder).toBe("Describe a change — it runs as its own session");
+		expect(store.workspace(website.id)?.explorations[0]?.status).toBe("open");
+
 		drawer.querySelector<HTMLButtonElement>('[data-act="focus-exploration"]')!.click();
 		view.update();
 		expect(drawer.classList.contains("is-overview")).toBe(false);
@@ -593,15 +608,37 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(drawer.querySelector(".surface-drawer-body > .surface-agent-note")).not.toBeNull();
 		expect(drawer.querySelectorAll(".surface-drawer-option-row")).toHaveLength(3);
 
-		drawer.querySelector<HTMLButtonElement>('[data-act="choose-variant"]')!.click();
-		const confirmVariant = drawer.querySelector<HTMLButtonElement>('[data-act="choose-variant"]')!;
-		expect(confirmVariant.classList.contains("is-confirming")).toBe(true);
-		expect(confirmVariant.textContent).toBe("Confirm");
-		expect(store.workspace(website.id)?.explorations[0]?.status).toBe("open");
-		confirmVariant.click();
+		const useVariant = drawer.querySelector<HTMLButtonElement>('[data-act="choose-variant"]')!;
+		expect(useVariant.textContent).toBe("Use this one");
+		const pickedId = useVariant.dataset.session!;
+		const waiting = store.session(pickedId)!.changes.map((change) => change.status);
+		useVariant.click();
 		await flush();
 		view.update();
-		expect(store.workspace(website.id)?.explorations[0]?.status).toBe("chosen");
+		const chosen = store.workspace(website.id)!;
+		expect(chosen.explorations[0]).toMatchObject({ status: "chosen", chosenSessionId: pickedId });
+		expect(
+			chosen.activeSessions.filter((session) => session.explorationId === chosen.explorations[0]!.id),
+		).toHaveLength(1);
+		expect(store.session(pickedId)!.changes.map((change) => change.status)).toEqual(waiting);
+		expect(store.state.drawer).toEqual({ surfaceId: website.id, sessionId: pickedId });
+		expect(store.state.undo).toBeUndefined();
+		expect(drawer.querySelector('[data-act="choose-variant"]')).toBeNull();
+		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(0);
+		expect(drawer.classList.contains("is-overview")).toBe(false);
+		expect(drawer.querySelectorAll(".surface-drawer-change:not(.is-option)").length).toBe(waiting.length);
+		drawer.querySelector<HTMLButtonElement>('[data-act="back-overview"]')!.click();
+		view.update();
+		expect(drawer.classList.contains("is-overview")).toBe(true);
+		expect(drawer.querySelector(".surface-overview-card.is-exploration")).toBeNull();
+		const keptCard = drawer
+			.querySelector(`.surface-overview-card.is-agent [data-session="${pickedId}"]`)!
+			.closest(".surface-overview-card")!;
+		expect(keptCard.querySelector(".surface-agent-note")?.textContent).toContain(
+			"How Thetaband Presents Itself at First Visit",
+		);
+		expect(await store.approveAll(pickedId)).toBe(true);
+		view.update();
 		expect(store.state.surfaces.find((surface) => surface.id === website.id)?.unpublishedChangeCount).toBe(1);
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="collapse-pill"]')!.click();
@@ -620,10 +657,12 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 			this.open = false;
 		};
 
-		drawer
-			.querySelector<HTMLElement>(
+		[
+			...drawer.querySelectorAll<HTMLElement>(
 				".surface-overview-card.is-agent:not(.is-exploration) .surface-overview-change-title",
-			)!
+			),
+		]
+			.find((title) => title.textContent === "Tydelig pris: 1.995 kr. inkl. fragt")!
 			.click();
 		view.update();
 		expect(drawer.classList.contains("is-overview")).toBe(false);
@@ -695,6 +734,45 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 		expect(drawer.classList.contains("is-open")).toBe(true);
 		view.dispose();
+		store.dispose();
+	});
+
+	it("drops a session's options when the member says what it should be instead", async () => {
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox", "bank", "members"] }),
+		});
+		await store.load();
+		const website = store.state.surfaces.find((surface) => surface.slug === "website")!;
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		const options = store.workspace(website.id)!.explorations[0]!;
+		expect(options.status).toBe("open");
+
+		view.el.querySelector<HTMLButtonElement>('.surface-drawer [data-act="instead-of"]')!.click();
+		view.update();
+		const ask = view.el.querySelector<HTMLTextAreaElement>(".surface-composer .surface-input")!;
+		expect(ask.placeholder).toBe("What should it be instead?");
+		ask.value = "En rolig forside med ét stort billede";
+		view.el
+			.querySelector<HTMLFormElement>(".surface-composer")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		view.update();
+
+		const after = store.workspace(website.id)!;
+		expect(after.explorations.find((item) => item.id === options.id)?.status).toBe("discarded");
+		expect(after.activeSessions.some((session) => options.variantSessionIds.includes(session.id))).toBe(false);
+		expect(after.activeSessions.some((session) => session.prompt === "En rolig forside med ét stort billede")).toBe(
+			true,
+		);
+		expect(store.state.insteadOf).toBeUndefined();
+		expect(ask.placeholder).toBe("Describe a change — it runs as its own session");
+		expect(view.el.querySelector(".surface-overview-card.is-exploration")).toBeNull();
+		view.el.remove();
 		store.dispose();
 	});
 

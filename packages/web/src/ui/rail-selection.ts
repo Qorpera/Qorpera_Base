@@ -8,6 +8,13 @@ import { easing, reducedMotion } from "./motion.ts";
 
 const SELECTED = ":is(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row).active";
 
+// WHY: a row in the rail's dock stands in a window of its own over the list, where a ghost drawn in the list would
+// run under the dock; the highlight slides only between the list's own rows.
+function selectedIn(list: HTMLElement): HTMLElement | undefined {
+	const selected = list.querySelector<HTMLElement>(SELECTED);
+	return selected && !selected.closest(".rail-dock") ? selected : undefined;
+}
+
 export interface Box {
 	left: number;
 	top: number;
@@ -63,7 +70,7 @@ export class RailSelection {
 			this.#from = boxIn(list, this.ghost.getBoundingClientRect(), getComputedStyle(this.ghost).borderRadius);
 			return;
 		}
-		const selected = list.querySelector<HTMLElement>(SELECTED);
+		const selected = selectedIn(list);
 		if (selected?.isConnected && selected.offsetParent)
 			this.#from = boxIn(list, selected.getBoundingClientRect(), getComputedStyle(selected).borderRadius);
 	}
@@ -72,7 +79,7 @@ export class RailSelection {
 	move(list: HTMLElement): void {
 		const from = this.#from;
 		this.#from = undefined;
-		const target = list.querySelector<HTMLElement>(SELECTED) ?? undefined;
+		const target = selectedIn(list);
 		// Already on its way there, unless the row moved meanwhile (a new row above it): then it re-aims.
 		if (target === this.#target && this.#animation && target?.offsetParent) {
 			const now = boxIn(list, target.getBoundingClientRect(), this.#to?.radius ?? "");

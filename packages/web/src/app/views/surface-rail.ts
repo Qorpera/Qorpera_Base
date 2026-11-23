@@ -13,6 +13,7 @@ import {
 } from "../surface-kinds.ts";
 import {
 	askedToPublish,
+	isOpenVariant,
 	openExplorations,
 	type SurfacesState,
 	type SurfacesStore,
@@ -70,7 +71,7 @@ function crewRow(
 	const sessions = workspace?.activeSessions ?? [];
 	const figures = [
 		...sessions
-			.filter((session) => !session.explorationId)
+			.filter((session) => !isOpenVariant(session, workspace))
 			.map((session) => {
 				const figure = crew.take(session, 20, "is-mini", turn(session));
 				figure.title = session.title;
