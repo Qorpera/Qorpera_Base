@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Switching between interfaces in the rail now enters the target page immediately with a tailored breathing loading skeleton (`surfaceSkeleton` in `ui/skeleton.ts`) and defers heavy content mounting until after the first paint, cancelling mounts cleanly if the member switches away mid-load. Preview and report modes no longer mount hidden live site views underneath, `SurfaceStudioView` and `SurfaceReportView` keep existing DOM and HTML frames across unrelated workspace updates, `Studio3DViewer` defers its initial 3D canvas rasterization off the entry frame, `SurfaceRail` updates active selection in place without recreating rail rows or figure tiles, and ops Databases views dispose their watches when switching away.
 - The composer at rest is a little more solid on surface pages and in conversations opened from the surface rail: its fill rises from 38% to 48% of the page colour in both themes (hover and focus unchanged at 80%; the thread-foot pills keep their 38% glass) (Jonas, 23 Nov 2026).
 - The rail's Co-Founder figure no longer has a ground shadow under it, in light and dark (Jonas, 23 Nov 2026).
 - Rail items (rows, pins, Co-Founder, interfaces, agent hub) no longer shrink while pressed; a click opens at once (Jonas, 23 Nov 2026).

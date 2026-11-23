@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SurfaceReportView } from "../src/app/views/surface-report-view.ts";
 import { prepareStudioHtmlPreview, SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
@@ -583,6 +584,64 @@ describe("SurfaceStudioView", () => {
 		expect(fills).toEqual(["100%", "4%"]);
 		const pathD = view.el.querySelector("svg.report-line-svg path")?.getAttribute("d") ?? "";
 		expect(pathD).not.toContain("NaN");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("shows a studio loading skeleton while cloud files load and keeps studio DOM and HTML frames intact across unrelated workspace refreshes", async () => {
+		const brand = summary({
+			id: BRAND_ID,
+			slug: "brand",
+			title: "Brand",
+			archetype: "studio",
+			folderRoot: "brand",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const website = summary();
+		const filesDeferred = deferred<Record<string, string>>();
+		const loadCloudFiles = vi.fn((_surface: SurfaceSummary) => filesDeferred.promise);
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [website, brand]),
+			getSurfaceWorkspace: vi.fn(async (id: string) =>
+				workspace([], { surface: id === brand.id ? { ...brand } : { ...website } }),
+			),
+		});
+		const store = storeWith(client, { loadCloudFiles });
+		await store.load();
+
+		const view = new SurfaceStudioView({
+			store,
+			surface: brand,
+			signal: new AbortController().signal,
+		});
+		document.body.append(view.el);
+		expect(view.el.querySelector(".skeleton-surface-studio")).not.toBeNull();
+		expect(view.el.querySelector(".studio-empty")).toBeNull();
+		expect(view.el.querySelector(".studio-head")).toBeNull();
+
+		filesDeferred.resolve({
+			"brand/tokens.json": JSON.stringify({ colors: { accent: "#2563eb" } }),
+			"brand/voice.md": "# Voice\nCalm and clear.\n",
+			"brand/index.html":
+				"<!doctype html><html><head><title>Brand Sheet</title></head><body><h1>Brand</h1></body></html>",
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		view.update();
+		expect(view.el.querySelector(".skeleton-surface-studio")).toBeNull();
+		expect(view.el.querySelector('[data-token="colors.accent"]')).not.toBeNull();
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="pages"]')?.click();
+		const frameBefore = view.el.querySelector<HTMLIFrameElement>("iframe.studio-html-frame");
+		expect(frameBefore).not.toBeNull();
+
+		await store.openSurface("website");
+		await store.refreshWorkspace(brand.id);
+		view.update();
+		expect(view.el.querySelector<HTMLIFrameElement>("iframe.studio-html-frame")).toBe(frameBefore);
+		expect(loadCloudFiles.mock.calls.filter(([surface]) => surface.id === brand.id)).toHaveLength(1);
+
 		view.dispose();
 		store.dispose();
 	});
