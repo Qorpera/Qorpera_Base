@@ -1103,8 +1103,6 @@ export class MachineScreenView {
 		this.#enter.disabled = true;
 		this.#mark.hidden = true;
 		this.#hint.textContent = "";
-		// Erasing is a write like any other and goes through the painter. Only the window's own canvas is erased here:
-		// the live picture's was dropped above with its stream, and freed there or after its last frame was handed back.
 		const turn = this.#lookTurn;
 		void this.#commit(this.#job(), () => {
 			if (turn !== this.#lookTurn) return "dropped";
