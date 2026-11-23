@@ -215,7 +215,14 @@ export class Studio3DViewer {
 		);
 		this.#bindPointer();
 		this.#drawToolbar();
-		this.#render();
+		if (typeof requestAnimationFrame === "function") {
+			this.#raf = requestAnimationFrame(() => {
+				this.#raf = undefined;
+				if (!this.#signal.aborted) this.#render();
+			});
+		} else {
+			this.#render();
+		}
 		signal.addEventListener(
 			"abort",
 			() => {

@@ -3,6 +3,15 @@ import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-clie
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const MAX_RESPONSE_BYTES = 256 * 1024;
 
+export interface NativeProviderAccountCredits {
+	readonly hasCredits?: boolean;
+	readonly unlimited?: boolean;
+	readonly balance?: number;
+	readonly used?: number;
+	readonly limit?: number;
+	readonly currency?: string;
+}
+
 export interface NativeProviderAccountUsage {
 	observedAt: string;
 	windows: readonly {
@@ -12,6 +21,7 @@ export interface NativeProviderAccountUsage {
 		resetAt?: string;
 		windowSeconds?: number;
 	}[];
+	credits?: NativeProviderAccountCredits;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -62,6 +72,49 @@ function usageWindows(value: unknown): NativeProviderAccountUsage["windows"] {
 	return windows;
 }
 
+function numericCredit(value: unknown): number | undefined {
+	const raw =
+		typeof value === "number"
+			? value
+			: typeof value === "string" && /^\d+(?:\.\d{1,6})?$/.test(value.trim())
+				? Number(value.trim())
+				: Number.NaN;
+	if (!Number.isFinite(raw) || raw < 0 || raw > 1_000_000_000) return undefined;
+	return Math.round(raw * 100) / 100;
+}
+
+function usageCredits(value: unknown): NativeProviderAccountCredits | undefined {
+	const credits = record(record(value)?.credits);
+	if (!credits) return undefined;
+	const hasCredits = typeof credits.has_credits === "boolean" ? credits.has_credits : undefined;
+	const unlimited = typeof credits.unlimited === "boolean" ? credits.unlimited : undefined;
+	const balance = numericCredit(credits.balance);
+	const used = numericCredit(credits.used);
+	const limit = numericCredit(credits.limit);
+	const currency =
+		typeof credits.currency === "string" && /^[A-Z]{3}$/.test(credits.currency.toUpperCase())
+			? credits.currency.toUpperCase()
+			: undefined;
+	if (unlimited === true) {
+		return {
+			...(hasCredits !== undefined ? { hasCredits } : {}),
+			unlimited: true,
+			...(balance !== undefined ? { balance } : {}),
+			...(currency ? { currency } : {}),
+		};
+	}
+	if (hasCredits === false && !(balance !== undefined && balance > 0)) return undefined;
+	if (balance === undefined && used === undefined && limit === undefined) return undefined;
+	return {
+		...(hasCredits !== undefined ? { hasCredits } : {}),
+		...(unlimited !== undefined ? { unlimited } : {}),
+		...(balance !== undefined ? { balance } : {}),
+		...(used !== undefined ? { used } : {}),
+		...(limit !== undefined ? { limit } : {}),
+		...(currency ? { currency } : {}),
+	};
+}
+
 /** Read account quota inside the credential-owning host. Only sanitized display
  * windows leave this function. Tokens are never refreshed or modified here. */
 export async function readNativeProviderAccountUsage(
@@ -102,8 +155,12 @@ export async function readNativeProviderAccountUsage(
 				}
 				const bytes = await readBoundedCloudResponse(response, MAX_RESPONSE_BYTES, deadline);
 				deadline.throwIfAborted();
-				const windows = usageWindows(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
-				return windows.length ? { observedAt: new Date().toISOString(), windows } : undefined;
+				const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+				const windows = usageWindows(parsed);
+				const credits = usageCredits(parsed);
+				return windows.length
+					? { observedAt: new Date().toISOString(), windows, ...(credits ? { credits } : {}) }
+					: undefined;
 			},
 			10_000,
 			signal,

@@ -61,7 +61,7 @@ select pg_temp.acct_assert(not exists (
 		'qorpera_company_machine_screen_watches',
 		'qorpera_founding_presence_devices', 'qorpera_friendships',
 		'qorpera_gemini_key_tickets', 'qorpera_gemini_keys',
-		'qorpera_mail_thread_reads', 'qorpera_member_email_actions', 'qorpera_member_email_drafts',
+		'qorpera_mail_thread_reads', 'qorpera_member_default_models', 'qorpera_member_email_actions', 'qorpera_member_email_drafts',
 		-- The pages a member hid from their own rail (20260930697000).
 		'qorpera_member_hidden_interface_pages', 'qorpera_member_notifications',
 		'qorpera_member_pictures', 'qorpera_member_session_accounts', 'qorpera_member_sidebar_agents',

@@ -2379,7 +2379,14 @@ export function mountApplication(
 			if (page) {
 				const el = h("div", { class: "surface-ops" });
 				const update = () => renderInterface(el, controller, page, interfaceWrites());
-				return { el, update, dispose: () => el.replaceChildren() };
+				return {
+					el,
+					update,
+					dispose: () => {
+						disposeInterface(el);
+						el.replaceChildren();
+					},
+				};
 			}
 			const team = controller.store.get().team;
 			if (!team) return undefined;
@@ -2992,6 +2999,27 @@ export function mountApplication(
 						{
 							store: surfaces,
 							mount: surfaceMount,
+							isMountLoading: (surface) => {
+								const currentState = controller.store.get();
+								if (currentState.accessLost) return false;
+								if (surface.archetype === "live_build" && surface.siteSlug)
+									return currentState.siteList === undefined;
+								if (surface.archetype === "studio" && !isLocalSurfaceId(surface.id)) return !currentState.team;
+								if (surface.archetype === "ops") {
+									const isBuiltInPage =
+										surface.slug === "inbox" ||
+										surface.icon === "mail" ||
+										surface.slug === "money" ||
+										surface.icon === "coin" ||
+										surface.icon === "bank" ||
+										surface.slug === "members" ||
+										surface.icon === "members" ||
+										surface.slug === "data" ||
+										surface.icon === "database";
+									if (!isBuiltInPage) return !currentState.team;
+								}
+								return false;
+							},
 							openMigration: () => openMigrationSheet(surfaces),
 							loadStudioFiles,
 							loadSitePassword,
