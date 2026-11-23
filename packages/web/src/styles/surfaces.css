@@ -1037,14 +1037,16 @@
 .surface-message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .surface-message.is-session { margin-right: 24px; padding: 2px 2px; color: var(--text); }
 .surface-message.is-system {
-	display: flex; align-items: center; gap: 7px; margin: 10px 6px; padding: 5px 10px; border-radius: 10px;
+	display: flex; align-items: flex-start; gap: 7px; margin: 10px 6px; padding: 5px 10px; border-radius: 10px;
 	background: color-mix(in srgb, var(--text) 3.5%, transparent); color: var(--text-muted); font-size: 12px; line-height: 16px;
 }
-.surface-system-mark { display: grid; place-items: center; width: 14px; height: 14px; flex: none; color: var(--agent-active); }
+.surface-system-mark { display: grid; place-items: center; width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--agent-active); }
 .surface-system-mark .icon { width: 12px; height: 12px; stroke-width: 2.6; }
-.surface-system-dot { width: 6px; height: 6px; flex: none; margin: 0 4px; border-radius: 50%; background: var(--text-soft); }
+.surface-system-dot { width: 6px; height: 6px; flex: none; margin: 5px 4px 0; border-radius: 50%; background: var(--text-soft); }
 .surface-system-text { flex: 1; min-width: 0; }
-.surface-message.is-system time { flex: none; color: var(--text-soft); font-size: 11px; font-variant-numeric: tabular-nums; }
+.surface-message-group.is-system { display: flex; flex-direction: column; gap: 3px; margin: 10px 6px; }
+.surface-message-group.is-system .surface-message.is-system { margin: 0; }
+.surface-message-time { padding: 0 4px; color: var(--text-soft); font-size: 10.5px; font-weight: 550; font-variant-numeric: tabular-nums; }
 .surface-question { margin: 6px; padding: 12px; border-radius: 14px; background: color-mix(in srgb, var(--warning) 12%, transparent); font-size: 13px; }
 .surface-question p { margin: 0 0 8px; }
 .surface-question-options { display: flex; flex-wrap: wrap; gap: 6px; }
