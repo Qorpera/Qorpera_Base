@@ -78,14 +78,7 @@
 	background: var(--bg);
 	border-right: 0;
 }
-.frame:has(.rail.has-surface-rail) .rail-reopen-btn {
-	top: 16px; left: 16px;
-	background: color-mix(in srgb, var(--bg) 42%, transparent);
-	backdrop-filter: blur(5px);
-}
-.frame:has(.rail.has-surface-rail) .rail-reopen-btn:hover {
-	background: color-mix(in srgb, var(--bg) 82%, transparent);
-}
+.frame:has(.rail.has-surface-rail) .rail-reopen-btn { top: 16px; left: 16px; }
 
 /* Unified Agents hub: Working task-driven agents at the top, Scheduled agents underneath, idle agents under Ready. */
 .rail-agents-hub {
@@ -350,10 +343,10 @@
 .surface-bar {
 	position: absolute; z-index: 10; top: 0; left: 0; right: 0;
 	display: flex; align-items: flex-start; justify-content: center;
-	padding: 10px 52px 0 10px; background: transparent; pointer-events: none;
+	padding: 10px 64px 0 10px; background: transparent; pointer-events: none;
 }
 .surface-page.has-drawer .surface-bar { padding: 10px 10px 0 10px; }
-.frame.rail-hidden-desktop .surface-bar { padding-inline: 54px; }
+.frame.rail-hidden-desktop .surface-bar { padding-inline: 54px 64px; }
 .frame.rail-hidden-desktop .surface-page.has-drawer .surface-bar { padding: 10px 10px 0 54px; }
 .surface-bar[hidden] { display: none; }
 .surface-pill {
@@ -467,22 +460,12 @@
 
 /* Right sidepanel toggle pinned statically to the top-right corner of the page (never pushed by the drawer). */
 .surface-panel-toggle {
-	position: absolute; z-index: 25; top: 16px; right: 16px; pointer-events: auto;
+	position: absolute; z-index: 25; top: 16px; right: 28px; pointer-events: auto;
 	display: grid; place-items: center; width: 34px; height: 34px; flex: none; padding: 0;
-	border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); border-radius: 10px;
-	background: color-mix(in srgb, var(--bg) 42%, transparent); color: var(--text-muted);
-	box-shadow: 0 2px 10px -4px rgb(18 18 17 / 16%); backdrop-filter: blur(5px); cursor: default;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
+	border: 0; border-radius: 10px; background: transparent; color: var(--text-muted); cursor: default;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
 }
-.surface-panel-toggle:hover {
-	background: color-mix(in srgb, var(--bg) 82%, transparent); color: var(--text); border-color: color-mix(in srgb, var(--text) 22%, transparent);
-}
-.surface-panel-toggle.is-on {
-	border-color: transparent; background: transparent; box-shadow: none; backdrop-filter: none; color: #676664;
-}
-.surface-panel-toggle.is-on:hover {
-	border-color: transparent; background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text);
-}
+.surface-panel-toggle:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); }
 .surface-panel-toggle[hidden] { display: none; }
 .surface-panel-toggle .icon { width: 18px; height: 18px; }
 .surface-panel-toggle-dot {
@@ -774,7 +757,7 @@
 	.surface-drawer { position: absolute; top: 0; right: 0; bottom: 0; box-shadow: -12px 0 36px rgb(18 18 17 / 18%); }
 }
 .surface-drawer-head {
-	display: flex; align-items: center; gap: 10px; min-height: 66px; padding: 14px 56px 12px 14px;
+	display: flex; align-items: center; gap: 10px; min-height: 66px; padding: 14px 70px 12px 14px;
 	border-bottom: 1px solid color-mix(in srgb, var(--text) 7%, transparent);
 }
 .surface-drawer-head.is-overview { padding-left: 16px; }

@@ -871,7 +871,6 @@ export class SurfaceView {
 		this.#bar.classList.toggle("is-collapsed", this.#pillCollapsed && pillParts.length > 0);
 		const panelLabel = panelOpen ? t("Close panel") : t("Preview panel");
 		this.#panelToggle.hidden = !showPanelToggle;
-		this.#panelToggle.classList.toggle("is-on", panelOpen);
 		this.#panelToggle.setAttribute("aria-pressed", String(panelOpen));
 		this.#panelToggle.setAttribute("aria-label", panelLabel);
 		this.#panelToggle.title = panelLabel;
