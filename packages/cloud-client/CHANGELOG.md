@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Automation owners (migration `20260930868000_surface_automation_owner`): `offerAutomation(automationId, toUserId)` calls `qorpera_offer_surface_automation` and `answerAutomationOffer(offerId, yes)` `qorpera_answer_surface_automation_offer`; both answer the automation's summary.
 - Interface session images (migration `20260930865000_surface_message_images`): `StartSurfaceSessionOptions` takes `clientInputId` and `images`, and `replySurfaceSession` an `attach` of both; with images they call `qorpera_start_surface_session_with_images` / `qorpera_reply_surface_session_with_images`. `surfaceSessionImages(sessionId)` reads a session's images. `CloudSessionAttachments.uploadSurface(surfaceId, …)` and `readSurface(sessionId, …)` use the gateway's `surface-upload` and `surface-input` routes.
 - `cloud-native-subscription-control.ts`: added optional `credits` (`hasCredits`, `unlimited`, `balance`, `used`, `limit`, `currency`) normalization on `NativeProviderUsageWindowSet` for ChatGPT and Claude subscription API/extra credits.
 - `setSurfaceFigure(surfaceId, figure)` calls `qorpera_set_surface_figure` (needs migration `20260930856000_surface_set_figure` live).

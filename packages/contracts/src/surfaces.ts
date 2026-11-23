@@ -139,6 +139,9 @@ export type SurfaceAutomationOutputMode = (typeof SURFACE_AUTOMATION_OUTPUT_MODE
 export const SURFACE_AUTOMATION_STATUSES = ["idle", "running", "needs_attention", "paused"] as const;
 export type SurfaceAutomationStatus = (typeof SURFACE_AUTOMATION_STATUSES)[number];
 
+export const SURFACE_AUTOMATION_OFFER_STATUSES = ["open", "no"] as const;
+export type SurfaceAutomationOfferStatus = (typeof SURFACE_AUTOMATION_OFFER_STATUSES)[number];
+
 export const SURFACE_SESSION_MESSAGE_AUTHORS = ["member", "session", "system"] as const;
 export type SurfaceSessionMessageAuthor = (typeof SURFACE_SESSION_MESSAGE_AUTHORS)[number];
 
@@ -358,6 +361,18 @@ export interface SurfaceAutomationSummary {
 	readonly lastRunAt: string | null;
 	readonly lastOutcomeSummary: string | null;
 	readonly nextRunAt: string | null;
+	readonly ownable: boolean;
+	readonly ownerUserId: string | null;
+	readonly offer: SurfaceAutomationOffer | null;
+}
+
+export interface SurfaceAutomationOffer {
+	readonly id: string;
+	readonly fromUserId: string | null;
+	readonly toUserId: string | null;
+	readonly offeredByUserId: string | null;
+	readonly status: SurfaceAutomationOfferStatus;
+	readonly answeredAt: string | null;
 }
 
 export interface SurfaceWorkspace {
@@ -859,6 +874,7 @@ export function parsePointToChangeTarget(value: unknown, label = "target"): Poin
 export function parseSurfaceAutomationSummary(value: unknown, label = "automation"): SurfaceAutomationSummary {
 	const raw = parseRecord(value, label);
 	if (typeof raw.enabled !== "boolean") throw new WireValueError(`${label}.enabled`);
+	if (typeof raw.ownable !== "boolean") throw new WireValueError(`${label}.ownable`);
 	const prompt =
 		raw.prompt === undefined ? undefined : parseOptionalText(raw.prompt, `${label}.prompt`, SURFACE_MAX_PROMPT_CHARS);
 	return {
@@ -877,6 +893,24 @@ export function parseSurfaceAutomationSummary(value: unknown, label = "automatio
 		lastRunAt: parseOptionalTimestamp(raw.lastRunAt, `${label}.lastRunAt`),
 		lastOutcomeSummary: parseOptionalText(raw.lastOutcomeSummary, `${label}.lastOutcomeSummary`, 500),
 		nextRunAt: parseOptionalTimestamp(raw.nextRunAt, `${label}.nextRunAt`),
+		ownable: raw.ownable,
+		ownerUserId: parseOptionalUuid(raw.ownerUserId, `${label}.ownerUserId`),
+		offer:
+			raw.offer === null || raw.offer === undefined
+				? null
+				: parseSurfaceAutomationOffer(raw.offer, `${label}.offer`),
+	};
+}
+
+function parseSurfaceAutomationOffer(value: unknown, label: string): SurfaceAutomationOffer {
+	const raw = parseRecord(value, label);
+	return {
+		id: parseUuid(raw.id, `${label}.id`),
+		fromUserId: parseOptionalUuid(raw.fromUserId, `${label}.fromUserId`),
+		toUserId: parseOptionalUuid(raw.toUserId, `${label}.toUserId`),
+		offeredByUserId: parseOptionalUuid(raw.offeredByUserId, `${label}.offeredByUserId`),
+		status: parseEnum(raw.status, SURFACE_AUTOMATION_OFFER_STATUSES, `${label}.status`),
+		answeredAt: parseOptionalTimestamp(raw.answeredAt, `${label}.answeredAt`),
 	};
 }
 

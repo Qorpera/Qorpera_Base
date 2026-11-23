@@ -193,3 +193,75 @@ describe("cloud-client surface session images", () => {
 			await expect(fixture(bad).client.surfaceSessionImages(sessionId)).rejects.toThrow();
 	});
 });
+
+describe("cloud-client surface automation owners", () => {
+	const automationId = "13500000-0000-4000-8000-000000000001";
+	const offerId = "13500000-0000-4000-8000-000000000002";
+	const jonas = "13500000-0000-4000-8000-000000000003";
+	const sofie = "13500000-0000-4000-8000-000000000004";
+	const automation = {
+		id: automationId,
+		key: "tidy-files",
+		title: "Tidy Files",
+		prompt: "Sort new uploads",
+		scheduleSummary: "Mondays 08:00",
+		targetSurfaceSlug: "files",
+		outputMode: "surface_session",
+		enabled: true,
+		status: "idle",
+		lastRunAt: null,
+		lastOutcomeSummary: null,
+		nextRunAt: null,
+		ownable: true,
+		ownerUserId: jonas,
+		offer: {
+			id: offerId,
+			fromUserId: jonas,
+			toUserId: sofie,
+			offeredByUserId: jonas,
+			status: "open",
+			answeredAt: null,
+		},
+	};
+
+	function fixture(data: unknown) {
+		const rpc = vi.fn(async () => ({ data, error: null }));
+		return { rpc, client: new CloudSurfacesClient({ rpc } as unknown as SupabaseClient) };
+	}
+
+	it("offers an automation and answers an offer, reading the owner and the offer back", async () => {
+		const offered = fixture({ moved: false, automation });
+		expect(await offered.client.offerAutomation(automationId, sofie)).toMatchObject({
+			ownerUserId: jonas,
+			offer: { id: offerId, toUserId: sofie, status: "open" },
+		});
+		expect(offered.rpc).toHaveBeenCalledWith("qorpera_offer_surface_automation", {
+			p_automation_id: automationId,
+			p_to_user_id: sofie,
+		});
+		const answered = fixture({
+			status: "yes",
+			moved: true,
+			automation: { ...automation, ownerUserId: sofie, offer: null },
+		});
+		expect(await answered.client.answerAutomationOffer(offerId, true)).toMatchObject({
+			ownerUserId: sofie,
+			offer: null,
+		});
+		expect(answered.rpc).toHaveBeenCalledWith("qorpera_answer_surface_automation_offer", {
+			p_offer_id: offerId,
+			p_yes: true,
+		});
+	});
+
+	it("refuses an answer without the automation, an unknown offer status or a missing owner flag", async () => {
+		await expect(fixture({ moved: true }).client.offerAutomation(automationId, sofie)).rejects.toThrow();
+		await expect(
+			fixture({
+				automation: { ...automation, offer: { ...automation.offer, status: "void" } },
+			}).client.offerAutomation(automationId, sofie),
+		).rejects.toThrow();
+		const { ownable: _ownable, ...unowned } = automation;
+		await expect(fixture([unowned]).client.listAutomations("13500000-0000-4000-8000-000000000009")).rejects.toThrow();
+	});
+});
