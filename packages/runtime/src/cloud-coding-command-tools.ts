@@ -159,12 +159,16 @@ export function cloudCodingCommandTools(options: {
 		}
 		if (action === "start" && value.runChecks !== undefined) {
 			if (value.runChecks !== true) throw new Error("Invalid coding command");
-			const allowed = ["operationKey", "runChecks", "checkNames", "failFast"];
+			const allowed = ["operationKey", "runChecks", "checkNames", "failFast", "cleanCopy", "validateSite"];
 			if (!Object.hasOwn(value, "operationKey") || Object.keys(value).some((key) => !allowed.includes(key)))
 				throw new Error("Invalid coding command");
 			if (typeof value.operationKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(value.operationKey))
 				throw new Error("Invalid coding operation key");
 			if (value.failFast !== undefined && typeof value.failFast !== "boolean")
+				throw new Error("Invalid coding command");
+			if (value.cleanCopy !== undefined && typeof value.cleanCopy !== "boolean")
+				throw new Error("Invalid coding command");
+			if (value.validateSite !== undefined && typeof value.validateSite !== "boolean")
 				throw new Error("Invalid coding command");
 			if (value.checkNames !== undefined) {
 				if (
@@ -238,7 +242,7 @@ export function cloudCodingCommandTools(options: {
 			source: "worker",
 			images: true,
 			description:
-				"Start a shell command in this session's isolated repository VM. Use it to inspect, edit, build, test and run servers. It returns a durable command handle; running is not success. A command that already ended shows its exit status and as much of its output as one result holds; read the handle for the rest, or for a command still running. A command has no time limit unless you set timeoutMs; it keeps running after your turn ends, until it exits, you cancel it, the session is archived, or the machine sleeps (only after 10 minutes with no turn and no command using the processor). If the machine stops under it, its state is machine_stopped: it may have done part of its work. Later turns can read or cancel it by its handle. Keep operationKey stable after an uncertain response. The command's environment holds the secret values this session was given, when it was given any, and no credentials for the repository, the model provider or the cloud. Handing the work in is coding_finish's, never a push or a publish from the shell. Or pass runChecks:true (without command or timeoutMs, with optional checkNames and failFast) to read .qorpera/checks.json in this worktree and run its checks pre-flight sequentially or in parallel needs DAG waves (up to 4 at once) with CI=true QORPERA_CHECKS=1, returning structured pass/fail results and output tails without landing on main. Or pass inspectImage (without command, timeoutMs, runChecks, checkNames or failFast) with a relative workspace path to a .png, .jpg, .jpeg or .webp file (up to 8 MiB, such as docs/changes/home.png or .tmp/check.png) to visually inspect that screenshot directly in your context; always use a fresh operationKey for each new or updated screenshot inspection (reusing an operationKey replays the earlier read's commandId and image).",
+				"Start a shell command in this session's isolated repository VM. Use it to inspect, edit, build, test and run servers. It returns a durable command handle; running is not success. A command that already ended shows its exit status and as much of its output as one result holds; read the handle for the rest, or for a command still running. A command has no time limit unless you set timeoutMs; it keeps running after your turn ends, until it exits, you cancel it, the session is archived, or the machine sleeps (only after 10 minutes with no turn and no command using the processor). If the machine stops under it, its state is machine_stopped: it may have done part of its work. Later turns can read or cancel it by its handle. Keep operationKey stable after an uncertain response. The command's environment holds the secret values this session was given, when it was given any, and no credentials for the repository, the model provider or the cloud. Handing the work in is coding_finish's, never a push or a publish from the shell. Or pass runChecks:true (without command or timeoutMs, with optional checkNames, failFast, cleanCopy, and validateSite) to read .qorpera/checks.json and run its checks pre-flight sequentially or in parallel needs DAG waves with CI=true QORPERA_CHECKS=1, auto-including transitive needs for checkNames, optionally inside a clean git clone (cleanCopy:true) and validating the built site tree (validateSite:true), returning structured pass/fail results and output tails without landing on main (per-check secrets allow-lists are enforced at landing; pre-flight runs with the session environment). Or pass inspectImage (without command, timeoutMs, runChecks, checkNames, failFast, cleanCopy or validateSite) with a relative workspace path to a .png, .jpg, .jpeg or .webp file (up to 8 MiB, such as docs/changes/home.png or .tmp/check.png) to visually inspect that screenshot directly in your context; always use a fresh operationKey for each new or updated screenshot inspection (reusing an operationKey replays the earlier read's commandId and image).",
 			inputSchema: {
 				...schema({
 					operationKey,
@@ -247,7 +251,7 @@ export function cloudCodingCommandTools(options: {
 					runChecks: {
 						type: "boolean",
 						description:
-							"Set true (without command or timeoutMs) to run .qorpera/checks.json pre-flight (sequentially or in parallel needs DAG waves) in this worktree with CI=true QORPERA_CHECKS=1 without landing on main.",
+							"Set true (without command or timeoutMs) to run .qorpera/checks.json pre-flight (sequentially or in parallel needs DAG waves) with CI=true QORPERA_CHECKS=1 without landing on main.",
 					},
 					checkNames: {
 						type: "array",
@@ -255,18 +259,30 @@ export function cloudCodingCommandTools(options: {
 						maxItems: 20,
 						uniqueItems: true,
 						items: { type: "string", pattern: CODE_CHECK_NAME_PATTERN.source },
-						description: "With runChecks true: optional subset of 1 to 20 check names to run.",
+						description:
+							"With runChecks true: optional subset of 1 to 20 check names to run (transitive needs are auto-included).",
 					},
 					failFast: {
 						type: "boolean",
-						description: "With runChecks true: stop on first failing check (default true).",
+						description:
+							"With runChecks true: stop on first failing check (defaults to the checks file's failFast or true).",
+					},
+					cleanCopy: {
+						type: "boolean",
+						description:
+							"With runChecks true: run checks inside a clean git clone --shared of HEAD matching landing.",
+					},
+					validateSite: {
+						type: "boolean",
+						description:
+							"With runChecks true: locally validate the built site tree against Qorpera site rules after checks pass.",
 					},
 					inspectImage: {
 						type: "string",
 						minLength: 1,
 						maxLength: MAX_CODING_INSPECT_PATH_BYTES,
 						description:
-							"Relative workspace path to a .png, .jpg, .jpeg or .webp screenshot (without command, timeoutMs, runChecks, checkNames or failFast) to inspect visually in your context (max 8 MiB raw, sanitized to <= 1920x1200 PNG). Use a fresh operationKey for every new or updated screenshot inspection.",
+							"Relative workspace path to a .png, .jpg, .jpeg or .webp screenshot (without command, timeoutMs, runChecks, checkNames, failFast, cleanCopy or validateSite) to inspect visually in your context (max 8 MiB raw, sanitized to <= 1920x1200 PNG). Use a fresh operationKey for every new or updated screenshot inspection.",
 					},
 					preflightLand: {
 						type: "boolean",
@@ -304,7 +320,9 @@ export function cloudCodingCommandTools(options: {
 						request: {
 							operationKey: String(input.operationKey),
 							...(Array.isArray(input.checkNames) ? { checkNames: input.checkNames as string[] } : {}),
-							failFast: input.failFast !== false,
+							...(input.failFast !== undefined ? { failFast: input.failFast === true } : {}),
+							...(input.cleanCopy === true ? { cleanCopy: true } : {}),
+							...(input.validateSite === true ? { validateSite: true } : {}),
 						},
 						context,
 						pollMs: options.pollMs,

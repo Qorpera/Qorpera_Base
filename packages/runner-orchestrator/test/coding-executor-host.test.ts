@@ -1,7 +1,19 @@
 import { type ChildProcess, execFile, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	lstat,
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	realpath,
+	rm,
+	symlink,
+	utimes,
+	writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -2826,10 +2838,15 @@ async function folderFixture(repositories = true) {
 		export: vi.fn<CodingFolderRepositories["export"]>(async () => Buffer.from("bundle")),
 	};
 	const onMount = vi.fn();
+	const folderExecStream = vi.fn<LxdInstanceExecStreamClient["execInstanceStream"]>(async () => ({
+		exitCode: 0,
+		stdout: Buffer.alloc(0),
+		stderr: Buffer.alloc(0),
+	}));
 	const folder = {
 		views,
 		control: { boundary, restarted, secrets },
-		client: {} as LxdInstanceExecStreamClient,
+		client: { execInstanceStream: folderExecStream },
 		...(repositories ? { repositories: sessionRepositories } : {}),
 		onMount,
 	};
@@ -2844,6 +2861,7 @@ async function folderFixture(repositories = true) {
 		...f,
 		host,
 		folder,
+		folderExecStream,
 		executor,
 		views,
 		boundary,
@@ -6113,6 +6131,12 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			PLAYWRIGHT_BROWSERS_PATH: "/var/cache/qorpera-packages/ms-playwright",
 			// Playwright's own GC would remove another session's browsers, its install unreadable in that session's home.
 			PLAYWRIGHT_SKIP_BROWSER_GC: "1",
+			CARGO_HOME: "/var/cache/qorpera-packages/cargo",
+			GOMODCACHE: "/var/cache/qorpera-packages/go-mod",
+			GOCACHE: "/var/cache/qorpera-packages/go-build",
+			BUN_INSTALL_CACHE_DIR: "/var/cache/qorpera-packages/bun",
+			TURBO_CACHE_DIR: "/var/cache/qorpera-packages/turbo",
+			SCCACHE_DIR: "/var/cache/qorpera-packages/sccache",
 		});
 		const company = Object.fromEntries(
 			Object.keys(CODING_PACKAGE_CACHE_ENVIRONMENT).map((name) => [name, `/company/value/of/${name}`]),
@@ -6308,7 +6332,13 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			},
 			notRun: ["build"],
 		});
-		expect(f.ran().map(checkOf)).toEqual([undefined, "npm ci", "npm test"]);
+		expect(
+			f
+				.ran()
+				.filter((r) => !r.environment.QORPERA_CHECKS_PERSIST_DIR)
+				.map(checkOf),
+		).toEqual([undefined, "npm ci", "npm test"]);
+		expect(f.ran().some((r) => Boolean(r.environment.QORPERA_CHECKS_PERSIST_DIR))).toBe(true);
 		// Killed (often for memory): a failure of the code all the same.
 		f.ending((run) => (checkOf(run) === "npm ci" ? { state: "exited", code: 137 } : {}));
 		expect(await f.run(CHECKS, 2)).toMatchObject({
@@ -6386,7 +6416,10 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		// The session's secret value is masked as its commands' output is, before anything of it is kept or handed on.
 		const masked = await handed(`key=${SECRET}\nbell\u0007\n`, 3);
 		expect(masked).toBe("key=***\nbell\u0007\n");
-		const id = f.ran().at(-1)?.commandId as string;
+		const id = f
+			.ran()
+			.filter((r) => checkOf(r) !== undefined)
+			.at(-1)?.commandId as string;
 		const kept = await readFile(join(f.custody, "host-commands", id.replaceAll("-", ""), "output.log"), "utf8");
 		expect(kept).toBe("key=***\nbell\u0007\n");
 		// The copy's output, and a check that passed, are never handed on.
@@ -9294,6 +9327,528 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			const started = performance.now();
 			expect(await f.run(CHECKS.slice(0, 1))).toMatchObject({ state: "passed" });
 			expect(performance.now() - started).toBeLessThan(1_500);
+			const copy = f.ran()[0];
+			expect(copy?.command).toContain("b=(0.1 0.2 0.5 1 2)");
+			expect(copy?.command).not.toContain("sleep 3");
+			const waitValues = mocked.guestOutput.mock.calls.map((call) => (call[0] as { waitMs?: number })?.waitMs);
+			expect(waitValues).toContain(5000);
+		});
+
+		it("enforces exclusive, retries, failFast: false, maxParallel, per-check env, and per-check secrets allow-list", async () => {
+			const f = await checksFixture({
+				secrets: { ALLOWED_SECRET: "secret-allowed-111111", OTHER_SECRET: "secret-other-222222" },
+			});
+			let flakyAttempts = 0;
+			const activeNames = new Set<string>();
+			let exclusiveOverlapped = false;
+			f.ending((run) => {
+				const cmd = checkOf(run);
+				if (!cmd) return {};
+				if (cmd === "run-exclusive") {
+					if (activeNames.size > 0) exclusiveOverlapped = true;
+					activeNames.add("exclusive");
+					return { after: 30 };
+				}
+				if (cmd === "run-flaky") {
+					flakyAttempts++;
+					return flakyAttempts === 1 ? { code: 1, printed: "transient error\n" } : { code: 0 };
+				}
+				return { after: 20 };
+			});
+			const baseOutput = mocked.guestOutput.getMockImplementation()!;
+			mocked.guestOutput.mockImplementation(async (request: unknown) => {
+				const res = await baseOutput(request);
+				const asked = parseCodingGuestRequest("output", request);
+				const found = f.commands.get(asked.commandId);
+				if (found && res.answer.state !== "running" && checkOf(found.run) === "run-exclusive") {
+					activeNames.delete("exclusive");
+				}
+				return res;
+			});
+			const checks: readonly CodeCheck[] = [
+				{
+					name: "excl",
+					run: "run-exclusive",
+					timeoutSeconds: 60,
+					cwd: ".",
+					needs: [],
+					exclusive: true,
+					env: { CUSTOM_FLAG: "yes" },
+					secrets: ["ALLOWED_SECRET"],
+				},
+				{
+					name: "flaky",
+					run: "run-flaky",
+					timeoutSeconds: 60,
+					cwd: ".",
+					needs: [],
+					retries: 1,
+					secrets: [],
+				},
+			];
+			const passed = await f.session.runChecks!(
+				{ commit: COMMIT, checks, attempt: 1, site: null, maxParallel: 6 },
+				f.signal,
+			);
+			expect(passed.state).toBe("passed");
+			expect(exclusiveOverlapped).toBe(false);
+			expect(flakyAttempts).toBe(2);
+			const exclRun = f.ran().find((r) => checkOf(r) === "run-exclusive");
+			expect(exclRun?.environment.CUSTOM_FLAG).toBe("yes");
+			expect(exclRun?.environment.ALLOWED_SECRET).toBe("secret-allowed-111111");
+			expect(exclRun?.environment.OTHER_SECRET).toBeUndefined();
+			const flakyRun = f.ran().find((r) => checkOf(r) === "run-flaky");
+			expect(flakyRun?.environment.ALLOWED_SECRET).toBeUndefined();
+			expect(flakyRun?.environment.OTHER_SECRET).toBeUndefined();
+
+			mocked.guestOutput.mockImplementation(baseOutput);
+			f.ending((run) => (checkOf(run) === "fail-left" ? { code: 1, printed: "left failed\n" } : {}));
+			const noFailFast = await f.session.runChecks!(
+				{
+					commit: COMMIT,
+					attempt: 2,
+					site: null,
+					failFast: false,
+					checks: [
+						{ name: "left", run: "fail-left", timeoutSeconds: 60, cwd: ".", needs: [] },
+						{ name: "left-child", run: "after-left", timeoutSeconds: 60, cwd: ".", needs: ["left"] },
+						{ name: "right", run: "pass-right", timeoutSeconds: 60, cwd: ".", needs: [] },
+					],
+				},
+				f.signal,
+			);
+			expect(noFailFast).toMatchObject({
+				state: "failed",
+				passed: [{ name: "right", ms: expect.any(Number) }],
+				failed: { name: "left", exitCode: 1 },
+				notRun: ["left-child"],
+			});
+		});
+
+		it("applies incremental path filters, runs downstream checks whose needs were skipped, and bypasses when checks file changed", async () => {
+			const f = await checksFixture();
+			const checks: readonly CodeCheck[] = [
+				{ name: "web-build", run: "build-web", timeoutSeconds: 60, cwd: ".", needs: [], paths: ["web/**"] },
+				{
+					name: "api-test",
+					run: "test-api",
+					timeoutSeconds: 60,
+					cwd: ".",
+					needs: ["web-build"],
+					paths: ["api/**"],
+				},
+				{
+					name: "always",
+					run: "smoke",
+					timeoutSeconds: 60,
+					cwd: ".",
+					needs: [],
+					paths: ["web/**"],
+					alwaysRun: true,
+				},
+			];
+			const filtered = await f.session.runChecks!(
+				{ commit: COMMIT, checks, attempt: 1, site: null, changedPaths: ["api/server.ts"], checksChanged: false },
+				f.signal,
+			);
+			expect(filtered).toMatchObject({
+				state: "passed",
+				checks: [
+					{ name: "web-build", ms: 0, skipped: "paths_unmatched" },
+					{ name: "api-test", ms: expect.any(Number) },
+					{ name: "always", ms: expect.any(Number) },
+				],
+			});
+			expect(f.ran().map(checkOf)).not.toContain("build-web");
+			expect(f.ran().map(checkOf)).toContain("test-api");
+			expect(f.ran().map(checkOf)).toContain("smoke");
+
+			const bypassed = await f.session.runChecks!(
+				{ commit: COMMIT, checks, attempt: 2, site: null, changedPaths: ["api/server.ts"], checksChanged: true },
+				f.signal,
+			);
+			expect(bypassed.state).toBe("passed");
+			expect(f.ran().map(checkOf)).toContain("build-web");
+
+			f.ending((run) => {
+				if (run.environment.QORPERA_CHECKS_BASE_BRANCH) {
+					return { code: 0, printed: 'QORPERA_DIFF_OK\nweb/a"b".html\0' };
+				}
+				return {};
+			});
+			const diffed = await f.session.runChecks!(
+				{ commit: COMMIT, checks, attempt: 3, site: null, checksChanged: false },
+				f.signal,
+			);
+			expect(diffed).toMatchObject({
+				state: "passed",
+				checks: [
+					{ name: "web-build", ms: expect.any(Number) },
+					{ name: "api-test", ms: 0, skipped: "paths_unmatched" },
+					{ name: "always", ms: expect.any(Number) },
+				],
+			});
+
+			f.ending((run) => {
+				if (run.environment.QORPERA_CHECKS_BASE_BRANCH) {
+					return { code: 0, printed: "QORPERA_DIFF_OK\ntruncated-without-nul" };
+				}
+				return {};
+			});
+			const truncatedDiff = await f.session.runChecks!(
+				{ commit: COMMIT, checks, attempt: 4, site: null, checksChanged: false },
+				f.signal,
+			);
+			expect(truncatedDiff).toMatchObject({
+				state: "passed",
+				checks: [
+					{ name: "web-build", ms: expect.any(Number) },
+					{ name: "api-test", ms: expect.any(Number) },
+					{ name: "always", ms: expect.any(Number) },
+				],
+			});
+		});
+
+		it("persists caches only on passing landing runs via host-owned root exec and parses structured failure artifacts with boundary protection", async () => {
+			const f = await checksFixture({ packageCaches: true });
+			const caches = [
+				{ key: `deps-\${hash('package-lock.json')}`, paths: ["node_modules"], restoreKeys: ["deps-"] },
+			];
+			const failingChecks: readonly CodeCheck[] = [
+				{
+					name: "unit",
+					run: "vitest run",
+					timeoutSeconds: 60,
+					cwd: ".",
+					artifacts: { paths: ["reports/junit.xml"], when: "on_failure", format: "junit" },
+				},
+			];
+			f.ending((run) => {
+				if (checkOf(run) === "vitest run") return { code: 1, printed: "1 failed\n" };
+				if (run.environment.QORPERA_CHECKS_PERSIST_DIR) {
+					const nonce = run.environment.QORPERA_CHECKS_ARTIFACT_NONCE;
+					const rel = run.environment.QORPERA_CHECKS_PERSIST_REL;
+					return {
+						code: 0,
+						printed: [
+							`QORPERA_ARTIFACT_BEGIN:${nonce}:junit`,
+							'<testsuite name="auth"><testcase name="rejects"><failure message="bad status"/></testcase></testsuite>',
+							`QORPERA_ARTIFACT_END:${nonce}`,
+							`QORPERA_PERSISTED:${nonce}:${JSON.stringify({ dir: rel, log: `${rel}/1-unit.log`, files: 2, bytes: 120 })}`,
+						].join("\n"),
+					};
+				}
+				return {};
+			});
+			const failed = await f.session.runChecks!(
+				{ commit: COMMIT, checks: failingChecks, attempt: 1, site: null, caches },
+				f.signal,
+			);
+			expect(failed).toMatchObject({
+				state: "failed",
+				failed: {
+					name: "unit",
+					persistedLog: expect.stringContaining("_check-runs/"),
+					artifactsDir: expect.stringContaining("_check-runs/"),
+					failedTests: [{ suite: "auth", name: "rejects", message: "bad status" }],
+				},
+			});
+			const persistCall = f.ran().find((r) => Boolean(r.environment.QORPERA_CHECKS_PERSIST_DIR));
+			expect(persistCall?.environment.QORPERA_CHECKS_PERSIST_KEEP_RUNS).toBe("20");
+			expect(f.ran().some((r) => Boolean(r.environment.QORPERA_CHECKS_CACHE_GLOBAL_ROOT))).toBe(false);
+			expect(f.folderExecStream).not.toHaveBeenCalled();
+
+			f.ending((run) => {
+				if (run.environment.QORPERA_CHECKS_TRACKED_NONCE) {
+					return {
+						code: 0,
+						printed: `QORPERA_CACHE_UNTRACKED:${run.environment.QORPERA_CHECKS_TRACKED_NONCE}:["node_modules"]\n`,
+					};
+				}
+				return { code: 0 };
+			});
+			const passed = await f.session.runChecks!(
+				{ commit: COMMIT, checks: failingChecks, attempt: 2, site: null, caches },
+				f.signal,
+			);
+			expect(passed.state).toBe("passed");
+			expect(f.ran().some((r) => Boolean(r.environment.QORPERA_CHECKS_CACHE_GLOBAL_ROOT))).toBe(false);
+			expect(f.folderExecStream).toHaveBeenCalledTimes(1);
+			const saveCall = f.folderExecStream.mock.calls[0]?.[2];
+			expect(saveCall?.command).toContain("QORPERA_CHECKS_CACHE_GLOBAL_ROOT=/var/cache/qorpera-check-caches");
+			expect(saveCall?.command.some((arg) => /^QORPERA_CHECKS_UID=\d+$/.test(arg))).toBe(true);
+			expect(saveCall?.command.some((arg) => /^QORPERA_CHECKS_GID=\d+$/.test(arg))).toBe(true);
+			expect(saveCall?.stdin.toString("utf8")).toContain("QORPERA_CACHE_SAVE_EOF");
+			const passCopy = f
+				.ran()
+				.find(
+					(r) =>
+						r.environment.QORPERA_CHECKS_NAME === runName(1, 2) && Boolean(r.environment.QORPERA_CHECKS_COMMIT),
+				);
+			expect(passCopy?.environment.QORPERA_CHECKS_CACHES).toBe(JSON.stringify(caches));
+		});
+
+		it("executes real diff, cache-tracked, cache-save, copy cache-restore, persist, and persist-drop scripts with bash, git, and python3 including hostile fsmonitor and symlink parent attacks", async () => {
+			const m = await onTheMachine();
+			const at = await m.home("v2");
+			const f = await checksFixture({ packageCaches: true });
+			const caches = [
+				{
+					key: `deps-\${hash('app.js')}`,
+					paths: ["node_modules", "app.js", "badparent/secret.txt"],
+					restoreKeys: ["deps-"],
+				},
+			];
+			f.ending((run) => {
+				if (run.environment.QORPERA_CHECKS_BASE_BRANCH) return { code: 0, printed: "QORPERA_DIFF_OK\napp.js\0" };
+				if (checkOf(run) === "fail-cmd") return { code: 1, printed: "fail\n" };
+				if (run.environment.QORPERA_CHECKS_PERSIST_DIR) {
+					const nonce = run.environment.QORPERA_CHECKS_ARTIFACT_NONCE;
+					const rel = run.environment.QORPERA_CHECKS_PERSIST_REL;
+					return {
+						code: 0,
+						printed: `QORPERA_PERSISTED:${nonce}:${JSON.stringify({ dir: rel, log: `${rel}/1-u.log`, files: 1, bytes: 10 })}\n`,
+					};
+				}
+				return {};
+			});
+			const defaultBoundary = f.boundary.getMockImplementation()!;
+			f.boundary.mockResolvedValue({
+				machine: f.machine.machineId,
+				reads: "released",
+				views: [{ viewId: f.viewId, unsaved: 1, refused: "carries" }],
+			});
+			await f.session.runChecks!(
+				{
+					commit: COMMIT,
+					checks: [
+						{
+							name: "u",
+							run: "fail-cmd",
+							timeoutSeconds: 60,
+							cwd: ".",
+							paths: ["app.js"],
+							artifacts: { paths: ["junit.xml"], when: "on_failure", format: "junit" },
+						},
+					],
+					attempt: 1,
+					site: null,
+					checksChanged: false,
+				},
+				f.signal,
+			);
+			f.boundary.mockImplementation(defaultBoundary);
+			const diffScript = f.ran().find((r) => Boolean(r.environment.QORPERA_CHECKS_BASE_BRANCH))?.command as string;
+			const persistScript = f.ran().find((r) => Boolean(r.environment.QORPERA_CHECKS_PERSIST_SPEC))
+				?.command as string;
+			const persistDropScript = f
+				.ran()
+				.find(
+					(r) => Boolean(r.environment.QORPERA_CHECKS_PERSIST_DIR) && !r.environment.QORPERA_CHECKS_PERSIST_SPEC,
+				)?.command as string;
+			expect(diffScript).toContain("QORPERA_DIFF_OK");
+			expect(persistScript).toContain("QORPERA_PERSIST_EOF");
+			expect(persistDropScript).toContain("QORPERA_CHECKS_PERSIST_DIR");
+			f.ending((run) => {
+				if (run.environment.QORPERA_CHECKS_TRACKED_NONCE) {
+					return {
+						code: 0,
+						printed: `QORPERA_CACHE_UNTRACKED:${run.environment.QORPERA_CHECKS_TRACKED_NONCE}:["node_modules","badparent/secret.txt"]\n`,
+					};
+				}
+				return { code: 0 };
+			});
+			await f.session.runChecks!(
+				{
+					commit: COMMIT,
+					checks: [{ name: "u", run: "ok", timeoutSeconds: 60, cwd: "." }],
+					attempt: 2,
+					site: null,
+					caches,
+				},
+				f.signal,
+			);
+			const cacheTrackedScript = f.ran().find((r) => Boolean(r.environment.QORPERA_CHECKS_TRACKED_NONCE))
+				?.command as string;
+			const cacheSaveScript = f.folderExecStream.mock.calls[0]?.[2].stdin.toString("utf8") as string;
+			expect(cacheTrackedScript).toContain("QORPERA_CACHE_TRACKED_EOF");
+			expect(cacheSaveScript).toContain("QORPERA_CACHE_SAVE_EOF");
+
+			const source = join(m.top, "source");
+			const repo = join(m.top, "repo.git");
+			await mkdir(join(source, "web"), { recursive: true });
+			await writeFile(join(source, 'web/a"b".html'), "<p>hi</p>\n");
+			await m.git(source, "add", 'web/a"b".html');
+			await m.git(source, "commit", "--quiet", "-m", "quoted file");
+			const commit2 = await m.git(source, "rev-parse", "HEAD");
+			await m.git(source, "push", "--quiet", repo, "HEAD:refs/heads/candidate");
+
+			const run1 = runName(1, 1);
+			expect(await m.copy(at, run1, { QORPERA_CHECKS_COMMIT: commit2 })).toEqual({ code: 0, output: "" });
+			const diffOut = await m.bash(
+				diffScript,
+				{
+					QORPERA_CHECKS_ROOT: at.root,
+					QORPERA_CHECKS_NAME: run1,
+					QORPERA_CHECKS_REPOSITORY: repo,
+					QORPERA_CHECKS_BASE_BRANCH: "main",
+					QORPERA_CHECKS_COMMIT: commit2,
+				},
+				at.home,
+			);
+			expect(diffOut).toEqual({ code: 0, output: 'QORPERA_DIFF_OK\nweb/a"b".html\0' });
+
+			const globalCache = join(m.top, "check-caches");
+			const repoCache = join(globalCache, "repo-1");
+			const outsideDir = join(m.top, "outside-secret");
+			const fsmonitorSentinel = join(m.top, "fsmonitor-ran");
+			await mkdir(globalCache, { recursive: true, mode: 0o755 });
+			await mkdir(outsideDir, { recursive: true });
+			await writeFile(join(outsideDir, "secret.txt"), "root-secret\n");
+			const src1 = join(at.root, run1, "src");
+			await mkdir(join(src1, "node_modules", ".bin"), { recursive: true });
+			await writeFile(join(src1, "node_modules", "cached.txt"), "from-cache\n");
+			await symlink("../cached.txt", join(src1, "node_modules", ".bin", "tool"));
+			await symlink(join(outsideDir, "secret.txt"), join(src1, "node_modules", "escape"));
+			await symlink(outsideDir, join(src1, "badparent"));
+			await writeFile(join(src1, "app.js"), "tampered-working-copy\n");
+			await m.git(src1, "config", "core.fsmonitor", `touch ${fsmonitorSentinel}`);
+
+			const trackedNonce = "11223344556677889900aabb";
+			const trackedRes = await m.bash(
+				cacheTrackedScript,
+				{
+					QORPERA_CHECKS_ROOT: at.root,
+					QORPERA_CHECKS_NAME: run1,
+					QORPERA_CHECKS_REPOSITORY: repo,
+					QORPERA_CHECKS_COMMIT: commit2,
+					QORPERA_CHECKS_CACHE_PATHS: JSON.stringify(["node_modules", "app.js", "badparent/secret.txt"]),
+					QORPERA_CHECKS_TRACKED_NONCE: trackedNonce,
+				},
+				at.home,
+			);
+			expect(trackedRes.code).toBe(0);
+			const trackedPrefix = `QORPERA_CACHE_UNTRACKED:${trackedNonce}:`;
+			const untrackedList = JSON.parse(trackedRes.output.trim().slice(trackedPrefix.length)) as string[];
+			expect(untrackedList).toEqual(["node_modules", "badparent/secret.txt"]);
+			expect(await m.exists(fsmonitorSentinel)).toBe(false);
+
+			const filteredCaches = [{ key: `deps-\${hash('app.js')}`, paths: untrackedList, restoreKeys: ["deps-"] }];
+			const saveRes = await m.bash(
+				cacheSaveScript,
+				{
+					QORPERA_CHECKS_ROOT: at.root,
+					QORPERA_CHECKS_NAME: run1,
+					QORPERA_CHECKS_CACHES: JSON.stringify(filteredCaches),
+					QORPERA_CHECKS_CACHE_ROOT: repoCache,
+					QORPERA_CHECKS_CACHE_GLOBAL_ROOT: globalCache,
+					QORPERA_CHECKS_CACHE_LIMIT_BYTES: String(100 * 1024 * 1024),
+				},
+				at.home,
+			);
+			expect(saveRes.code).toBe(0);
+			expect(await m.exists(fsmonitorSentinel)).toBe(false);
+			const savedKeys = await readdir(repoCache);
+			expect(savedKeys).toHaveLength(1);
+			const savedEntry = join(repoCache, savedKeys[0] as string);
+			expect(await readFile(join(savedEntry, "data", "node_modules", "cached.txt"), "utf8")).toBe("from-cache\n");
+			expect((await lstat(join(savedEntry, "data", "node_modules", ".bin", "tool"))).isSymbolicLink()).toBe(true);
+			expect(await m.exists(join(savedEntry, "data", "node_modules", "escape"))).toBe(false);
+			expect(await m.exists(join(savedEntry, "data", "badparent"))).toBe(false);
+			expect(await m.exists(join(savedEntry, "data", "app.js"))).toBe(false);
+			expect((await lstat(savedEntry)).mode & 0o777).toBe(0o755);
+			expect((await lstat(join(savedEntry, "data", "node_modules", "cached.txt"))).mode & 0o777).toBe(0o644);
+
+			await writeFile(join(savedEntry, "data", "app.js"), "poisoned-app\n");
+			const run2 = runName(1, 2);
+			expect(
+				await m.copy(at, run2, {
+					QORPERA_CHECKS_COMMIT: commit2,
+					QORPERA_CHECKS_CACHES: JSON.stringify(caches),
+					QORPERA_CHECKS_CACHE_ROOT: repoCache,
+				}),
+			).toEqual({ code: 0, output: "" });
+			expect(await readFile(join(at.root, run2, "src", "node_modules", "cached.txt"), "utf8")).toBe("from-cache\n");
+			expect(await readFile(join(at.root, run2, "src", "app.js"), "utf8")).toBe("app\n");
+			expect(await m.exists(fsmonitorSentinel)).toBe(false);
+
+			const oldRepoEntry = join(globalCache, "repo-old", "old-key");
+			await mkdir(join(oldRepoEntry, "data"), { recursive: true });
+			await writeFile(join(oldRepoEntry, "data", "big.bin"), Buffer.alloc(128 * 1024, 0x41));
+			await writeFile(join(oldRepoEntry, ".complete"), "");
+			await writeFile(join(oldRepoEntry, ".last-used"), "");
+			const oldTime = new Date("2020-01-01T00:00:00Z");
+			await utimes(join(oldRepoEntry, ".last-used"), oldTime, oldTime);
+			const lruRes = await m.bash(
+				cacheSaveScript,
+				{
+					QORPERA_CHECKS_ROOT: at.root,
+					QORPERA_CHECKS_NAME: run2,
+					QORPERA_CHECKS_CACHES: JSON.stringify(filteredCaches),
+					QORPERA_CHECKS_CACHE_ROOT: repoCache,
+					QORPERA_CHECKS_CACHE_GLOBAL_ROOT: globalCache,
+					QORPERA_CHECKS_CACHE_LIMIT_BYTES: "4096",
+				},
+				at.home,
+			);
+			expect(lruRes.code).toBe(0);
+			expect(await m.exists(oldRepoEntry)).toBe(false);
+
+			const runsRoot = join(m.top, "_check-runs");
+			await mkdir(join(runsRoot, "0000000001-old"), { recursive: true });
+			await mkdir(join(runsRoot, "0000000002-old"), { recursive: true });
+			await utimes(join(runsRoot, "0000000001-old"), oldTime, oldTime);
+			await utimes(
+				join(runsRoot, "0000000002-old"),
+				new Date("2021-01-01T00:00:00Z"),
+				new Date("2021-01-01T00:00:00Z"),
+			);
+			const src2 = join(at.root, run2, "src");
+			const log2 = join(at.root, run2, "out", "1-u.log");
+			await writeFile(log2, "token=super-secret-value-9999\n");
+			await writeFile(
+				join(src2, "junit.xml"),
+				'<testsuite name="api"><testcase name="works"><failure message="leak super-secret-value-9999"/></testcase></testsuite>\n',
+			);
+			const pdir = join(runsRoot, `${run2}-deadbeef`);
+			const nonce = "a1b2c3d4e5f6a1b2c3d4e5f6";
+			const persistOut = await m.bash(
+				persistScript,
+				{
+					QORPERA_CHECKS_ROOT: at.root,
+					QORPERA_CHECKS_NAME: run2,
+					QORPERA_CHECKS_PERSIST_DIR: pdir,
+					QORPERA_CHECKS_PERSIST_REL: `code/acme/shop/_check-runs/${run2}-deadbeef`,
+					QORPERA_CHECKS_PERSIST_SPEC: JSON.stringify({
+						logs: [{ src: log2, name: "1-u.log" }],
+						artifacts: [{ check: "u", format: "junit", paths: ["junit.xml"], extract: true }],
+					}),
+					QORPERA_CHECKS_PERSIST_KEEP_RUNS: "2",
+					QORPERA_CHECKS_ARTIFACT_NONCE: nonce,
+					QORPERA_CHECKS_SECRET_NAMES: "SECRET_VAL",
+					SECRET_VAL: "super-secret-value-9999",
+				},
+				src2,
+			);
+			expect(persistOut.code).toBe(0);
+			expect(persistOut.output).not.toContain("super-secret-value-9999");
+			expect(persistOut.output).toContain(`QORPERA_ARTIFACT_BEGIN:${nonce}:junit`);
+			expect(persistOut.output).toContain(`QORPERA_PERSISTED:${nonce}:`);
+			expect(await readFile(join(pdir, "1-u.log"), "utf8")).toBe("token=***\n");
+			expect(await readFile(join(pdir, "artifacts", "u", "junit.xml"), "utf8")).toContain("leak ***");
+			expect((await readdir(runsRoot)).sort()).toEqual([`${run2}-deadbeef`, "0000000002-old"].sort());
+
+			const dropOut = await m.bash(
+				persistDropScript,
+				{
+					QORPERA_CHECKS_ROOT: at.root,
+					QORPERA_CHECKS_NAME: run2,
+					QORPERA_CHECKS_PERSIST_DIR: pdir,
+				},
+				src2,
+			);
+			expect(dropOut.code).toBe(0);
+			expect(await m.exists(pdir)).toBe(false);
 		});
 	});
 });

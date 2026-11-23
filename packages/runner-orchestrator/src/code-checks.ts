@@ -1,81 +1,51 @@
-import { CODE_CHECKS_FILE, type CodeCommitFile } from "./code-host-jobs.ts";
 import {
-	CODE_CHECKS_DRILL,
-	type CodeSiteCollected,
-	type CodeSiteProblem,
-	codeSiteFolderValid,
-	codeSiteNameRefusal,
-	codeSiteTitleValid,
-} from "./code-site.ts";
+	CODE_CHECK_NAME_PATTERN,
+	type CodeCheck,
+	type CodeCheckArtifactFormat,
+	type CodeCheckArtifacts,
+	type CodeCheckCache,
+	type CodeChecksProblem,
+	type CodePreviewRecipe,
+	type CodeSiteKind,
+	type CodeSiteRecipe,
+	type CodeSurfaceGate,
+	codeChecksWallBudget,
+	type FailedTestCase,
+	filterCodeChecksByPaths,
+	MAX_CODE_CHECKS,
+	MAX_PARALLEL_CHECKS,
+	matchCheckGlob,
+	parseCheckFailureArtifacts,
+	parseCodeChecksBytes,
+	codeChecksPlan as planCodeChecks,
+} from "@qorpera/contracts";
+import { CODE_CHECKS_FILE, type CodeCommitFile } from "./code-host-jobs.ts";
+import { CODE_CHECKS_DRILL, type CodeSiteCollected, type CodeSiteProblem } from "./code-site.ts";
 import { bytes, cut, halfCharacter, shown, unseen } from "./code-words.ts";
-import { CodingJsonSyntaxError, parseCodingJson } from "./coding-setup.ts";
 
-export type { CodeCommitFile };
-
-/** A repository's checks (own code storage, step 3): the commands Qorpera runs on a clean copy of what would go into
- * its default branch, before it goes in. This file holds what is pure of them: the checks file's rules, the gate, the
- * row's value for a run that passed, and the words a failed turn reports. From step 4 the file may also say where the
- * checks leave the repository's website (`site`; its rules and commands are `code-site.ts`'). */
-
-const MAX_CODE_CHECKS_FILE_BYTES = 16 * 1024;
-const MAX_CODE_CHECKS = 20;
-const CODE_CHECK_DEFAULT_SECONDS = 600;
-const CODE_CHECK_MAX_SECONDS = 1800;
-const CODE_CHECKS_TOTAL_SECONDS = 3600;
-const CODE_CHECK_MIN_SECONDS = 10;
-const MAX_RUN_BYTES = 4096;
-const MAX_CWD_BYTES = 300;
-
-export const MAX_PARALLEL_CHECKS = 4;
-
-/** One check: `run` is a bash command run from `cwd`, a folder of the repository ("." is its top). */
-export interface CodeCheck {
-	readonly name: string;
-	readonly run: string;
-	readonly timeoutSeconds: number;
-	readonly cwd: string;
-	readonly needs?: readonly string[];
-}
-
-/** One problem with the checks file. Any problem refuses the whole file. */
-export interface CodeChecksProblem {
-	/** A JSON pointer into the file; "" is the whole file. */
-	readonly at: string;
-	readonly code: string;
-	readonly message: string;
-}
-
-/** A repository's website (own code storage, step 4; STEP4-RELEASES-PLAN.md 5.1): the folder of the repository its
- * checks leave the built site in (`.` is its top), the site's name (its link's last part, used once, when the site is
- * made) and its title, each null when the file leaves it out. */
-export type CodeSiteKind = "static" | "server" | "hybrid";
-
-export interface CodeSiteRecipe {
-	readonly folder: string;
-	readonly name: string | null;
-	readonly title: string | null;
-	readonly kind?: CodeSiteKind;
-	readonly dockerfile?: string | null;
-	readonly port?: number;
-	readonly healthPath?: string;
-	readonly idleTimeoutSec?: number;
-	readonly memoryMb?: number;
-	readonly vcpuLimit?: number;
-	readonly spaFallback?: string | null;
-}
-
-export interface CodePreviewRecipe {
-	readonly run: string;
-	readonly folder: string | null;
-	readonly cwd: string;
-	readonly timeoutSeconds: number;
-}
-
-export type CodeSurfaceGate = "none" | "stage";
+export {
+	codeChecksWallBudget,
+	filterCodeChecksByPaths,
+	MAX_PARALLEL_CHECKS,
+	matchCheckGlob,
+	parseCheckFailureArtifacts,
+};
+export type {
+	CodeCheck,
+	CodeCheckArtifactFormat,
+	CodeCheckArtifacts,
+	CodeCheckCache,
+	CodeChecksProblem,
+	CodeCommitFile,
+	CodePreviewRecipe,
+	CodeSiteKind,
+	CodeSiteRecipe,
+	CodeSurfaceGate,
+	FailedTestCase,
+};
 
 export type CodeChecksRead =
 	| { readonly state: "missing" }
-	/** `site` is the file's recipe, null without one. */
 	| {
 			readonly state: "ok";
 			readonly blob: string;
@@ -83,8 +53,10 @@ export type CodeChecksRead =
 			readonly site: CodeSiteRecipe | null;
 			readonly preview?: CodePreviewRecipe;
 			readonly surfaceGate?: CodeSurfaceGate;
+			readonly maxParallel?: number;
+			readonly failFast?: boolean;
+			readonly caches?: readonly CodeCheckCache[];
 	  }
-	/** `blob` is null when the path holds no regular file (a folder, a link or a submodule). */
 	| { readonly state: "refused"; readonly blob: string | null; readonly problems: readonly CodeChecksProblem[] };
 
 export interface CodeChecksChanged {
@@ -93,33 +65,47 @@ export interface CodeChecksChanged {
 	readonly run: string[];
 }
 
+export interface CodeChecksGateMeta {
+	readonly maxParallel?: number;
+	readonly failFast?: boolean;
+	readonly caches?: readonly CodeCheckCache[];
+	readonly checksChanged: boolean;
+	readonly allowCacheSave?: boolean;
+}
+
 export type CodeChecksGate =
 	| {
 			readonly gate: "run";
 			readonly checks: readonly CodeCheck[];
 			readonly blob: string;
 			readonly changed: CodeChecksChanged | null;
-			/** The candidate's recipe (null: no site). */
 			readonly site: CodeSiteRecipe | null;
+			readonly maxParallel?: number;
+			readonly failFast?: boolean;
+			readonly caches?: readonly CodeCheckCache[];
 	  }
 	| { readonly gate: "refused"; readonly summary: string };
 
-/** One run of the checks on one candidate. `run` strings are cut to 200 bytes; `tail` is `codeChecksTail` of the
- * failing check's masked output; `log` is the path of its whole output on the session's machine. A run that passed
- * says what became of the site (step 4): null when there was none to take (no recipe, or sites switched off). A run
- * whose checks passed but whose site the code made wrong is `site_refused` (`CodeChecksSiteRefused`). */
+export interface CodeCheckPassedEntry {
+	name: string;
+	run: string;
+	ms: number;
+	skipped?: "paths_unmatched";
+}
+
 export type CodeChecksRun =
 	| {
 			state: "passed";
 			ms: number;
 			copyMs: number;
-			checks: { name: string; run: string; ms: number }[];
+			checks: CodeCheckPassedEntry[];
 			site: CodeSiteCollected | null;
+			artifactsDir?: string;
 	  }
 	| {
 			state: "failed";
 			ms: number;
-			passed: { name: string; ms: number }[];
+			passed: { name: string; ms: number; skipped?: "paths_unmatched" }[];
 			failed: {
 				name: string;
 				run: string;
@@ -128,34 +114,30 @@ export type CodeChecksRun =
 				atLimit: boolean;
 				tail: string;
 				log: string;
+				failedTests?: readonly FailedTestCase[];
+				persistedLog?: string;
+				artifactsDir?: string;
 			};
 			notRun: string[];
 	  }
 	| { state: "not_run"; why: "copy" | "machine" | "transport" | "authority" | "budget"; code: string }
 	| CodeChecksSiteRefused;
 
-/** A run whose checks all passed, but whose site the code made wrong (step 4; STEP4-RELEASES-PLAN.md 8.1): nothing goes
- * in, and the turn fails with `codeSiteRefusedSummary`'s words. */
 export interface CodeChecksSiteRefused {
 	state: "site_refused";
 	ms: number;
-	checks: { name: string; run: string; ms: number }[];
+	checks: CodeCheckPassedEntry[];
 	problem: CodeSiteProblem;
 }
 
-const NAME = /^[a-z0-9][a-z0-9._-]{0,39}$/;
 const SHA = /^[0-9a-f]{40}$/;
-const UNKNOWN = "This key is not in the checks file's schema.";
 
-type Refuse = (at: string, code: string, message: string) => void;
+const GATE_META = new WeakMap<object, CodeChecksGateMeta>();
 
-/** The checks file as git holds it at one commit, read under its rules: JSON with comments and no trailing commas
- * (the setup file's reader), one object whose only keys are `$schema`, `checks` and `site`; 1 to 20 checks, each with a
- * unique name, a command of 1 to 4096 bytes without NUL, a time limit of 10 to 1800 s (600 when left out) and a folder
- * of the repository ("." when left out); the limits at most 3600 s together. `site`, when there, is the repository's
- * website (`CodeSiteRecipe`): an object with `folder` (a folder of the repository as the kernel keeps a site's), and
- * optionally `name` (a site's name) and `title` (1 to 120 characters on one line, no space at either end:
- * `SITE_TITLE`). A file that breaks any rule is refused whole, with every problem found. */
+export function codeChecksGateMetadata(checks: readonly CodeCheck[]): CodeChecksGateMeta | undefined {
+	return GATE_META.get(checks) ?? (checks[0] !== undefined ? GATE_META.get(checks[0]) : undefined);
+}
+
 export function readCodeChecks(file: CodeCommitFile): CodeChecksRead {
 	const entry = file.entry;
 	if (entry.kind === "missing") return { state: "missing" };
@@ -173,9 +155,8 @@ export function readCodeChecks(file: CodeCommitFile): CodeChecksRead {
 		};
 	const blob = file.blob;
 	if (typeof blob !== "string" || !SHA.test(blob)) throw new Error("INVALID_CODE_COMMIT_FILE");
-	const problems: CodeChecksProblem[] = [];
-	const parsed = parseChecks(entry.bytes, (at, code, message) => problems.push({ at, code, message }));
-	if (problems.length > 0 || parsed === null) return { state: "refused", blob, problems };
+	const parsed = parseCodeChecksBytes(entry.bytes);
+	if (!parsed.ok) return { state: "refused", blob, problems: parsed.problems };
 	return {
 		state: "ok",
 		blob,
@@ -183,456 +164,41 @@ export function readCodeChecks(file: CodeCommitFile): CodeChecksRead {
 		site: parsed.site,
 		...(parsed.preview !== undefined ? { preview: parsed.preview } : {}),
 		...(parsed.surfaceGate !== undefined ? { surfaceGate: parsed.surfaceGate } : {}),
+		...(parsed.maxParallel !== undefined ? { maxParallel: parsed.maxParallel } : {}),
+		...(parsed.failFast !== undefined ? { failFast: parsed.failFast } : {}),
+		...(parsed.caches !== undefined ? { caches: parsed.caches } : {}),
 	};
-}
-
-function parseChecks(
-	bytes: Uint8Array,
-	refuse: Refuse,
-): {
-	checks: CodeCheck[];
-	site: CodeSiteRecipe | null;
-	preview?: CodePreviewRecipe;
-	surfaceGate?: CodeSurfaceGate;
-} | null {
-	if (bytes.byteLength > MAX_CODE_CHECKS_FILE_BYTES) {
-		refuse("", "TOO_LARGE", "The checks file is over 16 KiB.");
-		return null;
-	}
-	let text: string;
-	try {
-		text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-	} catch {
-		refuse("", "NOT_UTF8", "The checks file is not UTF-8 text.");
-		return null;
-	}
-	let root: unknown;
-	try {
-		root = parseCodingJson(text, false);
-	} catch (error) {
-		if (!(error instanceof CodingJsonSyntaxError)) throw error;
-		const before = text.slice(0, error.index);
-		const line = before.split("\n").length;
-		const column = error.index - before.lastIndexOf("\n");
-		refuse("", "SYNTAX", `Line ${line}, column ${column}: ${error.message}`);
-		return null;
-	}
-	if (!isObject(root)) {
-		refuse("", "WRONG_TYPE", "The checks file must hold one JSON object.");
-		return null;
-	}
-	let checks: CodeCheck[] = [];
-	let site: CodeSiteRecipe | null = null;
-	let preview: CodePreviewRecipe | undefined;
-	let surfaceGate: CodeSurfaceGate | undefined;
-	for (const [key, value] of Object.entries(root)) {
-		const at = pointer("", key);
-		if (key === "$schema") {
-			if (typeof value !== "string") refuse(at, "WRONG_TYPE", "Must be a string.");
-		} else if (key === "checks") checks = checksOf(value, at, refuse);
-		else if (key === "site") site = siteOf(value, at, refuse);
-		else if (key === "preview") preview = previewOf(value, at, refuse);
-		else if (key === "surfaceGate") {
-			if (typeof value !== "string") refuse(at, "WRONG_TYPE", "Must be a string.");
-			else if (value === "none" || value === "stage") surfaceGate = value;
-			else refuse(at, "INVALID_VALUE", 'Must be "none" or "stage".');
-		} else refuse(at, "UNKNOWN_KEY", UNKNOWN);
-	}
-	if (!("checks" in root)) refuse("", "MISSING_KEY", "Needs checks.");
-	return {
-		checks,
-		site,
-		...(preview !== undefined ? { preview } : {}),
-		...(surfaceGate !== undefined ? { surfaceGate } : {}),
-	};
-}
-
-const PREVIEW_DEFAULT_SECONDS = 180;
-const PREVIEW_MAX_SECONDS = 600;
-
-function previewOf(value: unknown, at: string, refuse: Refuse): CodePreviewRecipe | undefined {
-	if (!isObject(value)) {
-		refuse(at, "WRONG_TYPE", "Must be an object.");
-		return undefined;
-	}
-	let run: string | null = null;
-	let folder: string | null = null;
-	let cwd = ".";
-	let timeoutSeconds = PREVIEW_DEFAULT_SECONDS;
-	for (const [key, field] of Object.entries(value)) {
-		const fieldAt = pointer(at, key);
-		if (key === "run") {
-			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (field.trim() === "" || bytes(field) > MAX_RUN_BYTES || field.includes("\0"))
-				refuse(fieldAt, "INVALID_VALUE", `Must be 1 to ${MAX_RUN_BYTES} bytes, without a NUL character.`);
-			else run = field;
-		} else if (key === "folder") {
-			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (codeSiteFolderValid(field)) folder = field;
-			else
-				refuse(
-					fieldAt,
-					"INVALID_PATH",
-					'Must be "." or a folder of the repository: a relative path without . or .. parts, at most 300 bytes.',
-				);
-		} else if (key === "cwd") {
-			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (!isFolder(field))
-				refuse(
-					fieldAt,
-					"INVALID_PATH",
-					`Must be a folder of the repository: a relative path without . or .. parts, at most ${MAX_CWD_BYTES} bytes.`,
-				);
-			else cwd = field;
-		} else if (key === "timeoutSeconds") {
-			if (
-				typeof field !== "number" ||
-				!Number.isInteger(field) ||
-				field < CODE_CHECK_MIN_SECONDS ||
-				field > PREVIEW_MAX_SECONDS
-			)
-				refuse(
-					fieldAt,
-					"INVALID_VALUE",
-					`Must be a whole number of seconds from ${CODE_CHECK_MIN_SECONDS} to ${PREVIEW_MAX_SECONDS}.`,
-				);
-			else timeoutSeconds = field;
-		} else {
-			refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN);
-		}
-	}
-	if (!("run" in value)) refuse(at, "MISSING_KEY", "Needs run.");
-	return run === null ? undefined : { run, folder, cwd, timeoutSeconds };
-}
-
-/** The `site` key (STEP4-RELEASES-PLAN.md 5.1): what the kernel keeps of a made site, so that a recipe this reads is
- * never one a report cannot carry. */
-function siteOf(value: unknown, at: string, refuse: Refuse): CodeSiteRecipe | null {
-	if (!isObject(value)) {
-		refuse(at, "WRONG_TYPE", "Must be an object.");
-		return null;
-	}
-	let folder: string | null = null;
-	let name: string | null = null;
-	let title: string | null = null;
-	let kind: CodeSiteKind | undefined;
-	let dockerfile: string | null | undefined;
-	let port: number | undefined;
-	let healthPath: string | undefined;
-	let idleTimeoutSec: number | undefined;
-	let memoryMb: number | undefined;
-	let vcpuLimit: number | undefined;
-	let spaFallback: string | null | undefined;
-	for (const [key, field] of Object.entries(value)) {
-		const fieldAt = pointer(at, key);
-		if (key === "folder" || key === "name" || key === "title") {
-			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (key === "folder") {
-				if (codeSiteFolderValid(field)) folder = field;
-				else
-					refuse(
-						fieldAt,
-						"INVALID_PATH",
-						'Must be "." or a folder of the repository: a relative path without . or .. parts, at most 300 bytes.',
-					);
-			} else if (key === "name") {
-				const refused = codeSiteNameRefusal(field);
-				if (refused === null) name = field;
-				else refuse(fieldAt, "INVALID_VALUE", refused);
-			} else if (field.startsWith(" ") || field.endsWith(" "))
-				refuse(fieldAt, "SITE_TITLE", "Must not start or end with a space.");
-			else if (codeSiteTitleValid(field)) title = field;
-			else refuse(fieldAt, "INVALID_VALUE", "Must be 1 to 120 characters on one line.");
-		} else if (key === "kind") {
-			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (field === "static" || field === "server" || field === "hybrid") kind = field;
-			else refuse(fieldAt, "INVALID_VALUE", 'Must be "static", "server", or "hybrid".');
-		} else if (key === "dockerfile") {
-			if (field === null) dockerfile = null;
-			else if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (field !== "." && codeSiteFolderValid(field)) dockerfile = field;
-			else refuse(fieldAt, "INVALID_PATH", "Must be a relative file path without . or .. parts, at most 300 bytes.");
-		} else if (key === "port") {
-			if (typeof field !== "number" || !Number.isInteger(field) || field < 1 || field > 65535)
-				refuse(fieldAt, "INVALID_VALUE", "Must be a whole port number from 1 to 65535.");
-			else port = field;
-		} else if (key === "healthPath") {
-			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (field.length < 1 || field.length > 256 || !field.startsWith("/") || /[\s\x00-\x1f\x7f]/.test(field))
-				refuse(fieldAt, "INVALID_VALUE", "Must start with / and contain 1 to 256 non-space characters.");
-			else healthPath = field;
-		} else if (key === "idleTimeoutSec") {
-			if (typeof field !== "number" || !Number.isInteger(field) || field < 0 || field > 86400)
-				refuse(fieldAt, "INVALID_VALUE", "Must be a whole number of seconds from 0 to 86400.");
-			else idleTimeoutSec = field;
-		} else if (key === "memoryMb") {
-			if (typeof field !== "number" || !Number.isInteger(field) || field < 64 || field > 8192)
-				refuse(fieldAt, "INVALID_VALUE", "Must be a whole number of megabytes from 64 to 8192.");
-			else memoryMb = field;
-		} else if (key === "vcpuLimit") {
-			if (typeof field !== "number" || !Number.isFinite(field) || field < 0.25 || field > 8)
-				refuse(fieldAt, "INVALID_VALUE", "Must be a number from 0.25 to 8.");
-			else vcpuLimit = field;
-		} else if (key === "spaFallback") {
-			if (field === null) spaFallback = null;
-			else if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (field !== "." && field.length <= 512 && codeSiteFolderValid(field)) spaFallback = field;
-			else refuse(fieldAt, "INVALID_PATH", "Must be a relative path such as index.html without . or .. parts.");
-		} else {
-			refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN);
-		}
-	}
-	const effectiveKind = kind ?? "static";
-	if (!("folder" in value)) {
-		if (effectiveKind === "server") folder = ".";
-		else refuse(at, "MISSING_KEY", "Needs folder.");
-	}
-	if (folder === null) return null;
-	const recipe: CodeSiteRecipe = {
-		folder,
-		name,
-		title,
-		...(kind !== undefined ? { kind } : {}),
-		...(dockerfile !== undefined ? { dockerfile } : {}),
-		...(port !== undefined ? { port } : {}),
-		...(healthPath !== undefined ? { healthPath } : {}),
-		...(idleTimeoutSec !== undefined ? { idleTimeoutSec } : {}),
-		...(memoryMb !== undefined ? { memoryMb } : {}),
-		...(vcpuLimit !== undefined ? { vcpuLimit } : {}),
-		...(spaFallback !== undefined ? { spaFallback } : {}),
-	};
-	return recipe;
-}
-
-function checksOf(value: unknown, at: string, refuse: Refuse): CodeCheck[] {
-	if (!Array.isArray(value)) {
-		refuse(at, "WRONG_TYPE", "Must be an array.");
-		return [];
-	}
-	if (value.length < 1 || value.length > MAX_CODE_CHECKS)
-		refuse(at, "INVALID_VALUE", `Must hold 1 to ${MAX_CODE_CHECKS} checks.`);
-	const checks: CodeCheck[] = [];
-	const parsed: { name: string | null; needs: readonly { name: string; at: string }[] }[] = [];
-	const names = new Set<string>();
-	let total = 0;
-	for (const [index, item] of value.entries()) {
-		const itemAt = pointer(at, index);
-		if (!isObject(item)) {
-			refuse(itemAt, "WRONG_TYPE", "Must be an object.");
-			continue;
-		}
-		let name: string | null = null;
-		let run: string | null = null;
-		let timeoutSeconds = CODE_CHECK_DEFAULT_SECONDS;
-		let cwd = ".";
-		let needs: string[] | undefined;
-		const needsEntries: { name: string; at: string }[] = [];
-		for (const [key, field] of Object.entries(item)) {
-			const fieldAt = pointer(itemAt, key);
-			if (key === "name") {
-				if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-				else if (!NAME.test(field))
-					refuse(
-						fieldAt,
-						"INVALID_VALUE",
-						"Must be 1 to 40 of a-z, 0-9, '.', '_' and '-', starting with a letter or a digit.",
-					);
-				else if (names.has(field)) refuse(fieldAt, "DUPLICATE", `The name "${field}" is given twice.`);
-				else {
-					names.add(field);
-					name = field;
-				}
-			} else if (key === "run") {
-				if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-				else if (field === "" || bytes(field) > MAX_RUN_BYTES || field.includes("\0"))
-					refuse(fieldAt, "INVALID_VALUE", `Must be 1 to ${MAX_RUN_BYTES} bytes, without a NUL character.`);
-				else run = field;
-			} else if (key === "timeoutSeconds") {
-				if (
-					typeof field !== "number" ||
-					!Number.isInteger(field) ||
-					field < CODE_CHECK_MIN_SECONDS ||
-					field > CODE_CHECK_MAX_SECONDS
-				)
-					refuse(
-						fieldAt,
-						"INVALID_VALUE",
-						`Must be a whole number of seconds from ${CODE_CHECK_MIN_SECONDS} to ${CODE_CHECK_MAX_SECONDS}.`,
-					);
-				else timeoutSeconds = field;
-			} else if (key === "cwd") {
-				if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-				else if (!isFolder(field))
-					refuse(
-						fieldAt,
-						"INVALID_PATH",
-						`Must be a folder of the repository: a relative path without . or .. parts, at most ${MAX_CWD_BYTES} bytes.`,
-					);
-				else cwd = field;
-			} else if (key === "needs") {
-				if (!Array.isArray(field)) refuse(fieldAt, "WRONG_TYPE", "Must be an array.");
-				else {
-					const listed: string[] = [];
-					const seen = new Set<string>();
-					for (const [depIndex, dep] of field.entries()) {
-						const depAt = pointer(fieldAt, depIndex);
-						if (typeof dep !== "string") refuse(depAt, "WRONG_TYPE", "Must be a string.");
-						else if (!NAME.test(dep))
-							refuse(
-								depAt,
-								"INVALID_VALUE",
-								"Must be 1 to 40 of a-z, 0-9, '.', '_' and '-', starting with a letter or a digit.",
-							);
-						else if (seen.has(dep)) refuse(depAt, "DUPLICATE", `The check "${dep}" is listed twice in needs.`);
-						else {
-							seen.add(dep);
-							listed.push(dep);
-							needsEntries.push({ name: dep, at: depAt });
-						}
-					}
-					needs = listed;
-				}
-			} else refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN);
-		}
-		if (!("name" in item)) refuse(itemAt, "MISSING_KEY", "Needs name.");
-		if (!("run" in item)) refuse(itemAt, "MISSING_KEY", "Needs run.");
-		total += timeoutSeconds;
-		parsed.push({ name, needs: needsEntries });
-		if (name !== null && run !== null)
-			checks.push(
-				needs === undefined ? { name, run, timeoutSeconds, cwd } : { name, run, timeoutSeconds, cwd, needs },
-			);
-	}
-	const edges = new Map<string, string[]>();
-	for (const entry of parsed) {
-		const validDeps: string[] = [];
-		for (const dep of entry.needs) {
-			if (entry.name !== null && dep.name === entry.name)
-				refuse(dep.at, "INVALID_VALUE", `The check "${dep.name}" cannot depend on itself.`);
-			else if (!names.has(dep.name)) refuse(dep.at, "INVALID_VALUE", `No check is named "${dep.name}".`);
-			else validDeps.push(dep.name);
-		}
-		if (entry.name !== null) edges.set(entry.name, validDeps);
-	}
-	const cycle = findCheckCycle(edges);
-	if (cycle !== null) refuse(at, "CYCLE", `The checks form a dependency cycle: ${cycle.join(" -> ")}.`);
-	if (total > CODE_CHECKS_TOTAL_SECONDS)
-		refuse(
-			at,
-			"TOO_LONG",
-			`The time limits add up to ${total} s; all checks together may take at most ${CODE_CHECKS_TOTAL_SECONDS} s.`,
-		);
-	return checks;
-}
-
-function findCheckCycle(edges: ReadonlyMap<string, readonly string[]>): string[] | null {
-	const state = new Map<string, 1 | 2>();
-	const stack: string[] = [];
-	const visit = (node: string): string[] | null => {
-		state.set(node, 1);
-		stack.push(node);
-		for (const dep of edges.get(node) ?? []) {
-			const seen = state.get(dep);
-			if (seen === 1) return [...stack.slice(stack.indexOf(dep)), dep];
-			if (seen === undefined) {
-				const cycle = visit(dep);
-				if (cycle !== null) return cycle;
-			}
-		}
-		stack.pop();
-		state.set(node, 2);
-		return null;
-	};
-	for (const name of edges.keys()) {
-		if (state.has(name)) continue;
-		const cycle = visit(name);
-		if (cycle !== null) return cycle;
-	}
-	return null;
 }
 
 export function codeChecksPlan(checks: readonly CodeCheck[]): readonly (readonly number[])[] | null {
-	if (checks.length === 0) return [];
-	if (!checks.some((check) => check.needs !== undefined))
-		return checks.map((_, index) => (index === 0 ? [] : [index - 1]));
-	const last = checks.at(-1);
-	const earlier = checks.slice(0, -1);
-	const hasTrailingDrill =
-		last !== undefined &&
-		last.needs === undefined &&
-		last.name === CODE_CHECKS_DRILL.name &&
-		last.run === CODE_CHECKS_DRILL.run &&
-		last.timeoutSeconds === CODE_CHECKS_DRILL.timeoutSeconds &&
-		last.cwd === CODE_CHECKS_DRILL.cwd &&
-		(earlier.some((check) => check.name === CODE_CHECKS_DRILL.name) ||
-			!earlier.some((check) => check.needs?.includes(CODE_CHECKS_DRILL.name)));
-	const repoCount = hasTrailingDrill ? checks.length - 1 : checks.length;
-	const indexByName = new Map<string, number>();
-	for (let index = 0; index < repoCount; index++) {
-		const check = checks[index] as CodeCheck;
-		if (indexByName.has(check.name)) return null;
-		indexByName.set(check.name, index);
-	}
-	const dependencies: number[][] = [];
-	for (let index = 0; index < repoCount; index++) {
-		const check = checks[index] as CodeCheck;
-		const seen = new Set<number>();
-		const deps: number[] = [];
-		for (const depName of check.needs ?? []) {
-			const depIndex = indexByName.get(depName);
-			if (depIndex === undefined || depIndex === index) return null;
-			if (!seen.has(depIndex)) {
-				seen.add(depIndex);
-				deps.push(depIndex);
-			}
-		}
-		dependencies.push(deps);
-	}
-	if (hasTrailingDrill) dependencies.push(Array.from({ length: repoCount }, (_, index) => index));
-	const indegree = dependencies.map((deps) => deps.length);
-	const dependents: number[][] = Array.from({ length: checks.length }, () => []);
-	for (let index = 0; index < dependencies.length; index++) {
-		for (const dep of dependencies[index] as readonly number[]) dependents[dep]?.push(index);
-	}
-	const ready: number[] = [];
-	for (let index = 0; index < indegree.length; index++) if (indegree[index] === 0) ready.push(index);
-	let visited = 0;
-	while (ready.length > 0) {
-		const current = ready.shift() as number;
-		visited++;
-		for (const next of dependents[current] as readonly number[]) {
-			indegree[next] = (indegree[next] as number) - 1;
-			if (indegree[next] === 0) ready.push(next);
-		}
-	}
-	return visited === checks.length ? dependencies : null;
+	return planCodeChecks(checks, CODE_CHECKS_DRILL);
 }
 
-/** "." (the top), or a relative path of the repository with no empty, `.` or `..` part (so no leading or trailing `/`
- * either), no control character and no backslash. */
-function isFolder(path: string): boolean {
-	if (path === ".") return true;
-	if (bytes(path) > MAX_CWD_BYTES) return false;
-	for (let index = 0; index < path.length; index++) {
-		const code = path.charCodeAt(index);
-		if (code < 0x20 || code === 0x7f || code === 0x5c) return false;
-	}
-	return path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
-}
-
-/** The gate (a `to-check` answer: at least one of the two reads is not missing). A candidate whose file is valid runs
- * its checks, whatever main has, and its recipe says what site they leave (main's never counts). A repository that has
- * a checks file keeps one: a candidate with no regular file there is refused. A candidate whose file has problems is
- * refused with them. */
 export function codeChecksGate(main: CodeChecksRead, candidate: CodeChecksRead): CodeChecksGate {
-	if (candidate.state === "ok")
+	if (candidate.state === "ok") {
+		const changed = changedOf(main.state === "ok" ? main.checks : [], candidate.checks);
+		const checks = candidate.checks.map((check) => ({ ...check }));
+		const checksChanged = main.state !== "ok" || main.blob !== candidate.blob || changed !== null;
+		const meta: CodeChecksGateMeta = {
+			...(candidate.maxParallel !== undefined ? { maxParallel: candidate.maxParallel } : {}),
+			...(candidate.failFast !== undefined ? { failFast: candidate.failFast } : {}),
+			...(candidate.caches !== undefined ? { caches: candidate.caches } : {}),
+			checksChanged,
+		};
+		// WHY: code-host-repositories.ts forwards gate.checks (or [...gate.checks, drill]) to runChecks without extra args.
+		GATE_META.set(checks, meta);
+		if (checks[0] !== undefined) GATE_META.set(checks[0], meta);
 		return {
 			gate: "run",
-			checks: candidate.checks,
+			checks,
 			blob: candidate.blob,
-			changed: changedOf(main.state === "ok" ? main.checks : [], candidate.checks),
+			changed,
 			site: candidate.site,
+			...(candidate.maxParallel !== undefined ? { maxParallel: candidate.maxParallel } : {}),
+			...(candidate.failFast !== undefined ? { failFast: candidate.failFast } : {}),
+			...(candidate.caches !== undefined ? { caches: candidate.caches } : {}),
 		};
+	}
 	if (main.state === "missing" && candidate.state === "missing") throw new Error("CODE_CHECKS_NOTHING_TO_CHECK");
 	return { gate: "refused", summary: codeChecksRefusedSummary(candidate, main.state !== "missing") };
 }
@@ -651,7 +217,7 @@ function effectiveNeedsOf(checks: readonly CodeCheck[]): ReadonlyMap<string, rea
 	return depsByName;
 }
 
-function sameNeeds(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+function sameStringSet(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
 	if (a === undefined || b === undefined) return a === b;
 	if (a.length !== b.length) return false;
 	const left = [...a].sort();
@@ -659,7 +225,22 @@ function sameNeeds(a: readonly string[] | undefined, b: readonly string[] | unde
 	return left.every((name, index) => name === right[index]);
 }
 
-/** Against main's valid file (else every check counts as added). Null when nothing changed. */
+function sameEnv(
+	a: Readonly<Record<string, string>> | undefined,
+	b: Readonly<Record<string, string>> | undefined,
+): boolean {
+	if (a === undefined || b === undefined) return a === b;
+	const aKeys = Object.keys(a).sort();
+	const bKeys = Object.keys(b).sort();
+	if (aKeys.length !== bKeys.length) return false;
+	return aKeys.every((key, index) => key === bKeys[index] && a[key] === b[key]);
+}
+
+function sameArtifacts(a: CodeCheckArtifacts | undefined, b: CodeCheckArtifacts | undefined): boolean {
+	if (a === undefined || b === undefined) return a === b;
+	return a.when === b.when && a.format === b.format && sameStringSet(a.paths, b.paths);
+}
+
 function changedOf(main: readonly CodeCheck[], candidate: readonly CodeCheck[]): CodeChecksChanged | null {
 	const before = new Map(main.map((check) => [check.name, check]));
 	const beforeNeeds = effectiveNeedsOf(main);
@@ -674,7 +255,15 @@ function changedOf(main: readonly CodeCheck[], candidate: readonly CodeCheck[]):
 			was.run !== check.run ||
 			was.cwd !== check.cwd ||
 			was.timeoutSeconds !== check.timeoutSeconds ||
-			!sameNeeds(beforeNeeds.get(check.name), afterNeeds.get(check.name))
+			!sameStringSet(beforeNeeds.get(check.name), afterNeeds.get(check.name)) ||
+			(was.exclusive ?? false) !== (check.exclusive ?? false) ||
+			(was.retries ?? 0) !== (check.retries ?? 0) ||
+			!sameStringSet(was.paths, check.paths) ||
+			!sameStringSet(was.pathsIgnore, check.pathsIgnore) ||
+			(was.alwaysRun ?? false) !== (check.alwaysRun ?? false) ||
+			!sameEnv(was.env, check.env) ||
+			!sameStringSet(was.secrets, check.secrets) ||
+			!sameArtifacts(was.artifacts, check.artifacts)
 		)
 			run.push(check.name);
 	}
@@ -682,15 +271,9 @@ function changedOf(main: readonly CodeCheck[], candidate: readonly CodeCheck[]):
 	return added.length > 0 || removed.length > 0 || run.length > 0 ? { added, removed, run } : null;
 }
 
-// The row's value -----------------------------------------------------------------------------------------------------
-
 const MAX_PASSED_RUN_BYTES = 200;
-/** The row's `checks` is at most 8 KiB as Postgres stores it (`pg_column_size`). */
 const MAX_PASSED_ROW_BYTES = 8192;
 
-/** The change row's `checks` for a run that passed on `commit` (the row's `main_after`; `blob` is the checks file's
- * blob there). Each `run` is cut to 200 bytes at whole characters. A file's checks always fit the row so; were the
- * value still over 8 KiB, every `run` is cut shorter until it fits. A value the row cannot hold throws. */
 export function codeChecksPassed(value: {
 	commit: string;
 	how: "fast-forward" | "merged";
@@ -701,7 +284,9 @@ export function codeChecksPassed(value: {
 }): Record<string, unknown> {
 	const { commit, how, blob, run, changed, tries } = value;
 	const names = (list: readonly string[], least: number) =>
-		list.length >= least && list.length <= MAX_CODE_CHECKS && list.every((name) => NAME.test(name));
+		list.length >= least &&
+		list.length <= MAX_CODE_CHECKS &&
+		list.every((name) => CODE_CHECK_NAME_PATTERN.test(name));
 	if (
 		!SHA.test(commit) ||
 		!SHA.test(blob) ||
@@ -711,6 +296,7 @@ export function codeChecksPassed(value: {
 			run.checks.map((check) => check.name),
 			1,
 		) ||
+		run.checks.some((check) => check.skipped !== undefined && check.skipped !== "paths_unmatched") ||
 		(changed !== null && !(names(changed.added, 0) && names(changed.removed, 0) && names(changed.run, 0)))
 	)
 		throw new Error("INVALID_CODE_CHECKS_RESULT");
@@ -722,49 +308,40 @@ export function codeChecksPassed(value: {
 			file: blob,
 			ms: millis(run.ms),
 			copyMs: millis(run.copyMs),
-			checks: run.checks.map((check) => ({ name: check.name, run: cut(check.run, limit), ms: millis(check.ms) })),
+			checks: run.checks.map((check) => ({
+				name: check.name,
+				run: cut(check.run, limit),
+				ms: millis(check.ms),
+				...(check.skipped !== undefined ? { skipped: check.skipped } : {}),
+			})),
 			changed: changed && { added: [...changed.added], removed: [...changed.removed], run: [...changed.run] },
 			tries,
 		};
-		// The datum's own 4-byte length, then the value.
 		if (4 + jsonbBytes(result) <= MAX_PASSED_ROW_BYTES) return result;
 	}
 	throw new Error("INVALID_CODE_CHECKS_RESULT");
 }
 
-/** At least as many bytes as Postgres's jsonb takes for `value`, counting each part at its largest: a container's
- * header, its alignment and its entry in its parent, each key's entry and bytes, a string's bytes as they are (no
- * escapes), and a number as a numeric of up to 16 digits. */
 function jsonbBytes(value: unknown): number {
 	if (typeof value === "string") return 4 + bytes(value);
 	if (Array.isArray(value)) return 11 + value.reduce((sum: number, item) => sum + jsonbBytes(item), 0);
 	if (isObject(value))
 		return 11 + Object.entries(value).reduce((sum, [key, item]) => sum + 4 + bytes(key) + jsonbBytes(item), 0);
-	// A number: its entry, alignment, a 4-byte length, the numeric's header and four base-10000 digits.
 	return 4 + 3 + 4 + 2 + 8;
 }
 
-/** The longest a time can say: the kernel takes a whole number of at most 15 digits (qorpera_code_json_count). */
 const MAX_MILLIS = 999_999_999_999_999;
 
 function millis(ms: number): number {
 	return Number.isFinite(ms) && ms > 0 ? Math.min(Math.round(ms), MAX_MILLIS) : 0;
 }
 
-// The words of a failed turn --------------------------------------------------------------------------------------------
-
-/** The executor keeps its words within this, so the kernel's round sentence and the results file's line fit the 4,000
- * bytes of a turn's summary. */
 const MAX_SUMMARY_BYTES = 3500;
 const MAX_TAIL_LINES = 30;
 const MAX_TAIL_BYTES = 1500;
+const MAX_SUMMARY_FAILED_TESTS = 10;
 const INDENT = "    ";
 
-/** The end of a check's output as the words show it: at most 30 lines and 1,500 bytes of UTF-8, cut at whole lines from
- * the end (a last line that alone is longer keeps its end, after an ellipsis). `\r\n` is a line break; every other
- * control character, a separator some readers break a line at, a mark that turns the direction of text around and
- * half of a surrogate pair are shown as U+FFFD. Each line loses its trailing white space, and the empty lines at
- * either end go. Applied twice, it changes nothing more. */
 export function codeChecksTail(output: string): string {
 	let clean = "";
 	for (const character of output.replaceAll("\r\n", "\n")) {
@@ -776,8 +353,6 @@ export function codeChecksTail(output: string): string {
 	return lastLines(lines, MAX_TAIL_BYTES, 0).join("\n");
 }
 
-/** The last of `lines` (at most 30) that fit `max` bytes, each counted with `pad` bytes more and a line break between,
- * without the empty lines they start with. A last line that alone is over keeps its end. */
 function lastLines(lines: readonly string[], max: number, pad: number): string[] {
 	const kept: string[] = [];
 	let used = 0;
@@ -789,14 +364,13 @@ function lastLines(lines: readonly string[], max: number, pad: number): string[]
 			used += size;
 			continue;
 		}
-		if (kept.length === 0) kept.unshift(endOf(line, max - pad));
+		if (kept.length === 0 && max > pad + bytes("…")) kept.unshift(endOf(line, max - pad));
 		break;
 	}
 	while (kept.length > 0 && kept[0] === "") kept.shift();
 	return kept;
 }
 
-/** The end of `text` in at most `max` bytes, at a whole character, after an ellipsis. */
 function endOf(text: string, max: number): string {
 	const characters = Array.from(text);
 	let used = bytes("…");
@@ -808,6 +382,34 @@ function endOf(text: string, max: number): string {
 		from--;
 	}
 	return `…${characters.slice(from).join("")}`;
+}
+
+function formatFailedTestsBlock(tests: readonly FailedTestCase[], maxBytes: number): string {
+	if (tests.length === 0 || maxBytes < 60) return "";
+	const header = ` Failed tests (${tests.length}):\n\n`;
+	const limitBytes = maxBytes - 2;
+	let used = bytes(header);
+	const lines: string[] = [];
+	const limit = Math.min(tests.length, MAX_SUMMARY_FAILED_TESTS);
+	for (let index = 0; index < limit; index++) {
+		const item = tests[index]!;
+		const suite = item.suite ? `${shown(item.suite, 60)} › ` : "";
+		const name = shown(item.name, 80);
+		const location = item.file ? ` (${shown(item.file, 80)}${item.line !== undefined ? `:${item.line}` : ""})` : "";
+		const message = item.message ? `: ${shown(item.message, 120)}` : "";
+		const line = `${INDENT}- ${suite}${name}${location}${message}`;
+		const extra = bytes(line) + (lines.length > 0 ? 1 : 0);
+		if (used + extra > limitBytes) break;
+		lines.push(line);
+		used += extra;
+	}
+	if (lines.length === 0) return "";
+	const omitted = tests.length - lines.length;
+	if (omitted > 0) {
+		const more = `${INDENT}… and ${omitted} more failed test${omitted === 1 ? "" : "s"}`;
+		if (used + 1 + bytes(more) <= limitBytes) lines.push(more);
+	}
+	return `${header}${lines.join("\n")}\n\n`;
 }
 
 export type SurfaceStageChecksGate =
@@ -826,7 +428,21 @@ export function surfaceStageChecksGate(
 	const baseOptedIn = baseChecks.state === "ok" && baseChecks.surfaceGate === "stage";
 	if (headChecks.state === "ok") {
 		if (baseOptedIn || headChecks.surfaceGate === "stage") {
-			return { gate: "run", checks: headChecks.checks, blob: headChecks.blob };
+			const checks = headChecks.checks.map((check) => ({ ...check }));
+			const checksChanged =
+				baseChecks.state !== "ok" ||
+				baseChecks.blob !== headChecks.blob ||
+				changedOf(baseChecks.checks, headChecks.checks) !== null;
+			const meta: CodeChecksGateMeta = {
+				...(headChecks.maxParallel !== undefined ? { maxParallel: headChecks.maxParallel } : {}),
+				...(headChecks.failFast !== undefined ? { failFast: headChecks.failFast } : {}),
+				...(headChecks.caches !== undefined ? { caches: headChecks.caches } : {}),
+				checksChanged,
+				allowCacheSave: false,
+			};
+			GATE_META.set(checks, meta);
+			if (checks[0] !== undefined) GATE_META.set(checks[0], meta);
+			return { gate: "run", checks, blob: headChecks.blob };
 		}
 		return { gate: "skip" };
 	}
@@ -846,9 +462,6 @@ export function surfaceStageChecksGate(
 	return { gate: "skip" };
 }
 
-/** `CODING_CHECKS_FAILED`: a check of the repository failed on the candidate, so nothing went into main. At most 3,500
- * bytes: the output's end gives up its first lines when the rest needs the room. `opening` (an operator's drill's
- * words and a space) comes first and takes its room from the output's end. */
 export function codeChecksFailedSummary(
 	run: Extract<CodeChecksRun, { state: "failed" }>,
 	how: "fast-forward" | "merged",
@@ -864,28 +477,43 @@ export function codeChecksFailedSummary(
 		`${opening}${action}: the check "${shown(failed.name, 40)}" failed on this change` +
 		`${how === "merged" ? " merged with main as it is now" : ""}. It ran ${code(failed.run, MAX_PASSED_RUN_BYTES)} ` +
 		`and ${exit} after ${Math.round(millis(failed.ms) / 1000)} s${limit}${killed}.`;
-	const passed = run.passed.length > 0 ? ` Checks that passed: ${namesOf(run.passed)}.` : "";
+	const persisted = failed.persistedLog ? ` Full masked log saved at ${shown(failed.persistedLog, 200)}.` : "";
+	const ranPassed = run.passed.filter((entry) => entry.skipped === undefined);
+	const skippedChecks = run.passed.filter((entry) => entry.skipped !== undefined);
+	const nameBudget = ranPassed.length > 0 && skippedChecks.length > 0 ? 300 : 600;
+	const passed = ranPassed.length > 0 ? ` Checks that passed: ${namesOf(ranPassed, nameBudget)}.` : "";
+	const skipped =
+		skippedChecks.length > 0 ? ` Checks skipped (no matching changes): ${namesOf(skippedChecks, nameBudget)}.` : "";
 	const foot =
-		`Its whole output is in ${shown(failed.log, 200)} on the session's machine.${passed} Fix the cause in the code, ` +
+		`Its whole output is in ${shown(failed.log, 200)} on the session's machine.${persisted}${passed}${skipped} Fix the cause in the code, ` +
 		"never by removing or weakening the check or its tests; run the checks yourself from a clean copy, commit and " +
 		"finish again. [code=CODING_CHECKS_FAILED]";
 	const tail = codeChecksTail(failed.tail);
+	const failedTests = failed.failedTests ?? [];
 	const before = " The end of its output:\n\n";
 	const after = "\n\n";
-	const room = MAX_SUMMARY_BYTES - bytes(head) - bytes(before) - bytes(after) - bytes(foot);
-	const lines = tail === "" ? [] : lastLines(tail.split("\n"), room, INDENT.length);
-	if (lines.length === 0) return `${head} It wrote no output. ${foot}`;
+	const testsBudget =
+		failedTests.length > 0
+			? Math.min(1100, Math.max(0, MAX_SUMMARY_BYTES - bytes(head) - bytes(foot) - (tail ? 320 : 32)))
+			: 0;
+	const testsSection = formatFailedTestsBlock(failedTests, testsBudget);
+	const room = MAX_SUMMARY_BYTES - bytes(head) - bytes(testsSection) - bytes(before) - bytes(after) - bytes(foot);
+	const lines = tail === "" || room <= INDENT.length + 4 ? [] : lastLines(tail.split("\n"), room, INDENT.length);
+	if (lines.length === 0) {
+		if (testsSection) return `${head}${testsSection}${foot}`;
+		return `${head} It wrote no output. ${foot}`;
+	}
 	const block = lines.map((line) => (line === "" ? "" : `${INDENT}${line}`)).join("\n");
+	if (testsSection) return `${head}${testsSection}The end of its output:\n\n${block}${after}${foot}`;
 	return `${head}${before}${block}${after}${foot}`;
 }
 
-/** The names of the checks that passed, comma separated, as many as fit 600 bytes, then how many more. */
-function namesOf(checks: readonly { name: string }[]): string {
+function namesOf(checks: readonly { name: string }[], maxBytes = 600): string {
 	const names: string[] = [];
 	let used = 0;
 	for (const check of checks) {
 		const name = shown(check.name, 40);
-		if (used + bytes(name) + 2 > 600) break;
+		if (used + bytes(name) + 2 > maxBytes) break;
 		names.push(name);
 		used += bytes(name) + 2;
 	}
@@ -893,8 +521,6 @@ function namesOf(checks: readonly { name: string }[]): string {
 	return [...names, ...(more > 0 ? [`and ${more} more`] : [])].join(", ");
 }
 
-/** `CODING_CHECKS_REFUSED`: the candidate's checks file is not one Qorpera reads, or is gone from a repository whose
- * main has one. At most 5 problems are named. */
 export function codeChecksRefusedSummary(
 	candidate: CodeChecksRead,
 	mainHadFile: boolean,
@@ -915,15 +541,10 @@ export function codeChecksRefusedSummary(
 	return `${action}: the repository's checks file, ${CODE_CHECKS_FILE}, ${what}. Fix the file, commit and finish again. [code=CODING_CHECKS_REFUSED]`;
 }
 
-/** The code of a run that was not started because a command of an earlier run of the session's checks was not seen to
- * end: the machine is there, and the checks run again once that command has stopped. */
 export const CODE_CHECKS_EARLIER_RUN_NOT_STOPPED = "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED";
 
-/** The code of a run whose copy found the folder of a later run on the machine and did nothing (the copy's own exit
- * 91): a copy whose start landed late, or a folder somebody made under `~/.qorpera-checks`. The session can remove it. */
 export const CODE_CHECKS_COPY_NOT_NEWEST = "CODE_CHECKS_COPY_EXIT_91";
 
-/** `CODING_CHECKS_DID_NOT_RUN`: the checks could not run, which is never the code's fault. */
 export function codeChecksNotRunSummary(
 	run: Extract<CodeChecksRun, { state: "not_run" }>,
 	options: { readonly staged?: boolean } = {},
@@ -952,24 +573,17 @@ export function codeChecksNotRunSummary(
 	return `${action}: Qorpera could not run the repository's checks on this change (${why}). This is not a fault in the code. The work is kept on the session's branch; finishing again runs the checks again. [code=CODING_CHECKS_DID_NOT_RUN]`;
 }
 
-/** `CODING_CHECKS_MAIN_MOVED`: main moved during the run and again during the run made once more. */
 export const CODE_CHECKS_MAIN_MOVED =
 	"Nothing went into main yet: main changed twice while this change's checks ran, so they never ran on what would go in. This is not a fault in the code. The work is kept on the session's branch; finishing again checks it once more. [code=CODING_CHECKS_MAIN_MOVED]";
 
-/** A command as Markdown code, its fence longer than any run of backticks inside. */
 function code(text: string, max: number): string {
 	const inner = shown(text, max);
 	const longest = Math.max(0, ...(inner.match(/`+/g) ?? []).map((ticks) => ticks.length));
 	const fence = "`".repeat(longest + 1);
-	// A reader takes one space off each end of code that has one at both: so one is put there for it to take.
 	const pad = /^[ `]|[ `]$/.test(inner) ? " " : "";
 	return `${fence}${pad}${inner}${pad}${fence}`;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function pointer(at: string, key: string | number): string {
-	return `${at}/${String(key).replaceAll("~", "~0").replaceAll("/", "~1")}`;
 }
