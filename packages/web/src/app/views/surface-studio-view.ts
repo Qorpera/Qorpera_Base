@@ -8,6 +8,7 @@ import {
 	type StudioPatchChange,
 	type StudioPatchOp,
 	type SurfacePreviewConflict,
+	type SurfaceStarterKind,
 	type SurfaceSummary,
 	sharedAssetsConsumedBy,
 	sharedAssetsProducedBy,
@@ -30,11 +31,46 @@ import {
 	type SurfacesStore,
 	type SurfaceUpdatePhase,
 } from "../surfaces-store.ts";
+import { COLOR_VALUE, type ColorToken, collectColors } from "./surface-blocks/colours.ts";
+import {
+	formatScalar,
+	isPlainRecord,
+	lookupPath,
+	parseJsonObject,
+	readableName,
+	type StudioSectionTask,
+} from "./surface-blocks/context.ts";
+import {
+	docPriority,
+	HTML_FILE_RE,
+	htmlDocumentTitle,
+	MARKDOWN_FILE_RE,
+	PROSE_TEXT_FILE_RE,
+	renderDoc,
+	renderPlainDoc,
+	renderSvgAssets,
+	type StudioDoc,
+	type StudioSvgAsset,
+	SVG_FILE_RE,
+	svgDataUrl,
+} from "./surface-blocks/files.ts";
+import {
+	COLOR_GROUPS,
+	collectSpecs,
+	MODEL_GROUPS,
+	renderSpecEntries,
+	renderSpecTables,
+	type SpecEntry,
+	type SpecTable,
+	TYPE_GROUPS,
+	VENDOR_GROUPS,
+} from "./surface-blocks/specs.ts";
+import { type LegacyStudioModel, legacyModelConfig } from "./surface-blocks/stage.ts";
+import { SurfaceLayoutView, surfaceLayoutPath } from "./surface-layout-view.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
-import { type Studio3DConfig, Studio3DViewer } from "./surface-studio-3d.ts";
-import { pickStudioModel, type StudioModelSource } from "./surface-studio-model.ts";
-import { StudioModelStage } from "./surface-studio-stage.ts";
+import { Studio3DViewer } from "./surface-studio-3d.ts";
+import { pickStudioModel } from "./surface-studio-model.ts";
 
 export interface SurfaceStudioOptions {
 	readonly store: SurfacesStore;
@@ -46,30 +82,10 @@ export interface SurfaceStudioOptions {
 	readonly timeSlice?: boolean;
 }
 
-interface ColorToken {
-	readonly key: string;
-	readonly label: string;
-	readonly value: string;
-	readonly changed: boolean;
-}
-
 interface TypeToken {
 	readonly key: string;
 	readonly label: string;
 	readonly value: string;
-	readonly changed: boolean;
-}
-
-interface SpecTable {
-	readonly title: string;
-	readonly columns: readonly string[];
-	readonly rows: readonly Record<string, string>[];
-}
-
-interface SpecEntry {
-	readonly key: string;
-	readonly value: string;
-	readonly prev?: string;
 	readonly changed: boolean;
 }
 
@@ -93,15 +109,6 @@ interface VendorCard {
 	readonly changed: boolean;
 }
 
-interface StudioDoc {
-	readonly path: string;
-	readonly title: string;
-	readonly content: string;
-	readonly baseContent?: string;
-	readonly isMarkdown: boolean;
-	readonly changed: boolean;
-}
-
 interface StudioHtmlPage {
 	readonly path: string;
 	readonly title: string;
@@ -110,131 +117,10 @@ interface StudioHtmlPage {
 	readonly changed: boolean;
 }
 
-interface StudioSvgAsset {
-	readonly path: string;
-	readonly title: string;
-	readonly svg: string;
-	readonly baseSvg?: string;
-	readonly changed: boolean;
-}
-
 type StudioTab = "overview" | "specs" | "vendors" | "analysis" | "files" | "pages";
 
-const COLOR_VALUE = /^(?:#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|hsl)a?\([^)]+\)|oklch\([^)]+\))$/i;
-const COLOR_GROUPS = new Set(["colors", "color", "palette", "swatches", "colorways"]);
-const TYPE_GROUPS = new Set(["font", "fonts", "typography", "type", "typeface"]);
-const MODEL_GROUPS = new Set(["model", "3d", "geometry"]);
 const OBJECT_JSON_RE = /(?:^|\/)object\.json$/i;
-const VENDOR_GROUPS = new Set(["vendors", "suppliers"]);
-const HTML_FILE_RE = /\.html?$/i;
-const SVG_FILE_RE = /\.svg$/i;
-const MARKDOWN_FILE_RE = /\.(?:md|markdown)$/i;
-const PROSE_TEXT_FILE_RE = /\.txt$/i;
 const TOKEN_STYLESHEET_RE = /(?:^|\/)(?:tokens|qorpera-identity)\.css$/i;
-const PRODUCT_LINE_KEY = /^(?:tagline|one line|oneliner|one liner|summary|description)$/i;
-const MAX_FACT_CHARS = 18;
-const MAX_INITIAL_TABLE_ROWS = 100;
-const MAX_INITIAL_TEXT_CHARS = 32_000;
-const NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
-	amp: "&",
-	lt: "<",
-	gt: ">",
-	quot: '"',
-	apos: "'",
-	nbsp: " ",
-};
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseJsonObject(text: string | undefined): Record<string, unknown> | undefined {
-	if (!text) return undefined;
-	try {
-		const parsed: unknown = JSON.parse(text);
-		return isPlainRecord(parsed) ? parsed : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function readableName(raw: string): string {
-	const base =
-		raw
-			.split("/")
-			.at(-1)
-			?.replace(/\.[a-z0-9]+$/i, "") ?? raw;
-	const spaced = base
-		.replace(/[-_]+/g, " ")
-		.replace(/([a-z])([A-Z])/g, "$1 $2")
-		.trim();
-	if (!spaced) return raw;
-	return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-}
-
-function formatScalar(value: unknown): string {
-	if (typeof value === "string") return value;
-	if (typeof value === "number" || typeof value === "boolean") return String(value);
-	if (value === null || value === undefined) return "–";
-	if (Array.isArray(value)) return value.map(formatScalar).join(", ");
-	return JSON.stringify(value);
-}
-
-function specLabel(key: string): string {
-	return key.split(" · ").at(-1) ?? key;
-}
-
-function lookupPath(root: Record<string, unknown> | undefined, segments: readonly string[]): unknown {
-	let current: unknown = root;
-	for (const segment of segments) {
-		if (!isPlainRecord(current)) return undefined;
-		current = current[segment];
-	}
-	return current;
-}
-
-function collectColors(
-	value: unknown,
-	baseRoot: Record<string, unknown> | undefined,
-	segments: readonly string[],
-	out: ColorToken[],
-): void {
-	if (typeof value === "string" && COLOR_VALUE.test(value.trim())) {
-		const prev = lookupPath(baseRoot, segments);
-		const label = segments.slice(-1)[0] ?? "";
-		out.push({
-			key: segments.join("."),
-			label: readableName(label),
-			value: value.trim(),
-			changed: prev !== value,
-		});
-		return;
-	}
-	if (Array.isArray(value)) {
-		const prevList = lookupPath(baseRoot, segments);
-		for (let index = 0; index < value.length; index++) {
-			const item = value[index];
-			if (!isPlainRecord(item)) continue;
-			const color = [item.hex, item.color, item.value].find(
-				(candidate): candidate is string => typeof candidate === "string" && COLOR_VALUE.test(candidate.trim()),
-			);
-			if (!color) continue;
-			const name =
-				typeof item.name === "string" ? item.name : typeof item.label === "string" ? item.label : `#${index + 1}`;
-			const prevItem = Array.isArray(prevList) ? prevList[index] : undefined;
-			const prevColor = isPlainRecord(prevItem) ? (prevItem.hex ?? prevItem.color ?? prevItem.value) : undefined;
-			out.push({
-				key: `${segments.join(".")}[${index}]`,
-				label: name,
-				value: color.trim(),
-				changed: prevColor !== color,
-			});
-		}
-		return;
-	}
-	if (!isPlainRecord(value)) return;
-	for (const [key, child] of Object.entries(value)) collectColors(child, baseRoot, [...segments, key], out);
-}
 
 function collectTypography(
 	value: unknown,
@@ -254,49 +140,6 @@ function collectTypography(
 	}
 	if (!isPlainRecord(value)) return;
 	for (const [key, child] of Object.entries(value)) collectTypography(child, baseRoot, [...segments, key], out);
-}
-
-function collectSpecs(
-	obj: Record<string, unknown>,
-	baseObj: Record<string, unknown> | undefined,
-	prefix: readonly string[],
-	entries: SpecEntry[],
-	tables: SpecTable[],
-): void {
-	for (const [key, value] of Object.entries(obj)) {
-		const segments = [...prefix, key];
-		const lower = key.toLowerCase();
-		if (
-			prefix.length === 0 &&
-			(COLOR_GROUPS.has(lower) || TYPE_GROUPS.has(lower) || MODEL_GROUPS.has(lower) || VENDOR_GROUPS.has(lower))
-		)
-			continue;
-		if (typeof value === "string" && COLOR_VALUE.test(value.trim())) continue;
-		if (Array.isArray(value) && value.length > 0 && value.every(isPlainRecord)) {
-			const columns: string[] = [];
-			for (const row of value) for (const col of Object.keys(row)) if (!columns.includes(col)) columns.push(col);
-			tables.push({
-				title: readableName(key),
-				columns,
-				rows: value.map((row) =>
-					Object.fromEntries(columns.map((col) => [col, formatScalar((row as Record<string, unknown>)[col])])),
-				),
-			});
-			continue;
-		}
-		if (isPlainRecord(value)) {
-			collectSpecs(value, baseObj, segments, entries, tables);
-			continue;
-		}
-		const prev = lookupPath(baseObj, segments);
-		const changed = JSON.stringify(prev) !== JSON.stringify(value);
-		entries.push({
-			key: segments.map(readableName).join(" · "),
-			value: formatScalar(value),
-			...(changed && prev !== undefined ? { prev: formatScalar(prev) } : {}),
-			changed,
-		});
-	}
 }
 
 function collectVendors(
@@ -325,61 +168,6 @@ function collectVendors(
 			changed: JSON.stringify(prevRow) !== JSON.stringify(row),
 		});
 	}
-}
-
-function extractModelConfig(
-	value: unknown,
-	baseRoot: Record<string, unknown> | undefined,
-	key: string,
-	title: string,
-	colors: readonly ColorToken[],
-): Studio3DConfig | undefined {
-	if (!isPlainRecord(value)) return undefined;
-	const kind = value.kind === "headband" ? "headband" : "device";
-	const dimensions = typeof value.dimensions === "string" ? value.dimensions : "";
-	const layers = Array.isArray(value.layers) ? value.layers.map(formatScalar) : [];
-	const colorways = colors.length
-		? colors.map((c) => ({ name: c.label, hex: c.value }))
-		: [{ name: "Sandstone", hex: "#e6dfd3" }];
-	return {
-		kind,
-		title,
-		dimensions,
-		colorways,
-		layers,
-		changed: JSON.stringify(baseRoot?.[key]) !== JSON.stringify(value),
-	};
-}
-
-function docPriority(path: string): number {
-	const lower = path.toLowerCase();
-	if (lower.includes("voice") || lower.includes("brief") || lower.includes("readme")) return 0;
-	if (lower.includes("spec") || lower.includes("guide")) return 1;
-	return 2;
-}
-
-function svgDataUrl(svg: string): string {
-	return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-}
-
-function htmlDocumentTitle(html: string, fallbackPath: string): string {
-	const match = html.match(/<title\b[^>]*>([\s\S]{1,200}?)<\/title>/i);
-	if (!match) return readableName(fallbackPath);
-	const title = match[1]!
-		.replace(/&(?:#x([0-9a-f]+)|#([0-9]+)|([a-z]+));/gi, (full, hex, dec, named) => {
-			if (hex) {
-				const code = Number.parseInt(hex, 16);
-				return Number.isFinite(code) ? String.fromCodePoint(code) : full;
-			}
-			if (dec) {
-				const code = Number.parseInt(dec, 10);
-				return Number.isFinite(code) ? String.fromCodePoint(code) : full;
-			}
-			return NAMED_HTML_ENTITIES[String(named).toLowerCase()] ?? full;
-		})
-		.trim()
-		.replace(/\s+/g, " ");
-	return title && title.length <= 80 ? title : readableName(fallbackPath);
 }
 
 function resolveRelativeStudioPath(fromFilePath: string, href: string): string | null {
@@ -519,11 +307,6 @@ function sameOrderedChanges(
 	return true;
 }
 
-interface StudioSectionTask {
-	readonly heavy?: boolean;
-	readonly build: () => HTMLElement;
-}
-
 interface ParsedStudioFiles {
 	readonly colors: ColorToken[];
 	readonly typography: TypeToken[];
@@ -639,12 +422,10 @@ export class SurfaceStudioView {
 	#renderSeq = 0;
 	#lastConflict: SurfacePreviewConflict | null = null;
 	#viewer3d: Studio3DViewer | undefined;
-	#stage: StudioModelStage | undefined;
-	#colorValues: readonly string[] = [];
 	#reportView: SurfaceReportView | undefined;
+	#layout: SurfaceLayoutView | undefined;
 	readonly #htmlFrames: AppFrame[] = [];
-	#tab: StudioTab = "overview";
-	#colorway = 0;
+	#tab = "overview";
 	#shownDeps: readonly unknown[] | undefined;
 	#shownOrdered: readonly StudioPatchChange[] | undefined;
 	#appliedIdentityVars: string[] = [];
@@ -678,6 +459,7 @@ export class SurfaceStudioView {
 	deactivate(): void {
 		this.#renderSeq++;
 		this.#reportView?.deactivate();
+		this.#layout?.deactivate();
 	}
 
 	dispose(): void {
@@ -688,6 +470,7 @@ export class SurfaceStudioView {
 			this.#settleTimer = undefined;
 		}
 		this.#reportView?.dispose();
+		this.#layout?.dispose();
 		this.#lifetime.abort();
 	}
 
@@ -1103,9 +886,8 @@ export class SurfaceStudioView {
 			mode,
 		} = params;
 		const { colors, typography, specs, vendors, docs, htmlPages, svgs, reportPaths, rawModel } = parsed;
-		const modelConfig = rawModel
-			? extractModelConfig(rawModel.value, rawModel.base, rawModel.key, surface.title, colors)
-			: undefined;
+		const legacyModel = rawModel ? { value: rawModel.value, base: rawModel.base?.[rawModel.key] } : undefined;
+		const modelConfig = legacyModel ? legacyModelConfig(legacyModel, surface.title, colors) : undefined;
 
 		const badgeText =
 			composition.status === "conflicted"
@@ -1197,23 +979,7 @@ export class SurfaceStudioView {
 			}
 		}
 
-		const renderPlainDoc = (content: string, bodyClass: string): HTMLElement[] => {
-			if (content.length <= MAX_INITIAL_TEXT_CHARS) {
-				return [h("div", { class: bodyClass }, content)];
-			}
-			const textEl = h("div", { class: bodyClass }, `${content.slice(0, MAX_INITIAL_TEXT_CHARS)}…`);
-			const moreBtn = h("button", { type: "button", class: "btn btn-small studio-more-btn" }, t("Show full file"));
-			moreBtn.addEventListener(
-				"click",
-				() => {
-					textEl.textContent = content;
-					moreBtn.remove();
-				},
-				{ once: true, signal: this.#lifetime.signal },
-			);
-			return [textEl, moreBtn];
-		};
-
+		const signal = this.#lifetime.signal;
 		const gridTasks: StudioSectionTask[] = [];
 
 		if (mode === "compare") {
@@ -1318,7 +1084,7 @@ export class SurfaceStudioView {
 									...(doc.baseContent
 										? doc.isMarkdown
 											? [markdown(doc.baseContent)]
-											: renderPlainDoc(doc.baseContent, "studio-plain-text")
+											: renderPlainDoc(doc.baseContent, "studio-plain-text", signal)
 										: [h("em", null, t("Not in Base"))]),
 								),
 								h(
@@ -1326,7 +1092,7 @@ export class SurfaceStudioView {
 									{ class: "studio-compare-cell is-preview studio-doc-body" },
 									...(doc.isMarkdown
 										? [markdown(doc.content)]
-										: renderPlainDoc(doc.content, "studio-plain-text")),
+										: renderPlainDoc(doc.content, "studio-plain-text", signal)),
 								),
 							),
 						),
@@ -1426,6 +1192,13 @@ export class SurfaceStudioView {
 		const isIdentity = isIdentitySurface || filePaths.some((path) => path.startsWith("identity/"));
 		const modelFile = isIdentity ? undefined : pickStudioModel(files, composition.binaries, surface.folderRoot);
 		this.#applyIdentityVars(isIdentity, identityTokens);
+		const productLike = lookKind === "product" || modelConfig !== undefined || modelFile !== undefined;
+		if (!isIdentity && (productLike || files[surfaceLayoutPath(surface.folderRoot)] !== undefined)) {
+			return this.#layoutPlan(params, children, files, composition.binaries, previewTokensCss, {
+				starter: productLike ? "product" : "custom",
+				legacyModel,
+			});
+		}
 		const isVendorSpec = (spec: SpecSection) => /vendor|supplier/i.test(spec.path);
 		const primarySpec = specs.find((spec) => !isVendorSpec(spec));
 		const vendorSpecs = specs.filter(isVendorSpec);
@@ -1434,9 +1207,7 @@ export class SurfaceStudioView {
 			detailSpecs.some((spec) => spec.tables.length > 0 || spec.entries.length > 0) || typography.length > 0;
 		const hasVendorsTab = vendors.length > 0 || vendorSpecs.length > 0;
 		const hasAnalysisTab = reportPaths.length > 0;
-		const isProduct = !isIdentity && lookKind === "product";
-		const productPage = isProduct || (!isIdentity && (modelConfig !== undefined || modelFile !== undefined));
-		const hasFilesTab = docs.length > 0 || (productPage && svgs.length > 0);
+		const hasFilesTab = docs.length > 0;
 		const hasPagesTab = htmlPages.length > 0;
 		const hasOverviewContent = Boolean(
 			(isIdentity && downstreamSurfaces.length > 0) ||
@@ -1447,45 +1218,30 @@ export class SurfaceStudioView {
 				(isIdentity && typography.length) ||
 				(!isIdentity && primarySpec && primarySpec.entries.length > 0),
 		);
-		const tabbed = Boolean(
-			modelConfig || modelFile || vendors.length || reportPaths.length || isIdentity || isProduct,
-		);
+		const tabbed = Boolean(modelConfig || modelFile || vendors.length || reportPaths.length || isIdentity);
 		const availableTabs: { readonly id: StudioTab; readonly label: string; readonly filled: boolean }[] = [];
 		if (tabbed) {
-			if (productPage) {
-				availableTabs.push(
-					{ id: "overview", label: t("Overview"), filled: true },
-					{ id: "specs", label: t("Specs"), filled: hasSpecsTab },
-					{ id: "vendors", label: t("Vendors"), filled: hasVendorsTab },
-					{ id: "analysis", label: t("Reports"), filled: hasAnalysisTab },
-					{ id: "files", label: t("Files"), filled: hasFilesTab },
-				);
-			} else {
-				if (
-					hasOverviewContent ||
-					(!hasSpecsTab && !hasVendorsTab && !hasAnalysisTab && !hasFilesTab && !hasPagesTab)
-				)
-					availableTabs.push({ id: "overview", label: t("Overview"), filled: true });
-				if (hasSpecsTab)
-					availableTabs.push({
-						id: "specs",
-						label: isIdentity ? t("Design System") : t("Specs & BOM"),
-						filled: true,
-					});
-				if (hasVendorsTab) availableTabs.push({ id: "vendors", label: t("Production & Vendors"), filled: true });
-				if (hasAnalysisTab)
-					availableTabs.push({
-						id: "analysis",
-						label: isIdentity ? t("Philosophy") : t("Analysis"),
-						filled: true,
-					});
-				if (hasFilesTab)
-					availableTabs.push({
-						id: "files",
-						label: isIdentity ? t("Voice & Files") : t("Brief & Files"),
-						filled: true,
-					});
-			}
+			if (hasOverviewContent || (!hasSpecsTab && !hasVendorsTab && !hasAnalysisTab && !hasFilesTab && !hasPagesTab))
+				availableTabs.push({ id: "overview", label: t("Overview"), filled: true });
+			if (hasSpecsTab)
+				availableTabs.push({
+					id: "specs",
+					label: isIdentity ? t("Design System") : t("Specs & BOM"),
+					filled: true,
+				});
+			if (hasVendorsTab) availableTabs.push({ id: "vendors", label: t("Production & Vendors"), filled: true });
+			if (hasAnalysisTab)
+				availableTabs.push({
+					id: "analysis",
+					label: isIdentity ? t("Philosophy") : t("Analysis"),
+					filled: true,
+				});
+			if (hasFilesTab)
+				availableTabs.push({
+					id: "files",
+					label: isIdentity ? t("Voice & Files") : t("Brief & Files"),
+					filled: true,
+				});
 			if (hasPagesTab)
 				availableTabs.push({ id: "pages", label: htmlPages.length === 1 ? t("Page") : t("Pages"), filled: true });
 			if (!availableTabs.some((tab) => tab.id === this.#tab)) this.#tab = availableTabs[0]!.id;
@@ -1510,83 +1266,6 @@ export class SurfaceStudioView {
 				),
 			);
 		}
-
-		const renderSpecEntries = (entries: readonly SpecEntry[]) =>
-			h(
-				"dl",
-				{ class: "studio-kv" },
-				entries.flatMap((entry) => [
-					h("dt", { class: entry.changed ? "is-changed" : "" }, entry.key),
-					entry.changed && entry.prev !== undefined
-						? h(
-								"dd",
-								{ class: "is-changed studio-diff-dd" },
-								h("span", { class: "studio-diff-prev" }, entry.prev),
-								h("span", { class: "studio-diff-arrow", "aria-hidden": "true" }, "→"),
-								h("span", { class: "studio-diff-next" }, entry.value),
-							)
-						: h("dd", { class: entry.changed ? "is-changed" : "" }, entry.value),
-				]),
-			);
-
-		const renderSpecRow = (columns: readonly string[], row: Readonly<Record<string, string>>) =>
-			h(
-				"tr",
-				null,
-				columns.map((col) => h("td", null, row[col] ?? "–")),
-			);
-
-		const renderSpecTables = (tables: readonly SpecTable[]) =>
-			tables.map((table) => {
-				const truncated = table.rows.length > MAX_INITIAL_TABLE_ROWS;
-				const initialRows = truncated ? table.rows.slice(0, MAX_INITIAL_TABLE_ROWS) : table.rows;
-				const tbody = h(
-					"tbody",
-					null,
-					initialRows.map((row) => renderSpecRow(table.columns, row)),
-				);
-				const moreBtn = truncated
-					? h(
-							"button",
-							{ type: "button", class: "btn btn-small studio-more-btn" },
-							t("Show all {count} rows", { count: table.rows.length }),
-						)
-					: null;
-				if (moreBtn) {
-					moreBtn.addEventListener(
-						"click",
-						() => {
-							const frag = document.createDocumentFragment();
-							for (let i = MAX_INITIAL_TABLE_ROWS; i < table.rows.length; i++) {
-								frag.append(renderSpecRow(table.columns, table.rows[i]!));
-							}
-							tbody.append(frag);
-							moreBtn.remove();
-						},
-						{ once: true, signal: this.#lifetime.signal },
-					);
-				}
-				return h(
-					"div",
-					{ class: "studio-table-wrap" },
-					h("h3", { class: "studio-subhead" }, table.title),
-					h(
-						"table",
-						{ class: "studio-table" },
-						h(
-							"thead",
-							null,
-							h(
-								"tr",
-								null,
-								table.columns.map((col) => h("th", null, readableName(col))),
-							),
-						),
-						tbody,
-					),
-					moreBtn,
-				);
-			});
 
 		const showOverview = !tabbed || this.#tab === "overview";
 		const showSpecs = !tabbed || this.#tab === "specs";
@@ -1618,120 +1297,11 @@ export class SurfaceStudioView {
 					),
 			});
 		} else if (!isIdentity && showOverview) {
-			const consumed = sharedAssetsConsumedBy(lookKind);
-			const produced = sharedAssetsProducedBy(lookKind);
-			const buildSharedLinks = (): HTMLElement | null => {
-				const builtOn = new Map<string, (typeof activeOtherSurfaces)[number]>();
-				const seenIncomingProducers = new Set<string>();
-				for (const link of consumed) {
-					if (
-						link.liveSyncMode === "prompt_context" &&
-						link.producedBy.every((k) => seenIncomingProducers.has(k))
-					) {
-						continue;
-					}
-					const producers = activeOtherSurfaces.filter((item) => {
-						const targetKind = store.lookOf(item).kind;
-						return (
-							link.producedBy.includes(targetKind) ||
-							(link.producedBy.includes("identity") && item.isGlobal === true)
-						);
-					});
-					if (!producers.length) continue;
-					for (const k of link.producedBy) seenIncomingProducers.add(k);
-					for (const target of producers) builtOn.set(target.slug, target);
-				}
-				const cleanFolderRoot = surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
-				const primaryProductRoot = store.state.surfaces
-					.filter(
-						(item) =>
-							item.status === "active" &&
-							item.archetype === "studio" &&
-							store.lookOf(item).kind === "product" &&
-							Boolean(item.folderRoot?.replace(/^\/+|\/+$/g, "")),
-					)
-					.sort((a, b) => (a.group < b.group ? -1 : a.group > b.group ? 1 : 0) || a.sortOrder - b.sortOrder)
-					.at(0)
-					?.folderRoot?.replace(/^\/+|\/+$/g, "");
-				const usedBy = new Map<string, (typeof activeOtherSurfaces)[number]>();
-				for (const link of produced) {
-					if (link.id === "product-catalog" && primaryProductRoot && primaryProductRoot !== cleanFolderRoot) {
-						continue;
-					}
-					const consumers = activeOtherSurfaces
-						.filter((item) => link.consumedBy.includes(store.lookOf(item).kind))
-						.sort((a, b) => (a.group === "products" ? 0 : 1) - (b.group === "products" ? 0 : 1));
-					for (const target of consumers) usedBy.set(target.slug, target);
-				}
-				if (builtOn.size === 0 && usedBy.size === 0) return null;
-				const group = (
-					dir: "in" | "out",
-					label: string,
-					targets: Map<string, (typeof activeOtherSurfaces)[number]>,
-				) =>
-					targets.size === 0
-						? null
-						: h(
-								"span",
-								{ class: "studio-reach-group", "data-link-dir": dir },
-								h("span", { class: "studio-reach-label" }, label),
-								[...targets.values()].map((target) =>
-									h(
-										"button",
-										{
-											type: "button",
-											class: "studio-reach-chip",
-											"data-act": "studio-open-surface",
-											"data-slug": target.slug,
-										},
-										surfaceTile(target, store.lookOf(target), "is-tiny"),
-										h("span", null, target.title),
-									),
-								),
-							);
-				return h(
-					"section",
-					{ class: "studio-reach", "data-live-linked": "true" },
-					group("in", t("Builds on"), builtOn),
-					group("out", t("Used by"), usedBy),
-				);
-			};
-			const built = buildSharedLinks();
+			const built = this.#sharedLinks(surface, lookKind, activeOtherSurfaces);
 			if (built) gridTasks.push({ build: () => built });
 		}
 
-		if (productPage && showOverview) {
-			const lineEntry = primarySpec?.entries.find((entry) => PRODUCT_LINE_KEY.test(specLabel(entry.key)));
-			const facts = (primarySpec?.entries ?? [])
-				.filter((entry) => entry !== lineEntry && entry.value !== "–" && entry.value.length <= MAX_FACT_CHARS)
-				.slice(0, 4);
-			gridTasks.push({
-				build: () =>
-					this.#productOverview(
-						surface.title,
-						lineEntry?.value ?? workspace?.briefSummary ?? "",
-						modelFile,
-						modelConfig,
-						colors,
-						facts,
-					),
-			});
-		}
-		if (productPage && tabbed && !showOverview) {
-			const emptyLine =
-				this.#tab === "specs" && !hasSpecsTab
-					? t("Every part, what it is made of and who makes it.")
-					: this.#tab === "vendors" && !hasVendorsTab
-						? t("Who can make it, side by side.")
-						: this.#tab === "analysis" && !hasAnalysisTab
-							? t("Reports and posts about the product.")
-							: this.#tab === "files" && !hasFilesTab
-								? t("Working files. Models, pictures and notes live here.")
-								: null;
-			if (emptyLine) gridTasks.push({ build: () => h("p", { class: "studio-home-empty" }, emptyLine) });
-		}
-
-		if (modelConfig && showOverview && !productPage) {
+		if (modelConfig && showOverview) {
 			gridTasks.push({
 				build: () => {
 					if (!this.#viewer3d) this.#viewer3d = new Studio3DViewer(modelConfig, this.#lifetime.signal);
@@ -1741,48 +1311,11 @@ export class SurfaceStudioView {
 			});
 		}
 
-		if (svgs.length && (productPage ? showFiles : showOverview)) {
-			gridTasks.push({
-				build: () =>
-					h(
-						"section",
-						{ class: "studio-section" },
-						h(
-							"div",
-							{ class: "studio-section-head" },
-							h("h2", null, isIdentity ? t("Brand mark") : t("Vector assets")),
-						),
-						h(
-							"div",
-							{ class: "studio-svg-grid" },
-							svgs.map((asset) =>
-								h(
-									"figure",
-									{ class: `studio-svg-card${asset.changed ? " is-changed" : ""}`, "data-file": asset.path },
-									h(
-										"div",
-										{ class: "studio-svg-stage" },
-										h("img", {
-											class: "studio-svg-img",
-											src: svgDataUrl(asset.svg),
-											alt: asset.title,
-										}),
-									),
-									h(
-										"figcaption",
-										{ class: "studio-svg-meta" },
-										h("strong", null, asset.title),
-										h("code", { class: "studio-file-tag" }, asset.path),
-										asset.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
-									),
-								),
-							),
-						),
-					),
-			});
+		if (svgs.length && showOverview) {
+			gridTasks.push({ build: () => renderSvgAssets(svgs, isIdentity ? t("Brand mark") : t("Vector assets")) });
 		}
 
-		if (colors.length && showOverview && !productPage) {
+		if (colors.length && showOverview) {
 			gridTasks.push({
 				build: () =>
 					h(
@@ -1815,7 +1348,7 @@ export class SurfaceStudioView {
 			});
 		}
 
-		if (tabbed && showOverview && primarySpec && primarySpec.entries.length > 0 && !isIdentity && !productPage) {
+		if (tabbed && showOverview && primarySpec && primarySpec.entries.length > 0 && !isIdentity) {
 			gridTasks.push({
 				build: () =>
 					h(
@@ -1995,32 +1528,14 @@ export class SurfaceStudioView {
 								spec.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
 							),
 							spec.entries.length ? renderSpecEntries(spec.entries) : null,
-							...renderSpecTables(spec.tables),
+							...renderSpecTables(spec.tables, signal),
 						),
 				});
 			}
 		}
 
 		if (showFiles) {
-			for (const doc of docs) {
-				gridTasks.push({
-					build: () =>
-						h(
-							"section",
-							{ class: `studio-section studio-doc${doc.changed ? " is-changed" : ""}`, "data-file": doc.path },
-							h(
-								"div",
-								{ class: "studio-section-head" },
-								h("h2", null, doc.title),
-								h("code", { class: "studio-file-tag" }, doc.path),
-								doc.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
-							),
-							...(doc.isMarkdown
-								? [h("div", { class: "studio-doc-body" }, markdown(doc.content))]
-								: renderPlainDoc(doc.content, "studio-doc-body studio-plain-text")),
-						),
-				});
-			}
+			for (const doc of docs) gridTasks.push({ build: () => renderDoc(doc, signal) });
 		}
 
 		if (showPages) {
@@ -2073,106 +1588,140 @@ export class SurfaceStudioView {
 		return { children, gridTasks, leavingSkeleton };
 	}
 
-	#productOverview(
-		title: string,
-		line: string,
-		modelFile: StudioModelSource | undefined,
-		model: Studio3DConfig | undefined,
-		colors: readonly ColorToken[],
-		facts: readonly SpecEntry[],
-	): HTMLElement {
-		if (this.#colorway >= colors.length) this.#colorway = 0;
-		this.#colorValues = colors.map((color) => color.value);
-		let stage: HTMLElement;
-		if (modelFile) {
-			this.#stage ??= new StudioModelStage(
-				(file, signal) => this.#options.store.readStudioBinary(file, signal),
-				this.#lifetime.signal,
-			);
-			this.#stage.update(modelFile);
-			this.#stage.setColorway(this.#colorValues[this.#colorway]);
-			stage = this.#stage.el;
-		} else if (model) {
-			if (!this.#viewer3d) this.#viewer3d = new Studio3DViewer(model, this.#lifetime.signal);
-			else this.#viewer3d.update(model);
-			this.#viewer3d.setColorway(this.#colorway);
-			stage = this.#viewer3d.el;
-		} else {
-			stage = h("div", { class: "studio-stage-floor", "aria-hidden": "true" });
+	#sharedLinks(
+		surface: SurfaceSummary,
+		lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"],
+		activeOtherSurfaces: readonly SurfaceSummary[],
+	): HTMLElement | null {
+		const store = this.#options.store;
+		const consumed = sharedAssetsConsumedBy(lookKind);
+		const produced = sharedAssetsProducedBy(lookKind);
+		const builtOn = new Map<string, (typeof activeOtherSurfaces)[number]>();
+		const seenIncomingProducers = new Set<string>();
+		for (const link of consumed) {
+			if (link.liveSyncMode === "prompt_context" && link.producedBy.every((k) => seenIncomingProducers.has(k))) {
+				continue;
+			}
+			const producers = activeOtherSurfaces.filter((item) => {
+				const targetKind = store.lookOf(item).kind;
+				return (
+					link.producedBy.includes(targetKind) || (link.producedBy.includes("identity") && item.isGlobal === true)
+				);
+			});
+			if (!producers.length) continue;
+			for (const k of link.producedBy) seenIncomingProducers.add(k);
+			for (const target of producers) builtOn.set(target.slug, target);
 		}
-		const dots = colors.length
-			? h(
-					"div",
-					{ class: "studio-dots", role: "radiogroup", "aria-label": t("Colorways") },
-					colors.map((color, index) => {
-						const dot = h("button", {
-							type: "button",
-							role: "radio",
-							class: `studio-dot${index === this.#colorway ? " is-on" : ""}`,
-							"aria-checked": String(index === this.#colorway),
-							"aria-label": color.label,
-							title: color.label,
-							"data-act": "studio-colorway",
-							"data-index": String(index),
-							"data-token": color.key,
-						});
-						dot.style.backgroundColor = color.value;
-						return dot;
-					}),
-				)
-			: h(
-					"div",
-					{ class: "studio-dots is-empty", "aria-hidden": "true" },
-					[0, 1, 2, 3].map(() => h("span", { class: "studio-dot" })),
-				);
-		const figures = facts.length
-			? facts.map((fact) =>
-					h(
-						"div",
-						{ class: `studio-fact${fact.changed ? " is-changed" : ""}` },
-						h("dt", null, specLabel(fact.key)),
-						h("dd", null, fact.value),
-					),
-				)
-			: [t("Size"), t("Weight"), t("Made of"), t("Price")].map((label) =>
-					h("div", { class: "studio-fact" }, h("dt", null, label), h("dd", null, "?")),
-				);
+		const cleanFolderRoot = surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
+		const primaryProductRoot = store.state.surfaces
+			.filter(
+				(item) =>
+					item.status === "active" &&
+					item.archetype === "studio" &&
+					store.lookOf(item).kind === "product" &&
+					Boolean(item.folderRoot?.replace(/^\/+|\/+$/g, "")),
+			)
+			.sort((a, b) => (a.group < b.group ? -1 : a.group > b.group ? 1 : 0) || a.sortOrder - b.sortOrder)
+			.at(0)
+			?.folderRoot?.replace(/^\/+|\/+$/g, "");
+		const usedBy = new Map<string, (typeof activeOtherSurfaces)[number]>();
+		for (const link of produced) {
+			if (link.id === "product-catalog" && primaryProductRoot && primaryProductRoot !== cleanFolderRoot) {
+				continue;
+			}
+			const consumers = activeOtherSurfaces
+				.filter((item) => link.consumedBy.includes(store.lookOf(item).kind))
+				.sort((a, b) => (a.group === "products" ? 0 : 1) - (b.group === "products" ? 0 : 1));
+			for (const target of consumers) usedBy.set(target.slug, target);
+		}
+		if (builtOn.size === 0 && usedBy.size === 0) return null;
+		const group = (dir: "in" | "out", label: string, targets: Map<string, (typeof activeOtherSurfaces)[number]>) =>
+			targets.size === 0
+				? null
+				: h(
+						"span",
+						{ class: "studio-reach-group", "data-link-dir": dir },
+						h("span", { class: "studio-reach-label" }, label),
+						[...targets.values()].map((target) =>
+							h(
+								"button",
+								{
+									type: "button",
+									class: "studio-reach-chip",
+									"data-act": "studio-open-surface",
+									"data-slug": target.slug,
+								},
+								surfaceTile(target, store.lookOf(target), "is-tiny"),
+								h("span", null, target.title),
+							),
+						),
+					);
 		return h(
 			"section",
-			{ class: "studio-product" },
-			h("div", { class: modelFile || model ? "studio-stage" : "studio-stage is-empty" }, stage),
-			h(
-				"div",
-				{ class: "studio-product-head" },
-				h("h2", null, title),
-				line
-					? h("p", { class: "studio-product-line" }, line)
-					: h("p", { class: "studio-product-line is-empty" }, t("One line about what it is")),
-				dots,
-			),
-			h("dl", { class: `studio-facts${facts.length ? "" : " is-empty"}` }, figures),
+			{ class: "studio-reach", "data-live-linked": "true" },
+			group("in", t("Builds on"), builtOn),
+			group("out", t("Used by"), usedBy),
 		);
+	}
+
+	#layoutPlan(
+		params: {
+			readonly surface: SurfaceSummary;
+			readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
+			readonly workspace: ReturnType<SurfacesStore["workspace"]>;
+			readonly baseFiles: Readonly<Record<string, string>>;
+			readonly activeOtherSurfaces: readonly SurfaceSummary[];
+		},
+		children: HTMLElement[],
+		files: Readonly<Record<string, string>>,
+		binaries: Readonly<Record<string, StudioBinaryRef>>,
+		previewTokensCss: string,
+		page: { readonly starter: SurfaceStarterKind; readonly legacyModel: LegacyStudioModel | undefined },
+	): {
+		readonly children: HTMLElement[];
+		readonly gridTasks: readonly StudioSectionTask[];
+		readonly leavingSkeleton: boolean;
+	} {
+		this.#layout ??= new SurfaceLayoutView({
+			store: this.#options.store,
+			surface: this.#options.surface,
+			signal: this.#lifetime.signal,
+			baseFiles: () => this.#baseFiles,
+			...(this.#options.patches ? { patches: this.#options.patches } : {}),
+			...(this.#options.timeSlice !== undefined ? { timeSlice: this.#options.timeSlice } : {}),
+		});
+		const plan = this.#layout.plan({
+			surface: params.surface,
+			files,
+			baseFiles: params.baseFiles,
+			binaries,
+			briefSummary: params.workspace?.briefSummary ?? "",
+			starter: page.starter,
+			tab: this.#tab,
+			legacyModel: page.legacyModel,
+			htmlFrame: (html, path, title, frameFiles, className) =>
+				this.#createHtmlFrame(html, path, title, frameFiles, previewTokensCss, className),
+		});
+		this.#tab = plan.tab;
+		if (plan.tabBar) children.push(plan.tabBar);
+		const gridTasks: StudioSectionTask[] = [];
+		if (plan.firstTab) {
+			const links = this.#sharedLinks(params.surface, params.lookKind, params.activeOtherSurfaces);
+			if (links) gridTasks.push({ build: () => links });
+		}
+		gridTasks.push(...plan.tasks);
+		const leavingSkeleton = this.#showingSkeleton;
+		this.#showingSkeleton = false;
+		return { children, gridTasks, leavingSkeleton };
 	}
 
 	#click(event: MouseEvent): void {
 		const target = (event.target as Element).closest<HTMLElement>("[data-act]");
 		if (!target || !this.el.contains(target)) return;
 		const { act } = target.dataset;
-		if (act === "studio-colorway") {
-			const index = Number(target.dataset.index);
-			if (!Number.isInteger(index) || index === this.#colorway) return;
-			this.#colorway = index;
-			this.#viewer3d?.setColorway(index);
-			this.#stage?.setColorway(this.#colorValues[index]);
-			for (const dot of this.el.querySelectorAll<HTMLElement>('[data-act="studio-colorway"]')) {
-				const on = dot === target;
-				dot.classList.toggle("is-on", on);
-				dot.setAttribute("aria-checked", String(on));
-			}
-			return;
-		}
+		if (this.#layout?.click(target, this.el)) return;
 		if (act === "studio-tab") {
-			const next = target.dataset.tab as StudioTab | undefined;
+			const next = target.dataset.tab;
 			if (next && next !== this.#tab) {
 				this.#tab = next;
 				this.update();

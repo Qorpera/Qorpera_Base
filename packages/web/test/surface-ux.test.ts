@@ -846,7 +846,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="vendors"]')!.click();
 		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(4);
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="analysis"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="reports"]')!.click();
 		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Why BrainBit OEM for Batch 1");
 		expect(view.el.querySelectorAll(".report-bar-row")).toHaveLength(3);
 		expect(view.el.querySelector(".report-table")).not.toBeNull();

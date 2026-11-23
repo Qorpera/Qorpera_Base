@@ -414,7 +414,7 @@ describe("SurfaceStudioView", () => {
 			signal: new AbortController().signal,
 			baseFiles: {
 				"hardware/headband/specs.json": JSON.stringify({
-					weight: "42g",
+					overview: { weight: "42g" },
 					colorways: [{ name: "Sandstone", hex: "#e8e2d5" }],
 					bom: [{ part: "EEG Sensor", supplier: "Nordic", unitCost: "$14" }],
 				}),
@@ -828,7 +828,7 @@ describe("SurfaceStudioView", () => {
 		document.body.append(view.el);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="analysis"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="reports"]')!.click();
 		expect(view.el.querySelector(".report-article")?.textContent).toContain("Vendor Deep Dive");
 		const fills = [...view.el.querySelectorAll<HTMLElement>(".report-bar-fill")].map((el) => el.style.width);
 		expect(fills).toEqual(["100%", "4%"]);
@@ -880,7 +880,7 @@ describe("SurfaceStudioView", () => {
 		expect(tabs.filter((tab) => tab.classList.contains("is-empty")).map((tab) => tab.dataset.tab)).toEqual([
 			"specs",
 			"vendors",
-			"analysis",
+			"reports",
 		]);
 		expect(view.el.querySelector(".studio-product-head h2")?.textContent).toBe("Thetabands");
 		expect(view.el.querySelector('[data-file="surfaces/thetabands/concepts.svg"]')).toBeNull();
@@ -941,13 +941,24 @@ describe("SurfaceStudioView", () => {
 			"?",
 		]);
 
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
+		expect(view.el.querySelectorAll(".studio-kv.is-empty")).toHaveLength(1);
+		expect(view.el.querySelector('[data-block="table"] .studio-section-head h2')?.textContent).toBe("Parts");
+		expect(view.el.querySelector('[data-block="table"] .studio-table.is-empty')).not.toBeNull();
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="vendors"]')!.click();
-		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe("Who can make it, side by side.");
+		expect(view.el.querySelector('[data-block="spec_list"] h2')?.textContent).toBe("Production plan");
+		expect(view.el.querySelectorAll(".studio-vendor-card.is-empty")).toHaveLength(2);
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="reports"]')!.click();
+		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe("Reports and posts about the product.");
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe(
+			"Working files. Models, pictures and notes live here.",
+		);
 		view.dispose();
 		store.dispose();
 	});
 
-	it("draws a Product Studio as one column: the model, its name and line, colour dots and four figures", async () => {
+	it("draws a Product Studio as one column: the model, its name and line, colour dots and its first four figures", async () => {
 		const thetabands = summary({
 			id: HEADBAND_ID,
 			slug: "thetabands",
@@ -991,9 +1002,9 @@ describe("SurfaceStudioView", () => {
 		expect(view.el.querySelector(".studio-product-line")?.textContent).toBe("Calm, measured.");
 		expect([...view.el.querySelectorAll(".studio-fact")].map((fact) => fact.textContent)).toEqual([
 			"Sensors4 dry EEG",
+			"MaterialsMoulded PC-ABS with a soft-touch coat and a woven strap",
 			"Battery14 h",
 			"Weight44 g",
-			"Price1.995 kr.",
 		]);
 		expect(view.el.querySelector(".studio-kv")).toBeNull();
 		expect(view.el.querySelector(".studio-swatches")).toBeNull();
