@@ -323,7 +323,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Nothing in {company} matches “{query}”.": "Intet i {company} matcher “{query}”.",
 	"Type to find agents, apps, files and settings.": "Skriv for at finde agenter, apps, filer og indstillinger.",
 	"Invoices and card": "Fakturaer og kort",
-	"New conversation or agent": "Ny samtale eller agent",
 	company: "virksomhed",
 	"No agents yet.": "Ingen agenter endnu.",
 	"Retry conversations": "Hent samtaler igen",

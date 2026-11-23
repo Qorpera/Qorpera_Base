@@ -857,57 +857,13 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			},
 			{ signal: company.signal },
 		);
-		let pressClosesAdd = false;
-		document.addEventListener(
-			"pointerdown",
-			(event) => {
-				pressClosesAdd =
-					add.getAttribute("aria-expanded") === "true" &&
-					event.target instanceof Node &&
-					add.contains(event.target);
-			},
-			{ capture: true, signal: company.signal },
-		);
 		add.addEventListener(
 			"click",
 			(event) => {
 				const store = surfacesOf(company);
 				if (!store) return;
 				event.preventDefault();
-				if (pressClosesAdd) {
-					pressClosesAdd = false;
-					return;
-				}
-				if (openMenu()?.el.isConnected && add.getAttribute("aria-expanded") === "true") return;
-				const box = add.getBoundingClientRect();
-				add.setAttribute("aria-expanded", "true");
-				openContextMenu({
-					label: t("Create"),
-					x: box.left,
-					y: box.bottom + 4,
-					opener: add,
-					onClose: () => add.setAttribute("aria-expanded", "false"),
-					items: [
-						{
-							label: t("New surface"),
-							icon: "grid",
-							select: () => openCreateSurfaceSheet(store, company.profile.profileId),
-						},
-						{
-							label: t("New scheduled agent"),
-							icon: "clock",
-							select: () => openScheduleAgentSheet(store),
-						},
-						{ kind: "separator" },
-						{
-							label: t("New conversation"),
-							icon: "plus",
-							select: () => {
-								location.hash = `#/c/${company.profile.profileId}/new`;
-							},
-						},
-					],
-				});
+				openCreateSurfaceSheet(store, company.profile.profileId);
 			},
 			{ signal: company.signal },
 		);
@@ -936,15 +892,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			},
 			{ signal: company.signal },
 		);
-		// Every keystroke filters, composed text included; redrawing never moves the field.
-		// Results start at the top of the list.
 		quietScroll(created.list);
-		input.addEventListener("input", () => {
-			created.list.scrollTop = 0;
-			created.redraw();
-		});
-		// Collapsing hides the field, so its text stops filtering until the rail opens again.
-		// A hidden rail (another page is showing) is drawn afresh when it returns.
 		window.addEventListener(
 			"qorpera-rail-resize",
 			() => {
@@ -977,8 +925,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		parts.close.setAttribute("aria-label", t("Close company navigation"));
 		parts.sidebarToggle.setAttribute("aria-label", t("Hide sidebar"));
 		parts.sidebarToggle.title = t("Hide sidebar");
-		parts.add.setAttribute("aria-label", t("New conversation or agent"));
-		parts.add.title = t("New conversation or agent");
+		parts.add.setAttribute("aria-label", t("New surface"));
+		parts.add.title = t("New surface");
 		parts.loading = undefined;
 		parts.rows = new Map();
 		parts.notices = new Map();

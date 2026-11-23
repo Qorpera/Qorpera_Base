@@ -31,6 +31,7 @@ import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
 import { companyInSentence, companyNameText } from "../ui/company-name.ts";
 import { button, h, icon, notice, replace } from "../ui/dom.ts";
+import { installHoverGlides } from "../ui/hover-glide.ts";
 import { disposeCardPictures, type InteractionCardApp, refreshAppPreviews } from "../ui/interaction-card.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
@@ -244,6 +245,7 @@ export function mountApplication(
 		reopenRailBtn.setAttribute("aria-expanded", String(!railLayout.hidden));
 	}
 	window.addEventListener("qorpera-rail-resize", syncRailReopen, { signal: versionWatch.signal });
+	installHoverGlides(versionWatch.signal);
 	syncRailReopen();
 	applyLanguage();
 	// Interface text and times are read when they are drawn: a new language or
@@ -2401,7 +2403,14 @@ export function mountApplication(
 			if (page) {
 				const el = h("div", { class: "surface-ops" });
 				const update = () => renderInterface(el, controller, page, interfaceWrites());
-				return { el, update, dispose: () => el.replaceChildren() };
+				return {
+					el,
+					update,
+					dispose: () => {
+						disposeInterface(el);
+						el.replaceChildren();
+					},
+				};
 			}
 			const team = controller.store.get().team;
 			if (!team) return undefined;
@@ -3014,6 +3023,27 @@ export function mountApplication(
 						{
 							store: surfaces,
 							mount: surfaceMount,
+							isMountLoading: (surface) => {
+								const currentState = controller.store.get();
+								if (currentState.accessLost) return false;
+								if (surface.archetype === "live_build" && surface.siteSlug)
+									return currentState.siteList === undefined;
+								if (surface.archetype === "studio" && !isLocalSurfaceId(surface.id)) return !currentState.team;
+								if (surface.archetype === "ops") {
+									const isBuiltInPage =
+										surface.slug === "inbox" ||
+										surface.icon === "mail" ||
+										surface.slug === "money" ||
+										surface.icon === "coin" ||
+										surface.icon === "bank" ||
+										surface.slug === "members" ||
+										surface.icon === "members" ||
+										surface.slug === "data" ||
+										surface.icon === "database";
+									if (!isBuiltInPage) return !currentState.team;
+								}
+								return false;
+							},
 							openMigration: () => openMigrationSheet(surfaces),
 							loadStudioFiles,
 							loadSitePassword,

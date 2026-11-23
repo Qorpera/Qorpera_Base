@@ -804,6 +804,18 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(body.hidden).toBe(true);
 		localStorage.removeItem("qorpera.web.rail-agents-open");
 
+		const dialog = HTMLDialogElement.prototype;
+		dialog.showModal ??= function (this: HTMLDialogElement) {
+			this.open = true;
+		};
+		const add = container.querySelector<HTMLAnchorElement>(".rail-add")!;
+		expect(add.getAttribute("aria-label")).toBe("New surface");
+		const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+		add.dispatchEvent(click);
+		expect(click.defaultPrevented).toBe(true);
+		expect(document.querySelector(".context-menu")).toBeNull();
+		expect(document.querySelector(".surface-create-sheet")).not.toBeNull();
+
 		auth.dispose();
 		store.dispose();
 		company.stop();
