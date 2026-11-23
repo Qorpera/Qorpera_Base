@@ -348,6 +348,7 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 				if (switched.checks) {
 					const told = (step: string, extra: Record<string, unknown> = {}) =>
 						this.#report({ event: "code-checks", step, staged: true, ...named(session), ...extra });
+					// WHY: checksSwitch consumes any one-shot operator drill; staging logs it with staged: true and runs "check" drills ("site" drills collect no site here).
 					const drill = switched.drill;
 					if (drill !== undefined) told("drill", { drill });
 					if (gate.gate === "refused") {
