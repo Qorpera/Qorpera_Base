@@ -202,8 +202,7 @@ function isFriend(state: FriendsState, address: string): boolean {
 	return state.friends.some((friend) => friend.email.toLowerCase() === address);
 }
 
-/** Within this long of the last mark a friend counts as online now: an open tab marks every four minutes. */
-const ONLINE_MS = 5 * 60_000;
+const ONLINE_MS = 3 * 60_000;
 
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;

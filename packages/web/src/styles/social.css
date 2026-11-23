@@ -5,7 +5,7 @@
 .account-menu:not(.account-menu-rail):has(> .account-friends) { display: flex; align-items: center; gap: 4px; }
 .account-friends {
 	position: relative; display: grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0;
-	border: 0; border-radius: 999px; background: transparent; color: var(--text-muted); cursor: pointer;
+	border: 0; border-radius: 999px; background: transparent; color: var(--text-muted); cursor: default;
 }
 .account-friends .icon { width: 19px; height: 19px; }
 .account-friends:hover { background: var(--hover); color: var(--text); }
@@ -21,10 +21,9 @@
 /* Inside a company the friends button sits in Settings' header instead (Jonas, 9 Nov 2026). */
 .account-menu-rail .account-friends { display: none; }
 
-/* The friends button in Settings' header, left of Settings | Storage: a plain icon and word, no fill (Jonas). */
 .settings-friends {
 	display: inline-flex; flex: none; align-items: center; gap: 7px; min-height: 34px; padding: 5px 8px;
-	border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
+	border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); font: inherit; font-size: 13px; font-weight: 500; cursor: default;
 }
 .settings-friends .icon { width: 16px; height: 16px; }
 .settings-friends:hover { color: var(--text); }
@@ -48,13 +47,13 @@
 	background: var(--overlay); color: var(--text); box-shadow: 0 24px 80px rgb(0 0 0 / 24%); font-family: var(--font-sans);
 }
 .friends-window[open] { display: flex; flex-direction: column; }
-.friends-window::backdrop { background: rgb(20 20 19 / 48%); backdrop-filter: blur(1.5px); }
+.friends-window::backdrop { background: rgb(20 20 19 / 48%); }
 .friends-window-body { min-height: 0; overflow-y: auto; padding: 26px 28px 28px; }
 .friends-window h1 { margin: 0 44px 18px 0; font-family: var(--font-display); font-size: 22px; font-weight: 680; letter-spacing: -0.02em; line-height: 1.25; }
 .friends-window .settings-lead { margin: -10px 0 18px; }
 .friends-window-close {
 	position: absolute; top: 18px; right: 18px; z-index: 1; display: grid; place-items: center; width: 32px; height: 32px;
-	padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-soft); cursor: pointer;
+	padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-soft); cursor: default;
 }
 .friends-window-close:hover, .friends-window-close:focus-visible { background: var(--hover); color: var(--text); }
 .friends-window-close .icon { width: 18px; height: 18px; }
@@ -71,7 +70,7 @@
 .leaderboard-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: -6px 0 18px; border-bottom: 1px solid var(--border); }
 .leaderboard-tab {
 	display: grid; align-content: start; gap: 2px; min-width: 0; padding: 12px 14px 13px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
-	border-radius: 10px 10px 0 0; background: transparent; color: var(--text-muted); font: inherit; text-align: left; cursor: pointer;
+	border-radius: 10px 10px 0 0; background: transparent; color: var(--text-muted); font: inherit; text-align: left; cursor: default;
 	transition: color 140ms ease, border-color 140ms ease, background-color 140ms ease;
 }
 .leaderboard-tab strong { font-size: 14px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
@@ -116,7 +115,7 @@
 .leaderboard-rows { margin: 0; padding: 0; list-style: none; border: 1px solid #e3e3e0; border-radius: 14px; background: #fff; overflow: hidden; }
 .leaderboard-row { display: flex; align-items: center; gap: 14px; min-height: 60px; padding: 9px 18px; }
 .leaderboard-row + .leaderboard-row { border-top: 1px solid #f0f0ee; }
-.leaderboard-row.is-me { background: color-mix(in srgb, var(--composer-accent) 6%, transparent); }
+.leaderboard-row.is-me { background: color-mix(in srgb, var(--composer-accent-ink) 6%, transparent); }
 .leaderboard-place { flex: none; width: 22px; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .leaderboard-move { flex: none; width: 40px; color: var(--text-soft); font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .leaderboard-move.is-up { color: #1f8f5f; }

@@ -16,9 +16,15 @@ export class AttachmentTray {
 	#urls: string[] = [];
 	#preview: SurfaceDialog | undefined;
 	#locked = false;
-	constructor(files: File[], change: (files: File[]) => void) {
+	readonly #idleStatus: string;
+	constructor(
+		files: File[],
+		change: (files: File[]) => void,
+		idleStatus = t("Attachments stay on this device. Sending attachments is not available yet."),
+	) {
 		this.#files = [...files];
 		this.#change = change;
+		this.#idleStatus = idleStatus;
 		this.#render();
 	}
 	get count(): number {
@@ -126,9 +132,7 @@ export class AttachmentTray {
 			}),
 		);
 		this.el.hidden = this.#files.length === 0;
-		this.status.textContent = this.#files.length
-			? t("Attachments stay on this device. Sending attachments is not available yet.")
-			: "";
+		this.status.textContent = this.#files.length ? this.#idleStatus : "";
 	}
 }
 

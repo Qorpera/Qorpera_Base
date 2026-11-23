@@ -5,12 +5,17 @@ import { CloudActionReviewChannel } from "@qorpera/runtime/cloud-action-review";
 import {
 	GeminiCapReachedError,
 	GeminiKeyRevokedError,
+	GeminiProviderError,
 	type GeminiToolSessionUsage,
 	geminiFunctionDeclarations,
+	geminiProviderDiagnostic,
+	geminiProviderErrorCode,
+	geminiProviderFailureCode,
 	runCloudGeminiToolSession,
 } from "@qorpera/runtime/cloud-gemini-tool-session";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
 import { type CloudNativeTool, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
+import type { CloudRuntimeObservability } from "@qorpera/runtime/cloud-runtime-observability";
 import { cloudRunWorkComposer } from "@qorpera/runtime/memory-tree/run-work";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -230,6 +235,7 @@ describe("runCloudGeminiToolSession", () => {
 			{ functionDeclarations: expect.arrayContaining([expect.objectContaining({ name: "read_report" })]) },
 			{ google_search: {} },
 		]);
+		expect(requests[0]?.body.toolConfig).toEqual({ includeServerSideToolInvocations: true });
 
 		const secondContents = requests[1]?.body.contents as Array<{
 			role: string;
@@ -1029,5 +1035,186 @@ describe("runCloudGeminiToolSession", () => {
 		expect(JSON.stringify(bodies[2])).toContain("Shot 1 folded");
 		expect(JSON.stringify(bodies[2])).toContain(TINY_PNG_BASE64);
 		expect(JSON.stringify(bodies[3])).not.toContain(TINY_PNG_BASE64);
+	});
+
+	it("records model_request observations, preserves server-side tool parts, and classifies HTTP errors without leaking raw text", async () => {
+		const observed: Array<{ kind: string; status?: string; errorCategory?: string }> = [];
+		const observability = {
+			start: (kind: string) => {
+				const entry: { kind: string; status?: string; errorCategory?: string } = { kind };
+				observed.push(entry);
+				return {
+					finish: (status: string, extra?: { errorCategory?: string }) => {
+						entry.status = status;
+						if (extra?.errorCategory) entry.errorCategory = extra.errorCategory;
+					},
+				};
+			},
+		} as unknown as CloudRuntimeObservability;
+		const boundary = makeBoundary([
+			{
+				name: "lookup_note",
+				description: "Read a note",
+				source: "company_file",
+				inputSchema: { type: "object", additionalProperties: false },
+				parseArguments: () => ({}),
+				execute: async () => ({ kind: "text", value: "ok" }),
+			},
+		]);
+		const serverToolCall = { id: "srv_1", toolType: "GOOGLE_SEARCH_WEB", args: { queries: ["qorpera"] } };
+		const serverToolResponse = { id: "srv_1", toolType: "GOOGLE_SEARCH_WEB", response: { result: "found" } };
+		const { baseUrl, requests } = await startMockGemini((_req, index) => {
+			if (index === 0) {
+				return {
+					body: {
+						candidates: [
+							{
+								content: {
+									role: "model",
+									parts: [
+										{ toolCall: serverToolCall },
+										{ toolResponse: serverToolResponse },
+										{ functionCall: { id: "call_1", name: "lookup_note", args: {} } },
+									],
+								},
+							},
+						],
+						usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 15 },
+					},
+				};
+			}
+			return {
+				body: {
+					candidates: [{ content: { role: "model", parts: [{ text: "Verified." }] } }],
+					usageMetadata: { promptTokenCount: 120, candidatesTokenCount: 10 },
+				},
+			};
+		});
+
+		await runCloudGeminiToolSession({
+			boundary,
+			observability,
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: baseUrl,
+			allowLoopback: true,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Search then check note",
+			signal: AbortSignal.timeout(10_000),
+		});
+
+		expect(observed).toEqual([
+			{ kind: "model_request", status: "succeeded" },
+			{ kind: "model_request", status: "succeeded" },
+		]);
+		expect(requests[0]?.body.toolConfig).toEqual({ includeServerSideToolInvocations: true });
+		const secondContents = requests[1]?.body.contents as Array<{
+			role: string;
+			parts: Array<Record<string, unknown>>;
+		}>;
+		expect(secondContents[1]?.parts).toEqual([
+			{ toolCall: serverToolCall },
+			{ toolResponse: serverToolResponse },
+			{ functionCall: { id: "call_1", name: "lookup_note", args: {} } },
+		]);
+
+		const cases = [
+			{
+				status: 403,
+				body: {
+					error: {
+						status: "PERMISSION_DENIED",
+						message: "secret billing account 12345",
+						details: [{ reason: "BILLING_DISABLED" }],
+					},
+				},
+				expectedCode: "billing_required",
+				expectedFailure: "GEMINI_API:BILLING_REQUIRED",
+				expectedAttempts: 1,
+			},
+			{
+				status: 400,
+				body: {
+					error: {
+						status: "INVALID_ARGUMENT",
+						message: "secret prompt fragment",
+					},
+				},
+				expectedCode: "invalid_request",
+				expectedFailure: "GEMINI_API:REQUEST_REJECTED",
+				expectedAttempts: 1,
+			},
+			{
+				status: 404,
+				body: {
+					error: {
+						status: "NOT_FOUND",
+						message: "model not found",
+					},
+				},
+				expectedCode: "model_unavailable",
+				expectedFailure: "GEMINI_API:MODEL_UNAVAILABLE",
+				expectedAttempts: 1,
+			},
+			{
+				status: 429,
+				body: {
+					error: {
+						status: "RESOURCE_EXHAUSTED",
+						message: "quota exceeded for secret project",
+					},
+				},
+				expectedCode: "quota_exhausted",
+				expectedFailure: "GEMINI_API:QUOTA_EXHAUSTED",
+				expectedAttempts: 3,
+			},
+			{
+				status: 503,
+				body: {
+					error: {
+						status: "UNAVAILABLE",
+						message: "overloaded backend",
+					},
+				},
+				expectedCode: "provider_outage",
+				expectedFailure: "GEMINI_API:PROVIDER_OUTAGE",
+				expectedAttempts: 3,
+			},
+		] as const;
+
+		for (const item of cases) {
+			let attempts = 0;
+			const errorFetch: typeof fetch = async () => {
+				attempts += 1;
+				return new Response(JSON.stringify(item.body), {
+					status: item.status,
+					headers: { "content-type": "application/json" },
+				});
+			};
+			const err = await runCloudGeminiToolSession({
+				boundary: makeBoundary([]),
+				observability,
+				model: "gemini-4-neon",
+				effort: "low",
+				apiKey: CANARY_KEY,
+				apiBaseUrl: "http://127.0.0.1:1",
+				allowLoopback: true,
+				fetch: errorFetch,
+				initialSpendMicrodollars: 0,
+				monthlyCapCents: null,
+				prompt: "Check error classification",
+				signal: AbortSignal.timeout(15_000),
+			}).catch((failure: unknown) => failure);
+			expect(attempts).toBe(item.expectedAttempts);
+			expect(err).toBeInstanceOf(GeminiProviderError);
+			expect(geminiProviderErrorCode(err)).toBe(item.expectedCode);
+			expect(geminiProviderFailureCode(err)).toBe(item.expectedFailure);
+			const diag = geminiProviderDiagnostic(err) ?? "";
+			expect(diag).toContain(`geminiCode=${item.expectedCode}`);
+			expect(diag).toContain(`httpStatus=${item.status}`);
+			expect(diag).not.toContain("secret");
+		}
 	});
 });

@@ -1,6 +1,7 @@
 import type {
 	SurfaceChangeUnit,
 	SurfaceExplorationSet,
+	SurfaceImageRef,
 	SurfaceSession,
 	SurfaceSessionMessage,
 	SurfaceSummary,
@@ -8,6 +9,7 @@ import type {
 } from "@qorpera/contracts";
 import { fmtTime, h, icon } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
+import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { uiScale } from "../../ui/scale.ts";
 import { surfaceHash } from "../router.ts";
 import type { SurfaceLook } from "../surface-kinds.ts";
@@ -18,10 +20,12 @@ import {
 	isRunningSession,
 	openExplorations,
 	reportsOwnedBy,
+	type SurfaceNote,
 	type SurfaceReportSummary,
 	type SurfacesStore,
 	sessionHeld,
 } from "../surfaces-store.ts";
+import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { CrewFigures } from "./surface-crew.ts";
 import { openPublishPatchnotesSheet, type PublishPatchnotesOptions } from "./surface-publish-sheet.ts";
 import { isActionChange } from "./surface-rail.ts";
@@ -115,7 +119,13 @@ function actionCard(
 	);
 }
 
-function memberBubble(text: string, extraClass = "", title?: string, authorName?: string): HTMLElement {
+function memberBubble(
+	text: string,
+	extraClass = "",
+	title?: string,
+	authorName?: string,
+	images?: HTMLElement | null,
+): HTMLElement {
 	const reply = splitChangeReply(text);
 	const className = ["surface-message", "is-member", extraClass].filter(Boolean).join(" ");
 	const bubble = reply
@@ -126,32 +136,37 @@ function memberBubble(text: string, extraClass = "", title?: string, authorName?
 				h("span", { class: "surface-message-text" }, reply.body),
 			)
 		: h("p", { class: className, ...(title ? { title } : {}) }, text);
-	if (!authorName) return bubble;
+	if (!authorName && !images) return bubble;
 	return h(
 		"div",
 		{ class: "surface-message-group is-member" },
-		h("span", { class: "surface-message-author" }, authorName),
+		authorName ? h("span", { class: "surface-message-author" }, authorName) : null,
+		images ?? null,
 		bubble,
 	);
 }
 
-function messageRow(message: SurfaceSessionMessage, authorName?: string): HTMLElement {
+function messageRow(message: SurfaceSessionMessage, authorName?: string, images?: HTMLElement | null): HTMLElement {
 	if (message.authorKind === "system")
 		return h(
 			"div",
-			{
-				class: "surface-message is-system",
-				...(message.changeId ? { "data-change-id": message.changeId } : {}),
-			},
-			message.changeId
-				? h("span", { class: "surface-system-mark", "aria-hidden": "true" }, icon("check"))
-				: h("span", { class: "surface-system-dot", "aria-hidden": "true" }),
-			h("span", { class: "surface-system-text" }, message.text),
-			h("time", { datetime: message.createdAt }, fmtTime(message.createdAt)),
+			{ class: "surface-message-group is-system" },
+			h("time", { class: "surface-message-time", datetime: message.createdAt }, fmtTime(message.createdAt)),
+			h(
+				"div",
+				{
+					class: "surface-message is-system",
+					...(message.changeId ? { "data-change-id": message.changeId } : {}),
+				},
+				message.changeId
+					? h("span", { class: "surface-system-mark", "aria-hidden": "true" }, icon("check"))
+					: h("span", { class: "surface-system-dot", "aria-hidden": "true" }),
+				h("span", { class: "surface-system-text" }, message.text),
+			),
 		);
 	if (message.authorKind === "session")
 		return h("p", { class: "surface-message is-session", title: fmtTime(message.createdAt) }, message.text);
-	return memberBubble(message.text, "", fmtTime(message.createdAt), authorName);
+	return memberBubble(message.text, "", fmtTime(message.createdAt), authorName, images);
 }
 
 function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
@@ -282,12 +297,11 @@ export class SurfaceSessionDrawer {
 	);
 	readonly #input = h("input", { class: "surface-drawer-input", autocomplete: "off" });
 	readonly #send = h("button", { type: "submit", class: "surface-send is-ready" }, icon("send"));
-	readonly #form = h(
-		"form",
-		{ class: "surface-drawer-foot" },
-		this.#replyStrip,
-		h("div", { class: "surface-drawer-compose" }, this.#input, this.#send),
-	);
+	readonly #compose = h("div", { class: "surface-drawer-compose" }, this.#input, this.#send);
+	readonly #form = h("form", { class: "surface-drawer-foot" }, this.#replyStrip, this.#compose);
+	readonly #images: SurfaceComposerImages;
+	readonly #sentImages = new Map<string, ReceivedAttachments>();
+	readonly #localImageUrls = new Map<File, string>();
 	readonly #store: SurfacesStore;
 	readonly #loadSitePassword: PublishPatchnotesOptions["loadSitePassword"];
 	readonly #crew = new CrewFigures();
@@ -312,6 +326,23 @@ export class SurfaceSessionDrawer {
 		} catch {
 			/* WHY: Local browser storage is optional in private/sandboxed contexts. */
 		}
+		this.#images = new SurfaceComposerImages(this.#form, signal, () =>
+			this.#send.classList.toggle("is-ready", !this.#images.problem),
+		);
+		this.#compose.insertBefore(this.#images.button, this.#input);
+		this.#form.insertBefore(this.#images.tray.el, this.#compose);
+		this.#form.append(this.#images.tray.status);
+		this.#images.setAvailable(store.canAttachImages);
+		signal.addEventListener(
+			"abort",
+			() => {
+				for (const view of this.#sentImages.values()) view.dispose();
+				this.#sentImages.clear();
+				for (const url of this.#localImageUrls.values()) URL.revokeObjectURL(url);
+				this.#localImageUrls.clear();
+			},
+			{ once: true },
+		);
 		this.el.append(this.#resizer, h("div", { class: "surface-drawer-inner" }, this.#head, this.#body, this.#form));
 		this.#wireResizer(signal);
 		this.#applyWidth();
@@ -338,16 +369,19 @@ export class SurfaceSessionDrawer {
 				event.preventDefault();
 				const sessionId = store.state.drawer?.sessionId;
 				const text = this.#input.value.trim();
-				if (!sessionId || !text) return;
+				if (!sessionId || !text || this.#images.problem) return;
 				const quoted = this.#quotedChange?.sessionId === sessionId ? this.#quotedChange : undefined;
 				const payload = quoted ? `Re: [${quoted.title}]\n${text}` : text;
+				const files = this.#images.files;
 				this.#input.value = "";
+				this.#images.set([]);
 				this.#setQuotedChange(undefined);
-				void store.reply(sessionId, payload).then((ok) => {
+				void store.reply(sessionId, payload, files).then((ok) => {
 					if (!ok && !this.#input.value) {
 						this.#input.value = text;
 						if (quoted) this.#setQuotedChange(quoted);
 					}
+					if (!ok && files.length && !this.#images.files.length) this.#images.set(files);
 				});
 			},
 			{ signal },
@@ -903,6 +937,7 @@ export class SurfaceSessionDrawer {
 			workspace,
 			picked?.id,
 			state.notes,
+			picked ? state.sessionImages[picked.id] : undefined,
 			state.mode,
 			state.activeReportSlug,
 			state.busy,
@@ -1021,15 +1056,7 @@ export class SurfaceSessionDrawer {
 			),
 		);
 		parts.push(h("div", { class: "surface-drawer-rule" }));
-		if (picked) {
-			if (picked.messages.length > 0) {
-				for (const message of picked.messages)
-					parts.push(messageRow(message, store.memberName(message.authorUserId)));
-			} else if (picked.prompt) {
-				parts.push(memberBubble(picked.prompt, "", undefined, store.memberName(picked.createdByUserId)));
-			}
-			for (const note of notes) parts.push(memberBubble(note.text, "is-pending"));
-		}
+		if (picked) parts.push(...this.#thread(picked, notes));
 		this.#body.replaceChildren(...parts);
 		const activeId = picked?.id ?? exploration.id;
 		const count = (picked ? picked.messages.length || (picked.prompt ? 1 : 0) : 0) + notes.length;
@@ -1054,6 +1081,7 @@ export class SurfaceSessionDrawer {
 			session,
 			resolvedSurface,
 			state.notes,
+			state.sessionImages[session.id],
 			state.mode,
 			state.activeReportSlug,
 			state.hiddenChanges,
@@ -1107,7 +1135,7 @@ export class SurfaceSessionDrawer {
 
 	#content(
 		session: SurfaceSession,
-		notes: readonly { text: string }[],
+		notes: readonly SurfaceNote[],
 		surface: SurfaceSummary | undefined,
 		look: SurfaceLook | undefined,
 		ownedNotes: readonly SurfaceReportSummary[],
@@ -1380,14 +1408,95 @@ export class SurfaceSessionDrawer {
 				);
 		}
 		parts.push(h("div", { class: "surface-drawer-rule" }));
+		parts.push(...this.#thread(session, notes));
+		return parts;
+	}
+
+	#thread(session: SurfaceSession, notes: readonly SurfaceNote[]): HTMLElement[] {
+		const store = this.#store;
+		store.ensureSessionImages(session);
+		const sent = store.state.sessionImages[session.id]?.messages ?? [];
+		const keep = new Set<string>();
+		const parts: HTMLElement[] = [];
 		if (session.messages.length > 0) {
-			for (const message of session.messages)
-				parts.push(messageRow(message, store.memberName(message.authorUserId)));
+			for (const message of session.messages) {
+				const attached =
+					message.authorKind === "member" ? sent.find((item) => item.messageId === message.id) : undefined;
+				let images: HTMLElement | undefined;
+				if (attached?.images.length) {
+					const key = `${session.id}:${attached.clientInputId}`;
+					keep.add(key);
+					images = this.#sentImageView(key, session.id, attached).el;
+				}
+				parts.push(messageRow(message, store.memberName(message.authorUserId), images));
+			}
 		} else if (session.prompt) {
 			parts.push(memberBubble(session.prompt, "", undefined, store.memberName(session.createdByUserId)));
 		}
-		for (const note of notes) parts.push(memberBubble(note.text, "is-pending"));
+		for (const [key, view] of this.#sentImages)
+			if (!keep.has(key)) {
+				view.dispose();
+				this.#sentImages.delete(key);
+			}
+		const sending = new Set<File>();
+		for (const note of notes) {
+			for (const file of note.files ?? []) sending.add(file);
+			parts.push(memberBubble(note.text, "is-pending", undefined, undefined, this.#localImages(note.files)));
+		}
+		for (const [file, url] of this.#localImageUrls)
+			if (!sending.has(file)) {
+				URL.revokeObjectURL(url);
+				this.#localImageUrls.delete(file);
+			}
 		return parts;
+	}
+
+	#sentImageView(
+		key: string,
+		sessionId: string,
+		attached: { readonly clientInputId: string; readonly images: readonly SurfaceImageRef[] },
+	): ReceivedAttachments {
+		const known = this.#sentImages.get(key);
+		if (known) return known;
+		const images = attached.images;
+		const view = new ReceivedAttachments(
+			{
+				id: attached.clientInputId,
+				attachmentCount: images.length,
+				attachments: images.map((image, index) => ({
+					kind: "image" as const,
+					name: images.length > 1 ? t("Image {n}", { n: index + 1 }) : t("Image"),
+					mediaType: image.mediaType,
+					bytes: image.bytes,
+					reference: { sha256: image.sha256, bytes: image.bytes, mediaType: image.mediaType },
+				})),
+			},
+			(_id, index, signal) => {
+				const image = images[index];
+				return image
+					? this.#store.readSessionImage(sessionId, attached.clientInputId, image, signal)
+					: Promise.reject(new Error(t("This image is not available.")));
+			},
+		);
+		view.el.classList.add("surface-message-images");
+		this.#sentImages.set(key, view);
+		return view;
+	}
+
+	#localImages(files: readonly File[] | undefined): HTMLElement | null {
+		if (!files?.length) return null;
+		return h(
+			"div",
+			{ class: "surface-message-images is-sending" },
+			...files.map((file) => {
+				let url = this.#localImageUrls.get(file);
+				if (!url) {
+					url = URL.createObjectURL(file);
+					this.#localImageUrls.set(file, url);
+				}
+				return h("img", { src: url, alt: file.name });
+			}),
+		);
 	}
 
 	#click(event: MouseEvent): void {

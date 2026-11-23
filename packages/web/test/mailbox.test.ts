@@ -2991,7 +2991,6 @@ describe("Digital Post", () => {
 		expect(main.querySelector(".mailbox-flags")?.textContent).toBe(
 			"Legal effect · Mandatory post · Case SKAT-2026-1",
 		);
-		// The documents and the letter's folder open in Storage.
 		expect(texts(main, ".mailbox-documents li")).toEqual(["Afgørelse.pdf", "Bilag 1.pdf"]);
 		expect(
 			[...main.querySelectorAll<HTMLElement>("[data-folder-path]")].map((each) => each.dataset.folderPath),

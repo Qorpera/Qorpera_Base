@@ -169,6 +169,7 @@ export function surfaceFigure(figure: SurfaceFigureId, state: SurfaceFigureState
 		class: "surface-figure-art",
 		alt: "",
 		draggable: "false",
+		loading: "lazy",
 		decoding: "async",
 		src: new URL(`./assets/surfaces/figures-v1/${figure}.png`, document.baseURI).href,
 	});

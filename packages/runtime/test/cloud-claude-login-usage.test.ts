@@ -144,6 +144,79 @@ describe("Claude Code's usage, as it reports it", () => {
 			],
 		});
 	});
+
+	it("projects Claude extra usage, spend, and promo credits when reported by get_usage", () => {
+		const extra = claudeUsageFromGetUsage(
+			{
+				rate_limits: {
+					seven_day: { utilization: 40, resets_at: "2026-11-23T16:00:00Z" },
+					extra_usage: {
+						is_enabled: true,
+						monthly_limit: 5000,
+						used_credits: 1250,
+						currency: "usd",
+						decimal_places: 2,
+					},
+				},
+			},
+			NOW,
+		);
+		expect(extra?.credits).toEqual({
+			hasCredits: true,
+			used: 12.5,
+			limit: 50,
+			balance: 37.5,
+			currency: "USD",
+		});
+
+		const spend = claudeUsageFromGetUsage(
+			{
+				rate_limits: {
+					seven_day: { utilization: 10 },
+					spend: {
+						enabled: true,
+						used: { amount_minor: 2500, currency: "EUR", exponent: 2 },
+						limit: { amount_minor: 10000, currency: "EUR", exponent: 2 },
+						balance: { amount_minor: 7500, currency: "EUR", exponent: 2 },
+					},
+				},
+			},
+			NOW,
+		);
+		expect(spend?.credits).toEqual({
+			hasCredits: true,
+			used: 25,
+			limit: 100,
+			balance: 75,
+			currency: "EUR",
+		});
+
+		const promo = claudeUsageFromGetUsage(
+			{
+				rate_limits: {
+					seven_day: { utilization: 10 },
+					promo_credits: { balance: 100, currency: "USD" },
+				},
+			},
+			NOW,
+		);
+		expect(promo?.credits).toEqual({
+			hasCredits: true,
+			balance: 100,
+			currency: "USD",
+		});
+
+		const disabled = claudeUsageFromGetUsage(
+			{
+				rate_limits: {
+					seven_day: { utilization: 10 },
+					extra_usage: { is_enabled: false, monthly_limit: null, used_credits: null },
+				},
+			},
+			NOW,
+		);
+		expect(disabled?.credits).toBeUndefined();
+	});
 });
 
 describe("the reset screen, read off Claude Code's terminal", () => {

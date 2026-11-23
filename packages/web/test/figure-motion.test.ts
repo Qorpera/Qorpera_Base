@@ -2,6 +2,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { localTime, pose } from "../public/assets/avatars/status-2d-v1/motion.mjs";
 import { writingAsk } from "../src/ui/figure-acts.ts";
+import { level } from "../src/ui/figure-levels.ts";
 import { type FigureArtwork, type FigureMotion, loadFigureMotion, mountFigureMotion } from "../src/ui/figure-motion.ts";
 import { deferred, settle } from "./fixtures.ts";
 
@@ -754,5 +755,26 @@ describe("2D studio playback in the shell", () => {
 		expect(pose("Thinking", 2).dots.map((dot) => dot.y)).toEqual([50, 50, 50]);
 		expect(pose("Done", 1).strokes).toHaveLength(6);
 		expect(pose("Done", 7).strokes).toHaveLength(0);
+	});
+	it("evicts oldest mipmap canvases past 128 and zeroes their backing store", () => {
+		const source = document.createElement("canvas");
+		source.width = source.height = 512;
+		const first = level("lru-test-0", source, 64) as HTMLCanvasElement;
+		expect(first.width).toBe(64);
+		for (let idx = 1; idx <= 130; idx++) {
+			level(`lru-test-${idx}`, source, 64);
+		}
+		expect(first.width).toBe(0);
+		expect(first.height).toBe(0);
+	});
+	it("zeroes canvas dimensions when a mounted figure is disposed", async () => {
+		const host = mount("Idle", "dispose-zero");
+		await settle();
+		show([host]);
+		const canvas = host.querySelector("canvas")!;
+		expect(canvas.width).toBeGreaterThan(0);
+		mounted.pop()!.dispose();
+		expect(canvas.width).toBe(0);
+		expect(canvas.height).toBe(0);
 	});
 });

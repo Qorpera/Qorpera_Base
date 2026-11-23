@@ -286,12 +286,12 @@ export class CompanyFolderCreator {
 		const staged = await mapBounded(
 			fileEntries,
 			PLATFORM_STAGE_CONCURRENCY,
-			(entry) =>
+			(entry, _index, stepSignal) =>
 				this.#folder.stage(
 					claim.environmentId,
 					new TextEncoder().encode(entry.text ?? ""),
 					{ mediaType: mediaType(entry.path), executable: false },
-					signal,
+					stepSignal,
 					{ profileId: claim.profileId, objectConcurrency },
 				),
 			signal,

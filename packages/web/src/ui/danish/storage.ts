@@ -1,6 +1,5 @@
 export const STORAGE: Record<string, string> = {
-	Storage: "Lager",
-	"Settings and storage": "Indstillinger og lager",
+	"{used} in total": "{used} i alt",
 	Documents: "Dokumenter",
 	Recents: "Seneste",
 	Folder: "Mappe",
@@ -28,6 +27,7 @@ export const STORAGE: Record<string, string> = {
 	"{shown} of {count} items": "{shown} af {count} elementer",
 	Yesterday: "I går",
 	"No recent changes match your search.": "Ingen seneste ændringer matcher din søgning.",
+	"Search recent changes": "Søg i seneste ændringer",
 
 	// HTML pages and folder links (app/views/company-folder.ts, ui/markdown.ts)
 	Page: "Side",
@@ -36,7 +36,7 @@ export const STORAGE: Record<string, string> = {
 	"Page: {name}": "Side: {name}",
 	"Show {name} large": "Vis {name} stort",
 	"This page can't be shown live, so its source is shown.": "Siden kan ikke vises direkte, så dens kilde vises.",
-	"Open {path} in Storage": "Åbn {path} i Lager",
+	"Open {path} in Files": "Åbn {path} i Filer",
 	"{name} could not be found in the Company File.": "{name} findes ikke i Virksomhedsfilen.",
 
 	// "Download the code" on a repository's folder (app/views/code-download.ts). The reader does not know git: no word
