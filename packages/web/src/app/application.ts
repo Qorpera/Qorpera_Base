@@ -116,7 +116,14 @@ import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
 import { SitesView } from "./views/settings-sites.ts";
-import { appLook, installSearchShortcut, renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
+import {
+	appLook,
+	clearShellCompanyState,
+	installSearchShortcut,
+	renderRail,
+	renderTopbar,
+	type ShellContext,
+} from "./views/shell.ts";
 import { renderNameAsk, renderPasswordAsk, renderSignIn } from "./views/signin.ts";
 import { SiteView } from "./views/site-view.ts";
 import { landStartCrown, settleStartCrown } from "./views/start-crown.ts";
@@ -880,6 +887,7 @@ export function mountApplication(
 
 	function teardownCompany(): void {
 		settingsAfterHome = undefined;
+		clearShellCompanyState(company);
 		disposeCompanyViews();
 		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
@@ -3250,6 +3258,7 @@ export function mountApplication(
 		hub.dispose();
 		teardownFounding();
 		teardownCompany();
+		clearShellCompanyState();
 		accountPayments?.dispose();
 		pictures.reset();
 		if (personPictures() === pictures) setPersonPictures(undefined);

@@ -53,6 +53,11 @@ export class HoverGlide {
 			window.clearTimeout(this.#leaving);
 			window.clearTimeout(this.#lighting);
 			window.clearTimeout(this.#removing);
+			this.#animation?.cancel();
+			this.#animation = undefined;
+			this.#target = undefined;
+			this.#lit = undefined;
+			this.#to = undefined;
 		});
 	}
 
@@ -92,6 +97,10 @@ export class HoverGlide {
 		}
 		window.clearTimeout(this.#leaving);
 		this.#leaving = 0;
+		if (item === this.#target && this.attached) {
+			if (item.classList.contains("active")) item.classList.remove(LIT_CLASS);
+			return;
+		}
 		this.#glideTo(item);
 	}
 

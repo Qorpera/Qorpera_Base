@@ -1009,4 +1009,54 @@ describe("the surface page", () => {
 		expect(mountDispose).toHaveBeenCalledTimes(1);
 		store.dispose();
 	});
+
+	it("disposes a live_build mount when switching away from Live mode to Preview", async () => {
+		const liveSurface = summary({
+			activeSessionCount: 1,
+			pendingChangeCount: 1,
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [liveSurface]),
+				getSurfaceWorkspace: vi.fn(async () =>
+					workspace([session(["staged"])], {
+						surface: liveSurface,
+						previewState: {
+							surfaceId: liveSurface.id,
+							mode: "single",
+							primary: previewFrame(),
+							compareFrames: [],
+						},
+					}),
+				),
+			}),
+		);
+		await store.load();
+		const mountDispose = vi.fn();
+		const mountCreate = vi.fn(() => ({
+			el: document.createElement("div"),
+			update: vi.fn(),
+			dispose: mountDispose,
+		}));
+		const view = new SurfaceView(
+			{
+				store,
+				mount: mountCreate,
+				openMigration: () => undefined,
+			},
+			liveSurface.slug,
+		);
+		document.body.append(view.el);
+		await flush();
+		store.setMode("live");
+		view.update();
+		expect(mountCreate).toHaveBeenCalledTimes(1);
+		expect(mountDispose).not.toHaveBeenCalled();
+
+		store.setMode("preview");
+		view.update();
+		expect(mountDispose).toHaveBeenCalledTimes(1);
+		view.dispose();
+		store.dispose();
+	});
 });

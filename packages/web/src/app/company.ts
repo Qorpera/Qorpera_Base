@@ -1610,6 +1610,7 @@ export class CompanyController {
 				this.#iconWatch = undefined;
 				return;
 			}
+			if (document.hidden) return;
 			const now = Date.now();
 			const stale = names.filter((name) => now - drawing[name]!.since > APP_ICONS_DRAWING_MS);
 			if (stale.length)

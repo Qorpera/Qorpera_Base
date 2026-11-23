@@ -981,7 +981,9 @@ export class ConversationView {
 		});
 		window.addEventListener("resize", () => this.#autosize(), { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-rail-resize", () => this.#autosize(), { signal: this.#lifetime.signal });
-		const refreshTimestamps = () => this.#refreshTimestamps();
+		const refreshTimestamps = () => {
+			if (!document.hidden) this.#refreshTimestamps();
+		};
 		this.#timestampTimer = window.setInterval(refreshTimestamps, 60_000);
 		window.addEventListener("focus", refreshTimestamps, { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-language-change", refreshTimestamps, { signal: this.#lifetime.signal });
@@ -1089,28 +1091,30 @@ export class ConversationView {
 	}
 
 	#autosize(): void {
-		// Start with compact geometry: collapsing after measuring an expanded
-		// field changes its padding and can clip a two-line draft.
 		const taller = this.#attachments.count > 0 || this.#answerShown !== undefined;
 		this.#composerShell.classList.toggle("is-expanded", taller);
 		this.#composer.style.height = "auto";
-		// The sizes come from the stylesheet, so they follow the app's scale: one line is the field's
-		// min-height, the tallest draft its max-height. scrollHeight is a whole number, so one line
-		// at 42 × 1.3 = 54.6 reads 55; round the line up before comparing.
 		const field = getComputedStyle(this.#composer);
 		const oneLine = Math.ceil(Number.parseFloat(field.minHeight) || 0);
 		const tallest = Number.parseFloat(field.maxHeight) || Number.POSITIVE_INFINITY;
-		this.#composerShell.classList.toggle("is-expanded", this.#composer.scrollHeight > oneLine || taller);
-		this.#composer.style.height = `${Math.min(this.#composer.scrollHeight, tallest)}px`;
-		this.#composer.style.overflowY = this.#composer.scrollHeight > tallest ? "auto" : "hidden";
-		// The shell is border-box: its height is the field's, the attachments' and its own padding and borders.
+		let contentHeight = this.#composer.scrollHeight;
+		const expanded = contentHeight > oneLine || taller;
+		if (expanded !== taller) {
+			this.#composerShell.classList.toggle("is-expanded", expanded);
+			contentHeight = this.#composer.scrollHeight;
+		}
+		const targetHeight = Math.min(contentHeight, tallest);
+		this.#composer.style.height = `${targetHeight}px`;
+		this.#composer.style.overflowY = contentHeight > tallest ? "auto" : "hidden";
 		const shell = getComputedStyle(this.#composerShell);
 		const frame = [shell.paddingTop, shell.paddingBottom, shell.borderTopWidth, shell.borderBottomWidth].reduce(
 			(sum, value) => sum + (Number.parseFloat(value) || 0),
 			0,
 		);
-		this.#composerShell.style.height = `${this.#composer.getBoundingClientRect().height + frame + this.#attachments.el.getBoundingClientRect().height + this.#answerStrip.getBoundingClientRect().height}px`;
-		// A new size can show or hide the field's scrollbar, which moves where its lines wrap.
+		const composerHeight = this.#composer.getBoundingClientRect().height;
+		const attachmentsHeight = this.#attachments.count > 0 ? this.#attachments.el.getBoundingClientRect().height : 0;
+		const answerHeight = this.#answerShown !== undefined ? this.#answerStrip.getBoundingClientRect().height : 0;
+		this.#composerShell.style.height = `${composerHeight + frame + attachmentsHeight + answerHeight}px`;
 		this.#skills.sync();
 	}
 
@@ -4394,7 +4398,7 @@ export class ConversationView {
 			// If nothing reached the cloud, the card comes back so it can be dismissed again.
 			void this.#company.dismissFailedRun(runId).catch(() => {
 				dismissed.delete(runId);
-				if (!this.#company.signal.aborted) this.#company.store.set({});
+				if (!this.#company.signal.aborted) this.#company.store.notify();
 			});
 		};
 		const profileId = this.#company.profile.profileId;

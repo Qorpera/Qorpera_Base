@@ -60,7 +60,7 @@
 .thread-foot {
 	--glass-bg: color-mix(in srgb, var(--bg) 72%, transparent);
 	--glass-edge: color-mix(in srgb, var(--text) 10%, transparent);
-	--glass-blur: blur(18px) saturate(1.8);
+	--glass-blur: blur(10px) saturate(1.5);
 	--glass-shadow: 0 1px 2px rgb(18 18 17 / 5%), 0 6px 22px rgb(18 18 17 / 9%);
 	position: absolute; z-index: 5; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; pointer-events: none;
 }
@@ -335,7 +335,7 @@
 .composer-mic .icon { width: 17px; height: 17px; }
 /* Listening: red as a recording is, with a soft ring that breathes. */
 .composer-mic.is-listening, .composer-mic.is-listening:hover:not(:disabled) { background: #ff3b30; color: #fff; animation: composer-listening 1.4s ease-in-out infinite; }
-@keyframes composer-listening { 50% { box-shadow: 0 0 0 4px rgb(255 59 48 / 22%); } }
+@keyframes composer-listening { 50% { transform: scale(1.06); opacity: 0.85; } }
 .composer-dictation-note { margin: 6px 6px 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
 .composer-dictation-note[hidden] { display: none; }
 .composer-send { right: 3px; display: grid; place-items: center; padding: 0; border: 0; background: var(--composer-accent); color: var(--composer-on-accent); cursor: default; }
