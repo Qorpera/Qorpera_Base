@@ -177,7 +177,8 @@ export class HoverGlide {
 // WHY: a menu still scaling in is measured at full size, and its border is not part of where the tint sits.
 export function boxWithin(list: HTMLElement, rect: DOMRect, radius: string): Box {
 	const outer = list.getBoundingClientRect();
-	const scale = list.offsetWidth > 0 && Math.abs(outer.width - list.offsetWidth) > 1 ? outer.width / list.offsetWidth : 1;
+	const scale =
+		list.offsetWidth > 0 && Math.abs(outer.width - list.offsetWidth) > 1 ? outer.width / list.offsetWidth : 1;
 	return {
 		left: (rect.left - outer.left) / scale - list.clientLeft + list.scrollLeft,
 		top: (rect.top - outer.top) / scale - list.clientTop + list.scrollTop,
