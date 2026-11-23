@@ -206,7 +206,6 @@ function affectedFileChips(store: SurfacesStore, paths: readonly string[]): HTML
 	const visible = files.slice(0, 3);
 	const extra = files.length - visible.length;
 	const goFiles = (event: MouseEvent) => {
-		event.stopPropagation();
 		if (!event.metaKey && !event.ctrlKey && !event.shiftKey && event.button === 0) store.navigateSurface("files");
 	};
 	return h(
@@ -1465,8 +1464,11 @@ export class SurfaceSessionDrawer {
 	}
 
 	#click(event: MouseEvent): void {
-		const target = (event.target as Element).closest<HTMLElement>("[data-act]");
+		const hit = event.target as Element;
+		const target = hit.closest<HTMLElement>("[data-act]");
 		if (!target) return;
+		const link = hit.closest("a");
+		if (link && link !== target && target.contains(link)) return;
 		const store = this.#store;
 		const drawer = store.state.drawer;
 		const surfaceId = drawer?.surfaceId ?? this.#surfaceId;
