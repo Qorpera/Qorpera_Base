@@ -199,6 +199,7 @@ begin
 		where profile_id = v_row.profile_id and user_id in (v_actor, p_to_user_id)
 		order by user_id for share;
 	select * into v_row from public.qorpera_surface_automations where id = p_automation_id for update;
+	if v_row.id is null then raise exception 'Automation not found' using errcode = 'P0002'; end if;
 	select m.role into v_role from public.qorpera_profile_members m
 		where m.profile_id = v_row.profile_id and m.user_id = v_actor;
 	if v_role is null or v_role = 'viewer' then
@@ -260,6 +261,7 @@ begin
 		order by user_id for share;
 	select * into v_row from public.qorpera_surface_automations where id = v_offer.automation_id for update;
 	select * into v_offer from public.qorpera_surface_automation_offers where id = p_offer_id for update;
+	if v_offer.id is null then raise exception 'That offer is not here' using errcode = '42501'; end if;
 	if v_offer.status <> 'open' then
 		return jsonb_build_object('status', v_offer.status, 'moved', false,
 			'automation', public.qorpera_surface_automation_json(v_row));
