@@ -883,13 +883,6 @@ function opsAction(
 			paths: [],
 			reply: "Prepared it for your approval. Check the details, then approve when it looks right.",
 		};
-	if (kind === "members")
-		return {
-			title: summarizeTitle(prompt, "Team update"),
-			summary: `Ready to apply: ${prompt.trim()}\n\nRoles and invitations change only after you approve.`,
-			paths: [],
-			reply: "The team update is ready. Approve it and I'll apply it right away.",
-		};
 	if (kind === "data")
 		return {
 			title: summarizeTitle(prompt, "Table update"),

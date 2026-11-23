@@ -82,6 +82,9 @@ export type SurfaceFigure = (typeof SURFACE_FIGURES)[number];
 export const SURFACE_PUBLISH_STATUSES = ["idle", "publishing", "failed"] as const;
 export type SurfacePublishStatus = (typeof SURFACE_PUBLISH_STATUSES)[number];
 
+export const SURFACE_PUBLISH_ASK_STATUSES = ["open", "declined"] as const;
+export type SurfacePublishAskStatus = (typeof SURFACE_PUBLISH_ASK_STATUSES)[number];
+
 export const SURFACE_HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
 export const SURFACE_STATUSES = ["proposed", "active", "archived"] as const;
@@ -200,6 +203,15 @@ export interface CrossSurfaceHandoffRequest {
 	readonly sourceRef?: Readonly<Record<string, unknown>>;
 }
 
+export interface SurfacePublishAsk {
+	readonly askedByUserId: string;
+	readonly askedUserId: string;
+	readonly askedAt: string;
+	readonly changeCount: number;
+	readonly status: SurfacePublishAskStatus;
+	readonly answeredAt: string | null;
+}
+
 export interface SurfaceSummary {
 	readonly id: string;
 	readonly slug: string;
@@ -228,6 +240,7 @@ export interface SurfaceSummary {
 	readonly pendingChangeCount: number;
 	readonly needsAttentionCount: number;
 	readonly sortOrder: number;
+	readonly publishAsk?: SurfacePublishAsk | null;
 }
 
 export interface SurfaceChangeDiffStats {
@@ -519,6 +532,18 @@ export function parseSurfaceSlug(value: unknown, label = "surface.slug"): string
 	return value;
 }
 
+function parseSurfacePublishAsk(value: unknown, label: string): SurfacePublishAsk {
+	const raw = parseRecord(value, label);
+	return {
+		askedByUserId: parseUuid(raw.askedByUserId, `${label}.askedByUserId`),
+		askedUserId: parseUuid(raw.askedUserId, `${label}.askedUserId`),
+		askedAt: parseTimestamp(raw.askedAt, `${label}.askedAt`).text,
+		changeCount: parseInteger(raw.changeCount, `${label}.changeCount`, 0, 10_000),
+		status: parseEnum(raw.status, SURFACE_PUBLISH_ASK_STATUSES, `${label}.status`),
+		answeredAt: parseOptionalTimestamp(raw.answeredAt, `${label}.answeredAt`),
+	};
+}
+
 export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceSummary {
 	const raw = parseRecord(value, label);
 	if (typeof raw.autoPublish !== "boolean") throw new WireValueError(`${label}.autoPublish`);
@@ -542,6 +567,10 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 			: parseOptionalText(raw.lastPublishError, `${label}.lastPublishError`, 1000);
 	const liveHeadSha =
 		raw.liveHeadSha === undefined ? undefined : parseOptionalText(raw.liveHeadSha, `${label}.liveHeadSha`, 64);
+	const publishAsk =
+		raw.publishAsk === undefined || raw.publishAsk === null
+			? raw.publishAsk
+			: parseSurfacePublishAsk(raw.publishAsk, `${label}.publishAsk`);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		slug: parseSurfaceSlug(raw.slug, `${label}.slug`),
@@ -575,6 +604,7 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		pendingChangeCount: parseInteger(raw.pendingChangeCount ?? 0, `${label}.pendingChangeCount`, 0, 100_000),
 		needsAttentionCount: parseInteger(raw.needsAttentionCount ?? 0, `${label}.needsAttentionCount`, 0, 100_000),
 		sortOrder: parseInteger(raw.sortOrder ?? 0, `${label}.sortOrder`, -10_000, 100_000),
+		...(publishAsk !== undefined ? { publishAsk } : {}),
 	};
 }
 

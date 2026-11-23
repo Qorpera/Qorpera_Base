@@ -3084,7 +3084,6 @@ export class CompanyController {
 		return editor;
 	}
 
-	/** Who each agent works for, and the asks that move one (cloud/works-for.ts; the Members page). */
 	worksFor(): WorksForCalls {
 		this.#worksFor ??= worksForCalls(this.#api.cloud, this.profile.profileId);
 		return this.#worksFor;

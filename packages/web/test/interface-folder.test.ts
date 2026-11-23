@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { interfaceLibraryFiles } from "@qorpera/cloud-client/interface-library";
-import { parseInterfaceFile } from "@qorpera/cloud-client/interfaces";
+import { type InterfaceFile, parseInterfaceFile } from "@qorpera/cloud-client/interfaces";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
@@ -33,14 +33,14 @@ const SALES = `Sales,Deals and leads,${me},no,${bea},${ada.id}`;
 const ON: InterfacePagesState = {
 	pages: [
 		{ page: "mailbox", on: true },
-		{ page: "members", on: true },
+		{ page: "bank", on: true },
 	],
 	mayChange: true,
 };
 const OFF: InterfacePagesState = {
 	pages: [
 		{ page: "mailbox", on: false },
-		{ page: "members", on: false },
+		{ page: "bank", on: false },
 	],
 	mayChange: true,
 };
@@ -119,9 +119,17 @@ line = "{title}"
 ${blocks}`;
 }
 
+// WHY: No page the web ships reads a folder table any more; the library's Members definition still does.
+function areasPage(): InterfaceFile {
+	const text = interfaceLibraryFiles(() => id(700))["QorperaOS/interfaces/members/interface.toml"]!;
+	const parsed = parseInterfaceFile(text);
+	if (!parsed.ok) throw new Error("The library's Members definition does not parse");
+	return parsed.file;
+}
+
 /** Follows `fake` for the pages `controller`'s company has on, as the app does; `hint` stands in for the folder's
  * hint. */
-async function follow(fake: FolderFake, controller: CompanyController) {
+async function follow(fake: FolderFake, controller: CompanyController, definitions?: InterfaceFile[]) {
 	let onHint: ((seq: number) => void) | undefined;
 	const stop = new AbortController();
 	const reader = new CompanyInterfaceFolder(
@@ -137,7 +145,7 @@ async function follow(fake: FolderFake, controller: CompanyController) {
 		(state) => controller.store.set({ interfaceFolder: state }),
 	);
 	cleanup.push(() => stop.abort());
-	reader.read(pagesOn(controller.store.get().interfacePages));
+	reader.read(definitions ?? pagesOn(controller.store.get().interfacePages));
 	await reader.open();
 	return {
 		reader,
@@ -159,7 +167,7 @@ function rail(controller: CompanyController, f: ReturnType<typeof fixture>) {
 		name: "company",
 		profileId: controller.profile.profileId,
 		section: "interface",
-		id: "members",
+		id: "bank",
 	};
 	renderRail(element, controller, {
 		profiles: [controller.profile],
@@ -190,11 +198,10 @@ describe("the pages and the folder (I7, C6a)", () => {
 		await follow(fake, controller);
 		expect(read(fake).filter((path) => path.startsWith("QorperaOS/interfaces"))).toEqual([]);
 		expect(fake.folder.list).not.toHaveBeenCalled();
-		// Mailbox needs mail: only Members is listed, as the web ships it.
-		expect(names(controller)).toEqual(["members"]);
-		expect(companyInterfaces(controller)[0]?.file.name).toBe("Members");
-		expect(texts(rail(controller, f), ".rail-apps-drawer [data-app-key] .rail-app-name")).toEqual(["Members"]);
-		for (const name of ["pulse", "alpha", "mailbox"]) {
+		expect(names(controller)).toEqual(["bank"]);
+		expect(companyInterfaces(controller)[0]?.file.name).toBe("Bank");
+		expect(texts(rail(controller, f), ".rail-apps-drawer [data-app-key] .rail-app-name")).toEqual(["Bank"]);
+		for (const name of ["pulse", "alpha", "mailbox", "members"]) {
 			const main = h("main");
 			renderInterface(main, controller, name);
 			expect(main.textContent).toContain("This page isn't available here yet.");
@@ -220,11 +227,11 @@ describe("the pages and the folder (I7, C6a)", () => {
 		await follow(fake, controller);
 		expect(read(fake).filter((path) => path.startsWith("QorperaOS/interfaces"))).toEqual([]);
 		expect(fake.folder.list).not.toHaveBeenCalled();
-		expect(names(controller)).toEqual(["mailbox", "members"]);
-		expect(companyInterfaces(controller).map((entry) => entry.file.name)).toEqual(["Mailbox", "Members"]);
+		expect(names(controller)).toEqual(["mailbox", "bank"]);
+		expect(companyInterfaces(controller).map((entry) => entry.file.name)).toEqual(["Mailbox", "Bank"]);
 		expect(texts(rail(controller, f), ".rail-apps-drawer [data-app-key] .rail-app-name")).toEqual([
 			"Mailbox",
-			"Members",
+			"Bank",
 		]);
 		const main = h("main");
 		renderInterface(main, controller, "mailbox");
@@ -235,29 +242,23 @@ describe("the pages and the folder (I7, C6a)", () => {
 	it("reads nothing while no page is on, what a page reads once it is on, and drops it once it is off", async () => {
 		vi.useFakeTimers();
 		const fake = seeded();
+		fake.put("bank/summary.json", "{}");
+		fake.put("finance/bank-setup.json", "{}");
 		const { controller } = company(OFF);
 		const { reader } = await follow(fake, controller);
 		expect(read(fake)).toEqual([]);
-		expect(controller.store.get().interfaceFolder?.tables.size).toBe(0);
+		expect(controller.store.get().interfaceFolder?.files.size).toBe(0);
 		expect(names(controller)).toEqual([]);
 		controller.store.set({ interfacePages: ON });
 		reader.read(pagesOn(ON));
 		await vi.advanceTimersByTimeAsync(1000);
-		await vi.waitFor(() =>
-			expect([...(controller.store.get().interfaceFolder?.tables.keys() ?? [])]).toEqual(["areas"]),
-		);
-		// Members' table and its rules text, not the cards it hides (C6d); Mailbox reads the company's mail, not the
-		// folder.
-		expect(read(fake).sort()).toEqual([
-			"QorperaOS/rules/shared-areas.md",
-			"QorperaOS/tables/areas/rows.csv",
-			"QorperaOS/tables/areas/table.toml",
-		]);
-		expect(names(controller)).toEqual(["members"]);
+		await vi.waitFor(() => expect(controller.store.get().interfaceFolder?.files.size).toBe(2));
+		expect(read(fake).sort()).toEqual(["bank/summary.json", "finance/bank-setup.json"]);
+		expect(names(controller)).toEqual(["bank"]);
 		controller.store.set({ interfacePages: OFF });
 		reader.read(pagesOn(OFF));
 		await vi.advanceTimersByTimeAsync(1000);
-		await vi.waitFor(() => expect(controller.store.get().interfaceFolder?.tables.size).toBe(0));
+		await vi.waitFor(() => expect(controller.store.get().interfaceFolder?.files.size).toBe(0));
 		expect(names(controller)).toEqual([]);
 		// Switching a page off only hides it: nothing in the folder changed.
 		expect(fake.commits).toEqual([]);
@@ -276,7 +277,7 @@ describe("files and tables from the folder", () => {
 		const fake = seeded();
 		fake.put("QorperaOS/rules/shared-areas.md", "Shared areas belong to everyone.");
 		const { controller } = company();
-		await follow(fake, controller);
+		await follow(fake, controller, [areasPage()]);
 		expect(read(fake)).toContain("QorperaOS/rules/shared-areas.md");
 		expect(controller.store.get().interfaceFolder?.files.get("QorperaOS/rules/shared-areas.md")).toBe(
 			"Shared areas belong to everyone.",
@@ -306,7 +307,7 @@ line = "{text}"
 		vi.useFakeTimers();
 		const fake = seeded();
 		const { controller } = company();
-		const { hint, joined } = await follow(fake, controller);
+		const { hint, joined } = await follow(fake, controller, [areasPage()]);
 		expect(joined()).toBe(true);
 		expect(supervisors(controller)).toEqual([bea]);
 		fake.folder.read.mockClear();
@@ -325,7 +326,7 @@ line = "{text}"
 		vi.useFakeTimers();
 		const fake = seeded();
 		const { controller } = company();
-		const { hint } = await follow(fake, controller);
+		const { hint } = await follow(fake, controller, [areasPage()]);
 		fake.folder.read.mockClear();
 		fake.put(AREAS, areas(SALES, `Ops,,${bea},no,,`));
 		fake.resync();
@@ -355,11 +356,9 @@ describe("a read that fails", () => {
 		fake.fail("QorperaOS/tables");
 		fake.fail("QorperaOS/rules");
 		const { controller } = company();
-		const { joined } = await follow(fake, controller);
+		const { joined } = await follow(fake, controller, [areasPage()]);
 		expect(controller.store.get().interfaceFolder).toBeUndefined();
 		expect(joined()).toBe(false);
-		// Members is listed by its team: its People view draws from the members themselves.
-		expect(names(controller)).toEqual(["members"]);
 		// The one-minute poll tries again, and follows the hint once a read lands.
 		fake.heal("QorperaOS/tables");
 		fake.heal("QorperaOS/rules");
@@ -372,7 +371,7 @@ describe("a read that fails", () => {
 		vi.useFakeTimers();
 		const fake = seeded();
 		const { controller } = company();
-		const { hint } = await follow(fake, controller);
+		const { hint } = await follow(fake, controller, [areasPage()]);
 		expect(rows(controller)).toEqual(["Sales"]);
 		fake.put(AREAS, areas(SALES, `Ops,,${bea},no,,`));
 		fake.fail("QorperaOS/tables");
@@ -389,7 +388,7 @@ describe("a read that fails", () => {
 		vi.useFakeTimers();
 		const fake = seeded();
 		const { controller } = company();
-		await follow(fake, controller);
+		await follow(fake, controller, [areasPage()]);
 		const readCallsBefore = fake.folder.read.mock.calls.length + fake.folder.changes.mock.calls.length;
 		const hiddenSpy = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
 		fake.put(AREAS, areas(SALES, `Ops,,${bea},no,,`));

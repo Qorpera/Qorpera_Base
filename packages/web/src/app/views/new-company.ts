@@ -5,9 +5,8 @@ import { button, growToText, h, icon, notice, personAvatar, replace, spinner } f
 import { phrase, t } from "../../ui/preferences.ts";
 import { IDEA_MAX_CHARACTERS } from "../router.ts";
 import type { HubController } from "./hub.ts";
+import { type GuestRole, inviteEmail, inviteEmailRow, inviteFriendRow, inviteSheetBody } from "./invite-sheet.ts";
 import { cheerStartCrown, claimStartCrown } from "./start-crown.ts";
-
-type GuestRole = "founder" | "spectator";
 
 interface Guest {
 	name: string;
@@ -15,8 +14,6 @@ interface Guest {
 	userId?: string;
 	role: GuestRole;
 }
-
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export interface Viewer {
 	userId: string;
@@ -394,11 +391,8 @@ class NewCompanyView {
 	}
 
 	#addEmail(input: HTMLInputElement): void {
-		const email = input.value.trim().toLowerCase();
-		if (!EMAIL.test(email)) {
-			input.focus();
-			return;
-		}
+		const email = inviteEmail(input);
+		if (!email) return;
 		this.#guests.set(email, { name: email, email, role: "spectator" });
 		this.#guestsChanged();
 		this.#sheet.querySelector<HTMLInputElement>(".hero-invite-email")?.focus();
@@ -412,101 +406,30 @@ class NewCompanyView {
 
 	#drawSheet(): void {
 		if (this.#sheet.hidden) return;
-		const email: HTMLInputElement = h("input", {
-			type: "email",
-			class: "hero-invite-email",
-			placeholder: t("Add someone by email"),
-			"aria-label": t("Email"),
-			onkeydown: (event: KeyboardEvent) => {
-				if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
-				event.preventDefault();
-				this.#addEmail(email);
-			},
-		});
-		const friends = this.#friends;
-		const emailed = [...this.#guests.values()].filter((guest) => !guest.userId);
+		const labels = { founder: t("Founder"), spectator: t("Spectator") } as const;
 		replace(
 			this.#sheet,
-			h("p", { class: "hero-invite-title" }, t("Invite people")),
-			...(friends === undefined
-				? [h("p", { class: "hero-invite-note" }, t("Loading your friends"))]
-				: friends.map((friend) => this.#friendRow(friend))),
-			...emailed.map((guest) => this.#emailRow(guest)),
-			this.#friendsFailed ? h("p", { class: "hero-invite-note" }, t("Your friends could not be read.")) : null,
-			h(
-				"div",
-				{ class: "hero-invite-add" },
-				email,
-				button(t("Add as spectator"), () => this.#addEmail(email), { small: true }),
-			),
-			h(
-				"div",
-				{ class: "hero-invite-foot" },
-				button(t("Done"), () => this.#toggleSheet(false), { primary: true, small: true }),
-			),
-		);
-	}
-
-	#friendRow(friend: HostedFriend): HTMLElement {
-		const name = friend.displayName || friend.email;
-		const role = this.#guests.get(friend.userId)?.role;
-		const choice = (option: GuestRole, label: string) =>
-			h(
-				"button",
-				{
-					type: "button",
-					class: "hero-invite-role",
-					"aria-pressed": String(role === option),
-					onclick: () => this.#choose(friend, option),
-				},
-				label,
-			);
-		return h(
-			"div",
-			{ class: "hero-invite-person" },
-			personAvatar(name, friend.userId),
-			h(
-				"div",
-				{ class: "hero-invite-who" },
-				h("strong", null, name),
-				h(
-					"small",
-					null,
-					role === "founder"
-						? t("Builds with you, on their own subscription.")
-						: role === "spectator"
-							? t("Follows the chats. No subscription.")
-							: friend.email,
+			...inviteSheetBody({
+				friends: this.#friends?.map((friend) =>
+					inviteFriendRow(
+						friend,
+						this.#guests.get(friend.userId)?.role,
+						(role) => this.#choose(friend, role),
+						labels,
+					),
 				),
-			),
-			h(
-				"div",
-				{ class: "hero-invite-roles", role: "group", "aria-label": t("Role for {name}", { name }) },
-				choice("founder", t("Founder")),
-				choice("spectator", t("Spectator")),
-			),
-		);
-	}
-
-	#emailRow(guest: Guest): HTMLElement {
-		return h(
-			"div",
-			{ class: "hero-invite-person" },
-			personAvatar(guest.email, guest.email),
-			h(
-				"div",
-				{ class: "hero-invite-who" },
-				h("strong", null, guest.email),
-				h("small", null, t("Follows the chats. No subscription.")),
-			),
-			button(
-				t("Remove"),
-				() => {
-					this.#guests.delete(guest.email);
-					this.#guestsChanged();
-				},
-				{ small: true },
-			),
+				emailed: [...this.#guests.values()]
+					.filter((guest) => !guest.userId)
+					.map((guest) =>
+						inviteEmailRow(guest.email, () => {
+							this.#guests.delete(guest.email);
+							this.#guestsChanged();
+						}),
+					),
+				note: this.#friendsFailed ? t("Your friends could not be read.") : undefined,
+				add: (input) => this.#addEmail(input),
+				done: () => this.#toggleSheet(false),
+			}),
 		);
 	}
 

@@ -2984,9 +2984,8 @@ function menuOn(page: Page, chip: HTMLElement, name: string, label: string, item
 		chipMenus.set(ui, name);
 		chip.setAttribute("aria-expanded", "true");
 	};
-	// A press on the chip while its menu is open only shuts the menu: the menu says which press shut it, and the click
-	// that press ends in opens nothing (as an agent's menu on the Members page). A click from the keyboard has no
-	// press before it.
+	// WHY: A press on the chip while its menu is open only shuts it; the menu names that press, so its click opens
+	// nothing. A click from the keyboard has no press before it.
 	let shuts = false;
 	chip.addEventListener("pointerdown", (event) => {
 		const shut = chipPresses.get(ui);

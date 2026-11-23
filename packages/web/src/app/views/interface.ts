@@ -20,7 +20,6 @@ import type { QuotedText } from "../quotes.ts";
 import { renderBank } from "./bank.ts";
 import { disposeData, renderData } from "./data.ts";
 import { renderMailbox } from "./mailbox.ts";
-import { renderMembers } from "./members.ts";
 
 /** What each container last showed, and the element that shows it. The page area is shared with every other
  * page, so a redraw is skipped only while that element is still the one on screen. */
@@ -155,11 +154,6 @@ export function renderInterface(
 	// The Mailbox draws itself from the company's mail as a mail app does (views/mailbox.ts).
 	if (entry.name === "mailbox") {
 		renderMailbox(container, company, name, writes?.mailManage ? { manage: writes.mailManage } : {});
-		return;
-	}
-	// The Members page draws who each agent works for (views/members.ts; Jonas, 9 November 2026).
-	if (entry.name === "members") {
-		renderMembers(container, company, writes?.openSettings ? { openSettings: writes.openSettings } : {});
 		return;
 	}
 	// The Bank page draws itself from the company's bank summary (views/bank.ts).

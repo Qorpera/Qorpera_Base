@@ -100,8 +100,12 @@ export const WORKSPACE: Record<string, string> = {
 	Active: "Aktiv",
 	Off: "Slået fra",
 	Today: "I dag",
-	// The Members page: who each agent works for (app/views/members.ts)
-	Members: "Medlemmer",
+	"Who agents work for": "Hvem agenterne arbejder for",
+	"Go to {name}": "Gå til {name}",
+	"On {place}": "På {place}",
+	"With {name}": "Hos {name}",
+	"In {place}": "I {place}",
+	Builder: "Bygger",
 	"1 agent": "1 agent",
 	"1 agent works for you": "1 agent arbejder for dig",
 	"1 agent works for {member}": "1 agent arbejder for {member}",
@@ -138,8 +142,8 @@ export const WORKSPACE: Record<string, string> = {
 	"{n} agents work for you": "{n} agenter arbejder for dig",
 	"{n} agents work for {member}": "{n} agenter arbejder for {member}",
 	"{agent}, your Co-Founder,": "{agent}, din Co-Founder,",
-	"Leave {company}? You lose access until someone invites you again. {n} agents work for you: they go to the open pile, where another member can take them. To hand them over first, use the Members page.":
-		"Forlad {company}? Du mister adgangen, til nogen inviterer dig igen. {n} agenter arbejder for dig: de kommer i den åbne bunke, hvor et andet medlem kan tage dem. Brug siden Medlemmer, hvis du vil give dem videre først.",
+	"Leave {company}? You lose access until someone invites you again. {n} agents work for you: they go to the open pile, where another member can take them. To hand them over first, move them under Who agents work for.":
+		"Forlad {company}? Du mister adgangen, til nogen inviterer dig igen. {n} agenter arbejder for dig: de kommer i den åbne bunke, hvor et andet medlem kan tage dem. Flyt dem under Hvem agenterne arbejder for, hvis du vil give dem videre først.",
 	"Here now": "Her nu",
 	"From outside the company": "Fra uden for virksomheden",
 	Unread: "Ulæst",
