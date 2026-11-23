@@ -432,17 +432,6 @@
 	background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgb(18 18 17 / 10%);
 }
 .surface-pill-device .icon { width: 14px; height: 14px; }
-.surface-handoff-btn {
-	display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 12px;
-	border: 1px solid color-mix(in srgb, var(--text) 10%, transparent); border-radius: 999px;
-	background: color-mix(in srgb, var(--text) 3%, var(--bg)); color: var(--text); font: inherit;
-	font-size: 12px; font-weight: 600; white-space: nowrap; cursor: default;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease;
-}
-.surface-handoff-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 7%, var(--bg)); }
-.surface-handoff-btn.is-on { background: var(--primary); color: var(--on-primary); border-color: transparent; }
-.surface-handoff-btn:disabled { opacity: 0.55; cursor: default; }
-.surface-handoff-btn .icon { width: 13px; height: 13px; }
 .surface-seg { display: inline-flex; padding: 2px; border-radius: 999px; background: color-mix(in srgb, var(--text) 5.5%, transparent); }
 .surface-seg button {
 	display: flex; align-items: center; height: 26px; padding: 0 12px; border: 0; border-radius: 999px; background: none;
@@ -673,28 +662,6 @@
 
 .surface-banners { display: grid; gap: 6px; width: min(760px, 100%); margin: 0 auto; }
 .surface-banners:empty { display: none; }
-.surface-handoff-bar {
-	display: flex; align-items: center; gap: 8px; width: min(760px, 100%); margin: 0 auto;
-	padding: 6px 8px 6px 14px; border: 1px solid var(--surface-glass-edge); border-radius: 14px;
-	background: color-mix(in srgb, var(--text) 2.5%, var(--bg));
-}
-.surface-handoff-bar[hidden] { display: none; }
-.surface-handoff-bar > .icon { width: 15px; height: 15px; flex: none; color: var(--text-soft); }
-.surface-handoff-target {
-	flex: none; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--text) 6%, transparent);
-	color: var(--text-muted); font-size: 12px; font-weight: 600;
-}
-.surface-handoff-target[hidden], .surface-handoff-select[hidden] { display: none; }
-.surface-handoff-select {
-	flex: none; height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
-	color: var(--text); font: inherit; font-size: 12px; font-weight: 600;
-}
-.surface-handoff-input {
-	flex: 1; min-width: 0; height: 30px; min-height: 0; padding: 0 6px; border: 0; outline: 0; background: transparent;
-	color: var(--text); font: inherit; font-size: 13.5px;
-}
-.surface-handoff-input:focus-visible { outline: none; }
-.surface-handoff-input::placeholder { color: var(--text-soft); }
 .surface-banner {
 	display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 14px; border: 1px solid var(--border);
 	border-radius: 12px; background: color-mix(in srgb, var(--text) 2.5%, var(--bg)); font-size: 13px;

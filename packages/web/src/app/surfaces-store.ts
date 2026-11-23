@@ -536,12 +536,6 @@ export function surfaceBySlug(state: Pick<SurfacesState, "surfaces">, slug: stri
 	return state.surfaces.find((surface) => surface.slug === slug);
 }
 
-export function productBuildSurfaces(state: Pick<SurfacesState, "surfaces">, excludeId?: string): SurfaceSummary[] {
-	return state.surfaces.filter(
-		(surface) => surface.status === "active" && surface.archetype === "live_build" && surface.id !== excludeId,
-	);
-}
-
 function findIdentitySurface(state: Pick<SurfacesState, "surfaces" | "surfaceLooks">): SurfaceSummary | undefined {
 	return state.surfaces.find(
 		(surface) =>

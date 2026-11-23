@@ -21,7 +21,6 @@ import {
 	isRunningSession,
 	migrationPending,
 	openExplorations,
-	productBuildSurfaces,
 	runningSessionTotal,
 	type SurfacePreviewMode,
 	type SurfacesStore,
@@ -161,20 +160,6 @@ export class SurfaceView {
 	readonly #compareColumns = h("div", { class: "surface-compare-columns" });
 	readonly #frames = h("div", { class: "surface-frames", hidden: true });
 	readonly #banner = h("div", { class: "surface-banners" });
-	readonly #handoffTargetTag = h("span", { class: "surface-handoff-target" });
-	readonly #handoffSelect = h("select", { class: "surface-handoff-select", "aria-label": t("Target surface") });
-	readonly #handoffInput = h("input", { class: "surface-handoff-input", type: "text", autocomplete: "off" });
-	readonly #handoffSubmit = h("button", { type: "submit", class: "btn btn-primary btn-small" }, t("Start session"));
-	readonly #handoffForm = h(
-		"form",
-		{ class: "surface-handoff-bar", hidden: true },
-		icon("forward"),
-		this.#handoffTargetTag,
-		this.#handoffSelect,
-		this.#handoffInput,
-		this.#handoffSubmit,
-		h("button", { type: "button", class: "btn btn-small", "data-act": "handoff-cancel" }, t("Cancel")),
-	);
 	readonly #chips = h("div", { class: "surface-chips" });
 	readonly #targetRow = h("div", { class: "surface-target-row" });
 	readonly #point = h(
@@ -199,8 +184,6 @@ export class SurfaceView {
 	readonly #compareDoors = new Map<string, CompareColumn>();
 	#framesMode: "none" | "primary" | "compare" = "none";
 	#pointing = false;
-	#handoffOpen = false;
-	#handoffTarget = "";
 	#target: PointToChangeTarget | undefined;
 	#mount: SurfaceMount | undefined;
 	#attachedReport: SurfaceReportView | undefined;
@@ -248,7 +231,7 @@ export class SurfaceView {
 				return surface ? host.store.remintPreviewPass(surface.id, previewId, stalePass) : Promise.resolve(false);
 			},
 		});
-		this.#topSlot.append(this.#handoffForm, this.#banner);
+		this.#topSlot.append(this.#banner);
 		this.#viewport.append(this.#phoneBar, this.#mountSlot, this.#reportSlot, this.#frames);
 		this.#canvas.append(this.#bar, this.#topSlot, this.#viewport, this.#composer, this.#toast);
 		this.#stage.append(this.#canvas, this.#drawer.el);
@@ -274,25 +257,6 @@ export class SurfaceView {
 				if (!data || data.type !== SURFACE_INSPECTOR_PICK_MESSAGE) return;
 				const picked = parsePointToChangeTarget(data.target);
 				if (picked) this.#onPick(picked);
-			},
-			{ signal },
-		);
-		this.#handoffForm.addEventListener(
-			"submit",
-			(event) => {
-				event.preventDefault();
-				void this.#submitHandoff();
-			},
-			{ signal },
-		);
-		this.#handoffSelect.addEventListener(
-			"change",
-			() => {
-				this.#handoffTarget = this.#handoffSelect.value;
-				const chosen = productBuildSurfaces(this.#host.store.state, this.surface?.id).find(
-					(item) => item.slug === this.#handoffTarget,
-				);
-				if (chosen) this.#handoffInput.placeholder = t("What should {name} do?", { name: chosen.title });
 			},
 			{ signal },
 		);
@@ -449,8 +413,6 @@ export class SurfaceView {
 			this.#phoneBar.hidden = true;
 			this.#banner.replaceChildren();
 			this.#toast.replaceChildren();
-			this.#handoffOpen = false;
-			this.#handoffForm.hidden = true;
 			this.#topSlot.hidden = true;
 			this.#composer.hidden = true;
 			this.#frames.hidden = true;
@@ -657,8 +619,6 @@ export class SurfaceView {
 					session.changes.some((change) => change.kind === "folder_patch" && isOpenChange(change)),
 				),
 			);
-		const handoffTargets = surface.archetype === "ops" ? productBuildSurfaces(state, surface.id) : [];
-		const busyHandoff = handoffTargets.some((target) => Boolean(state.busy[`handoff:${surface.id}:${target.slug}`]));
 		const activeDrawerSession =
 			state.drawer?.surfaceId === surface.id && !state.drawer.explorationId ? state.drawer.sessionId : "";
 		const activeDrawerExploration = state.drawer?.surfaceId === surface.id ? (state.drawer.explorationId ?? "") : "";
@@ -693,9 +653,6 @@ export class SurfaceView {
 				agent.running,
 				agent.badgeCount,
 			]),
-			handoffTargets.map((target) => [target.slug, target.title]),
-			busyHandoff,
-			this.#handoffOpen,
 			this.#pillCollapsed,
 			Boolean(state.busy[`publish:${surface.id}`]),
 			surface.publishStatus ?? "idle",
@@ -803,8 +760,6 @@ export class SurfaceView {
 				: null;
 
 		const count = surface.unpublishedChangeCount;
-		const handoffLabel =
-			handoffTargets.length === 1 ? t("Send to {target}…", { target: handoffTargets[0]!.title }) : t("Send to…");
 
 		const rightTools: HTMLElement[] = [];
 		const presentHere = store.peopleAtSurface(surface.slug);
@@ -821,21 +776,6 @@ export class SurfaceView {
 					presentHere.length > 3
 						? h("span", { class: "surface-pill-presence-more" }, `+${presentHere.length - 3}`)
 						: null,
-				),
-			);
-		}
-		if (handoffTargets.length > 0) {
-			rightTools.push(
-				h(
-					"button",
-					{
-						type: "button",
-						class: `surface-handoff-btn${this.#handoffOpen ? " is-on" : ""}`,
-						disabled: busyHandoff,
-						"data-act": "handoff-open",
-					},
-					icon("forward"),
-					handoffLabel,
 				),
 			);
 		}
@@ -1394,7 +1334,7 @@ export class SurfaceView {
 	}
 
 	#syncTopSlot(): void {
-		this.#topSlot.hidden = !this.#handoffOpen && this.#banner.childElementCount === 0;
+		this.#topSlot.hidden = this.#banner.childElementCount === 0;
 	}
 
 	#setPointing(active: boolean): void {
@@ -1429,11 +1369,6 @@ export class SurfaceView {
 
 	#keydown(event: KeyboardEvent): void {
 		if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
-		if (event.key === "Escape" && this.#handoffOpen) {
-			event.preventDefault();
-			this.#closeHandoff();
-			return;
-		}
 		if (event.key === "Escape" && this.#pointing) {
 			event.preventDefault();
 			this.#setPointing(false);
@@ -1446,65 +1381,6 @@ export class SurfaceView {
 		if (this.#point.hidden || this.#point.disabled) return;
 		event.preventDefault();
 		this.#setPointing(!this.#pointing);
-	}
-
-	#openHandoffPrompt(surface: SurfaceSummary): void {
-		const targets = productBuildSurfaces(this.#host.store.state, surface.id);
-		if (!targets.length) return;
-		if (!targets.some((item) => item.slug === this.#handoffTarget)) this.#handoffTarget = targets[0]!.slug;
-		const chosen = targets.find((item) => item.slug === this.#handoffTarget) ?? targets[0]!;
-		this.#handoffOpen = true;
-		this.#handoffForm.hidden = false;
-		this.#syncTopSlot();
-		if (targets.length === 1) {
-			this.#handoffSelect.hidden = true;
-			this.#handoffTargetTag.hidden = false;
-			this.#handoffTargetTag.textContent = chosen.title;
-		} else {
-			this.#handoffTargetTag.hidden = true;
-			this.#handoffSelect.hidden = false;
-			this.#handoffSelect.replaceChildren(
-				...targets.map((item) =>
-					h("option", { value: item.slug, selected: item.slug === chosen.slug }, item.title),
-				),
-			);
-			this.#handoffSelect.value = chosen.slug;
-		}
-		this.#handoffInput.placeholder = t("What should {name} do?", { name: chosen.title });
-		this.#handoffInput.setAttribute("aria-label", t("What should {name} do?", { name: chosen.title }));
-		this.#drawBar(surface);
-		this.#handoffInput.focus({ preventScroll: true });
-	}
-
-	#closeHandoff(): void {
-		if (!this.#handoffOpen) return;
-		this.#handoffOpen = false;
-		this.#handoffForm.hidden = true;
-		this.#syncTopSlot();
-		const surface = this.surface;
-		if (surface) this.#drawBar(surface);
-	}
-
-	async #submitHandoff(): Promise<void> {
-		const surface = this.surface;
-		const prompt = this.#handoffInput.value.trim();
-		if (!surface || !prompt) return;
-		const targets = productBuildSurfaces(this.#host.store.state, surface.id);
-		const target = targets.find((item) => item.slug === this.#handoffTarget) ?? targets[0];
-		if (!target) return;
-		this.#handoffInput.value = "";
-		const created = await this.#host.store.spawnCrossSurfaceSession({
-			sourceSurfaceId: surface.id,
-			targetSurfaceSlug: target.slug,
-			title: t("From {source}", { source: surface.title }),
-			prompt,
-			sourceRef: { surfaceSlug: surface.slug },
-		});
-		if (!created) {
-			this.#handoffInput.value = prompt;
-			return;
-		}
-		this.#closeHandoff();
 	}
 
 	#drawToast(): void {
@@ -1621,16 +1497,6 @@ export class SurfaceView {
 				if (ids.length) void store.reconcileChanges(surface.id, ids);
 				return;
 			}
-			case "handoff-open": {
-				const targets = productBuildSurfaces(store.state, surface.id);
-				if (!targets.length) return;
-				if (this.#handoffOpen) this.#closeHandoff();
-				else this.#openHandoffPrompt(surface);
-				return;
-			}
-			case "handoff-cancel":
-				this.#closeHandoff();
-				return;
 			case "publish":
 			case "open-publish":
 				openPublishPatchnotesSheet(store, surface, { loadSitePassword: this.#host.loadSitePassword });
