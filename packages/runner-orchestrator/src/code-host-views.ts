@@ -642,6 +642,21 @@ export class CodeHostJobs {
 	}
 }
 
+const RETRYABLE_NOT_APPLIED_REASONS = new Set([
+	"the save did not get through yet",
+	"the boundary split reached its batch limit; remaining changes stay pending",
+]);
+
+// WHY: Exit 4 whose unsaved paths are all transient waiting or retryable not_applied must retry in #publish instead of failing permanently.
+function isRetryablePublishEntry(entry: { outcome: string; reason?: string }): boolean {
+	if (entry.outcome === "waiting") return true;
+	return (
+		entry.outcome === "not_applied" &&
+		typeof entry.reason === "string" &&
+		RETRYABLE_NOT_APPLIED_REASONS.has(entry.reason)
+	);
+}
+
 /** `qorpera-folder publish --json`: 0 every path saved, 4 a path not saved or the boundary refused, 3 the view closed,
  * anything else no answer. Exit 1 can still print the node's whole report (its release check failed after it): one
  * with a path that will not be saved is refused, since publishing again would find nothing pending and exit 0; one
@@ -660,24 +675,45 @@ export function codeHostPublishAnswer(status: number, stdout: Buffer): CodeHostP
 		!isRecord(report) ||
 		!Array.isArray(report.paths) ||
 		!report.paths.every(
-			(entry) => isRecord(entry) && typeof entry.path === "string" && typeof entry.outcome === "string",
+			(entry) =>
+				isRecord(entry) &&
+				typeof entry.path === "string" &&
+				typeof entry.outcome === "string" &&
+				(entry.reason === undefined || entry.reason === null || typeof entry.reason === "string"),
 		)
 	)
 		return { answer: "unanswered" };
 	const refused = report.refused === undefined || report.refused === null ? undefined : String(report.refused);
-	const unsaved = (report.paths as { path: string; outcome: string }[]).filter((entry) => entry.outcome !== "saved");
+	const unsaved = (report.paths as { path: string; outcome: string; reason?: string | null }[]).filter(
+		(entry) => entry.outcome !== "saved",
+	);
 	const detail = () =>
 		[
 			...(refused === undefined ? [] : [`refused: ${refused.slice(0, 200)}`]),
-			...unsaved.slice(0, 20).map((entry) => `${entry.path}: ${entry.outcome}`),
+			...unsaved.slice(0, 20).map((entry) => {
+				const reason =
+					typeof entry.reason === "string" && entry.reason.trim() ? entry.reason.trim().slice(0, 120) : "";
+				return reason ? `${entry.path}: ${entry.outcome} (${reason})` : `${entry.path}: ${entry.outcome}`;
+			}),
 			...(unsaved.length > 20 ? [`and ${unsaved.length - 20} more`] : []),
 		].join(", ");
+	const allRetryable = () =>
+		unsaved.every((entry) =>
+			isRetryablePublishEntry({
+				outcome: entry.outcome,
+				...(typeof entry.reason === "string" ? { reason: entry.reason } : {}),
+			}),
+		);
 	if (status === 0 && refused === undefined && unsaved.length === 0) return { answer: "saved" };
-	if (status === 4 && (refused !== undefined || unsaved.length > 0)) return { answer: "refused", detail: detail() };
-	// `waiting` is the only outcome a later publish can still turn into saved.
+	if (status === 4 && (refused !== undefined || unsaved.length > 0)) {
+		if (refused === undefined && unsaved.length > 0 && allRetryable()) {
+			return { answer: "waiting", detail: detail() };
+		}
+		return { answer: "refused", detail: detail() };
+	}
 	if (status === 1)
 		return {
-			answer: refused !== undefined || unsaved.some((entry) => entry.outcome !== "waiting") ? "refused" : "waiting",
+			answer: refused !== undefined || !allRetryable() ? "refused" : "waiting",
 			detail: detail(),
 		};
 	return { answer: "unanswered" };

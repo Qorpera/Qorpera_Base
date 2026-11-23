@@ -85,10 +85,27 @@ export interface CodePreflightCheck {
 	readonly needs?: readonly string[];
 }
 
+export type CodePreflightSiteKind = "static" | "server" | "hybrid";
+
 export interface CodePreflightSite {
 	readonly folder: string;
 	readonly name: string | null;
 	readonly title: string | null;
+	readonly kind?: CodePreflightSiteKind;
+	readonly dockerfile?: string | null;
+	readonly port?: number;
+	readonly healthPath?: string;
+	readonly idleTimeoutSec?: number;
+	readonly memoryMb?: number;
+	readonly vcpuLimit?: number;
+	readonly spaFallback?: string | null;
+}
+
+export interface CodePreflightPreview {
+	readonly run: string;
+	readonly folder: string | null;
+	readonly cwd: string;
+	readonly timeoutSeconds: number;
 }
 
 export interface CodeChecksProblem {
@@ -104,6 +121,7 @@ export type ParsedCodeChecks =
 			readonly totalTimeoutSeconds: number;
 			readonly mode: "sequential" | "dag";
 			readonly site: CodePreflightSite | null;
+			readonly preview?: CodePreflightPreview;
 	  }
 	| { readonly ok: false; readonly problems: readonly CodeChecksProblem[] };
 
@@ -343,29 +361,150 @@ function parseSite(value: unknown, at: string, refuse: Refuse): CodePreflightSit
 	let folder: string | null = null;
 	let name: string | null = null;
 	let title: string | null = null;
+	let kind: CodePreflightSiteKind | undefined;
+	let dockerfile: string | null | undefined;
+	let port: number | undefined;
+	let healthPath: string | undefined;
+	let idleTimeoutSec: number | undefined;
+	let memoryMb: number | undefined;
+	let vcpuLimit: number | undefined;
+	let spaFallback: string | null | undefined;
 	for (const [key, field] of Object.entries(value)) {
 		const fieldAt = pointer(at, key);
-		if (key !== "folder" && key !== "name" && key !== "title") refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
-		else if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-		else if (key === "folder") {
-			if (isSiteFolder(field)) folder = field;
+		if (key === "folder" || key === "name" || key === "title") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (key === "folder") {
+				if (isSiteFolder(field)) folder = field;
+				else
+					refuse(
+						fieldAt,
+						"INVALID_PATH",
+						'Must be "." or a folder of the repository: a relative path without . or .. parts, at most 300 bytes.',
+					);
+			} else if (key === "name") {
+				const refused = siteNameRefusal(field);
+				if (refused === null) name = field;
+				else refuse(fieldAt, "INVALID_VALUE", refused);
+			} else if (field.startsWith(" ") || field.endsWith(" "))
+				refuse(fieldAt, "SITE_TITLE", "Must not start or end with a space.");
+			else if (isSiteTitleValid(field)) title = field;
+			else refuse(fieldAt, "INVALID_VALUE", "Must be 1 to 120 characters on one line.");
+		} else if (key === "kind") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (field === "static" || field === "server" || field === "hybrid") kind = field;
+			else refuse(fieldAt, "INVALID_VALUE", 'Must be "static", "server", or "hybrid".');
+		} else if (key === "dockerfile") {
+			if (field === null) dockerfile = null;
+			else if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (field !== "." && isSiteFolder(field)) dockerfile = field;
+			else refuse(fieldAt, "INVALID_PATH", "Must be a relative file path without . or .. parts, at most 300 bytes.");
+		} else if (key === "port") {
+			if (typeof field !== "number" || !Number.isInteger(field) || field < 1 || field > 65535)
+				refuse(fieldAt, "INVALID_VALUE", "Must be a whole port number from 1 to 65535.");
+			else port = field;
+		} else if (key === "healthPath") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (field.length < 1 || field.length > 256 || !field.startsWith("/") || /[\s\x00-\x1f\x7f]/.test(field))
+				refuse(fieldAt, "INVALID_VALUE", "Must start with / and contain 1 to 256 non-space characters.");
+			else healthPath = field;
+		} else if (key === "idleTimeoutSec") {
+			if (typeof field !== "number" || !Number.isInteger(field) || field < 0 || field > 86400)
+				refuse(fieldAt, "INVALID_VALUE", "Must be a whole number of seconds from 0 to 86400.");
+			else idleTimeoutSec = field;
+		} else if (key === "memoryMb") {
+			if (typeof field !== "number" || !Number.isInteger(field) || field < 64 || field > 8192)
+				refuse(fieldAt, "INVALID_VALUE", "Must be a whole number of megabytes from 64 to 8192.");
+			else memoryMb = field;
+		} else if (key === "vcpuLimit") {
+			if (typeof field !== "number" || !Number.isFinite(field) || field < 0.25 || field > 8)
+				refuse(fieldAt, "INVALID_VALUE", "Must be a number from 0.25 to 8.");
+			else vcpuLimit = field;
+		} else if (key === "spaFallback") {
+			if (field === null) spaFallback = null;
+			else if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (field !== "." && field.length <= 512 && isSiteFolder(field)) spaFallback = field;
+			else refuse(fieldAt, "INVALID_PATH", "Must be a relative path such as index.html without . or .. parts.");
+		} else {
+			refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
+		}
+	}
+	const effectiveKind = kind ?? "static";
+	if (!("folder" in value)) {
+		if (effectiveKind === "server") folder = ".";
+		else refuse(at, "MISSING_KEY", "Needs folder.");
+	}
+	if (folder === null) return null;
+	return {
+		folder,
+		name,
+		title,
+		...(kind !== undefined ? { kind } : {}),
+		...(dockerfile !== undefined ? { dockerfile } : {}),
+		...(port !== undefined ? { port } : {}),
+		...(healthPath !== undefined ? { healthPath } : {}),
+		...(idleTimeoutSec !== undefined ? { idleTimeoutSec } : {}),
+		...(memoryMb !== undefined ? { memoryMb } : {}),
+		...(vcpuLimit !== undefined ? { vcpuLimit } : {}),
+		...(spaFallback !== undefined ? { spaFallback } : {}),
+	};
+}
+
+const PREVIEW_DEFAULT_SECONDS = 180;
+const PREVIEW_MAX_SECONDS = 600;
+
+function parsePreview(value: unknown, at: string, refuse: Refuse): CodePreflightPreview | undefined {
+	if (!isObject(value)) {
+		refuse(at, "WRONG_TYPE", "Must be an object.");
+		return undefined;
+	}
+	let run: string | null = null;
+	let folder: string | null = null;
+	let cwd = ".";
+	let timeoutSeconds = PREVIEW_DEFAULT_SECONDS;
+	for (const [key, field] of Object.entries(value)) {
+		const fieldAt = pointer(at, key);
+		if (key === "run") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (field.trim() === "" || Buffer.byteLength(field, "utf8") > MAX_RUN_BYTES || field.includes("\0"))
+				refuse(fieldAt, "INVALID_VALUE", `Must be 1 to ${MAX_RUN_BYTES} bytes, without a NUL character.`);
+			else run = field;
+		} else if (key === "folder") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (isSiteFolder(field)) folder = field;
 			else
 				refuse(
 					fieldAt,
 					"INVALID_PATH",
 					'Must be "." or a folder of the repository: a relative path without . or .. parts, at most 300 bytes.',
 				);
-		} else if (key === "name") {
-			const refused = siteNameRefusal(field);
-			if (refused === null) name = field;
-			else refuse(fieldAt, "INVALID_VALUE", refused);
-		} else if (field.startsWith(" ") || field.endsWith(" "))
-			refuse(fieldAt, "SITE_TITLE", "Must not start or end with a space.");
-		else if (isSiteTitleValid(field)) title = field;
-		else refuse(fieldAt, "INVALID_VALUE", "Must be 1 to 120 characters on one line.");
+		} else if (key === "cwd") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (!isCheckFolder(field))
+				refuse(
+					fieldAt,
+					"INVALID_PATH",
+					`Must be a folder of the repository: a relative path without . or .. parts, at most ${MAX_CWD_BYTES} bytes.`,
+				);
+			else cwd = field;
+		} else if (key === "timeoutSeconds") {
+			if (
+				typeof field !== "number" ||
+				!Number.isInteger(field) ||
+				field < CODE_CHECK_MIN_SECONDS ||
+				field > PREVIEW_MAX_SECONDS
+			)
+				refuse(
+					fieldAt,
+					"INVALID_VALUE",
+					`Must be a whole number of seconds from ${CODE_CHECK_MIN_SECONDS} to ${PREVIEW_MAX_SECONDS}.`,
+				);
+			else timeoutSeconds = field;
+		} else {
+			refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
+		}
 	}
-	if (!("folder" in value)) refuse(at, "MISSING_KEY", "Needs folder.");
-	return folder === null ? null : { folder, name, title };
+	if (!("run" in value)) refuse(at, "MISSING_KEY", "Needs run.");
+	return run === null ? undefined : { run, folder, cwd, timeoutSeconds };
 }
 
 function findCheckCycle(edges: ReadonlyMap<string, readonly string[]>): string[] | null {
@@ -549,12 +688,14 @@ export function parseCodeChecksText(text: string): ParsedCodeChecks {
 		totalTimeoutSeconds: 0,
 	};
 	let site: CodePreflightSite | null = null;
+	let preview: CodePreflightPreview | undefined;
 	for (const [key, value] of Object.entries(root)) {
 		const at = pointer("", key);
 		if (key === "$schema") {
 			if (typeof value !== "string") refuse(at, "WRONG_TYPE", "Must be a string.");
 		} else if (key === "checks") parsedChecks = parseChecksArray(value, at, refuse);
 		else if (key === "site") site = parseSite(value, at, refuse);
+		else if (key === "preview") preview = parsePreview(value, at, refuse);
 		else refuse(at, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
 	}
 	if (!("checks" in root)) refuse("", "MISSING_KEY", "Needs checks.");
@@ -565,6 +706,7 @@ export function parseCodeChecksText(text: string): ParsedCodeChecks {
 		totalTimeoutSeconds: parsedChecks.totalTimeoutSeconds,
 		mode: parsedChecks.checks.some((check) => check.needs !== undefined) ? "dag" : "sequential",
 		site,
+		...(preview !== undefined ? { preview } : {}),
 	};
 }
 

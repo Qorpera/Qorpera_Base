@@ -1186,6 +1186,60 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 			}),
 			expect.any(AbortSignal),
 		);
+
+		const isolatedSpecs = `${JSON.stringify({ name: "Thetabands Gen 1", priceDkk: 1995 })}\n`;
+		const isolatedCatalog = `${JSON.stringify({ skus: ["TB-1"] })}\n`;
+		const isolatedMem = createInMemoryCompanyFolder({
+			"identity/tokens.json": tokensJson,
+			"product/specs.json": '{"legacy":true}\n',
+			"surfaces/thetabands/specs.json": isolatedSpecs,
+			"surfaces/thetabands/catalog.json": isolatedCatalog,
+		});
+		const isolatedCollected = await collectSharedCompanyAssets(
+			isolatedMem.folder,
+			profileId,
+			new AbortController().signal,
+			["surfaces/thetabands"],
+		);
+		expect(isolatedCollected["public/qorpera-shared/product/specs.json"]).toBe(isolatedSpecs);
+		expect(isolatedCollected["public/qorpera-shared/product/catalog.json"]).toBe(isolatedCatalog);
+
+		const isolatedHandlers = createSurfaceExecutionHandlers({
+			controlPlane: {
+				completeSurfacePreview: vi.fn().mockResolvedValue(undefined),
+				completeSurfaceMerge: vi.fn().mockResolvedValue(undefined),
+				completeSurfacePublish: vi.fn().mockResolvedValue(undefined),
+			},
+			resolveCodeHostJob: () => f.job,
+			resolveProductFolderRoots: vi.fn().mockResolvedValue(["surfaces/thetabands"]),
+			folder: isolatedMem.folder,
+			buildAndUploadPreview,
+			publishSurface,
+		});
+		buildAndUploadPreview.mockClear();
+		await isolatedHandlers.runPreviewJob(
+			{
+				previewId: randomUUID(),
+				surfaceId,
+				profileId,
+				shortHostId: "deadbeef",
+				baseSha: base.mainAfter,
+				selectedChangeIds: [],
+				repositoryKey: "thetaband/website",
+				exploration: null,
+				changes: [],
+			},
+			new AbortController().signal,
+		);
+		expect(buildAndUploadPreview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sharedAssets: expect.objectContaining({
+					"public/qorpera-shared/product/specs.json": isolatedSpecs,
+					"public/qorpera-shared/product/catalog.json": isolatedCatalog,
+				}),
+			}),
+			expect.any(AbortSignal),
+		);
 	}, 20_000);
 
 	it("publishes site versions and reports both publish success and failure", async () => {

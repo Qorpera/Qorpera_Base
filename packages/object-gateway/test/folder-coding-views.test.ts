@@ -131,6 +131,14 @@ describe("coding views", () => {
 			quietMs: DESKTOP_QUIET_MS,
 			machine: CODING_MACHINE_ID,
 		});
+		const hostAccess = codingGrants().coreAccess({
+			kind: "code_host",
+			machineId: null,
+			companyId: PROFILE,
+			codingMachineId: null,
+		});
+		expect(hostAccess).toMatchObject({ write: true });
+		expect(hostAccess?.quietMs).toBeUndefined();
 		expect(codingGrants().coreAccess({ ...coding, codingMachineId: null })).toBeUndefined();
 		const { open } = await company();
 		const at = (machine: BridgeInfo["machine"], cid: number): BridgeInfo => ({ cid, lookup: "found", machine });

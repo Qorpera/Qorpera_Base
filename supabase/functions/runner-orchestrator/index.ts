@@ -226,6 +226,12 @@ Deno.serve(async (request) => {
 					};
 				}
 				break;
+			case "surface_shared_product_folder_roots":
+				rpc = "qorpera_surface_shared_product_folder_roots";
+				args = {
+					p_profile_id: action.profileId,
+				};
+				break;
 			case "surface_enqueue_session_run":
 				rpc = "qorpera_surface_enqueue_session_run";
 				args = {

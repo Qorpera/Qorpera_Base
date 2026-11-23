@@ -314,6 +314,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Screenshots in interface sessions",
 		text: "Members can now attach screenshots and other images to the messages they send in an interface's sessions, when they start one and when they reply. The session's agent sees them: a folder or operations session gets their paths under Images the member attached and opens each with company_read; a code session opens each with its attachment viewer. The images of the latest message are marked, so the agent knows which ones the member means now.",
 	},
+	{
+		id: "studio-surface-isolation-and-schemas",
+		kind: "behaviour",
+		date: "2026-11-23",
+		title: "Clean Studio folders and Product/Report Studio schemas",
+		text: "Non-Identity Studio surfaces now default to an isolated folder under surfaces/<slug> instead of legacy top-level company folders like product or reports, so each new Studio surface starts blank and holds only its own work (Identity stays in the identity folder). Product Studio sessions now receive the structured Studio layout directly in their turn instructions for interactive 3D models, key specs, colorways, BOM tables, production plans, supplier cards, and editorial competitor or vendor analysis reports with charts and tables. Report surfaces receive the same structured report format.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

@@ -5,8 +5,10 @@ import {
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
 	PRODUCT_CATALOG_PATH,
+	PRODUCT_SPECS_PATH,
 	sharedAssetsConsumedBy,
 	sharedAssetsProducedBy,
+	sharedProductAssetCandidates,
 } from "../src/surface-shared-assets.ts";
 
 describe("surface shared assets & live Identity CSS compiler", () => {
@@ -79,5 +81,18 @@ describe("surface shared assets & live Identity CSS compiler", () => {
 		expect(sharedAssetsProducedBy("product").some((link) => link.sourcePaths.includes(PRODUCT_CATALOG_PATH))).toBe(
 			true,
 		);
+	});
+
+	it("resolves shared product assets from the primary product root with fallback to product/", () => {
+		expect(sharedProductAssetCandidates()).toEqual({
+			specsPaths: [PRODUCT_SPECS_PATH],
+			catalogPaths: [PRODUCT_CATALOG_PATH],
+		});
+		expect(
+			sharedProductAssetCandidates(["/surfaces/thetabands/", "surfaces/travel-case", "surfaces/thetabands"]),
+		).toEqual({
+			specsPaths: ["surfaces/thetabands/specs.json"],
+			catalogPaths: ["surfaces/thetabands/catalog.json"],
+		});
 	});
 });

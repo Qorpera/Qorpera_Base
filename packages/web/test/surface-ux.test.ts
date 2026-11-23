@@ -337,8 +337,9 @@ describe("creating surfaces", () => {
 			description: "Data room for the seed round.",
 		});
 		expect(store.lookOf(investor!)).toEqual({ kind: "custom" });
+		expect(investor!.folderRoot).toBe("surfaces/investor-room");
 		expect(store.workspace(investor!.id)?.briefSummary).toBe("Data room for the seed round.");
-		expect(store.state.localStudioBase[investor!.id]?.["investor-room/brief.md"]).toContain(
+		expect(store.state.localStudioBase[investor!.id]?.["surfaces/investor-room/brief.md"]).toContain(
 			"Data room for the seed round.",
 		);
 		const database = await store.createSurface({
@@ -347,7 +348,23 @@ describe("creating surfaces", () => {
 			archetype: "studio",
 			kind: "database",
 		});
-		expect(store.state.localStudioBase[database!.id]?.["database/tables.json"]).toContain("customers");
+		expect(database!.folderRoot).toBe("surfaces/database");
+		expect(store.state.localStudioBase[database!.id]?.["surfaces/database/tables.json"]).toContain("customers");
+
+		openCreateSurfaceSheet(store);
+		const productSheet = document.querySelector(".surface-create-sheet")!;
+		productSheet.querySelector<HTMLElement>('[data-preset="product"]')!.click();
+		const nameField = productSheet.querySelector<HTMLInputElement>(".surface-create-name")!;
+		nameField.value = "Thetabands";
+		nameField.dispatchEvent(new Event("input", { bubbles: true }));
+		productSheet
+			.querySelector<HTMLFormElement>(".surface-create-form")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		const thetabands = store.state.surfaces.find((item) => item.slug === "thetabands")!;
+		expect(thetabands).toBeDefined();
+		expect(thetabands.folderRoot).toBe("surfaces/thetabands");
+		expect(store.lookOf(thetabands).kind).toBe("product");
 		store.dispose();
 	});
 
@@ -602,7 +619,11 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			this.open = false;
 		};
 
-		drawer.querySelector<HTMLButtonElement>('[data-act="focus-session"]')!.click();
+		drawer
+			.querySelector<HTMLElement>(
+				".surface-overview-card.is-agent:not(.is-exploration) .surface-overview-change-title",
+			)!
+			.click();
 		view.update();
 		expect(drawer.classList.contains("is-overview")).toBe(false);
 		expect(drawer.querySelector(".surface-message.is-session")).not.toBeNull();
@@ -612,9 +633,11 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			"Tydelig pris: 1.995 kr. inkl. fragt",
 		);
 		const rowActions = [...firstChange.querySelectorAll<HTMLButtonElement>(".surface-drawer-change-acts button")].map(
-			(btn) => btn.textContent,
+			(btn) => btn.getAttribute("role") ?? btn.textContent,
 		);
-		expect(rowActions).toEqual(["Approve", "Change", "Discard"]);
+		expect(rowActions).toEqual(["switch", "Approve", "Change", "Discard"]);
+		expect(drawer.querySelector(".surface-drawer-title p")).toBeNull();
+		expect(drawer.textContent).not.toContain("toggle to preview");
 
 		firstChange.querySelector<HTMLButtonElement>('[data-act="approve"]')!.click();
 		const confirmFirst = drawer.querySelector<HTMLButtonElement>('.surface-drawer-change [data-act="approve"]')!;
@@ -832,7 +855,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		const body = hub!.querySelector<HTMLElement>(".rail-agents-body")!;
 		const count = hub!.querySelector<HTMLElement>(".rail-agents-count")!;
 		expect(toggle.getAttribute("aria-expanded")).toBe("false");
-		expect(body.hidden).toBe(true);
+		expect(body.hasAttribute("inert")).toBe(true);
 		expect(count.hidden).toBe(false);
 		const rows = hub!.querySelectorAll(".rail-agent-hub-row").length;
 		expect(Number(count.textContent)).toBe(rows);
@@ -840,26 +863,26 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		expect(toggle.getAttribute("aria-label")).toBe(`Agents: ${rows}`);
 		toggle.click();
 		expect(toggle.getAttribute("aria-expanded")).toBe("true");
-		expect(body.hidden).toBe(false);
+		expect(body.hasAttribute("inert")).toBe(false);
 		expect(count.hidden).toBe(true);
 		expect(localStorage.getItem("qorpera.web.rail-agents-open")).toBe("1");
 		expect(toggle.getAttribute("aria-label")).toBe("Agents");
 		toggle.click();
-		expect(body.hidden).toBe(true);
+		expect(body.hasAttribute("inert")).toBe(true);
 
 		draw("staff", idle.id);
-		expect(body.hidden).toBe(false);
+		expect(body.hasAttribute("inert")).toBe(false);
 		expect(hub!.querySelector(`a[data-agent-id="${idle.id}"]`)?.classList.contains("active")).toBe(true);
 		expect(localStorage.getItem("qorpera.web.rail-agents-open")).toBe("0");
 		toggle.click();
-		expect(body.hidden).toBe(true);
+		expect(body.hasAttribute("inert")).toBe(true);
 		draw("staff", idle.id);
-		expect(body.hidden).toBe(true);
+		expect(body.hasAttribute("inert")).toBe(true);
 		draw("surface", "website");
 		draw("staff", scheduled.id);
-		expect(body.hidden).toBe(false);
+		expect(body.hasAttribute("inert")).toBe(false);
 		draw("surface", "website");
-		expect(body.hidden).toBe(true);
+		expect(body.hasAttribute("inert")).toBe(true);
 		localStorage.removeItem("qorpera.web.rail-agents-open");
 
 		const dialog = HTMLDialogElement.prototype;
@@ -1101,9 +1124,11 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 			"+1",
 		]);
 		expect(linkHref(chips[0]!)).toBe(`#/c/${COMPANY}/s/files`);
+		expect(store.state.drawer).toBeUndefined();
 		chips[0]!.click();
 		expect(navigated).toEqual(["files"]);
 		expect(location.hash).toBe(`#/c/${COMPANY}/s/files`);
+		expect(store.state.drawer).toBeUndefined();
 
 		expect(view.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
 		expect(view.el.querySelector(".surface-drawer-source")).toBeNull();

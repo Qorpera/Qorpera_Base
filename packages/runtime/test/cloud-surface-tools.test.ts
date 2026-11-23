@@ -108,6 +108,38 @@ describe("cloud surface runtime tools", () => {
 			slug: "headband",
 			status: "proposed",
 		});
+
+		const isolated = tool.parseArguments({
+			slug: "thetabands",
+			title: "Thetabands",
+			group: "products",
+			archetype: "studio",
+			kind: "product",
+			sourceKind: "folder",
+		}) as Record<string, unknown>;
+		expect(isolated.folderRoot).toBe("surfaces/thetabands");
+
+		const identity = tool.parseArguments({
+			slug: "identity",
+			title: "Identity",
+			group: "products",
+			archetype: "studio",
+			kind: "identity",
+			isGlobal: true,
+			sourceKind: "folder",
+		}) as Record<string, unknown>;
+		expect(identity.folderRoot).toBe("identity");
+
+		const globalReport = tool.parseArguments({
+			slug: "company-research",
+			title: "Company Research",
+			group: "products",
+			archetype: "studio",
+			kind: "report",
+			isGlobal: true,
+			sourceKind: "folder",
+		}) as Record<string, unknown>;
+		expect(globalReport.folderRoot).toBe("surfaces/company-research");
 	});
 
 	it("accepts kind, figure, isGlobal, and activateImmediately on propose_surface and rejects colours and unknown figures", async () => {
@@ -414,10 +446,53 @@ describe("cloud surface runtime tools", () => {
 		expect(text).toContain("section.pricing > button.cta");
 		expect(text).toContain("PreorderCta");
 		expect(text).toContain("src/pages/preorder.astro");
+		expect(text).toContain("git merge main");
+		expect(text).toContain("git cherry-pick");
+		expect(text).toContain("coding_record_change");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("coding_record_change");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("direct live projection");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("toggled on or off simultaneously in Preview");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("atomic, self-contained, and conflict-minimizing");
+	});
+
+	it("formats structured conflictDetails and mainSha in buildSurfaceTurnBrief", () => {
+		const sessionId = randomUUID();
+		const brief = buildSurfaceTurnBrief({
+			sessionId,
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			briefMarkdown: "Landing page",
+			mainSha: "1".repeat(40),
+			conflictPaths: ["src/pricing.tsx", "src/badges.css"],
+			conflictDetails: [
+				{
+					changeId: randomUUID(),
+					title: "Pricing tiers",
+					branch: "qorpera/coding/worker-a",
+					parentSha: "1".repeat(40),
+					headSha: "a".repeat(40),
+					conflictPaths: ["src/pricing.tsx"],
+				},
+				{
+					changeId: randomUUID(),
+					title: "Pricing badges",
+					branch: "qorpera/coding/worker-b",
+					parentSha: "1".repeat(40),
+					headSha: "b".repeat(40),
+					conflictPaths: ["src/pricing.tsx", "src/badges.css"],
+				},
+			],
+		});
+
+		expect(brief).toContain("## Conflict Reconciliation");
+		expect(brief).toContain(`Target main SHA: \`${"1".repeat(40)}\``);
+		expect(brief).toContain("Pricing tiers");
+		expect(brief).toContain("qorpera/coding/worker-a");
+		expect(brief).toContain(`${"1".repeat(40)}..${"a".repeat(40)}`);
+		expect(brief).toContain("Pricing badges");
+		expect(brief).toContain("src/badges.css");
+		expect(brief).toContain("git merge main");
+		expect(brief).toContain("git cherry-pick <parentSha>..<headSha>");
 	});
 
 	it("injects Global Company Identity into buildSurfaceTurnBrief when identityContext has content", () => {
@@ -1992,6 +2067,328 @@ describe("cloud surface runtime tools", () => {
 					},
 				},
 			]);
+		} finally {
+			bundleSpy.mockRestore();
+			await rm(tempRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("threads surfaceKind and productFolderRoots from qorpera_native_surface_read_session_turn into Product Studio instructions and shared specs", async () => {
+		const tempRoot = await mkdtemp(join(tmpdir(), "qorpera-product-surface-session-test-"));
+		const rpcFixture = fileURLToPath(new URL("./fixtures/codex-boundary-rpc-fixture.cjs", import.meta.url));
+		const binarySha256 = createHash("sha256")
+			.update(await readFile(process.execPath))
+			.digest("hex");
+		const assertBundle = runtimeBundle.assertCloudRuntimeBundle;
+		const bundleSpy = vi
+			.spyOn(runtimeBundle, "assertCloudRuntimeBundle")
+			.mockImplementation((identity) => assertBundle(identity, CLOUD_RUNTIME_NATIVE_BINARY_SHA256));
+
+		try {
+			const f = nativeCompanyContextFixture();
+			f.context = {
+				...f.context,
+				agentKind: "cofounder",
+				identity: { ...f.context.identity, sessionId: null },
+			};
+			f.authority = {
+				...f.authority,
+				identity: { ...f.authority.identity, sessionId: null },
+			};
+			const surfaceId = randomUUID();
+			const sessionId = randomUUID();
+			const leaseToken = randomUUID();
+			const changeId = randomUUID();
+			const wake = {
+				schema: "qorpera.wake-envelope/v1",
+				id: randomUUID(),
+				runId: f.context.identity.runId,
+				kind: "agent",
+				companyId: f.context.identity.companyId,
+				environmentId: f.context.identity.environmentId,
+				staffAgentId: f.context.identity.staffAgentId,
+				requesterUserId: f.context.identity.requesterUserId,
+				actorStaffId: null,
+				actorUserId: null,
+				audience: {
+					kind: f.context.identity.audienceKind,
+					userId: f.context.identity.audienceUserId,
+					sessionId: null,
+				},
+				source: {
+					kind: "surface-session",
+					id: sessionId,
+					occurrenceKey: `surface-session:${sessionId}:${leaseToken}`,
+				},
+				policy: {
+					schema: "qorpera.wake-policy/v1",
+					kind: "agent",
+					initial: "forbidden",
+					final: "forbidden",
+					silenceAllowed: true,
+					maxPublicSends: 0,
+				},
+				time: {
+					utc: "2026-09-02T08:00:00.000000Z",
+					local: "2026-09-02T10:00:00.000000",
+					timeZone: "Europe/Copenhagen",
+				},
+				pins: {
+					companySnapshotId: null,
+					companySeq: 1,
+					staffVersion: f.context.identity.staffVersion,
+					wakeSchema: "qorpera.wake-envelope/v1",
+					runtimeBundleVersion: null,
+				},
+				routine: null,
+				payload: {
+					schema: "qorpera.surface-session-wake/v1",
+					surfaceSessionId: sessionId,
+					surfaceId,
+					profileId: f.context.identity.companyId,
+					surfaceSlug: "thetabands",
+					sourceKind: "folder",
+					originKind: "member",
+					memberInitiated: true,
+					leaseToken,
+				},
+				parentRunId: null,
+				causal: { rootId: randomUUID(), agentIds: [f.context.identity.staffAgentId] },
+			};
+
+			const folderFiles = new Map<string, string>([
+				["identity/tokens.json", '{"accent":"#7c6fd6"}'],
+				["surfaces/thetabands/specs.json", '{"overview":{"product":"Thetabands Gen 1","weight":"44 g"}}'],
+			]);
+			const folderSha = (text: string) => createHash("sha256").update(text).digest("hex");
+			const folderVersion = (path: string, text: string) => {
+				const hex = createHash("sha256").update(`${path}\n${text}`).digest("hex");
+				return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+			};
+			const folderEntry = (path: string) => {
+				const text = folderFiles.get(path);
+				if (text === undefined) return null;
+				return {
+					path,
+					kind: "file",
+					version: folderVersion(path, text),
+					seq: 1,
+					updatedAt: "2026-10-01T00:00:00+00:00",
+					manifestSha256: folderSha(`manifest:${text}`),
+					fileSha256: folderSha(text),
+					bytes: Buffer.byteLength(text),
+					mediaType: "application/json",
+					executable: false,
+					authority: { resourceId: randomUUID(), resourceRevision: 1, grantId: randomUUID(), grantRevision: 1 },
+				};
+			};
+
+			let nativeAdmission: Record<string, unknown> | undefined;
+			const control = {
+				describeToolAuthority: vi.fn(async () => structuredClone(f.authority)),
+				beginToolOperation: vi.fn<CloudNativeToolOperationControlPlane["beginToolOperation"]>(async () => {
+					throw new Error("No generic effects expected");
+				}),
+				completeToolOperation: vi.fn<CloudNativeToolOperationControlPlane["completeToolOperation"]>(async () => {
+					throw new Error("No generic effects expected");
+				}),
+				completeFolderToolOperation: vi.fn<
+					NonNullable<CloudNativeToolOperationControlPlane["completeFolderToolOperation"]>
+				>(async () => {
+					throw new Error("No folder writes expected");
+				}),
+				sendMessage: vi.fn<NativeProviderControlPlane["sendMessage"]>(async () => {
+					throw new Error("No public chat messages expected");
+				}),
+				appendInteractionRequest: vi.fn<NonNullable<NativeProviderControlPlane["appendInteractionRequest"]>>(
+					async () => {
+						throw new Error("No cards expected");
+					},
+				),
+			};
+
+			const pathCall: CloudCompanyPathControl["call"] = async (method, args, signal) => {
+				if (method === "qorpera_company_machines_available") return false;
+				if (method === "qorpera_company_home_available")
+					return { schema: "qorpera.company-home/v1", available: false };
+				if (method === "qorpera_record_runtime_observation_batch") {
+					const batch = args.p_observations as { attemptId: string; phase: string }[];
+					return {
+						schema: "qorpera.runtime-observation-batch-receipt/v1",
+						runId: f.binding.runId,
+						receipts: batch.map((observation) => ({
+							schema: "qorpera.runtime-observation-receipt/v1",
+							runId: f.binding.runId,
+							attemptId: observation.attemptId,
+							phase: observation.phase,
+							ingestedAt: new Date().toISOString(),
+							replayed: false,
+						})),
+					};
+				}
+				if (method === "qorpera_folder_read") {
+					const entry = folderEntry(args.p_path as string);
+					return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: entry !== null, entry };
+				}
+				if (method === "qorpera_folder_list") {
+					return { schema: "qorpera.folder-list/v1", asOfSeq: 1, entries: [], next: null };
+				}
+				if (method === "qorpera_folder_record_release") {
+					return {
+						schema: "qorpera.folder-release/v1",
+						releaseId: args.p_release_id,
+						reads: (args.p_reads as unknown[]).length,
+						replay: false,
+					};
+				}
+				if (method === "qorpera_begin_native_company_execution_v3") {
+					nativeAdmission = {
+						runId: f.binding.runId,
+						jobId: f.binding.jobId,
+						leaseId: f.binding.leaseId,
+						binarySha256: args.p_binary_sha256,
+						runtimeBundleSha256: args.p_runtime_bundle_sha256,
+						reasoningPolicySha256: args.p_reasoning_policy_sha256,
+						reasoningEffort: "low",
+						toolCatalogSha256: createHash("sha256")
+							.update(args.p_tool_catalog_text as string)
+							.digest("hex"),
+					};
+					return { schema: "qorpera.native-company-execution-admission/v1", ...nativeAdmission };
+				}
+				if (method === "qorpera_bind_native_company_context") {
+					const admission = nativeAdmission!;
+					return {
+						schema: "qorpera.native-company-execution-start/v1",
+						...admission,
+						contextSha256: args.p_context_sha256,
+						contextBytes: args.p_context_bytes,
+					};
+				}
+				if (method === "qorpera_describe_company_run_context") return structuredClone(f.context);
+				if (method === "qorpera_read_native_wake") return structuredClone(wake);
+				if (method === "qorpera_assert_company_path_reads") return null;
+				if (method === "qorpera_check_native_run") return await control.describeToolAuthority();
+				if (method === "qorpera_fence_native_context") {
+					const authority = await control.describeToolAuthority();
+					const receipt = await pathCall(
+						"qorpera_record_native_context_view",
+						{ p_environment_id: args.p_environment_id, p_binding: args.p_binding, p_view: args.p_view },
+						signal,
+					);
+					return { schema: "qorpera.native-context-fence/v1", authority, receipt, kept: args.p_paths };
+				}
+				if (method === "qorpera_record_native_context_view") {
+					return {
+						schema: "qorpera.native-context-view-receipt/v1",
+						viewId: randomUUID(),
+						requestId: (args.p_view as Record<string, unknown>).requestId,
+						sha256: "b".repeat(64),
+						ordinal: 1,
+					};
+				}
+				if (method === "qorpera_native_surface_read_session_turn") {
+					return {
+						sessionId,
+						surfaceId,
+						surfaceSlug: "thetabands",
+						surfaceTitle: "Thetabands",
+						surfaceKind: "product",
+						sourceKind: "folder",
+						prompt: "Design headband variants and audit suppliers.",
+						state: "queued",
+						repositoryKey: null,
+						folderRoot: "surfaces/thetabands",
+						productFolderRoots: ["surfaces/thetabands"],
+						briefSummary: "Physical EEG headband product studio",
+						explorationVariantLabel: null,
+						originKind: "member",
+						originRef: null,
+						baseSha: null,
+						branchHeadSha: null,
+						conflictPaths: [],
+					};
+				}
+				if (method === "qorpera_native_surface_session_images") {
+					return {
+						schema: "qorpera.native-surface-session-images/v1",
+						sessionId,
+						latestMemberMessageId: null,
+						messages: [],
+					};
+				}
+				if (method === "qorpera_native_surface_record_change") {
+					return { changeId, seq: 1, session: { openChangeCount: 1 } };
+				}
+				if (method === "qorpera_native_surface_complete_turn") {
+					return { id: sessionId, state: args.p_state };
+				}
+				if (method === "qorpera_native_surface_renew_lease") {
+					return { renewed: true };
+				}
+				throw new Error(`Unexpected RPC: ${method}`);
+			};
+
+			const evidencePath = join(tempRoot, "evidence.json");
+			const identityRoot = join(tempRoot, "identity");
+			await mkdir(join(identityRoot, "codex"), { recursive: true, mode: 0o700 });
+			await writeFile(join(identityRoot, "codex", "auth.json"), '{"tokens":{"access_token":"SYNTHETIC_SECRET"}}', {
+				mode: 0o600,
+			});
+
+			const runtime = new CloudNativeCompanyRuntime({
+				controlPlane: control,
+				pathControl: { call: pathCall },
+				command: [process.execPath, rpcFixture, "company-surface-session", evidencePath],
+				binarySha256,
+				timeoutMs: 10_000,
+				surfaceFirst: true,
+				folderBytes: () => ({
+					put: async () => {
+						throw new Error("No folder writes expected");
+					},
+					get: async (file: { fileSha256: string }) => {
+						const text = [...folderFiles.values()].find((value) => folderSha(value) === file.fileSha256);
+						if (text === undefined) throw new Error("No such file bytes");
+						return new TextEncoder().encode(text);
+					},
+					range: async (file: { fileSha256: string }, offset: number, length: number) => {
+						const text = [...folderFiles.values()].find((value) => folderSha(value) === file.fileSha256);
+						if (text === undefined) throw new Error("No such file bytes");
+						return new TextEncoder().encode(text).subarray(offset, offset + length);
+					},
+				}),
+			});
+
+			const request: NativeCompanyExecutionRequest = {
+				runtime: "company-path-v1",
+				authority: {
+					...f.binding,
+					encryptedCapsuleReference: `native-capsule/${f.binding.credentialCapsuleId}`,
+					attestationPolicySha256: "a".repeat(64),
+					expiresAt: "2099-08-28T12:00:00Z",
+				},
+				job: {
+					jobId: f.binding.jobId,
+					jobType: "agent_turn",
+					requiredCapability: "agent_turn",
+					attemptCount: 1,
+					payload: {},
+				},
+			};
+
+			await runtime.execute(request, identityRoot, new AbortController().signal);
+			const evidence = JSON.parse(await readFile(evidencePath, "utf8")) as {
+				threadParameters: { developerInstructions?: string };
+				turnParameters: unknown;
+			};
+			const instructions = evidence.threadParameters.developerInstructions ?? "";
+			expect(instructions).toContain("Product Studio file layout");
+			expect(instructions).not.toContain("When this surface represents a physical product");
+			expect(instructions).toContain("specs.json");
+			expect(instructions).toContain("vendors.json");
+			expect(instructions).toContain("<slug>.report.json");
+			expect(JSON.stringify(evidence.turnParameters)).toContain("Thetabands Gen 1");
 		} finally {
 			bundleSpy.mockRestore();
 			await rm(tempRoot, { recursive: true, force: true });
