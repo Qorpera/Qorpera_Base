@@ -809,39 +809,32 @@ export class SurfaceStudioView {
 					? t("1 live change applied")
 					: composition.appliedChangeIds.length > 1
 						? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
-						: t("Base");
-		const badgeClass =
-			composition.status === "conflicted"
-				? "studio-badge is-conflict"
-				: composition.appliedChangeIds.length > 0
-					? "studio-badge is-live"
-					: "studio-badge";
+						: null;
+		const badgeClass = composition.status === "conflicted" ? "studio-badge is-conflict" : "studio-badge is-live";
 
-		const children: HTMLElement[] = [
-			h(
-				"div",
-				{ class: "studio-head" },
+		const children: HTMLElement[] = [];
+		if (badgeText || updatingPhase) {
+			children.push(
 				h(
 					"div",
-					{ class: "studio-head-meta" },
-					surface.folderRoot ? h("span", { class: "studio-path" }, surface.folderRoot) : null,
-					h("span", { class: badgeClass }, badgeText),
+					{ class: "studio-head" },
+					badgeText ? h("span", { class: badgeClass }, badgeText) : h("span"),
+					updatingPhase
+						? h(
+								"span",
+								{
+									class: "studio-updating-pill",
+									role: "status",
+									"aria-live": "polite",
+									"data-updating-phase": updatingPhase,
+								},
+								h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
+								h("span", null, updatingLabel(updatingPhase)),
+							)
+						: null,
 				),
-				updatingPhase
-					? h(
-							"span",
-							{
-								class: "studio-updating-pill",
-								role: "status",
-								"aria-live": "polite",
-								"data-updating-phase": updatingPhase,
-							},
-							h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
-							h("span", null, updatingLabel(updatingPhase)),
-						)
-					: null,
-			),
-		];
+			);
+		}
 
 		if (composition.status === "conflicted") {
 			const paths = formatConflictPaths(composition.conflictReport.paths);

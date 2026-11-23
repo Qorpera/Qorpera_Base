@@ -78,14 +78,7 @@
 	background: var(--bg);
 	border-right: 0;
 }
-.frame:has(.rail.has-surface-rail) .rail-reopen-btn {
-	top: 16px; left: 16px;
-	background: color-mix(in srgb, var(--bg) 42%, transparent);
-	backdrop-filter: blur(5px);
-}
-.frame:has(.rail.has-surface-rail) .rail-reopen-btn:hover {
-	background: color-mix(in srgb, var(--bg) 82%, transparent);
-}
+.frame:has(.rail.has-surface-rail) .rail-reopen-btn { top: 16px; left: 16px; }
 
 /* Unified Agents hub: Working task-driven agents at the top, Scheduled agents underneath, idle agents under Ready. */
 .rail-agents-hub {
@@ -350,10 +343,10 @@
 .surface-bar {
 	position: absolute; z-index: 10; top: 0; left: 0; right: 0;
 	display: flex; align-items: flex-start; justify-content: center;
-	padding: 10px 52px 0 10px; background: transparent; pointer-events: none;
+	padding: 10px 64px 0 10px; background: transparent; pointer-events: none;
 }
 .surface-page.has-drawer .surface-bar { padding: 10px 10px 0 10px; }
-.frame.rail-hidden-desktop .surface-bar { padding-inline: 54px; }
+.frame.rail-hidden-desktop .surface-bar { padding-inline: 54px 64px; }
 .frame.rail-hidden-desktop .surface-page.has-drawer .surface-bar { padding: 10px 10px 0 54px; }
 .surface-bar[hidden] { display: none; }
 .surface-pill {
@@ -432,17 +425,6 @@
 	background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgb(18 18 17 / 10%);
 }
 .surface-pill-device .icon { width: 14px; height: 14px; }
-.surface-handoff-btn {
-	display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 12px;
-	border: 1px solid color-mix(in srgb, var(--text) 10%, transparent); border-radius: 999px;
-	background: color-mix(in srgb, var(--text) 3%, var(--bg)); color: var(--text); font: inherit;
-	font-size: 12px; font-weight: 600; white-space: nowrap; cursor: default;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease;
-}
-.surface-handoff-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 7%, var(--bg)); }
-.surface-handoff-btn.is-on { background: var(--primary); color: var(--on-primary); border-color: transparent; }
-.surface-handoff-btn:disabled { opacity: 0.55; cursor: default; }
-.surface-handoff-btn .icon { width: 13px; height: 13px; }
 .surface-seg { display: inline-flex; padding: 2px; border-radius: 999px; background: color-mix(in srgb, var(--text) 5.5%, transparent); }
 .surface-seg button {
 	display: flex; align-items: center; height: 26px; padding: 0 12px; border: 0; border-radius: 999px; background: none;
@@ -478,22 +460,12 @@
 
 /* Right sidepanel toggle pinned statically to the top-right corner of the page (never pushed by the drawer). */
 .surface-panel-toggle {
-	position: absolute; z-index: 25; top: 16px; right: 16px; pointer-events: auto;
+	position: absolute; z-index: 25; top: 16px; right: 28px; pointer-events: auto;
 	display: grid; place-items: center; width: 34px; height: 34px; flex: none; padding: 0;
-	border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); border-radius: 10px;
-	background: color-mix(in srgb, var(--bg) 42%, transparent); color: var(--text-muted);
-	box-shadow: 0 2px 10px -4px rgb(18 18 17 / 16%); backdrop-filter: blur(5px); cursor: default;
-	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
+	border: 0; border-radius: 10px; background: transparent; color: var(--text-muted); cursor: default;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
 }
-.surface-panel-toggle:hover {
-	background: color-mix(in srgb, var(--bg) 82%, transparent); color: var(--text); border-color: color-mix(in srgb, var(--text) 22%, transparent);
-}
-.surface-panel-toggle.is-on {
-	border-color: transparent; background: transparent; box-shadow: none; backdrop-filter: none; color: #676664;
-}
-.surface-panel-toggle.is-on:hover {
-	border-color: transparent; background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text);
-}
+.surface-panel-toggle:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); }
 .surface-panel-toggle[hidden] { display: none; }
 .surface-panel-toggle .icon { width: 18px; height: 18px; }
 .surface-panel-toggle-dot {
@@ -631,7 +603,9 @@
 .surface-mount > .surface-ops, .surface-mount > .surface-local-site { height: 100%; }
 .surface-mount .site-view, .surface-site > * { height: 100%; }
 .surface-ops .mailbox-scroll { padding-bottom: 108px; }
-.surface-ops > .page, .surface-files, .surface-files .files-page { padding-bottom: 120px; }
+.surface-ops > .page { padding-bottom: 120px; }
+.surface-mount > .surface-files { width: 100%; max-width: 1120px; margin-inline: auto; padding: 58px clamp(20px, 4.5%, 48px) 120px; }
+.surface-files .storage-columns { top: 52px; }
 .surface-local-site { position: relative; width: 100%; height: 100%; overflow: hidden; background: var(--bg); }
 .surface-local-site > .surface-frame { position: absolute; inset: 0; }
 .surface-local-site.is-opening > .surface-local-frame { opacity: 0; }
@@ -706,28 +680,6 @@
 
 .surface-banners { display: grid; gap: 6px; width: min(760px, 100%); margin: 0 auto; }
 .surface-banners:empty { display: none; }
-.surface-handoff-bar {
-	display: flex; align-items: center; gap: 8px; width: min(760px, 100%); margin: 0 auto;
-	padding: 6px 8px 6px 14px; border: 1px solid var(--surface-glass-edge); border-radius: 14px;
-	background: color-mix(in srgb, var(--text) 2.5%, var(--bg));
-}
-.surface-handoff-bar[hidden] { display: none; }
-.surface-handoff-bar > .icon { width: 15px; height: 15px; flex: none; color: var(--text-soft); }
-.surface-handoff-target {
-	flex: none; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--text) 6%, transparent);
-	color: var(--text-muted); font-size: 12px; font-weight: 600;
-}
-.surface-handoff-target[hidden], .surface-handoff-select[hidden] { display: none; }
-.surface-handoff-select {
-	flex: none; height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
-	color: var(--text); font: inherit; font-size: 12px; font-weight: 600;
-}
-.surface-handoff-input {
-	flex: 1; min-width: 0; height: 30px; min-height: 0; padding: 0 6px; border: 0; outline: 0; background: transparent;
-	color: var(--text); font: inherit; font-size: 13.5px;
-}
-.surface-handoff-input:focus-visible { outline: none; }
-.surface-handoff-input::placeholder { color: var(--text-soft); }
 .surface-banner {
 	display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 14px; border: 1px solid var(--border);
 	border-radius: 12px; background: color-mix(in srgb, var(--text) 2.5%, var(--bg)); font-size: 13px;
@@ -785,7 +737,7 @@
 }
 .surface-composer-shell::before {
 	content: ""; position: absolute; z-index: -1; inset: 0; border-radius: inherit;
-	background: color-mix(in srgb, var(--bg) 38%, transparent);
+	background: color-mix(in srgb, var(--bg) 48%, transparent);
 	backdrop-filter: blur(5px) saturate(1.4); pointer-events: none;
 	transition: background-color var(--motion-fast) ease, backdrop-filter var(--motion-fast) ease;
 }
@@ -840,7 +792,7 @@
 	.surface-drawer { position: absolute; top: 0; right: 0; bottom: 0; box-shadow: -12px 0 36px rgb(18 18 17 / 18%); }
 }
 .surface-drawer-head {
-	display: flex; align-items: center; gap: 10px; min-height: 66px; padding: 14px 56px 12px 14px;
+	display: flex; align-items: center; gap: 10px; min-height: 66px; padding: 14px 70px 12px 14px;
 	border-bottom: 1px solid color-mix(in srgb, var(--text) 7%, transparent);
 }
 .surface-drawer-head.is-overview { padding-left: 16px; }
@@ -1296,18 +1248,13 @@
 
 /* ---- Studio surface canvas ------------------------------------------------------ */
 .surface-studio {
+	position: relative;
 	max-width: 960px; min-height: 100%; margin: 0 auto; padding: 66px 32px 136px; display: flex; flex-direction: column;
 	gap: 24px;
 }
 .studio-head {
-	position: relative;
+	position: absolute; top: 22px; left: 32px; right: 32px;
 	display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 14px;
-	border-bottom: 1px solid var(--border);
-}
-.studio-head-meta { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.studio-path {
-	overflow: hidden; color: var(--text-soft); font-family: var(--mono); font-size: 12px; text-overflow: ellipsis;
-	white-space: nowrap;
 }
 .studio-badge {
 	display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 999px;
@@ -1873,6 +1820,7 @@
 	border-radius: 24px; padding: 10px 16px 46px;
 }
 .frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell::before {
+	background: color-mix(in srgb, var(--bg) 48%, transparent);
 	transition: background-color var(--motion-fast) ease, backdrop-filter var(--motion-fast) ease;
 }
 .frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell:hover::before,
