@@ -2441,13 +2441,14 @@ export function mountApplication(
 				return tellAgent(controller, accounts, agentId, note);
 			},
 		});
+		const liveWebsite = (slug: string) =>
+			controller.store
+				.get()
+				.siteList?.find((site) => site.slug === slug && site.kind === "files" && site.state === "live");
 		const surfaceMount = (surface: SurfaceSummary, signal: AbortSignal): SurfaceMount | undefined => {
 			if (surface.archetype === "live_build" && surface.siteSlug) {
 				const slug = surface.siteSlug;
-				const website = () =>
-					controller.store
-						.get()
-						.siteList?.find((site) => site.slug === slug && site.kind === "files" && site.state === "live");
+				const website = () => liveWebsite(slug);
 				if (!website()) return undefined;
 				const sites = createWebSites(cloud, controller.profile);
 				const view = new SiteView(
@@ -3144,6 +3145,11 @@ export function mountApplication(
 						{
 							store: surfaces,
 							mount: surfaceMount,
+							isSiteLive: (surface) =>
+								surface.archetype === "live_build" &&
+								surface.siteSlug !== null &&
+								surface.siteSlug !== undefined &&
+								liveWebsite(surface.siteSlug) !== undefined,
 							isMountLoading: (surface) => {
 								const currentState = controller.store.get();
 								if (currentState.accessLost) return false;

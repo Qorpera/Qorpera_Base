@@ -543,9 +543,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		const modeLabels = [...view.el.querySelectorAll(".surface-pill-modes button")].map((btn) => btn.textContent);
 		expect(modeLabels).toEqual(["Live", "Preview"]);
 		expect(view.el.querySelector(".surface-pill-device")).not.toBeNull();
-		const address = view.el.querySelector<HTMLAnchorElement>(".surface-pill .surface-pill-address");
-		expect(address?.getAttribute("href")).toBe("https://thetaband.dk");
-		expect(address?.textContent).toBe("thetaband.dk");
+		expect(view.el.querySelector(".surface-pill-address")).toBeNull();
 
 		const headerAgents = [...view.el.querySelectorAll<HTMLButtonElement>(".surface-pill .surface-bar-agent")];
 		expect(headerAgents).toHaveLength(2);
@@ -899,6 +897,42 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 		company.stop();
 		vi.unstubAllGlobals();
+	});
+
+	it("shows a website's address in the bar only while its site is live", async () => {
+		stubFigureMotion();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		let live = true;
+		const view = new SurfaceView(
+			{ store, mount: () => undefined, openMigration: () => undefined, isSiteLive: () => live },
+			"website",
+		);
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const address = view.el.querySelector<HTMLAnchorElement>(".surface-pill-modes > .surface-pill-address");
+		expect(address?.getAttribute("href")).toBe("https://thetaband.dk");
+		expect(address?.textContent).toBe("thetaband.dk");
+		expect(address?.closest('[role="group"]')).toBeNull();
+		const modes = view.el.querySelector('.surface-pill-mode-set[role="group"]');
+		expect([...(modes?.querySelectorAll("button") ?? [])].map((button) => button.textContent)).toEqual([
+			"Live",
+			"Preview",
+		]);
+
+		live = false;
+		view.update();
+		expect(view.el.querySelector(".surface-pill-address")).toBeNull();
+		expect(view.el.querySelector(".surface-pill-mode-set button")).not.toBeNull();
+
+		view.dispose();
+		store.dispose();
 	});
 
 	it("keeps the header pill balanced into three flex groups with collapse nested in the right tools", async () => {
