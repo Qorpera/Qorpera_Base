@@ -150,15 +150,19 @@ function messageRow(message: SurfaceSessionMessage, authorName?: string, images?
 	if (message.authorKind === "system")
 		return h(
 			"div",
-			{
-				class: "surface-message is-system",
-				...(message.changeId ? { "data-change-id": message.changeId } : {}),
-			},
-			message.changeId
-				? h("span", { class: "surface-system-mark", "aria-hidden": "true" }, icon("check"))
-				: h("span", { class: "surface-system-dot", "aria-hidden": "true" }),
-			h("span", { class: "surface-system-text" }, message.text),
-			h("time", { datetime: message.createdAt }, fmtTime(message.createdAt)),
+			{ class: "surface-message-group is-system" },
+			h("time", { class: "surface-message-time", datetime: message.createdAt }, fmtTime(message.createdAt)),
+			h(
+				"div",
+				{
+					class: "surface-message is-system",
+					...(message.changeId ? { "data-change-id": message.changeId } : {}),
+				},
+				message.changeId
+					? h("span", { class: "surface-system-mark", "aria-hidden": "true" }, icon("check"))
+					: h("span", { class: "surface-system-dot", "aria-hidden": "true" }),
+				h("span", { class: "surface-system-text" }, message.text),
+			),
 		);
 	if (message.authorKind === "session")
 		return h("p", { class: "surface-message is-session", title: fmtTime(message.createdAt) }, message.text);
