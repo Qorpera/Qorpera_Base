@@ -9,7 +9,7 @@ export interface Box {
 }
 
 export interface HoverGlideOptions {
-	signal: AbortSignal;
+	signal?: AbortSignal;
 	tintClass: string;
 	item(node: Element): HTMLElement | undefined;
 	paused?(): boolean;
@@ -49,7 +49,7 @@ export class HoverGlide {
 			},
 			{ signal },
 		);
-		signal.addEventListener("abort", () => {
+		signal?.addEventListener("abort", () => {
 			window.clearTimeout(this.#leaving);
 			window.clearTimeout(this.#lighting);
 			window.clearTimeout(this.#removing);
@@ -250,8 +250,7 @@ export function installHoverGlides(signal: AbortSignal): void {
 			glides.set(
 				group,
 				new HoverGlide(group, {
-					// WHY: a derived signal is held weakly by the app's, so a closed menu's glide can be collected.
-					signal: AbortSignal.any([signal]),
+					// WHY: no app signal here; it would keep every closed menu's glide alive, and the group's own listeners go with it.
 					tintClass: "hover-glide-tint",
 					item: (node) => {
 						const found = glideItem(node);
