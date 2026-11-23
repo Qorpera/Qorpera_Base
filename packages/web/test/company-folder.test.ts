@@ -515,6 +515,8 @@ describe("a folder-v2 company's Company File", () => {
 		await click(host.querySelector('.files-section[data-section="recents"]'));
 		expect(fake.client.history).toHaveBeenCalledWith(null, 20, expect.any(AbortSignal));
 		expect(section(host)).toBe("recents");
+		expect(search.placeholder).toBe("Search recent changes");
+		expect(search.getAttribute("aria-label")).toBe("Search recent changes");
 		expect(host.querySelector<HTMLElement>(".storage-documents")?.hidden).toBe(true);
 		expect(host.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(false);
 		expect(viewerOpen(host)).toBe(false);
@@ -525,6 +527,7 @@ describe("a folder-v2 company's Company File", () => {
 		).toEqual(["notes/log.txt"]);
 		await click(host.querySelector(".storage-recents button.folder-history-path"));
 		expect(section(host)).toBe("documents");
+		expect(search.placeholder).toBe("Search this folder");
 		expect(host.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(true);
 		expect(host.querySelector(".files-text")?.textContent).toBe("line one");
 		expect(search.value).toBe("");

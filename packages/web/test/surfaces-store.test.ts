@@ -332,6 +332,107 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("uploads a start's images under one input id and names them in the start", async () => {
+		const started = session(["staged"], { state: "running" });
+		const startSurfaceSession = vi.fn(async () => started);
+		const uploadImage = vi.fn(async (_surfaceId: string, _input: string, file: File) => ({
+			sha256: file.name === "a.png" ? "a".repeat(64) : "b".repeat(64),
+			bytes: file.size,
+			mediaType: file.type,
+		}));
+		const store = storeWith(
+			fakeClient({
+				startSurfaceSession,
+				surfaceSessionImages: vi.fn(async () => ({ sessionId: SESSION, messages: [] })),
+			}),
+			{ uploadImage },
+		);
+		await store.load();
+		await store.openSurface("website");
+		expect(store.canAttachImages).toBe(true);
+		const files = [
+			new File(["x"], "a.png", { type: "image/png" }),
+			new File(["yy"], "b.jpg", { type: "image/jpeg" }),
+		];
+		await store.startSession(SURFACE, "Ret knappen", {}, files);
+		expect(uploadImage).toHaveBeenCalledTimes(2);
+		const inputId = uploadImage.mock.calls[0]?.[1];
+		expect(uploadImage.mock.calls[1]?.[1]).toBe(inputId);
+		expect(uploadImage.mock.calls.map((call) => call[0])).toEqual([SURFACE, SURFACE]);
+		expect(startSurfaceSession).toHaveBeenCalledWith(SURFACE, "Ret knappen", {
+			clientInputId: inputId,
+			images: [
+				{ sha256: "a".repeat(64), bytes: 1, mediaType: "image/png" },
+				{ sha256: "b".repeat(64), bytes: 2, mediaType: "image/jpeg" },
+			],
+		});
+		store.dispose();
+	});
+
+	it("sends a steer's images with the reply and keeps them on the note while it is on its way", async () => {
+		const pending = deferred<ReturnType<typeof session>>();
+		const replySurfaceSession = vi.fn(() => pending.promise);
+		const uploadImage = vi.fn(async () => ({ sha256: "c".repeat(64), bytes: 3, mediaType: "image/webp" }));
+		const store = storeWith(
+			fakeClient({
+				replySurfaceSession,
+				surfaceSessionImages: vi.fn(async () => ({ sessionId: SESSION, messages: [] })),
+			}),
+			{ uploadImage },
+		);
+		await store.load();
+		await store.openSurface("website");
+		const file = new File(["zzz"], "shot.webp", { type: "image/webp" });
+		const sending = store.reply(SESSION, "Se her", [file]);
+		expect(store.state.notes[0]?.files).toEqual([file]);
+		await vi.waitFor(() => expect(replySurfaceSession).toHaveBeenCalled());
+		const inputId = (uploadImage.mock.calls[0] as unknown[] | undefined)?.[1];
+		expect(replySurfaceSession).toHaveBeenCalledWith(SESSION, "Se her", true, {
+			clientInputId: inputId,
+			images: [{ sha256: "c".repeat(64), bytes: 3, mediaType: "image/webp" }],
+		});
+		pending.resolve(session(["staged"], { messages: [sessionMessage(MESSAGE_IDS[0], "member", "Se her")] }));
+		expect(await sending).toBe(true);
+		store.dispose();
+	});
+
+	it("refuses images where they cannot be sent and keeps the plain reply call without them", async () => {
+		const replySurfaceSession = vi.fn(async () =>
+			session(["staged"], { messages: [sessionMessage(MESSAGE_IDS[0], "member", "Uden billede")] }),
+		);
+		const store = storeWith(fakeClient({ replySurfaceSession }));
+		await store.load();
+		await store.openSurface("website");
+		expect(store.canAttachImages).toBe(false);
+		expect(await store.reply(SESSION, "Uden billede")).toBe(true);
+		expect(replySurfaceSession).toHaveBeenCalledWith(SESSION, "Uden billede");
+		expect(await store.reply(SESSION, "Med billede", [new File(["x"], "a.png", { type: "image/png" })])).toBe(false);
+		expect(store.state.error).toBe("Images can't be sent here yet.");
+		store.dispose();
+	});
+
+	it("reads a session's images once per new member message", async () => {
+		const surfaceSessionImages = vi.fn(async () => ({
+			sessionId: SESSION,
+			messages: [
+				{
+					messageId: MESSAGE_IDS[0],
+					clientInputId: "6f1c2a8e-4b8f-4c55-9f0a-1d2e3f4a5b6c",
+					images: [{ sha256: "d".repeat(64), bytes: 4, mediaType: "image/png" }],
+				},
+			],
+		}));
+		const store = storeWith(fakeClient({ surfaceSessionImages }), { uploadImage: vi.fn() });
+		await store.load();
+		await store.openSurface("website");
+		const current = session(["staged"], { messages: [sessionMessage(MESSAGE_IDS[0], "member", "Se her")] });
+		store.ensureSessionImages(current);
+		store.ensureSessionImages(current);
+		await vi.waitFor(() => expect(store.state.sessionImages[current.id]?.messages).toHaveLength(1));
+		expect(surfaceSessionImages).toHaveBeenCalledTimes(1);
+		store.dispose();
+	});
+
 	it("removes an optimistic reply when the reply RPC fails", async () => {
 		const store = storeWith(
 			fakeClient({ replySurfaceSession: vi.fn(async () => Promise.reject(new Error("offline"))) }),
@@ -1591,5 +1692,57 @@ describe("SurfacesStore", () => {
 		});
 		expect(store.state.pendingStudioPatches[studioId]).toBeUndefined();
 		store.dispose();
+	});
+
+	it("skips generated directories, caps subfolder walks, and enforces a byte budget in readSurfaceFolderFiles", async () => {
+		const listedPaths: string[] = [];
+		const readPaths: string[] = [];
+		const chunk = "x".repeat(250_000);
+		const tokens = JSON.stringify({ colors: { accent: "#2563eb" } });
+		const folder = {
+			list: vi.fn(async (path: string) => {
+				listedPaths.push(path);
+				if (path === "repo") {
+					return {
+						entries: [
+							{ path: "repo/node_modules", kind: "folder" as const, file: null },
+							{ path: "repo/.git", kind: "folder" as const, file: null },
+							{ path: "repo/dist", kind: "folder" as const, file: null },
+							{
+								path: "repo/tokens.json",
+								kind: "file" as const,
+								file: { path: "repo/tokens.json", bytes: tokens.length },
+							},
+							...["a", "b", "c", "d", "e"].map((name) => ({
+								path: `repo/${name}.txt`,
+								kind: "file" as const,
+								file: { path: `repo/${name}.txt`, bytes: chunk.length },
+							})),
+							...Array.from({ length: 16 }, (_, idx) => ({
+								path: `repo/sub-${String(idx + 1).padStart(2, "0")}`,
+								kind: "folder" as const,
+								file: null,
+							})),
+						],
+					};
+				}
+				return { entries: [] };
+			}),
+			readFile: vi.fn(async (file: { readonly path: string; readonly bytes: number }) => {
+				readPaths.push(file.path);
+				return new TextEncoder().encode(file.path === "repo/tokens.json" ? tokens : chunk);
+			}),
+		};
+
+		const files = await readSurfaceFolderFiles(folder, ["repo"], new AbortController().signal);
+		expect(listedPaths).not.toContain("repo/node_modules");
+		expect(listedPaths).not.toContain("repo/.git");
+		expect(listedPaths).not.toContain("repo/dist");
+		expect(listedPaths.filter((path) => path.startsWith("repo/sub-"))).toHaveLength(12);
+		expect(files["repo/tokens.json"]).toContain("#2563eb");
+		expect(readPaths[0]).toBe("repo/tokens.json");
+		const totalBytes = Object.values(files).reduce((sum, text) => sum + text.length, 0);
+		expect(totalBytes).toBeLessThanOrEqual(1024 * 1024);
+		expect(Object.keys(files).filter((path) => path.endsWith(".txt")).length).toBeLessThan(5);
 	});
 });

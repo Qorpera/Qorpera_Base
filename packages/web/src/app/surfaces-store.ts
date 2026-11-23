@@ -20,9 +20,11 @@ import {
 	type SurfaceAutomationSummary,
 	type SurfaceChangeUnit,
 	type SurfaceExplorationSet,
+	type SurfaceImageRef,
 	type SurfaceMigrationChecklist,
 	type SurfacePreviewCompositionState,
 	type SurfaceSession,
+	type SurfaceSessionImages,
 	type SurfaceSummary,
 	type SurfaceWorkspace,
 } from "@qorpera/contracts";
@@ -74,6 +76,7 @@ export type SurfacesClient = Pick<
 			| "updateAutomation"
 			| "deleteAutomation"
 			| "setSurfaceFigure"
+			| "surfaceSessionImages"
 		>
 	>;
 
@@ -124,9 +127,37 @@ export interface SurfaceFolderReader<TFile extends SurfaceFolderReadableFile = S
 }
 
 const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css|svg|html?)$/i;
+const STUDIO_IGNORED_DIR = new Set([
+	"node_modules",
+	".git",
+	"dist",
+	"build",
+	"target",
+	".next",
+	".nuxt",
+	".turbo",
+	".cache",
+	"vendor",
+	"coverage",
+	"__pycache__",
+	".venv",
+	"out",
+]);
 const STUDIO_MAX_FILE_BYTES = 256 * 1024;
+const STUDIO_MAX_TOTAL_BYTES = 1024 * 1024;
 const STUDIO_MAX_FILES = 32;
+const STUDIO_MAX_SUBFOLDERS = 12;
+const STUDIO_LIST_CONCURRENCY = 4;
 const STUDIO_READ_CONCURRENCY = 6;
+
+function studioFilePriority(path: string): number {
+	const lower = path.toLowerCase();
+	if (lower.endsWith(".json")) return 0;
+	if (lower.endsWith(".css") || lower.endsWith(".svg")) return 1;
+	if (lower.endsWith(".md") || lower.endsWith(".markdown")) return 2;
+	if (lower.endsWith(".html") || lower.endsWith(".htm")) return 3;
+	return 4;
+}
 
 export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadableFile>(
 	folder: SurfaceFolderReader<TFile>,
@@ -150,7 +181,8 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 	const collectEntries = (entries: readonly SurfaceFolderEntry<TFile>[], allowSubfolders: boolean) => {
 		for (const entry of entries) {
 			if (allowSubfolders && entry.kind === "folder") {
-				subfolders.push(entry.path);
+				const base = entry.path.split("/").at(-1)?.toLowerCase() ?? "";
+				if (!STUDIO_IGNORED_DIR.has(base)) subfolders.push(entry.path);
 				continue;
 			}
 			if (
@@ -168,11 +200,31 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 	};
 	for (const entries of rootPages) collectEntries(entries, true);
 	if (subfolders.length > 0 && candidates.length < STUDIO_MAX_FILES) {
-		const subPages = await Promise.all([...new Set(subfolders)].map((sub) => listFolder(sub)));
+		const uniqueSubs = [...new Set(subfolders)].slice(0, STUDIO_MAX_SUBFOLDERS);
+		let subNext = 0;
+		const subPages: (readonly SurfaceFolderEntry<TFile>[])[] = [];
+		const listWorker = async (): Promise<void> => {
+			while (!signal.aborted) {
+				const index = subNext++;
+				if (index >= uniqueSubs.length) return;
+				subPages[index] = await listFolder(uniqueSubs[index]!);
+			}
+		};
+		await Promise.all(
+			Array.from({ length: Math.min(STUDIO_LIST_CONCURRENCY, uniqueSubs.length) }, () => listWorker()),
+		);
 		if (signal.aborted) return {};
-		for (const entries of subPages) collectEntries(entries, false);
+		for (const entries of subPages) if (entries) collectEntries(entries, false);
 	}
-	const selected = candidates.slice(0, STUDIO_MAX_FILES);
+	candidates.sort((a, b) => studioFilePriority(a.path) - studioFilePriority(b.path) || a.file.bytes - b.file.bytes);
+	const selected: { readonly path: string; readonly file: TFile }[] = [];
+	let totalBytes = 0;
+	for (const item of candidates) {
+		if (selected.length >= STUDIO_MAX_FILES) break;
+		if (selected.length > 0 && totalBytes + item.file.bytes > STUDIO_MAX_TOTAL_BYTES) continue;
+		selected.push(item);
+		totalBytes += item.file.bytes;
+	}
 	if (selected.length === 0) return {};
 	const decoder = new TextDecoder();
 	const files: Record<string, string> = {};
@@ -227,6 +279,7 @@ export interface SurfaceNote {
 	readonly text: string;
 	readonly at: string;
 	readonly priorMatches: number;
+	readonly files?: readonly File[];
 }
 
 export interface CreateSurfaceInput {
@@ -283,6 +336,7 @@ export interface SurfacesState {
 	readonly variantPick: Readonly<Record<string, string>>;
 	readonly collapsed: Readonly<Record<string, true>>;
 	readonly notes: readonly SurfaceNote[];
+	readonly sessionImages: Readonly<Record<string, SurfaceSessionImages>>;
 	readonly undo?: SurfaceUndo;
 	readonly busy: Readonly<Record<string, true>>;
 	readonly error?: string;
@@ -534,12 +588,6 @@ export function unpublishedChanges(
 
 export function surfaceBySlug(state: Pick<SurfacesState, "surfaces">, slug: string): SurfaceSummary | undefined {
 	return state.surfaces.find((surface) => surface.slug === slug);
-}
-
-export function productBuildSurfaces(state: Pick<SurfacesState, "surfaces">, excludeId?: string): SurfaceSummary[] {
-	return state.surfaces.filter(
-		(surface) => surface.status === "active" && surface.archetype === "live_build" && surface.id !== excludeId,
-	);
 }
 
 function findIdentitySurface(state: Pick<SurfacesState, "surfaces" | "surfaceLooks">): SurfaceSummary | undefined {
@@ -886,6 +934,18 @@ export interface SurfacesStoreOptions {
 		surface: SurfaceSummary,
 		signal: AbortSignal,
 	) => Promise<Readonly<Record<string, string>> | undefined>;
+	readonly uploadImage?: (
+		surfaceId: string,
+		clientInputId: string,
+		file: File,
+		signal: AbortSignal,
+	) => Promise<SurfaceImageRef>;
+	readonly readImage?: (
+		sessionId: string,
+		clientInputId: string,
+		image: SurfaceImageRef,
+		signal: AbortSignal,
+	) => Promise<Blob>;
 }
 
 interface LocalSandboxCacheEntry {
@@ -950,6 +1010,7 @@ export class SurfacesStore {
 	#undoSeq = 0;
 	#noteSeq = 0;
 	#localSeq = 0;
+	readonly #imageReads = new Map<string, string>();
 	#loaded: Promise<void> | undefined;
 
 	constructor(options: SurfacesStoreOptions) {
@@ -978,6 +1039,7 @@ export class SurfacesStore {
 			variantPick: {},
 			collapsed: {},
 			notes: [],
+			sessionImages: {},
 			busy: {},
 		});
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
@@ -1670,6 +1732,10 @@ export class SurfacesStore {
 
 	workspace(surfaceId: string): SurfaceWorkspace | undefined {
 		return this.state.workspaces[surfaceId];
+	}
+
+	isWorkspaceLoading(surfaceId: string): boolean {
+		return this.#inFlightWorkspaceRefreshes.has(surfaceId);
 	}
 
 	setActiveSurface(surfaceId: string | undefined): void {
@@ -2570,10 +2636,60 @@ export class SurfacesStore {
 		});
 	}
 
+	get canAttachImages(): boolean {
+		return Boolean(
+			this.#options.uploadImage && this.#options.client?.surfaceSessionImages && !this.isLocalInteractive,
+		);
+	}
+
+	async #uploadImages(
+		client: SurfacesClient,
+		surfaceId: string,
+		files: readonly File[],
+	): Promise<{ clientInputId: string; images: SurfaceImageRef[] } | undefined> {
+		if (!files.length) return undefined;
+		const upload = this.#options.uploadImage;
+		if (!upload || !client.surfaceSessionImages) throw new Error(t("Images can't be sent here yet."));
+		const clientInputId = crypto.randomUUID();
+		const images: SurfaceImageRef[] = [];
+		for (const file of files) images.push(await upload(surfaceId, clientInputId, file, this.#options.signal));
+		return { clientInputId, images };
+	}
+
+	ensureSessionImages(session: SurfaceSession): void {
+		const client = this.#options.client;
+		if (!client?.surfaceSessionImages || isLocalSurfaceId(session.surfaceId)) return;
+		const key = session.messages
+			.filter((message) => message.authorKind === "member")
+			.map((message) => message.id)
+			.join(",");
+		if (!key || this.#imageReads.get(session.id) === key) return;
+		this.#imageReads.set(session.id, key);
+		client.surfaceSessionImages(session.id).then(
+			(images) => {
+				if (this.#options.signal.aborted || this.#imageReads.get(session.id) !== key) return;
+				this.store.set((state) => ({ sessionImages: { ...state.sessionImages, [session.id]: images } }));
+			},
+			() => undefined,
+		);
+	}
+
+	readSessionImage(
+		sessionId: string,
+		clientInputId: string,
+		image: SurfaceImageRef,
+		signal: AbortSignal,
+	): Promise<Blob> {
+		const read = this.#options.readImage;
+		if (!read) return Promise.reject(new Error(t("This image is not available.")));
+		return read(sessionId, clientInputId, image, signal);
+	}
+
 	async startSession(
 		surfaceId: string,
 		prompt: string,
 		options: StartSurfaceSessionOptions = {},
+		files: readonly File[] = [],
 	): Promise<SurfaceSession | undefined> {
 		const text = prompt.trim();
 		if (!text) return undefined;
@@ -2622,9 +2738,10 @@ export class SurfacesStore {
 			this.#stageLocalSession(surface, id, text);
 			return local;
 		}
-		const session = await this.#run(`start:${surfaceId}:${text}`, (client) =>
-			client.startSurfaceSession(surfaceId, text, options),
-		);
+		const session = await this.#run(`start:${surfaceId}:${text}`, async (client) => {
+			const attached = await this.#uploadImages(client, surfaceId, files);
+			return client.startSurfaceSession(surfaceId, text, attached ? { ...options, ...attached } : options);
+		});
 		if (!session) return undefined;
 		const workspace = this.workspace(surfaceId);
 		if (workspace) this.#putWorkspace({ ...workspace, activeSessions: [...workspace.activeSessions, session] });
@@ -3385,7 +3502,7 @@ export class SurfacesStore {
 		return true;
 	}
 
-	async reply(sessionId: string, text: string): Promise<boolean> {
+	async reply(sessionId: string, text: string, files: readonly File[] = []): Promise<boolean> {
 		const message = text.trim();
 		if (!message || this.state.busy[`reply:${sessionId}`]) return false;
 		const existing = this.session(sessionId);
@@ -3433,9 +3550,17 @@ export class SurfacesStore {
 			text: message,
 			at: new Date().toISOString(),
 			priorMatches,
+			...(files.length ? { files: [...files] } : {}),
 		};
 		this.store.set((state) => ({ notes: [...state.notes, note] }));
-		const updated = await this.#run(`reply:${sessionId}`, (client) => client.replySurfaceSession(sessionId, message));
+		const updated = await this.#run(`reply:${sessionId}`, async (client) => {
+			const surfaceId = existing?.surfaceId;
+			if (files.length && !surfaceId) throw new Error(t("This session is not available."));
+			const attached = surfaceId ? await this.#uploadImages(client, surfaceId, files) : undefined;
+			return attached
+				? client.replySurfaceSession(sessionId, message, true, attached)
+				: client.replySurfaceSession(sessionId, message);
+		});
 		if (!updated) {
 			this.store.set((state) => ({ notes: state.notes.filter((item) => item.id !== note.id) }));
 			return false;

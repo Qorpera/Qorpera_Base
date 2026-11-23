@@ -48,7 +48,6 @@ export interface CompanyFolderPeople {
 	readonly staff: readonly { readonly id: string; readonly displayName: string }[];
 }
 
-/** Settings supplies its shared search field and navigation; the standalone browser supplies its own. */
 export interface CompanyFolderBrowserOptions {
 	/** Choose mode (Open's "A file…" on an agent's computer, 20260930758000): the same rows, where a file's row picks it
 	 * (again: unpicks it) and a folder's still opens it; the folder open is the pick while no file is. Nothing that
@@ -378,7 +377,7 @@ export class CompanyFolderBrowser {
 		);
 		this.#viewer = options.choose
 			? null
-			: h("dialog", { class: "surface-dialog storage-viewer", tabindex: "-1" }, this.#preview);
+			: h("dialog", { class: "surface-dialog storage-viewer", tabindex: "-1", "aria-modal": "true" }, this.#preview);
 		// Escape and a click beside the window close it, never while an action runs.
 		this.#viewer?.addEventListener(
 			"cancel",
@@ -521,7 +520,6 @@ export class CompanyFolderBrowser {
 				const target = event.target as Node;
 				const inViewer = this.#viewer?.contains(target) === true;
 				if (!inViewer && (this.#busy || (!this.#preview.contains(target) && !this.#list.contains(target)))) return;
-				// Escape in the window is the window's, even while an action runs: Settings under it stays open.
 				event.preventDefault();
 				if (!this.#busy) this.#close();
 			},
@@ -688,6 +686,9 @@ export class CompanyFolderBrowser {
 		this.#section = section;
 		this.#documents.hidden = section !== "documents";
 		this.#recents.hidden = section !== "recents";
+		const searchLabel = section === "recents" ? t("Search recent changes") : t("Search this folder");
+		this.#search.placeholder = searchLabel;
+		this.#search.setAttribute("aria-label", searchLabel);
 		for (const [value, control] of this.#sections) control.setAttribute("aria-pressed", String(value === section));
 	}
 

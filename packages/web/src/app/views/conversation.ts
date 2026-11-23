@@ -1,5 +1,4 @@
 import { companyPathKey } from "@qorpera/cloud-client/company-state-files";
-import type { SurfaceSummary } from "@qorpera/contracts";
 import { type CodingSession, codingSessionGoing } from "../../cloud/coding-session.ts";
 import type { EmailDraftAction, EmailDraftContent } from "../../cloud/email-drafts.ts";
 import { isGmailDraft, questionInput } from "../../cloud/interactions.ts";
@@ -96,15 +95,6 @@ import {
 	type ConversationState,
 } from "../company.ts";
 import { type QuotePiece, quotePieces } from "../quotes.ts";
-import { surfaceHash } from "../router.ts";
-import {
-	hasConflictedChange,
-	isOpenChange,
-	isRunningSession,
-	openExplorations,
-	type SurfacesStore,
-	surfacesOf,
-} from "../surfaces-store.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import { AgentDetails } from "./agent-details.ts";
 import { ComposerLogins } from "./composer-logins.ts";
@@ -129,7 +119,6 @@ import { SessionExecutionView } from "./session-execution.ts";
 import { SessionRunView } from "./session-run.ts";
 import { SharedDrafts } from "./shared-drafts.ts";
 import { type AppLook, appLook } from "./shell.ts";
-import { surfaceTile } from "./surface-rail.ts";
 import { ThreadReady } from "./thread-ready.ts";
 import { ThreadSites } from "./thread-sites.ts";
 
@@ -500,15 +489,6 @@ export class ConversationView {
 	/** What stands under the messages (notices, the coding pill, the composer), laid over the thread's foot
 	 * with no background of its own, so the messages scroll on behind it (Jonas, 9 Nov 2026). */
 	readonly #foot = h("div", { class: "thread-foot" });
-	readonly #surfaceJump = h("nav", {
-		class: "surface-thread-jump",
-		"aria-label": t("Active surfaces"),
-		hidden: true,
-	});
-	#surfaceJumpKey = "";
-	#surfaces: SurfacesStore | undefined;
-	#surfacesUnsub: (() => void) | undefined;
-	#isCofounder = false;
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
 	#statusKey = "";
@@ -1041,128 +1021,10 @@ export class ConversationView {
 		this.#decisions = dock;
 	}
 
-	#syncSurfacesStore(): SurfacesStore | undefined {
-		const resolved = this.#actions.surfaces ?? surfacesOf(this.#company);
-		if (resolved !== this.#surfaces) {
-			this.#surfacesUnsub?.();
-			this.#surfacesUnsub = undefined;
-			this.#surfaces = resolved;
-			if (resolved && !this.#disposed) {
-				this.#surfacesUnsub = resolved.store.subscribe(() => this.#renderSurfaceJump(this.#isCofounder));
-			}
-		}
-		return this.#surfaces;
-	}
-
-	#hideSurfaceJump(): void {
-		this.#surfaceJumpKey = "";
-		this.#surfaceJump.replaceChildren();
-		this.#surfaceJump.hidden = true;
-		this.#surfaceJump.remove();
-	}
-
-	#renderSurfaceJump(isCofounder: boolean): void {
-		this.#isCofounder = isCofounder;
-		const surfaces = this.#syncSurfacesStore();
-		if (!isCofounder || !surfaces || this.#disposed) {
-			if (this.#surfaceJumpKey !== "" || this.#surfaceJump.isConnected || !this.#surfaceJump.hidden)
-				this.#hideSurfaceJump();
-			return;
-		}
-		const state = surfaces.state;
-		const entries: {
-			readonly surface: SurfaceSummary;
-			readonly tone: "running" | "attention" | "ready";
-			readonly status: string;
-		}[] = [];
-		for (const surface of state.surfaces) {
-			if (surface.status !== "active" || surface.group !== "products") continue;
-			const look = surfaces.lookOf(surface);
-			const isIdentity = surface.isGlobal === true || look.kind === "identity";
-			const workspace = state.workspaces[surface.id];
-			const explorations = openExplorations(workspace);
-			const directions = explorations.reduce((sum, set) => sum + set.variantSessionIds.length, 0);
-			const running = workspace ? workspace.activeSessions.some(isRunningSession) : surface.runningSessionCount > 0;
-			const attention = workspace
-				? workspace.activeSessions.some((item) => item.state === "needs_input" || hasConflictedChange(item))
-				: surface.needsAttentionCount > 0;
-			const pending = workspace
-				? workspace.activeSessions.reduce((sum, item) => sum + item.changes.filter(isOpenChange).length, 0)
-				: surface.pendingChangeCount;
-			if (!isIdentity && !running && !attention && directions === 0 && pending === 0) continue;
-			let tone: "running" | "attention" | "ready" = "ready";
-			let status = t("Ready");
-			if (running) {
-				tone = "running";
-				status = t("Working");
-			} else if (attention) {
-				tone = "attention";
-				status = t("Needs you");
-			} else if (directions > 0) {
-				status = directions === 1 ? t("1 direction ready") : t("{count} directions ready", { count: directions });
-			} else if (pending > 0) {
-				status = pending === 1 ? t("1 change ready") : t("{count} changes ready", { count: pending });
-			}
-			entries.push({ surface, tone, status });
-		}
-		if (entries.length === 0) {
-			if (this.#surfaceJumpKey !== "" || this.#surfaceJump.isConnected || !this.#surfaceJump.hidden)
-				this.#hideSurfaceJump();
-			return;
-		}
-		const key = JSON.stringify(
-			entries.map(({ surface, tone, status }) => [
-				surface.id,
-				surface.slug,
-				surface.title,
-				surface.icon,
-				surface.kind,
-				surface.accentHex,
-				tone,
-				status,
-			]),
-		);
-		if (!this.#surfaceJump.parentElement) this.#composerWrap.before(this.#surfaceJump);
-		if (key === this.#surfaceJumpKey && !this.#surfaceJump.hidden) return;
-		this.#surfaceJumpKey = key;
-		const profileId = this.#company.profile.profileId;
-		this.#surfaceJump.replaceChildren(
-			...entries.map(({ surface, tone, status }) => {
-				const look = surfaces.lookOf(surface);
-				return h(
-					"a",
-					{
-						class: `surface-thread-jump-chip is-${tone}`,
-						href: surfaceHash(profileId, surface.slug),
-						title: `${surface.title} · ${status}`,
-						"data-surface-jump": surface.slug,
-						onclick: (event: MouseEvent) => {
-							if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-							if (surfaces.state.mode === "live") surfaces.setMode("preview");
-							surfaces.openPreviewPanel();
-							surfaces.navigateSurface(surface.slug);
-						},
-					},
-					surfaceTile(surface, look, "is-tiny"),
-					h("span", { class: "surface-thread-jump-title" }, surface.title),
-					h(
-						"span",
-						{ class: `surface-thread-jump-pill is-${tone}` },
-						h("span", { class: `surface-thread-jump-dot is-${tone}`, "aria-hidden": "true" }),
-						h("span", null, status),
-					),
-				);
-			}),
-		);
-		this.#surfaceJump.hidden = false;
-	}
-
 	dispose(): void {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.#lifetime.abort();
-		this.#surfacesUnsub?.();
-		this.#surfacesUnsub = undefined;
 		this.#decisions?.dispose();
 		window.clearInterval(this.#timestampTimer);
 		this.#sizes?.disconnect();
@@ -2555,7 +2417,6 @@ export class ConversationView {
 		const isCofounder =
 			!room && session?.staffAgentId !== undefined && session.staffAgentId === this.#company.cofounderId();
 		if (isCofounder) this.#gatherDecisions();
-		this.#renderSurfaceJump(isCofounder);
 		this.#renderHeader(session, agent);
 		this.#threadPieces(room, Boolean(session));
 		if (!room) this.#computerByItself(agent);

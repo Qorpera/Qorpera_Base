@@ -132,7 +132,6 @@
 .storage-modified, .storage-kind-label { color: var(--text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .storage-browser .files-size { width: auto; color: var(--text-muted); font-size: 12px; }
 
-/* ---- preview: its own window over Settings, the way a picture is viewed ---- */
 .storage-viewer[open] { display: flex; }
 .storage-viewer::backdrop { background: rgb(20 20 19 / 32%); }
 /* The window grows out of its file's icon and shrinks back into it (company-folder.ts, #zoom), so the dialogs' own
