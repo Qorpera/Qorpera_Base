@@ -1261,18 +1261,13 @@
 
 /* ---- Studio surface canvas ------------------------------------------------------ */
 .surface-studio {
+	position: relative;
 	max-width: 960px; min-height: 100%; margin: 0 auto; padding: 66px 32px 136px; display: flex; flex-direction: column;
 	gap: 24px;
 }
 .studio-head {
-	position: relative;
+	position: absolute; top: 22px; left: 32px; right: 32px;
 	display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 14px;
-	border-bottom: 1px solid var(--border);
-}
-.studio-head-meta { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.studio-path {
-	overflow: hidden; color: var(--text-soft); font-family: var(--mono); font-size: 12px; text-overflow: ellipsis;
-	white-space: nowrap;
 }
 .studio-badge {
 	display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 999px;
