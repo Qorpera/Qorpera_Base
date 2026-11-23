@@ -1,4 +1,4 @@
-import type { SurfaceCardsBlock } from "@qorpera/contracts";
+import type { SurfaceCardsBlock, SurfaceCardsFromBlock, SurfaceCardsItemsBlock } from "@qorpera/contracts";
 import { h } from "../../../ui/dom.ts";
 import {
 	formatScalar,
@@ -31,7 +31,79 @@ function shown(value: unknown): string | undefined {
 	return undefined;
 }
 
+const EMPTY_LINES = [0, 1];
+
+interface NamedCard {
+	readonly title: string;
+	readonly text?: string;
+	readonly lines?: readonly string[];
+	readonly changed: boolean;
+}
+
+function namedCard(title: string, value: unknown, found: boolean, changed: boolean): NamedCard {
+	if (found && isShownScalar(value)) return { title, text: formatScalar(value), changed };
+	if (found && Array.isArray(value)) {
+		const lines = value.flatMap((item) => (isShownScalar(item) ? [formatScalar(item)] : []));
+		if (lines.length) return { title, lines, changed };
+	}
+	return { title, changed };
+}
+
+function prepareNamedCards(block: SurfaceCardsItemsBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
+	const cards = block.items.map((item) => {
+		const read = ctx.read(item.from);
+		return namedCard(ctx.words(item.title), read.value, read.found, read.changed);
+	});
+	const filled = cards.some((card) => card.text !== undefined || card.lines !== undefined);
+	const heading = block.heading ? ctx.words(block.heading) : "";
+	const changed = cards.some((card) => card.changed);
+	return {
+		filled,
+		pieces: [
+			{
+				build: () =>
+					h(
+						"section",
+						{ class: "studio-section studio-vendors", "data-block": "cards" },
+						heading ? sectionHead(heading, changed) : null,
+						h(
+							"div",
+							{ class: "studio-vendor-grid" },
+							cards.map((card) => {
+								const empty = card.text === undefined && card.lines === undefined;
+								return h(
+									"article",
+									{
+										class: `studio-vendor-card studio-named-card${empty ? " is-empty" : ""}${card.changed ? " is-changed" : ""}`,
+									},
+									h("div", { class: "studio-vendor-top" }, h("strong", null, card.title)),
+									card.text !== undefined
+										? h("p", { class: "studio-card-text" }, card.text)
+										: card.lines
+											? h(
+													"ul",
+													{ class: "studio-card-lines" },
+													card.lines.map((line) => h("li", null, line)),
+												)
+											: h(
+													"div",
+													{ class: "studio-card-lines is-empty", "aria-hidden": "true" },
+													EMPTY_LINES.map(() => h("span", { class: "studio-pale-bar" })),
+												),
+								);
+							}),
+						),
+					),
+			},
+		],
+	};
+}
+
 export function prepareCards(block: SurfaceCardsBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
+	return "items" in block ? prepareNamedCards(block, ctx) : prepareListCards(block, ctx);
+}
+
+function prepareListCards(block: SurfaceCardsFromBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
 	const read = ctx.read(block.from);
 	const baseList = Array.isArray(read.base) ? read.base : [];
 	const cards: Card[] = Array.isArray(read.value)

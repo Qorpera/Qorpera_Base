@@ -448,7 +448,7 @@ describe("SurfaceStudioView", () => {
 		store.dispose();
 	});
 
-	it("keeps HTML, CSS, and SVG code out of Voice & Files, renders HTML live under Page, and renders SVG brand marks visually", async () => {
+	it("draws Identity from its starter layout: the logo on both grounds, the palette and type changed by a waiting change, pages under Files", async () => {
 		const identity = summary({
 			id: IDENTITY_ID,
 			slug: "identity",
@@ -500,28 +500,52 @@ describe("SurfaceStudioView", () => {
 			surface: identity,
 			signal: new AbortController().signal,
 			baseFiles: {
-				"identity/tokens.json": JSON.stringify({ colors: { primary: "#18181b", accent: "#2563eb" } }),
+				"identity/tokens.json": JSON.stringify({
+					colors: { primary: "#18181b", accent: "#2563eb" },
+					typography: { heading: "Newsreader, Georgia, serif" },
+				}),
 				"identity/tokens.css": ":root { --q-color-accent: #2563eb; }\n",
 			},
 		});
 		document.body.append(view.el);
 
-		const tabsWithoutVoice = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map(
-			(tab) => tab.textContent,
-		);
-		expect(tabsWithoutVoice).toEqual(["Overview", "Design System", "Page"]);
-		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#c9643b");
-		expect(view.el.querySelector('[data-token="colors.primary"] code')?.textContent).toBe("#18181b");
-		const svgImg = view.el.querySelector<HTMLImageElement>('[data-file="identity/logo.svg"] img.studio-svg-img');
-		expect(svgImg?.getAttribute("src")).toMatch(/^data:image\/svg\+xml;charset=utf-8,/);
+		const tabs = () => [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
+		expect(tabs()).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Files"]);
+		const palette = view.el.querySelector('[data-block="palette"]')!;
+		expect(palette.querySelector("h2")?.textContent).toBe("Palette");
+		expect(palette.querySelector(".studio-changed-pill")).not.toBeNull();
+		expect(palette.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#c9643b");
+		expect(palette.querySelector('[data-token="colors.accent"]')?.classList.contains("is-changed")).toBe(true);
+		expect(palette.querySelector('[data-token="colors.primary"] code')?.textContent).toBe("#18181b");
+		expect(palette.querySelector('[data-token="colors.primary"]')?.classList.contains("is-changed")).toBe(false);
+		const type = view.el.querySelector('[data-block="type_specimen"]')!;
+		expect([...type.querySelectorAll(".studio-type-meta")].map((row) => row.textContent)).toEqual([
+			"HeadingNewsreader",
+			"BodyInter",
+		]);
+		expect(type.querySelector('[data-token="typography.body"]')?.classList.contains("is-changed")).toBe(true);
+		expect(
+			type.querySelector<HTMLElement>('[data-token="typography.body"] .studio-type-sample')?.style.fontFamily,
+		).toContain("Inter");
+		const [logo, wordmark] = [...view.el.querySelectorAll<HTMLElement>('[data-block="brand_mark"]')];
+		expect(logo?.classList.contains("is-changed")).toBe(true);
+		expect(
+			[...logo!.querySelectorAll<HTMLElement>(".studio-mark-ground")].map((ground) => ground.dataset.ground),
+		).toEqual(["light", "dark"]);
+		const marks = [...logo!.querySelectorAll<HTMLImageElement>("img.studio-mark-img")];
+		expect(marks).toHaveLength(2);
+		expect(marks[0]?.getAttribute("src")).toMatch(/^data:image\/svg\+xml;charset=utf-8,/);
+		expect(wordmark?.querySelector("img")).toBeNull();
+		expect(wordmark?.querySelector(".studio-mark-grounds.is-empty")).not.toBeNull();
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="pages"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
 		const htmlCard = view.el.querySelector('[data-file="identity/index.html"]')!;
 		expect(htmlCard.querySelector("h2")?.textContent).toBe("Visuelt grundlag");
 		expect(htmlCard.querySelector("pre")).toBeNull();
 		const iframe = htmlCard.querySelector<HTMLIFrameElement>("iframe.studio-html-frame");
 		expect(iframe?.getAttribute("src")).toBe(PAGE_FRAME_URL);
 		expect(iframe?.getAttribute("sandbox")).toBe("allow-scripts");
+		expect(view.el.querySelector('[data-file="identity/logo.svg"]')).toBeNull();
 
 		store.setMode("compare");
 		view.update();
@@ -545,11 +569,7 @@ describe("SurfaceStudioView", () => {
 			},
 		});
 		document.body.append(withVoice.el);
-		const tabsWithVoice = [...withVoice.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map(
-			(tab) => tab.textContent,
-		);
-		expect(tabsWithVoice).toEqual(["Overview", "Design System", "Voice & Files", "Page"]);
-		withVoice.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+		withVoice.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="voice"]')!.click();
 		expect(withVoice.el.querySelector('[data-file="identity/voice.md"]')?.textContent).toContain(
 			"Calm, direct, grounded.",
 		);
@@ -557,6 +577,10 @@ describe("SurfaceStudioView", () => {
 		expect(withVoice.el.querySelector('[data-file="identity/tokens.css"]')).toBeNull();
 		expect(withVoice.el.querySelector('[data-file="identity/logo.svg"]')).toBeNull();
 		expect(withVoice.el.querySelector("pre")).toBeNull();
+		withVoice.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+		expect(withVoice.el.querySelector('[data-file="identity/voice.md"]')).toBeNull();
+		expect(withVoice.el.querySelector('[data-file="identity/index.html"]')).not.toBeNull();
+		expect(withVoice.el.querySelector('[data-file="identity/tokens.css"]')).toBeNull();
 
 		withVoice.dispose();
 		store.dispose();
@@ -634,7 +658,7 @@ describe("SurfaceStudioView", () => {
 		});
 		document.body.append(view.el);
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="pages"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
 		const pageCard = view.el.querySelector('[data-file="identity/index.html"]')!;
 		expect(pageCard.classList.contains("is-changed")).toBe(true);
 		expect(pageCard.querySelector(".studio-changed-pill")?.textContent).toBe("Updated");
@@ -947,10 +971,7 @@ describe("SurfaceStudioView", () => {
 				block.querySelector("h2")?.textContent,
 				block.querySelector(".studio-kv.is-empty") !== null,
 			]),
-		).toEqual([
-			["Specs", true],
-			["Other details", true],
-		]);
+		).toEqual([["Specs", true]]);
 		expect(view.el.querySelector(".studio-file-tag")).toBeNull();
 		expect(view.el.querySelector('[data-block="table"] .studio-section-head h2')?.textContent).toBe("Parts");
 		expect(view.el.querySelector('[data-block="table"] .studio-table.is-empty')).not.toBeNull();
@@ -958,7 +979,7 @@ describe("SurfaceStudioView", () => {
 		expect(view.el.querySelector('[data-block="spec_list"] h2')?.textContent).toBe("Production plan");
 		expect(view.el.querySelectorAll(".studio-vendor-card.is-empty")).toHaveLength(2);
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="reports"]')!.click();
-		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe("Reports and posts about the product.");
+		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe("Reports and posts live here.");
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
 		expect(view.el.querySelector(".studio-home-empty")?.textContent).toBe(
 			"Working files. Models, pictures and notes live here.",

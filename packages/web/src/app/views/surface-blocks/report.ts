@@ -57,7 +57,7 @@ export class SurfaceReports {
 			pieces.push({ build: () => sectionHead(heading, false) });
 		}
 		pieces.push({
-			build: () => (filled ? this.#view(signature, include) : homeEmpty(t("Reports and posts about the product."))),
+			build: () => (filled ? this.#view(signature, include) : homeEmpty(t("Reports and posts live here."))),
 		});
 		return { filled, pieces };
 	}

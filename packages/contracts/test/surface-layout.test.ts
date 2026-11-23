@@ -766,6 +766,78 @@ describe("source lists and spec_list skip", () => {
 	});
 });
 
+describe("named cards and files skip", () => {
+	it("takes cards as items of a title and a source, or as from and a title key", () => {
+		const items = [
+			{ title: "Mission", from: "/identity/company.json#/mission" },
+			{ title: "Ambition", from: ["/identity/company.json#/ambition", { value: "Grow" }] },
+		];
+		const layout = parseSurfaceLayout(
+			layoutWith([
+				{ type: "cards", id: "mission", items, heading: "Mission & Ambition" },
+				{ type: "cards", from: "vendors.json#/vendors", title: "vendor" },
+				{ type: "files", match: ["**/*.svg"], skip: ["logo.svg", "/identity/wordmark.svg"] },
+			]),
+		);
+		expect(layout.tabs[0]?.blocks).toEqual([
+			{ type: "cards", id: "mission", items, heading: "Mission & Ambition" },
+			{ type: "cards", from: "vendors.json#/vendors", title: "vendor", lines: [] },
+			{ type: "files", match: ["**/*.svg"], skip: ["logo.svg", "/identity/wordmark.svg"] },
+		]);
+		expect(parseSurfaceLayout(layout)).toEqual(layout);
+	});
+
+	it.each<[string, unknown, string]>([
+		[
+			"neither items nor from",
+			{ type: "cards" },
+			"layout.tabs[0].blocks[0] cards needs items or from, exactly one of them",
+		],
+		[
+			"both items and from",
+			{ type: "cards", items: [{ title: "A", from: "a.json" }], from: "a.json", title: "t" },
+			"layout.tabs[0].blocks[0] cards needs items or from, exactly one of them",
+		],
+		[
+			"lines with items",
+			{ type: "cards", items: [{ title: "A", from: "a.json" }], lines: ["x"] },
+			"layout.tabs[0].blocks[0] cards takes title, lines and badge only with from, not with items",
+		],
+		[
+			"seven named cards",
+			{ type: "cards", items: many(7, () => ({ title: "A", from: "a.json" })) },
+			"layout.tabs[0].blocks[0].items must hold 1 to 6 entries, not 7",
+		],
+		[
+			"no named cards",
+			{ type: "cards", items: [] },
+			"layout.tabs[0].blocks[0].items must hold 1 to 6 entries, not 0",
+		],
+		[
+			"a named card without a title",
+			{ type: "cards", items: [{ from: "a.json" }] },
+			"layout.tabs[0].blocks[0].items[0].title is missing; a card needs it",
+		],
+		[
+			"a named card title past 40 chars",
+			{ type: "cards", items: [{ title: "x".repeat(41), from: "a.json" }] },
+			"layout.tabs[0].blocks[0].items[0].title is longer than 40 chars",
+		],
+		[
+			"an empty files skip",
+			{ type: "files", skip: [] },
+			"layout.tabs[0].blocks[0].skip must hold 1 to 16 entries, not 0",
+		],
+	])("refuses %s", (_name, block, message) => {
+		expect(refusal(layoutWith([block]))).toBe(message);
+	});
+
+	it("reads a broken cards block as unknown and keeps the rest", () => {
+		const nodes = read(layoutWith([{ type: "cards", items: [{ title: "A" }] }, { type: "files" }]));
+		expect(nodes.map((node) => node.type)).toEqual(["unknown", "files"]);
+	});
+});
+
 describe("the block registry", () => {
 	it("holds one entry per type: eleven families and the row", () => {
 		const types = SURFACE_BLOCKS.map((block) => block.type);
@@ -802,7 +874,11 @@ describe("the block registry", () => {
 		}
 		expect(text).not.toMatch(/parse|registry|\.ts\b|function/i);
 		expect(text).toContain("A source may be a list of 2-6 sources tried in order; the first found wins.");
-		expect(text).toContain("- spec_list: labelled values; nested objects as groups; found but empty, or skip with nothing left, draws nothing.");
+		expect(text).toContain(
+			"- spec_list: labelled values; nested objects as groups, lists of objects as tables; nothing if found empty or all skipped.",
+		);
+		expect(text).toContain("items? [{title, from}] 1-6");
+		expect(text).toContain("facts and cards take items or from, not both");
 	});
 });
 
@@ -900,10 +976,33 @@ describe("starter layouts", () => {
 			"strategy",
 			"philosophy",
 			"voice",
+			"tokens",
+			"design-system",
+			"files",
+		]);
+		expect(identity.tabs.map((tab) => tab.title)).toEqual([
+			"Overview",
+			"Strategy",
+			"Philosophy",
+			"Voice",
+			"Design system",
+			"Files",
 		]);
 		expect(identity.tabs[0]?.blocks[0]).toMatchObject({
 			type: "row",
 			blocks: [{ type: "brand_mark" }, { type: "brand_mark" }],
+		});
+		expect(identity.tabs[0]?.blocks[2]).toEqual({
+			type: "cards",
+			id: "mission",
+			items: [
+				{ title: "Mission", from: "/identity/company.json#/mission" },
+				{ title: "Ambition", from: "/identity/company.json#/ambition" },
+			],
+			heading: "Mission & Ambition",
+		});
+		expect(nodesOf(identity).find((node) => node.type === "files" && node.id === "files")).toMatchObject({
+			skip: ["/identity/voice.md", "/identity/brief.md", "/identity/logo.svg", "/identity/wordmark.svg"],
 		});
 	});
 

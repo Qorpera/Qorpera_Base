@@ -21,6 +21,7 @@ export const SURFACE_GLOB_MAX_DEEP_PARTS = 4;
 export const SURFACE_GLOB_MAX_STARS_PER_PART = 4;
 export const SURFACE_LAYOUT_MAX_COLUMNS = 12;
 export const SURFACE_FACTS_MAX = 8;
+export const SURFACE_CARDS_MAX = 6;
 export const SURFACE_SOURCE_MIN_CHOICES = 2;
 export const SURFACE_SOURCE_MAX_CHOICES = 6;
 export const SURFACE_FACTS_DEFAULT_TAKE = 4;
@@ -138,7 +139,7 @@ export interface SurfaceTableBlock extends SurfaceBlockBase {
 	readonly caption?: string;
 }
 
-export interface SurfaceCardsBlock extends SurfaceBlockBase {
+export interface SurfaceCardsFromBlock extends SurfaceBlockBase {
 	readonly type: "cards";
 	readonly from: SurfaceSource;
 	readonly title: string;
@@ -146,6 +147,19 @@ export interface SurfaceCardsBlock extends SurfaceBlockBase {
 	readonly badge?: string;
 	readonly heading?: string;
 }
+
+export interface SurfaceCardItem {
+	readonly title: string;
+	readonly from: SurfaceSource;
+}
+
+export interface SurfaceCardsItemsBlock extends SurfaceBlockBase {
+	readonly type: "cards";
+	readonly items: readonly SurfaceCardItem[];
+	readonly heading?: string;
+}
+
+export type SurfaceCardsBlock = SurfaceCardsFromBlock | SurfaceCardsItemsBlock;
 
 export interface SurfaceReportFileBlock extends SurfaceBlockBase {
 	readonly type: "report";
@@ -164,6 +178,7 @@ export type SurfaceReportBlock = SurfaceReportFileBlock | SurfaceReportMatchBloc
 export interface SurfaceFilesBlock extends SurfaceBlockBase {
 	readonly type: "files";
 	readonly match?: readonly string[];
+	readonly skip?: readonly string[];
 	readonly heading?: string;
 }
 
@@ -236,6 +251,7 @@ export type SurfaceBlockFieldKind =
 	| "take"
 	| "height"
 	| "items"
+	| "cards"
 	| "columns"
 	| "blocks";
 
@@ -286,7 +302,7 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		summary: "a row of colour dots",
 		fields: [
 			{ name: "from", kind: "source", required: true, note: "a list of {name, hex} or an object of name to colour" },
-			{ name: "tints", kind: "stage", required: false, note: "id of a stage_3d on this tab the dots tint" },
+			{ name: "tints", kind: "stage", required: false, note: "a stage_3d on this tab to tint" },
 		],
 	},
 	{
@@ -335,7 +351,8 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 	{
 		type: "spec_list",
 		family: "specs",
-		summary: "labelled values; nested objects as groups; found but empty, or skip with nothing left, draws nothing",
+		summary:
+			"labelled values; nested objects as groups, lists of objects as tables; nothing if found empty or all skipped",
 		fields: [
 			{ name: "from", kind: "source", required: true, note: "an object" },
 			{ name: "skip", kind: "keys", required: false, note: "keys to leave out" },
@@ -356,10 +373,11 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 	{
 		type: "cards",
 		family: "cards",
-		summary: "one card per item: vendors, pillars, milestones",
+		summary: "one card per item, or named cards",
 		fields: [
-			{ name: "from", kind: "source", required: true, note: "a list of objects" },
-			{ name: "title", kind: "key", required: true, note: "the key each card is titled by" },
+			{ name: "items", kind: "cards", required: false, note: "each card's text; or use from" },
+			{ name: "from", kind: "source", required: false, note: "a list of objects" },
+			{ name: "title", kind: "key", required: false, note: "with from: the key cards are titled by" },
 			{ name: "lines", kind: "keys", required: false, note: "keys shown as lines" },
 			{ name: "badge", kind: "key", required: false, note: "a key shown as a badge" },
 			HEADING_FIELD,
@@ -385,7 +403,11 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		type: "files",
 		family: "files",
 		summary: "working files, notes and downloads",
-		fields: [{ name: "match", kind: "globs", required: false, note: "default every file" }, HEADING_FIELD],
+		fields: [
+			{ name: "match", kind: "globs", required: false, note: "default every file" },
+			{ name: "skip", kind: "globs", required: false, note: "files to leave out" },
+			HEADING_FIELD,
+		],
 	},
 	{
 		type: "module",
@@ -420,6 +442,7 @@ const FIELD_KIND_WORDS: Readonly<Record<SurfaceBlockFieldKind, string>> = {
 	take: `1-${SURFACE_FACTS_MAX}`,
 	height: `"auto"|${SURFACE_MODULE_MIN_HEIGHT}-${SURFACE_MODULE_MAX_HEIGHT}`,
 	items: `[{label, from}] 1-${SURFACE_FACTS_MAX}`,
+	cards: `[{title, from}] 1-${SURFACE_CARDS_MAX}`,
 	columns: "[{key, label}]",
 	blocks: `${SURFACE_ROW_MIN_BLOCKS}-${SURFACE_ROW_MAX_BLOCKS} blocks`,
 };
@@ -427,10 +450,10 @@ const FIELD_KIND_WORDS: Readonly<Record<SurfaceBlockFieldKind, string>> = {
 export function describeSurfaceBlocks(): string {
 	const lines = [
 		`${SURFACE_LAYOUT_PATH} at the interface folder's root sets the page: {"schema":"${SURFACE_LAYOUT_SCHEMA}","tabs":[{"id","title","blocks":[...]}]}.`,
-		`1-${SURFACE_LAYOUT_MAX_TABS} tabs; at most ${SURFACE_LAYOUT_MAX_TAB_NODES} blocks a tab (a row and the blocks in it each count) and ${SURFACE_LAYOUT_MAX_BLOCKS} in all. Tab title <=${SURFACE_LAYOUT_TAB_TITLE_CHARS} chars, label <=${SURFACE_LAYOUT_LABEL_CHARS}.`,
-		'A source is "file.json#/json/pointer", or "file" for a whole file, or {"value": ...} for a value the layout holds itself. A plain string always points at a file, never a literal. Paths are relative to the interface folder; a leading / names a company file such as /identity/tokens.json.',
+		`1-${SURFACE_LAYOUT_MAX_TABS} tabs; at most ${SURFACE_LAYOUT_MAX_TAB_NODES} blocks a tab (a row and its blocks each count) and ${SURFACE_LAYOUT_MAX_BLOCKS} in all. Tab title <=${SURFACE_LAYOUT_TAB_TITLE_CHARS} chars, label <=${SURFACE_LAYOUT_LABEL_CHARS}.`,
+		'A source is "file.json#/json/pointer", "file" for a whole file, or {"value": ...} for a value held here; a plain string is never a literal. Paths are relative to the interface folder; a leading / names a company file such as /identity/tokens.json.',
 		`A source may be a list of ${SURFACE_SOURCE_MIN_CHOICES}-${SURFACE_SOURCE_MAX_CHOICES} sources tried in order; the first found wins.`,
-		"Ids are lower-case slugs, unique in the layout. Labels, headings, titles and keys are plain text, never sources. Every block but a row may have an id. Every block draws its own empty home, so name homes before their files exist.",
+		"Ids are lower-case slugs, unique in the layout; a row has none. Labels, headings, titles and keys are plain text, never sources. Every block draws its own empty home, so name homes before their files exist.",
 		"Blocks (field?: optional):",
 	];
 	for (const block of SURFACE_BLOCKS) {
@@ -443,7 +466,7 @@ export function describeSurfaceBlocks(): string {
 		lines.push(`- ${block.type}: ${block.summary}. ${fields.join("; ")}`);
 	}
 	lines.push(
-		"facts takes items or from, not both. report takes from or match, not both. Globs: * and ? within a name, ** for any folders; a leading / as in sources.",
+		"facts and cards take items or from, not both; report from or match. Globs: * and ? within a name, ** for any folders; a leading / as in sources.",
 	);
 	return lines.join("\n");
 }
@@ -745,6 +768,14 @@ function parseFieldValue(field: SurfaceBlockField, value: unknown, label: string
 					from: parseSource(raw.from, `${at}.from`),
 				};
 			});
+		case "cards":
+			return parseList(value, label, 1, SURFACE_CARDS_MAX, (item, at) => {
+				const raw = parseClosed(item, at, "a card", ["title", "from"], ["title", "from"]);
+				return {
+					title: parseText(raw.title, `${at}.title`, SURFACE_LAYOUT_LABEL_CHARS, "a title"),
+					from: parseSource(raw.from, `${at}.from`),
+				};
+			});
 		case "columns":
 			return parseList(value, label, 1, SURFACE_LAYOUT_MAX_COLUMNS, (item, at) => {
 				const raw = parseClosed(item, at, "a column", ["key", "label"], ["key", "label"]);
@@ -764,10 +795,23 @@ function definitionOf(type: SurfaceLayoutNodeType): SurfaceBlockDefinition {
 	return definition;
 }
 
+function finishCards(block: Record<string, unknown>, label: string): void {
+	if ((block.items !== undefined) === (block.from !== undefined))
+		fail(label, "cards needs items or from, exactly one of them");
+	if (block.items !== undefined) {
+		if (block.title !== undefined || block.lines !== undefined || block.badge !== undefined) {
+			fail(label, "cards takes title, lines and badge only with from, not with items");
+		}
+		return;
+	}
+	if (block.title === undefined) fail(`${label}.title`, "is missing; cards with from needs it");
+	block.lines ??= [];
+}
+
 function finishBlock(type: SurfaceBlockType, block: Record<string, unknown>, label: string): void {
 	if (type === "stage_3d" && block.model === undefined) block.model = SURFACE_STAGE_DEFAULT_MODEL;
 	if (type === "brand_mark" && block.grounds === undefined) block.grounds = [...SURFACE_BRAND_GROUNDS];
-	if (type === "cards" && block.lines === undefined) block.lines = [];
+	if (type === "cards") finishCards(block, label);
 	if (type === "module" && block.height === undefined) block.height = "auto";
 	if (type === "facts") {
 		const hasItems = block.items !== undefined;
@@ -1145,18 +1189,37 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 						},
 					],
 				},
-				{ type: "title", id: "name", name: "/identity/company.json#/name" },
 				{
-					type: "facts",
+					type: "title",
+					id: "name",
+					name: ["/identity/company.json#/name", "/identity/tokens.json#/brand"],
+					line: "/identity/tokens.json#/voice/summary",
+				},
+				{
+					type: "cards",
 					id: "mission",
 					items: [
-						{ label: "Mission", from: "/identity/company.json#/mission" },
-						{ label: "Ambition", from: "/identity/company.json#/ambition" },
+						{ title: "Mission", from: "/identity/company.json#/mission" },
+						{ title: "Ambition", from: "/identity/company.json#/ambition" },
 					],
 					heading: "Mission & Ambition",
 				},
-				{ type: "palette", id: "palette", from: "/identity/tokens.json#/colors", heading: "Palette" },
-				{ type: "type_specimen", id: "type", from: "/identity/tokens.json#/typography", heading: "Type" },
+				{
+					type: "palette",
+					id: "palette",
+					from: [
+						"/identity/tokens.json#/colors",
+						"/identity/tokens.json#/palette",
+						"/identity/tokens.json#/color",
+					],
+					heading: "Palette",
+				},
+				{
+					type: "type_specimen",
+					id: "type",
+					from: ["/identity/tokens.json#/typography", "/identity/tokens.json#/fonts"],
+					heading: "Type",
+				},
 			],
 		},
 		{
@@ -1176,13 +1239,51 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 		{
 			id: "philosophy",
 			title: "Philosophy",
-			blocks: [{ type: "report", id: "philosophy", from: "/identity/philosophy.report.json" }],
+			blocks: [{ type: "report", id: "philosophy", match: "/identity/**/*.report.json" }],
 		},
 		{
 			id: "voice",
 			title: "Voice",
 			blocks: [
 				{ type: "files", id: "voice", match: ["/identity/voice.md", "/identity/brief.md"], heading: "Voice" },
+			],
+		},
+		{
+			id: "system",
+			title: "Design system",
+			blocks: [
+				{
+					type: "spec_list",
+					id: "tokens",
+					from: "/identity/tokens.json",
+					skip: ["colors", "palette", "color", "typography", "fonts", "brand", "voice"],
+					heading: "Other details",
+				},
+				{
+					type: "spec_list",
+					id: "design-system",
+					from: "/identity/design-system.json",
+					heading: "Design system",
+				},
+			],
+		},
+		{
+			id: "files",
+			title: "Files",
+			blocks: [
+				{
+					type: "files",
+					id: "files",
+					match: [
+						"/identity/**/*.md",
+						"/identity/**/*.markdown",
+						"/identity/**/*.txt",
+						"/identity/**/*.svg",
+						"/identity/**/*.html",
+						"/identity/**/*.htm",
+					],
+					skip: ["/identity/voice.md", "/identity/brief.md", "/identity/logo.svg", "/identity/wordmark.svg"],
+				},
 			],
 		},
 	],

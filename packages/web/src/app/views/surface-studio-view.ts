@@ -39,6 +39,7 @@ import {
 	parseJsonObject,
 	readableName,
 	type StudioSectionTask,
+	type SurfaceFileLayer,
 } from "./surface-blocks/context.ts";
 import {
 	docPriority,
@@ -280,6 +281,15 @@ export function prepareStudioHtmlPreview(
 	}
 	if (!modified) return frameParsedPage(doc, html);
 	return frameParsedPage(doc);
+}
+
+function surfaceStarter(
+	isIdentity: boolean,
+	lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"],
+	hasModel: boolean,
+): SurfaceStarterKind {
+	if (isIdentity) return "identity";
+	return lookKind === "product" || hasModel ? "product" : "custom";
 }
 
 function updatingLabel(phase: SurfaceUpdatePhase): string {
@@ -599,7 +609,8 @@ export class SurfaceStudioView {
 		}
 		this.#wasUpdating = updating;
 		const activeOtherSurfaces = state.surfaces.filter((item) => item.status === "active" && item.id !== surface.id);
-		const downstreamSurfaces = activeOtherSurfaces.filter((item) => item.group === "products");
+		const identityFiles = store.companyIdentityFiles();
+		const companyFiles = identityFiles && identityFiles.surfaceId !== surface.id ? identityFiles : undefined;
 		const linkedSurfacesKey = JSON.stringify(
 			activeOtherSurfaces.map((item) => {
 				const itemLook = store.lookOf(item);
@@ -635,6 +646,7 @@ export class SurfaceStudioView {
 			lookKind,
 			look.accent ?? "",
 			identityTokens?.css ?? "",
+			companyFiles,
 			workspace?.briefSummary ?? "",
 			linkedSurfacesKey,
 			busyReconcile,
@@ -668,7 +680,7 @@ export class SurfaceStudioView {
 			updatingPhase,
 			busyReconcile,
 			activeOtherSurfaces,
-			downstreamSurfaces,
+			companyFiles,
 			mode: state.mode,
 		};
 		if (sliced) {
@@ -704,7 +716,7 @@ export class SurfaceStudioView {
 		readonly updatingPhase: SurfaceUpdatePhase | null;
 		readonly busyReconcile: boolean;
 		readonly activeOtherSurfaces: readonly SurfaceSummary[];
-		readonly downstreamSurfaces: readonly SurfaceSummary[];
+		readonly companyFiles: SurfaceFileLayer | undefined;
 		readonly mode: SurfacesStore["state"]["mode"];
 	}): Promise<void> {
 		const signal = this.#lifetime.signal;
@@ -793,7 +805,7 @@ export class SurfaceStudioView {
 		readonly updatingPhase: SurfaceUpdatePhase | null;
 		readonly busyReconcile: boolean;
 		readonly activeOtherSurfaces: readonly SurfaceSummary[];
-		readonly downstreamSurfaces: readonly SurfaceSummary[];
+		readonly companyFiles: SurfaceFileLayer | undefined;
 		readonly mode: SurfacesStore["state"]["mode"];
 	}): void {
 		const composition = composeStudioPreview(
@@ -851,11 +863,12 @@ export class SurfaceStudioView {
 			readonly identityTokens: CompiledIdentityTokens | null;
 			readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 			readonly baseFiles: Readonly<Record<string, string>>;
+			readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
 			readonly initialLoading: boolean;
 			readonly updatingPhase: SurfaceUpdatePhase | null;
 			readonly busyReconcile: boolean;
 			readonly activeOtherSurfaces: readonly SurfaceSummary[];
-			readonly downstreamSurfaces: readonly SurfaceSummary[];
+			readonly companyFiles: SurfaceFileLayer | undefined;
 			readonly mode: SurfacesStore["state"]["mode"];
 		},
 		composition: ReturnType<typeof composeStudioPreview>,
@@ -882,7 +895,6 @@ export class SurfaceStudioView {
 			updatingPhase,
 			busyReconcile,
 			activeOtherSurfaces,
-			downstreamSurfaces,
 			mode,
 		} = params;
 		const { colors, typography, specs, vendors, docs, htmlPages, svgs, reportPaths, rawModel } = parsed;
@@ -952,13 +964,16 @@ export class SurfaceStudioView {
 		const allChangedPaths = [...new Set([...Object.keys(baseFiles), ...filePaths])]
 			.sort()
 			.filter((path) => baseFiles[path] !== files[path]);
+		const isIdentity = isIdentitySurface || filePaths.some((path) => path.startsWith("identity/"));
+		const modelFile = isIdentity ? undefined : pickStudioModel(files, composition.binaries, surface.folderRoot);
+		const starter = surfaceStarter(isIdentity, lookKind, modelConfig !== undefined || modelFile !== undefined);
 
 		if (filePaths.length === 0 && (mode !== "compare" || allChangedPaths.length === 0)) {
 			if (initialLoading) {
 				this.#showingSkeleton = true;
 				return { children: [surfaceSkeleton(t("Opening studio…"), "studio")], leavingSkeleton: false };
 			}
-			if (isIdentitySurface || lookKind !== "product" || mode === "compare") {
+			if (starter === "custom" || mode === "compare") {
 				const leavingSkeleton = this.#showingSkeleton;
 				this.#showingSkeleton = false;
 				children.push(
@@ -1189,14 +1204,13 @@ export class SurfaceStudioView {
 			return { children, gridTasks, leavingSkeleton };
 		}
 
-		const isIdentity = isIdentitySurface || filePaths.some((path) => path.startsWith("identity/"));
-		const modelFile = isIdentity ? undefined : pickStudioModel(files, composition.binaries, surface.folderRoot);
 		this.#applyIdentityVars(isIdentity, identityTokens);
-		const productLike = lookKind === "product" || modelConfig !== undefined || modelFile !== undefined;
-		if (!isIdentity && (productLike || files[surfaceLayoutPath(surface.folderRoot)] !== undefined)) {
-			return this.#layoutPlan(params, children, files, composition.binaries, previewTokensCss, {
-				starter: productLike ? "product" : "custom",
+		if (starter !== "custom" || files[surfaceLayoutPath(surface.folderRoot)] !== undefined) {
+			return this.#layoutPlan(params, children, files, composition.binaries, {
+				starter,
 				legacyModel,
+				previewTokensCss,
+				baseTokensCss,
 			});
 		}
 		const isVendorSpec = (spec: SpecSection) => /vendor|supplier/i.test(spec.path);
@@ -1210,38 +1224,17 @@ export class SurfaceStudioView {
 		const hasFilesTab = docs.length > 0;
 		const hasPagesTab = htmlPages.length > 0;
 		const hasOverviewContent = Boolean(
-			(isIdentity && downstreamSurfaces.length > 0) ||
-				modelConfig ||
-				modelFile ||
-				svgs.length ||
-				colors.length ||
-				(isIdentity && typography.length) ||
-				(!isIdentity && primarySpec && primarySpec.entries.length > 0),
+			modelConfig || modelFile || svgs.length || colors.length || (primarySpec && primarySpec.entries.length > 0),
 		);
-		const tabbed = Boolean(modelConfig || modelFile || vendors.length || reportPaths.length || isIdentity);
+		const tabbed = Boolean(modelConfig || modelFile || vendors.length || reportPaths.length);
 		const availableTabs: { readonly id: StudioTab; readonly label: string; readonly filled: boolean }[] = [];
 		if (tabbed) {
 			if (hasOverviewContent || (!hasSpecsTab && !hasVendorsTab && !hasAnalysisTab && !hasFilesTab && !hasPagesTab))
 				availableTabs.push({ id: "overview", label: t("Overview"), filled: true });
-			if (hasSpecsTab)
-				availableTabs.push({
-					id: "specs",
-					label: isIdentity ? t("Design System") : t("Specs & BOM"),
-					filled: true,
-				});
+			if (hasSpecsTab) availableTabs.push({ id: "specs", label: t("Specs & BOM"), filled: true });
 			if (hasVendorsTab) availableTabs.push({ id: "vendors", label: t("Production & Vendors"), filled: true });
-			if (hasAnalysisTab)
-				availableTabs.push({
-					id: "analysis",
-					label: isIdentity ? t("Philosophy") : t("Analysis"),
-					filled: true,
-				});
-			if (hasFilesTab)
-				availableTabs.push({
-					id: "files",
-					label: isIdentity ? t("Voice & Files") : t("Brief & Files"),
-					filled: true,
-				});
+			if (hasAnalysisTab) availableTabs.push({ id: "analysis", label: t("Analysis"), filled: true });
+			if (hasFilesTab) availableTabs.push({ id: "files", label: t("Brief & Files"), filled: true });
 			if (hasPagesTab)
 				availableTabs.push({ id: "pages", label: htmlPages.length === 1 ? t("Page") : t("Pages"), filled: true });
 			if (!availableTabs.some((tab) => tab.id === this.#tab)) this.#tab = availableTabs[0]!.id;
@@ -1274,29 +1267,7 @@ export class SurfaceStudioView {
 		const showFiles = !tabbed || this.#tab === "files";
 		const showPages = !tabbed || this.#tab === "pages";
 
-		if (isIdentity && showOverview && downstreamSurfaces.length > 0) {
-			gridTasks.push({
-				build: () =>
-					h(
-						"section",
-						{ class: "studio-reach", "data-identity-reach": "true", "data-live-linked": "true" },
-						h("span", { class: "studio-reach-label" }, t("Used by")),
-						downstreamSurfaces.map((target) =>
-							h(
-								"button",
-								{
-									type: "button",
-									class: "studio-reach-chip",
-									"data-act": "studio-open-surface",
-									"data-slug": target.slug,
-								},
-								surfaceTile(target, store.lookOf(target), "is-tiny"),
-								h("span", null, target.title),
-							),
-						),
-					),
-			});
-		} else if (!isIdentity && showOverview) {
+		if (showOverview) {
 			const built = this.#sharedLinks(surface, lookKind, activeOtherSurfaces);
 			if (built) gridTasks.push({ build: () => built });
 		}
@@ -1312,7 +1283,7 @@ export class SurfaceStudioView {
 		}
 
 		if (svgs.length && showOverview) {
-			gridTasks.push({ build: () => renderSvgAssets(svgs, isIdentity ? t("Brand mark") : t("Vector assets")) });
+			gridTasks.push({ build: () => renderSvgAssets(svgs, t("Vector assets")) });
 		}
 
 		if (colors.length && showOverview) {
@@ -1348,7 +1319,7 @@ export class SurfaceStudioView {
 			});
 		}
 
-		if (tabbed && showOverview && primarySpec && primarySpec.entries.length > 0 && !isIdentity) {
+		if (tabbed && showOverview && primarySpec && primarySpec.entries.length > 0) {
 			gridTasks.push({
 				build: () =>
 					h(
@@ -1366,7 +1337,7 @@ export class SurfaceStudioView {
 			});
 		}
 
-		if (typography.length && (showSpecs || (isIdentity && showOverview))) {
+		if (typography.length && showSpecs) {
 			gridTasks.push({
 				build: () =>
 					h(
@@ -1670,13 +1641,19 @@ export class SurfaceStudioView {
 			readonly lookKind: ReturnType<SurfacesStore["lookOf"]>["kind"];
 			readonly workspace: ReturnType<SurfacesStore["workspace"]>;
 			readonly baseFiles: Readonly<Record<string, string>>;
+			readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
 			readonly activeOtherSurfaces: readonly SurfaceSummary[];
+			readonly companyFiles: SurfaceFileLayer | undefined;
 		},
 		children: HTMLElement[],
 		files: Readonly<Record<string, string>>,
 		binaries: Readonly<Record<string, StudioBinaryRef>>,
-		previewTokensCss: string,
-		page: { readonly starter: SurfaceStarterKind; readonly legacyModel: LegacyStudioModel | undefined },
+		page: {
+			readonly starter: SurfaceStarterKind;
+			readonly legacyModel: LegacyStudioModel | undefined;
+			readonly previewTokensCss: string;
+			readonly baseTokensCss: string;
+		},
 	): {
 		readonly children: HTMLElement[];
 		readonly gridTasks: readonly StudioSectionTask[];
@@ -1695,12 +1672,25 @@ export class SurfaceStudioView {
 			files,
 			baseFiles: params.baseFiles,
 			binaries,
+			baseBinaries: params.baseBinaries,
+			company: params.companyFiles,
 			briefSummary: params.workspace?.briefSummary ?? "",
 			starter: page.starter,
 			tab: this.#tab,
 			legacyModel: page.legacyModel,
-			htmlFrame: (html, path, title, frameFiles, className) =>
-				this.#createHtmlFrame(html, path, title, frameFiles, previewTokensCss, className),
+			htmlPages: {
+				frame: (html, path, title, frameFiles, className) =>
+					this.#createHtmlFrame(html, path, title, frameFiles, page.previewTokensCss, className),
+				linksChanged: (html, path) =>
+					studioHtmlDependencyChanged(
+						html,
+						path,
+						files,
+						params.baseFiles,
+						page.previewTokensCss,
+						page.baseTokensCss,
+					),
+			},
 		});
 		this.#tab = plan.tab;
 		if (plan.tabBar) children.push(plan.tabBar);

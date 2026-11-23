@@ -770,54 +770,91 @@ export function effectiveStudioBaseBinaries(
 	).binaries;
 }
 
-const compiledIdentityByState = new WeakMap<SurfacesState, CompiledIdentityTokens | null>();
-let lastCompiledIdentity:
+export interface CompanyIdentityFiles {
+	readonly surfaceId: string;
+	readonly folderRoot: string;
+	readonly files: Readonly<Record<string, string>>;
+	readonly baseFiles: Readonly<Record<string, string>>;
+	readonly binaries: Readonly<Record<string, StudioBinaryRef>>;
+	readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
+}
+
+const identityFilesByState = new WeakMap<SurfacesState, CompanyIdentityFiles | null>();
+const compiledIdentityByFiles = new WeakMap<CompanyIdentityFiles, CompiledIdentityTokens | null>();
+let lastIdentityFiles:
 	| {
 			readonly identityId: string;
 			readonly folderRoot: string | null | undefined;
 			readonly liveMode: boolean;
 			readonly cloudFiles: Readonly<Record<string, string>> | undefined;
 			readonly localFiles: Readonly<Record<string, string>> | undefined;
+			readonly cloudBinaries: Readonly<Record<string, StudioBinaryRef>> | undefined;
+			readonly localBinaries: Readonly<Record<string, StudioBinaryRef>> | undefined;
 			readonly pendingPatches: readonly PendingStudioPatch[] | undefined;
 			readonly workspace: SurfaceWorkspace | undefined;
 			readonly variantPick: Readonly<Record<string, string>>;
 			readonly hiddenChanges: Readonly<Record<string, true>>;
 			readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
-			readonly result: CompiledIdentityTokens | null;
+			readonly result: CompanyIdentityFiles;
 	  }
 	| undefined;
 
-export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityTokens | null {
-	if (compiledIdentityByState.has(state)) return compiledIdentityByState.get(state) ?? null;
+function sameRecord<T>(a: Readonly<Record<string, T>>, b: Readonly<Record<string, T>>): boolean {
+	if (a === b) return true;
+	const keys = Object.keys(a);
+	if (keys.length !== Object.keys(b).length) return false;
+	return keys.every((key) => Object.hasOwn(b, key) && a[key] === b[key]);
+}
+
+function sameIdentityFiles(a: CompanyIdentityFiles, b: CompanyIdentityFiles): boolean {
+	return (
+		a.surfaceId === b.surfaceId &&
+		a.folderRoot === b.folderRoot &&
+		sameRecord(a.files, b.files) &&
+		sameRecord(a.baseFiles, b.baseFiles) &&
+		sameRecord(a.binaries, b.binaries) &&
+		sameRecord(a.baseBinaries, b.baseBinaries)
+	);
+}
+
+export function companyIdentityFiles(state: SurfacesState): CompanyIdentityFiles | null {
+	if (identityFilesByState.has(state)) return identityFilesByState.get(state) ?? null;
 	const identity = findIdentitySurface(state);
 	if (!identity) {
-		compiledIdentityByState.set(state, null);
+		identityFilesByState.set(state, null);
 		return null;
 	}
 	const cloudFiles = state.cloudSurfaceFiles[identity.id];
 	const localFiles = state.localStudioBase[identity.id];
+	const cloudBinaries = state.cloudSurfaceBinaries[identity.id];
+	const localBinaries = state.localStudioBinaries[identity.id];
 	const pendingPatches = state.pendingStudioPatches[identity.id];
 	const liveMode = state.mode === "live";
 	const workspace = liveMode ? undefined : state.workspaces[identity.id];
+	const last = lastIdentityFiles;
 	if (
-		lastCompiledIdentity &&
-		lastCompiledIdentity.identityId === identity.id &&
-		lastCompiledIdentity.folderRoot === identity.folderRoot &&
-		lastCompiledIdentity.liveMode === liveMode &&
-		lastCompiledIdentity.cloudFiles === cloudFiles &&
-		lastCompiledIdentity.localFiles === localFiles &&
-		lastCompiledIdentity.pendingPatches === pendingPatches &&
+		last &&
+		last.identityId === identity.id &&
+		last.folderRoot === identity.folderRoot &&
+		last.liveMode === liveMode &&
+		last.cloudFiles === cloudFiles &&
+		last.localFiles === localFiles &&
+		last.cloudBinaries === cloudBinaries &&
+		last.localBinaries === localBinaries &&
+		last.pendingPatches === pendingPatches &&
 		(liveMode ||
-			(lastCompiledIdentity.workspace === workspace &&
-				lastCompiledIdentity.variantPick === state.variantPick &&
-				lastCompiledIdentity.hiddenChanges === state.hiddenChanges &&
-				lastCompiledIdentity.studioPatches === state.studioPatches))
+			(last.workspace === workspace &&
+				last.variantPick === state.variantPick &&
+				last.hiddenChanges === state.hiddenChanges &&
+				last.studioPatches === state.studioPatches))
 	) {
-		compiledIdentityByState.set(state, lastCompiledIdentity.result);
-		return lastCompiledIdentity.result;
+		identityFilesByState.set(state, last.result);
+		return last.result;
 	}
 	const baseFiles: Readonly<Record<string, string>> = effectiveStudioBaseFiles(state, identity.id) ?? {};
-	let effectiveFiles: Readonly<Record<string, string>> = baseFiles;
+	const baseBinaries = effectiveStudioBaseBinaries(state, identity.id);
+	let files: Readonly<Record<string, string>> = baseFiles;
+	let binaries: Readonly<Record<string, StudioBinaryRef>> = baseBinaries;
 	if (!liveMode && workspace) {
 		const pickedVariants = new Set(
 			openExplorations(workspace)
@@ -835,20 +872,28 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 			}
 		}
 		if (ordered.length > 0) {
-			effectiveFiles = composeStudioPreview(baseFiles, ordered, identity.folderRoot ?? "identity").files;
+			const composed = composeStudioPreview(baseFiles, ordered, identity.folderRoot ?? "identity", baseBinaries);
+			files = composed.files;
+			binaries = composed.binaries;
 		}
 	}
-	const folderRoot = identity.folderRoot?.replace(/^\/+|\/+$/g, "");
-	const tokensJson =
-		effectiveFiles[IDENTITY_TOKENS_JSON_PATH] ??
-		(folderRoot ? effectiveFiles[`${folderRoot}/tokens.json`] : undefined);
-	const result = tokensJson?.trim() ? compileIdentityTokens(tokensJson) : null;
-	lastCompiledIdentity = {
+	const fresh: CompanyIdentityFiles = {
+		surfaceId: identity.id,
+		folderRoot: identity.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "",
+		files,
+		baseFiles,
+		binaries,
+		baseBinaries,
+	};
+	const result = last && sameIdentityFiles(last.result, fresh) ? last.result : fresh;
+	lastIdentityFiles = {
 		identityId: identity.id,
 		folderRoot: identity.folderRoot,
 		liveMode,
 		cloudFiles,
 		localFiles,
+		cloudBinaries,
+		localBinaries,
 		pendingPatches,
 		workspace,
 		variantPick: state.variantPick,
@@ -856,7 +901,19 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 		studioPatches: state.studioPatches,
 		result,
 	};
-	compiledIdentityByState.set(state, result);
+	identityFilesByState.set(state, result);
+	return result;
+}
+
+export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityTokens | null {
+	const identity = companyIdentityFiles(state);
+	if (!identity) return null;
+	if (compiledIdentityByFiles.has(identity)) return compiledIdentityByFiles.get(identity) ?? null;
+	const tokensJson =
+		identity.files[IDENTITY_TOKENS_JSON_PATH] ??
+		(identity.folderRoot ? identity.files[`${identity.folderRoot}/tokens.json`] : undefined);
+	const result = tokensJson?.trim() ? compileIdentityTokens(tokensJson) : null;
+	compiledIdentityByFiles.set(identity, result);
 	return result;
 }
 
@@ -1345,6 +1402,10 @@ export class SurfacesStore {
 		return compiledCompanyIdentity(this.state);
 	}
 
+	companyIdentityFiles(): CompanyIdentityFiles | null {
+		return companyIdentityFiles(this.state);
+	}
+
 	get canLoadCloudFiles(): boolean {
 		return Boolean(this.#options.loadCloudFiles);
 	}
@@ -1469,7 +1530,7 @@ export class SurfacesStore {
 		this.#hintTimer = undefined;
 		this.#folderHintTimer = undefined;
 		this.#retryLoadTimer = undefined;
-		lastCompiledIdentity = undefined;
+		lastIdentityFiles = undefined;
 		this.store.dispose();
 	}
 

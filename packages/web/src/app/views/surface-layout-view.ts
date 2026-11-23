@@ -14,6 +14,7 @@ import {
 import { h } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import type { SurfacesStore } from "../surfaces-store.ts";
+import { SurfacePictures } from "./surface-blocks/brand-mark.ts";
 import { prepareCards } from "./surface-blocks/cards.ts";
 import { type ColorToken, prepareSwatchRow, readSwatches } from "./surface-blocks/colours.ts";
 import {
@@ -22,13 +23,16 @@ import {
 	type StudioSectionTask,
 	type SurfaceBlockContext,
 	type SurfaceBlockPrepared,
+	type SurfaceFileLayer,
 } from "./surface-blocks/context.ts";
 import { prepareFacts } from "./surface-blocks/facts.ts";
-import { prepareFiles, type StudioHtmlFrameMaker } from "./surface-blocks/files.ts";
+import { prepareFiles, type StudioHtmlPages } from "./surface-blocks/files.ts";
+import { preparePalette } from "./surface-blocks/palette.ts";
 import { SurfaceReports } from "./surface-blocks/report.ts";
 import { prepareSpecList, prepareTable } from "./surface-blocks/specs.ts";
 import { type LegacyStudioModel, SurfaceStages } from "./surface-blocks/stage.ts";
 import { prepareTitle } from "./surface-blocks/title.ts";
+import { prepareTypeSpecimen } from "./surface-blocks/type-specimen.ts";
 import { prepareUnknown } from "./surface-blocks/unknown.ts";
 
 export interface SurfaceLayoutOptions {
@@ -45,11 +49,13 @@ export interface SurfaceLayoutInput {
 	readonly files: Readonly<Record<string, string>>;
 	readonly baseFiles: Readonly<Record<string, string>>;
 	readonly binaries: Readonly<Record<string, StudioBinaryRef>>;
+	readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
+	readonly company: SurfaceFileLayer | undefined;
 	readonly briefSummary: string;
 	readonly starter: SurfaceStarterKind;
 	readonly tab: string;
 	readonly legacyModel: LegacyStudioModel | undefined;
-	readonly htmlFrame: StudioHtmlFrameMaker;
+	readonly htmlPages: StudioHtmlPages;
 }
 
 export interface SurfaceLayoutPlan {
@@ -124,12 +130,15 @@ export class SurfaceLayoutView {
 	readonly #options: SurfaceLayoutOptions;
 	readonly #stages: SurfaceStages;
 	readonly #reports: SurfaceReports;
+	readonly #pictures: SurfacePictures;
 	readonly #colorways = new Map<string, number>();
 	#swatches = new Map<string, SwatchLink>();
 
 	constructor(options: SurfaceLayoutOptions) {
 		this.#options = options;
-		this.#stages = new SurfaceStages((file, signal) => options.store.readStudioBinary(file, signal), options.signal);
+		const read = (file: StudioBinaryRef, signal: AbortSignal) => options.store.readStudioBinary(file, signal);
+		this.#stages = new SurfaceStages(read, options.signal);
+		this.#pictures = new SurfacePictures(read, options.signal);
 		this.#reports = new SurfaceReports({
 			store: options.store,
 			surface: options.surface,
@@ -150,6 +159,8 @@ export class SurfaceLayoutView {
 			files: input.files,
 			baseFiles: input.baseFiles,
 			binaries: input.binaries,
+			baseBinaries: input.baseBinaries,
+			company: input.company,
 			briefSummary: input.briefSummary,
 			signal: this.#options.signal,
 			fromStarter: own === undefined,
@@ -248,6 +259,12 @@ export class SurfaceLayoutView {
 				this.#swatches.set(key, { ...(stage ? { stage } : {}), values: colours.map((colour) => colour.value) });
 				return prepareSwatchRow(key, colours, this.#selected(key, colours.length));
 			}
+			case "palette":
+				return preparePalette(block, ctx);
+			case "brand_mark":
+				return this.#pictures.prepare(block, ctx);
+			case "type_specimen":
+				return prepareTypeSpecimen(block, ctx);
 			case "facts":
 				return prepareFacts(block, ctx);
 			case "spec_list":
@@ -259,7 +276,7 @@ export class SurfaceLayoutView {
 			case "report":
 				return this.#reports.prepare(block, ctx);
 			case "files":
-				return prepareFiles(block, ctx, scope.input.htmlFrame);
+				return prepareFiles(block, ctx, scope.input.htmlPages);
 			default:
 				return prepareUnknown();
 		}

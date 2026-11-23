@@ -184,18 +184,31 @@ function fileTag(binding: string | undefined, ctx: SurfaceBlockContext): HTMLEle
 	return path ? h("code", { class: "studio-file-tag" }, path) : null;
 }
 
+interface ListTable {
+	readonly table: SpecTable;
+	readonly changed: boolean;
+}
+
 function listEntries(
 	value: Record<string, unknown>,
 	base: Record<string, unknown> | undefined,
 	skip: ReadonlySet<string>,
 	prefix: readonly string[],
 	entries: SpecEntry[],
+	tables: ListTable[],
 ): void {
 	for (const [key, item] of Object.entries(value)) {
 		if (prefix.length === 0 && skip.has(key.toLowerCase())) continue;
 		const segments = [...prefix, key];
 		if (isPlainRecord(item)) {
-			listEntries(item, base, skip, segments, entries);
+			listEntries(item, base, skip, segments, entries, tables);
+			continue;
+		}
+		if (Array.isArray(item) && item.length > 0 && item.every(isPlainRecord)) {
+			tables.push({
+				table: tableOf(segments.map(readableName).join(" · "), item),
+				changed: !sameValue(lookupPath(base, segments), item),
+			});
 			continue;
 		}
 		if (Array.isArray(item) && (item.length === 0 || !item.every((part) => part === null || isShownScalar(part))))
@@ -214,13 +227,14 @@ function listEntries(
 export function prepareSpecList(block: SurfaceSpecListBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
 	const read = ctx.read(block.from);
 	const entries: SpecEntry[] = [];
+	const tables: ListTable[] = [];
 	if (isPlainRecord(read.value)) {
 		const skip = new Set((block.skip ?? []).map((key) => key.toLowerCase()));
-		listEntries(read.value, isPlainRecord(read.base) ? read.base : undefined, skip, [], entries);
+		listEntries(read.value, isPlainRecord(read.base) ? read.base : undefined, skip, [], entries, tables);
 	}
-	if (entries.length === 0 && (read.found || block.skip?.length)) return { filled: false, pieces: [] };
-	const filled = entries.length > 0;
-	const changed = filled && entries.some((entry) => entry.changed);
+	const filled = entries.length > 0 || tables.length > 0;
+	if (!filled && (read.found || block.skip?.length)) return { filled: false, pieces: [] };
+	const changed = entries.some((entry) => entry.changed) || tables.some((item) => item.changed);
 	const heading = headingOf(block.heading, read.binding, ctx);
 	return {
 		filled,
@@ -232,7 +246,10 @@ export function prepareSpecList(block: SurfaceSpecListBlock, ctx: SurfaceBlockCo
 						{ class: `studio-section${changed ? " is-changed" : ""}`, "data-block": "spec_list" },
 						heading ? sectionHead(heading, changed, filled ? fileTag(read.binding, ctx) : null) : null,
 						filled
-							? renderSpecEntries(entries)
+							? [
+									entries.length ? renderSpecEntries(entries) : null,
+									...tables.map((item) => renderSpecTable(item.table, ctx.signal)),
+								]
 							: h(
 									"dl",
 									{ class: "studio-kv is-empty", "aria-hidden": "true" },
