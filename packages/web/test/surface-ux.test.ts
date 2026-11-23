@@ -743,25 +743,23 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		view.update();
 
-		expect(view.el.querySelector(".studio-3d-canvas")).not.toBeNull();
+		expect(view.el.querySelector(".studio-stage .studio-3d-canvas")).not.toBeNull();
 		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(0);
+		expect(view.el.querySelector(".studio-diff-prev")).toBeNull();
+		expect(view.el.querySelector(".studio-fact.is-changed")).not.toBeNull();
+
+		view.el.querySelector<HTMLButtonElement>('.studio-3d-view [data-view="apart"]')!.click();
+		expect(view.el.querySelector<HTMLElement>(".studio-3d-callouts")?.hidden).toBe(false);
+
+		const tabLabels = () =>
+			[...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
+		expect(tabLabels()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Files"]);
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
 		expect(view.el.querySelector(".studio-diff-prev")?.textContent).toBe("Prototype v2 (BrainBit evaluering)");
 		expect(view.el.querySelector(".studio-diff-next")?.textContent).toBe("Klar til Batch 1 (BrainBit låst)");
 
-		const explodeBtn = view.el.querySelector<HTMLButtonElement>('[data-act="3d-explode"]')!;
-		explodeBtn.click();
-		expect(view.el.querySelector<HTMLElement>(".studio-3d-callouts")?.hidden).toBe(false);
-
-		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")];
-		expect(tabs.map((tab) => tab.textContent)).toEqual([
-			"Overview",
-			"Specs & BOM",
-			"Production & Vendors",
-			"Analysis",
-			"Brief & Files",
-		]);
-
-		tabs[2]!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="vendors"]')!.click();
 		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(4);
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="analysis"]')!.click();
 		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Why BrainBit OEM for Batch 1");
