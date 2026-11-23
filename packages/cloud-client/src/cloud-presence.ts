@@ -18,6 +18,7 @@ const SYNC_RETRY_MS = 3_000;
 const SYNC_RETRY_MAX_MS = 30_000;
 const MAX_TRACKED_CLIENTS = 4_096;
 const SEQUENCE_RETENTION_MS = 6 * 60_000;
+const DEVICE_REFRESH_MS = 45_000;
 const TEXT_ENCODER = new TextEncoder();
 
 function jitteredDelay(ceilingMs: number): number {
@@ -86,9 +87,14 @@ export interface PresenceHealth {
 	error?: string;
 }
 
+export interface CloudPresenceOptions {
+	present?: boolean;
+}
+
 export interface CloudPresenceHandle {
 	/** Publish which staff thread this member has on screen (null = none). */
 	setOpenThread(staffAgentId: string | null): void;
+	setPresent?(present: boolean): void;
 	/** Announce a keystroke burst in a staff thread. Callers throttle. */
 	sendTyping(staffAgentId: string): void;
 	/** Announce the attached agent's live phase. Durable history uses trail sync. */
@@ -123,12 +129,14 @@ export class SupabaseCloudPresenceTransport {
 		onTyping: (event: PresenceTypingEvent) => void,
 		onActivity: (event: PresenceAgentActivityEvent) => void,
 		onHealth?: (health: PresenceHealth) => void,
+		options?: CloudPresenceOptions,
 	): CloudPresenceHandle {
 		if (!UUID_PATTERN.test(profileId)) throw new Error("Invalid presence profile");
 		// Private channel: Realtime authorizes the join against the presence
 		// policies on realtime.messages (migration 20260819011000) with the
 		// signed-in user's JWT, which supabase-js forwards automatically.
 		let openThread: string | null = null;
+		let present = options?.present ?? true;
 		let subscribed = false;
 		let stopped = false;
 		let channel: RealtimeChannel | undefined;
@@ -136,6 +144,8 @@ export class SupabaseCloudPresenceTransport {
 		let syncRetryTimer: ReturnType<typeof setTimeout> | undefined;
 		let syncFailures = 0;
 		let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+		let registeredAt = 0;
+		let registrationAttempted = false;
 		const identities = new Map<string, { identity: HostedPresenceIdentity; at: number }>();
 		// Members are reported the first time, then only when who is where changed.
 		let reported: string | undefined;
@@ -154,6 +164,28 @@ export class SupabaseCloudPresenceTransport {
 		const signatures = new PresenceSignatures();
 		const publicKey = signatures.publicKey();
 		let registration: Promise<HostedPresenceIdentity> | undefined;
+		const register = (): Promise<HostedPresenceIdentity> => {
+			if (!registration) {
+				registrationAttempted = true;
+				registration = publicKey
+					.then((key) => this.#primary.registerPresenceDevice(profileId, clientId, key))
+					.then((identity) => {
+						registeredAt = Date.now();
+						return identity;
+					});
+				void registration
+					.finally(() => {
+						registration = undefined;
+					})
+					.catch(() => undefined);
+			}
+			return registration;
+		};
+		const ensureRegistered = (): Promise<HostedPresenceIdentity | undefined> => {
+			if (stopped) return Promise.resolve(undefined);
+			if (registeredAt > 0 && Date.now() - registeredAt < DEVICE_REFRESH_MS) return Promise.resolve(undefined);
+			return register();
+		};
 		let outbound = Promise.resolve();
 		let pendingOutbound = 0;
 		let broadcastSequence = 0;
@@ -173,6 +205,7 @@ export class SupabaseCloudPresenceTransport {
 			activity?: PresenceAgentActivityEvent["activity"],
 		): void => {
 			if (stopped || !subscribed || !channel) return;
+			if (event === "open_thread" && !present) return;
 			if (event !== "open_thread" && pendingOutbound >= MAX_PENDING_OUTBOUND) return;
 			const target = channel;
 			const sequence = ++broadcastSequence;
@@ -180,10 +213,24 @@ export class SupabaseCloudPresenceTransport {
 			outbound = outbound
 				.then(async () => {
 					if (stopped || target !== channel || !subscribed) return;
+					if (event === "open_thread" && !present) return;
+					try {
+						await ensureRegistered();
+					} catch (error: unknown) {
+						if (!stopped && target === channel && present)
+							scheduleReconnect(
+								target,
+								error instanceof Error ? error.message : "Presence identity registration failed",
+							);
+						return;
+					}
+					if (stopped || target !== channel || !subscribed) return;
+					if (event === "open_thread" && !present) return;
 					const signature = await signatures.sign(
 						broadcastBytes(profileId, clientId, sequence, event, staffAgentId, activity),
 					);
 					if (stopped || target !== channel || !subscribed) return;
+					if (event === "open_thread" && !present) return;
 					// WHY: Bound track/send calls so a dying WebSocket cannot stall outbound presence indefinitely.
 					if (event === "open_thread")
 						await withCloudDeadline(
@@ -213,7 +260,19 @@ export class SupabaseCloudPresenceTransport {
 				});
 		};
 		const track = () => {
+			if (!present) return;
 			publish("open_thread", openThread ?? "");
+		};
+		const untrack = (): void => {
+			if (stopped || !subscribed || !channel) return;
+			const target = channel;
+			outbound = outbound
+				.then(async () => {
+					if (stopped || target !== channel || !subscribed || present) return;
+					if (typeof target.untrack !== "function") return;
+					await withCloudDeadline(() => target.untrack(), OUTBOUND_CALL_TIMEOUT_MS);
+				})
+				.catch(() => undefined);
 		};
 		const unknownIdentities = new Map<string, number>();
 		const identitiesInFlight = new Map<string, Promise<HostedPresenceIdentity | undefined>>();
@@ -347,9 +406,25 @@ export class SupabaseCloudPresenceTransport {
 				.catch(() => undefined);
 		};
 		let removing: Promise<unknown> = Promise.resolve();
+		const stopHeartbeat = (): void => {
+			if (heartbeatTimer) clearInterval(heartbeatTimer);
+			heartbeatTimer = undefined;
+		};
+		const startHeartbeat = (): void => {
+			if (stopped || !present || heartbeatTimer) return;
+			heartbeatTimer = setInterval(() => {
+				if (stopped || !present) return;
+				void register().catch((error: unknown) => {
+					if (channel && present)
+						scheduleReconnect(channel, error instanceof Error ? error.message : "Presence heartbeat failed");
+				});
+			}, 60_000);
+			if (typeof heartbeatTimer === "object") heartbeatTimer.unref?.();
+		};
 		const scheduleReconnect = (failed: RealtimeChannel, detail: string): void => {
 			if (stopped || failed !== channel || reconnectTimer) return;
 			subscribed = false;
+			stopHeartbeat();
 			report([]);
 			onHealth?.({ phase: "degraded", error: detail });
 			console.error(`presence channel degraded: ${detail}`);
@@ -368,20 +443,9 @@ export class SupabaseCloudPresenceTransport {
 			}, delay);
 			if (typeof reconnectTimer === "object") reconnectTimer.unref?.();
 		};
-		const register = (): Promise<HostedPresenceIdentity> => {
-			if (!registration) {
-				registration = publicKey.then((key) => this.#primary.registerPresenceDevice(profileId, clientId, key));
-				void registration
-					.finally(() => {
-						registration = undefined;
-					})
-					.catch(() => undefined);
-			}
-			return registration;
-		};
 		const connect = (): void => {
 			if (stopped) return;
-			void register()
+			void (present ? register() : Promise.resolve(undefined))
 				.then(async () => {
 					await removing;
 					await this.#client.realtime?.setAuth?.().catch(() => undefined);
@@ -528,7 +592,10 @@ export class SupabaseCloudPresenceTransport {
 							subscribed = true;
 							reconnectAttempts = 0;
 							onHealth?.({ phase: "connected" });
-							track();
+							if (present) {
+								startHeartbeat();
+								track();
+							}
 							return;
 						}
 						if (
@@ -556,18 +623,22 @@ export class SupabaseCloudPresenceTransport {
 				});
 		};
 		connect();
-		heartbeatTimer = setInterval(() => {
-			if (stopped) return;
-			void register().catch((error: unknown) => {
-				if (channel)
-					scheduleReconnect(channel, error instanceof Error ? error.message : "Presence heartbeat failed");
-			});
-		}, 60_000);
-		if (typeof heartbeatTimer === "object") heartbeatTimer.unref?.();
+		startHeartbeat();
 		return {
 			setOpenThread: (staffAgentId) => {
 				openThread = staffAgentId;
 				track();
+			},
+			setPresent: (nextPresent) => {
+				if (stopped || nextPresent === present) return;
+				present = nextPresent;
+				if (present) {
+					startHeartbeat();
+					track();
+				} else {
+					stopHeartbeat();
+					untrack();
+				}
 			},
 			sendTyping: (staffAgentId) => publish("typing", staffAgentId),
 			sendActivity: (staffAgentId, activity) => publish("agent_activity", staffAgentId, activity),
@@ -578,8 +649,7 @@ export class SupabaseCloudPresenceTransport {
 				reconnectTimer = undefined;
 				clearTimeout(syncRetryTimer);
 				syncRetryTimer = undefined;
-				if (heartbeatTimer) clearInterval(heartbeatTimer);
-				heartbeatTimer = undefined;
+				stopHeartbeat();
 				const active = channel;
 				channel = undefined;
 				outbound = Promise.resolve();
@@ -596,7 +666,8 @@ export class SupabaseCloudPresenceTransport {
 					);
 				}
 				await registration?.catch(() => undefined);
-				await this.#primary.unregisterPresenceDevice(profileId, clientId).catch(() => undefined);
+				if (registrationAttempted)
+					await this.#primary.unregisterPresenceDevice(profileId, clientId).catch(() => undefined);
 				report([]);
 				onHealth?.({ phase: "stopped" });
 			},

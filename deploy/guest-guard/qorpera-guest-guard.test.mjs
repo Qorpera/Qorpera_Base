@@ -46,7 +46,7 @@ echo "nft $*" >> "$S/log"
 case "$*" in
 	"-f /dev/stdin") cat > "$S/table";;
 	"-c -f /dev/stdin") cat > "$S/checked"; ! grep -q BROKEN "$S/checked";;
-	"list table ${TABLE}") [[ -f "$S/table" ]] || { echo "Error: No such file or directory" >&2; exit 1; };;
+	"-t list table ${TABLE}") [[ -f "$S/table" ]] || { echo "Error: No such file or directory" >&2; exit 1; };;
 	"list chain ${TABLE} refuse_input") grep '^add rule' "$S/table" || true;;
 	"list counters table ${TABLE}") echo counters;;
 	"delete table ${TABLE}") rm -f "$S/table";;
@@ -148,6 +148,8 @@ esac
 		assert.equal(listedVerify.status, 1);
 		assert.match(listedVerify.stderr, /bridge qagent0 is listed in the rules/);
 		assert.equal(run(["verify"]).status, 0, "the shipped rules do not list it");
+		const logText = readFileSync(join(dir, "log"), "utf8");
+		assert.match(logText, /^nft -t list table /m);
 		const named = join(dir, "named.nft");
 		writeFileSync(named, rules.replace("table inet", '# "qagent0" is the agent exit\'s bridge.\ntable inet'));
 		assert.equal(run(["check"], { QORPERA_GUEST_GUARD_RULES: named }).status, 0, "a mention outside guest_bridges is fine");

@@ -20,13 +20,16 @@ import {
 	type SurfaceAutomationSummary,
 	type SurfaceChangeUnit,
 	type SurfaceExplorationSet,
+	type SurfaceImageRef,
 	type SurfaceMigrationChecklist,
 	type SurfacePreviewCompositionState,
 	type SurfaceSession,
+	type SurfaceSessionImages,
 	type SurfaceSummary,
 	type SurfaceWorkspace,
 } from "@qorpera/contracts";
 import { phrase, t } from "../ui/preferences.ts";
+import { type SurfaceFigureId, surfaceFigureIcon } from "../ui/surface-figure.ts";
 import { Store } from "./state.ts";
 import { isOpsKind, type SurfaceKind, type SurfaceLook, surfaceLookOf } from "./surface-kinds.ts";
 import {
@@ -72,6 +75,8 @@ export type SurfacesClient = Pick<
 			| "createAutomation"
 			| "updateAutomation"
 			| "deleteAutomation"
+			| "setSurfaceFigure"
+			| "surfaceSessionImages"
 		>
 	>;
 
@@ -80,11 +85,225 @@ export type SurfacePreviewMode = "live" | "preview" | "compare" | "report";
 export type SurfacePreviewPanelState = "auto" | "open" | "closed";
 export type SurfaceDevice = "desktop" | "mobile";
 export type ApprovalOutcome = "open" | "hold" | "history";
+export type SurfaceUpdatePhase = "publishing" | "merging" | "updating";
 
 export const SURFACE_UNDO_MS = 5_000;
 const POLL_MS = 4_000;
+const FAST_POLL_MS = 1_000;
+const HINT_DEBOUNCE_MS = 50;
+const FOLDER_HINT_DEBOUNCE_MS = 50;
+export const PREVIEW_TOGGLE_DEBOUNCE_MS = 150;
 export const PREVIEW_PASS_TTL_MS = 45_000;
 const MAX_LOCAL_SANDBOX_CACHE = 8;
+
+export interface PendingStudioPatch {
+	readonly changeId: string;
+	readonly ops: readonly StudioPatchOp[];
+	readonly rev: number;
+}
+
+export interface SurfaceFolderReadableFile {
+	readonly bytes: number;
+}
+
+export interface SurfaceFolderEntry<TFile extends SurfaceFolderReadableFile = SurfaceFolderReadableFile> {
+	readonly path: string;
+	readonly kind: string;
+	readonly file: TFile | null;
+}
+
+export interface SurfaceFolderReader<TFile extends SurfaceFolderReadableFile = SurfaceFolderReadableFile> {
+	list(
+		parent: string | null,
+		after: string | null,
+		limit: number,
+		signal: AbortSignal,
+	): Promise<{ readonly entries: readonly SurfaceFolderEntry<TFile>[] }>;
+	readFile(
+		file: TFile,
+		signal: AbortSignal,
+		maxBytes?: number,
+		options?: { readonly cached?: boolean },
+	): Promise<Uint8Array>;
+}
+
+const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css|svg|html?)$/i;
+const STUDIO_IGNORED_DIR = new Set([
+	"node_modules",
+	".git",
+	"dist",
+	"build",
+	"target",
+	".next",
+	".nuxt",
+	".turbo",
+	".cache",
+	"vendor",
+	"coverage",
+	"__pycache__",
+	".venv",
+	"out",
+]);
+const STUDIO_MAX_FILE_BYTES = 256 * 1024;
+const STUDIO_MAX_TOTAL_BYTES = 1024 * 1024;
+const STUDIO_MAX_FILES = 32;
+const STUDIO_MAX_SUBFOLDERS = 12;
+const STUDIO_LIST_CONCURRENCY = 4;
+const STUDIO_READ_CONCURRENCY = 6;
+const MAX_CACHED_CLOUD_FILES = 6;
+
+function sameFileMap(
+	a: Readonly<Record<string, string>> | undefined,
+	b: Readonly<Record<string, string>> | undefined,
+): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	const aKeys = Object.keys(a);
+	const bKeys = Object.keys(b);
+	if (aKeys.length !== bKeys.length) return false;
+	for (const key of aKeys) {
+		if (!Object.hasOwn(b, key) || a[key] !== b[key]) return false;
+	}
+	return true;
+}
+
+function pruneCloudSurfaceFiles(
+	current: Readonly<Record<string, Readonly<Record<string, string>>>>,
+	surfaceId: string,
+	files: Readonly<Record<string, string>>,
+	keepIds: ReadonlySet<string>,
+): Record<string, Readonly<Record<string, string>>> {
+	const next: Record<string, Readonly<Record<string, string>>> = {};
+	for (const [id, entry] of Object.entries(current)) {
+		if (id !== surfaceId) next[id] = entry;
+	}
+	next[surfaceId] = files;
+	const keys = Object.keys(next);
+	let excess = keys.length - MAX_CACHED_CLOUD_FILES;
+	if (excess > 0) {
+		for (const id of keys) {
+			if (excess <= 0) break;
+			if (id === surfaceId || keepIds.has(id)) continue;
+			delete next[id];
+			excess--;
+		}
+	}
+	return next;
+}
+
+function studioFilePriority(path: string): number {
+	const lower = path.toLowerCase();
+	if (lower.endsWith(".json")) return 0;
+	if (lower.endsWith(".css") || lower.endsWith(".svg")) return 1;
+	if (lower.endsWith(".md") || lower.endsWith(".markdown")) return 2;
+	if (lower.endsWith(".html") || lower.endsWith(".htm")) return 3;
+	return 4;
+}
+
+export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadableFile>(
+	folder: SurfaceFolderReader<TFile>,
+	roots: readonly string[],
+	signal: AbortSignal,
+): Promise<Record<string, string>> {
+	const uniqueRoots = [...new Set(roots.map((root) => root.replace(/^\/+|\/+$/g, "")).filter(Boolean))];
+	if (!uniqueRoots.length || signal.aborted) return {};
+	const listFolder = async (parent: string): Promise<readonly SurfaceFolderEntry<TFile>[]> => {
+		try {
+			return (await folder.list(parent, null, 100, signal)).entries;
+		} catch {
+			return [];
+		}
+	};
+	const rootPages = await Promise.all(uniqueRoots.map((root) => listFolder(root)));
+	if (signal.aborted) return {};
+	const subfolders: string[] = [];
+	const candidates: { readonly path: string; readonly file: TFile }[] = [];
+	const seenPaths = new Set<string>();
+	const collectEntries = (entries: readonly SurfaceFolderEntry<TFile>[], allowSubfolders: boolean) => {
+		for (const entry of entries) {
+			if (allowSubfolders && entry.kind === "folder") {
+				const base = entry.path.split("/").at(-1)?.toLowerCase() ?? "";
+				if (!STUDIO_IGNORED_DIR.has(base)) subfolders.push(entry.path);
+				continue;
+			}
+			if (
+				entry.kind !== "file" ||
+				!entry.file ||
+				seenPaths.has(entry.path) ||
+				!STUDIO_TEXT_FILE.test(entry.path) ||
+				entry.file.bytes > STUDIO_MAX_FILE_BYTES
+			) {
+				continue;
+			}
+			seenPaths.add(entry.path);
+			candidates.push({ path: entry.path, file: entry.file });
+		}
+	};
+	for (const entries of rootPages) collectEntries(entries, true);
+	if (subfolders.length > 0 && candidates.length < STUDIO_MAX_FILES) {
+		const uniqueSubs = [...new Set(subfolders)].slice(0, STUDIO_MAX_SUBFOLDERS);
+		let subNext = 0;
+		const subPages: (readonly SurfaceFolderEntry<TFile>[])[] = [];
+		const listWorker = async (): Promise<void> => {
+			while (!signal.aborted) {
+				const index = subNext++;
+				if (index >= uniqueSubs.length) return;
+				subPages[index] = await listFolder(uniqueSubs[index]!);
+			}
+		};
+		await Promise.all(
+			Array.from({ length: Math.min(STUDIO_LIST_CONCURRENCY, uniqueSubs.length) }, () => listWorker()),
+		);
+		if (signal.aborted) return {};
+		for (const entries of subPages) if (entries) collectEntries(entries, false);
+	}
+	candidates.sort((a, b) => studioFilePriority(a.path) - studioFilePriority(b.path) || a.file.bytes - b.file.bytes);
+	const selected: { readonly path: string; readonly file: TFile }[] = [];
+	let totalBytes = 0;
+	for (const item of candidates) {
+		if (selected.length >= STUDIO_MAX_FILES) break;
+		if (selected.length > 0 && totalBytes + item.file.bytes > STUDIO_MAX_TOTAL_BYTES) continue;
+		selected.push(item);
+		totalBytes += item.file.bytes;
+	}
+	if (selected.length === 0) return {};
+	const decoder = new TextDecoder();
+	const files: Record<string, string> = {};
+	let next = 0;
+	const worker = async (): Promise<void> => {
+		while (!signal.aborted) {
+			const index = next++;
+			if (index >= selected.length) return;
+			const item = selected[index]!;
+			try {
+				const bytes = await folder.readFile(item.file, signal, STUDIO_MAX_FILE_BYTES, { cached: true });
+				if (!signal.aborted) files[item.path] = decoder.decode(bytes);
+			} catch {
+				if (signal.aborted) return;
+			}
+		}
+	};
+	const workers = Math.min(STUDIO_READ_CONCURRENCY, selected.length);
+	await Promise.all(Array.from({ length: workers }, () => worker()));
+	return files;
+}
+
+export function normalizeStudioPatchOps(
+	ops: readonly StudioPatchOp[],
+	folderRoot: string | null | undefined,
+): readonly StudioPatchOp[] {
+	const root = folderRoot?.trim().replace(/^\/+|\/+$/g, "") ?? "";
+	if (!root) return ops;
+	let changed = false;
+	const next = ops.map((op) => {
+		const cleaned = op.path.trim().replace(/^\/+|\/+$/g, "");
+		const target = !cleaned || cleaned === root || cleaned.startsWith(`${root}/`) ? cleaned : `${root}/${cleaned}`;
+		if (target === op.path) return op;
+		changed = true;
+		return { ...op, path: target };
+	});
+	return changed ? next : ops;
+}
 
 export type SurfaceUndoVerb = "merged" | "sent" | "done";
 
@@ -93,6 +312,7 @@ export interface SurfaceUndo {
 	readonly label: string;
 	readonly changeIds: readonly string[];
 	readonly verb: SurfaceUndoVerb;
+	readonly pending?: boolean;
 }
 
 export interface SurfaceNote {
@@ -101,6 +321,7 @@ export interface SurfaceNote {
 	readonly text: string;
 	readonly at: string;
 	readonly priorMatches: number;
+	readonly files?: readonly File[];
 }
 
 export interface CreateSurfaceInput {
@@ -138,6 +359,9 @@ export interface SurfacesState {
 	readonly foldedAgentIds: Readonly<Record<string, true>>;
 	readonly localStudioBase: Readonly<Record<string, Readonly<Record<string, string>>>>;
 	readonly cloudSurfaceFiles: Readonly<Record<string, Readonly<Record<string, string>>>>;
+	readonly pendingStudioPatches: Readonly<Record<string, readonly PendingStudioPatch[]>>;
+	readonly loadingCloudFiles: Readonly<Record<string, true>>;
+	readonly updatingCloudFiles: Readonly<Record<string, true>>;
 	readonly surfaceLooks: Readonly<Record<string, SurfaceLook>>;
 	readonly drawer?: { readonly surfaceId: string; readonly sessionId: string; readonly explorationId?: string };
 	readonly highlight?: { readonly surfaceId: string; readonly sessionId: string };
@@ -152,9 +376,9 @@ export interface SurfacesState {
 	readonly publishedChangeIds: Readonly<Record<string, true>>;
 	readonly studioPatches: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly variantPick: Readonly<Record<string, string>>;
-	readonly historyOpen: boolean;
 	readonly collapsed: Readonly<Record<string, true>>;
 	readonly notes: readonly SurfaceNote[];
+	readonly sessionImages: Readonly<Record<string, SurfaceSessionImages>>;
 	readonly undo?: SurfaceUndo;
 	readonly busy: Readonly<Record<string, true>>;
 	readonly error?: string;
@@ -408,18 +632,32 @@ export function surfaceBySlug(state: Pick<SurfacesState, "surfaces">, slug: stri
 	return state.surfaces.find((surface) => surface.slug === slug);
 }
 
-export function productBuildSurfaces(state: Pick<SurfacesState, "surfaces">, excludeId?: string): SurfaceSummary[] {
-	return state.surfaces.filter(
-		(surface) => surface.status === "active" && surface.archetype === "live_build" && surface.id !== excludeId,
-	);
-}
-
 function findIdentitySurface(state: Pick<SurfacesState, "surfaces" | "surfaceLooks">): SurfaceSummary | undefined {
 	return state.surfaces.find(
 		(surface) =>
 			surface.status === "active" &&
 			(surface.isGlobal === true || surfaceLookOf(surface, state.surfaceLooks).kind === "identity"),
 	);
+}
+
+export function effectiveStudioBaseFiles(
+	state: Pick<SurfacesState, "localStudioBase"> &
+		Partial<Pick<SurfacesState, "cloudSurfaceFiles" | "pendingStudioPatches">>,
+	surfaceId: string,
+): Readonly<Record<string, string>> | undefined {
+	const cloudFiles = state.cloudSurfaceFiles?.[surfaceId];
+	const localFiles = state.localStudioBase[surfaceId];
+	const pending = state.pendingStudioPatches?.[surfaceId];
+	if (!cloudFiles && !localFiles && (!pending || pending.length === 0)) return undefined;
+	let base: Readonly<Record<string, string>> =
+		cloudFiles && localFiles ? { ...cloudFiles, ...localFiles } : (cloudFiles ?? localFiles ?? {});
+	if (pending && pending.length > 0) {
+		base = composeStudioPreview(
+			base,
+			pending.map((item) => ({ changeId: item.changeId, ops: item.ops })),
+		).files;
+	}
+	return base;
 }
 
 const compiledIdentityByState = new WeakMap<SurfacesState, CompiledIdentityTokens | null>();
@@ -430,6 +668,7 @@ let lastCompiledIdentity:
 			readonly liveMode: boolean;
 			readonly cloudFiles: Readonly<Record<string, string>> | undefined;
 			readonly localFiles: Readonly<Record<string, string>> | undefined;
+			readonly pendingPatches: readonly PendingStudioPatch[] | undefined;
 			readonly workspace: SurfaceWorkspace | undefined;
 			readonly variantPick: Readonly<Record<string, string>>;
 			readonly hiddenChanges: Readonly<Record<string, true>>;
@@ -447,6 +686,7 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 	}
 	const cloudFiles = state.cloudSurfaceFiles[identity.id];
 	const localFiles = state.localStudioBase[identity.id];
+	const pendingPatches = state.pendingStudioPatches[identity.id];
 	const liveMode = state.mode === "live";
 	const workspace = liveMode ? undefined : state.workspaces[identity.id];
 	if (
@@ -456,6 +696,7 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 		lastCompiledIdentity.liveMode === liveMode &&
 		lastCompiledIdentity.cloudFiles === cloudFiles &&
 		lastCompiledIdentity.localFiles === localFiles &&
+		lastCompiledIdentity.pendingPatches === pendingPatches &&
 		(liveMode ||
 			(lastCompiledIdentity.workspace === workspace &&
 				lastCompiledIdentity.variantPick === state.variantPick &&
@@ -465,10 +706,7 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 		compiledIdentityByState.set(state, lastCompiledIdentity.result);
 		return lastCompiledIdentity.result;
 	}
-	const baseFiles: Record<string, string> = {
-		...(cloudFiles ?? {}),
-		...(localFiles ?? {}),
-	};
+	const baseFiles: Readonly<Record<string, string>> = effectiveStudioBaseFiles(state, identity.id) ?? {};
 	let effectiveFiles: Readonly<Record<string, string>> = baseFiles;
 	if (!liveMode && workspace) {
 		const pickedVariants = new Set(
@@ -482,11 +720,12 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 			for (const change of session.changes) {
 				if (change.kind !== "folder_patch" || !isOpenChange(change) || state.hiddenChanges[change.id]) continue;
 				const ops = state.studioPatches[change.id] ?? change.patchManifest;
-				if (ops?.length) ordered.push({ changeId: change.id, ops });
+				if (ops?.length)
+					ordered.push({ changeId: change.id, ops: normalizeStudioPatchOps(ops, identity.folderRoot) });
 			}
 		}
 		if (ordered.length > 0) {
-			effectiveFiles = composeStudioPreview(baseFiles, ordered).files;
+			effectiveFiles = composeStudioPreview(baseFiles, ordered, identity.folderRoot ?? "identity").files;
 		}
 	}
 	const folderRoot = identity.folderRoot?.replace(/^\/+|\/+$/g, "");
@@ -500,6 +739,7 @@ export function compiledCompanyIdentity(state: SurfacesState): CompiledIdentityT
 		liveMode,
 		cloudFiles,
 		localFiles,
+		pendingPatches,
 		workspace,
 		variantPick: state.variantPick,
 		hiddenChanges: state.hiddenChanges,
@@ -555,9 +795,15 @@ function parseReportsFromFiles(files: Readonly<Record<string, string>>): readonl
 }
 
 export function surfaceReports(
-	state: Pick<SurfacesState, "localStudioBase"> & Partial<Pick<SurfacesState, "cloudSurfaceFiles">>,
+	state: Pick<SurfacesState, "localStudioBase"> &
+		Partial<Pick<SurfacesState, "cloudSurfaceFiles" | "pendingStudioPatches">>,
 	surfaceId: string,
 ): readonly SurfaceReportSummary[] {
+	const pending = state.pendingStudioPatches?.[surfaceId];
+	if (pending && pending.length > 0) {
+		const effective = effectiveStudioBaseFiles(state, surfaceId);
+		return effective ? parseReportsFromFiles(effective) : EMPTY_REPORTS;
+	}
 	const cloudFiles = state.cloudSurfaceFiles?.[surfaceId];
 	const localFiles = state.localStudioBase[surfaceId];
 	if (!cloudFiles && !localFiles) return EMPTY_REPORTS;
@@ -730,6 +976,18 @@ export interface SurfacesStoreOptions {
 		surface: SurfaceSummary,
 		signal: AbortSignal,
 	) => Promise<Readonly<Record<string, string>> | undefined>;
+	readonly uploadImage?: (
+		surfaceId: string,
+		clientInputId: string,
+		file: File,
+		signal: AbortSignal,
+	) => Promise<SurfaceImageRef>;
+	readonly readImage?: (
+		sessionId: string,
+		clientInputId: string,
+		image: SurfaceImageRef,
+		signal: AbortSignal,
+	) => Promise<Blob>;
 }
 
 interface LocalSandboxCacheEntry {
@@ -762,6 +1020,9 @@ export class SurfacesStore {
 	readonly #localCreatedIds = new Set<string>();
 	readonly #studioUndoSnapshots = new Map<string, Readonly<Record<string, string>>>();
 	readonly #cloudFilesLoading = new Set<string>();
+	readonly #cloudFilesDirty = new Set<string>();
+	readonly #cloudFilesDirtyVisible = new Set<string>();
+	readonly #cloudFilesRev = new Map<string, number>();
 	readonly #mintingPreviewPasses = new Map<string, Promise<boolean>>();
 	readonly #previewPassMeta = new Map<
 		string,
@@ -770,22 +1031,42 @@ export class SurfacesStore {
 	readonly #workspaceEpoch = new Map<string, number>();
 	readonly #latestWorkspaceReq = new Map<string, number>();
 	readonly #inFlightWorkspaceRefreshes = new Set<string>();
+	readonly #hydratedAttempted = new Set<string>();
 	readonly #previewSyncInFlight = new Set<string>();
 	readonly #previewSyncDirty = new Set<string>();
+	readonly #previewSyncForeground = new Set<string>();
 	readonly #previewSyncGen = new Map<string, number>();
 	readonly #previewSyncWaiters = new Map<string, (() => void)[]>();
+	readonly #previewSyncDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	readonly #previewSyncDebounceWaiters = new Map<string, (() => void)[]>();
+	readonly #lastPreviewSyncKey = new Map<string, string>();
+	readonly #previewIdSelectionKey = new Map<string, string>();
+	readonly #pendingMerges = new Map<
+		string,
+		{
+			readonly surfaceId: string;
+			readonly label: string;
+			readonly changeIds: readonly string[];
+			readonly verb: SurfaceUndoVerb;
+			readonly undoId: number;
+		}
+	>();
+	readonly #pendingPublishChanges = new Map<string, readonly string[]>();
 	#activeSurfaceId: string | undefined;
 	#workspaceReqSeq = 0;
 	#surfacesReqSeq = 0;
 	#surfacesMutationEpoch = 0;
 	#undoTimer: ReturnType<typeof setTimeout> | undefined;
 	#pollTimer: ReturnType<typeof setInterval> | undefined;
+	#pollIntervalMs = 0;
 	#hintTimer: ReturnType<typeof setTimeout> | undefined;
+	#folderHintTimer: ReturnType<typeof setTimeout> | undefined;
 	#retryLoadTimer: ReturnType<typeof setTimeout> | undefined;
 	#pendingHintFiles = false;
 	#undoSeq = 0;
 	#noteSeq = 0;
 	#localSeq = 0;
+	readonly #imageReads = new Map<string, string>();
 	#loaded: Promise<void> | undefined;
 
 	constructor(options: SurfacesStoreOptions) {
@@ -800,6 +1081,9 @@ export class SurfacesStore {
 			foldedAgentIds: {},
 			localStudioBase: {},
 			cloudSurfaceFiles: {},
+			pendingStudioPatches: {},
+			loadingCloudFiles: {},
+			updatingCloudFiles: {},
 			surfaceLooks: {},
 			mode: "preview",
 			previewPanel: "auto",
@@ -809,9 +1093,9 @@ export class SurfacesStore {
 			publishedChangeIds: {},
 			studioPatches: {},
 			variantPick: {},
-			historyOpen: false,
 			collapsed: {},
 			notes: [],
+			sessionImages: {},
 			busy: {},
 		});
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
@@ -899,24 +1183,83 @@ export class SurfacesStore {
 		return compiledCompanyIdentity(this.state);
 	}
 
+	get canLoadCloudFiles(): boolean {
+		return Boolean(this.#options.loadCloudFiles);
+	}
+
+	isCloudFilesLoading(surfaceId: string): boolean {
+		return Boolean(this.state.loadingCloudFiles[surfaceId]);
+	}
+
+	surfaceUpdatePhase(surfaceId: string): SurfaceUpdatePhase | null {
+		const state = this.state;
+		const surface = state.surfaces.find((item) => item.id === surfaceId);
+		if (state.busy[`publish:${surfaceId}`] || surface?.publishStatus === "publishing") return "publishing";
+		const workspace = state.workspaces[surfaceId];
+		if (workspace) {
+			for (const session of workspace.activeSessions) {
+				if (state.busy[`session:${session.id}`]) return "merging";
+				for (const change of session.changes) {
+					if (
+						change.status === "merging" ||
+						state.busy[`change:${change.id}`] ||
+						state.busy[`undo:${change.id}`]
+					) {
+						return "merging";
+					}
+				}
+			}
+			for (const session of workspace.recentHistory) {
+				for (const change of session.changes) {
+					if (state.busy[`undo:${change.id}`]) return "merging";
+				}
+			}
+			for (const exploration of workspace.explorations) {
+				if (state.busy[`exploration:${exploration.id}`]) return "merging";
+			}
+		}
+		if (state.updatingCloudFiles[surfaceId]) return "updating";
+		return null;
+	}
+
+	isSurfaceUpdating(surfaceId: string): boolean {
+		return this.surfaceUpdatePhase(surfaceId) !== null;
+	}
+
 	dispose(): void {
 		if (this.#undoTimer) clearTimeout(this.#undoTimer);
 		if (this.#pollTimer) clearInterval(this.#pollTimer);
 		if (this.#hintTimer) clearTimeout(this.#hintTimer);
+		if (this.#folderHintTimer) clearTimeout(this.#folderHintTimer);
 		if (this.#retryLoadTimer) clearTimeout(this.#retryLoadTimer);
 		for (const timer of this.#localTimers) clearTimeout(timer);
 		this.#localTimers.clear();
 		this.#studioUndoSnapshots.clear();
+		this.#hydratedAttempted.clear();
 		this.#previewPassMeta.clear();
 		this.#previewSyncDirty.clear();
+		this.#previewSyncForeground.clear();
+		this.#lastPreviewSyncKey.clear();
+		this.#previewIdSelectionKey.clear();
+		this.#pendingMerges.clear();
+		this.#pendingPublishChanges.clear();
+		for (const timer of this.#previewSyncDebounceTimers.values()) clearTimeout(timer);
+		this.#previewSyncDebounceTimers.clear();
+		for (const waiters of this.#previewSyncDebounceWaiters.values()) {
+			for (const resolve of waiters) resolve();
+		}
+		this.#previewSyncDebounceWaiters.clear();
 		for (const waiters of this.#previewSyncWaiters.values()) {
 			for (const resolve of waiters) resolve();
 		}
 		this.#previewSyncWaiters.clear();
 		this.#undoTimer = undefined;
 		this.#pollTimer = undefined;
+		this.#pollIntervalMs = 0;
 		this.#hintTimer = undefined;
+		this.#folderHintTimer = undefined;
 		this.#retryLoadTimer = undefined;
+		lastCompiledIdentity = undefined;
 		this.store.dispose();
 	}
 
@@ -1391,10 +1734,18 @@ export class SurfacesStore {
 				for (const item of automations) {
 					if (item.prompt) prompts[item.id] = item.prompt;
 				}
-				this.store.set((state) => ({
-					automations,
-					scheduledAgentPrompts: { ...state.scheduledAgentPrompts, ...prompts },
-				}));
+				this.store.set((state) => {
+					const mergedPrompts = { ...state.scheduledAgentPrompts, ...prompts };
+					const promptsUnchanged = sameFileMap(state.scheduledAgentPrompts, mergedPrompts);
+					const automationsUnchanged =
+						state.automations.length === automations.length &&
+						JSON.stringify(state.automations) === JSON.stringify(automations);
+					if (automationsUnchanged && promptsUnchanged) return {};
+					return {
+						...(automationsUnchanged ? {} : { automations }),
+						...(promptsUnchanged ? {} : { scheduledAgentPrompts: mergedPrompts }),
+					};
+				});
 			}
 		} catch {
 			/* WHY: Automations are a quiet extra; a failed read must not block the surfaces themselves. */
@@ -1457,6 +1808,10 @@ export class SurfacesStore {
 		return this.state.workspaces[surfaceId];
 	}
 
+	isWorkspaceLoading(surfaceId: string): boolean {
+		return this.#inFlightWorkspaceRefreshes.has(surfaceId);
+	}
+
 	setActiveSurface(surfaceId: string | undefined): void {
 		this.#activeSurfaceId = surfaceId;
 	}
@@ -1470,6 +1825,7 @@ export class SurfacesStore {
 		const surface = surfaceBySlug(this.state, slug);
 		if (!surface) return undefined;
 		this.#activeSurfaceId = surface.id;
+		this.#hydratedAttempted.delete(surface.id);
 		if (isLocalSurfaceId(surface.id) || !this.#options.client) {
 			const existing = this.workspace(surface.id) ?? localWorkspace(surface);
 			this.#putWorkspace({ ...existing, surface });
@@ -1478,7 +1834,26 @@ export class SurfacesStore {
 		return this.refreshWorkspace(surface.id);
 	}
 
-	async refreshWorkspace(surfaceId: string, retryDepth = 0): Promise<SurfaceWorkspace | undefined> {
+	hydrateWorkspace(surfaceId: string): void {
+		if (
+			this.state.source !== "cloud" ||
+			isLocalSurfaceId(surfaceId) ||
+			!this.#options.client ||
+			this.state.workspaces[surfaceId] ||
+			this.#inFlightWorkspaceRefreshes.has(surfaceId) ||
+			this.#hydratedAttempted.has(surfaceId)
+		) {
+			return;
+		}
+		this.#hydratedAttempted.add(surfaceId);
+		void this.refreshWorkspace(surfaceId, 0, { background: true });
+	}
+
+	async refreshWorkspace(
+		surfaceId: string,
+		retryDepth = 0,
+		options?: { readonly background?: boolean },
+	): Promise<SurfaceWorkspace | undefined> {
 		const client = this.#options.client;
 		if (!client || isLocalSurfaceId(surfaceId)) return this.workspace(surfaceId);
 		const reqId = ++this.#workspaceReqSeq;
@@ -1497,11 +1872,15 @@ export class SurfacesStore {
 				rerun = retryDepth < 2;
 				result = this.workspace(surfaceId);
 			} else {
-				this.#putWorkspace(workspace, false);
+				this.#putWorkspace(workspace, false, options);
 				result = workspace;
 			}
 		} catch (error) {
-			if (!this.#options.signal.aborted && this.#latestWorkspaceReq.get(surfaceId) === reqId) {
+			if (
+				!options?.background &&
+				!this.#options.signal.aborted &&
+				this.#latestWorkspaceReq.get(surfaceId) === reqId
+			) {
 				this.store.set({ error: describe(error) });
 			}
 			result = undefined;
@@ -1511,7 +1890,7 @@ export class SurfacesStore {
 			}
 		}
 		if (rerun && !this.#options.signal.aborted && this.#latestWorkspaceReq.get(surfaceId) === reqId) {
-			return this.refreshWorkspace(surfaceId, retryDepth + 1);
+			return this.refreshWorkspace(surfaceId, retryDepth + 1, options);
 		}
 		return result;
 	}
@@ -1536,9 +1915,16 @@ export class SurfacesStore {
 		return this.#ensurePreviewPass(surfaceId, previewId);
 	}
 
-	#putWorkspace(workspace: SurfaceWorkspace, bumpEpoch = true): void {
+	#putWorkspace(workspace: SurfaceWorkspace, bumpEpoch = true, options?: { readonly background?: boolean }): void {
+		const surfaceId = workspace.surface.id;
+		const background =
+			options?.background === true &&
+			surfaceId !== this.#activeSurfaceId &&
+			surfaceId !== this.state.drawer?.surfaceId;
+		const prevWorkspace = this.state.workspaces[surfaceId];
+		const prevSurface = prevWorkspace?.surface ?? this.state.surfaces.find((surface) => surface.id === surfaceId);
 		if (bumpEpoch) {
-			this.#workspaceEpoch.set(workspace.surface.id, (this.#workspaceEpoch.get(workspace.surface.id) ?? 0) + 1);
+			this.#workspaceEpoch.set(surfaceId, (this.#workspaceEpoch.get(surfaceId) ?? 0) + 1);
 		}
 		const now = Date.now();
 		const trackIncomingPass = (frame: SurfaceWorkspace["previewState"]["primary"]): void => {
@@ -1555,12 +1941,66 @@ export class SurfacesStore {
 		for (const session of sessions) {
 			for (const change of session.changes) {
 				if (change.patchManifest && change.patchManifest.length > 0) {
-					extractedPatches[change.id] = change.patchManifest;
+					extractedPatches[change.id] = normalizeStudioPatchOps(
+						change.patchManifest,
+						workspace.surface.folderRoot,
+					);
 				}
 			}
 		}
+
+		const canSyncCloudFiles =
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(surfaceId) &&
+			Boolean(this.#options.loadCloudFiles) &&
+			(!background || Boolean(this.state.cloudSurfaceFiles[surfaceId]) || this.#cloudFilesLoading.has(surfaceId));
+		const isFolderSurface = workspace.surface.sourceKind === "folder" || workspace.surface.archetype === "studio";
+		const newlyLandedPatches: StudioPatchChange[] = [];
+		const unmergedChangeIds = new Set<string>();
+		let needsVisibleFileReload = false;
+
+		if (canSyncCloudFiles && prevWorkspace) {
+			const prevStatusByChange = new Map<string, SurfaceChangeUnit["status"]>();
+			for (const session of [...prevWorkspace.activeSessions, ...prevWorkspace.recentHistory]) {
+				for (const change of session.changes) prevStatusByChange.set(change.id, change.status);
+			}
+			for (const session of sessions) {
+				for (const change of session.changes) {
+					if (change.kind !== "folder_patch") continue;
+					const prevStatus = prevStatusByChange.get(change.id);
+					if (change.status === "merged" && prevStatus !== undefined && prevStatus !== "merged") {
+						needsVisibleFileReload = true;
+						const ops =
+							extractedPatches[change.id] ?? this.state.studioPatches[change.id] ?? change.patchManifest;
+						if (ops?.length) {
+							newlyLandedPatches.push({
+								changeId: change.id,
+								ops: normalizeStudioPatchOps(ops, workspace.surface.folderRoot),
+							});
+						}
+					} else if (prevStatus === "merged" && change.status !== "merged") {
+						needsVisibleFileReload = true;
+						unmergedChangeIds.add(change.id);
+					}
+				}
+			}
+			if (
+				isFolderSurface &&
+				prevSurface &&
+				(workspace.surface.publishStatus !== prevSurface.publishStatus ||
+					workspace.surface.unpublishedChangeCount !== prevSurface.unpublishedChangeCount)
+			) {
+				needsVisibleFileReload = true;
+			}
+		}
+
+		const nextRev = needsVisibleFileReload ? (this.#cloudFilesRev.get(surfaceId) ?? 0) + 1 : 0;
+		if (needsVisibleFileReload) {
+			this.#cloudFilesRev.set(surfaceId, nextRev);
+		}
+
 		this.store.set((state) => {
-			const prevState = state.workspaces[workspace.surface.id]?.previewState;
+			const prevState = state.workspaces[surfaceId]?.previewState;
 			const prevPasses = new Map<string, { readonly doorActionUrl: string | null; readonly memberPass: string }>();
 			if (prevState?.primary.previewId && prevState.primary.memberPass) {
 				prevPasses.set(prevState.primary.previewId, {
@@ -1612,34 +2052,120 @@ export class SurfacesStore {
 				Object.keys(extractedPatches).length > 0
 					? { ...state.studioPatches, ...extractedPatches }
 					: state.studioPatches;
+			let nextPendingStudioPatches = state.pendingStudioPatches;
+			if (newlyLandedPatches.length > 0 || unmergedChangeIds.size > 0) {
+				const existingPending = (state.pendingStudioPatches[surfaceId] ?? []).filter(
+					(item) =>
+						!unmergedChangeIds.has(item.changeId) &&
+						!newlyLandedPatches.some((added) => added.changeId === item.changeId),
+				);
+				const updatedPending: PendingStudioPatch[] = [
+					...existingPending,
+					...newlyLandedPatches.map((item) => ({ changeId: item.changeId, ops: item.ops, rev: nextRev })),
+				];
+				const copy = { ...state.pendingStudioPatches };
+				if (updatedPending.length > 0) copy[surfaceId] = updatedPending;
+				else delete copy[surfaceId];
+				nextPendingStudioPatches = copy;
+			}
+			const existingWorkspace = state.workspaces[surfaceId];
+			const workspaceUnchanged =
+				existingWorkspace !== undefined && JSON.stringify(existingWorkspace) === JSON.stringify(mergedWorkspace);
+			const existingSurface = state.surfaces.find((surface) => surface.id === surfaceId);
+			const surfaceUnchanged =
+				existingSurface !== undefined && JSON.stringify(existingSurface) === JSON.stringify(workspace.surface);
+			const patchesChanged =
+				nextPatches !== state.studioPatches && JSON.stringify(nextPatches) !== JSON.stringify(state.studioPatches);
+			if (
+				workspaceUnchanged &&
+				surfaceUnchanged &&
+				!patchesChanged &&
+				nextPendingStudioPatches === state.pendingStudioPatches &&
+				notes.length === state.notes.length
+			) {
+				return {};
+			}
 			return {
-				workspaces: { ...state.workspaces, [workspace.surface.id]: mergedWorkspace },
-				surfaces: state.surfaces.map((surface) =>
-					surface.id === workspace.surface.id ? workspace.surface : surface,
-				),
-				...(nextPatches !== state.studioPatches ? { studioPatches: nextPatches } : {}),
+				...(workspaceUnchanged ? {} : { workspaces: { ...state.workspaces, [surfaceId]: mergedWorkspace } }),
+				...(surfaceUnchanged
+					? {}
+					: {
+							surfaces: state.surfaces.map((surface) =>
+								surface.id === surfaceId ? workspace.surface : surface,
+							),
+						}),
+				...(patchesChanged ? { studioPatches: nextPatches } : {}),
+				...(nextPendingStudioPatches !== state.pendingStudioPatches
+					? { pendingStudioPatches: nextPendingStudioPatches }
+					: {}),
 				...(notes.length !== state.notes.length ? { notes } : {}),
 			};
 		});
-		const stored = this.state.workspaces[workspace.surface.id];
-		if (stored && !isLocalSurfaceId(workspace.surface.id) && this.#options.client?.mintPreviewPass) {
+		const stored = this.state.workspaces[surfaceId];
+		if (stored) {
+			this.#reconcilePendingPublish(stored.surface);
+			this.#reconcilePendingMerges(stored);
+		}
+		if (!background && stored && !isLocalSurfaceId(surfaceId) && this.#options.client?.mintPreviewPass) {
 			const frames = [stored.previewState.primary, ...stored.previewState.compareFrames.map((entry) => entry.frame)];
 			for (const frame of frames) {
 				if (frame.status === "ready" && frame.previewId && !frame.memberPass) {
 					const meta = this.#previewPassMeta.get(frame.previewId);
 					if (!meta || !meta.consumed || meta.retryMint) {
-						void this.#ensurePreviewPass(workspace.surface.id, frame.previewId);
+						void this.#ensurePreviewPass(surfaceId, frame.previewId);
 					}
 				}
 			}
 		}
+		if (canSyncCloudFiles) {
+			if (needsVisibleFileReload) {
+				void this.refreshCloudFiles(workspace.surface, { visible: true });
+			} else if (!background && !this.state.cloudSurfaceFiles[surfaceId]) {
+				void this.refreshCloudFiles(workspace.surface);
+			}
+		}
 		if (
+			!background &&
+			stored &&
 			this.state.source === "cloud" &&
 			!isLocalSurfaceId(workspace.surface.id) &&
-			this.#options.loadCloudFiles &&
-			!this.state.cloudSurfaceFiles[workspace.surface.id]
+			this.#options.client &&
+			stored.surface.archetype === "live_build" &&
+			stored.surface.sourceKind === "code_repo" &&
+			stored.previewState.mode !== "compare"
 		) {
-			void this.refreshCloudFiles(workspace.surface);
+			const info = this.#previewSelectionInfo(workspace.surface.id);
+			if (info.hasOpenChanges) {
+				const primary = stored.previewState.primary;
+				const primaryIds = [...new Set(primary.toggledChangeIds)].sort().join(",");
+				const stalePreviewId = Boolean(
+					primary.previewId &&
+						this.#previewIdSelectionKey.has(primary.previewId) &&
+						this.#previewIdSelectionKey.get(primary.previewId) !== info.selectionKey,
+				);
+				const matchesPrimary =
+					primary.status !== "live_baseline" &&
+					primary.status !== "failed" &&
+					!stalePreviewId &&
+					primaryIds === info.toggledKey;
+				if (matchesPrimary) {
+					this.#lastPreviewSyncKey.set(workspace.surface.id, info.selectionKey);
+				} else if (this.#lastPreviewSyncKey.get(workspace.surface.id) !== info.selectionKey) {
+					this.#lastPreviewSyncKey.set(workspace.surface.id, info.selectionKey);
+					void this.#syncPreview(workspace.surface.id, { background: true });
+				}
+			} else {
+				const primary = stored.previewState.primary;
+				if (primary.status !== "live_baseline") {
+					const emptyKey = `empty|${info.selectionKey}`;
+					if (this.#lastPreviewSyncKey.get(workspace.surface.id) !== emptyKey) {
+						this.#lastPreviewSyncKey.set(workspace.surface.id, emptyKey);
+						void this.#syncPreview(workspace.surface.id, { background: true });
+					}
+				} else {
+					this.#lastPreviewSyncKey.delete(workspace.surface.id);
+				}
+			}
 		}
 		this.#syncPolling();
 	}
@@ -1707,21 +2233,144 @@ export class SurfacesStore {
 		return promise;
 	}
 
-	async refreshCloudFiles(surface: SurfaceSummary): Promise<void> {
+	async refreshCloudFiles(surface: SurfaceSummary, options?: { readonly visible?: boolean }): Promise<void> {
 		const loadFiles = this.#options.loadCloudFiles;
-		if (!loadFiles || isLocalSurfaceId(surface.id) || this.#cloudFilesLoading.has(surface.id)) return;
+		if (!loadFiles || isLocalSurfaceId(surface.id)) return;
+		const visible = options?.visible === true;
+		if (this.#cloudFilesLoading.has(surface.id)) {
+			this.#cloudFilesDirty.add(surface.id);
+			if (visible) {
+				this.#cloudFilesDirtyVisible.add(surface.id);
+				if (!this.state.updatingCloudFiles[surface.id]) {
+					this.store.set((state) => ({
+						updatingCloudFiles: { ...state.updatingCloudFiles, [surface.id]: true },
+					}));
+				}
+			}
+			return;
+		}
 		this.#cloudFilesLoading.add(surface.id);
+		const fetchStartRev = this.#cloudFilesRev.get(surface.id) ?? 0;
+		const hadCachedFiles = this.state.cloudSurfaceFiles[surface.id] !== undefined;
+		if (!hadCachedFiles || visible) {
+			this.store.set((state) => ({
+				...(!hadCachedFiles && !state.loadingCloudFiles[surface.id]
+					? { loadingCloudFiles: { ...state.loadingCloudFiles, [surface.id]: true } }
+					: {}),
+				...(visible && !state.updatingCloudFiles[surface.id]
+					? { updatingCloudFiles: { ...state.updatingCloudFiles, [surface.id]: true } }
+					: {}),
+			}));
+		}
+		let shouldRerun = false;
+		let rerunVisible = false;
 		try {
 			const files = await loadFiles(surface, this.#options.signal);
-			if (this.#options.signal.aborted || files === undefined) return;
-			this.store.set((state) => ({
-				cloudSurfaceFiles: { ...state.cloudSurfaceFiles, [surface.id]: files },
-			}));
+			if (!this.#options.signal.aborted && files !== undefined) {
+				this.store.set((state) => {
+					const existingPending = state.pendingStudioPatches[surface.id];
+					let nextPendingStudioPatches = state.pendingStudioPatches;
+					if (existingPending && existingPending.length > 0) {
+						const remaining = existingPending.filter((item) => item.rev > fetchStartRev);
+						if (remaining.length !== existingPending.length) {
+							const copy = { ...state.pendingStudioPatches };
+							if (remaining.length > 0) copy[surface.id] = remaining;
+							else delete copy[surface.id];
+							nextPendingStudioPatches = copy;
+						}
+					}
+					const filesUnchanged = sameFileMap(state.cloudSurfaceFiles[surface.id], files);
+					if (filesUnchanged && nextPendingStudioPatches === state.pendingStudioPatches) return {};
+					const keepIds = new Set<string>();
+					if (this.#activeSurfaceId) keepIds.add(this.#activeSurfaceId);
+					if (state.drawer?.surfaceId) keepIds.add(state.drawer.surfaceId);
+					const identity = findIdentitySurface(state);
+					if (identity) keepIds.add(identity.id);
+					return {
+						...(filesUnchanged
+							? {}
+							: {
+									cloudSurfaceFiles: pruneCloudSurfaceFiles(
+										state.cloudSurfaceFiles,
+										surface.id,
+										files,
+										keepIds,
+									),
+								}),
+						...(nextPendingStudioPatches !== state.pendingStudioPatches
+							? { pendingStudioPatches: nextPendingStudioPatches }
+							: {}),
+					};
+				});
+			}
 		} catch {
-			/* WHY: Missing notes or studio folders are non-fatal; views fall back gracefully. */
+			if (!this.#options.signal.aborted) {
+				this.store.set((state) => {
+					const existingPending = state.pendingStudioPatches[surface.id];
+					if (!existingPending?.length) return {};
+					const remaining = existingPending.filter((item) => item.rev > fetchStartRev);
+					if (remaining.length === existingPending.length) return {};
+					const copy = { ...state.pendingStudioPatches };
+					if (remaining.length > 0) copy[surface.id] = remaining;
+					else delete copy[surface.id];
+					return { pendingStudioPatches: copy };
+				});
+			}
 		} finally {
 			this.#cloudFilesLoading.delete(surface.id);
+			if (!this.#options.signal.aborted && this.#cloudFilesDirty.delete(surface.id)) {
+				shouldRerun = true;
+				rerunVisible = this.#cloudFilesDirtyVisible.delete(surface.id) || visible;
+			} else {
+				this.#cloudFilesDirtyVisible.delete(surface.id);
+				if (!this.#options.signal.aborted) {
+					this.store.set((state) => {
+						const nextLoading = state.loadingCloudFiles[surface.id] ? { ...state.loadingCloudFiles } : undefined;
+						if (nextLoading) delete nextLoading[surface.id];
+						const nextUpdating = state.updatingCloudFiles[surface.id]
+							? { ...state.updatingCloudFiles }
+							: undefined;
+						if (nextUpdating) delete nextUpdating[surface.id];
+						if (!nextLoading && !nextUpdating) return {};
+						return {
+							...(nextLoading ? { loadingCloudFiles: nextLoading } : {}),
+							...(nextUpdating ? { updatingCloudFiles: nextUpdating } : {}),
+						};
+					});
+				}
+			}
 		}
+		if (shouldRerun && !this.#options.signal.aborted) {
+			const latestSurface = this.state.surfaces.find((item) => item.id === surface.id) ?? surface;
+			await this.refreshCloudFiles(latestSurface, { visible: rerunVisible });
+		}
+	}
+
+	onFolderHint(): void {
+		if (this.#options.signal.aborted || !this.#options.loadCloudFiles) return;
+		if (this.#folderHintTimer) return;
+		this.#folderHintTimer = setTimeout(() => {
+			this.#folderHintTimer = undefined;
+			if (this.#options.signal.aborted || this.state.source !== "cloud") return;
+			const workspaces = Object.values(this.state.workspaces).filter(
+				(workspace) => !isLocalSurfaceId(workspace.surface.id),
+			);
+			const refreshed = new Set<string>();
+			for (const workspace of workspaces) {
+				const relevant =
+					workspace.surface.id === this.#activeSurfaceId ||
+					workspace.surface.id === this.state.drawer?.surfaceId ||
+					this.#workspaceNeedsPoll(workspace) ||
+					(!this.#activeSurfaceId && workspaces.length <= 1);
+				if (!relevant) continue;
+				refreshed.add(workspace.surface.id);
+				void this.refreshCloudFiles(workspace.surface);
+			}
+			const identity = findIdentitySurface(this.state);
+			if (identity && !refreshed.has(identity.id) && !isLocalSurfaceId(identity.id)) {
+				void this.refreshCloudFiles(identity);
+			}
+		}, FOLDER_HINT_DEBOUNCE_MS);
 	}
 
 	refreshPendingCloudFiles(): void {
@@ -1758,6 +2407,15 @@ export class SurfacesStore {
 				return;
 			}
 			if (this.state.source === "cloud") {
+				const retryHydrate = [...this.#hydratedAttempted].filter(
+					(id) =>
+						!this.state.workspaces[id] &&
+						this.state.surfaces.some(
+							(surface) => surface.id === id && surface.status === "active" && surface.activeSessionCount > 0,
+						),
+				);
+				this.#hydratedAttempted.clear();
+				for (const id of retryHydrate) this.hydrateWorkspace(id);
 				void this.refreshSurfaces();
 				const client = this.#options.client;
 				if (client) void this.#loadAutomations(client);
@@ -1766,15 +2424,18 @@ export class SurfacesStore {
 				);
 				const refreshed = new Set<string>();
 				for (const workspace of workspaces) {
-					const relevant =
+					const foreground =
 						workspace.surface.id === this.#activeSurfaceId ||
-						workspace.surface.id === this.state.drawer?.surfaceId ||
+						workspace.surface.id === this.state.drawer?.surfaceId;
+					const activePoll =
+						foreground ||
 						this.#workspaceNeedsPoll(workspace) ||
 						(!this.#activeSurfaceId && workspaces.length <= 1);
-					if (!relevant) continue;
+					const hasCrew = workspace.activeSessions.length > 0 || openExplorations(workspace).length > 0;
+					if (!activePoll && !hasCrew) continue;
 					refreshed.add(workspace.surface.id);
-					void this.refreshWorkspace(workspace.surface.id);
-					if (reloadFiles) void this.refreshCloudFiles(workspace.surface);
+					void this.refreshWorkspace(workspace.surface.id, 0, { background: !foreground });
+					if (reloadFiles && activePoll) void this.refreshCloudFiles(workspace.surface);
 				}
 				if (reloadFiles) {
 					const identity = findIdentitySurface(this.state);
@@ -1783,7 +2444,7 @@ export class SurfacesStore {
 					}
 				}
 			}
-		}, 180);
+		}, HINT_DEBOUNCE_MS);
 	}
 
 	#workspaceNeedsPoll(workspace: SurfaceWorkspace): boolean {
@@ -1807,23 +2468,33 @@ export class SurfacesStore {
 				this.#workspaceNeedsPoll(workspace) &&
 				!this.#inFlightWorkspaceRefreshes.has(workspace.surface.id)
 			) {
-				void this.refreshWorkspace(workspace.surface.id);
+				const foreground =
+					workspace.surface.id === this.#activeSurfaceId || workspace.surface.id === this.state.drawer?.surfaceId;
+				void this.refreshWorkspace(workspace.surface.id, 0, { background: !foreground });
 			}
 		}
 	}
 
 	#syncPolling(): void {
-		const running = Object.values(this.state.workspaces).some((workspace) => this.#workspaceNeedsPoll(workspace));
+		const workspaces = Object.values(this.state.workspaces);
+		const fast = workspaces.some(
+			(workspace) =>
+				workspace.surface.publishStatus === "publishing" ||
+				workspace.previewState.primary.status === "composing" ||
+				workspace.previewState.primary.status === "building" ||
+				workspace.previewState.compareFrames.some(
+					(entry) => entry.frame.status === "composing" || entry.frame.status === "building",
+				) ||
+				workspace.activeSessions.some((session) => session.changes.some((change) => change.status === "merging")),
+		);
+		const running = fast || workspaces.some((workspace) => this.#workspaceNeedsPoll(workspace));
 		const realtimeConnected = this.#options.realtimeLive?.() === true;
 		const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
-		if (
-			running &&
-			!realtimeConnected &&
-			!hidden &&
-			!this.#pollTimer &&
-			this.#options.client &&
-			this.state.source === "cloud"
-		) {
+		const targetIntervalMs = fast ? FAST_POLL_MS : POLL_MS;
+		if (running && !realtimeConnected && !hidden && this.#options.client && this.state.source === "cloud") {
+			if (this.#pollTimer && this.#pollIntervalMs === targetIntervalMs) return;
+			if (this.#pollTimer) clearInterval(this.#pollTimer);
+			this.#pollIntervalMs = targetIntervalMs;
 			this.#pollTimer = setInterval(() => {
 				if (
 					this.#options.signal.aborted ||
@@ -1834,10 +2505,11 @@ export class SurfacesStore {
 					return;
 				}
 				this.#pollDueWorkspaces();
-			}, POLL_MS);
+			}, targetIntervalMs);
 		} else if ((!running || realtimeConnected || hidden) && this.#pollTimer) {
 			clearInterval(this.#pollTimer);
 			this.#pollTimer = undefined;
+			this.#pollIntervalMs = 0;
 		}
 	}
 
@@ -1851,18 +2523,20 @@ export class SurfacesStore {
 		if (!title) return undefined;
 		const icon = input.icon ?? (input.archetype === "studio" ? "spark" : "globe");
 		const description = input.description?.trim() || null;
+		const taken = new Set(this.state.surfaces.map((surface) => surface.slug));
+		const explicitSlug = input.slug?.trim();
+		const slug = slugifySurfaceTitle(explicitSlug || title, taken);
+		const explicitFolderRoot = input.folderRoot?.trim().replace(/^\/+|\/+$/g, "");
 		const folderRoot =
 			input.archetype === "studio"
-				? (input.folderRoot?.trim() || input.slug?.trim() || slugifySurfaceTitle(title, new Set())).replace(
-						/^\/+|\/+$/g,
-						"",
-					)
+				? explicitFolderRoot || (input.kind === "identity" ? "identity" : `surfaces/${slug}`)
 				: null;
 		if (this.state.source === "cloud" && this.#options.client?.createSurface) {
+			const cloudSlug = input.archetype === "studio" ? slug : explicitSlug || undefined;
 			const created = await this.#run("surface:create", (client) =>
 				client.createSurface!(this.#options.companyId, {
 					title,
-					...(input.slug?.trim() ? { slug: input.slug.trim() } : {}),
+					...(cloudSlug ? { slug: cloudSlug } : {}),
 					archetype: input.archetype,
 					...(input.kind ? { kind: input.kind } : {}),
 					icon,
@@ -1889,8 +2563,6 @@ export class SurfacesStore {
 			if (prompt && this.canStartSessions(created)) void this.startSession(created.id, prompt);
 			return created;
 		}
-		const taken = new Set(this.state.surfaces.map((surface) => surface.slug));
-		const slug = slugifySurfaceTitle(input.slug?.trim() || title, taken);
 		const sortOrder = this.state.surfaces.filter((surface) => surface.group === "products").length;
 		const created = localSurface(slug, title, "products", input.archetype, icon, sortOrder, {
 			sourceKind: input.archetype === "studio" ? "folder" : "code_repo",
@@ -1918,11 +2590,24 @@ export class SurfacesStore {
 	}
 
 	setMode(mode: SurfacePreviewMode): void {
+		const wasCompare = this.state.mode === "compare";
 		this.store.set({
 			mode,
 			...(mode !== "compare" ? { compareFocusSessionId: undefined } : {}),
 			...(mode !== "report" ? { activeReportSlug: undefined } : {}),
 		});
+		if (wasCompare && mode !== "compare" && this.#activeSurfaceId) {
+			const ws = this.workspace(this.#activeSurfaceId);
+			if (
+				ws &&
+				this.state.source === "cloud" &&
+				!isLocalSurfaceId(ws.surface.id) &&
+				ws.surface.sourceKind === "code_repo" &&
+				ws.previewState.mode === "compare"
+			) {
+				void this.#syncPreview(ws.surface.id, { background: true });
+			}
+		}
 	}
 
 	openReport(surfaceId: string, slug?: string): void {
@@ -1974,6 +2659,17 @@ export class SurfacesStore {
 
 	compareExploration(explorationId: string): void {
 		this.store.set({ mode: "compare", compareTargetId: explorationId, compareFocusSessionId: undefined });
+		const ws = Object.values(this.state.workspaces).find((item) =>
+			item.explorations.some((exp) => exp.id === explorationId),
+		);
+		if (
+			ws &&
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(ws.surface.id) &&
+			ws.surface.sourceKind === "code_repo"
+		) {
+			void this.#syncPreview(ws.surface.id);
+		}
 	}
 
 	compareSession(sessionId: string): void {
@@ -1982,6 +2678,17 @@ export class SurfacesStore {
 
 	setCompareTarget(targetId: string): void {
 		this.store.set({ mode: "compare", compareTargetId: targetId });
+		const ws = Object.values(this.state.workspaces).find((item) =>
+			item.explorations.some((exp) => exp.id === targetId),
+		);
+		if (
+			ws &&
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(ws.surface.id) &&
+			ws.surface.sourceKind === "code_repo"
+		) {
+			void this.#syncPreview(ws.surface.id);
+		}
 	}
 
 	toggleCompareOverlay(sessionId: string): void {
@@ -2008,10 +2715,6 @@ export class SurfacesStore {
 		this.store.set({ device });
 	}
 
-	toggleHistory(): void {
-		this.store.set((state) => ({ historyOpen: !state.historyOpen }));
-	}
-
 	toggleCollapsed(sessionId: string): void {
 		this.store.set((state) => {
 			const collapsed = { ...state.collapsed };
@@ -2027,10 +2730,6 @@ export class SurfacesStore {
 
 	clearError(): void {
 		this.store.set({ error: undefined });
-	}
-
-	clearHighlight(): void {
-		if (this.state.highlight) this.store.set({ highlight: undefined });
 	}
 
 	setStudioPatch(changeId: string, ops: readonly StudioPatchOp[]): void {
@@ -2123,10 +2822,60 @@ export class SurfacesStore {
 		});
 	}
 
+	get canAttachImages(): boolean {
+		return Boolean(
+			this.#options.uploadImage && this.#options.client?.surfaceSessionImages && !this.isLocalInteractive,
+		);
+	}
+
+	async #uploadImages(
+		client: SurfacesClient,
+		surfaceId: string,
+		files: readonly File[],
+	): Promise<{ clientInputId: string; images: SurfaceImageRef[] } | undefined> {
+		if (!files.length) return undefined;
+		const upload = this.#options.uploadImage;
+		if (!upload || !client.surfaceSessionImages) throw new Error(t("Images can't be sent here yet."));
+		const clientInputId = crypto.randomUUID();
+		const images: SurfaceImageRef[] = [];
+		for (const file of files) images.push(await upload(surfaceId, clientInputId, file, this.#options.signal));
+		return { clientInputId, images };
+	}
+
+	ensureSessionImages(session: SurfaceSession): void {
+		const client = this.#options.client;
+		if (!client?.surfaceSessionImages || isLocalSurfaceId(session.surfaceId)) return;
+		const key = session.messages
+			.filter((message) => message.authorKind === "member")
+			.map((message) => message.id)
+			.join(",");
+		if (!key || this.#imageReads.get(session.id) === key) return;
+		this.#imageReads.set(session.id, key);
+		client.surfaceSessionImages(session.id).then(
+			(images) => {
+				if (this.#options.signal.aborted || this.#imageReads.get(session.id) !== key) return;
+				this.store.set((state) => ({ sessionImages: { ...state.sessionImages, [session.id]: images } }));
+			},
+			() => undefined,
+		);
+	}
+
+	readSessionImage(
+		sessionId: string,
+		clientInputId: string,
+		image: SurfaceImageRef,
+		signal: AbortSignal,
+	): Promise<Blob> {
+		const read = this.#options.readImage;
+		if (!read) return Promise.reject(new Error(t("This image is not available.")));
+		return read(sessionId, clientInputId, image, signal);
+	}
+
 	async startSession(
 		surfaceId: string,
 		prompt: string,
 		options: StartSurfaceSessionOptions = {},
+		files: readonly File[] = [],
 	): Promise<SurfaceSession | undefined> {
 		const text = prompt.trim();
 		if (!text) return undefined;
@@ -2175,9 +2924,10 @@ export class SurfacesStore {
 			this.#stageLocalSession(surface, id, text);
 			return local;
 		}
-		const session = await this.#run(`start:${surfaceId}:${text}`, (client) =>
-			client.startSurfaceSession(surfaceId, text, options),
-		);
+		const session = await this.#run(`start:${surfaceId}:${text}`, async (client) => {
+			const attached = await this.#uploadImages(client, surfaceId, files);
+			return client.startSurfaceSession(surfaceId, text, attached ? { ...options, ...attached } : options);
+		});
 		if (!session) return undefined;
 		const workspace = this.workspace(surfaceId);
 		if (workspace) this.#putWorkspace({ ...workspace, activeSessions: [...workspace.activeSessions, session] });
@@ -2246,12 +2996,28 @@ export class SurfacesStore {
 	async archiveSurface(surfaceId: string): Promise<boolean> {
 		const remove = () => {
 			this.#surfacesMutationEpoch += 1;
+			this.#hydratedAttempted.delete(surfaceId);
 			this.store.set((state) => {
 				const workspaces = { ...state.workspaces };
 				delete workspaces[surfaceId];
+				const cloudSurfaceFiles = { ...state.cloudSurfaceFiles };
+				delete cloudSurfaceFiles[surfaceId];
+				const localStudioBase = { ...state.localStudioBase };
+				delete localStudioBase[surfaceId];
+				const pendingStudioPatches = { ...state.pendingStudioPatches };
+				delete pendingStudioPatches[surfaceId];
+				const loadingCloudFiles = { ...state.loadingCloudFiles };
+				delete loadingCloudFiles[surfaceId];
+				const updatingCloudFiles = { ...state.updatingCloudFiles };
+				delete updatingCloudFiles[surfaceId];
 				return {
 					surfaces: state.surfaces.filter((surface) => surface.id !== surfaceId),
 					workspaces,
+					cloudSurfaceFiles,
+					localStudioBase,
+					pendingStudioPatches,
+					loadingCloudFiles,
+					updatingCloudFiles,
 					...(state.drawer?.surfaceId === surfaceId ? { drawer: undefined } : {}),
 					...(state.highlight?.surfaceId === surfaceId ? { highlight: undefined } : {}),
 				};
@@ -2390,7 +3156,7 @@ export class SurfacesStore {
 					.filter((item) => item.ops.length > 0);
 				if (ordered.length > 0) {
 					for (const item of ordered) this.#studioUndoSnapshots.set(item.changeId, currentBase);
-					const composed = composeStudioPreview(currentBase, ordered);
+					const composed = composeStudioPreview(currentBase, ordered, workspace.surface.folderRoot);
 					this.store.set((state) => ({
 						localStudioBase: { ...state.localStudioBase, [surfaceId]: composed.files },
 					}));
@@ -2494,6 +3260,64 @@ export class SurfacesStore {
 		}, SURFACE_UNDO_MS);
 	}
 
+	// WHY: Async code_repo/folder merges stay in "merging" until the worker finishes; show a pending toast and start Undo only once merged.
+	#offerPendingMerge(
+		surfaceId: string,
+		label: string,
+		changeIds: readonly string[],
+		verb: SurfaceUndoVerb = "merged",
+	): void {
+		if (changeIds.length === 0) return;
+		if (this.#undoTimer) {
+			clearTimeout(this.#undoTimer);
+			this.#undoTimer = undefined;
+		}
+		const previous = this.state.undo;
+		if (previous) this.#evictStudioUndoSnapshots(previous.changeIds);
+		const id = ++this.#undoSeq;
+		this.#pendingMerges.set(`${surfaceId}:${id}`, { surfaceId, label, changeIds, verb, undoId: id });
+		this.store.set({ undo: { id, label, changeIds, verb, pending: true } });
+	}
+
+	#reconcilePendingMerges(workspace: SurfaceWorkspace): void {
+		const surfaceId = workspace.surface.id;
+		const statusById = new Map<string, SurfaceChangeUnit["status"]>();
+		for (const session of [...workspace.activeSessions, ...workspace.recentHistory]) {
+			for (const change of session.changes) statusById.set(change.id, change.status);
+		}
+		for (const [key, entry] of [...this.#pendingMerges.entries()]) {
+			if (entry.surfaceId !== surfaceId) continue;
+			const statuses = entry.changeIds
+				.map((id) => statusById.get(id))
+				.filter((s): s is SurfaceChangeUnit["status"] => Boolean(s));
+			if (statuses.length === 0) continue;
+			if (statuses.every((s) => s === "merged")) {
+				this.#pendingMerges.delete(key);
+				this.#offerUndo(entry.label, entry.changeIds, entry.verb);
+			} else if (!statuses.some((s) => s === "merging")) {
+				this.#pendingMerges.delete(key);
+				if (this.state.undo?.id === entry.undoId) this.store.set({ undo: undefined });
+			}
+		}
+	}
+
+	#reconcilePendingPublish(surface: SurfaceSummary): void {
+		const pending = this.#pendingPublishChanges.get(surface.id);
+		if (!pending) return;
+		if (surface.publishStatus === "idle" || (surface.publishStatus === undefined && !surface.hasUnpublishedChanges)) {
+			this.#pendingPublishChanges.delete(surface.id);
+			if (pending.length > 0) {
+				this.store.set((state) => {
+					const publishedChangeIds = { ...state.publishedChangeIds };
+					for (const id of pending) publishedChangeIds[id] = true;
+					return { publishedChangeIds };
+				});
+			}
+		} else if (surface.publishStatus === "failed") {
+			this.#pendingPublishChanges.delete(surface.id);
+		}
+	}
+
 	drawerOpenOn(sessionId: string): boolean {
 		return this.state.drawer?.sessionId === sessionId;
 	}
@@ -2539,7 +3363,18 @@ export class SurfacesStore {
 		const outcome = approvalOutcome(updated, this.drawerOpenOn(sessionId));
 		this.#applySession(updated, outcome);
 		const change = updated.changes.find((item) => item.id === changeId);
-		this.#offerUndo(change?.title ?? updated.title, [changeId], this.#undoVerbFor(updated.surfaceId));
+		const verb = this.#undoVerbFor(updated.surfaceId);
+		if (change?.status === "merging") {
+			const mergingIds = updated.changes.filter((item) => item.status === "merging").map((item) => item.id);
+			this.#offerPendingMerge(
+				updated.surfaceId,
+				change.title,
+				mergingIds.length > 0 ? mergingIds : [changeId],
+				verb,
+			);
+		} else if (!change || change.status === "merged") {
+			this.#offerUndo(change?.title ?? updated.title, [changeId], verb);
+		}
 		void this.refreshSurfaces();
 		return outcome;
 	}
@@ -2576,12 +3411,21 @@ export class SurfacesStore {
 					change.status === "merged" && before?.changes.find((item) => item.id === change.id)?.status !== "merged",
 			)
 			.map((change) => change.id);
+		const merging = updated.changes
+			.filter(
+				(change) =>
+					change.status === "merging" &&
+					before?.changes.find((item) => item.id === change.id)?.status !== "merging",
+			)
+			.map((change) => change.id);
 		if (this.drawerOpenOn(sessionId)) {
 			this.store.set({ drawer: undefined });
 			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
 		}
-		this.#applySession(updated, "history");
-		if (merged.length > 0) this.#offerUndo(updated.title, merged, this.#undoVerbFor(updated.surfaceId));
+		this.#applySession(updated, approvalOutcome(updated, false));
+		const verb = this.#undoVerbFor(updated.surfaceId);
+		if (merged.length > 0) this.#offerUndo(updated.title, merged, verb);
+		else if (merging.length > 0) this.#offerPendingMerge(updated.surfaceId, updated.title, merging, verb);
 		void this.refreshSurfaces();
 		return true;
 	}
@@ -2747,7 +3591,7 @@ export class SurfacesStore {
 
 	async undo(): Promise<boolean> {
 		const undo = this.state.undo;
-		if (!undo) return false;
+		if (!undo || undo.pending) return false;
 		if (this.#undoTimer) {
 			clearTimeout(this.#undoTimer);
 			this.#undoTimer = undefined;
@@ -2851,31 +3695,6 @@ export class SurfacesStore {
 		return true;
 	}
 
-	async revertSession(sessionId: string): Promise<boolean> {
-		const session = this.session(sessionId);
-		if (!session) return false;
-		const undoable = session.changes.filter((item) => item.status === "merged" && item.canUndo);
-		if (this.isLocalInteractive && isLocalSurfaceId(session.surfaceId)) {
-			return Boolean(this.#undoLocalChangeIds(undoable.map((item) => item.id)));
-		}
-		let restored: SurfaceSession | undefined;
-		for (const change of undoable) {
-			if (restored?.changes.find((item) => item.id === change.id)?.status === "staged") continue;
-			const next = await this.#run(`undo:${change.id}`, (client) => client.undoSurfaceChange(change.id));
-			if (!next) {
-				if (restored) {
-					this.#applySession(restored, approvalOutcome(restored, this.drawerOpenOn(restored.id)));
-					void this.refreshSurfaces();
-				}
-				return false;
-			}
-			restored = next;
-		}
-		if (restored) this.#applySession(restored, approvalOutcome(restored, false));
-		void this.refreshSurfaces();
-		return Boolean(restored);
-	}
-
 	async chooseVariant(exploration: SurfaceExplorationSet, sessionId: string): Promise<boolean> {
 		if (this.isLocalInteractive && isLocalSurfaceId(exploration.surfaceId)) {
 			const workspace = this.workspace(exploration.surfaceId);
@@ -2954,15 +3773,21 @@ export class SurfacesStore {
 				: {}),
 		}));
 		await this.refreshWorkspace(exploration.surfaceId);
-		this.#offerUndo(
-			chosen.explorationVariantLabel ?? chosen.title,
-			chosen.changes.filter((change) => change.status === "merged").map((change) => change.id),
-		);
+		const label = chosen.explorationVariantLabel ?? chosen.title;
+		const verb = this.#undoVerbFor(exploration.surfaceId);
+		const mergedIds = chosen.changes.filter((change) => change.status === "merged").map((change) => change.id);
+		const mergingIds = chosen.changes.filter((change) => change.status === "merging").map((change) => change.id);
+		if (mergedIds.length > 0) this.#offerUndo(label, mergedIds, verb);
+		else if (mergingIds.length > 0) this.#offerPendingMerge(exploration.surfaceId, label, mergingIds, verb);
 		void this.refreshSurfaces();
 		return true;
 	}
 
-	async reply(sessionId: string, text: string): Promise<boolean> {
+	async retrySession(sessionId: string): Promise<boolean> {
+		return this.reply(sessionId, t("Retry and complete the requested changes."));
+	}
+
+	async reply(sessionId: string, text: string, files: readonly File[] = []): Promise<boolean> {
 		const message = text.trim();
 		if (!message || this.state.busy[`reply:${sessionId}`]) return false;
 		const existing = this.session(sessionId);
@@ -3010,9 +3835,17 @@ export class SurfacesStore {
 			text: message,
 			at: new Date().toISOString(),
 			priorMatches,
+			...(files.length ? { files: [...files] } : {}),
 		};
 		this.store.set((state) => ({ notes: [...state.notes, note] }));
-		const updated = await this.#run(`reply:${sessionId}`, (client) => client.replySurfaceSession(sessionId, message));
+		const updated = await this.#run(`reply:${sessionId}`, async (client) => {
+			const surfaceId = existing?.surfaceId;
+			if (files.length && !surfaceId) throw new Error(t("This session is not available."));
+			const attached = surfaceId ? await this.#uploadImages(client, surfaceId, files) : undefined;
+			return attached
+				? client.replySurfaceSession(sessionId, message, true, attached)
+				: client.replySurfaceSession(sessionId, message);
+		});
 		if (!updated) {
 			this.store.set((state) => ({ notes: state.notes.filter((item) => item.id !== note.id) }));
 			return false;
@@ -3023,6 +3856,7 @@ export class SurfacesStore {
 	}
 
 	openDrawer(surfaceId: string, sessionId: string): void {
+		if (this.state.highlight?.sessionId === sessionId) this.store.set({ highlight: undefined });
 		const previous = this.state.drawer;
 		if (previous?.sessionId === sessionId && !previous.explorationId) return;
 		if (previous) this.closeDrawer();
@@ -3057,6 +3891,18 @@ export class SurfacesStore {
 		return !this.state.hiddenChanges[changeId];
 	}
 
+	async retryPreview(surfaceId: string): Promise<void> {
+		const timer = this.#previewSyncDebounceTimers.get(surfaceId);
+		if (timer) {
+			clearTimeout(timer);
+			this.#previewSyncDebounceTimers.delete(surfaceId);
+		}
+		this.#lastPreviewSyncKey.delete(surfaceId);
+		const primaryId = this.workspace(surfaceId)?.previewState.primary.previewId;
+		if (primaryId) this.#previewIdSelectionKey.delete(primaryId);
+		await this.#syncPreview(surfaceId);
+	}
+
 	async toggleChange(surfaceId: string, changeId: string): Promise<void> {
 		this.store.set((state) => {
 			const hiddenChanges = { ...state.hiddenChanges };
@@ -3069,7 +3915,7 @@ export class SurfacesStore {
 					: {}),
 			};
 		});
-		await this.#syncPreview(surfaceId);
+		await this.#syncPreview(surfaceId, { debounceMs: PREVIEW_TOGGLE_DEBOUNCE_MS });
 	}
 
 	async pickVariant(surfaceId: string, explorationId: string, sessionId: string): Promise<void> {
@@ -3123,11 +3969,117 @@ export class SurfacesStore {
 		return { toggledChangeIds, explorationSessionId };
 	}
 
-	async #syncPreview(surfaceId: string): Promise<void> {
+	#previewSelectionInfo(surfaceId: string): {
+		readonly selection: {
+			toggledChangeIds: string[];
+			explorationSessionId: string | null;
+			compareSessionIds?: string[];
+		};
+		readonly toggledKey: string;
+		readonly selectionKey: string;
+		readonly hasOpenChanges: boolean;
+	} {
+		const baseSelection = this.previewSelection(surfaceId);
+		const workspace = this.workspace(surfaceId);
+		const explorations = openExplorations(workspace);
+		const compareTarget =
+			this.state.mode === "compare"
+				? (explorations.find((item) => item.id === this.state.compareTargetId) ?? explorations[0])
+				: undefined;
+		const compareSessionIds =
+			compareTarget && compareTarget.variantSessionIds.length >= 2
+				? compareTarget.variantSessionIds.slice(0, 3)
+				: [];
+		const selection = compareSessionIds.length >= 2 ? { ...baseSelection, compareSessionIds } : baseSelection;
+		const changeById = new Map<string, SurfaceChangeUnit>();
+		for (const session of workspace?.activeSessions ?? []) {
+			for (const change of session.changes) changeById.set(change.id, change);
+		}
+		const changeStamp = (id: string): string => {
+			const ch = changeById.get(id);
+			return ch ? `${id}:${ch.parentSha ?? ""}:${ch.headSha ?? ""}` : id;
+		};
+		const explorationSession =
+			selection.explorationSessionId !== null
+				? workspace?.activeSessions.find((session) => session.id === selection.explorationSessionId)
+				: undefined;
+		const explorationChangeStamps =
+			explorationSession?.changes.filter(isOpenChange).map((change) => changeStamp(change.id)) ?? [];
+		const toggledKey = [...new Set(selection.toggledChangeIds)].sort().join(",");
+		const toggledStampKey = [...new Set(selection.toggledChangeIds)].sort().map(changeStamp).join(",");
+		const explorationKey = [...new Set(explorationChangeStamps)].sort().join(",");
+		const explorationHeadKey = explorationSession?.branchHeadSha ?? "";
+		const compareKey = compareSessionIds
+			.map((sid) => {
+				const sess = workspace?.activeSessions.find((item) => item.id === sid);
+				return `${sid}:${sess?.branchHeadSha ?? ""}`;
+			})
+			.join(",");
+		const surfaceStamp = `${workspace?.surface.liveHeadSha ?? ""}:${workspace?.surface.unpublishedChangeCount ?? 0}`;
+		return {
+			selection,
+			toggledKey,
+			selectionKey: `${surfaceStamp}|${selection.explorationSessionId ?? ""}:${explorationHeadKey}|${toggledStampKey}|${explorationKey}|${compareKey}`,
+			hasOpenChanges: toggledKey.length > 0 || explorationKey.length > 0 || compareSessionIds.length >= 2,
+		};
+	}
+
+	async #syncPreview(surfaceId: string, options?: { background?: boolean; debounceMs?: number }): Promise<void> {
 		const client = this.#options.client;
 		if (isLocalSurfaceId(surfaceId) || !client) return;
+		const foreground = !options?.background;
+		const debounceMs = options?.debounceMs ?? 0;
+		const busyKey = `preview:${surfaceId}`;
+		if (debounceMs > 0 && !this.#previewSyncInFlight.has(surfaceId)) {
+			const existingTimer = this.#previewSyncDebounceTimers.get(surfaceId);
+			if (existingTimer) clearTimeout(existingTimer);
+			if (foreground) {
+				this.#previewSyncForeground.add(surfaceId);
+				if (!this.#options.signal.aborted && (!this.state.busy[busyKey] || this.state.error !== undefined)) {
+					this.store.set((state) => ({ busy: { ...state.busy, [busyKey]: true }, error: undefined }));
+				}
+			}
+			await new Promise<void>((resolve) => {
+				const list = this.#previewSyncDebounceWaiters.get(surfaceId);
+				if (list) list.push(resolve);
+				else this.#previewSyncDebounceWaiters.set(surfaceId, [resolve]);
+				const timer = setTimeout(() => {
+					this.#previewSyncDebounceTimers.delete(surfaceId);
+					if (this.#options.signal.aborted) {
+						const pending = this.#previewSyncDebounceWaiters.get(surfaceId);
+						if (pending) {
+							this.#previewSyncDebounceWaiters.delete(surfaceId);
+							for (const done of pending) done();
+						}
+						return;
+					}
+					void this.#syncPreview(surfaceId, { background: !this.#previewSyncForeground.has(surfaceId) }).finally(
+						() => {
+							const pending = this.#previewSyncDebounceWaiters.get(surfaceId);
+							if (pending) {
+								this.#previewSyncDebounceWaiters.delete(surfaceId);
+								for (const done of pending) done();
+							}
+						},
+					);
+				}, debounceMs);
+				this.#previewSyncDebounceTimers.set(surfaceId, timer);
+			});
+			return;
+		}
+		const pendingTimer = this.#previewSyncDebounceTimers.get(surfaceId);
+		if (pendingTimer) {
+			clearTimeout(pendingTimer);
+			this.#previewSyncDebounceTimers.delete(surfaceId);
+		}
 		this.#previewSyncGen.set(surfaceId, (this.#previewSyncGen.get(surfaceId) ?? 0) + 1);
 		this.#previewSyncDirty.add(surfaceId);
+		if (foreground) {
+			this.#previewSyncForeground.add(surfaceId);
+			if (!this.#options.signal.aborted && (!this.state.busy[busyKey] || this.state.error !== undefined)) {
+				this.store.set((state) => ({ busy: { ...state.busy, [busyKey]: true }, error: undefined }));
+			}
+		}
 		if (this.#previewSyncInFlight.has(surfaceId)) {
 			await new Promise<void>((resolve) => {
 				const list = this.#previewSyncWaiters.get(surfaceId);
@@ -3136,24 +4088,31 @@ export class SurfacesStore {
 			});
 			return;
 		}
-		const busyKey = `preview:${surfaceId}`;
 		this.#previewSyncInFlight.add(surfaceId);
-		if (!this.#options.signal.aborted) {
-			this.store.set((state) => ({ busy: { ...state.busy, [busyKey]: true }, error: undefined }));
-		}
 		try {
 			while (this.#previewSyncDirty.has(surfaceId) && !this.#options.signal.aborted) {
 				this.#previewSyncDirty.delete(surfaceId);
 				const gen = this.#previewSyncGen.get(surfaceId) ?? 0;
-				const selection = this.previewSelection(surfaceId);
+				const info = this.#previewSelectionInfo(surfaceId);
+				this.#lastPreviewSyncKey.set(surfaceId, info.selectionKey);
 				try {
-					const previewState = await client.setPreviewSelection(surfaceId, selection);
+					const previewState = await client.setPreviewSelection(surfaceId, info.selection);
 					if (this.#options.signal.aborted) return;
 					if ((this.#previewSyncGen.get(surfaceId) ?? 0) !== gen) continue;
+					if (previewState?.primary.previewId) {
+						this.#previewIdSelectionKey.set(previewState.primary.previewId, info.selectionKey);
+					}
 					const workspace = this.workspace(surfaceId);
 					if (previewState && workspace) this.#putWorkspace({ ...workspace, previewState });
 				} catch (error) {
-					if (!this.#options.signal.aborted) {
+					if (this.#lastPreviewSyncKey.get(surfaceId) === info.selectionKey) {
+						this.#lastPreviewSyncKey.delete(surfaceId);
+					}
+					if (
+						!this.#options.signal.aborted &&
+						this.#previewSyncForeground.has(surfaceId) &&
+						!this.#previewSyncDirty.has(surfaceId)
+					) {
 						this.store.set({
 							error: isMissingSurfaceRpcError(error) ? this.#options.unavailableMessage : describe(error),
 						});
@@ -3163,7 +4122,8 @@ export class SurfacesStore {
 			}
 		} finally {
 			this.#previewSyncInFlight.delete(surfaceId);
-			if (!this.#options.signal.aborted) {
+			this.#previewSyncForeground.delete(surfaceId);
+			if (!this.#options.signal.aborted && this.state.busy[busyKey]) {
 				this.store.set((state) => {
 					const busy = { ...state.busy };
 					delete busy[busyKey];
@@ -3174,6 +4134,11 @@ export class SurfacesStore {
 			if (waiters) {
 				this.#previewSyncWaiters.delete(surfaceId);
 				for (const resolve of waiters) resolve();
+			}
+			const debouncedWaiters = this.#previewSyncDebounceWaiters.get(surfaceId);
+			if (debouncedWaiters && !this.#previewSyncDebounceTimers.has(surfaceId)) {
+				this.#previewSyncDebounceWaiters.delete(surfaceId);
+				for (const resolve of debouncedWaiters) resolve();
 			}
 		}
 	}
@@ -3197,8 +4162,21 @@ export class SurfacesStore {
 		}
 		const surface = await this.#run(`publish:${surfaceId}`, (client) => client.publishSurface(surfaceId));
 		if (!surface) return false;
-		markPublished();
+		// WHY: Defer marking changes published until async code_repo publish jobs finish transitioning back to idle.
+		if (surface.publishStatus === "publishing") {
+			this.#pendingPublishChanges.set(surfaceId, pendingIds);
+		} else if (surface.publishStatus !== "failed") {
+			markPublished();
+		}
 		this.#putSurface(surface);
+		if (
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(surface.id) &&
+			this.#options.loadCloudFiles &&
+			(surface.sourceKind === "folder" || surface.archetype === "studio")
+		) {
+			void this.refreshCloudFiles(surface, { visible: true });
+		}
 		return true;
 	}
 
@@ -3217,8 +4195,22 @@ export class SurfacesStore {
 		return true;
 	}
 
+	async setFigure(surfaceId: string, figure: SurfaceFigureId): Promise<boolean> {
+		const current = this.state.surfaces.find((item) => item.id === surfaceId);
+		if (!current) return false;
+		if (this.isLocalInteractive && isLocalSurfaceId(surfaceId)) {
+			this.#putSurface({ ...current, icon: surfaceFigureIcon(figure) });
+			return true;
+		}
+		const surface = await this.#run(`figure:${surfaceId}`, (client) => client.setSurfaceFigure!(surfaceId, figure));
+		if (!surface) return false;
+		this.#putSurface(surface);
+		return true;
+	}
+
 	#putSurface(surface: SurfaceSummary): void {
 		this.#surfacesMutationEpoch += 1;
+		this.#reconcilePendingPublish(surface);
 		this.store.set((state) => {
 			const workspace = state.workspaces[surface.id];
 			const nextSurfaces = sortSurfaces(state.surfaces.map((item) => (item.id === surface.id ? surface : item)));
@@ -3227,6 +4219,7 @@ export class SurfacesStore {
 				workspaces: workspace ? { ...state.workspaces, [surface.id]: { ...workspace, surface } } : state.workspaces,
 			};
 		});
+		this.#syncPolling();
 	}
 
 	async refreshSurfaces(): Promise<void> {
@@ -3242,7 +4235,30 @@ export class SurfacesStore {
 				startEpoch === this.#surfacesMutationEpoch &&
 				surfaces.length
 			) {
-				this.store.set({ surfaces: sortSurfaces(surfaces) });
+				const prevById = new Map(this.state.surfaces.map((surface) => [surface.id, surface]));
+				const next = sortSurfaces(surfaces);
+				if (
+					this.state.surfaces.length !== next.length ||
+					JSON.stringify(this.state.surfaces) !== JSON.stringify(next)
+				) {
+					this.store.set({ surfaces: next });
+				}
+				for (const surface of next) {
+					if (surface.status !== "active" || isLocalSurfaceId(surface.id)) continue;
+					const prev = prevById.get(surface.id);
+					const workspace = this.state.workspaces[surface.id];
+					const changed = surfaceCountsChanged(prev, surface);
+					if (changed) this.#hydratedAttempted.delete(surface.id);
+					if (
+						workspace &&
+						!this.#inFlightWorkspaceRefreshes.has(surface.id) &&
+						(changed || (surface.activeSessionCount === 0 && workspace.activeSessions.length > 0))
+					) {
+						const foreground =
+							surface.id === this.#activeSurfaceId || surface.id === this.state.drawer?.surfaceId;
+						void this.refreshWorkspace(surface.id, 0, { background: !foreground });
+					}
+				}
 			}
 		} catch {
 			/* WHY: Counts refresh opportunistically; the last good list stays on screen. */
@@ -3316,6 +4332,16 @@ export class SurfacesStore {
 		if (client) await this.#loadAutomations(client);
 		return true;
 	}
+}
+
+function surfaceCountsChanged(prev: SurfaceSummary | undefined, next: SurfaceSummary): boolean {
+	if (!prev) return false;
+	return (
+		prev.activeSessionCount !== next.activeSessionCount ||
+		prev.runningSessionCount !== next.runningSessionCount ||
+		prev.pendingChangeCount !== next.pendingChangeCount ||
+		prev.needsAttentionCount !== next.needsAttentionCount
+	);
 }
 
 function sortSurfaces(surfaces: readonly SurfaceSummary[]): SurfaceSummary[] {

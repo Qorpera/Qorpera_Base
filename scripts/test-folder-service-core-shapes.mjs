@@ -6,6 +6,7 @@ import {
 	parseFeedPage,
 	parseListPage,
 	parseMachineDataPass,
+	parseViewFingerprint,
 	parseViewRenewal,
 } from "../packages/object-gateway/src/folder-service/core.ts";
 import { ViewTree } from "../packages/object-gateway/src/folder-service/view-tree.ts";
@@ -37,6 +38,8 @@ function feedSql() {
 		call("list", `public.qorpera_folder_list('${ENV}', ${platform}, '', null, 1000, true)`) +
 		call("list-page-1", `public.qorpera_folder_list('${ENV}', ${platform}, '', null, 3, true)`) +
 		call("list-member", `public.qorpera_folder_list('${ENV}', ${member}, '', null, 1000, true)`) +
+		call("fingerprint", `public.qorpera_folder_view_fingerprint('${ENV}', ${platform})`) +
+		call("fingerprint-member", `public.qorpera_folder_view_fingerprint('${ENV}', ${member})`) +
 		call("feed", `public.qorpera_folder_feed('${ENV}', ${platform}, 0, 1000, null)`) +
 		call("feed-member", `public.qorpera_folder_feed('${ENV}', ${member}, 0, 1000, null)`) +
 		// Seq 3 holds 26 changes: a page of 5 from seq 2 stops inside it, with a cursor.
@@ -71,6 +74,7 @@ function boxSql() {
 		end $$;\n` +
 		call("box-open", box) +
 		call("box-list", `public.qorpera_folder_list('${env}', ${actor}, '', null, 1000, true)`) +
+		call("box-fingerprint", `public.qorpera_folder_view_fingerprint('${env}', ${actor})`) +
 		call("box-feed", `public.qorpera_folder_feed('${env}', ${actor}, 0, 1000, null)`) +
 		call("box-renew", `public.qorpera_folder_view_renew(${id}, ${pass})`) +
 		call("box-close", `public.qorpera_folder_view_close(${id}, ${pass})`) +
@@ -157,6 +161,18 @@ async function main() {
 		const memberFeed = parseFeedPage(got.get("feed-member"));
 		assert.deepEqual(ViewTree.diff(caughtUp(empty, [memberFeed]), caughtUp(memberList, [])), []);
 
+		const platformTree = caughtUp(list, []);
+		const platformFp = parseViewFingerprint(got.get("fingerprint"));
+		assert.equal(platformFp.seq, list.asOfSeq);
+		assert.equal(platformFp.entryCount, platformTree.explicitSize);
+		assert.equal(platformFp.entriesDigest, platformTree.entriesDigest);
+
+		const memberTree = caughtUp(memberList, []);
+		const memberFp = parseViewFingerprint(got.get("fingerprint-member"));
+		assert.equal(memberFp.seq, memberList.asOfSeq);
+		assert.equal(memberFp.entryCount, memberTree.explicitSize);
+		assert.equal(memberFp.entriesDigest, memberTree.entriesDigest);
+
 		const cursor = parseFeedPage(got.get("feed-cursor"));
 		assert.equal(cursor.more, true);
 		assert.equal(cursor.next.afterSeq, 2);
@@ -184,6 +200,11 @@ async function main() {
 		// The feed carries no receipts: its replay builds the listing's content.
 		const unreceipted = { ...boxList, entries: boxList.entries.map(({ authority: _receipt, ...entry }) => entry) };
 		assert.deepEqual(ViewTree.diff(caughtUp(emptyBox, [boxFeed]), caughtUp(unreceipted, [])), [], "the view's feed replays to its listing");
+		const boxTree = caughtUp(boxList, []);
+		const boxFp = parseViewFingerprint(boxed.get("box-fingerprint"));
+		assert.equal(boxFp.seq, boxList.asOfSeq);
+		assert.equal(boxFp.entryCount, boxTree.explicitSize);
+		assert.equal(boxFp.entriesDigest, boxTree.entriesDigest);
 		const renewal = parseViewRenewal(boxed.get("box-renew"));
 		assert.equal(renewal.state, "open");
 		// The open answer says what the view is (F3 4a): a run box, on no machine.

@@ -274,25 +274,39 @@
 		for (let index = 0; index < stops.length; index++) if (coverage[index] === 1 && !(eyes && eyes[index])) lights.push(stops[index]);
 		lights.sort((first, second) => first - second);
 		const median = lights.length ? lights[lights.length >> 1] : 0;
-		originals.set(id, { image, pixels, stops, eyes, median, width, height });
+		canvas.width = canvas.height = 0;
+		originals.set(id, { pixels, stops, eyes, median, width, height });
 	}
+
+	const MAX_RENDERED = 48;
 
 	function variant(id, value) {
 		const original = originals.get(id);
 		if (!original) throw new Error(`Avatar artwork not prepared: ${id}`);
 		const key = id + value;
-		if (rendered.has(key)) return rendered.get(key);
+		if (rendered.has(key)) {
+			const hit = rendered.get(key);
+			rendered.delete(key);
+			rendered.set(key, hit);
+			return hit;
+		}
+		if (rendered.size >= MAX_RENDERED) {
+			const oldest = rendered.keys().next().value;
+			if (oldest !== undefined) rendered.delete(oldest);
+		}
 		const canvas = document.createElement("canvas");
 		canvas.width = original.width;
 		canvas.height = original.height;
 		canvas.getContext("2d", { colorSpace: "srgb" }).putImageData(paint(id, value, original), 0, 0);
-		const result = { image: canvas, url: canvas.toDataURL("image/png") };
+		const result = { image: canvas, url: null };
 		rendered.set(key, result);
 		return result;
 	}
 
 	function source(id, value = color(id.endsWith("-face") ? id.slice(0, -5) : id)) {
-		return variant(id, value).url;
+		const entry = variant(id, value);
+		if (!entry.url) entry.url = entry.image.toDataURL("image/png");
+		return entry.url;
 	}
 
 	function drawable(id, value = color(id)) {

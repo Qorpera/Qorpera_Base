@@ -25,9 +25,6 @@ import { QuestionDock } from "./question-dock.ts";
  *   regular sidepanel"). It has the way back to the company and the concepts (cover or emblem, title, `about`, who
  *   made it), and it ends with its list (Jonas, 13 November 2026, on the Reload and Storage buttons and the strip under
  *   them: "get rid of this at the bottom of the concepts sidepanel").
- * - A concept's row has a menu of its own, the rail's (ui/context-menu.ts): a right-click, a long press on a touch
- *   screen, or Shift+F10 or the menu key on the focused row. It has Show in Storage, and for the open concept Reload,
- *   which also lets a concept that was told "Not now" three times ask again (views/app-ask-bar.ts).
  * - The strip that said whose the open concept is and that Qorpera never asks for passwords in it (security review r1
  *   H2, #1539 round 1) is gone on Jonas's word of 13 November 2026, and nothing replaces it: nothing on screen tells a
  *   member that a sign-in the page draws is not Qorpera's. Who made each concept still stands in its row. What else
@@ -179,7 +176,6 @@ export class ConceptsView {
 		);
 		// A press on an item at phone width shows its concept: the menu closes over it.
 		this.#list.addEventListener("click", () => this.#setMenuOpen(false), { signal: this.#lifetime.signal });
-		// A row's own menu: Reload and Show in Storage, where the panel's foot had them.
 		this.#list.addEventListener("contextmenu", (event) => this.#openRowMenu(event), {
 			signal: this.#lifetime.signal,
 		});
@@ -438,8 +434,6 @@ export class ConceptsView {
 			});
 	}
 
-	/** A concept's row's menu, the rail's (a right-click, a long press, Shift+F10 or the menu key on the focused row):
-	 * Reload for the open concept, and Show in Storage. Shift with a right-click keeps the browser's own menu. */
 	#openRowMenu(event: MouseEvent): void {
 		if (event.shiftKey && (event.clientX || event.clientY)) return;
 		const row = (event.target as Element).closest<HTMLAnchorElement>("a.concepts-item");
@@ -452,7 +446,7 @@ export class ConceptsView {
 			...(name === this.#selected()?.name
 				? [{ label: t("Reload"), icon: "reload", select: () => this.reload() }]
 				: []),
-			{ label: t("Show in Storage"), icon: "folder", select: () => this.#host.panel.openInStorage(concept.path) },
+			{ label: t("Show in Files"), icon: "folder", select: () => this.#host.panel.openInFiles(concept.path) },
 		];
 		const point = menuPoint(event, row);
 		openContextMenu({

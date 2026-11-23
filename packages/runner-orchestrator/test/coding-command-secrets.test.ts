@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
+	buildAppSecretMask,
 	type CodingCommandSecretRequest,
 	type CodingCommandSecrets,
 	type CodingEnvironmentAnswer,
 	type CodingEnvironmentScope,
 	type CodingEnvironmentSource,
 	CodingMachineCommandSecrets,
+	filterScopedSecrets,
 } from "../src/coding-command-secrets.ts";
 
 // 5j-4: each session attached to an executor's machine gets its vault environment from the broker, asked once for
@@ -488,5 +490,114 @@ describe("a coding machine's values for the folder service's save check (5j-5 (a
 			"CODING_COMMAND_SECRETS_RELEASED",
 		);
 		expect(f.secrets.values(machineA)).toBeUndefined();
+	});
+
+	it("reuses version-stamped environments across commands and invalidates immediately on version change or release", async () => {
+		const workerId = randomUUID();
+		const machineId = randomUUID();
+		const f = fixture({ [workerId]: { API_KEY } });
+		const scope = f.scope(workerId);
+		const versionA = "a".repeat(64);
+		const versionB = "b".repeat(64);
+		const req1 = { ...f.request(machineId, scope), vaultEnvVersion: versionA };
+		const req2 = { ...f.request(machineId, scope), vaultEnvVersion: versionA };
+		const req3 = { ...f.request(machineId, scope), vaultEnvVersion: versionB };
+
+		const session = f.secrets.session(machineId, scope);
+		const first = await session.resolve(req1, signal());
+		session.accepted(req1);
+		const second = await session.resolve(req2, signal());
+		session.accepted(req2);
+		expect(second.environment).toBe(first.environment);
+		expect(f.environment).toHaveBeenCalledTimes(1);
+
+		f.environment.mockResolvedValueOnce(answer({ API_KEY: ROTATED }));
+		const third = await session.resolve(req3, signal());
+		session.accepted(req3);
+		expect(third.environment).toStrictEqual({ API_KEY: ROTATED });
+		expect(f.environment).toHaveBeenCalledTimes(2);
+
+		const pub = await f.secrets.publication(machineId, scope, signal());
+		expect(f.environment).toHaveBeenCalledTimes(3);
+		expect(masked(pub.stream(), `${API_KEY} ${ROTATED}`)).toBe("*** ***");
+
+		f.secrets.release(machineId, workerId);
+		f.environment.mockResolvedValueOnce(answer({ API_KEY }));
+		const afterRelease = await f.secrets
+			.session(machineId, scope)
+			.resolve({ ...f.request(machineId, scope), vaultEnvVersion: versionB }, signal());
+		expect(afterRelease.environment).toStrictEqual({ API_KEY });
+		expect(f.environment).toHaveBeenCalledTimes(4);
+	});
+
+	it("bounds retained per-session command entries via LRU while keeping polled and concurrent in-flight starts", async () => {
+		const workerId = randomUUID();
+		const machineId = randomUUID();
+		const f = fixture({ [workerId]: { API_KEY } });
+		const scope = f.scope(workerId);
+		const session = f.secrets.session(machineId, scope);
+		const version = "c".repeat(64);
+		const firstReq = { ...f.request(machineId, scope), vaultEnvVersion: version };
+		await session.resolve(firstReq, signal());
+		session.accepted(firstReq);
+		const longRunningReq = { ...f.request(machineId, scope), vaultEnvVersion: version };
+		await session.resolve(longRunningReq, signal());
+		session.accepted(longRunningReq);
+		let latestReq = firstReq;
+		for (let i = 0; i < 1050; i++) {
+			latestReq = { ...f.request(machineId, scope), vaultEnvVersion: version };
+			await session.resolve(latestReq, signal());
+			session.accepted(latestReq);
+			if (i % 200 === 0) {
+				expect(await session.output(longRunningReq, signal())).not.toBeNull();
+			}
+		}
+		const inFlightA = { ...f.request(machineId, scope), vaultEnvVersion: version };
+		const inFlightB = { ...f.request(machineId, scope), vaultEnvVersion: version };
+		await session.resolve(inFlightA, signal());
+		await session.resolve(inFlightB, signal());
+		session.accepted(inFlightA);
+		session.accepted(inFlightB);
+		expect(f.environment).toHaveBeenCalledTimes(1);
+		expect(await session.output(firstReq, signal())).toBeNull();
+		expect(masked(await readMask(session, inFlightA), `a=${API_KEY}`)).toBe("a=***");
+		expect(masked(await readMask(session, inFlightB), `b=${API_KEY}`)).toBe("b=***");
+		expect(masked(await readMask(session, longRunningReq), `long=${API_KEY}`)).toBe("long=***");
+		expect(masked(await readMask(session, latestReq), `x=${API_KEY}`)).toBe("x=***");
+		expect(f.secrets.values(machineId)).toEqual([API_KEY]);
+	});
+
+	it("filters scoped secrets cleanly and allows short explicit non-sensitive config without weakening secret masking", async () => {
+		const filtered = filterScopedSecrets(
+			[
+				{ name: "OPENAI_API_KEY", value: "sk-proj-scoped-12345678", scope: "runtime", targetEnv: "prod" },
+				{ name: "BUILD_KEY", value: "build-secret-value-12345", scope: "build", targetEnv: "prod" },
+				{ name: "DEV_KEY", value: "dev-secret-value-123456", scope: "runtime", targetEnv: "dev" },
+				{ name: "NODE_ENV", value: "prod", scope: "all", targetEnv: "all", sensitive: false },
+				{ name: "PORT", value: "3000", scope: "runtime", targetEnv: "prod", sensitive: false },
+			],
+			"runtime",
+			"prod",
+		);
+		expect(filtered.secrets).toEqual({ OPENAI_API_KEY: "sk-proj-scoped-12345678" });
+		expect(filtered.config).toEqual({ NODE_ENV: "prod", PORT: "3000" });
+
+		expect(() =>
+			filterScopedSecrets(
+				[{ name: "SHORT_SECRET", value: "tiny", scope: "runtime", targetEnv: "prod" }],
+				"runtime",
+				"prod",
+			),
+		).toThrow(RangeError);
+		expect(() =>
+			filterScopedSecrets(
+				[{ name: "LD_PRELOAD", value: "/tmp/x.so", scope: "runtime", targetEnv: "prod", sensitive: false }],
+				"runtime",
+				"prod",
+			),
+		).toThrow(RangeError);
+
+		const appMask = buildAppSecretMask(filtered.secrets, [OLDER_KEY]);
+		expect(masked(appMask.stream(), "sk-proj-scoped-12345678 prod 3000")).toBe("*** prod 3000");
 	});
 });

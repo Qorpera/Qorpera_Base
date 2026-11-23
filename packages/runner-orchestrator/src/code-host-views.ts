@@ -118,12 +118,10 @@ export interface CodeHostJobsOptions {
 	mountWaitMs?: number;
 	/** How long a publish may take, asked again while the node's paths wait. Default 60 s. */
 	publishWaitMs?: number;
-	/** How long a clean, and each core call, may take. Default 60 s and 10 s. */
 	cleanMs?: number;
 	callMs?: number;
-	/** How often the mount is looked at while it comes up; a publish whose paths wait is asked again after 5 times this.
-	 * Default 200 ms. */
 	pollMs?: number;
+	warmViewIdleMs?: number;
 }
 
 interface View {
@@ -131,6 +129,16 @@ interface View {
 	readonly viewId: string;
 	readonly pass: string;
 }
+
+interface WarmView {
+	readonly companyId: string;
+	readonly environmentId: string;
+	readonly host: CodeHostLease;
+	readonly view: View;
+	timer: ReturnType<typeof setTimeout> | undefined;
+}
+
+const DEFAULT_WARM_VIEW_IDLE_MS = 60_000;
 
 export type CodeHostPublishAnswer =
 	| { answer: "saved" }
@@ -182,6 +190,7 @@ export interface CodeHostSession {
  * (two downloads of one company) would end each other for ever. */
 export interface CodeHostJobOptions {
 	yields?: boolean;
+	readOnly?: boolean;
 }
 
 /** The jobs of the executor's code hosts: `run` gives a job its company's code host, with the company folder mounted
@@ -198,10 +207,11 @@ export class CodeHostJobs {
 	readonly #cleanMs: number;
 	readonly #callMs: number;
 	readonly #pollMs: number;
-	/** Each company's last job in line. */
+	readonly #warmViewIdleMs: number;
 	readonly #tails = new Map<string, Promise<void>>();
-	/** Each company's jobs in line that yield, by what cancels them. */
 	readonly #yielding = new Map<string, Set<AbortController>>();
+	readonly #warmViews = new Map<string, WarmView>();
+	#closed = false;
 
 	constructor(options: CodeHostJobsOptions) {
 		this.#hosts = options.hosts;
@@ -213,12 +223,27 @@ export class CodeHostJobs {
 		this.#cleanMs = options.cleanMs ?? 60_000;
 		this.#callMs = options.callMs ?? 10_000;
 		this.#pollMs = options.pollMs ?? 200;
+		this.#warmViewIdleMs = options.warmViewIdleMs ?? DEFAULT_WARM_VIEW_IDLE_MS;
 		if (
 			![this.#mountWaitMs, this.#publishWaitMs, this.#cleanMs, this.#callMs, this.#pollMs].every(
 				(ms) => Number.isSafeInteger(ms) && ms >= 1 && ms <= 3_600_000,
-			)
+			) ||
+			!Number.isSafeInteger(this.#warmViewIdleMs) ||
+			this.#warmViewIdleMs < 0 ||
+			this.#warmViewIdleMs > 3_600_000
 		)
 			throw new Error("INVALID_CODE_HOST_JOBS");
+	}
+
+	async close(): Promise<void> {
+		this.#closed = true;
+		const entries = [...this.#warmViews.values()];
+		this.#warmViews.clear();
+		for (const warm of entries) {
+			if (warm.timer) clearTimeout(warm.timer);
+			warm.timer = undefined;
+		}
+		await Promise.allSettled(entries.map((warm) => this.#teardownWarm(warm)));
 	}
 
 	async run<T>(
@@ -228,22 +253,26 @@ export class CodeHostJobs {
 		job: (job: CodeHostJob, gc: CodeHostGcBlock) => Promise<T>,
 		options: CodeHostJobOptions = {},
 	): Promise<T> {
-		if (!isUuid(companyId) || !isUuid(environmentId) || ![undefined, false, true].includes(options?.yields))
+		if (
+			!isUuid(companyId) ||
+			!isUuid(environmentId) ||
+			![undefined, false, true].includes(options?.yields) ||
+			![undefined, false, true].includes(options?.readOnly)
+		)
 			throw new Error("INVALID_CODE_HOST_JOB");
-		// A job that yields waits and runs under what cancels it as well, until its steps are done.
+		const readOnly = options?.readOnly === true;
 		const yielding = options?.yields ? new AbortController() : undefined;
 		const until = yielding ? AbortSignal.any([signal, yielding.signal]) : signal;
 		try {
 			const done = await this.#turn(companyId, until, yielding);
 			try {
 				return await this.#hosts.use(companyId, until, (host) =>
-					this.#run(host, environmentId, until, job, yielding && { yielding, caller: signal }),
+					this.#run(host, environmentId, until, job, yielding && { yielding, caller: signal }, readOnly),
 				);
 			} finally {
 				done();
 			}
 		} catch (error) {
-			// Whatever a cancelled step threw, the job yielded: nothing cancels it once it publishes.
 			if (yielding?.signal.aborted && !signal.aborted) throw yielding.signal.reason;
 			throw error;
 		}
@@ -317,43 +346,149 @@ export class CodeHostJobs {
 		signal: AbortSignal,
 		job: (job: CodeHostJob, gc: CodeHostGcBlock) => Promise<T>,
 		yields?: { yielding: AbortController; caller: AbortSignal },
+		readOnly = false,
 	): Promise<T> {
 		const shell = lxdCodeHostShell(this.#client, host);
-		await this.#clean(shell, AbortSignal.any([signal, AbortSignal.timeout(this.#cleanMs)])).catch(
-			(error: unknown) => {
-				signal.throwIfAborted();
-				throw error;
-			},
-		);
-		const view = await this.#open(environmentId, signal);
+		const prior = this.#takeWarm(host.companyId);
+		let view: View | undefined;
+		if (prior) {
+			if (prior.environmentId === environmentId && (await this.#verifyWarm(shell, signal))) {
+				view = prior.view;
+			} else {
+				await this.#teardownView(shell, host, prior.view);
+			}
+		}
+		if (!view) {
+			await this.#clean(shell, AbortSignal.any([signal, AbortSignal.timeout(this.#cleanMs)])).catch(
+				(error: unknown) => {
+					signal.throwIfAborted();
+					throw error;
+				},
+			);
+			view = await this.#open(environmentId, signal);
+		}
 		let failure: { error: unknown } | undefined, result: T | undefined;
 		try {
-			await this.#mount(shell, view, signal);
+			if (!prior || view !== prior.view) await this.#mount(shell, view, signal);
 			result = await job({ shell, layout: CODE_HOST_LAYOUT, signal }, this.#gcBlock(view));
 			if (yields) {
-				// Cancelled by now, it publishes nothing. Past here it publishes like any other job, under its caller's signal
-				// alone: a job that yielded never published a part of what it wrote.
 				yields.yielding.signal.throwIfAborted();
 				this.#yielded(host.companyId, yields.yielding);
 			}
-			const published = await this.#publish(shell, yields?.caller ?? signal);
-			if (published.answer === "closed") throw new CodeHostJobFailure("CODE_HOST_VIEW_CLOSED", "the view closed");
-			if (published.answer === "refused")
-				throw new CodeHostJobFailure("CODE_HOST_PUBLISH_REFUSED", published.detail);
-			if (published.answer === "waiting")
-				throw new CodeHostJobFailure(
-					"CODE_HOST_PUBLISH_UNANSWERED",
-					published.detail || "the node did not prove the publish complete",
-				);
-			if (published.answer === "unanswered")
-				throw new CodeHostJobFailure("CODE_HOST_PUBLISH_UNANSWERED", "the node did not answer the publish");
+			if (!readOnly) {
+				const published = await this.#publish(shell, yields?.caller ?? signal);
+				if (published.answer === "closed") throw new CodeHostJobFailure("CODE_HOST_VIEW_CLOSED", "the view closed");
+				if (published.answer === "refused")
+					throw new CodeHostJobFailure("CODE_HOST_PUBLISH_REFUSED", published.detail);
+				if (published.answer === "waiting")
+					throw new CodeHostJobFailure(
+						"CODE_HOST_PUBLISH_UNANSWERED",
+						published.detail || "the node did not prove the publish complete",
+					);
+				if (published.answer === "unanswered")
+					throw new CodeHostJobFailure("CODE_HOST_PUBLISH_UNANSWERED", "the node did not answer the publish");
+			}
 		} catch (error) {
 			failure = { error };
 		}
+		if (!failure && this.#warmViewIdleMs > 0 && !this.#closed) {
+			this.#storeWarm(host, view);
+			return result as T;
+		}
+		await this.#teardownView(shell, host, view);
+		if (failure) throw failure.error;
+		return result as T;
+	}
+
+	#takeWarm(companyId: string): WarmView | undefined {
+		const warm = this.#warmViews.get(companyId);
+		if (!warm) return undefined;
+		this.#warmViews.delete(companyId);
+		if (warm.timer) clearTimeout(warm.timer);
+		warm.timer = undefined;
+		return warm;
+	}
+
+	#storeWarm(host: CodeHostLease, view: View): void {
+		const prior = this.#takeWarm(host.companyId);
+		if (prior) void this.#teardownWarm(prior);
+		const warm: WarmView = {
+			companyId: host.companyId,
+			environmentId: view.environmentId,
+			host,
+			view,
+			timer: undefined,
+		};
+		warm.timer = setTimeout(() => {
+			void this.#evictIdle(host.companyId, view.viewId);
+		}, this.#warmViewIdleMs);
+		warm.timer.unref?.();
+		this.#warmViews.set(host.companyId, warm);
+	}
+
+	async #verifyWarm(shell: CodeHostShell, signal: AbortSignal): Promise<boolean> {
+		const bounded = AbortSignal.any([signal, AbortSignal.timeout(Math.min(this.#mountWaitMs, this.#callMs))]);
+		try {
+			const state = await this.#ok(shell, ["/usr/bin/sh", "-c", CODE_HOST_FOLDER_STATE], bounded);
+			const fields = new Map(
+				state.stdout
+					.toString("utf8")
+					.split("\n")
+					.filter((line) => line.includes("="))
+					.map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)] as const),
+			);
+			const active = fields.get("ActiveState");
+			if (
+				active !== "active" ||
+				!["fuse qorpera-company", "fuse.qorpera qorpera-company"].includes(fields.get("Mount") ?? "")
+			)
+				return false;
+			const refresh = await this.#publish(shell, bounded);
+			return refresh.answer === "saved";
+		} catch {
+			signal.throwIfAborted();
+			return false;
+		}
+	}
+
+	async #evictIdle(companyId: string, viewId: string): Promise<void> {
+		const controller = new AbortController();
+		let done: (() => void) | undefined;
+		try {
+			done = await this.#turn(companyId, controller.signal);
+			const current = this.#warmViews.get(companyId);
+			if (!current || current.view.viewId !== viewId) return;
+			this.#takeWarm(companyId);
+			await this.#teardownWarm(current);
+		} catch {
+			return;
+		} finally {
+			done?.();
+		}
+	}
+
+	async #teardownWarm(warm: WarmView): Promise<void> {
+		await this.#hosts
+			.use(warm.companyId, AbortSignal.timeout(this.#cleanMs), async (host) => {
+				const shell = lxdCodeHostShell(this.#client, host);
+				await this.#clean(shell, AbortSignal.timeout(this.#cleanMs)).catch((error: unknown) =>
+					this.#log({ event: "code-host-view-error", step: "clean", project: host.project, error }),
+				);
+			})
+			.catch((error: unknown) => {
+				this.#log({ event: "code-host-view-error", step: "clean", project: warm.host.project, error });
+			});
+		await this.#closeView(warm.host, warm.view);
+	}
+
+	async #teardownView(shell: CodeHostShell, host: CodeHostLease, view: View): Promise<void> {
 		await this.#clean(shell, AbortSignal.timeout(this.#cleanMs)).catch((error: unknown) =>
 			this.#log({ event: "code-host-view-error", step: "clean", project: host.project, error }),
 		);
-		// Best effort: a view no folder program renews also ends with its lease.
+		await this.#closeView(host, view);
+	}
+
+	async #closeView(host: CodeHostLease, view: View): Promise<void> {
 		await this.#control
 			.call(
 				"qorpera_folder_view_close",
@@ -363,8 +498,6 @@ export class CodeHostJobs {
 			.catch((error: unknown) =>
 				this.#log({ event: "code-host-view-error", step: "close", project: host.project, error }),
 			);
-		if (failure) throw failure.error;
-		return result as T;
 	}
 
 	async #open(environmentId: string, signal: AbortSignal): Promise<View> {
@@ -517,6 +650,21 @@ export class CodeHostJobs {
 	}
 }
 
+const RETRYABLE_NOT_APPLIED_REASONS = new Set([
+	"the save did not get through yet",
+	"the boundary split reached its batch limit; remaining changes stay pending",
+]);
+
+// WHY: Exit 4 whose unsaved paths are all transient waiting or retryable not_applied must retry in #publish instead of failing permanently.
+function isRetryablePublishEntry(entry: { outcome: string; reason?: string }): boolean {
+	if (entry.outcome === "waiting") return true;
+	return (
+		entry.outcome === "not_applied" &&
+		typeof entry.reason === "string" &&
+		RETRYABLE_NOT_APPLIED_REASONS.has(entry.reason)
+	);
+}
+
 /** `qorpera-folder publish --json`: 0 every path saved, 4 a path not saved or the boundary refused, 3 the view closed,
  * anything else no answer. Exit 1 can still print the node's whole report (its release check failed after it): one
  * with a path that will not be saved is refused, since publishing again would find nothing pending and exit 0; one
@@ -535,24 +683,45 @@ export function codeHostPublishAnswer(status: number, stdout: Buffer): CodeHostP
 		!isRecord(report) ||
 		!Array.isArray(report.paths) ||
 		!report.paths.every(
-			(entry) => isRecord(entry) && typeof entry.path === "string" && typeof entry.outcome === "string",
+			(entry) =>
+				isRecord(entry) &&
+				typeof entry.path === "string" &&
+				typeof entry.outcome === "string" &&
+				(entry.reason === undefined || entry.reason === null || typeof entry.reason === "string"),
 		)
 	)
 		return { answer: "unanswered" };
 	const refused = report.refused === undefined || report.refused === null ? undefined : String(report.refused);
-	const unsaved = (report.paths as { path: string; outcome: string }[]).filter((entry) => entry.outcome !== "saved");
+	const unsaved = (report.paths as { path: string; outcome: string; reason?: string | null }[]).filter(
+		(entry) => entry.outcome !== "saved",
+	);
 	const detail = () =>
 		[
 			...(refused === undefined ? [] : [`refused: ${refused.slice(0, 200)}`]),
-			...unsaved.slice(0, 20).map((entry) => `${entry.path}: ${entry.outcome}`),
+			...unsaved.slice(0, 20).map((entry) => {
+				const reason =
+					typeof entry.reason === "string" && entry.reason.trim() ? entry.reason.trim().slice(0, 120) : "";
+				return reason ? `${entry.path}: ${entry.outcome} (${reason})` : `${entry.path}: ${entry.outcome}`;
+			}),
 			...(unsaved.length > 20 ? [`and ${unsaved.length - 20} more`] : []),
 		].join(", ");
+	const allRetryable = () =>
+		unsaved.every((entry) =>
+			isRetryablePublishEntry({
+				outcome: entry.outcome,
+				...(typeof entry.reason === "string" ? { reason: entry.reason } : {}),
+			}),
+		);
 	if (status === 0 && refused === undefined && unsaved.length === 0) return { answer: "saved" };
-	if (status === 4 && (refused !== undefined || unsaved.length > 0)) return { answer: "refused", detail: detail() };
-	// `waiting` is the only outcome a later publish can still turn into saved.
+	if (status === 4 && (refused !== undefined || unsaved.length > 0)) {
+		if (refused === undefined && unsaved.length > 0 && allRetryable()) {
+			return { answer: "waiting", detail: detail() };
+		}
+		return { answer: "refused", detail: detail() };
+	}
 	if (status === 1)
 		return {
-			answer: refused !== undefined || unsaved.some((entry) => entry.outcome !== "waiting") ? "refused" : "waiting",
+			answer: refused !== undefined || !allRetryable() ? "refused" : "waiting",
 			detail: detail(),
 		};
 	return { answer: "unanswered" };

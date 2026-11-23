@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patches";
 import { describe, expect, it } from "vitest";
 import { ObjectDependencyError } from "../src/dependency.ts";
 import type { MemberCompanyPublisherRpc } from "../src/member-company-authority.ts";
@@ -24,6 +25,7 @@ function createHarness(
 		readonly leaseRenewIntervalMs?: number;
 		readonly hangStoreGet?: boolean;
 		readonly commitDelayMs?: number;
+		readonly onBeforeCommit?: () => void;
 	},
 ) {
 	const profileId = randomUUID();
@@ -51,6 +53,8 @@ function createHarness(
 	let commitCount = 0;
 	let leaseRenewCount = 0;
 	let completeMergeAttemptErrors: Error[] = [];
+	let loadSnapshotAttemptErrors: Error[] = [];
+	let saveSnapshotAttemptErrors: Error[] = [];
 	let preCommitErrors: Error[] = [];
 	let postCommitErrors: Error[] = [];
 
@@ -189,6 +193,7 @@ function createHarness(
 				}
 				case "qorpera_folder_commit": {
 					commitCount += 1;
+					options?.onBeforeCommit?.();
 					const preCommitErr = preCommitErrors.shift();
 					if (preCommitErr) {
 						throw preCommitErr;
@@ -282,6 +287,8 @@ function createHarness(
 					return result;
 				}
 				case "qorpera_surface_save_folder_snapshot": {
+					const saveErr = saveSnapshotAttemptErrors.shift();
+					if (saveErr) throw saveErr;
 					const snapshotId = String(args.p_snapshot_id);
 					externalSnapshots.set(snapshotId, {
 						snapshotId,
@@ -294,6 +301,8 @@ function createHarness(
 					return { saved: true, snapshotId };
 				}
 				case "qorpera_surface_load_folder_snapshot": {
+					const loadErr = loadSnapshotAttemptErrors.shift();
+					if (loadErr) throw loadErr;
 					const snapshotId = typeof args.p_snapshot_id === "string" ? args.p_snapshot_id : null;
 					if (snapshotId && externalSnapshots.has(snapshotId)) {
 						return externalSnapshots.get(snapshotId);
@@ -369,6 +378,12 @@ function createHarness(
 		getLeaseRenewCount: () => leaseRenewCount,
 		setFailCompleteMergeAttempts(count: number) {
 			completeMergeAttemptErrors = Array.from({ length: count }, () => new Error("transient complete merge 503"));
+		},
+		setFailLoadSnapshotAttempts(count: number) {
+			loadSnapshotAttemptErrors = Array.from({ length: count }, () => new Error("transient load snapshot 503"));
+		},
+		setFailSaveSnapshotAttempts(count: number) {
+			saveSnapshotAttemptErrors = Array.from({ length: count }, () => new Error("transient save snapshot 503"));
 		},
 		setCompleteMergeAttemptErrors(errors: Error[]) {
 			completeMergeAttemptErrors = [...errors];
@@ -994,5 +1009,714 @@ describe("SurfaceFolderWorker", () => {
 		expect(hUncertainThen42501.completedMerges).toHaveLength(0);
 		expect(hUncertainThen42501.events.some((ev) => ev.kind === "surface_folder_merge_completion_failed")).toBe(true);
 		expect(hUncertainThen42501.events.some((ev) => ev.kind === "surface_folder_merge_failed")).toBe(false);
+	});
+
+	it("preserves original filesBefore across crash retries after folder commit and includes snapshotId inline", async () => {
+		const h = createHarness({ "brand/voice.md": "Original pre-merge voice." });
+		const jobId = randomUUID();
+		const changeId = randomUUID();
+		const mergeJob = {
+			jobId,
+			kind: "land_change" as const,
+			surfaceId: h.surfaceId,
+			profileId: h.profileId,
+			environmentId: h.environmentId,
+			leaseToken: randomUUID(),
+			folderRoot: "brand",
+			payload: { changeIds: [changeId] },
+			preMergeSnapshot: null,
+			approvedChanges: [
+				{
+					changeId,
+					kind: "folder_patch",
+					title: "Update voice",
+					summary: "Updates voice copy",
+					affectedPaths: ["voice.md"],
+					patchManifest: [{ op: "write_text", path: "voice.md", content: "Updated merged voice." }],
+				},
+			],
+		};
+
+		h.setFailCompleteMergeAttempts(10);
+		h.setPendingClaim({ merges: [mergeJob] });
+		expect(await h.worker.processDue(8)).toBe(1);
+		expect(h.readText("brand/voice.md")).toBe("Updated merged voice.");
+		expect(h.completedMerges).toHaveLength(0);
+
+		h.setFailCompleteMergeAttempts(0);
+		h.setFailLoadSnapshotAttempts(10);
+		h.setPendingClaim({ merges: [{ ...mergeJob, leaseToken: randomUUID() }] });
+		expect(await h.worker.processDue(8)).toBe(1);
+		expect(h.completedMerges).toHaveLength(0);
+		expect(h.externalSnapshots.get(`merge:${jobId}`)?.filesBefore).toEqual({
+			"brand/voice.md": "Original pre-merge voice.",
+		});
+
+		h.setFailLoadSnapshotAttempts(1);
+		h.setPendingClaim({ merges: [{ ...mergeJob, leaseToken: randomUUID() }] });
+		expect(await h.worker.processDue(8)).toBe(1);
+		expect(h.completedMerges).toHaveLength(1);
+		const snap = h.completedMerges[0]?.p_pre_merge_snapshot as {
+			snapshotId?: string;
+			filesBefore?: Record<string, string | null>;
+		};
+		expect(snap?.snapshotId).toBe(`merge:${jobId}`);
+		expect(snap?.filesBefore).toEqual({ "brand/voice.md": "Original pre-merge voice." });
+
+		const hSaveBlip = createHarness({ "brand/voice.md": "Initial voice." });
+		hSaveBlip.setFailSaveSnapshotAttempts(1);
+		hSaveBlip.setPendingClaim({
+			merges: [
+				{
+					...mergeJob,
+					jobId: randomUUID(),
+					surfaceId: hSaveBlip.surfaceId,
+					profileId: hSaveBlip.profileId,
+					environmentId: hSaveBlip.environmentId,
+				},
+			],
+		});
+		expect(await hSaveBlip.worker.processDue(8)).toBe(1);
+		expect(hSaveBlip.completedMerges).toHaveLength(1);
+		expect(hSaveBlip.completedMerges[0]?.p_status).toBe("landed");
+
+		const hSaveDown = createHarness({ "brand/voice.md": "Initial voice." });
+		hSaveDown.setFailSaveSnapshotAttempts(10);
+		hSaveDown.setPendingClaim({
+			merges: [
+				{
+					...mergeJob,
+					jobId: randomUUID(),
+					surfaceId: hSaveDown.surfaceId,
+					profileId: hSaveDown.profileId,
+					environmentId: hSaveDown.environmentId,
+				},
+			],
+		});
+		expect(await hSaveDown.worker.processDue(8)).toBe(1);
+		expect(hSaveDown.completedMerges).toHaveLength(0);
+	});
+
+	it("aborts in-flight jobs when lease renewal returns renewed:false, retries transient publishes, and runs distinct environments concurrently", async () => {
+		const profileId = randomUUID();
+		const environmentA = randomUUID();
+		const environmentB = randomUUID();
+		const surfaceA = randomUUID();
+		const surfaceB = randomUUID();
+		let activeReads = 0;
+		let maxActiveReads = 0;
+		let publishAttempts = 0;
+		const completedMerges: Record<string, unknown>[] = [];
+		const completedPublishes: Record<string, unknown>[] = [];
+		let leaseLossObserved = false;
+
+		const worker = new SurfaceFolderWorker({
+			authority: {
+				async publisher(method, args, signal) {
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						return {
+							merges: [
+								{
+									jobId: randomUUID(),
+									kind: "land_change",
+									surfaceId: surfaceA,
+									profileId,
+									environmentId: environmentA,
+									leaseToken: randomUUID(),
+									folderRoot: "a",
+									payload: {},
+									preMergeSnapshot: null,
+									approvedChanges: [
+										{
+											changeId: randomUUID(),
+											kind: "folder_patch",
+											title: "A",
+											summary: "A",
+											affectedPaths: ["x.txt"],
+											patchManifest: [{ op: "delete", path: "x.txt" }],
+										},
+									],
+								},
+								{
+									jobId: randomUUID(),
+									kind: "land_change",
+									surfaceId: surfaceB,
+									profileId,
+									environmentId: environmentB,
+									leaseToken: randomUUID(),
+									folderRoot: "b",
+									payload: {},
+									preMergeSnapshot: null,
+									approvedChanges: [
+										{
+											changeId: randomUUID(),
+											kind: "folder_patch",
+											title: "B",
+											summary: "B",
+											affectedPaths: ["y.txt"],
+											patchManifest: [{ op: "delete", path: "y.txt" }],
+										},
+									],
+								},
+							],
+							publishes: [
+								{
+									jobId: randomUUID(),
+									surfaceId: surfaceB,
+									profileId,
+									environmentId: environmentB,
+									leaseToken: randomUUID(),
+								},
+							],
+						};
+					}
+					if (method === "qorpera_surface_load_folder_snapshot") return null;
+					if (method === "qorpera_folder_read") {
+						activeReads += 1;
+						maxActiveReads = Math.max(maxActiveReads, activeReads);
+						await new Promise((r) => setTimeout(r, 30));
+						activeReads -= 1;
+						return { schema: "qorpera.folder-read/v1", found: false, entry: null };
+					}
+					if (method === "qorpera_surface_complete_merge") {
+						completedMerges.push(args);
+						return { status: args.p_status };
+					}
+					if (method === "qorpera_surface_complete_publish") {
+						publishAttempts += 1;
+						if (publishAttempts === 1) throw new Error("transient 503");
+						completedPublishes.push(args);
+						return { status: args.p_status };
+					}
+					if (method === "qorpera_surface_renew_lease") {
+						return { renewed: true };
+					}
+					signal.throwIfAborted();
+					return null;
+				},
+			},
+			store: { get: async () => new Uint8Array() },
+			replication: { uploadWithAuthority: async () => "stored" },
+			completionRetryDelaysMs: [5, 5],
+		});
+
+		expect(await worker.processDue(8)).toBe(3);
+		expect(maxActiveReads).toBeGreaterThanOrEqual(2);
+		expect(completedPublishes).toHaveLength(1);
+		expect(completedPublishes[0]?.p_status).toBe("published");
+		expect(publishAttempts).toBe(2);
+
+		const lostMerges: Record<string, unknown>[] = [];
+		const lossWorker = new SurfaceFolderWorker({
+			authority: {
+				async publisher(method, args, signal) {
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						return {
+							merges: [
+								{
+									jobId: randomUUID(),
+									kind: "land_change",
+									surfaceId: surfaceA,
+									profileId,
+									environmentId: environmentA,
+									leaseToken: randomUUID(),
+									folderRoot: "a",
+									payload: {},
+									preMergeSnapshot: null,
+									approvedChanges: [
+										{
+											changeId: randomUUID(),
+											kind: "folder_patch",
+											title: "Slow",
+											summary: "Slow",
+											affectedPaths: ["x.txt"],
+											patchManifest: [{ op: "delete", path: "x.txt" }],
+										},
+									],
+								},
+							],
+							publishes: [],
+						};
+					}
+					if (method === "qorpera_surface_load_folder_snapshot") return null;
+					if (method === "qorpera_folder_read") {
+						await new Promise<void>((_, reject) => {
+							signal.addEventListener(
+								"abort",
+								() => {
+									leaseLossObserved = true;
+									reject(signal.reason ?? new Error("aborted"));
+								},
+								{ once: true },
+							);
+						});
+					}
+					if (method === "qorpera_surface_renew_lease") {
+						return { renewed: false };
+					}
+					if (method === "qorpera_surface_complete_merge") {
+						lostMerges.push(args);
+					}
+					return null;
+				},
+			},
+			store: { get: async () => new Uint8Array() },
+			replication: { uploadWithAuthority: async () => "stored" },
+			leaseRenewIntervalMs: 50,
+			jobTimeoutMs: 5_000,
+			completionRetryDelaysMs: [5],
+		});
+		expect(await lossWorker.processDue(8)).toBe(1);
+		expect(leaseLossObserved).toBe(true);
+		expect(lostMerges).toHaveLength(0);
+	});
+
+	it("matches composeStudioPreview path resolution and rejects ./ dot-segment ops identically", async () => {
+		const baseFiles = { "identity/voice.md": "Base voice.\n" };
+		const dotChangeId = randomUUID();
+		const dotOps = [{ op: "write_text" as const, path: "./voice.md", content: "Dot segment.\n" }];
+		const dotPreview = composeStudioPreview(baseFiles, [{ changeId: dotChangeId, ops: dotOps }], "identity");
+		expect(dotPreview.status).toBe("conflicted");
+
+		const hDot = createHarness(baseFiles);
+		hDot.setPendingClaim({
+			merges: [
+				{
+					jobId: randomUUID(),
+					kind: "land_change",
+					surfaceId: hDot.surfaceId,
+					profileId: hDot.profileId,
+					environmentId: hDot.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "identity",
+					payload: { changeIds: [dotChangeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: dotChangeId,
+							kind: "folder_patch",
+							title: "Dot segment write",
+							summary: "Attempts ./voice.md",
+							affectedPaths: ["./voice.md"],
+							patchManifest: dotOps,
+						},
+					],
+				},
+			],
+		});
+		expect(await hDot.worker.processDue(8)).toBe(1);
+		expect(hDot.completedMerges[0]?.p_status).toBe("failed");
+		expect(String(hDot.completedMerges[0]?.p_error_detail)).toContain("Unsafe studio patch path");
+
+		const okChangeId = randomUUID();
+		const okOps = [{ op: "write_text" as const, path: "voice.md", content: "Clean voice.\n" }];
+		const okPreview = composeStudioPreview(baseFiles, [{ changeId: okChangeId, ops: okOps }], "identity");
+		expect(okPreview.status).toBe("ready");
+		expect(okPreview.files["identity/voice.md"]).toBe("Clean voice.\n");
+
+		const hOk = createHarness(baseFiles);
+		hOk.setPendingClaim({
+			merges: [
+				{
+					jobId: randomUUID(),
+					kind: "land_change",
+					surfaceId: hOk.surfaceId,
+					profileId: hOk.profileId,
+					environmentId: hOk.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "identity",
+					payload: { changeIds: [okChangeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: okChangeId,
+							kind: "folder_patch",
+							title: "Update voice",
+							summary: "Updates voice.md",
+							affectedPaths: ["voice.md"],
+							patchManifest: okOps,
+						},
+					],
+				},
+			],
+		});
+		expect(await hOk.worker.processDue(8)).toBe(1);
+		expect(hOk.completedMerges[0]?.p_status).toBe("landed");
+		expect(hOk.readText("identity/voice.md")).toBe("Clean voice.\n");
+	});
+
+	it("reads and stages multiple files concurrently, skips redundant parent directory probes and unchanged writes", async () => {
+		const readPaths: string[] = [];
+		let activeReads = 0;
+		let maxConcurrentReads = 0;
+		let activeStages = 0;
+		let maxConcurrentStages = 0;
+		let openUploads = 0;
+
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const objects = new Map<string, Uint8Array>();
+		const entries = new Map<string, StoredEntry>();
+		const put = (path: string, text: string): string => {
+			const parts = path.split("/");
+			for (let i = 1; i < parts.length; i += 1) {
+				const dir = parts.slice(0, i).join("/");
+				if (!entries.has(dir)) {
+					entries.set(dir, {
+						kind: "folder",
+						version: randomUUID(),
+						content: null,
+						manifestSha256: null,
+						fileSha256: null,
+						mediaType: "inode/directory",
+					});
+				}
+			}
+			const bytes = new TextEncoder().encode(text);
+			const fileSha = digestSha256(bytes);
+			const manifestText = JSON.stringify({
+				schema: "qorpera.cloud-file-manifest/v2",
+				fileSha256: fileSha,
+				bytes: bytes.byteLength,
+				mediaType: "application/json",
+				executable: false,
+				chunks: bytes.byteLength > 0 ? [{ sha256: fileSha, bytes: bytes.byteLength }] : [],
+			});
+			const manifestBytes = new TextEncoder().encode(manifestText);
+			const manifestSha = digestSha256(manifestBytes);
+			objects.set(fileSha, bytes);
+			objects.set(manifestSha, manifestBytes);
+			const version = randomUUID();
+			entries.set(path, {
+				kind: "file",
+				version,
+				content: bytes,
+				manifestSha256: manifestSha,
+				fileSha256: fileSha,
+				mediaType: "application/json",
+			});
+			return version;
+		};
+		put("identity/tokens.json", `${JSON.stringify({ colors: { accent: "#111111" } }, null, 2)}\n`);
+		const unchangedVersion = put("identity/voice.md", "Same voice.");
+		const intents = new Map<
+			string,
+			{ manifestSha256: string; fileSha256: string; bytes: number; mediaType: string; executable: boolean }
+		>();
+		const committedUnits: Record<string, unknown>[][] = [];
+		const completedMerges: Record<string, unknown>[] = [];
+		const jobId = randomUUID();
+		const changeId = randomUUID();
+		let claimed = false;
+
+		const worker = new SurfaceFolderWorker({
+			authority: {
+				async publisher(method, args) {
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						if (claimed) return { merges: [], publishes: [] };
+						claimed = true;
+						return {
+							merges: [
+								{
+									jobId,
+									kind: "land_change",
+									surfaceId,
+									profileId,
+									environmentId,
+									leaseToken: randomUUID(),
+									folderRoot: "identity",
+									payload: { changeIds: [changeId] },
+									preMergeSnapshot: null,
+									approvedChanges: [
+										{
+											changeId,
+											kind: "folder_patch",
+											title: "Update accent only",
+											summary: "Updates accent and leaves voice unchanged",
+											affectedPaths: ["tokens.json", "voice.md"],
+											patchManifest: [
+												{ op: "merge_json", path: "tokens.json", patch: { colors: { accent: "#2255aa" } } },
+												{ op: "write_text", path: "voice.md", content: "Same voice." },
+											],
+										},
+									],
+								},
+							],
+							publishes: [],
+						};
+					}
+					if (method === "qorpera_surface_load_folder_snapshot") return null;
+					if (method === "qorpera_surface_save_folder_snapshot") return { saved: true };
+					if (method === "qorpera_folder_read") {
+						const path = String(args.p_path);
+						readPaths.push(path);
+						activeReads += 1;
+						maxConcurrentReads = Math.max(maxConcurrentReads, activeReads);
+						await new Promise((resolve) => setTimeout(resolve, 15));
+						activeReads -= 1;
+						const entry = entries.get(path);
+						if (!entry) return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false, entry: null };
+						return {
+							schema: "qorpera.folder-read/v1",
+							asOfSeq: 1,
+							found: true,
+							entry: {
+								path,
+								kind: entry.kind,
+								version: entry.version,
+								manifestSha256: entry.manifestSha256,
+								fileSha256: entry.fileSha256,
+								bytes: entry.content?.byteLength ?? 0,
+								mediaType: entry.mediaType,
+								executable: false,
+							},
+						};
+					}
+					if (method === "qorpera_folder_authorize_object_download") {
+						const buf = objects.get(String(args.p_sha256));
+						return { schema: "qorpera.folder-object-download/v1", profileId, bytes: buf?.byteLength ?? 0 };
+					}
+					if (method === "qorpera_folder_open_upload") {
+						openUploads += 1;
+						activeStages += 1;
+						maxConcurrentStages = Math.max(maxConcurrentStages, activeStages);
+						await new Promise((resolve) => setTimeout(resolve, 15));
+						activeStages -= 1;
+						const manifestText = String(args.p_manifest);
+						const manifestBytes = new TextEncoder().encode(manifestText);
+						const manifestSha = digestSha256(manifestBytes);
+						const parsed = JSON.parse(manifestText) as {
+							fileSha256: string;
+							bytes: number;
+							mediaType: string;
+							executable: boolean;
+						};
+						const intentId = randomUUID();
+						intents.set(intentId, {
+							manifestSha256: manifestSha,
+							fileSha256: parsed.fileSha256,
+							bytes: parsed.bytes,
+							mediaType: parsed.mediaType,
+							executable: parsed.executable,
+						});
+						return { schema: "qorpera.folder-upload/v1", intentId, manifestSha256: manifestSha, present: [] };
+					}
+					if (method === "qorpera_folder_authorize_object_upload") {
+						return { schema: "qorpera.folder-object-upload/v1", profileId };
+					}
+					if (method === "qorpera_folder_confirm_object") {
+						return { schema: "qorpera.folder-object/v1", sha256: args.p_sha256, bytes: args.p_bytes };
+					}
+					if (method === "qorpera_folder_seal_upload") {
+						const intent = intents.get(String(args.p_intent))!;
+						return { schema: "qorpera.folder-seal/v1", state: "sealed", intentId: args.p_intent, file: intent };
+					}
+					if (method === "qorpera_folder_commit") {
+						const units = args.p_units as Record<string, unknown>[];
+						committedUnits.push(units);
+						return {
+							schema: "qorpera.folder-commit/v1",
+							units: units.map(() => ({ outcome: "saved", version: randomUUID() })),
+						};
+					}
+					if (method === "qorpera_surface_complete_merge") {
+						completedMerges.push(args);
+						return { jobId: args.p_job_id, status: args.p_status };
+					}
+					return { renewed: true };
+				},
+			},
+			store: {
+				async get(_profileId, hash) {
+					return objects.get(hash)!;
+				},
+			},
+			replication: {
+				async uploadWithAuthority(_profileId, hash, bytes, hooks) {
+					await hooks.authorize();
+					objects.set(hash, new Uint8Array(bytes));
+					await hooks.confirm();
+					return "stored";
+				},
+			},
+			completionRetryDelaysMs: [5],
+		});
+
+		expect(await worker.processDue(8)).toBe(1);
+		expect(maxConcurrentReads).toBeGreaterThanOrEqual(2);
+		expect(maxConcurrentStages).toBe(2);
+		expect(readPaths).not.toContain("identity");
+		expect(openUploads).toBe(2);
+		expect(committedUnits[0]?.map((unit) => unit.path)).toEqual([
+			"identity/voice.md",
+			"identity/tokens.json",
+			"identity/tokens.css",
+		]);
+		expect(committedUnits[0]?.[0]?.expectedVersion).toBe(unchangedVersion);
+		const snapshot = completedMerges[0]?.p_pre_merge_snapshot as {
+			versionsAfter?: Record<string, string | null>;
+		};
+		expect(typeof snapshot?.versionsAfter?.["identity/voice.md"]).toBe("string");
+	});
+
+	it("preserves CAS guards on unchanged files, saves undo snapshots for all-unchanged patches, and serializes overlapping same-environment surfaces", async () => {
+		const hNoop = createHarness({ "brand/voice.md": "Original voice." });
+		const noopJobId = randomUUID();
+		const noopChangeId = randomUUID();
+		hNoop.setPendingClaim({
+			merges: [
+				{
+					jobId: noopJobId,
+					kind: "land_change",
+					surfaceId: hNoop.surfaceId,
+					profileId: hNoop.profileId,
+					environmentId: hNoop.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "brand",
+					payload: { changeIds: [noopChangeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: noopChangeId,
+							kind: "folder_patch",
+							title: "No-op voice write",
+							summary: "Writes identical content",
+							affectedPaths: ["voice.md"],
+							patchManifest: [{ op: "write_text", path: "voice.md", content: "Original voice." }],
+						},
+					],
+				},
+			],
+		});
+		expect(await hNoop.worker.processDue(8)).toBe(1);
+		expect(hNoop.getCommitCount()).toBe(1);
+		const noopSnapshot = hNoop.completedMerges[0]?.p_pre_merge_snapshot as Record<string, unknown> | null;
+		expect(noopSnapshot).toBeTruthy();
+
+		const noopUndoJobId = randomUUID();
+		hNoop.setPendingClaim({
+			merges: [
+				{
+					jobId: noopUndoJobId,
+					kind: "undo_change",
+					surfaceId: hNoop.surfaceId,
+					profileId: hNoop.profileId,
+					environmentId: hNoop.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "brand",
+					payload: { changeId: noopChangeId },
+					preMergeSnapshot: noopSnapshot,
+					approvedChanges: [],
+				},
+			],
+		});
+		expect(await hNoop.worker.processDue(8)).toBe(1);
+		expect(hNoop.completedMerges[1]).toMatchObject({ p_job_id: noopUndoJobId, p_status: "landed" });
+
+		let mutatedMidFlight = false;
+		const hConflict = createHarness(
+			{ "brand/voice.md": "Original voice." },
+			{
+				onBeforeCommit: () => {
+					if (!mutatedMidFlight) {
+						mutatedMidFlight = true;
+						hConflict.putFile("brand/voice.md", "Concurrent edit before commit.");
+					}
+				},
+			},
+		);
+		const conflictJobId = randomUUID();
+		const conflictChangeId = randomUUID();
+		hConflict.setPendingClaim({
+			merges: [
+				{
+					jobId: conflictJobId,
+					kind: "land_change",
+					surfaceId: hConflict.surfaceId,
+					profileId: hConflict.profileId,
+					environmentId: hConflict.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "brand",
+					payload: { changeIds: [conflictChangeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: conflictChangeId,
+							kind: "folder_patch",
+							title: "No-op voice write racing concurrent edit",
+							summary: "Writes identical content",
+							affectedPaths: ["voice.md"],
+							patchManifest: [{ op: "write_text", path: "voice.md", content: "Original voice." }],
+						},
+					],
+				},
+			],
+		});
+		expect(await hConflict.worker.processDue(8)).toBe(1);
+		expect(hConflict.completedMerges[0]).toMatchObject({
+			p_job_id: conflictJobId,
+			p_status: "conflicted",
+			p_conflict_paths: ["brand/voice.md"],
+		});
+		expect(hConflict.readText("brand/voice.md")).toBe("Concurrent edit before commit.");
+
+		const hOverlap = createHarness({ "site/blog/post.md": "v0" }, { commitDelayMs: 20 });
+		const secondSurfaceId = randomUUID();
+		const jobA = randomUUID();
+		const jobB = randomUUID();
+		const changeA = randomUUID();
+		const changeB = randomUUID();
+		hOverlap.setPendingClaim({
+			merges: [
+				{
+					jobId: jobA,
+					kind: "land_change",
+					surfaceId: hOverlap.surfaceId,
+					profileId: hOverlap.profileId,
+					environmentId: hOverlap.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "site",
+					payload: { changeIds: [changeA] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: changeA,
+							kind: "folder_patch",
+							title: "Root edit",
+							summary: "Edits nested post via parent root",
+							affectedPaths: ["blog/post.md"],
+							patchManifest: [{ op: "write_text", path: "blog/post.md", content: "v1" }],
+						},
+					],
+				},
+				{
+					jobId: jobB,
+					kind: "land_change",
+					surfaceId: secondSurfaceId,
+					profileId: hOverlap.profileId,
+					environmentId: hOverlap.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "site/blog",
+					payload: { changeIds: [changeB] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId: changeB,
+							kind: "folder_patch",
+							title: "Nested edit",
+							summary: "Edits same post via nested root",
+							affectedPaths: ["post.md"],
+							patchManifest: [{ op: "write_text", path: "post.md", content: "v2" }],
+						},
+					],
+				},
+			],
+		});
+		expect(await hOverlap.worker.processDue(8)).toBe(2);
+		expect(hOverlap.completedMerges).toHaveLength(2);
+		expect(hOverlap.completedMerges[0]).toMatchObject({ p_job_id: jobA, p_status: "landed" });
+		expect(hOverlap.completedMerges[1]).toMatchObject({ p_job_id: jobB, p_status: "landed" });
+		expect(hOverlap.readText("site/blog/post.md")).toBe("v2");
 	});
 });

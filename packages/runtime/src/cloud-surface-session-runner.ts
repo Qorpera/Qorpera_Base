@@ -1,20 +1,19 @@
 import {
 	compileIdentityTokens,
-	compileIdentityTokensCss,
 	IDENTITY_BRIEF_PATH,
 	IDENTITY_COMPANY_PATH,
 	IDENTITY_LOGO_PATH,
+	IDENTITY_SHARED_ASSET_PATHS,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
 	IDENTITY_VOICE_PATH,
 	type PointToChangeTarget,
-	PRODUCT_CATALOG_PATH,
-	PRODUCT_SPECS_PATH,
 	parsePointToChangeTarget,
-	SHARED_COMPANY_ASSET_PATHS,
 	type SurfaceSessionQuestion,
 	type SurfaceSourceKind,
+	sharedProductAssetCandidates,
 } from "@qorpera/contracts";
+import { withAbortScopes } from "./abort-scope.ts";
 import type { CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
@@ -35,6 +34,7 @@ import {
 	buildSurfaceTurnBrief,
 	SURFACE_STAGED_CODING_INSTRUCTIONS,
 	type SurfaceCodingTurnBinding,
+	type SurfaceConflictDetail,
 	type SurfaceIdentityContext,
 	type SurfaceSharedAssetsContext,
 } from "./cloud-surface-turn-context.ts";
@@ -47,15 +47,13 @@ const MAX_SURFACE_BRIEF_BYTES = 32_768;
 const MAX_FAILURE_REPLY_CHARS = 500;
 const READ_ONLY_FOLDER_TOOLS = new Set(["company_read", "company_list"]);
 
-const SHARED_ASSET_BYTE_LIMITS: Readonly<Record<(typeof SHARED_COMPANY_ASSET_PATHS)[number], number>> = {
+const IDENTITY_ASSET_BYTE_LIMITS: Readonly<Record<(typeof IDENTITY_SHARED_ASSET_PATHS)[number], number>> = {
 	[IDENTITY_BRIEF_PATH]: MAX_IDENTITY_BRIEF_BYTES,
 	[IDENTITY_VOICE_PATH]: MAX_IDENTITY_VOICE_BYTES,
 	[IDENTITY_TOKENS_JSON_PATH]: MAX_IDENTITY_TOKENS_BYTES,
 	[IDENTITY_TOKENS_CSS_PATH]: MAX_IDENTITY_TOKENS_BYTES,
 	[IDENTITY_LOGO_PATH]: MAX_SHARED_ASSET_BYTES,
 	[IDENTITY_COMPANY_PATH]: MAX_SHARED_ASSET_BYTES,
-	[PRODUCT_SPECS_PATH]: MAX_SHARED_ASSET_BYTES,
-	[PRODUCT_CATALOG_PATH]: MAX_SHARED_ASSET_BYTES,
 };
 
 export interface SurfaceSharedAssetsSnapshot extends SurfaceSharedAssetsContext {
@@ -80,17 +78,21 @@ export interface SurfaceSessionTurnInput {
 	readonly companyId: string;
 	readonly surfaceSlug: string;
 	readonly surfaceTitle: string;
+	readonly surfaceKind?: string;
 	readonly sourceKind: SurfaceSourceKind;
 	readonly prompt: string;
 	readonly state?: "queued" | "reconciling";
 	readonly repositoryKey?: string | null;
 	readonly folderRoot?: string | null;
+	readonly productFolderRoots?: readonly string[];
 	readonly briefSummary?: string | null;
 	readonly briefMarkdown?: string | null;
 	readonly explorationVariantLabel?: string | null;
 	readonly originKind?: string;
 	readonly originRef?: unknown;
 	readonly conflictPaths?: readonly string[] | null;
+	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;
+	readonly mainSha?: string | null;
 	readonly leaseToken?: string | null;
 }
 
@@ -185,6 +187,7 @@ export interface SurfaceSessionRunnerPorts {
 	readonly renewSessionLease?: SurfaceSessionLeaseRenewalPort["renewSessionLease"];
 	readonly leaseRenewIntervalMs?: number;
 	readonly leaseExtendSeconds?: number;
+	readonly completionRetryDelaysMs?: readonly number[];
 	readonly signal?: AbortSignal;
 }
 
@@ -212,6 +215,7 @@ export interface SurfaceSessionDeliveryJob {
 	readonly originRef?: unknown;
 	readonly repositoryKey?: string | null;
 	readonly folderRoot?: string | null;
+	readonly productFolderRoots?: readonly string[];
 	readonly surfaceSlug?: string;
 	readonly surfaceTitle?: string;
 	readonly surfaceArchetype?: string;
@@ -296,28 +300,43 @@ export async function loadSurfaceIdentityContext(
 export async function loadSurfaceSharedAssets(
 	folder: SurfaceFolderTextReader,
 	signal: AbortSignal,
+	productFolderRoots?: readonly string[] | null,
 ): Promise<SurfaceSharedAssetsSnapshot | null> {
-	const entries = await Promise.all(
-		SHARED_COMPANY_ASSET_PATHS.map(
-			async (path) =>
-				[path, await readOptionalFolderText(folder, path, SHARED_ASSET_BYTE_LIMITS[path], signal)] as const,
+	const { specsPaths, catalogPaths } = sharedProductAssetCandidates(productFolderRoots);
+	const [identityEntries, specsEntries, catalogEntries] = await Promise.all([
+		Promise.all(
+			IDENTITY_SHARED_ASSET_PATHS.map(
+				async (path) =>
+					[path, await readOptionalFolderText(folder, path, IDENTITY_ASSET_BYTE_LIMITS[path], signal)] as const,
+			),
 		),
-	);
-	const byPath = new Map<string, string | null>(entries);
+		Promise.all(
+			specsPaths.map(
+				async (path) => [path, await readOptionalFolderText(folder, path, MAX_SHARED_ASSET_BYTES, signal)] as const,
+			),
+		),
+		Promise.all(
+			catalogPaths.map(
+				async (path) => [path, await readOptionalFolderText(folder, path, MAX_SHARED_ASSET_BYTES, signal)] as const,
+			),
+		),
+	]);
+	const byPath = new Map<string, string | null>(identityEntries);
 	const briefMarkdown = byPath.get(IDENTITY_BRIEF_PATH) ?? null;
 	const voiceSummary = byPath.get(IDENTITY_VOICE_PATH) ?? null;
 	const tokensJson = byPath.get(IDENTITY_TOKENS_JSON_PATH) ?? null;
 	const existingTokensCss = byPath.get(IDENTITY_TOKENS_CSS_PATH) ?? null;
-	const compiledTokensCss =
-		existingTokensCss === null &&
-		tokensJson !== null &&
-		Object.keys(compileIdentityTokens(tokensJson).vars).length > 0
-			? compileIdentityTokensCss(tokensJson)
-			: null;
+	let compiledTokensCss: string | null = null;
+	if (existingTokensCss === null && tokensJson !== null) {
+		const compiled = compileIdentityTokens(tokensJson);
+		if (Object.keys(compiled.vars).length > 0) {
+			compiledTokensCss = compiled.css;
+		}
+	}
 	const tokensCss = existingTokensCss ?? compiledTokensCss;
 	const companyProfileJson = byPath.get(IDENTITY_COMPANY_PATH) ?? null;
-	const productSpecsJson = byPath.get(PRODUCT_SPECS_PATH) ?? null;
-	const productCatalogJson = byPath.get(PRODUCT_CATALOG_PATH) ?? null;
+	const productSpecsJson = specsEntries.find(([, text]) => text !== null)?.[1] ?? null;
+	const productCatalogJson = catalogEntries.find(([, text]) => text !== null)?.[1] ?? null;
 	const logoSvg = byPath.get(IDENTITY_LOGO_PATH) ?? null;
 	const hasLogoSvg = logoSvg !== null;
 	if (
@@ -345,7 +364,7 @@ export async function loadSurfaceSharedAssets(
 	};
 }
 
-function extractPointToChangeTarget(originRef: unknown): PointToChangeTarget | null {
+export function extractPointToChangeTarget(originRef: unknown): PointToChangeTarget | null {
 	if (!originRef || typeof originRef !== "object" || Array.isArray(originRef)) return null;
 	const rec = originRef as Record<string, unknown>;
 	const candidates: unknown[] = [originRef];
@@ -359,11 +378,39 @@ function extractPointToChangeTarget(originRef: unknown): PointToChangeTarget | n
 	return null;
 }
 
+const STUDIO_REPORT_SCHEMA =
+	"`<slug>.report.json` (one or more files for deep-dive vendor audits, competitor analyses, strategy essays, or product blog posts — rendered in the Analysis tab with charts, tables, and article switcher): " +
+	'JSON object `{ "category", "headline", "subtitle", "author", "date", "readingTime", "keyMetrics": [{ "label", "value", "delta" }], "sections": [{ "id", "kicker", "heading", "paragraphs": ["..."], "blocks": [...] }] }`. ' +
+	'Supported section `blocks`: `bar_chart` (`heading`, `subtitle`, `max`, `items: [{ label, value, display, note, highlight }]`), `line_chart` (`heading`, `subtitle`, `xLabels`, `series: [{ name, color, values }]`), `table` (`heading`, `caption`, `columns`, `rows`, `highlightRow`), `callout` (`tone: "thesis" | "decision" | "tradeoff"`, `heading`, `body`, `bullets`), `quote` (`text`, `attribution`), `figure` (`heading`, `caption`, `panels: [{ label, heading, body, accent }]`).';
+
+const PRODUCT_STUDIO_SCHEMA =
+	"Product Studio file layout (write files directly at the root of the surface folder, not scattered in nested markdown folders): " +
+	'(1) `specs.json` — `{ "model": { "kind": "headband" | "device", "dimensions": "...", "layers": ["..."] }, "overview": { ...key-value specs... }, "colorways": [{ "name": "...", "hex": "#rrggbb" }], "bom": [{ "part": "...", "supplier": "...", "unitCost": "..." }] }`. `model` renders the interactive 3D Studio viewer with drag-to-orbit, exploded layers, and colorway switching (use `"headband"` for wearable bands/headbands, `"device"` for other physical hardware); `overview` renders Key specs; `colorways` drives Palette swatches and 3D variants; `bom` renders the BOM table under Specs & BOM. ' +
+	'(2) `vendors.json` — `{ "production": { "targetBatch", "landedCogs", "criticalPath", "compliance" }, "vendors": [{ "vendor", "component", "region", "moq", "leadTime", "unitPrice", "status", "certifications" }] }` (renders Production & Vendors cards). ' +
+	`(3) ${STUDIO_REPORT_SCHEMA} ` +
+	"(4) `brief.md` — concise product brief (renders under Brief & Files). " +
+	"Prefer structured JSON (`specs.json`, `vendors.json`, `<slug>.report.json`) over loose markdown prose so the founder gets the 3D stage, specs/variants, vendor cards, and tabbed analysis views.";
+
 function buildFolderSurfaceInstructions(input: SurfaceSessionTurnInput, folderRoot: string, notesRoot: string): string {
+	const isIdentity = input.surfaceKind === "identity" || input.surfaceSlug === "identity" || folderRoot === "identity";
+	const isReport = !isIdentity && input.surfaceKind === "report";
+	const isDatabase = !isIdentity && input.surfaceKind === "database";
+	const isProduct = !isIdentity && input.surfaceKind === "product";
+	const schemaGuidance = isIdentity
+		? `Identity Studio file layout (directly under ${folderRoot}/): \`tokens.json\` (colors, typography, radii), \`logo.svg\` (vector brand mark), \`voice.md\` and \`brief.md\` (voice and guidelines), and optional ${STUDIO_REPORT_SCHEMA}`
+		: isReport
+			? `Report & Analysis file layout (directly under ${folderRoot}/): ${STUDIO_REPORT_SCHEMA}`
+			: isProduct
+				? PRODUCT_STUDIO_SCHEMA
+				: !isDatabase
+					? `When this surface represents a physical product, follow the ${PRODUCT_STUDIO_SCHEMA}`
+					: "";
 	return (
 		`This session is scoped to the Studio/Identity Surface "${input.surfaceTitle}" (${input.surfaceSlug}), which projects ${folderRoot}/ directly from Company Files. ` +
 		"Founders preview multiple unmerged staged patches toggled on or off simultaneously before approving any change. " +
 		`Use stage_surface_patch to stage cohesive folder_patch operations (write_text, merge_json, delete) relative to ${folderRoot}/, keeping each change atomic and conflict-minimizing. ` +
+		"Studio renders structured JSON (tokens, specs, vendors, *.report.json), Markdown prose (voice.md, brief.md), and SVG marks natively — do not create standalone HTML/CSS code pages inside Studio folders. " +
+		(schemaGuidance ? `${schemaGuidance} ` : "") +
 		`Any file writes are strictly confined to ${folderRoot}/ and ${notesRoot}/; attach concise supporting analyses as notePaths under ${notesRoot}/ rather than creating loose markdown files elsewhere.`
 	);
 }
@@ -461,6 +508,31 @@ export function createControlPlaneSessionLeaseRenewalPort(
 
 const DEFAULT_SESSION_LEASE_RENEW_INTERVAL_MS = 60_000;
 const DEFAULT_SESSION_LEASE_EXTEND_SECONDS = 300;
+const DEFAULT_COMPLETION_RETRY_DELAYS_MS = [250, 750] as const;
+
+function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+	if (ms <= 0 || signal?.aborted) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		const onAbort = (): void => {
+			clearTimeout(timer);
+			resolve();
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		timer.unref?.();
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+function isAlreadyCompletedSessionError(error: unknown): boolean {
+	if (!error || typeof error !== "object") return false;
+	const text = error instanceof Error ? error.message : String(error);
+	if (/session is not running/i.test(text)) return true;
+	const code = (error as { code?: unknown }).code;
+	return code === "55000" && /not running/i.test(text);
+}
 
 export async function runSurfaceSessionTurn(
 	input: SurfaceSessionTurnInput,
@@ -473,12 +545,27 @@ export async function runSurfaceSessionTurn(
 	let identityContext: SurfaceIdentityContext | null = null;
 	let sharedAssets: SurfaceSharedAssetsContext | null = null;
 
+	let initialRenewTimer: ReturnType<typeof setTimeout> | undefined;
 	let leaseTimer: ReturnType<typeof setInterval> | undefined;
 	let leaseLost = false;
+	let outcomeReady = false;
 	const leaseAbort = new AbortController();
+	const stopLeaseRenewal = (): void => {
+		if (initialRenewTimer !== undefined) {
+			clearTimeout(initialRenewTimer);
+			initialRenewTimer = undefined;
+		}
+		if (leaseTimer !== undefined) {
+			clearInterval(leaseTimer);
+			leaseTimer = undefined;
+		}
+		if (!leaseAbort.signal.aborted) {
+			leaseAbort.abort();
+		}
+	};
 	const onCallerAbort = (): void => {
 		turnAbort.abort(callerSignal.reason);
-		leaseAbort.abort(callerSignal.reason);
+		stopLeaseRenewal();
 	};
 	if (callerSignal.aborted) {
 		onCallerAbort();
@@ -497,12 +584,12 @@ export async function runSurfaceSessionTurn(
 			Math.min(900, Math.floor(ports.leaseExtendSeconds ?? DEFAULT_SESSION_LEASE_EXTEND_SECONDS)),
 		);
 		let inFlight = false;
-		// WHY: Keep the session lease alive for long turns and abort immediately if another worker reclaims the lease.
-		leaseTimer = setInterval(() => {
+		const renewOnce = (): void => {
 			if (inFlight || leaseAbort.signal.aborted) return;
 			inFlight = true;
-			void Promise.resolve()
-				.then(() =>
+			void withAbortScopes(
+				[leaseAbort.signal],
+				(renewSignal) =>
 					renewSessionLease(
 						{
 							sessionId: input.sessionId,
@@ -510,13 +597,14 @@ export async function runSurfaceSessionTurn(
 							leaseToken,
 							extendSeconds,
 						},
-						leaseAbort.signal,
+						renewSignal,
 					),
-				)
+				15_000,
+			)
 				.then((result) => {
-					if (result && result.renewed === false) {
+					if (result && result.renewed === false && !leaseAbort.signal.aborted) {
 						leaseLost = true;
-						leaseAbort.abort(new Error("Surface session lease lost during execution"));
+						stopLeaseRenewal();
 						turnAbort.abort(new Error("Surface session lease lost during execution"));
 					}
 				})
@@ -524,51 +612,53 @@ export async function runSurfaceSessionTurn(
 				.finally(() => {
 					inFlight = false;
 				});
-		}, intervalMs);
+		};
+		// WHY: Fire an initial renewal on the next tick so wakes queued near the 10-minute lease bound extend immediately without racing synchronous abort-listener registration.
+		initialRenewTimer = setTimeout(renewOnce, 0);
+		initialRenewTimer.unref?.();
+		leaseTimer = setInterval(renewOnce, intervalMs);
 		leaseTimer.unref?.();
 	}
 
 	try {
-		if (folderReader) {
-			const loaded = await loadSurfaceSharedAssets(folderReader, signal);
-			if (loaded) {
-				if (
-					input.surfaceSlug !== "identity" &&
-					(loaded.briefMarkdown || loaded.voiceSummary || loaded.tokensJson)
-				) {
-					identityContext = {
-						briefMarkdown: loaded.briefMarkdown,
-						voiceSummary: loaded.voiceSummary,
-						tokensJson: loaded.tokensJson,
-					};
-				}
-				if (
-					loaded.tokensCss ||
-					loaded.companyProfileJson ||
-					loaded.productSpecsJson ||
-					loaded.productCatalogJson ||
-					loaded.hasLogoSvg
-				) {
-					sharedAssets = {
-						tokensCss: loaded.tokensCss,
-						companyProfileJson: loaded.companyProfileJson,
-						productSpecsJson: loaded.productSpecsJson,
-						productCatalogJson: loaded.productCatalogJson,
-						hasLogoSvg: loaded.hasLogoSvg,
-					};
-				}
+		const explicitBrief = input.briefMarkdown?.trim() || null;
+		const [loaded, folderBrief] = folderReader
+			? await Promise.all([
+					loadSurfaceSharedAssets(folderReader, signal, input.productFolderRoots),
+					explicitBrief === null
+						? readOptionalFolderText(
+								folderReader,
+								`QorperaOS/surfaces/${input.surfaceSlug}/brief.md`,
+								MAX_SURFACE_BRIEF_BYTES,
+								signal,
+							)
+						: Promise.resolve(null),
+				])
+			: [null, null];
+		if (loaded) {
+			if (input.surfaceSlug !== "identity" && (loaded.briefMarkdown || loaded.voiceSummary || loaded.tokensJson)) {
+				identityContext = {
+					briefMarkdown: loaded.briefMarkdown,
+					voiceSummary: loaded.voiceSummary,
+					tokensJson: loaded.tokensJson,
+				};
+			}
+			if (
+				loaded.tokensCss ||
+				loaded.companyProfileJson ||
+				loaded.productSpecsJson ||
+				loaded.productCatalogJson ||
+				loaded.hasLogoSvg
+			) {
+				sharedAssets = {
+					tokensCss: loaded.tokensCss,
+					companyProfileJson: loaded.companyProfileJson,
+					productSpecsJson: loaded.productSpecsJson,
+					productCatalogJson: loaded.productCatalogJson,
+					hasLogoSvg: loaded.hasLogoSvg,
+				};
 			}
 		}
-		const explicitBrief = input.briefMarkdown?.trim() || null;
-		const folderBrief =
-			explicitBrief === null && folderReader
-				? await readOptionalFolderText(
-						folderReader,
-						`QorperaOS/surfaces/${input.surfaceSlug}/brief.md`,
-						MAX_SURFACE_BRIEF_BYTES,
-						signal,
-					)
-				: null;
 		const briefMarkdown = explicitBrief ?? folderBrief ?? input.briefSummary?.trim() ?? null;
 		const pointToChangeTarget = extractPointToChangeTarget(input.originRef);
 		const normalizedFolderRoot =
@@ -592,6 +682,8 @@ export async function runSurfaceSessionTurn(
 			sharedAssets,
 			pointToChangeTarget,
 			conflictPaths: input.conflictPaths ?? null,
+			conflictDetails: input.conflictDetails ?? null,
+			mainSha: input.mainSha ?? null,
 		});
 
 		let outcome: SurfaceSessionTurnExecutionOutcome;
@@ -682,6 +774,8 @@ export async function runSurfaceSessionTurn(
 				sharedAssets,
 				pointToChangeTarget,
 				conflictPaths: input.conflictPaths ?? null,
+				conflictDetails: input.conflictDetails ?? null,
+				mainSha: input.mainSha ?? null,
 				recordChange: recordChange.bind(ports.surfaceTools),
 			};
 			const codeRequest: SurfaceCodeRepoTurnRequest = {
@@ -713,24 +807,49 @@ export async function runSurfaceSessionTurn(
 		if (leaseLost) {
 			throw new Error("Surface session lease lost during execution");
 		}
+		// WHY: Stop lease renewal before completing the turn so Postgres clearing lease_token never causes a concurrent renewal to abort the in-flight completion response.
+		stopLeaseRenewal();
+		outcomeReady = true;
 		const state = outcome.state ?? (outcome.question ? "needs_input" : "ready");
 		const replyText = outcome.replyText?.trim() || null;
 		const question = outcome.question ?? null;
 		const notePaths = outcome.notePaths ? [...outcome.notePaths] : null;
 		const branchHeadSha = outcome.branchHeadSha ?? null;
-		await ports.completeSessionTurn(
-			{
-				sessionId: input.sessionId,
-				companyId: input.companyId,
-				state,
-				replyText,
-				question,
-				notePaths,
-				branchHeadSha,
-				...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
-			},
-			signal,
-		);
+		const completionPayload: SurfaceSessionTurnCompletion = {
+			sessionId: input.sessionId,
+			companyId: input.companyId,
+			state,
+			replyText,
+			question,
+			notePaths,
+			branchHeadSha,
+			...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
+		};
+		const retryDelays = ports.completionRetryDelaysMs ?? DEFAULT_COMPLETION_RETRY_DELAYS_MS;
+		let lastCompletionError: unknown;
+		for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+			try {
+				await withAbortScopes(
+					[],
+					(completeSignal) => ports.completeSessionTurn(completionPayload, completeSignal),
+					15_000,
+				);
+				lastCompletionError = undefined;
+				break;
+			} catch (error) {
+				if (attempt > 0 && isAlreadyCompletedSessionError(error)) {
+					lastCompletionError = undefined;
+					break;
+				}
+				lastCompletionError = error;
+				const delayMs = retryDelays[attempt];
+				if (delayMs === undefined || callerSignal.aborted) break;
+				await delayWithAbort(delayMs, callerSignal);
+			}
+		}
+		if (lastCompletionError !== undefined) {
+			throw lastCompletionError;
+		}
 		return {
 			sessionId: input.sessionId,
 			sourceKind: input.sourceKind,
@@ -744,22 +863,29 @@ export async function runSurfaceSessionTurn(
 			error: null,
 		};
 	} catch (error) {
+		stopLeaseRenewal();
 		const { errorMessage, replyText } = formatSessionFailure(error);
-		if (!leaseLost) {
-			const completionSignal = callerSignal.aborted ? new AbortController().signal : callerSignal;
-			await ports.completeSessionTurn(
-				{
-					sessionId: input.sessionId,
-					companyId: input.companyId,
-					state: "failed",
-					replyText,
-					question: null,
-					notePaths: null,
-					branchHeadSha: null,
-					...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
-				},
-				completionSignal,
-			);
+		if (!outcomeReady && !leaseLost && !callerSignal.aborted) {
+			try {
+				await withAbortScopes(
+					[callerSignal],
+					(failSignal) =>
+						ports.completeSessionTurn(
+							{
+								sessionId: input.sessionId,
+								companyId: input.companyId,
+								state: "failed",
+								replyText,
+								question: null,
+								notePaths: null,
+								branchHeadSha: null,
+								...(input.leaseToken !== undefined ? { leaseToken: input.leaseToken } : {}),
+							},
+							failSignal,
+						),
+					10_000,
+				);
+			} catch {}
 		}
 		return {
 			sessionId: input.sessionId,
@@ -775,8 +901,7 @@ export async function runSurfaceSessionTurn(
 			cause: error,
 		};
 	} finally {
-		if (leaseTimer !== undefined) clearInterval(leaseTimer);
-		leaseAbort.abort();
+		stopLeaseRenewal();
 		callerSignal.removeEventListener("abort", onCallerAbort);
 	}
 }
@@ -797,11 +922,13 @@ function deliveryJobToTurnInput(job: SurfaceSessionDeliveryJob): SurfaceSessionT
 		companyId: job.profileId,
 		surfaceSlug,
 		surfaceTitle,
+		...(job.surfaceKind ? { surfaceKind: job.surfaceKind } : {}),
 		sourceKind: inferDeliverySourceKind(job),
 		prompt: job.prompt,
 		state: job.state,
 		repositoryKey: job.repositoryKey ?? null,
 		folderRoot: job.folderRoot ?? null,
+		...(job.productFolderRoots ? { productFolderRoots: job.productFolderRoots } : {}),
 		briefSummary: job.briefSummary ?? null,
 		explorationVariantLabel: job.explorationVariantLabel ?? null,
 		originKind: job.originKind,

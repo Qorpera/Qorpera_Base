@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
@@ -11,15 +11,19 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { POSTGRES_IMAGE, POSTGRES_LOCALE } from "../../../scripts/test-hosted-db.mjs";
 import {
+	applyClusterBroadcast,
 	companyDatabase,
+	createClusterWorkerCallbacks,
 	createDirectoryPublicReader,
 	createHttpPublicReader,
 	createTriggerWakeDispatcher,
 	DataChangeNotifier,
 	Gateway,
 	parsePublicConfig,
+	relayClusterBroadcast,
 	serve,
 	serveRuns,
+	startWatcher,
 	TEST_SCHEMA_NAME,
 } from "./gateway.mjs";
 
@@ -396,6 +400,222 @@ describe("parsePublicConfig and DataChangeNotifier", () => {
 			rmSync(dirRoot, { recursive: true, force: true });
 		}
 	});
+
+	it("coalesces in-flight trigger wakes, caps wake dispatcher concurrency, coalesces public reader calls, skips FIFOs, decouples watcher housekeeping, and bounds pending test reservations", async () => {
+		const notifier = new DataChangeNotifier();
+		let inFlight = 0;
+		let peakInFlight = 0;
+		const wakeBatches = [];
+		let releaseFirst;
+		const firstStarted = new Promise((resolve) => {
+			notifier.register({
+				id: "slow-wake",
+				environmentId: "env-inflight",
+				database: "shop",
+				minIntervalMs: 15,
+				onWake: async (ev) => {
+					inFlight++;
+					peakInFlight = Math.max(peakInFlight, inFlight);
+					wakeBatches.push(ev.tables);
+					if (wakeBatches.length === 1) {
+						resolve();
+						await new Promise((done) => {
+							releaseFirst = done;
+						});
+					}
+					inFlight--;
+				},
+			});
+		});
+		notifier.notify("env-inflight", { schema: "shop", table: "orders" });
+		await firstStarted;
+		notifier.notify("env-inflight", { schema: "shop", table: "items" });
+		notifier.notify("env-inflight", { schema: "shop", table: "payments" });
+		await new Promise((r) => setTimeout(r, 40));
+		assert.equal(wakeBatches.length, 1);
+		assert.equal(peakInFlight, 1);
+		releaseFirst();
+		for (let i = 0; i < 40 && wakeBatches.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+		assert.equal(wakeBatches.length, 2);
+		assert.deepEqual([...wakeBatches[1]].sort(), ["items", "payments"]);
+		assert.equal(peakInFlight, 1);
+		notifier.notifyTrigger("slow-wake", "*");
+		for (let i = 0; i < 40 && wakeBatches.length < 3; i++) await new Promise((r) => setTimeout(r, 10));
+		assert.equal(wakeBatches.length, 3);
+		assert.deepEqual(wakeBatches[2], ["*"]);
+		notifier.close();
+
+		let activeDispatches = 0;
+		let peakDispatches = 0;
+		const dispatchErrors = [];
+		const releases = [];
+		const boundedDispatch = createTriggerWakeDispatcher({
+			url: "http://127.0.0.1:9/wake",
+			maxConcurrent: 2,
+			maxQueued: 2,
+			fetch: async () => {
+				activeDispatches++;
+				peakDispatches = Math.max(peakDispatches, activeDispatches);
+				await new Promise((done) => releases.push(done));
+				activeDispatches--;
+				return new Response('{"ok":true}', { status: 200 });
+			},
+			onError: (err) => dispatchErrors.push(err.message),
+		});
+		const calls = [];
+		for (let i = 0; i < 6; i++) calls.push(boundedDispatch({ id: `t-${i}` }));
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(peakDispatches, 2);
+		assert.equal(dispatchErrors.filter((m) => /queue is full/i.test(m)).length, 2);
+		while (releases.length > 0) {
+			releases.shift()();
+			await new Promise((r) => setTimeout(r, 5));
+		}
+		await Promise.all(calls);
+		assert.equal(peakDispatches, 2);
+
+		let readerFetchCalls = 0;
+		const sfEnv = randomUUID();
+		const sfReader = createHttpPublicReader({
+			url: "http://127.0.0.1:9/files",
+			cacheMs: 1_000,
+			fetch: async (_url, init) => {
+				readerFetchCalls++;
+				await new Promise((r) => setTimeout(r, 30));
+				const reqBody = JSON.parse(init.body);
+				return new Response(JSON.stringify({ files: Object.fromEntries(reqBody.paths.map((p) => [p, "select 1;\n"])) }), { status: 200 });
+			},
+		});
+		const parallelReads = await Promise.all(
+			Array.from({ length: 5 }, () => sfReader(sfEnv, ["data/shop/queries/q.sql", "data/shop/queries/q.sql"])),
+		);
+		assert.equal(readerFetchCalls, 1);
+		for (const map of parallelReads) assert.equal(map.get("data/shop/queries/q.sql"), "select 1;\n");
+
+		const fifoRoot = mkdtempSync(join(tmpdir(), "qorpera-pub-fifo-"));
+		try {
+			const fifoEnv = randomUUID();
+			mkdirSync(join(fifoRoot, fifoEnv, "data", "shop", "queries"), { recursive: true });
+			const fifoPath = join(fifoRoot, fifoEnv, "data", "shop", "queries", "pipe.sql");
+			execFileSync("mkfifo", [fifoPath]);
+			const dirReader = createDirectoryPublicReader({ rootDir: fifoRoot });
+			const fifoResult = await dirReader(fifoEnv, ["data/shop/queries/pipe.sql"]);
+			assert.equal(fifoResult.get("data/shop/queries/pipe.sql"), null);
+		} finally {
+			rmSync(fifoRoot, { recursive: true, force: true });
+		}
+
+		let fastLooks = 0;
+		let housekeeps = 0;
+		let releaseHousekeep;
+		const fakeGw = {
+			watchOnce: async ({ housekeeping }) => {
+				assert.equal(housekeeping, false);
+				fastLooks++;
+				return { ended: [], full: [], near: [], unforgotten: [], databases: ["c_0123456789abcdef0123456789abcdef"] };
+			},
+			housekeepOnce: async () => {
+				housekeeps++;
+				await new Promise((done) => {
+					releaseHousekeep = done;
+				});
+				return { unforgotten: [] };
+			},
+		};
+		const stopFakeWatcher = startWatcher(fakeGw, { everyMs: 20 });
+		try {
+			for (let i = 0; i < 40 && fastLooks < 3; i++) await new Promise((r) => setTimeout(r, 15));
+			assert.ok(fastLooks >= 3, `expected >= 3 fast watchOnce ticks while housekeeping is busy, got ${fastLooks}`);
+			assert.equal(housekeeps, 1);
+		} finally {
+			stopFakeWatcher();
+			releaseHousekeep?.();
+		}
+
+		const baseStore = { host: "127.0.0.1", port: 1, logins: { admin: "a", keeper: "k", watch: "w", folderKey: "0".repeat(64) } };
+		const reserveGw = new Gateway({
+			store: baseStore,
+			platform: {},
+			limits: { applyMs: 1_000 },
+			testSchemas: { reaper: false },
+		});
+		try {
+			const db = companyDatabase(randomUUID());
+			const schema = "qorpera_test_0123456789abcdef";
+			const now = Date.now();
+			const oneHourLater = now + 3_600_000;
+			await reserveGw.reserveTestSchema({
+				database: db,
+				schema,
+				environmentId: randomUUID(),
+				sourceDatabase: "shop",
+				ttlMs: 3_600_000,
+				createdAt: now,
+				expiresAt: oneHourLater,
+				readLive: false,
+			});
+			const pendingCheck = reserveGw.checkTestSchema(db, schema);
+			assert.ok(pendingCheck.expiresAt !== null && pendingCheck.expiresAt <= now + 30_000, "pending reservation must stay bounded");
+			reserveGw.touchTestSchema({ database: db, schema, expiresAt: oneHourLater, activate: true });
+			assert.equal(reserveGw.checkTestSchema(db, schema).expiresAt, oneHourLater);
+		} finally {
+			await reserveGw.close();
+		}
+	});
+
+	it("relays schemaChange, makeRoom, testSchemaDrop, and drop IPC broadcasts to primary and connected peers only", () => {
+		const primaryCalls = [];
+		const peerCalls = [];
+		const makeFakeGw = (sink) => ({
+			notifySchemaChange: (database, schema) => sink.push(["schemaChange", database, schema]),
+			reclaimIdlePools: (database) => sink.push(["makeRoom", database]),
+			evictTestSchema: (database, schema) => sink.push(["testSchemaDrop", database, schema]),
+			evictCompany: (database) => sink.push(["dropCompany", database]),
+			evictDatabase: (database, schema, n) => sink.push(["dropDatabase", database, schema, n]),
+		});
+		const primaryGw = makeFakeGw(primaryCalls);
+		const peerGw = makeFakeGw(peerCalls);
+		const sentToPeers = [];
+		const workers = {
+			1: { id: 1, isConnected: () => true },
+			2: { id: 2, isConnected: () => true },
+			3: { id: 3, isConnected: () => false },
+			4: { id: 4, isConnected: () => true },
+		};
+		const fromWorker = [];
+		const callbacks = createClusterWorkerCallbacks((msg) => fromWorker.push(msg));
+		callbacks.onSchemaChange({ database: "c_1", schema: "shop" });
+		callbacks.onMakeRoom({ database: "c_1" });
+		callbacks.onTestSchemaDrop({ database: "c_1", schema: "qorpera_test_0123456789abcdef" });
+		callbacks.onDrop({ kind: "database", database: "c_1", schema: "shop", n: 2 });
+		callbacks.onDrop({ kind: "company", database: "c_1" });
+
+		for (const msg of fromWorker) {
+			assert.equal(
+				relayClusterBroadcast(primaryGw, msg, 1, workers, (peer, payload) => {
+					sentToPeers.push({ id: peer.id, payload });
+					if (peer.id === 2) assert.equal(applyClusterBroadcast(peerGw, payload), true);
+				}),
+				true,
+			);
+		}
+		assert.equal(relayClusterBroadcast(primaryGw, { type: "agentRead", pid: 1, delta: 1 }, 1, workers, () => {}), false);
+		assert.equal(applyClusterBroadcast(peerGw, { type: "unknown" }), false);
+
+		const expected = [
+			["schemaChange", "c_1", "shop"],
+			["makeRoom", "c_1"],
+			["testSchemaDrop", "c_1", "qorpera_test_0123456789abcdef"],
+			["dropDatabase", "c_1", "shop", 2],
+			["dropCompany", "c_1"],
+		];
+		assert.deepEqual(primaryCalls, expected);
+		assert.deepEqual(peerCalls, expected);
+		assert.deepEqual(
+			sentToPeers.map((entry) => entry.id),
+			[2, 4, 2, 4, 2, 4, 2, 4, 2, 4],
+		);
+	});
 });
 
 describe("external doors, direct logins, hooks, and live triggers against PostgreSQL 17", { skip: !dockerUsable }, () => {
@@ -677,6 +897,10 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 			assert.equal(wakesOld.length, 0);
 			assert.equal(wakesNew.length, 1);
 
+			gateway.notifySchemaChange(companyDatabase(envId), "shop");
+			await new Promise((r) => setTimeout(r, 120));
+			assert.equal(wakesNew.length, 1, "peer schemaChange IPC must invalidate caches without waking triggers directly");
+
 			const terminated = await asSuperuser(
 				"postgres",
 				"select pid, pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and application_name = 'qorpera-data-gateway listen'",
@@ -698,13 +922,21 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 				await new Promise((r) => setTimeout(r, 50));
 			}
 			assert.equal(reconnected, true, "expected LISTEN backend to reconnect with a new pid");
+			for (let i = 0; i < 40 && !wakesNew.slice(1).some((w) => w.tables.includes("*")); i++) {
+				await new Promise((r) => setTimeout(r, 25));
+			}
+			assert.ok(
+				wakesNew.slice(1).some((w) => w.tables.includes("*")),
+				`expected wildcard catch-up wake after LISTEN reconnect without any new write, got ${JSON.stringify(wakesNew)}`,
+			);
+			const wakesAfterCatchUp = wakesNew.length;
 			await post(
 				`/v1/hook-data/${envId}/change`,
 				{ database: "shop", change: "ingest-stripe", hookId: "hook-reconnect-1", params: { email: "r2@example.com", source: "stripe" } },
 				{ authorization: `Bearer ${hookToken}` },
 			);
-			for (let i = 0; i < 80 && wakesNew.length < 2; i++) await new Promise((r) => setTimeout(r, 25));
-			assert.ok(wakesNew.length >= 2, `expected trigger wake after LISTEN reconnect, got ${wakesNew.length}`);
+			for (let i = 0; i < 80 && wakesNew.length <= wakesAfterCatchUp; i++) await new Promise((r) => setTimeout(r, 25));
+			assert.ok(wakesNew.length > wakesAfterCatchUp, `expected trigger wake after LISTEN reconnect, got ${wakesNew.length}`);
 
 			const wakesBeforeEvict = wakesNew.length;
 			await gateway.evictDatabase(companyDatabase(envId), "shop");

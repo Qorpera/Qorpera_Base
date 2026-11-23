@@ -403,6 +403,25 @@ describe("LxdCodingExecutorHost 5h snapshot planning, authority, and setup lifec
 						stderr: Buffer.alloc(0),
 					};
 				}
+				if (verb === "status-all") {
+					const workerIds = Array.isArray(payload.workerIds) ? (payload.workerIds as string[]) : [];
+					return {
+						exitCode: 0,
+						stdout: Buffer.from(
+							`${JSON.stringify({
+								schema: "qorpera.coding-guest-status-all/v1",
+								bootId: BOOT_ID,
+								uptimeMs: 1000,
+								sessions: workerIds.map((workerId) => ({
+									workerId,
+									commands: [],
+									usage: { bootId: BOOT_ID, cpuUsageUsec: 0, ioBytes: 0, ioComplete: true, uptimeMs: 1000 },
+								})),
+							})}\n`,
+						),
+						stderr: Buffer.alloc(0),
+					};
+				}
 				return {
 					exitCode: 0,
 					stdout: Buffer.from(

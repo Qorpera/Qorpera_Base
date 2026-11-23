@@ -148,6 +148,7 @@ interface PictureCache {
 	disposed: boolean;
 }
 
+const MAX_CARD_PICTURES = 48;
 const PICTURES = new WeakMap<NonNullable<InteractionCardContext["image"]>, PictureCache>();
 
 export function disposeCardPictures(read: NonNullable<InteractionCardContext["image"]> | undefined): void {
@@ -172,7 +173,21 @@ function picture(read: NonNullable<InteractionCardContext["image"]>, path: strin
 		PICTURES.set(read, cache);
 	}
 	let shown = cache.entries.get(path);
+	if (shown) {
+		cache.entries.delete(path);
+		cache.entries.set(path, shown);
+	}
 	if (!shown) {
+		if (cache.entries.size >= MAX_CARD_PICTURES) {
+			const oldestKey = cache.entries.keys().next().value;
+			if (oldestKey !== undefined) {
+				const evicted = cache.entries.get(oldestKey);
+				cache.entries.delete(oldestKey);
+				void evicted?.then((url) => {
+					if (url) forgetPictureUrl(url);
+				});
+			}
+		}
 		const active = cache;
 		shown = read(path, active.controller.signal)
 			.then(async (blob) => {

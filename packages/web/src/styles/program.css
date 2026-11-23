@@ -69,7 +69,7 @@
 	border-radius: 50%;
 	background: none;
 	color: var(--text-muted);
-	cursor: pointer;
+	cursor: default;
 	transition:
 		background var(--motion-fast) ease,
 		color var(--motion-fast) ease;
@@ -239,7 +239,7 @@
 	font-weight: 600;
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
-	cursor: pointer;
+	cursor: default;
 	transition: background var(--motion-fast) ease;
 }
 .program-download:hover:not(:disabled) {
@@ -285,7 +285,7 @@
 	border-style: solid;
 	color: var(--text);
 	background: color-mix(in srgb, var(--bg) 72%, transparent);
-	cursor: pointer;
+	cursor: default;
 	transition: background var(--motion-fast) ease;
 }
 .program-kind.is-made:hover:not(:disabled) {
@@ -315,7 +315,7 @@
 	font-size: 13.5px;
 	text-decoration: underline;
 	text-underline-offset: 3px;
-	cursor: pointer;
+	cursor: default;
 }
 .program-back-button:hover {
 	color: var(--text);
@@ -406,11 +406,11 @@
 		border-color var(--motion-fast) ease;
 }
 button.program-drop-area {
-	cursor: pointer;
+	cursor: default;
 }
 .program-drop.is-over .program-drop-area {
-	border-color: var(--composer-accent);
-	background: color-mix(in srgb, var(--composer-accent) 7%, var(--bg));
+	border-color: var(--composer-accent-ink);
+	background: color-mix(in srgb, var(--composer-accent-ink) 7%, var(--bg));
 }
 .program-drop-line {
 	margin: 0;
@@ -426,7 +426,7 @@ button.program-drop-area {
 	color: var(--text-muted);
 	font: inherit;
 	font-size: 16px;
-	cursor: pointer;
+	cursor: default;
 }
 .program-drop-choose:hover {
 	color: var(--text);
@@ -434,7 +434,7 @@ button.program-drop-area {
 }
 .program-drop-choose:focus-visible,
 .program-drop-area:focus-visible {
-	outline: 2px solid var(--composer-accent);
+	outline: 2px solid var(--composer-accent-ink);
 	outline-offset: 2px;
 }
 .program-drop-problem {
@@ -462,7 +462,7 @@ button.program-drop-area {
 	aspect-ratio: 1;
 	background: linear-gradient(
 		to top,
-		color-mix(in srgb, var(--composer-accent) 13%, var(--program-glass)) var(--share),
+		color-mix(in srgb, var(--composer-accent-ink) 13%, var(--program-glass)) var(--share),
 		var(--program-glass) var(--share)
 	);
 	transition: background var(--motion-base) ease;
@@ -480,13 +480,13 @@ button.program-drop-area {
 	border-style: solid;
 	color: var(--text);
 	background: color-mix(in srgb, var(--bg) 72%, transparent);
-	cursor: pointer;
+	cursor: default;
 }
 .program-kind.is-choice:hover,
 .program-kind.is-choice:focus-visible {
 	background: var(--bg);
 	outline: none;
-	border-color: var(--composer-accent);
+	border-color: var(--composer-accent-ink);
 }
 .program-drop-status {
 	display: flex;

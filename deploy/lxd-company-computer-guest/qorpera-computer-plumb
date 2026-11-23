@@ -161,6 +161,15 @@ else
 fi
 # The same computer's previous shell or desktop, if its namespace is still going away.
 ip link del "${host}" 2>/dev/null || true
+# WHY: Delete the host veth on any mid-plumb error or refusal so a dying namespace never leaks an interface and /30 route.
+plumbing_host=${host}
+cleanup_plumb() {
+	if [[ -n ${plumbing_host} ]]; then
+		ip link del "${plumbing_host}" 2>/dev/null || true
+		plumbing_host=
+	fi
+}
+trap cleanup_plumb EXIT
 ip link add "${host}" type veth peer name eth0 netns "${pid}"
 ip addr add "${host_ip}/30" dev "${host}"
 ip link set "${host}" up
@@ -187,14 +196,15 @@ table inet qorpera_computer {
 	}
 }
 EOF
-nsenter -t "${pid}" -n sysctl -q -w net.ipv6.conf.eth0.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1
-nsenter -t "${pid}" -n ip addr add "${peer_ip}/30" dev eth0
-nsenter -t "${pid}" -n ip link set eth0 up
-nsenter -t "${pid}" -n ip route add default via "${host_ip}"
-nsenter -t "${pid}" -n sysctl -q -w net.ipv4.ping_group_range="0 2147483647"
+# WHY: Combine inner sysctl and ip configuration into one nsenter call to cut four namespace-entry forks per computer start.
+nsenter -t "${pid}" -n /bin/bash -euo pipefail -c '
+	sysctl -q -w net.ipv6.conf.eth0.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 "net.ipv4.ping_group_range=0 2147483647"
+	printf "addr add %s/30 dev eth0\nlink set eth0 up\nroute add default via %s\n" "$1" "$2" | ip -batch -
+' _ "${peer_ip}" "${host_ip}"
 # The process must still be the one asked about, still waiting at its gate.
 if ! held || [[ $(readlink "/proc/${pid}/ns/net" 2>/dev/null) != "${target}" ]]; then
-	ip link del "${host}" 2>/dev/null || true
+	cleanup_plumb
 	refuse namespace
 fi
+plumbing_host=
 printf 'ok %s\n' "${peer_ip}"

@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	CloudGeminiKeyVault,
+	checkGeminiApiKey,
 	GeminiKeyInvalidError,
 	type GeminiKeyVaultAuthority,
 	geminiKeyHint,
@@ -34,7 +35,26 @@ function digestHex(bytes: Uint8Array | string): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
 
-function standIn(verifyKey?: (apiKey: string, signal: AbortSignal) => Promise<void>) {
+function standIn(
+	verifyKey?: (apiKey: string, signal: AbortSignal) => Promise<void>,
+	checkKey?: (
+		apiKey: string,
+		signal: AbortSignal,
+	) => Promise<
+		| { readonly ok: true }
+		| {
+				readonly ok: false;
+				readonly errorCode:
+					| "key_rejected"
+					| "billing_required"
+					| "quota_exhausted"
+					| "model_unavailable"
+					| "invalid_request"
+					| "provider_outage"
+					| "transport_unavailable";
+		  }
+	>,
+) {
 	const keyring = new CloudSecretKeyring({}, { "vault-root-1": randomBytes(32) });
 	const state = {
 		profileId: randomUUID(),
@@ -42,7 +62,9 @@ function standIn(verifyKey?: (apiKey: string, signal: AbortSignal) => Promise<vo
 		geminiKeyId: randomUUID(),
 		keyId: "vault-root-1",
 		ticketId: randomUUID(),
+		checkTicketId: randomUUID(),
 		capability: randomBytes(32).toString("hex"),
+		checkCapability: randomBytes(32).toString("hex"),
 		defaultForChats: true,
 		monthlyCapCents: 10_000 as number | null,
 		spendMonth: "2026-11",
@@ -51,6 +73,8 @@ function standIn(verifyKey?: (apiKey: string, signal: AbortSignal) => Promise<vo
 		envelope: null as Buffer | null,
 		keyHint: null as string | null,
 		refusal: null as "REVOKED" | "CAP_REACHED" | null,
+		lastCheckStatus: null as "ok" | "error" | null,
+		lastCheckErrorCode: null as string | null,
 	};
 	const authority: GeminiKeyVaultAuthority = {
 		describeGeminiKeyTicket: vi.fn(async (request) => {
@@ -111,14 +135,46 @@ function standIn(verifyKey?: (apiKey: string, signal: AbortSignal) => Promise<vo
 				monthlyCapCents: state.monthlyCapCents,
 			};
 		}),
+		describeGeminiKeyCheck: vi.fn(async (request) => {
+			if (
+				request.ticketId !== state.checkTicketId ||
+				request.capabilitySha256 !== digestHex(state.checkCapability) ||
+				!state.envelope
+			) {
+				throw Object.assign(new Error("Gemini key check ticket is unavailable"), { code: "42501" });
+			}
+			return {
+				schema: "qorpera.gemini-key-check-description/v1",
+				ticketId: state.checkTicketId,
+				profileId: state.profileId,
+				ownerUserId: state.ownerUserId,
+				geminiKeyId: state.geminiKeyId,
+				keyId: state.keyId,
+				version: state.version,
+				envelopeSha256: digestHex(state.envelope),
+				encryptedEnvelopeBase64: state.envelope.toString("base64"),
+			};
+		}),
+		completeGeminiKeyCheck: vi.fn(async (completion) => {
+			state.lastCheckStatus = completion.status;
+			state.lastCheckErrorCode = completion.errorCode;
+			return {
+				schema: "qorpera.gemini-key-checked/v1",
+				ok: completion.status === "ok",
+				errorCode: completion.errorCode,
+				checkedAt: "2026-11-22T18:00:00.000Z",
+			};
+		}),
 	};
 	const verify = verifyKey ?? vi.fn(async () => undefined);
+	const check = checkKey ?? vi.fn(async () => ({ ok: true as const }));
 	return {
 		keyring,
 		state,
 		authority,
 		verify,
-		vault: new CloudGeminiKeyVault({ authority, keyring, verifyKey: verify }),
+		check,
+		vault: new CloudGeminiKeyVault({ authority, keyring, verifyKey: verify, checkKey: check }),
 	};
 }
 
@@ -184,6 +240,45 @@ describe("Gemini Neon pricing and key formatting", () => {
 		await expect(verifyGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), badFetch)).rejects.toBeInstanceOf(
 			GeminiKeyInvalidError,
 		);
+	});
+
+	it("checks a Gemini key against the gemini-4-neon model endpoint and classifies errors", async () => {
+		const seen: { url: string; header: string | null }[] = [];
+		const okFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			seen.push({ url: String(input), header: new Headers(init?.headers).get("x-goog-api-key") });
+			return Response.json({ name: "models/gemini-4-neon" });
+		}) as typeof fetch;
+		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), okFetch)).toEqual({ ok: true });
+		expect(seen[0]?.url).toContain("/v1beta/models/gemini-4-neon");
+		expect(seen[0]?.url).not.toContain(CANARY_KEY);
+		expect(seen[0]?.header).toBe(CANARY_KEY);
+
+		const billingFetch = (async () =>
+			Response.json(
+				{ error: { status: "PERMISSION_DENIED", details: [{ reason: "BILLING_DISABLED" }] } },
+				{ status: 403 },
+			)) as typeof fetch;
+		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), billingFetch)).toEqual({
+			ok: false,
+			errorCode: "billing_required",
+		});
+
+		const rejectedFetch = (async () =>
+			Response.json(
+				{ error: { status: "INVALID_ARGUMENT", details: [{ reason: "API_KEY_INVALID" }] } },
+				{ status: 400 },
+			)) as typeof fetch;
+		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), rejectedFetch)).toEqual({
+			ok: false,
+			errorCode: "key_rejected",
+		});
+
+		const missingFetch = (async () =>
+			Response.json({ error: { status: "NOT_FOUND" } }, { status: 404 })) as typeof fetch;
+		expect(await checkGeminiApiKey(CANARY_KEY, AbortSignal.timeout(5_000), missingFetch)).toEqual({
+			ok: false,
+			errorCode: "model_unavailable",
+		});
 	});
 });
 
@@ -401,6 +496,32 @@ describe("HttpCloudSecretBrokerService Gemini key routes", () => {
 				state: "open",
 				apiKey: CANARY_AQ_KEY,
 			});
+
+			const checkResponse = await fetch(
+				`http://127.0.0.1:${port}/v1/gemini-keys/${f.state.checkTicketId}/check?company=${companyId}`,
+				{
+					method: "POST",
+					headers: {
+						origin: "https://app.qorpera.example",
+						"content-type": "application/json",
+					},
+					body: JSON.stringify({
+						schema: "qorpera.gemini-key-check-request/v1",
+						capability: f.state.checkCapability,
+					}),
+				},
+			);
+			expect(checkResponse.status).toBe(200);
+			expect(checkResponse.headers.get("access-control-allow-origin")).toBe("https://app.qorpera.example");
+			expect(await checkResponse.json()).toEqual({
+				schema: "qorpera.gemini-key-checked/v1",
+				ok: true,
+				errorCode: null,
+				checkedAt: "2026-11-22T18:00:00.000Z",
+			});
+			expect(f.check).toHaveBeenCalledWith(CANARY_AQ_KEY, expect.any(AbortSignal));
+			expect(f.state.lastCheckStatus).toBe("ok");
+			expect(f.state.lastCheckErrorCode).toBeNull();
 		} finally {
 			await service.close();
 		}

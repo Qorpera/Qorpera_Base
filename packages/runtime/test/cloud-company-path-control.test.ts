@@ -444,6 +444,13 @@ describe("the folder core's entry points (core C3)", () => {
 		// Existing code brought in (20260930736000).
 		"qorpera_folder_request_code_import",
 		"qorpera_folder_code_import",
+		"qorpera_folder_code_status",
+		"qorpera_folder_code_claim_overlaps",
+		"qorpera_folder_code_history",
+		"qorpera_folder_code_query",
+		"qorpera_folder_code_lifecycle",
+		"qorpera_folder_request_code_undo_v2",
+		"qorpera_folder_code_request_v2",
 	] as const;
 
 	it("reads a page of proposals and a proposal's apply up to 16 MiB, where a proposal's close stops at 256 KiB", async () => {
@@ -464,11 +471,19 @@ describe("the folder core's entry points (core C3)", () => {
 	it("reads one routine whole, up to a megabyte, where other folder reads stop at 256 KiB", async () => {
 		const answer = { schema: "fixture", routines: ["x".repeat(300 * 1024)] };
 		const transport = vi.fn<typeof fetch>(async () => Response.json(answer));
-		await expect(
-			fixture(transport).call("qorpera_folder_agent_routines", {}, new AbortController().signal),
-		).resolves.toEqual(answer);
+		for (const method of [
+			"qorpera_folder_agent_routines",
+			"qorpera_folder_code_request_v2",
+			"qorpera_folder_code_history",
+			"qorpera_folder_code_status",
+		] as const) {
+			await expect(fixture(transport).call(method, {}, new AbortController().signal)).resolves.toEqual(answer);
+		}
 		await expect(
 			fixture(transport).call("qorpera_folder_agent_todos", {}, new AbortController().signal),
+		).rejects.toThrow("Company File control response too large");
+		await expect(
+			fixture(transport).call("qorpera_folder_code_claim_overlaps", {}, new AbortController().signal),
 		).rejects.toThrow("Company File control response too large");
 		const over = vi.fn<typeof fetch>(async () => Response.json({ routines: ["x".repeat(1024 * 1024)] }));
 		await expect(

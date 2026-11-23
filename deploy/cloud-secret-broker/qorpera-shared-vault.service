@@ -55,6 +55,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 # Every company's calls and background passes run in this one process.
 MemoryMax=768M
+MemorySwapMax=0
 TasksMax=64
 CPUQuota=200%
 

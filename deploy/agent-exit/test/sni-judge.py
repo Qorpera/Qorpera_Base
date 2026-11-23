@@ -491,6 +491,45 @@ def main():
     print(f"PASS: the status names the packets held and counts the kernel's drops of the queue; drops in "
           f"{sni.DROPS_LASTING} status writes in a row are a problem for a minute after the last, a burst is not")
 
+    whole = handshake(server_names((0, (b"a" * 50) + b".example.test")))
+    fragmented = b"".join(record(whole[i:i + 1]) for i in range(sni.MAX_HELLO_RECORDS + 1))
+    check(sni.client_hello(fragmented) == ("bad", "too many TLS records in a ClientHello"),
+          f"excessive TLS record count refused: {sni.client_hello(fragmented)}")
+
+    run = Run()
+    run.flow(port=41001, data=hello("x.test"))
+    key_rst = (("10.210.1.1", 41001), (SERVER, 443))
+    check(len(run.judge.flows[key_rst].hello) > 0, "passed flow retains hello while awaiting server ACK")
+    run.send(packet("10.210.1.1", 41001, 5001, RST))
+    check(run.judge.flows[key_rst].hello == b"" and key_rst not in run.judge.passed_flows, "RST clears passed flow.hello")
+
+    run = Run()
+    run.flow(port=41002, data=hello("x.test"))
+    key_exp = (("10.210.1.1", 41002), (SERVER, 443))
+    check(len(run.judge.flows[key_exp].hello) > 0 and key_exp in run.judge.passed_flows, "passed flow tracked for expiry")
+    run.at += sni.HOLD_TIME + 1
+    run.judge.expire(run.at)
+    check(run.judge.flows[key_exp].hello == b"" and key_exp not in run.judge.passed_flows,
+          "expire() frees passed flow.hello after HOLD_TIME")
+    _, late_verdicts = run.send(packet("10.210.1.1", 41002, 5001, ACK | PSH, b"late"))
+    check(late_verdicts == [(run.ident, REPEAT, REFUSED)], f"late packet after HOLD_TIME is still refused: {late_verdicts}")
+
+    capped = sni.Judge(lambda _m, _n: None, report=lambda _l: None, max_flows=4)
+    capped.packet(1, packet("10.210.1.1", 42000, 1000, SYN), 0)
+    capped.packet(2, packet("10.210.1.1", 42000, 1001, ACK | PSH, hello("x.test")[:10]), 0)
+    held_key = (("10.210.1.1", 42000), (SERVER, 443))
+    for p in range(1, 10):
+        capped.packet(10 + p, packet("10.210.1.1", 42000 + p, 1000, SYN), p)
+    check(len(capped.flows) == 4 and held_key in capped.flows,
+          f"max_flows caps table while preserving holding flows: len={len(capped.flows)}")
+
+    wrap_q = sni.Queue.__new__(sni.Queue)
+    wrap_q.number, wrap_q.seq = 0, 0xFFFFFFFF
+    wrapped_msg = wrap_q.message(sni.MSG_VERDICT, b"", sni.NLM_F_REQUEST)
+    check(struct.unpack_from("=IHHII", wrapped_msg)[3] == 0 and wrap_q.seq == 0,
+          f"Queue.message wraps u32 seq cleanly: {wrap_q.seq}")
+    print("PASS: record-count cap, passed-flow hello eviction, max_flows cap, and u32 netlink seq wrap")
+
 
 class Kernel:
     """The queue socket's stand-in: what the kernel answers, one read at a time, and what was sent."""

@@ -1613,4 +1613,400 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 			[authorize, 60_000],
 		]);
 	});
+
+	it("exposes coding_record_change and staged surface instructions for a surface-backed coding turn", async () => {
+		const f = fixture();
+		f.coding.repository = { host: "qorpera", owner: "surfaces", name: "website", baseBranch: "main" };
+		const sessionId = randomUUID();
+		const recordChange = vi.fn().mockResolvedValue({ changeId: randomUUID(), seq: 1, openChangeCount: 1 });
+		const fullPrompt = `${"Build the Scandinavian storefront hero. ".repeat(60)}END_MARKER`;
+		let offeredToolNames: string[] = [];
+		let finishDescription = "";
+		let capturedInstructions = "";
+		let capturedPrompt = "";
+
+		vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+			capturedInstructions = options.runtimeInstructions ?? "";
+			capturedPrompt = options.prompt ?? "";
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				offeredToolNames = adapters.tools.map((tool) => tool.name);
+				finishDescription = adapters.tools.find((tool) => tool.name === "coding_finish")?.description ?? "";
+				const recordTool = adapters.tools.find((tool) => tool.name === "coding_record_change")!;
+				await recordTool.execute(
+					recordTool.parseArguments({
+						title: "Initial hero",
+						summary: "Builds landing hero for preview.",
+						commitSha: "b".repeat(40),
+					}),
+					f.context,
+				);
+				const finishTool = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+				await finishTool.execute(
+					finishTool.parseArguments({
+						operationKey: "surf-finish-1",
+						summary: "Staged the homepage for preview.",
+						headSha: "b".repeat(40),
+					}),
+					f.context,
+				);
+				return {
+					providerSessionId: "native-surface-thread",
+					toolCalls: 2,
+					codexVersion: "pinned",
+					fencedRequests: 2,
+				};
+			} finally {
+				run.close();
+			}
+		});
+
+		await f.runtime.execute(f.request, "/private", f.context.signal, {
+			...f.turn,
+			surfaceSession: {
+				sessionId,
+				surfaceSlug: "website",
+				surfaceTitle: "Hjemmeside",
+				repositoryKey: "surfaces/website",
+				folderRoot: null,
+				briefMarkdown: "Public landing page.",
+				explorationVariantLabel: null,
+				pointToChangeTarget: null,
+				conflictPaths: [],
+				fullPrompt,
+				recordChange,
+			},
+		});
+
+		expect(offeredToolNames).toEqual([
+			"coding_run_command",
+			"coding_read_command",
+			"coding_cancel_command",
+			"coding_record_change",
+			"coding_finish",
+			"coding_ask",
+		]);
+		expect(finishDescription).toContain("staged on the session branch for founder Preview and approval");
+		expect(finishDescription).not.toContain("lands into");
+		expect(capturedInstructions).toContain("Surface Staged Mode");
+		expect(capturedInstructions).toContain("Surface Preview and CI contract");
+		expect(capturedInstructions).toContain('"surfaceGate": "stage"');
+		expect(capturedInstructions).toContain("apps/<repo>*/index.html");
+		expect(capturedInstructions).not.toContain("qorpera.site");
+		expect(capturedInstructions).not.toContain("What's new");
+		expect(capturedInstructions).not.toContain("gets the commit landed on its default branch");
+		expect(capturedPrompt).toContain("END_MARKER");
+		expect(Buffer.byteLength(capturedPrompt)).toBeLessThanOrEqual(64 * 1024);
+		expect(recordChange).toHaveBeenCalledTimes(1);
+	});
+
+	it("enforces the 64 KiB prompt byte cap after appending a large Surface turn brief", async () => {
+		const f = await fixture();
+		let capturedPrompt = "";
+		let admittedBytes = 0;
+		const baseCall = f.control.call;
+		f.control.call = vi.fn(async (method, args, signal) => {
+			if (method === "qorpera_begin_native_coding_execution") {
+				admittedBytes = Number(args.p_context_bytes);
+			}
+			return baseCall(method, args, signal);
+		});
+		f.turnContext.earlierTurns = Array.from({ length: 12 }, (_, index) => ({
+			sequence: index + 1,
+			input: {
+				from: index === 0 ? "dispatch" : "member",
+				text: index === 0 ? null : `Reply ${index}: ${"x".repeat(3200)}`,
+			},
+			submitted: {
+				kind: "finish",
+				summary: `Turn ${index + 1} summary ${"y".repeat(3200)}`,
+				question: null,
+				options: [],
+				headSha: "a".repeat(40),
+			},
+			outcome: {
+				state: "succeeded",
+				summary: `Outcome ${index + 1} ${"z".repeat(1200)}`,
+				reason: null,
+				needs: null,
+				options: [],
+				pullRequest: null,
+			},
+		}));
+		f.coding.sequence = 13;
+		f.turnContext.input = { from: "member", text: "Continue polishing the surface.", answers: null };
+
+		vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+			capturedPrompt = options.prompt ?? "";
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				await options.beginExecution(
+					{
+						type: "namespace",
+						name: "qorpera",
+						tools: adapters.tools.map((tool) => ({
+							type: "function",
+							name: tool.name,
+							description: tool.description,
+							inputSchema: tool.inputSchema,
+						})),
+					},
+					options.signal,
+				);
+				const finish = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+				await finish.execute(
+					finish.parseArguments({
+						operationKey: "finish-capped-surface",
+						headSha: "b".repeat(40),
+						summary: "Polished.",
+					}),
+					f.context,
+				);
+				return { providerSessionId: "native-thread", toolCalls: 1, codexVersion: "pinned", fencedRequests: 1 };
+			} finally {
+				run.close();
+			}
+		});
+
+		await f.runtime.execute(f.request, "/private", f.context.signal, {
+			...f.turn,
+			wake: { ...f.turn.wake, payload: { ...f.turn.wake.payload, sequence: 13 } },
+			surfaceSession: {
+				sessionId: "22222222-2222-4222-8222-222222222222",
+				surfaceSlug: "website",
+				surfaceTitle: "Website",
+				repositoryKey: "surfaces/website",
+				briefMarkdown: "Brief ".repeat(1400),
+				fullPrompt: "Full prompt ".repeat(1400),
+				identityContext: {
+					briefMarkdown: "Identity ".repeat(500),
+					voiceSummary: "Voice ".repeat(400),
+					tokensJson: `{"brand":"${"t".repeat(3000)}"}`,
+				},
+				recordChange: vi.fn(),
+			},
+		});
+
+		expect(Buffer.byteLength(capturedPrompt)).toBeLessThanOrEqual(64 * 1024);
+		expect(admittedBytes).toBe(Buffer.byteLength(capturedPrompt));
+		expect(capturedPrompt).toContain("# Surface Context: Website (website)");
+	});
+
+	it("shows the member's attached images through coding_view_attachment on a surface turn", async () => {
+		const f = fixture();
+		f.coding.repository = { host: "qorpera", owner: "surfaces", name: "website", baseBranch: "main" };
+		const png = pngFile(pngHeader(2, 1, 8, 2), pngRows([[255, 0, 0, 0, 0, 255]]));
+		const sha = createHash("sha256").update(png).digest("hex");
+		const clientInputId = randomUUID();
+		const memberImage = {
+			clientInputId,
+			sha256: sha,
+			bytes: png.byteLength,
+			mediaType: "image/png",
+			path: `QorperaOS/surfaces/website/images/${clientInputId}/${sha}.png`,
+			latest: true,
+		};
+		const viewAttachment = vi.fn(async () => Uint8Array.from(png));
+		const original = f.call.getMockImplementation()!;
+		const recordedViews: unknown[] = [];
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_record_coding_context_view") {
+				recordedViews.push(args.p_view);
+				return {
+					schema: "qorpera.native-context-view-receipt/v1",
+					viewId: randomUUID(),
+					requestId: (args.p_view as { requestId: string }).requestId,
+					sha256: "d".repeat(64),
+					ordinal: recordedViews.length,
+				};
+			}
+			return original(method, args, signal);
+		});
+		let offered: string[] = [];
+		let prompt = "";
+		vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+			prompt = options.prompt ?? "";
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				offered = adapters.tools.map((tool) => tool.name);
+				const boundary = new CloudNativeToolBoundary({
+					companyId: f.authority.identity.companyId,
+					runId: f.authority.identity.runId,
+					identity: f.authority.identity,
+					tools: adapters.tools,
+					assertActive: async () => undefined,
+					signal: options.signal,
+				});
+				try {
+					const invoked = await boundary.invoke("view-1", "qorpera", "coding_view_attachment", {
+						clientInputId,
+						sha256: sha,
+					});
+					expect(invoked.success).toBe(true);
+					expect(invoked.contentItems).toHaveLength(2);
+					const envelopeText = invoked.contentItems[0].text;
+					const answer = JSON.parse(JSON.parse(envelopeText).content.text);
+					expect(answer).toMatchObject({
+						schema: "qorpera.coding-attachment-view/v1",
+						clientInputId,
+						sha256: sha,
+					});
+					const fenced = await boundary.fenceNativeResults([
+						{
+							kind: "function_call_output",
+							callId: "view-1",
+							output: [
+								{ type: "input_text", text: envelopeText },
+								{ type: "input_image", sha256: answer.imageSha256 },
+							],
+						},
+					]);
+					const frame = {
+						schema: "qorpera.native-result-fence/v1" as const,
+						requestId: "req-view-1",
+						threadId: "thread",
+						turnId: "turn",
+						purpose: "turn" as const,
+						outputs: [],
+					};
+					await adapters.recordContextView(frame, fenced, options.signal);
+					expect(recordedViews).toHaveLength(1);
+					await expect(
+						adapters.recordContextView(
+							{ ...frame, requestId: "req-view-bad-hash" },
+							[{ ...fenced[0]!, imageSha256: "f".repeat(64) }],
+							options.signal,
+						),
+					).rejects.toThrow("CODING_CONTEXT_RESOURCES_REFUSED");
+				} finally {
+					boundary.close();
+				}
+				const finishTool = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+				await finishTool.execute(
+					finishTool.parseArguments({
+						operationKey: "surf-finish-view",
+						summary: "Matched the screenshot.",
+						headSha: "b".repeat(40),
+					}),
+					f.context,
+				);
+				return {
+					providerSessionId: "native-surface-thread",
+					toolCalls: 2,
+					codexVersion: "pinned",
+					fencedRequests: 2,
+				};
+			} finally {
+				run.close();
+			}
+		});
+
+		await f.runtime.execute(f.request, "/private", f.context.signal, {
+			...f.turn,
+			surfaceSession: {
+				sessionId: randomUUID(),
+				surfaceSlug: "website",
+				surfaceTitle: "Hjemmeside",
+				repositoryKey: "surfaces/website",
+				folderRoot: null,
+				briefMarkdown: null,
+				recordChange: vi.fn(),
+				memberImages: [memberImage],
+				viewAttachment,
+			},
+		});
+
+		expect(offered).toEqual([
+			"coding_run_command",
+			"coding_read_command",
+			"coding_cancel_command",
+			"coding_record_change",
+			"coding_view_attachment",
+			"coding_finish",
+			"coding_ask",
+		]);
+		expect(prompt).toContain("Images the member attached (open each with coding_view_attachment");
+		expect(prompt).toContain(`- clientInputId ${clientInputId}, sha256 ${sha} (image/png)`);
+		expect(viewAttachment).toHaveBeenCalledWith(memberImage, expect.any(AbortSignal));
+	});
+
+	it("surfaces sorted secretNames in coding turn context and composed prompt without values", async () => {
+		const f = await fixture();
+		Object.assign(f.turnContext, { secretNames: ["ANTHROPIC_API_KEY", "NPM_TOKEN", "OPENAI_API_KEY"] });
+		const prompts: Record<string, unknown>[] = [];
+		vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				prompts.push(JSON.parse(options.prompt ?? "") as Record<string, unknown>);
+				expect(options.runtimeInstructions).toContain(
+					"secretNames in the context lists those exact variable names",
+				);
+				const finish = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+				await finish.execute(
+					finish.parseArguments({
+						operationKey: "finish-secrets",
+						headSha: "a".repeat(40),
+						summary: "Done.",
+					}),
+					f.context,
+				);
+				return { providerSessionId: "native-thread", toolCalls: 1, codexVersion: "pinned", fencedRequests: 1 };
+			} finally {
+				run.close();
+			}
+		});
+		await f.runtime.execute(f.request, "/private", f.context.signal, f.turn);
+		expect(prompts[0]?.secretNames).toEqual(["ANTHROPIC_API_KEY", "NPM_TOKEN", "OPENAI_API_KEY"]);
+		const repository = {
+			host: "github.com" as const,
+			owner: f.coding.repository.owner,
+			name: f.coding.repository.name,
+			baseBranch: f.coding.repository.baseBranch,
+		};
+		const baseContext = {
+			schema: "qorpera.coding-turn-context/v2",
+			workerId: f.coding.workerId,
+			sequence: 1,
+			...f.turnContext,
+		};
+		expect(() =>
+			parseCloudCodingTurnContext(
+				{ ...baseContext, secretNames: ["lowercase_bad"] },
+				{ workerId: f.coding.workerId, sequence: 1 },
+				repository,
+			),
+		).toThrow("CODING_TURN_CONTEXT_INVALID");
+		expect(() =>
+			parseCloudCodingTurnContext(
+				{ ...baseContext, secretNames: ["OPENAI_API_KEY", "OPENAI_API_KEY"] },
+				{ workerId: f.coding.workerId, sequence: 1 },
+				repository,
+			),
+		).toThrow("CODING_TURN_CONTEXT_INVALID");
+		const omitted: Record<string, unknown> = { ...baseContext };
+		delete omitted.secretNames;
+		expect(
+			parseCloudCodingTurnContext(omitted, { workerId: f.coding.workerId, sequence: 1 }, repository).secretNames,
+		).toEqual([]);
+	});
 });

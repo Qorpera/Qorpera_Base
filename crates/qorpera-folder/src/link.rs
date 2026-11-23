@@ -155,6 +155,10 @@ impl Link {
 
 	pub fn has_reads(&self) -> bool { self.reads.is_some() }
 
+	pub fn reads_lost(&self) -> bool {
+		self.reads.as_ref().is_some_and(|log| log.locked().is_ok_and(|l| l.lost()))
+	}
+
 	pub fn epoch(&self) -> u64 { self.view.lock().unwrap().epoch }
 
 	/// Checks atomic primary-file replacement even while the filesystem is idle. A bad replacement never erases
@@ -179,7 +183,12 @@ impl Link {
 
 	pub fn expire(&self) {
 		let expired = self.view.lock().unwrap().closed_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(60));
-		if expired && !self.closed.swap(true, Ordering::SeqCst) { self.fire_closed(); }
+		if expired && !self.closed.swap(true, Ordering::SeqCst) {
+			let _free = self.free.lock().unwrap();
+			self.ready.notify_all();
+			drop(_free);
+			self.fire_closed();
+		}
 	}
 	pub fn new(addr: String, view: View, max: usize) -> Link {
 		Link {
@@ -1418,4 +1427,23 @@ mod tests {
 		}
 	}
 
+	#[test]
+	fn expire_wakes_caller_waiting_for_pool_slot() {
+		let view = View { environment_id: "company".into(), view_id: "v1".into(), pass: "p".into() };
+		let link = Arc::new(Link::new("unix:/nonexistent".into(), view, 1));
+		*link.open.lock().unwrap() = 1;
+		let (tx, rx) = std::sync::mpsc::channel();
+		let waiter = {
+			let link = link.clone();
+			std::thread::spawn(move || {
+				let _ = tx.send(link.take().err().map(|e| format!("{e}")));
+			})
+		};
+		std::thread::sleep(Duration::from_millis(40));
+		link.view.lock().unwrap().closed_at = Some(Instant::now() - Duration::from_secs(61));
+		link.expire();
+		let msg = rx.recv_timeout(Duration::from_secs(2)).expect("expire wakes blocked take()");
+		assert!(msg.is_some());
+		waiter.join().unwrap();
+	}
 }

@@ -79,11 +79,6 @@ import { type HooksClient, HooksView } from "./settings-hooks.ts";
  *   the Writer chip's menu, that agent writes and sends it instead, and its review decides as for any send. A member's
  *   own email shows in Sent and in its thread with the member's picture.
  *
- * - Digital Post (deploy/first-node/RUNTIME-DIGITAL-POST.md): the letters the company folder holds from public
- *   authorities are lines of the Inbox among the threads, newest first, each with the authority as its sender and a
- *   Digital Post mark. A letter opens to its text and its documents (which open in Storage), with a line to ask an agent
- *   about it. Addresses has a Digital Post row, and its Choose asks the Co-Founder to give it an agent. The Mailbox shows
- *   while the company has an email address, or Digital Post connected or holding letters.
  * - Making addresses (Jonas, 9 Nov 2026: they live here, not in Settings): under Addresses, and on the page with no
  *   address yet, an owner or admin adds, pauses or removes the company's mail addresses and connects Digital Post.
  *   The addresses are the company's mailboxes as Settings' card lists them (views/settings-hooks.ts), each line with
@@ -678,11 +673,16 @@ function say(page: Page, text: string, agent: string | null, moveFocus?: string)
 	const id = ++toastIds;
 	page.ui.toast = { text, agent, id };
 	page.redraw(moveFocus);
-	setTimeout(() => {
+	const { signal } = page.company;
+	if (signal.aborted) return;
+	const timer = setTimeout(() => {
+		signal.removeEventListener("abort", stop);
 		if (page.ui.toast?.id !== id) return;
 		page.ui.toast = null;
 		page.redraw();
 	}, TOAST_MS);
+	const stop = () => clearTimeout(timer);
+	signal.addEventListener("abort", stop, { once: true });
 }
 
 // The page --------------------------------------------------------------------------------------------------------
@@ -1703,7 +1703,6 @@ function letterLine(page: Page, letter: DigitalPostLetter): HTMLElement {
 	);
 }
 
-/** An open letter: who sent it and when, its flags, its text, and its documents, which open in Storage. */
 function letterView(page: Page, folder: string): HTMLElement {
 	const { company, ui } = page;
 	const letter = letterOf(page, folder);

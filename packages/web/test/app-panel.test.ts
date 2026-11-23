@@ -37,7 +37,7 @@ function company(files: Record<string, string> = {}) {
 		apps: () => read,
 		agentName: () => null,
 		onFolderChange: () => () => {},
-		openInStorage: vi.fn<(path: string) => void>(),
+		openInFiles: vi.fn<(path: string) => void>(),
 		openApp: vi.fn<(name: string) => void>(),
 		budgetKey: crypto.randomUUID(),
 	} satisfies AppPanelHost;
@@ -90,19 +90,19 @@ async function opened(host: AppPanelHost, target: AppPanelTarget = { kind: "app"
 }
 
 describe("a link in an app's page", () => {
-	it("opens another app where apps open, and a file of the company in Storage", async () => {
+	it("opens another app where apps open, and a file of the company in Files", async () => {
 		const { host } = company();
 		const app = await opened(host);
 		expect(await app.clicked("app:hiring")).toEqual({ type: "qorpera-app-answer", id: 1, ok: true, value: null });
 		expect(host.openApp).toHaveBeenCalledExactlyOnceWith("hiring");
 		expect(await app.clicked("folder:strategy/plan%202027.md")).toMatchObject({ ok: true });
-		expect(host.openInStorage).toHaveBeenCalledExactlyOnceWith("strategy/plan 2027.md");
+		expect(host.openInFiles).toHaveBeenCalledExactlyOnceWith("strategy/plan 2027.md");
 		// Anything else opens nothing, and the page's own calls are answered as before.
 		const open = vi.spyOn(window, "open").mockReturnValue(null);
 		for (const bad of ["other.html", "folder:QorperaOS/vision/vision.md", "javascript:alert(1)", "mailto:a@b.dk", 7])
 			expect(await app.clicked(bad), String(bad)).toMatchObject({ ok: false });
 		expect(host.openApp).toHaveBeenCalledOnce();
-		expect(host.openInStorage).toHaveBeenCalledOnce();
+		expect(host.openInFiles).toHaveBeenCalledOnce();
 		expect(open).not.toHaveBeenCalled();
 		expect(app.panel.el.querySelector(".side-panel-link")).toBeNull();
 		expect(await app.call("read", { path: "apps/sales/index.html" })).toMatchObject({ ok: true });
@@ -227,7 +227,7 @@ describe("a link in an app's page", () => {
 				error: "Only an app in apps/ reads the company's data",
 			});
 		expect(host.openApp).not.toHaveBeenCalled();
-		expect(host.openInStorage).not.toHaveBeenCalled();
+		expect(host.openInFiles).not.toHaveBeenCalled();
 		expect(open).not.toHaveBeenCalled();
 		expect(page.html).toBe('<!doctype html><html><head></head><body><a href="app:sales">Sales</a></body></html>');
 	});
@@ -292,6 +292,34 @@ describe("an app's base style", () => {
 		});
 		void app.panel.reload(true);
 		expect((await app.handed()).html).toContain("--q-accent: #1f6f5b;");
+	});
+
+	it("preserves fresh=true when a fresh reload is queued during an in-flight load", async () => {
+		const { host, fake } = company({ "QorperaOS/brand/brand.toml": 'accent = "#1f6f5b"\n' });
+		const app = await opened(host);
+		expect(app.html).toContain("--q-accent: #1f6f5b;");
+		const origRead = fake.folder.read.getMockImplementation();
+		if (!origRead) throw new Error("the folder fake reads");
+		let releaseFirst: (() => void) | undefined;
+		let blockedOnce = false;
+		fake.folder.read.mockImplementation(async (...args) => {
+			if (!blockedOnce && args[0] === "apps/sales/index.html") {
+				blockedOnce = true;
+				await new Promise<void>((resolve) => {
+					releaseFirst = resolve;
+				});
+			}
+			return origRead(...args);
+		});
+		const firstReload = app.panel.reload(false);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		fake.put("QorperaOS/brand/brand.toml", 'accent = "#b84a1c"\n');
+		const queuedFresh = app.panel.reload(true);
+		releaseFirst?.();
+		await firstReload;
+		await queuedFresh;
+		const refreshed = await app.handed();
+		expect(refreshed.html).toContain("--q-accent: #b84a1c;");
 	});
 });
 

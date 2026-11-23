@@ -64,6 +64,7 @@ interface DoorSlot {
 export interface SurfaceDoorOptions {
 	readonly onPick?: (target: PointToChangeTarget) => void;
 	readonly onShownChange?: () => void;
+	readonly onRetry?: () => void;
 	readonly handshakeTimeoutMs?: number;
 	readonly isPassUsable?: (previewId: string, pass: string) => boolean;
 	readonly onPassSent?: (previewId: string, pass: string) => void;
@@ -90,11 +91,22 @@ export class SurfaceDoorStage {
 	readonly #lifetime = new AbortController();
 	readonly #waitingState = h("span", { class: "surface-state is-running" });
 	readonly #waitingText = h("p");
+	readonly #retryBtn = h(
+		"button",
+		{
+			type: "button",
+			class: "btn btn-small surface-door-retry",
+			"data-act": "retry-preview",
+			hidden: true,
+		},
+		t("Retry preview"),
+	);
 	readonly #waiting = h(
 		"div",
 		{ class: "surface-frame is-waiting", hidden: true },
 		this.#waitingState,
 		this.#waitingText,
+		this.#retryBtn,
 	);
 	readonly #pillText = h("span");
 	readonly #pill = h(
@@ -115,6 +127,7 @@ export class SurfaceDoorStage {
 	constructor(signal: AbortSignal, options: SurfaceDoorOptions = {}) {
 		this.#options = options;
 		signal.addEventListener("abort", () => this.dispose(), { once: true });
+		this.#retryBtn.addEventListener("click", () => this.#options.onRetry?.(), { signal: this.#lifetime.signal });
 		this.el.append(this.#waiting, this.#pill);
 		window.addEventListener("message", (event) => this.#onMessage(event), { signal: this.#lifetime.signal });
 	}
@@ -268,6 +281,7 @@ export class SurfaceDoorStage {
 		this.#requestedPassKey = undefined;
 		this.#dropStaging();
 		this.#dropActive();
+		this.#retryBtn.hidden = true;
 		this.#waiting.hidden = true;
 		this.#pill.hidden = true;
 	}
@@ -305,6 +319,7 @@ export class SurfaceDoorStage {
 	#showWaiting(kind: "running" | "conflicted" | "failed", words: string): void {
 		this.#waitingState.className = `surface-state is-${kind}`;
 		this.#waitingText.textContent = words;
+		this.#retryBtn.hidden = kind !== "failed" || !this.#options.onRetry;
 		this.#waiting.hidden = false;
 	}
 

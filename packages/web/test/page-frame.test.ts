@@ -689,6 +689,7 @@ describe("an HTML page's frame", () => {
 		// Every other page of the site keeps refusing to be framed, and the app frames nothing but this site.
 		const site = rule("/*");
 		expect(site).toContain("X-Frame-Options: DENY");
+		expect(site).toContain("Origin-Agent-Cluster: ?1");
 		expect(site).toContain("Permissions-Policy: camera=(), microphone=(self), geolocation=(), payment=(), usb=()");
 		expect(policy(site)).toContain("frame-ancestors 'none'");
 		expect(policy(site)).toMatch(/^default-src 'self';/);

@@ -97,7 +97,7 @@ no database login and no service key; it sees a login only for one operation and
   (the login needs a new sign-in), anything else is retried later. At most 4 renewals run at once.
   Budgets nest: Codex 25 s, helper answer 28 s, broker wait 30 s, vault renewal 35 s; once asked, a
   renewal runs to its budget whatever the member's request does, because only it can save the new
-  login. Stopping the unit lets renewals in flight finish (`KillMode=mixed`, 40 s).
+  login. Stopping the unit lets renewals in flight finish (`KillMode=mixed`, 85 s; the helper drains up to 75 s).
 - **Part B, sign-in** (migration `20260928184000`, `cloud-model-login-sign-in.ts`,
   `cloud-model-login-vault-sign-in.ts`): a member signs in to the vault; the web client is unchanged.
   - An operator switches a company with `qorpera_set_model_login_sign_in(company, true)` (service
@@ -375,7 +375,7 @@ Prerequisites on each host: the broker build and the CA file
 reinstalled from this build **first** (an older helper refuses a config with the new limit keys and a
 vault token, and stops for every broker on the host); a host without a helper installs it as in
 "Installing the helper" above, its own token included (`helper-token` refuses on a host without one).
-Reinstalling node 1's helper restarts it: renewals in flight finish (its stop waits up to 40 s), but a
+Reinstalling node 1's helper restarts it: renewals in flight finish (the helper drains up to 75 s, `TimeoutStopSec=85`), but a
 member in the middle of a sign-in has to start again, so pick a moment with none pending (no
 `qorpera_native_provider_login_sessions` row with status `pending` and `expires_at` in the future).
 
@@ -408,7 +408,8 @@ Node 1:
    Regex keys hold `{}`, so each stays quoted (Step 7 doc); nginx tries exact keys first and regex keys in
    order.
    - `?company=` maps (`$qorpera_capture_broker` for captures, connector sign-in start and confirm, and
-     member Gemini API key saves at `/v1/gemini-keys/<ticketId>`;
+     member Gemini API key saves at `/v1/gemini-keys/<ticketId>` and key checks at
+     `/v1/gemini-keys/<ticketId>/check`;
      `$qorpera_email_draft_broker` for email drafts (node 1 routes them with a map of their own);
      `$qorpera_operations_broker` for `/v1/operations`, `/v1/repository-credentials`,
      `/v1/coding-environment`, `/v1/coding-mcp`, `/v1/coding-repository-fetch/{refs,upload-pack}` and
@@ -965,12 +966,18 @@ passes through Supabase). The vault verifies the key against Google via `x-goog-
 vault key (`qorpera_gemini_keys`), and opens it only for an active attended run whose lease is pinned to that key
 (`qorpera_open_gemini_key_for_run`).
 
-- **nginx (`:10000` server block on node 1):** both callers send `?company=<profileId>` (browser save at
+- **nginx (`:10000` server block on node 1):** callers send `?company=<profileId>` (browser save and key check at
   `packages/web/src/cloud/gemini-key.ts` and runner open at `packages/runtime/src/cloud-secret-broker-http.ts`), so
   the existing `$args`-keyed `$qorpera_capture_broker` and `$qorpera_operations_broker` maps resolve the company's
-  broker without new maps. Add these two locations beside the other `:10000` vault routes:
+  broker without new maps. Add these three locations beside the other `:10000` vault routes:
   ```nginx
   location ~ "^/v1/gemini-keys/[0-9a-fA-F-]{36}$" {
+      limit_except POST OPTIONS { deny all; }
+      if ($qorpera_capture_broker = "") { return 404; }
+      proxy_buffering off;
+      proxy_pass http://$qorpera_capture_broker;
+  }
+  location ~ "^/v1/gemini-keys/[0-9a-fA-F-]{36}/check$" {
       limit_except POST OPTIONS { deny all; }
       if ($qorpera_capture_broker = "") { return 404; }
       proxy_buffering off;
@@ -987,11 +994,18 @@ vault key (`qorpera_gemini_keys`), and opens it only for an active attended run 
   1. Apply migration `20260930823000_gemini_4_neon` (additive; `qorpera_active_bundle_gemini_choice()` stays `false`
      under bundle 270).
   2. Outside the node roll, in its own quiet minute: deploy the release's `qorpera-shared-vault` build
-     (`qorpera-cloud-secret-broker-service.mjs`, which serves both v270 and v271), add the two `:10000` nginx
+     (`qorpera-cloud-secret-broker-service.mjs`, which serves both v270 and v271), add the `:10000` nginx
      locations above, run `nginx -t`, and reload nginx.
   3. Roll runtime bundle 271 (`20260929027199`, which activates `modelPolicy.geminiChoice = "thread"` and requires
      `20260930823000_gemini_4_neon`).
   Never activate bundle 271 before step 2: Gemini key save returns 404 and Gemini runs fail at key open until the
-  vault build and both `:10000` nginx routes are live.
+  vault build and `:10000` nginx routes are live.
+- **Key check rollout (`20260930858000`):**
+  1. Apply migration `20260930858000_member_default_models_and_gemini_health` (adds `purpose = 'check'` tickets and
+     `qorpera_begin_gemini_key_check`/`qorpera_describe_gemini_key_check`/`qorpera_complete_gemini_key_check`).
+  2. Deploy the `qorpera-shared-vault` build carrying `POST /v1/gemini-keys/:ticketId/check`, add the
+     `^/v1/gemini-keys/[0-9a-fA-F-]{36}/check$` `:10000` nginx location above, run `nginx -t`, and reload nginx.
+  3. Deploy the web release that surfaces **Check key**. Never deploy the web release before step 2: **Check key**
+     returns 404 and leaves pending check tickets until the vault build and nginx route are live.
 - **Rollback:** reverse the active bundle to 270; `qorpera_active_bundle_gemini_choice()` returns `false` and the
   migration, vault handlers, and nginx locations stay harmlessly in place.

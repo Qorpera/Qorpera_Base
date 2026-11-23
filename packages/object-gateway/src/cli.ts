@@ -10,7 +10,7 @@ import { CompanyFolderCreator } from "./company-folder-creation.ts";
 import { ConnectionFileWriter } from "./connection-files.ts";
 import { DigitalPostLetterWriter } from "./digital-post-files.ts";
 import { ObjectGatewayFolderGc } from "./folder-gc.ts";
-import { stopGateway } from "./gateway-stop.ts";
+import { createGatewaySignalHandler } from "./gateway-stop.ts";
 import { ObjectGatewayJournal } from "./journal.ts";
 import { createSerialGate, startGatewayMaintenance } from "./maintenance.ts";
 import { SupabaseMemberCompanyAuthority } from "./member-company-authority.ts";
@@ -252,6 +252,7 @@ if (process.argv[2] === "migrate") {
 			});
 	}, 15_000);
 	let stopping = false;
+	const shutdown = new AbortController();
 	// The connection-file writer's own loop: one drain at a time (its worker id holds at most one claim), at most ten
 	// files and 60 s per tick, so it never holds up the gateway's other maintenance.
 	let writing = false;
@@ -259,9 +260,9 @@ if (process.argv[2] === "migrate") {
 		if (!connectionFiles || writing || stopping) return;
 		writing = true;
 		try {
-			await withAbortScopes([], (signal) => connectionFiles.writeDue(10, signal), 60_000);
+			await withAbortScopes([shutdown.signal], (signal) => connectionFiles.writeDue(10, signal), 60_000);
 		} catch {
-			process.stderr.write("Connection file writer requires operator attention\n");
+			if (!shutdown.signal.aborted) process.stderr.write("Connection file writer requires operator attention\n");
 		} finally {
 			writing = false;
 		}
@@ -276,9 +277,9 @@ if (process.argv[2] === "migrate") {
 		if (!codingResults || writingResults || stopping) return;
 		writingResults = true;
 		try {
-			await withAbortScopes([], (signal) => codingResults.writeDue(10, signal), 30_000);
+			await withAbortScopes([shutdown.signal], (signal) => codingResults.writeDue(10, signal), 30_000);
 		} catch {
-			process.stderr.write("Coding results writer requires operator attention\n");
+			if (!shutdown.signal.aborted) process.stderr.write("Coding results writer requires operator attention\n");
 		} finally {
 			writingResults = false;
 		}
@@ -293,9 +294,9 @@ if (process.argv[2] === "migrate") {
 		if (!bankSummaries || writingSummaries || stopping) return;
 		writingSummaries = true;
 		try {
-			await withAbortScopes([], (signal) => bankSummaries.writeDue(10, signal), 60_000);
+			await withAbortScopes([shutdown.signal], (signal) => bankSummaries.writeDue(10, signal), 60_000);
 		} catch {
-			process.stderr.write("Bank summary writer requires operator attention\n");
+			if (!shutdown.signal.aborted) process.stderr.write("Bank summary writer requires operator attention\n");
 		} finally {
 			writingSummaries = false;
 		}
@@ -310,9 +311,9 @@ if (process.argv[2] === "migrate") {
 		if (!digitalPostLetters || writingLetters || stopping) return;
 		writingLetters = true;
 		try {
-			await withAbortScopes([], (signal) => digitalPostLetters.writeDue(5, signal), 120_000);
+			await withAbortScopes([shutdown.signal], (signal) => digitalPostLetters.writeDue(5, signal), 120_000);
 		} catch {
-			process.stderr.write("Digital Post letter writer requires operator attention\n");
+			if (!shutdown.signal.aborted) process.stderr.write("Digital Post letter writer requires operator attention\n");
 		} finally {
 			writingLetters = false;
 		}
@@ -327,9 +328,9 @@ if (process.argv[2] === "migrate") {
 		if (!memoryErase || erasing || stopping) return;
 		erasing = true;
 		try {
-			await withAbortScopes([], (signal) => memoryErase.eraseDue(10, signal), 30_000);
+			await withAbortScopes([shutdown.signal], (signal) => memoryErase.eraseDue(10, signal), 30_000);
 		} catch {
-			process.stderr.write("Memory message eraser requires operator attention\n");
+			if (!shutdown.signal.aborted) process.stderr.write("Memory message eraser requires operator attention\n");
 		} finally {
 			erasing = false;
 		}
@@ -343,9 +344,9 @@ if (process.argv[2] === "migrate") {
 		if (!companyCreation || creating || stopping) return;
 		creating = true;
 		try {
-			await withAbortScopes([], (signal) => companyCreation.createDue(5, signal), 120_000);
+			await withAbortScopes([shutdown.signal], (signal) => companyCreation.createDue(5, signal), 120_000);
 		} catch {
-			process.stderr.write("Company creation worker requires operator attention\n");
+			if (!shutdown.signal.aborted) process.stderr.write("Company creation worker requires operator attention\n");
 		} finally {
 			creating = false;
 		}
@@ -354,29 +355,52 @@ if (process.argv[2] === "migrate") {
 		void createCompanies();
 	}, 15_000);
 	let writingSurfaceFolders = false;
-	const surfaceFolderStop = new AbortController();
+	let surfaceFolderBurst = 0;
+	let surfaceFolderTimer: ReturnType<typeof setTimeout> | undefined;
+	const SURFACE_FOLDER_IDLE_MS = 400;
+	const SURFACE_FOLDER_BURST_PAUSE_MS = 100;
+	const SURFACE_FOLDER_ERROR_MS = 2_000;
+	const scheduleSurfaceFolders = (delayMs: number): void => {
+		if (!surfaceFolderWorker || stopping) return;
+		if (surfaceFolderTimer) clearTimeout(surfaceFolderTimer);
+		surfaceFolderTimer = setTimeout(() => {
+			surfaceFolderTimer = undefined;
+			void writeSurfaceFolders();
+		}, delayMs);
+		surfaceFolderTimer.unref?.();
+	};
 	const writeSurfaceFolders = async (): Promise<void> => {
 		if (!surfaceFolderWorker || writingSurfaceFolders || stopping) return;
 		writingSurfaceFolders = true;
+		let nextDelayMs = SURFACE_FOLDER_IDLE_MS;
 		try {
-			await surfaceFolderWorker.processDue(8, surfaceFolderStop.signal);
+			const handled = await surfaceFolderWorker.processDue(8, shutdown.signal);
+			if (handled > 0) {
+				surfaceFolderBurst += 1;
+				nextDelayMs = surfaceFolderBurst >= 4 ? SURFACE_FOLDER_BURST_PAUSE_MS : 0;
+				if (surfaceFolderBurst >= 4) surfaceFolderBurst = 0;
+			} else {
+				surfaceFolderBurst = 0;
+			}
 		} catch {
-			process.stderr.write("Surface folder writer requires operator attention\n");
+			surfaceFolderBurst = 0;
+			nextDelayMs = SURFACE_FOLDER_ERROR_MS;
+			if (!shutdown.signal.aborted) process.stderr.write("Surface folder writer requires operator attention\n");
 		} finally {
 			writingSurfaceFolders = false;
+			if (!stopping) scheduleSurfaceFolders(nextDelayMs);
 		}
 	};
-	const surfaceFolderWrites = setInterval(() => {
-		void writeSurfaceFolders();
-	}, 2_000);
+	scheduleSurfaceFolders(SURFACE_FOLDER_IDLE_MS);
 	server.listen(port(process.env), host, () => {
 		process.stdout.write(`Qorpera object gateway listening on ${host}:${port(process.env)}\n`);
 	});
 
-	for (const signal of ["SIGINT", "SIGTERM"] as const) {
-		process.on(signal, () => {
-			triggerReconcile = undefined;
+	const onSignal = createGatewaySignalHandler({
+		onFirstSignal: () => {
 			stopping = true;
+			triggerReconcile = undefined;
+			shutdown.abort();
 			maintenance.stop();
 			clearInterval(storedLineWrites);
 			clearInterval(connectionFileWrites);
@@ -385,18 +409,22 @@ if (process.argv[2] === "migrate") {
 			clearInterval(digitalPostWrites);
 			clearInterval(memoryErasures);
 			clearInterval(companyCreations);
-			clearInterval(surfaceFolderWrites);
-			surfaceFolderStop.abort();
-			stopGateway({
-				close: (done) =>
-					server.close(() => {
-						authority.close();
-						done();
-					}),
-				flush: () => replication.flushStoredLines(),
-				say: (line) => process.stderr.write(line),
-				exit: (code) => process.exit(code),
-			});
-		});
+			if (surfaceFolderTimer) clearTimeout(surfaceFolderTimer);
+			surfaceFolderTimer = undefined;
+		},
+		stop: {
+			close: (done) =>
+				server.close(() => {
+					authority.close();
+					done();
+				}),
+			forceClose: () => server.closeAllConnections(),
+			flush: () => replication.flushStoredLines(),
+			say: (line) => process.stderr.write(line),
+			exit: (code) => process.exit(code),
+		},
+	});
+	for (const signal of ["SIGINT", "SIGTERM"] as const) {
+		process.on(signal, onSignal);
 	}
 }

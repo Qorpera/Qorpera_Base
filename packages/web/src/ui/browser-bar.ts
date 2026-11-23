@@ -84,7 +84,11 @@ export function watchBrowserBar(root: Element): () => void {
 				schedule();
 				return;
 			}
-			if (target instanceof Element && target.parentElement?.closest("main") === null) {
+			if (
+				target instanceof Element &&
+				target.parentElement?.closest("main") === null &&
+				target.parentElement?.closest(".rail, .rail-scroll, .rail-agents-body, .rail-surfaces") === null
+			) {
 				schedule();
 				return;
 			}

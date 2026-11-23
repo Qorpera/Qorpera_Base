@@ -12,6 +12,7 @@
 #   DATA_GATEWAY_PACKAGE   the folder that holds the packaged gateway: qorpera-company-data-gateway.mjs and its
 #                          .sha256 (scripts/package-company-data-gateway.mjs; README.md: how a machine gets it)
 #   DATA_DB_CPUS, DATA_DB_MEMORY   the database's caps (2 and 7g by default: the machine is 2 vCPU and 8 GiB)
+#   DATA_WORKERS           gateway cluster workers (1 by default; auto or >1 share cpus: 1 and mem_limit: 512m)
 #   DATA_BACKUP_MODE       rw (the default); restore.sh sets ro, so a restored copy never writes the archive
 #
 # The database's port is not published: only the gateway reaches it, over this project's network. A standby on
@@ -75,6 +76,7 @@ services:
       DATA_PLATFORM_URL: ${DATA_PLATFORM_URL:?set DATA_PLATFORM_URL}
       DATA_PLATFORM_KEY: ${DATA_PLATFORM_KEY:?set DATA_PLATFORM_KEY}
       DATA_LISTEN: 0.0.0.0:8480
+      DATA_WORKERS: ${DATA_WORKERS:-1}
       DATA_ADMIN_TOKEN: ${DATA_ADMIN_TOKEN:-}
       DATA_ADMIN_TOKEN_FILE: ${DATA_ADMIN_TOKEN_FILE:-}
       DATA_DIRECT_LOGIN_TOKEN: ${DATA_DIRECT_LOGIN_TOKEN:-}
@@ -105,6 +107,7 @@ services:
       - ${DATA_GATEWAY_LISTEN:?set DATA_GATEWAY_LISTEN}:8480
     cpus: 1
     mem_limit: 512m
+    stop_grace_period: 20s
     logging:
       driver: json-file
       options: { max-size: 20m, max-file: "3" }

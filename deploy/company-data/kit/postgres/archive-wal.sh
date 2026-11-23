@@ -8,23 +8,36 @@
 # No pipeline: each step's own status is checked (dash has no pipefail).
 set -eu
 src=$1
-dst=/backup/wal/$2.gz
+wal_dir=${QORPERA_WAL_ARCHIVE_DIR:-/backup/wal}
+dst=$wal_dir/$2.gz
+check=""
+tmp=""
+cleanup() {
+	[ -z "$check" ] || rm -f -- "$check"
+	[ -z "$tmp" ] || rm -f -- "$tmp"
+}
+# WHY: Remove temp files on failure or signal because pg_archivecleanup only prunes .gz WAL files, never .tmp remnants.
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 if [ -e "$dst" ]; then
 	check=$(mktemp)
 	if gzip -dc "$dst" >"$check" 2>/dev/null; then
 		if cmp -s "$check" "$src"; then
-			rm -f "$check"
 			exit 0
 		fi
-		rm -f "$check"
 		echo "archive-wal: $dst exists and differs" >&2
 		exit 1
 	fi
-	rm -f "$check"
+	rm -f -- "$check"
+	check=""
 	echo "archive-wal: $dst is damaged; archiving it again" >&2
 fi
-gzip -1 -c "$src" >"$dst.tmp"
-gzip -t "$dst.tmp"
-sync "$dst.tmp"
-mv "$dst.tmp" "$dst"
-sync /backup/wal
+tmp="$dst.tmp.$$"
+gzip -1 -c "$src" >"$tmp"
+gzip -t "$tmp"
+sync "$tmp"
+mv "$tmp" "$dst"
+tmp=""
+sync "$wal_dir"

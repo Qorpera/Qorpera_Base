@@ -20,6 +20,7 @@ import {
 } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CodeCheck, type CodeSiteRecipe, codeChecksTail } from "../src/code-checks.ts";
+import { CODE_RESTORING } from "../src/code-host-repositories.ts";
 import {
 	CODE_CHECKS_DRILL,
 	CODE_CHECKS_NEWER_RUN,
@@ -43,6 +44,7 @@ import {
 	CodingWorkspaceFailed,
 } from "../src/coding-executor.ts";
 import {
+	CODING_BOOT_READY_COMMAND,
 	CODING_FOLDER_GIT_ENVIRONMENT,
 	CODING_HOST_RPCS,
 	codingFolderGitEnvironment,
@@ -111,6 +113,7 @@ const mocked = vi.hoisted(() => ({
 	guestQuiesce: vi.fn(),
 	guestStop: vi.fn(),
 	guestStatus: vi.fn(),
+	guestStatusAll: vi.fn(),
 	guestMount: vi.fn(),
 	folderTransports: [] as Record<string, unknown>[],
 	/** The folder model's transports the host builds are the real ones, over the guest agent's client faked here. */
@@ -169,9 +172,16 @@ vi.mock("../src/coding-guest-client.ts", () => ({
 		quiesce = mocked.guestQuiesce;
 		stopSession = mocked.guestStop;
 		status = mocked.guestStatus;
+		statusAll = mocked.guestStatusAll;
 		mount = mocked.guestMount;
 	},
-	CodingGuestRefused: class extends Error {},
+	CodingGuestRefused: class extends Error {
+		readonly code: string;
+		constructor(code: string) {
+			super(`CODING_GUEST_REFUSED:${code}`);
+			this.code = code;
+		}
+	},
 }));
 vi.mock("../src/coding-machine.ts", async (original) => ({
 	...(await original<typeof import("../src/coding-machine.ts")>()),
@@ -2757,7 +2767,8 @@ describe("housekeeping of a member's machines", () => {
 });
 
 /** The folder model's wait for a machine's boot to finish. */
-const SETTLED = ["/usr/bin/systemctl", "is-system-running", "--wait"];
+const SETTLED = [...CODING_BOOT_READY_COMMAND];
+const isSettledCommand = (command: readonly string[]) => command.join("\0") === SETTLED.join("\0");
 
 /** The fixture on the folder model: the session's views, the folder service's boundary, its repositories and the guest
  * agent, faked. `repositories` false leaves the executor's default: none, at /company. */
@@ -2776,6 +2787,7 @@ async function folderFixture(repositories = true) {
 		usage: { bootId: f.bootId, uptimeMs: 600_000, cpuUsageUsec: 0, ioBytes: 0, ioComplete: true, ...usage },
 	});
 	mocked.guestStatus.mockResolvedValue(status());
+	mocked.guestStatusAll.mockRejectedValue(new CodingGuestRefused("CODING_GUEST_ARGUMENTS_INVALID"));
 	mocked.guestCancel.mockResolvedValue({});
 	mocked.guestQuiesce.mockResolvedValue({});
 	mocked.guestStop.mockResolvedValue({});
@@ -3095,7 +3107,7 @@ describe("a coding session on the folder model", () => {
 		});
 		const waited = vi.fn();
 		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
-			if (command[1] !== "is-system-running") return fallback(project, name, command, signal);
+			if (!isSettledCommand(command)) return fallback(project, name, command, signal);
 			waited(command);
 			await booted;
 		});
@@ -3106,14 +3118,14 @@ describe("a coding session on the folder model", () => {
 		await prepared;
 		expect(f.calls("qorpera_attach_coding_session")).toHaveLength(1);
 		expect(f.views.attach).toHaveBeenCalledTimes(1);
-		// The same boot is not waited for again.
 		await nextTurn(f, f.host, 2);
 		expect(waited).toHaveBeenCalledTimes(1);
-		// A new boot is, and one that finished degraded (a unit failed: systemctl exits 1) has finished too.
+		let newBootAttempts = 0;
 		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
-			if (command[1] !== "is-system-running") return fallback(project, name, command, signal);
+			if (!isSettledCommand(command)) return fallback(project, name, command, signal);
 			waited(command);
-			throw new Error("LXD instance command failed");
+			newBootAttempts += 1;
+			if (newBootAttempts === 1) throw new Error("LXD instance command failed");
 		});
 		f.files.set("/proc/sys/kernel/random/boot_id", {
 			uid: 0,
@@ -3122,17 +3134,17 @@ describe("a coding session on the folder model", () => {
 			content: Buffer.from(`${randomUUID()}\n`),
 		});
 		await nextTurn(f, f.host, 3);
-		expect(waited).toHaveBeenCalledTimes(2);
+		expect(waited).toHaveBeenCalledTimes(3);
 		expect(f.calls("qorpera_attach_coding_session")).toHaveLength(3);
 		await nextTurn(f, f.host, 4);
-		expect(waited).toHaveBeenCalledTimes(2);
+		expect(waited).toHaveBeenCalledTimes(3);
 	});
 	it("attaches anyway once a boot is still unfinished at the limit, and waits for it again on the next turn", async () => {
 		const f = await folderFixture();
 		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
 		const waited = vi.fn();
 		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
-			if (command[1] !== "is-system-running") return fallback(project, name, command, signal);
+			if (!isSettledCommand(command)) return fallback(project, name, command, signal);
 			waited(command);
 			await new Promise((_done, fail) =>
 				signal!.addEventListener("abort", () => fail(signal!.reason), { once: true }),
@@ -3155,7 +3167,7 @@ describe("a coding session on the folder model", () => {
 		const unanswered = [new Error("LXD operation failed"), new Error("LXD instance agent not running")];
 		const waited = vi.fn();
 		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
-			if (command[1] !== "is-system-running") return fallback(project, name, command, signal);
+			if (!isSettledCommand(command)) return fallback(project, name, command, signal);
 			waited(command);
 			const failure = unanswered.shift();
 			if (failure) throw failure;
@@ -3171,7 +3183,7 @@ describe("a coding session on the folder model", () => {
 		const f = await folderFixture();
 		const fallback = vi.mocked(f.client.execInstance).getMockImplementation()!;
 		vi.mocked(f.client.execInstance).mockImplementation(async (project, name, command, signal) => {
-			if (command[1] !== "is-system-running") return fallback(project, name, command, signal);
+			if (!isSettledCommand(command)) return fallback(project, name, command, signal);
 			throw new Error("LXD: Instance is not running");
 		});
 		await expect(f.host.prepareWorkspace(f.claim, f.turn(), f.signal)).rejects.toThrow(
@@ -9329,7 +9341,12 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		expect(f.client.readCodingMachineMemory).toHaveBeenCalledWith(
 			f.machine.project,
 			f.plan.request.name,
-			[slicePath, folderServicePath, userPath],
+			[
+				slicePath,
+				`/sys/fs/cgroup/qorpera-folder.slice/qorpera-folder-${worker32}.service/memory.stat`,
+				folderServicePath,
+				userPath,
+			],
 			expect.any(AbortSignal),
 		);
 		expect(
@@ -9820,7 +9837,12 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		expect(f.client.readCodingMachineMemory).toHaveBeenCalledWith(
 			f.machine.project,
 			f.plan.request.name,
-			[slicePath, folderServicePath, userPath],
+			[
+				slicePath,
+				`/sys/fs/cgroup/qorpera-folder.slice/qorpera-folder-${worker32}.service/memory.stat`,
+				folderServicePath,
+				userPath,
+			],
 			expect.any(AbortSignal),
 		);
 		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
@@ -9848,7 +9870,12 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		expect(f.client.readCodingMachineMemory).toHaveBeenCalledWith(
 			f.machine.project,
 			f.plan.request.name,
-			[slicePath, folderServicePath, userPath],
+			[
+				slicePath,
+				`/sys/fs/cgroup/qorpera-folder.slice/qorpera-folder-${worker32}.service/memory.stat`,
+				folderServicePath,
+				userPath,
+			],
 			expect.any(AbortSignal),
 		);
 		expect(f.calls("qorpera_record_coding_machine_load").at(-1)).toMatchObject({
@@ -10006,5 +10033,220 @@ describe("coding machine load reporting and horizontal overflow (step 5k)", () =
 		const loadsBefore = f.calls("qorpera_record_coding_machine_load").length;
 		await stalledHost.keep(f.signal);
 		expect(f.calls("qorpera_record_coding_machine_load")).toHaveLength(loadsBefore + 1);
+	});
+
+	it("observes attached sessions via one batched statusAll exec and caches immutable kept command text", async () => {
+		const f = await folderFixture();
+		const second = f.another();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		await f.host.prepareWorkspace(second, f.turnOf(second), f.signal);
+		f.host.endTurn(f.claim);
+		f.host.endTurn(second);
+		f.state.listed = [f.entry()];
+		const cmd1 = randomUUID();
+		const cmd2 = randomUUID();
+		mocked.guestStatus.mockClear();
+		mocked.guestStatusAll.mockResolvedValue({
+			schema: "qorpera.coding-guest-status-all/v1",
+			bootId: f.bootId,
+			uptimeMs: 600_000,
+			sessions: [
+				{
+					workerId: f.claim.workerId,
+					commands: [{ commandId: cmd1, state: "running" }],
+					usage: { bootId: f.bootId, uptimeMs: 600_000, cpuUsageUsec: 1000, ioBytes: 100, ioComplete: true },
+				},
+				{
+					workerId: second.workerId,
+					commands: [{ commandId: cmd2, state: "running" }],
+					usage: { bootId: f.bootId, uptimeMs: 600_000, cpuUsageUsec: 2000, ioBytes: 200, ioComplete: true },
+				},
+			],
+		});
+		mocked.keptCommand.mockImplementation(async (_custody: string, _workerId: string, id: string) => ({
+			turn: 1,
+			command: `run ${id}`,
+		}));
+		mocked.keptCommand.mockClear();
+
+		await f.host.keep(f.signal);
+		expect(mocked.guestStatusAll).toHaveBeenCalledTimes(1);
+		expect(mocked.guestStatus).not.toHaveBeenCalled();
+		expect(mocked.keptCommand).toHaveBeenCalledTimes(2);
+
+		await f.host.keep(f.signal);
+		expect(mocked.guestStatusAll).toHaveBeenCalledTimes(2);
+		expect(mocked.keptCommand).toHaveBeenCalledTimes(2);
+	});
+
+	it("overlaps VM boot with worktree prepare, runs prepare ahead of attach on turn 2, and refuses with CODE_RESTORING", async () => {
+		const f = await folderFixture();
+		const order: string[] = [];
+		let releaseReconcile!: () => void;
+		const reconcileGate = new Promise<void>((resolve) => {
+			releaseReconcile = resolve;
+		});
+		const origReconcile = mocked.reconcile.getMockImplementation()!;
+		mocked.reconcile.mockImplementationOnce(async (input) => {
+			order.push("reconcile:start");
+			await reconcileGate;
+			order.push("reconcile:end");
+			return origReconcile(input);
+		});
+		const origPrepare = f.repositories.prepare.getMockImplementation()!;
+		f.repositories.prepare.mockImplementationOnce(async (session, signal) => {
+			order.push("repo:start");
+			releaseReconcile();
+			const out = await origPrepare(session, signal);
+			order.push("repo:end");
+			return out;
+		});
+
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		expect(order.indexOf("repo:start")).toBeGreaterThan(-1);
+		expect(order.indexOf("repo:start")).toBeLessThan(order.indexOf("reconcile:end"));
+		expect(f.calls("qorpera_record_coding_worktree_created")).toHaveLength(1);
+		expect(f.repositories.prepare).toHaveBeenCalledTimes(1);
+
+		const turn2Order: string[] = [];
+		f.repositories.prepare.mockImplementationOnce(async (session, signal) => {
+			turn2Order.push("prepare");
+			return origPrepare(session, signal);
+		});
+		f.state.duringAttach = () => {
+			turn2Order.push("attach");
+		};
+		const turn2Claim = { ...f.claim, sequence: 2, worktreeCreatedAt: new Date().toISOString() };
+		f.sequences.set(f.claim.workerId, 2);
+		f.host.endTurn(f.claim);
+		await f.host.prepareWorkspace(
+			turn2Claim,
+			{ ...f.turn(), sequence: 2, turnId: codingHostId("turn", `${f.claim.workerId}:2`), baseSha: f.baseSha },
+			f.signal,
+		);
+		expect(f.repositories.prepare).toHaveBeenCalledTimes(2);
+		expect(turn2Order).toEqual(["prepare", "attach"]);
+		expect(f.calls("qorpera_record_coding_worktree_created")).toHaveLength(1);
+
+		const turn3Claim = { ...turn2Claim, sequence: 3 };
+		f.sequences.set(f.claim.workerId, 3);
+		f.host.endTurn(turn2Claim);
+		const attachBeforeTurn3 = f.calls("qorpera_attach_coding_session").length;
+		f.repositories.prepare.mockRejectedValueOnce(
+			new CodingWorkspaceFailed("CODE_HOST_RESTORE_IN_PROGRESS", CODE_RESTORING),
+		);
+		await expect(
+			f.host.prepareWorkspace(
+				turn3Claim,
+				{ ...f.turn(), sequence: 3, turnId: codingHostId("turn", `${f.claim.workerId}:3`), baseSha: f.baseSha },
+				f.signal,
+			),
+		).rejects.toMatchObject({
+			message: "CODE_HOST_RESTORE_IN_PROGRESS",
+			summary: `${CODE_RESTORING} [code=CODE_HOST_RESTORE_IN_PROGRESS]`,
+		});
+		expect(f.calls("qorpera_attach_coding_session")).toHaveLength(attachBeforeTurn3);
+	});
+
+	it("serializes hard-NFS storage calls across two workers so at most one NAS call hangs at a time", async () => {
+		const f = await folderFixture();
+		const host = new LxdCodingExecutorHost({ ...f.options, folder: f.folder, storageStepTimeoutMs: 60 });
+		const second = f.another();
+		let active = 0;
+		let maxActive = 0;
+		let started = 0;
+		let releaseHang!: () => void;
+		const hang = new Promise<void>((resolve) => {
+			releaseHang = resolve;
+		});
+		mocked.storagePrepare.mockImplementation(async () => {
+			active++;
+			started++;
+			maxActive = Math.max(maxActive, active);
+			try {
+				await hang;
+			} finally {
+				active--;
+			}
+		});
+		const firstWork = host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const secondWork = host.prepareWorkspace(second, f.turnOf(second), f.signal);
+		const results = await Promise.allSettled([firstWork, secondWork]);
+		expect(results[0]?.status).toBe("rejected");
+		expect(results[1]?.status).toBe("rejected");
+		expect((results[0] as PromiseRejectedResult).reason).toMatchObject({ message: "CODING_HOST_STORAGE_TIMEOUT" });
+		expect((results[1] as PromiseRejectedResult).reason).toMatchObject({ message: "CODING_HOST_STORAGE_TIMEOUT" });
+		expect(maxActive).toBe(1);
+		expect(started).toBe(1);
+		releaseHang();
+		await hang;
+	});
+
+	it("reuses pre-authorized CodingCommandTurnContext in commandTransport without duplicate run or list RPCs", async () => {
+		const f = await folderFixture();
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const scope = {
+			workerId: f.claim.workerId,
+			vmId: f.machine.machineId,
+			requestId: f.turn().turnId,
+			turn: f.claim.sequence,
+		};
+		const localBinding = f.host.localRunBinding(scope);
+		expect(localBinding).toMatchObject({
+			workerId: f.claim.workerId,
+			leaseToken: f.claim.leaseToken,
+			machineIdSha256: f.options.machineIdSha256,
+		});
+		const plan = lxdCodingMachinePlan(f.machine);
+		const runAuthority = {
+			schema: "qorpera.coding-machine-admission/v1",
+			machineId: f.machine.machineId,
+			workerId: f.claim.workerId,
+			instanceSha256: plan.instanceSha256,
+			intent: "run",
+			guestUid: 200001,
+			validForMs: 5000,
+			nodeId: randomUUID(),
+			nodeVersion: 1,
+		};
+		const context = {
+			inputSha256: "a".repeat(64),
+			runAuthority,
+			rebuildDue: false,
+			diskEpoch: null,
+			vaultEnvVersion: "b".repeat(64),
+			startedAt: performance.now(),
+			postAuthority: undefined as
+				| {
+						readonly inputSha256: string;
+						readonly runAuthority?: unknown;
+						readonly rebuildDue?: boolean;
+						readonly diskEpoch?: string | null;
+						readonly vaultEnvVersion?: string;
+						readonly startedAt?: number;
+				  }
+				| undefined,
+		};
+		f.call.mockClear();
+		const postAuthorize = vi.fn(async () => {
+			context.postAuthority = {
+				inputSha256: "a".repeat(64),
+				runAuthority,
+				rebuildDue: false,
+				diskEpoch: null,
+				vaultEnvVersion: "b".repeat(64),
+				startedAt: performance.now(),
+			};
+		});
+		await f.host.commandTransport(scope, postAuthorize, f.signal, context);
+		const transportOpts = mocked.folderTransports.at(-1) as unknown as LxdCodingFolderCommandTransportOptions;
+		expect(transportOpts.vaultEnvVersion).toBe("b".repeat(64));
+		await transportOpts.authorize("start", scope, randomUUID(), "a".repeat(64), f.signal);
+		expect(postAuthorize).not.toHaveBeenCalled();
+		await transportOpts.authorize("start", scope, randomUUID(), "a".repeat(64), f.signal);
+		expect(postAuthorize).toHaveBeenCalledTimes(1);
+		expect(await transportOpts.withheld?.(f.signal)).toBe(false);
+		expect(f.calls("qorpera_authorize_coding_machine_run")).toEqual([]);
+		expect(f.calls("qorpera_list_coding_machines")).toEqual([]);
 	});
 });

@@ -103,10 +103,13 @@ and its usual identity keys: `user.qorpera.company_id`, `user.qorpera.machine_id
 Everything after that is the reconciler's (`qorpera-agent-plug.service`, root), which reads LXD every 5 seconds:
 - a machine that stops (asleep) keeps its address and entry; its connections are flushed once;
 - a machine that is gone (missing from two reads of LXD in a row after it was seen, or never created within an hour
-  of its last plug) is unplugged under the plug lock: quarantined for 15 minutes first, then it loses its lease (dnsmasq
-  reloads), its connections, the exit's per-machine counts, refused flows and brake, and its entry. A failed flush is
-  tried again every pass; the address is not given out before it succeeds. An entry removed by hand is unplugged
-  the same way, from the reconciler's own copy;
+  of its last plug) is unplugged: under the plug lock its address is quarantined for 15 minutes and marked `unflushed`,
+  its lease and per-machine nft state (counts, refused flows, brake, DNS, and reach elements) are cleared, and its
+  entry and `seen` marker are removed; after releasing the lock dnsmasq reloads and its connections are flushed,
+  removing `unflushed` once the flush succeeds. A failed flush (or crash before flush finishes) leaves `unflushed` in
+  place so the address stays held and is retried (with `forget`) on the next pass. An entry removed by hand is
+  unplugged the same way, from the reconciler's
+  own copy;
 - a flush ends the address's connections in the exit's table and their masqueraded twins in the node's (TCP, UDP and
   ICMP; other protocols' twins end with their timeout);
 - every entry is checked against its machine (the card above, the identity keys), a running machine's card must be
@@ -243,7 +246,8 @@ far more. So `X logs` (the logs' timer, every 5 minutes) tends them:
   cannot seal) is a problem in `logs.json`, so `verify` fails.
 - **Keeps the disk safe.** 90 days are kept. A part the NAS holds (the shipper's record of it, below) goes from the
   node a week after its day, with no deletion record: the NAS has it. Past 80% of the cap, or with less than the floor
-  plus 5 points of the disk free, the parts the NAS holds go first, oldest first; then the oldest of the rest: the DNS
+  plus 5 points of the disk free (a floor of 0 turns this off), the parts the NAS holds go first, oldest first; then the
+  oldest of the rest: the DNS
   record's and the connection log's, then the client history's (small, and
   what ties addresses to companies). One rule for the connection log and the client history, at 90 days and under
   pressure alike: a part goes only once a counts file names it. The open files and the counts never go under

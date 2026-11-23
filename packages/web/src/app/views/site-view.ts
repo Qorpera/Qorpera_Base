@@ -373,6 +373,10 @@ export class SiteView {
 		this.#lifetime.abort();
 	}
 
+	reload(): void {
+		this.#open();
+	}
+
 	/** Opens the site in the frame with a fresh pass, at `to` (a path of the site) or at its start. */
 	#open(to?: string): void {
 		const site = this.#host.site();

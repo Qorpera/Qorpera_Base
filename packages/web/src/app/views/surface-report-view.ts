@@ -2,8 +2,19 @@ import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patch
 import type { StudioPatchChange, StudioPatchOp, SurfacePreviewConflict, SurfaceSummary } from "@qorpera/contracts";
 import { h } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
+import { playOnce } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
-import { formatConflictPaths, isOpenChange, type SurfacesStore } from "../surfaces-store.ts";
+import { surfaceSkeleton } from "../../ui/skeleton.ts";
+import { createFrameBudget, hasBrowserCompositor, yieldToMain } from "../../ui/time-slice.ts";
+import {
+	effectiveStudioBaseFiles,
+	formatConflictPaths,
+	isLocalSurfaceId,
+	isOpenChange,
+	normalizeStudioPatchOps,
+	type SurfacesStore,
+	type SurfaceUpdatePhase,
+} from "../surfaces-store.ts";
 import { surfaceTile } from "./surface-rail.ts";
 
 export interface SurfaceReportOptions {
@@ -14,6 +25,7 @@ export interface SurfaceReportOptions {
 	readonly patches?: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly loadFiles?: (surface: SurfaceSummary, signal: AbortSignal) => Promise<Readonly<Record<string, string>>>;
 	readonly embedded?: boolean;
+	readonly timeSlice?: boolean;
 }
 
 interface ReportMetric {
@@ -526,24 +538,93 @@ function renderBlock(block: ReportBlock): HTMLElement {
 	}
 }
 
+function updatingLabel(phase: SurfaceUpdatePhase): string {
+	if (phase === "publishing") return t("Publishing…");
+	if (phase === "merging") return t("Applying…");
+	return t("Updating…");
+}
+
+interface ReportMarkdownDoc {
+	readonly path: string;
+	readonly content: string;
+	readonly changed: boolean;
+}
+
+interface ReportRenderParams {
+	readonly seq: number;
+	readonly surface: SurfaceSummary;
+	readonly workspace: ReturnType<SurfacesStore["workspace"]>;
+	readonly baseFiles: Readonly<Record<string, string>>;
+	readonly ordered: readonly StudioPatchChange[];
+	readonly initialLoading: boolean;
+	readonly updatingPhase: SurfaceUpdatePhase | null;
+	readonly busyReconcile: boolean;
+	readonly mode: SurfacesStore["state"]["mode"];
+	readonly activeReportSlug: string | undefined;
+}
+
+function parseSingleReportFile(
+	path: string,
+	files: Readonly<Record<string, string>>,
+	baseFiles: Readonly<Record<string, string>>,
+	reports: ReportDocument[],
+	markdownDocs: ReportMarkdownDoc[],
+): void {
+	const content = files[path] ?? "";
+	const baseContent = baseFiles[path];
+	const changed = baseContent !== content;
+	if (/\.report\.json$/i.test(path)) {
+		const parsed = parseReportJson(path, content);
+		if (parsed) {
+			const parsedBase = baseContent ? parseReportJson(path, baseContent) : undefined;
+			reports.push({
+				...parsed,
+				changed,
+				...(parsedBase ? { base: { ...parsedBase, changed: false } } : {}),
+			});
+			return;
+		}
+	}
+	if (/\.(?:md|markdown)$/i.test(path)) markdownDocs.push({ path, content, changed });
+}
+
 export class SurfaceReportView {
 	readonly el = h("div", { class: "surface-report" });
 	readonly #options: SurfaceReportOptions;
 	readonly #lifetime = new AbortController();
 	#baseFiles: Readonly<Record<string, string>>;
 	#loading = false;
+	#showingSkeleton = false;
 	#lastConflict: SurfacePreviewConflict | null = null;
 	#activeSlug = "";
 	#shownDeps: readonly unknown[] | undefined;
 	#shownOrdered: readonly StudioPatchChange[] | undefined;
+	#wasUpdating = false;
+	#settleTimer: ReturnType<typeof setTimeout> | undefined;
+	#renderSeq = 0;
 
 	constructor(options: SurfaceReportOptions) {
 		this.#options = options;
 		if (options.embedded) this.el.classList.add("is-embedded");
 		this.#baseFiles = options.baseFiles ? { ...options.baseFiles } : {};
-		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
+		options.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: this.#lifetime.signal });
-		if (options.loadFiles && !options.baseFiles) void this.#load();
+		if (!options.baseFiles) {
+			const cloudManaged =
+				options.store.canLoadCloudFiles &&
+				!isLocalSurfaceId(options.surface.id) &&
+				options.store.state.source === "cloud";
+			if (cloudManaged) {
+				if (
+					!options.store.state.cloudSurfaceFiles[options.surface.id] &&
+					!options.store.isCloudFilesLoading(options.surface.id)
+				) {
+					void options.store.refreshCloudFiles(options.surface);
+				}
+			} else if (options.loadFiles) {
+				void this.#load();
+			}
+		}
 		this.update();
 	}
 
@@ -552,7 +633,16 @@ export class SurfaceReportView {
 		this.#baseFiles = files;
 	}
 
+	deactivate(): void {
+		this.#renderSeq++;
+	}
+
 	dispose(): void {
+		this.#renderSeq++;
+		if (this.#settleTimer) {
+			clearTimeout(this.#settleTimer);
+			this.#settleTimer = undefined;
+		}
 		this.#lifetime.abort();
 	}
 
@@ -575,7 +665,7 @@ export class SurfaceReportView {
 		}
 	}
 
-	#orderedChanges(): StudioPatchChange[] {
+	#orderedChanges(folderRoot: string | null | undefined): StudioPatchChange[] {
 		const store = this.#options.store;
 		const state = store.state;
 		if (state.mode === "live") return [];
@@ -584,7 +674,7 @@ export class SurfaceReportView {
 			for (const change of session.changes) {
 				if (change.kind !== "folder_patch" || !isOpenChange(change) || !store.isChangeShown(change.id)) continue;
 				const ops = this.#options.patches?.[change.id] ?? state.studioPatches[change.id];
-				if (ops?.length) ordered.push({ changeId: change.id, ops });
+				if (ops?.length) ordered.push({ changeId: change.id, ops: normalizeStudioPatchOps(ops, folderRoot) });
 			}
 		}
 		return ordered;
@@ -592,30 +682,54 @@ export class SurfaceReportView {
 
 	#effectiveBaseFiles(surfaceId: string): Readonly<Record<string, string>> {
 		const state = this.#options.store.state;
-		const cloudBase = state.cloudSurfaceFiles[surfaceId];
-		const localBase = state.localStudioBase[surfaceId];
-		if (!cloudBase && !localBase) return this.#baseFiles;
-		return { ...this.#baseFiles, ...(cloudBase ?? {}), ...(localBase ?? {}) };
+		const storeBase = effectiveStudioBaseFiles(state, surfaceId);
+		if (!storeBase) return this.#baseFiles;
+		return this.#options.baseFiles ? { ...this.#baseFiles, ...storeBase } : storeBase;
 	}
 
 	update(): void {
+		if (this.#lifetime.signal.aborted) return;
 		const store = this.#options.store;
 		const state = store.state;
 		const surface = state.surfaces.find((item) => item.id === this.#options.surface.id) ?? this.#options.surface;
 		const baseFiles = this.#effectiveBaseFiles(surface.id);
 		const workspace = store.workspace(surface.id);
-		const ordered = this.#orderedChanges();
+		const ordered = this.#orderedChanges(surface.folderRoot);
 		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
+		const updatingPhase = this.#options.embedded ? null : store.surfaceUpdatePhase(surface.id);
+		const updating = updatingPhase !== null;
+		const initialLoading =
+			this.#loading || (!state.cloudSurfaceFiles[surface.id] && store.isCloudFilesLoading(surface.id));
+		this.el.classList.toggle("is-updating", updating);
+		this.el.setAttribute("aria-busy", String(updating));
+		if (updating) {
+			if (this.#settleTimer) {
+				clearTimeout(this.#settleTimer);
+				this.#settleTimer = undefined;
+			}
+			this.el.classList.remove("is-settled");
+		} else if (this.#wasUpdating) {
+			this.el.classList.add("is-settled");
+			if (this.#settleTimer) clearTimeout(this.#settleTimer);
+			this.#settleTimer = setTimeout(() => {
+				this.#settleTimer = undefined;
+				this.el.classList.remove("is-settled");
+			}, 600);
+		}
+		this.#wasUpdating = updating;
 		const deps: readonly unknown[] = [
-			this.#loading,
+			initialLoading,
+			updatingPhase,
 			state.mode,
 			state.activeReportSlug,
 			this.#activeSlug,
 			this.#baseFiles,
 			state.cloudSurfaceFiles[surface.id],
+			state.pendingStudioPatches[surface.id],
 			state.localStudioBase[surface.id],
 			surface.title,
-			workspace?.briefSummary,
+			surface.folderRoot,
+			workspace?.briefSummary ?? "",
 			busyReconcile,
 		];
 		const sameDeps =
@@ -632,35 +746,113 @@ export class SurfaceReportView {
 		if (sameDeps && sameOrdered) return;
 		this.#shownDeps = deps;
 		this.#shownOrdered = ordered;
+		const seq = ++this.#renderSeq;
 
-		const composition = composeStudioPreview(baseFiles, ordered);
+		const sliced = this.#options.timeSlice ?? hasBrowserCompositor();
+		if (initialLoading && Object.keys(baseFiles).length === 0 && ordered.length === 0 && state.mode !== "compare") {
+			this.#showingSkeleton = true;
+			this.el.replaceChildren(surfaceSkeleton(t("Opening studio…"), "report"));
+			return;
+		}
+
+		const params: ReportRenderParams = {
+			seq,
+			surface,
+			workspace,
+			baseFiles,
+			ordered,
+			initialLoading,
+			updatingPhase,
+			busyReconcile,
+			mode: state.mode,
+			activeReportSlug: state.activeReportSlug,
+		};
+		if (sliced) {
+			if (this.el.childElementCount === 0 || this.#showingSkeleton) {
+				this.#showingSkeleton = true;
+				if (!this.el.querySelector(".skeleton-surface-report")) {
+					this.el.replaceChildren(surfaceSkeleton(t("Opening studio…"), "report"));
+				}
+			}
+			void this.#renderSliced(params);
+			return;
+		}
+		this.#renderSync(params);
+	}
+
+	#isRenderActive(seq: number): boolean {
+		return seq === this.#renderSeq && !this.#lifetime.signal.aborted;
+	}
+
+	async #renderSliced(params: ReportRenderParams): Promise<void> {
+		const signal = this.#lifetime.signal;
+		const budget = createFrameBudget(6);
+		if (!(await yieldToMain(signal).then(() => this.#isRenderActive(params.seq)))) return;
+		budget.reset();
+
+		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot);
 		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
 		const files = composition.files;
 		const filePaths = Object.keys(files).sort();
 
 		const reports: ReportDocument[] = [];
-		const markdownDocs: { readonly path: string; readonly content: string; readonly changed: boolean }[] = [];
+		const markdownDocs: ReportMarkdownDoc[] = [];
 		for (const path of filePaths) {
-			const content = files[path] ?? "";
-			const baseContent = baseFiles[path];
-			const changed = baseContent !== content;
-			if (/\.report\.json$/i.test(path)) {
-				const parsed = parseReportJson(path, content);
-				if (parsed) {
-					const parsedBase = baseContent ? parseReportJson(path, baseContent) : undefined;
-					reports.push({
-						...parsed,
-						changed,
-						...(parsedBase ? { base: { ...parsedBase, changed: false } } : {}),
-					});
-					continue;
-				}
-			}
-			if (/\.(?:md|markdown)$/i.test(path)) markdownDocs.push({ path, content, changed });
+			parseSingleReportFile(path, files, params.baseFiles, reports, markdownDocs);
+			if (!(await budget.yieldIfNeeded(signal)) || !this.#isRenderActive(params.seq)) return;
 		}
 
-		if (state.activeReportSlug && reports.some((item) => item.slug === state.activeReportSlug)) {
-			this.#activeSlug = state.activeReportSlug;
+		const plan = this.#buildRenderPlan(params, composition, reports, markdownDocs);
+		if (!this.#isRenderActive(params.seq)) return;
+		if (!plan.article || !plan.sectionTasks) {
+			this.el.replaceChildren(...plan.children);
+			if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
+			return;
+		}
+		const tasks = plan.sectionTasks;
+		if (tasks[0]) plan.article.append(tasks[0]());
+		this.el.replaceChildren(...plan.children);
+		if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
+		budget.reset();
+		for (let i = 1; i < tasks.length; i++) {
+			if (!(await budget.yieldIfNeeded(signal)) || !this.#isRenderActive(params.seq)) return;
+			plan.article.append(tasks[i]!());
+		}
+	}
+
+	#renderSync(params: ReportRenderParams): void {
+		const composition = composeStudioPreview(params.baseFiles, params.ordered, params.surface.folderRoot);
+		this.#lastConflict = composition.status === "conflicted" ? composition.conflictReport : null;
+		const files = composition.files;
+		const filePaths = Object.keys(files).sort();
+
+		const reports: ReportDocument[] = [];
+		const markdownDocs: ReportMarkdownDoc[] = [];
+		for (const path of filePaths) {
+			parseSingleReportFile(path, files, params.baseFiles, reports, markdownDocs);
+		}
+		const plan = this.#buildRenderPlan(params, composition, reports, markdownDocs);
+		if (plan.article && plan.sectionTasks) {
+			for (const task of plan.sectionTasks) plan.article.append(task());
+		}
+		this.el.replaceChildren(...plan.children);
+		if (plan.leavingSkeleton) playOnce(this.el, "is-entering");
+	}
+
+	#buildRenderPlan(
+		params: ReportRenderParams,
+		composition: ReturnType<typeof composeStudioPreview>,
+		reports: readonly ReportDocument[],
+		markdownDocs: readonly ReportMarkdownDoc[],
+	): {
+		readonly children: HTMLElement[];
+		readonly article?: HTMLElement;
+		readonly sectionTasks?: readonly (() => HTMLElement)[];
+		readonly leavingSkeleton: boolean;
+	} {
+		const { surface, workspace, initialLoading, updatingPhase, busyReconcile, mode, activeReportSlug } = params;
+		if (activeReportSlug && reports.some((item) => item.slug === activeReportSlug)) {
+			this.#activeSlug = activeReportSlug;
 		} else if (reports.length && !reports.some((item) => item.slug === this.#activeSlug)) {
 			this.#activeSlug = reports[0]!.slug;
 		}
@@ -673,13 +865,8 @@ export class SurfaceReportView {
 					? t("1 live change applied")
 					: composition.appliedChangeIds.length > 1
 						? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
-						: t("Base");
-		const badgeClass =
-			composition.status === "conflicted"
-				? "studio-badge is-conflict"
-				: composition.appliedChangeIds.length > 0
-					? "studio-badge is-live"
-					: "studio-badge";
+						: null;
+		const badgeClass = composition.status === "conflicted" ? "studio-badge is-conflict" : "studio-badge is-live";
 
 		const showChrome = reports.length > 1 || !this.#options.embedded;
 		const chrome = showChrome
@@ -708,7 +895,24 @@ export class SurfaceReportView {
 							)
 						: h("span", { class: "report-chrome-spacer" }),
 					!this.#options.embedded
-						? h("div", { class: "report-chrome-tools" }, h("span", { class: badgeClass }, badgeText))
+						? h(
+								"div",
+								{ class: "report-chrome-tools" },
+								updatingPhase
+									? h(
+											"span",
+											{
+												class: "studio-updating-pill",
+												role: "status",
+												"aria-live": "polite",
+												"data-updating-phase": updatingPhase,
+											},
+											h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
+											h("span", null, updatingLabel(updatingPhase)),
+										)
+									: null,
+								badgeText ? h("span", { class: badgeClass }, badgeText) : null,
+							)
 						: null,
 				)
 			: null;
@@ -741,34 +945,35 @@ export class SurfaceReportView {
 			);
 		}
 
-		if (state.mode === "compare") {
+		if (mode === "compare") {
+			const leavingSkeleton = this.#showingSkeleton;
+			this.#showingSkeleton = false;
 			children.push(this.#renderCompare(reports));
-			this.el.replaceChildren(...children);
-			return;
+			return { children, leavingSkeleton };
 		}
 
 		if (!activeReport && markdownDocs.length === 0) {
+			if (initialLoading) {
+				this.#showingSkeleton = true;
+				return { children: [surfaceSkeleton(t("Opening studio…"), "report")], leavingSkeleton: false };
+			}
+			const leavingSkeleton = this.#showingSkeleton;
+			this.#showingSkeleton = false;
 			children.push(
 				h(
 					"div",
 					{ class: "studio-empty" },
-					this.#loading
-						? [h("span", { class: "surface-state is-running" }), h("p", null, t("Opening studio…"))]
-						: [
-								surfaceTile(surface, this.#options.store.lookOf(surface), "is-hero"),
-								h("h2", null, surface.title),
-								workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
-								h(
-									"p",
-									null,
-									t("No reports yet. Describe an analysis, vendor comparison, or design essay below."),
-								),
-							],
+					surfaceTile(surface, this.#options.store.lookOf(surface), "is-hero"),
+					h("h2", null, surface.title),
+					workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
+					h("p", null, t("No reports yet. Describe an analysis, vendor comparison, or design essay below.")),
 				),
 			);
-			this.el.replaceChildren(...children);
-			return;
+			return { children, leavingSkeleton };
 		}
+
+		const leavingSkeleton = this.#showingSkeleton;
+		this.#showingSkeleton = false;
 
 		if (activeReport) {
 			const subtitleChanged = Boolean(activeReport.base && activeReport.base.subtitle !== activeReport.subtitle);
@@ -814,27 +1019,28 @@ export class SurfaceReportView {
 							}),
 						)
 					: null,
-				...activeReport.sections.map((section, idx) => {
-					const baseSection = activeReport.base?.sections[idx];
-					const sectionChanged = Boolean(baseSection && JSON.stringify(baseSection) !== JSON.stringify(section));
-					return h(
-						"section",
-						{
-							class: `report-section${sectionChanged ? " is-changed" : ""}`,
-							"data-section-id": section.id,
-						},
-						section.kicker ? h("span", { class: "report-kicker" }, section.kicker) : null,
-						h(
-							"div",
-							{ class: "report-section-head" },
-							h("h2", null, section.heading),
-							sectionChanged ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
-						),
-						...section.paragraphs.map((paragraph) => h("div", { class: "report-prose" }, markdown(paragraph))),
-						...(section.blocks ?? []).map((block) => renderBlock(block)),
-					);
-				}),
 			);
+
+			const sectionTasks = activeReport.sections.map((section, idx) => () => {
+				const baseSection = activeReport.base?.sections[idx];
+				const sectionChanged = Boolean(baseSection && JSON.stringify(baseSection) !== JSON.stringify(section));
+				return h(
+					"section",
+					{
+						class: `report-section${sectionChanged ? " is-changed" : ""}`,
+						"data-section-id": section.id,
+					},
+					section.kicker ? h("span", { class: "report-kicker" }, section.kicker) : null,
+					h(
+						"div",
+						{ class: "report-section-head" },
+						h("h2", null, section.heading),
+						sectionChanged ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
+					),
+					...section.paragraphs.map((paragraph) => h("div", { class: "report-prose" }, markdown(paragraph))),
+					...(section.blocks ?? []).map((block) => renderBlock(block)),
+				);
+			});
 
 			const toc =
 				activeReport.sections.length >= 2
@@ -862,27 +1068,16 @@ export class SurfaceReportView {
 					: null;
 
 			children.push(h("div", { class: "report-layout" }, article, toc));
-		} else {
-			children.push(
-				h(
-					"div",
-					{ class: "report-layout" },
-					h(
-						"article",
-						{ class: "report-article" },
-						markdownDocs.map((doc) =>
-							h(
-								"section",
-								{ class: "report-section" },
-								h("div", { class: "report-prose" }, markdown(doc.content)),
-							),
-						),
-					),
-				),
-			);
+			return { children, article, sectionTasks, leavingSkeleton };
 		}
 
-		this.el.replaceChildren(...children);
+		const article = h("article", { class: "report-article" });
+		const sectionTasks = markdownDocs.map(
+			(doc) => () =>
+				h("section", { class: "report-section" }, h("div", { class: "report-prose" }, markdown(doc.content))),
+		);
+		children.push(h("div", { class: "report-layout" }, article));
+		return { children, article, sectionTasks, leavingSkeleton };
 	}
 
 	#renderCompare(reports: readonly ReportDocument[]): HTMLElement {

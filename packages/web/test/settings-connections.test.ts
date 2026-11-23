@@ -153,7 +153,9 @@ describe("member model account settings", () => {
 		document.body.append(view.el);
 		await settle();
 		expect(view.el.textContent).toContain("member@example.com");
-		expect(view.el.textContent).toContain("Refreshing…");
+		const refresh = view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!;
+		expect(refresh.textContent).toBe("Refresh");
+		expect(refresh.hasAttribute("aria-disabled")).toBe(false);
 		expect(refreshAccountMetadata).toHaveBeenCalledTimes(1);
 		vi.mocked(client.listConnections).mockResolvedValue(
 			observed({
@@ -210,7 +212,7 @@ describe("member model account settings", () => {
 		await settle();
 		expect(refresh().textContent).toBe("Updated");
 		window.dispatchEvent(new Event("focus"));
-		expect(refresh().textContent).toBe("Refreshing…");
+		expect(refresh().textContent).toBe("Refresh");
 		await settle();
 		expect(refresh().textContent).toBe("Refresh");
 		expect(refreshAccountMetadata.mock.calls.at(-1)![1]).toBe(false);
@@ -287,17 +289,20 @@ describe("member model account settings", () => {
 		expect(refresh().textContent).toBe("Updated");
 		expect(refresh().hasAttribute("aria-disabled")).toBe(false);
 		expect(document.activeElement).toBe(refresh());
-		// A press while a background read greys it out does nothing: that read ends without "Updated".
 		const background = deferred<void>();
 		refreshAccountMetadata.mockReturnValueOnce(background.promise);
 		window.dispatchEvent(new Event("focus"));
 		await settle();
-		expect(refresh().getAttribute("aria-disabled")).toBe("true");
+		expect(refresh().textContent).toBe("Refresh");
+		expect(refresh().hasAttribute("aria-disabled")).toBe(false);
 		refresh().click();
+		await settle();
+		expect(refresh().textContent).toBe("Refreshing…");
+		expect(refreshAccountMetadata.mock.calls.map((call) => call[1])).toEqual([false, true, false]);
 		background.resolve();
 		await settle();
-		expect(refresh().textContent).toBe("Refresh");
-		expect(refreshAccountMetadata.mock.calls.map((call) => call[1])).toEqual([false, true, false]);
+		expect(refreshAccountMetadata.mock.calls.map((call) => call[1])).toEqual([false, true, false, true]);
+		expect(refresh().textContent).toBe("Updated");
 		expect(document.activeElement).toBe(refresh());
 	});
 	it("shows the returning card details in Danish", async () => {
@@ -2268,6 +2273,23 @@ describe("Claude usage and limit resets on the Claude card", () => {
 		expect(view.el.textContent).not.toContain("Usage could not be refreshed");
 	});
 
+	it("reads a Claude login in the background at most every five minutes, and on every Refresh", async () => {
+		vi.useFakeTimers();
+		const { client } = await claudeView(login());
+		const reads = () => vi.mocked(client.readClaude).mock.calls.map(([options]) => options.force);
+		expect(reads()).toEqual([false]);
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		await vi.advanceTimersByTimeAsync(4 * 60_000);
+		expect(reads()).toEqual([false]);
+		view.el.querySelector<HTMLButtonElement>('[data-focus-key="refresh"]')!.click();
+		await settle();
+		expect(reads()).toEqual([false, true]);
+		await vi.advanceTimersByTimeAsync(6 * 60_000);
+		expect(reads()).toEqual([false, true, false]);
+		view.dispose();
+	});
+
 	it("says what brings Claude's usage back when the last reading is old or missing", async () => {
 		const hint = "Usage updates the next time Claude works on a task.";
 		await claudeView(
@@ -2519,5 +2541,53 @@ describe("several Claude logins, one In use", () => {
 			return id(99);
 		});
 		expect(reads).toEqual([id(70), id(72)]);
+	});
+
+	it("renders provider-reported API credits under ChatGPT and Claude cards", async () => {
+		const now = new Date().toISOString();
+		const chatgptWithCredits: NativeMemberConnection = {
+			...connected,
+			sponsorBindingId: id(82),
+			sponsorVersion: 1,
+			providerAccountUsage: {
+				observedAt: now,
+				windows: [{ id: "primary", label: "5 hours", usedPercent: 20 }],
+				credits: { hasCredits: true, unlimited: false, balance: 42.5, currency: "USD" },
+			},
+		};
+		const claudeWithCredits: WebClaudeLogin = {
+			loginId: id(75),
+			clientConnectionId: id(175),
+			createdAt: timestamp,
+			providerAccountEmail: "claude@example.com",
+			inUse: true,
+			usage: {
+				observedAt: now,
+				windows: [{ id: "seven_day", label: "Weekly", usedPercent: 10 }],
+				credits: { hasCredits: true, used: 12.5, limit: 50, balance: 37.5, currency: "USD" },
+			},
+		};
+		const { client } = await setup(true, observed(chatgptWithCredits));
+		client.listClaudeLogins = vi.fn(async () => ({
+			signInOpen: true,
+			readable: true,
+			logins: [claudeWithCredits],
+		}));
+		view.dispose();
+		document.body.replaceChildren();
+		view = new ConnectionsView(client, new AbortController().signal);
+		document.body.append(view.el);
+		await settle();
+
+		const openaiCard = view.el.querySelector<HTMLElement>(`[data-connection-id="${id(81)}"]`)!;
+		expect(openaiCard.textContent).toContain("API credits");
+		expect(openaiCard.textContent).toContain("$42.50 available");
+
+		const claudeCard = view.el.querySelector<HTMLElement>(`[data-claude-login-id="${id(75)}"]`)!;
+		expect(claudeCard.textContent).toContain("API credits");
+		expect(claudeCard.textContent).toContain("$37.50 left of $50");
+		expect(claudeCard.querySelector('.connection-usage-credits [role="meter"]')?.getAttribute("aria-valuenow")).toBe(
+			"75",
+		);
 	});
 });

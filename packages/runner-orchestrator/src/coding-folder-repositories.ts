@@ -97,12 +97,21 @@ export interface CodingFolderRepositories {
 		signal: AbortSignal,
 		options?: { maximumBytes?: number },
 	): Promise<Buffer>;
+	verifyStaged?(session: CodingFolderRepositorySession, headSha: string, signal: AbortSignal): Promise<CodingStaged>;
 }
 
 /** What a start needs: the claim, and its run authority (no base yet, no worktree, no token). */
 export interface CodingFolderStart {
 	readonly claim: CodingSessionClaim;
 	assertAuthorized(signal: AbortSignal): Promise<void>;
+}
+
+export interface CodingStaged {
+	readonly branch: string;
+	readonly baseSha: string;
+	readonly headSha: string;
+	readonly changed: boolean;
+	readonly filesChanged: number;
 }
 
 /** Where a session's work landed in a repository kept in Qorpera. */

@@ -213,7 +213,14 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 	readonly #signingIn = new Map<string, number>();
 	#lastLookup = Number.NEGATIVE_INFINITY;
 	#lastSweep = Number.NEGATIVE_INFINITY;
-	#refreshing: Promise<void> | undefined;
+	#refreshing:
+		| {
+				promise: Promise<void>;
+				readonly controller: AbortController;
+				waiters: number;
+		  }
+		| undefined;
+	#refreshGeneration = 0;
 	/** The last refresh's failure, until one succeeds. */
 	#refreshFailure: unknown;
 	readonly #timers = new Set<ReturnType<typeof setTimeout>>();
@@ -300,18 +307,25 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		if (known) return known.scope;
 		signal.throwIfAborted();
 		// A refresh already running (the first one after a start included) may serve it: wait for that one.
-		const running = this.#refreshing;
-		if (running) {
-			await waitForWithAbort(
-				running.catch(() => undefined),
-				signal,
-			);
+		if (this.#refreshing && !this.#refreshing.controller.signal.aborted) {
+			try {
+				await this.refresh(signal);
+			} catch (error) {
+				if (signal.aborted) throw error;
+			}
 			return this.#unknown(id);
 		}
 		// A company created a moment ago may not be on the list yet: look again, but not on every request.
 		if (this.#now() - this.#lastLookup < MISSING_LOOKUP_MS) return this.#unknown(id);
-		this.#lastLookup = this.#now();
-		await this.refresh(signal);
+		const previousLookup = this.#lastLookup;
+		const lookupStartedAt = this.#now();
+		this.#lastLookup = lookupStartedAt;
+		try {
+			await this.refresh(signal);
+		} catch (error) {
+			if (signal.aborted && this.#lastLookup === lookupStartedAt) this.#lastLookup = previousLookup;
+			throw error;
+		}
 		return this.#served.get(id)?.scope;
 	}
 
@@ -329,25 +343,66 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 
 	/** One refresh: registers the new companies, serves every registered one, drops the rest. */
 	refresh(signal: AbortSignal): Promise<void> {
-		const running = this.#refreshing;
-		if (running) return waitForWithAbort(running, signal);
-		this.#refreshing = this.#refresh(signal)
-			.then(
-				() => {
-					this.#refreshFailure = undefined;
-				},
-				(error: unknown) => {
-					this.#refreshFailure = error;
-					throw error;
-				},
-			)
-			.finally(() => {
-				this.#refreshing = undefined;
-			});
-		return this.#refreshing;
+		if (signal.aborted) return Promise.reject(signal.reason);
+		if (this.#closing.signal.aborted) return Promise.reject(this.#closing.signal.reason);
+		let state = this.#refreshing;
+		if (!state || state.controller.signal.aborted) {
+			// WHY: Decouple the shared refresh signal from any single caller and drop aborted refreshes so arriving callers start fresh.
+			if (state && this.#refreshing === state) this.#refreshing = undefined;
+			const controller = new AbortController();
+			const onClose = (): void => controller.abort(this.#closing.signal.reason);
+			this.#closing.signal.addEventListener("abort", onClose, { once: true });
+			const created: {
+				promise: Promise<void>;
+				readonly controller: AbortController;
+				waiters: number;
+			} = {
+				promise: Promise.resolve(),
+				controller,
+				waiters: 0,
+			};
+			this.#refreshGeneration += 1;
+			const generation = this.#refreshGeneration;
+			const promise = this.#refresh(controller.signal, generation)
+				.then(
+					() => {
+						if (generation === this.#refreshGeneration) this.#refreshFailure = undefined;
+					},
+					(error: unknown) => {
+						if (!controller.signal.aborted && generation === this.#refreshGeneration)
+							this.#refreshFailure = error;
+						throw error;
+					},
+				)
+				.finally(() => {
+					this.#closing.signal.removeEventListener("abort", onClose);
+					if (this.#refreshing === created) this.#refreshing = undefined;
+				});
+			void promise.catch(() => undefined);
+			created.promise = promise;
+			this.#refreshing = created;
+			state = created;
+		}
+		state.waiters += 1;
+		let released = false;
+		const release = (aborted: boolean): void => {
+			if (released) return;
+			released = true;
+			state.waiters -= 1;
+			if (aborted && state.waiters === 0) {
+				if (this.#refreshing === state) this.#refreshing = undefined;
+				state.controller.abort(signal.reason);
+			}
+		};
+		const onAbort = (): void => release(true);
+		signal.addEventListener("abort", onAbort, { once: true });
+		return waitForWithAbort(state.promise, signal).finally(() => {
+			signal.removeEventListener("abort", onAbort);
+			release(false);
+		});
 	}
 
-	async #refresh(signal: AbortSignal): Promise<void> {
+	async #refresh(signal: AbortSignal, generation: number): Promise<void> {
 		const answer = record(await this.#principal.companies(signal), "Shared vault companies");
 		if (
 			answer.schema !== "qorpera.broker-principal-companies/v1" ||
@@ -365,7 +420,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 		} else {
 			for (const waiting of answer.unregistered) {
 				// Out of time: the next refresh registers the rest.
-				if (signal.aborted) break;
+				if (signal.aborted || generation !== this.#refreshGeneration) break;
 				try {
 					const done = record(
 						await this.#principal.register(company(waiting), signal),
@@ -381,6 +436,8 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 				}
 			}
 		}
+		// WHY: Skip applying a stale snapshot when a newer refresh has already started so an overlapping old run cannot drop newly served companies.
+		if (generation !== this.#refreshGeneration) return;
 		const listed = new Set<string>();
 		for (const entry of registered) {
 			listed.add(entry.companyId);

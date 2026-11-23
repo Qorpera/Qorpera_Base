@@ -55,6 +55,7 @@ export function openPublishPatchnotesSheet(
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
 	const rollingBack = new Set<string>();
 	let publishing = false;
+	let awaitingAsyncPublish = false;
 	let lastRenderKey: string | undefined;
 
 	const currentSurface = (): SurfaceSummary =>
@@ -96,6 +97,20 @@ export function openPublishPatchnotesSheet(
 		if (closed) return;
 		const state = store.state;
 		const surface = currentSurface();
+		if (awaitingAsyncPublish) {
+			if (
+				surface.publishStatus === "idle" ||
+				(surface.publishStatus === undefined && !surface.hasUnpublishedChanges)
+			) {
+				awaitingAsyncPublish = false;
+				dialog.close();
+				return;
+			}
+			if (surface.publishStatus === "failed") {
+				awaitingAsyncPublish = false;
+				status.textContent = surface.lastPublishError ?? t("Publish failed. Try again.");
+			}
+		}
 		const look = store.lookOf(surface);
 		const entries = unpublishedChanges(state, surfaceId);
 		const total = Math.max(entries.length, surface.unpublishedChangeCount);
@@ -104,16 +119,23 @@ export function openPublishPatchnotesSheet(
 		const subtitle = host ? `${surface.title} · ${host}` : surface.title;
 		ensurePasswordLoaded(surface);
 
+		const publishError =
+			surface.publishStatus === "failed"
+				? surface.lastPublishError?.trim() || t("The last publish failed. Try again.")
+				: "";
+
 		const renderKey = JSON.stringify([
 			surface.title,
 			surface.unpublishedChangeCount,
 			surface.publishStatus ?? "",
+			publishError,
 			liveUrl,
 			look.kind,
 			look.accent ?? "",
 			sitePassword ?? "",
 			copiedKind ?? "",
 			publishing,
+			awaitingAsyncPublish,
 			status.textContent ?? "",
 			entries.map(({ change, session, exploration }) => [
 				change.id,
@@ -191,7 +213,10 @@ export function openPublishPatchnotesSheet(
 								const busy =
 									rollingBack.has(change.id) || Boolean(state.busy[`undo:${change.id}`]) || publishing;
 								const stamp = fmtTime(change.resolvedAt ?? change.createdAt);
-								const batchSize = change.kind === "folder_patch" ? (change.undoBatchSize ?? 1) : 1;
+								const batchSize =
+									change.kind === "folder_patch" || change.kind === "git_range"
+										? (change.undoBatchSize ?? 1)
+										: 1;
 								return h(
 									"li",
 									{ class: "surface-patchnote-item", "data-change": change.id },
@@ -257,8 +282,8 @@ export function openPublishPatchnotesSheet(
 		const publishInProgress = publishing || surface.publishStatus === "publishing";
 		const cancelBtn = h(
 			"button",
-			{ type: "button", class: "btn", disabled: publishInProgress, "data-act": "cancel" },
-			t("Cancel"),
+			{ type: "button", class: "btn", disabled: publishing, "data-act": "cancel" },
+			surface.publishStatus === "publishing" ? t("Close") : t("Cancel"),
 		);
 		const publishLabel = publishInProgress
 			? t("Publishing…")
@@ -293,6 +318,7 @@ export function openPublishPatchnotesSheet(
 					: null,
 			),
 			...(shareBar ? [shareBar] : []),
+			...(publishError ? [h("p", { class: "surface-sheet-error", role: "alert" }, publishError)] : []),
 			h(
 				"p",
 				{ class: "surface-sheet-lead" },
@@ -349,8 +375,15 @@ export function openPublishPatchnotesSheet(
 			void store.publish(surfaceId).then((ok) => {
 				publishing = false;
 				if (closed) return;
-				if (ok) dialog.close();
-				else {
+				if (ok) {
+					if (currentSurface().publishStatus === "publishing") {
+						awaitingAsyncPublish = true;
+						status.textContent = t("Publishing…");
+						render();
+					} else {
+						dialog.close();
+					}
+				} else {
 					status.textContent = store.state.error ?? t("That didn't work. Try again.");
 					render();
 				}

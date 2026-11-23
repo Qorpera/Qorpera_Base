@@ -214,6 +214,7 @@ function setup(options: Partial<CodeHostJobsOptions> = {}) {
 		mountWaitMs: 200,
 		publishWaitMs: 200,
 		pollMs: 2,
+		warmViewIdleMs: 0,
 		...options,
 	});
 	return { lxd, control, events, jobs, host: lxd.host(COMPANY) };
@@ -325,6 +326,18 @@ describe("CodeHostJobs", () => {
 			"vsock:2:5250",
 		]);
 		expect(lxd.execs.find((exec) => exec.label === "publish")?.request.maxStdoutBytes).toBe(64 * 1024 ** 2);
+		expect(host.unit).toBeUndefined();
+		expect(host.mounted).toBe(false);
+		expect(host.view).toBeUndefined();
+	});
+
+	it("skips publish on readOnly jobs while still mounting, running, and closing the view cleanly", async () => {
+		const { lxd, control, jobs, host } = setup();
+		const answer = await jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand, { readOnly: true });
+		expect(answer).toBe("ok");
+		expect(lxd.labels()).toEqual(["clean", "view", "start", "state", "/usr/local/bin/git --version", "clean"]);
+		expect(lxd.labels()).not.toContain("publish");
+		expect(control.methods()).toEqual(["qorpera_folder_view_open", "qorpera_folder_view_close"]);
 		expect(host.unit).toBeUndefined();
 		expect(host.mounted).toBe(false);
 		expect(host.view).toBeUndefined();
@@ -1223,6 +1236,44 @@ describe("codeHostPublishAnswer", () => {
 			answer: "waiting",
 			detail: "code/a/b/repo.git/HEAD: waiting",
 		});
+		expect(codeHostPublishAnswer(4, Buffer.from(waiting))).toEqual({
+			answer: "waiting",
+			detail: "code/a/b/repo.git/HEAD: waiting",
+		});
+		const retryableNotApplied = `${JSON.stringify({
+			paths: [
+				{ path: "code/a/b/repo.git/HEAD", outcome: "not_applied", reason: "the save did not get through yet" },
+			],
+		})}\n`;
+		expect(codeHostPublishAnswer(4, Buffer.from(retryableNotApplied))).toEqual({
+			answer: "waiting",
+			detail: "code/a/b/repo.git/HEAD: not_applied (the save did not get through yet)",
+		});
+		expect(codeHostPublishAnswer(1, Buffer.from(retryableNotApplied))).toEqual({
+			answer: "waiting",
+			detail: "code/a/b/repo.git/HEAD: not_applied (the save did not get through yet)",
+		});
+		const batchLimit = `${JSON.stringify({
+			paths: [
+				{
+					path: "code/a/b/repo.git/pack",
+					outcome: "not_applied",
+					reason: "the boundary split reached its batch limit; remaining changes stay pending",
+				},
+			],
+		})}\n`;
+		expect(codeHostPublishAnswer(4, Buffer.from(batchLimit))).toEqual({
+			answer: "waiting",
+			detail:
+				"code/a/b/repo.git/pack: not_applied (the boundary split reached its batch limit; remaining changes stay pending)",
+		});
+		const tooLong = `${JSON.stringify({
+			paths: [{ path: "code/a/b/deep", outcome: "refused", reason: "too_long" }],
+		})}\n`;
+		expect(codeHostPublishAnswer(4, Buffer.from(tooLong))).toEqual({
+			answer: "refused",
+			detail: "code/a/b/deep: refused (too_long)",
+		});
 	});
 });
 
@@ -1370,5 +1421,66 @@ describe("the code host's scripts", () => {
 		await expect(readFile(`${dir}/run/view.json`, "utf8")).resolves.toBe('{"view":1}');
 		expect(write().status).not.toBe(0);
 		await expect(readFile(`${dir}/run/view.json`, "utf8")).resolves.toBe('{"view":1}');
+	});
+});
+
+describe("CodeHostJobs warm view pool", () => {
+	it("reuses a warm view for consecutive jobs on the same company and environment, refreshes before reuse, and closes cleanly", async () => {
+		const { lxd, control, jobs, host } = setup({ warmViewIdleMs: 5_000 });
+		try {
+			await expect(jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand)).resolves.toBe("ok");
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_open")).toHaveLength(1);
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_close")).toHaveLength(0);
+			expect(host.mounted).toBe(true);
+
+			await expect(jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand)).resolves.toBe("ok");
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_open")).toHaveLength(1);
+			expect(lxd.labels(COMPANY).filter((label) => label === "start")).toHaveLength(1);
+			expect(lxd.labels(COMPANY).filter((label) => label === "publish").length).toBeGreaterThanOrEqual(3);
+		} finally {
+			await jobs.close();
+		}
+		expect(control.calls.filter((c) => c.method === "qorpera_folder_view_close")).toHaveLength(1);
+		expect(host.mounted).toBe(false);
+	});
+
+	it("tears down a warm view on job error, environment switch, stale mount, or idle TTL", async () => {
+		const { lxd, control, jobs, host } = setup({ warmViewIdleMs: 5_000 });
+		try {
+			await jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand);
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_open")).toHaveLength(1);
+
+			host.unit = exited(3);
+			host.mounted = false;
+			await jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand);
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_open")).toHaveLength(2);
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_close")).toHaveLength(1);
+
+			const otherEnv = randomUUID();
+			await jobs.run(COMPANY, otherEnv, signal(), oneCommand);
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_open")).toHaveLength(3);
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_close")).toHaveLength(2);
+
+			await expect(
+				jobs.run(COMPANY, otherEnv, signal(), async () => {
+					throw new Error("JOB_FAILED");
+				}),
+			).rejects.toThrow("JOB_FAILED");
+			expect(control.calls.filter((c) => c.method === "qorpera_folder_view_close")).toHaveLength(3);
+			expect(host.mounted).toBe(false);
+		} finally {
+			await jobs.close();
+		}
+
+		const idle = setup({ warmViewIdleMs: 30 });
+		try {
+			await idle.jobs.run(COMPANY, ENVIRONMENT, signal(), oneCommand);
+			expect(idle.control.calls.filter((c) => c.method === "qorpera_folder_view_close")).toHaveLength(0);
+			await until(() => idle.control.calls.filter((c) => c.method === "qorpera_folder_view_close").length === 1);
+			expect(idle.host.mounted).toBe(false);
+		} finally {
+			await idle.jobs.close();
+		}
+		expect(lxd.labels(COMPANY).length).toBeGreaterThan(0);
 	});
 });

@@ -15,7 +15,7 @@ const EXECUTOR_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 /** The vault's name rule in upper case (`qorpera_coding_environment_name_allowed`, 5j-1), kept equal by hand: names
  * the session's own setup, its shell and its tools read are not the vault's. */
 const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
-const RESERVED_PREFIX = /^(LC|GIT|LD|DYLD|QORPERA|SSH|XDG|DOCKER|ANTHROPIC|CLAUDE|CODEX|OPENAI)_/;
+const RESERVED_PREFIX = /^(LC|GIT|LD|DYLD|QORPERA|SSH|XDG|DOCKER|CLAUDE|CODEX)_/;
 const RESERVED = new Set([
 	"HOME",
 	"PATH",
@@ -69,15 +69,9 @@ const MAX_MASK_VALUES = 64;
  * 2 MiB holds them even when JSON escapes every character. */
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
-/**
- * A session's vault environment through the company's secret broker (F3 5j-4). For each command it starts, the
- * executor asks the broker (`POST /v1/coding-environment?company=<profileId>`, the shared origin routes by company)
- * for the environment of one session it holds, with the executor's own broker token (a value no guest holds; the
- * brokers' runtime token does not open this route). The broker asks the kernel, which checks the lease. The values go
- * to the command's processes and its output's mask only, and the older values used on the session's machine (`mask`)
- * to the mask only: kept in the executor's memory, never written, logged or put in an error. Every failure is the same
- * opaque error.
- */
+// WHY: Fetches session env + machine mask history from the secret broker using the executor-only token;
+// CodingMachineCommandSecrets caches answers per (session, vaultEnvVersion), so environment_secret_used
+// audit rows are recorded once per session, version, and machine (or per command start without a version).
 export class BrokerCodingEnvironment implements CodingEnvironmentSource {
 	readonly #origin: string;
 	readonly #executorToken: string;

@@ -1,6 +1,7 @@
 import type {
 	SurfaceChangeUnit,
 	SurfaceExplorationSet,
+	SurfaceImageRef,
 	SurfaceSession,
 	SurfaceSessionMessage,
 	SurfaceSummary,
@@ -8,6 +9,7 @@ import type {
 } from "@qorpera/contracts";
 import { fmtTime, h, icon } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
+import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { uiScale } from "../../ui/scale.ts";
 import { surfaceHash } from "../router.ts";
 import type { SurfaceLook } from "../surface-kinds.ts";
@@ -18,10 +20,12 @@ import {
 	isRunningSession,
 	openExplorations,
 	reportsOwnedBy,
+	type SurfaceNote,
 	type SurfaceReportSummary,
 	type SurfacesStore,
 	sessionHeld,
 } from "../surfaces-store.ts";
+import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { CrewFigures } from "./surface-crew.ts";
 import { openPublishPatchnotesSheet, type PublishPatchnotesOptions } from "./surface-publish-sheet.ts";
 import { isActionChange } from "./surface-rail.ts";
@@ -115,7 +119,13 @@ function actionCard(
 	);
 }
 
-function memberBubble(text: string, extraClass = "", title?: string, authorName?: string): HTMLElement {
+function memberBubble(
+	text: string,
+	extraClass = "",
+	title?: string,
+	authorName?: string,
+	images?: HTMLElement | null,
+): HTMLElement {
 	const reply = splitChangeReply(text);
 	const className = ["surface-message", "is-member", extraClass].filter(Boolean).join(" ");
 	const bubble = reply
@@ -126,32 +136,37 @@ function memberBubble(text: string, extraClass = "", title?: string, authorName?
 				h("span", { class: "surface-message-text" }, reply.body),
 			)
 		: h("p", { class: className, ...(title ? { title } : {}) }, text);
-	if (!authorName) return bubble;
+	if (!authorName && !images) return bubble;
 	return h(
 		"div",
 		{ class: "surface-message-group is-member" },
-		h("span", { class: "surface-message-author" }, authorName),
+		authorName ? h("span", { class: "surface-message-author" }, authorName) : null,
+		images ?? null,
 		bubble,
 	);
 }
 
-function messageRow(message: SurfaceSessionMessage, authorName?: string): HTMLElement {
+function messageRow(message: SurfaceSessionMessage, authorName?: string, images?: HTMLElement | null): HTMLElement {
 	if (message.authorKind === "system")
 		return h(
 			"div",
-			{
-				class: "surface-message is-system",
-				...(message.changeId ? { "data-change-id": message.changeId } : {}),
-			},
-			message.changeId
-				? h("span", { class: "surface-system-mark", "aria-hidden": "true" }, icon("check"))
-				: h("span", { class: "surface-system-dot", "aria-hidden": "true" }),
-			h("span", { class: "surface-system-text" }, message.text),
-			h("time", { datetime: message.createdAt }, fmtTime(message.createdAt)),
+			{ class: "surface-message-group is-system" },
+			h("time", { class: "surface-message-time", datetime: message.createdAt }, fmtTime(message.createdAt)),
+			h(
+				"div",
+				{
+					class: "surface-message is-system",
+					...(message.changeId ? { "data-change-id": message.changeId } : {}),
+				},
+				message.changeId
+					? h("span", { class: "surface-system-mark", "aria-hidden": "true" }, icon("check"))
+					: h("span", { class: "surface-system-dot", "aria-hidden": "true" }),
+				h("span", { class: "surface-system-text" }, message.text),
+			),
 		);
 	if (message.authorKind === "session")
 		return h("p", { class: "surface-message is-session", title: fmtTime(message.createdAt) }, message.text);
-	return memberBubble(message.text, "", fmtTime(message.createdAt), authorName);
+	return memberBubble(message.text, "", fmtTime(message.createdAt), authorName, images);
 }
 
 function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
@@ -163,42 +178,36 @@ function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
 	return null;
 }
 
-function agentStatusSummary(session: SurfaceSession, surface: SurfaceSummary, look: SurfaceLook): string {
+function agentStatusLine(session: SurfaceSession): string | null {
 	if (session.state === "needs_input") return t("Needs you");
+	if (session.state === "failed") return t("Failed");
 	if (isRunningSession(session)) return t("Working");
 	if (hasConflictedChange(session)) return t("Conflict");
-	const live = session.changes.filter((change) => change.status !== "discarded");
-	const open = live.filter(isOpenChange).length;
-	const actions = live.length > 0 && live.every((change) => isActionChange(change, surface));
-	if (actions) {
-		if (open > 1) return t("{count} actions ready", { count: open });
-		return look.kind === "inbox" ? t("Draft ready") : t("Action ready");
-	}
-	if (open === 1) return t("1 change ready");
-	if (open > 1) return t("{count} changes ready", { count: open });
-	return t("Ready");
+	return null;
+}
+
+function failedSessionDetail(session: SurfaceSession): string {
+	const detail = [...session.messages]
+		.reverse()
+		.find((message) => (message.authorKind === "system" || message.authorKind === "session") && message.text.trim())
+		?.text.trim();
+	return detail || t("This session failed. Retry to try again.");
 }
 
 function rankSessions(sessions: readonly SurfaceSession[]): SurfaceSession[] {
 	const score = (session: SurfaceSession): number =>
 		session.state === "needs_input"
 			? 0
-			: hasConflictedChange(session)
+			: session.state === "failed"
 				? 1
-				: isRunningSession(session)
+				: hasConflictedChange(session)
 					? 2
-					: session.changes.some(isOpenChange)
+					: isRunningSession(session)
 						? 3
-						: 4;
+						: session.changes.some(isOpenChange)
+							? 4
+							: 5;
 	return [...sessions].sort((a, b) => score(a) - score(b));
-}
-
-function projectedSourcePath(surface: SurfaceSummary): string | null {
-	const repo = surface.repositoryKey?.trim().replace(/^\/+|\/+$/g, "");
-	if (repo) return repo.startsWith("code/") ? repo : `code/${repo}`;
-	const folder = surface.folderRoot?.trim().replace(/^\/+|\/+$/g, "");
-	if (folder) return `${folder}/`;
-	return null;
 }
 
 function affectedFileChips(store: SurfacesStore, paths: readonly string[]): HTMLElement | null {
@@ -267,7 +276,6 @@ export class SurfaceSessionDrawer {
 	});
 	readonly #head = h("div", { class: "surface-drawer-head" });
 	readonly #body = h("div", { class: "surface-drawer-body" });
-	readonly #sourceFoot = h("div", { class: "surface-drawer-source", hidden: true });
 	readonly #replyTitle = h("span", { class: "surface-drawer-reply-title" });
 	readonly #replyStrip = h(
 		"div",
@@ -291,12 +299,11 @@ export class SurfaceSessionDrawer {
 	);
 	readonly #input = h("input", { class: "surface-drawer-input", autocomplete: "off" });
 	readonly #send = h("button", { type: "submit", class: "surface-send is-ready" }, icon("send"));
-	readonly #form = h(
-		"form",
-		{ class: "surface-drawer-foot" },
-		this.#replyStrip,
-		h("div", { class: "surface-drawer-compose" }, this.#input, this.#send),
-	);
+	readonly #compose = h("div", { class: "surface-drawer-compose" }, this.#input, this.#send);
+	readonly #form = h("form", { class: "surface-drawer-foot" }, this.#replyStrip, this.#compose);
+	readonly #images: SurfaceComposerImages;
+	readonly #sentImages = new Map<string, ReceivedAttachments>();
+	readonly #localImageUrls = new Map<File, string>();
 	readonly #store: SurfacesStore;
 	readonly #loadSitePassword: PublishPatchnotesOptions["loadSitePassword"];
 	readonly #crew = new CrewFigures();
@@ -321,10 +328,24 @@ export class SurfaceSessionDrawer {
 		} catch {
 			/* WHY: Local browser storage is optional in private/sandboxed contexts. */
 		}
-		this.el.append(
-			this.#resizer,
-			h("div", { class: "surface-drawer-inner" }, this.#head, this.#body, this.#sourceFoot, this.#form),
+		this.#images = new SurfaceComposerImages(this.#form, signal, () =>
+			this.#send.classList.toggle("is-ready", !this.#images.problem),
 		);
+		this.#compose.insertBefore(this.#images.button, this.#input);
+		this.#form.insertBefore(this.#images.tray.el, this.#compose);
+		this.#form.append(this.#images.tray.status);
+		this.#images.setAvailable(store.canAttachImages);
+		signal.addEventListener(
+			"abort",
+			() => {
+				for (const view of this.#sentImages.values()) view.dispose();
+				this.#sentImages.clear();
+				for (const url of this.#localImageUrls.values()) URL.revokeObjectURL(url);
+				this.#localImageUrls.clear();
+			},
+			{ once: true },
+		);
+		this.el.append(this.#resizer, h("div", { class: "surface-drawer-inner" }, this.#head, this.#body, this.#form));
 		this.#wireResizer(signal);
 		this.#applyWidth();
 		signal.addEventListener("abort", () => this.#disarm(false), { once: true });
@@ -350,16 +371,19 @@ export class SurfaceSessionDrawer {
 				event.preventDefault();
 				const sessionId = store.state.drawer?.sessionId;
 				const text = this.#input.value.trim();
-				if (!sessionId || !text) return;
+				if (!sessionId || !text || this.#images.problem) return;
 				const quoted = this.#quotedChange?.sessionId === sessionId ? this.#quotedChange : undefined;
 				const payload = quoted ? `Re: [${quoted.title}]\n${text}` : text;
+				const files = this.#images.files;
 				this.#input.value = "";
+				this.#images.set([]);
 				this.#setQuotedChange(undefined);
-				void store.reply(sessionId, payload).then((ok) => {
+				void store.reply(sessionId, payload, files).then((ok) => {
 					if (!ok && !this.#input.value) {
 						this.#input.value = text;
 						if (quoted) this.#setQuotedChange(quoted);
 					}
+					if (!ok && files.length && !this.#images.files.length) this.#images.set(files);
 				});
 			},
 			{ signal },
@@ -554,7 +578,6 @@ export class SurfaceSessionDrawer {
 			this.#shown = undefined;
 			this.#sessionId = "";
 			this.#messages = 0;
-			this.#sourceFoot.hidden = true;
 			this.#disarm(false);
 			this.#setQuotedChange(undefined);
 			return;
@@ -562,14 +585,12 @@ export class SurfaceSessionDrawer {
 		if (focusedExploration) {
 			if (this.#quotedChange && this.#quotedChange.sessionId !== state.drawer?.sessionId)
 				this.#setQuotedChange(undefined);
-			this.#sourceFoot.hidden = true;
 			this.#form.hidden = false;
 			this.#renderFocusedExploration(focusedExploration, targetSurface);
 			return;
 		}
 		if (focusedSession) {
 			if (this.#quotedChange && this.#quotedChange.sessionId !== focusedSession.id) this.#setQuotedChange(undefined);
-			this.#sourceFoot.hidden = true;
 			this.#form.hidden = false;
 			this.#renderFocused(focusedSession, targetSurface);
 			return;
@@ -606,7 +627,6 @@ export class SurfaceSessionDrawer {
 		this.#shown = deps;
 		const explorations = openExplorations(workspace);
 		const plainSessions = rankSessions((workspace?.activeSessions ?? []).filter((session) => !session.explorationId));
-		const sourcePath = projectedSourcePath(surface);
 		this.#sessionId = "";
 		this.#messages = 0;
 
@@ -633,30 +653,6 @@ export class SurfaceSessionDrawer {
 		}
 		this.#crew.settle();
 		this.#body.replaceChildren(...parts);
-		if (sourcePath) {
-			const href = surfaceHash(store.companyId, "files");
-			this.#sourceFoot.replaceChildren(
-				h(
-					"a",
-					{
-						class: "surface-source-pill",
-						href,
-						title: t("Open in Files"),
-						onclick: (event: MouseEvent) => {
-							if (!event.metaKey && !event.ctrlKey && !event.shiftKey && event.button === 0)
-								store.navigateSurface("files");
-						},
-					},
-					icon("folder"),
-					h("code", { class: "surface-source-path" }, sourcePath),
-					h("span", { class: "surface-source-link" }, t("Files")),
-				),
-			);
-			this.#sourceFoot.hidden = false;
-		} else {
-			this.#sourceFoot.replaceChildren();
-			this.#sourceFoot.hidden = true;
-		}
 	}
 
 	#explorationCard(
@@ -682,6 +678,7 @@ export class SurfaceSessionDrawer {
 				class: ["surface-overview-card", "is-agent", "is-exploration", attention && "is-attention"]
 					.filter(Boolean)
 					.join(" "),
+				"data-act": "focus-exploration",
 				"data-exploration": exploration.id,
 			},
 			h(
@@ -698,7 +695,7 @@ export class SurfaceSessionDrawer {
 					"span",
 					{ class: "surface-overview-agent-copy" },
 					h("strong", null, exploration.title),
-					h("span", null, running ? t("Working") : t("{count} options", { count: variants.length })),
+					running ? h("span", null, t("Working")) : null,
 				),
 				h("span", { class: "surface-overview-agent-go", "aria-hidden": "true" }, icon("chevron")),
 			),
@@ -763,9 +760,11 @@ export class SurfaceSessionDrawer {
 			surface.archetype === "ops" ||
 			(listed.length > 0 && listed.every((change) => isActionChange(change, surface)));
 		const busyReconcile = Boolean(state.busy[`reconcile:${surface.id}`]);
-		const attention = session.state === "needs_input" || hasConflictedChange(session);
+		const failed = session.state === "failed";
+		const attention = session.state === "needs_input" || hasConflictedChange(session) || failed;
 		const ownedNotes = reportsOwnedBy(state, surface.id, { kind: "session", id: session.id });
 		const noteNodes = this.#noteButtons(ownedNotes);
+		const statusLine = agentStatusLine(session);
 
 		const head = h(
 			"button",
@@ -781,12 +780,32 @@ export class SurfaceSessionDrawer {
 				"span",
 				{ class: "surface-overview-agent-copy" },
 				h("strong", null, session.title),
-				h("span", null, agentStatusSummary(session, surface, look)),
+				statusLine ? h("span", null, statusLine) : null,
 			),
 			h("span", { class: "surface-overview-agent-go", "aria-hidden": "true" }, icon("chevron")),
 		);
 
 		const bodyItems: HTMLElement[] = [...noteNodes];
+		if (failed) {
+			bodyItems.push(
+				h(
+					"div",
+					{ class: "surface-failed is-compact", role: "alert" },
+					h("p", null, failedSessionDetail(session)),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "surface-overview-act is-danger",
+							disabled: Boolean(state.busy[`reply:${session.id}`]),
+							"data-act": "retry-session",
+							"data-session": session.id,
+						},
+						t("Retry"),
+					),
+				),
+			);
+		}
 		if (session.question) {
 			bodyItems.push(
 				h(
@@ -914,7 +933,10 @@ export class SurfaceSessionDrawer {
 		return h(
 			"section",
 			{
-				class: ["surface-overview-card", "is-agent", attention && "is-attention"].filter(Boolean).join(" "),
+				class: ["surface-overview-card", "is-agent", attention && "is-attention", failed && "is-failed"]
+					.filter(Boolean)
+					.join(" "),
+				"data-act": "focus-session",
 				"data-session": session.id,
 			},
 			head,
@@ -943,6 +965,7 @@ export class SurfaceSessionDrawer {
 			workspace,
 			picked?.id,
 			state.notes,
+			picked ? state.sessionImages[picked.id] : undefined,
 			state.mode,
 			state.activeReportSlug,
 			state.busy,
@@ -954,10 +977,6 @@ export class SurfaceSessionDrawer {
 		this.#input.placeholder = t("Steer this session…");
 		this.#input.setAttribute("aria-label", t("Steer this session…"));
 		this.#send.setAttribute("aria-label", t("Send"));
-
-		const subtitle = [picked?.originLabel, t("{count} options", { count: variants.length })]
-			.filter((part): part is string => Boolean(part))
-			.join(" · ");
 
 		this.#head.className = "surface-drawer-head";
 		this.#head.replaceChildren(
@@ -973,19 +992,12 @@ export class SurfaceSessionDrawer {
 				icon("back"),
 			),
 			this.#crew.takeExploration(exploration, variants, 36, "is-large"),
-			h("div", { class: "surface-drawer-title" }, h("h2", null, exploration.title), h("p", null, subtitle)),
+			h("div", { class: "surface-drawer-title" }, h("h2", null, exploration.title)),
 		);
 		this.#crew.settle();
 
 		const parts: HTMLElement[] = [];
 		if (resolvedSurface) parts.push(...this.#noteButtons(ownedNotes));
-		parts.push(
-			h(
-				"p",
-				{ class: "surface-drawer-label" },
-				t("{count} options · pick one to preview", { count: variants.length }),
-			),
-		);
 		parts.push(
 			h(
 				"div",
@@ -1060,16 +1072,7 @@ export class SurfaceSessionDrawer {
 				}),
 			),
 		);
-		parts.push(h("div", { class: "surface-drawer-rule" }));
-		if (picked) {
-			if (picked.messages.length > 0) {
-				for (const message of picked.messages)
-					parts.push(messageRow(message, store.memberName(message.authorUserId)));
-			} else if (picked.prompt) {
-				parts.push(memberBubble(picked.prompt, "", undefined, store.memberName(picked.createdByUserId)));
-			}
-			for (const note of notes) parts.push(memberBubble(note.text, "is-pending"));
-		}
+		if (picked) parts.push(...this.#thread(picked, notes));
 		this.#body.replaceChildren(...parts);
 		const activeId = picked?.id ?? exploration.id;
 		const count = (picked ? picked.messages.length || (picked.prompt ? 1 : 0) : 0) + notes.length;
@@ -1094,6 +1097,7 @@ export class SurfaceSessionDrawer {
 			session,
 			resolvedSurface,
 			state.notes,
+			state.sessionImages[session.id],
 			state.mode,
 			state.activeReportSlug,
 			state.hiddenChanges,
@@ -1122,18 +1126,7 @@ export class SurfaceSessionDrawer {
 				icon("back"),
 			),
 			this.#crew.take(session, 36, "is-large"),
-			h(
-				"div",
-				{ class: "surface-drawer-title" },
-				h("h2", null, session.title),
-				h(
-					"p",
-					null,
-					[session.originLabel, fmtTime(session.createdAt)]
-						.filter((part): part is string => Boolean(part))
-						.join(" · "),
-				),
-			),
+			h("div", { class: "surface-drawer-title" }, h("h2", null, session.title)),
 		);
 		this.#crew.settle();
 		this.#body.replaceChildren(...this.#content(session, notes, resolvedSurface, look, ownedNotes));
@@ -1147,7 +1140,7 @@ export class SurfaceSessionDrawer {
 
 	#content(
 		session: SurfaceSession,
-		notes: readonly { text: string }[],
+		notes: readonly SurfaceNote[],
 		surface: SurfaceSummary | undefined,
 		look: SurfaceLook | undefined,
 		ownedNotes: readonly SurfaceReportSummary[],
@@ -1207,6 +1200,25 @@ export class SurfaceSessionDrawer {
 					),
 				),
 			);
+		if (session.state === "failed")
+			parts.push(
+				h(
+					"div",
+					{ class: "surface-failed", role: "alert" },
+					h("p", null, failedSessionDetail(session)),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "btn btn-small",
+							disabled: Boolean(store.state.busy[`reply:${session.id}`]),
+							"data-act": "retry-session",
+							"data-session": session.id,
+						},
+						t("Retry"),
+					),
+				),
+			);
 		if (session.question)
 			parts.push(
 				h(
@@ -1263,15 +1275,6 @@ export class SurfaceSessionDrawer {
 					),
 				);
 		} else if (listed.length && !sessionHeld(session)) {
-			parts.push(
-				h(
-					"p",
-					{ class: "surface-drawer-label" },
-					listed.length === 1
-						? t("1 change · toggle to preview")
-						: t("{count} changes · toggle to preview", { count: listed.length }),
-				),
-			);
 			const busyReconcile = Boolean(store.state.busy[`reconcile:${session.surfaceId}`]);
 			const running = isRunningSession(session);
 			const changeRows: HTMLElement[] = [];
@@ -1292,17 +1295,7 @@ export class SurfaceSessionDrawer {
 						h(
 							"div",
 							{ class: "surface-drawer-change-top" },
-							open
-								? h("button", {
-										type: "button",
-										class: "surface-switch",
-										role: "switch",
-										"aria-checked": String(shown),
-										"aria-label": t("Show {title} in the preview", { title: change.title }),
-										"data-act": "toggle",
-										"data-change": change.id,
-									})
-								: h("span", { class: "surface-change-mark" }, icon("check")),
+							open ? null : h("span", { class: "surface-change-mark" }, icon("check")),
 							h(
 								"div",
 								{ class: "surface-drawer-change-copy" },
@@ -1325,57 +1318,70 @@ export class SurfaceSessionDrawer {
 							),
 							!open ? changeTag(change) : null,
 						),
-						open && !running
+						open
 							? h(
 									"div",
 									{ class: "surface-drawer-change-acts" },
-									conflicted
-										? h(
-												"button",
-												{
-													type: "button",
-													class: "surface-change-btn is-danger",
-													"data-act": "reconcile",
-													"data-change": change.id,
-													disabled: busyReconcile,
-												},
-												t("Reconcile"),
-											)
-										: h(
-												"button",
-												{
-													type: "button",
-													class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
-													"data-act": "approve",
-													"data-change": change.id,
-													...(armed ? { "data-armed": "true" } : {}),
-													disabled: busyChange,
-												},
-												armed ? t("Confirm") : t("Approve"),
-											),
-									h(
-										"button",
-										{
-											type: "button",
-											class: "surface-change-btn",
-											"data-act": "quote-change",
-											"data-session": session.id,
-											"data-change": change.id,
-											"data-change-title": change.title,
-										},
-										t("Change"),
-									),
-									h(
-										"button",
-										{
-											type: "button",
-											class: "surface-change-btn is-muted",
-											"data-act": "discard-change",
-											"data-change": change.id,
-											disabled: busyChange,
-										},
-										t("Discard"),
-									),
+									h("button", {
+										type: "button",
+										class: "surface-switch",
+										role: "switch",
+										"aria-checked": String(shown),
+										"aria-label": t("Show {title} in the preview", { title: change.title }),
+										"data-act": "toggle",
+										"data-change": change.id,
+									}),
+									...(running
+										? []
+										: [
+												conflicted
+													? h(
+															"button",
+															{
+																type: "button",
+																class: "surface-change-btn is-danger",
+																"data-act": "reconcile",
+																"data-change": change.id,
+																disabled: busyReconcile,
+															},
+															t("Reconcile"),
+														)
+													: h(
+															"button",
+															{
+																type: "button",
+																class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
+																"data-act": "approve",
+																"data-change": change.id,
+																...(armed ? { "data-armed": "true" } : {}),
+																disabled: busyChange,
+															},
+															armed ? t("Confirm") : t("Approve"),
+														),
+												h(
+													"button",
+													{
+														type: "button",
+														class: "surface-change-btn",
+														"data-act": "quote-change",
+														"data-session": session.id,
+														"data-change": change.id,
+														"data-change-title": change.title,
+													},
+													t("Change"),
+												),
+												h(
+													"button",
+													{
+														type: "button",
+														class: "surface-change-btn is-muted",
+														"data-act": "discard-change",
+														"data-change": change.id,
+														disabled: busyChange,
+													},
+													t("Discard"),
+												),
+											]),
 								)
 							: null,
 					),
@@ -1419,20 +1425,103 @@ export class SurfaceSessionDrawer {
 					),
 				);
 		}
-		parts.push(h("div", { class: "surface-drawer-rule" }));
-		if (session.messages.length > 0) {
-			for (const message of session.messages)
-				parts.push(messageRow(message, store.memberName(message.authorUserId)));
-		} else if (session.prompt) {
-			parts.push(memberBubble(session.prompt, "", undefined, store.memberName(session.createdByUserId)));
-		}
-		for (const note of notes) parts.push(memberBubble(note.text, "is-pending"));
+		parts.push(...this.#thread(session, notes));
 		return parts;
 	}
 
+	#thread(session: SurfaceSession, notes: readonly SurfaceNote[]): HTMLElement[] {
+		const store = this.#store;
+		store.ensureSessionImages(session);
+		const sent = store.state.sessionImages[session.id]?.messages ?? [];
+		const keep = new Set<string>();
+		const parts: HTMLElement[] = [];
+		if (session.messages.length > 0) {
+			for (const message of session.messages) {
+				const attached =
+					message.authorKind === "member" ? sent.find((item) => item.messageId === message.id) : undefined;
+				let images: HTMLElement | undefined;
+				if (attached?.images.length) {
+					const key = `${session.id}:${attached.clientInputId}`;
+					keep.add(key);
+					images = this.#sentImageView(key, session.id, attached).el;
+				}
+				parts.push(messageRow(message, store.memberName(message.authorUserId), images));
+			}
+		} else if (session.prompt) {
+			parts.push(memberBubble(session.prompt, "", undefined, store.memberName(session.createdByUserId)));
+		}
+		for (const [key, view] of this.#sentImages)
+			if (!keep.has(key)) {
+				view.dispose();
+				this.#sentImages.delete(key);
+			}
+		const sending = new Set<File>();
+		for (const note of notes) {
+			for (const file of note.files ?? []) sending.add(file);
+			parts.push(memberBubble(note.text, "is-pending", undefined, undefined, this.#localImages(note.files)));
+		}
+		for (const [file, url] of this.#localImageUrls)
+			if (!sending.has(file)) {
+				URL.revokeObjectURL(url);
+				this.#localImageUrls.delete(file);
+			}
+		return parts;
+	}
+
+	#sentImageView(
+		key: string,
+		sessionId: string,
+		attached: { readonly clientInputId: string; readonly images: readonly SurfaceImageRef[] },
+	): ReceivedAttachments {
+		const known = this.#sentImages.get(key);
+		if (known) return known;
+		const images = attached.images;
+		const view = new ReceivedAttachments(
+			{
+				id: attached.clientInputId,
+				attachmentCount: images.length,
+				attachments: images.map((image, index) => ({
+					kind: "image" as const,
+					name: images.length > 1 ? t("Image {n}", { n: index + 1 }) : t("Image"),
+					mediaType: image.mediaType,
+					bytes: image.bytes,
+					reference: { sha256: image.sha256, bytes: image.bytes, mediaType: image.mediaType },
+				})),
+			},
+			(_id, index, signal) => {
+				const image = images[index];
+				return image
+					? this.#store.readSessionImage(sessionId, attached.clientInputId, image, signal)
+					: Promise.reject(new Error(t("This image is not available.")));
+			},
+		);
+		view.el.classList.add("surface-message-images");
+		this.#sentImages.set(key, view);
+		return view;
+	}
+
+	#localImages(files: readonly File[] | undefined): HTMLElement | null {
+		if (!files?.length) return null;
+		return h(
+			"div",
+			{ class: "surface-message-images is-sending" },
+			...files.map((file) => {
+				let url = this.#localImageUrls.get(file);
+				if (!url) {
+					url = URL.createObjectURL(file);
+					this.#localImageUrls.set(file, url);
+				}
+				return h("img", { src: url, alt: file.name });
+			}),
+		);
+	}
+
 	#click(event: MouseEvent): void {
-		const target = (event.target as Element).closest<HTMLElement>("[data-act]");
+		const hit = event.target as Element;
+		const target = hit.closest<HTMLElement>("[data-act]");
 		if (!target) return;
+		const link = hit.closest("a");
+		if (link && link !== target && target.contains(link)) return;
 		const store = this.#store;
 		const drawer = store.state.drawer;
 		const surfaceId = drawer?.surfaceId ?? this.#surfaceId;
@@ -1497,6 +1586,9 @@ export class SurfaceSessionDrawer {
 				if (ids.length) void store.reconcileChanges(surfaceId, ids);
 				return;
 			}
+			case "retry-session":
+				if (sessionId) void store.retrySession(sessionId);
+				return;
 			case "quote-change": {
 				if (sessionId && change && changeTitle) {
 					this.#setQuotedChange({ sessionId, changeId: change, title: changeTitle });

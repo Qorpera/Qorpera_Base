@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { folderKey } from "@qorpera/contracts";
 import type { CoreEntry, CoreReceipt, FeedChange } from "./core.ts";
 import type { WireEntry } from "./protocol.ts";
@@ -119,6 +120,16 @@ function same(a: TreeEntry, b: TreeEntry): boolean {
 	);
 }
 
+function entryDigest(entry: TreeEntry): { readonly hi: bigint; readonly lo: bigint } {
+	const authority = entry.authority;
+	const input =
+		authority !== undefined
+			? `${entry.path}:${entry.version}:${authority.resourceId}:${authority.resourceRevision}:${authority.grantId ?? ""}:${authority.grantRevision ?? ""}`
+			: `${entry.path}:${entry.version}`;
+	const digest = createHash("sha256").update(input, "utf8").digest();
+	return { hi: digest.readBigUInt64BE(0), lo: digest.readBigUInt64BE(8) };
+}
+
 export function wireEntry(e: TreeEntry): WireEntry {
 	return {
 		name: nameOf(e.path),
@@ -141,9 +152,20 @@ export class ViewTree {
 	readonly #deltas: { readonly rev: number; readonly path: string; readonly entry: TreeEntry | undefined }[] = [];
 	#deltaBaseRev = 0;
 	#revision = 0;
+	#explicitCount = 0;
+	#digestHi = 0n;
+	#digestLo = 0n;
 
 	get size(): number {
 		return this.#entries.size;
+	}
+
+	get explicitSize(): number {
+		return this.#explicitCount;
+	}
+
+	get entriesDigest(): string {
+		return this.#digestHi.toString(16).padStart(16, "0") + this.#digestLo.toString(16).padStart(16, "0");
 	}
 
 	get revision(): number {
@@ -379,6 +401,19 @@ export class ViewTree {
 
 	#link(entry: TreeEntry): void {
 		this.#recordDelta(entry.path, entry);
+		const existing = this.#entries.get(entry.path);
+		if (existing && !existing.implicit) {
+			const prev = entryDigest(existing);
+			this.#explicitCount--;
+			this.#digestHi ^= prev.hi;
+			this.#digestLo ^= prev.lo;
+		}
+		if (!entry.implicit) {
+			const next = entryDigest(entry);
+			this.#explicitCount++;
+			this.#digestHi ^= next.hi;
+			this.#digestLo ^= next.lo;
+		}
 		const parent = parentOf(entry.path);
 		this.#entries.set(entry.path, entry);
 		let names = this.#children.get(parent);
@@ -395,6 +430,13 @@ export class ViewTree {
 
 	#unlink(path: string): void {
 		this.#recordDelta(path, undefined);
+		const existing = this.#entries.get(path);
+		if (existing && !existing.implicit) {
+			const prev = entryDigest(existing);
+			this.#explicitCount--;
+			this.#digestHi ^= prev.hi;
+			this.#digestLo ^= prev.lo;
+		}
 		const parent = parentOf(path);
 		this.#entries.delete(path);
 		this.#children.delete(path);

@@ -1,4 +1,8 @@
+import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { readCodingServiceCredential } from "../../../deploy/coding-worker/credentials.ts";
 import {
 	errorCode,
 	logCodeHost,
@@ -495,6 +499,31 @@ describe("executor code host log", () => {
 		} finally {
 			log.mockRestore();
 			error.mockRestore();
+		}
+	});
+});
+
+describe("readCodingServiceCredential", () => {
+	it("loads both qorpera-coding-* and webHosting qorpera-web-* credentials and rejects unrelated names", async () => {
+		const rawDir = await mkdtemp(join(tmpdir(), "qorpera-cred-test-"));
+		const dir = await realpath(rawDir);
+		try {
+			const codingPath = join(dir, "qorpera-coding-registry");
+			const webPath = join(dir, "qorpera-web-router-control");
+			await writeFile(codingPath, "coding-secret\n", { mode: 0o400 });
+			await writeFile(webPath, "web-secret\n", { mode: 0o400 });
+			await chmod(codingPath, 0o400);
+			await chmod(webPath, 0o400);
+			expect(await readCodingServiceCredential(dir, "qorpera-coding-registry")).toBe("coding-secret");
+			expect(await readCodingServiceCredential(dir, "qorpera-web-router-control")).toBe("web-secret");
+			await expect(readCodingServiceCredential(dir, "qorpera-other-secret")).rejects.toThrow(
+				"CODING_CREDENTIAL_PATH_INVALID",
+			);
+			await expect(readCodingServiceCredential(dir, "../qorpera-coding-registry")).rejects.toThrow(
+				"CODING_CREDENTIAL_PATH_INVALID",
+			);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
 		}
 	});
 });

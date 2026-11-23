@@ -171,7 +171,6 @@ export class WebMemberAccount {
 	async companies(signal?: AbortSignal): Promise<WebCompany[]> {
 		const context = this.#context();
 		const revision = ++this.#catalogRevision;
-		this.#companies = [];
 		const result = companies(await context.rpc("qorpera_list_hosted_profiles", {}, signal ?? context.signal));
 		context.current();
 		signal?.throwIfAborted();
