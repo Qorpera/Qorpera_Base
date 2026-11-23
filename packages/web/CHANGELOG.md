@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Search is a window now (Jonas, 23 Nov 2026): the rail's magnifier, or ⌘K / Ctrl+K anywhere, opens one window over the app that finds agents (hidden and folded ones too, and by their section's name), members, group chats, apps, files across the whole Company File (by name, `qorpera_member_folder_search`, migration 864000) and settings (opening the right tab with the row lit). Empty, it shows what was opened from it lately and recently changed files. ↑↓ move, Enter opens, Tab narrows to one kind, Esc widens then closes; on a phone it fills the screen with a close button. The fold-out field over the company name and the rail's own filter are gone.
 - The composer at rest is a little more solid on surface pages and in conversations opened from the surface rail: its fill rises from 38% to 48% of the page colour in both themes (hover and focus unchanged at 80%; the thread-foot pills keep their 38% glass) (Jonas, 23 Nov 2026).
 - The rail's Co-Founder figure no longer has a ground shadow under it, in light and dark (Jonas, 23 Nov 2026).
 - Rail items (rows, pins, Co-Founder, interfaces, agent hub) no longer shrink while pressed; a click opens at once (Jonas, 23 Nov 2026).
