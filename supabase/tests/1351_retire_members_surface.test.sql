@@ -46,8 +46,8 @@ begin
 		'a new company keeps identity, Inbox, Money and Files'
 	);
 	perform pg_temp.rms_assert(
-		not exists (select 1 from public.qorpera_surfaces where surface_kind = 'members' and status <> 'archived'),
-		'no Members surface stays active'
+		not exists (select 1 from public.qorpera_surfaces where profile_id = v_company and surface_kind = 'members'),
+		'bootstrap creates no Members-kind surface'
 	);
 end $$;
 

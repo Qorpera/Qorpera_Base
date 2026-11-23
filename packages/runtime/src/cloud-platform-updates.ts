@@ -321,6 +321,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Clean Studio folders and Product/Report Studio schemas",
 		text: "Non-Identity Studio surfaces now default to an isolated folder under surfaces/<slug> instead of legacy top-level company folders like product or reports, so each new Studio surface starts blank and holds only its own work (Identity stays in the identity folder). Product Studio sessions now receive the structured Studio layout directly in their turn instructions for interactive 3D models, key specs, colorways, BOM tables, production plans, supplier cards, and editorial competitor or vendor analysis reports with charts and tables. Report surfaces receive the same structured report format.",
 	},
+	{
+		id: "people-in-the-rail",
+		kind: "behaviour",
+		date: "2026-11-23",
+		title: "No Members page: People in the sidebar",
+		text: "The Members page and the Members interface are gone. Teammates now stand under People at the foot of the sidebar, with where each one is right now, and owners invite from there or from the company menu. Who each agent works for, each member's ChatGPT, and the offers of agents you make with offer_agents_to_member are in Settings, Team, under Who agents work for: send a member there to say yes, never to a Members page.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

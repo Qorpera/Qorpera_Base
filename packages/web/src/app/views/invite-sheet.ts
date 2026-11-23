@@ -151,10 +151,10 @@ export function openInviteSheet(company: CompanyController, calls: InviteCalls, 
 		draw();
 		try {
 			await work();
-			await company.refreshTeam();
 		} catch (error) {
 			note = describeError(error);
 		}
+		await company.refreshTeam().catch(() => {});
 		busy = false;
 		draw();
 	};
@@ -171,11 +171,19 @@ export function openInviteSheet(company: CompanyController, calls: InviteCalls, 
 		const typing = typed !== null && typed === document.activeElement;
 		const choose = (friend: HostedFriend) => (role: GuestRole) => {
 			const invited = invitationOf(friend.email);
+			// WHY: The cloud never invites a founder, so a builder joins as a contributor.
+			const invite = (as: GuestRole) =>
+				calls.inviteMember(profileId, friend.email, as === "spectator" ? "viewer" : "contributor");
 			void run(async () => {
-				if (invited) await calls.cancelInvitation(profileId, invited.id);
-				if (invited && roleOf(invited) === role) return;
-				// WHY: The cloud never invites a founder, so a builder joins as a contributor.
-				await calls.inviteMember(profileId, friend.email, role === "spectator" ? "viewer" : "contributor");
+				if (!invited) return invite(role);
+				await calls.cancelInvitation(profileId, invited.id);
+				if (roleOf(invited) === role) return;
+				try {
+					await invite(role);
+				} catch (error) {
+					await invite(roleOf(invited)).catch(() => {});
+					throw error;
+				}
 			});
 		};
 		replace(

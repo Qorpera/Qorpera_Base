@@ -127,6 +127,25 @@ describe("the company's invite sheet", () => {
 		expect(calls.inviteMember).toHaveBeenCalledWith(profileA.profileId, mads.email, "viewer");
 	});
 
+	it("invites again with the old role when a swap fails, and takes a failed team read as nothing", async () => {
+		const { calls, refreshTeam } = sheet([invitation(mads.email, "contributor")]);
+		await settle();
+		calls.inviteMember.mockRejectedValueOnce(new Error("Try again in a minute"));
+		press("Mads", "Spectator");
+		await settle();
+		expect(calls.cancelInvitation).toHaveBeenCalledWith(profileA.profileId, id(90));
+		expect(calls.inviteMember.mock.calls.map(([, email, role]) => [email, role])).toEqual([
+			[mads.email, "viewer"],
+			[mads.email, "contributor"],
+		]);
+		expect(root()?.querySelector("[role=alert]")?.textContent).toContain("Try again in a minute");
+		refreshTeam.mockRejectedValueOnce(new Error("Failed to fetch"));
+		press("Anna", "Builder");
+		await settle();
+		expect(calls.inviteMember).toHaveBeenLastCalledWith(profileA.profileId, anna.email, "contributor");
+		expect(root()?.querySelector("[role=alert]")).toBeNull();
+	});
+
 	it("adds someone by email as a spectator, and lists who was invited by email with Remove", async () => {
 		const { calls } = sheet([invitation("guest@example.invalid", "viewer")]);
 		await settle();
