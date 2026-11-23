@@ -120,6 +120,7 @@ declare
 	v_bo constant uuid := '85600000-0000-4000-8000-000000000002';
 	v_dee constant uuid := '13500000-0000-4000-8000-000000000004';
 	v_vic constant uuid := '13500000-0000-4000-8000-000000000005';
+	v_eve constant uuid := '13500000-0000-4000-8000-000000000006';
 	v_company uuid := (v_claim ->> 'profileId')::uuid;
 	v_automation uuid;
 	v_agent_automation uuid;
@@ -135,10 +136,12 @@ declare
 	v_last_run timestamptz;
 begin
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
-	insert into auth.users(id, email) values (v_dee, 'dee-sao@example.test'), (v_vic, 'vic-sao@example.test');
+	insert into auth.users(id, email) values
+		(v_dee, 'dee-sao@example.test'), (v_vic, 'vic-sao@example.test'), (v_eve, 'eve-sao@example.test');
 	insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role) values
 		(v_company, v_dee, 'dee-sao@example.test', 'Dee', 'contributor'),
-		(v_company, v_vic, 'vic-sao@example.test', 'Vic', 'viewer');
+		(v_company, v_vic, 'vic-sao@example.test', 'Vic', 'viewer'),
+		(v_company, v_eve, 'eve-sao@example.test', 'Eve', 'contributor');
 
 	perform pg_temp.sao_as(v_anna);
 	set local role authenticated;
@@ -162,6 +165,18 @@ begin
 		'an agent''s automation is owned by the member who started the company'
 	);
 	delete from public.qorpera_surface_automations where id = v_agent_automation;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	perform public.qorpera_service_bootstrap_company_surfaces(v_company, null);
+	reset role;
+	perform pg_temp.sao_assert(
+		(select owner_user_id from public.qorpera_surface_automations where profile_id = v_company and key = 'cofounder-pulse')
+			= (select created_by_user_id from public.qorpera_company_cofounders where profile_id = v_company),
+		'the Co-Founder Pulse is owned by the member who started the company'
+	);
+	update public.qorpera_surface_automations set enabled = false, next_run_at = null
+	where profile_id = v_company and key = 'cofounder-pulse';
 
 	v_due := pg_temp.sao_due(v_automation);
 	select * into strict v_session from public.qorpera_surface_sessions where id = (v_due ->> 'sessionId')::uuid;
@@ -229,6 +244,50 @@ begin
 	);
 	perform pg_temp.sao_settle((v_due ->> 'sessionId')::uuid);
 
+	perform pg_temp.sao_as(v_anna);
+	set local role authenticated;
+	perform public.qorpera_reply_surface_session((v_due ->> 'sessionId')::uuid, 'Also tidy the drafts', true);
+	reset role;
+	v_enq := pg_temp.sao_enqueue((v_due ->> 'sessionId')::uuid);
+	select * into strict v_wake from public.qorpera_wake_occurrences where id = (v_enq ->> 'wakeId')::uuid;
+	perform pg_temp.sao_assert(
+		v_wake.requested_by_user_id = case
+			when to_regprocedure('public.qorpera_surface_turn_requester(public.qorpera_surface_sessions)') is null then v_bo
+			else v_anna end,
+		'a teammate''s reply in an automation''s session is paid by the owner, or by the replier once replies are their own turns: '
+			|| v_enq::text
+	);
+	perform pg_temp.sao_settle((v_due ->> 'sessionId')::uuid);
+
+	v_result := pg_temp.sao_offer(v_anna, v_automation, v_dee);
+	v_offer := (v_result -> 'automation' -> 'offer' ->> 'id')::uuid;
+	perform pg_temp.sao_assert(
+		(v_result -> 'automation' -> 'offer' ->> 'fromUserId')::uuid = v_bo
+			and (v_result -> 'automation' -> 'offer' ->> 'offeredByUserId')::uuid = v_anna,
+		'a company owner hands over a member''s automation: ' || v_result::text
+	);
+	perform pg_temp.sao_refused(v_bo, format('select public.qorpera_answer_surface_automation_offer(%L, true)', v_offer), '42501');
+	perform pg_temp.sao_assert(
+		pg_temp.sao_answer(v_anna, v_offer, false) ->> 'status' = 'withdrawn',
+		'the company owner who offered it takes the offer back'
+	);
+
+	v_offer := (pg_temp.sao_offer(v_bo, v_automation, v_dee) -> 'automation' -> 'offer' ->> 'id')::uuid;
+	update public.qorpera_surface_automations set owner_user_id = v_anna where id = v_automation;
+	v_result := pg_temp.sao_answer(v_dee, v_offer, true);
+	perform pg_temp.sao_assert(
+		v_result ->> 'status' = 'void' and (v_result -> 'automation' ->> 'ownerUserId')::uuid = v_anna,
+		'a yes after the owner changed moves nothing: ' || v_result::text
+	);
+	update public.qorpera_surface_automations set owner_user_id = v_bo where id = v_automation;
+
+	v_offer := (pg_temp.sao_offer(v_bo, v_automation, v_eve) -> 'automation' -> 'offer' ->> 'id')::uuid;
+	delete from auth.users where id = v_eve;
+	perform pg_temp.sao_assert(
+		(select status from public.qorpera_surface_automation_offers where id = v_offer) = 'void',
+		'an offer to an account that is deleted is void'
+	);
+
 	v_offer := (pg_temp.sao_offer(v_bo, v_automation, v_dee) -> 'automation' -> 'offer' ->> 'id')::uuid;
 	perform pg_temp.sao_answer(v_dee, v_offer, true);
 	select last_run_at into v_last_run from public.qorpera_surface_automations where id = v_automation;
@@ -259,11 +318,26 @@ begin
 
 	perform pg_temp.sao_refused(v_anna, format('select public.qorpera_offer_surface_automation(%L, %L)', v_automation, v_vic), '22023');
 	perform pg_temp.sao_refused(v_vic, format('select public.qorpera_offer_surface_automation(%L, %L)', v_automation, v_vic), '42501');
+	v_result := pg_temp.sao_offer(v_anna, v_automation, v_bo);
+	v_offer := (v_result -> 'automation' -> 'offer' ->> 'id')::uuid;
+	perform pg_temp.sao_assert(
+		not (v_result ->> 'moved')::boolean and v_result -> 'automation' -> 'offer' -> 'fromUserId' = 'null'::jsonb,
+		'a company owner offers nobody''s automation to a member: ' || v_result::text
+	);
+	perform pg_temp.sao_answer(v_bo, v_offer, false);
 	v_result := pg_temp.sao_offer(v_bo, v_automation, v_bo);
 	perform pg_temp.sao_assert(
 		(v_result ->> 'moved')::boolean and (v_result -> 'automation' ->> 'ownerUserId')::uuid = v_bo
 			and v_result -> 'automation' ->> 'status' = 'idle',
-		'any member takes nobody''s automation at once: ' || v_result::text
+		'any member takes nobody''s automation at once, and it may run on their login: ' || v_result::text
+	);
+
+	update public.qorpera_surface_automations set owner_user_id = null where id = v_automation;
+	v_offer := (pg_temp.sao_offer(v_anna, v_automation, v_bo) -> 'automation' -> 'offer' ->> 'id')::uuid;
+	v_result := pg_temp.sao_answer(v_bo, v_offer, true);
+	perform pg_temp.sao_assert(
+		v_result ->> 'status' = 'yes' and (v_result -> 'automation' ->> 'ownerUserId')::uuid = v_bo,
+		'a yes to an offer of nobody''s automation makes the member its owner: ' || v_result::text
 	);
 
 	v_due := pg_temp.sao_due(v_automation);

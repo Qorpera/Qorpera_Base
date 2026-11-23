@@ -108,9 +108,14 @@ language sql stable security definer set search_path = '' as $$
 $$;
 
 -- WHY: Null means it may run; 'nobody' when no member who may pay owns it, 'no_login' when the owner has no login that pays.
-create function public.qorpera_surface_automation_payer_problem(p_profile_id uuid, p_owner_user_id uuid)
+-- Volatile: a code_repo target asks the coding resolver, which records the owner's coding sponsor as an enqueue would.
+create function public.qorpera_surface_automation_payer_problem(
+	p_profile_id uuid,
+	p_owner_user_id uuid,
+	p_target_surface_slug text
+)
 returns text
-language plpgsql stable security definer set search_path = '' as $$
+language plpgsql volatile security definer set search_path = '' as $$
 declare
 	v_sponsor jsonb;
 begin
@@ -119,6 +124,19 @@ begin
 		where m.profile_id = p_profile_id and m.user_id = p_owner_user_id and m.role <> 'viewer'
 	) then
 		return 'nobody';
+	end if;
+	if exists (
+		select 1 from public.qorpera_surfaces s
+		where s.profile_id = p_profile_id and s.slug = p_target_surface_slug and s.status = 'active'
+			and s.source_kind = 'code_repo'
+	) then
+		v_sponsor := public.qorpera_surface_resolve_coding_sponsor(
+			p_profile_id,
+			(select c.environment_id from public.qorpera_company_cofounders c where c.profile_id = p_profile_id limit 1),
+			p_owner_user_id,
+			false
+		);
+		return case when v_sponsor ->> 'status' in ('ok', 'no_coding_executor') then null else 'no_login' end;
 	end if;
 	v_sponsor := public.qorpera_surface_resolve_sponsor(p_profile_id, p_owner_user_id);
 	if nullif(v_sponsor ->> 'sponsorBindingId', '') is null or nullif(v_sponsor ->> 'sponsorVersion', '') is null then
@@ -222,7 +240,11 @@ begin
 	end if;
 	if v_row.owner_user_id is null and p_to_user_id = v_actor then
 		update public.qorpera_surface_automations
-		set owner_user_id = v_actor, status = case when status = 'needs_attention' then 'idle' else status end,
+		set owner_user_id = v_actor, status = case
+				when status not in ('idle', 'needs_attention') then status
+				when public.qorpera_surface_automation_payer_problem(profile_id, v_actor, target_surface_slug) is null then 'idle'
+				else 'needs_attention'
+			end,
 			updated_at = clock_timestamp()
 		where id = v_row.id
 		returning * into v_row;
@@ -282,7 +304,12 @@ begin
 		else
 			update public.qorpera_surface_automations
 			set owner_user_id = v_offer.to_user_id,
-				status = case when status = 'needs_attention' then 'idle' else status end
+				status = case
+					when status not in ('idle', 'needs_attention') then status
+					when public.qorpera_surface_automation_payer_problem(profile_id, v_offer.to_user_id, target_surface_slug) is null
+						then 'idle'
+					else 'needs_attention'
+				end
 			where id = v_row.id;
 		end if;
 	end if;
@@ -380,7 +407,7 @@ select pg_temp.sao_patch('public.qorpera_surface_claim_due_automations(integer)'
 $old$			select a.id
 			from public.qorpera_surface_automations a
 			where a.enabled = true$old$,
-$new$			select a.id, public.qorpera_surface_automation_payer_problem(a.profile_id, a.owner_user_id) as problem
+$new$			select a.id, public.qorpera_surface_automation_payer_problem(a.profile_id, a.owner_user_id, a.target_surface_slug) as problem
 			from public.qorpera_surface_automations a
 			where a.enabled = true$new$,
 $old$			last_run_at = v_now,
@@ -410,15 +437,20 @@ $new$					origin_kind, origin_label, origin_ref, created_by_user_id, state, base
 ]);
 
 select pg_temp.sao_patch('public.qorpera_surface_trigger_automation(uuid)'::regprocedure, array[
+$old$	v_session jsonb;
+begin$old$,
+$new$	v_session jsonb;
+	v_problem text;
+begin$new$,
 $old$	if public.qorpera_surface_company_paused(v_auto.profile_id) then
 		return jsonb_build_object('status', 'skipped', 'reason', 'paused');
 	end if;$old$,
 $new$	if public.qorpera_surface_company_paused(v_auto.profile_id) then
 		return jsonb_build_object('status', 'skipped', 'reason', 'paused');
 	end if;
-	if public.qorpera_surface_automation_payer_problem(v_auto.profile_id, v_auto.owner_user_id) is not null then
-		return jsonb_build_object('status', 'skipped', 'reason',
-			public.qorpera_surface_automation_payer_problem(v_auto.profile_id, v_auto.owner_user_id));
+	v_problem := public.qorpera_surface_automation_payer_problem(v_auto.profile_id, v_auto.owner_user_id, v_auto.target_surface_slug);
+	if v_problem is not null then
+		return jsonb_build_object('status', 'skipped', 'reason', v_problem);
 	end if;$new$,
 $old$	return jsonb_build_object('status', 'started', 'session', v_session);$old$,
 $new$	update public.qorpera_surface_sessions
@@ -455,7 +487,7 @@ $new$		elsif v_surf_session.origin_ref ? 'automationId' then
 
 revoke all on function
 	public.qorpera_surface_automation_json(public.qorpera_surface_automations),
-	public.qorpera_surface_automation_payer_problem(uuid, uuid),
+	public.qorpera_surface_automation_payer_problem(uuid, uuid, text),
 	public.qorpera_surface_automation_default_owner(),
 	public.qorpera_surface_automation_owner_left(),
 	public.qorpera_surface_automation_offer_lost_member()
@@ -482,7 +514,7 @@ begin
 		if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
 			raise exception 'Surface automation owner function has an API owner: %', v_owner;
 		end if;
-		execute format('grant execute on function public.qorpera_surface_automation_json(public.qorpera_surface_automations), public.qorpera_surface_automation_payer_problem(uuid, uuid) to %I', v_owner);
+		execute format('grant execute on function public.qorpera_surface_automation_json(public.qorpera_surface_automations), public.qorpera_surface_automation_payer_problem(uuid, uuid, text) to %I', v_owner);
 	end loop;
 end $$;
 
