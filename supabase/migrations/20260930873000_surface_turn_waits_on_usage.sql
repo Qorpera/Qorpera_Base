@@ -1,6 +1,3 @@
--- WHY: A surface turn whose login is at its usage limit waits on that login and goes on by itself after the reset
--- (founder 5 Nov, contract 2026-11-05 and 2026-11-23). Before this, the turn's wake or coding worker sat on the full
--- login until a sweep expired it, retried once and ended failed.
 set local lock_timeout = '3s';
 
 do $$ begin

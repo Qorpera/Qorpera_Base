@@ -19,7 +19,6 @@ returns void language sql as $$
 	select set_config('request.jwt.claims', jsonb_build_object('role', 'authenticated', 'sub', p_user_id)::text, true)::text::void
 $$;
 
--- A usage reading of every login of the member a minute ago: p_used percent of the week used, reset in two hours.
 create function pg_temp.uw_usage(p_user_id uuid, p_used numeric)
 returns void language sql as $$
 	insert into public.qorpera_native_provider_account_metadata(connection_id, connection_version, provider_account_usage)
@@ -118,7 +117,6 @@ begin
 	perform public.qorpera_folder_materialize_company(pg_temp.uw_company(), 16);
 end $$;
 
--- 1. A Bo turn that is running when his only login reaches its limit waits on that login.
 do $$
 declare
 	v_surface uuid;
@@ -194,7 +192,6 @@ begin
 	perform pg_temp.uw_assert(pg_temp.uw_claim(v_session) is null, 'a waiting turn is not claimed before its recheck');
 end $$;
 
--- 2. Bo replies with only a full login: the reply is kept and the turn waits on his login, never on Anna's.
 do $$
 declare
 	v_session uuid := current_setting('uw.session')::uuid;
@@ -281,7 +278,6 @@ begin
 	);
 end $$;
 
--- 3. After the reset Bo's turn goes on by itself, on Bo's login.
 select pg_temp.uw_usage(pg_temp.uw_bo(), 30);
 
 do $$
@@ -312,7 +308,6 @@ begin
 	where id = v_session;
 end $$;
 
--- 4. Anna's reply with a login that has room is not held while Bo's login is full.
 select pg_temp.uw_usage(pg_temp.uw_bo(), 100);
 
 do $$
@@ -343,8 +338,6 @@ begin
 	where id = v_session;
 end $$;
 
--- 5. A coding-backed session: Bo's turn waits before any worker starts, and a running worker on a full login is not
--- expired.
 do $$
 declare
 	v_env uuid;
