@@ -1597,7 +1597,11 @@ export class SurfaceStudioView {
 					for (const target of consumers) usedBy.set(target.slug, target);
 				}
 				if (builtOn.size === 0 && usedBy.size === 0) return null;
-				const group = (dir: "in" | "out", label: string, targets: Map<string, (typeof activeOtherSurfaces)[number]>) =>
+				const group = (
+					dir: "in" | "out",
+					label: string,
+					targets: Map<string, (typeof activeOtherSurfaces)[number]>,
+				) =>
 					targets.size === 0
 						? null
 						: h(
