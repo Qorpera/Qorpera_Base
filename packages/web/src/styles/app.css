@@ -502,21 +502,21 @@ label > input, label > select { font-weight: 400; }
  * group takes contacts only: with nobody in it, it shows only while a contact is dragged, as the place to drop one
  * back (ui/rail-drag.ts says what is dragged). */
 /* WHY: sticky inside the list, so Agents and Members stay in view while the interfaces scroll under them. No frame:
- * the mask fades the list out under its top 20px; its own rows fade at the foot under ::after, which stays opaque
- * to the list (a mask there would show the list through). */
+ * a shadow in the rail's own colour fades the list out above it. A shadow takes no clicks, so the rows under the
+ * fade still answer the pointer; a mask on the dock would not let them. */
 .rail-dock {
-	--dock-fade: linear-gradient(to bottom, transparent, #000 20px);
 	position: sticky; z-index: 3; bottom: 0; margin-top: auto;
 	display: grid; grid-template-columns: minmax(0, 1fr); align-content: start;
 	max-height: 50%; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
-	padding-top: 20px; background: var(--rail);
-	-webkit-mask-image: var(--dock-fade); mask-image: var(--dock-fade);
+	background: var(--rail); box-shadow: 0 -9px 9px var(--rail);
 }
-.rail-dock::after {
-	content: ""; position: sticky; z-index: 4; bottom: 0; height: 12px; margin-top: -6px; pointer-events: none;
-	background: var(--rail);
-	-webkit-mask-image: linear-gradient(to bottom, transparent, #000 8px); mask-image: linear-gradient(to bottom, transparent, #000 8px);
+.rail-dock::before, .rail-dock::after {
+	content: ""; position: sticky; z-index: 4; height: 6px; pointer-events: none; background: var(--rail);
 }
+.rail-dock::before { top: 0; -webkit-mask-image: linear-gradient(to top, transparent, #000); mask-image: linear-gradient(to top, transparent, #000); }
+.rail-dock::after { bottom: 0; -webkit-mask-image: linear-gradient(to bottom, transparent, #000); mask-image: linear-gradient(to bottom, transparent, #000); }
+.rail-scroll > :has(+ .rail-dock:has(> :not(.rail-members.is-empty, .rail-hover-tint))),
+.rail-scroll[data-dragging="member"] > :has(+ .rail-dock) { margin-bottom: 20px; }
 .rail-dock .rail-agents-head { padding: 6px 8px; border-radius: 8px; }
 .rail-dock .rail-agents-chevron { opacity: 0.6; }
 .rail-dock:not(:has(> :not(.rail-members.is-empty, .rail-hover-tint))) { display: none; }

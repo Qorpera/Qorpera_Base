@@ -38,7 +38,7 @@ describe("the rail's Agents and Members dock", () => {
 		const framing = () =>
 			rules
 				.filter((rule) => reaches(dock, rule.selectorText))
-				.flatMap((rule) => [rule.style.border, rule.style.borderRadius, rule.style.boxShadow])
+				.flatMap((rule) => [rule.style.border, rule.style.borderRadius])
 				.filter(Boolean);
 		expect(rules.some((rule) => reaches(dock, rule.selectorText) && rule.style.position === "sticky")).toBe(true);
 		expect(framing()).toEqual([]);
@@ -46,8 +46,9 @@ describe("the rail's Agents and Members dock", () => {
 		expect(framing()).toEqual([]);
 	});
 
-	it("fades the list out under its top edge and stays solid to the list at its foot", () => {
-		const fade = /\.rail-dock \{[^}]*--dock-fade: ([^;]+);/.exec(appCss)?.[1];
-		expect(fade).toMatch(/^linear-gradient\(to bottom, transparent, #000 \d+px\)$/);
+	it("fades the list out under a shadow in the rail's own colour, which takes no clicks from the rows under it", () => {
+		const dock = /\.rail-dock \{([^}]*)\}/.exec(appCss)?.[1] ?? "";
+		expect(dock).toMatch(/box-shadow: 0 -\d+px \d+px var\(--rail\);/);
+		expect(dock).not.toMatch(/mask-image|padding|border/);
 	});
 });
