@@ -4260,7 +4260,8 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 		hits,
 		revive: (key) => {
 			const [, kind, path] = /^file:(file|folder|symlink):(.+)$/.exec(key) ?? [];
-			return kind && path && context.openStorage ? fileHit(context, path, kind) : undefined;
+			const readable = company.store.get().team?.capabilities.read === true;
+			return kind && path && readable && context.openStorage ? fileHit(context, path, kind) : undefined;
 		},
 		...(folder && company.store.get().team?.capabilities.read
 			? {
@@ -4313,6 +4314,7 @@ export function installSearchShortcut(): void {
 		const target = searchTarget;
 		if (!target?.parts.context || target.company.signal.aborted) return;
 		if (document.querySelector<HTMLElement>(".frame")?.inert) return;
+		if (document.querySelector("dialog[open]:not(.search-window)")) return;
 		event.preventDefault();
 		openSearchWindow(target.company, target.parts.context, target.parts.searchToggle);
 	});

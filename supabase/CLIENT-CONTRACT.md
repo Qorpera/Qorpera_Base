@@ -1182,6 +1182,14 @@ by their keys, never with a lowercase literal.
   (`path`, `op`, `kind`, `version`), `more` when there are others or more than 1,000 versions. A change set none of
   whose first 1,000 versions the member may read is left out (the feed still shows it). `next` is a seq to pass as
   `before`.
+- `qorpera_member_folder_search(environment, query, limit)` (20260930864000): `qorpera.folder-search/v1`,
+  `{asOfSeq, entries, more}`. Finds entries anywhere in the folder the member may read, under the recursive
+  listing's read rules: every word of the query (1 to 8 words, at most 200 characters, case ignored) must be in the
+  path. Names that start with the first word typed come first, then names holding every word, then the rest; shorter
+  paths first within each. Each entry is in the read's shape (a link's `target` included). `limit` is 1 to 50;
+  `more` when more matched, or when the first 20,000 matching entries in key order were all that was ranked. Refuses
+  a bad query or limit (22023), a non-member or a company without the folder (42501) and a company being deleted
+  (55000).
 - `qorpera_member_folder_changes(environment, after_seq, limit, cursor?)`: the folder feed (`qorpera.folder-feed/v1`,
   core §6), each change set with `by` and `at`; a link's change has its `target`. Follow it from `next` (`afterSeq`,
   `cursor`); on `resync`, read

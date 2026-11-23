@@ -759,6 +759,12 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
 		expect(window.open).toBe(false);
 		frame.inert = false;
+		const feedback = h("dialog", { class: "feedback-dialog" });
+		document.body.append(feedback);
+		feedback.showModal();
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+		expect(window.open).toBe(false);
+		feedback.close();
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
 		expect(window.open).toBe(true);
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
