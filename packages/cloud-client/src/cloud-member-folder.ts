@@ -220,6 +220,28 @@ export function parseCloudMemberFolderList(value: unknown, limit: number): Cloud
 	return { asOfSeq: seq(page.asOfSeq, "listing"), entries, next };
 }
 
+export const CLOUD_MEMBER_FOLDER_SEARCH = 50;
+export const CLOUD_MEMBER_FOLDER_SEARCH_QUERY = 200;
+
+export interface CloudMemberFolderSearch {
+	readonly asOfSeq: number;
+	readonly entries: readonly CloudMemberFolderEntry[];
+	readonly more: boolean;
+}
+
+export function parseCloudMemberFolderSearch(value: unknown, limit: number): CloudMemberFolderSearch {
+	const page = closed(value, ["schema", "asOfSeq", "entries", "more"], [], "search");
+	if (
+		page.schema !== "qorpera.folder-search/v1" ||
+		!Array.isArray(page.entries) ||
+		page.entries.length > limit ||
+		typeof page.more !== "boolean" ||
+		(page.more && page.entries.length !== limit)
+	)
+		invalid("search");
+	return { asOfSeq: seq(page.asOfSeq, "search"), entries: page.entries.map(parseCloudMemberFolderEntry), more: page.more };
+}
+
 export type CloudMemberFolderBy =
 	| { readonly kind: "member"; readonly userId: string }
 	| { readonly kind: "agent"; readonly staffAgentId: string }
@@ -972,6 +994,22 @@ export class CloudMemberFolderClient {
 			},
 			signal,
 		).then((value) => parseCloudMemberFolderList(value, limit));
+	}
+
+	search(query: string, limit: number, signal: AbortSignal): Promise<CloudMemberFolderSearch> {
+		const words = query.trim().split(/\s+/).filter(Boolean);
+		if (
+			query.length > CLOUD_MEMBER_FOLDER_SEARCH_QUERY ||
+			words.length < 1 ||
+			words.length > 8 ||
+			!Number.isSafeInteger(limit) ||
+			limit < 1 ||
+			limit > CLOUD_MEMBER_FOLDER_SEARCH
+		)
+			throw new CloudMemberFolderError("Invalid company folder search");
+		return this.#call("qorpera_member_folder_search", { p_query: query, p_limit: limit }, signal).then((value) =>
+			parseCloudMemberFolderSearch(value, limit),
+		);
 	}
 
 	/** A path's versions, newest first. */

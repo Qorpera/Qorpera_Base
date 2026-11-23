@@ -5,6 +5,7 @@ import { cloudFileBytesSha256 } from "../src/cloud-file-bytes.ts";
 import {
 	CLOUD_MEMBER_FOLDER_PAGE,
 	CLOUD_MEMBER_FOLDER_READ_MANY,
+	CLOUD_MEMBER_FOLDER_SEARCH,
 	CloudMemberFolderAccessDenied,
 	CloudMemberFolderClient,
 	CloudMemberFolderFileCache,
@@ -17,6 +18,7 @@ import {
 	parseCloudMemberFolderHint,
 	parseCloudMemberFolderHistory,
 	parseCloudMemberFolderList,
+	parseCloudMemberFolderSearch,
 	parseCloudMemberFolderPathHistory,
 	parseCloudMemberFolderRead,
 } from "../src/cloud-member-folder.ts";
@@ -481,6 +483,30 @@ describe("the member folder client", () => {
 		// A database without the call answers 404: the caller reads each path alone.
 		const missing = client(() => new Response(null, { status: 404 }));
 		await expect(missing.folder.readMany(["a"], new AbortController().signal)).rejects.toMatchObject({ status: 404 });
+	});
+
+	it("searches the whole folder by name and refuses an answer that breaks the limit", async () => {
+		const entry = { path: "brand/logo.svg", kind: "folder", version, seq: 3, updatedAt: at };
+		const { folder, calls } = client(() =>
+			Response.json({ schema: "qorpera.folder-search/v1", asOfSeq: 4, entries: [entry], more: false }),
+		);
+		const found = await folder.search("logo brand", 10, new AbortController().signal);
+		expect(calls[0]!.url).toBe("https://cloud.test/rest/v1/rpc/qorpera_member_folder_search");
+		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ p_environment_id: env, p_query: "logo brand", p_limit: 10 });
+		expect(found.entries.map((one) => one.path)).toEqual(["brand/logo.svg"]);
+		expect(found.more).toBe(false);
+		expect(() =>
+			parseCloudMemberFolderSearch({ schema: "qorpera.folder-search/v1", asOfSeq: 4, entries: [entry], more: true }, 2),
+		).toThrow("Invalid company folder search");
+		expect(
+			parseCloudMemberFolderSearch({ schema: "qorpera.folder-search/v1", asOfSeq: 4, entries: [entry], more: true }, 1)
+				.more,
+		).toBe(true);
+		for (const query of ["", "   ", "a".repeat(201), "a b c d e f g h i"])
+			expect(() => folder.search(query, 10, new AbortController().signal)).toThrow("Invalid company folder search");
+		expect(() => folder.search("logo", CLOUD_MEMBER_FOLDER_SEARCH + 1, new AbortController().signal)).toThrow(
+			"Invalid company folder search",
+		);
 	});
 
 	it("reads a page of 200 links with the longest paths and targets, each character escaped at worst", async () => {

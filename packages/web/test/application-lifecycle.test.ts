@@ -798,7 +798,7 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("textarea")).toBe(composer);
 	});
 
-	it("reopens the drawer on the search field while a query keeps it open over the name", async () => {
+	it("reopens the drawer on the company's name", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		withInterfacesTab(f);
 		await draw();
@@ -806,18 +806,12 @@ describe("account and route ownership", () => {
 		toggle().click();
 		await draw();
 		expect(f.root.querySelector<HTMLElement>(".rail .rail-apps")!.hidden).toBe(false);
-		f.root.querySelector<HTMLButtonElement>(".rail .rail-search-toggle")!.click();
-		const input = f.root.querySelector<HTMLInputElement>(".rail .rail-search input")!;
-		input.value = "Fixture";
-		input.dispatchEvent(new Event("input"));
-		await draw();
-		// The name is inert under the open field, so the drawer comes back to the field.
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
 		await draw();
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
 		toggle().click();
 		await draw();
-		expect(document.activeElement).toBe(input);
+		expect(document.activeElement).toBe(f.root.querySelector(".rail .rail-company"));
 	});
 
 	it("keeps profile-menu focus through refreshes and closes it before the mobile drawer", async () => {

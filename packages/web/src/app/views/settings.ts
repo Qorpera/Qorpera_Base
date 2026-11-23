@@ -11,7 +11,7 @@ import { companyLogos } from "../../ui/company-logos.ts";
 import { showCompanyName } from "../../ui/company-name.ts";
 import { button, h, icon, notice, replace } from "../../ui/dom.ts";
 import { friendsCount } from "../../ui/friends-count.ts";
-import { leave } from "../../ui/motion.ts";
+import { leave, reducedMotion } from "../../ui/motion.ts";
 import { phrase, t, uiText } from "../../ui/preferences.ts";
 import type { AuthController } from "../auth.ts";
 import { CompanyController } from "../company.ts";
@@ -27,7 +27,7 @@ import { CompanyBrandView } from "./settings-brand.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
 import { DefaultModelsView } from "./settings-default-models.ts";
 import { GeminiKeyView } from "./settings-gemini-key.ts";
-import { GoodWillView, MyGoodWillView } from "./settings-good-will.ts";
+import { GoodWillView, goodWillName, MyGoodWillView } from "./settings-good-will.ts";
 import { RulesView } from "./settings-rules.ts";
 import { storageSummary } from "./storage-summary.ts";
 import { renderTeam, type TeamFeedback } from "./team.ts";
@@ -72,6 +72,56 @@ export type SettingsTab = SettingsCategory | "storage" | "recents" | "my-connect
 /** Pages of the open company. Settings with no company open (from the company list with several) show only the
  * account's pages: these are hidden, and one asked for shows General until a company is open. Storage too. */
 const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company"]);
+
+export interface SettingsPlace {
+	readonly tab: SettingsTab;
+	readonly label: string;
+	readonly area: string;
+	readonly words: string;
+	readonly mark?: string;
+}
+
+export function settingsPlaces(): SettingsPlace[] {
+	const general = phrase("General");
+	const company = phrase("Company");
+	const subscriptions = phrase("AI subscriptions");
+	return [
+		{ tab: "general", label: uiText("Account"), area: general, words: "name email password picture konto navn adgangskode billede", mark: uiText("Account") },
+		{ tab: "general", label: uiText("Language & region"), area: general, words: "language region time zone timezone sprog dansk english tidszone område", mark: uiText("Language & region") },
+		{ tab: "general", label: uiText("Appearance"), area: general, words: "theme dark light mode colour color composer interface size tema mørk lys farve størrelse", mark: uiText("Appearance") },
+		{ tab: "general", label: goodWillName(), area: general, words: "goodwill good will tax skat", mark: goodWillName() },
+		{ tab: "company", label: uiText("Staff at work"), area: company, words: "members people team invitations invite staff medlemmer personer invitationer inviter", mark: uiText("Staff at work") },
+		{ tab: "company", label: t("Agent rules"), area: company, words: "rules approve approval ask first allow permissions safety regler godkend tilladelser", mark: t("Agent rules") },
+		{ tab: "company", label: t("Delete company"), area: company, words: "delete leave remove slet forlad", mark: t("Delete company") },
+		{ tab: "company", label: t("Invoices and card"), area: company, words: "invoices card payment billing good will tax fakturaer kort betaling skat", mark: goodWillName() },
+		{ tab: "leaderboard", label: phrase("Leaderboard"), area: t("Settings"), words: "friends compare ranking awards streak venner rangliste" },
+		{ tab: "ai-subscriptions", label: t("Model accounts"), area: subscriptions, words: "chatgpt openai codex claude anthropic gemini google sign in login log ind", mark: t("Model accounts") },
+		{ tab: "ai-subscriptions", label: t("Default models"), area: subscriptions, words: "model effort coding conversational standardmodeller", mark: t("Default models") },
+		{ tab: "ai-subscriptions", label: t("Gemini API key"), area: subscriptions, words: "google gemini api key nøgle", mark: t("Gemini API key") },
+		{ tab: "storage", label: t("Storage"), area: t("Company File"), words: "files storage documents company file filer dokumenter lager" },
+	];
+}
+
+export function markSettingsPlace(text: string): void {
+	const until = performance.now() + 2500;
+	const look = () => {
+		const content = document.querySelector<HTMLElement>(".settings-content:not([hidden])");
+		const found = [...(content?.querySelectorAll<HTMLElement>("h2, button, summary") ?? [])].find(
+			(element) => element.textContent?.trim() === text && !element.closest("[hidden]"),
+		);
+		if (!found) {
+			if (performance.now() < until) requestAnimationFrame(look);
+			return;
+		}
+		const target = found.closest<HTMLElement>(".settings-group") ?? found;
+		target.scrollIntoView({ block: "center", behavior: reducedMotion() ? "auto" : "smooth" });
+		target.classList.remove("is-found");
+		void target.offsetWidth;
+		target.classList.add("is-found");
+		target.addEventListener("animationend", () => target.classList.remove("is-found"), { once: true });
+	};
+	requestAnimationFrame(look);
+}
 
 /** AI subscriptions' lead, with or without a company open. */
 const subscriptionsLead = () =>
