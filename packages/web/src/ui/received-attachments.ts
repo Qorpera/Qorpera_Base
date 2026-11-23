@@ -7,6 +7,9 @@ import { t } from "./preferences.ts";
 
 const SAFE_IMAGES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
+/** What the cards need of a message: its id (the bytes are asked for by it), its files, and whether it is still on its way. */
+export type AttachmentMessage = Pick<TranscriptMessage, "id" | "attachments" | "attachmentCount" | "pending">;
+
 /** One file's card and what is known about its bytes. */
 interface Slot {
 	index: number;
@@ -39,8 +42,8 @@ export class ReceivedAttachments {
 	#visibility: IntersectionObserver | undefined;
 	#preview: SurfaceDialog | undefined;
 	/** The message the files belong to; bytes are asked for by the message's current id. */
-	#message: TranscriptMessage;
-	constructor(message: TranscriptMessage, load?: WorkspaceActions["previewAttachment"]) {
+	#message: AttachmentMessage;
+	constructor(message: AttachmentMessage, load?: WorkspaceActions["previewAttachment"]) {
 		this.#message = message;
 		this.#load = load;
 		const attachments =
@@ -84,7 +87,7 @@ export class ReceivedAttachments {
 	}
 	/** The same files under the message's next id: the browser's copy of a sent message becomes
 	 * the cloud's waiting input and then the transcript's message, and the files stay as shown. */
-	follow(message: TranscriptMessage): void {
+	follow(message: AttachmentMessage): void {
 		this.#message = message;
 		for (const slot of this.#slots) if (slot.seen) this.#thumbnail(slot);
 	}

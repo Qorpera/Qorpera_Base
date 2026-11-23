@@ -20,9 +20,11 @@ import {
 	type SurfaceAutomationSummary,
 	type SurfaceChangeUnit,
 	type SurfaceExplorationSet,
+	type SurfaceImageRef,
 	type SurfaceMigrationChecklist,
 	type SurfacePreviewCompositionState,
 	type SurfaceSession,
+	type SurfaceSessionImages,
 	type SurfaceSummary,
 	type SurfaceWorkspace,
 } from "@qorpera/contracts";
@@ -74,6 +76,7 @@ export type SurfacesClient = Pick<
 			| "updateAutomation"
 			| "deleteAutomation"
 			| "setSurfaceFigure"
+			| "surfaceSessionImages"
 		>
 	>;
 
@@ -227,6 +230,8 @@ export interface SurfaceNote {
 	readonly text: string;
 	readonly at: string;
 	readonly priorMatches: number;
+	/** The images on their way with the words; shown from this device until the message is the cloud's. */
+	readonly files?: readonly File[];
 }
 
 export interface CreateSurfaceInput {
@@ -283,6 +288,8 @@ export interface SurfacesState {
 	readonly variantPick: Readonly<Record<string, string>>;
 	readonly collapsed: Readonly<Record<string, true>>;
 	readonly notes: readonly SurfaceNote[];
+	/** Each session's member images, as last read; the drawer shows them under their messages. */
+	readonly sessionImages: Readonly<Record<string, SurfaceSessionImages>>;
 	readonly undo?: SurfaceUndo;
 	readonly busy: Readonly<Record<string, true>>;
 	readonly error?: string;
@@ -880,6 +887,20 @@ export interface SurfacesStoreOptions {
 		surface: SurfaceSummary,
 		signal: AbortSignal,
 	) => Promise<Readonly<Record<string, string>> | undefined>;
+	/** Saves one image for a message not yet sent; the message then names it. */
+	readonly uploadImage?: (
+		surfaceId: string,
+		clientInputId: string,
+		file: File,
+		signal: AbortSignal,
+	) => Promise<SurfaceImageRef>;
+	/** One image of a sent message, for its thumbnail and preview. */
+	readonly readImage?: (
+		sessionId: string,
+		clientInputId: string,
+		image: SurfaceImageRef,
+		signal: AbortSignal,
+	) => Promise<Blob>;
 }
 
 interface LocalSandboxCacheEntry {
@@ -944,6 +965,7 @@ export class SurfacesStore {
 	#undoSeq = 0;
 	#noteSeq = 0;
 	#localSeq = 0;
+	readonly #imageReads = new Map<string, string>();
 	#loaded: Promise<void> | undefined;
 
 	constructor(options: SurfacesStoreOptions) {
@@ -972,6 +994,7 @@ export class SurfacesStore {
 			variantPick: {},
 			collapsed: {},
 			notes: [],
+			sessionImages: {},
 			busy: {},
 		});
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
@@ -2568,10 +2591,62 @@ export class SurfacesStore {
 		});
 	}
 
+	/** Whether a message here can carry images: the cloud's sessions, with the upload and the read wired. */
+	get canAttachImages(): boolean {
+		return Boolean(
+			this.#options.uploadImage && this.#options.client?.surfaceSessionImages && !this.isLocalInteractive,
+		);
+	}
+
+	async #uploadImages(
+		client: SurfacesClient,
+		surfaceId: string,
+		files: readonly File[],
+	): Promise<{ clientInputId: string; images: SurfaceImageRef[] } | undefined> {
+		if (!files.length) return undefined;
+		const upload = this.#options.uploadImage;
+		if (!upload || !client.surfaceSessionImages) throw new Error(t("Images can't be sent here yet."));
+		const clientInputId = crypto.randomUUID();
+		const images: SurfaceImageRef[] = [];
+		for (const file of files) images.push(await upload(surfaceId, clientInputId, file, this.#options.signal));
+		return { clientInputId, images };
+	}
+
+	/** Reads a session's member images once per new member message; the drawer draws them from state. */
+	ensureSessionImages(session: SurfaceSession): void {
+		const client = this.#options.client;
+		if (!client?.surfaceSessionImages || isLocalSurfaceId(session.surfaceId)) return;
+		const key = session.messages
+			.filter((message) => message.authorKind === "member")
+			.map((message) => message.id)
+			.join(",");
+		if (!key || this.#imageReads.get(session.id) === key) return;
+		this.#imageReads.set(session.id, key);
+		client.surfaceSessionImages(session.id).then(
+			(images) => {
+				if (this.#options.signal.aborted || this.#imageReads.get(session.id) !== key) return;
+				this.store.set((state) => ({ sessionImages: { ...state.sessionImages, [session.id]: images } }));
+			},
+			() => undefined,
+		);
+	}
+
+	readSessionImage(
+		sessionId: string,
+		clientInputId: string,
+		image: SurfaceImageRef,
+		signal: AbortSignal,
+	): Promise<Blob> {
+		const read = this.#options.readImage;
+		if (!read) return Promise.reject(new Error(t("This image is not available.")));
+		return read(sessionId, clientInputId, image, signal);
+	}
+
 	async startSession(
 		surfaceId: string,
 		prompt: string,
 		options: StartSurfaceSessionOptions = {},
+		files: readonly File[] = [],
 	): Promise<SurfaceSession | undefined> {
 		const text = prompt.trim();
 		if (!text) return undefined;
@@ -2620,9 +2695,10 @@ export class SurfacesStore {
 			this.#stageLocalSession(surface, id, text);
 			return local;
 		}
-		const session = await this.#run(`start:${surfaceId}:${text}`, (client) =>
-			client.startSurfaceSession(surfaceId, text, options),
-		);
+		const session = await this.#run(`start:${surfaceId}:${text}`, async (client) => {
+			const attached = await this.#uploadImages(client, surfaceId, files);
+			return client.startSurfaceSession(surfaceId, text, attached ? { ...options, ...attached } : options);
+		});
 		if (!session) return undefined;
 		const workspace = this.workspace(surfaceId);
 		if (workspace) this.#putWorkspace({ ...workspace, activeSessions: [...workspace.activeSessions, session] });
@@ -3383,7 +3459,7 @@ export class SurfacesStore {
 		return true;
 	}
 
-	async reply(sessionId: string, text: string): Promise<boolean> {
+	async reply(sessionId: string, text: string, files: readonly File[] = []): Promise<boolean> {
 		const message = text.trim();
 		if (!message || this.state.busy[`reply:${sessionId}`]) return false;
 		const existing = this.session(sessionId);
@@ -3431,9 +3507,17 @@ export class SurfacesStore {
 			text: message,
 			at: new Date().toISOString(),
 			priorMatches,
+			...(files.length ? { files: [...files] } : {}),
 		};
 		this.store.set((state) => ({ notes: [...state.notes, note] }));
-		const updated = await this.#run(`reply:${sessionId}`, (client) => client.replySurfaceSession(sessionId, message));
+		const updated = await this.#run(`reply:${sessionId}`, async (client) => {
+			const surfaceId = existing?.surfaceId;
+			if (files.length && !surfaceId) throw new Error(t("This session is not available."));
+			const attached = surfaceId ? await this.#uploadImages(client, surfaceId, files) : undefined;
+			return attached
+				? client.replySurfaceSession(sessionId, message, true, attached)
+				: client.replySurfaceSession(sessionId, message);
+		});
 		if (!updated) {
 			this.store.set((state) => ({ notes: state.notes.filter((item) => item.id !== note.id) }));
 			return false;
