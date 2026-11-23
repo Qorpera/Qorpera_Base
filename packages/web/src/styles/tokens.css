@@ -88,8 +88,10 @@
 	--send-active: var(--primary);
 	--send-active-hover: var(--primary-hover);
 	--composer-accent: #0a84ff;
+	--composer-accent-ink: var(--composer-accent);
 	--agent-active: #00c887;
 	--composer-on-accent: #ffffff;
+	--composer-on-accent-muted: rgba(255, 255, 255, 0.92);
 	--composer-accent-hover: color-mix(in srgb, var(--composer-accent) 88%, #000000);
 
 	/* scale: Big draws each design pixel at 130% with a mouse or trackpad;
@@ -228,5 +230,12 @@
 	--agent-active: #0a84ff;
 }
 :root[data-composer-color="grey"] {
-	--composer-accent: #5b5b5b;
+	--composer-accent: color-mix(in srgb, var(--text) 7%, var(--bg));
+	--composer-accent-ink: #5b5b5b;
+	--composer-on-accent: var(--text);
+	--composer-on-accent-muted: var(--text-muted);
+	--composer-accent-hover: color-mix(in srgb, var(--text) 13%, var(--bg));
+}
+:root[data-theme="dark"][data-composer-color="grey"] {
+	--composer-accent-ink: #989894;
 }

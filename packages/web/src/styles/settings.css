@@ -171,7 +171,7 @@
 .color-swatch .swatch-window { grid-template-rows: minmax(0, 2fr) minmax(0, 2fr) minmax(0, 1fr) minmax(0, 3fr); align-items: start; gap: 6%; padding: 10% 8% 8%; background: var(--bg); }
 .color-swatch-blue { --swatch-accent: #0a84ff; }
 .color-swatch-green { --swatch-accent: #30d158; }
-.color-swatch-grey { --swatch-accent: #5b5b5b; }
+.color-swatch-grey { --swatch-accent: color-mix(in srgb, var(--text) 7%, transparent); }
 .swatch-bubble { height: 100%; border-radius: 12px; }
 .swatch-bubble-agent { width: 58%; justify-self: start; background: var(--pane-strong); }
 .swatch-bubble-member { width: 46%; justify-self: end; background: var(--swatch-accent); }
