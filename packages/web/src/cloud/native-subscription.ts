@@ -2,6 +2,7 @@ import {
 	type CreateMemberSponsorInput,
 	type NativeExecutionConnections,
 	type NativeMemberConnection,
+	type NativeProviderAccountCredits,
 	type NativeProviderLoginAuthorization,
 	NativeSubscriptionControlPlane,
 	type RequestSponsoredSessionTurnInput,
@@ -63,6 +64,7 @@ export interface WebClaudeLogins {
 }
 
 export type WebClaudeResetKind = "session" | "weekly" | "fable" | "full";
+export type WebProviderCredits = NativeProviderAccountCredits;
 export interface WebClaudeUsage {
 	observedAt: string;
 	windows: readonly {
@@ -71,6 +73,7 @@ export interface WebClaudeUsage {
 		usedPercent: number;
 		resetAt?: string;
 	}[];
+	credits?: WebProviderCredits;
 	limitResetAt?: string;
 }
 export interface WebClaudeResetEntry {
@@ -98,6 +101,37 @@ const instant = (value: unknown): value is string => typeof value === "string" &
 const shortText = (value: unknown): value is string =>
 	typeof value === "string" && value.length > 0 && value.length <= 120;
 
+function parseClaudeCredits(value: unknown): WebProviderCredits | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const input = value as Record<string, unknown>;
+	const amount = (raw: unknown): number | undefined =>
+		typeof raw === "number" && Number.isFinite(raw) && raw >= 0 && raw <= 10_000_000 ? raw : undefined;
+	const hasCredits = typeof input.hasCredits === "boolean" ? input.hasCredits : undefined;
+	const unlimited = typeof input.unlimited === "boolean" ? input.unlimited : undefined;
+	const balance = amount(input.balance);
+	const used = amount(input.used);
+	const limit = amount(input.limit);
+	const currency =
+		typeof input.currency === "string" && /^[A-Z]{3}$/.test(input.currency) ? input.currency : undefined;
+	if (
+		hasCredits === undefined &&
+		unlimited === undefined &&
+		balance === undefined &&
+		used === undefined &&
+		limit === undefined
+	) {
+		return undefined;
+	}
+	return {
+		...(hasCredits !== undefined ? { hasCredits } : {}),
+		...(unlimited !== undefined ? { unlimited } : {}),
+		...(balance !== undefined ? { balance } : {}),
+		...(used !== undefined ? { used } : {}),
+		...(limit !== undefined ? { limit } : {}),
+		...(currency !== undefined ? { currency } : {}),
+	};
+}
+
 function parseClaudeUsage(value: unknown): WebClaudeUsage | undefined {
 	const input = value as Record<string, unknown> | null;
 	if (!input || typeof input !== "object" || !instant(input.observedAt) || !Array.isArray(input.windows))
@@ -122,10 +156,12 @@ function parseClaudeUsage(value: unknown): WebClaudeUsage | undefined {
 			...(instant(window.resetAt) ? { resetAt: window.resetAt } : {}),
 		});
 	}
-	return windows.length || instant(input.limitResetAt)
+	const credits = parseClaudeCredits(input.credits);
+	return windows.length || instant(input.limitResetAt) || credits
 		? {
 				observedAt: input.observedAt,
 				windows,
+				...(credits ? { credits } : {}),
 				...(instant(input.limitResetAt) ? { limitResetAt: input.limitResetAt } : {}),
 			}
 		: undefined;

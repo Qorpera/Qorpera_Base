@@ -1,9 +1,11 @@
+import type { WebDefaultModels } from "../../cloud/default-models.ts";
 import type { WebGeminiKey } from "../../cloud/gemini-key.ts";
 import type { WebNativeSubscription } from "../../cloud/native-subscription.ts";
 import type { HostedProfile } from "../../cloud/types.ts";
 import { button, h, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import { type ConnectionsClient, ConnectionsView, type ProviderSignIns } from "./settings-connections.ts";
+import { DefaultModelsView } from "./settings-default-models.ts";
 import { GeminiKeyView } from "./settings-gemini-key.ts";
 
 /** One of the member's companies, as AI subscriptions with no company open reach it. */
@@ -14,6 +16,7 @@ export interface AccountSubscriptionsCompany {
 	signIns: ProviderSignIns;
 	/** Starts a sign-in that outlives this page. */
 	begin: WebNativeSubscription["beginProviderLogin"];
+	defaultModels?: WebDefaultModels;
 	gemini?: WebGeminiKey;
 }
 
@@ -27,6 +30,7 @@ export class AccountSubscriptionsView {
 	readonly #profiles: readonly HostedProfile[];
 	readonly #open: (profile: HostedProfile) => AccountSubscriptionsCompany;
 	readonly #lifetime = new AbortController();
+	#defaultModels: DefaultModelsView | undefined;
 	#connections: ConnectionsView | undefined;
 	#geminiKey: GeminiKeyView | undefined;
 
@@ -44,6 +48,8 @@ export class AccountSubscriptionsView {
 
 	dispose(): void {
 		this.#lifetime.abort();
+		this.#defaultModels?.dispose();
+		this.#defaultModels = undefined;
 		this.#connections?.dispose();
 		this.#connections = undefined;
 		this.#geminiKey?.dispose();
@@ -83,6 +89,8 @@ export class AccountSubscriptionsView {
 			}
 			if (signal.aborted) return;
 			if (!usable) continue;
+			this.#defaultModels = company.defaultModels ? new DefaultModelsView(company.defaultModels, signal) : undefined;
+			const refreshDefaults = () => void this.#defaultModels?.refresh();
 			this.#connections = new ConnectionsView(
 				company.client,
 				signal,
@@ -92,9 +100,10 @@ export class AccountSubscriptionsView {
 				undefined,
 				undefined,
 				{ companyName: profile.profileName },
+				refreshDefaults,
 			);
-			this.#geminiKey = company.gemini ? new GeminiKeyView(company.gemini, signal) : undefined;
-			replace(this.el, this.#connections.el, this.#geminiKey?.el);
+			this.#geminiKey = company.gemini ? new GeminiKeyView(company.gemini, signal, refreshDefaults) : undefined;
+			replace(this.el, this.#defaultModels?.el, this.#connections.el, this.#geminiKey?.el);
 			return;
 		}
 		replace(

@@ -35,15 +35,6 @@ export class RailHover {
 			},
 			options,
 		);
-		list.addEventListener(
-			"pointerdown",
-			(event) => {
-				if (this.#target && this.#itemOf(event.target) === this.#target) this.tint.classList.add("is-pressed");
-			},
-			options,
-		);
-		window.addEventListener("pointerup", () => this.tint.classList.remove("is-pressed"), options);
-		window.addEventListener("pointercancel", () => this.tint.classList.remove("is-pressed"), options);
 		signal.addEventListener("abort", () => {
 			window.clearTimeout(this.#leaving);
 			window.clearTimeout(this.#lighting);
@@ -138,7 +129,7 @@ export class RailHover {
 			Object.assign(this.tint.style, frame(box));
 		}
 		this.#target = undefined;
-		this.tint.classList.remove("is-on", "is-pressed");
+		this.tint.classList.remove("is-on");
 		window.clearTimeout(this.#removing);
 		if (now) this.tint.remove();
 		else this.#removing = window.setTimeout(() => this.tint.remove(), 160);
@@ -163,17 +154,7 @@ export class RailHover {
 	}
 
 	#currentBox(): Box {
-		// WHY: the press shrink scales the rect around its centre; the layout size undoes it mid-spring too.
-		const rect = this.tint.getBoundingClientRect();
-		const width = this.tint.offsetWidth || rect.width;
-		const height = this.tint.offsetHeight || rect.height;
-		const unscaled = new DOMRect(
-			rect.left + rect.width / 2 - width / 2,
-			rect.top + rect.height / 2 - height / 2,
-			width,
-			height,
-		);
-		return boxIn(this.#list, unscaled, getComputedStyle(this.tint).borderRadius);
+		return boxIn(this.#list, this.tint.getBoundingClientRect(), getComputedStyle(this.tint).borderRadius);
 	}
 }
 

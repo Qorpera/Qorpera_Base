@@ -386,4 +386,48 @@ describe("a sign-in ChatGPT no longer accepts", () => {
 			setLanguagePreference("en");
 		}
 	});
+
+	it("renders default models above model accounts when provided", async () => {
+		const b = company(true);
+		const lifetime = new AbortController();
+		view = new AccountSubscriptionsView(
+			[profileB],
+			() => ({
+				client: b.client as unknown as WebNativeSubscription,
+				signIns: b.signIns,
+				begin: b.begin,
+				defaultModels: {
+					read: vi.fn(async () => ({
+						conversationModel: "gpt-6.2-sol",
+						conversationEffort: "low" as const,
+						codingModel: "gpt-6.2-sol",
+						codingEffort: "high" as const,
+						storedConversationModel: null,
+						storedCodingModel: null,
+						conversationModels: ["gpt-6.2-sol", "gpt-6-astra"],
+						codingModels: ["gpt-6.2-sol", "gpt-6-astra"],
+						conversationEfforts: {
+							"gpt-6.2-sol": ["low", "medium", "high", "xhigh"] as const,
+							"gpt-6-astra": ["low", "medium", "high", "xhigh"] as const,
+						},
+						codingEfforts: {
+							"gpt-6.2-sol": ["low", "medium", "high"] as const,
+							"gpt-6-astra": ["low", "medium", "high"] as const,
+						},
+						version: 0,
+					})),
+					set: vi.fn(async () => {
+						throw new Error("not used");
+					}),
+				},
+			}),
+			lifetime.signal,
+		);
+		document.body.append(view.el);
+		await settle();
+		await settle();
+		const headings = [...view.el.querySelectorAll("h2")].map((heading) => heading.textContent);
+		expect(headings[0]).toBe("Default models");
+		expect(headings[1]).toBe("Model accounts");
+	});
 });

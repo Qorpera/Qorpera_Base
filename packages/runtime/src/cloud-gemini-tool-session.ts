@@ -12,7 +12,13 @@ import type {
 	CloudCodexOpening,
 	CloudCodexToolSessionResult,
 } from "./cloud-codex-tool-session.ts";
-import { geminiNeonSpendMicrodollars } from "./cloud-gemini-key-vault.ts";
+import {
+	classifyGeminiHttpError,
+	GEMINI_PROVIDER_ERROR_CODES,
+	type GeminiProviderErrorCode,
+	geminiNeonSpendMicrodollars,
+	readGeminiErrorSnippet,
+} from "./cloud-gemini-key-vault.ts";
 import {
 	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
 	type CloudNativeContextItem,
@@ -38,6 +44,8 @@ const RETRY_DELAYS_MS = [1_000, 3_000] as const;
 const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
 
+export { GEMINI_PROVIDER_ERROR_CODES, type GeminiProviderErrorCode };
+
 export class GeminiCapReachedError extends Error {
 	readonly monthlyCapCents: number;
 	readonly monthSpendMicrodollars: number;
@@ -51,10 +59,91 @@ export class GeminiCapReachedError extends Error {
 }
 
 export class GeminiKeyRevokedError extends Error {
-	constructor(message = "Your Gemini API key is no longer valid or was removed.") {
+	readonly httpStatus: number | null;
+	readonly providerStatus: string | null;
+
+	constructor(
+		message = "Your Gemini API key is no longer valid or was removed.",
+		httpStatus: number | null = null,
+		providerStatus: string | null = null,
+	) {
 		super(message);
 		this.name = "GeminiKeyRevokedError";
+		this.httpStatus = httpStatus;
+		this.providerStatus = providerStatus;
 	}
+}
+
+export class GeminiProviderError extends Error {
+	readonly code: GeminiProviderErrorCode;
+	readonly httpStatus: number | null;
+	readonly providerStatus: string | null;
+
+	constructor(
+		code: GeminiProviderErrorCode,
+		httpStatus: number | null,
+		providerStatus: string | null,
+		message: string,
+		options?: ErrorOptions,
+	) {
+		super(message, options);
+		this.name = "GeminiProviderError";
+		this.code = code;
+		this.httpStatus = httpStatus;
+		this.providerStatus = providerStatus;
+	}
+}
+
+const GEMINI_FAILURE_CODES: Readonly<Record<GeminiProviderErrorCode, string>> = {
+	key_rejected: "GEMINI_API:KEY_REJECTED",
+	billing_required: "GEMINI_API:BILLING_REQUIRED",
+	quota_exhausted: "GEMINI_API:QUOTA_EXHAUSTED",
+	model_unavailable: "GEMINI_API:MODEL_UNAVAILABLE",
+	invalid_request: "GEMINI_API:REQUEST_REJECTED",
+	provider_outage: "GEMINI_API:PROVIDER_OUTAGE",
+	transport_unavailable: "GEMINI_API:TRANSPORT_UNAVAILABLE",
+};
+
+export function geminiProviderErrorCode(error: unknown): GeminiProviderErrorCode | undefined {
+	let current = error;
+	for (let depth = 0; depth < 8 && current instanceof Error; depth += 1) {
+		if (current instanceof GeminiProviderError) return current.code;
+		if (current instanceof GeminiKeyRevokedError) return "key_rejected";
+		current = current.cause;
+	}
+	return undefined;
+}
+
+export function geminiProviderFailureCode(error: unknown): string | undefined {
+	let current = error;
+	for (let depth = 0; depth < 8 && current instanceof Error; depth += 1) {
+		if (current instanceof GeminiCapReachedError) return "GEMINI_API:CAP_REACHED";
+		if (current instanceof GeminiKeyRevokedError) return "GEMINI_API:KEY_REJECTED";
+		if (current instanceof GeminiProviderError) return GEMINI_FAILURE_CODES[current.code];
+		current = current.cause;
+	}
+	return undefined;
+}
+
+export function geminiProviderDiagnostic(error: unknown): string | undefined {
+	let current = error;
+	for (let depth = 0; depth < 8 && current instanceof Error; depth += 1) {
+		if (current instanceof GeminiProviderError) {
+			const parts = [`geminiCode=${current.code}`];
+			if (current.httpStatus !== null) parts.push(`httpStatus=${current.httpStatus}`);
+			if (current.providerStatus !== null) parts.push(`providerStatus=${current.providerStatus}`);
+			return parts.join(", ");
+		}
+		if (current instanceof GeminiKeyRevokedError) {
+			const parts = ["geminiCode=key_rejected"];
+			if (current.httpStatus !== null) parts.push(`httpStatus=${current.httpStatus}`);
+			if (current.providerStatus !== null) parts.push(`providerStatus=${current.providerStatus}`);
+			return parts.join(", ");
+		}
+		if (current instanceof GeminiCapReachedError) return "geminiCode=cap_reached";
+		current = current.cause;
+	}
+	return undefined;
 }
 
 export interface GeminiToolSessionUsage {
@@ -338,123 +427,216 @@ async function generateGeminiContent(options: {
 	fetcher: typeof fetch;
 	signal: AbortSignal;
 	retryOnBusy: boolean;
+	observability?: CloudRuntimeObservability;
 }): Promise<GeminiApiResponse> {
 	const url = `${options.baseUrl}/v1beta/models/${encodeURIComponent(options.model)}:generateContent`;
 	const payload = JSON.stringify(options.body);
-	for (let attempt = 0; ; attempt++) {
-		options.signal.throwIfAborted();
-		const scoped = new AbortController();
-		const onCallerAbort = (): void => scoped.abort(options.signal.reason);
-		options.signal.addEventListener("abort", onCallerAbort, { once: true });
-		const requestTimer = setTimeout(
-			() => scoped.abort(new DOMException("Gemini API request timed out", "TimeoutError")),
-			MAX_GEMINI_REQUEST_MS,
-		);
-		requestTimer.unref?.();
-		const requestSignal = scoped.signal;
-		let bytes: Uint8Array | undefined;
-		let retryWait: number | undefined;
-		try {
-			let reply: Response;
+	const observation = options.observability?.start("model_request");
+	let recorded = false;
+	const failObservation = (
+		errorCategory:
+			| "authority_unavailable"
+			| "budget_exhausted"
+			| "provider_failed"
+			| "transport_unavailable"
+			| "timeout"
+			| "cancelled",
+	): void => {
+		if (recorded) return;
+		recorded = true;
+		observation?.finish(errorCategory === "cancelled" ? "cancelled" : "failed", { errorCategory });
+	};
+	try {
+		for (let attempt = 0; ; attempt++) {
+			options.signal.throwIfAborted();
+			const scoped = new AbortController();
+			const onCallerAbort = (): void => scoped.abort(options.signal.reason);
+			options.signal.addEventListener("abort", onCallerAbort, { once: true });
+			const requestTimer = setTimeout(
+				() => scoped.abort(new DOMException("Gemini API request timed out", "TimeoutError")),
+				MAX_GEMINI_REQUEST_MS,
+			);
+			requestTimer.unref?.();
+			const requestSignal = scoped.signal;
+			let bytes: Uint8Array | undefined;
+			let retryWait: number | undefined;
 			try {
-				reply = await options.fetcher(url, {
-					method: "POST",
-					redirect: "error",
-					headers: {
-						"content-type": "application/json",
-						"x-goog-api-key": options.apiKey,
-					},
-					body: payload,
-					signal: requestSignal,
-				});
-			} catch (error) {
-				if (options.signal.aborted) throw error;
-				const wait = options.retryOnBusy ? RETRY_DELAYS_MS[attempt] : undefined;
-				if (wait !== undefined) {
-					retryWait = wait;
-				} else {
-					throw tagNativeRuntimeFailure(
-						new Error("Could not reach the Gemini API", { cause: error }),
-						"native-tools",
-						"transport_unavailable",
-					);
-				}
-				reply = undefined as never;
-			}
-			if (retryWait === undefined) {
-				if (reply.status === 401 || reply.status === 403) {
-					void reply.body?.cancel().catch(() => undefined);
-					throw tagNativeRuntimeFailure(
-						new GeminiKeyRevokedError("Google rejected your Gemini API key."),
-						"native-tools",
-						"authority_unavailable",
-					);
-				}
-				if (reply.status === 429 || (reply.status >= 500 && reply.status <= 599)) {
-					void reply.body?.cancel().catch(() => undefined);
+				let reply: Response;
+				try {
+					reply = await options.fetcher(url, {
+						method: "POST",
+						redirect: "error",
+						headers: {
+							"content-type": "application/json",
+							"x-goog-api-key": options.apiKey,
+						},
+						body: payload,
+						signal: requestSignal,
+					});
+				} catch (error) {
+					if (options.signal.aborted) throw error;
 					const wait = options.retryOnBusy ? RETRY_DELAYS_MS[attempt] : undefined;
 					if (wait !== undefined) {
 						retryWait = wait;
 					} else {
-						const busyError = new Error(`Gemini API is temporarily busy (${reply.status})`);
-						if (!options.retryOnBusy) throw new CloudActionReviewBusy();
-						throw tagNativeRuntimeFailure(busyError, "native-tools", "provider_failed");
+						failObservation("transport_unavailable");
+						throw tagNativeRuntimeFailure(
+							new GeminiProviderError("transport_unavailable", null, null, "Could not reach the Gemini API", {
+								cause: error,
+							}),
+							"native-tools",
+							"transport_unavailable",
+						);
 					}
-				} else if (!reply.ok) {
-					void reply.body?.cancel().catch(() => undefined);
-					throw tagNativeRuntimeFailure(
-						new Error(`Gemini API rejected the request (${reply.status})`),
-						"native-tools",
-						"provider_failed",
-					);
-				} else {
-					try {
-						bytes = await readBoundedCloudResponse(reply, MAX_GEMINI_RESPONSE_BYTES, requestSignal);
-					} catch (error) {
-						if (options.signal.aborted) throw error;
-						if (error instanceof Error && error.message === "Cloud response exceeds its byte limit") {
-							throw tagNativeRuntimeFailure(error, "native-tools", "provider_failed");
-						}
-						const wait = options.retryOnBusy ? RETRY_DELAYS_MS[attempt] : undefined;
-						if (wait !== undefined) {
-							retryWait = wait;
-						} else {
+					reply = undefined as never;
+				}
+				if (retryWait === undefined) {
+					if (!reply.ok) {
+						const snippet = await readGeminiErrorSnippet(reply);
+						const classified = classifyGeminiHttpError(reply.status, snippet);
+						if (classified.code === "billing_required") {
+							failObservation("budget_exhausted");
 							throw tagNativeRuntimeFailure(
-								new Error("Could not reach the Gemini API", { cause: error }),
+								new GeminiProviderError(
+									"billing_required",
+									reply.status,
+									classified.providerStatus,
+									`Gemini API billing or credits required (${reply.status})`,
+								),
 								"native-tools",
-								"transport_unavailable",
+								"budget_exhausted",
 							);
+						}
+						if (classified.code === "key_rejected") {
+							failObservation("authority_unavailable");
+							throw tagNativeRuntimeFailure(
+								new GeminiKeyRevokedError(
+									"Google rejected your Gemini API key.",
+									reply.status,
+									classified.providerStatus,
+								),
+								"native-tools",
+								"authority_unavailable",
+							);
+						}
+						if (classified.code === "quota_exhausted" || classified.code === "provider_outage") {
+							const wait = options.retryOnBusy ? RETRY_DELAYS_MS[attempt] : undefined;
+							if (wait !== undefined) {
+								retryWait = wait;
+							} else {
+								failObservation("provider_failed");
+								if (!options.retryOnBusy) throw new CloudActionReviewBusy();
+								throw tagNativeRuntimeFailure(
+									new GeminiProviderError(
+										classified.code,
+										reply.status,
+										classified.providerStatus,
+										`Gemini API is temporarily busy (${reply.status})`,
+									),
+									"native-tools",
+									"provider_failed",
+								);
+							}
+						} else {
+							failObservation("provider_failed");
+							throw tagNativeRuntimeFailure(
+								new GeminiProviderError(
+									classified.code,
+									reply.status,
+									classified.providerStatus,
+									`Gemini API rejected the request (${reply.status})`,
+								),
+								"native-tools",
+								"provider_failed",
+							);
+						}
+					} else {
+						try {
+							bytes = await readBoundedCloudResponse(reply, MAX_GEMINI_RESPONSE_BYTES, requestSignal);
+						} catch (error) {
+							if (options.signal.aborted) throw error;
+							if (error instanceof Error && error.message === "Cloud response exceeds its byte limit") {
+								failObservation("provider_failed");
+								throw tagNativeRuntimeFailure(error, "native-tools", "provider_failed");
+							}
+							const wait = options.retryOnBusy ? RETRY_DELAYS_MS[attempt] : undefined;
+							if (wait !== undefined) {
+								retryWait = wait;
+							} else {
+								failObservation("transport_unavailable");
+								throw tagNativeRuntimeFailure(
+									new GeminiProviderError(
+										"transport_unavailable",
+										null,
+										null,
+										"Could not reach the Gemini API",
+										{
+											cause: error,
+										},
+									),
+									"native-tools",
+									"transport_unavailable",
+								);
+							}
 						}
 					}
 				}
+			} finally {
+				clearTimeout(requestTimer);
+				options.signal.removeEventListener("abort", onCallerAbort);
 			}
-		} finally {
-			clearTimeout(requestTimer);
-			options.signal.removeEventListener("abort", onCallerAbort);
+			if (retryWait !== undefined) {
+				await pauseAbortable(retryWait, options.signal);
+				continue;
+			}
+			if (!bytes) {
+				failObservation("provider_failed");
+				throw new Error("Gemini API returned an empty response");
+			}
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+			} catch (error) {
+				failObservation("provider_failed");
+				throw tagNativeRuntimeFailure(
+					new Error("Gemini API returned malformed JSON", { cause: error }),
+					"native-tools",
+					"provider_failed",
+				);
+			}
+			if (!isPlainObject(parsed)) {
+				failObservation("provider_failed");
+				throw tagNativeRuntimeFailure(
+					new Error("Gemini API response is invalid"),
+					"native-tools",
+					"provider_failed",
+				);
+			}
+			const candidates = Array.isArray(parsed.candidates) ? parsed.candidates : [];
+			const first = isPlainObject(candidates[0]) ? candidates[0] : undefined;
+			const content = first && isPlainObject(first.content) ? first.content : undefined;
+			const rawParts = content && Array.isArray(content.parts) ? content.parts : [];
+			const parts = rawParts.filter(isPlainObject);
+			const usage = parseUsageMetadata(parsed.usageMetadata);
+			recorded = true;
+			observation?.finish("succeeded", {
+				inputTokens: usage.inputTokens,
+				cachedInputTokens: usage.cachedTokens,
+				outputTokens: usage.outputTokens,
+				totalTokens: usage.inputTokens + usage.outputTokens,
+			});
+			return { parts, usage };
 		}
-		if (retryWait !== undefined) {
-			await pauseAbortable(retryWait, options.signal);
-			continue;
+	} catch (error) {
+		if (!recorded) {
+			const category = options.signal.aborted
+				? options.signal.reason instanceof Error && options.signal.reason.name === "TimeoutError"
+					? "timeout"
+					: "cancelled"
+				: "provider_failed";
+			failObservation(category);
 		}
-		if (!bytes) throw new Error("Gemini API returned an empty response");
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-		} catch (error) {
-			throw tagNativeRuntimeFailure(
-				new Error("Gemini API returned malformed JSON", { cause: error }),
-				"native-tools",
-				"provider_failed",
-			);
-		}
-		if (!isPlainObject(parsed))
-			throw tagNativeRuntimeFailure(new Error("Gemini API response is invalid"), "native-tools", "provider_failed");
-		const candidates = Array.isArray(parsed.candidates) ? parsed.candidates : [];
-		const first = isPlainObject(candidates[0]) ? candidates[0] : undefined;
-		const content = first && isPlainObject(first.content) ? first.content : undefined;
-		const rawParts = content && Array.isArray(content.parts) ? content.parts : [];
-		const parts = rawParts.filter(isPlainObject);
-		return { parts, usage: parseUsageMetadata(parsed.usageMetadata) };
+		throw error;
 	}
 }
 
@@ -680,6 +862,7 @@ export async function runCloudGeminiToolSession(options: {
 							fetcher,
 							signal: combinedSignal,
 							retryOnBusy: false,
+							observability: options.observability,
 							body: {
 								systemInstruction: { parts: [{ text: input.instructions }] },
 								contents: [{ role: "user", parts: [{ text: input.prompt }] }],
@@ -774,10 +957,12 @@ export async function runCloudGeminiToolSession(options: {
 					fetcher,
 					signal: sessionSignal,
 					retryOnBusy: true,
+					observability: options.observability,
 					body: {
 						...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
 						contents: requestContents,
 						tools,
+						...(declarations.length > 0 ? { toolConfig: { includeServerSideToolInvocations: true } } : {}),
 						generationConfig: {
 							thinkingConfig: { thinkingLevel: options.effort },
 						},

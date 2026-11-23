@@ -235,6 +235,17 @@ export class SurfaceRail {
 						}),
 					}),
 				},
+				...(surface.archetype === "ops"
+					? []
+					: [
+							{
+								label: t("Auto-publish on Approve"),
+								hint: t("Approved changes go live without a separate Publish."),
+								checked: surface.autoPublish,
+								multiple: true,
+								select: () => void this.#store.setAutoPublish(surface.id, !surface.autoPublish),
+							},
+						]),
 			],
 		});
 	}

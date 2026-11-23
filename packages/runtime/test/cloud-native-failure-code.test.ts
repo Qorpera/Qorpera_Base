@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CLOUD_AGENT_NO_FINAL_SEND_CODE, CloudAgentNoFinalSend } from "../src/cloud-agent-mouth.ts";
+import { GeminiCapReachedError, GeminiKeyRevokedError, GeminiProviderError } from "../src/cloud-gemini-tool-session.ts";
 import { tagNativeRuntimeFailure } from "../src/cloud-native-failure.ts";
 import { nativeProviderFailureCode } from "../src/cloud-native-provider-service.ts";
 import {
@@ -92,6 +93,35 @@ describe("the fixed code a failed native execution carries back", () => {
 		expect(nativeProviderFailureCode(new Error("Provider harness output exceeded its byte limit"))).toBe(
 			"HARNESS_OUTPUT_LIMIT",
 		);
+	});
+	it("maps Gemini provider, key, and cap errors to closed GEMINI_API codes", () => {
+		expect(nativeProviderFailureCode(new GeminiCapReachedError(10_000, 100_000_000))).toBe("GEMINI_API:CAP_REACHED");
+		expect(
+			nativeProviderFailureCode(
+				tagNativeRuntimeFailure(new GeminiKeyRevokedError(), "native-tools", "authority_unavailable"),
+			),
+		).toBe("GEMINI_API:KEY_REJECTED");
+		expect(
+			nativeProviderFailureCode(
+				new Error("Native provider execution failed (stage=native-tools, category=provider_failed)", {
+					cause: new GeminiProviderError("billing_required", 403, "PERMISSION_DENIED", "Billing required"),
+				}),
+			),
+		).toBe("GEMINI_API:BILLING_REQUIRED");
+		expect(
+			nativeProviderFailureCode(
+				new GeminiProviderError("quota_exhausted", 429, "RESOURCE_EXHAUSTED", "Quota exhausted"),
+			),
+		).toBe("GEMINI_API:QUOTA_EXHAUSTED");
+		expect(nativeProviderFailureCode(new GeminiProviderError("provider_outage", 503, "UNAVAILABLE", "Outage"))).toBe(
+			"GEMINI_API:PROVIDER_OUTAGE",
+		);
+		expect(
+			nativeProviderFailureCode(new GeminiProviderError("invalid_request", 400, "INVALID_ARGUMENT", "Bad request")),
+		).toBe("GEMINI_API:REQUEST_REJECTED");
+		expect(
+			nativeProviderFailureCode(new GeminiProviderError("model_unavailable", 404, "NOT_FOUND", "Model missing")),
+		).toBe("GEMINI_API:MODEL_UNAVAILABLE");
 	});
 	it("never passes free text or other upper-case text, and keeps every segment short enough for the runner's redaction", () => {
 		for (const message of [

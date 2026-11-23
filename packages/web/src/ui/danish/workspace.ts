@@ -626,6 +626,7 @@ export const WORKSPACE: Record<string, string> = {
 	"Show in sidebar": "Vis i sidepanelet",
 	Hidden: "Skjulte",
 	"Hidden: {count}": "Skjulte: {count}",
+	"Agents: {count}": "Agenter: {count}",
 	"Hide from sidebar": "Skjul fra sidepanelet",
 	"Hidden for you": "Skjult for dig",
 	Delete: "Slet",
