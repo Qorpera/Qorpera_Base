@@ -2041,7 +2041,6 @@ interface AgentsHubParts {
 	releasedOffers: string | undefined;
 	rowCount: number;
 	readonly workingWrap: HTMLElement;
-	readonly workingTitle: HTMLElement;
 	readonly workingList: HTMLElement;
 	readonly scheduledWrap: HTMLElement;
 	readonly scheduledTitle: HTMLElement;
@@ -2099,9 +2098,8 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			count,
 			h("span", { class: "rail-agents-chevron", "aria-hidden": "true" }, icon("chevron-down")),
 		);
-		const workingTitle = h("div", { class: "rail-agents-subhead" }, t("Working"));
 		const workingList = h("div", { class: "rail-agents-list" });
-		const workingWrap = h("div", { class: "rail-agents-sub", hidden: true }, workingTitle, workingList);
+		const workingWrap = h("div", { class: "rail-agents-sub", hidden: true }, workingList);
 		const scheduledTitle = h("div", { class: "rail-agents-subhead" }, t("Scheduled"));
 		const scheduledList = h("div", { class: "rail-agents-list" });
 		const scheduledWrap = h("div", { class: "rail-agents-sub", hidden: true }, scheduledTitle, scheduledList);
@@ -2134,7 +2132,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			releasedOffers: undefined,
 			rowCount: 0,
 			workingWrap,
-			workingTitle,
 			workingList,
 			scheduledWrap,
 			scheduledTitle,
@@ -2168,7 +2165,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 	hub.title.textContent = t("Agents");
 	hub.el.setAttribute("aria-label", t("Agents"));
 
-	hub.workingTitle.textContent = t("Working");
 	hub.workingWrap.hidden = !hasWorking;
 	const workingKey = JSON.stringify([
 		locale,

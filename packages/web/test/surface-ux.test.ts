@@ -864,7 +864,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
-	it("unifies sidebar Agents into Working, Scheduled, and Ready with no Move button, no Other agents drawer, and no duplicate agents", async () => {
+	it("unifies sidebar Agents into working rows with no title, Scheduled, and Ready with no Move button, no Other agents drawer, and no duplicate agents", async () => {
 		stubFigureMotion();
 		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 		const f = fixture();
@@ -924,8 +924,10 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(hub?.querySelector(".rail-agents-legacy")).toBeNull();
 		expect(hub?.textContent).not.toContain("Other agents");
 
-		const subheads = [...hub!.querySelectorAll<HTMLElement>(".rail-agents-subhead")].map((el) => el.textContent);
-		expect(subheads).toEqual(["Working", "Scheduled", "Ready"]);
+		const groups = [...hub!.querySelectorAll<HTMLElement>(".rail-agents-sub")].map(
+			(el) => el.querySelector(".rail-agents-subhead")?.textContent ?? null,
+		);
+		expect(groups).toEqual([null, "Scheduled", "Ready"]);
 
 		const staffHrefs = [...hub!.querySelectorAll<HTMLAnchorElement>("a.rail-agent-hub-row")]
 			.map((a) => linkHref(a))
