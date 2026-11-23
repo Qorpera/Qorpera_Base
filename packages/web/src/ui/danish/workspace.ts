@@ -43,7 +43,7 @@ export const WORKSPACE: Record<string, string> = {
 	"Use at least 8 characters for your password.": "Brug mindst 8 tegn til din adgangskode.",
 	"There's already an account with this email.": "Der findes allerede en konto med denne e-mail.",
 	"Type your email first, then choose Forgot password.": "Skriv din e-mail først, og vælg så Glemt adgangskode.",
-	"Enter the 6-digit code from the email.": "Skriv den 6-cifrede kode fra e-mailen.",
+	"Enter the code from the email.": "Skriv koden fra e-mailen.",
 	"We sent a new code.": "Vi har sendt en ny kode.",
 	"Sign in to change your password.": "Log ind for at ændre din adgangskode.",
 	"That email and password don't match an account.": "Den e-mail og adgangskode passer ikke til en konto.",
@@ -425,15 +425,15 @@ export const WORKSPACE: Record<string, string> = {
 	"Create account": "Opret konto",
 	"Already have an account?": "Har du allerede en konto?",
 	"Check your email": "Tjek din e-mail",
-	"We sent a 6-digit code to {email}. Type it here to finish your account.":
-		"Vi har sendt en 6-cifret kode til {email}. Skriv den her for at gøre din konto færdig.",
-	"We sent a 6-digit code to {email}. Type it here to sign in.":
-		"Vi har sendt en 6-cifret kode til {email}. Skriv den her for at logge ind.",
+	"We sent a code to {email}. Type it here to finish your account.":
+		"Vi har sendt en kode til {email}. Skriv den her for at gøre din konto færdig.",
+	"We sent a code to {email}. Type it here to sign in.":
+		"Vi har sendt en kode til {email}. Skriv den her for at logge ind.",
 	"Didn't get it? Look in spam, or ": "Fik du den ikke? Kig i spam, eller ",
 	"Wrong email? Go back": "Forkert e-mail? Gå tilbage",
 	"Choose a new password": "Vælg en ny adgangskode",
-	"We sent a 6-digit code to {email}. Type it, then pick a new password.":
-		"Vi har sendt en 6-cifret kode til {email}. Skriv den, og vælg så en ny adgangskode.",
+	"We sent a code to {email}. Type it, then pick a new password.":
+		"Vi har sendt en kode til {email}. Skriv den, og vælg så en ny adgangskode.",
 	"Save and sign in": "Gem og log ind",
 	"Pick a new password for {email}.": "Vælg en ny adgangskode til {email}.",
 	"Back to sign in": "Tilbage til log ind",

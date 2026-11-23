@@ -91,7 +91,7 @@ describe("creating an account", () => {
 		});
 		expect(auth.store.get().step).toEqual({ name: "confirm", email: "mette@lerhave.dk" });
 		expect(root.querySelector("h1")!.textContent).toBe("Check your email");
-		expect(root.querySelectorAll(".auth-code-box")).toHaveLength(6);
+		expect(root.querySelectorAll(".auth-code-box")).toHaveLength(8);
 	});
 
 	it("refuses a short password before asking Auth", async () => {
@@ -124,11 +124,25 @@ describe("creating an account", () => {
 		expect(auth.store.get().step.name).toBe("signin");
 	});
 
-	it("proves the email when the last digit is typed", async () => {
+	it("proves the email when the last digit is typed and still accepts a 6-digit code on submit", async () => {
 		await signedOut();
 		auth.store.set({ step: { name: "confirm", email: "mette@lerhave.dk" } });
 		await settle();
-		type("signinCode", "48 20a71");
+		type("signinCode", "48 20a71 93");
+		await settle();
+		expect(calls.verifyOtp).toHaveBeenCalledWith({ email: "mette@lerhave.dk", token: "48207193", type: "email" });
+
+		calls.verifyOtp.mockClear();
+		auth.store.set({ step: { name: "code", email: "mette@lerhave.dk" } });
+		await settle();
+		type("signinCode", "12345");
+		submit();
+		await settle();
+		expect(calls.verifyOtp).not.toHaveBeenCalled();
+		expect(root.querySelector(".auth-alert")!.textContent).toContain("Enter the code from the email.");
+
+		type("signinCode", "482071");
+		submit();
 		await settle();
 		expect(calls.verifyOtp).toHaveBeenCalledWith({ email: "mette@lerhave.dk", token: "482071", type: "email" });
 	});
@@ -197,13 +211,13 @@ describe("a new password", () => {
 		await settle();
 		expect(calls.resetPasswordForEmail).toHaveBeenCalledWith("mette@lerhave.dk", { redirectTo: expect.any(String) });
 		expect(root.querySelector("h1")!.textContent).toBe("Choose a new password");
-		type("signinCode", "482071");
+		type("signinCode", "48207193");
 		await settle();
 		expect(calls.verifyOtp).not.toHaveBeenCalled();
 		type("signinNewPassword", "nytkodeord1");
 		submit();
 		await settle();
-		expect(calls.verifyOtp).toHaveBeenCalledWith({ email: "mette@lerhave.dk", token: "482071", type: "recovery" });
+		expect(calls.verifyOtp).toHaveBeenCalledWith({ email: "mette@lerhave.dk", token: "48207193", type: "recovery" });
 		expect(calls.updateUser).toHaveBeenCalledWith({ password: "nytkodeord1", data: { password_set: true } });
 		expect(auth.store.get().step.name).toBe("signin");
 	});
