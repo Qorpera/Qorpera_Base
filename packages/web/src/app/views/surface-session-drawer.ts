@@ -1464,8 +1464,11 @@ export class SurfaceSessionDrawer {
 	}
 
 	#click(event: MouseEvent): void {
-		const target = (event.target as Element).closest<HTMLElement>("[data-act], a[href]");
-		if (!target?.dataset.act) return;
+		const hit = event.target as Element;
+		const target = hit.closest<HTMLElement>("[data-act]");
+		if (!target) return;
+		const link = hit.closest("a[href]");
+		if (link && link !== target && target.contains(link)) return;
 		const store = this.#store;
 		const drawer = store.state.drawer;
 		const surfaceId = drawer?.surfaceId ?? this.#surfaceId;

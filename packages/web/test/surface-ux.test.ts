@@ -1110,7 +1110,7 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		chips[0]!.click();
 		expect(navigated).toEqual(["files"]);
 		expect(location.hash).toBe(`#/c/${COMPANY}/s/files`);
-		view.update();
+		expect(store.state.drawer).toBeUndefined();
 
 		expect(view.el.querySelector(".surface-drawer.is-open.is-overview")).not.toBeNull();
 		expect(view.el.querySelector(".surface-drawer-source")).toBeNull();
