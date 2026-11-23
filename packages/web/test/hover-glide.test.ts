@@ -75,6 +75,29 @@ describe("hover glide in menus", () => {
 		expect(menu.querySelector(".hover-glide-tint")).toBeNull();
 	});
 
+	it("lights the figure under the pointer in a grid of figures", () => {
+		const grid = h("div", { class: "surface-figure-choices" });
+		grid.getBoundingClientRect = () => new DOMRect(20, 110, 296, 246);
+		const cell = (figure: string, left: number, top: number) => {
+			const element = h("button", { class: "surface-figure-choice", "data-figure": figure });
+			element.getBoundingClientRect = () => new DOMRect(left, top, 46, 46);
+			return element;
+		};
+		const browser = cell("browser", 20, 110);
+		const parcel = cell("parcel", 120, 160);
+		grid.append(browser, parcel);
+		menu.append(grid);
+
+		point(browser, "pointerover");
+		const tint = grid.querySelector<HTMLElement>(".hover-glide-tint");
+		expect(tint?.classList.contains("is-on")).toBe(true);
+		expect(tint?.style.translate).toBe("0px 0px");
+		point(parcel, "pointerover");
+		play(400);
+		expect(tint?.style.translate).toBe("100px 50px");
+		expect(menu.querySelector(":scope > .hover-glide-tint")).toBeNull();
+	});
+
 	it("passes over disabled items as a gap", () => {
 		const first = item("Brooks", 106);
 		const off = item("Fokusur", 138, { disabled: true });
