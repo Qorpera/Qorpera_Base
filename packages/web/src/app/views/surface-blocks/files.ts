@@ -29,13 +29,16 @@ const NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
 	nbsp: " ",
 };
 
-export type StudioHtmlFrameMaker = (
-	html: string,
-	htmlPath: string,
-	title: string,
-	files: Readonly<Record<string, string>>,
-	className: string,
-) => HTMLElement;
+export interface StudioHtmlPages {
+	readonly frame: (
+		html: string,
+		htmlPath: string,
+		title: string,
+		files: Readonly<Record<string, string>>,
+		className: string,
+	) => HTMLElement;
+	readonly linksChanged: (html: string, htmlPath: string) => boolean;
+}
 
 export interface StudioDoc {
 	readonly path: string;
@@ -188,7 +191,7 @@ export interface SurfaceFilesPlace {
 export function prepareFiles(
 	block: SurfaceFilesBlock,
 	ctx: SurfaceBlockContext,
-	htmlFrame: StudioHtmlFrameMaker,
+	htmlPages: StudioHtmlPages,
 	place: SurfaceFilesPlace,
 ): SurfaceBlockPrepared {
 	const svgs: StudioSvgAsset[] = [];
@@ -196,13 +199,13 @@ export function prepareFiles(
 	const cards: JsonCard[] = [];
 	const pages: { readonly path: string; readonly title: string; readonly html: string; readonly changed: boolean }[] =
 		[];
-	for (const { path } of ctx.matching(block.match)) {
+	for (const { path } of ctx.matching(block.match, block.skip)) {
 		if (place.claimed.has(path)) continue;
-		const content = ctx.files[path] ?? "";
-		const baseContent = ctx.baseFiles[path];
-		const changed = baseContent !== content;
+		const text = ctx.text(path);
+		const content = text.value ?? "";
+		const changed = text.base !== content;
 		if (JSON_FILE_RE.test(path)) {
-			const card = OWN_BLOCK_JSON_RE.test(path) ? undefined : jsonCard(path, content, baseContent);
+			const card = OWN_BLOCK_JSON_RE.test(path) ? undefined : jsonCard(path, content, text.base);
 			if (card) cards.push(card);
 		} else if (SVG_FILE_RE.test(path)) {
 			const trimmed = content.trim();
@@ -211,7 +214,12 @@ export function prepareFiles(
 		} else if (MARKDOWN_FILE_RE.test(path) || PROSE_TEXT_FILE_RE.test(path)) {
 			docs.push({ path, title: readableName(path), content, isMarkdown: MARKDOWN_FILE_RE.test(path), changed });
 		} else if (HTML_FILE_RE.test(path)) {
-			pages.push({ path, title: htmlDocumentTitle(content, path), html: content, changed });
+			pages.push({
+				path,
+				title: htmlDocumentTitle(content, path),
+				html: content,
+				changed: changed || htmlPages.linksChanged(content, path),
+			});
 		}
 	}
 	docs.sort((a, b) => docPriority(a.path) - docPriority(b.path) || a.path.localeCompare(b.path));
@@ -246,7 +254,7 @@ export function prepareFiles(
 						h("code", { class: "studio-file-tag" }, page.path),
 						page.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
 					),
-					htmlFrame(page.html, page.path, page.title, ctx.files, "studio-html-frame"),
+					htmlPages.frame(page.html, page.path, page.title, ctx.files, "studio-html-frame"),
 				),
 		});
 	}

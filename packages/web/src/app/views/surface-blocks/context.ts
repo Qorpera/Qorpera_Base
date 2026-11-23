@@ -37,25 +37,35 @@ export interface SurfaceFolderFile {
 	readonly relative?: string;
 }
 
-export interface SurfaceBlockContext {
-	readonly surface: SurfaceSummary;
-	readonly folderRoot: string;
+export interface SurfaceFileLayer {
 	readonly files: Readonly<Record<string, string>>;
 	readonly baseFiles: Readonly<Record<string, string>>;
 	readonly binaries: Readonly<Record<string, StudioBinaryRef>>;
+	readonly baseBinaries: Readonly<Record<string, StudioBinaryRef>>;
+}
+
+export interface SurfaceBlockContext extends SurfaceFileLayer {
+	readonly surface: SurfaceSummary;
+	readonly folderRoot: string;
 	readonly briefSummary: string;
 	readonly signal: AbortSignal;
 	readonly words: (text: string) => string;
 	readonly read: (source: SurfaceSource | undefined) => SurfaceBlockRead;
 	readonly companyPath: (bindingPath: string) => string | undefined;
-	readonly matching: (globs: readonly string[] | undefined) => readonly SurfaceFolderFile[];
+	readonly text: (path: string) => { readonly value: string | undefined; readonly base: string | undefined };
+	readonly binary: (path: string) => {
+		readonly value: StudioBinaryRef | undefined;
+		readonly base: StudioBinaryRef | undefined;
+	};
+	readonly matching: (
+		globs: readonly string[] | undefined,
+		skip?: readonly string[] | undefined,
+	) => readonly SurfaceFolderFile[];
 }
 
-export interface SurfaceBlockContextInput {
+export interface SurfaceBlockContextInput extends SurfaceFileLayer {
 	readonly surface: SurfaceSummary;
-	readonly files: Readonly<Record<string, string>>;
-	readonly baseFiles: Readonly<Record<string, string>>;
-	readonly binaries: Readonly<Record<string, StudioBinaryRef>>;
+	readonly company?: SurfaceFileLayer | undefined;
 	readonly briefSummary: string;
 	readonly signal: AbortSignal;
 	readonly fromStarter: boolean;
@@ -70,6 +80,18 @@ const STARTER_WORDS: ReadonlySet<string> = new Set([
 	phrase("Parts"),
 	phrase("Production plan"),
 	phrase("Other details"),
+	phrase("Logo"),
+	phrase("Wordmark"),
+	phrase("Mission & Ambition"),
+	phrase("Mission"),
+	phrase("Ambition"),
+	phrase("Palette"),
+	phrase("Type"),
+	phrase("Strategy"),
+	phrase("Philosophy"),
+	phrase("Voice"),
+	phrase("Design system"),
+	phrase("Tokens"),
 ]);
 
 export function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -180,8 +202,20 @@ export function surfaceGlobFinds(glob: string, file: SurfaceFolderFile): boolean
 	return file.relative !== undefined && surfaceGlobMatches(glob, file.relative);
 }
 
+function holds(layer: SurfaceFileLayer, path: string): boolean {
+	return (
+		Object.hasOwn(layer.files, path) ||
+		Object.hasOwn(layer.baseFiles, path) ||
+		Object.hasOwn(layer.binaries, path) ||
+		Object.hasOwn(layer.baseBinaries, path)
+	);
+}
+
 export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBlockContext {
 	const folderRoot = cleanFolderRoot(input.surface.folderRoot);
+	const company = input.company;
+	const layerOf = (path: string): SurfaceFileLayer =>
+		company && !holds(input, path) && holds(company, path) ? company : input;
 	const companyPath = (bindingPath: string): string | undefined => {
 		try {
 			if (folderRoot) return surfaceCompanyPath(folderRoot, bindingPath);
@@ -191,13 +225,13 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 			return undefined;
 		}
 	};
-	const reader = (files: Readonly<Record<string, string>>) => {
+	const reader = (pick: (layer: SurfaceFileLayer) => Readonly<Record<string, string>>) => {
 		const parsed = new Map<string, unknown>();
 		return (bindingPath: string): unknown => {
 			const path = companyPath(bindingPath);
 			if (!path) return undefined;
 			if (!parsed.has(path)) {
-				const text = files[path];
+				const text = pick(layerOf(path))[path];
 				let value: unknown;
 				if (text !== undefined) {
 					try {
@@ -211,21 +245,23 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 			return parsed.get(path);
 		};
 	};
-	const readPreview = reader(input.files);
-	const readBase = reader(input.baseFiles);
-	const allFiles = Object.keys(input.files)
-		.sort()
-		.map((path): SurfaceFolderFile => {
-			const relative = folderRelative(folderRoot, path);
-			return relative === undefined ? { path } : { path, relative };
-		});
+	const readPreview = reader((layer) => layer.files);
+	const readBase = reader((layer) => layer.baseFiles);
+	const companyOnly = company ? Object.keys(company.files).filter((path) => !Object.hasOwn(input.files, path)) : [];
+	const allFiles = [...Object.keys(input.files), ...companyOnly].sort().map((path): SurfaceFolderFile => {
+		const relative = folderRelative(folderRoot, path);
+		return relative === undefined ? { path } : { path, relative };
+	});
 	const folderFiles = allFiles.filter((file) => file.relative !== undefined);
+	const finds = (globs: readonly string[], file: SurfaceFolderFile) =>
+		globs.some((glob) => surfaceGlobFinds(glob, file));
 	return {
 		surface: input.surface,
 		folderRoot,
 		files: input.files,
 		baseFiles: input.baseFiles,
 		binaries: input.binaries,
+		baseBinaries: input.baseBinaries,
 		briefSummary: input.briefSummary,
 		signal: input.signal,
 		words: input.fromStarter ? (text) => (STARTER_WORDS.has(text) ? t(text) : text) : (text) => text,
@@ -245,9 +281,17 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 			};
 		},
 		companyPath,
-		matching: (globs) =>
-			globs === undefined
-				? folderFiles
-				: allFiles.filter((file) => globs.some((glob) => surfaceGlobFinds(glob, file))),
+		text: (path) => {
+			const layer = layerOf(path);
+			return { value: layer.files[path], base: layer.baseFiles[path] };
+		},
+		binary: (path) => {
+			const layer = layerOf(path);
+			return { value: layer.binaries[path], base: layer.baseBinaries[path] };
+		},
+		matching: (globs, skip) =>
+			(globs === undefined ? folderFiles : allFiles.filter((file) => finds(globs, file))).filter(
+				(file) => !skip || !finds(skip, file),
+			),
 	};
 }

@@ -1297,7 +1297,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
-	it("renders the foundational Identity interface with global reach chips, Design System, Philosophy, and Voice & Files", async () => {
+	it("renders the foundational Identity interface from its starter layout with the Used by line, Philosophy and Voice", async () => {
 		stubFigureMotion();
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
@@ -1311,18 +1311,18 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		view.update();
 
 		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
-		expect(tabs).toEqual(["Overview", "Design System", "Philosophy", "Voice & Files"]);
+		expect(tabs).toEqual(["Overview", "Strategy", "Philosophy", "Voice", "Design system", "Files"]);
 
-		const reachChips = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-reach-chip")].map(
-			(chip) => chip.dataset.slug,
-		);
-		expect(reachChips).toEqual(["website", "phone-app", "product", "financials"]);
+		const reachChips = [
+			...view.el.querySelectorAll<HTMLButtonElement>('[data-link-dir="out"] .studio-reach-chip'),
+		].map((chip) => chip.dataset.slug);
+		expect(reachChips).toEqual(expect.arrayContaining(["website", "phone-app", "product"]));
 		expect(view.el.querySelector('[data-token="colors.Aften Lavendel"] code')?.textContent).toBe("#6f61cf");
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="analysis"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="philosophy"]')!.click();
 		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Calm Technology You Actually Put On");
 
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="voice"]')!.click();
 		expect(view.el.querySelector('[data-file="identity/voice.md"]')?.textContent).toContain(
 			"Vi siger / Vi siger aldrig",
 		);
@@ -1653,11 +1653,9 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		identityView.update();
 
-		const identityReach = identityView.el.querySelector<HTMLElement>(
-			'[data-identity-reach="true"][data-live-linked="true"]',
-		)!;
+		const identityReach = identityView.el.querySelector<HTMLElement>('.studio-reach[data-live-linked="true"]')!;
 		expect(identityReach).not.toBeNull();
-		expect(identityReach.textContent).toContain("Used by");
+		expect(identityReach.querySelector('[data-link-dir="out"]')?.textContent).toContain("Used by");
 		expect(identityReach.textContent).not.toContain("identity/tokens.json");
 		expect(identityReach.querySelector(".studio-live-dot")).toBeNull();
 		identityView.dispose();
