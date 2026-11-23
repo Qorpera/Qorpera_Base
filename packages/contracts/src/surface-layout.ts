@@ -565,6 +565,7 @@ function namePartMatches(pattern: readonly string[], name: readonly string[]): b
 }
 
 export function surfaceGlobMatches(glob: string, path: string): boolean {
+	if (glob.startsWith("/") !== path.startsWith("/")) return false;
 	const globParts = glob.split("/").map((part) => (part === "**" ? null : Array.from(part)));
 	const pathParts = path.split("/").map((part) => Array.from(part));
 	let next: boolean[] = pathParts.map(() => false);

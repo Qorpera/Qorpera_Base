@@ -661,6 +661,16 @@ describe("bindings", () => {
 		expect(surfaceGlobMatches("/identity/*.md", "/identity/voice.md")).toBe(true);
 		expect(surfaceGlobMatches("/identity/*.md", "identity/voice.md")).toBe(false);
 		expect(surfaceGlobMatches("*.md", "/voice.md")).toBe(false);
+		expect(surfaceGlobMatches("**/*.md", "/identity/voice.md")).toBe(false);
+		expect(surfaceGlobMatches("*/x", "/x")).toBe(false);
+		expect(surfaceGlobMatches("**", "/identity/voice.md")).toBe(false);
+		expect(surfaceGlobMatches("*/voice.md", "/identity/voice.md")).toBe(false);
+		expect(surfaceGlobMatches("/**", "identity/voice.md")).toBe(false);
+		expect(surfaceGlobMatches("/*/voice.md", "identity/voice.md")).toBe(false);
+		expect(surfaceGlobMatches("/**", "/identity/voice.md")).toBe(true);
+		expect(surfaceGlobMatches("/**/*.md", "/identity/voice.md")).toBe(true);
+		expect(surfaceGlobMatches("/*/voice.md", "/identity/voice.md")).toBe(true);
+		expect(surfaceGlobMatches("**/*.md", "identity/voice.md")).toBe(true);
 		expect(surfaceGlobMatches("notes/**", "notes")).toBe(true);
 		expect(surfaceGlobMatches("**", "a/b/c")).toBe(true);
 	});
