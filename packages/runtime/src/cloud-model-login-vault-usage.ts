@@ -92,6 +92,7 @@ export interface ModelLoginUsageAuthority {
 
 const CLAUDE_READ_SCHEMA = "qorpera.claude-login-read-description/v1";
 const CLAUDE_READ_MS = 23_000;
+const CLAUDE_RENEW_WAIT_MS = 5_000;
 const CLAUDE_RESET_MS = 80_000;
 const CLAUDE_SAVE_ATTEMPTS = 6;
 const CLAUDE_SAVE_RETRY_MS = 2_000;
@@ -319,6 +320,7 @@ export class CloudModelLoginUsage {
 	readonly #keys: CloudSecretKeyring;
 	readonly #fetch: typeof fetch;
 	readonly #claude: ClaudeLoginReads | undefined;
+	readonly #renewClaude: ((claudeLoginId: string) => Promise<"reopen" | "keep" | "pending">) | undefined;
 	readonly #resetting = new Map<string, Promise<void>>();
 	readonly #claimSecret = randomBytes(32);
 	readonly #started = new Set<string>();
@@ -328,11 +330,13 @@ export class CloudModelLoginUsage {
 		keyring: CloudSecretKeyring;
 		fetch?: typeof fetch;
 		claude?: ClaudeLoginReads;
+		renewClaude?: (claudeLoginId: string) => Promise<"reopen" | "keep" | "pending">;
 	}) {
 		this.#authority = options.authority;
 		this.#keys = options.keyring;
 		this.#fetch = options.fetch ?? fetch;
 		this.#claude = options.claude;
+		this.#renewClaude = options.renewClaude;
 	}
 
 	async #claudeDescription(
@@ -346,6 +350,32 @@ export class CloudModelLoginUsage {
 			if ((error as { code?: unknown } | null)?.code === "42501") return { state: "none" };
 			throw error;
 		}
+	}
+
+	async #renewedClaude(
+		claude: Extract<ClaudeReadDescription, { state: "open" }>,
+		request: { requestId: string; capabilitySha256: string },
+		signal: AbortSignal,
+	): Promise<ClaudeReadDescription> {
+		const renew = this.#renewClaude;
+		if (!renew) return claude;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let onAbort: (() => void) | undefined;
+		const waited = new Promise<"pending">((resolveWait) => {
+			timer = setTimeout(() => resolveWait("pending"), CLAUDE_RENEW_WAIT_MS);
+			onAbort = () => resolveWait("pending");
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
+		let checked: "reopen" | "keep" | "pending";
+		try {
+			checked = await Promise.race([renew(claude.claudeLoginId).catch(() => "keep" as const), waited]);
+		} finally {
+			clearTimeout(timer);
+			if (onAbort) signal.removeEventListener("abort", onAbort);
+		}
+		if (checked !== "reopen" || signal.aborted) return claude;
+		claude.envelope.fill(0);
+		return await this.#claudeDescription(request, signal);
 	}
 
 	#claimToken(request: { requestId: string; capabilitySha256: string }): string {
@@ -556,6 +586,8 @@ export class CloudModelLoginUsage {
 			if (this.#resetting.has(refresh.requestId)) return answer("preparing");
 			const claudeRequest = { requestId: refresh.requestId, capabilitySha256 };
 			claude = await this.#claudeDescription(claudeRequest, signal);
+			if (claude.state === "open" && !this.#started.has(refresh.requestId))
+				claude = await this.#renewedClaude(claude, claudeRequest, signal);
 			if (claude.state === "open" && claude.reset !== null)
 				return answer(await this.#claudeReset(claude, claudeRequest, signal));
 			// Every login is read at once, each on its own deadline inside the route's: one that
