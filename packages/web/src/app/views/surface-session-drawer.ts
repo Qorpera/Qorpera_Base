@@ -178,20 +178,11 @@ function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
 	return null;
 }
 
-function agentStatusSummary(session: SurfaceSession, surface: SurfaceSummary, look: SurfaceLook): string {
+function agentStatusLine(session: SurfaceSession): string | null {
 	if (session.state === "needs_input") return t("Needs you");
 	if (isRunningSession(session)) return t("Working");
 	if (hasConflictedChange(session)) return t("Conflict");
-	const live = session.changes.filter((change) => change.status !== "discarded");
-	const open = live.filter(isOpenChange).length;
-	const actions = live.length > 0 && live.every((change) => isActionChange(change, surface));
-	if (actions) {
-		if (open > 1) return t("{count} actions ready", { count: open });
-		return look.kind === "inbox" ? t("Draft ready") : t("Action ready");
-	}
-	if (open === 1) return t("1 change ready");
-	if (open > 1) return t("{count} changes ready", { count: open });
-	return t("Ready");
+	return null;
 }
 
 function rankSessions(sessions: readonly SurfaceSession[]): SurfaceSession[] {
@@ -693,7 +684,7 @@ export class SurfaceSessionDrawer {
 					"span",
 					{ class: "surface-overview-agent-copy" },
 					h("strong", null, exploration.title),
-					h("span", null, running ? t("Working") : t("{count} options", { count: variants.length })),
+					running ? h("span", null, t("Working")) : null,
 				),
 				h("span", { class: "surface-overview-agent-go", "aria-hidden": "true" }, icon("chevron")),
 			),
@@ -761,6 +752,7 @@ export class SurfaceSessionDrawer {
 		const attention = session.state === "needs_input" || hasConflictedChange(session);
 		const ownedNotes = reportsOwnedBy(state, surface.id, { kind: "session", id: session.id });
 		const noteNodes = this.#noteButtons(ownedNotes);
+		const statusLine = agentStatusLine(session);
 
 		const head = h(
 			"button",
@@ -776,7 +768,7 @@ export class SurfaceSessionDrawer {
 				"span",
 				{ class: "surface-overview-agent-copy" },
 				h("strong", null, session.title),
-				h("span", null, agentStatusSummary(session, surface, look)),
+				statusLine ? h("span", null, statusLine) : null,
 			),
 			h("span", { class: "surface-overview-agent-go", "aria-hidden": "true" }, icon("chevron")),
 		);

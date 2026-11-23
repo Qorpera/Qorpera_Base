@@ -175,7 +175,6 @@ export const SURFACES: Record<string, string> = {
 	"Ask an agent to handle a task here…": "Bed en agent om at klare en opgave her…",
 	"Ask an agent": "Spørg en agent",
 	"{count} actions ready": "{count} handlinger klar",
-	"Draft ready": "Udkast klar",
 	"Action ready": "Handling klar",
 	"All done": "Alt er klaret",
 	"1 change ready": "1 ændring klar",
