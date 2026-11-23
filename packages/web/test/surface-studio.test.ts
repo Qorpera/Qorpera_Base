@@ -102,7 +102,7 @@ describe("SurfaceStudioView", () => {
 
 		store.setMode("live");
 		view.update();
-		expect(view.el.querySelector(".studio-badge")?.textContent).toBe("Base");
+		expect(view.el.querySelector(".studio-badge")).toBeNull();
 		expect(view.el.querySelector('[data-file="brand/voice.md"]')?.textContent).toContain("Calm and direct.");
 		expect(view.el.querySelector(".studio-sync-btn")).toBeNull();
 
@@ -500,7 +500,7 @@ describe("SurfaceStudioView", () => {
 		view.update();
 		expect(view.el.classList.contains("is-updating")).toBe(false);
 		expect(view.el.classList.contains("is-settled")).toBe(true);
-		expect(view.el.querySelector(".studio-badge")?.textContent).toBe("Base");
+		expect(view.el.querySelector(".studio-badge")).toBeNull();
 		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#2b6cb0");
 		expect(view.el.querySelector('[data-file="brand/old-notes.md"]')).toBeNull();
 
