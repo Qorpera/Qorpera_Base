@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `SurfaceAutomationSummary` carries `ownable`, `ownerUserId` (null: nobody) and `offer` (`SurfaceAutomationOffer`, open or turned down in the last day), as migration `20260930868000` answers them.
 - `SurfaceImageRef`, `SurfaceMessageImages`, `SurfaceSessionImages` and `parseSurfaceSessionImages`: the images of an interface session's messages, as `qorpera_surface_session_images` answers them (migration `20260930865000`).
 - `SURFACE_FIGURES`: the figures a surface can be drawn as; the web draws them and the agents' `propose_surface` picks from them.
 - `CLOUD_MACHINE_HOME.sftpServer` (`/usr/lib/openssh/sftp-server`): the program of a home's file channel (Claude Code on the home, slice C1), from the machine image's `openssh-sftp-server`.

@@ -1385,6 +1385,28 @@ Each call answers 42501 for a caller who is not a member of the company.
   agents, why})` asks one member (an id, email, full name or a first name only they have) to take 1 to 20 agents (ids or
   names). The member answers on the Members page as above.
 
+### Who owns an automation (20260930868000_surface_automation_owner)
+
+Multiplayer in place (Jonas, 23 Nov 2026). Each surface automation is owned by one member who is not a viewer, or by
+nobody: a member's new automation is theirs; one an agent or the platform makes is the member's who started the
+company. Its owner's login pays for each run it starts; a run already started keeps its login. An automation nobody
+owns, or whose owner has no login that pays, does not run: its next time comes, and its `status` is
+`needs_attention`. A member who leaves or becomes a viewer leaves their automations with nobody, and every open offer
+that names them is void.
+
+- `qorpera_list_automations(company)` and the summaries `qorpera_create_surface_automation`,
+  `qorpera_update_surface_automation` and `qorpera_toggle_automation` answer carry `ownable` (false for a legacy
+  routine, which keeps its own payer), `ownerUserId` (null: nobody) and `offer`: the open offer, or one turned down in
+  the last day, `{id, fromUserId, toUserId, offeredByUserId, status: "open" | "no", answeredAt}`, else null.
+- `qorpera_offer_surface_automation(automation, to_user)`: `{moved, automation}`. Its owner, or an owner or admin,
+  offers it to a member who is not a viewer (an open offer, `moved` false); offering it to its owner moves nothing
+  (`moved` true). Anyone who is not a viewer takes one nobody owns at once (to = the caller, `moved` true). A viewer
+  cannot offer (42501) or receive (22023); anyone else is 42501; one open offer per automation (55P03).
+- `qorpera_answer_surface_automation_offer(offer, yes)`: `{status, moved, automation}`. The member offered says yes
+  (`yes`, they own it) or no (`no`); its owner or the member who offered may take it back (`yes` false, `withdrawn`).
+  A yes after its owner changed, or to a member who is now a viewer, is `void`. An offer already answered answers its
+  status. Anyone else is 42501.
+
 ### Member chats (20260930715000_member_messages)
 
 Members of a company message each other (Jonas, 10 Nov 2026): one chat per pair of members per company, shown as
