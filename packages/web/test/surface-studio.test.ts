@@ -947,10 +947,7 @@ describe("SurfaceStudioView", () => {
 				block.querySelector("h2")?.textContent,
 				block.querySelector(".studio-kv.is-empty") !== null,
 			]),
-		).toEqual([
-			["Specs", true],
-			["Other details", true],
-		]);
+		).toEqual([["Specs", true]]);
 		expect(view.el.querySelector(".studio-file-tag")).toBeNull();
 		expect(view.el.querySelector('[data-block="table"] .studio-section-head h2')?.textContent).toBe("Parts");
 		expect(view.el.querySelector('[data-block="table"] .studio-table.is-empty')).not.toBeNull();
