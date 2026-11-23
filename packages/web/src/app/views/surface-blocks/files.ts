@@ -4,17 +4,20 @@ import { markdown } from "../../../ui/markdown.ts";
 import { t } from "../../../ui/preferences.ts";
 import {
 	homeEmpty,
+	parseJsonObject,
 	readableName,
 	type StudioSectionTask,
 	type SurfaceBlockContext,
 	type SurfaceBlockPrepared,
 	sectionHead,
 } from "./context.ts";
+import { collectSpecs, renderSpecEntries, renderSpecTables, type SpecEntry, type SpecTable } from "./specs.ts";
 
 export const HTML_FILE_RE = /\.html?$/i;
 export const SVG_FILE_RE = /\.svg$/i;
 export const MARKDOWN_FILE_RE = /\.(?:md|markdown)$/i;
 export const PROSE_TEXT_FILE_RE = /\.txt$/i;
+const JSON_FILE_RE = /\.json$/i;
 const MAX_INITIAL_TEXT_CHARS = 32_000;
 const NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
 	amp: "&",
@@ -149,20 +152,58 @@ export function renderDoc(doc: StudioDoc, signal: AbortSignal): HTMLElement {
 	);
 }
 
+interface JsonCard {
+	readonly path: string;
+	readonly entries: readonly SpecEntry[];
+	readonly tables: readonly SpecTable[];
+	readonly changed: boolean;
+}
+
+function jsonCard(path: string, content: string, baseContent: string | undefined): JsonCard | undefined {
+	const parsed = parseJsonObject(content);
+	if (!parsed) return undefined;
+	const entries: SpecEntry[] = [];
+	const tables: SpecTable[] = [];
+	collectSpecs(parsed, parseJsonObject(baseContent), [], entries, tables);
+	if (entries.length === 0 && tables.length === 0) return undefined;
+	return { path, entries, tables, changed: baseContent !== content };
+}
+
+function renderJsonCard(card: JsonCard, signal: AbortSignal): HTMLElement {
+	return h(
+		"section",
+		{ class: `studio-section${card.changed ? " is-changed" : ""}`, "data-file": card.path },
+		sectionHead(readableName(card.path), card.changed, h("code", { class: "studio-file-tag" }, card.path)),
+		card.entries.length ? renderSpecEntries(card.entries) : null,
+		...renderSpecTables(card.tables, signal),
+	);
+}
+
+export interface SurfaceFilesPlace {
+	readonly claimed: ReadonlySet<string>;
+	readonly alone: boolean;
+}
+
 export function prepareFiles(
 	block: SurfaceFilesBlock,
 	ctx: SurfaceBlockContext,
 	htmlFrame: StudioHtmlFrameMaker,
+	place: SurfaceFilesPlace,
 ): SurfaceBlockPrepared {
 	const svgs: StudioSvgAsset[] = [];
 	const docs: StudioDoc[] = [];
+	const cards: JsonCard[] = [];
 	const pages: { readonly path: string; readonly title: string; readonly html: string; readonly changed: boolean }[] =
 		[];
 	for (const { path } of ctx.matching(block.match)) {
+		if (place.claimed.has(path)) continue;
 		const content = ctx.files[path] ?? "";
 		const baseContent = ctx.baseFiles[path];
 		const changed = baseContent !== content;
-		if (SVG_FILE_RE.test(path)) {
+		if (JSON_FILE_RE.test(path)) {
+			const card = jsonCard(path, content, baseContent);
+			if (card) cards.push(card);
+		} else if (SVG_FILE_RE.test(path)) {
 			const trimmed = content.trim();
 			if (!/<svg[\s>]/i.test(trimmed)) continue;
 			svgs.push({ path, title: readableName(path), svg: trimmed, changed });
@@ -173,7 +214,8 @@ export function prepareFiles(
 		}
 	}
 	docs.sort((a, b) => docPriority(a.path) - docPriority(b.path) || a.path.localeCompare(b.path));
-	const filled = svgs.length + docs.length + pages.length > 0;
+	const filled = svgs.length + docs.length + cards.length + pages.length > 0;
+	if (!filled && !block.heading && !place.alone) return { filled, pieces: [] };
 	const pieces: StudioSectionTask[] = [];
 	if (block.heading) {
 		const heading = ctx.words(block.heading);
@@ -185,6 +227,7 @@ export function prepareFiles(
 	}
 	if (svgs.length) pieces.push({ build: () => renderSvgAssets(svgs, t("Vector assets")) });
 	for (const doc of docs) pieces.push({ build: () => renderDoc(doc, ctx.signal) });
+	for (const card of cards) pieces.push({ build: () => renderJsonCard(card, ctx.signal) });
 	for (const page of pages) {
 		pieces.push({
 			heavy: true,

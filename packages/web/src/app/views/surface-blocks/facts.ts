@@ -1,4 +1,4 @@
-import type { SurfaceFactsBlock } from "@qorpera/contracts";
+import { SURFACE_FACT_FIGURE_CHARS, type SurfaceFactsBlock } from "@qorpera/contracts";
 import { h } from "../../../ui/dom.ts";
 import { t } from "../../../ui/preferences.ts";
 import {
@@ -36,6 +36,10 @@ function factsFrom(value: unknown, base: unknown, skip: readonly string[]): Fact
 	});
 }
 
+function fitsAsFigure(fact: Fact): boolean {
+	return fact.value !== undefined && fact.value.length <= SURFACE_FACT_FIGURE_CHARS;
+}
+
 export function prepareFacts(block: SurfaceFactsBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
 	let facts: readonly Fact[];
 	if ("items" in block) {
@@ -50,7 +54,7 @@ export function prepareFacts(block: SurfaceFactsBlock, ctx: SurfaceBlockContext)
 		});
 	} else {
 		const read = ctx.read(block.from);
-		facts = factsFrom(read.value, read.base, block.skip).slice(0, block.take);
+		facts = factsFrom(read.value, read.base, block.skip).filter(fitsAsFigure).slice(0, block.take);
 		if (facts.length === 0) {
 			const labels = [t("Size"), t("Weight"), t("Made of"), t("Price")];
 			facts = Array.from({ length: block.take }, (_, index) => ({ label: labels[index] ?? "", changed: false }));

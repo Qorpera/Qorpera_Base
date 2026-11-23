@@ -265,7 +265,8 @@ describe("Product studio on the layout renderer", () => {
 			"Dimensions · Shade · Width",
 		]);
 		expect(lists[1]!.textContent).not.toContain("A lamp that dims itself.");
-		expect(lists[1]!.querySelector(".studio-table")).toBeNull();
+		expect(lists[1]!.querySelector(".studio-subhead")?.textContent).toBe("Certifications");
+		expect(lists[1]!.querySelector(".studio-table td")?.textContent).toBe("CE");
 
 		tab("files");
 		const page = view.el.querySelector('.studio-html-card[data-file="surfaces/lamp/pages/sheet.html"]');
@@ -284,6 +285,86 @@ describe("Product studio on the layout renderer", () => {
 		expect(lists[0]!.querySelector(".studio-kv.is-empty")).not.toBeNull();
 		view.dispose();
 		store.dispose();
+	});
+
+	it("shows only figures short enough to read as one, so fewer when values are long", async () => {
+		const { view, store } = await open({
+			[`${ROOT}/specs.json`]: JSON.stringify({
+				overview: {
+					product: "Thetaband Gen 1",
+					status: "Prototype v2 (BrainBit evaluering)",
+					electronics: "BrainBit 4-ch dry EEG",
+					weight: "48 g",
+					battery: "8 timer meditation",
+					retailPrice: "1.995 kr. inkl. moms",
+				},
+			}),
+		});
+		expect([...view.el.querySelectorAll(".studio-fact")].map((fact) => fact.textContent)).toEqual([
+			"ProductThetaband Gen 1",
+			"Weight48 g",
+			"Battery8 timer meditation",
+		]);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("finds the dots under colors and the vendors under suppliers", async () => {
+		const { view, tab, store } = await open({
+			[`${ROOT}/specs.json`]: JSON.stringify({ colors: [{ name: "Moss", hex: "#5b6b3a" }] }),
+			[`${ROOT}/vendors.json`]: JSON.stringify({ suppliers: [{ vendor: "Nordic Knit", component: "Shade" }] }),
+		});
+		expect(
+			[...view.el.querySelectorAll('[data-act="studio-colorway"]')].map((dot) => dot.getAttribute("aria-label")),
+		).toEqual(["Moss"]);
+		tab("vendors");
+		expect(view.el.querySelector(".studio-vendor-card .studio-vendor-top")?.textContent).toBe("Nordic Knit");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("shows a .json file no block reads as a card on Specs, never one another block draws", async () => {
+		const { view, tab, store } = await open({
+			...productFiles(),
+			[`${ROOT}/object.json`]: JSON.stringify({ model: "lamp.glb" }),
+			[`${ROOT}/pricing.json`]: JSON.stringify({ retail: "900 kr.", tiers: [{ name: "Early", price: "750 kr." }] }),
+			[`${ROOT}/sales.report.json`]: REPORT,
+		});
+		tab("specs");
+		const cards = [...view.el.querySelectorAll<HTMLElement>(".studio-grid > section[data-file]")];
+		expect(cards.map((card) => card.dataset.file)).toEqual([`${ROOT}/pricing.json`]);
+		expect(cards[0]!.querySelector("h2")?.textContent).toBe("Pricing");
+		expect(cards[0]!.querySelector(".studio-kv dt")?.textContent).toBe("Retail");
+		expect(cards[0]!.querySelector(".studio-table td")?.textContent).toBe("Early");
+		tab("files");
+		expect(view.el.querySelector('[data-file$=".json"]')).toBeNull();
+		view.dispose();
+		store.dispose();
+
+		const own = await open({
+			[`${ROOT}/notes.json`]: JSON.stringify({ owner: "Ida" }),
+			[`${ROOT}/specs.json`]: JSON.stringify({ overview: { weight: "48 g" } }),
+			[`${ROOT}/layout.json`]: JSON.stringify({
+				schema: "qorpera.surface-layout/v1",
+				tabs: [
+					{
+						id: "all",
+						title: "All",
+						blocks: [
+							{ type: "spec_list", from: "specs.json#/overview" },
+							{ type: "files", match: ["**/*.json"] },
+						],
+					},
+				],
+			}),
+		});
+		expect(
+			[...own.view.el.querySelectorAll<HTMLElement>(".studio-grid > section[data-file]")].map(
+				(card) => card.dataset.file,
+			),
+		).toEqual([`${ROOT}/notes.json`]);
+		own.view.dispose();
+		own.store.dispose();
 	});
 
 	it("draws the layout across time slices like the page did", async () => {
