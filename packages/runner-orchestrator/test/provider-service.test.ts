@@ -766,6 +766,7 @@ describe("runner provider HTTP service", () => {
 			surfaceKind: "website",
 			siteSlug: "thetaband",
 			identityFolderRoot: "identity",
+			productFolderRoots: ["surfaces/thetabands"],
 			briefSummary: "Public site",
 			retryCount: 1,
 			sponsor: {

@@ -335,7 +335,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		kind: "database",
 		title: phrase("Database"),
 		archetype: "studio",
-		folderRoot: "database",
 	},
 	{
 		id: "dashboard",
@@ -350,7 +349,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		kind: "product",
 		title: phrase("Product Studio"),
 		archetype: "studio",
-		folderRoot: "product",
 	},
 	{
 		id: "report",
@@ -358,7 +356,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		kind: "report",
 		title: phrase("Report & Analysis"),
 		archetype: "studio",
-		folderRoot: "reports",
 	},
 ];
 
@@ -569,13 +566,15 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 		submit.disabled = true;
 		const custom = selected.kind === "custom";
 		const archetype = custom ? customArchetype : selected.archetype;
+		const matchesPresetTitle = title.toLowerCase() === t(selected.title).trim().toLowerCase();
+		const usePresetSlug = selected.kind === "identity" || (!customName && matchesPresetTitle);
 		const created = await store.createSurface({
 			title,
-			...(selected.slug ? { slug: selected.slug } : {}),
+			...(usePresetSlug && selected.slug ? { slug: selected.slug } : {}),
 			archetype,
 			icon: surfaceFigureIcon(figure),
 			kind: selected.kind,
-			folderRoot: custom && archetype === "studio" ? undefined : selected.folderRoot,
+			folderRoot: selected.kind === "identity" ? selected.folderRoot : undefined,
 			description: custom ? descriptionInput.value.trim() || undefined : undefined,
 			initialPrompt: promptInput.value.trim() || undefined,
 		});

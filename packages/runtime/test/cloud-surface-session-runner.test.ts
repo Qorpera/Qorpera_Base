@@ -1136,4 +1136,98 @@ describe("cloud surface session runner", () => {
 		expect(opaque423.state).toBe("failed");
 		expect(opaqueStates).toEqual(["ready", "ready"]);
 	});
+
+	it("threads surfaceKind into folder instructions with Product and Report Studio schemas", async () => {
+		const seen: Record<string, string> = {};
+		const hook = createSurfaceSessionProviderHook({
+			resolveRunnerPorts: (job) => ({
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+				renewSessionLease: vi.fn().mockResolvedValue({ renewed: true }),
+				executeTurn: async (req) => {
+					seen[job.surfaceSlug ?? "unknown"] = req.instructions;
+					return { state: "ready", replyText: "Staged." };
+				},
+			}),
+		});
+
+		await hook.runDeliveredSession(
+			{
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				profileId: randomUUID(),
+				surfaceSlug: "thetabands",
+				surfaceTitle: "Thetabands",
+				surfaceArchetype: "studio",
+				surfaceSourceKind: "folder",
+				surfaceKind: "product",
+				folderRoot: "surfaces/thetabands",
+				prompt: "Design headband variants and audit suppliers.",
+				leaseToken: randomUUID(),
+			},
+			"machine-1",
+		);
+
+		await hook.runDeliveredSession(
+			{
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				profileId: randomUUID(),
+				surfaceSlug: "market-notes",
+				surfaceTitle: "Market Notes",
+				surfaceArchetype: "studio",
+				surfaceSourceKind: "folder",
+				surfaceKind: "report",
+				folderRoot: "surfaces/market-notes",
+				prompt: "Compare EEG competitors.",
+				leaseToken: randomUUID(),
+			},
+			"machine-1",
+		);
+
+		expect(seen.thetabands).toContain("specs.json");
+		expect(seen.thetabands).toContain('"kind": "headband" | "device"');
+		expect(seen.thetabands).toContain("vendors.json");
+		expect(seen.thetabands).toContain("<slug>.report.json");
+		expect(seen.thetabands).toContain("surfaces/thetabands/");
+		expect(seen["market-notes"]).toContain("<slug>.report.json");
+		expect(seen["market-notes"]).toContain("bar_chart");
+		expect(seen["market-notes"]).not.toContain("vendors.json");
+
+		await hook.runDeliveredSession(
+			{
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				profileId: randomUUID(),
+				surfaceSlug: "inventory",
+				surfaceTitle: "Inventory",
+				surfaceArchetype: "studio",
+				surfaceSourceKind: "folder",
+				surfaceKind: "database",
+				folderRoot: "surfaces/inventory",
+				prompt: "Add SKU table.",
+				leaseToken: randomUUID(),
+			},
+			"machine-1",
+		);
+		expect(seen.inventory).not.toContain("Product Studio file layout");
+		expect(seen.inventory).not.toContain("vendors.json");
+
+		const isolatedLoaded = await loadSurfaceSharedAssets(
+			{
+				async readText(path) {
+					const files: Record<string, string> = {
+						"product/specs.json": '{"legacy":true}',
+						"surfaces/thetabands/specs.json": '{"weightGrams":44}',
+						"surfaces/thetabands/catalog.json": '{"skus":["TB-1"]}',
+					};
+					return files[path] ?? null;
+				},
+			},
+			new AbortController().signal,
+			["surfaces/thetabands"],
+		);
+		expect(isolatedLoaded?.productSpecsJson).toBe('{"weightGrams":44}');
+		expect(isolatedLoaded?.productCatalogJson).toBe('{"skus":["TB-1"]}');
+	});
 });

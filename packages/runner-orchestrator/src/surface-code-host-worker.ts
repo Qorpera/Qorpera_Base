@@ -5,8 +5,11 @@ import {
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
 	isUuid,
+	PRODUCT_CATALOG_PATH,
+	PRODUCT_SPECS_PATH,
 	SURFACE_IDENTITY_CSS_MOUNT_PATH,
 	SURFACE_SHARED_DIR,
+	sharedProductAssetCandidates,
 } from "@qorpera/contracts";
 import { withAbortScope } from "./abort-scope.ts";
 import {
@@ -52,6 +55,7 @@ export const SURFACE_CODE_HOST_RPCS = [
 	"qorpera_surface_site_version_list",
 	"qorpera_surface_site_version_put",
 	"qorpera_surface_site_version_finish",
+	"qorpera_surface_shared_product_folder_roots",
 ] as const;
 
 export type SurfaceCodeHostRpc = (typeof SURFACE_CODE_HOST_RPCS)[number];
@@ -244,13 +248,17 @@ function mergeTreeWithSharedAssets(
 	return { files, manifestSha256, totalBytes, hasOverlay };
 }
 
-// WHY: Reads optional company identity token files in a single fast shell exec (avoiding 8 serial LXD execs when code_host views only mount code/).
+// WHY: Reads optional company identity token and primary product files in a single fast shell exec (avoiding serial LXD execs when code_host views only mount code/).
 async function readSharedIdentityAssets(
 	codeHostJob: CodeHostJob,
 	signal: AbortSignal,
+	productFolderRoots?: readonly string[],
 ): Promise<Readonly<Record<string, string>>> {
 	const cssFull = `${codeHostJob.layout.companyRoot}/${IDENTITY_TOKENS_CSS_PATH}`;
 	const jsonFull = `${codeHostJob.layout.companyRoot}/${IDENTITY_TOKENS_JSON_PATH}`;
+	const { specsPaths, catalogPaths } = sharedProductAssetCandidates(productFolderRoots);
+	const specsFull = specsPaths[0] ? `${codeHostJob.layout.companyRoot}/${specsPaths[0]}` : "";
+	const catalogFull = catalogPaths[0] ? `${codeHostJob.layout.companyRoot}/${catalogPaths[0]}` : "";
 	let result: { status: number | null; stdout: Buffer };
 	try {
 		result = await codeHostJob.shell.run(
@@ -258,15 +266,17 @@ async function readSharedIdentityAssets(
 				argv: [
 					"/bin/sh",
 					"-c",
-					'if [ -f "$1" ] && [ -s "$1" ]; then printf "CSS\\n"; head -c "$3" -- "$1"; elif [ -f "$2" ] && [ -s "$2" ]; then printf "JSON\\n"; head -c "$3" -- "$2"; fi',
+					'emit() { if [ -n "$2" ] && [ -f "$2" ] && [ -s "$2" ]; then b=$(head -c "$3" -- "$2" | wc -c | tr -d " "); printf "%s %s\\n" "$1" "$b"; head -c "$b" -- "$2"; fi; }; if [ -f "$1" ] && [ -s "$1" ]; then emit CSS "$1" "$5"; elif [ -f "$2" ] && [ -s "$2" ]; then emit JSON "$2" "$5"; fi; emit SPECS "$3" "$5"; emit CATALOG "$4" "$5"',
 					"_",
 					cssFull,
 					jsonFull,
+					specsFull,
+					catalogFull,
 					String(MAX_SHARED_ASSET_READ_BYTES),
 				],
 				cwd: "/",
 				env: { PATH: "/usr/bin:/bin" },
-				maximumOutputBytes: MAX_SHARED_ASSET_READ_BYTES + 1024,
+				maximumOutputBytes: MAX_SHARED_ASSET_READ_BYTES * 3 + 2048,
 			},
 			signal,
 		);
@@ -275,25 +285,38 @@ async function readSharedIdentityAssets(
 		return {};
 	}
 	if (result.status !== 0 || result.stdout.byteLength === 0) return {};
-	const nl = result.stdout.indexOf(0x0a);
-	if (nl < 0) return {};
-	const kind = result.stdout.subarray(0, nl).toString("latin1");
-	const body = result.stdout.subarray(nl + 1).toString("utf8");
-	if (!body) return {};
 	const mounted: Record<string, string> = {};
-	if (kind === "CSS") {
-		mounted[`${SURFACE_SHARED_DIR}/${IDENTITY_TOKENS_CSS_PATH}`] = body;
-		mounted[SURFACE_IDENTITY_CSS_MOUNT_PATH] = body;
-		return mounted;
+	let offset = 0;
+	while (offset < result.stdout.byteLength) {
+		const nl = result.stdout.indexOf(0x0a, offset);
+		if (nl < 0) break;
+		const header = result.stdout.subarray(offset, nl).toString("latin1");
+		const space = header.indexOf(" ");
+		if (space < 1) break;
+		const kind = header.slice(0, space);
+		const byteLen = Number.parseInt(header.slice(space + 1), 10);
+		if (!Number.isSafeInteger(byteLen) || byteLen < 0) break;
+		const start = nl + 1;
+		const end = start + byteLen;
+		if (end > result.stdout.byteLength) break;
+		const body = result.stdout.subarray(start, end).toString("utf8");
+		offset = end;
+		if (!body) continue;
+		if (kind === "CSS") {
+			mounted[`${SURFACE_SHARED_DIR}/${IDENTITY_TOKENS_CSS_PATH}`] = body;
+			mounted[SURFACE_IDENTITY_CSS_MOUNT_PATH] = body;
+		} else if (kind === "JSON") {
+			const compiled = compileIdentityTokensCss(body);
+			mounted[`${SURFACE_SHARED_DIR}/${IDENTITY_TOKENS_JSON_PATH}`] = body;
+			mounted[`${SURFACE_SHARED_DIR}/${IDENTITY_TOKENS_CSS_PATH}`] = compiled;
+			mounted[SURFACE_IDENTITY_CSS_MOUNT_PATH] = compiled;
+		} else if (kind === "SPECS") {
+			mounted[`${SURFACE_SHARED_DIR}/${PRODUCT_SPECS_PATH}`] = body;
+		} else if (kind === "CATALOG") {
+			mounted[`${SURFACE_SHARED_DIR}/${PRODUCT_CATALOG_PATH}`] = body;
+		}
 	}
-	if (kind === "JSON") {
-		const compiled = compileIdentityTokensCss(body);
-		mounted[`${SURFACE_SHARED_DIR}/${IDENTITY_TOKENS_JSON_PATH}`] = body;
-		mounted[`${SURFACE_SHARED_DIR}/${IDENTITY_TOKENS_CSS_PATH}`] = compiled;
-		mounted[SURFACE_IDENTITY_CSS_MOUNT_PATH] = compiled;
-		return mounted;
-	}
-	return {};
+	return mounted;
 }
 
 async function resolveMainHeadAndTree(
@@ -907,6 +930,22 @@ export class SurfaceCodeHostWorker {
 		);
 	}
 
+	async #resolveProductFolderRoots(profileId: string, signal: AbortSignal): Promise<readonly string[]> {
+		try {
+			const raw = await this.#control.call(
+				"qorpera_surface_shared_product_folder_roots",
+				{ p_profile_id: profileId },
+				signal,
+			);
+			return Array.isArray(raw)
+				? raw.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+				: [];
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return [];
+		}
+	}
+
 	async #runPreview(preview: ClaimedSurfacePreviewJob, signal: AbortSignal): Promise<boolean> {
 		const controlPlane = createControlPlaneBridge(this.#control);
 		const leaseField = preview.leaseToken !== undefined ? { leaseToken: preview.leaseToken } : {};
@@ -955,6 +994,7 @@ export class SurfaceCodeHostWorker {
 					readonly sharedAssets: Readonly<Record<string, string>>;
 			  };
 
+		const productFolderRoots = await this.#resolveProductFolderRoots(preview.profileId, signal);
 		let prepared: PreparedPreview;
 		try {
 			const ran = await this.#runYieldable<PreparedPreview>(
@@ -985,7 +1025,7 @@ export class SurfaceCodeHostWorker {
 						repository,
 						tree: composed.compositeTreeSha,
 					});
-					const sharedAssets = await readSharedIdentityAssets(codeHostJob, codeHostJob.signal);
+					const sharedAssets = await readSharedIdentityAssets(codeHostJob, codeHostJob.signal, productFolderRoots);
 					return {
 						status: "ready",
 						compositeCommitSha: composed.compositeCommitSha,
@@ -1200,6 +1240,7 @@ export class SurfaceCodeHostWorker {
 			readonly sharedAssets: Readonly<Record<string, string>>;
 		};
 
+		const productFolderRoots = await this.#resolveProductFolderRoots(pub.profileId, signal);
 		let prepared: PreparedPublish;
 		try {
 			const ran = await this.#runYieldable<PreparedPublish>(
@@ -1210,7 +1251,7 @@ export class SurfaceCodeHostWorker {
 					await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
 					const resolved = await resolveMainHeadAndTree(codeHostJob, repository, explicitHeadSha);
 					const treeData = await this.#readTree(codeHostJob, { repository, tree: resolved.treeSha });
-					const sharedAssets = await readSharedIdentityAssets(codeHostJob, codeHostJob.signal);
+					const sharedAssets = await readSharedIdentityAssets(codeHostJob, codeHostJob.signal, productFolderRoots);
 					return {
 						headSha: resolved.headSha,
 						treeSha: resolved.treeSha,

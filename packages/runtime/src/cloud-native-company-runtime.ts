@@ -2080,6 +2080,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const conflictPaths = Array.isArray(sessionTurnRaw.conflictPaths)
 			? sessionTurnRaw.conflictPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
+		const productFolderRoots = Array.isArray(sessionTurnRaw.productFolderRoots)
+			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
 		const folderClient = new CloudCompanyFolderClient({
@@ -2105,7 +2108,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				if (signal.aborted) throw error;
 				return null;
 			}),
-			loadSurfaceSharedAssets(folderClient, signal).catch((error) => {
+			loadSurfaceSharedAssets(folderClient, signal, productFolderRoots).catch((error) => {
 				if (signal.aborted) throw error;
 				return null;
 			}),
@@ -2194,6 +2197,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const conflictPaths = Array.isArray(sessionTurnRaw.conflictPaths)
 			? sessionTurnRaw.conflictPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
+		const productFolderRoots = Array.isArray(sessionTurnRaw.productFolderRoots)
+			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
 		const memberImagesSection = surfaceMemberImagesSection(
@@ -2206,11 +2212,13 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			companyId: identity.companyId,
 			surfaceSlug,
 			surfaceTitle,
+			...(typeof sessionTurnRaw.surfaceKind === "string" ? { surfaceKind: sessionTurnRaw.surfaceKind } : {}),
 			sourceKind,
 			prompt: sessionTurnRaw.prompt,
 			state: sessionTurnRaw.state === "reconciling" ? "reconciling" : "queued",
 			repositoryKey: typeof sessionTurnRaw.repositoryKey === "string" ? sessionTurnRaw.repositoryKey : null,
 			folderRoot: typeof sessionTurnRaw.folderRoot === "string" ? sessionTurnRaw.folderRoot : null,
+			...(productFolderRoots.length > 0 ? { productFolderRoots } : {}),
 			briefSummary: typeof sessionTurnRaw.briefSummary === "string" ? sessionTurnRaw.briefSummary : null,
 			explorationVariantLabel:
 				typeof sessionTurnRaw.explorationVariantLabel === "string" ? sessionTurnRaw.explorationVariantLabel : null,

@@ -184,6 +184,7 @@ describe("SurfaceStudioView", () => {
 		});
 		expect(populated.el.querySelector('[data-token="colorways[0]"] strong')?.textContent).toBe("Sandstone");
 		expect(populated.el.querySelector(".studio-kv dd")?.textContent).toBe("42g");
+		populated.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
 		expect(populated.el.querySelector(".studio-table td")?.textContent).toBe("EEG Sensor");
 		populated.dispose();
 
@@ -585,6 +586,118 @@ describe("SurfaceStudioView", () => {
 		const pathD = view.el.querySelector("svg.report-line-svg path")?.getAttribute("d") ?? "";
 		expect(pathD).not.toContain("NaN");
 		view.dispose();
+		store.dispose();
+	});
+
+	it("keeps Product Studio tabbed on SVG and markdown drafts and shows its isolated specs path", async () => {
+		const thetabands = summary({
+			id: HEADBAND_ID,
+			slug: "thetabands",
+			title: "Thetabands",
+			archetype: "studio",
+			kind: "product",
+			icon: "figure:headband",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/thetabands",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const website = summary({
+			id: IDENTITY_ID,
+			slug: "website",
+			title: "Hjemmeside",
+			archetype: "live_build",
+			kind: "website",
+		});
+		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [website, thetabands]) }));
+		await store.load();
+
+		const view = new SurfaceStudioView({
+			store,
+			surface: thetabands,
+			signal: new AbortController().signal,
+			baseFiles: {
+				"surfaces/thetabands/concepts.svg":
+					'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40"><rect width="120" height="40"/></svg>',
+				"surfaces/thetabands/brief.md": "# Thetabands\nInitial concept notes.\n",
+			},
+		});
+		document.body.append(view.el);
+
+		const tabs = [...view.el.querySelectorAll<HTMLButtonElement>(".studio-tab")].map((tab) => tab.textContent);
+		expect(tabs).toEqual(["Overview", "Brief & Files"]);
+		expect(view.el.querySelector('[data-file="surfaces/thetabands/concepts.svg"]')).not.toBeNull();
+		expect(view.el.querySelector('[data-file="surfaces/thetabands/brief.md"]')).toBeNull();
+		expect(view.el.querySelector('[data-link-dir="out"]')?.textContent).toContain("surfaces/thetabands/specs.json");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
+		expect(view.el.querySelector('[data-file="surfaces/thetabands/brief.md"]')?.textContent).toContain(
+			"Initial concept notes.",
+		);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("shows the shared product Feeds link only on the primary Product Studio when multiple exist", async () => {
+		const thetabands = summary({
+			id: HEADBAND_ID,
+			slug: "thetabands",
+			title: "Thetabands",
+			archetype: "studio",
+			kind: "product",
+			sortOrder: 10,
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/thetabands",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const travelCase = summary({
+			id: BRAND_ID,
+			slug: "travel-case",
+			title: "Travel Case",
+			archetype: "studio",
+			kind: "product",
+			sortOrder: 20,
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/travel-case",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const website = summary({
+			id: IDENTITY_ID,
+			slug: "website",
+			title: "Hjemmeside",
+			archetype: "live_build",
+			kind: "website",
+		});
+		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [website, travelCase, thetabands]) }));
+		await store.load();
+
+		const primaryView = new SurfaceStudioView({
+			store,
+			surface: thetabands,
+			signal: new AbortController().signal,
+			baseFiles: { "surfaces/thetabands/specs.json": JSON.stringify({ weight: "42g" }) },
+		});
+		expect(primaryView.el.querySelector('[data-link-dir="out"]')?.textContent).toContain(
+			"surfaces/thetabands/specs.json",
+		);
+		primaryView.dispose();
+
+		const secondaryView = new SurfaceStudioView({
+			store,
+			surface: travelCase,
+			signal: new AbortController().signal,
+			baseFiles: { "surfaces/travel-case/specs.json": JSON.stringify({ weight: "95g" }) },
+		});
+		expect(secondaryView.el.querySelector('[data-link-dir="out"]')).toBeNull();
+		secondaryView.dispose();
 		store.dispose();
 	});
 

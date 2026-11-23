@@ -95,6 +95,7 @@ function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
 			"explorationVariantLabel",
 			"siteSlug",
 			"identityFolderRoot",
+			"productFolderRoots",
 			"briefSummary",
 			"retryCount",
 			"sponsor",
@@ -206,6 +207,18 @@ function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
 		input.identityFolderRoot === undefined
 			? undefined
 			: optionalBoundedString(input.identityFolderRoot, "Surface identity folder root", 256);
+	let productFolderRoots: string[] | undefined;
+	if (input.productFolderRoots !== undefined && input.productFolderRoots !== null) {
+		if (!Array.isArray(input.productFolderRoots) || input.productFolderRoots.length > 32) {
+			throw new Error("Surface product folder roots are invalid");
+		}
+		productFolderRoots = input.productFolderRoots.map((item) => {
+			if (typeof item !== "string" || item.trim().length < 1 || item.length > 256 || /[\0\r\n]/.test(item)) {
+				throw new Error("Surface product folder roots are invalid");
+			}
+			return item;
+		});
+	}
 	const briefSummary =
 		input.briefSummary === undefined
 			? undefined
@@ -235,6 +248,7 @@ function parseSurfaceSession(value: unknown): ClaimedSurfaceSessionJob {
 		...(explorationVariantLabel !== undefined ? { explorationVariantLabel } : {}),
 		...(siteSlug !== undefined ? { siteSlug } : {}),
 		...(identityFolderRoot !== undefined ? { identityFolderRoot } : {}),
+		...(productFolderRoots !== undefined ? { productFolderRoots } : {}),
 		...(briefSummary !== undefined ? { briefSummary } : {}),
 		...(retryCount !== undefined ? { retryCount } : {}),
 		...(sponsor !== undefined ? { sponsor } : {}),

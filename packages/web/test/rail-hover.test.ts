@@ -13,6 +13,23 @@ function row(label: string, top: number): HTMLElement {
 	return element;
 }
 
+let frames = new Map<number, FrameRequestCallback>();
+let frameIds = 0;
+let clock = 0;
+
+function play(ms: number): void {
+	for (const end = clock + ms; clock < end; ) {
+		clock += 16;
+		const due = [...frames.values()];
+		frames.clear();
+		for (const callback of due) callback(clock);
+	}
+}
+
+function tintTop(hover: RailHover): number {
+	return Number.parseFloat(hover.tint.style.translate.split(" ")[1] ?? "");
+}
+
 describe("rail hover tint", () => {
 	let list: HTMLElement;
 	let controller: AbortController;
@@ -20,6 +37,12 @@ describe("rail hover tint", () => {
 
 	beforeEach(() => {
 		vi.useFakeTimers();
+		frames = new Map();
+		vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+			frames.set(++frameIds, callback);
+			return frameIds;
+		});
+		vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
 		list = h("div", { class: "rail-scroll" });
 		list.getBoundingClientRect = () => new DOMRect(0, 0, 300, 600);
 		document.body.append(list);
@@ -31,6 +54,7 @@ describe("rail hover tint", () => {
 		Reflect.deleteProperty(document, "elementFromPoint");
 		controller.abort();
 		list.remove();
+		vi.unstubAllGlobals();
 		vi.useRealTimers();
 	});
 
@@ -72,6 +96,8 @@ describe("rail hover tint", () => {
 		hover.settle();
 
 		expect(elementFromPoint).toHaveBeenCalledWith(50, 30);
+		play(400);
+		vi.advanceTimersByTime(100);
 		expect(hover.tint.style.translate).toBe("10px 84px");
 		expect(rebuilt.classList.contains("hover-lit")).toBe(true);
 	});
@@ -98,5 +124,35 @@ describe("rail hover tint", () => {
 
 		expect(first.classList.contains("hover-lit")).toBe(false);
 		expect(hover.attached).toBe(hover.tint);
+	});
+
+	it("follows a new row from where it is, settles on it and stops on leaving", () => {
+		const first = row("Astrid", 20);
+		const second = row("Bo", 100);
+		const third = row("Clara", 180);
+		list.append(first, second, third);
+
+		point(first, "pointerover");
+		point(second, "pointerover");
+		expect(frames.size).toBe(1);
+		play(16);
+		const midway = tintTop(hover);
+		expect(midway).toBeGreaterThan(20);
+		expect(midway).toBeLessThan(100);
+
+		point(third, "pointerover");
+		expect(frames.size).toBe(1);
+		play(16);
+		expect(tintTop(hover)).toBeGreaterThan(midway);
+
+		play(600);
+		expect(hover.tint.style.translate).toBe("10px 180px");
+		expect(hover.tint.style.scale).toBe("none");
+		expect(frames.size).toBe(0);
+
+		point(first, "pointerover");
+		expect(frames.size).toBe(1);
+		point(list, "pointerleave");
+		expect(frames.size).toBe(0);
 	});
 });
