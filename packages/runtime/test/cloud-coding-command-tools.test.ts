@@ -30,7 +30,7 @@ import { pngChunk, pngFile, pngHeader, pngRows } from "./fixtures/png-fixture.ts
 
 const execFileAsync = promisify(execFile);
 
-function fixture() {
+function fixture(options?: { repositoryArea?: string }) {
 	const { authority } = nativeToolAuthorityFixture();
 	const identity = authority.identity;
 	const scope = { workerId: randomUUID(), vmId: randomUUID(), requestId: randomUUID(), turn: 1 };
@@ -64,7 +64,13 @@ function fixture() {
 			})
 		).content;
 	});
-	const tools = cloudCodingCommandTools({ scope, identity, gateway, operations: { execute } });
+	const tools = cloudCodingCommandTools({
+		scope,
+		identity,
+		gateway,
+		operations: { execute },
+		...(options?.repositoryArea ? { repositoryArea: options.repositoryArea } : {}),
+	});
 	const boundary = new CloudNativeToolBoundary({
 		companyId: identity.companyId,
 		runId: identity.runId,
@@ -1108,8 +1114,8 @@ describe("coding_run_command preflightLand dry-run check", () => {
 		return { dir, git, gitEnv };
 	}
 
-	async function invokePreflight(cwd: string, operationKey: string) {
-		const f = fixture();
+	async function invokePreflight(cwd: string, operationKey: string, repositoryArea?: string) {
+		const f = fixture(repositoryArea ? { repositoryArea } : undefined);
 		f.gateway.start.mockImplementation(async (_scope, request) => {
 			let stdout = "";
 			let exitCode = 0;
@@ -1200,6 +1206,72 @@ describe("coding_run_command preflightLand dry-run check", () => {
 			});
 			expect(conflict.parsed.conflictMessages.length).toBeGreaterThan(0);
 			expect(conflict.parsed.conflictMessages.join(" ")).toContain("CONFLICT");
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("flags paths exceeding the 2,600-byte folded-key limit including the worktree prefix", async () => {
+		const { dir, git } = await preflightRepo();
+		try {
+			const baseHead = await git("rev-parse", "HEAD");
+			const blobSha = await git("hash-object", "-w", join(dir, "app.ts"));
+			const commitSyntheticPath = async (relPath: string, message: string) => {
+				await git("reset", "--hard", "--quiet", baseHead);
+				await git("update-index", "--add", "--cacheinfo", `100644,${blobSha},${relPath}`);
+				const treeSha = await git("write-tree");
+				const commitSha = await git("commit-tree", treeSha, "-p", baseHead, "-m", message);
+				await git("update-ref", "HEAD", commitSha);
+			};
+
+			const longPath = `${Array.from({ length: 14 }, (_, i) => `d${String(i).padStart(2, "0")}_${"a".repeat(186)}`).join("/")}/file.ts`;
+			expect(Buffer.byteLength(longPath)).toBeGreaterThan(2650);
+			expect(Buffer.byteLength(longPath)).toBeLessThan(2800);
+			await commitSyntheticPath(longPath, "over 2600-byte path");
+			const over2700 = await invokePreflight(dir, "preflight-over-2700", "code/qorpera/site");
+			expect(over2700.res.success).toBe(true);
+			expect(over2700.parsed).toMatchObject({
+				readyToLand: false,
+				mergeClean: true,
+			});
+			expect(
+				over2700.parsed.nameProblems.some(
+					(item: { code: string; path: string }) => item.code === "CODE_HOST_NAMES_FOLDER_REFUSES",
+				),
+			).toBe(true);
+
+			// WHY: code/qorpera/site/worktrees/<36-char-uuid>/ is 64 bytes, leaving 2,536 bytes for the repo path.
+			const prefix12 = Array.from(
+				{ length: 12 },
+				(_, i) => `p${String(i).padStart(2, "0")}_${"b".repeat(191)}`,
+			).join("/");
+			const fitsPath = `${prefix12}/${"c".repeat(2520 - prefix12.length - 1)}`;
+			expect(Buffer.byteLength(fitsPath)).toBe(2520);
+			await commitSyntheticPath(fitsPath, "fits area key budget");
+			const fitsForSite = await invokePreflight(dir, "preflight-fits-site", "code/qorpera/site");
+			expect(fitsForSite.res.success).toBe(true);
+			expect(fitsForSite.parsed).toMatchObject({
+				mergeClean: true,
+				nameProblems: [],
+			});
+			const refusedDefault = await invokePreflight(dir, "preflight-refused-default");
+			expect(refusedDefault.res.success).toBe(true);
+			expect(refusedDefault.parsed).toMatchObject({
+				readyToLand: false,
+				mergeClean: true,
+				nameProblems: [{ code: "CODE_HOST_NAMES_FOLDER_REFUSES", path: fitsPath }],
+			});
+
+			const justOverPath = `${prefix12}/${"c".repeat(2540 - prefix12.length - 1)}`;
+			expect(Buffer.byteLength(justOverPath)).toBe(2540);
+			await commitSyntheticPath(justOverPath, "exceeds area key budget");
+			const overForSite = await invokePreflight(dir, "preflight-over-site", "code/qorpera/site");
+			expect(overForSite.res.success).toBe(true);
+			expect(overForSite.parsed).toMatchObject({
+				readyToLand: false,
+				mergeClean: true,
+				nameProblems: [{ code: "CODE_HOST_NAMES_FOLDER_REFUSES", path: justOverPath }],
+			});
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}

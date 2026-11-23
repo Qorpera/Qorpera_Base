@@ -29,71 +29,89 @@ const DEFAULT_TIMEOUT_GRACE_MS = 5000;
 const CANCEL_ON_ABORT_MS = 5000;
 const MAX_PREFLIGHT_OUTPUT_BYTES = 128 * 1024;
 const PAYLOAD_PREFIX = "QORPERA_PREFLIGHT_LAND:";
+const CODE_FOLDER_KEY_BYTES = 2600;
+const CODE_FOLDER_ANY_SESSION = "worktrees/00000000-0000-0000-0000-000000000000";
+// WHY: Reserve worst-case code/<39-byte owner>/<100-byte name>/worktrees/<36-byte uuid>/ prefix when repositoryArea is omitted.
+const MAX_DEFAULT_WORKTREE_PREFIX_BYTES = 5 + 39 + 1 + 100 + 1 + CODE_FOLDER_ANY_SESSION.length + 1;
 
-const PREFLIGHT_LAND_SCRIPT = [
-	'const cp=require("node:child_process"),fs=require("node:fs"),os=require("node:os"),path=require("node:path");',
-	'const git=(args,gitDir)=>cp.spawnSync("git",gitDir?["--git-dir="+gitDir,...args]:args,{maxBuffer:64*1024*1024});',
-	"const shaRe=/^[0-9a-f]{40}$/;",
-	'const headRes=git(["rev-parse","--verify","HEAD"]);',
-	"if(headRes.status!==0)process.exit(41);",
-	'const headSha=headRes.stdout.toString("utf8").trim();',
-	"if(!shaRe.test(headSha))process.exit(41);",
-	'const stRes=git(["status","--porcelain","-z"]);',
-	"if(stRes.status!==0)process.exit(42);",
-	'const stRaw=stRes.stdout.toString("utf8");',
-	'let uncommittedChanges=0;for(const item of stRaw.split("\\0"))if(item)uncommittedChanges++;',
-	'let baseRef="refs/heads/main",baseSha="";',
-	'for(const ref of ["refs/heads/main","refs/remotes/origin/main"]){',
-	'const r=git(["rev-parse","--verify","--quiet",ref+"^{commit}"]);',
-	'if(r.status===0){const s=r.stdout.toString("utf8").trim();if(shaRe.test(s)){baseRef=ref;baseSha=s;break;}}}',
-	"if(!baseSha)process.exit(43);",
-	'const commonRes=git(["rev-parse","--git-common-dir"]);',
-	"if(commonRes.status!==0)process.exit(44);",
-	'const commonDir=path.resolve(commonRes.stdout.toString("utf8").trim());',
-	'const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"qorpera-preflight-"));',
-	"try{",
-	'const scratch=path.join(tmp,"scratch.git");',
-	'const initRes=git(["init","--quiet","--bare","--template=",scratch]);',
-	"if(initRes.status!==0)process.exit(44);",
-	'fs.writeFileSync(path.join(scratch,"objects","info","alternates"),path.join(commonDir,"objects")+"\\n");',
-	'const mt=git(["merge-tree","--write-tree","-z","--name-only","--messages",baseSha,headSha],scratch);',
-	"let mergeClean=false,treeSha=null,conflictedPaths=[],conflictMessages=[];",
-	"if(mt.status===0){",
-	'const nul=mt.stdout.indexOf(0);treeSha=mt.stdout.subarray(0,nul>=0?nul:mt.stdout.length).toString("latin1").trim();',
-	"mergeClean=shaRe.test(treeSha);",
-	"}else if(mt.status===1){",
-	'const f=mt.stdout.toString("utf8").split("\\0");const pset=new Set();let i=1;',
-	'while(i<f.length&&f[i]!==""){pset.add(f[i]);i++;}i++;',
-	"const mset=new Set();let mb=0;",
-	'while(i<f.length&&f[i]!==""){const cnt=Number(f[i]);if(!Number.isSafeInteger(cnt)||cnt<0||i+cnt+2>=f.length)break;',
-	'const t=f[i+cnt+1]||"",m=f[i+cnt+2]||"";i+=cnt+3;',
-	'if(!t.startsWith("CONFLICT")&&!m.includes("CONFLICT"))continue;',
-	'const c=m.replace(/[\\r\\n\\t]+/g," ").replace(/[\\x00-\\x1f\\x7f]/g,"").trim().slice(0,300);',
-	"if(!c||mset.has(c))continue;if(conflictMessages.length>=20||mb+Buffer.byteLength(c)>2048)break;",
-	"mset.add(c);conflictMessages.push(c);mb+=Buffer.byteLength(c);}",
-	"conflictedPaths=[...pset].slice(0,50);",
-	"}else{process.exit(45);}",
-	"const targetTree=treeSha||headSha;",
-	'const ls=git(["ls-tree","-r","-t","-l","-z","--full-tree",targetTree],treeSha?scratch:undefined);',
-	"if(ls.status!==0)process.exit(46);",
-	"const nameProblems=[],largeFiles=[],seenCase=new Map();",
-	"let off=0;const buf=ls.stdout;",
-	"while(off<buf.length){const end=buf.indexOf(0,off);if(end<0)break;",
-	"const rec=buf.subarray(off,end);off=end+1;const tab=rec.indexOf(9);if(tab<0)continue;",
-	'const hdr=rec.subarray(0,tab).toString("latin1").split(/ +/);if(hdr.length!==4)continue;',
-	"const type=hdr[1],size=Number(hdr[3]),raw=rec.subarray(tab+1);",
-	'const p=raw.toString("utf8");',
-	'if(!Buffer.from(p,"utf8").equals(raw)){if(nameProblems.length<20)nameProblems.push({code:"CODE_HOST_NAMES_NOT_UTF8",path:p});continue;}',
-	'if(p.normalize("NFC")!==p&&nameProblems.length<20)nameProblems.push({code:"CODE_HOST_NAMES_NOT_NFC",path:p});',
-	'if(type==="blob"&&size>268435456&&largeFiles.length<20)largeFiles.push({path:p,bytes:size});',
-	'const slash=p.lastIndexOf("/"),dir=p.slice(0,slash+1),base=p.slice(slash+1),key=dir+"\\0"+base.toLowerCase();',
-	'const prev=seenCase.get(key);if(prev!==undefined&&prev!==p&&nameProblems.length<20)nameProblems.push({code:"CODE_HOST_NAMES_DIFFER_BY_CASE",path:p});else seenCase.set(key,p);',
-	'const segs=p.split("/");',
-	'if(Buffer.byteLength(p)>4000||segs.some((s)=>!s||/[\\\\\\x00-\\x1f\\x7f]/.test(s)||s.endsWith(".")||s.endsWith(" ")||Buffer.byteLength(s)>255)){',
-	'if(nameProblems.length<20)nameProblems.push({code:"CODE_HOST_NAMES_FOLDER_REFUSES",path:p});}}',
-	'process.stdout.write("QORPERA_PREFLIGHT_LAND:"+JSON.stringify({baseRef,baseSha,headSha,uncommittedChanges,mergeClean,conflictedPaths,conflictMessages,nameProblems,largeFiles})+"\\n");',
-	"}finally{fs.rmSync(tmp,{recursive:true,force:true});}",
-].join("");
+function maxPreflightPathBytes(repositoryArea?: string): number {
+	const prefixBytes =
+		typeof repositoryArea === "string" && repositoryArea.length > 0
+			? Buffer.byteLength(`${repositoryArea}/${CODE_FOLDER_ANY_SESSION}/`, "utf8")
+			: MAX_DEFAULT_WORKTREE_PREFIX_BYTES;
+	return Math.max(0, CODE_FOLDER_KEY_BYTES - prefixBytes);
+}
+
+function buildPreflightLandScript(maxKeyBytes: number): string {
+	return [
+		'const cp=require("node:child_process"),fs=require("node:fs"),os=require("node:os"),path=require("node:path");',
+		'const git=(args,gitDir)=>cp.spawnSync("git",gitDir?["--git-dir="+gitDir,...args]:args,{maxBuffer:64*1024*1024});',
+		"const shaRe=/^[0-9a-f]{40}$/;",
+		`const maxKeyBytes=${maxKeyBytes};`,
+		'const headRes=git(["rev-parse","--verify","HEAD"]);',
+		"if(headRes.status!==0)process.exit(41);",
+		'const headSha=headRes.stdout.toString("utf8").trim();',
+		"if(!shaRe.test(headSha))process.exit(41);",
+		'const stRes=git(["status","--porcelain","-z"]);',
+		"if(stRes.status!==0)process.exit(42);",
+		'const stRaw=stRes.stdout.toString("utf8");',
+		'let uncommittedChanges=0;for(const item of stRaw.split("\\0"))if(item)uncommittedChanges++;',
+		'let baseRef="refs/heads/main",baseSha="";',
+		'for(const ref of ["refs/heads/main","refs/remotes/origin/main"]){',
+		'const r=git(["rev-parse","--verify","--quiet",ref+"^{commit}"]);',
+		'if(r.status===0){const s=r.stdout.toString("utf8").trim();if(shaRe.test(s)){baseRef=ref;baseSha=s;break;}}}',
+		"if(!baseSha)process.exit(43);",
+		'const commonRes=git(["rev-parse","--git-common-dir"]);',
+		"if(commonRes.status!==0)process.exit(44);",
+		'const commonDir=path.resolve(commonRes.stdout.toString("utf8").trim());',
+		'const tmp=fs.mkdtempSync(path.join(os.tmpdir(),"qorpera-preflight-"));',
+		"try{",
+		'const scratch=path.join(tmp,"scratch.git");',
+		'const initRes=git(["init","--quiet","--bare","--template=",scratch]);',
+		"if(initRes.status!==0)process.exit(44);",
+		'fs.writeFileSync(path.join(scratch,"objects","info","alternates"),path.join(commonDir,"objects")+"\\n");',
+		'const mt=git(["merge-tree","--write-tree","-z","--name-only","--messages",baseSha,headSha],scratch);',
+		"let mergeClean=false,treeSha=null,conflictedPaths=[],conflictMessages=[];",
+		"if(mt.status===0){",
+		'const nul=mt.stdout.indexOf(0);treeSha=mt.stdout.subarray(0,nul>=0?nul:mt.stdout.length).toString("latin1").trim();',
+		"mergeClean=shaRe.test(treeSha);",
+		"}else if(mt.status===1){",
+		'const f=mt.stdout.toString("utf8").split("\\0");const pset=new Set();let i=1;',
+		'while(i<f.length&&f[i]!==""){pset.add(f[i]);i++;}i++;',
+		"const mset=new Set();let mb=0;",
+		'while(i<f.length&&f[i]!==""){const cnt=Number(f[i]);if(!Number.isSafeInteger(cnt)||cnt<0||i+cnt+2>=f.length)break;',
+		'const t=f[i+cnt+1]||"",m=f[i+cnt+2]||"";i+=cnt+3;',
+		'if(!t.startsWith("CONFLICT")&&!m.includes("CONFLICT"))continue;',
+		'const c=m.replace(/[\\r\\n\\t]+/g," ").replace(/[\\x00-\\x1f\\x7f]/g,"").trim().slice(0,300);',
+		"if(!c||mset.has(c))continue;if(conflictMessages.length>=20||mb+Buffer.byteLength(c)>2048)break;",
+		"mset.add(c);conflictMessages.push(c);mb+=Buffer.byteLength(c);}",
+		"conflictedPaths=[...pset].slice(0,50);",
+		"}else{process.exit(45);}",
+		"const targetTree=treeSha||headSha;",
+		'const ls=git(["ls-tree","-r","-t","-l","-z","--full-tree",targetTree],treeSha?scratch:undefined);',
+		"if(ls.status!==0)process.exit(46);",
+		"const nameProblems=[],largeFiles=[],seenCase=new Map(),folderRefusedTrees=new Set();",
+		"let off=0;const buf=ls.stdout;",
+		"while(off<buf.length){const end=buf.indexOf(0,off);if(end<0)break;",
+		"const rec=buf.subarray(off,end);off=end+1;const tab=rec.indexOf(9);if(tab<0)continue;",
+		'const hdr=rec.subarray(0,tab).toString("latin1").split(/ +/);if(hdr.length!==4)continue;',
+		"const type=hdr[1],size=Number(hdr[3]),raw=rec.subarray(tab+1);",
+		'const p=raw.toString("utf8");',
+		'if(!Buffer.from(p,"utf8").equals(raw)){if(nameProblems.length<20)nameProblems.push({code:"CODE_HOST_NAMES_NOT_UTF8",path:p});continue;}',
+		'if(p.normalize("NFC")!==p&&nameProblems.length<20)nameProblems.push({code:"CODE_HOST_NAMES_NOT_NFC",path:p});',
+		'if(type==="blob"&&size>268435456&&largeFiles.length<20)largeFiles.push({path:p,bytes:size});',
+		'const slash=p.lastIndexOf("/"),dir=p.slice(0,slash+1),parent=slash>=0?p.slice(0,slash):"",base=p.slice(slash+1),key=dir+"\\0"+base.toLowerCase();',
+		'const prev=seenCase.get(key);if(prev!==undefined&&prev!==p&&nameProblems.length<20)nameProblems.push({code:"CODE_HOST_NAMES_DIFFER_BY_CASE",path:p});else seenCase.set(key,p);',
+		'if(parent&&folderRefusedTrees.has(parent)){if(type==="tree")folderRefusedTrees.add(p);continue;}',
+		'const segs=p.split("/");',
+		'const folded=p.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC");',
+		'const foldedSegs=folded.split("/");',
+		'if(Buffer.byteLength(p)>maxKeyBytes||Buffer.byteLength(folded)>maxKeyBytes||foldedSegs.length!==segs.length||[segs,foldedSegs].some((parts)=>parts.some((s)=>!s||s==="."||s===".."||/[\\\\\\x00-\\x1f\\x7f-\\x9f\\u2028\\u2029]/.test(s)||s.endsWith(".")||s.endsWith(" ")))||segs.some((s)=>Buffer.byteLength(s)>255)){',
+		'if(nameProblems.length<20)nameProblems.push({code:"CODE_HOST_NAMES_FOLDER_REFUSES",path:p});if(type==="tree")folderRefusedTrees.add(p);}}',
+		'process.stdout.write("QORPERA_PREFLIGHT_LAND:"+JSON.stringify({baseRef,baseSha,headSha,uncommittedChanges,mergeClean,conflictedPaths,conflictMessages,nameProblems,largeFiles})+"\\n");',
+		"}finally{fs.rmSync(tmp,{recursive:true,force:true});}",
+	].join("");
+}
 
 export interface CodingPreflightLandRequest {
 	readonly operationKey: string;
@@ -103,8 +121,9 @@ function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-export function buildPreflightLandCommand(): string {
-	return `if [ -x /usr/bin/node ]; then NODE_BIN=/usr/bin/node; else NODE_BIN=node; fi; NODE_OPTIONS= "$NODE_BIN" -e ${shellQuote(PREFLIGHT_LAND_SCRIPT)} 2>/dev/null`;
+export function buildPreflightLandCommand(repositoryArea?: string): string {
+	const script = buildPreflightLandScript(maxPreflightPathBytes(repositoryArea));
+	return `if [ -x /usr/bin/node ]; then NODE_BIN=/usr/bin/node; else NODE_BIN=node; fi; NODE_OPTIONS= "$NODE_BIN" -e ${shellQuote(script)} 2>/dev/null`;
 }
 
 function preflightSubOperationKey(operationKey: string, suffix: string): string {
@@ -177,6 +196,7 @@ export async function runCodingPreflightLand(options: {
 	checkAuthority: (context: CloudToolContext) => Promise<void>;
 	request: CodingPreflightLandRequest;
 	context: CloudToolContext;
+	repositoryArea?: string;
 	pollMs?: number;
 	timeoutGraceMs?: number;
 }): Promise<CloudToolContent> {
@@ -210,7 +230,7 @@ export async function runCodingPreflightLand(options: {
 		}
 	};
 
-	const command = buildPreflightLandCommand();
+	const command = buildPreflightLandCommand(options.repositoryArea);
 	const subKey = preflightSubOperationKey(request.operationKey, "run");
 	const subArgs = { operationKey: subKey, command, timeoutMs: PREFLIGHT_TIMEOUT_MS };
 	const childObservation = context.observation?.child("coding_run_command");

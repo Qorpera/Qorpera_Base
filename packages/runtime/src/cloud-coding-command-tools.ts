@@ -50,6 +50,7 @@ export function cloudCodingCommandTools(options: {
 	identity: CloudNativeToolIdentity;
 	operations: Pick<CloudNativeToolOperations, "execute">;
 	gateway: CloudCodingCommandGateway;
+	repositoryArea?: string;
 	pollMs?: number;
 	timeoutGraceMs?: number;
 }): readonly CloudNativeTool[] {
@@ -288,6 +289,7 @@ export function cloudCodingCommandTools(options: {
 						checkAuthority: check,
 						request: { operationKey: String(input.operationKey) },
 						context,
+						...(options.repositoryArea ? { repositoryArea: options.repositoryArea } : {}),
 						pollMs: options.pollMs,
 						timeoutGraceMs: options.timeoutGraceMs,
 					});
