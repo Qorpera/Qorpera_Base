@@ -356,7 +356,9 @@ describe("files in the search window", () => {
 		expect(filePlace("research/2026/q4/names/shop-names.md", title)).toBe("q4 / names");
 		expect(filePlace("code/surfaces/website/main/styles.css", title)).toBe("Hjemmeside");
 		expect(filePlace("code/surfaces/website/main/src/assets/product.png", title)).toBe("Hjemmeside / assets");
-		expect(filePlace("code/surfaces/website/main", title)).toBe("Hjemmeside");
+		expect(filePlace("code/surfaces/website", title)).toBe("Code");
+		expect(filePlace("code/surfaces", title)).toBe("Code");
+		expect(filePlace("code", title)).toBe("Company File");
 		expect(filePlace("code/surfaces/shop/main/index.html", title)).toBe("shop");
 		expect(filePlace("code/acme/storefront/main/src/app.ts", title)).toBe("storefront / src");
 		const draft = "code/surfaces/website/worktrees/533ab75c-8957-408f-ab6e-5d1f6c2a9e10";
@@ -377,12 +379,15 @@ describe("files in the search window", () => {
 			{ path: "code/surfaces/website/worktrees", kind: "folder", at: "2026-11-23T12:00:00Z" },
 			{ path: "code/surfaces/website/worktrees/bbb", kind: "folder", at: "2026-11-23T12:00:00Z" },
 			{ path: "code/surfaces/website/main", kind: "folder", at: "2026-11-22T10:00:00Z" },
+			{ path: "code/surfaces/website/main/.git", kind: "file", at: "2026-11-22T10:00:00Z" },
+			{ path: "code/surfaces/website/worktrees/bbb/.git", kind: "file", at: "2026-11-23T12:00:00Z" },
+			{ path: "code/surfaces/website", kind: "folder", at: "2026-11-22T10:00:00Z" },
 		];
 		expect(oneCopyEach(copies).map((file) => file.path)).toEqual([
 			"brand/logo.svg",
 			"code/surfaces/website/main/styles.css",
 			"code/surfaces/website/worktrees/bbb/new.css",
-			"code/surfaces/website/main",
+			"code/surfaces/website",
 		]);
 		expect(isPlumbing("code/surfaces/website/worktrees/bbb/new.css")).toBe(false);
 		expect(isPlumbing("notes/repo.git/HEAD")).toBe(false);

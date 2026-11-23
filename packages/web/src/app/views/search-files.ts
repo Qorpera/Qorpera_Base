@@ -10,7 +10,7 @@ export interface FoundFile {
 }
 
 const COPY = /^(code\/[^/]+\/[^/]+)\/(main|worktrees\/[^/]+)\/(.+)$/;
-const PLUMBING = /^code\/[^/]+\/[^/]+\/(?:repo\.git(?:\/.*)?|worktrees(?:\/[^/]+)?)$/;
+const PLUMBING = /^code\/[^/]+\/[^/]+\/(?:repo\.git(?:\/.*)?|main(?:\/\.git)?|worktrees(?:\/[^/]+(?:\/\.git)?)?)$/;
 const FILE_MARKS: Partial<Record<FileCategory, SearchMark>> = {
 	image: "image",
 	document: "document",
@@ -34,10 +34,12 @@ export function isPlumbing(path: string): boolean {
 export function filePlace(path: string, surfaceTitle: (slug: string) => string | undefined): string {
 	const folders = settledPath(path).split("/").slice(0, -1);
 	let place: string;
-	if (folders[0] === "code" && folders.length >= 3) {
+	if (folders[0] !== "code") place = folders.length ? folders.slice(-2).join(" / ") : t("Company File");
+	else if (folders.length < 3) place = t("Code");
+	else {
 		const home = (folders[1] === "surfaces" ? surfaceTitle(folders[2]!) : undefined) ?? folders[2]!;
 		place = [home, ...folders.slice(3).slice(-1)].join(" / ");
-	} else place = folders.length ? folders.slice(-2).join(" / ") : t("Company File");
+	}
 	return isDraft(path) ? t("{place} · draft", { place }) : place;
 }
 
