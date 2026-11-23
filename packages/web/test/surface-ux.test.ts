@@ -2009,7 +2009,9 @@ describe("a website that is not live", () => {
 	});
 
 	it("switches auto-publish back on when it is made not live", async () => {
-		const { view, client, order, settle, done } = await website({ world: { entry: { isPublic: true, domains: [] } } });
+		const { view, client, order, settle, done } = await website({
+			world: { entry: { isPublic: true, domains: [] } },
+		});
 		expect(order).toEqual([]);
 		await openCard(view, settle);
 		card(view).querySelector<HTMLButtonElement>('[data-key="not-live"]')!.click();
@@ -2025,12 +2027,7 @@ describe("a website that is not live", () => {
 			world: { entry: { isPublic: true, domains: [] } },
 			shown: { unpublishedChangeCount: 2 },
 		});
-		expect(parts(view)).toEqual([
-			"surface-pill-address is-live",
-			"mode",
-			"device",
-			"surface-publish has-changes",
-		]);
+		expect(parts(view)).toEqual(["surface-pill-address is-live", "mode", "device", "surface-publish has-changes"]);
 		expect(view.el.querySelector('[data-act="publish-menu"]')).not.toBeNull();
 		store.setMode("live");
 		await settle();

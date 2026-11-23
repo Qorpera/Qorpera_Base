@@ -3007,11 +3007,7 @@ export class SurfacesStore {
 		return this.#sessionAt(sessionId)?.session;
 	}
 
-	async #run<T>(
-		key: string,
-		work: (client: SurfacesClient) => Promise<T>,
-		quiet = false,
-	): Promise<T | undefined> {
+	async #run<T>(key: string, work: (client: SurfacesClient) => Promise<T>, quiet = false): Promise<T | undefined> {
 		const client = this.#options.client;
 		if (!client) {
 			if (!quiet) this.store.set({ error: this.#options.unavailableMessage });
