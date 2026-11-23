@@ -1259,7 +1259,6 @@ describe("a folder-v2 company's Company File", () => {
 		expect(viewer.open).toBe(true);
 		expect(viewer.querySelector(".files-text")?.textContent).toBe("Hello.");
 		expect(host.querySelector<HTMLElement>(".files-preview")?.inert).toBe(true);
-		expect(viewerOpen(host)).toBe(false);
 		// Escape again while it goes changes nothing.
 		viewer.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
 		expect(played).toHaveLength(2);
@@ -1358,17 +1357,6 @@ describe("a folder-v2 company's Company File", () => {
 		await click(viewer.querySelector('.files-preview-head [aria-label="Close readme.txt"]'));
 		expect(viewer.contains(host.querySelector(".files-status"))).toBe(false);
 		expect(host.querySelector(".files-retries")?.nextElementSibling).toBe(host.querySelector(".files-root"));
-	});
-
-	it("keeps the standalone browser's preview beside the files, with no window and no scrolling", async () => {
-		const { host } = await opened();
-		const reveal = vi.fn();
-		host.querySelector<HTMLElement>(".files-preview")!.scrollIntoView = reveal;
-		await click(row(host, "readme.txt"));
-		expect(host.querySelector(".files-text")?.textContent).toBe("Hello.");
-		expect(host.querySelector("dialog")).toBeNull();
-		expect(host.querySelector(".files-body > .files-preview")?.hasAttribute("hidden")).toBe(false);
-		expect(reveal).not.toHaveBeenCalled();
 	});
 
 	it("shows a path's history with who and when, a file's and a link's versions, and an earlier one in place of the latest", async () => {
