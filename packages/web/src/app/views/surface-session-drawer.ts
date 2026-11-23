@@ -178,20 +178,11 @@ function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
 	return null;
 }
 
-function agentStatusSummary(session: SurfaceSession, surface: SurfaceSummary, look: SurfaceLook): string {
+function agentStatusLine(session: SurfaceSession): string | null {
 	if (session.state === "needs_input") return t("Needs you");
 	if (isRunningSession(session)) return t("Working");
 	if (hasConflictedChange(session)) return t("Conflict");
-	const live = session.changes.filter((change) => change.status !== "discarded");
-	const open = live.filter(isOpenChange).length;
-	const actions = live.length > 0 && live.every((change) => isActionChange(change, surface));
-	if (actions) {
-		if (open > 1) return t("{count} actions ready", { count: open });
-		return look.kind === "inbox" ? t("Draft ready") : t("Action ready");
-	}
-	if (open === 1) return t("1 change ready");
-	if (open > 1) return t("{count} changes ready", { count: open });
-	return t("Ready");
+	return null;
 }
 
 function rankSessions(sessions: readonly SurfaceSession[]): SurfaceSession[] {
@@ -215,6 +206,7 @@ function affectedFileChips(store: SurfacesStore, paths: readonly string[]): HTML
 	const visible = files.slice(0, 3);
 	const extra = files.length - visible.length;
 	const goFiles = (event: MouseEvent) => {
+		event.stopPropagation();
 		if (!event.metaKey && !event.ctrlKey && !event.shiftKey && event.button === 0) store.navigateSurface("files");
 	};
 	return h(
@@ -676,6 +668,7 @@ export class SurfaceSessionDrawer {
 				class: ["surface-overview-card", "is-agent", "is-exploration", attention && "is-attention"]
 					.filter(Boolean)
 					.join(" "),
+				"data-act": "focus-exploration",
 				"data-exploration": exploration.id,
 			},
 			h(
@@ -692,7 +685,7 @@ export class SurfaceSessionDrawer {
 					"span",
 					{ class: "surface-overview-agent-copy" },
 					h("strong", null, exploration.title),
-					h("span", null, running ? t("Working") : t("{count} options", { count: variants.length })),
+					running ? h("span", null, t("Working")) : null,
 				),
 				h("span", { class: "surface-overview-agent-go", "aria-hidden": "true" }, icon("chevron")),
 			),
@@ -760,6 +753,7 @@ export class SurfaceSessionDrawer {
 		const attention = session.state === "needs_input" || hasConflictedChange(session);
 		const ownedNotes = reportsOwnedBy(state, surface.id, { kind: "session", id: session.id });
 		const noteNodes = this.#noteButtons(ownedNotes);
+		const statusLine = agentStatusLine(session);
 
 		const head = h(
 			"button",
@@ -775,7 +769,7 @@ export class SurfaceSessionDrawer {
 				"span",
 				{ class: "surface-overview-agent-copy" },
 				h("strong", null, session.title),
-				h("span", null, agentStatusSummary(session, surface, look)),
+				statusLine ? h("span", null, statusLine) : null,
 			),
 			h("span", { class: "surface-overview-agent-go", "aria-hidden": "true" }, icon("chevron")),
 		);
@@ -909,6 +903,7 @@ export class SurfaceSessionDrawer {
 			"section",
 			{
 				class: ["surface-overview-card", "is-agent", attention && "is-attention"].filter(Boolean).join(" "),
+				"data-act": "focus-session",
 				"data-session": session.id,
 			},
 			head,
@@ -950,10 +945,6 @@ export class SurfaceSessionDrawer {
 		this.#input.setAttribute("aria-label", t("Steer this session…"));
 		this.#send.setAttribute("aria-label", t("Send"));
 
-		const subtitle = [picked?.originLabel, t("{count} options", { count: variants.length })]
-			.filter((part): part is string => Boolean(part))
-			.join(" · ");
-
 		this.#head.className = "surface-drawer-head";
 		this.#head.replaceChildren(
 			h(
@@ -968,19 +959,12 @@ export class SurfaceSessionDrawer {
 				icon("back"),
 			),
 			this.#crew.takeExploration(exploration, variants, 36, "is-large"),
-			h("div", { class: "surface-drawer-title" }, h("h2", null, exploration.title), h("p", null, subtitle)),
+			h("div", { class: "surface-drawer-title" }, h("h2", null, exploration.title)),
 		);
 		this.#crew.settle();
 
 		const parts: HTMLElement[] = [];
 		if (resolvedSurface) parts.push(...this.#noteButtons(ownedNotes));
-		parts.push(
-			h(
-				"p",
-				{ class: "surface-drawer-label" },
-				t("{count} options · pick one to preview", { count: variants.length }),
-			),
-		);
 		parts.push(
 			h(
 				"div",
@@ -1055,7 +1039,6 @@ export class SurfaceSessionDrawer {
 				}),
 			),
 		);
-		parts.push(h("div", { class: "surface-drawer-rule" }));
 		if (picked) parts.push(...this.#thread(picked, notes));
 		this.#body.replaceChildren(...parts);
 		const activeId = picked?.id ?? exploration.id;
@@ -1110,18 +1093,7 @@ export class SurfaceSessionDrawer {
 				icon("back"),
 			),
 			this.#crew.take(session, 36, "is-large"),
-			h(
-				"div",
-				{ class: "surface-drawer-title" },
-				h("h2", null, session.title),
-				h(
-					"p",
-					null,
-					[session.originLabel, fmtTime(session.createdAt)]
-						.filter((part): part is string => Boolean(part))
-						.join(" · "),
-				),
-			),
+			h("div", { class: "surface-drawer-title" }, h("h2", null, session.title)),
 		);
 		this.#crew.settle();
 		this.#body.replaceChildren(...this.#content(session, notes, resolvedSurface, look, ownedNotes));
@@ -1251,15 +1223,6 @@ export class SurfaceSessionDrawer {
 					),
 				);
 		} else if (listed.length && !sessionHeld(session)) {
-			parts.push(
-				h(
-					"p",
-					{ class: "surface-drawer-label" },
-					listed.length === 1
-						? t("1 change · toggle to preview")
-						: t("{count} changes · toggle to preview", { count: listed.length }),
-				),
-			);
 			const busyReconcile = Boolean(store.state.busy[`reconcile:${session.surfaceId}`]);
 			const running = isRunningSession(session);
 			const changeRows: HTMLElement[] = [];
@@ -1280,17 +1243,7 @@ export class SurfaceSessionDrawer {
 						h(
 							"div",
 							{ class: "surface-drawer-change-top" },
-							open
-								? h("button", {
-										type: "button",
-										class: "surface-switch",
-										role: "switch",
-										"aria-checked": String(shown),
-										"aria-label": t("Show {title} in the preview", { title: change.title }),
-										"data-act": "toggle",
-										"data-change": change.id,
-									})
-								: h("span", { class: "surface-change-mark" }, icon("check")),
+							open ? null : h("span", { class: "surface-change-mark" }, icon("check")),
 							h(
 								"div",
 								{ class: "surface-drawer-change-copy" },
@@ -1313,57 +1266,70 @@ export class SurfaceSessionDrawer {
 							),
 							!open ? changeTag(change) : null,
 						),
-						open && !running
+						open
 							? h(
 									"div",
 									{ class: "surface-drawer-change-acts" },
-									conflicted
-										? h(
-												"button",
-												{
-													type: "button",
-													class: "surface-change-btn is-danger",
-													"data-act": "reconcile",
-													"data-change": change.id,
-													disabled: busyReconcile,
-												},
-												t("Reconcile"),
-											)
-										: h(
-												"button",
-												{
-													type: "button",
-													class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
-													"data-act": "approve",
-													"data-change": change.id,
-													...(armed ? { "data-armed": "true" } : {}),
-													disabled: busyChange,
-												},
-												armed ? t("Confirm") : t("Approve"),
-											),
-									h(
-										"button",
-										{
-											type: "button",
-											class: "surface-change-btn",
-											"data-act": "quote-change",
-											"data-session": session.id,
-											"data-change": change.id,
-											"data-change-title": change.title,
-										},
-										t("Change"),
-									),
-									h(
-										"button",
-										{
-											type: "button",
-											class: "surface-change-btn is-muted",
-											"data-act": "discard-change",
-											"data-change": change.id,
-											disabled: busyChange,
-										},
-										t("Discard"),
-									),
+									h("button", {
+										type: "button",
+										class: "surface-switch",
+										role: "switch",
+										"aria-checked": String(shown),
+										"aria-label": t("Show {title} in the preview", { title: change.title }),
+										"data-act": "toggle",
+										"data-change": change.id,
+									}),
+									...(running
+										? []
+										: [
+												conflicted
+													? h(
+															"button",
+															{
+																type: "button",
+																class: "surface-change-btn is-danger",
+																"data-act": "reconcile",
+																"data-change": change.id,
+																disabled: busyReconcile,
+															},
+															t("Reconcile"),
+														)
+													: h(
+															"button",
+															{
+																type: "button",
+																class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
+																"data-act": "approve",
+																"data-change": change.id,
+																...(armed ? { "data-armed": "true" } : {}),
+																disabled: busyChange,
+															},
+															armed ? t("Confirm") : t("Approve"),
+														),
+												h(
+													"button",
+													{
+														type: "button",
+														class: "surface-change-btn",
+														"data-act": "quote-change",
+														"data-session": session.id,
+														"data-change": change.id,
+														"data-change-title": change.title,
+													},
+													t("Change"),
+												),
+												h(
+													"button",
+													{
+														type: "button",
+														class: "surface-change-btn is-muted",
+														"data-act": "discard-change",
+														"data-change": change.id,
+														disabled: busyChange,
+													},
+													t("Discard"),
+												),
+											]),
 								)
 							: null,
 					),
@@ -1407,7 +1373,6 @@ export class SurfaceSessionDrawer {
 					),
 				);
 		}
-		parts.push(h("div", { class: "surface-drawer-rule" }));
 		parts.push(...this.#thread(session, notes));
 		return parts;
 	}
