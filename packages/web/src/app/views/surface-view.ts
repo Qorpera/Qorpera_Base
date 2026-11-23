@@ -22,6 +22,7 @@ import {
 	hasConflictedChange,
 	isLocalSurfaceId,
 	isOpenChange,
+	isOpenVariant,
 	isRunningSession,
 	migrationPending,
 	openExplorations,
@@ -724,7 +725,7 @@ export class SurfaceView {
 		const look = store.lookOf(surface);
 		const workspace = state.workspaces[surface.id];
 		const explorations = openExplorations(workspace);
-		const plainSessions = (workspace?.activeSessions ?? []).filter((session) => !session.explorationId);
+		const plainSessions = (workspace?.activeSessions ?? []).filter((session) => !isOpenVariant(session, workspace));
 		type HeaderAgent =
 			| {
 					readonly kind: "exploration";
@@ -1292,7 +1293,7 @@ export class SurfaceView {
 			mode === "live"
 				? []
 				: (workspace?.activeSessions ?? []).flatMap((session) => {
-						if (session.explorationId && session.id !== pickedId) return [];
+						if (isOpenVariant(session, workspace) && session.id !== pickedId) return [];
 						return session.changes.filter((change) => isOpenChange(change) && store.isChangeShown(change.id));
 					});
 		const key = JSON.stringify([
@@ -1876,7 +1877,7 @@ export class SurfaceView {
 			case "bar-agents-more": {
 				const workspace = store.workspace(surface.id);
 				const explorations = openExplorations(workspace);
-				const sessions = (workspace?.activeSessions ?? []).filter((s) => !s.explorationId);
+				const sessions = (workspace?.activeSessions ?? []).filter((s) => !isOpenVariant(s, workspace));
 				if (!explorations.length && !sessions.length) return;
 				const box = target.getBoundingClientRect();
 				openContextMenu({
