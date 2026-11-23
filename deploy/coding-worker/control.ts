@@ -17,7 +17,7 @@ import { withTimeoutSignal } from "./timeout-signal.ts";
 export const CODING_CONTROL_METHODS: ReadonlySet<string> = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODING_SNAPSHOT_RPCS, ...COMPANY_MACHINE_HOST_RPCS, ...CODE_HOST_RPCS,
 	...CODE_HOST_DELETION_RPCS, ...CODE_CARE_RPCS, ...CODE_CHANGE_RPCS, ...CODE_REQUEST_RPCS, ...CODE_SITE_RPCS,
 	...NATIVE_WEB_HOSTING_RPCS, ...SURFACE_CODE_HOST_RPCS,
-	"qorpera_authorize_coding_command", "qorpera_route_coding_command",
+	"qorpera_authorize_coding_command", "qorpera_authorize_coding_command_v2", "qorpera_route_coding_command",
 	"qorpera_authorize_machine_command", "qorpera_authorize_machine_coding_value", "qorpera_authorize_machine_account_fill",
 	"qorpera_authorize_machine_screen",
 	"qorpera_member_machine_screen_authority", "qorpera_member_machine_desktop_act_authority",

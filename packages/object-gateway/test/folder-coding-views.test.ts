@@ -737,7 +737,12 @@ describe("the control socket", () => {
 		const KEY_IS = "key is 32 bytes, base64url";
 		expect(answers).toEqual([
 			{ boundary: { machine: CODING_MACHINE_ID, reads: "released", views: [] } },
-			{ error: { code: "BAD_REQUEST", message: "A request's op is boundary, restarted, open, close or secrets" } },
+			{
+				error: {
+					code: "BAD_REQUEST",
+					message: "A request's op is boundary, release-reads, restarted, open, close or secrets",
+				},
+			},
 			{ error: { code: "BAD_REQUEST", message: MACHINE } },
 			{ boundary: { machine: CODING_MACHINE_ID, reads: "released", views: [] } },
 			{ error: { code: "BAD_REQUEST", message: "A restarted request is {op, machine}" } },
@@ -770,5 +775,61 @@ describe("the control socket", () => {
 		// What the service takes are the hashes the executor made (secret-scan.test.ts), under its key.
 		expect(sets[0]?.[1].carries("a test-value-0001 in a name")).toBe(true);
 		expect(sets[0]?.[1].carries("a test-value-0002 in a name")).toBe(false);
+	});
+
+	it("coalesces concurrent machine boundaries and runs lightweight releaseReads without flushing sibling writes", async () => {
+		const { core, service, open } = await company();
+		const first = await open(SESSION);
+		const second = await open(SECOND);
+		await first.read(PLAN);
+		await write(second, "docs/pending-only.txt", "still-pending");
+
+		let releaseGateResolve!: () => void;
+		const releaseGate = new Promise<void>((resolve) => {
+			releaseGateResolve = resolve;
+		});
+		const origRelease = core.releaseReads.bind(core);
+		let releaseCalls = 0;
+		core.releaseReads = async (...args) => {
+			releaseCalls += 1;
+			await releaseGate;
+			return origRelease(...args);
+		};
+
+		const [rr1, rr2] = await Promise.all([
+			service.releaseReads(CODING_MACHINE_ID),
+			(async () => {
+				await wait(5);
+				const p = service.releaseReads(CODING_MACHINE_ID);
+				releaseGateResolve();
+				return p;
+			})(),
+		]);
+		expect(rr1).toEqual({ machine: CODING_MACHINE_ID, reads: "released" });
+		expect(rr2).toEqual({ machine: CODING_MACHINE_ID, reads: "released" });
+		expect(releaseCalls).toBe(1);
+		expect(core.entries.has("docs/pending-only.txt")).toBe(false);
+
+		core.releaseReads = origRelease;
+		let commitGateResolve!: () => void;
+		const commitGate = new Promise<void>((resolve) => {
+			commitGateResolve = resolve;
+		});
+		const origCommit = core.commit.bind(core);
+		let commitCalls = 0;
+		core.commit = async (...args) => {
+			commitCalls += 1;
+			await commitGate;
+			return origCommit(...args);
+		};
+		const b1 = service.boundary(CODING_MACHINE_ID);
+		await wait(5);
+		const b2 = service.boundary(CODING_MACHINE_ID);
+		commitGateResolve();
+		const [res1, res2] = await Promise.all([b1, b2]);
+		expect(res1.reads).toBe("released");
+		expect(res2.reads).toBe("released");
+		expect(commitCalls).toBe(1);
+		expect(core.entries.has("docs/pending-only.txt")).toBe(true);
 	});
 });
