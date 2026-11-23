@@ -335,7 +335,7 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 	{
 		type: "spec_list",
 		family: "specs",
-		summary: "labelled values; nested objects as groups; found but empty draws nothing",
+		summary: "labelled values; nested objects as groups; found but empty, or skip with nothing left, draws nothing",
 		fields: [
 			{ name: "from", kind: "source", required: true, note: "an object" },
 			{ name: "skip", kind: "keys", required: false, note: "keys to leave out" },

@@ -802,7 +802,7 @@ describe("the block registry", () => {
 		}
 		expect(text).not.toMatch(/parse|registry|\.ts\b|function/i);
 		expect(text).toContain("A source may be a list of 2-6 sources tried in order; the first found wins.");
-		expect(text).toContain("- spec_list: labelled values; nested objects as groups; found but empty draws nothing.");
+		expect(text).toContain("- spec_list: labelled values; nested objects as groups; found but empty, or skip with nothing left, draws nothing.");
 	});
 });
 

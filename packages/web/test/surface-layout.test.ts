@@ -276,6 +276,16 @@ describe("Product studio on the layout renderer", () => {
 		store.dispose();
 	});
 
+	it("gives a list of the rest no empty home, and a named list one", async () => {
+		const { view, tab, store } = await open({});
+		tab("specs");
+		const lists = [...view.el.querySelectorAll('[data-block="spec_list"]')];
+		expect(lists.map((list) => list.querySelector("h2")?.textContent)).toEqual(["Specs"]);
+		expect(lists[0]!.querySelector(".studio-kv.is-empty")).not.toBeNull();
+		view.dispose();
+		store.dispose();
+	});
+
 	it("draws the layout across time slices like the page did", async () => {
 		const surface = studio();
 		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [surface]) }));

@@ -218,7 +218,7 @@ export function prepareSpecList(block: SurfaceSpecListBlock, ctx: SurfaceBlockCo
 		const skip = new Set((block.skip ?? []).map((key) => key.toLowerCase()));
 		listEntries(read.value, isPlainRecord(read.base) ? read.base : undefined, skip, [], entries);
 	}
-	if (read.found && entries.length === 0) return { filled: false, pieces: [] };
+	if (entries.length === 0 && (read.found || block.skip?.length)) return { filled: false, pieces: [] };
 	const filled = entries.length > 0;
 	const changed = filled && entries.some((entry) => entry.changed);
 	const heading = headingOf(block.heading, read.binding, ctx);
