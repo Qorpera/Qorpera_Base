@@ -128,7 +128,7 @@ export class HoverGlide {
 		}
 		window.clearTimeout(this.#removing);
 		this.tint.classList.add("is-on");
-		if (!from || reducedMotion() || typeof this.tint.animate !== "function" || sameBox(from, to)) {
+		if (!from || reducedMotion() || typeof requestAnimationFrame !== "function" || sameBox(from, to)) {
 			this.#stop();
 			this.#show(to);
 			this.#light(item, 0);
@@ -156,9 +156,9 @@ export class HoverGlide {
 				return;
 			}
 			this.#show(next);
-			this.#frame = window.requestAnimationFrame(step);
+			this.#frame = requestAnimationFrame(step);
 		};
-		this.#frame = window.requestAnimationFrame(step);
+		this.#frame = requestAnimationFrame(step);
 	}
 
 	#show(box: Box): void {
@@ -167,7 +167,7 @@ export class HoverGlide {
 	}
 
 	#stop(): void {
-		window.cancelAnimationFrame(this.#frame);
+		cancelAnimationFrame(this.#frame);
 		this.#frame = 0;
 	}
 
