@@ -1345,6 +1345,54 @@ describe("SurfaceFolderWorker", () => {
 		expect(hOk.readText("identity/voice.md")).toBe("Clean voice.\n");
 	});
 
+	it("fails a land job holding a write_file op, naming its path, and commits nothing", async () => {
+		const h = createHarness({ "product/spec.md": "Spec.\n" });
+		const changeId = randomUUID();
+		h.setPendingClaim({
+			merges: [
+				{
+					jobId: randomUUID(),
+					kind: "land_change",
+					surfaceId: h.surfaceId,
+					profileId: h.profileId,
+					environmentId: h.environmentId,
+					leaseToken: randomUUID(),
+					folderRoot: "product",
+					payload: { changeIds: [changeId] },
+					preMergeSnapshot: null,
+					approvedChanges: [
+						{
+							changeId,
+							kind: "folder_patch",
+							title: "Add model",
+							summary: "Adds model.glb",
+							affectedPaths: ["model.glb"],
+							patchManifest: [
+								{ op: "write_text", path: "spec.md", content: "New spec.\n" },
+								{
+									op: "write_file",
+									path: "model.glb",
+									file: {
+										manifestSha256: "a".repeat(64),
+										fileSha256: "b".repeat(64),
+										bytes: 2048,
+										mediaType: "model/gltf-binary",
+									},
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		expect(await h.worker.processDue(8)).toBe(1);
+		expect(h.completedMerges).toHaveLength(1);
+		expect(h.completedMerges[0]?.p_status).toBe("failed");
+		expect(String(h.completedMerges[0]?.p_error_detail)).toContain("write_file ops cannot land yet: model.glb");
+		expect(h.getCommitCount()).toBe(0);
+		expect(h.readText("product/spec.md")).toBe("Spec.\n");
+	});
+
 	it("reads and stages multiple files concurrently, skips redundant parent directory probes and unchanged writes", async () => {
 		const readPaths: string[] = [];
 		let activeReads = 0;

@@ -7,6 +7,7 @@ import {
 	parseStudioPatchOps,
 	resolveStudioFolderPath,
 	type StudioPatchOp,
+	type StudioTextPatchOp,
 } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import { ObjectDependencyError } from "./dependency.ts";
@@ -284,14 +285,19 @@ function parentDirectoriesOf(paths: Iterable<string>): string[] {
 	return [...dirs].sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b));
 }
 
-function extractStudioOps(manifest: unknown): StudioPatchOp[] {
+function extractStudioOps(manifest: unknown): StudioTextPatchOp[] {
+	let ops: StudioPatchOp[];
 	if (Array.isArray(manifest)) {
-		return parseStudioPatchOps(manifest);
+		ops = parseStudioPatchOps(manifest);
+	} else if (manifest && typeof manifest === "object" && Array.isArray((manifest as { ops?: unknown }).ops)) {
+		ops = parseStudioPatchOps((manifest as { ops: unknown[] }).ops);
+	} else {
+		throw new Error("Folder change patch manifest is missing valid ops");
 	}
-	if (manifest && typeof manifest === "object" && Array.isArray((manifest as { ops?: unknown }).ops)) {
-		return parseStudioPatchOps((manifest as { ops: unknown[] }).ops);
-	}
-	throw new Error("Folder change patch manifest is missing valid ops");
+	return ops.map((op) => {
+		if (op.op === "write_file") throw new Error(`Folder change write_file ops cannot land yet: ${op.path}`);
+		return op;
+	});
 }
 
 function parseClaimedFolderMerge(value: unknown): ClaimedFolderMergeJob | null {
@@ -747,7 +753,7 @@ export class SurfaceFolderWorker {
 			throw new Error("Folder merge job has no approved changes");
 		}
 
-		const resolvedOps: { readonly path: string; readonly op: StudioPatchOp }[] = [];
+		const resolvedOps: { readonly path: string; readonly op: StudioTextPatchOp }[] = [];
 		const touchedPaths = new Set<string>();
 		for (const change of job.approvedChanges) {
 			const ops = extractStudioOps(change.patchManifest);

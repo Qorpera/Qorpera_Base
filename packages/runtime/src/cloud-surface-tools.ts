@@ -1090,6 +1090,11 @@ export function createStageSurfacePatchTool(sessionId: string, port: SurfacePatc
 				const safePath = assertSafeRelativePath(op.path, `ops[${index}].path`);
 				if (op.op === "write_text") return { op: "write_text", path: safePath, content: op.content };
 				if (op.op === "delete") return { op: "delete", path: safePath };
+				if (op.op === "write_file") {
+					throw new CloudToolArgumentRefusal(
+						`ops[${index}].op write_file is not available in stage_surface_patch`,
+					);
+				}
 				validateMergeJsonValue(op.patch, `ops[${index}].patch`, 0);
 				return { op: "merge_json", path: safePath, patch: op.patch };
 			});

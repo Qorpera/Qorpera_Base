@@ -294,6 +294,24 @@ describe("cloud surface runtime tools", () => {
 		).toThrow();
 		expect(() =>
 			tool.parseArguments({
+				title: "Binary",
+				summary: "None",
+				ops: [
+					{
+						op: "write_file",
+						path: "model.glb",
+						file: {
+							manifestSha256: "a".repeat(64),
+							fileSha256: "b".repeat(64),
+							bytes: 1024,
+							mediaType: "model/gltf-binary",
+						},
+					},
+				],
+			}),
+		).toThrow("ops[0].op write_file is not available in stage_surface_patch");
+		expect(() =>
+			tool.parseArguments({
 				title: "Missing content",
 				summary: "None",
 				ops: [{ op: "write_text", path: "a.md" }],
