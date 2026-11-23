@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { StudioBinaryRef } from "@qorpera/contracts";
 import { describe, expect, it } from "vitest";
-import { starterStudioFiles } from "../src/app/surface-local-sandbox.ts";
+import { SAMPLE_HEADBAND, SAMPLE_HEADBAND_PATH, starterStudioFiles } from "../src/app/surface-local-sandbox.ts";
 import {
 	APART_DISTANCE,
 	apartOffset,
@@ -9,8 +10,11 @@ import {
 	pickStudioModel,
 	sameStudioModel,
 	shortestTurn,
+	studioColorHex,
 	tintedMaterials,
 } from "../src/app/views/surface-studio-model.ts";
+
+const SAMPLE_FILE = new URL(`../public/${SAMPLE_HEADBAND_PATH.slice(2)}`, import.meta.url);
 
 function ref(seed: string, mediaType = "model/gltf-binary"): StudioBinaryRef {
 	return {
@@ -144,9 +148,48 @@ describe("taking a model apart", () => {
 	});
 });
 
+describe("a colour dot's value as the colour a model takes", () => {
+	it("reads every hex form, dropping alpha", () => {
+		expect(studioColorHex("#C3BBEA")).toBe("#c3bbea");
+		expect(studioColorHex("#abc")).toBe("#aabbcc");
+		expect(studioColorHex("#abcd")).toBe("#aabbcc");
+		expect(studioColorHex(" #c3bbea80 ")).toBe("#c3bbea");
+	});
+
+	it("reads rgb and hsl in their comma, space and percentage forms", () => {
+		expect(studioColorHex("rgb(195, 187, 234)")).toBe("#c3bbea");
+		expect(studioColorHex("rgba(195 187 234 / 0.5)")).toBe("#c3bbea");
+		expect(studioColorHex("rgb(100% 0% 50%)")).toBe("#ff0080");
+		expect(studioColorHex("hsl(120, 100%, 25%)")).toBe("#008000");
+		expect(studioColorHex("hsla(0.5turn 100% 50% / 40%)")).toBe("#00ffff");
+	});
+
+	it("reads oklch, clipping to what a screen can show", () => {
+		expect(studioColorHex("oklch(100% 0 0)")).toBe("#ffffff");
+		expect(studioColorHex("oklch(0 0 0)")).toBe("#000000");
+		expect(studioColorHex("oklch(62.8% 0.2577 29.23)")).toBe("#ff0000");
+		expect(studioColorHex("oklch(0.7 0.1 290 / 0.5)")).toBe("#9d94d9");
+		expect(studioColorHex("oklch(70% 0.4 none)")).toMatch(/^#[0-9a-f]{6}$/);
+	});
+
+	it("gives nothing for a value it cannot read", () => {
+		for (const value of [
+			undefined,
+			"",
+			"lavender",
+			"#12",
+			"rgb(nope)",
+			"rgb(1, 2)",
+			"oklch(70% 0.1)",
+			"lab(50 20 30)",
+		])
+			expect(studioColorHex(value), String(value)).toBeUndefined();
+	});
+});
+
 describe("the sample headband", () => {
 	it("names in its object.json the nodes and materials its model holds", () => {
-		const gltf = glbJson(new URL("./fixtures/headband.glb", import.meta.url).pathname);
+		const gltf = glbJson(SAMPLE_FILE.pathname);
 		const files = starterStudioFiles(
 			{ slug: "product", title: "Product", folderRoot: "product" },
 			"Thetaband",
@@ -164,6 +207,13 @@ describe("the sample headband", () => {
 		);
 		expect(used.size).toBe(materials.length);
 		expect([...tintedMaterials(materials, object)]).toEqual(["BandFabric", "Shell"]);
-		expect(readFileSync(new URL("./fixtures/headband.glb", import.meta.url)).byteLength).toBeLessThan(120 * 1024);
+		expect(readFileSync(SAMPLE_FILE).byteLength).toBeLessThan(120 * 1024);
+	});
+
+	it("is referenced by the size and hash of the web app's own file", () => {
+		const bytes = readFileSync(SAMPLE_FILE);
+		expect(SAMPLE_HEADBAND.bytes).toBe(bytes.byteLength);
+		expect(SAMPLE_HEADBAND.fileSha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+		expect(SAMPLE_HEADBAND.mediaType).toBe("model/gltf-binary");
 	});
 });

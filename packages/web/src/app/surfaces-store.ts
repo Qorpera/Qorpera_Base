@@ -151,7 +151,7 @@ const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css|svg|html?)$/i
 const STUDIO_BINARY_FILE = /\.(?:glb|webp|png|jpe?g)$/i;
 const STUDIO_BINARY_TYPES = new Set<string>([...STUDIO_BINARY_MEDIA_TYPES, "application/octet-stream"]);
 const STUDIO_MAX_BINARIES = 32;
-const MAX_CACHED_BINARY_READS = 4;
+export const MAX_CACHED_BINARY_BYTES = 64 * 1024 * 1024;
 const EMPTY_FOLDER: SurfaceFolderContents = { files: {}, binaries: {} };
 const STUDIO_IGNORED_DIR = new Set([
 	"node_modules",
@@ -1190,7 +1190,7 @@ export class SurfacesStore {
 	#noteSeq = 0;
 	#localSeq = 0;
 	readonly #imageReads = new Map<string, string>();
-	readonly #binaryReads = new Map<string, Promise<Uint8Array>>();
+	readonly #binaryReads = new Map<string, { readonly read: Promise<Uint8Array>; readonly bytes: number }>();
 	#loaded: Promise<void> | undefined;
 
 	constructor(options: SurfacesStoreOptions) {
@@ -1351,9 +1351,7 @@ export class SurfacesStore {
 
 	readStudioBinary(file: StudioBinaryRef, signal: AbortSignal): Promise<Uint8Array> {
 		signal.throwIfAborted();
-		const local = localStudioBinaryBytes(file);
-		if (local) return Promise.resolve(local);
-		const read = this.#binaryRead(file);
+		const read = localStudioBinaryBytes(file) ?? this.#binaryRead(file);
 		if (!read) return Promise.reject(new Error("No folder to read from"));
 		return new Promise<Uint8Array>((resolve, reject) => {
 			const stop = () => reject(signal.reason);
@@ -1377,19 +1375,23 @@ export class SurfacesStore {
 		if (kept) {
 			this.#binaryReads.delete(key);
 			this.#binaryReads.set(key, kept);
-			return kept;
+			return kept.read;
 		}
 		const readCloudBinary = this.#options.readCloudBinary;
 		if (!readCloudBinary) return undefined;
 		const read = readCloudBinary(file, this.#options.signal);
-		this.#binaryReads.set(key, read);
+		if (file.bytes > MAX_CACHED_BINARY_BYTES / 2) return read;
+		const entry = { read, bytes: file.bytes };
+		this.#binaryReads.set(key, entry);
 		read.catch(() => {
-			if (this.#binaryReads.get(key) === read) this.#binaryReads.delete(key);
+			if (this.#binaryReads.get(key) === entry) this.#binaryReads.delete(key);
 		});
-		while (this.#binaryReads.size > MAX_CACHED_BINARY_READS) {
-			const oldest = this.#binaryReads.keys().next().value;
-			if (oldest === undefined) break;
+		let held = 0;
+		for (const item of this.#binaryReads.values()) held += item.bytes;
+		for (const [oldest, item] of this.#binaryReads) {
+			if (held <= MAX_CACHED_BINARY_BYTES || oldest === key) break;
 			this.#binaryReads.delete(oldest);
+			held -= item.bytes;
 		}
 		return read;
 	}

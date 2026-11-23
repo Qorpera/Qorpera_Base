@@ -59,6 +59,15 @@ test("the first screen never downloads the figures' motion data or noVNC; main.j
 	);
 });
 
+test("the first screen never downloads the sample 3D model; the sandbox fetches its file only when its stage asks", async () => {
+	const { layout, text } = await built;
+	const first = [layout.script, ...layout.preload];
+	assert.deepEqual(inputsOf(layout, first).filter((path) => /surface-sample-headband|\.glb$/.test(path)), []);
+	assert.deepEqual(inputsOf(layout, layout.files.filter((file) => file.endsWith(".js"))).filter((path) => /\.glb$/.test(path)), []);
+	assert.ok(first.some((file) => text[file].includes("./assets/surfaces/samples/headband.glb")));
+	for (const file of first) assert.ok(!text[file].includes("Z2xURgIAAAA"), file);
+});
+
 test("vendor code has its own preloaded chunk, and an app-only change renames only main.js", async () => {
 	const { layout } = await built;
 	const vendorChunk = layout.vendor.filter((file) => inputsOf(layout, [file]).some((path) => VENDOR.test(path)));

@@ -9,7 +9,6 @@ import {
 	type SurfaceSummary,
 } from "@qorpera/contracts";
 import type { SurfaceKind } from "./surface-kinds.ts";
-import { SAMPLE_HEADBAND_GLB_BASE64, SAMPLE_HEADBAND_GLB_SHA256 } from "./surface-sample-headband.ts";
 
 export function isThetabandCompany(companyName: string): boolean {
 	return /\bthetaband\b/i.test(companyName);
@@ -447,10 +446,28 @@ function thetabandHeadbandObject(): Record<string, unknown> {
 	};
 }
 
-let sampleHeadband: Uint8Array | undefined;
+export const SAMPLE_HEADBAND: StudioBinaryRef = Object.freeze({
+	manifestSha256: "5762d4aec6fd9fe32fd6c919f43dd489aea3a181bc37d6ab0e8b0c9fb9aee258",
+	fileSha256: "5762d4aec6fd9fe32fd6c919f43dd489aea3a181bc37d6ab0e8b0c9fb9aee258",
+	bytes: 97164,
+	mediaType: "model/gltf-binary",
+});
+export const SAMPLE_HEADBAND_PATH = "./assets/surfaces/samples/headband.glb";
 
-function sampleHeadbandBytes(): Uint8Array {
-	sampleHeadband ??= Uint8Array.from(atob(SAMPLE_HEADBAND_GLB_BASE64), (char) => char.charCodeAt(0));
+let sampleHeadband: Promise<Uint8Array> | undefined;
+
+function sampleHeadbandBytes(): Promise<Uint8Array> {
+	sampleHeadband ??= (async () => {
+		const address = new URL(`${SAMPLE_HEADBAND_PATH}?v=${SAMPLE_HEADBAND.fileSha256.slice(0, 12)}`, document.baseURI);
+		const response = await fetch(address);
+		if (!response.ok) throw new Error(`${response.status}`);
+		const bytes = new Uint8Array(await response.arrayBuffer());
+		if (bytes.byteLength !== SAMPLE_HEADBAND.bytes) throw new Error("The sample model changed");
+		return bytes;
+	})();
+	sampleHeadband.catch(() => {
+		sampleHeadband = undefined;
+	});
 	return sampleHeadband;
 }
 
@@ -462,17 +479,12 @@ export function starterStudioBinaries(
 	if (!isSpecSurface(surface, kind) || !isThetabandCompany(companyName.trim())) return {};
 	const root = (surface.folderRoot || surface.slug || "studio").replace(/^\/+|\/+$/g, "");
 	return {
-		[`${root}/headband.glb`]: {
-			manifestSha256: SAMPLE_HEADBAND_GLB_SHA256,
-			fileSha256: SAMPLE_HEADBAND_GLB_SHA256,
-			bytes: sampleHeadbandBytes().byteLength,
-			mediaType: "model/gltf-binary",
-		},
+		[`${root}/headband.glb`]: SAMPLE_HEADBAND,
 	};
 }
 
-export function localStudioBinaryBytes(ref: StudioBinaryRef): Uint8Array | undefined {
-	return ref.fileSha256 === SAMPLE_HEADBAND_GLB_SHA256 ? sampleHeadbandBytes() : undefined;
+export function localStudioBinaryBytes(ref: StudioBinaryRef): Promise<Uint8Array> | undefined {
+	return ref.fileSha256 === SAMPLE_HEADBAND.fileSha256 ? sampleHeadbandBytes() : undefined;
 }
 
 export function starterStudioFiles(

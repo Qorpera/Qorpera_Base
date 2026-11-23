@@ -5,6 +5,7 @@ import { STUDIO_BINARY_MAX_BYTES, type StudioBinaryRef } from "@qorpera/contract
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseRoute, routeHash, surfaceHash } from "../src/app/router.ts";
 import { Store } from "../src/app/state.ts";
+import { SAMPLE_HEADBAND, SAMPLE_HEADBAND_PATH } from "../src/app/surface-local-sandbox.ts";
 import {
 	activeTaskSessions,
 	approvalOutcome,
@@ -14,6 +15,7 @@ import {
 	effectiveStudioBaseBinaries,
 	effectiveStudioBaseFiles,
 	isOpenVariant,
+	MAX_CACHED_BINARY_BYTES,
 	migrationPending,
 	normalizeStudioPatchOps,
 	PREVIEW_PASS_TTL_MS,
@@ -1480,19 +1482,72 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
-	it("gives the local sandbox's Product a real headband model, its bytes held in memory", async () => {
-		const store = storeWith(undefined, { companyName: "Thetaband", localInteractive: true });
-		await store.load();
-		const product = store.state.surfaces.find((surface) => surface.slug === "product")!;
-		const binaries = store.state.localStudioBinaries[product.id]!;
-		const glb = binaries["product/headband.glb"]!;
-		expect(glb.mediaType).toBe("model/gltf-binary");
-		const fixture = readFileSync(new URL("./fixtures/headband.glb", import.meta.url));
-		expect(glb.bytes).toBe(fixture.byteLength);
-		expect(glb.fileSha256).toBe(createHash("sha256").update(fixture).digest("hex"));
-		const bytes = await store.readStudioBinary(glb, new AbortController().signal);
-		expect(Buffer.from(bytes).equals(fixture)).toBe(true);
-		expect(JSON.parse(store.state.localStudioBase[product.id]!["product/object.json"]!).model).toBe("headband.glb");
+	it("gives the local sandbox's Product a real headband model, fetched from the app's own file only when asked", async () => {
+		const file = readFileSync(new URL(`../public/${SAMPLE_HEADBAND_PATH.slice(2)}`, import.meta.url));
+		const fetched = vi.fn(async (address: URL) => {
+			expect(address.href).toBe(
+				`https://app.example/assets/surfaces/samples/headband.glb?v=${SAMPLE_HEADBAND.fileSha256.slice(0, 12)}`,
+			);
+			return new Response(new Uint8Array(file));
+		});
+		vi.stubGlobal("document", {
+			baseURI: "https://app.example/",
+			visibilityState: "visible",
+			addEventListener: () => undefined,
+			removeEventListener: () => undefined,
+		});
+		vi.stubGlobal("fetch", fetched);
+		try {
+			const store = storeWith(undefined, { companyName: "Thetaband", localInteractive: true });
+			await store.load();
+			const product = store.state.surfaces.find((surface) => surface.slug === "product")!;
+			const glb = store.state.localStudioBinaries[product.id]!["product/headband.glb"]!;
+			expect(glb).toEqual(SAMPLE_HEADBAND);
+			expect(glb.bytes).toBe(file.byteLength);
+			expect(glb.fileSha256).toBe(createHash("sha256").update(file).digest("hex"));
+			expect(fetched).not.toHaveBeenCalled();
+			const bytes = await store.readStudioBinary(glb, new AbortController().signal);
+			expect(Buffer.from(bytes).equals(file)).toBe(true);
+			await store.readStudioBinary(glb, new AbortController().signal);
+			expect(fetched).toHaveBeenCalledTimes(1);
+			expect(JSON.parse(store.state.localStudioBase[product.id]!["product/object.json"]!).model).toBe(
+				"headband.glb",
+			);
+			store.dispose();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("keeps read model bytes up to 64 MiB in all, and never a file over half of that", async () => {
+		const mib = 1024 * 1024;
+		const ref = (seed: string, bytes: number): StudioBinaryRef => ({
+			manifestSha256: seed.repeat(64),
+			fileSha256: seed.repeat(64),
+			bytes,
+			mediaType: "model/gltf-binary",
+		});
+		const readCloudBinary = vi.fn(async () => new Uint8Array([1]));
+		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => []) }), { readCloudBinary });
+		const signal = new AbortController().signal;
+		const a = ref("a", 20 * mib);
+		const b = ref("b", 20 * mib);
+		const c = ref("c", 20 * mib);
+		const d = ref("d", 20 * mib);
+		const big = ref("e", 33 * mib);
+		expect(MAX_CACHED_BINARY_BYTES).toBe(64 * mib);
+		for (const file of [a, b, c, a]) await store.readStudioBinary(file, signal);
+		expect(readCloudBinary).toHaveBeenCalledTimes(3);
+		await store.readStudioBinary(d, signal);
+		await store.readStudioBinary(a, signal);
+		expect(readCloudBinary).toHaveBeenCalledTimes(4);
+		await store.readStudioBinary(b, signal);
+		expect(readCloudBinary).toHaveBeenCalledTimes(5);
+		await store.readStudioBinary(big, signal);
+		await store.readStudioBinary(big, signal);
+		expect(readCloudBinary).toHaveBeenCalledTimes(7);
+		await store.readStudioBinary(a, signal);
+		expect(readCloudBinary).toHaveBeenCalledTimes(7);
 		store.dispose();
 	});
 
