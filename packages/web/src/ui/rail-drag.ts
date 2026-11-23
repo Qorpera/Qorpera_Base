@@ -378,24 +378,36 @@ export class RailDrag {
 		const step = () => {
 			const active = this.#active;
 			if (!active?.ghost) return;
-			const rect = this.#list.getBoundingClientRect();
-			const edge = EDGE * uiScale();
-			const speed =
-				active.lastY < rect.top + edge
-					? -Math.ceil((rect.top + edge - active.lastY) / 4)
-					: active.lastY > rect.bottom - edge
-						? Math.ceil((active.lastY - (rect.bottom - edge)) / 4)
-						: 0;
-			if (speed) {
-				const before = this.#list.scrollTop;
-				this.#list.scrollTop += speed;
-				if (this.#list.scrollTop !== before) {
-					this.#target(active.lastX, active.lastY);
-				}
+			const dock = this.#dockAt(active.lastX, active.lastY);
+			if ((dock && this.#edgeScroll(dock, active.lastY)) || this.#edgeScroll(this.#list, active.lastY)) {
+				this.#target(active.lastX, active.lastY);
 			}
 			this.#frame = requestAnimationFrame(step);
 		};
 		this.#frame = requestAnimationFrame(step);
+	}
+
+	#edgeScroll(scroller: HTMLElement, y: number): boolean {
+		const rect = scroller.getBoundingClientRect();
+		const edge = EDGE * uiScale();
+		const speed =
+			y < rect.top + edge
+				? -Math.ceil((rect.top + edge - y) / 4)
+				: y > rect.bottom - edge
+					? Math.ceil((y - (rect.bottom - edge)) / 4)
+					: 0;
+		if (!speed) return false;
+		const before = scroller.scrollTop;
+		scroller.scrollTop += speed;
+		return scroller.scrollTop !== before;
+	}
+
+	// WHY: the rail's dock (Agents and People) scrolls by itself inside the list: over it the dock scrolls first, and
+	// the list once the dock can go no further.
+	#dockAt(x: number, y: number): HTMLElement | undefined {
+		return document
+			.elementsFromPoint?.(x, y)
+			.find((element): element is HTMLElement => element.matches(".rail-dock") && this.#list.contains(element));
 	}
 
 	#release(event: PointerEvent): void {
