@@ -81,6 +81,25 @@ create trigger qorpera_surfaces_close_publish_asks
 	)
 	execute function public.qorpera_surface_close_publish_asks();
 
+create function public.qorpera_surface_publish_asks_member_left()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+	if tg_op = 'DELETE' then
+		delete from public.qorpera_surface_publish_asks
+		where profile_id = old.profile_id and old.user_id in (asked_user_id, asked_by_user_id);
+	elsif new.role = 'viewer' then
+		delete from public.qorpera_surface_publish_asks
+		where profile_id = old.profile_id and asked_user_id = old.user_id;
+	end if;
+	return null;
+end $$;
+revoke all on function public.qorpera_surface_publish_asks_member_left()
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
+create trigger qorpera_profile_members_close_publish_asks
+	after delete or update of role on public.qorpera_profile_members
+	for each row execute function public.qorpera_surface_publish_asks_member_left();
+
 select pg_temp.spa_patch('public.qorpera_surface_summary_json(public.qorpera_surfaces)'::regprocedure, array[
 $old$		'needsAttentionCount', coalesce(stats.attention_sessions, 0) + coalesce(change_stats.conflicted_changes, 0),$old$,
 $new$		'needsAttentionCount', coalesce(stats.attention_sessions, 0) + coalesce(change_stats.conflicted_changes, 0),

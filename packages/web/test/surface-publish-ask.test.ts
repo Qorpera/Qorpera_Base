@@ -124,6 +124,16 @@ describe("asking a teammate to publish", () => {
 		}
 	});
 
+	it("shows a teammate's open ask to others without asking over it", async () => {
+		const shown = site({ publishAsk: ask() });
+		const { store } = await setUp(MADS, shown, {}, [JONAS, SOFIE, MADS]);
+		openPublishPatchnotesSheet(store, shown);
+		expect(sheetText()).toContain("Jonas asked Sofie to publish.");
+		expect(sheetButton("ask-menu")).toBeNull();
+		expect(sheetButton("confirm-publish")).not.toBeNull();
+		store.dispose();
+	});
+
 	it("lets the asker pick one of several teammates by face", async () => {
 		const { store, calls } = await setUp(JONAS, site(), {}, [JONAS, SOFIE, MADS]);
 		openPublishPatchnotesSheet(store, site());

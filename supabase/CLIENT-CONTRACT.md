@@ -1836,7 +1836,8 @@ A surface holds at most one ask. Each call answers the surface's summary.
   caller asked nothing there.
 
 Yes is the asked member's own `qorpera_publish_surface`, with their own authority. An ask goes when anyone's publish
-starts (a job's publish when it starts) and when nothing is left to publish. Each change sends the `surfaces` hint.
+starts (a job's publish when it starts), when nothing is left to publish, and when the asked member leaves the
+company or becomes a viewer (the asker leaving closes it too). Each change sends the `surfaces` hint.
 
 ### Coding environment secrets (20260928549440_coding_environment_secrets)
 

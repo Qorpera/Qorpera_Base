@@ -7421,7 +7421,8 @@ the founder there was no way forward but Qorpera's support.
 2. **One at a time.** A surface holds one ask; a new one replaces it. The asked member's no keeps it, marked, for the
    asker to read until the asker clears it or asks again.
 3. **It closes by itself.** Anyone's publish closes it when it starts, and so does a surface with nothing left to
-   publish. With Auto-publish on there is nothing to ask.
+   publish, and so does the asked member leaving the company or becoming a viewer. With Auto-publish on there is
+   nothing to ask. While an ask waits, nobody else asks over it from Patch notes.
 
 ## 20. Enforcement matrix
 

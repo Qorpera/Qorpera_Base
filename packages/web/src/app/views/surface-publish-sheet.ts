@@ -353,7 +353,7 @@ export function openPublishPatchnotesSheet(
 						: null;
 		const canAsk =
 			!askedMe &&
-			myAsk?.status !== "open" &&
+			ask?.status !== "open" &&
 			!surface.autoPublish &&
 			total > 0 &&
 			!publishInProgress &&
