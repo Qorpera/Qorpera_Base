@@ -1,22 +1,25 @@
 import {
 	normalizeStudioFolderRoot,
 	resolveStudioFolderPath,
+	type StudioBinaryRef,
 	type StudioPatchChange,
 	type StudioPatchOp,
 	type SurfacePreviewConflict,
 } from "@qorpera/contracts";
 
-export type { StudioPatchChange, StudioPatchOp };
+export type { StudioBinaryRef, StudioPatchChange, StudioPatchOp };
 
 export type StudioPreviewComposition =
 	| {
 			readonly status: "ready";
 			readonly files: Readonly<Record<string, string>>;
+			readonly binaries: Readonly<Record<string, StudioBinaryRef>>;
 			readonly appliedChangeIds: readonly string[];
 	  }
 	| {
 			readonly status: "conflicted";
 			readonly files: Readonly<Record<string, string>>;
+			readonly binaries: Readonly<Record<string, StudioBinaryRef>>;
 			readonly appliedChangeIds: readonly string[];
 			readonly conflictReport: SurfacePreviewConflict;
 	  };
@@ -56,6 +59,7 @@ export function composeStudioPreview(
 	baseFiles: Readonly<Record<string, string>>,
 	orderedChanges: readonly StudioPatchChange[],
 	folderRoot?: string | null,
+	baseBinaries: Readonly<Record<string, StudioBinaryRef>> = {},
 ): StudioPreviewComposition {
 	let normalizedRoot: string | null = null;
 	let invalidRoot = false;
@@ -67,12 +71,14 @@ export function composeStudioPreview(
 		}
 	}
 	const working: Record<string, string> = { ...baseFiles };
+	const binaries: Record<string, StudioBinaryRef> = { ...baseBinaries };
 	const touchedWholeFiles = new Map<string, string>();
 	const touchedJsonKeys = new Map<string, Set<string>>();
 	const appliedChangeIds: string[] = [];
 
 	for (const change of orderedChanges) {
 		const snapshot: Record<string, string> = { ...working };
+		const binarySnapshot: Record<string, StudioBinaryRef> = { ...binaries };
 		const conflictPaths: string[] = [];
 		const conflictOwners = new Set<string>();
 
@@ -92,7 +98,7 @@ export function composeStudioPreview(
 			} else {
 				path = op.path;
 			}
-			if (op.op === "write_text" || op.op === "delete") {
+			if (op.op === "write_text" || op.op === "delete" || op.op === "write_file") {
 				const priorOwner = touchedWholeFiles.get(path);
 				if (priorOwner && priorOwner !== change.changeId) {
 					conflictPaths.push(path);
@@ -104,8 +110,10 @@ export function composeStudioPreview(
 					continue;
 				}
 				touchedWholeFiles.set(path, change.changeId);
-				if (op.op === "delete") delete working[path];
-				else working[path] = op.content;
+				delete working[path];
+				delete binaries[path];
+				if (op.op === "write_text") working[path] = op.content;
+				else if (op.op === "write_file") binaries[path] = op.file;
 				continue;
 			}
 
@@ -113,6 +121,10 @@ export function composeStudioPreview(
 			if (wholeOwner && wholeOwner !== change.changeId) {
 				conflictPaths.push(path);
 				conflictOwners.add(wholeOwner);
+				continue;
+			}
+			if (Object.hasOwn(binaries, path)) {
+				conflictPaths.push(path);
 				continue;
 			}
 			let currentObj: Record<string, unknown> = {};
@@ -140,6 +152,7 @@ export function composeStudioPreview(
 			return {
 				status: "conflicted",
 				files: snapshot,
+				binaries: binarySnapshot,
 				appliedChangeIds,
 				conflictReport: {
 					changeIds: conflictIds,
@@ -153,6 +166,7 @@ export function composeStudioPreview(
 	return {
 		status: "ready",
 		files: working,
+		binaries,
 		appliedChangeIds,
 	};
 }

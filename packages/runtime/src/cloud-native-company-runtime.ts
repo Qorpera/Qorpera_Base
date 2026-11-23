@@ -2617,7 +2617,11 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 										folder: folderClient,
 										operations,
 										identity: runIdentity,
-										surfaceFilePolicy: { mode: "surface_worker", allowedRoots: turnReq.allowedRoots },
+										surfaceFilePolicy: {
+											mode: "surface_worker",
+											writableRoots: turnReq.writableRoots,
+											stagedRoots: turnReq.stagedRoots,
+										},
 									})
 								: cloudFolderFileTools({
 										folder: folderClient,
