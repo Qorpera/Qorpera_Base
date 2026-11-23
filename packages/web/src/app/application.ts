@@ -67,6 +67,7 @@ import { MemberPictures } from "./member-pictures.ts";
 import { newVersionNotice, runningBuildFiles, watchNewVersion } from "./new-version.ts";
 import { watchOnline } from "./online-mark.ts";
 import { OpenQuestions } from "./open-questions.ts";
+import { COMPANY_PRESENCE_PLACE } from "./presence-place.ts";
 import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
@@ -975,6 +976,7 @@ export function mountApplication(
 							},
 							profile.profileId,
 						)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
+					online,
 				);
 				company = controller;
 				const localDev =
@@ -2332,7 +2334,7 @@ export function mountApplication(
 								? `site:${route.id}`
 								: route.section === "concepts" || route.section === "sites" || route.section === "whats-new"
 									? route.section
-									: undefined,
+									: COMPANY_PRESENCE_PLACE,
 		);
 		// A card's request waits only while its agent's chat is on the way.
 		if (route.section !== "chat" && route.section !== "staff") agentPage = undefined;

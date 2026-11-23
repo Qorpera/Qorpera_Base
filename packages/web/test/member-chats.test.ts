@@ -20,6 +20,7 @@ import {
 	parseMemberChatPage,
 	parseMemberChats,
 } from "../src/cloud/member-chats.ts";
+import type { PresenceMember } from "../src/cloud/presence.ts";
 import type { HostedProfileMember, HostedStaffAgent } from "../src/cloud/types.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { h, linkHref } from "../src/ui/dom.ts";
@@ -1308,7 +1309,7 @@ describe("a member's chat on screen", () => {
 });
 
 describe("who is online", () => {
-	it("says online for a member in the company now or marked within minutes, else when they last were", () => {
+	it("says online for an active member in the company now or marked within minutes, ignoring hidden tabs", () => {
 		const now = Date.parse("2026-11-10T12:00:00Z");
 		const chatsOf = (lastSeenAt: string | null) => ({ [sofie]: summary(sofie, { lastSeenAt }) });
 		expect(memberPresence({ here: [], memberChats: chatsOf("2026-11-10T11:58:00Z") }, sofie, now)).toEqual({
@@ -1319,11 +1320,64 @@ describe("who is online", () => {
 			online: false,
 		});
 		expect(memberPresence({ here: [], memberChats: chatsOf(null) }, sofie, now)).toBeNull();
-		const here = [{ clientId: id(70), userId: sofie, name: "Sofie", staffAgentId: null }];
-		expect(memberPresence({ here, memberChats: chatsOf("2026-11-09T09:00:00Z") }, sofie, now)).toEqual({
+		const hiddenTab = [{ clientId: id(70), userId: sofie, name: "Sofie", staffAgentId: null }];
+		expect(memberPresence({ here: hiddenTab, memberChats: chatsOf("2026-11-09T09:00:00Z") }, sofie, now)).toEqual({
+			online: false,
+			text: "Last online 1 day ago",
+		});
+		const activeTab = [{ clientId: id(70), userId: sofie, name: "Sofie", staffAgentId: "@company" }];
+		expect(memberPresence({ here: activeTab, memberChats: chatsOf("2026-11-09T09:00:00Z") }, sofie, now)).toEqual({
 			online: true,
 			text: "Online now",
 		});
+	});
+
+	it("keeps a member who was actively here from snapping back to a stale last-online time on disconnect", async () => {
+		const nineHoursAgo = new Date(Date.now() - 9 * 60 * 60_000).toISOString();
+		let publish: ((members: PresenceMember[]) => void) | undefined;
+		const { f, controller, rpc } = company({
+			chats: [summary(sofie, { lastSeenAt: nineHoursAgo })],
+		});
+		vi.mocked(f.api.getTeam).mockResolvedValue({ ...team, members: people });
+		vi.mocked(f.api.joinPresence).mockImplementation((_profile, onMembers) => {
+			publish = onMembers;
+			return {
+				setOpenThread: vi.fn(),
+				setPresent: vi.fn(),
+				sendTyping: vi.fn(),
+				sendActivity: vi.fn(),
+				stop: vi.fn(async () => {}),
+			};
+		});
+		await controller.refreshTeam();
+		await controller.memberChats.refresh();
+		await settle();
+		const readsBefore = rpc.mock.calls.filter((call) => call[0] === "qorpera_list_member_chats").length;
+
+		publish?.([{ clientId: id(71), userId: sofie, name: "Sofie", staffAgentId: null }]);
+		await settle();
+		expect(memberPresence(controller.store.get(), sofie)).toEqual({
+			online: false,
+			text: "Last online 9 hours ago",
+		});
+		publish?.([]);
+		await settle();
+		expect(memberPresence(controller.store.get(), sofie)).toEqual({
+			online: false,
+			text: "Last online 9 hours ago",
+		});
+		expect(rpc.mock.calls.filter((call) => call[0] === "qorpera_list_member_chats").length).toBe(readsBefore);
+
+		publish?.([{ clientId: id(72), userId: sofie, name: "Sofie", staffAgentId: "@company" }]);
+		await settle();
+		expect(memberPresence(controller.store.get(), sofie)).toEqual({ online: true, text: "Online now" });
+
+		publish?.([]);
+		await settle();
+		expect(memberPresence(controller.store.get(), sofie)).toEqual({ online: true, text: "Online now" });
+		expect(rpc.mock.calls.filter((call) => call[0] === "qorpera_list_member_chats").length).toBeGreaterThan(
+			readsBefore,
+		);
 	});
 });
 
