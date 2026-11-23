@@ -326,6 +326,7 @@ export class SurfaceAddress {
 	}
 
 	#copy(control: HTMLButtonElement, text: string | Promise<string>, refused: () => void): void {
+		if (typeof text !== "string") text.catch(() => {});
 		void toClipboard(text).then((copied) => {
 			if (!copied) return refused();
 			const label = control.textContent;

@@ -246,6 +246,16 @@ describe("the address sheet's stops", () => {
 		expect(links()).toEqual(["Open the site", "Copy link", "Copy password"]);
 	});
 
+	it("says so when the password cannot be read in a browser with no clipboard at all", async () => {
+		const password = vi.fn(async (): Promise<string | null> => "nordic-pass-42");
+		await opened({}, true, password);
+		password.mockResolvedValue(null);
+		press("Copy password");
+		await settle();
+		expect(problem()).toBe("That didn't work. Try again.");
+		expect(links()).toEqual(["Open the site", "Copy link"]);
+	});
+
 	it("offers no password to a member who cannot read one, and says what to press when a copy is refused", async () => {
 		const { address } = await opened({}, false, async () => null);
 		expect(links()).toEqual(["Open the site", "Copy link"]);
