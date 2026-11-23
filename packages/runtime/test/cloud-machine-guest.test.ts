@@ -20,18 +20,28 @@ import { idleRuleBusy, parseCloudMachineCommandReceipt } from "@qorpera/contract
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	cancelMachineCommand,
+	executeMachineApp,
 	executeMachineCommand,
+	MACHINE_APP_CRASH_STDERR_LINES,
+	MACHINE_APP_RESTART_POLICY,
 	MACHINE_FOLDER,
+	MachineAppRingLogger,
 	type MachineGuestPorts,
 	mountMachineFolder,
 	observeMachine,
+	parseCgroupOomKills,
 	prepareMachineGuest,
+	probeMachineAppHealth,
+	queryMachineAppLogs,
 	readMachineCommand,
 	readMachineInput,
 	refreshMachineLease,
+	reloadMachineApp,
 	runMachineGuestCli,
 	runMachineWatchdog,
+	startMachineApp,
 	startMachineCommand,
+	stopMachineApp,
 	stopMachineCommands,
 } from "../src/cloud-machine-guest.ts";
 
@@ -1322,5 +1332,197 @@ describe("company folder on the machine", () => {
 		large.write(Buffer.alloc(4097, 0x61));
 		await expect(tooLarge).rejects.toThrow("MACHINE_FOLDER_VIEW_INVALID");
 		await expect(readMachineInput(new PassThrough(), 4096, 10)).rejects.toThrow("MACHINE_FOLDER_VIEW_UNREAD");
+	});
+});
+
+describe("managed app supervision, rolling NDJSON logs, and crash summaries", () => {
+	it("starts a restartable managed app unit with Restart=on-failure, RestartSec=2, and StartLimitBurst=5", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 900_000, m.ports);
+		await refreshMachineLease(900_000, m.ports);
+		const started = await startMachineApp(
+			{
+				slug: "my-shop",
+				command: "node server.js",
+				port: 3000,
+				healthPath: "/healthz",
+				env: { NODE_ENV: "production" },
+			},
+			m.ports,
+		);
+		expect(started).toMatchObject({
+			schema: "qorpera.machine-app-started/v1",
+			machineId: m.machineId,
+			slug: "my-shop",
+			unit: "qorpera-machine-app-my-shop.service",
+			port: 3000,
+		});
+		const runCall = m.system.mock.calls.find(([exe]) => exe === "/usr/bin/systemd-run");
+		expect(runCall).toBeDefined();
+		const args = runCall?.[1] ?? [];
+		expect(args).toContain("--unit=qorpera-machine-app-my-shop.service");
+		expect(args).toContain(`--property=Restart=${MACHINE_APP_RESTART_POLICY.restart}`);
+		expect(args).toContain(`--property=RestartSec=${MACHINE_APP_RESTART_POLICY.restartSec}`);
+		expect(args).toContain(`--property=StartLimitBurst=${MACHINE_APP_RESTART_POLICY.startLimitBurst}`);
+		expect(args).toContain(`--property=StartLimitIntervalSec=${MACHINE_APP_RESTART_POLICY.startLimitIntervalSec}`);
+		expect(args.slice(-2)).toEqual(["app-execute", "my-shop"]);
+		const stopped = await stopMachineApp("my-shop", m.ports);
+		expect(stopped).toEqual({
+			schema: "qorpera.machine-app-stopped/v1",
+			slug: "my-shop",
+			unit: "qorpera-machine-app-my-shop.service",
+		});
+	});
+
+	it("rotates NDJSON logs across 4 ring segments without dropping recent crash logs", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 900_000, m.ports);
+		const ports: MachineGuestPorts = { ...m.ports, appLogSegments: 4, appLogSegmentBytes: 320 };
+		const ring = new MachineAppRingLogger("ring-app", ports);
+		await ring.init();
+		for (let i = 1; i <= 40; i += 1) {
+			await ring.write(i % 5 === 0 ? "stderr" : "stdout", `event-line-${i} payload-padding-for-rotation`);
+		}
+		await ring.flush();
+		const allLogs = await queryMachineAppLogs("ring-app", { tail: 500 }, ports);
+		expect(allLogs.schema).toBe("qorpera.machine-app-logs/v1");
+		expect(allLogs.lines.length).toBeGreaterThan(0);
+		expect(allLogs.lines.length).toBeLessThan(40);
+		expect(allLogs.lines.at(-1)?.line).toContain("event-line-40");
+		expect(allLogs.lines.at(-1)?.seq).toBe(40);
+		const stderrOnly = await queryMachineAppLogs("ring-app", { stream: "stderr", grep: "EVENT-LINE-40" }, ports);
+		expect(stderrOnly.lines).toHaveLength(1);
+		expect(stderrOnly.lines[0]?.stream).toBe("stderr");
+		const future = await queryMachineAppLogs("ring-app", { since: "2099-01-01T00:00:00Z" }, ports);
+		expect(future.lines).toEqual([]);
+	});
+
+	it("captures stdout/stderr into ring logs and writes crash.json with oom_kill and last 50 stderr lines", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 900_000, m.ports);
+		await refreshMachineLease(900_000, m.ports);
+		const ports: MachineGuestPorts = {
+			...m.ports,
+			readMemoryEvents: async () => "low 0\nhigh 0\nmax 1\noom 2\noom_kill 3\n",
+		};
+		await startMachineApp(
+			{
+				slug: "crash-app",
+				command: "echo boot-ready; for i in $(seq 1 65); do echo stderr-fail-$i >&2; done; exit 137",
+				port: 4000,
+			},
+			ports,
+		);
+		m.units.set("qorpera-machine-app-crash-app.service", "ControlGroup=/qorpera-machine.slice/crash-app\n");
+		const code = await executeMachineApp("crash-app", ports);
+		expect(code).toBe(137);
+		expect(parseCgroupOomKills("low 0\noom_kill 7\n")).toBe(7);
+		expect(parseCgroupOomKills("low 0\n")).toBe(0);
+
+		const logs = await queryMachineAppLogs("crash-app", { stream: "stderr", tail: 10 }, ports);
+		expect(logs.lines).toHaveLength(10);
+		expect(logs.truncated).toBe(true);
+		expect(logs.totalMatched).toBe(65);
+		expect(logs.lines.at(-1)?.line).toBe("stderr-fail-65");
+		expect(logs.crashSummary).toMatchObject({
+			schema: "qorpera.machine-app-crash/v1",
+			slug: "crash-app",
+			exitCode: 137,
+			signal: null,
+			oomKill: 3,
+			oomKilled: true,
+			restartCount: 1,
+		});
+		expect(logs.crashSummary?.stderrTail).toHaveLength(MACHINE_APP_CRASH_STDERR_LINES);
+		expect(logs.crashSummary?.stderrTail[0]).toBe("stderr-fail-16");
+		expect(logs.crashSummary?.stderrTail.at(-1)).toBe("stderr-fail-65");
+	});
+
+	it("probes health, supports blue-green port reload, rejects unhealthy targets, and exposes CLI commands", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 900_000, m.ports);
+		await refreshMachineLease(900_000, m.ports);
+		const probeApp = vi.fn(async (port: number, healthPath: string) => ({
+			healthy: port === 3000 || port === 3001,
+			status: port === 3000 || port === 3001 ? 200 : 503,
+			latencyMs: healthPath === "/healthz" ? 4 : 9,
+		}));
+		const ports: MachineGuestPorts = { ...m.ports, probeApp };
+		await startMachineApp({ slug: "web-app", command: "node index.js", port: 3000, healthPath: "/healthz" }, ports);
+		m.units.set("qorpera-machine-app-web-app.service", "ActiveState=active\nSubState=running\nNRestarts=2\n");
+
+		const health = await probeMachineAppHealth("web-app", ports);
+		expect(health).toMatchObject({
+			schema: "qorpera.machine-app-health/v1",
+			slug: "web-app",
+			activeState: "active",
+			subState: "running",
+			restarts: 2,
+			port: 3000,
+			healthy: true,
+			lastStatus: 200,
+			lastLatencyMs: 4,
+		});
+
+		await expect(reloadMachineApp("web-app", { port: 3999 }, ports)).rejects.toThrow("MACHINE_APP_TARGET_UNHEALTHY");
+		const swapped = await reloadMachineApp("web-app", { port: 3001 }, ports);
+		expect(swapped).toEqual({
+			schema: "qorpera.machine-app-reload/v1",
+			slug: "web-app",
+			previousPort: 3000,
+			activePort: 3001,
+			healthy: true,
+			restarted: false,
+		});
+
+		const restarted = await reloadMachineApp("web-app", { port: 3001 }, ports);
+		expect(restarted).toEqual({
+			schema: "qorpera.machine-app-reload/v1",
+			slug: "web-app",
+			previousPort: 3001,
+			activePort: 3001,
+			healthy: true,
+			restarted: true,
+		});
+
+		const nonce = randomUUID();
+		await runMachineGuestCli([nonce, "app-health", "web-app"], ports);
+		const cliHealth = JSON.parse(await readFile(join(m.root, "run", "replies", `${nonce}.json`), "utf8"));
+		expect(cliHealth).toMatchObject({
+			schema: "qorpera.machine-app-health/v1",
+			slug: "web-app",
+			port: 3001,
+			healthy: true,
+		});
+	});
+
+	it("recovers from ring write failures without poisoning the queue and bounds crash.json under 64 KiB", async () => {
+		const m = await machine();
+		await prepareMachineGuest(m.machineId, 900_000, m.ports);
+		await refreshMachineLease(900_000, m.ports);
+		const ring = new MachineAppRingLogger("fail-safe", m.ports);
+		await expect(ring.write("stdout", "before-init")).resolves.toBeUndefined();
+		await ring.init();
+		await expect(ring.write("stdout", "after-init")).resolves.toBeUndefined();
+		await ring.flush();
+		const recovered = await queryMachineAppLogs("fail-safe", { tail: 10 }, m.ports);
+		expect(recovered.lines.some((entry) => entry.line === "after-init")).toBe(true);
+
+		const hugeLine = "x".repeat(8192);
+		await startMachineApp(
+			{
+				slug: "big-stderr",
+				command: `node -e 'for (let i = 0; i < 50; i++) console.error(${JSON.stringify(hugeLine)} + i); process.exit(1);'`,
+				port: 4050,
+			},
+			m.ports,
+		);
+		expect(await executeMachineApp("big-stderr", m.ports)).toBe(1);
+		const crashRaw = await readFile(join(m.root, "var", "apps", "big-stderr", "crash.json"), "utf8");
+		expect(Buffer.byteLength(crashRaw)).toBeLessThan(65536);
+		const bigLogs = await queryMachineAppLogs("big-stderr", { tail: 5 }, m.ports);
+		expect(bigLogs.crashSummary).not.toBeNull();
+		expect(bigLogs.crashSummary?.exitCode).toBe(1);
+		expect(bigLogs.crashSummary?.stderrTail.length).toBeGreaterThan(0);
 	});
 });

@@ -160,6 +160,8 @@ export type CloudCompanyPathRpc =
 	// Private app links (v195, 20260930562000): the check before the review, and the share with its one-time claim.
 	| "qorpera_site_share_check"
 	| "qorpera_site_share_app"
+	| "qorpera_site_agent_list_versions"
+	| "qorpera_site_agent_activate_version"
 	| "qorpera_native_surface_describe_senses"
 	| "qorpera_native_surface_propose"
 	| "qorpera_native_surface_start_session"
