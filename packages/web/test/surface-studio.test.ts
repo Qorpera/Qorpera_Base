@@ -630,7 +630,10 @@ describe("SurfaceStudioView", () => {
 		expect(tabs).toEqual(["Overview", "Brief & Files"]);
 		expect(view.el.querySelector('[data-file="surfaces/thetabands/concepts.svg"]')).not.toBeNull();
 		expect(view.el.querySelector('[data-file="surfaces/thetabands/brief.md"]')).toBeNull();
-		expect(view.el.querySelector('[data-link-dir="out"]')?.textContent).toContain("surfaces/thetabands/specs.json");
+		const usedBy = view.el.querySelector<HTMLElement>('.studio-reach [data-link-dir="out"]')!;
+		expect(usedBy.textContent).toContain("Used by");
+		expect(usedBy.textContent).toContain("Hjemmeside");
+		expect(view.el.querySelector(".studio-reach")?.textContent).not.toContain("specs.json");
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="files"]')!.click();
 		expect(view.el.querySelector('[data-file="surfaces/thetabands/brief.md"]')?.textContent).toContain(
@@ -685,9 +688,7 @@ describe("SurfaceStudioView", () => {
 			signal: new AbortController().signal,
 			baseFiles: { "surfaces/thetabands/specs.json": JSON.stringify({ weight: "42g" }) },
 		});
-		expect(primaryView.el.querySelector('[data-link-dir="out"]')?.textContent).toContain(
-			"surfaces/thetabands/specs.json",
-		);
+		expect(primaryView.el.querySelector('[data-link-dir="out"] [data-slug="website"]')).not.toBeNull();
 		primaryView.dispose();
 
 		const secondaryView = new SurfaceStudioView({
