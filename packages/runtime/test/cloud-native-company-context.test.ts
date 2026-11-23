@@ -726,6 +726,7 @@ const STAFF_TOOLS = [
 	"publish_site",
 	"unpublish_site",
 	"share_app",
+	"manage_site",
 	"machine_start",
 	"machine_run",
 	"machine_read",

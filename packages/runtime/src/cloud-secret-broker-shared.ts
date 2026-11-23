@@ -473,6 +473,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 			...(helper ? { renewer: helper } : {}),
 			...(plan ? { chatGptPlan: plan } : {}),
 		});
+		const renewer = this.#claudeRenewer;
 		const usage = new CloudModelLoginUsage({
 			authority,
 			keyring: this.#keyring,
@@ -484,6 +485,7 @@ export class SharedCloudSecretBrokerCompanies implements CloudSecretBrokerCompan
 						},
 					}
 				: {}),
+			...(renewer ? { renewClaude: (claudeLoginId: string) => renewer.checkForRun(claudeLoginId, "read") } : {}),
 		});
 		return {
 			authorityId: entry.authorityId,

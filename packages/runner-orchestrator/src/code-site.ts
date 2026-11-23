@@ -39,6 +39,10 @@ export const CODE_SITE_EXTENSIONS: readonly string[] = [
 	"txt",
 	"csv",
 	"xml",
+	"vtt",
+	"md",
+	"rss",
+	"atom",
 	"svg",
 	"png",
 	"jpg",
@@ -58,6 +62,9 @@ export const CODE_SITE_EXTENSIONS: readonly string[] = [
 	"ogg",
 	"wav",
 	"pdf",
+	"wasm",
+	"glb",
+	"gltf",
 ];
 const EXTENSION = /\.([A-Za-z0-9]{1,12})$/;
 

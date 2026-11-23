@@ -98,7 +98,51 @@ export const CODING_PACKAGE_CACHES = /* @__PURE__ */ Object.freeze({
 			settings: { PLAYWRIGHT_SKIP_BROWSER_GC: "1" },
 			trees: ["*"],
 		}),
+		/* @__PURE__ */ Object.freeze({
+			folder: "cargo",
+			variables: ["CARGO_HOME"],
+			settings: {},
+			trees: ["registry/src/*", "git/checkouts/*"],
+		}),
+		/* @__PURE__ */ Object.freeze({
+			folder: "go-mod",
+			variables: ["GOMODCACHE"],
+			settings: {},
+			trees: ["*"],
+		}),
+		/* @__PURE__ */ Object.freeze({
+			folder: "go-build",
+			variables: ["GOCACHE"],
+			settings: {},
+			trees: [],
+		}),
+		/* @__PURE__ */ Object.freeze({
+			folder: "bun",
+			variables: ["BUN_INSTALL_CACHE_DIR"],
+			settings: {},
+			trees: ["*"],
+		}),
+		/* @__PURE__ */ Object.freeze({
+			folder: "turbo",
+			variables: ["TURBO_CACHE_DIR"],
+			settings: {},
+			trees: [],
+		}),
+		/* @__PURE__ */ Object.freeze({
+			folder: "sccache",
+			variables: ["SCCACHE_DIR"],
+			settings: {},
+			trees: [],
+		}),
 	]),
+});
+export const CODING_CHECK_CACHES = /* @__PURE__ */ Object.freeze({
+	root: "/var/cache/qorpera-check-caches",
+	owner: "root",
+	group: "root",
+	mode: "0755",
+	limitBytes: 8_589_934_592,
+	ageDays: 30,
 });
 /** One tool of the machine's package caches. */
 export interface CodingPackageCacheTool {

@@ -75,6 +75,8 @@ export type SurfacesClient = Pick<
 			| "createAutomation"
 			| "updateAutomation"
 			| "deleteAutomation"
+			| "offerAutomation"
+			| "answerAutomationOffer"
 			| "setSurfaceFigure"
 			| "surfaceSessionImages"
 		>
@@ -95,6 +97,7 @@ const FOLDER_HINT_DEBOUNCE_MS = 50;
 export const PREVIEW_TOGGLE_DEBOUNCE_MS = 150;
 export const PREVIEW_PASS_TTL_MS = 45_000;
 const MAX_LOCAL_SANDBOX_CACHE = 8;
+const LOCAL_AUTOMATION_OWNER = { ownable: false, ownerUserId: null, offer: null } as const;
 
 export interface PendingStudioPatch {
 	readonly changeId: string;
@@ -1581,7 +1584,7 @@ export class SurfacesStore {
 			if (existingKeys.has(auto.key)) continue;
 			const id = `local-automation-${++this.#localSeq}`;
 			const { heading, ...rest } = auto;
-			nextAutomations.push({ ...rest, id, title: heading });
+			nextAutomations.push({ ...rest, ...LOCAL_AUTOMATION_OWNER, id, title: heading });
 			nextPrompts[id] = auto.scheduleSummary;
 		}
 
@@ -1639,6 +1642,7 @@ export class SurfacesStore {
 			lastRunAt: null,
 			lastOutcomeSummary: prompt.length <= 68 ? prompt : `${prompt.slice(0, 65).trimEnd()}…`,
 			nextRunAt: null,
+			...LOCAL_AUTOMATION_OWNER,
 		};
 		this.store.set((state) => ({
 			automations: [...state.automations, created],
@@ -4281,6 +4285,26 @@ export class SurfacesStore {
 		return true;
 	}
 
+	async offerAutomation(automationId: string, toUserId: string): Promise<boolean> {
+		return this.#ownAutomation(automationId, (client) => client.offerAutomation?.(automationId, toUserId));
+	}
+
+	async answerAutomationOffer(automationId: string, offerId: string, yes: boolean): Promise<boolean> {
+		return this.#ownAutomation(automationId, (client) => client.answerAutomationOffer?.(offerId, yes));
+	}
+
+	async #ownAutomation(
+		automationId: string,
+		call: (client: SurfacesClient) => Promise<SurfaceAutomationSummary> | undefined,
+	): Promise<boolean> {
+		const updated = await this.#run(`automation:${automationId}`, async (client) => call(client));
+		if (!updated) return false;
+		this.store.set((state) => ({
+			automations: state.automations.map((item) => (item.id === updated.id ? updated : item)),
+		}));
+		return true;
+	}
+
 	async applyMigration(input: ApplySurfaceMigrationInput): Promise<boolean> {
 		if (this.isLocalInteractive) {
 			const migration = this.state.migration;
@@ -4304,6 +4328,7 @@ export class SurfacesStore {
 						lastRunAt: null,
 						lastOutcomeSummary: t("Folded from agent"),
 						nextRunAt: null,
+						...LOCAL_AUTOMATION_OWNER,
 					});
 				}
 			}

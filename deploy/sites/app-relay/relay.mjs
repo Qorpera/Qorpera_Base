@@ -6,33 +6,37 @@ import { createServer, STATUS_CODES } from "node:http";
 import { pathToFileURL } from "node:url";
 
 export const DEFAULT_HOST_SUFFIX = "-preview.qorpera.com";
+export const DEFAULT_WEB_ORIGINS = Object.freeze(["https://app.qorpera.com"]);
 export const GATE_COOKIE = "__Host-qorpera_app";
-/** The database role the relay's JWT names: EXECUTE on its three RPCs and nothing else. */
+export const SITE_HOST_COOKIE = "__Host-qorpera_site";
 export const RELAY_ROLE = "qorpera_site_relay";
-/** The largest request body the relay passes to an app. */
 export const MAX_BODY_BYTES = 10 * 1024 * 1024;
-/** The password form's body: a password and a path, far below this. */
+export const MAX_CONFIGURABLE_BODY_BYTES = 100 * 1024 * 1024;
 export const MAX_UNLOCK_BODY_BYTES = 4096;
-/** The largest WebSocket frame, and message, the relay takes from a link program. */
 export const MAX_FRAME_BYTES = 1024 * 1024;
-/** The most bytes the relay queues for one program; a program that lets more pile up is cut off. */
 export const MAX_QUEUED_BYTES = 8 * 1024 * 1024;
+export const MAX_PROGRAM_BUFFERED_BYTES = 2 * 1024 * 1024;
+export const MAX_TOTAL_BUFFERED_BYTES = 32 * 1024 * 1024;
 export const MAX_PINGS_PER_SECOND = 10;
-/** The largest body chunk one message carries. */
 export const CHUNK_BYTES = 64 * 1024;
-export const RESPONSE_TIMEOUT_MS = 60_000;
+export const INITIAL_STREAM_WINDOW = 256 * 1024;
+export const WINDOW_UPDATE_THRESHOLD = 64 * 1024;
+export const FIRST_BYTE_TIMEOUT_MS = 60_000;
+export const RESPONSE_TIMEOUT_MS = FIRST_BYTE_TIMEOUT_MS;
+export const STREAM_IDLE_TIMEOUT_MS = 300_000;
+export const SSE_KEEPALIVE_MS = 25_000;
+export const GRACEFUL_SHUTDOWN_MS = 30_000;
 export const SESSION_CACHE_MS = 30_000;
 export const LOCKED_CACHE_MS = 5_000;
 export const KEEPALIVE_MS = 25_000;
 export const SILENT_MS = 60_000;
-/** The longest one visitor may hold a program's link (reading slower than the app writes) before its answer ends. */
 export const PAUSED_MS = 30_000;
-/** How often a connected program's key, site and port are checked again. */
 export const RECHECK_MS = 5 * 60_000;
-/** Connects: refused ones a minute per address (an IPv6 /64) and link, outside the trusted addresses; in flight in
- * all, for everyone. */
 export const CONNECT_LIMIT = Object.freeze({ refusedPerMinute: 10, total: 512 });
-export const MAX_WS_PER_SITE = 32;
+export const PUBLIC_RATE_LIMIT_BURST = 300;
+export const PUBLIC_RATE_LIMIT_PER_MINUTE = 600;
+export const PUBLIC_MAX_CONCURRENT_PER_IP = 32;
+export const MAX_WS_PER_SITE = 256;
 export const MAX_WS_MESSAGE_BYTES = 1024 * 1024;
 export const MAX_WS_QUEUED_BYTES = 2 * 1024 * 1024;
 export const TYPE = Object.freeze({
@@ -47,11 +51,20 @@ export const TYPE = Object.freeze({
 	wsOpenOk: 9,
 	wsData: 10,
 	wsClose: 11,
+	window: 12,
+	health: 13,
+	swapTarget: 14,
 });
 export const CLOSE = Object.freeze({ refused: 4001, replaced: 4002, portChanged: 1012, tooManyPings: 1008 });
 
 const SLUG = "[a-z0-9][a-z0-9-]{1,46}[a-z0-9]";
+const CUSTOM_DOMAIN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const WEB_ORIGIN = /^https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*(?::[0-9]{1,5})?$/;
+const IPV4_HOST = /^[0-9.]+$/;
 const TOKEN = /^[A-Za-z0-9_-]{32}$/;
+const MEMBER_PASS = /^[A-Za-z0-9_-]{43}$/;
+const AUTH_MODES = new Set(["password", "company_member", "public"]);
+const GATE_COOKIE_NAMES = new Set([GATE_COOKIE.toLowerCase(), SITE_HOST_COOKIE.toLowerCase()]);
 /** A claim or a key as the database makes them (base64url or hex), and as a Bearer header carries them. */
 const SECRET = /^[A-Za-z0-9._~+/-]{16,512}={0,2}$/;
 /** A link program's id: 32 random bytes in base64url, made once per process. */
@@ -64,9 +77,6 @@ const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_STREAMS = 256;
 const MAX_SESSIONS_KEPT = 10_000;
 const MAX_REFUSALS_KEPT = 10_000;
-const STREAM_PAUSE_BYTES = 256 * 1024;
-const PROGRAM_PAUSE_BYTES = 2 * 1024 * 1024;
-const RELAY_PAUSE_BYTES = 32 * 1024 * 1024;
 const SHARED_PAUSED_MS = 4_000;
 const MAX_RPC_ANSWER_BYTES = 64 * 1024;
 const RPC_TIMEOUT_MS = 20_000;
@@ -139,16 +149,61 @@ function escapeRegExp(text) {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** The app host a request came in on: x-forwarded-host as api-front sets it (the request's own name), one value, a
- * slug and the suffix, letters in any case. Host never decides. Null for anything else. */
-export function appHost(header, suffix = DEFAULT_HOST_SUFFIX) {
+export function appHost(header, suffix = DEFAULT_HOST_SUFFIX, customDomains = null) {
 	if (typeof header !== "string") return null;
 	const host = header.toLowerCase();
 	const match = new RegExp(`^(${SLUG})${escapeRegExp(suffix)}$`).exec(host);
-	return match ? { host, slug: match[1] } : null;
+	if (match) return { host, slug: match[1] };
+	if (customDomains && CUSTOM_DOMAIN.test(host) && !IPV4_HOST.test(host)) {
+		if (customDomains instanceof Map && customDomains.has(host)) {
+			return { host, slug: customDomains.get(host), customDomain: true };
+		}
+		if (customDomains instanceof Set && customDomains.has(host)) {
+			return { host, slug: host, customDomain: true };
+		}
+	}
+	return null;
 }
 
-/** The session tokens a Cookie header's gate cookies hold (at most 3, each tried). */
+export function customDomainHost(header) {
+	if (typeof header !== "string") return null;
+	const host = header.toLowerCase();
+	if (host.length < 4 || host.length > 253 || IPV4_HOST.test(host) || !CUSTOM_DOMAIN.test(host)) return null;
+	return host;
+}
+
+export function encodeWindow(bytes) {
+	const buf = Buffer.allocUnsafe(4);
+	buf.writeUInt32BE(Math.max(0, Math.min(0xffffffff, bytes >>> 0)), 0);
+	return buf;
+}
+
+export function decodeWindow(payload) {
+	if (!payload || payload.length !== 4) return 0;
+	return payload.readUInt32BE(0);
+}
+
+export function parseWebOrigins(value) {
+	if (Array.isArray(value)) {
+		const valid = value.filter((item) => {
+			if (typeof item !== "string" || !WEB_ORIGIN.test(item)) return false;
+			try {
+				return new URL(item).origin === item;
+			} catch {
+				return false;
+			}
+		});
+		return valid.length > 0 ? [...new Set(valid)].slice(0, 8) : DEFAULT_WEB_ORIGINS;
+	}
+	let parsed;
+	try {
+		parsed = JSON.parse(value ?? "");
+	} catch {
+		return DEFAULT_WEB_ORIGINS;
+	}
+	return Array.isArray(parsed) ? parseWebOrigins(parsed) : DEFAULT_WEB_ORIGINS;
+}
+
 export function gateTokens(header) {
 	const tokens = [];
 	for (const part of (header ?? "").split(";")) {
@@ -160,12 +215,15 @@ export function gateTokens(header) {
 	return tokens.slice(0, 3);
 }
 
-/** A Cookie header without the gate cookie (any case of its name), or null when nothing is left. */
+export function authTokens(header) {
+	return gateTokens(header);
+}
+
 export function withoutGateCookie(header) {
 	const kept = String(header)
 		.split(";")
 		.map((part) => part.trim())
-		.filter((part) => part !== "" && part.split("=")[0].trim().toLowerCase() !== GATE_COOKIE.toLowerCase());
+		.filter((part) => part !== "" && !GATE_COOKIE_NAMES.has(part.split("=")[0].trim().toLowerCase()));
 	return kept.length ? kept.join("; ") : null;
 }
 
@@ -175,18 +233,15 @@ export function gateCookie(token, maxAge) {
 
 export const CLEAR_GATE_COOKIE = `${GATE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
 
-/** An app's Set-Cookie as the visitor gets it: host-only (every Domain attribute taken out), or null for one that
- * would set the gate cookie. */
 export function appCookie(value) {
 	const [first = "", ...attributes] = String(value).split(";");
-	// A nameless cookie ("=v" or "v") whose value starts like the gate's is refused by browsers too.
 	const pair = first.trim().replace(/^=\s*/, "").toLowerCase();
-	const gate = GATE_COOKIE.toLowerCase();
-	if (pair === gate || pair.startsWith(`${gate}=`) || pair.startsWith(`${gate} `)) return null;
+	for (const gate of GATE_COOKIE_NAMES) {
+		if (pair === gate || pair.startsWith(`${gate}=`) || pair.startsWith(`${gate} `)) return null;
+	}
 	return [first, ...attributes.filter((attribute) => !/^\s*domain\s*(=|$)/i.test(attribute))].join(";");
 }
 
-/** The lowercase names a set of headers' Connection headers list: hop-by-hop for that hop. */
 function connectionListed(pairs) {
 	const listed = new Set();
 	for (const [name, value] of pairs)
@@ -195,24 +250,25 @@ function connectionListed(pairs) {
 	return listed;
 }
 
-/** rawHeaders (name, value, name, value, ...) as pairs. */
 export function headerPairs(raw) {
 	const pairs = [];
 	for (let index = 0; index + 1 < raw.length; index += 2) pairs.push([raw[index], raw[index + 1]]);
 	return pairs;
 }
 
-/** What the app gets: the visitor's headers without the hop-by-hop ones, Envoy's own, the proxy headers a visitor
- * could send and the gate cookie; then Host and X-Forwarded-Host (the app host), X-Forwarded-Proto https and
- * X-Forwarded-For (the visitor's CF-Connecting-IP only, when it holds one address). A body the visitor sent chunked
- * goes on chunked (`chunked`), so the program frames it for the app whatever the method. */
-export function requestHeaders(raw, { host, client, chunked = false }) {
+export function requestHeaders(raw, { host, client, chunked = false, memberId = null }) {
 	const pairs = headerPairs(raw);
 	const listed = connectionListed(pairs);
 	const headers = [["host", host]];
 	for (const [name, value] of pairs) {
 		const lower = name.toLowerCase();
-		if (HOP_BY_HOP.has(lower) || listed.has(lower) || VISITOR_DROPPED.has(lower) || lower.startsWith("x-envoy-"))
+		if (
+			HOP_BY_HOP.has(lower) ||
+			listed.has(lower) ||
+			VISITOR_DROPPED.has(lower) ||
+			lower.startsWith("x-envoy-") ||
+			lower.startsWith("x-qorpera-")
+		)
 			continue;
 		if (lower === "cookie") {
 			const kept = withoutGateCookie(value);
@@ -224,14 +280,75 @@ export function requestHeaders(raw, { host, client, chunked = false }) {
 	if (chunked) headers.push(["transfer-encoding", "chunked"]);
 	headers.push(["x-forwarded-proto", "https"], ["x-forwarded-host", host]);
 	if (client) headers.push(["x-forwarded-for", client]);
+	if (memberId) headers.push(["x-qorpera-member-id", memberId]);
 	return headers;
 }
 
-/** What the visitor gets of an app's response headers: no hop-by-hop ones, every Set-Cookie host-only, none for the gate
- * cookie, only names and values HTTP allows, and the relay's caching headers in place of the app's (no-store kept when
- * the app said it). Null when the list is not a list of [name, value] strings, or names its length more than once or
- * not in digits only (Node would take `+2` or `0x2`, and write every copy). */
-export function responseHeaders(pairs) {
+function parseSafeCacheControl(pairs, isPublic) {
+	let sawHeader = false;
+	let noStore = false;
+	let noCache = false;
+	let mustRevalidate = false;
+	let immutable = false;
+	let requestedPublic = false;
+	let maxAge = null;
+	let staleWhileRevalidate = null;
+	for (const [name, value] of pairs) {
+		if (name.toLowerCase() !== "cache-control") continue;
+		sawHeader = true;
+		for (const rawDirective of value.split(",")) {
+			const directive = rawDirective.trim().toLowerCase();
+			if (!directive) continue;
+			if (directive === "no-store") noStore = true;
+			else if (directive === "no-cache") noCache = true;
+			else if (directive === "must-revalidate") mustRevalidate = true;
+			else if (directive === "immutable") immutable = true;
+			else if (directive === "public") requestedPublic = true;
+			else {
+				const maxAgeMatch = /^max-age=(\d{1,9})$/.exec(directive);
+				if (maxAgeMatch) {
+					const seconds = Math.min(31_536_000, Number(maxAgeMatch[1]));
+					maxAge = maxAge === null ? seconds : Math.min(maxAge, seconds);
+					continue;
+				}
+				const swrMatch = /^stale-while-revalidate=(\d{1,6})$/.exec(directive);
+				if (swrMatch) {
+					const seconds = Math.min(86_400, Number(swrMatch[1]));
+					staleWhileRevalidate = staleWhileRevalidate === null ? seconds : Math.min(staleWhileRevalidate, seconds);
+				}
+			}
+		}
+	}
+	if (noStore) {
+		return [
+			["cache-control", "private, no-store"],
+			["cdn-cache-control", "no-store"],
+		];
+	}
+	if (!sawHeader || (maxAge === null && !noCache && !mustRevalidate)) {
+		return FORWARDED_CACHE_HEADERS.map((pair) => [...pair]);
+	}
+	if (noCache && maxAge === null) {
+		return FORWARDED_CACHE_HEADERS.map((pair) => [...pair]);
+	}
+	const scope = isPublic && requestedPublic ? "public" : "private";
+	const directives = [scope];
+	if (maxAge !== null) directives.push(`max-age=${maxAge}`);
+	if (mustRevalidate) directives.push("must-revalidate");
+	if (immutable && maxAge !== null && maxAge > 0) directives.push("immutable");
+	if (staleWhileRevalidate !== null) directives.push(`stale-while-revalidate=${staleWhileRevalidate}`);
+	const out = [["cache-control", directives.join(", ")]];
+	if (!isPublic || scope === "private") out.push(["cdn-cache-control", "no-store"]);
+	return out;
+}
+
+export function isEventStreamHeaders(pairs) {
+	return pairs.some(
+		([name, value]) => name.toLowerCase() === "content-type" && /^\s*text\/event-stream(?:\s*;|$)/i.test(value),
+	);
+}
+
+export function responseHeaders(pairs, { isPublic = false } = {}) {
 	if (!Array.isArray(pairs) || pairs.length > 500) return null;
 	if (
 		!pairs.every((pair) => Array.isArray(pair) && pair.length === 2 && pair.every((item) => typeof item === "string"))
@@ -239,9 +356,7 @@ export function responseHeaders(pairs) {
 		return null;
 	const lengths = pairs.filter(([name]) => name.toLowerCase() === "content-length");
 	if (lengths.length > 1 || lengths.some(([, value]) => !/^\d{1,15}$/.test(value))) return null;
-	const noStore = pairs.some(
-		([name, value]) => name.toLowerCase() === "cache-control" && /(?:^|,)\s*no-store\s*(?:[,=]|$)/i.test(value),
-	);
+	const isEventStream = isEventStreamHeaders(pairs);
 	const listed = connectionListed(pairs);
 	const headers = [];
 	for (const [name, value] of pairs) {
@@ -251,7 +366,8 @@ export function responseHeaders(pairs) {
 			!HEADER_VALUE.test(value) ||
 			HOP_BY_HOP.has(lower) ||
 			listed.has(lower) ||
-			APP_CACHE_HEADERS.has(lower)
+			APP_CACHE_HEADERS.has(lower) ||
+			(isEventStream && lower === "x-accel-buffering")
 		)
 			continue;
 		if (lower === "set-cookie") {
@@ -261,7 +377,12 @@ export function responseHeaders(pairs) {
 		}
 		headers.push([name, value]);
 	}
-	headers.push(...(noStore ? NO_STORE_CACHE_HEADERS : FORWARDED_CACHE_HEADERS).map((pair) => [...pair]));
+	if (isEventStream) {
+		headers.push(["cache-control", "no-cache, no-transform"], ["x-accel-buffering", "no"]);
+		if (!isPublic) headers.push(["cdn-cache-control", "no-store"]);
+		return headers;
+	}
+	headers.push(...parseSafeCacheControl(pairs, isPublic));
 	return headers;
 }
 
@@ -288,7 +409,7 @@ export function parseWsProtocols(raw) {
 	return { ok: true, protocols };
 }
 
-export function isValidVisitorWsOrigin(headers, host, raw) {
+export function isValidVisitorWsOrigin(headers, host, raw, { allowAbsentOrigin = false } = {}) {
 	const site = headers["sec-fetch-site"];
 	if (site === "same-site" || site === "cross-site") return false;
 	const expected = `https://${host}`;
@@ -299,12 +420,14 @@ export function isValidVisitorWsOrigin(headers, host, raw) {
 			if (lower === "sec-fetch-site" && (value === "same-site" || value === "cross-site")) return false;
 			if (lower === "origin") origins.push(value);
 		}
+		if (origins.length === 0) return allowAbsentOrigin;
 		return origins.length === 1 && origins[0] === expected;
 	}
+	if (headers.origin === undefined) return allowAbsentOrigin;
 	return headers.origin === expected;
 }
 
-export function wsRequestHeaders(raw, { host, client, protocols = [] }) {
+export function wsRequestHeaders(raw, { host, client, protocols = [], memberId = null }) {
 	const pairs = headerPairs(raw);
 	const listed = connectionListed(pairs);
 	const headers = [["host", host]];
@@ -315,9 +438,9 @@ export function wsRequestHeaders(raw, { host, client, protocols = [] }) {
 			listed.has(lower) ||
 			VISITOR_DROPPED.has(lower) ||
 			WS_HANDSHAKE_DROPPED.has(lower) ||
-			lower === "authorization" ||
 			lower === "sec-websocket-protocol" ||
-			lower.startsWith("x-envoy-")
+			lower.startsWith("x-envoy-") ||
+			lower.startsWith("x-qorpera-")
 		)
 			continue;
 		if (lower === "cookie") {
@@ -330,6 +453,7 @@ export function wsRequestHeaders(raw, { host, client, protocols = [] }) {
 	if (protocols.length > 0) headers.push(["sec-websocket-protocol", protocols.join(", ")]);
 	headers.push(["x-forwarded-proto", "https"], ["x-forwarded-host", host]);
 	if (client) headers.push(["x-forwarded-for", client]);
+	if (memberId) headers.push(["x-qorpera-member-id", memberId]);
 	return headers;
 }
 
@@ -843,8 +967,7 @@ export class WebSocketConnection {
 	close(code = 1000, reason = "") {
 		if (this.closing || this.closed) return;
 		this.closing = true;
-		this.#write(encodeFrame(0x8, encodeWsClose(code, reason)));
-		// The peer answers with its close; a peer that does not is cut off.
+		if (!this.#socket.destroyed) this.#socket.write(encodeFrame(0x8, encodeWsClose(code, reason)));
 		this.#closeTimer = setTimeout(() => this.#socket.destroy(), 3000);
 		this.#closeTimer.unref();
 	}
@@ -876,11 +999,18 @@ function closed(value, keys) {
 	return value;
 }
 
-/** qorpera_site_app_connect: {state: 'ok', key, port, siteId} or {state: 'refused'}. */
+function closedOptional(value, required, optional = []) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
+	const allowed = new Set([...required, ...optional]);
+	for (const key of required) if (!Object.hasOwn(value, key)) invalid();
+	for (const key of Object.keys(value)) if (!allowed.has(key)) invalid();
+	return value;
+}
+
 export function parseConnectAnswer(value) {
 	if (value?.state === "refused") return closed(value, ["state"]) && { state: "refused" };
 	if (value?.state !== "ok") invalid();
-	const answer = closed(value, ["state", "key", "port", "siteId"]);
+	const answer = closedOptional(value, ["state", "key", "port", "siteId"], ["authMode", "domains"]);
 	if (
 		!(answer.key === null || (typeof answer.key === "string" && SECRET.test(answer.key))) ||
 		!Number.isInteger(answer.port) ||
@@ -890,24 +1020,61 @@ export function parseConnectAnswer(value) {
 		!UUID.test(answer.siteId)
 	)
 		invalid();
-	return { state: "ok", key: answer.key, port: answer.port, siteId: answer.siteId };
+	const parsed = { state: "ok", key: answer.key, port: answer.port, siteId: answer.siteId };
+	if (Object.hasOwn(answer, "authMode")) {
+		if (typeof answer.authMode !== "string" || !AUTH_MODES.has(answer.authMode)) invalid();
+		parsed.authMode = answer.authMode;
+	}
+	if (Object.hasOwn(answer, "domains")) {
+		if (
+			!Array.isArray(answer.domains) ||
+			answer.domains.length > 20 ||
+			!answer.domains.every((item) => typeof item === "string" && customDomainHost(item) === item)
+		)
+			invalid();
+		parsed.domains = answer.domains;
+	}
+	return parsed;
 }
 
-/** qorpera_site_app_session: {state: 'open', siteId} or {state: 'locked'}. */
 export function parseSessionAnswer(value) {
-	if (value?.state === "locked") return closed(value, ["state"]) && { state: "locked" };
+	if (value?.state === "locked") {
+		const answer = closedOptional(value, ["state"], ["authMode", "slug"]);
+		const parsed = { state: "locked" };
+		if (Object.hasOwn(answer, "authMode")) {
+			if (typeof answer.authMode !== "string" || !AUTH_MODES.has(answer.authMode)) invalid();
+			parsed.authMode = answer.authMode;
+		}
+		if (Object.hasOwn(answer, "slug")) {
+			if (typeof answer.slug !== "string" || !new RegExp(`^${SLUG}$`).test(answer.slug)) invalid();
+			parsed.slug = answer.slug;
+		}
+		return parsed;
+	}
 	if (value?.state !== "open") invalid();
-	const answer = closed(value, ["state", "siteId"]);
+	const answer = closedOptional(value, ["state", "siteId"], ["authMode", "memberId", "slug"]);
 	if (typeof answer.siteId !== "string" || !UUID.test(answer.siteId)) invalid();
-	return { state: "open", siteId: answer.siteId };
+	const parsed = { state: "open", siteId: answer.siteId };
+	if (Object.hasOwn(answer, "authMode")) {
+		if (typeof answer.authMode !== "string" || !AUTH_MODES.has(answer.authMode)) invalid();
+		parsed.authMode = answer.authMode;
+	}
+	if (Object.hasOwn(answer, "memberId")) {
+		if (typeof answer.memberId !== "string" || !UUID.test(answer.memberId)) invalid();
+		parsed.memberId = answer.memberId;
+	}
+	if (Object.hasOwn(answer, "slug")) {
+		if (typeof answer.slug !== "string" || !new RegExp(`^${SLUG}$`).test(answer.slug)) invalid();
+		parsed.slug = answer.slug;
+	}
+	return parsed;
 }
 
-/** qorpera_site_app_unlock: as qorpera_site_unlock. */
 export function parseUnlockAnswer(value) {
 	const state = value?.state;
 	if (state === "wrong") return closed(value, ["state"]) && { state };
 	if (state === "open") {
-		const answer = closed(value, ["state", "token", "maxAge"]);
+		const answer = closedOptional(value, ["state", "token", "maxAge"], ["memberId"]);
 		if (
 			typeof answer.token !== "string" ||
 			!TOKEN.test(answer.token) ||
@@ -916,7 +1083,12 @@ export function parseUnlockAnswer(value) {
 			answer.maxAge > 400 * 24 * 3600
 		)
 			invalid();
-		return { state, token: answer.token, maxAge: answer.maxAge };
+		const parsed = { state, token: answer.token, maxAge: answer.maxAge };
+		if (Object.hasOwn(answer, "memberId")) {
+			if (typeof answer.memberId !== "string" || !UUID.test(answer.memberId)) invalid();
+			parsed.memberId = answer.memberId;
+		}
+		return parsed;
 	}
 	if (state !== "limited") invalid();
 	const answer = closed(value, ["state", "retryAfter"]);
@@ -984,6 +1156,8 @@ const TEXT = {
 		again: "Try again in a moment.",
 		tooLarge: "Too large",
 		tooLargeLead: "What was sent is too large for an app link.",
+		memberOnly: "Company members only",
+		memberOnlyLead: "Open this app from Qorpera while signed in as a company member.",
 		footer: "Shared with Qorpera",
 	},
 	da: {
@@ -1008,6 +1182,8 @@ const TEXT = {
 		again: "Prøv igen om lidt.",
 		tooLarge: "For stort",
 		tooLargeLead: "Det sendte er for stort til et app-link.",
+		memberOnly: "Kun for medlemmer af virksomheden",
+		memberOnlyLead: "Åbn denne app fra Qorpera, mens du er logget ind som medlem af virksomheden.",
 		footer: "Delt med Qorpera",
 	},
 };
@@ -1157,58 +1333,50 @@ async function readLimited(response, limit) {
 
 // --- The relay --------------------------------------------------------------------------------------------------------
 
-/** One connected link program: its WebSocket, its id, the site and port it serves, its key (in memory only) and its
- * open streams. */
 class Program {
-	constructor(slug, ws, { id, key, siteId, port, nextCheckAt }) {
+	constructor(slug, ws, { id, key, siteId, port, nextCheckAt, authMode = "password", domains = [] }) {
 		this.slug = slug;
 		this.ws = ws;
 		this.id = id;
 		this.key = key;
 		this.siteId = siteId;
 		this.port = port;
+		this.authMode = authMode;
+		this.domains = new Set(domains);
 		this.streams = new Map();
 		this.wsStreams = new Set();
+		this.httpCount = 0;
 		this.wsCount = 0;
 		this.next = 1;
-		this.blocked = 0;
-		this.blocking = new Set();
 		this.buffered = 0;
 		this.pauseCount = 0;
+		this.windowUpdates = 0;
+		this.evictions = 0;
 		this.sharedProgressChecks = 0;
 		this.uploadQueue = [];
 		this.keptAliveAt = Date.now();
 		this.nextCheckAt = nextCheckAt;
+		this.health = {
+			connected: true,
+			healthy: true,
+			port,
+			lastStatus: null,
+			lastLatencyMs: null,
+			restartCount: 0,
+			checkedAt: null,
+		};
+		this.swapPending = null;
 	}
 
 	send(type, stream, payload = EMPTY) {
 		return this.ws.send(encodeMessage(type, stream, payload));
 	}
 
-	/** A stream id no open stream holds: 1 up to 2^32 - 1, then round again. Stream 0 is the connection's own. */
 	allocate() {
 		let id = this.next;
 		while (this.streams.has(id)) id = id >= 0xffffffff ? 1 : id + 1;
 		this.next = id >= 0xffffffff ? 1 : id + 1;
 		return id;
-	}
-
-	block(blocker) {
-		if (this.blocking.has(blocker)) return;
-		this.blocking.add(blocker);
-		if (this.blocked++ === 0) {
-			this.pauseCount++;
-			this.ws.pause();
-		}
-	}
-
-	unblock(blocker) {
-		if (!this.blocking.delete(blocker)) return;
-		if (--this.blocked === 0) this.ws.resume();
-	}
-
-	tightenBlocked() {
-		for (const blocker of this.blocking) blocker.tighten();
 	}
 
 	pumpUploads(highWater) {
@@ -1234,19 +1402,24 @@ class Program {
 	}
 }
 
-/** The relay as an http.Server (not listening yet). `apiKey` is the stack's anon key (the gateway's), `relayJwt` the
- * relay's own JWT (role qorpera_site_relay); `fetch` reaches the database. The other options are for tests. */
 export function createRelay({
 	api,
 	apiKey,
 	relayJwt,
 	hostSuffix = DEFAULT_HOST_SUFFIX,
 	fetch: fetcher = globalThis.fetch,
-	responseTimeoutMs = RESPONSE_TIMEOUT_MS,
+	responseTimeoutMs,
+	firstByteTimeoutMs = responseTimeoutMs ?? FIRST_BYTE_TIMEOUT_MS,
+	streamIdleTimeoutMs = responseTimeoutMs ?? STREAM_IDLE_TIMEOUT_MS,
+	sseKeepaliveMs = SSE_KEEPALIVE_MS,
+	streamWindowBytes = INITIAL_STREAM_WINDOW,
+	windowUpdateThreshold = WINDOW_UPDATE_THRESHOLD,
 	sessionCacheMs = SESSION_CACHE_MS,
 	lockedCacheMs = LOCKED_CACHE_MS,
 	maxBodyBytes = MAX_BODY_BYTES,
 	maxQueuedBytes = MAX_QUEUED_BYTES,
+	maxProgramBufferedBytes = MAX_PROGRAM_BUFFERED_BYTES,
+	maxTotalBufferedBytes = MAX_TOTAL_BUFFERED_BYTES,
 	maxWsPerSite = MAX_WS_PER_SITE,
 	maxWsMessageBytes = MAX_WS_MESSAGE_BYTES,
 	maxWsQueuedBytes = MAX_WS_QUEUED_BYTES,
@@ -1258,6 +1431,11 @@ export function createRelay({
 	sharedPausedMs = SHARED_PAUSED_MS,
 	recheckMs = RECHECK_MS,
 	connectLimit = CONNECT_LIMIT,
+	publicRateLimitBurst,
+	publicRateLimitPerMinute = PUBLIC_RATE_LIMIT_PER_MINUTE,
+	publicMaxConcurrentPerIp = PUBLIC_MAX_CONCURRENT_PER_IP,
+	webOrigins = DEFAULT_WEB_ORIGINS,
+	gracefulShutdownMs = GRACEFUL_SHUTDOWN_MS,
 	maxSessionsKept = MAX_SESSIONS_KEPT,
 	maxRefusalsKept = MAX_REFUSALS_KEPT,
 	trustedAddresses = [],
@@ -1269,11 +1447,18 @@ export function createRelay({
 		throw new Error("The API must be an http(s) URL without credentials");
 	const base = apiUrl.href.replace(/\/+$/, "");
 	if (typeof apiKey !== "string" || apiKey.length < 20) throw new Error("The API key is missing");
-	// Never the service role: the relay faces the internet and needs three RPCs only.
 	if (jwtRole(relayJwt) !== RELAY_ROLE) throw new Error(`The relay's JWT must name the role ${RELAY_ROLE}`);
 	if (!/^[-.][a-z0-9.-]*\.[a-z0-9-]+$/.test(hostSuffix)) throw new Error("The host suffix is invalid");
+	const allowedWebOrigins = parseWebOrigins(webOrigins);
+	const boundedMaxBodyBytes = Math.max(1, Math.min(MAX_CONFIGURABLE_BODY_BYTES, Number(maxBodyBytes) || MAX_BODY_BYTES));
+	const effectivePublicRatePerMin = Math.max(1, Number(publicRateLimitPerMinute) || PUBLIC_RATE_LIMIT_PER_MINUTE);
+	const effectivePublicBurst = Math.max(
+		1,
+		publicRateLimitBurst !== undefined
+			? Number(publicRateLimitBurst) || 1
+			: Math.min(PUBLIC_RATE_LIMIT_BURST, effectivePublicRatePerMin),
+	);
 	const client = Buffer.from(clientSource ?? readFileSync(new URL("./client.mjs", import.meta.url)));
-	/** The agent exits' public addresses: every company's machines connect from them, so none is ever held back. */
 	const trusted = new Set(
 		trustedAddresses.map((value) => {
 			const address = clientAddress(value);
@@ -1281,33 +1466,88 @@ export function createRelay({
 			return address;
 		}),
 	);
-	/** slug -> Program: the one connected link program of each link. */
 	const programs = new Map();
+	const domainToSlug = new Map();
 	const sessions = new Map();
 	const lockedSessions = new Map();
 	const sessionInFlight = new Map();
-	/** Upgrade sockets whose connect the database is answering. */
 	const upgrading = new Set();
-	/** "address group, slug" -> {start, count}: refused connects in the current minute, outside the trusted addresses. */
 	const refusals = new Map();
 	const addressRefusals = new Map();
 	const pendingByAddress = new Map();
+	const publicHits = new Map();
+	const publicInFlight = new Map();
 	const uploadHighWater = Math.max(1024, Math.min(Math.floor(maxQueuedBytes / 2), 4 * 1024 * 1024));
+	let totalHttpBufferedBytes = 0;
 	let pendingTotal = 0;
 	let pendingUntrusted = 0;
 	let visitorUpgrading = 0;
-	let relayBuffered = 0;
-	let bufferedPrograms = 0;
+	let draining = false;
+	const drainWaiters = new Set();
 
-	function adjustBuffered(program, delta) {
-		if (delta === 0) return;
-		const was = program.buffered;
-		const next = Math.max(0, was + delta);
-		const actual = next - was;
-		program.buffered = next;
-		relayBuffered = Math.max(0, relayBuffered + actual);
-		if (was === 0 && next > 0) bufferedPrograms++;
-		else if (was > 0 && next === 0) bufferedPrograms = Math.max(0, bufferedPrograms - 1);
+	function totalActiveStreams() {
+		let count = 0;
+		for (const program of programs.values()) count += program.streams.size;
+		return count;
+	}
+
+	function evictLargestBuffered(targetPrograms) {
+		let victim = null;
+		let victimProg = null;
+		let maxBytes = 0;
+		let oldestStall = Number.POSITIVE_INFINITY;
+		for (const prog of targetPrograms) {
+			for (const stream of prog.streams.values()) {
+				const bytes = stream.bufferedBytes?.() ?? 0;
+				if (bytes <= 0 || !stream.evict) continue;
+				const stalled = stream.stalledSince?.() ?? Number.POSITIVE_INFINITY;
+				if (bytes > maxBytes || (bytes === maxBytes && stalled < oldestStall)) {
+					victim = stream;
+					victimProg = prog;
+					maxBytes = bytes;
+					oldestStall = stalled;
+				}
+			}
+		}
+		if (!victim) return false;
+		victimProg.evictions++;
+		victim.evict();
+		return true;
+	}
+
+	function checkDrained() {
+		if (!draining || totalActiveStreams() > 0) return;
+		for (const wake of drainWaiters) wake();
+		drainWaiters.clear();
+	}
+
+	function syncProgramDomains(program, domains = []) {
+		for (const existing of program.domains) {
+			if (domainToSlug.get(existing) === program.slug) domainToSlug.delete(existing);
+		}
+		program.domains.clear();
+		for (const host of domains) {
+			program.domains.add(host);
+			domainToSlug.set(host, program.slug);
+		}
+	}
+
+	function clearProgramDomains(program) {
+		for (const existing of program.domains) {
+			if (domainToSlug.get(existing) === program.slug) domainToSlug.delete(existing);
+		}
+		program.domains.clear();
+	}
+
+	function resolveSiteHost(header) {
+		const matched = appHost(header, hostSuffix, domainToSlug);
+		if (!matched) return null;
+		return {
+			host: matched.host,
+			slug: matched.slug,
+			lookupKey: matched.customDomain ? matched.host : matched.slug,
+			customDomain: Boolean(matched.customDomain),
+		};
 	}
 
 	function socketWriteQueue(res) {
@@ -1322,7 +1562,6 @@ export function createRelay({
 	}
 
 	function failure(error) {
-		// The error's kind only: never a secret.
 		log(`the database could not answer (${error instanceof Error ? error.name : typeof error})`);
 	}
 
@@ -1347,9 +1586,8 @@ export function createRelay({
 		map.set(id, entry);
 	}
 
-	/** The site a session token opens on this slug, or null; `fresh` asks the database whatever is kept. */
-	async function sessionSite(slug, token, fresh = false) {
-		const id = `${slug} ${token}`;
+	async function sessionLookup(lookupKey, token, fresh = false) {
+		const id = `${lookupKey} ${token ?? "-"}`;
 		const now = Date.now();
 		if (!fresh) {
 			const open = sessions.get(id);
@@ -1357,13 +1595,13 @@ export function createRelay({
 				if (open.until > now) {
 					sessions.delete(id);
 					sessions.set(id, open);
-					return open.siteId;
+					return open.info;
 				}
 				sessions.delete(id);
 			}
 			const locked = lockedSessions.get(id);
 			if (locked) {
-				if (locked.until > now) return null;
+				if (locked.until > now) return locked.info;
 				lockedSessions.delete(id);
 			}
 			const running = sessionInFlight.get(id);
@@ -1373,17 +1611,32 @@ export function createRelay({
 			lockedSessions.delete(id);
 		}
 		const lookup = (async () => {
-			const result = parseSessionAnswer(await rpc("qorpera_site_app_session", { p_slug: slug, p_token: token }));
-			const siteId = result.state === "open" ? result.siteId : null;
-			const until = Date.now() + (siteId ? sessionCacheMs : lockedCacheMs);
-			if (siteId) {
+			const result = parseSessionAnswer(await rpc("qorpera_site_app_session", { p_slug: lookupKey, p_token: token }));
+			const info =
+				result.state === "open"
+					? {
+							open: true,
+							siteId: result.siteId,
+							authMode: result.authMode ?? "password",
+							memberId: result.memberId ?? null,
+							slug: result.slug ?? null,
+						}
+					: {
+							open: false,
+							siteId: null,
+							authMode: result.authMode ?? "password",
+							memberId: null,
+							slug: result.slug ?? null,
+						};
+			const until = Date.now() + (info.open ? sessionCacheMs : lockedCacheMs);
+			if (info.open) {
 				lockedSessions.delete(id);
-				keep(sessions, id, { until, siteId }, maxSessionsKept);
+				keep(sessions, id, { until, info }, maxSessionsKept);
 			} else {
 				sessions.delete(id);
-				keep(lockedSessions, id, { until }, maxSessionsKept);
+				keep(lockedSessions, id, { until, info }, maxSessionsKept);
 			}
-			return siteId;
+			return info;
 		})();
 		if (!fresh) {
 			sessionInFlight.set(id, lookup);
@@ -1423,6 +1676,34 @@ export function createRelay({
 		bumpRefusal(addressRefusals, group, now);
 	}
 
+	function admitPublic(address, slug) {
+		const group = address ? addressGroup(address) : "unknown";
+		const now = Date.now();
+		const rateKey = `${group} ${slug}`;
+		let bucket = publicHits.get(rateKey);
+		if (!bucket) {
+			bucket = { tokens: effectivePublicBurst, updatedAt: now };
+			keep(publicHits, rateKey, bucket, maxRefusalsKept);
+		} else {
+			const elapsedMs = Math.max(0, now - bucket.updatedAt);
+			bucket.tokens = Math.min(effectivePublicBurst, bucket.tokens + (elapsedMs * effectivePublicRatePerMin) / 60_000);
+			bucket.updatedAt = now;
+		}
+		if (bucket.tokens < 1) return null;
+		const active = publicInFlight.get(rateKey) ?? 0;
+		if (active >= publicMaxConcurrentPerIp) return null;
+		bucket.tokens -= 1;
+		publicInFlight.set(rateKey, active + 1);
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			const left = (publicInFlight.get(rateKey) ?? 1) - 1;
+			if (left <= 0) publicInFlight.delete(rateKey);
+			else publicInFlight.set(rateKey, left);
+		};
+	}
+
 	function admit(address, slug) {
 		if (pendingTotal >= connectLimit.total) return null;
 		const isTrusted = trusted.has(address);
@@ -1455,7 +1736,6 @@ export function createRelay({
 		};
 	}
 
-	/** Whether the database still takes a program: its key, its site. */
 	async function stillHolds(program) {
 		const result = parseConnectAnswer(
 			await rpc("qorpera_site_app_connect", { p_slug: program.slug, p_secret: program.key, p_program: program.id }),
@@ -1463,9 +1743,15 @@ export function createRelay({
 		return result.state === "ok" && result.siteId === program.siteId ? result : null;
 	}
 
-	/** A program that no longer serves its link's site (or port) ends; the link is free for the right one. */
 	function drop(program, why, code = CLOSE.refused) {
-		if (programs.get(program.slug) === program) programs.delete(program.slug);
+		if (programs.get(program.slug) === program) {
+			programs.delete(program.slug);
+			clearProgramDomains(program);
+		}
+		if (program.swapPending) {
+			program.swapPending.reject(new Error("program disconnected"));
+			program.swapPending = null;
+		}
 		log(`${program.slug}: the link program ends: ${why}`);
 		program.ws.close(code, code === CLOSE.refused ? "refused" : why);
 		for (const stream of [...program.streams.values()]) stream.gone();
@@ -1486,32 +1772,79 @@ export function createRelay({
 		const url = req.url ?? "";
 		const path = url.split("?")[0];
 		if (path === "/.qorpera/health") {
+			if (draining) {
+				res.writeHead(503, {
+					"content-type": "text/plain; charset=utf-8",
+					"cache-control": "no-store",
+					connection: "close",
+				});
+				res.end(req.method === "HEAD" ? undefined : "draining\n");
+				return;
+			}
 			res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
 			res.end(req.method === "HEAD" ? undefined : "ok\n");
 			return;
 		}
 		const text = TEXT[lang];
-		const site = appHost(req.headers["x-forwarded-host"], hostSuffix);
+		if (draining) {
+			req.resume();
+			return answer(req, res, 503, messagePage(lang, text.unavailable, text.again), {
+				"retry-after": "5",
+				connection: "close",
+			});
+		}
+		const site = resolveSiteHost(req.headers["x-forwarded-host"]);
 		if (!site || !url.startsWith("/")) return answer(req, res, 404, messagePage(lang, text.notFound, text.nothing));
-		// Before the gate: a change another site's page made the visitor's browser send never reaches the database or
-		// the app, with a session or without (so a probe needs none).
+		const isMemberDoor = path === "/.qorpera/member" || path === "/__qorpera/member";
+		if (isMemberDoor) {
+			const sentOrigin = req.headers.origin;
+			if (req.method === "POST" && (typeof sentOrigin !== "string" || !allowedWebOrigins.includes(sentOrigin))) {
+				req.resume();
+				return answer(req, res, 403, messagePage(lang, text.otherSite, text.otherSiteLead), { connection: "close" });
+			}
+			return platform(req, res, lang, site, path);
+		}
 		if (changeFromAnotherSite(req.method, req.headers, site.host)) {
 			req.resume();
 			return answer(req, res, 403, messagePage(lang, text.otherSite, text.otherSiteLead), { connection: "close" });
 		}
 		if (isPlatformPath(path)) return platform(req, res, lang, site, path);
 
-		// The gate.
-		const tokens = gateTokens(req.headers.cookie);
+		const program = programs.get(site.slug);
+		const tokens = authTokens(req.headers.cookie);
+		let lockedAuthMode = program?.authMode ?? "password";
 		for (const token of tokens) {
-			const siteId = await sessionSite(site.slug, token);
-			if (siteId) return serve(req, res, lang, site, token, siteId);
+			const info = await sessionLookup(site.lookupKey, token);
+			if (info.open) {
+				if (program) program.authMode = info.authMode;
+				return serve(req, res, lang, site, token, info);
+			}
+			if (info.authMode) lockedAuthMode = info.authMode;
 		}
-		// A session that ended takes its cookie with it.
-		return lockedAnswer(req, res, lang, tokens.length > 0);
+		if (program?.authMode === "public") {
+			const info = await sessionLookup(site.lookupKey, null);
+			if (info.open) {
+				const releasePublic = admitPublic(clientAddress(req.headers["cf-connecting-ip"]), site.slug);
+				if (!releasePublic)
+					return answer(req, res, 429, messagePage(lang, text.unavailable, text.again), { "retry-after": "30" });
+				return serve(req, res, lang, site, null, info, releasePublic);
+			}
+			lockedAuthMode = info.authMode;
+		}
+		return lockedAnswer(req, res, lang, tokens.length > 0, lockedAuthMode);
 	}
 
-	function lockedAnswer(req, res, lang, clear) {
+	function lockedAnswer(req, res, lang, clear, authMode = "password") {
+		const text = TEXT[lang];
+		if (authMode === "company_member") {
+			return answer(
+				req,
+				res,
+				401,
+				messagePage(lang, text.memberOnly, text.memberOnlyLead),
+				clear ? { "set-cookie": CLEAR_GATE_COOKIE } : {},
+			);
+		}
 		return answer(
 			req,
 			res,
@@ -1522,25 +1855,35 @@ export function createRelay({
 		);
 	}
 
-	/** The link's program for a session of `siteId`. A program connected for another site of this slug never serves it:
-	 * the session is asked again (a kept answer may be older than the program), and the program is dropped only when the
-	 * database no longer takes it. */
-	async function serve(req, res, lang, site, token, siteId) {
+	async function serve(req, res, lang, site, token, info, onComplete = null) {
 		const text = TEXT[lang];
-		const notRunning = () =>
-			answer(req, res, 503, messagePage(lang, text.notRunning, text.again), { "retry-after": "10" });
+		const release = () => {
+			if (onComplete) {
+				const fn = onComplete;
+				onComplete = null;
+				fn();
+			}
+		};
+		const notRunning = () => {
+			release();
+			return answer(req, res, 503, messagePage(lang, text.notRunning, text.again), { "retry-after": "10" });
+		};
 		let program = programs.get(site.slug);
-		if (program && program.siteId !== siteId) {
-			const fresh = await sessionSite(site.slug, token, true);
-			if (!fresh) return lockedAnswer(req, res, lang, true);
+		if (program && program.siteId !== info.siteId) {
+			const fresh = await sessionLookup(site.lookupKey, token, true);
+			if (!fresh.open) {
+				release();
+				return lockedAnswer(req, res, lang, token !== null, fresh.authMode);
+			}
 			program = programs.get(site.slug);
-			if (program && program.siteId !== fresh) {
+			if (program && program.siteId !== fresh.siteId) {
 				if (!(await stillHolds(program)) && programs.get(site.slug) === program) drop(program, "its site is gone");
 				return notRunning();
 			}
+			info = fresh;
 		}
 		if (!program) return notRunning();
-		return forward(req, res, lang, site, program);
+		return forward(req, res, lang, site, program, info, release);
 	}
 
 	async function platform(req, res, lang, site, path) {
@@ -1570,7 +1913,14 @@ export function createRelay({
 				res.writeHead(405, { ...pageHeaders(), allow: "POST" });
 				return void res.end();
 			}
-			return unlock(req, res, lang, site);
+			return unlock(req, res, lang, site, "password");
+		}
+		if (path === "/.qorpera/member" || path === "/__qorpera/member") {
+			if (method !== "POST") {
+				res.writeHead(405, { ...pageHeaders(), allow: "POST" });
+				return void res.end();
+			}
+			return unlock(req, res, lang, site, "member");
 		}
 		if (path === "/.qorpera/connect") {
 			res.writeHead(426, { ...pageHeaders(), upgrade: "websocket", connection: "Upgrade" });
@@ -1579,12 +1929,16 @@ export function createRelay({
 		return answer(req, res, 404, messagePage(lang, text.notFound, text.nothing));
 	}
 
-	async function unlock(req, res, lang, site) {
+	async function unlock(req, res, lang, site, kind = "password") {
 		const text = TEXT[lang];
 		const refused = (status) =>
 			answer(req, res, status, messagePage(lang, text.private, text.refused), { connection: "close" });
 		const origin = req.headers.origin;
-		if (origin !== undefined && origin !== `https://${site.host}`) return refused(403);
+		if (kind === "member") {
+			if (typeof origin !== "string" || !allowedWebOrigins.includes(origin)) return refused(403);
+		} else if (origin !== undefined && origin !== `https://${site.host}`) {
+			return refused(403);
+		}
 		if (
 			!String(req.headers["content-type"] ?? "")
 				.toLowerCase()
@@ -1599,16 +1953,23 @@ export function createRelay({
 		} catch {
 			return refused(400);
 		}
-		const next = safeNext(form.get("next") ?? "/");
-		const password = form.get("password") ?? "";
+		const sentNext = form.get("next") ?? (form.has("path") ? `/${(form.get("path") ?? "").replace(/^\/+/, "")}` : "/");
+		const next = safeNext(sentNext);
+		const passes = kind === "member" ? form.getAll("pass") : form.getAll("password");
+		const credential = passes.length === 1 ? (passes[0] ?? "") : "";
 		const locked = (status, error, extra = {}) =>
-			answer(req, res, status, passwordPage(lang, next, error), extra, "same-origin");
-		if (!password || password.length > MAX_PASSWORD) return locked(401, text.empty);
-		// The app sites' own unlock: never a files site's session.
+			kind === "member"
+				? answer(req, res, status, messagePage(lang, text.memberOnly, text.memberOnlyLead), extra)
+				: answer(req, res, status, passwordPage(lang, next, error), extra, "same-origin");
+		if (kind === "member") {
+			if (!MEMBER_PASS.test(credential)) return locked(401, text.wrong);
+		} else if (!credential || credential.length > MAX_PASSWORD) {
+			return locked(401, text.empty);
+		}
 		const result = parseUnlockAnswer(
 			await rpc("qorpera_site_app_unlock", {
-				p_slug: site.slug,
-				p_password: password,
+				p_slug: site.lookupKey,
+				p_password: credential,
 				p_client: clientAddress(req.headers["cf-connecting-ip"]),
 			}),
 		);
@@ -1621,131 +1982,138 @@ export function createRelay({
 		res.end();
 	}
 
-	/** One request through the link's program: its head, its body as it comes, the response streamed back. */
-	function forward(req, res, lang, site, program) {
+	function forward(req, res, lang, site, program, info, onComplete = null) {
 		const text = TEXT[lang];
+		const release = () => {
+			if (onComplete) {
+				const fn = onComplete;
+				onComplete = null;
+				fn();
+			}
+		};
 		const declared = req.headers["content-length"];
-		if (declared !== undefined && (!/^\d+$/.test(declared) || Number(declared) > maxBodyBytes)) {
+		if (declared !== undefined && (!/^\d+$/.test(declared) || Number(declared) > boundedMaxBodyBytes)) {
 			req.resume();
+			release();
 			return answer(req, res, 413, messagePage(lang, text.tooLarge, text.tooLargeLead), { connection: "close" });
 		}
-		if (program.streams.size >= MAX_STREAMS)
+		if (program.httpCount >= MAX_STREAMS) {
+			release();
 			return answer(req, res, 503, messagePage(lang, text.unavailable, text.unavailableLead), {
 				"retry-after": "5",
 			});
+		}
 
 		const id = program.allocate();
+		program.httpCount++;
+		const isPublic = info.authMode === "public";
+		const maxStreamBuffered = Math.max(streamWindowBytes * 2, 512 * 1024);
 		let answered = false;
+		let isEventStream = false;
 		let over = false;
-		let blocked = null;
-		let blockedAt = 0;
-		let lastBlockedWritable = 0;
-		let lastBlockedQueue = 0;
+		let waitingDrain = false;
+		let creditRemaining = streamWindowBytes;
 		let streamBuffered = 0;
-		let tightened = false;
+		let pendingWindow = 0;
+		let stalledTimer = null;
+		let stalledAt = 0;
+		let lastStalledWritable = 0;
+		let lastStalledQueue = 0;
 		let received = 0;
 		let reqPaused = false;
 		let reqEnded = false;
 		let uploadEntry = null;
 		let timer = null;
-		const syncBuffered = (next = res.writableLength) => {
-			const bounded = Math.max(0, next);
-			const delta = bounded - streamBuffered;
-			if (delta !== 0) {
-				streamBuffered = bounded;
-				adjustBuffered(program, delta);
-			}
-			return bounded;
+		let sseKeepaliveTimer = null;
+		let lastSseWriteAt = 0;
+
+		const syncBuffered = (next) => {
+			const clamped = Math.max(0, next);
+			const delta = clamped - streamBuffered;
+			if (delta === 0) return;
+			streamBuffered = clamped;
+			program.buffered = Math.max(0, program.buffered + delta);
+			totalHttpBufferedBytes = Math.max(0, totalHttpBufferedBytes + delta);
 		};
-		const overRelayCap = () =>
-			relayBuffered >= RELAY_PAUSE_BYTES &&
-			bufferedPrograms > 0 &&
-			program.buffered >= Math.floor(RELAY_PAUSE_BYTES / bufferedPrograms);
+		const flushWindow = () => {
+			if (over || pendingWindow <= 0 || program.ws.closed) return;
+			const amount = pendingWindow;
+			pendingWindow = 0;
+			creditRemaining += amount;
+			program.windowUpdates++;
+			program.send(TYPE.window, id, encodeWindow(amount));
+		};
+		const clearStalledTimer = () => {
+			if (stalledTimer) {
+				clearTimeout(stalledTimer);
+				stalledTimer = null;
+			}
+		};
 		const armTimer = () => {
 			if (timer) clearTimeout(timer);
-			timer = setTimeout(() => fail(504, text.slow, text.again), responseTimeoutMs);
+			const timeout = answered ? streamIdleTimeoutMs : firstByteTimeoutMs;
+			timer = setTimeout(() => fail(504, text.slow, text.again), timeout);
 		};
-		const armBlockedTimer = (ms) => {
-			if (blocked) clearTimeout(blocked);
-			blocked = setTimeout(() => {
-				if (over) return;
-				const elapsed = Date.now() - blockedAt;
-				if (!tightened || elapsed >= pausedMs) return fail(502, text.notAnswering, text.notAnsweringLead);
-				const currentWritable = syncBuffered();
+		const armStalledTimer = (ms) => {
+			clearStalledTimer();
+			stalledTimer = setTimeout(() => {
+				if (over || !waitingDrain) return;
+				const elapsed = Date.now() - stalledAt;
+				if (elapsed >= pausedMs) return fail(502, text.notAnswering, text.notAnsweringLead);
+				const currentWritable = Math.max(0, res.writableLength);
 				const currentQueue = socketWriteQueue(res);
-				// WHY: Check writableLength and libuv writeQueueSize so slow mobile links draining mid-chunk count as progressing.
+				// WHY: Check writableLength and libuv writeQueueSize so steadily draining slow visitors stay alive without blocking sibling streams.
 				if (
-					currentWritable < lastBlockedWritable ||
-					(currentWritable === lastBlockedWritable && currentQueue < lastBlockedQueue)
+					currentWritable < lastStalledWritable ||
+					(currentWritable === lastStalledWritable && currentQueue < lastStalledQueue)
 				) {
 					program.sharedProgressChecks++;
-					lastBlockedWritable = currentWritable;
-					lastBlockedQueue = currentQueue;
-					if (
-						currentWritable <= STREAM_PAUSE_BYTES / 2 &&
-						program.buffered < PROGRAM_PAUSE_BYTES &&
-						!overRelayCap()
-					) {
-						unblock();
-						return;
-					}
-					armBlockedTimer(Math.min(sharedPausedMs, Math.max(1, pausedMs - elapsed)));
+					lastStalledWritable = currentWritable;
+					lastStalledQueue = currentQueue;
+					armStalledTimer(Math.min(sharedPausedMs, Math.max(1, pausedMs - elapsed)));
 					return;
 				}
 				fail(502, text.notAnswering, text.notAnsweringLead);
 			}, ms);
 		};
-		const blocker = {
-			tighten: () => {
-				if (!blocked || tightened) return;
-				tightened = true;
-				lastBlockedWritable = syncBuffered();
-				lastBlockedQueue = socketWriteQueue(res);
-				const limit = Math.min(pausedMs, sharedPausedMs);
-				const left = Math.max(0, Math.min(limit, pausedMs - (Date.now() - blockedAt)));
-				armBlockedTimer(left);
-			},
-		};
-		const block = () => {
-			if (blocked || over) return;
-			// WHY: Pause the app-response timer while the relay itself has paused reading from the program for a slow visitor.
-			if (timer) {
-				clearTimeout(timer);
-				timer = null;
-			}
-			blockedAt = Date.now();
-			lastBlockedWritable = syncBuffered();
-			lastBlockedQueue = socketWriteQueue(res);
-			tightened = program.streams.size > 1;
-			const limit = tightened ? Math.min(pausedMs, sharedPausedMs) : pausedMs;
-			armBlockedTimer(limit);
-			program.block(blocker);
-		};
-		const unblock = () => {
-			if (!blocked) return;
-			clearTimeout(blocked);
-			blocked = null;
-			tightened = false;
-			program.unblock(blocker);
-			if (!over) armTimer();
+		const startSseKeepalive = () => {
+			if (!isEventStream || sseKeepaliveMs <= 0) return;
+			lastSseWriteAt = Date.now();
+			sseKeepaliveTimer = setInterval(() => {
+				if (over || waitingDrain || res.destroyed || res.writableEnded) return;
+				if (Date.now() - lastSseWriteAt < sseKeepaliveMs) return;
+				try {
+					res.write(": keepalive\n\n");
+					lastSseWriteAt = Date.now();
+				} catch {
+					fail(502, text.notAnswering, text.notAnsweringLead);
+				}
+			}, Math.max(25, Math.floor(sseKeepaliveMs / 2)));
+			sseKeepaliveTimer.unref();
 		};
 		const done = () => {
+			if (over) return;
 			over = true;
 			if (timer) {
 				clearTimeout(timer);
 				timer = null;
 			}
+			if (sseKeepaliveTimer) {
+				clearInterval(sseKeepaliveTimer);
+				sseKeepaliveTimer = null;
+			}
+			clearStalledTimer();
 			syncBuffered(0);
 			program.streams.delete(id);
+			program.httpCount = Math.max(0, program.httpCount - 1);
 			uploadEntry = null;
-			unblock();
 			if (reqPaused && !reqEnded) {
 				reqPaused = false;
 				req.resume();
 			}
+			release();
+			checkDrained();
 		};
-		/** The stream ends early: the program is told (unless it ended it), the visitor gets a page (or the connection
-		 * ends, once a response has begun), and the rest of the request body is dropped. */
 		const fail = (status, title, lead, { tellProgram = true } = {}) => {
 			if (over) return;
 			done();
@@ -1765,11 +2133,10 @@ export function createRelay({
 				} catch {
 					return broken();
 				}
-				const headers = responseHeaders(head?.headers);
+				const headers = responseHeaders(head?.headers, { isPublic });
 				const status = head?.status;
 				if (!Number.isInteger(status) || status < 200 || status > 599 || !headers) return broken();
-				// Never more or fewer bytes than the answer's Content-Length: the visitor's connection, which Envoy shares
-				// between every app host, ends instead.
+				isEventStream = isEventStreamHeaders(headers);
 				res.strictContentLength = true;
 				try {
 					res.writeHead(status, headers.flat());
@@ -1779,27 +2146,53 @@ export function createRelay({
 				answered = true;
 				armTimer();
 				res.flushHeaders();
+				startSseKeepalive();
 			},
 			body(payload) {
 				if (!answered) return broken();
-				if (!blocked) armTimer();
+				creditRemaining -= payload.length;
+				if (creditRemaining < 0) {
+					// WHY: Enforce per-stream send credits so a modified link program cannot exhaust relay memory when a visitor stops reading.
+					done();
+					if (!program.ws.closed) drop(program, "flow control window exceeded", 1002);
+					req.resume();
+					res.destroy();
+					return;
+				}
+				if (!waitingDrain) armTimer();
 				let room;
 				try {
 					room = res.write(payload);
 				} catch {
 					return broken();
 				}
-				const currentBuffered = syncBuffered();
-				if (blocked) {
-					lastBlockedWritable = currentBuffered;
-					lastBlockedQueue = socketWriteQueue(res);
-				} else if (
-					!room &&
-					(currentBuffered >= STREAM_PAUSE_BYTES ||
-						program.buffered >= PROGRAM_PAUSE_BYTES ||
-						overRelayCap())
-				)
-					block();
+				syncBuffered(res.writableLength);
+				if (streamBuffered > maxStreamBuffered) return fail(502, text.notAnswering, text.notAnsweringLead);
+				// WHY: Evict the heaviest stalled stream when per-program or relay-wide memory caps trip so fast readers are never disrupted.
+				while (program.buffered > maxProgramBufferedBytes) {
+					if (!evictLargestBuffered([program])) break;
+				}
+				while (totalHttpBufferedBytes > maxTotalBufferedBytes) {
+					if (!evictLargestBuffered(programs.values())) break;
+				}
+				if (over) return;
+				if (isEventStream) lastSseWriteAt = Date.now();
+				pendingWindow += payload.length;
+				if (!room) {
+					if (!waitingDrain) {
+						waitingDrain = true;
+						stalledAt = Date.now();
+						lastStalledWritable = Math.max(0, res.writableLength);
+						lastStalledQueue = socketWriteQueue(res);
+						if (timer) {
+							clearTimeout(timer);
+							timer = null;
+						}
+						armStalledTimer(Math.min(pausedMs, sharedPausedMs));
+					}
+					return;
+				}
+				if (!waitingDrain && pendingWindow >= windowUpdateThreshold) flushWindow();
 			},
 			end() {
 				if (!answered) return broken();
@@ -1816,14 +2209,19 @@ export function createRelay({
 			gone() {
 				fail(502, text.notAnswering, text.notAnsweringLead, { tellProgram: false });
 			},
+			bufferedBytes: () => streamBuffered,
+			stalledSince: () => (waitingDrain ? stalledAt : Number.POSITIVE_INFINITY),
+			evict: () => fail(502, text.notAnswering, text.notAnsweringLead),
 			broken,
 		});
-		program.tightenBlocked();
 		res.on("drain", () => {
-			syncBuffered();
-			unblock();
+			if (over) return;
+			syncBuffered(res.writableLength);
+			waitingDrain = false;
+			clearStalledTimer();
+			armTimer();
+			flushWindow();
 		});
-		// The visitor left: the program stops too.
 		res.on("close", () => {
 			if (over) return;
 			done();
@@ -1840,6 +2238,7 @@ export function createRelay({
 						host: site.host,
 						client: clientAddress(req.headers["cf-connecting-ip"]),
 						chunked: req.headers["transfer-encoding"] !== undefined,
+						memberId: info.memberId,
 					}),
 				}),
 			),
@@ -1874,7 +2273,7 @@ export function createRelay({
 		req.on("data", (chunk) => {
 			if (over) return;
 			received += chunk.length;
-			if (received > maxBodyBytes) return fail(413, text.tooLarge, text.tooLargeLead);
+			if (received > boundedMaxBodyBytes) return fail(413, text.tooLarge, text.tooLargeLead);
 			const slices = [];
 			for (let at = 0; at < chunk.length; at += CHUNK_BYTES) slices.push(chunk.subarray(at, at + CHUNK_BYTES));
 			if (uploadEntry || program.uploadQueue.length > 0) return queueSlices(slices);
@@ -1931,17 +2330,27 @@ export function createRelay({
 		offeredProtocols,
 		releaseUpgrading,
 		sessionToken,
-		sessionSiteId,
+		info,
+		onComplete = null,
 	) {
 		const text = TEXT[lang];
+		const release = () => {
+			if (onComplete) {
+				const fn = onComplete;
+				onComplete = null;
+				fn();
+			}
+		};
 		if (program.ws.closed || socket.destroyed) {
 			releaseUpgrading();
+			release();
 			if (!socket.destroyed)
 				rawAnswer(socket, 503, messagePage(lang, text.notRunning, text.again), { "retry-after": "10" });
 			return;
 		}
-		if (program.wsCount >= maxWsPerSite || program.streams.size >= MAX_STREAMS) {
+		if (program.wsCount >= maxWsPerSite) {
 			releaseUpgrading();
+			release();
 			rawAnswer(socket, 503, messagePage(lang, text.unavailable, text.unavailableLead), { "retry-after": "5" });
 			return;
 		}
@@ -1956,7 +2365,24 @@ export function createRelay({
 		let wsUploadEntry = null;
 		let wsPendingBytes = 0;
 		let pendingClose = null;
+		let pendingWsWindow = 0;
+		let wsWaitingDrain = false;
+		let wsStalledTimer = null;
 		let timer = null;
+
+		const flushWsWindow = () => {
+			if (over || pendingWsWindow <= 0 || program.ws.closed) return;
+			const amount = pendingWsWindow;
+			pendingWsWindow = 0;
+			program.windowUpdates++;
+			program.send(TYPE.window, id, encodeWindow(amount));
+		};
+		const clearWsStalledTimer = () => {
+			if (wsStalledTimer) {
+				clearTimeout(wsStalledTimer);
+				wsStalledTimer = null;
+			}
+		};
 		const onPrematureClose = () => {
 			if (over || opened) return;
 			done();
@@ -1969,6 +2395,7 @@ export function createRelay({
 				clearTimeout(timer);
 				timer = null;
 			}
+			clearWsStalledTimer();
 			socket.off("close", onPrematureClose);
 			releaseUpgrading();
 			program.streams.delete(id);
@@ -1980,6 +2407,8 @@ export function createRelay({
 			wsUploadEntry = null;
 			wsPendingBytes = 0;
 			pendingClose = null;
+			release();
+			checkDrained();
 		};
 		const failBeforeOpen = (status, title, lead, extra = {}, tellProgram = true) => {
 			if (over) return;
@@ -1994,12 +2423,8 @@ export function createRelay({
 			if (!program.ws.closed) program.send(TYPE.wsClose, id, encoded);
 			visitorWs?.close(code, reason);
 		};
-		const dropSlowVisitor = () => {
-			if (over) return;
-			const encoded = encodeWsClose(1008, "backpressure");
-			done();
-			if (!program.ws.closed) program.send(TYPE.wsClose, id, encoded);
-			visitorWs?.terminate();
+		const dropSlowVisitor = (code = 1008, reason = "slow consumer") => {
+			closeBoth(code, reason);
 		};
 		const pauseVisitor = () => {
 			if (!visitorPaused && visitorWs && !visitorWs.closed) {
@@ -2052,7 +2477,7 @@ export function createRelay({
 			if (!program.ws.closed) program.send(TYPE.wsClose, id, encoded);
 		};
 		socket.on("close", onPrematureClose);
-		timer = setTimeout(() => failBeforeOpen(504, text.slow, text.again), responseTimeoutMs);
+		timer = setTimeout(() => failBeforeOpen(504, text.slow, text.again), firstByteTimeoutMs);
 		program.streams.set(id, {
 			wsOpenOk(payload) {
 				if (over) return;
@@ -2098,10 +2523,18 @@ export function createRelay({
 					maxQueued: maxWsQueuedBytes,
 					allowText: true,
 				});
+				visitorWs.onDrain = () => {
+					if (over) return;
+					wsWaitingDrain = false;
+					clearWsStalledTimer();
+					flushWsWindow();
+				};
 				wsTracker = {
 					ws: visitorWs,
 					token: sessionToken,
-					siteId: sessionSiteId,
+					lookupKey: site.lookupKey,
+					siteId: info.siteId,
+					authMode: info.authMode,
 					pingedAt: Date.now(),
 					checkedAt: Date.now(),
 					rechecking: false,
@@ -2116,7 +2549,7 @@ export function createRelay({
 					message.copy(frame, 1);
 					if (wsUploadEntry || program.uploadQueue.length > 0) {
 						if (wsPendingBytes + frame.length > maxWsQueuedBytes) {
-							dropSlowVisitor();
+							dropSlowVisitor(1008, "slow consumer");
 							return;
 						}
 						wsPendingBytes += frame.length;
@@ -2125,7 +2558,7 @@ export function createRelay({
 					}
 					if (program.ws.needsDrain && program.ws.queuedBytes + frame.length > uploadHighWater) {
 						if (wsPendingBytes + frame.length > maxWsQueuedBytes) {
-							dropSlowVisitor();
+							dropSlowVisitor(1008, "slow consumer");
 							return;
 						}
 						wsPendingBytes += frame.length;
@@ -2159,7 +2592,22 @@ export function createRelay({
 						return closeBoth(1007, "invalid utf-8");
 					}
 				}
-				visitorWs.send(data, opcode);
+				if (visitorWs.queuedBytes + data.length + 14 > maxWsQueuedBytes) {
+					return dropSlowVisitor(1008, "slow consumer");
+				}
+				const room = visitorWs.send(data, opcode);
+				pendingWsWindow += data.length;
+				if (!room) {
+					if (!wsWaitingDrain) {
+						wsWaitingDrain = true;
+						wsStalledTimer = setTimeout(() => {
+							if (!over && wsWaitingDrain) dropSlowVisitor(1013, "slow consumer");
+						}, pausedMs);
+						wsStalledTimer.unref();
+					}
+					return;
+				}
+				if (!wsWaitingDrain && pendingWsWindow >= windowUpdateThreshold) flushWsWindow();
 			},
 			wsClose(payload) {
 				if (over) return;
@@ -2197,7 +2645,6 @@ export function createRelay({
 				closeBoth(1011, "protocol error");
 			},
 		});
-		program.tightenBlocked();
 		program.send(
 			TYPE.wsOpen,
 			id,
@@ -2208,6 +2655,7 @@ export function createRelay({
 						host: site.host,
 						client: clientAddress(req.headers["cf-connecting-ip"]),
 						protocols: offeredProtocols,
+						memberId: info.memberId,
 					}),
 				}),
 			),
@@ -2216,6 +2664,8 @@ export function createRelay({
 
 	async function upgradeVisitor(req, socket, head, lang, site) {
 		const text = TEXT[lang];
+		if (draining)
+			return rawAnswer(socket, 503, messagePage(lang, text.unavailable, text.again), { "retry-after": "5" });
 		const url = req.url ?? "";
 		const path = url.split("?")[0];
 		if (!url.startsWith("/") || isPlatformPath(path))
@@ -2224,7 +2674,11 @@ export function createRelay({
 		if (!accept) return rawAnswer(socket, 400, messagePage(lang, text.notFound, text.nothing));
 		const parsedProtocols = parseWsProtocols(req.rawHeaders);
 		if (!parsedProtocols.ok) return rawAnswer(socket, 400, messagePage(lang, text.notFound, text.nothing));
-		if (!isValidVisitorWsOrigin(req.headers, site.host, req.rawHeaders))
+		if (!isValidVisitorWsOrigin(req.headers, site.host, req.rawHeaders, { allowAbsentOrigin: true }))
+			return rawAnswer(socket, 403, messagePage(lang, text.otherSite, text.otherSiteLead));
+		const originPresent = isValidVisitorWsOrigin(req.headers, site.host, req.rawHeaders, { allowAbsentOrigin: false });
+		const precheckProgram = programs.get(site.slug);
+		if (!originPresent && (precheckProgram?.authMode !== "public" || Boolean(req.headers.cookie)))
 			return rawAnswer(socket, 403, messagePage(lang, text.otherSite, text.otherSiteLead));
 		if (visitorUpgrading >= MAX_VISITOR_UPGRADING)
 			return rawAnswer(socket, 503, messagePage(lang, text.unavailable, text.again), { "retry-after": "5" });
@@ -2239,40 +2693,73 @@ export function createRelay({
 			visitorUpgrading = Math.max(0, visitorUpgrading - 1);
 		};
 		let handedOff = false;
+		let releasePublic = null;
 		try {
-			const tokens = gateTokens(req.headers.cookie);
+			let program = programs.get(site.slug);
+			const tokens = authTokens(req.headers.cookie);
 			let matchedToken = null;
-			let siteId = null;
+			let info = null;
+			let lockedAuthMode = program?.authMode ?? "password";
 			for (const token of tokens) {
-				const found = await sessionSite(site.slug, token);
+				const found = await sessionLookup(site.lookupKey, token);
 				if (socket.destroyed) return;
-				if (found) {
+				if (found.open) {
 					matchedToken = token;
-					siteId = found;
+					info = found;
+					if (program) program.authMode = found.authMode;
 					break;
 				}
+				if (found.authMode) lockedAuthMode = found.authMode;
 			}
-			if (!siteId) {
+			if (!info && program?.authMode === "public") {
+				const found = await sessionLookup(site.lookupKey, null);
+				if (socket.destroyed) return;
+				if (found.open) info = found;
+				else lockedAuthMode = found.authMode;
+			}
+			if (!originPresent) {
+				const allowedAbsentOrigin = info?.open && info.authMode === "public" && !req.headers.cookie;
+				if (!allowedAbsentOrigin) {
+					rawAnswer(socket, 403, messagePage(lang, text.otherSite, text.otherSiteLead));
+					return;
+				}
+			}
+			if (!info?.open) {
 				rawAnswer(
 					socket,
 					401,
-					passwordPage(lang, safeNext(url)),
+					lockedAuthMode === "company_member"
+						? messagePage(lang, text.memberOnly, text.memberOnlyLead)
+						: passwordPage(lang, safeNext(url)),
 					tokens.length > 0 ? { "set-cookie": CLEAR_GATE_COOKIE } : {},
 				);
 				return;
 			}
-			let program = programs.get(site.slug);
-			let activeSiteId = siteId;
-			if (program && program.siteId !== siteId) {
-				const fresh = await sessionSite(site.slug, matchedToken, true);
-				if (socket.destroyed) return;
-				if (!fresh) {
-					rawAnswer(socket, 401, passwordPage(lang, safeNext(url)), { "set-cookie": CLEAR_GATE_COOKIE });
+			if (info.authMode === "public") {
+				releasePublic = admitPublic(clientAddress(req.headers["cf-connecting-ip"]), site.slug);
+				if (!releasePublic) {
+					rawAnswer(socket, 429, messagePage(lang, text.unavailable, text.again), { "retry-after": "30" });
 					return;
 				}
-				activeSiteId = fresh;
+			}
+			program = programs.get(site.slug);
+			if (program && program.siteId !== info.siteId) {
+				const fresh = await sessionLookup(site.lookupKey, matchedToken, true);
+				if (socket.destroyed) return;
+				if (!fresh.open) {
+					rawAnswer(
+						socket,
+						401,
+						fresh.authMode === "company_member"
+							? messagePage(lang, text.memberOnly, text.memberOnlyLead)
+							: passwordPage(lang, safeNext(url)),
+						matchedToken ? { "set-cookie": CLEAR_GATE_COOKIE } : {},
+					);
+					return;
+				}
+				info = fresh;
 				program = programs.get(site.slug);
-				if (program && program.siteId !== fresh) {
+				if (program && program.siteId !== fresh.siteId) {
 					if (!(await stillHolds(program)) && programs.get(site.slug) === program) drop(program, "its site is gone");
 					if (!socket.destroyed)
 						rawAnswer(socket, 503, messagePage(lang, text.notRunning, text.again), { "retry-after": "10" });
@@ -2284,6 +2771,8 @@ export function createRelay({
 				return;
 			}
 			handedOff = true;
+			const completePublic = releasePublic;
+			releasePublic = null;
 			forwardVisitorWs(
 				req,
 				socket,
@@ -2295,13 +2784,55 @@ export function createRelay({
 				parsedProtocols.protocols,
 				releaseUpgrading,
 				matchedToken,
-				activeSiteId,
+				info,
+				completePublic,
 			);
 		} catch (error) {
 			failure(error);
 			rawAnswer(socket, 503, messagePage(lang, text.unavailable, text.unavailableLead), { "retry-after": "30" });
 		} finally {
-			if (!handedOff) releaseUpgrading();
+			if (!handedOff) {
+				releasePublic?.();
+				releaseUpgrading();
+			}
+		}
+	}
+
+	function handleHealthFrame(program, payload) {
+		try {
+			const data = JSON.parse(payload.toString("utf8"));
+			if (!data || typeof data !== "object" || Array.isArray(data)) return;
+			if (typeof data.healthy !== "boolean") return;
+			program.health = {
+				connected: true,
+				healthy: data.healthy,
+				port: Number.isInteger(data.port) ? data.port : program.port,
+				lastStatus: Number.isInteger(data.lastStatus) ? data.lastStatus : null,
+				lastLatencyMs:
+					typeof data.lastLatencyMs === "number" && Number.isFinite(data.lastLatencyMs) && data.lastLatencyMs >= 0
+						? Math.round(data.lastLatencyMs)
+						: null,
+				restartCount: Number.isSafeInteger(data.restartCount) && data.restartCount >= 0 ? data.restartCount : 0,
+				checkedAt: Number.isSafeInteger(data.checkedAt) ? data.checkedAt : Date.now(),
+			};
+		} catch {
+			return;
+		}
+	}
+
+	function handleSwapTargetAck(program, payload) {
+		if (!program.swapPending) return;
+		const pending = program.swapPending;
+		program.swapPending = null;
+		try {
+			const ack = JSON.parse(payload.toString("utf8"));
+			if (ack?.ok === true && Number.isInteger(ack.activePort) && ack.activePort >= 1 && ack.activePort <= 65535) {
+				program.port = ack.activePort;
+				program.health = { ...program.health, port: ack.activePort, healthy: true };
+			}
+			pending.resolve(ack);
+		} catch (error) {
+			pending.reject(error);
 		}
 	}
 
@@ -2315,13 +2846,14 @@ export function createRelay({
 		}
 		const { type, stream: id, payload } = decoded;
 		if (type === TYPE.keepalive) return;
+		if (type === TYPE.health && id === 0) return handleHealthFrame(program, payload);
+		if (type === TYPE.swapTarget && id === 0) return handleSwapTargetAck(program, payload);
 		if (
 			![TYPE.response, TYPE.body, TYPE.end, TYPE.reset, TYPE.wsOpenOk, TYPE.wsData, TYPE.wsClose].includes(type)
 		) {
 			program.ws.close(1002, "invalid message");
 			return;
 		}
-		// A stream that is over already (a timeout, a visitor who left): its late messages are dropped.
 		const stream = program.streams.get(id);
 		if (!stream) return;
 		if (type === TYPE.response) stream.response ? stream.response(payload) : stream.broken();
@@ -2341,30 +2873,44 @@ export function createRelay({
 			siteId: result.siteId,
 			port: result.port,
 			nextCheckAt: scheduleCheck(),
+			authMode: result.authMode ?? "password",
+			domains: result.domains ?? [],
 		});
+		if (old) clearProgramDomains(old);
 		programs.set(site.slug, program);
+		syncProgramDomains(program, result.domains ?? []);
 		ws.onMessage = (message) => programMessage(program, message);
 		ws.onDrain = () => program.pumpUploads(uploadHighWater);
 		ws.onClose = () => {
 			if (programs.get(site.slug) === program) {
 				programs.delete(site.slug);
+				clearProgramDomains(program);
 				log(`${site.slug}: the link program is gone`);
+			}
+			if (program.swapPending) {
+				program.swapPending.reject(new Error("program disconnected"));
+				program.swapPending = null;
 			}
 			program.uploadQueue.length = 0;
 			for (const stream of [...program.streams.values()]) stream.gone();
-			adjustBuffered(program, -program.buffered);
+			checkDrained();
 		};
 		if (old) {
-			// Only the newest program serves a link; the older one's open requests end with it.
 			old.ws.close(CLOSE.replaced, "replaced");
 			old.uploadQueue.length = 0;
 			for (const stream of [...old.streams.values()]) stream.gone();
-			adjustBuffered(old, -old.buffered);
 		}
 		program.send(
 			TYPE.hello,
 			0,
-			Buffer.from(JSON.stringify({ key: result.key, url: `https://${site.host}/`, port: result.port })),
+			Buffer.from(
+				JSON.stringify({
+					key: result.key,
+					url: `https://${site.host}/`,
+					port: result.port,
+					window: streamWindowBytes,
+				}),
+			),
 		);
 		log(`${site.slug}: a link program connected${old ? ", replacing the one before" : ""}`);
 	}
@@ -2373,13 +2919,16 @@ export function createRelay({
 		socket.on("error", () => socket.destroy());
 		const lang = language(req.headers["accept-language"]);
 		const text = TEXT[lang];
+		const path = (req.url ?? "").split("?")[0];
+		if (path !== "/.qorpera/connect") {
+			const site = resolveSiteHost(req.headers["x-forwarded-host"]);
+			if (!site) return rawAnswer(socket, 404, messagePage(lang, text.notFound, text.nothing));
+			return upgradeVisitor(req, socket, head, lang, site);
+		}
 		const site = appHost(req.headers["x-forwarded-host"], hostSuffix);
 		if (!site) return rawAnswer(socket, 404, messagePage(lang, text.notFound, text.nothing));
-		if ((req.url ?? "").split("?")[0] !== "/.qorpera/connect")
-			return upgradeVisitor(req, socket, head, lang, site);
 		const accept = req.method === "GET" ? acceptKey(req.headers) : null;
 		if (!accept) return rawAnswer(socket, 400, messagePage(lang, text.notFound, text.nothing));
-		/** The handshake completed: a refusal is a close code, which the program reads and stops at. */
 		const opened = () => {
 			socket.write(
 				`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
@@ -2391,14 +2940,12 @@ export function createRelay({
 		};
 		const secret = /^Bearer (\S+)$/.exec(String(req.headers.authorization ?? ""))?.[1];
 		const id = req.headers["x-qorpera-program"];
-		// Not a claim or key and a program id as the platform makes them: refused, asking nobody, counting nothing.
 		if (!secret || !SECRET.test(secret) || typeof id !== "string" || !PROGRAM_ID.test(id))
 			return opened().close(CLOSE.refused, "refused");
 		const address = clientAddress(req.headers["cf-connecting-ip"]);
 		const releaseAdmit = admit(address, site.slug);
 		if (!releaseAdmit)
 			return rawAnswer(socket, 429, messagePage(lang, text.unavailable, text.again), { "retry-after": "30" });
-		// Nothing is read from the socket until the database has answered.
 		socket.pause();
 		upgrading.add(socket);
 		try {
@@ -2425,9 +2972,35 @@ export function createRelay({
 		}
 	}
 
+	function requestSwapTarget(slug, newPort, { healthPath = "", timeoutMs = 5_000 } = {}) {
+		const program = programs.get(slug);
+		if (!program || program.ws.closed) return Promise.reject(new Error("program not connected"));
+		if (!Number.isInteger(newPort) || newPort < 1 || newPort > 65535) return Promise.reject(new Error("invalid port"));
+		if (program.swapPending) return Promise.reject(new Error("swap already in progress"));
+		return new Promise((resolve, reject) => {
+			const deadline = setTimeout(() => {
+				if (program.swapPending) {
+					program.swapPending = null;
+					reject(new Error("swap timed out"));
+				}
+			}, timeoutMs + 1_000);
+			deadline.unref();
+			program.swapPending = {
+				resolve: (value) => {
+					clearTimeout(deadline);
+					resolve(value);
+				},
+				reject: (error) => {
+					clearTimeout(deadline);
+					reject(error);
+				},
+			};
+			program.send(TYPE.swapTarget, 0, Buffer.from(JSON.stringify({ port: newPort, healthPath, timeoutMs })));
+		});
+	}
+
 	const wsSessionCheckMs = sessionCacheMs > 0 ? sessionCacheMs : SESSION_CACHE_MS;
 
-	/** Keepalives out, silent programs dropped (a paused one too), every key, site and port checked again now and then. */
 	function sweep() {
 		const now = Date.now();
 		for (const program of programs.values()) {
@@ -2452,11 +3025,11 @@ export function createRelay({
 				if (!visitor.rechecking && now - visitor.checkedAt >= wsSessionCheckMs) {
 					visitor.rechecking = true;
 					visitor.checkedAt = now;
-					sessionSite(program.slug, visitor.token)
+					sessionLookup(visitor.lookupKey, visitor.token)
 						.then((found) => {
 							visitor.rechecking = false;
 							if (!program.wsStreams.has(visitor)) return;
-							if (!found || found !== visitor.siteId) visitor.sessionEnded();
+							if (!found.open || found.siteId !== visitor.siteId) visitor.sessionEnded();
 						})
 						.catch((error) => {
 							visitor.rechecking = false;
@@ -2472,8 +3045,21 @@ export function createRelay({
 						if (programs.get(program.slug) !== program) return;
 						if (result.state !== "ok") drop(program, "its key no longer holds");
 						else if (result.siteId !== program.siteId) drop(program, "its site is gone");
-						// The program connects again and learns the port from its hello.
-						else if (result.port !== program.port) drop(program, "the shared port changed", CLOSE.portChanged);
+						else {
+							program.authMode = result.authMode ?? "password";
+							syncProgramDomains(program, result.domains ?? []);
+							if (result.port !== program.port && !program.swapPending) {
+								void requestSwapTarget(program.slug, result.port)
+									.then((ack) => {
+										if (programs.get(program.slug) !== program) return;
+										if (!ack?.ok) drop(program, "the shared port changed", CLOSE.portChanged);
+									})
+									.catch(() => {
+										if (programs.get(program.slug) === program)
+											drop(program, "the shared port changed", CLOSE.portChanged);
+									});
+							}
+						}
 					})
 					.catch(failure);
 			}
@@ -2482,13 +3068,12 @@ export function createRelay({
 		for (const [id, kept] of lockedSessions) if (kept.until <= now) lockedSessions.delete(id);
 		for (const [id, entry] of refusals) if (now - entry.start >= 60_000) refusals.delete(id);
 		for (const [id, entry] of addressRefusals) if (now - entry.start >= 60_000) addressRefusals.delete(id);
+		for (const [id, entry] of publicHits) if (now - entry.updatedAt >= 120_000) publicHits.delete(id);
 	}
 
 	const server = createServer(handle);
-	// Longer than api-front's idle time for its connections here (60 s, the app_relay cluster), so a request Envoy
-	// sends on a kept connection never meets one this side has just closed.
-	server.keepAliveTimeout = 75_000;
-	server.headersTimeout = 80_000;
+	server.keepAliveTimeout = 375_000;
+	server.headersTimeout = 380_000;
 	server.on("upgrade", (req, socket, head) => {
 		upgrade(req, socket, head).catch((error) => {
 			failure(error);
@@ -2512,12 +3097,56 @@ export function createRelay({
 		server.closeAllConnections();
 		return server;
 	};
-	/** Whether a link's program is connected, and dropping it (its socket closed at once): for operators and tests. */
+	server.drain = async (timeoutMs = gracefulShutdownMs) => {
+		draining = true;
+		const closedPromise = new Promise((resolve) => close(resolve));
+		if (totalActiveStreams() > 0) {
+			await new Promise((resolve) => {
+				let settled = false;
+				const doneWait = () => {
+					if (settled) return;
+					settled = true;
+					clearTimeout(deadline);
+					drainWaiters.delete(doneWait);
+					resolve();
+				};
+				const deadline = setTimeout(doneWait, Math.max(0, timeoutMs));
+				deadline.unref();
+				drainWaiters.add(doneWait);
+				checkDrained();
+			});
+		}
+		clearInterval(timer);
+		for (const program of programs.values()) {
+			for (const stream of [...program.streams.values()]) stream.gone();
+			program.ws.close(1001, "going away");
+		}
+		for (const socket of upgrading) socket.destroy();
+		server.closeAllConnections();
+		await closedPromise;
+	};
 	server.isConnected = (slug) => programs.has(slug);
 	server.dropProgram = (slug) => programs.get(slug)?.ws.terminate();
 	server.pauseCount = (slug) => programs.get(slug)?.pauseCount ?? 0;
+	server.windowUpdates = (slug) => programs.get(slug)?.windowUpdates ?? 0;
+	server.evictions = (slug) => programs.get(slug)?.evictions ?? 0;
 	server.sharedProgressChecks = (slug) => programs.get(slug)?.sharedProgressChecks ?? 0;
 	server.wsCount = (slug) => programs.get(slug)?.wsCount ?? 0;
+	server.programHealth = (slug) => {
+		const program = programs.get(slug);
+		if (!program)
+			return {
+				connected: false,
+				healthy: false,
+				port: null,
+				lastStatus: null,
+				lastLatencyMs: null,
+				restartCount: 0,
+				checkedAt: null,
+			};
+		return { ...program.health };
+	};
+	server.swapTarget = requestSwapTarget;
 	return server;
 }
 
@@ -2527,11 +3156,19 @@ export function main(env = process.env) {
 		if (!value) throw new Error(`${name} is not set`);
 		return value;
 	};
+	const parsedMaxBody = env.QORPERA_APP_RELAY_MAX_BODY_BYTES ? Number(env.QORPERA_APP_RELAY_MAX_BODY_BYTES) : MAX_BODY_BYTES;
+	const parsedShutdownMs = env.QORPERA_APP_RELAY_GRACEFUL_SHUTDOWN_MS
+		? Number(env.QORPERA_APP_RELAY_GRACEFUL_SHUTDOWN_MS)
+		: GRACEFUL_SHUTDOWN_MS;
 	const server = createRelay({
 		api: required("QORPERA_API"),
 		apiKey: required("QORPERA_API_KEY"),
 		relayJwt: required("QORPERA_RELAY_JWT"),
 		hostSuffix: env.QORPERA_APP_HOST_SUFFIX?.trim() || DEFAULT_HOST_SUFFIX,
+		webOrigins: parseWebOrigins(env.QORPERA_WEB_ORIGINS),
+		maxBodyBytes: Number.isFinite(parsedMaxBody) && parsedMaxBody > 0 ? parsedMaxBody : MAX_BODY_BYTES,
+		gracefulShutdownMs:
+			Number.isFinite(parsedShutdownMs) && parsedShutdownMs >= 0 ? parsedShutdownMs : GRACEFUL_SHUTDOWN_MS,
 		trustedAddresses: (env.QORPERA_APP_RELAY_TRUSTED_ADDRESSES ?? "")
 			.split(",")
 			.map((value) => value.trim())
@@ -2540,15 +3177,12 @@ export function main(env = process.env) {
 	const port = Number(env.QORPERA_APP_RELAY_PORT ?? 8090);
 	server.listen(port, "0.0.0.0", () => {
 		console.log(`app-relay: listening on :${port}`);
-		// Every company's machines leave through the agent exit's address: without it here, refused connects from one
-		// company count against the links of all the others.
 		if (!env.QORPERA_APP_RELAY_TRUSTED_ADDRESSES?.trim())
 			console.warn("app-relay: QORPERA_APP_RELAY_TRUSTED_ADDRESSES is empty: set the agent exit's public addresses");
 	});
 	for (const signal of ["SIGTERM", "SIGINT"])
 		process.once(signal, () => {
-			server.close(() => process.exit(0));
-			setTimeout(() => process.exit(0), 5000).unref();
+			void server.drain().finally(() => process.exit(0));
 		});
 	return server;
 }

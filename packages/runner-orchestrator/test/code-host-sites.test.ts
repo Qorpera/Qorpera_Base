@@ -335,7 +335,7 @@ describe("code host: a repository's site tree (own code storage, step 4, part B)
 			[{ files: { "index.html": index, "about.html": { link: "index.html" } } }, "about.html"],
 			[{ files: { "index.html": index }, submodules: { "vendor/lib": "1".repeat(40) } }, "vendor/lib"],
 			[{ files: { "index.html": index, ".well-known/app.json": "{}" } }, ".well-known/app.json"],
-			[{ files: { "index.html": index, "notes.md": "# notes\n" } }, "notes.md"],
+			[{ files: { "index.html": index, "notes.bak": "# notes\n" } }, "notes.bak"],
 			[{ files: { "index.html": index, "my page.html": index } }, "my page.html"],
 			[{ files: { "index.html": index, [long]: index } }, long],
 		];

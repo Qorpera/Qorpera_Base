@@ -156,6 +156,35 @@
 }
 .rail-agent-sched .rail-agent-hub-row { flex: 1; min-width: 0; }
 .rail-agent-sched.is-paused .rail-agent-hub-copy strong { color: var(--rail-small); }
+.rail-automation-fig { position: relative; display: grid; flex: none; }
+.rail-automation-fig > .rail-automation-face {
+	position: absolute; right: -5px; bottom: -3px; z-index: 4; box-sizing: border-box; width: 15px; height: 15px;
+	font-size: 7px; font-weight: 650; box-shadow: 0 0 0 2px var(--rail); pointer-events: none;
+}
+.rail-automation-fig > .rail-automation-face.is-nobody {
+	display: grid; place-items: center; border: 1.5px dashed color-mix(in srgb, var(--text) 55%, transparent);
+	border-radius: 50%; background: var(--rail); color: var(--text-muted); font-size: 8px; font-weight: 700;
+}
+.rail-agent-sched.is-offered .rail-automation-fig > .surface-crew { opacity: 0.38; }
+.rail-agent-sched.is-offered .rail-automation-fig::after {
+	content: ""; position: absolute; inset: -4px; border: 1.5px dashed color-mix(in srgb, var(--text) 34%, transparent);
+	border-radius: 50%;
+}
+.rail-automation-answer { display: flex; flex: none; gap: 6px; }
+.rail-automation-answer button {
+	display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 1px solid var(--border-strong);
+	border-radius: 50%; background: var(--bg); color: var(--text); cursor: default;
+	transition: transform var(--motion-fast) var(--ease-spring);
+}
+.rail-automation-answer button.is-yes { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
+.rail-automation-answer button:not(:disabled):hover { transform: scale(1.08); }
+.rail-automation-answer button:disabled { opacity: 0.5; }
+.rail-automation-answer .icon { width: 14px; height: 14px; }
+.rail-automation-take {
+	flex: none; padding: 3px 9px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg);
+	color: var(--text); font: inherit; font-size: 12px; font-weight: 600; cursor: default;
+}
+.rail-automation-take:disabled { opacity: 0.5; }
 .rail-agents-legacy { margin-top: 2px; }
 .rail-agents-legacy[hidden] { display: none; }
 .rail-agents-legacy.is-open .rail-legacy-chevron { transform: rotate(90deg); }

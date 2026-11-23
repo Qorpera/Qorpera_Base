@@ -1,17 +1,24 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { CloudMachineCommandReceipt } from "../../packages/contracts/src/cloud-machine.ts";
 import type {
-	CompanyMachineAccountFill, CompanyMachineAccountFillOutcome, CompanyMachineAccountFillSeal, CompanyMachineClipboardClear,
-	CompanyMachineClipboardCleared, CompanyMachineCodingValue, CompanyMachineCodingValueOutcome,
-	CompanyMachineMemberAct, CompanyMachineMemberActOutcome, CompanyMachineMemberLook, CompanyMachineMemberLookOutcome,
-	CompanyMachineMemberPointer, CompanyMachineMemberPointerOutcome, CompanyMachineMemberStart,
-	CompanyMachineMemberStartOutcome, CompanyMachineMemberStream, CompanyMachineScreen, CompanyMachineScreenOutcome,
+	CompanyMachineAccountFill, CompanyMachineAccountFillOutcome, CompanyMachineAccountFillSeal,
+	CompanyMachineAppAuthority, CompanyMachineAppHealthResult, CompanyMachineAppLogsRequest,
+	CompanyMachineAppLogsResult, CompanyMachineAppReloadRequest, CompanyMachineAppReloadResult,
+	CompanyMachineAppStartRequest, CompanyMachineAppStartResult, CompanyMachineAppStopResult,
+	CompanyMachineClipboardClear, CompanyMachineClipboardCleared, CompanyMachineCodingValue,
+	CompanyMachineCodingValueOutcome, CompanyMachineMemberAct, CompanyMachineMemberActOutcome,
+	CompanyMachineMemberLook, CompanyMachineMemberLookOutcome, CompanyMachineMemberPointer,
+	CompanyMachineMemberPointerOutcome, CompanyMachineMemberStart, CompanyMachineMemberStartOutcome,
+	CompanyMachineMemberStream, CompanyMachineScreen, CompanyMachineScreenOutcome,
 } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import {
 	CLOUD_MACHINE_ACCOUNT_FILL_SCHEMA,
 	type CloudMachineAccountFillAnswer,
 	type CloudMachineAccountFillHttpRequest,
 	CloudMachineAccountFillRefusal,
+	type CloudMachineAppAnswer,
+	type CloudMachineAppHttpRequest,
+	CloudMachineAppRefusal,
 	CLOUD_MACHINE_CODING_VALUE_SCHEMA,
 	CLOUD_MACHINE_SCREEN_SCHEMA,
 	CLOUD_MACHINE_WAKE_WAIT_MS,
@@ -41,6 +48,7 @@ import {
 	createHttpCloudMachineCommandGateway,
 	createHttpMemberMachineScreenPeer,
 	isCloudMachineAccountFillRefusal,
+	isCloudMachineAppRefusal,
 	isCloudMachineCodingValueRefusal,
 	isCloudMachineScreenRefusal,
 	isCloudMemberMachineActRefusal,
@@ -66,11 +74,12 @@ import { createCloudHomeChannel } from "../../packages/runtime/src/cloud-home-ch
 import type { CodingCommandPeer } from "./command-routing.ts";
 import type { MachineAccountFillSealRequest } from "./machine-account-fill-broker.ts";
 import {
-	authorizeMachineAccountFill, authorizeMachineCodingValue, authorizeMachineCommand, authorizeMachineScreen,
-	authorizeMemberMachineAct, authorizeMemberMachinePointer, authorizeMemberMachineScreen, authorizeMemberMachineStart,
-	type MachineAccountFillAuthority, type MachineCodingValueAuthority, type MachineCodingValueClear,
-	type MachineCommandAuthority, type MachineScreenAuthority, type MemberMachineActAuthority,
-	type MemberMachinePointerAuthority, type MemberMachineScreenAuthority, type MemberMachineStartAuthority,
+	authorizeMachineAccountFill, authorizeMachineAppOp, authorizeMachineCodingValue, authorizeMachineCommand,
+	authorizeMachineScreen, authorizeMemberMachineAct, authorizeMemberMachinePointer, authorizeMemberMachineScreen,
+	authorizeMemberMachineStart, type MachineAccountFillAuthority, type MachineAppAuthority,
+	type MachineCodingValueAuthority, type MachineCodingValueClear, type MachineCommandAuthority,
+	type MachineScreenAuthority, type MemberMachineActAuthority, type MemberMachinePointerAuthority,
+	type MemberMachineScreenAuthority, type MemberMachineStartAuthority,
 } from "./machine-command-authority.ts";
 
 interface MachineCommandRouterOptions {
@@ -100,6 +109,11 @@ interface MachineCommandRouterOptions {
 	codingValueClearLocal?(authority: MachineCodingValueClear, signal: AbortSignal): Promise<void>;
 	/** machine_screen (20260930708000): runs the screen helper on this node's machine; absent when the executor carries no machines. */
 	screenLocal?(authority: MachineScreenAuthority, signal: AbortSignal): Promise<CloudMachineScreenAnswer>;
+	appLocal?(
+		request: CloudMachineAppHttpRequest,
+		authority: MachineAppAuthority,
+		signal: AbortSignal,
+	): Promise<CloudMachineAppAnswer>;
 	/** A member's look (20260930712000): begins it as the member (member-control.ts); absent when this executor takes no
 	 * member's requests (only the node behind the member bridge does). */
 	memberBegin?(token: string, look: { companyId: string; machineId: string; confirmed: boolean }, signal: AbortSignal): Promise<string>;
@@ -408,6 +422,44 @@ export class MachineCommandRouter {
 			: answer;
 		this.#told(authority);
 		return told;
+	}
+	async app(request: CloudMachineAppHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineAppAnswer> {
+		const authority = await authorizeMachineAppOp(this.#options.control, request, signal);
+		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
+			if (!this.#options.appLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+			return this.#options.appLocal(request, authority, signal);
+		}
+		if (localOnly) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+		const peer = this.#options.peers.find(
+			(entry) => entry.owner === authority.executorOwner && entry.providerId === authority.providerId,
+		);
+		if (!peer) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+		const gateway = createHttpCloudMachineCommandGateway({
+			url: peer.origin,
+			token: await this.#options.credential(peer.tokenCredential),
+			binding: request.binding,
+			holder: null,
+			fetch: this.#options.fetch,
+		});
+		const inp = request.input;
+		if (inp.op === "start") {
+			if (!gateway.appStart) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+			return gateway.appStart(request.scope, inp, signal);
+		}
+		if (inp.op === "stop") {
+			if (!gateway.appStop) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+			return gateway.appStop(request.scope, inp, signal);
+		}
+		if (inp.op === "health") {
+			if (!gateway.appHealth) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+			return gateway.appHealth(request.scope, inp, signal);
+		}
+		if (inp.op === "reload") {
+			if (!gateway.appReload) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+			return gateway.appReload(request.scope, inp, signal);
+		}
+		if (!gateway.appLogs) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+		return gateway.appLogs(request.scope, inp, signal);
 	}
 	/** The agent's answer carries the member's touch SQL's read gave (20260930734000): SQL hears it was told, up to that
 	 * action's time. Beside the answer, never before it (review r2 F2 of #1701): the answer goes at once, and the word has
@@ -1005,6 +1057,55 @@ export function localMemberMachineStream(host: {
 	return (stream, sink, signal) => host.memberStream(stream, sink, signal);
 }
 
+export function localMachineApp(host: {
+	appStart(
+		authority: CompanyMachineAppAuthority,
+		request: CompanyMachineAppStartRequest,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAppStartResult>;
+	appStop(authority: CompanyMachineAppAuthority, slug: string, signal: AbortSignal): Promise<CompanyMachineAppStopResult>;
+	appHealth(
+		authority: CompanyMachineAppAuthority,
+		slug: string,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAppHealthResult>;
+	appReload(
+		authority: CompanyMachineAppAuthority,
+		request: CompanyMachineAppReloadRequest,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAppReloadResult>;
+	appLogs(
+		authority: CompanyMachineAppAuthority,
+		request: CompanyMachineAppLogsRequest,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAppLogsResult>;
+}): (
+	request: CloudMachineAppHttpRequest,
+	authority: MachineAppAuthority,
+	signal: AbortSignal,
+) => Promise<CloudMachineAppAnswer> {
+	return async (request, authority, signal) => {
+		const target: CompanyMachineAppAuthority = {
+			machineId: authority.machineId,
+			placementId: authority.placementId,
+			bootId: authority.bootId,
+			runId: authority.runId,
+		};
+		const inp = request.input;
+		try {
+			if (inp.op === "start") return await host.appStart(target, inp, signal);
+			if (inp.op === "stop") return await host.appStop(target, inp.slug, signal);
+			if (inp.op === "health") return await host.appHealth(target, inp.slug, signal);
+			if (inp.op === "reload") return await host.appReload(target, inp, signal);
+			return await host.appLogs(target, inp, signal);
+		} catch (error) {
+			if (error instanceof Error && isCloudMachineAppRefusal(error.message))
+				throw new CloudMachineAppRefusal(error.message);
+			throw error;
+		}
+	};
+}
+
 /** The machine routes of an executor's command service: its ingress (`localOnly` false), or its peer listener (true), which
  * never forwards. */
 export function machineCommandRoutes(
@@ -1018,6 +1119,7 @@ export function machineCommandRoutes(
 	codingValue(request: CloudMachineCodingValueHttpRequest, signal: AbortSignal): Promise<CloudMachineCodingValueAnswer>;
 	accountFill(request: CloudMachineAccountFillHttpRequest, signal: AbortSignal): Promise<CloudMachineAccountFillAnswer>;
 	screen(request: CloudMachineScreenHttpRequest, signal: AbortSignal): Promise<CloudMachineScreenAnswer>;
+	app(request: CloudMachineAppHttpRequest, signal: AbortSignal): Promise<CloudMachineAppAnswer>;
 	memberScreen?(request: CloudMemberMachineScreenPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineScreen>;
 	memberAct?(request: CloudMemberMachineActPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineAct>;
 	memberStart?(request: CloudMemberMachineStartPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineStart>;
@@ -1044,6 +1146,7 @@ export function machineCommandRoutes(
 		codingValue: (request, signal) => router.codingValue(request, signal, localOnly),
 		accountFill: (request, signal) => router.accountFill(request, signal, localOnly),
 		screen: (request, signal) => router.screen(request, signal, localOnly),
+		app: (request, signal) => router.app(request, signal, localOnly),
 		// A member's look comes from another executor only, on the peer listener; a guest's ingress has none.
 		...(localOnly ? { memberScreen: (request: CloudMemberMachineScreenPeerRequest, signal: AbortSignal) => router.memberScreenPeer(request, signal) } : {}),
 		// So does a member's action (20260930713000).

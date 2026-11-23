@@ -19,7 +19,7 @@ export const CODING_CONTROL_METHODS: ReadonlySet<string> = new Set<string>([...C
 	...NATIVE_WEB_HOSTING_RPCS, ...SURFACE_CODE_HOST_RPCS,
 	"qorpera_authorize_coding_command", "qorpera_authorize_coding_command_v2", "qorpera_route_coding_command",
 	"qorpera_authorize_machine_command", "qorpera_authorize_machine_coding_value", "qorpera_authorize_machine_account_fill",
-	"qorpera_authorize_machine_screen",
+	"qorpera_authorize_machine_screen", "qorpera_authorize_machine_app_op",
 	"qorpera_member_machine_screen_authority", "qorpera_member_machine_desktop_act_authority",
 	// A member's start of a desktop (20260930714000; it was missing, as F33 of #1661 found for take-over's record).
 	"qorpera_member_machine_desktop_start_authority", "qorpera_native_binding_proven",

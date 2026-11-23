@@ -8388,6 +8388,135 @@ describe("the agent's home in the company folder (slice 3, 20260930754000)", () 
 		).toHaveLength(1);
 		expect(pipe.mock.calls.some((call) => call[2].command.includes("exec-server"))).toBe(false);
 	});
+
+	it("runs appHealth, appReload, and appLogs through the guest helper and validates replies", async () => {
+		const f = await fixture();
+		const authority = { machineId: id(2), placementId: id(6), bootId: f.boot, runId: id(31) };
+		answering(
+			f,
+			"app-health",
+			JSON.stringify({
+				schema: "qorpera.machine-app-health/v1",
+				slug: "my-shop",
+				unit: "qorpera-machine-app-my-shop.service",
+				activeState: "active",
+				subState: "running",
+				restarts: 1,
+				port: 3000,
+				healthy: true,
+				lastStatus: 200,
+				lastLatencyMs: 6,
+				crashSummary: null,
+			}),
+		);
+		const health = await f.host.appHealth(authority, "my-shop", f.signal);
+		expect(health).toMatchObject({ slug: "my-shop", healthy: true, port: 3000, restarts: 1 });
+		expect(f.client.execInstance.mock.calls.at(-1)?.[2].slice(3)).toEqual(["app-health", "my-shop"]);
+
+		answering(
+			f,
+			"app-start",
+			JSON.stringify({
+				schema: "qorpera.machine-app-started/v1",
+				machineId: authority.machineId,
+				slug: "my-shop",
+				unit: "qorpera-machine-app-my-shop.service",
+				port: 3000,
+			}),
+		);
+		const started = await f.host.appStart(
+			authority,
+			{ slug: "my-shop", command: "node index.js", port: 3000, healthPath: "/healthz" },
+			f.signal,
+		);
+		expect(started).toMatchObject({ slug: "my-shop", port: 3000 });
+
+		answering(
+			f,
+			"app-stop",
+			JSON.stringify({
+				schema: "qorpera.machine-app-stopped/v1",
+				slug: "my-shop",
+				unit: "qorpera-machine-app-my-shop.service",
+			}),
+		);
+		expect(await f.host.appStop(authority, "my-shop", f.signal)).toMatchObject({
+			slug: "my-shop",
+			unit: "qorpera-machine-app-my-shop.service",
+		});
+
+		answering(
+			f,
+			"app-reload",
+			JSON.stringify({
+				schema: "qorpera.machine-app-reload/v1",
+				slug: "my-shop",
+				previousPort: 3000,
+				activePort: 3001,
+				healthy: true,
+				restarted: false,
+			}),
+		);
+		const reloaded = await f.host.appReload(
+			authority,
+			{ slug: "my-shop", port: 3001, healthPath: "/healthz" },
+			f.signal,
+		);
+		expect(reloaded).toMatchObject({ previousPort: 3000, activePort: 3001, healthy: true, restarted: false });
+		expect(JSON.parse(String((f.client.pushInstanceFile.mock.calls.at(-1) as unknown[] | undefined)?.[3]))).toEqual({
+			port: 3001,
+			healthPath: "/healthz",
+		});
+
+		answering(
+			f,
+			"app-logs",
+			JSON.stringify({
+				schema: "qorpera.machine-app-logs/v1",
+				slug: "my-shop",
+				lines: [{ ts: "2026-11-22T06:00:00.000Z", seq: 7, stream: "stderr", line: "oom near limit" }],
+				totalMatched: 1,
+				truncated: false,
+				crashSummary: {
+					schema: "qorpera.machine-app-crash/v1",
+					slug: "my-shop",
+					at: "2026-11-22T06:00:01.000Z",
+					exitCode: 137,
+					signal: null,
+					oomKill: 1,
+					oomKilled: true,
+					restartCount: 1,
+					stderrTail: ["oom near limit"],
+				},
+			}),
+		);
+		const logs = await f.host.appLogs(
+			authority,
+			{ slug: "my-shop", grep: "oom", tail: 25, stream: "stderr", since: "2026-11-22T05:00:00Z" },
+			f.signal,
+		);
+		expect(logs.lines).toHaveLength(1);
+		expect(logs.crashSummary).toMatchObject({ oomKilled: true, exitCode: 137 });
+		expect(JSON.parse(String((f.client.pushInstanceFile.mock.calls.at(-1) as unknown[] | undefined)?.[3]))).toEqual({
+			grep: "oom",
+			tail: 25,
+			stream: "stderr",
+			since: "2026-11-22T05:00:00Z",
+		});
+
+		answering(
+			f,
+			"app-reload",
+			JSON.stringify({ schema: "qorpera.machine-guest-refusal/v1", code: "MACHINE_APP_TARGET_UNHEALTHY" }),
+		);
+		await expect(f.host.appReload(authority, { slug: "my-shop", port: 3999 }, f.signal)).rejects.toThrow(
+			"MACHINE_APP_TARGET_UNHEALTHY",
+		);
+		await expect(f.host.appHealth(authority, "../bad", f.signal)).rejects.toThrow("COMPANY_MACHINE_APP_INVALID");
+		await expect(f.host.appLogs(authority, { slug: "my-shop", tail: 999 }, f.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_APP_INVALID",
+		);
+	});
 });
 
 describe("company machine host abort scoping, stream teardown, and pass pacing", () => {

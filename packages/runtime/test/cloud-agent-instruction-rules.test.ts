@@ -52,6 +52,7 @@ const COFOUNDER_TOOLS = [
 	"manage_code",
 	"manage_hook",
 	"manage_routine",
+	"manage_site",
 	"manage_todo",
 	"manage_worker",
 	"offer_agents_to_member",

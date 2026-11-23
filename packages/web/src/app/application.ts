@@ -43,6 +43,7 @@ import { deferOffFrame } from "../ui/time-slice.ts";
 import { AgentNotes } from "./agent-notes.ts";
 import type { AppTellSource, HeldNote } from "./app-actions.ts";
 import { AuthController, accountName, displayName, needsPassword } from "./auth.ts";
+import { offersWaitingOn } from "./automation-owner.ts";
 import { agentWorks, CompanyController } from "./company.ts";
 import { CompanyDatabases } from "./company-data.ts";
 import { CompanyLogos } from "./company-logos.ts";
@@ -1901,7 +1902,10 @@ export function mountApplication(
 			agentCard = opened;
 		};
 		// The tab counts the agents that wait on the member here (app/tab-title.ts).
-		showWaitingInTitle(controller.agentsWaitingOnMe());
+		showWaitingInTitle(
+			controller.agentsWaitingOnMe() +
+				offersWaitingOn(surfacesOf(controller)?.state.automations ?? [], controller.userId),
+		);
 		if (!rail.hidden)
 			renderRail(rail, controller, {
 				...context,

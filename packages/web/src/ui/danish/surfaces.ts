@@ -320,4 +320,12 @@ export const SURFACES: Record<string, string> = {
 	"The last publish failed. Try again.": "Den seneste udgivelse mislykkedes. Prøv igen.",
 	"This session failed. Retry to try again.": "Denne session mislykkedes. Prøv igen for at fortsætte.",
 	"Merging “{title}”…": "Fletter “{title}”…",
+	"Hand to {name}": "Giv til {name}",
+	"Take it": "Tag den",
+	"Take the offer back": "Træk tilbuddet tilbage",
+	"Offered to {name}": "Tilbudt til {name}",
+	"You said no": "Du sagde nej",
+	"{name} said no": "{name} sagde nej",
+	"Yes, take {title} from {name}": "Ja, overtag {title} fra {name}",
+	"No, leave {title} with {name}": "Nej, lad {title} blive hos {name}",
 };
