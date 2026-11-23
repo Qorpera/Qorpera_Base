@@ -185,6 +185,8 @@ describe("SurfaceCodeHostWorker", () => {
 						return { updated: 1, sessionId: args.p_session_id };
 					case "qorpera_surface_renew_lease":
 						return { renewed: true };
+					case "qorpera_surface_shared_product_folder_roots":
+						return [];
 					default:
 						throw new Error(`Unexpected RPC ${method}`);
 				}
@@ -388,6 +390,9 @@ describe("SurfaceCodeHostWorker", () => {
 				}
 				if (method === "qorpera_surface_renew_lease") {
 					return { renewed: true };
+				}
+				if (method === "qorpera_surface_shared_product_folder_roots") {
+					return [];
 				}
 				throw new Error(`Unexpected RPC ${method}`);
 			},
@@ -612,6 +617,9 @@ describe("SurfaceCodeHostWorker", () => {
 				if (method === "qorpera_surface_renew_lease") {
 					return { renewed: true };
 				}
+				if (method === "qorpera_surface_shared_product_folder_roots") {
+					return [];
+				}
 				throw new Error(`Unexpected RPC ${method}`);
 			},
 		};
@@ -666,11 +674,6 @@ describe("SurfaceCodeHostWorker", () => {
 		await f.git(sessionWorktree, "commit", "-m", "Add faq");
 		const shaB = await f.git(sessionWorktree, "rev-parse", "HEAD");
 
-		await writeFile(join(sessionWorktree, "contact.html"), "<!doctype html><p>Contact</p>\n");
-		await f.git(sessionWorktree, "add", "contact.html");
-		await f.git(sessionWorktree, "commit", "-m", "Add contact");
-		const shaC = await f.git(sessionWorktree, "rev-parse", "HEAD");
-
 		const callOrder: string[] = [];
 		let mode: "not_running_retry" | "permanent_failure" = "not_running_retry";
 		let completeAttempts = 0;
@@ -711,6 +714,9 @@ describe("SurfaceCodeHostWorker", () => {
 				}
 				if (method === "qorpera_surface_renew_lease") {
 					return { renewed: true };
+				}
+				if (method === "qorpera_surface_shared_product_folder_roots") {
+					return [];
 				}
 				throw new Error(`Unexpected RPC ${method}`);
 			},
@@ -841,7 +847,7 @@ describe("SurfaceCodeHostWorker", () => {
 			publishes: [],
 			automations: [],
 		};
-		expect(shaC).toMatch(/^[0-9a-f]{40}$/);
+		expect(shaC2).toMatch(/^[0-9a-f]{40}$/);
 
 		const secondPass = await worker.pass(new AbortController().signal);
 		expect(secondPass).toEqual({ previews: 0, merges: 0, publishes: 0, failed: 1 });

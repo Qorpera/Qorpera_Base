@@ -7,20 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929027499_runtime_bundle_activation_v274.sql";
-const activationVersion = 274;
-const previousActivationVersion = 273;
-const previousActivationSha256 = "b04f15eb5ff3da03f707ff6febaae3e1dc8d7f0f1494ad241f39f878d85c6883";
+const activation = "supabase/migrations/20260929027799_runtime_bundle_activation_v277.sql";
+const activationVersion = 277;
+const previousActivationVersion = 276;
+const previousActivationSha256 = "cfae66f2acddf87c86f2b8445279158dde2ab74a216561eb294e35fa75f9da05";
 const activationRequires = Object.freeze([
 	[
-		"20260930850000_app_vault_secrets_and_code_routines",
-		"#2144 (hosted app vault secrets and code/ops routines): bundle 274 relies on app vault secret grants and code/ops routine wakes",
-		"to_regprocedure('public.qorpera_list_app_secrets(uuid,uuid)') is not null and to_regprocedure('public.qorpera_revoke_app_secret_grant(uuid,uuid)') is not null",
-	],
-	[
-		"20260930857000_surface_code_repo_coding_sessions",
-		"#2182 (code_repo Surface coding sessions): bundle 274 routes code_repo surfaces through surface-backed coding workers and coding_record_change",
-		"to_regprocedure('public.qorpera_surface_cancel_coding_workers(uuid[],text)') is not null and exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'qorpera_coding_sessions' and column_name = 'surface_session_id')",
+		"20260930860000_surface_preview_reconcile_and_merge_hardening",
+		"#2199 (surface preview, reconcile, and merge hardening): bundle 277 uses hardened surface preview composition, merge serialization, and session lease handling",
+		"to_regprocedure('public.qorpera_surface_preview_composition_key(uuid,text,uuid[],uuid)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

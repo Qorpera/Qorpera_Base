@@ -895,6 +895,12 @@ begin
 		v_undo_job -> 'preMergeSnapshot' ->> 'snapshotId' = repeat('1', 64),
 		'undo_change claim includes durable preMergeSnapshot from database'
 	);
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	perform public.qorpera_surface_complete_merge(
+		(v_undo_job ->> 'jobId')::uuid, 'landed', null, null, null, null, null, null, (v_undo_job ->> 'leaseToken')::uuid
+	);
+	reset role;
 
 	perform pg_temp.sf_as(v_owner);
 	set local role authenticated;

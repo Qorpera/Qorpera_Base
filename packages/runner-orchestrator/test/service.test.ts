@@ -484,4 +484,75 @@ describe("runner orchestrator service boundary", () => {
 			await rm(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("enriches fallback deliverSurfaceSession jobs with shared productFolderRoots", async () => {
+		const orchestratorId = "11111111-1111-4111-8111-111111111111";
+		const controlActions: Record<string, unknown>[] = [];
+		const profileId = "88888888-8888-4888-8888-888888888888";
+		const fakeControl = new SupabaseCloudRunnerOrchestratorControlPlane(
+			"https://project.supabase.co",
+			"publishable-key",
+			orchestratorId,
+			"c".repeat(43),
+			vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+				const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+				controlActions.push(body);
+				if (body.action === "surface_shared_product_folder_roots") {
+					return Response.json({ value: ["surfaces/thetabands"] });
+				}
+				return Response.json({ value: null });
+			}) as typeof fetch,
+		);
+		const providerCalls: Record<string, unknown>[] = [];
+		const fakeProvider = new HttpCloudRunnerProviderAdapter(
+			"https://provider.example",
+			"managed",
+			"provider-token",
+			vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+				providerCalls.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+				return new Response(JSON.stringify({ ok: true }), {
+					status: 202,
+					headers: { "content-type": "application/json" },
+				});
+			}) as typeof fetch,
+		);
+		const config = createDefaultSurfaceWorkerConfig({
+			controlPlane: fakeControl,
+			providerAdapter: fakeProvider,
+			orchestratorId,
+		});
+		const sampleSession = {
+			sessionId: runnerId,
+			surfaceId: logicalComputerId,
+			profileId,
+			state: "queued" as const,
+			prompt: "Refresh product cards on website",
+			originKind: "member",
+			originRef: null,
+			repositoryKey: "surfaces/website",
+			surfaceSourceKind: "code_repo" as const,
+			surfaceKind: "website",
+			placement: { strategy: "reuse_machine" as const, machineId: runnerId, activeTurns: 0, targetDensity: 6 },
+		};
+		await config.dispatchSessionTurn(sampleSession, runnerId, new AbortController().signal);
+		expect(controlActions).toEqual([
+			{
+				action: "surface_shared_product_folder_roots",
+				orchestratorId,
+				profileId,
+			},
+		]);
+		expect(providerCalls).toEqual([
+			{
+				schema: "qorpera.runner-provider/v1",
+				action: "surface_session",
+				adapter_id: "managed",
+				machine_id: runnerId,
+				session: {
+					...sampleSession,
+					productFolderRoots: ["surfaces/thetabands"],
+				},
+			},
+		]);
+	});
 });

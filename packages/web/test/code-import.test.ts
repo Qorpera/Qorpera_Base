@@ -222,10 +222,7 @@ async function storage(calls: CodeDownloadCalls) {
 	};
 	const host = document.createElement("section");
 	document.body.append(host);
-	const browser = new CompanyFolderBrowser(host, source, () => ({ me: id(1), members: [], staff: [] }), {
-		embedded: true,
-		search: document.createElement("input"),
-	});
+	const browser = new CompanyFolderBrowser(host, source, () => ({ me: id(1), members: [], staff: [] }));
 	disposers.push(() => browser.dispose());
 	await browser.open();
 	await settle();

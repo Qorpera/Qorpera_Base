@@ -54,10 +54,12 @@ export class CodingMachineUnavailable extends Error {
  * merges the default branch itself (own code storage, slice 1). */
 export class CodingLandConflict extends Error {
 	readonly paths: readonly string[];
-	constructor(paths: readonly string[]) {
+	readonly messages: readonly string[];
+	constructor(paths: readonly string[], messages: readonly string[] = []) {
 		super("CODING_LAND_CONFLICT");
 		this.name = "CodingLandConflict";
 		this.paths = Object.freeze([...paths]);
+		this.messages = Object.freeze([...messages]);
 	}
 }
 /** A landing the code host refused by rule, for another reason than a conflict (file names main cannot hold, a file too
@@ -201,9 +203,10 @@ function namedPaths(paths: readonly (string | null)[]): string {
 	return `${shown.join(", ")}${more ? ` and ${more} more` : ""}`;
 }
 /** A landing that conflicts with the default branch of a repository kept in Qorpera: what to do, and where. */
-export function landConflict(baseBranch: string, paths: readonly string[]): string {
+export function landConflict(baseBranch: string, paths: readonly string[], messages: readonly string[] = []): string {
 	const named = namedPaths(paths);
-	return `The change was not landed: it conflicts with what ${baseBranch} got since this session began${named ? `, in ${named}` : ""}. Nothing changed on ${baseBranch}. Run git merge ${baseBranch} on the session's branch, resolve the conflicts, run the checks, commit and finish again.`;
+	const details = messages.length > 0 ? ` Conflict details: ${withinBytes(messages.join("; "), 1200)}.` : "";
+	return `The change was not landed: it conflicts with what ${baseBranch} got since this session began${named ? `, in ${named}` : ""}.${details} Nothing changed on ${baseBranch}. Run git merge ${baseBranch} on the session's branch, resolve the conflicts, run the checks, commit and finish again.`;
 }
 /** Whether a failure says the session's machine needs recovery before anything else runs on it, with or without a
  * detail after the code (`CODING_HOST_VM_RECOVERY_REQUIRED:LXD_REFUSED_403`). */
@@ -233,9 +236,16 @@ const CODING_LAND_FILE_TOO_LARGE = "CODING_LAND_FILE_TOO_LARGE";
 /** What to change after a landing the code host refused by rule (its code, and the paths it named, a null for one not
  * to be named), or whose refs it could not read, or undefined for a code this does not know. Never a plain "finish
  * again" for work that would be refused the same way. A refusal for the files' names or size ends with its code. */
-export function landRefusal(baseBranch: string, code: string, paths: readonly (string | null)[]): string | undefined {
+export function landRefusal(
+	baseBranch: string,
+	code: string,
+	paths: readonly (string | null)[],
+	options?: { readonly staged?: boolean },
+): string | undefined {
 	const named = paths.length ? `: ${namedPaths(paths)}` : "";
-	const not = `The change was not landed, and nothing changed on ${baseBranch}`;
+	const not = options?.staged
+		? "The change was not staged for preview"
+		: `The change was not landed, and nothing changed on ${baseBranch}`;
 	switch (code) {
 		case "CODE_HOST_FILE_TOO_LARGE":
 			return `${not}: it holds files larger than 256 MiB, which a repository kept in Qorpera does not take${named}. Take them out, commit and finish again. [code=${CODING_LAND_FILE_TOO_LARGE}]`;
@@ -247,10 +257,12 @@ export function landRefusal(baseBranch: string, code: string, paths: readonly (s
 		case "CODE_HOST_NAMES_FOLDER_REFUSES":
 			// git takes such names; the company folder, which holds the repository's files, does not. The landing asks its
 			// rule where any session's worktree would hold a path (CODE_FOLDER_ANY_SESSION), 42 bytes deeper than main/.
-			return `${not}: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session's workspace holds it)${named}. Rename them, commit and finish again. [code=${CODING_LAND_NAMES_REFUSED}]`;
+			return `${not}: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 2,600 bytes where a session's workspace holds it)${named}. Rename them, commit and finish again. [code=${CODING_LAND_NAMES_REFUSED}]`;
 		case "CODE_HOST_EXPORT_MOVED":
 		case "CODE_HOST_EXPORT_NO_BRANCH":
 			return `${not}: the commit handed in is not on this session's own branch. Commit the work on the branch the session's workspace has checked out, and finish with that commit.`;
+		case "CODE_HOST_BASE_UNKNOWN":
+			return `${not}: the session's base commit is no longer present in the repository. Start a fresh session from ${baseBranch}.`;
 		case "CODE_HOST_REF_UNREADABLE":
 			// git could not read the repository's refs: once is a hiccup, twice is a file that is not git's any more.
 			return `${not}: the repository's own record of its branches could not be read. Finish again once; if that fails the same way, nothing can go into ${baseBranch} until Qorpera has repaired the repository, so say so in your report. The work is kept on the session's branch.`;
@@ -328,6 +340,7 @@ export interface CodingSessionClaim {
 	repository: CloudCodingRepository;
 	branch: string;
 	baseSha: string | null;
+	worktreeCreatedAt?: string | null;
 	harnessSessionRef: string | null;
 	pullRequest: CloudCodingPullRequest | null;
 	title: string;
@@ -503,6 +516,7 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		repository: parseCloudCodingRepository(item.repository),
 		branch: item.branch,
 		baseSha: item.baseSha === undefined ? null : (item.baseSha as string | null),
+		...(item.worktreeCreatedAt === undefined ? {} : { worktreeCreatedAt: optionalText(item.worktreeCreatedAt, 64) }),
 		harnessSessionRef: optionalText(item.harnessSessionRef, 512),
 		pullRequest:
 			item.pullRequest === null || item.pullRequest === undefined
@@ -1055,8 +1069,7 @@ export class CloudCodingExecutor {
 						if (active.aborted) throw error;
 						end();
 						if (error instanceof CodingLandConflict) {
-							// Nothing landed: the session merges the default branch itself and finishes again.
-							await complete("failed", landConflict(claimed.repository.baseBranch, error.paths));
+							await complete("failed", landConflict(claimed.repository.baseBranch, error.paths, error.messages));
 							await emitCodeChange("conflict", {
 								workerId: claimed.workerId,
 								...(turn.runId ? { parentRunId: turn.runId } : {}),

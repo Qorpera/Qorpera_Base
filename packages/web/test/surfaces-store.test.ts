@@ -1,6 +1,7 @@
 import { CloudSurfacesError } from "@qorpera/cloud-client/surfaces";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseRoute, routeHash, surfaceHash } from "../src/app/router.ts";
+import { Store } from "../src/app/state.ts";
 import {
 	approvalOutcome,
 	attachSurfaces,
@@ -332,6 +333,107 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("uploads a start's images under one input id and names them in the start", async () => {
+		const started = session(["staged"], { state: "running" });
+		const startSurfaceSession = vi.fn(async () => started);
+		const uploadImage = vi.fn(async (_surfaceId: string, _input: string, file: File) => ({
+			sha256: file.name === "a.png" ? "a".repeat(64) : "b".repeat(64),
+			bytes: file.size,
+			mediaType: file.type,
+		}));
+		const store = storeWith(
+			fakeClient({
+				startSurfaceSession,
+				surfaceSessionImages: vi.fn(async () => ({ sessionId: SESSION, messages: [] })),
+			}),
+			{ uploadImage },
+		);
+		await store.load();
+		await store.openSurface("website");
+		expect(store.canAttachImages).toBe(true);
+		const files = [
+			new File(["x"], "a.png", { type: "image/png" }),
+			new File(["yy"], "b.jpg", { type: "image/jpeg" }),
+		];
+		await store.startSession(SURFACE, "Ret knappen", {}, files);
+		expect(uploadImage).toHaveBeenCalledTimes(2);
+		const inputId = uploadImage.mock.calls[0]?.[1];
+		expect(uploadImage.mock.calls[1]?.[1]).toBe(inputId);
+		expect(uploadImage.mock.calls.map((call) => call[0])).toEqual([SURFACE, SURFACE]);
+		expect(startSurfaceSession).toHaveBeenCalledWith(SURFACE, "Ret knappen", {
+			clientInputId: inputId,
+			images: [
+				{ sha256: "a".repeat(64), bytes: 1, mediaType: "image/png" },
+				{ sha256: "b".repeat(64), bytes: 2, mediaType: "image/jpeg" },
+			],
+		});
+		store.dispose();
+	});
+
+	it("sends a steer's images with the reply and keeps them on the note while it is on its way", async () => {
+		const pending = deferred<ReturnType<typeof session>>();
+		const replySurfaceSession = vi.fn(() => pending.promise);
+		const uploadImage = vi.fn(async () => ({ sha256: "c".repeat(64), bytes: 3, mediaType: "image/webp" }));
+		const store = storeWith(
+			fakeClient({
+				replySurfaceSession,
+				surfaceSessionImages: vi.fn(async () => ({ sessionId: SESSION, messages: [] })),
+			}),
+			{ uploadImage },
+		);
+		await store.load();
+		await store.openSurface("website");
+		const file = new File(["zzz"], "shot.webp", { type: "image/webp" });
+		const sending = store.reply(SESSION, "Se her", [file]);
+		expect(store.state.notes[0]?.files).toEqual([file]);
+		await vi.waitFor(() => expect(replySurfaceSession).toHaveBeenCalled());
+		const inputId = (uploadImage.mock.calls[0] as unknown[] | undefined)?.[1];
+		expect(replySurfaceSession).toHaveBeenCalledWith(SESSION, "Se her", true, {
+			clientInputId: inputId,
+			images: [{ sha256: "c".repeat(64), bytes: 3, mediaType: "image/webp" }],
+		});
+		pending.resolve(session(["staged"], { messages: [sessionMessage(MESSAGE_IDS[0], "member", "Se her")] }));
+		expect(await sending).toBe(true);
+		store.dispose();
+	});
+
+	it("refuses images where they cannot be sent and keeps the plain reply call without them", async () => {
+		const replySurfaceSession = vi.fn(async () =>
+			session(["staged"], { messages: [sessionMessage(MESSAGE_IDS[0], "member", "Uden billede")] }),
+		);
+		const store = storeWith(fakeClient({ replySurfaceSession }));
+		await store.load();
+		await store.openSurface("website");
+		expect(store.canAttachImages).toBe(false);
+		expect(await store.reply(SESSION, "Uden billede")).toBe(true);
+		expect(replySurfaceSession).toHaveBeenCalledWith(SESSION, "Uden billede");
+		expect(await store.reply(SESSION, "Med billede", [new File(["x"], "a.png", { type: "image/png" })])).toBe(false);
+		expect(store.state.error).toBe("Images can't be sent here yet.");
+		store.dispose();
+	});
+
+	it("reads a session's images once per new member message", async () => {
+		const surfaceSessionImages = vi.fn(async () => ({
+			sessionId: SESSION,
+			messages: [
+				{
+					messageId: MESSAGE_IDS[0],
+					clientInputId: "6f1c2a8e-4b8f-4c55-9f0a-1d2e3f4a5b6c",
+					images: [{ sha256: "d".repeat(64), bytes: 4, mediaType: "image/png" }],
+				},
+			],
+		}));
+		const store = storeWith(fakeClient({ surfaceSessionImages }), { uploadImage: vi.fn() });
+		await store.load();
+		await store.openSurface("website");
+		const current = session(["staged"], { messages: [sessionMessage(MESSAGE_IDS[0], "member", "Se her")] });
+		store.ensureSessionImages(current);
+		store.ensureSessionImages(current);
+		await vi.waitFor(() => expect(store.state.sessionImages[current.id]?.messages).toHaveLength(1));
+		expect(surfaceSessionImages).toHaveBeenCalledTimes(1);
+		store.dispose();
+	});
+
 	it("removes an optimistic reply when the reply RPC fails", async () => {
 		const store = storeWith(
 			fakeClient({ replySurfaceSession: vi.fn(async () => Promise.reject(new Error("offline"))) }),
@@ -600,6 +702,38 @@ describe("SurfacesStore", () => {
 		});
 		expect(createSurface).toHaveBeenCalledTimes(1);
 		expect(created?.id).toBe(createdApp.id);
+
+		const createdProduct = summary({
+			id: "22222222-2222-4222-8222-222222222298",
+			slug: "thetabands",
+			title: "Thetabands",
+			archetype: "studio",
+			kind: "product",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/thetabands",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		createSurface.mockResolvedValueOnce(createdProduct);
+		const product = await store.createSurface({
+			title: "Thetabands",
+			archetype: "studio",
+			kind: "product",
+		});
+		expect(product?.folderRoot).toBe("surfaces/thetabands");
+		expect(createSurface).toHaveBeenLastCalledWith(
+			COMPANY,
+			expect.objectContaining({
+				title: "Thetabands",
+				slug: "thetabands",
+				archetype: "studio",
+				kind: "product",
+				folderRoot: "surfaces/thetabands",
+				isGlobal: false,
+			}),
+		);
 
 		const auto = await store.createScheduledAgent({
 			title: "Weekly check",
@@ -1261,26 +1395,29 @@ describe("SurfacesStore", () => {
 
 		const p1 = store.toggleChange(SURFACE, CHANGES[0]);
 		const p2 = store.toggleChange(SURFACE, CHANGES[1]);
+		expect(selections).toHaveLength(0);
+		await new Promise((resolve) => setTimeout(resolve, 180));
 		expect(selections).toHaveLength(1);
-		expect(selections[0]?.toggledChangeIds).toEqual([CHANGES[1]]);
+		expect(selections[0]?.toggledChangeIds).toEqual([]);
 
+		const p2b = store.toggleChange(SURFACE, CHANGES[0]);
 		firstSync.resolve({
 			surfaceId: SURFACE,
 			mode: "single",
-			primary: previewFrame({ previewId: PREVIEW_IDS[0], toggledChangeIds: [CHANGES[1]] }),
+			primary: previewFrame({ previewId: PREVIEW_IDS[0], toggledChangeIds: [] }),
 			compareFrames: [],
 		});
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(selections).toHaveLength(2);
-		expect(selections[1]?.toggledChangeIds).toEqual([]);
+		expect(selections[1]?.toggledChangeIds).toEqual([CHANGES[0]]);
 
 		secondSync.resolve({
 			surfaceId: SURFACE,
 			mode: "single",
-			primary: previewFrame({ previewId: PREVIEW_IDS[1], toggledChangeIds: [] }),
+			primary: previewFrame({ previewId: PREVIEW_IDS[1], toggledChangeIds: [CHANGES[0]] }),
 			compareFrames: [],
 		});
-		await Promise.all([p1, p2]);
+		await Promise.all([p1, p2, p2b]);
 		expect(store.workspace(SURFACE)?.previewState.primary.previewId).toBe(PREVIEW_IDS[1]);
 
 		store.openExplorationDrawer(SURFACE, "66666666-6666-4666-8666-666666666601");
@@ -1590,6 +1727,357 @@ describe("SurfacesStore", () => {
 			colors: { accent: "#ff5500" },
 		});
 		expect(store.state.pendingStudioPatches[studioId]).toBeUndefined();
+		store.dispose();
+	});
+
+	it("auto-composes when change headSha or liveHeadSha advances, avoids infinite failed-preview loops, supports retryPreview, and resets to live_baseline when last change closes", async () => {
+		let currentHeadSha = "a".repeat(40);
+		let currentLiveSha = "1".repeat(40);
+		let currentStatus: "ready" | "failed" = "ready";
+		let hasOpen = true;
+		const setPreviewSelection = vi.fn(
+			async (_surfaceId: string, sel: { toggledChangeIds: string[]; explorationSessionId: string | null }) => ({
+				surfaceId: SURFACE,
+				mode: "single" as const,
+				primary:
+					sel.toggledChangeIds.length === 0
+						? previewFrame({
+								previewId: null,
+								status: "live_baseline",
+								toggledChangeIds: [],
+								doorActionUrl: null,
+								memberPass: null,
+							})
+						: previewFrame({
+								previewId: currentStatus === "failed" ? PREVIEW_IDS[0] : PREVIEW_IDS[1],
+								status: currentStatus,
+								toggledChangeIds: sel.toggledChangeIds,
+								errorDetail: currentStatus === "failed" ? "Build error" : null,
+							}),
+				compareFrames: [],
+			}),
+		);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace(
+					hasOpen
+						? [
+								session(["staged"], {
+									changes: [
+										change(CHANGES[0], 1, "staged", { parentSha: currentLiveSha, headSha: currentHeadSha }),
+									],
+								}),
+							]
+						: [],
+					{
+						surface: summary({ liveHeadSha: currentLiveSha }),
+						previewState: {
+							surfaceId: SURFACE,
+							mode: "single",
+							primary: previewFrame({
+								previewId: PREVIEW_IDS[0],
+								status: currentStatus,
+								toggledChangeIds: [CHANGES[0]],
+								errorDetail: currentStatus === "failed" ? "Build error" : null,
+							}),
+							compareFrames: [],
+						},
+					},
+				),
+			),
+			setPreviewSelection,
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("website");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(0);
+
+		currentStatus = "failed";
+		await store.refreshWorkspace(SURFACE);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(0);
+
+		await store.retryPreview(SURFACE);
+		expect(setPreviewSelection).toHaveBeenCalledTimes(1);
+
+		currentStatus = "ready";
+		currentHeadSha = "b".repeat(40);
+		await store.refreshWorkspace(SURFACE);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(2);
+
+		currentLiveSha = "2".repeat(40);
+		await store.refreshWorkspace(SURFACE);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(3);
+
+		hasOpen = false;
+		await store.refreshWorkspace(SURFACE);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(setPreviewSelection).toHaveBeenCalledTimes(4);
+		expect(store.workspace(SURFACE)?.previewState.primary.status).toBe("live_baseline");
+		store.dispose();
+	});
+
+	it("polls composing/building previews at fast 1s cadence and sends compareSessionIds on compareExploration", async () => {
+		vi.useFakeTimers();
+		const variantA = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333311",
+			explorationId: "66666666-6666-4666-8666-666666666611",
+			explorationVariantLabel: "Minimal",
+			branchHeadSha: "a".repeat(40),
+		});
+		const variantB = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333312",
+			explorationId: "66666666-6666-4666-8666-666666666611",
+			explorationVariantLabel: "Bold",
+			branchHeadSha: "b".repeat(40),
+		});
+		let wsCalls = 0;
+		const setPreviewSelection = vi.fn(
+			async (
+				_id: string,
+				sel: { toggledChangeIds: string[]; explorationSessionId: string | null; compareSessionIds?: string[] },
+			) => ({
+				surfaceId: SURFACE,
+				mode: (sel.compareSessionIds && sel.compareSessionIds.length >= 2 ? "compare" : "single") as
+					| "compare"
+					| "single",
+				primary: previewFrame({
+					status: "building",
+					doorActionUrl: null,
+					memberPass: null,
+					toggledChangeIds: sel.toggledChangeIds,
+				}),
+				compareFrames: (sel.compareSessionIds ?? []).map((sid) => ({
+					sessionId: sid,
+					label: sid,
+					frame: previewFrame({ status: "composing", doorActionUrl: null, memberPass: null }),
+				})),
+			}),
+		);
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () => {
+				wsCalls += 1;
+				return workspace([variantA, variantB], {
+					explorations: [
+						{
+							id: "66666666-6666-4666-8666-666666666611",
+							surfaceId: SURFACE,
+							title: "Header exploration",
+							status: "open",
+							chosenSessionId: null,
+							variantSessionIds: [variantA.id, variantB.id],
+							createdAt: "2026-10-16T09:00:00.000Z",
+							resolvedAt: null,
+						},
+					],
+					previewState: {
+						surfaceId: SURFACE,
+						mode: "single",
+						primary: previewFrame({
+							status: "building",
+							doorActionUrl: null,
+							memberPass: null,
+							toggledChangeIds: [],
+						}),
+						compareFrames: [],
+					},
+				});
+			}),
+			setPreviewSelection,
+		});
+		const store = storeWith(client, { realtimeLive: () => false });
+		await store.load();
+		await store.openSurface("website");
+		expect(wsCalls).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(1_050);
+		expect(wsCalls).toBe(2);
+
+		setPreviewSelection.mockClear();
+		store.compareExploration("66666666-6666-4666-8666-666666666611");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(setPreviewSelection).toHaveBeenCalledWith(SURFACE, {
+			toggledChangeIds: [],
+			explorationSessionId: variantA.id,
+			compareSessionIds: [variantA.id, variantB.id],
+		});
+		store.dispose();
+	});
+
+	it("shows pending Merging toast for async merges until merged, and defers markPublished until async publish finishes", async () => {
+		vi.useFakeTimers();
+		let wsState: "staged" | "merging" | "merged" = "staged";
+		let pubStatus: "idle" | "publishing" | "failed" = "idle";
+		const undoSurfaceChange = vi.fn(async () => session(["staged"]));
+		const client = fakeClient({
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace(wsState === "merged" ? [] : [session([wsState])], {
+					surface: summary({
+						publishStatus: pubStatus,
+						lastPublishError: pubStatus === "failed" ? "Build exited 1" : null,
+						hasUnpublishedChanges: wsState === "merged" && pubStatus !== "idle",
+						unpublishedChangeCount: wsState === "merged" && pubStatus !== "idle" ? 1 : 0,
+					}),
+					recentHistory: wsState === "merged" ? [session(["merged"], { state: "completed" })] : [],
+				}),
+			),
+			approveSurfaceChange: vi.fn(async () => {
+				wsState = "merging";
+				return session(["merging"]);
+			}),
+			undoSurfaceChange,
+			publishSurface: vi.fn(async () => {
+				pubStatus = "publishing";
+				return summary({ publishStatus: "publishing", hasUnpublishedChanges: true, unpublishedChangeCount: 1 });
+			}),
+		});
+		const store = storeWith(client, { realtimeLive: () => false });
+		await store.load();
+		await store.openSurface("website");
+
+		await store.approveChange(SESSION, CHANGES[0]);
+		expect(store.state.undo?.pending).toBe(true);
+		expect(await store.undo()).toBe(false);
+		expect(undoSurfaceChange).not.toHaveBeenCalled();
+
+		wsState = "merged";
+		pubStatus = "publishing";
+		await store.refreshWorkspace(SURFACE);
+		expect(store.state.undo?.pending).toBeUndefined();
+		expect(store.state.undo?.changeIds).toEqual([CHANGES[0]]);
+
+		await store.publish(SURFACE);
+		expect(store.state.publishedChangeIds[CHANGES[0]]).toBeUndefined();
+		expect(unpublishedChanges(store.state, SURFACE)).toHaveLength(1);
+
+		pubStatus = "failed";
+		await store.refreshWorkspace(SURFACE);
+		expect(store.state.publishedChangeIds[CHANGES[0]]).toBeUndefined();
+		expect(store.workspace(SURFACE)?.surface.lastPublishError).toBe("Build exited 1");
+
+		await store.publish(SURFACE);
+		expect(store.state.publishedChangeIds[CHANGES[0]]).toBeUndefined();
+		pubStatus = "idle";
+		await store.refreshWorkspace(SURFACE);
+		expect(store.state.publishedChangeIds[CHANGES[0]]).toBe(true);
+		store.dispose();
+	});
+
+	it("skips generated directories, caps subfolder walks, and enforces a byte budget in readSurfaceFolderFiles", async () => {
+		const listedPaths: string[] = [];
+		const readPaths: string[] = [];
+		const chunk = "x".repeat(250_000);
+		const tokens = JSON.stringify({ colors: { accent: "#2563eb" } });
+		const folder = {
+			list: vi.fn(async (path: string) => {
+				listedPaths.push(path);
+				if (path === "repo") {
+					return {
+						entries: [
+							{ path: "repo/node_modules", kind: "folder" as const, file: null },
+							{ path: "repo/.git", kind: "folder" as const, file: null },
+							{ path: "repo/dist", kind: "folder" as const, file: null },
+							{
+								path: "repo/tokens.json",
+								kind: "file" as const,
+								file: { path: "repo/tokens.json", bytes: tokens.length },
+							},
+							...["a", "b", "c", "d", "e"].map((name) => ({
+								path: `repo/${name}.txt`,
+								kind: "file" as const,
+								file: { path: `repo/${name}.txt`, bytes: chunk.length },
+							})),
+							...Array.from({ length: 16 }, (_, idx) => ({
+								path: `repo/sub-${String(idx + 1).padStart(2, "0")}`,
+								kind: "folder" as const,
+								file: null,
+							})),
+						],
+					};
+				}
+				return { entries: [] };
+			}),
+			readFile: vi.fn(async (file: { readonly path: string; readonly bytes: number }) => {
+				readPaths.push(file.path);
+				return new TextEncoder().encode(file.path === "repo/tokens.json" ? tokens : chunk);
+			}),
+		};
+
+		const files = await readSurfaceFolderFiles(folder, ["repo"], new AbortController().signal);
+		expect(listedPaths).not.toContain("repo/node_modules");
+		expect(listedPaths).not.toContain("repo/.git");
+		expect(listedPaths).not.toContain("repo/dist");
+		expect(listedPaths.filter((path) => path.startsWith("repo/sub-"))).toHaveLength(12);
+		expect(files["repo/tokens.json"]).toContain("#2563eb");
+		expect(readPaths[0]).toBe("repo/tokens.json");
+		const totalBytes = Object.values(files).reduce((sum, text) => sum + text.length, 0);
+		expect(totalBytes).toBeLessThanOrEqual(1024 * 1024);
+		expect(Object.keys(files).filter((path) => path.endsWith(".txt")).length).toBeLessThan(5);
+	});
+
+	it("skips Store.set notifications when a patch changes no fields", async () => {
+		const store = new Store({ count: 1, label: "idle" });
+		const updates = vi.fn();
+		store.subscribe(updates);
+		const initial = store.get();
+		store.set({});
+		store.set({ count: 1 });
+		store.set((state) => ({ label: state.label }));
+		await Promise.resolve();
+		expect(updates).not.toHaveBeenCalled();
+		expect(store.get()).toBe(initial);
+		store.set({ count: 2 });
+		await Promise.resolve();
+		expect(updates).toHaveBeenCalledTimes(1);
+		expect(store.get().count).toBe(2);
+	});
+
+	it("avoids re-emitting identical cloud files and caps cached cloud surface files", async () => {
+		const extra = Array.from({ length: 8 }, (_, idx) =>
+			summary({
+				id: `11111111-1111-4111-8111-11111111110${idx}`,
+				slug: `surface-${idx}`,
+				title: `Surface ${idx}`,
+				folderRoot: `surfaces/s-${idx}`,
+				archetype: "studio",
+				siteSlug: null,
+				liveUrl: null,
+			}),
+		);
+		const loadCloudFiles = vi.fn(async (surface: { readonly id: string }) => ({
+			"tokens.json": `{"id":"${surface.id}"}`,
+		}));
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => extra),
+				getSurfaceWorkspace: vi.fn(async (id: string) =>
+					workspace([], { surface: extra.find((item) => item.id === id) ?? extra[0]! }),
+				),
+			}),
+			{ loadCloudFiles },
+		);
+		await store.load();
+		await store.openSurface(extra[0]!.slug);
+		const firstMap = store.state.cloudSurfaceFiles[extra[0]!.id];
+		expect(firstMap).toEqual({ "tokens.json": `{"id":"${extra[0]!.id}"}` });
+
+		const notifications = vi.fn();
+		const unsubscribe = store.store.subscribe(notifications);
+		await store.refreshCloudFiles(extra[0]!);
+		unsubscribe();
+		expect(notifications).not.toHaveBeenCalled();
+		expect(store.state.cloudSurfaceFiles[extra[0]!.id]).toBe(firstMap);
+
+		for (let idx = 1; idx < extra.length; idx++) {
+			await store.refreshCloudFiles(extra[idx]!);
+		}
+		const cachedIds = Object.keys(store.state.cloudSurfaceFiles);
+		expect(cachedIds.length).toBeLessThanOrEqual(6);
+		expect(cachedIds).toContain(extra[0]!.id);
+		expect(cachedIds).toContain(extra.at(-1)!.id);
 		store.dispose();
 	});
 });

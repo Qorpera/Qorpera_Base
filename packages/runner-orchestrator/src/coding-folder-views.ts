@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readdir, unlink } from "node:fs/promises";
+import { mkdir, readdir, stat, unlink } from "node:fs/promises";
 import { posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -153,7 +153,10 @@ export class CodingFolderViews {
 	readonly #closeMs: number;
 	readonly #root: string;
 	readonly #assert: (signal: AbortSignal) => Promise<void>;
-	/** The last use of the records, settled: the next waits for it, even once its caller gave up. */
+	readonly #verifiedBoots = new Map<string, string>();
+	readonly #byWorker = new Map<string, HeldView>();
+	readonly #byMachine = new Map<string, Set<string>>();
+	#hydratedStamp: string | undefined;
 	#recordWork: Promise<unknown> = Promise.resolve();
 	constructor(options: CodingFolderViewsOptions) {
 		const program = (path: string, mode: number, bytes: Buffer): Program => {
@@ -176,8 +179,6 @@ export class CodingFolderViews {
 		this.#closeMs = options.closeMs ?? CLOSE_MS;
 	}
 
-	/** Makes sure the machine has this executor's guest agent and folder program, writing whichever differs beside its
-	 * place and renaming it over, so a program running from the old file keeps it. */
 	async install(machine: LxdCodingMachineBinding, signal: AbortSignal): Promise<void> {
 		const { project, machineId } = lxdCodingMachinePlan(machine).binding;
 		const name = lxdCodingMachineName(machineId);
@@ -185,6 +186,13 @@ export class CodingFolderViews {
 		for (const program of differing) await this.#write(project, name, program, signal);
 		if (differing.length > 0 && (await this.#differing(project, name, signal)).length > 0)
 			throw new Error("CODING_FOLDER_GUEST_INSTALL_UNCONFIRMED");
+	}
+
+	async #installForBoot(machine: LxdCodingMachineBinding, bootId: string, signal: AbortSignal): Promise<void> {
+		const { machineId } = lxdCodingMachinePlan(machine).binding;
+		if (this.#verifiedBoots.get(machineId) === bootId) return;
+		await this.install(machine, signal);
+		this.#verifiedBoots.set(machineId, bootId);
 	}
 
 	/** Shows the session its view at /company: the one it has, on a later turn of the same attachment, or a new one.
@@ -228,7 +236,7 @@ export class CodingFolderViews {
 		const asked = { ...session, workerId, environmentId, attachmentToken, bootId };
 		return withTimeoutScope(signal, left, async (deadline) => {
 			try {
-				await this.install(session.machine, deadline);
+				await this.#installForBoot(session.machine, bootId, deadline);
 			} catch (error) {
 				throw stopped(signal, deadline, error, "CODING_FOLDER_GUEST_INSTALL_UNCONFIRMED");
 			}
@@ -428,32 +436,23 @@ export class CodingFolderViews {
 			: { ends };
 	}
 
-	/** The view the session holds, by its record. */
 	#held(workerId: string, signal: AbortSignal): Promise<HeldView | undefined> {
-		return this.#records(async () => {
-			try {
-				return readHeld(await readRecord(posix.join(this.#root, `${workerId}.json`)), workerId);
-			} catch (error) {
-				if (code(error, "ENOENT")) return undefined;
-				throw error;
-			}
-		}, signal);
+		return this.#records(async () => this.#byWorker.get(workerId), signal);
 	}
 
-	/** The views held on the machine, by their records. */
 	#heldOn(machineId: string, signal: AbortSignal): Promise<HeldView[]> {
-		return this.#records(async (checked) => {
+		return this.#records(async () => {
+			const workers = this.#byMachine.get(machineId);
+			if (!workers || workers.size === 0) return [];
 			const views: HeldView[] = [];
-			for (const name of (await readdir(this.#root)).sort()) {
-				checked.throwIfAborted();
-				const view = readHeld(await readRecord(posix.join(this.#root, name)), name.slice(0, -".json".length));
-				if (view.machineId === machineId) views.push(view);
+			for (const workerId of [...workers].sort()) {
+				const view = this.#byWorker.get(workerId);
+				if (view) views.push(view);
 			}
 			return views;
 		}, signal);
 	}
 
-	/** Records the view, once (the session's old one is gone by now). */
 	#keep(view: HeldView, signal: AbortSignal): Promise<void> {
 		const { workerId, machineId, bootId, attachmentToken, viewId, pass } = view;
 		const bytes = Buffer.from(
@@ -461,27 +460,95 @@ export class CodingFolderViews {
 		);
 		return this.#records(async () => {
 			if (!(await publish(this.#root, `${workerId}.json`, bytes))) throw new Error(RECORD_FAILED);
+			this.#indexSet(view);
+			this.#hydratedStamp = await this.#dirStamp();
 		}, signal);
 	}
 
-	/** Removes the view's record, unless the session holds another view since. */
 	#forget(view: HeldView, signal: AbortSignal): Promise<void> {
 		return this.#records(async () => {
 			const path = posix.join(this.#root, `${view.workerId}.json`);
+			const current = this.#byWorker.get(view.workerId);
+			if (!current || current.viewId !== view.viewId) return;
 			try {
 				if (readHeld(await readRecord(path), view.workerId).viewId !== view.viewId) return;
 				await unlink(path);
 			} catch (error) {
-				if (code(error, "ENOENT")) return;
+				if (code(error, "ENOENT")) {
+					this.#indexDelete(view.workerId);
+					this.#hydratedStamp = await this.#dirStamp();
+					return;
+				}
 				throw error;
 			}
 			await syncDirectory(this.#root);
+			this.#indexDelete(view.workerId);
+			this.#hydratedStamp = await this.#dirStamp();
 		}, signal);
 	}
 
-	/** One use of the records, once the last one ended: IO a hard NFS mount hangs never overlaps. The storage is checked
-	 * mounted before and after it, the folder made if it is missing, and what an interrupted write left removed first.
-	 * Rejects with the caller's reason, or with CODING_FOLDER_VIEW_RECORD_FAILED for anything else, past RECORD_MS too. */
+	#indexSet(view: HeldView): void {
+		const prior = this.#byWorker.get(view.workerId);
+		if (prior && prior.machineId !== view.machineId) {
+			const oldSet = this.#byMachine.get(prior.machineId);
+			oldSet?.delete(view.workerId);
+			if (oldSet && oldSet.size === 0) this.#byMachine.delete(prior.machineId);
+		}
+		this.#byWorker.set(view.workerId, view);
+		let set = this.#byMachine.get(view.machineId);
+		if (!set) {
+			set = new Set<string>();
+			this.#byMachine.set(view.machineId, set);
+		}
+		set.add(view.workerId);
+	}
+
+	#indexDelete(workerId: string): void {
+		const prior = this.#byWorker.get(workerId);
+		if (!prior) return;
+		this.#byWorker.delete(workerId);
+		const set = this.#byMachine.get(prior.machineId);
+		set?.delete(workerId);
+		if (set && set.size === 0) this.#byMachine.delete(prior.machineId);
+	}
+
+	async #dirStamp(): Promise<string> {
+		const info = await stat(this.#root, { bigint: true });
+		return `${info.dev}:${info.ino}:${info.mtimeNs}:${info.ctimeNs}`;
+	}
+
+	async #hydrate(checked: AbortSignal): Promise<void> {
+		let swept = false;
+		const entries = (await readdir(this.#root)).sort();
+		for (const name of entries) {
+			if (name.startsWith(".write-")) {
+				checked.throwIfAborted();
+				await unlink(posix.join(this.#root, name));
+				swept = true;
+			}
+		}
+		if (swept) await syncDirectory(this.#root);
+		const nextByWorker = new Map<string, HeldView>();
+		const nextByMachine = new Map<string, Set<string>>();
+		for (const name of entries) {
+			if (name.startsWith(".write-")) continue;
+			checked.throwIfAborted();
+			const view = readHeld(await readRecord(posix.join(this.#root, name)), name.slice(0, -".json".length));
+			nextByWorker.set(view.workerId, view);
+			let set = nextByMachine.get(view.machineId);
+			if (!set) {
+				set = new Set<string>();
+				nextByMachine.set(view.machineId, set);
+			}
+			set.add(view.workerId);
+		}
+		this.#byWorker.clear();
+		this.#byMachine.clear();
+		for (const [k, v] of nextByWorker) this.#byWorker.set(k, v);
+		for (const [k, v] of nextByMachine) this.#byMachine.set(k, v);
+		this.#hydratedStamp = await this.#dirStamp();
+	}
+
 	async #records<T>(use: (signal: AbortSignal) => Promise<T>, signal: AbortSignal): Promise<T> {
 		return withTimeoutScope(signal, RECORD_MS, async (checked) => {
 			const work = this.#recordWork.then(async () => {
@@ -494,22 +561,12 @@ export class CodingFolderViews {
 					},
 				);
 				await checkDirectory(this.#root);
-				// A write's temporary file is gone once its use ends, unless the process died in it: half written, or a second
-				// link of the record it became, which no read takes. The folder is this executor's alone (a private rootPath,
-				// deploy/coding-worker/README.md) and its uses never overlap, so any one here now is a dead write's.
-				let swept = false;
-				for (const name of await readdir(this.#root))
-					if (name.startsWith(".write-")) {
-						checked.throwIfAborted();
-						await unlink(posix.join(this.#root, name));
-						swept = true;
-					}
-				if (swept) await syncDirectory(this.#root);
+				const stamp = await this.#dirStamp();
+				if (this.#hydratedStamp !== stamp) await this.#hydrate(checked);
 				const result = await use(checked);
 				await this.#assert(checked);
 				return result;
 			});
-			// Settled either way: a caller that stopped first leaves no rejection unhandled.
 			this.#recordWork = work.catch(() => undefined);
 			try {
 				return await abortable(work, checked);

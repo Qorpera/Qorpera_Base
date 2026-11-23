@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { watchOnline } from "../src/app/online-mark.ts";
+import {
+	ACTIVE_IDLE_MS,
+	ONLINE_MARK_MS,
+	ONLINE_RETRY_MS,
+	PASSIVE_FOCUS_DELAY_MS,
+	UNFOCUSED_GRACE_MS,
+	watchOnline,
+} from "../src/app/online-mark.ts";
 import { FriendsController, lastOnline } from "../src/app/views/friends.ts";
 import { LeaderboardView } from "../src/app/views/leaderboard.ts";
 import type { CloudApi } from "../src/cloud/api.ts";
@@ -133,8 +140,9 @@ describe("friends list reads", () => {
 
 describe("last online", () => {
 	const now = Date.parse("2026-11-09T12:00:00Z");
-	it("says online now for five minutes after a mark, then how long ago", () => {
-		expect(lastOnline("2026-11-09T11:57:00Z", now)).toEqual({ online: true, text: "Online now" });
+	it("says online now for three minutes after a mark, then how long ago", () => {
+		expect(lastOnline("2026-11-09T11:58:00Z", now)).toEqual({ online: true, text: "Online now" });
+		expect(lastOnline("2026-11-09T11:57:00Z", now)).toEqual({ online: false, text: "Last online 3 minutes ago" });
 		expect(lastOnline("2026-11-09T11:40:00Z", now)).toEqual({ online: false, text: "Last online 20 minutes ago" });
 		expect(lastOnline("2026-11-09T09:00:00Z", now)?.text).toBe("Last online 3 hours ago");
 		// Hours up to a day ("yesterday" never: it can be a few hours ago), then days, then weeks, then 2+ weeks.
@@ -151,40 +159,162 @@ describe("last online", () => {
 });
 
 describe("online marks", () => {
+	let visibility: DocumentVisibilityState = "visible";
+	let focused = true;
+
 	beforeEach(() => {
 		vi.useFakeTimers();
+		visibility = "visible";
+		focused = true;
+		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+		vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
 	});
 
-	it("marks when asked and every four minutes while signed in", async () => {
+	it("marks on user activity, throttles to once a minute, and stops once idle", async () => {
 		const mark = vi.fn(async () => {});
 		let signedIn = false;
 		const watch = watchOnline(mark, () => signedIn);
 		watch.mark();
+		window.dispatchEvent(new Event("pointerdown"));
+		await vi.advanceTimersByTimeAsync(0);
 		expect(mark).not.toHaveBeenCalled();
+
 		signedIn = true;
 		watch.mark();
 		await vi.advanceTimersByTimeAsync(0);
 		expect(mark).toHaveBeenCalledTimes(1);
-		// Focus right after a mark does not mark again.
-		window.dispatchEvent(new Event("focus"));
+
+		window.dispatchEvent(new Event("keydown"));
+		await vi.advanceTimersByTimeAsync(ONLINE_MARK_MS - 1);
 		expect(mark).toHaveBeenCalledTimes(1);
-		await vi.advanceTimersByTimeAsync(4 * 60_000);
+		await vi.advanceTimersByTimeAsync(1);
 		expect(mark).toHaveBeenCalledTimes(2);
+
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(mark).toHaveBeenCalledTimes(2);
+		expect(watch.active).toBe(false);
+
+		window.dispatchEvent(new MouseEvent("mousemove", { clientX: 25, clientY: 40 }));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(mark).toHaveBeenCalledTimes(3);
+		expect(watch.active).toBe(true);
+
 		watch.stop();
-		await vi.advanceTimersByTimeAsync(8 * 60_000);
-		expect(mark).toHaveBeenCalledTimes(2);
+		window.dispatchEvent(new Event("pointerdown"));
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(mark).toHaveBeenCalledTimes(3);
 	});
 
-	it("stops for good on a cloud without the function", async () => {
+	it("never marks hidden tabs, unfocused windows, or brief tab switches without interaction", async () => {
+		const mark = vi.fn(async () => {});
+		visibility = "hidden";
+		focused = false;
+		const hiddenWatch = watchOnline(mark, () => true);
+		hiddenWatch.mark();
+		window.dispatchEvent(new Event("pointerdown"));
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(mark).not.toHaveBeenCalled();
+		expect(hiddenWatch.active).toBe(false);
+		hiddenWatch.stop();
+
+		visibility = "visible";
+		focused = false;
+		const unfocusedWatch = watchOnline(mark, () => true);
+		unfocusedWatch.mark();
+		window.dispatchEvent(new MouseEvent("mousemove", { clientX: 50, clientY: 60 }));
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(mark).not.toHaveBeenCalled();
+		expect(unfocusedWatch.active).toBe(false);
+		unfocusedWatch.stop();
+
+		visibility = "visible";
+		focused = true;
+		const quickSwitch = watchOnline(mark, () => true);
+		quickSwitch.mark();
+		await vi.advanceTimersByTimeAsync(PASSIVE_FOCUS_DELAY_MS - 100);
+		visibility = "hidden";
+		focused = false;
+		document.dispatchEvent(new Event("visibilitychange"));
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(mark).not.toHaveBeenCalled();
+		expect(quickSwitch.active).toBe(false);
+		quickSwitch.stop();
+	});
+
+	it("activates after staying focused without input and drops after blur grace or idle", async () => {
+		const mark = vi.fn(async () => {});
+		const watch = watchOnline(mark, () => true);
+		await vi.advanceTimersByTimeAsync(PASSIVE_FOCUS_DELAY_MS);
+		expect(watch.active).toBe(true);
+		expect(mark).toHaveBeenCalledTimes(1);
+
+		focused = false;
+		window.dispatchEvent(new Event("blur"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(watch.active).toBe(true);
+		await vi.advanceTimersByTimeAsync(UNFOCUSED_GRACE_MS);
+		expect(watch.active).toBe(false);
+
+		focused = true;
+		window.dispatchEvent(new Event("focus"));
+		await vi.advanceTimersByTimeAsync(PASSIVE_FOCUS_DELAY_MS);
+		expect(watch.active).toBe(true);
+		await vi.advanceTimersByTimeAsync(ACTIVE_IDLE_MS);
+		expect(watch.active).toBe(false);
+
+		focused = false;
+		window.dispatchEvent(new Event("wheel"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(watch.active).toBe(true);
+		await vi.advanceTimersByTimeAsync(UNFOCUSED_GRACE_MS);
+		expect(watch.active).toBe(false);
+
+		focused = true;
+		const frame = document.createElement("iframe");
+		document.body.append(frame);
+		frame.focus();
+		window.dispatchEvent(new Event("blur"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(watch.active).toBe(true);
+		focused = false;
+		await vi.advanceTimersByTimeAsync(5_000 + UNFOCUSED_GRACE_MS);
+		expect(watch.active).toBe(false);
+		watch.stop();
+	});
+
+	it("ignores stationary pointer reflows and retries transient mark failures", async () => {
+		const mark = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
+		const watch = watchOnline(mark, () => true);
+		window.dispatchEvent(new MouseEvent("mousemove", { clientX: 10, clientY: 20 }));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(mark).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(ONLINE_RETRY_MS);
+		expect(mark).toHaveBeenCalledTimes(2);
+
+		await vi.advanceTimersByTimeAsync(ONLINE_MARK_MS);
+		window.dispatchEvent(new MouseEvent("mousemove", { clientX: 10, clientY: 20 }));
+		await vi.advanceTimersByTimeAsync(ONLINE_MARK_MS);
+		expect(mark).toHaveBeenCalledTimes(2);
+		watch.stop();
+	});
+
+	it("stops for good on a cloud without the function while keeping activity tracking alive", async () => {
 		const mark = vi.fn(async () => {
 			throw new CloudRpcError("qorpera_mark_online", { message: "missing", code: "PGRST202" });
 		});
 		const watch = watchOnline(mark, () => true);
+		window.dispatchEvent(new Event("pointerdown"));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(mark).toHaveBeenCalledTimes(1);
+		expect(watch.active).toBe(true);
+		await vi.advanceTimersByTimeAsync(2 * ONLINE_MARK_MS);
+		window.dispatchEvent(new Event("pointerdown"));
 		watch.mark();
 		await vi.advanceTimersByTimeAsync(0);
-		await vi.advanceTimersByTimeAsync(12 * 60_000);
-		watch.mark();
 		expect(mark).toHaveBeenCalledTimes(1);
+		expect(watch.active).toBe(true);
+		watch.stop();
 	});
 });
 

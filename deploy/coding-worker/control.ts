@@ -17,7 +17,7 @@ import { withTimeoutSignal } from "./timeout-signal.ts";
 export const CODING_CONTROL_METHODS: ReadonlySet<string> = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODING_SNAPSHOT_RPCS, ...COMPANY_MACHINE_HOST_RPCS, ...CODE_HOST_RPCS,
 	...CODE_HOST_DELETION_RPCS, ...CODE_CARE_RPCS, ...CODE_CHANGE_RPCS, ...CODE_REQUEST_RPCS, ...CODE_SITE_RPCS,
 	...NATIVE_WEB_HOSTING_RPCS, ...SURFACE_CODE_HOST_RPCS,
-	"qorpera_authorize_coding_command", "qorpera_route_coding_command",
+	"qorpera_authorize_coding_command", "qorpera_authorize_coding_command_v2", "qorpera_route_coding_command",
 	"qorpera_authorize_machine_command", "qorpera_authorize_machine_coding_value", "qorpera_authorize_machine_account_fill",
 	"qorpera_authorize_machine_screen", "qorpera_authorize_machine_app_op",
 	"qorpera_member_machine_screen_authority", "qorpera_member_machine_desktop_act_authority",
@@ -110,7 +110,12 @@ export class CodingExecutorHttpControl {
 	async call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 		if (!CODING_CONTROL_METHODS.has(method)) throw new Error("CODING_CONTROL_METHOD_INVALID");
 		const body = JSON.stringify(args);
-		const maxRequestBytes = method === "qorpera_web_code_deployment_register" ? 4 * 1024 * 1024 : 128 * 1024;
+		const maxRequestBytes =
+			method === "qorpera_web_code_deployment_register"
+				? 4 * 1024 * 1024
+				: method === "qorpera_code_request_finish"
+					? 512 * 1024
+					: 128 * 1024;
 		if (Buffer.byteLength(body) > maxRequestBytes) throw new Error("CODING_CONTROL_REQUEST_TOO_LARGE");
 		const refusals = VIEW_REFUSALS.get(method);
 		let failure: Error = unconfirmed(method, "no answer");

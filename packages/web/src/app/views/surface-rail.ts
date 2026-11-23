@@ -1,7 +1,7 @@
 import type { SurfaceChangeUnit, SurfaceSummary } from "@qorpera/contracts";
 import { menuPoint, openContextMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { h, icon } from "../../ui/dom.ts";
-import { t } from "../../ui/preferences.ts";
+import { presentationLocale, t } from "../../ui/preferences.ts";
 import { type SurfaceFigureState, surfaceFigure, surfaceFigureChoices } from "../../ui/surface-figure.ts";
 import { surfaceHash } from "../router.ts";
 import {
@@ -111,22 +111,50 @@ function surfaceSubtitle(surface: SurfaceSummary, look: SurfaceLook, members?: S
 	return surfaceKindSubtitle(look.kind);
 }
 
-function surfaceRow(
+function setRowActive(row: HTMLElement, active: boolean): void {
+	row.classList.toggle("active", active);
+	if (active) row.setAttribute("aria-current", "page");
+	else row.removeAttribute("aria-current");
+}
+
+interface SurfaceRowEntry {
+	readonly el: HTMLAnchorElement;
+	readonly nameEl: HTMLElement;
+	tileEl: HTMLElement;
+	tileKey: string;
+	subEl: HTMLElement;
+	noticeEl: HTMLElement | null;
+	noticeText: string | null;
+}
+
+interface SurfaceGroupEntry {
+	readonly el: HTMLElement;
+	readonly head: HTMLElement;
+	headKey: string;
+}
+
+function createSurfaceRow(
 	surface: SurfaceSummary,
 	look: SurfaceLook,
 	profileId: string,
 	active: boolean,
 	crew: HTMLElement | null,
 	members?: SurfaceRailMembers,
-): HTMLElement {
+): SurfaceRowEntry {
 	const state: SurfaceFigureState = surface.runningSessionCount > 0 ? "working" : "rest";
-	const notice =
+	const tint = surfaceTint(look);
+	const tileKey = JSON.stringify([surfaceFigureOf(surface, look), state, tint]);
+	const tileEl = surfaceTile(surface, look, "", state);
+	const nameEl = h("span", { class: "rail-surface-name" }, surface.title);
+	const subEl = crew ?? h("span", { class: "rail-surface-sub" }, surfaceSubtitle(surface, look, members));
+	const noticeText =
 		surface.needsAttentionCount > 0
 			? t("Needs your attention")
 			: surface.runningSessionCount > 0
 				? t("Working")
 				: null;
-	const row = h(
+	const noticeEl = noticeText ? h("span", { class: "visually-hidden" }, noticeText) : null;
+	const el = h(
 		"a",
 		{
 			class: `rail-surface${active ? " active" : ""}`,
@@ -137,17 +165,73 @@ function surfaceRow(
 			"data-surface-kind": look.kind,
 			...(active ? { "aria-current": "page" } : {}),
 		},
-		surfaceTile(surface, look, "", state),
-		h(
-			"span",
-			{ class: "rail-surface-text" },
-			h("span", { class: "rail-surface-name" }, surface.title),
-			crew ?? h("span", { class: "rail-surface-sub" }, surfaceSubtitle(surface, look, members)),
-		),
-		notice ? h("span", { class: "visually-hidden" }, notice) : null,
+		tileEl,
+		h("span", { class: "rail-surface-text" }, nameEl, subEl),
+		noticeEl,
 	);
-	row.style.setProperty("--surface-tint", surfaceTint(look));
-	return row;
+	el.style.setProperty("--surface-tint", tint);
+	return { el, nameEl, tileEl, tileKey, subEl, noticeEl, noticeText };
+}
+
+function syncSurfaceRow(
+	entry: SurfaceRowEntry,
+	surface: SurfaceSummary,
+	look: SurfaceLook,
+	profileId: string,
+	active: boolean,
+	crew: HTMLElement | null,
+	members?: SurfaceRailMembers,
+): void {
+	const href = surfaceHash(profileId, surface.slug);
+	if (entry.el.getAttribute("href") !== href) entry.el.setAttribute("href", href);
+	if (entry.el.title !== surface.title) entry.el.title = surface.title;
+	if (entry.el.dataset.surfaceSlug !== surface.slug) entry.el.dataset.surfaceSlug = surface.slug;
+	if (entry.el.dataset.surfaceKind !== look.kind) entry.el.dataset.surfaceKind = look.kind;
+	const tint = surfaceTint(look);
+	if (entry.el.style.getPropertyValue("--surface-tint") !== tint) entry.el.style.setProperty("--surface-tint", tint);
+	setRowActive(entry.el, active);
+	const state: SurfaceFigureState = surface.runningSessionCount > 0 ? "working" : "rest";
+	const tileKey = JSON.stringify([surfaceFigureOf(surface, look), state, tint]);
+	if (entry.tileKey !== tileKey) {
+		const nextTile = surfaceTile(surface, look, "", state);
+		entry.tileEl.replaceWith(nextTile);
+		entry.tileEl = nextTile;
+		entry.tileKey = tileKey;
+	}
+	if (entry.nameEl.textContent !== surface.title) entry.nameEl.textContent = surface.title;
+	if (crew) {
+		entry.subEl.replaceWith(crew);
+		entry.subEl = crew;
+	} else {
+		const subtitle = surfaceSubtitle(surface, look, members);
+		if (entry.subEl.classList.contains("rail-surface-crew")) {
+			const nextSub = h("span", { class: "rail-surface-sub" }, subtitle);
+			entry.subEl.replaceWith(nextSub);
+			entry.subEl = nextSub;
+		} else if (entry.subEl.textContent !== subtitle) {
+			entry.subEl.textContent = subtitle;
+		}
+	}
+	const noticeText =
+		surface.needsAttentionCount > 0
+			? t("Needs your attention")
+			: surface.runningSessionCount > 0
+				? t("Working")
+				: null;
+	if (entry.noticeText !== noticeText) {
+		entry.noticeText = noticeText;
+		if (noticeText) {
+			if (entry.noticeEl) {
+				entry.noticeEl.textContent = noticeText;
+			} else {
+				entry.noticeEl = h("span", { class: "visually-hidden" }, noticeText);
+				entry.el.append(entry.noticeEl);
+			}
+		} else if (entry.noticeEl) {
+			entry.noticeEl.remove();
+			entry.noticeEl = null;
+		}
+	}
 }
 
 function proposedSurfaceRow(surface: SurfaceSummary, look: SurfaceLook, busy: boolean): HTMLElement {
@@ -193,10 +277,15 @@ function proposedSurfaceRow(surface: SurfaceSummary, look: SurfaceLook, busy: bo
 export class SurfaceRail {
 	readonly el = h("div", { class: "rail-surfaces" });
 	readonly #membersList = h("div", { class: "rail-members rail-surface-members" });
+	readonly #membersTree = h("div", { class: "surface-tree" }, this.#membersList);
 	readonly #store: SurfacesStore;
 	readonly #profileId: string;
 	readonly #onAddSurface: (() => void) | undefined;
 	readonly #crew = new CrewFigures();
+	readonly #groups = new Map<"products" | "operations", SurfaceGroupEntry>();
+	readonly #rows = new Map<string, SurfaceRowEntry>();
+	readonly #proposedRows = new Map<string, { readonly el: HTMLElement; readonly key: string }>();
+	#activeSlug: string | undefined;
 	#shown: readonly unknown[] | undefined;
 
 	constructor(store: SurfacesStore, profileId: string, signal: AbortSignal, onAddSurface?: () => void) {
@@ -255,11 +344,11 @@ export class SurfaceRail {
 		reconcileChildren(this.#membersList, memberRows);
 		const state = this.#store.state;
 		const deps: readonly unknown[] = [
-			activeSlug,
 			canAddProgram,
 			memberRows.length,
 			members?.unread ?? 0,
 			members?.active ?? false,
+			presentationLocale(),
 			state.source,
 			state.surfaces,
 			state.workspaces,
@@ -272,10 +361,24 @@ export class SurfaceRail {
 			this.#shown.length === deps.length &&
 			deps.every((value, index) => Object.is(this.#shown![index], value))
 		) {
+			for (const surface of state.surfaces) {
+				if (surface.status === "active" && surface.activeSessionCount > 0 && !state.workspaces[surface.id]) {
+					this.#store.hydrateWorkspace(surface.id);
+				}
+			}
+			if (this.#activeSlug !== activeSlug) {
+				this.#activeSlug = activeSlug;
+				for (const entry of this.#rows.values()) {
+					setRowActive(entry.el, entry.el.dataset.surfaceSlug === activeSlug);
+				}
+			}
 			return;
 		}
 		this.#shown = deps;
+		this.#activeSlug = activeSlug;
 		const groups: HTMLElement[] = [];
+		const seenActive = new Set<string>();
+		const seenProposed = new Set<string>();
 		for (const [group, label] of [
 			["products", t("Building")],
 			["operations", t("Running")],
@@ -284,70 +387,99 @@ export class SurfaceRail {
 			const activeSurfaces = groupSurfaces.filter((surface) => surface.status === "active");
 			const proposedSurfaces = groupSurfaces.filter((surface) => surface.status === "proposed");
 			if (!activeSurfaces.length && !proposedSurfaces.length) continue;
-			groups.push(
-				h(
-					"div",
-					{ class: "rail-surface-group", role: "group", "aria-label": label },
-					h(
-						"div",
-						{ class: "rail-section-title rail-surface-title" },
-						h("span", null, label),
-						group === "products" && canAddProgram
-							? this.#onAddSurface
-								? h(
-										"button",
-										{
-											type: "button",
-											class: "rail-surface-add",
-											"aria-label": t("New surface"),
-											title: t("New surface"),
-											"data-act": "add-surface",
-										},
-										icon("plus"),
-									)
-								: h(
-										"a",
-										{
-											class: "rail-surface-add",
-											href: `#/c/${this.#profileId}/new-program`,
-											"aria-label": t("New program"),
-											title: t("New program"),
-										},
-										icon("plus"),
-									)
-							: null,
-					),
-					activeSurfaces.flatMap((surface) => {
-						const look = surfaceLookOf(surface, state.surfaceLooks);
-						const active = surface.slug === activeSlug;
-						const hasMembers = look.kind === "members" && memberRows.length > 0;
-						if (surface.activeSessionCount > 0 && !state.workspaces[surface.id]) {
-							this.#store.hydrateWorkspace(surface.id);
-						}
-						const row = surfaceRow(
-							surface,
-							look,
-							this.#profileId,
-							active,
-							crewRow(state, surface, this.#crew),
-							hasMembers ? members : undefined,
-						);
-						if (!hasMembers) return [row];
-						const tree = h("div", { class: "surface-tree" }, this.#membersList);
-						tree.style.setProperty("--surface-tint", surfaceTint(look));
-						return [row, tree];
-					}),
-					proposedSurfaces.map((surface) =>
-						proposedSurfaceRow(
-							surface,
-							surfaceLookOf(surface, state.surfaceLooks),
-							Boolean(state.busy[`surface:${surface.id}`]),
-						),
-					),
-				),
-			);
+			const headKey = JSON.stringify([label, group === "products" && canAddProgram, Boolean(this.#onAddSurface)]);
+			let groupEntry = this.#groups.get(group);
+			if (!groupEntry) {
+				const head = h("div", { class: "rail-section-title rail-surface-title" });
+				const el = h("div", { class: "rail-surface-group", role: "group", "aria-label": label }, head);
+				groupEntry = { el, head, headKey: "" };
+				this.#groups.set(group, groupEntry);
+			}
+			if (groupEntry.headKey !== headKey) {
+				groupEntry.headKey = headKey;
+				groupEntry.el.setAttribute("aria-label", label);
+				groupEntry.head.replaceChildren(
+					h("span", null, label),
+					...(group === "products" && canAddProgram
+						? [
+								this.#onAddSurface
+									? h(
+											"button",
+											{
+												type: "button",
+												class: "rail-surface-add",
+												"aria-label": t("New surface"),
+												title: t("New surface"),
+												"data-act": "add-surface",
+											},
+											icon("plus"),
+										)
+									: h(
+											"a",
+											{
+												class: "rail-surface-add",
+												href: `#/c/${this.#profileId}/new-program`,
+												"aria-label": t("New program"),
+												title: t("New program"),
+											},
+											icon("plus"),
+										),
+							]
+						: []),
+				);
+			}
+			const groupChildren: HTMLElement[] = [groupEntry.head];
+			for (const surface of activeSurfaces) {
+				seenActive.add(surface.id);
+				const look = surfaceLookOf(surface, state.surfaceLooks);
+				const active = surface.slug === activeSlug;
+				const hasMembers = look.kind === "members" && memberRows.length > 0;
+				if (surface.activeSessionCount > 0 && !state.workspaces[surface.id]) {
+					this.#store.hydrateWorkspace(surface.id);
+				}
+				const crew = crewRow(state, surface, this.#crew);
+				let entry = this.#rows.get(surface.id);
+				if (!entry) {
+					entry = createSurfaceRow(surface, look, this.#profileId, active, crew, hasMembers ? members : undefined);
+					this.#rows.set(surface.id, entry);
+				} else {
+					syncSurfaceRow(entry, surface, look, this.#profileId, active, crew, hasMembers ? members : undefined);
+				}
+				groupChildren.push(entry.el);
+				if (hasMembers) {
+					this.#membersTree.style.setProperty("--surface-tint", surfaceTint(look));
+					groupChildren.push(this.#membersTree);
+				}
+			}
+			for (const surface of proposedSurfaces) {
+				seenProposed.add(surface.id);
+				const look = surfaceLookOf(surface, state.surfaceLooks);
+				const busy = Boolean(state.busy[`surface:${surface.id}`]);
+				const key = JSON.stringify([
+					surface.slug,
+					surface.title,
+					surfaceFigureOf(surface, look),
+					surfaceTint(look),
+					busy,
+					presentationLocale(),
+				]);
+				let entry = this.#proposedRows.get(surface.id);
+				if (!entry || entry.key !== key) {
+					entry = { el: proposedSurfaceRow(surface, look, busy), key };
+					this.#proposedRows.set(surface.id, entry);
+				}
+				groupChildren.push(entry.el);
+			}
+			reconcileChildren(groupEntry.el, groupChildren);
+			groups.push(groupEntry.el);
 		}
-		this.el.replaceChildren(...groups);
+		for (const id of [...this.#rows.keys()]) {
+			if (!seenActive.has(id)) this.#rows.delete(id);
+		}
+		for (const id of [...this.#proposedRows.keys()]) {
+			if (!seenProposed.has(id)) this.#proposedRows.delete(id);
+		}
+		reconcileChildren(this.el, groups);
 		this.el.hidden = groups.length === 0;
 		this.#crew.settle();
 	}

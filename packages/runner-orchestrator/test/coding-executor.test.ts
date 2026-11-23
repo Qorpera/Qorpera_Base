@@ -589,6 +589,33 @@ describe("the coding executor over a session turn", () => {
 		expect(w.host.detachSession).not.toHaveBeenCalled();
 	});
 
+	it("includes bounded conflict details when CodingLandConflict carries merge-tree messages", async () => {
+		const w = world();
+		vi.mocked(w.host.publish).mockRejectedValueOnce(
+			new CodingLandConflict(
+				["src/cart.js"],
+				["CONFLICT (content): Merge conflict in src/cart.js", "Auto-merging src/cart.js"],
+			),
+		);
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion.p_outcome).toBe("failed");
+		expect(completion.p_summary).toContain("Conflict details: CONFLICT (content): Merge conflict in src/cart.js");
+		expect(Buffer.byteLength(String(completion.p_summary))).toBeLessThanOrEqual(4000);
+	});
+
 	it("a landing refused by rule fails the turn with what to change", async () => {
 		const w = world();
 		const summary = landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["assets/film.mov"])!;
@@ -641,7 +668,7 @@ describe("the coding executor over a session turn", () => {
 		);
 		// Names the company folder does not take: what to rename, the paths a null stands for only counted.
 		expect(landRefusal("main", "CODE_HOST_NAMES_FOLDER_REFUSES", ["bad.", null, "x "])).toBe(
-			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session\'s workspace holds it): "bad.", "x " and 1 more. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]',
+			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 2,600 bytes where a session\'s workspace holds it): "bad.", "x " and 1 more. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]',
 		);
 		expect(landRefusal("main", "CODE_HOST_NAMES_FOLDER_REFUSES", [null])).toContain(
 			": 1 path not named here. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]",

@@ -11,6 +11,11 @@ import {
 	SURFACE_IDENTITY_CSS_MOUNT_PATH,
 	SURFACE_SHARED_DIR,
 } from "@qorpera/contracts";
+import {
+	type SurfaceAttachmentReader,
+	type SurfaceMemberImage,
+	surfaceMemberImagesSection,
+} from "./cloud-surface-images.ts";
 import type { CloudSurfaceToolsPort } from "./cloud-surface-tools.ts";
 
 export interface SurfaceIdentityContext {
@@ -27,6 +32,38 @@ export interface SurfaceSharedAssetsContext {
 	readonly hasLogoSvg?: boolean;
 }
 
+export interface SurfaceConflictDetail {
+	readonly changeId?: string | null;
+	readonly title?: string | null;
+	readonly sessionId?: string | null;
+	readonly branch?: string | null;
+	readonly parentSha?: string | null;
+	readonly headSha?: string | null;
+	readonly conflictPaths?: readonly string[] | null;
+}
+
+export function parseSurfaceConflictDetails(raw: unknown): SurfaceConflictDetail[] {
+	if (!Array.isArray(raw)) return [];
+	const out: SurfaceConflictDetail[] = [];
+	for (const entry of raw) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const item = entry as Record<string, unknown>;
+		const conflictPaths = Array.isArray(item.conflictPaths)
+			? item.conflictPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+			: null;
+		out.push({
+			changeId: typeof item.changeId === "string" ? item.changeId : null,
+			title: typeof item.title === "string" ? item.title : null,
+			sessionId: typeof item.sessionId === "string" ? item.sessionId : null,
+			branch: typeof item.branch === "string" ? item.branch : null,
+			parentSha: typeof item.parentSha === "string" ? item.parentSha : null,
+			headSha: typeof item.headSha === "string" ? item.headSha : null,
+			conflictPaths,
+		});
+	}
+	return out;
+}
+
 export interface SurfaceTurnBriefInput {
 	readonly sessionId: string;
 	readonly surfaceSlug: string;
@@ -40,7 +77,11 @@ export interface SurfaceTurnBriefInput {
 	readonly sharedAssets?: SurfaceSharedAssetsContext | null;
 	readonly pointToChangeTarget?: PointToChangeTarget | null;
 	readonly conflictPaths?: readonly string[] | null;
+	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;
+	readonly mainSha?: string | null;
 	readonly recordChange?: CloudSurfaceToolsPort["recordChange"];
+	readonly memberImages?: readonly SurfaceMemberImage[] | null;
+	readonly viewAttachment?: SurfaceAttachmentReader;
 }
 
 export interface SurfaceCodingTurnBinding extends SurfaceTurnBriefInput {
@@ -48,11 +89,12 @@ export interface SurfaceCodingTurnBinding extends SurfaceTurnBriefInput {
 }
 
 export const SURFACE_STAGED_CODING_INSTRUCTIONS =
-	"IMPORTANT — Surface Staged Mode (overrides direct-landing instructions above): " +
+	"IMPORTANT — Surface Staged Mode: " +
 	"This session is scoped to a Qorpera Surface — a direct live projection of its codebase or Company Files folder. " +
 	"Commits you make on this session branch stay STAGED for founder Preview and approval and do NOT land on main until the founder approves them. " +
 	"Founders preview multiple unmerged staged changes from concurrent sessions toggled on or off simultaneously in Preview before approving or publishing any of them. " +
-	"Preview renders static web assets from the repository's index.html at the root or from the folder configured in .qorpera/checks.json under site.folder — make sure a clean servable index.html and its assets are committed on the session branch (commit the built output folder if you use a bundler). " +
+	"Preview renders static web assets from site.folder in .qorpera/checks.json, from index.html at the repository root, from dist/build/out/public, or from apps/<repo>*/index.html — make sure a clean servable index.html and its assets are committed on the session branch (commit the built output folder if you use a bundler, and set site.folder to it when needed). " +
+	'A .qorpera/checks.json file is optional for simple static Surfaces; for multi-file codebases, run .qorpera/checks.json pre-flight via coding_run_command (runChecks: true) before coding_finish, and optionally set "surfaceGate": "stage" in .qorpera/checks.json to enforce checks automatically before staging (default "none" keeps Preview staging instant). ' +
 	"Keep each staged change atomic, self-contained, and conflict-minimizing: touch only the files needed for this deliverable and avoid unrequested sweeping refactors across shared files. " +
 	"For each cohesive user-visible deliverable you complete, commit cleanly on the current branch and call coding_record_change with a plain founder-facing title, short summary, parentSha, and commitSha before moving to the next change. " +
 	"When all requested deliverables are committed and verified, call coding_finish with the final headSha to stage the session as ready for review.";
@@ -73,8 +115,9 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 	const sections: string[] = [
 		headerLines.join("\n"),
 		"## Surface Projection & Parallel Preview\n" +
-			"This Surface projects its underlying codebase or Company Files folder directly into the live Preview. " +
+			"This Surface projects its underlying codebase or Company Files folder directly into the live Preview (resolving `site.folder` from `.qorpera/checks.json`, root `index.html`, `dist`/`build`/`out`/`public`, or `apps/<repo>*/index.html`; commit the built output folder when using a bundler). " +
 			"Founders can toggle multiple unmerged staged changes from concurrent sessions on and off together in Preview before approving or publishing them. " +
+			'For multi-file codebases, verify changes pre-flight with `coding_run_command` (`runChecks: true` when `.qorpera/checks.json` exists; opt into `"surfaceGate": "stage"` to enforce checks automatically on `coding_finish`, or leave default `"none"` for instant Preview staging). ' +
 			"Keep each staged change atomic, self-contained, and conflict-minimizing — touch only the files required for your deliverable and avoid unnecessary edits to unrelated shared files.",
 	];
 
@@ -181,17 +224,64 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		sections.push(lines.join("\n"));
 	}
 
-	if (binding.conflictPaths && binding.conflictPaths.length > 0) {
-		const maxConflictPaths = 100;
-		const shown = binding.conflictPaths.slice(0, maxConflictPaths).map((path) => `- ${path.slice(0, 256)}`);
-		const overflow = binding.conflictPaths.length - shown.length;
-		if (overflow > 0) {
-			shown.push(`- ...and ${overflow} more paths`);
+	const conflictPaths = binding.conflictPaths?.filter((p) => p.trim().length > 0) ?? [];
+	const conflictDetails = binding.conflictDetails ?? [];
+	if (conflictPaths.length > 0 || conflictDetails.length > 0) {
+		const lines: string[] = ["## Conflict Reconciliation"];
+		const mainSha = binding.mainSha?.trim();
+		if (mainSha) {
+			lines.push(`Target main SHA: \`${mainSha.slice(0, 64)}\``);
 		}
-		sections.push(
-			`## Conflict Reconciliation\nReconcile overlapping changes cleanly across these files:\n${shown.join("\n")}`,
+		if (conflictDetails.length > 0) {
+			lines.push("Conflicting staged changes to reconcile:");
+			const maxDetails = 25;
+			for (const detail of conflictDetails.slice(0, maxDetails)) {
+				const label = detail.title?.trim() || detail.changeId?.trim() || "Staged change";
+				const parts: string[] = [label.slice(0, 160)];
+				const branch = detail.branch?.trim();
+				if (branch) parts.push(`branch \`${branch.slice(0, 120)}\``);
+				const parentSha = detail.parentSha?.trim();
+				const headSha = detail.headSha?.trim();
+				if (parentSha && headSha) {
+					parts.push(`range \`${parentSha.slice(0, 40)}..${headSha.slice(0, 40)}\``);
+				} else if (headSha) {
+					parts.push(`commit \`${headSha.slice(0, 40)}\``);
+				}
+				const detailPaths = detail.conflictPaths?.filter((p) => p.trim().length > 0) ?? [];
+				if (detailPaths.length > 0) {
+					parts.push(`paths: ${detailPaths.slice(0, 10).join(", ")}`);
+				}
+				lines.push(`- ${parts.join(" · ")}`);
+			}
+			if (conflictDetails.length > maxDetails) {
+				lines.push(`- ...and ${conflictDetails.length - maxDetails} more conflicting changes`);
+			}
+		}
+		if (conflictPaths.length > 0) {
+			const maxConflictPaths = 100;
+			lines.push("Conflicted files:");
+			const shown = conflictPaths.slice(0, maxConflictPaths).map((path) => `- ${path.slice(0, 256)}`);
+			const overflow = conflictPaths.length - shown.length;
+			if (overflow > 0) {
+				shown.push(`- ...and ${overflow} more paths`);
+			}
+			lines.push(...shown);
+		}
+		lines.push(
+			"Reconciliation procedure:",
+			"1. Inspect current `main` (`git log -n 5 main`) and integrate your branch cleanly with `git merge main` or apply each conflicting range with `git cherry-pick <parentSha>..<headSha>`.",
+			"2. Inspect every conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) across the conflicted files and preserve the intent of each change cleanly without dropping behavior.",
+			"3. Run the repository's build and test checks (`coding_run_command` with `runChecks: true` when `.qorpera/checks.json` exists, plus targeted tests) to verify the reconciled code passes.",
+			"4. Commit the clean resolution on the session branch, call `coding_record_change` with the resolved commit range, and finish with `coding_finish`.",
 		);
+		sections.push(lines.join("\n"));
 	}
+
+	const images = surfaceMemberImagesSection(
+		binding.memberImages ?? [],
+		binding.viewAttachment ? "coding_view_attachment" : "company_read",
+	);
+	if (images) sections.push(images);
 
 	return sections.join("\n\n");
 }

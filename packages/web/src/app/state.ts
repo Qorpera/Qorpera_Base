@@ -22,7 +22,20 @@ export class Store<T extends object> {
 	set(patch: Partial<T> | ((current: T) => Partial<T>)): void {
 		if (this.#disposed) return;
 		const next = typeof patch === "function" ? patch(this.#value) : patch;
+		let changed = false;
+		for (const key of Object.keys(next) as (keyof T)[]) {
+			if (!(key in this.#value) || !Object.is(this.#value[key], next[key])) {
+				changed = true;
+				break;
+			}
+		}
+		if (!changed) return;
 		this.#value = { ...this.#value, ...next };
+		this.#notify();
+	}
+
+	notify(): void {
+		if (this.#disposed) return;
 		this.#notify();
 	}
 

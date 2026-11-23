@@ -29,6 +29,7 @@ import {
 	CodeWorktreeNamesRefused,
 	exportCodeBranch,
 	landCodeBranch,
+	pruneCodeArea,
 	retireCodeWorktrees,
 	startCodeArea,
 	writeCodeChangeRecords,
@@ -433,7 +434,7 @@ describe("CodeHostRepositories", () => {
 		});
 		// The 256-byte name (over 200 bytes) and the key are counted, never named.
 		expect(refused.summary).toBe(
-			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session\'s workspace holds it): "a/b/c.", "a\\\\b.txt", "bad.", "x " and 2 more. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]',
+			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 2,600 bytes where a session\'s workspace holds it): "a/b/c.", "a\\\\b.txt", "bad.", "x " and 2 more. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]',
 		);
 		const repo = join(f.companyRoot, "code/qorpera/example/repo.git");
 		expect(await f.git(repo, "rev-parse", "refs/heads/main")).toBe(baseSha);
@@ -3270,6 +3271,76 @@ describe("per-repository landing queue and inline record batching", () => {
 		expect(refCalls).toHaveLength(1);
 	});
 
+	it("resumes a reopened follow-up turn from current main when prune deleted its merged branch", async () => {
+		resetMocks();
+		const f = await fixture();
+		const repo: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const shell = localShell([]);
+		const unused = async (): Promise<never> => {
+			throw new Error("CODE_HOST_GC_UNUSED");
+		};
+		const gc: CodeHostGcBlock = { begin: unused, end: unused };
+		const jobs: Pick<CodeHostJobs, "run"> = {
+			async run(_companyId, _environmentId, given, job) {
+				return await job(
+					{
+						shell,
+						layout: { companyRoot: f.companyRoot, scratchRoot: join(f.root, "scratch"), git: GIT },
+						signal: given,
+					},
+					gc,
+				);
+			},
+		};
+		const repositories = new CodeHostRepositories(jobs);
+		const claim = { ...f.session.claim, repository: repo, baseSha: null };
+		const { baseSha } = await repositories.start({ claim, assertAuthorized: f.authorized }, signal());
+
+		const workerId = randomUUID();
+		const firstTurn: CodingFolderRepositorySession = {
+			...f.session,
+			claim: { ...claim, workerId, sequence: 1, branch: `qorpera/coding/${workerId}` },
+			baseSha,
+		};
+		await repositories.prepare(firstTurn, signal());
+		const tree = join(f.companyRoot, "code/qorpera/example/worktrees", workerId);
+		const head1 = await f.commit(tree, "first.js");
+		const landed1 = await repositories.land(firstTurn, head1, signal());
+
+		const otherId = randomUUID();
+		const otherSession: CodingFolderRepositorySession = {
+			...f.session,
+			claim: { ...claim, workerId: otherId, sequence: 1, branch: `qorpera/coding/${otherId}` },
+			baseSha: landed1.mainSha,
+		};
+		await repositories.prepare(otherSession, signal());
+		const head2 = await f.commit(join(f.companyRoot, "code/qorpera/example/worktrees", otherId), "second.js");
+		const landed2 = await repositories.land(otherSession, head2, signal());
+
+		await jobs.run(COMPANY, ENVIRONMENT, signal(), async (job) => {
+			await pruneCodeArea(job, { repository: repo, workerIds: [workerId], phase: "files" });
+		});
+		await jobs.run(COMPANY, ENVIRONMENT, signal(), async (job) => {
+			const result = await pruneCodeArea(job, {
+				repository: repo,
+				workerIds: [workerId],
+				phase: "git-folder",
+				deleteMergedBranches: true,
+			});
+			expect(result.deletedBranches).toEqual([`qorpera/coding/${workerId}`]);
+		});
+
+		const followUp: CodingFolderRepositorySession = {
+			...f.session,
+			claim: { ...claim, workerId, sequence: 2, branch: `qorpera/coding/${workerId}` },
+			baseSha,
+		};
+		await repositories.prepare(followUp, signal());
+		expect(await f.git(tree, "rev-parse", "HEAD")).toBe(landed2.mainSha);
+		expect(await readFile(join(tree, "first.js"), "utf8")).toBe("first.js\n");
+		expect(await readFile(join(tree, "second.js"), "utf8")).toBe("second.js\n");
+	});
+
 	it("starts a surface-backed Qorpera repository with starter files and verifies staged commits without moving main", async () => {
 		const f = await fixture();
 		const kept: CloudCodingRepository = { host: "qorpera", owner: "surfaces", name: "website", baseBranch: "main" };
@@ -3313,5 +3384,143 @@ describe("per-repository landing queue and inline record batching", () => {
 		});
 		expect(await f.git(repo, "rev-parse", "refs/heads/main")).toBe(baseSha);
 		expect(await f.git(repo, "rev-parse", `refs/heads/${claim.branch}`)).toBe(head);
+	});
+
+	it("enforces opt-in surfaceGate stage checks on verifyStaged while skipping default or none repos", async () => {
+		const f = await fixture();
+		const kept: CloudCodingRepository = { host: "qorpera", owner: "surfaces", name: "app", baseBranch: "main" };
+		const claim: CodingSessionClaim = {
+			...f.session.claim,
+			repository: kept,
+			baseSha: null,
+			surfaceSession: {
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				slug: "app",
+				title: "App",
+			},
+		};
+		const { baseSha } = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal());
+		const runChecks = vi.fn<NonNullable<typeof f.session.runChecks>>();
+		const checksSwitch = vi.fn<NonNullable<typeof f.session.checksSwitch>>(async () => ({
+			checks: true,
+			site: true,
+		}));
+		const session = { ...f.session, claim, baseSha, checksSwitch, runChecks };
+		await f.repositories.prepare(session, signal());
+		const tree = join(f.companyRoot, "code/surfaces/app/worktrees", f.workerId);
+		const commitChecks = async (checksText: string, note: string): Promise<string> => {
+			await writeFile(join(tree, ".qorpera/checks.json"), checksText);
+			await f.git(tree, "add", ".qorpera/checks.json");
+			await f.git(tree, "commit", "-m", note);
+			return (await f.git(tree, "rev-parse", "HEAD")).trim();
+		};
+
+		const plainHead = await f.commit(tree, "page.html");
+		expect((await f.repositories.verifyStaged(session, plainHead, signal())).headSha).toBe(plainHead);
+		expect(runChecks).not.toHaveBeenCalled();
+
+		const stageHead = await commitChecks(
+			JSON.stringify({ surfaceGate: "stage", checks: [{ name: "test", run: "npm test" }] }),
+			"enable surface stage gate",
+		);
+		runChecks.mockResolvedValueOnce({
+			state: "passed",
+			ms: 50,
+			copyMs: 10,
+			checks: [{ name: "test", run: "npm test", ms: 40 }],
+			site: null,
+		});
+		expect((await f.repositories.verifyStaged(session, stageHead, signal())).headSha).toBe(stageHead);
+		expect(runChecks).toHaveBeenCalledTimes(1);
+		expect(runChecks.mock.calls[0]?.[0]).toMatchObject({ commit: stageHead, site: null, attempt: 1 });
+
+		runChecks.mockResolvedValueOnce({
+			state: "failed",
+			ms: 100,
+			passed: [],
+			failed: {
+				name: "test",
+				run: "npm test",
+				ms: 100,
+				exitCode: 1,
+				atLimit: false,
+				tail: "boom",
+				log: "/tmp/test.log",
+			},
+			notRun: [],
+		});
+		await expect(f.repositories.verifyStaged(session, stageHead, signal())).rejects.toMatchObject({
+			message: "CODING_CHECKS_FAILED",
+			summary: expect.stringContaining("Nothing was staged for Preview:"),
+		});
+
+		runChecks
+			.mockResolvedValueOnce({ state: "not_run", why: "machine", code: "MACHINE_STOPPED" })
+			.mockResolvedValueOnce({ state: "not_run", why: "machine", code: "MACHINE_STOPPED" });
+		await expect(f.repositories.verifyStaged(session, stageHead, signal())).rejects.toMatchObject({
+			message: "CODING_CHECKS_DID_NOT_RUN",
+			summary: expect.stringContaining("Nothing was staged for Preview:"),
+		});
+		expect(runChecks.mock.calls.slice(-2).map(([input]) => input.attempt)).toEqual([1, 2]);
+
+		checksSwitch.mockResolvedValueOnce({ checks: true, site: true, drill: "check" });
+		runChecks.mockResolvedValueOnce({
+			state: "failed",
+			ms: 80,
+			passed: [{ name: "test", ms: 40 }],
+			failed: {
+				name: CODE_CHECKS_DRILL.name,
+				run: CODE_CHECKS_DRILL.run,
+				ms: 40,
+				exitCode: 1,
+				atLimit: false,
+				tail: "drill",
+				log: "/tmp/drill.log",
+			},
+			notRun: [],
+		});
+		await expect(f.repositories.verifyStaged(session, stageHead, signal())).rejects.toMatchObject({
+			message: "CODING_CHECKS_FAILED",
+			summary: expect.stringContaining(`${CODE_DRILL_WORDS} Nothing was staged for Preview:`),
+		});
+		expect(runChecks.mock.calls.at(-1)?.[0].checks.map((c) => c.name)).toEqual(["test", CODE_CHECKS_DRILL.name]);
+
+		const brokenStageHead = await commitChecks('{"surfaceGate":"stage","checks":[', "broken stage gate");
+		await expect(f.repositories.verifyStaged(session, brokenStageHead, signal())).rejects.toMatchObject({
+			message: "CODING_CHECKS_REFUSED",
+			summary: expect.stringContaining("Nothing was staged for Preview:"),
+		});
+
+		checksSwitch.mockResolvedValueOnce({ checks: false, site: false });
+		expect((await f.repositories.verifyStaged(session, brokenStageHead, signal())).headSha).toBe(brokenStageHead);
+
+		const repo = join(f.companyRoot, "code/surfaces/app/repo.git");
+		await f.git(repo, "update-ref", "refs/heads/main", stageHead);
+		const gatedSession = { ...session, baseSha: stageHead };
+		await f.git(tree, "reset", "--hard", stageHead);
+		await f.git(tree, "rm", ".qorpera/checks.json");
+		await f.git(tree, "commit", "-m", "delete checks file");
+		const deletedHead = (await f.git(tree, "rev-parse", "HEAD")).trim();
+		await expect(f.repositories.verifyStaged(gatedSession, deletedHead, signal())).rejects.toMatchObject({
+			message: "CODING_CHECKS_REFUSED",
+			summary: expect.stringContaining("is gone in this change"),
+		});
+
+		await f.git(tree, "reset", "--hard", stageHead);
+		const optOutHead = await commitChecks(
+			JSON.stringify({ surfaceGate: "none", checks: [{ name: "test", run: "npm test" }] }),
+			"disable surface stage gate",
+		);
+		const callsBeforeOptOut = runChecks.mock.calls.length;
+		runChecks.mockResolvedValueOnce({
+			state: "passed",
+			ms: 50,
+			copyMs: 10,
+			checks: [{ name: "test", run: "npm test", ms: 40 }],
+			site: null,
+		});
+		expect((await f.repositories.verifyStaged(gatedSession, optOutHead, signal())).headSha).toBe(optOutHead);
+		expect(runChecks.mock.calls.length).toBe(callsBeforeOptOut + 1);
 	});
 });

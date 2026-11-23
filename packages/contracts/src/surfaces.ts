@@ -1,8 +1,10 @@
 import {
 	isUuid,
 	parseBoundedText,
+	parseClosedRecord,
 	parseInteger,
 	parseRecord,
+	parseSha256Hex,
 	parseTimestamp,
 	parseUuid,
 	WireValueError,
@@ -155,6 +157,28 @@ export interface SurfaceSessionMessage {
 	readonly createdAt: string;
 }
 
+export const SURFACE_IMAGE_MEDIA_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
+export const SURFACE_IMAGE_MAX_COUNT = 5;
+export const SURFACE_IMAGE_MAX_TOTAL_BYTES = 8 * 1024 * 1024;
+export const SURFACE_SESSION_IMAGES_SCHEMA = "qorpera.surface-session-images/v1";
+
+export interface SurfaceImageRef {
+	readonly sha256: string;
+	readonly bytes: number;
+	readonly mediaType: string;
+}
+
+export interface SurfaceMessageImages {
+	readonly messageId: string;
+	readonly clientInputId: string;
+	readonly images: readonly SurfaceImageRef[];
+}
+
+export interface SurfaceSessionImages {
+	readonly sessionId: string;
+	readonly messages: readonly SurfaceMessageImages[];
+}
+
 export type StudioPatchOp =
 	| { readonly op: "write_text"; readonly path: string; readonly content: string }
 	| { readonly op: "delete"; readonly path: string }
@@ -191,6 +215,8 @@ export interface SurfaceSummary {
 	readonly previewMode: SurfacePreviewMode;
 	readonly autoPublish: boolean;
 	readonly publishStatus?: SurfacePublishStatus;
+	readonly lastPublishError?: string | null;
+	readonly liveHeadSha?: string | null;
 	readonly liveUrl: string | null;
 	readonly hasUnpublishedChanges: boolean;
 	readonly unpublishedChangeCount: number;
@@ -249,6 +275,7 @@ export interface SurfaceSession {
 	readonly createdByUserId?: string | null;
 	readonly explorationId: string | null;
 	readonly explorationVariantLabel: string | null;
+	readonly branchHeadSha?: string | null;
 	readonly hasActiveChat: boolean;
 	readonly question: SurfaceSessionQuestion | null;
 	readonly notePaths?: readonly string[];
@@ -494,6 +521,12 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		raw.publishStatus === undefined || raw.publishStatus === null
 			? undefined
 			: parseEnum(raw.publishStatus, SURFACE_PUBLISH_STATUSES, `${label}.publishStatus`);
+	const lastPublishError =
+		raw.lastPublishError === undefined
+			? undefined
+			: parseOptionalText(raw.lastPublishError, `${label}.lastPublishError`, 1000);
+	const liveHeadSha =
+		raw.liveHeadSha === undefined ? undefined : parseOptionalText(raw.liveHeadSha, `${label}.liveHeadSha`, 64);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		slug: parseSurfaceSlug(raw.slug, `${label}.slug`),
@@ -512,6 +545,8 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		previewMode: parseEnum(raw.previewMode, SURFACE_PREVIEW_MODES, `${label}.previewMode`),
 		autoPublish: raw.autoPublish,
 		...(publishStatus !== undefined ? { publishStatus } : {}),
+		...(lastPublishError !== undefined ? { lastPublishError } : {}),
+		...(liveHeadSha !== undefined ? { liveHeadSha } : {}),
 		liveUrl: parseOptionalText(raw.liveUrl, `${label}.liveUrl`, 512),
 		hasUnpublishedChanges: raw.hasUnpublishedChanges,
 		unpublishedChangeCount: parseInteger(
@@ -627,6 +662,8 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		raw.notePaths === undefined || raw.notePaths === null
 			? undefined
 			: parseStringArray(raw.notePaths, `${label}.notePaths`, 64, 512);
+	const branchHeadSha =
+		raw.branchHeadSha === undefined ? undefined : parseOptionalText(raw.branchHeadSha, `${label}.branchHeadSha`, 64);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		surfaceId: parseUuid(raw.surfaceId, `${label}.surfaceId`),
@@ -639,6 +676,7 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		...(createdByUserId !== undefined ? { createdByUserId } : {}),
 		explorationId: parseOptionalUuid(raw.explorationId, `${label}.explorationId`),
 		explorationVariantLabel: parseOptionalText(raw.explorationVariantLabel, `${label}.explorationVariantLabel`, 80),
+		...(branchHeadSha !== undefined ? { branchHeadSha } : {}),
 		hasActiveChat: raw.hasActiveChat,
 		question,
 		...(notePaths !== undefined ? { notePaths } : {}),
@@ -653,6 +691,40 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		createdAt: parseTimestamp(raw.createdAt, `${label}.createdAt`).text,
 		updatedAt: parseTimestamp(raw.updatedAt, `${label}.updatedAt`).text,
 		closedAt: parseOptionalTimestamp(raw.closedAt, `${label}.closedAt`),
+	};
+}
+
+function parseSurfaceImageRef(value: unknown, label: string): SurfaceImageRef {
+	const raw = parseClosedRecord(value, label, ["sha256", "bytes", "mediaType"]);
+	return {
+		sha256: parseSha256Hex(raw.sha256, `${label}.sha256`),
+		bytes: parseInteger(raw.bytes, `${label}.bytes`, 1, SURFACE_IMAGE_MAX_TOTAL_BYTES),
+		mediaType: parseEnum(raw.mediaType, SURFACE_IMAGE_MEDIA_TYPES, `${label}.mediaType`),
+	};
+}
+
+export function parseSurfaceSessionImages(value: unknown): SurfaceSessionImages {
+	const label = "sessionImages";
+	const raw = parseClosedRecord(value, label, ["schema", "sessionId", "messages"]);
+	if (raw.schema !== SURFACE_SESSION_IMAGES_SCHEMA) throw new WireValueError(`${label}.schema`);
+	if (!Array.isArray(raw.messages) || raw.messages.length > 10_000) throw new WireValueError(`${label}.messages`);
+	return {
+		sessionId: parseUuid(raw.sessionId, `${label}.sessionId`),
+		messages: raw.messages.map((item, index) => {
+			const at = `${label}.messages[${index}]`;
+			const message = parseClosedRecord(item, at, ["messageId", "clientInputId", "images"]);
+			if (
+				!Array.isArray(message.images) ||
+				message.images.length < 1 ||
+				message.images.length > SURFACE_IMAGE_MAX_COUNT
+			)
+				throw new WireValueError(`${at}.images`);
+			return {
+				messageId: parseUuid(message.messageId, `${at}.messageId`),
+				clientInputId: parseUuid(message.clientInputId, `${at}.clientInputId`),
+				images: message.images.map((image, slot) => parseSurfaceImageRef(image, `${at}.images[${slot}]`)),
+			};
+		}),
 	};
 }
 

@@ -34,6 +34,7 @@ const objectOperations: Array<{ name: string; call: (authority: SupabaseObjectAu
 
 const publisherOperations = [
 	"qorpera_room_image_commit",
+	"qorpera_surface_image_commit",
 	"qorpera_claim_connection_file",
 	"qorpera_finish_connection_file",
 	"qorpera_claim_coding_results_file",
