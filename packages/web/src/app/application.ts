@@ -3164,6 +3164,7 @@ export function mountApplication(
 								return site ? { siteId: site.id, client: siteHosting } : undefined;
 							},
 							managesSites,
+							canWrite: () => controller.store.get().team?.capabilities.write === true,
 							isSiteLive: (surface) =>
 								surface.archetype === "live_build" &&
 								surface.siteSlug !== null &&

@@ -24,6 +24,8 @@ export interface SurfaceAddressSetup {
 	readonly canManage: () => boolean;
 	readonly changed: () => void;
 	readonly signal: AbortSignal;
+	readonly beforePublic?: () => Promise<boolean>;
+	readonly publicChanged?: (isPublic: boolean) => void;
 }
 
 export type AddressMark = "unknown" | "private" | "live";
@@ -168,6 +170,10 @@ export class SurfaceAddress {
 
 	get isOpen(): boolean {
 		return this.#open;
+	}
+
+	get isWriting(): boolean {
+		return this.#writing > 0;
 	}
 
 	sync(shown: boolean, target: SurfaceSiteHosting | undefined, liveUrl: string | null): string {
@@ -428,8 +434,13 @@ export class SurfaceAddress {
 					if (now.isPublic === next) now.isPublic = !next;
 				};
 			},
-			(client, siteId) => client.setPublic(siteId, next, this.#setup.signal),
+			async (client, siteId) => {
+				const before = next ? this.#setup.beforePublic : undefined;
+				if (before && !(await before())) throw new Error("NOT_PUBLISHED");
+				return client.setPublic(siteId, next, this.#setup.signal);
+			},
 			next ? phrase("The site did not go live. Try again.") : phrase("The site is still live. Try again."),
+			() => this.#setup.publicChanged?.(next),
 		);
 	}
 

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { SurfaceSummary } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
@@ -30,6 +31,7 @@ import {
 	fakeClient,
 	fakeSiteHosting,
 	HOSTED_SITE,
+	type HostingWorld,
 	MESSAGE_IDS,
 	previewFrame,
 	SESSION,
@@ -1040,7 +1042,8 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		live = false;
 		view.update();
 		expect(view.el.querySelector(".surface-pill-address")).toBeNull();
-		expect(view.el.querySelector('[data-toggle="mode"] button')).not.toBeNull();
+		expect(view.el.querySelector('[data-toggle="mode"] button')).toBeNull();
+		expect(view.el.querySelector('[data-toggle="device"]')).not.toBeNull();
 
 		view.dispose();
 		store.dispose();
@@ -1781,5 +1784,258 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 
 		controller.abort();
 		store.dispose();
+	});
+});
+
+describe("a website that is not live", () => {
+	interface Setup {
+		readonly shown?: Partial<SurfaceSummary>;
+		readonly world?: Partial<HostingWorld>;
+		readonly served?: boolean;
+		readonly canWrite?: boolean;
+		readonly unread?: boolean;
+		readonly publishFails?: number;
+		readonly autoFails?: boolean;
+	}
+
+	async function website(setup: Setup = {}) {
+		let current = summary({ unpublishedChangeCount: 0, ...setup.shown });
+		const answer = (next: Partial<SurfaceSummary>) => {
+			current = { ...current, ...next };
+			return current;
+		};
+		const order: string[] = [];
+		let publishFails = setup.publishFails ?? 0;
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [current]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([], { surface: current })),
+			publishSurface: vi.fn(async () => {
+				order.push("publish");
+				if (publishFails-- > 0) throw new Error("refused");
+				return answer({ unpublishedChangeCount: 0, hasUnpublishedChanges: false });
+			}),
+			setSurfaceAutoPublish: vi.fn(async (_id: string, enabled: boolean) => {
+				order.push(`auto:${enabled}`);
+				if (setup.autoFails) throw new Error("refused");
+				return answer({ autoPublish: enabled });
+			}),
+		});
+		const store = storeWith(client);
+		await store.load();
+		const hosting = fakeSiteHosting(setup.world);
+		if (setup.unread) hosting.client.read.mockImplementation(() => new Promise(() => undefined));
+		hosting.client.setPublic.mockImplementation(async (_siteId: string, isPublic: boolean) => {
+			order.push(`public:${isPublic}`);
+			if (hosting.world.entry) hosting.world.entry.isPublic = isPublic;
+			return isPublic;
+		});
+		const view = new SurfaceView(
+			{
+				store,
+				mount: () => undefined,
+				openMigration: () => undefined,
+				isSiteLive: () => setup.served ?? true,
+				siteHosting: () => ({ siteId: HOSTED_SITE, client: hosting.client }),
+				managesSites: () => true,
+				canWrite: () => setup.canWrite ?? true,
+			},
+			"website",
+		);
+		document.body.append(view.el);
+		const settle = async () => {
+			for (let turn = 0; turn < 4; turn++) {
+				await flush();
+				view.update();
+			}
+		};
+		await settle();
+		const raise = async (next: Partial<SurfaceSummary>) => {
+			answer(next);
+			store.store.set((state) => ({
+				surfaces: state.surfaces.map((item) => (item.id === SURFACE ? { ...item, ...next } : item)),
+			}));
+			await settle();
+		};
+		const done = () => {
+			view.dispose();
+			store.dispose();
+		};
+		return { store, view, client, hosting, order, settle, raise, done };
+	}
+
+	const parts = (view: SurfaceView) =>
+		[...view.el.querySelectorAll<HTMLElement>(".surface-pill > :not(.surface-pill-divider)")].map(
+			(part) => part.dataset.toggle ?? part.className,
+		);
+	const card = (view: SurfaceView) => view.el.querySelector<HTMLElement>(".surface-address-sheet")!;
+	const openCard = async (view: SurfaceView, settle: () => Promise<void>) => {
+		view.el.querySelector<HTMLButtonElement>(".surface-pill-address")!.click();
+		await settle();
+	};
+	const pressGoLive = async (view: SurfaceView, settle: () => Promise<void>) => {
+		await openCard(view, settle);
+		card(view).querySelector<HTMLButtonElement>(".surface-address-go")!.click();
+		card(view).querySelector<HTMLButtonElement>(".surface-address-go")!.click();
+		await settle();
+	};
+	const noProblem = (store: { readonly state: { readonly error?: string } }, view: SurfaceView) => {
+		expect(store.state.error).toBeUndefined();
+		expect(view.el.querySelector(".surface-banner.is-error, .surface-toast")).toBeNull();
+		expect(document.querySelector("dialog[open]")).toBeNull();
+	};
+
+	it("draws the address and the desktop / phone switch only: no Live / Preview, no Publish", async () => {
+		const { view, done } = await website({ canWrite: false, shown: { unpublishedChangeCount: 2 } });
+		expect(parts(view)).toEqual(["surface-pill-address is-private", "device"]);
+		expect(view.el.querySelector('[data-act="mode"], .surface-publish, [data-act="publish-menu"]')).toBeNull();
+		expect(view.el.querySelector<HTMLElement>(".surface-bar")?.hidden).toBe(false);
+		expect(view.el.querySelector(".surface-notch-pill .surface-notch-label")?.textContent).toBe("Preview");
+		expect(view.el.querySelector(".surface-notch-pill .surface-notch-count")).toBeNull();
+		done();
+	});
+
+	it("draws the same bar, without an address, for a website with no served site yet", async () => {
+		const { view, hosting, done } = await website({ served: false, canWrite: false });
+		expect(parts(view)).toEqual(["device"]);
+		expect(view.el.querySelector('[data-act="mode"], .surface-publish, .surface-pill-address')).toBeNull();
+		expect(hosting.client.read).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("turns a stored Live view into Preview", async () => {
+		const { store, settle, done } = await website({ canWrite: false });
+		store.setMode("live");
+		await settle();
+		expect(store.state.mode).toBe("preview");
+		done();
+	});
+
+	it("draws neither the view switch nor Publish, and calls nothing, while it is not known whether the site is public", async () => {
+		const { store, view, client, done } = await website({
+			unread: true,
+			world: { entry: { isPublic: true, domains: [] } },
+			shown: { unpublishedChangeCount: 2 },
+		});
+		expect(parts(view)).toEqual(["surface-pill-address is-unknown", "device"]);
+		expect(view.el.querySelector('[data-act="mode"], .surface-publish')).toBeNull();
+		store.setMode("live");
+		view.update();
+		expect(view.el.querySelector('[data-act="mode"]')).toBeNull();
+		expect(client.setSurfaceAutoPublish).not.toHaveBeenCalled();
+		expect(client.publishSurface).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("switches auto-publish on once and silently, and never for a read-only member", async () => {
+		const writer = await website();
+		expect(writer.client.setSurfaceAutoPublish).toHaveBeenCalledTimes(1);
+		expect(writer.client.setSurfaceAutoPublish).toHaveBeenCalledWith(SURFACE, true);
+		expect(writer.store.state.surfaces.find((item) => item.id === SURFACE)?.autoPublish).toBe(true);
+		await writer.raise({ title: "Thetaband" });
+		expect(writer.client.setSurfaceAutoPublish).toHaveBeenCalledTimes(1);
+		noProblem(writer.store, writer.view);
+		writer.done();
+
+		const reader = await website({ canWrite: false, shown: { unpublishedChangeCount: 2 } });
+		expect(reader.client.setSurfaceAutoPublish).not.toHaveBeenCalled();
+		expect(reader.client.publishSurface).not.toHaveBeenCalled();
+		reader.done();
+	});
+
+	it("does not retry a failed switch on every redraw, and shows nothing for it", async () => {
+		const { store, view, client, raise, settle, done } = await website({ autoFails: true });
+		expect(client.setSurfaceAutoPublish).toHaveBeenCalledTimes(1);
+		for (let turn = 0; turn < 5; turn++) view.update();
+		await settle();
+		await raise({ title: "Thetaband" });
+		expect(client.setSurfaceAutoPublish).toHaveBeenCalledTimes(1);
+		noProblem(store, view);
+		done();
+	});
+
+	it("publishes approved changes once per count, silently, never while a publish runs, and not again after a failure", async () => {
+		const { store, view, client, raise, settle, done } = await website({
+			shown: { autoPublish: true, unpublishedChangeCount: 2 },
+			publishFails: 1,
+		});
+		expect(client.publishSurface).toHaveBeenCalledTimes(1);
+		for (let turn = 0; turn < 5; turn++) view.update();
+		await settle();
+		expect(client.publishSurface).toHaveBeenCalledTimes(1);
+		noProblem(store, view);
+
+		await raise({ unpublishedChangeCount: 3, publishStatus: "publishing" });
+		expect(client.publishSurface).toHaveBeenCalledTimes(1);
+		await raise({ publishStatus: "idle" });
+		expect(client.publishSurface).toHaveBeenCalledTimes(2);
+		expect(store.state.surfaces.find((item) => item.id === SURFACE)?.unpublishedChangeCount).toBe(0);
+		expect(client.setSurfaceAutoPublish).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("goes live by publishing what is approved first, then making the site public, then switching auto-publish off", async () => {
+		const { store, view, order, settle, done } = await website({
+			shown: { autoPublish: true, unpublishedChangeCount: 1 },
+			publishFails: 1,
+		});
+		expect(order).toEqual(["publish"]);
+		await pressGoLive(view, settle);
+		expect(order).toEqual(["publish", "publish", "public:true", "auto:false"]);
+		expect(view.el.querySelector(".surface-pill-address")?.className).toBe("surface-pill-address is-live");
+		expect(store.state.surfaces.find((item) => item.id === SURFACE)?.autoPublish).toBe(false);
+		expect(parts(view)).toEqual(["surface-pill-address is-live", "mode", "device"]);
+		expect(card(view).querySelector(".surface-address-problem")).toBeNull();
+		noProblem(store, view);
+		done();
+	});
+
+	it("stays not live and says so in the card when publishing before Go live fails", async () => {
+		const { store, view, order, hosting, settle, done } = await website({
+			shown: { autoPublish: true, unpublishedChangeCount: 1 },
+			publishFails: Number.POSITIVE_INFINITY,
+		});
+		await pressGoLive(view, settle);
+		expect(order).toEqual(["publish", "publish"]);
+		expect(hosting.client.setPublic).not.toHaveBeenCalled();
+		expect(view.el.querySelector(".surface-pill-address")?.className).toBe("surface-pill-address is-private");
+		expect(card(view).querySelector(".surface-address-problem")?.textContent).toBe(
+			"The site did not go live. Try again.",
+		);
+		expect(view.el.querySelector('[data-act="mode"], .surface-publish')).toBeNull();
+		await settle();
+		expect(order).toEqual(["publish", "publish"]);
+		expect(store.state.error).toBeUndefined();
+		done();
+	});
+
+	it("switches auto-publish back on when it is made not live", async () => {
+		const { view, client, order, settle, done } = await website({ world: { entry: { isPublic: true, domains: [] } } });
+		expect(order).toEqual([]);
+		await openCard(view, settle);
+		card(view).querySelector<HTMLButtonElement>('[data-key="not-live"]')!.click();
+		await settle();
+		expect(order).toEqual(["public:false", "auto:true"]);
+		expect(client.setSurfaceAutoPublish).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector(".surface-pill-address")?.className).toBe("surface-pill-address is-private");
+		done();
+	});
+
+	it("leaves a public website's bar as it was: the switch, Publish and its menu", async () => {
+		const { store, view, order, settle, done } = await website({
+			world: { entry: { isPublic: true, domains: [] } },
+			shown: { unpublishedChangeCount: 2 },
+		});
+		expect(parts(view)).toEqual([
+			"surface-pill-address is-live",
+			"mode",
+			"device",
+			"surface-publish has-changes",
+		]);
+		expect(view.el.querySelector('[data-act="publish-menu"]')).not.toBeNull();
+		store.setMode("live");
+		await settle();
+		expect(store.state.mode).toBe("live");
+		expect(order).toEqual([]);
+		done();
 	});
 });
