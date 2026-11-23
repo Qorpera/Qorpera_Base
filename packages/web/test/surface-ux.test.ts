@@ -297,6 +297,7 @@ describe("creating surfaces", () => {
 		expect(sheet.querySelector<HTMLInputElement>(".surface-create-name")?.value).toBe("");
 		expect(sheet.querySelector(".surface-sheet-link")).toBeNull();
 		expect(sheet.querySelector(".surface-create-swatch")).toBeNull();
+		expect([...custom.children].map((child) => child.tagName)).toEqual(["TEXTAREA"]);
 		const picked = () =>
 			sheet.querySelector<HTMLElement>('.surface-figure-choice[aria-checked="true"]')?.dataset.figure;
 		expect(sheet.querySelectorAll(".surface-figure-choice")).toHaveLength(26);
@@ -379,6 +380,22 @@ describe("creating surfaces", () => {
 		expect(thetabands).toBeDefined();
 		expect(thetabands.folderRoot).toBe("surfaces/thetabands");
 		expect(store.lookOf(thetabands).kind).toBe("product");
+
+		openCreateSurfaceSheet(store);
+		const customSheet = document.querySelector(".surface-create-sheet")!;
+		const customName = customSheet.querySelector<HTMLInputElement>(".surface-create-name")!;
+		customName.value = "Support Desk";
+		customName.dispatchEvent(new Event("input", { bubbles: true }));
+		const brief = customSheet.querySelector<HTMLTextAreaElement>(".surface-create-custom textarea")!;
+		brief.value = "Answers for customers.";
+		customSheet
+			.querySelector<HTMLFormElement>(".surface-create-form")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		const desk = store.state.surfaces.find((item) => item.slug === "support-desk")!;
+		expect(desk.archetype).toBe("live_build");
+		expect(store.lookOf(desk)).toEqual({ kind: "custom" });
+		expect(store.workspace(desk.id)?.briefSummary).toBe("Answers for customers.");
 		store.dispose();
 	});
 

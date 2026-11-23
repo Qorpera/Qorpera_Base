@@ -1434,7 +1434,7 @@
 .surface-create-name:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
 .surface-create-name:focus { outline: none; background: color-mix(in srgb, var(--text) 4%, transparent); }
 .surface-create-line { margin: 2px 0 0; color: var(--text-muted); font-size: 12.5px; text-align: center; }
-.surface-create-custom { display: grid; justify-items: center; gap: 8px; width: 100%; margin-top: 14px; }
+.surface-create-custom { display: grid; width: 100%; margin-top: 14px; }
 .surface-create-custom[hidden] { display: none; }
 .surface-create-field { display: grid; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--text); }
 .surface-create-input, .surface-create-prompt {
