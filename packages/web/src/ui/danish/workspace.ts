@@ -321,7 +321,7 @@ export const WORKSPACE: Record<string, string> = {
 	Sort: "Sortér",
 	"Best match": "Bedste match",
 	Latest: "Nyeste",
-	"Show only": "Vis kun",
+	Everything: "Alt",
 	now: "nu",
 	"{place} · draft": "{place} · kladde",
 	"Files could not be searched just now.": "Filerne kunne ikke gennemsøges lige nu.",

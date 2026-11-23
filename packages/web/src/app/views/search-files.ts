@@ -9,7 +9,8 @@ export interface FoundFile {
 	readonly at?: string;
 }
 
-const WORKING_COPY = /^(code\/[^/]+\/[^/]+)\/worktrees\/[^/]+\/(.+)$/;
+const COPY = /^(code\/[^/]+\/[^/]+)\/(main|worktrees\/[^/]+)\/(.+)$/;
+const PLUMBING = /^code\/[^/]+\/[^/]+\/(?:repo\.git(?:\/.*)?|worktrees(?:\/[^/]+)?)$/;
 const FILE_MARKS: Partial<Record<FileCategory, SearchMark>> = {
 	image: "image",
 	document: "document",
@@ -17,19 +18,27 @@ const FILE_MARKS: Partial<Record<FileCategory, SearchMark>> = {
 };
 
 export function settledPath(path: string): string {
-	const copy = WORKING_COPY.exec(path);
-	return copy ? `${copy[1]}/${copy[2]}` : path;
+	const copy = COPY.exec(path);
+	return copy ? `${copy[1]}/${copy[3]}` : path;
+}
+
+export function isDraft(path: string): boolean {
+	const copy = COPY.exec(path);
+	return copy !== null && copy[2] !== "main";
+}
+
+export function isPlumbing(path: string): boolean {
+	return PLUMBING.test(path);
 }
 
 export function filePlace(path: string, surfaceTitle: (slug: string) => string | undefined): string {
-	const settled = settledPath(path);
-	const folders = settled.split("/").slice(0, -1);
+	const folders = settledPath(path).split("/").slice(0, -1);
 	let place: string;
 	if (folders[0] === "code" && folders.length >= 3) {
 		const home = (folders[1] === "surfaces" ? surfaceTitle(folders[2]!) : undefined) ?? folders[2]!;
 		place = [home, ...folders.slice(3).slice(-1)].join(" / ");
 	} else place = folders.length ? folders.slice(-2).join(" / ") : t("Company File");
-	return settled === path ? place : t("{place} · draft", { place });
+	return isDraft(path) ? t("{place} · draft", { place }) : place;
 }
 
 export function fileHit(
@@ -53,13 +62,15 @@ export function fileHit(
 	};
 }
 
-export function newestCopies(files: readonly FoundFile[]): FoundFile[] {
-	const newest = new Map<string, FoundFile>();
+export function oneCopyEach(files: readonly FoundFile[]): FoundFile[] {
+	const kept = new Map<string, FoundFile>();
 	for (const file of files) {
+		if (isPlumbing(file.path)) continue;
 		const settled = settledPath(file.path);
-		const kept = newest.get(settled);
-		if (!kept || (file.at ?? "") > (kept.at ?? "")) newest.set(settled, file);
+		const held = kept.get(settled);
+		const better = !held || (isDraft(held.path) && (!isDraft(file.path) || (file.at ?? "") > (held.at ?? "")));
+		if (better) kept.set(settled, file);
 	}
-	const chosen = new Set(newest.values());
+	const chosen = new Set(kept.values());
 	return files.filter((file) => chosen.has(file));
 }

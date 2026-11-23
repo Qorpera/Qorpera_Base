@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fileHit, filePlace, newestCopies } from "../src/app/views/search-files.ts";
+import { fileHit, filePlace, isPlumbing, oneCopyEach } from "../src/app/views/search-files.ts";
 import {
 	rankHits,
 	type SearchFiles,
@@ -174,6 +174,7 @@ describe("the search window", () => {
 		expect(choose(".search-window-filter", "Needs you")).toEqual([
 			"Latest",
 			"Name",
+			"Everything",
 			"Needs you",
 			"Working",
 			"Images",
@@ -183,7 +184,7 @@ describe("the search window", () => {
 		expect(groups()).toEqual(["Agents and people"]);
 		expect(titles()).toEqual(["Brand review"]);
 		expect(filter.classList.contains("is-on")).toBe(true);
-		choose(".search-window-filter", "Needs you");
+		choose(".search-window-filter", "Everything");
 		expect(filter.classList.contains("is-on")).toBe(false);
 		expect(groups()).toEqual([]);
 		type("brand");
@@ -206,6 +207,12 @@ describe("the search window", () => {
 		expect(menus()).toBe(0);
 		press();
 		expect(menus()).toBe(1);
+		const filter = window.el.querySelector<HTMLElement>(".search-window-filter")!;
+		filter.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+		expect(menus()).toBe(1);
+		expect(window.el.querySelector(".context-menu:not(.is-leaving)")?.getAttribute("aria-label")).toBe(
+			"Sort and filter",
+		);
 		window.close();
 		expect(menus()).toBe(0);
 	});
@@ -343,30 +350,42 @@ describe("times and order", () => {
 describe("files in the search window", () => {
 	const title = (slug: string) => (slug === "website" ? "Hjemmeside" : undefined);
 
-	it("says where a file is in a few words, never an agent's working folder", () => {
+	it("says where a file is in a few words, never the folders a code area keeps its copies in", () => {
 		expect(filePlace("notes.md", title)).toBe("Company File");
 		expect(filePlace("brand/logo/logo-dark.svg", title)).toBe("brand / logo");
 		expect(filePlace("research/2026/q4/names/shop-names.md", title)).toBe("q4 / names");
-		expect(filePlace("code/surfaces/website/styles.css", title)).toBe("Hjemmeside");
-		expect(filePlace("code/surfaces/website/src/assets/product.png", title)).toBe("Hjemmeside / assets");
-		expect(filePlace("code/surfaces/shop/index.html", title)).toBe("shop");
-		expect(filePlace("code/acme/storefront/src/app.ts", title)).toBe("storefront / src");
-		expect(filePlace("code/surfaces/website/worktrees/533ab75c-8957-408f-ab6e-5d1f6c2a9e10/styles.css", title)).toBe(
-			"Hjemmeside · draft",
-		);
+		expect(filePlace("code/surfaces/website/main/styles.css", title)).toBe("Hjemmeside");
+		expect(filePlace("code/surfaces/website/main/src/assets/product.png", title)).toBe("Hjemmeside / assets");
+		expect(filePlace("code/surfaces/website/main", title)).toBe("Hjemmeside");
+		expect(filePlace("code/surfaces/shop/main/index.html", title)).toBe("shop");
+		expect(filePlace("code/acme/storefront/main/src/app.ts", title)).toBe("storefront / src");
+		const draft = "code/surfaces/website/worktrees/533ab75c-8957-408f-ab6e-5d1f6c2a9e10";
+		expect(filePlace(`${draft}/styles.css`, title)).toBe("Hjemmeside · draft");
+		expect(filePlace(`${draft}/src/assets/product.png`, title)).toBe("Hjemmeside / assets · draft");
 	});
 
-	it("keeps the newest of a file's copies, in the order they came", () => {
+	it("keeps one copy of a file: the published one, else the newest draft, and nothing of git's own", () => {
 		const copies = [
 			{ path: "code/surfaces/website/worktrees/aaa/styles.css", kind: "file", at: "2026-11-23T10:00:00Z" },
 			{ path: "brand/logo.svg", kind: "file", at: "2026-11-20T10:00:00Z" },
-			{ path: "code/surfaces/website/styles.css", kind: "file", at: "2026-11-22T10:00:00Z" },
+			{ path: "code/surfaces/website/main/styles.css", kind: "file", at: "2026-11-22T10:00:00Z" },
 			{ path: "code/surfaces/website/worktrees/bbb/styles.css", kind: "file", at: "2026-11-23T11:00:00Z" },
+			{ path: "code/surfaces/website/worktrees/aaa/new.css", kind: "file", at: "2026-11-23T09:00:00Z" },
+			{ path: "code/surfaces/website/worktrees/bbb/new.css", kind: "file", at: "2026-11-23T12:00:00Z" },
+			{ path: "code/surfaces/website/repo.git/HEAD", kind: "file", at: "2026-11-23T12:00:00Z" },
+			{ path: "code/surfaces/website/repo.git", kind: "folder", at: "2026-11-23T12:00:00Z" },
+			{ path: "code/surfaces/website/worktrees", kind: "folder", at: "2026-11-23T12:00:00Z" },
+			{ path: "code/surfaces/website/worktrees/bbb", kind: "folder", at: "2026-11-23T12:00:00Z" },
+			{ path: "code/surfaces/website/main", kind: "folder", at: "2026-11-22T10:00:00Z" },
 		];
-		expect(newestCopies(copies).map((file) => file.path)).toEqual([
+		expect(oneCopyEach(copies).map((file) => file.path)).toEqual([
 			"brand/logo.svg",
-			"code/surfaces/website/worktrees/bbb/styles.css",
+			"code/surfaces/website/main/styles.css",
+			"code/surfaces/website/worktrees/bbb/new.css",
+			"code/surfaces/website/main",
 		]);
+		expect(isPlumbing("code/surfaces/website/worktrees/bbb/new.css")).toBe(false);
+		expect(isPlumbing("notes/repo.git/HEAD")).toBe(false);
 	});
 
 	it("draws a file as the Files page does and opens it where it is", () => {
@@ -385,7 +404,7 @@ describe("files in the search window", () => {
 		logo.open();
 		expect(shown).toEqual(["brand/logo.svg"]);
 		expect(fileHit({ path: "brand", kind: "folder" }, () => {}).marks).toEqual(["folder"]);
-		expect(fileHit({ path: "code/surfaces/website/styles.css", kind: "file" }, () => {}).marks).toBeUndefined();
+		expect(fileHit({ path: "code/surfaces/website/main/styles.css", kind: "file" }, () => {}).marks).toBeUndefined();
 	});
 });
 

@@ -217,7 +217,7 @@ export class SearchWindow {
 	#fileTimer: ReturnType<typeof setTimeout> | undefined;
 	#opener: HTMLElement | null = null;
 	#menu: ContextMenu | undefined;
-	#shutBy: Event | undefined;
+	#shut: { press: Event; button: HTMLElement } | undefined;
 	#pointer: { x: number; y: number } | undefined;
 
 	constructor() {
@@ -374,7 +374,8 @@ export class SearchWindow {
 
 	#opens(button: HTMLElement, open: () => void): void {
 		button.addEventListener("pointerdown", (event) => {
-			if (event.button === 0 && event !== this.#shutBy) open();
+			const shutIt = this.#shut?.press === event && this.#shut.button === button;
+			if (event.button === 0 && !shutIt) open();
 		});
 		button.addEventListener("mousedown", (event) => event.preventDefault());
 		button.addEventListener("click", (event) => {
@@ -392,7 +393,7 @@ export class SearchWindow {
 			opener: button,
 			container: this.el,
 			onClose: (press) => {
-				this.#shutBy = press;
+				this.#shut = press ? { press, button } : undefined;
 				if (this.#menu === menu) this.#menu = undefined;
 				if (this.el.open) this.#input.focus({ preventScroll: true });
 			},
@@ -424,14 +425,14 @@ export class SearchWindow {
 				},
 			});
 		const marks = MARKS.filter((mark) => !this.#only || MARK_KIND[mark] === this.#only);
-		if (marks.length) entries.push({ kind: "separator" }, { kind: "caption", label: t("Show only") });
-		for (const mark of marks)
+		if (!marks.length) return entries;
+		entries.push({ kind: "separator" }, { kind: "caption", label: t("Show") });
+		for (const mark of [null, ...marks])
 			entries.push({
-				label: markLabel(mark),
+				label: mark ? markLabel(mark) : t("Everything"),
 				checked: this.#mark === mark,
-				multiple: true,
 				select: () => {
-					this.#mark = this.#mark === mark ? null : mark;
+					this.#mark = mark;
 					this.#redraw();
 					if (this.#manyFiles()) this.#askFiles();
 				},

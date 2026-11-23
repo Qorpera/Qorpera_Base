@@ -99,7 +99,7 @@ import type { CardFootActions } from "./card-foot.ts";
 import { personFace } from "./friends.ts";
 import { type InviteCalls, openInviteSheet } from "./invite-sheet.ts";
 import { memberPresence } from "./member-chat.ts";
-import { type FoundFile, fileHit, newestCopies, settledPath } from "./search-files.ts";
+import { type FoundFile, fileHit, isPlumbing, oneCopyEach, settledPath } from "./search-files.ts";
 import { type SearchHit, type SearchMark, type SearchSources, SearchWindow } from "./search-window.ts";
 import { markSettingsPlace, type SettingsTab, settingsPlaces } from "./settings.ts";
 import { CrewFigures, crewWave } from "./surface-crew.ts";
@@ -4505,7 +4505,7 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 					files: {
 						search: async (query, limit, signal) => {
 							const answer = await folder().search(query, Math.min(FILE_SEARCH_MOST, limit * 3), signal);
-							const files = newestCopies(
+							const files = oneCopyEach(
 								answer.entries.map((entry) => ({ path: entry.path, kind: entry.kind, at: entry.updatedAt })),
 							);
 							return {
@@ -4523,7 +4523,7 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 									if (decided.has(settled)) continue;
 									decided.add(settled);
 									if (change.op === "delete" || change.op === "move_out" || change.kind !== "file") continue;
-									if (change.path.split("/", 1)[0] === "QorperaOS") continue;
+									if (change.path.split("/", 1)[0] === "QorperaOS" || isPlumbing(change.path)) continue;
 									recent.push({ path: change.path, kind: change.kind, at: item.at });
 								}
 							return recent.slice(0, RECENT_FILES).map((file) => fileHit(file, openFile, surfaceTitle));
