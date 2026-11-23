@@ -341,6 +341,7 @@ export const SURFACES: Record<string, string> = {
 	"Could you add these lines to the DNS for {domain}? They connect it to our website.":
 		"Kan du tilføje disse linjer til DNS for {domain}? De forbinder domænet med vores hjemmeside.",
 	"Go live": "Gå live",
+	"Going live…": "Går live…",
 	"It can go live once its first version is ready.": "Den kan gå live, når dens første version er klar.",
 	"Make it not live": "Slå live fra",
 	"No longer points here": "Peger ikke hertil længere",

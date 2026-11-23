@@ -162,12 +162,26 @@ describe("the address card before the site is public", () => {
 			if (world.entry) world.entry.isPublic = isPublic;
 			return isPublic;
 		});
+		const confirm = go()!.className;
 		await goLive();
 		expect(steps).toEqual(["before"]);
-		expect(address.mark()).toBe("live");
+		expect(address.mark()).toBe("private");
+		expect(address.isWriting).toBe(true);
+		expect(bar().classList.contains("is-private")).toBe(true);
+		const going = go()!;
+		expect(going.textContent).toBe("Going live…");
+		expect(going.disabled).toBe(true);
+		expect(going.className).toBe(`${confirm} is-going`);
+		going.click();
+		address.close();
+		expect(beforePublic).toHaveBeenCalledTimes(1);
 		finish(true);
 		await settle();
 		expect(steps).toEqual(["before", "public:true", "changed:true"]);
+		expect(address.mark()).toBe("live");
+		expect(address.isWriting).toBe(false);
+		address.open();
+		await settle();
 		press("Make it not live");
 		await settle();
 		expect(steps).toEqual(["before", "public:true", "changed:true", "public:false", "changed:false"]);
@@ -181,6 +195,8 @@ describe("the address card before the site is public", () => {
 		expect(address.mark()).toBe("private");
 		expect(problem()).toBe("The site did not go live. Try again.");
 		expect(go()?.textContent).toBe("Go live");
+		expect(go()?.disabled).toBe(false);
+		expect(address.isWriting).toBe(false);
 	});
 
 	it("lets go of Confirm on its own after a while and on a press anywhere else", async () => {

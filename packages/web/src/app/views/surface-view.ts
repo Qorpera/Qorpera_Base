@@ -49,7 +49,7 @@ export interface SurfaceViewHost {
 	mount(surface: SurfaceSummary, signal: AbortSignal): SurfaceMount | undefined;
 	openMigration(): void;
 	readonly isMountLoading?: (surface: SurfaceSummary) => boolean;
-	readonly isSiteLive?: (surface: SurfaceSummary) => boolean;
+	readonly isSiteLive?: (surface: SurfaceSummary) => boolean | undefined;
 	readonly loadStudioFiles?: (
 		surface: SurfaceSummary,
 		signal: AbortSignal,
@@ -67,6 +67,8 @@ interface CompareColumn {
 }
 
 const PHONE_MODEL_KEY = "qorpera.web.surface-phone-model.v1";
+export const GO_LIVE_PUBLISH_WAIT_MS = 5 * 60_000;
+const AUTO_PUBLISH_OFF_QUIET_TRIES = 3;
 
 interface PhoneModelSpec {
 	readonly id: string;
@@ -230,6 +232,7 @@ export class SurfaceView {
 	#sitePublic = true;
 	readonly #autoPublishAsked = new Set<string>();
 	readonly #publishedAtCount = new Map<string, number>();
+	readonly #autoPublishOffOwed = new Map<string, { tries: number; at: SurfaceSummary | undefined }>();
 	#viewportResizeObserver: ResizeObserver | undefined;
 	#notchResizeObserver: ResizeObserver | undefined;
 
@@ -286,8 +289,13 @@ export class SurfaceView {
 			beforePublic: () => this.#publishBeforeLive(),
 			publicChanged: (isPublic) => {
 				const surface = this.surface;
-				if (surface && surface.autoPublish === isPublic)
-					void host.store.setAutoPublish(surface.id, !isPublic, { quiet: true });
+				if (!surface) return;
+				if (isPublic) {
+					this.#autoPublishOffOwed.set(surface.id, { tries: 0, at: undefined });
+					return;
+				}
+				this.#autoPublishOffOwed.delete(surface.id);
+				if (!surface.autoPublish) void host.store.setAutoPublish(surface.id, true, { quiet: true });
 			},
 			signal,
 		});
@@ -788,7 +796,8 @@ export class SurfaceView {
 		const hasAgents = explorations.length + plainSessions.length > 0;
 		const showViewportSplit = supportsViewportSplit(surface, look);
 		const live = surface.archetype === "live_build";
-		const siteLive = this.#host.isSiteLive?.(surface) === true;
+		const served = this.#host.isSiteLive?.(surface);
+		const siteLive = served === true;
 		const addressShown = live && siteLive;
 		const reader = addressShown ? this.#host.siteHosting?.(surface) : undefined;
 		const addressKey = this.#address.sync(addressShown, reader, surface.liveUrl);
@@ -796,13 +805,16 @@ export class SurfaceView {
 		const site: AddressMark =
 			!live || !this.#host.isSiteLive
 				? "live"
-				: !siteLive
-					? "private"
-					: reader && surface.liveUrl && !(mark === "unknown" && this.#address.readFailed)
-						? mark
-						: "live";
+				: served === undefined
+					? "unknown"
+					: !siteLive
+						? "private"
+						: reader && surface.liveUrl && !(mark === "unknown" && this.#address.readFailed)
+							? mark
+							: "live";
 		this.#sitePublic = site === "live";
 		if (site === "private" && !this.#address.isWriting) this.#publishWhileNotLive(surface);
+		if (mark === "live" && !this.#address.isWriting) this.#switchAutoPublishOffOwed(surface);
 		const key = JSON.stringify([
 			site,
 			siteLive,
@@ -1076,28 +1088,59 @@ export class SurfaceView {
 		void store.publish(surface.id, { quiet: true });
 	}
 
+	#switchAutoPublishOffOwed(surface: SurfaceSummary): void {
+		const owed = this.#autoPublishOffOwed.get(surface.id);
+		const store = this.#host.store;
+		if (!owed || store.state.busy[`auto:${surface.id}`]) return;
+		if (!surface.autoPublish) {
+			this.#autoPublishOffOwed.delete(surface.id);
+			return;
+		}
+		if (owed.at === surface || owed.tries > AUTO_PUBLISH_OFF_QUIET_TRIES) return;
+		owed.at = surface;
+		owed.tries += 1;
+		void store.setAutoPublish(surface.id, false, { quiet: owed.tries <= AUTO_PUBLISH_OFF_QUIET_TRIES });
+	}
+
 	async #publishBeforeLive(): Promise<boolean> {
 		const store = this.#host.store;
 		const surfaceId = this.surface?.id;
 		if (!surfaceId) return false;
-		const signal = this.#active.signal;
-		const busy = () => Boolean(store.state.busy[`publish:${surfaceId}`]);
-		if (busy())
-			await new Promise<void>((resolve) => {
-				const settle = () => {
-					stop();
-					signal.removeEventListener("abort", settle);
-					resolve();
-				};
-				const stop = store.store.subscribe(() => {
-					if (!busy()) settle();
-				});
-				signal.addEventListener("abort", settle, { once: true });
+		const ceiling = new AbortController();
+		const timer = setTimeout(() => ceiling.abort(), GO_LIVE_PUBLISH_WAIT_MS);
+		const signal = AbortSignal.any([this.#active.signal, ceiling.signal]);
+		const settled = () =>
+			!store.state.busy[`publish:${surfaceId}`] &&
+			store.state.surfaces.find((item) => item.id === surfaceId)?.publishStatus !== "publishing";
+		try {
+			if (!(await this.#until(settled, signal))) return false;
+			const surface = this.surface;
+			if (!surface) return false;
+			if (surface.unpublishedChangeCount === 0) return true;
+			if (!(await store.publish(surface.id, { quiet: true }))) return false;
+			if (!(await this.#until(settled, signal))) return false;
+			const after = this.surface;
+			return after !== undefined && after.publishStatus !== "failed";
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	#until(done: () => boolean, signal: AbortSignal): Promise<boolean> {
+		if (signal.aborted) return Promise.resolve(false);
+		if (done()) return Promise.resolve(true);
+		return new Promise((resolve) => {
+			const finish = (answer: boolean) => {
+				stop();
+				signal.removeEventListener("abort", aborted);
+				resolve(answer);
+			};
+			const aborted = () => finish(false);
+			const stop = this.#host.store.store.subscribe(() => {
+				if (done()) finish(true);
 			});
-		const surface = this.surface;
-		if (!surface || signal.aborted) return false;
-		if (surface.unpublishedChangeCount === 0) return true;
-		return (await store.publish(surface.id, { quiet: true })) && this.surface?.publishStatus !== "failed";
+			signal.addEventListener("abort", aborted, { once: true });
+		});
 	}
 
 	#drawMount(surface: SurfaceSummary): void {
