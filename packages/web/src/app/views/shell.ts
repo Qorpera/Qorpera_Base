@@ -2046,14 +2046,12 @@ interface AgentsHubParts {
 	readonly title: HTMLElement;
 	readonly toggle: HTMLElement;
 	readonly count: HTMLElement;
-	readonly waiting: HTMLElement;
 	readonly body: HTMLElement;
 	open: boolean;
 	held: boolean;
 	activeAgentId: string | undefined;
 	releasedFor: string | undefined;
 	rowCount: number;
-	waitingCount: number;
 	readonly workingWrap: HTMLElement;
 	readonly workingTitle: HTMLElement;
 	readonly workingList: HTMLElement;
@@ -2106,12 +2104,10 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 	if (!hub) {
 		const title = h("span", { class: "rail-agents-label" }, t("Agents"));
 		const count = h("span", { class: "rail-agents-count" });
-		const waiting = h("span", { class: "rail-hidden-unread", "aria-hidden": "true", hidden: true });
 		const toggle = h(
 			"button",
 			{ type: "button", class: "rail-section-title rail-agents-head", "aria-controls": "rail-agents-body" },
 			title,
-			waiting,
 			count,
 			h("span", { class: "rail-agents-chevron", "aria-hidden": "true" }, icon("chevron-down")),
 		);
@@ -2143,14 +2139,12 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			title,
 			toggle,
 			count,
-			waiting,
 			body,
 			open,
 			held: false,
 			activeAgentId: undefined,
 			releasedFor: undefined,
 			rowCount: 0,
-			waitingCount: 0,
 			workingWrap,
 			workingTitle,
 			workingList,
@@ -2433,14 +2427,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 
 	hub.rowCount =
 		hub.workingList.childElementCount + hub.scheduledList.childElementCount + hub.idleList.childElementCount;
-	hub.waitingCount =
-		tasks.filter(
-			({ session, running }) =>
-				!running &&
-				(session.state === "needs_input" ||
-					hasConflictedChange(session) ||
-					session.changes.some((change) => change.status !== "discarded" && isOpenChange(change))),
-		).length + explorations.filter(({ variants }) => variants.length > 0 && !variants.some(isRunningSession)).length;
 	const activeInside =
 		input.activeAgentId !== undefined &&
 		[input.workingStaff, input.scheduledStaff, input.idleStaff].some((list) =>
@@ -2460,19 +2446,7 @@ function paintAgentsFold(hub: AgentsHubParts): void {
 	hub.body.hidden = !shown;
 	hub.count.textContent = String(hub.rowCount);
 	hub.count.hidden = shown;
-	hub.waiting.textContent = hub.waitingCount > 99 ? "99+" : String(hub.waitingCount);
-	hub.waiting.hidden = shown || hub.waitingCount === 0;
-	hub.toggle.setAttribute(
-		"aria-label",
-		shown
-			? t("Agents")
-			: [
-					t("Agents: {count}", { count: hub.rowCount }),
-					hub.waitingCount ? t("Waiting for you: {count}", { count: hub.waitingCount }) : "",
-				]
-					.filter(Boolean)
-					.join(" · "),
-	);
+	hub.toggle.setAttribute("aria-label", shown ? t("Agents") : t("Agents: {count}", { count: hub.rowCount }));
 }
 
 const surfaceRails = new WeakMap<CompanyController, SurfaceRail>();
