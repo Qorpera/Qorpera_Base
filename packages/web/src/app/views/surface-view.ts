@@ -28,7 +28,7 @@ import {
 	surfaceBySlug,
 	surfaceHasReports,
 } from "../surfaces-store.ts";
-import { SurfaceAddress, type SurfaceSiteHosting } from "./surface-address-sheet.ts";
+import { type AddressMark, SurfaceAddress, type SurfaceSiteHosting } from "./surface-address-sheet.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { applyIdentityTokensToFrame, SurfaceDoorStage } from "./surface-door.ts";
 import { firstName, openPublishSheet } from "./surface-publish-sheet.ts";
@@ -49,13 +49,14 @@ export interface SurfaceViewHost {
 	mount(surface: SurfaceSummary, signal: AbortSignal): SurfaceMount | undefined;
 	openMigration(): void;
 	readonly isMountLoading?: (surface: SurfaceSummary) => boolean;
-	readonly isSiteLive?: (surface: SurfaceSummary) => boolean;
+	readonly isSiteLive?: (surface: SurfaceSummary) => boolean | undefined;
 	readonly loadStudioFiles?: (
 		surface: SurfaceSummary,
 		signal: AbortSignal,
 	) => Promise<Readonly<Record<string, string>>>;
 	readonly siteHosting?: (surface: SurfaceSummary) => SurfaceSiteHosting | undefined;
 	readonly managesSites?: () => boolean;
+	readonly canWrite?: () => boolean;
 }
 
 interface CompareColumn {
@@ -66,6 +67,8 @@ interface CompareColumn {
 }
 
 const PHONE_MODEL_KEY = "qorpera.web.surface-phone-model.v1";
+export const GO_LIVE_PUBLISH_WAIT_MS = 5 * 60_000;
+const AUTO_PUBLISH_OFF_QUIET_TRIES = 3;
 
 interface PhoneModelSpec {
 	readonly id: string;
@@ -226,6 +229,10 @@ export class SurfaceView {
 	readonly #thumbAt = new Map<string, readonly [number, number]>();
 	#phoneModelId = PHONE_MODELS[0]!.id;
 	#phoneBarShown = "";
+	#sitePublic = true;
+	readonly #autoPublishAsked = new Set<string>();
+	readonly #publishedAtCount = new Map<string, number>();
+	readonly #autoPublishOffOwed = new Map<string, { tries: number; at: SurfaceSummary | undefined }>();
 	#viewportResizeObserver: ResizeObserver | undefined;
 	#notchResizeObserver: ResizeObserver | undefined;
 
@@ -275,7 +282,20 @@ export class SurfaceView {
 			canManage: () => host.managesSites?.() === true,
 			changed: () => {
 				const surface = this.surface;
-				if (surface && !this.#deactivated) this.#drawBar(surface);
+				if (!surface || this.#deactivated) return;
+				this.#drawBar(surface);
+				this.#drawToast();
+			},
+			beforePublic: () => this.#publishBeforeLive(),
+			publicChanged: (isPublic) => {
+				const surface = this.surface;
+				if (!surface) return;
+				if (isPublic) {
+					this.#autoPublishOffOwed.set(surface.id, { tries: 0, at: undefined });
+					return;
+				}
+				this.#autoPublishOffOwed.delete(surface.id);
+				if (!surface.autoPublish) void host.store.setAutoPublish(surface.id, true, { quiet: true });
 			},
 			signal,
 		});
@@ -775,14 +795,28 @@ export class SurfaceView {
 			explorations.length;
 		const hasAgents = explorations.length + plainSessions.length > 0;
 		const showViewportSplit = supportsViewportSplit(surface, look);
-		const siteLive = this.#host.isSiteLive?.(surface) === true;
-		const addressShown = surface.archetype === "live_build" && siteLive;
-		const addressKey = this.#address.sync(
-			addressShown,
-			addressShown ? this.#host.siteHosting?.(surface) : undefined,
-			surface.liveUrl,
-		);
+		const live = surface.archetype === "live_build";
+		const served = this.#host.isSiteLive?.(surface);
+		const siteLive = served === true;
+		const addressShown = live && siteLive;
+		const reader = addressShown ? this.#host.siteHosting?.(surface) : undefined;
+		const addressKey = this.#address.sync(addressShown, reader, surface.liveUrl);
+		const mark = this.#address.mark();
+		const site: AddressMark =
+			!live || !this.#host.isSiteLive
+				? "live"
+				: served === undefined
+					? "unknown"
+					: !siteLive
+						? "private"
+						: reader && surface.liveUrl && !(mark === "unknown" && this.#address.readFailed)
+							? mark
+							: "live";
+		this.#sitePublic = site === "live";
+		if (site === "private" && !this.#address.isWriting) this.#publishWhileNotLive(surface);
+		if (mark === "live" && !this.#address.isWriting) this.#switchAutoPublishOffOwed(surface);
 		const key = JSON.stringify([
+			site,
 			siteLive,
 			addressKey,
 			surface.id,
@@ -807,7 +841,7 @@ export class SurfaceView {
 		if (key === this.#barShown) return;
 		this.#barShown = key;
 		const ask = surface.publishAsk ?? null;
-		const askedMe = askedToPublish(surface, store.userId);
+		const askedMe = site === "live" && askedToPublish(surface, store.userId);
 		const myAsk = ask && ask.askedByUserId === store.userId ? ask : null;
 		const askKey = askedMe ? `${surface.id}:${ask!.askedAt}` : "";
 		if (askKey && askKey !== this.#askShown) {
@@ -815,8 +849,8 @@ export class SurfaceView {
 			if (state.mode === "live") queueMicrotask(() => store.setMode("preview"));
 		}
 		this.#askShown = askKey;
+		if (site === "private" && state.mode === "live") queueMicrotask(() => store.setMode("preview"));
 
-		const live = surface.archetype === "live_build";
 		const effectiveMode: SurfacePreviewMode = state.mode === "compare" ? "preview" : state.mode;
 		const toggle = (name: string, label: string, ...segments: HTMLElement[]) =>
 			h(
@@ -855,7 +889,7 @@ export class SurfaceView {
 		const groups: HTMLElement[] = [];
 		const address = live ? this.#address.button() : null;
 		if (address) groups.push(address);
-		if (live) {
+		if (live && site === "live") {
 			groups.push(
 				toggle(
 					"mode",
@@ -945,7 +979,7 @@ export class SurfaceView {
 					),
 				),
 			);
-		} else if (surface.archetype !== "ops" && (count > 0 || publishBusy)) {
+		} else if (site === "live" && surface.archetype !== "ops" && (count > 0 || publishBusy)) {
 			const askedUser = myAsk && !publishBusy ? myAsk.askedUserId : null;
 			const saidNo = askedUser && myAsk?.status === "declined" ? firstName(personName(askedUser)) : null;
 			groups.push(
@@ -1013,7 +1047,7 @@ export class SurfaceView {
 				: effectiveMode === "report"
 					? t("Notes")
 					: t("Preview");
-		const notchCount = count > 0 ? count : openWorkCount;
+		const notchCount = site === "live" && count > 0 ? count : openWorkCount;
 		this.#notchPill.replaceChildren(
 			h("span", { class: "surface-notch-label" }, notchLabel),
 			...(notchCount > 0 ? [h("span", { class: "surface-notch-count" }, String(notchCount))] : []),
@@ -1034,6 +1068,79 @@ export class SurfaceView {
 		this.#barPinned = Boolean(address) && this.#address.mark() === "private";
 		if (this.#barPinned) this.#barOpen = true;
 		this.#paintNotch();
+	}
+
+	#publishWhileNotLive(surface: SurfaceSummary): void {
+		if (this.#host.canWrite?.() !== true) return;
+		const store = this.#host.store;
+		if (!surface.autoPublish && !this.#autoPublishAsked.has(surface.id)) {
+			this.#autoPublishAsked.add(surface.id);
+			void store.setAutoPublish(surface.id, true, { quiet: true });
+		}
+		const count = surface.unpublishedChangeCount;
+		if (count === 0) {
+			this.#publishedAtCount.delete(surface.id);
+			return;
+		}
+		const publishing = Boolean(store.state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
+		if (publishing || this.#publishedAtCount.get(surface.id) === count) return;
+		this.#publishedAtCount.set(surface.id, count);
+		void store.publish(surface.id, { quiet: true });
+	}
+
+	#switchAutoPublishOffOwed(surface: SurfaceSummary): void {
+		const owed = this.#autoPublishOffOwed.get(surface.id);
+		const store = this.#host.store;
+		if (!owed || store.state.busy[`auto:${surface.id}`]) return;
+		if (!surface.autoPublish) {
+			this.#autoPublishOffOwed.delete(surface.id);
+			return;
+		}
+		if (owed.at === surface || owed.tries > AUTO_PUBLISH_OFF_QUIET_TRIES) return;
+		owed.at = surface;
+		owed.tries += 1;
+		void store.setAutoPublish(surface.id, false, { quiet: owed.tries <= AUTO_PUBLISH_OFF_QUIET_TRIES });
+	}
+
+	async #publishBeforeLive(): Promise<boolean> {
+		const store = this.#host.store;
+		const surfaceId = this.surface?.id;
+		if (!surfaceId) return false;
+		const ceiling = new AbortController();
+		const timer = setTimeout(() => ceiling.abort(), GO_LIVE_PUBLISH_WAIT_MS);
+		const signal = AbortSignal.any([this.#active.signal, ceiling.signal]);
+		const settled = () =>
+			!store.state.busy[`publish:${surfaceId}`] &&
+			store.state.surfaces.find((item) => item.id === surfaceId)?.publishStatus !== "publishing";
+		try {
+			if (!(await this.#until(settled, signal))) return false;
+			const surface = this.surface;
+			if (!surface) return false;
+			if (surface.unpublishedChangeCount === 0) return true;
+			if (!(await store.publish(surface.id, { quiet: true }))) return false;
+			if (!(await this.#until(settled, signal))) return false;
+			const after = this.surface;
+			return after !== undefined && after.publishStatus !== "failed";
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	#until(done: () => boolean, signal: AbortSignal): Promise<boolean> {
+		if (signal.aborted) return Promise.resolve(false);
+		if (done()) return Promise.resolve(true);
+		return new Promise((resolve) => {
+			const finish = (answer: boolean) => {
+				stop();
+				signal.removeEventListener("abort", aborted);
+				resolve(answer);
+			};
+			const aborted = () => finish(false);
+			const stop = this.#host.store.store.subscribe(() => {
+				if (done()) finish(true);
+			});
+			signal.addEventListener("abort", aborted, { once: true });
+		});
 	}
 
 	#drawMount(surface: SurfaceSummary): void {
@@ -1541,7 +1648,7 @@ export class SurfaceView {
 
 	#drawToast(): void {
 		const undo = this.#host.store.state.undo;
-		const key = undo ? `${undo.id}:${undo.pending ? "p" : "r"}` : "";
+		const key = undo ? `${undo.id}:${undo.pending ? "p" : "r"}:${this.#sitePublic}` : "";
 		if (key === this.#toastShown) return;
 		this.#toastShown = key;
 		this.#toast.replaceChildren(
@@ -1566,7 +1673,7 @@ export class SurfaceView {
 										? t("Done: “{title}”", { title: undo.label })
 										: t("Merged “{title}” into Base", { title: undo.label }),
 							),
-							undo.verb === "merged"
+							undo.verb === "merged" && this.#sitePublic
 								? h(
 										"button",
 										{ type: "button", class: "surface-toast-review", "data-act": "open-publish" },

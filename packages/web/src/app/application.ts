@@ -44,7 +44,7 @@ import { AgentNotes } from "./agent-notes.ts";
 import type { AppTellSource, HeldNote } from "./app-actions.ts";
 import { AuthController, accountName, displayName, needsPassword } from "./auth.ts";
 import { offersWaitingOn } from "./automation-owner.ts";
-import { agentWorks, CompanyController } from "./company.ts";
+import { agentWorks, CompanyController, siteServed } from "./company.ts";
 import { CompanyDatabases } from "./company-data.ts";
 import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
@@ -2241,6 +2241,7 @@ export function mountApplication(
 							const prevList = controller.store.get().siteList;
 							if (prevList === undefined || JSON.stringify(prevList) !== JSON.stringify(list))
 								controller.store.set(sitesListed(list));
+							if (controller.store.get().siteListUnread) controller.store.set({ siteListUnread: false });
 							// WHY: ask for taken-down sites only while a live files site exists; keep the last set on failure.
 							if (list.some((site) => site.kind === "files" && site.state === "live")) {
 								try {
@@ -2258,8 +2259,11 @@ export function mountApplication(
 							}
 						},
 						() => {
-							if (!controller.signal.aborted && controller.store.get().siteList === undefined)
-								controller.store.set({ siteList: [] });
+							if (controller.signal.aborted) return;
+							controller.store.set({
+								siteListUnread: true,
+								...(controller.store.get().siteList === undefined ? { siteList: [] } : {}),
+							});
 						},
 					)
 					.finally(() => {
@@ -2274,7 +2278,7 @@ export function mountApplication(
 			window.addEventListener("focus", readSites, { signal: controller.signal });
 		} else if (state.team && !state.team.capabilities.read && state.siteList === undefined)
 			// A member the company's sites are never read for: a site's own page says it can't be shown, not waits.
-			controller.store.set({ siteList: [] });
+			controller.store.set({ siteList: [], siteListUnread: true });
 		// What's new, read the same way for its entry and badge. A cloud without the read (before 20260930729000), or one
 		// that refuses this member, shows no entry; a read that did not answer leaves the entry as it was.
 		if (releasesRead !== controller && state.team?.capabilities.read) {
@@ -3164,11 +3168,8 @@ export function mountApplication(
 								return site ? { siteId: site.id, client: siteHosting } : undefined;
 							},
 							managesSites,
-							isSiteLive: (surface) =>
-								surface.archetype === "live_build" &&
-								surface.siteSlug !== null &&
-								surface.siteSlug !== undefined &&
-								liveWebsite(surface.siteSlug) !== undefined,
+							canWrite: () => controller.store.get().team?.capabilities.write === true,
+							isSiteLive: (surface) => siteServed(controller.store.get(), surface),
 							isMountLoading: (surface) => {
 								const currentState = controller.store.get();
 								if (currentState.accessLost) return false;

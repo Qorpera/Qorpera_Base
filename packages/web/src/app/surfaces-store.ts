@@ -1133,6 +1133,10 @@ function describe(error: unknown): string {
 	return error instanceof Error && error.message ? error.message : String(error);
 }
 
+export interface QuietCall {
+	readonly quiet?: boolean;
+}
+
 export interface SurfacesStoreOptions {
 	readonly companyId: string;
 	readonly companyName?: string;
@@ -3064,18 +3068,18 @@ export class SurfacesStore {
 		return this.#sessionAt(sessionId)?.session;
 	}
 
-	async #run<T>(key: string, work: (client: SurfacesClient) => Promise<T>): Promise<T | undefined> {
+	async #run<T>(key: string, work: (client: SurfacesClient) => Promise<T>, quiet = false): Promise<T | undefined> {
 		const client = this.#options.client;
 		if (!client) {
-			this.store.set({ error: this.#options.unavailableMessage });
+			if (!quiet) this.store.set({ error: this.#options.unavailableMessage });
 			return undefined;
 		}
 		if (this.state.busy[key]) return undefined;
-		this.store.set((state) => ({ busy: { ...state.busy, [key]: true }, error: undefined }));
+		this.store.set((state) => ({ busy: { ...state.busy, [key]: true }, ...(quiet ? {} : { error: undefined }) }));
 		try {
 			return await work(client);
 		} catch (error) {
-			if (!this.#options.signal.aborted)
+			if (!this.#options.signal.aborted && !quiet)
 				this.store.set({
 					error: isMissingSurfaceRpcError(error) ? this.#options.unavailableMessage : describe(error),
 				});
@@ -4504,7 +4508,7 @@ export class SurfacesStore {
 		}
 	}
 
-	async publish(surfaceId: string): Promise<boolean> {
+	async publish(surfaceId: string, options: QuietCall = {}): Promise<boolean> {
 		const pendingIds = unpublishedChanges(this.state, surfaceId).map((entry) => entry.change.id);
 		const markPublished = () => {
 			if (!pendingIds.length) return;
@@ -4521,7 +4525,11 @@ export class SurfacesStore {
 			this.#putSurface({ ...surface, hasUnpublishedChanges: false, unpublishedChangeCount: 0 });
 			return true;
 		}
-		const surface = await this.#run(`publish:${surfaceId}`, (client) => client.publishSurface(surfaceId));
+		const surface = await this.#run(
+			`publish:${surfaceId}`,
+			(client) => client.publishSurface(surfaceId),
+			options.quiet,
+		);
 		if (!surface) return false;
 		// WHY: Defer marking changes published until async code_repo publish jobs finish transitioning back to idle.
 		if (surface.publishStatus === "publishing") {
@@ -4567,15 +4575,17 @@ export class SurfacesStore {
 		return true;
 	}
 
-	async setAutoPublish(surfaceId: string, enabled: boolean): Promise<boolean> {
+	async setAutoPublish(surfaceId: string, enabled: boolean, options: QuietCall = {}): Promise<boolean> {
 		if (this.isLocalInteractive && isLocalSurfaceId(surfaceId)) {
 			const surface = this.state.surfaces.find((item) => item.id === surfaceId);
 			if (!surface) return false;
 			this.#putSurface({ ...surface, autoPublish: enabled });
 			return true;
 		}
-		const surface = await this.#run(`auto:${surfaceId}`, (client) =>
-			client.setSurfaceAutoPublish(surfaceId, enabled),
+		const surface = await this.#run(
+			`auto:${surfaceId}`,
+			(client) => client.setSurfaceAutoPublish(surfaceId, enabled),
+			options.quiet,
 		);
 		if (!surface) return false;
 		this.#putSurface(surface);
