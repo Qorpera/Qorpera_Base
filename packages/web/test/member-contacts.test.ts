@@ -6,6 +6,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { MemberChats, type MemberChatsHost } from "../src/app/member-chats.ts";
 import { contactPlaces, railContacts, weave } from "../src/app/rail-contacts.ts";
 import type { Route } from "../src/app/router.ts";
+import type { InviteCalls } from "../src/app/views/invite-sheet.ts";
 import { renderRail, type ShellContext } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import {
@@ -398,6 +399,7 @@ function companyWith(
 		placing?: boolean;
 		capabilities?: HostedProfileTeam["capabilities"];
 		route?: Route;
+		invites?: InviteCalls;
 		/** Whether the cloud keeps the next place. */
 		keeps?: () => boolean;
 	} = {},
@@ -472,6 +474,7 @@ function companyWith(
 			agentActions: {},
 			openAgentCard: openCard,
 			openGroupCard: () => {},
+			...(options.invites ? { invites: options.invites } : {}),
 		});
 	cleanup.push(company.store.subscribe(draw));
 	draw();
@@ -523,7 +526,7 @@ describe("contacts in the rail", () => {
 		// The group is named, as the sections are; it is a place contacts land in.
 		const group = rail.querySelector<HTMLElement>(".rail-members")!;
 		expect(group.querySelector<HTMLElement>(".rail-section-title")!.hidden).toBe(false);
-		expect(group.querySelector(".rail-section-title")!.textContent).toBe("Members");
+		expect(group.querySelector(".rail-section-title")!.textContent).toBe("People");
 		expect(group.dataset.dropZone).toBe("members");
 		expect(rail.querySelector(".rail-scroll")!.lastElementChild).toBe(group);
 	});
@@ -583,7 +586,7 @@ describe("contacts in the rail", () => {
 		await ready;
 		expect(rightClick(rowOf(rail, "Sofie Lund")).defaultPrevented).toBe(true);
 		expect(openMenu()?.el.getAttribute("aria-label")).toBe("Sofie Lund actions");
-		expect(menuItems()).toEqual(["Pin", "Hide from sidebar"]);
+		expect(menuItems()).toEqual(["Message", "Pin", "Hide from sidebar"]);
 		choose("Hide from sidebar");
 		await settle();
 		// Never placed, she keeps her place in the Members group for when she is shown again.
@@ -602,7 +605,7 @@ describe("contacts in the rail", () => {
 		// Open, the fold lists her with her own count.
 		expect(fold.querySelector<HTMLElement>(".rail-hidden-unread")?.hidden).toBe(true);
 		rightClick(hidden);
-		expect(menuItems()).toEqual(["Show in sidebar"]);
+		expect(menuItems()).toEqual(["Message", "Show in sidebar"]);
 		choose("Show in sidebar");
 		await settle();
 		expect(places[1]).toEqual([{ userId: sofie, place: { zone: "members", rank: 5000 }, hidden: false }]);
@@ -663,7 +666,7 @@ describe("contacts in the rail", () => {
 		expect(places).toEqual([[{ userId: mads, place: { zone: "pinned", after: dee.id, rank: 0 }, hidden: false }]]);
 		expect(zones(rail)).toMatchObject({ pinned: ["Dee", "Mads"], members: ["Sofie Lund"] });
 		rightClick(rail.querySelector(`.rail-pinned [data-member-id="${mads}"]`)!);
-		expect(menuItems()).toEqual(["Unpin", "Hide from sidebar"]);
+		expect(menuItems()).toEqual(["Message", "Unpin", "Hide from sidebar"]);
 		choose("Unpin");
 		await settle();
 		// Back in the Members group, after the contacts there.
@@ -746,14 +749,15 @@ describe("contacts in the rail", () => {
 		await old.ready;
 		expect(zones(old.rail).members).toEqual(["Sofie Lund", "Mads Berg"]);
 		expect(old.rail.querySelector<HTMLElement>(".rail-members")!.dataset.dropZone).toBeUndefined();
-		expect(rightClick(rowOf(old.rail, "Sofie Lund")).defaultPrevented).toBe(false);
-		expect(openMenu()).toBeUndefined();
+		rightClick(rowOf(old.rail, "Sofie Lund"));
+		expect(menuItems()).toEqual(["Message"]);
+		openMenu()?.close();
 		document.body.replaceChildren();
 		// No sidebar: nothing to pin to, but a contact still hides.
 		const bare = companyWith({ sidebar: "missing" });
 		await bare.ready;
 		rightClick(rowOf(bare.rail, "Sofie Lund"));
-		expect(menuItems()).toEqual(["Hide from sidebar"]);
+		expect(menuItems()).toEqual(["Message", "Hide from sidebar"]);
 	});
 
 	it("puts a contact back and says why when the cloud did not keep its place", async () => {
@@ -824,6 +828,108 @@ describe("contacts in the rail", () => {
 		press(rowOf(rail, "Mads Berg"), "ArrowDown");
 		await settle();
 		expect(places).toHaveLength(4);
+	});
+});
+
+describe("People at the foot of the rail", () => {
+	const online = (userId: string, value: string) => ({
+		clientId: `${userId}-tab`,
+		userId,
+		name: "Sofie",
+		staffAgentId: value,
+	});
+
+	it("says where a teammate is, and one click takes you there", async () => {
+		const { company, rail, ready } = companyWith();
+		await ready;
+		company.store.set({ here: [online(sofie, `@agent:${bo.id}`)] });
+		await settle();
+		const row = rowOf(rail, "Sofie Lund");
+		expect(row.querySelector("small")?.textContent).toBe("With Bo");
+		expect(row.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/staff/${bo.id}`);
+		expect(rowOf(rail, "Mads Berg").getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/member/${mads}`);
+		company.store.set({ here: [online(sofie, "@app:trips")] });
+		await settle();
+		expect(rowOf(rail, "Sofie Lund").querySelector("small")?.textContent).toBe("Online now");
+		expect(rowOf(rail, "Sofie Lund").getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/member/${sofie}`);
+	});
+
+	it("opens the chat while a message of theirs waits, whatever they look at", async () => {
+		const { company, rail, ready } = companyWith({
+			chats: [
+				summary(sofie, {
+					unread: 1,
+					last: { id: id(95), seq: 1, authorUserId: sofie, text: "Look at the prices", createdAt: timestamp },
+				}),
+				summary(mads),
+			],
+		});
+		await ready;
+		company.store.set({ here: [online(sofie, `@agent:${bo.id}`)] });
+		await settle();
+		const row = rowOf(rail, "Sofie Lund");
+		expect(row.querySelector("small")?.textContent).toBe("Look at the prices");
+		expect(row.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/member/${sofie}`);
+	});
+
+	it("offers Go to and Message on a teammate's menu, before Pin and Hide", async () => {
+		const { company, rail, ready } = companyWith();
+		await ready;
+		company.store.set({ here: [online(sofie, `@agent:${bo.id}`)] });
+		await settle();
+		rightClick(rowOf(rail, "Sofie Lund"));
+		const labels = [...document.querySelectorAll(".context-menu [role^=menuitem]")].map(
+			(item) => item.querySelector(".context-menu-label")?.textContent,
+		);
+		expect(labels).toEqual(["Go to Sofie", "Message", "Pin", "Hide from sidebar"]);
+		expect(document.querySelector(".context-menu [role^=menuitem] .person-avatar")?.textContent).toBe("SL");
+		document.querySelector<HTMLElement>(".context-menu [role^=menuitem]")!.click();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${bo.id}`);
+		rightClick(rowOf(rail, "Mads Berg"));
+		expect(menuItems()).toEqual(["Message", "Pin", "Hide from sidebar"]);
+		choose("Message");
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/member/${mads}`);
+	});
+
+	it("ends People with Invite for those who may invite, which opens the invite sheet", async () => {
+		const invites = {
+			listFriends: vi.fn(async () => []),
+			inviteMember: vi.fn(),
+			cancelInvitation: vi.fn(),
+		} as unknown as InviteCalls;
+		const { rail, ready } = companyWith({ invites });
+		await ready;
+		const list = rail.querySelector<HTMLElement>(".rail-members .rail-section-list")!;
+		expect(names(list.children)).toEqual(["Sofie Lund", "Mads Berg", "Invite"]);
+		list.querySelector<HTMLButtonElement>(".rail-row-invite")!.click();
+		expect(document.querySelector(".company-invite-sheet")?.getAttribute("aria-label")).toBe("Invite people");
+		document.querySelector<HTMLElement>(".company-invite-sheet")!.remove();
+		document.body.replaceChildren();
+		const viewer = companyWith({
+			invites,
+			capabilities: { read: true, write: true, authorize: false, manageMembers: false },
+		});
+		await viewer.ready;
+		expect(viewer.rail.querySelector(".rail-row-invite")).toBeNull();
+	});
+
+	it("shows People with Invite alone to a founder with no teammates yet", async () => {
+		const invites = { listFriends: vi.fn(async () => []) } as unknown as InviteCalls;
+		const { rail, ready } = companyWith({ invites, members: [people[0]!], chats: [] });
+		await ready;
+		const group = rail.querySelector<HTMLElement>(".rail-members")!;
+		expect(group.classList.contains("is-empty")).toBe(false);
+		expect(names(group.querySelectorAll(".rail-section-list > *"))).toEqual(["Invite"]);
+	});
+
+	it("puts Invite people in the company menu for those who may invite", async () => {
+		const invites = { listFriends: vi.fn(async () => []) } as unknown as InviteCalls;
+		const { rail, ready } = companyWith({ invites });
+		await ready;
+		rail.querySelector<HTMLButtonElement>(".rail-company")!.click();
+		expect(menuItems()).toContain("Invite people");
+		choose("Invite people");
+		expect(document.querySelector(".company-invite-sheet")).not.toBeNull();
 	});
 });
 

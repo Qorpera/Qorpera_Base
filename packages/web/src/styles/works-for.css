@@ -1,11 +1,4 @@
-/* The Members page (app/views/members.ts): pictures only, with no header and no boxes. A line per member: their face,
- * name and ChatGPT meter, then the figures of the agents that work for them. An agent moves by a drag onto another line
- * or by a tap and a choice. A member's colour (`--seat`, their person colour) is on their face and their meter only. */
-.members-page {
-	flex: 1; min-height: 0; overflow-y: auto; display: grid; gap: 14px; align-content: start;
-	padding: 40px 24px 32px; container: members / inline-size;
-}
-.members-page > * { width: 100%; max-width: 860px; justify-self: center; }
+.members-page { display: grid; gap: 14px; align-content: start; container: members / inline-size; }
 .members-page.is-dragging { user-select: none; }
 /* The broken line of an empty place, of an agent on its way and of nobody's face. */
 .members-page { --members-dash: color-mix(in srgb, var(--text) 34%, transparent); }
@@ -150,9 +143,6 @@
 	.members-rows .members-faces .person-avatar:nth-child(n + 3) { display: none; }
 	.members-rows .members-who-text { justify-items: start; gap: 5px; }
 	.members-rows .members-agent-name { font-size: 12.5px; }
-}
-@media (max-width: 760px) {
-	.members-page { padding: 18px 12px 24px; }
 }
 @media (prefers-reduced-motion: reduce) {
 	.members-agent, .members-pic, .members-row, .members-slot i, .members-answer button { transition: none; }

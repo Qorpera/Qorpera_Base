@@ -10,7 +10,7 @@
 @import "./bank.css";
 @import "./data.css";
 @import "./data-changes.css";
-@import "./members.css";
+@import "./works-for.css";
 @import "./mailbox.css";
 @import "./sites.css";
 @import "./program.css";
@@ -503,6 +503,9 @@ label > input, label > select { font-weight: 400; }
 .rail-members.is-empty { display: none; }
 .rail-scroll[data-dragging="member"] .rail-members.is-empty { display: block; }
 .rail-row-member { --rail-row-figure: 50px; min-height: 63.75px; }
+.rail-row-invite { --rail-row-figure: 50px; width: 100%; border: 0; background: transparent; font: inherit; text-align: left; }
+.rail-row-invite .rail-row-copy { align-self: center; padding-top: 0; }
+.rail-row-invite .invite-plus { box-sizing: border-box; width: 38px; height: 38px; font-size: 18px; font-weight: 400; }
 .rail-row-member .person-avatar { width: 44px; height: 44px; font-size: 15px; }
 :is(.rail-row-member, .rail-pin-member) .person-online-dot { right: 0; bottom: 0; width: 13px; height: 13px; box-shadow: 0 0 0 2px var(--rail); }
 .hover-lit:is(.rail-row-member, .rail-pin-member) .person-online-dot { box-shadow: 0 0 0 2px var(--rail-hover); }
@@ -864,6 +867,7 @@ textarea.hero-idea:focus-visible { outline: none; }
 	background: transparent; color: var(--text); font: 15px var(--font-sans);
 }
 .hero-invite-foot { display: flex; justify-content: flex-end; padding: 10px 4px 0; }
+.hero-invite-sheet.company-invite-sheet { position: fixed; z-index: 40; width: min(560px, calc(100vw - 16px)); max-height: min(520px, calc(100vh - 80px)); }
 .hero-invite-face { display: inline-flex; }
 .hero-invite-face .person-avatar { width: 34px; height: 34px; font-size: 12px; }
 .hero-plus, .founding-plus {

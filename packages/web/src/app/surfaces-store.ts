@@ -451,7 +451,6 @@ function localSurface(
 const OPS_SURFACES = [
 	{ slug: "inbox", title: phrase("Inbox"), icon: "mail", page: "mailbox" },
 	{ slug: "money", title: phrase("Money"), icon: "coin", page: "bank" },
-	{ slug: "members", title: phrase("Members"), icon: "members", page: "members" },
 	{ slug: "data", title: phrase("Databases"), icon: "database", page: "data" },
 	{ slug: "files", title: phrase("Files"), icon: "drawers", page: null },
 ] as const;
@@ -4345,9 +4344,12 @@ function surfaceCountsChanged(prev: SurfaceSummary | undefined, next: SurfaceSum
 }
 
 function sortSurfaces(surfaces: readonly SurfaceSummary[]): SurfaceSummary[] {
-	return surfaces
-		.filter((surface) => surface.status !== "archived")
-		.sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title));
+	return (
+		surfaces
+			// WHY: The cloud lists the retired Members surface until migration 20260930869000 archives it.
+			.filter((surface) => surface.status !== "archived" && surface.kind !== "members")
+			.sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title))
+	);
 }
 
 const registry = new WeakMap<object, SurfacesStore>();

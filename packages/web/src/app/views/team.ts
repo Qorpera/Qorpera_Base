@@ -7,14 +7,15 @@ import { preserveFormDrafts } from "../../ui/forms.ts";
 import { t } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
-import { worksForCount } from "./members.ts";
+import { renderWorksFor, worksForCount } from "./works-for.ts";
 
 const ROLES: HostedProfileRole[] = ["viewer", "contributor", "admin", "owner"];
 
 /** The companies whose Delete/Leave company confirmation is being prepared. */
 const confirming = new WeakSet<CompanyController>();
 
-/** How many agents work for the member: read now, or the Members page's last read when the read fails or is slow. */
+const worksForHosts = new WeakMap<HTMLElement, HTMLElement>();
+
 async function agentsWorkingFor(company: CompanyController): Promise<number> {
 	const read = company
 		.worksFor()
@@ -59,6 +60,7 @@ export function renderTeam(
 		addFriend: () => void;
 		/** Holds the Delete/Leave company button; without it the button ends the team page. */
 		exit?: HTMLElement;
+		openSubscriptions?: () => void;
 	},
 ): void {
 	const state = company.store.get();
@@ -403,6 +405,19 @@ export function renderTeam(
 			);
 			content.append(picker);
 		}
+		let worksFor = worksForHosts.get(container);
+		if (!worksFor) {
+			worksFor = h("div");
+			worksForHosts.set(container, worksFor);
+		}
+		renderWorksFor(
+			worksFor,
+			company,
+			options.openSubscriptions ? { openSubscriptions: options.openSubscriptions } : {},
+		);
+		content.append(
+			h("section", { class: "settings-group team-works-for" }, h("h2", null, t("Who agents work for")), worksFor),
+		);
 		// Only the last member deletes; the last founder stays while others remain (2026-09-28). A
 		// cloud without several founders sends neither flag: its one owner deletes, others leave.
 		const deleting = team.capabilities.deleteCompany ?? team.role === "owner";
@@ -416,9 +431,6 @@ export function renderTeam(
 			deleting ? t("Delete company") : t("Leave company"),
 			() =>
 				void (async () => {
-					// Agents that work for a member who leaves go to the open pile (migration 20260930700000): read how
-					// many before asking, so they can be handed over on the Members page first. A cloud without the read,
-					// or one that does not answer within two seconds, counts none.
 					// One confirmation at a time: a second click while the count is read (the button may be drawn again
 					// meanwhile) opens no second dialog.
 					if (confirming.has(company)) return;
@@ -437,7 +449,7 @@ export function renderTeam(
 								})
 							: carried
 								? t(
-										"Leave {company}? You lose access until someone invites you again. {n} agents work for you: they go to the open pile, where another member can take them. To hand them over first, use the Members page.",
+										"Leave {company}? You lose access until someone invites you again. {n} agents work for you: they go to the open pile, where another member can take them. To hand them over first, move them under Who agents work for.",
 										{ company: companyInSentence(profile.profileName), n: String(carried) },
 									)
 								: t("Leave {company}? You lose access until someone invites you again.", {

@@ -65,7 +65,7 @@ describe("surface kinds", () => {
 	it("tells every surface's kind from its slug, icon and archetype", () => {
 		expect(inferSurfaceKind(inbox)).toBe("inbox");
 		expect(inferSurfaceKind({ slug: "money", icon: "coin", archetype: "ops" })).toBe("money");
-		expect(inferSurfaceKind({ slug: "members", icon: "members", archetype: "ops" })).toBe("members");
+		expect(inferSurfaceKind({ slug: "members", icon: "members", archetype: "ops" })).toBe("custom");
 		expect(inferSurfaceKind({ slug: "data", icon: "database", archetype: "ops" })).toBe("data");
 		expect(inferSurfaceKind({ slug: "files", icon: "drawers", archetype: "ops" })).toBe("files");
 		expect(inferSurfaceKind({ slug: "thetaband", icon: "globe", archetype: "live_build" })).toBe("website");
@@ -79,13 +79,13 @@ describe("surface kinds", () => {
 		expect(opsComposerPlaceholder("files")).toBe("Ask an agent to organize, summarize, or create files…");
 	});
 
-	it("brings Members and Databases into Running when the company has those pages", () => {
+	it("brings Databases into Running when the company has that page, and never the retired Members page", () => {
 		const surfaces = synthesizeSurfaces({
 			companyId: COMPANY,
 			sites: [],
 			pages: ["mailbox", "bank", "members", "data"],
 		});
-		expect(surfaces.map((item) => item.slug)).toEqual(["inbox", "money", "members", "data", "files"]);
+		expect(surfaces.map((item) => item.slug)).toEqual(["inbox", "money", "data", "files"]);
 		expect(surfaces.every((item) => item.group === "operations")).toBe(true);
 	});
 });
@@ -432,28 +432,25 @@ describe("creating surfaces", () => {
 	});
 });
 
-describe("unified agents, nested members, and Thetaband orchestration", () => {
-	it("nests human member threads directly under the Members surface with teammate count", async () => {
-		const store = storeWith(undefined, {
-			companyName: "Brooks",
-			localInteractive: true,
-			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox", "members"] }),
+describe("unified agents, the retired Members surface, and Thetaband orchestration", () => {
+	it("leaves the retired Members surface out while the cloud still lists it", async () => {
+		const members = summary({
+			id: "55555555-5555-4555-8555-555555555509",
+			slug: "members",
+			title: "Members",
+			group: "operations",
+			archetype: "ops",
+			kind: "members",
+			icon: "members",
+			siteSlug: null,
+			liveUrl: null,
 		});
+		const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [inbox, members]) }));
 		await store.load();
-		await store.openSurface("members");
+		expect(store.state.surfaces.map((surface) => surface.slug)).toEqual(["inbox"]);
 		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
-		document.body.append(rail.el);
-		const marie = document.createElement("a");
-		marie.className = "rail-row";
-		marie.dataset.memberId = "user-marie";
-		marie.textContent = "Marie Malling";
-		rail.update("members", false, { rows: [marie], unread: 0, active: false });
-
-		const membersRow = rail.el.querySelector('.rail-surface[data-surface-slug="members"]')!;
-		expect(membersRow.querySelector(".rail-surface-sub")?.textContent).toBe("1 teammate");
-		const tree = membersRow.nextElementSibling!;
-		expect(tree.querySelector('.rail-members [data-member-id="user-marie"]')).toBe(marie);
-		expect(rail.el.querySelector('[aria-label="Building"]')).toBeNull();
+		rail.update(undefined);
+		expect(rail.el.querySelector('[data-surface-slug="members"]')).toBeNull();
 		store.dispose();
 	});
 

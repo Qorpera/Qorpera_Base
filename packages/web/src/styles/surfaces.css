@@ -60,14 +60,6 @@
 .rail-compact .rail-surface {
 	width: 56px; min-height: 56px; padding: 4px; justify-content: center; gap: 0;
 }
-.rail-compact .surface-tree {
-	margin: 2px 0 6px; padding-left: 0; border-left: 0; width: 100%; justify-items: center; gap: 4px;
-}
-.rail-compact .rail-surface-members { justify-items: center; width: 100%; gap: 4px; padding: 2px 0; }
-.rail-compact .rail-surface-members .rail-row {
-	width: 44px; min-height: 40px; padding: 4px; justify-content: center; justify-items: center;
-}
-.rail-compact .rail-surface-members .rail-row-stand { width: 32px; height: 32px; }
 /* WHY: The surface-first rail lists Inbox, Money, Members and Databases itself, so the icon drawer that repeated them
  * above the Co-Founder folds away (shell.ts marks the rail; its elements stay for the legacy rail and its tests). */
 .has-surface-rail .rail-apps, .has-surface-rail > .rail-apps-drawer { display: none !important; }
@@ -168,12 +160,6 @@
 .rail-agents-legacy[hidden] { display: none; }
 .rail-agents-legacy.is-open .rail-legacy-chevron { transform: rotate(90deg); }
 
-/* Human member threads nested directly beneath the Members surface. */
-.rail-surface-members { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; padding: 2px 0; }
-.rail-surface-members .rail-row { min-height: 44px; padding: 4px 8px 4px 4px; border-radius: 10px; }
-.rail-surface-members .rail-row-stand { width: 34px; height: 34px; }
-.rail-surface-members .person-avatar { width: 30px; height: 30px; font-size: 11.5px; }
-
 .surface-tile {
 	--tile-size: 48px;
 	position: relative; display: grid; place-items: center; width: var(--tile-size); height: var(--tile-size); flex: none;
@@ -242,10 +228,6 @@
 .rail-proposed-btn.is-dismiss:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
 .rail-proposed-btn:disabled { opacity: 0.45; cursor: default; }
 
-.surface-tree {
-	display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 2px 0 10px 33px; padding-left: 10px;
-	border-left: 1.5px solid color-mix(in srgb, var(--surface-tint, var(--text)) 18%, transparent);
-}
 .rail-surface-sub.rail-surface-crew { display: flex; align-items: center; gap: 2px; min-height: 22px; overflow: visible; }
 .surface-crew.is-mini.is-highlighted { border-radius: 50%; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
 .rail-surface-crew-more {
