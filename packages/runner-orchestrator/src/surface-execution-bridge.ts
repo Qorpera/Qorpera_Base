@@ -75,7 +75,11 @@ export type SurfaceCompanyFolderCommitOperation =
 export type SurfaceCompanyFolderCommitResult =
 	| { readonly status: "saved"; readonly versionsAfter?: Readonly<Record<string, string | null>> }
 	| { readonly status: "conflict"; readonly conflictPaths: readonly string[] }
-	| { readonly status: "missing_files"; readonly paths: readonly string[] };
+	| {
+			readonly status: "unverified_files";
+			readonly missingPaths: readonly string[];
+			readonly mismatchedPaths: readonly string[];
+	  };
 
 export interface SurfaceCompanyFolderPort {
 	readFiles(
@@ -298,6 +302,16 @@ function parseStoredFileValue(value: unknown): { readonly file: SurfaceCompanyFo
 		mediaType: file.mediaType,
 		executable: file.executable,
 	});
+}
+
+function unverifiedFilesDetail(missingPaths: readonly string[], mismatchedPaths: readonly string[]): string {
+	const problems = [
+		...(missingPaths.length > 0 ? [`Stored file not found in the company folder: ${missingPaths.join(", ")}`] : []),
+		...(mismatchedPaths.length > 0
+			? [`Stored file does not match its reference: ${mismatchedPaths.join(", ")}`]
+			: []),
+	];
+	return formatErrorDetail(problems.join(". "), "Stored file not found in the company folder");
 }
 
 function commitOperation(
@@ -1113,15 +1127,12 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			{ profileId: job.profileId, folderRoot: normalizedRoot, operations },
 			signal,
 		);
-		if (commitResult.status === "missing_files") {
+		if (commitResult.status === "unverified_files") {
 			await completeMerge(
 				{
 					jobId: job.jobId,
 					status: "failed",
-					errorDetail: formatErrorDetail(
-						`Stored file not found in the company folder: ${commitResult.paths.join(", ")}`,
-						"Stored file not found in the company folder",
-					),
+					errorDetail: unverifiedFilesDetail(commitResult.missingPaths, commitResult.mismatchedPaths),
 				},
 				signal,
 			);
@@ -1398,15 +1409,12 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			{ profileId: job.profileId, folderRoot: normalizedRoot, operations },
 			signal,
 		);
-		if (commitResult.status === "missing_files") {
+		if (commitResult.status === "unverified_files") {
 			await completeMerge(
 				{
 					jobId: job.jobId,
 					status: "failed",
-					errorDetail: formatErrorDetail(
-						`Stored file not found in the company folder: ${commitResult.paths.join(", ")}`,
-						"Stored file not found in the company folder",
-					),
+					errorDetail: unverifiedFilesDetail(commitResult.missingPaths, commitResult.mismatchedPaths),
 				},
 				signal,
 			);

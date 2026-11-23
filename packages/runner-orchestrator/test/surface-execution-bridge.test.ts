@@ -114,7 +114,7 @@ async function createGitSurfaceFixture() {
 function createInMemoryCompanyFolder(initial: Record<string, string> = {}) {
 	const files = new Map<string, string>(Object.entries(initial));
 	const storedFiles = new Map<string, SurfaceCompanyFolderStoredFile>();
-	const storage = new Set<string>();
+	const storage = new Map<string, SurfaceCompanyFolderStoredFile>();
 	const versions = new Map<string, number>();
 	for (const key of files.keys()) versions.set(key, 1);
 	let seq = 1;
@@ -138,15 +138,15 @@ function createInMemoryCompanyFolder(initial: Record<string, string> = {}) {
 		}
 	};
 	const storeFile = (seed: string, mediaType: string): SurfaceCompanyFolderStoredFile => {
-		const manifestSha256 = createHash("sha256").update(`manifest:${seed}`).digest("hex");
-		storage.add(manifestSha256);
-		return {
-			manifestSha256,
+		const file: SurfaceCompanyFolderStoredFile = {
+			manifestSha256: createHash("sha256").update(`manifest:${seed}`).digest("hex"),
 			fileSha256: createHash("sha256").update(`file:${seed}`).digest("hex"),
 			bytes: 4096 + seed.length,
 			mediaType,
 			executable: false,
 		};
+		storage.set(file.manifestSha256, file);
+		return file;
 	};
 	const putStoredFile = (path: string, seed: string, mediaType: string): SurfaceCompanyFolderStoredFile => {
 		const file = storeFile(seed, mediaType);
@@ -186,9 +186,22 @@ function createInMemoryCompanyFolder(initial: Record<string, string> = {}) {
 			if (conflictPaths.length > 0) {
 				return { status: "conflict", conflictPaths };
 			}
-			const missing = operations.filter((op) => "file" in op && !storage.has(op.file.manifestSha256));
-			if (missing.length > 0) {
-				return { status: "missing_files", paths: missing.map((op) => op.path) };
+			const missingPaths: string[] = [];
+			const mismatchedPaths: string[] = [];
+			for (const op of operations) {
+				if (!("file" in op)) continue;
+				const stored = storage.get(op.file.manifestSha256);
+				if (!stored) missingPaths.push(op.path);
+				else if (
+					stored.fileSha256 !== op.file.fileSha256 ||
+					stored.bytes !== op.file.bytes ||
+					stored.mediaType !== op.file.mediaType ||
+					stored.executable !== op.file.executable
+				)
+					mismatchedPaths.push(op.path);
+			}
+			if (missingPaths.length > 0 || mismatchedPaths.length > 0) {
+				return { status: "unverified_files", missingPaths, mismatchedPaths };
 			}
 			commitCalls.push(operations.map((op) => ({ ...op })));
 			seq += 1;
@@ -1071,6 +1084,35 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 			expect(t.mem.commitCalls).toHaveLength(0);
 			expect(t.mem.files.get("product/spec.md")).toBe("Spec.\n");
 			expect(t.mem.storedFiles.has("product/model.glb")).toBe(false);
+		});
+
+		it("fails a reference that does not match its stored file, naming the path, and commits nothing", async () => {
+			const t = setup({ "product/spec.md": "Spec.\n" });
+			const model = t.mem.storeFile("model", "model/gltf-binary");
+			const ref = {
+				manifestSha256: model.manifestSha256,
+				fileSha256: model.fileSha256,
+				bytes: model.bytes,
+				mediaType: model.mediaType,
+			};
+			const landed = await t.land(randomUUID(), [
+				{ op: "write_text", path: "product/spec.md", content: "New spec.\n" },
+				{ op: "write_file", path: "product/wrong-hash.glb", file: { ...ref, fileSha256: "c".repeat(64) } },
+				{ op: "write_file", path: "product/wrong-type.png", file: { ...ref, mediaType: "image/png" } },
+				{
+					op: "write_file",
+					path: "product/missing.glb",
+					file: { ...ref, manifestSha256: "d".repeat(64) },
+				},
+			]);
+
+			expect(landed).toMatchObject({
+				status: "failed",
+				errorDetail:
+					"Stored file not found in the company folder: product/missing.glb. Stored file does not match its reference: product/wrong-hash.glb, product/wrong-type.png",
+			});
+			expect(t.mem.commitCalls).toHaveLength(0);
+			expect(t.mem.files.get("product/spec.md")).toBe("Spec.\n");
 		});
 
 		it("refuses a reference that fails the contract's parse before reading the folder", async () => {
