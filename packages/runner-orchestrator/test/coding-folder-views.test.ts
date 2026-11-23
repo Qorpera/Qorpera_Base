@@ -489,7 +489,7 @@ describe("CodingFolderViews", () => {
 				viewId: VIEWS[0],
 				packageCaches: true,
 			});
-			expect(at.events).toEqual(["sha256sum", "mount"]);
+			expect(at.events).toEqual(["mount"]);
 			expect(at.mounts).toHaveLength(2);
 			expect(at.mounts[1]).toEqual(at.mounts[0]);
 			expect(at.opens).toHaveLength(1);
@@ -506,7 +506,7 @@ describe("CodingFolderViews", () => {
 			expect((error as CodingFolderRestartRequired).code).toBe("VIEW_CLOSED");
 			expect(error.message).toBe("CODING_FOLDER_VIEW_REFUSED:VIEW_CLOSED");
 			// No other view opens: what the closed one read may still be in the machine.
-			expect(at.events).toEqual(["sha256sum", "mount"]);
+			expect(at.events).toEqual(["mount"]);
 			expect(at.opens).toHaveLength(1);
 			expect(at.closes).toEqual([]);
 			// It stays held, for the restart to end; the session's attach on the new boot then opens a new view.
@@ -541,7 +541,7 @@ describe("CodingFolderViews", () => {
 			at.script.boundary = (machine, final) => ({ ...released(machine, final), reads: "unproven" });
 			const error = await rejection(at.views.attach(session({ attachmentToken: TOKEN_2 }), later(), live()));
 			expect((error as CodingFolderRestartRequired).code).toBe("READS_UNPROVEN");
-			expect(at.events).toEqual(["sha256sum", "boundary", "close"]);
+			expect(at.events).toEqual(["boundary", "close"]);
 			expect(at.closes).toEqual([{ p_view_id: VIEWS[0], p_pass: PASSES[0] }]);
 			expect(at.opens).toHaveLength(1);
 			await expect(at.views.held(WORKER, live())).resolves.toBeUndefined();
@@ -567,7 +567,7 @@ describe("CodingFolderViews", () => {
 				const error = await rejection(at.views.attach(session({ attachmentToken: TOKEN_2 }), later(), live()));
 				expect(error).toBeInstanceOf(CodingFolderRestartRequired);
 				expect((error as CodingFolderRestartRequired).code).toBe("READS_UNREADABLE");
-				expect(at.events).toEqual(["sha256sum", "boundary", "close"]);
+				expect(at.events).toEqual(["boundary", "close"]);
 				expect(at.opens).toHaveLength(1);
 				await expect(at.views.held(WORKER, live())).resolves.toBeUndefined();
 			},
@@ -614,7 +614,7 @@ describe("CodingFolderViews", () => {
 				replaced: { workerId: WORKER, viewId: VIEWS[0], saved: true, closed: true },
 				packageCaches: true,
 			});
-			expect(at.events).toEqual(["sha256sum", "boundary", "close", "open", "mount"]);
+			expect(at.events).toEqual(["boundary", "close", "open", "mount"]);
 			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [VIEWS[0]] });
 			expect(at.closes).toEqual([{ p_view_id: VIEWS[0], p_pass: PASSES[0] }]);
 			expect(at.opens.at(-1)).toMatchObject({ p_anchor: { workerId: WORKER, attachmentToken: TOKEN_2 } });
@@ -872,7 +872,7 @@ describe("CodingFolderViews", () => {
 				viewId: VIEWS[1],
 				packageCaches: true,
 			});
-			expect(at.events).toEqual(["sha256sum", "boundary", "open", "mount"]);
+			expect(at.events).toEqual(["boundary", "open", "mount"]);
 			expect(at.boundaries.at(-1)).toEqual({ machine: MACHINE, final: [] });
 		});
 
@@ -1228,7 +1228,7 @@ describe("CodingFolderViews", () => {
 			at.boundaries.splice(0);
 			at.script.unmounted = () => true;
 			expect(await failure(at.views.attach(session(), later(), live()))).toBe(RECORD_FAILED);
-			expect(at.events.splice(0)).toEqual(["sha256sum"]);
+			expect(at.events.splice(0)).toEqual([]);
 			expect(await failure(at.views.end(WORKER, live()))).toBe(RECORD_FAILED);
 			expect(at.events.splice(0)).toEqual([]);
 			// A machine's end still saves what its views have pending, before it rejects.
@@ -1312,5 +1312,15 @@ describe("CodingFolderViews", () => {
 			anySpy.mockRestore();
 			timeoutSpy.mockRestore();
 		}
+	});
+
+	it("caches verified guest binary sha256 per (machineId, bootId) and invalidates when bootId changes", async () => {
+		const at = fixture();
+		await at.views.attach(session(), later(), live());
+		expect(at.events.filter((e) => e === "sha256sum")).toHaveLength(1);
+		await at.views.attach(session({ workerId: WORKER_2 }), later(), live());
+		expect(at.events.filter((e) => e === "sha256sum")).toHaveLength(1);
+		await at.views.attach(session({ bootId: BOOT_2 }), later(), live());
+		expect(at.events.filter((e) => e === "sha256sum")).toHaveLength(2);
 	});
 });

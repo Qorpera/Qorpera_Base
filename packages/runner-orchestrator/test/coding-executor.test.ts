@@ -589,6 +589,33 @@ describe("the coding executor over a session turn", () => {
 		expect(w.host.detachSession).not.toHaveBeenCalled();
 	});
 
+	it("includes bounded conflict details when CodingLandConflict carries merge-tree messages", async () => {
+		const w = world();
+		vi.mocked(w.host.publish).mockRejectedValueOnce(
+			new CodingLandConflict(
+				["src/cart.js"],
+				["CONFLICT (content): Merge conflict in src/cart.js", "Auto-merging src/cart.js"],
+			),
+		);
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion.p_outcome).toBe("failed");
+		expect(completion.p_summary).toContain("Conflict details: CONFLICT (content): Merge conflict in src/cart.js");
+		expect(Buffer.byteLength(String(completion.p_summary))).toBeLessThanOrEqual(4000);
+	});
+
 	it("a landing refused by rule fails the turn with what to change", async () => {
 		const w = world();
 		const summary = landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["assets/film.mov"])!;

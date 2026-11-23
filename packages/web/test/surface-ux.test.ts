@@ -1252,7 +1252,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		hub.dispose();
 	});
 
-	it("renders the Used by line on Identity, the Live-linked strip on Product, and applies live Identity CSS vars to Product", async () => {
+	it("renders the Used by line on Identity, the same one-line links on Product, and applies live Identity CSS vars to Product", async () => {
 		stubFigureMotion();
 		const navigated: string[] = [];
 		const store = storeWith(undefined, {
@@ -1291,17 +1291,26 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(productStudio.classList.contains("has-identity-tokens")).toBe(true);
 		expect(productStudio.style.getPropertyValue("--q-color-accent")).toBe("#6f61cf");
 
-		const sharedStrip = productView.el.querySelector<HTMLElement>('.studio-shared-links[data-live-linked="true"]')!;
+		const sharedStrip = productView.el.querySelector<HTMLElement>('.studio-reach[data-live-linked="true"]')!;
 		expect(sharedStrip).not.toBeNull();
-		expect(sharedStrip.textContent).toContain("Live-linked via Company Files");
-		expect(sharedStrip.querySelector('[data-link-dir="in"]')?.textContent).toContain("identity/tokens.css");
-		expect(sharedStrip.querySelector('[data-link-dir="out"]')?.textContent).toContain("product/specs.json");
+		expect(productView.el.querySelector(".studio-shared-links")).toBeNull();
+		expect(sharedStrip.querySelector('[data-link-dir="in"]')?.textContent).toContain("Builds on");
+		expect(sharedStrip.querySelector('[data-link-dir="out"]')?.textContent).toContain("Used by");
+		expect(sharedStrip.textContent).not.toContain("tokens.css");
+		expect(sharedStrip.textContent).not.toContain("specs.json");
+		expect(sharedStrip.textContent).not.toContain("CSS vars");
 
 		const outSlugs = [
 			...sharedStrip.querySelectorAll<HTMLButtonElement>('[data-link-dir="out"] .studio-reach-chip'),
 		].map((chip) => chip.dataset.slug);
 		expect(outSlugs).toContain("website");
 		expect(outSlugs).toContain("phone-app");
+		expect(new Set(outSlugs).size).toBe(outSlugs.length);
+		const inSlugs = [
+			...sharedStrip.querySelectorAll<HTMLButtonElement>('[data-link-dir="in"] .studio-reach-chip'),
+		].map((chip) => chip.dataset.slug);
+		expect(inSlugs).toContain("identity");
+		expect(new Set(inSlugs).size).toBe(inSlugs.length);
 
 		sharedStrip.querySelector<HTMLButtonElement>('[data-link-dir="in"] [data-slug="identity"]')!.click();
 		expect(navigated).toEqual(["identity"]);

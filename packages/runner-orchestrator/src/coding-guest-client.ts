@@ -8,6 +8,7 @@ import {
 	type CodingGuestRequests,
 	type CodingGuestSessionQuiescedAnswer,
 	type CodingGuestSessionStoppedAnswer,
+	type CodingGuestStatusAllAnswer,
 	type CodingGuestStatusAnswer,
 	type CodingGuestVerb,
 	parseCodingGuestAnswer,
@@ -23,12 +24,9 @@ import type { LxdInstanceExecStreamClient } from "./lxd-client.ts";
 // read only after the exec ended, against the request it answers, and anything else fails the call.
 
 const INVALID = "CODING_GUEST_ANSWER_INVALID";
-/** An answer line, its newline included: a status answer's commands fit well inside it. */
 const LINE_BYTES = 131072;
-/** Node's own message when the agent crashed; never read. */
+const STATUS_ALL_LINE_BYTES = 524288;
 const STDERR_BYTES = 16384;
-/** Each verb's whole call. The agent waits up to 60 s for its session's lock (mount, run, quiesce, stop-session), up
- * to 20 s for a folder program's mount, and up to 30 s for each systemctl call; `output` adds the request's own wait. */
 const CALL_MS: Readonly<Record<CodingGuestVerb, number>> = Object.freeze({
 	mount: 120000,
 	run: 120000,
@@ -37,6 +35,7 @@ const CALL_MS: Readonly<Record<CodingGuestVerb, number>> = Object.freeze({
 	quiesce: 120000,
 	"stop-session": 120000,
 	status: 60000,
+	"status-all": 60000,
 });
 
 /** The agent answered with a refusal. Its code is the guest's word: what it says is not proof of anything. */
@@ -97,6 +96,12 @@ export class LxdCodingGuestClient {
 	async status(request: CodingGuestRequests["status"], signal: AbortSignal): Promise<CodingGuestStatusAnswer> {
 		return (await this.#call("status", request, signal)).answer;
 	}
+	async statusAll(
+		request: CodingGuestRequests["status-all"],
+		signal: AbortSignal,
+	): Promise<CodingGuestStatusAllAnswer> {
+		return (await this.#call("status-all", request, signal)).answer;
+	}
 
 	async #call<V extends CodingGuestVerb>(
 		verb: V,
@@ -112,21 +117,21 @@ export class LxdCodingGuestClient {
 		const stdin = Buffer.from(JSON.stringify(asked));
 		if (stdin.byteLength > CODING_GUEST.maxInputBytes) throw new Error("CODING_GUEST_REQUEST_INVALID");
 		const page = verb === "output" ? (asked as CodingGuestRequests["output"]) : undefined;
+		const lineLimit = verb === "status-all" ? STATUS_ALL_LINE_BYTES : LINE_BYTES;
 		const result = await this.#client.execInstanceStream(
 			this.#project,
 			this.#name,
 			{
 				command: [CODING_GUEST.node, CODING_GUEST.agent, verb],
 				stdin,
-				maxStdoutBytes: LINE_BYTES + (page?.maxBytes ?? 0),
+				maxStdoutBytes: lineLimit + (page?.maxBytes ?? 0),
 				maxStderrBytes: STDERR_BYTES,
 				timeoutMs: CALL_MS[verb] + (page?.waitMs ?? 0),
 			},
 			signal,
 		);
-		// The agent answers every verb, a refusal too, and exits 0: anything else crashed or is not the agent.
 		if (result.exitCode !== 0) throw new Error("CODING_GUEST_FAILED");
-		return readAnswer(verb, asked, result.stdout);
+		return readAnswer(verb, asked, result.stdout, lineLimit);
 	}
 }
 
@@ -134,9 +139,10 @@ function readAnswer<V extends CodingGuestVerb>(
 	verb: V,
 	asked: CodingGuestRequests[V],
 	stdout: Buffer,
+	lineLimit: number,
 ): { answer: CodingGuestAnswers[V]; bytes: Buffer } {
 	const end = stdout.indexOf(0x0a);
-	if (end < 0 || end + 1 > LINE_BYTES) throw new Error(INVALID);
+	if (end < 0 || end + 1 > lineLimit) throw new Error(INVALID);
 	const bytes = stdout.subarray(end + 1);
 	let refusal: CodingGuestRefusal | undefined;
 	let answer: CodingGuestAnswers[V] | undefined;

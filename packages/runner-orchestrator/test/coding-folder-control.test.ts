@@ -772,4 +772,21 @@ describe("the machine's secret values for the save check (5j-5 (a))", () => {
 		const error = await f.client.secrets(MACHINE, signal()).catch((caught: unknown) => caught);
 		expect((error as Error).message).toBe("CODING_FOLDER_CONTROL_ANSWER_INVALID");
 	});
+
+	it("calls lightweight release-reads and falls back to boundary on BAD_REQUEST from older services", async () => {
+		const f = await control(reply({ reads: { machine: MACHINE, reads: "released" } }));
+		const answer = await f.client.releaseReads(MACHINE, signal());
+		expect(answer).toEqual({ machine: MACHINE, reads: "released" });
+		expect(Object.isFrozen(answer)).toBe(true);
+		expect(f.requests).toEqual([`${JSON.stringify({ op: "release-reads", machine: MACHINE })}\n`]);
+
+		let call = 0;
+		const fallback = await control((socket) => {
+			call += 1;
+			reply(call === 1 ? { error: { code: "BAD_REQUEST", message: "unknown op" } } : boundary())(socket);
+		});
+		const fellBack = await fallback.client.releaseReads(MACHINE, signal());
+		expect(fellBack).toEqual({ machine: MACHINE, reads: "released" });
+		expect(fallback.requests.map((raw) => JSON.parse(raw).op)).toEqual(["release-reads", "boundary"]);
+	});
 });

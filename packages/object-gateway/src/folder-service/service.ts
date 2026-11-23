@@ -237,14 +237,13 @@ export type { Report, ReportEntry };
 /** A coding machine's boundary (F3 5c, the plan's "Boundaries"), as the executor asks it over the control socket. */
 export interface MachineBoundary {
 	readonly machine: string;
-	/** What came of releasing every read the machine was served before the answer: `released`, so its output may reach
-	 * a model; `unanswered`, none yet; the core's refusal (the plan's rule 4: `unreadable` moves the machine); or
-	 * `unproven`, a read it was served went unreleased (by a run before this one too, unless it vouched for the machine),
-	 * so the executor restarts it (and says so, `restarted`), or it restarted while the boundary was out. Only `released`
-	 * lets output go. */
 	readonly reads: Released | "unproven";
-	/** Each open view of the machine's boundary, or why it had none. */
 	readonly views: readonly MachineViewReport[];
+}
+
+export interface MachineReadsRelease {
+	readonly machine: string;
+	readonly reads: Released | "unproven";
 }
 
 export interface MachineViewReport {
@@ -855,6 +854,11 @@ export class FolderService {
 	readonly #dataApplyMs: number;
 	readonly #maxBoundaryBatches: number;
 	readonly #dataCalls = new Map<string, { running: number; began: number[] }>();
+	readonly #boundaryFlights = new Map<
+		string,
+		{ restarts: number; pendingSig: string; running: Promise<MachineBoundary>; next?: Promise<MachineBoundary> }
+	>();
+	readonly #releaseReadsFlights = new Map<string, { restarts: number; promise: Promise<MachineReadsRelease> }>();
 
 	constructor(options: FolderServiceOptions) {
 		this.#core = options.core;
@@ -966,7 +970,76 @@ export class FolderService {
 	async boundary(machine: string, final: readonly string[] = []): Promise<MachineBoundary> {
 		if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
 		this.#noteActivity();
-		return this.#machineBoundary(machine, final);
+		if (final.length > 0) return this.#machineBoundary(machine, final);
+		const restarts = this.#restarts.get(machine) ?? 0;
+		const pendingSig = this.#pendingSignature(machine);
+		const active = this.#boundaryFlights.get(machine);
+		if (active && active.restarts === restarts) {
+			if (active.pendingSig === pendingSig && active.next === undefined) return active.running;
+			if (active.next !== undefined) return active.next;
+			const next = active.running
+				.catch(() => undefined)
+				.then(() => {
+					if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
+					return this.#startBoundaryFlight(machine);
+				});
+			active.next = next;
+			return next;
+		}
+		return this.#startBoundaryFlight(machine);
+	}
+
+	async releaseReads(machine: string): Promise<MachineReadsRelease> {
+		if (this.#stopping) throw new ProtocolError(ErrorCode.unavailable, STOPPING);
+		this.#noteActivity();
+		const restarts = this.#restarts.get(machine) ?? 0;
+		const active = this.#releaseReadsFlights.get(machine);
+		if (active && active.restarts === restarts) return active.promise;
+		const promise = this.#releaseMachineReads(machine).finally(() => {
+			if (this.#releaseReadsFlights.get(machine)?.promise === promise) this.#releaseReadsFlights.delete(machine);
+		});
+		this.#releaseReadsFlights.set(machine, { restarts, promise });
+		return promise;
+	}
+
+	#startBoundaryFlight(machine: string): Promise<MachineBoundary> {
+		const restarts = this.#restarts.get(machine) ?? 0;
+		const pendingSig = this.#pendingSignature(machine);
+		const running = this.#machineBoundary(machine, []).finally(() => {
+			const current = this.#boundaryFlights.get(machine);
+			if (current?.running === running && current.next === undefined) this.#boundaryFlights.delete(machine);
+		});
+		this.#boundaryFlights.set(machine, { restarts, pendingSig, running });
+		return running;
+	}
+
+	#pendingSignature(machine: string): string {
+		const parts: string[] = [];
+		for (const view of this.#machineViews(machine)) {
+			const nodes = view.pending?.nodes();
+			if (!nodes || nodes.size === 0) {
+				parts.push(`${view.key}:0`);
+				continue;
+			}
+			const entries: string[] = [];
+			for (const [path, node] of nodes) {
+				const ver = node.kind === "gone" ? "gone" : `${node.kind}:${node.version}`;
+				entries.push(`${path}=${ver}`);
+			}
+			entries.sort();
+			parts.push(`${view.key}:${entries.join(",")}`);
+		}
+		parts.sort();
+		return parts.join("|");
+	}
+
+	async #releaseMachineReads(machine: string): Promise<MachineReadsRelease> {
+		const restarts = this.#restarts.get(machine);
+		let reads = await this.#releaseMachine(machine);
+		for (let round = 1; reads === "released" && this.#machineViews(machine).some((view) => view.unreleased); round++)
+			reads = round < MACHINE_RELEASE_ROUNDS ? await this.#releaseMachine(machine) : "unanswered";
+		const unproven = this.#machineLost(machine) || this.#restarts.get(machine) !== restarts;
+		return { machine, reads: unproven ? "unproven" : reads };
 	}
 
 	/** The executor stopped the coding machine and starts it again (F3 5c, the plan's rule 4), which it says over the

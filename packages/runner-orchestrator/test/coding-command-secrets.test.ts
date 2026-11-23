@@ -492,6 +492,81 @@ describe("a coding machine's values for the folder service's save check (5j-5 (a
 		expect(f.secrets.values(machineA)).toBeUndefined();
 	});
 
+	it("reuses version-stamped environments across commands and invalidates immediately on version change or release", async () => {
+		const workerId = randomUUID();
+		const machineId = randomUUID();
+		const f = fixture({ [workerId]: { API_KEY } });
+		const scope = f.scope(workerId);
+		const versionA = "a".repeat(64);
+		const versionB = "b".repeat(64);
+		const req1 = { ...f.request(machineId, scope), vaultEnvVersion: versionA };
+		const req2 = { ...f.request(machineId, scope), vaultEnvVersion: versionA };
+		const req3 = { ...f.request(machineId, scope), vaultEnvVersion: versionB };
+
+		const session = f.secrets.session(machineId, scope);
+		const first = await session.resolve(req1, signal());
+		session.accepted(req1);
+		const second = await session.resolve(req2, signal());
+		session.accepted(req2);
+		expect(second.environment).toBe(first.environment);
+		expect(f.environment).toHaveBeenCalledTimes(1);
+
+		f.environment.mockResolvedValueOnce(answer({ API_KEY: ROTATED }));
+		const third = await session.resolve(req3, signal());
+		session.accepted(req3);
+		expect(third.environment).toStrictEqual({ API_KEY: ROTATED });
+		expect(f.environment).toHaveBeenCalledTimes(2);
+
+		const pub = await f.secrets.publication(machineId, scope, signal());
+		expect(f.environment).toHaveBeenCalledTimes(3);
+		expect(masked(pub.stream(), `${API_KEY} ${ROTATED}`)).toBe("*** ***");
+
+		f.secrets.release(machineId, workerId);
+		f.environment.mockResolvedValueOnce(answer({ API_KEY }));
+		const afterRelease = await f.secrets
+			.session(machineId, scope)
+			.resolve({ ...f.request(machineId, scope), vaultEnvVersion: versionB }, signal());
+		expect(afterRelease.environment).toStrictEqual({ API_KEY });
+		expect(f.environment).toHaveBeenCalledTimes(4);
+	});
+
+	it("bounds retained per-session command entries via LRU while keeping polled and concurrent in-flight starts", async () => {
+		const workerId = randomUUID();
+		const machineId = randomUUID();
+		const f = fixture({ [workerId]: { API_KEY } });
+		const scope = f.scope(workerId);
+		const session = f.secrets.session(machineId, scope);
+		const version = "c".repeat(64);
+		const firstReq = { ...f.request(machineId, scope), vaultEnvVersion: version };
+		await session.resolve(firstReq, signal());
+		session.accepted(firstReq);
+		const longRunningReq = { ...f.request(machineId, scope), vaultEnvVersion: version };
+		await session.resolve(longRunningReq, signal());
+		session.accepted(longRunningReq);
+		let latestReq = firstReq;
+		for (let i = 0; i < 1050; i++) {
+			latestReq = { ...f.request(machineId, scope), vaultEnvVersion: version };
+			await session.resolve(latestReq, signal());
+			session.accepted(latestReq);
+			if (i % 200 === 0) {
+				expect(await session.output(longRunningReq, signal())).not.toBeNull();
+			}
+		}
+		const inFlightA = { ...f.request(machineId, scope), vaultEnvVersion: version };
+		const inFlightB = { ...f.request(machineId, scope), vaultEnvVersion: version };
+		await session.resolve(inFlightA, signal());
+		await session.resolve(inFlightB, signal());
+		session.accepted(inFlightA);
+		session.accepted(inFlightB);
+		expect(f.environment).toHaveBeenCalledTimes(1);
+		expect(await session.output(firstReq, signal())).toBeNull();
+		expect(masked(await readMask(session, inFlightA), `a=${API_KEY}`)).toBe("a=***");
+		expect(masked(await readMask(session, inFlightB), `b=${API_KEY}`)).toBe("b=***");
+		expect(masked(await readMask(session, longRunningReq), `long=${API_KEY}`)).toBe("long=***");
+		expect(masked(await readMask(session, latestReq), `x=${API_KEY}`)).toBe("x=***");
+		expect(f.secrets.values(machineId)).toEqual([API_KEY]);
+	});
+
 	it("filters scoped secrets cleanly and allows short explicit non-sensitive config without weakening secret masking", async () => {
 		const filtered = filterScopedSecrets(
 			[

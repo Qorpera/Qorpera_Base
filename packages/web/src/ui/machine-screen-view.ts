@@ -959,7 +959,10 @@ export class MachineScreenView {
 		// The size was this stream's own and goes with it; nothing else ever read it.
 		paint.size = null;
 		if (paint.showing) this.#handBack();
-		else this.#streamCanvas.hidden = true;
+		else {
+			this.#streamCanvas.hidden = true;
+			this.#streamCanvas.width = this.#streamCanvas.height = 0;
+		}
 		// Anything of this stream still waiting its turn in the stream's own order is let through to be dropped: a later
 		// message starts on a settled chain, and every message already waiting — on a decode or on the one before it —
 		// answers now, because each of those awaits is raced against the stream's end.
@@ -1001,6 +1004,7 @@ export class MachineScreenView {
 				this.#looked = true;
 			}
 			this.#swap(this.#canvas, from);
+			if (copy) from.width = from.height = 0;
 			// Were the live picture's the only pixels this view ever had and the copy did not happen, there is nothing
 			// of its own to fall back to: it shows no picture until the first look lands.
 			if (this.#shown && !this.#looked) {
@@ -1084,7 +1088,6 @@ export class MachineScreenView {
 	streamEnded(): void {
 		this.#cleared++;
 		this.#dropPaint();
-		this.#streamCanvas.width = this.#streamCanvas.height = 0;
 	}
 
 	/** No picture any more: the view goes away, and the panel's state text shows. */
@@ -1100,8 +1103,6 @@ export class MachineScreenView {
 		this.#enter.disabled = true;
 		this.#mark.hidden = true;
 		this.#hint.textContent = "";
-		// Erasing is a write like any other and goes through the painter. Only the window's own canvas is erased here:
-		// the live picture's was dropped above with its stream, is hidden, and is emptied by the next stream's own size.
 		const turn = this.#lookTurn;
 		void this.#commit(this.#job(), () => {
 			if (turn !== this.#lookTurn) return "dropped";

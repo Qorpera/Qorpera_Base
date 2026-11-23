@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { authorizeCodingCommand, proveNativeBinding } from "../../../deploy/coding-worker/command-authority.ts";
+import {
+	authorizeCodingCommand,
+	authorizeCodingCommandV2,
+	proveNativeBinding,
+} from "../../../deploy/coding-worker/command-authority.ts";
 import type { CloudCodingCommandHttpRequest } from "../src/cloud-coding-command-http.ts";
 import { cloudNativeToolOperationEnvelope } from "../src/cloud-native-tool-operations.ts";
 import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
@@ -105,5 +109,92 @@ describe("the guest-facing listener's lease proof (G2-6b)", () => {
 		const refused = await proveNativeBinding({ call }, binding, holder, signal).catch((error: unknown) => error);
 		expect(refused).toBeInstanceOf(Error);
 		expect(String((refused as Error).message)).not.toContain("L".repeat(43));
+	});
+
+	it("authorizes consolidated v2 response with route, runAuthority, rebuildDue, diskEpoch, and vaultEnvVersion", async () => {
+		const f = fixture();
+		const bindingAnswer = await f.call();
+		const route = {
+			schema: "qorpera.coding-command-route/v1",
+			executorOwner: "node-1",
+			providerId: "lxd",
+			machineId: f.request.scope.vmId,
+		};
+		const runAuthority = { schema: "qorpera.coding-machine-admission/v1", intent: "run" };
+		const vaultEnvVersion = "e".repeat(64);
+		const diskEpoch = randomUUID();
+		const holder = `job.${f.request.binding.jobId}.${"L".repeat(43)}`;
+		const localRun = {
+			workerId: f.request.scope.workerId,
+			leaseToken: randomUUID(),
+			bindingText: "{}",
+			storage: {
+				schema: "qorpera.coding-storage/v1" as const,
+				volumeId: f.request.scope.workerId,
+				workerId: f.request.scope.workerId,
+				companyId: randomUUID(),
+				environmentId: randomUUID(),
+				writerGeneration: 1 as const,
+				machineIdSha256: "f".repeat(64),
+				policy: {
+					schema: "qorpera.coding-nas-policy/v1" as const,
+					mountPoint: "/srv/nas",
+					source: "10.0.0.2:/srv/nas",
+					serverAddress: "10.0.0.2",
+					rootPath: "/srv/nas/coding",
+				},
+				dataSource: "/srv/nas/data",
+				custodySource: "/srv/nas/state",
+				dataTarget: "/workspace" as const,
+				custodyTarget: "/var/lib/qorpera-coding" as const,
+			},
+			machineIdSha256: "f".repeat(64),
+		};
+		const call = vi.fn<() => Promise<unknown>>(async () => ({
+			schema: "qorpera.coding-command-authority/v2",
+			binding: bindingAnswer,
+			route,
+			runAuthority,
+			rebuildDue: true,
+			diskEpoch,
+			vaultEnvVersion,
+		}));
+		const authorized = await authorizeCodingCommandV2({ call }, f.request, holder, localRun, f.signal);
+		expect(call).toHaveBeenCalledWith(
+			"qorpera_authorize_coding_command_v2",
+			expect.objectContaining({
+				p_binding: f.request.binding,
+				p_holder: holder,
+				p_scope: f.request.scope,
+				p_action: "start",
+				p_command_id: f.request.input.commandId,
+				p_lease_token: localRun.leaseToken,
+				p_binding_text: localRun.bindingText,
+				p_machine_id_sha256: localRun.machineIdSha256,
+			}),
+			f.signal,
+		);
+		expect(authorized).toMatchObject({
+			inputSha256: f.inputSha256,
+			route,
+			runAuthority,
+			rebuildDue: true,
+			diskEpoch,
+			vaultEnvVersion,
+		});
+		expect(typeof authorized.startedAt).toBe("number");
+
+		call.mockResolvedValueOnce({
+			schema: "qorpera.coding-command-authority/v2",
+			binding: bindingAnswer,
+			route,
+			runAuthority: null,
+			rebuildDue: false,
+			diskEpoch: null,
+			vaultEnvVersion,
+		});
+		await expect(authorizeCodingCommandV2({ call }, f.request, holder, localRun, f.signal)).rejects.toThrow(
+			"CODING_COMMAND_AUTHORITY_INVALID",
+		);
 	});
 });

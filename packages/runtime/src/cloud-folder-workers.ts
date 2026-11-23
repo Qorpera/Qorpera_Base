@@ -87,6 +87,7 @@ export interface CloudFolderWorkerChange {
 	readonly harness?: "codex" | "claude-code";
 	readonly repository?: CloudCodingRepository;
 	readonly owner?: string;
+	readonly claimedPaths?: readonly string[];
 	readonly text?: string;
 	readonly decision?: "accept" | "reject";
 	readonly note?: string;
@@ -239,11 +240,13 @@ export class CloudFolderWorkers {
 					doneWhen,
 					context: briefContext || null,
 					sources,
-					// The database checks a coding session's fields, and refuses them on an in-house worker.
 					...(request.species === undefined ? {} : { species: request.species }),
 					...(request.harness === undefined ? {} : { harness: request.harness }),
 					...(request.repository === undefined ? {} : { repository: request.repository }),
 					...(request.owner === undefined ? {} : { owner: request.owner }),
+					...(request.claimedPaths && request.claimedPaths.length > 0
+						? { claimedPaths: [...request.claimedPaths] }
+						: {}),
 				},
 				{
 					action: "dispatch",
@@ -260,10 +263,23 @@ export class CloudFolderWorkers {
 					...(request.harness === undefined ? {} : { harness: request.harness }),
 					...(request.repository === undefined ? {} : { repository: { ...request.repository } }),
 					...(request.owner === undefined ? {} : { owner: request.owner }),
+					...(request.claimedPaths && request.claimedPaths.length > 0
+						? { claimedPaths: [...request.claimedPaths] }
+						: {}),
 				},
 				`${where.folder}/brief.md`,
 				actionReviewId,
-				coding ? { harness: coding.harness, branch: `qorpera/coding/${id}` } : undefined,
+				coding
+					? {
+							workerId: id,
+							harness: coding.harness,
+							branch: `qorpera/coding/${id}`,
+							repository: coding.repository,
+							...(request.claimedPaths && request.claimedPaths.length > 0
+								? { claimedPaths: [...request.claimedPaths] }
+								: {}),
+						}
+					: undefined,
 			);
 		}
 		if (request.action === "followup") {
@@ -531,7 +547,13 @@ export class CloudFolderWorkers {
 		args: JsonValue,
 		path: string,
 		actionReviewId: string | undefined,
-		coding?: { readonly harness: string; readonly branch: string },
+		coding?: {
+			readonly workerId: string;
+			readonly harness: string;
+			readonly branch: string;
+			readonly repository: CloudCodingRepository;
+			readonly claimedPaths?: readonly string[];
+		},
 	): Promise<CloudToolContent> {
 		const folder = workerRequest.folder;
 		return this.#operations.execute({
@@ -543,7 +565,6 @@ export class CloudFolderWorkers {
 				target: { path: folder },
 				requiresCompanyRevision: true,
 			},
-			// The folder core decides at the commit, under this call's receipt.
 			authorize: async () => {},
 			perform: async (_operation, { receiptId, signal: performSignal }) => {
 				const staged = await this.#folder.stage(units, performSignal);
@@ -563,6 +584,27 @@ export class CloudFolderWorkers {
 					performSignal,
 				);
 				const saved = this.#unit(committed, request.action === "dispatch" ? "last" : "first");
+				let overlappingSessions: readonly unknown[] = [];
+				if (
+					coding &&
+					saved.outcome === "saved" &&
+					coding.claimedPaths &&
+					coding.claimedPaths.length > 0 &&
+					typeof this.#folder.codeClaimOverlaps === "function"
+				) {
+					try {
+						overlappingSessions = await this.#folder.codeClaimOverlaps(
+							{
+								repository: coding.repository,
+								claimedPaths: coding.claimedPaths,
+								excludeWorkerId: coding.workerId,
+							},
+							performSignal,
+						);
+					} catch {
+						overlappingSessions = [];
+					}
+				}
 				const output = cloudToolJsonText({
 					schema: "qorpera.agent-worker-receipt/v1",
 					runId: this.#identity.runId,
@@ -573,8 +615,22 @@ export class CloudFolderWorkers {
 					...(saved.problems.length ? { problems: saved.problems } : {}),
 					todoKey: request.todoKey,
 					worker: { workerKey: request.workerKey, path: folder, file: path },
-					// A coding session waits for its machine: the executor's claim starts it (C3a).
-					...(coding && saved.outcome === "saved" ? { coding: { phase: "queued", ...coding } } : {}),
+					...(coding && saved.outcome === "saved"
+						? {
+								coding: {
+									phase: "queued",
+									harness: coding.harness,
+									branch: coding.branch,
+									...(coding.claimedPaths ? { claimedPaths: [...coding.claimedPaths] } : {}),
+								},
+							}
+						: {}),
+					...(overlappingSessions.length > 0
+						? {
+								claimOverlapWarning: `Advisory warning: claimedPaths overlap with ${overlappingSessions.length} active coding ${overlappingSessions.length === 1 ? "session" : "sessions"} on this repository; coordinate or narrow scope to avoid merge conflicts.`,
+								overlappingSessions: overlappingSessions as unknown as JsonValue,
+							}
+						: {}),
 					next:
 						saved.outcome === "saved"
 							? request.action === "decide"
