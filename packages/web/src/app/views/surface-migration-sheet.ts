@@ -551,12 +551,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 						)
 					: null,
 			),
-			h(
-				"div",
-				{ class: "surface-sheet-actions" },
-				status,
-				submit,
-			),
+			h("div", { class: "surface-sheet-actions" }, status, submit),
 		),
 	);
 	form.addEventListener("pointerdown", (event) => {
