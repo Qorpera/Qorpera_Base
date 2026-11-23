@@ -21,6 +21,8 @@ export const SURFACE_GLOB_MAX_DEEP_PARTS = 4;
 export const SURFACE_GLOB_MAX_STARS_PER_PART = 4;
 export const SURFACE_LAYOUT_MAX_COLUMNS = 12;
 export const SURFACE_FACTS_MAX = 8;
+export const SURFACE_SOURCE_MIN_CHOICES = 2;
+export const SURFACE_SOURCE_MAX_CHOICES = 6;
 export const SURFACE_FACTS_DEFAULT_TAKE = 4;
 export const SURFACE_STAGE_DEFAULT_MODEL = "object.json";
 export const SURFACE_MODULE_MIN_HEIGHT = 120;
@@ -50,7 +52,8 @@ export const SURFACE_BLOCK_TYPES = [
 export type SurfaceBlockType = (typeof SURFACE_BLOCK_TYPES)[number];
 export type SurfaceLayoutNodeType = SurfaceBlockType | "row";
 
-export type SurfaceSource = string | { readonly value: unknown };
+export type SurfaceSourceChoice = string | { readonly value: unknown };
+export type SurfaceSource = SurfaceSourceChoice | readonly SurfaceSourceChoice[];
 export type SurfaceBrandGround = (typeof SURFACE_BRAND_GROUNDS)[number];
 
 interface SurfaceBlockBase {
@@ -118,6 +121,7 @@ export type SurfaceFactsBlock = SurfaceFactsItemsBlock | SurfaceFactsFromBlock;
 export interface SurfaceSpecListBlock extends SurfaceBlockBase {
 	readonly type: "spec_list";
 	readonly from: SurfaceSource;
+	readonly skip?: readonly string[];
 	readonly heading?: string;
 }
 
@@ -331,8 +335,12 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 	{
 		type: "spec_list",
 		family: "specs",
-		summary: "labelled values",
-		fields: [{ name: "from", kind: "source", required: true, note: "an object" }, HEADING_FIELD],
+		summary: "labelled values; nested objects as groups; found but empty draws nothing",
+		fields: [
+			{ name: "from", kind: "source", required: true, note: "an object" },
+			{ name: "skip", kind: "keys", required: false, note: "keys to leave out" },
+			HEADING_FIELD,
+		],
 	},
 	{
 		type: "table",
@@ -421,6 +429,7 @@ export function describeSurfaceBlocks(): string {
 		`${SURFACE_LAYOUT_PATH} at the interface folder's root sets the page: {"schema":"${SURFACE_LAYOUT_SCHEMA}","tabs":[{"id","title","blocks":[...]}]}.`,
 		`1-${SURFACE_LAYOUT_MAX_TABS} tabs; at most ${SURFACE_LAYOUT_MAX_TAB_NODES} blocks a tab (a row and the blocks in it each count) and ${SURFACE_LAYOUT_MAX_BLOCKS} in all. Tab title <=${SURFACE_LAYOUT_TAB_TITLE_CHARS} chars, label <=${SURFACE_LAYOUT_LABEL_CHARS}.`,
 		'A source is "file.json#/json/pointer", or "file" for a whole file, or {"value": ...} for a value the layout holds itself. A plain string always points at a file, never a literal. Paths are relative to the interface folder; a leading / names a company file such as /identity/tokens.json.',
+		`A source may be a list of ${SURFACE_SOURCE_MIN_CHOICES}-${SURFACE_SOURCE_MAX_CHOICES} sources tried in order; the first found wins.`,
 		"Ids are lower-case slugs, unique in the layout. Labels, headings, titles and keys are plain text, never sources. Every block but a row may have an id. Every block draws its own empty home, so name homes before their files exist.",
 		"Blocks (field?: optional):",
 	];
@@ -502,7 +511,7 @@ function walkPointer(document: unknown, pointer: string): SurfaceSourceValue {
 	return current === undefined ? NOT_FOUND : { found: true, value: current };
 }
 
-export function resolveSurfaceSource(source: unknown, readJson: SurfaceJsonReader): SurfaceSourceValue {
+function resolveSourceChoice(source: unknown, readJson: SurfaceJsonReader): SurfaceSourceValue {
 	if (isPlainObject(source)) {
 		return Object.hasOwn(source, "value") && source.value !== undefined
 			? { found: true, value: source.value }
@@ -514,6 +523,16 @@ export function resolveSurfaceSource(source: unknown, readJson: SurfaceJsonReade
 	} catch {
 		return NOT_FOUND;
 	}
+}
+
+export function resolveSurfaceSource(source: unknown, readJson: SurfaceJsonReader): SurfaceSourceValue {
+	if (!Array.isArray(source)) return resolveSourceChoice(source, readJson);
+	for (const choice of source) {
+		if (Array.isArray(choice)) continue;
+		const resolved = resolveSourceChoice(choice, readJson);
+		if (resolved.found) return resolved;
+	}
+	return NOT_FOUND;
 }
 
 function parseGlob(value: unknown, label: string): string {
@@ -603,6 +622,14 @@ function parseId(value: unknown, label: string): string {
 }
 
 function parseSource(value: unknown, label: string): SurfaceSource {
+	if (!Array.isArray(value)) return parseSourceChoice(value, label);
+	return parseList(value, label, SURFACE_SOURCE_MIN_CHOICES, SURFACE_SOURCE_MAX_CHOICES, (item, at) => {
+		if (Array.isArray(item)) fail(at, "is a list inside a list; a list of sources holds sources only");
+		return parseSourceChoice(item, at);
+	});
+}
+
+function parseSourceChoice(value: unknown, label: string): SurfaceSourceChoice {
 	if (isPlainObject(value)) {
 		const keys = Object.keys(value);
 		if (keys.length !== 1 || keys[0] !== "value" || value.value === undefined) {
@@ -1025,7 +1052,17 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 			title: "Overview",
 			blocks: [
 				{ type: "stage_3d", id: "stage", model: "object.json" },
-				{ type: "title", line: "specs.json#/overview/tagline" },
+				{
+					type: "title",
+					line: [
+						"specs.json#/overview/tagline",
+						"specs.json#/tagline",
+						"specs.json#/overview/summary",
+						"specs.json#/summary",
+						"specs.json#/overview/description",
+						"specs.json#/description",
+					],
+				},
 				{ type: "swatch_row", from: "specs.json#/colorways", tints: "stage" },
 				{
 					type: "facts",
@@ -1041,6 +1078,12 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 			blocks: [
 				{ type: "spec_list", from: "specs.json#/overview" },
 				{ type: "table", from: "specs.json#/bom", heading: "Parts" },
+				{
+					type: "spec_list",
+					from: "specs.json",
+					skip: ["overview", "bom", "model", "colorways", "tagline", "summary", "description"],
+					heading: "Other details",
+				},
 			],
 		},
 		{
@@ -1052,7 +1095,7 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 					type: "cards",
 					from: "vendors.json#/vendors",
 					title: "vendor",
-					lines: ["component", "region", "moq", "leadTime", "unitPrice", "certifications"],
+					lines: ["component", "unitPrice", "moq", "leadTime", "region", "certifications"],
 					badge: "status",
 				},
 			],
@@ -1065,7 +1108,12 @@ const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
 		{
 			id: "files",
 			title: "Files",
-			blocks: [{ type: "files", match: ["**/*.md", "**/*.markdown", "**/*.txt", "**/*.svg"] }],
+			blocks: [
+				{
+					type: "files",
+					match: ["**/*.md", "**/*.markdown", "**/*.txt", "**/*.svg", "**/*.html", "**/*.htm"],
+				},
+			],
 		},
 	],
 };

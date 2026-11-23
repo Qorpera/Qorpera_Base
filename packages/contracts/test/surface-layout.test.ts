@@ -625,6 +625,28 @@ describe("bindings", () => {
 		expect(resolveSurfaceSource("list.json#/0", readJson)).toEqual({ found: true, value: "zero" });
 	});
 
+	it("tries a list of sources in order and takes the first one found", () => {
+		const files: Record<string, unknown> = { "specs.json": { tagline: "Top", overview: { summary: null } } };
+		const readJson = (path: string) => files[path];
+		expect(resolveSurfaceSource(["specs.json#/overview/tagline", "specs.json#/tagline"], readJson)).toEqual({
+			found: true,
+			value: "Top",
+		});
+		expect(resolveSurfaceSource(["specs.json#/overview/summary", "specs.json#/tagline"], readJson)).toEqual({
+			found: true,
+			value: null,
+		});
+		expect(resolveSurfaceSource(["nothing.json", { value: "held" }], readJson)).toEqual({
+			found: true,
+			value: "held",
+		});
+		expect(resolveSurfaceSource([["specs.json#/tagline"], "nothing.json"], readJson)).toEqual({
+			found: false,
+			value: undefined,
+		});
+		expect(resolveSurfaceSource([], readJson)).toEqual({ found: false, value: undefined });
+	});
+
 	it("says not found, never throws, for anything missing", () => {
 		const files: Record<string, unknown> = {
 			"specs.json": { overview: { tagline: "Calm" }, bom: [{ part: "Shell" }] },
@@ -696,6 +718,44 @@ describe("bindings", () => {
 	});
 });
 
+describe("source lists and spec_list skip", () => {
+	it("accepts a list of 2 to 6 sources wherever a source goes, and a spec_list that skips keys", () => {
+		const line = ["specs.json#/overview/tagline", "specs.json#/tagline", { value: "A band" }];
+		const layout = parseSurfaceLayout(
+			layoutWith([
+				{ type: "title", line },
+				{ type: "spec_list", from: "specs.json", skip: ["overview", "bom"], heading: "Other details" },
+			]),
+		);
+		expect(layout.tabs[0]?.blocks).toEqual([
+			{ type: "title", line },
+			{ type: "spec_list", from: "specs.json", skip: ["overview", "bom"], heading: "Other details" },
+		]);
+	});
+
+	it("refuses a list that is too short, too long or holds a list", () => {
+		expect(refusal(layoutWith([{ type: "title", line: ["specs.json#/tagline"] }]))).toBe(
+			"layout.tabs[0].blocks[0].line must hold 2 to 6 entries, not 1",
+		);
+		expect(refusal(layoutWith([{ type: "title", line: Array.from({ length: 7 }, () => "specs.json") }]))).toBe(
+			"layout.tabs[0].blocks[0].line must hold 2 to 6 entries, not 7",
+		);
+		expect(refusal(layoutWith([{ type: "title", line: ["specs.json", ["specs.json"]] }]))).toBe(
+			"layout.tabs[0].blocks[0].line[1] is a list inside a list; a list of sources holds sources only",
+		);
+		expect(refusal(layoutWith([{ type: "title", line: ["specs.json", "../specs.json"] }]))).toMatch(
+			/^layout\.tabs\[0\]\.blocks\[0\]\.line\[1\] /,
+		);
+	});
+
+	it("reads a block with a broken source list as unknown and keeps the rest", () => {
+		const read = readSurfaceLayout(
+			JSON.stringify(layoutWith([{ type: "title", line: ["specs.json", ["x.json"]] }, { type: "files" }])),
+		);
+		expect("layout" in read && read.layout.tabs[0]?.blocks.map((node) => node.type)).toEqual(["unknown", "files"]);
+	});
+});
+
 describe("the block registry", () => {
 	it("holds one entry per type: eleven families and the row", () => {
 		const types = SURFACE_BLOCKS.map((block) => block.type);
@@ -731,6 +791,8 @@ describe("the block registry", () => {
 			for (const field of block.fields) expect(text).toContain(`${field.name}${field.required ? "" : "?"}`);
 		}
 		expect(text).not.toMatch(/parse|registry|\.ts\b|function/i);
+		expect(text).toContain("A source may be a list of 2-6 sources tried in order; the first found wins.");
+		expect(text).toContain("- spec_list: labelled values; nested objects as groups; found but empty draws nothing.");
 	});
 });
 
@@ -786,11 +848,33 @@ describe("starter layouts", () => {
 		const product = SURFACE_STARTER_LAYOUTS.product;
 		expect(product.tabs.map((tab) => tab.title)).toEqual(["Overview", "Specs", "Vendors", "Reports", "Files"]);
 		expect(product.tabs[0]?.blocks.map((node) => node.type)).toEqual(["stage_3d", "title", "swatch_row", "facts"]);
+		expect(product.tabs[0]?.blocks[1]).toEqual({
+			type: "title",
+			line: [
+				"specs.json#/overview/tagline",
+				"specs.json#/tagline",
+				"specs.json#/overview/summary",
+				"specs.json#/summary",
+				"specs.json#/overview/description",
+				"specs.json#/description",
+			],
+		});
 		expect(product.tabs[0]?.blocks[3]).toMatchObject({ from: "specs.json#/overview", take: 4 });
-		expect(product.tabs[1]?.blocks.map((node) => node.type)).toEqual(["spec_list", "table"]);
+		expect(product.tabs[1]?.blocks.map((node) => node.type)).toEqual(["spec_list", "table", "spec_list"]);
+		expect(product.tabs[1]?.blocks[2]).toEqual({
+			type: "spec_list",
+			from: "specs.json",
+			skip: ["overview", "bom", "model", "colorways", "tagline", "summary", "description"],
+			heading: "Other details",
+		});
 		expect(product.tabs[2]?.blocks.map((node) => node.type)).toEqual(["spec_list", "cards"]);
+		expect(product.tabs[2]?.blocks[1]).toMatchObject({
+			lines: ["component", "unitPrice", "moq", "leadTime", "region", "certifications"],
+		});
 		expect(product.tabs[3]?.blocks).toEqual([{ type: "report", match: "**/*.report.json" }]);
-		expect(product.tabs[4]?.blocks.map((node) => node.type)).toEqual(["files"]);
+		expect(product.tabs[4]?.blocks).toEqual([
+			{ type: "files", match: ["**/*.md", "**/*.markdown", "**/*.txt", "**/*.svg", "**/*.html", "**/*.htm"] },
+		]);
 	});
 
 	it("gives Identity its homes in order, the face first", () => {
