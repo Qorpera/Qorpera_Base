@@ -87,7 +87,8 @@
 /* ---- the rail ---- */
 
 /* Above the travelling highlight. (:where keeps any other position, the drag ghost's, in charge.) */
-:where(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row, .rail-agent-sched) { position: relative; z-index: 1; }
+/* WHY: Safari paints a freshly animating highlight over its later siblings until it layers them, so each row keeps its own layer. */
+:where(.rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row, .rail-agent-sched) { position: relative; z-index: 1; transform: translateZ(0); }
 .rail-row, .rail-pin, .cofounder-home, .rail-surface, .rail-agent-hub-row {
 	transition: color var(--motion-base) ease;
 }

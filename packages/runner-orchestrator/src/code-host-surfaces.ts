@@ -8,6 +8,7 @@ import { CODE_FOLDER_ANY_SESSION, codeFolderRefuses } from "./code-folder-names.
 import {
 	CODE_AREA_CONFIG,
 	CODE_AREA_IN_QORPERA_REF,
+	type CodeCommitFile,
 	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
@@ -15,6 +16,7 @@ import {
 	MAX_READ,
 	moveBase,
 	type Run,
+	readCommitChecksFile,
 	SHA,
 	tail,
 	WORKTREE_IN_PROGRESS,
@@ -1004,6 +1006,8 @@ export interface VerifyStagedSurfaceBranchResult {
 	readonly headSha: string;
 	readonly changed: boolean;
 	readonly filesChanged: number;
+	readonly baseChecksFile?: CodeCommitFile;
+	readonly checksFile?: CodeCommitFile;
 	readonly restored: readonly string[];
 }
 
@@ -1040,13 +1044,19 @@ export async function verifyStagedSurfaceBranch(
 		const { records } = await run.checkNamesIncremental(run.repo, baseSha, headSha);
 		const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
 		if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
-		const changedPaths = await diffPathsBetween(run, baseSha, headSha, "CODE_HOST_EXPORT_FAILED");
+		const [changedPaths, baseChecksFile, checksFile] = await Promise.all([
+			diffPathsBetween(run, baseSha, headSha, "CODE_HOST_EXPORT_FAILED"),
+			readCommitChecksFile(run, baseSha),
+			readCommitChecksFile(run, headSha),
+		]);
 		return {
 			branch,
 			baseSha,
 			headSha,
 			changed: true,
 			filesChanged: changedPaths.length,
+			baseChecksFile,
+			checksFile,
 			restored: run.restored,
 		};
 	});

@@ -201,12 +201,18 @@
 @keyframes surface-figure-toward { 0%, 10% { transform: none; } 18%, 60% { transform: translate(6%, 0.5%); } 68%, 100% { transform: none; } }
 @keyframes surface-figure-breathe { 50% { transform: scale(1.025, 0.985); } }
 .rail-surface {
-	display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 7px 10px; border-radius: 13px;
+	position: relative; display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 7px 10px; border-radius: 13px;
 	color: var(--text); text-decoration: none; -webkit-font-smoothing: auto;
 }
 .rail-surface:hover { text-decoration: none; }
 .rail-surface.active, .rail-surface.active:hover { background: var(--rail-selection); color: var(--rail-selection-text); }
 .rail-surface:focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
+.rail-surface > .rail-here { top: 50%; right: 10px; transform: translateY(-50%); }
+.rail-surface:has(> .rail-here) { padding-right: calc(20px + var(--here-size, 22px) * (1 + (var(--here-count, 1) - 1) * 0.82)); }
+.rail-surface.hover-lit > .rail-here { --here-ring: var(--rail-hover); }
+.rail-surface.active > .rail-here { --here-ring: var(--rail-selection); }
+.rail-compact .rail-surface > .rail-here { --here-size: 18px; top: 2px; right: 2px; transform: none; }
+.rail-compact .rail-surface:has(> .rail-here) { padding-right: 4px; }
 .rail-surface-text { display: grid; flex: 1; min-width: 0; gap: 2px; }
 .rail-surface-name {
 	min-width: 0; overflow: hidden; color: var(--text); font-size: 14.5px; font-weight: 660; line-height: 20px;
@@ -1428,7 +1434,6 @@
 .studio-grid, .report-layout { transition: opacity var(--motion-base) ease; }
 .surface-studio.is-updating .studio-grid,
 .surface-report.is-updating .report-layout { opacity: 0.8; }
-.surface-studio.is-updating .studio-live-dot { animation: surface-breathe 1.1s ease-in-out infinite; }
 .surface-studio.is-updating :is(.studio-swatch, .studio-doc, .studio-vendor-card) {
 	position: relative; overflow: hidden;
 }
@@ -1579,9 +1584,10 @@
 
 .studio-reach { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 12.5px; }
 .studio-reach-label { color: var(--text-soft); }
+.studio-reach-group { display: contents; }
+.studio-reach-group + .studio-reach-group > .studio-reach-label { margin-left: 10px; }
 .studio-reach .studio-reach-chip { height: 26px; padding: 0 2px; border: 0; background: none; gap: 7px; }
 .studio-reach .studio-reach-chip:hover { background: none; transform: none; text-decoration: underline; text-underline-offset: 3px; }
-.studio-reach-chips { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; max-width: 100%; }
 .studio-reach-chip {
 	display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-width: 0; height: 34px; padding: 0 12px 0 6px;
 	border: 1px solid color-mix(in srgb, var(--text) 10%, transparent); border-radius: 999px;
@@ -1591,44 +1597,6 @@
 .studio-reach-chip > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .studio-reach-chip:hover {
 	background: var(--rail-hover); border-color: color-mix(in srgb, var(--text) 22%, transparent); transform: translateY(-1px);
-}
-.studio-reach-chip.is-compact {
-	gap: 6px; height: 26px; padding: 0 9px 0 4px; font-size: 11.5px; font-weight: 580;
-}
-.studio-live-dot {
-	width: 6px; height: 6px; border-radius: 50%; flex: none;
-	background: var(--studio-brand-accent, var(--agent-active));
-	box-shadow: 0 0 0 3px color-mix(in srgb, var(--studio-brand-accent, var(--agent-active)) 18%, transparent);
-}
-.studio-link-path {
-	max-width: 100%; overflow-wrap: anywhere; padding: 1px 7px; border-radius: 6px;
-	background: color-mix(in srgb, var(--text) 5%, transparent);
-	color: var(--text); font-family: var(--mono); font-size: 11.5px;
-}
-.studio-link-arrow { color: var(--text-soft); font-size: 11.5px; }
-.studio-link-count {
-	margin-left: auto; padding: 1px 8px; border-radius: 999px;
-	background: color-mix(in srgb, var(--studio-brand-accent, var(--accent)) 11%, transparent);
-	color: var(--studio-brand-accent, var(--accent)); font-size: 11px; font-weight: 600;
-	font-variant-numeric: tabular-nums;
-}
-.studio-shared-links {
-	display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 10px; padding: 12px 15px;
-	border: 1px solid var(--border); border-radius: 14px;
-	background: color-mix(in srgb, var(--text) 1.8%, var(--bg));
-}
-.studio-shared-links-head {
-	display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0;
-}
-.studio-shared-links-title {
-	color: var(--text-muted); font-size: 11.5px; font-weight: 650; letter-spacing: 0.01em;
-}
-.studio-shared-links-list { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 8px; }
-.studio-shared-link-row {
-	display: flex; flex-wrap: wrap; align-items: center; gap: 7px 8px; min-width: 0;
-}
-.studio-shared-link-dir {
-	min-width: 52px; color: var(--text-soft); font-size: 11.5px; font-weight: 600;
 }
 .surface-studio.has-identity-tokens {
 	--studio-brand-accent: var(--q-color-accent, var(--brand-accent, var(--accent)));
@@ -1640,9 +1608,6 @@
 .surface-studio.has-identity-tokens .studio-changed-pill {
 	background: color-mix(in srgb, var(--studio-brand-accent) 13%, transparent);
 	color: var(--studio-brand-accent);
-}
-.surface-studio.has-identity-tokens .studio-shared-links {
-	border-color: color-mix(in srgb, var(--studio-brand-accent) 22%, var(--border));
 }
 
 .studio-3d-dims {
@@ -2040,11 +2005,11 @@
 .surface-pill-presence {
 	display: inline-flex; align-items: center; padding: 0 2px;
 }
-.surface-pill-presence .avatar {
-	width: 20px; height: 20px; font-size: 9px;
-	box-shadow: 0 0 0 1.5px var(--bg);
+.surface-pill-presence .person-avatar {
+	width: 22px; height: 22px; font-size: 9.5px; font-weight: 650;
+	box-shadow: 0 0 0 2px var(--bg);
 }
-.surface-pill-presence .avatar + .avatar { margin-left: -6px; }
+.surface-pill-presence .person-avatar + .person-avatar { margin-left: -4px; }
 .surface-pill-presence-more {
 	margin-left: 4px; font-size: 11px; font-weight: 600; color: var(--text-muted);
 }
@@ -2074,7 +2039,6 @@
 @media (prefers-reduced-motion: reduce) {
 	.surface-state.is-running, .surface-ring, .surface-toast, .surface-bar-agent.is-attention,
 	.surface-studio.is-updating .studio-head::after, .surface-report.is-updating .report-chrome::after,
-	.surface-studio.is-updating .studio-live-dot,
 	.surface-studio.is-updating :is(.studio-swatch, .studio-doc, .studio-vendor-card)::after,
 	.surface-studio.is-settled .studio-grid, .surface-report.is-settled .report-layout,
 	:is(.surface-mount, .surface-frames, .surface-report-slot, .surface-studio, .surface-report).is-entering { animation: none; }

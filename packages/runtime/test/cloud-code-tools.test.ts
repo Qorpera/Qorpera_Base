@@ -1,10 +1,4 @@
 import { createHash } from "node:crypto";
-import {
-	workerStandingTexts,
-	writeTodoFile,
-	writeWorkerBriefFile,
-	writeWorkerResultsFile,
-} from "@qorpera/cloud-client/company-state-files";
 import { CLOUD_CODE_TOOL_DESCRIPTION, cloudCodeTools } from "@qorpera/runtime/cloud-code-tools";
 import { type CloudCompanyFolderBytes, CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
 import type { CloudCompanyPathControl, CloudCompanyPathRpc } from "@qorpera/runtime/cloud-company-path-gateway";
@@ -27,9 +21,12 @@ import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fix
  * functions), and the calls go through the run's real folder client. */
 
 const REQUEST = "72000000-0000-4000-8000-000000000001";
-const UNDO = "qorpera_folder_request_code_undo";
-const STANDS = "qorpera_folder_code_request";
+const UNDO = "qorpera_folder_request_code_undo_v2";
+const STANDS = "qorpera_folder_code_request_v2";
 const DESCRIBE = "qorpera_folder_describe_code_change";
+const HISTORY = "qorpera_folder_code_history";
+const QUERY = "qorpera_folder_code_query";
+const LIFECYCLE = "qorpera_folder_code_lifecycle";
 const undo = {
 	action: "undo",
 	operationKey: "undo-12",
@@ -40,7 +37,7 @@ const undo = {
 };
 const queued = { schema: "qorpera.code-request/v1", state: "queued", requestId: REQUEST };
 const stands = (over: Record<string, unknown> = {}) => ({
-	schema: "qorpera.code-request/v1",
+	schema: "qorpera.code-request/v2",
 	requestId: REQUEST,
 	kind: "undo",
 	state: "queued",
@@ -48,6 +45,8 @@ const stands = (over: Record<string, unknown> = {}) => ({
 	change: null,
 	code: null,
 	paths: null,
+	messages: null,
+	data: null,
 	...over,
 });
 const sqlError = (code: string, message: string) => new CloudCompanyFolderRpcError(code, message);
@@ -151,60 +150,64 @@ async function fixture(
 }
 
 describe("manage_code: the tool an agent's own run is offered", () => {
-	it("is one tool with four actions, described in plain words within the catalog's bound", async () => {
+	it("is one tool with 15 actions, described concisely within the catalog's bound", async () => {
 		const f = await fixture(() => queued);
 		try {
 			expect(f.tools.map((tool) => [tool.name, tool.source])).toEqual([["manage_code", "runtime"]]);
 			expect(CLOUD_RUNTIME_TOOL_OPERATIONS).toContain("manage_code");
 			const [tool] = f.tools;
 			expect(tool.description).toBe(CLOUD_CODE_TOOL_DESCRIPTION);
-			expect(Buffer.byteLength(tool.description)).toBeLessThan(1800);
+			expect(Buffer.byteLength(tool.description)).toBeLessThan(2000);
 			for (const said of [
-				"Qorpera numbers every change that goes into a repository's main code and writes its record at code/<owner>/<name>/changes/<number>.md.",
-				"Every action takes owner and name; undo, describe and bring_in take operationKey, and undo and describe also take change, the number.",
-				"- status: inspect code/<owner>/<name>/ in one call (no operationKey): active or blocked coding sessions targeting it, active worktrees, recent changes from changes/index.md, and its checks configuration.",
-				"- undo: put main back as it was without that change, as a new change of its own: nothing is lost, and an undo can be undone.",
-				"When later changes built on it, nothing happens and you are told the files: then undo with andLater true, which takes out that change and every change after it, or send the session a follow-up.",
-				"After an undo, check main before you tell anyone.",
-				"- describe: set the change's notice and picture; what you leave out stays as it is.",
-				// Step 6 (STEP6-IMPORT-BUILD.md section 6): existing code comes in with its history, after a look.
-				'- bring_in: bring existing code in with its history, as a new repository code/<owner>/<name>/ (lowercase): from {"github":"owner/name"}, or from {"file":"code/_incoming/<folder>/<name>.bundle"}, a git bundle of at most 256 MB made on a machine (from a zip: git init, add, commit, then git bundle create with --all).',
-				"look true only reads it: size, history, who changed it lately, what stops it, files with key-like strings.",
-				"It takes minutes: call again with the same operationKey, and tell members it shows in Storage when it is in.",
-				"Replace keys it found where you can, and ask a member once for the rest.",
-				// What a member reads never carries the platform's own names for things.
 				"Change numbers are yours, never the members' words.",
+				"- status:",
+				"- log / diff / show / branches / merge_preview:",
+				"- history:",
+				"- undo:",
+				"- describe:",
+				"- bring_in:",
+				"- create / archive / unarchive / tag / prune:",
 			])
 				expect(tool.description).toContain(said);
-			// Only how a bundle is made names git, for the machine it is made on.
-			expect(tool.description.replace(/ \(from a zip: [^)]*\)|a git bundle/g, "")).not.toMatch(
-				/commit|branch|pull request|merge|revert|git\b/i,
-			);
 			expect(tool.inputSchema).toMatchObject({
 				type: "object",
 				additionalProperties: false,
 				required: ["action", "owner", "name"],
 				properties: {
-					action: { type: "string", enum: ["undo", "describe", "bring_in", "status"] },
-					operationKey: {
-						description: "Required for undo, describe and bring_in; omit for status.",
+					action: {
+						type: "string",
+						enum: [
+							"status",
+							"log",
+							"diff",
+							"show",
+							"branches",
+							"merge_preview",
+							"history",
+							"undo",
+							"describe",
+							"bring_in",
+							"create",
+							"archive",
+							"unarchive",
+							"tag",
+							"prune",
+						],
 					},
 					change: { type: "integer", minimum: 1 },
+					toChange: { type: "integer", minimum: 1 },
+					changes: { type: "array", minItems: 1, maxItems: 50 },
 					andLater: { type: "boolean" },
+					dryRun: { type: "boolean" },
+					runChecks: { type: "boolean" },
+					force: { type: "boolean" },
 					from: {
 						type: "object",
 						additionalProperties: false,
 						properties: {
 							github: { type: "string" },
 							file: { type: "string" },
-							// The import's follow-ups (lead's decision 3): a branch beside github too.
-							branch: {
-								type: "string",
-								minLength: 1,
-								maxLength: 200,
-								description:
-									"The branch to bring in as main when it is not the source's own: one a look named, or a file's when its main branch is not clear.",
-							},
+							branch: { type: "string", minLength: 1, maxLength: 200 },
 						},
 					},
 					look: { type: "boolean" },
@@ -219,21 +222,15 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 		const f = await fixture(() => queued);
 		try {
 			for (const [args, why] of [
-				[{ ...undo, action: "revert" }, "action is undo, describe, bring_in or status"],
-				[
-					{ operationKey: "k", owner: "acme", name: "shop", change: 12 },
-					"action is undo, describe, bring_in or status",
-				],
+				[{ ...undo, action: "revert" }, "action must be one of"],
+				[{ operationKey: "k", owner: "acme", name: "shop", change: 12 }, "action must be one of"],
 				[
 					{ action: "status", owner: "acme", name: "shop", operationKey: "k" },
 					"status takes only action, owner, name",
 				],
 				[{ action: "status", owner: "acme", name: "shop", change: 1 }, "status takes only action, owner, name"],
 				[{ action: "status", owner: "Acme", name: "shop" }, "owner and name are the repository's"],
-				[
-					{ ...undo, picture: "product/a.png" },
-					"undo takes only action, operationKey, owner, name, change, andLater, reason, notice",
-				],
+				[{ ...undo, picture: "product/a.png" }, "undo takes only action, operationKey, owner, name"],
 				[
 					{ ...undo, action: "describe" },
 					"describe takes only action, operationKey, owner, name, change, notice, picture",
@@ -252,6 +249,39 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 				[{ ...undo, reason: "two\nlines" }, "reason is one line of at most 500 characters"],
 				[{ ...undo, reason: "æ".repeat(251) }, "undo needs reason"],
 				[{ ...undo, andLater: "yes" }, "andLater is true or false"],
+				[{ ...undo, dryRun: "yes" }, "dryRun is true or false"],
+				[{ ...undo, runChecks: "yes" }, "runChecks is true or false"],
+				[{ ...undo, force: "yes" }, "force is true or false"],
+				[{ ...undo, changes: [12, 13] }, "changes cannot be combined with change"],
+				[
+					{ ...less("change"), changes: Array.from({ length: 51 }, (_, i) => i + 1) },
+					"changes must be a list of 1 to 50 distinct change numbers",
+				],
+				[{ ...undo, toChange: 10 }, "toChange must be at least change"],
+				[{ ...undo, toChange: 62 }, "toChange must be at least change and span at most 50 changes"],
+				[{ ...undo, toChange: 15, andLater: true }, "toChange cannot be combined with andLater"],
+				[
+					{ action: "history", owner: "acme", name: "shop", state: "unchanged" },
+					"state must be one of landed, reverted, conflict, refused, lost",
+				],
+				[{ action: "diff", owner: "acme", name: "shop", base: "main" }, "diff requires base and head"],
+				[
+					{ action: "show", owner: "acme", name: "shop", path: "../escape" },
+					"path must be a relative repository path",
+				],
+				[{ action: "merge_preview", owner: "acme", name: "shop" }, "merge_preview requires head"],
+				[
+					{ action: "tag", operationKey: "t1", owner: "acme", name: "shop", mode: "list", tag: "v1" },
+					"tag list does not take",
+				],
+				[
+					{ action: "tag", operationKey: "t2", owner: "acme", name: "shop", mode: "create", tag: "bad..tag" },
+					"tag must be a valid git tag name",
+				],
+				[
+					{ action: "tag", operationKey: "t3", owner: "acme", name: "shop", mode: "create", tag: "v1/.hidden" },
+					"tag must be a valid git tag name",
+				],
 				[{ ...undo, notice: "x".repeat(201) }, "notice is one line of at most 200 characters"],
 				[{ ...undo, notice: "a\tb" }, "notice is one line of at most 200 characters"],
 				[
@@ -427,6 +457,9 @@ describe("manage_code undo: one answer in plain words per way it can go", () => 
 						name: "shop",
 						change: 12,
 						andLater: false,
+						dryRun: false,
+						runChecks: false,
+						force: false,
 						reason: "It broke the checkout.",
 						notice: "The returns line is gone again.",
 					},
@@ -646,7 +679,7 @@ describe("manage_code undo: one answer in plain words per way it can go", () => 
 		[
 			"too_many",
 			true,
-			"Nothing was undone: that would take out more than 500 changes at once. Instead, send the session a follow-up that puts the old behaviour back.",
+			"Nothing was undone: that would take out too many changes at once. Instead, send the session a follow-up that puts the old behaviour back.",
 		],
 		[
 			"busy",
@@ -692,7 +725,7 @@ describe("manage_code undo: one answer in plain words per way it can go", () => 
 		[
 			"22023",
 			"Code request is invalid",
-			"The request was not taken as written: check owner, name, change and the texts, and call again.",
+			"The request was not taken as written: check owner, name and parameters, and call again.",
 		],
 		[
 			"23505",
@@ -1712,7 +1745,7 @@ describe("manage_code undo of the first change of code brought in", () => {
 	});
 });
 
-describe("manage_code status", () => {
+describe("manage_code status (SQL-backed)", () => {
 	const ancestors = (paths: readonly string[]) => {
 		const out = new Set<string>();
 		for (const path of paths) {
@@ -1722,58 +1755,94 @@ describe("manage_code status", () => {
 		return [...out];
 	};
 
-	const codingBrief = (options: {
-		id: string;
-		title: string;
-		dispatchedAt: string;
-		followUps?: number;
-		repository?: { host: "qorpera" | "github.com"; owner: string; name: string; baseBranch: string };
-		species?: "coding" | "in-house";
-	}) => {
-		const species = options.species ?? "coding";
-		return writeWorkerBriefFile({
-			id: options.id,
-			title: options.title,
-			species,
-			...(species === "coding"
-				? {
-						harness: "codex" as const,
-						repository: options.repository ?? {
-							host: "qorpera",
-							owner: "acme",
-							name: "shop",
-							baseBranch: "main",
-						},
-					}
-				: {}),
-			access: "read",
-			revival: "batch",
-			dispatchedAt: options.dispatchedAt,
-			followUps: options.followUps ?? 0,
-			followedUpAt: options.followUps ? options.dispatchedAt : null,
-			goal: "Deliver the requested change.",
-			doneWhen: "Checks pass and main is updated.",
-			context: null,
-			sources: [],
-			...workerStandingTexts({ species, access: "read", revival: "batch" }),
-			followUp: options.followUps ? "Keep going." : null,
-		});
-	};
-
-	const todo = (id: string, status: "open" | "blocked" | "done" | "cancelled" = "open") =>
-		writeTodoFile({
-			id,
-			title: "Shop work",
-			status,
-			requestedBy: null,
-			detail: "",
-		});
+	const baseSqlStatus = (over: Record<string, unknown> = {}) => ({
+		schema: "qorpera.code-repository-status/v1",
+		registered: true,
+		repository: {
+			owner: "acme",
+			name: "shop",
+			path: "code/acme/shop",
+			registered: true,
+			archived: false,
+			archivedAt: null,
+			mainSha: "a".repeat(40),
+			lastChange: 13,
+			checksEnabled: true,
+			siteEnabled: true,
+			restoredAt: null,
+			importedAt: null,
+		},
+		sessionsTotal: 1,
+		sessions: [
+			{
+				workerId: "10000000-0000-4000-8000-000000000001",
+				workerKey: "cart-totals",
+				agent: "nora",
+				todoKey: "checkout",
+				title: "Fix cart totals",
+				state: "active",
+				phase: "running",
+				harness: "codex",
+				branch: "qorpera/coding/10000000-0000-4000-8000-000000000001",
+				worktree: "code/acme/shop/worktrees/10000000-0000-4000-8000-000000000001",
+				baseSha: "a".repeat(40),
+				claimedPaths: ["src/cart/**"],
+				sequence: 1,
+				archived: false,
+				needs: null,
+				path: "QorperaOS/agents/nora/todos/checkout/cart-totals",
+				createdAt: "2026-11-22T08:00:00Z",
+				updatedAt: "2026-11-22T09:00:00Z",
+			},
+		],
+		changesCount: 2,
+		recentChanges: [
+			{
+				n: 13,
+				kind: "land",
+				state: "landed",
+				how: "fast-forward",
+				title: "Add promo codes",
+				notice: null,
+				workerId: null,
+				checksState: "passed",
+				siteState: "made",
+				filesChanged: 2,
+				mainBefore: "b".repeat(40),
+				mainAfter: "a".repeat(40),
+				undoes: null,
+				revertedBy: null,
+				createdAt: "2026-11-21T10:00:00Z",
+			},
+			{
+				n: 12,
+				kind: "land",
+				state: "landed",
+				how: "fast-forward",
+				title: "Update cart totals",
+				notice: null,
+				workerId: null,
+				checksState: "passed",
+				siteState: "made",
+				filesChanged: 1,
+				mainBefore: "c".repeat(40),
+				mainAfter: "b".repeat(40),
+				undoes: null,
+				revertedBy: null,
+				createdAt: "2026-11-20T10:00:00Z",
+			},
+		],
+		site: { slug: "shop-demo", url: "https://shop-demo.qorpera.com/", liveChange: 12 },
+		queue: { landing: 0, running: 1, queued: 0, restoring: false, openRequests: [] },
+		...over,
+	});
 
 	async function statusFixture(seed: {
 		files?: Record<string, string>;
 		folders?: string[];
 		links?: Record<string, string>;
 		rawFiles?: Record<string, Uint8Array>;
+		sqlStatus?: Record<string, unknown>;
 	}) {
 		const allPaths = [
 			...Object.keys(seed.files ?? {}),
@@ -1781,14 +1850,28 @@ describe("manage_code status", () => {
 			...Object.keys(seed.rawFiles ?? {}),
 			...(seed.folders ?? []),
 		];
-		const f = await folderWriterFixture({
-			files: seed.files,
-			folders: [...new Set([...(seed.folders ?? []), ...ancestors(allPaths)])],
-			links: seed.links,
-		});
+		const sqlAnswer = seed.sqlStatus ?? baseSqlStatus();
+		const statusCalls: Record<string, unknown>[] = [];
+		const f = await folderWriterFixture(
+			{
+				files: seed.files,
+				folders: [...new Set([...(seed.folders ?? []), ...ancestors(allPaths)])],
+				links: seed.links,
+			},
+			{
+				rpc: (method, args) => {
+					if (method === "qorpera_folder_code_status") {
+						statusCalls.push(structuredClone(args));
+						return sqlAnswer;
+					}
+					return undefined;
+				},
+			},
+		);
 		for (const [path, bytes] of Object.entries(seed.rawFiles ?? {})) {
 			f.seed(path, bytes, "application/octet-stream");
 		}
+		const listSpy = vi.spyOn(f.folder, "list");
 		const tools = cloudCodeTools({ folder: f.folder, identity: f.identity });
 		const boundary = new CloudNativeToolBoundary({
 			companyId: f.identity.companyId,
@@ -1809,116 +1892,27 @@ describe("manage_code status", () => {
 				text: envelope.content.text,
 			};
 		};
-		return { ...f, boundary, invoke };
+		return { ...f, statusCalls, listSpy, boundary, invoke };
 	}
 
-	it("summarizes sibling sessions, worktrees, recent changes, checks and records strict read provenance", async () => {
-		const activeId = "10000000-0000-4000-8000-000000000001";
-		const queuedId = "10000000-0000-4000-8000-000000000002";
-		const blockedId = "10000000-0000-4000-8000-000000000003";
-		const doneId = "10000000-0000-4000-8000-000000000004";
-		const closedTodoWorkerId = "10000000-0000-4000-8000-000000000005";
-		const otherRepoId = "10000000-0000-4000-8000-000000000006";
-		const githubRepoId = "10000000-0000-4000-8000-000000000007";
-		const inHouseId = "10000000-0000-4000-8000-000000000008";
-		const orphanWorktreeId = "10000000-0000-4000-8000-000000000099";
-
+	it("returns SQL-backed status through real CloudCompanyFolderClient parsing without any folder list crawl", async () => {
 		const f = await statusFixture({
-			folders: [
-				"code/acme/shop/main",
-				`code/acme/shop/worktrees/${activeId}`,
-				`code/acme/shop/worktrees/${doneId}`,
-				`code/acme/shop/worktrees/${orphanWorktreeId}`,
-			],
+			folders: ["code/acme/shop/main"],
 			files: {
-				"code/acme/shop/changes/index.md": [
-					"# Changes",
-					"",
-					"Live: https://shop-demo.qorpera.com/ (change 12)",
-					"Ready in What's new: change 13",
-					"",
-					"- 13 · 2026-11-21 · ready · Add promo codes",
-					"- 12 · 2026-11-20 · live · Update cart totals",
-					"- 11 · 2026-11-19 · undone · Broken header",
-				].join("\n"),
 				"code/acme/shop/main/.qorpera/checks.json": `\uFEFF${JSON.stringify({
 					checks: [
 						{ name: "install", run: "npm ci", timeoutSeconds: 180 },
 						{ name: "lint", run: "npm run lint", needs: ["install"] },
-						{ name: "test", run: "npm test", cwd: "apps/web", timeoutSeconds: 300, needs: ["install"] },
 					],
 					site: { folder: "dist", name: "shop-demo", title: "Acme Shop" },
 				})}`,
-				"QorperaOS/agents/nora/todos/checkout.md": todo("20000000-0000-4000-8000-000000000001", "open"),
-				"QorperaOS/agents/nora/todos/checkout/cart-fix/brief.md": codingBrief({
-					id: activeId,
-					title: "Fix cart totals",
-					dispatchedAt: "2026-11-21T10:00:00.000Z",
-					followUps: 1,
-				}),
-				"QorperaOS/agents/nora/todos/checkout/queued-task/brief.md": codingBrief({
-					id: queuedId,
-					title: "Add coupon validation",
-					dispatchedAt: "2026-11-21T11:00:00.000Z",
-				}),
-				"QorperaOS/agents/nora/todos/checkout/already-done/brief.md": codingBrief({
-					id: doneId,
-					title: "Initial layout",
-					dispatchedAt: "2026-11-20T09:00:00.000Z",
-				}),
-				"QorperaOS/agents/nora/todos/checkout/already-done/results.md": writeWorkerResultsFile({
-					outcome: "succeeded",
-					reportedAt: "2026-11-20T10:00:00.000Z",
-					decision: null,
-					note: null,
-					summary: "Landed cleanly.",
-					needs: null,
-					files: [],
-				}),
-				"QorperaOS/agents/nora/todos/checkout/research/brief.md": codingBrief({
-					id: inHouseId,
-					title: "Market notes",
-					dispatchedAt: "2026-11-21T08:00:00.000Z",
-					species: "in-house",
-				}),
-				"QorperaOS/agents/nora/todos/archived-work.md": todo("20000000-0000-4000-8000-000000000002", "done"),
-				"QorperaOS/agents/nora/todos/archived-work/old-session/brief.md": codingBrief({
-					id: closedTodoWorkerId,
-					title: "Old finished todo worker",
-					dispatchedAt: "2026-11-19T08:00:00.000Z",
-				}),
-				"QorperaOS/agents/mira/todos/shipping.md": todo("20000000-0000-4000-8000-000000000003", "open"),
-				"QorperaOS/agents/mira/todos/shipping/rates/brief.md": codingBrief({
-					id: blockedId,
-					title: "Integrate shipping rates",
-					dispatchedAt: "2026-11-21T09:00:00.000Z",
-				}),
-				"QorperaOS/agents/mira/todos/shipping/rates/results.md": writeWorkerResultsFile({
-					outcome: "blocked",
-					reportedAt: "2026-11-21T09:30:00.000Z",
-					decision: null,
-					note: null,
-					summary: "Need carrier API sandbox key.",
-					needs: "Provide sandbox carrier credentials.",
-					files: [],
-				}),
-				"QorperaOS/agents/mira/todos/shipping/other-repo/brief.md": codingBrief({
-					id: otherRepoId,
-					title: "Touch other repo",
-					dispatchedAt: "2026-11-21T09:00:00.000Z",
-					repository: { host: "qorpera", owner: "acme", name: "billing", baseBranch: "main" },
-				}),
-				"QorperaOS/agents/mira/todos/shipping/github-repo/brief.md": codingBrief({
-					id: githubRepoId,
-					title: "Touch GitHub repo",
-					dispatchedAt: "2026-11-21T09:00:00.000Z",
-					repository: { host: "github.com", owner: "acme", name: "shop", baseBranch: "main" },
-				}),
 			},
 		});
 		try {
 			const answer = await f.invoke({ action: "status", owner: "acme", name: "shop" });
 			expect(answer).toMatchObject({ success: true, status: "ok", truncated: false });
+			expect(f.statusCalls).toEqual([{ p_binding: f.binding, p_owner: "acme", p_name: "shop" }]);
+			expect(f.listSpy).not.toHaveBeenCalled();
 			const parsed = JSON.parse(answer.text);
 			expect(parsed).toMatchObject({
 				schema: "qorpera.code-status/v1",
@@ -1927,125 +1921,52 @@ describe("manage_code status", () => {
 					name: "shop",
 					path: "code/acme/shop",
 					hasMain: true,
+					archived: false,
+					checksEnabled: true,
+					siteEnabled: true,
+					lastChange: 13,
+					mainSha: "a".repeat(40),
 					restoring: false,
+					site: { slug: "shop-demo", url: "https://shop-demo.qorpera.com/", liveChange: 12 },
 				},
+				sessionsTotal: 1,
 				sessionsTruncated: false,
-				worktreesTruncated: false,
+				changesCount: 2,
 				recentChanges: {
 					present: true,
-					notices: ["Live: https://shop-demo.qorpera.com/ (change 12)", "Ready in What's new: change 13"],
-					totalListed: 3,
+					total: 2,
 					changes: [
-						{ change: 13, date: "2026-11-21", state: "ready", summary: "Add promo codes" },
-						{ change: 12, date: "2026-11-20", state: "live", summary: "Update cart totals" },
-						{ change: 11, date: "2026-11-19", state: "undone", summary: "Broken header" },
+						{ n: 13, state: "landed", title: "Add promo codes" },
+						{ n: 12, state: "landed", title: "Update cart totals" },
 					],
 				},
+				queue: { landing: 0, running: 1, queued: 0, restoring: false, openRequests: [] },
 				checks: {
 					present: true,
 					valid: true,
-					path: "code/acme/shop/main/.qorpera/checks.json",
 					mode: "dag",
-					totalTimeoutSeconds: 1080,
-					checks: [
-						{ name: "install", cwd: ".", timeoutSeconds: 180 },
-						{ name: "lint", cwd: ".", timeoutSeconds: 600, needs: ["install"] },
-						{ name: "test", cwd: "apps/web", timeoutSeconds: 300, needs: ["install"] },
-					],
 					site: { folder: "dist", name: "shop-demo", title: "Acme Shop" },
 				},
 			});
-			expect(parsed.sessions).toEqual([
-				{
-					workerId: queuedId,
-					agent: "nora",
-					todoKey: "checkout",
-					workerKey: "queued-task",
-					title: "Add coupon validation",
-					state: "active",
-					harness: "codex",
-					dispatchedAt: "2026-11-21T11:00:00Z",
-					followUps: 0,
-					hasWorktree: false,
-					path: "QorperaOS/agents/nora/todos/checkout/queued-task",
-				},
-				{
-					workerId: activeId,
-					agent: "nora",
-					todoKey: "checkout",
-					workerKey: "cart-fix",
-					title: "Fix cart totals",
-					state: "active",
-					harness: "codex",
-					dispatchedAt: "2026-11-21T10:00:00Z",
-					followUps: 1,
-					hasWorktree: true,
-					path: "QorperaOS/agents/nora/todos/checkout/cart-fix",
-				},
-				{
-					workerId: blockedId,
-					agent: "mira",
-					todoKey: "shipping",
-					workerKey: "rates",
-					title: "Integrate shipping rates",
-					state: "blocked",
-					harness: "codex",
-					dispatchedAt: "2026-11-21T09:00:00Z",
-					followUps: 0,
-					needs: "Provide sandbox carrier credentials.",
-					hasWorktree: false,
-					path: "QorperaOS/agents/mira/todos/shipping/rates",
-				},
-			]);
-			expect(parsed.worktrees).toEqual([
-				{
-					workerId: activeId,
-					path: `code/acme/shop/worktrees/${activeId}`,
-					updatedAt: expect.any(String),
-					session: {
-						agent: "nora",
-						todoKey: "checkout",
-						workerKey: "cart-fix",
-						title: "Fix cart totals",
-						state: "active",
-					},
-				},
-				{
-					workerId: doneId,
-					path: `code/acme/shop/worktrees/${doneId}`,
-					updatedAt: expect.any(String),
-					session: {
-						agent: "nora",
-						todoKey: "checkout",
-						workerKey: "already-done",
-						title: "Initial layout",
-						state: "succeeded",
-					},
-				},
-				{
-					workerId: orphanWorktreeId,
-					path: `code/acme/shop/worktrees/${orphanWorktreeId}`,
-					updatedAt: expect.any(String),
-				},
-			]);
+			expect(parsed.sessions[0]).toMatchObject({
+				workerKey: "cart-totals",
+				agent: "nora",
+				state: "active",
+				phase: "running",
+				claimedPaths: ["src/cart/**"],
+			});
 			expect(f.releases).toHaveLength(1);
 			const release = f.releases[0] as { p_output_sha256: string; p_reads: { path: string }[] };
 			expect(release.p_output_sha256).toBe(createHash("sha256").update(answer.text, "utf8").digest("hex"));
-			const releasedPaths = release.p_reads.map((item) => item.path);
-			expect(releasedPaths).toContain("code/acme/shop");
-			expect(releasedPaths).toContain("code/acme/shop/changes/index.md");
-			expect(releasedPaths).toContain("code/acme/shop/main/.qorpera/checks.json");
-			expect(releasedPaths).toContain(`code/acme/shop/worktrees/${activeId}`);
-			expect(releasedPaths).toContain("QorperaOS/agents/nora/todos/checkout/cart-fix/brief.md");
-			expect(releasedPaths).toContain("QorperaOS/agents/mira/todos/shipping/rates/results.md");
+			expect(release.p_reads.map((item) => item.path)).toContain("code/acme/shop/main/.qorpera/checks.json");
 		} finally {
 			f.boundary.close();
 			f.run.close();
 		}
 	});
 
-	it("refuses when the repository is missing or not a folder", async () => {
-		const missing = await statusFixture({});
+	it("refuses when unregistered and missing from the folder, and reports checks file errors cleanly", async () => {
+		const missing = await statusFixture({ sqlStatus: baseSqlStatus({ registered: false }) });
 		try {
 			const refused = await missing.invoke({ action: "status", owner: "acme", name: "ghost" });
 			expect(refused).toMatchObject({
@@ -2058,54 +1979,6 @@ describe("manage_code status", () => {
 			missing.boundary.close();
 			missing.run.close();
 		}
-		const notFolder = await statusFixture({ files: { "code/acme/shop": "not a folder" } });
-		try {
-			const refused = await notFolder.invoke({ action: "status", owner: "acme", name: "shop" });
-			expect(refused).toMatchObject({
-				success: false,
-				status: "denied",
-				text: "REFUSED: code/acme/shop is not a repository folder.",
-			});
-		} finally {
-			notFolder.boundary.close();
-			notFolder.run.close();
-		}
-	});
-
-	it("reports restoring state, missing index, and checks file missing, invalid, symlink, oversized and non-UTF-8 cases", async () => {
-		const bare = await statusFixture({
-			folders: ["code/acme/shop/main"],
-			files: { "code/acme/shop/restoring.json": "{}" },
-		});
-		try {
-			const parsed = JSON.parse((await bare.invoke({ action: "status", owner: "acme", name: "shop" })).text);
-			expect(parsed.repository).toMatchObject({ hasMain: true, restoring: true });
-			expect(parsed.recentChanges).toEqual({ present: false, notices: [], totalListed: 0, changes: [] });
-			expect(parsed.checks).toEqual({ present: false, path: "code/acme/shop/main/.qorpera/checks.json" });
-		} finally {
-			bare.boundary.close();
-			bare.run.close();
-		}
-
-		const invalidJson = await statusFixture({
-			folders: ["code/acme/shop/main"],
-			files: {
-				"code/acme/shop/main/.qorpera/checks.json": JSON.stringify({
-					checks: [{ name: "test", run: "npm test", needs: ["install"] }],
-				}),
-			},
-		});
-		try {
-			const parsed = JSON.parse((await invalidJson.invoke({ action: "status", owner: "acme", name: "shop" })).text);
-			expect(parsed.checks).toMatchObject({
-				present: true,
-				valid: false,
-				problems: [{ at: "/checks/0/needs/0", code: "INVALID_VALUE", message: 'No check is named "install".' }],
-			});
-		} finally {
-			invalidJson.boundary.close();
-			invalidJson.run.close();
-		}
 
 		const linked = await statusFixture({
 			folders: ["code/acme/shop/main/.qorpera"],
@@ -2113,61 +1986,29 @@ describe("manage_code status", () => {
 		});
 		try {
 			const parsed = JSON.parse((await linked.invoke({ action: "status", owner: "acme", name: "shop" })).text);
-			expect(parsed.checks).toMatchObject({
-				present: true,
-				valid: false,
-				problems: [{ code: "NOT_A_FILE" }],
-			});
+			expect(parsed.checks).toMatchObject({ present: true, valid: false, problems: [{ code: "NOT_A_FILE" }] });
 		} finally {
 			linked.boundary.close();
 			linked.run.close();
 		}
-
-		const oversized = await statusFixture({
-			folders: ["code/acme/shop/main"],
-			files: { "code/acme/shop/main/.qorpera/checks.json": "x".repeat(16 * 1024 + 1) },
-		});
-		try {
-			const parsed = JSON.parse((await oversized.invoke({ action: "status", owner: "acme", name: "shop" })).text);
-			expect(parsed.checks).toMatchObject({
-				present: true,
-				valid: false,
-				problems: [{ code: "TOO_LARGE" }],
-			});
-		} finally {
-			oversized.boundary.close();
-			oversized.run.close();
-		}
-
-		const binary = await statusFixture({
-			folders: ["code/acme/shop/main"],
-			rawFiles: { "code/acme/shop/main/.qorpera/checks.json": new Uint8Array([0xff, 0xfe, 0x00]) },
-		});
-		try {
-			const parsed = JSON.parse((await binary.invoke({ action: "status", owner: "acme", name: "shop" })).text);
-			expect(parsed.checks).toMatchObject({
-				present: true,
-				valid: false,
-				problems: [{ code: "NOT_UTF8" }],
-			});
-		} finally {
-			binary.boundary.close();
-			binary.run.close();
-		}
 	});
 
-	it("redacts secrets before hashing the release and refuses when release read provenance is revoked", async () => {
+	it("redacts secrets before hashing release and shrinks oversized status payloads to fit one result", async () => {
 		const secret = "whsec_TESTSECRETVALUE1234567890";
 		const f = await statusFixture({
 			folders: ["code/acme/shop/main"],
-			files: {
-				"QorperaOS/agents/nora/todos/hooks.md": todo("20000000-0000-4000-8000-000000000010", "open"),
-				"QorperaOS/agents/nora/todos/hooks/verify/brief.md": codingBrief({
-					id: "10000000-0000-4000-8000-000000000010",
-					title: `Verify ${secret}`,
-					dispatchedAt: "2026-11-21T12:00:00.000Z",
-				}),
-			},
+			sqlStatus: baseSqlStatus({
+				recentChanges: [
+					{
+						n: 13,
+						state: "landed",
+						summary: `Verify ${secret}`,
+						createdAt: "2026-11-21T10:00:00Z",
+						workerId: null,
+					},
+				],
+				changesCount: 1,
+			}),
 		});
 		try {
 			const answer = await f.invoke({ action: "status", owner: "acme", name: "shop" });
@@ -2181,75 +2022,343 @@ describe("manage_code status", () => {
 			f.run.close();
 		}
 
-		const receipt = {
-			resourceId: "30000000-0000-4000-8000-000000000001",
-			resourceRevision: 1,
-			grantId: "30000000-0000-4000-8000-000000000002",
-			grantRevision: 1,
-		};
-		const revoked = await fixture((method, args) => {
-			if (method === "qorpera_folder_read") {
-				const path = args.p_path as string;
-				if (path === "code/acme/shop" || path === "code/acme/shop/main") {
+		const manySessions = Array.from({ length: 80 }, (_, i) => ({
+			workerId: `10000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
+			phase: "working",
+			harness: "codex",
+			claimedPaths: [`src/module-${i}/${"a".repeat(200)}/**`],
+			worktree: `code/acme/shop/worktrees/10000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
+			branch: `qorpera/coding/10000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
+			updatedAt: "2026-11-22T09:00:00Z",
+		}));
+		const big = await statusFixture({
+			folders: ["code/acme/shop/main"],
+			sqlStatus: baseSqlStatus({ sessions: manySessions, sessionsTotal: 80 }),
+		});
+		try {
+			const answer = await big.invoke({ action: "status", owner: "acme", name: "shop" });
+			expect(answer).toMatchObject({ success: true, status: "ok", truncated: false });
+			const parsed = JSON.parse(answer.text);
+			expect(parsed.sessionsTruncated).toBe(true);
+			expect(parsed.sessions.length).toBeLessThan(80);
+		} finally {
+			big.boundary.close();
+			big.run.close();
+		}
+	});
+});
+
+describe("manage_code read queries, history, lifecycle, and v2 undo", () => {
+	it("dispatches log, diff, show, branches, merge_preview, and SQL history cleanly", async () => {
+		const f = await fixture((method, args) => {
+			if (method === HISTORY) {
+				return {
+					schema: "qorpera.code-history/v1",
+					owner: "acme",
+					name: "shop",
+					total: 120,
+					changes: [
+						{ n: 120, state: "landed", summary: "Latest", createdAt: "2026-11-22T00:00:00Z", workerId: null },
+					],
+					nextCursor: 119,
+				};
+			}
+			if (method === QUERY) return { schema: "qorpera.code-query/v1", state: "queued", requestId: REQUEST };
+			if (method === STANDS) {
+				const lastQuery = f.calls.filter((c) => c.method === QUERY).at(-1)?.args.p_request as Record<
+					string,
+					unknown
+				>;
+				if (lastQuery.op === "diff") {
+					return stands({
+						kind: "query",
+						state: "done",
+						result: "ok",
+						data: { filesChanged: 1, patch: "+hello\n", truncated: false },
+					});
+				}
+				return stands({ kind: "query", state: "done", result: "ok", data: { op: lastQuery.op, ok: true } });
+			}
+			throw new Error(`Unexpected ${method} ${JSON.stringify(args)}`);
+		});
+		try {
+			const hist = await f.invoke({
+				action: "history",
+				owner: "acme",
+				name: "shop",
+				state: "landed",
+				cursor: 121,
+				limit: 10,
+			});
+			expect(hist.success).toBe(true);
+			expect(JSON.parse(hist.text)).toMatchObject({
+				schema: "qorpera.code-history/v1",
+				total: 120,
+				nextCursor: 119,
+			});
+
+			const logRes = await f.invoke({
+				action: "log",
+				owner: "acme",
+				name: "shop",
+				ref: "main",
+				path: "src/app.ts",
+				limit: 5,
+			});
+			expect(logRes.success).toBe(true);
+			expect(f.calls.find((c) => c.method === QUERY)?.args.p_request).toEqual({
+				op: "log",
+				owner: "acme",
+				name: "shop",
+				ref: "main",
+				path: "src/app.ts",
+				limit: 5,
+			});
+
+			const diffRes = await f.invoke({
+				action: "diff",
+				owner: "acme",
+				name: "shop",
+				base: 10,
+				head: 12,
+				statOnly: false,
+				paths: ["src/app.ts"],
+			});
+			expect(diffRes.success).toBe(true);
+			expect(f.calls.filter((c) => c.method === QUERY).at(-1)?.args.p_request).toEqual({
+				op: "diff",
+				owner: "acme",
+				name: "shop",
+				from: 10,
+				to: 12,
+				statOnly: false,
+				paths: ["src/app.ts"],
+			});
+
+			for (const call of [
+				{ action: "show", owner: "acme", name: "shop", ref: 12, path: "src/app.ts" },
+				{ action: "branches", owner: "acme", name: "shop" },
+				{
+					action: "merge_preview",
+					owner: "acme",
+					name: "shop",
+					base: "main",
+					head: "worker:10000000-0000-4000-8000-000000000001",
+				},
+			]) {
+				expect((await f.invoke(call)).success).toBe(true);
+			}
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("runs lifecycle actions (create, archive, tag, prune) and v2 undo options (dryRun, runChecks, range, conflict messages, site reuse)", async () => {
+		const f = await fixture((method, args) => {
+			if (method === LIFECYCLE) {
+				const req = args.p_request as Record<string, unknown>;
+				if (req.op === "archive") {
+					if (req.owner === "surfaces") {
+						return {
+							schema: "qorpera.code-lifecycle/v1",
+							state: "refused",
+							reason: "surface_backed",
+						};
+					}
 					return {
-						schema: "qorpera.folder-read/v1",
-						asOfSeq: 1,
-						found: true,
-						entry: {
-							path,
-							kind: "folder",
-							version: "30000000-0000-4000-8000-000000000010",
-							seq: 1,
-							updatedAt: "2026-11-21T00:00:00Z",
-							authority: receipt,
-						},
+						schema: "qorpera.code-lifecycle/v1",
+						state: "done",
+						result: "archived",
+						owner: "acme",
+						name: "shop",
+						archivedAt: "2026-11-22T09:00:00Z",
 					};
 				}
-				return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false, entry: null };
+				if (req.op === "unarchive") {
+					return {
+						schema: "qorpera.code-lifecycle/v1",
+						state: "done",
+						result: "unarchived",
+						owner: "acme",
+						name: "shop",
+						archivedAt: null,
+					};
+				}
+				return { schema: "qorpera.code-lifecycle/v1", state: "queued", requestId: REQUEST };
 			}
-			if (method === "qorpera_folder_record_release") {
-				throw sqlError("42501", "A released read is no longer readable");
+			if (method === UNDO) return queued;
+			if (method === STANDS) {
+				const last = f.calls.filter((c) => c.method === LIFECYCLE || c.method === UNDO).at(-1);
+				if (last?.method === LIFECYCLE) {
+					const op = (last.args.p_request as Record<string, unknown>).op;
+					if (op === "create")
+						return stands({
+							kind: "lifecycle",
+							state: "done",
+							result: "created",
+							data: { created: true, mainSha: "a".repeat(40) },
+						});
+					if (op === "tag")
+						return stands({
+							kind: "lifecycle",
+							state: "done",
+							result: "tagged",
+							data: { tag: "v1.0.0", kind: "annotated", sha: "a".repeat(40), targetSha: "a".repeat(40) },
+						});
+					return stands({
+						kind: "lifecycle",
+						state: "done",
+						result: "pruned",
+						data: { retiredWorktrees: ["w1"], deletedBranches: ["qorpera/coding/w1"], skippedWorktrees: [] },
+					});
+				}
+				const u = last?.args.p_request as Record<string, unknown>;
+				if (u.dryRun) {
+					return stands({
+						state: "done",
+						result: "dry_run",
+						data: {
+							clean: true,
+							wouldRevert: [10, 11],
+							filesChanged: 2,
+							matchesBeforeTree: true,
+							checksFilePresent: true,
+						},
+					});
+				}
+				if (u.runChecks && !u.force) {
+					return stands({
+						state: "refused",
+						code: "CODE_HOST_UNDO_CONFLICT",
+						paths: ["src/cart.ts"],
+						messages: ["CONFLICT (content): Merge conflict in src/cart.ts"],
+					});
+				}
+				return stands({
+					state: "done",
+					result: "undone",
+					change: 16,
+					data: { siteReused: true, siteNeedsRebuild: false, checksVerified: "passed" },
+				});
 			}
 			throw new Error(`Unexpected ${method}`);
 		});
 		try {
-			const refused = await revoked.invoke({ action: "status", owner: "acme", name: "shop" });
-			expect(refused).toMatchObject({ success: false, status: "denied" });
-			expect(refused.text).toContain("READ_REVOKED");
-			expect(refused.text).not.toContain("qorpera.code-status/v1");
-		} finally {
-			revoked.run.close();
-		}
-	});
-
-	it("shrinks large status payloads to fit one tool result and sets worktreesTruncated", async () => {
-		const worktreeFolders = Array.from(
-			{ length: 100 },
-			(_, i) => `code/acme/shop/worktrees/10000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
-		);
-		const files: Record<string, string> = {
-			"QorperaOS/agents/nora/todos/big.md": todo("20000000-0000-4000-8000-000000000020", "open"),
-		};
-		for (let i = 0; i < 40; i++) {
-			const id = `10000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`;
-			files[`QorperaOS/agents/nora/todos/big/task-${String(i).padStart(2, "0")}/brief.md`] = codingBrief({
-				id,
-				title: `Long sibling coding session title number ${i} ${"x".repeat(120)}`,
-				dispatchedAt: `2026-11-21T10:${String(i).padStart(2, "0")}:00.000Z`,
+			const created = await f.invoke({ action: "create", operationKey: "cr-1", owner: "acme", name: "shop" });
+			expect(created.success).toBe(true);
+			expect(JSON.parse(created.text)).toMatchObject({
+				action: "create",
+				state: "done",
+				result: "created",
+				owner: "acme",
+				name: "shop",
+				created: true,
 			});
-		}
-		const f = await statusFixture({
-			folders: ["code/acme/shop/main", ...worktreeFolders],
-			files,
-		});
-		try {
-			const answer = await f.invoke({ action: "status", owner: "acme", name: "shop" });
-			expect(answer).toMatchObject({ success: true, status: "ok", truncated: false });
-			const parsed = JSON.parse(answer.text);
-			expect(parsed.worktreesTruncated || parsed.sessionsTruncated).toBe(true);
-			expect(parsed.worktrees.length).toBeLessThan(100);
+
+			const archived = await f.invoke({
+				action: "archive",
+				operationKey: "ar-1",
+				owner: "acme",
+				name: "shop",
+				reason: "Retired",
+			});
+			expect(archived.success).toBe(true);
+			expect(archived.text).toContain("archived");
+
+			const surfaceArchived = await f.invoke({
+				action: "archive",
+				operationKey: "ar-surface",
+				owner: "surfaces",
+				name: "website",
+			});
+			expect(surfaceArchived.success).toBe(false);
+			expect(surfaceArchived.text).toContain("backs a surface and cannot be archived");
+
+			const unarchived = await f.invoke({
+				action: "unarchive",
+				operationKey: "unar-1",
+				owner: "acme",
+				name: "shop",
+			});
+			expect(unarchived.success).toBe(true);
+			expect(JSON.parse(unarchived.text)).toMatchObject({
+				action: "unarchive",
+				state: "done",
+				result: "unarchived",
+				archivedAt: null,
+			});
+
+			const tagged = await f.invoke({
+				action: "tag",
+				operationKey: "tg-1",
+				owner: "acme",
+				name: "shop",
+				mode: "create",
+				tag: "v1.0.0",
+				ref: "main",
+				message: "Release 1.0.0",
+			});
+			expect(tagged.success).toBe(true);
+			expect(f.calls.filter((c) => c.method === LIFECYCLE).at(-1)?.args.p_request).toMatchObject({
+				op: "tag",
+				mode: "create",
+				tag: "v1.0.0",
+				target: "main",
+				message: "Release 1.0.0",
+			});
+
+			const pruned = await f.invoke({
+				action: "prune",
+				operationKey: "pr-1",
+				owner: "acme",
+				name: "shop",
+				deleteMergedBranches: true,
+			});
+			expect(pruned.success).toBe(true);
+
+			const dry = await f.invoke({
+				action: "undo",
+				operationKey: "u-dry",
+				owner: "acme",
+				name: "shop",
+				change: 10,
+				toChange: 11,
+				dryRun: true,
+				reason: "Preview range undo",
+			});
+			expect(dry.success).toBe(true);
+			expect(JSON.parse(dry.text)).toMatchObject({
+				schema: "qorpera.code-undo-dry-run/v1",
+				clean: true,
+				wouldRevert: [10, 11],
+				filesChanged: 2,
+				matchesBeforeTree: true,
+			});
+
+			const conflictWithMsg = await f.invoke({
+				action: "undo",
+				operationKey: "u-conf",
+				owner: "acme",
+				name: "shop",
+				changes: [10, 12],
+				runChecks: true,
+				reason: "Revert specific changes",
+			});
+			expect(conflictWithMsg.text).toContain("CONFLICT (content): Merge conflict in src/cart.ts");
+
+			const siteAware = await f.invoke({
+				action: "undo",
+				operationKey: "u-site",
+				owner: "acme",
+				name: "shop",
+				change: 12,
+				runChecks: true,
+				force: true,
+				reason: "Emergency rollback",
+			});
+			expect(siteAware.success).toBe(true);
+			expect(siteAware.text).toContain("change 16");
 		} finally {
-			f.boundary.close();
 			f.run.close();
 		}
 	});

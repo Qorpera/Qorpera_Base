@@ -114,7 +114,7 @@ describe("the executor's code requests, as executor.ts builds them", () => {
 		await requests.settled();
 		expect(kernel.calls[0]).toMatchObject({
 			method: "qorpera_code_requests_claim",
-			args: { p_owner: OWNER, p_kinds: ["undo", "download", "restore", "import"] },
+			args: { p_owner: OWNER, p_kinds: ["undo", "download", "restore", "import", "query", "lifecycle"] },
 		});
 		// The run: step fetch before anything else, then the connection with no broker refuses, and the import ends
 		// failed with that code; the finish takes it.
@@ -151,7 +151,7 @@ describe("the executor's code requests, as executor.ts builds them", () => {
 		});
 		await requests.pass(new AbortController().signal);
 		await requests.settled();
-		expect(kernel.calls[0]?.args.p_kinds).toEqual(["undo", "download", "restore"]);
+		expect(kernel.calls[0]?.args.p_kinds).toEqual(["undo", "download", "restore", "query", "lifecycle"]);
 		expect(kernel.calls.slice(1).map((call) => [call.method, call.args.p_outcome])).toEqual([
 			["qorpera_code_request_finish", { schema: "qorpera.code-request-outcome/v1", state: "busy" }],
 		]);

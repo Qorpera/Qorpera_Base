@@ -502,9 +502,18 @@ describe("the live picture in the screen view (20260930745000)", () => {
 		expect(mark()).toBe("Updating…");
 		expect(screen.shown).toBe(true);
 		expect(live.hidden).toBe(true);
+		expect([live.width, live.height]).toEqual([0, 0]);
 		// The fresh look lands and the picture is live again.
 		expect(await screen.show(look("new-look", 640, 480))).toBe(true);
 		expect(mark()).toBe("Live");
+	});
+
+	it("frees the live picture's canvas at once when its stream ends before any of its pixels showed", async () => {
+		const { screen, live } = view();
+		await screen.stream({ kind: "size", width: 640, height: 480 });
+		screen.streamEnded();
+		expect(live.hidden).toBe(true);
+		expect([live.width, live.height]).toEqual([0, 0]);
 	});
 
 	it("drops a look that began before the stream and decodes after its end: the handed-back frame stays, and is not called live (the v245 release review F2)", async () => {

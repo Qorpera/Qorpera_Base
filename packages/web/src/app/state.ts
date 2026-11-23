@@ -24,7 +24,7 @@ export class Store<T extends object> {
 		const next = typeof patch === "function" ? patch(this.#value) : patch;
 		let changed = false;
 		for (const key of Object.keys(next) as (keyof T)[]) {
-			if (!Object.is(this.#value[key], next[key])) {
+			if (!(key in this.#value) || !Object.is(this.#value[key], next[key])) {
 				changed = true;
 				break;
 			}
