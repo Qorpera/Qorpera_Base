@@ -10,7 +10,7 @@ facts under it. You write only `object.json` and make the model or pictures on a
 hand. Make it in Blender (metres, real materials, each part a named object) and export it:
 `blender -b thing.blend --python-exit-code 1 --python-expr "import bpy; bpy.ops.export_scene.gltf(filepath='/company/apps/<app>/thing.glb', export_format='GLB', export_apply=True)"`.
 No Draco or meshopt compression. Keep it light for a phone. `view` `{"yaw", "pitch"}` in degrees: where it opens,
-else three-quarter; `environment`: your own `.hdr` light in the folder.
+else three-quarter; `environment`: an `.hdr` light in the folder.
 
 ## Pictures
 
@@ -19,7 +19,7 @@ else three-quarter; `environment`: your own `.hdr` light in the folder.
   equal steps, on a transparent background, `columns` frames per row, left to right, top to bottom. Frame 0 is the
   three-quarter view that shows it best; each next frame turns the thing 360/N degrees, its front to the viewer's
   right. Turn the thing, not the camera; same camera, light and scale in every frame; the axis in the frame's middle;
-  the thing fills about 90 % of the frame height, on the frame's lower edge. Frames 500 to 640 px; WebP with alpha;
+  it fills about 90 % of the frame height, on the frame's lower edge. Frames 500 to 640 px; WebP with alpha;
   the sheet under 4 MB.
 - A thing too abstract to read alone (a band, a ring) reads better worn or held by a plain matte stand-in.
 - Draw only what you know. A model you made yourself says so in `line` ("Illustrative model of ...").
@@ -34,11 +34,11 @@ else three-quarter; `environment`: your own `.hdr` light in the folder.
     `source` (optional).
   - `state`: `known` (solid dot), `assumed` (hollow dashed dot and a tag), `unknown` (dashed "?" dot, no value).
   - `node`: with `model`, the part's object name in Blender; the page finds it.
-  - `pull`: optional `[x, y, z]` (shares of its size, y up): where it moves apart.
+  - `pull`: optional `[x, y, z]`, a studio's Apart: where the part moves, in shares of the whole model's size, y up.
   - `track`, for pictures: one `[x, y, v]` per frame: x and y as fractions (0 to 1, from the top left), v 1 when the
     part faces the viewer unhidden, else 0 (x and y also then). A still has one. Compute them in your render script
     (project each part's point, a facing test and a ray test); never type them.
-- `tint`: the materials a studio's colour dots recolour.
+- `tint`: materials a studio's colour dots recolour.
 - `facts`: up to 5 figures that describe it, each `{"label"` up to 18, `"value"` up to 14, `"state"`, `"source"`?`}`.
   An unknown fact has no value: it draws a hatched "?".
 - `variants`: up to 6 other candidates or colours, each `{"id", "name", "line"?, "model"?, "turntable" or "picture",
@@ -62,7 +62,7 @@ part faces the viewer best, and shows its note. Never invent a value: a figure t
   "model": "box.glb",
   "turntable": { "picture": "pictures/box.webp", "frames": 4, "columns": 4, "frameWidth": 560, "frameHeight": 560 },
   "parts": [
-    { "id": "lid", "name": "Lid", "value": "Magnet", "state": "assumed", "node": "Lid", "note": "Closes with a magnet; its hold is not measured.",
+    { "id": "lid", "name": "Lid", "value": "Magnet", "state": "assumed", "node": "Lid", "note": "Magnet; hold not measured.",
       "track": [[0.5, 0.21, 1], [0.52, 0.2, 1], [0.5, 0.21, 1], [0.48, 0.2, 1]] }
   ],
   "facts": [
