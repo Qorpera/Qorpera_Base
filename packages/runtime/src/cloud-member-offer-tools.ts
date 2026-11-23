@@ -14,12 +14,6 @@ import {
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
-/* The Co-Founder deals the team out between the members (migrations 20260930700000 and 20260930702000; Jonas, 9 Nov
- * 2026: "the co-founder should hire some categories/sections to one member/subscription, and another category of agent
- * to another member"). Each agent works for one member, whose ChatGPT carries the work handed to it. The Co-Founder
- * sees who works for whom (crew_and_members) and asks a member to take agents (offer_agents_to_member); nothing moves
- * until the member says yes on the Members page. The cloud derives the company and the Co-Founder from the run. */
-
 export const CLOUD_CREW_AND_MEMBERS_DESCRIPTION =
 	"See the company's members and its team: each member's name, role and whether their ChatGPT can carry work now " +
 	"(ready, full until a time, needs a new sign-in, or none connected), each agent with the member it works for " +

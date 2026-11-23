@@ -276,7 +276,7 @@ export function cloudActionEffect(
 		case "add_review_rule":
 		// Sorting a payment changes only what Qorpera charges the company; members see and can change each one.
 		case "good_will_mark":
-		// An offer of agents moves nothing until the member says yes on the Members page.
+		// WHY: An offer of agents moves nothing until the member says yes in Settings → Team, Who agents work for.
 		case "offer_agents_to_member":
 		// The company's reading of itself (20260930766000) is the company's bookkeeping, like a todo: members see it as the
 		// first layer of the company's map and say when it is wrong.
