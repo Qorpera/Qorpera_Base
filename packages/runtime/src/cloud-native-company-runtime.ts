@@ -117,7 +117,9 @@ import {
 	GEMINI_ACTION_REVIEW_MODEL,
 	GeminiCapReachedError,
 	GeminiKeyRevokedError,
+	type GeminiProviderErrorCode,
 	type GeminiUsageReceipt,
+	geminiProviderErrorCode,
 } from "./cloud-gemini-tool-session.ts";
 import { cloudGoodWillTools } from "./cloud-good-will-tools.ts";
 import { cloudHiringTools } from "./cloud-hiring-tools.ts";
@@ -202,6 +204,12 @@ import { type CloudSecretOperationClient, cloudSecretTools, describeCloudSecretT
 import { cloudSidebarTools } from "./cloud-sidebar-tools.ts";
 import { cloudSiteTools } from "./cloud-site-tools.ts";
 import { cloudSkillTools, composeCloudAgentSkills, unavailableCloudAgentSkills } from "./cloud-skill-tools.ts";
+import {
+	parseNativeSurfaceSessionImages,
+	readSurfaceMemberImage,
+	type SurfaceMemberImage,
+	surfaceMemberImagesSection,
+} from "./cloud-surface-images.ts";
 import {
 	createControlPlaneSessionCompletionPort,
 	createControlPlaneSessionLeaseRenewalPort,
@@ -1886,7 +1894,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		} catch (error) {
 			composition.finish("failed", { errorCategory: cloudRuntimeErrorCategory(error, signal) });
 			if (isGeminiRun) {
-				if (error instanceof GeminiCapReachedError) await this.#recordGeminiCapReached(binding);
+				if (error instanceof GeminiCapReachedError) {
+					await this.#recordGeminiCapReached(binding);
+				} else {
+					const geminiError = geminiProviderErrorCode(error);
+					if (geminiError) await this.#recordGeminiKeyError(binding, geminiError);
+				}
 			} else {
 				await this.#recordUsageSignal(binding, error);
 			}
@@ -2067,6 +2080,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const conflictPaths = Array.isArray(sessionTurnRaw.conflictPaths)
 			? sessionTurnRaw.conflictPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
+		const productFolderRoots = Array.isArray(sessionTurnRaw.productFolderRoots)
+			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
 		const folderClient = new CloudCompanyFolderClient({
@@ -2086,16 +2102,17 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				return null;
 			}
 		};
-		const [briefMarkdown, identityContext, sharedSnapshot] = await Promise.all([
+		const [briefMarkdown, identityContext, sharedSnapshot, memberImages] = await Promise.all([
 			readBrief(),
 			loadSurfaceIdentityContext(folderClient, signal).catch((error) => {
 				if (signal.aborted) throw error;
 				return null;
 			}),
-			loadSurfaceSharedAssets(folderClient, signal).catch((error) => {
+			loadSurfaceSharedAssets(folderClient, signal, productFolderRoots).catch((error) => {
 				if (signal.aborted) throw error;
 				return null;
 			}),
+			this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal),
 		]);
 		const surfaceTools = createControlPlaneSurfaceToolsPort(this.#paths, {
 			leaseToken,
@@ -2120,7 +2137,25 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			conflictDetails,
 			mainSha,
 			recordChange: surfaceTools.recordChange,
+			memberImages,
+			viewAttachment: (image, readSignal) => readSurfaceMemberImage(folderClient, image, readSignal),
 		};
+	}
+
+	async #surfaceMemberImages(
+		companyId: string,
+		sessionId: string,
+		leaseToken: string,
+		signal: AbortSignal,
+	): Promise<SurfaceMemberImage[]> {
+		return parseNativeSurfaceSessionImages(
+			await this.#paths.call(
+				"qorpera_native_surface_session_images",
+				{ p_profile_id: companyId, p_session_id: sessionId, p_lease_token: leaseToken },
+				signal,
+			),
+			sessionId,
+		);
 	}
 
 	async #surfaceSessionTurn(
@@ -2162,19 +2197,28 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		const conflictPaths = Array.isArray(sessionTurnRaw.conflictPaths)
 			? sessionTurnRaw.conflictPaths.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
 			: [];
+		const productFolderRoots = Array.isArray(sessionTurnRaw.productFolderRoots)
+			? sessionTurnRaw.productFolderRoots.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+			: [];
 		const conflictDetails = parseSurfaceConflictDetails(sessionTurnRaw.conflictDetails);
 		const mainSha = typeof sessionTurnRaw.mainSha === "string" ? sessionTurnRaw.mainSha : null;
+		const memberImagesSection = surfaceMemberImagesSection(
+			await this.#surfaceMemberImages(identity.companyId, sessionId, leaseToken, signal),
+			"company_read",
+		);
 		const turnInput: SurfaceSessionTurnInput = {
 			sessionId,
 			surfaceId,
 			companyId: identity.companyId,
 			surfaceSlug,
 			surfaceTitle,
+			...(typeof sessionTurnRaw.surfaceKind === "string" ? { surfaceKind: sessionTurnRaw.surfaceKind } : {}),
 			sourceKind,
 			prompt: sessionTurnRaw.prompt,
 			state: sessionTurnRaw.state === "reconciling" ? "reconciling" : "queued",
 			repositoryKey: typeof sessionTurnRaw.repositoryKey === "string" ? sessionTurnRaw.repositoryKey : null,
 			folderRoot: typeof sessionTurnRaw.folderRoot === "string" ? sessionTurnRaw.folderRoot : null,
+			...(productFolderRoots.length > 0 ? { productFolderRoots } : {}),
 			briefSummary: typeof sessionTurnRaw.briefSummary === "string" ? sessionTurnRaw.briefSummary : null,
 			explorationVariantLabel:
 				typeof sessionTurnRaw.explorationVariantLabel === "string" ? sessionTurnRaw.explorationVariantLabel : null,
@@ -2442,7 +2486,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			};
 
 			const runtimeInstructions = `${spec.instructions}\n\nWhen finished staging changes or inspecting the surface, call surface_reply with a concise founder-facing summary. If a concrete founder decision is required first, call surface_ask.`;
-			const fullPrompt = `${spec.turnBrief}\n\nFounder request:\n${spec.prompt}`;
+			const fullPrompt = `${spec.turnBrief}${memberImagesSection ? `\n\n${memberImagesSection}` : ""}\n\nFounder request:\n${spec.prompt}`;
 			const contextText = `${runtimeInstructions}\n${fullPrompt}`;
 			const contextSha256 = createHash("sha256").update(contextText).digest("hex");
 			const contextBytes = Buffer.byteLength(contextText);
@@ -3011,6 +3055,24 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			);
 		} catch {
 			console.error("Gemini spend cap notice was not recorded");
+		}
+	}
+
+	async #recordGeminiKeyError(binding: CloudNativeToolBinding, errorCode: GeminiProviderErrorCode): Promise<void> {
+		try {
+			await withAbortScopes(
+				[],
+				(recordSignal) =>
+					this.#paths.call(
+						"qorpera_record_gemini_key_error",
+						{ p_binding: binding, p_error_code: errorCode },
+						recordSignal,
+						10_000,
+					),
+				10_000,
+			);
+		} catch {
+			console.error(`Gemini key error notice was not recorded (${errorCode})`);
 		}
 	}
 

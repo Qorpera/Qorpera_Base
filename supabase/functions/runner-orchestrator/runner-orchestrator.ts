@@ -189,6 +189,11 @@ export type RunnerOrchestratorRequest =
 			lane?: "all" | "sessions" | "folder" | "code_repo";
 	  }
 	| {
+			action: "surface_shared_product_folder_roots";
+			orchestratorId: string;
+			profileId: string;
+	  }
+	| {
 			action: "surface_enqueue_session_run";
 			orchestratorId: string;
 			sessionId: string;
@@ -601,6 +606,12 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				...(lane !== undefined ? { lane } : {}),
 			};
 		}
+		case "surface_shared_product_folder_roots":
+			return {
+				action: input.action,
+				orchestratorId,
+				profileId: uuid(input.profileId, "surface profile id"),
+			};
 		case "surface_enqueue_session_run":
 			return {
 				action: input.action,

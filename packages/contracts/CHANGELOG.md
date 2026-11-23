@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `SurfaceImageRef`, `SurfaceMessageImages`, `SurfaceSessionImages` and `parseSurfaceSessionImages`: the images of an interface session's messages, as `qorpera_surface_session_images` answers them (migration `20260930865000`).
 - `SURFACE_FIGURES`: the figures a surface can be drawn as; the web draws them and the agents' `propose_surface` picks from them.
 - `CLOUD_MACHINE_HOME.sftpServer` (`/usr/lib/openssh/sftp-server`): the program of a home's file channel (Claude Code on the home, slice C1), from the machine image's `openssh-sftp-server`.
 - `CLOUD_MACHINE_HOME`: where a machine keeps the pinned Codex for an agent's home (`/opt/qorpera-machine/codex`), the account its exec-server runs as (`qorpera-agent`, uid and gid 2000, home `/var/lib/qorpera-agent`, not root by default and with a password-free way to root of its own, `deploy/machine/qorpera-agent.sudoers`, so Codex's own shell can do everything `machine_run` does as root there) and the company folder's mount point (`/company`), so the runtime, the executor and the image build name one truth (agent-box slice 1). `CLOUD_MACHINE_HOME.codexSha256` (the pinned build the executor runs, equal to the artifact's) and `unitPrefix` (`qorpera-machine-home-`, each channel's unit in the machines' slice), home-lxd 14 Nov 2026.

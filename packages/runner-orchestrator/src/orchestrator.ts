@@ -526,6 +526,7 @@ export interface CloudRunnerOrchestratorControlPlane {
 		signal?: AbortSignal,
 	): Promise<{ deferred: boolean } | undefined>;
 	claimSurfaceJobs?(limit?: number, signal?: AbortSignal, lane?: SurfaceClaimLane): Promise<ClaimedSurfaceJobs>;
+	resolveSharedProductFolderRoots?(profileId: string, signal?: AbortSignal): Promise<readonly string[]>;
 	enqueueSurfaceSessionRun?(
 		input: EnqueueSurfaceSessionRunInput,
 		signal?: AbortSignal,
@@ -774,6 +775,11 @@ type CloudRunnerOrchestratorRequest =
 			orchestratorId: string;
 			limit: number;
 			lane?: SurfaceClaimLane;
+	  }
+	| {
+			action: "surface_shared_product_folder_roots";
+			orchestratorId: string;
+			profileId: string;
 	  }
 	| {
 			action: "surface_enqueue_session_run";
@@ -1515,6 +1521,15 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 		input.identityFolderRoot === undefined
 			? undefined
 			: optionalResponseString(input.identityFolderRoot, "surface identity folder root");
+	let productFolderRoots: string[] | undefined;
+	if (input.productFolderRoots !== undefined && input.productFolderRoots !== null) {
+		if (!Array.isArray(input.productFolderRoots) || input.productFolderRoots.length > 32) {
+			throw new Error("Runner orchestrator returned invalid surface product folder roots");
+		}
+		productFolderRoots = input.productFolderRoots.map((item) =>
+			responseText(item, "surface product folder root", 256),
+		);
+	}
 	const briefSummary =
 		input.briefSummary === undefined
 			? undefined
@@ -1560,6 +1575,7 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 		...(explorationVariantLabel !== undefined ? { explorationVariantLabel } : {}),
 		...(siteSlug !== undefined ? { siteSlug } : {}),
 		...(identityFolderRoot !== undefined ? { identityFolderRoot } : {}),
+		...(productFolderRoots !== undefined ? { productFolderRoots } : {}),
 		...(briefSummary !== undefined ? { briefSummary } : {}),
 		...(retryCount !== undefined ? { retryCount } : {}),
 		...(sponsor !== undefined ? { sponsor } : {}),
@@ -4457,6 +4473,22 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 				signal,
 			),
 		);
+	}
+
+	async resolveSharedProductFolderRoots(profileId: string, signal?: AbortSignal): Promise<readonly string[]> {
+		requiredUuid(profileId, "Surface profile id");
+		const raw = await this.#request(
+			{
+				action: "surface_shared_product_folder_roots",
+				orchestratorId: this.#orchestratorId,
+				profileId,
+			},
+			signal,
+		);
+		if (!Array.isArray(raw) || raw.length > 32) {
+			throw new Error("Runner orchestrator returned invalid surface product folder roots");
+		}
+		return raw.map((item) => responseText(item, "surface product folder root", 256));
 	}
 
 	async enqueueSurfaceSessionRun(

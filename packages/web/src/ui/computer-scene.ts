@@ -426,6 +426,11 @@ export class ComputerScene {
 	dispose(): void {
 		this.hide();
 		this.#stop.abort();
+		for (const canvas of this.#screen.querySelectorAll("canvas")) {
+			canvas.width = canvas.height = 0;
+		}
+		this.#screen.replaceChildren();
+		this.#built = undefined;
 	}
 
 	/** Builds the screen for the look: the dark screen, the hour's frame, the avatar, the eyes and the dock. */

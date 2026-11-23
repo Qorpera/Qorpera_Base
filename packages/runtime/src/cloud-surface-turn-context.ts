@@ -11,6 +11,11 @@ import {
 	SURFACE_IDENTITY_CSS_MOUNT_PATH,
 	SURFACE_SHARED_DIR,
 } from "@qorpera/contracts";
+import {
+	type SurfaceAttachmentReader,
+	type SurfaceMemberImage,
+	surfaceMemberImagesSection,
+} from "./cloud-surface-images.ts";
 import type { CloudSurfaceToolsPort } from "./cloud-surface-tools.ts";
 
 export interface SurfaceIdentityContext {
@@ -75,6 +80,8 @@ export interface SurfaceTurnBriefInput {
 	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;
 	readonly mainSha?: string | null;
 	readonly recordChange?: CloudSurfaceToolsPort["recordChange"];
+	readonly memberImages?: readonly SurfaceMemberImage[] | null;
+	readonly viewAttachment?: SurfaceAttachmentReader;
 }
 
 export interface SurfaceCodingTurnBinding extends SurfaceTurnBriefInput {
@@ -82,7 +89,7 @@ export interface SurfaceCodingTurnBinding extends SurfaceTurnBriefInput {
 }
 
 export const SURFACE_STAGED_CODING_INSTRUCTIONS =
-	"IMPORTANT — Surface Staged Mode (overrides direct-landing instructions above): " +
+	"IMPORTANT — Surface Staged Mode: " +
 	"This session is scoped to a Qorpera Surface — a direct live projection of its codebase or Company Files folder. " +
 	"Commits you make on this session branch stay STAGED for founder Preview and approval and do NOT land on main until the founder approves them. " +
 	"Founders preview multiple unmerged staged changes from concurrent sessions toggled on or off simultaneously in Preview before approving or publishing any of them. " +
@@ -267,6 +274,12 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 		);
 		sections.push(lines.join("\n"));
 	}
+
+	const images = surfaceMemberImagesSection(
+		binding.memberImages ?? [],
+		binding.viewAttachment ? "coding_view_attachment" : "company_read",
+	);
+	if (images) sections.push(images);
 
 	return sections.join("\n\n");
 }

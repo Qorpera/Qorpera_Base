@@ -18,6 +18,7 @@ export interface PresencePlace {
 }
 
 const MAX = 256;
+export const COMPANY_PRESENCE_PLACE = "company";
 
 export function presenceValue(sessionId: string | undefined, place: string | undefined): string | null {
 	if (!sessionId && !place) return null;
@@ -29,7 +30,8 @@ export function parsePresenceValue(value: string | null | undefined): PresencePl
 	if (!value) return {};
 	const at = value.indexOf("@");
 	const sessionId = at < 0 ? value : value.slice(0, at);
-	const place = at < 0 ? "" : value.slice(at + 1);
+	const rawPlace = at < 0 ? "" : value.slice(at + 1);
+	const place = rawPlace === COMPANY_PRESENCE_PLACE ? "" : rawPlace;
 	return { ...(sessionId ? { sessionId } : {}), ...(place ? { place } : {}) };
 }
 

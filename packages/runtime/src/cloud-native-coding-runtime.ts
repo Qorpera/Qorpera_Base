@@ -42,6 +42,7 @@ import {
 import { assertCloudRuntimeBundle } from "./cloud-runtime-bundle.ts";
 import type { CloudRuntimeObservability, CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 import { SITE_NAME_RULE } from "./cloud-site-tools.ts";
+import { CODING_ATTACHMENT_VIEW_SCHEMA, createCodingViewAttachmentTool } from "./cloud-surface-images.ts";
 import { createCodingRecordChangeTool } from "./cloud-surface-tools.ts";
 import {
 	buildSurfaceTurnBrief,
@@ -177,7 +178,7 @@ function trimUtf8ToBytes(text: string, maxBytes: number): string {
 	return maxBytes > suffixBytes ? `${out}${suffix}` : out;
 }
 
-function codingShownImageSha256(text: unknown): string | undefined {
+function codingShownImageSha256(text: unknown, wanted: string = CODING_INSPECT_IMAGE_SCHEMA): string | undefined {
 	if (typeof text !== "string") return undefined;
 	let answer: unknown;
 	try {
@@ -187,10 +188,7 @@ function codingShownImageSha256(text: unknown): string | undefined {
 	}
 	if (!answer || typeof answer !== "object" || Array.isArray(answer)) return undefined;
 	const { schema, kind, imageSha256 } = answer as { schema?: unknown; kind?: unknown; imageSha256?: unknown };
-	return schema === CODING_INSPECT_IMAGE_SCHEMA &&
-		kind === "image" &&
-		typeof imageSha256 === "string" &&
-		SHA.test(imageSha256)
+	return schema === wanted && kind === "image" && typeof imageSha256 === "string" && SHA.test(imageSha256)
 		? imageSha256
 		: undefined;
 }
@@ -913,10 +911,16 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				const recordChangeTool = surfaceSession
 					? [createCodingRecordChangeTool(surfaceSession.sessionId, { recordChange: surfaceSession.recordChange })]
 					: [];
+				const attachments = surfaceSession?.memberImages ?? [];
+				const viewAttachmentTool =
+					surfaceSession?.viewAttachment && attachments.length > 0
+						? [createCodingViewAttachmentTool(attachments, surfaceSession.viewAttachment)]
+						: [];
 				return {
 					tools: [
 						...cloudCodingCommandTools({ scope, identity, operations, gateway: guarded }),
 						...recordChangeTool,
+						...viewAttachmentTool,
 						finish,
 						ask,
 					],
@@ -939,12 +943,16 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 									!output.capture &&
 									output.imageSha256 !== undefined &&
 									envelope.status === "ok" &&
-									provenance.tool === "coding_run_command" &&
 									provenance.source === "worker" &&
 									provenance.companyReadId === undefined &&
 									provenance.companyId === initial.identity.companyId &&
 									provenance.runId === initial.identity.runId &&
-									codingShownImageSha256(content?.text) === output.imageSha256;
+									((provenance.tool === "coding_run_command" &&
+										codingShownImageSha256(content?.text) === output.imageSha256) ||
+										(provenance.tool === "coding_view_attachment" &&
+											viewAttachmentTool.length > 0 &&
+											codingShownImageSha256(content?.text, CODING_ATTACHMENT_VIEW_SCHEMA) ===
+												output.imageSha256));
 								if (
 									output.capture ||
 									(output.imageSha256 !== undefined && !shownImage) ||

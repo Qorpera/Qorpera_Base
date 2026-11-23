@@ -66,7 +66,7 @@
 .members-agent {
 	position: relative; display: grid; justify-items: center; align-content: start; gap: 1px; width: var(--tile);
 	padding: 8px 2px 7px; border: 0; border-radius: 14px; background: transparent; color: var(--text); font: inherit;
-	cursor: pointer; transition: background-color var(--motion-fast) ease, transform var(--motion-fast) var(--ease-spring);
+	cursor: default; transition: background-color var(--motion-fast) ease, transform var(--motion-fast) var(--ease-spring);
 }
 .members-agent:disabled { cursor: default; }
 .members-agent:not(:disabled):hover, .members-agent.menu-open { background: var(--hover); }
@@ -90,7 +90,7 @@
 .members-answer { display: flex; gap: 8px; padding: 1px 0 6px; }
 .members-answer button {
 	display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 1px solid var(--border-strong);
-	border-radius: 50%; background: var(--bg); color: var(--text); cursor: pointer;
+	border-radius: 50%; background: var(--bg); color: var(--text); cursor: default;
 	transition: transform var(--motion-fast) var(--ease-spring), background-color var(--motion-fast) ease;
 }
 .members-answer button.is-yes { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }

@@ -1,5 +1,3 @@
-/* The company folder inside the shared Settings / Storage window (company-folder.ts, embedded): a title row with the
- * type filter, sort and view switch; an icon or list view; a file's preview in its own window over Settings; and Recents, grouped by day. Rules that size by room use the `storage` container, in em of its 14px text so they follow the UI size. */
 .storage-browser, .files-page.storage-browser {
 	--files-folder: #4a8ef0;
 	--storage-doc: #3f78d8; --storage-pdf: #d8473e; --storage-sheet: #23955a; --storage-image: #8460d4; --storage-other: #7d7d78;
@@ -14,7 +12,6 @@
 	--storage-folder-back: #4d8ae0; --storage-folder-front: #74a9f2;
 	--storage-selected: color-mix(in srgb, #6ea4ff 18%, transparent);
 }
-.storage-browser.is-embedded { max-width: none; padding: 0; }
 .storage-browser [hidden] { display: none !important; }
 
 /* ---- title row ---- */
@@ -28,7 +25,7 @@
 .storage-controls { display: flex; align-items: center; gap: 8px; }
 .storage-select {
 	height: 30px; max-width: 160px; padding: 0 28px 0 10px; border: 1px solid var(--border); border-radius: 8px;
-	appearance: none; -webkit-appearance: none; background: transparent; color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer;
+	appearance: none; -webkit-appearance: none; background: transparent; color: var(--text); font: inherit; font-size: 12.5px; cursor: default;
 	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23908f8a' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 	background-repeat: no-repeat; background-position: right 9px center; background-size: 12px;
 	transition: background-color var(--motion-fast, 120ms) ease, border-color var(--motion-fast, 120ms) ease;
@@ -39,7 +36,7 @@
 .storage-view-toggle { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--hover); }
 .storage-view-button {
 	display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 26px; border: 0;
-	border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer;
+	border-radius: 6px; background: transparent; color: var(--text-muted); cursor: default;
 }
 .storage-view-button:hover { color: var(--text); }
 .storage-view-button[aria-pressed="true"] { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--border), 0 1px 2px rgb(0 0 0 / 10%); }
@@ -51,7 +48,7 @@
 .storage-code-button {
 	display: inline-flex; flex: none; align-items: center; gap: 7px; height: 30px; padding: 0 9px 0 10px;
 	border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text);
-	font: inherit; font-size: 12.5px; white-space: nowrap; cursor: pointer;
+	font: inherit; font-size: 12.5px; white-space: nowrap; cursor: default;
 	transition: background-color var(--motion-fast, 120ms) ease, border-color var(--motion-fast, 120ms) ease;
 }
 .storage-code-button:is(:hover, .menu-open):not([aria-disabled="true"]) { background-color: var(--hover); border-color: var(--border-strong); }
@@ -81,7 +78,9 @@
 .storage-browser .files-name { display: block; min-width: 0; }
 .storage-browser .files-target { display: block; width: 100%; max-width: 100%; padding-top: 1px; }
 .storage-grid-meta { color: var(--text-soft); font-size: 11.5px; line-height: 1.4; font-variant-numeric: tabular-nums; }
-.storage-count { margin: 14px 0 0; color: var(--text-soft); font-size: 12px; }
+.storage-foot { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 14px 0 0; color: var(--text-soft); font-size: 12px; }
+.storage-foot > p { margin: 0; }
+.storage-usage:empty { display: none; }
 
 /* The icon view's glyphs (tileGlyph): a two-tone folder, and a page whose tag takes the category's colour. */
 .storage-glyph { display: block; width: 100%; height: 100%; overflow: visible; }
@@ -133,7 +132,6 @@
 .storage-modified, .storage-kind-label { color: var(--text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .storage-browser .files-size { width: auto; color: var(--text-muted); font-size: 12px; }
 
-/* ---- preview: its own window over Settings, the way a picture is viewed ---- */
 .storage-viewer[open] { display: flex; }
 .storage-viewer::backdrop { background: rgb(20 20 19 / 32%); }
 /* The window grows out of its file's icon and shrinks back into it (company-folder.ts, #zoom), so the dialogs' own

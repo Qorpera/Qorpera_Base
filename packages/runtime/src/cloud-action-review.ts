@@ -255,6 +255,7 @@ export function cloudActionEffect(
 		case "data_query":
 		// How one part of an interface app is made: the runtime's own text, the same for every company.
 		case "app_guide":
+		case "coding_view_attachment":
 		// more_tools' describe shows tools' descriptions and forms (T3-6). Its use is never classified as more_tools: the
 		// boundary runs it as the call of the tool it names.
 		case "more_tools":

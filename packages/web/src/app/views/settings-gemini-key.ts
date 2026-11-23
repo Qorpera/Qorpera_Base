@@ -3,15 +3,41 @@ import {
 	formatUsdMicrodollars,
 	GEMINI_MAX_CAP_CENTS,
 	GEMINI_MIN_CAP_CENTS,
+	type GeminiKeyErrorCode,
 	GeminiKeyInvalidError,
 	GeminiKeyStaleError,
 	type GeminiKeyState,
 	geminiKeyLooksValid,
 	type WebGeminiKey,
 } from "../../cloud/gemini-key.ts";
-import { button, h, notice, replace } from "../../ui/dom.ts";
+import { button, fmtTime, h, notice, replace } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import { monthName } from "./settings-good-will.ts";
+
+const GOOGLE_AI_STUDIO_SPEND_URL = "https://aistudio.google.com/spend";
+
+function geminiErrorMessage(code: GeminiKeyErrorCode): string {
+	switch (code) {
+		case "billing_required":
+			return t(
+				"Google reported that billing or AI Ultra credits are not active for this key. Claim your monthly credits or check billing in Google AI Studio.",
+			);
+		case "quota_exhausted":
+			return t(
+				"Google returned a quota or rate limit for this key. Check your credits and billing in Google AI Studio, or try again shortly.",
+			);
+		case "key_rejected":
+			return t("Google rejected this API key. Check it in Google AI Studio or replace it here.");
+		case "model_unavailable":
+			return t("Google reported that Gemini 4 Neon is unavailable for this key.");
+		case "invalid_request":
+			return t("Google rejected the last Gemini request made with this key.");
+		case "provider_outage":
+			return t("Google's Gemini API had a temporary server error on the last run.");
+		case "transport_unavailable":
+			return t("Qorpera could not reach Google's Gemini API on the last run.");
+	}
+}
 
 function parseCapDollars(raw: string): number | null | "invalid" {
 	const trimmed = raw.trim();
@@ -33,21 +59,22 @@ function formatCapInput(cents: number | null): string {
 export class GeminiKeyView {
 	readonly el = h("section", { class: "settings-group gemini-key-section" });
 	readonly #client: WebGeminiKey;
+	readonly #onChanged: (() => void) | undefined;
 	readonly #lifetime = new AbortController();
 	#state: GeminiKeyState | undefined;
 	#loading = true;
 	#loadError = false;
-	#working: "save" | "settings" | "revoke" | undefined;
+	#working: "save" | "settings" | "check" | "revoke" | undefined;
 	#adding = false;
 	#replacing = false;
 	#keyDraft = "";
 	#capDraft = "100";
-	#defaultDraft = false;
 	#error: string | undefined;
 	#status: string | undefined;
 
-	constructor(client: WebGeminiKey, signal: AbortSignal) {
+	constructor(client: WebGeminiKey, signal: AbortSignal, onChanged?: () => void) {
 		this.#client = client;
+		this.#onChanged = onChanged;
 		if (signal.aborted) {
 			this.#lifetime.abort();
 			return;
@@ -75,7 +102,6 @@ export class GeminiKeyView {
 			this.#state = next;
 			if (next.key) {
 				this.#capDraft = formatCapInput(next.key.monthlyCapCents);
-				this.#defaultDraft = next.key.defaultForChats;
 			}
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
@@ -105,13 +131,15 @@ export class GeminiKeyView {
 			this.#draw();
 			return;
 		}
-		const defaultForChats = existing ? existing.defaultForChats : this.#defaultDraft;
 		this.#working = "save";
 		this.#error = undefined;
 		this.#status = undefined;
 		this.#draw();
 		try {
-			const next = await this.#client.save({ apiKey, defaultForChats, monthlyCapCents }, this.#lifetime.signal);
+			const next = await this.#client.save(
+				{ apiKey, defaultForChats: false, monthlyCapCents },
+				this.#lifetime.signal,
+			);
 			if (this.#lifetime.signal.aborted) return;
 			this.#state = next;
 			this.#keyDraft = "";
@@ -119,9 +147,9 @@ export class GeminiKeyView {
 			this.#replacing = false;
 			if (next.key) {
 				this.#capDraft = formatCapInput(next.key.monthlyCapCents);
-				this.#defaultDraft = next.key.defaultForChats;
 			}
 			this.#status = t("Gemini API key saved.");
+			this.#onChanged?.();
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
 			this.#error =
@@ -136,7 +164,7 @@ export class GeminiKeyView {
 		}
 	}
 
-	async #updateSettings(defaultForChats: boolean, monthlyCapCents: number | null, savedNotice: string): Promise<void> {
+	async #updateSettings(monthlyCapCents: number | null, savedNotice: string): Promise<void> {
 		const key = this.#state?.key;
 		if (!key || this.#working || this.#lifetime.signal.aborted) return;
 		this.#working = "settings";
@@ -145,14 +173,13 @@ export class GeminiKeyView {
 		this.#draw();
 		try {
 			const next = await this.#client.updateSettings(
-				{ defaultForChats, monthlyCapCents, expectedVersion: key.version },
+				{ defaultForChats: null, monthlyCapCents, expectedVersion: key.version },
 				this.#lifetime.signal,
 			);
 			if (this.#lifetime.signal.aborted) return;
 			this.#state = next;
 			if (next.key) {
 				this.#capDraft = formatCapInput(next.key.monthlyCapCents);
-				this.#defaultDraft = next.key.defaultForChats;
 			}
 			this.#status = savedNotice;
 		} catch (error) {
@@ -172,17 +199,28 @@ export class GeminiKeyView {
 		}
 	}
 
-	async #toggleDefault(): Promise<void> {
-		const key = this.#state?.key;
-		if (!key) return;
-		const nextDefault = !key.defaultForChats;
-		await this.#updateSettings(
-			nextDefault,
-			key.monthlyCapCents,
-			nextDefault
-				? t("Gemini 4 Neon is now the default for your chats.")
-				: t("Gemini 4 Neon is no longer the default for your chats."),
-		);
+	async #checkKey(): Promise<void> {
+		if (!this.#state?.key || !this.#client.check || this.#working || this.#lifetime.signal.aborted) return;
+		this.#working = "check";
+		this.#error = undefined;
+		this.#status = undefined;
+		this.#draw();
+		try {
+			const result = await this.#client.check(this.#lifetime.signal);
+			if (this.#lifetime.signal.aborted) return;
+			this.#state = result.state;
+			if (result.ok) {
+				this.#status = t("Key verified for Gemini 4 Neon. Google checks billing and credits when a reply runs.");
+			}
+		} catch {
+			if (this.#lifetime.signal.aborted) return;
+			this.#error = t("The Gemini API key could not be checked. Try again.");
+		} finally {
+			if (!this.#lifetime.signal.aborted) {
+				this.#working = undefined;
+				this.#draw();
+			}
+		}
 	}
 
 	async #saveCap(): Promise<void> {
@@ -195,7 +233,7 @@ export class GeminiKeyView {
 			this.#draw();
 			return;
 		}
-		await this.#updateSettings(key.defaultForChats, parsed, t("Monthly spend cap saved."));
+		await this.#updateSettings(parsed, t("Monthly spend cap saved."));
 	}
 
 	async #revoke(): Promise<void> {
@@ -212,8 +250,8 @@ export class GeminiKeyView {
 			this.#adding = false;
 			this.#replacing = false;
 			this.#capDraft = "100";
-			this.#defaultDraft = false;
 			this.#status = t("Gemini API key removed.");
+			this.#onChanged?.();
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
 			this.#error = t("The Gemini API key could not be removed. Try again.");
@@ -256,21 +294,6 @@ export class GeminiKeyView {
 						this.#capDraft = (event.currentTarget as HTMLInputElement).value;
 					},
 				});
-		const defaultCheck = isReplace
-			? null
-			: h(
-					"label",
-					{ class: "gemini-default-option" },
-					h("input", {
-						type: "checkbox",
-						checked: this.#defaultDraft,
-						disabled: busy,
-						onchange: (event: Event) => {
-							this.#defaultDraft = (event.currentTarget as HTMLInputElement).checked;
-						},
-					}),
-					h("span", null, t("Use Gemini 4 Neon by default for my chats")),
-				);
 		const saveButton = h(
 			"button",
 			{ type: "submit", class: "btn btn-primary", disabled: busy },
@@ -300,7 +323,6 @@ export class GeminiKeyView {
 			capInput
 				? h("label", { class: "gemini-cap-field" }, h("span", null, t("Monthly spend cap (USD)")), capInput)
 				: null,
-			defaultCheck,
 			h("div", { class: "hook-form-actions" }, saveButton, cancelButton),
 			h(
 				"small",
@@ -346,7 +368,6 @@ export class GeminiKeyView {
 							() => {
 								this.#adding = true;
 								this.#capDraft = "100";
-								this.#defaultDraft = false;
 								this.#keyDraft = "";
 								this.#error = undefined;
 								this.#status = undefined;
@@ -391,22 +412,15 @@ export class GeminiKeyView {
 		const busy = Boolean(this.#working);
 		const spent = formatUsdMicrodollars(key.monthSpendMicrodollars);
 		const capLabel = key.monthlyCapCents !== null ? formatUsdCents(key.monthlyCapCents) : null;
-		const percentUsed =
-			key.monthlyCapCents !== null
-				? Math.min(100, Math.round((key.monthSpendMicrodollars / (key.monthlyCapCents * 10_000)) * 100))
+		const remainingMicrodollars =
+			key.monthlyCapCents !== null ? Math.max(0, key.monthlyCapCents * 10_000 - key.monthSpendMicrodollars) : null;
+		const remaining = remainingMicrodollars !== null ? formatUsdMicrodollars(remainingMicrodollars) : null;
+		const percentRemaining =
+			key.monthlyCapCents !== null && remainingMicrodollars !== null
+				? Math.max(0, Math.min(100, Math.round((remainingMicrodollars / (key.monthlyCapCents * 10_000)) * 100)))
 				: 0;
 		const meterFill = h("span");
-		meterFill.style.width = `${percentUsed}%`;
-
-		const defaultSwitch = h("button", {
-			type: "button",
-			role: "switch",
-			class: "routine-switch",
-			"aria-checked": String(key.defaultForChats),
-			"aria-label": t("Use Gemini 4 Neon by default for my chats"),
-			onclick: () => void this.#toggleDefault(),
-		});
-		if (busy) defaultSwitch.setAttribute("aria-disabled", "true");
+		meterFill.style.width = `${percentRemaining}%`;
 
 		const currentCapText = formatCapInput(key.monthlyCapCents);
 		const capSaveButton = h(
@@ -430,6 +444,11 @@ export class GeminiKeyView {
 			},
 		});
 
+		const checkButton = this.#client.check
+			? button(this.#working === "check" ? t("Checking…") : t("Check key"), () => void this.#checkKey(), {
+					disabled: busy,
+				})
+			: null;
 		const replaceButton = button(
 			t("Replace key"),
 			() => {
@@ -446,6 +465,28 @@ export class GeminiKeyView {
 			() => void this.#revoke(),
 			{ danger: true, disabled: busy },
 		);
+		const billingLink = h(
+			"a",
+			{
+				class: "gemini-billing-link",
+				href: GOOGLE_AI_STUDIO_SPEND_URL,
+				target: "_blank",
+				rel: "noopener noreferrer",
+			},
+			t("Manage credits in Google AI Studio"),
+		);
+		const lastErrorCode = key.lastErrorCode ?? null;
+		const healthNotice = lastErrorCode
+			? notice(
+					lastErrorCode === "key_rejected" || lastErrorCode === "billing_required" ? "danger" : "warn",
+					key.lastErrorAt
+						? t("{message} ({time})", {
+								message: geminiErrorMessage(lastErrorCode),
+								time: fmtTime(key.lastErrorAt),
+							})
+						: geminiErrorMessage(lastErrorCode),
+				)
+			: null;
 
 		replace(
 			this.el,
@@ -463,12 +504,19 @@ export class GeminiKeyView {
 						{ class: "settings-copy" },
 						h("strong", null, t("Gemini 4 Neon")),
 						h("small", { class: "connection-email" }, t("Key {hint}", { hint: key.keyHint })),
-						h("small", { class: "connection-scope" }, t("Used in all your companies")),
+						h(
+							"small",
+							{ class: "connection-scope" },
+							key.lastCheckedAt && !lastErrorCode
+								? t("Used in all your companies · Checked {time}", { time: fmtTime(key.lastCheckedAt) })
+								: t("Used in all your companies"),
+						),
 					),
-					h("div", { class: "connection-actions" }, replaceButton, removeButton),
+					h("div", { class: "connection-actions" }, checkButton, replaceButton, removeButton),
 					h(
 						"div",
 						{ class: "connection-usage" },
+						healthNotice,
 						h(
 							"div",
 							{ class: "connection-usage-window" },
@@ -478,48 +526,54 @@ export class GeminiKeyView {
 								h(
 									"span",
 									{ class: "connection-usage-label" },
-									t("Spend in {month}", { month: monthName(key.spendMonth) }),
+									capLabel !== null
+										? t("Tracked budget in {month}", { month: monthName(key.spendMonth) })
+										: t("Spend in {month}", { month: monthName(key.spendMonth) }),
 								),
-								capLabel !== null
+								capLabel !== null && remaining !== null
 									? key.capReached
 										? h(
 												"span",
 												{ class: "connection-usage-limit" },
 												t("{spent} of {cap} · Cap reached", { spent, cap: capLabel }),
 											)
-										: h("span", null, t("{spent} of {cap}", { spent, cap: capLabel }))
+										: h(
+												"span",
+												null,
+												t("{remaining} left of {cap} ({spent} spent)", {
+													remaining,
+													cap: capLabel,
+													spent,
+												}),
+											)
 									: h("span", null, t("{spent} · No monthly cap", { spent })),
 							),
 							capLabel !== null
 								? h(
 										"div",
 										{
-											class: `connection-usage-meter${percentUsed >= 85 || key.capReached ? " is-low" : ""}`,
+											class: `connection-usage-meter${percentRemaining <= 15 || key.capReached ? " is-low" : ""}`,
 										},
 										meterFill,
 									)
 								: null,
+							h(
+								"div",
+								{ class: "gemini-credits-note" },
+								h(
+									"small",
+									null,
+									t(
+										"Google does not expose AI Studio credit balances over the API, so Qorpera tracks spend made here.",
+									),
+								),
+								" ",
+								billingLink,
+							),
 						),
 						key.capReached
 							? notice("warn", t("Gemini conversations are paused until next month or until you raise the cap."))
 							: null,
-					),
-					h(
-						"div",
-						{ class: "connection-away" },
-						h(
-							"div",
-							{ class: "settings-copy" },
-							h("strong", null, t("Use Gemini 4 Neon by default for my chats")),
-							h(
-								"small",
-								null,
-								t(
-									"New conversations without a chosen model use Gemini 4 Neon. Background workers and routines keep using your other logins.",
-								),
-							),
-						),
-						defaultSwitch,
 					),
 					h(
 						"form",

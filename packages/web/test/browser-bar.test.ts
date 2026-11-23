@@ -119,4 +119,22 @@ describe("the browser's bar takes the page's top-left colour", () => {
 		expect(rafSpy).toHaveBeenCalled();
 		expect(bar()).toBe("rgb(250, 250, 250)");
 	});
+
+	it("ignores class and hidden mutations inside the sidebar rail while still watching the rail itself", async () => {
+		const rail = layer("rgb(233, 231, 230)");
+		rail.className = "rail";
+		const row = document.createElement("div");
+		row.className = "rail-surface";
+		rail.append(row);
+		stop = watchBrowserBar(document.body);
+		const rafSpy = vi.spyOn(globalThis, "requestAnimationFrame");
+		row.classList.add("is-hovered");
+		row.hidden = true;
+		await settle();
+		expect(rafSpy).not.toHaveBeenCalled();
+		rail.hidden = true;
+		await settle();
+		expect(rafSpy).toHaveBeenCalled();
+		expect(bar()).toBe("rgb(250, 250, 250)");
+	});
 });

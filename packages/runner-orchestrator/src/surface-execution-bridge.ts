@@ -2,18 +2,21 @@ import { createHash } from "node:crypto";
 import {
 	type CloudCodingRepository,
 	compileIdentityTokensCss,
+	IDENTITY_SHARED_ASSET_PATHS,
 	IDENTITY_TOKENS_CSS_PATH,
 	IDENTITY_TOKENS_JSON_PATH,
 	isUuid,
+	PRODUCT_CATALOG_PATH,
+	PRODUCT_SPECS_PATH,
 	parseCloudCodingRepository,
 	parseStudioPatchOps,
-	SHARED_COMPANY_ASSET_PATHS,
 	type StudioPatchOp,
 	SURFACE_IDENTITY_CSS_MOUNT_PATH,
 	SURFACE_SHARED_DIR,
 	type SurfaceSessionState,
+	sharedProductAssetCandidates,
 } from "@qorpera/contracts";
-import { type CodeHostJob, CodeHostRefusal, undoCodeChange } from "./code-host-jobs.ts";
+import { type CodeHostJob, CodeHostJobFailure, CodeHostRefusal, undoCodeChange } from "./code-host-jobs.ts";
 import {
 	type CodeHostChangeRange,
 	type EnsureSurfaceStarterRepositoryResult,
@@ -126,6 +129,7 @@ export interface SurfaceExecutionBridgePorts {
 		input: { readonly profileId: string; readonly surfaceId: string; readonly repository: CloudCodingRepository },
 		signal: AbortSignal,
 	) => Promise<CodeHostJob> | CodeHostJob;
+	readonly resolveProductFolderRoots?: (profileId: string, signal: AbortSignal) => Promise<readonly string[]>;
 	readonly buildAndUploadPreview?: (
 		input: {
 			readonly previewId: string;
@@ -168,6 +172,7 @@ export interface SurfaceExecutionBridgePorts {
 	readonly folder?: SurfaceCompanyFolderPort;
 	readonly folderSnapshots?: SurfaceFolderSnapshotPort;
 	readonly completionRetryDelaysMs?: readonly number[];
+	readonly rethrowOnCodeHostFailure?: boolean;
 	readonly runOpsActionJob?: (
 		job: ClaimedSurfaceMergeJob,
 		signal: AbortSignal,
@@ -493,53 +498,77 @@ export async function undoSurfaceCodeRepoChange(
 		readonly andLater?: boolean;
 	},
 ): Promise<SurfaceCodeRepoUndoOutcome> {
-	try {
-		const undone = await undoCodeChange(codeHostJob, {
-			repository: input.repository,
-			requestId: input.jobId,
-			change: {
-				n: 1,
-				mainBefore: input.landedMainBefore,
-				mainAfter: input.landedMainAfter,
-			},
-			andLater: input.andLater ?? false,
-			message: `Undo surface change ${input.changeId}`,
-		});
-		if (undone.state === "nothing") {
-			return { status: "landed", mainBefore: undone.mainSha, mainAfter: undone.mainSha };
-		}
-		return { status: "landed", mainBefore: undone.mainBefore, mainAfter: undone.mainAfter };
-	} catch (error) {
-		if (error instanceof CodeHostRefusal && error.code === "CODE_HOST_UNDO_CONFLICT") {
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		try {
+			await prepareSurfaceRepository(codeHostJob, { repository: input.repository, slug: input.repository.name });
+			const undone = await undoCodeChange(codeHostJob, {
+				repository: input.repository,
+				requestId: input.jobId,
+				change: {
+					n: 1,
+					mainBefore: input.landedMainBefore,
+					mainAfter: input.landedMainAfter,
+				},
+				andLater: input.andLater ?? false,
+				message: `Undo surface change ${input.changeId}`,
+			});
+			if (undone.state === "nothing") {
+				return { status: "landed", mainBefore: undone.mainSha, mainAfter: undone.mainSha };
+			}
+			return { status: "landed", mainBefore: undone.mainBefore, mainAfter: undone.mainAfter };
+		} catch (error) {
+			if (attempt === 0 && error instanceof CodeHostJobFailure && error.code === "CODE_HOST_BASE_MOVED") {
+				continue;
+			}
+			if (error instanceof CodeHostRefusal && error.code === "CODE_HOST_UNDO_CONFLICT") {
+				return {
+					status: "conflicted",
+					conflictPaths: error.paths,
+					errorDetail: formatConflictDetail(error.paths),
+				};
+			}
 			return {
-				status: "conflicted",
-				conflictPaths: error.paths,
-				errorDetail: formatConflictDetail(error.paths),
+				status: "failed",
+				errorDetail: formatErrorDetail(error, "Code-repository undo failed"),
 			};
 		}
-		return {
-			status: "failed",
-			errorDetail: formatErrorDetail(error, "Code-repository undo failed"),
-		};
 	}
+	return { status: "failed", errorDetail: "Code-repository undo failed after concurrent branch update" };
 }
 
 export async function collectSharedCompanyAssets(
 	folder: Pick<SurfaceCompanyFolderPort, "readFiles">,
 	profileId: string,
 	signal: AbortSignal,
+	productFolderRoots?: readonly string[] | null,
 ): Promise<Readonly<Record<string, string>>> {
+	const { specsPaths, catalogPaths } = sharedProductAssetCandidates(productFolderRoots);
+	const requestPaths = [...new Set([...IDENTITY_SHARED_ASSET_PATHS, ...specsPaths, ...catalogPaths])];
 	let raw: Readonly<Record<string, string | null>>;
 	try {
-		raw = await folder.readFiles({ profileId, folderRoot: "", paths: [...SHARED_COMPANY_ASSET_PATHS] }, signal);
+		raw = await folder.readFiles({ profileId, folderRoot: "", paths: requestPaths }, signal);
 	} catch {
 		return {};
 	}
 	const mounted: Record<string, string> = {};
-	for (const assetPath of SHARED_COMPANY_ASSET_PATHS) {
+	for (const assetPath of IDENTITY_SHARED_ASSET_PATHS) {
 		const content = raw[assetPath];
 		if (typeof content !== "string") continue;
 		mounted[`${SURFACE_SHARED_DIR}/${assetPath}`] = content;
+	}
+	for (const specsPath of specsPaths) {
+		const content = raw[specsPath];
+		if (typeof content === "string") {
+			mounted[`${SURFACE_SHARED_DIR}/${PRODUCT_SPECS_PATH}`] = content;
+			break;
+		}
+	}
+	for (const catalogPath of catalogPaths) {
+		const content = raw[catalogPath];
+		if (typeof content === "string") {
+			mounted[`${SURFACE_SHARED_DIR}/${PRODUCT_CATALOG_PATH}`] = content;
+			break;
+		}
 	}
 	const existingCss = raw[IDENTITY_TOKENS_CSS_PATH];
 	const tokensJson = raw[IDENTITY_TOKENS_JSON_PATH];
@@ -654,6 +683,9 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			);
 			await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
 		} catch (error) {
+			if ((error instanceof CodeHostJobFailure && error.code === "CODE_HOST_JOB_YIELDED") || signal.aborted) {
+				throw error;
+			}
 			await ports.controlPlane.completeSurfacePreview(
 				{
 					previewId: job.previewId,
@@ -667,8 +699,12 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 		}
 
 		const buildAndUploadPreview = ports.buildAndUploadPreview;
+		const productFolderRoots =
+			ports.folder && ports.resolveProductFolderRoots
+				? await ports.resolveProductFolderRoots(job.profileId, signal).catch(() => undefined)
+				: undefined;
 		const sharedAssets = ports.folder
-			? await collectSharedCompanyAssets(ports.folder, job.profileId, signal)
+			? await collectSharedCompanyAssets(ports.folder, job.profileId, signal, productFolderRoots)
 			: undefined;
 		// WHY: qorpera_surface_upsert_preview uses all-zero SHA when live_head_sha is unset; omit so git resolves main.
 		const baseSha = job.baseSha && job.baseSha !== ZERO_SHA ? job.baseSha : undefined;
@@ -1366,6 +1402,9 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				);
 			}
 		} catch (error) {
+			if (ports.rethrowOnCodeHostFailure && sourceKind === "code_repo" && !reported && !committed) {
+				throw error;
+			}
 			if (!reported && !committed) {
 				await ports.controlPlane.completeSurfaceMerge(
 					{
@@ -1392,8 +1431,12 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				throw new Error("Surface publish handler is not configured");
 			}
 			const liveHeadSha = typeof job.payload.liveHeadSha === "string" ? job.payload.liveHeadSha : null;
+			const productFolderRoots =
+				ports.folder && ports.resolveProductFolderRoots
+					? await ports.resolveProductFolderRoots(job.profileId, signal).catch(() => undefined)
+					: undefined;
 			const sharedAssets = ports.folder
-				? await collectSharedCompanyAssets(ports.folder, job.profileId, signal)
+				? await collectSharedCompanyAssets(ports.folder, job.profileId, signal, productFolderRoots)
 				: undefined;
 			const result = await ports.publishSurface(
 				{
@@ -1419,6 +1462,9 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 				signal,
 			);
 		} catch (error) {
+			if ((error instanceof CodeHostJobFailure && error.code === "CODE_HOST_JOB_YIELDED") || signal.aborted) {
+				throw error;
+			}
 			await ports.controlPlane.completeSurfacePublish(
 				{
 					jobId: job.jobId,

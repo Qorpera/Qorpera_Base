@@ -21,6 +21,7 @@ import {
 	type WebMemberConnection,
 	type WebNativeProviderLogin,
 	type WebNativeSubscription,
+	type WebProviderCredits,
 } from "../../cloud/native-subscription.ts";
 import { companyInSentence } from "../../ui/company-name.ts";
 import { button, fmtTime, h, replace } from "../../ui/dom.ts";
@@ -68,7 +69,22 @@ function resetCountdown(milliseconds: number): string {
 }
 
 type UsageWindow = { id: string; label: string; usedPercent: number; resetAt?: string };
-type UsageReading = { observedAt: string; windows: readonly UsageWindow[] };
+type UsageReading = { observedAt: string; windows: readonly UsageWindow[]; credits?: WebProviderCredits };
+
+function formatCreditAmount(amount: number, currency: string | undefined): string {
+	const fixed = Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
+	switch (currency) {
+		case undefined:
+		case "USD":
+			return `$${fixed}`;
+		case "EUR":
+			return `€${fixed}`;
+		case "GBP":
+			return `£${fixed}`;
+		default:
+			return `${fixed} ${currency}`;
+	}
+}
 
 const REFILLS: Readonly<Record<WebClaudeResetKind, readonly string[]>> = {
 	session: [],
@@ -290,6 +306,7 @@ export class ConnectionsView {
 	 * (the founding table) never offers "Continue with ChatGPT". */
 	readonly #plan: PlanSignIn | undefined;
 	readonly #navigate: (url: string) => void;
+	readonly #onProvidersChanged: (() => void) | undefined;
 	/** `signIns` and `begin` come from the application when sign-ins should
 	 * outlive this page; alone, the page keeps its own. */
 	constructor(
@@ -301,10 +318,12 @@ export class ConnectionsView {
 		navigate: (url: string) => void = (url) => location.assign(url),
 		plan?: PlanSignIn,
 		accountWide?: { companyName: string },
+		onProvidersChanged?: () => void,
 	) {
 		this.#client = client;
 		this.#accountWide = accountWide;
 		this.#navigate = navigate;
+		this.#onProvidersChanged = onProvidersChanged;
 		this.#plan = offered.includes("openai") ? plan : undefined;
 		this.#offered = PROVIDERS.filter((provider) => offered.includes(provider.id));
 		this.#signIns = signIns;
@@ -579,7 +598,10 @@ export class ConnectionsView {
 				if (attempt.sending && !claudeFinished) continue;
 				if (attempt.login && (finished || claudeFinished || Date.parse(attempt.login.expiresAt) <= Date.now())) {
 					this.#attempts.delete(provider);
-					if (claudeFinished) this.#outcome = this.#claudeAdded(attempt.login.clientConnectionId);
+					if (claudeFinished) {
+						this.#outcome = this.#claudeAdded(attempt.login.clientConnectionId);
+						this.#onProvidersChanged?.();
+					}
 					// With no company open only account logins are listed: say where a company login went, and that a
 					// sign-in ended without one.
 					if (this.#accountWide && provider === "openai" && !finished)
@@ -711,6 +733,7 @@ export class ConnectionsView {
 		await this.#refresh();
 		if (added && !this.#lifetime.signal.aborted) {
 			this.#outcome = this.#claudeAdded(login.clientConnectionId);
+			this.#onProvidersChanged?.();
 			this.#draw();
 		}
 	}
@@ -756,6 +779,7 @@ export class ConnectionsView {
 		let failed = false;
 		try {
 			await this.#client.signOutClaude(login.loginId, this.#lifetime.signal, next?.loginId);
+			this.#onProvidersChanged?.();
 		} catch {
 			failed = true;
 		} finally {
@@ -994,7 +1018,7 @@ export class ConnectionsView {
 	#claudeUsage(login: WebClaudeLogin, using: boolean): HTMLElement[] {
 		const limitResetAt = claudeLimitResetAt(login.usage, Date.now());
 		const refilling = new Set(using && this.#claudeReset ? REFILLS[this.#claudeReset.kind] : []);
-		const shown = login.usage?.windows.length ? login.usage : undefined;
+		const shown = login.usage?.windows.length || login.usage?.credits ? login.usage : undefined;
 		const unmarked = using && !shown?.windows.some((window) => refilling.has(window.id));
 		const status = () => h("span", { class: "muted", role: "status" }, t("Using a reset…"));
 		const bars =
@@ -1276,6 +1300,69 @@ export class ConnectionsView {
 			unanswered,
 		);
 	}
+	#credits(credits: WebProviderCredits | undefined, stale: boolean): HTMLElement | null {
+		if (!credits) return null;
+		const currency = credits.currency;
+		let summary: string | undefined;
+		if (credits.unlimited === true) {
+			summary = t("Unlimited");
+		} else if (credits.balance !== undefined && credits.limit !== undefined) {
+			summary = t("{balance} left of {limit}", {
+				balance: formatCreditAmount(credits.balance, currency),
+				limit: formatCreditAmount(credits.limit, currency),
+			});
+		} else if (credits.used !== undefined && credits.limit !== undefined) {
+			summary = t("{used} of {limit} used", {
+				used: formatCreditAmount(credits.used, currency),
+				limit: formatCreditAmount(credits.limit, currency),
+			});
+		} else if (credits.balance !== undefined) {
+			summary = t("{balance} available", { balance: formatCreditAmount(credits.balance, currency) });
+		} else if (credits.hasCredits === false) {
+			summary = t("No credits available");
+		} else if (credits.hasCredits === true) {
+			summary = t("Credits active");
+		}
+		if (!summary) return null;
+		let remainingPercent: number | undefined;
+		if (credits.limit !== undefined && credits.limit > 0) {
+			if (credits.balance !== undefined) {
+				remainingPercent = Math.max(0, Math.min(100, Math.round((credits.balance / credits.limit) * 100)));
+			} else if (credits.used !== undefined) {
+				remainingPercent = Math.max(
+					0,
+					Math.min(100, Math.round(((credits.limit - credits.used) / credits.limit) * 100)),
+				);
+			}
+		}
+		const fill = remainingPercent !== undefined ? h("span") : null;
+		if (fill && remainingPercent !== undefined) fill.style.width = `${remainingPercent}%`;
+		return h(
+			"div",
+			{ class: "connection-usage-window connection-usage-credits" },
+			h(
+				"div",
+				{ class: "connection-usage-heading" },
+				h("span", { class: "connection-usage-label" }, t("API credits")),
+				h("span", null, summary),
+			),
+			fill && remainingPercent !== undefined
+				? h(
+						"div",
+						{
+							class: `connection-usage-meter${remainingPercent <= 15 ? " is-low" : ""}${stale ? " is-stale" : ""}`,
+							role: "meter",
+							"aria-label": t("API credits"),
+							"aria-valuemin": 0,
+							"aria-valuemax": 100,
+							"aria-valuenow": remainingPercent,
+							"aria-valuetext": summary,
+						},
+						fill,
+					)
+				: null,
+		);
+	}
 	#bars(
 		usage: UsageReading | undefined,
 		usable: boolean,
@@ -1383,6 +1470,7 @@ export class ConnectionsView {
 							),
 				);
 			}),
+			this.#credits(usage.credits, stale),
 		);
 	}
 	#attempt(provider: (typeof PROVIDERS)[number], attempt: Attempt): HTMLElement {

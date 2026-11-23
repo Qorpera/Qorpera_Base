@@ -34,8 +34,47 @@ export class CloudSessionAttachments {
 			throw new Error("Invalid attachment deadline");
 	}
 
-	async upload(
+	upload(
 		sessionId: string,
+		clientInputId: string,
+		bytes: Uint8Array,
+		mediaType: string,
+		signal: AbortSignal,
+	): Promise<CloudSessionAttachment> {
+		return this.#upload("upload", sessionId, clientInputId, bytes, mediaType, signal);
+	}
+
+	uploadSurface(
+		surfaceId: string,
+		clientInputId: string,
+		bytes: Uint8Array,
+		mediaType: string,
+		signal: AbortSignal,
+	): Promise<CloudSessionAttachment> {
+		return this.#upload("surface-upload", surfaceId, clientInputId, bytes, mediaType, signal);
+	}
+
+	read(
+		sessionId: string,
+		inputId: string,
+		reference: CloudSessionAttachment,
+		signal: AbortSignal,
+	): Promise<Uint8Array> {
+		return this.#read("input", sessionId, inputId, reference, signal);
+	}
+
+	readSurface(
+		sessionId: string,
+		clientInputId: string,
+		reference: CloudSessionAttachment,
+		signal: AbortSignal,
+	): Promise<Uint8Array> {
+		return this.#read("surface-input", sessionId, clientInputId, reference, signal);
+	}
+
+	async #upload(
+		kind: "upload" | "surface-upload",
+		ownerId: string,
 		clientInputId: string,
 		bytes: Uint8Array,
 		mediaType: string,
@@ -50,7 +89,7 @@ export class CloudSessionAttachments {
 			bytes: selected.byteLength,
 			mediaType,
 		};
-		const result = await this.#request("upload", sessionId, clientInputId, reference, signal, selected);
+		const result = await this.#request(kind, ownerId, clientInputId, reference, signal, selected);
 		let value: unknown;
 		try {
 			value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(result));
@@ -68,14 +107,15 @@ export class CloudSessionAttachments {
 		return reference;
 	}
 
-	async read(
+	async #read(
+		kind: "input" | "surface-input",
 		sessionId: string,
 		inputId: string,
 		reference: CloudSessionAttachment,
 		signal: AbortSignal,
 	): Promise<Uint8Array> {
 		const selected = { ...reference };
-		const bytes = await this.#request("input", sessionId, inputId, selected, signal);
+		const bytes = await this.#request(kind, sessionId, inputId, selected, signal);
 		if (bytes.byteLength !== selected.bytes || (await cloudFileBytesSha256(bytes)) !== selected.sha256)
 			throw new Error("Chat attachment integrity check failed");
 		signal.throwIfAborted();
@@ -83,7 +123,7 @@ export class CloudSessionAttachments {
 	}
 
 	#request(
-		kind: "upload" | "input",
+		kind: "upload" | "input" | "surface-upload" | "surface-input",
 		sessionId: string,
 		inputId: string,
 		reference: CloudSessionAttachment,

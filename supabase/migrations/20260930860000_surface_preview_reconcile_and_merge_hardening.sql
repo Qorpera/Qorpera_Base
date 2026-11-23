@@ -143,6 +143,7 @@ $new$declare
 	v_now timestamptz := clock_timestamp();
 	v_comp_key text;
 	v_host_id text;
+	v_salt integer;
 	v_row public.qorpera_surface_previews%rowtype;
 begin
 	-- WHY: 20260930860000 hashes exploration head_sha and change parent_sha:head_sha via shared helper so rebased/new commits never collide.
@@ -152,50 +153,105 @@ begin
 		coalesce(p_selected_change_ids, '{}'::uuid[]),
 		p_exploration_session_id
 	);
-	v_host_id := substr(v_comp_key, 1, 8);
 
-	insert into public.qorpera_surface_previews(
-		profile_id, surface_id, composition_key, short_host_id, base_sha,
-		selected_change_ids, exploration_session_id, status, expires_at, updated_at
-	)
-	values (
-		p_surface.profile_id, p_surface.id, v_comp_key, v_host_id,
-		coalesce(p_base_sha, repeat('0', 40)), coalesce(p_selected_change_ids, '{}'::uuid[]),
-		p_exploration_session_id, 'composing', v_now + interval '24 hours', v_now
-	)
-	on conflict (surface_id, composition_key) do update set
-		exploration_session_id = excluded.exploration_session_id,
-		expires_at = v_now + interval '24 hours',
-		error_detail = case
-			when public.qorpera_surface_previews.status = 'failed' then null
-			else public.qorpera_surface_previews.error_detail
-		end,
-		conflict_report = case
-			when public.qorpera_surface_previews.status = 'failed' then null
-			else public.qorpera_surface_previews.conflict_report
-		end,
-		lease_expires_at = case
-			when public.qorpera_surface_previews.status = 'failed' then null
-			else public.qorpera_surface_previews.lease_expires_at
-		end,
-		lease_token = case
-			when public.qorpera_surface_previews.status = 'failed' then null
-			else public.qorpera_surface_previews.lease_token
-		end,
-		attempts = case
-			when public.qorpera_surface_previews.status = 'failed' then 0
-			else public.qorpera_surface_previews.attempts
-		end,
-		created_at = case
-			when public.qorpera_surface_previews.status = 'failed' then v_now
-			else public.qorpera_surface_previews.created_at
-		end,
-		updated_at = v_now,
-		status = case
-			when public.qorpera_surface_previews.status = 'failed' then 'composing'
-			else public.qorpera_surface_previews.status
-		end
-	returning * into v_row;
+	-- WHY: Prune expired unleased previews older than 1 hour so high-churn commit/rebase keys do not accumulate unboundedly.
+	delete from public.qorpera_surface_previews p
+	where p.surface_id = p_surface.id
+		and p.composition_key <> v_comp_key
+		and p.expires_at <= v_now - interval '1 hour'
+		and (p.status <> 'building' or p.lease_expires_at is null or p.lease_expires_at <= v_now);
+
+	select p.short_host_id
+	into v_host_id
+	from public.qorpera_surface_previews p
+	where p.surface_id = p_surface.id
+		and p.composition_key = v_comp_key;
+
+	-- WHY: Salt short_host_id on 32-bit prefix collision with another composition so unique(surface_id, short_host_id) never fails selection.
+	for v_salt in 0..31 loop
+		if v_host_id is null then
+			if v_salt = 0 then
+				v_host_id := substr(v_comp_key, 1, 8);
+			elsif v_salt < 31 then
+				v_host_id := substr(
+					encode(extensions.digest(v_comp_key || ':host:' || v_salt::text, 'sha256'), 'hex'),
+					1,
+					8
+				);
+			else
+				v_host_id := substr(
+					encode(extensions.digest(v_comp_key || ':host:' || extensions.gen_random_uuid()::text, 'sha256'), 'hex'),
+					1,
+					8
+				);
+			end if;
+			if v_salt < 31 and exists (
+				select 1
+				from public.qorpera_surface_previews p
+				where p.surface_id = p_surface.id
+					and p.short_host_id = v_host_id
+					and p.composition_key <> v_comp_key
+			) then
+				v_host_id := null;
+				continue;
+			end if;
+		end if;
+
+		begin
+			insert into public.qorpera_surface_previews(
+				profile_id, surface_id, composition_key, short_host_id, base_sha,
+				selected_change_ids, exploration_session_id, status, expires_at, updated_at
+			)
+			values (
+				p_surface.profile_id, p_surface.id, v_comp_key, v_host_id,
+				coalesce(p_base_sha, repeat('0', 40)), coalesce(p_selected_change_ids, '{}'::uuid[]),
+				p_exploration_session_id, 'composing', v_now + interval '24 hours', v_now
+			)
+			on conflict (surface_id, composition_key) do update set
+				exploration_session_id = excluded.exploration_session_id,
+				expires_at = v_now + interval '24 hours',
+				error_detail = case
+					when public.qorpera_surface_previews.status = 'failed' then null
+					else public.qorpera_surface_previews.error_detail
+				end,
+				conflict_report = case
+					when public.qorpera_surface_previews.status = 'failed' then null
+					else public.qorpera_surface_previews.conflict_report
+				end,
+				lease_expires_at = case
+					when public.qorpera_surface_previews.status = 'failed' then null
+					else public.qorpera_surface_previews.lease_expires_at
+				end,
+				lease_token = case
+					when public.qorpera_surface_previews.status = 'failed' then null
+					else public.qorpera_surface_previews.lease_token
+				end,
+				attempts = case
+					when public.qorpera_surface_previews.status = 'failed' then 0
+					else public.qorpera_surface_previews.attempts
+				end,
+				created_at = case
+					when public.qorpera_surface_previews.status = 'failed' then v_now
+					else public.qorpera_surface_previews.created_at
+				end,
+				updated_at = v_now,
+				status = case
+					when public.qorpera_surface_previews.status = 'failed' then 'composing'
+					else public.qorpera_surface_previews.status
+				end
+			returning * into v_row;
+			exit;
+		exception when unique_violation then
+			if v_salt = 31 then
+				raise;
+			end if;
+			v_host_id := null;
+		end;
+	end loop;
+
+	if v_row.id is null then
+		raise exception 'Unable to allocate preview host id' using errcode = '55000';
+	end if;
 
 	-- WHY: Expire obsolete unbuilt composing previews no member currently selects so bursty toggling skips stale work immediately.
 	update public.qorpera_surface_previews p
@@ -239,6 +295,19 @@ begin
 select pg_temp.sprmh_patch(
 	'public.qorpera_set_preview_selection(uuid,uuid[],uuid,uuid[],text)'::regprocedure,
 	array[
+$old$	v_user_id := public.qorpera_assert_surface_member(v_surface.profile_id, false);
+	perform public.qorpera_assert_surfaces_enabled();
+
+	if cardinality(v_compare) > 3 then$old$,
+$new$	v_user_id := public.qorpera_assert_surface_member(v_surface.profile_id, false);
+	perform public.qorpera_assert_surfaces_enabled();
+
+	-- WHY: 20260930860000 serializes preview selection per surface so concurrent members never expire each other's fresh composing preview.
+	perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('qorpera.surface-preview:' || p_surface_id::text, 0));
+	select * into v_surface from public.qorpera_surfaces where id = p_surface_id;
+	if v_surface.id is null then raise exception 'Surface not found' using errcode = 'P0002'; end if;
+
+	if cardinality(v_compare) > 3 then$new$,
 $old$	if cardinality(v_toggled) > 0 and exists (
 		select 1 from unnest(v_toggled) as cid
 		where not exists (
@@ -1119,6 +1188,26 @@ $new$	-- WHY: 20260930860000 discards superseded conflicted changes once a recon
 		v_session.state in ('reconciling', 'reconciling_running')
 		or v_session.origin_label = 'Conflict reconciliation'
 	) and jsonb_typeof(v_session.origin_ref -> 'changeIds') = 'array' then
+		-- WHY: Lock superseded sessions in canonical id order before updating their changes so approve/undo cannot deadlock (40P01).
+		perform 1
+		from public.qorpera_surface_sessions s
+		where s.surface_id = v_session.surface_id
+			and s.profile_id = v_session.profile_id
+			and s.id <> p_session_id
+			and s.id in (
+				select ch.session_id
+				from public.qorpera_surface_changes ch
+				where ch.surface_id = v_session.surface_id
+					and ch.profile_id = v_session.profile_id
+					and ch.id <> v_change.id
+					and ch.id in (
+						select x::uuid
+						from jsonb_array_elements_text(v_session.origin_ref -> 'changeIds') as x
+					)
+			)
+		order by s.id asc
+		for update;
+
 		with resolved as (
 			update public.qorpera_surface_changes ch
 			set
