@@ -464,7 +464,7 @@ export function describeSurfaceBlocks(): string {
 		lines.push(`- ${block.type}: ${block.summary}. ${fields.join("; ")}`);
 	}
 	lines.push(
-		"facts and cards take items or from, not both; report from or match. Globs: * and ? within a name, ** for any folders; a leading / as in sources.",
+		"facts and cards take items or from, not both; cards with from needs title; report from or match. Globs: * and ? in a name, ** for any folders; a leading / as in sources.",
 	);
 	return lines.join("\n");
 }

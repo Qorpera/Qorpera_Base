@@ -883,7 +883,7 @@ describe("the block registry", () => {
 			"- files: working files no other block shows, .json too; its empty line only alone on a tab or with a heading.",
 		);
 		expect(text).toContain("items? [{title, from}] 1-6");
-		expect(text).toContain("facts and cards take items or from, not both");
+		expect(text).toContain("facts and cards take items or from, not both; cards with from needs title");
 	});
 });
 
