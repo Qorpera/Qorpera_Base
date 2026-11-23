@@ -21,7 +21,7 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import type { CompanySite } from "../src/cloud/sites.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { colourNameHex } from "../src/ui/avatar.ts";
-import { h } from "../src/ui/dom.ts";
+import { confirmDialog, h } from "../src/ui/dom.ts";
 import { interfaceEmblem } from "../src/ui/interface-emblem.ts";
 import { nameDialog } from "../src/ui/name-dialog.ts";
 import {
@@ -726,7 +726,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(element.querySelector(".rail-concepts")).toBeNull();
 	});
 
-	it("opens the search window from its button and ⌘K, and goes where a hit leads", () => {
+	it("opens the search window from its button and ⌘K, and goes where a hit leads", async () => {
 		stubDialogs();
 		let blocked = false;
 		const { element } = rail(home, true, { searchBlocked: () => blocked });
@@ -766,6 +766,11 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
 		expect(window.open).toBe(false);
 		viewer.close();
+		const confirm = confirmDialog("Delete Research?", "Delete");
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+		expect(window.open).toBe(false);
+		document.querySelector<HTMLButtonElement>(".modal button")!.click();
+		expect(await confirm).toBe(false);
 		const card = h("dialog", { class: "agent-card", "aria-modal": "false" });
 		document.body.append(card);
 		card.open = true;

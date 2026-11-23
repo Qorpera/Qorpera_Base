@@ -4301,6 +4301,15 @@ function openSearchWindow(company: CompanyController, context: ShellContext | un
 	searchWindow.open(searchSources(company, context), opener);
 }
 
+function anotherModalOpen(): boolean {
+	return [...document.querySelectorAll<HTMLElement>('[aria-modal="true"]')].some(
+		(element) =>
+			!element.classList.contains("search-window") &&
+			!element.closest(".is-leaving") &&
+			(!(element instanceof HTMLDialogElement) || element.open),
+	);
+}
+
 export function installSearchShortcut(): void {
 	if (searchShortcut) return;
 	searchShortcut = true;
@@ -4315,7 +4324,7 @@ export function installSearchShortcut(): void {
 		const target = searchTarget;
 		if (!target?.parts.context || target.company.signal.aborted) return;
 		if (target.parts.context.searchBlocked?.()) return;
-		if (document.querySelector('dialog[open][aria-modal="true"]:not(.search-window)')) return;
+		if (anotherModalOpen()) return;
 		event.preventDefault();
 		openSearchWindow(target.company, target.parts.context, target.parts.searchToggle);
 	});
