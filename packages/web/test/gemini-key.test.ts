@@ -272,6 +272,22 @@ describe("GeminiKeyView", () => {
 						state,
 					};
 				}
+				if (checkCalls === 2) {
+					state = sampleState({
+						monthlyCapCents: state.key?.monthlyCapCents ?? 10_000,
+						version: state.key?.version ?? 1,
+						lastErrorCode: "billing_required",
+						lastErrorAt: timestamp,
+						lastCheckedAt: timestamp,
+					});
+					return {
+						ok: false,
+						errorCode: "billing_required" as const,
+						errorDetail: "prepay_balance_empty" as const,
+						checkedAt: timestamp,
+						state,
+					};
+				}
 				state = sampleState({
 					monthlyCapCents: state.key?.monthlyCapCents ?? 10_000,
 					version: state.key?.version ?? 1,
@@ -321,8 +337,14 @@ describe("GeminiKeyView", () => {
 		checkButton.click();
 		await settle();
 		expect(client.check).toHaveBeenCalledTimes(2);
+		expect(view.el.textContent).toContain("prepay credit balance above $0");
+
+		const checkButtonAgain = [...view.el.querySelectorAll("button")].find((btn) => btn.textContent === "Check key")!;
+		checkButtonAgain.click();
+		await settle();
+		expect(client.check).toHaveBeenCalledTimes(3);
 		expect(view.el.textContent).toContain("Key verified for Gemini 4 Neon. Ready to use.");
-		expect(view.el.textContent).not.toContain("Free Tier (quota limit 0)");
+		expect(view.el.textContent).not.toContain("prepay credit balance above $0");
 
 		const capInput = view.el.querySelector<HTMLInputElement>(".gemini-cap-input")!;
 		capInput.value = "10";

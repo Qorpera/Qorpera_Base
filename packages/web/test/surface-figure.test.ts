@@ -503,9 +503,8 @@ describe("a surface's figure in the rail", () => {
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
 		document.body.append(view.el);
 		view.update();
-		const agent = view.el.querySelector<HTMLButtonElement>(`.surface-bar-agent[data-session="${SESSION}"]`)!;
-		expect(agent.classList.contains("is-highlighted")).toBe(true);
-		agent.click();
+		expect(view.el.querySelector(".surface-bar .surface-crew")).toBeNull();
+		view.el.querySelector<HTMLButtonElement>(`[data-act="focus-session"][data-session="${SESSION}"]`)!.click();
 		expect(store.state.highlight).toBeUndefined();
 		expect(store.state.drawer?.sessionId).toBe(SESSION);
 		rail.update("website");

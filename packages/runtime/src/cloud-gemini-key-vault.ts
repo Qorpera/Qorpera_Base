@@ -41,6 +41,7 @@ export const GEMINI_PROVIDER_ERROR_DETAILS = Object.freeze([
 	"api_key_blocked",
 	"service_disabled",
 	"billing_disabled",
+	"prepay_balance_empty",
 	"free_tier_limit_zero",
 	"quota_limit_zero",
 	"rate_limited",
@@ -93,8 +94,10 @@ const REGION_REASONS = new Set(["LOCATION_NOT_SUPPORTED", "REGION_NOT_SUPPORTED"
 
 const FREE_TIER_PATTERN = /free[_\s-]?tier/i;
 const ZERO_LIMIT_PATTERN = /\blimit\s*:\s*0\b/i;
+const PREPAY_MESSAGE_PATTERN =
+	/prepa(?:y|id)\s+(?:credits?|balance)|credit\s+balance\s+above\s+\$?0|payment\s+required/i;
 const BILLING_MESSAGE_PATTERN =
-	/billing(?:\s+account)?\s+(?:is\s+)?(?:not\s+enabled|disabled|required|closed)|enable\s+billing|prepaid\s+(?:balance|billing|credit)|claim\s+(?:your\s+)?credits?/i;
+	/billing(?:\s+account)?\s+(?:is\s+)?(?:not\s+enabled|disabled|required|closed)|enable\s+billing|prepaid\s+billing|claim\s+(?:your\s+)?credits?/i;
 const SPEND_LIMIT_PATTERN = /spend(?:ing)?\s*(?:cap|limit)|monthly\s+(?:spend|budget)/i;
 const SPEND_METRIC_PATTERN = /spend|budget|credit/i;
 const DAILY_QUOTA_PATTERN = /per[_\s-]?day|daily\s+(?:quota|limit)|requests\s+per\s+day|perday/i;
@@ -208,6 +211,7 @@ export function classifyGeminiHttpError(
 
 	const freeTierMessage = FREE_TIER_PATTERN.test(message);
 	const zeroLimitMessage = ZERO_LIMIT_PATTERN.test(message);
+	const prepayMessage = PREPAY_MESSAGE_PATTERN.test(message);
 	const billingMessage = BILLING_MESSAGE_PATTERN.test(message);
 	const spendMessage = SPEND_LIMIT_PATTERN.test(message);
 	const dailyMessage = DAILY_QUOTA_PATTERN.test(message);
@@ -216,7 +220,16 @@ export function classifyGeminiHttpError(
 	const keyExpiredMessage = KEY_EXPIRED_MESSAGE_PATTERN.test(message);
 	const serviceDisabledMessage = SERVICE_DISABLED_MESSAGE_PATTERN.test(message);
 
-	if (status === 402 || billingReason || ((status === 400 || status === 403 || status === 429) && billingMessage)) {
+	if (status === 402) {
+		return { code: "billing_required", providerStatus, detailCode: "prepay_balance_empty", retryAfterMs: null };
+	}
+	if (billingReason) {
+		return { code: "billing_required", providerStatus, detailCode: "billing_disabled", retryAfterMs: null };
+	}
+	if ((status === 400 || status === 403 || status === 429) && prepayMessage) {
+		return { code: "billing_required", providerStatus, detailCode: "prepay_balance_empty", retryAfterMs: null };
+	}
+	if ((status === 400 || status === 403 || status === 429) && billingMessage) {
 		return { code: "billing_required", providerStatus, detailCode: "billing_disabled", retryAfterMs: null };
 	}
 	if (status === 429 && (hasFreeTierQuota || freeTierMessage) && (hasZeroQuotaLimit || zeroLimitMessage)) {
