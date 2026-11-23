@@ -963,6 +963,20 @@ describe("the edge function's route for the one call", () => {
 		]);
 
 		calls.length = 0;
+		answer = answers(true, { data: ["surfaces/thetabands"] });
+		const productRootsRes = await post({
+			action: "surface_shared_product_folder_roots",
+			orchestratorId,
+			profileId: assignmentId,
+		});
+		assert.equal(productRootsRes.status, 200);
+		assert.deepEqual(await productRootsRes.json(), { value: ["surfaces/thetabands"] });
+		assert.deepEqual(calls[1], [
+			"qorpera_surface_shared_product_folder_roots",
+			{ p_profile_id: assignmentId },
+		]);
+
+		calls.length = 0;
 		answer = answers(true, { data: { status: "started", session: { sessionId } } });
 		const triggerRes = await post({
 			action: "surface_trigger_automation",

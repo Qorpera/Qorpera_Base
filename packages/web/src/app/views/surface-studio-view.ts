@@ -1399,30 +1399,16 @@ export class SurfaceStudioView {
 		const hasAnalysisTab = reportPaths.length > 0;
 		const hasFilesTab = docs.length > 0;
 		const hasPagesTab = htmlPages.length > 0;
-		const hasNonIdentitySharedLinks =
-			!isIdentity &&
-			(sharedAssetsConsumedBy(lookKind).some((link) =>
-				activeOtherSurfaces.some((item) => {
-					const targetKind = store.lookOf(item).kind;
-					return (
-						link.producedBy.includes(targetKind) ||
-						(link.producedBy.includes("identity") && item.isGlobal === true)
-					);
-				}),
-			) ||
-				sharedAssetsProducedBy(lookKind).some((link) =>
-					activeOtherSurfaces.some((item) => link.consumedBy.includes(store.lookOf(item).kind)),
-				));
+		const isProduct = !isIdentity && lookKind === "product";
 		const hasOverviewContent = Boolean(
 			(isIdentity && downstreamSurfaces.length > 0) ||
-				hasNonIdentitySharedLinks ||
 				modelConfig ||
 				svgs.length ||
 				colors.length ||
 				(isIdentity && typography.length) ||
 				(!isIdentity && primarySpec && primarySpec.entries.length > 0),
 		);
-		const tabbed = Boolean(modelConfig || vendors.length || reportPaths.length || isIdentity);
+		const tabbed = Boolean(modelConfig || vendors.length || reportPaths.length || isIdentity || isProduct);
 		const availableTabs: { readonly id: StudioTab; readonly label: string }[] = [];
 		if (tabbed) {
 			if (hasOverviewContent || (!hasSpecsTab && !hasVendorsTab && !hasAnalysisTab && !hasFilesTab && !hasPagesTab))
@@ -1618,12 +1604,30 @@ export class SurfaceStudioView {
 						),
 					);
 				}
+				const cleanFolderRoot = surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
+				const primaryProductRoot = store.state.surfaces
+					.filter(
+						(item) =>
+							item.status === "active" &&
+							item.archetype === "studio" &&
+							store.lookOf(item).kind === "product" &&
+							Boolean(item.folderRoot?.replace(/^\/+|\/+$/g, "")),
+					)
+					.sort((a, b) => (a.group < b.group ? -1 : a.group > b.group ? 1 : 0) || a.sortOrder - b.sortOrder)
+					.at(0)
+					?.folderRoot?.replace(/^\/+|\/+$/g, "");
 				for (const link of produced) {
+					if (link.id === "product-catalog" && primaryProductRoot && primaryProductRoot !== cleanFolderRoot) {
+						continue;
+					}
 					const consumers = activeOtherSurfaces
 						.filter((item) => link.consumedBy.includes(store.lookOf(item).kind))
 						.sort((a, b) => (a.group === "products" ? 0 : 1) - (b.group === "products" ? 0 : 1));
 					if (!consumers.length) continue;
-					const primaryPath = link.sourcePaths[0] ?? "";
+					const primaryPath =
+						link.id === "product-catalog" && cleanFolderRoot
+							? `${cleanFolderRoot}/specs.json`
+							: (link.sourcePaths[0] ?? "");
 					linkRows.push(
 						h(
 							"div",
@@ -1667,10 +1671,8 @@ export class SurfaceStudioView {
 					h("div", { class: "studio-shared-links-list" }, ...linkRows),
 				);
 			};
-			if (hasNonIdentitySharedLinks) {
-				const built = buildSharedLinks();
-				if (built) gridTasks.push({ build: () => built });
-			}
+			const built = buildSharedLinks();
+			if (built) gridTasks.push({ build: () => built });
 		}
 
 		if (modelConfig && showOverview) {

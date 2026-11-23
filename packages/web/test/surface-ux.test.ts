@@ -337,8 +337,9 @@ describe("creating surfaces", () => {
 			description: "Data room for the seed round.",
 		});
 		expect(store.lookOf(investor!)).toEqual({ kind: "custom" });
+		expect(investor!.folderRoot).toBe("surfaces/investor-room");
 		expect(store.workspace(investor!.id)?.briefSummary).toBe("Data room for the seed round.");
-		expect(store.state.localStudioBase[investor!.id]?.["investor-room/brief.md"]).toContain(
+		expect(store.state.localStudioBase[investor!.id]?.["surfaces/investor-room/brief.md"]).toContain(
 			"Data room for the seed round.",
 		);
 		const database = await store.createSurface({
@@ -347,7 +348,23 @@ describe("creating surfaces", () => {
 			archetype: "studio",
 			kind: "database",
 		});
-		expect(store.state.localStudioBase[database!.id]?.["database/tables.json"]).toContain("customers");
+		expect(database!.folderRoot).toBe("surfaces/database");
+		expect(store.state.localStudioBase[database!.id]?.["surfaces/database/tables.json"]).toContain("customers");
+
+		openCreateSurfaceSheet(store);
+		const productSheet = document.querySelector(".surface-create-sheet")!;
+		productSheet.querySelector<HTMLElement>('[data-preset="product"]')!.click();
+		const nameField = productSheet.querySelector<HTMLInputElement>(".surface-create-name")!;
+		nameField.value = "Thetabands";
+		nameField.dispatchEvent(new Event("input", { bubbles: true }));
+		productSheet
+			.querySelector<HTMLFormElement>(".surface-create-form")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		const thetabands = store.state.surfaces.find((item) => item.slug === "thetabands")!;
+		expect(thetabands).toBeDefined();
+		expect(thetabands.folderRoot).toBe("surfaces/thetabands");
+		expect(store.lookOf(thetabands).kind).toBe("product");
 		store.dispose();
 	});
 

@@ -703,6 +703,38 @@ describe("SurfacesStore", () => {
 		expect(createSurface).toHaveBeenCalledTimes(1);
 		expect(created?.id).toBe(createdApp.id);
 
+		const createdProduct = summary({
+			id: "22222222-2222-4222-8222-222222222298",
+			slug: "thetabands",
+			title: "Thetabands",
+			archetype: "studio",
+			kind: "product",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "surfaces/thetabands",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		createSurface.mockResolvedValueOnce(createdProduct);
+		const product = await store.createSurface({
+			title: "Thetabands",
+			archetype: "studio",
+			kind: "product",
+		});
+		expect(product?.folderRoot).toBe("surfaces/thetabands");
+		expect(createSurface).toHaveBeenLastCalledWith(
+			COMPANY,
+			expect.objectContaining({
+				title: "Thetabands",
+				slug: "thetabands",
+				archetype: "studio",
+				kind: "product",
+				folderRoot: "surfaces/thetabands",
+				isGlobal: false,
+			}),
+		);
+
 		const auto = await store.createScheduledAgent({
 			title: "Weekly check",
 			prompt: "Review conversion metrics",

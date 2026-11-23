@@ -2523,18 +2523,20 @@ export class SurfacesStore {
 		if (!title) return undefined;
 		const icon = input.icon ?? (input.archetype === "studio" ? "spark" : "globe");
 		const description = input.description?.trim() || null;
+		const taken = new Set(this.state.surfaces.map((surface) => surface.slug));
+		const explicitSlug = input.slug?.trim();
+		const slug = slugifySurfaceTitle(explicitSlug || title, taken);
+		const explicitFolderRoot = input.folderRoot?.trim().replace(/^\/+|\/+$/g, "");
 		const folderRoot =
 			input.archetype === "studio"
-				? (input.folderRoot?.trim() || input.slug?.trim() || slugifySurfaceTitle(title, new Set())).replace(
-						/^\/+|\/+$/g,
-						"",
-					)
+				? explicitFolderRoot || (input.kind === "identity" ? "identity" : `surfaces/${slug}`)
 				: null;
 		if (this.state.source === "cloud" && this.#options.client?.createSurface) {
+			const cloudSlug = input.archetype === "studio" ? slug : explicitSlug || undefined;
 			const created = await this.#run("surface:create", (client) =>
 				client.createSurface!(this.#options.companyId, {
 					title,
-					...(input.slug?.trim() ? { slug: input.slug.trim() } : {}),
+					...(cloudSlug ? { slug: cloudSlug } : {}),
 					archetype: input.archetype,
 					...(input.kind ? { kind: input.kind } : {}),
 					icon,
@@ -2561,8 +2563,6 @@ export class SurfacesStore {
 			if (prompt && this.canStartSessions(created)) void this.startSession(created.id, prompt);
 			return created;
 		}
-		const taken = new Set(this.state.surfaces.map((surface) => surface.slug));
-		const slug = slugifySurfaceTitle(input.slug?.trim() || title, taken);
 		const sortOrder = this.state.surfaces.filter((surface) => surface.group === "products").length;
 		const created = localSurface(slug, title, "products", input.archetype, icon, sortOrder, {
 			sourceKind: input.archetype === "studio" ? "folder" : "code_repo",
