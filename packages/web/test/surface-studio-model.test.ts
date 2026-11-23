@@ -162,6 +162,12 @@ describe("a colour dot's value as the colour a model takes", () => {
 		expect(studioColorHex("rgb(100% 0% 50%)")).toBe("#ff0080");
 		expect(studioColorHex("hsl(120, 100%, 25%)")).toBe("#008000");
 		expect(studioColorHex("hsla(0.5turn 100% 50% / 40%)")).toBe("#00ffff");
+		expect(studioColorHex("rgba(195, 187, 234, 0.5)")).toBe("#c3bbea");
+		expect(studioColorHex("rgb(195, 187, 234, 50%)")).toBe("#c3bbea");
+		expect(studioColorHex("hsla(120, 100%, 25%, 0.3)")).toBe("#008000");
+		expect(studioColorHex("hsl(120, 100%, 25%, 1)")).toBe("#008000");
+		expect(studioColorHex("rgba(195 187 234 0.5)")).toBeUndefined();
+		expect(studioColorHex("rgba(1, 2, 3, 0.5, 9)")).toBeUndefined();
 	});
 
 	it("reads oklch, clipping to what a screen can show", () => {

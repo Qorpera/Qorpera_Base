@@ -252,11 +252,14 @@ export function studioColorHex(value: string | undefined): string | undefined {
 	}
 	const call = /^(rgba?|hsla?|oklch)\(\s*([^)]*)\)$/.exec(text);
 	if (!call) return undefined;
-	const tokens = call[2]!
+	const inside = call[2]!;
+	const legacyAlpha = call[1] !== "oklch" && inside.includes(",") && !inside.includes("/");
+	const tokens = inside
 		.split("/")[0]!
 		.trim()
 		.split(/[\s,]+/)
 		.filter(Boolean);
+	if (legacyAlpha && tokens.length === 4) tokens.pop();
 	if (tokens.length !== 3) return undefined;
 	const [first, second, third] = tokens as [string, string, string];
 	let rgb: readonly [number, number, number] | undefined;
