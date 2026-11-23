@@ -1001,9 +1001,15 @@ test("journalSince filters with millisecond UTC --since and --grep and restartRo
 
 	const node = await nodeFixture();
 	try {
+		let clock = since.getTime();
+		node.agent.now = () => new Date(clock);
+		node.agent.ports.sleep = async (ms) => {
+			clock += ms;
+		};
 		await adopted(node);
 		await staged(node, 1, { provider: "p1" });
 		const seenOpts = [];
+		const seenSince = [];
 		const baseRestart = node.agent.ports.restart;
 		const baseMainPid = node.agent.ports.mainPid;
 		let attempts = 0;
@@ -1011,7 +1017,7 @@ test("journalSince filters with millisecond UTC --since and --grep and restartRo
 		node.agent.ports.restart = async (unit) => {
 			attempts = 0;
 			await baseRestart(unit);
-			if ((await node.link("roles/provider")) === "../releases/1") refusalTimes.push(Date.now());
+			if ((await node.link("roles/provider")) === "../releases/1") refusalTimes.push(clock);
 		};
 		node.agent.ports.mainPid = async (unit) => {
 			if (unit === UNITS.provider && (await node.link("roles/provider")) === "../releases/1" && attempts++ === 0) {
@@ -1022,9 +1028,12 @@ test("journalSince filters with millisecond UTC --since and --grep and restartRo
 		};
 		node.agent.ports.journalSince = async (_unit, from, opts) => {
 			seenOpts.push(opts);
+			seenSince.push(from.getTime());
 			return refusalTimes.some((ts) => ts >= from.getTime()) ? '{"state":"QORPERA_NODE_ROLE_START_REFUSED"}\n' : "";
 		};
 		await assert.rejects(node.agent.apply(1), /APPLY_ROLLED_BACK ROLE_REFUSED provider/);
+		assert.deepEqual(refusalTimes, [since.getTime()]);
+		assert.deepEqual(seenSince, [since.getTime(), since.getTime() + 500]);
 		assert.deepEqual(seenOpts[0], { grep: "QORPERA_NODE_ROLE_START_REFUSED" });
 		assert.equal(await node.link("current"), "releases/0");
 	} finally {
