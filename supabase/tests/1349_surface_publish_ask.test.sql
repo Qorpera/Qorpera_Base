@@ -241,6 +241,12 @@ begin
 		exists (select 1 from public.qorpera_surface_publish_asks where surface_id = v_surface and asked_user_id = v_bo),
 		'another member''s role change leaves the ask'
 	);
+	perform pg_temp.spa_call(v_eve, format('select public.qorpera_ask_surface_publish(%L, %L)', v_surface, v_bo));
+	delete from public.qorpera_profile_members where profile_id = v_company and user_id = v_eve;
+	perform pg_temp.spa_assert(
+		not exists (select 1 from public.qorpera_surface_publish_asks where surface_id = v_surface),
+		'an ask closes when the asker leaves the company'
+	);
 
 	update public.qorpera_surfaces set auto_publish = true where id = v_surface;
 	perform pg_temp.spa_assert(
