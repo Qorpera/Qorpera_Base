@@ -124,7 +124,7 @@ describe("creating an account", () => {
 		expect(auth.store.get().step.name).toBe("signin");
 	});
 
-	it("proves the email when the last digit is typed and still accepts a 6-digit code on submit", async () => {
+	it("proves the email when the last digit is typed and rejects shorter codes", async () => {
 		await signedOut();
 		auth.store.set({ step: { name: "confirm", email: "mette@lerhave.dk" } });
 		await settle();
@@ -135,16 +135,11 @@ describe("creating an account", () => {
 		calls.verifyOtp.mockClear();
 		auth.store.set({ step: { name: "code", email: "mette@lerhave.dk" } });
 		await settle();
-		type("signinCode", "12345");
-		submit();
-		await settle();
-		expect(calls.verifyOtp).not.toHaveBeenCalled();
-		expect(root.querySelector(".auth-alert")!.textContent).toContain("Enter the code from the email.");
-
 		type("signinCode", "482071");
 		submit();
 		await settle();
-		expect(calls.verifyOtp).toHaveBeenCalledWith({ email: "mette@lerhave.dk", token: "482071", type: "email" });
+		expect(calls.verifyOtp).not.toHaveBeenCalled();
+		expect(root.querySelector(".auth-alert")!.textContent).toContain("Enter the 8-digit code from the email.");
 	});
 });
 
@@ -227,7 +222,7 @@ describe("a new password", () => {
 		calls.verifyOtp.mockResolvedValueOnce({ data: {}, error: authError("otp_expired") });
 		auth.store.set({ step: { name: "reset", email: "mette@lerhave.dk" } });
 		await settle();
-		type("signinCode", "482071");
+		type("signinCode", "48207193");
 		type("signinNewPassword", "nytkodeord1");
 		submit();
 		await settle();
@@ -246,7 +241,7 @@ describe("a new password that is refused after the code signed in", () => {
 		calls.updateUser.mockResolvedValueOnce({ data: { user: null }, error: authError("same_password") });
 		auth.store.set({ step: { name: "reset", email: "mette@lerhave.dk" } });
 		await settle();
-		type("signinCode", "482071");
+		type("signinCode", "48207193");
 		type("signinNewPassword", "gammelkode1");
 		submit();
 		await settle();
@@ -269,7 +264,7 @@ describe("a new password that is refused after the code signed in", () => {
 		f.auth(userA);
 		await settle();
 		expect(auth.store.get().step.name).toBe("signin");
-		await auth.resetPassword("123456", "nytkodeord1");
+		await auth.resetPassword("12345678", "nytkodeord1");
 		expect(calls.verifyOtp).not.toHaveBeenCalled();
 		expect(calls.updateUser).not.toHaveBeenCalled();
 	});
@@ -279,11 +274,11 @@ describe("a new password that is refused after the code signed in", () => {
 		f.auth(userA);
 		auth.store.set({ step: { name: "reset", email: "mette@lerhave.dk" } });
 		await settle();
-		type("signinCode", "482071");
+		type("signinCode", "48207193");
 		type("signinNewPassword", "nytkodeord1");
 		submit();
 		await settle();
-		expect(calls.verifyOtp).toHaveBeenCalledWith({ email: "mette@lerhave.dk", token: "482071", type: "recovery" });
+		expect(calls.verifyOtp).toHaveBeenCalledWith({ email: "mette@lerhave.dk", token: "48207193", type: "recovery" });
 		expect(calls.verifyOtp.mock.invocationCallOrder[0]).toBeLessThan(calls.updateUser.mock.invocationCallOrder[0]!);
 	});
 
