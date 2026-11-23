@@ -30,7 +30,7 @@ import {
 } from "../surfaces-store.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { CrewFigures } from "./surface-crew.ts";
-import { openPublishPatchnotesSheet, type PublishPatchnotesOptions } from "./surface-publish-sheet.ts";
+import { openPublishSheet } from "./surface-publish-sheet.ts";
 import { isActionChange } from "./surface-rail.ts";
 
 const DRAWER_WIDTH_KEY = "qorpera.web.surface-drawer-width.v1";
@@ -57,6 +57,27 @@ function recipientOf(change: SurfaceChangeUnit): string | null {
 	if (!address) return null;
 	const name = address.split("@")[0] ?? address;
 	return name ? name.charAt(0).toLocaleUpperCase() + name.slice(1) : address;
+}
+
+function approveFace(text: string, shown: boolean, confirm: boolean, glyph?: string): HTMLElement {
+	return h(
+		"span",
+		{
+			class: ["surface-approve-face", confirm && "is-confirm", !shown && "is-ghost"].filter(Boolean).join(" "),
+			...(shown ? {} : { "aria-hidden": "true", "data-text": text }),
+		},
+		glyph ? icon(glyph) : null,
+		shown ? text : null,
+	);
+}
+
+function approveLabel(rest: string, armed: boolean, glyph?: string): HTMLElement {
+	return h(
+		"span",
+		{ class: "surface-approve-label" },
+		approveFace(rest, !armed, false, glyph),
+		approveFace(t("Confirm"), armed, true),
+	);
 }
 
 function actionCard(
@@ -111,8 +132,7 @@ function actionCard(
 							...(armed ? { "data-armed": "true" } : {}),
 							disabled: busy,
 						},
-						armed ? icon("check") : inbox ? icon("send") : null,
-						armed ? t("Confirm") : inbox ? t("Send") : t("Approve"),
+						approveLabel(inbox ? t("Send") : t("Approve"), armed, inbox ? "send" : undefined),
 					),
 					single
 						? h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard"))
@@ -342,7 +362,6 @@ export class SurfaceSessionDrawer {
 	readonly #sentImages = new Map<string, ReceivedAttachments>();
 	readonly #localImageUrls = new Map<File, string>();
 	readonly #store: SurfacesStore;
-	readonly #loadSitePassword: PublishPatchnotesOptions["loadSitePassword"];
 	readonly #crew = new CrewFigures();
 	#preferredWidth: number | undefined;
 	#width = DRAWER_DEFAULT;
@@ -357,9 +376,8 @@ export class SurfaceSessionDrawer {
 	#armTimer: ReturnType<typeof setTimeout> | undefined;
 	#mention: { options: MentionTarget[]; active: number } | undefined;
 
-	constructor(store: SurfacesStore, signal: AbortSignal, options: PublishPatchnotesOptions = {}) {
+	constructor(store: SurfacesStore, signal: AbortSignal) {
 		this.#store = store;
-		this.#loadSitePassword = options.loadSitePassword;
 		try {
 			const stored = Number(localStorage.getItem(DRAWER_WIDTH_KEY));
 			if (Number.isFinite(stored) && stored >= DRAWER_MIN) this.#preferredWidth = stored;
@@ -1067,7 +1085,7 @@ export class SurfaceSessionDrawer {
 												"data-change": change.id,
 												...(armed ? { "data-armed": "true" } : {}),
 											},
-											armed ? t("Confirm") : inbox ? t("Send") : t("Approve"),
+											approveLabel(inbox ? t("Send") : t("Approve"), armed),
 										)
 									: null,
 							),
@@ -1126,7 +1144,7 @@ export class SurfaceSessionDrawer {
 													"data-change": change.id,
 													...(armed ? { "data-armed": "true" } : {}),
 												},
-												armed ? t("Confirm") : t("Approve"),
+												approveLabel(t("Approve"), armed),
 											)
 										: null,
 							),
@@ -1470,11 +1488,12 @@ export class SurfaceSessionDrawer {
 								"data-act": "approve-all",
 								...(armedAll ? { "data-armed": "true" } : {}),
 							},
-							armedAll
-								? t("Confirm")
-								: look.kind === "inbox"
+							approveLabel(
+								look.kind === "inbox"
 									? t("Send all {count}", { count: openActions.length })
 									: t("Approve all {count}", { count: openActions.length }),
+								armedAll,
+							),
 						),
 						h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard")),
 					),
@@ -1561,7 +1580,7 @@ export class SurfaceSessionDrawer {
 																...(armed ? { "data-armed": "true" } : {}),
 																disabled: busyChange,
 															},
-															armed ? t("Confirm") : t("Approve"),
+															approveLabel(t("Approve"), armed),
 														),
 												h(
 													"button",
@@ -1621,7 +1640,7 @@ export class SurfaceSessionDrawer {
 											"data-act": "approve-all",
 											...(armedAll ? { "data-armed": "true" } : {}),
 										},
-										armedAll ? t("Confirm") : t("Approve all {count}", { count: open }),
+										approveLabel(t("Approve all {count}", { count: open }), armedAll),
 									)
 								: null,
 						open > 1
@@ -1798,8 +1817,7 @@ export class SurfaceSessionDrawer {
 				return;
 			case "open-publish": {
 				const targetSurface = store.state.surfaces.find((item) => item.id === surfaceId);
-				if (targetSurface)
-					openPublishPatchnotesSheet(store, targetSurface, { loadSitePassword: this.#loadSitePassword });
+				if (targetSurface) openPublishSheet(store, targetSurface);
 				return;
 			}
 			case "reconcile":

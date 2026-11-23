@@ -1107,3 +1107,17 @@ export function resolveStudioFolderPath(folderRoot: string, rawPath: string): st
 	}
 	return prefixed;
 }
+
+export function surfaceCompanyPath(folderRoot: string, bindingPath: string): string {
+	const rooted = bindingPath.startsWith("/");
+	const body = rooted ? bindingPath.slice(1) : bindingPath;
+	if (
+		!body ||
+		body.includes("\\") ||
+		body.includes("\0") ||
+		body.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
+	) {
+		throw new Error(`Unsafe company file path: ${bindingPath}`);
+	}
+	return rooted ? body : `${normalizeStudioFolderRoot(folderRoot)}/${body}`;
+}

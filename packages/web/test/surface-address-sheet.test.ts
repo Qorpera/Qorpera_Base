@@ -20,7 +20,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-function mount(world: Partial<HostingWorld> = {}, manage = true) {
+function mount(world: Partial<HostingWorld> = {}, manage = true, password?: () => Promise<string | null>) {
 	const container = h("div", { class: "surface-canvas" });
 	document.body.append(container);
 	const controller = new AbortController();
@@ -28,6 +28,7 @@ function mount(world: Partial<HostingWorld> = {}, manage = true) {
 	const address = new SurfaceAddress({
 		container,
 		canManage: () => manage,
+		...(password ? { password } : {}),
 		changed: () => {
 			const shown = container.querySelector(".surface-pill-address");
 			const next = address.button();
@@ -49,7 +50,11 @@ const stops = () =>
 		item.className,
 	]);
 const lines = () => [...sheet().querySelectorAll(".surface-address-line")].map((item) => item.textContent);
-const buttons = () => [...sheet().querySelectorAll<HTMLButtonElement>("button")].map((item) => item.textContent);
+const buttons = () =>
+	[...sheet().querySelectorAll<HTMLButtonElement>("button:not(.surface-address-link)")].map(
+		(item) => item.textContent,
+	);
+const links = () => [...sheet().querySelectorAll(".surface-address-links > *")].map((item) => item.textContent);
 const press = (label: string) =>
 	[...sheet().querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === label)!.click();
 const problem = () => sheet().querySelector(".surface-address-problem")?.textContent;
@@ -62,8 +67,8 @@ const submit = (text: string) => {
 };
 const refusal = (message: string, code = "42501") => new CloudRpcError("rpc", { message, code });
 
-async function opened(world: Partial<HostingWorld> = {}, manage = true) {
-	const mounted = mount(world, manage);
+async function opened(world: Partial<HostingWorld> = {}, manage = true, password?: () => Promise<string | null>) {
+	const mounted = mount(world, manage, password);
 	await settle();
 	mounted.address.open();
 	await settle();
@@ -184,6 +189,85 @@ describe("the address sheet's stops", () => {
 		await settle();
 		expect(problem()).toMatch(/^Press (⌘|Ctrl\+)C to copy\.$/);
 		expect(window.getSelection()?.toString()).toBe("edge.qorpera.com");
+	});
+
+	it("copies the site's link from under its name, and its password while only the team can open it", async () => {
+		const writeText = vi.fn(async (_text: string) => undefined);
+		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+		const password = vi.fn(async (): Promise<string | null> => "nordic-pass-42");
+		const { client } = await opened({}, true, password);
+		expect(links()).toEqual(["Open the site", "Copy link", "Copy password"]);
+
+		press("Copy link");
+		await settle();
+		expect(writeText).toHaveBeenLastCalledWith(LIVE_URL);
+		expect(links()).toEqual(["Open the site", "Copied", "Copy password"]);
+		press("Copy password");
+		await settle();
+		expect(writeText).toHaveBeenLastCalledWith("nordic-pass-42");
+
+		press("Put it live");
+		await settle();
+		expect(client.setPublic).toHaveBeenCalledWith(HOSTED_SITE, true, expect.any(AbortSignal));
+		expect(links()).toEqual(["Open the site", "Copy link"]);
+	});
+
+	it("copies the password as it is at the press, and drops the offer once it can no longer be read", async () => {
+		const writeText = vi.fn(async (_text: string) => undefined);
+		Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+		const password = vi.fn(async (): Promise<string | null> => "nordic-pass-42");
+		const { address } = await opened({}, true, password);
+		press("Copy password");
+		await settle();
+		expect(writeText).toHaveBeenLastCalledWith("nordic-pass-42");
+
+		password.mockResolvedValue("changed-pass-43");
+		address.close();
+		address.open();
+		await settle();
+		press("Copy password");
+		await settle();
+		expect(writeText).toHaveBeenLastCalledWith("changed-pass-43");
+
+		address.close();
+		address.open();
+		await settle();
+		password.mockResolvedValue(null);
+		press("Copy password");
+		await settle();
+		expect(writeText).toHaveBeenCalledTimes(2);
+		expect(problem()).toBe("That didn't work. Try again.");
+		expect(links()).toEqual(["Open the site", "Copy link"]);
+
+		password.mockResolvedValue("back-again-44");
+		address.close();
+		address.open();
+		await settle();
+		expect(links()).toEqual(["Open the site", "Copy link", "Copy password"]);
+	});
+
+	it("says so when the password cannot be read in a browser with no clipboard at all", async () => {
+		const password = vi.fn(async (): Promise<string | null> => "nordic-pass-42");
+		await opened({}, true, password);
+		password.mockResolvedValue(null);
+		press("Copy password");
+		await settle();
+		expect(problem()).toBe("That didn't work. Try again.");
+		expect(links()).toEqual(["Open the site", "Copy link"]);
+	});
+
+	it("offers no password to a member who cannot read one, and says what to press when a copy is refused", async () => {
+		const { address } = await opened({}, false, async () => null);
+		expect(links()).toEqual(["Open the site", "Copy link"]);
+		press("Copy link");
+		await settle();
+		expect(problem()).toMatch(/^Press (⌘C|Ctrl\+C) to copy\.$/);
+		expect(window.getSelection()?.toString()).toBe("thetaband.qorpera.com");
+		address.close();
+		document.body.replaceChildren();
+
+		await opened();
+		expect(links()).toEqual(["Open the site", "Copy link"]);
 	});
 
 	it("offers a verified domain as the address on one press, and removes a domain", async () => {

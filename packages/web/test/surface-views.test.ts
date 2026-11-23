@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SurfacesClient } from "../src/app/surfaces-store.ts";
 import { SITE_DOOR_PASS, SITE_DOOR_READY, SITE_DOOR_SHOWN, SITE_DOOR_URL } from "../src/app/views/site-view.ts";
 import { previewStatusText, publishFailureText, SurfaceDoorStage } from "../src/app/views/surface-door.ts";
-import { openPublishPatchnotesSheet } from "../src/app/views/surface-publish-sheet.ts";
+import { openPublishSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
@@ -376,10 +376,12 @@ describe("the surface page", () => {
 		const drawer = view.el.querySelector(".surface-drawer")!;
 		expect(drawer.classList.contains("is-open")).toBe(true);
 		const approveBtn = drawer.querySelector<HTMLElement>(`[data-act="approve"][data-change="${CHANGES[2]}"]`)!;
+		expect(approveBtn.querySelector(".surface-approve-face.is-ghost")?.getAttribute("data-text")).toBe("Confirm");
 		approveBtn.click();
 		const confirmBtn = drawer.querySelector<HTMLElement>(`[data-act="approve"][data-change="${CHANGES[2]}"]`)!;
 		expect(confirmBtn.classList.contains("is-confirming")).toBe(true);
 		expect(confirmBtn.textContent).toBe("Confirm");
+		expect(confirmBtn.querySelector(".surface-approve-face.is-ghost")?.getAttribute("data-text")).toBe("Approve");
 		confirmBtn.click();
 		await flush();
 		await flush();
@@ -973,7 +975,7 @@ describe("the surface page", () => {
 			this.dispatchEvent(new Event("close"));
 		};
 		const websiteSurface = store.state.surfaces.find((item) => item.id === SURFACE)!;
-		const sheet = openPublishPatchnotesSheet(store, websiteSurface);
+		const sheet = openPublishSheet(store, websiteSurface);
 		const buttons = [...sheet.el.querySelectorAll<HTMLButtonElement>('[data-act="rollback"]')];
 		expect(buttons).toHaveLength(2);
 		buttons[0]!.click();
@@ -1021,7 +1023,7 @@ describe("the surface page", () => {
 		expect(publishFailureText("Missing index.html")).toBeNull();
 	});
 
-	it("renders Retry preview button on failed door frames, Failed session badges & Retry action, pending merge toast, and publish errors in patch notes", async () => {
+	it("renders Retry preview button on failed door frames, Failed session badges & Retry action, pending merge toast, and publish errors in the publish window", async () => {
 		const controller = new AbortController();
 		const onRetry = vi.fn();
 		const door = new SurfaceDoorStage(controller.signal, { onRetry });
@@ -1117,12 +1119,12 @@ describe("the surface page", () => {
 			this.open = false;
 			this.dispatchEvent(new Event("close"));
 		};
-		const sheet = openPublishPatchnotesSheet(store, store.state.surfaces[0]!);
+		const sheet = openPublishSheet(store, store.state.surfaces[0]!);
 		expect(sheet.el.querySelector(".surface-sheet-error")?.textContent).toBe("Missing index.html");
 		sheet.el.querySelector<HTMLButtonElement>('[data-act="confirm-publish"]')!.click();
 		await flush();
 		expect(sheet.el.open).toBe(true);
-		expect(sheet.el.querySelector(".surface-sheet-status")?.textContent).toBe("Publishing…");
+		expect(sheet.el.querySelector('[data-act="confirm-publish"]')?.textContent).toBe("Publishing…");
 
 		currentPublishStatus = "idle";
 		await store.refreshWorkspace(SURFACE);
