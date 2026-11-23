@@ -3368,6 +3368,12 @@ export interface CodeCommitFile {
 	entry: CodeCommitEntry;
 	blob: string | null;
 }
+// WHY: Allows surface branch staging to read .qorpera/checks.json from git commits without checking out a worktree.
+export async function readCommitChecksFile(run: Run, commit: string): Promise<CodeCommitFile> {
+	const entry = await commitTreeEntry(run, commit, CODE_CHECKS_FILE);
+	return await commitFileFromEntry(run, entry, CODE_CHECKS_READ_BYTES);
+}
+
 /** One path of a commit of the code area, read by git (`ls-tree`, then `cat-file`) and never from a worktree. `path`
  * and `maxBytes` are the caller's to check. */
 async function commitTreeEntry(

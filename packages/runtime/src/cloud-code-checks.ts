@@ -108,6 +108,8 @@ export interface CodePreflightPreview {
 	readonly timeoutSeconds: number;
 }
 
+export type CodePreflightSurfaceGate = "none" | "stage";
+
 export interface CodeChecksProblem {
 	readonly at: string;
 	readonly code: string;
@@ -122,6 +124,7 @@ export type ParsedCodeChecks =
 			readonly mode: "sequential" | "dag";
 			readonly site: CodePreflightSite | null;
 			readonly preview?: CodePreflightPreview;
+			readonly surfaceGate?: CodePreflightSurfaceGate;
 	  }
 	| { readonly ok: false; readonly problems: readonly CodeChecksProblem[] };
 
@@ -689,6 +692,7 @@ export function parseCodeChecksText(text: string): ParsedCodeChecks {
 	};
 	let site: CodePreflightSite | null = null;
 	let preview: CodePreflightPreview | undefined;
+	let surfaceGate: CodePreflightSurfaceGate | undefined;
 	for (const [key, value] of Object.entries(root)) {
 		const at = pointer("", key);
 		if (key === "$schema") {
@@ -696,7 +700,11 @@ export function parseCodeChecksText(text: string): ParsedCodeChecks {
 		} else if (key === "checks") parsedChecks = parseChecksArray(value, at, refuse);
 		else if (key === "site") site = parseSite(value, at, refuse);
 		else if (key === "preview") preview = parsePreview(value, at, refuse);
-		else refuse(at, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
+		else if (key === "surfaceGate") {
+			if (typeof value !== "string") refuse(at, "WRONG_TYPE", "Must be a string.");
+			else if (value === "none" || value === "stage") surfaceGate = value;
+			else refuse(at, "INVALID_VALUE", 'Must be "none" or "stage".');
+		} else refuse(at, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
 	}
 	if (!("checks" in root)) refuse("", "MISSING_KEY", "Needs checks.");
 	if (problems.length > 0) return { ok: false, problems };
@@ -707,6 +715,7 @@ export function parseCodeChecksText(text: string): ParsedCodeChecks {
 		mode: parsedChecks.checks.some((check) => check.needs !== undefined) ? "dag" : "sequential",
 		site,
 		...(preview !== undefined ? { preview } : {}),
+		...(surfaceGate !== undefined ? { surfaceGate } : {}),
 	};
 }
 

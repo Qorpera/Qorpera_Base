@@ -3314,4 +3314,142 @@ describe("per-repository landing queue and inline record batching", () => {
 		expect(await f.git(repo, "rev-parse", "refs/heads/main")).toBe(baseSha);
 		expect(await f.git(repo, "rev-parse", `refs/heads/${claim.branch}`)).toBe(head);
 	});
+
+	it("enforces opt-in surfaceGate stage checks on verifyStaged while skipping default or none repos", async () => {
+		const f = await fixture();
+		const kept: CloudCodingRepository = { host: "qorpera", owner: "surfaces", name: "app", baseBranch: "main" };
+		const claim: CodingSessionClaim = {
+			...f.session.claim,
+			repository: kept,
+			baseSha: null,
+			surfaceSession: {
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				slug: "app",
+				title: "App",
+			},
+		};
+		const { baseSha } = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal());
+		const runChecks = vi.fn<NonNullable<typeof f.session.runChecks>>();
+		const checksSwitch = vi.fn<NonNullable<typeof f.session.checksSwitch>>(async () => ({
+			checks: true,
+			site: true,
+		}));
+		const session = { ...f.session, claim, baseSha, checksSwitch, runChecks };
+		await f.repositories.prepare(session, signal());
+		const tree = join(f.companyRoot, "code/surfaces/app/worktrees", f.workerId);
+		const commitChecks = async (checksText: string, note: string): Promise<string> => {
+			await writeFile(join(tree, ".qorpera/checks.json"), checksText);
+			await f.git(tree, "add", ".qorpera/checks.json");
+			await f.git(tree, "commit", "-m", note);
+			return (await f.git(tree, "rev-parse", "HEAD")).trim();
+		};
+
+		const plainHead = await f.commit(tree, "page.html");
+		expect((await f.repositories.verifyStaged(session, plainHead, signal())).headSha).toBe(plainHead);
+		expect(runChecks).not.toHaveBeenCalled();
+
+		const stageHead = await commitChecks(
+			JSON.stringify({ surfaceGate: "stage", checks: [{ name: "test", run: "npm test" }] }),
+			"enable surface stage gate",
+		);
+		runChecks.mockResolvedValueOnce({
+			state: "passed",
+			ms: 50,
+			copyMs: 10,
+			checks: [{ name: "test", run: "npm test", ms: 40 }],
+			site: null,
+		});
+		expect((await f.repositories.verifyStaged(session, stageHead, signal())).headSha).toBe(stageHead);
+		expect(runChecks).toHaveBeenCalledTimes(1);
+		expect(runChecks.mock.calls[0]?.[0]).toMatchObject({ commit: stageHead, site: null, attempt: 1 });
+
+		runChecks.mockResolvedValueOnce({
+			state: "failed",
+			ms: 100,
+			passed: [],
+			failed: {
+				name: "test",
+				run: "npm test",
+				ms: 100,
+				exitCode: 1,
+				atLimit: false,
+				tail: "boom",
+				log: "/tmp/test.log",
+			},
+			notRun: [],
+		});
+		await expect(f.repositories.verifyStaged(session, stageHead, signal())).rejects.toMatchObject({
+			message: "CODING_CHECKS_FAILED",
+			summary: expect.stringContaining("Nothing was staged for Preview:"),
+		});
+
+		runChecks
+			.mockResolvedValueOnce({ state: "not_run", why: "machine", code: "MACHINE_STOPPED" })
+			.mockResolvedValueOnce({ state: "not_run", why: "machine", code: "MACHINE_STOPPED" });
+		await expect(f.repositories.verifyStaged(session, stageHead, signal())).rejects.toMatchObject({
+			message: "CODING_CHECKS_DID_NOT_RUN",
+			summary: expect.stringContaining("Nothing was staged for Preview:"),
+		});
+		expect(runChecks.mock.calls.slice(-2).map(([input]) => input.attempt)).toEqual([1, 2]);
+
+		checksSwitch.mockResolvedValueOnce({ checks: true, site: true, drill: "check" });
+		runChecks.mockResolvedValueOnce({
+			state: "failed",
+			ms: 80,
+			passed: [{ name: "test", ms: 40 }],
+			failed: {
+				name: CODE_CHECKS_DRILL.name,
+				run: CODE_CHECKS_DRILL.run,
+				ms: 40,
+				exitCode: 1,
+				atLimit: false,
+				tail: "drill",
+				log: "/tmp/drill.log",
+			},
+			notRun: [],
+		});
+		await expect(f.repositories.verifyStaged(session, stageHead, signal())).rejects.toMatchObject({
+			message: "CODING_CHECKS_FAILED",
+			summary: expect.stringContaining(`${CODE_DRILL_WORDS} Nothing was staged for Preview:`),
+		});
+		expect(runChecks.mock.calls.at(-1)?.[0].checks.map((c) => c.name)).toEqual(["test", CODE_CHECKS_DRILL.name]);
+
+		const brokenStageHead = await commitChecks('{"surfaceGate":"stage","checks":[', "broken stage gate");
+		await expect(f.repositories.verifyStaged(session, brokenStageHead, signal())).rejects.toMatchObject({
+			message: "CODING_CHECKS_REFUSED",
+			summary: expect.stringContaining("Nothing was staged for Preview:"),
+		});
+
+		checksSwitch.mockResolvedValueOnce({ checks: false, site: false });
+		expect((await f.repositories.verifyStaged(session, brokenStageHead, signal())).headSha).toBe(brokenStageHead);
+
+		const repo = join(f.companyRoot, "code/surfaces/app/repo.git");
+		await f.git(repo, "update-ref", "refs/heads/main", stageHead);
+		const gatedSession = { ...session, baseSha: stageHead };
+		await f.git(tree, "reset", "--hard", stageHead);
+		await f.git(tree, "rm", ".qorpera/checks.json");
+		await f.git(tree, "commit", "-m", "delete checks file");
+		const deletedHead = (await f.git(tree, "rev-parse", "HEAD")).trim();
+		await expect(f.repositories.verifyStaged(gatedSession, deletedHead, signal())).rejects.toMatchObject({
+			message: "CODING_CHECKS_REFUSED",
+			summary: expect.stringContaining("is gone in this change"),
+		});
+
+		await f.git(tree, "reset", "--hard", stageHead);
+		const optOutHead = await commitChecks(
+			JSON.stringify({ surfaceGate: "none", checks: [{ name: "test", run: "npm test" }] }),
+			"disable surface stage gate",
+		);
+		const callsBeforeOptOut = runChecks.mock.calls.length;
+		runChecks.mockResolvedValueOnce({
+			state: "passed",
+			ms: 50,
+			copyMs: 10,
+			checks: [{ name: "test", run: "npm test", ms: 40 }],
+			site: null,
+		});
+		expect((await f.repositories.verifyStaged(gatedSession, optOutHead, signal())).headSha).toBe(optOutHead);
+		expect(runChecks.mock.calls.length).toBe(callsBeforeOptOut + 1);
+	});
 });
