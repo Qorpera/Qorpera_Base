@@ -104,10 +104,6 @@ export const SURFACES: Record<string, string> = {
 	"Auto-publish on Approve": "Udgiv automatisk ved godkendelse",
 	"Approved changes go live without a separate Publish.": "Godkendte ændringer går live uden en særskilt udgivelse.",
 	"Delete {name}? It is removed for everyone in the company.": "Slet {name}? Den fjernes for alle i virksomheden.",
-	"{name} could not be deleted. One of its scheduled agents was deleted before that.":
-		"{name} kunne ikke slettes. En af dens planlagte agenter blev slettet inden da.",
-	"{name} could not be deleted. {count} of its scheduled agents were deleted before that.":
-		"{name} kunne ikke slettes. {count} af dens planlagte agenter blev slettet inden da.",
 	"{path} and {count} more": "{path} og {count} flere",
 	"Opening preview…": "Åbner forhåndsvisning…",
 	Reconcile: "Løs konflikt",
