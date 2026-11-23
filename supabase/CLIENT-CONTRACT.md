@@ -1820,6 +1820,21 @@ only live ones. A day after an input's last upload `qorpera_surface_image_orphan
 `qorpera-surface-image-sweep`, every minute, one folder commit a call) deletes the folder of an input no message holds,
 or the images a held input does not list, then the row.
 
+### Interface session turns and notes (20260930866000_surface_session_notes)
+
+A session's JSON carries `turnRequestedByUserId`: the member whose turn it is on (the last member to reply, else the
+starter; null for an agent-started session nobody replied to). Its messages may have `authorKind: "note"` with
+`noteTo`, the user ids the note names (null on every other message).
+
+- `qorpera_surface_session_note(p_session_id, p_message, p_to uuid[])` (a member who is not a viewer) keeps a note from
+  the caller to the members named and answers the session. It never queues or wakes the session and its agent never
+  reads it. Refuses an empty message, no one named, more than 16 or the caller named (22023), a non-member caller or a
+  name outside the company (42501) and a missing session (P0002).
+- `qorpera_surface_unseen_notes(p_profile_id)` (any member) answers the caller's own unseen notes,
+  `[{surfaceId, sessionId, count}]`.
+- `qorpera_surface_notes_seen(p_session_id)` (any member) marks the caller's own notes in that session seen and
+  answers how many.
+
 ### Coding environment secrets (20260928549440_coding_environment_secrets)
 
 The environment variables of a coding session's commands (an npm token, a Sentry DSN). Each is a vault secret captured

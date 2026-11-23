@@ -9,6 +9,7 @@ import {
 	parseSurfaceSession,
 	parseSurfaceSessionImages,
 	parseSurfaceSummary,
+	parseSurfaceUnseenNotes,
 	parseSurfaceWorkspace,
 	SURFACE_ARCHETYPES,
 	SURFACE_GROUPS,
@@ -34,6 +35,7 @@ import {
 	type SurfaceSourceKind,
 	type SurfaceStatus,
 	type SurfaceSummary,
+	type SurfaceUnseenNote,
 	type SurfaceWorkspace,
 } from "@qorpera/contracts";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -653,6 +655,24 @@ export class CloudSurfacesClient {
 					})
 				: await this.#rpc("qorpera_reply_surface_session", args);
 		return parseSurfaceSession(data, "session");
+	}
+
+	async noteSurfaceSession(sessionId: string, message: string, to: readonly string[]): Promise<SurfaceSession> {
+		const data = await this.#rpc("qorpera_surface_session_note", {
+			p_session_id: sessionId,
+			p_message: message,
+			p_to: [...to],
+		});
+		return parseSurfaceSession(data, "session");
+	}
+
+	async unseenSurfaceNotes(companyId: string): Promise<SurfaceUnseenNote[]> {
+		const data = await this.#rpc("qorpera_surface_unseen_notes", { p_profile_id: companyId });
+		return parseSurfaceUnseenNotes(data);
+	}
+
+	async markSurfaceNotesSeen(sessionId: string): Promise<void> {
+		await this.#rpc("qorpera_surface_notes_seen", { p_session_id: sessionId });
 	}
 
 	async surfaceSessionImages(sessionId: string): Promise<SurfaceSessionImages> {

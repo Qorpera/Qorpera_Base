@@ -7,7 +7,8 @@ import type {
 	SurfaceSummary,
 	SurfaceWorkspace,
 } from "@qorpera/contracts";
-import { fmtTime, h, icon } from "../../ui/dom.ts";
+import { fmtTime, h, icon, personAvatar, replace } from "../../ui/dom.ts";
+import { leadingMentions, type MentionTarget, matchTargets, mentionQuery } from "../../ui/mentions.ts";
 import { t } from "../../ui/preferences.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { uiScale } from "../../ui/scale.ts";
@@ -23,6 +24,7 @@ import {
 	type SurfaceNote,
 	type SurfaceReportSummary,
 	type SurfacesStore,
+	type SurfaceTeammate,
 	sessionHeld,
 } from "../surfaces-store.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
@@ -119,34 +121,61 @@ function actionCard(
 	);
 }
 
+function firstName(name: string): string {
+	return name.split(/\s+/)[0] || name;
+}
+
 function memberBubble(
 	text: string,
 	extraClass = "",
 	title?: string,
-	authorName?: string,
+	author?: SurfaceTeammate,
 	images?: HTMLElement | null,
+	to?: readonly SurfaceTeammate[],
 ): HTMLElement {
 	const reply = splitChangeReply(text);
-	const className = ["surface-message", "is-member", extraClass].filter(Boolean).join(" ");
+	const noteLabel = to ? t("Note to {names}", { names: to.map((who) => firstName(who.name)).join(", ") }) : "";
+	const className = ["surface-message", "is-member", to && "is-note", extraClass].filter(Boolean).join(" ");
+	const hint = [noteLabel, title].filter(Boolean).join(" · ");
 	const bubble = reply
 		? h(
 				"div",
-				{ class: className, ...(title ? { title } : {}) },
+				{ class: className, ...(hint ? { title: hint } : {}) },
 				h("span", { class: "surface-message-ref" }, icon("link"), h("span", null, reply.title)),
 				h("span", { class: "surface-message-text" }, reply.body),
 			)
-		: h("p", { class: className, ...(title ? { title } : {}) }, text);
-	if (!authorName && !images) return bubble;
+		: to
+			? h(
+					"p",
+					{ class: className, title: hint },
+					h("span", { class: "surface-message-text" }, text),
+					h(
+						"span",
+						{ class: "surface-note-to" },
+						...to.map((who) => personAvatar(who.name, who.userId)),
+						h("span", { class: "visually-hidden" }, noteLabel),
+					),
+				)
+			: h("p", { class: className, ...(hint ? { title: hint } : {}) }, text);
+	if (!author && !images) return bubble;
+	const face = author ? personAvatar(author.name, author.userId) : null;
+	face?.classList.add("surface-message-face");
 	return h(
 		"div",
-		{ class: "surface-message-group is-member" },
-		authorName ? h("span", { class: "surface-message-author" }, authorName) : null,
+		{ class: `surface-message-group is-member${face ? " has-face" : ""}` },
+		author ? h("span", { class: "surface-message-author" }, author.name) : null,
 		images ?? null,
 		bubble,
+		face,
 	);
 }
 
-function messageRow(message: SurfaceSessionMessage, authorName?: string, images?: HTMLElement | null): HTMLElement {
+function messageRow(
+	message: SurfaceSessionMessage,
+	author?: SurfaceTeammate,
+	images?: HTMLElement | null,
+	to?: readonly SurfaceTeammate[],
+): HTMLElement {
 	if (message.authorKind === "system")
 		return h(
 			"div",
@@ -166,7 +195,7 @@ function messageRow(message: SurfaceSessionMessage, authorName?: string, images?
 		);
 	if (message.authorKind === "session")
 		return h("p", { class: "surface-message is-session", title: fmtTime(message.createdAt) }, message.text);
-	return memberBubble(message.text, "", fmtTime(message.createdAt), authorName, images);
+	return memberBubble(message.text, "", fmtTime(message.createdAt), author, images, to);
 }
 
 function changeTag(change: SurfaceChangeUnit): HTMLElement | null {
@@ -300,7 +329,14 @@ export class SurfaceSessionDrawer {
 	readonly #input = h("input", { class: "surface-drawer-input", autocomplete: "off" });
 	readonly #send = h("button", { type: "submit", class: "surface-send is-ready" }, icon("send"));
 	readonly #compose = h("div", { class: "surface-drawer-compose" }, this.#input, this.#send);
-	readonly #form = h("form", { class: "surface-drawer-foot" }, this.#replyStrip, this.#compose);
+	readonly #picker = h("div", {
+		class: "mention-picker",
+		role: "listbox",
+		id: "surface-mention-picker",
+		hidden: true,
+		"aria-label": t("Teammates to write to"),
+	});
+	readonly #form = h("form", { class: "surface-drawer-foot" }, this.#picker, this.#replyStrip, this.#compose);
 	readonly #images: SurfaceComposerImages;
 	readonly #sentImages = new Map<string, ReceivedAttachments>();
 	readonly #localImageUrls = new Map<File, string>();
@@ -318,6 +354,7 @@ export class SurfaceSessionDrawer {
 	#quotedChange: QuotedChangeRef | undefined;
 	#armedApprove: string | undefined;
 	#armTimer: ReturnType<typeof setTimeout> | undefined;
+	#mention: { options: MentionTarget[]; active: number } | undefined;
 
 	constructor(store: SurfacesStore, signal: AbortSignal, options: PublishPatchnotesOptions = {}) {
 		this.#store = store;
@@ -373,6 +410,24 @@ export class SurfaceSessionDrawer {
 				const text = this.#input.value.trim();
 				if (!sessionId || !text || this.#images.problem) return;
 				const quoted = this.#quotedChange?.sessionId === sessionId ? this.#quotedChange : undefined;
+				const to = quoted ? [] : leadingMentions(text, this.#teammates());
+				if (to.length) {
+					this.#input.value = "";
+					this.#syncNoteMode();
+					void store
+						.noteTo(
+							sessionId,
+							text,
+							to.map((target) => target.id),
+						)
+						.then((ok) => {
+							if (!ok && !this.#input.value) {
+								this.#input.value = text;
+								this.#syncNoteMode();
+							}
+						});
+					return;
+				}
 				const payload = quoted ? `Re: [${quoted.title}]\n${text}` : text;
 				const files = this.#images.files;
 				this.#input.value = "";
@@ -389,8 +444,19 @@ export class SurfaceSessionDrawer {
 			{ signal },
 		);
 		this.#input.addEventListener(
+			"input",
+			() => {
+				this.#syncNoteMode();
+				this.#updateMention();
+			},
+			{ signal },
+		);
+		this.#input.addEventListener("click", () => this.#updateMention(), { signal });
+		this.#input.addEventListener("blur", () => this.#closeMention(), { signal });
+		this.#input.addEventListener(
 			"keydown",
 			(event) => {
+				if (this.#mentionKey(event)) return;
 				if (event.key === "Escape" && this.#quotedChange) {
 					event.preventDefault();
 					this.#setQuotedChange(undefined);
@@ -399,6 +465,125 @@ export class SurfaceSessionDrawer {
 			{ signal },
 		);
 		this.el.addEventListener("click", (event) => this.#click(event), { signal });
+	}
+
+	#teammates(): MentionTarget[] {
+		return this.#store.teammates().map((member) => ({ kind: "member", id: member.userId, name: member.name }));
+	}
+
+	#syncNoteMode(): void {
+		const note = leadingMentions(this.#input.value, this.#teammates()).length > 0;
+		this.#form.classList.toggle("is-note", note);
+		this.#images.button.hidden = note || !this.#store.canAttachImages;
+	}
+
+	#updateMention(): void {
+		const input = this.#input;
+		const caret = input.selectionStart ?? input.value.length;
+		const targets = input.selectionStart === input.selectionEnd ? this.#teammates() : [];
+		const query = targets.length ? mentionQuery(input.value, caret) : undefined;
+		const options = query ? matchTargets(query.query, targets) : [];
+		if (!query || !options.length) {
+			this.#closeMention();
+			return;
+		}
+		const chosen = this.#mention?.options[this.#mention.active]?.id;
+		this.#mention = {
+			options,
+			active: Math.max(
+				0,
+				options.findIndex((option) => option.id === chosen),
+			),
+		};
+		this.#renderMention();
+	}
+
+	#renderMention(): void {
+		const mention = this.#mention;
+		if (!mention) return;
+		const optionId = (index: number) => `${this.#picker.id}-${index}`;
+		replace(
+			this.#picker,
+			...mention.options.map((option, index) =>
+				h(
+					"div",
+					{
+						class: "mention-option",
+						role: "option",
+						id: optionId(index),
+						"aria-selected": String(index === mention.active),
+						onmousedown: (event: MouseEvent) => {
+							event.preventDefault();
+							this.#chooseMention(index);
+						},
+						onmousemove: () => {
+							if (this.#mention && this.#mention.active !== index) {
+								this.#mention.active = index;
+								this.#renderMention();
+							}
+						},
+					},
+					personAvatar(option.name, option.id),
+					h("span", { class: "mention-name" }, option.name),
+					h("small", null, t("Member")),
+				),
+			),
+		);
+		this.#picker.hidden = false;
+		this.#input.setAttribute("aria-autocomplete", "list");
+		this.#input.setAttribute("aria-controls", this.#picker.id);
+		this.#input.setAttribute("aria-activedescendant", optionId(mention.active));
+	}
+
+	#closeMention(): void {
+		if (!this.#mention && this.#picker.hidden) return;
+		this.#mention = undefined;
+		this.#picker.hidden = true;
+		replace(this.#picker);
+		for (const name of ["aria-activedescendant", "aria-controls", "aria-autocomplete"])
+			this.#input.removeAttribute(name);
+	}
+
+	#mentionKey(event: KeyboardEvent): boolean {
+		const mention = this.#mention;
+		if (!mention || event.isComposing) return false;
+		const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+		if (step) {
+			event.preventDefault();
+			mention.active = (mention.active + step + mention.options.length) % mention.options.length;
+			this.#renderMention();
+			return true;
+		}
+		if ((event.key === "Enter" || event.key === "Tab") && !event.shiftKey) {
+			event.preventDefault();
+			this.#chooseMention(mention.active);
+			return true;
+		}
+		if (event.key === "Escape") {
+			event.preventDefault();
+			event.stopPropagation();
+			this.#closeMention();
+			return true;
+		}
+		return false;
+	}
+
+	#chooseMention(index: number): void {
+		const option = this.#mention?.options[index];
+		const input = this.#input;
+		const end = input.selectionStart ?? input.value.length;
+		const query = option && input.selectionEnd === end ? mentionQuery(input.value, end) : undefined;
+		if (!option || !query) {
+			this.#closeMention();
+			return;
+		}
+		const name = `@${option.name} `;
+		input.value = input.value.slice(0, query.start) + name + input.value.slice(end);
+		const caret = query.start + name.length;
+		input.focus();
+		input.setSelectionRange(caret, caret);
+		this.#closeMention();
+		this.#syncNoteMode();
 	}
 
 	#wireResizer(signal: AbortSignal): void {
@@ -775,7 +960,7 @@ export class SurfaceSessionDrawer {
 				"data-session": session.id,
 				title: t("View responses"),
 			},
-			this.#crew.take(session, 30),
+			this.#crew.take(session, 30, "", this.#store.turnHolder(session)),
 			h(
 				"span",
 				{ class: "surface-overview-agent-copy" },
@@ -972,6 +1157,7 @@ export class SurfaceSessionDrawer {
 			this.#armedApprove,
 			ownedNotes,
 		];
+		if (picked && state.unseenNotes[picked.id]) store.seeNotes(picked.id);
 		if (sameDeps(this.#shown, deps)) return;
 		this.#shown = deps;
 		this.#input.placeholder = t("Steer this session…");
@@ -1107,6 +1293,7 @@ export class SurfaceSessionDrawer {
 			this.#armedApprove,
 			ownedNotes,
 		];
+		if (state.unseenNotes[session.id]) store.seeNotes(session.id);
 		if (sameDeps(this.#shown, deps)) return;
 		this.#shown = deps;
 		this.#input.placeholder = t("Steer this session…");
@@ -1125,7 +1312,7 @@ export class SurfaceSessionDrawer {
 				},
 				icon("back"),
 			),
-			this.#crew.take(session, 36, "is-large"),
+			this.#crew.take(session, 36, "is-large", store.turnHolder(session)),
 			h("div", { class: "surface-drawer-title" }, h("h2", null, session.title)),
 		);
 		this.#crew.settle();
@@ -1445,10 +1632,14 @@ export class SurfaceSessionDrawer {
 					keep.add(key);
 					images = this.#sentImageView(key, session.id, attached).el;
 				}
-				parts.push(messageRow(message, store.memberName(message.authorUserId), images));
+				const to =
+					message.authorKind === "note"
+						? (message.noteTo ?? []).flatMap((userId) => this.#person(userId) ?? [])
+						: undefined;
+				parts.push(messageRow(message, this.#person(message.authorUserId), images, to));
 			}
 		} else if (session.prompt) {
-			parts.push(memberBubble(session.prompt, "", undefined, store.memberName(session.createdByUserId)));
+			parts.push(memberBubble(session.prompt, "", undefined, this.#person(session.createdByUserId)));
 		}
 		for (const [key, view] of this.#sentImages)
 			if (!keep.has(key)) {
@@ -1458,7 +1649,16 @@ export class SurfaceSessionDrawer {
 		const sending = new Set<File>();
 		for (const note of notes) {
 			for (const file of note.files ?? []) sending.add(file);
-			parts.push(memberBubble(note.text, "is-pending", undefined, undefined, this.#localImages(note.files)));
+			parts.push(
+				memberBubble(
+					note.text,
+					"is-pending",
+					undefined,
+					undefined,
+					this.#localImages(note.files),
+					note.to?.flatMap((userId) => this.#person(userId) ?? []),
+				),
+			);
 		}
 		for (const [file, url] of this.#localImageUrls)
 			if (!sending.has(file)) {
@@ -1466,6 +1666,11 @@ export class SurfaceSessionDrawer {
 				this.#localImageUrls.delete(file);
 			}
 		return parts;
+	}
+
+	#person(userId: string | null | undefined): SurfaceTeammate | undefined {
+		const name = this.#store.memberName(userId);
+		return userId && name ? { userId, name } : undefined;
 	}
 
 	#sentImageView(

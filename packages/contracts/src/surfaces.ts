@@ -139,7 +139,7 @@ export type SurfaceAutomationOutputMode = (typeof SURFACE_AUTOMATION_OUTPUT_MODE
 export const SURFACE_AUTOMATION_STATUSES = ["idle", "running", "needs_attention", "paused"] as const;
 export type SurfaceAutomationStatus = (typeof SURFACE_AUTOMATION_STATUSES)[number];
 
-export const SURFACE_SESSION_MESSAGE_AUTHORS = ["member", "session", "system"] as const;
+export const SURFACE_SESSION_MESSAGE_AUTHORS = ["member", "session", "system", "note"] as const;
 export type SurfaceSessionMessageAuthor = (typeof SURFACE_SESSION_MESSAGE_AUTHORS)[number];
 
 export const SURFACE_INSPECTOR_MODE_MESSAGE = "qorpera-inspector-mode";
@@ -154,7 +154,14 @@ export interface SurfaceSessionMessage {
 	readonly authorUserId?: string | null;
 	readonly text: string;
 	readonly changeId: string | null;
+	readonly noteTo?: readonly string[];
 	readonly createdAt: string;
+}
+
+export interface SurfaceUnseenNote {
+	readonly surfaceId: string;
+	readonly sessionId: string;
+	readonly count: number;
 }
 
 export const SURFACE_IMAGE_MEDIA_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
@@ -273,6 +280,7 @@ export interface SurfaceSession {
 	readonly originKind: SurfaceSessionOriginKind;
 	readonly originLabel: string | null;
 	readonly createdByUserId?: string | null;
+	readonly turnRequestedByUserId?: string | null;
 	readonly explorationId: string | null;
 	readonly explorationVariantLabel: string | null;
 	readonly branchHeadSha?: string | null;
@@ -627,6 +635,8 @@ export function parseSurfaceSessionMessage(value: unknown, label = "message"): S
 	const raw = parseRecord(value, label);
 	const authorUserId =
 		raw.authorUserId === undefined ? undefined : parseOptionalUuid(raw.authorUserId, `${label}.authorUserId`);
+	const noteTo =
+		raw.noteTo === undefined || raw.noteTo === null ? undefined : parseUuidArray(raw.noteTo, `${label}.noteTo`, 16);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		sessionId: parseUuid(raw.sessionId, `${label}.sessionId`),
@@ -634,8 +644,21 @@ export function parseSurfaceSessionMessage(value: unknown, label = "message"): S
 		...(authorUserId !== undefined ? { authorUserId } : {}),
 		text: parseBoundedText(raw.text, `${label}.text`, SURFACE_MAX_PROMPT_CHARS, 0),
 		changeId: parseOptionalUuid(raw.changeId, `${label}.changeId`),
+		...(noteTo !== undefined ? { noteTo } : {}),
 		createdAt: parseTimestamp(raw.createdAt, `${label}.createdAt`).text,
 	};
+}
+
+export function parseSurfaceUnseenNotes(value: unknown, label = "unseenNotes"): SurfaceUnseenNote[] {
+	if (!Array.isArray(value)) throw new WireValueError(label);
+	return value.map((item, index) => {
+		const raw = parseRecord(item, `${label}[${index}]`);
+		return {
+			surfaceId: parseUuid(raw.surfaceId, `${label}[${index}].surfaceId`),
+			sessionId: parseUuid(raw.sessionId, `${label}[${index}].sessionId`),
+			count: parseInteger(raw.count, `${label}[${index}].count`, 1, 10_000),
+		};
+	});
 }
 
 export function parseSurfaceSession(value: unknown, label = "session"): SurfaceSession {
@@ -658,6 +681,10 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		raw.createdByUserId === undefined
 			? undefined
 			: parseOptionalUuid(raw.createdByUserId, `${label}.createdByUserId`);
+	const turnRequestedByUserId =
+		raw.turnRequestedByUserId === undefined
+			? undefined
+			: parseOptionalUuid(raw.turnRequestedByUserId, `${label}.turnRequestedByUserId`);
 	const notePaths =
 		raw.notePaths === undefined || raw.notePaths === null
 			? undefined
@@ -674,6 +701,7 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		originKind: parseEnum(raw.originKind, SURFACE_SESSION_ORIGIN_KINDS, `${label}.originKind`),
 		originLabel: parseOptionalText(raw.originLabel, `${label}.originLabel`, 160),
 		...(createdByUserId !== undefined ? { createdByUserId } : {}),
+		...(turnRequestedByUserId !== undefined ? { turnRequestedByUserId } : {}),
 		explorationId: parseOptionalUuid(raw.explorationId, `${label}.explorationId`),
 		explorationVariantLabel: parseOptionalText(raw.explorationVariantLabel, `${label}.explorationVariantLabel`, 80),
 		...(branchHeadSha !== undefined ? { branchHeadSha } : {}),

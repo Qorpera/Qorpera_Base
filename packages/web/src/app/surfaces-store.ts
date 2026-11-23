@@ -26,6 +26,7 @@ import {
 	type SurfaceSession,
 	type SurfaceSessionImages,
 	type SurfaceSummary,
+	type SurfaceUnseenNote,
 	type SurfaceWorkspace,
 } from "@qorpera/contracts";
 import { phrase, t } from "../ui/preferences.ts";
@@ -77,6 +78,9 @@ export type SurfacesClient = Pick<
 			| "deleteAutomation"
 			| "setSurfaceFigure"
 			| "surfaceSessionImages"
+			| "noteSurfaceSession"
+			| "unseenSurfaceNotes"
+			| "markSurfaceNotesSeen"
 		>
 	>;
 
@@ -322,6 +326,12 @@ export interface SurfaceNote {
 	readonly at: string;
 	readonly priorMatches: number;
 	readonly files?: readonly File[];
+	readonly to?: readonly string[];
+}
+
+export interface SurfaceTeammate {
+	readonly userId: string;
+	readonly name: string;
 }
 
 export interface CreateSurfaceInput {
@@ -379,6 +389,7 @@ export interface SurfacesState {
 	readonly collapsed: Readonly<Record<string, true>>;
 	readonly notes: readonly SurfaceNote[];
 	readonly sessionImages: Readonly<Record<string, SurfaceSessionImages>>;
+	readonly unseenNotes: Readonly<Record<string, SurfaceUnseenNote>>;
 	readonly undo?: SurfaceUndo;
 	readonly busy: Readonly<Record<string, true>>;
 	readonly error?: string;
@@ -528,7 +539,8 @@ export function formatConflictPaths(paths: readonly string[]): string {
 function memberMessageMatches(session: SurfaceSession, text: string): number {
 	let count = 0;
 	for (const message of session.messages)
-		if (message.authorKind === "member" && message.text.trim() === text) count += 1;
+		if ((message.authorKind === "member" || message.authorKind === "note") && message.text.trim() === text)
+			count += 1;
 	return count;
 }
 
@@ -971,6 +983,7 @@ export interface SurfacesStoreOptions {
 	readonly onNavigateSurface?: (slug: string) => void;
 	readonly realtimeLive?: () => boolean;
 	readonly memberName?: (userId: string) => string | undefined;
+	readonly teammates?: () => readonly SurfaceTeammate[];
 	readonly peopleAtSurface?: (slug: string) => readonly { readonly userId: string; readonly name: string }[];
 	readonly loadCloudFiles?: (
 		surface: SurfaceSummary,
@@ -1096,6 +1109,7 @@ export class SurfacesStore {
 			collapsed: {},
 			notes: [],
 			sessionImages: {},
+			unseenNotes: {},
 			busy: {},
 		});
 		options.signal.addEventListener("abort", () => this.dispose(), { once: true });
@@ -1169,6 +1183,32 @@ export class SurfacesStore {
 	memberName(userId: string | null | undefined): string | undefined {
 		if (!userId) return undefined;
 		return this.#options.memberName?.(userId);
+	}
+
+	teammates(): readonly SurfaceTeammate[] {
+		return this.#options.teammates?.() ?? [];
+	}
+
+	turnHolder(session: SurfaceSession): SurfaceTeammate | undefined {
+		if (!this.teammates().length || !(isRunningSession(session) || session.state === "needs_input")) return undefined;
+		const userId = session.turnRequestedByUserId;
+		const name = this.memberName(userId);
+		return userId && name ? { userId, name } : undefined;
+	}
+
+	unseenNotesOn(surfaceId: string): number {
+		let count = 0;
+		for (const item of Object.values(this.state.unseenNotes)) if (item.surfaceId === surfaceId) count += item.count;
+		return count;
+	}
+
+	seeNotes(sessionId: string): void {
+		if (!this.state.unseenNotes[sessionId]) return;
+		this.store.set((state) => {
+			const { [sessionId]: _seen, ...rest } = state.unseenNotes;
+			return { unseenNotes: rest };
+		});
+		void this.#options.client?.markSurfaceNotesSeen?.(sessionId).catch(() => undefined);
 	}
 
 	peopleAtSurface(slug: string): readonly { readonly userId: string; readonly name: string }[] {
@@ -1350,7 +1390,7 @@ export class SurfacesStore {
 			this.#useLocal(isMissingSurfaceRpcError(error) ? undefined : describe(error));
 			return;
 		}
-		await Promise.all([this.#loadAutomations(client), this.#loadMigration(client)]);
+		await Promise.all([this.#loadAutomations(client), this.#loadMigration(client), this.#loadUnseenNotes(client)]);
 	}
 
 	#useLocal(error?: string): void {
@@ -1724,6 +1764,18 @@ export class SurfacesStore {
 			};
 		});
 		return true;
+	}
+
+	async #loadUnseenNotes(client: SurfacesClient): Promise<void> {
+		if (!client.unseenSurfaceNotes) return;
+		try {
+			const unseen = await client.unseenSurfaceNotes(this.#options.companyId);
+			if (this.#options.signal.aborted) return;
+			const next = Object.fromEntries(unseen.map((item) => [item.sessionId, item]));
+			if (JSON.stringify(next) !== JSON.stringify(this.state.unseenNotes)) this.store.set({ unseenNotes: next });
+		} catch {
+			/* WHY: Unseen notes are a mark on the rail; the last good list stays on screen. */
+		}
 	}
 
 	async #loadAutomations(client: SurfacesClient): Promise<void> {
@@ -2418,7 +2470,10 @@ export class SurfacesStore {
 				for (const id of retryHydrate) this.hydrateWorkspace(id);
 				void this.refreshSurfaces();
 				const client = this.#options.client;
-				if (client) void this.#loadAutomations(client);
+				if (client) {
+					void this.#loadAutomations(client);
+					void this.#loadUnseenNotes(client);
+				}
 				const workspaces = Object.values(this.state.workspaces).filter(
 					(workspace) => !isLocalSurfaceId(workspace.surface.id),
 				);
@@ -3845,6 +3900,56 @@ export class SurfacesStore {
 			return attached
 				? client.replySurfaceSession(sessionId, message, true, attached)
 				: client.replySurfaceSession(sessionId, message);
+		});
+		if (!updated) {
+			this.store.set((state) => ({ notes: state.notes.filter((item) => item.id !== note.id) }));
+			return false;
+		}
+		if (this.state.workspaces[updated.surfaceId]) this.#applySession(updated, "open");
+		else this.store.set((state) => ({ notes: reconcileNotes(state.notes, [updated]) }));
+		return true;
+	}
+
+	async noteTo(sessionId: string, text: string, to: readonly string[]): Promise<boolean> {
+		const message = text.trim();
+		const existing = this.session(sessionId);
+		if (!message || !to.length || !existing || this.state.busy[`reply:${sessionId}`]) return false;
+		if (this.isLocalInteractive && isLocalSurfaceId(existing.surfaceId)) {
+			const now = new Date().toISOString();
+			this.#applySession(
+				{
+					...existing,
+					messages: [
+						...existing.messages,
+						{
+							id: `local-message-${++this.#localSeq}`,
+							sessionId,
+							authorKind: "note",
+							text: message,
+							changeId: null,
+							noteTo: [...to],
+							createdAt: now,
+						},
+					],
+				},
+				"open",
+			);
+			return true;
+		}
+		const note: SurfaceNote = {
+			id: ++this.#noteSeq,
+			sessionId,
+			text: message,
+			at: new Date().toISOString(),
+			priorMatches:
+				memberMessageMatches(existing, message) +
+				this.state.notes.filter((item) => item.sessionId === sessionId && item.text === message).length,
+			to: [...to],
+		};
+		this.store.set((state) => ({ notes: [...state.notes, note] }));
+		const updated = await this.#run(`reply:${sessionId}`, (client) => {
+			if (!client.noteSurfaceSession) throw new Error(t("Notes to teammates are not available here yet."));
+			return client.noteSurfaceSession(sessionId, message, to);
 		});
 		if (!updated) {
 			this.store.set((state) => ({ notes: state.notes.filter((item) => item.id !== note.id) }));

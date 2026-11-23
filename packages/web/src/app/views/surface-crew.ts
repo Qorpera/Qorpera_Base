@@ -2,10 +2,10 @@ import type { SurfaceExplorationSet, SurfaceSession } from "@qorpera/contracts";
 import { AGENT_COLOUR_HEX } from "../../cloud/agent-colours.ts";
 import { AGENT_LOOK, stateLine } from "../../ui/agent-activity.ts";
 import { FIGURE_IDS, type FigureId, figureElement } from "../../ui/avatar.ts";
-import { h, icon } from "../../ui/dom.ts";
+import { h, icon, personAvatar } from "../../ui/dom.ts";
 import type { Activity, Ask } from "../../ui/figure-motion.ts";
 import { t } from "../../ui/preferences.ts";
-import { hasConflictedChange, isRunningSession, sessionHeld } from "../surfaces-store.ts";
+import { hasConflictedChange, isRunningSession, type SurfaceTeammate, sessionHeld } from "../surfaces-store.ts";
 
 // WHY: The Crown is the Co-Founder's alone, so sessions draw only from the staff crew.
 const CREW: readonly FigureId[] = FIGURE_IDS.filter((figure) => figure !== "crown");
@@ -61,6 +61,17 @@ export function explorationCrewLook(variants: readonly SurfaceSession[]): CrewLo
 	return { tone: "ready", activity: "Idle", alive: true, label: t("Ready") };
 }
 
+function turnFace(turn: SurfaceTeammate): HTMLElement {
+	const face = personAvatar(turn.name, turn.userId);
+	face.classList.add("surface-crew-turn");
+	face.title = turnLabel(turn);
+	return face;
+}
+
+function turnLabel(turn: SurfaceTeammate): string {
+	return t("{name}'s turn", { name: turn.name.split(/\s+/)[0] || turn.name });
+}
+
 export function crewWave(): HTMLElement | string {
 	return stateLine(AGENT_LOOK.working) ?? t("Working");
 }
@@ -71,10 +82,19 @@ export class CrewFigures {
 	#kept = new Map<string, HTMLElement>();
 	#used = new Map<string, HTMLElement>();
 
-	take(session: SurfaceSession, size: number, className = ""): HTMLElement {
+	take(session: SurfaceSession, size: number, className = "", turn?: SurfaceTeammate): HTMLElement {
 		const look = crewLook(session);
 		const crew = sessionCrew(session.id);
-		const key = JSON.stringify([session.id, size, look.tone, look.activity, look.ask ?? "", className]);
+		const key = JSON.stringify([
+			session.id,
+			size,
+			look.tone,
+			look.activity,
+			look.ask ?? "",
+			className,
+			turn?.userId ?? "",
+			turn?.name ?? "",
+		]);
 		let stand = this.#used.get(key) ?? this.#kept.get(key);
 		if (!stand) {
 			const figure = figureElement(crew.figure, crew.color, {
@@ -89,13 +109,15 @@ export class CrewFigures {
 				{
 					class: ["surface-crew", `is-${look.tone}`, className].filter(Boolean).join(" "),
 					role: "img",
-					"aria-label": look.label,
+					"aria-label": turn ? `${look.label} · ${turnLabel(turn)}` : look.label,
 					"data-figure": crew.figure,
 				},
 				figure,
 				look.tone === "merged"
 					? h("span", { class: "surface-crew-pip", "aria-hidden": "true" }, icon("check"))
-					: null,
+					: turn
+						? turnFace(turn)
+						: null,
 			);
 			stand.style.setProperty("--crew-colour", crew.color);
 			stand.style.setProperty("--crew-size", `${size}px`);

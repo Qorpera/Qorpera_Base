@@ -1,4 +1,4 @@
-import type { SurfaceChangeUnit, SurfaceSummary } from "@qorpera/contracts";
+import type { SurfaceChangeUnit, SurfaceSession, SurfaceSummary } from "@qorpera/contracts";
 import { menuPoint, openContextMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
 import { h, icon } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
@@ -11,7 +11,7 @@ import {
 	surfaceLookOf,
 	surfaceTint,
 } from "../surface-kinds.ts";
-import { openExplorations, type SurfacesState, type SurfacesStore } from "../surfaces-store.ts";
+import { openExplorations, type SurfacesState, type SurfacesStore, type SurfaceTeammate } from "../surfaces-store.ts";
 import { CrewFigures } from "./surface-crew.ts";
 
 export function surfaceTile(
@@ -60,14 +60,19 @@ function hostOf(url: string): string {
 
 const CREW_SHOWN = 6;
 
-function crewRow(state: SurfacesState, surface: SurfaceSummary, crew: CrewFigures): HTMLElement | null {
+function crewRow(
+	state: SurfacesState,
+	surface: SurfaceSummary,
+	crew: CrewFigures,
+	turn: (session: SurfaceSession) => SurfaceTeammate | undefined,
+): HTMLElement | null {
 	const workspace = state.workspaces[surface.id];
 	const sessions = workspace?.activeSessions ?? [];
 	const figures = [
 		...sessions
 			.filter((session) => !session.explorationId)
 			.map((session) => {
-				const figure = crew.take(session, 20, "is-mini");
+				const figure = crew.take(session, 20, "is-mini", turn(session));
 				figure.title = session.title;
 				figure.classList.toggle("is-highlighted", state.highlight?.sessionId === session.id);
 				return figure;
@@ -133,26 +138,37 @@ interface SurfaceGroupEntry {
 	headKey: string;
 }
 
+function noteMark(tile: HTMLElement, notes: number): HTMLElement {
+	if (notes > 0) tile.append(h("span", { class: "rail-mention", "aria-hidden": "true" }, "@"));
+	return tile;
+}
+
+function rowNotice(surface: SurfaceSummary, notes: number): string | null {
+	const notice = [
+		surface.needsAttentionCount > 0 ? t("Needs your attention") : surface.runningSessionCount > 0 ? t("Working") : "",
+		notes > 0 ? t("A teammate left you a note") : "",
+	]
+		.filter(Boolean)
+		.join(" · ");
+	return notice || null;
+}
+
 function createSurfaceRow(
 	surface: SurfaceSummary,
 	look: SurfaceLook,
 	profileId: string,
 	active: boolean,
 	crew: HTMLElement | null,
+	notes: number,
 	members?: SurfaceRailMembers,
 ): SurfaceRowEntry {
 	const state: SurfaceFigureState = surface.runningSessionCount > 0 ? "working" : "rest";
 	const tint = surfaceTint(look);
-	const tileKey = JSON.stringify([surfaceFigureOf(surface, look), state, tint]);
-	const tileEl = surfaceTile(surface, look, "", state);
+	const tileKey = JSON.stringify([surfaceFigureOf(surface, look), state, tint, notes > 0]);
+	const tileEl = noteMark(surfaceTile(surface, look, "", state), notes);
 	const nameEl = h("span", { class: "rail-surface-name" }, surface.title);
 	const subEl = crew ?? h("span", { class: "rail-surface-sub" }, surfaceSubtitle(surface, look, members));
-	const noticeText =
-		surface.needsAttentionCount > 0
-			? t("Needs your attention")
-			: surface.runningSessionCount > 0
-				? t("Working")
-				: null;
+	const noticeText = rowNotice(surface, notes);
 	const noticeEl = noticeText ? h("span", { class: "visually-hidden" }, noticeText) : null;
 	const el = h(
 		"a",
@@ -180,6 +196,7 @@ function syncSurfaceRow(
 	profileId: string,
 	active: boolean,
 	crew: HTMLElement | null,
+	notes: number,
 	members?: SurfaceRailMembers,
 ): void {
 	const href = surfaceHash(profileId, surface.slug);
@@ -191,9 +208,9 @@ function syncSurfaceRow(
 	if (entry.el.style.getPropertyValue("--surface-tint") !== tint) entry.el.style.setProperty("--surface-tint", tint);
 	setRowActive(entry.el, active);
 	const state: SurfaceFigureState = surface.runningSessionCount > 0 ? "working" : "rest";
-	const tileKey = JSON.stringify([surfaceFigureOf(surface, look), state, tint]);
+	const tileKey = JSON.stringify([surfaceFigureOf(surface, look), state, tint, notes > 0]);
 	if (entry.tileKey !== tileKey) {
-		const nextTile = surfaceTile(surface, look, "", state);
+		const nextTile = noteMark(surfaceTile(surface, look, "", state), notes);
 		entry.tileEl.replaceWith(nextTile);
 		entry.tileEl = nextTile;
 		entry.tileKey = tileKey;
@@ -212,12 +229,7 @@ function syncSurfaceRow(
 			entry.subEl.textContent = subtitle;
 		}
 	}
-	const noticeText =
-		surface.needsAttentionCount > 0
-			? t("Needs your attention")
-			: surface.runningSessionCount > 0
-				? t("Working")
-				: null;
+	const noticeText = rowNotice(surface, notes);
 	if (entry.noticeText !== noticeText) {
 		entry.noticeText = noticeText;
 		if (noticeText) {
@@ -355,6 +367,8 @@ export class SurfaceRail {
 			state.highlight,
 			state.busy,
 			state.surfaceLooks,
+			state.unseenNotes,
+			this.#store.teammates().length,
 		];
 		if (
 			this.#shown &&
@@ -437,13 +451,31 @@ export class SurfaceRail {
 				if (surface.activeSessionCount > 0 && !state.workspaces[surface.id]) {
 					this.#store.hydrateWorkspace(surface.id);
 				}
-				const crew = crewRow(state, surface, this.#crew);
+				const crew = crewRow(state, surface, this.#crew, (session) => this.#store.turnHolder(session));
+				const notes = this.#store.unseenNotesOn(surface.id);
 				let entry = this.#rows.get(surface.id);
 				if (!entry) {
-					entry = createSurfaceRow(surface, look, this.#profileId, active, crew, hasMembers ? members : undefined);
+					entry = createSurfaceRow(
+						surface,
+						look,
+						this.#profileId,
+						active,
+						crew,
+						notes,
+						hasMembers ? members : undefined,
+					);
 					this.#rows.set(surface.id, entry);
 				} else {
-					syncSurfaceRow(entry, surface, look, this.#profileId, active, crew, hasMembers ? members : undefined);
+					syncSurfaceRow(
+						entry,
+						surface,
+						look,
+						this.#profileId,
+						active,
+						crew,
+						notes,
+						hasMembers ? members : undefined,
+					);
 				}
 				groupChildren.push(entry.el);
 				if (hasMembers) {
