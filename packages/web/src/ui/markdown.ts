@@ -426,7 +426,6 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true, s
 				// An agent's interface app where no paragraph placed it (a list's item, a table's cell): its card, in place.
 				const app = token.type === "link" ? appLinkName(decodeEntities(token.href)) : undefined;
 				if (app !== undefined) return [appCard(app, content)];
-				// A file or folder of the company's own Company File: a button the app answers by opening Storage there.
 				const path = folderLinkPath(decodeEntities(token.href));
 				if (path !== undefined)
 					return [
@@ -436,7 +435,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true, s
 								type: "button",
 								class: "folder-link",
 								"data-folder-path": path,
-								title: t("Open {path} in Storage", { path }),
+								title: t("Open {path} in Files", { path }),
 							},
 							content,
 						),

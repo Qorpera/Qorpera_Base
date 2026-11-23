@@ -46,7 +46,6 @@ export interface CodeImportHost {
 	live(): void;
 	calls(): CodeDownloadCalls;
 	readonly code: CodeListSource;
-	/** Opens a folder of the company's in Storage. */
 	open(path: string): void;
 	/** What the place code/<owner>/<name> holds may have changed: its import came, moved a step or ended, or this page
 	 * sees for the first time how it stands. The browser reads its open folder again when that is the place or a folder

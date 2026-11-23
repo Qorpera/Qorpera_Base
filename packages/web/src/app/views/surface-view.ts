@@ -30,6 +30,7 @@ import {
 	surfaceBySlug,
 	surfaceHasReports,
 } from "../surfaces-store.ts";
+import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { CrewFigures } from "./surface-crew.ts";
 import { applyIdentityTokensToFrame, SurfaceDoorStage } from "./surface-door.ts";
 import { openPublishPatchnotesSheet } from "./surface-publish-sheet.ts";
@@ -177,13 +178,9 @@ export class SurfaceView {
 	);
 	readonly #input = h("textarea", { class: "surface-input", rows: 1 });
 	readonly #send = h("button", { type: "submit", class: "surface-send" }, icon("send"));
-	readonly #composer = h(
-		"form",
-		{ class: "surface-composer" },
-		this.#chips,
-		this.#targetRow,
-		h("div", { class: "surface-composer-shell" }, this.#point, this.#input, this.#send),
-	);
+	readonly #shell = h("div", { class: "surface-composer-shell" }, this.#point, this.#input, this.#send);
+	readonly #composer = h("form", { class: "surface-composer" }, this.#chips, this.#targetRow, this.#shell);
+	readonly #images: SurfaceComposerImages;
 	readonly #toast = h("div", { class: "surface-toast-host", role: "status" });
 	readonly #drawer: SurfaceSessionDrawer;
 	readonly #primaryDoor: SurfaceDoorStage;
@@ -229,6 +226,11 @@ export class SurfaceView {
 			/* WHY: Local browser storage is optional in private/sandboxed contexts. */
 		}
 		const signal = this.#active.signal;
+		this.#images = new SurfaceComposerImages(this.#shell, signal, () => this.#syncSend());
+		this.#shell.insertBefore(this.#images.button, this.#input);
+		this.#composer.insertBefore(this.#images.tray.el, this.#shell);
+		this.#composer.append(this.#images.tray.status);
+		this.#images.setAvailable(host.store.canAttachImages);
 		this.#drawer = new SurfaceSessionDrawer(host.store, signal, {
 			loadSitePassword: host.loadSitePassword,
 		});
@@ -294,7 +296,7 @@ export class SurfaceView {
 			"input",
 			() => {
 				growToText(this.#input);
-				this.#send.classList.toggle("is-ready", this.#input.value.trim().length > 0);
+				this.#syncSend();
 			},
 			{ signal },
 		);
@@ -1615,22 +1617,30 @@ export class SurfaceView {
 		);
 	}
 
+	#syncSend(): void {
+		this.#send.classList.toggle("is-ready", this.#input.value.trim().length > 0 && !this.#images.problem);
+	}
+
 	async #submit(): Promise<void> {
 		const surface = this.surface;
 		const text = this.#input.value.trim();
-		if (!surface || !text || this.#input.disabled) return;
+		if (!surface || !text || this.#input.disabled || this.#images.problem) return;
 		const target = this.#target;
 		const options: StartSurfaceSessionOptions = target
 			? { target, originKind: "point_to_change", originLabel: targetOriginLabel(target) }
 			: {};
+		const files = this.#images.files;
 		this.#input.value = "";
 		growToText(this.#input);
-		this.#send.classList.remove("is-ready");
-		const session = await this.#host.store.startSession(surface.id, text, options);
+		this.#images.set([]);
+		const session = await this.#host.store.startSession(surface.id, text, options, files);
 		if (!session) {
-			this.#input.value = text;
-			growToText(this.#input);
-			this.#send.classList.toggle("is-ready", text.length > 0);
+			if (!this.#input.value) {
+				this.#input.value = text;
+				growToText(this.#input);
+			}
+			if (!this.#images.files.length) this.#images.set(files);
+			this.#syncSend();
 			return;
 		}
 		if (target) {

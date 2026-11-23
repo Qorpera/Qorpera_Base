@@ -1,4 +1,4 @@
-@import "./settings-storage.css";
+@import "./settings-window.css";
 @import "./company-storage.css";
 
 .settings-overlay { position: fixed; z-index: 400; inset: 0; display: grid; place-items: center; padding: 36px; background: rgb(20 20 19 / 48%); backdrop-filter: blur(1.5px); font-family: var(--font-sans); font-optical-sizing: auto; font-synthesis: none; text-rendering: geometricPrecision; }
