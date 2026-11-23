@@ -2690,11 +2690,16 @@ turn was requested by and paid with the session's starter. Now:
 - A reply makes the turn a member turn even in a session an agent started, so it
   runs without unattended permission, like the member's own posts.
 - A coding-backed session's worker follows the replier: its owner, requester and
-  sponsor move to the replier for that turn. A worker that is running is
-  cancelled by the reply first (20260930860000), so no running work changes payer.
-- A run's member-turn authority is read from its own wake (`memberInitiated` and
-  its requester, fixed when the wake was made), never from the session's latest
-  reply.
+  sponsor move to the replier from that reply's turn until the next reply. A
+  worker that is running is cancelled by the reply first (20260930860000), so no
+  running work changes payer. This supersedes, for surface sessions only, "nobody
+  but its owner moves it" (2026-11-03): a teammate's reply moves the worker to
+  that teammate.
+- A surface-session wake's run reads its member-turn authority from the wake
+  itself (`memberInitiated` and its requester, fixed when the wake was made),
+  never from the session's latest reply. A coding worker-dispatch run still reads
+  the session's current turn requester; a reply cancels that worker first, so no
+  running coding work changes authority.
 - An agent-started session with no reply still falls back to the Co-Founder's
   creator, then the owner. That is unchanged and open.
 

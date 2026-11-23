@@ -63,9 +63,12 @@ returns boolean language sql immutable set search_path = '' as $$
 $$;
 
 select pg_temp.stp_patch('public.qorpera_reply_surface_session(uuid,text,boolean)'::regprocedure, array[
-$old$	v_user_id := public.qorpera_assert_surface_member(v_peek.profile_id, true);
+$old$	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
+	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
 $old$,
-$new$	v_user_id := public.qorpera_assert_surface_member(v_peek.profile_id, true);
+$new$	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
+	if v_session.id is null then raise exception 'Surface session not found' using errcode = 'P0002'; end if;
+	-- WHY: after the session lock, so the sponsor binding is locked in the same order as the enqueue takes it.
 	if exists (
 		select 1 from public.qorpera_surfaces surf
 		where surf.id = v_peek.surface_id and surf.source_kind = 'code_repo'
