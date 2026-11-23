@@ -66,7 +66,7 @@ export function collectColors(
 export function readSwatches(block: SurfaceSwatchRowBlock, ctx: SurfaceBlockContext): ColorToken[] {
 	const read = ctx.read(block.from);
 	if (!read.found) return [];
-	const key = sourceKey(block.from) ?? "colours";
+	const key = sourceKey(read.binding) ?? "colours";
 	const out: ColorToken[] = [];
 	collectColors(read.value, { [key]: read.base }, [key], out);
 	return out;

@@ -5,6 +5,7 @@ import { COLOR_VALUE } from "./colours.ts";
 import {
 	formatScalar,
 	isPlainRecord,
+	isShownScalar,
 	lookupPath,
 	readableName,
 	type SurfaceBlockContext,
@@ -171,27 +172,56 @@ function paleBar(): HTMLElement {
 	return h("span", { class: "studio-pale-bar" });
 }
 
-function headingOf(heading: string | undefined, source: SurfaceSpecListBlock["from"], ctx: SurfaceBlockContext) {
+function headingOf(heading: string | undefined, binding: string | undefined, ctx: SurfaceBlockContext): string {
 	if (heading) return ctx.words(heading);
-	const file = sourceFile(source);
+	const file = sourceFile(binding);
 	return file ? readableName(file) : "";
 }
 
-function fileTag(source: SurfaceSpecListBlock["from"], ctx: SurfaceBlockContext): HTMLElement | null {
-	const file = sourceFile(source);
+function fileTag(binding: string | undefined, ctx: SurfaceBlockContext): HTMLElement | null {
+	const file = sourceFile(binding);
 	const path = file ? ctx.companyPath(file) : undefined;
 	return path ? h("code", { class: "studio-file-tag" }, path) : null;
+}
+
+function listEntries(
+	value: Record<string, unknown>,
+	base: Record<string, unknown> | undefined,
+	skip: ReadonlySet<string>,
+	prefix: readonly string[],
+	entries: SpecEntry[],
+): void {
+	for (const [key, item] of Object.entries(value)) {
+		if (prefix.length === 0 && skip.has(key.toLowerCase())) continue;
+		const segments = [...prefix, key];
+		if (isPlainRecord(item)) {
+			listEntries(item, base, skip, segments, entries);
+			continue;
+		}
+		if (Array.isArray(item) && (item.length === 0 || !item.every((part) => part === null || isShownScalar(part))))
+			continue;
+		const prev = lookupPath(base, segments);
+		const changed = !sameValue(prev, item);
+		entries.push({
+			key: segments.map(readableName).join(" · "),
+			value: formatScalar(item),
+			...(changed && prev !== undefined ? { prev: formatScalar(prev) } : {}),
+			changed,
+		});
+	}
 }
 
 export function prepareSpecList(block: SurfaceSpecListBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
 	const read = ctx.read(block.from);
 	const entries: SpecEntry[] = [];
-	const tables: SpecTable[] = [];
 	if (isPlainRecord(read.value)) {
-		collectSpecs(read.value, isPlainRecord(read.base) ? read.base : undefined, [], entries, tables);
+		const skip = new Set((block.skip ?? []).map((key) => key.toLowerCase()));
+		listEntries(read.value, isPlainRecord(read.base) ? read.base : undefined, skip, [], entries);
 	}
-	const filled = entries.length > 0 || tables.length > 0;
-	const heading = headingOf(block.heading, block.from, ctx);
+	if (read.found && entries.length === 0) return { filled: false, pieces: [] };
+	const filled = entries.length > 0;
+	const changed = filled && entries.some((entry) => entry.changed);
+	const heading = headingOf(block.heading, read.binding, ctx);
 	return {
 		filled,
 		pieces: [
@@ -199,15 +229,10 @@ export function prepareSpecList(block: SurfaceSpecListBlock, ctx: SurfaceBlockCo
 				build: () =>
 					h(
 						"section",
-						{
-							class: `studio-section${filled && read.changed ? " is-changed" : ""}`,
-							"data-block": "spec_list",
-						},
-						heading
-							? sectionHead(heading, filled && read.changed, filled ? fileTag(block.from, ctx) : null)
-							: null,
+						{ class: `studio-section${changed ? " is-changed" : ""}`, "data-block": "spec_list" },
+						heading ? sectionHead(heading, changed, filled ? fileTag(read.binding, ctx) : null) : null,
 						filled
-							? [entries.length ? renderSpecEntries(entries) : null, ...renderSpecTables(tables, ctx.signal)]
+							? renderSpecEntries(entries)
 							: h(
 									"dl",
 									{ class: "studio-kv is-empty", "aria-hidden": "true" },
@@ -224,7 +249,7 @@ export function prepareTable(block: SurfaceTableBlock, ctx: SurfaceBlockContext)
 	const rows = Array.isArray(read.value) ? read.value.filter(isPlainRecord) : [];
 	const columns = block.columns?.map((column) => ({ key: column.key, label: ctx.words(column.label) }));
 	const table = rows.length ? tableOf("", rows, columns) : undefined;
-	const heading = headingOf(block.heading, block.from, ctx);
+	const heading = headingOf(block.heading, read.binding, ctx);
 	const changed = table !== undefined && read.changed;
 	return {
 		filled: table !== undefined,

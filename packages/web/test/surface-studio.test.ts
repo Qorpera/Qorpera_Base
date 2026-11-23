@@ -942,7 +942,15 @@ describe("SurfaceStudioView", () => {
 		]);
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
-		expect(view.el.querySelectorAll(".studio-kv.is-empty")).toHaveLength(1);
+		expect(
+			[...view.el.querySelectorAll('[data-block="spec_list"]')].map((block) => [
+				block.querySelector("h2")?.textContent,
+				block.querySelector(".studio-kv.is-empty") !== null,
+			]),
+		).toEqual([
+			["Specs", true],
+			["Other details", true],
+		]);
 		expect(view.el.querySelector(".studio-file-tag")).toBeNull();
 		expect(view.el.querySelector('[data-block="table"] .studio-section-head h2')?.textContent).toBe("Parts");
 		expect(view.el.querySelector('[data-block="table"] .studio-table.is-empty')).not.toBeNull();

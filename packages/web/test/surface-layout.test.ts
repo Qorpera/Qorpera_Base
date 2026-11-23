@@ -118,6 +118,7 @@ describe("Product studio on the layout renderer", () => {
 			"Weight",
 			"Price",
 		]);
+		expect(view.el.querySelectorAll('[data-block="spec_list"]')).toHaveLength(1);
 		const table = view.el.querySelector('[data-block="table"]')!;
 		expect(table.querySelector("h2")?.textContent).toBe("Parts");
 		expect([...table.querySelectorAll("th")].map((cell) => cell.textContent)).toEqual([
@@ -134,9 +135,9 @@ describe("Product studio on the layout renderer", () => {
 		expect(cards[0]!.querySelector(".studio-vendor-top")?.textContent).toBe("Nordic KnitChosen");
 		expect(cards[0]!.querySelector(".studio-vendor-comp")?.textContent).toBe("Shade");
 		expect([...cards[0]!.querySelectorAll(".studio-vendor-meta span")].map((chip) => chip.textContent)).toEqual([
-			"DK",
-			"MOQ 300",
 			"64 kr.",
+			"MOQ 300",
+			"DK",
 		]);
 
 		tab("reports");
@@ -235,6 +236,42 @@ describe("Product studio on the layout renderer", () => {
 		tab("overview");
 		expect(view.el.querySelectorAll(".is-changed")).toHaveLength(0);
 		expect(changedFacts()).toEqual([]);
+		view.dispose();
+		store.dispose();
+	});
+
+	it("carries over today's line, the rest of specs.json and the folder's own pages", async () => {
+		const { view, tab, store } = await open({
+			[`${ROOT}/specs.json`]: JSON.stringify({
+				tagline: "A lamp that dims itself.",
+				overview: { battery: "14 h" },
+				bom: [{ part: "Shade" }],
+				colorways: [{ name: "Ash", hex: "#dddddd" }],
+				warranty: "2 years",
+				dimensions: { height: "32 cm", shade: { width: "18 cm" } },
+				certifications: [{ name: "CE" }],
+			}),
+			[`${ROOT}/pages/sheet.html`]:
+				"<!doctype html><html><head><title>Spec sheet</title></head><body><h1>Lamp</h1></body></html>",
+		});
+		expect(view.el.querySelector(".studio-product-line")?.textContent).toBe("A lamp that dims itself.");
+
+		tab("specs");
+		const lists = [...view.el.querySelectorAll('[data-block="spec_list"]')];
+		expect(lists.map((list) => list.querySelector("h2")?.textContent)).toEqual(["Specs", "Other details"]);
+		expect([...lists[1]!.querySelectorAll(".studio-kv dt")].map((item) => item.textContent)).toEqual([
+			"Warranty",
+			"Dimensions · Height",
+			"Dimensions · Shade · Width",
+		]);
+		expect(lists[1]!.textContent).not.toContain("A lamp that dims itself.");
+		expect(lists[1]!.querySelector(".studio-table")).toBeNull();
+
+		tab("files");
+		const page = view.el.querySelector('.studio-html-card[data-file="surfaces/lamp/pages/sheet.html"]');
+		expect(page?.querySelector("h2")?.textContent).toBe("Spec sheet");
+		expect(page?.querySelector("iframe.studio-html-frame")).not.toBeNull();
+		expect(view.el.querySelector(".studio-home-empty")).toBeNull();
 		view.dispose();
 		store.dispose();
 	});

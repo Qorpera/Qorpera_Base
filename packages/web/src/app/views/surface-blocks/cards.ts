@@ -53,7 +53,7 @@ export function prepareCards(block: SurfaceCardsBlock, ctx: SurfaceBlockContext)
 				];
 			})
 		: [];
-	const file = sourceFile(block.from);
+	const file = sourceFile(read.binding);
 	const heading = block.heading ? ctx.words(block.heading) : file ? readableName(file) : "";
 	return {
 		filled: cards.length > 0,

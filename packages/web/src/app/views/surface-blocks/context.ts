@@ -3,6 +3,7 @@ import {
 	resolveSurfaceSource,
 	type StudioBinaryRef,
 	type SurfaceSource,
+	type SurfaceSourceChoice,
 	type SurfaceSummary,
 	surfaceCompanyPath,
 	surfaceGlobMatches,
@@ -28,11 +29,12 @@ export interface SurfaceBlockRead {
 	readonly value: unknown;
 	readonly base: unknown;
 	readonly changed: boolean;
+	readonly binding?: string;
 }
 
 export interface SurfaceFolderFile {
 	readonly path: string;
-	readonly relative: string;
+	readonly relative?: string;
 }
 
 export interface SurfaceBlockContext {
@@ -67,6 +69,7 @@ const STARTER_WORDS: ReadonlySet<string> = new Set([
 	phrase("Files"),
 	phrase("Parts"),
 	phrase("Production plan"),
+	phrase("Other details"),
 ]);
 
 export function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -135,20 +138,28 @@ export function homeEmpty(line: string): HTMLElement {
 	return h("p", { class: "studio-home-empty" }, line);
 }
 
-export function sourceFile(source: SurfaceSource | undefined): string | undefined {
-	if (typeof source !== "string") return undefined;
+function isChoiceList(source: SurfaceSource): source is readonly SurfaceSourceChoice[] {
+	return Array.isArray(source);
+}
+
+function sourceChoices(source: SurfaceSource): readonly SurfaceSourceChoice[] {
+	return isChoiceList(source) ? source : [source];
+}
+
+export function sourceFile(binding: string | undefined): string | undefined {
+	if (binding === undefined) return undefined;
 	try {
-		return parseSurfaceBinding(source).path;
+		return parseSurfaceBinding(binding).path;
 	} catch {
 		return undefined;
 	}
 }
 
-export function sourceKey(source: SurfaceSource | undefined): string | undefined {
-	if (typeof source !== "string") return undefined;
+export function sourceKey(binding: string | undefined): string | undefined {
+	if (binding === undefined) return undefined;
 	try {
-		const binding = parseSurfaceBinding(source);
-		const last = binding.pointer.split("/").at(-1);
+		const parsed = parseSurfaceBinding(binding);
+		const last = parsed.pointer.split("/").at(-1);
 		return last ? last.replace(/~1/g, "/").replace(/~0/g, "~") : undefined;
 	} catch {
 		return undefined;
@@ -162,6 +173,11 @@ export function cleanFolderRoot(folderRoot: string | null | undefined): string {
 export function folderRelative(folderRoot: string, path: string): string | undefined {
 	if (!folderRoot) return path;
 	return path.startsWith(`${folderRoot}/`) ? path.slice(folderRoot.length + 1) : undefined;
+}
+
+export function surfaceGlobFinds(glob: string, file: SurfaceFolderFile): boolean {
+	if (glob.startsWith("/")) return surfaceGlobMatches(glob.slice(1), file.path);
+	return file.relative !== undefined && surfaceGlobMatches(glob, file.relative);
 }
 
 export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBlockContext {
@@ -197,12 +213,13 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 	};
 	const readPreview = reader(input.files);
 	const readBase = reader(input.baseFiles);
-	const folderFiles = Object.keys(input.files)
+	const allFiles = Object.keys(input.files)
 		.sort()
-		.flatMap((path): SurfaceFolderFile[] => {
+		.map((path): SurfaceFolderFile => {
 			const relative = folderRelative(folderRoot, path);
-			return relative === undefined ? [] : [{ path, relative }];
+			return relative === undefined ? { path } : { path, relative };
 		});
+	const folderFiles = allFiles.filter((file) => file.relative !== undefined);
 	return {
 		surface: input.surface,
 		folderRoot,
@@ -214,6 +231,9 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 		words: input.fromStarter ? (text) => (STARTER_WORDS.has(text) ? t(text) : text) : (text) => text,
 		read: (source) => {
 			if (source === undefined) return { found: false, value: undefined, base: undefined, changed: false };
+			const choices = sourceChoices(source);
+			const found = choices.find((choice) => resolveSurfaceSource(choice, readPreview).found);
+			const binding = typeof found === "string" ? found : choices.find((choice) => typeof choice === "string");
 			const preview = resolveSurfaceSource(source, readPreview);
 			const base = resolveSurfaceSource(source, readBase);
 			return {
@@ -221,12 +241,13 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 				value: preview.value,
 				base: base.value,
 				changed: preview.found !== base.found || !sameValue(preview.value, base.value),
+				...(typeof binding === "string" ? { binding } : {}),
 			};
 		},
 		companyPath,
 		matching: (globs) =>
-			folderFiles.filter(
-				(file) => globs === undefined || globs.some((glob) => surfaceGlobMatches(glob, file.relative)),
-			),
+			globs === undefined
+				? folderFiles
+				: allFiles.filter((file) => globs.some((glob) => surfaceGlobFinds(glob, file))),
 	};
 }

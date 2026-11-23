@@ -48,7 +48,7 @@ function stageModel(block: SurfaceStage3dBlock, ctx: SurfaceBlockContext): Studi
 	const read = ctx.read(block.model);
 	if (read.found && isPlainRecord(read.value)) {
 		const object = parseStudioObject(JSON.stringify(read.value));
-		const file = sourceFile(block.model);
+		const file = sourceFile(read.binding);
 		const objectPath = file ? ctx.companyPath(file) : undefined;
 		const folder = objectPath ? objectPath.slice(0, Math.max(0, objectPath.lastIndexOf("/"))) : ctx.folderRoot;
 		if (object?.model && GLB_FILE.test(object.model)) {

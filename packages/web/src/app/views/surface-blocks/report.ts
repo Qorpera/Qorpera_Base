@@ -1,9 +1,4 @@
-import {
-	type StudioPatchOp,
-	type SurfaceReportBlock,
-	type SurfaceSummary,
-	surfaceGlobMatches,
-} from "@qorpera/contracts";
+import type { StudioPatchOp, SurfaceReportBlock, SurfaceSummary } from "@qorpera/contracts";
 import { t } from "../../../ui/preferences.ts";
 import type { SurfacesStore } from "../../surfaces-store.ts";
 import { SurfaceReportView } from "../surface-report-view.ts";
@@ -14,6 +9,7 @@ import {
 	type SurfaceBlockContext,
 	type SurfaceBlockPrepared,
 	sectionHead,
+	surfaceGlobFinds,
 } from "./context.ts";
 
 const REPORT_FILE_RE = /\.report\.json$/i;
@@ -44,7 +40,10 @@ export class SurfaceReports {
 			signature = `match:${glob}`;
 			include = (path) => {
 				const relative = folderRelative(root, path);
-				return relative !== undefined && REPORT_FILE_RE.test(path) && surfaceGlobMatches(glob, relative);
+				return (
+					REPORT_FILE_RE.test(path) &&
+					surfaceGlobFinds(glob, relative === undefined ? { path } : { path, relative })
+				);
 			};
 		} else {
 			const file = ctx.companyPath(block.from);

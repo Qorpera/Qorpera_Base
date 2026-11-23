@@ -248,6 +248,7 @@ export const SURFACES: Record<string, string> = {
 	Specs: "Specifikationer",
 	Vendors: "Leverandører",
 	Parts: "Dele",
+	"Other details": "Andre detaljer",
 	Reports: "Rapporter",
 	"One line about what it is": "Én linje om, hvad det er",
 	Weight: "Vægt",
