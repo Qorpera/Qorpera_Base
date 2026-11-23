@@ -1,7 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isDeepStrictEqual } from "node:util";
 import { ObjectDependencyError, readBoundedIncomingBody } from "./dependency.ts";
-import type { MemberCompanyAuthority } from "./member-company-authority.ts";
+import type {
+	MemberCompanyAuthority,
+	MemberCompanyPublisherRpc,
+	MemberCompanyRpc,
+} from "./member-company-authority.ts";
 import { memberFolderWriter } from "./member-folder-commits.ts";
 import { UUID } from "./native-objects.ts";
 import { type FileSystemObjectStore, type VerifiedObjectBytes, verifyObjectBytes } from "./object-store.ts";
@@ -23,6 +27,51 @@ import type { ObjectGatewayReplication } from "./replication.ts";
  * The database's refusals keep their statuses: 42501 is 403, 22023 400, 23505 (another member's input) 409, 54000 (the
  * input's limits) 413, and 55000 (no folder, the file gone, a paused company) 423.
  */
+
+interface AttachmentRpcs {
+	readonly begin: { rpc: MemberCompanyRpc; schema: string; owner: "sessionId" | "surfaceId"; arg: string };
+	readonly commit: { rpc: MemberCompanyPublisherRpc; schema: string; arg: string };
+	readonly download: { rpc: MemberCompanyRpc; schema: string; input: "inputId" | "clientInputId"; arg: string };
+}
+
+const CHAT: AttachmentRpcs = {
+	begin: {
+		rpc: "qorpera_room_image_begin",
+		schema: "qorpera.room-image-begin/v1",
+		owner: "sessionId",
+		arg: "p_session_id",
+	},
+	commit: { rpc: "qorpera_room_image_commit", schema: "qorpera.room-image/v1", arg: "p_session_id" },
+	download: {
+		rpc: "qorpera_room_image_download",
+		schema: "qorpera.room-image-download/v1",
+		input: "inputId",
+		arg: "p_input_id",
+	},
+};
+
+const SURFACE: AttachmentRpcs = {
+	begin: {
+		rpc: "qorpera_surface_image_begin",
+		schema: "qorpera.surface-image-begin/v1",
+		owner: "surfaceId",
+		arg: "p_surface_id",
+	},
+	commit: { rpc: "qorpera_surface_image_commit", schema: "qorpera.surface-image/v1", arg: "p_surface_id" },
+	download: {
+		rpc: "qorpera_surface_image_download",
+		schema: "qorpera.surface-image-download/v1",
+		input: "clientInputId",
+		arg: "p_client_input_id",
+	},
+};
+
+const ROUTES: Record<string, { readonly upload: boolean; readonly rpcs: AttachmentRpcs }> = {
+	upload: { upload: true, rpcs: CHAT },
+	input: { upload: false, rpcs: CHAT },
+	"surface-upload": { upload: true, rpcs: SURFACE },
+	"surface-input": { upload: false, rpcs: SURFACE },
+};
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const MEDIA = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
@@ -52,6 +101,7 @@ function answer(value: unknown, keys: readonly string[], expected: Record<string
 /** An image the download names: its folder, its manifest and an image within the limits; 503 otherwise. */
 function download(
 	value: unknown,
+	rpcs: AttachmentRpcs,
 	sessionId: string,
 	inputId: string,
 	sha256: string,
@@ -62,7 +112,7 @@ function download(
 			"schema",
 			"environmentId",
 			"sessionId",
-			"inputId",
+			rpcs.download.input,
 			"sha256",
 			"bytes",
 			"mediaType",
@@ -70,7 +120,7 @@ function download(
 			"fileSha256",
 			"path",
 		],
-		{ schema: "qorpera.room-image-download/v1", sessionId, inputId, sha256, fileSha256: sha256 },
+		{ schema: rpcs.download.schema, sessionId, [rpcs.download.input]: inputId, sha256, fileSha256: sha256 },
 	);
 	if (
 		typeof item.environmentId !== "string" ||
@@ -96,14 +146,16 @@ export async function serveMemberSessionAttachment(
 	options: MemberSessionAttachmentOptions,
 ): Promise<void> {
 	const match =
-		/^\/v1\/member-session-attachments\/(upload|input)\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/([0-9a-f]{64})$/.exec(
+		/^\/v1\/member-session-attachments\/(upload|input|surface-upload|surface-input)\/([0-9a-f-]{36})\/([0-9a-f-]{36})\/([0-9a-f]{64})$/.exec(
 			request.url ?? "",
 		);
 	if (!match || !UUID.test(match[2]) || !UUID.test(match[3])) throw new ObjectDependencyError(404);
+	const route = ROUTES[match[1]];
 	const header = request.headers.authorization;
 	if (!header || !/^Bearer [A-Za-z0-9._~-]{1,8192}$/.test(header)) throw new ObjectDependencyError(401);
 	const token = header.slice(7);
-	const [, kind, sessionId, inputId, sha256] = match;
+	const [, , ownerId, inputId, sha256] = match;
+	const { rpcs } = route;
 	const controller = new AbortController();
 	const disconnected = () => {
 		if (!response.writableFinished) controller.abort(new ObjectDependencyError(503));
@@ -118,7 +170,7 @@ export async function serveMemberSessionAttachment(
 		...(options.readFallback ? { readFallback: options.readFallback } : {}),
 	});
 	try {
-		if (kind === "upload") {
+		if (route.upload) {
 			if (request.method !== "PUT") throw new ObjectDependencyError(405);
 			const length = request.headers["content-length"];
 			const mediaType = request.headers["content-type"];
@@ -133,10 +185,10 @@ export async function serveMemberSessionAttachment(
 			const size = Number(length);
 			const begun = answer(
 				await options.authority.member(
-					"qorpera_room_image_begin",
+					rpcs.begin.rpc,
 					token,
 					{
-						p_session_id: sessionId,
+						[rpcs.begin.arg]: ownerId,
 						p_client_input_id: inputId,
 						p_sha256: sha256,
 						p_bytes: size,
@@ -144,10 +196,10 @@ export async function serveMemberSessionAttachment(
 					},
 					signal,
 				),
-				["schema", "environmentId", "sessionId", "clientInputId", "sha256", "bytes", "mediaType", "path"],
+				["schema", "environmentId", rpcs.begin.owner, "clientInputId", "sha256", "bytes", "mediaType", "path"],
 				{
-					schema: "qorpera.room-image-begin/v1",
-					sessionId,
+					schema: rpcs.begin.schema,
+					[rpcs.begin.owner]: ownerId,
 					clientInputId: inputId,
 					sha256,
 					bytes: size,
@@ -183,12 +235,12 @@ export async function serveMemberSessionAttachment(
 			});
 			answer(
 				await options.authority.publisher(
-					"qorpera_room_image_commit",
-					{ p_user_id: member.actor.userId, p_session_id: sessionId, p_client_input_id: inputId, p_file: file },
+					rpcs.commit.rpc,
+					{ p_user_id: member.actor.userId, [rpcs.commit.arg]: ownerId, p_client_input_id: inputId, p_file: file },
 					signal,
 				),
 				["schema", "sha256", "bytes", "mediaType", "path"],
-				{ schema: "qorpera.room-image/v1", sha256, bytes: size, mediaType, path: begun.path },
+				{ schema: rpcs.commit.schema, sha256, bytes: size, mediaType, path: begun.path },
 			);
 			signal.throwIfAborted();
 			response.writeHead(200, { "content-type": "application/json", "cache-control": "private, no-store" });
@@ -199,12 +251,17 @@ export async function serveMemberSessionAttachment(
 		const authorize = async () =>
 			download(
 				await options.authority.member(
-					"qorpera_room_image_download",
+					rpcs.download.rpc,
 					token,
-					{ p_session_id: sessionId, p_input_id: inputId, p_sha256: sha256 },
+					{
+						p_session_id: ownerId,
+						[rpcs.download.arg]: inputId,
+						p_sha256: sha256,
+					},
 					signal,
 				),
-				sessionId,
+				rpcs,
+				ownerId,
 				inputId,
 				sha256,
 			);
