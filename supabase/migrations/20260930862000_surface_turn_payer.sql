@@ -71,21 +71,21 @@ $new$	select * into v_session from public.qorpera_surface_sessions where id = p_
 	-- WHY: after the session lock, so the sponsor binding is locked in the same order as the enqueue takes it.
 	if exists (
 		select 1 from public.qorpera_surfaces surf
-		where surf.id = v_peek.surface_id and surf.source_kind = 'code_repo'
+		where surf.id = v_session.surface_id and surf.source_kind = 'code_repo'
 	) then
 		case coalesce(public.qorpera_surface_resolve_coding_sponsor(
-			v_peek.profile_id,
-			(select c.environment_id from public.qorpera_company_cofounders c where c.profile_id = v_peek.profile_id limit 1),
+			v_session.profile_id,
+			(select c.environment_id from public.qorpera_company_cofounders c where c.profile_id = v_session.profile_id limit 1),
 			v_user_id,
 			true,
-			(select cs.harness from public.qorpera_coding_sessions cs where cs.worker_id = v_peek.worker_id),
-			v_peek.worker_id is not null
+			(select cs.harness from public.qorpera_coding_sessions cs where cs.worker_id = v_session.worker_id),
+			v_session.worker_id is not null
 		) ->> 'status', '')
 			when 'ok', 'no_coding_executor' then null;
 			else
 				raise exception 'Connect a model account in Settings → AI subscriptions to reply' using errcode = '42501';
 		end case;
-	elsif nullif(public.qorpera_surface_resolve_sponsor(v_peek.profile_id, v_user_id) ->> 'sponsorBindingId', '') is null then
+	elsif nullif(public.qorpera_surface_resolve_sponsor(v_session.profile_id, v_user_id) ->> 'sponsorBindingId', '') is null then
 		raise exception 'Connect a model account in Settings → AI subscriptions to reply' using errcode = '42501';
 	end if;
 $new$,
