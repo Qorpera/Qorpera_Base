@@ -59,7 +59,6 @@ export interface SurfaceViewHost {
 		surface: SurfaceSummary,
 		signal: AbortSignal,
 	) => Promise<Readonly<Record<string, string>>>;
-	readonly loadSitePassword?: (surface: SurfaceSummary) => Promise<string | null>;
 	readonly siteHosting?: (surface: SurfaceSummary) => SurfaceSiteHosting | undefined;
 	readonly managesSites?: () => boolean;
 }
@@ -268,10 +267,6 @@ export class SurfaceView {
 		this.#address = new SurfaceAddress({
 			container: this.#canvas,
 			canManage: () => host.managesSites?.() === true,
-			password: () => {
-				const surface = this.surface;
-				return surface && host.loadSitePassword ? host.loadSitePassword(surface) : Promise.resolve(null);
-			},
 			changed: () => {
 				const surface = this.surface;
 				if (surface && !this.#deactivated) this.#drawBar(surface);
