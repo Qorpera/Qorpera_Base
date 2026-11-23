@@ -56,9 +56,9 @@ interface Row {
 
 export const ADDRESS_POLL_MS = 15_000;
 export const ADDRESS_RECHECK_GAP_MS = 60_000;
-export const ADDRESS_DOMAIN_LIMIT = 5;
+const ADDRESS_DOMAIN_LIMIT = 5;
 const COPIED_MS = 1600;
-const MAIN: Page = { kind: "main" };
+const MAIN = { kind: "main" } as const;
 
 const REFUSALS: Readonly<Record<string, string>> = {
 	PUBLIC_SITES_DISABLED: phrase("Sites cannot go live for everyone yet."),
