@@ -271,9 +271,7 @@ describe("creating surfaces", () => {
 		};
 		openCreateSurfaceSheet(store, COMPANY);
 		const sheet = document.querySelector(".surface-create-sheet")!;
-		const presets = [...sheet.querySelectorAll<HTMLElement>(".surface-create-kind")].map(
-			(row) => row.dataset.preset,
-		);
+		const presets = [...sheet.querySelectorAll<HTMLElement>(".surface-create-kind")].map((row) => row.dataset.preset);
 		expect(presets).toEqual([
 			"identity",
 			"website",

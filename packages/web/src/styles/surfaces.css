@@ -1208,9 +1208,9 @@
 	margin: 8px 0; padding: 18px 16px; border: 1px dashed var(--border); border-radius: 12px;
 	color: var(--text-muted); font-size: 13px; text-align: center;
 }
-.surface-dialog.surface-sheet.surface-create-sheet { width: min(680px, calc(100vw - 32px)); max-height: min(720px, calc(100dvh - 40px)); border-radius: 18px; }
+.surface-dialog.surface-sheet.surface-create-sheet { width: min(700px, calc(100vw - 32px)); max-height: min(720px, calc(100dvh - 40px)); border-radius: 18px; }
 .surface-create-sheet .surface-dialog-content { padding: 0; }
-.surface-create-form { display: grid; grid-template-columns: 208px minmax(0, 1fr); min-height: 460px; }
+.surface-create-form { display: grid; grid-template-columns: 224px minmax(0, 1fr); min-height: 460px; }
 .surface-create-side {
 	padding: 22px 8px 12px; border-right: 1px solid var(--border);
 	background: color-mix(in srgb, var(--text) 2%, var(--overlay));
@@ -1225,6 +1225,7 @@
 }
 .surface-create-kind:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
 .surface-create-kind.is-selected { background: color-mix(in srgb, var(--text) 7.5%, transparent); }
+:root[data-theme="dark"] .surface-create-kind.is-selected { background: color-mix(in srgb, var(--text) 11%, transparent); }
 .surface-create-kind:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
 .surface-create-kind-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .surface-tile.is-kind { --tile-size: 23px; }
