@@ -26,7 +26,6 @@ export const COMPANY: Record<string, string> = {
 	"No history to show.": "Der er ingen historik at vise.",
 	"Nothing has changed yet.": "Der er ikke ændret noget endnu.",
 	"Nothing in this folder matches “{query}”.": "Intet i denne mappe matcher “{query}”.",
-	"Recent changes": "Seneste ændringer",
 	"Search this folder": "Søg i denne mappe",
 	"Show older": "Vis ældre",
 	"Show the latest": "Vis den nyeste",
