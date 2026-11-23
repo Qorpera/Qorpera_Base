@@ -1794,6 +1794,7 @@ describe("a website that is not live", () => {
 		readonly served?: boolean;
 		readonly canWrite?: boolean;
 		readonly unread?: boolean;
+		readonly readFails?: boolean;
 		readonly publishFails?: number;
 		readonly autoFails?: boolean;
 	}
@@ -1824,6 +1825,7 @@ describe("a website that is not live", () => {
 		await store.load();
 		const hosting = fakeSiteHosting(setup.world);
 		if (setup.unread) hosting.client.read.mockImplementation(() => new Promise(() => undefined));
+		if (setup.readFails) hosting.client.read.mockRejectedValue(new Error("offline"));
 		hosting.client.setPublic.mockImplementation(async (_siteId: string, isPublic: boolean) => {
 			order.push(`public:${isPublic}`);
 			if (hosting.world.entry) hosting.world.entry.isPublic = isPublic;
@@ -1921,6 +1923,19 @@ describe("a website that is not live", () => {
 		store.setMode("live");
 		view.update();
 		expect(view.el.querySelector('[data-act="mode"]')).toBeNull();
+		expect(client.setSurfaceAutoPublish).not.toHaveBeenCalled();
+		expect(client.publishSurface).not.toHaveBeenCalled();
+		done();
+	});
+
+	it("keeps the view switch and Publish when whether the site is public could not be read", async () => {
+		const { view, client, done } = await website({
+			readFails: true,
+			world: { entry: { isPublic: true, domains: [] } },
+			shown: { unpublishedChangeCount: 2 },
+		});
+		expect(view.el.querySelectorAll('.surface-pill [data-act="mode"]')).toHaveLength(2);
+		expect(view.el.querySelector(".surface-pill .surface-publish")).not.toBeNull();
 		expect(client.setSurfaceAutoPublish).not.toHaveBeenCalled();
 		expect(client.publishSurface).not.toHaveBeenCalled();
 		done();

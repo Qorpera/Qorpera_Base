@@ -792,13 +792,14 @@ export class SurfaceView {
 		const addressShown = live && siteLive;
 		const reader = addressShown ? this.#host.siteHosting?.(surface) : undefined;
 		const addressKey = this.#address.sync(addressShown, reader, surface.liveUrl);
+		const mark = this.#address.mark();
 		const site: AddressMark =
 			!live || !this.#host.isSiteLive
 				? "live"
 				: !siteLive
 					? "private"
-					: reader && surface.liveUrl
-						? this.#address.mark()
+					: reader && surface.liveUrl && !(mark === "unknown" && this.#address.readFailed)
+						? mark
 						: "live";
 		this.#sitePublic = site === "live";
 		if (site === "private" && !this.#address.isWriting) this.#publishWhileNotLive(surface);

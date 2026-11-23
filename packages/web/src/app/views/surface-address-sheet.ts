@@ -176,6 +176,10 @@ export class SurfaceAddress {
 		return this.#writing > 0;
 	}
 
+	get readFailed(): boolean {
+		return this.#failed;
+	}
+
 	sync(shown: boolean, target: SurfaceSiteHosting | undefined, liveUrl: string | null): string {
 		const url = shown && liveUrl ? liveUrl : "";
 		const next = url ? target : undefined;
