@@ -402,7 +402,7 @@ export class RailDrag {
 		return scroller.scrollTop !== before;
 	}
 
-	// WHY: the rail's dock (Agents and People) scrolls by itself inside the list: over it the dock scrolls first, and
+	// WHY: the rail's dock (Agents and Members) scrolls by itself inside the list: over it the dock scrolls first, and
 	// the list once the dock can go no further.
 	#dockAt(x: number, y: number): HTMLElement | undefined {
 		return document

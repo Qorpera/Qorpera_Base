@@ -493,8 +493,8 @@ interface MembersFold {
 	readonly count: HTMLElement;
 	readonly body: HTMLElement;
 	open: boolean;
-	holdKey: string;
-	releasedFor: string | undefined;
+	holding: readonly string[];
+	released: Set<string>;
 	rowCount: number;
 }
 interface HiddenParts {
@@ -664,14 +664,15 @@ function membersSection(): { section: SectionParts; fold: MembersFold } {
 			title,
 			list,
 		},
-		fold: { label, count, body, open, holdKey: "", releasedFor: undefined, rowCount: 0 },
+		fold: { label, count, body, open, holding: [], released: new Set(), rowCount: 0 },
 	};
 }
 
+const membersHeld = (fold: MembersFold) => fold.holding.some((userId) => !fold.released.has(userId));
+
 function paintMembersFold(parts: RailParts): void {
 	const fold = parts.membersFold;
-	const held = fold.holdKey !== "" && fold.releasedFor !== fold.holdKey;
-	const shown = fold.open || held || parts.collapsed;
+	const shown = fold.open || membersHeld(fold) || parts.collapsed;
 	parts.members.el.classList.toggle("is-open", shown);
 	parts.members.title.setAttribute("aria-expanded", String(shown));
 	fold.body.toggleAttribute("inert", !shown);
@@ -856,8 +857,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			"click",
 			() => {
 				const fold = created.membersFold;
-				fold.open = !(fold.open || (fold.holdKey !== "" && fold.releasedFor !== fold.holdKey));
-				fold.releasedFor = fold.holdKey;
+				fold.open = !(fold.open || membersHeld(fold));
+				fold.released = new Set(fold.holding);
 				try {
 					localStorage.setItem(MEMBERS_OPEN_KEY, fold.open ? "1" : "0");
 				} catch {
@@ -1915,10 +1916,10 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	reconcile(parts.members.list, canInvite ? [...memberRows, parts.invite] : memberRows);
 	const membersFold = parts.membersFold;
 	membersFold.rowCount = memberRows.length;
-	membersFold.holdKey = memberIds
-		.filter((userId) => userId === activeMemberId || (memberChats?.[userId]?.unread ?? 0) > 0)
-		.join(",");
-	if (membersFold.holdKey === "") membersFold.releasedFor = undefined;
+	membersFold.holding = memberIds.filter(
+		(userId) => userId === activeMemberId || (memberChats?.[userId]?.unread ?? 0) > 0,
+	);
+	membersFold.released = new Set(membersFold.holding.filter((userId) => membersFold.released.has(userId)));
 	paintMembersFold(parts);
 	surfaceRail?.update(activeSurfaceSlug, false);
 	// Collapsed, where section titles hide, a short line parts each group of agents from the

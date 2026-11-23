@@ -549,14 +549,22 @@ describe("contacts in the rail", () => {
 		expect(localStorage.getItem("qorpera.web.rail-members-open")).toBe("1");
 	});
 
-	it("holds Members open while a member's message waits, until it is folded by hand", async () => {
-		const { rail, ready } = companyWith({ chats: [summary(sofie, { unread: 2 }), summary(mads)] });
+	it("holds Members open while a member's message waits, until it is folded by hand or another waits", async () => {
+		const { rail, company, ready } = companyWith({ chats: [summary(sofie, { unread: 2 }), summary(mads)] });
 		await ready;
 		const group = rail.querySelector<HTMLElement>(".rail-members")!;
 		expect(group.classList.contains("is-open")).toBe(true);
 		group.querySelector<HTMLButtonElement>("button.rail-section-title")!.click();
 		expect(group.classList.contains("is-open")).toBe(false);
 		expect(localStorage.getItem("qorpera.web.rail-members-open")).toBe("0");
+		const chats = company.store.get().memberChats!;
+		company.store.set({ memberChats: { ...chats, [sofie]: { ...chats[sofie]!, unread: 0 } } });
+		await settle();
+		expect(group.classList.contains("is-open")).toBe(false);
+		const read = company.store.get().memberChats!;
+		company.store.set({ memberChats: { ...read, [mads]: { ...read[mads]!, unread: 1 } } });
+		await settle();
+		expect(group.classList.contains("is-open")).toBe(true);
 	});
 
 	it("draws each contact where its member put it: pinned as a card, in a section after its agent", async () => {

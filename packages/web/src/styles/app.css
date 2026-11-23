@@ -432,6 +432,7 @@ label > input, label > select { font-weight: 400; }
  * except in the collapsed rail, where no section shows a title. */
 .rail-section.is-empty > .rail-section-title { display: none; }
 .frame:not(.rail-compact) .rail-dragging .rail-section.is-empty > .rail-section-title:not([hidden]) { display: block; }
+.frame:not(.rail-compact) .rail-dragging .rail-section.is-empty > .rail-agents-head:not([hidden]) { display: flex; }
 .rail-section-title:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 .rail-section-list { display: grid; gap: 0; }
 /* Grok Bot's "Hidden Bots": a quiet row at the foot of the list, the count on the right;
@@ -500,7 +501,7 @@ label > input, label > select { font-weight: 400; }
  * member puts it (a card in the pinned row); until then it stands in the Members group at the foot of the list. That
  * group takes contacts only: with nobody in it, it shows only while a contact is dragged, as the place to drop one
  * back (ui/rail-drag.ts says what is dragged). */
-/* WHY: sticky inside the list, so Agents and People stay in view while the interfaces scroll under them. */
+/* WHY: sticky inside the list, so Agents and Members stay in view while the interfaces scroll under them. */
 .rail-dock {
 	position: sticky; z-index: 3; bottom: 0; margin-top: auto;
 	display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 4px;
