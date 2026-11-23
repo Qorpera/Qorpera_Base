@@ -348,7 +348,12 @@ describe("a folder-v2 company's Company File", () => {
 		expect(host.querySelector("h1")?.textContent).toBe("Company File");
 		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
 		expect(fake.client.list).toHaveBeenCalledWith(null, null, 200, expect.any(AbortSignal));
+		expect(host.querySelector(".files-list")?.classList.contains("is-grid")).toBe(true);
+		expect(host.querySelector('[aria-label="Icon view"]')?.getAttribute("aria-pressed")).toBe("true");
+		expect(row(host, "notes")?.querySelector(".files-kind svg.storage-glyph")).not.toBeNull();
+		expect(host.querySelector<HTMLElement>(".files-crumbs")?.hidden).toBe(true);
 		await click(row(host, "notes"));
+		expect(host.querySelector<HTMLElement>(".files-crumbs")?.hidden).toBe(false);
 		expect(fake.client.list).toHaveBeenLastCalledWith("notes", null, 200, expect.any(AbortSignal));
 		expect(rows(host)).toEqual(["log.txt", "plan.md"]);
 		expect(visibleText(host.querySelector(".files-crumbs"))).toContain("notes");

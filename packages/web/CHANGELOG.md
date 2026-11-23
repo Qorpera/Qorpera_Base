@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+- The composer at rest is a little more solid on surface pages and in conversations opened from the surface rail: its fill rises from 38% to 48% of the page colour in both themes (hover and focus unchanged at 80%; the thread-foot pills keep their 38% glass) (Jonas, 23 Nov 2026).
+- The rail's Co-Founder figure no longer has a ground shadow under it, in light and dark (Jonas, 23 Nov 2026).
 - Rail items (rows, pins, Co-Founder, interfaces, agent hub) no longer shrink while pressed; a click opens at once (Jonas, 23 Nov 2026).
 - The rail's Agents section (Working, Scheduled, Ready) folds and opens from its title and starts folded (Jonas, 23 Nov 2026). Folded, the title shows only how many rows it holds and a chevron, in the title's own grey: no coloured badge, since the folded section should not draw the eye (Jonas, 23 Nov 2026: "the whole point is that it shouldn't draw your attention"); screen readers hear "Agents: 4". The choice is kept in this browser (`qorpera.web.rail-agents-open`). While the open page is an agent listed in it, the section shows open without changing the kept choice.
 - Active interface and agent rows in the rail now follow the Appearance colour chosen in Settings (`--rail-selection`), matching the Co-Founder card and sliding the highlight between them, and the Settings Grey choice replaces dark `#5b5b5b` with the soft 7% text-mix surface grey (`#efefef` in light, `#2e302f` in dark) with readable dark/light foreground and ink tokens (Jonas, 22 Nov 2026).

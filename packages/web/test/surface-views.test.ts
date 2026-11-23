@@ -536,7 +536,7 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
-	it("hands off directly from Brand Studio and via inline prompt from Inbox to Website", async () => {
+	it("shows no Send to bar on Brand Studio or on an ops surface like Inbox", async () => {
 		const brand = summary({
 			id: "22222222-2222-4222-8222-222222222229",
 			slug: "brand",
@@ -556,24 +556,13 @@ describe("the surface page", () => {
 			siteSlug: null,
 			liveUrl: null,
 		});
-		const spawned = session([], {
-			id: "33333333-3333-4333-8333-333333333388",
-			surfaceId: SURFACE,
-			state: "queued",
-			originKind: "cross_surface",
-			originLabel: "From Brand",
-		});
-		const spawnCrossSurfaceSession = vi.fn(async () => spawned);
-		const navigated: string[] = [];
 		const store = storeWith(
 			fakeClient({
 				listSurfaces: vi.fn(async () => [summary(), brand, inbox]),
 				getSurfaceWorkspace: vi.fn(async (id: string) =>
 					workspace([], { surface: id === brand.id ? brand : id === inbox.id ? inbox : summary() }),
 				),
-				spawnCrossSurfaceSession,
 			}),
-			{ onNavigateSurface: (slug) => navigated.push(slug) },
 		);
 		await store.load();
 
@@ -597,25 +586,8 @@ describe("the surface page", () => {
 		document.body.append(inboxView.el);
 		await flush();
 		inboxView.update();
-		const sendBarBtn = inboxView.el.querySelector<HTMLButtonElement>(".surface-handoff-btn")!;
-		expect(sendBarBtn.textContent).toContain("Send to Website…");
-		sendBarBtn.click();
-		const form = inboxView.el.querySelector<HTMLFormElement>(".surface-handoff-bar")!;
-		expect(form.hidden).toBe(false);
-		const handoffInput = form.querySelector<HTMLInputElement>(".surface-handoff-input")!;
-		handoffInput.value = "Fix Mette's Safari checkout bug";
-		form.dispatchEvent(new Event("submit", { cancelable: true }));
-		await flush();
-		expect(spawnCrossSurfaceSession).toHaveBeenNthCalledWith(
-			1,
-			expect.objectContaining({
-				sourceSurfaceId: inbox.id,
-				targetSurfaceSlug: "website",
-				prompt: "Fix Mette's Safari checkout bug",
-			}),
-		);
-		expect(form.hidden).toBe(true);
-		expect(navigated).toEqual(["website"]);
+		expect(inboxView.el.querySelector(".surface-handoff-btn")).toBeNull();
+		expect(inboxView.el.querySelector(".surface-notch, .surface-pill")).toBeNull();
 		inboxView.dispose();
 		store.dispose();
 	});

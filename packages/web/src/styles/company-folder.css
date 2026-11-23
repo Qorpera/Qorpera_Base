@@ -2,13 +2,14 @@
  * for #386, read only. A breadcrumb, one list of folders and files, a preview beside it with the file's history, and
  * the company's recent changes. */
 .files-page { position: relative; max-width: 1120px; --files-folder: #c0872a; --files-code: rgba(18, 18, 17, 0.035); }
-.files-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 12px; }
-.files-head h1 { flex: 1; margin: 0; white-space: nowrap; }
-.files-tools { display: flex; align-items: center; gap: 8px; }
+.files-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin-bottom: 12px; }
+.files-head h1 { flex: none; margin: 0; white-space: nowrap; }
+.files-tools { display: flex; flex: 1; align-items: center; gap: 8px; }
+.files-tools > .files-tool { margin-left: auto; }
 .files-search { position: relative; display: flex; align-items: center; }
 .files-search .icon { position: absolute; top: 50%; left: 10px; width: 15px; height: 15px; transform: translateY(-50%); color: var(--text-soft); pointer-events: none; }
 .files-search-input {
-	width: 220px; height: 32px; padding: 0 10px 0 32px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+	width: 280px; height: 32px; padding: 0 10px 0 32px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
 	background: var(--bg); color: var(--text); font: inherit; font-size: 13.5px;
 }
 .files-search-input::placeholder { color: var(--text-soft); }
