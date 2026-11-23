@@ -378,7 +378,11 @@ describe("A folder's own layout.json", () => {
 			},
 			{ id: "reports", title: "Reports", blocks: [{ type: "report", match: "*.report.json" }] },
 			{ id: "files", title: "Files", blocks: [{ type: "files", match: ["*.md"] }] },
-			{ id: "launch", title: "Launch plan", blocks: [{ type: "files", match: ["launch/*.md"], heading: "Launch" }] },
+			{
+				id: "launch",
+				title: "Launch plan",
+				blocks: [{ type: "files", match: ["launch/*.md", "/notes/launch.md"], heading: "Launch" }],
+			},
 		],
 	};
 
@@ -387,6 +391,7 @@ describe("A folder's own layout.json", () => {
 			...productFiles(),
 			[`${ROOT}/layout.json`]: JSON.stringify(OWN_LAYOUT),
 			[`${ROOT}/launch/plan.md`]: "# Launch\nPre-orders open in March.\n",
+			"notes/launch.md": "# Notes\nAsk the shop about May.\n",
 		});
 		expect(tabs()).toEqual(["Overview", "Specs", "Vendors", "Reports", "Files", "Launch plan"]);
 		expect(view.el.querySelector(".studio-stage")).toBeNull();
@@ -409,6 +414,7 @@ describe("A folder's own layout.json", () => {
 		tab("launch");
 		expect(view.el.querySelector(".studio-section-head h2")?.textContent).toBe("Launch");
 		expect(view.el.querySelector('[data-file="surfaces/lamp/launch/plan.md"]')?.textContent).toContain("March");
+		expect(view.el.querySelector('[data-file="notes/launch.md"]')?.textContent).toContain("Ask the shop");
 		expect(view.el.querySelector('[data-file="surfaces/lamp/brief.md"]')).toBeNull();
 		tab("files");
 		expect(view.el.querySelector('[data-file="surfaces/lamp/brief.md"]')).not.toBeNull();

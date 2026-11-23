@@ -176,7 +176,7 @@ export function folderRelative(folderRoot: string, path: string): string | undef
 }
 
 export function surfaceGlobFinds(glob: string, file: SurfaceFolderFile): boolean {
-	if (glob.startsWith("/")) return surfaceGlobMatches(glob.slice(1), file.path);
+	if (glob.startsWith("/")) return surfaceGlobMatches(glob, `/${file.path}`);
 	return file.relative !== undefined && surfaceGlobMatches(glob, file.relative);
 }
 
