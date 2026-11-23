@@ -200,7 +200,20 @@ export class DesktopHoldLedger {
 			if (!entry || signal.aborted) return settled;
 			if (entry.going.size > 0) {
 				settled = false;
-				await Promise.all(entry.going);
+				await new Promise<void>((resolve, reject) => {
+					const onAbort = () => resolve();
+					signal.addEventListener("abort", onAbort, { once: true });
+					Promise.all(entry.going).then(
+						() => {
+							signal.removeEventListener("abort", onAbort);
+							resolve();
+						},
+						(error) => {
+							signal.removeEventListener("abort", onAbort);
+							if (!signal.aborted) reject(error);
+						},
+					);
+				});
 				continue;
 			}
 			const unsure = entry.unsure - Date.now();

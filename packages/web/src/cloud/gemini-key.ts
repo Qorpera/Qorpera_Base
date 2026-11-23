@@ -24,6 +24,18 @@ export class GeminiKeyStaleError extends Error {
 	}
 }
 
+export const GEMINI_KEY_ERROR_CODES = [
+	"key_rejected",
+	"billing_required",
+	"quota_exhausted",
+	"model_unavailable",
+	"invalid_request",
+	"provider_outage",
+	"transport_unavailable",
+] as const;
+
+export type GeminiKeyErrorCode = (typeof GEMINI_KEY_ERROR_CODES)[number];
+
 export interface GeminiKeyInfo {
 	id: string;
 	keyHint: string;
@@ -35,9 +47,19 @@ export interface GeminiKeyInfo {
 	monthCachedTokens: number;
 	monthOutputTokens: number;
 	capReached: boolean;
+	lastErrorCode?: GeminiKeyErrorCode | null;
+	lastErrorAt?: string | null;
+	lastCheckedAt?: string | null;
 	version: number;
 	createdAt: string;
 	updatedAt: string;
+}
+
+export interface GeminiKeyCheckResult {
+	ok: boolean;
+	errorCode: GeminiKeyErrorCode | null;
+	checkedAt: string;
+	state: GeminiKeyState;
 }
 
 export interface GeminiKeyState {
@@ -52,7 +74,7 @@ export interface GeminiKeySaveInput {
 }
 
 export interface GeminiKeySettingsInput {
-	defaultForChats: boolean;
+	defaultForChats?: boolean | null;
 	monthlyCapCents: number | null;
 	expectedVersion: number;
 }
@@ -61,6 +83,7 @@ export interface WebGeminiKey {
 	read(signal?: AbortSignal): Promise<GeminiKeyState>;
 	save(input: GeminiKeySaveInput, signal?: AbortSignal): Promise<GeminiKeyState>;
 	updateSettings(input: GeminiKeySettingsInput, signal?: AbortSignal): Promise<GeminiKeyState>;
+	check?(signal?: AbortSignal): Promise<GeminiKeyCheckResult>;
 	revoke(signal?: AbortSignal): Promise<GeminiKeyState>;
 }
 
@@ -123,6 +146,24 @@ export function parseGeminiKeyState(value: unknown): GeminiKeyState {
 		key.monthlyCapCents === null
 			? null
 			: boundedInteger(key.monthlyCapCents, "gemini monthly cap", GEMINI_MIN_CAP_CENTS, GEMINI_MAX_CAP_CENTS);
+	let lastErrorCode: GeminiKeyErrorCode | null = null;
+	if (key.lastErrorCode !== undefined && key.lastErrorCode !== null) {
+		if (
+			typeof key.lastErrorCode !== "string" ||
+			!(GEMINI_KEY_ERROR_CODES as readonly string[]).includes(key.lastErrorCode)
+		) {
+			throw new CloudShapeError("gemini key error code");
+		}
+		lastErrorCode = key.lastErrorCode as GeminiKeyErrorCode;
+	}
+	const lastErrorAt =
+		key.lastErrorAt === undefined || key.lastErrorAt === null
+			? null
+			: timestamp(key.lastErrorAt, "gemini key last error time");
+	const lastCheckedAt =
+		key.lastCheckedAt === undefined || key.lastCheckedAt === null
+			? null
+			: timestamp(key.lastCheckedAt, "gemini key last check time");
 	return {
 		vaultAvailable: input.vaultAvailable,
 		key: {
@@ -141,6 +182,9 @@ export function parseGeminiKeyState(value: unknown): GeminiKeyState {
 			monthCachedTokens: boundedInteger(key.monthCachedTokens, "gemini cached tokens", 0, Number.MAX_SAFE_INTEGER),
 			monthOutputTokens: boundedInteger(key.monthOutputTokens, "gemini output tokens", 0, Number.MAX_SAFE_INTEGER),
 			capReached: key.capReached,
+			lastErrorCode,
+			lastErrorAt,
+			lastCheckedAt,
 			version: boundedInteger(key.version, "gemini key version", 1, Number.MAX_SAFE_INTEGER),
 			createdAt: timestamp(key.createdAt, "gemini key creation time"),
 			updatedAt: timestamp(key.updatedAt, "gemini key update time"),
@@ -346,7 +390,7 @@ export function createWebGeminiKey(
 					"qorpera_update_gemini_key_settings",
 					{
 						p_profile_id: normalizedProfileId,
-						p_default_for_chats: input.defaultForChats,
+						p_default_for_chats: input.defaultForChats ?? null,
 						p_monthly_cap_cents: monthlyCapCents,
 						p_expected_version: input.expectedVersion,
 					},
@@ -359,6 +403,70 @@ export function createWebGeminiKey(
 				}
 				throw error;
 			}
+		},
+		check: async (signal) => {
+			const ticket = parseGeminiKeyTicket(
+				await rpc("qorpera_begin_gemini_key_check", { p_profile_id: normalizedProfileId }, signal),
+				normalizedProfileId,
+			);
+			const checked = await withScopedCloudDeadline(
+				[companySignal, signal],
+				async (deadline) => {
+					const check = () => {
+						deadline.throwIfAborted();
+						current();
+					};
+					check();
+					const response = await fetchImplementation(
+						`${ticket.serviceOrigin}/v1/gemini-keys/${ticket.ticketId}/check?company=${normalizedProfileId}`,
+						{
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body: JSON.stringify({
+								schema: "qorpera.gemini-key-check-request/v1",
+								capability: ticket.capability,
+							}),
+							signal: deadline,
+							redirect: "error",
+							credentials: "omit",
+						},
+					);
+					try {
+						check();
+						const bytes = await readBoundedCloudResponse(response, 32768, deadline);
+						if (response.status !== 200) {
+							throw new Error("The Gemini API key could not be checked.");
+						}
+						const parsed = record(
+							JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown,
+							"gemini key check",
+						);
+						if (parsed.schema !== "qorpera.gemini-key-checked/v1" || typeof parsed.ok !== "boolean") {
+							throw new CloudShapeError("gemini key check");
+						}
+						let errorCode: GeminiKeyErrorCode | null = null;
+						if (parsed.errorCode !== null) {
+							if (
+								typeof parsed.errorCode !== "string" ||
+								!(GEMINI_KEY_ERROR_CODES as readonly string[]).includes(parsed.errorCode)
+							) {
+								throw new CloudShapeError("gemini key check");
+							}
+							errorCode = parsed.errorCode as GeminiKeyErrorCode;
+						}
+						return {
+							ok: parsed.ok,
+							errorCode,
+							checkedAt: timestamp(parsed.checkedAt, "gemini key checked at"),
+						};
+					} finally {
+						if (!response.body?.locked) void response.body?.cancel().catch(() => undefined);
+					}
+				},
+				30_000,
+			);
+			const state = await read(signal);
+			return { ...checked, state };
 		},
 		revoke: async (signal) => {
 			const raw = await rpc("qorpera_revoke_gemini_key", { p_profile_id: normalizedProfileId }, signal);

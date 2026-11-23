@@ -36,20 +36,28 @@ import {
 	type CodeHostCommand,
 	type CodeHostGcBlock,
 	type CodeHostJob,
+	CodeHostRefusal,
 	CodeWorktreeNamesRefused,
 	checkCodeArea,
 	codeAreaPath,
 	codeRefsSha256,
 	collectCodeGarbage,
+	diffCodeArea,
 	exportCodeBranch,
 	fsckCodeArea,
 	inspectCodeArea,
 	landCodeBranch,
+	listCodeBranches,
 	listCodeChangeArchives,
+	logCodeArea,
+	previewCodeMerge,
+	pruneCodeArea,
 	removeCodeDownloads,
 	retireCodeWorktrees,
 	seedCodeArea,
+	showCodeFile,
 	startCodeArea,
+	tagCodeArea,
 	undoCodeChange,
 	withJob,
 	writeCodeChangeRecords,
@@ -243,12 +251,10 @@ describe("code host seed", () => {
 			packs: (await readdir(join(c.repo, "objects/pack"))).sort(),
 			main: (await readdir(join(c.code, "main"))).sort(),
 		};
-		// 4,029 bytes: 4,055 where main/ holds it, which the folder takes, and 4,097 where a session's worktree does
-		// (`code/qorpera/example/worktrees/<36>/`), one past its 4,096: no session could check it out.
-		const deep = [...Array.from({ length: 20 }, () => "d".repeat(200)), "e".repeat(9)].join("/");
-		expect(Buffer.byteLength(deep)).toBe(4029);
-		expect(Buffer.byteLength(`code/qorpera/example/main/${deep}`)).toBe(4055);
-		expect(Buffer.byteLength(`code/qorpera/example/${CODE_FOLDER_ANY_SESSION}/${deep}`)).toBe(4097);
+		const deep = [...Array.from({ length: 12 }, () => "d".repeat(200)), "e".repeat(121)].join("/");
+		expect(Buffer.byteLength(deep)).toBe(2533);
+		expect(Buffer.byteLength(`code/qorpera/example/main/${deep}`)).toBe(2559);
+		expect(Buffer.byteLength(`code/qorpera/example/${CODE_FOLDER_ANY_SESSION}/${deep}`)).toBe(2601);
 		for (const [paths, refused] of [
 			[["bad."], ["bad."]],
 			[[deep], [deep]],
@@ -605,9 +611,7 @@ describe("code host worktrees", () => {
 			await rm(s.tree, { recursive: true });
 			return { ...s, head, input: { repository: kept, workerId: s.workerId, baseSha } };
 		};
-		// 4,029 bytes: 4,055 where main/ holds it, and 4,097 where the session's worktree holds it
-		// (`code/qorpera/example/worktrees/<36>/`), one past the folder's 4,096.
-		const deep = [...Array.from({ length: 20 }, () => "d".repeat(200)), "e".repeat(9)].join("/");
+		const deep = [...Array.from({ length: 12 }, () => "d".repeat(200)), "e".repeat(121)].join("/");
 		for (const [paths, refused] of [
 			[["bad."], ["bad."]],
 			[["x /file", "x /y/z.txt"], ["x "]],
@@ -682,17 +686,15 @@ describe("the company folder's names where a place holds them", () => {
 		const workerId = randomUUID();
 		expect(CODE_FOLDER_ANY_SESSION).toHaveLength(`worktrees/${workerId}`.length);
 		expect(`${area}/${CODE_FOLDER_ANY_SESSION}/`.length - `${area}/main/`.length).toBe(42);
-		for (const bytes of [4028, 4029, 4070, 4071]) expect(Buffer.byteLength(long(bytes))).toBe(bytes);
-		// main/: 26 bytes before the path, so 4,070 is the longest.
-		expect(codeFolderRefuses(area, records(long(4070)))).toEqual([]);
-		expect(codeFolderRefuses(area, records(long(4071)))).toEqual([long(4071)]);
-		expect(codeFolderRefuses(area, records(long(4071)), "main")).toEqual([long(4071)]);
-		// A session's worktree: 68 bytes before the path, so 4,028 is the longest, for any session.
+		for (const bytes of [2532, 2533, 2574, 2575]) expect(Buffer.byteLength(long(bytes))).toBe(bytes);
+		expect(codeFolderRefuses(area, records(long(2574)))).toEqual([]);
+		expect(codeFolderRefuses(area, records(long(2575)))).toEqual([long(2575)]);
+		expect(codeFolderRefuses(area, records(long(2575)), "main")).toEqual([long(2575)]);
 		for (const under of [CODE_FOLDER_ANY_SESSION, `worktrees/${workerId}`]) {
-			expect(codeFolderRefuses(area, records(long(4028)), under)).toEqual([]);
-			expect(codeFolderRefuses(area, records(long(4029)), under)).toEqual([long(4029)]);
+			expect(codeFolderRefuses(area, records(long(2532)), under)).toEqual([]);
+			expect(codeFolderRefuses(area, records(long(2533)), under)).toEqual([long(2533)]);
 		}
-		expect(codeFolderRefuses(area, records(long(4029)))).toEqual([]);
+		expect(codeFolderRefuses(area, records(long(2533)))).toEqual([]);
 		// What the folder refuses wherever it stands is refused in both.
 		for (const under of ["main", CODE_FOLDER_ANY_SESSION])
 			expect(
@@ -1155,14 +1157,10 @@ describe("code host: a repository kept in Qorpera (own code storage, slice 1)", 
 			return { s, head: await f.git(s.tree, "rev-parse", "HEAD") };
 		};
 		const long = "n".repeat(256);
-		// 4,071 bytes, every name within 255: 4,097 where main/ holds it (`code/qorpera/example/main/`), one past the
-		// folder's 4,096 bytes.
-		const deep = [...Array.from({ length: 20 }, () => "d".repeat(200)), "e".repeat(51)].join("/");
-		expect(Buffer.byteLength(`code/qorpera/example/main/${deep}`)).toBe(4097);
-		// 4,029 bytes: 4,055 where main/ holds it, which the folder takes, but 4,097 where a session's worktree holds it
-		// (`code/qorpera/example/worktrees/<36>/`): nothing goes into main that no session could check out.
-		const edge = [...Array.from({ length: 20 }, () => "d".repeat(200)), "e".repeat(9)].join("/");
-		expect(Buffer.byteLength(`code/qorpera/example/main/${edge}`)).toBe(4055);
+		const deep = [...Array.from({ length: 12 }, () => "d".repeat(200)), "e".repeat(163)].join("/");
+		expect(Buffer.byteLength(`code/qorpera/example/main/${deep}`)).toBe(2601);
+		const edge = [...Array.from({ length: 12 }, () => "d".repeat(200)), "e".repeat(121)].join("/");
+		expect(Buffer.byteLength(`code/qorpera/example/main/${edge}`)).toBe(2559);
 		for (const [paths, refused] of [
 			[["bad."], ["bad."]],
 			// A folder is named once, at the highest part the folder refuses.
@@ -2427,6 +2425,8 @@ describe("code host: the change record, undo and download of a repository kept i
 				pathsMore: 0,
 			},
 			replayed: false,
+			matchesBeforeTree: false,
+			checksFilePresent: false,
 		});
 		// Main and main/ moved together, to what main was without the three commits; everything since is kept.
 		expect(await state(f, c)).toMatchObject({
@@ -2446,6 +2446,8 @@ describe("code host: the change record, undo and download of a repository kept i
 			mainBefore: undone.mainAfter,
 			diff: { filesChanged: 1, paths: [{ path: "cart.js", change: "removed" }], pathsMore: 0 },
 			replayed: false,
+			matchesBeforeTree: false,
+			checksFilePresent: false,
 		});
 		expect((await state(f, c)).files).toEqual(["later.txt"]);
 
@@ -3776,5 +3778,312 @@ describe("code host exec batching", () => {
 			archives: [{ name: "0001-0500.md", text: "# Attempted Overwrite\n", immutable: true }],
 		});
 		expect(await readFile(archivePath, "utf8")).toBe(completeText);
+	});
+});
+
+describe("read-only git queries, conflict messages, v2 undo, tags, and prune", () => {
+	const kept = { host: "qorpera" as const, owner: "qorpera", name: "example", baseBranch: "main" };
+
+	async function session(
+		f: Awaited<ReturnType<typeof fixture>>,
+		c: Awaited<ReturnType<Awaited<ReturnType<typeof fixture>>["company"]>>,
+		baseSha: string,
+	) {
+		const workerId = randomUUID();
+		await addCodeWorktree(c.job, { repository: kept, workerId, baseSha });
+		const tree = join(c.code, "worktrees", workerId);
+		const commit = async (files: Record<string, string | Buffer>, message: string) => {
+			for (const [rel, content] of Object.entries(files)) {
+				await mkdir(dirname(join(tree, rel)), { recursive: true });
+				await writeFile(join(tree, rel), content);
+			}
+			await f.git(tree, "add", "--all");
+			await f.git(tree, "commit", "--quiet", "-m", message);
+			return f.git(tree, "rev-parse", "HEAD");
+		};
+		return { workerId, tree, commit, branch: `qorpera/coding/${workerId}` };
+	}
+
+	async function refsDigest(c: Awaited<ReturnType<Awaited<ReturnType<typeof fixture>>["company"]>>) {
+		const checked = await checkCodeArea(c.job, { repository: kept });
+		if (checked.state !== "present") throw new Error("expected present");
+		return checked.refsSha256;
+	}
+
+	it("runs log, diff, show, branches, and merge_preview read-only without mutating refs", async () => {
+		const f = await fixture();
+		const c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s1 = await session(f, c, baseSha);
+		const h1 = await s1.commit(
+			{
+				"src/app.ts": "export const v = 1;\n",
+				"docs/notes.md": "hello\n",
+				"bin/raw.dat": Buffer.from([0x00, 0x01, 0xff]),
+			},
+			"Add app and docs",
+		);
+		await symlink("notes.md", join(s1.tree, "docs/link.md"));
+		await f.git(s1.tree, "add", "docs/link.md");
+		await f.git(s1.tree, "commit", "--quiet", "-m", "Add symlink");
+		const h1Link = await f.git(s1.tree, "rev-parse", "HEAD");
+		const l1 = await landCodeBranch(c.job, { repository: kept, workerId: s1.workerId, headSha: h1Link });
+
+		const s2 = await session(f, c, l1.mainSha);
+		const bigBody = Array.from({ length: 120 }, (_, i) => `export const line${i} = ${i};`).join("\n");
+		const h2 = await s2.commit({ "src/app.ts": `export const v = 2;\n${bigBody}\n` }, "Update app v2");
+		const l2 = await landCodeBranch(c.job, { repository: kept, workerId: s2.workerId, headSha: h2 });
+
+		const sActive = await session(f, c, l1.mainSha);
+		const hConflict = await sActive.commit(
+			{ "src/app.ts": "export const v = 99;\n", "src/extra.ts": "extra\n" },
+			"Conflicting edit",
+		);
+		await f.git(c.repo, "--git-dir=.", "update-ref", "refs/qorpera/imported/heads/legacy", h1);
+
+		const refsBefore = await refsDigest(c);
+
+		const logMain = await logCodeArea(c.job, { repository: kept, ref: "main", limit: 2 });
+		expect(logMain.resolvedSha).toBe(l2.mainSha);
+		expect(logMain.commits).toHaveLength(2);
+		expect(logMain.commits[0]?.subject).toBe("Update app v2");
+
+		const logPath = await logCodeArea(c.job, {
+			repository: kept,
+			ref: `worker:${sActive.workerId}`,
+			path: "src/extra.ts",
+		});
+		expect(logPath.resolvedSha).toBe(hConflict);
+		expect(logPath.commits).toHaveLength(1);
+		expect(logPath.commits[0]?.subject).toBe("Conflicting edit");
+
+		const diffFull = await diffCodeArea(c.job, { repository: kept, from: l1.mainSha, to: l2.mainSha });
+		expect(diffFull.filesChanged).toBe(1);
+		expect(diffFull.patch).toContain("-export const v = 1;");
+		expect(diffFull.patch).toContain("+export const v = 2;");
+		expect(diffFull.truncated).toBe(false);
+
+		const diffStat = await diffCodeArea(c.job, {
+			repository: kept,
+			from: baseSha,
+			to: l2.mainSha,
+			statOnly: true,
+			paths: ["src/app.ts"],
+		});
+		expect(diffStat.patch).toBeNull();
+		expect(diffStat.filesChanged).toBe(1);
+
+		const diffTrunc = await diffCodeArea(c.job, {
+			repository: kept,
+			from: l1.mainSha,
+			to: l2.mainSha,
+			maxBytes: 1024,
+		});
+		expect(diffTrunc.truncated).toBe(true);
+		expect(Buffer.byteLength(diffTrunc.patch ?? "")).toBeLessThanOrEqual(1024);
+
+		const shown = await showCodeFile(c.job, { repository: kept, ref: l1.mainSha, path: "src/app.ts" });
+		expect(shown.content).toBe("export const v = 1;\n");
+		expect(shown.truncated).toBe(false);
+
+		await expect(showCodeFile(c.job, { repository: kept, ref: "main", path: "docs/link.md" })).rejects.toMatchObject({
+			code: "CODE_HOST_SYMLINK_REFUSED",
+		});
+		await expect(showCodeFile(c.job, { repository: kept, ref: "main", path: "bin/raw.dat" })).rejects.toMatchObject({
+			code: "CODE_HOST_BINARY_FILE",
+		});
+		await expect(showCodeFile(c.job, { repository: kept, ref: "main", path: "missing.ts" })).rejects.toMatchObject({
+			code: "CODE_HOST_FILE_NOT_FOUND",
+		});
+		await expect(showCodeFile(c.job, { repository: kept, ref: "main", path: "src" })).rejects.toMatchObject({
+			code: "CODE_HOST_NOT_A_FILE",
+		});
+
+		const branches = await listCodeBranches(c.job, { repository: kept });
+		expect(branches.main.sha).toBe(l2.mainSha);
+		const activeBranch = branches.coding.find((b) => b.workerId === sActive.workerId);
+		expect(activeBranch).toMatchObject({ sha: hConflict, ahead: 1, behind: 1 });
+		expect(branches.imported.some((b) => b.name === "legacy")).toBe(true);
+
+		const cleanPreview = await previewCodeMerge(c.job, {
+			repository: kept,
+			base: l1.mainSha,
+			head: `worker:${sActive.workerId}`,
+		});
+		expect(cleanPreview.clean).toBe(true);
+		expect(cleanPreview.conflictedPaths).toEqual([]);
+		expect(cleanPreview.conflictMessages).toEqual([]);
+
+		const conflictPreview = await previewCodeMerge(c.job, {
+			repository: kept,
+			base: "main",
+			head: `worker:${sActive.workerId}`,
+		});
+		expect(conflictPreview.clean).toBe(false);
+		expect(conflictPreview.conflictedPaths).toEqual(["src/app.ts"]);
+		expect(conflictPreview.conflictMessages.join(" ")).toContain("CONFLICT");
+
+		expect(await refsDigest(c)).toBe(refsBefore);
+	});
+
+	it("preserves conflict messages on landCodeBranch and supports dryRun, multi-target, and verifyChecks on undoCodeChange", async () => {
+		const f = await fixture();
+		const c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s1 = await session(f, c, baseSha);
+		const h1 = await s1.commit(
+			{ "a.txt": "v1\n", [CODE_CHECKS_FILE]: JSON.stringify({ checks: [{ name: "test", run: "true" }] }) },
+			"change 1",
+		);
+		const l1 = await landCodeBranch(c.job, { repository: kept, workerId: s1.workerId, headSha: h1 });
+
+		const s2 = await session(f, c, l1.mainSha);
+		const h2 = await s2.commit({ "b.txt": "b1\n" }, "change 2");
+		const l2 = await landCodeBranch(c.job, { repository: kept, workerId: s2.workerId, headSha: h2 });
+
+		const sConflict = await session(f, c, baseSha);
+		const hConflict = await sConflict.commit({ "a.txt": "conflict\n" }, "conflicting");
+		const landErr = await landCodeBranch(c.job, {
+			repository: kept,
+			workerId: sConflict.workerId,
+			headSha: hConflict,
+		}).catch((e) => e);
+		expect(landErr).toBeInstanceOf(CodeHostRefusal);
+		expect((landErr as CodeHostRefusal).code).toBe("CODE_HOST_LAND_CONFLICT");
+		expect((landErr as CodeHostRefusal).paths).toEqual(["a.txt"]);
+		expect((landErr as CodeHostRefusal).messages.join(" ")).toContain("CONFLICT");
+
+		const refsBeforeDry = await refsDigest(c);
+		const dry = await undoCodeChange(c.job, {
+			repository: kept,
+			requestId: randomUUID(),
+			change: { n: 2, mainBefore: l2.mainBefore, mainAfter: l2.mainSha },
+			andLater: false,
+			message: "Dry run undo 2",
+			dryRun: true,
+		});
+		expect(dry).toMatchObject({
+			state: "dry_run",
+			clean: true,
+			mainBefore: l2.mainSha,
+			matchesBeforeTree: true,
+			checksFilePresent: true,
+			conflictedPaths: [],
+		});
+		expect(await refsDigest(c)).toBe(refsBeforeDry);
+
+		await expect(
+			undoCodeChange(c.job, {
+				repository: kept,
+				requestId: randomUUID(),
+				change: { n: 2, mainBefore: l2.mainBefore, mainAfter: l2.mainSha },
+				andLater: false,
+				message: "Blocked by checks",
+				verifyChecks: async () => {
+					throw new CodeHostRefusal("CODE_HOST_UNDO_CHECKS_FAILED", ["test"]);
+				},
+			}),
+		).rejects.toMatchObject({ code: "CODE_HOST_UNDO_CHECKS_FAILED" });
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(l2.mainSha);
+
+		const multi = await undoCodeChange(c.job, {
+			repository: kept,
+			requestId: randomUUID(),
+			change: { n: 1, mainBefore: l1.mainBefore, mainAfter: l1.mainSha },
+			andLater: false,
+			message: "Revert 1 and 2",
+			targets: [
+				{ n: 2, mainBefore: l2.mainBefore, mainAfter: l2.mainSha },
+				{ n: 1, mainBefore: l1.mainBefore, mainAfter: l1.mainSha },
+			],
+		});
+		expect(multi).toMatchObject({ state: "undone", mainBefore: l2.mainSha, matchesBeforeTree: true });
+		if (multi.state !== "undone") throw new Error("expected undone");
+		expect(await exists(join(c.code, "main/a.txt"))).toBe(false);
+		expect(await exists(join(c.code, "main/b.txt"))).toBe(false);
+	});
+
+	it("creates and lists lightweight/annotated tags and prunes archived worktrees and merged branches safely", async () => {
+		const f = await fixture();
+		const c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const sMerged = await session(f, c, baseSha);
+		const hMerged = await sMerged.commit({ "merged.txt": "ok\n" }, "merged work");
+		const landed = await landCodeBranch(c.job, { repository: kept, workerId: sMerged.workerId, headSha: hMerged });
+
+		const sUnmerged = await session(f, c, landed.mainSha);
+		await sUnmerged.commit({ "unmerged.txt": "wip\n" }, "unmerged work");
+
+		const light = await tagCodeArea(c.job, { repository: kept, mode: "create", tag: "v1.0.0", target: "main" });
+		expect(light).toMatchObject({ mode: "create", tag: "v1.0.0", kind: "lightweight", targetSha: landed.mainSha });
+		const annotated = await tagCodeArea(c.job, {
+			repository: kept,
+			mode: "create",
+			tag: "v1.0.1",
+			target: landed.mainSha,
+			message: "Release 1.0.1",
+		});
+		expect(annotated).toMatchObject({ mode: "create", tag: "v1.0.1", kind: "annotated", targetSha: landed.mainSha });
+		await expect(
+			tagCodeArea(c.job, { repository: kept, mode: "create", tag: "v1.0.0", target: "main" }),
+		).rejects.toMatchObject({ code: "CODE_HOST_TAG_EXISTS" });
+		const listed = await tagCodeArea(c.job, { repository: kept, mode: "list" });
+		expect(listed.mode).toBe("list");
+		if (listed.mode !== "list") throw new Error("expected list");
+		expect(listed.tags.map((t) => t.tag).sort()).toEqual(["v1.0.0", "v1.0.1"]);
+
+		const filesPhase = await pruneCodeArea(c.job, {
+			repository: kept,
+			workerIds: [sMerged.workerId, sUnmerged.workerId],
+			phase: "files",
+		});
+		expect(filesPhase.retiredWorktrees.sort()).toEqual([sMerged.workerId, sUnmerged.workerId].sort());
+		expect(filesPhase.deletedBranches).toEqual([]);
+		expect(await exists(sMerged.tree)).toBe(false);
+		expect(await exists(sUnmerged.tree)).toBe(false);
+
+		const gitPhase = await pruneCodeArea(c.job, {
+			repository: kept,
+			workerIds: [sMerged.workerId, sUnmerged.workerId],
+			phase: "git-folder",
+			deleteMergedBranches: true,
+		});
+		expect(gitPhase.retiredWorktrees.sort()).toEqual([sMerged.workerId, sUnmerged.workerId].sort());
+		expect(gitPhase.deletedBranches).toEqual([`qorpera/coding/${sMerged.workerId}`]);
+		expect(
+			await f.git(c.repo, "--git-dir=.", "show-ref", "--verify", `refs/heads/qorpera/coding/${sUnmerged.workerId}`),
+		).toBeTruthy();
+
+		const sLater = await session(f, c, landed.mainSha);
+		const hLater = await sLater.commit({ "later.txt": "later\n" }, "later work");
+		const landedLater = await landCodeBranch(c.job, {
+			repository: kept,
+			workerId: sLater.workerId,
+			headSha: hLater,
+		});
+
+		const reopenedMerged = await addCodeWorktree(c.job, {
+			repository: kept,
+			workerId: sMerged.workerId,
+			baseSha,
+			preferCurrentBase: true,
+		});
+		expect(reopenedMerged).toMatchObject({ state: "added", headSha: landedLater.mainSha });
+		expect(await readFile(join(sMerged.tree, "merged.txt"), "utf8")).toBe("ok\n");
+		expect(await readFile(join(sMerged.tree, "later.txt"), "utf8")).toBe("later\n");
+
+		const reopenedUnmerged = await addCodeWorktree(c.job, {
+			repository: kept,
+			workerId: sUnmerged.workerId,
+			baseSha: landed.mainSha,
+			preferCurrentBase: true,
+		});
+		expect(reopenedUnmerged.state).toBe("added");
+		expect(await readFile(join(sUnmerged.tree, "unmerged.txt"), "utf8")).toBe("wip\n");
+		expect(await exists(join(sUnmerged.tree, "later.txt"))).toBe(false);
+
+		const freshAtOldBase = randomUUID();
+		const addedOld = await addCodeWorktree(c.job, { repository: kept, workerId: freshAtOldBase, baseSha });
+		expect(addedOld).toMatchObject({ state: "added", headSha: baseSha });
 	});
 });

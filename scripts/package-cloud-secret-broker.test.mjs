@@ -37,6 +37,8 @@ test("packages the secret broker separately from every execution host", async ()
 		assert.match(sharedUnit, /^LoadCredential=qorpera-cloud-secret-master-keys:\/etc\/qorpera-shared-vault\/master-keys.json$/m);
 		assert.match(sharedUnit, /^TimeoutStopSec=90$/m);
 		assert.match(sharedUnit, /^NoNewPrivileges=yes$/m);
+		assert.match(sharedUnit, /^LimitCORE=0$/m);
+		assert.match(sharedUnit, /^MemorySwapMax=0$/m);
 		assert.doesNotMatch(sharedUnit, /qorpera-cloud-secret-control|qorpera-cloud-secret-keyring/);
 		for (const artifact of manifest.artifacts) {
 			const bytes = await readFile(join(destination, artifact.file));
@@ -63,6 +65,8 @@ test("packages the secret broker separately from every execution host", async ()
 		assert.match(service, /^ProtectSystem=strict$/m);
 		assert.match(service, /^NoNewPrivileges=yes$/m);
 		assert.match(service, /^TimeoutStopSec=90$/m);
+		assert.match(service, /^LimitCORE=0$/m);
+		assert.match(service, /^MemorySwapMax=0$/m);
 		assert.match(service, /^LoadCredential=qorpera-cloud-secret-keyring:/m);
 		assert.match(service, /^LoadCredential=qorpera-cloud-secret-runtime:/m);
 		assert.match(service, /^LoadCredential=qorpera-cloud-secret-database-url:/m);

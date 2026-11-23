@@ -6,7 +6,10 @@ import {
 	type CodeCheck,
 	type CodeCheckArtifactFormat,
 	type CodeChecksProblem,
+	type CodePreviewRecipe,
+	type CodeSiteKind,
 	type CodeSiteRecipe,
+	type CodeSurfaceGate,
 	expandCodeCheckNeeds,
 	type FailedTestCase,
 	type JsonValue,
@@ -34,7 +37,10 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
 export { CODE_CHECK_NAME_PATTERN, MAX_CODE_CHECKS_FILE_BYTES, parseCodeChecksText };
 export type { CodeChecksProblem, FailedTestCase, ParsedCodeChecks };
 export type CodePreflightCheck = CodeCheck;
+export type CodePreflightSiteKind = CodeSiteKind;
 export type CodePreflightSite = CodeSiteRecipe;
+export type CodePreflightPreview = CodePreviewRecipe;
+export type CodePreflightSurfaceGate = CodeSurfaceGate;
 
 export const MAX_PARALLEL_PREFLIGHT_CHECKS = MAX_PARALLEL_CHECKS;
 

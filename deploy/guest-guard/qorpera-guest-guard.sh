@@ -58,7 +58,8 @@ batch() {
 # 0: loaded, 1: not loaded. Anything else nft says (no permission, no netlink) stops the script.
 loaded() {
 	local err
-	if err=$(LC_ALL=C nft list table $table 2>&1 >/dev/null); then return 0; fi
+	# WHY: Pass -t (--terse) so checking table existence does not serialize up to 81,920 dynamic set elements.
+	if err=$(LC_ALL=C nft -t list table $table 2>&1 >/dev/null); then return 0; fi
 	[[ $err == *"No such file or directory"* ]] && return 1
 	die "nft cannot read the table: $err"
 }
@@ -212,12 +213,13 @@ probe() {
 	# shellcheck disable=SC2016 # expanded inside the guest
 	local test_one='timeout 4 bash -c "exec 3<>/dev/tcp/${1%:*}/${1##*:}" 2>/dev/null && echo open || echo closed'
 	for target in $open; do
-		state=$(lxc exec --project "$project" "$instance" -- bash -c "$test_one" _ "$target" </dev/null) || state=error
+		# WHY: Bound host-side lxc exec so a wedged guest or LXD agent cannot hang probe indefinitely.
+		state=$(timeout 15 lxc exec --project "$project" "$instance" -- bash -c "$test_one" _ "$target" </dev/null) || state=error
 		printf '%-24s %-6s expected open\n' "$target" "$state"
 		[[ $state == open ]] || failures=$((failures + 1))
 	done
 	for target in $refused; do
-		state=$(lxc exec --project "$project" "$instance" -- bash -c "$test_one" _ "$target" </dev/null) || state=error
+		state=$(timeout 15 lxc exec --project "$project" "$instance" -- bash -c "$test_one" _ "$target" </dev/null) || state=error
 		printf '%-24s %-6s expected closed%s\n' "$target" "$state" "$([[ $mode == enforce ]] || echo ' (observe: only counted)')"
 		if [[ $state == error || ($mode == enforce && $state != closed) ]]; then failures=$((failures + 1)); fi
 	done

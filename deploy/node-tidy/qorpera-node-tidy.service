@@ -13,6 +13,8 @@ TimeoutStartSec=15min
 ExecStart=/usr/bin/flock --nonblock --conflict-exit-code 75 /run/lock/qorpera-node-update.lock /usr/bin/node /opt/qorpera-node-tidy/qorpera-node-tidy.mjs --apply --config /etc/qorpera-node-tidy.json
 SuccessExitStatus=75
 NoNewPrivileges=yes
+# WHY: Ensure lock files created by flock stay root-only instead of inheriting permissive default umask bits.
+UMask=0077
 ProtectSystem=full
 ProtectHome=yes
 PrivateTmp=no

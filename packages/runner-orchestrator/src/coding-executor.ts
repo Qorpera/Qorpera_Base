@@ -6,6 +6,8 @@ import {
 	parseCloudCodingRepository,
 } from "@qorpera/contracts";
 import { withAbortScope, withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
+import { type AppAutoRedeployHooks, parseAppDeployConfig, runPostLandAppAutoRedeploy } from "./app-auto-redeploy.ts";
+import type { CompanyMachineSecretsManager } from "./company-machine-secrets.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA40 = /^[0-9a-f]{40}$/;
@@ -32,6 +34,8 @@ export const CODING_EXECUTOR_RPCS = [
 	"qorpera_describe_coding_turn",
 	"qorpera_complete_coding_turn",
 	"qorpera_defer_coding_session",
+	"qorpera_emit_code_change_routine_wakes",
+	"qorpera_emit_app_unhealthy_routine_wakes",
 ] as const;
 /** The turn cannot have its member's machine yet (a full node, a machine being
  * removed, the session still on another machine): it waits in the queue. */
@@ -50,10 +54,12 @@ export class CodingMachineUnavailable extends Error {
  * merges the default branch itself (own code storage, slice 1). */
 export class CodingLandConflict extends Error {
 	readonly paths: readonly string[];
-	constructor(paths: readonly string[]) {
+	readonly messages: readonly string[];
+	constructor(paths: readonly string[], messages: readonly string[] = []) {
 		super("CODING_LAND_CONFLICT");
 		this.name = "CodingLandConflict";
 		this.paths = Object.freeze([...paths]);
+		this.messages = Object.freeze([...messages]);
 	}
 }
 /** A landing the code host refused by rule, for another reason than a conflict (file names main cannot hold, a file too
@@ -197,9 +203,10 @@ function namedPaths(paths: readonly (string | null)[]): string {
 	return `${shown.join(", ")}${more ? ` and ${more} more` : ""}`;
 }
 /** A landing that conflicts with the default branch of a repository kept in Qorpera: what to do, and where. */
-export function landConflict(baseBranch: string, paths: readonly string[]): string {
+export function landConflict(baseBranch: string, paths: readonly string[], messages: readonly string[] = []): string {
 	const named = namedPaths(paths);
-	return `The change was not landed: it conflicts with what ${baseBranch} got since this session began${named ? `, in ${named}` : ""}. Nothing changed on ${baseBranch}. Run git merge ${baseBranch} on the session's branch, resolve the conflicts, run the checks, commit and finish again.`;
+	const details = messages.length > 0 ? ` Conflict details: ${withinBytes(messages.join("; "), 1200)}.` : "";
+	return `The change was not landed: it conflicts with what ${baseBranch} got since this session began${named ? `, in ${named}` : ""}.${details} Nothing changed on ${baseBranch}. Run git merge ${baseBranch} on the session's branch, resolve the conflicts, run the checks, commit and finish again.`;
 }
 /** Whether a failure says the session's machine needs recovery before anything else runs on it, with or without a
  * detail after the code (`CODING_HOST_VM_RECOVERY_REQUIRED:LXD_REFUSED_403`). */
@@ -229,9 +236,16 @@ const CODING_LAND_FILE_TOO_LARGE = "CODING_LAND_FILE_TOO_LARGE";
 /** What to change after a landing the code host refused by rule (its code, and the paths it named, a null for one not
  * to be named), or whose refs it could not read, or undefined for a code this does not know. Never a plain "finish
  * again" for work that would be refused the same way. A refusal for the files' names or size ends with its code. */
-export function landRefusal(baseBranch: string, code: string, paths: readonly (string | null)[]): string | undefined {
+export function landRefusal(
+	baseBranch: string,
+	code: string,
+	paths: readonly (string | null)[],
+	options?: { readonly staged?: boolean },
+): string | undefined {
 	const named = paths.length ? `: ${namedPaths(paths)}` : "";
-	const not = `The change was not landed, and nothing changed on ${baseBranch}`;
+	const not = options?.staged
+		? "The change was not staged for preview"
+		: `The change was not landed, and nothing changed on ${baseBranch}`;
 	switch (code) {
 		case "CODE_HOST_FILE_TOO_LARGE":
 			return `${not}: it holds files larger than 256 MiB, which a repository kept in Qorpera does not take${named}. Take them out, commit and finish again. [code=${CODING_LAND_FILE_TOO_LARGE}]`;
@@ -243,10 +257,12 @@ export function landRefusal(baseBranch: string, code: string, paths: readonly (s
 		case "CODE_HOST_NAMES_FOLDER_REFUSES":
 			// git takes such names; the company folder, which holds the repository's files, does not. The landing asks its
 			// rule where any session's worktree would hold a path (CODE_FOLDER_ANY_SESSION), 42 bytes deeper than main/.
-			return `${not}: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session's workspace holds it)${named}. Rename them, commit and finish again. [code=${CODING_LAND_NAMES_REFUSED}]`;
+			return `${not}: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 2,600 bytes where a session's workspace holds it)${named}. Rename them, commit and finish again. [code=${CODING_LAND_NAMES_REFUSED}]`;
 		case "CODE_HOST_EXPORT_MOVED":
 		case "CODE_HOST_EXPORT_NO_BRANCH":
 			return `${not}: the commit handed in is not on this session's own branch. Commit the work on the branch the session's workspace has checked out, and finish with that commit.`;
+		case "CODE_HOST_BASE_UNKNOWN":
+			return `${not}: the session's base commit is no longer present in the repository. Start a fresh session from ${baseBranch}.`;
 		case "CODE_HOST_REF_UNREADABLE":
 			// git could not read the repository's refs: once is a hiccup, twice is a file that is not git's any more.
 			return `${not}: the repository's own record of its branches could not be read. Finish again once; if that fails the same way, nothing can go into ${baseBranch} until Qorpera has repaired the repository, so say so in your report. The work is kept on the session's branch.`;
@@ -272,6 +288,7 @@ export const PUBLICATION_UNFINISHED =
  * into the default branch (own code storage, step 3). Set before the executor knows whether the repository has checks.
  * The web shows the founder's card line for checks by these exact words. */
 const CODING_LANDING_STEP = "Checking and saving the change";
+const CODING_STAGING_STEP = "Staging changes for preview";
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */
@@ -301,6 +318,13 @@ export interface CodingExecutorControl {
 	): Promise<unknown>;
 }
 
+export interface CodingSurfaceSessionClaim {
+	readonly sessionId: string;
+	readonly surfaceId: string;
+	readonly slug: string;
+	readonly title: string;
+}
+
 /** One leased turn of a coding session, as qorpera_claim_coding_session hands it out. */
 export interface CodingSessionClaim {
 	workerId: string;
@@ -316,6 +340,7 @@ export interface CodingSessionClaim {
 	repository: CloudCodingRepository;
 	branch: string;
 	baseSha: string | null;
+	worktreeCreatedAt?: string | null;
 	harnessSessionRef: string | null;
 	pullRequest: CloudCodingPullRequest | null;
 	title: string;
@@ -323,6 +348,7 @@ export interface CodingSessionClaim {
 	definitionOfDone: string;
 	context: string;
 	followUp: string | null;
+	surfaceSession?: CodingSurfaceSessionClaim;
 }
 
 /** What the harness left behind at the end of its turn (qorpera_submit_coding_turn). `picture`: the screenshot the
@@ -367,7 +393,22 @@ export interface CodingExecutorPublication {
 		readonly mainSha: string;
 		readonly filesChanged: number;
 		readonly change: number | null;
+		readonly mainBefore?: string;
+		readonly paths?: readonly string[];
 	};
+	readonly staged?: {
+		readonly branch: string;
+		readonly baseSha: string;
+		readonly headSha: string;
+		readonly filesChanged: number;
+	};
+}
+export interface CodingAutoRedeployContext {
+	readonly rawConfig: string;
+	readonly siteId: string;
+	readonly paths?: readonly string[];
+	readonly secretsManager?: CompanyMachineSecretsManager;
+	readonly hooks: AppAutoRedeployHooks;
 }
 export interface CodingExecutorHost {
 	/** Plan and wake the member's coding machine on genuine node capacity, attach
@@ -399,6 +440,11 @@ export interface CodingExecutorHost {
 	 * kept per-session VMs and close released ones; every failure is recorded
 	 * and returned. */
 	housekeep(signal: AbortSignal): Promise<CodingHousekeepingOutcome[]>;
+	autoRedeploy?(
+		claim: CodingSessionClaim,
+		landed: NonNullable<CodingExecutorPublication["landed"]>,
+		signal: AbortSignal,
+	): Promise<CodingAutoRedeployContext | null>;
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -434,6 +480,28 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		!dispatch.goal.trim()
 	)
 		throw new Error("Invalid coding claim");
+	let surfaceSession: CodingSurfaceSessionClaim | undefined;
+	if (item.surfaceSession !== undefined && item.surfaceSession !== null) {
+		const rawSurface = record(item.surfaceSession, "Invalid coding claim");
+		if (
+			typeof rawSurface.sessionId !== "string" ||
+			!UUID.test(rawSurface.sessionId) ||
+			typeof rawSurface.surfaceId !== "string" ||
+			!UUID.test(rawSurface.surfaceId) ||
+			typeof rawSurface.slug !== "string" ||
+			!/^[a-z0-9][a-z0-9-]{0,63}$/.test(rawSurface.slug) ||
+			typeof rawSurface.title !== "string" ||
+			!rawSurface.title.trim() ||
+			Buffer.byteLength(rawSurface.title) > 400
+		)
+			throw new Error("Invalid coding claim");
+		surfaceSession = {
+			sessionId: rawSurface.sessionId,
+			surfaceId: rawSurface.surfaceId,
+			slug: rawSurface.slug.trim(),
+			title: rawSurface.title.trim(),
+		};
+	}
 	return {
 		workerId: String(item.workerId),
 		leaseToken: String(item.leaseToken),
@@ -448,6 +516,7 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		repository: parseCloudCodingRepository(item.repository),
 		branch: item.branch,
 		baseSha: item.baseSha === undefined ? null : (item.baseSha as string | null),
+		...(item.worktreeCreatedAt === undefined ? {} : { worktreeCreatedAt: optionalText(item.worktreeCreatedAt, 64) }),
 		harnessSessionRef: optionalText(item.harnessSessionRef, 512),
 		pullRequest:
 			item.pullRequest === null || item.pullRequest === undefined
@@ -458,6 +527,7 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		definitionOfDone: text(dispatch.definitionOfDone ?? "", 4000),
 		context: text(dispatch.context ?? "", 16384),
 		followUp: optionalText(item.followUp, 8192),
+		...(surfaceSession ? { surfaceSession } : {}),
 	};
 }
 
@@ -574,7 +644,7 @@ function answerBefore<T>(call: () => Promise<T>, signal: AbortSignal): Promise<T
  * lease is another's): the kernel wrote what happened, and nothing is left for the executor to report. */
 export type CodingTurnOutcome = "completed" | "blocked" | "failed" | "deferred" | "released" | "recovery-required";
 /** Where a reported error happened. `watch`: a read of the running turn that stayed lost, which the turn outlives. */
-export type CodingReportStage = "turn" | "stop" | "defer" | "publish" | "watch";
+export type CodingReportStage = "turn" | "stop" | "defer" | "publish" | "watch" | "redeploy";
 
 /** Claims coding session turns and runs each to its end, many at once: every
  * member's sessions share that member's machine, and the node's capacity is
@@ -965,9 +1035,33 @@ export class CloudCodingExecutor {
 						p_phase: "publishing",
 						// A repository kept in Qorpera has no pull request: its work lands (own code storage), once its checks
 						// passed (step 3). The founder's card reads exactly these words (CODING_LANDING_STEP).
-						p_last_step:
-							claimed.repository.host === "qorpera" ? CODING_LANDING_STEP : "Publishing the draft pull request",
+						p_last_step: claimed.surfaceSession
+							? CODING_STAGING_STEP
+							: claimed.repository.host === "qorpera"
+								? CODING_LANDING_STEP
+								: "Publishing the draft pull request",
 					});
+					const emitCodeChange = async (
+						kind: "landed" | "checks_failed" | "conflict",
+						event: Record<string, unknown>,
+					): Promise<void> => {
+						try {
+							await call(
+								"qorpera_emit_code_change_routine_wakes",
+								{
+									p_environment_id: claimed.environmentId,
+									p_owner: claimed.repository.owner,
+									p_name: claimed.repository.name,
+									p_kind: kind,
+									p_event: event,
+								},
+								signal,
+								5000,
+							);
+						} catch {
+							// WHY: routine wake emission is best-effort and must never fail a finalized turn.
+						}
+					};
 					let publication: CodingExecutorPublication;
 					try {
 						publication = await this.#host.publish(claimed, submission, active);
@@ -975,14 +1069,25 @@ export class CloudCodingExecutor {
 						if (active.aborted) throw error;
 						end();
 						if (error instanceof CodingLandConflict) {
-							// Nothing landed: the session merges the default branch itself and finishes again.
-							await complete("failed", landConflict(claimed.repository.baseBranch, error.paths));
+							await complete("failed", landConflict(claimed.repository.baseBranch, error.paths, error.messages));
+							await emitCodeChange("conflict", {
+								workerId: claimed.workerId,
+								...(turn.runId ? { parentRunId: turn.runId } : {}),
+								paths: error.paths,
+							});
 							return "failed";
 						}
 						if (error instanceof CodingLandRefused) {
 							// Nothing landed, and the same work would be refused again: the turn fails with what to change.
 							this.#reported("publish", error);
 							await complete("failed", error.summary);
+							if (error.message.startsWith("CODING_CHECKS_")) {
+								await emitCodeChange("checks_failed", {
+									workerId: claimed.workerId,
+									...(turn.runId ? { parentRunId: turn.runId } : {}),
+									checks: { code: error.message, summary: withinBytes(error.summary, 1000) },
+								});
+							}
 							return "failed";
 						}
 						if (error instanceof CodingPushRefused || error instanceof CodingSaveRefused) {
@@ -1006,10 +1111,11 @@ export class CloudCodingExecutor {
 						await complete("failed", PUBLICATION_UNFINISHED);
 						return "failed";
 					}
-					if (!publication.pullRequest && !publication.noChange && !publication.landed)
+					if (!publication.pullRequest && !publication.noChange && !publication.landed && !publication.staged)
 						throw new Error("Coding publication unconfirmed");
 					end();
 					const landed = publication.landed;
+					const staged = publication.staged;
 					// How many files the landing changed on the default branch, for the session's card: only for a landing that
 					// moved it, and only a count the kernel takes.
 					const filesChanged =
@@ -1019,26 +1125,96 @@ export class CloudCodingExecutor {
 						landed.filesChanged >= 0 &&
 						landed.filesChanged <= 2_147_483_647
 							? landed.filesChanged
-							: null;
+							: staged &&
+									Number.isSafeInteger(staged.filesChanged) &&
+									staged.filesChanged >= 0 &&
+									staged.filesChanged <= 2_147_483_647
+								? staged.filesChanged
+								: null;
 					await complete("succeeded", submission.summary, {
 						p_pull_request: publication.pullRequest,
 						p_harness_session_ref: claimed.harnessSessionRef,
 						// Where a repository kept in Qorpera got the commit: the session's record, and its agent's report.
-						...(landed
+						...(staged
 							? {
 									p_artifacts: [
 										{
-											kind: "landed",
-											state: landed.state,
-											branch: claimed.repository.baseBranch,
-											headSha: submission.headSha,
-											mainSha: landed.mainSha,
+											kind: "staged",
+											branch: staged.branch,
+											baseSha: staged.baseSha,
+											headSha: staged.headSha,
 										},
 									],
 									p_files_changed: filesChanged,
 								}
-							: {}),
+							: landed
+								? {
+										p_artifacts: [
+											{
+												kind: "landed",
+												state: landed.state,
+												branch: claimed.repository.baseBranch,
+												headSha: submission.headSha,
+												mainSha: landed.mainSha,
+											},
+										],
+										p_files_changed: filesChanged,
+									}
+								: {}),
 					});
+					if (landed && landed.state !== "unchanged") {
+						await emitCodeChange("landed", {
+							...(landed.change !== null ? { change: String(landed.change) } : {}),
+							...(landed.mainBefore ? { mainBefore: landed.mainBefore } : {}),
+							mainAfter: landed.mainSha,
+							workerId: claimed.workerId,
+							...(turn.runId ? { parentRunId: turn.runId } : {}),
+							...(landed.paths ? { paths: landed.paths } : {}),
+						});
+						if (this.#host.autoRedeploy) {
+							try {
+								const redeploy = await this.#host.autoRedeploy(claimed, landed, signal);
+								if (redeploy) {
+									const config = parseAppDeployConfig(JSON.parse(redeploy.rawConfig));
+									await runPostLandAppAutoRedeploy({
+										config,
+										event: {
+											kind: "landed",
+											repo: `${claimed.repository.owner}/${claimed.repository.name}`,
+											change: landed.change !== null ? String(landed.change) : landed.mainSha,
+											mainBefore: landed.mainBefore ?? null,
+											mainAfter: landed.mainSha,
+											paths: redeploy.paths ?? landed.paths ?? [],
+										},
+										...(redeploy.secretsManager ? { secretsManager: redeploy.secretsManager } : {}),
+										hooks: {
+											...redeploy.hooks,
+											emitAppUnhealthy: async (unhealthy, hookSignal) => {
+												await call(
+													"qorpera_emit_app_unhealthy_routine_wakes",
+													{
+														p_environment_id: claimed.environmentId,
+														p_site_id: redeploy.siteId,
+														p_event: {
+															status: unhealthy.status,
+															restartCount: unhealthy.restartCount,
+															error: unhealthy.error,
+														},
+													},
+													hookSignal,
+													5000,
+												).catch(() => undefined);
+												await redeploy.hooks.emitAppUnhealthy?.(unhealthy, hookSignal);
+											},
+										},
+										signal,
+									});
+								}
+							} catch (redeployError) {
+								this.#reported("redeploy", redeployError);
+							}
+						}
+					}
 					return "completed";
 				}
 				end();

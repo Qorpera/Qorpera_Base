@@ -255,6 +255,7 @@ export function cloudActionEffect(
 		case "data_query":
 		// How one part of an interface app is made: the runtime's own text, the same for every company.
 		case "app_guide":
+		case "coding_view_attachment":
 		// more_tools' describe shows tools' descriptions and forms (T3-6). Its use is never classified as more_tools: the
 		// boundary runs it as the call of the tool it names.
 		case "more_tools":
@@ -799,6 +800,12 @@ function routineSchedule(args: Record<string, JsonValue>, fallbackZone: string):
 	if (trigger.kind === "once" && typeof trigger.after === "string") words = `When ${listened(trigger.after)} is done`;
 	else if (trigger.kind === "once") words = "The agent picks each next run";
 	else if (trigger.kind === "listener" && trigger.source === "event") words = eventWhen(trigger.only);
+	else if (trigger.kind === "listener" && trigger.source === "code-change" && typeof trigger.repo === "string")
+		words = `When ${trigger.repo} changes`;
+	else if (trigger.kind === "listener" && trigger.source === "app-unhealthy" && typeof trigger.site === "string")
+		words = `When hosted app ${trigger.site} is unhealthy`;
+	else if (trigger.kind === "listener" && trigger.source === "data-change" && typeof trigger.database === "string")
+		words = `When database ${trigger.database} changes`;
 	else if (trigger.kind === "listener" && typeof trigger.path === "string")
 		words =
 			trigger.match === "subtree"

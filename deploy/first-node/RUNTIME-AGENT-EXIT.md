@@ -193,9 +193,10 @@ healthy exit (E2).
   another company's name on traffic, and an address stays tied to its company also after the machine is gone.
 - A sleeping machine keeps its address and its entry; its connections are flushed when it sleeps, so stale entries
   never hold its connection bound. When a machine goes away (missing from two reads of LXD in a row after it was seen,
-  or never created within an hour of its last plug), the reconciler unplugs it under the plug lock: its address is
-  quarantined first, then its lease is removed (dnsmasq reloads), its connections and the exit's per-machine counts
-  and refused flows are cleared, and its entry is removed. A machine made again under the same name gets its entry
+  or never created within an hour of its last plug), the reconciler unplugs it: under the plug lock its address is
+  quarantined and marked `unflushed` first, its lease and per-machine nft state (counts, refused flows, brake, DNS, and
+  reach elements) are cleared, and its entry and `seen` marker are removed; after releasing the plug lock dnsmasq
+  reloads and its connections are flushed before `unflushed` is removed. A machine made again under the same name gets its entry
   back from `plug` with a new time, and is not unplugged in between. A flush that fails is tried again every pass, and
   its address is not given out until it succeeds. The address stays unused for 15 minutes, longer than a DHCP lease
   (10 minutes), so late log lines are never given to the wrong company and the address is free again before it is

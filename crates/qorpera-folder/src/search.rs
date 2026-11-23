@@ -288,6 +288,10 @@ impl<K: Eq + std::hash::Hash + Clone, V: Clone> ShardedLru<K, V> {
 		self.shards[shard & self.mask].lock().unwrap().get_with(key, f)
 	}
 
+	fn contains_key(&self, shard: usize, key: &K) -> bool {
+		self.shards[shard & self.mask].lock().unwrap().map.contains_key(key)
+	}
+
 	fn insert(&self, shard: usize, key: K, val: V, cost: usize) {
 		self.shards[shard & self.mask].lock().unwrap().insert(key, val, cost);
 	}
@@ -1472,6 +1476,27 @@ impl InvertedIndex {
 		DocInfo::default()
 	}
 
+fn insert_sorted_posting(list: &mut Vec<u32>, doc_id: u32) -> bool {
+	match list.last().copied() {
+		None => {
+			list.push(doc_id);
+			true
+		}
+		Some(last) if doc_id > last => {
+			list.push(doc_id);
+			true
+		}
+		Some(last) if doc_id == last => false,
+		_ => match list.binary_search(&doc_id) {
+			Ok(_) => false,
+			Err(pos) => {
+				list.insert(pos, doc_id);
+				true
+			}
+		},
+	}
+}
+
 	fn record_doc(&mut self, profile_uuid: [u8; 16], doc_id: u32, mut info: DocInfo, trigrams: Option<&[u32]>) {
 		if self.profile_uuid.is_none() {
 			self.profile_uuid = Some(profile_uuid);
@@ -1485,7 +1510,7 @@ impl InvertedIndex {
 		if info.kind == DOC_INDEXED {
 			match trigrams {
 				Some(tris) => {
-					let est = tris.len() * 2 + 64;
+					let est = tris.len().saturating_mul(4).saturating_add(64);
 					if !self.budget.can_afford(est) {
 						info.kind = DOC_BLOOM_ONLY;
 					}
@@ -1507,11 +1532,13 @@ impl InvertedIndex {
 							if !base.try_push_posting(tri, doc_id) {
 								let is_new = !self.added_postings.contains_key(&tri);
 								let list = self.added_postings.entry(tri).or_default();
-								list.push(doc_id);
-								let delta = 4 + if is_new { 48 } else { 0 };
-								self.delta_bytes += delta;
-								self.budget.charge(delta);
-								overflowed = true;
+								// WHY: Keep added_postings strictly sorted and deduped in overflow too so later binary_search lookups stay valid.
+								if Self::insert_sorted_posting(list, doc_id) {
+									let delta = 4 + if is_new { 48 } else { 0 };
+									self.delta_bytes += delta;
+									self.budget.charge(delta);
+									overflowed = true;
+								}
 							}
 						}
 					}
@@ -1531,22 +1558,8 @@ impl InvertedIndex {
 					for &tri in tris {
 						let is_new = !self.added_postings.contains_key(&tri);
 						let list = self.added_postings.entry(tri).or_default();
-						match list.last().copied() {
-							None => {
-								list.push(doc_id);
-								self.charge_delta(4 + if is_new { 48 } else { 0 });
-							}
-							Some(last) if doc_id > last => {
-								list.push(doc_id);
-								self.charge_delta(4);
-							}
-							Some(last) if doc_id == last => {}
-							_ => {
-								if let Err(pos) = list.binary_search(&doc_id) {
-									list.insert(pos, doc_id);
-									self.charge_delta(4);
-								}
-							}
+						if Self::insert_sorted_posting(list, doc_id) {
+							self.charge_delta(4 + if is_new { 48 } else { 0 });
 						}
 					}
 				}
@@ -1584,7 +1597,7 @@ impl InvertedIndex {
 				}
 			}
 		}
-		out.maybe_compact();
+		// WHY: Defer heavy compaction off the single shared tree_handle thread; search workers trigger compaction on record_doc.
 		out
 	}
 
@@ -2368,7 +2381,7 @@ impl SharedIndex {
 
 	fn has_trigram(&self, profile_uuid: [u8; 16], manifest_sha: [u8; 32]) -> bool {
 		let key = ObjectKey { profile_uuid, sha256: manifest_sha };
-		self.trigrams.get_with(shard_of(&key), &key, |_| ()).is_some()
+		self.trigrams.contains_key(shard_of(&key), &key)
 	}
 
 	fn prefetch_and_index_entry(
@@ -2785,16 +2798,17 @@ fn slice_tree(tree: &CompactTree, path: &str, from: Option<&str>) -> std::ops::R
 	}
 	let under_path = if path.is_empty() { true } else { is_descendant(f, path) };
 	if !under_path {
-		if !path.is_empty() && f.as_bytes() < path.as_bytes() {
+		if !path.is_empty() && tree_order(f, path) == Ordering::Less {
 			return lo..hi;
 		}
 		return 0..0;
 	}
-	if tree.entries[lo].kind_code() != 1 {
+	if !path.is_empty() && tree.entries[lo].kind_code() != 1 {
 		return 0..0;
 	}
-	let rel = tree.partition_point_in(lo + 1..hi, |p| tree_order(p, f) == Ordering::Less);
-	(lo + 1 + rel)..hi
+	let search_start = if !path.is_empty() || tree.path(lo).is_empty() { lo + 1 } else { lo };
+	let rel = tree.partition_point_in(search_start..hi, |p| tree_order(p, f) == Ordering::Less);
+	(search_start + rel)..hi
 }
 
 enum GlobPart {
@@ -3335,6 +3349,10 @@ impl Matcher {
 				fold_text(&String::from_utf8_lossy(whole)).contains(query_folded.as_str())
 			}
 			Self::Pattern { regex } => {
+				if regex.has_text_anchor() {
+					// WHY: StartText/EndText evaluate per line in find_str; matching them against a multi-line chunk skips interior lines.
+					return true;
+				}
 				if !regex.runs_on_folded() {
 					let decoded = String::from_utf8_lossy(whole);
 					return regex.find_in_text(&decoded, scratch).is_some();
@@ -3825,7 +3843,11 @@ fn execute_search_with_tree(
 							let mut rem_reads = READS_PER_ANSWER.saturating_sub(state.reads_count);
 							let mut rem_read_bytes = READS_BYTES.saturating_sub(state.read_bytes);
 							let mut scan_end = tree_idx;
-							for cand_idx in tree_idx..range_end {
+							let scan_limit = range_end.min(tree_idx.saturating_add(4096));
+							for (scanned, cand_idx) in (tree_idx..scan_limit).enumerate() {
+								if (scanned & 63) == 0 && Instant::now() >= deadline {
+									break;
+								}
 								if batch.len() >= PREFETCH_BATCH_SIZE
 									|| batch_bytes >= PREFETCH_MAX_BATCH_BYTES
 									|| rem_reads == 0
@@ -3859,29 +3881,39 @@ fn execute_search_with_tree(
 								let prefetch_deadline = deadline.checked_sub(Duration::from_millis(15)).unwrap_or(deadline);
 								let batch_ref = batch.as_slice();
 								let collected: Mutex<Vec<InvUpdate>> = Mutex::new(Vec::with_capacity(batch.len()));
+								let run_worker = || {
+									let mut local = Vec::new();
+									loop {
+										if Instant::now() >= prefetch_deadline {
+											break;
+										}
+										let pos = cursor.fetch_add(1, AtomicOrdering::Relaxed);
+										if pos >= batch_ref.len() {
+											break;
+										}
+										let ce = tree_ref.entry(batch_ref[pos]);
+										if let Some((cid, cinfo, ctris)) =
+											index.prefetch_and_index_entry(profile_id, profile_uuid, ce)
+										{
+											local.push(InvUpdate { doc_id: cid, info: cinfo, trigrams: ctris });
+										}
+									}
+									if !local.is_empty() {
+										collected.lock().unwrap().extend(local);
+									}
+								};
 								std::thread::scope(|scope| {
+									let mut spawned = 0usize;
 									for _ in 0..workers {
-										scope.spawn(|| {
-											let mut local = Vec::new();
-											loop {
-												if Instant::now() >= prefetch_deadline {
-													break;
-												}
-												let pos = cursor.fetch_add(1, AtomicOrdering::Relaxed);
-												if pos >= batch_ref.len() {
-													break;
-												}
-												let ce = tree_ref.entry(batch_ref[pos]);
-												if let Some((cid, cinfo, ctris)) =
-													index.prefetch_and_index_entry(profile_id, profile_uuid, ce)
-												{
-													local.push(InvUpdate { doc_id: cid, info: cinfo, trigrams: ctris });
-												}
-											}
-											if !local.is_empty() {
-												collected.lock().unwrap().extend(local);
-											}
-										});
+										// WHY: Fall back to inline prefetch on thread-spawn EAGAIN instead of panicking and aborting search-worker.
+										if std::thread::Builder::new().spawn_scoped(scope, run_worker).is_ok() {
+											spawned += 1;
+										} else {
+											break;
+										}
+									}
+									if spawned == 0 {
+										run_worker();
 									}
 								});
 								let updates = collected.into_inner().unwrap();
@@ -5734,6 +5766,80 @@ mod tests {
 		assert_eq!(dense.entries[1].doc_id, 1);
 		assert_eq!(dense.next_doc_id, 2);
 		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn non_multiline_anchors_match_interior_lines_past_chunk_prefilter() {
+		let dir = temp_dir("non-multiline-anchors");
+		let entry = write_object_file(
+			&dir,
+			"lines.txt",
+			"00000000-0000-4000-8000-000000000091",
+			b"alpha\nfoo\nbar\n",
+			1024,
+			0,
+		);
+		let index = SharedIndex::new(dir.clone(), 4);
+		for pattern in ["(?-m)^foo", "(?-m)foo$"] {
+			for piece_bytes in [256 * 1024usize, 4usize] {
+				let mut req = base_request(vec![entry.clone()], Some(pattern));
+				req.regex = true;
+				req.piece_bytes = Some(piece_bytes);
+				let res = execute_search(&index, &req).unwrap();
+				assert_eq!(res.hits.len(), 1, "pattern={pattern} piece_bytes={piece_bytes}");
+				assert_eq!(res.hits[0].line, 2);
+				assert_eq!(res.hits[0].text, "foo");
+			}
+		}
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn slice_tree_handles_rootless_trees_and_tree_order_cursors() {
+		let dir = temp_dir("slice-tree-order");
+		let media = MediaInterner::new();
+		let e_a = write_object_file(&dir, "a.ts", "00000000-0000-4000-8000-0000000000a1", b"a\n", 1024, 0);
+		let e_b = write_object_file(&dir, "src/f010.ts", "00000000-0000-4000-8000-0000000000a2", b"b\n", 1024, 1);
+		let e_c = write_object_file(&dir, "src/f020.ts", "00000000-0000-4000-8000-0000000000a3", b"c\n", 1024, 2);
+		let rootless = CompactTree::from_wire(&[e_a, e_b, e_c], &media);
+		let slice = slice_tree(&rootless, "", Some("src/f010.ts"));
+		let paths: Vec<&str> = slice.map(|i| rootless.path(i)).collect();
+		assert_eq!(paths, vec!["src/f010.ts", "src/f020.ts"]);
+
+		let d1 = make_folder_entry("docs", 0);
+		let f1 = write_object_file(&dir, "docs/b.ts", "00000000-0000-4000-8000-0000000000a4", b"d\n", 1024, 1);
+		let d2 = make_folder_entry("docs-other", 2);
+		let f2 = write_object_file(&dir, "docs-other/x.ts", "00000000-0000-4000-8000-0000000000a5", b"e\n", 1024, 3);
+		let tree = CompactTree::from_wire(&[d1, f1, d2, f2], &media);
+		let other_slice = slice_tree(&tree, "docs-other", Some("docs/b.ts"));
+		let other_paths: Vec<&str> = other_slice.map(|i| tree.path(i)).collect();
+		assert_eq!(other_paths, vec!["docs-other", "docs-other/x.ts"]);
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn inverted_index_overflow_preserves_sorted_added_postings() {
+		let budget = Arc::new(InvertedBudget::new(4 * 1024 * 1024));
+		let mut inv = InvertedIndex::new(32, budget);
+		let profile = [7u8; 16];
+		let info = DocInfo { kind: DOC_INDEXED, long_lines_1m: 0, max_line_bytes: 32 };
+		let tri = 0x616263u32;
+		for doc_id in [10u32, 5, 2, 8, 5] {
+			inv.record_doc(profile, doc_id, info, Some(&[tri]));
+		}
+		if let Some(list) = inv.added_postings.get(&tri) {
+			assert!(list.windows(2).all(|w| w[0] < w[1]), "unsorted overflow postings: {list:?}");
+		}
+		let mut patched = inv.patch_from(&[], 32, 32);
+		for doc_id in [9u32, 3, 1, 7] {
+			patched.record_doc(profile, doc_id, info, Some(&[tri]));
+		}
+		if let Some(list) = patched.added_postings.get(&tri) {
+			assert!(list.windows(2).all(|w| w[0] < w[1]), "unsorted patched postings: {list:?}");
+		}
+		let compiled = CompiledTrigramQuery::from_query(&TrigramQuery::Exact(tri));
+		let got = patched.eval_query(&compiled).unwrap();
+		assert_eq!(got, vec![1, 2, 3, 5, 7, 8, 9, 10]);
 	}
 
 	fn pipe_buffer() -> (SharedBuf, SharedReader) {

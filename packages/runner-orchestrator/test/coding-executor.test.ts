@@ -162,6 +162,10 @@ function world(machineId = randomUUID()): {
 								? "awaiting_input"
 								: "failed";
 					return { schema: "qorpera.coding-session/v1", workerId, phase: state.phase };
+				case "qorpera_emit_code_change_routine_wakes":
+					return { schema: "qorpera.code-change-wakes/v1", state: "idle", wakes: 0, skipped: 0, wakeIds: [] };
+				case "qorpera_emit_app_unhealthy_routine_wakes":
+					return { schema: "qorpera.app-unhealthy-wakes/v1", state: "idle", wakes: 0, skipped: 0, wakeIds: [] };
 				default:
 					throw new Error(`Unexpected control method ${String(method)}`);
 			}
@@ -585,6 +589,33 @@ describe("the coding executor over a session turn", () => {
 		expect(w.host.detachSession).not.toHaveBeenCalled();
 	});
 
+	it("includes bounded conflict details when CodingLandConflict carries merge-tree messages", async () => {
+		const w = world();
+		vi.mocked(w.host.publish).mockRejectedValueOnce(
+			new CodingLandConflict(
+				["src/cart.js"],
+				["CONFLICT (content): Merge conflict in src/cart.js", "Auto-merging src/cart.js"],
+			),
+		);
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion.p_outcome).toBe("failed");
+		expect(completion.p_summary).toContain("Conflict details: CONFLICT (content): Merge conflict in src/cart.js");
+		expect(Buffer.byteLength(String(completion.p_summary))).toBeLessThanOrEqual(4000);
+	});
+
 	it("a landing refused by rule fails the turn with what to change", async () => {
 		const w = world();
 		const summary = landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["assets/film.mov"])!;
@@ -637,7 +668,7 @@ describe("the coding executor over a session turn", () => {
 		);
 		// Names the company folder does not take: what to rename, the paths a null stands for only counted.
 		expect(landRefusal("main", "CODE_HOST_NAMES_FOLDER_REFUSES", ["bad.", null, "x "])).toBe(
-			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes where a session\'s workspace holds it): "bad.", "x " and 1 more. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]',
+			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 2,600 bytes where a session\'s workspace holds it): "bad.", "x " and 1 more. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]',
 		);
 		expect(landRefusal("main", "CODE_HOST_NAMES_FOLDER_REFUSES", [null])).toContain(
 			": 1 path not named here. Rename them, commit and finish again. [code=CODING_LAND_NAMES_REFUSED]",
@@ -713,6 +744,44 @@ describe("the coding executor over a session turn", () => {
 		// The founder's card draws its line for the checks by exactly these words (the web, part E).
 		expect(await stepOf("qorpera")).toBe("Checking and saving the change");
 		expect(await stepOf("github.com")).toBe("Publishing the draft pull request");
+	});
+
+	it("stages surface-backed Qorpera coding turns with staged artifact and staging step without landing main", async () => {
+		const w = world();
+		const surfaceSession = {
+			sessionId: randomUUID(),
+			surfaceId: randomUUID(),
+			slug: "website",
+			title: "Hjemmeside",
+		};
+		w.world.claim.repository = { host: "qorpera", owner: "surfaces", name: "website", baseBranch: "main" } as never;
+		(w.world.claim as Record<string, unknown>).surfaceSession = surfaceSession;
+		const branch = `qorpera/coding/${w.world.claim.workerId}`;
+		vi.mocked(w.host.publish).mockResolvedValueOnce({
+			pullRequest: null,
+			noChange: false,
+			staged: { branch, baseSha, headSha, filesChanged: 1 },
+		});
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Staged the homepage draft for preview.",
+			headSha,
+			operationKey: "done",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+		const publishing = w.world.calls.find(
+			(c) => c.method === "qorpera_record_coding_progress" && c.args.p_phase === "publishing",
+		);
+		expect(publishing?.args.p_last_step).toBe("Staging changes for preview");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion.p_outcome).toBe("succeeded");
+		expect(completion.p_artifacts).toEqual([{ kind: "staged", branch, baseSha, headSha }]);
 	});
 
 	it.each([
@@ -1509,6 +1578,37 @@ describe("the coding executor over a session turn", () => {
 		// Runtime v92: a session takes any number of turns (the claim of turn 65 used to be refused
 		// forever while the kernel admitted it).
 		expect(parseCodingSessionClaim(claimJson(workerId, randomUUID(), { sequence: 65 })).sequence).toBe(65);
+		const surfaceSession = {
+			sessionId: randomUUID(),
+			surfaceId: randomUUID(),
+			slug: "website",
+			title: "Hjemmeside",
+		};
+		expect(parseCodingSessionClaim(claimJson(workerId, randomUUID(), { surfaceSession })).surfaceSession).toEqual(
+			surfaceSession,
+		);
+		const longCjkTitle = "網".repeat(80);
+		const longEmojiTitle = "🌟".repeat(80);
+		expect(
+			parseCodingSessionClaim(
+				claimJson(workerId, randomUUID(), { surfaceSession: { ...surfaceSession, title: longCjkTitle } }),
+			).surfaceSession?.title,
+		).toBe(longCjkTitle);
+		expect(
+			parseCodingSessionClaim(
+				claimJson(workerId, randomUUID(), { surfaceSession: { ...surfaceSession, title: longEmojiTitle } }),
+			).surfaceSession?.title,
+		).toBe(longEmojiTitle);
+		expect(() =>
+			parseCodingSessionClaim(
+				claimJson(workerId, randomUUID(), { surfaceSession: { ...surfaceSession, title: "a".repeat(401) } }),
+			),
+		).toThrow("Invalid coding claim");
+		expect(() =>
+			parseCodingSessionClaim(
+				claimJson(workerId, randomUUID(), { surfaceSession: { ...surfaceSession, slug: "BAD SLUG" } }),
+			),
+		).toThrow("Invalid coding claim");
 		const turn = parseCodingTurnState(
 			{
 				schema: "qorpera.coding-turn-state/v1",
@@ -1888,5 +1988,184 @@ describe("the lease and the turn's reads through a slow database", () => {
 		timeline(polls, [2000, 14000, 19000, 21000, 23000, 25000]);
 		// The next poll waits its 2 s from the moment the describe and its retries settled.
 		near(polls[2]! - settled[1]!, 2000);
+	});
+});
+
+describe("CloudCodingExecutor code_change routine wakes and auto-redeploy", () => {
+	it("emits landed code_change wake and runs opt-in autoRedeploy with app_unhealthy wake on smoke failure", async () => {
+		const w = world();
+		const siteId = randomUUID();
+		vi.mocked(w.host.publish).mockResolvedValueOnce({
+			pullRequest: null,
+			noChange: false,
+			landed: {
+				state: "fast-forward",
+				mainBefore: baseSha,
+				mainSha: headSha,
+				filesChanged: 1,
+				change: 21,
+				paths: ["src/server.ts"],
+			},
+		});
+		const rollback = vi.fn(async () => {});
+		w.host.autoRedeploy = vi.fn(async () => ({
+			rawConfig: JSON.stringify({
+				schema: "qorpera.app-deploy/v1",
+				autoRedeploy: true,
+				site: "billing-api",
+				paths: ["src/**"],
+				buildCommand: "npm run build",
+				reloadCommand: "systemctl reload billing-api",
+				healthUrl: "https://billing-api.qorpera.test/health",
+				healthAttempts: 1,
+				healthIntervalMs: 0,
+			}),
+			siteId,
+			secretsManager: {
+				deliverBuild: vi.fn(async () => ({
+					siteId,
+					slug: "billing-api",
+					envPath: "/run/qorpera-apps/.billing-api.build.env",
+					secretNames: [],
+					mask: { stream: () => ({ push: (b: Buffer) => b, end: () => Buffer.alloc(0) }) },
+					scrub: vi.fn(async () => {}),
+				})),
+				snapshot: vi.fn(async () => null),
+				deliver: vi.fn(async () => ({
+					siteId,
+					slug: "billing-api",
+					envPath: "/run/qorpera-apps/billing-api.env",
+					secretNames: ["OPENAI_API_KEY"],
+					mask: { stream: () => ({ push: (b: Buffer) => b, end: () => Buffer.alloc(0) }) },
+					scrub: vi.fn(async () => {}),
+				})),
+				restore: vi.fn(async () => {}),
+			} as never,
+			hooks: {
+				currentReleaseId: vi.fn(async () => "rel-old"),
+				loadRuntimeSecrets: async () => ({
+					siteId,
+					slug: "billing-api",
+					scope: "runtime" as const,
+					targetEnv: "prod" as const,
+					secrets: { OPENAI_API_KEY: "sk-proj-secret-1234567890" },
+				}),
+				build: vi.fn(async () => ({ releaseId: "rel-new" })),
+				reload: vi.fn(async () => {}),
+				rollback,
+				probeHealth: vi.fn(async () => ({ ok: false, status: 503, error: "HTTP 503" })),
+			},
+		}));
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Shipped",
+			headSha,
+			operationKey: "done",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+		expect(rollback).toHaveBeenCalledTimes(1);
+		expect(w.world.calls).toContainEqual({
+			method: "qorpera_emit_code_change_routine_wakes",
+			args: {
+				p_environment_id: w.world.claim.environmentId,
+				p_owner: w.world.claim.repository.owner,
+				p_name: w.world.claim.repository.name,
+				p_kind: "landed",
+				p_event: {
+					change: "21",
+					mainBefore: baseSha,
+					mainAfter: headSha,
+					workerId: w.world.claim.workerId,
+					parentRunId: expect.any(String),
+					paths: ["src/server.ts"],
+				},
+			},
+		});
+		expect(w.world.calls).toContainEqual({
+			method: "qorpera_emit_app_unhealthy_routine_wakes",
+			args: {
+				p_environment_id: w.world.claim.environmentId,
+				p_site_id: siteId,
+				p_event: {
+					status: "rollback_triggered",
+					restartCount: 1,
+					error: "HTTP 503",
+				},
+			},
+		});
+	});
+
+	it("emits conflict and checks_failed code_change wakes on landing failure", async () => {
+		const conflictWorld = world();
+		vi.mocked(conflictWorld.host.publish).mockRejectedValueOnce(new CodingLandConflict(["src/app.ts"]));
+		const finish = (workerId: string) => ({
+			schema: "qorpera.coding-submission/v1",
+			workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Attempt",
+			headSha,
+			operationKey: "done",
+		});
+		const conflictExec = new CloudCodingExecutor({
+			control: withHook(
+				conflictWorld.control,
+				endTurnOnPoll(conflictWorld.world, "completed", finish(conflictWorld.world.claim.workerId)),
+			),
+			host: conflictWorld.host,
+			owner: "exec-test",
+			turnPollMs: 1,
+		});
+		expect(await conflictExec.runOnce(new AbortController().signal)).toBe("failed");
+		expect(conflictWorld.world.calls).toContainEqual({
+			method: "qorpera_emit_code_change_routine_wakes",
+			args: {
+				p_environment_id: conflictWorld.world.claim.environmentId,
+				p_owner: conflictWorld.world.claim.repository.owner,
+				p_name: conflictWorld.world.claim.repository.name,
+				p_kind: "conflict",
+				p_event: {
+					workerId: conflictWorld.world.claim.workerId,
+					parentRunId: expect.any(String),
+					paths: ["src/app.ts"],
+				},
+			},
+		});
+
+		const checksWorld = world();
+		vi.mocked(checksWorld.host.publish).mockRejectedValueOnce(
+			new CodingLandRefused("CODING_CHECKS_FAILED", "npm test failed"),
+		);
+		const checksExec = new CloudCodingExecutor({
+			control: withHook(
+				checksWorld.control,
+				endTurnOnPoll(checksWorld.world, "completed", finish(checksWorld.world.claim.workerId)),
+			),
+			host: checksWorld.host,
+			owner: "exec-test",
+			turnPollMs: 1,
+		});
+		expect(await checksExec.runOnce(new AbortController().signal)).toBe("failed");
+		expect(checksWorld.world.calls).toContainEqual({
+			method: "qorpera_emit_code_change_routine_wakes",
+			args: {
+				p_environment_id: checksWorld.world.claim.environmentId,
+				p_owner: checksWorld.world.claim.repository.owner,
+				p_name: checksWorld.world.claim.repository.name,
+				p_kind: "checks_failed",
+				p_event: {
+					workerId: checksWorld.world.claim.workerId,
+					parentRunId: expect.any(String),
+					checks: { code: "CODING_CHECKS_FAILED", summary: "npm test failed" },
+				},
+			},
+		});
 	});
 });

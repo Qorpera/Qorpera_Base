@@ -236,4 +236,63 @@ describe("Supabase object authority", () => {
 			await rm(directory, { recursive: true, force: true });
 		}
 	});
+
+	it("parses folder download fence metadata and rechecks via qorpera_folder_download_fence", async () => {
+		const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+		let fenceResponse: Response = Response.json({
+			schema: "qorpera.folder-object-download/v1",
+			profileId,
+			bytes: 12,
+			authoritySeq: 7,
+			rechecked: false,
+		});
+		const authority = new SupabaseObjectAuthority({
+			projectUrl: "https://project.supabase.co",
+			publishableKey: "sb_publishable_public",
+			secretKey: "sb_secret_private",
+			fetch: async (request, init) => {
+				const req = new Request(request, init);
+				calls.push({ url: req.url, body: (await req.json()) as Record<string, unknown> });
+				if (req.url.endsWith("/qorpera_folder_authorize_object_download")) {
+					return Response.json({
+						schema: "qorpera.folder-object-download/v1",
+						profileId,
+						bytes: 12,
+						authoritySeq: 7,
+						checkedAt: "2026-11-22T09:00:00.000Z",
+						viaActive: true,
+					});
+				}
+				return fenceResponse;
+			},
+		});
+		const actor = { kind: "platform" as const };
+		const pre = await authority.authorizeFolderDownload(environmentId, actor, sha256);
+		expect(pre).toEqual({
+			profileId,
+			bytes: 12,
+			fence: { authoritySeq: 7, checkedAt: "2026-11-22T09:00:00.000Z", viaActive: true },
+		});
+
+		const post = await authority.recheckFolderDownloadFence(environmentId, actor, sha256, pre.fence!);
+		expect(post).toEqual({ profileId, bytes: 12 });
+		expect(calls[1]).toEqual({
+			url: "https://project.supabase.co/rest/v1/rpc/qorpera_folder_download_fence",
+			body: {
+				p_environment_id: environmentId,
+				p_actor: actor,
+				p_sha256: sha256,
+				p_authority_seq: 7,
+				p_checked_at: "2026-11-22T09:00:00.000Z",
+				p_via_active: true,
+			},
+		});
+
+		fenceResponse = Response.json({ schema: "wrong", profileId, bytes: 12 });
+		await expect(
+			authority.recheckFolderDownloadFence(environmentId, actor, sha256, pre.fence!),
+		).rejects.toMatchObject({
+			status: 403,
+		});
+	});
 });

@@ -6,6 +6,8 @@ import {
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SITE_DOOR_PASS, SITE_DOOR_READY, SITE_DOOR_SHOWN, SITE_DOOR_URL } from "../src/app/views/site-view.ts";
+import { SurfaceDoorStage } from "../src/app/views/surface-door.ts";
+import { openPublishPatchnotesSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
 import { linkHref } from "../src/ui/dom.ts";
@@ -78,14 +80,14 @@ describe("the surface rail", () => {
 		expect(titles).toEqual(["Building", "Running"]);
 		const active = rail.el.querySelector<HTMLAnchorElement>(".rail-surface.active");
 		expect(active ? linkHref(active) : null).toBe(`#/c/${COMPANY}/s/website`);
-		expect(active?.querySelector(".interface-emblem")).not.toBeNull();
+		expect(active?.querySelector(".surface-figure")?.getAttribute("data-figure")).toBe("browser");
 		const add = rail.el.querySelector(".rail-surface-add");
 		expect(add ? linkHref(add) : null).toBe(`#/c/${COMPANY}/new-program`);
 		expect(rail.el.querySelector(".surface-switch")).toBeNull();
-		const sessionBtn = rail.el.querySelector<HTMLButtonElement>(".surface-session-main")!;
-		expect(sessionBtn.querySelector(".surface-session-status")?.textContent).toBe("3 changes ready");
-		sessionBtn.click();
-		expect(store.state.drawer?.sessionId).toBe(SESSION);
+		const crew = active?.querySelector<HTMLElement>(".rail-surface-crew");
+		expect(crew?.getAttribute("aria-label")).toBe("1 session active");
+		expect(crew?.querySelectorAll(".surface-crew.is-mini")).toHaveLength(1);
+		expect(rail.el.querySelector(".surface-session, .surface-tree")).toBeNull();
 		store.dispose();
 	});
 
@@ -464,14 +466,6 @@ describe("the surface page", () => {
 		await store.load();
 		await store.openSurface("website");
 
-		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
-		document.body.append(rail.el);
-		rail.update("website");
-		expect(rail.el.querySelector(".surface-conflict-paths")?.textContent).toBe("src/hero.tsx, src/theme.css");
-		rail.el.querySelector<HTMLButtonElement>(`.surface-reconcile[data-change="${CHANGES[0]}"]`)!.click();
-		await flush();
-		expect(reconcileChanges).toHaveBeenNthCalledWith(1, SURFACE, [CHANGES[0]]);
-
 		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
 		document.body.append(view.el);
 		await flush();
@@ -480,13 +474,13 @@ describe("the surface page", () => {
 		expect(view.el.querySelector(".surface-banner.is-conflict")?.textContent).toContain("src/hero.tsx");
 		view.el.querySelector<HTMLButtonElement>('.surface-banner.is-conflict [data-act="reconcile"]')!.click();
 		await flush();
-		expect(reconcileChanges).toHaveBeenNthCalledWith(2, SURFACE, [CHANGES[0], CHANGES[1]]);
+		expect(reconcileChanges).toHaveBeenNthCalledWith(1, SURFACE, [CHANGES[0], CHANGES[1]]);
 
 		const drawer = view.el.querySelector(".surface-drawer")!;
 		expect(drawer.querySelector(".surface-drawer-change.is-conflicted")?.textContent).toContain("src/hero.tsx");
 		drawer.querySelector<HTMLButtonElement>(`[data-act="reconcile"][data-change="${CHANGES[0]}"]`)!.click();
 		await flush();
-		expect(reconcileChanges).toHaveBeenNthCalledWith(3, SURFACE, [CHANGES[0]]);
+		expect(reconcileChanges).toHaveBeenNthCalledWith(2, SURFACE, [CHANGES[0]]);
 		view.dispose();
 		store.dispose();
 	});
@@ -542,7 +536,7 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
-	it("hands off directly from Brand Studio and via inline prompt from Inbox to Website", async () => {
+	it("shows no Send to bar on Brand Studio or on an ops surface like Inbox", async () => {
 		const brand = summary({
 			id: "22222222-2222-4222-8222-222222222229",
 			slug: "brand",
@@ -562,24 +556,13 @@ describe("the surface page", () => {
 			siteSlug: null,
 			liveUrl: null,
 		});
-		const spawned = session([], {
-			id: "33333333-3333-4333-8333-333333333388",
-			surfaceId: SURFACE,
-			state: "queued",
-			originKind: "cross_surface",
-			originLabel: "From Brand",
-		});
-		const spawnCrossSurfaceSession = vi.fn(async () => spawned);
-		const navigated: string[] = [];
 		const store = storeWith(
 			fakeClient({
 				listSurfaces: vi.fn(async () => [summary(), brand, inbox]),
 				getSurfaceWorkspace: vi.fn(async (id: string) =>
 					workspace([], { surface: id === brand.id ? brand : id === inbox.id ? inbox : summary() }),
 				),
-				spawnCrossSurfaceSession,
 			}),
-			{ onNavigateSurface: (slug) => navigated.push(slug) },
 		);
 		await store.load();
 
@@ -603,25 +586,8 @@ describe("the surface page", () => {
 		document.body.append(inboxView.el);
 		await flush();
 		inboxView.update();
-		const sendBarBtn = inboxView.el.querySelector<HTMLButtonElement>(".surface-handoff-btn")!;
-		expect(sendBarBtn.textContent).toContain("Send to Website…");
-		sendBarBtn.click();
-		const form = inboxView.el.querySelector<HTMLFormElement>(".surface-handoff-bar")!;
-		expect(form.hidden).toBe(false);
-		const handoffInput = form.querySelector<HTMLInputElement>(".surface-handoff-input")!;
-		handoffInput.value = "Fix Mette's Safari checkout bug";
-		form.dispatchEvent(new Event("submit", { cancelable: true }));
-		await flush();
-		expect(spawnCrossSurfaceSession).toHaveBeenNthCalledWith(
-			1,
-			expect.objectContaining({
-				sourceSurfaceId: inbox.id,
-				targetSurfaceSlug: "website",
-				prompt: "Fix Mette's Safari checkout bug",
-			}),
-		);
-		expect(form.hidden).toBe(true);
-		expect(navigated).toEqual(["website"]);
+		expect(inboxView.el.querySelector(".surface-handoff-btn")).toBeNull();
+		expect(inboxView.el.querySelector(".surface-notch, .surface-pill")).toBeNull();
 		inboxView.dispose();
 		store.dispose();
 	});
@@ -644,6 +610,563 @@ describe("the surface page", () => {
 		expect(view.el.querySelector<HTMLElement>(".surface-composer")?.hidden).toBe(true);
 		expect(view.el.querySelector<HTMLElement>(".surface-top-slot")?.hidden).toBe(true);
 		expect(view.el.querySelector(".surface-empty")?.textContent).toContain("This surface isn't available.");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("times out hung preview handshakes with one auto-remint retry and never submits consumed passes", async () => {
+		vi.useFakeTimers();
+		const consumed = new Set<string>();
+		const remints: { previewId: string; stalePass?: string }[] = [];
+		const controller = new AbortController();
+		const stage = new SurfaceDoorStage(controller.signal, {
+			handshakeTimeoutMs: 500,
+			isPassUsable: (_previewId, pass) => !consumed.has(pass),
+			onPassSent: (_previewId, pass) => consumed.add(pass),
+			onNeedFreshPass: (previewId, stalePass) => {
+				remints.push({ previewId, stalePass });
+				return undefined;
+			},
+		});
+		document.body.append(stage.el);
+
+		const pass1 = VALID_PASS;
+		const pass2 = `${VALID_PASS.slice(0, -1)}2`;
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], memberPass: pass1 }), "Preview");
+		const firstFrame = stage.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		spyFrameMessages(firstFrame);
+		sendFromFrame(firstFrame, { type: SITE_DOOR_READY });
+		expect(consumed.has(pass1)).toBe(true);
+
+		vi.advanceTimersByTime(500);
+		expect(stage.el.querySelector("iframe.is-staging")).toBeNull();
+		expect(remints).toEqual([{ previewId: PREVIEW_IDS[0], stalePass: pass1 }]);
+
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], memberPass: pass1 }), "Preview");
+		expect(stage.el.querySelector("iframe.is-staging")).toBeNull();
+
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], memberPass: pass2 }), "Preview");
+		expect(stage.el.querySelector("iframe.is-staging")).not.toBeNull();
+		vi.advanceTimersByTime(500);
+		expect(remints).toHaveLength(1);
+		expect(stage.el.querySelector(".surface-frame.is-waiting .surface-state.is-failed")).not.toBeNull();
+
+		const pass3 = `${VALID_PASS.slice(0, -1)}3`;
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[1], memberPass: pass3 }), "Preview 2");
+		const liveFrame = stage.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		spyFrameMessages(liveFrame);
+		sendFromFrame(liveFrame, { type: SITE_DOOR_READY });
+		sendFromFrame(liveFrame, { type: SITE_DOOR_SHOWN });
+		expect(stage.hasShown).toBe(true);
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[1], memberPass: null }), "Preview 2");
+		expect(stage.el.querySelector("iframe.is-shown")).toBe(liveFrame);
+		expect(stage.el.querySelector("iframe.is-staging")).toBeNull();
+
+		const failStage = new SurfaceDoorStage(controller.signal, {
+			handshakeTimeoutMs: 500,
+			onNeedFreshPass: async () => false,
+		});
+		document.body.append(failStage.el);
+		failStage.sync(previewFrame({ previewId: PREVIEW_IDS[0], memberPass: pass1 }), "Preview fail");
+		vi.advanceTimersByTime(500);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(failStage.el.querySelector(".surface-frame.is-waiting .surface-state.is-failed")).not.toBeNull();
+		expect(failStage.el.querySelector(".surface-frame.is-waiting p")?.textContent).toBe(
+			"The preview could not be opened.",
+		);
+
+		controller.abort();
+		vi.useRealTimers();
+	});
+
+	it("preserves a cross-surface drawer when an outgoing SurfaceView disposes and tracks concurrent publish rollbacks", async () => {
+		const brand = summary({
+			id: "22222222-2222-4222-8222-222222222229",
+			slug: "brand",
+			title: "Brand",
+			archetype: "studio",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const rb1 = deferred<ReturnType<typeof session>>();
+		const rb2 = deferred<ReturnType<typeof session>>();
+		let rbCount = 0;
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [summary({ unpublishedChangeCount: 2 }), brand]),
+				getSurfaceWorkspace: vi.fn(async (id: string) =>
+					id === brand.id
+						? workspace(
+								[session(["staged"], { id: "33333333-3333-4333-8333-333333333399", surfaceId: brand.id })],
+								{
+									surface: brand,
+								},
+							)
+						: workspace([session(["merged", "merged"])], { surface: summary({ unpublishedChangeCount: 2 }) }),
+				),
+				undoSurfaceChange: vi.fn(() => {
+					rbCount += 1;
+					return rbCount === 1 ? rb1.promise : rb2.promise;
+				}),
+			}),
+		);
+		await store.load();
+		const websiteView = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(websiteView.el);
+		await flush();
+		websiteView.update();
+
+		await store.openSurface("brand");
+		store.openDrawer(brand.id, "33333333-3333-4333-8333-333333333399");
+		websiteView.dispose();
+		expect(store.state.drawer).toEqual({
+			surfaceId: brand.id,
+			sessionId: "33333333-3333-4333-8333-333333333399",
+		});
+
+		HTMLDialogElement.prototype.showModal = function () {
+			this.open = true;
+		};
+		HTMLDialogElement.prototype.close = function () {
+			this.open = false;
+			this.dispatchEvent(new Event("close"));
+		};
+		const websiteSurface = store.state.surfaces.find((item) => item.id === SURFACE)!;
+		const sheet = openPublishPatchnotesSheet(store, websiteSurface);
+		const buttons = [...sheet.el.querySelectorAll<HTMLButtonElement>('[data-act="rollback"]')];
+		expect(buttons).toHaveLength(2);
+		buttons[0]!.click();
+		sheet.el.querySelector<HTMLButtonElement>(`[data-act="rollback"][data-change="${CHANGES[1]}"]`)!.click();
+		expect(
+			sheet.el.querySelector<HTMLButtonElement>(`[data-act="rollback"][data-change="${CHANGES[0]}"]`)?.disabled,
+		).toBe(true);
+		expect(
+			sheet.el.querySelector<HTMLButtonElement>(`[data-act="rollback"][data-change="${CHANGES[1]}"]`)?.disabled,
+		).toBe(true);
+
+		rb1.resolve(session(["staged", "merged"]));
+		await flush();
+		expect(
+			sheet.el.querySelector<HTMLButtonElement>(`[data-act="rollback"][data-change="${CHANGES[1]}"]`)?.disabled,
+		).toBe(true);
+		sheet.close();
+		rb2.resolve(session(["staged", "staged"]));
+		await flush();
+		store.dispose();
+	});
+
+	it("renders Retry preview button on failed door frames, Failed session badges & Retry action, pending merge toast, and publish errors in patch notes", async () => {
+		const controller = new AbortController();
+		const onRetry = vi.fn();
+		const door = new SurfaceDoorStage(controller.signal, { onRetry });
+		document.body.append(door.el);
+		door.sync(
+			previewFrame({ status: "failed", errorDetail: "Vite build failed", doorActionUrl: null, memberPass: null }),
+			"Website",
+		);
+		const retryBtn = door.el.querySelector<HTMLButtonElement>('[data-act="retry-preview"]')!;
+		expect(retryBtn).not.toBeNull();
+		expect(retryBtn.hidden).toBe(false);
+		retryBtn.click();
+		expect(onRetry).toHaveBeenCalledTimes(1);
+
+		door.sync(previewFrame({ status: "building", doorActionUrl: null, memberPass: null }), "Website");
+		expect(retryBtn.hidden).toBe(true);
+		controller.abort();
+
+		const failedSession = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333341",
+			title: "Broken session",
+			state: "failed",
+			messages: [sessionMessage(MESSAGE_IDS[0], "system", "Session timed out after worker retry. Reply to retry.")],
+		});
+		const readySession = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333342",
+			title: "Normal ready session",
+			state: "ready",
+		});
+		const replySurfaceSession = vi.fn(async () => ({ ...failedSession, state: "queued" as const }));
+		const approveSurfaceChange = vi.fn(async () => ({
+			...readySession,
+			changes: [change(CHANGES[0], 1, "merging")],
+		}));
+		let currentPublishStatus: "idle" | "publishing" | "failed" = "failed";
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [
+				summary({
+					publishStatus: currentPublishStatus,
+					lastPublishError: currentPublishStatus === "failed" ? "Missing index.html" : null,
+					hasUnpublishedChanges: true,
+					unpublishedChangeCount: 1,
+				}),
+			]),
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([readySession, failedSession], {
+					surface: summary({
+						publishStatus: currentPublishStatus,
+						lastPublishError: currentPublishStatus === "failed" ? "Missing index.html" : null,
+						hasUnpublishedChanges: true,
+						unpublishedChangeCount: 1,
+					}),
+					recentHistory: [session(["merged"], { state: "completed" })],
+				}),
+			),
+			replySurfaceSession,
+			approveSurfaceChange,
+			publishSurface: vi.fn(async () => {
+				currentPublishStatus = "publishing";
+				return summary({ publishStatus: "publishing", hasUnpublishedChanges: true, unpublishedChangeCount: 1 });
+			}),
+		});
+		const store = storeWith(client);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const failedBarBadge = view.el.querySelector(".surface-bar-agent-badge.is-danger");
+		expect(failedBarBadge?.textContent).toBe("Failed");
+
+		const cards = [...view.el.querySelectorAll<HTMLElement>(".surface-overview-card.is-agent")];
+		expect(cards[0]?.dataset.session).toBe(failedSession.id);
+		expect(cards[0]?.classList.contains("is-failed")).toBe(true);
+		const retrySessionBtn = cards[0]!.querySelector<HTMLButtonElement>('[data-act="retry-session"]')!;
+		expect(retrySessionBtn).not.toBeNull();
+		retrySessionBtn.click();
+		await flush();
+		expect(replySurfaceSession).toHaveBeenCalledWith(failedSession.id, expect.any(String));
+
+		await store.approveChange(readySession.id, CHANGES[0]);
+		view.update();
+		const pendingToast = view.el.querySelector(".surface-toast.is-pending");
+		expect(pendingToast).not.toBeNull();
+		expect(pendingToast?.textContent).toContain("Merging");
+		expect(pendingToast?.querySelector('[data-act="undo"]')).toBeNull();
+
+		HTMLDialogElement.prototype.showModal = function () {
+			this.open = true;
+		};
+		HTMLDialogElement.prototype.close = function () {
+			this.open = false;
+			this.dispatchEvent(new Event("close"));
+		};
+		const sheet = openPublishPatchnotesSheet(store, store.state.surfaces[0]!);
+		expect(sheet.el.querySelector(".surface-sheet-error")?.textContent).toBe("Missing index.html");
+		sheet.el.querySelector<HTMLButtonElement>('[data-act="confirm-publish"]')!.click();
+		await flush();
+		expect(sheet.el.open).toBe(true);
+		expect(sheet.el.querySelector(".surface-sheet-status")?.textContent).toBe("Publishing…");
+
+		currentPublishStatus = "idle";
+		await store.refreshWorkspace(SURFACE);
+		expect(sheet.el.open).toBe(false);
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("enters with a page loading screen, defers heavy mounting until after first paint, and cancels mounts when switched away", async () => {
+		const brand = summary({
+			id: "22222222-2222-4222-8222-222222222241",
+			slug: "brand",
+			title: "Brand",
+			archetype: "studio",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const inbox = summary({
+			id: "22222222-2222-4222-8222-222222222242",
+			slug: "inbox",
+			title: "Inbox",
+			group: "operations",
+			archetype: "ops",
+			icon: "mail",
+			sourceKind: "native_ops",
+			previewMode: "none",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [summary(), brand, inbox]),
+				getSurfaceWorkspace: vi.fn(async (id: string) =>
+					workspace([], { surface: id === brand.id ? brand : id === inbox.id ? inbox : summary() }),
+				),
+			}),
+		);
+		await store.load();
+
+		const skippedMount = vi.fn(() => ({ el: document.createElement("div"), update: vi.fn(), dispose: vi.fn() }));
+		const skippedView = new SurfaceView({ store, mount: skippedMount, openMigration: () => undefined }, "website");
+		document.body.append(skippedView.el);
+		skippedView.update();
+		const skippedLoading = skippedView.el.querySelector<HTMLElement>(".surface-loading")!;
+		expect(skippedLoading.hidden).toBe(false);
+		expect(skippedLoading.querySelector(".skeleton-surface-live")).not.toBeNull();
+		expect(skippedView.el.querySelector<HTMLElement>(".surface-mount")?.hidden).toBe(true);
+		expect(skippedMount).not.toHaveBeenCalled();
+
+		skippedView.dispose();
+		await flush();
+		expect(skippedMount).not.toHaveBeenCalled();
+
+		const opsEl = document.createElement("div");
+		opsEl.className = "ops-loaded";
+		const opsMount = vi.fn(() => ({ el: opsEl, update: vi.fn(), dispose: vi.fn() }));
+		const opsView = new SurfaceView({ store, mount: opsMount, openMigration: () => undefined }, "inbox");
+		document.body.append(opsView.el);
+		opsView.update();
+		expect(opsView.el.querySelector<HTMLElement>(".surface-loading")?.hidden).toBe(false);
+		expect(opsView.el.querySelector(".skeleton-surface-ops")).not.toBeNull();
+		expect(opsMount).not.toHaveBeenCalled();
+
+		await flush();
+		expect(opsMount).toHaveBeenCalledTimes(1);
+		expect(opsView.el.querySelector<HTMLElement>(".surface-loading")?.hidden).toBe(true);
+		expect(opsView.el.querySelector<HTMLElement>(".surface-mount")?.hidden).toBe(false);
+		expect(opsView.el.querySelector(".surface-mount .ops-loaded")).toBe(opsEl);
+		opsView.dispose();
+
+		const studioView = new SurfaceView(
+			{
+				store,
+				mount: () => undefined,
+				openMigration: () => undefined,
+				loadStudioFiles: async () => ({ "brand/voice.md": "Calm.\n" }),
+			},
+			"brand",
+		);
+		document.body.append(studioView.el);
+		studioView.update();
+		expect(studioView.el.querySelector(".skeleton-surface-studio")).not.toBeNull();
+		expect(studioView.el.querySelector(".surface-studio")).toBeNull();
+		await flush();
+		expect(studioView.el.querySelector<HTMLElement>(".surface-loading")?.hidden).toBe(true);
+		expect(studioView.el.querySelector(".surface-studio")).not.toBeNull();
+		studioView.dispose();
+		store.dispose();
+	});
+
+	it("holds the loading screen while a preview workspace or mount dependency loads and avoids mounting live views behind Preview", async () => {
+		const pendingWorkspace = deferred<ReturnType<typeof workspace>>();
+		const site = summary({ activeSessionCount: 1, pendingChangeCount: 1 });
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [site]),
+				getSurfaceWorkspace: vi.fn(() => pendingWorkspace.promise),
+			}),
+		);
+		await store.load();
+
+		const mountEl = document.createElement("div");
+		mountEl.className = "live-site-mount";
+		let mountLoading = true;
+		const mount = vi.fn(() => ({ el: mountEl, update: vi.fn(), dispose: vi.fn() }));
+		const view = new SurfaceView(
+			{
+				store,
+				mount,
+				isMountLoading: () => mountLoading,
+				openMigration: () => undefined,
+			},
+			"website",
+		);
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		expect(view.el.querySelector<HTMLElement>(".surface-loading")?.hidden).toBe(false);
+		expect(view.el.querySelector(".surface-empty")).toBeNull();
+		expect(mount).not.toHaveBeenCalled();
+
+		pendingWorkspace.resolve(
+			workspace([session(["staged"])], {
+				surface: site,
+				previewState: {
+					surfaceId: SURFACE,
+					mode: "single",
+					primary: previewFrame({
+						previewId: PREVIEW_IDS[0],
+						doorActionUrl: "https://thetaband--p1111aaaa.qorpera.com/__qorpera/member",
+						memberPass: VALID_PASS,
+					}),
+					compareFrames: [],
+				},
+			}),
+		);
+		await flush();
+		view.update();
+		expect(view.el.querySelector<HTMLElement>(".surface-loading")?.hidden).toBe(true);
+		expect(view.el.querySelector<HTMLElement>(".surface-frames")?.hidden).toBe(false);
+		expect(view.el.querySelector<HTMLElement>(".surface-mount")?.hidden).toBe(true);
+		expect(mount).not.toHaveBeenCalled();
+
+		store.setMode("live");
+		view.update();
+		expect(view.el.querySelector<HTMLElement>(".surface-loading")?.hidden).toBe(false);
+		expect(mount).not.toHaveBeenCalled();
+
+		mountLoading = false;
+		view.update();
+		expect(view.el.querySelector<HTMLElement>(".surface-loading")?.hidden).toBe(true);
+		expect(mount).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector(".surface-mount .live-site-mount")).toBe(mountEl);
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("keeps SurfaceRail row elements and tiles in place when switching the active surface", async () => {
+		const brand = summary({
+			id: "22222222-2222-4222-8222-222222222243",
+			slug: "brand",
+			title: "Brand",
+			archetype: "studio",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [summary(), brand]),
+				getSurfaceWorkspace: vi.fn(async (id: string) =>
+					workspace([], { surface: id === brand.id ? brand : summary() }),
+				),
+			}),
+		);
+		await store.load();
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update("website");
+
+		const websiteRow = rail.el.querySelector<HTMLAnchorElement>('.rail-surface[data-surface-slug="website"]')!;
+		const brandRow = rail.el.querySelector<HTMLAnchorElement>('.rail-surface[data-surface-slug="brand"]')!;
+		const websiteTile = websiteRow.querySelector(".surface-tile")!;
+		const brandTile = brandRow.querySelector(".surface-tile")!;
+		expect(websiteRow.classList.contains("active")).toBe(true);
+		expect(websiteRow.getAttribute("aria-current")).toBe("page");
+		expect(brandRow.classList.contains("active")).toBe(false);
+
+		rail.update("brand");
+		expect(rail.el.querySelector('.rail-surface[data-surface-slug="website"]')).toBe(websiteRow);
+		expect(rail.el.querySelector('.rail-surface[data-surface-slug="brand"]')).toBe(brandRow);
+		expect(websiteRow.querySelector(".surface-tile")).toBe(websiteTile);
+		expect(brandRow.querySelector(".surface-tile")).toBe(brandTile);
+		expect(websiteRow.classList.contains("active")).toBe(false);
+		expect(websiteRow.getAttribute("aria-current")).toBeNull();
+		expect(brandRow.classList.contains("active")).toBe(true);
+		expect(brandRow.getAttribute("aria-current")).toBe("page");
+
+		await store.openSurface("brand");
+		rail.update("brand");
+		expect(rail.el.querySelector('.rail-surface[data-surface-slug="website"]')).toBe(websiteRow);
+		expect(rail.el.querySelector('.rail-surface[data-surface-slug="brand"]')).toBe(brandRow);
+		expect(websiteRow.querySelector(".surface-tile")).toBe(websiteTile);
+		expect(brandRow.querySelector(".surface-tile")).toBe(brandTile);
+		store.dispose();
+	});
+
+	it("deactivates an outgoing SurfaceView immediately while keeping heavy mount disposal deferred until dispose()", async () => {
+		const inbox = summary({
+			id: "22222222-2222-4222-8222-222222222244",
+			slug: "inbox",
+			title: "Inbox",
+			archetype: "ops",
+			icon: "mail",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [inbox]),
+				getSurfaceWorkspace: vi.fn(async () =>
+					workspace([session(["staged"], { surfaceId: inbox.id })], { surface: inbox }),
+				),
+			}),
+		);
+		await store.load();
+
+		const clearActiveSpy = vi.spyOn(store, "clearActiveSurface");
+		const mountEl = document.createElement("div");
+		const mountDeactivate = vi.fn();
+		const mountDispose = vi.fn();
+		const mountUpdate = vi.fn();
+		const view = new SurfaceView(
+			{
+				store,
+				mount: () => ({ el: mountEl, update: mountUpdate, deactivate: mountDeactivate, dispose: mountDispose }),
+				openMigration: () => undefined,
+			},
+			"inbox",
+		);
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		store.openDrawer(inbox.id, SESSION);
+		expect(store.state.drawer?.surfaceId).toBe(inbox.id);
+
+		const updatesBefore = mountUpdate.mock.calls.length;
+		view.deactivate();
+		expect(mountDeactivate).toHaveBeenCalledTimes(1);
+		expect(mountDispose).not.toHaveBeenCalled();
+		expect(clearActiveSpy).toHaveBeenCalledWith(inbox.id);
+		expect(store.state.drawer).toBeUndefined();
+
+		view.update();
+		expect(mountUpdate).toHaveBeenCalledTimes(updatesBefore);
+
+		view.dispose();
+		view.dispose();
+		expect(mountDispose).toHaveBeenCalledTimes(1);
+		store.dispose();
+	});
+
+	it("disposes a live_build mount when switching away from Live mode to Preview", async () => {
+		const liveSurface = summary({
+			activeSessionCount: 1,
+			pendingChangeCount: 1,
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [liveSurface]),
+				getSurfaceWorkspace: vi.fn(async () =>
+					workspace([session(["staged"])], {
+						surface: liveSurface,
+						previewState: {
+							surfaceId: liveSurface.id,
+							mode: "single",
+							primary: previewFrame(),
+							compareFrames: [],
+						},
+					}),
+				),
+			}),
+		);
+		await store.load();
+		const mountDispose = vi.fn();
+		const mountCreate = vi.fn(() => ({
+			el: document.createElement("div"),
+			update: vi.fn(),
+			dispose: mountDispose,
+		}));
+		const view = new SurfaceView(
+			{
+				store,
+				mount: mountCreate,
+				openMigration: () => undefined,
+			},
+			liveSurface.slug,
+		);
+		document.body.append(view.el);
+		await flush();
+		store.setMode("live");
+		view.update();
+		expect(mountCreate).toHaveBeenCalledTimes(1);
+		expect(mountDispose).not.toHaveBeenCalled();
+
+		store.setMode("preview");
+		view.update();
+		expect(mountDispose).toHaveBeenCalledTimes(1);
 		view.dispose();
 		store.dispose();
 	});

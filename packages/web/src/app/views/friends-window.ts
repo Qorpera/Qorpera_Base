@@ -64,6 +64,14 @@ export class FriendsWindow {
 		this.#timer = setInterval(() => {
 			if (document.visibilityState === "visible" && !this.#friends.store.get().loading) void this.#friends.refresh();
 		}, REFRESH_MS);
+		document.addEventListener(
+			"visibilitychange",
+			() => {
+				if (document.visibilityState === "visible" && !this.#friends.store.get().loading)
+					void this.#friends.refresh();
+			},
+			{ signal },
+		);
 	}
 
 	get friends(): FriendsController {

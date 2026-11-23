@@ -46,10 +46,11 @@ function indexInstant(text: string): string {
 export function cloudRoutineTriggerOfFile(file: RoutineFile): CloudRoutineTrigger | null {
 	const trigger = file.trigger;
 	const base = { id: "file", replyPolicy: file.reply as CloudRoutineReplyPolicy };
+	const check = file.checkBeforeWake ? { checkBeforeWake: { ...file.checkBeforeWake } } : {};
 	const start = (starts: string | null) => (starts === null ? {} : { startAt: indexInstant(starts) });
 	switch (trigger.when) {
 		case "every":
-			return { ...base, kind: "schedule", intervalMinutes: trigger.minutes, ...start(trigger.starts) };
+			return { ...base, kind: "schedule", intervalMinutes: trigger.minutes, ...start(trigger.starts), ...check };
 		case "weekly":
 			if (file.timezone === null) return null;
 			return {
@@ -60,6 +61,7 @@ export function cloudRoutineTriggerOfFile(file: RoutineFile): CloudRoutineTrigge
 				localTime: trigger.time,
 				timeZone: file.timezone,
 				...start(trigger.starts),
+				...check,
 			};
 		case "window":
 			if (file.timezone === null) return null;
@@ -72,6 +74,7 @@ export function cloudRoutineTriggerOfFile(file: RoutineFile): CloudRoutineTrigge
 				timeZone: file.timezone,
 				...(trigger.days === null ? {} : { weekdays: trigger.days.map((day) => CLOUD_DAYS[day]) }),
 				...(trigger.months === null ? {} : { months: [...trigger.months] }),
+				...check,
 			};
 		case "once":
 			if (file.timezone === null) return null;
@@ -80,7 +83,6 @@ export function cloudRoutineTriggerOfFile(file: RoutineFile): CloudRoutineTrigge
 				kind: "once",
 				at: trigger.at,
 				timeZone: file.timezone,
-				// The listened path's folded key, as the index keeps it.
 				...(trigger.after === undefined ? {} : { after: companyPathKey(trigger.after) }),
 			};
 		case "file-change":
@@ -93,6 +95,37 @@ export function cloudRoutineTriggerOfFile(file: RoutineFile): CloudRoutineTrigge
 				source: "event",
 				hookId: trigger.hook,
 				...(trigger.only === null ? {} : { only: [...trigger.only] }),
+				timeZone: file.timezone,
+			};
+		case "code-change":
+			if (file.timezone === null) return null;
+			return {
+				...base,
+				kind: "listener",
+				source: "code-change",
+				repo: trigger.repo.toLowerCase(),
+				events: [...trigger.events],
+				...(trigger.paths === null ? {} : { paths: [...trigger.paths] }),
+				timeZone: file.timezone,
+			};
+		case "app-unhealthy":
+			if (file.timezone === null) return null;
+			return {
+				...base,
+				kind: "listener",
+				source: "app-unhealthy",
+				site: trigger.site,
+				timeZone: file.timezone,
+			};
+		case "data-change":
+			if (file.timezone === null) return null;
+			return {
+				...base,
+				kind: "listener",
+				source: "data-change",
+				database: trigger.database,
+				...(trigger.tables === null ? {} : { tables: [...trigger.tables] }),
+				...(trigger.operations === null ? {} : { operations: [...trigger.operations] }),
 				timeZone: file.timezone,
 			};
 	}
@@ -130,7 +163,14 @@ type FlatTrigger = Partial<
 		| "watch"
 		| "match"
 		| "hook"
-		| "only",
+		| "only"
+		| "repo"
+		| "events"
+		| "paths"
+		| "site"
+		| "database"
+		| "tables"
+		| "operations",
 		CompanyStateSetting
 	>
 >;
@@ -156,6 +196,17 @@ function flat(trigger: RoutineTrigger): FlatTrigger {
 			return { when: "file-change", watch: trigger.watch, match: trigger.match };
 		case "event":
 			return { when: "event", hook: trigger.hook, only: trigger.only };
+		case "code-change":
+			return { when: "code-change", repo: trigger.repo, events: trigger.events, paths: trigger.paths };
+		case "app-unhealthy":
+			return { when: "app-unhealthy", site: trigger.site };
+		case "data-change":
+			return {
+				when: "data-change",
+				database: trigger.database,
+				tables: trigger.tables,
+				operations: trigger.operations,
+			};
 	}
 }
 

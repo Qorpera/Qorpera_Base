@@ -54,6 +54,7 @@ import type { AppAnswer, AppCall, FramedPage } from "../ui/app-frame.ts";
 import { folderLinkPath } from "../ui/folder-links.ts";
 import { webHref } from "../ui/markdown.ts";
 import { framePage, PAGE_FRAME_URL } from "../ui/page-frame.ts";
+import { hasBrowserCompositor, yieldToMain } from "../ui/time-slice.ts";
 import {
 	AppActionRefused,
 	type AppGate,
@@ -531,18 +532,18 @@ class AppFiles {
 
 	async #pieces(file: CloudMemberFolderFile, type: string): Promise<Blob> {
 		const folder = this.#folder;
-		let blob = new Blob([], { type });
+		const parts: BlobPart[] = [];
 		await this.#turn(() =>
 			folder.readFilePieces!(
 				file,
 				this.#signal,
 				(piece) => {
-					blob = new Blob([blob, piece as BlobPart], { type });
+					parts.push(piece as BlobPart);
 				},
 				LIVE,
 			),
 		);
-		return blob;
+		return new Blob(parts, { type });
 	}
 
 	/** A path's entry, read live as the member: with the other paths asked for in the same moment, in one call. */
@@ -1497,22 +1498,43 @@ export class AppBridge {
 			(entry) => entry.kind === "folder",
 		);
 		const todos: { agent: string; title: string; status: string; updatedAt: string }[] = [];
-		for (const agent of agents) {
-			if (todos.length >= TODO_FILES) break;
-			const files = await listAll(folder, `${agent.path}/todos`, this.#signal, TODO_FILES - todos.length).catch(
-				() => [],
-			);
-			for (const file of files) {
-				if (file.kind !== "file" || appFileKind(file.path) !== "md") continue;
-				const text = await readText(folder, file, this.#signal, 16 * 1024);
-				const parsed = text === null ? null : parseCompanyStateFile(file.path, text);
-				if (parsed?.ok !== true || parsed.file.kind !== "todo") continue;
-				todos.push({
-					agent: agent.path.slice(agent.path.lastIndexOf("/") + 1),
-					title: parsed.file.title,
-					status: parsed.file.status,
-					updatedAt: file.updatedAt,
+		const batchSize = APP_READ_CONCURRENCY * 2;
+		for (
+			let agentStart = 0;
+			agentStart < agents.length && todos.length < TODO_FILES;
+			agentStart += APP_READ_CONCURRENCY
+		) {
+			const remaining = TODO_FILES - todos.length;
+			const agentChunk = agents.slice(agentStart, agentStart + APP_READ_CONCURRENCY);
+			const listed = await mapLimited(agentChunk, APP_READ_CONCURRENCY, this.#signal, async (agent) => ({
+				agent: agent.path.slice(agent.path.lastIndexOf("/") + 1),
+				files: await listAll(folder, `${agent.path}/todos`, this.#signal, remaining).catch(() => []),
+			}));
+			const candidates: { agent: string; file: CloudMemberFolderEntry }[] = [];
+			for (const group of listed) {
+				for (const file of group.files) {
+					if (file.kind !== "file" || appFileKind(file.path) !== "md") continue;
+					candidates.push({ agent: group.agent, file });
+				}
+			}
+			for (let start = 0; start < candidates.length && todos.length < TODO_FILES; start += batchSize) {
+				const slice = candidates.slice(start, start + batchSize);
+				const read = await mapLimited(slice, APP_READ_CONCURRENCY, this.#signal, async ({ agent, file }) => {
+					const text = await readText(folder, file, this.#signal, 16 * 1024);
+					const parsed = text === null ? null : parseCompanyStateFile(file.path, text);
+					if (parsed?.ok !== true || parsed.file.kind !== "todo") return null;
+					return {
+						agent,
+						title: parsed.file.title,
+						status: parsed.file.status,
+						updatedAt: file.updatedAt,
+					};
 				});
+				for (const item of read) {
+					if (!item) continue;
+					todos.push(item);
+					if (todos.length >= TODO_FILES) break;
+				}
 			}
 		}
 		return todos;
@@ -2258,8 +2280,15 @@ export async function warmApps(folder: Folder, apps: readonly CompanyApp[], sign
 		);
 	}
 	let next = 0;
+	const yieldBetween = hasBrowserCompositor();
 	const worker = async () => {
-		while (next < reads.length && !signal.aborted) await reads[next++]!().catch(() => undefined);
+		while (next < reads.length && !signal.aborted) {
+			if (yieldBetween) {
+				await yieldToMain(signal);
+				if (signal.aborted) return;
+			}
+			await reads[next++]!().catch(() => undefined);
+		}
 	};
 	await Promise.all(Array.from({ length: WARM_AT_ONCE }, worker));
 }
@@ -2346,6 +2375,7 @@ export class CompanyApps {
 		void this.#hints?.close().catch(() => undefined);
 		this.#listeners.clear();
 		this.#readers.clear();
+		this.#icons.clear();
 	}
 
 	/** The apps as last read. */
@@ -2439,6 +2469,10 @@ export class CompanyApps {
 		if (!this.#last.some((app) => app.manifest)) return;
 		this.#warming = setTimeout(() => {
 			if (this.#stop.signal.aborted) return;
+			if (typeof document !== "undefined" && document.hidden) {
+				this.#warming = undefined;
+				return;
+			}
 			void Promise.resolve()
 				.then(() => warmApps(this.#source.folder(), this.#last, this.#stop.signal))
 				.catch(() => undefined)

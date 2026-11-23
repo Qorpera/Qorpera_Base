@@ -24,6 +24,12 @@ export type FolderServiceActor =
 /** Any actor the folder core's byte checks take; SQL judges each (C1D §3). */
 export type FolderActor = FolderRunActor | FolderServiceActor;
 
+export interface FolderDownloadFence {
+	readonly authoritySeq: number;
+	readonly checkedAt: string;
+	readonly viaActive: boolean;
+}
+
 /** The folder core's byte checks (deploy/first-node/RUNTIME-COMPANY-FOLDER-C1D.md §3, §7). */
 export interface FolderObjectAuthority extends NativeBindingProof {
 	/** Per chunk: the object is listed by this actor's open upload intent. Returns the company, the NAS place. */
@@ -47,6 +53,12 @@ export interface FolderObjectAuthority extends NativeBindingProof {
 		environmentId: string,
 		actor: FolderActor,
 		sha256: string,
+	): Promise<{ profileId: string; bytes: number; fence?: FolderDownloadFence }>;
+	recheckFolderDownloadFence?(
+		environmentId: string,
+		actor: FolderActor,
+		sha256: string,
+		fence: FolderDownloadFence,
 	): Promise<{ profileId: string; bytes: number }>;
 	readLegacyObject(companyId: string, sha256: string): Promise<Uint8Array>;
 }
@@ -114,7 +126,10 @@ export async function serveFolderObject(
 			throw new ObjectDependencyError(503);
 	}
 	// Recheck after potentially slow NAS I/O.
-	const current = await options.authority.authorizeFolderDownload(environmentId, actor, sha256);
+	const current =
+		authority.fence && options.authority.recheckFolderDownloadFence
+			? await options.authority.recheckFolderDownloadFence(environmentId, actor, sha256, authority.fence)
+			: await options.authority.authorizeFolderDownload(environmentId, actor, sha256);
 	if (current.profileId !== authority.profileId || current.bytes !== authority.bytes)
 		throw new ObjectDependencyError(503);
 	response.writeHead(200, {

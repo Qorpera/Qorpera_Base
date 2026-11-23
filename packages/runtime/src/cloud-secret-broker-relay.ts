@@ -89,7 +89,17 @@ export async function openCloudSecretRelay(
 		upstream.destroy(new Error("Cloud secret relay ended"));
 	};
 	signal.addEventListener("abort", end, { once: true });
-	upstream.once("close", () => signal.removeEventListener("abort", end));
+	const onBodyError = (): void => {
+		end();
+	};
+	if (request.body) request.body.once("error", onBodyError);
+	upstream.once("close", () => {
+		signal.removeEventListener("abort", end);
+		if (request.body) {
+			request.body.unpipe(upstream);
+			request.body.off("error", onBodyError);
+		}
+	});
 	upstream.setTimeout(request.idleMs, end);
 	return await new Promise<IncomingMessage>((resolve, reject) => {
 		let timer = setTimeout(end, Math.max(0, CONNECT_MS - (Date.now() - started)));

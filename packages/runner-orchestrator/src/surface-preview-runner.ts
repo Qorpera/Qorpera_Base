@@ -1,6 +1,7 @@
 import type { CloudCodingRepository, SurfacePreviewConflict } from "@qorpera/contracts";
-import type { CodeHostJob } from "./code-host-jobs.ts";
+import { type CodeHostJob, CodeHostJobFailure } from "./code-host-jobs.ts";
 import { type CodeHostChangeRange, composePreviewTree } from "./code-host-surfaces.ts";
+import { parseCodingJson } from "./coding-setup.ts";
 
 export interface FastPreviewRecipe {
 	readonly run: string;
@@ -16,7 +17,7 @@ const SKIPPED_PREVIEW_CHECK_NAMES = /^(?:test|tests|unit|e2e|lint|typecheck|form
 export function parseFastPreviewRecipe(checksJsonText: string): FastPreviewRecipe | null {
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(checksJsonText);
+		parsed = parseCodingJson(checksJsonText, false);
 	} catch {
 		return null;
 	}
@@ -114,7 +115,6 @@ export async function buildCompositeSurfacePreview(
 			...(request.baseSha ? { baseSha: request.baseSha } : {}),
 			...(request.exploration ? { exploration: request.exploration } : {}),
 			changes: request.changes,
-			previewRefId: request.shortHostId,
 		});
 
 		if (composed.status === "conflicted") {
@@ -150,6 +150,10 @@ export async function buildCompositeSurfacePreview(
 		await ports.completePreview(request.previewId, completion);
 		return completion;
 	} catch (error) {
+		// WHY: A preempted preview job yielded to higher-priority company work; never mark it permanently failed.
+		if ((error instanceof CodeHostJobFailure && error.code === "CODE_HOST_JOB_YIELDED") || job.signal.aborted) {
+			throw error;
+		}
 		const detail = error instanceof Error ? error.message.slice(0, 1000) : "Preview build failed";
 		const completion: SurfacePreviewBuildCompletion = {
 			status: "failed",

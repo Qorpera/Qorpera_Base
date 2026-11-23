@@ -624,48 +624,26 @@ export interface LxdCodingFolderCommandSession {
 	readonly allowedSecrets?: readonly string[];
 }
 
+export const CODING_COMMAND_START_WAIT_MS = 2_500;
+
 export interface LxdCodingFolderCommandTransportOptions {
 	readonly machine: LxdCodingMachineBinding;
 	readonly scope: CloudCodingCommandScope;
-	/** The LXD operation that started the machine as it runs now, from the machine's journal, read each time it is
-	 * needed: none while the machine starts again. A command starts under it and runs only while it stays the same; a
-	 * command of any other start ended with its boot, whenever the transport was made. */
 	readonly currentStart: () => string | undefined;
 	readonly session: LxdCodingFolderCommandSession;
-	/** The worker's custody folder on the host: the executor's, and out of the machine's reach. */
 	readonly custody: string;
-	/** The most output a command keeps: the resource profile's log bytes. */
 	readonly limitBytes: number;
 	readonly guest: Pick<LxdCodingGuestClient, "run" | "output" | "cancel">;
-	readonly control: Pick<CodingFolderControl, "boundary">;
-	/** Whether the folder service could not say that every read the machine was served in the boot this LXD operation
-	 * started was released (F3 5g-5, from the machine's journal): a command of that boot keeps nothing more of what it
-	 * left on the machine's disk. Asked of the command's own start each time its output is about to be kept. */
+	readonly control: Pick<CodingFolderControl, "boundary"> & Partial<Pick<CodingFolderControl, "releaseReads">>;
 	readonly dropped: (startOperationId: string, signal: AbortSignal) => Promise<boolean>;
-	/** Whether the machine shows nothing of its commands (F3 5g-5: SQL holds it marked for a new disk, so its disk may
-	 * hold a read the turn can no longer read): nothing more of a command's output is kept (asked after the machine's
-	 * boundary releases), and `hidden` answers nothing of the command, how it ended included. No answer withholds.
-	 * Never by default. */
 	readonly withheld?: (signal: AbortSignal) => Promise<boolean>;
-	/** The rebuild that gave the machine the disk it has now (F3 5g-5, from next to its journal), or null for the disk
-	 * it was made with. A command starts on it, and nothing of one started on a disk the machine no longer has, or on
-	 * another machine the session ran on before, is kept or shown (`hidden`: not what it printed, nor how much, nor how
-	 * it ended), whatever the folder service and SQL say now: the reads that disk may have held stayed with it, not with
-	 * the command's custody. No answer shows nothing. Never replaced by default. */
 	readonly disk?: (signal: AbortSignal) => Promise<string | null>;
-	/** The command's secrets and the mask for its output; none by default. */
 	readonly secrets?: CodingCommandSecrets;
-	/** As the NAS transport's: checks the request's authority before each call's work and again before its answer. */
 	readonly authorize: Authorize;
+	readonly startWaitMs?: number;
+	readonly vaultEnvVersion?: string;
 }
 
-/** The folder model's command transport: the same calls and receipts as `LxdCodingCommandTransport`. Only a trusted
- * provider constructs it, with an `authorize` that checks the request's lease and the machine before each effect.
- * Each call takes at most 25 s of its own; a command still running then shows `running`, with what was kept. A call
- * refuses outright only for what is the same for every command of the session (its input, its authority, its custody,
- * the machine's start and disk), for a command with no kept start, or one not the host's own, and for another command
- * under the call's id; anything it meets after its command's kept start is read is held (`CodingCommandHeld`, F3
- * 5g-5). */
 export class LxdCodingFolderCommandTransport {
 	readonly #scope: Readonly<CloudCodingCommandScope>;
 	readonly #companyId: string;
@@ -682,9 +660,12 @@ export class LxdCodingFolderCommandTransport {
 	readonly #currentStart: LxdCodingFolderCommandTransportOptions["currentStart"];
 	readonly #secrets: CodingCommandSecrets;
 	readonly #authorize: Authorize;
+	readonly #startWaitMs: number;
+	readonly #vaultEnvVersion: string | undefined;
 	constructor(options: LxdCodingFolderCommandTransportOptions) {
 		const machine = lxdCodingMachinePlan(options.machine).binding;
 		const { scope, session } = options;
+		const startWaitMs = options.startWaitMs ?? CODING_COMMAND_START_WAIT_MS;
 		if (
 			Object.keys(scope).sort().join() !== "requestId,turn,vmId,workerId" ||
 			!isUuid(scope.workerId) ||
@@ -703,7 +684,10 @@ export class LxdCodingFolderCommandTransport {
 			(session.allowedSecrets !== undefined &&
 				(!Array.isArray(session.allowedSecrets) ||
 					session.allowedSecrets.length > 256 ||
-					!session.allowedSecrets.every((name) => typeof name === "string" && ENVIRONMENT_NAME.test(name))))
+					!session.allowedSecrets.every((name) => typeof name === "string" && ENVIRONMENT_NAME.test(name)))) ||
+			!Number.isSafeInteger(startWaitMs) ||
+			startWaitMs < 0 ||
+			startWaitMs > CODING_GUEST.maxWaitMs
 		)
 			throw new Error("CODING_COMMAND_BINDING_INVALID");
 		this.#scope = Object.freeze({ ...scope });
@@ -726,6 +710,8 @@ export class LxdCodingFolderCommandTransport {
 		this.#currentStart = options.currentStart;
 		this.#secrets = options.secrets ?? noCodingCommandSecrets;
 		this.#authorize = options.authorize;
+		this.#startWaitMs = startWaitMs;
+		this.#vaultEnvVersion = options.vaultEnvVersion;
 	}
 
 	async #gate(
@@ -884,7 +870,17 @@ export class LxdCodingFolderCommandTransport {
 					}
 					progress = await this.#save(folder, { ...progress, acknowledged: true });
 				}
-				return this.#settle(folder, request, progress, outcome, budget, signal, FIRST_PAGE, false);
+				return this.#settle(
+					folder,
+					request,
+					progress,
+					outcome,
+					budget,
+					signal,
+					FIRST_PAGE,
+					false,
+					this.#startWaitMs,
+				);
 			});
 		});
 		await this.#gate("start", scope, input.commandId, input.inputSha256, signal);
@@ -956,7 +952,6 @@ export class LxdCodingFolderCommandTransport {
 		});
 	}
 
-	/** Brings the kept output up to date unless the command ended, and answers a page of it. */
 	async #settle(
 		folder: string,
 		request: Request,
@@ -966,7 +961,7 @@ export class LxdCodingFolderCommandTransport {
 		signal: AbortSignal,
 		read: Omit<CloudCodingCommandRead, "commandId">,
 		cancelSent: boolean,
-		waitMs = 0,
+		firstWaitMs = 0,
 	): Promise<CloudCodingCommandReceipt> {
 		let shown: State = "running";
 		if (!outcome)
@@ -977,7 +972,7 @@ export class LxdCodingFolderCommandTransport {
 				budget,
 				signal,
 				cancelSent,
-				waitMs,
+				firstWaitMs,
 			));
 		const page = await readPage(folder, progress, request.limitBytes, outcome !== undefined, read);
 		return parseCloudCodingCommandReceipt({
@@ -993,9 +988,6 @@ export class LxdCodingFolderCommandTransport {
 		});
 	}
 
-	/** Pulls what the command printed since the host last kept its output, and keeps it once the machine's boundary
-	 * released every read the machine was served until then, unless the command's boot is then written down as dropped.
-	 * Without that release nothing is kept, and the command shows `running`. */
 	async #advance(
 		folder: string,
 		request: Request,
@@ -1003,18 +995,13 @@ export class LxdCodingFolderCommandTransport {
 		budget: AbortSignal,
 		signal: AbortSignal,
 		cancelSent: boolean,
-		waitMs = 0,
+		firstWaitMs = 0,
 	): Promise<{ progress: Progress; outcome?: Outcome; shown: State }> {
 		const workerId = this.#scope.workerId,
 			commandId = request.commandId;
-		// The machine started again since the command did, or starts again now.
 		const moved = request.startOperationId !== this.#currentStart();
-		// ...and the machine has had a new disk since (or the command ran on another machine), or the folder service could
-		// not say every read the machine was served before then was released (F3 5g-5): what the command left on the
-		// machine's disk is not kept, and it ended with the machine.
 		if (moved && (!(await this.#hasDisk(request, budget)) || (await this.#dropped(request.startOperationId, budget))))
 			return this.#unknown(folder, progress, moved, budget, signal);
-		// Past the limit nothing more is kept: only where the command is.
 		const skip = progress.limitReached;
 		const pages: { offset: number; gap: number; bytes: Buffer }[] = [];
 		let at = progress.raw,
@@ -1028,7 +1015,7 @@ export class LxdCodingFolderCommandTransport {
 						commandId,
 						offset: at,
 						maxBytes: skip ? 1 : CODING_GUEST.maxPageBytes,
-						waitMs: index === 0 ? waitMs : 0,
+						waitMs: index === 0 ? firstWaitMs : 0,
 					},
 					budget,
 				);
@@ -1168,11 +1155,12 @@ export class LxdCodingFolderCommandTransport {
 		return { progress: next, outcome, shown: state };
 	}
 
-	/** Whether the machine's boundary released every read the machine was served until now, and the machine shows its
-	 * commands. No answer is no release. */
 	async #released(budget: AbortSignal, signal: AbortSignal): Promise<boolean> {
 		try {
-			if ((await this.#control.boundary(this.#machineId, [], budget)).reads !== "released") return false;
+			const released = this.#control.releaseReads
+				? await this.#control.releaseReads(this.#machineId, budget)
+				: await this.#control.boundary(this.#machineId, [], budget);
+			if (released.reads !== "released") return false;
 		} catch {
 			signal.throwIfAborted();
 			return false;
@@ -1235,6 +1223,7 @@ export class LxdCodingFolderCommandTransport {
 			machineId: this.#machineId,
 			commandId,
 			kind: "command",
+			...(this.#vaultEnvVersion === undefined ? {} : { vaultEnvVersion: this.#vaultEnvVersion }),
 		};
 	}
 

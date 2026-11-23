@@ -585,7 +585,7 @@ impl Shared {
 			let writer = held.remove(&path).expect("held");
 			// Given up otherwise, or the node has no such handle open any more.
 			let Err(f) = self.link.discard_write(writer.handle) else { continue };
-			if again(&f) {
+			if again(&f, self.link.reads_lost()) {
 				eprintln!("qorpera-folder: the kept write of {path} could not be given up yet (errno {})", f.errno());
 				held.insert(path, writer);
 			}
@@ -737,7 +737,7 @@ impl Shared {
 				self.versions.lock().unwrap().saved(path, &version);
 				Ok(Some((ino, link)))
 			}
-			Err(f) if again(&f) => Err(f.errno()),
+			Err(f) if again(&f, self.link.reads_lost()) => Err(f.errno()),
 			Err(f) => {
 				eprintln!("qorpera-folder: the link {path} stays out of the folder: {f}");
 				Ok(None)
@@ -787,7 +787,7 @@ impl Shared {
 			}
 			Err(Sent::Node(f)) => {
 				// Kept for an answer the node may get past; after any other, the handle is not the node's any more.
-				if again(&f) {
+				if again(&f, self.link.reads_lost()) {
 					held.insert(path.to_string(), writer);
 				}
 				return Err(f.errno());
@@ -1028,7 +1028,7 @@ impl FolderFs {
 						.into_iter()
 						.map(|(c_ino, kind, name, attr)| DirItem { ino: c_ino, kind, name, plus: DirPlus::Local(attr) }),
 				);
-				reply.opened(self.s.handle(Handle::Dir(Arc::new(entries), top)), FopenFlags::empty());
+				reply.opened(self.s.handle(Handle::Dir(Arc::new(entries), top, Vec::new())), FopenFlags::empty());
 			}
 			Err(e) => reply.error(Errno::from_i32(e)),
 		}
@@ -1629,7 +1629,7 @@ impl FolderFs {
 			match unlink() {
 				Ok(()) => return Ok(true),
 				Err(Fail::Remote(e)) if e.code == code::NOT_FOUND => return Ok(true),
-				Err(f) if again(&f) && Instant::now() + wait < until => {
+				Err(f) if again(&f, self.s.link.reads_lost()) && Instant::now() + wait < until => {
 					std::thread::sleep(wait);
 					wait = (wait * 2).min(Duration::from_secs(1));
 				}

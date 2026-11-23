@@ -2,9 +2,16 @@ import type { ApplySurfaceMigrationInput } from "@qorpera/cloud-client/surfaces"
 import type { SurfaceAutomationSummary, SurfaceMigrationChecklist } from "@qorpera/contracts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { fmtTime, h, icon } from "../../ui/dom.ts";
-import { type Emblem, interfaceEmblem } from "../../ui/interface-emblem.ts";
+import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { phrase, t } from "../../ui/preferences.ts";
-import { SURFACE_ACCENTS, SURFACE_CUSTOM_EMBLEMS, type SurfaceKind, surfaceKindTint } from "../surface-kinds.ts";
+import {
+	markSurfaceFigure,
+	type SurfaceFigureId,
+	surfaceFigure,
+	surfaceFigureChoices,
+	surfaceFigureIcon,
+} from "../../ui/surface-figure.ts";
+import { type SurfaceKind, surfaceKindFigure, surfaceKindSubtitle } from "../surface-kinds.ts";
 import { migrationPending, type SurfacesStore } from "../surfaces-store.ts";
 
 type AgentAction = ApplySurfaceMigrationInput["agentDecisions"][number]["action"];
@@ -174,7 +181,10 @@ function automationLine(automation: SurfaceAutomationSummary): string {
 export function openAutomationsSheet(store: SurfacesStore): void {
 	const list = h("ul", { class: "surface-automations" });
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
+	const toggling = new Set<string>();
+	let closed = false;
 	const draw = () => {
+		if (closed) return;
 		const state = store.state;
 		const rows = state.automations.map((automation) => {
 			const toggle = h("button", {
@@ -183,10 +193,18 @@ export function openAutomationsSheet(store: SurfacesStore): void {
 				role: "switch",
 				"aria-checked": String(automation.enabled),
 				"aria-label": t("Turn {name} on or off", { name: automation.title }),
-				disabled: Boolean(state.busy[`automation:${automation.id}`]),
+				disabled: toggling.has(automation.id) || Boolean(state.busy[`automation:${automation.id}`]),
 			});
 			toggle.addEventListener("click", async () => {
-				await store.toggleAutomation(automation.id, !automation.enabled);
+				if (toggling.has(automation.id)) return;
+				toggling.add(automation.id);
+				toggle.disabled = true;
+				try {
+					await store.toggleAutomation(automation.id, !automation.enabled);
+				} finally {
+					toggling.delete(automation.id);
+				}
+				if (closed) return;
 				status.textContent = store.state.error ?? "";
 				draw();
 			});
@@ -210,7 +228,9 @@ export function openAutomationsSheet(store: SurfacesStore): void {
 					]),
 		);
 	};
-	const dialog = new SurfaceDialog(t("Automations"), "surface-sheet", () => undefined);
+	const dialog = new SurfaceDialog(t("Automations"), "surface-sheet", () => {
+		closed = true;
+	});
 	const sections: HTMLElement[] = [
 		h("h2", null, t("Automations")),
 		h(
@@ -259,21 +279,26 @@ interface SurfacePreset {
 	readonly slug: string | null;
 	readonly kind: SurfaceKind;
 	readonly title: string;
-	readonly description: string;
+	readonly line?: string;
 	readonly archetype: "live_build" | "studio";
-	readonly icon: Emblem;
 	readonly folderRoot?: string;
 }
 
 const SURFACE_PRESETS: readonly SurfacePreset[] = [
 	{
+		id: "custom",
+		slug: null,
+		kind: "custom",
+		title: phrase("Custom Surface"),
+		line: phrase("Anything else: an inventory tracker, investor room, support desk…"),
+		archetype: "live_build",
+	},
+	{
 		id: "identity",
 		slug: "identity",
 		kind: "identity",
 		title: phrase("Identity"),
-		description: phrase("Global branding, voice, design tokens, and philosophy shared across every product."),
 		archetype: "studio",
-		icon: "spark",
 		folderRoot: "identity",
 	},
 	{
@@ -281,123 +306,97 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "website",
 		kind: "website",
 		title: phrase("Website"),
-		description: phrase("Marketing site or storefront with live preview and publish."),
 		archetype: "live_build",
-		icon: "globe",
 	},
 	{
 		id: "web_app",
 		slug: "app",
 		kind: "web_app",
 		title: phrase("Web App"),
-		description: phrase("Interactive product or customer portal built in parallel sessions."),
 		archetype: "live_build",
-		icon: "spark",
 	},
 	{
 		id: "mobile_app",
 		slug: "mobile",
 		kind: "mobile_app",
 		title: phrase("Mobile App"),
-		description: phrase("iOS and Android app, previewed in a real phone frame."),
 		archetype: "live_build",
-		icon: "phone",
 	},
 	{
 		id: "desktop_app",
 		slug: "desktop",
 		kind: "desktop_app",
 		title: phrase("Desktop App"),
-		description: phrase("macOS and Windows app in a native window."),
 		archetype: "live_build",
-		icon: "window",
 	},
 	{
 		id: "database",
 		slug: "database",
 		kind: "database",
 		title: phrase("Database"),
-		description: phrase("Tables, schemas, records, and queries."),
 		archetype: "studio",
-		icon: "database",
-		folderRoot: "database",
 	},
 	{
 		id: "dashboard",
 		slug: "dashboard",
 		kind: "dashboard",
 		title: phrase("Financial Dashboard"),
-		description: phrase("MRR, runway, cashflow, P&L, and KPIs at a glance."),
 		archetype: "live_build",
-		icon: "chart",
 	},
 	{
 		id: "product",
 		slug: "product",
 		kind: "product",
 		title: phrase("Product Studio"),
-		description: phrase("Product specs, colorways, BOM, and design briefs in one place."),
 		archetype: "studio",
-		icon: "box",
-		folderRoot: "product",
 	},
 	{
 		id: "report",
 		slug: "reports",
 		kind: "report",
 		title: phrase("Report & Analysis"),
-		description: phrase("Long-form essays, vendor analyses, and design notes with inline charts and tables."),
 		archetype: "studio",
-		icon: "book",
-		folderRoot: "reports",
-	},
-	{
-		id: "custom",
-		slug: null,
-		kind: "custom",
-		title: phrase("Custom Surface"),
-		description: phrase("Anything else: an inventory tracker, investor room, support desk…"),
-		archetype: "live_build",
-		icon: "star",
 	},
 ];
 
-function presetTile(emblem: Emblem, tint: string, size = 20): HTMLElement {
-	const tile = h("span", { class: "surface-tile is-sheet", "aria-hidden": "true" }, interfaceEmblem(emblem, size));
-	tile.style.setProperty("--surface-tint", tint);
-	return tile;
+const KIND_STEPS: Readonly<Record<string, number>> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
+
+function kindLine(preset: SurfacePreset): string {
+	return preset.line ? t(preset.line) : surfaceKindSubtitle(preset.kind);
 }
 
-export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string): void {
+export function openCreateSurfaceSheet(store: SurfacesStore): void {
 	let selected: SurfacePreset = SURFACE_PRESETS[0]!;
 	let customArchetype: "live_build" | "studio" = "live_build";
-	let customAccent = SURFACE_ACCENTS[0]!.hex;
-	let customEmblem: Emblem = SURFACE_CUSTOM_EMBLEMS[0]!;
+	let figure: SurfaceFigureId = surfaceKindFigure(selected.kind);
+	let figureChosen = false;
+	let customName = false;
 	const dialog = new SurfaceDialog(t("New surface"), "surface-sheet surface-create-sheet", () => undefined);
 	const nameInput = h("input", {
 		type: "text",
-		class: "surface-create-input",
-		value: t(selected.title),
+		class: "surface-create-name",
+		value: selected.kind === "custom" ? "" : t(selected.title),
 		placeholder: t("Surface name"),
+		"aria-label": t("Name"),
 		autocomplete: "off",
 	});
-	let customName = false;
 	nameInput.addEventListener("input", () => {
 		customName = nameInput.value.trim().length > 0;
 	});
+	const line = h("p", { class: "surface-create-line" }, kindLine(selected));
 	const promptInput = h("textarea", {
 		class: "surface-create-prompt",
-		rows: 2,
+		rows: 3,
+		"aria-label": t("First session (optional)"),
 		placeholder: t("Optional: describe the first change to start right away…"),
 	});
 	const descriptionInput = h("textarea", {
 		class: "surface-create-prompt",
 		rows: 2,
+		"aria-label": t("Brief"),
 		placeholder: t("What is this surface for? An agent shapes it from this brief."),
 	});
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
-	const customTile = h("span", { class: "surface-create-custom-tile" });
-	const drawCustomTile = () => customTile.replaceChildren(presetTile(customEmblem, customAccent, 24));
 	const segment = (value: "live_build" | "studio", label: string, hint: string) => {
 		const button = h(
 			"button",
@@ -425,133 +424,138 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 		segment("studio", t("Studio files"), t("Documents, tables, and specs that sessions edit.")),
 	);
 	archetypeRow.setAttribute("aria-label", t("How it is built"));
-	const swatches = h(
-		"div",
-		{ class: "surface-create-swatches", role: "radiogroup", "aria-label": t("Colour") },
-		SURFACE_ACCENTS.map((accent) => {
-			const swatch = h("button", {
-				type: "button",
-				class: "surface-create-swatch",
-				role: "radio",
-				"aria-checked": String(accent.hex === customAccent),
-				"aria-label": t(accent.name),
-				title: t(accent.name),
-			});
-			swatch.style.setProperty("--swatch", accent.hex);
-			swatch.addEventListener("click", () => {
-				customAccent = accent.hex;
-				for (const other of swatches.querySelectorAll("button"))
-					other.setAttribute("aria-checked", String(other === swatch));
-				drawCustomTile();
-			});
-			return swatch;
-		}),
-	);
-	const emblems = h(
-		"div",
-		{ class: "surface-create-emblems", role: "radiogroup", "aria-label": t("Icon") },
-		SURFACE_CUSTOM_EMBLEMS.map((emblem) => {
-			const choice = h(
-				"button",
-				{
-					type: "button",
-					class: "surface-create-emblem-choice",
-					role: "radio",
-					"aria-checked": String(emblem === customEmblem),
-					"data-emblem": emblem,
-				},
-				interfaceEmblem(emblem, 18),
-			);
-			choice.setAttribute("aria-label", t("Icon"));
-			choice.addEventListener("click", () => {
-				customEmblem = emblem;
-				for (const other of emblems.querySelectorAll("button"))
-					other.setAttribute("aria-checked", String(other === choice));
-				drawCustomTile();
-			});
-			return choice;
-		}),
-	);
-	drawCustomTile();
 	const customPanel = h(
 		"div",
-		{ class: "surface-create-custom", hidden: true },
-		h(
-			"div",
-			{ class: "surface-create-custom-row" },
-			customTile,
-			h("div", { class: "surface-create-custom-picks" }, swatches, emblems),
-		),
-		h("div", { class: "surface-create-field" }, h("span", null, t("How it is built")), archetypeRow),
-		h("label", { class: "surface-create-field" }, h("span", null, t("Brief")), descriptionInput),
+		{ class: "surface-create-custom", hidden: selected.kind !== "custom" },
+		archetypeRow,
+		descriptionInput,
 	);
-	const cards = SURFACE_PRESETS.map((preset) => {
-		const card = h(
+
+	const heroTile = h("span", { class: "surface-tile is-stage", "aria-hidden": "true" }, surfaceFigure(figure));
+	const showFigure = () => heroTile.replaceChildren(surfaceFigure(figure));
+	const avatar = h(
+		"button",
+		{
+			type: "button",
+			class: "surface-create-avatar",
+			"aria-label": t("Change figure"),
+			"aria-expanded": "false",
+			title: t("Change figure"),
+		},
+		heroTile,
+		h("span", { class: "surface-create-avatar-edit", "aria-hidden": "true" }, icon("edit")),
+	);
+	const figures = surfaceFigureChoices(figure, (id) => {
+		figure = id;
+		figureChosen = true;
+		showFigure();
+		setPicker(false);
+		avatar.focus({ preventScroll: true });
+	});
+	const picker = h("div", { class: "surface-create-figures", hidden: true }, figures);
+	const setPicker = (open: boolean) => {
+		picker.hidden = !open;
+		avatar.setAttribute("aria-expanded", String(open));
+		if (open) figures.querySelector<HTMLElement>('[aria-checked="true"]')?.focus({ preventScroll: true });
+	};
+	avatar.addEventListener("click", () => setPicker(picker.hidden));
+	const stage = h("div", { class: "surface-create-stage" }, avatar, picker);
+	stage.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape" || picker.hidden) return;
+		event.preventDefault();
+		event.stopPropagation();
+		setPicker(false);
+		avatar.focus({ preventScroll: true });
+	});
+
+	const choose = (preset: SurfacePreset) => {
+		selected = preset;
+		for (const row of rows) {
+			const on = row.dataset.preset === preset.id;
+			row.classList.toggle("is-selected", on);
+			row.setAttribute("aria-pressed", String(on));
+		}
+		line.textContent = kindLine(preset);
+		customPanel.hidden = preset.kind !== "custom";
+		if (!figureChosen) {
+			figure = surfaceKindFigure(preset.kind);
+			markSurfaceFigure(figures, figure);
+			showFigure();
+		}
+		if (!customName) nameInput.value = preset.kind === "custom" ? "" : t(preset.title);
+	};
+	const rows = SURFACE_PRESETS.map((preset) => {
+		const row = h(
 			"button",
 			{
 				type: "button",
-				class: `surface-create-card${preset.id === selected.id ? " is-selected" : ""}`,
+				class: `surface-create-kind${preset.id === selected.id ? " is-selected" : ""}`,
 				"aria-pressed": String(preset.id === selected.id),
 				"data-preset": preset.id,
 			},
-			presetTile(preset.icon, surfaceKindTint(preset.kind)),
 			h(
 				"span",
-				{ class: "surface-create-card-copy" },
-				h("strong", null, t(preset.title)),
-				h("small", null, t(preset.description)),
+				{ class: "surface-tile is-kind", "aria-hidden": "true" },
+				surfaceFigure(surfaceKindFigure(preset.kind)),
 			),
+			h("span", { class: "surface-create-kind-name" }, t(preset.title)),
 		);
-		card.addEventListener("click", () => {
-			selected = preset;
-			for (const other of cards) {
-				const on = other === card;
-				other.classList.toggle("is-selected", on);
-				other.setAttribute("aria-pressed", String(on));
-			}
-			customPanel.hidden = preset.kind !== "custom";
-			if (!customName) nameInput.value = preset.kind === "custom" ? "" : t(preset.title);
+		row.addEventListener("click", () => {
+			choose(preset);
 			if (preset.kind === "custom") nameInput.focus({ preventScroll: true });
 		});
-		return card;
+		return row;
 	});
+	const kinds = h("div", { class: "surface-create-kinds", role: "group", "aria-label": t("Surface type") }, rows);
+	kinds.addEventListener("keydown", (event) => {
+		const step = KIND_STEPS[event.key];
+		if (!step) return;
+		const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+		if (at < 0) return;
+		event.preventDefault();
+		const index = (at + step + rows.length) % rows.length;
+		choose(SURFACE_PRESETS[index]!);
+		rows[index]!.focus();
+	});
+
 	const submit = h("button", { type: "submit", class: "btn btn-primary" }, t("Create surface"));
 	const form = h(
 		"form",
 		{ class: "surface-create-form" },
-		h("h2", null, t("New surface")),
-		h(
-			"p",
-			{ class: "surface-sheet-lead" },
-			t("Each surface is a shared place your sessions build and update together."),
-		),
-		h("div", { class: "surface-create-grid", role: "group", "aria-label": t("Surface type") }, cards),
-		customPanel,
-		h("label", { class: "surface-create-field" }, h("span", null, t("Name")), nameInput),
-		h("label", { class: "surface-create-field" }, h("span", null, t("First session (optional)")), promptInput),
-		store.isLocalInteractive
-			? h(
-					"p",
-					{ class: "surface-local-note" },
-					t("Local preview — changes stay in this browser until Surfaces migrations are deployed."),
-				)
-			: null,
 		h(
 			"div",
-			{ class: "surface-sheet-actions" },
+			{ class: "surface-create-side" },
+			h("h2", null, t("New surface")),
+			h("p", { class: "surface-create-lead" }, t("What should your sessions build?")),
+			kinds,
+		),
+		h(
+			"div",
+			{ class: "surface-create-main" },
+			stage,
 			h(
-				"a",
-				{
-					class: "surface-sheet-link",
-					href: `#/c/${profileId}/new-program`,
-					onclick: () => dialog.close(false),
-				},
-				t("Import a program instead"),
+				"div",
+				{ class: "surface-create-body" },
+				nameInput,
+				line,
+				customPanel,
+				promptInput,
+				store.isLocalInteractive
+					? h(
+							"p",
+							{ class: "surface-local-note" },
+							t("Local preview — changes stay in this browser until Surfaces migrations are deployed."),
+						)
+					: null,
 			),
-			status,
-			submit,
+			h("div", { class: "surface-sheet-actions" }, status, submit),
 		),
 	);
+	form.addEventListener("pointerdown", (event) => {
+		if (picker.hidden || !(event.target instanceof Node)) return;
+		if (picker.contains(event.target) || avatar.contains(event.target)) return;
+		setPicker(false);
+	});
 	form.addEventListener("submit", async (event) => {
 		event.preventDefault();
 		const title = nameInput.value.trim();
@@ -562,14 +566,15 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 		submit.disabled = true;
 		const custom = selected.kind === "custom";
 		const archetype = custom ? customArchetype : selected.archetype;
+		const matchesPresetTitle = title.toLowerCase() === t(selected.title).trim().toLowerCase();
+		const usePresetSlug = selected.kind === "identity" || (!customName && matchesPresetTitle);
 		const created = await store.createSurface({
 			title,
-			...(selected.slug ? { slug: selected.slug } : {}),
+			...(usePresetSlug && selected.slug ? { slug: selected.slug } : {}),
 			archetype,
-			icon: custom ? customEmblem : selected.icon,
+			icon: surfaceFigureIcon(figure),
 			kind: selected.kind,
-			...(custom ? { accent: customAccent } : {}),
-			folderRoot: custom && archetype === "studio" ? undefined : selected.folderRoot,
+			folderRoot: selected.kind === "identity" ? selected.folderRoot : undefined,
 			description: custom ? descriptionInput.value.trim() || undefined : undefined,
 			initialPrompt: promptInput.value.trim() || undefined,
 		});
@@ -657,18 +662,23 @@ export function openScheduleAgentSheet(store: SurfacesStore, existing?: SurfaceA
 	);
 	const remove =
 		editing && existing && store.isLocalInteractive && existing.id.startsWith("local-")
-			? h(
-					"button",
-					{
-						type: "button",
-						class: "btn",
-						onclick: async () => {
-							await store.deleteScheduledAgent(existing.id);
+			? (() => {
+					const button = h("button", { type: "button", class: "btn" }, t("Delete"));
+					button.addEventListener("click", async () => {
+						if (button.disabled) return;
+						button.disabled = true;
+						submit.disabled = true;
+						const deleted = await store.deleteScheduledAgent(existing.id);
+						if (deleted) {
 							dialog.close(false);
-						},
-					},
-					t("Delete"),
-				)
+						} else {
+							button.disabled = false;
+							submit.disabled = false;
+							status.textContent = store.state.error ?? t("That didn't work. Try again.");
+						}
+					});
+					return button;
+				})()
 			: null;
 	const form = h(
 		"form",

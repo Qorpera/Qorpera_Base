@@ -13,7 +13,7 @@
 .rail-apps.is-open .icon rect:nth-of-type(2) { transform: translate(1px, -1px); }
 .rail-apps.is-open .icon rect:nth-of-type(3) { transform: translate(1px, 1px); }
 .rail-apps.is-open .icon rect:nth-of-type(4) { transform: translate(-1px, 1px); }
-.rail-apps:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
+.rail-apps:focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
 /* A page has something waiting while the drawer is closed. */
 .rail-apps-dot {
 	position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%;
@@ -50,7 +50,7 @@
 /* The open page: its tile in a soft wash of its own colour, its emblem kept in that colour (Jonas, 12 Nov 2026: "the
  * icons shouldn't turn white when selected"; before, the tile was the selection colour with a white emblem). */
 .rail-app.active, .rail-app.active:hover { background: color-mix(in srgb, var(--app-colour, var(--text)) 16%, transparent); }
-.rail-app:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
+.rail-app:focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
 /* Reordering by dragging (ui/app-grid-drag.ts): the lifted icon rides above the others, a little larger, and the rest
  * make way. Its tile shows no hover while it moves. */
 .rail-apps-grid.is-sorting { cursor: grabbing; }
@@ -63,10 +63,6 @@
 .rail-app:hover .interface-emblem { transform: translateY(-2px) scale(1.06); }
 .rail-app-stand .rail-mention { top: -5px; right: -10px; box-shadow: 0 0 0 2px var(--rail); }
 .rail-app-name { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; font-weight: 600; line-height: 1.2; }
-/* The field opening: it widens with a spring, its text box fades in just after; folding back runs the other way. */
-.rail-search { transition: width var(--motion-slow) var(--ease-spring), background-color var(--motion-base) ease, box-shadow var(--motion-base) ease; }
-.rail-search input { transition: opacity var(--motion-base) ease 80ms, visibility 0s; }
-.rail-toolbar:not(.is-searching) .rail-search input { transition: opacity var(--motion-fast) ease, visibility 0s var(--motion-fast); }
 /* Every emblem in its app's colour, no tile (Jonas, 11 Nov 2026: black only had "little distinction and contrast"), the
  * open page's too; an app in a group is drawn in the group's (12 Nov 2026). */
 .rail-app-stand .interface-emblem { --emblem-ink: var(--app-colour, var(--text)); }
@@ -76,7 +72,7 @@
 .group-emblem .group-card-front { fill: var(--emblem-ink); }
 .rail-app-group.is-open .group-card-front { transform: translate(-2.2px, -2.5px) rotate(-12deg) scaleX(0.786); }
 .rail-app-group.is-open .group-card-back { transform: translate(2.2px, 2.5px) rotate(12deg) scaleX(0.786); }
-.rail-app-group { border: 0; background: none; font: inherit; cursor: pointer; }
+.rail-app-group { border: 0; background: none; font: inherit; cursor: default; }
 .rail-app-group.is-open .rail-mention { display: none; }
 /* Tiles a group brings grow in after it; tiles it takes away fade where they stood, out of the grid's flow. */
 .rail-apps-drawer.is-open .rail-app.is-entering {
@@ -140,7 +136,8 @@
 .interface-emblem { --emblem-ink: var(--text); }
 .interface-emblem [data-fill="ink"] { fill: var(--emblem-ink); }
 .interface-emblem [data-stroke="ink"] { stroke: var(--emblem-ink); }
-.interface-emblem .emblem-beat { stroke-dasharray: 60; animation: emblem-beat 2.4s linear infinite; }
+.interface-emblem .emblem-beat { stroke-dasharray: 60; }
+:is(.rail-app, .app-look-icon):hover .interface-emblem .emblem-beat { animation: emblem-beat 2.4s linear infinite; }
 @keyframes emblem-beat { 0% { stroke-dashoffset: 60; } 60%, 100% { stroke-dashoffset: 0; } }
 
 /* An interface page. */
@@ -155,8 +152,8 @@
 .interface-live { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 12px; }
 .interface-live.is-degraded .interface-live-dot { background: var(--warning); animation: none; }
 .interface-waiting { display: grid; place-items: center; min-height: 200px; }
-.interface-live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--agent-active); animation: interface-live 2s infinite; }
-@keyframes interface-live { 0% { box-shadow: 0 0 0 0 rgb(0 200 135 / 45%); } 70% { box-shadow: 0 0 0 7px rgb(0 200 135 / 0%); } 100% { box-shadow: 0 0 0 0 rgb(0 200 135 / 0%); } }
+.interface-live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--agent-active); animation: interface-live 2s ease-in-out infinite; }
+@keyframes interface-live { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.88); } }
 .interface-page {
 	flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
 	gap: 14px; align-content: start; padding: 16px 22px 22px;
@@ -202,20 +199,20 @@ a.interface-item:hover { background: var(--hover); text-decoration: none; }
 }
 .interface-view {
 	position: relative; padding: 8px 10px 10px; border: 0; background: transparent; color: var(--text-muted);
-	font: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer;
+	font: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: default;
 	transition: color var(--motion-base) ease;
 }
 .interface-view[aria-selected="true"] { color: var(--text); }
 .interface-view[aria-selected="true"]::after {
 	content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 2px;
-	background: var(--composer-accent);
+	background: var(--composer-accent-ink);
 }
-.interface-view:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: -2px; border-radius: 8px; }
+.interface-view:focus-visible { outline: 2px solid var(--composer-accent-ink); outline-offset: -2px; border-radius: 8px; }
 
 /* A row with buttons, a row that opens, and the buttons themselves. */
 .interface-item-row { display: flex; align-items: center; gap: 8px; }
 .interface-item-row > .interface-item { flex: 1; min-width: 0; }
-button.interface-item { width: 100%; border: 0; background: transparent; font: inherit; text-align: left; cursor: pointer; }
+button.interface-item { width: 100%; border: 0; background: transparent; font: inherit; text-align: left; cursor: default; }
 button.interface-item:hover, .interface-item.is-open { background: var(--hover); }
 .interface-cards .interface-item-row { border-radius: 12px; background: var(--warning-soft); padding-right: 10px; }
 .interface-cards .interface-item-row > .interface-item { background: transparent; }
@@ -223,10 +220,10 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 .interface-button {
 	display: inline-flex; align-items: center; height: 28px; padding: 0 10px; border: 0; border-radius: 8px;
 	background: var(--pane-strong); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600;
-	text-decoration: none; cursor: pointer;
+	text-decoration: none; cursor: default;
 }
 .interface-button:disabled { opacity: 0.6; cursor: default; }
-.interface-button:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 1px; }
+.interface-button:focus-visible { outline: 2px solid var(--composer-accent-ink); outline-offset: 1px; }
 .interface-button:hover { text-decoration: none; background: var(--hover); }
 
 /* A table: sortable headings, a filter above, a row that opens. */
@@ -239,13 +236,13 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 .interface-table th { padding: 0; border-bottom: 1px solid var(--border); color: var(--text-muted); font-weight: 600; text-align: left; }
 .interface-sort {
 	width: 100%; padding: 6px 8px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left;
-	cursor: pointer;
+	cursor: default;
 }
 .interface-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .interface-table tr.is-open td { background: var(--hover); }
 .interface-row-open {
 	padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-weight: 600;
-	text-align: left; cursor: pointer;
+	text-align: left; cursor: default;
 }
 .interface-row-open:hover { text-decoration: underline; }
 
@@ -255,8 +252,8 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 .interface-fields dd { margin: 0; overflow-wrap: anywhere; }
 .interface-detail-text { margin-bottom: 10px; font-size: 13.5px; }
 .interface-back {
-	display: none; margin: 0 0 8px; padding: 0; border: 0; background: transparent; color: var(--composer-accent);
-	font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+	display: none; margin: 0 0 8px; padding: 0; border: 0; background: transparent; color: var(--composer-accent-ink);
+	font: inherit; font-size: 13px; font-weight: 600; cursor: default;
 }
 @media (max-width: 760px) {
 	.interface-page.has-open > .interface-block:not(.interface-detail.is-open) { display: none; }
@@ -283,14 +280,14 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 	display: grid; gap: 6px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg);
 	transition: opacity var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
 }
-.interface-card.is-open { border-color: var(--composer-accent); }
+.interface-card.is-open { border-color: var(--composer-accent-ink); }
 .interface-card-open, .interface-card-body {
 	display: grid; gap: 3px; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit;
 	text-align: left; overflow-wrap: anywhere;
 }
-.interface-card-open { cursor: pointer; }
+.interface-card-open { cursor: default; }
 .interface-card-open:hover .interface-card-title { text-decoration: underline; }
-.interface-card-open:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 3px; border-radius: 6px; }
+.interface-card-open:focus-visible { outline: 2px solid var(--composer-accent-ink); outline-offset: 3px; border-radius: 6px; }
 .interface-card-title { font-size: 13px; font-weight: 600; }
 .interface-card-line { color: var(--text-muted); font-size: 12.5px; }
 .interface-card-note { color: var(--text-soft); font-size: 11.5px; }
@@ -308,7 +305,7 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 }
 .interface-card.is-settling { transition: transform var(--motion-base) var(--ease-spring), box-shadow var(--motion-fast) ease; }
 .interface-board.is-dragging { user-select: none; }
-.interface-lane.is-drop-target { border-color: var(--composer-accent); border-style: dashed; }
+.interface-lane.is-drop-target { border-color: var(--composer-accent-ink); border-style: dashed; }
 .interface-lane.is-drop-over { background: var(--hover); border-style: solid; }
 /* An offer of a card (step I9c): a quiet line on the card with its answers, and the members it may go to. */
 .interface-card-offers { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
@@ -350,13 +347,13 @@ button.interface-item:hover, .interface-item.is-open { background: var(--hover);
 	display: grid; gap: 2px; width: 100%; height: 100%; padding: 9px 10px; border: 1px solid var(--border);
 	border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; text-align: left;
 }
-button.interface-number { cursor: pointer; }
+button.interface-number { cursor: default; }
 button.interface-number:hover, .interface-number.is-open { background: var(--hover); }
-button.interface-number:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 1px; }
+button.interface-number:focus-visible { outline: 2px solid var(--composer-accent-ink); outline-offset: 1px; }
 .interface-number-label { color: var(--text-muted); font-size: 12px; font-weight: 600; }
 .interface-number-value { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .interface-number-change, .interface-number-target { color: var(--text-muted); font-size: 11.5px; }
-.interface-trend { display: block; width: 100%; height: 32px; margin-top: 4px; color: var(--composer-accent); }
+.interface-trend { display: block; width: 100%; height: 32px; margin-top: 4px; color: var(--composer-accent-ink); }
 .interface-days { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .interface-day h3 { margin: 0 0 2px; color: var(--text-muted); font-size: 12px; font-weight: 600; }
 .interface-day-items { display: grid; margin: 0; padding: 0; list-style: none; }
@@ -377,7 +374,7 @@ button.interface-number:focus-visible { outline: 2px solid var(--composer-accent
 .interface-outside { padding: 0 3px; border-radius: 5px; background: var(--hover); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 .interface-table td.interface-outside { padding: 7px 8px; border-radius: 0; }
 .review-email-body.interface-outside { padding: 13px 16px; border-radius: 0; }
-.interface-unread { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--composer-accent); }
+.interface-unread { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--composer-accent-ink); }
 .interface-mail-list li:not(.is-unread) .interface-item { padding-left: 22px; }
 .interface-mail-list li.is-unread strong { font-weight: 700; }
 .interface-mail-older { display: grid; justify-items: start; gap: 4px; margin-top: 8px; }
@@ -422,28 +419,28 @@ button.interface-number:focus-visible { outline: 2px solid var(--composer-accent
 .app-look .color-choice.is-default { background: none; box-shadow: inset 0 0 0 1.5px var(--text-muted); }
 .app-look .color-choice[aria-checked="true"]::after { inset: -3px; }
 .app-look-icons { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
-.app-look-icon { display: grid; place-items: center; aspect-ratio: 1; padding: 0; border: 0; border-radius: 9px; background: none; cursor: pointer; }
+.app-look-icon { display: grid; place-items: center; aspect-ratio: 1; padding: 0; border: 0; border-radius: 9px; background: none; cursor: default; }
 .app-look-icon:hover { background: var(--hover); }
-.app-look-icon:focus-visible { outline: 2px solid var(--rail-selection); outline-offset: -2px; }
+.app-look-icon:focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
 .app-look-icon[aria-checked="true"] { background: color-mix(in srgb, var(--app-colour, var(--text)) 12%, transparent); box-shadow: inset 0 0 0 2px var(--app-colour, var(--text)); }
 .app-look-icon .interface-emblem { width: 28px; height: 28px; --emblem-ink: var(--app-colour, var(--text)); }
 .app-look-drawing {
-	aspect-ratio: 1; border-radius: 9px; background-size: 300% 100%; animation: app-look-shimmer 1.3s linear infinite;
-	background-image: linear-gradient(100deg, var(--hover) 30%, color-mix(in srgb, var(--app-colour, var(--text)) 18%, var(--hover)) 50%, var(--hover) 70%);
+	aspect-ratio: 1; border-radius: 9px; background: color-mix(in srgb, var(--app-colour, var(--text)) 12%, var(--hover));
+	animation: app-look-shimmer 1.3s ease-in-out infinite;
 }
-@keyframes app-look-shimmer { from { background-position: 100% 0; } to { background-position: -50% 0; } }
+@keyframes app-look-shimmer { 50% { opacity: 0.45; } }
 .app-look-empty { grid-column: 1 / -1; padding: 2px; font-size: 12px; color: var(--text-muted); }
 .app-look-generate {
 	display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 9px 11px; border: 1px solid var(--border-strong);
-	border-radius: 9px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer;
+	border-radius: 9px; background: none; color: var(--text); font: inherit; text-align: left; cursor: default;
 }
 .app-look-generate:hover:not(:disabled) { background: var(--hover); }
 .app-look-generate:disabled { cursor: default; opacity: 0.75; }
-.app-look-generate .icon { width: 18px; height: 18px; flex: none; color: var(--rail-selection); }
+.app-look-generate .icon { width: 18px; height: 18px; flex: none; color: var(--rail-selection-ink); }
 .app-look-generate-text { display: grid; gap: 1px; font-size: 13px; }
 .app-look-generate-text small { font-size: 11.5px; line-height: 1.35; color: var(--text-muted); }
 .app-look-problem { margin: 2px; font-size: 12px; color: var(--danger); }
-.app-look-own { justify-self: start; margin: 4px 2px 0; padding: 0; border: 0; background: none; color: var(--text-muted); font: inherit; font-size: 12.5px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.app-look-own { justify-self: start; margin: 4px 2px 0; padding: 0; border: 0; background: none; color: var(--text-muted); font: inherit; font-size: 12.5px; text-decoration: underline; text-underline-offset: 2px; cursor: default; }
 /* An app whose agent draws new icons breathes until they come. */
 .rail-app.is-drawing .interface-emblem { animation: app-drawing 1.2s ease-in-out infinite; }
 @keyframes app-drawing { 50% { opacity: 0.45; } }

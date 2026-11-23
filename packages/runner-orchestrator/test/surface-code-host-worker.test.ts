@@ -14,7 +14,8 @@ import {
 	type CodeHostShell,
 	startCodeArea,
 } from "../src/code-host-jobs.ts";
-import { readCodeSiteTree } from "../src/code-host-sites.ts";
+import { readCodeSiteTree, readSurfaceSiteTree } from "../src/code-host-sites.ts";
+import { ensureSurfaceStarterRepository } from "../src/code-host-surfaces.ts";
 import {
 	SURFACE_CODE_HOST_RPCS,
 	type SurfaceCodeHostRpc,
@@ -184,6 +185,8 @@ describe("SurfaceCodeHostWorker", () => {
 						return { updated: 1, sessionId: args.p_session_id };
 					case "qorpera_surface_renew_lease":
 						return { renewed: true };
+					case "qorpera_surface_shared_product_folder_roots":
+						return [];
 					default:
 						throw new Error(`Unexpected RPC ${method}`);
 				}
@@ -387,6 +390,9 @@ describe("SurfaceCodeHostWorker", () => {
 				}
 				if (method === "qorpera_surface_renew_lease") {
 					return { renewed: true };
+				}
+				if (method === "qorpera_surface_shared_product_folder_roots") {
+					return [];
 				}
 				throw new Error(`Unexpected RPC ${method}`);
 			},
@@ -611,6 +617,9 @@ describe("SurfaceCodeHostWorker", () => {
 				if (method === "qorpera_surface_renew_lease") {
 					return { renewed: true };
 				}
+				if (method === "qorpera_surface_shared_product_folder_roots") {
+					return [];
+				}
 				throw new Error(`Unexpected RPC ${method}`);
 			},
 		};
@@ -665,11 +674,6 @@ describe("SurfaceCodeHostWorker", () => {
 		await f.git(sessionWorktree, "commit", "-m", "Add faq");
 		const shaB = await f.git(sessionWorktree, "rev-parse", "HEAD");
 
-		await writeFile(join(sessionWorktree, "contact.html"), "<!doctype html><p>Contact</p>\n");
-		await f.git(sessionWorktree, "add", "contact.html");
-		await f.git(sessionWorktree, "commit", "-m", "Add contact");
-		const shaC = await f.git(sessionWorktree, "rev-parse", "HEAD");
-
 		const callOrder: string[] = [];
 		let mode: "not_running_retry" | "permanent_failure" = "not_running_retry";
 		let completeAttempts = 0;
@@ -710,6 +714,9 @@ describe("SurfaceCodeHostWorker", () => {
 				}
 				if (method === "qorpera_surface_renew_lease") {
 					return { renewed: true };
+				}
+				if (method === "qorpera_surface_shared_product_folder_roots") {
+					return [];
 				}
 				throw new Error(`Unexpected RPC ${method}`);
 			},
@@ -840,10 +847,65 @@ describe("SurfaceCodeHostWorker", () => {
 			publishes: [],
 			automations: [],
 		};
-		expect(shaC).toMatch(/^[0-9a-f]{40}$/);
+		expect(shaC2).toMatch(/^[0-9a-f]{40}$/);
 
 		const secondPass = await worker.pass(new AbortController().signal);
 		expect(secondPass).toEqual({ previews: 0, merges: 0, publishes: 0, failed: 1 });
 		expect(callOrder).toEqual(["published", "complete:1", "complete:2", "complete:3", "rebase:1", "rebase:2"]);
+	});
+
+	it("reads surface starter repositories with readSurfaceSiteTree, skipping dotfiles/README/node_modules and honoring site.folder", async () => {
+		const root = await realpath(await mkdtemp(join(tmpdir(), "surface-site-tree-")));
+		roots.push(root);
+		const companyRoot = join(root, "folder");
+		const scratchRoot = join(root, "scratch");
+		await mkdir(companyRoot, { recursive: true });
+		await mkdir(scratchRoot, { recursive: true });
+		const log: CodeHostCommand[] = [];
+		const job: CodeHostJob = {
+			shell: crossPlatformLocalShell(log),
+			layout: { companyRoot, scratchRoot, git: GIT },
+			signal: new AbortController().signal,
+		};
+		const repository = { host: "qorpera" as const, owner: "surfaces", name: "hjemmeside", baseBranch: "main" };
+		const starter = await ensureSurfaceStarterRepository(job, { repository, title: "Hjemmeside" });
+
+		const env = {
+			PATH: "/usr/bin:/bin",
+			HOME: root,
+			GIT_CONFIG_NOSYSTEM: "1",
+			GIT_CONFIG_GLOBAL: "/dev/null",
+			GIT_AUTHOR_NAME: "Session",
+			GIT_AUTHOR_EMAIL: "session@example.invalid",
+			GIT_COMMITTER_NAME: "Session",
+			GIT_COMMITTER_EMAIL: "session@example.invalid",
+		};
+		const git = async (cwd: string, ...args: string[]) => (await exec(GIT, args, { cwd, env })).stdout.trim();
+		const repo = join(companyRoot, "code/surfaces/hjemmeside/repo.git");
+		const starterTreeSha = await git(repo, "rev-parse", `${starter.mainSha}^{tree}`);
+
+		const starterTree = await readSurfaceSiteTree(job, { repository, tree: starterTreeSha });
+		const starterPaths = starterTree.files.map((file) => file.path).sort();
+		expect(starterPaths).toEqual(["index.html", "qorpera-identity.css", "styles.css"]);
+
+		const mainWorktree = join(companyRoot, "code/surfaces/hjemmeside/main");
+		await mkdir(join(mainWorktree, "dist"), { recursive: true });
+		await mkdir(join(mainWorktree, "node_modules/pkg"), { recursive: true });
+		await writeFile(join(mainWorktree, "dist/index.html"), "<!doctype html><h1>Built</h1>\n");
+		await writeFile(join(mainWorktree, "dist/app.js"), "console.log('ok');\n");
+		await writeFile(join(mainWorktree, "node_modules/pkg/index.js"), "module.exports = {};\n");
+		await writeFile(
+			join(mainWorktree, ".qorpera/checks.json"),
+			JSON.stringify({ checks: [], site: { folder: "dist" } }),
+		);
+		await git(mainWorktree, "add", "dist", "node_modules", ".qorpera/checks.json");
+		await git(mainWorktree, "commit", "-m", "Add dist site folder");
+		const builtSha = await git(mainWorktree, "rev-parse", "HEAD");
+		const builtTreeSha = await git(repo, "rev-parse", `${builtSha}^{tree}`);
+
+		const builtTree = await readSurfaceSiteTree(job, { repository, tree: builtTreeSha });
+		expect(builtTree.files.map((file) => file.path).sort()).toEqual(["app.js", "index.html"]);
+		const builtIndex = builtTree.files.find((file) => file.path === "index.html");
+		expect(builtIndex ? Buffer.from(builtIndex.content).toString("utf8") : "").toContain("Built");
 	});
 });

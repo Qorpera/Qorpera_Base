@@ -9,6 +9,7 @@ import {
 	type CodeCommitFile,
 	codeChecksFailedSummary,
 	codeChecksGate,
+	codeChecksGateMetadata,
 	codeChecksNotRunSummary,
 	codeChecksPassed,
 	codeChecksPlan,
@@ -16,6 +17,7 @@ import {
 	codeChecksTail,
 	MAX_PARALLEL_CHECKS,
 	readCodeChecks,
+	surfaceStageChecksGate,
 } from "../src/code-checks.ts";
 import { CODE_CHECKS_DRILL, CODE_DRILL_WORDS } from "../src/code-site.ts";
 
@@ -1302,5 +1304,144 @@ describe("the row's value for a run that passed", () => {
 		expect(withTests).toContain("Checks skipped (no matching changes): docs.");
 		expect(withTests).not.toContain("Checks that passed: lint, docs.");
 		expect(unseenIn(withTests)).toBe(false);
+	});
+});
+
+describe("surfaceStageChecksGate and surfaceGate schema", () => {
+	const fileOf = (text: string, blob = BLOB): CodeCommitFile => ({
+		entry: { kind: "file", bytes: new TextEncoder().encode(text) },
+		blob,
+	});
+	const missingFile: CodeCommitFile = { entry: { kind: "missing" }, blob: null };
+
+	it("accepts optional surfaceGate 'none' and 'stage' and rejects invalid types or values", () => {
+		const noneRes = readCodeChecks(fileOf('{"surfaceGate":"none","checks":[{"name":"test","run":"npm test"}]}'));
+		expect(noneRes.state).toBe("ok");
+		if (noneRes.state === "ok") expect(noneRes.surfaceGate).toBe("none");
+
+		const stageRes = readCodeChecks(fileOf('{"surfaceGate":"stage","checks":[{"name":"test","run":"npm test"}]}'));
+		expect(stageRes.state).toBe("ok");
+		if (stageRes.state === "ok") expect(stageRes.surfaceGate).toBe("stage");
+
+		const omitted = readCodeChecks(fileOf('{"checks":[{"name":"test","run":"npm test"}]}'));
+		expect(omitted.state).toBe("ok");
+		if (omitted.state === "ok") expect(omitted.surfaceGate).toBeUndefined();
+
+		const badType = readCodeChecks(fileOf('{"surfaceGate":true,"checks":[{"name":"test","run":"npm test"}]}'));
+		expect(badType.state).toBe("refused");
+		if (badType.state === "refused") {
+			expect(badType.problems).toContainEqual({
+				at: "/surfaceGate",
+				code: "WRONG_TYPE",
+				message: "Must be a string.",
+			});
+		}
+
+		const badVal = readCodeChecks(fileOf('{"surfaceGate":"always","checks":[{"name":"test","run":"npm test"}]}'));
+		expect(badVal.state).toBe("refused");
+		if (badVal.state === "refused") {
+			expect(badVal.problems).toContainEqual({
+				at: "/surfaceGate",
+				code: "INVALID_VALUE",
+				message: 'Must be "none" or "stage".',
+			});
+		}
+	});
+
+	it("skips when omitted or none, runs when stage, and fails closed on broken or deleted stage-gated files", () => {
+		const missingRead = readCodeChecks(missingFile);
+		const noneFile = fileOf('{"checks":[{"name":"test","run":"npm test"}]}');
+		const stageFile = fileOf('{"surfaceGate":"stage","checks":[{"name":"test","run":"npm test"}]}');
+		const brokenStageFile = fileOf('{"surfaceGate":"stage","checks":[');
+		const brokenNonStageFile = fileOf('{"checks":[');
+
+		expect(surfaceStageChecksGate(missingRead, readCodeChecks(noneFile), noneFile)).toEqual({ gate: "skip" });
+		expect(surfaceStageChecksGate(missingRead, readCodeChecks(brokenNonStageFile), brokenNonStageFile)).toEqual({
+			gate: "skip",
+		});
+
+		const runGate = surfaceStageChecksGate(missingRead, readCodeChecks(stageFile), stageFile);
+		expect(runGate.gate).toBe("run");
+		if (runGate.gate === "run") expect(runGate.checks.map((c) => c.name)).toEqual(["test"]);
+
+		const refusedBroken = surfaceStageChecksGate(missingRead, readCodeChecks(brokenStageFile), brokenStageFile);
+		expect(refusedBroken.gate).toBe("refused");
+		if (refusedBroken.gate === "refused") {
+			expect(refusedBroken.summary).toContain("Nothing was staged for Preview:");
+			expect(refusedBroken.summary).toContain("[code=CODING_CHECKS_REFUSED]");
+		}
+
+		const refusedDeleted = surfaceStageChecksGate(readCodeChecks(stageFile), missingRead, missingFile);
+		expect(refusedDeleted.gate).toBe("refused");
+		if (refusedDeleted.gate === "refused") {
+			expect(refusedDeleted.summary).toContain("Nothing was staged for Preview:");
+			expect(refusedDeleted.summary).toContain("is gone in this change");
+		}
+
+		const explicitNoneFile = fileOf('{"surfaceGate":"none","checks":[{"name":"test","run":"npm test"}]}');
+		const baseStageHeadNone = surfaceStageChecksGate(
+			readCodeChecks(stageFile),
+			readCodeChecks(explicitNoneFile),
+			explicitNoneFile,
+		);
+		expect(baseStageHeadNone.gate).toBe("run");
+		if (baseStageHeadNone.gate === "run") expect(baseStageHeadNone.checks.map((c) => c.name)).toEqual(["test"]);
+
+		const baseStageHeadOmitted = surfaceStageChecksGate(
+			readCodeChecks(stageFile),
+			readCodeChecks(noneFile),
+			noneFile,
+		);
+		expect(baseStageHeadOmitted.gate).toBe("run");
+		if (baseStageHeadOmitted.gate === "run") expect(baseStageHeadOmitted.checks.map((c) => c.name)).toEqual(["test"]);
+
+		const cachedStageFile = fileOf(
+			JSON.stringify({
+				surfaceGate: "stage",
+				maxParallel: 2,
+				failFast: false,
+				caches: [{ key: "deps-1", paths: ["node_modules"] }],
+				checks: [{ name: "test", run: "npm test" }],
+			}),
+		);
+		const cachedGate = surfaceStageChecksGate(missingRead, readCodeChecks(cachedStageFile), cachedStageFile);
+		expect(cachedGate.gate).toBe("run");
+		if (cachedGate.gate === "run") {
+			expect(codeChecksGateMetadata(cachedGate.checks)).toEqual({
+				maxParallel: 2,
+				failFast: false,
+				caches: [{ key: "deps-1", paths: ["node_modules"] }],
+				checksChanged: true,
+				allowCacheSave: false,
+			});
+		}
+	});
+
+	it("formats staged failure and not_run summaries with Preview wording", () => {
+		const failedRun: Extract<CodeChecksRun, { state: "failed" }> = {
+			state: "failed",
+			ms: 1200,
+			passed: [],
+			failed: {
+				name: "test",
+				run: "npm test",
+				ms: 1200,
+				exitCode: 1,
+				atLimit: false,
+				tail: "assertion failed",
+				log: "/tmp/check.log",
+			},
+			notRun: [],
+		};
+		const failedText = codeChecksFailedSummary(failedRun, "fast-forward", "", { staged: true });
+		expect(failedText).toContain("Nothing was staged for Preview:");
+		expect(failedText).toContain("[code=CODING_CHECKS_FAILED]");
+
+		const notRunText = codeChecksNotRunSummary(
+			{ state: "not_run", why: "machine", code: "MACHINE_STOPPED" },
+			{ staged: true },
+		);
+		expect(notRunText).toContain("Nothing was staged for Preview:");
+		expect(notRunText).toContain("[code=CODING_CHECKS_DID_NOT_RUN]");
 	});
 });

@@ -706,3 +706,73 @@ it("routes manage_worker and report_work to the folder writer, and says how work
 	// The writer's own answer: a saved report ends the worker's turn.
 	expect(answered.completesTurn).toBe(true);
 });
+
+it("forwards claimedPaths on coding dispatch and attaches claimOverlapWarning when active sessions overlap", async () => {
+	const otherId = "4b0e9c1a-0000-4000-8000-000000000099";
+	const overlapCalls: Record<string, unknown>[] = [];
+	const f = await fixture(
+		{ files: { [TODO]: todoText() } },
+		{
+			rpc: (method, args) => {
+				if (method === "qorpera_folder_code_claim_overlaps") {
+					overlapCalls.push(structuredClone(args));
+					return {
+						schema: "qorpera.code-claim-overlaps/v1",
+						overlaps: [
+							{
+								workerId: otherId,
+								workerKey: "cart-ui",
+								title: "Update cart UI",
+								phase: "running",
+								branch: `qorpera/coding/${otherId}`,
+								claimedPaths: ["src/cart/**"],
+								matchedPaths: ["src/cart/totals.ts"],
+							},
+						],
+					};
+				}
+				return undefined;
+			},
+		},
+	);
+	const result = parse(
+		await f.workers().change(
+			{
+				...DISPATCH,
+				operationKey: "dispatch-coding-claim",
+				workerKey: "cart-totals",
+				species: "coding",
+				harness: "codex",
+				repository: { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" },
+				claimedPaths: ["src/cart/totals.ts"],
+			},
+			f.context,
+		),
+	);
+	expect(result).toMatchObject({
+		schema: "qorpera.agent-worker-receipt/v1",
+		action: "dispatch",
+		outcome: "saved",
+		claimOverlapWarning: expect.stringContaining("overlap with 1 active coding session"),
+		overlappingSessions: [
+			{
+				workerId: otherId,
+				workerKey: "cart-ui",
+				title: "Update cart UI",
+				phase: "running",
+				claimedPaths: ["src/cart/**"],
+				matchedPaths: ["src/cart/totals.ts"],
+			},
+		],
+	});
+	expect(overlapCalls).toEqual([
+		{
+			p_binding: f.binding,
+			p_request: {
+				repository: { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" },
+				claimedPaths: ["src/cart/totals.ts"],
+				excludeWorkerId: expect.any(String),
+			},
+		},
+	]);
+});

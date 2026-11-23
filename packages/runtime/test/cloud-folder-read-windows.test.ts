@@ -102,7 +102,11 @@ describe("a read of several files that shows a token", () => {
 		expect(shown).not.toContain(token);
 		expect(shown).toContain("The deploy reads ghp_[REDACTED] from the vault.");
 		expect(redactCloudWebhookSecrets(shown)).toBe(shown);
-		expect(f.releases.map((release) => release.p_output_sha256)).toEqual([sha(shown), sha(shown)]);
+		expect(f.releases.map((release) => release.p_output_sha256)).toEqual([sha(shown)]);
+		expect((f.releases[0]?.p_reads as { path: string }[]).map((read) => read.path)).toEqual([
+			"docs/plain.md",
+			"keys/deploy.md",
+		]);
 		expect(content.companyReadId).toBe(f.releases[0]?.p_release_id);
 	});
 });

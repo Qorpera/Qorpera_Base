@@ -962,4 +962,272 @@ describe("cloud surface session runner", () => {
 		expect(unconfigured.state).toBe("failed");
 		expect(unconfigured.error).toContain("renewSessionLease");
 	});
+
+	it("stops lease renewal before completion, retries completion without overwriting with failed, handles caller abort cleanly, and reads brief.md in parallel", async () => {
+		const sessionId = randomUUID();
+		const surfaceId = randomUUID();
+		const companyId = randomUUID();
+		const leaseToken = randomUUID();
+
+		let activeReads = 0;
+		let maxActiveReads = 0;
+		let inCompletion = false;
+		let renewalsDuringCompletion = 0;
+		let completionAttempts = 0;
+		const seenStates: string[] = [];
+
+		const result = await runSurfaceSessionTurn(
+			{
+				sessionId,
+				surfaceId,
+				companyId,
+				surfaceSlug: "studio-a",
+				surfaceTitle: "Studio A",
+				sourceKind: "folder",
+				folderRoot: "studio-a",
+				prompt: "Refine layout",
+				leaseToken,
+			},
+			{
+				folder: {
+					async readText(path) {
+						activeReads += 1;
+						maxActiveReads = Math.max(maxActiveReads, activeReads);
+						await new Promise((r) => setTimeout(r, 20));
+						activeReads -= 1;
+						if (path === "QorperaOS/surfaces/studio-a/brief.md") return { text: "Studio brief" };
+						if (path === "identity/tokens.json") return { text: '{"accent":"#d76f45"}' };
+						return null;
+					},
+				},
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				leaseRenewIntervalMs: 10,
+				completionRetryDelaysMs: [5, 5],
+				renewSessionLease: async () => {
+					if (inCompletion) {
+						renewalsDuringCompletion += 1;
+						return { renewed: false };
+					}
+					return { renewed: true };
+				},
+				executeTurn: async () => ({ state: "ready", replyText: "Completed turn." }),
+				completeSessionTurn: async (completion) => {
+					seenStates.push(completion.state);
+					inCompletion = true;
+					completionAttempts += 1;
+					await new Promise((r) => setTimeout(r, 25));
+					inCompletion = false;
+					if (completionAttempts === 1) {
+						throw new Error("transient completion 503");
+					}
+				},
+			},
+		);
+
+		expect(result.state).toBe("ready");
+		expect(maxActiveReads).toBeGreaterThanOrEqual(2);
+		expect(renewalsDuringCompletion).toBe(0);
+		expect(seenStates).toEqual(["ready", "ready"]);
+
+		const persistentStates: string[] = [];
+		const failedCompletion = await runSurfaceSessionTurn(
+			{
+				sessionId,
+				surfaceId,
+				companyId,
+				surfaceSlug: "studio-a",
+				surfaceTitle: "Studio A",
+				sourceKind: "folder",
+				folderRoot: "studio-a",
+				prompt: "Refine layout",
+			},
+			{
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				completionRetryDelaysMs: [5],
+				executeTurn: async () => ({ state: "ready", replyText: "Done." }),
+				completeSessionTurn: async (completion) => {
+					persistentStates.push(completion.state);
+					throw new Error("database unavailable");
+				},
+			},
+		);
+		expect(failedCompletion.state).toBe("failed");
+		expect(persistentStates).toEqual(["ready", "ready"]);
+
+		const callerAbort = new AbortController();
+		const abortCompletions: string[] = [];
+		const abortPromise = runSurfaceSessionTurn(
+			{
+				sessionId,
+				surfaceId,
+				companyId,
+				surfaceSlug: "studio-a",
+				surfaceTitle: "Studio A",
+				sourceKind: "folder",
+				folderRoot: "studio-a",
+				prompt: "Shutdown test",
+			},
+			{
+				signal: callerAbort.signal,
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				executeTurn: async ({ signal }) =>
+					new Promise((_, reject) => {
+						signal.addEventListener("abort", () => reject(new Error("shutdown")), { once: true });
+					}),
+				completeSessionTurn: async (completion) => {
+					abortCompletions.push(completion.state);
+				},
+			},
+		);
+		callerAbort.abort(new Error("shutdown"));
+		const abortedResult = await abortPromise;
+		expect(abortedResult.state).toBe("failed");
+		expect(abortCompletions).toEqual([]);
+
+		const swallowed = await runSurfaceSessionTurn(
+			{
+				sessionId,
+				surfaceId,
+				companyId,
+				surfaceSlug: "studio-a",
+				surfaceTitle: "Studio A",
+				sourceKind: "folder",
+				folderRoot: "studio-a",
+				prompt: "Fail test",
+			},
+			{
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				executeTurn: async () => {
+					throw new Error("model error");
+				},
+				completeSessionTurn: async () => {
+					throw new Error("secondary db outage");
+				},
+			},
+		);
+		expect(swallowed.state).toBe("failed");
+		expect(swallowed.error).toContain("model error");
+
+		let opaqueAttempt = 0;
+		const opaqueStates: string[] = [];
+		const opaque423 = await runSurfaceSessionTurn(
+			{
+				sessionId,
+				surfaceId,
+				companyId,
+				surfaceSlug: "studio-a",
+				surfaceTitle: "Studio A",
+				sourceKind: "folder",
+				folderRoot: "studio-a",
+				prompt: "Opaque 423 retry test",
+			},
+			{
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				completionRetryDelaysMs: [5],
+				executeTurn: async () => ({ state: "ready", replyText: "Done." }),
+				completeSessionTurn: async (completion) => {
+					opaqueStates.push(completion.state);
+					opaqueAttempt += 1;
+					if (opaqueAttempt === 1) throw new Error("transient 503");
+					throw Object.assign(new Error("Request failed with status 423"), { status: 423 });
+				},
+			},
+		);
+		expect(opaque423.state).toBe("failed");
+		expect(opaqueStates).toEqual(["ready", "ready"]);
+	});
+
+	it("threads surfaceKind into folder instructions with Product and Report Studio schemas", async () => {
+		const seen: Record<string, string> = {};
+		const hook = createSurfaceSessionProviderHook({
+			resolveRunnerPorts: (job) => ({
+				surfaceTools: { stageSurfacePatch: vi.fn() },
+				completeSessionTurn: vi.fn().mockResolvedValue(undefined),
+				renewSessionLease: vi.fn().mockResolvedValue({ renewed: true }),
+				executeTurn: async (req) => {
+					seen[job.surfaceSlug ?? "unknown"] = req.instructions;
+					return { state: "ready", replyText: "Staged." };
+				},
+			}),
+		});
+
+		await hook.runDeliveredSession(
+			{
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				profileId: randomUUID(),
+				surfaceSlug: "thetabands",
+				surfaceTitle: "Thetabands",
+				surfaceArchetype: "studio",
+				surfaceSourceKind: "folder",
+				surfaceKind: "product",
+				folderRoot: "surfaces/thetabands",
+				prompt: "Design headband variants and audit suppliers.",
+				leaseToken: randomUUID(),
+			},
+			"machine-1",
+		);
+
+		await hook.runDeliveredSession(
+			{
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				profileId: randomUUID(),
+				surfaceSlug: "market-notes",
+				surfaceTitle: "Market Notes",
+				surfaceArchetype: "studio",
+				surfaceSourceKind: "folder",
+				surfaceKind: "report",
+				folderRoot: "surfaces/market-notes",
+				prompt: "Compare EEG competitors.",
+				leaseToken: randomUUID(),
+			},
+			"machine-1",
+		);
+
+		expect(seen.thetabands).toContain("specs.json");
+		expect(seen.thetabands).toContain('"kind": "headband" | "device"');
+		expect(seen.thetabands).toContain("vendors.json");
+		expect(seen.thetabands).toContain("<slug>.report.json");
+		expect(seen.thetabands).toContain("surfaces/thetabands/");
+		expect(seen["market-notes"]).toContain("<slug>.report.json");
+		expect(seen["market-notes"]).toContain("bar_chart");
+		expect(seen["market-notes"]).not.toContain("vendors.json");
+
+		await hook.runDeliveredSession(
+			{
+				sessionId: randomUUID(),
+				surfaceId: randomUUID(),
+				profileId: randomUUID(),
+				surfaceSlug: "inventory",
+				surfaceTitle: "Inventory",
+				surfaceArchetype: "studio",
+				surfaceSourceKind: "folder",
+				surfaceKind: "database",
+				folderRoot: "surfaces/inventory",
+				prompt: "Add SKU table.",
+				leaseToken: randomUUID(),
+			},
+			"machine-1",
+		);
+		expect(seen.inventory).not.toContain("Product Studio file layout");
+		expect(seen.inventory).not.toContain("vendors.json");
+
+		const isolatedLoaded = await loadSurfaceSharedAssets(
+			{
+				async readText(path) {
+					const files: Record<string, string> = {
+						"product/specs.json": '{"legacy":true}',
+						"surfaces/thetabands/specs.json": '{"weightGrams":44}',
+						"surfaces/thetabands/catalog.json": '{"skus":["TB-1"]}',
+					};
+					return files[path] ?? null;
+				},
+			},
+			new AbortController().signal,
+			["surfaces/thetabands"],
+		);
+		expect(isolatedLoaded?.productSpecsJson).toBe('{"weightGrams":44}');
+		expect(isolatedLoaded?.productCatalogJson).toBe('{"skus":["TB-1"]}');
+	});
 });

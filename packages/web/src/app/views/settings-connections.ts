@@ -21,6 +21,7 @@ import {
 	type WebMemberConnection,
 	type WebNativeProviderLogin,
 	type WebNativeSubscription,
+	type WebProviderCredits,
 } from "../../cloud/native-subscription.ts";
 import { companyInSentence } from "../../ui/company-name.ts";
 import { button, fmtTime, h, replace } from "../../ui/dom.ts";
@@ -68,7 +69,22 @@ function resetCountdown(milliseconds: number): string {
 }
 
 type UsageWindow = { id: string; label: string; usedPercent: number; resetAt?: string };
-type UsageReading = { observedAt: string; windows: readonly UsageWindow[] };
+type UsageReading = { observedAt: string; windows: readonly UsageWindow[]; credits?: WebProviderCredits };
+
+function formatCreditAmount(amount: number, currency: string | undefined): string {
+	const fixed = Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
+	switch (currency) {
+		case undefined:
+		case "USD":
+			return `$${fixed}`;
+		case "EUR":
+			return `€${fixed}`;
+		case "GBP":
+			return `£${fixed}`;
+		default:
+			return `${fixed} ${currency}`;
+	}
+}
 
 const REFILLS: Readonly<Record<WebClaudeResetKind, readonly string[]>> = {
 	session: [],
@@ -277,7 +293,10 @@ export class ConnectionsView {
 	#refreshAgain = false;
 	#metadataRefresh: Promise<void> | undefined;
 	#metadataForced = false;
-	#usageUpdating = false;
+	#forcedTaken = false;
+	#forcedNext: Promise<void> | undefined;
+	readonly #claudeAsked = new Map<string, number>();
+	#memberRefreshing = false;
 	#usageError: string | undefined;
 	#unansweredByOwnRefresh: ReadonlyMap<string, string | undefined> = new Map();
 	/** "Continue with ChatGPT": offered while the company may use plan logins, asked when the
@@ -290,6 +309,7 @@ export class ConnectionsView {
 	 * (the founding table) never offers "Continue with ChatGPT". */
 	readonly #plan: PlanSignIn | undefined;
 	readonly #navigate: (url: string) => void;
+	readonly #onProvidersChanged: (() => void) | undefined;
 	/** `signIns` and `begin` come from the application when sign-ins should
 	 * outlive this page; alone, the page keeps its own. */
 	constructor(
@@ -301,10 +321,12 @@ export class ConnectionsView {
 		navigate: (url: string) => void = (url) => location.assign(url),
 		plan?: PlanSignIn,
 		accountWide?: { companyName: string },
+		onProvidersChanged?: () => void,
 	) {
 		this.#client = client;
 		this.#accountWide = accountWide;
 		this.#navigate = navigate;
+		this.#onProvidersChanged = onProvidersChanged;
 		this.#plan = offered.includes("openai") ? plan : undefined;
 		this.#offered = PROVIDERS.filter((provider) => offered.includes(provider.id));
 		this.#signIns = signIns;
@@ -416,13 +438,17 @@ export class ConnectionsView {
 		this.#refreshing ??= this.#readUntilCurrent();
 		return this.#refreshing;
 	}
-	/** `force` is the member's own Refresh: a new observation even while a
-	 * recent one would otherwise answer. A Refresh that joins a background read
-	 * makes it forced; it can only join before that read asks for usage, since
-	 * the button is greyed out from the read's first redraw. */
 	#refreshUsage(force = false): Promise<void> {
 		if (this.#lifetime.signal.aborted) return Promise.resolve();
 		if (!this.#client.refreshAccountMetadata && !this.#client.readClaude) return this.#refresh();
+		const running = this.#metadataRefresh;
+		if (force && running && this.#forcedTaken && !this.#metadataForced) {
+			this.#forcedNext ??= running.then(() => {
+				this.#forcedNext = undefined;
+				return this.#refreshUsage(true);
+			});
+			return this.#forcedNext;
+		}
 		this.#metadataForced = (this.#metadataRefresh !== undefined && this.#metadataForced) || force;
 		this.#metadataRefresh ??= this.#readUsage();
 		return this.#metadataRefresh;
@@ -432,8 +458,18 @@ export class ConnectionsView {
 	async #refreshNow(): Promise<void> {
 		clearTimeout(this.#updatedClock);
 		this.#updated = false;
-		await this.#refreshUsage(true);
-		if (this.#lifetime.signal.aborted || this.#error || this.#usageError) return;
+		this.#memberRefreshing = true;
+		this.#draw();
+		try {
+			await this.#refreshUsage(true);
+		} finally {
+			this.#memberRefreshing = false;
+		}
+		if (this.#lifetime.signal.aborted) return;
+		if (this.#error || this.#usageError) {
+			this.#draw();
+			return;
+		}
 		// A second click during the same read ends here too; keep one clock.
 		clearTimeout(this.#updatedClock);
 		this.#updated = true;
@@ -444,7 +480,6 @@ export class ConnectionsView {
 		}, UPDATED_MS);
 	}
 	async #readUsage(): Promise<void> {
-		this.#usageUpdating = true;
 		this.#usageError = undefined;
 		// A read the member did not ask for ends an "Updated" still showing.
 		clearTimeout(this.#updatedClock);
@@ -460,9 +495,13 @@ export class ConnectionsView {
 			const resetting = this.#claudeReset?.phase === "using";
 			const codex = !resetting && this.#shown().some(live) && this.#client.refreshAccountMetadata;
 			const claude = !resetting && this.#claudeReadable() ? this.#client.readClaude : undefined;
-			if (!codex && !claude) return;
 			const forced = this.#metadataForced;
-			const logins = this.#claude?.logins ?? [];
+			this.#forcedTaken = true;
+			const now = Date.now();
+			const logins = (this.#claude?.logins ?? []).filter(
+				(login) => forced || now - (this.#claudeAsked.get(login.loginId) ?? 0) >= USAGE_FRESH_MS,
+			);
+			if (!codex && !(claude && logins.length)) return;
 			let failed = false;
 			let codexAnswered = false;
 			const before = new Map(
@@ -482,6 +521,7 @@ export class ConnectionsView {
 				);
 			for (const login of claude ? logins : []) {
 				if (this.#lifetime.signal.aborted) return;
+				this.#claudeAsked.set(login.loginId, Date.now());
 				await claude!({ loginId: login.loginId, force: forced }, this.#lifetime.signal).catch(() => {
 					failed = true;
 				});
@@ -501,7 +541,7 @@ export class ConnectionsView {
 		} catch {
 			if (!this.#lifetime.signal.aborted) this.#usageError = t("Usage could not be refreshed. Try again.");
 		} finally {
-			this.#usageUpdating = false;
+			this.#forcedTaken = false;
 			this.#metadataRefresh = undefined;
 			if (!this.#lifetime.signal.aborted) this.#draw();
 		}
@@ -579,7 +619,10 @@ export class ConnectionsView {
 				if (attempt.sending && !claudeFinished) continue;
 				if (attempt.login && (finished || claudeFinished || Date.parse(attempt.login.expiresAt) <= Date.now())) {
 					this.#attempts.delete(provider);
-					if (claudeFinished) this.#outcome = this.#claudeAdded(attempt.login.clientConnectionId);
+					if (claudeFinished) {
+						this.#outcome = this.#claudeAdded(attempt.login.clientConnectionId);
+						this.#onProvidersChanged?.();
+					}
 					// With no company open only account logins are listed: say where a company login went, and that a
 					// sign-in ended without one.
 					if (this.#accountWide && provider === "openai" && !finished)
@@ -711,6 +754,7 @@ export class ConnectionsView {
 		await this.#refresh();
 		if (added && !this.#lifetime.signal.aborted) {
 			this.#outcome = this.#claudeAdded(login.clientConnectionId);
+			this.#onProvidersChanged?.();
 			this.#draw();
 		}
 	}
@@ -756,6 +800,7 @@ export class ConnectionsView {
 		let failed = false;
 		try {
 			await this.#client.signOutClaude(login.loginId, this.#lifetime.signal, next?.loginId);
+			this.#onProvidersChanged?.();
 		} catch {
 			failed = true;
 		} finally {
@@ -994,7 +1039,7 @@ export class ConnectionsView {
 	#claudeUsage(login: WebClaudeLogin, using: boolean): HTMLElement[] {
 		const limitResetAt = claudeLimitResetAt(login.usage, Date.now());
 		const refilling = new Set(using && this.#claudeReset ? REFILLS[this.#claudeReset.kind] : []);
-		const shown = login.usage?.windows.length ? login.usage : undefined;
+		const shown = login.usage?.windows.length || login.usage?.credits ? login.usage : undefined;
 		const unmarked = using && !shown?.windows.some((window) => refilling.has(window.id));
 		const status = () => h("span", { class: "muted", role: "status" }, t("Using a reset…"));
 		const bars =
@@ -1005,7 +1050,7 @@ export class ConnectionsView {
 		// WHY: an idle sign-in's key lapses after hours and only a Claude task renews it; till then a read finds nothing new.
 		if (
 			!using &&
-			!this.#usageUpdating &&
+			!this.#memberRefreshing &&
 			!(login.usage && Date.now() - Date.parse(login.usage.observedAt) <= USAGE_FRESH_MS)
 		)
 			bars.append(
@@ -1276,6 +1321,69 @@ export class ConnectionsView {
 			unanswered,
 		);
 	}
+	#credits(credits: WebProviderCredits | undefined, stale: boolean): HTMLElement | null {
+		if (!credits) return null;
+		const currency = credits.currency;
+		let summary: string | undefined;
+		if (credits.unlimited === true) {
+			summary = t("Unlimited");
+		} else if (credits.balance !== undefined && credits.limit !== undefined) {
+			summary = t("{balance} left of {limit}", {
+				balance: formatCreditAmount(credits.balance, currency),
+				limit: formatCreditAmount(credits.limit, currency),
+			});
+		} else if (credits.used !== undefined && credits.limit !== undefined) {
+			summary = t("{used} of {limit} used", {
+				used: formatCreditAmount(credits.used, currency),
+				limit: formatCreditAmount(credits.limit, currency),
+			});
+		} else if (credits.balance !== undefined) {
+			summary = t("{balance} available", { balance: formatCreditAmount(credits.balance, currency) });
+		} else if (credits.hasCredits === false) {
+			summary = t("No credits available");
+		} else if (credits.hasCredits === true) {
+			summary = t("Credits active");
+		}
+		if (!summary) return null;
+		let remainingPercent: number | undefined;
+		if (credits.limit !== undefined && credits.limit > 0) {
+			if (credits.balance !== undefined) {
+				remainingPercent = Math.max(0, Math.min(100, Math.round((credits.balance / credits.limit) * 100)));
+			} else if (credits.used !== undefined) {
+				remainingPercent = Math.max(
+					0,
+					Math.min(100, Math.round(((credits.limit - credits.used) / credits.limit) * 100)),
+				);
+			}
+		}
+		const fill = remainingPercent !== undefined ? h("span") : null;
+		if (fill && remainingPercent !== undefined) fill.style.width = `${remainingPercent}%`;
+		return h(
+			"div",
+			{ class: "connection-usage-window connection-usage-credits" },
+			h(
+				"div",
+				{ class: "connection-usage-heading" },
+				h("span", { class: "connection-usage-label" }, t("API credits")),
+				h("span", null, summary),
+			),
+			fill && remainingPercent !== undefined
+				? h(
+						"div",
+						{
+							class: `connection-usage-meter${remainingPercent <= 15 ? " is-low" : ""}${stale ? " is-stale" : ""}`,
+							role: "meter",
+							"aria-label": t("API credits"),
+							"aria-valuemin": 0,
+							"aria-valuemax": 100,
+							"aria-valuenow": remainingPercent,
+							"aria-valuetext": summary,
+						},
+						fill,
+					)
+				: null,
+		);
+	}
 	#bars(
 		usage: UsageReading | undefined,
 		usable: boolean,
@@ -1383,6 +1491,7 @@ export class ConnectionsView {
 							),
 				);
 			}),
+			this.#credits(usage.credits, stale),
 		);
 	}
 	#attempt(provider: (typeof PROVIDERS)[number], attempt: Attempt): HTMLElement {
@@ -1543,13 +1652,9 @@ export class ConnectionsView {
 						.sort((a, b) => Number(Boolean(b.inUse)) - Number(Boolean(a.inUse)))
 						.map((login) => this.#claudeCard(login)),
 				];
-		// Greyed out, not disabled: a disabled button would drop keyboard focus
-		// to "Add account" at the read's first redraw. A press checks the state
-		// the button was drawn in, so one before a background read's first
-		// redraw still joins that read and makes it forced.
-		const busy = this.#loading || this.#usageUpdating || this.#claudeReset?.phase === "using";
+		const busy = this.#loading || this.#memberRefreshing || this.#claudeReset?.phase === "using";
 		const refresh = button(
-			this.#usageUpdating ? t("Refreshing…") : this.#updated ? t("Updated") : t("Refresh"),
+			this.#memberRefreshing ? t("Refreshing…") : this.#updated ? t("Updated") : t("Refresh"),
 			() => {
 				if (!busy) void this.#refreshNow();
 			},

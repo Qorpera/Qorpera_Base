@@ -263,6 +263,42 @@ describe("cloud-code-checks canonical parser and v2 schema", () => {
 			expect(codes).toContain("INVALID_VALUE /checks/0/artifacts/format");
 		}
 	});
+
+	it("parses and validates optional preview and surfaceGate fields", () => {
+		const valid = parseCodeChecksText(
+			JSON.stringify({
+				surfaceGate: "stage",
+				preview: { run: "npm run preview", folder: "dist", cwd: "apps/web", timeoutSeconds: 240 },
+				checks: [{ name: "test", run: "npm test" }],
+			}),
+		);
+		expect(valid.ok).toBe(true);
+		if (valid.ok) {
+			expect(valid.surfaceGate).toBe("stage");
+			expect(valid.preview).toEqual({
+				run: "npm run preview",
+				folder: "dist",
+				cwd: "apps/web",
+				timeoutSeconds: 240,
+			});
+		}
+
+		const bad = parseCodeChecksText(
+			JSON.stringify({
+				surfaceGate: "strict",
+				preview: { folder: "../bad", timeoutSeconds: 999 },
+				checks: [{ name: "test", run: "npm test" }],
+			}),
+		);
+		expect(bad.ok).toBe(false);
+		if (!bad.ok) {
+			const codes = bad.problems.map((p) => `${p.code} ${p.at}`);
+			expect(codes).toContain("INVALID_VALUE /surfaceGate");
+			expect(codes).toContain("INVALID_PATH /preview/folder");
+			expect(codes).toContain("INVALID_VALUE /preview/timeoutSeconds");
+			expect(codes).toContain("MISSING_KEY /preview");
+		}
+	});
 });
 
 describe("DAG budget, transitive needs, and path filtering", () => {

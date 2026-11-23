@@ -1464,4 +1464,24 @@ describe("coding_run_command runChecks pre-flight runner", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	it("validates optional surfaceGate in parseCodeChecksText", () => {
+		const stage = parseCodeChecksText('{"surfaceGate":"stage","checks":[{"name":"test","run":"npm test"}]}');
+		expect(stage.ok).toBe(true);
+		if (stage.ok) expect(stage.surfaceGate).toBe("stage");
+
+		const none = parseCodeChecksText('{"surfaceGate":"none","checks":[{"name":"test","run":"npm test"}]}');
+		expect(none.ok).toBe(true);
+		if (none.ok) expect(none.surfaceGate).toBe("none");
+
+		const invalid = parseCodeChecksText('{"surfaceGate":"strict","checks":[{"name":"test","run":"npm test"}]}');
+		expect(invalid.ok).toBe(false);
+		if (!invalid.ok) {
+			expect(invalid.problems).toContainEqual({
+				at: "/surfaceGate",
+				code: "INVALID_VALUE",
+				message: 'Must be "none" or "stage".',
+			});
+		}
+	});
 });

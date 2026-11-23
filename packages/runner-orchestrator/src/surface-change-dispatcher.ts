@@ -4,7 +4,7 @@ import {
 	type SurfaceChangeStatus,
 	type SurfaceSessionState,
 } from "@qorpera/contracts";
-import type { CodeHostJob } from "./code-host-jobs.ts";
+import { type CodeHostJob, CodeHostJobFailure, CodeHostRefusal } from "./code-host-jobs.ts";
 import {
 	CodeHostChangeConflict,
 	type CodeHostChangeRange,
@@ -55,6 +55,11 @@ export type SurfaceChangeApprovalOutcome =
 			readonly conflictPaths: readonly string[];
 	  };
 
+function rebaseErrorCode(error: unknown): string {
+	if (error instanceof CodeHostRefusal || error instanceof CodeHostJobFailure) return error.code;
+	return error instanceof Error && error.name ? error.name : "UNKNOWN";
+}
+
 // WHY: Runs selective cherry-pick landing, sibling/peer rebasing, lifecycle evaluation, and optional auto-publish in one deterministic workflow.
 export async function approveAndSyncSurfaceChanges(
 	job: CodeHostJob,
@@ -79,27 +84,57 @@ export async function approveAndSyncSurfaceChanges(
 		throw error;
 	}
 
+	// WHY: Once cherryPickChangeUnits advances refs/heads/main, isolate non-abort rebase errors so one peer session never fails an already-landed merge.
 	let siblingRebase: RebaseSessionChangesResult | null = null;
 	if (request.siblingRemainingChanges.length > 0) {
-		siblingRebase = await rebaseSessionChanges(job, {
-			repository: request.repository,
-			workerId: request.workerId,
-			ontoSha: landed.mainAfter,
-			remainingChanges: request.siblingRemainingChanges,
-			updateBranchRef: true,
-		});
+		const allowedBranchTips = [
+			request.siblingRemainingChanges[request.siblingRemainingChanges.length - 1]!.headSha,
+			...request.approvedChanges.map((change) => change.headSha),
+		];
+		try {
+			siblingRebase = await rebaseSessionChanges(job, {
+				repository: request.repository,
+				workerId: request.workerId,
+				ontoSha: landed.mainAfter,
+				remainingChanges: request.siblingRemainingChanges,
+				updateBranchRef: true,
+				allowedBranchTips,
+			});
+		} catch (error) {
+			if (job.signal.aborted) throw error;
+			siblingRebase = {
+				status: "deferred",
+				ontoSha: landed.mainAfter,
+				reason: "rebase_failed",
+				errorCode: rebaseErrorCode(error),
+				restored: [],
+			};
+		}
 	}
 
 	const peerSync: { sessionId: string; result: RebaseSessionChangesResult }[] = [];
 	for (const peer of request.peerSessions) {
 		if (peer.remainingChanges.length === 0) continue;
-		const result = await rebaseSessionChanges(job, {
-			repository: request.repository,
-			workerId: peer.workerId,
-			ontoSha: landed.mainAfter,
-			remainingChanges: peer.remainingChanges,
-			updateBranchRef: true,
-		});
+		let result: RebaseSessionChangesResult;
+		try {
+			result = await rebaseSessionChanges(job, {
+				repository: request.repository,
+				workerId: peer.workerId,
+				ontoSha: landed.mainAfter,
+				remainingChanges: peer.remainingChanges,
+				updateBranchRef: true,
+				allowedBranchTips: [peer.remainingChanges[peer.remainingChanges.length - 1]!.headSha],
+			});
+		} catch (error) {
+			if (job.signal.aborted) throw error;
+			result = {
+				status: "deferred",
+				ontoSha: landed.mainAfter,
+				reason: "rebase_failed",
+				errorCode: rebaseErrorCode(error),
+				restored: [],
+			};
+		}
 		peerSync.push({ sessionId: peer.sessionId, result });
 	}
 

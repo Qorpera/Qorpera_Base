@@ -769,7 +769,17 @@ it("is manage_routine: its description, its list arguments, the checks before re
 		(
 			schema as { properties: { trigger: { oneOf: { properties: { kind: { const: string } } }[] } } }
 		).properties.trigger.oneOf.map((item) => item.properties.kind.const);
-	expect(kinds(tool?.inputSchema)).toEqual(["dynamic", "when_done", "every", "weekly", "file_change", "event"]);
+	expect(kinds(tool?.inputSchema)).toEqual([
+		"dynamic",
+		"when_done",
+		"every",
+		"weekly",
+		"file_change",
+		"event",
+		"code_change",
+		"app_unhealthy",
+		"data_change",
+	]);
 	const list = parse((await tool?.execute({ action: "list" }, f.context)) as { value: unknown });
 	expect(list.routines.map((routine: { routineKey: string }) => routine.routineKey)).toEqual(["inbox"]);
 	// The run's own dynamic routine, concluded here, owes no decision.
@@ -788,4 +798,80 @@ it("is manage_routine: its description, its list arguments, the checks before re
 	expect(() =>
 		tool?.parseArguments({ action: "conclude", operationKey: "end-1", routineKey: "inbox", summary: "Done." }),
 	).not.toThrow();
+});
+
+it("writes and parses code-change, app-unhealthy, data-change and checkBeforeWake routine files cleanly", async () => {
+	const f = await fixture({ folders: [ROUTINES] });
+	const routines = f.routines();
+	const cases: Parameters<typeof routines.check>[0][] = [
+		{
+			action: "upsert",
+			operationKey: "op-code",
+			routineKey: "code-watch",
+			title: "Code watch",
+			intent: "React to landed TypeScript changes.",
+			trigger: {
+				kind: "listener",
+				source: "code-change",
+				repo: "acme/web",
+				events: ["landed", "checks_failed"],
+				paths: ["src/**/*.ts"],
+				timeZone: "UTC",
+				replyPolicy: "optional",
+			},
+		},
+		{
+			action: "upsert",
+			operationKey: "op-app",
+			routineKey: "app-watch",
+			title: "App watch",
+			intent: "Diagnose crash-looping app.",
+			trigger: {
+				kind: "listener",
+				source: "app-unhealthy",
+				site: "billing-app",
+				timeZone: "UTC",
+				replyPolicy: "optional",
+			},
+		},
+		{
+			action: "upsert",
+			operationKey: "op-data",
+			routineKey: "data-watch",
+			title: "Data watch",
+			intent: "Triage new invoices.",
+			trigger: {
+				kind: "listener",
+				source: "data-change",
+				database: "billing",
+				tables: ["invoices"],
+				operations: ["insert"],
+				timeZone: "UTC",
+				replyPolicy: "optional",
+			},
+		},
+		{
+			action: "upsert",
+			operationKey: "op-probe",
+			routineKey: "probe-watch",
+			title: "Health probe",
+			intent: "Alert on failed probe.",
+			trigger: {
+				kind: "schedule",
+				intervalMinutes: 15,
+				replyPolicy: "optional",
+			},
+			checkBeforeWake: {
+				kind: "http_probe",
+				url: "https://billing.example.com/health",
+				expectStatus: 200,
+				timeoutMs: 5000,
+			},
+		},
+	];
+	for (const req of cases) {
+		expect(() => routines.check(req)).not.toThrow();
+		const res = parse((await routines.change(req, f.call())).content);
+		expect(res.outcome).toBe("saved");
+	}
 });

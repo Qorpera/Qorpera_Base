@@ -817,7 +817,9 @@ export class ComputerPanel {
 		const unsubscribeHolds = this.#ledger.subscribe(() => this.#holdsChanged());
 		signal.addEventListener("abort", unsubscribeHolds, { once: true });
 		// The member's attention: any touch on the page; coming back to the tab counts as one.
-		const touched = () => this.#touched();
+		const touched = () => {
+			if (this.attached) this.#touched();
+		};
 		for (const type of ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"])
 			document.addEventListener(type, touched, { capture: true, passive: true, signal });
 		document.addEventListener(
@@ -3567,6 +3569,21 @@ export class ComputerPanels {
 		}
 		panel = new ComputerPanel(agent, this.#computer, this.#signal, this.#options, open);
 		this.#panels.set(agent.id, panel);
+		const detached: string[] = [];
+		for (const [id, existing] of this.#panels) {
+			if (
+				id !== agent.id &&
+				!existing.attached &&
+				!existing.holding &&
+				!existing.el.classList.contains("is-entered")
+			) {
+				detached.push(id);
+			}
+		}
+		while (detached.length > 3) {
+			const oldest = detached.shift();
+			if (oldest) this.close(oldest);
+		}
 		return panel;
 	}
 

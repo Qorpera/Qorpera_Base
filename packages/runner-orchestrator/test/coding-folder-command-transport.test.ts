@@ -31,6 +31,7 @@ import {
 } from "../../runtime/src/cloud-coding-command-http.ts";
 import { type CodingCommandSecrets, CodingMachineCommandSecrets } from "../src/coding-command-secrets.ts";
 import {
+	CODING_COMMAND_START_WAIT_MS,
 	CodingCommandHeld,
 	codingCommandExecution,
 	LxdCodingFolderCommandTransport,
@@ -553,7 +554,7 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 			commandId: input.commandId,
 			offset: 0,
 			maxBytes: CODING_GUEST.maxPageBytes,
-			waitMs: 0,
+			waitMs: CODING_COMMAND_START_WAIT_MS,
 		});
 		expect(at.control.boundary).toHaveBeenCalledWith(at.machine.machineId, [], expect.any(AbortSignal));
 		const folder = at.folder(input.commandId);
@@ -2004,5 +2005,37 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 				session: { uid: 200001, gid: 200001, cwd: "/company/work", allowedSecrets: ["BAD-NAME"] },
 			}),
 		).toThrow("CODING_COMMAND_BINDING_INVALID");
+	});
+
+	it("respects explicit startWaitMs overrides, prefers control.releaseReads, and forwards vaultEnvVersion", async () => {
+		const releaseReads = vi.fn(async (machine: string) => ({ machine, reads: "released" as const }));
+		const seenVersions: (string | undefined)[] = [];
+		const version = "d".repeat(64);
+		const at = await fixture();
+		const custom = at.another({
+			control: { boundary: at.control.boundary, releaseReads },
+			startWaitMs: 0,
+			vaultEnvVersion: version,
+			secrets: {
+				resolve: async (req) => {
+					seenVersions.push(req.vaultEnvVersion);
+					return { environment: Object.freeze({}), mask: () => new CodingSecretMask([]).stream() };
+				},
+				accepted: () => undefined,
+				output: async (req) => {
+					seenVersions.push(req.vaultEnvVersion);
+					return () => new CodingSecretMask([]).stream();
+				},
+			},
+		});
+		const input = at.input("ls -la");
+		at.guest.print(input.commandId, "ok\n");
+		at.guest.end(input.commandId, "exited", { code: 0, signal: null });
+		const receipt = await custom.start(at.scope, input, signal);
+		expect(receipt.state).toBe("succeeded");
+		expect(at.guest.lastOutput()?.waitMs).toBe(0);
+		expect(releaseReads).toHaveBeenCalledTimes(1);
+		expect(at.control.boundary).not.toHaveBeenCalled();
+		expect(seenVersions).toEqual([version, version]);
 	});
 });

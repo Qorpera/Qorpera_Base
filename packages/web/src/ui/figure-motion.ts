@@ -107,8 +107,59 @@ export function loadFigureMotion(): Promise<typeof MotionData> {
 	return motionLoading;
 }
 
+const MAX_SURFACES = 48;
+const MAX_SCRATCH_POOL = 6;
 const prepared = new Map<string, Promise<void>>();
 const surfaces = new Map<string, { body: HTMLCanvasElement; source: CanvasImageSource }>();
+
+function touchSurface(key: string): { body: HTMLCanvasElement; source: CanvasImageSource } | undefined {
+	const hit = surfaces.get(key);
+	if (!hit) return undefined;
+	surfaces.delete(key);
+	surfaces.set(key, hit);
+	return hit;
+}
+
+function storeSurface(key: string, surface: { body: HTMLCanvasElement; source: CanvasImageSource }): void {
+	if (surfaces.size >= MAX_SURFACES) {
+		const inUse = new Set<string>();
+		for (const item of live) inUse.add(item.id + item.shown);
+		for (const oldest of surfaces.keys()) {
+			if (surfaces.size < MAX_SURFACES) break;
+			if (inUse.has(oldest)) continue;
+			const evicted = surfaces.get(oldest);
+			surfaces.delete(oldest);
+			if (evicted) evicted.body.width = evicted.body.height = 0;
+		}
+	}
+	surfaces.set(key, surface);
+}
+
+function pooledCanvas(pool: Map<number, HTMLCanvasElement>, side: number): HTMLCanvasElement {
+	const hit = pool.get(side);
+	if (hit) {
+		pool.delete(side);
+		pool.set(side, hit);
+		return hit;
+	}
+	if (pool.size >= MAX_SCRATCH_POOL) {
+		const oldest = pool.keys().next().value;
+		if (oldest !== undefined) {
+			const evicted = pool.get(oldest);
+			pool.delete(oldest);
+			if (evicted) evicted.width = evicted.height = 0;
+		}
+	}
+	const created = document.createElement("canvas");
+	created.width = created.height = side;
+	pool.set(side, created);
+	return created;
+}
+
+function clearCanvasPool(pool: Map<number, HTMLCanvasElement>): void {
+	for (const canvas of pool.values()) canvas.width = canvas.height = 0;
+	pool.clear();
+}
 /** One clock per agent and activity, shared by every view of that agent. */
 interface Clock {
 	elapsed: number;
@@ -249,7 +300,8 @@ async function prepare(entry: LiveMotion): Promise<void> {
 		pc.globalCompositeOperation = "destination-in";
 		pc.drawImage(source, 0, 0, 512, 512);
 		ctx.drawImage(patch, 0, 0);
-		surfaces.set(key, { body, source });
+		patch.width = patch.height = 0;
+		storeSurface(key, { body, source });
 	}
 }
 
@@ -513,7 +565,7 @@ function shapeFor(entry: LiveMotion): Shape {
 }
 
 const AIR_SPAN = 100 + 2 * AIR_MARGIN;
-let overCanvas: HTMLCanvasElement | undefined;
+const overPool = new Map<number, HTMLCanvasElement>();
 function air(entry: LiveMotion, body: Act["body"]): void {
 	const work = entry.work;
 	if (!work) {
@@ -531,10 +583,10 @@ function air(entry: LiveMotion, body: Act["body"]): void {
 		return canvas;
 	};
 	entry.air ??= { behind: made("figure-air is-behind"), front: made("figure-air"), drawn: false };
-	const side = Math.max(1, Math.round(((entry.side * AIR_SPAN) / 100) * Math.min(window.devicePixelRatio || 1, 3)));
+	const side = Math.max(1, Math.round(((entry.side * AIR_SPAN) / 100) * Math.min(window.devicePixelRatio || 1, 2)));
 	const k = side / AIR_SPAN,
 		margin = AIR_MARGIN * k;
-	const surface = surfaces.get(entry.id + entry.shown);
+	const surface = touchSurface(entry.id + entry.shown);
 	const layered = (canvas: HTMLCanvasElement) => {
 		if (canvas.width !== side) canvas.width = canvas.height = side;
 		const ctx = canvas.getContext("2d")!;
@@ -546,8 +598,7 @@ function air(entry: LiveMotion, body: Act["body"]): void {
 	paintLayers(layered(entry.air.behind), work.behind, k);
 	const front = layered(entry.air.front);
 	if (work.over.length && surface) {
-		overCanvas ??= document.createElement("canvas");
-		if (overCanvas.width !== side) overCanvas.width = overCanvas.height = side;
+		const overCanvas = pooledCanvas(overPool, side);
 		const oc = overCanvas.getContext("2d")!;
 		oc.setTransform(1, 0, 0, 1, 0, 0);
 		oc.globalCompositeOperation = "source-over";
@@ -750,20 +801,20 @@ function paint(entry: LiveMotion): void {
 	const side = Math.max(1, Math.round(entry.side * Math.min(window.devicePixelRatio || 1, 3)));
 	const look = symbol ?? signature(drawn);
 	const key = `${side}:${SYMBOLIC.includes(activity) ? sample : ""}:${reduced}:${look}${desk ? `:${desk.key}` : ""}`;
-	canvas.dataset.frame = String(sample);
+	const frameStr = String(sample);
+	if (canvas.dataset.frame !== frameStr) canvas.dataset.frame = frameStr;
 	if (entry.painted === key) return;
 	entry.painted = key;
 	const ctx = canvas.getContext("2d")!;
 	if (canvas.width !== side) {
 		canvas.width = canvas.height = side;
-		// The 512px body is drawn several times smaller; ask for the resampler
-		// that averages, so silhouettes stay as soft as an image element's.
 		ctx.imageSmoothingQuality = "high";
 	}
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	ctx.clearRect(0, 0, side, side);
 	ctx.scale(side / 100, side / 100);
-	const asset = surfaces.get(entry.id + entry.shown)!;
+	const asset = touchSurface(entry.id + entry.shown);
+	if (!asset) return;
 	strokes(ctx, p.strokes, false, entry.side);
 	// A figure that has become a symbol is drawn as the symbol, in its own colour.
 	if (symbol) drawSymbol(ctx, symbol, entry.shown);
@@ -909,7 +960,7 @@ function paint(entry: LiveMotion): void {
 
 /** The screen's light (20260930742000): a glow from below and in front, laid over the figure as light (screen blend,
  * on the figure only), and a soft pool of it under the figure. */
-let lightCanvas: HTMLCanvasElement | undefined;
+const lightPool = new Map<number, HTMLCanvasElement>();
 function deskLight(
 	ctx: CanvasRenderingContext2D,
 	canvas: HTMLCanvasElement,
@@ -919,8 +970,7 @@ function deskLight(
 	const [r, g, b] = atComputerLight(desk);
 	const dark = document.documentElement.dataset.theme === "dark";
 	const s = desk.strength;
-	lightCanvas ??= document.createElement("canvas");
-	if (lightCanvas.width !== side) lightCanvas.width = lightCanvas.height = side;
+	const lightCanvas = pooledCanvas(lightPool, side);
 	const lc = lightCanvas.getContext("2d")!;
 	lc.setTransform(1, 0, 0, 1, 0, 0);
 	lc.globalCompositeOperation = "source-over";
@@ -1063,18 +1113,21 @@ function tick(now: number): void {
 			(entry.moment?.kind === "cheer" || entry.moment?.kind === "hooray")
 		)
 			advanced.add(entry.clock);
+	const stepped = new Set<LiveMotion["clock"]>();
 	for (const entry of live) {
 		if (!shown(entry)) continue;
-		if (moving(entry, now) && !advanced.has(entry.clock)) {
+		const active = moving(entry, now);
+		if (active && !advanced.has(entry.clock)) {
 			advance(entry.clock, entry.activity, elapsed, now);
 			advanced.add(entry.clock);
+			stepped.add(entry.clock);
 		}
 		const playing = entry.moment;
 		if (playing) {
 			playing.t += elapsed;
 			if (playing.t >= MOMENT_LENGTH[playing.kind]) entry.moment = undefined;
 		}
-		paint(entry);
+		if (active || stepped.has(entry.clock) || playing || !entry.painted) paint(entry);
 	}
 	let more = false;
 	for (const entry of live) {
@@ -1111,7 +1164,7 @@ export function mountFigureMotion(
 	fallback.className = "figure-fallback";
 	fallback.alt = "";
 	fallback.hidden = true;
-	fallback.src = new URL(`${id}.webp`, base()).href;
+	fallback.decoding = "async";
 	host.append(fallback, canvas);
 	host.dataset.activity = options.activity ?? "Idle";
 	const activity = options.activity ?? "Idle";
@@ -1263,11 +1316,8 @@ export function mountFigureMotion(
 			})
 			.catch(() => {
 				if (!live.has(entry)) return;
-				// The still artwork in its old colour is better than no figure.
+				if (!fallback.src) fallback.src = new URL(`${id}.webp`, base()).href;
 				fallback.hidden = false;
-				// Artwork that failed is fetched again by a figure built anew (the rail
-				// rebuilds these). The motion sampler cannot come back in this page, so
-				// without it the figure keeps its still artwork and asks for no rebuild.
 				if (!motionFailed) host.dataset.motionUnavailable = "true";
 			});
 	}
@@ -1277,6 +1327,13 @@ export function mountFigureMotion(
 			byHost.delete(host);
 			visibility?.unobserve(host);
 			sizes?.unobserve(host);
+			entry.canvas.width = entry.canvas.height = 0;
+			if (entry.air) {
+				entry.air.behind.width = entry.air.behind.height = 0;
+				entry.air.front.width = entry.air.front.height = 0;
+			}
+			for (const box of entry.boxes.values()) box.width = box.height = 0;
+			entry.boxes.clear();
 			if (--clock.users === 0) clocks.delete(clockKey);
 			if (!live.size) {
 				if (frame) cancelAnimationFrame(frame);
@@ -1287,6 +1344,8 @@ export function mountFigureMotion(
 				sizes?.disconnect();
 				lifetime?.abort();
 				lifetime = undefined;
+				clearCanvasPool(overPool);
+				clearCanvasPool(lightPool);
 			}
 		},
 		play(kind) {

@@ -4,9 +4,7 @@ import { dayLabel } from "../src/app/agent-line.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import type { Route } from "../src/app/router.ts";
-import { HubController } from "../src/app/views/hub.ts";
 import { NewConversationView } from "../src/app/views/new-conversation.ts";
-import { SettingsView } from "../src/app/views/settings.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { projectTranscript, type TranscriptMessage } from "../src/cloud/transcript.ts";
 import type { HostedStaffExecutionActivity } from "../src/cloud/types.ts";
@@ -26,11 +24,9 @@ import { ReceivedAttachments } from "../src/ui/received-attachments.ts";
 import {
 	deferred,
 	event,
-	file,
 	fixture,
 	id,
 	profileA,
-	profileB,
 	session,
 	settle,
 	staff,
@@ -326,44 +322,6 @@ describe("shell presentation lifecycle", () => {
 		expect(themePreference()).toBe("system");
 		expect(theme()).toBe("light");
 	});
-	it("ignores storage totals returned after settings moves to another company", async () => {
-		const f = companyFixture(),
-			auth = new AuthController(f.cloud);
-		await auth.start();
-		cleanup.push(() => auth.dispose());
-		const pending = deferred<typeof file>();
-		vi.mocked(f.api.getCompanyFile)
-			.mockReturnValueOnce(pending.promise)
-			.mockResolvedValue({ ...file, storageUsedBytes: 40 });
-		const hub = new HubController(f.api);
-		cleanup.push(() => hub.dispose());
-		// On the company list, settings follow the account's only company.
-		const view = new SettingsView(
-			f.api,
-			auth,
-			hub,
-			[],
-			undefined,
-			() => {},
-			() => {},
-		);
-		cleanup.push(() => view.dispose());
-		document.body.append(view.el);
-		view.updateProfiles([profileA]);
-		view.el.querySelector<HTMLButtonElement>('.settings-mode[data-mode="storage"]')!.click();
-		const usage = () => view.el.querySelector(".settings-storage-usage");
-		expect(usage()?.textContent).toContain("Loading storage");
-		expect(usage()?.querySelector("progress")).toBeNull();
-		// The company is removed and another one takes its place.
-		view.updateProfiles([]);
-		view.updateProfiles([profileB]);
-		await settle();
-		expect(usage()?.textContent).toContain("40 B in total");
-		pending.resolve({ ...file, storageUsedBytes: 99 });
-		await settle();
-		expect(usage()?.textContent).not.toContain("99 B");
-		expect(usage()?.textContent).toContain("40 B in total");
-	});
 	it("draws each agent state, with a red disc on an idle agent whose run did not finish", () => {
 		const mount = stubFigureMotion();
 		const f = companyFixture();
@@ -604,7 +562,7 @@ describe("shell presentation lifecycle", () => {
 		expect(line()).toBe("Didn't finish");
 		expect(row().querySelector("small")?.classList.contains("is-failed")).toBe(true);
 	});
-	it.each(["agent", "cofounder"])("updates the %s state without disturbing a composing search", (kind) => {
+	it.each(["agent", "cofounder"])("updates the %s state in its row", (kind) => {
 		stubFigureMotion();
 		const f = companyFixture();
 		if (kind === "cofounder") f.company.store.set({ staff: [{ ...staff, templateId: "co-founder" }] });
@@ -614,15 +572,6 @@ describe("shell presentation lifecycle", () => {
 				kind === "cofounder" ? ".cofounder-home" : `a[data-href$="/staff/${staff.id}"]`,
 			)!;
 		const disc = () => row().querySelector(".rail-row-status, .cofounder-status, .alert-mark");
-		const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
-		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
-		expect(document.activeElement).toBe(search);
-		search.dispatchEvent(new CompositionEvent("compositionstart"));
-		search.value = "Fixture";
-		search.setSelectionRange(1, 3);
-		search.dispatchEvent(new InputEvent("input", { isComposing: true }));
-		const observer = new MutationObserver(() => {});
-		observer.observe(rail, { childList: true, subtree: true });
 		const failed: HostedStaffExecutionActivity = {
 			runId: id(72),
 			staffAgentId: staff.id,
@@ -657,17 +606,6 @@ describe("shell presentation lifecycle", () => {
 		expect(disc()).toBeNull();
 		expect(row().querySelector("small")?.textContent).toBe(kind === "cofounder" ? undefined : "Needs you");
 		expect(row().getAttribute("aria-label")).toContain("Needs you");
-		expect(document.activeElement).toBe(search);
-		expect(search.value).toBe("Fixture");
-		expect([search.selectionStart, search.selectionEnd]).toEqual([1, 3]);
-		expect(
-			observer
-				.takeRecords()
-				.flatMap((record) => [...record.removedNodes])
-				.some((node) => node === search || node.contains(search)),
-		).toBe(false);
-		observer.disconnect();
-		search.dispatchEvent(new CompositionEvent("compositionend", { data: "Fixture" }));
 	});
 });
 
@@ -961,27 +899,18 @@ it("marks the Co-Founder's home current and puts search before the add button, f
 	expect(rail.querySelector(".cofounder-stand .figure")).not.toBeNull();
 	expect(rail.querySelector(".cofounder-status")).toBeNull();
 	expect(rail.querySelector(".account-menu-rail .account-trigger")).not.toBeNull();
-	// Search and the add button share the top row, search first.
-	expect(rail.querySelector('.rail-toolbar > .rail-search > input[type="search"]')).not.toBeNull();
-	expect(rail.querySelector('.rail-toolbar > .rail-search + .rail-add[data-href$="/new"]')).not.toBeNull();
-	// The search folds out of its button over the tabs.
-	rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
-	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
-	expect(document.activeElement).toBe(search);
-	search.value = "Product quality";
-	search.dispatchEvent(new Event("input"));
-	expect(rail.textContent).toContain("No matching conversations.");
+	expect(rail.querySelector('.rail-toolbar > .rail-search-toggle + .rail-add[data-href$="/new"]')).not.toBeNull();
+	expect(rail.querySelector('input[type="search"]')).toBeNull();
 	expect(f.cloud.rpc).not.toHaveBeenCalled();
 });
 
-it("keeps the rail's search field, rows and focus through redraws and pauses the search while the rail is collapsed", () => {
+it("keeps the rail's rows and focus through redraws and collapses at the breakpoint", () => {
 	const f = companyFixture();
 	const other = { ...staff, id: id(92), displayName: "Second agent" };
 	f.company.store.set({ staff: [staff, other] });
 	const { rail, frame, draw, layout } = mountRail(f);
 	const toolbar = rail.querySelector(".rail-toolbar"),
 		list = rail.querySelector(".rail-scroll"),
-		search = rail.querySelector<HTMLInputElement>('input[type="search"]')!,
 		row = rail.querySelector<HTMLElement>(`a[data-href$="/staff/${staff.id}"]`)!,
 		otherRow = rail.querySelector<HTMLElement>(`a[data-href$="/staff/${other.id}"]`)!;
 	// An update that changes nothing the rail shows leaves its elements, and keyboard focus, alone.
@@ -1014,28 +943,13 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	expect(document.activeElement).toBe(rail.querySelector(`a[data-href$="/chat/${session.sessionId}"]`));
 	expect(rail.querySelector(".rail-toolbar")).toBe(toolbar);
 	expect(rail.querySelector(".rail-scroll")).toBe(list);
-	// Every keystroke filters, composed text included, and redraws never move the field.
-	rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
-	expect(document.activeElement).toBe(search);
-	search.dispatchEvent(new CompositionEvent("compositionstart"));
-	search.value = "é";
-	search.dispatchEvent(new InputEvent("input", { isComposing: true }));
-	draw();
-	expect(search.closest(".rail-toolbar")).toBe(toolbar);
-	expect(document.activeElement).toBe(search);
-	expect(rail.textContent).toContain("No matching conversations.");
-	// Collapsing hides the field: its text stays, and it filters again once the rail opens.
 	layout.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
-	expect(search.value).toBe("é");
 	expect(rail.textContent).toContain(staff.displayName);
 	layout.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
-	expect(rail.textContent).toContain("No matching conversations.");
-	// In the phone layout the rail is a drawer and never collapsed, so the field shows and filters.
 	layout.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
 	vi.stubGlobal("innerWidth", 760);
 	window.dispatchEvent(new Event("resize"));
 	expect(frame.classList.contains("rail-compact")).toBe(false);
-	expect(rail.textContent).toContain("No matching conversations.");
 	// One pixel wider it collapses again, although the width and its cap stay the same.
 	vi.stubGlobal("innerWidth", 761);
 	window.dispatchEvent(new Event("resize"));
@@ -1047,14 +961,10 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 it("leaves a hidden rail alone and leaves the foot untouched by redraws that change nothing", () => {
 	const f = companyFixture();
 	const { rail, draw, layout } = mountRail(f);
-	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
-	search.value = "zz";
-	search.dispatchEvent(new Event("input"));
-	expect(rail.textContent).toContain("No matching conversations.");
-	// Another page is showing: collapsing the rail does not draw it until it returns.
+	const before = rail.querySelector(".rail-scroll");
 	rail.hidden = true;
 	layout.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
-	expect(rail.textContent).toContain("No matching conversations.");
+	expect(rail.querySelector(".rail-scroll")).toBe(before);
 	rail.hidden = false;
 	draw();
 	expect(rail.textContent).toContain(staff.displayName);

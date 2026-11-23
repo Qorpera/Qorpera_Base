@@ -4,6 +4,7 @@
  * asks), so a crisp silhouette and the eyes turn jagged. Each surface is
  * halved down to the power of two at or above the painted side, every 2:1
  * step averaging exactly. */
+const MAX_LEVELS = 128;
 const levels = new Map<string, HTMLCanvasElement>();
 const scratch = new Map<number, HTMLCanvasElement>();
 
@@ -48,10 +49,21 @@ export function level(key: string, image: CanvasImageSource, bucket: number): Ca
 	if (bucket >= 512) return image;
 	const levelKey = `${key}:${bucket}`;
 	let scaled = levels.get(levelKey);
-	if (!scaled) {
-		scaled = halve(image, bucket, canvas) as HTMLCanvasElement;
+	if (scaled) {
+		levels.delete(levelKey);
 		levels.set(levelKey, scaled);
+		return scaled;
 	}
+	if (levels.size >= MAX_LEVELS) {
+		const oldest = levels.keys().next().value;
+		if (oldest !== undefined) {
+			const evicted = levels.get(oldest);
+			levels.delete(oldest);
+			if (evicted) evicted.width = evicted.height = 0;
+		}
+	}
+	scaled = halve(image, bucket, canvas) as HTMLCanvasElement;
+	levels.set(levelKey, scaled);
 	return scaled;
 }
 

@@ -4,8 +4,8 @@ import { CompanyController } from "../src/app/company.ts";
 import { DraftSync } from "../src/app/room-drafts.ts";
 import { tellAgent } from "../src/app/tell-agent.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
-import { CloudRpcError } from "../src/cloud/client.ts";
-import type { RoomDraft, RoomDraftWrite } from "../src/cloud/room-drafts.ts";
+import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
+import { type RoomDraft, type RoomDraftWrite, subscribeRoomDrafts } from "../src/cloud/room-drafts.ts";
 import type { HostedProfileMember, HostedSession } from "../src/cloud/types.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
 import { accountsFake } from "./mail-fixtures.ts";
@@ -724,5 +724,109 @@ describe("an app's note waiting in the member's own shared draft", () => {
 		expect([state.answering, state.draft]).toEqual(["app:orders#1043 · Lund", "Earlier words\n\nGet a quote."]);
 		await vi.advanceTimersByTimeAsync(310);
 		expect(put.mock.calls.at(-1)?.[3]).toBe("> app:orders#1043 · Lund\n\nEarlier words\n\nGet a quote.");
+	});
+
+	it("waits until a leaving room-draft channel clears from getChannels, sends one leave per channel, and bounds stop()", async () => {
+		interface HeldChannel {
+			topic: string;
+			leaving: boolean;
+			subscribed: number;
+			handler?: (msg: { payload?: unknown }) => void;
+			on: (kind: string, filter: { event: string }, cb: (msg: { payload?: unknown }) => void) => HeldChannel;
+			subscribe: (cb: (status: string) => void) => HeldChannel;
+		}
+		const held: HeldChannel[] = [];
+		const created: HeldChannel[] = [];
+		const removeCalls = new Map<HeldChannel, number>();
+		const cloud = {
+			supabase: {
+				getChannels: () => [...held],
+				channel: vi.fn((topic: string) => {
+					const full = `realtime:${topic}`;
+					const existing = held.find((each) => each.topic === full);
+					if (existing) return existing;
+					const ch: HeldChannel = {
+						topic: full,
+						leaving: false,
+						subscribed: 0,
+						on(_kind, _filter, cb) {
+							this.handler = cb;
+							return this;
+						},
+						subscribe(cb) {
+							if (this.leaving) return this;
+							this.subscribed++;
+							cb("SUBSCRIBED");
+							return this;
+						},
+					};
+					held.push(ch);
+					created.push(ch);
+					return ch;
+				}),
+				removeChannel: vi.fn(async (ch: HeldChannel) => {
+					ch.leaving = true;
+					removeCalls.set(ch, (removeCalls.get(ch) ?? 0) + 1);
+					await new Promise<void>((resolve) => setTimeout(resolve, 10_000));
+					for (let i = held.length - 1; i >= 0; i--) {
+						if (held[i]!.topic === ch.topic) held.splice(i, 1);
+					}
+					return "timed out";
+				}),
+			},
+		} as unknown as Cloud;
+
+		const first = subscribeRoomDrafts(cloud, roomId, vi.fn(), vi.fn());
+		expect(created).toHaveLength(1);
+		let firstStopped = false;
+		const stoppingFirst = first.stop().then(() => {
+			firstStopped = true;
+		});
+		await vi.advanceTimersByTimeAsync(1_999);
+		expect(firstStopped).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
+		await stoppingFirst;
+		expect(firstStopped).toBe(true);
+
+		const phases: string[] = [];
+		const received: RoomDraft[] = [];
+		const second = subscribeRoomDrafts(
+			cloud,
+			roomId,
+			(value) => received.push(value),
+			(phase) => phases.push(phase),
+		);
+		await vi.advanceTimersByTimeAsync(2_100);
+		expect(created).toHaveLength(1);
+		expect(phases).toEqual(["connecting", "degraded"]);
+		expect(removeCalls.get(created[0]!)).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(created).toHaveLength(2);
+		expect(phases.at(-1)).toBe("connected");
+		expect(removeCalls.get(created[0]!)).toBe(1);
+		await vi.advanceTimersByTimeAsync(15_000);
+		expect(held).toEqual([created[1]]);
+		created[1]!.handler?.({
+			payload: {
+				schema: "qorpera.room-draft/v1",
+				roomId,
+				ownerUserId: userB.id,
+				body: "Recovered live draft",
+				revision: 2,
+				editorUserId: userB.id,
+				contributors: [],
+				updatedAt: timestamp,
+			},
+		});
+		expect(received.map((item) => item.body)).toEqual(["Recovered live draft"]);
+
+		let secondStopped = false;
+		const stoppingSecond = second.stop().then(() => {
+			secondStopped = true;
+		});
+		await vi.advanceTimersByTimeAsync(2_000);
+		await stoppingSecond;
+		expect(secondStopped).toBe(true);
 	});
 });

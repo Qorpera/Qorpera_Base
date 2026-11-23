@@ -53,8 +53,10 @@ export function openPublishPatchnotesSheet(
 	});
 	const body = h("div", { class: "surface-patchnotes-body" });
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
-	let rollingBack: string | undefined;
+	const rollingBack = new Set<string>();
 	let publishing = false;
+	let awaitingAsyncPublish = false;
+	let lastRenderKey: string | undefined;
 
 	const currentSurface = (): SurfaceSummary =>
 		store.state.surfaces.find((item) => item.id === surfaceId) ?? initialSurface;
@@ -92,8 +94,23 @@ export function openPublishPatchnotesSheet(
 	};
 
 	const render = () => {
+		if (closed) return;
 		const state = store.state;
 		const surface = currentSurface();
+		if (awaitingAsyncPublish) {
+			if (
+				surface.publishStatus === "idle" ||
+				(surface.publishStatus === undefined && !surface.hasUnpublishedChanges)
+			) {
+				awaitingAsyncPublish = false;
+				dialog.close();
+				return;
+			}
+			if (surface.publishStatus === "failed") {
+				awaitingAsyncPublish = false;
+				status.textContent = surface.lastPublishError ?? t("Publish failed. Try again.");
+			}
+		}
 		const look = store.lookOf(surface);
 		const entries = unpublishedChanges(state, surfaceId);
 		const total = Math.max(entries.length, surface.unpublishedChangeCount);
@@ -101,6 +118,38 @@ export function openPublishPatchnotesSheet(
 		const host = hostOf(liveUrl || null);
 		const subtitle = host ? `${surface.title} · ${host}` : surface.title;
 		ensurePasswordLoaded(surface);
+
+		const publishError =
+			surface.publishStatus === "failed"
+				? surface.lastPublishError?.trim() || t("The last publish failed. Try again.")
+				: "";
+
+		const renderKey = JSON.stringify([
+			surface.title,
+			surface.unpublishedChangeCount,
+			surface.publishStatus ?? "",
+			publishError,
+			liveUrl,
+			look.kind,
+			look.accent ?? "",
+			sitePassword ?? "",
+			copiedKind ?? "",
+			publishing,
+			awaitingAsyncPublish,
+			status.textContent ?? "",
+			entries.map(({ change, session, exploration }) => [
+				change.id,
+				change.title,
+				change.summary ?? "",
+				change.resolvedAt ?? change.createdAt,
+				change.approvedByUserId ?? "",
+				change.undoBatchSize ?? 1,
+				exploration?.title ?? session.title,
+				rollingBack.has(change.id) || Boolean(state.busy[`undo:${change.id}`]),
+			]),
+		]);
+		if (renderKey === lastRenderKey) return;
+		lastRenderKey = renderKey;
 
 		const shareBar = liveUrl
 			? h(
@@ -162,9 +211,12 @@ export function openPublishPatchnotesSheet(
 								const sourceLabel = exploration ? exploration.title : session.title;
 								const approver = store.memberName(change.approvedByUserId);
 								const busy =
-									rollingBack === change.id || Boolean(state.busy[`undo:${change.id}`]) || publishing;
+									rollingBack.has(change.id) || Boolean(state.busy[`undo:${change.id}`]) || publishing;
 								const stamp = fmtTime(change.resolvedAt ?? change.createdAt);
-								const batchSize = change.kind === "folder_patch" ? (change.undoBatchSize ?? 1) : 1;
+								const batchSize =
+									change.kind === "folder_patch" || change.kind === "git_range"
+										? (change.undoBatchSize ?? 1)
+										: 1;
 								return h(
 									"li",
 									{ class: "surface-patchnote-item", "data-change": change.id },
@@ -230,8 +282,8 @@ export function openPublishPatchnotesSheet(
 		const publishInProgress = publishing || surface.publishStatus === "publishing";
 		const cancelBtn = h(
 			"button",
-			{ type: "button", class: "btn", disabled: publishInProgress, "data-act": "cancel" },
-			t("Cancel"),
+			{ type: "button", class: "btn", disabled: publishing, "data-act": "cancel" },
+			surface.publishStatus === "publishing" ? t("Close") : t("Cancel"),
 		);
 		const publishLabel = publishInProgress
 			? t("Publishing…")
@@ -255,7 +307,7 @@ export function openPublishPatchnotesSheet(
 			h(
 				"div",
 				{ class: "surface-patchnotes-head" },
-				surfaceTile(surface, look, 22, "is-sheet"),
+				surfaceTile(surface, look, "is-sheet"),
 				h("div", { class: "surface-patchnotes-heading" }, h("h2", null, t("Patch notes")), h("p", null, subtitle)),
 				total > 0
 					? h(
@@ -266,6 +318,7 @@ export function openPublishPatchnotesSheet(
 					: null,
 			),
 			...(shareBar ? [shareBar] : []),
+			...(publishError ? [h("p", { class: "surface-sheet-error", role: "alert" }, publishError)] : []),
 			h(
 				"p",
 				{ class: "surface-sheet-lead" },
@@ -302,24 +355,35 @@ export function openPublishPatchnotesSheet(
 			return;
 		}
 		if (act === "rollback" && change) {
-			rollingBack = change;
+			if (rollingBack.has(change) || publishing) return;
+			rollingBack.add(change);
 			status.textContent = "";
 			render();
 			void store.rollbackChange(change).then((ok) => {
-				rollingBack = undefined;
+				rollingBack.delete(change);
+				if (closed) return;
 				if (!ok) status.textContent = store.state.error ?? t("That didn't work. Try again.");
 				render();
 			});
 			return;
 		}
 		if (act === "confirm-publish") {
+			if (publishing) return;
 			publishing = true;
 			status.textContent = t("Publishing…");
 			render();
 			void store.publish(surfaceId).then((ok) => {
 				publishing = false;
-				if (ok) dialog.close();
-				else {
+				if (closed) return;
+				if (ok) {
+					if (currentSurface().publishStatus === "publishing") {
+						awaitingAsyncPublish = true;
+						status.textContent = t("Publishing…");
+						render();
+					} else {
+						dialog.close();
+					}
+				} else {
 					status.textContent = store.state.error ?? t("That didn't work. Try again.");
 					render();
 				}

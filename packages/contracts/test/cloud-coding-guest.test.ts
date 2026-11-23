@@ -55,8 +55,20 @@ describe("coding guest requests", () => {
 		expect(parseCodingGuestRequest("stop-session", session)).toEqual(session);
 		expect(parseCodingGuestRequest("quiesce", session)).toEqual(session);
 		expect(Object.isFrozen(parseCodingGuestRequest("status", session))).toBe(true);
+		const statusAll = { schema: "qorpera.coding-guest-status-all/v1", workerIds: [workerId] };
+		expect(parseCodingGuestRequest("status-all", statusAll)).toEqual(statusAll);
+		expect(Object.isFrozen(parseCodingGuestRequest("status-all", statusAll).workerIds)).toBe(true);
 		expect(parseCodingGuestRequest("run", { ...run, timeoutMs: null }).timeoutMs).toBeNull();
-		expect(CODING_GUEST_VERBS).toEqual(["mount", "run", "output", "cancel", "quiesce", "stop-session", "status"]);
+		expect(CODING_GUEST_VERBS).toEqual([
+			"mount",
+			"run",
+			"output",
+			"cancel",
+			"quiesce",
+			"stop-session",
+			"status",
+			"status-all",
+		]);
 	});
 	it.each<[string, (typeof CODING_GUEST_VERBS)[number], unknown]>([
 		["an unknown verb", "exec" as never, run],

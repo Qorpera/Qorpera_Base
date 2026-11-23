@@ -7,6 +7,7 @@ import {
 	parseSurfaceMigrationChecklist,
 	parseSurfacePreviewCompositionState,
 	parseSurfaceSession,
+	parseSurfaceSessionImages,
 	parseSurfaceSummary,
 	parseSurfaceWorkspace,
 	SURFACE_ARCHETYPES,
@@ -22,11 +23,13 @@ import {
 	type SurfaceAutomationSummary,
 	type SurfaceChangeUnit,
 	type SurfaceGroup,
+	type SurfaceImageRef,
 	type SurfaceKind,
 	type SurfaceMigrationChecklist,
 	type SurfacePreviewCompositionState,
 	type SurfacePreviewMode,
 	type SurfaceSession,
+	type SurfaceSessionImages,
 	type SurfaceSessionMessage,
 	type SurfaceSourceKind,
 	type SurfaceStatus,
@@ -418,6 +421,8 @@ export interface StartSurfaceSessionOptions {
 	readonly variantLabels?: readonly string[];
 	readonly originKind?: "member" | "cofounder" | "automation" | "point_to_change" | "cross_surface";
 	readonly originLabel?: string;
+	readonly clientInputId?: string;
+	readonly images?: readonly SurfaceImageRef[];
 }
 
 export interface CreateSurfaceRpcInput {
@@ -494,6 +499,12 @@ export interface SurfacePreviewPassGrant {
 	readonly previewId: string;
 	readonly doorActionUrl: string;
 	readonly memberPass: string;
+}
+
+function surfaceImageRows(
+	images: readonly SurfaceImageRef[],
+): { objectSha256: string; bytes: number; mediaType: string }[] {
+	return images.map((image) => ({ objectSha256: image.sha256, bytes: image.bytes, mediaType: image.mediaType }));
 }
 
 export class CloudSurfacesClient {
@@ -590,13 +601,21 @@ export class CloudSurfacesClient {
 		return parseSurfaceSummary(data, "surface");
 	}
 
+	async setSurfaceFigure(surfaceId: string, figure: string): Promise<SurfaceSummary> {
+		const data = await this.#rpc("qorpera_set_surface_figure", { p_surface_id: surfaceId, p_figure: figure });
+		return parseSurfaceSummary(data, "surface");
+	}
+
 	async startSurfaceSession(
 		surfaceId: string,
 		prompt: string,
 		options: StartSurfaceSessionOptions = {},
 	): Promise<SurfaceSession> {
 		const target = options.target ? parsePointToChangeTarget(options.target) : null;
-		const data = await this.#rpc("qorpera_start_surface_session", {
+		const images = options.images ?? [];
+		if (images.length > 0 && !options.clientInputId)
+			throw new CloudSurfacesError("Surface session images need a client input id");
+		const args = {
 			p_surface_id: surfaceId,
 			p_prompt: prompt,
 			p_title: options.title ?? null,
@@ -606,17 +625,39 @@ export class CloudSurfacesClient {
 			p_exploration_count: options.explorationCount ?? null,
 			p_exploration_title: options.explorationTitle ?? null,
 			...(options.variantLabels ? { p_variant_labels: [...options.variantLabels] } : {}),
-		});
+		};
+		const data =
+			images.length > 0
+				? await this.#rpc("qorpera_start_surface_session_with_images", {
+						...args,
+						p_client_input_id: options.clientInputId,
+						p_images: surfaceImageRows(images),
+					})
+				: await this.#rpc("qorpera_start_surface_session", args);
 		return parseSurfaceSession(data, "session");
 	}
 
-	async replySurfaceSession(sessionId: string, message: string, keepOpen = true): Promise<SurfaceSession> {
-		const data = await this.#rpc("qorpera_reply_surface_session", {
-			p_session_id: sessionId,
-			p_message: message,
-			p_keep_open: keepOpen,
-		});
+	async replySurfaceSession(
+		sessionId: string,
+		message: string,
+		keepOpen = true,
+		attach?: { clientInputId: string; images: readonly SurfaceImageRef[] },
+	): Promise<SurfaceSession> {
+		const args = { p_session_id: sessionId, p_message: message, p_keep_open: keepOpen };
+		const data =
+			attach && attach.images.length > 0
+				? await this.#rpc("qorpera_reply_surface_session_with_images", {
+						...args,
+						p_client_input_id: attach.clientInputId,
+						p_images: surfaceImageRows(attach.images),
+					})
+				: await this.#rpc("qorpera_reply_surface_session", args);
 		return parseSurfaceSession(data, "session");
+	}
+
+	async surfaceSessionImages(sessionId: string): Promise<SurfaceSessionImages> {
+		const data = await this.#rpc("qorpera_surface_session_images", { p_session_id: sessionId });
+		return parseSurfaceSessionImages(data);
 	}
 
 	async setSessionChatOpen(sessionId: string, open: boolean): Promise<SurfaceSession> {

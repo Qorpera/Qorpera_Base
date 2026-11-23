@@ -218,6 +218,50 @@ export interface CodingEnvironmentRequest {
 	readonly executorOwner: string;
 }
 
+export type AppSecretScope = "build" | "test" | "runtime";
+export type AppSecretTargetEnv = "dev" | "prod";
+
+export interface AppSecretsRequest {
+	readonly siteId: string;
+	readonly scope: AppSecretScope;
+	readonly targetEnv: AppSecretTargetEnv;
+	readonly executorOwner: string;
+	readonly machineIdSha256: string;
+	readonly deploymentId?: string;
+}
+
+export interface AppSecrets {
+	readonly schema: "qorpera.app-secrets/v1";
+	readonly siteId: string;
+	readonly slug: string;
+	readonly scope: AppSecretScope;
+	readonly targetEnv: AppSecretTargetEnv;
+	readonly secrets: Readonly<Record<string, string>>;
+}
+
+interface AppSecretEntry {
+	readonly name: string;
+	readonly secretId: string;
+	readonly version: number;
+	readonly keyId: string;
+	readonly ownerKind: "company";
+	readonly scope: AppSecretScope;
+	readonly targetEnv: AppSecretTargetEnv;
+	readonly encryptedEnvelopeBase64: string;
+	readonly envelopeSha256: string;
+}
+
+interface AppSecretsAuthorization {
+	readonly schema: "qorpera.app-secrets-authorization/v1";
+	readonly companyId: string;
+	readonly environmentId: string;
+	readonly siteId: string;
+	readonly slug: string;
+	readonly scope: AppSecretScope;
+	readonly targetEnv: AppSecretTargetEnv;
+	readonly secrets: readonly AppSecretEntry[];
+}
+
 /** The only answer that ever carries environment values out of the broker: each
  * variable's name and value, in the authorization's order. It goes to the executor,
  * which starts the session's processes with it, never into a model turn or a log.
@@ -314,6 +358,7 @@ export interface CloudSecretBrokerAuthority {
 	/** A coding session's environment secrets (5j-3); a broker whose database role cannot run the
 	 * function leaves this out and refuses every environment request. */
 	authorizeCodingEnvironment?(request: CodingEnvironmentRequest, signal: AbortSignal): Promise<unknown>;
+	authorizeAppSecrets?(request: AppSecretsRequest, signal: AbortSignal): Promise<unknown>;
 	/** A coding session's MCP sign-in for one origin, and the company's GitHub connection for its own fetch (5j-6b);
 	 * a broker whose database role cannot run the functions leaves these out and refuses every relay request. */
 	authorizeCodingMcpSignIn?(request: CodingMcpSignInRequest, signal: AbortSignal): Promise<unknown>;
@@ -637,6 +682,129 @@ export function parseCodingEnvironmentRequest(value: {
 		workerId: uuid(value.workerId, "Coding worker").toLowerCase(),
 		leaseToken: uuid(value.leaseToken, "Coding lease").toLowerCase(),
 		executorOwner: value.executorOwner,
+	};
+}
+
+export function parseAppSecretsRequest(value: {
+	readonly siteId: unknown;
+	readonly scope: unknown;
+	readonly targetEnv: unknown;
+	readonly executorOwner: unknown;
+	readonly machineIdSha256: unknown;
+	readonly deploymentId?: unknown;
+}): AppSecretsRequest {
+	const scope = value.scope;
+	const targetEnv = value.targetEnv;
+	if (
+		(scope !== "build" && scope !== "test" && scope !== "runtime") ||
+		(targetEnv !== "dev" && targetEnv !== "prod") ||
+		typeof value.executorOwner !== "string" ||
+		!EXECUTOR_OWNER.test(value.executorOwner) ||
+		typeof value.machineIdSha256 !== "string" ||
+		!SHA.test(value.machineIdSha256)
+	) {
+		throw new Error("App secrets request is invalid");
+	}
+	const hasDeployment = value.deploymentId !== undefined && value.deploymentId !== null;
+	if (scope === "runtime" && !hasDeployment) {
+		throw new Error("App secrets request is invalid");
+	}
+	const deploymentId = hasDeployment ? uuid(value.deploymentId, "Hosted app deployment").toLowerCase() : undefined;
+	return {
+		siteId: uuid(value.siteId, "Hosted app site").toLowerCase(),
+		scope,
+		targetEnv,
+		executorOwner: value.executorOwner,
+		machineIdSha256: value.machineIdSha256.toLowerCase(),
+		...(deploymentId === undefined ? {} : { deploymentId }),
+	};
+}
+
+const APP_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
+
+function parseAppSecretEntry(entry: unknown, request: AppSecretsRequest): AppSecretEntry {
+	const secret = record(entry, "App secret");
+	exact(
+		secret,
+		[
+			"name",
+			"secretId",
+			"secretVersion",
+			"keyId",
+			"ownerKind",
+			"scope",
+			"targetEnv",
+			"encryptedEnvelopeBase64",
+			"envelopeSha256",
+		],
+		"App secret",
+	);
+	if (
+		typeof secret.name !== "string" ||
+		!ENVIRONMENT_NAME.test(secret.name) ||
+		secret.ownerKind !== "company" ||
+		secret.scope !== request.scope ||
+		secret.targetEnv !== request.targetEnv ||
+		typeof secret.keyId !== "string" ||
+		!KEY_ID.test(secret.keyId) ||
+		typeof secret.encryptedEnvelopeBase64 !== "string" ||
+		secret.encryptedEnvelopeBase64.length === 0 ||
+		secret.encryptedEnvelopeBase64.length > 262_144 ||
+		typeof secret.envelopeSha256 !== "string" ||
+		!SHA.test(secret.envelopeSha256)
+	) {
+		throw new Error("App secret is invalid");
+	}
+	return {
+		name: secret.name,
+		secretId: uuid(secret.secretId, "Cloud secret").toLowerCase(),
+		version: integer(secret.secretVersion, "Cloud secret version"),
+		keyId: secret.keyId,
+		ownerKind: "company",
+		scope: request.scope,
+		targetEnv: request.targetEnv,
+		encryptedEnvelopeBase64: secret.encryptedEnvelopeBase64,
+		envelopeSha256: secret.envelopeSha256.toLowerCase(),
+	};
+}
+
+function parseAppSecretsAuthorization(value: unknown, request: AppSecretsRequest): AppSecretsAuthorization {
+	const input = record(value, "App secrets authorization");
+	exact(
+		input,
+		["schema", "companyId", "environmentId", "siteId", "slug", "scope", "targetEnv", "secrets"],
+		"App secrets authorization",
+	);
+	if (
+		input.schema !== "qorpera.app-secrets-authorization/v1" ||
+		typeof input.siteId !== "string" ||
+		input.siteId.toLowerCase() !== request.siteId ||
+		typeof input.slug !== "string" ||
+		!APP_SLUG_PATTERN.test(input.slug) ||
+		input.scope !== request.scope ||
+		input.targetEnv !== request.targetEnv ||
+		!Array.isArray(input.secrets)
+	) {
+		throw new Error("App secrets authorization differs from its request");
+	}
+	const companyId = uuid(input.companyId, "Cloud secret company");
+	const environmentId = uuid(input.environmentId, "Cloud secret environment");
+	const names = new Set<string>();
+	const secrets = input.secrets.map((entry: unknown): AppSecretEntry => {
+		const secret = parseAppSecretEntry(entry, request);
+		if (names.has(secret.name)) throw new Error("App secret is invalid");
+		names.add(secret.name);
+		return secret;
+	});
+	return {
+		schema: "qorpera.app-secrets-authorization/v1",
+		companyId,
+		environmentId,
+		siteId: request.siteId,
+		slug: input.slug,
+		scope: request.scope,
+		targetEnv: request.targetEnv,
+		secrets,
 	};
 }
 
@@ -1467,6 +1635,50 @@ export class CloudSecretBroker {
 		return { schema: "qorpera.coding-environment/v1", environment, mask: [...mask] };
 	}
 
+	async appSecrets(request: AppSecretsRequest, signal: AbortSignal): Promise<AppSecrets> {
+		try {
+			return await this.#appSecrets(request, signal);
+		} catch {
+			throw new Error("App secrets are unavailable");
+		}
+	}
+
+	async #appSecrets(value: AppSecretsRequest, signal: AbortSignal): Promise<AppSecrets> {
+		if (!this.#authority.authorizeAppSecrets) throw new Error("App secrets are unavailable");
+		const request = parseAppSecretsRequest(value);
+		const authorization = parseAppSecretsAuthorization(
+			await this.#authority.authorizeAppSecrets(request, signal),
+			request,
+		);
+		const secrets: Record<string, string> = {};
+		for (const secret of authorization.secrets) {
+			const envelope = Buffer.from(secret.encryptedEnvelopeBase64, "base64");
+			try {
+				if (createHash("sha256").update(envelope).digest("hex") !== secret.envelopeSha256)
+					throw new Error("Cloud secret envelope digest differs");
+				const identity = {
+					companyId: authorization.companyId,
+					environmentId: authorization.environmentId,
+					secretId: secret.secretId,
+					version: secret.version,
+					keyId: secret.keyId,
+				};
+				secrets[secret.name] = await this.#keys.use(envelope, identity, async (fields) => environmentValue(fields));
+			} finally {
+				envelope.fill(0);
+			}
+		}
+		signal.throwIfAborted();
+		return {
+			schema: "qorpera.app-secrets/v1",
+			siteId: authorization.siteId,
+			slug: authorization.slug,
+			scope: authorization.scope,
+			targetEnv: authorization.targetEnv,
+			secrets,
+		};
+	}
+
 	/**
 	 * A coding session's MCP sign-in for one server (5j-6b), for the broker's relay: the header the
 	 * session's request is sent upstream with, released only for a session the kernel confirms the
@@ -2020,6 +2232,23 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	authorizeAppSecrets(request: AppSecretsRequest, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_authorize_app_secrets($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text,$7::text,$8::uuid) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				request.siteId,
+				request.scope,
+				request.targetEnv,
+				request.executorOwner,
+				request.machineIdSha256,
+				request.deploymentId ?? null,
+			],
+			signal,
+		);
+	}
+
 	authorizeCodingMcpSignIn(request: CodingMcpSignInRequest, signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(
 			"select public.qorpera_authorize_coding_mcp_sign_in($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::text) as result",
@@ -2563,6 +2792,35 @@ export class PostgresCloudSecretBrokerAuthority
 		return this.#rpc(
 			"select public.qorpera_open_gemini_key_for_run($1::uuid,$2::text,$3::jsonb) as result",
 			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, JSON.stringify(binding)],
+			signal,
+		);
+	}
+
+	describeGeminiKeyCheck(
+		request: Parameters<NonNullable<GeminiKeyVaultAuthority["describeGeminiKeyCheck"]>>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_describe_gemini_key_check($1::uuid,$2::text,$3::uuid,$4::text) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, request.ticketId, request.capabilitySha256],
+			signal,
+		);
+	}
+
+	completeGeminiKeyCheck(
+		completion: Parameters<NonNullable<GeminiKeyVaultAuthority["completeGeminiKeyCheck"]>>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_complete_gemini_key_check($1::uuid,$2::text,$3::uuid,$4::text,$5::text,$6::text) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				completion.ticketId,
+				completion.capabilitySha256,
+				completion.status,
+				completion.errorCode,
+			],
 			signal,
 		);
 	}

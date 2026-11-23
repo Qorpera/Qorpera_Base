@@ -3,6 +3,8 @@ export const MAX_CODE_CHECKS = 20;
 export const CODE_CHECK_DEFAULT_SECONDS = 600;
 export const CODE_CHECK_MIN_SECONDS = 10;
 export const CODE_CHECK_MAX_SECONDS = 1800;
+const PREVIEW_DEFAULT_SECONDS = 180;
+const PREVIEW_MAX_SECONDS = 600;
 export const CODE_CHECKS_CRITICAL_PATH_SECONDS = 3600;
 export const CODE_CHECKS_TOTAL_CPU_SECONDS = 7200;
 export const MAX_CODE_CHECK_RUN_BYTES = 4096;
@@ -169,6 +171,15 @@ export interface CodeSiteRecipe {
 	readonly spaFallback?: string | null;
 }
 
+export interface CodePreviewRecipe {
+	readonly run: string;
+	readonly folder: string | null;
+	readonly cwd: string;
+	readonly timeoutSeconds: number;
+}
+
+export type CodeSurfaceGate = "none" | "stage";
+
 export interface CodeChecksProblem {
 	readonly at: string;
 	readonly code: string;
@@ -182,6 +193,8 @@ export interface ParsedCodeChecksOk {
 	readonly totalTimeoutSeconds: number;
 	readonly mode: "sequential" | "dag";
 	readonly site: CodeSiteRecipe | null;
+	readonly preview?: CodePreviewRecipe;
+	readonly surfaceGate?: CodeSurfaceGate;
 	readonly maxParallel?: number;
 	readonly failFast?: boolean;
 	readonly caches?: readonly CodeCheckCache[];
@@ -560,6 +573,65 @@ function parseSite(value: unknown, at: string, refuse: Refuse): CodeSiteRecipe |
 		...(vcpuLimit !== undefined ? { vcpuLimit } : {}),
 		...(spaFallback !== undefined ? { spaFallback } : {}),
 	};
+}
+
+function parsePreview(value: unknown, at: string, refuse: Refuse): CodePreviewRecipe | undefined {
+	if (!isObject(value)) {
+		refuse(at, "WRONG_TYPE", "Must be an object.");
+		return undefined;
+	}
+	let run: string | null = null;
+	let folder: string | null = null;
+	let cwd = ".";
+	let timeoutSeconds = PREVIEW_DEFAULT_SECONDS;
+	for (const [key, field] of Object.entries(value)) {
+		const fieldAt = pointer(at, key);
+		if (key === "run") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (field.trim() === "" || utf8Bytes(field) > MAX_CODE_CHECK_RUN_BYTES || field.includes("\0"))
+				refuse(
+					fieldAt,
+					"INVALID_VALUE",
+					`Must be 1 to ${MAX_CODE_CHECK_RUN_BYTES} bytes, without a NUL character.`,
+				);
+			else run = field;
+		} else if (key === "folder") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (isCodeSiteFolderValid(field)) folder = field;
+			else
+				refuse(
+					fieldAt,
+					"INVALID_PATH",
+					'Must be "." or a folder of the repository: a relative path without . or .. parts, at most 300 bytes.',
+				);
+		} else if (key === "cwd") {
+			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+			else if (!isCodeCheckFolder(field))
+				refuse(
+					fieldAt,
+					"INVALID_PATH",
+					`Must be a folder of the repository: a relative path without . or .. parts, at most ${MAX_CODE_CHECK_CWD_BYTES} bytes.`,
+				);
+			else cwd = field;
+		} else if (key === "timeoutSeconds") {
+			if (
+				typeof field !== "number" ||
+				!Number.isInteger(field) ||
+				field < CODE_CHECK_MIN_SECONDS ||
+				field > PREVIEW_MAX_SECONDS
+			)
+				refuse(
+					fieldAt,
+					"INVALID_VALUE",
+					`Must be a whole number of seconds from ${CODE_CHECK_MIN_SECONDS} to ${PREVIEW_MAX_SECONDS}.`,
+				);
+			else timeoutSeconds = field;
+		} else {
+			refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
+		}
+	}
+	if (!("run" in value)) refuse(at, "MISSING_KEY", "Needs run.");
+	return run === null ? undefined : { run, folder, cwd, timeoutSeconds };
 }
 
 function parseCaches(value: unknown, at: string, refuse: Refuse): CodeCheckCache[] {
@@ -1048,6 +1120,8 @@ function parseRootText(source: string, refuse: Refuse): ParsedCodeChecksOk | nul
 		totalTimeoutSeconds: 0,
 	};
 	let site: CodeSiteRecipe | null = null;
+	let preview: CodePreviewRecipe | undefined;
+	let surfaceGate: CodeSurfaceGate | undefined;
 	let maxParallel: number | undefined;
 	let failFast: boolean | undefined;
 	let caches: CodeCheckCache[] | undefined;
@@ -1057,7 +1131,12 @@ function parseRootText(source: string, refuse: Refuse): ParsedCodeChecksOk | nul
 			if (typeof value !== "string") refuse(at, "WRONG_TYPE", "Must be a string.");
 		} else if (key === "checks") parsedChecks = parseChecksArray(value, at, refuse);
 		else if (key === "site") site = parseSite(value, at, refuse);
-		else if (key === "maxParallel") {
+		else if (key === "preview") preview = parsePreview(value, at, refuse);
+		else if (key === "surfaceGate") {
+			if (typeof value !== "string") refuse(at, "WRONG_TYPE", "Must be a string.");
+			else if (value === "none" || value === "stage") surfaceGate = value;
+			else refuse(at, "INVALID_VALUE", 'Must be "none" or "stage".');
+		} else if (key === "maxParallel") {
 			if (typeof value !== "number")
 				refuse(at, "WRONG_TYPE", `Must be an integer from ${MIN_PARALLEL_CHECKS} to ${MAX_PARALLEL_CHECKS_LIMIT}.`);
 			else if (!Number.isInteger(value) || value < MIN_PARALLEL_CHECKS || value > MAX_PARALLEL_CHECKS_LIMIT)
@@ -1081,6 +1160,8 @@ function parseRootText(source: string, refuse: Refuse): ParsedCodeChecksOk | nul
 		totalTimeoutSeconds: parsedChecks.totalTimeoutSeconds,
 		mode: parsedChecks.checks.some((check) => check.needs !== undefined) ? "dag" : "sequential",
 		site,
+		...(preview !== undefined ? { preview } : {}),
+		...(surfaceGate !== undefined ? { surfaceGate } : {}),
 		...(maxParallel !== undefined ? { maxParallel } : {}),
 		...(failFast !== undefined ? { failFast } : {}),
 		...(caches !== undefined ? { caches } : {}),

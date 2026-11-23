@@ -77,7 +77,7 @@ textarea.founding-vision:focus-visible { outline: none; }
 .founding-invite {
 	display: inline-flex; align-items: center; gap: 9px; height: 48px; padding: 0 16px 0 6px;
 	border: 1px solid var(--border-strong); border-radius: var(--radius-pill); background: transparent; color: var(--text);
-	font: 600 15px var(--font-sans); cursor: pointer;
+	font: 600 15px var(--font-sans); cursor: default;
 }
 .founding-invite:hover, .founding-invite[aria-expanded="true"] { background: var(--hover); }
 .founding-invite-faces { display: inline-flex; }
@@ -93,8 +93,8 @@ textarea.founding-vision:focus-visible { outline: none; }
 	animation: founding-peek var(--motion-spring) var(--ease-spring) both, founding-live 1.8s ease-in-out infinite;
 }
 @keyframes founding-live {
-	0%, 100% { box-shadow: 0 0 0 2px var(--overlay), 0 0 0 4px var(--line-color); }
-	50% { box-shadow: 0 0 0 2px var(--overlay), 0 0 0 7px color-mix(in srgb, var(--line-color) 30%, transparent); }
+	0%, 100% { transform: scale(1); opacity: 1; }
+	50% { transform: scale(1.06); opacity: 0.88; }
 }
 .founding-writing { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 0 auto; padding: 0 8px; color: var(--text-soft); font-size: 14px; }
 .founding-dots { display: inline-flex; align-items: center; gap: 3px; color: var(--line-color, var(--text-soft)); }
@@ -139,7 +139,7 @@ textarea.founding-vision:focus-visible { outline: none; }
 .founding-sheet h2 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
 .founding-close {
 	flex: none; display: grid; place-items: center; width: 30px; height: 30px; margin-left: auto; border: 0; border-radius: 50%;
-	background: transparent; color: var(--text-muted); cursor: pointer; align-self: center;
+	background: transparent; color: var(--text-muted); cursor: default; align-self: center;
 }
 .founding-close .icon { width: 16px; height: 16px; }
 .founding-close:hover { background: var(--hover); color: var(--text); }
