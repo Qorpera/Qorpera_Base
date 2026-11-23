@@ -190,6 +190,7 @@ describe("Gemini key helpers and transport", () => {
 					schema: "qorpera.gemini-key-checked/v1",
 					ok: false,
 					errorCode: "billing_required",
+					errorDetail: "free_tier_limit_zero",
 					checkedAt: timestamp,
 				});
 			}
@@ -217,6 +218,7 @@ describe("Gemini key helpers and transport", () => {
 		const checked = await client.check!();
 		expect(checked.ok).toBe(false);
 		expect(checked.errorCode).toBe("billing_required");
+		expect(checked.errorDetail).toBe("free_tier_limit_zero");
 		expect(checked.state.key?.lastErrorCode).toBe("billing_required");
 		expect(checked.state.key?.lastCheckedAt).toBe(timestamp);
 		expect(requests).toHaveLength(3);
@@ -228,8 +230,9 @@ describe("Gemini key helpers and transport", () => {
 });
 
 describe("GeminiKeyView", () => {
-	it("connects a key, shows remaining budget and health errors, checks key, updates cap, and removes the key", async () => {
+	it("connects a key, auto-checks and displays specific health errors, re-checks to clear, updates cap, and removes the key", async () => {
 		let state: GeminiKeyState = { vaultAvailable: true, key: null };
+		let checkCalls = 0;
 		const onChanged = vi.fn();
 		const client: WebGeminiKey = {
 			read: vi.fn(async () => state),
@@ -237,8 +240,8 @@ describe("GeminiKeyView", () => {
 				state = sampleState({
 					defaultForChats: input.defaultForChats,
 					monthlyCapCents: input.monthlyCapCents,
-					lastErrorCode: "billing_required",
-					lastErrorAt: timestamp,
+					lastErrorCode: null,
+					lastErrorAt: null,
 				});
 				return state;
 			}),
@@ -252,6 +255,23 @@ describe("GeminiKeyView", () => {
 				return state;
 			}),
 			check: vi.fn(async () => {
+				checkCalls += 1;
+				if (checkCalls === 1) {
+					state = sampleState({
+						monthlyCapCents: state.key?.monthlyCapCents ?? 10_000,
+						version: state.key?.version ?? 1,
+						lastErrorCode: "billing_required",
+						lastErrorAt: timestamp,
+						lastCheckedAt: timestamp,
+					});
+					return {
+						ok: false,
+						errorCode: "billing_required" as const,
+						errorDetail: "free_tier_limit_zero" as const,
+						checkedAt: timestamp,
+						state,
+					};
+				}
 				state = sampleState({
 					monthlyCapCents: state.key?.monthlyCapCents ?? 10_000,
 					version: state.key?.version ?? 1,
@@ -259,7 +279,7 @@ describe("GeminiKeyView", () => {
 					lastErrorAt: null,
 					lastCheckedAt: timestamp,
 				});
-				return { ok: true, errorCode: null, checkedAt: timestamp, state };
+				return { ok: true, errorCode: null, errorDetail: null, checkedAt: timestamp, state };
 			}),
 			revoke: vi.fn(async () => {
 				state = { vaultAvailable: true, key: null };
@@ -286,10 +306,11 @@ describe("GeminiKeyView", () => {
 			{ apiKey: CANARY_KEY, defaultForChats: false, monthlyCapCents: 10_000 },
 			expect.any(AbortSignal),
 		);
+		expect(client.check).toHaveBeenCalledTimes(1);
 		expect(onChanged).toHaveBeenCalledTimes(1);
 		expect(view.el.textContent).toContain("Key AIza...cdef");
 		expect(view.el.textContent).toContain("$87.66 left of $100 ($12.34 spent)");
-		expect(view.el.textContent).toContain("billing or AI Ultra credits are not active");
+		expect(view.el.textContent).toContain("Free Tier (quota limit 0)");
 		expect(view.el.querySelector<HTMLAnchorElement>(".gemini-billing-link")?.href).toBe(
 			"https://aistudio.google.com/spend",
 		);
@@ -299,9 +320,9 @@ describe("GeminiKeyView", () => {
 		const checkButton = [...view.el.querySelectorAll("button")].find((btn) => btn.textContent === "Check key")!;
 		checkButton.click();
 		await settle();
-		expect(client.check).toHaveBeenCalledOnce();
-		expect(view.el.textContent).toContain("Key verified for Gemini 4 Neon.");
-		expect(view.el.textContent).not.toContain("billing or AI Ultra credits are not active");
+		expect(client.check).toHaveBeenCalledTimes(2);
+		expect(view.el.textContent).toContain("Key verified for Gemini 4 Neon. Ready to use.");
+		expect(view.el.textContent).not.toContain("Free Tier (quota limit 0)");
 
 		const capInput = view.el.querySelector<HTMLInputElement>(".gemini-cap-input")!;
 		capInput.value = "10";

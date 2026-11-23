@@ -366,22 +366,48 @@ export const SETTINGS: Record<string, string> = {
 	"Credits active": "Kredit aktiv",
 	"Gemini API key": "Gemini-API-nøgle",
 	"Gemini 4 Neon": "Gemini 4 Neon",
-	"Google reported that billing or AI Ultra credits are not active for this key. Claim your monthly credits or check billing in Google AI Studio.":
-		"Google meldte, at fakturering eller AI Ultra-kredit ikke er aktiv for denne nøgle. Indløs din månedlige kredit, eller tjek fakturering i Google AI Studio.",
-	"Google returned a quota or rate limit for this key. Check your credits and billing in Google AI Studio, or try again shortly.":
-		"Google returnerede en kvote- eller hastighedsgrænse for denne nøgle. Tjek din kredit og fakturering i Google AI Studio, eller prøv igen om lidt.",
-	"Google rejected this API key. Check it in Google AI Studio or replace it here.":
-		"Google afviste denne API-nøgle. Tjek den i Google AI Studio, eller udskift den her.",
+	"This key's Google project is on the Free Tier (quota limit 0). Gemini 4 Neon requires paid billing or claimed AI Ultra credits — claim your credits and link billing to this project in Google AI Studio, then click Check key.":
+		"Denne nøgles Google-projekt er på gratispakken (kvotegrænse 0). Gemini 4 Neon kræver aktiv fakturering eller indløst AI Ultra-kredit — indløs din kredit, knyt fakturering til projektet i Google AI Studio, og klik på Tjek nøgle.",
+	"Google returned a quota limit of 0 for Gemini 4 Neon on this key's project. Claim your AI Ultra credits or link a paid billing account to this project in Google AI Studio, then click Check key.":
+		"Google returnerede kvotegrænse 0 for Gemini 4 Neon på denne nøgles projekt. Indløs din AI Ultra-kredit, eller knyt en faktureringskonto til projektet i Google AI Studio, og klik på Tjek nøgle.",
+	"Google reported that billing or AI Ultra credits are not enabled for this key's project. Claim your monthly credits or enable billing in Google AI Studio, then click Check key.":
+		"Google meldte, at fakturering eller AI Ultra-kredit ikke er slået til for denne nøgles projekt. Indløs din månedlige kredit, eller slå fakturering til i Google AI Studio, og klik på Tjek nøgle.",
+	"This key's Google AI Studio spending cap or credit balance was reached. Check your spend limit and credits in Google AI Studio.":
+		"Denne nøgles forbrugsgrænse eller kreditsaldo i Google AI Studio er nået. Tjek din forbrugsgrænse og kredit i Google AI Studio.",
+	"This key's Google project reached its daily Gemini API quota. Check your usage tier in Google AI Studio or wait for the daily reset.":
+		"Denne nøgles Google-projekt har nået sin daglige Gemini-API-kvote. Tjek dit niveau i Google AI Studio, eller vent på den daglige nulstilling.",
+	"Google temporarily rate-limited requests for this key's project. Wait a moment and try again, or check your rate limits in Google AI Studio.":
+		"Google har midlertidigt begrænset hastigheden for denne nøgles projekt. Vent et øjeblik, og prøv igen, eller tjek dine grænser i Google AI Studio.",
+	"Google reported that the Gemini API is not available in this key's region.":
+		"Google meldte, at Gemini-API'et ikke er tilgængeligt i denne nøgles område.",
+	"The Generative Language API is disabled on this key's Google Cloud project. Enable it in Google Cloud or use a key from another project.":
+		"Generative Language API er slået fra på denne nøgles Google Cloud-projekt. Slå det til i Google Cloud, eller brug en nøgle fra et andet projekt.",
+	"This Gemini API key has expired. Create a new key in Google AI Studio and replace it here.":
+		"Denne Gemini-API-nøgle er udløbet. Opret en ny nøgle i Google AI Studio, og udskift den her.",
+	"Google blocked this API key due to key restrictions. Allow the Generative Language API without referrer or IP restrictions in Google AI Studio, or replace the key here.":
+		"Google blokerede denne API-nøgle på grund af nøglebegrænsninger. Tillad Generative Language API uden henvisnings- eller IP-begrænsninger i Google AI Studio, eller udskift nøglen her.",
+	"Google rejected this API key as invalid. Check it in Google AI Studio or replace it here.":
+		"Google afviste denne API-nøgle som ugyldig. Tjek den i Google AI Studio, eller udskift den her.",
+	"Google's Gemini API is temporarily overloaded. Try again in a moment.":
+		"Googles Gemini-API er midlertidigt overbelastet. Prøv igen om lidt.",
+	"Google reported that billing or AI Ultra credits are not active for this key's project (Gemini 4 Neon requires paid billing or claimed credits). Claim your monthly credits and link billing in Google AI Studio, then click Check key.":
+		"Google meldte, at fakturering eller AI Ultra-kredit ikke er aktiv for denne nøgles projekt (Gemini 4 Neon kræver fakturering eller indløst kredit). Indløs din månedlige kredit, knyt fakturering til projektet i Google AI Studio, og klik på Tjek nøgle.",
+	"Google returned a quota or rate limit for this key's project. Check your rate limits and spend cap in Google AI Studio, or try again shortly.":
+		"Google returnerede en kvote- eller hastighedsgrænse for denne nøgles projekt. Tjek dine grænser og forbrugsgrænse i Google AI Studio, eller prøv igen om lidt.",
+	"Google rejected this API key. Check that it is active and allowed to use the Generative Language API in Google AI Studio, or replace it here.":
+		"Google afviste denne API-nøgle. Tjek, at den er aktiv og må bruge Generative Language API i Google AI Studio, eller udskift den her.",
 	"Google reported that Gemini 4 Neon is unavailable for this key.":
 		"Google meldte, at Gemini 4 Neon ikke er tilgængelig for denne nøgle.",
+	"Google reported that Gemini 4 Neon is unavailable for this key or region.":
+		"Google meldte, at Gemini 4 Neon ikke er tilgængelig for denne nøgle eller dette område.",
 	"Google rejected the last Gemini request made with this key.":
 		"Google afviste den seneste Gemini-forespørgsel med denne nøgle.",
-	"Google's Gemini API had a temporary server error on the last run.":
-		"Googles Gemini-API havde en midlertidig serverfejl ved den seneste kørsel.",
-	"Qorpera could not reach Google's Gemini API on the last run.":
-		"Qorpera kunne ikke nå Googles Gemini-API ved den seneste kørsel.",
-	"Key verified for Gemini 4 Neon. Google checks billing and credits when a reply runs.":
-		"Nøglen er bekræftet for Gemini 4 Neon. Google tjekker fakturering og kredit, når et svar kører.",
+	"Google's Gemini API had a temporary server error on the last check or run.":
+		"Googles Gemini-API havde en midlertidig serverfejl ved det seneste tjek eller kørsel.",
+	"Qorpera could not reach Google's Gemini API on the last check or run.":
+		"Qorpera kunne ikke nå Googles Gemini-API ved det seneste tjek eller kørsel.",
+	"Key verified for Gemini 4 Neon. Ready to use.": "Nøglen er bekræftet for Gemini 4 Neon. Klar til brug.",
+	"Gemini API key saved and verified for Gemini 4 Neon.": "Gemini-API-nøglen er gemt og bekræftet for Gemini 4 Neon.",
 	"The Gemini API key could not be checked. Try again.": "Gemini-API-nøglen kunne ikke tjekkes. Prøv igen.",
 	"Check key": "Tjek nøgle",
 	"Manage credits in Google AI Studio": "Administrer kredit i Google AI Studio",

@@ -15,7 +15,9 @@ import type {
 import {
 	classifyGeminiHttpError,
 	GEMINI_PROVIDER_ERROR_CODES,
+	GEMINI_PROVIDER_ERROR_DETAILS,
 	type GeminiProviderErrorCode,
+	type GeminiProviderErrorDetail,
 	geminiNeonSpendMicrodollars,
 	readGeminiErrorSnippet,
 } from "./cloud-gemini-key-vault.ts";
@@ -41,10 +43,16 @@ export const GEMINI_ACTION_REVIEW_MODEL = "gemini-4-neon";
 const MAX_GEMINI_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_GEMINI_REQUEST_MS = 5 * 60_000;
 const RETRY_DELAYS_MS = [1_000, 3_000] as const;
+const MAX_GEMINI_RETRY_WAIT_MS = 15_000;
 const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
 
-export { GEMINI_PROVIDER_ERROR_CODES, type GeminiProviderErrorCode };
+export {
+	GEMINI_PROVIDER_ERROR_CODES,
+	GEMINI_PROVIDER_ERROR_DETAILS,
+	type GeminiProviderErrorCode,
+	type GeminiProviderErrorDetail,
+};
 
 export class GeminiCapReachedError extends Error {
 	readonly monthlyCapCents: number;
@@ -61,16 +69,19 @@ export class GeminiCapReachedError extends Error {
 export class GeminiKeyRevokedError extends Error {
 	readonly httpStatus: number | null;
 	readonly providerStatus: string | null;
+	readonly detailCode: GeminiProviderErrorDetail | null;
 
 	constructor(
 		message = "Your Gemini API key is no longer valid or was removed.",
 		httpStatus: number | null = null,
 		providerStatus: string | null = null,
+		detailCode: GeminiProviderErrorDetail | null = null,
 	) {
 		super(message);
 		this.name = "GeminiKeyRevokedError";
 		this.httpStatus = httpStatus;
 		this.providerStatus = providerStatus;
+		this.detailCode = detailCode;
 	}
 }
 
@@ -78,6 +89,7 @@ export class GeminiProviderError extends Error {
 	readonly code: GeminiProviderErrorCode;
 	readonly httpStatus: number | null;
 	readonly providerStatus: string | null;
+	readonly detailCode: GeminiProviderErrorDetail | null;
 
 	constructor(
 		code: GeminiProviderErrorCode,
@@ -85,12 +97,14 @@ export class GeminiProviderError extends Error {
 		providerStatus: string | null,
 		message: string,
 		options?: ErrorOptions,
+		detailCode: GeminiProviderErrorDetail | null = null,
 	) {
 		super(message, options);
 		this.name = "GeminiProviderError";
 		this.code = code;
 		this.httpStatus = httpStatus;
 		this.providerStatus = providerStatus;
+		this.detailCode = detailCode;
 	}
 }
 
@@ -130,12 +144,14 @@ export function geminiProviderDiagnostic(error: unknown): string | undefined {
 	for (let depth = 0; depth < 8 && current instanceof Error; depth += 1) {
 		if (current instanceof GeminiProviderError) {
 			const parts = [`geminiCode=${current.code}`];
+			if (current.detailCode !== null) parts.push(`geminiDetail=${current.detailCode}`);
 			if (current.httpStatus !== null) parts.push(`httpStatus=${current.httpStatus}`);
 			if (current.providerStatus !== null) parts.push(`providerStatus=${current.providerStatus}`);
 			return parts.join(", ");
 		}
 		if (current instanceof GeminiKeyRevokedError) {
 			const parts = ["geminiCode=key_rejected"];
+			if (current.detailCode !== null) parts.push(`geminiDetail=${current.detailCode}`);
 			if (current.httpStatus !== null) parts.push(`httpStatus=${current.httpStatus}`);
 			if (current.providerStatus !== null) parts.push(`providerStatus=${current.providerStatus}`);
 			return parts.join(", ");
@@ -493,7 +509,7 @@ async function generateGeminiContent(options: {
 				if (retryWait === undefined) {
 					if (!reply.ok) {
 						const snippet = await readGeminiErrorSnippet(reply);
-						const classified = classifyGeminiHttpError(reply.status, snippet);
+						const classified = classifyGeminiHttpError(reply.status, snippet, reply.headers.get("retry-after"));
 						if (classified.code === "billing_required") {
 							failObservation("budget_exhausted");
 							throw tagNativeRuntimeFailure(
@@ -502,6 +518,8 @@ async function generateGeminiContent(options: {
 									reply.status,
 									classified.providerStatus,
 									`Gemini API billing or credits required (${reply.status})`,
+									undefined,
+									classified.detailCode,
 								),
 								"native-tools",
 								"budget_exhausted",
@@ -514,15 +532,24 @@ async function generateGeminiContent(options: {
 									"Google rejected your Gemini API key.",
 									reply.status,
 									classified.providerStatus,
+									classified.detailCode,
 								),
 								"native-tools",
 								"authority_unavailable",
 							);
 						}
 						if (classified.code === "quota_exhausted" || classified.code === "provider_outage") {
-							const wait = options.retryOnBusy ? RETRY_DELAYS_MS[attempt] : undefined;
-							if (wait !== undefined) {
-								retryWait = wait;
+							const nonTransientQuota =
+								classified.code === "quota_exhausted" &&
+								(classified.detailCode === "daily_quota_exhausted" ||
+									classified.detailCode === "spend_limit_reached" ||
+									(classified.retryAfterMs !== null && classified.retryAfterMs > MAX_GEMINI_RETRY_WAIT_MS));
+							const baseWait = options.retryOnBusy && !nonTransientQuota ? RETRY_DELAYS_MS[attempt] : undefined;
+							if (baseWait !== undefined) {
+								retryWait =
+									classified.retryAfterMs !== null
+										? Math.min(MAX_GEMINI_RETRY_WAIT_MS, Math.max(baseWait, classified.retryAfterMs))
+										: baseWait;
 							} else {
 								failObservation("provider_failed");
 								if (!options.retryOnBusy) throw new CloudActionReviewBusy();
@@ -532,6 +559,8 @@ async function generateGeminiContent(options: {
 										reply.status,
 										classified.providerStatus,
 										`Gemini API is temporarily busy (${reply.status})`,
+										undefined,
+										classified.detailCode,
 									),
 									"native-tools",
 									"provider_failed",
@@ -545,6 +574,8 @@ async function generateGeminiContent(options: {
 									reply.status,
 									classified.providerStatus,
 									`Gemini API rejected the request (${reply.status})`,
+									undefined,
+									classified.detailCode,
 								),
 								"native-tools",
 								"provider_failed",
