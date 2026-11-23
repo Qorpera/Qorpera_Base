@@ -1,4 +1,4 @@
-import { isUuid, SHA256_HEX_PATTERN } from "@qorpera/contracts";
+import { isUuid, SHA256_HEX_PATTERN, type StudioBinaryRef } from "@qorpera/contracts";
 import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import { CloudSha256, cloudFileBytesSha256 } from "./cloud-file-bytes.ts";
 import { CloudRequestTimeoutError, readBoundedCloudResponse, withCloudDeadline } from "./cloud-request.ts";
@@ -92,11 +92,7 @@ function oneOf<T extends string>(value: unknown, allowed: readonly T[], what: st
 	return value as T;
 }
 
-export interface CloudMemberFolderFile {
-	readonly manifestSha256: string;
-	readonly fileSha256: string;
-	readonly bytes: number;
-	readonly mediaType: string;
+export interface CloudMemberFolderFile extends StudioBinaryRef {
 	readonly executable: boolean;
 }
 
