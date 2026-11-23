@@ -5,6 +5,7 @@ import {
 	type CustomDomainStatus,
 	isApexHostname,
 	type SiteCustomDomain,
+	siteDnsRecords,
 	validateCustomDomainInput,
 	type WebSiteHosting,
 } from "../../cloud/site-hosting.ts";
@@ -153,7 +154,7 @@ function passwordProblem(password: string): string | undefined {
 }
 
 /** What to press to copy a text the page selected, when the browser would not let the page copy it. */
-function pressToCopy(): string {
+export function pressToCopy(): string {
 	return /Mac|iPhone|iPad/.test(navigator.userAgent) ? t("Press ⌘C to copy.") : t("Press Ctrl+C to copy.");
 }
 
@@ -805,44 +806,17 @@ export class SitesView {
 		};
 		const onHash = () => close();
 		const renderGuide = (added: AddedSiteDomain) => {
-			const lines: HTMLElement[] = [h("div", null, t("Domain added. Point your DNS records below:"))];
-			if (added.dns.recordType === "A" && added.dns.ipv4) {
-				lines.push(
-					h("div", null, t("Record {type} · {host} · {value}", { type: "A", host: "@", value: added.dns.ipv4 })),
-				);
-				if (added.dns.ipv6)
-					lines.push(
-						h(
-							"div",
-							null,
-							t("Record {type} · {host} · {value}", { type: "AAAA", host: "@", value: added.dns.ipv6 }),
-						),
-					);
-			} else if (added.dns.cnameTarget) {
-				lines.push(
+			replace(
+				guide,
+				h("div", null, t("Domain added. Point your DNS records below:")),
+				...siteDnsRecords(added.hostname, added.dns).map((record) =>
 					h(
 						"div",
 						null,
-						t("Record {type} · {host} · {value}", {
-							type: "CNAME",
-							host: added.hostname,
-							value: added.dns.cnameTarget,
-						}),
+						t("Record {type} · {host} · {value}", { type: record.type, host: record.host, value: record.value }),
 					),
-				);
-			}
-			lines.push(
-				h(
-					"div",
-					null,
-					t("Record {type} · {host} · {value}", {
-						type: "TXT",
-						host: added.dns.txtHost,
-						value: added.dns.txtValue,
-					}),
 				),
 			);
-			replace(guide, ...lines);
 			guide.hidden = false;
 			input.hidden = true;
 			submitBtn.hidden = true;
