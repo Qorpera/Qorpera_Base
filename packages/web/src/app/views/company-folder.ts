@@ -365,7 +365,7 @@ export class CompanyFolderBrowser {
 		this.#source = source;
 		this.#people = people;
 		this.#options = options;
-		this.#view = options.embedded ? "grid" : "list";
+		this.#view = options.choose ? "list" : "grid";
 		this.#search =
 			options.search ??
 			h("input", {
@@ -387,7 +387,7 @@ export class CompanyFolderBrowser {
 			{ once: true },
 		);
 		this.#viewer = options.embedded
-			? h("dialog", { class: "surface-dialog storage-viewer", tabindex: "-1" }, this.#preview)
+			? h("dialog", { class: "surface-dialog storage-viewer", tabindex: "-1", "aria-modal": "true" }, this.#preview)
 			: null;
 		// Escape and a click beside the window close it, never while an action runs.
 		this.#viewer?.addEventListener(
@@ -873,9 +873,7 @@ export class CompanyFolderBrowser {
 
 	#drawCrumbs(): void {
 		const parts = this.#dir ? this.#dir.split("/") : [];
-		// The title already names the top folder, so the trail is drawn only below it.
-		this.#crumbs.hidden =
-			(this.#options.embedded === true || this.#options.choose !== undefined) && parts.length === 0;
+		this.#crumbs.hidden = parts.length === 0;
 		const steps: HTMLElement[] = [
 			parts.length
 				? h(
@@ -985,7 +983,7 @@ export class CompanyFolderBrowser {
 				h(
 					"span",
 					{ class: `files-kind is-${category}`, "aria-hidden": "true" },
-					this.#view === "grid" && this.#options.embedded ? tileGlyph(item, category) : icon(kind),
+					this.#view === "grid" ? tileGlyph(item, category) : icon(kind),
 				),
 				h(
 					"span",

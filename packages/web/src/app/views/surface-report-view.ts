@@ -2,7 +2,9 @@ import { composeStudioPreview } from "@qorpera/cloud-client/surface-studio-patch
 import type { StudioPatchChange, StudioPatchOp, SurfacePreviewConflict, SurfaceSummary } from "@qorpera/contracts";
 import { h } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
+import { playOnce } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
+import { surfaceSkeleton } from "../../ui/skeleton.ts";
 import {
 	effectiveStudioBaseFiles,
 	formatConflictPaths,
@@ -546,6 +548,7 @@ export class SurfaceReportView {
 	readonly #lifetime = new AbortController();
 	#baseFiles: Readonly<Record<string, string>>;
 	#loading = false;
+	#showingSkeleton = false;
 	#lastConflict: SurfacePreviewConflict | null = null;
 	#activeSlug = "";
 	#shownDeps: readonly unknown[] | undefined;
@@ -565,7 +568,10 @@ export class SurfaceReportView {
 				!isLocalSurfaceId(options.surface.id) &&
 				options.store.state.source === "cloud";
 			if (cloudManaged) {
-				if (!options.store.state.cloudSurfaceFiles[options.surface.id]) {
+				if (
+					!options.store.state.cloudSurfaceFiles[options.surface.id] &&
+					!options.store.isCloudFilesLoading(options.surface.id)
+				) {
 					void options.store.refreshCloudFiles(options.surface);
 				}
 			} else if (options.loadFiles) {
@@ -670,7 +676,7 @@ export class SurfaceReportView {
 			state.localStudioBase[surface.id],
 			surface.title,
 			surface.folderRoot,
-			workspace?.briefSummary,
+			workspace?.briefSummary ?? "",
 			busyReconcile,
 		];
 		const sameDeps =
@@ -728,13 +734,8 @@ export class SurfaceReportView {
 					? t("1 live change applied")
 					: composition.appliedChangeIds.length > 1
 						? t("{count} live changes applied", { count: composition.appliedChangeIds.length })
-						: t("Base");
-		const badgeClass =
-			composition.status === "conflicted"
-				? "studio-badge is-conflict"
-				: composition.appliedChangeIds.length > 0
-					? "studio-badge is-live"
-					: "studio-badge";
+						: null;
+		const badgeClass = composition.status === "conflicted" ? "studio-badge is-conflict" : "studio-badge is-live";
 
 		const showChrome = reports.length > 1 || !this.#options.embedded;
 		const chrome = showChrome
@@ -779,7 +780,7 @@ export class SurfaceReportView {
 											h("span", null, updatingLabel(updatingPhase)),
 										)
 									: null,
-								h("span", { class: badgeClass }, badgeText),
+								badgeText ? h("span", { class: badgeClass }, badgeText) : null,
 							)
 						: null,
 				)
@@ -820,25 +821,25 @@ export class SurfaceReportView {
 		}
 
 		if (!activeReport && markdownDocs.length === 0) {
+			if (initialLoading) {
+				this.#showingSkeleton = true;
+				this.el.replaceChildren(surfaceSkeleton(t("Opening studio…"), "report"));
+				return;
+			}
+			const leavingSkeleton = this.#showingSkeleton;
+			this.#showingSkeleton = false;
 			children.push(
 				h(
 					"div",
 					{ class: "studio-empty" },
-					initialLoading
-						? [h("span", { class: "surface-state is-running" }), h("p", null, t("Opening studio…"))]
-						: [
-								surfaceTile(surface, this.#options.store.lookOf(surface), "is-hero"),
-								h("h2", null, surface.title),
-								workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
-								h(
-									"p",
-									null,
-									t("No reports yet. Describe an analysis, vendor comparison, or design essay below."),
-								),
-							],
+					surfaceTile(surface, this.#options.store.lookOf(surface), "is-hero"),
+					h("h2", null, surface.title),
+					workspace?.briefSummary ? h("p", { class: "studio-brief" }, workspace.briefSummary) : null,
+					h("p", null, t("No reports yet. Describe an analysis, vendor comparison, or design essay below.")),
 				),
 			);
 			this.el.replaceChildren(...children);
+			if (leavingSkeleton) playOnce(this.el, "is-entering");
 			return;
 		}
 
@@ -954,7 +955,10 @@ export class SurfaceReportView {
 			);
 		}
 
+		const leavingSkeleton = this.#showingSkeleton;
+		this.#showingSkeleton = false;
 		this.el.replaceChildren(...children);
+		if (leavingSkeleton) playOnce(this.el, "is-entering");
 	}
 
 	#renderCompare(reports: readonly ReportDocument[]): HTMLElement {

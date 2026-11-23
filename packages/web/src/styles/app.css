@@ -18,6 +18,7 @@
 @import "./agent-routines.css";
 @import "./social.css";
 @import "./surfaces.css";
+@import "./search-window.css";
 @import "./dark.css";
 @import "./motion.css";
 @import "./boot.css";
@@ -54,8 +55,8 @@ body {
 .scroll-quiet[data-scrolled] { -webkit-mask-position: 0 0; mask-position: 0 0; }
 a { color: var(--blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
-/* In-app links carry data-href instead of href (ui/dom.ts), so the browser gives them no pointer of its own. */
-a[data-href] { cursor: pointer; }
+/* WHY: links and buttons keep the arrow, as in a native app, never the pointing hand (Jonas, 23 Nov 2026). */
+a:any-link, a[data-href] { cursor: default; }
 h1 { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; }
 h2 { font-size: 16px; font-weight: 650; margin-top: 24px; }
 h3 { font-size: 14px; font-weight: 650; margin-top: 16px; }
@@ -96,7 +97,7 @@ label > input, label > select { font-weight: 400; }
 /* buttons */
 .btn {
 	min-height: 32px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-	background: var(--bg); padding: 0 12px; cursor: pointer; white-space: nowrap;
+	background: var(--bg); padding: 0 12px; cursor: default; white-space: nowrap;
 	transition: background 120ms ease, border-color 120ms ease, transform var(--motion-base) var(--ease-spring);
 	display: inline-flex; align-items: center; gap: 6px;
 }
@@ -188,7 +189,7 @@ label > input, label > select { font-weight: 400; }
 .account-trigger {
 	display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px 0 5px;
 	border: 1px solid transparent; border-radius: 999px; background: transparent;
-	color: var(--text); font-weight: 600; cursor: pointer;
+	color: var(--text); font-weight: 600; cursor: default;
 }
 .account-trigger:hover, .account-menu.is-open .account-trigger { background: var(--hover); }
 .account-chip {
@@ -223,7 +224,7 @@ label > input, label > select { font-weight: 400; }
 .account-item {
 	display: flex; flex: none; align-items: center; gap: 10px; width: 100%;
 	padding: 7px 12px; border: 0; border-radius: 8px; background: transparent; color: var(--text);
-	font: inherit; font-size: 15px; font-weight: 400; line-height: 1.4; text-align: left; cursor: pointer;
+	font: inherit; font-size: 15px; font-weight: 400; line-height: 1.4; text-align: left; cursor: default;
 }
 .account-item:hover { background: var(--hover); text-decoration: none; }
 .account-item .icon { width: 18px; height: 18px; flex: none; color: var(--text); }
@@ -316,8 +317,8 @@ label > input, label > select { font-weight: 400; }
 }
 .rail[hidden] { display: none; }
 /* One top row (Jonas, 5 Nov 2026): the company's name, which opens the member's companies, then
- * the four windows (the apps drawer, styles/interfaces.css), the search button, the add button, and the sidebar toggle.
- * The search folds out of its button leftward over the name and the four windows. */
+ * the four windows (the apps drawer, styles/interfaces.css), the search button, which opens the search window
+ * (search-window.css), the add button, and the sidebar toggle. */
 .rail-toolbar {
 	--rail-control: 36px; flex: none; display: grid;
 	grid-template-columns: auto minmax(0, 1fr) auto var(--rail-control) auto auto;
@@ -334,18 +335,16 @@ label > input, label > select { font-weight: 400; }
 .rail-sidebar-toggle[hidden] { display: none; }
 .rail-reopen-btn {
 	position: absolute; z-index: 24; top: 10px; left: 14px; width: 34px; height: 34px; border-radius: 10px;
-	border: 1px solid color-mix(in srgb, var(--text) 11%, transparent);
-	background: color-mix(in srgb, var(--bg) 86%, transparent); backdrop-filter: blur(14px);
-	color: var(--text-muted); box-shadow: 0 2px 10px -4px rgb(18 18 17 / 16%);
+	border: 0; background: transparent; color: var(--text-muted);
 }
-.rail-reopen-btn:hover { background: var(--bg); color: var(--text); border-color: color-mix(in srgb, var(--text) 22%, transparent); }
+.rail-reopen-btn:hover { color: var(--text); }
 .rail-reopen-btn svg { width: 18px; height: 18px; }
 .rail-reopen-btn[hidden] { display: none; }
 .frame.rail-hidden-desktop :is(.thread-header, .new-conversation-header) { padding-left: 58px; }
 .rail-company {
 	grid-area: 1 / 2; justify-self: start; display: flex; align-items: center; gap: 3px; max-width: 100%; min-width: 0;
 	height: 32px; margin-left: -6px; padding: 0 7px 0 6px; border: 0; border-radius: 9px; background: transparent;
-	color: var(--text); font: inherit; cursor: pointer;
+	color: var(--text); font: inherit; cursor: default;
 	transition: background-color var(--motion-fast) ease, opacity var(--motion-fast) ease 80ms;
 }
 .rail-company:hover, .rail-company[aria-expanded="true"] { background: var(--rail-hover); }
@@ -355,7 +354,6 @@ label > input, label > select { font-weight: 400; }
 .rail-company-chevron { flex: none; display: grid; color: var(--rail-small); }
 .rail-company-chevron .icon { width: 14px; height: 14px; transition: transform var(--motion-base) var(--ease-spring); }
 .rail-company[aria-expanded="true"] .rail-company-chevron .icon { transform: rotate(180deg); }
-.rail-toolbar.is-searching :is(.rail-company, .rail-apps) { opacity: 0; pointer-events: none; transition-delay: 0s; }
 .rail-add svg { width: 18px; height: 18px; }
 .rail-mobile-close { display: none; grid-area: 1 / 1; margin-right: 6px; }
 .rail-resizer { position: absolute; z-index: 8; left: calc(var(--rail-width) - 4px); top: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; }
@@ -364,34 +362,13 @@ label > input, label > select { font-weight: 400; }
 .rail-resizing { cursor: col-resize; user-select: none; }
 .rail-add:hover { text-decoration: none; background: var(--rail-hover); }
 .rail-add[hidden] { display: none; }
-.rail-search {
-	grid-area: 1 / 2 / 2 / 5; justify-self: end; position: relative; z-index: 1; display: flex; align-items: center;
-	width: var(--rail-control); min-width: 0; height: var(--rail-control); overflow: hidden;
-	border-radius: 10px; color: var(--rail-search-ink);
+.rail-search-toggle {
+	grid-area: 1 / 4; display: grid; place-items: center; width: var(--rail-control); height: var(--rail-control);
+	padding: 0; border: 0; border-radius: 10px; background: transparent; color: var(--rail-search-ink); cursor: default;
 }
-.rail-toolbar.is-searching .rail-search {
-	width: 100%; background: var(--overlay); box-shadow: 0 0 0 1px rgb(18 18 17 / 10%);
-}
-.rail-search-toggle, .rail-search-close {
-	flex: none; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer;
-}
-.rail-search-toggle { width: var(--rail-control); height: var(--rail-control); border-radius: 10px; }
 .rail-search-toggle svg { width: 16px; height: 16px; }
-.rail-toolbar:not(.is-searching) .rail-search-toggle:hover { background: var(--rail-hover); }
-.rail-search-close { width: 30px; height: 30px; margin-right: 3px; border-radius: 8px; }
-.rail-search-close svg { width: 14px; height: 14px; }
-.rail-search-close:hover { background: var(--rail-hover); }
-.rail-search-close[hidden] { display: none; }
-.rail-search input {
-	flex: 1; width: 100%; min-width: 0; height: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0;
-	background: transparent; font: inherit; font-size: 13px; font-weight: 400; color: var(--text); outline: 0;
-}
-/* Folded, the field is only its button: the text box can't be seen or reached. */
-.rail-toolbar:not(.is-searching) .rail-search input { visibility: hidden; opacity: 0; }
-/* The open field's ring and caret show where typing goes; the buttons show keyboard focus themselves. */
-.rail-search input::-webkit-search-cancel-button { appearance: none; display: none; }
-.rail-search :is(.rail-search-toggle, .rail-search-close):focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
-.rail-search input::placeholder { color: #777772; }
+.rail-search-toggle:hover { background: var(--rail-hover); }
+.rail-search-toggle:focus-visible { outline: 2px solid var(--rail-selection-ink); outline-offset: -2px; }
 .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; margin-top: -16px; padding-top: 16px; }
 /* The list reaches 16px up under the top row (Jonas, 5 Nov 2026: half the space above the Co-Founder),
  * so the figure may stand into that band. Scrolled, the band hides the list and the 8px fade follows it. */
@@ -414,21 +391,16 @@ label > input, label > select { font-weight: 400; }
 	width: 100%; padding: calc(var(--figure) - var(--lift) + 8px) 12px 5px; border-radius: 12px;
 	background: transparent; color: var(--text); text-align: center;
 }
-.cofounder-home:hover { background: var(--rail-hover); text-decoration: none; }
+.cofounder-home:hover { text-decoration: none; }
 .cofounder-home.active, .cofounder-home.active:hover { background: var(--rail-selection); color: var(--rail-selection-text); }
 .cofounder-home strong { position: relative; z-index: 2; max-width: 100%; font-size: 13px; font-weight: 650; line-height: 16px; }
 .cofounder-stand { position: absolute; left: 50%; top: calc(-1 * var(--lift)); width: var(--figure); height: var(--figure); transform: translateX(-50%); }
-.cofounder-stand::before {
-	content: ""; position: absolute; left: 7%; right: 7%; bottom: -1px; height: 12px; border-radius: 50%;
-	background: rgba(0, 30, 80, 0.3); filter: blur(5px);
-}
-/* The figure stands sharp on the card: only the ground shadow above sits under it (Jonas, 20 Oct). */
 .cofounder-stand .figure { position: relative; z-index: 1; width: var(--figure); height: var(--figure); }
 .cofounder-status {
 	position: absolute; z-index: 2; right: -4px; bottom: -6px; width: 22px; height: 22px; border-radius: 50%;
 	background: var(--rail-status); border: 3px solid var(--rail);
 }
-.cofounder-home:hover .cofounder-status { border-color: var(--rail-hover); }
+.cofounder-home.hover-lit .cofounder-status { border-color: var(--rail-hover); }
 .cofounder-home.active .cofounder-status { border-color: var(--rail-selection); }
 
 /* Pinned agents: this member's square cards right under the Co-Founder, centered as a
@@ -443,12 +415,12 @@ label > input, label > select { font-weight: 400; }
 	width: 86px; height: 86px; padding: 7px 5px 5px; border-radius: 12px; color: var(--text); text-align: center;
 	-webkit-touch-callout: none;
 }
-.rail-pin:hover { background: var(--rail-hover); text-decoration: none; }
+.rail-pin:hover { text-decoration: none; }
 .rail-pin.active, .rail-pin.active:hover { background: var(--rail-selection); color: var(--rail-selection-text); }
 .rail-pin-stand { position: relative; display: grid; place-items: center; width: 52px; height: 52px; }
 .rail-pin .figure { width: 52px; height: 52px; }
 .rail-pin-name { max-width: 100%; font-size: 11.5px; font-weight: 600; line-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rail-pin:hover .rail-row-status { border-color: var(--rail-hover); }
+.rail-pin.hover-lit .rail-row-status { border-color: var(--rail-hover); }
 .rail-pin.active .rail-row-status { border-color: var(--rail-selection); }
 .rail-drop-slot { display: none; }
 /* The company's sections: a quiet title over its agents. Unassigned carries the rest
@@ -473,7 +445,7 @@ label > input, label > select { font-weight: 400; }
 .rail-hidden-toggle {
 	display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 8px; border: 0; border-radius: 8px;
 	background: transparent; color: var(--rail-small); font: inherit; font-size: 12px; font-weight: 600; line-height: 16px;
-	text-align: left; cursor: pointer;
+	text-align: left; cursor: default;
 }
 .rail-hidden-toggle:hover { background: var(--rail-hover); }
 .rail-hidden-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -501,7 +473,7 @@ label > input, label > select { font-weight: 400; }
 	display: grid; flex: 1; place-items: center; height: 64px; color: var(--rail-small); font-size: 12px; font-weight: 550;
 }
 .rail-dragging .rail-section-list:not(:has(> :not(.is-drag-source))) { min-height: 44px; }
-.rail-dragging :is(.rail-row, .rail-pin):hover:not(.active) { background: transparent; }
+.rail-dragging > .rail-hover-tint { opacity: 0; }
 .rail-scroll .is-drag-source { display: none !important; }
 .rail-scroll .is-drag-landing { visibility: hidden; }
 .rail-drop-gap { flex: none; height: 63.75px; pointer-events: none; }
@@ -537,13 +509,13 @@ label > input, label > select { font-weight: 400; }
 .rail-row-member { --rail-row-figure: 50px; min-height: 63.75px; }
 .rail-row-member .person-avatar { width: 44px; height: 44px; font-size: 15px; }
 :is(.rail-row-member, .rail-pin-member) .person-online-dot { right: 0; bottom: 0; width: 13px; height: 13px; box-shadow: 0 0 0 2px var(--rail); }
-:is(.rail-row-member, .rail-pin-member):hover .person-online-dot { box-shadow: 0 0 0 2px var(--rail-hover); }
+.hover-lit:is(.rail-row-member, .rail-pin-member) .person-online-dot { box-shadow: 0 0 0 2px var(--rail-hover); }
 :is(.rail-row-member, .rail-pin-member).active .person-online-dot { box-shadow: 0 0 0 2px var(--rail-selection); }
 :is(.rail-row-member, .rail-pin-member) .rail-mention { top: 0; right: 0; }
 :is(.rail-row-member, .rail-pin-member).active .rail-mention { background: var(--rail-selection-text); color: var(--rail-selection); box-shadow: 0 0 0 2px var(--rail-selection); }
 .rail-pin-member .person-avatar { width: 48px; height: 48px; font-size: 16px; }
 /* A page hidden from the rail, in Hidden: a button that opens its menu. */
-.rail-row-page { width: 100%; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; }
+.rail-row-page { width: 100%; border: 0; background: none; font: inherit; text-align: left; cursor: default; }
 /* What's new's heading (#/c/<id>/whats-new): its spark beside the title. */
 .sites-page-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
 .sites-page-heading > svg { flex: none; }
@@ -571,7 +543,7 @@ label > input, label > select { font-weight: 400; }
 .whats-new-behind, .whats-new-waiting, .whats-new-managers, .whats-new-empty { margin: 10px 0 0; color: var(--text-muted); }
 .whats-new-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .whats-new-site > .service-outcome { margin: 12px 0 0; font-size: 13px; }
-.rail-row:hover { background: var(--rail-hover); text-decoration: none; }
+.rail-row:hover { text-decoration: none; }
 .rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: var(--rail-selection-text); }
 .rail-row .figure { width: var(--rail-row-figure); height: var(--rail-row-figure); }
 /* Keep the tracks within the stand so larger group canvases overflow symmetrically. */
@@ -591,9 +563,9 @@ label > input, label > select { font-weight: 400; }
 .rail-row > .rail-here { top: 50%; right: 10px; transform: translateY(-50%); }
 /* Room for the marker: its first circle, then 82% of one for each further one (they overlap by 18%), and 10px either side. */
 .rail-row:has(> .rail-here) { padding-right: calc(20px + var(--here-size, 22px) * (1 + (var(--here-count, 1) - 1) * 0.82)); }
-.rail-row:hover > .rail-here, .rail-app:hover > .rail-here { --here-ring: var(--rail-hover); }
+.rail-row.hover-lit > .rail-here, .rail-app:hover > .rail-here { --here-ring: var(--rail-hover); }
 :is(.rail-row, .rail-app).active > .rail-here, :is(.rail-pin, .cofounder-home).active .rail-here { --here-ring: var(--rail-selection); }
-.rail-pin:hover .rail-here, .cofounder-home:hover .rail-here { --here-ring: var(--rail-hover); }
+.rail-pin.hover-lit .rail-here, .cofounder-home.hover-lit .rail-here { --here-ring: var(--rail-hover); }
 /* On a card, against the figure's top-right, where a row's "@" would be on its own figure. */
 :is(.cofounder-stand, .rail-pin-stand) > .rail-here { --here-size: 20px; top: 2px; left: calc(100% - 6px); }
 .rail-app { position: relative; }
@@ -602,7 +574,7 @@ label > input, label > select { font-weight: 400; }
 .rail-apps:hover > .rail-here, .rail-apps.is-open > .rail-here { --here-ring: var(--rail-hover); }
 .rail-compact .rail-row > .rail-here { --here-size: 18px; top: 2px; right: 2px; transform: none; }
 .rail-compact .rail-row:has(> .rail-here) { padding-right: 8px; }
-.rail-row:hover .rail-row-status { border-color: var(--rail-hover); }
+.rail-row.hover-lit .rail-row-status { border-color: var(--rail-hover); }
 .rail-row.active .rail-row-status { border-color: var(--rail-selection); }
 /* As in a Messages contact row: the name sits at the top of the row, 10px under the
  * selection's edge, in bold; the figure stays centered (Jonas, 9 Nov 2026). */
@@ -635,8 +607,8 @@ label > input, label > select { font-weight: 400; }
 /* RailLayout sets rail-compact only where the rail stands beside the page, never on the drawer. */
 .rail-compact .rail { padding-inline: 7px; }
 .rail-compact .rail-toolbar { grid-template-columns: minmax(0, 1fr); row-gap: 6px; }
-.rail-compact .rail-toolbar > :is(.rail-apps, .rail-add, .rail-sidebar-toggle) { grid-area: auto / 1; justify-self: center; margin-left: 0; }
-.rail-compact .rail-company, .rail-compact .rail-search, .rail-compact .cofounder-home > strong, .rail-compact .rail-row-copy, .rail-compact .account-menu-rail .account-trigger-name, .rail-compact .rail-connection { display: none; }
+.rail-compact .rail-toolbar > :is(.rail-apps, .rail-search-toggle, .rail-add, .rail-sidebar-toggle) { grid-area: auto / 1; justify-self: center; margin-left: 0; }
+.rail-compact .rail-company, .rail-compact .cofounder-home > strong, .rail-compact .rail-row-copy, .rail-compact .account-menu-rail .account-trigger-name, .rail-compact .rail-connection { display: none; }
 .rail-compact .rail-cofounder { padding: 6px 0 3px; }
 .rail-compact .cofounder-home { height: 64px; padding: 0; }
 .rail-compact .rail { --figure: 48px; }
@@ -742,7 +714,7 @@ a.card:hover { border-color: var(--border-strong); }
 .kv dt { color: var(--text-muted); font-family: var(--font-mono); font-size: 12px; }
 .kv dd { word-break: break-word; }
 .page.team > .company-exit { margin-top: 24px; }
-details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
+details > summary { cursor: default; font-weight: 600; margin: 8px 0; }
 
 /* hub */
 .hub { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; padding: 8px 40px 64px; }
@@ -758,7 +730,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .company-grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 26px 22px; padding-top: 46px; }
 .company-card {
 	display: flex; flex-direction: column; align-items: center; gap: 12px; width: 152px; margin: 0; padding: 0;
-	border: 0; background: none; color: var(--text); font: inherit; text-align: center; text-decoration: none; cursor: pointer;
+	border: 0; background: none; color: var(--text); font: inherit; text-align: center; text-decoration: none; cursor: default;
 }
 .company-card:hover { text-decoration: none; }
 .company-card:focus-visible { outline: none; }
@@ -798,7 +770,7 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .company-decline {
 	position: absolute; top: -8px; right: 0; z-index: 1; display: grid; place-items: center; width: 28px; height: 28px;
 	border: 1px solid var(--border-strong); border-radius: 50%; background: var(--overlay); color: var(--text-muted);
-	cursor: pointer; opacity: 0; transition: opacity var(--motion-fast) ease;
+	cursor: default; opacity: 0; transition: opacity var(--motion-fast) ease;
 }
 .company-decline .icon { width: 14px; height: 14px; }
 .company-tile-invitation:hover .company-decline, .company-decline:focus-visible { opacity: 1; }
@@ -867,7 +839,7 @@ textarea.hero-idea:focus-visible { outline: none; }
 .hero-invite {
 	display: inline-flex; align-items: center; gap: 9px; height: 48px; padding: 0 16px 0 6px;
 	border: 1px solid var(--border-strong); border-radius: var(--radius-pill); background: transparent; color: var(--text);
-	font: 600 15px var(--font-sans); cursor: pointer;
+	font: 600 15px var(--font-sans); cursor: default;
 }
 .hero-invite:hover:not(:disabled) { background: var(--hover); }
 .hero-invite[aria-expanded="true"] { box-shadow: inset 0 0 0 1px var(--text); }
@@ -887,7 +859,7 @@ textarea.hero-idea:focus-visible { outline: none; }
 .hero-invite-roles { display: inline-flex; flex: none; padding: 3px; border-radius: var(--radius-pill); background: var(--hover); }
 .hero-invite-role {
 	height: 32px; padding: 0 13px; border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--text-muted);
-	font: 600 13.5px var(--font-sans); cursor: pointer;
+	font: 600 13.5px var(--font-sans); cursor: default;
 }
 .hero-invite-role[aria-pressed="true"] { background: var(--overlay); color: var(--text); box-shadow: 0 1px 3px rgba(18, 18, 17, 0.18); }
 .hero-invite-add { display: flex; align-items: center; gap: 10px; padding: 12px 4px 4px; border-top: 1px solid var(--border); }
@@ -905,7 +877,7 @@ textarea.hero-idea:focus-visible { outline: none; }
 .hero-plus .icon, .founding-plus .icon { width: 14px; height: 14px; }
 .hero-go {
 	display: grid; place-items: center; width: 54px; height: 54px; margin-left: auto; border: 0; border-radius: 50%;
-	background: var(--primary); color: var(--on-primary); cursor: pointer; transition: transform var(--motion-base) var(--ease-spring);
+	background: var(--primary); color: var(--on-primary); cursor: default; transition: transform var(--motion-base) var(--ease-spring);
 }
 .hero-go:hover:not(:disabled) { transform: scale(1.06); }
 .hero-go .icon { width: 22px; height: 22px; stroke-width: 2.6; }
@@ -917,7 +889,7 @@ textarea.hero-idea:focus-visible { outline: none; }
 .hero-starter-pills { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; }
 .hero-starter-pill {
 	height: 30px; padding: 0 11px; border: 1px solid var(--border); border-radius: var(--radius-pill);
-	background: transparent; color: var(--text-muted); font: 560 12.5px var(--font-sans); cursor: pointer;
+	background: transparent; color: var(--text-muted); font: 560 12.5px var(--font-sans); cursor: default;
 	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease;
 }
 .hero-starter-pill:hover:not(:disabled) { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
@@ -990,7 +962,7 @@ a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, 
 }
 .figure-choice {
 	position: relative; display: grid; place-items: center; width: min(100%, 40px); aspect-ratio: 1; padding: 3px;
-	border: 1px solid transparent; border-radius: 50%; background: none; cursor: pointer;
+	border: 1px solid transparent; border-radius: 50%; background: none; cursor: default;
 }
 .figure-choice .figure { width: 32px; height: 32px; }
 .figure-choice:hover:not(:disabled) { background: #f4f4f2; }
@@ -1002,13 +974,13 @@ a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, 
 }
 .color-choice {
 	position: relative; grid-column: span 2; justify-self: center; width: 28px; height: 28px; padding: 0; border: 0;
-	border-radius: 50%; background: var(--choice-color); cursor: pointer;
+	border-radius: 50%; background: var(--choice-color); cursor: default;
 }
 .color-choice:nth-child(7) { grid-column: 2 / span 2; }
 .color-choice[aria-checked="true"]::after { content: ""; position: absolute; inset: -5px; border: 1px solid #999994; border-radius: 50%; }
 .meet-start {
 	min-width: 184px; height: 34px; margin-top: 28px; padding: 0 32px; border: 0; border-radius: 8px;
-	background: #0e84ff; color: #fff; font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer;
+	background: #0e84ff; color: #fff; font: inherit; font-size: 13.5px; font-weight: 600; cursor: default;
 }
 .meet-start:hover:not(:disabled) { filter: brightness(1.06); }
 .meet-start:disabled { opacity: 0.6; cursor: default; }
@@ -1030,7 +1002,7 @@ a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, 
 .auth-provider {
 	display: flex; align-items: center; justify-content: center; gap: 10px; height: 46px; padding: 0 16px;
 	border: 1px solid var(--auth-line-strong); border-radius: 8px; background: var(--auth-field); color: var(--auth-ink);
-	font-size: 15px; font-weight: 600; letter-spacing: -0.005em; cursor: pointer;
+	font-size: 15px; font-weight: 600; letter-spacing: -0.005em; cursor: default;
 	transition: background-color 140ms ease, border-color 140ms ease;
 }
 .auth-provider img { width: 18px; height: 18px; }
@@ -1051,17 +1023,17 @@ a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, 
 .auth-label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .auth-password { position: relative; display: grid; }
 .auth-form .auth-password input { padding-right: 64px; }
-.auth-show { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); padding: 6px 8px; border: 0; border-radius: 6px; background: none; color: var(--auth-soft); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.auth-show { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); padding: 6px 8px; border: 0; border-radius: 6px; background: none; color: var(--auth-soft); font: inherit; font-size: 13px; font-weight: 600; cursor: default; }
 .auth-show:hover { color: var(--auth-ink); }
 .auth-hint { margin: 0; color: var(--auth-soft); font-size: 13px; line-height: 1.45; }
 .auth-primary {
 	height: 46px; margin-top: 6px; padding: 0 20px; border: 0; border-radius: 8px; background: var(--auth-ink); color: #fff;
-	font-size: 15px; font-weight: 600; letter-spacing: -0.005em; cursor: pointer; transition: background-color 160ms ease;
+	font-size: 15px; font-weight: 600; letter-spacing: -0.005em; cursor: default; transition: background-color 160ms ease;
 }
 .auth-primary:hover:not(:disabled) { background: #2b2b2b; }
-.auth-link { justify-self: center; margin-top: 4px; padding: 4px 0; border: 0; background: none; color: var(--auth-soft); font-size: 13px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.auth-link { justify-self: center; margin-top: 4px; padding: 4px 0; border: 0; background: none; color: var(--auth-soft); font-size: 13px; cursor: default; text-decoration: underline; text-underline-offset: 3px; }
 .auth-link:hover { color: var(--auth-ink); }
-.auth-inline { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.auth-inline { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: default; text-decoration: underline; text-underline-offset: 3px; }
 .auth-inline:disabled { cursor: default; opacity: 0.6; }
 .auth-forgot { color: var(--auth-soft); font-size: 13px; }
 .auth-forgot:hover { color: var(--auth-ink); }

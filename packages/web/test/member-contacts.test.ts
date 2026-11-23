@@ -35,6 +35,7 @@ import {
 	timestamp,
 	userA,
 } from "./fixtures.ts";
+import { searchFromRail } from "./search-window-helpers.ts";
 
 /* A member's contacts in their own rail (Jonas, 10 Nov 2026: "not sure I like the member contacts at the top,
  * undraggable and un-hideable"): where each stands (app/rail-contacts.ts), how a place is kept (app/member-chats.ts,
@@ -594,13 +595,7 @@ describe("contacts in the rail", () => {
 		expect(fold.querySelector<HTMLElement>(".rail-hidden-unread")?.hidden).toBe(false);
 		expect(fold.querySelector(".rail-hidden-unread")?.textContent).toBe("3");
 		expect(fold.getAttribute("aria-label")).toBe("Hidden: 1 · Unread: 3");
-		// A search still finds her.
-		const search = rail.querySelector<HTMLInputElement>("#rail-search-input")!;
-		search.value = "sofie";
-		search.dispatchEvent(new Event("input"));
-		expect(zones(rail).members).toEqual(["Sofie Lund"]);
-		search.value = "";
-		search.dispatchEvent(new Event("input"));
+		expect(searchFromRail(rail, "sofie")).toEqual(["Sofie Lund"]);
 		fold.click();
 		const hidden = rail.querySelector<HTMLElement>(`.rail-hidden-list [data-member-id="${sofie}"]`)!;
 		expect(hidden.querySelector(".rail-count")?.textContent).toBe("3");
@@ -829,60 +824,6 @@ describe("contacts in the rail", () => {
 		press(rowOf(rail, "Mads Berg"), "ArrowDown");
 		await settle();
 		expect(places).toHaveLength(4);
-		// While a search hides rows, no contact is placed by what is left on screen.
-		const search = rail.querySelector<HTMLInputElement>("#rail-search-input")!;
-		search.value = "o";
-		search.dispatchEvent(new Event("input"));
-		expect(zones(rail).Research).toEqual(["Bo", "Sofie Lund"]);
-		press(rowOf(rail, "Sofie Lund"), "ArrowUp");
-		await settle();
-		expect(places).toHaveLength(4);
-	});
-});
-
-describe("an agent's step while a search hides rows", () => {
-	it("moves the agent in the company's order and leaves every contact after its own agent", async () => {
-		// Review of #1652, F2: Anna, Alan and Bo, then Mads after Bo. A search for "a" hides Bo; Anna's step down over
-		// Alan read Mads's place off the rows left on screen and put him after Anna, ahead of Bo. (The section is "Ops":
-		// a search that names a section lists everyone in it.)
-		const [anna, alan] = [agent(45, "Anna"), agent(46, "Alan")];
-		const { rail, manage, places, ready } = companyWith({
-			agents: [anna, alan, bo],
-			chats: [placed(mads, { zone: "section", sectionId: research, after: bo.id, rank: 0 })],
-			members: [people[0]!, people[2]!],
-			sidebar: {
-				sections: [{ sectionId: research, name: "Ops" }],
-				placements: {
-					[anna.id]: { sectionId: research, position: 0 },
-					[alan.id]: { sectionId: research, position: 1 },
-					[bo.id]: { sectionId: research, position: 2 },
-				},
-				pinned: [],
-				hidden: [],
-			},
-		});
-		await ready;
-		expect(zones(rail).Ops).toEqual(["Anna", "Alan", "Bo", "Mads Berg"]);
-		const search = rail.querySelector<HTMLInputElement>("#rail-search-input")!;
-		search.value = "a";
-		search.dispatchEvent(new Event("input"));
-		expect(zones(rail).Ops).toEqual(["Anna", "Alan", "Mads Berg"]);
-		const row = rowOf(rail, "Anna");
-		row.focus();
-		row.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true, cancelable: true }),
-		);
-		await settle();
-		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
-			action: "move_agent",
-			staffAgentId: anna.id,
-			sectionId: research,
-			order: [alan.id, anna.id, bo.id],
-		});
-		expect(places).toEqual([]);
-		search.value = "";
-		search.dispatchEvent(new Event("input"));
-		expect(zones(rail).Ops).toEqual(["Alan", "Anna", "Bo", "Mads Berg"]);
 	});
 });
 
@@ -1124,7 +1065,7 @@ describe("dragging contacts in the rail", () => {
 		expect(zones(rail).Research).toEqual(["Bo", "Sofie Lund", "Ada"]);
 	});
 
-	it("shows a hidden contact again where it is dragged out of Hidden, and picks none up while searching", async () => {
+	it("shows a hidden contact again where it is dragged out of Hidden", async () => {
 		localStorage.setItem("qorpera.web.rail-hidden-open", "1");
 		const { rail, places, ready } = companyWith({ chats: [summary(sofie, { hidden: true }), summary(mads)] });
 		await ready;
@@ -1136,15 +1077,6 @@ describe("dragging contacts in the rail", () => {
 		]);
 		expect(zones(rail).Unassigned).toEqual(["Cy", "Sofie Lund"]);
 		expect(rail.querySelector(".rail-hidden")).toBeNull();
-		const search = rail.querySelector<HTMLInputElement>("#rail-search-input")!;
-		search.value = "s";
-		search.dispatchEvent(new Event("input"));
-		expect(drag(rowOf(rail, "Mads Berg"), rowOf(rail, "Sofie Lund"), rail)).toEqual({
-			lit: undefined,
-			kind: undefined,
-		});
-		await settle();
-		expect(places).toHaveLength(1);
 	});
 });
 

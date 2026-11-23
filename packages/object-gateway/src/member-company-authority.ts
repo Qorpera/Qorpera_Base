@@ -15,6 +15,8 @@ export type MemberCompanyRpc =
 	// The chat image route (20260930260000): a member's begin of one image, and the read of a posted one.
 	| "qorpera_room_image_begin"
 	| "qorpera_room_image_download"
+	| "qorpera_surface_image_begin"
+	| "qorpera_surface_image_download"
 	// The member commit route's writer check (folder core C4, P34a): the member's own actor, from their token.
 	| "qorpera_member_folder_writer"
 	| "qorpera_member_folder_read";
@@ -23,6 +25,7 @@ export type MemberCompanyPublisherRpc =
 	| "qorpera_native_presence_subject"
 	// The chat image route's save of an image it staged as the platform.
 	| "qorpera_room_image_commit"
+	| "qorpera_surface_image_commit"
 	// The vault's connection-file writer (connection-files.ts, P22b): its claim and finish, and the folder core's
 	// platform staging, read and commit.
 	| "qorpera_claim_connection_file"
