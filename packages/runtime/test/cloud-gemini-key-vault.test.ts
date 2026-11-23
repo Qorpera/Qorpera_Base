@@ -415,6 +415,77 @@ describe("Gemini Neon pricing and key formatting", () => {
 			detailCode: "rate_limited",
 			retryAfterMs: 7_500,
 		});
+
+		const freeTierNonZeroMinuteLimit = classifyGeminiHttpError(
+			429,
+			new TextEncoder().encode(
+				JSON.stringify({
+					error: {
+						status: "RESOURCE_EXHAUSTED",
+						message: "Quota exceeded for metric: generate_content_free_tier_requests, limit: 15",
+						details: [
+							{
+								violations: [
+									{
+										quotaMetric: "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+										quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
+										quotaValue: "15",
+									},
+								],
+							},
+						],
+					},
+				}),
+			),
+			"4",
+		);
+		expect(freeTierNonZeroMinuteLimit).toEqual({
+			code: "quota_exhausted",
+			providerStatus: "RESOURCE_EXHAUSTED",
+			detailCode: "rate_limited",
+			retryAfterMs: 4_000,
+		});
+
+		const freeTierNonZeroDailyLimit = classifyGeminiHttpError(
+			429,
+			new TextEncoder().encode(
+				JSON.stringify({
+					error: {
+						status: "RESOURCE_EXHAUSTED",
+						details: [
+							{
+								violations: [
+									{
+										quotaMetric: "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+										quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+										quotaValue: "50",
+									},
+								],
+							},
+						],
+					},
+				}),
+			),
+		);
+		expect(freeTierNonZeroDailyLimit).toEqual({
+			code: "quota_exhausted",
+			providerStatus: "RESOURCE_EXHAUSTED",
+			detailCode: "daily_quota_exhausted",
+			retryAfterMs: null,
+		});
+
+		expect(classifyGeminiHttpError(503, undefined, "300")).toEqual({
+			code: "provider_outage",
+			providerStatus: null,
+			detailCode: "overloaded",
+			retryAfterMs: 120_000,
+		});
+		expect(classifyGeminiHttpError(429, undefined, "0")).toEqual({
+			code: "quota_exhausted",
+			providerStatus: null,
+			detailCode: "rate_limited",
+			retryAfterMs: null,
+		});
 	});
 });
 

@@ -11,6 +11,8 @@ const GEMINI_API_KEY_FIELD = "gemini_api_key";
 const GEMINI_VERIFY_URL = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1";
 const GEMINI_CHECK_GENERATE_URL =
 	"https://generativelanguage.googleapis.com/v1beta/models/gemini-4-neon:generateContent";
+// WHY: Key checks send a minimal generateContent probe because metadata GET returns 200 for unbilled keys; the
+// negligible probe cost is intentionally not tracked against the member's monthly spend cap ledger.
 const GEMINI_CHECK_REQUEST_BODY = JSON.stringify({
 	contents: [{ role: "user", parts: [{ text: "Reply with ok." }] }],
 	generationConfig: {
@@ -217,7 +219,7 @@ export function classifyGeminiHttpError(
 	if (status === 402 || billingReason || ((status === 400 || status === 403 || status === 429) && billingMessage)) {
 		return { code: "billing_required", providerStatus, detailCode: "billing_disabled", retryAfterMs: null };
 	}
-	if (status === 429 && (hasFreeTierQuota || freeTierMessage)) {
+	if (status === 429 && (hasFreeTierQuota || freeTierMessage) && (hasZeroQuotaLimit || zeroLimitMessage)) {
 		return { code: "billing_required", providerStatus, detailCode: "free_tier_limit_zero", retryAfterMs: null };
 	}
 	if (status === 429 && (hasZeroQuotaLimit || zeroLimitMessage)) {

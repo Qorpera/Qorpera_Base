@@ -1262,4 +1262,93 @@ describe("runCloudGeminiToolSession", () => {
 			expect(diag).not.toContain("secret");
 		}
 	});
+
+	it("stops retries on long RetryInfo delays and honors bounded Retry-After and RetryInfo waits", async () => {
+		let longDelayAttempts = 0;
+		const longDelayErr = await runCloudGeminiToolSession({
+			boundary: makeBoundary([]),
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: "http://127.0.0.1:1",
+			allowLoopback: true,
+			fetch: async () => {
+				longDelayAttempts += 1;
+				return new Response(
+					JSON.stringify({
+						error: {
+							status: "RESOURCE_EXHAUSTED",
+							message: "Quota temporarily exhausted",
+							details: [{ retryDelay: "30s" }],
+						},
+					}),
+					{ status: 429, headers: { "content-type": "application/json" } },
+				);
+			},
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Stop on long retry delay",
+			signal: AbortSignal.timeout(10_000),
+		}).catch((failure: unknown) => failure);
+		expect(longDelayAttempts).toBe(1);
+		expect(longDelayErr).toBeInstanceOf(GeminiProviderError);
+		expect(geminiProviderErrorCode(longDelayErr)).toBe("quota_exhausted");
+
+		vi.useFakeTimers();
+		try {
+			let attempts = 0;
+			const controller = new AbortController();
+			const run = runCloudGeminiToolSession({
+				boundary: makeBoundary([]),
+				model: "gemini-4-neon",
+				effort: "low",
+				apiKey: CANARY_KEY,
+				apiBaseUrl: "http://127.0.0.1:1",
+				allowLoopback: true,
+				fetch: async () => {
+					attempts += 1;
+					if (attempts === 1) {
+						return new Response(
+							JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED", message: "Rate limited" } }),
+							{ status: 429, headers: { "content-type": "application/json", "retry-after": "2" } },
+						);
+					}
+					if (attempts === 2) {
+						return new Response(
+							JSON.stringify({
+								error: { status: "UNAVAILABLE", message: "Overloaded", details: [{ retryDelay: "20s" }] },
+							}),
+							{ status: 503, headers: { "content-type": "application/json" } },
+						);
+					}
+					return new Response(
+						JSON.stringify({
+							candidates: [{ content: { role: "model", parts: [{ text: "Recovered." }] } }],
+							usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 10 },
+						}),
+						{ status: 200, headers: { "content-type": "application/json" } },
+					);
+				},
+				initialSpendMicrodollars: 0,
+				monthlyCapCents: null,
+				prompt: "Retry with bounded waits",
+				signal: controller.signal,
+			});
+
+			await vi.advanceTimersByTimeAsync(1_999);
+			expect(attempts).toBe(1);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(attempts).toBe(2);
+
+			await vi.advanceTimersByTimeAsync(14_999);
+			expect(attempts).toBe(2);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(attempts).toBe(3);
+
+			const result = await run;
+			expect(result.codexVersion).toBe("gemini-4-neon");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
