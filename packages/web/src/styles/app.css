@@ -515,7 +515,7 @@ label > input, label > select { font-weight: 400; }
 }
 .rail-dock::before { top: 0; -webkit-mask-image: linear-gradient(to top, transparent, #000); mask-image: linear-gradient(to top, transparent, #000); }
 .rail-dock::after { bottom: 0; -webkit-mask-image: linear-gradient(to bottom, transparent, #000); mask-image: linear-gradient(to bottom, transparent, #000); }
-.rail-scroll > :has(+ .rail-dock:has(> :not(.rail-members.is-empty, .rail-hover-tint))),
+.rail-scroll > :has(+ .rail-dock > :not(.rail-members.is-empty, .rail-hover-tint)),
 .rail-scroll[data-dragging="member"] > :has(+ .rail-dock) { margin-bottom: 20px; }
 .rail-dock .rail-agents-head { padding: 6px 8px; border-radius: 8px; }
 .rail-dock .rail-agents-chevron { opacity: 0.6; }

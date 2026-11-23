@@ -52,3 +52,18 @@ describe("the rail's Agents and Members dock", () => {
 		expect(dock).not.toMatch(/mask-image|padding|border/);
 	});
 });
+
+describe("app.css selectors", () => {
+	it("nest no :has() inside :has(), which browsers drop together with the whole rule", () => {
+		const nested = [...appCss.matchAll(/:has\(/g)].filter(({ index }) => {
+			let depth = 1;
+			for (let at = index + 5; at < appCss.length && depth > 0; at++) {
+				if (appCss.startsWith(":has(", at)) return true;
+				if (appCss[at] === "(") depth++;
+				else if (appCss[at] === ")") depth--;
+			}
+			return false;
+		});
+		expect(nested.map(({ index }) => appCss.slice(index, index + 80))).toEqual([]);
+	});
+});
