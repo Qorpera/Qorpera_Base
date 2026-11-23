@@ -1122,4 +1122,62 @@ describe("SurfaceCodeHostWorker previews built by the platform", () => {
 		).toEqual(["assets/app-Ab12_x.js", "index.html"]);
 		expect(files?.get("index.html")?.toString("utf8")).toContain("Built");
 	});
+
+	it("publishes main's built tree from the same plan and fails a checks file that declares a build but is not valid", async () => {
+		const f = await createCodeHostFixture();
+		const output = await commitFiles(f, { "dist/index.html": "<!doctype html><h1>Live</h1>\n" }, "Output");
+		const builtTree = await f.git(join(f.code, "repo.git"), "rev-parse", `${output.commit}:dist`);
+		const source = await commitFiles(f, { ".qorpera/checks.json": RECIPE_CHECKS, "package.json": "{}\n" }, "Source");
+		const jobId = randomUUID();
+		const lease = randomUUID();
+		const h = buildHarness(f, [{ state: "built", buildId: randomUUID(), builtTreeSha: builtTree }]);
+		h.claim({
+			publishes: [
+				{
+					jobId,
+					surfaceId: randomUUID(),
+					profileId: randomUUID(),
+					environmentId: randomUUID(),
+					sourceKind: "code_repo",
+					liveHeadSha: source.commit,
+					leaseToken: lease,
+					repositoryKey: "thetaband/website",
+					siteId: randomUUID(),
+					payload: {},
+				},
+			],
+		});
+		expect(await h.worker.pass(new AbortController().signal)).toEqual({
+			previews: 0,
+			merges: 0,
+			publishes: 1,
+			failed: 0,
+		});
+		expect(h.calls.find((c) => c.method === "qorpera_surface_request_build")?.args).toMatchObject({
+			p_kind: "publish",
+			p_id: jobId,
+			p_commit_sha: source.commit,
+			p_tree_sha: source.tree,
+		});
+		expect(h.calls.find((c) => c.method === "qorpera_surface_site_version_finish")?.args.p_promote_live).toBe(true);
+		expect(h.calls.find((c) => c.method === "qorpera_surface_complete_publish")?.args).toMatchObject({
+			p_status: "published",
+			p_published_head_sha: source.commit,
+		});
+		const [files] = [...h.uploads.values()];
+		expect(files?.get("index.html")?.toString("utf8")).toContain("Live");
+
+		const broken = await commitFiles(
+			f,
+			{ ".qorpera/checks.json": JSON.stringify({ preview: { run: "vite build", folder: "../out" } }) },
+			"Broken checks",
+		);
+		const g = buildHarness(f, []);
+		g.claim(previewClaim(broken.commit, randomUUID(), randomUUID()));
+		await g.worker.pass(new AbortController().signal);
+		const failed = g.calls.find((c) => c.method === "qorpera_surface_complete_preview");
+		expect(failed?.args.p_status).toBe("failed");
+		expect(String(failed?.args.p_error_detail).split("\n")[0]).toBe("PREVIEW_BUILD_FAILED");
+		expect(g.calls.some((c) => c.method === "qorpera_surface_request_build")).toBe(false);
+	});
 });

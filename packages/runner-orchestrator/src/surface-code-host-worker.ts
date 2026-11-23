@@ -1390,26 +1390,48 @@ export class SurfaceCodeHostWorker {
 					? pub.liveHeadSha
 					: null;
 
-		type PreparedPublish = {
-			readonly headSha: string;
-			readonly treeSha: string;
-			readonly files: readonly CodeSiteTreeFile[];
-			readonly sharedAssets: Readonly<Record<string, string>>;
-		};
+		type PreparedPublish =
+			| { readonly status: "invalid"; readonly detail: string }
+			| {
+					readonly status: "build";
+					readonly headSha: string;
+					readonly treeSha: string;
+					readonly recipe: SurfacePreviewRecipe;
+			  }
+			| {
+					readonly status: "ready";
+					readonly headSha: string;
+					readonly treeSha: string;
+					readonly files: readonly CodeSiteTreeFile[];
+					readonly sharedAssets: Readonly<Record<string, string>>;
+			  };
 
+		const environmentId = pub.environmentId;
+		const failPublish = async (errorDetail: string): Promise<true> => {
+			await controlPlane.completeSurfacePublish(
+				{ jobId: pub.jobId, status: "failed", errorDetail, ...leaseField },
+				signal,
+			);
+			return true;
+		};
 		const productFolderRoots = await this.#resolveProductFolderRoots(pub.profileId, signal);
 		let prepared: PreparedPublish;
 		try {
 			const ran = await this.#runYieldable<PreparedPublish>(
 				pub.profileId,
-				pub.environmentId,
+				environmentId,
 				signal,
 				async (codeHostJob) => {
 					await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
 					const resolved = await resolveMainHeadAndTree(codeHostJob, repository, explicitHeadSha);
+					const plan = await this.#readPlan(codeHostJob, { repository, tree: resolved.treeSha });
+					if (plan.kind === "invalid") return { status: "invalid", detail: plan.detail };
+					if (plan.kind === "build")
+						return { status: "build", headSha: resolved.headSha, treeSha: resolved.treeSha, recipe: plan.recipe };
 					const treeData = await this.#readTree(codeHostJob, { repository, tree: resolved.treeSha });
 					const sharedAssets = await readSharedIdentityAssets(codeHostJob, codeHostJob.signal, productFolderRoots);
 					return {
+						status: "ready",
 						headSha: resolved.headSha,
 						treeSha: resolved.treeSha,
 						files: treeData.files,
@@ -1429,17 +1451,41 @@ export class SurfaceCodeHostWorker {
 			prepared = ran.value;
 		} catch (error) {
 			if (signal.aborted) throw error;
-			const detail = error instanceof Error ? error.message.slice(0, 1000) : "Surface publish read failed";
-			await controlPlane.completeSurfacePublish(
-				{
-					jobId: pub.jobId,
-					status: "failed",
-					errorDetail: detail,
-					...leaseField,
-				},
-				signal,
-			);
-			return true;
+			return await failPublish(surfaceFailureDetail(error, null, "Surface publish read failed"));
+		}
+		if (prepared.status === "invalid") return await failPublish(prepared.detail);
+
+		let site: ReadSite;
+		if (prepared.status === "build") {
+			if (!pub.leaseToken) return await failPublish("Publish job is missing its lease");
+			let built: "parked" | "yielded" | ReadSite;
+			try {
+				built = await this.#builtSite(
+					{
+						kind: "publish",
+						id: pub.jobId,
+						leaseToken: pub.leaseToken,
+						profileId: pub.profileId,
+						environmentId,
+						repository,
+						commitSha: prepared.headSha,
+						treeSha: prepared.treeSha,
+						recipe: prepared.recipe,
+						productFolderRoots,
+					},
+					signal,
+				);
+			} catch (error) {
+				if (signal.aborted) throw error;
+				return await failPublish(
+					surfaceFailureDetail(error, prepared.recipe.folder, "Surface publish build failed"),
+				);
+			}
+			if (built === "parked") return true;
+			if (built === "yielded") return false;
+			site = built;
+		} else {
+			site = { treeSha: prepared.treeSha, files: prepared.files, sharedAssets: prepared.sharedAssets };
 		}
 
 		try {
@@ -1448,11 +1494,11 @@ export class SurfaceCodeHostWorker {
 				{
 					surfaceId: pub.surfaceId,
 					mainSha: prepared.headSha,
-					treeSha: prepared.treeSha,
+					treeSha: site.treeSha,
 					title: null,
 					promoteLive: true,
-					files: prepared.files,
-					sharedAssets: prepared.sharedAssets,
+					files: site.files,
+					sharedAssets: site.sharedAssets,
 					uploadConcurrency: this.#uploadConcurrency,
 				},
 				signal,
@@ -1469,17 +1515,13 @@ export class SurfaceCodeHostWorker {
 			return true;
 		} catch (error) {
 			if (signal.aborted) throw error;
-			const detail = error instanceof Error ? error.message.slice(0, 1000) : "Surface publish upload failed";
-			await controlPlane.completeSurfacePublish(
-				{
-					jobId: pub.jobId,
-					status: "failed",
-					errorDetail: detail,
-					...leaseField,
-				},
-				signal,
+			return await failPublish(
+				surfaceFailureDetail(
+					error,
+					prepared.status === "build" ? prepared.recipe.folder : null,
+					"Surface publish upload failed",
+				),
 			);
-			return true;
 		}
 	}
 }
