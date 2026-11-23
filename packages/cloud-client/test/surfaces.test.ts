@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { describe, expect, it, vi } from "vitest";
 import {
+	CloudSurfacesClient,
 	parseSurfaceManifestToml,
 	parseSurfaceOrderFile,
 	renderSurfaceManifestToml,
@@ -98,5 +100,96 @@ describe("cloud-client surface state files", () => {
 
 		const badAccent = parseSurfaceManifestToml(path, text.replace("#d76f45", "not-a-color"));
 		expect(badAccent.ok).toBe(false);
+	});
+});
+
+describe("cloud-client surface session images", () => {
+	const surfaceId = "29600000-0000-4000-8000-000000000001";
+	const sessionId = "29600000-0000-4000-8000-000000000002";
+	const clientInputId = "29600000-0000-4000-8000-000000000003";
+	const messageId = "29600000-0000-4000-8000-000000000004";
+	const image = { sha256: "a".repeat(64), bytes: 12, mediaType: "image/png" };
+	const session = {
+		id: sessionId,
+		surfaceId,
+		workerId: null,
+		title: "Fix the header",
+		prompt: "Fix the header",
+		state: "queued",
+		originKind: "member",
+		originLabel: null,
+		explorationId: null,
+		explorationVariantLabel: null,
+		hasActiveChat: true,
+		question: null,
+		changes: [],
+		messages: [],
+		createdAt: "2026-11-23T10:00:00.000Z",
+		updatedAt: "2026-11-23T10:00:00.000Z",
+		closedAt: null,
+	};
+
+	function fixture(data: unknown = session) {
+		const rpc = vi.fn(async () => ({ data, error: null }));
+		return { rpc, client: new CloudSurfacesClient({ rpc } as unknown as SupabaseClient) };
+	}
+
+	it("starts and replies through the plain RPCs without images", async () => {
+		const { rpc, client } = fixture();
+		await client.startSurfaceSession(surfaceId, "Fix the header", { clientInputId, images: [] });
+		await client.replySurfaceSession(sessionId, "And the footer", true);
+		await client.replySurfaceSession(sessionId, "And the footer", false, { clientInputId, images: [] });
+		expect(rpc.mock.calls.map((call) => (call as unknown[])[0])).toEqual([
+			"qorpera_start_surface_session",
+			"qorpera_reply_surface_session",
+			"qorpera_reply_surface_session",
+		]);
+		expect((rpc.mock.calls[0] as unknown[])[1]).not.toHaveProperty("p_images");
+	});
+
+	it("starts and replies through the image RPCs with the images as their folder hashes", async () => {
+		const { rpc, client } = fixture();
+		await client.startSurfaceSession(surfaceId, "Fix the header", { clientInputId, images: [image] });
+		await client.replySurfaceSession(sessionId, "Like this", true, { clientInputId, images: [image] });
+		const row = { objectSha256: image.sha256, bytes: image.bytes, mediaType: image.mediaType };
+		expect(rpc.mock.calls[0]).toEqual([
+			"qorpera_start_surface_session_with_images",
+			expect.objectContaining({ p_surface_id: surfaceId, p_client_input_id: clientInputId, p_images: [row] }),
+		]);
+		expect(rpc.mock.calls[1]).toEqual([
+			"qorpera_reply_surface_session_with_images",
+			{
+				p_session_id: sessionId,
+				p_message: "Like this",
+				p_keep_open: true,
+				p_client_input_id: clientInputId,
+				p_images: [row],
+			},
+		]);
+		await expect(client.startSurfaceSession(surfaceId, "Fix", { images: [image] })).rejects.toThrow(
+			"client input id",
+		);
+	});
+
+	it("reads a session's images and refuses a malformed answer", async () => {
+		const answer = {
+			schema: "qorpera.surface-session-images/v1",
+			sessionId,
+			messages: [{ messageId, clientInputId, images: [image] }],
+		};
+		expect(await fixture(answer).client.surfaceSessionImages(sessionId)).toEqual({
+			sessionId,
+			messages: [{ messageId, clientInputId, images: [image] }],
+		});
+		const { rpc } = fixture(answer);
+		await new CloudSurfacesClient({ rpc } as unknown as SupabaseClient).surfaceSessionImages(sessionId);
+		expect(rpc).toHaveBeenCalledWith("qorpera_surface_session_images", { p_session_id: sessionId });
+		for (const bad of [
+			{ ...answer, schema: "qorpera.surface-session-images/v2" },
+			{ ...answer, messages: [{ messageId, clientInputId, images: [] }] },
+			{ ...answer, messages: [{ messageId, clientInputId, images: [{ ...image, mediaType: "image/svg+xml" }] }] },
+			{ ...answer, messages: [{ messageId, clientInputId, images: [{ ...image, path: "QorperaOS/x" }] }] },
+		])
+			await expect(fixture(bad).client.surfaceSessionImages(sessionId)).rejects.toThrow();
 	});
 });
