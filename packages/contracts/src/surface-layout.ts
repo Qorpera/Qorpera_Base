@@ -1288,7 +1288,7 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 						"brand",
 						"voice",
 					],
-					heading: "Other details",
+					heading: "Tokens",
 				},
 				{
 					type: "spec_list",

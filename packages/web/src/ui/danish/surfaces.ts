@@ -250,6 +250,7 @@ export const SURFACES: Record<string, string> = {
 	Strategy: "Strategi",
 	Voice: "Stemme",
 	"Design system": "Designsystem",
+	Tokens: "Designtokens",
 	Reports: "Rapporter",
 	"One line about what it is": "Én linje om, hvad det er",
 	Weight: "Vægt",

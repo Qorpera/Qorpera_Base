@@ -744,7 +744,7 @@ describe("Identity on the layout renderer", () => {
 		expect(view.el.querySelector('[data-file="identity/notes/naming.md"]')).toBeNull();
 		tab("system");
 		const lists = [...view.el.querySelectorAll('[data-block="spec_list"]')];
-		expect(lists.map((list) => list.querySelector("h2")?.textContent)).toEqual(["Other details", "Design system"]);
+		expect(lists.map((list) => list.querySelector("h2")?.textContent)).toEqual(["Tokens", "Design system"]);
 		expect([...lists[0]!.querySelectorAll(".studio-kv dt")].map((key) => key.textContent)).toEqual([
 			"Radius · Card",
 			"Radius · Pill",

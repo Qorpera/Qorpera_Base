@@ -91,6 +91,7 @@ const STARTER_WORDS: ReadonlySet<string> = new Set([
 	phrase("Philosophy"),
 	phrase("Voice"),
 	phrase("Design system"),
+	phrase("Tokens"),
 ]);
 
 export function isPlainRecord(value: unknown): value is Record<string, unknown> {

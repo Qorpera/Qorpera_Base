@@ -1814,15 +1814,17 @@ a.surface-address-row:hover { text-decoration: none; }
 	display: grid; grid-template-columns: repeat(var(--studio-mark-grounds, 2), minmax(0, 1fr)); gap: 10px; min-width: 0;
 }
 .studio-mark-ground {
-	display: grid; place-items: center; min-width: 0; aspect-ratio: 16 / 9; padding: 18px; box-sizing: border-box;
-	border-radius: 12px; overflow: hidden; box-shadow: inset 0 0 0 1px rgb(18 18 17 / 8%);
+	display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); min-width: 0; aspect-ratio: 16 / 9; padding: 18px;
+	box-sizing: border-box; border-radius: 12px; overflow: hidden; box-shadow: inset 0 0 0 1px rgb(18 18 17 / 8%);
 }
 .studio-mark-ground.is-light { background: #f7f6f3; color-scheme: light; }
 .studio-mark-ground.is-dark { background: #19191c; color-scheme: dark; }
 .studio-mark-grounds.is-empty .studio-mark-ground.is-light { background: color-mix(in srgb, #f7f6f3 55%, transparent); }
-.studio-mark-grounds.is-empty .studio-mark-ground.is-dark { background: color-mix(in srgb, #19191c 22%, transparent); }
+.studio-mark-grounds.is-empty .studio-mark-ground.is-dark { background: color-mix(in srgb, #19191c 12%, transparent); }
+:root[data-theme="dark"] .studio-mark-grounds.is-empty .studio-mark-ground.is-light { background: color-mix(in srgb, #f7f6f3 10%, transparent); }
+:root[data-theme="dark"] .studio-mark-grounds.is-empty .studio-mark-ground.is-dark { background: rgb(0 0 0 / 26%); }
 .studio-mark.is-changed .studio-mark-ground { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 42%, transparent); }
-.studio-mark-img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.studio-mark-img { display: block; width: 100%; height: 100%; min-width: 0; min-height: 0; object-fit: contain; }
 .studio-card-text { margin: 0; color: var(--text); font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; white-space: pre-line; }
 .studio-card-lines { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: var(--text); font-size: 14px; line-height: 1.5; }
 .studio-card-lines.is-empty { padding-left: 0; }
