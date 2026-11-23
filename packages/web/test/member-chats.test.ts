@@ -1458,7 +1458,9 @@ describe("members as contacts in the rail", () => {
 		// I like the member contacts at the top").
 		const list = element.querySelector(".rail-scroll")!;
 		const order = [...list.children].map((child) =>
-			child.classList.contains("rail-members") ? "members" : child.className.split(" ")[0],
+			child.classList.contains("rail-dock") && child.querySelector(":scope > .rail-members")
+				? "members"
+				: child.className.split(" ")[0],
 		);
 		expect(order.indexOf("rail-cofounder")).toBeLessThan(order.indexOf("rail-section"));
 		expect(order.indexOf("rail-section")).toBeLessThan(order.indexOf("members"));

@@ -179,7 +179,6 @@ describe("the surface rail", () => {
 		const dialog = () => document.querySelector<HTMLElement>('[role="alertdialog"]');
 		const dialogButton = (label: string) =>
 			[...dialog()!.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === label)!;
-		const dialogLines = () => [...dialog()!.querySelectorAll(".modal-list li")].map((item) => item.textContent);
 		const scheduled = (id: string, targetSurfaceSlug: string | null): SurfaceAutomationSummary => ({
 			id,
 			key: id,
@@ -271,8 +270,12 @@ describe("the surface rail", () => {
 			store.dispose();
 		});
 
-		it("says what goes with it and what stays, read fresh, and deletes it all with the one call", async () => {
-			const listAutomations = vi.fn(async () => [scheduled("a-2", "inbox"), scheduled("a-3", null)]);
+		it("asks the one question whatever the surface holds, and deletes it all with the one call", async () => {
+			const listAutomations = vi.fn(async () => [
+				scheduled("a-1", "website"),
+				scheduled("a-2", "inbox"),
+				scheduled("a-3", null),
+			]);
 			const deleteAutomation = vi.fn(async () => true);
 			const archiveSurface = vi.fn(async (id: string) => summary({ id, status: "archived" }));
 			const { store, rail } = await railOf(
@@ -280,69 +283,22 @@ describe("the surface rail", () => {
 				{ listAutomations, deleteAutomation, archiveSurface },
 				"inbox",
 			);
-			listAutomations.mockImplementation(async () => [
-				scheduled("a-1", "website"),
-				scheduled("a-2", "inbox"),
-				scheduled("a-3", null),
-			]);
+			const reads = listAutomations.mock.calls.length;
 
 			await chooseDelete(rail, "website");
-			expect(dialogLines()).toEqual([
-				"Its scheduled agent is deleted too.",
-				"Its 3 active sessions go with it.",
-				"The 2 still working are stopped.",
-				"Its unpublished changes go with it.",
-				"Its site stays online. Settings → Sites takes it offline.",
-			]);
-			expect(store.state.automations.map((item) => item.id)).toEqual(["a-1", "a-2", "a-3"]);
+			expect(dialog()!.classList.contains("confirm-dialog")).toBe(true);
+			expect([...dialog()!.children].map((item) => item.tagName)).toEqual(["P", "DIV"]);
+			expect(dialog()!.querySelector("p")?.textContent).toBe(
+				"Delete Website? It is removed for everyone in the company.",
+			);
 			dialogButton("Delete").click();
 			await flush();
 			expect(archiveSurface).toHaveBeenCalledTimes(1);
 			expect(archiveSurface).toHaveBeenCalledWith(SURFACE);
 			expect(deleteAutomation).not.toHaveBeenCalled();
+			expect(listAutomations).toHaveBeenCalledTimes(reads);
 			expect(store.state.automations.map((item) => item.id)).toEqual(["a-2", "a-3"]);
 			expect(store.state.surfaces.map((item) => item.slug)).toEqual(["inbox"]);
-			store.dispose();
-		});
-
-		it("counts several scheduled agents, one session waiting and changes approved but not published", async () => {
-			const { store, rail } = await railOf(
-				[summary({ ...quiet, activeSessionCount: 1, unpublishedChangeCount: 2 })],
-				{
-					listAutomations: vi.fn(async () => [scheduled("a-1", "website"), scheduled("a-2", "website")]),
-				},
-			);
-
-			await chooseDelete(rail, "website");
-			expect(dialogLines()).toEqual([
-				"Its 2 scheduled agents are deleted too.",
-				"Its active session goes with it.",
-				"Its unpublished changes go with it.",
-			]);
-			dialogButton("Cancel").click();
-			store.dispose();
-		});
-
-		it("names the one session still working", async () => {
-			const { store, rail } = await railOf([summary({ ...quiet, activeSessionCount: 1, runningSessionCount: 1 })]);
-
-			await chooseDelete(rail, "website");
-			expect(dialogLines()).toEqual(["Its active session goes with it.", "The one still working is stopped."]);
-			dialogButton("Cancel").click();
-			store.dispose();
-		});
-
-		it("asks nothing and deletes nothing when the scheduled agents cannot be read", async () => {
-			const listAutomations = vi.fn(async () => [scheduled("a-1", "website")]);
-			const archiveSurface = vi.fn(async (id: string) => summary({ id, status: "archived" }));
-			const { store, rail, reportError } = await railOf([summary()], { listAutomations, archiveSurface });
-			listAutomations.mockImplementation(async () => Promise.reject(new Error("offline")));
-
-			await chooseDelete(rail, "website");
-			expect(dialog()).toBeNull();
-			expect(reportError).toHaveBeenCalledWith("Website could not be deleted.");
-			expect(archiveSurface).not.toHaveBeenCalled();
-			expect(railRow(rail, "website")).not.toBeNull();
 			store.dispose();
 		});
 

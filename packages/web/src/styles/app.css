@@ -500,6 +500,21 @@ label > input, label > select { font-weight: 400; }
  * member puts it (a card in the pinned row); until then it stands in the Members group at the foot of the list. That
  * group takes contacts only: with nobody in it, it shows only while a contact is dragged, as the place to drop one
  * back (ui/rail-drag.ts says what is dragged). */
+/* WHY: sticky inside the list, so Agents and People stay in view while the interfaces scroll under them. */
+.rail-dock {
+	position: sticky; z-index: 3; bottom: 0; margin-top: auto;
+	display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 4px;
+	max-height: 50%; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+	padding: 6px; border-radius: 16px; background: var(--rail);
+	border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+	box-shadow: 0 1px 2px rgb(0 0 0 / 4%), 0 4px 14px rgb(0 0 0 / 5%);
+}
+.rail-scroll > :has(+ .rail-dock:has(> :not(.rail-members.is-empty, .rail-hover-tint))),
+.rail-scroll[data-dragging="member"] > :has(+ .rail-dock) { margin-bottom: 10px; }
+.rail-dock:not(:has(> :not(.rail-members.is-empty, .rail-hover-tint))) { display: none; }
+/* WHY: as specific as the rule above, so it must stay after it. */
+.rail-scroll[data-dragging="member"] > .rail-dock { display: grid; }
+.rail-compact .rail-dock { padding: 4px; border-radius: 14px; }
 .rail-members.is-empty { display: none; }
 .rail-scroll[data-dragging="member"] .rail-members.is-empty { display: block; }
 .rail-row-member { --rail-row-figure: 50px; min-height: 63.75px; }
@@ -1090,6 +1105,13 @@ a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, 
 .modal-backdrop { position: fixed; inset: 0; background: rgba(18, 18, 17, 0.35); display: grid; place-items: center; z-index: 500; }
 .modal { width: min(440px, 92vw); background: var(--overlay); border-radius: var(--radius-xl); padding: 20px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.confirm-dialog { gap: 18px; }
+.confirm-dialog > p { font-size: 17px; line-height: 1.4; text-wrap: balance; }
+.confirm-dialog .modal-list { margin-top: -10px; }
+.confirm-dialog .modal-actions .btn { min-height: 36px; padding: 0 16px; font-size: 15px; }
+.confirm-dialog .btn-danger, .confirm-dialog .btn-danger:hover:not(:disabled) { border-color: transparent; color: #ffffff; }
+.confirm-dialog .btn-danger { background: var(--danger-solid); }
+.confirm-dialog .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger-solid) 88%, #000000); }
 
 .mobile-navigation-toggle, .navigation-backdrop { display: none; }
 /* The phone layout; scripts ask the same query through isPhoneLayout (src/ui/layout.ts). */

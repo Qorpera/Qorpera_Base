@@ -366,38 +366,14 @@ export class SurfaceRail {
 		if (this.#deleting.has(surfaceId)) return;
 		this.#deleting.add(surfaceId);
 		try {
-			const read = await this.#store.refreshAutomations();
 			const surface = this.#store.state.surfaces.find((item) => item.id === surfaceId);
 			if (!surface) return;
-			if (!read) {
-				this.#reportNotDeleted(surface.title);
-				return;
-			}
-			const scheduled = this.#store.state.automations.filter(
-				(item) => item.targetSurfaceSlug === surface.slug,
-			).length;
-			const active = surface.activeSessionCount;
-			const working = surface.runningSessionCount;
 			const confirmed = await confirmDialog(
 				t("Delete {name}? It is removed for everyone in the company.", { name: surface.title }),
 				t("Delete"),
 				true,
 				undefined,
 				this.#signal,
-				[
-					...(scheduled === 1 ? [t("Its scheduled agent is deleted too.")] : []),
-					...(scheduled > 1 ? [t("Its {count} scheduled agents are deleted too.", { count: scheduled })] : []),
-					...(active === 1 ? [t("Its active session goes with it.")] : []),
-					...(active > 1 ? [t("Its {count} active sessions go with it.", { count: active })] : []),
-					...(working === 1 ? [t("The one still working is stopped.")] : []),
-					...(working > 1 ? [t("The {count} still working are stopped.", { count: working })] : []),
-					...(surface.pendingChangeCount + surface.unpublishedChangeCount > 0
-						? [t("Its unpublished changes go with it.")]
-						: []),
-					...(surface.archetype === "live_build" && surface.liveUrl
-						? [t("Its site stays online. Settings → Sites takes it offline.")]
-						: []),
-				],
 			);
 			if (!confirmed) return;
 			if (!(await this.#store.deleteSurface(surfaceId))) this.#reportNotDeleted(surface.title);

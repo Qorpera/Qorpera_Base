@@ -165,17 +165,24 @@ describe("email draft member transport", () => {
 		const f = fixture();
 		vi.useFakeTimers();
 		try {
+			let brokerRequested = (): void => {};
+			const brokerRequest = new Promise<void>((resolve) => {
+				brokerRequested = resolve;
+			});
 			const hangingFetch = vi.fn(
 				(_input: RequestInfo | URL, init?: RequestInit) =>
 					new Promise<Response>((_resolve, reject) => {
 						init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+						brokerRequested();
 					}),
 			);
 			vi.stubGlobal("fetch", hangingFetch);
 			const attempt = f.client.act(session, interaction, "send", content);
 			const caught = attempt.catch((error: unknown) => error);
+			await Promise.race([brokerRequest, attempt]);
 			await vi.advanceTimersByTimeAsync(29_999);
 			expect(hangingFetch).toHaveBeenCalledTimes(1);
+			expect(hangingFetch.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
 			await vi.advanceTimersByTimeAsync(1);
 			const error = await caught;
 			expect(error).toBeInstanceOf(DOMException);

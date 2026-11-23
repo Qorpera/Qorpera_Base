@@ -926,29 +926,33 @@ export class SurfaceSessionDrawer {
 				}),
 			),
 			picked
-				? (() => {
-						const armKey = `choose:${exploration.id}:${picked.id}`;
-						const armed = this.#armedApprove === armKey;
-						return h(
-							"div",
-							{ class: "surface-overview-card-foot" },
-							h(
-								"button",
-								{
-									type: "button",
-									class: `surface-overview-act surface-approve-btn${armed ? " is-confirming" : ""}`,
-									disabled: busy,
-									"data-act": "choose-variant",
-									"data-exploration": exploration.id,
-									"data-session": picked.id,
-									...(armed ? { "data-armed": "true" } : {}),
-								},
-								armed
-									? t("Confirm")
-									: t("Approve {label}", { label: picked.explorationVariantLabel ?? picked.title }),
-							),
-						);
-					})()
+				? h(
+						"div",
+						{ class: "surface-overview-card-foot is-options" },
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-overview-act is-primary",
+								disabled: busy,
+								"data-act": "choose-variant",
+								"data-exploration": exploration.id,
+								"data-session": picked.id,
+							},
+							t("Use this one"),
+						),
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-overview-act is-quiet",
+								disabled: busy,
+								"data-act": "instead-of",
+								"data-exploration": exploration.id,
+							},
+							t("None of these"),
+						),
+					)
 				: null,
 		);
 	}
@@ -1228,49 +1232,45 @@ export class SurfaceSessionDrawer {
 							h("span", { class: "surface-drawer-change-title" }, label),
 						),
 						checked
-							? (() => {
-									const armed = this.#armedApprove === `choose:${exploration.id}:${variant.id}`;
-									return h(
-										"div",
-										{ class: "surface-drawer-change-acts" },
-										h(
-											"button",
-											{
-												type: "button",
-												class: `surface-change-btn is-approve surface-approve-btn${armed ? " is-confirming" : ""}`,
-												disabled: busy,
-												"data-act": "choose-variant",
-												"data-exploration": exploration.id,
-												"data-session": variant.id,
-												...(armed ? { "data-armed": "true" } : {}),
-											},
-											armed ? t("Confirm") : t("Approve"),
-										),
-										h(
-											"button",
-											{
-												type: "button",
-												class: "surface-change-btn",
-												"data-act": "quote-change",
-												"data-session": variant.id,
-												"data-change": primaryChange?.id ?? variant.id,
-												"data-change-title": label,
-											},
-											t("Change"),
-										),
-										h(
-											"button",
-											{
-												type: "button",
-												class: "surface-change-btn is-muted",
-												disabled: busy,
-												"data-act": "discard-exploration",
-												"data-exploration": exploration.id,
-											},
-											t("Discard"),
-										),
-									);
-								})()
+							? h(
+									"div",
+									{ class: "surface-drawer-change-acts" },
+									h(
+										"button",
+										{
+											type: "button",
+											class: "surface-change-btn is-approve surface-approve-btn",
+											disabled: busy,
+											"data-act": "choose-variant",
+											"data-exploration": exploration.id,
+											"data-session": variant.id,
+										},
+										t("Use this one"),
+									),
+									h(
+										"button",
+										{
+											type: "button",
+											class: "surface-change-btn",
+											"data-act": "quote-change",
+											"data-session": variant.id,
+											"data-change": primaryChange?.id ?? variant.id,
+											"data-change-title": label,
+										},
+										t("Change"),
+									),
+									h(
+										"button",
+										{
+											type: "button",
+											class: "surface-change-btn is-muted",
+											disabled: busy,
+											"data-act": "discard-exploration",
+											"data-exploration": exploration.id,
+										},
+										t("Discard"),
+									),
+								)
 							: null,
 					);
 				}),
@@ -1774,10 +1774,12 @@ export class SurfaceSessionDrawer {
 			case "choose-variant": {
 				const workspace = store.workspace(surfaceId);
 				const set = workspace?.explorations.find((item) => item.id === exploration);
-				if (set && session && this.#confirmOrArm(`choose:${set.id}:${session}`))
-					void store.chooseVariant(set, session);
+				if (set && session) void store.chooseVariant(set, session);
 				return;
 			}
+			case "instead-of":
+				if (exploration) store.askInstead(surfaceId, exploration);
+				return;
 			case "discard-exploration": {
 				const workspace = store.workspace(surfaceId);
 				const set = workspace?.explorations.find((item) => item.id === exploration);

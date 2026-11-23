@@ -75,11 +75,7 @@
 /* Unified Agents hub: Working task-driven agents at the top, Scheduled agents underneath, idle agents under Ready. */
 .rail.has-surface-rail .rail-scroll { display: flex; flex-direction: column; }
 .rail.has-surface-rail .rail-scroll > * { flex: none; }
-.rail-agents-hub {
-	display: grid; grid-template-columns: minmax(0, 1fr); margin-top: auto; padding-top: 8px;
-	border-top: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
-}
-.rail-scroll > :has(+ .rail-agents-hub) { margin-bottom: 8px; }
+.rail-agents-hub { display: grid; grid-template-columns: minmax(0, 1fr); }
 .rail-agents-head {
 	display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent;
 	font-family: inherit; text-align: left; cursor: default;
@@ -981,6 +977,7 @@
 .surface-overview-option:has(.surface-overview-option-line) { align-items: flex-start; }
 .surface-overview-option:has(.surface-overview-option-line) .surface-radio { margin-top: 2px; }
 .surface-overview-card-foot { display: flex; justify-content: flex-end; padding-top: 2px; }
+.surface-overview-card-foot.is-options { justify-content: flex-start; align-items: center; gap: 4px; }
 .surface-overview-agent-head {
 	display: flex; align-items: center; gap: 9px; width: calc(100% + 10px); margin: -5px -5px 0; padding: 6px 7px;
 	border: 0; border-radius: 10px; background: none; color: var(--text); font: inherit; text-align: left; cursor: default;
@@ -1020,6 +1017,11 @@
 	cursor: default; transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease;
 }
 .surface-overview-act:hover:not(:disabled) { background: var(--sidebar-selection); color: #fff; border-color: transparent; }
+.surface-overview-act.is-primary { background: var(--text); color: var(--bg); border-color: transparent; }
+.surface-overview-act.is-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 86%, var(--bg)); color: var(--bg); }
+.surface-overview-act.is-quiet { border-color: transparent; background: none; }
+.surface-overview-act.is-quiet:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.surface-overview-act:disabled { opacity: 0.48; }
 .surface-overview-act.is-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, transparent); background: color-mix(in srgb, var(--danger) 8%, var(--bg)); }
 .surface-overview-act.is-danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
 .surface-overview-empty { margin: 18px 8px; color: var(--text-muted); font-size: 13px; line-height: 1.5; text-align: center; }
