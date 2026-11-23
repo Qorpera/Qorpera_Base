@@ -898,6 +898,7 @@ export class SettingsView {
 					exit: panel.querySelector<HTMLElement>(".settings-company-exit")!,
 					// Friends are a window of their own: it opens over Settings, on its search field.
 					addFriend: () => this.#openFriends(),
+					openSubscriptions: () => this.#select("ai-subscriptions"),
 					onCompanyRemoved: (profileId) => {
 						if (!this.#lifetime.signal.aborted && this.#company === company) this.#close();
 						this.#companyRemoved(profileId);

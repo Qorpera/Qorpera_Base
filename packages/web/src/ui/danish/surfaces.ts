@@ -160,7 +160,6 @@ export const SURFACES: Record<string, string> = {
 	"Custom surface": "Egen surface",
 	"Mail & follow-ups": "Mails og opfølgning",
 	"Balances & invoices": "Saldi og fakturaer",
-	"Team & roles": "Team og roller",
 	"Company files": "Virksomhedens filer",
 	"Ask an agent to draft, follow up, or summarize mail…":
 		"Bed en agent om at skrive udkast, følge op eller opsummere mails…",
@@ -170,8 +169,6 @@ export const SURFACES: Record<string, string> = {
 		"Bed en agent om at hente data, tilføje rækker eller opdatere tabeller…",
 	"Ask an agent to organize, summarize, or create files…":
 		"Bed en agent om at organisere, opsummere eller oprette filer…",
-	"Ask an agent to invite, update roles, or onboard people…":
-		"Bed en agent om at invitere, opdatere roller eller tage imod nye folk…",
 	"Ask an agent to handle a task here…": "Bed en agent om at klare en opgave her…",
 	"Ask an agent": "Spørg en agent",
 	"{count} actions ready": "{count} handlinger klar",
@@ -231,9 +228,6 @@ export const SURFACES: Record<string, string> = {
 	"Every evening · 21:45": "Hver aften · 21:45",
 	"Every Monday · 09:00": "Hver mandag · 09:00",
 	"Every hour": "Hver time",
-	"1 teammate": "1 kollega",
-	"{count} teammates": "{count} kolleger",
-	"{count} unread": "{count} ulæste",
 	"Active agents on this surface": "Aktive agenter på denne surface",
 	"More active agents": "Flere aktive agenter",
 	"Close panel": "Luk panel",

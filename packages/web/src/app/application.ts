@@ -761,6 +761,7 @@ export function mountApplication(
 			openSettings,
 			openFeedback,
 			openFriends,
+			invites: api,
 			invitations: hub.store.get().invitations.length,
 			...(route.name === "company" && route.section !== "meet" && company && !company.store.get().accessLost
 				? {
@@ -2420,7 +2421,6 @@ export function mountApplication(
 				};
 			},
 			bankConnection: () => createWebConnectors(cloud, controller.profile),
-			openSettings: (tab) => openSettings(tab),
 			data: () => companyDatabases,
 			dataAsk: (agentId, note) => {
 				let accounts = askAccounts.get(controller);
@@ -2481,11 +2481,9 @@ export function mountApplication(
 					? "mailbox"
 					: surface.slug === "money" || surface.icon === "coin" || surface.icon === "bank"
 						? "bank"
-						: surface.slug === "members" || surface.icon === "members"
-							? "members"
-							: surface.slug === "data" || surface.icon === "database"
-								? "data"
-								: undefined;
+						: surface.slug === "data" || surface.icon === "database"
+							? "data"
+							: undefined;
 			if (page) {
 				const el = h("div", { class: "surface-ops" });
 				const update = () => renderInterface(el, controller, page, interfaceWrites());
@@ -3155,8 +3153,6 @@ export function mountApplication(
 										surface.slug === "money" ||
 										surface.icon === "coin" ||
 										surface.icon === "bank" ||
-										surface.slug === "members" ||
-										surface.icon === "members" ||
 										surface.slug === "data" ||
 										surface.icon === "database";
 									if (!isBuiltInPage) return !currentState.team;
@@ -3231,7 +3227,11 @@ export function mountApplication(
 						teamFeedback = next;
 						render();
 					},
-					{ onCompanyRemoved: companyRemovedHandler(), addFriend: openFriends },
+					{
+						onCompanyRemoved: companyRemovedHandler(),
+						addFriend: openFriends,
+						openSubscriptions: () => openSettings("ai-subscriptions"),
+					},
 				);
 				return;
 		}

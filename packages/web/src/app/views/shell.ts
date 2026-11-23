@@ -81,6 +81,7 @@ import {
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
+import { type PersonWhere, personWhere } from "../person-place.ts";
 import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
 import { appHash, conceptsHash, type Route, siteHash, surfaceHash } from "../router.ts";
 import { surfaceKindSubtitle, surfaceLookOf } from "../surface-kinds.ts";
@@ -96,6 +97,7 @@ import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
 import { personFace } from "./friends.ts";
+import { type InviteCalls, openInviteSheet } from "./invite-sheet.ts";
 import { memberPresence } from "./member-chat.ts";
 import { type SearchHit, type SearchSources, SearchWindow } from "./search-window.ts";
 import { markSettingsPlace, type SettingsTab, settingsPlaces } from "./settings.ts";
@@ -143,6 +145,7 @@ export interface ShellContext {
 	searchFolder?: () => Pick<CloudMemberFolderClient, "search" | "history">;
 	searchBlocked?: () => boolean;
 	openInFiles?: (path: string) => void;
+	invites?: InviteCalls;
 }
 
 /* The account menu is one long-lived element: the shell re-renders on every
@@ -450,6 +453,7 @@ interface RailParts {
 	/** The company's other members, each a contact (this member's chat with them): those the member has not put
 	 * elsewhere in the rail, after everything the company arranges. */
 	readonly members: SectionParts;
+	readonly invite: HTMLButtonElement;
 	/** Grok Bot's "Hidden Bots": this member's hidden agents and contacts, folded at the foot of the list. */
 	readonly hiddenGroup: HiddenParts;
 	/** The list's placeholder, built when first shown so it breathes with the page's. */
@@ -739,6 +743,16 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			sections: new Map(),
 			unassigned: sectionParts("unassigned"),
 			members: sectionParts(MEMBERS_ZONE),
+			invite: h(
+				"button",
+				{ type: "button", class: "rail-row rail-row-invite" },
+				h(
+					"span",
+					{ class: "rail-row-stand" },
+					h("span", { class: "person-avatar invite-plus", "aria-hidden": "true" }, "+"),
+				),
+				h("span", { class: "rail-row-copy" }, h("strong")),
+			),
 			hiddenGroup: hiddenParts(() => created.redraw()),
 			loading: undefined,
 			empty: h("p", { class: "rail-empty" }),
@@ -758,6 +772,14 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			redraw,
 		};
 		created.members.el.classList.add("rail-members");
+		created.invite.addEventListener(
+			"click",
+			() => {
+				const invites = created.context?.invites;
+				if (invites) openInviteSheet(company, invites, created.invite);
+			},
+			{ signal: company.signal },
+		);
 		(created as { drag: RailDrag }).drag = new RailDrag(list, () => dragHooks(company, created), company.signal);
 		// The drawer's icons reorder by dragging (or Alt with an arrow); the order is the member's own, on this device.
 		(created as { appsDrag: AppGridDrag }).appsDrag = new AppGridDrag(
@@ -852,6 +874,18 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 							}),
 						),
 						{ kind: "separator" },
+						...(created.context?.invites && company.store.get().team?.capabilities.manageMembers
+							? [
+									{
+										label: t("Invite people"),
+										icon: "friends",
+										select: () => {
+											const invites = created.context?.invites;
+											if (invites) openInviteSheet(company, invites, companyButton);
+										},
+									},
+								]
+							: []),
 						{
 							label: t("New company"),
 							icon: "plus",
@@ -924,7 +958,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		parts.appsDrawer.setAttribute("aria-label", t("Apps"));
 		parts.interfaceRows = new Map();
 		parts.pinnedGroup.setAttribute("aria-label", t("Pinned"));
-		parts.members.title.textContent = t("Members");
+		parts.members.title.textContent = t("People");
+		parts.invite.querySelector("strong")!.textContent = t("Invite");
 		const slot = parts.pinnedGroup.querySelector<HTMLElement>(".rail-drop-slot");
 		if (slot) slot.textContent = t("Drop here to pin");
 		parts.unassigned.title.textContent = t("Unassigned");
@@ -1143,13 +1178,14 @@ interface MemberModel {
 	unread: number;
 	/** Something waits: the count pops when it arrives, as a mention's badge does. */
 	mentioned: boolean;
+	go?: string;
 }
 function memberRow(model: MemberModel, href: string): HTMLElement {
 	return h(
 		"a",
 		{
 			class: "rail-row rail-row-member",
-			href,
+			href: model.go ?? href,
 			draggable: "false",
 			"data-member-id": model.userId,
 			"aria-label": memberLabel(model),
@@ -1179,7 +1215,7 @@ function memberCard(model: MemberModel, href: string): HTMLElement {
 		"a",
 		{
 			class: "rail-pin rail-pin-member",
-			href,
+			href: model.go ?? href,
 			draggable: "false",
 			"data-member-id": model.userId,
 			"aria-label": memberLabel(model),
@@ -1435,13 +1471,15 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		const presence = memberPresence(state, userId);
 		const href = `#/c/${profileId}/member/${userId}`;
 		const waiting = chat.unread > 0 && chat.last?.authorUserId === userId ? chat.last.text : undefined;
+		const where = waiting || !presence?.online ? undefined : personWhereIn(company, userId);
 		const model: MemberModel = {
 			userId,
 			name: member.displayName,
 			online: presence?.online === true,
-			line: waiting ?? presence?.text ?? "",
+			line: waiting ?? where?.label ?? presence?.text ?? "",
 			unread: chat.unread,
 			mentioned: chat.unread > 0,
+			...(where ? { go: where.href } : {}),
 		};
 		return row(`${keyPrefix}${href}`, href, model, activeMemberId === userId, build);
 	};
@@ -1695,6 +1733,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		placing,
 		unassignedRows.map(rowKeyOf),
 		memberRows.map(rowKeyOf),
+		Boolean(context.invites && state.team?.capabilities.manageMembers),
 		hiddenGroup.open,
 		hiddenCount,
 		hiddenUnread,
@@ -1775,34 +1814,19 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		parts.unassigned.el.removeAttribute("aria-labelledby");
 	}
 	reconcile(parts.unassigned.list, unassignedRows);
-	// The Members group is a zone only contacts land in, where the cloud keeps their places. Its title parts it from
-	// the sections above it, as Unassigned's does. With nobody in it, it shows only while a contact is dragged, so one
-	// can be dropped back there (styles/app.css).
-	const hasMembersSurface = Boolean(
-		surfaceRail &&
-			surfacesStore?.state.surfaces.some((surface) => surface.status === "active" && surface.slug === "members"),
-	);
-	const memberUnread = contacts.reduce(
-		(sum, contact) =>
-			sum + (contact.zone === MEMBERS_ZONE && !contact.hidden ? (memberChats?.[contact.userId]?.unread ?? 0) : 0),
-		0,
-	);
-	zone(parts.members.el, placing && !hasMembersSurface);
-	parts.members.title.hidden = !sectioned;
-	parts.members.el.classList.toggle("is-empty", !memberRows.length);
-	reconcile(parts.members.list, hasMembersSurface ? [] : memberRows);
-	surfaceRail?.update(
-		activeSurfaceSlug,
-		false,
-		hasMembersSurface ? { rows: memberRows, unread: memberUnread, active: Boolean(activeMemberId) } : undefined,
-	);
+	const canInvite = Boolean(context.invites && state.team?.capabilities.manageMembers);
+	const people = memberRows.length + Number(canInvite);
+	zone(parts.members.el, placing);
+	parts.members.el.classList.toggle("is-empty", !people);
+	reconcile(parts.members.list, canInvite ? [...memberRows, parts.invite] : memberRows);
+	surfaceRail?.update(activeSurfaceSlug, false);
 	// Collapsed, where section titles hide, a short line parts each group of agents from the
 	// group above it: never under the Co-Founder, never around a section with no one in it.
 	let above = pinnedElements.length > 0;
 	for (const [element, count] of [
 		...sectionGroups.map(({ group, rows: sectionRows }) => [group.el, sectionRows.length] as const),
 		[parts.unassigned.el, unassignedRows.length] as const,
-		[parts.members.el, hasMembersSurface ? 0 : memberRows.length] as const,
+		[parts.members.el, people] as const,
 	]) {
 		element.classList.toggle("rail-divided", above && count > 0);
 		above ||= count > 0;
@@ -1842,10 +1866,10 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			surfaceRail ? surfaceRail.el : null,
 			parts.loading ?? null,
 			...(agentsHub || surfaceRail ? [] : legacyNodes),
-			!hasMembersSurface && (memberRows.length || placing) ? parts.members.el : null,
 			hiddenCount ? hiddenGroup.el : null,
 			empty && !surfaceRail ? parts.empty : null,
 			agentsHub,
+			people || placing ? parts.members.el : null,
 			parts.hover.attached ?? null,
 			parts.selection.moving ?? null,
 		].filter((element) => element !== null),
@@ -3266,15 +3290,55 @@ function placeContacts(company: CompanyController, changes: readonly MemberConta
 	company.memberChats.place(changes);
 }
 
-/** A contact's menu: Pin or Unpin where the rail has a pinned row, and Hide from sidebar (Show in sidebar, for a
- * hidden one). It is the member's own rail, so any member may. Moving is a drag, or Alt with an arrow. Nothing to
- * offer on a cloud that keeps no places. */
+function personWhereIn(company: CompanyController, userId: string): PersonWhere | undefined {
+	const state = company.store.get();
+	const surfaces = surfacesOf(company)?.state.surfaces ?? [];
+	const cofounderId = company.cofounderId();
+	return personWhere(company.profile.profileId, state.here, userId, {
+		surface: (slug) => surfaces.find((surface) => surface.status === "active" && surface.slug.toLowerCase() === slug),
+		agent: (id) => {
+			const agent = state.staff.find((item) => item.id.toLowerCase() === id && item.employmentStatus === "active");
+			return agent ? { id: agent.id, name: agent.displayName, home: agent.id === cofounderId } : undefined;
+		},
+		room: (id) => {
+			const session = state.sessions.find(
+				(item) => isGroupChat(item) && String(item.executionScope?.roomId).toLowerCase() === id,
+			);
+			return session ? { sessionId: session.sessionId, title: session.title } : undefined;
+		},
+		page: (name) => companyInterfaces(company).find((entry) => entry.name === name)?.file.name,
+	});
+}
+
 function contactMenu(company: CompanyController, userId: string): MenuEntry[] {
+	const name = company.memberName(userId);
+	const where = personWhereIn(company, userId);
+	const chat = `#/c/${company.profile.profileId}/member/${userId}`;
+	const items: MenuEntry[] = [
+		...(where
+			? [
+					{
+						label: t("Go to {name}", { name: name.trim().split(/\s+/)[0] || name }),
+						lead: personAvatar(name, userId),
+						select: () => {
+							location.hash = where.href;
+						},
+					},
+				]
+			: []),
+		{
+			label: t("Message"),
+			icon: "feedback",
+			select: () => {
+				location.hash = chat;
+			},
+		},
+	];
 	const contact = companyContacts(company).contacts.find((item) => item.userId === userId);
-	if (!contact || !placedChats(company)) return [];
+	if (!contact || !placedChats(company)) return items;
+	items.push({ kind: "separator" });
 	const state = company.store.get();
 	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
-	const items: MenuEntry[] = [];
 	if (sidebar && !contact.hidden && contact.zone === "pinned")
 		items.push({
 			label: t("Unpin"),
@@ -3704,7 +3768,7 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 		// The row is rebuilt when a message arrives; focus goes back to the new one, in the zone it was opened from.
 		const prefix = memberElement.closest(".rail-hidden") ? ".rail-hidden " : "";
 		items = contactMenu(company, userId);
-		label = t("{name} actions", { name: memberElement.querySelector("strong")?.textContent ?? t("Members") });
+		label = t("{name} actions", { name: memberElement.querySelector("strong")?.textContent ?? t("People") });
 		opener = memberElement;
 		findOpener = () => parts.list.querySelector<HTMLElement>(`${prefix}[data-member-id="${userId}"]`);
 	} else if (agentElement) {

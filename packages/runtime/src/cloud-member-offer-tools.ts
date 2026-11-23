@@ -14,12 +14,6 @@ import {
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
-/* The Co-Founder deals the team out between the members (migrations 20260930700000 and 20260930702000; Jonas, 9 Nov
- * 2026: "the co-founder should hire some categories/sections to one member/subscription, and another category of agent
- * to another member"). Each agent works for one member, whose ChatGPT carries the work handed to it. The Co-Founder
- * sees who works for whom (crew_and_members) and asks a member to take agents (offer_agents_to_member); nothing moves
- * until the member says yes on the Members page. The cloud derives the company and the Co-Founder from the run. */
-
 export const CLOUD_CREW_AND_MEMBERS_DESCRIPTION =
 	"See the company's members and its team: each member's name, role and whether their ChatGPT can carry work now " +
 	"(ready, full until a time, needs a new sign-in, or none connected), each agent with the member it works for " +
@@ -27,7 +21,7 @@ export const CLOUD_CREW_AND_MEMBERS_DESCRIPTION =
 	"their ChatGPT. Use it before offer_agents_to_member.";
 
 export const CLOUD_OFFER_AGENTS_DESCRIPTION = [
-	"Ask one member to take some agents, so the work handed to them runs on that member's ChatGPT. Nothing moves until the member says yes on the Members page; an agent that already works for them, or already waits for an answer, is left as it is. Never offer agents to a viewer or to a member with no ChatGPT connected. Tell the members once, briefly, what you offered whom and why.",
+	"Ask one member to take some agents, so the work handed to them runs on that member's ChatGPT. Nothing moves until the member says yes in Settings, Team, under Who agents work for; an agent that already works for them, or already waits for an answer, is left as it is. Never offer agents to a viewer or to a member with no ChatGPT connected. Tell the members once, briefly, what you offered whom and why.",
 ].join("\n");
 
 /** An agent as the Co-Founder names it: its name, or, when another agent has the same name, its name, role and id. */
@@ -191,7 +185,7 @@ export function cloudMemberOfferTools(
 					asked: r.asked as JsonValue,
 					alreadyTheirs: r.alreadyTheirs as JsonValue,
 					alreadyWaiting: r.alreadyAsked as JsonValue,
-					next: "Nothing moves until the member says yes on the Members page.",
+					next: "Nothing moves until the member says yes in Settings, Team, under Who agents work for.",
 				}),
 			};
 		},

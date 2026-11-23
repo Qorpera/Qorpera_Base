@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
-import { type MembersOptions, renderMembers } from "../src/app/views/members.ts";
+import { renderWorksFor, type WorksForOptions } from "../src/app/views/works-for.ts";
 import type { HostedProfileMember, HostedStaffAgent } from "../src/cloud/types.ts";
 import { parseWorksFor, type WorksFor, type WorksForAsk, type WorksForCalls } from "../src/cloud/works-for.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
@@ -18,10 +18,6 @@ import {
 	timestamp,
 	userA,
 } from "./fixtures.ts";
-
-/* The Members page (app/views/members.ts; Jonas, 9 and 10 Nov 2026): who each agent works for, as pictures only. A
- * line per member with their agents; an agent moves by a drag onto another line or by a tap and a choice from a menu,
- * as an ask the other side says yes to. */
 
 const cofounder: HostedStaffAgent = { ...staff, id: id(40), displayName: "Kaya", templateId: "co-founder" };
 const agent = (n: number, name: string, role: string): HostedStaffAgent => ({
@@ -90,7 +86,7 @@ afterEach(() => {
 function page(
 	members: HostedProfileMember[],
 	read: WorksFor,
-	extra: { staff?: HostedStaffAgent[]; reader?: () => Promise<WorksFor>; options?: MembersOptions } = {},
+	extra: { staff?: HostedStaffAgent[]; reader?: () => Promise<WorksFor>; options?: WorksForOptions } = {},
 ) {
 	const f = fixture();
 	const controller = new CompanyController(f.api, profileA, userA.id);
@@ -109,7 +105,7 @@ function page(
 	vi.spyOn(controller, "worksFor").mockReturnValue(calls);
 	const container = document.createElement("main");
 	document.body.append(container);
-	renderMembers(container, controller, extra.options);
+	renderWorksFor(container, controller, extra.options);
 	return { container, calls };
 }
 
@@ -155,7 +151,7 @@ const pointer = (type: string, x: number, y: number, target: EventTarget = docum
 		}),
 	);
 
-describe("the Members page", () => {
+describe("who agents work for, in Settings → Team", () => {
 	it("draws a line per member, their ChatGPT as a meter and their agents by name only", async () => {
 		const { container } = page([ann, sofie], works());
 		await settle();
@@ -181,11 +177,7 @@ describe("the Members page", () => {
 	it("has no header, no tabs and no text of its own", async () => {
 		const { container } = page([ann, sofie], works());
 		await settle();
-		const headings = [...container.querySelectorAll("h1, h2, h3")];
-		expect(headings.map((heading) => [heading.className, heading.textContent])).toEqual([
-			["visually-hidden", "Members"],
-		]);
-		expect(container.querySelector(".interface-title, .interface-tabs, [role=tablist]")).toBeNull();
+		expect(container.querySelector("h1, h2, h3, .interface-title, .interface-tabs, [role=tablist]")).toBeNull();
 		expect(container.querySelector(".members-page p")).toBeNull();
 		// All it writes: each member's initials, name and how much of their ChatGPT is used, and each agent's name.
 		expect(container.querySelector(".members-page")?.textContent).toBe(
@@ -447,20 +439,20 @@ describe("the Members page", () => {
 	});
 
 	it("offers the viewer their own missing ChatGPT where the meter would be", async () => {
-		const openSettings = vi.fn();
+		const openSubscriptions = vi.fn();
 		const logins = (state: "none" | "sign_in") => [
 			{ userId: userA.id, state, usedPercent: null, resetsAt: null },
 			{ userId: sofie.userId, state, usedPercent: null, resetsAt: null },
 		];
-		const none = page([ann, sofie], works({ logins: logins("none") }), { options: { openSettings } });
+		const none = page([ann, sofie], works({ logins: logins("none") }), { options: { openSubscriptions } });
 		await settle();
 		const [mine, hers] = lines(none.container);
 		expect(mine?.querySelector(".members-sub")?.getAttribute("title")).toBe("You have not connected ChatGPT.");
 		expect(mine?.querySelector(".members-sub")?.textContent).toBe("Connect ChatGPT");
 		expect(hers?.querySelector(".members-sub button")).toBeNull();
 		mine?.querySelector<HTMLButtonElement>(".members-sub button")?.click();
-		expect(openSettings).toHaveBeenCalledWith("ai-subscriptions");
-		const out = page([ann, sofie], works({ logins: logins("sign_in") }), { options: { openSettings } });
+		expect(openSubscriptions).toHaveBeenCalledOnce();
+		const out = page([ann, sofie], works({ logins: logins("sign_in") }), { options: { openSubscriptions } });
 		await settle();
 		expect(lines(out.container)[0]?.querySelector(".members-sub")?.textContent).toBe("Sign in again");
 		// Without a way to Settings, the picture alone.
