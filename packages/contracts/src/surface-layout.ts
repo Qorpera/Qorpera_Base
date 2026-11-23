@@ -1,4 +1,3 @@
-import { resolveStudioFolderPath } from "./surfaces.ts";
 import { WireValueError } from "./wire-values.ts";
 
 export const SURFACE_LAYOUT_PATH = "layout.json";
@@ -467,13 +466,6 @@ export function parseSurfaceBinding(text: unknown, label = "binding"): SurfaceBi
 	if (/~(?![01])/.test(pointer))
 		fail(label, "has a ~ in its pointer not followed by 0 or 1 (write ~0 for ~, ~1 for /)");
 	return { path, pointer };
-}
-
-export function surfaceCompanyPath(folderRoot: string, bindingPath: string): string {
-	if (!bindingPath.startsWith("/")) return resolveStudioFolderPath(folderRoot, bindingPath);
-	const body = bindingPath.slice(1);
-	checkRelativeSegments(body, "path", "file path");
-	return body;
 }
 
 export type SurfaceJsonReader = (path: string) => unknown;
