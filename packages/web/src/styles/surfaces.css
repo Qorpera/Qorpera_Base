@@ -1542,7 +1542,6 @@
 .studio-reach-group + .studio-reach-group > .studio-reach-label { margin-left: 10px; }
 .studio-reach .studio-reach-chip { height: 26px; padding: 0 2px; border: 0; background: none; gap: 7px; }
 .studio-reach .studio-reach-chip:hover { background: none; transform: none; text-decoration: underline; text-underline-offset: 3px; }
-.studio-reach-chips { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; max-width: 100%; }
 .studio-reach-chip {
 	display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-width: 0; height: 34px; padding: 0 12px 0 6px;
 	border: 1px solid color-mix(in srgb, var(--text) 10%, transparent); border-radius: 999px;
@@ -1552,9 +1551,6 @@
 .studio-reach-chip > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .studio-reach-chip:hover {
 	background: var(--rail-hover); border-color: color-mix(in srgb, var(--text) 22%, transparent); transform: translateY(-1px);
-}
-.studio-reach-chip.is-compact {
-	gap: 6px; height: 26px; padding: 0 9px 0 4px; font-size: 11.5px; font-weight: 580;
 }
 .surface-studio.has-identity-tokens {
 	--studio-brand-accent: var(--q-color-accent, var(--brand-accent, var(--accent)));

@@ -1308,6 +1308,12 @@ describe("unified agents, nested members, and Thetaband orchestration", () => {
 		].map((chip) => chip.dataset.slug);
 		expect(outSlugs).toContain("website");
 		expect(outSlugs).toContain("phone-app");
+		expect(new Set(outSlugs).size).toBe(outSlugs.length);
+		const inSlugs = [
+			...sharedStrip.querySelectorAll<HTMLButtonElement>('[data-link-dir="in"] .studio-reach-chip'),
+		].map((chip) => chip.dataset.slug);
+		expect(inSlugs).toContain("identity");
+		expect(new Set(inSlugs).size).toBe(inSlugs.length);
 
 		sharedStrip.querySelector<HTMLButtonElement>('[data-link-dir="in"] [data-slug="identity"]')!.click();
 		expect(navigated).toEqual(["identity"]);
