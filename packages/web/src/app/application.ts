@@ -1059,6 +1059,49 @@ export function mountApplication(
 					},
 					peopleAtSurface: (slug) => controller.peopleByPlace().get(`surface:${slug.toLowerCase()}`) ?? [],
 					loadCloudFiles: loadSurfaceCloudFiles,
+					uploadImage: async (surfaceId, clientInputId, file, signal) => {
+						const current = () => {
+							signal.throwIfAborted();
+							if (
+								disposed ||
+								company !== controller ||
+								auth.userId !== userId ||
+								controller.store.get().accessLost
+							)
+								throw new Error(t("Company access changed."));
+						};
+						const bytes = new Uint8Array(await file.arrayBuffer());
+						current();
+						if (bytes.length !== file.size) throw new Error(t("The selected image changed."));
+						const saved = await createWebSessionAttachments(cloud, userId, signal, current).uploadSurface(
+							surfaceId,
+							clientInputId,
+							bytes,
+							file.type,
+							signal,
+						);
+						return { sha256: saved.sha256, bytes: saved.bytes, mediaType: saved.mediaType };
+					},
+					readImage: async (sessionId, clientInputId, image, signal) => {
+						const current = () => {
+							signal.throwIfAborted();
+							if (
+								disposed ||
+								company !== controller ||
+								auth.userId !== userId ||
+								controller.store.get().accessLost
+							)
+								throw new Error(t("Company access changed."));
+						};
+						const bytes = await createWebSessionAttachments(cloud, userId, signal, current).readSurface(
+							sessionId,
+							clientInputId,
+							{ sha256: image.sha256, bytes: image.bytes, mediaType: image.mediaType },
+							signal,
+						);
+						current();
+						return new Blob([new Uint8Array(bytes)], { type: image.mediaType });
+					},
 				});
 				attachSurfaces(controller, surfaces);
 				surfaces.store.subscribe(() => render());

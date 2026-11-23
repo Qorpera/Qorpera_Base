@@ -333,6 +333,13 @@ export const SURFACES: Record<string, string> = {
 	"Vector assets": "Vektorfiler",
 	"Other changed files": "Andre ændrede filer",
 	Removed: "Fjernet",
+	"Attach images": "Vedhæft billeder",
+	Image: "Billede",
+	"Image {n}": "Billede {n}",
+	"This image is not available.": "Billedet er ikke tilgængeligt.",
+	"Images can't be sent here yet.": "Billeder kan ikke sendes her endnu.",
+	"This session is not available.": "Sessionen er ikke tilgængelig.",
+	"The selected image changed.": "Det valgte billede er ændret.",
 	"Show all {count} rows": "Vis alle {count} rækker",
 	"Show full file": "Vis hele filen",
 };
