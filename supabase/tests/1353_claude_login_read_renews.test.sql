@@ -61,7 +61,10 @@ begin
 		'2: the member''s read is pending');
 	v := pg_temp.r_take('open');
 	perform pg_temp.base_assert(v -> 'renewal' = 'null'::jsonb,
-		'2: a run''s purposes still need a live run: ' || v::text);
+		'2: a run''s open still needs a live run: ' || v::text);
+	v := pg_temp.r_take('poll');
+	perform pg_temp.base_assert(v -> 'renewal' = 'null'::jsonb,
+		'2: a run''s poll still needs a live run: ' || v::text);
 	v := pg_temp.r_take('read');
 	perform pg_temp.base_assert(v #>> '{renewal,token}' is not null
 		and v ->> 'claudeLoginId' = '13530000-0000-4000-8000-0000000000c1',
@@ -86,10 +89,29 @@ begin
 	perform pg_temp.base_assert(v #>> '{renewal,token}' is not null,
 		'3: a pending resets read takes it: ' || (v - 'encryptedEnvelopeBase64')::text);
 	perform pg_temp.r_unlock();
+	update public.qorpera_native_account_refresh_requests set claude_resets = false, claude_reset_kind = 'full',
+		claude_reset_state = 'asked'
+	where id = (pg_temp.r_request()).id;
+	v := pg_temp.r_take('read');
+	perform pg_temp.base_assert(v #>> '{renewal,token}' is not null,
+		'3: a pending reset takes it: ' || (v - 'encryptedEnvelopeBase64')::text);
+	perform pg_temp.r_unlock();
 	update public.qorpera_native_account_refresh_requests set status = 'completed', completed_at = clock_timestamp()
 	where id = (pg_temp.r_request()).id;
 	v := pg_temp.r_take('read');
 	perform pg_temp.base_assert(v -> 'renewal' = 'null'::jsonb, '3: a read no longer pending takes nothing: ' || v::text);
+	insert into public.qorpera_native_account_refresh_requests(profile_id, client_request_id, compute_identity_id,
+		requested_by_user_id, capability_sha256, compute_recovery_epoch, status, created_at, expires_at,
+		claude_login_id, claude_usage, claude_resets)
+	select profile_id, extensions.gen_random_uuid(), compute_identity_id, requested_by_user_id, repeat('2', 64),
+		compute_recovery_epoch, 'pending', clock_timestamp() - interval '10 minutes',
+		clock_timestamp() - interval '7 minutes', claude_login_id, true, true
+	from public.qorpera_native_account_refresh_requests where id = (pg_temp.r_request()).id;
+	perform pg_temp.base_assert(exists (select 1 from public.qorpera_native_account_refresh_requests
+		where capability_sha256 = repeat('2', 64) and status = 'pending' and expires_at < clock_timestamp()
+			and claude_login_id = '13530000-0000-4000-8000-0000000000c1'), '3: a pending read whose time has passed');
+	v := pg_temp.r_take('read');
+	perform pg_temp.base_assert(v -> 'renewal' = 'null'::jsonb, '3: an expired read takes nothing: ' || v::text);
 end $$;
 grant execute on function pg_temp.r_s2() to qorpera_secret_broker;
 set local session authorization qorpera_secret_broker;

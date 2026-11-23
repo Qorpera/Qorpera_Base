@@ -92,6 +92,7 @@ export interface ModelLoginUsageAuthority {
 
 const CLAUDE_READ_SCHEMA = "qorpera.claude-login-read-description/v1";
 const CLAUDE_READ_MS = 23_000;
+const CLAUDE_RENEW_WAIT_MS = 5_000;
 const CLAUDE_RESET_MS = 80_000;
 const CLAUDE_SAVE_ATTEMPTS = 6;
 const CLAUDE_SAVE_RETRY_MS = 2_000;
@@ -358,8 +359,21 @@ export class CloudModelLoginUsage {
 	): Promise<ClaudeReadDescription> {
 		const renew = this.#renewClaude;
 		if (!renew) return claude;
-		const checked = await renew(claude.claudeLoginId).catch(() => "keep" as const);
-		if (checked !== "reopen") return claude;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let onAbort: (() => void) | undefined;
+		const waited = new Promise<"pending">((resolveWait) => {
+			timer = setTimeout(() => resolveWait("pending"), CLAUDE_RENEW_WAIT_MS);
+			onAbort = () => resolveWait("pending");
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
+		let checked: "reopen" | "keep" | "pending";
+		try {
+			checked = await Promise.race([renew(claude.claudeLoginId).catch(() => "keep" as const), waited]);
+		} finally {
+			clearTimeout(timer);
+			if (onAbort) signal.removeEventListener("abort", onAbort);
+		}
+		if (checked !== "reopen" || signal.aborted) return claude;
 		claude.envelope.fill(0);
 		return await this.#claudeDescription(request, signal);
 	}

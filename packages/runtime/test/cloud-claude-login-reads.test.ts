@@ -296,7 +296,12 @@ describe("the vault's Claude read and reset", () => {
 			readClaudeLogin: vi.fn(async () => ({ usage: USAGE, resets: RESETS })),
 			useClaudeReset: vi.fn(),
 		};
-		const usage = new CloudModelLoginUsage({ authority: w.authority, keyring: w.keyring, claude: reads, renewClaude });
+		const usage = new CloudModelLoginUsage({
+			authority: w.authority,
+			keyring: w.keyring,
+			claude: reads,
+			renewClaude,
+		});
 		expect((await usage.refresh(w.request, AbortSignal.timeout(5_000))).status).toBe("completed");
 		expect(renewClaude).toHaveBeenCalledExactlyOnceWith(w.claudeLoginId);
 		expect(w.authority.describeClaudeLoginRead).toHaveBeenCalledTimes(2);
@@ -308,7 +313,10 @@ describe("the vault's Claude read and reset", () => {
 
 		const kept = vaultWorld();
 		const keep = vi.fn(async () => "keep" as const);
-		const keptReads = { readClaudeLogin: vi.fn(async () => ({ usage: USAGE, resets: RESETS })), useClaudeReset: vi.fn() };
+		const keptReads = {
+			readClaudeLogin: vi.fn(async () => ({ usage: USAGE, resets: RESETS })),
+			useClaudeReset: vi.fn(),
+		};
 		await new CloudModelLoginUsage({
 			authority: kept.authority,
 			keyring: kept.keyring,
@@ -340,6 +348,93 @@ describe("the vault's Claude read and reset", () => {
 			).status,
 		).toBe("completed");
 		expect(failingReads.readClaudeLogin).toHaveBeenCalledTimes(1);
+	});
+
+	it("reads the version it has when the renewal is still running, and waits for it at most 5 s", async () => {
+		const w = vaultWorld();
+		const reads = { readClaudeLogin: vi.fn(async () => ({ usage: USAGE, resets: RESETS })), useClaudeReset: vi.fn() };
+		const pending = vi.fn(async () => "pending" as const);
+		await new CloudModelLoginUsage({
+			authority: w.authority,
+			keyring: w.keyring,
+			claude: reads,
+			renewClaude: pending,
+		}).refresh(w.request, AbortSignal.timeout(5_000));
+		expect(pending).toHaveBeenCalledTimes(1);
+		expect(w.authority.describeClaudeLoginRead).toHaveBeenCalledTimes(1);
+		expect(reads.readClaudeLogin).toHaveBeenCalledWith(
+			{ credentials: b64(CREDENTIALS), usage: true, resets: true },
+			expect.any(AbortSignal),
+		);
+
+		const slow = vaultWorld();
+		const slowReads = {
+			readClaudeLogin: vi.fn(async () => ({ usage: USAGE, resets: RESETS })),
+			useClaudeReset: vi.fn(),
+		};
+		const started = Date.now();
+		const answer = await new CloudModelLoginUsage({
+			authority: slow.authority,
+			keyring: slow.keyring,
+			claude: slowReads,
+			renewClaude: () => new Promise<"reopen">(() => undefined),
+		}).refresh(slow.request, AbortSignal.timeout(10_000));
+		expect(answer.status).toBe("completed");
+		expect(Date.now() - started).toBeGreaterThanOrEqual(4_900);
+		expect(Date.now() - started).toBeLessThan(9_000);
+		expect(slow.authority.describeClaudeLoginRead).toHaveBeenCalledTimes(1);
+		expect(slowReads.readClaudeLogin).toHaveBeenCalledTimes(1);
+	}, 15_000);
+
+	it("renews before a reset too, presses it with the renewed sign-in, and checks once per request", async () => {
+		const w = vaultWorld({ reset: "full" });
+		const renewedCredentials = '{"claudeAiOauth":{"accessToken":"renewed-reset-fixture"}}';
+		const renewedEnvelope = w.keyring.sealMember(
+			{
+				[CLAUDE_LOGIN_FIELD]: JSON.stringify({
+					schema: CLAUDE_LOGIN_FILES_SCHEMA,
+					files: { ".credentials.json": b64(renewedCredentials), ".claude.json": b64(SETTINGS) },
+				}),
+			},
+			{ memberId: w.request.body.requested_by_user_id, loginId: w.claudeLoginId, version: 3, keyId: "vault-root-1" },
+		);
+		const describe = w.authority.describeClaudeLoginRead.getMockImplementation()!;
+		const renewClaude = vi.fn(async () => {
+			w.authority.describeClaudeLoginRead.mockImplementation(async () => ({
+				...(await describe()),
+				version: 3,
+				envelopeSha256: createHash("sha256").update(renewedEnvelope).digest("hex"),
+				encryptedEnvelopeBase64: Buffer.from(renewedEnvelope).toString("base64"),
+			}));
+			return "reopen" as const;
+		});
+		let finish: (value: { outcome: "reset"; left: number }) => void = () => undefined;
+		const reads = {
+			readClaudeLogin: vi.fn(),
+			useClaudeReset: vi.fn(
+				() =>
+					new Promise<{ outcome: "reset"; left: number }>((resolve) => {
+						finish = resolve;
+					}),
+			),
+		};
+		const usage = new CloudModelLoginUsage({
+			authority: w.authority,
+			keyring: w.keyring,
+			claude: reads,
+			renewClaude,
+		});
+		expect((await usage.refresh(w.request, AbortSignal.timeout(5_000))).status).toBe("preparing");
+		expect((await usage.refresh(w.request, AbortSignal.timeout(5_000))).status).toBe("preparing");
+		await vi.waitFor(() => expect(reads.useClaudeReset).toHaveBeenCalledTimes(1));
+		expect(reads.useClaudeReset).toHaveBeenCalledWith(
+			{ credentials: b64(renewedCredentials), kind: "full" },
+			expect.any(AbortSignal),
+		);
+		finish({ outcome: "reset", left: 2 });
+		await vi.waitFor(() => expect(w.authority.completeModelLoginAccountRefresh).toHaveBeenCalledTimes(1));
+		expect((await usage.refresh(w.request, AbortSignal.timeout(5_000))).status).toBe("completed");
+		expect(renewClaude).toHaveBeenCalledTimes(1);
 	});
 
 	it("still completes the refresh when the read fails", async () => {
