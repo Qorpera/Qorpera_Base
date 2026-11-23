@@ -3,7 +3,6 @@ import { AttachmentTray, attachmentProblemText } from "../../ui/attachments.ts";
 import { h, icon } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 
-/** Screenshots for an interface composer: a button, paste and drop on the composer, and the tray of chosen images. */
 export class SurfaceComposerImages {
 	readonly button: HTMLButtonElement;
 	readonly tray: AttachmentTray;
@@ -94,13 +93,11 @@ export class SurfaceComposerImages {
 		return this.#files;
 	}
 
-	/** Why the chosen images cannot be sent, in the member's language; undefined when they can. */
 	get problem(): string | undefined {
 		const problem = this.#files.length ? sessionAttachmentProblem(this.#files) : undefined;
 		return problem && attachmentProblemText(problem);
 	}
 
-	/** Attaching shows only where the message can carry images. */
 	setAvailable(available: boolean): void {
 		this.#available = available;
 		this.button.hidden = !available;
@@ -118,11 +115,11 @@ export class SurfaceComposerImages {
 		if (files.length) this.tray.add(files);
 	}
 
-	/** The tray says its own refusals (a file too large); the send's limits are said here and cleared once met. */
 	#syncStatus(): void {
 		const problem = this.problem ?? "";
 		if (problem) this.tray.status.textContent = problem;
-		else if (this.#shownProblem && this.tray.status.textContent === this.#shownProblem) this.tray.status.textContent = "";
+		else if (this.#shownProblem && this.tray.status.textContent === this.#shownProblem)
+			this.tray.status.textContent = "";
 		this.#shownProblem = problem;
 	}
 }

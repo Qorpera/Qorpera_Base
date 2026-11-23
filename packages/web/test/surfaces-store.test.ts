@@ -341,13 +341,19 @@ describe("SurfacesStore", () => {
 			mediaType: file.type,
 		}));
 		const store = storeWith(
-			fakeClient({ startSurfaceSession, surfaceSessionImages: vi.fn(async () => ({ sessionId: SESSION, messages: [] })) }),
+			fakeClient({
+				startSurfaceSession,
+				surfaceSessionImages: vi.fn(async () => ({ sessionId: SESSION, messages: [] })),
+			}),
 			{ uploadImage },
 		);
 		await store.load();
 		await store.openSurface("website");
 		expect(store.canAttachImages).toBe(true);
-		const files = [new File(["x"], "a.png", { type: "image/png" }), new File(["yy"], "b.jpg", { type: "image/jpeg" })];
+		const files = [
+			new File(["x"], "a.png", { type: "image/png" }),
+			new File(["yy"], "b.jpg", { type: "image/jpeg" }),
+		];
 		await store.startSession(SURFACE, "Ret knappen", {}, files);
 		expect(uploadImage).toHaveBeenCalledTimes(2);
 		const inputId = uploadImage.mock.calls[0]?.[1];
@@ -368,7 +374,10 @@ describe("SurfacesStore", () => {
 		const replySurfaceSession = vi.fn(() => pending.promise);
 		const uploadImage = vi.fn(async () => ({ sha256: "c".repeat(64), bytes: 3, mediaType: "image/webp" }));
 		const store = storeWith(
-			fakeClient({ replySurfaceSession, surfaceSessionImages: vi.fn(async () => ({ sessionId: SESSION, messages: [] })) }),
+			fakeClient({
+				replySurfaceSession,
+				surfaceSessionImages: vi.fn(async () => ({ sessionId: SESSION, messages: [] })),
+			}),
 			{ uploadImage },
 		);
 		await store.load();

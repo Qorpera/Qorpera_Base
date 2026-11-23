@@ -7,7 +7,6 @@ import { t } from "./preferences.ts";
 
 const SAFE_IMAGES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
-/** What the cards need of a message: its id (the bytes are asked for by it), its files, and whether it is still on its way. */
 export type AttachmentMessage = Pick<TranscriptMessage, "id" | "attachments" | "attachmentCount" | "pending">;
 
 /** One file's card and what is known about its bytes. */

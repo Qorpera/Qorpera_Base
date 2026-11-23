@@ -1042,7 +1042,12 @@ export function mountApplication(
 					uploadImage: async (surfaceId, clientInputId, file, signal) => {
 						const current = () => {
 							signal.throwIfAborted();
-							if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
+							if (
+								disposed ||
+								company !== controller ||
+								auth.userId !== userId ||
+								controller.store.get().accessLost
+							)
 								throw new Error(t("Company access changed."));
 						};
 						const bytes = new Uint8Array(await file.arrayBuffer());
@@ -1060,7 +1065,12 @@ export function mountApplication(
 					readImage: async (sessionId, clientInputId, image, signal) => {
 						const current = () => {
 							signal.throwIfAborted();
-							if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
+							if (
+								disposed ||
+								company !== controller ||
+								auth.userId !== userId ||
+								controller.store.get().accessLost
+							)
 								throw new Error(t("Company access changed."));
 						};
 						const bytes = await createWebSessionAttachments(cloud, userId, signal, current).readSurface(

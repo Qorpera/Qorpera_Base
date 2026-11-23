@@ -230,7 +230,6 @@ export interface SurfaceNote {
 	readonly text: string;
 	readonly at: string;
 	readonly priorMatches: number;
-	/** The images on their way with the words; shown from this device until the message is the cloud's. */
 	readonly files?: readonly File[];
 }
 
@@ -288,7 +287,6 @@ export interface SurfacesState {
 	readonly variantPick: Readonly<Record<string, string>>;
 	readonly collapsed: Readonly<Record<string, true>>;
 	readonly notes: readonly SurfaceNote[];
-	/** Each session's member images, as last read; the drawer shows them under their messages. */
 	readonly sessionImages: Readonly<Record<string, SurfaceSessionImages>>;
 	readonly undo?: SurfaceUndo;
 	readonly busy: Readonly<Record<string, true>>;
@@ -887,14 +885,12 @@ export interface SurfacesStoreOptions {
 		surface: SurfaceSummary,
 		signal: AbortSignal,
 	) => Promise<Readonly<Record<string, string>> | undefined>;
-	/** Saves one image for a message not yet sent; the message then names it. */
 	readonly uploadImage?: (
 		surfaceId: string,
 		clientInputId: string,
 		file: File,
 		signal: AbortSignal,
 	) => Promise<SurfaceImageRef>;
-	/** One image of a sent message, for its thumbnail and preview. */
 	readonly readImage?: (
 		sessionId: string,
 		clientInputId: string,
@@ -2591,7 +2587,6 @@ export class SurfacesStore {
 		});
 	}
 
-	/** Whether a message here can carry images: the cloud's sessions, with the upload and the read wired. */
 	get canAttachImages(): boolean {
 		return Boolean(
 			this.#options.uploadImage && this.#options.client?.surfaceSessionImages && !this.isLocalInteractive,
@@ -2612,7 +2607,6 @@ export class SurfacesStore {
 		return { clientInputId, images };
 	}
 
-	/** Reads a session's member images once per new member message; the drawer draws them from state. */
 	ensureSessionImages(session: SurfaceSession): void {
 		const client = this.#options.client;
 		if (!client?.surfaceSessionImages || isLocalSurfaceId(session.surfaceId)) return;

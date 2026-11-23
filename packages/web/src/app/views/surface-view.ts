@@ -29,12 +29,12 @@ import {
 	surfaceBySlug,
 	surfaceHasReports,
 } from "../surfaces-store.ts";
+import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { CrewFigures } from "./surface-crew.ts";
 import { applyIdentityTokensToFrame, SurfaceDoorStage } from "./surface-door.ts";
 import { openPublishPatchnotesSheet } from "./surface-publish-sheet.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
-import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { SurfaceSessionDrawer } from "./surface-session-drawer.ts";
 import { SurfaceStudioView } from "./surface-studio-view.ts";
 

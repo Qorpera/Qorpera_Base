@@ -296,9 +296,7 @@ export class SurfaceSessionDrawer {
 	readonly #compose = h("div", { class: "surface-drawer-compose" }, this.#input, this.#send);
 	readonly #form = h("form", { class: "surface-drawer-foot" }, this.#replyStrip, this.#compose);
 	readonly #images: SurfaceComposerImages;
-	/** Sent images per message (`<session>:<client input id>`), kept across redraws so thumbnails load once. */
 	readonly #sentImages = new Map<string, ReceivedAttachments>();
-	/** Images still on their way, shown from this device. */
 	readonly #localImageUrls = new Map<File, string>();
 	readonly #store: SurfacesStore;
 	readonly #loadSitePassword: PublishPatchnotesOptions["loadSitePassword"];
@@ -1410,7 +1408,6 @@ export class SurfaceSessionDrawer {
 		return parts;
 	}
 
-	/** The session's messages, each member message with its images, then the member's messages still on their way. */
 	#thread(session: SurfaceSession, notes: readonly SurfaceNote[]): HTMLElement[] {
 		const store = this.#store;
 		store.ensureSessionImages(session);
@@ -1461,7 +1458,6 @@ export class SurfaceSessionDrawer {
 		const view = new ReceivedAttachments(
 			{
 				id: attached.clientInputId,
-				pending: false,
 				attachmentCount: images.length,
 				attachments: images.map((image, index) => ({
 					kind: "image" as const,
