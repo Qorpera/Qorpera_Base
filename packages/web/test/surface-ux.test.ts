@@ -297,6 +297,7 @@ describe("creating surfaces", () => {
 		expect(sheet.querySelector<HTMLInputElement>(".surface-create-name")?.value).toBe("");
 		expect(sheet.querySelector(".surface-sheet-link")).toBeNull();
 		expect(sheet.querySelector(".surface-create-swatch")).toBeNull();
+		expect([...custom.children].map((child) => child.tagName)).toEqual(["TEXTAREA"]);
 		const picked = () =>
 			sheet.querySelector<HTMLElement>('.surface-figure-choice[aria-checked="true"]')?.dataset.figure;
 		expect(sheet.querySelectorAll(".surface-figure-choice")).toHaveLength(26);
@@ -379,6 +380,22 @@ describe("creating surfaces", () => {
 		expect(thetabands).toBeDefined();
 		expect(thetabands.folderRoot).toBe("surfaces/thetabands");
 		expect(store.lookOf(thetabands).kind).toBe("product");
+
+		openCreateSurfaceSheet(store);
+		const customSheet = document.querySelector(".surface-create-sheet")!;
+		const customName = customSheet.querySelector<HTMLInputElement>(".surface-create-name")!;
+		customName.value = "Support Desk";
+		customName.dispatchEvent(new Event("input", { bubbles: true }));
+		const brief = customSheet.querySelector<HTMLTextAreaElement>(".surface-create-custom textarea")!;
+		brief.value = "Answers for customers.";
+		customSheet
+			.querySelector<HTMLFormElement>(".surface-create-form")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+		const desk = store.state.surfaces.find((item) => item.slug === "support-desk")!;
+		expect(desk.archetype).toBe("live_build");
+		expect(store.lookOf(desk)).toEqual({ kind: "custom" });
+		expect(store.workspace(desk.id)?.briefSummary).toBe("Answers for customers.");
 		store.dispose();
 	});
 
@@ -850,7 +867,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="vendors"]')!.click();
 		expect(view.el.querySelectorAll(".studio-vendor-card")).toHaveLength(4);
-		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="analysis"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="reports"]')!.click();
 		expect(view.el.querySelector(".report-headline")?.textContent).toBe("Why BrainBit OEM for Batch 1");
 		expect(view.el.querySelectorAll(".report-bar-row")).toHaveLength(3);
 		expect(view.el.querySelector(".report-table")).not.toBeNull();
@@ -1016,9 +1033,8 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		address!.click();
 		const sheet = view.el.querySelector<HTMLElement>(".surface-address-sheet")!;
 		expect(sheet.hidden).toBe(false);
-		expect(sheet.querySelector<HTMLAnchorElement>(".surface-address-open")?.getAttribute("href")).toBe(
-			"https://thetaband.dk",
-		);
+		expect(sheet.querySelector(".surface-address-name")?.textContent).toBe("thetaband.dk");
+		expect(sheet.querySelector(".surface-address-row")).toBeNull();
 		expect(view.el.querySelector(".surface-pill-address")?.getAttribute("aria-expanded")).toBe("true");
 		view.el.querySelector<HTMLButtonElement>(".surface-pill-address")!.click();
 		expect(sheet.hidden).toBe(true);
@@ -1073,19 +1089,20 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		await flush();
 		expect(hosting.client.read).toHaveBeenCalledTimes(1);
 		expect(address()?.className).toBe("surface-pill-address is-private");
-		expect(address()?.title).toBe("Only your team can open it");
-		expect(address()?.querySelector(".surface-address-lock svg")).not.toBeNull();
+		expect(address()?.title).toBe("Not live yet");
+		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
 		expect(address()?.textContent).toBe("thetaband.dk");
 
 		address()!.click();
 		await flush();
 		const sheet = view.el.querySelector<HTMLElement>(".surface-canvas > .surface-address-sheet")!;
 		expect(sheet.hidden).toBe(false);
-		[...sheet.querySelectorAll<HTMLButtonElement>("button")]
-			.find((item) => item.textContent === "Put it live")!
-			.click();
+		sheet.querySelector<HTMLButtonElement>(".surface-address-go")!.click();
+		expect(address()?.className).toBe("surface-pill-address is-private");
+		expect(sheet.querySelector(".surface-address-go")?.textContent).toBe("Confirm");
+		sheet.querySelector<HTMLButtonElement>(".surface-address-go")!.click();
 		expect(address()?.className).toBe("surface-pill-address is-live");
-		expect(address()?.title).toBe("Anyone can open it");
+		expect(address()?.title).toBe("Live");
 		expect(address()?.querySelector(".surface-address-dot")).not.toBeNull();
 		await flush();
 
@@ -1093,9 +1110,9 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		address()!.click();
 		address()!.click();
 		await flush();
-		expect(address()?.className).toBe("surface-pill-address is-waiting");
-		expect(address()?.title).toBe("Waiting for your domain");
-		expect(address()?.textContent).toBe("www.thetaband.dk");
+		expect(address()?.className).toBe("surface-pill-address is-live");
+		expect(address()?.title).toBe("Live");
+		expect(address()?.textContent).toBe("thetaband.dk");
 
 		hosting.world.entry!.domains = [siteDomain("www.thetaband.dk", "tls_active", { isPrimary: true })];
 		address()!.click();

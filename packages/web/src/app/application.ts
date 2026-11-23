@@ -23,7 +23,7 @@ import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import { createWebSiteHosting } from "../cloud/site-hosting.ts";
-import { type CompanySite, createWebSites, siteOfLink } from "../cloud/sites.ts";
+import { type CompanySite, createWebSites } from "../cloud/sites.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
 import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
@@ -3153,27 +3153,6 @@ export function mountApplication(
 						).folder();
 						return (await readSurfaceFolderFiles(folder, roots, readSignal)).files;
 					};
-					const loadSitePassword = async (surface: SurfaceSummary): Promise<string | null> => {
-						if (!managesSites() || !surface.liveUrl || isLocalSurfaceId(surface.id)) return null;
-						const sites = createWebSites(cloud, controller.profile);
-						const matchSite = (list: readonly CompanySite[]): CompanySite | undefined =>
-							(surface.siteSlug ? list.find((item) => item.slug === surface.siteSlug) : undefined) ??
-							(surface.liveUrl ? siteOfLink(list, surface.liveUrl) : undefined);
-						try {
-							let site = matchSite(controller.store.get().siteList ?? []);
-							if (!site) {
-								const listed = await sites.list(controller.signal);
-								if (controller.signal.aborted) return null;
-								controller.store.set(sitesListed(listed));
-								site = matchSite(listed);
-							}
-							if (!site) return null;
-							const result = await sites.password(site.id, controller.signal);
-							return result.password || null;
-						} catch {
-							return null;
-						}
-					};
 					const siteHosting = createWebSiteHosting(cloud, controller.profile);
 					const view = new SurfaceView(
 						{
@@ -3211,7 +3190,6 @@ export function mountApplication(
 							},
 							openMigration: () => openMigrationSheet(surfaces),
 							loadStudioFiles,
-							loadSitePassword,
 						},
 						route.id ?? "",
 					);
