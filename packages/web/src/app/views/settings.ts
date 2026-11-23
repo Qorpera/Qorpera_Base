@@ -71,6 +71,7 @@ export interface SettingsPlace {
 	readonly tab: SettingsTab;
 	readonly label: string;
 	readonly area: string;
+	readonly icon: string;
 	readonly words: string;
 	readonly mark?: string;
 }
@@ -79,10 +80,11 @@ export function settingsPlaces(deletes: boolean): SettingsPlace[] {
 	const general = phrase("General");
 	const company = phrase("Company");
 	const subscriptions = phrase("AI subscriptions");
-	const place = (tab: SettingsTab, label: string, area: string, words: string, mark?: string): SettingsPlace => ({
+	const place = (tab: SettingsCategory, label: string, area: string, words: string, mark?: string): SettingsPlace => ({
 		tab,
 		label,
 		area,
+		icon: TABS.find((one) => one.id === tab)!.icon,
 		words,
 		...(mark ? { mark } : {}),
 	});

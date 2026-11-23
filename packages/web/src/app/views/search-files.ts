@@ -1,0 +1,78 @@
+import { h } from "../../ui/dom.ts";
+import { t } from "../../ui/preferences.ts";
+import { type FileCategory, fileCategory, tileGlyph } from "./company-folder.ts";
+import type { SearchHit, SearchMark } from "./search-window.ts";
+
+export interface FoundFile {
+	readonly path: string;
+	readonly kind: string;
+	readonly at?: string;
+}
+
+const COPY = /^(code\/[^/]+\/[^/]+)\/(main|worktrees\/[^/]+)\/(.+)$/;
+const PLUMBING = /^code\/[^/]+\/[^/]+\/(?:repo\.git(?:\/.*)?|main(?:\/\.git)?|worktrees(?:\/[^/]+(?:\/\.git)?)?)$/;
+const FILE_MARKS: Partial<Record<FileCategory, SearchMark>> = {
+	image: "image",
+	document: "document",
+	folder: "folder",
+};
+
+export function settledPath(path: string): string {
+	const copy = COPY.exec(path);
+	return copy ? `${copy[1]}/${copy[3]}` : path;
+}
+
+export function isDraft(path: string): boolean {
+	const copy = COPY.exec(path);
+	return copy !== null && copy[2] !== "main";
+}
+
+export function isPlumbing(path: string): boolean {
+	return PLUMBING.test(path);
+}
+
+export function filePlace(path: string, surfaceTitle: (slug: string) => string | undefined): string {
+	const folders = settledPath(path).split("/").slice(0, -1);
+	let place: string;
+	if (folders[0] !== "code") place = folders.length ? folders.slice(-2).join(" / ") : t("Company File");
+	else if (folders.length < 3) place = t("Code");
+	else {
+		const home = (folders[1] === "surfaces" ? surfaceTitle(folders[2]!) : undefined) ?? folders[2]!;
+		place = [home, ...folders.slice(3).slice(-1)].join(" / ");
+	}
+	return isDraft(path) ? t("{place} · draft", { place }) : place;
+}
+
+export function fileHit(
+	file: FoundFile,
+	open: (path: string) => void,
+	surfaceTitle: (slug: string) => string | undefined = () => undefined,
+): SearchHit {
+	const { path, kind } = file;
+	const category = fileCategory({ kind: kind === "folder" || kind === "symlink" ? kind : "file", path });
+	const mark = FILE_MARKS[category];
+	return {
+		key: `file:${kind}:${path}`,
+		kind: "files",
+		title: path.slice(path.lastIndexOf("/") + 1),
+		detail: filePlace(path, surfaceTitle),
+		words: path,
+		...(file.at ? { at: file.at } : {}),
+		...(mark ? { marks: [mark] } : {}),
+		lead: () => h("span", { class: `files-kind is-${category}` }, tileGlyph({ path }, category, false)),
+		open: () => open(path),
+	};
+}
+
+export function oneCopyEach(files: readonly FoundFile[]): FoundFile[] {
+	const kept = new Map<string, FoundFile>();
+	for (const file of files) {
+		if (isPlumbing(file.path)) continue;
+		const settled = settledPath(file.path);
+		const held = kept.get(settled);
+		const better = !held || (isDraft(held.path) && (!isDraft(file.path) || (file.at ?? "") > (held.at ?? "")));
+		if (better) kept.set(settled, file);
+	}
+	const chosen = new Set(kept.values());
+	return files.filter((file) => chosen.has(file));
+}
