@@ -2680,7 +2680,8 @@ who share a session can now write to each other there without waking its agent:
   no turn requester, so no login pays for it.
 - A note is never part of a turn's input. Every reader of member messages for a
   turn (the coding follow-up, the images of a turn) reads the kind `member` only,
-  and `qorpera_native_surface_read_session_turn` reads no messages.
+  and the conversation `qorpera_native_surface_read_session_turn` gives a folder
+  turn (20260930872000) reads the kinds `member` and `session` only.
 - Each member named has it unseen until they open that session
   (`qorpera_surface_unseen_notes`, `qorpera_surface_notes_seen`); only the
   member's own notes are listed or marked.

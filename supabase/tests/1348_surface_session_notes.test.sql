@@ -184,4 +184,16 @@ begin
 			and not has_function_privilege('service_role', 'public.qorpera_surface_notes_seen(uuid)', 'execute'),
 		'the note RPCs are for signed-in members only'
 	);
+
+	reset role;
+	insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, author_user_id, body)
+	values (v_company, v_session_id, 'member', v_bo, 'Make the accent darker please');
+	update public.qorpera_surface_sessions set state = 'running', lease_token = '13480000-0000-4000-8000-000000000001'
+	where id = v_session_id;
+	v_json := public.qorpera_native_surface_read_session_turn(v_company, v_session_id, '13480000-0000-4000-8000-000000000001');
+	perform pg_temp.ssn_assert(
+		strpos(v_json ->> 'prompt', 'Make the accent darker please') > 0
+			and strpos(v_json ->> 'prompt', 'does the accent look right?') = 0,
+		'a folder turn reads the member reply but never the note'
+	);
 end $$;
