@@ -220,10 +220,16 @@ export function classifyGeminiHttpError(
 	const keyExpiredMessage = KEY_EXPIRED_MESSAGE_PATTERN.test(message);
 	const serviceDisabledMessage = SERVICE_DISABLED_MESSAGE_PATTERN.test(message);
 
-	if (status === 402 || ((status === 400 || status === 403 || status === 429) && prepayMessage)) {
+	if (status === 402) {
 		return { code: "billing_required", providerStatus, detailCode: "prepay_balance_empty", retryAfterMs: null };
 	}
-	if (billingReason || ((status === 400 || status === 403 || status === 429) && billingMessage)) {
+	if (billingReason) {
+		return { code: "billing_required", providerStatus, detailCode: "billing_disabled", retryAfterMs: null };
+	}
+	if ((status === 400 || status === 403 || status === 429) && prepayMessage) {
+		return { code: "billing_required", providerStatus, detailCode: "prepay_balance_empty", retryAfterMs: null };
+	}
+	if ((status === 400 || status === 403 || status === 429) && billingMessage) {
 		return { code: "billing_required", providerStatus, detailCode: "billing_disabled", retryAfterMs: null };
 	}
 	if (status === 429 && (hasFreeTierQuota || freeTierMessage) && (hasZeroQuotaLimit || zeroLimitMessage)) {

@@ -343,6 +343,64 @@ describe("Gemini Neon pricing and key formatting", () => {
 			retryAfterMs: null,
 		});
 
+		expect(
+			classifyGeminiHttpError(
+				402,
+				new TextEncoder().encode(
+					JSON.stringify({
+						error: {
+							status: "FAILED_PRECONDITION",
+							details: [{ reason: "BILLING_DISABLED" }],
+						},
+					}),
+				),
+			),
+		).toEqual({
+			code: "billing_required",
+			providerStatus: "FAILED_PRECONDITION",
+			detailCode: "prepay_balance_empty",
+			retryAfterMs: null,
+		});
+
+		expect(
+			classifyGeminiHttpError(
+				403,
+				new TextEncoder().encode(
+					JSON.stringify({
+						error: {
+							status: "PERMISSION_DENIED",
+							message: "Prepay credits depleted for this billing account.",
+							details: [{ reason: "BILLING_DISABLED" }],
+						},
+					}),
+				),
+			),
+		).toEqual({
+			code: "billing_required",
+			providerStatus: "PERMISSION_DENIED",
+			detailCode: "billing_disabled",
+			retryAfterMs: null,
+		});
+
+		expect(
+			classifyGeminiHttpError(
+				429,
+				new TextEncoder().encode(
+					JSON.stringify({
+						error: {
+							status: "RESOURCE_EXHAUSTED",
+							message: "Prepaid credits exhausted for this billing account.",
+						},
+					}),
+				),
+			),
+		).toEqual({
+			code: "billing_required",
+			providerStatus: "RESOURCE_EXHAUSTED",
+			detailCode: "prepay_balance_empty",
+			retryAfterMs: null,
+		});
+
 		const rejectedFetch = (async () =>
 			Response.json(
 				{ error: { status: "INVALID_ARGUMENT", details: [{ reason: "API_KEY_INVALID" }] } },

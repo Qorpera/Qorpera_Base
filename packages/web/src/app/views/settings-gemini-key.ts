@@ -33,7 +33,7 @@ function geminiErrorDetailMessage(detail: GeminiKeyErrorDetail): string {
 			);
 		case "prepay_balance_empty":
 			return t(
-				"Google returned Payment Required (402) for this key's billing account. Even when AI Ultra credits are claimed, Google AI Studio requires a prepay credit balance above $0 to resume service (eligible credits apply first). Top up in Google AI Studio Billing, then click Check key.",
+				"Google reported that this key's billing account has no prepay credit balance. Even when AI Ultra credits are claimed, Google AI Studio requires a prepay credit balance above $0 to resume service (eligible credits apply first). Top up in Google AI Studio Billing, then click Check key.",
 			);
 		case "spend_limit_reached":
 			return t(
