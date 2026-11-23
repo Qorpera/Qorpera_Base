@@ -135,7 +135,7 @@ export interface ShellContext {
 	refreshInterfacePages?: () => void;
 	searchFolder?: () => Pick<CloudMemberFolderClient, "search" | "history">;
 	searchBlocked?: () => boolean;
-	openStorage?: (path: string) => void;
+	openInFiles?: (path: string) => void;
 }
 
 /* The account menu is one long-lived element: the shell re-renders on every
@@ -863,7 +863,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				const store = surfacesOf(company);
 				if (!store) return;
 				event.preventDefault();
-				openCreateSurfaceSheet(store, company.profile.profileId);
+				openCreateSurfaceSheet(store);
 			},
 			{ signal: company.signal },
 		);
@@ -2301,9 +2301,7 @@ function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
 	if (!store) return undefined;
 	let rail = surfaceRails.get(company);
 	if (!rail) {
-		rail = new SurfaceRail(store, company.profile.profileId, company.signal, () =>
-			openCreateSurfaceSheet(store, company.profile.profileId),
-		);
+		rail = new SurfaceRail(store, company.profile.profileId, company.signal, () => openCreateSurfaceSheet(store));
 		surfaceRails.set(company, rail);
 	}
 	return rail;
@@ -4104,7 +4102,7 @@ function fileHit(context: ShellContext, path: string, kind: string): SearchHit {
 		title: name,
 		detail: kind === "folder" ? `${t("Folder")} · ${folder}` : folder,
 		lead: () => icon(glyph),
-		open: () => context.openStorage?.(path),
+		open: () => context.openInFiles?.(path),
 	};
 }
 
@@ -4210,7 +4208,7 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 		revive: (key) => {
 			const [, kind, path] = /^file:(file|folder|symlink):(.+)$/.exec(key) ?? [];
 			const readable = company.store.get().team?.capabilities.read === true;
-			return kind && path && readable && context.openStorage ? fileHit(context, path, kind) : undefined;
+			return kind && path && readable && context.openInFiles ? fileHit(context, path, kind) : undefined;
 		},
 		...(folder && company.store.get().team?.capabilities.read
 			? {

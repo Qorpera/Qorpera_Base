@@ -11,7 +11,7 @@ import {
 	surfaceFigureChoices,
 	surfaceFigureIcon,
 } from "../../ui/surface-figure.ts";
-import { type SurfaceKind, surfaceKindFigure } from "../surface-kinds.ts";
+import { type SurfaceKind, surfaceKindFigure, surfaceKindSubtitle } from "../surface-kinds.ts";
 import { migrationPending, type SurfacesStore } from "../surfaces-store.ts";
 
 type AgentAction = ApplySurfaceMigrationInput["agentDecisions"][number]["action"];
@@ -279,18 +279,25 @@ interface SurfacePreset {
 	readonly slug: string | null;
 	readonly kind: SurfaceKind;
 	readonly title: string;
-	readonly description: string;
+	readonly line?: string;
 	readonly archetype: "live_build" | "studio";
 	readonly folderRoot?: string;
 }
 
 const SURFACE_PRESETS: readonly SurfacePreset[] = [
 	{
+		id: "custom",
+		slug: null,
+		kind: "custom",
+		title: phrase("Custom Surface"),
+		line: phrase("Anything else: an inventory tracker, investor room, support desk…"),
+		archetype: "live_build",
+	},
+	{
 		id: "identity",
 		slug: "identity",
 		kind: "identity",
 		title: phrase("Identity"),
-		description: phrase("Global branding, voice, design tokens, and philosophy shared across every product."),
 		archetype: "studio",
 		folderRoot: "identity",
 	},
@@ -299,7 +306,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "website",
 		kind: "website",
 		title: phrase("Website"),
-		description: phrase("Marketing site or storefront with live preview and publish."),
 		archetype: "live_build",
 	},
 	{
@@ -307,7 +313,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "app",
 		kind: "web_app",
 		title: phrase("Web App"),
-		description: phrase("Interactive product or customer portal built in parallel sessions."),
 		archetype: "live_build",
 	},
 	{
@@ -315,7 +320,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "mobile",
 		kind: "mobile_app",
 		title: phrase("Mobile App"),
-		description: phrase("iOS and Android app, previewed in a real phone frame."),
 		archetype: "live_build",
 	},
 	{
@@ -323,7 +327,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "desktop",
 		kind: "desktop_app",
 		title: phrase("Desktop App"),
-		description: phrase("macOS and Windows app in a native window."),
 		archetype: "live_build",
 	},
 	{
@@ -331,7 +334,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "database",
 		kind: "database",
 		title: phrase("Database"),
-		description: phrase("Tables, schemas, records, and queries."),
 		archetype: "studio",
 	},
 	{
@@ -339,7 +341,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "dashboard",
 		kind: "dashboard",
 		title: phrase("Financial Dashboard"),
-		description: phrase("MRR, runway, cashflow, P&L, and KPIs at a glance."),
 		archetype: "live_build",
 	},
 	{
@@ -347,7 +348,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "product",
 		kind: "product",
 		title: phrase("Product Studio"),
-		description: phrase("Product specs, colorways, BOM, and design briefs in one place."),
 		archetype: "studio",
 	},
 	{
@@ -355,48 +355,45 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "reports",
 		kind: "report",
 		title: phrase("Report & Analysis"),
-		description: phrase("Long-form essays, vendor analyses, and design notes with inline charts and tables."),
 		archetype: "studio",
-	},
-	{
-		id: "custom",
-		slug: null,
-		kind: "custom",
-		title: phrase("Custom Surface"),
-		description: phrase("Anything else: an inventory tracker, investor room, support desk…"),
-		archetype: "live_build",
 	},
 ];
 
-function figureTile(figure: SurfaceFigureId): HTMLElement {
-	return h("span", { class: "surface-tile is-sheet", "aria-hidden": "true" }, surfaceFigure(figure));
+const KIND_STEPS: Readonly<Record<string, number>> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
+
+function kindLine(preset: SurfacePreset): string {
+	return preset.line ? t(preset.line) : surfaceKindSubtitle(preset.kind);
 }
 
-export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string): void {
+export function openCreateSurfaceSheet(store: SurfacesStore): void {
 	let selected: SurfacePreset = SURFACE_PRESETS[0]!;
 	let customArchetype: "live_build" | "studio" = "live_build";
 	let figure: SurfaceFigureId = surfaceKindFigure(selected.kind);
 	let figureChosen = false;
+	let customName = false;
 	const dialog = new SurfaceDialog(t("New surface"), "surface-sheet surface-create-sheet", () => undefined);
 	const nameInput = h("input", {
 		type: "text",
-		class: "surface-create-input",
-		value: t(selected.title),
+		class: "surface-create-name",
+		value: selected.kind === "custom" ? "" : t(selected.title),
 		placeholder: t("Surface name"),
+		"aria-label": t("Name"),
 		autocomplete: "off",
 	});
-	let customName = false;
 	nameInput.addEventListener("input", () => {
 		customName = nameInput.value.trim().length > 0;
 	});
+	const line = h("p", { class: "surface-create-line" }, kindLine(selected));
 	const promptInput = h("textarea", {
 		class: "surface-create-prompt",
-		rows: 2,
+		rows: 3,
+		"aria-label": t("First session (optional)"),
 		placeholder: t("Optional: describe the first change to start right away…"),
 	});
 	const descriptionInput = h("textarea", {
 		class: "surface-create-prompt",
 		rows: 2,
+		"aria-label": t("Brief"),
 		placeholder: t("What is this surface for? An agent shapes it from this brief."),
 	});
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
@@ -427,88 +424,138 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 		segment("studio", t("Studio files"), t("Documents, tables, and specs that sessions edit.")),
 	);
 	archetypeRow.setAttribute("aria-label", t("How it is built"));
+	const customPanel = h(
+		"div",
+		{ class: "surface-create-custom", hidden: selected.kind !== "custom" },
+		archetypeRow,
+		descriptionInput,
+	);
+
+	const heroTile = h("span", { class: "surface-tile is-stage", "aria-hidden": "true" }, surfaceFigure(figure));
+	const showFigure = () => heroTile.replaceChildren(surfaceFigure(figure));
+	const avatar = h(
+		"button",
+		{
+			type: "button",
+			class: "surface-create-avatar",
+			"aria-label": t("Change figure"),
+			"aria-expanded": "false",
+			title: t("Change figure"),
+		},
+		heroTile,
+		h("span", { class: "surface-create-avatar-edit", "aria-hidden": "true" }, icon("edit")),
+	);
 	const figures = surfaceFigureChoices(figure, (id) => {
 		figure = id;
 		figureChosen = true;
+		showFigure();
+		setPicker(false);
+		avatar.focus({ preventScroll: true });
 	});
-	const customPanel = h(
-		"div",
-		{ class: "surface-create-custom", hidden: true },
-		h("div", { class: "surface-create-field" }, h("span", null, t("How it is built")), archetypeRow),
-		h("label", { class: "surface-create-field" }, h("span", null, t("Brief")), descriptionInput),
-	);
-	const cards = SURFACE_PRESETS.map((preset) => {
-		const card = h(
+	const picker = h("div", { class: "surface-create-figures", hidden: true }, figures);
+	const setPicker = (open: boolean) => {
+		picker.hidden = !open;
+		avatar.setAttribute("aria-expanded", String(open));
+		if (open) figures.querySelector<HTMLElement>('[aria-checked="true"]')?.focus({ preventScroll: true });
+	};
+	avatar.addEventListener("click", () => setPicker(picker.hidden));
+	const stage = h("div", { class: "surface-create-stage" }, avatar, picker);
+	stage.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape" || picker.hidden) return;
+		event.preventDefault();
+		event.stopPropagation();
+		setPicker(false);
+		avatar.focus({ preventScroll: true });
+	});
+
+	const choose = (preset: SurfacePreset) => {
+		selected = preset;
+		for (const row of rows) {
+			const on = row.dataset.preset === preset.id;
+			row.classList.toggle("is-selected", on);
+			row.setAttribute("aria-pressed", String(on));
+		}
+		line.textContent = kindLine(preset);
+		customPanel.hidden = preset.kind !== "custom";
+		if (!figureChosen) {
+			figure = surfaceKindFigure(preset.kind);
+			markSurfaceFigure(figures, figure);
+			showFigure();
+		}
+		if (!customName) nameInput.value = preset.kind === "custom" ? "" : t(preset.title);
+	};
+	const rows = SURFACE_PRESETS.map((preset) => {
+		const row = h(
 			"button",
 			{
 				type: "button",
-				class: `surface-create-card${preset.id === selected.id ? " is-selected" : ""}`,
+				class: `surface-create-kind${preset.id === selected.id ? " is-selected" : ""}`,
 				"aria-pressed": String(preset.id === selected.id),
 				"data-preset": preset.id,
 			},
-			figureTile(surfaceKindFigure(preset.kind)),
 			h(
 				"span",
-				{ class: "surface-create-card-copy" },
-				h("strong", null, t(preset.title)),
-				h("small", null, t(preset.description)),
+				{ class: "surface-tile is-kind", "aria-hidden": "true" },
+				surfaceFigure(surfaceKindFigure(preset.kind)),
 			),
+			h("span", { class: "surface-create-kind-name" }, t(preset.title)),
 		);
-		card.addEventListener("click", () => {
-			selected = preset;
-			for (const other of cards) {
-				const on = other === card;
-				other.classList.toggle("is-selected", on);
-				other.setAttribute("aria-pressed", String(on));
-			}
-			customPanel.hidden = preset.kind !== "custom";
-			if (!figureChosen) {
-				figure = surfaceKindFigure(preset.kind);
-				markSurfaceFigure(figures, figure);
-			}
-			if (!customName) nameInput.value = preset.kind === "custom" ? "" : t(preset.title);
+		row.addEventListener("click", () => {
+			choose(preset);
 			if (preset.kind === "custom") nameInput.focus({ preventScroll: true });
 		});
-		return card;
+		return row;
 	});
+	const kinds = h("div", { class: "surface-create-kinds", role: "group", "aria-label": t("Surface type") }, rows);
+	kinds.addEventListener("keydown", (event) => {
+		const step = KIND_STEPS[event.key];
+		if (!step) return;
+		const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+		if (at < 0) return;
+		event.preventDefault();
+		const index = (at + step + rows.length) % rows.length;
+		choose(SURFACE_PRESETS[index]!);
+		rows[index]!.focus();
+	});
+
 	const submit = h("button", { type: "submit", class: "btn btn-primary" }, t("Create surface"));
 	const form = h(
 		"form",
 		{ class: "surface-create-form" },
-		h("h2", null, t("New surface")),
-		h(
-			"p",
-			{ class: "surface-sheet-lead" },
-			t("Each surface is a shared place your sessions build and update together."),
-		),
-		h("div", { class: "surface-create-grid", role: "group", "aria-label": t("Surface type") }, cards),
-		customPanel,
-		h("div", { class: "surface-create-field" }, h("span", null, t("Figure")), figures),
-		h("label", { class: "surface-create-field" }, h("span", null, t("Name")), nameInput),
-		h("label", { class: "surface-create-field" }, h("span", null, t("First session (optional)")), promptInput),
-		store.isLocalInteractive
-			? h(
-					"p",
-					{ class: "surface-local-note" },
-					t("Local preview — changes stay in this browser until Surfaces migrations are deployed."),
-				)
-			: null,
 		h(
 			"div",
-			{ class: "surface-sheet-actions" },
+			{ class: "surface-create-side" },
+			h("h2", null, t("New surface")),
+			h("p", { class: "surface-create-lead" }, t("What should your sessions build?")),
+			kinds,
+		),
+		h(
+			"div",
+			{ class: "surface-create-main" },
+			stage,
 			h(
-				"a",
-				{
-					class: "surface-sheet-link",
-					href: `#/c/${profileId}/new-program`,
-					onclick: () => dialog.close(false),
-				},
-				t("Import a program instead"),
+				"div",
+				{ class: "surface-create-body" },
+				nameInput,
+				line,
+				customPanel,
+				promptInput,
+				store.isLocalInteractive
+					? h(
+							"p",
+							{ class: "surface-local-note" },
+							t("Local preview — changes stay in this browser until Surfaces migrations are deployed."),
+						)
+					: null,
 			),
-			status,
-			submit,
+			h("div", { class: "surface-sheet-actions" }, status, submit),
 		),
 	);
+	form.addEventListener("pointerdown", (event) => {
+		if (picker.hidden || !(event.target instanceof Node)) return;
+		if (picker.contains(event.target) || avatar.contains(event.target)) return;
+		setPicker(false);
+	});
 	form.addEventListener("submit", async (event) => {
 		event.preventDefault();
 		const title = nameInput.value.trim();

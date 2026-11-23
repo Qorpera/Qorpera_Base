@@ -21,7 +21,6 @@
 /* Inside a company the friends button sits in Settings' header instead (Jonas, 9 Nov 2026). */
 .account-menu-rail .account-friends { display: none; }
 
-/* The friends button in Settings' header, left of Settings | Storage: a plain icon and word, no fill (Jonas). */
 .settings-friends {
 	display: inline-flex; flex: none; align-items: center; gap: 7px; min-height: 34px; padding: 5px 8px;
 	border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); font: inherit; font-size: 13px; font-weight: 500; cursor: default;

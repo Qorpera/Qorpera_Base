@@ -269,12 +269,11 @@ describe("creating surfaces", () => {
 		dialog.close ??= function (this: HTMLDialogElement) {
 			this.open = false;
 		};
-		openCreateSurfaceSheet(store, COMPANY);
+		openCreateSurfaceSheet(store);
 		const sheet = document.querySelector(".surface-create-sheet")!;
-		const presets = [...sheet.querySelectorAll<HTMLElement>(".surface-create-card")].map(
-			(card) => card.dataset.preset,
-		);
+		const presets = [...sheet.querySelectorAll<HTMLElement>(".surface-create-kind")].map((row) => row.dataset.preset);
 		expect(presets).toEqual([
+			"custom",
 			"identity",
 			"website",
 			"web_app",
@@ -284,26 +283,42 @@ describe("creating surfaces", () => {
 			"dashboard",
 			"product",
 			"report",
-			"custom",
 		]);
 		const custom = sheet.querySelector<HTMLElement>(".surface-create-custom")!;
-		expect(custom.hidden).toBe(true);
-		sheet.querySelector<HTMLElement>('[data-preset="custom"]')!.click();
 		expect(custom.hidden).toBe(false);
+		expect(sheet.querySelector('[data-preset="custom"]')?.getAttribute("aria-pressed")).toBe("true");
+		expect(sheet.querySelector<HTMLInputElement>(".surface-create-name")?.value).toBe("");
+		expect(sheet.querySelector(".surface-sheet-link")).toBeNull();
 		expect(sheet.querySelector(".surface-create-swatch")).toBeNull();
 		const picked = () =>
 			sheet.querySelector<HTMLElement>('.surface-figure-choice[aria-checked="true"]')?.dataset.figure;
 		expect(sheet.querySelectorAll(".surface-figure-choice")).toHaveLength(26);
 		expect(picked()).toBe("gem");
+		const hero = () => sheet.querySelector<HTMLElement>(".surface-create-stage .surface-figure")?.dataset.figure;
+		const line = () => sheet.querySelector(".surface-create-line")?.textContent;
+		expect(hero()).toBe("gem");
 
 		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
 		expect(custom.hidden).toBe(true);
 		expect(picked()).toBe("phone");
+		expect(hero()).toBe("phone");
+		expect(line()).toBe("iOS & Android app");
+		expect(sheet.querySelector('[data-preset="mobile_app"]')?.getAttribute("aria-pressed")).toBe("true");
+		const avatar = sheet.querySelector<HTMLButtonElement>(".surface-create-avatar")!;
+		const figures = sheet.querySelector<HTMLElement>(".surface-create-figures")!;
+		expect(sheet.querySelector(".surface-create-swap")).toBeNull();
+		expect(figures.hidden).toBe(true);
+		avatar.click();
+		expect(figures.hidden).toBe(false);
+		expect(avatar.getAttribute("aria-expanded")).toBe("true");
 		sheet.querySelector<HTMLElement>('.surface-figure-choice[data-figure="piggy"]')!.click();
+		expect(figures.hidden).toBe(true);
+		expect(hero()).toBe("piggy");
 		sheet.querySelector<HTMLElement>('[data-preset="website"]')!.click();
 		expect(picked()).toBe("piggy");
+		expect(hero()).toBe("piggy");
 		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
-		expect(sheet.querySelector<HTMLInputElement>(".surface-create-input")?.value).toBe("Mobile App");
+		expect(sheet.querySelector<HTMLInputElement>(".surface-create-name")?.value).toBe("Mobile App");
 		sheet
 			.querySelector<HTMLFormElement>(".surface-create-form")!
 			.dispatchEvent(new Event("submit", { cancelable: true }));
@@ -350,6 +365,50 @@ describe("creating surfaces", () => {
 		expect(thetabands).toBeDefined();
 		expect(thetabands.folderRoot).toBe("surfaces/thetabands");
 		expect(store.lookOf(thetabands).kind).toBe("product");
+		store.dispose();
+	});
+
+	it("moves the kind with the arrow keys and folds the figure picker without closing the window", async () => {
+		const store = storeWith(undefined, { companyName: "Brooks", localInteractive: true });
+		await store.load();
+		const dialog = HTMLDialogElement.prototype;
+		dialog.showModal ??= function (this: HTMLDialogElement) {
+			this.open = true;
+		};
+		dialog.close ??= function (this: HTMLDialogElement) {
+			this.open = false;
+		};
+		openCreateSurfaceSheet(store);
+		const sheet = document.querySelector<HTMLDialogElement>(".surface-create-sheet")!;
+		const row = (id: string) => sheet.querySelector<HTMLElement>(`[data-preset="${id}"]`)!;
+		const press = (target: HTMLElement, key: string) =>
+			target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+
+		row("report").focus();
+		press(row("report"), "ArrowDown");
+		expect(document.activeElement).toBe(row("custom"));
+		expect(row("custom").getAttribute("aria-pressed")).toBe("true");
+		expect(sheet.querySelector<HTMLElement>(".surface-create-custom")!.hidden).toBe(false);
+		press(row("custom"), "ArrowRight");
+		expect(document.activeElement).toBe(row("identity"));
+		expect(row("identity").getAttribute("aria-pressed")).toBe("true");
+		press(row("identity"), "ArrowLeft");
+		expect(document.activeElement).toBe(row("custom"));
+
+		const avatar = sheet.querySelector<HTMLButtonElement>(".surface-create-avatar")!;
+		const figures = sheet.querySelector<HTMLElement>(".surface-create-figures")!;
+		avatar.click();
+		avatar.focus();
+		press(avatar, "Escape");
+		expect(figures.hidden).toBe(true);
+		expect(sheet.open).toBe(true);
+		expect(sheet.isConnected).toBe(true);
+
+		avatar.click();
+		expect(figures.hidden).toBe(false);
+		const name = sheet.querySelector<HTMLElement>(".surface-create-name")!;
+		name.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		expect(figures.hidden).toBe(true);
 		store.dispose();
 	});
 

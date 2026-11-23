@@ -25,12 +25,6 @@ import { assembleApp, PageFiles } from "../interface-apps.ts";
 import { CodeDownload } from "./code-download.ts";
 import { CodeImport } from "./code-import.ts";
 
-/* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
- * the file browser Jonas approved for #386. A breadcrumb, one list of folders, files and links, and a preview beside it
- * (inside Settings, in its own window over Settings, the way a picture is viewed) with the path's history, where an earlier version of a file or a link is restored (RUNTIME-FOLDER-LINKS.md, LK6);
- * the company's recent changes on the clock button. The folder's hint (P30) nudges a sync from the feed, and a slow
- * poll backs it up; a place under code/ whose import moves a step is read again at once (code-import.ts). */
-
 type Client = Pick<
 	CloudMemberFolderClient,
 	"list" | "read" | "readFile" | "readFilePieces" | "pathHistory" | "history" | "changes" | "commit"
@@ -54,16 +48,13 @@ export interface CompanyFolderPeople {
 	readonly staff: readonly { readonly id: string; readonly displayName: string }[];
 }
 
-/** Settings supplies its shared search field and navigation; the standalone browser supplies its own. */
 export interface CompanyFolderBrowserOptions {
-	readonly search?: HTMLInputElement;
-	readonly embedded?: boolean;
-	readonly onSectionChange?: (section: "documents" | "recents") => void;
 	/** Choose mode (Open's "A file…" on an agent's computer, 20260930758000): the same rows, where a file's row picks it
 	 * (again: unpicks it) and a folder's still opens it; the folder open is the pick while no file is. Nothing that
 	 * changes the folder is reachable: no preview (so no history, Restore or download), no Recents, no code download or
 	 * import, and a link is shown but not picked. Told every pick, null at the top with nothing picked. */
 	readonly choose?: (pick: CompanyFolderPick | null) => void;
+	readonly usage?: () => Promise<{ readonly storageUsedBytes: number }>;
 }
 
 /** What choose mode picked: a file, or the folder open. */
@@ -302,13 +293,13 @@ export class CompanyFolderBrowser {
 		h("span", null, t("Kind")),
 	);
 	readonly #count = h("p", { class: "storage-count", role: "status" });
+	readonly #usage = h("p", { class: "storage-usage" });
 	readonly #filter = h("select", { class: "storage-select", "aria-label": t("File type") });
 	readonly #sort = h("select", { class: "storage-select", "aria-label": t("Sort files") });
 	readonly #views = h("div", { class: "storage-view-toggle", role: "group", "aria-label": t("File view") });
+	readonly #sections = new Map<"documents" | "recents", HTMLButtonElement>();
 	readonly #more = button(t("More files"), () => void this.#run(() => this.#load(this.#dir, true)), { small: true });
 	readonly #preview = h("aside", { class: "files-preview" });
-	/** Inside Settings, the preview's own window over Settings; null in the standalone browser, where it sits beside
-	 * the files. It stays inside the browser's root, so it rests with the list while an action runs. */
 	readonly #viewer: HTMLDialogElement | null;
 	/** The window going back into its file: it is still open, with what it showed, until the motion ends. */
 	#leaving: { readonly motion: Animation[] } | null = null;
@@ -366,16 +357,14 @@ export class CompanyFolderBrowser {
 		this.#people = people;
 		this.#options = options;
 		this.#view = options.choose ? "list" : "grid";
-		this.#search =
-			options.search ??
-			h("input", {
-				type: "search",
-				class: "files-search-input",
-				placeholder: t("Search this folder"),
-				"aria-label": t("Search this folder"),
-				autocomplete: "off",
-				spellcheck: "false",
-			});
+		this.#search = h("input", {
+			type: "search",
+			class: "files-search-input",
+			placeholder: t("Search this folder"),
+			"aria-label": t("Search this folder"),
+			autocomplete: "off",
+			spellcheck: "false",
+		});
 		this.#stop = new AbortController();
 		if (source.signal.aborted) this.#stop.abort(source.signal.reason);
 		this.#stop.signal.addEventListener(
@@ -386,9 +375,9 @@ export class CompanyFolderBrowser {
 			},
 			{ once: true },
 		);
-		this.#viewer = options.embedded
-			? h("dialog", { class: "surface-dialog storage-viewer", tabindex: "-1", "aria-modal": "true" }, this.#preview)
-			: null;
+		this.#viewer = options.choose
+			? null
+			: h("dialog", { class: "surface-dialog storage-viewer", tabindex: "-1", "aria-modal": "true" }, this.#preview);
 		// Escape and a click beside the window close it, never while an action runs.
 		this.#viewer?.addEventListener(
 			"cancel",
@@ -481,12 +470,33 @@ export class CompanyFolderBrowser {
 		this.#more.hidden = true;
 		this.#preview.hidden = true;
 		host.classList.add("files-page", "folder-page", "storage-browser");
-		host.classList.toggle("is-embedded", options.embedded === true);
 		host.classList.toggle("is-choosing", options.choose !== undefined);
+		const sections = h("div", {
+			class: "storage-view-toggle files-sections",
+			role: "group",
+			"aria-label": t("Company File"),
+		});
+		for (const [section, label] of [
+			["documents", t("Documents")],
+			["recents", t("Recents")],
+		] as const) {
+			const control = h(
+				"button",
+				{
+					type: "button",
+					class: "files-section",
+					"data-section": section,
+					"aria-pressed": String(section === "documents"),
+					onclick: () => (section === "documents" ? this.showDocuments() : this.showRecents()),
+				},
+				label,
+			);
+			this.#sections.set(section, control);
+			sections.append(control);
+		}
 		replace(
 			host,
-			// Choose mode sits in its owner's dialog, which names it: no page heading, no Recents.
-			options.embedded || options.choose
+			options.choose
 				? null
 				: h(
 						"header",
@@ -495,18 +505,8 @@ export class CompanyFolderBrowser {
 						h(
 							"div",
 							{ class: "files-tools" },
-							options.search ? null : h("label", { class: "files-search" }, icon("search"), this.#search),
-							h(
-								"button",
-								{
-									type: "button",
-									class: "files-tool",
-									title: t("Recent changes"),
-									"aria-label": t("Recent changes"),
-									onclick: () => void this.#run(() => this.#showChanges()),
-								},
-								icon("clock"),
-							),
+							h("label", { class: "files-search" }, icon("search"), this.#search),
+							sections,
 						),
 					),
 			this.#status,
@@ -520,7 +520,6 @@ export class CompanyFolderBrowser {
 				const target = event.target as Node;
 				const inViewer = this.#viewer?.contains(target) === true;
 				if (!inViewer && (this.#busy || (!this.#preview.contains(target) && !this.#list.contains(target)))) return;
-				// Escape in the window is the window's, even while an action runs: Settings under it stays open.
 				event.preventDefault();
 				if (!this.#busy) this.#close();
 			},
@@ -533,6 +532,13 @@ export class CompanyFolderBrowser {
 		replace(this.#status, h("span", { class: "visually-hidden" }, t("Opening Company File")));
 		replace(this.#root, listSkeleton(t("Opening Company File"), 4));
 		this.#client = this.#source.folder();
+		void this.#options.usage?.().then(
+			(file) => {
+				if (!this.#disposed)
+					this.#usage.textContent = t("{used} in total", { used: fmtBytes(file.storageUsedBytes) });
+			},
+			() => undefined,
+		);
 		this.#downloads ??= new WebFileDownloads({ signal: this.#signal(), current: () => this.#live() });
 		const downloads = this.#downloads;
 		const client = this.#client;
@@ -581,7 +587,7 @@ export class CompanyFolderBrowser {
 					this.#columns,
 					this.#list,
 					h("div", { class: "files-list-more" }, this.#more),
-					this.#count,
+					h("div", { class: "storage-foot" }, this.#count, this.#usage),
 				),
 				this.#viewer ?? this.#preview,
 			),
@@ -616,13 +622,11 @@ export class CompanyFolderBrowser {
 		return this.#ready;
 	}
 
-	/** Settings' Documents navigation returns to the top of the company folder. */
 	showDocuments(): void {
 		this.#pendingSection = "documents";
 		this.#navigate();
 	}
 
-	/** Recents is the existing company change feed, rendered as the main storage section. */
 	showRecents(): void {
 		this.#pendingSection = "recents";
 		this.#navigate();
@@ -678,18 +682,14 @@ export class CompanyFolderBrowser {
 		);
 	}
 
-	/** Draws the shown dates again, in the time zone and language chosen now, without reading anything. */
-	redraw(): void {
-		if (!this.#ready || this.#disposed) return;
-		this.#drawList(false);
-		if (this.#section === "recents") this.#drawRecents();
-	}
-
 	#setSection(section: "documents" | "recents"): void {
 		this.#section = section;
 		this.#documents.hidden = section !== "documents";
 		this.#recents.hidden = section !== "recents";
-		this.#options.onSectionChange?.(section);
+		const searchLabel = section === "recents" ? t("Search recent changes") : t("Search this folder");
+		this.#search.placeholder = searchLabel;
+		this.#search.setAttribute("aria-label", searchLabel);
+		for (const [value, control] of this.#sections) control.setAttribute("aria-pressed", String(value === section));
 	}
 
 	dispose(): void {
@@ -704,10 +704,7 @@ export class CompanyFolderBrowser {
 		if (this.#viewer?.open) this.#viewer.close();
 		this.#forget(this.#opened);
 		this.#opened = null;
-		// An embedded host (Storage in Settings) leaves with its owner, often while Settings fades out: stripping
-		// its look here would flash the bare, unstyled list for that fade. A page host is reused, so it is reset.
-		if (this.#options.embedded) return;
-		this.#host.classList.remove("files-page", "folder-page", "has-preview", "storage-browser", "is-embedded");
+		this.#host.classList.remove("files-page", "folder-page", "storage-browser", "is-choosing");
 	}
 
 	// ---- lifetime -------------------------------------------------------------
@@ -1136,7 +1133,6 @@ export class CompanyFolderBrowser {
 	async #open(entry: CloudMemberFolderEntry, refresh = false): Promise<void> {
 		if (!entry.file && entry.target === null) return;
 		if (!refresh && this.#opened?.path === entry.path && !this.#opened.version) return;
-		// Inside Settings the window opens at once, out of the file, and the file fills it once it is read.
 		const waiting = this.#viewer !== null && !refresh;
 		if (waiting) this.#drawLoading(entry.path);
 		try {
@@ -1186,7 +1182,6 @@ export class CompanyFolderBrowser {
 		if (this.#viewer?.open) this.#root.before(this.#status, this.#retries);
 		this.#forget(this.#opened);
 		this.#opened = null;
-		this.#host.classList.remove("has-preview");
 		for (const row of this.#list.querySelectorAll(".files-row.is-open")) row.classList.remove("is-open");
 		const done = () => {
 			this.#leaving = null;
@@ -1295,7 +1290,6 @@ export class CompanyFolderBrowser {
 		this.#disposeDisconnectedFrames();
 		this.#preview.setAttribute("aria-label", title);
 		this.#preview.hidden = false;
-		this.#host.classList.add("has-preview");
 		// What a read brings in fades into the window that waited for it.
 		if (this.#loading) {
 			this.#loading = false;
@@ -1706,42 +1700,6 @@ export class CompanyFolderBrowser {
 		);
 	}
 
-	#changeRows(sets: readonly CloudMemberFolderChangeSet[]): HTMLElement[] {
-		return sets.map((set) =>
-			h(
-				"li",
-				{ class: "folder-history-row is-set" },
-				h(
-					"div",
-					{ class: "folder-history-what" },
-					h("small", null, `${this.#who(set.by)} · ${this.#format(set.at)}`),
-					h(
-						"ul",
-						{ class: "folder-history-paths" },
-						...set.paths.map((item) =>
-							h(
-								"li",
-								null,
-								item.kind !== "folder" && item.op !== "delete" && item.op !== "move_out"
-									? h(
-											"button",
-											{
-												type: "button",
-												class: "folder-history-path",
-												onclick: () => void this.#run(() => this.#goTo(item.path)),
-											},
-											item.path,
-										)
-									: h("span", { class: "folder-history-path is-gone" }, item.path),
-							),
-						),
-						set.more ? h("li", { class: "folder-history-more" }, t("and more")) : null,
-					),
-				),
-			),
-		);
-	}
-
 	/** Recents' newest page ("fresh"), the page below what is shown ("older"), or the newest pages again on a sync
 	 * ("refresh"). A refresh keeps the older pages already shown, so "Show older" is not undone by a poll: it reads
 	 * newest pages until they reach the newest change shown, so nothing between the two is skipped. When that is more
@@ -1890,23 +1848,6 @@ export class CompanyFolderBrowser {
 			);
 		}
 		return rows;
-	}
-
-	/** The standalone browser keeps its existing recent-changes panel. */
-	async #showChanges(before: number | null = null, shown: CloudMemberFolderChangeSet[] = []): Promise<void> {
-		const page = await this.#client!.history(before, 20, this.#signal());
-		this.#live();
-		const sets = [...shown, ...page.items];
-		const title = t("Recent changes");
-		const rows = this.#changeRows(sets);
-		this.#panel(title, [
-			rows.length
-				? h("ul", { class: "folder-history" }, ...rows)
-				: h("p", { class: "files-note" }, t("Nothing has changed yet.")),
-			page.next !== null
-				? button(t("Show older"), () => void this.#run(() => this.#showChanges(page.next, sets)), { small: true })
-				: null,
-		]);
 	}
 
 	/** What a folder link names: a folder opens in the list; a file or a link opens in the preview, in its folder. */
