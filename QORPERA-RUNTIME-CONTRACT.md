@@ -2722,7 +2722,8 @@ who share a session can now write to each other there without waking its agent:
   no turn requester, so no login pays for it.
 - A note is never part of a turn's input. Every reader of member messages for a
   turn (the coding follow-up, the images of a turn) reads the kind `member` only,
-  and `qorpera_native_surface_read_session_turn` reads no messages.
+  and the conversation `qorpera_native_surface_read_session_turn` gives a folder
+  turn (20260930872000) reads the kinds `member` and `session` only.
 - Each member named has it unseen until they open that session
   (`qorpera_surface_unseen_notes`, `qorpera_surface_notes_seen`); only the
   member's own notes are listed or marked.
@@ -2880,6 +2881,34 @@ Routines follow the same rule (migration 20260930095000):
 
 Still open: a coding worker's payer still chooses among the member's logins
 (until coding runs on folder-v2, C3, the 2026-10-01 coding rule above holds).
+
+2026-11-23 amendment: a surface automation is paid by its owner (founder, 23
+November 2026, multiplayer in place: "yes to all five, build it"; migration
+20260930868000). Until now an automation's run had no requester and fell to the
+Co-Founder's creator, then the company's oldest owner. Now:
+
+- Each surface automation is owned by one member who is not a viewer, or by
+  nobody. A member's new automation is theirs; one an agent or the platform
+  makes is the member's who started the company, who paid for it before.
+- A run it starts (its surface session) is requested by its owner and paid by
+  the owner's login, the one the first-choice order picks for new work of
+  theirs. That session keeps that requester until it ends: a later hand-over
+  does not move it, and when its member leaves or becomes a viewer before it is
+  queued to run, it does not run on anyone else's login.
+- An automation nobody owns, or whose owner has no login that can pay, does not
+  run: its time passes, it shows that it needs attention, and no other login
+  is used.
+- Its owner, or an owner or admin, hands it over by an offer the teammate
+  answers; one open offer at a time, which its owner or the offerer can take
+  back. Yes moves it; no leaves it. Anyone who is not a viewer takes an
+  automation nobody owns at once. A member who leaves or becomes a viewer
+  leaves their automations with nobody, and the open offers that name them are
+  void.
+- An automation aimed at a coding-backed surface pays with its owner's coding
+  login that may work while they are away; with none, it does not run either.
+- A member's reply in an automation's session follows the surface-session
+  rule for replies (20260930862000): it is requested by and paid with the
+  replier's own login. Legacy routines keep their payer as above.
 
 ## 18. Short constitution
 
@@ -7501,6 +7530,20 @@ the founder there was no way forward but Qorpera's support.
    and the worker's run carries that message on as its request. Its
    sentence that a card's answer never lets the agent repeat the action goes: the denial's last sentence already says
    so. Not retrying, rewording or reaching it another way stands.
+
+### 2026-11-23 amendment: asking a teammate to publish
+
+> The founder, 23 November 2026, on the multiplayer-in-place design ("Ask Sofie" before publishing): "yes to all five,
+> build it". It goes live with migration `20260930867000`; no runtime bundle.
+
+1. **An ask grants nothing.** A member who may publish a surface (not a viewer) may ask one other member who may
+   publish it. The ask is a request on the surface, not authority: the asked member's yes is her own publish, checked
+   as her own Publish is, and never runs as the asker.
+2. **One at a time.** A surface holds one ask; a new one replaces it. The asked member's no keeps it, marked, for the
+   asker to read until the asker clears it or asks again.
+3. **It closes by itself.** Anyone's publish closes it when it starts, and so does a surface with nothing left to
+   publish, and so does the asked member leaving the company or becoming a viewer. With Auto-publish on there is
+   nothing to ask. While an ask waits, nobody else asks over it from Patch notes.
 
 ## 20. Enforcement matrix
 

@@ -8,30 +8,18 @@ import { presentationLocale, t } from "../../ui/preferences.ts";
 import { uiScale } from "../../ui/scale.ts";
 import type { CompanyController } from "../company.ts";
 
-/* The Members page (Jonas, 9 November 2026: "this interface should help clear up and delegate responsibility/ownership
- * between members ... through simple and big visuals"; 10 November: "dont want any textbased sections, pure visual",
- * "you can get rid of the containers too" and, of the bar with the page's title, "get rid of the pages header though,
- * it's pointless"). Each agent but the Co-Founder works for one member, whose ChatGPT runs the work handed to it
- * (migrations 20260930700000 and 20260930701000). The page is pictures only, with no header, no text and no boxes: a
- * line per member, their face, name and ChatGPT meter, then the figures of the agents that work for them, by name
- * only ("get rid of the subtitles for the agents"). An agent moves by a drag onto another member's line, or by a tap
- * and a choice from a menu; until the other side says yes it stands faded where it would go. The Co-Founder stands by
- * everyone's faces, and agents nobody works for have a last line of their own. What a picture means in words is its
- * tooltip. */
-
 /** How often the page reads again while it is open. */
 const READ_EVERY_MS = 30_000;
 /** Up to this many members the agents are drawn big; with more, smaller. */
 const ROOMY_UP_TO = 3;
 
-export interface MembersOptions {
-	/** Opens Settings at a tab, for Connect ChatGPT and Sign in again. */
-	readonly openSettings?: (tab: "ai-subscriptions") => void;
+export interface WorksForOptions {
+	readonly openSubscriptions?: () => void;
 }
 
 interface Page {
 	readonly company: CompanyController;
-	options: MembersOptions;
+	options: WorksForOptions;
 	data: WorksFor | undefined;
 	error: string | undefined;
 	/** A call on its way; the page waits for it. */
@@ -80,7 +68,11 @@ function resetTime(iso: string): string {
 	).format(at);
 }
 
-export function renderMembers(container: HTMLElement, company: CompanyController, options: MembersOptions = {}): void {
+export function renderWorksFor(
+	container: HTMLElement,
+	company: CompanyController,
+	options: WorksForOptions = {},
+): void {
 	let page = pages.get(container);
 	if (!page || page.company !== company) {
 		page?.stop?.();
@@ -132,7 +124,6 @@ export function renderMembers(container: HTMLElement, company: CompanyController
 /** Each company's last read, for the Leave company dialog (views/team.ts). */
 const lastRead = new WeakMap<CompanyController, WorksFor>();
 
-/** How many agents work for the member, as the Members page last read it; undefined when it never read. */
 export function worksForCount(company: CompanyController): number | undefined {
 	return lastRead.get(company)?.agents.filter((agent) => agent.userId === company.userId).length;
 }
@@ -192,18 +183,12 @@ function draw(container: HTMLElement, page: Page): void {
 		page.error,
 		page.busy,
 		page.note,
-		Boolean(page.options.openSettings),
+		Boolean(page.options.openSubscriptions),
 	]);
 	const last = drawn.get(container);
 	if (last?.key === key && container.firstElementChild === last.element) return;
 	const shell = (...body: (HTMLElement | null)[]) => {
-		const element = h(
-			"section",
-			{ class: "interface members", "data-interface": "members" },
-			// No header (Jonas: "it's pointless"); the name stays for a screen reader.
-			h("h1", { class: "visually-hidden" }, t("Members")),
-			h("div", { class: "members-page" }, ...body),
-		);
+		const element = h("div", { class: "members-page" }, ...body);
 		replace(container, element);
 		drawn.set(container, { key, element });
 	};
@@ -432,16 +417,10 @@ function row(ctx: Ctx, seat: Seat, size: number): HTMLElement {
  * and says when it has room again; one that is not there, or needs a new sign-in, is a broken line. */
 function subscription(ctx: Ctx, seat: Seat): HTMLElement {
 	const login = seat.login;
-	const openSettings = ctx.page.options.openSettings;
+	const openSubscriptions = ctx.page.options.openSubscriptions;
 	const settings = (label: string) =>
-		seat.you && openSettings
-			? [
-					h(
-						"button",
-						{ class: "btn btn-small", type: "button", onclick: () => openSettings("ai-subscriptions") },
-						label,
-					),
-				]
+		seat.you && openSubscriptions
+			? [h("button", { class: "btn btn-small", type: "button", onclick: openSubscriptions }, label)]
 			: null;
 	const mark = h("img", { class: "members-gpt", src: "./assets/provider-openai.svg", alt: "" });
 	const meter = (used: number) => {

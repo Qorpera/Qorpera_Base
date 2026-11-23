@@ -46,7 +46,14 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_note_interface_changes",
 	"qorpera_folder_emit_data_change_wakes",
 	"qorpera_folder_request_code_undo",
+	"qorpera_folder_request_code_undo_v2",
 	"qorpera_folder_code_request",
+	"qorpera_folder_code_request_v2",
+	"qorpera_folder_code_status",
+	"qorpera_folder_code_claim_overlaps",
+	"qorpera_folder_code_history",
+	"qorpera_folder_code_query",
+	"qorpera_folder_code_lifecycle",
 	"qorpera_folder_describe_code_change",
 	"qorpera_folder_request_code_import",
 	"qorpera_folder_code_import",
@@ -129,7 +136,14 @@ const PERMITTED_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_close_proposal",
 	"qorpera_folder_archive_coding_worker",
 	"qorpera_folder_request_code_undo",
+	"qorpera_folder_request_code_undo_v2",
 	"qorpera_folder_code_request",
+	"qorpera_folder_code_request_v2",
+	"qorpera_folder_code_status",
+	"qorpera_folder_code_claim_overlaps",
+	"qorpera_folder_code_history",
+	"qorpera_folder_code_query",
+	"qorpera_folder_code_lifecycle",
 	"qorpera_folder_describe_code_change",
 	"qorpera_folder_request_code_import",
 	"qorpera_folder_code_import",
@@ -157,6 +171,8 @@ const PERMITTED_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_site_unpublish",
 	"qorpera_site_share_check",
 	"qorpera_site_share_app",
+	"qorpera_site_agent_list_versions",
+	"qorpera_site_agent_activate_version",
 	"qorpera_native_surface_describe_senses",
 	"qorpera_native_surface_propose",
 	"qorpera_native_surface_start_session",
@@ -261,7 +277,11 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 								: // One routine whole (32 KiB of instructions, each character escaped at worst), or a
 									// page of 32 with theirs cut; a page of 16 workers with their outputs' paths.
 									response.ok &&
-										(method === "qorpera_folder_agent_routines" || method === "qorpera_folder_agent_workers")
+										(method === "qorpera_folder_agent_routines" ||
+											method === "qorpera_folder_agent_workers" ||
+											method === "qorpera_folder_code_request_v2" ||
+											method === "qorpera_folder_code_history" ||
+											method === "qorpera_folder_code_status")
 									? 1024 * 1024
 									: response.ok
 										? 256 * 1024

@@ -1385,6 +1385,28 @@ Each call answers 42501 for a caller who is not a member of the company.
   agents, why})` asks one member (an id, email, full name or a first name only they have) to take 1 to 20 agents (ids or
   names). The member answers on the Members page as above.
 
+### Who owns an automation (20260930868000_surface_automation_owner)
+
+Multiplayer in place (Jonas, 23 Nov 2026). Each surface automation is owned by one member who is not a viewer, or by
+nobody: a member's new automation is theirs; one an agent or the platform makes is the member's who started the
+company. Its owner's login pays for each run it starts; a run already started keeps its login. An automation nobody
+owns, or whose owner has no login that pays, does not run: its next time comes, and its `status` is
+`needs_attention`. A member who leaves or becomes a viewer leaves their automations with nobody, and every open offer
+that names them is void.
+
+- `qorpera_list_automations(company)` and the summaries `qorpera_create_surface_automation`,
+  `qorpera_update_surface_automation` and `qorpera_toggle_automation` answer carry `ownable` (false for a legacy
+  routine, which keeps its own payer), `ownerUserId` (null: nobody) and `offer`: the open offer, or one turned down in
+  the last day, `{id, fromUserId, toUserId, offeredByUserId, status: "open" | "no", answeredAt}`, else null.
+- `qorpera_offer_surface_automation(automation, to_user)`: `{moved, automation}`. Its owner, or an owner or admin,
+  offers it to a member who is not a viewer (an open offer, `moved` false); offering it to its owner moves nothing
+  (`moved` true). Anyone who is not a viewer takes one nobody owns at once (to = the caller, `moved` true). A viewer
+  cannot offer (42501) or receive (22023); anyone else is 42501; one open offer per automation (55P03).
+- `qorpera_answer_surface_automation_offer(offer, yes)`: `{status, moved, automation}`. The member offered says yes
+  (`yes`, they own it) or no (`no`); its owner or the member who offered may take it back (`yes` false, `withdrawn`).
+  A yes after its owner changed, or to a member who is now a viewer, is `void`. An offer already answered answers its
+  status. Anyone else is 42501.
+
 ### Member chats (20260930715000_member_messages)
 
 Members of a company message each other (Jonas, 10 Nov 2026): one chat per pair of members per company, shown as
@@ -1845,6 +1867,25 @@ the payer rules would now pick for it (in a coding-backed session, its coding lo
 - `qorpera_surface_session_continue(p_session_id)` (the waiting member, not a viewer) lets the waiting turn try again
   at once on the login `continueWith` names, and answers the session. Refuses another member (42501), a turn that
   already runs or no such login with room (55000) and a missing session (P0002).
+
+### Asking a teammate to publish (20260930867000_surface_publish_ask)
+
+A surface's summary (`qorpera_list_surfaces`, the workspace's `surface` and every call that answers a summary) carries
+`publishAsk`: null, or `{askedByUserId, askedUserId, askedAt, changeCount, status: "open" | "declined", answeredAt}`.
+A surface holds at most one ask. Each call answers the surface's summary.
+
+- `qorpera_ask_surface_publish(p_surface_id, p_user_id)`: a member who may publish (not a viewer) asks another member
+  who may publish; a new ask replaces the surface's ask. `changeCount` is what waited to publish then. Refuses 22023
+  for oneself or nobody, 42501 when the caller or the asked member may not publish, 55000 "This surface publishes on
+  Approve" (Auto-publish on), "A publish is already running" and "Nothing to publish".
+- `qorpera_decline_surface_publish_ask(p_surface_id)`: the asked member says no; the ask stays as `declined`, with
+  `answeredAt`, for the asker to read. P0002 when no open ask names the caller.
+- `qorpera_withdraw_surface_publish_ask(p_surface_id)`: the asker takes the ask back, open or declined. P0002 when the
+  caller asked nothing there.
+
+Yes is the asked member's own `qorpera_publish_surface`, with their own authority. An ask goes when anyone's publish
+starts (a job's publish when it starts), when nothing is left to publish, and when the asked member leaves the
+company or becomes a viewer (the asker leaving closes it too). Each change sends the `surfaces` hint.
 
 ### Coding environment secrets (20260928549440_coding_environment_secrets)
 

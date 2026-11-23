@@ -77,12 +77,17 @@ export type SurfacesClient = Pick<
 			| "createAutomation"
 			| "updateAutomation"
 			| "deleteAutomation"
+			| "offerAutomation"
+			| "answerAutomationOffer"
 			| "setSurfaceFigure"
 			| "surfaceSessionImages"
 			| "noteSurfaceSession"
 			| "unseenSurfaceNotes"
 			| "markSurfaceNotesSeen"
 			| "continueSurfaceSession"
+			| "askSurfacePublish"
+			| "declineSurfacePublishAsk"
+			| "withdrawSurfacePublishAsk"
 		>
 	>;
 
@@ -101,6 +106,7 @@ const FOLDER_HINT_DEBOUNCE_MS = 50;
 export const PREVIEW_TOGGLE_DEBOUNCE_MS = 150;
 export const PREVIEW_PASS_TTL_MS = 45_000;
 const MAX_LOCAL_SANDBOX_CACHE = 8;
+const LOCAL_AUTOMATION_OWNER = { ownable: false, ownerUserId: null, offer: null } as const;
 
 export interface PendingStudioPatch {
 	readonly changeId: string;
@@ -468,7 +474,6 @@ function localSurface(
 const OPS_SURFACES = [
 	{ slug: "inbox", title: phrase("Inbox"), icon: "mail", page: "mailbox" },
 	{ slug: "money", title: phrase("Money"), icon: "coin", page: "bank" },
-	{ slug: "members", title: phrase("Members"), icon: "members", page: "members" },
 	{ slug: "data", title: phrase("Databases"), icon: "database", page: "data" },
 	{ slug: "files", title: phrase("Files"), icon: "drawers", page: null },
 ] as const;
@@ -614,6 +619,10 @@ export interface UnpublishedChangeEntry {
 	readonly change: SurfaceChangeUnit;
 	readonly session: SurfaceSession;
 	readonly exploration?: SurfaceExplorationSet;
+}
+
+export function askedToPublish(surface: SurfaceSummary, userId: string | undefined): boolean {
+	return Boolean(userId) && surface.publishAsk?.status === "open" && surface.publishAsk.askedUserId === userId;
 }
 
 export function unpublishedChanges(
@@ -992,6 +1001,8 @@ export interface SurfacesStoreOptions {
 	readonly teammates?: () => readonly SurfaceTeammate[];
 	readonly selfUserId?: string;
 	readonly peopleAtSurface?: (slug: string) => readonly { readonly userId: string; readonly name: string }[];
+	readonly userId?: string;
+	readonly publishers?: () => readonly { readonly userId: string; readonly name: string }[];
 	readonly loadCloudFiles?: (
 		surface: SurfaceSummary,
 		signal: AbortSignal,
@@ -1226,6 +1237,14 @@ export class SurfacesStore {
 
 	peopleAtSurface(slug: string): readonly { readonly userId: string; readonly name: string }[] {
 		return this.#options.peopleAtSurface?.(slug) ?? [];
+	}
+
+	get userId(): string | undefined {
+		return this.#options.userId;
+	}
+
+	publishTeammates(): readonly { readonly userId: string; readonly name: string }[] {
+		return (this.#options.publishers?.() ?? []).filter((person) => person.userId !== this.#options.userId);
 	}
 
 	lookOf(surface: Pick<SurfaceSummary, "id" | "slug" | "icon" | "archetype" | "kind" | "accentHex">): SurfaceLook {
@@ -1635,7 +1654,7 @@ export class SurfacesStore {
 			if (existingKeys.has(auto.key)) continue;
 			const id = `local-automation-${++this.#localSeq}`;
 			const { heading, ...rest } = auto;
-			nextAutomations.push({ ...rest, id, title: heading });
+			nextAutomations.push({ ...rest, ...LOCAL_AUTOMATION_OWNER, id, title: heading });
 			nextPrompts[id] = auto.scheduleSummary;
 		}
 
@@ -1693,6 +1712,7 @@ export class SurfacesStore {
 			lastRunAt: null,
 			lastOutcomeSummary: prompt.length <= 68 ? prompt : `${prompt.slice(0, 65).trimEnd()}…`,
 			nextRunAt: null,
+			...LOCAL_AUTOMATION_OWNER,
 		};
 		this.store.set((state) => ({
 			automations: [...state.automations, created],
@@ -4306,6 +4326,32 @@ export class SurfacesStore {
 		return true;
 	}
 
+	askToPublish(surfaceId: string, userId: string): Promise<boolean> {
+		return this.#publishAsk(surfaceId, (client) => client.askSurfacePublish?.(surfaceId, userId));
+	}
+
+	declinePublishAsk(surfaceId: string): Promise<boolean> {
+		return this.#publishAsk(surfaceId, (client) => client.declineSurfacePublishAsk?.(surfaceId));
+	}
+
+	withdrawPublishAsk(surfaceId: string): Promise<boolean> {
+		return this.#publishAsk(surfaceId, (client) => client.withdrawSurfacePublishAsk?.(surfaceId));
+	}
+
+	async #publishAsk(
+		surfaceId: string,
+		call: (client: SurfacesClient) => Promise<SurfaceSummary> | undefined,
+	): Promise<boolean> {
+		const surface = await this.#run(`publish-ask:${surfaceId}`, async (client) => {
+			const pending = call(client);
+			if (!pending) throw new Error(this.#options.unavailableMessage);
+			return await pending;
+		});
+		if (!surface) return false;
+		this.#putSurface(surface);
+		return true;
+	}
+
 	async setAutoPublish(surfaceId: string, enabled: boolean): Promise<boolean> {
 		if (this.isLocalInteractive && isLocalSurfaceId(surfaceId)) {
 			const surface = this.state.surfaces.find((item) => item.id === surfaceId);
@@ -4408,6 +4454,26 @@ export class SurfacesStore {
 		return true;
 	}
 
+	async offerAutomation(automationId: string, toUserId: string): Promise<boolean> {
+		return this.#ownAutomation(automationId, (client) => client.offerAutomation?.(automationId, toUserId));
+	}
+
+	async answerAutomationOffer(automationId: string, offerId: string, yes: boolean): Promise<boolean> {
+		return this.#ownAutomation(automationId, (client) => client.answerAutomationOffer?.(offerId, yes));
+	}
+
+	async #ownAutomation(
+		automationId: string,
+		call: (client: SurfacesClient) => Promise<SurfaceAutomationSummary> | undefined,
+	): Promise<boolean> {
+		const updated = await this.#run(`automation:${automationId}`, async (client) => call(client));
+		if (!updated) return false;
+		this.store.set((state) => ({
+			automations: state.automations.map((item) => (item.id === updated.id ? updated : item)),
+		}));
+		return true;
+	}
+
 	async applyMigration(input: ApplySurfaceMigrationInput): Promise<boolean> {
 		if (this.isLocalInteractive) {
 			const migration = this.state.migration;
@@ -4431,6 +4497,7 @@ export class SurfacesStore {
 						lastRunAt: null,
 						lastOutcomeSummary: t("Folded from agent"),
 						nextRunAt: null,
+						...LOCAL_AUTOMATION_OWNER,
 					});
 				}
 			}
@@ -4471,9 +4538,12 @@ function surfaceCountsChanged(prev: SurfaceSummary | undefined, next: SurfaceSum
 }
 
 function sortSurfaces(surfaces: readonly SurfaceSummary[]): SurfaceSummary[] {
-	return surfaces
-		.filter((surface) => surface.status !== "archived")
-		.sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title));
+	return (
+		surfaces
+			// WHY: The cloud lists the retired Members surface until migration 20260930869000 archives it.
+			.filter((surface) => surface.status !== "archived" && surface.kind !== "members")
+			.sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title))
+	);
 }
 
 const registry = new WeakMap<object, SurfacesStore>();

@@ -1,9 +1,13 @@
 import type { SurfaceSummary } from "@qorpera/contracts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
-import { fmtTime, h, icon } from "../../ui/dom.ts";
+import { fmtTime, h, icon, personAvatar } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
-import { type SurfacesStore, unpublishedChanges } from "../surfaces-store.ts";
+import { askedToPublish, type SurfacesStore, unpublishedChanges } from "../surfaces-store.ts";
 import { surfaceTile } from "./surface-rail.ts";
+
+export function firstName(name: string): string {
+	return name.trim().split(/\s+/)[0] || name;
+}
 
 function hostOf(url: string | null): string {
 	if (!url) return "";
@@ -55,6 +59,7 @@ export function openPublishPatchnotesSheet(
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
 	const rollingBack = new Set<string>();
 	let publishing = false;
+	let choosing = false;
 	let awaitingAsyncPublish = false;
 	let lastRenderKey: string | undefined;
 
@@ -119,6 +124,14 @@ export function openPublishPatchnotesSheet(
 		const subtitle = host ? `${surface.title} · ${host}` : surface.title;
 		ensurePasswordLoaded(surface);
 
+		const me = store.userId;
+		const ask = surface.publishAsk ?? null;
+		const askedMe = askedToPublish(surface, me);
+		const myAsk = ask && ask.askedByUserId === me ? ask : null;
+		const teammates = store.publishTeammates();
+		const askBusy = Boolean(state.busy[`publish-ask:${surface.id}`]);
+		const nameOf = (userId: string) => store.memberName(userId) ?? t("A teammate");
+
 		const publishError =
 			surface.publishStatus === "failed"
 				? surface.lastPublishError?.trim() || t("The last publish failed. Try again.")
@@ -137,6 +150,12 @@ export function openPublishPatchnotesSheet(
 			publishing,
 			awaitingAsyncPublish,
 			status.textContent ?? "",
+			ask,
+			me ?? "",
+			teammates,
+			surface.autoPublish,
+			askBusy,
+			choosing,
 			entries.map(({ change, session, exploration }) => [
 				change.id,
 				change.title,
@@ -280,6 +299,120 @@ export function openPublishPatchnotesSheet(
 					: [h("p", { class: "surface-patchnotes-empty" }, t("No unpublished changes in Base right now."))];
 
 		const publishInProgress = publishing || surface.publishStatus === "publishing";
+		const askLine = (userId: string, text: string, ...actions: HTMLElement[]) =>
+			h(
+				"div",
+				{ class: "surface-publish-ask-line" },
+				personAvatar(nameOf(userId), userId),
+				h("span", { class: "surface-publish-ask-text" }, text),
+				...actions,
+			);
+		const askNote = askedMe
+			? askLine(
+					ask!.askedByUserId,
+					t("{name} asks you to publish.", { name: firstName(nameOf(ask!.askedByUserId)) }),
+				)
+			: myAsk?.status === "declined"
+				? askLine(
+						myAsk.askedUserId,
+						t("{name} said no.", { name: firstName(nameOf(myAsk.askedUserId)) }),
+						h(
+							"button",
+							{
+								type: "button",
+								class: "surface-publish-ask-act",
+								disabled: askBusy,
+								"data-act": "withdraw-ask",
+							},
+							t("OK"),
+						),
+					)
+				: myAsk
+					? askLine(
+							myAsk.askedUserId,
+							t("Waiting for {name}.", { name: firstName(nameOf(myAsk.askedUserId)) }),
+							h(
+								"button",
+								{
+									type: "button",
+									class: "surface-publish-ask-act",
+									disabled: askBusy,
+									"data-act": "withdraw-ask",
+								},
+								t("Take back"),
+							),
+						)
+					: ask?.status === "open"
+						? askLine(
+								ask.askedUserId,
+								t("{asker} asked {name} to publish.", {
+									asker: firstName(nameOf(ask.askedByUserId)),
+									name: firstName(nameOf(ask.askedUserId)),
+								}),
+							)
+						: null;
+		const canAsk =
+			!askedMe &&
+			ask?.status !== "open" &&
+			!surface.autoPublish &&
+			total > 0 &&
+			!publishInProgress &&
+			teammates.length > 0;
+		const only = teammates.length === 1 ? teammates[0]! : null;
+		const askBtn = canAsk
+			? only
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "btn surface-publish-ask-btn",
+							disabled: askBusy,
+							"data-act": "ask",
+							"data-user": only.userId,
+						},
+						personAvatar(only.name, only.userId),
+						t("Ask {name}", { name: firstName(only.name) }),
+					)
+				: h(
+						"button",
+						{
+							type: "button",
+							class: "btn surface-publish-ask-btn",
+							disabled: askBusy,
+							"aria-expanded": String(choosing),
+							"data-act": "ask-menu",
+						},
+						t("Ask a teammate"),
+					)
+			: null;
+		const picker =
+			canAsk && !only && choosing
+				? h(
+						"div",
+						{ class: "surface-publish-ask-pick", role: "group", "aria-label": t("Ask a teammate") },
+						...teammates.map((person) =>
+							h(
+								"button",
+								{
+									type: "button",
+									class: "surface-publish-ask-person",
+									disabled: askBusy,
+									"data-act": "ask",
+									"data-user": person.userId,
+								},
+								personAvatar(person.name, person.userId),
+								h("span", null, person.name),
+							),
+						),
+					)
+				: null;
+		const declineBtn = askedMe
+			? h(
+					"button",
+					{ type: "button", class: "btn", disabled: askBusy || publishing, "data-act": "decline-ask" },
+					t("No"),
+				)
+			: null;
 		const cancelBtn = h(
 			"button",
 			{ type: "button", class: "btn", disabled: publishing, "data-act": "cancel" },
@@ -327,8 +460,20 @@ export function openPublishPatchnotesSheet(
 					: t("Live matches Base"),
 			),
 			...listNodes,
-			h("div", { class: "surface-sheet-actions" }, status, cancelBtn, publishBtn),
+			...(askNote ? [askNote] : []),
+			...(picker ? [picker] : []),
+			h("div", { class: "surface-sheet-actions" }, status, cancelBtn, declineBtn, askBtn, publishBtn),
 		);
+	};
+
+	const runAsk = async (pending: Promise<boolean>): Promise<boolean> => {
+		status.textContent = "";
+		const ok = await pending;
+		if (!closed && !ok) {
+			status.textContent = store.state.error ?? t("That didn't work. Try again.");
+			render();
+		}
+		return ok;
 	};
 
 	body.addEventListener("click", (event) => {
@@ -352,6 +497,27 @@ export function openPublishPatchnotesSheet(
 		}
 		if (act === "cancel") {
 			dialog.close();
+			return;
+		}
+		if (act === "ask" && target.dataset.user) {
+			choosing = false;
+			void runAsk(store.askToPublish(surfaceId, target.dataset.user));
+			return;
+		}
+		if (act === "ask-menu") {
+			choosing = !choosing;
+			render();
+			body.querySelector<HTMLElement>(choosing ? ".surface-publish-ask-person" : '[data-act="ask-menu"]')?.focus();
+			return;
+		}
+		if (act === "withdraw-ask") {
+			void runAsk(store.withdrawPublishAsk(surfaceId));
+			return;
+		}
+		if (act === "decline-ask") {
+			void runAsk(store.declinePublishAsk(surfaceId)).then((ok) => {
+				if (ok) dialog.close();
+			});
 			return;
 		}
 		if (act === "rollback" && change) {

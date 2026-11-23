@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+	CODING_CHECK_CACHES,
 	CODING_GUEST,
 	CODING_GUEST_MOUNT_V2,
 	CODING_GUEST_VERBS,
+	CODING_PACKAGE_CACHE_ENVIRONMENT,
+	CODING_PACKAGE_CACHES,
 	type CodingGuestOutputRequest,
 	type CodingGuestRunRequest,
 	parseCodingGuestAnswer,
@@ -52,8 +55,20 @@ describe("coding guest requests", () => {
 		expect(parseCodingGuestRequest("stop-session", session)).toEqual(session);
 		expect(parseCodingGuestRequest("quiesce", session)).toEqual(session);
 		expect(Object.isFrozen(parseCodingGuestRequest("status", session))).toBe(true);
+		const statusAll = { schema: "qorpera.coding-guest-status-all/v1", workerIds: [workerId] };
+		expect(parseCodingGuestRequest("status-all", statusAll)).toEqual(statusAll);
+		expect(Object.isFrozen(parseCodingGuestRequest("status-all", statusAll).workerIds)).toBe(true);
 		expect(parseCodingGuestRequest("run", { ...run, timeoutMs: null }).timeoutMs).toBeNull();
-		expect(CODING_GUEST_VERBS).toEqual(["mount", "run", "output", "cancel", "quiesce", "stop-session", "status"]);
+		expect(CODING_GUEST_VERBS).toEqual([
+			"mount",
+			"run",
+			"output",
+			"cancel",
+			"quiesce",
+			"stop-session",
+			"status",
+			"status-all",
+		]);
 	});
 	it.each<[string, (typeof CODING_GUEST_VERBS)[number], unknown]>([
 		["an unknown verb", "exec" as never, run],
@@ -281,5 +296,36 @@ describe("coding guest answers", () => {
 			{ schema: "qorpera.coding-guest-refusal/v1", code: "FOLDER_UNMOUNTED", detail: "x" },
 		])
 			expect(() => parseCodingGuestRefusal(value)).toThrow("Invalid coding guest refusal");
+	});
+	it("exposes expanded package caches and check caches configuration", () => {
+		expect(CODING_PACKAGE_CACHES.tools.map((tool) => tool.folder)).toEqual([
+			"npm",
+			"pnpm",
+			"pip",
+			"uv",
+			"ms-playwright",
+			"cargo",
+			"go-mod",
+			"go-build",
+			"bun",
+			"turbo",
+			"sccache",
+		]);
+		expect(CODING_PACKAGE_CACHE_ENVIRONMENT).toMatchObject({
+			CARGO_HOME: "/var/cache/qorpera-packages/cargo",
+			GOMODCACHE: "/var/cache/qorpera-packages/go-mod",
+			GOCACHE: "/var/cache/qorpera-packages/go-build",
+			BUN_INSTALL_CACHE_DIR: "/var/cache/qorpera-packages/bun",
+			TURBO_CACHE_DIR: "/var/cache/qorpera-packages/turbo",
+			SCCACHE_DIR: "/var/cache/qorpera-packages/sccache",
+		});
+		expect(CODING_CHECK_CACHES).toEqual({
+			root: "/var/cache/qorpera-check-caches",
+			owner: "root",
+			group: "root",
+			mode: "0755",
+			limitBytes: 8_589_934_592,
+			ageDays: 30,
+		});
 	});
 });

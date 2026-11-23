@@ -1,9 +1,12 @@
-import { SURFACE_KINDS, type SurfaceKind, type SurfaceSummary } from "@qorpera/contracts";
+import { SURFACE_KINDS as STORED_KINDS, type SurfaceKind as StoredKind, type SurfaceSummary } from "@qorpera/contracts";
 import type { Emblem } from "../ui/interface-emblem.ts";
 import { phrase, t } from "../ui/preferences.ts";
 import { type SurfaceFigureId, surfaceFigureFromIcon } from "../ui/surface-figure.ts";
 
-export { SURFACE_KINDS, type SurfaceKind };
+export type SurfaceKind = Exclude<StoredKind, "members">;
+export const SURFACE_KINDS: readonly SurfaceKind[] = STORED_KINDS.filter(
+	(kind): kind is SurfaceKind => kind !== "members",
+);
 
 export interface SurfaceLook {
 	readonly kind: SurfaceKind;
@@ -36,7 +39,6 @@ const KIND_SPECS: Readonly<Record<SurfaceKind, KindSpec>> = {
 	custom: { emblem: "star", figure: "gem", tint: "#6c839b", subtitle: phrase("Custom surface") },
 	inbox: { emblem: "mail", figure: "envelope", tint: "#2f63d8", subtitle: phrase("Mail & follow-ups") },
 	money: { emblem: "bank", figure: "money", tint: "#0fa958", subtitle: phrase("Balances & invoices") },
-	members: { emblem: "members", figure: "people", tint: "#a145f7", subtitle: phrase("Team & roles") },
 	data: { emblem: "database", figure: "can", tint: "#0e9c93", subtitle: phrase("Tables & queries") },
 	files: { emblem: "drawers", figure: "folder", tint: "#d4950f", subtitle: phrase("Company files") },
 };
@@ -73,7 +75,6 @@ export function inferSurfaceKind(surface: Pick<SurfaceSummary, "slug" | "icon" |
 	if (surface.archetype === "ops") {
 		if (slug === "inbox" || slug === "mail" || icon === "mail") return "inbox";
 		if (slug === "money" || slug === "bank" || icon === "coin" || icon === "bank") return "money";
-		if (slug === "members" || slug === "team" || icon === "members") return "members";
 		if (slug === "data" || slug === "databases" || icon === "database") return "data";
 		if (slug === "files" || icon === "drawers") return "files";
 		return "custom";
@@ -100,7 +101,10 @@ export function surfaceLookOf(
 ): SurfaceLook {
 	const local = looks[surface.id];
 	if (local) return local;
-	const kind = surface.kind && surface.kind !== "custom" ? surface.kind : inferSurfaceKind(surface);
+	const kind =
+		surface.kind && surface.kind !== "custom" && surface.kind !== "members"
+			? surface.kind
+			: inferSurfaceKind(surface);
 	return {
 		kind,
 		...(surface.accentHex ? { accent: surface.accentHex } : {}),
@@ -135,7 +139,7 @@ export function surfaceKindSubtitle(kind: SurfaceKind): string {
 }
 
 export function isOpsKind(kind: SurfaceKind): boolean {
-	return kind === "inbox" || kind === "money" || kind === "members" || kind === "data" || kind === "files";
+	return kind === "inbox" || kind === "money" || kind === "data" || kind === "files";
 }
 
 export function supportsViewportSplit(
@@ -156,8 +160,6 @@ export function opsComposerPlaceholder(kind: SurfaceKind): string {
 			return t("Ask an agent to query, add rows, or update tables…");
 		case "files":
 			return t("Ask an agent to organize, summarize, or create files…");
-		case "members":
-			return t("Ask an agent to invite, update roles, or onboard people…");
 		default:
 			return t("Ask an agent to handle a task here…");
 	}

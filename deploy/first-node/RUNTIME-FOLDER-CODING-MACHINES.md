@@ -541,10 +541,13 @@ A boundary's answer carries step 4's reasons per view (4c), so the turn's report
 
 ## Setup file and snapshots
 
-> **Scope reset, 2026-10-17.** This section is deferred with the rest of 5h, the Cursor and devcontainer
-> mappings included (the note at the top). The merged setup parser and snapshot records (#1100 and #1131) stay,
-> unused, with their tables and migrations. A coding machine with no setup is the accepted core baseline. The
-> section stays as the record.
+> **Implemented (`20260930854000`, step 5h).** Setup discovery (`.qorpera/environment.json`, `.cursor/environment.json`,
+> `.devcontainer/devcontainer.json`), canonical `setup_digest` propagation into `qorpera_plan_coding_machine`, background
+> scrubbed LXD snapshot builds on the agent plug (`CodingSnapshotBuilder`), per-attach worktree `install`/`start`/tracked
+> `terminals` lifecycle hooks (`CodingSetupLifecycle`), optional stopped pre-unpacked standby VMs (`CodingStandbyPool`),
+> and `codingAuxiliary` node inventory headroom accounting are now wired behind opt-in executor config (`snapshots`,
+> `standbyPoolSize`). Stateful VM memory suspend/resume remains deferred pending live LXD 6.9 proof; a coding machine with
+> no setup file continues on the core baseline unchanged.
 
 **Which file.** The first that exists at the root of the default branch: ours (`.qorpera/environment.json`, with
 Cursor's keys), then `.cursor/environment.json`, then `.devcontainer/devcontainer.json`. The code host reads it with
@@ -713,13 +716,17 @@ The limits:
 - a file too big to check (over 1 GiB inflated, or alone in a pack over 512 MiB) can't be saved in git on a machine with
   values: the way out drops it only from a refused commit, and a commit that carries it again is refused again.
 
-Since 5j-4, the executor asks the company's secret broker for the session's environment once for each command it
-starts, and masks that command's output, `output.log` and receipts with those values and the values of every other
-session on the machine. A session's values stay in the masks until the machine's last session is released, or until the
-machine stops, restarts for the folder, gets a new disk, sleeps or is removed (in each case SQL has already ended every
-attachment, so this behaves like an executor restart and the next attach asks the vault again). When the
-executor does not know the values a command runs with (it restarted after the start, or the guest did not confirm that
-it took this start's environment), none of that command's output is kept: the bytes are counted lost.
+Since 5j-4, the executor asks the company's secret broker for the session's environment on attach and on command start
+whenever the session's `vaultEnvVersion` from `qorpera_authorize_coding_command_v2` changes (or on every command start
+when no `vaultEnvVersion` is supplied). While an attachment stays on the same machine with an unchanged
+`vaultEnvVersion`, the executor reuses the session's cached answer in memory, so `environment_secret_used` audit rows
+are recorded once per session, `vaultEnvVersion`, and machine rather than once per command start. The executor masks
+each command's output, `output.log` and receipts with those values and the values of every other session on the machine.
+A session's values stay in the masks until the machine's last session is released, or until the machine stops, restarts
+for the folder, gets a new disk, sleeps or is removed (in each case SQL has already ended every attachment, so this
+behaves like an executor restart and the next attach asks the vault again). When the executor does not know the values a
+command runs with (it restarted after the start, or the guest did not confirm that it took this start's environment),
+none of that command's output is kept: the bytes are counted lost.
 
 An older value, such as a secret's value before it was changed, can still be on the machine (in a process started
 before, a container or a file). So each answer also brings the older values used on this machine by this member

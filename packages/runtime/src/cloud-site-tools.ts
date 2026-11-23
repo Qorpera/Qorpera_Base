@@ -10,6 +10,7 @@ import { CloudControlRpcRefused } from "./cloud-control-errors.ts";
 import { unavailable } from "./cloud-folder-file-tools.ts";
 import {
 	CLOUD_MACHINE_TOOL_VERSION,
+	CloudMachineAppRefusal,
 	type CloudMachineCommandGateway,
 	cloudMachineCommandRefusal,
 } from "./cloud-machine-command-http.ts";
@@ -26,7 +27,7 @@ import {
 	CloudToolRefusal,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
-import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
+import { type CloudNativeToolOperations, cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
 
 /*
@@ -101,7 +102,11 @@ const WEB_EXTENSIONS = new Set([
 	"webmanifest",
 	"txt",
 	"csv",
+	"vtt",
+	"md",
 	"xml",
+	"rss",
+	"atom",
 	"svg",
 	"png",
 	"jpg",
@@ -121,6 +126,9 @@ const WEB_EXTENSIONS = new Set([
 	"ogg",
 	"wav",
 	"pdf",
+	"wasm",
+	"glb",
+	"gltf",
 ]);
 
 /** Where a site's or an app link's password is, which the agent never sees. A message that links one of the company's
@@ -130,9 +138,9 @@ const SITE_PASSWORD =
 
 export const CLOUD_PUBLISH_SITE_TOOL_DESCRIPTION = [
 	"Publish a static website from the company folder to a private address of its own, https://<slug>.qorpera.com/, that people outside the company open with a password. Only static files are served: no server code runs (a server app goes by share_app).",
-	"source is a folder whose index.html is the home page (every web file under it goes out: HTML, CSS, JavaScript, JSON, text, images, fonts, audio, video, PDF), or one .html file, published as the home page. Its files link each other from / (/img/logo.png) or relatively (img/logo.png): both work. At most 500 files and 25 MiB, 10 MiB a file; hidden files, links and other types are left out and named in the answer.",
+	"source is a folder whose index.html is the home page (every web file under it goes out: HTML, CSS, JavaScript, JSON, text, Markdown, VTT, RSS/Atom, WebAssembly, glTF/GLB, images, fonts, audio, video, PDF), or one .html file, published as the home page. Its files link each other from / (/img/logo.png) or relatively (img/logo.png): both work. At most 500 files and 25 MiB, 10 MiB a file; hidden files, links and other types are left out and named in the answer.",
 	"Each site is its own origin: browser storage, cookies (never one with Domain=qorpera.com) and frames of its own pages work; other sites cannot frame it or load its files, and it gets no service worker.",
-	`A site's first publish waits for an owner or admin to approve it on a card, and so does publishing it from another folder. Publishing the same slug again replaces the whole site at once and keeps its password. ${SITE_PASSWORD}`,
+	`A site's first publish waits for an owner or admin to approve it on a card, and so does publishing it from another folder. Publishing the same slug again switches the site at once, keeps the last ten versions for rollback with manage_site, and keeps its password. ${SITE_PASSWORD}`,
 ].join("\n");
 
 export const CLOUD_UNPUBLISH_SITE_TOOL_DESCRIPTION =
@@ -140,9 +148,20 @@ export const CLOUD_UNPUBLISH_SITE_TOOL_DESCRIPTION =
 
 export const CLOUD_SHARE_APP_TOOL_DESCRIPTION = [
 	"Share a server app (Node, Python, Docker, any program that answers HTTP) at a private link, https://<slug>-preview.qorpera.com/, that people outside the company open with a password, as they open a website. Static files (HTML, CSS, JavaScript, images) need no machine: publish them with publish_site.",
-	"The app runs on one of the company's always-on machines: start one with machine_start and lifetime always-on (a task machine sleeps, and its link stops), run the app there with machine_run listening on a port (on 127.0.0.1 or all addresses), then call share_app with the machine's name and that port; the machine must be running. A coding session's work is on the machine at /company/code/<owner>/<name>/worktrees/<workerId>.",
-	"The platform starts the link program that connects the link to the app on that machine, as a command with no time limit (machine_list counts it; machine_read shows its status lines; machine_cancel stops it). Its command carries a one-time code that the program spends within seconds; only that program can use it again. The link works while the program and the app run; otherwise it says the app is not running. If it stops, call share_app again. The link passes HTTP requests, not WebSockets (a dev server's live reload does not work through it).",
+	"The app runs on one of the company's always-on machines: start one with machine_start and lifetime always-on (a task machine sleeps, and its link stops), run the app there listening on a port (on 127.0.0.1 or all addresses), then call share_app with the machine's name and that port; the machine must be running. A coding session's work is on the machine at /company/code/<owner>/<name>/worktrees/<workerId>.",
+	"The platform starts the link program that connects the link to the app on that machine, as a command with no time limit (machine_list counts it; machine_read shows its status lines; machine_cancel stops it). Its command carries a one-time code that the program spends within seconds; only that program can use it again. The link works while the program and the app run; otherwise it says the app is not running. If it stops, call share_app again. The link passes HTTP requests, long-lived SSE streams, and WebSockets (including dev server live reload and bidirectional realtime apps) with per-stream flow control and active health checks; once shared, manage_site can start and supervise the app under restart-on-failure systemd management, probe health, reload, stop, or read rolling NDJSON logs and crash summaries, and updating the shared port via share_app performs a zero-downtime target swap when healthy.",
 	`A first share waits for an owner or admin to approve it on a card, and so does sharing the link from another machine or port. Sharing the same slug again keeps its link and password. ${SITE_PASSWORD} unpublish_site turns the link off.`,
+].join("\n");
+
+export const CLOUD_MANAGE_SITE_TOOL_DESCRIPTION = [
+	"Inspect and manage the company's published websites and shared app links.",
+	"- action list_versions: list retained versions of a static website (current live version, kept versions for instant rollback, and ready code builds) or inspect an app link's machine, port, and auth mode.",
+	"- action rollback: atomically switch a publish_site static website back to a previously published version by versionId (keeps the current live version in history; repository code sites still release and roll back in What's new).",
+	"- action app_start: launch a shared app link's process under supervised restart-on-failure systemd management (command, port, optional healthPath and cwd) with 4x16 MiB ring-rotated NDJSON logs and automatic crash summaries.",
+	"- action app_health: inspect the supervised app unit's systemd state, restart count, local health probe result, and latest crash summary.",
+	"- action app_reload: restart the supervised app unit in place or probe and update its port/healthPath.",
+	"- action app_logs: query structured rolling NDJSON stdout/stderr logs and automatic crash summary (OOM kills, exit code/signal, restart count, recent stderr tail) for a hosted app link, with optional grep, tail (1-500, default 100), stream (stdout|stderr|all), and since (ISO-8601 timestamp).",
+	"- action app_stop: stop the supervised app unit on its machine.",
 ].join("\n");
 
 /** One file a site will serve: its path in the site and the folder entry it is read from. */
@@ -992,7 +1011,462 @@ export function cloudSiteTools(options: {
 			});
 		},
 	};
-	return [publish, unpublish, share];
+	const manage: CloudNativeTool = {
+		name: "manage_site" satisfies CloudRuntimeToolOperation,
+		source: "runtime",
+		description: CLOUD_MANAGE_SITE_TOOL_DESCRIPTION,
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["action", "slug"],
+			properties: {
+				action: {
+					type: "string",
+					enum: ["list_versions", "rollback", "app_start", "app_stop", "app_health", "app_reload", "app_logs"],
+				},
+				slug: { type: "string", pattern: SLUG.source, description: "The site's or app link's name in its link." },
+				versionId: {
+					type: "string",
+					description: "The version UUID to activate (required when action is rollback).",
+				},
+				command: {
+					type: "string",
+					minLength: 1,
+					maxLength: 16384,
+					description: "Shell command to supervise under systemd (required when action is app_start).",
+				},
+				port: {
+					type: "integer",
+					minimum: 1,
+					maximum: 65535,
+					description: "Port the app listens on (required for app_start, optional for app_reload).",
+				},
+				healthPath: {
+					type: "string",
+					maxLength: 256,
+					description: "Optional HTTP health probe path starting with / (for app_start or app_reload).",
+				},
+				cwd: {
+					type: "string",
+					minLength: 1,
+					maxLength: 512,
+					description: "Optional absolute working directory on the machine (for app_start).",
+				},
+				grep: { type: "string", minLength: 1, maxLength: 256 },
+				tail: { type: "integer", minimum: 1, maximum: 500 },
+				stream: { type: "string", enum: ["stdout", "stderr", "all"] },
+				since: { type: "string", minLength: 1, maxLength: 64 },
+			},
+		},
+		parseArguments(value) {
+			const input = args(
+				value,
+				"manage_site",
+				["action", "slug"],
+				["versionId", "command", "port", "healthPath", "cwd", "grep", "tail", "stream", "since"],
+			);
+			const action = input.action;
+			const validActions = [
+				"list_versions",
+				"rollback",
+				"app_start",
+				"app_stop",
+				"app_health",
+				"app_reload",
+				"app_logs",
+			];
+			if (typeof action !== "string" || !validActions.includes(action))
+				throw new CloudToolArgumentRefusal(
+					"action must be list_versions, rollback, app_start, app_stop, app_health, app_reload, or app_logs",
+				);
+			const slug = parseSlug(input.slug);
+			const forbid = (allowed: readonly string[], msg: string) => {
+				for (const key of Object.keys(input))
+					if (key !== "action" && key !== "slug" && !allowed.includes(key))
+						throw new CloudToolArgumentRefusal(msg);
+			};
+			if (action === "list_versions" || action === "app_stop" || action === "app_health") {
+				forbid([], `${action} takes only action and slug`);
+				return { action, slug };
+			}
+			if (action === "rollback") {
+				forbid(["versionId"], "rollback takes only action, slug, and versionId");
+				if (typeof input.versionId !== "string" || !isUuid(input.versionId))
+					throw new CloudToolArgumentRefusal("versionId must be a valid version UUID");
+				return { action, slug, versionId: input.versionId };
+			}
+			if (action === "app_start") {
+				forbid(
+					["command", "port", "healthPath", "cwd"],
+					"app_start takes command, port, and optional healthPath/cwd",
+				);
+				if (
+					typeof input.command !== "string" ||
+					!input.command.trim() ||
+					input.command.includes("\0") ||
+					Buffer.byteLength(input.command) > 16384 ||
+					Buffer.byteLength(JSON.stringify(input.command)) > 32768
+				)
+					throw new CloudToolArgumentRefusal(
+						"command must be a non-empty string up to 16384 bytes (32768 bytes JSON-encoded)",
+					);
+				if (!isPort(input.port))
+					throw new CloudToolArgumentRefusal(
+						"port must be the app's port on the machine, a whole number from 1 to 65535",
+					);
+				const parsed: Record<string, JsonValue> = { action, slug, command: input.command, port: input.port };
+				if (input.healthPath !== undefined) {
+					if (
+						typeof input.healthPath !== "string" ||
+						(input.healthPath !== "" &&
+							(!input.healthPath.startsWith("/") ||
+								input.healthPath.length > 256 ||
+								/[\x00-\x1f\x7f\s]/.test(input.healthPath)))
+					)
+						throw new CloudToolArgumentRefusal("healthPath must be empty or a / path without whitespace");
+					parsed.healthPath = input.healthPath;
+				}
+				if (input.cwd !== undefined) {
+					if (
+						typeof input.cwd !== "string" ||
+						!input.cwd.startsWith("/") ||
+						input.cwd.length > 512 ||
+						/[\0\r\n]/.test(input.cwd)
+					)
+						throw new CloudToolArgumentRefusal("cwd must be an absolute path up to 512 characters");
+					parsed.cwd = input.cwd;
+				}
+				return parsed;
+			}
+			if (action === "app_reload") {
+				forbid(["port", "healthPath"], "app_reload takes only optional port and healthPath");
+				const parsed: Record<string, JsonValue> = { action, slug };
+				if (input.port !== undefined) {
+					if (!isPort(input.port))
+						throw new CloudToolArgumentRefusal(
+							"port must be the app's port on the machine, a whole number from 1 to 65535",
+						);
+					parsed.port = input.port;
+				}
+				if (input.healthPath !== undefined) {
+					if (
+						typeof input.healthPath !== "string" ||
+						(input.healthPath !== "" &&
+							(!input.healthPath.startsWith("/") ||
+								input.healthPath.length > 256 ||
+								/[\x00-\x1f\x7f\s]/.test(input.healthPath)))
+					)
+						throw new CloudToolArgumentRefusal("healthPath must be empty or a / path without whitespace");
+					parsed.healthPath = input.healthPath;
+				}
+				return parsed;
+			}
+			forbid(["grep", "tail", "stream", "since"], "app_logs does not take versionId or app control options");
+			const parsed: Record<string, JsonValue> = { action, slug };
+			if (input.grep !== undefined) {
+				if (
+					typeof input.grep !== "string" ||
+					!input.grep.length ||
+					input.grep.length > 256 ||
+					/\p{Cc}/u.test(input.grep)
+				)
+					throw new CloudToolArgumentRefusal("grep must be a single-line string of 1 to 256 characters");
+				parsed.grep = input.grep;
+			}
+			if (input.tail !== undefined) {
+				if (
+					typeof input.tail !== "number" ||
+					!Number.isSafeInteger(input.tail) ||
+					input.tail < 1 ||
+					input.tail > 500
+				)
+					throw new CloudToolArgumentRefusal("tail must be a whole number from 1 to 500");
+				parsed.tail = input.tail;
+			}
+			if (input.stream !== undefined) {
+				if (input.stream !== "stdout" && input.stream !== "stderr" && input.stream !== "all")
+					throw new CloudToolArgumentRefusal("stream must be stdout, stderr, or all");
+				parsed.stream = input.stream;
+			}
+			if (input.since !== undefined) {
+				if (
+					typeof input.since !== "string" ||
+					!input.since.length ||
+					input.since.length > 64 ||
+					Number.isNaN(Date.parse(input.since))
+				)
+					throw new CloudToolArgumentRefusal("since must be an ISO-8601 timestamp");
+				parsed.since = input.since;
+			}
+			return parsed;
+		},
+		async execute(value, context) {
+			assertContext(context);
+			const input = value as {
+				action: "list_versions" | "rollback" | "app_start" | "app_stop" | "app_health" | "app_reload" | "app_logs";
+				slug: string;
+				versionId?: string;
+				command?: string;
+				port?: number;
+				healthPath?: string;
+				cwd?: string;
+				grep?: string;
+				tail?: number;
+				stream?: "stdout" | "stderr" | "all";
+				since?: string;
+			};
+			if (input.action === "list_versions") {
+				let answer: Record<string, unknown>;
+				try {
+					answer = parseRecord(
+						await call("qorpera_site_agent_list_versions", { p_slug: input.slug }, context.signal),
+						"Site versions differ",
+					);
+				} catch (error) {
+					return relayed(error, "NOT_AVAILABLE: site versions cannot be listed now");
+				}
+				if (
+					answer.schema !== "qorpera.site-versions/v1" ||
+					answer.slug !== input.slug ||
+					!Array.isArray(answer.versions)
+				)
+					throw new Error("Site versions differ");
+				return { kind: "text", value: cloudToolJsonText(answer as unknown as JsonValue) };
+			}
+			if (input.action === "rollback") {
+				let answer: Record<string, unknown>;
+				try {
+					answer = parseRecord(
+						await call(
+							"qorpera_site_agent_activate_version",
+							{ p_slug: input.slug, p_version_id: input.versionId },
+							context.signal,
+							30_000,
+						),
+						"Site rollback differs",
+					);
+				} catch (error) {
+					return relayed(error, "NOT_AVAILABLE: site rollback is not available now");
+				}
+				if (
+					answer.schema !== "qorpera.site-version-activate/v1" ||
+					answer.slug !== input.slug ||
+					typeof answer.versionId !== "string" ||
+					!isUuid(answer.versionId)
+				)
+					throw new Error("Site rollback differs");
+				return { kind: "text", value: cloudToolJsonText(answer as unknown as JsonValue) };
+			}
+			let site: Record<string, unknown>;
+			try {
+				site = parseRecord(
+					await call("qorpera_site_agent_list_versions", { p_slug: input.slug }, context.signal),
+					"Site versions differ",
+				);
+			} catch (error) {
+				return relayed(error, `NOT_AVAILABLE: ${input.action} cannot run now`);
+			}
+			if (site.schema !== "qorpera.site-versions/v1" || site.slug !== input.slug)
+				throw new Error("Site versions differ");
+			if (site.kind !== "app")
+				refuse(`APP_SITE_REQUIRED: ${input.action} only applies to app links created with share_app`);
+			if (
+				typeof site.machineId !== "string" ||
+				!isUuid(site.machineId) ||
+				typeof site.machine !== "string" ||
+				!MACHINE.test(site.machine)
+			)
+				refuse("APP_MACHINE_NOT_FOUND: this app link has no active machine");
+			const scope = { machineId: site.machineId };
+			const machines = options.machines;
+			const gw = machines?.gateway;
+			const runApp = async <T>(fn: () => Promise<T>): Promise<T> => {
+				try {
+					return await fn();
+				} catch (error) {
+					if (error instanceof CloudMachineAppRefusal)
+						refuse(`${error.code}: ${site.machine} refused ${input.action}`);
+					const refusal = cloudMachineCommandRefusal(error);
+					if (refusal) refuse(`${refusal}: ${site.machine} is not available for ${input.action}`);
+					throw error;
+				}
+			};
+			const runMutatingApp = async <T>(
+				perform: (receiptId: string, envelope: string, signal: AbortSignal) => Promise<T>,
+			): Promise<T> => {
+				if (!machines) refuse("APP_CONTROL_UNAVAILABLE: app supervision is not available on this run's gateway");
+				const operationKey = `manage-site.${createHash("sha256").update(context.callId).digest("hex").slice(0, 32)}`;
+				const content = await machines.operations.execute({
+					operation: {
+						tool: "manage_site",
+						toolVersion: CLOUD_MACHINE_TOOL_VERSION,
+						logicalOperationKey: operationKey,
+						arguments: input as unknown as JsonValue,
+						target: { realm: "company_machine", machineId: scope.machineId },
+						requiresCompanyRevision: false,
+					},
+					signal: context.signal,
+					authorize: async (_operation, admittedIdentity) => {
+						if (!isDeepStrictEqual(admittedIdentity, expected)) throw new Error("Manage site identity changed");
+					},
+					perform: async (operation, effect) => {
+						const envelope = cloudNativeToolOperationEnvelope(effect.identity, operation);
+						try {
+							const answer = await perform(effect.receiptId, envelope, effect.signal);
+							return { content: { kind: "json", value: answer as unknown as JsonValue } };
+						} catch (error) {
+							if (error instanceof CloudMachineAppRefusal)
+								return { content: { kind: "json", value: { refused: error.code } } };
+							const refusal = cloudMachineCommandRefusal(error);
+							if (refusal) return { content: { kind: "json", value: { refused: refusal } } };
+							throw error;
+						}
+					},
+				});
+				const answer = content.kind === "json" ? content.value : null;
+				if (
+					answer &&
+					typeof answer === "object" &&
+					!Array.isArray(answer) &&
+					typeof (answer as Record<string, unknown>).refused === "string"
+				)
+					refuse(
+						`${String((answer as Record<string, unknown>).refused)}: ${site.machine} refused ${input.action}`,
+					);
+				return answer as unknown as T;
+			};
+			if (input.action === "app_start") {
+				const appStart = gw?.appStart;
+				if (!appStart) refuse("APP_CONTROL_UNAVAILABLE: app supervision is not available on this run's gateway");
+				const command = input.command ?? "";
+				const port = input.port ?? 0;
+				const started = await runMutatingApp((receiptId, envelope, signal) =>
+					appStart(
+						scope,
+						{
+							receiptId,
+							envelope,
+							slug: input.slug,
+							command,
+							port,
+							...(input.healthPath !== undefined ? { healthPath: input.healthPath } : {}),
+							...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+						},
+						signal,
+					),
+				);
+				return {
+					kind: "text",
+					value: cloudToolJsonText({
+						schema: "qorpera.site-app-started/v1",
+						slug: input.slug,
+						machine: site.machine,
+						unit: started.unit,
+						port: started.port,
+					}),
+				};
+			}
+			if (input.action === "app_stop") {
+				const appStop = gw?.appStop;
+				if (!appStop) refuse("APP_CONTROL_UNAVAILABLE: app supervision is not available on this run's gateway");
+				const stopped = await runMutatingApp((receiptId, envelope, signal) =>
+					appStop(scope, { receiptId, envelope, slug: input.slug }, signal),
+				);
+				return {
+					kind: "text",
+					value: cloudToolJsonText({
+						schema: "qorpera.site-app-stopped/v1",
+						slug: input.slug,
+						machine: site.machine,
+						unit: stopped.unit,
+					}),
+				};
+			}
+			if (input.action === "app_health") {
+				const appHealth = gw?.appHealth;
+				if (!appHealth) refuse("APP_CONTROL_UNAVAILABLE: app health is not available on this run's gateway");
+				const health = await runApp(() => appHealth(scope, { slug: input.slug }, context.signal));
+				return {
+					kind: "text",
+					value: cloudToolJsonText({
+						schema: "qorpera.site-app-health/v1",
+						slug: input.slug,
+						machine: site.machine,
+						unit: health.unit,
+						activeState: health.activeState,
+						subState: health.subState,
+						restarts: health.restarts,
+						port: health.port,
+						healthy: health.healthy,
+						lastStatus: health.lastStatus,
+						lastLatencyMs: health.lastLatencyMs,
+						crashSummary: (health.crashSummary ?? null) as unknown as JsonValue,
+					}),
+				};
+			}
+			if (input.action === "app_reload") {
+				const appReload = gw?.appReload;
+				if (!appReload) refuse("APP_CONTROL_UNAVAILABLE: app reload is not available on this run's gateway");
+				const reloaded = await runMutatingApp((receiptId, envelope, signal) =>
+					appReload(
+						scope,
+						{
+							receiptId,
+							envelope,
+							slug: input.slug,
+							...(input.port !== undefined ? { port: input.port } : {}),
+							...(input.healthPath !== undefined ? { healthPath: input.healthPath } : {}),
+						},
+						signal,
+					),
+				);
+				return {
+					kind: "text",
+					value: cloudToolJsonText({
+						schema: "qorpera.site-app-reload/v1",
+						slug: input.slug,
+						machine: site.machine,
+						previousPort: reloaded.previousPort,
+						activePort: reloaded.activePort,
+						healthy: reloaded.healthy,
+						restarted: reloaded.restarted,
+					}),
+				};
+			}
+			const appLogs = gw?.appLogs;
+			if (!appLogs)
+				refuse("APP_LOGS_UNAVAILABLE: structured app logs are not available on this run's machine gateway");
+			const logs = await runApp(() =>
+				appLogs(
+					scope,
+					{
+						slug: input.slug,
+						...(input.grep !== undefined ? { grep: input.grep } : {}),
+						...(input.tail !== undefined ? { tail: input.tail } : {}),
+						...(input.stream !== undefined ? { stream: input.stream } : {}),
+						...(input.since !== undefined ? { since: input.since } : {}),
+					},
+					context.signal,
+				),
+			);
+			if (logs.schema !== "qorpera.machine-app-logs/v1" || logs.slug !== input.slug || !Array.isArray(logs.lines))
+				throw new Error("App logs differ");
+			return {
+				kind: "text",
+				value: cloudToolJsonText({
+					schema: "qorpera.site-app-logs/v1",
+					slug: input.slug,
+					machine: site.machine,
+					port: typeof site.port === "number" ? site.port : null,
+					lines: logs.lines as unknown as JsonValue,
+					totalMatched: logs.totalMatched,
+					truncated: logs.truncated,
+					crashSummary: (logs.crashSummary ?? null) as unknown as JsonValue,
+				}),
+			};
+		},
+	};
+	return [publish, unpublish, share, manage];
 }
 
 interface PublishReceipt {

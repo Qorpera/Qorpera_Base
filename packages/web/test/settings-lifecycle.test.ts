@@ -222,7 +222,9 @@ describe("settings session lifecycle", () => {
 			// On the company list itself the rail needs no way back to it.
 			expect(f.root.querySelector<HTMLElement>(".settings-back")!.hidden).toBe(true);
 			// The pages are switched from the rail now: Settings read none, and no rules until the Company tab draws them.
-			expect(rpcNames(f).filter((name) => name !== "qorpera_list_review_rules")).toEqual([]);
+			expect(
+				rpcNames(f).filter((name) => name !== "qorpera_list_review_rules" && name !== "qorpera_read_works_for"),
+			).toEqual([]);
 		},
 	);
 	it("preserves the selected company and focus when the profile list refreshes", async () => {

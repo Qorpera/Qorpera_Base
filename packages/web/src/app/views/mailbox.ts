@@ -673,11 +673,16 @@ function say(page: Page, text: string, agent: string | null, moveFocus?: string)
 	const id = ++toastIds;
 	page.ui.toast = { text, agent, id };
 	page.redraw(moveFocus);
-	setTimeout(() => {
+	const { signal } = page.company;
+	if (signal.aborted) return;
+	const timer = setTimeout(() => {
+		signal.removeEventListener("abort", stop);
 		if (page.ui.toast?.id !== id) return;
 		page.ui.toast = null;
 		page.redraw();
 	}, TOAST_MS);
+	const stop = () => clearTimeout(timer);
+	signal.addEventListener("abort", stop, { once: true });
 }
 
 // The page --------------------------------------------------------------------------------------------------------
@@ -2979,9 +2984,8 @@ function menuOn(page: Page, chip: HTMLElement, name: string, label: string, item
 		chipMenus.set(ui, name);
 		chip.setAttribute("aria-expanded", "true");
 	};
-	// A press on the chip while its menu is open only shuts the menu: the menu says which press shut it, and the click
-	// that press ends in opens nothing (as an agent's menu on the Members page). A click from the keyboard has no
-	// press before it.
+	// WHY: A press on the chip while its menu is open only shuts it; the menu names that press, so its click opens
+	// nothing. A click from the keyboard has no press before it.
 	let shuts = false;
 	chip.addEventListener("pointerdown", (event) => {
 		const shut = chipPresses.get(ui);

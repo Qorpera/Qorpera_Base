@@ -17,6 +17,7 @@ import {
 	parseCloudCodingCommandReceipt,
 } from "../src/cloud-coding-command-tools.ts";
 import { CODING_INSPECT_IMAGE_SCHEMA, MAX_CODING_INSPECT_IMAGE_BYTES } from "../src/cloud-coding-image-inspect.ts";
+import { CODING_PREFLIGHT_LAND_SCHEMA } from "../src/cloud-coding-preflight-land.ts";
 import { CLOUD_COMMAND_PAGE_ASK } from "../src/cloud-command-page-fit.ts";
 import { CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
 import { CloudNativeToolBoundary } from "../src/cloud-native-tool-boundary.ts";
@@ -29,7 +30,7 @@ import { pngChunk, pngFile, pngHeader, pngRows } from "./fixtures/png-fixture.ts
 
 const execFileAsync = promisify(execFile);
 
-function fixture() {
+function fixture(options?: { repositoryArea?: string }) {
 	const { authority } = nativeToolAuthorityFixture();
 	const identity = authority.identity;
 	const scope = { workerId: randomUUID(), vmId: randomUUID(), requestId: randomUUID(), turn: 1 };
@@ -63,7 +64,13 @@ function fixture() {
 			})
 		).content;
 	});
-	const tools = cloudCodingCommandTools({ scope, identity, gateway, operations: { execute } });
+	const tools = cloudCodingCommandTools({
+		scope,
+		identity,
+		gateway,
+		operations: { execute },
+		...(options?.repositoryArea ? { repositoryArea: options.repositoryArea } : {}),
+	});
 	const boundary = new CloudNativeToolBoundary({
 		companyId: identity.companyId,
 		runId: identity.runId,
@@ -461,6 +468,10 @@ describe("isolated coding command tools", () => {
 		{ operationKey: "pf-1", checkNames: ["test"], command: "npm test" },
 		{ operationKey: "pf-1", failFast: false, command: "npm test" },
 		{ operationKey: "pf-1", runChecks: true, failFast: "no" },
+		{ operationKey: "pf-1", runChecks: true, cleanCopy: "yes" },
+		{ operationKey: "pf-1", runChecks: true, validateSite: 1 },
+		{ operationKey: "pf-1", cleanCopy: true, command: "npm test" },
+		{ operationKey: "pf-1", validateSite: true, command: "npm test" },
 		{ operationKey: "pf-1", runChecks: true, checkNames: [] },
 		{ operationKey: "pf-1", runChecks: true, checkNames: ["test", "test"] },
 		{ operationKey: "pf-1", runChecks: true, checkNames: ["BadName"] },
@@ -1082,6 +1093,208 @@ describe("coding_run_command inspectImage visual screenshot inspection", () => {
 			expect(f.gateway.cancel).toHaveBeenCalledWith(f.scope, f.commandId, expect.any(AbortSignal));
 		} finally {
 			boundary.close();
+			f.boundary.close();
+		}
+	});
+});
+
+describe("coding_run_command preflightLand dry-run check", () => {
+	async function preflightRepo() {
+		const dir = await mkdtemp(join(tmpdir(), "preflight-land-"));
+		const gitEnv = {
+			...process.env,
+			GIT_AUTHOR_NAME: "Test",
+			GIT_AUTHOR_EMAIL: "test@example.invalid",
+			GIT_COMMITTER_NAME: "Test",
+			GIT_COMMITTER_EMAIL: "test@example.invalid",
+		};
+		const git = async (...args: string[]) =>
+			(await execFileAsync("git", args, { cwd: dir, env: gitEnv })).stdout.trim();
+		await git("init", "--quiet", "--initial-branch=main", ".");
+		await writeFile(join(dir, "app.ts"), "export const v = 1;\n");
+		await git("add", "--all");
+		await git("commit", "--quiet", "-m", "base");
+		await git("checkout", "--quiet", "-b", "work");
+		return { dir, git, gitEnv };
+	}
+
+	async function invokePreflight(cwd: string, operationKey: string, repositoryArea?: string) {
+		const f = fixture(repositoryArea ? { repositoryArea } : undefined);
+		f.gateway.start.mockImplementation(async (_scope, request) => {
+			let stdout = "";
+			let exitCode = 0;
+			try {
+				const res = await execFileAsync("sh", ["-c", request.command], { cwd, maxBuffer: 8 * 1024 * 1024 });
+				stdout = res.stdout;
+			} catch (error) {
+				const err = error as { code?: number; stdout?: string };
+				exitCode = typeof err.code === "number" ? err.code : 1;
+				stdout = err.stdout ?? "";
+			}
+			return {
+				...f.receipt,
+				commandId: request.commandId,
+				inputSha256: request.inputSha256,
+				state: "succeeded",
+				exitCode,
+				output: stdout,
+				truncated: false,
+				log: {
+					offset: 0,
+					nextOffset: Buffer.byteLength(stdout),
+					totalBytes: Buffer.byteLength(stdout),
+					limitBytes: 67108864,
+					limitReached: false,
+				},
+			};
+		});
+		try {
+			const res = await f.boundary.invoke("preflight", "qorpera", "coding_run_command", {
+				operationKey,
+				preflightLand: true,
+			});
+			const envelope = JSON.parse(res.contentItems[0].text) as { status: string; content: { text: string } };
+			return { res, envelope, parsed: res.success ? JSON.parse(envelope.content.text) : null };
+		} finally {
+			f.boundary.close();
+		}
+	}
+
+	it("reports readyToLand true for a clean branch and detects conflicts with messages and bad filenames", async () => {
+		const { dir, git } = await preflightRepo();
+		try {
+			await writeFile(join(dir, "feature.ts"), "export const ok = true;\n");
+			await git("add", "--all");
+			await git("commit", "--quiet", "-m", "feature");
+			const clean = await invokePreflight(dir, "preflight-clean");
+			expect(clean.res.success).toBe(true);
+			expect(clean.parsed).toMatchObject({
+				schema: CODING_PREFLIGHT_LAND_SCHEMA,
+				readyToLand: true,
+				mergeClean: true,
+				uncommittedChanges: 0,
+				conflictedPaths: [],
+				conflictMessages: [],
+				nameProblems: [],
+				largeFiles: [],
+			});
+
+			await writeFile(join(dir, "bad."), "trailing dot\n");
+			await git("add", "--all");
+			await git("commit", "--quiet", "-m", "bad name");
+			const badName = await invokePreflight(dir, "preflight-badname");
+			expect(badName.parsed).toMatchObject({
+				readyToLand: false,
+				mergeClean: true,
+				nameProblems: [{ code: "CODE_HOST_NAMES_FOLDER_REFUSES", path: "bad." }],
+			});
+			await git("rm", "--quiet", "bad.");
+			await git("commit", "--quiet", "-m", "remove bad name");
+
+			await writeFile(join(dir, "app.ts"), "export const v = 2;\n");
+			await git("add", "--all");
+			await git("commit", "--quiet", "-m", "work edits app");
+			await git("checkout", "--quiet", "main");
+			await writeFile(join(dir, "app.ts"), "export const v = 3;\n");
+			await git("add", "--all");
+			await git("commit", "--quiet", "-m", "main edits app");
+			await git("checkout", "--quiet", "work");
+
+			const conflict = await invokePreflight(dir, "preflight-conflict");
+			expect(conflict.res.success).toBe(true);
+			expect(conflict.parsed).toMatchObject({
+				schema: CODING_PREFLIGHT_LAND_SCHEMA,
+				readyToLand: false,
+				mergeClean: false,
+				conflictedPaths: ["app.ts"],
+			});
+			expect(conflict.parsed.conflictMessages.length).toBeGreaterThan(0);
+			expect(conflict.parsed.conflictMessages.join(" ")).toContain("CONFLICT");
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("flags paths exceeding the 2,600-byte folded-key limit including the worktree prefix", async () => {
+		const { dir, git } = await preflightRepo();
+		try {
+			const baseHead = await git("rev-parse", "HEAD");
+			const blobSha = await git("hash-object", "-w", join(dir, "app.ts"));
+			const commitSyntheticPath = async (relPath: string, message: string) => {
+				await git("reset", "--hard", "--quiet", baseHead);
+				await git("update-index", "--add", "--cacheinfo", `100644,${blobSha},${relPath}`);
+				const treeSha = await git("write-tree");
+				const commitSha = await git("commit-tree", treeSha, "-p", baseHead, "-m", message);
+				await git("update-ref", "HEAD", commitSha);
+			};
+
+			const longPath = `${Array.from({ length: 14 }, (_, i) => `d${String(i).padStart(2, "0")}_${"a".repeat(186)}`).join("/")}/file.ts`;
+			expect(Buffer.byteLength(longPath)).toBeGreaterThan(2650);
+			expect(Buffer.byteLength(longPath)).toBeLessThan(2800);
+			await commitSyntheticPath(longPath, "over 2600-byte path");
+			const over2700 = await invokePreflight(dir, "preflight-over-2700", "code/qorpera/site");
+			expect(over2700.res.success).toBe(true);
+			expect(over2700.parsed).toMatchObject({
+				readyToLand: false,
+				mergeClean: true,
+			});
+			expect(
+				over2700.parsed.nameProblems.some(
+					(item: { code: string; path: string }) => item.code === "CODE_HOST_NAMES_FOLDER_REFUSES",
+				),
+			).toBe(true);
+
+			// WHY: code/qorpera/site/worktrees/<36-char-uuid>/ is 65 bytes, leaving 2,535 bytes for the repo path.
+			const prefix12 = Array.from(
+				{ length: 12 },
+				(_, i) => `p${String(i).padStart(2, "0")}_${"b".repeat(191)}`,
+			).join("/");
+			const fitsPath = `${prefix12}/${"c".repeat(2520 - prefix12.length - 1)}`;
+			expect(Buffer.byteLength(fitsPath)).toBe(2520);
+			await commitSyntheticPath(fitsPath, "fits area key budget");
+			const fitsForSite = await invokePreflight(dir, "preflight-fits-site", "code/qorpera/site");
+			expect(fitsForSite.res.success).toBe(true);
+			expect(fitsForSite.parsed).toMatchObject({
+				mergeClean: true,
+				nameProblems: [],
+			});
+			const refusedDefault = await invokePreflight(dir, "preflight-refused-default");
+			expect(refusedDefault.res.success).toBe(true);
+			expect(refusedDefault.parsed).toMatchObject({
+				readyToLand: false,
+				mergeClean: true,
+				nameProblems: [{ code: "CODE_HOST_NAMES_FOLDER_REFUSES", path: fitsPath }],
+			});
+
+			const justOverPath = `${prefix12}/${"c".repeat(2540 - prefix12.length - 1)}`;
+			expect(Buffer.byteLength(justOverPath)).toBe(2540);
+			await commitSyntheticPath(justOverPath, "exceeds area key budget");
+			const overForSite = await invokePreflight(dir, "preflight-over-site", "code/qorpera/site");
+			expect(overForSite.res.success).toBe(true);
+			expect(overForSite.parsed).toMatchObject({
+				readyToLand: false,
+				mergeClean: true,
+				nameProblems: [{ code: "CODE_HOST_NAMES_FOLDER_REFUSES", path: justOverPath }],
+			});
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects invalid preflightLand argument combinations", async () => {
+		const f = fixture();
+		try {
+			for (const args of [
+				{ operationKey: "p1", preflightLand: false },
+				{ operationKey: "p2", preflightLand: true, command: "git status" },
+				{ operationKey: "p3", preflightLand: true, runChecks: true },
+				{ operationKey: "p4", preflightLand: true, timeoutMs: 5000 },
+			]) {
+				const res = await f.boundary.invoke("bad-preflight", "qorpera", "coding_run_command", args);
+				expect(res.success).toBe(false);
+			}
+			expect(f.gateway.start).not.toHaveBeenCalled();
+		} finally {
 			f.boundary.close();
 		}
 	});

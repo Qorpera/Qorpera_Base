@@ -20,6 +20,7 @@ import { basename, dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+	CODING_CHECK_CACHES,
 	CODING_GUEST,
 	CODING_PACKAGE_CACHES,
 	parseCodingGuestAnswer,
@@ -32,6 +33,7 @@ import {
 	type CodingGuestAgentPorts,
 	codingPackageCachesTmpfiles,
 	runCodingGuestAgent,
+	trimCodingCheckCaches,
 	trimCodingPackageCaches,
 } from "../src/cloud-coding-guest-agent.ts";
 import { FOLDER_CACHE } from "../src/cloud-folder-cache-dir.ts";
@@ -122,6 +124,8 @@ async function machine() {
 	await mkdir(join(root, "lib"));
 	await writeFile(resolv, "nameserver 192.0.2.53\n");
 	const calls: string[][] = [];
+	const ipBatches: { namespace?: string; force: boolean; lines: string[] }[] = [];
+	const namespaces = new Set<string>();
 	const chowns: [string, number, number][] = [];
 	const sleeps: number[] = [];
 	const units = new Map<string, Unit>();
@@ -243,6 +247,25 @@ async function machine() {
 					const [first, last] = args[at + 1].split("-").map(Number);
 					await appendFile(file, `${args[args.length - 1]}:${first}:${last - first + 1}\n`);
 				}
+			if (tool === "ip") {
+				const batchAt = args.indexOf("-batch");
+				if (batchAt >= 0 && args[batchAt + 1]) {
+					const nsAt = args.indexOf("-n");
+					const namespace = nsAt >= 0 ? args[nsAt + 1] : undefined;
+					const force = args.includes("-force");
+					const lines = (await readFile(args[batchAt + 1], "utf8"))
+						.split("\n")
+						.map((line) => line.trim())
+						.filter(Boolean);
+					ipBatches.push({ ...(namespace ? { namespace } : {}), force, lines });
+					for (const line of lines) {
+						if (line.startsWith("netns add ")) namespaces.add(line.slice("netns add ".length));
+						else if (line.startsWith("netns delete ")) namespaces.delete(line.slice("netns delete ".length));
+					}
+				} else if (args[0] === "netns" && args[1] === "delete" && args[2]) {
+					namespaces.delete(args[2]);
+				}
+			}
 			if (tool === "umount" && !state.stuckMount) mounts.delete(args[args.length - 1]);
 			if (tool === "systemctl" && args[0] === "show") await state.onShow?.(args[1]);
 			if (tool === "systemctl") return systemctl(args);
@@ -251,6 +274,8 @@ async function machine() {
 		},
 		bootId: async () => state.boot,
 		uptimeMs: async () => state.uptimeMs,
+		netnsExists: async (ns) => namespaces.has(ns),
+		totalMemoryBytes: async () => 8 * 1024 * 1024 * 1024,
 		cgroupRoot: join(root, "cgroup"),
 		procRoot: join(root, "proc"),
 		nowMs: () => Date.now() + state.skewMs,
@@ -294,6 +319,8 @@ async function machine() {
 		dataCommand,
 		work,
 		calls,
+		ipBatches,
+		namespaces,
 		chowns,
 		sleeps,
 		units,
@@ -565,16 +592,10 @@ describe("mounting a session", () => {
 			["usermod", "--add-subuids", "1048576-1114111", "--add-subgids", "1048576-1114111", "qorpera-200001"],
 			["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"],
 			["nft", "-f", join(m.runRoot, "networks", "rules.nft")],
-			["ip", "netns", "delete", ns],
-			["ip", "link", "delete", "qgh0"],
-			["ip", "netns", "add", ns],
-			["ip", "link", "add", "qgh0", "type", "veth", "peer", "name", "qgn0", "netns", ns],
-			["ip", "address", "add", "10.253.0.1/30", "dev", "qgh0"],
-			["ip", "link", "set", "qgh0", "up"],
-			["ip", "-n", ns, "link", "set", "lo", "up"],
-			["ip", "-n", ns, "address", "add", "10.253.0.2/30", "dev", "qgn0"],
-			["ip", "-n", ns, "link", "set", "qgn0", "up"],
-			["ip", "-n", ns, "route", "add", "default", "via", "10.253.0.1"],
+			["ip", "-force", "-batch", expect.any(String)],
+			["ip", "-batch", expect.any(String)],
+			["ip", "-n", ns, "-batch", expect.any(String)],
+			["systemctl", "daemon-reload"],
 			["systemctl", "stop", s.folderUnit],
 			show(s.folderUnit),
 			show(s.folderUnit),
@@ -584,10 +605,33 @@ describe("mounting a session", () => {
 			["systemctl", "try-restart", "user@200001.service"],
 			["loginctl", "enable-linger", "qorpera-200001"],
 		]);
+		expect(m.ipBatches).toEqual([
+			{ force: true, lines: [`netns delete ${ns}`, "link delete qgh0"] },
+			{
+				force: false,
+				lines: [
+					`netns add ${ns}`,
+					`link add qgh0 type veth peer name qgn0 netns ${ns}`,
+					"address add 10.253.0.1/30 dev qgh0",
+					"link set qgh0 up",
+				],
+			},
+			{
+				namespace: ns,
+				force: false,
+				lines: [
+					"link set lo up",
+					"address add 10.253.0.2/30 dev qgn0",
+					"link set qgn0 up",
+					"route add default via 10.253.0.1",
+				],
+			},
+		]);
 		expect(m.calls.find(([tool]) => tool === "systemd-run")).toEqual([
 			"systemd-run",
 			"--quiet",
 			`--unit=${s.folderUnit}`,
+			"--slice=qorpera-folder.slice",
 			...[
 				"Type=exec",
 				"StartLimitIntervalSec=0",
@@ -986,29 +1030,46 @@ describe("mounting a session", () => {
 		const workerId = randomUUID();
 		const s = sessionAt(m, workerId);
 		const ns = s.namespace;
+		m.ipBatches.length = 0;
 		expect((await call(m, "mount", mountRequest(workerId))).line.mount).toBe("mounted");
 		expect(m.calls.filter(([tool]) => tool === "sysctl" || tool === "nft" || tool === "ip")).toEqual([
-			["ip", "netns", "delete", ns],
-			["ip", "link", "delete", "qgh1"],
-			["ip", "netns", "add", ns],
-			["ip", "link", "add", "qgh1", "type", "veth", "peer", "name", "qgn1", "netns", ns],
-			["ip", "address", "add", "10.253.0.5/30", "dev", "qgh1"],
-			["ip", "link", "set", "qgh1", "up"],
-			["ip", "-n", ns, "link", "set", "lo", "up"],
-			["ip", "-n", ns, "address", "add", "10.253.0.6/30", "dev", "qgn1"],
-			["ip", "-n", ns, "link", "set", "qgn1", "up"],
-			["ip", "-n", ns, "route", "add", "default", "via", "10.253.0.5"],
+			["ip", "-force", "-batch", expect.any(String)],
+			["ip", "-batch", expect.any(String)],
+			["ip", "-n", ns, "-batch", expect.any(String)],
+		]);
+		expect(m.ipBatches).toEqual([
+			{ force: true, lines: [`netns delete ${ns}`, "link delete qgh1"] },
+			{
+				force: false,
+				lines: [
+					`netns add ${ns}`,
+					`link add qgh1 type veth peer name qgn1 netns ${ns}`,
+					"address add 10.253.0.5/30 dev qgh1",
+					"link set qgh1 up",
+				],
+			},
+			{
+				namespace: ns,
+				force: false,
+				lines: [
+					"link set lo up",
+					"address add 10.253.0.6/30 dev qgn1",
+					"link set qgn1 up",
+					"route add default via 10.253.0.5",
+				],
+			},
 		]);
 		expect(await readFile(join(m.runRoot, "networks", "1"), "utf8")).toBe(s.w);
 		// The networks' records live in memory: a restarted machine has none.
 		await rm(join(m.runRoot, "networks"), { recursive: true });
 		m.calls.length = 0;
+		m.ipBatches.length = 0;
 		expect((await call(m, "mount", mountRequest(workerId))).line.mount).toBe("mounted");
 		expect(m.calls.filter(([tool]) => tool === "sysctl" || tool === "nft")).toEqual([
 			["sysctl", "-q", "-w", "net.ipv4.ip_forward=1"],
 			["nft", "-f", join(m.runRoot, "networks", "rules.nft")],
 		]);
-		expect(m.calls).toContainEqual(["ip", "address", "add", "10.253.0.1/30", "dev", "qgh0"]);
+		expect(m.ipBatches[1]?.lines).toContain("address add 10.253.0.1/30 dev qgh0");
 	});
 	it("refuses another view while something is still mounted where it goes, keeping the old one", async () => {
 		const m = await machine();
@@ -1086,13 +1147,18 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 					settings: {},
 					trees: ["archive-v*/*", "environments-v*/*", "builds-v*/*"],
 				},
-				// Playwright's own browser GC, run by one session, removes another's browsers (its install unreadable).
 				{
 					folder: "ms-playwright",
 					variables: ["PLAYWRIGHT_BROWSERS_PATH"],
 					settings: { PLAYWRIGHT_SKIP_BROWSER_GC: "1" },
 					trees: ["*"],
 				},
+				{ folder: "cargo", variables: ["CARGO_HOME"], settings: {}, trees: ["registry/src/*", "git/checkouts/*"] },
+				{ folder: "go-mod", variables: ["GOMODCACHE"], settings: {}, trees: ["*"] },
+				{ folder: "go-build", variables: ["GOCACHE"], settings: {}, trees: [] },
+				{ folder: "bun", variables: ["BUN_INSTALL_CACHE_DIR"], settings: {}, trees: ["*"] },
+				{ folder: "turbo", variables: ["TURBO_CACHE_DIR"], settings: {}, trees: [] },
+				{ folder: "sccache", variables: ["SCCACHE_DIR"], settings: {}, trees: [] },
 			],
 		});
 		const acl = "group:qorpera-coding:rwx,default:group:qorpera-coding:rwx";
@@ -1100,17 +1166,35 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 			[
 				"# The machine's package caches, which its coding sessions and Qorpera's checks share. Written by the coding guest",
 				"# agent at the first mount of each boot (CODING_PACKAGE_CACHES).",
-				...["", "/npm", "/pnpm", "/pip", "/uv", "/ms-playwright"].flatMap((folder) => [
+				...[
+					"",
+					"/npm",
+					"/pnpm",
+					"/pip",
+					"/uv",
+					"/ms-playwright",
+					"/cargo",
+					"/go-mod",
+					"/go-build",
+					"/bun",
+					"/turbo",
+					"/sccache",
+				].flatMap((folder) => [
 					`d /var/cache/qorpera-packages${folder} 2775 root qorpera-coding 30d`,
 					`a /var/cache/qorpera-packages${folder} - - - - ${acl}`,
 				]),
-				// The trees tmpfiles ages no file of: the agent ages each whole.
+				`d ${CODING_CHECK_CACHES.root} 0755 root root 30d`,
 				"x /var/cache/qorpera-packages/npm/_npx/*",
 				"x /var/cache/qorpera-packages/pnpm/v*/links/*",
 				"x /var/cache/qorpera-packages/uv/archive-v*/*",
 				"x /var/cache/qorpera-packages/uv/environments-v*/*",
 				"x /var/cache/qorpera-packages/uv/builds-v*/*",
 				"x /var/cache/qorpera-packages/ms-playwright/*",
+				"x /var/cache/qorpera-packages/cargo/registry/src/*",
+				"x /var/cache/qorpera-packages/cargo/git/checkouts/*",
+				"x /var/cache/qorpera-packages/go-mod/*",
+				"x /var/cache/qorpera-packages/bun/*",
+				`x ${CODING_CHECK_CACHES.root}/*/*`,
 				"",
 			].join("\n"),
 		);
@@ -1267,25 +1351,34 @@ describe("the package caches' trim", () => {
 		await at("npm", past, past);
 		const browser = await planted(join(root, "ms-playwright", "ffmpeg-1013", "tiny"), 1024);
 		await utimes(browser, ahead(3), ahead(3));
-		expect(await trimCodingPackageCaches(root, 2.5 * MIB)).toEqual(["pnpm", "npm"]);
+		expect(await trimCodingPackageCaches(root, 2.5 * MIB)).toEqual(["pnpm/store/entry", "npm/store/entry"]);
 		for (const folder of ["pnpm", "npm"]) {
 			expect((await lstat(join(root, folder))).isDirectory()).toBe(true);
 			expect(await readdir(join(root, folder))).toEqual([]);
 		}
 		for (const folder of ["uv", "pip"]) expect(await readdir(join(root, folder, "store"))).toEqual(["entry"]);
 		expect(await readdir(join(root, "ms-playwright", "ffmpeg-1013"))).toEqual(["tiny"]);
-		// At the limit, nothing goes; a byte under it, the least recently used that holds anything.
 		let total = 0;
 		for (const folder of await readdir(root)) total += await held(join(root, folder));
 		expect(await trimCodingPackageCaches(root, total)).toEqual([]);
-		expect(await trimCodingPackageCaches(root, total - 1)).toEqual(["uv"]);
-		expect(await trimCodingPackageCaches(root, 0)).toEqual(["pip", "ms-playwright"]);
+		expect(await trimCodingPackageCaches(root, total - 1)).toEqual(["uv/store/entry"]);
+		expect(await trimCodingPackageCaches(root, 0)).toEqual(["pip/store/entry", "ms-playwright/ffmpeg-1013"]);
+	});
+
+	it("evicts only least-recently-used entries inside a tool folder while keeping newer entries intact", async () => {
+		const root = await caches();
+		const older = await planted(join(root, "npm", "_cacache", "content-v2", "old-entry"));
+		await utimes(older, past, past);
+		await delay(30);
+		const newer = await planted(join(root, "npm", "_cacache", "content-v2", "new-entry"));
+		await utimes(newer, ahead(1), ahead(1));
+		expect(await trimCodingPackageCaches(root, 1.5 * MIB)).toEqual(["npm/_cacache/content-v2/old-entry"]);
+		expect(await readdir(join(root, "npm", "_cacache", "content-v2"))).toEqual(["new-entry"]);
 	});
 
 	it("counts the blocks a folder holds: a file linked twice once, a sparse file as what it holds", async () => {
 		const root = await caches();
 		const shared = await planted(join(root, "pnpm", "files", "00", "a"));
-		// Linked twice in pnpm's own folder too: one folder, however many of its names.
 		await link(shared, join(root, "pnpm", "files", "00", "b"));
 		await mkdir(join(root, "uv", "archive-v0"), { recursive: true });
 		await link(shared, join(root, "uv", "archive-v0", "a"));
@@ -1295,9 +1388,11 @@ describe("the package caches' trim", () => {
 		await utimes(await planted(join(root, "npm", "_cacache", "used"), 64 * 1024), ahead(2), ahead(2));
 		expect(await trimCodingPackageCaches(root, 1.5 * MIB)).toEqual([]);
 		expect(await readdir(join(root, "uv", "archive-v0"))).toEqual(["a"]);
-		// Under half of it, pnpm goes first (a tie with uv, in the tools' order), and the file stays on disk through uv's
-		// link: uv goes too. Then they hold less than the limit: pip and npm, used later, stay.
-		expect(await trimCodingPackageCaches(root, 0.5 * MIB)).toEqual(["pnpm", "uv"]);
+		expect(await trimCodingPackageCaches(root, 0.5 * MIB)).toEqual([
+			"pnpm/files/00/a",
+			"pnpm/files/00/b",
+			"uv/archive-v0/a",
+		]);
 		expect(await readdir(join(root, "pnpm"))).toEqual([]);
 		expect(await readdir(join(root, "uv"))).toEqual([]);
 		expect(await readdir(join(root, "pip", "wheels"))).toEqual(["sparse"]);
@@ -1383,6 +1478,22 @@ describe("the package caches' trim", () => {
 		expect(await readdir(dirname(elsewhere))).toEqual(["big"]);
 		expect(await trimCodingPackageCaches(join(root, "none"), 0)).toEqual([]);
 	});
+
+	it("trims check caches by LRU .last-used timestamp and cleans stale staging directories", async () => {
+		const root = await caches();
+		await planted(join(root, "repo-a", "old-key", "data", "blob"));
+		const oldMarker = await planted(join(root, "repo-a", "old-key", ".last-used"), 0);
+		await utimes(oldMarker, past, past);
+		await delay(30);
+		await planted(join(root, "repo-b", "new-key", "data", "blob"));
+		const newMarker = await planted(join(root, "repo-b", "new-key", ".last-used"), 0);
+		await utimes(newMarker, ahead(2), ahead(2));
+		await planted(join(root, "repo-a", ".staging-stale", "tmp"), 1024);
+		const nowMs = Date.now() + 2 * 3_600_000;
+		expect(await trimCodingCheckCaches(root, 1.5 * MIB, nowMs)).toEqual(["repo-a/old-key"]);
+		await gone(join(root, "repo-a"));
+		expect(await readdir(join(root, "repo-b"))).toEqual(["new-key"]);
+	});
 });
 
 describe("running a command", () => {
@@ -1417,6 +1528,7 @@ describe("running a command", () => {
 				"Type=exec",
 				"ExitType=cgroup",
 				"KillMode=control-group",
+				"OOMPolicy=kill",
 				"TimeoutStopSec=5",
 				"RuntimeMaxSec=60",
 				"ProtectProc=invisible",
@@ -2401,5 +2513,181 @@ describe("stopping a session", () => {
 		for (const path of [join(s.mountpoint, "left"), s.user]) expect((await lstat(path)).isFile()).toBe(true);
 		expect((await lstat(s.folderCache)).isDirectory()).toBe(true);
 		await gone(join(m.runRoot, "networks", "0"));
+	});
+});
+
+describe("batched status-all, cgroup isolation, lock-free network reuse, and ended pruning", () => {
+	it("reads cgroup v2 cpu.stat and io.stat in status-all without touching /proc, and falls back to one /proc scan when io.stat is absent", async () => {
+		const m = await machine();
+		const first = await mounted(m, randomUUID());
+		const second = randomUUID();
+		expect((await call(m, "mount", mountRequest(second, { ...VIEW, viewId: "view-2" }, 200002))).line.mount).toBe(
+			"mounted",
+		);
+		const s1 = sessionAt(m, first);
+		const s2 = sessionAt(m, second);
+		m.state.command = "hold";
+		const c1 = randomUUID();
+		expect((await call(m, "run", runRequest(m, first, c1, "sleep 60"))).line.state).toBe("running");
+
+		const cgroup1 = join(m.root, "cgroup", "qorpera.slice", "qorpera-coding.slice", s1.slice);
+		const cgroup2 = join(m.root, "cgroup", "qorpera-coding.slice", s2.slice);
+		const user1 = join(m.root, "cgroup", "user.slice", "user-200001.slice");
+		await mkdir(cgroup1, { recursive: true });
+		await mkdir(cgroup2, { recursive: true });
+		await mkdir(user1, { recursive: true });
+		await writeFile(join(cgroup1, "cpu.stat"), "usage_usec 1200000\n");
+		await writeFile(join(cgroup1, "io.stat"), "8:0 rbytes=4096 wbytes=1024 rios=1 wios=1\n");
+		await writeFile(join(user1, "cpu.stat"), "usage_usec 300000\n");
+		await writeFile(join(user1, "io.stat"), "8:0 rbytes=2048 wbytes=512\n");
+		await writeFile(join(cgroup2, "cpu.stat"), "usage_usec 50000\n");
+		await writeFile(join(cgroup2, "io.stat"), "8:0 rbytes=128 wbytes=64\n");
+		await rm(join(m.root, "proc"), { recursive: true });
+
+		m.calls.length = 0;
+		const batched = await call(m, "status-all", {
+			schema: "qorpera.coding-guest-status-all/v1",
+			workerIds: [first, second],
+		});
+		expect(batched.code).toBe(0);
+		expect(batched.line).toEqual({
+			schema: "qorpera.coding-guest-status-all/v1",
+			bootId: m.state.boot,
+			uptimeMs: m.state.uptimeMs,
+			sessions: [
+				{
+					workerId: first,
+					commands: [{ commandId: c1, state: "running", exit: null, end: 0 }],
+					usage: {
+						bootId: m.state.boot,
+						uptimeMs: m.state.uptimeMs,
+						cpuUsageUsec: 1500000,
+						ioBytes: 7680,
+						ioComplete: true,
+					},
+				},
+				{
+					workerId: second,
+					commands: [],
+					usage: {
+						bootId: m.state.boot,
+						uptimeMs: m.state.uptimeMs,
+						cpuUsageUsec: 50000,
+						ioBytes: 192,
+						ioComplete: true,
+					},
+				},
+			],
+		});
+
+		await rm(join(cgroup1, "io.stat"));
+		await rm(join(user1, "io.stat"));
+		await rm(join(cgroup2, "io.stat"));
+		await mkdir(join(m.root, "proc", "501"), { recursive: true });
+		await writeFile(
+			join(m.root, "proc", "501", "cgroup"),
+			`0::/qorpera.slice/qorpera-coding.slice/${s1.slice}/qorpera-coding-${s1.w}-${compact(c1)}.service\n`,
+		);
+		await writeFile(join(m.root, "proc", "501", "cmdline"), "/bin/bash\0-c\0sleep 60\0");
+		await writeFile(join(m.root, "proc", "501", "io"), "rchar: 900\nwchar: 100\n");
+
+		const fallback = await call(m, "status-all", {
+			schema: "qorpera.coding-guest-status-all/v1",
+			workerIds: [first, second],
+		});
+		expect(fallback.code).toBe(0);
+		expect(fallback.line.sessions[0].usage.ioBytes).toBe(1000);
+		expect(fallback.line.sessions[0].usage.ioComplete).toBe(true);
+		expect(fallback.line.sessions[1].usage.ioBytes).toBe(0);
+		expect(fallback.line.sessions[1].usage.ioComplete).toBe(true);
+	});
+
+	it("writes per-session cgroup v2 slice and qorpera-folder.slice limits and skips daemon-reload and ip on warm remount", async () => {
+		const m = await machine();
+		const workerId = await mounted(m);
+		const s = sessionAt(m, workerId);
+		const folderSlice = await readFile(join(m.systemdRoot, "qorpera-folder.slice"), "utf8");
+		expect(folderSlice).toContain("MemoryHigh=15%");
+		expect(folderSlice).toContain("MemoryMax=20%");
+		const sessionSlice = await readFile(join(m.systemdRoot, s.slice), "utf8");
+		expect(sessionSlice).toContain("CPUWeight=100");
+		expect(sessionSlice).toContain("IOWeight=100");
+		expect(sessionSlice).toContain("IOAccounting=yes");
+		expect(sessionSlice).toContain("TasksMax=512");
+		expect(sessionSlice).toContain("MemoryMax=4096M");
+		expect(sessionSlice).toContain("MemoryHigh=3481M");
+		expect((await lstat(join(m.runRoot, "networks", `${s.w}.json`))).isFile()).toBe(true);
+
+		m.calls.length = 0;
+		m.ipBatches.length = 0;
+		expect((await call(m, "mount", mountRequest(workerId))).line.mount).toBe("mounted");
+		expect(m.calls.some(([tool]) => tool === "ip")).toBe(false);
+		expect(m.calls.some(([tool, action]) => tool === "systemctl" && action === "daemon-reload")).toBe(false);
+		expect(m.ipBatches).toEqual([]);
+	});
+
+	it("preserves intent and outcome tombstones past 256 ended commands while pruning expired output and active markers", async () => {
+		const m = await machine();
+		const workerId = await mounted(m);
+		const s = sessionAt(m, workerId);
+		const nowSec = Math.floor(Date.now() / 1000);
+		const expired = await plant(m, workerId, { boot: randomUUID() });
+		await writeFile(join(expired.output, "00000000000000000000.log"), "old-bytes");
+		await writeFile(
+			expired.outcome,
+			JSON.stringify({
+				schema: "qorpera.coding-guest-outcome/v1",
+				commandId: expired.commandId,
+				state: "exited",
+				exit: { code: 0, signal: null },
+				end: 9,
+			}),
+		);
+		await utimes(expired.outcome, 1000, 1000);
+		await mkdir(join(m.runRoot, "active", s.w), { recursive: true });
+		await writeFile(join(m.runRoot, "active", s.w, expired.c), "");
+
+		const recent: Awaited<ReturnType<typeof plant>>[] = [];
+		for (let i = 0; i < CODING_GUEST.maxStatusCommands + 5; i++) {
+			const cmd = await plant(m, workerId, { boot: randomUUID() });
+			await writeFile(join(cmd.output, "00000000000000000000.log"), "kept");
+			await writeFile(
+				cmd.outcome,
+				JSON.stringify({
+					schema: "qorpera.coding-guest-outcome/v1",
+					commandId: cmd.commandId,
+					state: "exited",
+					exit: { code: 0, signal: null },
+					end: 4,
+				}),
+			);
+			await utimes(cmd.outcome, nowSec - i, nowSec - i);
+			recent.push(cmd);
+		}
+		const fresh = await ran(m, workerId, "printf ok");
+		expect(fresh.commandId).toBeTruthy();
+
+		expect((await lstat(expired.intent)).isFile()).toBe(true);
+		expect((await lstat(expired.outcome)).isFile()).toBe(true);
+		await expect(lstat(expired.output)).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(lstat(join(m.runRoot, "active", s.w, expired.c))).rejects.toMatchObject({ code: "ENOENT" });
+
+		const oldestRecent = recent.at(-1)!;
+		expect((await lstat(oldestRecent.intent)).isFile()).toBe(true);
+		expect((await lstat(oldestRecent.outcome)).isFile()).toBe(true);
+		expect(await readFile(join(oldestRecent.output, "00000000000000000000.log"), "utf8")).toBe("kept");
+
+		const liveId = randomUUID();
+		const startedLive = await call(m, "run", runRequest(m, workerId, liveId, "sleep 60"));
+		expect(startedLive.line).toMatchObject({ commandId: liveId, state: "running" });
+
+		const status = await call(m, "status-all", {
+			schema: "qorpera.coding-guest-status-all/v1",
+			workerIds: [workerId],
+		});
+		expect(status.code).toBe(0);
+		expect(status.line.sessions[0].commands.map((c: { commandId: string }) => c.commandId)).toEqual([liveId]);
+		await call(m, "cancel", { schema: "qorpera.coding-guest-cancel/v1", workerId, commandId: liveId });
+		await m.settle();
 	});
 });

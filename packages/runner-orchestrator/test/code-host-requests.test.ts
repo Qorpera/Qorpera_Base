@@ -170,7 +170,15 @@ function setup(options: Partial<CodeHostRequestsOptions> = {}) {
 	const jobs = {
 		undo: vi.fn<CodeRequestJobs["undo"]>(async () => {
 			order.push("undo");
-			return { state: "undone", mainBefore: MAIN, mainAfter: UNDONE, diff: DIFF, replayed: false };
+			return {
+				state: "undone",
+				mainBefore: MAIN,
+				mainAfter: UNDONE,
+				diff: DIFF,
+				replayed: false,
+				matchesBeforeTree: false,
+				checksFilePresent: false,
+			};
 		}),
 		archive: vi.fn<CodeRequestJobs["archive"]>(async () => {
 			order.push("archive");
@@ -1494,5 +1502,362 @@ describe("CodeHostRequests", () => {
 		} finally {
 			watch.restore();
 		}
+	});
+
+	describe("query, lifecycle, v2 undo, and wake", () => {
+		it("claims query and lifecycle kinds only when those jobs are configured, and executes read-only queries with readOnly: true", async () => {
+			const log = vi.fn<NonNullable<CodeRequestJobs["log"]>>(async () => ({
+				ref: "main",
+				resolvedSha: MAIN,
+				commits: [
+					{ sha: MAIN, parents: [BEFORE], author: "Alice", authoredAt: "2026-11-22T00:00:00Z", subject: "Init" },
+				],
+			}));
+			const show = vi.fn<NonNullable<CodeRequestJobs["show"]>>(async () => {
+				throw new CodeHostRefusal("CODE_HOST_BINARY_FILE", ["assets/logo.png"]);
+			});
+			const start = vi.fn<NonNullable<CodeRequestJobs["start"]>>(async () => ({
+				state: "started" as const,
+				baseSha: MAIN,
+				restored: [],
+			}));
+			const tag = vi.fn<NonNullable<CodeRequestJobs["tag"]>>(async (_job, value) =>
+				value.mode === "list"
+					? {
+							mode: "list" as const,
+							tags: [
+								{
+									tag: "v1.0.0",
+									kind: "lightweight" as const,
+									sha: MAIN,
+									targetSha: MAIN,
+									createdAt: "2026-11-22T00:00:00Z",
+									subject: "Init",
+								},
+							],
+						}
+					: {
+							mode: "create" as const,
+							tag: value.tag ?? "v1.0.0",
+							kind: "lightweight" as const,
+							sha: MAIN,
+							targetSha: MAIN,
+						},
+			);
+			const prune = vi.fn<NonNullable<CodeRequestJobs["prune"]>>(async (_job, value) => ({
+				retiredWorktrees: [...value.workerIds],
+				deletedBranches:
+					value.phase === "git-folder" && value.deleteMergedBranches
+						? value.workerIds.map((id) => `qorpera/coding/${id}`)
+						: [],
+				skippedWorktrees: [],
+			}));
+			const t = setup();
+			t.kernel.answer = (method, args) => {
+				if (method === "qorpera_code_request_step") {
+					const step = (args.p_progress as { step?: string } | null)?.step;
+					return {
+						schema: STEP,
+						state: "go",
+						leaseUntil: "2026-11-10T12:35:00+00:00",
+						candidates: step === "files" ? [R1, R2] : [R1],
+					};
+				}
+				return undefined;
+			};
+			const extraJobs: CodeRequestJobs = { ...t.jobs, log, show, start, tag, prune };
+			const r = new CodeHostRequests({
+				control: t.kernel,
+				hosts: {
+					run: async (companyId, environmentId, runSignal, job, jobOptions) => {
+						t.runs.push({ companyId, environmentId, options: jobOptions });
+						return job({ shell: SHELL, layout: CODE_HOST_LAYOUT, signal: runSignal }, BLOCK);
+					},
+				},
+				jobs: extraJobs,
+				records: { inJob: t.inJob },
+				owner: OWNER,
+				machineIdSha256: MACHINE,
+			});
+			t.kernel.claims = [
+				[
+					{
+						requestId: R1,
+						token: T1,
+						...WHERE,
+						kind: "query",
+						op: "log",
+						query: { ref: "main", limit: 10 },
+					},
+					{
+						requestId: R2,
+						token: T2,
+						...WHERE,
+						kind: "query",
+						op: "show",
+						query: { ref: "main", path: "assets/logo.png" },
+					},
+					{
+						requestId: R3,
+						token: T3,
+						...WHERE,
+						kind: "lifecycle",
+						op: "create",
+						lifecycle: {},
+					},
+				],
+				[
+					{
+						requestId: R1,
+						token: T1,
+						...WHERE,
+						kind: "lifecycle",
+						op: "tag",
+						lifecycle: { mode: "list" },
+					},
+					{
+						requestId: R2,
+						token: T2,
+						...WHERE,
+						kind: "lifecycle",
+						op: "prune",
+						lifecycle: { workerIds: [R1], deleteMergedBranches: true },
+					},
+				],
+			];
+			await expect(r.pass(new AbortController().signal)).resolves.toEqual({
+				done: 2,
+				refused: 1,
+				failed: 0,
+				busy: 0,
+			});
+			expect(t.calls[0]).toEqual({
+				method: "qorpera_code_requests_claim",
+				args: { ...WHO, p_limit: 10, p_kinds: ["undo", "download", "restore", "query", "lifecycle"] },
+			});
+			expect(t.runs[0]?.options).toEqual({ readOnly: true });
+			expect(t.runs[1]?.options).toEqual({ readOnly: true });
+			expect(t.runs[2]?.options).toBeUndefined();
+			expect(t.finishes()[0]).toEqual(
+				finishOf(R1, T1, {
+					schema: SCHEMA,
+					state: "done",
+					result: "ok",
+					data: {
+						ref: "main",
+						resolvedSha: MAIN,
+						commits: [
+							{
+								sha: MAIN,
+								parents: [BEFORE],
+								author: "Alice",
+								authoredAt: "2026-11-22T00:00:00Z",
+								subject: "Init",
+							},
+						],
+					},
+				}),
+			);
+			expect(t.finishes()[1]).toEqual(
+				finishOf(R2, T2, {
+					schema: SCHEMA,
+					state: "refused",
+					code: "CODE_HOST_BINARY_FILE",
+					paths: ["assets/logo.png"],
+				}),
+			);
+			expect(t.finishes()[2]).toEqual(
+				finishOf(R3, T3, { schema: SCHEMA, state: "done", result: "created", mainSha: MAIN, created: true }),
+			);
+
+			await expect(r.pass(new AbortController().signal)).resolves.toEqual({
+				done: 2,
+				refused: 0,
+				failed: 0,
+				busy: 0,
+			});
+			expect(t.runs[3]?.options).toEqual({ readOnly: true });
+			expect(t.runs[4]?.options).toBeUndefined();
+			expect(t.runs[5]?.options).toBeUndefined();
+			expect(prune.mock.calls.map((c) => [c[1].phase, c[1].workerIds, c[1].deleteMergedBranches])).toEqual([
+				["files", [R1, R2], undefined],
+				["git-folder", [R1], true],
+			]);
+			expect(t.finishes()[3]).toEqual(
+				finishOf(R1, T1, {
+					schema: SCHEMA,
+					state: "done",
+					result: "tags",
+					tags: [
+						{
+							tag: "v1.0.0",
+							kind: "lightweight",
+							sha: MAIN,
+							targetSha: MAIN,
+							createdAt: "2026-11-22T00:00:00Z",
+							subject: "Init",
+						},
+					],
+				}),
+			);
+			expect(t.finishes()[4]).toEqual(
+				finishOf(R2, T2, {
+					schema: SCHEMA,
+					state: "done",
+					result: "pruned",
+					retiredWorktrees: [R1],
+					deletedBranches: [`qorpera/coding/${R1}`],
+					skippedWorktrees: [],
+				}),
+			);
+		});
+
+		it("handles dryRun undo, checked undo refusals, conflict messages, prior site pin reuse, and immediate wake()", async () => {
+			const pinSite = vi.fn<NonNullable<CodeRequestJobs["pinSite"]>>(async () => ({
+				pinned: true,
+				ref: "refs/qorpera/sites/change-15",
+			}));
+			const wakeSites = vi.fn();
+			const verifyUndoChecks = vi.fn(async () => "passed" as const);
+			const t = setup({ sites: { wake: wakeSites }, verifyUndoChecks });
+			t.jobs.undo
+				.mockResolvedValueOnce({
+					state: "dry_run",
+					clean: true,
+					mainBefore: MAIN,
+					filesChanged: 2,
+					paths: DIFF.paths,
+					pathsMore: 0,
+					matchesBeforeTree: true,
+					checksFilePresent: true,
+					conflictedPaths: [],
+					conflictMessages: [],
+				})
+				.mockResolvedValueOnce({
+					state: "undone",
+					mainBefore: MAIN,
+					mainAfter: UNDONE,
+					diff: DIFF,
+					replayed: false,
+					matchesBeforeTree: true,
+					checksFilePresent: true,
+				})
+				.mockRejectedValueOnce(
+					new CodeHostRefusal(
+						"CODE_HOST_UNDO_CONFLICT",
+						["src/front.tsx"],
+						["CONFLICT (content): Merge conflict in src/front.tsx"],
+					),
+				);
+			const r = new CodeHostRequests({
+				control: t.kernel,
+				hosts: {
+					run: async (companyId, environmentId, runSignal, job, jobOptions) => {
+						t.runs.push({ companyId, environmentId, options: jobOptions });
+						return job({ shell: SHELL, layout: CODE_HOST_LAYOUT, signal: runSignal }, BLOCK);
+					},
+				},
+				jobs: { ...t.jobs, pinSite },
+				records: { inJob: t.inJob },
+				sites: { wake: wakeSites },
+				verifyUndoChecks,
+				owner: OWNER,
+				machineIdSha256: MACHINE,
+			});
+			t.kernel.claims = [
+				[
+					{ ...UNDO, dryRun: true },
+					{
+						...UNDO,
+						requestId: R2,
+						token: T2,
+						runChecks: true,
+						priorVerifiedChange: 11,
+						siteConfigured: true,
+						priorSite: { change: 11, tree: BEFORE },
+					},
+					{ ...UNDO, requestId: R3, token: T3 },
+				],
+			];
+			await expect(r.pass(new AbortController().signal)).resolves.toEqual({
+				done: 2,
+				refused: 1,
+				failed: 0,
+				busy: 0,
+			});
+			expect(t.runs[0]?.options).toEqual({ readOnly: true });
+			expect(t.inJob).toHaveBeenCalledTimes(1);
+			expect(pinSite).toHaveBeenCalledTimes(1);
+			expect(wakeSites).toHaveBeenCalledTimes(1);
+			expect(t.finishes()[0]).toEqual(
+				finishOf(R1, T1, {
+					schema: SCHEMA,
+					state: "done",
+					result: "dry_run",
+					clean: true,
+					mainBefore: MAIN,
+					filesChanged: 2,
+					paths: DIFF.paths,
+					pathsMore: 0,
+					wouldRevert: [12],
+					matchesBeforeTree: true,
+					checksFilePresent: true,
+					conflictedPaths: [],
+					conflictMessages: [],
+				}),
+			);
+			expect(t.finishes()[1]).toMatchObject(
+				finishOf(R2, T2, {
+					schema: SCHEMA,
+					state: "done",
+					result: "undone",
+					matchesBeforeTree: true,
+					checksVerified: "inherited",
+					siteReused: true,
+				}),
+			);
+			expect(t.finishes()[2]).toEqual(
+				finishOf(R3, T3, {
+					schema: SCHEMA,
+					state: "refused",
+					code: "CODE_HOST_UNDO_CONFLICT",
+					paths: ["src/front.tsx"],
+					messages: ["CONFLICT (content): Merge conflict in src/front.tsx"],
+				}),
+			);
+			const unverified = setup();
+			unverified.jobs.undo.mockImplementationOnce(async (_job, value) => {
+				await value.verifyChecks?.({
+					commitSha: UNDONE,
+					mainBefore: MAIN,
+					matchesBeforeTree: true,
+					checksFilePresent: true,
+				});
+				return {
+					state: "undone",
+					mainBefore: MAIN,
+					mainAfter: UNDONE,
+					diff: DIFF,
+					replayed: false,
+					matchesBeforeTree: true,
+					checksFilePresent: true,
+				};
+			});
+			unverified.kernel.claims = [[{ ...UNDO, runChecks: true, priorVerifiedChange: null }]];
+			await expect(unverified.pass()).resolves.toEqual({ done: 0, refused: 1, failed: 0, busy: 0 });
+			expect(unverified.finishes()[0]).toMatchObject(
+				finishOf(R1, T1, {
+					schema: SCHEMA,
+					state: "refused",
+					code: "CODE_HOST_UNDO_CHECKS_REQUIRED",
+					paths: [".qorpera/checks.json"],
+				}),
+			);
+			const started = Date.now();
+			const waiting = r.wait(10_000, new AbortController().signal);
+			r.wake();
+			await waiting;
+			expect(Date.now() - started).toBeLessThan(2000);
+		});
 	});
 });

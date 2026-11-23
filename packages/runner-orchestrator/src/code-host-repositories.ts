@@ -18,6 +18,7 @@ import {
 	codeChecksNotRunSummary,
 	codeChecksPassed,
 	readCodeChecks,
+	surfaceStageChecksGate,
 } from "./code-checks.ts";
 import {
 	addCodeWorktree,
@@ -31,10 +32,22 @@ import {
 	CodeWorktreeNamesRefused,
 	codeAreaPath,
 	commitCodeBranchBatch,
+	diffCodeArea,
 	exportCodeBranch,
 	landCodeBranch,
 	landCodeBranchBatch,
+	listCodeBranches,
+	logCodeArea,
+	previewCodeMerge,
+	pruneCodeArea,
+	type Run,
+	showCodeFile,
 	startCodeArea,
+	tagCodeArea,
+	tail,
+	treeRecords,
+	undoCodeChange,
+	withJob,
 } from "./code-host-jobs.ts";
 import { attachCodeSession, type CodeAreaBroker } from "./code-host-seed.ts";
 import { pinCodeSiteTree } from "./code-host-sites.ts";
@@ -61,6 +74,13 @@ import {
 	type CodingLanded,
 	type CodingStaged,
 } from "./coding-folder-repositories.ts";
+import {
+	type CodingSetupSource,
+	EMPTY_CODING_SETUP,
+	EMPTY_CODING_SETUP_DIGEST,
+	type ParsedCodingSetup,
+	parseCodingSetup,
+} from "./coding-setup.ts";
 
 /** The largest bundle a session's export hands the broker's push: the NAS path's cap (coding-git-transfer.ts). */
 export const CODE_HOST_EXPORT_MAXIMUM_BYTES = 64 * 1024 ** 2;
@@ -236,7 +256,12 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			await this.#job(session, signal, async (job) => {
 				// A repository kept in Qorpera holds its sessions' bases (start made it): only the worktree is added.
 				if (repository.host === "qorpera") {
-					const added = await addCodeWorktree(job, { repository, workerId, baseSha: session.baseSha });
+					const added = await addCodeWorktree(job, {
+						repository,
+						workerId,
+						baseSha: session.baseSha,
+						...(session.claim.sequence > 1 ? { preferCurrentBase: true } : {}),
+					});
 					if (!added.headSha)
 						throw new CodeHostRefusal("CODE_HOST_WORKTREE_NO_BRANCH", [
 							`${codeAreaPath(repository)}/worktrees/${workerId}`,
@@ -302,6 +327,69 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 		}
 	}
 
+	async readSetup(session: CodingFolderStart, baseSha: string, signal: AbortSignal): Promise<ParsedCodingSetup> {
+		if (!SHA.test(baseSha)) {
+			return {
+				file: null,
+				refused: false,
+				setupDigest: EMPTY_CODING_SETUP_DIGEST,
+				setupSpec: EMPTY_CODING_SETUP,
+				dockerfiles: [],
+				problems: [],
+			};
+		}
+		const { repository } = session.claim;
+		return this.#job(session, signal, (job) =>
+			withJob(job, repository, async (run) => {
+				if ((await run.types([run.repo]))[0] !== "directory") {
+					return {
+						file: null,
+						refused: false,
+						setupDigest: EMPTY_CODING_SETUP_DIGEST,
+						setupSpec: EMPTY_CODING_SETUP,
+						dockerfiles: [],
+						problems: [],
+					};
+				}
+				const verified = await run.git(run.repo, ["rev-parse", "--verify", "--quiet", `${baseSha}^{commit}`]);
+				if (verified.status !== 0) {
+					return {
+						file: null,
+						refused: false,
+						setupDigest: EMPTY_CODING_SETUP_DIGEST,
+						setupSpec: EMPTY_CODING_SETUP,
+						dockerfiles: [],
+						problems: [],
+					};
+				}
+				const source: CodingSetupSource = {
+					read: async (path, maxBytes) => readCommitSetupFile(run, baseSha, path, maxBytes),
+				};
+				return parseCodingSetup(source);
+			}),
+		);
+	}
+
+	async archiveCommit(
+		session: CodingFolderStart,
+		commitSha: string,
+		signal: AbortSignal,
+		options?: { maximumBytes?: number },
+	): Promise<Buffer> {
+		if (!SHA.test(commitSha)) throw new CodeHostJobFailure("CODE_HOST_COMMIT_INVALID");
+		const { repository } = session.claim;
+		const maximumBytes = options?.maximumBytes ?? CODE_HOST_EXPORT_MAXIMUM_BYTES;
+		return this.#job(session, signal, (job) =>
+			withJob(job, repository, async (run) => {
+				const result = await run.git(run.repo, ["archive", "--format=tar", commitSha], {
+					maximumOutputBytes: maximumBytes,
+				});
+				if (result.status !== 0) throw new CodeHostJobFailure("CODE_HOST_ARCHIVE_FAILED", tail(result.stderr));
+				return result.stdout;
+			}),
+		);
+	}
+
 	async verifyStaged(
 		session: CodingFolderRepositorySession,
 		headSha: string,
@@ -309,8 +397,9 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	): Promise<CodingStaged> {
 		const { repository, workerId } = session.claim;
 		if (repository.host !== "qorpera") throw new Error("CODE_HOST_REPOSITORY_NOT_HERE");
+		let verified: Awaited<ReturnType<typeof verifyStagedSurfaceBranch>>;
 		try {
-			const verified = await this.#job(session, signal, (job) =>
+			verified = await this.#job(session, signal, (job) =>
 				verifyStagedSurfaceBranch(job, {
 					repository,
 					workerId,
@@ -318,13 +407,6 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 					headSha,
 				}),
 			);
-			return {
-				branch: verified.branch,
-				baseSha: verified.baseSha,
-				headSha: verified.headSha,
-				changed: verified.changed,
-				filesChanged: verified.filesChanged,
-			};
 		} catch (error) {
 			if (signal.aborted) throw error;
 			if (error instanceof CodeHostRefusal) {
@@ -336,6 +418,71 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			}
 			throw error;
 		}
+		if (
+			verified.changed &&
+			verified.checksFile &&
+			verified.baseChecksFile &&
+			session.checksSwitch &&
+			session.runChecks
+		) {
+			const gate = surfaceStageChecksGate(
+				readCodeChecks(verified.baseChecksFile),
+				readCodeChecks(verified.checksFile),
+				verified.checksFile,
+			);
+			if (gate.gate !== "skip") {
+				const switched = await session.checksSwitch(signal);
+				if (switched.checks) {
+					const told = (step: string, extra: Record<string, unknown> = {}) =>
+						this.#report({ event: "code-checks", step, staged: true, ...named(session), ...extra });
+					// WHY: checksSwitch consumes any one-shot operator drill; staging logs it with staged: true and runs "check" drills ("site" drills collect no site here).
+					const drill = switched.drill;
+					if (drill !== undefined) told("drill", { drill });
+					if (gate.gate === "refused") {
+						told("refused");
+						throw new CodingLandRefused("CODING_CHECKS_REFUSED", gate.summary);
+					}
+					const checks = drill === "check" ? [...gate.checks, CODE_CHECKS_DRILL] : gate.checks;
+					const input = { commit: verified.headSha, checks, site: null };
+					let run = await session.runChecks({ ...input, attempt: 1 }, signal);
+					if (run.state === "not_run") {
+						told("not-run", { why: run.why, code: run.code, attempt: 1 });
+						run = await session.runChecks({ ...input, attempt: 2 }, signal);
+					}
+					if (run.state === "not_run") {
+						told("not-run", { why: run.why, code: run.code, attempt: 2 });
+						throw new CodingLandRefused(
+							"CODING_CHECKS_DID_NOT_RUN",
+							codeChecksNotRunSummary(run, { staged: true }),
+						);
+					}
+					if (run.state === "failed") {
+						const drilled =
+							drill === "check" && run.notRun.length === 0 && run.failed.name === CODE_CHECKS_DRILL.name;
+						told("failed", {
+							exitCode: run.failed.exitCode,
+							atLimit: run.failed.atLimit,
+							...(drilled ? { drill } : {}),
+						});
+						throw new CodingLandRefused(
+							"CODING_CHECKS_FAILED",
+							codeChecksFailedSummary(run, "fast-forward", drilled ? `${CODE_DRILL_WORDS} ` : "", {
+								staged: true,
+							}),
+						);
+					}
+					if (run.state === "site_refused") throw new Error("CODE_HOST_LANDING_INVALID");
+					told("passed", { ms: run.ms });
+				}
+			}
+		}
+		return {
+			branch: verified.branch,
+			baseSha: verified.baseSha,
+			headSha: verified.headSha,
+			changed: verified.changed,
+			filesChanged: verified.filesChanged,
+		};
 	}
 
 	/** The session's submitted commit landed on the default branch of its repository kept in Qorpera. A landing that
@@ -1495,7 +1642,7 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 		if (waiter.settled) return;
 		if (error.code === "CODE_HOST_LAND_CONFLICT") {
 			await this.#reportRefused(waiter.session, waiter.headSha, "conflict", error.code, error.paths);
-			settleReject(waiter, new CodingLandConflict(error.paths));
+			settleReject(waiter, new CodingLandConflict(error.paths, error.messages));
 			return;
 		}
 		const summary = landRefusal(
@@ -1548,6 +1695,91 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			const result = await steps(job);
 			await session.assertAuthorized(signal);
 			return result;
+		});
+	}
+
+	async runReadOnly<T>(
+		companyId: string,
+		environmentId: string,
+		signal: AbortSignal,
+		steps: (job: CodeHostJob) => Promise<T>,
+	): Promise<T> {
+		return await this.#jobs.run(companyId, environmentId, signal, steps, { readOnly: true });
+	}
+
+	async log(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof logCodeArea>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof logCodeArea>> {
+		return await this.runReadOnly(companyId, environmentId, signal, (job) => logCodeArea(job, value));
+	}
+
+	async diff(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof diffCodeArea>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof diffCodeArea>> {
+		return await this.runReadOnly(companyId, environmentId, signal, (job) => diffCodeArea(job, value));
+	}
+
+	async show(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof showCodeFile>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof showCodeFile>> {
+		return await this.runReadOnly(companyId, environmentId, signal, (job) => showCodeFile(job, value));
+	}
+
+	async branches(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof listCodeBranches>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof listCodeBranches>> {
+		return await this.runReadOnly(companyId, environmentId, signal, (job) => listCodeBranches(job, value));
+	}
+
+	async mergePreview(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof previewCodeMerge>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof previewCodeMerge>> {
+		return await this.runReadOnly(companyId, environmentId, signal, (job) => previewCodeMerge(job, value));
+	}
+
+	async tag(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof tagCodeArea>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof tagCodeArea>> {
+		return await this.#jobs.run(companyId, environmentId, signal, (job) => tagCodeArea(job, value), {
+			readOnly: value.mode === "list",
+		});
+	}
+
+	async prune(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof pruneCodeArea>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof pruneCodeArea>> {
+		return await this.#jobs.run(companyId, environmentId, signal, (job) => pruneCodeArea(job, value));
+	}
+
+	async undo(
+		companyId: string,
+		environmentId: string,
+		value: Parameters<typeof undoCodeChange>[1],
+		signal: AbortSignal,
+	): Promise<ReturnType<typeof undoCodeChange>> {
+		return await this.#jobs.run(companyId, environmentId, signal, (job) => undoCodeChange(job, value), {
+			readOnly: value.dryRun === true,
 		});
 	}
 }
@@ -1746,4 +1978,29 @@ function codeAreaBroker(session: CodingFolderRepositorySession): CodeAreaBroker 
 		},
 		runGit: session.runGit,
 	};
+}
+
+async function readCommitSetupFile(
+	run: Run,
+	commit: string,
+	path: string,
+	maxBytes: number,
+): Promise<{ kind: "missing" } | { kind: "other" } | { kind: "file"; bytes: Uint8Array }> {
+	if (!path || path.length > 4096 || /[\0\n\r]/.test(path)) return { kind: "missing" };
+	if (path.split("/").some((part) => !part || part === "." || part === "..")) return { kind: "missing" };
+	const listing = await run.gitOk(
+		run.repo,
+		["ls-tree", "-l", "-z", "--full-tree", commit, "--", path],
+		"CODE_HOST_TREE_UNREADABLE",
+	);
+	const wantedPath = Buffer.from(path, "utf8");
+	const entry = treeRecords(listing).find((record) => record.path.equals(wantedPath));
+	if (!entry) return { kind: "missing" };
+	if (entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755")) return { kind: "other" };
+	const bytes = Number(entry.size);
+	if (!SHA.test(entry.name) || !Number.isSafeInteger(bytes)) throw new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE");
+	if (bytes > maxBytes) return { kind: "file", bytes: Buffer.alloc(maxBytes + 1) };
+	const read = await run.git(run.repo, ["cat-file", "blob", entry.name], { maximumOutputBytes: maxBytes });
+	if (read.status !== 0) throw new CodeHostJobFailure("CODE_HOST_FILE_UNREADABLE", tail(read.stderr));
+	return { kind: "file", bytes: read.stdout };
 }

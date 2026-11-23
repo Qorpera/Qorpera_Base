@@ -1,10 +1,25 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	type CloudCodingCommandReceipt,
 	type CloudCodingCommandScope,
+	CODE_CHECK_NAME_PATTERN,
+	type CodeCheck,
+	type CodeCheckArtifactFormat,
+	type CodeChecksProblem,
+	type CodePreviewRecipe,
+	type CodeSiteKind,
+	type CodeSiteRecipe,
+	type CodeSurfaceGate,
+	expandCodeCheckNeeds,
+	type FailedTestCase,
 	type JsonValue,
+	MAX_CODE_CHECKS_FILE_BYTES,
+	MAX_PARALLEL_CHECKS,
+	type ParsedCodeChecks,
+	parseCheckFailureArtifacts,
 	parseCloudCodingCommandRead,
 	parseCloudCodingCommandReceipt,
+	parseCodeChecksText,
 } from "@qorpera/contracts";
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
 import { CLOUD_COMMAND_PAGE_ASK } from "./cloud-command-page-fit.ts";
@@ -17,58 +32,64 @@ import {
 	redactCloudWebhookSecrets,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
-import { SITE_NAME_RULE } from "./cloud-site-tools.ts";
 import { fitsOneResult } from "./cloud-worker-tools.ts";
 
-export const MAX_CODE_CHECKS_FILE_BYTES = 16 * 1024;
-export const CODE_CHECK_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,39}$/;
-export const MAX_PARALLEL_PREFLIGHT_CHECKS = 4;
+export { CODE_CHECK_NAME_PATTERN, MAX_CODE_CHECKS_FILE_BYTES, parseCodeChecksText };
+export type { CodeChecksProblem, FailedTestCase, ParsedCodeChecks };
+export type CodePreflightCheck = CodeCheck;
+export type CodePreflightSiteKind = CodeSiteKind;
+export type CodePreflightSite = CodeSiteRecipe;
+export type CodePreflightPreview = CodePreviewRecipe;
+export type CodePreflightSurfaceGate = CodeSurfaceGate;
 
-const MAX_CODE_CHECKS = 20;
-const CODE_CHECK_DEFAULT_SECONDS = 600;
-const CODE_CHECK_MIN_SECONDS = 10;
-const CODE_CHECK_MAX_SECONDS = 1800;
-const CODE_CHECKS_TOTAL_SECONDS = 3600;
-const MAX_RUN_BYTES = 4096;
-const MAX_CWD_BYTES = 300;
-const MAX_SITE_TITLE_CHARS = 120;
-const MAX_JSON_DEPTH = 32;
+export const MAX_PARALLEL_PREFLIGHT_CHECKS = MAX_PARALLEL_CHECKS;
+
 const MAX_TAIL_LINES = 30;
 const MAX_TAIL_BYTES = 1500;
 const MAX_COMMAND_BYTES = 16384;
 const MAX_COMMAND_JSON_BYTES = 60000;
 const READ_CHECKS_TIMEOUT_MS = 30_000;
+const CLEAN_COPY_TIMEOUT_MS = 120_000;
+const SITE_VALIDATE_TIMEOUT_MS = 60_000;
+const ARTIFACT_READ_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_MS = 250;
 const MAX_POLL_MS = 1000;
 const DEFAULT_TIMEOUT_GRACE_MS = 5000;
 const CANCEL_ON_ABORT_MS = 5000;
 const TAIL_READ_BYTES = 8192;
-const UNKNOWN_KEY_MESSAGE = "This key is not in the checks file's schema.";
 
-const SITE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
-const RESERVED_SITE_NAMES = new Set(
-	"api app www admin assets static qorpera login signin signup robots favicon sites site well-known help support status mail functions auth rest storage realtime objects inbox send screens edge coding noreply staging dev test preview next docs blog news account accounts billing pay payments checkout secure security sso id oauth my dashboard console portal cdn media files download downloads smtp imap pop mx autoconfig autodiscover abuse postmaster hostmaster webmaster ns1 ns2 vpn git code data db ws live screen desktop computer health metrics tunnel gateway relay hooks webhooks events invite invites join team teams company companies members cofounder agent agents chat email webmail calendar ftp m mobile wiki shop store home root system internal private public demo beta".split(
-		" ",
-	),
-);
-
-const JSON_ESCAPES = new Map<string, string>([
-	['"', '"'],
-	["\\", "\\"],
-	["/", "/"],
-	["b", "\b"],
-	["f", "\f"],
-	["n", "\n"],
-	["r", "\r"],
-	["t", "\t"],
+const SITE_EXTENSIONS_JSON = JSON.stringify([
+	"html",
+	"htm",
+	"css",
+	"js",
+	"mjs",
+	"json",
+	"map",
+	"webmanifest",
+	"txt",
+	"csv",
+	"xml",
+	"svg",
+	"png",
+	"jpg",
+	"jpeg",
+	"gif",
+	"webp",
+	"avif",
+	"ico",
+	"woff",
+	"woff2",
+	"ttf",
+	"otf",
+	"mp4",
+	"webm",
+	"mp3",
+	"m4a",
+	"ogg",
+	"wav",
+	"pdf",
 ]);
-const JSON_LITERALS: readonly [string, boolean | null][] = [
-	["true", true],
-	["false", false],
-	["null", null],
-];
-const JSON_NUMBER = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
-const LONE_SURROGATE = /[\uD800-\uDFFF]/u;
 
 const READ_CHECKS_COMMAND =
 	"if [ ! -e .qorpera/checks.json ] && [ ! -L .qorpera/checks.json ]; then exit 44; fi; if [ -L .qorpera ] || [ -L .qorpera/checks.json ] || [ ! -f .qorpera/checks.json ]; then exit 45; fi; if [ \"$(wc -c < .qorpera/checks.json)\" -gt 16384 ]; then exit 46; fi; if command -v iconv >/dev/null 2>&1; then iconv -f UTF-8 -t UTF-8 -- .qorpera/checks.json >/dev/null 2>&1 || exit 47; elif command -v node >/dev/null 2>&1; then node -e \"new TextDecoder('utf-8',{fatal:true}).decode(require('node:fs').readFileSync('.qorpera/checks.json'))\" >/dev/null 2>&1 || exit 47; fi; cat -- .qorpera/checks.json";
@@ -76,54 +97,6 @@ const READ_CHECKS_COMMAND =
 const CHANGE_INDEX_LINE = /^- (\d+) · (\d{4}-\d{2}-\d{2}) · ([^·]+?)(?: · (.*))?$/;
 const CHANGE_INDEX_NOTICE =
 	/^(?:Put back to an earlier copy|Brought in on|Live:|Ready in What's new:|Preparing for What's new:|Site taken down)/;
-
-export interface CodePreflightCheck {
-	readonly name: string;
-	readonly run: string;
-	readonly timeoutSeconds: number;
-	readonly cwd: string;
-	readonly needs?: readonly string[];
-}
-
-export type CodePreflightSiteKind = "static" | "server" | "hybrid";
-
-export interface CodePreflightSite {
-	readonly folder: string;
-	readonly name: string | null;
-	readonly title: string | null;
-	readonly kind?: CodePreflightSiteKind;
-	readonly dockerfile?: string | null;
-	readonly port?: number;
-	readonly healthPath?: string;
-	readonly idleTimeoutSec?: number;
-	readonly memoryMb?: number;
-	readonly vcpuLimit?: number;
-	readonly spaFallback?: string | null;
-}
-
-export interface CodePreflightPreview {
-	readonly run: string;
-	readonly folder: string | null;
-	readonly cwd: string;
-	readonly timeoutSeconds: number;
-}
-
-export interface CodeChecksProblem {
-	readonly at: string;
-	readonly code: string;
-	readonly message: string;
-}
-
-export type ParsedCodeChecks =
-	| {
-			readonly ok: true;
-			readonly checks: readonly CodePreflightCheck[];
-			readonly totalTimeoutSeconds: number;
-			readonly mode: "sequential" | "dag";
-			readonly site: CodePreflightSite | null;
-			readonly preview?: CodePreflightPreview;
-	  }
-	| { readonly ok: false; readonly problems: readonly CodeChecksProblem[] };
 
 export interface CodeChangeSummary {
 	readonly change: number;
@@ -141,7 +114,9 @@ export interface ParsedCodeChangesIndex {
 export interface CodingPreflightCheckRequest {
 	readonly operationKey: string;
 	readonly checkNames?: readonly string[];
-	readonly failFast: boolean;
+	readonly failFast?: boolean;
+	readonly cleanCopy?: boolean;
+	readonly validateSite?: boolean;
 }
 
 interface PreflightCheckOutcome {
@@ -153,152 +128,20 @@ interface PreflightCheckOutcome {
 	readonly timedOut: boolean;
 	readonly ms: number;
 	readonly commandId: string;
+	readonly attempts?: number;
 	readonly tail?: string;
+	readonly failedTests?: readonly FailedTestCase[];
 }
 
-class ChecksJsonSyntaxError extends Error {
-	readonly index: number;
-
-	constructor(index: number, message: string) {
-		super(message);
-		this.index = index;
-	}
-}
-
-type Refuse = (at: string, code: string, message: string) => void;
-
-function pointer(at: string, key: string | number): string {
-	return `${at}/${String(key).replaceAll("~", "~0").replaceAll("/", "~1")}`;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parseChecksJson(text: string): unknown {
-	let i = 0;
-	const fail = (message: string) => new ChecksJsonSyntaxError(i, message);
-	const skipSpace = (): void => {
-		for (;;) {
-			const c = text[i];
-			if (c === " " || c === "\t" || c === "\n" || c === "\r") i++;
-			else if (c === "/" && text[i + 1] === "/") {
-				while (i < text.length && text[i] !== "\n" && text[i] !== "\r") i++;
-			} else if (c === "/" && text[i + 1] === "*") {
-				const end = text.indexOf("*/", i + 2);
-				if (end < 0) throw fail("A comment is never closed.");
-				i = end + 2;
-			} else return;
-		}
-	};
-	const readString = (): string => {
-		i++;
-		let out = "";
-		let from = i;
-		for (;;) {
-			if (i >= text.length) throw fail("A string is never closed.");
-			const c = text.charCodeAt(i);
-			if (c === 0x22) break;
-			if (c < 0x20) throw fail("A string holds a control character; write it as an escape.");
-			if (c !== 0x5c) {
-				i++;
-				continue;
-			}
-			out += text.slice(from, i);
-			const letter = text.charAt(i + 1);
-			const simple = JSON_ESCAPES.get(letter);
-			if (simple !== undefined) {
-				out += simple;
-				i += 2;
-			} else if (letter === "u" && /^[0-9a-fA-F]{4}$/.test(text.slice(i + 2, i + 6))) {
-				out += String.fromCharCode(Number.parseInt(text.slice(i + 2, i + 6), 16));
-				i += 6;
-			} else throw fail("A string holds an escape JSON doesn't have.");
-			from = i;
-		}
-		out += text.slice(from, i);
-		if (LONE_SURROGATE.test(out)) throw fail("A string holds half of a UTF-16 surrogate pair.");
-		i++;
-		return out;
-	};
-	const readValue = (depth: number): unknown => {
-		skipSpace();
-		const c = text[i];
-		if (c === "{" || c === "[") {
-			if (depth === MAX_JSON_DEPTH) throw fail(`The file nests deeper than ${MAX_JSON_DEPTH} levels.`);
-			i++;
-			return c === "{" ? readObject(depth + 1) : readArray(depth + 1);
-		}
-		if (c === '"') return readString();
-		for (const [word, literal] of JSON_LITERALS)
-			if (text.startsWith(word, i)) {
-				i += word.length;
-				return literal;
-			}
-		JSON_NUMBER.lastIndex = i;
-		const number = JSON_NUMBER.exec(text);
-		if (!number) throw fail(i < text.length ? "Expected a value." : "The file ends where a value was expected.");
-		const n = Number(number[0]);
-		if (!Number.isFinite(n)) throw fail("A number is too large.");
-		i = JSON_NUMBER.lastIndex;
-		return n;
-	};
-	const readObject = (depth: number): Record<string, unknown> => {
-		const out: Record<string, unknown> = Object.create(null);
-		skipSpace();
-		if (text[i] === "}") {
-			i++;
-			return out;
-		}
-		for (;;) {
-			skipSpace();
-			if (text[i] !== '"') throw fail("Expected a key in double quotes.");
-			const keyAt = i;
-			const key = readString();
-			if (key in out) {
-				i = keyAt;
-				throw fail(`The key ${JSON.stringify(key)} appears twice.`);
-			}
-			skipSpace();
-			if (text[i] !== ":") throw fail("Expected ':' after a key.");
-			i++;
-			out[key] = readValue(depth);
-			skipSpace();
-			if (text[i] === "}") {
-				i++;
-				return out;
-			}
-			if (text[i] !== ",") throw fail("Expected ',' or '}'.");
-			i++;
-			skipSpace();
-			if (text[i] === "}") throw fail("A comma before '}': this file allows no trailing commas.");
-		}
-	};
-	const readArray = (depth: number): unknown[] => {
-		const out: unknown[] = [];
-		skipSpace();
-		if (text[i] === "]") {
-			i++;
-			return out;
-		}
-		for (;;) {
-			out.push(readValue(depth));
-			skipSpace();
-			if (text[i] === "]") {
-				i++;
-				return out;
-			}
-			if (text[i] !== ",") throw fail("Expected ',' or ']'.");
-			i++;
-			skipSpace();
-			if (text[i] === "]") throw fail("A comma before ']': this file allows no trailing commas.");
-		}
-	};
-	const root = readValue(0);
-	skipSpace();
-	if (i < text.length) throw fail("Text follows the value.");
-	return root;
-}
+type PreflightSiteValidation =
+	| { readonly state: "valid"; readonly folder: string; readonly files: number; readonly bytes: number }
+	| {
+			readonly state: "invalid";
+			readonly folder: string;
+			readonly problem: { readonly code: string; readonly path: string | null };
+	  }
+	| { readonly state: "no_site" }
+	| { readonly state: "error"; readonly folder: string; readonly reason: string };
 
 function isControlPoint(point: number): boolean {
 	return point < 0x20 || (point >= 0x7f && point <= 0x9f) || point === 0x2028 || point === 0x2029;
@@ -312,402 +155,6 @@ function isUnseenPoint(point: number): boolean {
 		(point >= 0x2066 && point <= 0x2069) ||
 		point === 0xfeff
 	);
-}
-
-function isCheckFolder(folder: string): boolean {
-	if (folder === ".") return true;
-	if (folder === "" || Buffer.byteLength(folder, "utf8") > MAX_CWD_BYTES) return false;
-	for (let index = 0; index < folder.length; index++) {
-		const code = folder.charCodeAt(index);
-		if (code < 0x20 || code === 0x7f || code === 0x5c) return false;
-	}
-	return folder.split("/").every((part) => part !== "" && part !== "." && part !== "..");
-}
-
-function isSiteFolder(folder: string): boolean {
-	if (folder === ".") return true;
-	if (folder === "" || Buffer.byteLength(folder, "utf8") > MAX_CWD_BYTES) return false;
-	for (const char of folder) {
-		if (isControlPoint(char.codePointAt(0) as number) || char === "\\") return false;
-	}
-	return folder.split("/").every((part) => part !== "" && part !== "." && part !== "..");
-}
-
-function siteNameRefusal(name: string): string | null {
-	let broken: string;
-	if (!SITE_NAME_PATTERN.test(name)) broken = "";
-	else if (name.includes("--")) broken = " This one has two hyphens in a row.";
-	else if (name.endsWith("-preview")) broken = " This one ends in -preview.";
-	else if (name.includes("qorpera")) broken = " This one contains qorpera.";
-	else if (RESERVED_SITE_NAMES.has(name)) broken = " This one is a reserved name.";
-	else return null;
-	return `${SITE_NAME_RULE}${broken} Pick another, or leave name out.`;
-}
-
-function isSiteTitleValid(title: string): boolean {
-	const chars = Array.from(title);
-	if (chars.length < 1 || chars.length > MAX_SITE_TITLE_CHARS) return false;
-	for (const char of chars) {
-		if (isControlPoint(char.codePointAt(0) as number)) return false;
-	}
-	return true;
-}
-
-function parseSite(value: unknown, at: string, refuse: Refuse): CodePreflightSite | null {
-	if (!isObject(value)) {
-		refuse(at, "WRONG_TYPE", "Must be an object.");
-		return null;
-	}
-	let folder: string | null = null;
-	let name: string | null = null;
-	let title: string | null = null;
-	let kind: CodePreflightSiteKind | undefined;
-	let dockerfile: string | null | undefined;
-	let port: number | undefined;
-	let healthPath: string | undefined;
-	let idleTimeoutSec: number | undefined;
-	let memoryMb: number | undefined;
-	let vcpuLimit: number | undefined;
-	let spaFallback: string | null | undefined;
-	for (const [key, field] of Object.entries(value)) {
-		const fieldAt = pointer(at, key);
-		if (key === "folder" || key === "name" || key === "title") {
-			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (key === "folder") {
-				if (isSiteFolder(field)) folder = field;
-				else
-					refuse(
-						fieldAt,
-						"INVALID_PATH",
-						'Must be "." or a folder of the repository: a relative path without . or .. parts, at most 300 bytes.',
-					);
-			} else if (key === "name") {
-				const refused = siteNameRefusal(field);
-				if (refused === null) name = field;
-				else refuse(fieldAt, "INVALID_VALUE", refused);
-			} else if (field.startsWith(" ") || field.endsWith(" "))
-				refuse(fieldAt, "SITE_TITLE", "Must not start or end with a space.");
-			else if (isSiteTitleValid(field)) title = field;
-			else refuse(fieldAt, "INVALID_VALUE", "Must be 1 to 120 characters on one line.");
-		} else if (key === "kind") {
-			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (field === "static" || field === "server" || field === "hybrid") kind = field;
-			else refuse(fieldAt, "INVALID_VALUE", 'Must be "static", "server", or "hybrid".');
-		} else if (key === "dockerfile") {
-			if (field === null) dockerfile = null;
-			else if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (field !== "." && isSiteFolder(field)) dockerfile = field;
-			else refuse(fieldAt, "INVALID_PATH", "Must be a relative file path without . or .. parts, at most 300 bytes.");
-		} else if (key === "port") {
-			if (typeof field !== "number" || !Number.isInteger(field) || field < 1 || field > 65535)
-				refuse(fieldAt, "INVALID_VALUE", "Must be a whole port number from 1 to 65535.");
-			else port = field;
-		} else if (key === "healthPath") {
-			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (field.length < 1 || field.length > 256 || !field.startsWith("/") || /[\s\x00-\x1f\x7f]/.test(field))
-				refuse(fieldAt, "INVALID_VALUE", "Must start with / and contain 1 to 256 non-space characters.");
-			else healthPath = field;
-		} else if (key === "idleTimeoutSec") {
-			if (typeof field !== "number" || !Number.isInteger(field) || field < 0 || field > 86400)
-				refuse(fieldAt, "INVALID_VALUE", "Must be a whole number of seconds from 0 to 86400.");
-			else idleTimeoutSec = field;
-		} else if (key === "memoryMb") {
-			if (typeof field !== "number" || !Number.isInteger(field) || field < 64 || field > 8192)
-				refuse(fieldAt, "INVALID_VALUE", "Must be a whole number of megabytes from 64 to 8192.");
-			else memoryMb = field;
-		} else if (key === "vcpuLimit") {
-			if (typeof field !== "number" || !Number.isFinite(field) || field < 0.25 || field > 8)
-				refuse(fieldAt, "INVALID_VALUE", "Must be a number from 0.25 to 8.");
-			else vcpuLimit = field;
-		} else if (key === "spaFallback") {
-			if (field === null) spaFallback = null;
-			else if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (field !== "." && field.length <= 512 && isSiteFolder(field)) spaFallback = field;
-			else refuse(fieldAt, "INVALID_PATH", "Must be a relative path such as index.html without . or .. parts.");
-		} else {
-			refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
-		}
-	}
-	const effectiveKind = kind ?? "static";
-	if (!("folder" in value)) {
-		if (effectiveKind === "server") folder = ".";
-		else refuse(at, "MISSING_KEY", "Needs folder.");
-	}
-	if (folder === null) return null;
-	return {
-		folder,
-		name,
-		title,
-		...(kind !== undefined ? { kind } : {}),
-		...(dockerfile !== undefined ? { dockerfile } : {}),
-		...(port !== undefined ? { port } : {}),
-		...(healthPath !== undefined ? { healthPath } : {}),
-		...(idleTimeoutSec !== undefined ? { idleTimeoutSec } : {}),
-		...(memoryMb !== undefined ? { memoryMb } : {}),
-		...(vcpuLimit !== undefined ? { vcpuLimit } : {}),
-		...(spaFallback !== undefined ? { spaFallback } : {}),
-	};
-}
-
-const PREVIEW_DEFAULT_SECONDS = 180;
-const PREVIEW_MAX_SECONDS = 600;
-
-function parsePreview(value: unknown, at: string, refuse: Refuse): CodePreflightPreview | undefined {
-	if (!isObject(value)) {
-		refuse(at, "WRONG_TYPE", "Must be an object.");
-		return undefined;
-	}
-	let run: string | null = null;
-	let folder: string | null = null;
-	let cwd = ".";
-	let timeoutSeconds = PREVIEW_DEFAULT_SECONDS;
-	for (const [key, field] of Object.entries(value)) {
-		const fieldAt = pointer(at, key);
-		if (key === "run") {
-			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (field.trim() === "" || Buffer.byteLength(field, "utf8") > MAX_RUN_BYTES || field.includes("\0"))
-				refuse(fieldAt, "INVALID_VALUE", `Must be 1 to ${MAX_RUN_BYTES} bytes, without a NUL character.`);
-			else run = field;
-		} else if (key === "folder") {
-			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (isSiteFolder(field)) folder = field;
-			else
-				refuse(
-					fieldAt,
-					"INVALID_PATH",
-					'Must be "." or a folder of the repository: a relative path without . or .. parts, at most 300 bytes.',
-				);
-		} else if (key === "cwd") {
-			if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-			else if (!isCheckFolder(field))
-				refuse(
-					fieldAt,
-					"INVALID_PATH",
-					`Must be a folder of the repository: a relative path without . or .. parts, at most ${MAX_CWD_BYTES} bytes.`,
-				);
-			else cwd = field;
-		} else if (key === "timeoutSeconds") {
-			if (
-				typeof field !== "number" ||
-				!Number.isInteger(field) ||
-				field < CODE_CHECK_MIN_SECONDS ||
-				field > PREVIEW_MAX_SECONDS
-			)
-				refuse(
-					fieldAt,
-					"INVALID_VALUE",
-					`Must be a whole number of seconds from ${CODE_CHECK_MIN_SECONDS} to ${PREVIEW_MAX_SECONDS}.`,
-				);
-			else timeoutSeconds = field;
-		} else {
-			refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
-		}
-	}
-	if (!("run" in value)) refuse(at, "MISSING_KEY", "Needs run.");
-	return run === null ? undefined : { run, folder, cwd, timeoutSeconds };
-}
-
-function findCheckCycle(edges: ReadonlyMap<string, readonly string[]>): string[] | null {
-	const state = new Map<string, 1 | 2>();
-	const stack: string[] = [];
-	const visit = (node: string): string[] | null => {
-		state.set(node, 1);
-		stack.push(node);
-		for (const dep of edges.get(node) ?? []) {
-			const seen = state.get(dep);
-			if (seen === 1) return [...stack.slice(stack.indexOf(dep)), dep];
-			if (seen === undefined) {
-				const cycle = visit(dep);
-				if (cycle !== null) return cycle;
-			}
-		}
-		stack.pop();
-		state.set(node, 2);
-		return null;
-	};
-	for (const name of edges.keys()) {
-		if (state.has(name)) continue;
-		const cycle = visit(name);
-		if (cycle !== null) return cycle;
-	}
-	return null;
-}
-
-function parseChecksArray(
-	value: unknown,
-	at: string,
-	refuse: Refuse,
-): { checks: CodePreflightCheck[]; totalTimeoutSeconds: number } {
-	if (!Array.isArray(value)) {
-		refuse(at, "WRONG_TYPE", "Must be an array.");
-		return { checks: [], totalTimeoutSeconds: 0 };
-	}
-	if (value.length < 1 || value.length > MAX_CODE_CHECKS)
-		refuse(at, "INVALID_VALUE", `Must hold 1 to ${MAX_CODE_CHECKS} checks.`);
-	const checks: CodePreflightCheck[] = [];
-	const parsed: { name: string | null; needs: readonly { name: string; at: string }[] }[] = [];
-	const names = new Set<string>();
-	let total = 0;
-	for (const [index, item] of value.entries()) {
-		const itemAt = pointer(at, index);
-		if (!isObject(item)) {
-			refuse(itemAt, "WRONG_TYPE", "Must be an object.");
-			continue;
-		}
-		let name: string | null = null;
-		let run: string | null = null;
-		let timeoutSeconds = CODE_CHECK_DEFAULT_SECONDS;
-		let cwd = ".";
-		let needs: string[] | undefined;
-		const needsEntries: { name: string; at: string }[] = [];
-		for (const [key, field] of Object.entries(item)) {
-			const fieldAt = pointer(itemAt, key);
-			if (key === "name") {
-				if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-				else if (!CODE_CHECK_NAME_PATTERN.test(field))
-					refuse(
-						fieldAt,
-						"INVALID_VALUE",
-						"Must be 1 to 40 of a-z, 0-9, '.', '_' and '-', starting with a letter or a digit.",
-					);
-				else if (names.has(field)) refuse(fieldAt, "DUPLICATE", `The name "${field}" is given twice.`);
-				else {
-					names.add(field);
-					name = field;
-				}
-			} else if (key === "run") {
-				if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-				else if (field === "" || Buffer.byteLength(field, "utf8") > MAX_RUN_BYTES || field.includes("\0"))
-					refuse(fieldAt, "INVALID_VALUE", `Must be 1 to ${MAX_RUN_BYTES} bytes, without a NUL character.`);
-				else run = field;
-			} else if (key === "timeoutSeconds") {
-				if (
-					typeof field !== "number" ||
-					!Number.isInteger(field) ||
-					field < CODE_CHECK_MIN_SECONDS ||
-					field > CODE_CHECK_MAX_SECONDS
-				)
-					refuse(
-						fieldAt,
-						"INVALID_VALUE",
-						`Must be a whole number of seconds from ${CODE_CHECK_MIN_SECONDS} to ${CODE_CHECK_MAX_SECONDS}.`,
-					);
-				else timeoutSeconds = field;
-			} else if (key === "cwd") {
-				if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
-				else if (!isCheckFolder(field))
-					refuse(
-						fieldAt,
-						"INVALID_PATH",
-						`Must be a folder of the repository: a relative path without . or .. parts, at most ${MAX_CWD_BYTES} bytes.`,
-					);
-				else cwd = field;
-			} else if (key === "needs") {
-				if (!Array.isArray(field)) refuse(fieldAt, "WRONG_TYPE", "Must be an array.");
-				else {
-					const listed: string[] = [];
-					const seen = new Set<string>();
-					for (const [depIndex, dep] of field.entries()) {
-						const depAt = pointer(fieldAt, depIndex);
-						if (typeof dep !== "string") refuse(depAt, "WRONG_TYPE", "Must be a string.");
-						else if (!CODE_CHECK_NAME_PATTERN.test(dep))
-							refuse(
-								depAt,
-								"INVALID_VALUE",
-								"Must be 1 to 40 of a-z, 0-9, '.', '_' and '-', starting with a letter or a digit.",
-							);
-						else if (seen.has(dep)) refuse(depAt, "DUPLICATE", `The check "${dep}" is listed twice in needs.`);
-						else {
-							seen.add(dep);
-							listed.push(dep);
-							needsEntries.push({ name: dep, at: depAt });
-						}
-					}
-					needs = listed;
-				}
-			} else refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
-		}
-		if (!("name" in item)) refuse(itemAt, "MISSING_KEY", "Needs name.");
-		if (!("run" in item)) refuse(itemAt, "MISSING_KEY", "Needs run.");
-		total += timeoutSeconds;
-		parsed.push({ name, needs: needsEntries });
-		if (name !== null && run !== null)
-			checks.push(
-				needs === undefined ? { name, run, timeoutSeconds, cwd } : { name, run, timeoutSeconds, cwd, needs },
-			);
-	}
-	const edges = new Map<string, string[]>();
-	for (const entry of parsed) {
-		const validDeps: string[] = [];
-		for (const dep of entry.needs) {
-			if (entry.name !== null && dep.name === entry.name)
-				refuse(dep.at, "INVALID_VALUE", `The check "${dep.name}" cannot depend on itself.`);
-			else if (!names.has(dep.name)) refuse(dep.at, "INVALID_VALUE", `No check is named "${dep.name}".`);
-			else validDeps.push(dep.name);
-		}
-		if (entry.name !== null) edges.set(entry.name, validDeps);
-	}
-	const cycle = findCheckCycle(edges);
-	if (cycle !== null) refuse(at, "CYCLE", `The checks form a dependency cycle: ${cycle.join(" -> ")}.`);
-	if (total > CODE_CHECKS_TOTAL_SECONDS)
-		refuse(
-			at,
-			"TOO_LONG",
-			`The time limits add up to ${total} s; all checks together may take at most ${CODE_CHECKS_TOTAL_SECONDS} s.`,
-		);
-	return { checks, totalTimeoutSeconds: total };
-}
-
-export function parseCodeChecksText(text: string): ParsedCodeChecks {
-	const problems: CodeChecksProblem[] = [];
-	const refuse: Refuse = (at, code, message) => {
-		problems.push({ at, code, message });
-	};
-	if (Buffer.byteLength(text, "utf8") > MAX_CODE_CHECKS_FILE_BYTES) {
-		refuse("", "TOO_LARGE", "The checks file is over 16 KiB.");
-		return { ok: false, problems };
-	}
-	const source = text.startsWith("\uFEFF") ? text.slice(1) : text;
-	let root: unknown;
-	try {
-		root = parseChecksJson(source);
-	} catch (error) {
-		if (!(error instanceof ChecksJsonSyntaxError)) throw error;
-		const before = source.slice(0, error.index);
-		const line = before.split("\n").length;
-		const column = error.index - before.lastIndexOf("\n");
-		refuse("", "SYNTAX", `Line ${line}, column ${column}: ${error.message}`);
-		return { ok: false, problems };
-	}
-	if (!isObject(root)) {
-		refuse("", "WRONG_TYPE", "The checks file must hold one JSON object.");
-		return { ok: false, problems };
-	}
-	let parsedChecks: { checks: CodePreflightCheck[]; totalTimeoutSeconds: number } = {
-		checks: [],
-		totalTimeoutSeconds: 0,
-	};
-	let site: CodePreflightSite | null = null;
-	let preview: CodePreflightPreview | undefined;
-	for (const [key, value] of Object.entries(root)) {
-		const at = pointer("", key);
-		if (key === "$schema") {
-			if (typeof value !== "string") refuse(at, "WRONG_TYPE", "Must be a string.");
-		} else if (key === "checks") parsedChecks = parseChecksArray(value, at, refuse);
-		else if (key === "site") site = parseSite(value, at, refuse);
-		else if (key === "preview") preview = parsePreview(value, at, refuse);
-		else refuse(at, "UNKNOWN_KEY", UNKNOWN_KEY_MESSAGE);
-	}
-	if (!("checks" in root)) refuse("", "MISSING_KEY", "Needs checks.");
-	if (problems.length > 0) return { ok: false, problems };
-	return {
-		ok: true,
-		checks: parsedChecks.checks,
-		totalTimeoutSeconds: parsedChecks.totalTimeoutSeconds,
-		mode: parsedChecks.checks.some((check) => check.needs !== undefined) ? "dag" : "sequential",
-		site,
-		...(preview !== undefined ? { preview } : {}),
-	};
 }
 
 export function parseCodeChangesIndex(text: string, maxChanges = 15): ParsedCodeChangesIndex {
@@ -783,9 +230,181 @@ function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-export function buildPreflightCheckCommand(check: Pick<CodePreflightCheck, "cwd" | "run">): string {
-	const inner = `CI=true QORPERA_CHECKS=1 /bin/bash --noprofile --norc -c ${shellQuote(check.run)} </dev/null`;
-	return check.cwd === "." ? inner : `( cd -- ${shellQuote(check.cwd)} && ${inner} )`;
+export function buildPreflightCheckCommand(
+	check: Pick<CodePreflightCheck, "cwd" | "run" | "env">,
+	workDir?: string,
+): string {
+	const envPrefix = check.env
+		? `${Object.entries(check.env)
+				.map(([k, v]) => `${k}=${shellQuote(v)}`)
+				.join(" ")} `
+		: "";
+	const inner = `${envPrefix}CI=true QORPERA_CHECKS=1 /bin/bash --noprofile --norc -c ${shellQuote(check.run)} </dev/null`;
+	const targetDir = workDir === undefined ? check.cwd : check.cwd === "." ? workDir : `${workDir}/${check.cwd}`;
+	return targetDir === "." ? inner : `( cd -- ${shellQuote(targetDir)} && ${inner} )`;
+}
+
+function buildCleanCopySetupCommand(hash: string): string {
+	return [
+		"set -eu",
+		`dir="$HOME/.qorpera-preflight/${hash}"`,
+		'rm -rf -- "$dir"',
+		'mkdir -p -- "$HOME/.qorpera-preflight"',
+		'commit="$(git rev-parse --verify HEAD 2>/dev/null)" || exit 48',
+		'dirty="$(git status --porcelain 2>/dev/null | head -n 1 || true)"',
+		'git clone --quiet --shared --no-checkout -- . "$dir"',
+		'git -C "$dir" -c advice.detachedHead=false checkout --quiet --detach "$commit"',
+		'state="clean"; [ -z "$dirty" ] || state="dirty"',
+		'printf \'QORPERA_CLEAN_COPY %s %s %s\\n\' "$commit" "$state" "$dir"',
+	].join("\n");
+}
+
+function buildCleanCopyDropCommand(hash: string): string {
+	return `rm -rf -- "$HOME/.qorpera-preflight/${hash}"`;
+}
+
+function buildReadChecksCommand(workDir?: string): string {
+	return workDir === undefined ? READ_CHECKS_COMMAND : `( cd -- ${shellQuote(workDir)} && ${READ_CHECKS_COMMAND} )`;
+}
+
+function buildSiteValidateCommand(folder: string, workDir?: string): string {
+	const base = workDir ?? ".";
+	const py = [
+		"import json,os,re,sys",
+		`EXT=set(${SITE_EXTENSIONS_JSON})`,
+		'PATH_RE=re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,199}(/[A-Za-z0-9_][A-Za-z0-9._-]{0,199}){0,15}$")',
+		'EXT_RE=re.compile(r"\\.([A-Za-z0-9]{1,12})$")',
+		"def fail(code,p=''):print('QORPERA_SITE_PROBLEM '+code+(' '+p if p else ''));sys.exit(3)",
+		"root=sys.argv[1];folder=sys.argv[2]",
+		"cur=root",
+		'if folder!=".":',
+		'\tfor part in folder.split("/"):',
+		"\t\tcur=os.path.join(cur,part)",
+		"\t\tif os.path.islink(cur) or not os.path.isdir(cur):fail('SITE_FOLDER_MISSING')",
+		"elif os.path.islink(cur) or not os.path.isdir(cur):fail('SITE_FOLDER_MISSING')",
+		"files=0;total=0;folders=set();has_index=False",
+		"for dp,dns,fns in os.walk(cur,followlinks=False):",
+		'\tdns[:]=[d for d in sorted(dns) if not d.startswith(".") and not os.path.islink(os.path.join(dp,d))]',
+		"\tfor fn in sorted(fns):",
+		'\t\tif fn.startswith("."):continue',
+		"\t\tfp=os.path.join(dp,fn)",
+		"\t\tif os.path.islink(fp) or not os.path.isfile(fp):continue",
+		"\t\tm=EXT_RE.search(fn)",
+		"\t\tif not m or m.group(1).lower() not in EXT:continue",
+		'\t\trel=os.path.relpath(fp,cur).replace(os.sep,"/")',
+		"\t\tif len(rel.encode('utf-8'))>512 or not PATH_RE.fullmatch(rel):fail('SITE_FILE_NAME',rel)",
+		"\t\tsz=os.lstat(fp).st_size",
+		"\t\tif sz>10*1024*1024:fail('SITE_FILE_TOO_LARGE',rel)",
+		"\t\tfiles+=1",
+		"\t\tif files>500:fail('SITE_TOO_MANY_FILES')",
+		"\t\ttotal+=sz",
+		"\t\tif total>25*1024*1024:fail('SITE_TOO_LARGE')",
+		'\t\tparts=rel.split("/")',
+		"\t\tfor i in range(1,len(parts)):folders.add('/'.join(parts[:i]))",
+		"\t\tif len(folders)>100:fail('SITE_TOO_MANY_FOLDERS')",
+		"\t\tif rel=='index.html':has_index=True",
+		"if not has_index:fail('SITE_NO_INDEX')",
+		"print(f'QORPERA_SITE_OK {files} {total}')",
+	].join("\n");
+	return `python3 -I - ${shellQuote(base)} ${shellQuote(folder)} <<'QORPERA_SITE_VALIDATE_EOF'\n${py}\nQORPERA_SITE_VALIDATE_EOF`;
+}
+
+function buildServerSiteValidateCommand(dockerfile: string, workDir?: string): string {
+	const base = workDir ?? ".";
+	const py = [
+		"import os,stat,sys",
+		"def fail(code,p=''):print('QORPERA_SITE_PROBLEM '+code+(' '+p if p else ''));sys.exit(3)",
+		"root=sys.argv[1];dockerfile=sys.argv[2]",
+		"if not stat.S_ISDIR(os.lstat(root).st_mode):sys.exit(2)",
+		'parts=dockerfile.split("/")',
+		'if any(part in ("",".","..") for part in parts):sys.exit(2)',
+		"target=os.path.join(root,dockerfile)",
+		"try:",
+		"\tmode=os.lstat(target).st_mode",
+		"except OSError:",
+		"\tfail('SITE_FOLDER_MISSING',dockerfile)",
+		"if not stat.S_ISREG(mode):",
+		"\tfail('SITE_FOLDER_MISSING',dockerfile)",
+		"print('QORPERA_SITE_OK 0 0')",
+	].join("\n");
+	return `python3 -I - ${shellQuote(base)} ${shellQuote(dockerfile)} <<'QORPERA_SITE_VALIDATE_EOF'\n${py}\nQORPERA_SITE_VALIDATE_EOF`;
+}
+
+function buildArtifactReadCommand(
+	paths: readonly string[],
+	format: CodeCheckArtifactFormat,
+	nonce: string,
+	workDir?: string,
+): string {
+	const base = workDir ?? ".";
+	const py = [
+		"import fnmatch,json,os,sys",
+		"src=sys.argv[1];pats=json.loads(sys.argv[2]);fmt=sys.argv[3];nonce=sys.argv[4]",
+		"def exp_braces(p):",
+		'\to=p.find("{")',
+		"\tif o<0:return [p]",
+		'\tc=p.find("}",o+1)',
+		"\tif c<0:return [p]",
+		"\tout=[]",
+		'\tfor a in p[o+1:c].split(","):',
+		"\t\tfor t in exp_braces(p[c+1:]):",
+		"\t\t\tout.append(p[:o]+a+t)",
+		"\t\t\tif len(out)>=32:return out",
+		"\treturn out",
+		"def match_one(pat,rel):",
+		'\tpp=pat.split("/");sp=rel.split("/");memo={}',
+		"\tdef dp(i,j):",
+		"\t\tif (i,j) in memo:return memo[(i,j)]",
+		"\t\tif i==len(pp):r=(j==len(sp))",
+		'\t\telif pp[i]=="**":r=dp(i+1,j) or (j<len(sp) and dp(i,j+1))',
+		"\t\telif j<len(sp):r=fnmatch.fnmatchcase(sp[j],pp[i]) and dp(i+1,j+1)",
+		"\t\telse:r=False",
+		"\t\tmemo[(i,j)]=r;return r",
+		"\treturn dp(0,0)",
+		"def match_glob(pat,rel):return any(match_one(e,rel) for e in exp_braces(pat))",
+		"rem=256*1024;count=0",
+		"for dp,dns,fns in os.walk(src,followlinks=False):",
+		'\tdns[:]=[d for d in sorted(dns) if d.lower()!=".git" and not os.path.islink(os.path.join(dp,d))]',
+		"\tfor fn in sorted(fns):",
+		"\t\tif rem<=0 or count>=50:break",
+		"\t\tfp=os.path.join(dp,fn)",
+		"\t\tif os.path.islink(fp) or not os.path.isfile(fp):continue",
+		'\t\trel=os.path.relpath(fp,src).replace(os.sep,"/")',
+		"\t\tif not any(match_glob(p,rel) for p in pats):continue",
+		"\t\tcount+=1",
+		"\t\ttry:",
+		'\t\t\twith open(fp,"rb") as f:raw=f.read(rem)',
+		"\t\t\trem-=len(raw)",
+		'\t\t\tsys.stdout.write(f"QORPERA_ARTIFACT_BEGIN:{nonce}:{fmt}\\n")',
+		'\t\t\tsys.stdout.write(raw.decode("utf-8",errors="replace"))',
+		'\t\t\tsys.stdout.write(f"\\nQORPERA_ARTIFACT_END:{nonce}\\n")',
+		"\t\texcept OSError:pass",
+	].join("\n");
+	return `python3 -I - ${shellQuote(base)} ${shellQuote(JSON.stringify(paths))} ${shellQuote(format)} ${shellQuote(nonce)} <<'QORPERA_ARTIFACT_EOF'\n${py}\nQORPERA_ARTIFACT_EOF`;
+}
+
+function extractFramedArtifacts(
+	output: string,
+	nonce: string,
+): { readonly format: CodeCheckArtifactFormat; readonly content: string }[] {
+	const results: { format: CodeCheckArtifactFormat; content: string }[] = [];
+	const beginPrefix = `QORPERA_ARTIFACT_BEGIN:${nonce}:`;
+	const endMarker = `\nQORPERA_ARTIFACT_END:${nonce}`;
+	let cursor = 0;
+	for (;;) {
+		const start = output.indexOf(beginPrefix, cursor);
+		if (start < 0) break;
+		const lineEnd = output.indexOf("\n", start);
+		if (lineEnd < 0) break;
+		const format = output.slice(start + beginPrefix.length, lineEnd).trim();
+		const end = output.indexOf(endMarker, lineEnd + 1);
+		if (end < 0) break;
+		if (format === "junit" || format === "tap" || format === "vitest-json") {
+			results.push({ format, content: output.slice(lineEnd + 1, end) });
+		}
+		cursor = end + endMarker.length;
+	}
+	return results;
 }
 
 function preflightSubOperationKey(operationKey: string, suffix: string): string {
@@ -802,6 +421,10 @@ function serializePreflightOutcome(
 		readonly notRun: readonly string[];
 		readonly skipped: readonly { readonly name: string; readonly blockedBy: readonly string[] }[];
 		readonly site: CodePreflightSite | null;
+		readonly autoIncludedNeeds?: readonly string[];
+		readonly cleanCopy?: { readonly commit: string; readonly uncommittedChangesIgnored: boolean };
+		readonly siteValidation?: PreflightSiteValidation;
+		readonly notices?: readonly string[];
 	},
 	tailCap: number,
 ): string {
@@ -813,9 +436,21 @@ function serializePreflightOutcome(
 			status: entry.status,
 			exitCode: entry.exitCode,
 			...(entry.timedOut ? { timedOut: true } : {}),
+			...(entry.attempts !== undefined && entry.attempts > 1 ? { attempts: entry.attempts } : {}),
 			ms: entry.ms,
 			commandId: entry.commandId,
 			...(entry.tail !== undefined ? { tail: codeChecksTail(entry.tail, tailCap) } : {}),
+			...(entry.failedTests && entry.failedTests.length > 0
+				? {
+						failedTests: entry.failedTests.map((t) => ({
+							...(t.suite !== undefined ? { suite: t.suite } : {}),
+							name: t.name,
+							...(t.file !== undefined ? { file: t.file } : {}),
+							...(t.line !== undefined ? { line: t.line } : {}),
+							...(t.message !== undefined ? { message: t.message } : {}),
+						})),
+					}
+				: {}),
 		}),
 	);
 	return cloudToolJsonText(
@@ -829,8 +464,28 @@ function serializePreflightOutcome(
 			notRun: [...payload.notRun],
 			skipped: payload.skipped.map((item) => ({ name: item.name, blockedBy: [...item.blockedBy] })),
 			site: payload.site
-				? { folder: payload.site.folder, name: payload.site.name, title: payload.site.title }
+				? {
+						folder: payload.site.folder,
+						name: payload.site.name,
+						title: payload.site.title,
+						...(payload.site.kind !== undefined ? { kind: payload.site.kind } : {}),
+						...(payload.site.dockerfile !== undefined ? { dockerfile: payload.site.dockerfile } : {}),
+						...(payload.site.port !== undefined ? { port: payload.site.port } : {}),
+						...(payload.site.healthPath !== undefined ? { healthPath: payload.site.healthPath } : {}),
+						...(payload.site.idleTimeoutSec !== undefined ? { idleTimeoutSec: payload.site.idleTimeoutSec } : {}),
+						...(payload.site.memoryMb !== undefined ? { memoryMb: payload.site.memoryMb } : {}),
+						...(payload.site.vcpuLimit !== undefined ? { vcpuLimit: payload.site.vcpuLimit } : {}),
+						...(payload.site.spaFallback !== undefined ? { spaFallback: payload.site.spaFallback } : {}),
+					}
 				: null,
+			...(payload.autoIncludedNeeds && payload.autoIncludedNeeds.length > 0
+				? { autoIncludedNeeds: [...payload.autoIncludedNeeds] }
+				: {}),
+			...(payload.cleanCopy !== undefined ? { cleanCopy: payload.cleanCopy } : {}),
+			...(payload.siteValidation !== undefined
+				? { siteValidation: payload.siteValidation as unknown as JsonValue }
+				: {}),
+			...(payload.notices && payload.notices.length > 0 ? { notices: [...payload.notices] } : {}),
 		},
 		MAX_COMMAND_JSON_BYTES,
 	);
@@ -1085,290 +740,499 @@ export async function runCodingPreflightChecks(options: {
 		return { kind: "text", value: text };
 	};
 
-	const readStarted = await startSubCommand("read", READ_CHECKS_COMMAND, READ_CHECKS_TIMEOUT_MS);
-	const readWaited = await waitUntilDone("read", readStarted, READ_CHECKS_TIMEOUT_MS, context.signal);
-	if (readWaited.timedOut) {
-		return finish(
-			cloudToolJsonText({
-				schema: "qorpera.coding-preflight-checks/v1",
-				state: "not_run",
-				file: ".qorpera/checks.json",
-				reason: "read_timed_out",
-			}),
-		);
-	}
-	const readFinal = readWaited.receipt;
-	if (readFinal.state !== "succeeded" && readFinal.state !== "failed") {
-		return finish(
-			cloudToolJsonText({
-				schema: "qorpera.coding-preflight-checks/v1",
-				state: "not_run",
-				file: ".qorpera/checks.json",
-				reason: readFinal.state,
-			}),
-		);
-	}
-	if (readFinal.state === "failed") {
-		if (readFinal.exitCode === 44) {
-			return finish(
-				cloudToolJsonText({
-					schema: "qorpera.coding-preflight-checks/v1",
-					state: "missing",
-					file: ".qorpera/checks.json",
-					message: "No .qorpera/checks.json file was found in this worktree. Add one before coding_finish.",
-				}),
+	const cleanHash = request.cleanCopy
+		? createHash("sha256").update(request.operationKey, "utf8").digest("hex").slice(0, 16)
+		: undefined;
+	let cleanWorkDir: string | undefined;
+	let cleanCopyMeta: { readonly commit: string; readonly uncommittedChangesIgnored: boolean } | undefined;
+
+	const cleanupCleanCopy = async (): Promise<void> => {
+		if (!cleanHash || cleanWorkDir === undefined || context.signal.aborted) return;
+		try {
+			const dropped = await startSubCommand(
+				"clean-drop",
+				buildCleanCopyDropCommand(cleanHash),
+				READ_CHECKS_TIMEOUT_MS,
 			);
+			await waitUntilDone("clean-drop", dropped, READ_CHECKS_TIMEOUT_MS, context.signal);
+		} catch {
+			return;
 		}
-		if (readFinal.exitCode === 45) {
-			return finish(
-				cloudToolJsonText({
-					schema: "qorpera.coding-preflight-checks/v1",
-					state: "invalid",
-					file: ".qorpera/checks.json",
-					problems: [
-						{
-							at: "",
-							code: "NOT_A_FILE",
-							message: "The checks file is not a regular file (a folder, a symlink or a submodule).",
-						},
-					],
-				}),
-			);
-		}
-		if (readFinal.exitCode === 46) {
-			return finish(
-				cloudToolJsonText({
-					schema: "qorpera.coding-preflight-checks/v1",
-					state: "invalid",
-					file: ".qorpera/checks.json",
-					problems: [{ at: "", code: "TOO_LARGE", message: "The checks file is over 16 KiB." }],
-				}),
-			);
-		}
-		if (readFinal.exitCode === 47) {
-			return finish(
-				cloudToolJsonText({
-					schema: "qorpera.coding-preflight-checks/v1",
-					state: "invalid",
-					file: ".qorpera/checks.json",
-					problems: [{ at: "", code: "NOT_UTF8", message: "The checks file is not UTF-8 text." }],
-				}),
-			);
-		}
-		return finish(
-			cloudToolJsonText({
-				schema: "qorpera.coding-preflight-checks/v1",
-				state: "not_run",
-				file: ".qorpera/checks.json",
-				reason: "read_failed",
-				exitCode: readFinal.exitCode,
-			}),
-		);
-	}
-
-	const rawChecksText = await readFullOutput(readFinal, MAX_CODE_CHECKS_FILE_BYTES + 1, context.signal);
-	const parsed = parseCodeChecksText(rawChecksText);
-	if (!parsed.ok) {
-		return finish(
-			cloudToolJsonText({
-				schema: "qorpera.coding-preflight-checks/v1",
-				state: "invalid",
-				file: ".qorpera/checks.json",
-				problems: parsed.problems.map((p) => ({ at: p.at, code: p.code, message: p.message })),
-			}),
-		);
-	}
-
-	const originalIndexByName = new Map(parsed.checks.map((check, index) => [check.name, index]));
-	let selected = parsed.checks;
-	const selectedNames = new Set(parsed.checks.map((check) => check.name));
-	if (request.checkNames !== undefined) {
-		const unknown = request.checkNames.filter((name) => !originalIndexByName.has(name));
-		if (unknown.length > 0) {
-			return finish(
-				cloudToolJsonText({
-					schema: "qorpera.coding-preflight-checks/v1",
-					state: "invalid",
-					file: ".qorpera/checks.json",
-					problems: unknown.map((name) => ({
-						at: "",
-						code: "UNKNOWN_CHECK",
-						message: `No check named "${name}" exists in .qorpera/checks.json.`,
-					})),
-					availableChecks: parsed.checks.map((check) => check.name),
-				}),
-			);
-		}
-		selectedNames.clear();
-		for (const name of request.checkNames) selectedNames.add(name);
-		selected = parsed.checks.filter((check) => selectedNames.has(check.name));
-	}
-
-	const commandProblems: CodeChecksProblem[] = [];
-	const commandsByName = new Map<string, string>();
-	for (const check of selected) {
-		const cmd = buildPreflightCheckCommand(check);
-		if (
-			Buffer.byteLength(cmd, "utf8") > MAX_COMMAND_BYTES ||
-			Buffer.byteLength(JSON.stringify(cmd)) > MAX_COMMAND_JSON_BYTES
-		) {
-			commandProblems.push({
-				at: `/checks/${originalIndexByName.get(check.name)}/run`,
-				code: "COMMAND_TOO_LONG",
-				message: `Check "${check.name}" exceeds the command size limit after shell quoting.`,
-			});
-		} else {
-			commandsByName.set(check.name, cmd);
-		}
-	}
-	if (commandProblems.length > 0) {
-		return finish(
-			cloudToolJsonText({
-				schema: "qorpera.coding-preflight-checks/v1",
-				state: "invalid",
-				file: ".qorpera/checks.json",
-				problems: commandProblems.map((p) => ({ at: p.at, code: p.code, message: p.message })),
-			}),
-		);
-	}
-
-	const isDag = parsed.mode === "dag";
-	const maxConcurrent = isDag ? MAX_PARALLEL_PREFLIGHT_CHECKS : 1;
-	const depsByName = new Map<string, readonly string[]>();
-	for (const check of selected) {
-		depsByName.set(check.name, isDag ? (check.needs ?? []).filter((dep) => selectedNames.has(dep)) : []);
-	}
-
-	const runStartedAt = Date.now();
-	const outcomes = new Map<string, PreflightCheckOutcome>();
-	const skipped = new Map<string, readonly string[]>();
-	const pending = new Set<string>(selected.map((check) => check.name));
-	const checkByName = new Map(selected.map((check) => [check.name, check]));
-	const waveAbort = new AbortController();
-	const waveSignal = AbortSignal.any([context.signal, waveAbort.signal]);
-	const running = new Map<string, Promise<string>>();
-	let stoppedByFailure = false;
-	let anyFailed = false;
-	let anyNotRun = false;
-
-	const startCheck = async (check: CodePreflightCheck): Promise<void> => {
-		const checkStartedAt = Date.now();
-		const originalIndex = originalIndexByName.get(check.name)!;
-		const suffix = `c:${originalIndex}`;
-		const cmd = commandsByName.get(check.name)!;
-		const timeoutMs = check.timeoutSeconds * 1000;
-		const startedReceipt = await startSubCommand(suffix, cmd, timeoutMs);
-		const promise = (async (): Promise<string> => {
-			const waited = await waitUntilDone(suffix, startedReceipt, timeoutMs, waveSignal);
-			const elapsedMs = Math.max(0, Date.now() - checkStartedAt);
-			const finalReceipt = waited.receipt;
-			const status: PreflightCheckOutcome["status"] =
-				finalReceipt.state === "succeeded"
-					? "passed"
-					: finalReceipt.state === "failed"
-						? "failed"
-						: finalReceipt.state === "cancelled"
-							? "cancelled"
-							: finalReceipt.state === "machine_stopped"
-								? "machine_stopped"
-								: "unconfirmed";
-			const tail =
-				status === "passed" || waited.cancelledByWave
-					? undefined
-					: await readOutputTail(finalReceipt, context.signal);
-			outcomes.set(check.name, {
-				name: check.name,
-				cwd: check.cwd,
-				...(check.needs !== undefined ? { needs: check.needs } : {}),
-				status,
-				exitCode: finalReceipt.exitCode,
-				timedOut: waited.timedOut,
-				ms: elapsedMs,
-				commandId: finalReceipt.commandId,
-				...(tail !== undefined ? { tail } : {}),
-			});
-			if (status !== "passed") {
-				if (status === "machine_stopped" || status === "unconfirmed") anyNotRun = true;
-				else if (!waited.cancelledByWave) anyFailed = true;
-				if (request.failFast && !waited.cancelledByWave) {
-					stoppedByFailure = true;
-					waveAbort.abort();
-				}
-			}
-			return check.name;
-		})();
-		promise.catch(() => {
-			waveAbort.abort();
-		});
-		running.set(check.name, promise);
 	};
 
 	try {
-		while (pending.size > 0 || running.size > 0) {
-			if (!stoppedByFailure && !waveAbort.signal.aborted) {
-				let progressed = true;
-				while (progressed) {
-					progressed = false;
-					for (const name of [...pending]) {
-						const deps = depsByName.get(name) ?? [];
-						const blockedBy = deps.filter((dep) => {
-							const depOutcome = outcomes.get(dep);
-							return (depOutcome !== undefined && depOutcome.status !== "passed") || skipped.has(dep);
+		if (cleanHash) {
+			const setupStarted = await startSubCommand(
+				"clean-setup",
+				buildCleanCopySetupCommand(cleanHash),
+				CLEAN_COPY_TIMEOUT_MS,
+			);
+			const setupWaited = await waitUntilDone("clean-setup", setupStarted, CLEAN_COPY_TIMEOUT_MS, context.signal);
+			if (setupWaited.timedOut) {
+				return finish(
+					cloudToolJsonText({
+						schema: "qorpera.coding-preflight-checks/v1",
+						state: "not_run",
+						file: ".qorpera/checks.json",
+						reason: "clean_copy_timed_out",
+					}),
+				);
+			}
+			const setupFinal = setupWaited.receipt;
+			if (setupFinal.state !== "succeeded") {
+				return finish(
+					cloudToolJsonText({
+						schema: "qorpera.coding-preflight-checks/v1",
+						state: "not_run",
+						file: ".qorpera/checks.json",
+						reason: setupFinal.exitCode === 48 ? "clean_copy_no_head" : "clean_copy_failed",
+						...(setupFinal.exitCode !== null ? { exitCode: setupFinal.exitCode } : {}),
+					}),
+				);
+			}
+			const setupOut = await readFullOutput(setupFinal, 4096, context.signal);
+			const line = setupOut
+				.replaceAll("\r\n", "\n")
+				.split("\n")
+				.find((entry) => entry.startsWith("QORPERA_CLEAN_COPY "));
+			const match = line ? /^QORPERA_CLEAN_COPY ([0-9a-f]{40}) (clean|dirty) (\/[^\n]+)$/.exec(line) : null;
+			if (!match || !match[3]!.includes("/.qorpera-preflight/")) {
+				return finish(
+					cloudToolJsonText({
+						schema: "qorpera.coding-preflight-checks/v1",
+						state: "not_run",
+						file: ".qorpera/checks.json",
+						reason: "clean_copy_invalid",
+					}),
+				);
+			}
+			cleanCopyMeta = { commit: match[1]!, uncommittedChangesIgnored: match[2] === "dirty" };
+			cleanWorkDir = match[3]!;
+		}
+
+		const readStarted = await startSubCommand("read", buildReadChecksCommand(cleanWorkDir), READ_CHECKS_TIMEOUT_MS);
+		const readWaited = await waitUntilDone("read", readStarted, READ_CHECKS_TIMEOUT_MS, context.signal);
+		if (readWaited.timedOut) {
+			return finish(
+				cloudToolJsonText({
+					schema: "qorpera.coding-preflight-checks/v1",
+					state: "not_run",
+					file: ".qorpera/checks.json",
+					reason: "read_timed_out",
+				}),
+			);
+		}
+		const readFinal = readWaited.receipt;
+		if (readFinal.state !== "succeeded" && readFinal.state !== "failed") {
+			return finish(
+				cloudToolJsonText({
+					schema: "qorpera.coding-preflight-checks/v1",
+					state: "not_run",
+					file: ".qorpera/checks.json",
+					reason: readFinal.state,
+				}),
+			);
+		}
+		if (readFinal.state === "failed") {
+			if (readFinal.exitCode === 44) {
+				return finish(
+					cloudToolJsonText({
+						schema: "qorpera.coding-preflight-checks/v1",
+						state: "missing",
+						file: ".qorpera/checks.json",
+						message: "No .qorpera/checks.json file was found in this worktree. Add one before coding_finish.",
+					}),
+				);
+			}
+			if (readFinal.exitCode === 45) {
+				return finish(
+					cloudToolJsonText({
+						schema: "qorpera.coding-preflight-checks/v1",
+						state: "invalid",
+						file: ".qorpera/checks.json",
+						problems: [
+							{
+								at: "",
+								code: "NOT_A_FILE",
+								message: "The checks file is not a regular file (a folder, a symlink or a submodule).",
+							},
+						],
+					}),
+				);
+			}
+			if (readFinal.exitCode === 46) {
+				return finish(
+					cloudToolJsonText({
+						schema: "qorpera.coding-preflight-checks/v1",
+						state: "invalid",
+						file: ".qorpera/checks.json",
+						problems: [{ at: "", code: "TOO_LARGE", message: "The checks file is over 16 KiB." }],
+					}),
+				);
+			}
+			if (readFinal.exitCode === 47) {
+				return finish(
+					cloudToolJsonText({
+						schema: "qorpera.coding-preflight-checks/v1",
+						state: "invalid",
+						file: ".qorpera/checks.json",
+						problems: [{ at: "", code: "NOT_UTF8", message: "The checks file is not UTF-8 text." }],
+					}),
+				);
+			}
+			return finish(
+				cloudToolJsonText({
+					schema: "qorpera.coding-preflight-checks/v1",
+					state: "not_run",
+					file: ".qorpera/checks.json",
+					reason: "read_failed",
+					exitCode: readFinal.exitCode,
+				}),
+			);
+		}
+
+		const rawChecksText = await readFullOutput(readFinal, MAX_CODE_CHECKS_FILE_BYTES + 1, context.signal);
+		const parsed = parseCodeChecksText(rawChecksText);
+		if (!parsed.ok) {
+			return finish(
+				cloudToolJsonText({
+					schema: "qorpera.coding-preflight-checks/v1",
+					state: "invalid",
+					file: ".qorpera/checks.json",
+					problems: parsed.problems.map((p) => ({ at: p.at, code: p.code, message: p.message })),
+				}),
+			);
+		}
+
+		const originalIndexByName = new Map(parsed.checks.map((check, index) => [check.name, index]));
+		let selected = parsed.checks;
+		let autoIncludedNeeds: readonly string[] = [];
+		if (request.checkNames !== undefined) {
+			const unknown = request.checkNames.filter((name) => !originalIndexByName.has(name));
+			if (unknown.length > 0) {
+				return finish(
+					cloudToolJsonText({
+						schema: "qorpera.coding-preflight-checks/v1",
+						state: "invalid",
+						file: ".qorpera/checks.json",
+						problems: unknown.map((name) => ({
+							at: "",
+							code: "UNKNOWN_CHECK",
+							message: `No check named "${name}" exists in .qorpera/checks.json.`,
+						})),
+						availableChecks: parsed.checks.map((check) => check.name),
+					}),
+				);
+			}
+			const expanded = expandCodeCheckNeeds(parsed.checks, request.checkNames);
+			selected = expanded.selected;
+			autoIncludedNeeds = expanded.autoIncluded;
+		}
+		const selectedNames = new Set(selected.map((check) => check.name));
+
+		const commandProblems: CodeChecksProblem[] = [];
+		const commandsByName = new Map<string, string>();
+		for (const check of selected) {
+			const cmd = buildPreflightCheckCommand(check, cleanWorkDir);
+			if (
+				Buffer.byteLength(cmd, "utf8") > MAX_COMMAND_BYTES ||
+				Buffer.byteLength(JSON.stringify(cmd)) > MAX_COMMAND_JSON_BYTES
+			) {
+				commandProblems.push({
+					at: `/checks/${originalIndexByName.get(check.name)}/run`,
+					code: "COMMAND_TOO_LONG",
+					message: `Check "${check.name}" exceeds the command size limit after shell quoting.`,
+				});
+			} else {
+				commandsByName.set(check.name, cmd);
+			}
+		}
+		if (commandProblems.length > 0) {
+			return finish(
+				cloudToolJsonText({
+					schema: "qorpera.coding-preflight-checks/v1",
+					state: "invalid",
+					file: ".qorpera/checks.json",
+					problems: commandProblems.map((p) => ({ at: p.at, code: p.code, message: p.message })),
+				}),
+			);
+		}
+
+		const isDag = parsed.mode === "dag";
+		const effectiveFailFast = request.failFast ?? parsed.failFast ?? true;
+		const maxConcurrent = isDag ? Math.max(1, Math.min(8, parsed.maxParallel ?? MAX_PARALLEL_PREFLIGHT_CHECKS)) : 1;
+		const depsByName = new Map<string, readonly string[]>();
+		for (const check of selected) {
+			depsByName.set(check.name, isDag ? (check.needs ?? []).filter((dep) => selectedNames.has(dep)) : []);
+		}
+
+		const runStartedAt = Date.now();
+		const outcomes = new Map<string, PreflightCheckOutcome>();
+		const skipped = new Map<string, readonly string[]>();
+		const pending = new Set<string>(selected.map((check) => check.name));
+		const checkByName = new Map(selected.map((check) => [check.name, check]));
+		const waveAbort = new AbortController();
+		const waveSignal = AbortSignal.any([context.signal, waveAbort.signal]);
+		const running = new Map<string, Promise<string>>();
+		let activeExclusive = false;
+		let stoppedByFailure = false;
+		let anyFailed = false;
+		let anyNotRun = false;
+
+		const readFailedArtifacts = async (
+			check: CodePreflightCheck,
+			originalIndex: number,
+		): Promise<readonly FailedTestCase[] | undefined> => {
+			if (!check.artifacts || check.artifacts.format === "raw") return undefined;
+			if (context.signal.aborted) return undefined;
+			try {
+				const nonce = randomBytes(12).toString("hex");
+				const cmd = buildArtifactReadCommand(check.artifacts.paths, check.artifacts.format, nonce, cleanWorkDir);
+				const started = await startSubCommand(`a:${originalIndex}`, cmd, ARTIFACT_READ_TIMEOUT_MS);
+				const waited = await waitUntilDone(`a:${originalIndex}`, started, ARTIFACT_READ_TIMEOUT_MS, context.signal);
+				if (waited.timedOut || waited.receipt.state !== "succeeded") return undefined;
+				const text = redactCloudWebhookSecrets(await readFullOutput(waited.receipt, 320 * 1024, context.signal));
+				const extracted = extractFramedArtifacts(text, nonce);
+				if (extracted.length === 0) return undefined;
+				const failedTests = parseCheckFailureArtifacts(extracted);
+				return failedTests.length > 0 ? failedTests : undefined;
+			} catch {
+				if (context.signal.aborted) throw context.signal.reason;
+				return undefined;
+			}
+		};
+
+		const startCheck = async (check: CodePreflightCheck): Promise<void> => {
+			const isExclusive = check.exclusive === true;
+			if (isExclusive) activeExclusive = true;
+			const checkStartedAt = Date.now();
+			const originalIndex = originalIndexByName.get(check.name)!;
+			const cmd = commandsByName.get(check.name)!;
+			const timeoutMs = check.timeoutSeconds * 1000;
+			const maxRetries = check.retries ?? 0;
+			let firstStarted: CloudCodingCommandReceipt;
+			try {
+				firstStarted = await startSubCommand(`c:${originalIndex}`, cmd, timeoutMs);
+			} catch (error) {
+				if (isExclusive) activeExclusive = false;
+				throw error;
+			}
+			const promise = (async (): Promise<string> => {
+				try {
+					let attempt = 0;
+					let currentReceipt = firstStarted;
+					for (;;) {
+						const suffix = attempt === 0 ? `c:${originalIndex}` : `c:${originalIndex}:r${attempt}`;
+						const waited = await waitUntilDone(suffix, currentReceipt, timeoutMs, waveSignal);
+						const finalReceipt = waited.receipt;
+						const status: PreflightCheckOutcome["status"] =
+							finalReceipt.state === "succeeded"
+								? "passed"
+								: finalReceipt.state === "failed"
+									? "failed"
+									: finalReceipt.state === "cancelled"
+										? "cancelled"
+										: finalReceipt.state === "machine_stopped"
+											? "machine_stopped"
+											: "unconfirmed";
+						if (
+							status === "failed" &&
+							!waited.cancelledByWave &&
+							attempt < maxRetries &&
+							!waveAbort.signal.aborted &&
+							!context.signal.aborted
+						) {
+							attempt++;
+							currentReceipt = await startSubCommand(`c:${originalIndex}:r${attempt}`, cmd, timeoutMs);
+							continue;
+						}
+						const elapsedMs = Math.max(0, Date.now() - checkStartedAt);
+						const tail =
+							status === "passed" || waited.cancelledByWave
+								? undefined
+								: await readOutputTail(finalReceipt, context.signal);
+						const failedTests =
+							status === "failed" && !waited.cancelledByWave
+								? await readFailedArtifacts(check, originalIndex)
+								: undefined;
+						outcomes.set(check.name, {
+							name: check.name,
+							cwd: check.cwd,
+							...(check.needs !== undefined ? { needs: check.needs } : {}),
+							status,
+							exitCode: finalReceipt.exitCode,
+							timedOut: waited.timedOut,
+							...(attempt > 0 ? { attempts: attempt + 1 } : {}),
+							ms: elapsedMs,
+							commandId: finalReceipt.commandId,
+							...(tail !== undefined ? { tail } : {}),
+							...(failedTests !== undefined ? { failedTests } : {}),
 						});
-						if (blockedBy.length > 0) {
+						if (status !== "passed") {
+							if (status === "machine_stopped" || status === "unconfirmed") anyNotRun = true;
+							else if (!waited.cancelledByWave) anyFailed = true;
+							if (effectiveFailFast && !waited.cancelledByWave) {
+								stoppedByFailure = true;
+								waveAbort.abort();
+							}
+						}
+						return check.name;
+					}
+				} finally {
+					if (isExclusive) activeExclusive = false;
+				}
+			})();
+			promise.catch(() => {
+				waveAbort.abort();
+			});
+			running.set(check.name, promise);
+		};
+
+		try {
+			while (pending.size > 0 || running.size > 0) {
+				if (!stoppedByFailure && !waveAbort.signal.aborted) {
+					let progressed = true;
+					while (progressed) {
+						progressed = false;
+						for (const name of [...pending]) {
+							const deps = depsByName.get(name) ?? [];
+							const blockedBy = deps.filter((dep) => {
+								const depOutcome = outcomes.get(dep);
+								return (depOutcome !== undefined && depOutcome.status !== "passed") || skipped.has(dep);
+							});
+							if (blockedBy.length > 0) {
+								pending.delete(name);
+								skipped.set(name, blockedBy);
+								progressed = true;
+							}
+						}
+					}
+					if (!activeExclusive) {
+						for (const name of [...pending]) {
+							if (stoppedByFailure || waveAbort.signal.aborted) break;
+							const deps = depsByName.get(name) ?? [];
+							if (!deps.every((dep) => outcomes.get(dep)?.status === "passed")) continue;
+							const check = checkByName.get(name)!;
+							if (check.exclusive === true) {
+								if (running.size === 0) {
+									pending.delete(name);
+									await startCheck(check);
+									break;
+								}
+								continue;
+							}
+							if (running.size >= maxConcurrent) break;
 							pending.delete(name);
-							skipped.set(name, blockedBy);
-							progressed = true;
+							await startCheck(check);
 						}
 					}
 				}
-				for (const name of [...pending]) {
-					if (running.size >= maxConcurrent || stoppedByFailure || waveAbort.signal.aborted) break;
-					const deps = depsByName.get(name) ?? [];
-					if (deps.every((dep) => outcomes.get(dep)?.status === "passed")) {
-						pending.delete(name);
-						await startCheck(checkByName.get(name)!);
+				if (running.size === 0) break;
+				const finishedName = await Promise.race(running.values());
+				running.delete(finishedName);
+			}
+		} finally {
+			waveAbort.abort();
+			if (running.size > 0) await Promise.allSettled(running.values());
+		}
+
+		const orderedOutcomes: PreflightCheckOutcome[] = [];
+		for (const check of selected) {
+			const outcome = outcomes.get(check.name);
+			if (outcome) orderedOutcomes.push(outcome);
+		}
+		const notRun = selected.map((check) => check.name).filter((name) => pending.has(name));
+		const skippedList = selected
+			.filter((check) => skipped.has(check.name))
+			.map((check) => ({ name: check.name, blockedBy: skipped.get(check.name)! }));
+		let overallState: "passed" | "failed" | "not_run" =
+			anyNotRun && !anyFailed
+				? "not_run"
+				: anyFailed || notRun.length > 0 || skippedList.length > 0
+					? "failed"
+					: "passed";
+
+		let siteValidation: PreflightSiteValidation | undefined;
+		if (request.validateSite === true && overallState === "passed") {
+			if (parsed.site === null) {
+				siteValidation = { state: "no_site" };
+			} else if (parsed.site.kind === "server" && !parsed.site.dockerfile) {
+				siteValidation = { state: "valid", folder: parsed.site.folder, files: 0, bytes: 0 };
+			} else {
+				const validateCommand =
+					parsed.site.kind === "server" && parsed.site.dockerfile
+						? buildServerSiteValidateCommand(parsed.site.dockerfile, cleanWorkDir)
+						: buildSiteValidateCommand(parsed.site.folder, cleanWorkDir);
+				const valStarted = await startSubCommand("site-validate", validateCommand, SITE_VALIDATE_TIMEOUT_MS);
+				const valWaited = await waitUntilDone(
+					"site-validate",
+					valStarted,
+					SITE_VALIDATE_TIMEOUT_MS,
+					context.signal,
+				);
+				if (valWaited.timedOut) {
+					siteValidation = { state: "error", folder: parsed.site.folder, reason: "timed_out" };
+					overallState = "failed";
+				} else {
+					const valOut = redactCloudWebhookSecrets(await readFullOutput(valWaited.receipt, 8192, context.signal));
+					const okMatch = /^QORPERA_SITE_OK (\d+) (\d+)$/m.exec(valOut);
+					const probMatch = /^QORPERA_SITE_PROBLEM ([A-Z0-9_]+)(?: (.+))?$/m.exec(valOut);
+					if (valWaited.receipt.state === "succeeded" && okMatch) {
+						siteValidation = {
+							state: "valid",
+							folder: parsed.site.folder,
+							files: Number(okMatch[1]),
+							bytes: Number(okMatch[2]),
+						};
+					} else if (probMatch) {
+						siteValidation = {
+							state: "invalid",
+							folder: parsed.site.folder,
+							problem: { code: probMatch[1]!, path: probMatch[2]?.trim() || null },
+						};
+						overallState = "failed";
+					} else {
+						siteValidation = {
+							state: "error",
+							folder: parsed.site.folder,
+							reason:
+								valWaited.receipt.exitCode !== null
+									? `exit_${valWaited.receipt.exitCode}`
+									: valWaited.receipt.state,
+						};
+						overallState = "failed";
 					}
 				}
 			}
-			if (running.size === 0) break;
-			const finishedName = await Promise.race(running.values());
-			running.delete(finishedName);
 		}
+
+		const checksWithSecrets = selected.filter((check) => check.secrets !== undefined).map((check) => check.name);
+		const notices =
+			checksWithSecrets.length > 0
+				? [
+						`Per-check secrets allow-lists are enforced at landing; pre-flight runs with the session environment (checks with secrets: ${checksWithSecrets.join(", ")}).`,
+					]
+				: undefined;
+		const totalMs = Math.max(0, Date.now() - runStartedAt);
+		const payload = {
+			state: overallState,
+			mode: parsed.mode,
+			ms: totalMs,
+			checks: orderedOutcomes,
+			notRun,
+			skipped: skippedList,
+			site: parsed.site,
+			...(autoIncludedNeeds.length > 0 ? { autoIncludedNeeds } : {}),
+			...(cleanCopyMeta !== undefined ? { cleanCopy: cleanCopyMeta } : {}),
+			...(siteValidation !== undefined ? { siteValidation } : {}),
+			...(notices !== undefined ? { notices } : {}),
+		};
+		for (const tailCap of [MAX_TAIL_BYTES, 800, 400, 200, 0]) {
+			const candidate = redactCloudWebhookSecrets(serializePreflightOutcome(payload, tailCap));
+			if (fitsOneResult(candidate)) return finish(candidate);
+		}
+		return finish(redactCloudWebhookSecrets(serializePreflightOutcome(payload, 0)));
 	} finally {
-		waveAbort.abort();
-		if (running.size > 0) await Promise.allSettled(running.values());
+		await cleanupCleanCopy();
 	}
-
-	const orderedOutcomes: PreflightCheckOutcome[] = [];
-	for (const check of selected) {
-		const outcome = outcomes.get(check.name);
-		if (outcome) orderedOutcomes.push(outcome);
-	}
-	const notRun = selected.map((check) => check.name).filter((name) => pending.has(name));
-	const skippedList = selected
-		.filter((check) => skipped.has(check.name))
-		.map((check) => ({ name: check.name, blockedBy: skipped.get(check.name)! }));
-	const totalMs = Math.max(0, Date.now() - runStartedAt);
-	const overallState: "passed" | "failed" | "not_run" =
-		anyNotRun && !anyFailed
-			? "not_run"
-			: anyFailed || notRun.length > 0 || skippedList.length > 0
-				? "failed"
-				: "passed";
-
-	const payload = {
-		state: overallState,
-		mode: parsed.mode,
-		ms: totalMs,
-		checks: orderedOutcomes,
-		notRun,
-		skipped: skippedList,
-		site: parsed.site,
-	};
-	for (const tailCap of [MAX_TAIL_BYTES, 800, 400, 200, 0]) {
-		const candidate = redactCloudWebhookSecrets(serializePreflightOutcome(payload, tailCap));
-		if (fitsOneResult(candidate)) return finish(candidate);
-	}
-	return finish(redactCloudWebhookSecrets(serializePreflightOutcome(payload, 0)));
 }

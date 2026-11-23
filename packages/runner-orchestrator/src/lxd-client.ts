@@ -41,7 +41,7 @@ const MAX_EXEC_STREAM_OUTPUT_BYTES = 8 * 1024 * 1024;
 const CODING_MEMORY_CODING_SLICE =
 	/^\/sys\/fs\/cgroup\/qorpera\.slice\/qorpera-coding\.slice\/qorpera-coding-[0-9a-f]{32}\.slice\/memory\.stat$/;
 const CODING_MEMORY_FOLDER_SERVICE =
-	/^\/sys\/fs\/cgroup\/system\.slice\/qorpera-folder-[0-9a-f]{32}\.service\/memory\.stat$/;
+	/^\/sys\/fs\/cgroup\/(?:system|qorpera-folder)\.slice\/qorpera-folder-[0-9a-f]{32}\.service\/memory\.stat$/;
 const CODING_MEMORY_USER_SLICE = /^\/sys\/fs\/cgroup\/user\.slice\/user-([2-5][0-9]{5})\.slice\/memory\.stat$/;
 const CODING_MEMORY_HEADER = /^=== (\/[A-Za-z0-9/_.-]+) ===$/;
 const CODING_MEMORY_BATCH_SIZE = 58;
@@ -231,6 +231,42 @@ export type LxdTrackedInstanceAction =
  * up, and a coding machine rebuilds only from a local image. */
 export interface LxdImageClient {
 	hasImage(project: string, fingerprint: string, signal: AbortSignal): Promise<boolean>;
+}
+
+export interface LxdImageSummary {
+	readonly fingerprint: string;
+	readonly size: number;
+	readonly createdAt?: string;
+	readonly properties: Readonly<Record<string, string>>;
+}
+
+export interface LxdSnapshotImageClient extends LxdImageClient {
+	publishInstanceImage(
+		project: string,
+		instanceName: string,
+		options: {
+			readonly properties?: Readonly<Record<string, string>>;
+			readonly compressionAlgorithm?: string;
+			readonly waitSeconds?: number;
+		},
+		signal: AbortSignal,
+	): Promise<{ readonly fingerprint: string; readonly size: number }>;
+	deleteImage(project: string, fingerprint: string, signal: AbortSignal): Promise<boolean>;
+	listImages(project: string, signal: AbortSignal): Promise<readonly LxdImageSummary[]>;
+}
+
+export interface LxdStandbyClient {
+	renameInstance(project: string, oldName: string, newName: string, signal: AbortSignal): Promise<void>;
+	updateInstanceConfig(
+		project: string,
+		name: string,
+		update: {
+			readonly config: Readonly<Record<string, string>>;
+			readonly devices?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+		},
+		signal: AbortSignal,
+	): Promise<void>;
+	listInstances(project: string, signal: AbortSignal): Promise<readonly LxdInstanceRecord[]>;
 }
 
 /** Whether a project lets its instances have the agent card, read from LXD and never changed: LXD's own rule
@@ -1590,6 +1626,8 @@ export class LxdUnixClient
 		LxdInstanceDeviceClient,
 		LxdInstanceDeviceUpdateClient,
 		LxdImageClient,
+		LxdSnapshotImageClient,
+		LxdStandbyClient,
 		LxdProjectClient,
 		LxdOfficeConfigurationClient,
 		LxdOfficeServiceStartClient,
@@ -1892,6 +1930,145 @@ export class LxdUnixClient
 		} catch {
 			throw new Error("LXD_IMAGE_UNCONFIRMED");
 		}
+	}
+
+	async publishInstanceImage(
+		project: string,
+		instanceName: string,
+		options: {
+			readonly properties?: Readonly<Record<string, string>>;
+			readonly compressionAlgorithm?: string;
+			readonly waitSeconds?: number;
+		},
+		signal: AbortSignal,
+	): Promise<{ readonly fingerprint: string; readonly size: number }> {
+		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(instanceName))
+			throw new Error("LXD instance scope is invalid");
+		const waitSeconds = options.waitSeconds ?? 600;
+		if (!Number.isSafeInteger(waitSeconds) || waitSeconds < 1 || waitSeconds > 1800)
+			throw new Error("LXD image publish timeout is invalid");
+		const compression = options.compressionAlgorithm ?? "zstd";
+		if (!/^[a-z0-9-]+$/.test(compression)) throw new Error("LXD image compression is invalid");
+		const body = {
+			public: false,
+			compression_algorithm: compression,
+			properties: options.properties ? { ...options.properties } : {},
+			source: { type: "instance", name: instanceName },
+		};
+		const result = await this.#request("POST", projectPath("/1.0/images", project), body, signal);
+		const operation = await this.#waitForOperation(result, signal, waitSeconds);
+		const metadata = record(operation.metadata, "LXD image publish metadata");
+		const fingerprint = metadata.fingerprint;
+		if (typeof fingerprint !== "string" || !/^[0-9a-f]{64}$/.test(fingerprint))
+			throw new Error("LXD published image fingerprint is invalid");
+		const info = await this.#request("GET", projectPath(`/1.0/images/${fingerprint}`, project), undefined, signal);
+		const imageMeta = record(envelopeMetadata(info), "LXD image");
+		if (
+			imageMeta.fingerprint !== fingerprint ||
+			!Number.isSafeInteger(imageMeta.size) ||
+			(imageMeta.size as number) < 0
+		)
+			throw new Error("LXD published image metadata is invalid");
+		return { fingerprint, size: imageMeta.size as number };
+	}
+
+	async deleteImage(project: string, fingerprint: string, signal: AbortSignal): Promise<boolean> {
+		if (!INSTANCE_NAME.test(project) || !/^[0-9a-f]{64}$/.test(fingerprint))
+			throw new Error("LXD image identity is invalid");
+		const result = await this.#request(
+			"DELETE",
+			projectPath(`/1.0/images/${fingerprint}`, project),
+			undefined,
+			signal,
+		);
+		if (result.status === 404) return false;
+		await this.#waitForOperation(result, signal);
+		return true;
+	}
+
+	async listImages(project: string, signal: AbortSignal): Promise<readonly LxdImageSummary[]> {
+		if (!INSTANCE_NAME.test(project)) throw new Error("LXD project name is invalid");
+		const result = await this.#request("GET", projectPath("/1.0/images?recursion=1", project), undefined, signal);
+		const entries = envelopeMetadata(result);
+		if (!Array.isArray(entries)) throw new Error("LXD images list is invalid");
+		return entries.map((entry) => {
+			const meta = record(entry, "LXD image");
+			if (
+				typeof meta.fingerprint !== "string" ||
+				!/^[0-9a-f]{64}$/.test(meta.fingerprint) ||
+				!Number.isSafeInteger(meta.size) ||
+				(meta.size as number) < 0
+			)
+				throw new Error("LXD image summary is invalid");
+			const properties = meta.properties ? stringRecord(meta.properties, "LXD image properties") : {};
+			return {
+				fingerprint: meta.fingerprint,
+				size: meta.size as number,
+				...(typeof meta.created_at === "string" ? { createdAt: meta.created_at } : {}),
+				properties,
+			};
+		});
+	}
+
+	async renameInstance(project: string, oldName: string, newName: string, signal: AbortSignal): Promise<void> {
+		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(oldName) || !INSTANCE_NAME.test(newName))
+			throw new Error("LXD instance scope is invalid");
+		const result = await this.#request(
+			"POST",
+			projectPath(`/1.0/instances/${encodeURIComponent(oldName)}`, project),
+			{ name: newName },
+			signal,
+		);
+		await this.#waitForOperation(result, signal);
+	}
+
+	async updateInstanceConfig(
+		project: string,
+		name: string,
+		update: {
+			readonly config: Readonly<Record<string, string>>;
+			readonly devices?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+		},
+		signal: AbortSignal,
+	): Promise<void> {
+		if (!INSTANCE_NAME.test(project) || !INSTANCE_NAME.test(name)) throw new Error("LXD instance scope is invalid");
+		const path = projectPath(`/1.0/instances/${encodeURIComponent(name)}`, project);
+		const current = await this.#request("GET", path, undefined, signal);
+		const metadata = record(envelopeMetadata(current), "LXD instance");
+		const etag = current.headers?.etag;
+		if (typeof etag !== "string" || !etag) throw new Error("LXD instance version is unavailable");
+		const existingConfig = stringRecord(metadata.config, "LXD instance config");
+		const nextConfig: Record<string, string> = {};
+		for (const [key, value] of Object.entries(existingConfig)) {
+			if (key.startsWith("volatile.") || key.startsWith("image.")) nextConfig[key] = value;
+		}
+		for (const [key, value] of Object.entries(update.config)) nextConfig[key] = value;
+		const body = {
+			architecture: metadata.architecture,
+			config: nextConfig,
+			devices: update.devices ?? devices(metadata.devices),
+			ephemeral: metadata.ephemeral,
+			profiles: strings(metadata.profiles, "LXD instance profiles"),
+			stateful: metadata.stateful,
+			description: metadata.description,
+		};
+		const payload = Buffer.from(JSON.stringify(body), "utf-8");
+		const result = await this.#requestPayload(
+			"PUT",
+			path,
+			payload,
+			{ "content-type": "application/json", "if-match": etag },
+			signal,
+		);
+		await this.#waitForOperation(result, signal);
+	}
+
+	async listInstances(project: string, signal: AbortSignal): Promise<readonly LxdInstanceRecord[]> {
+		if (!INSTANCE_NAME.test(project)) throw new Error("LXD project name is invalid");
+		const result = await this.#request("GET", projectPath("/1.0/instances?recursion=1", project), undefined, signal);
+		const entries = envelopeMetadata(result);
+		if (!Array.isArray(entries)) throw new Error("LXD instances list is invalid");
+		return entries.map((entry) => instance(entry));
 	}
 
 	async inspectOfficeInfrastructure(

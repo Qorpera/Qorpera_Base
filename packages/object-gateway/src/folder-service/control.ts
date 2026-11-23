@@ -11,7 +11,7 @@ import {
 	SecretSet,
 	type SecretValue,
 } from "./secret-scan.ts";
-import type { MachineBoundary } from "./service.ts";
+import type { MachineBoundary, MachineReadsRelease } from "./service.ts";
 import type { CommandWindow } from "./windows.ts";
 
 /** The folder service's control socket (F3 5c and 6b, the plans' "Boundaries"): host-local, for the executor of the
@@ -52,24 +52,24 @@ const REFUSED = "This socket admits only the executor of the coding and test mac
 
 export interface ControlTarget {
 	boundary(machine: string, final: readonly string[]): Promise<MachineBoundary>;
-	/** Whether a read the machine was served may have gone unreleased. */
+	releaseReads?(machine: string): Promise<MachineReadsRelease>;
 	restarted(machine: string): boolean;
 	openWindow(machine: string, window: CommandWindow): void;
 	closeWindow(machine: string, commandId: string): Promise<MachineBoundary>;
-	/** Takes the machine's secret values in place of what it sent before; how many it holds. */
 	secrets(machine: string, set: SecretSet): number;
 }
 
 type Request =
 	| { op: "boundary"; machine: string; final: string[] }
+	| { op: "release-reads"; machine: string }
 	| { op: "restarted"; machine: string }
 	| { op: "open"; machine: string; window: CommandWindow }
 	| { op: "close"; machine: string; commandId: string }
 	| { op: "secrets"; machine: string; set: SecretSet };
 
-/** Each request's keys: all are needed but a boundary's `final`. */
 const KEYS: Record<Request["op"], readonly string[]> = {
 	boundary: ["op", "machine", "final"],
+	"release-reads": ["op", "machine"],
 	restarted: ["op", "machine"],
 	open: ["op", "machine", "commandId", "runId", "staffAgentId", "requestedByUserId"],
 	close: ["op", "machine", "commandId"],
@@ -77,6 +77,7 @@ const KEYS: Record<Request["op"], readonly string[]> = {
 };
 const SHAPES: Record<Request["op"], string> = {
 	boundary: "A boundary request is {op, machine, final?}",
+	"release-reads": "A release-reads request is {op, machine}",
 	restarted: "A restarted request is {op, machine}",
 	open: "An open request is {op, machine, commandId, runId, staffAgentId, requestedByUserId}",
 	close: "A close request is {op, machine, commandId}",
@@ -93,6 +94,7 @@ const IDS: Record<string, string> = {
 /** What the executor hears when its request failed for a reason of the service's. */
 const FAILED: Record<Request["op"], string> = {
 	boundary: "The boundary could not be made now",
+	"release-reads": "The reads could not be released now",
 	restarted: "The restart could not be taken now",
 	open: "The window could not be opened now",
 	close: "The window's boundary could not be made now",
@@ -201,6 +203,11 @@ async function answer(text: string, options: ControlOptions): Promise<unknown> {
 	const request = parseRequest(text);
 	if (typeof request === "string") return { error: { code: ErrorCode.badRequest, message: request } };
 	try {
+		if (request.op === "release-reads") {
+			if (options.target.releaseReads) return { reads: await options.target.releaseReads(request.machine) };
+			const boundary = await options.target.boundary(request.machine, []);
+			return { reads: { machine: boundary.machine, reads: boundary.reads } };
+		}
 		if (request.op === "restarted")
 			return { restarted: { machine: request.machine, dropped: options.target.restarted(request.machine) } };
 		if (request.op === "open") {
@@ -231,12 +238,19 @@ function parseRequest(text: string): Request | string {
 		return "A request is one JSON object a line";
 	const request = value as Record<string, unknown>;
 	const op = request.op;
-	if (op !== "boundary" && op !== "restarted" && op !== "open" && op !== "close" && op !== "secrets")
-		return "A request's op is boundary, restarted, open, close or secrets";
+	if (
+		op !== "boundary" &&
+		op !== "release-reads" &&
+		op !== "restarted" &&
+		op !== "open" &&
+		op !== "close" &&
+		op !== "secrets"
+	)
+		return "A request's op is boundary, release-reads, restarted, open, close or secrets";
 	if (Object.keys(request).some((key) => !KEYS[op].includes(key))) return SHAPES[op];
 	const machine = request.machine;
 	if (!isUuid(machine)) return "machine is a coding machine's id or a test machine's placement id";
-	if (op === "restarted") return { op, machine };
+	if (op === "restarted" || op === "release-reads") return { op, machine };
 	if (op === "secrets") {
 		const key = canonical(request.key, 43);
 		if (!key) return KEY;

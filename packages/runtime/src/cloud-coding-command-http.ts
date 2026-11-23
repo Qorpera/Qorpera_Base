@@ -33,6 +33,7 @@ import {
 	CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
 	CLOUD_MACHINE_WAKE_SCHEMA,
 	CloudMachineAccountFillRefusal,
+	CloudMachineAppRefusal,
 	CloudMachineCodingValueRefusal,
 	CloudMachineCommandRefusal,
 	type CloudMachineCommandServiceOptions,
@@ -49,6 +50,8 @@ import {
 	cloudMemberMachineStreamFrameHead,
 	parseCloudMachineAccountFillAnswer,
 	parseCloudMachineAccountFillHttpRequest,
+	parseCloudMachineAppAnswer,
+	parseCloudMachineAppHttpRequest,
 	parseCloudMachineCodingValueAnswer,
 	parseCloudMachineCodingValueHttpRequest,
 	parseCloudMachineScreenAnswer,
@@ -317,6 +320,24 @@ export interface CloudCodingCommandExecution {
 	hidden(signal: AbortSignal): Promise<CloudCodingCommandHidden | undefined>;
 }
 
+export interface CloudCodingCommandRoute {
+	readonly schema: "qorpera.coding-command-route/v1";
+	readonly executorOwner: string;
+	readonly providerId: string;
+	readonly machineId: string;
+}
+
+export interface CloudCodingCommandAuthority {
+	readonly inputSha256: string;
+	readonly route?: CloudCodingCommandRoute;
+	readonly runAuthority?: unknown;
+	readonly rebuildDue?: boolean;
+	readonly diskEpoch?: string | null;
+	readonly vaultEnvVersion?: string;
+	readonly startedAt?: number;
+	postAuthority?: CloudCodingCommandAuthority;
+}
+
 export interface CloudCodingCommandServiceOptions {
 	token: string;
 	/** G2-6b: whether the request's holder credential (x-qorpera-identity) holds its binding's run lease
@@ -327,10 +348,19 @@ export interface CloudCodingCommandServiceOptions {
 	/** Recheck the current native binding, request lease, worker/VM/turn and
 	 * original command receipt. For start also compare command+timeout against
 	 * its canonical admitted arguments. Return the original command input hash. */
-	authorize(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<{ inputSha256: string }>;
+	authorize(
+		request: CloudCodingCommandHttpRequest,
+		signal: AbortSignal,
+		holder?: string | null,
+	): Promise<CloudCodingCommandAuthority>;
 	/** Trusted host composition constructs the fixed LXD guest transport after
 	 * SQL authority checks; never execute a shell on the host. */
-	execute(request: CloudCodingCommandHttpRequest, signal: AbortSignal): Promise<CloudCodingCommandExecution>;
+	execute(
+		request: CloudCodingCommandHttpRequest,
+		signal: AbortSignal,
+		authority?: CloudCodingCommandAuthority,
+	): Promise<CloudCodingCommandExecution>;
+	consolidatedCodingAuth?: boolean;
 	/** Company machines' commands on the same ingress (/v1/machine-commands/*),
 	 * when this executor routes them. */
 	machines?: CloudMachineCommandServiceOptions;
@@ -668,6 +698,7 @@ export class HttpCloudCodingCommandService {
 				this.#options.machines?.accountFill && request.url === "/v1/machine-commands/account-fill";
 			// machine_screen (20260930708000): the machine's screen helper, for a look or one executing receipt.
 			const screenRoute = this.#options.machines?.screen && request.url === "/v1/machine-commands/screen";
+			const appRoute = this.#options.machines?.app && request.url === "/v1/machine-commands/app";
 			// A member's look (20260930712000): on the peer listener only (no run's lease to prove), from another executor.
 			const memberScreenRoute =
 				this.#options.proveBinding === null &&
@@ -702,6 +733,7 @@ export class HttpCloudCodingCommandService {
 					!codingValueRoute &&
 					!accountFillRoute &&
 					!screenRoute &&
+					!appRoute &&
 					!memberScreenRoute &&
 					!memberActRoute &&
 					!memberStartRoute &&
@@ -716,7 +748,7 @@ export class HttpCloudCodingCommandService {
 			const body = await readRequest(request, controller.signal);
 			// G2-6b: the run's own lease proves the binding before either route asks anything about it (a machine
 			// start's authorization already records the command).
-			if (this.#options.proveBinding !== null)
+			if (this.#options.proveBinding !== null && !(route && this.#options.consolidatedCodingAuth))
 				await this.#options.proveBinding(
 					parseCloudNativeToolBinding((body as { binding?: unknown } | null)?.binding),
 					holder as string,
@@ -782,6 +814,21 @@ export class HttpCloudCodingCommandService {
 				} catch (error) {
 					// Only a refusal the agent can act on is told apart, by its fixed code.
 					if (!(error instanceof CloudMachineScreenRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (appRoute && this.#options.machines?.app) {
+				const admitted = parseCloudMachineAppHttpRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						parseCloudMachineAppAnswer(admitted, await this.#options.machines.app(admitted, controller.signal)),
+						131072,
+					);
+				} catch (error) {
+					if (!(error instanceof CloudMachineAppRefusal)) throw error;
 					replyJson(reply, 409, { code: error.code });
 				}
 				return;
@@ -925,18 +972,21 @@ export class HttpCloudCodingCommandService {
 			}
 			if (!route) throw new Error(ERROR);
 			const admitted = parseRequest(body, route[1]);
-			const authority = await this.#options.authorize(admitted, controller.signal);
+			const authHolder = this.#options.proveBinding !== null ? (holder as string) : null;
+			const authority = await this.#options.authorize(admitted, controller.signal, authHolder);
 			if (
 				!HASH.test(authority.inputSha256) ||
 				(admitted.action === "start" && authority.inputSha256 !== admitted.input.inputSha256)
 			)
 				throw new Error(ERROR);
 			controller.signal.throwIfAborted();
-			const executed = await this.#options.execute(admitted, controller.signal);
+			const executed = await this.#options.execute(admitted, controller.signal, authority);
 			const receipt = parseCloudCodingCommandReceipt(executed.receipt);
-			const after = await this.#options.authorize(admitted, controller.signal);
+			const after =
+				authority.postAuthority ?? (await this.#options.authorize(admitted, controller.signal, authHolder));
 			controller.signal.throwIfAborted();
 			if (
+				!HASH.test(after.inputSha256) ||
 				after.inputSha256 !== authority.inputSha256 ||
 				receipt.inputSha256 !== authority.inputSha256 ||
 				receipt.workerId !== admitted.scope.workerId ||

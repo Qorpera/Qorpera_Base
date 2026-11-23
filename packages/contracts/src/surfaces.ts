@@ -82,6 +82,9 @@ export type SurfaceFigure = (typeof SURFACE_FIGURES)[number];
 export const SURFACE_PUBLISH_STATUSES = ["idle", "publishing", "failed"] as const;
 export type SurfacePublishStatus = (typeof SURFACE_PUBLISH_STATUSES)[number];
 
+export const SURFACE_PUBLISH_ASK_STATUSES = ["open", "declined"] as const;
+export type SurfacePublishAskStatus = (typeof SURFACE_PUBLISH_ASK_STATUSES)[number];
+
 export const SURFACE_HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
 export const SURFACE_STATUSES = ["proposed", "active", "archived"] as const;
@@ -138,6 +141,9 @@ export type SurfaceAutomationOutputMode = (typeof SURFACE_AUTOMATION_OUTPUT_MODE
 
 export const SURFACE_AUTOMATION_STATUSES = ["idle", "running", "needs_attention", "paused"] as const;
 export type SurfaceAutomationStatus = (typeof SURFACE_AUTOMATION_STATUSES)[number];
+
+export const SURFACE_AUTOMATION_OFFER_STATUSES = ["open", "no"] as const;
+export type SurfaceAutomationOfferStatus = (typeof SURFACE_AUTOMATION_OFFER_STATUSES)[number];
 
 export const SURFACE_SESSION_MESSAGE_AUTHORS = ["member", "session", "system", "note"] as const;
 export type SurfaceSessionMessageAuthor = (typeof SURFACE_SESSION_MESSAGE_AUTHORS)[number];
@@ -204,6 +210,15 @@ export interface CrossSurfaceHandoffRequest {
 	readonly sourceRef?: Readonly<Record<string, unknown>>;
 }
 
+export interface SurfacePublishAsk {
+	readonly askedByUserId: string;
+	readonly askedUserId: string;
+	readonly askedAt: string;
+	readonly changeCount: number;
+	readonly status: SurfacePublishAskStatus;
+	readonly answeredAt: string | null;
+}
+
 export interface SurfaceSummary {
 	readonly id: string;
 	readonly slug: string;
@@ -232,6 +247,7 @@ export interface SurfaceSummary {
 	readonly pendingChangeCount: number;
 	readonly needsAttentionCount: number;
 	readonly sortOrder: number;
+	readonly publishAsk?: SurfacePublishAsk | null;
 }
 
 export interface SurfaceChangeDiffStats {
@@ -373,6 +389,18 @@ export interface SurfaceAutomationSummary {
 	readonly lastRunAt: string | null;
 	readonly lastOutcomeSummary: string | null;
 	readonly nextRunAt: string | null;
+	readonly ownable: boolean;
+	readonly ownerUserId: string | null;
+	readonly offer: SurfaceAutomationOffer | null;
+}
+
+export interface SurfaceAutomationOffer {
+	readonly id: string;
+	readonly fromUserId: string | null;
+	readonly toUserId: string | null;
+	readonly offeredByUserId: string | null;
+	readonly status: SurfaceAutomationOfferStatus;
+	readonly answeredAt: string | null;
 }
 
 export interface SurfaceWorkspace {
@@ -519,6 +547,18 @@ export function parseSurfaceSlug(value: unknown, label = "surface.slug"): string
 	return value;
 }
 
+function parseSurfacePublishAsk(value: unknown, label: string): SurfacePublishAsk {
+	const raw = parseRecord(value, label);
+	return {
+		askedByUserId: parseUuid(raw.askedByUserId, `${label}.askedByUserId`),
+		askedUserId: parseUuid(raw.askedUserId, `${label}.askedUserId`),
+		askedAt: parseTimestamp(raw.askedAt, `${label}.askedAt`).text,
+		changeCount: parseInteger(raw.changeCount, `${label}.changeCount`, 0, 10_000),
+		status: parseEnum(raw.status, SURFACE_PUBLISH_ASK_STATUSES, `${label}.status`),
+		answeredAt: parseOptionalTimestamp(raw.answeredAt, `${label}.answeredAt`),
+	};
+}
+
 export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceSummary {
 	const raw = parseRecord(value, label);
 	if (typeof raw.autoPublish !== "boolean") throw new WireValueError(`${label}.autoPublish`);
@@ -542,6 +582,10 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 			: parseOptionalText(raw.lastPublishError, `${label}.lastPublishError`, 1000);
 	const liveHeadSha =
 		raw.liveHeadSha === undefined ? undefined : parseOptionalText(raw.liveHeadSha, `${label}.liveHeadSha`, 64);
+	const publishAsk =
+		raw.publishAsk === undefined || raw.publishAsk === null
+			? raw.publishAsk
+			: parseSurfacePublishAsk(raw.publishAsk, `${label}.publishAsk`);
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		slug: parseSurfaceSlug(raw.slug, `${label}.slug`),
@@ -575,6 +619,7 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		pendingChangeCount: parseInteger(raw.pendingChangeCount ?? 0, `${label}.pendingChangeCount`, 0, 100_000),
 		needsAttentionCount: parseInteger(raw.needsAttentionCount ?? 0, `${label}.needsAttentionCount`, 0, 100_000),
 		sortOrder: parseInteger(raw.sortOrder ?? 0, `${label}.sortOrder`, -10_000, 100_000),
+		...(publishAsk !== undefined ? { publishAsk } : {}),
 	};
 }
 
@@ -914,6 +959,7 @@ export function parsePointToChangeTarget(value: unknown, label = "target"): Poin
 export function parseSurfaceAutomationSummary(value: unknown, label = "automation"): SurfaceAutomationSummary {
 	const raw = parseRecord(value, label);
 	if (typeof raw.enabled !== "boolean") throw new WireValueError(`${label}.enabled`);
+	if (typeof raw.ownable !== "boolean") throw new WireValueError(`${label}.ownable`);
 	const prompt =
 		raw.prompt === undefined ? undefined : parseOptionalText(raw.prompt, `${label}.prompt`, SURFACE_MAX_PROMPT_CHARS);
 	return {
@@ -932,6 +978,24 @@ export function parseSurfaceAutomationSummary(value: unknown, label = "automatio
 		lastRunAt: parseOptionalTimestamp(raw.lastRunAt, `${label}.lastRunAt`),
 		lastOutcomeSummary: parseOptionalText(raw.lastOutcomeSummary, `${label}.lastOutcomeSummary`, 500),
 		nextRunAt: parseOptionalTimestamp(raw.nextRunAt, `${label}.nextRunAt`),
+		ownable: raw.ownable,
+		ownerUserId: parseOptionalUuid(raw.ownerUserId, `${label}.ownerUserId`),
+		offer:
+			raw.offer === null || raw.offer === undefined
+				? null
+				: parseSurfaceAutomationOffer(raw.offer, `${label}.offer`),
+	};
+}
+
+function parseSurfaceAutomationOffer(value: unknown, label: string): SurfaceAutomationOffer {
+	const raw = parseRecord(value, label);
+	return {
+		id: parseUuid(raw.id, `${label}.id`),
+		fromUserId: parseOptionalUuid(raw.fromUserId, `${label}.fromUserId`),
+		toUserId: parseOptionalUuid(raw.toUserId, `${label}.toUserId`),
+		offeredByUserId: parseOptionalUuid(raw.offeredByUserId, `${label}.offeredByUserId`),
+		status: parseEnum(raw.status, SURFACE_AUTOMATION_OFFER_STATUSES, `${label}.status`),
+		answeredAt: parseOptionalTimestamp(raw.answeredAt, `${label}.answeredAt`),
 	};
 }
 

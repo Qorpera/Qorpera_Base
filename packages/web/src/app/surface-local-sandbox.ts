@@ -883,13 +883,6 @@ function opsAction(
 			paths: [],
 			reply: "Prepared it for your approval. Check the details, then approve when it looks right.",
 		};
-	if (kind === "members")
-		return {
-			title: summarizeTitle(prompt, "Team update"),
-			summary: `Ready to apply: ${prompt.trim()}\n\nRoles and invitations change only after you approve.`,
-			paths: [],
-			reply: "The team update is ready. Approve it and I'll apply it right away.",
-		};
 	if (kind === "data")
 		return {
 			title: summarizeTitle(prompt, "Table update"),
@@ -1985,7 +1978,12 @@ export interface StarterSurfaceBundle {
 			}[];
 		};
 	}[];
-	readonly automations: readonly (Omit<SurfaceAutomationSummary, "id" | "title"> & { readonly heading: string })[];
+	readonly automations: readonly (Omit<
+		SurfaceAutomationSummary,
+		"id" | "title" | "ownable" | "ownerUserId" | "offer"
+	> & {
+		readonly heading: string;
+	})[];
 }
 
 // WHY: Lets Co-Founder spin up a realistic 4-surface starter kit in local preview (tailored for Thetaband) so each interface can be judged in practice.

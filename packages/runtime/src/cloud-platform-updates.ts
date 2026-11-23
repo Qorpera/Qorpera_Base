@@ -321,6 +321,48 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Clean Studio folders and Product/Report Studio schemas",
 		text: "Non-Identity Studio surfaces now default to an isolated folder under surfaces/<slug> instead of legacy top-level company folders like product or reports, so each new Studio surface starts blank and holds only its own work (Identity stays in the identity folder). Product Studio sessions now receive the structured Studio layout directly in their turn instructions for interactive 3D models, key specs, colorways, BOM tables, production plans, supplier cards, and editorial competitor or vendor analysis reports with charts and tables. Report surfaces receive the same structured report format.",
 	},
+	{
+		id: "people-in-the-rail",
+		kind: "behaviour",
+		date: "2026-11-23",
+		title: "No Members page: People in the sidebar",
+		text: "The Members page and the Members interface are gone. Teammates now stand under People at the foot of the sidebar, with where each one is right now, and owners invite from there or from the company menu. Who each agent works for, each member's ChatGPT, and the offers of agents you make with offer_agents_to_member are in Settings, Team, under Who agents work for: send a member there to say yes, never to a Members page.",
+	},
+	{
+		id: "surface-stage-ci-gate",
+		kind: "capability",
+		date: "2026-11-23",
+		title: "Opt-in CI checks before staging Surface commits",
+		text: 'Code-backed Surface repositories can now set surfaceGate to "stage" in their checks file so Qorpera automatically runs the repository checks in the session machine before staging commits for Preview (default "none" keeps Preview staging instant for simple static Surfaces). Once a repository base opts into "stage", sessions must pass checks to stage and cannot bypass the gate by deleting, breaking, or clearing the checks file.',
+	},
+	{
+		id: "code-ops-git-read-claims-revert-and-lifecycle",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "Faster code inspection, path claims and safer undos",
+		text: "manage_code now supports fast read-only git inspection without booting a coding machine (commit log, diffs, file show at any ref, branch ahead/behind counts, merge previews and paginated change history) plus repository create, archive, unarchive, tag and prune actions, SQL-backed status, and dry-run, verification-gated or range undos that reuse prior verified site builds. When dispatching parallel coding sessions with manage_worker, declare claimedPaths to receive immediate overlap warnings against active sessions. company_read also batches up to 24 files with parallel reads and per-file line ranges.",
+	},
+	{
+		id: "checks-v2-paths-caches-artifacts",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "Smarter repository checks with caches and artifacts",
+		text: "Repository checks now support path filters (paths, pathsIgnore, alwaysRun), blessed build caches (caches with restoreKeys), structured failure reports (artifacts in junit, tap, or vitest-json format), and finer controls: maxParallel up to 8, failFast, exclusive steps, retries, static env variables, and least-privilege secrets allow-lists. DAG suites are budgeted by critical path rather than total sum, and preflight runs support cleanCopy to test a clean clone matching landing plus validateSite before hand-in. Failed landing runs also persist full masked logs in the company folder.",
+	},
+	{
+		id: "app-relay-streaming-and-site-rollbacks",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "App WebSockets, SSE, supervision and site rollbacks",
+		text: "Shared app links (share_app) now carry HTTP, long-lived SSE streaming and WebSockets with per-stream flow control, active health probing, and zero-downtime port swaps. Static websites published with publish_site now keep up to ten versions within a per-company kept-version budget and accept WebAssembly, glTF/GLB, WebVTT, Markdown, and RSS/Atom files. Use manage_site to list versions, roll back a published static website atomically, or start, check health, reload, stop, and read structured logs and crash summaries for a hosted app.",
+	},
+	{
+		id: "coding-prewarmed-snapshots-and-standby",
+		kind: "capability",
+		date: "2026-11-22",
+		title: "Pre-warmed coding snapshots and environment hooks",
+		text: "Repositories can now declare a Qorpera, Cursor or devcontainer environment configuration with install, start, background terminal and static non-secret environment settings. Qorpera computes a setup digest, builds scrubbed per-node snapshot images in the background under the company's network exit rules so new coding machines start with base packages pre-warmed, and runs worktree install, start and tracked background terminal hooks automatically on attach with clean teardown on detach.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

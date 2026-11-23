@@ -29,8 +29,9 @@ import {
 	createHttpCloudCodingCommandGateway,
 	HttpCloudCodingCommandService,
 } from "../../runtime/src/cloud-coding-command-http.ts";
-import type { CodingCommandSecrets } from "../src/coding-command-secrets.ts";
+import { type CodingCommandSecrets, CodingMachineCommandSecrets } from "../src/coding-command-secrets.ts";
 import {
+	CODING_COMMAND_START_WAIT_MS,
 	CodingCommandHeld,
 	codingCommandExecution,
 	LxdCodingFolderCommandTransport,
@@ -553,7 +554,7 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 			commandId: input.commandId,
 			offset: 0,
 			maxBytes: CODING_GUEST.maxPageBytes,
-			waitMs: 0,
+			waitMs: CODING_COMMAND_START_WAIT_MS,
 		});
 		expect(at.control.boundary).toHaveBeenCalledWith(at.machine.machineId, [], expect.any(AbortSignal));
 		const folder = at.folder(input.commandId);
@@ -1934,5 +1935,107 @@ describe("LxdCodingFolderCommandTransport", { timeout: 30_000 }, () => {
 		expect(at.guest.watch.peak).toBe(1);
 		await Promise.all([at.read(first.commandId), at.read(second.commandId)]);
 		expect(at.guest.watch.peak).toBe(2);
+	});
+
+	it("enforces allowedSecrets allow-list while keeping full vault output masking and supports waitMs long-polling", async () => {
+		const machineSecrets = new CodingMachineCommandSecrets({
+			environment: async () => ({
+				environment: {
+					ALLOWED_KEY: "secret-allowed-12345678",
+					HIDDEN_KEY: "secret-hidden-987654321",
+				},
+				mask: [],
+			}),
+		});
+		const at = await fixture();
+		const secrets = machineSecrets.session(at.machine.machineId, {
+			companyId: at.machine.companyId,
+			workerId: at.workerId,
+			leaseToken: randomUUID(),
+		});
+		const restricted = at.another({
+			secrets,
+			session: {
+				uid: 200001,
+				gid: 200001,
+				cwd: "/company/work",
+				allowedSecrets: ["ALLOWED_KEY"],
+			},
+		});
+		const cmd = at.input();
+		at.guest.print(cmd.commandId, "leaked secret-hidden-987654321 and secret-allowed-12345678\n");
+		at.guest.end(cmd.commandId, "exited", { code: 0, signal: null });
+		const receipt = await restricted.start(at.scope, cmd, signal);
+		const runEnv = at.guest.client.run.mock.calls[0]?.[0].environment;
+		expect(runEnv?.ALLOWED_KEY).toBe("secret-allowed-12345678");
+		expect(runEnv?.HIDDEN_KEY).toBeUndefined();
+		expect(receipt.output).toBe("leaked *** and ***\n");
+
+		const zeroSecrets = at.another({
+			secrets,
+			session: {
+				uid: 200001,
+				gid: 200001,
+				cwd: "/company/work",
+				allowedSecrets: [],
+			},
+		});
+		const cmd2 = at.input();
+		await zeroSecrets.start(at.scope, cmd2, signal);
+		const runEnv2 = at.guest.client.run.mock.calls[1]?.[0].environment;
+		expect(runEnv2?.ALLOWED_KEY).toBeUndefined();
+		expect(runEnv2?.HIDDEN_KEY).toBeUndefined();
+
+		const runningCmd = at.input();
+		await at.start(runningCmd);
+		at.guest.client.output.mockClear();
+		await at.transport.read(at.scope, { commandId: runningCmd.commandId, tail: true, limit: 4096 }, signal, {
+			waitMs: 5000,
+		});
+		expect(at.guest.client.output.mock.calls[0]?.[0].waitMs).toBe(5000);
+		expect(
+			await rejected(
+				at.transport.read(at.scope, { commandId: runningCmd.commandId }, signal, {
+					waitMs: CODING_GUEST.maxWaitMs + 1,
+				}),
+			),
+		).toBe("CODING_COMMAND_INPUT_INVALID");
+		expect(() =>
+			at.another({
+				session: { uid: 200001, gid: 200001, cwd: "/company/work", allowedSecrets: ["BAD-NAME"] },
+			}),
+		).toThrow("CODING_COMMAND_BINDING_INVALID");
+	});
+
+	it("respects explicit startWaitMs overrides, prefers control.releaseReads, and forwards vaultEnvVersion", async () => {
+		const releaseReads = vi.fn(async (machine: string) => ({ machine, reads: "released" as const }));
+		const seenVersions: (string | undefined)[] = [];
+		const version = "d".repeat(64);
+		const at = await fixture();
+		const custom = at.another({
+			control: { boundary: at.control.boundary, releaseReads },
+			startWaitMs: 0,
+			vaultEnvVersion: version,
+			secrets: {
+				resolve: async (req) => {
+					seenVersions.push(req.vaultEnvVersion);
+					return { environment: Object.freeze({}), mask: () => new CodingSecretMask([]).stream() };
+				},
+				accepted: () => undefined,
+				output: async (req) => {
+					seenVersions.push(req.vaultEnvVersion);
+					return () => new CodingSecretMask([]).stream();
+				},
+			},
+		});
+		const input = at.input("ls -la");
+		at.guest.print(input.commandId, "ok\n");
+		at.guest.end(input.commandId, "exited", { code: 0, signal: null });
+		const receipt = await custom.start(at.scope, input, signal);
+		expect(receipt.state).toBe("succeeded");
+		expect(at.guest.lastOutput()?.waitMs).toBe(0);
+		expect(releaseReads).toHaveBeenCalledTimes(1);
+		expect(at.control.boundary).not.toHaveBeenCalled();
+		expect(seenVersions).toEqual([version, version]);
 	});
 });

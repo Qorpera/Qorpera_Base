@@ -2,6 +2,8 @@ import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
+import { connect as tcpConnect } from "node:net";
 import { join, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -83,6 +85,10 @@ export interface MachineGuestPorts {
 	/** Exec stdin, at most this many bytes. */
 	readInput?: (maxBytes: number) => Promise<Buffer>;
 	sleep?: (ms: number) => Promise<void>;
+	appLogSegments?: number;
+	appLogSegmentBytes?: number;
+	probeApp?: (port: number, healthPath: string) => Promise<{ healthy: boolean; status: number; latencyMs: number }>;
+	readMemoryEvents?: (cgroupPath: string) => Promise<string>;
 }
 interface Identity {
 	schema: "qorpera.machine-guest/v1";
@@ -113,6 +119,7 @@ function roots(ports: MachineGuestPorts) {
 		runtime,
 		inbox: join(state, "inbox"),
 		commands: join(state, "commands"),
+		apps: join(state, "apps"),
 		replies: join(runtime, "replies"),
 		identity: join(runtime, "machine.json"),
 		lease: join(runtime, "lease.json"),
@@ -1113,6 +1120,515 @@ async function showFolderView(
 	}
 }
 
+export const MACHINE_APP_LOG_SEGMENTS = 4;
+export const MACHINE_APP_LOG_SEGMENT_BYTES = 16 * 1024 * 1024;
+export const MACHINE_APP_CRASH_STDERR_LINES = 50;
+export const MACHINE_APP_RESTART_POLICY = Object.freeze({
+	restart: "on-failure",
+	restartSec: 2,
+	startLimitBurst: 5,
+	startLimitIntervalSec: 60,
+});
+const APP_SLUG = /^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/;
+const APP_SCH = "qorpera.machine-app-";
+const APP_ERR = "MACHINE_APP_";
+
+export interface MachineAppSpec {
+	readonly slug: string;
+	readonly command: string;
+	readonly port: number;
+	readonly healthPath?: string;
+	readonly cwd?: string;
+	readonly env?: Readonly<Record<string, string>>;
+}
+export interface MachineAppLogEntry {
+	readonly ts: string;
+	readonly seq: number;
+	readonly stream: "stdout" | "stderr";
+	readonly line: string;
+}
+export interface MachineAppCrashSummary {
+	readonly schema: "qorpera.machine-app-crash/v1";
+	readonly slug: string;
+	readonly at: string;
+	readonly exitCode: number | null;
+	readonly signal: string | null;
+	readonly oomKill: number;
+	readonly oomKilled: boolean;
+	readonly restartCount: number;
+	readonly stderrTail: readonly string[];
+}
+export interface MachineAppLogsQuery {
+	readonly grep?: string;
+	readonly tail?: number;
+	readonly stream?: "stdout" | "stderr" | "all";
+	readonly since?: string;
+}
+export interface MachineAppLogsAnswer {
+	readonly schema: "qorpera.machine-app-logs/v1";
+	readonly slug: string;
+	readonly lines: readonly MachineAppLogEntry[];
+	readonly totalMatched: number;
+	readonly truncated: boolean;
+	readonly crashSummary: MachineAppCrashSummary | null;
+}
+export interface MachineAppHealthAnswer {
+	readonly schema: "qorpera.machine-app-health/v1";
+	readonly slug: string;
+	readonly unit: string;
+	readonly activeState: string;
+	readonly subState: string;
+	readonly restarts: number;
+	readonly port: number | null;
+	readonly healthy: boolean;
+	readonly lastStatus: number | null;
+	readonly lastLatencyMs: number | null;
+	readonly crashSummary: MachineAppCrashSummary | null;
+}
+export interface MachineAppReloadAnswer {
+	readonly schema: "qorpera.machine-app-reload/v1";
+	readonly slug: string;
+	readonly previousPort: number | null;
+	readonly activePort: number;
+	readonly healthy: boolean;
+	readonly restarted: boolean;
+}
+
+const isPort = (v: unknown): v is number => Number.isInteger(v) && (v as number) > 0 && (v as number) < 65536;
+const isHp = (v: unknown): v is string =>
+	typeof v === "string" && (!v || (v[0] === "/" && v.length <= 256 && !/[\x00-\x1f\x7f\s]/.test(v)));
+const optJ = (f: string, n = 4096) => missing(() => readJson(f, n)).catch(() => undefined);
+const ctl = (p: MachineGuestPorts, a: readonly string[]) => (p.system ?? system)("/usr/bin/systemctl", a);
+const fail = (c: string): never => {
+	throw new Error(`${APP_ERR}${c}`);
+};
+const appP = (p: MachineGuestPorts, s: unknown) => {
+	if (typeof s !== "string" || !APP_SLUG.test(s)) fail("SLUG_INVALID");
+	const d = join(roots(p).apps, s as string);
+	const l = join(d, "logs");
+	return {
+		s: s as string,
+		l,
+		r: join(l, "ring.json"),
+		sp: join(d, "spec.json"),
+		st: join(d, "state.json"),
+		cr: join(d, "crash.json"),
+		u: `qorpera-machine-app-${s}.service`,
+		g: (i: number) => join(l, `segment-${i}.ndjson`),
+	};
+};
+async function authApp(p: MachineGuestPorts, lease = false) {
+	requireRoot(p);
+	const g = await identity(p);
+	if (lease && !(await leaseLive(p))) throw new Error("MACHINE_GUEST_LEASE_UNAVAILABLE");
+	return g;
+}
+function parseSpec(v: unknown): MachineAppSpec {
+	const r = (v && typeof v === "object" && !Array.isArray(v) ? v : fail("SPEC_INVALID")) as Record<string, unknown>;
+	const { slug, command, port, healthPath = "", cwd, env } = r;
+	const bad =
+		typeof slug !== "string" ||
+		!APP_SLUG.test(slug) ||
+		typeof command !== "string" ||
+		!command.trim() ||
+		command.includes("\0") ||
+		Buffer.byteLength(command) > 16384 ||
+		Buffer.byteLength(JSON.stringify(command)) > 32768 ||
+		!isPort(port) ||
+		!isHp(healthPath) ||
+		(cwd != null && (typeof cwd !== "string" || cwd[0] !== "/" || cwd.length > 512 || /[\0\r\n]/.test(cwd))) ||
+		(env != null &&
+			(typeof env !== "object" ||
+				Array.isArray(env) ||
+				Object.keys(env).length > 128 ||
+				Object.entries(env).some(
+					([k, x]) => !/^[A-Za-z_]\w{0,127}$/.test(k) || typeof x !== "string" || x.length > 4096 || /\0/.test(x),
+				)));
+	if (bad) fail("SPEC_INVALID");
+	return {
+		slug: slug as string,
+		command: command as string,
+		port: port as number,
+		healthPath: healthPath as string,
+		...(cwd ? { cwd: cwd as string } : {}),
+		...(env ? { env: env as Record<string, string> } : {}),
+	};
+}
+
+export class MachineAppRingLogger {
+	readonly #p: ReturnType<typeof appP>;
+	readonly #m: {
+		schema: string;
+		segments: number;
+		segmentBytes: number;
+		activeSegment: number;
+		bytesInActive: number;
+		nextSeq: number;
+	};
+	readonly #e: string[] = [];
+	#eb = 0;
+	#q = Promise.resolve();
+	constructor(slug: string, ports: MachineGuestPorts = {}) {
+		this.#p = appP(ports, slug);
+		this.#m = {
+			schema: `${APP_SCH}ring/v1`,
+			segments: Math.max(2, Math.min(16, ports.appLogSegments ?? MACHINE_APP_LOG_SEGMENTS)),
+			segmentBytes: Math.max(256, ports.appLogSegmentBytes ?? MACHINE_APP_LOG_SEGMENT_BYTES),
+			activeSegment: 0,
+			bytesInActive: 0,
+			nextSeq: 1,
+		};
+	}
+	async init() {
+		await mkdir(this.#p.l, { recursive: true, mode: 0o700 });
+		const m = this.#m;
+		const c = (await optJ(this.#p.r)) as Record<string, unknown> | undefined;
+		if (c?.schema === m.schema && Number.isSafeInteger(c.nextSeq))
+			Object.assign(m, {
+				activeSegment: Math.max(0, Number(c.activeSegment) || 0) % m.segments,
+				bytesInActive: Math.max(0, Number(c.bytesInActive) || 0),
+				nextSeq: Math.max(1, Number(c.nextSeq)),
+			});
+		else await writeJson(this.#p.r, m, 0o600);
+	}
+	write(stream: "stdout" | "stderr", raw: string) {
+		const line = Buffer.byteLength(raw) > 8192 ? `${Buffer.from(raw).subarray(0, 8192).toString("utf8")}...` : raw;
+		if (stream === "stderr") {
+			const tl =
+				Buffer.byteLength(line) > 4096 ? `${Buffer.from(line).subarray(0, 4096).toString("utf8")}...` : line;
+			this.#e.push(tl);
+			this.#eb += Buffer.byteLength(tl);
+			while (this.#e.length > MACHINE_APP_CRASH_STDERR_LINES || this.#eb > 32768) {
+				const drop = this.#e.shift();
+				if (drop !== undefined) this.#eb -= Buffer.byteLength(drop);
+			}
+		}
+		const m = this.#m;
+		const enc = `${JSON.stringify({ ts: new Date().toISOString(), seq: m.nextSeq++, stream, line })}\n`;
+		const len = Buffer.byteLength(enc);
+		this.#q = this.#q
+			.then(async () => {
+				const rot = m.bytesInActive > 0 && m.bytesInActive + len > m.segmentBytes;
+				if (rot) Object.assign(m, { activeSegment: (m.activeSegment + 1) % m.segments, bytesInActive: 0 });
+				const c = constants;
+				const f = await open(
+					this.#p.g(m.activeSegment),
+					c.O_WRONLY | c.O_CREAT | c.O_NOFOLLOW | (rot ? c.O_TRUNC : c.O_APPEND),
+					0o600,
+				);
+				try {
+					await f.writeFile(enc, "utf8");
+				} finally {
+					await f.close();
+				}
+				m.bytesInActive += len;
+				await writeJson(this.#p.r, m, 0o600);
+			})
+			.catch(() => undefined);
+		return this.#q;
+	}
+	flush() {
+		return this.#q;
+	}
+	stderrTail(): readonly string[] {
+		return [...this.#e];
+	}
+}
+
+export const parseCgroupOomKills = (t: string) => Math.max(0, Number(/^oom_kill\s+(\d+)$/m.exec(t)?.[1] ?? 0) || 0);
+const readCrash = async (p: MachineGuestPorts, s: string) => {
+	const v = (await optJ(appP(p, s).cr, 65536)) as Record<string, unknown> | undefined;
+	return v?.schema === `${APP_SCH}crash/v1` ? (v as unknown as MachineAppCrashSummary) : null;
+};
+function probeApp(port: number, hp: string): Promise<{ healthy: boolean; status: number; latencyMs: number }> {
+	const t0 = Date.now();
+	return new Promise((done) => {
+		let ok = false;
+		const end = (healthy: boolean, status: number) => {
+			if (!ok) {
+				ok = true;
+				done({ healthy, status, latencyMs: Math.max(0, Date.now() - t0) });
+			}
+		};
+		if (hp?.startsWith("/")) {
+			const r = httpRequest({ host: "127.0.0.1", port, path: hp, agent: false, timeout: 3000 }, (res) => {
+				res.resume();
+				const c = res.statusCode ?? 0;
+				end(c >= 200 && c < 400, c);
+			});
+			r.on("timeout", () => {
+				r.destroy();
+				end(false, 0);
+			})
+				.on("error", () => end(false, 0))
+				.end();
+			return;
+		}
+		const s = tcpConnect({ host: "127.0.0.1", port }).setTimeout(3000);
+		const fin = (h: boolean) => {
+			s.destroy();
+			end(h, h ? 200 : 0);
+		};
+		s.once("connect", () => fin(true))
+			.once("timeout", () => fin(false))
+			.once("error", () => fin(false));
+	});
+}
+
+export async function startMachineApp(specInput: unknown, ports: MachineGuestPorts = {}) {
+	const g = await authApp(ports, true);
+	const spec = parseSpec(specInput);
+	const p = appP(ports, spec.slug);
+	await mkdir(p.l, { recursive: true, mode: 0o700 });
+	await writeJson(p.sp, spec, 0o600);
+	for (const op of ["stop", "reset-failed"]) await ctl(ports, [op, p.u]).catch(() => undefined);
+	const { restart, restartSec, startLimitBurst, startLimitIntervalSec } = MACHINE_APP_RESTART_POLICY;
+	const props = [
+		`Slice=${PATHS.slice}`,
+		`WorkingDirectory=${spec.cwd ?? ports.home ?? "/root"}`,
+		`Restart=${restart}`,
+		`RestartSec=${restartSec}`,
+		`StartLimitBurst=${startLimitBurst}`,
+		`StartLimitIntervalSec=${startLimitIntervalSec}`,
+		"KillMode=control-group",
+		"TimeoutStopSec=15",
+		"StandardOutput=null",
+		"StandardError=journal",
+	];
+	await (ports.system ?? system)("/usr/bin/systemd-run", [
+		"--quiet",
+		`--unit=${p.u}`,
+		...props.map((x) => `--property=${x}`),
+		"/usr/bin/env",
+		"-i",
+		`PATH=${COMMAND_ENV.PATH}`,
+		"LANG=C.UTF-8",
+		"/usr/bin/node",
+		ports.helper ?? PATHS.helper,
+		"app-execute",
+		spec.slug,
+	]);
+	return { schema: `${APP_SCH}started/v1`, machineId: g.machineId, slug: spec.slug, unit: p.u, port: spec.port };
+}
+
+export async function executeMachineApp(slug: string, ports: MachineGuestPorts = {}): Promise<number> {
+	await authApp(ports);
+	if (!(await leaseLive(ports))) return MACHINE_GUEST_REFUSED_EXIT_CODE;
+	const p = appP(ports, slug);
+	const spec = parseSpec(await readJson(p.sp, 65536));
+	const ring = new MachineAppRingLogger(spec.slug, ports);
+	await ring.init();
+	const child = spawn("/bin/bash", ["-l", "-c", spec.command], {
+		cwd: spec.cwd ?? ports.home ?? "/root",
+		env: {
+			...COMMAND_ENV,
+			...(ports.home ? { HOME: ports.home } : {}),
+			PORT: String(spec.port),
+			...(spec.env ?? {}),
+		},
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	for (const [st, r] of [
+		["stdout", child.stdout],
+		["stderr", child.stderr],
+	] as const) {
+		let b = "";
+		r.setEncoding("utf8")
+			.on("data", (c: string) => {
+				const ls = (b + c).split(/\r?\n/);
+				b = ls.pop() ?? "";
+				for (const l of ls) void ring.write(st, l);
+			})
+			.on("end", () => {
+				if (b) void ring.write(st, b);
+			});
+	}
+	const onTerm = () => child.kill("SIGTERM");
+	process.once("SIGTERM", onTerm);
+	const out = await new Promise<{ exitCode: number | null; signal: string | null }>((d) => {
+		child
+			.once("error", () => d({ exitCode: 127, signal: null }))
+			.once("close", (exitCode, signal) => d({ exitCode, signal }));
+	});
+	process.removeListener("SIGTERM", onTerm);
+	await ring.flush();
+	if (out.exitCode !== 0 || out.signal !== null) {
+		const prev = (await optJ(p.st)) as { restartCount?: unknown } | undefined;
+		const restartCount = Number.isSafeInteger(prev?.restartCount) ? Number(prev?.restartCount) + 1 : 1;
+		const at = new Date().toISOString();
+		await writeJson(p.st, { schema: `${APP_SCH}state/v1`, restartCount, lastExitAt: at }, 0o600);
+		let oomKill = 0;
+		try {
+			const cg = await unitCgroup(ports, p.u).catch(
+				async () =>
+					(await systemFile(ports, "/proc/self/cgroup"))
+						.split("\n")
+						.find((l) => l.startsWith("0::"))
+						?.slice(3) ?? "",
+			);
+			if (cg) {
+				const events = join(ports.cgroupRoot ?? "/sys/fs/cgroup", cg, "memory.events");
+				oomKill = parseCgroupOomKills(
+					await (ports.readMemoryEvents ?? ((x: string) => systemFile(ports, x)))(events),
+				);
+			}
+		} catch {}
+		await writeJson(
+			p.cr,
+			{
+				schema: `${APP_SCH}crash/v1`,
+				slug: spec.slug,
+				at,
+				...out,
+				oomKill,
+				oomKilled: oomKill > 0,
+				restartCount,
+				stderrTail: ring.stderrTail(),
+			},
+			0o600,
+		);
+	}
+	return out.exitCode ?? 128;
+}
+
+export async function queryMachineAppLogs(
+	slug: string,
+	q: MachineAppLogsQuery = {},
+	ports: MachineGuestPorts = {},
+): Promise<MachineAppLogsAnswer> {
+	await authApp(ports);
+	const p = appP(ports, slug);
+	const st = q.stream ?? "all";
+	const tail = q.tail ?? 100;
+	const since = q.since
+		? typeof q.since === "string" && q.since.length <= 64 && !Number.isNaN(Date.parse(q.since))
+			? new Date(Date.parse(q.since)).toISOString()
+			: null
+		: "";
+	if (
+		!["stdout", "stderr", "all"].includes(st) ||
+		!Number.isInteger(tail) ||
+		tail < 1 ||
+		tail > 500 ||
+		(q.grep !== undefined && (typeof q.grep !== "string" || q.grep.length > 256)) ||
+		since === null
+	)
+		fail("LOGS_QUERY_INVALID");
+	const meta = (await optJ(p.r)) as { segments?: unknown } | undefined;
+	const segs = Number.isSafeInteger(meta?.segments)
+		? Math.max(1, Math.min(16, Number(meta?.segments)))
+		: (ports.appLogSegments ?? MACHINE_APP_LOG_SEGMENTS);
+	const entries: MachineAppLogEntry[] = [];
+	for (let i = 0; i < segs; i += 1) {
+		const raw = await missing(() => readFile(p.g(i), "utf8")).catch(() => undefined);
+		for (const l of raw ? raw.split("\n") : []) {
+			if (!l) continue;
+			try {
+				const e = JSON.parse(l) as Partial<MachineAppLogEntry>;
+				if (
+					typeof e.ts === "string" &&
+					Number.isSafeInteger(e.seq) &&
+					(e.stream === "stdout" || e.stream === "stderr") &&
+					typeof e.line === "string"
+				)
+					entries.push({ ts: e.ts, seq: Number(e.seq), stream: e.stream, line: e.line });
+			} catch {}
+		}
+	}
+	const ndl = q.grep?.toLowerCase();
+	const matched = entries
+		.sort((a, b) => a.seq - b.seq)
+		.filter(
+			(e) =>
+				(st === "all" || e.stream === st) &&
+				(!since || e.ts >= since) &&
+				(!ndl || e.line.toLowerCase().includes(ndl)),
+		);
+	let lines = matched.slice(-tail);
+	let truncated = matched.length > lines.length;
+	const crashSummary = await readCrash(ports, p.s);
+	const budget = Math.max(4096, 49152 - (crashSummary ? Buffer.byteLength(JSON.stringify(crashSummary)) : 0));
+	while (lines.length && Buffer.byteLength(JSON.stringify(lines)) > budget) {
+		lines = lines.slice(1);
+		truncated = true;
+	}
+	return { schema: `${APP_SCH}logs/v1`, slug: p.s, lines, totalMatched: matched.length, truncated, crashSummary };
+}
+
+export async function probeMachineAppHealth(
+	slug: string,
+	ports: MachineGuestPorts = {},
+): Promise<MachineAppHealthAnswer> {
+	await authApp(ports);
+	const p = appP(ports, slug);
+	const raw = await optJ(p.sp, 65536);
+	const spec = raw ? parseSpec(raw) : null;
+	let activeState = "unknown";
+	let subState = "unknown";
+	let restarts = 0;
+	try {
+		const f = Object.fromEntries(
+			(await ctl(ports, ["show", p.u, "--property=ActiveState,SubState,NRestarts"]))
+				.trim()
+				.split("\n")
+				.filter(Boolean)
+				.map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+		);
+		activeState = f.ActiveState || "inactive";
+		subState = f.SubState || "dead";
+		restarts = /^\d+$/.test(f.NRestarts ?? "") ? Number(f.NRestarts) : 0;
+	} catch {}
+	const pr = spec ? await (ports.probeApp ?? probeApp)(spec.port, spec.healthPath ?? "") : null;
+	return {
+		schema: `${APP_SCH}health/v1`,
+		slug: p.s,
+		unit: p.u,
+		activeState,
+		subState,
+		restarts,
+		port: spec?.port ?? null,
+		healthy: pr?.healthy ?? false,
+		lastStatus: pr?.status ?? null,
+		lastLatencyMs: pr?.latencyMs ?? null,
+		crashSummary: await readCrash(ports, p.s),
+	};
+}
+
+export async function reloadMachineApp(
+	slug: string,
+	opts: { port?: number; healthPath?: string } = {},
+	ports: MachineGuestPorts = {},
+): Promise<MachineAppReloadAnswer> {
+	await authApp(ports, true);
+	const p = appP(ports, slug);
+	const spec = parseSpec(await readJson(p.sp, 65536));
+	const activePort = opts.port ?? spec.port;
+	const hp = opts.healthPath ?? spec.healthPath ?? "";
+	if (!isPort(activePort) || !isHp(hp)) fail("SPEC_INVALID");
+	const restarted = activePort === spec.port;
+	if (restarted) await ctl(ports, ["restart", p.u]);
+	const { healthy } = await (ports.probeApp ?? probeApp)(activePort, hp);
+	if (!restarted) {
+		if (!healthy) fail("TARGET_UNHEALTHY");
+		await writeJson(p.sp, { ...spec, port: activePort, healthPath: hp }, 0o600);
+	}
+	return { schema: `${APP_SCH}reload/v1`, slug: p.s, previousPort: spec.port, activePort, healthy, restarted };
+}
+
+export async function stopMachineApp(slug: string, ports: MachineGuestPorts = {}) {
+	await authApp(ports);
+	const p = appP(ports, slug);
+	await ctl(ports, ["stop", p.u]).catch(() => undefined);
+	return { schema: `${APP_SCH}stopped/v1`, slug: p.s, unit: p.u };
+}
+
+async function readInboxOnce(p: MachineGuestPorts, id: string, max: number) {
+	const f = join(roots(p).inbox, `${uuid(id)}.json`);
+	const v = await readJson(f, max);
+	await rm(f, { force: true }).catch(() => undefined);
+	return v;
+}
+
 /** Every answer goes to a reply file the executor reads back (LXD exec
  * returns no output); old replies are removed on the way. */
 async function reply(ports: MachineGuestPorts, nonce: string, value: unknown): Promise<void> {
@@ -1130,6 +1646,7 @@ async function reply(ports: MachineGuestPorts, nonce: string, value: unknown): P
 export async function runMachineGuestCli(argv: readonly string[], ports: MachineGuestPorts = {}): Promise<number> {
 	const [first, second, ...rest] = argv;
 	if (first === "execute" && second && rest.length === 0) return executeMachineCommand(second, ports);
+	if (first === "app-execute" && second && rest.length === 0) return executeMachineApp(second, ports);
 	if (first === "watchdog" && second === undefined) {
 		await runMachineWatchdog(ports);
 		return 0;
@@ -1164,6 +1681,22 @@ export async function runMachineGuestCli(argv: readonly string[], ports: Machine
 				await (ports.readInput ?? ((max: number) => readMachineInput(process.stdin, max)))(FOLDER_VIEW_MAX_BYTES),
 				ports,
 			);
+		else if (second === "app-start" && rest.length === 1)
+			result = await startMachineApp(await readInboxOnce(ports, a, 65536), ports);
+		else if (second === "app-health" && rest.length === 1) result = await probeMachineAppHealth(a, ports);
+		else if (second === "app-reload" && rest.length >= 1 && rest.length <= 2)
+			result = await reloadMachineApp(
+				a,
+				b ? ((await readInboxOnce(ports, b, 4096)) as { port?: number; healthPath?: string }) : {},
+				ports,
+			);
+		else if (second === "app-logs" && rest.length >= 1 && rest.length <= 2)
+			result = await queryMachineAppLogs(
+				a,
+				b ? ((await readInboxOnce(ports, b, 4096)) as MachineAppLogsQuery) : {},
+				ports,
+			);
+		else if (second === "app-stop" && rest.length === 1) result = await stopMachineApp(a, ports);
 		else throw new Error("INVALID_MACHINE_GUEST_ARGUMENTS");
 	} catch (error) {
 		result = { schema: "qorpera.machine-guest-refusal/v1", code: codingErrorCode(error) };

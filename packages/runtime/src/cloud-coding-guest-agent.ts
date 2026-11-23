@@ -17,12 +17,13 @@ import {
 	rmdir,
 	unlink,
 } from "node:fs/promises";
-import { constants as osConstants } from "node:os";
+import { constants as osConstants, totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
+	CODING_CHECK_CACHES,
 	CODING_GUEST,
 	CODING_GUEST_MOUNT_V2,
 	CODING_GUEST_VERBS,
@@ -41,6 +42,9 @@ import {
 	type CodingGuestSessionQuiescedAnswer,
 	type CodingGuestSessionRequest,
 	type CodingGuestSessionStoppedAnswer,
+	type CodingGuestStatusAllAnswer,
+	type CodingGuestStatusAllRequest,
+	type CodingGuestStatusAllSession,
 	type CodingGuestStatusAnswer,
 	type CodingGuestUsage,
 	type CodingGuestVerb,
@@ -78,8 +82,15 @@ const NETWORKS = 16384;
 const FOLDER_POLLS = 100;
 const POLL_MS = 200;
 const USER_SCHEMA = "qorpera.coding-guest-session-user/v1";
+const NETWORK_SCHEMA = "qorpera.coding-guest-network/v1";
 const INTENT_SCHEMA = "qorpera.coding-guest-intent/v1";
 const OUTCOME_SCHEMA = "qorpera.coding-guest-outcome/v1";
+const FOLDER_SLICE = "qorpera-folder.slice";
+const MIB = 1024 * 1024;
+const SESSION_MIN_MEMORY_MAX_MIB = 512;
+const SESSION_MIN_MEMORY_HIGH_MIB = 384;
+const SESSION_RESERVED_HEADROOM_MIB = 1024;
+const SESSION_TASKS_MAX = 512;
 const INPUT_GRACE_MS = 60000;
 const OUTCOME_KEEP_MS = 3600000;
 const RING_ENTRIES = 64;
@@ -117,6 +128,7 @@ export interface CodingGuestAgentPorts {
 	/** The machine's package caches (CODING_PACKAGE_CACHES): their folder, the tmpfiles file that makes them, and the most
 	 * their tool folders may hold at boot. */
 	packageCaches?: { root: string; config: string; limitBytes: number };
+	checkCaches?: { root: string; limitBytes: number };
 	subidFiles?: { uid: string; gid: string };
 	/** systemd-resolved's upstream list, bound over a session's /etc/resolv.conf (the stub is not in its netns). */
 	resolvConf?: string;
@@ -140,8 +152,9 @@ export interface CodingGuestAgentPorts {
 	requireRoot?: boolean;
 	/** The uid the relay runs as, which its request must name. */
 	processUid?: () => number;
-	/** Calls the listener when systemd stops the relay's unit (SIGTERM); returns the unsubscribe. */
 	onTerminate?: (listener: () => void) => () => void;
+	netnsExists?: (namespace: string) => Promise<boolean>;
+	totalMemoryBytes?: () => Promise<number>;
 }
 type Agent = Required<CodingGuestAgentPorts>;
 
@@ -156,6 +169,12 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 			root: CODING_PACKAGE_CACHES.root,
 			config: "/etc/tmpfiles.d/qorpera-packages.conf",
 			limitBytes: CODING_PACKAGE_CACHES.limitBytes,
+		},
+		checkCaches: ports.checkCaches ?? {
+			root: ports.packageCaches
+				? join(dirname(ports.packageCaches.root), "qorpera-check-caches")
+				: CODING_CHECK_CACHES.root,
+			limitBytes: CODING_CHECK_CACHES.limitBytes,
 		},
 		subidFiles: ports.subidFiles ?? { uid: "/etc/subuid", gid: "/etc/subgid" },
 		resolvConf: ports.resolvConf ?? "/run/systemd/resolve/resolv.conf",
@@ -183,7 +202,19 @@ function settle(ports: CodingGuestAgentPorts): Agent {
 				process.on("SIGTERM", listener);
 				return () => process.off("SIGTERM", listener);
 			}),
+		netnsExists:
+			ports.netnsExists ??
+			((namespace: string) =>
+				(ports.requireRoot ?? true) ? exists(join("/run/netns", namespace)) : Promise.resolve(true)),
+		totalMemoryBytes: ports.totalMemoryBytes ?? readTotalMemoryBytes,
 	};
+}
+
+async function readTotalMemoryBytes(): Promise<number> {
+	const text = await readFile("/proc/meminfo", "utf8").catch(() => "");
+	const match = /^MemTotal:\s+([0-9]+)\s+kB$/m.exec(text);
+	if (match) return Number(match[1]) * 1024;
+	return totalmem();
 }
 
 async function system(executable: string, args: readonly string[]): Promise<string> {
@@ -331,6 +362,9 @@ function places(at: Agent, workerId: string) {
 		mountpoint: join(at.folderRoot, "mounts", worker),
 		folderUnit: `qorpera-folder-${worker}.service`,
 		slice: `qorpera-coding-${worker}.slice`,
+		sliceUnit: join(at.systemdRoot, `qorpera-coding-${worker}.slice`),
+		activeDir: join(at.runtimeRoot, "active", worker),
+		networkRecord: join(at.runtimeRoot, "networks", `${worker}.json`),
 		namespace: `qorpera-${worker}`,
 	};
 }
@@ -344,10 +378,9 @@ function commandPlaces(at: Agent, session: Places, commandId: string) {
 		intent: join(directory, "intent.json"),
 		cancel: join(directory, "cancel.json"),
 		outcome: join(directory, "outcome.json"),
-		/** The session user's: the relay writes the ring and exit.json here. */
 		output: join(directory, "output"),
-		/** The whole request, secrets included, in memory until systemd has opened it as the relay's stdin. */
 		input: join(at.runtimeRoot, "inputs", `${session.worker}-${command}.json`),
+		active: join(session.activeDir, command),
 		unit: `qorpera-coding-${session.worker}-${command}.service`,
 	};
 }
@@ -516,7 +549,10 @@ async function ensureSubids(at: Agent, name: string, uid: number): Promise<void>
  * removes what was not read, written or changed for 30 days. Each tool folder is a line of its own, so it is only ever
  * emptied, never removed. The tools' trees are left out of it (`x`, their contents too): a browser or an unpacked
  * package missing a file it has not read for 30 days is broken, so the agent ages each whole (ageCodingPackageTrees). */
-export function codingPackageCachesTmpfiles(root: string): string {
+export function codingPackageCachesTmpfiles(
+	root: string,
+	checkCachesRoot = join(dirname(root), "qorpera-check-caches"),
+): string {
 	const { group, ageDays, tools } = CODING_PACKAGE_CACHES;
 	const acl = `group:${group}:rwx,default:group:${group}:rwx`;
 	return [
@@ -526,7 +562,10 @@ export function codingPackageCachesTmpfiles(root: string): string {
 			`d ${path} 2775 root ${group} ${ageDays}d`,
 			`a ${path} - - - - ${acl}`,
 		]),
+		// WHY: Blessed check caches are root-owned 0755 so unprivileged session commands can read them but never poison them.
+		`d ${checkCachesRoot} ${CODING_CHECK_CACHES.mode} ${CODING_CHECK_CACHES.owner} ${CODING_CHECK_CACHES.group} ${CODING_CHECK_CACHES.ageDays}d`,
 		...tools.flatMap(({ folder, trees }) => trees.map((tree) => `x ${root}/${folder}/${tree}`)),
+		`x ${checkCachesRoot}/*/*`,
 		"",
 	].join("\n");
 }
@@ -582,59 +621,255 @@ export async function ageCodingPackageTrees(root: string, nowMs: number, ageMs: 
 			}
 	return removed;
 }
-/** Whole tool folders of the machine's package caches under `root` emptied, the least recently used first, while
- * together they hold more than `limitBytes` on disk; answers the folders emptied, in that order (ties in the tools'
- * order; one that holds nothing is passed over). What they hold is the blocks of each file and folder in them, a file
- * linked twice counted once; a file also linked from a folder not yet emptied still counts after its first folder is
- * emptied, so the trim goes on while it stays on disk. A folder's last use is the newest read, write or change of a file
- * in it (a hard link into a project changes only the change time). A tool folder that is not a real folder is neither
- * counted nor emptied. Emptied, a folder stays, with its owner, mode and ACL. */
+function trackCacheInode(
+	held: Map<string, { bytes: number; refs: number }>,
+	seen: Set<string>,
+	dev: number,
+	ino: number,
+	bytes: number,
+): number {
+	const key = `${dev}:${ino}`;
+	if (seen.has(key)) return 0;
+	seen.add(key);
+	const known = held.get(key);
+	if (known) known.refs++;
+	else held.set(key, { bytes, refs: 1 });
+	return bytes;
+}
+
 export async function trimCodingPackageCaches(root: string, limitBytes: number): Promise<string[]> {
-	// Each file or folder once (by device and inode), with its blocks and how many of the tool folders still hold it.
-	const held = new Map<string, { bytes: number; folders: number }>();
-	const folders: { folder: string; path: string; entries: string[]; bytes: number; usedMs: number }[] = [];
-	for (const { folder } of CODING_PACKAGE_CACHES.tools) {
-		const path = join(root, folder);
-		if (!(await missing(() => lstat(path)))?.isDirectory()) continue;
-		const entries = new Set<string>();
-		let bytes = 0;
-		let usedMs = 0;
-		for (const directories = [path]; directories.length > 0; ) {
+	const held = new Map<string, { bytes: number; refs: number }>();
+	const dirInfo = new Map<string, { key: string; bytes: number; usedMs: number }>();
+	const units: {
+		relative: string;
+		path: string;
+		toolPath: string;
+		toolIndex: number;
+		keys: string[];
+		bytes: number;
+		usedMs: number;
+	}[] = [];
+	for (const [toolIndex, { folder, trees }] of CODING_PACKAGE_CACHES.tools.entries()) {
+		const toolPath = join(root, folder);
+		if (!(await missing(() => lstat(toolPath)))?.isDirectory()) continue;
+		const treeRoots = new Set<string>();
+		for (const tree of trees) {
+			for (const matched of await treesMatching(toolPath, tree)) treeRoots.add(matched);
+		}
+		for (const directories = [toolPath]; directories.length > 0; ) {
 			const directory = directories.pop() as string;
-			for (const name of (await missing(() => readdir(directory))) ?? []) {
+			const names = (await missing(() => readdir(directory))) ?? [];
+			if (directory !== toolPath && names.length === 0) {
+				const info = dirInfo.get(directory);
+				if (info) {
+					dirInfo.delete(directory);
+					units.push({
+						relative: directory.slice(root.length + 1),
+						path: directory,
+						toolPath,
+						toolIndex,
+						keys: [info.key],
+						bytes: info.bytes,
+						usedMs: info.usedMs,
+					});
+				}
+				continue;
+			}
+			for (const name of names) {
 				const entry = join(directory, name);
 				const stat = await missing(() => lstat(entry));
 				if (!stat) continue;
-				if (stat.isDirectory()) directories.push(entry);
-				else if (stat.isFile()) usedMs = Math.max(usedMs, stat.atimeMs, stat.mtimeMs, stat.ctimeMs);
-				const key = `${stat.dev}:${stat.ino}`;
-				if (entries.has(key)) continue;
-				entries.add(key);
-				bytes += stat.blocks * 512;
-				const known = held.get(key);
-				if (known) known.folders++;
-				else held.set(key, { bytes: stat.blocks * 512, folders: 1 });
+				if (treeRoots.has(entry)) {
+					const entries = new Set<string>();
+					let bytes = trackCacheInode(held, entries, stat.dev, stat.ino, stat.blocks * 512);
+					let fileUsedMs = 0;
+					let dirUsedMs = Math.max(stat.mtimeMs, stat.ctimeMs);
+					if (stat.isDirectory()) {
+						for (const stack = [entry]; stack.length > 0; ) {
+							const current = stack.pop() as string;
+							for (const childName of (await missing(() => readdir(current))) ?? []) {
+								const child = join(current, childName);
+								const childStat = await missing(() => lstat(child));
+								if (!childStat) continue;
+								bytes += trackCacheInode(held, entries, childStat.dev, childStat.ino, childStat.blocks * 512);
+								if (childStat.isDirectory()) {
+									dirUsedMs = Math.max(dirUsedMs, childStat.mtimeMs, childStat.ctimeMs);
+									stack.push(child);
+								} else if (childStat.isFile()) {
+									fileUsedMs = Math.max(fileUsedMs, childStat.atimeMs, childStat.mtimeMs, childStat.ctimeMs);
+								}
+							}
+						}
+					} else if (stat.isFile()) {
+						fileUsedMs = Math.max(stat.atimeMs, stat.mtimeMs, stat.ctimeMs);
+					}
+					units.push({
+						relative: entry.slice(root.length + 1),
+						path: entry,
+						toolPath,
+						toolIndex,
+						keys: [...entries],
+						bytes,
+						usedMs: fileUsedMs > 0 ? fileUsedMs : dirUsedMs,
+					});
+				} else if (stat.isDirectory()) {
+					const dirSeen = new Set<string>();
+					const bytes = trackCacheInode(held, dirSeen, stat.dev, stat.ino, stat.blocks * 512);
+					dirInfo.set(entry, {
+						key: `${stat.dev}:${stat.ino}`,
+						bytes,
+						usedMs: Math.max(stat.mtimeMs, stat.ctimeMs),
+					});
+					directories.push(entry);
+				} else {
+					const entries = new Set<string>();
+					const bytes = trackCacheInode(held, entries, stat.dev, stat.ino, stat.blocks * 512);
+					const usedMs = stat.isFile()
+						? Math.max(stat.atimeMs, stat.mtimeMs, stat.ctimeMs)
+						: Math.max(stat.mtimeMs, stat.ctimeMs);
+					units.push({
+						relative: entry.slice(root.length + 1),
+						path: entry,
+						toolPath,
+						toolIndex,
+						keys: [...entries],
+						bytes,
+						usedMs,
+					});
+				}
 			}
 		}
-		folders.push({ folder, path, entries: [...entries], bytes, usedMs });
 	}
 	let total = 0;
 	for (const { bytes } of held.values()) total += bytes;
-	const emptied: string[] = [];
-	for (const { folder, path, entries, bytes } of folders.sort((a, b) => a.usedMs - b.usedMs)) {
+	const evicted: string[] = [];
+	units.sort((a, b) => a.usedMs - b.usedMs || a.toolIndex - b.toolIndex || a.relative.localeCompare(b.relative));
+	for (const unit of units) {
 		if (total <= limitBytes) break;
-		if (bytes === 0) continue;
-		for (const name of (await missing(() => readdir(path))) ?? [])
-			await rm(join(path, name), { recursive: true, force: true });
-		// What only this folder held is gone; what another folder still holds stays counted.
-		for (const key of entries) {
-			const known = held.get(key) as { bytes: number; folders: number };
-			if (--known.folders === 0) total -= known.bytes;
+		if (unit.bytes === 0) continue;
+		await rm(unit.path, { recursive: true, force: true });
+		for (const key of unit.keys) {
+			const known = held.get(key);
+			if (known && --known.refs === 0) total -= known.bytes;
 		}
-		emptied.push(folder);
+		let parent = dirname(unit.path);
+		while (parent !== unit.toolPath && parent.startsWith(`${unit.toolPath}/`)) {
+			const remaining = await missing(() => readdir(parent));
+			if (!remaining || remaining.length > 0) break;
+			try {
+				await rmdir(parent);
+			} catch {
+				break;
+			}
+			const info = dirInfo.get(parent);
+			if (info) {
+				dirInfo.delete(parent);
+				const known = held.get(info.key);
+				if (known && --known.refs === 0) total -= known.bytes;
+			}
+			parent = dirname(parent);
+		}
+		evicted.push(unit.relative);
 	}
-	return emptied;
+	return evicted;
 }
+
+const STAGING_TTL_MS = 3_600_000;
+
+export async function trimCodingCheckCaches(root: string, limitBytes: number, nowMs = Date.now()): Promise<string[]> {
+	if (!(await missing(() => lstat(root)))?.isDirectory()) return [];
+	const held = new Map<string, { bytes: number; refs: number }>();
+	const entries: {
+		relative: string;
+		path: string;
+		parent: string;
+		keys: string[];
+		bytes: number;
+		usedMs: number;
+	}[] = [];
+	const repoDirs = (await missing(() => readdir(root))) ?? [];
+	for (const repoName of repoDirs) {
+		const repoPath = join(root, repoName);
+		const repoStat = await missing(() => lstat(repoPath));
+		if (!repoStat) continue;
+		if (repoName.startsWith(".staging-")) {
+			if (nowMs - Math.max(repoStat.mtimeMs, repoStat.ctimeMs) > STAGING_TTL_MS) {
+				await rm(repoPath, { recursive: true, force: true });
+			}
+			continue;
+		}
+		if (!repoStat.isDirectory()) continue;
+		const keyNames = (await missing(() => readdir(repoPath))) ?? [];
+		for (const keyName of keyNames) {
+			const entryPath = join(repoPath, keyName);
+			const entryStat = await missing(() => lstat(entryPath));
+			if (!entryStat) continue;
+			if (keyName.startsWith(".staging-")) {
+				if (nowMs - Math.max(entryStat.mtimeMs, entryStat.ctimeMs) > STAGING_TTL_MS) {
+					await rm(entryPath, { recursive: true, force: true });
+				}
+				continue;
+			}
+			const seen = new Set<string>();
+			let bytes = trackCacheInode(held, seen, entryStat.dev, entryStat.ino, entryStat.blocks * 512);
+			let fileUsedMs = 0;
+			let dirUsedMs = Math.max(entryStat.mtimeMs, entryStat.ctimeMs);
+			if (entryStat.isDirectory()) {
+				for (const stack = [entryPath]; stack.length > 0; ) {
+					const current = stack.pop() as string;
+					for (const childName of (await missing(() => readdir(current))) ?? []) {
+						const child = join(current, childName);
+						const childStat = await missing(() => lstat(child));
+						if (!childStat) continue;
+						bytes += trackCacheInode(held, seen, childStat.dev, childStat.ino, childStat.blocks * 512);
+						if (childStat.isDirectory()) {
+							dirUsedMs = Math.max(dirUsedMs, childStat.mtimeMs, childStat.ctimeMs);
+							stack.push(child);
+						} else if (childStat.isFile()) {
+							fileUsedMs = Math.max(fileUsedMs, childStat.atimeMs, childStat.mtimeMs, childStat.ctimeMs);
+						}
+					}
+				}
+			} else if (entryStat.isFile()) {
+				fileUsedMs = Math.max(entryStat.atimeMs, entryStat.mtimeMs, entryStat.ctimeMs);
+			}
+			const marker = await missing(() => lstat(join(entryPath, ".last-used")));
+			const usedMs = marker?.isFile()
+				? Math.max(marker.atimeMs, marker.mtimeMs, marker.ctimeMs)
+				: fileUsedMs > 0
+					? fileUsedMs
+					: dirUsedMs;
+			entries.push({
+				relative: `${repoName}/${keyName}`,
+				path: entryPath,
+				parent: repoPath,
+				keys: [...seen],
+				bytes,
+				usedMs,
+			});
+		}
+		const afterStaging = await missing(() => readdir(repoPath));
+		if (afterStaging && afterStaging.length === 0) await ignore(rmdir(repoPath));
+	}
+	let total = 0;
+	for (const { bytes } of held.values()) total += bytes;
+	const evicted: string[] = [];
+	entries.sort((a, b) => a.usedMs - b.usedMs || a.relative.localeCompare(b.relative));
+	for (const entry of entries) {
+		if (total <= limitBytes) break;
+		if (entry.bytes === 0) continue;
+		await rm(entry.path, { recursive: true, force: true });
+		for (const key of entry.keys) {
+			const known = held.get(key);
+			if (known && --known.refs === 0) total -= known.bytes;
+		}
+		const remaining = await missing(() => readdir(entry.parent));
+		if (remaining && remaining.length === 0) await ignore(rmdir(entry.parent));
+		evicted.push(entry.relative);
+	}
+	return evicted;
+}
+
 /** The machine's package caches, once a boot, at its first mount and before the session's user (the guest agent has no
  * boot of its own; every turn mounts before its commands run): the tmpfiles file written, its folders made or set right,
  * the tools' trees not used for the age removed whole, and the tool folders trimmed to the limit. Its record lives in memory, so a restarted machine does it again. Answers
@@ -646,10 +881,11 @@ async function ensurePackageCaches(at: Agent): Promise<boolean> {
 	const { root, config, limitBytes } = at.packageCaches;
 	try {
 		await mkdir(dirname(config), { recursive: true, mode: 0o755 });
-		await writeText(config, codingPackageCachesTmpfiles(root), 0o644);
+		await writeText(config, codingPackageCachesTmpfiles(root, at.checkCaches.root), 0o644);
 		await at.system(TOOLS.systemdTmpfiles, ["--create", config]);
 		await ageCodingPackageTrees(root, at.nowMs(), CODING_PACKAGE_CACHES.ageDays * 86_400_000);
 		await trimCodingPackageCaches(root, limitBytes);
+		await trimCodingCheckCaches(at.checkCaches.root, at.checkCaches.limitBytes, at.nowMs());
 		await writeText(ready, "", 0o600);
 		return true;
 	} catch {
@@ -727,9 +963,51 @@ function address(index: number, end: 1 | 2): string {
 	const n = 4 * index + end;
 	return `10.253.${n >> 8}.${n & 255}`;
 }
-/** The session's network namespace behind the machine's NAT. Its index and readiness live in memory, so a restarted
- * machine makes them again. */
+async function networkReadyFast(at: Agent, session: Places): Promise<boolean> {
+	const networks = join(at.runtimeRoot, "networks");
+	const held = await missing(() => readJson(session.networkRecord, 4096)).catch(() => undefined);
+	if (!held || typeof held !== "object" || Array.isArray(held)) return false;
+	const entry = held as Record<string, unknown>;
+	if (
+		entry.schema !== NETWORK_SCHEMA ||
+		entry.worker !== session.worker ||
+		entry.namespace !== session.namespace ||
+		!Number.isSafeInteger(entry.index) ||
+		Number(entry.index) < 0 ||
+		Number(entry.index) >= NETWORKS
+	)
+		return false;
+	const [natReady, indexReady, nsPresent] = await Promise.all([
+		exists(join(networks, "nat.ready")),
+		exists(join(networks, `${entry.index}.ready`)),
+		at.netnsExists(session.namespace),
+	]);
+	return natReady && indexReady && nsPresent;
+}
+async function runIpBatch(
+	at: Agent,
+	networks: string,
+	prefix: string,
+	lines: readonly string[],
+	options: { namespace?: string; force?: boolean } = {},
+): Promise<void> {
+	const batchPath = join(networks, `.${prefix}-${randomUUID()}.batch`);
+	await writeText(batchPath, `${lines.join("\n")}\n`, 0o600);
+	try {
+		const args = [
+			...(options.namespace ? ["-n", options.namespace] : []),
+			...(options.force ? ["-force"] : []),
+			"-batch",
+			batchPath,
+		];
+		if (options.force) await ignore(at.system(TOOLS.ip, args));
+		else await at.system(TOOLS.ip, args);
+	} finally {
+		await rm(batchPath, { force: true });
+	}
+}
 async function ensureNetwork(at: Agent, session: Places): Promise<void> {
+	if (await networkReadyFast(at, session)) return;
 	await locked(at, machineLock(at), "CODING_GUEST_MACHINE_BUSY", async () => {
 		const networks = join(at.runtimeRoot, "networks");
 		await mkdir(networks, { recursive: true, mode: 0o700 });
@@ -742,21 +1020,39 @@ async function ensureNetwork(at: Agent, session: Places): Promise<void> {
 		}
 		const index = await networkIndex(networks, session.worker);
 		const ready = join(networks, `${index}.ready`);
-		if (await exists(ready)) return;
+		const ns = session.namespace;
+		if ((await exists(ready)) && (await at.netnsExists(ns))) {
+			await writeJson(session.networkRecord, {
+				schema: NETWORK_SCHEMA,
+				worker: session.worker,
+				index,
+				namespace: ns,
+			});
+			return;
+		}
 		const host = `qgh${index}`;
 		const inside = `qgn${index}`;
-		const ns = session.namespace;
-		await ignore(at.system(TOOLS.ip, ["netns", "delete", ns]));
-		await ignore(at.system(TOOLS.ip, ["link", "delete", host]));
-		await at.system(TOOLS.ip, ["netns", "add", ns]);
-		await at.system(TOOLS.ip, ["link", "add", host, "type", "veth", "peer", "name", inside, "netns", ns]);
-		await at.system(TOOLS.ip, ["address", "add", `${address(index, 1)}/30`, "dev", host]);
-		await at.system(TOOLS.ip, ["link", "set", host, "up"]);
-		await at.system(TOOLS.ip, ["-n", ns, "link", "set", "lo", "up"]);
-		await at.system(TOOLS.ip, ["-n", ns, "address", "add", `${address(index, 2)}/30`, "dev", inside]);
-		await at.system(TOOLS.ip, ["-n", ns, "link", "set", inside, "up"]);
-		await at.system(TOOLS.ip, ["-n", ns, "route", "add", "default", "via", address(index, 1)]);
+		await runIpBatch(at, networks, "cleanup", [`netns delete ${ns}`, `link delete ${host}`], { force: true });
+		await runIpBatch(at, networks, "host", [
+			`netns add ${ns}`,
+			`link add ${host} type veth peer name ${inside} netns ${ns}`,
+			`address add ${address(index, 1)}/30 dev ${host}`,
+			`link set ${host} up`,
+		]);
+		await runIpBatch(
+			at,
+			networks,
+			"ns",
+			[
+				"link set lo up",
+				`address add ${address(index, 2)}/30 dev ${inside}`,
+				`link set ${inside} up`,
+				`route add default via ${address(index, 1)}`,
+			],
+			{ namespace: ns },
+		);
 		await writeText(ready, "", 0o600);
+		await writeJson(session.networkRecord, { schema: NETWORK_SCHEMA, worker: session.worker, index, namespace: ns });
 	});
 }
 /** The session's network index: the file named by it holds the session's worker; the lowest free one otherwise. */
@@ -856,6 +1152,7 @@ function folderArgs(session: Places, uid: number, gid: number): string[] {
 	return [
 		"--quiet",
 		`--unit=${session.folderUnit}`,
+		`--slice=${FOLDER_SLICE}`,
 		...properties.flatMap((property) => ["--property", property]),
 		CODING_GUEST.folderProgram,
 		"mount",
@@ -964,18 +1261,67 @@ async function showView(
 		await at.sleep(POLL_MS);
 	}
 }
+async function writeUnitIfChanged(path: string, text: string): Promise<boolean> {
+	if ((await readFile(path, "utf8").catch(() => undefined)) === text) return false;
+	await mkdir(dirname(path), { recursive: true, mode: 0o755 });
+	await writeText(path, text, 0o644);
+	return true;
+}
+async function ensureFolderSlice(at: Agent): Promise<boolean> {
+	const text = [
+		"[Unit]",
+		"Description=Qorpera Coding Folder Mounts",
+		"",
+		"[Slice]",
+		"MemoryAccounting=yes",
+		"MemoryHigh=15%",
+		"MemoryMax=20%",
+		"",
+	].join("\n");
+	return writeUnitIfChanged(join(at.systemdRoot, FOLDER_SLICE), text);
+}
+function sessionMemoryBoundsMib(totalBytes: number): { highMib: number; maxMib: number } {
+	const totalMib = Math.max(SESSION_MIN_MEMORY_MAX_MIB, Math.floor(totalBytes / MIB));
+	const maxMib = Math.max(
+		SESSION_MIN_MEMORY_MAX_MIB,
+		Math.min(
+			Math.floor(totalMib * 0.5),
+			Math.max(SESSION_MIN_MEMORY_MAX_MIB, totalMib - SESSION_RESERVED_HEADROOM_MIB),
+		),
+	);
+	const highMib = Math.max(SESSION_MIN_MEMORY_HIGH_MIB, Math.min(maxMib - 1, Math.floor(maxMib * 0.85)));
+	return { highMib, maxMib };
+}
+async function ensureSessionSlice(at: Agent, session: Places): Promise<boolean> {
+	const { highMib, maxMib } = sessionMemoryBoundsMib(await at.totalMemoryBytes());
+	const text = [
+		"[Unit]",
+		`Description=Qorpera Coding Session ${session.worker}`,
+		"",
+		"[Slice]",
+		"CPUAccounting=yes",
+		"CPUWeight=100",
+		"IOAccounting=yes",
+		"IOWeight=100",
+		"MemoryAccounting=yes",
+		`MemoryHigh=${highMib}M`,
+		`MemoryMax=${maxMib}M`,
+		`TasksMax=${SESSION_TASKS_MAX}`,
+		"",
+	].join("\n");
+	return writeUnitIfChanged(session.sliceUnit, text);
+}
 function userManagerDropIn(at: Agent, uid: number): { directory: string; file: string } {
 	const directory = join(at.systemdRoot, `user@${uid}.service.d`);
 	return { directory, file: join(directory, "qorpera-company.conf") };
 }
-/** The session's user manager (its shells, editors and containers) sees the folder at /company and lives in the
- * session's namespace; it restarts when that changed or the folder program started again, and lingers. */
 async function ensureUserManager(
 	at: Agent,
 	session: Places,
 	uid: number,
 	name: string,
 	restarted: boolean,
+	reloadNeeded: boolean,
 ): Promise<void> {
 	const resolv = await exists(at.resolvConf);
 	const text = [
@@ -987,12 +1333,8 @@ async function ensureUserManager(
 		"",
 	].join("\n");
 	const dropIn = userManagerDropIn(at, uid);
-	const changed = (await readFile(dropIn.file, "utf8").catch(() => undefined)) !== text;
-	if (changed) {
-		await mkdir(dropIn.directory, { recursive: true, mode: 0o755 });
-		await writeText(dropIn.file, text, 0o644);
-		await at.system(TOOLS.systemctl, ["daemon-reload"]);
-	}
+	const changed = await writeUnitIfChanged(dropIn.file, text);
+	if (changed || reloadNeeded) await at.system(TOOLS.systemctl, ["daemon-reload"]);
 	if (changed || restarted) await at.system(TOOLS.systemctl, ["try-restart", `user@${uid}.service`]);
 	await at.system(TOOLS.loginctl, ["enable-linger", name]);
 }
@@ -1035,8 +1377,13 @@ export async function mountCodingGuestSession(
 			await mkdir(session.session, { recursive: true, mode: 0o755 });
 			if (!held) await writeJson(session.user, { schema: USER_SCHEMA, uid: request.uid, gid: request.gid });
 			await ensureNetwork(at, session);
+			const folderSliceChanged = await ensureFolderSlice(at);
+			if (folderSliceChanged) await at.system(TOOLS.systemctl, ["daemon-reload"]);
 			const shown = await showView(at, session, request.view, request.uid, request.gid);
-			if (shown.mount === "mounted") await ensureUserManager(at, session, request.uid, name, shown.restarted);
+			if (shown.mount === "mounted") {
+				const sessionSliceChanged = await ensureSessionSlice(at, session);
+				await ensureUserManager(at, session, request.uid, name, shown.restarted, sessionSliceChanged);
+			}
 			return { mount: shown.mount, caches };
 		});
 	} finally {
@@ -1200,13 +1547,13 @@ async function ringEnd(output: string): Promise<number> {
  * bash ended, the cancel record and the unit's timeout what ended it. */
 async function observe(at: Agent, command: CommandPlaces, commandId: string): Promise<CodingGuestCommand> {
 	const held = await readOutcome(command, commandId);
-	if (held) return held;
+	if (held) {
+		await ignore(rm(command.active, { force: true }));
+		return held;
+	}
 	const intent = await readIntent(command);
 	if (!intent) throw new Error("CODING_GUEST_COMMAND_UNKNOWN");
 	const sameBoot = intent.bootId === (await at.bootId());
-	// In this order: a run removes the input only once its unit started, the relay writes its exit record before its
-	// unit ends, and a cancel writes its record before it stops the unit. So an input that is gone means the unit state
-	// read next is the started unit's, and records read after a unit that is not live are all it will write.
 	const starting = sameBoot && (await young(at, command.input));
 	const unit = sameBoot ? await unitState(at, command.unit) : undefined;
 	let state: CodingGuestCommandState;
@@ -1216,10 +1563,8 @@ async function observe(at: Agent, command: CommandPlaces, commandId: string): Pr
 		const cancelled = await exists(command.cancel);
 		exit = await readExit(command);
 		if (cancelled) state = "cancelled";
-		// The deadline ended what was left, even after bash itself exited (ExitType=cgroup).
 		else if (unit?.result === "timeout") state = "timed_out";
 		else if (exit) state = "exited";
-		// The run that wrote the input may not have started its unit yet.
 		else if (starting) state = "running";
 		else state = "lost";
 	}
@@ -1229,8 +1574,10 @@ async function observe(at: Agent, command: CommandPlaces, commandId: string): Pr
 	if (!(await retain(command.outcome, { schema: OUTCOME_SCHEMA, state, exit: ended, end }))) {
 		const kept = await readOutcome(command, commandId);
 		if (!kept) throw new Error("CODING_GUEST_STATE_INVALID");
+		await ignore(rm(command.active, { force: true }));
 		return kept;
 	}
+	await ignore(rm(command.active, { force: true }));
 	if (sameBoot) await ignore(at.system(TOOLS.systemctl, ["reset-failed", command.unit]));
 	return { commandId, state, exit: ended, end };
 }
@@ -1242,9 +1589,9 @@ async function young(at: Agent, path: string): Promise<boolean> {
 function runArgs(at: Agent, session: Places, command: CommandPlaces, request: CodingGuestRunRequest, resolv: boolean) {
 	const properties = [
 		"Type=exec",
-		// The command runs until everything it started ended, and a stop ends all of it.
 		"ExitType=cgroup",
 		"KillMode=control-group",
+		"OOMPolicy=kill",
 		"TimeoutStopSec=5",
 		...(request.timeoutMs === null ? [] : [`RuntimeMaxSec=${Math.ceil(request.timeoutMs / 1000)}`]),
 		"ProtectProc=invisible",
@@ -1276,16 +1623,15 @@ function runArgs(at: Agent, session: Places, command: CommandPlaces, request: Co
 		command.command,
 	];
 }
-/** Drops the output of commands that ended over an hour ago (their intent and outcome stay, so the same commandId is
- * never run again) and this session's inputs no run is still starting. The output folder is the session user's: only
- * its files are unlinked, never followed into. */
 async function pruneEnded(at: Agent, session: Places): Promise<void> {
 	const now = at.nowMs();
 	for (const name of (await missing(() => readdir(session.commands))) ?? []) {
 		if (!COMPACT.test(name)) continue;
 		const directory = join(session.commands, name);
 		const outcome = await missing(() => lstat(join(directory, "outcome.json")));
-		if (!outcome?.isFile() || now - outcome.mtimeMs <= OUTCOME_KEEP_MS) continue;
+		if (!outcome?.isFile()) continue;
+		await ignore(rm(join(session.activeDir, name), { force: true }));
+		if (now - outcome.mtimeMs <= OUTCOME_KEEP_MS) continue;
 		const output = join(directory, "output");
 		for (const entry of (await missing(() => readdir(output))) ?? []) await ignore(unlink(join(output, entry)));
 		await ignore(rmdir(output));
@@ -1328,17 +1674,18 @@ export async function runCodingGuestCommand(
 			if (!(await folderMounted(at, session))) throw new Error("CODING_GUEST_FOLDER_UNMOUNTED");
 			await pruneEnded(at, session);
 			await ensureNetwork(at, session);
+			if (await ensureSessionSlice(at, session)) await at.system(TOOLS.systemctl, ["daemon-reload"]);
 			await mkdir(session.commands, { recursive: true, mode: 0o755 });
 			await makeDirectory(command.directory, 0o755);
 			await makeDirectory(command.output, 0o700);
 			await at.chown(command.output, request.uid, request.gid);
 			await mkdir(dirname(command.input), { recursive: true, mode: 0o700 });
-			// The input before the intent: whoever sees the intent sees the input until the run is over.
+			await mkdir(session.activeDir, { recursive: true, mode: 0o700 });
 			await writeJson(command.input, request);
 			try {
 				const bootId = await at.bootId();
 				await retain(command.intent, { schema: INTENT_SCHEMA, commandId: request.commandId, digest, bootId });
-				// On a failure here the command may or may not have started: a read shows which.
+				await writeText(command.active, "", 0o600);
 				await at.system(TOOLS.systemdRun, runArgs(at, session, command, request, await exists(at.resolvConf)));
 			} finally {
 				await rm(command.input, { force: true });
@@ -1403,50 +1750,206 @@ export async function cancelCodingGuestCommand(
 	return Object.freeze({ schema: "qorpera.coding-guest-command/v1", workerId: request.workerId, ...now });
 }
 
-/** The session's usage so far, for the executor's idle rule: the processor time of its slice and of its user's slice
- * (the user manager and what that started), and the bytes their processes passed to read and write calls
- * (/proc/<pid>/io rchar + wchar). A command's relay, which only copies its command's output to the ring, is left out;
- * its command counts. Kernel files that vanish while read (a unit or process ended) count as nothing. */
-async function readSessionUsage(at: Agent, session: Places): Promise<CodingGuestUsage> {
-	const bootId = await at.bootId();
-	const uptimeMs = await at.uptimeMs();
+function parseCgroupIoStatBytes(text: string): number {
+	let total = 0;
+	for (const match of text.matchAll(/\b(?:rbytes|wbytes)=([0-9]+)\b/g)) total += Number(match[1]);
+	return total;
+}
+
+interface CgroupSample {
+	readonly groups: readonly string[];
+	readonly cpuUsageUsec: number;
+	readonly ioBytes: number;
+	readonly ioFromCgroup: boolean;
+}
+
+async function readSessionCgroupSample(at: Agent, session: Places): Promise<CgroupSample> {
 	const user = await readSessionUser(session);
-	const kernel = (path: string) => readFile(path, "utf8").catch(() => "");
-	const groups = [
-		`/qorpera.slice/qorpera-coding.slice/${session.slice}`,
-		...(user ? [`/user.slice/user-${user.uid}.slice`] : []),
-	];
+	const nestedSlice = `/qorpera.slice/qorpera-coding.slice/${session.slice}`;
+	const flatSlice = `/qorpera-coding.slice/${session.slice}`;
+	const sliceGroup =
+		(await exists(join(at.cgroupRoot, nestedSlice))) || !(await exists(join(at.cgroupRoot, flatSlice)))
+			? nestedSlice
+			: flatSlice;
+	const groups = [sliceGroup, ...(user ? [`/user.slice/user-${user.uid}.slice`] : [])];
 	let cpuUsageUsec = 0;
+	let ioBytes = 0;
+	let anyGroupDir = false;
+	let allExistingHaveIoStat = true;
 	for (const group of groups) {
-		const usage = /^usage_usec ([0-9]+)$/m.exec(await kernel(join(at.cgroupRoot, group, "cpu.stat")));
+		const dir = join(at.cgroupRoot, group);
+		if (!(await exists(dir))) continue;
+		anyGroupDir = true;
+		const cpuText = await readFile(join(dir, "cpu.stat"), "utf8").catch(() => "");
+		const usage = /^usage_usec ([0-9]+)$/m.exec(cpuText);
 		if (usage) cpuUsageUsec += Number(usage[1]);
+		const ioText = await missing(() => readFile(join(dir, "io.stat"), "utf8")).catch(() => undefined);
+		if (ioText === undefined) allExistingHaveIoStat = false;
+		else ioBytes += parseCgroupIoStatBytes(ioText);
 	}
-	// One pass over the machine's processes, as the NAS model's observation makes, so the cgroups the user manager may
-	// make (they are delegated to the session's user) cost nothing. A machine with more processes than one pass reads,
-	// or whose processes cannot be listed, may hide the session's bytes: its usage says so.
+	const ioFromCgroup = anyGroupDir
+		? allExistingHaveIoStat
+		: (await exists(join(at.cgroupRoot, "qorpera.slice/qorpera-coding.slice/io.stat"))) ||
+			(await exists(join(at.cgroupRoot, "qorpera-coding.slice/io.stat"))) ||
+			(await exists(join(at.cgroupRoot, "io.stat")));
+	return { groups, cpuUsageUsec, ioBytes, ioFromCgroup };
+}
+
+async function readProcIoBySession(
+	at: Agent,
+	targets: readonly { worker: string; groups: readonly string[] }[],
+): Promise<{ ioByWorker: Map<string, number>; ioComplete: boolean }> {
+	const ioByWorker = new Map<string, number>();
+	for (const target of targets) ioByWorker.set(target.worker, 0);
 	const listed = await readdir(at.procRoot).catch(() => undefined);
 	const pids = (listed ?? []).filter((pid) => /^[1-9][0-9]*$/.test(pid));
-	let ioBytes = 0;
+	const kernel = (path: string) => readFile(path, "utf8").catch(() => "");
 	for (const pid of pids.slice(0, CODING_GUEST.usageProcesses)) {
-		// The unified hierarchy's line: the cgroup it runs in.
 		const group = /^0::(.*)$/m.exec(await kernel(join(at.procRoot, pid, "cgroup")))?.[1] ?? "";
-		if (!groups.some((top) => group === top || group.startsWith(`${top}/`))) continue;
+		if (!group) continue;
+		let matched: { worker: string; groups: readonly string[] } | undefined;
+		for (const target of targets) {
+			if (target.groups.some((top) => group === top || group.startsWith(`${top}/`))) {
+				matched = target;
+				break;
+			}
+		}
+		if (!matched) continue;
 		const argv = (await kernel(join(at.procRoot, pid, "cmdline"))).replace(/\0$/, "").split("\0");
 		if (
 			argv.at(-4) === at.agent &&
 			argv.at(-3) === "relay" &&
-			argv.at(-2) === session.worker &&
+			argv.at(-2) === matched.worker &&
 			COMPACT.test(argv.at(-1) ?? "")
 		)
 			continue;
-		ioBytes += idleRuleProcessIoBytes(await kernel(join(at.procRoot, pid, "io")));
+		ioByWorker.set(
+			matched.worker,
+			(ioByWorker.get(matched.worker) ?? 0) + idleRuleProcessIoBytes(await kernel(join(at.procRoot, pid, "io"))),
+		);
 	}
+	return {
+		ioByWorker,
+		ioComplete: listed !== undefined && pids.length <= CODING_GUEST.usageProcesses,
+	};
+}
+
+async function readSessionUsage(at: Agent, session: Places): Promise<CodingGuestUsage> {
+	const bootId = await at.bootId();
+	const uptimeMs = await at.uptimeMs();
+	const sample = await readSessionCgroupSample(at, session);
+	if (sample.ioFromCgroup) {
+		return Object.freeze({
+			bootId,
+			uptimeMs,
+			cpuUsageUsec: Math.min(sample.cpuUsageUsec, Number.MAX_SAFE_INTEGER),
+			ioBytes: Math.min(sample.ioBytes, Number.MAX_SAFE_INTEGER),
+			ioComplete: true,
+		});
+	}
+	const proc = await readProcIoBySession(at, [{ worker: session.worker, groups: sample.groups }]);
 	return Object.freeze({
 		bootId,
 		uptimeMs,
-		cpuUsageUsec: Math.min(cpuUsageUsec, Number.MAX_SAFE_INTEGER),
-		ioBytes: Math.min(ioBytes, Number.MAX_SAFE_INTEGER),
-		ioComplete: listed !== undefined && pids.length <= CODING_GUEST.usageProcesses,
+		cpuUsageUsec: Math.min(sample.cpuUsageUsec, Number.MAX_SAFE_INTEGER),
+		ioBytes: Math.min(proc.ioByWorker.get(session.worker) ?? 0, Number.MAX_SAFE_INTEGER),
+		ioComplete: proc.ioComplete,
+	});
+}
+
+async function readActiveRunningCommands(at: Agent, session: Places): Promise<CodingGuestCommand[]> {
+	const seeded = join(session.activeDir, ".seeded");
+	const running: CodingGuestCommand[] = [];
+	if (!(await exists(seeded))) {
+		const openEntries: { name: string; mtimeMs: number }[] = [];
+		for (const name of (await missing(() => readdir(session.commands))) ?? []) {
+			if (!COMPACT.test(name) || !isUuid(dashed(name))) continue;
+			const intent = await missing(() => lstat(join(session.commands, name, "intent.json")));
+			if (!intent?.isFile()) continue;
+			const outcome = await missing(() => lstat(join(session.commands, name, "outcome.json")));
+			if (!outcome?.isFile()) openEntries.push({ name, mtimeMs: intent.mtimeMs });
+		}
+		openEntries.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+		await mkdir(session.activeDir, { recursive: true, mode: 0o700 });
+		for (const entry of openEntries) {
+			const commandId = dashed(entry.name);
+			const cmd = commandPlaces(at, session, commandId);
+			const seen = Object.freeze(await observe(at, cmd, commandId));
+			if (seen.state === "running") {
+				await writeText(cmd.active, "", 0o600);
+				running.push(seen);
+			}
+		}
+		await writeText(seeded, "", 0o600);
+	} else {
+		const names = ((await missing(() => readdir(session.activeDir))) ?? []).filter(
+			(name) => COMPACT.test(name) && isUuid(dashed(name)),
+		);
+		names.sort();
+		for (const name of names) {
+			const commandId = dashed(name);
+			const cmd = commandPlaces(at, session, commandId);
+			try {
+				const seen = Object.freeze(await observe(at, cmd, commandId));
+				if (seen.state === "running") running.push(seen);
+			} catch (error) {
+				if (error instanceof Error && error.message === "CODING_GUEST_COMMAND_UNKNOWN") {
+					await ignore(rm(cmd.active, { force: true }));
+					continue;
+				}
+				throw error;
+			}
+		}
+	}
+	if (running.length > CODING_GUEST.maxStatusCommands) throw new Error("CODING_GUEST_STATUS_OVERFLOW");
+	return running;
+}
+
+export async function readCodingGuestStatusAll(
+	request: CodingGuestStatusAllRequest,
+	ports: CodingGuestAgentPorts = {},
+): Promise<CodingGuestStatusAllAnswer> {
+	const at = settle(ports);
+	const [bootId, uptimeMs] = await Promise.all([at.bootId(), at.uptimeMs()]);
+	const collected: {
+		workerId: string;
+		session: Places;
+		commands: CodingGuestCommand[];
+		sample: CgroupSample;
+	}[] = [];
+	for (const workerId of request.workerIds) {
+		const session = places(at, workerId);
+		const [commands, sample] = await Promise.all([
+			readActiveRunningCommands(at, session),
+			readSessionCgroupSample(at, session),
+		]);
+		collected.push({ workerId, session, commands, sample });
+	}
+	const procFallback = collected
+		.filter(({ sample }) => !sample.ioFromCgroup)
+		.map(({ session, sample }) => ({ worker: session.worker, groups: sample.groups }));
+	const proc = procFallback.length > 0 ? await readProcIoBySession(at, procFallback) : undefined;
+	const sessions: CodingGuestStatusAllSession[] = collected.map(({ workerId, session, commands, sample }) =>
+		Object.freeze({
+			workerId,
+			commands: Object.freeze(commands),
+			usage: Object.freeze({
+				bootId,
+				uptimeMs,
+				cpuUsageUsec: Math.min(sample.cpuUsageUsec, Number.MAX_SAFE_INTEGER),
+				ioBytes: Math.min(
+					sample.ioFromCgroup ? sample.ioBytes : (proc?.ioByWorker.get(session.worker) ?? 0),
+					Number.MAX_SAFE_INTEGER,
+				),
+				ioComplete: sample.ioFromCgroup ? true : (proc?.ioComplete ?? false),
+			}),
+		}),
+	);
+	return Object.freeze({
+		schema: "qorpera.coding-guest-status-all/v1",
+		bootId,
+		uptimeMs,
+		sessions: Object.freeze(sessions),
 	});
 }
 
@@ -1542,24 +2045,30 @@ export async function stopCodingGuestSession(
 		);
 		await ignore(at.system(TOOLS.umount, ["-l", session.mountpoint]));
 		if (await anythingMountedAt(at, session.mountpoint)) throw new Error("CODING_GUEST_FOLDER_STILL_MOUNTED");
+		let unitsRemoved = false;
 		if (user) {
 			const dropIn = userManagerDropIn(at, user.uid);
 			if (await exists(dropIn.file)) {
 				await rm(dropIn.file, { force: true });
 				await ignore(rmdir(dropIn.directory));
-				await at.system(TOOLS.systemctl, ["daemon-reload"]);
+				unitsRemoved = true;
 			}
 		}
+		if (await exists(session.sliceUnit)) {
+			await rm(session.sliceUnit, { force: true });
+			unitsRemoved = true;
+		}
+		if (unitsRemoved) await at.system(TOOLS.systemctl, ["daemon-reload"]);
 		await locked(at, machineLock(at), "CODING_GUEST_MACHINE_BUSY", async () => {
 			const networks = join(at.runtimeRoot, "networks");
 			const index = await heldNetwork(networks, session.worker);
+			await rm(session.networkRecord, { force: true });
 			await ignore(at.system(TOOLS.ip, ["netns", "delete", session.namespace]));
 			if (index === undefined) return;
 			await ignore(at.system(TOOLS.ip, ["link", "delete", `qgh${index}`]));
 			await rm(join(networks, `${index}.ready`), { force: true });
 			await rm(join(networks, String(index)), { force: true });
 		});
-		// Never recursive: whatever is still in the mountpoint is not the folder's to remove.
 		try {
 			await rmdir(session.mountpoint);
 		} catch (error) {
@@ -1569,6 +2078,7 @@ export async function stopCodingGuestSession(
 		}
 		await rm(session.view, { force: true });
 		await rm(session.folderState, { recursive: true, force: true });
+		await rm(session.activeDir, { recursive: true, force: true });
 		const inputs = join(at.runtimeRoot, "inputs");
 		for (const name of (await missing(() => readdir(inputs))) ?? [])
 			if (name.startsWith(`${session.worker}-`)) await rm(join(inputs, name), { force: true });
@@ -1742,6 +2252,8 @@ export async function runCodingGuestAgent(
 		else if (verb === "quiesce") line = await quiesceCodingGuestSession(await readRequest("quiesce", input), ports);
 		else if (verb === "stop-session")
 			line = await stopCodingGuestSession(await readRequest("stop-session", input), ports);
+		else if (verb === "status-all")
+			line = await readCodingGuestStatusAll(await readRequest("status-all", input), ports);
 		else line = await readCodingGuestStatus(await readRequest("status", input), ports);
 	} catch (error) {
 		line = { schema: "qorpera.coding-guest-refusal/v1", code: codingErrorCode(error) };

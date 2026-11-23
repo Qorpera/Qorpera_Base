@@ -98,7 +98,51 @@ export const CODING_PACKAGE_CACHES = /* @__PURE__ */ Object.freeze({
 			settings: { PLAYWRIGHT_SKIP_BROWSER_GC: "1" },
 			trees: ["*"],
 		}),
+		/* @__PURE__ */ Object.freeze({
+			folder: "cargo",
+			variables: ["CARGO_HOME"],
+			settings: {},
+			trees: ["registry/src/*", "git/checkouts/*"],
+		}),
+		/* @__PURE__ */ Object.freeze({
+			folder: "go-mod",
+			variables: ["GOMODCACHE"],
+			settings: {},
+			trees: ["*"],
+		}),
+		/* @__PURE__ */ Object.freeze({
+			folder: "go-build",
+			variables: ["GOCACHE"],
+			settings: {},
+			trees: [],
+		}),
+		/* @__PURE__ */ Object.freeze({
+			folder: "bun",
+			variables: ["BUN_INSTALL_CACHE_DIR"],
+			settings: {},
+			trees: ["*"],
+		}),
+		/* @__PURE__ */ Object.freeze({
+			folder: "turbo",
+			variables: ["TURBO_CACHE_DIR"],
+			settings: {},
+			trees: [],
+		}),
+		/* @__PURE__ */ Object.freeze({
+			folder: "sccache",
+			variables: ["SCCACHE_DIR"],
+			settings: {},
+			trees: [],
+		}),
 	]),
+});
+export const CODING_CHECK_CACHES = /* @__PURE__ */ Object.freeze({
+	root: "/var/cache/qorpera-check-caches",
+	owner: "root",
+	group: "root",
+	mode: "0755",
+	limitBytes: 8_589_934_592,
+	ageDays: 30,
 });
 /** One tool of the machine's package caches. */
 export interface CodingPackageCacheTool {
@@ -125,7 +169,15 @@ export const CODING_PACKAGE_CACHE_ENVIRONMENT: Readonly<Record<string, string>> 
 	),
 );
 
-export type CodingGuestVerb = "mount" | "run" | "output" | "cancel" | "quiesce" | "stop-session" | "status";
+export type CodingGuestVerb =
+	| "mount"
+	| "run"
+	| "output"
+	| "cancel"
+	| "quiesce"
+	| "stop-session"
+	| "status"
+	| "status-all";
 export const CODING_GUEST_VERBS: readonly CodingGuestVerb[] = /* @__PURE__ */ Object.freeze([
 	"mount",
 	"run",
@@ -134,6 +186,7 @@ export const CODING_GUEST_VERBS: readonly CodingGuestVerb[] = /* @__PURE__ */ Ob
 	"quiesce",
 	"stop-session",
 	"status",
+	"status-all",
 ]);
 
 /** A coding view the node's folder service opened for the session (5g-4 opens it). */
@@ -187,6 +240,10 @@ export interface CodingGuestSessionRequest {
 	readonly schema: "qorpera.coding-guest-session/v1";
 	readonly workerId: string;
 }
+export interface CodingGuestStatusAllRequest {
+	readonly schema: "qorpera.coding-guest-status-all/v1";
+	readonly workerIds: readonly string[];
+}
 export interface CodingGuestRequests {
 	mount: CodingGuestMountRequest;
 	run: CodingGuestRunRequest;
@@ -195,6 +252,7 @@ export interface CodingGuestRequests {
 	quiesce: CodingGuestSessionRequest;
 	"stop-session": CodingGuestSessionRequest;
 	status: CodingGuestSessionRequest;
+	"status-all": CodingGuestStatusAllRequest;
 }
 
 /** running: its unit runs it; exited: bash ended (exit says how); cancelled: the executor stopped it; timed_out: its
@@ -264,10 +322,19 @@ export interface CodingGuestUsage {
 export interface CodingGuestStatusAnswer {
 	readonly schema: "qorpera.coding-guest-status/v2";
 	readonly workerId: string;
-	/** Every running command, then the newest of the rest; at most CODING_GUEST.maxStatusCommands. The agent refuses
-	 * rather than leave a running command out. */
 	readonly commands: readonly CodingGuestCommand[];
 	readonly usage: CodingGuestUsage;
+}
+export interface CodingGuestStatusAllSession {
+	readonly workerId: string;
+	readonly commands: readonly CodingGuestCommand[];
+	readonly usage: CodingGuestUsage;
+}
+export interface CodingGuestStatusAllAnswer {
+	readonly schema: "qorpera.coding-guest-status-all/v1";
+	readonly bootId: string;
+	readonly uptimeMs: number;
+	readonly sessions: readonly CodingGuestStatusAllSession[];
 }
 export interface CodingGuestAnswers {
 	mount: CodingGuestMountAnswer;
@@ -277,6 +344,7 @@ export interface CodingGuestAnswers {
 	quiesce: CodingGuestSessionQuiescedAnswer;
 	"stop-session": CodingGuestSessionStoppedAnswer;
 	status: CodingGuestStatusAnswer;
+	"status-all": CodingGuestStatusAllAnswer;
 }
 /** Any verb's refusal: nothing was started, or the outcome is unknown and a read shows it. */
 export interface CodingGuestRefusal {
@@ -331,8 +399,8 @@ const REQUEST_KEYS: Record<CodingGuestVerb, string> = {
 	quiesce: "schema,workerId",
 	"stop-session": "schema,workerId",
 	status: "schema,workerId",
+	"status-all": "schema,workerIds",
 };
-/** The mount request that asks for the package caches' word (CodingGuestMountRequest). */
 export const CODING_GUEST_MOUNT_V2 = "qorpera.coding-guest-mount/v2";
 const REQUEST_SCHEMAS: Record<CodingGuestVerb, string> = {
 	mount: "qorpera.coding-guest-mount/v1",
@@ -342,6 +410,7 @@ const REQUEST_SCHEMAS: Record<CodingGuestVerb, string> = {
 	quiesce: "qorpera.coding-guest-session/v1",
 	"stop-session": "qorpera.coding-guest-session/v1",
 	status: "qorpera.coding-guest-session/v1",
+	"status-all": "qorpera.coding-guest-status-all/v1",
 };
 
 /** The view's three fields are printable ASCII without spaces: the folder program reads them from a file. */
@@ -364,6 +433,16 @@ export function parseCodingGuestRequest<V extends CodingGuestVerb>(verb: V, valu
 	const input = object(value, REQUEST_KEYS[verb], error);
 	if (input.schema !== REQUEST_SCHEMAS[verb] && !(verb === "mount" && input.schema === CODING_GUEST_MOUNT_V2))
 		throw new Error(error);
+	if (verb === "status-all") {
+		if (!Array.isArray(input.workerIds) || input.workerIds.length > CODING_GUEST.maxStatusCommands)
+			throw new Error(error);
+		const workerIds = input.workerIds.map((entry) => id(entry, error));
+		if (new Set(workerIds).size !== workerIds.length) throw new Error(error);
+		return Object.freeze({
+			schema: "qorpera.coding-guest-status-all/v1",
+			workerIds: Object.freeze(workerIds),
+		}) as never;
+	}
 	id(input.workerId, error);
 	if ("commandId" in input) id(input.commandId, error);
 	if (verb === "mount" || verb === "run") {
@@ -444,7 +523,52 @@ export function parseCodingGuestAnswer<V extends CodingGuestVerb>(
 ): CodingGuestAnswers[V] {
 	const error = "Invalid coding guest answer";
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
-	const workerId = request.workerId;
+	if (verb === "status-all") {
+		const asked = request as CodingGuestStatusAllRequest;
+		const input = object(value, "bootId,schema,sessions,uptimeMs", error);
+		if (input.schema !== "qorpera.coding-guest-status-all/v1" || !Array.isArray(input.sessions))
+			throw new Error(error);
+		const bootId = id(input.bootId, error);
+		const uptimeMs = count(input.uptimeMs, Number.MAX_SAFE_INTEGER, error);
+		if (input.sessions.length !== asked.workerIds.length) throw new Error(error);
+		const expected = new Set(asked.workerIds);
+		const seenWorkers = new Set<string>();
+		const sessions = input.sessions.map((entry) => {
+			const row = object(entry, "commands,usage,workerId", error);
+			const sessionWorkerId = id(row.workerId, error);
+			if (!expected.has(sessionWorkerId) || seenWorkers.has(sessionWorkerId)) throw new Error(error);
+			seenWorkers.add(sessionWorkerId);
+			if (!Array.isArray(row.commands) || row.commands.length > CODING_GUEST.maxStatusCommands)
+				throw new Error(error);
+			const commands = row.commands.map((item) =>
+				Object.freeze(command(object(item, "commandId,end,exit,state", error), error)),
+			);
+			if (new Set(commands.map((item) => item.commandId)).size !== commands.length) throw new Error(error);
+			const usage = object(row.usage, "bootId,cpuUsageUsec,ioBytes,ioComplete,uptimeMs", error);
+			if (typeof usage.ioComplete !== "boolean") throw new Error(error);
+			const usageBootId = id(usage.bootId, error);
+			const usageUptimeMs = count(usage.uptimeMs, Number.MAX_SAFE_INTEGER, error);
+			if (usageBootId !== bootId || usageUptimeMs !== uptimeMs) throw new Error(error);
+			return Object.freeze({
+				workerId: sessionWorkerId,
+				commands: Object.freeze(commands),
+				usage: Object.freeze({
+					bootId: usageBootId,
+					uptimeMs: usageUptimeMs,
+					cpuUsageUsec: count(usage.cpuUsageUsec, Number.MAX_SAFE_INTEGER, error),
+					ioBytes: count(usage.ioBytes, Number.MAX_SAFE_INTEGER, error),
+					ioComplete: usage.ioComplete,
+				}),
+			});
+		});
+		return Object.freeze({
+			schema: "qorpera.coding-guest-status-all/v1",
+			bootId,
+			uptimeMs,
+			sessions: Object.freeze(sessions),
+		}) as never;
+	}
+	const workerId = (request as Exclude<CodingGuestRequests[V], CodingGuestStatusAllRequest>).workerId;
 	if ((value as Record<string, unknown>).workerId !== workerId) throw new Error(error);
 	if (verb === "mount") {
 		// A v1 answer is exactly the four keys, as before; a v2 request's may also say whether the caches are ready.

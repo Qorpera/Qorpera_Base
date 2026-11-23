@@ -14,8 +14,9 @@ import { CODE_BUNDLE_FOLDER, type CodeBundleStore, createCodeBundleStore } from 
 import { CodeChangeRecords } from "../../packages/runner-orchestrator/src/code-change-records.ts";
 import { CodeHostCare } from "../../packages/runner-orchestrator/src/code-host-care.ts";
 import {
-	archiveCodeArea, bundleCodeArea, checkCodeArea, collectCodeGarbage, fsckCodeArea, removeCodeDownloads, retireCodeWorktrees,
-	undoCodeChange, writeCodeChangeRecords,
+	archiveCodeArea, bundleCodeArea, checkCodeArea, collectCodeGarbage, diffCodeArea, fsckCodeArea, listCodeBranches,
+	logCodeArea, previewCodeMerge, pruneCodeArea, removeCodeDownloads, retireCodeWorktrees, showCodeFile, startCodeArea,
+	tagCodeArea, undoCodeChange, writeCodeChangeRecords,
 } from "../../packages/runner-orchestrator/src/code-host-jobs.ts";
 import { CodeHostRepositories } from "../../packages/runner-orchestrator/src/code-host-repositories.ts";
 import { CODE_HOST_IMPORT_JOBS } from "../../packages/runner-orchestrator/src/code-host-import.ts";
@@ -25,9 +26,10 @@ import { CodeImportStop, type CodeImportTransports } from "../../packages/runner
 import { fetchGitHubImport } from "../../packages/runner-orchestrator/src/code-import-fetch.ts";
 import { CodeImport } from "../../packages/runner-orchestrator/src/code-import-run.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
-import { exportCodeSiteSource, readCodeSiteTree, readRepoDeployConfig, readSurfaceSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
+import { exportCodeSiteSource, pinCodeSiteTree, readCodeSiteTree, readRepoDeployConfig, readSurfaceSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { CodeSiteUploads } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
+import { RealtimeOrchestratorWake } from "../../packages/runner-orchestrator/src/orchestrator-wake.ts";
 import { SurfaceCodeHostWorker } from "../../packages/runner-orchestrator/src/surface-code-host-worker.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { CodingMachineCommandSecrets } from "../../packages/runner-orchestrator/src/coding-command-secrets.ts";
@@ -35,6 +37,8 @@ import { codingCommandExecution } from "../../packages/runner-orchestrator/src/c
 import { CodingFolderControl } from "../../packages/runner-orchestrator/src/coding-folder-control.ts";
 import { CodingFolderSecretKey } from "../../packages/runner-orchestrator/src/coding-folder-secrets.ts";
 import { CodingFolderViews } from "../../packages/runner-orchestrator/src/coding-folder-views.ts";
+import { CodingSnapshotBuilder } from "../../packages/runner-orchestrator/src/coding-snapshots.ts";
+import { CODING_STANDBY_MAX_POOL_SIZE, CodingStandbyPool } from "../../packages/runner-orchestrator/src/coding-standby-pool.ts";
 import { createCodingNasStorage } from "../../packages/runner-orchestrator/src/coding-storage.ts";
 import { lxdCodingMachinePlan } from "../../packages/runner-orchestrator/src/coding-machine.ts";
 import { UnixFolderControl } from "../../packages/runner-orchestrator/src/folder-control.ts";
@@ -52,16 +56,16 @@ import {
 } from "../../packages/runner-orchestrator/src/company-machine-stream-process.ts";
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
-import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
+import { authorizeCodingCommand, authorizeCodingCommandV2, proveNativeBinding } from "./command-authority.ts";
 import { authorizeHomeSession } from "./home-session-authority.ts";
 import { BrokerMachineAccountFill } from "./machine-account-fill-broker.ts";
 import {
-	localMachineAccountFill, localMachineCodingValue, localMachineCodingValueClear, localMachineScreen, localMachineWake,
-	localMemberMachineAct, localMemberMachinePointer, localMemberMachineScreen, localMemberMachineStart, localMemberMachineStream,
-	MachineCommandRouter, machineCommandRoutes,
+	localMachineAccountFill, localMachineApp, localMachineCodingValue, localMachineCodingValueClear, localMachineScreen,
+	localMachineWake, localMemberMachineAct, localMemberMachinePointer, localMemberMachineScreen, localMemberMachineStart,
+	localMemberMachineStream, MachineCommandRouter, machineCommandRoutes,
 } from "./machine-command-routing.ts";
 import { MemberMachineScreenControl } from "./member-control.ts";
-import { CodingCommandRouter, codingCommandRoutes, type CodingCommandPeer } from "./command-routing.ts";
+import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
 import { BrokerRepositoryCredentials, REPOSITORY_TOKEN } from "./repository-credentials.ts";
@@ -150,11 +154,17 @@ interface Config {
 		companyDataUrl?: string;
 		objectStorageUrl?: string;
 	} | null;
+	snapshots: {
+		enabled: boolean;
+		ttlSeconds?: number;
+		housekeepIntervalMs?: number;
+	} | null;
+	standbyPoolSize: number;
 }
 interface PinnedFile { path: string; sha256: string }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
-const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "desktopStreams", "folder", "machines", "memberScreens", "memberStreams", "webHosting"]);
+const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "desktopStreams", "folder", "machines", "memberScreens", "memberStreams", "snapshots", "standbyPoolSize", "webHosting"]);
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return value as Record<string, unknown>;
@@ -386,7 +396,41 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 			[Number(config.commandPort), Number(config.peerCommandPort)]),
 		desktopStreams: desktopStreamsConfig(config.desktopStreams),
 		webHosting: webHostingConfig(config.webHosting),
+		snapshots: snapshotsConfig(config.snapshots),
+		standbyPoolSize: standbyPoolSizeConfig(config.standbyPoolSize),
 	};
+}
+
+function snapshotsConfig(value: unknown): Config["snapshots"] {
+	if (value === undefined) return null;
+	const input = object(value);
+	const allowed = new Set(["enabled", "housekeepIntervalMs", "ttlSeconds"]);
+	if (Object.keys(input).some((k) => !allowed.has(k)) || typeof input.enabled !== "boolean")
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	if (
+		input.ttlSeconds !== undefined &&
+		(!Number.isSafeInteger(input.ttlSeconds) || Number(input.ttlSeconds) < 300 || Number(input.ttlSeconds) > 7776000)
+	)
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	if (
+		input.housekeepIntervalMs !== undefined &&
+		(!Number.isSafeInteger(input.housekeepIntervalMs) ||
+			Number(input.housekeepIntervalMs) < 10_000 ||
+			Number(input.housekeepIntervalMs) > 86_400_000)
+	)
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return {
+		enabled: input.enabled,
+		...(input.ttlSeconds !== undefined ? { ttlSeconds: Number(input.ttlSeconds) } : {}),
+		...(input.housekeepIntervalMs !== undefined ? { housekeepIntervalMs: Number(input.housekeepIntervalMs) } : {}),
+	};
+}
+
+function standbyPoolSizeConfig(value: unknown): number {
+	if (value === undefined) return 0;
+	if (!Number.isSafeInteger(value) || Number(value) < 0 || Number(value) > CODING_STANDBY_MAX_POOL_SIZE)
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return Number(value);
 }
 
 /** A loggable code for an executor error: fixed identifiers only (they carry
@@ -451,12 +495,18 @@ export function codeImportTransports(broker: { origin: string; executorToken: st
  * the one bundle store; every git step runs in the company's code host). A restore and an import need the bundle store. */
 export function codeHostRequestsOf(parts: {
 	control: CodeHostRequestsOptions["control"]; hosts: Pick<CodeHostJobs, "run">; records: CodeHostRequestsOptions["records"];
+	sites?: CodeHostRequestsOptions["sites"];
 	bundles: CodeBundleStore | undefined; transports: CodeImportTransports; owner: string; machineIdSha256: string;
 }): CodeHostRequests {
-	const { control, hosts, records, bundles, transports, owner, machineIdSha256 } = parts;
+	const { control, hosts, records, sites, bundles, transports, owner, machineIdSha256 } = parts;
 	return new CodeHostRequests({
-		control, hosts, records, owner, machineIdSha256,
-		jobs: { undo: undoCodeChange, archive: archiveCodeArea, removeDownloads: removeCodeDownloads },
+		control, hosts, records, ...(sites ? { sites } : {}), owner, machineIdSha256,
+		jobs: {
+			undo: undoCodeChange, archive: archiveCodeArea, removeDownloads: removeCodeDownloads,
+			start: startCodeArea, log: logCodeArea, diff: diffCodeArea, show: showCodeFile,
+			branches: listCodeBranches, mergePreview: previewCodeMerge, tag: tagCodeArea, prune: pruneCodeArea,
+			pinSite: pinCodeSiteTree,
+		},
 		...(bundles ? { restore: new CodeRestore({
 			control, hosts, bundles, check: checkCodeArea, bundle: bundleCodeArea, owner, machineIdSha256, report: logCodeRecord,
 		}) } : {}),
@@ -569,11 +619,18 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		})
 		: undefined;
 	const codeRequests = codeHostJobs && codeRecords ? codeHostRequestsOf({
-		control, hosts: codeHostJobs, records: codeRecords, bundles: codeBundles,
+		control, hosts: codeHostJobs, records: codeRecords, ...(codeSites ? { sites: codeSites } : {}), bundles: codeBundles,
 		transports: codeImportTransports(config.broker ? { origin: config.broker.origin,
 			executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner } : null),
-		owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
+		owner: config.owner, machineIdSha256,
 	}) : undefined;
+	const requestWake = codeRequests && config.memberScreens ? new RealtimeOrchestratorWake({
+		supabaseUrl: config.supabaseUrl,
+		publishableKey: config.memberScreens.publishableKey,
+		topic: () => `qorpera-code-requests-wake-${createHash("sha256").update(`qorpera.code-requests-wake/v1:${config.owner}:${machineIdSha256}`).digest("hex")}`,
+		onState: (state, reason) => console.log(JSON.stringify({ event: "code-request-wake", state, ...(reason ? { reason } : {}) })),
+	}) : undefined;
+	requestWake?.subscribe(() => codeRequests?.wake());
 	let folder: LxdCodingExecutorHostOptions["folder"];
 	if (config.folder) {
 		const agent = await readPinned(config.folder.agent), program = await readPinned(config.folder.program);
@@ -607,10 +664,40 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		console.log(JSON.stringify({ event: "coding-executor-folder", agentSha256: config.folder.agent.sha256, programSha256: config.folder.program.sha256,
 			repositories: codeHostJobs ? "code-host" : "none" }));
 	}
+	const standbyPool =
+		config.standbyPoolSize > 0
+			? new CodingStandbyPool({
+					lxd,
+					vmPolicy: config.vmPolicy,
+					standbyPoolSize: config.standbyPoolSize,
+					report: (event) => console.log(JSON.stringify(event)),
+				})
+			: undefined;
+	const snapshotBuilder = config.snapshots?.enabled
+		? new CodingSnapshotBuilder({
+				control: { rpc: (method, args, signal) => control.call(method, args, signal) },
+				lxd,
+				owner: config.owner,
+				machineIdSha256,
+				vmPolicy: config.vmPolicy,
+				projectAllowsAgentCard: (project, read) => lxd.allowsAgentCard(project, read),
+				...(standbyPool
+					? {
+							onImagesPruned: (fingerprints: readonly string[]) => {
+								for (const fp of fingerprints) void standbyPool.invalidateFingerprint(fp);
+							},
+						}
+					: {}),
+				...(config.snapshots.ttlSeconds !== undefined ? { ttlSeconds: config.snapshots.ttlSeconds } : {}),
+				report: (event) => console.log(JSON.stringify(event)),
+			})
+		: undefined;
 	const host = new LxdCodingExecutorHost({
 		control, owner: config.owner, machineIdSha256,
 		vmPolicy: config.vmPolicy, storagePolicy: config.storagePolicy, client: lxd, guest: config.guest, journalRoot, ...(folder ? { folder } : {}),
 		...(commandSecrets ? { commandSecrets } : {}),
+		...(snapshotBuilder ? { snapshotBuilder } : {}),
+		...(standbyPool ? { standbyPool } : {}),
 		...(codeHostJobs && nativeEdge?.appHostInternalUrl && nativeEdge?.appHostControlToken
 			? {
 					autoRedeploy: createNativeEdgeAutoRedeploy({
@@ -716,6 +803,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			...(accountFills ? { accountFillLocal: localMachineAccountFill(machineHost, accountFills) } : {}),
 			codingValueClearLocal: localMachineCodingValueClear(machineHost),
 			screenLocal: localMachineScreen(machineHost),
+			appLocal: localMachineApp(machineHost),
 			memberScreenLocal: localMemberMachineScreen(machineHost),
 			memberActLocal: localMemberMachineAct(machineHost),
 			memberStartLocal: localMemberMachineStart(machineHost),
@@ -725,26 +813,38 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	});
 	const router = new CodingCommandRouter({
 		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential: peerCredential,
-		async executeLocal(request, signal) {
+		async executeLocal(request, signal, authority) {
 			const transport = await host.commandTransport(request.scope, async (action, scope, commandId, inputSha256, checked) => {
 				if (action !== request.action || JSON.stringify(scope) !== JSON.stringify(request.scope) || commandId !== request.input.commandId ||
 					(request.action === "start" && inputSha256 !== request.input.inputSha256)) throw new Error("CODING_COMMAND_REQUEST_CHANGED");
-				await authorizeCodingCommand(control, request, checked);
-			}, signal);
+				if (authority) {
+					authority.postAuthority = await authorizeCodingCommandV2(
+						control,
+						request,
+						null,
+						host.localRunBinding(request.scope),
+						checked,
+					);
+				} else {
+					await authorizeCodingCommand(control, request, checked);
+				}
+			}, signal, authority);
 			// F3 5g-5: the command service asks the folder model's transport what the receipt shows, after its final authorization,
 			// and only then answers what the transport held of the call.
 			return codingCommandExecution(transport, request.input.commandId, request.action === "start" ? transport.start(request.scope, request.input, signal) :
 				request.action === "read" ? transport.read(request.scope, request.input, signal) : transport.cancel(request.scope, request.input.commandId, signal));
 		},
 	});
-	const ingressCoding = codingCommandRoutes(router, control, false);
-	const peerCoding = codingCommandRoutes(router, control, true);
 	const commands = new HttpCloudCodingCommandService({
 		token: commandToken, port: config.commandPort,
 		// G2-6b: a guest's request proves its run's lease before anything else is asked about its binding.
 		proveBinding: (binding, holder, signal) => proveNativeBinding(control, binding, holder, signal),
-		authorize: ingressCoding.authorize,
-		execute: ingressCoding.execute,
+		consolidatedCodingAuth: true,
+		authorize: (request, signal, holder) => {
+			if (!holder) throw new Error("CODING_COMMAND_UNPROVEN");
+			return authorizeCodingCommandV2(control, request, holder, host.localRunBinding(request.scope), signal);
+		},
+		execute: (request, signal, authority) => router.execute(request, signal, false, authority),
 		machines: machineCommandRoutes(machineRouter, control, false),
 		// The agent's home (slice 1): one channel per run, opened on this node's machine or forwarded to the peer that
 		// holds it, as a machine command is.
@@ -757,8 +857,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		token: peerToken, port: config.peerCommandPort,
 		// Only executors hold the peer token, and the forwarding one proved the guest's holder at its own ingress.
 		proveBinding: null,
-		authorize: peerCoding.authorize,
-		execute: peerCoding.execute,
+		consolidatedCodingAuth: true,
+		authorize: (request, signal) =>
+			authorizeCodingCommandV2(control, request, null, host.localRunBinding(request.scope), signal),
+		execute: (request, signal, authority) => router.execute(request, signal, true, authority),
 		machines: machineCommandRoutes(machineRouter, control, true),
 		// A home channel a peer forwarded: SQL authorizes the same session again, and it opens only on this node.
 		home: {
@@ -802,6 +904,20 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		if (memberStreams) {
 			if (stop.signal.aborted) onStopStreams();
 			else stop.signal.addEventListener("abort", onStopStreams, { once: true });
+		}
+		if (snapshotBuilder) {
+			snapshotBuilder.startHousekeeping(config.snapshots?.housekeepIntervalMs);
+			void snapshotBuilder.housekeep(stop.signal).catch((error) => {
+				if (!stop.signal.aborted)
+					console.error(JSON.stringify({ event: "coding-snapshot-housekeep-error", ...loggedError(error) }));
+			});
+		}
+		if (standbyPool) {
+			await standbyPool.sweepOrphans(stop.signal).catch((error) => {
+				if (!stop.signal.aborted)
+					console.error(JSON.stringify({ event: "coding-standby-sweep-error", ...loggedError(error) }));
+			});
+			standbyPool.start();
 		}
 		const running = new CloudCodingExecutor({
 			control,
@@ -927,14 +1043,18 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		// the passes, so an undo never waits behind one, and are counted in the pass after they ended.
 		const requesting = (async () => {
 			if (!codeRequests) return;
+			requestWake?.start();
 			while (!stop.signal.aborted) {
+				let worked = false;
 				try {
 					const passed = await codeRequests.pass(stop.signal);
-					if (passed.done + passed.refused + passed.failed + passed.busy > 0) console.log(JSON.stringify({ event: "code-request", step: "pass", ...passed }));
+					const total = passed.done + passed.refused + passed.failed + passed.busy;
+					if (total > 0) console.log(JSON.stringify({ event: "code-request", step: "pass", ...passed }));
+					worked = passed.done + passed.refused + passed.failed > 0;
 				} catch (error) {
 					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-request-error", step: "pass", ...loggedError(error) }));
 				}
-				await setTimeout(5_000, undefined, { signal: stop.signal }).catch(() => undefined);
+				if (!worked) await codeRequests.wait(requestWake?.listening ? 5_000 : 1_000, stop.signal);
 			}
 		})();
 		// The change record's files a landing's or an undo's own job did not write (a refused landing, a described
@@ -1002,12 +1122,19 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		};
 		await closeStep("member-streams", closeMemberStreams);
 		await closeStep("executor-drain", () => executor?.drain());
+		await closeStep("code-requests-wake", () => {
+			requestWake?.stop();
+			return undefined;
+		});
 		await closeStep("code-requests", () => codeRequests?.settled());
 		await closeStep("machine-host", () => machineHost?.settled());
 		await closeStep("host-settled", async () => {
 			for (const outcome of await host.settled())
 				console.log(JSON.stringify({ event: outcome.state === "failed" ? "coding-session-error" : "coding-session", ...outcome }));
 		});
+		await closeStep("snapshot-builder", () => snapshotBuilder?.close());
+		await closeStep("standby-pool", () => standbyPool?.close());
+		await closeStep("code-host-jobs", () => codeHostJobs?.close());
 		await closeStep("code-hosts", () => codeHosts?.close());
 		await closeStep("commands", () => commands.close());
 		await closeStep("peer-commands", () => peerCommands.close());

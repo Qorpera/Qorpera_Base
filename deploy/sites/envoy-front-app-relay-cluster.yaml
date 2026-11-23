@@ -3,7 +3,7 @@
 # front/envoy-front.yaml, service api-front) under `clusters:`, after the api_gw cluster, at the same indentation
 # (4 spaces before `- name:`), together with the virtual hosts block: Envoy refuses either one without the other.
 # app-relay is the compose service of deploy/sites/app-relay/compose-service.yml on the same network. The relay keeps
-# connections open 75 s, so Envoy closes an idle one first (60 s) and never sends a request on a connection the relay
+# connections open 375 s, so Envoy closes an idle one first (360 s) and never sends a request on a connection the relay
 # has just closed.
     - name: app_relay
       type: STRICT_DNS
@@ -11,7 +11,7 @@
       typed_extension_protocol_options:
         envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
           '@type': type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
-          common_http_protocol_options: { idle_timeout: 60s }
+          common_http_protocol_options: { idle_timeout: 360s }
           explicit_http_config: { http_protocol_options: {} }
       load_assignment:
         cluster_name: app_relay

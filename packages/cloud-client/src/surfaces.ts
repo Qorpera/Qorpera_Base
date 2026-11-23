@@ -509,6 +509,12 @@ function surfaceImageRows(
 	return images.map((image) => ({ objectSha256: image.sha256, bytes: image.bytes, mediaType: image.mediaType }));
 }
 
+function automationOf(data: unknown, name: string): SurfaceAutomationSummary {
+	if (!data || typeof data !== "object" || Array.isArray(data))
+		throw new CloudSurfacesError(`Invalid ${name} payload`);
+	return parseSurfaceAutomationSummary((data as Record<string, unknown>).automation, "automation");
+}
+
 export class CloudSurfacesClient {
 	readonly #supabase: SupabaseClient;
 
@@ -766,6 +772,21 @@ export class CloudSurfacesClient {
 		return parseSurfaceSummary(data, "surface");
 	}
 
+	async askSurfacePublish(surfaceId: string, userId: string): Promise<SurfaceSummary> {
+		const data = await this.#rpc("qorpera_ask_surface_publish", { p_surface_id: surfaceId, p_user_id: userId });
+		return parseSurfaceSummary(data, "surface");
+	}
+
+	async declineSurfacePublishAsk(surfaceId: string): Promise<SurfaceSummary> {
+		const data = await this.#rpc("qorpera_decline_surface_publish_ask", { p_surface_id: surfaceId });
+		return parseSurfaceSummary(data, "surface");
+	}
+
+	async withdrawSurfacePublishAsk(surfaceId: string): Promise<SurfaceSummary> {
+		const data = await this.#rpc("qorpera_withdraw_surface_publish_ask", { p_surface_id: surfaceId });
+		return parseSurfaceSummary(data, "surface");
+	}
+
 	async listAutomations(companyId: string): Promise<SurfaceAutomationSummary[]> {
 		const data = await this.#rpc("qorpera_list_automations", { p_company_id: companyId });
 		if (!Array.isArray(data)) throw new CloudSurfacesError("Invalid qorpera_list_automations payload");
@@ -804,6 +825,19 @@ export class CloudSurfacesClient {
 			p_clear_target: input.targetSurfaceSlug === null,
 		});
 		return parseSurfaceAutomationSummary(data, "automation");
+	}
+
+	async offerAutomation(automationId: string, toUserId: string): Promise<SurfaceAutomationSummary> {
+		const data = await this.#rpc("qorpera_offer_surface_automation", {
+			p_automation_id: automationId,
+			p_to_user_id: toUserId,
+		});
+		return automationOf(data, "qorpera_offer_surface_automation");
+	}
+
+	async answerAutomationOffer(offerId: string, yes: boolean): Promise<SurfaceAutomationSummary> {
+		const data = await this.#rpc("qorpera_answer_surface_automation_offer", { p_offer_id: offerId, p_yes: yes });
+		return automationOf(data, "qorpera_answer_surface_automation_offer");
 	}
 
 	async deleteAutomation(automationId: string): Promise<boolean> {
