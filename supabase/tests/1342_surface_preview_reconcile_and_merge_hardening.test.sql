@@ -934,4 +934,55 @@ begin
 		and (select base_sha from public.qorpera_coding_sessions where worker_id = v_worker_peer_idle) = v_peer_coding_base,
 		'update_rebased_changes advances qorpera_surface_sessions.base_sha without modifying qorpera_coding_sessions.base_sha'
 	);
+
+	-- WHY: Verify short_host_id prefix collisions salt cleanly instead of raising 23505 and >1h expired previews are pruned.
+	declare
+		v_collide_key text;
+		v_collide_prefix text;
+		v_stale_id uuid := extensions.gen_random_uuid();
+		v_collide_sel jsonb;
+		v_collide_preview_id uuid;
+		v_collide_host_id text;
+	begin
+		update public.qorpera_surfaces set live_head_sha = repeat('9', 40) where id = v_surface_id;
+		v_collide_key := public.qorpera_surface_preview_composition_key(
+			v_surface_id, repeat('9', 40), array[v_c1], null
+		);
+		v_collide_prefix := substr(v_collide_key, 1, 8);
+
+		insert into public.qorpera_surface_previews(
+			profile_id, surface_id, composition_key, short_host_id, base_sha,
+			selected_change_ids, status, expires_at
+		)
+		values (
+			v_company_a, v_surface_id, 'synthetic-collision-key', v_collide_prefix, repeat('9', 40),
+			'{}'::uuid[], 'ready', clock_timestamp() + interval '12 hours'
+		);
+
+		insert into public.qorpera_surface_previews(
+			id, profile_id, surface_id, composition_key, short_host_id, base_sha,
+			selected_change_ids, status, expires_at
+		)
+		values (
+			v_stale_id, v_company_a, v_surface_id, 'synthetic-expired-old-key',
+			case when v_collide_prefix = 'deadbeef' then 'cafebabe' else 'deadbeef' end,
+			repeat('9', 40),
+			'{}'::uuid[], 'composing', clock_timestamp() - interval '2 hours'
+		);
+
+		perform pg_temp.sprmh_as(v_owner);
+		set local role authenticated;
+		v_collide_sel := public.qorpera_set_preview_selection(v_surface_id, array[v_c1], null, '{}'::uuid[], '/');
+		reset role;
+
+		v_collide_preview_id := (v_collide_sel #>> '{primary,previewId}')::uuid;
+		select short_host_id into strict v_collide_host_id from public.qorpera_surface_previews where id = v_collide_preview_id;
+
+		perform pg_temp.sprmh_assert(
+			v_collide_host_id <> v_collide_prefix
+			and v_collide_host_id ~ '^[a-z0-9]{8}$'
+			and not exists (select 1 from public.qorpera_surface_previews where id = v_stale_id),
+			'short_host_id salts around prefix collisions and expired >1h unleased previews are garbage-collected'
+		);
+	end;
 end $$;

@@ -82,7 +82,7 @@ export interface SurfaceCodingTurnBinding extends SurfaceTurnBriefInput {
 }
 
 export const SURFACE_STAGED_CODING_INSTRUCTIONS =
-	"IMPORTANT — Surface Staged Mode (overrides direct-landing instructions above): " +
+	"IMPORTANT — Surface Staged Mode: " +
 	"This session is scoped to a Qorpera Surface — a direct live projection of its codebase or Company Files folder. " +
 	"Commits you make on this session branch stay STAGED for founder Preview and approval and do NOT land on main until the founder approves them. " +
 	"Founders preview multiple unmerged staged changes from concurrent sessions toggled on or off simultaneously in Preview before approving or publishing any of them. " +
