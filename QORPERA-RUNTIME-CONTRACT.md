@@ -2847,9 +2847,8 @@ Co-Founder's creator, then the company's oldest owner. Now:
 - An automation aimed at a coding-backed surface pays with its owner's coding
   login that may work while they are away; with none, it does not run either.
 - A member's reply in an automation's session follows the surface-session
-  rule for replies: until migration 20260930862000 lands it is requested and
-  paid like the session's own turns (its owner), and with it by the replier's
-  own login. Legacy routines keep their payer as above.
+  rule for replies (20260930862000): it is requested by and paid with the
+  replier's own login. Legacy routines keep their payer as above.
 
 ## 18. Short constitution
 
