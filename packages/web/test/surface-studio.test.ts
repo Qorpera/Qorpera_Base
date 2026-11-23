@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SurfaceReportView } from "../src/app/views/surface-report-view.ts";
 import { prepareStudioHtmlPreview, SurfaceStudioView } from "../src/app/views/surface-studio-view.ts";
 import { PAGE_FRAME_URL } from "../src/ui/page-frame.ts";
 import { deferred } from "./fixtures.ts";
@@ -103,6 +104,8 @@ describe("SurfaceStudioView", () => {
 		store.setMode("live");
 		view.update();
 		expect(view.el.querySelector(".studio-badge")).toBeNull();
+		expect(view.el.querySelector(".studio-head")).toBeNull();
+		expect(view.el.querySelector(".studio-path")).toBeNull();
 		expect(view.el.querySelector('[data-file="brand/voice.md"]')?.textContent).toContain("Calm and direct.");
 		expect(view.el.querySelector(".studio-sync-btn")).toBeNull();
 
@@ -490,6 +493,7 @@ describe("SurfaceStudioView", () => {
 		view.update();
 		expect(view.el.classList.contains("is-updating")).toBe(true);
 		expect(view.el.querySelector(".studio-updating-pill")?.textContent).toBe("Updating…");
+		expect(view.el.querySelector(".studio-head")).not.toBeNull();
 		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#2b6cb0");
 
 		postMergeLoad.resolve({
@@ -501,6 +505,7 @@ describe("SurfaceStudioView", () => {
 		expect(view.el.classList.contains("is-updating")).toBe(false);
 		expect(view.el.classList.contains("is-settled")).toBe(true);
 		expect(view.el.querySelector(".studio-badge")).toBeNull();
+		expect(view.el.querySelector(".studio-head")).toBeNull();
 		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#2b6cb0");
 		expect(view.el.querySelector('[data-file="brand/old-notes.md"]')).toBeNull();
 
@@ -578,6 +583,58 @@ describe("SurfaceStudioView", () => {
 		expect(fills).toEqual(["100%", "4%"]);
 		const pathD = view.el.querySelector("svg.report-line-svg path")?.getAttribute("d") ?? "";
 		expect(pathD).not.toContain("NaN");
+		view.dispose();
+		store.dispose();
+	});
+});
+
+describe("SurfaceReportView", () => {
+	it("shows its pill only while live changes are applied", async () => {
+		const report = summary({
+			id: BRAND_ID,
+			slug: "brand",
+			title: "Brand",
+			archetype: "studio",
+			icon: "book",
+			sourceKind: "folder",
+			repositoryKey: null,
+			folderRoot: "brand",
+			siteSlug: null,
+			previewMode: "studio_overlay",
+			liveUrl: null,
+		});
+		const c1 = change(CHANGES[0], 1, "staged", {
+			surfaceId: BRAND_ID,
+			kind: "folder_patch",
+			title: "Sharper headline",
+			affectedPaths: ["brand/q3.report.json"],
+		});
+		const reportSession = session(["staged"], { surfaceId: BRAND_ID, changes: [c1] });
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [summary(), report]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([reportSession], { surface: report })),
+			setPreviewSelection: vi.fn(async () => workspace([], { surface: report }).previewState),
+		});
+		const store = storeWith(client);
+		await store.load();
+		await store.openSurface("brand");
+		store.setStudioPatch(CHANGES[0], [
+			{ op: "merge_json", path: "brand/q3.report.json", patch: { headline: "Q3, sharper" } },
+		]);
+
+		const view = new SurfaceReportView({
+			store,
+			surface: report,
+			signal: new AbortController().signal,
+			baseFiles: { "brand/q3.report.json": JSON.stringify({ headline: "Q3", sections: [] }) },
+		});
+		document.body.append(view.el);
+		expect(view.el.querySelector(".studio-badge")?.textContent).toBe("1 live change applied");
+
+		await store.toggleChange(BRAND_ID, CHANGES[0]);
+		view.update();
+		expect(view.el.querySelector(".studio-badge")).toBeNull();
+		expect(view.el.querySelector(".report-chrome")).not.toBeNull();
 		view.dispose();
 		store.dispose();
 	});
