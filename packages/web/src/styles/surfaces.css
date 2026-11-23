@@ -1840,6 +1840,7 @@
 	border-radius: 24px; padding: 10px 16px 46px;
 }
 .frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell::before {
+	background: color-mix(in srgb, var(--bg) 48%, transparent);
 	transition: background-color var(--motion-fast) ease, backdrop-filter var(--motion-fast) ease;
 }
 .frame:has(.rail.has-surface-rail) .thread .thread-foot .composer-shell:hover::before,
