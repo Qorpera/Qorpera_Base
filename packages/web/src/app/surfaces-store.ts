@@ -3053,6 +3053,17 @@ export class SurfacesStore {
 		return true;
 	}
 
+	async deleteSurface(surfaceId: string): Promise<boolean> {
+		const surface = this.state.surfaces.find((item) => item.id === surfaceId);
+		if (!surface) return false;
+		if (this.state.source === "cloud" && this.#options.client) await this.#loadAutomations(this.#options.client);
+		for (const automation of this.state.automations) {
+			if (automation.targetSurfaceSlug === surface.slug && !(await this.deleteScheduledAgent(automation.id)))
+				return false;
+		}
+		return this.archiveSurface(surfaceId);
+	}
+
 	async spawnCrossSurfaceSession(request: CrossSurfaceHandoffRequest): Promise<SurfaceSession | undefined> {
 		const prompt = request.prompt.trim();
 		const targetSlug = request.targetSurfaceSlug.trim();

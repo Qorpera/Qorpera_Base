@@ -103,6 +103,13 @@ export const SURFACES: Record<string, string> = {
 	"Merged “{title}” into Base": "Flettede “{title}” ind i Base",
 	"Auto-publish on Approve": "Udgiv automatisk ved godkendelse",
 	"Approved changes go live without a separate Publish.": "Godkendte ændringer går live uden en særskilt udgivelse.",
+	"Delete {name}? It is removed for everyone in the company.": "Slet {name}? Den fjernes for alle i virksomheden.",
+	"Its scheduled agent is deleted too.": "Dens planlagte agent slettes også.",
+	"Its {count} scheduled agents are deleted too.": "Dens {count} planlagte agenter slettes også.",
+	"The session working in it runs to its end.": "Den session, der arbejder i den, kører færdig.",
+	"The {count} sessions working in it run to their end.": "De {count} sessioner, der arbejder i den, kører færdig.",
+	"Its site stays online. Settings → Sites takes it offline.":
+		"Dens hjemmeside bliver online. Tag den offline i Indstillinger → Hjemmesider.",
 	"{path} and {count} more": "{path} og {count} flere",
 	"Opening preview…": "Åbner forhåndsvisning…",
 	Reconcile: "Løs konflikt",

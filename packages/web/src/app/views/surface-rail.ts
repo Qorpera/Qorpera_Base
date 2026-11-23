@@ -1,6 +1,6 @@
 import type { SurfaceChangeUnit, SurfaceSummary } from "@qorpera/contracts";
 import { menuPoint, openContextMenu, pressToOpenMenu } from "../../ui/context-menu.ts";
-import { h, icon } from "../../ui/dom.ts";
+import { confirmDialog, h, icon } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import { type SurfaceFigureState, surfaceFigure, surfaceFigureChoices } from "../../ui/surface-figure.ts";
 import { surfaceHash } from "../router.ts";
@@ -266,7 +266,9 @@ export class SurfaceRail {
 	readonly el = h("div", { class: "rail-surfaces" });
 	readonly #store: SurfacesStore;
 	readonly #profileId: string;
+	readonly #signal: AbortSignal;
 	readonly #onAddSurface: (() => void) | undefined;
+	readonly #reportError: ((text: string) => void) | undefined;
 	readonly #crew = new CrewFigures();
 	readonly #groups = new Map<"products" | "operations", SurfaceGroupEntry>();
 	readonly #rows = new Map<string, SurfaceRowEntry>();
@@ -274,10 +276,18 @@ export class SurfaceRail {
 	#activeSlug: string | undefined;
 	#shown: readonly unknown[] | undefined;
 
-	constructor(store: SurfacesStore, profileId: string, signal: AbortSignal, onAddSurface?: () => void) {
+	constructor(
+		store: SurfacesStore,
+		profileId: string,
+		signal: AbortSignal,
+		onAddSurface?: () => void,
+		reportError?: (text: string) => void,
+	) {
 		this.#store = store;
 		this.#profileId = profileId;
+		this.#signal = signal;
 		this.#onAddSurface = onAddSurface;
+		this.#reportError = reportError;
 		this.el.addEventListener("click", (event) => this.#click(event), { signal });
 		this.el.addEventListener("contextmenu", (event) => this.#menu(event), { signal });
 		pressToOpenMenu(this.el, signal, (event) => this.#menu(event));
@@ -320,9 +330,43 @@ export class SurfaceRail {
 								multiple: true,
 								select: () => void this.#store.setAutoPublish(surface.id, !surface.autoPublish),
 							},
+							{ kind: "separator" as const },
+							{
+								label: t("Delete"),
+								icon: "trash",
+								danger: true,
+								select: () => void this.#delete(surface),
+							},
 						]),
 			],
 		});
+	}
+
+	async #delete(surface: SurfaceSummary): Promise<void> {
+		const scheduled = this.#store.state.automations.filter((item) => item.targetSurfaceSlug === surface.slug).length;
+		const working = surface.runningSessionCount;
+		const confirmed = await confirmDialog(
+			t("Delete {name}? It is removed for everyone in the company.", { name: surface.title }),
+			t("Delete"),
+			true,
+			undefined,
+			this.#signal,
+			[
+				...(scheduled === 1 ? [t("Its scheduled agent is deleted too.")] : []),
+				...(scheduled > 1 ? [t("Its {count} scheduled agents are deleted too.", { count: scheduled })] : []),
+				...(working === 1 ? [t("The session working in it runs to its end.")] : []),
+				...(working > 1 ? [t("The {count} sessions working in it run to their end.", { count: working })] : []),
+				...(surface.archetype === "live_build" && surface.liveUrl
+					? [t("Its site stays online. Settings → Sites takes it offline.")]
+					: []),
+			],
+		);
+		if (!confirmed) return;
+		if (!(await this.#store.deleteSurface(surface.id))) {
+			if (!this.#signal.aborted) this.#reportError?.(t("{name} could not be deleted.", { name: surface.title }));
+			return;
+		}
+		if (this.#activeSlug === surface.slug) location.hash = `#/c/${this.#profileId}`;
 	}
 
 	update(activeSlug: string | undefined, canAddProgram = false): void {

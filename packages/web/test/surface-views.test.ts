@@ -2,6 +2,7 @@
 import {
 	SURFACE_INSPECTOR_MODE_MESSAGE,
 	SURFACE_INSPECTOR_PICK_MESSAGE,
+	type SurfaceAutomationSummary,
 	type SurfaceExplorationSet,
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,7 @@ import { SurfaceDoorStage } from "../src/app/views/surface-door.ts";
 import { openPublishPatchnotesSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
+import { openMenu } from "../src/ui/context-menu.ts";
 import { linkHref } from "../src/ui/dom.ts";
 import { deferred } from "./fixtures.ts";
 import {
@@ -143,6 +145,249 @@ describe("the surface rail", () => {
 		expect(archiveSurface).toHaveBeenCalledWith(proposedPress.id);
 		expect(rail.el.querySelectorAll(".rail-surface-proposed")).toHaveLength(0);
 		store.dispose();
+	});
+
+	describe("Delete in the right-click menu", () => {
+		const inbox = summary({
+			id: "55555555-5555-4555-8555-555555555555",
+			slug: "inbox",
+			title: "Inbox",
+			group: "operations",
+			archetype: "ops",
+			icon: "mail",
+			siteSlug: null,
+			activeSessionCount: 0,
+		});
+		const railRow = (rail: SurfaceRail, slug: string) =>
+			rail.el.querySelector<HTMLElement>(`.rail-surface[data-surface-slug="${slug}"]`);
+		const rightClick = (rail: SurfaceRail, slug: string) =>
+			railRow(rail, slug)!.dispatchEvent(
+				new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+			);
+		const menuRow = (label: string) =>
+			[...document.querySelectorAll<HTMLElement>(".context-menu-item")].find(
+				(item) => item.textContent?.trim() === label,
+			);
+		const dialog = () => document.querySelector<HTMLElement>('[role="alertdialog"]');
+		const dialogButton = (label: string) =>
+			[...dialog()!.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === label)!;
+		const dialogLines = () => [...dialog()!.querySelectorAll(".modal-list li")].map((item) => item.textContent);
+		const scheduled = (id: string, targetSurfaceSlug: string | null): SurfaceAutomationSummary => ({
+			id,
+			key: id,
+			title: "Weekly check",
+			scheduleSummary: "Mondays 08:00",
+			targetSurfaceSlug,
+			outputMode: targetSurfaceSlug ? "surface_session" : "decision_card",
+			enabled: true,
+			status: "idle",
+			lastRunAt: null,
+			lastOutcomeSummary: null,
+			nextRunAt: null,
+			ownable: true,
+			ownerUserId: null,
+			offer: null,
+		});
+
+		afterEach(() => {
+			openMenu()?.close();
+			history.replaceState(null, "", location.pathname);
+		});
+
+		it("asks first, deletes on the dialog's Delete, and leaves the deleted surface's page", async () => {
+			const archiveSurface = vi.fn(async (id: string) => summary({ id, status: "archived" }));
+			const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [summary(), inbox]), archiveSurface }));
+			await store.load();
+			const reportError = vi.fn();
+			const rail = new SurfaceRail(store, COMPANY, new AbortController().signal, undefined, reportError);
+			document.body.append(rail.el);
+			rail.update("website");
+
+			rightClick(rail, "website");
+			const remove = menuRow("Delete")!;
+			expect(remove.classList.contains("danger")).toBe(true);
+			expect(remove.previousElementSibling?.getAttribute("role")).toBe("separator");
+			remove.click();
+			expect(openMenu()).toBeUndefined();
+			expect(dialog()?.querySelector("p")?.textContent).toBe(
+				"Delete Website? It is removed for everyone in the company.",
+			);
+			expect(dialogLines()).toEqual(["Its site stays online. Settings → Sites takes it offline."]);
+			dialogButton("Cancel").click();
+			await flush();
+			expect(dialog()).toBeNull();
+			expect(archiveSurface).not.toHaveBeenCalled();
+			expect(railRow(rail, "website")).not.toBeNull();
+
+			rightClick(rail, "website");
+			menuRow("Delete")!.click();
+			expect(dialogButton("Delete").classList.contains("btn-danger")).toBe(true);
+			dialogButton("Delete").click();
+			await flush();
+			rail.update("website");
+			expect(archiveSurface).toHaveBeenCalledWith(SURFACE);
+			expect(railRow(rail, "website")).toBeNull();
+			expect(railRow(rail, "inbox")).not.toBeNull();
+			expect(location.hash).toBe(`#/c/${COMPANY}`);
+			expect(reportError).not.toHaveBeenCalled();
+			store.dispose();
+		});
+
+		it("stays on the page that is open when another surface is deleted", async () => {
+			const shop = summary({
+				id: "55555555-5555-4555-8555-555555555577",
+				slug: "shop",
+				title: "Shop",
+				liveUrl: null,
+			});
+			const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [summary(), shop]) }));
+			await store.load();
+			const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+			document.body.append(rail.el);
+			rail.update("website");
+
+			rightClick(rail, "shop");
+			menuRow("Delete")!.click();
+			expect(dialog()!.querySelector(".modal-list")).toBeNull();
+			dialogButton("Delete").click();
+			await flush();
+			rail.update("website");
+			expect(railRow(rail, "shop")).toBeNull();
+			expect(location.hash).toBe("");
+			store.dispose();
+		});
+
+		it("says what goes with it and what stays, and deletes its scheduled agents, a teammate's new one too, before the surface", async () => {
+			const calls: string[] = [];
+			const deleteAutomation = vi.fn(async (id: string) => {
+				calls.push(`agent ${id}`);
+				return true;
+			});
+			const archiveSurface = vi.fn(async (id: string) => {
+				calls.push("surface");
+				return summary({ id, status: "archived" });
+			});
+			const listAutomations = vi.fn(async () => [
+				scheduled("a-1", "website"),
+				scheduled("a-2", "inbox"),
+				scheduled("a-3", null),
+			]);
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [summary({ runningSessionCount: 2 }), inbox]),
+					listAutomations,
+					deleteAutomation,
+					archiveSurface,
+				}),
+			);
+			await store.load();
+			listAutomations.mockImplementation(async () => [
+				scheduled("a-1", "website"),
+				scheduled("a-2", "inbox"),
+				scheduled("a-3", null),
+				scheduled("a-4", "website"),
+			]);
+			const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+			document.body.append(rail.el);
+			rail.update("inbox");
+
+			rightClick(rail, "website");
+			menuRow("Delete")!.click();
+			expect(dialogLines()).toEqual([
+				"Its scheduled agent is deleted too.",
+				"The 2 sessions working in it run to their end.",
+				"Its site stays online. Settings → Sites takes it offline.",
+			]);
+			dialogButton("Delete").click();
+			await flush();
+			expect(calls).toEqual(["agent a-1", "agent a-4", "surface"]);
+			expect(store.state.automations.map((item) => item.id)).toEqual(["a-2", "a-3"]);
+			expect(store.state.surfaces.map((item) => item.slug)).toEqual(["inbox"]);
+			store.dispose();
+		});
+
+		it("counts several scheduled agents and one working session", async () => {
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [summary({ runningSessionCount: 1, liveUrl: null })]),
+					listAutomations: vi.fn(async () => [scheduled("a-1", "website"), scheduled("a-2", "website")]),
+				}),
+			);
+			await store.load();
+			const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+			document.body.append(rail.el);
+			rail.update("website");
+
+			rightClick(rail, "website");
+			menuRow("Delete")!.click();
+			expect(dialogLines()).toEqual([
+				"Its 2 scheduled agents are deleted too.",
+				"The session working in it runs to its end.",
+			]);
+			dialogButton("Cancel").click();
+			store.dispose();
+		});
+
+		it("keeps the surface when one of its scheduled agents cannot be deleted", async () => {
+			const archiveSurface = vi.fn(async (id: string) => summary({ id, status: "archived" }));
+			const store = storeWith(
+				fakeClient({
+					listAutomations: vi.fn(async () => [scheduled("a-1", "website")]),
+					deleteAutomation: vi.fn(async () => Promise.reject(new Error("permission denied"))),
+					archiveSurface,
+				}),
+			);
+			await store.load();
+			const reportError = vi.fn();
+			const rail = new SurfaceRail(store, COMPANY, new AbortController().signal, undefined, reportError);
+			document.body.append(rail.el);
+			rail.update("website");
+
+			rightClick(rail, "website");
+			menuRow("Delete")!.click();
+			dialogButton("Delete").click();
+			await flush();
+			rail.update("website");
+			expect(archiveSurface).not.toHaveBeenCalled();
+			expect(reportError).toHaveBeenCalledWith("Website could not be deleted.");
+			expect(railRow(rail, "website")).not.toBeNull();
+			expect(store.state.automations.map((item) => item.id)).toEqual(["a-1"]);
+			store.dispose();
+		});
+
+		it("says so in the rail and keeps the surface when the delete fails", async () => {
+			const archiveSurface = vi.fn(async () => Promise.reject(new Error("permission denied")));
+			const store = storeWith(fakeClient({ archiveSurface }));
+			await store.load();
+			const reportError = vi.fn();
+			const rail = new SurfaceRail(store, COMPANY, new AbortController().signal, undefined, reportError);
+			document.body.append(rail.el);
+			rail.update("website");
+
+			rightClick(rail, "website");
+			menuRow("Delete")!.click();
+			dialogButton("Delete").click();
+			await flush();
+			rail.update("website");
+			expect(reportError).toHaveBeenCalledWith("Website could not be deleted.");
+			expect(railRow(rail, "website")).not.toBeNull();
+			expect(location.hash).toBe("");
+			store.dispose();
+		});
+
+		it("offers no Delete on a built-in surface, which nothing can bring back", async () => {
+			const store = storeWith(fakeClient({ listSurfaces: vi.fn(async () => [summary(), inbox]) }));
+			await store.load();
+			const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+			document.body.append(rail.el);
+			rail.update("website");
+
+			rightClick(rail, "inbox");
+			expect(menuRow("Figure")).toBeDefined();
+			expect(menuRow("Delete")).toBeUndefined();
+			expect(openMenu()!.el.querySelector('[role="separator"]')).toBeNull();
+			store.dispose();
+		});
 	});
 });
 

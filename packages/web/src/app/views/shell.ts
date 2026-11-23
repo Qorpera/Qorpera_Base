@@ -2445,7 +2445,13 @@ function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
 	if (!store) return undefined;
 	let rail = surfaceRails.get(company);
 	if (!rail) {
-		rail = new SurfaceRail(store, company.profile.profileId, company.signal, () => openCreateSurfaceSheet(store));
+		rail = new SurfaceRail(
+			store,
+			company.profile.profileId,
+			company.signal,
+			() => openCreateSurfaceSheet(store),
+			(text) => company.reportRailError(text),
+		);
 		surfaceRails.set(company, rail);
 	}
 	return rail;
