@@ -11,7 +11,13 @@ import {
 	surfaceLookOf,
 	surfaceTint,
 } from "../surface-kinds.ts";
-import { askedToPublish, openExplorations, type SurfacesState, type SurfacesStore, type SurfaceTeammate } from "../surfaces-store.ts";
+import {
+	askedToPublish,
+	openExplorations,
+	type SurfacesState,
+	type SurfacesStore,
+	type SurfaceTeammate,
+} from "../surfaces-store.ts";
 import { CrewFigures } from "./surface-crew.ts";
 
 export function surfaceTile(
@@ -433,7 +439,9 @@ export class SurfaceRail {
 				if (surface.activeSessionCount > 0 && !state.workspaces[surface.id]) {
 					this.#store.hydrateWorkspace(surface.id);
 				}
-				const crew = asksMe ? null : crewRow(state, surface, this.#crew, (session) => this.#store.turnHolder(session));
+				const crew = asksMe
+					? null
+					: crewRow(state, surface, this.#crew, (session) => this.#store.turnHolder(session));
 				const notes = this.#store.unseenNotesOn(surface.id);
 				let entry = this.#rows.get(surface.id);
 				if (!entry) {
