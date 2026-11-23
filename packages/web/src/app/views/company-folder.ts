@@ -387,7 +387,7 @@ export class CompanyFolderBrowser {
 			{ once: true },
 		);
 		this.#viewer = options.embedded
-			? h("dialog", { class: "surface-dialog storage-viewer", tabindex: "-1" }, this.#preview)
+			? h("dialog", { class: "surface-dialog storage-viewer", tabindex: "-1", "aria-modal": "true" }, this.#preview)
 			: null;
 		// Escape and a click beside the window close it, never while an action runs.
 		this.#viewer?.addEventListener(

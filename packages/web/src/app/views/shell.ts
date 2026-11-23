@@ -1,3 +1,4 @@
+import type { CloudMemberFolderClient } from "@qorpera/cloud-client/cloud-member-folder";
 import { type AppManifest, OWED_APPS } from "@qorpera/cloud-client/interface-apps";
 import type { User } from "@supabase/supabase-js";
 import {
@@ -75,6 +76,7 @@ import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
 import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
 import { appHash, conceptsHash, type Route, siteHash, surfaceHash } from "../router.ts";
+import { surfaceKindSubtitle, surfaceLookOf } from "../surface-kinds.ts";
 import {
 	activeTaskSessions,
 	hasConflictedChange,
@@ -88,10 +90,11 @@ import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
 import { personFace } from "./friends.ts";
 import { memberPresence } from "./member-chat.ts";
-import type { SettingsTab } from "./settings.ts";
+import { type SearchHit, type SearchSources, SearchWindow } from "./search-window.ts";
+import { markSettingsPlace, type SettingsTab, settingsPlaces } from "./settings.ts";
 import { CrewFigures, crewWave } from "./surface-crew.ts";
 import { openCreateSurfaceSheet, openScheduleAgentSheet } from "./surface-migration-sheet.ts";
-import { isActionChange, SurfaceRail } from "./surface-rail.ts";
+import { isActionChange, SurfaceRail, surfaceTile } from "./surface-rail.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
  * main pane. A compact toolbar keeps the rail accessible on small screens. */
@@ -130,6 +133,9 @@ export interface ShellContext {
 	hideInterfacePage?: (page: InterfacePageName, hidden: boolean) => Promise<void>;
 	/** Reads the member's pages again: after Reset sidebar, or its Undo, a hidden page may show or hide again. */
 	refreshInterfacePages?: () => void;
+	searchFolder?: () => Pick<CloudMemberFolderClient, "search" | "history">;
+	searchBlocked?: () => boolean;
+	openStorage?: (path: string) => void;
 }
 
 /* The account menu is one long-lived element: the shell re-renders on every
@@ -424,12 +430,7 @@ interface RailParts {
 	readonly close: HTMLButtonElement;
 	readonly sidebarToggle: HTMLButtonElement;
 	readonly add: HTMLAnchorElement;
-	/** The search folds out of its button over the name, and folds back on Esc or its close button. */
-	readonly search: HTMLElement;
 	readonly searchToggle: HTMLButtonElement;
-	readonly searchClose: HTMLButtonElement;
-	searchOpen: boolean;
-	readonly input: HTMLInputElement;
 	readonly list: HTMLElement;
 	readonly connection: HTMLElement;
 	readonly foot: HTMLElement;
@@ -455,7 +456,6 @@ interface RailParts {
 	locale: string;
 	/** What the connection status last said. */
 	connectionShown: string;
-	/** Whether the last draw found the rail collapsed, where the search field is hidden. */
 	collapsed: boolean;
 	layoutKey: string | undefined;
 	readonly presenceElements: Set<HTMLElement>;
@@ -648,14 +648,11 @@ function reconcile(parent: HTMLElement, children: readonly HTMLElement[]): void 
 function partsFor(company: CompanyController, redraw: () => void): RailParts {
 	let parts = railParts.get(company);
 	if (!parts) {
-		const input = h("input", { type: "search", autocomplete: "off", spellcheck: "false", id: "rail-search-input" });
 		const searchToggle = h(
 			"button",
-			{ type: "button", class: "rail-search-toggle", "aria-controls": "rail-search-input" },
+			{ type: "button", class: "rail-search-toggle", "aria-haspopup": "dialog" },
 			icon("search"),
 		);
-		const searchClose = h("button", { type: "button", class: "rail-search-close" }, icon("close"));
-		const search = h("div", { class: "rail-search" }, searchToggle, input, searchClose);
 		const close = h("button", { type: "button", class: "icon-button rail-mobile-close" }, icon("close"));
 		const sidebarToggle = h(
 			"button",
@@ -718,15 +715,11 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appKeysShown: undefined,
 			appFolding: undefined,
 			appsDrag: undefined as unknown as AppGridDrag,
-			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add, sidebarToggle),
+			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, searchToggle, add, sidebarToggle),
 			close,
 			sidebarToggle,
 			add,
-			search,
 			searchToggle,
-			searchClose,
-			searchOpen: false,
-			input,
 			list,
 			connection,
 			foot: h("div", { class: "rail-footer" }, connection),
@@ -874,52 +867,9 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			},
 			{ signal: company.signal },
 		);
-		// The search button opens the field over the name. Esc or the close button folds it back, clears it and
-		// hands focus back to the button; so does leaving it empty.
-		const openSearch = () => {
-			if (!created.searchOpen) {
-				created.searchOpen = true;
-				created.redraw();
-			}
-			input.focus();
-		};
-		const closeSearch = (refocus: boolean) => {
-			if (!created.searchOpen) return;
-			created.searchOpen = false;
-			if (input.value) {
-				input.value = "";
-				created.list.scrollTop = 0;
-			}
-			created.redraw();
-			if (refocus) searchToggle.focus();
-		};
-		searchToggle.addEventListener("click", openSearch, { signal: company.signal });
-		searchClose.addEventListener("click", () => closeSearch(true), { signal: company.signal });
-		// A press on either button keeps focus where it is (Safari and Firefox never focus a pressed button, so focus
-		// would otherwise fall to the page as the field folds); the click does the rest.
-		for (const button of [searchToggle, searchClose]) {
-			button.addEventListener("mousedown", (event) => event.preventDefault(), { signal: company.signal });
-		}
-		// Esc folds the search from anywhere in it, never while a composition is open.
-		search.addEventListener(
-			"keydown",
-			(event) => {
-				if (event.key !== "Escape" || event.isComposing || !created.searchOpen) return;
-				event.preventDefault();
-				event.stopPropagation();
-				closeSearch(true);
-			},
-			{ signal: company.signal },
-		);
-		search.addEventListener(
-			"focusout",
-			(event) => {
-				const next = event.relatedTarget;
-				if ((next instanceof Node && search.contains(next)) || input.value.trim()) return;
-				closeSearch(false);
-			},
-			{ signal: company.signal },
-		);
+		searchToggle.addEventListener("click", () => openSearchWindow(company, created.context, searchToggle), {
+			signal: company.signal,
+		});
 		list.addEventListener("contextmenu", (event) => openRailMenu(company, created, event), {
 			signal: company.signal,
 		});
@@ -938,19 +888,11 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				const item = railItemOf(element);
 				if (!event.altKey || !delta || !item) return;
 				event.preventDefault();
-				nudgeItem(company, created, element, item, delta);
+				nudgeItem(company, element, item, delta);
 			},
 			{ signal: company.signal },
 		);
-		// Every keystroke filters, composed text included; redrawing never moves the field.
-		// Results start at the top of the list.
 		quietScroll(created.list);
-		input.addEventListener("input", () => {
-			created.list.scrollTop = 0;
-			created.redraw();
-		});
-		// Collapsing hides the field, so its text stops filtering until the rail opens again.
-		// A hidden rail (another page is showing) is drawn afresh when it returns.
 		window.addEventListener(
 			"qorpera-rail-resize",
 			() => {
@@ -980,8 +922,6 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		if (slot) slot.textContent = t("Drop here to pin");
 		parts.unassigned.title.textContent = t("Unassigned");
 		parts.hiddenGroup.label.textContent = t("Hidden");
-		parts.searchClose.setAttribute("aria-label", t("Close search"));
-		parts.searchClose.title = t("Close search");
 		parts.close.setAttribute("aria-label", t("Close company navigation"));
 		parts.sidebarToggle.setAttribute("aria-label", t("Hide sidebar"));
 		parts.sidebarToggle.title = t("Hide sidebar");
@@ -1353,27 +1293,13 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// Co-Founder duplicated them, so a surface-first rail folds it (and its grid button) away visually.
 	container.classList.toggle("has-surface-rail", surfacesOf(company) !== undefined);
 	showCompanyName(parts.companyName, company.profile.profileName);
-	// Text in the field keeps it open, so a query never filters from a folded field.
-	if (parts.input.value) parts.searchOpen = true;
-	parts.toolbar.classList.toggle("is-searching", parts.searchOpen);
-	const searchLabel = t("Search agents");
-	parts.input.placeholder = searchLabel;
-	parts.input.setAttribute("aria-label", searchLabel);
-	parts.input.tabIndex = parts.searchOpen ? 0 : -1;
-	parts.searchToggle.setAttribute("aria-label", searchLabel);
+	const searchLabel = `${t("Search")} (${shortcutLabel()})`;
+	parts.searchToggle.setAttribute("aria-label", t("Search"));
+	parts.searchToggle.setAttribute("aria-keyshortcuts", SEARCH_SHORTCUT);
 	parts.searchToggle.title = searchLabel;
-	parts.searchToggle.setAttribute("aria-expanded", String(parts.searchOpen));
-	// Open, the button only points back at the field, so it leaves the Tab order.
-	parts.searchToggle.tabIndex = parts.searchOpen ? -1 : 0;
-	parts.searchClose.hidden = !parts.searchOpen;
+	searchTarget = { company, parts };
 	reconcile(container, [parts.toolbar, parts.appsDrawer, parts.list, parts.foot]);
 	parts.collapsed = isCollapsed(container);
-	// The open field covers the name and the four windows, so they take no clicks or focus; the collapsed rail shows
-	// the four windows, not the field.
-	parts.company.inert = parts.searchOpen && !parts.collapsed;
-	parts.apps.inert = parts.searchOpen && !parts.collapsed;
-	const railQuery = parts.collapsed ? "" : parts.input.value.trim().toLowerCase();
-	const matches = (text: string) => !railQuery || text.toLowerCase().includes(railQuery);
 	parts.close.hidden = !context.navigation;
 	parts.close.onclick = context.navigation?.toggle ?? null;
 	parts.sidebarToggle.hidden = !context.sidebar;
@@ -1471,20 +1397,19 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		};
 	};
 	const surfaceRail = surfaceRailFor(company);
-	const cofounderElement =
-		cofounder && matches(cofounder.displayName)
-			? row(
-					`#/c/${profileId}`,
-					`#/c/${profileId}`,
-					agentModel(cofounder),
-					Boolean(
-						section === "home" ||
-							(cofounderSessionId && activeSessionId === cofounderSessionId) ||
-							isActive(cofounder.id),
-					),
-					cofounderCard,
-				)
-			: null;
+	const cofounderElement = cofounder
+		? row(
+				`#/c/${profileId}`,
+				`#/c/${profileId}`,
+				agentModel(cofounder),
+				Boolean(
+					section === "home" ||
+						(cofounderSessionId && activeSessionId === cofounderSessionId) ||
+						isActive(cofounder.id),
+				),
+				cofounderCard,
+			)
+		: null;
 	// The sidebar: this member's pins and hidden agents and group chats, the company's
 	// sections. A cloud without it shows every agent in one list, as before; one that
 	// places agents only lists the group chats after them.
@@ -1521,39 +1446,14 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const pinned = (sidebar?.pinned ?? []).filter((itemId) => rosterSet.has(itemId));
 	const pinnedSet = new Set(pinned);
 	const hidden = new Set(sidebar?.hidden ?? []);
-	// A search that names a section lists everyone in it, pinned ones too; "Unassigned" names
-	// what is in no section once there are sections to tell it from.
 	const sectionNames = sidebar?.sections ?? [];
 	const sectionIdSet = new Set(sectionNames.map((item) => item.sectionId));
-	const wholeSections = new Set(
-		railQuery
-			? sectionNames.filter((item) => matches(item.name)).map((item) => item.sectionId as string | undefined)
-			: [],
-	);
-	if (railQuery && sectionNames.length && matches(t("Unassigned"))) wholeSections.add(undefined);
-	const sectionOf = (itemId: string) => {
-		const placed = sidebar?.placements[itemId]?.sectionId;
-		return placed && sectionIdSet.has(placed) ? placed : undefined;
-	};
-	const inWholeSection = (itemId: string) => wholeSections.has(sectionOf(itemId));
 	const surfacesStore = surfacesOf(company);
 	const foldedAgents = surfacesStore?.state.foldedAgentIds ?? {};
 	const shown = (agent: HostedStaffAgent | undefined): agent is HostedStaffAgent =>
-		// A hidden agent is still found by searching for it.
-		Boolean(agent) &&
-		!foldedAgents[agent!.id] &&
-		(matches(agent!.displayName) || inWholeSection(agent!.id)) &&
-		(!hidden.has(agent!.id) || Boolean(railQuery));
-	const roomShown = (roomId: string) =>
-		(matches(placedRooms.get(roomId)?.title ?? "") || inWholeSection(roomId)) &&
-		(!hidden.has(roomId) || Boolean(railQuery));
-	// A contact shows as an agent does: where it stands unless hidden, and a search finds a hidden one too. A search
-	// that names the section it stands in lists it with the section.
-	const contactShown = (contact: RailContact) =>
-		(matches(others.get(contact.userId)!.displayName) ||
-			(contact.zone === "unassigned" && wholeSections.has(undefined)) ||
-			(contact.zone.startsWith("section:") && wholeSections.has(contact.zone.slice("section:".length)))) &&
-		(!contact.hidden || Boolean(railQuery));
+		Boolean(agent) && !foldedAgents[agent!.id] && !hidden.has(agent!.id);
+	const roomShown = (roomId: string) => !hidden.has(roomId);
+	const contactShown = (contact: RailContact) => !contact.hidden;
 	const agentElement = (agent: HostedStaffAgent) =>
 		row(
 			`#/c/${profileId}/staff/${agent.id}`,
@@ -1623,14 +1523,12 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		return { group, name: item.name, rows: inContainer(item.sectionId) };
 	});
 	for (const [sectionId] of parts.sections) if (!sectionIdSet.has(sectionId)) parts.sections.delete(sectionId);
-	// Hidden agents and group chats fold at the foot of the list, where they can be shown
-	// again. A search already lists the matching ones in their places.
-	const hiddenItems = railQuery ? [] : roster.filter((itemId) => hidden.has(itemId));
+	const hiddenItems = roster.filter((itemId) => hidden.has(itemId));
 	// With them, the pages an owner or admin hid, for owners and admins: from here they show them again.
-	const hiddenPages = railQuery ? [] : hiddenInterfaces(company);
+	const hiddenPages = hiddenInterfaces(company);
 	// And the contacts the member hid. A hidden contact can still write: how many of their messages wait stands on
 	// the fold, so nothing a person sent goes unseen.
-	const hiddenContacts = railQuery ? [] : contacts.filter((contact) => contact.hidden);
+	const hiddenContacts = contacts.filter((contact) => contact.hidden);
 	const hiddenUnread = hiddenContacts.reduce((sum, contact) => sum + (memberChats?.[contact.userId]?.unread ?? 0), 0);
 	const hiddenCount = hiddenItems.length + hiddenPages.length + hiddenContacts.length;
 	const hiddenGroup = parts.hiddenGroup;
@@ -1672,7 +1570,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			.filter(
 				(session) =>
 					session.status === "open" &&
-					(matches(session.title) || wholeSections.has(undefined)) &&
 					// A pair transcript is reached from the chips in the agents' threads, never from the rail.
 					!isAgentPairSession(session) &&
 					!placedRooms.has(String(session.executionScope?.roomId).toLowerCase()) &&
@@ -1754,12 +1651,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const waiting = (state.loading || state.connectionLost) && !state.staff.length;
 	if (!waiting) parts.loading = undefined;
 	else parts.loading ??= railListSkeleton();
-	const empty =
-		!state.loading && !state.connectionLost && !cofounderElement && !anyRows
-			? railQuery
-				? t("No matching conversations.")
-				: t("No agents yet.")
-			: null;
+	const empty = !state.loading && !state.connectionLost && !cofounderElement && !anyRows ? t("No agents yet.") : null;
 	const listNotices = [
 		connectionNotice(),
 		errorNotice("sessions", state.sessionsError, () =>
@@ -1784,7 +1676,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		parts.collapsed,
 		Boolean(sidebar),
 		activeStates.filter((entry) => entry.current).map((entry) => entry.key),
-		surfaceRail && !railQuery ? (activeSurfaceSlug ?? null) : null,
+		surfaceRail ? (activeSurfaceSlug ?? null) : null,
 		cofounderElement ? rowKeyOf(cofounderElement) : null,
 		pinnedElements.map(rowKeyOf),
 		sectionGroups.map(({ group, name, rows: sectionRows }) => [
@@ -1794,7 +1686,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		]),
 		sectioned,
 		placing,
-		Boolean(railQuery),
 		unassignedRows.map(rowKeyOf),
 		memberRows.map(rowKeyOf),
 		hiddenGroup.open,
@@ -1882,7 +1773,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// can be dropped back there (styles/app.css).
 	const hasMembersSurface = Boolean(
 		surfaceRail &&
-			!railQuery &&
 			surfacesStore?.state.surfaces.some((surface) => surface.status === "active" && surface.slug === "members"),
 	);
 	const memberUnread = contacts.reduce(
@@ -1912,9 +1802,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	}
 	reconcile(parts.cofounderGroup, cofounderElement ? [cofounderElement] : []);
 	const legacyNodes = [
-		sidebar && !railQuery ? parts.pinnedGroup : pinnedElements.length ? parts.pinnedGroup : null,
-		...sectionGroups.filter(({ rows: r }) => r.length || !railQuery).map(({ group }) => group.el),
-		unassignedRows.length || (sectioned && !railQuery) ? parts.unassigned.el : null,
+		sidebar || pinnedElements.length ? parts.pinnedGroup : null,
+		...sectionGroups.map(({ group }) => group.el),
+		unassignedRows.length || sectioned ? parts.unassigned.el : null,
 	].filter((element) => element !== null);
 	const companyAgents = active.filter(
 		(agent) => agent.id !== cofounderId && !foldedAgents[agent.id] && !hidden.has(agent.id),
@@ -1928,25 +1818,24 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	);
 	const activeAgentId =
 		context.route.name === "company" && context.route.section === "staff" ? context.route.id : undefined;
-	const agentsHub =
-		surfaceRail && !railQuery
-			? syncAgentsHub(company, {
-					profileId,
-					activeAgentId,
-					workingStaff,
-					scheduledStaff,
-					idleStaff,
-				})
-			: null;
+	const agentsHub = surfaceRail
+		? syncAgentsHub(company, {
+				profileId,
+				activeAgentId,
+				workingStaff,
+				scheduledStaff,
+				idleStaff,
+			})
+		: null;
 	reconcile(
 		parts.list,
 		[
 			...listNotices,
 			cofounderElement ? parts.cofounderGroup : null,
-			surfaceRail && !railQuery ? surfaceRail.el : null,
+			surfaceRail ? surfaceRail.el : null,
 			parts.loading ?? null,
-			...(agentsHub ? [agentsHub] : surfaceRail && !railQuery ? [] : legacyNodes),
-			!hasMembersSurface && (memberRows.length || (placing && !railQuery)) ? parts.members.el : null,
+			...(agentsHub ? [agentsHub] : surfaceRail ? [] : legacyNodes),
+			!hasMembersSurface && (memberRows.length || placing) ? parts.members.el : null,
 			hiddenCount ? hiddenGroup.el : null,
 			empty && !surfaceRail ? parts.empty : null,
 			parts.hover.attached ?? null,
@@ -1972,9 +1861,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		if (replacement) replacement.focus({ preventScroll: true });
 		else {
 			const now = focusables();
-			(
-				now[Math.min(index, now.length - 1)] ?? (parts.input.tabIndex < 0 ? parts.searchToggle : parts.input)
-			).focus();
+			(now[Math.min(index, now.length - 1)] ?? parts.searchToggle).focus();
 		}
 	}
 
@@ -4023,11 +3910,8 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 		return state.sidebarUnavailable ? undefined : state.sidebar;
 	};
 	return {
-		// The collapsed rail hides the search field and ignores its text. A contact drags wherever the cloud keeps
-		// its place; an agent or a group chat, where the company has a sidebar.
 		canDrag: (itemId: string) =>
-			(parts.collapsed || !parts.input.value.trim()) &&
-			(placedChats(company)?.[itemId] ? true : Boolean(sidebarOf()) && company.sidebarRoster().includes(itemId)),
+			placedChats(company)?.[itemId] ? true : Boolean(sidebarOf()) && company.sidebarRoster().includes(itemId),
 		accepts: (zone: string, itemId: string) => {
 			// The pinned row holds so many cards, whatever is dragged: one that is in it already moves within it.
 			const pinnable = () => keptOrder(company, "pinned").includes(itemId) || !pinnedRowFull(company);
@@ -4143,13 +4027,7 @@ function heldOrder(company: CompanyController, zone: string): string[] {
  * pinned row (the member's own order) or a section (the company's order of agents and group chats; hidden and pinned
  * ones keep their places). A contact's step, and a step over a contact, change only where the contact stands, which
  * is its member's own. */
-function nudgeItem(
-	company: CompanyController,
-	parts: RailParts,
-	element: HTMLElement,
-	item: RailItem,
-	delta: number,
-): void {
+function nudgeItem(company: CompanyController, element: HTMLElement, item: RailItem, delta: number): void {
 	const itemId = item.id;
 	// What the member sees in the row's zone. A row in Hidden stands in no zone: it has no place to move from.
 	const zoneElement = element.closest<HTMLElement>("[data-drop-zone]");
@@ -4162,12 +4040,7 @@ function nudgeItem(
 	const stepped = [...seen];
 	stepped.splice(at, 1);
 	stepped.splice(at + delta, 0, itemId);
-	// A contact's place is read off the rows the member sees. While a search hides some of them none is made, as none
-	// is dragged then: an agent that steps then moves in the company's order alone, and every contact keeps standing
-	// after the agent it stood after.
-	const settle = () => {
-		if (parts.collapsed || !parts.input.value.trim()) settleContacts(company, zone, stepped);
-	};
+	const settle = () => settleContacts(company, zone, stepped);
 	if (item.kind === "member" || placedChats(company)?.[beside]) {
 		settle();
 		return;
@@ -4204,4 +4077,203 @@ function nudgeItem(
 	order.splice(order.indexOf(neighbour) + (delta > 0 ? 1 : 0), 0, itemId);
 	void company.changeSidebar(moveRequest(moved, sectionId ?? null, { order }));
 	settle();
+}
+
+const SEARCH_SHORTCUT = "Meta+K Control+K";
+const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp|svg|avif|heic)$/i;
+const CODE_FILE = /\.(?:[cm]?[jt]sx?|py|rs|go|rb|java|kt|swift|c|h|cpp|cs|php|sh|sql|css|scss|html?|json|ya?ml|toml)$/i;
+const RECENT_FILES = 4;
+
+let searchWindow: SearchWindow | undefined;
+let searchTarget: { company: CompanyController; parts: RailParts } | undefined;
+let searchShortcut = false;
+
+function shortcutLabel(): string {
+	return /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘K" : "Ctrl+K";
+}
+
+function fileHit(context: ShellContext, path: string, kind: string): SearchHit {
+	const slash = path.lastIndexOf("/");
+	const name = path.slice(slash + 1);
+	const folder = slash < 0 ? t("Company File") : path.slice(0, slash).split("/").join(" / ");
+	const glyph =
+		kind === "folder" ? "folder" : IMAGE_FILE.test(name) ? "image" : CODE_FILE.test(name) ? "code" : "file";
+	return {
+		key: `file:${kind}:${path}`,
+		kind: "files",
+		title: name,
+		detail: kind === "folder" ? `${t("Folder")} · ${folder}` : folder,
+		lead: () => icon(glyph),
+		open: () => context.openStorage?.(path),
+	};
+}
+
+function searchSources(company: CompanyController, context: ShellContext): SearchSources {
+	const profileId = company.profile.profileId;
+	const go = (href: string) => () => {
+		location.hash = href;
+	};
+	const hits = (): SearchHit[] => {
+		const state = company.store.get();
+		const found: SearchHit[] = [];
+		const cofounderId = company.cofounderId();
+		const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+		const sectionName = new Map(sidebar?.sections.map((section) => [section.sectionId, section.name]));
+		const placedIn = (itemId: string) => sectionName.get(sidebar?.placements[itemId]?.sectionId ?? "") ?? "";
+		for (const agent of state.staff) {
+			if (agent.employmentStatus !== "active") continue;
+			const href = agent.id === cofounderId ? `#/c/${profileId}` : `#/c/${profileId}/staff/${agent.id}`;
+			found.push({
+				key: `agent:${agent.id}`,
+				kind: "people",
+				title: agent.displayName,
+				detail: agent.role || t("Agent"),
+				words: `${t("Agent")} ${placedIn(agent.id)}`,
+				lead: () => agentFigure(agent, agent.displayName, { size: 30 }),
+				open: go(href),
+			});
+		}
+		const { others } = companyContacts(company);
+		for (const [userId, member] of others)
+			found.push({
+				key: `member:${userId}`,
+				kind: "people",
+				title: member.displayName,
+				detail: t("Member"),
+				lead: () => personAvatar(member.displayName, userId),
+				open: go(`#/c/${profileId}/member/${userId}`),
+			});
+		for (const session of company.groupChatRooms().values())
+			found.push({
+				key: `chat:${session.sessionId}`,
+				kind: "people",
+				title: session.title,
+				detail: t("Group chat"),
+				lead: () => groupChatAvatar(company.groupAgents(session.sessionId), { width: 30, height: 28 }),
+				open: go(`#/c/${profileId}/chat/${session.sessionId}`),
+			});
+		const store = surfacesOf(company);
+		for (const surface of store?.state.surfaces ?? []) {
+			if (surface.status !== "active") continue;
+			const look = surfaceLookOf(surface, store?.state.surfaceLooks);
+			found.push({
+				key: `surface:${surface.id}`,
+				kind: "apps",
+				title: surface.title,
+				detail: surfaceKindSubtitle(look.kind),
+				lead: () => surfaceTile(surface, look, "is-small"),
+				open: go(surfaceHash(profileId, surface.slug)),
+			});
+		}
+		for (const page of companyInterfaces(company))
+			found.push({
+				key: `page:${page.name}`,
+				kind: "apps",
+				title: page.file.name,
+				detail: page.file.about ?? t("Page"),
+				lead: () => icon("interfaces"),
+				open: go(`#/c/${profileId}/i/${page.name}`),
+			});
+		for (const app of state.apps ?? []) {
+			if (app.manifest?.posted !== true || app.manifest.concept) continue;
+			found.push({
+				key: `app:${app.name}`,
+				kind: "apps",
+				title: app.manifest.name,
+				detail: app.manifest.about ?? t("App"),
+				lead: () => icon("interfaces"),
+				open: go(appHash(profileId, app.name)),
+			});
+		}
+		const team = state.team;
+		const deletes = Boolean(team && (team.capabilities.deleteCompany ?? team.role === "owner"));
+		for (const place of settingsPlaces(deletes))
+			found.push({
+				key: `setting:${place.tab}:${place.label}`,
+				kind: "settings",
+				title: place.label,
+				detail: `${t("Settings")} · ${place.area}`,
+				words: place.words,
+				lead: () => icon("settings"),
+				open: () => {
+					context.openSettings(place.tab);
+					if (place.mark) markSettingsPlace(place.mark);
+				},
+			});
+		return found;
+	};
+	const folder = context.searchFolder;
+	return {
+		profileId,
+		companyName: company.profile.profileName,
+		hits,
+		revive: (key) => {
+			const [, kind, path] = /^file:(file|folder|symlink):(.+)$/.exec(key) ?? [];
+			const readable = company.store.get().team?.capabilities.read === true;
+			return kind && path && readable && context.openStorage ? fileHit(context, path, kind) : undefined;
+		},
+		...(folder && company.store.get().team?.capabilities.read
+			? {
+					files: {
+						search: async (query, limit, signal) => {
+							const answer = await folder().search(query, limit, signal);
+							return {
+								hits: answer.entries.map((entry) => fileHit(context, entry.path, entry.kind)),
+								more: answer.more,
+							};
+						},
+						recent: async (signal) => {
+							const page = await folder().history(null, 20, signal);
+							const decided = new Set<string>();
+							const recent: SearchHit[] = [];
+							for (const item of page.items)
+								for (const change of item.paths) {
+									if (decided.has(change.path)) continue;
+									decided.add(change.path);
+									if (change.op === "delete" || change.op === "move_out" || change.kind !== "file") continue;
+									if (change.path.split("/", 1)[0] === "QorperaOS") continue;
+									recent.push(fileHit(context, change.path, change.kind));
+									if (recent.length === RECENT_FILES) return recent;
+								}
+							return recent;
+						},
+					},
+				}
+			: {}),
+	};
+}
+
+function openSearchWindow(company: CompanyController, context: ShellContext | undefined, opener: HTMLElement): void {
+	if (!context) return;
+	searchWindow ??= new SearchWindow();
+	searchWindow.open(searchSources(company, context), opener);
+}
+
+function anotherModalOpen(): boolean {
+	return [...document.querySelectorAll<HTMLElement>('[aria-modal="true"]')].some(
+		(element) =>
+			!element.classList.contains("search-window") &&
+			!element.closest(".is-leaving") &&
+			(!(element instanceof HTMLDialogElement) || element.open),
+	);
+}
+
+export function installSearchShortcut(): void {
+	if (searchShortcut) return;
+	searchShortcut = true;
+	document.addEventListener("keydown", (event) => {
+		if (event.isComposing || event.altKey || event.shiftKey || event.key.toLowerCase() !== "k") return;
+		if (!(event.metaKey || event.ctrlKey) || (event.metaKey && event.ctrlKey)) return;
+		if (searchWindow?.isOpen) {
+			event.preventDefault();
+			searchWindow.close();
+			return;
+		}
+		const target = searchTarget;
+		if (!target?.parts.context || target.company.signal.aborted) return;
+		if (target.parts.context.searchBlocked?.()) return;
+		if (anotherModalOpen()) return;
+		event.preventDefault();
+		openSearchWindow(target.company, target.parts.context, target.parts.searchToggle);
+	});
 }
