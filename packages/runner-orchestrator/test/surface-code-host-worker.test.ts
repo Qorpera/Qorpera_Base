@@ -1123,6 +1123,27 @@ describe("SurfaceCodeHostWorker previews built by the platform", () => {
 		expect(files?.get("index.html")?.toString("utf8")).toContain("Built");
 	});
 
+	it("leaves a preview the build request already failed (a company out of computer hours) without completing it again", async () => {
+		const f = await createCodeHostFixture();
+		const source = await commitFiles(f, { ".qorpera/checks.json": RECIPE_CHECKS, "package.json": "{}\n" }, "Source");
+		const h = buildHarness(f, [
+			{
+				state: "failed",
+				buildId: null,
+				errorDetail: "PREVIEW_BUILD_NO_HOURS\nThe company has no computer hours left.",
+			},
+		]);
+		h.claim(previewClaim(source.commit, randomUUID(), randomUUID()));
+		expect(await h.worker.pass(new AbortController().signal)).toEqual({
+			previews: 1,
+			merges: 0,
+			publishes: 0,
+			failed: 0,
+		});
+		expect(h.calls.some((c) => c.method === "qorpera_surface_complete_preview")).toBe(false);
+		expect(h.calls.some((c) => c.method === "qorpera_surface_site_version_begin")).toBe(false);
+	});
+
 	it("publishes main's built tree from the same plan and fails a checks file that declares a build but is not valid", async () => {
 		const f = await createCodeHostFixture();
 		const output = await commitFiles(f, { "dist/index.html": "<!doctype html><h1>Live</h1>\n" }, "Output");

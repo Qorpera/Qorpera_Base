@@ -2172,11 +2172,15 @@ describe("CloudCodingExecutor code_change routine wakes and auto-redeploy", () =
 
 describe("the coding executor over a preview builder's turn", () => {
 	const recipe = { run: "npm ci && npm run build", cwd: ".", folder: "dist", timeoutSeconds: 180 };
-	const builderWorld = (begun: Record<string, unknown>) => {
+	const builderWorld = (begun: Record<string, unknown>, held: string[] = ["go"]) => {
 		const w = world();
 		Object.assign(w.world.claim.dispatch, { kind: "surface-preview-build" });
 		const control: CodingExecutorControl = {
 			call: async (method, args, signal) => {
+				if (method === "qorpera_check_surface_preview_build") {
+					w.world.calls.push({ method, args });
+					return { state: held.shift() ?? "go" };
+				}
 				if (method === "qorpera_begin_surface_preview_build") {
 					w.world.calls.push({ method, args });
 					return begun;
@@ -2267,6 +2271,66 @@ describe("the coding executor over a preview builder's turn", () => {
 			idle.w.world.calls.find((call) => call.method === "qorpera_complete_surface_preview_build")?.args,
 		).toMatchObject({
 			p_build_id: null,
+			p_outcome: "none",
+		});
+	});
+
+	it("asks before preparing the machine: waits behind the company's two builds, ends a turn with nothing to build, and ends one refused for computer hours without deferring", async () => {
+		const busy = builderWorld({ state: "build", build }, ["wait"]);
+		busy.w.host.buildPreview = vi.fn();
+		expect(
+			await new CloudCodingExecutor({
+				control: busy.control,
+				host: busy.w.host,
+				owner: "exec-test",
+				turnPollMs: 1,
+			}).runOnce(new AbortController().signal),
+		).toBe("deferred");
+		expect(busy.w.host.prepareWorkspace).not.toHaveBeenCalled();
+		expect(busy.w.world.calls.find((call) => call.method === "qorpera_defer_coding_session")?.args.p_reason).toBe(
+			"PREVIEW_BUILDS_BUSY",
+		);
+
+		const idle = builderWorld({ state: "build", build }, ["none"]);
+		idle.w.host.buildPreview = vi.fn();
+		expect(
+			await new CloudCodingExecutor({
+				control: idle.control,
+				host: idle.w.host,
+				owner: "exec-test",
+				turnPollMs: 1,
+			}).runOnce(new AbortController().signal),
+		).toBe("completed");
+		expect(idle.w.host.prepareWorkspace).not.toHaveBeenCalled();
+		expect(idle.w.world.calls.some((call) => call.method === "qorpera_begin_surface_preview_build")).toBe(false);
+		expect(
+			idle.w.world.calls.find((call) => call.method === "qorpera_complete_surface_preview_build")?.args,
+		).toMatchObject({
+			p_build_id: null,
+			p_outcome: "none",
+		});
+
+		const zero = builderWorld({ state: "build", build }, ["go", "none"]);
+		zero.w.host.buildPreview = vi.fn();
+		vi.mocked(zero.w.host.prepareWorkspace).mockRejectedValueOnce(
+			new CodingMachineUnavailable("COMPUTER_HOURS_EXHAUSTED"),
+		);
+		expect(
+			await new CloudCodingExecutor({
+				control: zero.control,
+				host: zero.w.host,
+				owner: "exec-test",
+				turnPollMs: 1,
+			}).runOnce(new AbortController().signal),
+		).toBe("completed");
+		expect(zero.w.host.detachSession).toHaveBeenCalled();
+		expect(zero.w.world.calls.filter((call) => call.method === "qorpera_check_surface_preview_build")).toHaveLength(
+			2,
+		);
+		expect(zero.w.world.calls.some((call) => call.method === "qorpera_defer_coding_session")).toBe(false);
+		expect(
+			zero.w.world.calls.find((call) => call.method === "qorpera_complete_surface_preview_build")?.args,
+		).toMatchObject({
 			p_outcome: "none",
 		});
 	});

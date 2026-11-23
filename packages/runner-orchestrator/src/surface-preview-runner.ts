@@ -134,8 +134,12 @@ export function previewBuildOutcome(run: CodeChecksRun, recipe: SurfacePreviewRe
 		return {
 			outcome: "failed",
 			errorDetail: previewBuildDetail(
-				NOT_RUN_FOR_THE_MACHINE.has(run.why) ? PREVIEW_BUILD_NO_MACHINE : PREVIEW_BUILD_FAILED,
-				`The build "${shownRun}" did not run: ${run.why === "copy" ? "the composed commit could not be copied into the coding machine" : "the coding machine could not run it"}. [code=${run.code}]`,
+				run.code.endsWith("COMPUTER_HOURS_EXHAUSTED")
+					? PREVIEW_BUILD_NO_HOURS
+					: NOT_RUN_FOR_THE_MACHINE.has(run.why)
+						? PREVIEW_BUILD_NO_MACHINE
+						: PREVIEW_BUILD_FAILED,
+				`The build "${shownRun}" did not run: ${run.code.endsWith("COMPUTER_HOURS_EXHAUSTED") ? "the company ran out of computer hours" : run.why === "copy" ? "the composed commit could not be copied into the coding machine" : "the coding machine could not run it"}. [code=${run.code}]`,
 			),
 		};
 	}
@@ -183,14 +187,18 @@ export function readSurfacePreviewRecipe(checksText: string | null): SurfacePrev
 	}
 	const preview = parsed.preview;
 	if (!preview || preview.run.trim() === "true") return { kind: "none" };
+	const folder = preview.folder ?? parsed.site?.folder ?? null;
+	if (folder === null)
+		return {
+			kind: "invalid",
+			detail: previewBuildDetail(
+				PREVIEW_BUILD_FAILED,
+				'.qorpera/checks.json has a preview recipe but names no folder, so nothing was built. Add "folder" to "preview": the folder the build writes, counted from the repository root (for example "dist", or "web/dist" when "cwd" is "web").',
+			),
+		};
 	return {
 		kind: "recipe",
-		recipe: {
-			run: preview.run,
-			cwd: preview.cwd,
-			folder: preview.folder ?? parsed.site?.folder ?? ".",
-			timeoutSeconds: preview.timeoutSeconds,
-		},
+		recipe: { run: preview.run, cwd: preview.cwd, folder, timeoutSeconds: preview.timeoutSeconds },
 	};
 }
 

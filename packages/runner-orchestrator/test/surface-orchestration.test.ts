@@ -128,6 +128,9 @@ describe("surface preview runner and change dispatcher", () => {
 			kind: "none",
 		});
 		expect(readSurfacePreviewRecipe(null)).toEqual({ kind: "none" });
+		const noFolder = readSurfacePreviewRecipe(JSON.stringify({ checks, preview: { run: "vite build", cwd: "web" } }));
+		expect(noFolder.kind).toBe("invalid");
+		expect(noFolder.kind === "invalid" && noFolder.detail).toContain("counted from the repository root");
 		expect(readSurfacePreviewRecipe("{ not json")).toEqual({ kind: "none" });
 		const invalid = readSurfacePreviewRecipe(JSON.stringify({ preview: { run: "vite build", folder: "../dist" } }));
 		expect(invalid.kind).toBe("invalid");

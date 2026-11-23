@@ -99,7 +99,7 @@ export type SurfacePreviewPlanRead = (
 
 type SurfaceBuildAnswer =
 	| { readonly state: "built"; readonly buildId: string; readonly builtTreeSha: string }
-	| { readonly state: "waiting" | "failed"; readonly buildId: string };
+	| { readonly state: "waiting" | "failed" };
 
 type ReadSite = {
 	readonly treeSha: string;
@@ -1016,10 +1016,11 @@ export class SurfaceCodeHostWorker {
 		);
 		const answer = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
 		const buildId = typeof answer.buildId === "string" && isUuid(answer.buildId) ? answer.buildId : null;
+		if (answer.state === "failed") return { state: "failed" };
 		if (buildId === null) throw new Error("Surface build request returned an invalid answer");
 		if (answer.state === "built" && typeof answer.builtTreeSha === "string" && GIT_SHA.test(answer.builtTreeSha))
 			return { state: "built", buildId, builtTreeSha: answer.builtTreeSha };
-		if (answer.state === "waiting" || answer.state === "failed") return { state: answer.state, buildId };
+		if (answer.state === "waiting") return { state: "waiting" };
 		throw new Error("Surface build request returned an invalid answer");
 	}
 

@@ -38,6 +38,7 @@ export const CODING_EXECUTOR_RPCS = [
 	"qorpera_defer_coding_session",
 	"qorpera_emit_code_change_routine_wakes",
 	"qorpera_emit_app_unhealthy_routine_wakes",
+	"qorpera_check_surface_preview_build",
 	"qorpera_begin_surface_preview_build",
 	"qorpera_complete_surface_preview_build",
 ] as const;
@@ -963,6 +964,39 @@ export class CloudCodingExecutor {
 				// 1. The workspace: the member's machine, the session's NAS folders, pinned base, seeded checkout.
 				let turn = await describe();
 				if (turn.phase !== "preparing") throw new Error("Coding turn is not preparing");
+				const finishBuild = async (
+					buildId: string | null,
+					outcome: "built" | "failed" | "none",
+					extra: { builtTreeSha?: string; errorDetail?: string } = {},
+				) => {
+					await again("qorpera_complete_surface_preview_build", {
+						...args,
+						p_build_id: buildId,
+						p_outcome: outcome,
+						p_built_tree_sha: extra.builtTreeSha ?? null,
+						p_error_detail: extra.errorDetail ?? null,
+					});
+				};
+				const checkBuild = async () =>
+					record(await again("qorpera_check_surface_preview_build", args), "Preview build check unconfirmed")
+						.state;
+				if (claimed.previewBuilder) {
+					const held = await checkBuild();
+					if (held === "wait") {
+						try {
+							await call("qorpera_defer_coding_session", { ...args, p_reason: "PREVIEW_BUILDS_BUSY" });
+						} catch (deferError) {
+							this.#reported("defer", deferError);
+							return "recovery-required";
+						}
+						return "deferred";
+					}
+					if (held !== "go") {
+						end();
+						await finishBuild(null, "none");
+						return "completed";
+					}
+				}
 				let workspace: CodingWorkspace;
 				try {
 					workspace = await this.#host.prepareWorkspace(claimed, turn, active);
@@ -1003,6 +1037,14 @@ export class CloudCodingExecutor {
 					} catch (detachError) {
 						this.#reported("stop", detachError);
 					}
+					if (
+						claimed.previewBuilder &&
+						error.reason === "COMPUTER_HOURS_EXHAUSTED" &&
+						(await checkBuild()) === "none"
+					) {
+						await finishBuild(null, "none");
+						return "completed";
+					}
 					try {
 						await call("qorpera_defer_coding_session", { ...args, p_reason: error.reason });
 					} catch (deferError) {
@@ -1013,19 +1055,6 @@ export class CloudCodingExecutor {
 					return "deferred";
 				}
 				if (claimed.previewBuilder) {
-					const finishBuild = async (
-						buildId: string | null,
-						outcome: "built" | "failed" | "none",
-						extra: { builtTreeSha?: string; errorDetail?: string } = {},
-					) => {
-						await again("qorpera_complete_surface_preview_build", {
-							...args,
-							p_build_id: buildId,
-							p_outcome: outcome,
-							p_built_tree_sha: extra.builtTreeSha ?? null,
-							p_error_detail: extra.errorDetail ?? null,
-						});
-					};
 					const begun = record(
 						await again("qorpera_begin_surface_preview_build", args),
 						"Preview build begin unconfirmed",
