@@ -10,7 +10,7 @@ import type { InterfacePagesState } from "../src/app/interface-pages.ts";
 import { companyInterfaces } from "../src/app/interfaces.ts";
 import { parseRoute, type Route, routeHash } from "../src/app/router.ts";
 import { messageText, renderInterface } from "../src/app/views/interface.ts";
-import { installSearchShortcut, renderRail } from "../src/app/views/shell.ts";
+import { installSearchShortcut, renderRail, type ShellContext } from "../src/app/views/shell.ts";
 import {
 	EMPTY_APP_LAYOUT,
 	type MemberAppLayout,
@@ -181,7 +181,7 @@ describe("the shipped pages (C6a)", () => {
 
 describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 Nov 2026)", () => {
 	/** A company that shows Members, so the rail has the four windows; unless `read` is false and its pages aren't read yet. */
-	function rail(route: Route, read = true) {
+	function rail(route: Route, read = true, extra: Partial<ShellContext> = {}) {
 		const { f, controller } = company([], { members: 3, ...(read ? { pages: pages(false, true) } : {}) });
 		const element = h("aside", { class: "rail" });
 		document.body.append(h("div", { class: "frame" }, element));
@@ -198,6 +198,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			openFeedback: () => {},
 			openFriends: () => {},
 			agentActions: {},
+			...extra,
 		};
 		const draw = (next: Route = route) => renderRail(element, controller, { ...context, route: next });
 		draw();
@@ -727,7 +728,8 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 
 	it("opens the search window from its button and ⌘K, and goes where a hit leads", () => {
 		stubDialogs();
-		const { element } = rail(home);
+		let blocked = false;
+		const { element } = rail(home, true, { searchBlocked: () => blocked });
 		const toggle = element.querySelector<HTMLButtonElement>(".rail-search-toggle")!;
 		expect(element.querySelector(".rail-search input")).toBeNull();
 		expect(toggle.getAttribute("aria-label")).toBe("Search");
@@ -754,17 +756,13 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(window.open).toBe(false);
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`);
 		installSearchShortcut();
-		const frame = element.closest<HTMLElement>(".frame")!;
-		frame.inert = true;
+		blocked = true;
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
 		expect(window.open).toBe(false);
-		frame.inert = false;
-		const feedback = h("dialog", { class: "feedback-dialog" });
-		document.body.append(feedback);
-		feedback.showModal();
-		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
-		expect(window.open).toBe(false);
-		feedback.close();
+		blocked = false;
+		const card = h("dialog", { class: "agent-card" });
+		document.body.append(card);
+		card.open = true;
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
 		expect(window.open).toBe(true);
 		document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));

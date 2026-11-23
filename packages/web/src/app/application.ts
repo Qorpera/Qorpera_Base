@@ -1861,6 +1861,7 @@ export function mountApplication(
 					).folder();
 				},
 				openStorage: (path) => openSettings("storage", path),
+				searchBlocked: () => Boolean(settings || feedback || friendsWindow),
 			});
 		// The drawer may draw an app otherwise now (the member's icon or colour for it, its group's colour): its cards
 		// in the messages follow.

@@ -134,6 +134,7 @@ export interface ShellContext {
 	/** Reads the member's pages again: after Reset sidebar, or its Undo, a hidden page may show or hide again. */
 	refreshInterfacePages?: () => void;
 	searchFolder?: () => Pick<CloudMemberFolderClient, "search" | "history">;
+	searchBlocked?: () => boolean;
 	openStorage?: (path: string) => void;
 }
 
@@ -4313,8 +4314,7 @@ export function installSearchShortcut(): void {
 		}
 		const target = searchTarget;
 		if (!target?.parts.context || target.company.signal.aborted) return;
-		if (document.querySelector<HTMLElement>(".frame")?.inert) return;
-		if (document.querySelector("dialog[open]:not(.search-window)")) return;
+		if (target.parts.context.searchBlocked?.()) return;
 		event.preventDefault();
 		openSearchWindow(target.company, target.parts.context, target.parts.searchToggle);
 	});
