@@ -37,7 +37,8 @@ end $$;
 
 alter table public.qorpera_surface_sessions
 	add column waiting_on_usage_user_id uuid references auth.users(id) on delete set null,
-	add column waiting_on_usage_until timestamptz;
+	add column waiting_on_usage_until timestamptz,
+	add column waiting_on_usage_grace boolean not null default false;
 
 create function public.qorpera_surface_usage_wait(p_binding_id uuid, p_version bigint)
 returns jsonb language sql stable security definer set search_path = '' as $$
@@ -87,6 +88,7 @@ begin
 		lease_expires_at = v_recheck,
 		waiting_on_usage_user_id = coalesce((p_wait ->> 'userId')::uuid, public.qorpera_surface_turn_requester(s)),
 		waiting_on_usage_until = v_reset,
+		waiting_on_usage_grace = false,
 		updated_at = v_now
 	where s.id = p_session_id;
 	return v_recheck;
@@ -100,11 +102,57 @@ begin
 	-- WHY: at the reset the paused run, the held wake or the coding claim needs a moment to take the turn up again;
 	-- one grace lease, then the usual expiry.
 	update public.qorpera_surface_sessions
-	set lease_expires_at = v_now + interval '10 minutes', waiting_on_usage_until = v_now, updated_at = v_now
-	where id = p_session_id and waiting_on_usage_user_id is not null
-		and (waiting_on_usage_until is null or waiting_on_usage_until > v_now - interval '5 minutes');
+	set lease_expires_at = v_now + interval '10 minutes', waiting_on_usage_grace = true, updated_at = v_now
+	where id = p_session_id and waiting_on_usage_user_id is not null and not waiting_on_usage_grace;
 	return found;
 end $$;
+
+create function public.qorpera_surface_coding_login_usable(
+	p_profile_id uuid,
+	p_owner_user_id uuid,
+	p_connection_id uuid,
+	p_connection_version bigint,
+	p_allow_autonomous boolean,
+	p_member_initiated boolean
+)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select exists (
+		select 1
+		from public.qorpera_provider_connections as connection
+		join public.qorpera_provider_connection_versions as version on version.connection_id = connection.id
+			and version.version = p_connection_version and version.authorization_state = 'active'
+		where connection.id = p_connection_id
+			and public.qorpera_provider_execution_enabled(connection.provider, version.authentication_mode, version.native_harness)
+			and (version.authentication_mode <> 'native_subscription' or exists (
+				select 1 from public.qorpera_native_credential_capsules as capsule
+				where capsule.id = version.credential_capsule_id and capsule.status = 'active'
+			))
+	) and (
+		exists (
+			select 1
+			from public.qorpera_execution_sponsor_versions as sponsor
+			join public.qorpera_execution_sponsor_bindings as binding on binding.id = sponsor.binding_id
+			where binding.profile_id = p_profile_id and binding.status = 'active'
+				and sponsor.sponsor_kind = 'member_connection'
+				and sponsor.provider_connection_id = p_connection_id
+				and sponsor.provider_connection_version = p_connection_version
+				and sponsor.created_by_user_id = p_owner_user_id
+				and (sponsor.allow_autonomous or p_member_initiated)
+				and sponsor.version = (select max(later.version) from public.qorpera_execution_sponsor_versions as later
+					where later.binding_id = binding.id)
+		)
+		or not exists (
+			select 1 from public.qorpera_execution_sponsor_bindings as binding
+			cross join lateral (select encode(extensions.digest(convert_to(
+				case when p_allow_autonomous then 'qorpera-coding-owner:' else 'qorpera-surface-coding-owner:' end
+					|| p_connection_id::text || ':' || p_connection_version::text, 'utf8'), 'sha256'), 'hex') as hex) as seed
+			where binding.profile_id = p_profile_id
+				and binding.client_binding_id = (left(seed.hex, 8) || '-' || substr(seed.hex, 9, 4) || '-4' || substr(seed.hex, 14, 3)
+					|| '-8' || substr(seed.hex, 18, 3) || '-' || substr(seed.hex, 21, 12))::uuid
+				and (binding.created_by_user_id <> p_owner_user_id or binding.status <> 'active')
+		)
+	)
+$$;
 
 create function public.qorpera_surface_continue_login(p_session public.qorpera_surface_sessions, p_user_id uuid)
 returns uuid language plpgsql stable security definer set search_path = '' as $$
@@ -140,7 +188,9 @@ begin
 		continue when v_harness is null or not (v_harness = any(v_harnesses));
 		select login.connection_id, login.connection_version into v_connection_id, v_connection_version
 		from public.qorpera_coding_owner_login(p_session.profile_id, p_user_id, v_harness) as login
-		where v_member_initiated or coalesce(login.allow_autonomous, false);
+		where (v_member_initiated or coalesce(login.allow_autonomous, false))
+			and public.qorpera_surface_coding_login_usable(p_session.profile_id, p_user_id, login.connection_id,
+				login.connection_version, coalesce(login.allow_autonomous, false), v_member_initiated);
 		if v_connection_id is not null then
 			return case when public.qorpera_native_account_remaining(v_connection_id, v_connection_version) <> 0
 				then v_connection_id end;
@@ -182,6 +232,7 @@ $new$		'turnRequestedByUserId', public.qorpera_surface_turn_requester(p_session)
 		'waitingOnUsage', case
 			when p_session.waiting_on_usage_user_id is not null
 				and p_session.state in ('queued', 'running', 'reconciling', 'reconciling_running')
+				and not p_session.waiting_on_usage_grace
 				and (p_session.waiting_on_usage_until is null or p_session.waiting_on_usage_until > clock_timestamp())
 			then jsonb_build_object(
 				'userId', p_session.waiting_on_usage_user_id,
@@ -220,7 +271,8 @@ $old$			worker_id = v_worker.id,
 $new$			worker_id = v_worker.id,
 			wake_id = null,
 			waiting_on_usage_user_id = null,
-			waiting_on_usage_until = null,$new$,
+			waiting_on_usage_until = null,
+			waiting_on_usage_grace = false,$new$,
 $old$		return jsonb_build_object('status', 'unavailable', 'reason', 'no_sponsor');
 	end if;
 $old$,
@@ -236,14 +288,16 @@ $new$,
 $old$		wake_id = v_wake.id,$old$,
 $new$		wake_id = v_wake.id,
 		waiting_on_usage_user_id = null,
-		waiting_on_usage_until = null,$new$
+		waiting_on_usage_until = null,
+		waiting_on_usage_grace = false,$new$
 ]);
 
 select pg_temp.stw_patch('public.qorpera_reply_surface_session(uuid,text,boolean)'::regprocedure, array[
 $old$		turn_requested_by_user_id = v_user_id,$old$,
 $new$		turn_requested_by_user_id = v_user_id,
 		waiting_on_usage_user_id = null,
-		waiting_on_usage_until = null,$new$
+		waiting_on_usage_until = null,
+		waiting_on_usage_grace = false,$new$
 ]);
 
 select pg_temp.stw_patch('public.qorpera_surface_complete_session_turn(uuid,text,text,jsonb,text[],text,uuid)'::regprocedure, array[
@@ -266,7 +320,8 @@ $new$	if p_state = 'failed' then
 $old$		retry_count = retry_count + v_retry_increment,$old$,
 $new$		retry_count = retry_count + v_retry_increment,
 		waiting_on_usage_user_id = null,
-		waiting_on_usage_until = null,$new$
+		waiting_on_usage_until = null,
+		waiting_on_usage_grace = false,$new$
 ]);
 
 select pg_temp.stw_patch('public.qorpera_surface_renew_lease(text,uuid,uuid,integer)'::regprocedure, array[
@@ -274,6 +329,7 @@ $old$		update public.qorpera_surface_sessions
 		set lease_expires_at = v_new_expiry, updated_at = clock_timestamp()$old$,
 $new$		update public.qorpera_surface_sessions
 		set lease_expires_at = v_new_expiry, waiting_on_usage_user_id = null, waiting_on_usage_until = null,
+			waiting_on_usage_grace = false,
 			updated_at = clock_timestamp()$new$
 ]);
 
@@ -339,6 +395,7 @@ revoke all on function
 	public.qorpera_surface_turn_usage_wait(uuid, uuid, uuid),
 	public.qorpera_surface_hold_for_usage(uuid, jsonb, boolean),
 	public.qorpera_surface_usage_grace(uuid),
+	public.qorpera_surface_coding_login_usable(uuid, uuid, uuid, bigint, boolean, boolean),
 	public.qorpera_surface_continue_login(public.qorpera_surface_sessions, uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 revoke all on function public.qorpera_surface_session_continue(uuid) from public, anon, service_role, qorpera_secret_broker;
@@ -368,6 +425,7 @@ begin
 		execute format('grant execute on function public.qorpera_surface_usage_wait(uuid, bigint), '
 			|| 'public.qorpera_surface_turn_usage_wait(uuid, uuid, uuid), public.qorpera_surface_hold_for_usage(uuid, jsonb, boolean), '
 			|| 'public.qorpera_surface_usage_grace(uuid), '
+			|| 'public.qorpera_surface_coding_login_usable(uuid, uuid, uuid, bigint, boolean, boolean), '
 			|| 'public.qorpera_surface_continue_login(public.qorpera_surface_sessions, uuid) to %I',
 			v_owner);
 	end loop;

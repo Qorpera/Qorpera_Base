@@ -506,6 +506,34 @@ select pg_temp.uw_login_usage(pg_temp.uw_login(31), 30);
 do $$
 declare
 	v_session uuid := current_setting('uw.code_session')::uuid;
+	v_errcode text;
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_native_credential_capsules set status = 'disabled'
+	where id = '85600000-0000-4000-8000-000000000a1f';
+	set local session_replication_role = origin;
+	perform pg_temp.uw_assert(
+		pg_temp.uw_json(pg_temp.uw_bo(), v_session) -> 'waitingOnUsage' -> 'continueWith' = 'null'::jsonb,
+		'a coding login the turn could not pay with is never offered, even with room'
+	);
+	perform pg_temp.uw_as(pg_temp.uw_bo());
+	set local role authenticated;
+	begin
+		perform public.qorpera_surface_session_continue(v_session);
+	exception when others then
+		v_errcode := sqlstate;
+	end;
+	reset role;
+	perform pg_temp.uw_assert(v_errcode = '55000', 'Continue refuses when the only login with room cannot pay');
+	set local session_replication_role = replica;
+	update public.qorpera_native_credential_capsules set status = 'active'
+	where id = '85600000-0000-4000-8000-000000000a1f';
+	set local session_replication_role = origin;
+end $$;
+
+do $$
+declare
+	v_session uuid := current_setting('uw.code_session')::uuid;
 	v_enq jsonb;
 	v_worker public.qorpera_runtime_workers%rowtype;
 begin
@@ -596,6 +624,8 @@ begin
 		not has_function_privilege('authenticated', 'public.qorpera_surface_hold_for_usage(uuid,jsonb,boolean)', 'execute')
 			and not has_function_privilege('anon', 'public.qorpera_surface_turn_usage_wait(uuid,uuid,uuid)', 'execute')
 			and not has_function_privilege('authenticated', 'public.qorpera_surface_usage_grace(uuid)', 'execute')
+			and not has_function_privilege('authenticated',
+				'public.qorpera_surface_coding_login_usable(uuid,uuid,uuid,bigint,boolean,boolean)', 'execute')
 			and not has_function_privilege('authenticated',
 				'public.qorpera_surface_continue_login(public.qorpera_surface_sessions,uuid)', 'execute')
 			and not has_function_privilege('anon', 'public.qorpera_surface_session_continue(uuid)', 'execute'),
