@@ -36,7 +36,7 @@ import { SurfaceAddress, type SurfaceSiteHosting } from "./surface-address-sheet
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { CrewFigures } from "./surface-crew.ts";
 import { applyIdentityTokensToFrame, SurfaceDoorStage } from "./surface-door.ts";
-import { firstName, openPublishPatchnotesSheet } from "./surface-publish-sheet.ts";
+import { firstName, openPublishSheet } from "./surface-publish-sheet.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
 import { SurfaceSessionDrawer } from "./surface-session-drawer.ts";
@@ -240,9 +240,7 @@ export class SurfaceView {
 		this.#composer.insertBefore(this.#images.tray.el, this.#shell);
 		this.#composer.append(this.#images.tray.status);
 		this.#images.setAvailable(host.store.canAttachImages);
-		this.#drawer = new SurfaceSessionDrawer(host.store, signal, {
-			loadSitePassword: host.loadSitePassword,
-		});
+		this.#drawer = new SurfaceSessionDrawer(host.store, signal);
 		this.#primaryDoor = new SurfaceDoorStage(this.#lifetime.signal, {
 			onPick: (target) => {
 				if (!this.#deactivated) this.#onPick(target);
@@ -270,6 +268,10 @@ export class SurfaceView {
 		this.#address = new SurfaceAddress({
 			container: this.#canvas,
 			canManage: () => host.managesSites?.() === true,
+			password: () => {
+				const surface = this.surface;
+				return surface && host.loadSitePassword ? host.loadSitePassword(surface) : Promise.resolve(null);
+			},
 			changed: () => {
 				const surface = this.surface;
 				if (surface && !this.#deactivated) this.#drawBar(surface);
@@ -1742,7 +1744,7 @@ export class SurfaceView {
 								? h(
 										"button",
 										{ type: "button", class: "surface-toast-review", "data-act": "open-publish" },
-										t("Patch notes"),
+										t("Publish"),
 									)
 								: null,
 							h(
@@ -1854,17 +1856,11 @@ export class SurfaceView {
 				return;
 			case "publish":
 			case "open-publish":
-				openPublishPatchnotesSheet(store, surface, { loadSitePassword: this.#host.loadSitePassword });
+				openPublishSheet(store, surface);
 				return;
 			case "publish-menu": {
 				const box = target.getBoundingClientRect();
 				const items = [];
-				items.push({
-					label: t("Patch notes"),
-					icon: "file",
-					select: () =>
-						openPublishPatchnotesSheet(store, surface, { loadSitePassword: this.#host.loadSitePassword }),
-				});
 				if (surface.liveUrl) {
 					const url = surface.liveUrl;
 					items.push({

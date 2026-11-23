@@ -7501,7 +7501,7 @@ the founder there was no way forward but Qorpera's support.
    asker to read until the asker clears it or asks again.
 3. **It closes by itself.** Anyone's publish closes it when it starts, and so does a surface with nothing left to
    publish, and so does the asked member leaving the company or becoming a viewer. With Auto-publish on there is
-   nothing to ask. While an ask waits, nobody else asks over it from Patch notes.
+   nothing to ask. While an ask waits, nobody else asks over it from the publish window.
 
 ## 20. Enforcement matrix
 
