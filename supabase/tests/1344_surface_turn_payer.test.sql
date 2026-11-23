@@ -317,9 +317,8 @@ begin
 	end;
 	reset role;
 	perform pg_temp.stp_assert(
-		v_errcode like '55000:Coding is not available%'
-			and (select turn_requested_by_user_id from public.qorpera_surface_sessions where id = v_session) is null,
-		'with coding switched off the reply says so instead of asking for a login: ' || coalesce(v_errcode, 'accepted')
+		v_errcode is null,
+		'with coding switched off the reply is kept as before, not refused for a login: ' || coalesce(v_errcode, 'accepted')
 	);
 	update public.qorpera_coding_executors set enabled = true where environment_id = v_env;
 

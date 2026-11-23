@@ -78,9 +78,7 @@ $new$	v_user_id := public.qorpera_assert_surface_member(v_peek.profile_id, true)
 			(select cs.harness from public.qorpera_coding_sessions cs where cs.worker_id = v_peek.worker_id),
 			v_peek.worker_id is not null
 		) ->> 'status', '')
-			when 'ok' then null;
-			when 'no_coding_executor' then
-				raise exception 'Coding is not available for this surface right now' using errcode = '55000';
+			when 'ok', 'no_coding_executor' then null;
 			else
 				raise exception 'Connect a model account in Settings → AI subscriptions to reply' using errcode = '42501';
 		end case;

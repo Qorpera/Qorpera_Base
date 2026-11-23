@@ -2685,8 +2685,8 @@ turn was requested by and paid with the session's starter. Now:
   nobody else's login is used.
 - In a coding-backed session where coding is not available (no enabled
   executor, or the executor no longer offers the session's harness), the reply
-  is refused with "Coding is not available for this surface right now" (55000)
-  and is not kept.
+  is not refused here: what follows is as before this amendment, and no
+  coding turn starts, so no login pays.
 - A reply makes the turn a member turn even in a session an agent started, so it
   runs without unattended permission, like the member's own posts.
 - A coding-backed session's worker follows the replier: its owner, requester and
