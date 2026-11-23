@@ -679,6 +679,9 @@ begin
 	update public.qorpera_surface_sessions
 	set lease_expires_at = clock_timestamp() - interval '1 minute'
 	where id = v_session_timeout;
+	update public.qorpera_coding_sessions
+	set created_at = clock_timestamp() - interval '31 minutes', updated_at = clock_timestamp() - interval '31 minutes'
+	where worker_id = v_worker_timeout;
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
@@ -709,6 +712,9 @@ begin
 	update public.qorpera_surface_sessions
 	set lease_expires_at = clock_timestamp() - interval '1 minute'
 	where id = v_session_timeout;
+	update public.qorpera_coding_sessions
+	set created_at = clock_timestamp() - interval '31 minutes', updated_at = clock_timestamp() - interval '31 minutes'
+	where worker_id = v_worker_timeout;
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;

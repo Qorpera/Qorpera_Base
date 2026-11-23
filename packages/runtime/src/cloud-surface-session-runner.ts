@@ -34,6 +34,7 @@ import {
 	buildSurfaceTurnBrief,
 	SURFACE_STAGED_CODING_INSTRUCTIONS,
 	type SurfaceCodingTurnBinding,
+	type SurfaceConflictDetail,
 	type SurfaceIdentityContext,
 	type SurfaceSharedAssetsContext,
 } from "./cloud-surface-turn-context.ts";
@@ -90,6 +91,8 @@ export interface SurfaceSessionTurnInput {
 	readonly originKind?: string;
 	readonly originRef?: unknown;
 	readonly conflictPaths?: readonly string[] | null;
+	readonly conflictDetails?: readonly SurfaceConflictDetail[] | null;
+	readonly mainSha?: string | null;
 	readonly leaseToken?: string | null;
 }
 
@@ -679,6 +682,8 @@ export async function runSurfaceSessionTurn(
 			sharedAssets,
 			pointToChangeTarget,
 			conflictPaths: input.conflictPaths ?? null,
+			conflictDetails: input.conflictDetails ?? null,
+			mainSha: input.mainSha ?? null,
 		});
 
 		let outcome: SurfaceSessionTurnExecutionOutcome;
@@ -769,6 +774,8 @@ export async function runSurfaceSessionTurn(
 				sharedAssets,
 				pointToChangeTarget,
 				conflictPaths: input.conflictPaths ?? null,
+				conflictDetails: input.conflictDetails ?? null,
+				mainSha: input.mainSha ?? null,
 				recordChange: recordChange.bind(ports.surfaceTools),
 			};
 			const codeRequest: SurfaceCodeRepoTurnRequest = {

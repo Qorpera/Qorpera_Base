@@ -446,10 +446,53 @@ describe("cloud surface runtime tools", () => {
 		expect(text).toContain("section.pricing > button.cta");
 		expect(text).toContain("PreorderCta");
 		expect(text).toContain("src/pages/preorder.astro");
+		expect(text).toContain("git merge main");
+		expect(text).toContain("git cherry-pick");
+		expect(text).toContain("coding_record_change");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("coding_record_change");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("direct live projection");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("toggled on or off simultaneously in Preview");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("atomic, self-contained, and conflict-minimizing");
+	});
+
+	it("formats structured conflictDetails and mainSha in buildSurfaceTurnBrief", () => {
+		const sessionId = randomUUID();
+		const brief = buildSurfaceTurnBrief({
+			sessionId,
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			briefMarkdown: "Landing page",
+			mainSha: "1".repeat(40),
+			conflictPaths: ["src/pricing.tsx", "src/badges.css"],
+			conflictDetails: [
+				{
+					changeId: randomUUID(),
+					title: "Pricing tiers",
+					branch: "qorpera/coding/worker-a",
+					parentSha: "1".repeat(40),
+					headSha: "a".repeat(40),
+					conflictPaths: ["src/pricing.tsx"],
+				},
+				{
+					changeId: randomUUID(),
+					title: "Pricing badges",
+					branch: "qorpera/coding/worker-b",
+					parentSha: "1".repeat(40),
+					headSha: "b".repeat(40),
+					conflictPaths: ["src/pricing.tsx", "src/badges.css"],
+				},
+			],
+		});
+
+		expect(brief).toContain("## Conflict Reconciliation");
+		expect(brief).toContain(`Target main SHA: \`${"1".repeat(40)}\``);
+		expect(brief).toContain("Pricing tiers");
+		expect(brief).toContain("qorpera/coding/worker-a");
+		expect(brief).toContain(`${"1".repeat(40)}..${"a".repeat(40)}`);
+		expect(brief).toContain("Pricing badges");
+		expect(brief).toContain("src/badges.css");
+		expect(brief).toContain("git merge main");
+		expect(brief).toContain("git cherry-pick <parentSha>..<headSha>");
 	});
 
 	it("injects Global Company Identity into buildSurfaceTurnBrief when identityContext has content", () => {

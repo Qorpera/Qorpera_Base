@@ -64,8 +64,21 @@ begin
 		raise exception 'Surface not found for profile' using errcode = 'P0002';
 	end if;
 	select coalesce(array_agg(distinct p order by p), '{}'::text[]) into v_conflict_paths
-	from public.qorpera_surface_changes c, unnest(coalesce(c.conflict_paths, '{}'::text[])) as p
-	where c.session_id = v_session.id and c.status = 'conflicted';
+	from (
+		select p
+		from public.qorpera_surface_changes c
+		cross join lateral unnest(coalesce(c.conflict_paths, '{}'::text[])) as p
+		where c.session_id = v_session.id and c.status = 'conflicted'
+		union
+		select x as p
+		from jsonb_array_elements_text(
+			case
+				when jsonb_typeof(v_session.origin_ref -> 'paths') = 'array' then v_session.origin_ref -> 'paths'
+				else '[]'::jsonb
+			end
+		) as x
+		where nullif(btrim(x), '') is not null
+	) combined;
 	return jsonb_build_object(
 		'sessionId', v_session.id,
 		'surfaceId', v_surface.id,
@@ -84,7 +97,12 @@ begin
 		'originRef', v_session.origin_ref,
 		'baseSha', v_session.base_sha,
 		'branchHeadSha', v_session.branch_head_sha,
-		'conflictPaths', to_jsonb(coalesce(v_conflict_paths, '{}'::text[]))
+		'mainSha', v_surface.live_head_sha,
+		'conflictPaths', to_jsonb(coalesce(v_conflict_paths, '{}'::text[])),
+		'conflictDetails', case
+			when jsonb_typeof(v_session.origin_ref -> 'changes') = 'array' then v_session.origin_ref -> 'changes'
+			else '[]'::jsonb
+		end
 	);
 end $$;
 revoke all on function public.qorpera_native_surface_read_session_turn(uuid, uuid, uuid) from public, anon, authenticated;

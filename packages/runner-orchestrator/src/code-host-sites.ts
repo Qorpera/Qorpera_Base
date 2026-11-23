@@ -25,6 +25,7 @@ import {
 	codeSiteManifest,
 	codeSiteTreeProblem,
 } from "./code-site.ts";
+import { parseCodingJson } from "./coding-setup.ts";
 
 /** A repository's website as the code host reads it (own code storage, step 4, part B; STEP4-RELEASES-PLAN.md 8.2).
  * Once a change's checks passed, the executor's collect writes the web files of the folder the checks file names into
@@ -223,6 +224,39 @@ export async function readCodeSiteTree(
 const SURFACE_SITE_EXTENSIONS = new Set(CODE_SITE_EXTENSIONS);
 const SURFACE_EXTENSION = /\.([A-Za-z0-9]{1,12})$/;
 const SURFACE_SITE_FALLBACK_FOLDERS = ["dist", "build", "out", "public"] as const;
+const SURFACE_SKIP_DIRS = new Set(["node_modules", "vendor", "target", "coverage", "__pycache__"]);
+const SURFACE_ROOT_CONFIG_FILES = new Set([
+	"package.json",
+	"package-lock.json",
+	"tsconfig.json",
+	"jsconfig.json",
+	"biome.json",
+	"biome.jsonc",
+	"eslint.config.js",
+	"eslint.config.mjs",
+	"eslint.config.cjs",
+	"vite.config.js",
+	"vite.config.mjs",
+	"vite.config.cjs",
+	"vitest.config.js",
+	"vitest.config.mjs",
+	"vitest.config.cjs",
+	"webpack.config.js",
+	"webpack.config.mjs",
+	"webpack.config.cjs",
+	"rollup.config.js",
+	"rollup.config.mjs",
+	"postcss.config.js",
+	"postcss.config.mjs",
+	"postcss.config.cjs",
+	"tailwind.config.js",
+	"tailwind.config.mjs",
+	"tailwind.config.cjs",
+	"next.config.js",
+	"next.config.mjs",
+	"next.config.cjs",
+]);
+const SURFACE_TSCONFIG_FILE = /^tsconfig\.[^/]+\.json$/i;
 const MAX_SURFACE_CHECKS_BYTES = 64 * 1024;
 const MAX_SURFACE_WALK_FOLDERS = 500;
 
@@ -299,7 +333,7 @@ async function readSurfaceChecksSiteFolder(
 	);
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse((blobs.get(checksEntry.id) as Buffer).toString("utf8"));
+		parsed = parseCodingJson((blobs.get(checksEntry.id) as Buffer).toString("utf8"), false);
 	} catch {
 		return null;
 	}
@@ -310,6 +344,62 @@ async function readSurfaceChecksSiteFolder(
 	if (typeof folder !== "string") return null;
 	const trimmed = folder.trim();
 	return codeSiteFolderValid(trimmed) ? trimmed : null;
+}
+
+async function resolveFallbackWebTree(
+	run: Run,
+	entries: readonly ParsedGitTreeEntry[],
+	labelPrefix: string,
+): Promise<string | null> {
+	for (const candidate of SURFACE_SITE_FALLBACK_FOLDERS) {
+		const dir = entries.find((entry) => entry.mode === "40000" && entry.name === candidate);
+		if (!dir) continue;
+		const label = labelPrefix ? `${labelPrefix}/${candidate}` : candidate;
+		const subTrees = await readObjects(run, "tree", [dir.id], MAX_LISTING, () => label);
+		const subEntries = parseGitTreeEntries(subTrees.get(dir.id) as Buffer, label);
+		if (hasIndexHtml(subEntries)) return dir.id;
+	}
+	return null;
+}
+
+async function resolveMonorepoAppSiteTree(
+	run: Run,
+	rootEntries: readonly ParsedGitTreeEntry[],
+	repoName: string,
+): Promise<string | null> {
+	const appsDir = rootEntries.find((entry) => entry.mode === "40000" && entry.name === "apps");
+	if (!appsDir) return null;
+	const appsTrees = await readObjects(run, "tree", [appsDir.id], MAX_LISTING, () => "apps");
+	const appSubdirs = parseGitTreeEntries(appsTrees.get(appsDir.id) as Buffer, "apps")
+		.filter((entry) => entry.mode === "40000" && !entry.name.startsWith("."))
+		.sort((a, b) => a.name.localeCompare(b.name));
+	if (appSubdirs.length === 0) return null;
+	const repoLower = repoName.toLowerCase();
+	const prioritized = [
+		...appSubdirs.filter((entry) => entry.name.toLowerCase() === repoLower),
+		...appSubdirs.filter((entry) => {
+			const lower = entry.name.toLowerCase();
+			return lower !== repoLower && (lower.startsWith(`${repoLower}-`) || lower.startsWith(`${repoLower}_`));
+		}),
+	];
+	const candidates = prioritized.length > 0 ? prioritized : appSubdirs;
+	const matches: string[] = [];
+	for (const subdir of candidates) {
+		const label = `apps/${subdir.name}`;
+		const subTrees = await readObjects(run, "tree", [subdir.id], MAX_LISTING, () => label);
+		const subEntries = parseGitTreeEntries(subTrees.get(subdir.id) as Buffer, label);
+		if (hasIndexHtml(subEntries)) {
+			if (prioritized.length > 0) return subdir.id;
+			matches.push(subdir.id);
+			continue;
+		}
+		const nested = await resolveFallbackWebTree(run, subEntries, label);
+		if (nested) {
+			if (prioritized.length > 0) return nested;
+			matches.push(nested);
+		}
+	}
+	return matches.length === 1 ? (matches[0] as string) : null;
 }
 
 // WHY: Surface previews and publishes compose a full repository tree (including .qorpera/checks.json and non-web source files); filter to servable web assets under the resolved site folder while keeping cryptographic git object verification.
@@ -338,24 +428,18 @@ export async function readSurfaceSiteTree(
 		let siteTreeId = tree;
 		if (configuredFolder && configuredFolder !== ".") {
 			const resolved = await resolveTreeFolder(run, tree, configuredFolder);
-			if (resolved) {
-				siteTreeId = resolved;
-			} else if (!hasIndexHtml(rootEntries)) {
+			if (!resolved) {
 				throw new CodeSiteTreeInvalid({ code: "SITE_FOLDER_MISSING", path: configuredFolder, variable: null });
 			}
-		} else if (!hasIndexHtml(rootEntries)) {
-			for (const candidate of SURFACE_SITE_FALLBACK_FOLDERS) {
-				const dir = rootEntries.find((entry) => entry.mode === "40000" && entry.name === candidate);
-				if (!dir) continue;
-				const subTrees = await readObjects(run, "tree", [dir.id], MAX_LISTING, () => candidate);
-				const subEntries = parseGitTreeEntries(subTrees.get(dir.id) as Buffer, candidate);
-				if (hasIndexHtml(subEntries)) {
-					siteTreeId = dir.id;
-					break;
-				}
-			}
+			siteTreeId = resolved;
+		} else if (!configuredFolder && !hasIndexHtml(rootEntries)) {
+			const fallbackTree =
+				(await resolveFallbackWebTree(run, rootEntries, "")) ??
+				(await resolveMonorepoAppSiteTree(run, rootEntries, repository.name));
+			if (fallbackTree) siteTreeId = fallbackTree;
 		}
 
+		const servingRepoRoot = siteTreeId === tree;
 		const entries: { mode: string; type: string; name: string; path: string; bytes: number }[] = [];
 		let level = [{ id: siteTreeId, path: "" }],
 			walkedFolders = 0;
@@ -367,11 +451,17 @@ export async function readSurfaceSiteTree(
 				for (const item of parseGitTreeEntries(trees.get(folder.id) as Buffer, folder.path || siteTreeId)) {
 					if (item.name.startsWith(".")) continue;
 					if (item.mode === "40000") {
-						if (item.name === "node_modules") continue;
+						if (SURFACE_SKIP_DIRS.has(item.name)) continue;
 						next.push({ id: item.id, path: folder.path ? `${folder.path}/${item.name}` : item.name });
 						continue;
 					}
 					if (!isRegularBlobMode(item.mode)) continue;
+					if (
+						servingRepoRoot &&
+						folder.path === "" &&
+						(SURFACE_ROOT_CONFIG_FILES.has(item.name.toLowerCase()) || SURFACE_TSCONFIG_FILE.test(item.name))
+					)
+						continue;
 					const path = folder.path ? `${folder.path}/${item.name}` : item.name;
 					const extension = SURFACE_EXTENSION.exec(item.name)?.[1]?.toLowerCase();
 					if (

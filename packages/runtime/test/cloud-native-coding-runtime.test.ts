@@ -1694,8 +1694,109 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 		expect(finishDescription).toContain("staged on the session branch for founder Preview and approval");
 		expect(finishDescription).not.toContain("lands into");
 		expect(capturedInstructions).toContain("Surface Staged Mode");
+		expect(capturedInstructions).not.toContain("qorpera.site");
+		expect(capturedInstructions).not.toContain("What's new");
+		expect(capturedInstructions).not.toContain("gets the commit landed on its default branch");
 		expect(capturedPrompt).toContain("END_MARKER");
+		expect(Buffer.byteLength(capturedPrompt)).toBeLessThanOrEqual(64 * 1024);
 		expect(recordChange).toHaveBeenCalledTimes(1);
+	});
+
+	it("enforces the 64 KiB prompt byte cap after appending a large Surface turn brief", async () => {
+		const f = await fixture();
+		let capturedPrompt = "";
+		let admittedBytes = 0;
+		const baseCall = f.control.call;
+		f.control.call = vi.fn(async (method, args, signal) => {
+			if (method === "qorpera_begin_native_coding_execution") {
+				admittedBytes = Number(args.p_context_bytes);
+			}
+			return baseCall(method, args, signal);
+		});
+		f.turnContext.earlierTurns = Array.from({ length: 12 }, (_, index) => ({
+			sequence: index + 1,
+			input: {
+				from: index === 0 ? "dispatch" : "member",
+				text: index === 0 ? null : `Reply ${index}: ${"x".repeat(3200)}`,
+			},
+			submitted: {
+				kind: "finish",
+				summary: `Turn ${index + 1} summary ${"y".repeat(3200)}`,
+				question: null,
+				options: [],
+				headSha: "a".repeat(40),
+			},
+			outcome: {
+				state: "succeeded",
+				summary: `Outcome ${index + 1} ${"z".repeat(1200)}`,
+				reason: null,
+				needs: null,
+				options: [],
+				pullRequest: null,
+			},
+		}));
+		f.coding.sequence = 13;
+		f.turnContext.input = { from: "member", text: "Continue polishing the surface.", answers: null };
+
+		vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+			capturedPrompt = options.prompt ?? "";
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				await options.beginExecution(
+					{
+						type: "namespace",
+						name: "qorpera",
+						tools: adapters.tools.map((tool) => ({
+							type: "function",
+							name: tool.name,
+							description: tool.description,
+							inputSchema: tool.inputSchema,
+						})),
+					},
+					options.signal,
+				);
+				const finish = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+				await finish.execute(
+					finish.parseArguments({
+						operationKey: "finish-capped-surface",
+						headSha: "b".repeat(40),
+						summary: "Polished.",
+					}),
+					f.context,
+				);
+				return { providerSessionId: "native-thread", toolCalls: 1, codexVersion: "pinned", fencedRequests: 1 };
+			} finally {
+				run.close();
+			}
+		});
+
+		await f.runtime.execute(f.request, "/private", f.context.signal, {
+			...f.turn,
+			wake: { ...f.turn.wake, payload: { ...f.turn.wake.payload, sequence: 13 } },
+			surfaceSession: {
+				sessionId: "22222222-2222-4222-8222-222222222222",
+				surfaceSlug: "website",
+				surfaceTitle: "Website",
+				repositoryKey: "surfaces/website",
+				briefMarkdown: "Brief ".repeat(1400),
+				fullPrompt: "Full prompt ".repeat(1400),
+				identityContext: {
+					briefMarkdown: "Identity ".repeat(500),
+					voiceSummary: "Voice ".repeat(400),
+					tokensJson: `{"brand":"${"t".repeat(3000)}"}`,
+				},
+				recordChange: vi.fn(),
+			},
+		});
+
+		expect(Buffer.byteLength(capturedPrompt)).toBeLessThanOrEqual(64 * 1024);
+		expect(admittedBytes).toBe(Buffer.byteLength(capturedPrompt));
+		expect(capturedPrompt).toContain("# Surface Context: Website (website)");
 	});
 
 	it("shows the member's attached images through coding_view_attachment on a surface turn", async () => {

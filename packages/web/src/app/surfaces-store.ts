@@ -92,6 +92,7 @@ const POLL_MS = 4_000;
 const FAST_POLL_MS = 1_000;
 const HINT_DEBOUNCE_MS = 50;
 const FOLDER_HINT_DEBOUNCE_MS = 50;
+export const PREVIEW_TOGGLE_DEBOUNCE_MS = 150;
 export const PREVIEW_PASS_TTL_MS = 45_000;
 const MAX_LOCAL_SANDBOX_CACHE = 8;
 
@@ -311,6 +312,7 @@ export interface SurfaceUndo {
 	readonly label: string;
 	readonly changeIds: readonly string[];
 	readonly verb: SurfaceUndoVerb;
+	readonly pending?: boolean;
 }
 
 export interface SurfaceNote {
@@ -1035,7 +1037,21 @@ export class SurfacesStore {
 	readonly #previewSyncForeground = new Set<string>();
 	readonly #previewSyncGen = new Map<string, number>();
 	readonly #previewSyncWaiters = new Map<string, (() => void)[]>();
+	readonly #previewSyncDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	readonly #previewSyncDebounceWaiters = new Map<string, (() => void)[]>();
 	readonly #lastPreviewSyncKey = new Map<string, string>();
+	readonly #previewIdSelectionKey = new Map<string, string>();
+	readonly #pendingMerges = new Map<
+		string,
+		{
+			readonly surfaceId: string;
+			readonly label: string;
+			readonly changeIds: readonly string[];
+			readonly verb: SurfaceUndoVerb;
+			readonly undoId: number;
+		}
+	>();
+	readonly #pendingPublishChanges = new Map<string, readonly string[]>();
 	#activeSurfaceId: string | undefined;
 	#workspaceReqSeq = 0;
 	#surfacesReqSeq = 0;
@@ -1224,6 +1240,15 @@ export class SurfacesStore {
 		this.#previewSyncDirty.clear();
 		this.#previewSyncForeground.clear();
 		this.#lastPreviewSyncKey.clear();
+		this.#previewIdSelectionKey.clear();
+		this.#pendingMerges.clear();
+		this.#pendingPublishChanges.clear();
+		for (const timer of this.#previewSyncDebounceTimers.values()) clearTimeout(timer);
+		this.#previewSyncDebounceTimers.clear();
+		for (const waiters of this.#previewSyncDebounceWaiters.values()) {
+			for (const resolve of waiters) resolve();
+		}
+		this.#previewSyncDebounceWaiters.clear();
 		for (const waiters of this.#previewSyncWaiters.values()) {
 			for (const resolve of waiters) resolve();
 		}
@@ -2077,6 +2102,10 @@ export class SurfacesStore {
 			};
 		});
 		const stored = this.state.workspaces[surfaceId];
+		if (stored) {
+			this.#reconcilePendingPublish(stored.surface);
+			this.#reconcilePendingMerges(stored);
+		}
 		if (!background && stored && !isLocalSurfaceId(surfaceId) && this.#options.client?.mintPreviewPass) {
 			const frames = [stored.previewState.primary, ...stored.previewState.compareFrames.map((entry) => entry.frame)];
 			for (const frame of frames) {
@@ -2109,7 +2138,16 @@ export class SurfacesStore {
 			if (info.hasOpenChanges) {
 				const primary = stored.previewState.primary;
 				const primaryIds = [...new Set(primary.toggledChangeIds)].sort().join(",");
-				const matchesPrimary = primary.status !== "live_baseline" && primaryIds === info.toggledKey;
+				const stalePreviewId = Boolean(
+					primary.previewId &&
+						this.#previewIdSelectionKey.has(primary.previewId) &&
+						this.#previewIdSelectionKey.get(primary.previewId) !== info.selectionKey,
+				);
+				const matchesPrimary =
+					primary.status !== "live_baseline" &&
+					primary.status !== "failed" &&
+					!stalePreviewId &&
+					primaryIds === info.toggledKey;
 				if (matchesPrimary) {
 					this.#lastPreviewSyncKey.set(workspace.surface.id, info.selectionKey);
 				} else if (this.#lastPreviewSyncKey.get(workspace.surface.id) !== info.selectionKey) {
@@ -2117,7 +2155,16 @@ export class SurfacesStore {
 					void this.#syncPreview(workspace.surface.id, { background: true });
 				}
 			} else {
-				this.#lastPreviewSyncKey.delete(workspace.surface.id);
+				const primary = stored.previewState.primary;
+				if (primary.status !== "live_baseline") {
+					const emptyKey = `empty|${info.selectionKey}`;
+					if (this.#lastPreviewSyncKey.get(workspace.surface.id) !== emptyKey) {
+						this.#lastPreviewSyncKey.set(workspace.surface.id, emptyKey);
+						void this.#syncPreview(workspace.surface.id, { background: true });
+					}
+				} else {
+					this.#lastPreviewSyncKey.delete(workspace.surface.id);
+				}
 			}
 		}
 		this.#syncPolling();
@@ -2433,6 +2480,11 @@ export class SurfacesStore {
 		const fast = workspaces.some(
 			(workspace) =>
 				workspace.surface.publishStatus === "publishing" ||
+				workspace.previewState.primary.status === "composing" ||
+				workspace.previewState.primary.status === "building" ||
+				workspace.previewState.compareFrames.some(
+					(entry) => entry.frame.status === "composing" || entry.frame.status === "building",
+				) ||
 				workspace.activeSessions.some((session) => session.changes.some((change) => change.status === "merging")),
 		);
 		const running = fast || workspaces.some((workspace) => this.#workspaceNeedsPoll(workspace));
@@ -2538,11 +2590,24 @@ export class SurfacesStore {
 	}
 
 	setMode(mode: SurfacePreviewMode): void {
+		const wasCompare = this.state.mode === "compare";
 		this.store.set({
 			mode,
 			...(mode !== "compare" ? { compareFocusSessionId: undefined } : {}),
 			...(mode !== "report" ? { activeReportSlug: undefined } : {}),
 		});
+		if (wasCompare && mode !== "compare" && this.#activeSurfaceId) {
+			const ws = this.workspace(this.#activeSurfaceId);
+			if (
+				ws &&
+				this.state.source === "cloud" &&
+				!isLocalSurfaceId(ws.surface.id) &&
+				ws.surface.sourceKind === "code_repo" &&
+				ws.previewState.mode === "compare"
+			) {
+				void this.#syncPreview(ws.surface.id, { background: true });
+			}
+		}
 	}
 
 	openReport(surfaceId: string, slug?: string): void {
@@ -2594,6 +2659,17 @@ export class SurfacesStore {
 
 	compareExploration(explorationId: string): void {
 		this.store.set({ mode: "compare", compareTargetId: explorationId, compareFocusSessionId: undefined });
+		const ws = Object.values(this.state.workspaces).find((item) =>
+			item.explorations.some((exp) => exp.id === explorationId),
+		);
+		if (
+			ws &&
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(ws.surface.id) &&
+			ws.surface.sourceKind === "code_repo"
+		) {
+			void this.#syncPreview(ws.surface.id);
+		}
 	}
 
 	compareSession(sessionId: string): void {
@@ -2602,6 +2678,17 @@ export class SurfacesStore {
 
 	setCompareTarget(targetId: string): void {
 		this.store.set({ mode: "compare", compareTargetId: targetId });
+		const ws = Object.values(this.state.workspaces).find((item) =>
+			item.explorations.some((exp) => exp.id === targetId),
+		);
+		if (
+			ws &&
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(ws.surface.id) &&
+			ws.surface.sourceKind === "code_repo"
+		) {
+			void this.#syncPreview(ws.surface.id);
+		}
 	}
 
 	toggleCompareOverlay(sessionId: string): void {
@@ -3173,6 +3260,64 @@ export class SurfacesStore {
 		}, SURFACE_UNDO_MS);
 	}
 
+	// WHY: Async code_repo/folder merges stay in "merging" until the worker finishes; show a pending toast and start Undo only once merged.
+	#offerPendingMerge(
+		surfaceId: string,
+		label: string,
+		changeIds: readonly string[],
+		verb: SurfaceUndoVerb = "merged",
+	): void {
+		if (changeIds.length === 0) return;
+		if (this.#undoTimer) {
+			clearTimeout(this.#undoTimer);
+			this.#undoTimer = undefined;
+		}
+		const previous = this.state.undo;
+		if (previous) this.#evictStudioUndoSnapshots(previous.changeIds);
+		const id = ++this.#undoSeq;
+		this.#pendingMerges.set(`${surfaceId}:${id}`, { surfaceId, label, changeIds, verb, undoId: id });
+		this.store.set({ undo: { id, label, changeIds, verb, pending: true } });
+	}
+
+	#reconcilePendingMerges(workspace: SurfaceWorkspace): void {
+		const surfaceId = workspace.surface.id;
+		const statusById = new Map<string, SurfaceChangeUnit["status"]>();
+		for (const session of [...workspace.activeSessions, ...workspace.recentHistory]) {
+			for (const change of session.changes) statusById.set(change.id, change.status);
+		}
+		for (const [key, entry] of [...this.#pendingMerges.entries()]) {
+			if (entry.surfaceId !== surfaceId) continue;
+			const statuses = entry.changeIds
+				.map((id) => statusById.get(id))
+				.filter((s): s is SurfaceChangeUnit["status"] => Boolean(s));
+			if (statuses.length === 0) continue;
+			if (statuses.every((s) => s === "merged")) {
+				this.#pendingMerges.delete(key);
+				this.#offerUndo(entry.label, entry.changeIds, entry.verb);
+			} else if (!statuses.some((s) => s === "merging")) {
+				this.#pendingMerges.delete(key);
+				if (this.state.undo?.id === entry.undoId) this.store.set({ undo: undefined });
+			}
+		}
+	}
+
+	#reconcilePendingPublish(surface: SurfaceSummary): void {
+		const pending = this.#pendingPublishChanges.get(surface.id);
+		if (!pending) return;
+		if (surface.publishStatus === "idle" || (surface.publishStatus === undefined && !surface.hasUnpublishedChanges)) {
+			this.#pendingPublishChanges.delete(surface.id);
+			if (pending.length > 0) {
+				this.store.set((state) => {
+					const publishedChangeIds = { ...state.publishedChangeIds };
+					for (const id of pending) publishedChangeIds[id] = true;
+					return { publishedChangeIds };
+				});
+			}
+		} else if (surface.publishStatus === "failed") {
+			this.#pendingPublishChanges.delete(surface.id);
+		}
+	}
+
 	drawerOpenOn(sessionId: string): boolean {
 		return this.state.drawer?.sessionId === sessionId;
 	}
@@ -3218,7 +3363,18 @@ export class SurfacesStore {
 		const outcome = approvalOutcome(updated, this.drawerOpenOn(sessionId));
 		this.#applySession(updated, outcome);
 		const change = updated.changes.find((item) => item.id === changeId);
-		this.#offerUndo(change?.title ?? updated.title, [changeId], this.#undoVerbFor(updated.surfaceId));
+		const verb = this.#undoVerbFor(updated.surfaceId);
+		if (change?.status === "merging") {
+			const mergingIds = updated.changes.filter((item) => item.status === "merging").map((item) => item.id);
+			this.#offerPendingMerge(
+				updated.surfaceId,
+				change.title,
+				mergingIds.length > 0 ? mergingIds : [changeId],
+				verb,
+			);
+		} else if (!change || change.status === "merged") {
+			this.#offerUndo(change?.title ?? updated.title, [changeId], verb);
+		}
 		void this.refreshSurfaces();
 		return outcome;
 	}
@@ -3255,12 +3411,21 @@ export class SurfacesStore {
 					change.status === "merged" && before?.changes.find((item) => item.id === change.id)?.status !== "merged",
 			)
 			.map((change) => change.id);
+		const merging = updated.changes
+			.filter(
+				(change) =>
+					change.status === "merging" &&
+					before?.changes.find((item) => item.id === change.id)?.status !== "merging",
+			)
+			.map((change) => change.id);
 		if (this.drawerOpenOn(sessionId)) {
 			this.store.set({ drawer: undefined });
 			void this.#options.client?.setSessionChatOpen(sessionId, false).catch(() => undefined);
 		}
 		this.#applySession(updated, approvalOutcome(updated, false));
-		if (merged.length > 0) this.#offerUndo(updated.title, merged, this.#undoVerbFor(updated.surfaceId));
+		const verb = this.#undoVerbFor(updated.surfaceId);
+		if (merged.length > 0) this.#offerUndo(updated.title, merged, verb);
+		else if (merging.length > 0) this.#offerPendingMerge(updated.surfaceId, updated.title, merging, verb);
 		void this.refreshSurfaces();
 		return true;
 	}
@@ -3426,7 +3591,7 @@ export class SurfacesStore {
 
 	async undo(): Promise<boolean> {
 		const undo = this.state.undo;
-		if (!undo) return false;
+		if (!undo || undo.pending) return false;
 		if (this.#undoTimer) {
 			clearTimeout(this.#undoTimer);
 			this.#undoTimer = undefined;
@@ -3608,12 +3773,18 @@ export class SurfacesStore {
 				: {}),
 		}));
 		await this.refreshWorkspace(exploration.surfaceId);
-		this.#offerUndo(
-			chosen.explorationVariantLabel ?? chosen.title,
-			chosen.changes.filter((change) => change.status === "merged").map((change) => change.id),
-		);
+		const label = chosen.explorationVariantLabel ?? chosen.title;
+		const verb = this.#undoVerbFor(exploration.surfaceId);
+		const mergedIds = chosen.changes.filter((change) => change.status === "merged").map((change) => change.id);
+		const mergingIds = chosen.changes.filter((change) => change.status === "merging").map((change) => change.id);
+		if (mergedIds.length > 0) this.#offerUndo(label, mergedIds, verb);
+		else if (mergingIds.length > 0) this.#offerPendingMerge(exploration.surfaceId, label, mergingIds, verb);
 		void this.refreshSurfaces();
 		return true;
+	}
+
+	async retrySession(sessionId: string): Promise<boolean> {
+		return this.reply(sessionId, t("Retry and complete the requested changes."));
 	}
 
 	async reply(sessionId: string, text: string, files: readonly File[] = []): Promise<boolean> {
@@ -3720,6 +3891,18 @@ export class SurfacesStore {
 		return !this.state.hiddenChanges[changeId];
 	}
 
+	async retryPreview(surfaceId: string): Promise<void> {
+		const timer = this.#previewSyncDebounceTimers.get(surfaceId);
+		if (timer) {
+			clearTimeout(timer);
+			this.#previewSyncDebounceTimers.delete(surfaceId);
+		}
+		this.#lastPreviewSyncKey.delete(surfaceId);
+		const primaryId = this.workspace(surfaceId)?.previewState.primary.previewId;
+		if (primaryId) this.#previewIdSelectionKey.delete(primaryId);
+		await this.#syncPreview(surfaceId);
+	}
+
 	async toggleChange(surfaceId: string, changeId: string): Promise<void> {
 		this.store.set((state) => {
 			const hiddenChanges = { ...state.hiddenChanges };
@@ -3732,7 +3915,7 @@ export class SurfacesStore {
 					: {}),
 			};
 		});
-		await this.#syncPreview(surfaceId);
+		await this.#syncPreview(surfaceId, { debounceMs: PREVIEW_TOGGLE_DEBOUNCE_MS });
 	}
 
 	async pickVariant(surfaceId: string, explorationId: string, sessionId: string): Promise<void> {
@@ -3787,35 +3970,108 @@ export class SurfacesStore {
 	}
 
 	#previewSelectionInfo(surfaceId: string): {
-		readonly selection: { toggledChangeIds: string[]; explorationSessionId: string | null };
+		readonly selection: {
+			toggledChangeIds: string[];
+			explorationSessionId: string | null;
+			compareSessionIds?: string[];
+		};
 		readonly toggledKey: string;
 		readonly selectionKey: string;
 		readonly hasOpenChanges: boolean;
 	} {
-		const selection = this.previewSelection(surfaceId);
+		const baseSelection = this.previewSelection(surfaceId);
 		const workspace = this.workspace(surfaceId);
-		const explorationChangeIds =
-			selection.explorationSessionId !== null
-				? (workspace?.activeSessions
-						.find((session) => session.id === selection.explorationSessionId)
-						?.changes.filter(isOpenChange)
-						.map((change) => change.id) ?? [])
+		const explorations = openExplorations(workspace);
+		const compareTarget =
+			this.state.mode === "compare"
+				? (explorations.find((item) => item.id === this.state.compareTargetId) ?? explorations[0])
+				: undefined;
+		const compareSessionIds =
+			compareTarget && compareTarget.variantSessionIds.length >= 2
+				? compareTarget.variantSessionIds.slice(0, 3)
 				: [];
+		const selection = compareSessionIds.length >= 2 ? { ...baseSelection, compareSessionIds } : baseSelection;
+		const changeById = new Map<string, SurfaceChangeUnit>();
+		for (const session of workspace?.activeSessions ?? []) {
+			for (const change of session.changes) changeById.set(change.id, change);
+		}
+		const changeStamp = (id: string): string => {
+			const ch = changeById.get(id);
+			return ch ? `${id}:${ch.parentSha ?? ""}:${ch.headSha ?? ""}` : id;
+		};
+		const explorationSession =
+			selection.explorationSessionId !== null
+				? workspace?.activeSessions.find((session) => session.id === selection.explorationSessionId)
+				: undefined;
+		const explorationChangeStamps =
+			explorationSession?.changes.filter(isOpenChange).map((change) => changeStamp(change.id)) ?? [];
 		const toggledKey = [...new Set(selection.toggledChangeIds)].sort().join(",");
-		const explorationKey = [...new Set(explorationChangeIds)].sort().join(",");
+		const toggledStampKey = [...new Set(selection.toggledChangeIds)].sort().map(changeStamp).join(",");
+		const explorationKey = [...new Set(explorationChangeStamps)].sort().join(",");
+		const explorationHeadKey = explorationSession?.branchHeadSha ?? "";
+		const compareKey = compareSessionIds
+			.map((sid) => {
+				const sess = workspace?.activeSessions.find((item) => item.id === sid);
+				return `${sid}:${sess?.branchHeadSha ?? ""}`;
+			})
+			.join(",");
+		const surfaceStamp = `${workspace?.surface.liveHeadSha ?? ""}:${workspace?.surface.unpublishedChangeCount ?? 0}`;
 		return {
 			selection,
 			toggledKey,
-			selectionKey: `${selection.explorationSessionId ?? ""}|${toggledKey}|${explorationKey}`,
-			hasOpenChanges: toggledKey.length > 0 || explorationKey.length > 0,
+			selectionKey: `${surfaceStamp}|${selection.explorationSessionId ?? ""}:${explorationHeadKey}|${toggledStampKey}|${explorationKey}|${compareKey}`,
+			hasOpenChanges: toggledKey.length > 0 || explorationKey.length > 0 || compareSessionIds.length >= 2,
 		};
 	}
 
-	async #syncPreview(surfaceId: string, options?: { background?: boolean }): Promise<void> {
+	async #syncPreview(surfaceId: string, options?: { background?: boolean; debounceMs?: number }): Promise<void> {
 		const client = this.#options.client;
 		if (isLocalSurfaceId(surfaceId) || !client) return;
 		const foreground = !options?.background;
+		const debounceMs = options?.debounceMs ?? 0;
 		const busyKey = `preview:${surfaceId}`;
+		if (debounceMs > 0 && !this.#previewSyncInFlight.has(surfaceId)) {
+			const existingTimer = this.#previewSyncDebounceTimers.get(surfaceId);
+			if (existingTimer) clearTimeout(existingTimer);
+			if (foreground) {
+				this.#previewSyncForeground.add(surfaceId);
+				if (!this.#options.signal.aborted && (!this.state.busy[busyKey] || this.state.error !== undefined)) {
+					this.store.set((state) => ({ busy: { ...state.busy, [busyKey]: true }, error: undefined }));
+				}
+			}
+			await new Promise<void>((resolve) => {
+				const list = this.#previewSyncDebounceWaiters.get(surfaceId);
+				if (list) list.push(resolve);
+				else this.#previewSyncDebounceWaiters.set(surfaceId, [resolve]);
+				const timer = setTimeout(() => {
+					this.#previewSyncDebounceTimers.delete(surfaceId);
+					if (this.#options.signal.aborted) {
+						const pending = this.#previewSyncDebounceWaiters.get(surfaceId);
+						if (pending) {
+							this.#previewSyncDebounceWaiters.delete(surfaceId);
+							for (const done of pending) done();
+						}
+						return;
+					}
+					void this.#syncPreview(surfaceId, { background: !this.#previewSyncForeground.has(surfaceId) }).finally(
+						() => {
+							const pending = this.#previewSyncDebounceWaiters.get(surfaceId);
+							if (pending) {
+								this.#previewSyncDebounceWaiters.delete(surfaceId);
+								for (const done of pending) done();
+							}
+						},
+					);
+				}, debounceMs);
+				this.#previewSyncDebounceTimers.set(surfaceId, timer);
+			});
+			return;
+		}
+		const pendingTimer = this.#previewSyncDebounceTimers.get(surfaceId);
+		if (pendingTimer) {
+			clearTimeout(pendingTimer);
+			this.#previewSyncDebounceTimers.delete(surfaceId);
+		}
 		this.#previewSyncGen.set(surfaceId, (this.#previewSyncGen.get(surfaceId) ?? 0) + 1);
 		this.#previewSyncDirty.add(surfaceId);
 		if (foreground) {
@@ -3843,6 +4099,9 @@ export class SurfacesStore {
 					const previewState = await client.setPreviewSelection(surfaceId, info.selection);
 					if (this.#options.signal.aborted) return;
 					if ((this.#previewSyncGen.get(surfaceId) ?? 0) !== gen) continue;
+					if (previewState?.primary.previewId) {
+						this.#previewIdSelectionKey.set(previewState.primary.previewId, info.selectionKey);
+					}
 					const workspace = this.workspace(surfaceId);
 					if (previewState && workspace) this.#putWorkspace({ ...workspace, previewState });
 				} catch (error) {
@@ -3876,6 +4135,11 @@ export class SurfacesStore {
 				this.#previewSyncWaiters.delete(surfaceId);
 				for (const resolve of waiters) resolve();
 			}
+			const debouncedWaiters = this.#previewSyncDebounceWaiters.get(surfaceId);
+			if (debouncedWaiters && !this.#previewSyncDebounceTimers.has(surfaceId)) {
+				this.#previewSyncDebounceWaiters.delete(surfaceId);
+				for (const resolve of debouncedWaiters) resolve();
+			}
 		}
 	}
 
@@ -3898,7 +4162,12 @@ export class SurfacesStore {
 		}
 		const surface = await this.#run(`publish:${surfaceId}`, (client) => client.publishSurface(surfaceId));
 		if (!surface) return false;
-		markPublished();
+		// WHY: Defer marking changes published until async code_repo publish jobs finish transitioning back to idle.
+		if (surface.publishStatus === "publishing") {
+			this.#pendingPublishChanges.set(surfaceId, pendingIds);
+		} else if (surface.publishStatus !== "failed") {
+			markPublished();
+		}
 		this.#putSurface(surface);
 		if (
 			this.state.source === "cloud" &&
@@ -3941,6 +4210,7 @@ export class SurfacesStore {
 
 	#putSurface(surface: SurfaceSummary): void {
 		this.#surfacesMutationEpoch += 1;
+		this.#reconcilePendingPublish(surface);
 		this.store.set((state) => {
 			const workspace = state.workspaces[surface.id];
 			const nextSurfaces = sortSurfaces(state.surfaces.map((item) => (item.id === surface.id ? surface : item)));
@@ -3949,6 +4219,7 @@ export class SurfacesStore {
 				workspaces: workspace ? { ...state.workspaces, [surface.id]: { ...workspace, surface } } : state.workspaces,
 			};
 		});
+		this.#syncPolling();
 	}
 
 	async refreshSurfaces(): Promise<void> {

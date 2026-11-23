@@ -17,6 +17,7 @@ import {
 	type Run,
 	SHA,
 	tail,
+	WORKTREE_IN_PROGRESS,
 	withJob,
 	ZERO,
 } from "./code-host-jobs.ts";
@@ -61,7 +62,10 @@ export interface RebaseSessionChangesInput {
 	readonly ontoSha: string;
 	readonly remainingChanges: readonly CodeHostChangeRange[];
 	readonly updateBranchRef?: boolean;
+	readonly allowedBranchTips?: readonly string[];
 }
+
+export type RebaseDeferReason = "branch_advanced" | "worktree_dirty" | "worktree_unsafe" | "cas_race" | "rebase_failed";
 
 export type RebaseSessionChangesResult =
 	| {
@@ -73,6 +77,7 @@ export type RebaseSessionChangesResult =
 				readonly parentSha: string;
 				readonly headSha: string;
 			}[];
+			readonly worktreeSynced?: boolean;
 			readonly restored: readonly string[];
 	  }
 	| {
@@ -85,6 +90,13 @@ export type RebaseSessionChangesResult =
 				readonly parentSha: string;
 				readonly headSha: string;
 			}[];
+			readonly restored: readonly string[];
+	  }
+	| {
+			readonly status: "deferred";
+			readonly ontoSha: string;
+			readonly reason: RebaseDeferReason;
+			readonly errorCode?: string;
 			readonly restored: readonly string[];
 	  };
 
@@ -117,6 +129,7 @@ export type ComposePreviewTreeResult =
 			readonly lastCleanTreeSha: string;
 			readonly appliedChangeIds: readonly string[];
 			readonly conflictingChangeId: string;
+			readonly explorationConflicted?: boolean;
 			readonly conflictPaths: readonly string[];
 			readonly restored: readonly string[];
 	  };
@@ -170,7 +183,7 @@ async function treeOfCommit(run: Run, commitSha: string, errorCode: string): Pro
 	return tree;
 }
 
-// WHY: Synthetic commits parented on parentSha pin merge-base universally on Git 2.38+ without mutating refs or worktrees.
+// WHY: Git 2.38/2.39 (macOS dev) lacks --merge-base on merge-tree, so fall back to synthetic parented commits only on exit 129.
 async function applyRange(
 	run: Run,
 	cursorCommit: string,
@@ -180,15 +193,31 @@ async function applyRange(
 ): Promise<
 	{ readonly ok: true; readonly treeSha: string } | { readonly ok: false; readonly paths: readonly string[] }
 > {
-	const cursorTree = await treeOfCommit(run, cursorCommit, errorCode);
-	const headTree = await treeOfCommit(run, headSha, errorCode);
-	const ours = await commitTree(run, cursorTree, parentSha, "qorpera merge ours", [], errorCode);
-	const theirs = await commitTree(run, headTree, parentSha, "qorpera merge theirs", [], errorCode);
-	const merged = await run.git(
+	let merged = await run.git(
 		run.repo,
-		["merge-tree", "--write-tree", "-z", "--name-only", "--no-messages", ours, theirs],
+		[
+			"merge-tree",
+			"--write-tree",
+			"-z",
+			"--name-only",
+			"--no-messages",
+			`--merge-base=${parentSha}`,
+			cursorCommit,
+			headSha,
+		],
 		{ maximumOutputBytes: MAX_READ },
 	);
+	if (merged.status === 129 && /merge-base/i.test(merged.stderr)) {
+		const cursorTree = await treeOfCommit(run, cursorCommit, errorCode);
+		const headTree = await treeOfCommit(run, headSha, errorCode);
+		const ours = await commitTree(run, cursorTree, parentSha, "qorpera merge ours", [], errorCode);
+		const theirs = await commitTree(run, headTree, parentSha, "qorpera merge theirs", [], errorCode);
+		merged = await run.git(
+			run.repo,
+			["merge-tree", "--write-tree", "-z", "--name-only", "--no-messages", ours, theirs],
+			{ maximumOutputBytes: MAX_READ },
+		);
+	}
 	const fields = merged.stdout.toString("utf8").split("\0");
 	if (merged.status === 1) {
 		return { ok: false, paths: [...new Set(fields.slice(1).filter(Boolean))] };
@@ -197,6 +226,27 @@ async function applyRange(
 		throw new CodeHostJobFailure(errorCode, tail(merged.stderr));
 	}
 	return { ok: true, treeSha: fields[0] as string };
+}
+
+async function assertOrderedRange(run: Run, parentSha: string, headSha: string, errorCode: string): Promise<void> {
+	if (parentSha === headSha) return;
+	const ordered = await run.git(run.repo, ["merge-base", "--is-ancestor", parentSha, headSha]);
+	if (ordered.status === 1) {
+		throw new CodeHostRefusal("CODE_HOST_INVALID_CHANGE_RANGE", [parentSha, headSha]);
+	}
+	if (ordered.status !== 0) {
+		throw new CodeHostJobFailure(errorCode, tail(ordered.stderr));
+	}
+}
+
+async function assertAllCommits(run: Run, shas: readonly string[]): Promise<void> {
+	const unique = [...new Set(shas)];
+	if (unique.length === 0) return;
+	const ok = await run.areCommits(run.repo, unique);
+	const missing = unique.filter((_, index) => !ok[index]);
+	if (missing.length > 0) {
+		throw new CodeHostRefusal("CODE_HOST_UNKNOWN_COMMIT", missing);
+	}
 }
 
 async function commitTree(
@@ -235,15 +285,22 @@ export async function cherryPickChangeUnits(
 		if (input.expectMainSha && mainSha !== input.expectMainSha) {
 			throw new CodeHostJobFailure("CODE_HOST_LAND_STALE", "default branch moved before cherry-pick");
 		}
+		await assertAllCommits(
+			run,
+			input.changes.flatMap((change) => [change.parentSha, change.headSha]),
+		);
 		for (const change of input.changes) {
-			if (!(await run.isCommit(run.repo, change.parentSha)) || !(await run.isCommit(run.repo, change.headSha))) {
-				throw new CodeHostRefusal("CODE_HOST_UNKNOWN_COMMIT", [change.parentSha, change.headSha]);
-			}
+			await assertOrderedRange(run, change.parentSha, change.headSha, "CODE_HOST_CHERRY_PICK_FAILED");
 		}
 
 		let cursor = mainSha;
+		let cursorTree = await treeOfCommit(run, cursor, "CODE_HOST_CHERRY_PICK_FAILED");
 		const landedCommits: { changeId: string; commitSha: string }[] = [];
 		for (const change of input.changes) {
+			if (change.parentSha === change.headSha) {
+				landedCommits.push({ changeId: change.changeId, commitSha: cursor });
+				continue;
+			}
 			const applied = await applyRange(
 				run,
 				cursor,
@@ -254,7 +311,6 @@ export async function cherryPickChangeUnits(
 			if (!applied.ok) {
 				throw new CodeHostChangeConflict("CODE_HOST_CHERRY_PICK_CONFLICT", change.changeId, applied.paths);
 			}
-			const cursorTree = await treeOfCommit(run, cursor, "CODE_HOST_CHERRY_PICK_FAILED");
 			if (applied.treeSha === cursorTree) {
 				landedCommits.push({ changeId: change.changeId, commitSha: cursor });
 				continue;
@@ -270,14 +326,18 @@ export async function cherryPickChangeUnits(
 				[`Qorpera-Change: ${change.changeId}`],
 				"CODE_HOST_CHERRY_PICK_FAILED",
 			);
+			cursorTree = applied.treeSha;
 			landedCommits.push({ changeId: change.changeId, commitSha: cursor });
 		}
 
-		const records = await run.checkNames(run.repo, cursor);
-		const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
-		if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+		if (cursor !== mainSha) {
+			const { records } = await run.checkNamesIncremental(run.repo, mainSha, cursor);
+			const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
+			if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+		}
 
-		const paths = await diffPathsBetween(run, mainSha, cursor, "CODE_HOST_CHERRY_PICK_FAILED");
+		const paths =
+			cursor === mainSha ? [] : await diffPathsBetween(run, mainSha, cursor, "CODE_HOST_CHERRY_PICK_FAILED");
 		if (cursor !== mainSha) {
 			await moveBase(run, area.main, base, cursor, mainSha);
 		}
@@ -291,6 +351,109 @@ export async function cherryPickChangeUnits(
 	});
 }
 
+async function inspectWorktreeForRebase(
+	run: Run,
+	workerId: string,
+	branchRef: string,
+	oldTip: string | null,
+): Promise<{ readonly exists: false } | { readonly exists: true; readonly defer: RebaseDeferReason | null }> {
+	const wtTree = `${run.code}/worktrees/${workerId}`;
+	const wtAdmin = `${run.repo}/worktrees/${workerId}`;
+	const [treeType, adminType, linkType, backType, commonType, headType, refsType, ...progress] = await run.types([
+		wtTree,
+		wtAdmin,
+		`${wtTree}/.git`,
+		`${wtAdmin}/gitdir`,
+		`${wtAdmin}/commondir`,
+		`${wtAdmin}/HEAD`,
+		`${wtAdmin}/refs`,
+		...WORKTREE_IN_PROGRESS.map((name) => `${wtAdmin}/${name}`),
+	]);
+	if (treeType === "none" && adminType === "none") return { exists: false };
+	if (
+		treeType !== "directory" ||
+		adminType !== "directory" ||
+		linkType !== "file" ||
+		backType !== "file" ||
+		commonType !== "file" ||
+		headType !== "file"
+	) {
+		return { exists: true, defer: "worktree_unsafe" };
+	}
+	const [linkBytes, backBytes, commonBytes, headBytes] = await run.readMany([
+		`${wtTree}/.git`,
+		`${wtAdmin}/gitdir`,
+		`${wtAdmin}/commondir`,
+		`${wtAdmin}/HEAD`,
+	]);
+	if (
+		!linkBytes?.equals(Buffer.from(`gitdir: ${wtAdmin}\n`)) ||
+		!backBytes?.equals(Buffer.from(`${wtTree}/.git\n`)) ||
+		!commonBytes?.equals(Buffer.from("../..\n")) ||
+		!headBytes?.equals(Buffer.from(`ref: ${branchRef}\n`))
+	) {
+		return { exists: true, defer: "worktree_unsafe" };
+	}
+	if (!oldTip) return { exists: true, defer: "worktree_unsafe" };
+	if (progress.some((type) => type !== "none")) return { exists: true, defer: "worktree_dirty" };
+	if (refsType !== "none") {
+		if (refsType !== "directory") return { exists: true, defer: "worktree_unsafe" };
+		const own = await run.command([
+			"/usr/bin/find",
+			`${wtAdmin}/refs`,
+			"-mindepth",
+			"1",
+			"!",
+			"-type",
+			"d",
+			"-print",
+			"-quit",
+		]);
+		if (own.status !== 0) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", tail(own.stderr));
+		if (own.stdout.length) return { exists: true, defer: "worktree_dirty" };
+	}
+	// WHY: A session controls its worktree; reject gitlinks and nested .git before any git status/reset touches disk so submodule configs cannot execute filter drivers on the code host.
+	const headRecords = await run.checkNames(run.repo, oldTip).catch((error: unknown) => {
+		if (error instanceof CodeHostRefusal) return null;
+		throw error;
+	});
+	if (
+		!headRecords ||
+		codeFolderRefuses(run.area, headRecords, `worktrees/${workerId}`).length > 0 ||
+		headRecords.some((record) => record.type === "commit")
+	) {
+		return { exists: true, defer: "worktree_unsafe" };
+	}
+	const nested = await run.command(["/usr/bin/find", wtTree, "-mindepth", "2", "-iname", ".git", "-print", "-quit"]);
+	if (nested.status !== 0) throw new CodeHostJobFailure("CODE_HOST_INSPECT_FAILED", tail(nested.stderr));
+	if (nested.stdout.length) return { exists: true, defer: "worktree_unsafe" };
+	// WHY: Edits flagged assume-unchanged or skip-worktree are hidden from porcelain status and would be overwritten by reset --hard.
+	const plain = await run.sh(
+		'out=$1; shift; "$@" >"$out" || exit 2; grep -q -v "^H " "$out"; case $? in 1) exit 0 ;; 0) exit 1 ;; *) exit 2 ;; esac',
+		[
+			`${run.directory}/rebase-index.out`,
+			run.layout.git,
+			"--no-replace-objects",
+			`--git-dir=${wtAdmin}`,
+			`--work-tree=${wtTree}`,
+			"ls-files",
+			"-v",
+		],
+	);
+	if (plain.status !== 0) return { exists: true, defer: "worktree_dirty" };
+	const clean = await run.clean([
+		`--git-dir=${wtAdmin}`,
+		`--work-tree=${wtTree}`,
+		"status",
+		"--porcelain",
+		"-z",
+		"--untracked-files=normal",
+		"--ignore-submodules=all",
+	]);
+	if (!clean) return { exists: true, defer: "worktree_dirty" };
+	return { exists: true, defer: null };
+}
+
 export async function rebaseSessionChanges(
 	job: CodeHostJob,
 	input: RebaseSessionChangesInput,
@@ -300,16 +463,54 @@ export async function rebaseSessionChanges(
 	const ontoSha = assertSha(input.ontoSha);
 	if (!Array.isArray(input.remainingChanges)) throw new Error("INVALID_CODE_HOST_JOB");
 	for (const change of input.remainingChanges) assertChangeRange(change);
+	if (input.allowedBranchTips !== undefined) {
+		for (const tip of input.allowedBranchTips) assertSha(tip);
+	}
 
 	return withJob(job, repository, async (run) => {
 		await prepareKeptArea(run);
-		if (!(await run.isCommit(run.repo, ontoSha))) {
-			throw new CodeHostRefusal("CODE_HOST_UNKNOWN_COMMIT", [ontoSha]);
+		await assertAllCommits(run, [
+			ontoSha,
+			...input.remainingChanges.flatMap((change) => [change.parentSha, change.headSha]),
+		]);
+		for (const change of input.remainingChanges) {
+			await assertOrderedRange(run, change.parentSha, change.headSha, "CODE_HOST_REBASE_FAILED");
+		}
+
+		const branchRef = `refs/heads/qorpera/coding/${input.workerId}`;
+		const wtAdmin = `${run.repo}/worktrees/${input.workerId}`;
+		const wtTree = `${run.code}/worktrees/${input.workerId}`;
+		const oldTip = input.updateBranchRef ? await run.ref(branchRef) : null;
+		let hasWorktree = false;
+		if (input.updateBranchRef) {
+			const expectedTips = new Set<string>(
+				input.allowedBranchTips && input.allowedBranchTips.length > 0
+					? input.allowedBranchTips
+					: input.remainingChanges.length > 0
+						? [input.remainingChanges[input.remainingChanges.length - 1]!.headSha]
+						: [],
+			);
+			// WHY: If an active peer session committed past its last staged change, moving its branch and resetting its worktree would destroy unrecorded commits.
+			if (oldTip !== null && expectedTips.size > 0 && !expectedTips.has(oldTip)) {
+				return { status: "deferred" as const, ontoSha, reason: "branch_advanced" as const, restored: run.restored };
+			}
+			const inspected = await inspectWorktreeForRebase(run, input.workerId, branchRef, oldTip);
+			if (inspected.exists) {
+				if (inspected.defer !== null) {
+					return { status: "deferred" as const, ontoSha, reason: inspected.defer, restored: run.restored };
+				}
+				hasWorktree = true;
+			}
 		}
 
 		let cursor = ontoSha;
+		let cursorTree = await treeOfCommit(run, cursor, "CODE_HOST_REBASE_FAILED");
 		const rebased: { changeId: string; parentSha: string; headSha: string }[] = [];
 		for (const change of input.remainingChanges) {
+			if (change.parentSha === change.headSha) {
+				rebased.push({ changeId: change.changeId, parentSha: cursor, headSha: cursor });
+				continue;
+			}
 			const applied = await applyRange(run, cursor, change.parentSha, change.headSha, "CODE_HOST_REBASE_FAILED");
 			if (!applied.ok) {
 				return {
@@ -321,27 +522,91 @@ export async function rebaseSessionChanges(
 					restored: run.restored,
 				};
 			}
+			if (applied.treeSha === cursorTree) {
+				rebased.push({ changeId: change.changeId, parentSha: cursor, headSha: cursor });
+				continue;
+			}
+			const body = change.summary?.trim()
+				? `${change.title.trim()}\n\n${change.summary.trim()}`
+				: change.title.trim();
 			const nextSha = await commitTree(
 				run,
 				applied.treeSha,
 				cursor,
-				change.title.trim(),
+				body,
 				[`Qorpera-Change: ${change.changeId}`],
 				"CODE_HOST_REBASE_FAILED",
 			);
 			rebased.push({ changeId: change.changeId, parentSha: cursor, headSha: nextSha });
 			cursor = nextSha;
+			cursorTree = applied.treeSha;
 		}
 
+		let worktreeSynced = true;
 		if (input.updateBranchRef) {
-			const branchRef = `refs/heads/qorpera/coding/${input.workerId}`;
-			await run.gitOk(run.repo, ["update-ref", branchRef, cursor], "CODE_HOST_REBASE_FAILED");
+			if (hasWorktree) {
+				const cursorRecords = await run.checkNames(run.repo, cursor);
+				if (cursorRecords.some((record) => record.type === "commit")) {
+					return {
+						status: "deferred" as const,
+						ontoSha,
+						reason: "worktree_unsafe" as const,
+						restored: run.restored,
+					};
+				}
+				const refused = codeFolderRefuses(run.area, cursorRecords, `worktrees/${input.workerId}`);
+				if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+			} else if (cursor !== ontoSha) {
+				const { records } = await run.checkNamesIncremental(run.repo, ontoSha, cursor);
+				const refused = codeFolderRefuses(run.area, records, `worktrees/${input.workerId}`);
+				if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+			}
+			// WHY: Compare-and-swap avoids clobbering a concurrent commit; resetting the linked worktree keeps disk and index aligned with the moved branch ref.
+			const updated = await run.git(run.repo, ["update-ref", branchRef, cursor, oldTip ?? ZERO]);
+			if (updated.status !== 0) {
+				return { status: "deferred" as const, ontoSha, reason: "cas_race" as const, restored: run.restored };
+			}
+			if (hasWorktree) {
+				// WHY: On reset failure, CAS-rollback the ref and best-effort restore oldTip; if restore fails too, mark worktree_unsafe so half-checked-out files aren't mistaken for untouched.
+				const reset = await run.git(wtAdmin, [`--work-tree=${wtTree}`, "reset", "--hard", "--quiet", cursor]);
+				if (reset.status !== 0) {
+					const rollbackArgs = oldTip
+						? ["update-ref", branchRef, oldTip, cursor]
+						: ["update-ref", "-d", branchRef, cursor];
+					const rolledBack = await run.git(run.repo, rollbackArgs);
+					if (rolledBack.status === 0) {
+						const restoredTree = oldTip
+							? await run.git(wtAdmin, [`--work-tree=${wtTree}`, "reset", "--hard", "--quiet", oldTip])
+							: { status: 1 };
+						// WHY: A partial checkout can leave files newly added in cursor as untracked on disk even after reset --hard oldTip exits 0; re-verify cleanliness before reporting worktree_dirty.
+						const cleanAfterRestore =
+							restoredTree.status === 0 &&
+							(await run.clean([
+								`--git-dir=${wtAdmin}`,
+								`--work-tree=${wtTree}`,
+								"status",
+								"--porcelain",
+								"-z",
+								"--untracked-files=normal",
+								"--ignore-submodules=all",
+							]));
+						return {
+							status: "deferred" as const,
+							ontoSha,
+							reason: cleanAfterRestore ? ("worktree_dirty" as const) : ("worktree_unsafe" as const),
+							restored: run.restored,
+						};
+					}
+					worktreeSynced = false;
+				}
+			}
 		}
 		return {
 			status: "clean" as const,
 			ontoSha,
 			branchHeadSha: cursor,
 			rebasedChanges: rebased,
+			...(input.updateBranchRef ? { worktreeSynced } : {}),
 			restored: run.restored,
 		};
 	});
@@ -371,15 +636,17 @@ export async function composePreviewTree(
 	return withJob(job, repository, async (run) => {
 		const { mainSha } = await prepareKeptArea(run);
 		const baseSha = input.baseSha ?? mainSha;
-		if (!(await run.isCommit(run.repo, baseSha))) {
-			throw new CodeHostRefusal("CODE_HOST_UNKNOWN_COMMIT", [baseSha]);
-		}
+		await assertAllCommits(run, [
+			baseSha,
+			...(input.exploration ? [input.exploration.baseSha, input.exploration.headSha] : []),
+			...input.changes.flatMap((change) => [change.parentSha, change.headSha]),
+		]);
 
 		let cursorCommit = baseSha;
 		let cursorTree = await treeOfCommit(run, baseSha, "CODE_HOST_PREVIEW_FAILED");
 		const appliedChangeIds: string[] = [];
 
-		if (input.exploration) {
+		if (input.exploration && input.exploration.baseSha !== input.exploration.headSha) {
 			const applied = await applyRange(
 				run,
 				cursorCommit,
@@ -395,22 +662,29 @@ export async function composePreviewTree(
 					lastCleanTreeSha: cursorTree,
 					appliedChangeIds,
 					conflictingChangeId: input.exploration.sessionId,
+					explorationConflicted: true,
 					conflictPaths: applied.paths,
 					restored: run.restored,
 				};
 			}
-			cursorTree = applied.treeSha;
-			cursorCommit = await commitTree(
-				run,
-				cursorTree,
-				cursorCommit,
-				`Preview exploration ${input.exploration.sessionId}`,
-				[],
-				"CODE_HOST_PREVIEW_FAILED",
-			);
+			if (applied.treeSha !== cursorTree) {
+				cursorTree = applied.treeSha;
+				cursorCommit = await commitTree(
+					run,
+					cursorTree,
+					cursorCommit,
+					`Preview exploration ${input.exploration.sessionId}`,
+					[],
+					"CODE_HOST_PREVIEW_FAILED",
+				);
+			}
 		}
 
 		for (const change of input.changes) {
+			if (change.parentSha === change.headSha) {
+				appliedChangeIds.push(change.changeId);
+				continue;
+			}
 			const applied = await applyRange(
 				run,
 				cursorCommit,
@@ -430,15 +704,17 @@ export async function composePreviewTree(
 					restored: run.restored,
 				};
 			}
-			cursorTree = applied.treeSha;
-			cursorCommit = await commitTree(
-				run,
-				cursorTree,
-				cursorCommit,
-				`Preview change ${change.changeId}`,
-				[],
-				"CODE_HOST_PREVIEW_FAILED",
-			);
+			if (applied.treeSha !== cursorTree) {
+				cursorTree = applied.treeSha;
+				cursorCommit = await commitTree(
+					run,
+					cursorTree,
+					cursorCommit,
+					`Preview change ${change.changeId}`,
+					[],
+					"CODE_HOST_PREVIEW_FAILED",
+				);
+			}
 			appliedChangeIds.push(change.changeId);
 		}
 
@@ -480,9 +756,12 @@ export async function inspectChangeRange(
 		if (ordered.status !== 0) throw new CodeHostRefusal("CODE_HOST_INVALID_CHANGE_RANGE", [parentSha, headSha]);
 
 		const numstat = (
-			await run.gitOk(run.repo, ["diff", "--numstat", "-z", parentSha, headSha], "CODE_HOST_INSPECT_FAILED", {
-				maximumOutputBytes: MAX_READ,
-			})
+			await run.gitOk(
+				run.repo,
+				["diff", "--numstat", "--no-renames", "-z", parentSha, headSha],
+				"CODE_HOST_INSPECT_FAILED",
+				{ maximumOutputBytes: MAX_READ },
+			)
 		).toString("utf8");
 		const entries = numstat.split("\0").filter(Boolean);
 		const paths: string[] = [];
@@ -645,7 +924,12 @@ export async function ensureSurfaceStarterRepository(
 			const at =
 				area.main === "present" &&
 				(await run.read(`${run.repo}/worktrees/main/HEAD`))?.equals(Buffer.from(`${head}\n`)) === true;
-			if (!at) await moveBase(run, area.main, base, head, head);
+			if (!at) {
+				const records = await run.checkNames(run.repo, head);
+				const refused = codeFolderRefuses(run.area, records, "main");
+				if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
+				await moveBase(run, area.main, base, head, head);
+			}
 			return { status: "existing" as const, mainSha: head, restored: run.restored };
 		}
 
@@ -744,6 +1028,7 @@ export async function verifyStagedSurfaceBranch(
 		const held = await run.git(run.repo, ["merge-base", "--is-ancestor", headSha, branchTip]);
 		if (held.status === 1) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
 		if (held.status !== 0) throw new CodeHostJobFailure("CODE_HOST_EXPORT_FAILED", tail(held.stderr));
+		await assertOrderedRange(run, baseSha, headSha, "CODE_HOST_EXPORT_FAILED");
 		const beyond = await run.gitOk(
 			run.repo,
 			["rev-list", "--max-count=1", headSha, `^${baseSha}`],
@@ -752,6 +1037,9 @@ export async function verifyStagedSurfaceBranch(
 		if (!beyond.length) {
 			return { branch, baseSha, headSha, changed: false, filesChanged: 0, restored: run.restored };
 		}
+		const { records } = await run.checkNamesIncremental(run.repo, baseSha, headSha);
+		const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
+		if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
 		const changedPaths = await diffPathsBetween(run, baseSha, headSha, "CODE_HOST_EXPORT_FAILED");
 		return {
 			branch,

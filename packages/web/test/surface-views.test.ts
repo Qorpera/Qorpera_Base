@@ -756,6 +756,117 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
+	it("renders Retry preview button on failed door frames, Failed session badges & Retry action, pending merge toast, and publish errors in patch notes", async () => {
+		const controller = new AbortController();
+		const onRetry = vi.fn();
+		const door = new SurfaceDoorStage(controller.signal, { onRetry });
+		document.body.append(door.el);
+		door.sync(
+			previewFrame({ status: "failed", errorDetail: "Vite build failed", doorActionUrl: null, memberPass: null }),
+			"Website",
+		);
+		const retryBtn = door.el.querySelector<HTMLButtonElement>('[data-act="retry-preview"]')!;
+		expect(retryBtn).not.toBeNull();
+		expect(retryBtn.hidden).toBe(false);
+		retryBtn.click();
+		expect(onRetry).toHaveBeenCalledTimes(1);
+
+		door.sync(previewFrame({ status: "building", doorActionUrl: null, memberPass: null }), "Website");
+		expect(retryBtn.hidden).toBe(true);
+		controller.abort();
+
+		const failedSession = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333341",
+			title: "Broken session",
+			state: "failed",
+			messages: [sessionMessage(MESSAGE_IDS[0], "system", "Session timed out after worker retry. Reply to retry.")],
+		});
+		const readySession = session(["staged"], {
+			id: "33333333-3333-4333-8333-333333333342",
+			title: "Normal ready session",
+			state: "ready",
+		});
+		const replySurfaceSession = vi.fn(async () => ({ ...failedSession, state: "queued" as const }));
+		const approveSurfaceChange = vi.fn(async () => ({
+			...readySession,
+			changes: [change(CHANGES[0], 1, "merging")],
+		}));
+		let currentPublishStatus: "idle" | "publishing" | "failed" = "failed";
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [
+				summary({
+					publishStatus: currentPublishStatus,
+					lastPublishError: currentPublishStatus === "failed" ? "Missing index.html" : null,
+					hasUnpublishedChanges: true,
+					unpublishedChangeCount: 1,
+				}),
+			]),
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([readySession, failedSession], {
+					surface: summary({
+						publishStatus: currentPublishStatus,
+						lastPublishError: currentPublishStatus === "failed" ? "Missing index.html" : null,
+						hasUnpublishedChanges: true,
+						unpublishedChangeCount: 1,
+					}),
+					recentHistory: [session(["merged"], { state: "completed" })],
+				}),
+			),
+			replySurfaceSession,
+			approveSurfaceChange,
+			publishSurface: vi.fn(async () => {
+				currentPublishStatus = "publishing";
+				return summary({ publishStatus: "publishing", hasUnpublishedChanges: true, unpublishedChangeCount: 1 });
+			}),
+		});
+		const store = storeWith(client);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const failedBarBadge = view.el.querySelector(".surface-bar-agent-badge.is-danger");
+		expect(failedBarBadge?.textContent).toBe("Failed");
+
+		const cards = [...view.el.querySelectorAll<HTMLElement>(".surface-overview-card.is-agent")];
+		expect(cards[0]?.dataset.session).toBe(failedSession.id);
+		expect(cards[0]?.classList.contains("is-failed")).toBe(true);
+		const retrySessionBtn = cards[0]!.querySelector<HTMLButtonElement>('[data-act="retry-session"]')!;
+		expect(retrySessionBtn).not.toBeNull();
+		retrySessionBtn.click();
+		await flush();
+		expect(replySurfaceSession).toHaveBeenCalledWith(failedSession.id, expect.any(String));
+
+		await store.approveChange(readySession.id, CHANGES[0]);
+		view.update();
+		const pendingToast = view.el.querySelector(".surface-toast.is-pending");
+		expect(pendingToast).not.toBeNull();
+		expect(pendingToast?.textContent).toContain("Merging");
+		expect(pendingToast?.querySelector('[data-act="undo"]')).toBeNull();
+
+		HTMLDialogElement.prototype.showModal = function () {
+			this.open = true;
+		};
+		HTMLDialogElement.prototype.close = function () {
+			this.open = false;
+			this.dispatchEvent(new Event("close"));
+		};
+		const sheet = openPublishPatchnotesSheet(store, store.state.surfaces[0]!);
+		expect(sheet.el.querySelector(".surface-sheet-error")?.textContent).toBe("Missing index.html");
+		sheet.el.querySelector<HTMLButtonElement>('[data-act="confirm-publish"]')!.click();
+		await flush();
+		expect(sheet.el.open).toBe(true);
+		expect(sheet.el.querySelector(".surface-sheet-status")?.textContent).toBe("Publishing…");
+
+		currentPublishStatus = "idle";
+		await store.refreshWorkspace(SURFACE);
+		expect(sheet.el.open).toBe(false);
+
+		view.dispose();
+		store.dispose();
+	});
+
 	it("enters with a page loading screen, defers heavy mounting until after first paint, and cancels mounts when switched away", async () => {
 		const brand = summary({
 			id: "22222222-2222-4222-8222-222222222241",
