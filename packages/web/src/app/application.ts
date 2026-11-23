@@ -2454,8 +2454,8 @@ export function mountApplication(
 					{
 						site: website,
 						pass: (site, passSignal) => sites.memberPass(site, passSignal),
-						numbers: numbersHost(),
 						timeZone: () => controller.store.get().team?.timeZone,
+						siteAlone: true,
 					},
 					slug,
 					AbortSignal.any([controller.signal, signal]),
@@ -2463,7 +2463,7 @@ export function mountApplication(
 				let wasPublishing = surface.publishStatus === "publishing";
 				let lastUnpublished = surface.unpublishedChangeCount;
 				return {
-					el: h("div", { class: "surface-site" }, view.el),
+					el: h("div", { class: "surface-site is-alone" }, view.el),
 					update: () => {
 						view.update();
 						const latest = surfacesOf(controller)?.state.surfaces.find((item) => item.id === surface.id);

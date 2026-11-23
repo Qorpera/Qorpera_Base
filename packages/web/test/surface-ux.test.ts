@@ -543,6 +543,9 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		const modeLabels = [...view.el.querySelectorAll(".surface-pill-modes button")].map((btn) => btn.textContent);
 		expect(modeLabels).toEqual(["Live", "Preview"]);
 		expect(view.el.querySelector(".surface-pill-device")).not.toBeNull();
+		const address = view.el.querySelector<HTMLAnchorElement>(".surface-pill .surface-pill-address");
+		expect(address?.getAttribute("href")).toBe("https://thetaband.dk");
+		expect(address?.textContent).toBe("thetaband.dk");
 
 		const headerAgents = [...view.el.querySelectorAll<HTMLButtonElement>(".surface-pill .surface-bar-agent")];
 		expect(headerAgents).toHaveLength(2);

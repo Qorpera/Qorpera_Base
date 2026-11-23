@@ -872,6 +872,19 @@ export class SurfaceView {
 			? h(
 					"div",
 					{ class: "surface-pill-modes", role: "group", "aria-label": t("What the surface shows") },
+					surface.liveUrl
+						? h(
+								"a",
+								{
+									class: "surface-pill-address",
+									href: surface.liveUrl,
+									target: "_blank",
+									rel: "noopener noreferrer",
+									title: t("Open in a new tab"),
+								},
+								hostOf(surface.liveUrl),
+							)
+						: null,
 					seg("live", t("Live"), t("What visitors see right now")),
 					seg("preview", t("Preview"), t("Base with the changes you have turned on")),
 				)

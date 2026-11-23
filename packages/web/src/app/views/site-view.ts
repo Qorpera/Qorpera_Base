@@ -35,6 +35,7 @@ export interface SiteViewHost {
 	readonly numbers?: CompanyLiveSource;
 	/** The company's own time zone, whose day "today" is: the cloud counts days in it. */
 	timeZone(): string | null | undefined;
+	readonly siteAlone?: boolean;
 }
 
 /** The site door, beside index.html, and the words it and the view speak (public/site-door/door.js). */
@@ -303,31 +304,38 @@ export class SiteView {
 		this.#curve.setAttribute("preserveAspectRatio", "none");
 		this.#curve.setAttribute("role", "img");
 		this.#pages = h("ol", { class: "site-pages" });
-		this.el = h(
-			"div",
-			{ class: "site-view" },
-			this.#title,
-			h(
-				"div",
-				{ class: "site-window" },
-				h("div", { class: "site-bar" }, this.#address, h("span", { class: "site-tools" }, this.#reload, this.#out)),
-				this.#glass,
-			),
-			h(
-				"div",
-				{ class: "site-side" },
-				h(
-					"p",
-					{ class: "site-now" },
-					h("span", { class: "site-live", "aria-hidden": "true" }),
-					this.#nowNumber,
-					this.#nowLabel,
-				),
-				this.#today,
-				h("figure", { class: "site-day" }, this.#curve, h("figcaption", null, t("Last 24 hours"))),
-				this.#pages,
-			),
-		);
+		this.el = host.siteAlone
+			? h("div", { class: "site-view is-alone" }, this.#title, h("div", { class: "site-window" }, this.#glass))
+			: h(
+					"div",
+					{ class: "site-view" },
+					this.#title,
+					h(
+						"div",
+						{ class: "site-window" },
+						h(
+							"div",
+							{ class: "site-bar" },
+							this.#address,
+							h("span", { class: "site-tools" }, this.#reload, this.#out),
+						),
+						this.#glass,
+					),
+					h(
+						"div",
+						{ class: "site-side" },
+						h(
+							"p",
+							{ class: "site-now" },
+							h("span", { class: "site-live", "aria-hidden": "true" }),
+							this.#nowNumber,
+							this.#nowLabel,
+						),
+						this.#today,
+						h("figure", { class: "site-day" }, this.#curve, h("figcaption", null, t("Last 24 hours"))),
+						this.#pages,
+					),
+				);
 		this.update();
 		this.#drawNumbers();
 		this.#watch();

@@ -441,6 +441,13 @@
 .surface-canvas.is-dragging-notch { user-select: none; cursor: grabbing; }
 .surface-canvas.is-dragging-notch iframe { pointer-events: none; }
 .surface-pill::-webkit-scrollbar { display: none; }
+.surface-pill-address {
+	display: block; flex: none; max-width: 220px; height: 30px; margin-right: 4px; padding: 0 10px; border-radius: 999px;
+	overflow: hidden; color: var(--text); font-size: 12px; font-weight: 600; line-height: 30px; text-decoration: none;
+	text-overflow: ellipsis; white-space: nowrap; cursor: default;
+	transition: background-color var(--motion-fast) ease;
+}
+.surface-pill-address:hover { background: color-mix(in srgb, var(--text) 5%, transparent); text-decoration: none; }
 .surface-pill-modes { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .surface-pill-modes button {
 	display: inline-flex; align-items: center; height: 30px; padding: 0 10px; border: 0; border-radius: 999px;
@@ -682,7 +689,7 @@
 	transform: translateX(-50%); border-radius: 50%; background: #141413; pointer-events: none;
 }
 .surface-mount > .surface-site, .surface-mount > .surface-ops, .surface-mount > .surface-files, .surface-mount > .surface-local-site { min-height: 100%; }
-.surface-mount > .surface-ops, .surface-mount > .surface-local-site { height: 100%; }
+.surface-mount > .surface-ops, .surface-mount > .surface-local-site, .surface-mount > .surface-site.is-alone { height: 100%; }
 .surface-mount .site-view, .surface-site > * { height: 100%; }
 .surface-ops .mailbox-scroll { padding-bottom: 108px; }
 .surface-ops > .page { padding-bottom: 120px; }
