@@ -1150,8 +1150,8 @@ describe("cloud surface runtime tools", () => {
 					...(policy ? { surfaceFilePolicy: policy } : {}),
 				});
 				const getTool = (name: string) => tools.find((candidate) => candidate.name === name) as CloudNativeTool;
-				return (name: string, args: JsonValue) =>
-					getTool(name).execute(getTool(name).parseArguments(args), f.context);
+				return (name: string, args: JsonValue, context = f.context) =>
+					getTool(name).execute(getTool(name).parseArguments(args), context);
 			};
 
 			const cofounderBlocked = makeCaller({ mode: "cofounder", allowExplicitMemberDoc: false });
@@ -1301,6 +1301,54 @@ describe("cloud surface runtime tools", () => {
 				newText: "# Identity note, revised",
 			});
 			expect(JSON.parse(String(noteEditOk.value)).state).toBe("applied");
+
+			await expect(
+				workerCaller("company_delete", {
+					path: "identity/tokens.json",
+					operationKey: "worker-delete-studio",
+					expectedVersion: tokensBefore.entry!.version,
+				}),
+			).rejects.toSatisfy(stagedOnly);
+			await expect(
+				workerCaller("company_move", {
+					from: "identity/tokens.json",
+					to: "QorperaOS/surfaces/identity/notes/tokens.json",
+					operationKey: "worker-move-out-of-studio",
+					expectedVersion: tokensBefore.entry!.version,
+					asOfSeq: null,
+				}),
+			).rejects.toSatisfy(stagedOnly);
+			const paletteNote = await f.folder.read(
+				"QorperaOS/surfaces/identity/notes/palette.md",
+				new AbortController().signal,
+			);
+			await expect(
+				workerCaller("company_move", {
+					from: "QorperaOS/surfaces/identity/notes/palette.md",
+					to: "identity/palette.md",
+					operationKey: "worker-move-into-studio",
+					expectedVersion: paletteNote.entry!.version,
+					asOfSeq: null,
+				}),
+			).rejects.toSatisfy(stagedOnly);
+			expect((await f.folder.read("identity/tokens.json", new AbortController().signal)).entry).not.toBeNull();
+			expect((await f.folder.read("identity/palette.md", new AbortController().signal)).entry).toBeNull();
+			const noteMoved = await workerCaller(
+				"company_move",
+				{
+					from: "QorperaOS/surfaces/identity/notes/palette.md",
+					to: "QorperaOS/surfaces/identity/notes/drafts/palette.md",
+					operationKey: "worker-move-note",
+					expectedVersion: paletteNote.entry!.version,
+					asOfSeq: null,
+				},
+				{ ...f.context, callId: "worker-move-note", actionReviewId: randomUUID() },
+			);
+			expect(JSON.parse(String(noteMoved.value)).state).toBe("applied");
+			expect(
+				(await f.folder.read("QorperaOS/surfaces/identity/notes/drafts/palette.md", new AbortController().signal))
+					.entry,
+			).not.toBeNull();
 
 			const nestedCaller = makeCaller({
 				mode: "surface_worker",
