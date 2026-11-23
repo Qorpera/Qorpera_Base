@@ -103,6 +103,7 @@ async function productStoreWithFolder(
 
 function fakeThree(options: { readonly webgl: boolean; readonly model?: boolean }) {
 	const renderer = { dispose: vi.fn(), forceContextLoss: vi.fn() };
+	const renderers: { readonly domElement: HTMLCanvasElement; readonly setSize: ReturnType<typeof vi.fn> }[] = [];
 	const materials: { name: string; color: FakeColor; dispose(): void }[] = [];
 	class FakeColor {
 		hex = "#ffffff";
@@ -166,23 +167,27 @@ function fakeThree(options: { readonly webgl: boolean; readonly model?: boolean 
 	}
 	return {
 		renderer,
+		renderers,
 		materials,
 		library: {
 			WebGLRenderer: class {
 				readonly domElement: HTMLCanvasElement;
+				readonly setSize = vi.fn();
 				constructor(init: { readonly canvas: HTMLCanvasElement }) {
 					if (!options.webgl) throw new Error("no WebGL");
 					this.domElement = init.canvas;
+					renderers.push(this);
 				}
 				setClearColor() {}
 				setPixelRatio() {}
-				setSize() {}
 				render() {}
 				dispose() {
 					renderer.dispose();
 				}
 				forceContextLoss() {
 					renderer.forceContextLoss();
+					const canvas = this.domElement;
+					setTimeout(() => canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true })), 0);
 				}
 			},
 			Scene: class extends Object3D {
@@ -245,6 +250,20 @@ function fakeThree(options: { readonly webgl: boolean; readonly model?: boolean 
 			SRGBColorSpace: "srgb",
 		},
 	};
+}
+
+function sizeBox(stage: HTMLElement): void {
+	const box = stage.querySelector<HTMLElement>(".studio-model-box")!;
+	box.getBoundingClientRect = () => ({ width: 640, height: 300 }) as DOMRect;
+}
+
+function reopenOverview(view: SurfaceStudioView): void {
+	view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
+	view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="overview"]')!.click();
+}
+
+async function laterTasks(): Promise<void> {
+	for (let index = 0; index < 3; index++) await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 async function settle(): Promise<void> {
@@ -1093,16 +1112,19 @@ describe("SurfaceStudioView", () => {
 		store.dispose();
 	});
 
-	it("draws the model again on a new context after the browser gives its graphics back", async () => {
+	it("draws the model again on a new context after the browser gives its graphics back, whatever the old context does later", async () => {
 		const three = fakeThree({ webgl: true, model: true });
 		vi.stubGlobal("QORPERA_THREE", three.library);
 		const { store, surface, readCloudBinary } = await productStoreWithFolder(() => ({
 			"surfaces/thetabands/model.glb": MODEL_REF,
 		}));
 		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		document.body.append(view.el);
 		const stage = view.el.querySelector<HTMLElement>(".studio-model")!;
+		sizeBox(stage);
 		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
 		const first = stage.querySelector("canvas")!;
+		expect(three.renderers[0]!.setSize).toHaveBeenCalledWith(640, 300, false);
 		const lost = new Event("webglcontextlost", { cancelable: true });
 		first.dispatchEvent(lost);
 		expect(lost.defaultPrevented).toBe(true);
@@ -1111,12 +1133,50 @@ describe("SurfaceStudioView", () => {
 		expect(three.renderer.dispose).toHaveBeenCalledTimes(1);
 		expect(first.isConnected).toBe(false);
 		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		await laterTasks();
 		const second = stage.querySelector("canvas")!;
 		expect(second).not.toBe(first);
+		expect(second).toBe(three.renderers[1]!.domElement);
+		expect(three.renderers[1]!.setSize).toHaveBeenCalledWith(640, 300, false);
+		reopenOverview(view);
+		expect(three.renderers).toHaveLength(2);
+		expect(second.isConnected).toBe(true);
+		expect(stage.classList.contains("is-ready")).toBe(true);
 		expect(three.materials).toHaveLength(2);
 		expect(readCloudBinary).toHaveBeenCalledTimes(1);
 		view.dispose();
 		expect(three.renderer.dispose).toHaveBeenCalledTimes(2);
+		store.dispose();
+	});
+
+	it("rebuilds a lost stage on its next update, and a late restore of the old context changes nothing", async () => {
+		const three = fakeThree({ webgl: true, model: true });
+		vi.stubGlobal("QORPERA_THREE", three.library);
+		const { store, surface } = await productStoreWithFolder(() => ({
+			"surfaces/thetabands/model.glb": MODEL_REF,
+		}));
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		document.body.append(view.el);
+		const stage = view.el.querySelector<HTMLElement>(".studio-model")!;
+		sizeBox(stage);
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		const first = stage.querySelector("canvas")!;
+		first.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+		reopenOverview(view);
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(1);
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		await laterTasks();
+		const second = stage.querySelector("canvas")!;
+		expect(second).toBe(three.renderers[1]!.domElement);
+		expect(three.renderers[1]!.setSize).toHaveBeenCalledWith(640, 300, false);
+		first.dispatchEvent(new Event("webglcontextrestored"));
+		first.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+		reopenOverview(view);
+		expect(three.renderers).toHaveLength(2);
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(1);
+		expect(second.isConnected).toBe(true);
+		expect(stage.classList.contains("is-ready")).toBe(true);
+		view.dispose();
 		store.dispose();
 	});
 

@@ -47,6 +47,7 @@ interface StageGl {
 	readonly camera: ThreeCamera;
 	readonly spin: ThreeObject3D;
 	readonly environment: ThreeTexture;
+	readonly listeners: AbortController;
 }
 
 interface StagePart {
@@ -302,19 +303,29 @@ export class StudioModelStage {
 		const camera = new three.PerspectiveCamera(FOV, 1, 0.05, 60);
 		const spin = new three.Group();
 		scene.add(spin);
-		this.#gl = { three, renderer, scene, camera, spin, environment };
+		const listeners = new AbortController();
+		const signal = AbortSignal.any([this.#signal, listeners.signal]);
+		this.#gl = { three, renderer, scene, camera, spin, environment, listeners };
+		const current = () => canvas === this.#gl?.renderer.domElement;
 		canvas.addEventListener(
 			"webglcontextlost",
 			(event) => {
+				if (!current()) return;
 				event.preventDefault();
 				this.#lost = true;
 				if (this.#raf) cancelAnimationFrame(this.#raf);
 				this.#raf = 0;
 			},
-			{ signal: this.#signal },
+			{ signal },
 		);
-		canvas.addEventListener("webglcontextrestored", () => this.#rebuild(), { signal: this.#signal });
-		this.#bindPointer(canvas);
+		canvas.addEventListener(
+			"webglcontextrestored",
+			() => {
+				if (current()) this.#rebuild();
+			},
+			{ signal },
+		);
+		this.#bindPointer(canvas, signal);
 		this.#box.append(canvas);
 		if (typeof ResizeObserver === "function") {
 			this.#resize = new ResizeObserver(() => this.#measure());
@@ -414,10 +425,14 @@ export class StudioModelStage {
 		this.#raf = 0;
 		this.#resize?.disconnect();
 		this.#resize = undefined;
+		this.#width = 0;
+		this.#height = 0;
+		this.#drag = undefined;
 		this.#clearShown();
 		const gl = this.#gl;
 		this.#gl = undefined;
 		if (!gl) return;
+		gl.listeners.abort();
 		gl.environment.dispose();
 		gl.renderer.dispose();
 		gl.renderer.forceContextLoss();
@@ -478,8 +493,7 @@ export class StudioModelStage {
 		this.#kick();
 	}
 
-	#bindPointer(canvas: HTMLCanvasElement): void {
-		const signal = this.#signal;
+	#bindPointer(canvas: HTMLCanvasElement, signal: AbortSignal): void {
 		canvas.addEventListener(
 			"pointerdown",
 			(event) => {
