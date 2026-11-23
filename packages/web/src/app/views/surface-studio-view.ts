@@ -182,21 +182,30 @@ export function prepareStudioHtmlPreview(
 		}
 		if (!css) continue;
 		const style = doc.createElement("style");
-		style.textContent = css.replace(/<\/style/gi, "<\\/style");
+		style.textContent = css.replace(/<\/(style)/gi, "<\\/$1");
 		link.replaceWith(style);
 		modified = true;
 	}
+	const deferred: HTMLScriptElement[] = [];
 	for (const script of [...doc.querySelectorAll("script[src]")]) {
 		const resolved = resolveRelativeStudioPath(htmlPath, script.getAttribute("src") ?? "");
 		const code = resolved && SCRIPT_FILE_RE.test(resolved) ? files[resolved] : undefined;
 		if (code === undefined) continue;
+		const classic = (script.getAttribute("type") ?? "").trim().toLowerCase() !== "module";
 		const inline = doc.createElement("script");
 		for (const attribute of [...script.attributes])
-			if (attribute.name !== "src") inline.setAttribute(attribute.name, attribute.value);
-		inline.textContent = code.replace(/<\/script/gi, "<\\/script");
-		script.replaceWith(inline);
+			if (attribute.name !== "src" && !(classic && (attribute.name === "defer" || attribute.name === "async")))
+				inline.setAttribute(attribute.name, attribute.value);
+		inline.textContent = code.replace(/<\/(script)/gi, "<\\/$1").replace(/<!--/g, "\\x3c!--");
+		if (classic && script.hasAttribute("defer")) {
+			script.remove();
+			deferred.push(inline);
+		} else {
+			script.replaceWith(inline);
+		}
 		modified = true;
 	}
+	doc.body.append(...deferred);
 	for (const img of [...doc.querySelectorAll("img[src]")]) {
 		const resolved = resolveRelativeStudioPath(htmlPath, img.getAttribute("src") ?? "");
 		if (!resolved || !SVG_FILE_RE.test(resolved)) continue;

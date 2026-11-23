@@ -2254,6 +2254,35 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("reads a module's page and scripts together, ahead of loose text files, when a folder holds more than the cap", async () => {
+		const entry = (path: string) => ({ path, kind: "file" as const, file: { path, bytes: 20 } });
+		const folder = {
+			list: vi.fn(async (path: string) => ({
+				entries:
+					path === "notes"
+						? [
+								...Array.from({ length: 40 }, (_, index) => entry(`notes/log-${index}.txt`)),
+								{ path: "notes/modules", kind: "folder" as const, file: null },
+							]
+						: path === "notes/modules"
+							? [{ path: "notes/modules/countdown", kind: "folder" as const, file: null }]
+							: path === "notes/modules/countdown"
+								? [
+										entry("notes/modules/countdown/index.html"),
+										entry("notes/modules/countdown/app.js"),
+										entry("notes/modules/countdown/util.mjs"),
+									]
+								: [],
+			})),
+			readFile: vi.fn(async () => new TextEncoder().encode("x")),
+		};
+		const { files } = await readSurfaceFolderFiles(folder, ["notes"], new AbortController().signal);
+		expect(Object.keys(files)).toHaveLength(32);
+		expect(files["notes/modules/countdown/index.html"]).toBe("x");
+		expect(files["notes/modules/countdown/app.js"]).toBe("x");
+		expect(files["notes/modules/countdown/util.mjs"]).toBe("x");
+	});
+
 	it("skips generated directories, caps subfolder walks, and enforces a byte budget in readSurfaceFolderFiles", async () => {
 		const listedPaths: string[] = [];
 		const readPaths: string[] = [];

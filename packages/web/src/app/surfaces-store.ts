@@ -248,7 +248,7 @@ function studioFilePriority(path: string): number {
 	if (lower.endsWith(".json")) return 0;
 	if (lower.endsWith(".css") || lower.endsWith(".svg")) return 1;
 	if (lower.endsWith(".md") || lower.endsWith(".markdown")) return 2;
-	if (lower.endsWith(".html") || lower.endsWith(".htm")) return 3;
+	if (/\.(?:html?|m?js)$/.test(lower)) return 3;
 	return 4;
 }
 
@@ -312,7 +312,7 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 	let level = [...new Set(subfolders)].slice(0, STUDIO_MAX_SUBFOLDERS);
 	let listed = 0;
 	for (let depth = 1; depth <= STUDIO_FOLDER_DEPTH; depth++) {
-		if (level.length === 0 || candidates.length >= STUDIO_MAX_FILES) break;
+		if (level.length === 0) break;
 		const folders = level;
 		listed += folders.length;
 		let subNext = 0;

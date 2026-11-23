@@ -1038,7 +1038,7 @@ function moduleFiles(): Record<string, string> {
 	return {
 		[`${ROOT}/brief.md`]: "# Notes\nWhat we learned.\n",
 		[`${ROOT}/modules/countdown/index.html`]: COUNTDOWN_HTML,
-		[`${ROOT}/modules/countdown/style.css`]: "#left { font-size: 40px; }",
+		[`${ROOT}/modules/countdown/style.css`]: "#left { font-size: 40px; } body { min-height: 100vh; }",
 		[`${ROOT}/modules/countdown/app.js`]: 'document.getElementById("left").dataset.ready = "yes";',
 		[`${ROOT}/modules/countdown/notes.md`]: "# Countdown notes\n",
 		[`${ROOT}/modules/price/index.html`]: "<!doctype html><title>Price</title><body>900 kr.</body>",
@@ -1100,6 +1100,12 @@ describe("The module block", () => {
 		expect(html).toContain('<script type="module">document.getElementById("left").dataset.ready = "yes";</script>');
 		expect(html).not.toContain('src="./app.js"');
 		expect(html).toContain("qorpera-module-height");
+		expect(html).toContain("body { min-height: 100vh; }");
+		expect(html).toContain('setProperty("height","auto","important")');
+		expect(html).toContain('setProperty("min-height","0","important")');
+		expect(html.indexOf('setProperty("min-height","0","important")')).toBeLessThan(
+			html.indexOf("getBoundingClientRect"),
+		);
 
 		sayHeight(frame, 2400);
 		expect(frame.style.getPropertyValue("--studio-module-fit")).toBe("1600px");

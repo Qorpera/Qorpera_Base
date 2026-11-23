@@ -11,7 +11,7 @@ import type { StudioHtmlPages } from "./files.ts";
 
 export const MODULE_HEIGHT_MESSAGE = "qorpera-module-height";
 const MODULE_INDEX = "index.html";
-const FIT_SCRIPT = `<script>(()=>{const root=document.documentElement;const post=()=>parent.postMessage({type:"${MODULE_HEIGHT_MESSAGE}",height:Math.ceil(root.getBoundingClientRect().height)},"*");new ResizeObserver(post).observe(root);addEventListener("load",post);})();</script>`;
+const FIT_SCRIPT = `<script>(()=>{const root=document.documentElement;const loose=(element)=>{if(!element)return;element.style.setProperty("height","auto","important");element.style.setProperty("min-height","0","important");};const post=()=>{loose(root);loose(document.body);parent.postMessage({type:"${MODULE_HEIGHT_MESSAGE}",height:Math.ceil(root.getBoundingClientRect().height)},"*");};loose(root);loose(document.body);new ResizeObserver(post).observe(root);addEventListener("load",post);})();</script>`;
 
 export interface SurfaceModulePlace {
 	readonly alone: boolean;
