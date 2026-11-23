@@ -16,6 +16,9 @@ export const SURFACE_LAYOUT_BINDING_CHARS = 600;
 export const SURFACE_LAYOUT_GLOB_CHARS = 128;
 export const SURFACE_LAYOUT_MAX_KEYS = 16;
 export const SURFACE_LAYOUT_MAX_GLOBS = 16;
+export const SURFACE_GLOB_MAX_PARTS = 16;
+export const SURFACE_GLOB_MAX_DEEP_PARTS = 4;
+export const SURFACE_GLOB_MAX_STARS_PER_PART = 4;
 export const SURFACE_LAYOUT_MAX_COLUMNS = 12;
 export const SURFACE_FACTS_MAX = 8;
 export const SURFACE_FACTS_DEFAULT_TAKE = 4;
@@ -418,7 +421,7 @@ export function describeSurfaceBlocks(): string {
 		`${SURFACE_LAYOUT_PATH} at the interface folder's root sets the page: {"schema":"${SURFACE_LAYOUT_SCHEMA}","tabs":[{"id","title","blocks":[...]}]}.`,
 		`1-${SURFACE_LAYOUT_MAX_TABS} tabs; at most ${SURFACE_LAYOUT_MAX_TAB_NODES} blocks a tab (a row and the blocks in it each count) and ${SURFACE_LAYOUT_MAX_BLOCKS} in all. Tab title <=${SURFACE_LAYOUT_TAB_TITLE_CHARS} chars, label <=${SURFACE_LAYOUT_LABEL_CHARS}.`,
 		'A source is "file.json#/json/pointer", or "file" for a whole file, or {"value": ...} for a value the layout holds itself. A plain string always points at a file, never a literal. Paths are relative to the interface folder; a leading / names a company file such as /identity/tokens.json.',
-		"Ids are lower-case slugs, unique in the layout. Labels, headings, titles and keys are plain text, never sources. Every block may have an id. Every block draws its own empty home, so name homes before their files exist.",
+		"Ids are lower-case slugs, unique in the layout. Labels, headings, titles and keys are plain text, never sources. Every block but a row may have an id. Every block draws its own empty home, so name homes before their files exist.",
 		"Blocks (field?: optional):",
 	];
 	for (const block of SURFACE_BLOCKS) {
@@ -431,7 +434,7 @@ export function describeSurfaceBlocks(): string {
 		lines.push(`- ${block.type}: ${block.summary}. ${fields.join("; ")}`);
 	}
 	lines.push(
-		"facts takes items or from, not both. report takes from or match, not both. Globs: * within a folder, ** across folders.",
+		"facts takes items or from, not both. report takes from or match, not both. Globs: * and ? within a name, ** for any folders; a leading / as in sources.",
 	);
 	return lines.join("\n");
 }
@@ -516,32 +519,69 @@ export function resolveSurfaceSource(source: unknown, readJson: SurfaceJsonReade
 function parseGlob(value: unknown, label: string): string {
 	if (typeof value !== "string") fail(label, 'must be a glob such as "*.report.json"');
 	if (value.length > SURFACE_LAYOUT_GLOB_CHARS) fail(label, `is longer than ${SURFACE_LAYOUT_GLOB_CHARS} chars`);
-	if (value.startsWith("/")) fail(label, "must be relative to the interface folder, without a leading /");
-	checkRelativeSegments(value, label, "glob");
+	const body = value.startsWith("/") ? value.slice(1) : value;
+	checkRelativeSegments(body, label, "glob");
+	const parts = body.split("/");
+	if (parts.length > SURFACE_GLOB_MAX_PARTS) fail(label, `has more than ${SURFACE_GLOB_MAX_PARTS} folder levels`);
+	let deep = 0;
+	for (const part of parts) {
+		if (part === "**") {
+			deep += 1;
+			continue;
+		}
+		if (part.includes("**")) fail(label, "has ** inside a name; ** stands alone between slashes, as in **/*.md");
+		if (part.split("*").length - 1 > SURFACE_GLOB_MAX_STARS_PER_PART) {
+			fail(label, `has more than ${SURFACE_GLOB_MAX_STARS_PER_PART} * in one name`);
+		}
+	}
+	if (deep > SURFACE_GLOB_MAX_DEEP_PARTS) fail(label, `has more than ${SURFACE_GLOB_MAX_DEEP_PARTS} **`);
 	return value;
 }
 
-export function surfaceGlobMatches(glob: string, path: string): boolean {
-	let pattern = "";
-	for (let index = 0; index < glob.length; index += 1) {
-		const char = glob[index] ?? "";
-		if (char === "*" && glob[index + 1] === "*") {
-			if (glob[index + 2] === "/") {
-				pattern += "(?:.*/)?";
-				index += 2;
-			} else {
-				pattern += ".*";
-				index += 1;
-			}
-		} else if (char === "*") {
-			pattern += "[^/]*";
-		} else if (char === "?") {
-			pattern += "[^/]";
+function namePartMatches(pattern: readonly string[], name: readonly string[]): boolean {
+	let at = 0;
+	let from = 0;
+	let star = -1;
+	let resume = 0;
+	while (from < name.length) {
+		const want = pattern[at];
+		if (want !== undefined && want !== "*" && (want === "?" || want === name[from])) {
+			at += 1;
+			from += 1;
+		} else if (want === "*") {
+			star = at;
+			at += 1;
+			resume = from;
+		} else if (star >= 0) {
+			at = star + 1;
+			resume += 1;
+			from = resume;
 		} else {
-			pattern += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+			return false;
 		}
 	}
-	return new RegExp(`^${pattern}$`).test(path);
+	while (pattern[at] === "*") at += 1;
+	return at === pattern.length;
+}
+
+export function surfaceGlobMatches(glob: string, path: string): boolean {
+	const globParts = glob.split("/").map((part) => (part === "**" ? null : Array.from(part)));
+	const pathParts = path.split("/").map((part) => Array.from(part));
+	let next: boolean[] = pathParts.map(() => false);
+	next.push(true);
+	for (let index = globParts.length - 1; index >= 0; index -= 1) {
+		const part = globParts[index];
+		const here: boolean[] = new Array(pathParts.length + 1).fill(false);
+		for (let from = pathParts.length; from >= 0; from -= 1) {
+			const name = pathParts[from];
+			here[from] =
+				part === null || part === undefined
+					? Boolean(next[from]) || (name !== undefined && Boolean(here[from + 1]))
+					: name !== undefined && Boolean(next[from + 1]) && namePartMatches(part, name);
+		}
+		next = here;
+	}
+	return Boolean(next[0]);
 }
 
 function parseText(value: unknown, label: string, max: number, what: string): string {
@@ -603,9 +643,8 @@ function parseClosed(
 	required: readonly string[],
 ): Record<string, unknown> {
 	if (!isPlainObject(value)) fail(label, `must be an object (${what})`);
-	for (const key of Object.keys(value)) {
-		if (!fields.includes(key))
-			fail(`${label}.${key}`, `is not a field of ${what}; its fields are ${fields.join(", ")}`);
+	if (Object.keys(value).some((key) => !fields.includes(key))) {
+		fail(label, `has a field that ${what} does not take; its fields are ${fields.join(", ")}`);
 	}
 	for (const key of required) {
 		if (!Object.hasOwn(value, key)) fail(`${label}.${key}`, `is missing; ${what} needs it`);
@@ -1041,28 +1080,34 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 				{
 					type: "row",
 					blocks: [
-						{ type: "brand_mark", id: "logo", from: "logo.svg", grounds: ["light", "dark"], heading: "Logo" },
+						{
+							type: "brand_mark",
+							id: "logo",
+							from: "/identity/logo.svg",
+							grounds: ["light", "dark"],
+							heading: "Logo",
+						},
 						{
 							type: "brand_mark",
 							id: "wordmark",
-							from: "wordmark.svg",
+							from: "/identity/wordmark.svg",
 							grounds: ["light", "dark"],
 							heading: "Wordmark",
 						},
 					],
 				},
-				{ type: "title", id: "name", name: "company.json#/name" },
+				{ type: "title", id: "name", name: "/identity/company.json#/name" },
 				{
 					type: "facts",
 					id: "mission",
 					items: [
-						{ label: "Mission", from: "company.json#/mission" },
-						{ label: "Ambition", from: "company.json#/ambition" },
+						{ label: "Mission", from: "/identity/company.json#/mission" },
+						{ label: "Ambition", from: "/identity/company.json#/ambition" },
 					],
 					heading: "Mission & Ambition",
 				},
-				{ type: "palette", id: "palette", from: "tokens.json#/colors", heading: "Palette" },
-				{ type: "type_specimen", id: "type", from: "tokens.json#/typography", heading: "Type" },
+				{ type: "palette", id: "palette", from: "/identity/tokens.json#/colors", heading: "Palette" },
+				{ type: "type_specimen", id: "type", from: "/identity/tokens.json#/typography", heading: "Type" },
 			],
 		},
 		{
@@ -1072,7 +1117,7 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 				{
 					type: "cards",
 					id: "strategy",
-					from: "company.json#/strategy",
+					from: "/identity/company.json#/strategy",
 					title: "title",
 					lines: ["detail"],
 					heading: "Strategy",
@@ -1082,12 +1127,14 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 		{
 			id: "philosophy",
 			title: "Philosophy",
-			blocks: [{ type: "report", id: "philosophy", from: "philosophy.report.json" }],
+			blocks: [{ type: "report", id: "philosophy", from: "/identity/philosophy.report.json" }],
 		},
 		{
 			id: "voice",
 			title: "Voice",
-			blocks: [{ type: "files", id: "voice", match: ["voice.md", "brief.md"], heading: "Voice" }],
+			blocks: [
+				{ type: "files", id: "voice", match: ["/identity/voice.md", "/identity/brief.md"], heading: "Voice" },
+			],
 		},
 	],
 };

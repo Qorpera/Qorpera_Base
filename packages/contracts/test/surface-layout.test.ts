@@ -20,6 +20,13 @@ import {
 	surfaceCompanyPath,
 	surfaceGlobMatches,
 } from "../src/index.ts";
+import {
+	IDENTITY_BRIEF_PATH,
+	IDENTITY_COMPANY_PATH,
+	IDENTITY_LOGO_PATH,
+	IDENTITY_TOKENS_JSON_PATH,
+	IDENTITY_VOICE_PATH,
+} from "../src/surface-shared-assets.ts";
 import { WireValueError } from "../src/wire-values.ts";
 
 const SCHEMA = SURFACE_LAYOUT_SCHEMA;
@@ -94,7 +101,12 @@ describe("parseSurfaceLayout", () => {
 	it.each<[string, unknown, string, string]>([
 		["a non-object", "layout", "layout", "must be an object"],
 		["a wrong schema", { schema: "x", tabs: [] }, "layout.schema", SCHEMA],
-		["an unknown root field", { schema: SCHEMA, tabs: [], theme: "dark" }, "layout.theme", "is not a field"],
+		[
+			"an unknown root field",
+			{ schema: SCHEMA, tabs: [], theme: "dark" },
+			"layout",
+			"has a field that the layout does not take",
+		],
 		["no tabs", { schema: SCHEMA, tabs: [] }, "layout.tabs", "1 to 12"],
 		[
 			"thirteen tabs",
@@ -132,8 +144,8 @@ describe("parseSurfaceLayout", () => {
 		[
 			"an unknown field",
 			layoutWith([{ type: "palette", from: "a.json", colour: "red" }]),
-			"layout.tabs[0].blocks[0].colour",
-			"its fields are type, id, from, heading",
+			"layout.tabs[0].blocks[0]",
+			"has a field that palette does not take; its fields are type, id, from, heading",
 		],
 		["a missing required field", layoutWith([{ type: "spec_list" }]), "layout.tabs[0].blocks[0].from", "is missing"],
 		[
@@ -269,8 +281,8 @@ describe("parseSurfaceLayout", () => {
 		[
 			"a heading on a title",
 			layoutWith([{ type: "title", heading: "Name" }]),
-			"layout.tabs[0].blocks[0].heading",
-			"is not a field",
+			"layout.tabs[0].blocks[0]",
+			"has a field that title does not take",
 		],
 		["a report with neither", layoutWith([{ type: "report" }]), "layout.tabs[0].blocks[0]", "exactly one"],
 		[
@@ -286,10 +298,34 @@ describe("parseSurfaceLayout", () => {
 			".json",
 		],
 		[
-			"a rooted glob",
-			layoutWith([{ type: "files", match: ["/identity/*"] }]),
+			"a bare / glob",
+			layoutWith([{ type: "files", match: ["/"] }]),
 			"layout.tabs[0].blocks[0].match[0]",
-			"relative",
+			"names no glob",
+		],
+		[
+			"a glob with ** inside a name",
+			layoutWith([{ type: "files", match: ["a**b.md"] }]),
+			"layout.tabs[0].blocks[0].match[0]",
+			"** stands alone",
+		],
+		[
+			"a glob with five **",
+			layoutWith([{ type: "files", match: ["**/a/**/b/**/c/**/d/**/*.md"] }]),
+			"layout.tabs[0].blocks[0].match[0]",
+			"more than 4 **",
+		],
+		[
+			"a glob with five * in one name",
+			layoutWith([{ type: "report", match: "*a*a*a*a*a.json" }]),
+			"layout.tabs[0].blocks[0].match",
+			"more than 4 * in one name",
+		],
+		[
+			"a glob seventeen folders deep",
+			layoutWith([{ type: "files", match: [many(17, () => "a").join("/")] }]),
+			"layout.tabs[0].blocks[0].match[0]",
+			"more than 16 folder levels",
 		],
 		["a .. glob", layoutWith([{ type: "report", match: "../*.json" }]), "layout.tabs[0].blocks[0].match", ". or .."],
 		["an empty glob list", layoutWith([{ type: "files", match: [] }]), "layout.tabs[0].blocks[0].match", "1 to 16"],
@@ -349,8 +385,8 @@ describe("parseSurfaceLayout", () => {
 		[
 			"a row with an id",
 			layoutWith([{ type: "row", id: "pair", blocks: [{ type: "files" }, { type: "files" }] }]),
-			"layout.tabs[0].blocks[0].id",
-			"is not a field of row",
+			"layout.tabs[0].blocks[0]",
+			"has a field that row does not take",
 		],
 		[
 			"a broken block inside a row",
@@ -443,6 +479,8 @@ describe("parseSurfaceLayout", () => {
 	it("never quotes a value in a refusal", () => {
 		expect(refusal(layoutWith([{ type: "secret-token-123" }]))).not.toContain("secret-token-123");
 		expect(refusal(layoutWith([{ type: "table", from: "secret-token-123#x" }]))).not.toContain("secret-token-123");
+		expect(refusal(layoutWith([{ type: "files", "secret-token-123": 1 }]))).not.toContain("secret-token-123");
+		expect(refusal({ schema: SCHEMA, tabs: [], "secret-token-123": 1 })).not.toContain("secret-token-123");
 	});
 });
 
@@ -555,7 +593,8 @@ describe("bindings", () => {
 
 	it("maps a binding path to a company path", () => {
 		expect(surfaceCompanyPath("surfaces/headband", "specs.json")).toBe("surfaces/headband/specs.json");
-		expect(surfaceCompanyPath("identity", "identity/tokens.json")).toBe("identity/tokens.json");
+		expect(surfaceCompanyPath("identity", "identity/tokens.json")).toBe("identity/identity/tokens.json");
+		expect(surfaceCompanyPath("/identity/", "tokens.json")).toBe("identity/tokens.json");
 		expect(surfaceCompanyPath("surfaces/headband", "/identity/tokens.json")).toBe("identity/tokens.json");
 		expect(() => surfaceCompanyPath("surfaces/headband", "/../x.json")).toThrow();
 		expect(() => surfaceCompanyPath("surfaces/headband", "../x.json")).toThrow();
@@ -618,6 +657,32 @@ describe("bindings", () => {
 		).toEqual(missing);
 	});
 
+	it("matches rooted globs against company paths only", () => {
+		expect(surfaceGlobMatches("/identity/*.md", "/identity/voice.md")).toBe(true);
+		expect(surfaceGlobMatches("/identity/*.md", "identity/voice.md")).toBe(false);
+		expect(surfaceGlobMatches("*.md", "/voice.md")).toBe(false);
+		expect(surfaceGlobMatches("notes/**", "notes")).toBe(true);
+		expect(surfaceGlobMatches("**", "a/b/c")).toBe(true);
+	});
+
+	it("answers adversarial globs at once", { timeout: 1000 }, () => {
+		const deepPath = `${many(40, () => "a").join("/")}/x.txt`;
+		const longName = `${"a".repeat(400)}b`;
+		const cases: [string, string, boolean][] = [
+			[`${many(42, () => "**").join("/")}/*.md`, deepPath, false],
+			[`${many(42, () => "**").join("/")}/*.txt`, deepPath, true],
+			[many(64, () => "*a").join(""), longName, false],
+			[many(64, () => "*a").join(""), "a".repeat(400), true],
+			["**/**/**/**/*a*a*a*a", `${many(60, () => "a".repeat(30)).join("/")}/b`, false],
+			[`${many(200, () => "*").join("")}b`, "a".repeat(5000), false],
+		];
+		for (const [glob, path, expected] of cases) {
+			const started = performance.now();
+			expect(surfaceGlobMatches(glob, path)).toBe(expected);
+			expect(performance.now() - started).toBeLessThan(200);
+		}
+	});
+
 	it("matches globs within and across folders", () => {
 		expect(surfaceGlobMatches("*.report.json", "essay.report.json")).toBe(true);
 		expect(surfaceGlobMatches("*.report.json", "reports/essay.report.json")).toBe(false);
@@ -645,7 +710,7 @@ describe("the block registry", () => {
 			if (block.type === "row") continue;
 			const names = ["type", "id", ...block.fields.map((field) => field.name)];
 			expect(refusal(layoutWith([{ type: block.type, notAField: 1 }]))).toBe(
-				`layout.tabs[0].blocks[0].notAField is not a field of ${block.type}; its fields are ${names.join(", ")}`,
+				`layout.tabs[0].blocks[0] has a field that ${block.type} does not take; its fields are ${names.join(", ")}`,
 			);
 			const required = block.fields.find((field) => field.required);
 			if (required) {
@@ -696,14 +761,25 @@ describe("starter layouts", () => {
 		}
 	});
 
-	it("bind only to paths relative to the folder or rooted at the company", () => {
+	it("bind Product and Custom inside their folder and Identity to the canonical identity files", () => {
 		for (const kind of SURFACE_STARTER_KINDS) {
 			for (const source of sourcesOf(SURFACE_STARTER_LAYOUTS[kind])) {
 				const { path } = parseSurfaceBinding(source);
-				expect(path.startsWith("/") || !path.includes("..")).toBe(true);
 				expect(() => surfaceCompanyPath("surfaces/x", path)).not.toThrow();
+				if (kind === "identity") expect(path.startsWith("/identity/")).toBe(true);
+				else expect(path.startsWith("/")).toBe(false);
 			}
 		}
+		const identityPaths = sourcesOf(SURFACE_STARTER_LAYOUTS.identity).map(
+			(source) => parseSurfaceBinding(source).path,
+		);
+		for (const canonical of [IDENTITY_COMPANY_PATH, IDENTITY_TOKENS_JSON_PATH, IDENTITY_LOGO_PATH]) {
+			expect(identityPaths).toContain(`/${canonical}`);
+		}
+		const voice = nodesOf(SURFACE_STARTER_LAYOUTS.identity).find(
+			(node) => node.type === "files" && node.id === "voice",
+		);
+		expect(voice).toMatchObject({ match: [`/${IDENTITY_VOICE_PATH}`, `/${IDENTITY_BRIEF_PATH}`] });
 	});
 
 	it("keeps the product page's homes in today's order", () => {

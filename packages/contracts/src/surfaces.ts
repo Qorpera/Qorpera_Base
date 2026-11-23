@@ -1109,8 +1109,8 @@ export function resolveStudioFolderPath(folderRoot: string, rawPath: string): st
 }
 
 export function surfaceCompanyPath(folderRoot: string, bindingPath: string): string {
-	if (!bindingPath.startsWith("/")) return resolveStudioFolderPath(folderRoot, bindingPath);
-	const body = bindingPath.slice(1);
+	const rooted = bindingPath.startsWith("/");
+	const body = rooted ? bindingPath.slice(1) : bindingPath;
 	if (
 		!body ||
 		body.includes("\\") ||
@@ -1119,5 +1119,5 @@ export function surfaceCompanyPath(folderRoot: string, bindingPath: string): str
 	) {
 		throw new Error(`Unsafe company file path: ${bindingPath}`);
 	}
-	return body;
+	return rooted ? body : `${normalizeStudioFolderRoot(folderRoot)}/${body}`;
 }
