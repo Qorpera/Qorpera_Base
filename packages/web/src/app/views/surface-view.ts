@@ -1017,7 +1017,7 @@ export class SurfaceView {
 		const notchCount = count > 0 ? count : openWorkCount;
 		this.#notchPill.replaceChildren(
 			h("span", { class: "surface-notch-label" }, notchLabel),
-			notchCount > 0 ? h("span", { class: "surface-notch-count" }, String(notchCount)) : null,
+			...(notchCount > 0 ? [h("span", { class: "surface-notch-count" }, String(notchCount))] : []),
 		);
 		const focused = document.activeElement;
 		const focusKey =
