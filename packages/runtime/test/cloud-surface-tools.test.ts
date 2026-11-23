@@ -2266,6 +2266,14 @@ describe("cloud surface runtime tools", () => {
 						conflictPaths: [],
 					};
 				}
+				if (method === "qorpera_native_surface_session_images") {
+					return {
+						schema: "qorpera.native-surface-session-images/v1",
+						sessionId,
+						latestMemberMessageId: null,
+						messages: [],
+					};
+				}
 				if (method === "qorpera_native_surface_record_change") {
 					return { changeId, seq: 1, session: { openChangeCount: 1 } };
 				}

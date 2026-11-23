@@ -1605,7 +1605,7 @@ export class SurfaceStudioView {
 					);
 				}
 				const cleanFolderRoot = surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
-				const primaryProductRoot = state.surfaces
+				const primaryProductRoot = store.state.surfaces
 					.filter(
 						(item) =>
 							item.status === "active" &&
