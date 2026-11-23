@@ -386,11 +386,11 @@ const STUDIO_REPORT_SCHEMA =
 
 const PRODUCT_STUDIO_SCHEMA =
 	"Product Studio file layout (write files directly at the root of the surface folder, not scattered in nested markdown folders): " +
-	'(1) `specs.json` — `{ "model": { "kind": "headband" | "device", "dimensions": "...", "layers": ["..."] }, "overview": { ...key-value specs... }, "colorways": [{ "name": "...", "hex": "#rrggbb" }], "bom": [{ "part": "...", "supplier": "...", "unitCost": "..." }] }`. `model` renders the interactive 3D Studio viewer with drag-to-orbit, exploded layers, and colorway switching (use `"headband"` for wearable bands/headbands, `"device"` for other physical hardware); `overview` renders Key specs; `colorways` drives Palette swatches and 3D variants; `bom` renders the BOM table under Specs & BOM. ' +
-	'(2) `vendors.json` — `{ "production": { "targetBatch", "landedCogs", "criticalPath", "compliance" }, "vendors": [{ "vendor", "component", "region", "moq", "leadTime", "unitPrice", "status", "certifications" }] }` (renders Production & Vendors cards). ' +
-	`(3) ${STUDIO_REPORT_SCHEMA} ` +
-	"(4) `brief.md` — concise product brief (renders under Brief & Files). " +
-	"Prefer structured JSON (`specs.json`, `vendors.json`, `<slug>.report.json`) over loose markdown prose so the founder gets the 3D stage, specs/variants, vendor cards, and tabbed analysis views.";
+	'(1) `specs.json` — `{ "model": { "kind": "headband" | "device", "dimensions": "...", "layers": ["..."] }, "overview": { "tagline": "one line saying what the product is", ...key-value specs... }, "colorways": [{ "name": "...", "hex": "#rrggbb" }], "bom": [{ "part": "...", "supplier": "...", "unitCost": "..." }] }`. The Overview tab is one column: `model` draws the product alone on its row with a Whole / Apart view of its `layers` (use `"headband"` for wearable bands/headbands, `"device"` for other physical hardware); `overview.tagline` is the one line under the product name; the first four other `overview` values of at most 18 characters are the figures under it, so put the four that matter most first and keep them short (for example "14 h", "44 g", "1.995 kr."); `colorways` are the colour dots that recolour the model. Every `overview` entry and the `bom` table show under the Specs tab. ' +
+	'(2) `vendors.json` — `{ "production": { "targetBatch", "landedCogs", "criticalPath", "compliance" }, "vendors": [{ "vendor", "component", "region", "moq", "leadTime", "unitPrice", "status", "certifications" }] }` (the Vendors tab). ' +
+	`(3) ${STUDIO_REPORT_SCHEMA} In a Product Studio these are the Reports tab. ` +
+	"(4) `brief.md` — concise product brief (the Files tab, with any other documents and vector files). " +
+	"The five tabs (Overview, Specs, Vendors, Reports, Files) are always there, so a Product Studio that holds only Markdown shows an empty Overview: prefer structured JSON (`specs.json`, `vendors.json`, `<slug>.report.json`) over loose markdown prose so the founder gets the model, the line, the figures, vendor cards and reports in their homes.";
 
 function buildFolderSurfaceInstructions(input: SurfaceSessionTurnInput, folderRoot: string, notesRoot: string): string {
 	const isIdentity = input.surfaceKind === "identity" || input.surfaceSlug === "identity" || folderRoot === "identity";

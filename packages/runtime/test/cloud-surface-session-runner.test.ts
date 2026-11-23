@@ -1207,6 +1207,9 @@ describe("cloud surface session runner", () => {
 		expect(seen.thetabands).toContain("specs.json");
 		expect(seen.thetabands).toContain('"kind": "headband" | "device"');
 		expect(seen.thetabands).toContain("vendors.json");
+		expect(seen.thetabands).toContain('"tagline": "one line saying what the product is"');
+		expect(seen.thetabands).toContain("(Overview, Specs, Vendors, Reports, Files) are always there");
+		expect(seen.thetabands).toContain("the first four other `overview` values of at most 18 characters");
 		expect(seen.thetabands).toContain("<slug>.report.json");
 		expect(seen.thetabands).toContain("surfaces/thetabands/");
 		expect(seen["market-notes"]).toContain("<slug>.report.json");
