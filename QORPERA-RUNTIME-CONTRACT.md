@@ -2697,14 +2697,19 @@ failed. Now:
   login is left running: neither the sessions lane's sweep nor
   `qorpera_surface_expire_coding_sessions` expires, retries or cancels it; its
   lease moves to the recheck and the wait is recorded. A paused run keeps its
-  login and goes on after the reset, as for every run.
+  login and goes on after the reset, as for every run. When the login has room
+  again, such a turn gets one 10-minute grace lease, so the resumed run, the
+  held wake or the coding claim takes it up before any expiry. Only the turn's
+  own work counts: a coding worker left from an earlier member's turn does not
+  make a later turn wait.
 - A new reply, a turn that starts or renews its lease, and a completed turn clear
   the wait.
 - Session reads carry `waitingOnUsage` (`userId`, `until`) while the wait
   holds. For the waiting member only, and only before the turn is admitted,
-  `continueWith` names one of their own logins with room;
-  `qorpera_surface_session_continue` then lets the turn try again at once, so the
-  payer rules pick that login. It refuses anyone else (42501) and a member with
+  `continueWith` names the login of theirs the payer rules would now pick for
+  the turn (in a coding-backed session: the coding login for the session's
+  harness, or the first harness with a login), when that login has room;
+  `qorpera_surface_session_continue` then lets the turn try again at once on it. It refuses anyone else (42501) and a member with
   no login with room (55000). Nothing moves to another member's login.
 
 2026-11-23 amendment: notes between members in a surface session (founder, 23

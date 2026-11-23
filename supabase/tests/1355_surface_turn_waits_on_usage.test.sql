@@ -117,6 +117,59 @@ begin
 	perform public.qorpera_folder_materialize_company(pg_temp.uw_company(), 16);
 end $$;
 
+create function pg_temp.uw_login(p_capsule_n integer) returns uuid language sql as $$
+	select version.connection_id from public.qorpera_provider_connection_versions as version
+	where version.credential_capsule_id = ('85600000-0000-4000-8000-000000000a' || lpad(to_hex(p_capsule_n), 2, '0'))::uuid
+	limit 1
+$$;
+
+create function pg_temp.uw_login_usage(p_connection uuid, p_used numeric)
+returns void language sql as $$
+	update public.qorpera_native_provider_account_metadata
+	set provider_account_usage = jsonb_set(jsonb_set(provider_account_usage, '{windows,0,usedPercent}', to_jsonb(p_used)),
+		'{observedAt}', to_jsonb(statement_timestamp() - interval '1 minute'))
+	where connection_id = p_connection and connection_version = 2
+$$;
+
+create function pg_temp.uw_second_login(p_user uuid, p_identity_n integer, p_n integer)
+returns void language plpgsql as $$
+declare v_identity jsonb; v_login jsonb; v_connection jsonb; v_hex text := lpad(to_hex(p_n), 2, '0');
+begin
+	perform pg_temp.as_user(p_user);
+	set local role authenticated;
+	v_identity := public.qorpera_upsert_member_compute_identity(pg_temp.uw_company(),
+		('85600000-0000-4000-8000-0000000007' || lpad(to_hex(p_identity_n), 2, '0'))::uuid,
+		'My model account', 'qorpera-member-linux', 'v1', '["agent_turn","company_substrate"]',
+		'{"network":"provider-native-only","credentialExport":false}');
+	v_login := public.qorpera_begin_native_provider_login(pg_temp.uw_company(), ('85600000-0000-4000-8000-0000000008' || v_hex)::uuid,
+		('85600000-0000-4000-8000-0000000009' || v_hex)::uuid, (v_identity ->> 'compute_identity_id')::uuid,
+		'openai', 'codex-cli', repeat(v_hex, 32), 900);
+	reset role;
+	perform pg_temp.as_service();
+	set local role service_role;
+	v_connection := public.qorpera_complete_native_provider_login((v_login ->> 'login_id')::uuid, repeat(v_hex, 32),
+		('85600000-0000-4000-8000-000000000a' || v_hex)::uuid,
+		'object://native-capsules/85600000-0000-4000-8000-000000000a' || v_hex, repeat('d', 64), 'openai-' || v_hex,
+		'personal-subscription', 'qorpera-native-provider-consent/v1',
+		'{"monthly_microusd":1000000000,"reservation_microusd":1000,"max_calls_per_run":32,"max_input_tokens_per_run":2000000,"max_output_tokens_per_run":500000,"max_concurrent_runs":32}');
+	reset role;
+	insert into public.qorpera_provider_connection_versions
+	select (jsonb_populate_record(null::public.qorpera_provider_connection_versions,
+		to_jsonb(v) || '{"version":2,"allow_autonomous":true}'::jsonb)).*
+	from public.qorpera_provider_connection_versions v
+	where connection_id = (v_connection ->> 'connection_id')::uuid and version = 1;
+	perform pg_temp.as_user(p_user);
+	set local role authenticated;
+	perform public.qorpera_create_member_execution_sponsor(pg_temp.uw_company(), ('85600000-0000-4000-8000-000000000b' || v_hex)::uuid,
+		(v_connection ->> 'connection_id')::uuid, 2, true);
+	reset role;
+end $$;
+
+create function pg_temp.uw_paid_with(p_binding uuid) returns uuid language sql as $$
+	select provider_connection_id from public.qorpera_execution_sponsor_versions
+	where binding_id = p_binding order by version desc limit 1
+$$;
+
 do $$
 declare
 	v_surface uuid;
@@ -175,7 +228,35 @@ begin
 			and pg_temp.uw_failed_lines(v_session) = 0,
 		'the claim lane''s sweep leaves a paused turn on its full login running and records the wait: ' || to_jsonb(v_row)::text
 	);
+end $$;
 
+select pg_temp.uw_usage(pg_temp.uw_bo(), 30);
+
+do $$
+declare
+	v_session uuid := current_setting('uw.session')::uuid;
+	v_row public.qorpera_surface_sessions%rowtype;
+begin
+	perform pg_temp.uw_due(v_session);
+	perform pg_temp.uw_claim(v_session);
+	v_row := pg_temp.uw_session(v_session);
+	perform pg_temp.uw_assert(
+		v_row.state = 'running' and v_row.retry_count = 0 and v_row.lease_token = current_setting('uw.lease')::uuid
+			and v_row.lease_expires_at > clock_timestamp() + interval '9 minutes'
+			and (select status from public.qorpera_wake_occurrences where id = v_row.wake_id) = 'materialized'
+			and pg_temp.uw_failed_lines(v_session) = 0
+			and pg_temp.uw_json(pg_temp.uw_anna(), v_session) -> 'waitingOnUsage' = 'null'::jsonb,
+		'at the reset the sweep gives the paused turn a grace lease instead of expiring it: ' || to_jsonb(v_row)::text
+	);
+end $$;
+
+select pg_temp.uw_usage(pg_temp.uw_bo(), 100);
+
+do $$
+declare
+	v_session uuid := current_setting('uw.session')::uuid;
+	v_row public.qorpera_surface_sessions%rowtype := pg_temp.uw_session(current_setting('uw.session')::uuid);
+begin
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
 	perform public.qorpera_surface_complete_session_turn(v_session, 'failed', 'The login reached its usage limit.',
@@ -340,6 +421,55 @@ end $$;
 
 do $$
 declare
+	v_session uuid := current_setting('uw.session')::uuid;
+	v_enq jsonb;
+begin
+	perform pg_temp.uw_reply(pg_temp.uw_bo(), v_session, 'And the yearly plan');
+	v_enq := pg_temp.uw_turn(v_session);
+	perform pg_temp.uw_assert(
+		v_enq ->> 'reason' = 'usage_limit'
+			and pg_temp.uw_json(pg_temp.uw_bo(), v_session) -> 'waitingOnUsage' -> 'continueWith' = 'null'::jsonb,
+		'with every login full there is nothing to continue on: ' || v_enq::text
+	);
+end $$;
+
+select pg_temp.uw_second_login(pg_temp.uw_bo(), 2, 31);
+
+do $$
+declare
+	v_session uuid := current_setting('uw.session')::uuid;
+	v_enq jsonb;
+	v_wake public.qorpera_wake_occurrences%rowtype;
+begin
+	perform pg_temp.uw_assert(
+		pg_temp.uw_json(pg_temp.uw_bo(), v_session) -> 'waitingOnUsage' -> 'continueWith' <> 'null'::jsonb
+			and pg_temp.uw_json(pg_temp.uw_anna(), v_session) -> 'waitingOnUsage' -> 'continueWith' = 'null'::jsonb,
+		'Bo, and only Bo, is offered his login with room'
+	);
+	perform pg_temp.uw_as(pg_temp.uw_bo());
+	set local role authenticated;
+	perform public.qorpera_surface_session_continue(v_session);
+	reset role;
+	v_enq := pg_temp.uw_turn(v_session);
+	perform pg_temp.uw_assert(v_enq ->> 'status' = 'enqueued', 'Continue lets the turn start at once: ' || v_enq::text);
+	select * into strict v_wake from public.qorpera_wake_occurrences where id = (v_enq ->> 'wakeId')::uuid;
+	perform pg_temp.uw_assert(
+		pg_temp.uw_payer(v_wake.sponsor_binding_id) = pg_temp.uw_bo()
+			and pg_temp.uw_paid_with(v_wake.sponsor_binding_id) = pg_temp.uw_login(31),
+		'the continued turn runs on Bo''s login with room'
+	);
+	update public.qorpera_wake_occurrences
+	set status = 'cancelled', finished_at = clock_timestamp(), blocked_reason = 'turn settled by the test'
+	where id = v_wake.id and status = 'queued';
+	update public.qorpera_surface_sessions
+	set state = 'ready', lease_token = null, lease_expires_at = null, wake_id = null
+	where id = v_session;
+end $$;
+
+select pg_temp.uw_usage(pg_temp.uw_bo(), 100);
+
+do $$
+declare
 	v_env uuid;
 	v_surface uuid;
 	v_session uuid;
@@ -365,12 +495,13 @@ begin
 	perform pg_temp.uw_assert(
 		v_enq ->> 'status' = 'deferred' and v_enq ->> 'reason' = 'usage_limit'
 			and v_row.state = 'queued' and v_row.worker_id is null and v_row.waiting_on_usage_user_id = pg_temp.uw_bo()
-			and not exists (select 1 from public.qorpera_runtime_workers where surface_session_id = v_session),
-		'a coding turn on a full login waits before any worker starts: ' || v_enq::text
+			and not exists (select 1 from public.qorpera_runtime_workers where surface_session_id = v_session)
+			and pg_temp.uw_json(pg_temp.uw_bo(), v_session) -> 'waitingOnUsage' -> 'continueWith' = 'null'::jsonb,
+		'a coding turn on full logins waits before any worker starts: ' || v_enq::text
 	);
 end $$;
 
-select pg_temp.uw_usage(pg_temp.uw_bo(), 30);
+select pg_temp.uw_login_usage(pg_temp.uw_login(31), 30);
 
 do $$
 declare
@@ -378,14 +509,22 @@ declare
 	v_enq jsonb;
 	v_worker public.qorpera_runtime_workers%rowtype;
 begin
-	perform pg_temp.uw_due(v_session);
+	perform pg_temp.uw_assert(
+		pg_temp.uw_json(pg_temp.uw_bo(), v_session) -> 'waitingOnUsage' -> 'continueWith' <> 'null'::jsonb,
+		'Bo is offered the coding login the next turn would pay with, now that it has room'
+	);
+	perform pg_temp.uw_as(pg_temp.uw_bo());
+	set local role authenticated;
+	perform public.qorpera_surface_session_continue(v_session);
+	reset role;
 	v_enq := pg_temp.uw_turn(v_session);
 	select * into strict v_worker from public.qorpera_runtime_workers where id = (v_enq ->> 'workerId')::uuid;
 	perform pg_temp.uw_assert(
 		v_enq ->> 'status' = 'enqueued' and v_worker.owner_user_id = pg_temp.uw_bo()
 			and pg_temp.uw_payer(v_worker.owner_sponsor_binding_id) = pg_temp.uw_bo()
+			and pg_temp.uw_paid_with(v_worker.owner_sponsor_binding_id) = pg_temp.uw_login(31)
 			and (pg_temp.uw_session(v_session)).waiting_on_usage_user_id is null,
-		'after the reset the coding turn starts on Bo''s login: ' || v_enq::text
+		'Continue starts the coding turn on Bo''s login with room: ' || v_enq::text
 	);
 	perform set_config('uw.worker', v_worker.id::text, false);
 end $$;
@@ -411,9 +550,54 @@ begin
 			and pg_temp.uw_failed_lines(v_session) = 0,
 		'the coding sweep leaves a worker waiting on its full login alone: ' || to_jsonb(v_row)::text
 	);
+end $$;
+
+select pg_temp.uw_usage(pg_temp.uw_bo(), 30);
+
+do $$
+declare
+	v_session uuid := current_setting('uw.code_session')::uuid;
+	v_row public.qorpera_surface_sessions%rowtype;
+begin
+	perform pg_temp.uw_due(v_session);
+	perform pg_temp.uw_claim(v_session);
+	v_row := pg_temp.uw_session(v_session);
+	perform pg_temp.uw_assert(
+		v_row.state = 'running' and v_row.retry_count = 0
+			and v_row.lease_expires_at > clock_timestamp() + interval '9 minutes'
+			and (select state from public.qorpera_runtime_workers where id = current_setting('uw.worker')::uuid) = 'active'
+			and pg_temp.uw_failed_lines(v_session) = 0,
+		'at the reset the coding sweep gives the waiting worker a grace lease instead of cancelling it: ' || to_jsonb(v_row)::text
+	);
+end $$;
+
+select pg_temp.uw_usage(pg_temp.uw_bo(), 100);
+
+do $$
+declare
+	v_session uuid := current_setting('uw.code_session')::uuid;
+	v_lease uuid;
+	v_row public.qorpera_surface_sessions%rowtype;
+begin
+	perform pg_temp.uw_reply(pg_temp.uw_anna(), v_session, 'Use the new font as well');
+	v_lease := pg_temp.uw_claim(v_session);
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	perform public.qorpera_surface_complete_session_turn(v_session, 'failed', 'Surface session could not start.',
+		null, null, null, v_lease);
+	reset role;
+	v_row := pg_temp.uw_session(v_session);
+	perform pg_temp.uw_assert(
+		v_row.state = 'queued' and v_row.retry_count = 1 and v_row.waiting_on_usage_user_id is null
+			and pg_temp.uw_failed_lines(v_session) = 1,
+		'an earlier turn''s worker on a full login does not hold Anna''s failed turn: ' || to_jsonb(v_row)::text
+	);
 	perform pg_temp.uw_assert(
 		not has_function_privilege('authenticated', 'public.qorpera_surface_hold_for_usage(uuid,jsonb,boolean)', 'execute')
-			and not has_function_privilege('anon', 'public.qorpera_surface_turn_usage_wait(uuid,uuid)', 'execute')
+			and not has_function_privilege('anon', 'public.qorpera_surface_turn_usage_wait(uuid,uuid,uuid)', 'execute')
+			and not has_function_privilege('authenticated', 'public.qorpera_surface_usage_grace(uuid)', 'execute')
+			and not has_function_privilege('authenticated',
+				'public.qorpera_surface_continue_login(public.qorpera_surface_sessions,uuid)', 'execute')
 			and not has_function_privilege('anon', 'public.qorpera_surface_session_continue(uuid)', 'execute'),
 		'the wait helpers are not callable from the API'
 	);

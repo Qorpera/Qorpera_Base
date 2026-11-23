@@ -1839,12 +1839,12 @@ starter; null for an agent-started session nobody replied to). Its messages may 
 
 A session's JSON carries `waitingOnUsage` while its turn waits for a full login to reset: `{userId, until,
 continueWith}` (else null). `userId` is the member whose login is full, `until` the reset (null when unknown).
-`continueWith` is `{account}` (the email of one of the caller's own logins with room, or null) only for that member
-while the turn waits in the queue, else null.
+`continueWith` is `{account}` (the email, or null) only for that member while the turn waits in the queue and the login
+the payer rules would now pick for it (in a coding-backed session, its coding login) has room, else null.
 
 - `qorpera_surface_session_continue(p_session_id)` (the waiting member, not a viewer) lets the waiting turn try again
-  at once, so it runs on their login with room, and answers the session. Refuses another member (42501), a turn that
-  already runs or a member with no login with room (55000) and a missing session (P0002).
+  at once on the login `continueWith` names, and answers the session. Refuses another member (42501), a turn that
+  already runs or no such login with room (55000) and a missing session (P0002).
 
 ### Coding environment secrets (20260928549440_coding_environment_secrets)
 
