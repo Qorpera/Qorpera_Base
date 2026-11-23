@@ -77,6 +77,7 @@ describe("the address sheet's stops", () => {
 		expect(sheet().hidden).toBe(false);
 		expect(sheet().getAttribute("role")).toBe("dialog");
 		expect(sheet().querySelector(".surface-address-name")?.textContent).toBe("thetaband.qorpera.com");
+		expect(sheet().querySelector(".surface-address-name span")?.textContent).toBe(".qorpera.com");
 		expect(stops()).toEqual([
 			["Only you", "is-now"],
 			["Live", ""],
@@ -139,6 +140,7 @@ describe("the address sheet's stops", () => {
 		]);
 		expect(bar().classList.contains("is-waiting")).toBe(true);
 		expect(bar().textContent).toBe("www.thetaband.dk");
+		expect(sheet().querySelector(".surface-address-name span")?.textContent).toBe(".dk");
 
 		press("Show the two lines to paste where you bought it");
 		const rows = [...sheet().querySelectorAll(".surface-address-record")].map((row) =>

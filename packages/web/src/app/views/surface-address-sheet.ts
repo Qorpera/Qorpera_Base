@@ -491,7 +491,7 @@ export class SurfaceAddress {
 		const first = this.#sheet.hidden;
 		this.#painted = key;
 		const name = this.name();
-		const cut = name.indexOf(".");
+		const cut = name.endsWith(".qorpera.com") ? name.length - ".qorpera.com".length : name.lastIndexOf(".");
 		this.#sheet.setAttribute("aria-label", t("Where the site lives"));
 		replace(
 			this.#sheet,

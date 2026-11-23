@@ -516,13 +516,15 @@
 .surface-address-input:focus { border-color: var(--text-soft); }
 .surface-address-records { display: grid; width: 100%; font: 11.5px var(--font-mono); }
 .surface-address-record {
-	display: grid; grid-template-columns: 44px minmax(0, 0.8fr) minmax(0, 1fr) 24px; align-items: center; gap: 6px;
-	padding: 6px 0; border-top: 1px solid var(--border);
+	display: grid; grid-template-columns: 44px minmax(0, 1fr) 24px; grid-template-areas: "type host copy" "type value copy";
+	align-items: start; gap: 2px 6px; padding: 7px 0; border-top: 1px solid var(--border);
 }
-.surface-address-record b { font-weight: 600; }
+.surface-address-record b { grid-area: type; font-weight: 600; }
 .surface-address-record-host, .surface-address-value { overflow-wrap: anywhere; user-select: all; }
-.surface-address-value { color: var(--text-muted); }
+.surface-address-record-host { grid-area: host; }
+.surface-address-value { grid-area: value; color: var(--text-muted); }
 .surface-address-copy {
+	grid-area: copy; align-self: center;
 	display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px;
 	background: none; color: var(--text-soft); cursor: default;
 }
