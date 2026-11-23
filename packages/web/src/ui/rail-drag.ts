@@ -378,33 +378,36 @@ export class RailDrag {
 		const step = () => {
 			const active = this.#active;
 			if (!active?.ghost) return;
-			const scroller = this.#scrollerAt(active.lastX, active.lastY);
-			const rect = scroller.getBoundingClientRect();
-			const edge = EDGE * uiScale();
-			const speed =
-				active.lastY < rect.top + edge
-					? -Math.ceil((rect.top + edge - active.lastY) / 4)
-					: active.lastY > rect.bottom - edge
-						? Math.ceil((active.lastY - (rect.bottom - edge)) / 4)
-						: 0;
-			if (speed) {
-				const before = scroller.scrollTop;
-				scroller.scrollTop += speed;
-				if (scroller.scrollTop !== before) {
-					this.#target(active.lastX, active.lastY);
-				}
+			const dock = this.#dockAt(active.lastX, active.lastY);
+			if ((dock && this.#edgeScroll(dock, active.lastY)) || this.#edgeScroll(this.#list, active.lastY)) {
+				this.#target(active.lastX, active.lastY);
 			}
 			this.#frame = requestAnimationFrame(step);
 		};
 		this.#frame = requestAnimationFrame(step);
 	}
 
-	// WHY: the rail's dock (Agents and People) scrolls by itself inside the list, so over it the dock is what scrolls.
-	#scrollerAt(x: number, y: number): HTMLElement {
-		const dock = document
+	#edgeScroll(scroller: HTMLElement, y: number): boolean {
+		const rect = scroller.getBoundingClientRect();
+		const edge = EDGE * uiScale();
+		const speed =
+			y < rect.top + edge
+				? -Math.ceil((rect.top + edge - y) / 4)
+				: y > rect.bottom - edge
+					? Math.ceil((y - (rect.bottom - edge)) / 4)
+					: 0;
+		if (!speed) return false;
+		const before = scroller.scrollTop;
+		scroller.scrollTop += speed;
+		return scroller.scrollTop !== before;
+	}
+
+	// WHY: the rail's dock (Agents and People) scrolls by itself inside the list: over it the dock scrolls first, and
+	// the list once the dock can go no further.
+	#dockAt(x: number, y: number): HTMLElement | undefined {
+		return document
 			.elementsFromPoint?.(x, y)
 			.find((element): element is HTMLElement => element.matches(".rail-dock") && this.#list.contains(element));
-		return dock && dock.scrollHeight > dock.clientHeight ? dock : this.#list;
 	}
 
 	#release(event: PointerEvent): void {

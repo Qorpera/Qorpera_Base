@@ -51,7 +51,7 @@ afterEach(() => {
 });
 
 describe("dragging a contact over the rail's dock", () => {
-	it("scrolls the dock, not the list behind it, near the dock's lower edge", () => {
+	it("scrolls the dock near its lower edge, and the list behind it once the dock is at its end", () => {
 		const pinned = boxed(h("div", { "data-drop-zone": "pinned" }), 0, 40);
 		const sofie = boxed(h("a", { class: "rail-pin", "data-member-id": "sofie" }, "Sofie"), 0, 40);
 		pinned.append(sofie);
@@ -77,5 +77,10 @@ describe("dragging a contact over the rail's dock", () => {
 		expect(list.dataset.dragging).toBe("member");
 		expect(dock.scrollTop).toBeGreaterThan(0);
 		expect(list.scrollTop).toBe(0);
+
+		dock.scrollTop = 600;
+		for (let i = 0; i < 3; i++) for (const frame of frames.splice(0)) frame(48 + i * 16);
+		expect(dock.scrollTop).toBe(600);
+		expect(list.scrollTop).toBeGreaterThan(0);
 	});
 });

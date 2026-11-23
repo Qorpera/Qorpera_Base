@@ -528,7 +528,6 @@ describe("contacts in the rail", () => {
 		expect(group.querySelector<HTMLElement>(".rail-section-title")!.hidden).toBe(false);
 		expect(group.querySelector(".rail-section-title")!.textContent).toBe("People");
 		expect(group.dataset.dropZone).toBe("members");
-		// People stand in the rail's own window at its foot, after the agents, while the list scrolls under it.
 		const dock = rail.querySelector(".rail-scroll")!.lastElementChild!;
 		expect(dock.classList.contains("rail-dock")).toBe(true);
 		expect(group.parentElement).toBe(dock);
