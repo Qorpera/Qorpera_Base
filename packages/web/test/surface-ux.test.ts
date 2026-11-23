@@ -271,8 +271,8 @@ describe("creating surfaces", () => {
 		};
 		openCreateSurfaceSheet(store, COMPANY);
 		const sheet = document.querySelector(".surface-create-sheet")!;
-		const presets = [...sheet.querySelectorAll<HTMLElement>(".surface-create-card")].map(
-			(card) => card.dataset.preset,
+		const presets = [...sheet.querySelectorAll<HTMLElement>(".surface-create-kind")].map(
+			(row) => row.dataset.preset,
 		);
 		expect(presets).toEqual([
 			"identity",
@@ -295,15 +295,30 @@ describe("creating surfaces", () => {
 			sheet.querySelector<HTMLElement>('.surface-figure-choice[aria-checked="true"]')?.dataset.figure;
 		expect(sheet.querySelectorAll(".surface-figure-choice")).toHaveLength(26);
 		expect(picked()).toBe("gem");
+		const hero = () => sheet.querySelector<HTMLElement>(".surface-create-stage .surface-figure")?.dataset.figure;
+		const line = () => sheet.querySelector(".surface-create-line")?.textContent;
+		expect(hero()).toBe("gem");
 
 		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
 		expect(custom.hidden).toBe(true);
 		expect(picked()).toBe("phone");
+		expect(hero()).toBe("phone");
+		expect(line()).toBe("iOS & Android app");
+		expect(sheet.querySelector('[data-preset="mobile_app"]')?.getAttribute("aria-pressed")).toBe("true");
+		const swap = sheet.querySelector<HTMLButtonElement>(".surface-create-swap")!;
+		const figures = sheet.querySelector<HTMLElement>(".surface-create-figures")!;
+		expect(figures.hidden).toBe(true);
+		swap.click();
+		expect(figures.hidden).toBe(false);
+		expect(swap.getAttribute("aria-expanded")).toBe("true");
 		sheet.querySelector<HTMLElement>('.surface-figure-choice[data-figure="piggy"]')!.click();
+		expect(figures.hidden).toBe(true);
+		expect(hero()).toBe("piggy");
 		sheet.querySelector<HTMLElement>('[data-preset="website"]')!.click();
 		expect(picked()).toBe("piggy");
+		expect(hero()).toBe("piggy");
 		sheet.querySelector<HTMLElement>('[data-preset="mobile_app"]')!.click();
-		expect(sheet.querySelector<HTMLInputElement>(".surface-create-input")?.value).toBe("Mobile App");
+		expect(sheet.querySelector<HTMLInputElement>(".surface-create-name")?.value).toBe("Mobile App");
 		sheet
 			.querySelector<HTMLFormElement>(".surface-create-form")!
 			.dispatchEvent(new Event("submit", { cancelable: true }));

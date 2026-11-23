@@ -137,8 +137,8 @@ export const SURFACES: Record<string, string> = {
 	Typography: "Typografi",
 	"Aa Bb Cc · 123": "Aa Bb Cc · Ææ Øø Åå · 123",
 	"New surface": "Ny surface",
-	"Each surface is a shared place your sessions build and update together.":
-		"Hver surface er et fælles sted, som dine sessioner bygger og opdaterer sammen.",
+	"What should your sessions build?": "Hvad skal dine sessioner bygge?",
+	"Change figure": "Skift figur",
 	"Surface type": "Type af surface",
 	"Surface name": "Navn på surface",
 	"First session (optional)": "Første session (valgfrit)",
@@ -147,15 +147,7 @@ export const SURFACES: Record<string, string> = {
 	"Create surface": "Opret surface",
 	"Import a program instead": "Importér et program i stedet",
 	Website: "Hjemmeside",
-	"Marketing site or storefront with live preview and publish.":
-		"Hjemmeside eller butik med live forhåndsvisning og udgivelse.",
 	"Web App": "Webapp",
-	"Interactive product or customer portal built in parallel sessions.":
-		"Interaktivt produkt eller kundeportal bygget i parallelle sessioner.",
-	"Global branding, voice, design tokens, and philosophy shared across every product.":
-		"Global branding, stemme, designtokens og filosofi delt på tværs af alle produkter.",
-	"Product specs, colorways, BOM, and design briefs in one place.":
-		"Produktspecifikationer, farvevarianter, BOM og designbriefs samlet ét sted.",
 	"Local preview — changes stay in this browser until Surfaces migrations are deployed.":
 		"Lokal forhåndsvisning — ændringer bliver i denne browser, indtil Surfaces-migrationerne er udrullet.",
 	"Got it — updated the open changes with “{note}”.": "Forstået — opdaterede de åbne ændringer med “{note}”.",
@@ -204,13 +196,9 @@ export const SURFACES: Record<string, string> = {
 	"Sent “{title}”": "Sendte “{title}”",
 	"Done: “{title}”": "Klaret: “{title}”",
 	"Mobile App": "Mobilapp",
-	"iOS and Android app, previewed in a real phone frame.": "iOS- og Android-app, vist i en rigtig telefonramme.",
 	"Desktop App": "Desktop-app",
-	"macOS and Windows app in a native window.": "App til macOS og Windows i et rigtigt vindue.",
 	Database: "Database",
-	"Tables, schemas, records, and queries.": "Tabeller, skemaer, poster og forespørgsler.",
 	"Financial Dashboard": "Økonomioverblik",
-	"MRR, runway, cashflow, P&L, and KPIs at a glance.": "MRR, runway, likviditet, resultat og nøgletal på ét blik.",
 	Identity: "Identitet",
 	"Brand, voice, design & philosophy": "Brand, stemme, design og filosofi",
 	"Design System": "Designsystem",
@@ -282,8 +270,6 @@ export const SURFACES: Record<string, string> = {
 	"MOQ {moq}": "MOQ {moq}",
 	"Essays, analysis & charts": "Essays, analyser og grafer",
 	"Report & Analysis": "Rapport & analyse",
-	"Long-form essays, vendor analyses, and design notes with inline charts and tables.":
-		"Længere essays, leverandøranalyser og designnoter med grafer og tabeller.",
 	"Key specs": "Nøglespecifikationer",
 	"Production plan": "Produktionsplan",
 	"Deep-dive vendor analysis": "Uddybende leverandøranalyse",

@@ -11,7 +11,7 @@ import {
 	surfaceFigureChoices,
 	surfaceFigureIcon,
 } from "../../ui/surface-figure.ts";
-import { type SurfaceKind, surfaceKindFigure } from "../surface-kinds.ts";
+import { type SurfaceKind, surfaceKindFigure, surfaceKindSubtitle } from "../surface-kinds.ts";
 import { migrationPending, type SurfacesStore } from "../surfaces-store.ts";
 
 type AgentAction = ApplySurfaceMigrationInput["agentDecisions"][number]["action"];
@@ -279,7 +279,7 @@ interface SurfacePreset {
 	readonly slug: string | null;
 	readonly kind: SurfaceKind;
 	readonly title: string;
-	readonly description: string;
+	readonly line?: string;
 	readonly archetype: "live_build" | "studio";
 	readonly folderRoot?: string;
 }
@@ -290,7 +290,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "identity",
 		kind: "identity",
 		title: phrase("Identity"),
-		description: phrase("Global branding, voice, design tokens, and philosophy shared across every product."),
 		archetype: "studio",
 		folderRoot: "identity",
 	},
@@ -299,7 +298,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "website",
 		kind: "website",
 		title: phrase("Website"),
-		description: phrase("Marketing site or storefront with live preview and publish."),
 		archetype: "live_build",
 	},
 	{
@@ -307,7 +305,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "app",
 		kind: "web_app",
 		title: phrase("Web App"),
-		description: phrase("Interactive product or customer portal built in parallel sessions."),
 		archetype: "live_build",
 	},
 	{
@@ -315,7 +312,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "mobile",
 		kind: "mobile_app",
 		title: phrase("Mobile App"),
-		description: phrase("iOS and Android app, previewed in a real phone frame."),
 		archetype: "live_build",
 	},
 	{
@@ -323,7 +319,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "desktop",
 		kind: "desktop_app",
 		title: phrase("Desktop App"),
-		description: phrase("macOS and Windows app in a native window."),
 		archetype: "live_build",
 	},
 	{
@@ -331,7 +326,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "database",
 		kind: "database",
 		title: phrase("Database"),
-		description: phrase("Tables, schemas, records, and queries."),
 		archetype: "studio",
 		folderRoot: "database",
 	},
@@ -340,7 +334,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "dashboard",
 		kind: "dashboard",
 		title: phrase("Financial Dashboard"),
-		description: phrase("MRR, runway, cashflow, P&L, and KPIs at a glance."),
 		archetype: "live_build",
 	},
 	{
@@ -348,7 +341,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "product",
 		kind: "product",
 		title: phrase("Product Studio"),
-		description: phrase("Product specs, colorways, BOM, and design briefs in one place."),
 		archetype: "studio",
 		folderRoot: "product",
 	},
@@ -357,7 +349,6 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: "reports",
 		kind: "report",
 		title: phrase("Report & Analysis"),
-		description: phrase("Long-form essays, vendor analyses, and design notes with inline charts and tables."),
 		archetype: "studio",
 		folderRoot: "reports",
 	},
@@ -366,13 +357,13 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		slug: null,
 		kind: "custom",
 		title: phrase("Custom Surface"),
-		description: phrase("Anything else: an inventory tracker, investor room, support desk…"),
+		line: phrase("Anything else: an inventory tracker, investor room, support desk…"),
 		archetype: "live_build",
 	},
 ];
 
-function figureTile(figure: SurfaceFigureId): HTMLElement {
-	return h("span", { class: "surface-tile is-sheet", "aria-hidden": "true" }, surfaceFigure(figure));
+function kindLine(preset: SurfacePreset): string {
+	return preset.line ? t(preset.line) : surfaceKindSubtitle(preset.kind);
 }
 
 export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string): void {
@@ -380,26 +371,30 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 	let customArchetype: "live_build" | "studio" = "live_build";
 	let figure: SurfaceFigureId = surfaceKindFigure(selected.kind);
 	let figureChosen = false;
+	let customName = false;
 	const dialog = new SurfaceDialog(t("New surface"), "surface-sheet surface-create-sheet", () => undefined);
 	const nameInput = h("input", {
 		type: "text",
-		class: "surface-create-input",
+		class: "surface-create-name",
 		value: t(selected.title),
 		placeholder: t("Surface name"),
+		"aria-label": t("Name"),
 		autocomplete: "off",
 	});
-	let customName = false;
 	nameInput.addEventListener("input", () => {
 		customName = nameInput.value.trim().length > 0;
 	});
+	const line = h("p", { class: "surface-create-line" }, kindLine(selected));
 	const promptInput = h("textarea", {
 		class: "surface-create-prompt",
-		rows: 2,
+		rows: 3,
+		"aria-label": t("First session (optional)"),
 		placeholder: t("Optional: describe the first change to start right away…"),
 	});
 	const descriptionInput = h("textarea", {
 		class: "surface-create-prompt",
 		rows: 2,
+		"aria-label": t("Brief"),
 		placeholder: t("What is this surface for? An agent shapes it from this brief."),
 	});
 	const status = h("p", { class: "surface-sheet-status", role: "status" });
@@ -430,86 +425,127 @@ export function openCreateSurfaceSheet(store: SurfacesStore, profileId: string):
 		segment("studio", t("Studio files"), t("Documents, tables, and specs that sessions edit.")),
 	);
 	archetypeRow.setAttribute("aria-label", t("How it is built"));
+	const customPanel = h("div", { class: "surface-create-custom", hidden: true }, archetypeRow, descriptionInput);
+
+	const hero = h("span", { class: "surface-tile is-stage", "aria-hidden": "true" }, surfaceFigure(figure));
+	const showFigure = () => hero.replaceChildren(surfaceFigure(figure));
+	const swap = h(
+		"button",
+		{ type: "button", class: "surface-create-swap", "aria-expanded": "false" },
+		t("Change figure"),
+	);
 	const figures = surfaceFigureChoices(figure, (id) => {
 		figure = id;
 		figureChosen = true;
+		showFigure();
+		setPicker(false);
+		swap.focus({ preventScroll: true });
 	});
-	const customPanel = h(
-		"div",
-		{ class: "surface-create-custom", hidden: true },
-		h("div", { class: "surface-create-field" }, h("span", null, t("How it is built")), archetypeRow),
-		h("label", { class: "surface-create-field" }, h("span", null, t("Brief")), descriptionInput),
-	);
-	const cards = SURFACE_PRESETS.map((preset) => {
-		const card = h(
+	const picker = h("div", { class: "surface-create-figures", hidden: true }, figures);
+	const setPicker = (open: boolean) => {
+		picker.hidden = !open;
+		swap.setAttribute("aria-expanded", String(open));
+		if (open) figures.querySelector<HTMLElement>('[aria-checked="true"]')?.focus({ preventScroll: true });
+	};
+	swap.addEventListener("click", () => setPicker(picker.hidden));
+	picker.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape") return;
+		event.preventDefault();
+		event.stopPropagation();
+		setPicker(false);
+		swap.focus({ preventScroll: true });
+	});
+
+	const choose = (preset: SurfacePreset) => {
+		selected = preset;
+		for (const row of rows) {
+			const on = row.dataset.preset === preset.id;
+			row.classList.toggle("is-selected", on);
+			row.setAttribute("aria-pressed", String(on));
+		}
+		line.textContent = kindLine(preset);
+		customPanel.hidden = preset.kind !== "custom";
+		if (!figureChosen) {
+			figure = surfaceKindFigure(preset.kind);
+			markSurfaceFigure(figures, figure);
+			showFigure();
+		}
+		if (!customName) nameInput.value = preset.kind === "custom" ? "" : t(preset.title);
+	};
+	const rows = SURFACE_PRESETS.map((preset) => {
+		const row = h(
 			"button",
 			{
 				type: "button",
-				class: `surface-create-card${preset.id === selected.id ? " is-selected" : ""}`,
+				class: `surface-create-kind${preset.id === selected.id ? " is-selected" : ""}`,
 				"aria-pressed": String(preset.id === selected.id),
 				"data-preset": preset.id,
 			},
-			figureTile(surfaceKindFigure(preset.kind)),
-			h(
-				"span",
-				{ class: "surface-create-card-copy" },
-				h("strong", null, t(preset.title)),
-				h("small", null, t(preset.description)),
-			),
+			h("span", { class: "surface-tile is-kind", "aria-hidden": "true" }, surfaceFigure(surfaceKindFigure(preset.kind))),
+			h("span", { class: "surface-create-kind-name" }, t(preset.title)),
 		);
-		card.addEventListener("click", () => {
-			selected = preset;
-			for (const other of cards) {
-				const on = other === card;
-				other.classList.toggle("is-selected", on);
-				other.setAttribute("aria-pressed", String(on));
-			}
-			customPanel.hidden = preset.kind !== "custom";
-			if (!figureChosen) {
-				figure = surfaceKindFigure(preset.kind);
-				markSurfaceFigure(figures, figure);
-			}
-			if (!customName) nameInput.value = preset.kind === "custom" ? "" : t(preset.title);
+		row.addEventListener("click", () => {
+			choose(preset);
 			if (preset.kind === "custom") nameInput.focus({ preventScroll: true });
 		});
-		return card;
+		return row;
 	});
+	const kinds = h("div", { class: "surface-create-kinds", role: "group", "aria-label": t("Surface type") }, rows);
+	kinds.addEventListener("keydown", (event) => {
+		if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+		const at = rows.findIndex((row) => row === document.activeElement);
+		if (at < 0) return;
+		event.preventDefault();
+		const next = rows[(at + (event.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length]!;
+		next.focus();
+		next.click();
+	});
+
 	const submit = h("button", { type: "submit", class: "btn btn-primary" }, t("Create surface"));
 	const form = h(
 		"form",
 		{ class: "surface-create-form" },
-		h("h2", null, t("New surface")),
-		h(
-			"p",
-			{ class: "surface-sheet-lead" },
-			t("Each surface is a shared place your sessions build and update together."),
-		),
-		h("div", { class: "surface-create-grid", role: "group", "aria-label": t("Surface type") }, cards),
-		customPanel,
-		h("div", { class: "surface-create-field" }, h("span", null, t("Figure")), figures),
-		h("label", { class: "surface-create-field" }, h("span", null, t("Name")), nameInput),
-		h("label", { class: "surface-create-field" }, h("span", null, t("First session (optional)")), promptInput),
-		store.isLocalInteractive
-			? h(
-					"p",
-					{ class: "surface-local-note" },
-					t("Local preview — changes stay in this browser until Surfaces migrations are deployed."),
-				)
-			: null,
 		h(
 			"div",
-			{ class: "surface-sheet-actions" },
+			{ class: "surface-create-side" },
+			h("h2", null, t("New surface")),
+			h("p", { class: "surface-create-lead" }, t("What should your sessions build?")),
+			kinds,
+		),
+		h(
+			"div",
+			{ class: "surface-create-main" },
+			h("div", { class: "surface-create-stage" }, hero, swap, picker),
 			h(
-				"a",
-				{
-					class: "surface-sheet-link",
-					href: `#/c/${profileId}/new-program`,
-					onclick: () => dialog.close(false),
-				},
-				t("Import a program instead"),
+				"div",
+				{ class: "surface-create-body" },
+				nameInput,
+				line,
+				customPanel,
+				promptInput,
+				store.isLocalInteractive
+					? h(
+							"p",
+							{ class: "surface-local-note" },
+							t("Local preview — changes stay in this browser until Surfaces migrations are deployed."),
+						)
+					: null,
 			),
-			status,
-			submit,
+			h(
+				"div",
+				{ class: "surface-sheet-actions" },
+				h(
+					"a",
+					{
+						class: "surface-sheet-link",
+						href: `#/c/${profileId}/new-program`,
+						onclick: () => dialog.close(false),
+					},
+					t("Import a program instead"),
+				),
+				status,
+				submit,
+			),
 		),
 	);
 	form.addEventListener("submit", async (event) => {
