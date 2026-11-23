@@ -473,6 +473,11 @@ describe("cloud surface runtime tools", () => {
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("atomic, self-contained, and conflict-minimizing");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("surfaceGate");
 		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("apps/<repo>*/index.html");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain("Commit source only, never build output");
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).toContain('"preview": { "run"');
+		expect(SURFACE_STAGED_CODING_INSTRUCTIONS).not.toContain("commit the built output folder");
+		expect(text).toContain("commit source only, never build output");
+		expect(text).not.toContain("commit the built output folder");
 		expect(text).toContain("surfaceGate");
 		expect(text).toContain("runChecks: true");
 	});
