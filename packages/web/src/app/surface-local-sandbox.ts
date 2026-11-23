@@ -435,13 +435,14 @@ function thetabandHeadbandObject(): Record<string, unknown> {
 		line: "Illustrativ model af pandebåndet",
 		model: "headband.glb",
 		view: { yaw: 30, pitch: 14 },
-		tint: ["BandFabric"],
+		tint: ["BandFabric", "Shell"],
 		parts: [
-			{ id: "band", name: "Strikket bånd", state: "known", node: "Band" },
-			{ id: "sensor-left", name: "Venstre sensor", state: "known", node: "Sensor_Left", pull: [-0.12, -0.3, 0.05] },
-			{ id: "sensor-center", name: "Midtersensor", state: "known", node: "Sensor_Center", pull: [0, -0.34, 0.08] },
-			{ id: "sensor-right", name: "Højre sensor", state: "known", node: "Sensor_Right", pull: [0.12, -0.3, 0.05] },
-			{ id: "battery", name: "LiPo 280 mAh", state: "assumed", node: "Battery" },
+			{ id: "strap", name: "Vævet rem", state: "known", node: "Strap" },
+			{ id: "shell", name: "Fast front", state: "known", node: "Shell", pull: [0, 0, 0.45] },
+			{ id: "liner", name: "Polstring", state: "assumed", node: "Liner", pull: [0, 0, -0.15] },
+			{ id: "fore", name: "Pandesensorer", state: "known", node: "Sensors_Front", pull: [0, -0.05, -0.32] },
+			{ id: "temple", name: "Tindingesensorer", state: "known", node: "Sensors_Temple", pull: [0, 0.22, 0] },
+			{ id: "battery", name: "Batteri", state: "assumed", node: "Battery" },
 		],
 	};
 }

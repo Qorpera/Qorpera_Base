@@ -155,10 +155,15 @@ describe("the sample headband", () => {
 		const object = parseStudioObject(files["product/object.json"]);
 		expect(object?.model).toBe("headband.glb");
 		const nodes = gltf.nodes.map((node) => node.name);
-		expect(nodes).toEqual(["Band", "Sensor_Left", "Sensor_Center", "Sensor_Right", "Battery"]);
+		expect(nodes).toEqual(["Strap", "Shell", "Liner", "Sensors_Front", "Sensors_Temple", "Battery"]);
 		expect(object?.parts.map((part) => part.node)).toEqual(nodes);
-		const materials = gltf.nodes.map((node) => gltf.materials[gltf.meshes[node.mesh]!.primitives[0]!.material]!.name);
-		expect(new Set(materials).size).toBe(nodes.length);
-		expect([...tintedMaterials(materials, object)]).toEqual(["BandFabric"]);
+		const materials = gltf.materials.map((material) => material.name);
+		expect(materials).toEqual(["BandFabric", "Shell", "SensorPad", "Contact", "BatteryMetal"]);
+		const used = new Set(
+			gltf.nodes.flatMap((node) => gltf.meshes[node.mesh]!.primitives.map((primitive) => primitive.material)),
+		);
+		expect(used.size).toBe(materials.length);
+		expect([...tintedMaterials(materials, object)]).toEqual(["BandFabric", "Shell"]);
+		expect(readFileSync(new URL("./fixtures/headband.glb", import.meta.url)).byteLength).toBeLessThan(120 * 1024);
 	});
 });
