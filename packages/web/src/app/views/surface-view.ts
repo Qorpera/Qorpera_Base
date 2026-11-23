@@ -13,6 +13,7 @@ import { growToText, h, icon, personAvatar } from "../../ui/dom.ts";
 import { playOnce } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
 import { type SurfaceSkeletonKind, surfaceSkeleton } from "../../ui/skeleton.ts";
+import { afterPaint } from "../../ui/time-slice.ts";
 import { opsComposerPlaceholder, supportsViewportSplit } from "../surface-kinds.ts";
 import { renderLocalSitePreviewHtml } from "../surface-local-sandbox.ts";
 import {
@@ -29,6 +30,7 @@ import {
 	surfaceBySlug,
 	surfaceHasReports,
 } from "../surfaces-store.ts";
+import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import { CrewFigures } from "./surface-crew.ts";
 import { applyIdentityTokensToFrame, SurfaceDoorStage } from "./surface-door.ts";
 import { openPublishPatchnotesSheet } from "./surface-publish-sheet.ts";
@@ -40,6 +42,7 @@ import { SurfaceStudioView } from "./surface-studio-view.ts";
 export interface SurfaceMount {
 	readonly el: HTMLElement;
 	update(): void;
+	deactivate?(): void;
 	dispose(): void;
 }
 
@@ -140,6 +143,7 @@ export class SurfaceView {
 	readonly el = h("section", { class: "page surface-page" });
 	readonly slug: string;
 	readonly #host: SurfaceViewHost;
+	readonly #active = new AbortController();
 	readonly #lifetime = new AbortController();
 	readonly #bar = h("header", { class: "surface-bar" });
 	readonly #panelToggle = h("button", {
@@ -174,13 +178,9 @@ export class SurfaceView {
 	);
 	readonly #input = h("textarea", { class: "surface-input", rows: 1 });
 	readonly #send = h("button", { type: "submit", class: "surface-send" }, icon("send"));
-	readonly #composer = h(
-		"form",
-		{ class: "surface-composer" },
-		this.#chips,
-		this.#targetRow,
-		h("div", { class: "surface-composer-shell" }, this.#point, this.#input, this.#send),
-	);
+	readonly #shell = h("div", { class: "surface-composer-shell" }, this.#point, this.#input, this.#send);
+	readonly #composer = h("form", { class: "surface-composer" }, this.#chips, this.#targetRow, this.#shell);
+	readonly #images: SurfaceComposerImages;
 	readonly #toast = h("div", { class: "surface-toast-host", role: "status" });
 	readonly #drawer: SurfaceSessionDrawer;
 	readonly #primaryDoor: SurfaceDoorStage;
@@ -198,8 +198,9 @@ export class SurfaceView {
 	#localSiteShown = "";
 	#loadingKind: SurfaceSkeletonKind | "" = "";
 	#contentReady = false;
-	#mountFrame: number | undefined;
-	#mountTimer: ReturnType<typeof setTimeout> | undefined;
+	#deactivated = false;
+	#disposed = false;
+	#cancelReady: (() => void) | undefined;
 	#mountedFor = "";
 	#lastSurfaceId = "";
 	#barShown = "";
@@ -224,19 +225,28 @@ export class SurfaceView {
 		} catch {
 			/* WHY: Local browser storage is optional in private/sandboxed contexts. */
 		}
-		const signal = this.#lifetime.signal;
+		const signal = this.#active.signal;
+		this.#images = new SurfaceComposerImages(this.#shell, signal, () => this.#syncSend());
+		this.#shell.insertBefore(this.#images.button, this.#input);
+		this.#composer.insertBefore(this.#images.tray.el, this.#shell);
+		this.#composer.append(this.#images.tray.status);
+		this.#images.setAvailable(host.store.canAttachImages);
 		this.#drawer = new SurfaceSessionDrawer(host.store, signal, {
 			loadSitePassword: host.loadSitePassword,
 		});
-		this.#primaryDoor = new SurfaceDoorStage(signal, {
-			onPick: (target) => this.#onPick(target),
+		this.#primaryDoor = new SurfaceDoorStage(this.#lifetime.signal, {
+			onPick: (target) => {
+				if (!this.#deactivated) this.#onPick(target);
+			},
 			onShownChange: () => {
+				if (this.#deactivated) return;
 				const surface = this.surface;
 				if (surface) this.#drawChrome(surface);
 			},
 			isPassUsable: (previewId, pass) => host.store.isPreviewPassUsable(previewId, pass),
 			onPassSent: (previewId, pass) => host.store.markPreviewPassConsumed(previewId, pass),
 			onNeedFreshPass: (previewId, stalePass) => {
+				if (this.#deactivated) return Promise.resolve(false);
 				const surface = this.surface;
 				return surface ? host.store.remintPreviewPass(surface.id, previewId, stalePass) : Promise.resolve(false);
 			},
@@ -282,7 +292,7 @@ export class SurfaceView {
 			"input",
 			() => {
 				growToText(this.#input);
-				this.#send.classList.toggle("is-ready", this.#input.value.trim().length > 0);
+				this.#syncSend();
 			},
 			{ signal },
 		);
@@ -303,26 +313,12 @@ export class SurfaceView {
 	}
 
 	#scheduleContentReady(): void {
-		const ready = () => {
-			this.#mountFrame = undefined;
-			this.#mountTimer = undefined;
-			if (this.#lifetime.signal.aborted || this.#contentReady) return;
+		this.#cancelReady = afterPaint(() => {
+			this.#cancelReady = undefined;
+			if (this.#deactivated || this.#disposed || this.#contentReady) return;
 			this.#contentReady = true;
 			this.update();
-		};
-		// WHY: Let the browser paint the loading screen and rail transition on Frame 0 before mounting heavy content; jsdom has no paint loop and runs rAF on a 16ms timer.
-		const hasCompositor =
-			typeof requestAnimationFrame === "function" &&
-			!(typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent));
-		if (hasCompositor) {
-			this.#mountFrame = requestAnimationFrame(() => {
-				this.#mountFrame = undefined;
-				if (this.#lifetime.signal.aborted) return;
-				this.#mountTimer = setTimeout(ready, 0);
-			});
-		} else {
-			this.#mountTimer = setTimeout(ready, 0);
-		}
+		}, this.#active.signal);
 	}
 
 	#clearLocalLoadTimer(): void {
@@ -349,6 +345,21 @@ export class SurfaceView {
 		this.#loadingKind = "";
 		this.#loadingSlot.replaceChildren();
 		if (revealSlot) playOnce(revealSlot, "is-entering");
+	}
+
+	#disposeMount(): void {
+		if (!this.#mount) return;
+		this.#mount.dispose();
+		this.#mount = undefined;
+		this.#mountedFor = "";
+		this.#mountSlot.replaceChildren();
+	}
+
+	#disposeAttachedReport(): void {
+		if (!this.#attachedReport) return;
+		this.#attachedReport.dispose();
+		this.#attachedReport = undefined;
+		this.#reportSlot.replaceChildren();
 	}
 
 	#clearFrames(): void {
@@ -458,25 +469,17 @@ export class SurfaceView {
 		if (!this.#input.disabled) this.#input.focus({ preventScroll: true });
 	}
 
-	dispose(): void {
-		if (this.#mountFrame !== undefined) {
-			cancelAnimationFrame(this.#mountFrame);
-			this.#mountFrame = undefined;
-		}
-		if (this.#mountTimer !== undefined) {
-			clearTimeout(this.#mountTimer);
-			this.#mountTimer = undefined;
-		}
+	deactivate(): void {
+		if (this.#deactivated) return;
+		this.#deactivated = true;
+		this.#cancelReady?.();
+		this.#cancelReady = undefined;
 		this.#clearLocalLoadTimer();
 		this.#viewportResizeObserver?.disconnect();
 		this.#viewportResizeObserver = undefined;
-		this.#clearCompare();
-		this.#primaryDoor.dispose();
-		this.#attachedReport?.dispose();
-		this.#attachedReport = undefined;
-		this.#lifetime.abort();
-		this.#mount?.dispose();
-		this.#mount = undefined;
+		this.#mount?.deactivate?.();
+		this.#attachedReport?.deactivate();
+		this.#active.abort();
 		const ownSurfaceId = this.#lastSurfaceId || this.surface?.id;
 		if (ownSurfaceId) {
 			this.#host.store.clearActiveSurface(ownSurfaceId);
@@ -486,7 +489,21 @@ export class SurfaceView {
 		}
 	}
 
+	dispose(): void {
+		if (this.#disposed) return;
+		this.#disposed = true;
+		this.deactivate();
+		this.#clearCompare();
+		this.#primaryDoor.dispose();
+		this.#attachedReport?.dispose();
+		this.#attachedReport = undefined;
+		this.#lifetime.abort();
+		this.#mount?.dispose();
+		this.#mount = undefined;
+	}
+
 	update(): void {
+		if (this.#deactivated || this.#disposed) return;
 		const store = this.#host.store;
 		const state = store.state;
 		const surface = this.surface;
@@ -574,6 +591,7 @@ export class SurfaceView {
 			);
 			if (reportMode) {
 				this.#clearFrames();
+				if (surface.archetype === "live_build") this.#disposeMount();
 				this.#mountSlot.hidden = true;
 				this.#hideLoading(this.#reportSlot);
 				this.#reportSlot.hidden = false;
@@ -587,16 +605,20 @@ export class SurfaceView {
 				}
 				this.#attachedReport.update();
 			} else if (remoteCompare || showPrimary) {
+				this.#disposeAttachedReport();
 				this.#reportSlot.hidden = true;
+				if (surface.archetype === "live_build") this.#disposeMount();
 				this.#hideLoading(this.#frames);
 				this.#drawFrames(surface);
 				const identityTokens = store.companyIdentityTokens();
 				this.#primaryDoor.setIdentityTokens(identityTokens);
 				for (const entry of this.#compareDoors.values()) entry.stage.setIdentityTokens(identityTokens);
 			} else if (waitingForWorkspace || waitingForMount) {
+				this.#disposeAttachedReport();
 				this.#clearFrames();
 				this.#showLoading(skeletonKind, t("Opening surface…"));
 			} else {
+				this.#disposeAttachedReport();
 				this.#reportSlot.hidden = true;
 				this.#clearFrames();
 				this.#mountSlot.hidden = false;
@@ -1135,7 +1157,7 @@ export class SurfaceView {
 				applyIdentityTokensToFrame(frame, this.#host.store.companyIdentityTokens());
 				onLoad?.();
 			},
-			{ signal: this.#lifetime.signal, once: true },
+			{ signal: this.#active.signal, once: true },
 		);
 		frame.srcdoc = html;
 		return frame;
@@ -1585,22 +1607,30 @@ export class SurfaceView {
 		);
 	}
 
+	#syncSend(): void {
+		this.#send.classList.toggle("is-ready", this.#input.value.trim().length > 0 && !this.#images.problem);
+	}
+
 	async #submit(): Promise<void> {
 		const surface = this.surface;
 		const text = this.#input.value.trim();
-		if (!surface || !text || this.#input.disabled) return;
+		if (!surface || !text || this.#input.disabled || this.#images.problem) return;
 		const target = this.#target;
 		const options: StartSurfaceSessionOptions = target
 			? { target, originKind: "point_to_change", originLabel: targetOriginLabel(target) }
 			: {};
+		const files = this.#images.files;
 		this.#input.value = "";
 		growToText(this.#input);
-		this.#send.classList.remove("is-ready");
-		const session = await this.#host.store.startSession(surface.id, text, options);
+		this.#images.set([]);
+		const session = await this.#host.store.startSession(surface.id, text, options, files);
 		if (!session) {
-			this.#input.value = text;
-			growToText(this.#input);
-			this.#send.classList.toggle("is-ready", text.length > 0);
+			if (!this.#input.value) {
+				this.#input.value = text;
+				growToText(this.#input);
+			}
+			if (!this.#images.files.length) this.#images.set(files);
+			this.#syncSend();
 			return;
 		}
 		if (target) {

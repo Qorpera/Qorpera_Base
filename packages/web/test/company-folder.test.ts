@@ -341,6 +341,10 @@ function ready(frame: HTMLIFrameElement) {
 	window.dispatchEvent(event);
 }
 const retries = (host: HTMLElement) => visibleText(host.querySelector(".files-retries"));
+const searchOf = (host: HTMLElement) => host.querySelector<HTMLInputElement>(".files-search-input")!;
+const section = (host: HTMLElement) =>
+	host.querySelector<HTMLElement>('.files-section[aria-pressed="true"]')?.dataset.section;
+const viewerOpen = (host: HTMLElement) => host.querySelector<HTMLDialogElement>("dialog.storage-viewer")?.open === true;
 
 describe("a folder-v2 company's Company File", () => {
 	it("lists the top folder, folders first, and enters a folder", async () => {
@@ -361,6 +365,17 @@ describe("a folder-v2 company's Company File", () => {
 		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
 	});
 
+	it("says under the list what the company's storage holds in total, and nothing when that can't be read", async () => {
+		const { host } = await opened({ usage: async () => ({ storageUsedBytes: 40 }) });
+		expect(host.querySelector(".storage-foot .storage-usage")?.textContent).toBe("40 B in total");
+		const failed = await opened({
+			usage: async () => {
+				throw new Error("Storage offline");
+			},
+		});
+		expect(failed.host.querySelector(".storage-usage")?.textContent).toBe("");
+	});
+
 	it("shows a link among the files with the target it names, and opens its page with the target, reading no bytes", async () => {
 		const { fake, host } = await opened();
 		fake.links.set("notes/latest", "../readme.txt");
@@ -375,7 +390,7 @@ describe("a folder-v2 company's Company File", () => {
 		expect(target.textContent).toBe("→ ../readme.txt");
 		expect(target.title).toBe("Link to ../readme.txt");
 		await click(link);
-		expect(host.classList.contains("has-preview")).toBe(true);
+		expect(viewerOpen(host)).toBe(true);
 		expect(link.closest(".files-row")?.classList.contains("is-open")).toBe(true);
 		expect(host.querySelector(".files-preview-head h2")?.textContent).toBe("latest");
 		expect(visibleText(host.querySelector(".files-link-target"))).toBe("Link to ../readme.txt");
@@ -398,13 +413,9 @@ describe("a folder-v2 company's Company File", () => {
 		expect(visibleText(host.querySelector(".files-empty"))).toContain("nothing");
 	});
 
-	it("embeds without a second header, searches from Settings, and switches between icon and detailed list views", async () => {
-		const search = document.createElement("input");
-		document.body.append(search);
-		const { host, fake } = await opened({ embedded: true, search });
-		expect(host.querySelector(".files-head")).toBeNull();
-		expect(host.querySelector("input")).toBeNull();
-		expect(search.parentElement).toBe(document.body);
+	it("searches the open folder and switches between icon and detailed list views", async () => {
+		const { host, fake } = await opened();
+		const search = searchOf(host);
 		expect(host.querySelector(".storage-title")?.textContent).toBe("Documents");
 		expect(host.querySelector(".files-list")?.classList.contains("is-grid")).toBe(true);
 		expect(host.querySelector('[aria-label="Icon view"]')?.getAttribute("aria-pressed")).toBe("true");
@@ -424,8 +435,8 @@ describe("a folder-v2 company's Company File", () => {
 	});
 
 	it("combines file type and name filters, then sorts real metadata without extra reads", async () => {
-		const search = document.createElement("input");
-		const { host, fake } = await opened({ embedded: true, search });
+		const { host, fake } = await opened();
+		const search = searchOf(host);
 		const filter = host.querySelector<HTMLSelectElement>('[aria-label="File type"]')!;
 		filter.value = "image";
 		filter.dispatchEvent(new Event("change"));
@@ -452,7 +463,7 @@ describe("a folder-v2 company's Company File", () => {
 	});
 
 	it("sorts loaded pages by their modification timestamps and makes partial counts explicit", async () => {
-		const { host, fake } = await opened({ embedded: true });
+		const { host, fake } = await opened();
 		fake.client.list.mockResolvedValueOnce({
 			asOfSeq: 4,
 			entries: [
@@ -479,7 +490,7 @@ describe("a folder-v2 company's Company File", () => {
 	});
 
 	it("counts one item as one, in English and in Danish", async () => {
-		const { host, fake } = await opened({ embedded: true });
+		const { host, fake } = await opened();
 		const count = () => host.querySelector(".storage-count")?.textContent;
 		await click(row(host, "big"));
 		expect(count()).toBe("0 items");
@@ -499,35 +510,36 @@ describe("a folder-v2 company's Company File", () => {
 	});
 
 	it("shows searchable Recents from the company change feed, opens a file, and returns to Documents", async () => {
-		const search = document.createElement("input");
-		const onSectionChange = vi.fn();
-		const { host, browser, fake } = await opened({ embedded: true, search, onSectionChange });
-		browser.showRecents();
-		await settle();
+		const { host, browser, fake } = await opened();
+		const search = searchOf(host);
+		await click(host.querySelector('.files-section[data-section="recents"]'));
 		expect(fake.client.history).toHaveBeenCalledWith(null, 20, expect.any(AbortSignal));
-		expect(onSectionChange).toHaveBeenLastCalledWith("recents");
+		expect(section(host)).toBe("recents");
+		expect(search.placeholder).toBe("Search recent changes");
+		expect(search.getAttribute("aria-label")).toBe("Search recent changes");
 		expect(host.querySelector<HTMLElement>(".storage-documents")?.hidden).toBe(true);
 		expect(host.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(false);
-		expect(host.classList.contains("has-preview")).toBe(false);
+		expect(viewerOpen(host)).toBe(false);
 		search.value = "log";
 		search.dispatchEvent(new Event("input"));
 		expect(
 			[...host.querySelectorAll(".storage-recents button.folder-history-path")].map((item) => item.textContent),
 		).toEqual(["notes/log.txt"]);
 		await click(host.querySelector(".storage-recents button.folder-history-path"));
-		expect(onSectionChange).toHaveBeenLastCalledWith("documents");
+		expect(section(host)).toBe("documents");
+		expect(search.placeholder).toBe("Search this folder");
 		expect(host.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(true);
 		expect(host.querySelector(".files-text")?.textContent).toBe("line one");
 		expect(search.value).toBe("");
 		browser.showDocuments();
 		await settle();
 		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
-		expect(host.classList.contains("has-preview")).toBe(false);
+		expect(viewerOpen(host)).toBe(false);
 	});
 
-	it("detaches the shared search field and stops Recents reads when disposed", async () => {
-		const search = document.createElement("input");
-		const { host, browser, fake } = await opened({ embedded: true, search });
+	it("stops search and Recents reads when disposed", async () => {
+		const { host, browser, fake } = await opened();
+		const search = searchOf(host);
 		browser.dispose();
 		search.value = "nothing";
 		search.dispatchEvent(new Event("input"));
@@ -541,12 +553,7 @@ describe("a folder-v2 company's Company File", () => {
 		expect(fake.client.list).toHaveBeenCalledTimes(1);
 	});
 
-	it("keeps an embedded host's look when disposed, so Settings fading out shows no bare list", async () => {
-		const embedded = await opened({ embedded: true });
-		embedded.browser.dispose();
-		expect([...embedded.host.classList]).toEqual(
-			expect.arrayContaining(["files-page", "folder-page", "storage-browser", "is-embedded"]),
-		);
+	it("leaves its host plain when disposed, so the host can be reused", async () => {
 		const page = await opened();
 		page.browser.dispose();
 		expect(page.host.classList.contains("files-page")).toBe(false);
@@ -554,7 +561,7 @@ describe("a folder-v2 company's Company File", () => {
 	});
 
 	it("paginates Recents and ignores an in-flight answer after disposal", async () => {
-		const { host, browser, fake } = await opened({ embedded: true });
+		const { host, browser, fake } = await opened();
 		fake.client.history.mockResolvedValueOnce({ asOfSeq: 4, items: [], next: 3 });
 		browser.showRecents();
 		await settle();
@@ -586,8 +593,7 @@ describe("a folder-v2 company's Company File", () => {
 		const src = source(fake);
 		const host = document.createElement("section");
 		document.body.append(host);
-		const onSectionChange = vi.fn();
-		const browser = new CompanyFolderBrowser(host, src.value, people, { embedded: true, onSectionChange });
+		const browser = new CompanyFolderBrowser(host, src.value, people);
 		disposers.push(() => browser.dispose());
 		const listing = deferred<CloudMemberFolderListPage>();
 		const history = deferred<CloudMemberFolderHistory>();
@@ -599,12 +605,12 @@ describe("a folder-v2 company's Company File", () => {
 		listing.resolve({ asOfSeq: 4, entries: [entry("notes")], next: null });
 		await opening;
 		await settle();
-		expect(onSectionChange).toHaveBeenLastCalledWith("recents");
+		expect(section(host)).toBe("recents");
 		browser.showDocuments();
 		history.resolve({ asOfSeq: 4, items: [], next: null });
 		await settle();
 		await settle();
-		expect(onSectionChange).toHaveBeenLastCalledWith("documents");
+		expect(section(host)).toBe("documents");
 		expect(host.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(true);
 		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
 	});
@@ -612,7 +618,7 @@ describe("a folder-v2 company's Company File", () => {
 	it("keeps the older Recents pages already shown when a background sync reads the newest page again", async () => {
 		vi.useFakeTimers();
 		const set = recentSet;
-		const { fake, src, host, browser } = await opened({ embedded: true });
+		const { fake, src, host, browser } = await opened();
 		const shown = () =>
 			[...host.querySelectorAll(".storage-recents button.folder-history-path")].map((path) => path.textContent);
 		const older = () =>
@@ -644,7 +650,7 @@ describe("a folder-v2 company's Company File", () => {
 
 	it("drops older Recents pages after an access change or a feed reset instead of showing them unchecked", async () => {
 		vi.useFakeTimers();
-		const { fake, src, host, browser } = await opened({ embedded: true });
+		const { fake, src, host, browser } = await opened();
 		const shown = () =>
 			[...host.querySelectorAll(".storage-recents button.folder-history-path")].map((path) => path.textContent);
 		const older = () =>
@@ -695,7 +701,7 @@ describe("a folder-v2 company's Company File", () => {
 
 	it("clears Recents at an access change even when the reads after it fail, and the next poll shows the newest page", async () => {
 		vi.useFakeTimers();
-		const { fake, src, host, browser } = await opened({ embedded: true });
+		const { fake, src, host, browser } = await opened();
 		const shown = () =>
 			[...host.querySelectorAll(".storage-recents button.folder-history-path")].map((path) => path.textContent);
 		const older = () =>
@@ -763,7 +769,7 @@ describe("a folder-v2 company's Company File", () => {
 
 	it("forgets older Recents when a folder listing moves past feed changes it never read", async () => {
 		vi.useFakeTimers();
-		const { fake, src, host, browser } = await opened({ embedded: true });
+		const { fake, src, host, browser } = await opened();
 		const shown = () =>
 			[...host.querySelectorAll(".storage-recents button.folder-history-path")].map((path) => path.textContent);
 		const older = () =>
@@ -839,7 +845,7 @@ describe("a folder-v2 company's Company File", () => {
 
 	it("reads through every change that arrived between two refreshes before joining the older Recents pages", async () => {
 		vi.useFakeTimers();
-		const { fake, src, host, browser } = await opened({ embedded: true });
+		const { fake, src, host, browser } = await opened();
 		const seqs = () =>
 			[...host.querySelectorAll(".storage-recents button.folder-history-path")].map((path) =>
 				Number(path.textContent?.match(/\d+/)?.[0]),
@@ -906,7 +912,7 @@ describe("a folder-v2 company's Company File", () => {
 			const src = source(fake),
 				host = document.createElement("section");
 			document.body.append(host);
-			const browser = new CompanyFolderBrowser(host, src.value, people, { embedded: true });
+			const browser = new CompanyFolderBrowser(host, src.value, people);
 			disposers.push(() => browser.dispose());
 			await browser.open();
 			await settle();
@@ -924,27 +930,8 @@ describe("a folder-v2 company's Company File", () => {
 		}
 	});
 
-	it("draws dates again in the time zone chosen since, without reading the folder again", async () => {
-		expect(setTimeZonePreference("UTC")).toBe(true);
-		try {
-			const { fake, host, browser } = await opened({ embedded: true });
-			const modified = () =>
-				[...host.querySelectorAll<HTMLElement>(".files-row-main")]
-					.find((button) => button.querySelector(".files-name")?.textContent === "readme.txt")
-					?.querySelector("time")
-					?.title.replace(/\s/g, " ");
-			expect(modified()).toBe("Oct 3, 2026, 9:12 AM");
-			expect(setTimeZonePreference("Pacific/Auckland")).toBe(true);
-			browser.redraw();
-			expect(modified()).toBe("Oct 3, 2026, 10:12 PM");
-			expect(fake.client.list).toHaveBeenCalledOnce();
-		} finally {
-			setTimeZonePreference("system");
-		}
-	});
-
 	it("retries a failed Recents read in the same section", async () => {
-		const { host, browser, fake } = await opened({ embedded: true });
+		const { host, browser, fake } = await opened();
 		fake.client.history.mockRejectedValueOnce(new Error("offline"));
 		browser.showRecents();
 		await settle();
@@ -957,15 +944,14 @@ describe("a folder-v2 company's Company File", () => {
 	});
 
 	it("keeps Documents selected after a failed return from Recents and retries the requested root folder", async () => {
-		const onSectionChange = vi.fn();
-		const { host, browser, fake } = await opened({ embedded: true, onSectionChange });
+		const { host, browser, fake } = await opened();
 		await click(row(host, "notes"));
 		browser.showRecents();
 		await settle();
 		fake.client.list.mockRejectedValueOnce(new Error("offline"));
 		browser.showDocuments();
 		await settle();
-		expect(onSectionChange).toHaveBeenLastCalledWith("documents");
+		expect(section(host)).toBe("documents");
 		expect(host.querySelector<HTMLElement>(".storage-documents")?.hidden).toBe(false);
 		expect(host.querySelector<HTMLElement>(".storage-recents")?.hidden).toBe(true);
 		expect(status(host)).toContain("could not be read just now");
@@ -984,7 +970,7 @@ describe("a folder-v2 company's Company File", () => {
 		const { host } = await opened();
 		await click(row(host, "readme.txt"));
 		expect(host.querySelector(".files-text")?.textContent).toBe("Hello.");
-		expect(host.classList.contains("has-preview")).toBe(true);
+		expect(viewerOpen(host)).toBe(true);
 		await click(row(host, "logo.png"));
 		expect(host.querySelector<HTMLImageElement>(".files-image")?.src).toBe("blob:fixture-picture");
 		await click(row(host, "notes"));
@@ -1001,7 +987,7 @@ describe("a folder-v2 company's Company File", () => {
 			this.open = false;
 		};
 		const html = "<h1>Sales</h1><script>1</script>";
-		const { fake, host, browser } = await opened({ embedded: true });
+		const { fake, host, browser } = await opened();
 		fake.folders.add("designs");
 		fake.contents.set("designs/sales.html", html);
 		browser.showDocuments();
@@ -1091,7 +1077,7 @@ describe("a folder-v2 company's Company File", () => {
 			]) as Document;
 		});
 		const html = '<!doctype html><link rel="preconnect" href="https://x.example"><p>Hi</p>';
-		const { fake, host, browser } = await opened({ embedded: true });
+		const { fake, host, browser } = await opened();
 		fake.contents.set("hinted.html", html);
 		browser.reveal("hinted.html");
 		await settle();
@@ -1106,7 +1092,7 @@ describe("a folder-v2 company's Company File", () => {
 	});
 
 	it("opens what a folder link names: a file in its folder with its preview, a folder, or says it isn't there", async () => {
-		const { fake, host, browser } = await opened({ embedded: true });
+		const { fake, host, browser } = await opened();
 		fake.folders.add("designs");
 		fake.contents.set("designs/sales.html", "<p>Sales</p>");
 		browser.reveal("designs/sales.html");
@@ -1121,7 +1107,7 @@ describe("a folder-v2 company's Company File", () => {
 		browser.reveal("notes");
 		await settle();
 		expect(host.querySelector(".storage-title")?.textContent).toBe("notes");
-		expect(host.classList.contains("has-preview")).toBe(false);
+		expect(viewerOpen(host)).toBe(false);
 		// From Recents too, back in Documents; a file at the top opens there.
 		browser.showRecents();
 		await settle();
@@ -1134,12 +1120,12 @@ describe("a folder-v2 company's Company File", () => {
 		browser.reveal("designs/gone.html");
 		await settle();
 		expect(status(host)).toBe("gone.html could not be found in the Company File.");
-		expect(host.classList.contains("has-preview")).toBe(false);
+		expect(viewerOpen(host)).toBe(false);
 		expect(host.querySelector(".storage-title")?.textContent).toBe("Documents");
 	});
 
 	it("opens a folder link in a document it shows, here", async () => {
-		const { fake, host } = await opened({ embedded: true });
+		const { fake, host } = await opened();
 		fake.contents.set(
 			"notes/plan.md",
 			"# Plan\n\nSee [the log](folder:notes/log.txt) and [nothing](folder:../log.txt).",
@@ -1158,9 +1144,9 @@ describe("a folder-v2 company's Company File", () => {
 		document.body.removeEventListener("click", outside);
 	});
 
-	it("opens an embedded file in its own window over Settings, focused once input is enabled, and closes it", async () => {
+	it("opens a file in its own window over the page, focused once input is enabled, and closes it", async () => {
 		vi.useFakeTimers();
-		const { fake, src, host, browser } = await opened({ embedded: true });
+		const { fake, src, host, browser } = await opened();
 		const viewer = host.querySelector<HTMLDialogElement>("dialog.storage-viewer")!;
 		expect(viewer.open).toBe(false);
 		expect(viewer.contains(host.querySelector(".files-preview"))).toBe(true);
@@ -1189,7 +1175,7 @@ describe("a folder-v2 company's Company File", () => {
 		viewer.dispatchEvent(pressed);
 		expect(pressed.defaultPrevented).toBe(true);
 		expect(viewer.open).toBe(false);
-		expect(host.classList.contains("has-preview")).toBe(false);
+		expect(viewerOpen(host)).toBe(false);
 		expect(document.activeElement).toBe(row(host, "readme.txt"));
 		// From Recents too; a click beside the window closes it.
 		browser.showRecents();
@@ -1209,7 +1195,7 @@ describe("a folder-v2 company's Company File", () => {
 	});
 
 	it("opens the file window at once while the file is read, and fades the file in", async () => {
-		const { fake, host } = await opened({ embedded: true });
+		const { fake, host } = await opened();
 		const viewer = host.querySelector<HTMLDialogElement>("dialog.storage-viewer")!;
 		let read!: () => void;
 		const reading = fake.client.readFile.getMockImplementation()!;
@@ -1241,12 +1227,12 @@ describe("a folder-v2 company's Company File", () => {
 		fake.client.readFile.mockRejectedValueOnce(new Error("lost"));
 		await click(row(host, "readme.txt"));
 		expect(viewer.open).toBe(false);
-		expect(host.classList.contains("has-preview")).toBe(false);
+		expect(viewerOpen(host)).toBe(false);
 		expect(status(host)).toContain("could not be read");
 	});
 
 	it("grows the file window out of its file and lets it shrink back before it closes", async () => {
-		const { host } = await opened({ embedded: true });
+		const { host } = await opened();
 		const viewer = host.querySelector<HTMLDialogElement>("dialog.storage-viewer")!;
 		/** Each animation the window plays, finished by hand. */
 		const played: { keyframes: Keyframe[]; options: KeyframeAnimationOptions; finish(): void; cancel: () => void }[] =
@@ -1276,7 +1262,6 @@ describe("a folder-v2 company's Company File", () => {
 		expect(viewer.open).toBe(true);
 		expect(viewer.querySelector(".files-text")?.textContent).toBe("Hello.");
 		expect(host.querySelector<HTMLElement>(".files-preview")?.inert).toBe(true);
-		expect(host.classList.contains("has-preview")).toBe(false);
 		// Escape again while it goes changes nothing.
 		viewer.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
 		expect(played).toHaveLength(2);
@@ -1318,7 +1303,7 @@ describe("a folder-v2 company's Company File", () => {
 	});
 
 	it("rests the file window while an action runs and says what failed inside it, back under the list once closed", async () => {
-		const { fake, host } = await opened({ embedded: true });
+		const { fake, host } = await opened();
 		const viewer = host.querySelector<HTMLDialogElement>("dialog.storage-viewer")!;
 		const preview = host.querySelector<HTMLElement>(".files-preview")!;
 		await click(row(host, "readme.txt"));
@@ -1377,17 +1362,6 @@ describe("a folder-v2 company's Company File", () => {
 		expect(host.querySelector(".files-retries")?.nextElementSibling).toBe(host.querySelector(".files-root"));
 	});
 
-	it("keeps the standalone browser's preview beside the files, with no window and no scrolling", async () => {
-		const { host } = await opened();
-		const reveal = vi.fn();
-		host.querySelector<HTMLElement>(".files-preview")!.scrollIntoView = reveal;
-		await click(row(host, "readme.txt"));
-		expect(host.querySelector(".files-text")?.textContent).toBe("Hello.");
-		expect(host.querySelector("dialog")).toBeNull();
-		expect(host.querySelector(".files-body > .files-preview")?.hasAttribute("hidden")).toBe(false);
-		expect(reveal).not.toHaveBeenCalled();
-	});
-
 	it("shows a path's history with who and when, a file's and a link's versions, and an earlier one in place of the latest", async () => {
 		const { fake, host } = await opened();
 		await click(row(host, "readme.txt"));
@@ -1422,10 +1396,10 @@ describe("a folder-v2 company's Company File", () => {
 		expect(fake.client.readFile).toHaveBeenCalledTimes(reads);
 	});
 
-	it("shows the company's recent changes and opens a changed file or link from them", async () => {
+	it("shows the company's recent changes in Recents and opens a changed file or link from them", async () => {
 		const { fake, host } = await opened();
 		fake.links.set("notes/latest", "plan.md");
-		await click(host.querySelector('.files-tool[aria-label="Recent changes"]'));
+		await click(host.querySelector('.files-section[data-section="recents"]'));
 		expect(fake.client.history).toHaveBeenCalledWith(null, 20, expect.any(AbortSignal));
 		const sets = [...host.querySelectorAll(".folder-history-row")].map((line) => visibleText(line));
 		expect(sets[0]).toContain("Bo");
@@ -1438,7 +1412,7 @@ describe("a folder-v2 company's Company File", () => {
 		await click(host.querySelector("button.folder-history-path"));
 		expect(rows(host)).toEqual(["latest", "log.txt", "plan.md"]);
 		expect(host.querySelector(".files-text")?.textContent).toBe("line one");
-		await click(host.querySelector('.files-tool[aria-label="Recent changes"]'));
+		await click(host.querySelector('.files-section[data-section="recents"]'));
 		await click(host.querySelectorAll("button.folder-history-path")[1]);
 		expect(host.querySelector(".files-preview-head h2")?.textContent).toBe("latest");
 		expect(visibleText(host.querySelector(".files-link-target"))).toBe("Link to plan.md");
@@ -1888,7 +1862,7 @@ describe("choose mode: Open's \"A file…\" on an agent's computer (202609307580
 		await browser.open();
 		await settle();
 		expect(host.querySelector("h1")).toBeNull();
-		expect(host.querySelector(".files-tool")).toBeNull();
+		expect(host.querySelector(".files-head, .files-section")).toBeNull();
 		await click(row(host, "readme.txt"));
 		await click(row(host, "notes"));
 		await click(row(host, "plan.md"));

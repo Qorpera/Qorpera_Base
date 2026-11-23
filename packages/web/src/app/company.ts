@@ -89,6 +89,7 @@ import type { CompanyApp, CompanyAppIcon } from "./interface-apps.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
 import { MemberChats } from "./member-chats.ts";
+import { type ActivitySource, type ActivityWatch, watchActivity } from "./online-mark.ts";
 import { parsePresenceValue, presenceValue, sessionPlace } from "./presence-place.ts";
 import {
 	appendQuoted,
@@ -477,6 +478,7 @@ const OPEN_FULL_MS = 10_000;
 const WATCH_SKIP_MS = 1_500;
 /** The company's clock: its heartbeat with live hints, its recovery path without them. */
 const HEARTBEAT_MS = 30_000;
+const HIDDEN_PRESENCE_LEAVE_MS = 60_000;
 
 /** What a live hint reads: at once and then at most once an interval for someone looking, so a message shows as soon as
  * it is saved. A hidden tab keeps the wait, which also merges a burst of hints: nobody pays for reads nobody sees. */
@@ -696,14 +698,27 @@ export class CompanyController {
 	#hoursWaitReads = 0;
 	/** This tab on the company's presence channel, once another member could be here. */
 	#presence: CloudPresenceHandle | undefined;
+	#presenceWatching = false;
+	#present = false;
+	#hiddenPresenceTimer: ReturnType<typeof setTimeout> | undefined;
+	#activity: ActivitySource | undefined;
+	#ownedActivity: ActivityWatch | undefined;
+	readonly #seenLiveAt = new Map<string, number>();
 	/** What this tab says it shows (app/presence-place.ts): the open conversation and its place while the tab is visible. */
 	#tracked: string | null = null;
 	/** Where this tab is outside a conversation: an interface's page, an app, Concepts, Sites or an agent's card. */
 	#openPlace: string | undefined;
 
-	constructor(api: CloudApi, profile: HostedProfile, userId: string, writeInput?: SessionInputWriter) {
+	constructor(
+		api: CloudApi,
+		profile: HostedProfile,
+		userId: string,
+		writeInput?: SessionInputWriter,
+		activity?: ActivitySource,
+	) {
 		this.#api = api;
 		this.#userId = userId;
+		this.#activity = activity;
 		// A note from an app that waits in a thread (app/tell-agent.ts) answers its app's line, which the composer shows
 		// above the field and never in it (`answering`). Wherever the draft is saved and shared, the line is its text's
 		// first line (cloud/wall-reply.ts `appNoteLead`), so a reload, another tab and another member's client have it
@@ -778,8 +793,12 @@ export class CompanyController {
 			},
 			visible: () => typeof document === "undefined" || document.visibilityState !== "hidden",
 			summaries: () => this.store.get().memberChats,
-			setSummaries: (memberChats, placing) =>
-				this.store.set(placing === undefined ? { memberChats } : { memberChats, memberContactPlacing: placing }),
+			setSummaries: (memberChats, placing) => {
+				const merged = this.#mergeSeenLive(memberChats);
+				this.store.set(
+					placing === undefined ? { memberChats: merged } : { memberChats: merged, memberContactPlacing: placing },
+				);
+			},
 			setUnavailable: () => this.store.set({ memberChatsUnavailable: true, memberChats: undefined }),
 			placeFailed: () => this.reportRailError(t("The sidebar could not be changed. Try again.")),
 			// Reset sidebar counts placed contacts among the member's changes (20260930727000).
@@ -894,8 +913,14 @@ export class CompanyController {
 		clearInterval(this.#iconWatch);
 		this.#realtime?.stop();
 		this.#sidebarRealtime?.stop();
+		clearTimeout(this.#hiddenPresenceTimer);
+		this.#hiddenPresenceTimer = undefined;
 		void this.#presence?.stop().catch(() => {});
 		this.#presence = undefined;
+		this.#present = false;
+		this.#ownedActivity?.stop();
+		this.#ownedActivity = undefined;
+		this.#seenLiveAt.clear();
 		this.memberChats.stop();
 		if (this.#poll) clearInterval(this.#poll);
 		clearTimeout(this.#watching);
@@ -1610,6 +1635,7 @@ export class CompanyController {
 				this.#iconWatch = undefined;
 				return;
 			}
+			if (document.hidden) return;
 			const now = Date.now();
 			const stale = names.filter((name) => now - drawing[name]!.since > APP_ICONS_DRAWING_MS);
 			if (stale.length)
@@ -2468,27 +2494,104 @@ export class CompanyController {
 		return [...seen.values()];
 	}
 
+	#mergeSeenLive(summaries: Readonly<Record<string, MemberChatSummary>>): Readonly<Record<string, MemberChatSummary>> {
+		if (this.#seenLiveAt.size === 0) return summaries;
+		let changed = false;
+		const next: Record<string, MemberChatSummary> = { ...summaries };
+		for (const [userId, chat] of Object.entries(summaries)) {
+			const liveAt = this.#seenLiveAt.get(userId);
+			if (liveAt === undefined) continue;
+			const parsed = chat.lastSeenAt ? Date.parse(chat.lastSeenAt) : Number.NaN;
+			if (Number.isFinite(parsed) && parsed >= liveAt) {
+				this.#seenLiveAt.delete(userId);
+				continue;
+			}
+			next[userId] = { ...chat, lastSeenAt: new Date(liveAt).toISOString() };
+			changed = true;
+		}
+		return changed ? next : summaries;
+	}
+
+	#onPresenceMembers(members: PresenceMember[]): void {
+		if (this.#stopped) return;
+		const others = members.filter((member) => member.userId !== this.#userId);
+		const previousActive = new Set(
+			(this.store.get().here ?? []).filter((member) => member.staffAgentId !== null).map((member) => member.userId),
+		);
+		const nextActive = new Set(
+			others.filter((member) => member.staffAgentId !== null).map((member) => member.userId),
+		);
+		const now = Date.now();
+		let leftActive = false;
+		for (const userId of nextActive) this.#seenLiveAt.set(userId, now);
+		for (const userId of previousActive) {
+			if (nextActive.has(userId)) continue;
+			this.#seenLiveAt.set(userId, now);
+			leftActive = true;
+		}
+		const summaries = this.store.get().memberChats;
+		const merged = leftActive && summaries ? this.#mergeSeenLive(summaries) : undefined;
+		this.store.set(merged ? { here: others, memberChats: merged } : { here: others });
+		if (leftActive && (typeof document === "undefined" || document.visibilityState !== "hidden"))
+			void this.memberChats.refresh();
+	}
+
 	/** Join the presence channel once the company has another member: alone, nobody could be here. */
 	#joinPresence(): void {
 		const team = this.store.get().team;
-		if (this.#stopped || this.#presence || !team?.members.some((member) => member.userId !== this.#userId)) return;
-		try {
-			this.#presence = this.#api.joinPresence(
-				this.profile.profileId,
-				(members) => {
-					if (!this.#stopped) this.store.set({ here: members.filter((member) => member.userId !== this.#userId) });
-				},
-				() => {},
-			);
-		} catch {
+		if (this.#stopped || !team?.members.some((member) => member.userId !== this.#userId)) return;
+		if (!this.#presenceWatching) {
+			this.#presenceWatching = true;
+			if (!this.#activity) {
+				this.#ownedActivity = watchActivity();
+				this.#activity = this.#ownedActivity;
+			}
+			if (typeof document !== "undefined")
+				document.addEventListener("visibilitychange", () => this.#syncPresence(), { signal: this.signal });
+			const stopActivity = this.#activity.subscribe(() => this.#syncPresence());
+			this.signal.addEventListener("abort", stopActivity, { once: true });
+			const stopStore = this.store.subscribe(() => this.#trackOpen());
+			this.signal.addEventListener("abort", stopStore, { once: true });
+		}
+		this.#syncPresence();
+	}
+
+	#syncPresence(): void {
+		if (this.#stopped || !this.#presenceWatching) return;
+		const visible = typeof document === "undefined" || document.visibilityState !== "hidden";
+		if (!visible) {
+			this.#trackOpen();
+			if (this.#presence && this.#hiddenPresenceTimer === undefined) {
+				this.#hiddenPresenceTimer = setTimeout(() => {
+					this.#hiddenPresenceTimer = undefined;
+					if (this.#stopped || (typeof document !== "undefined" && document.visibilityState !== "hidden")) return;
+					const presence = this.#presence;
+					this.#presence = undefined;
+					this.#tracked = null;
+					this.#present = false;
+					void presence?.stop().catch(() => {});
+					this.store.set({ here: [] });
+				}, HIDDEN_PRESENCE_LEAVE_MS);
+			}
 			return;
 		}
-		this.#tracked = null;
-		if (typeof document !== "undefined")
-			document.addEventListener("visibilitychange", () => this.#trackOpen(), { signal: this.signal });
-		// The open conversation's place is known once its session is: track again when the sessions arrive.
-		const stop = this.store.subscribe(() => this.#trackOpen());
-		this.signal.addEventListener("abort", stop, { once: true });
+		if (this.#hiddenPresenceTimer !== undefined) {
+			clearTimeout(this.#hiddenPresenceTimer);
+			this.#hiddenPresenceTimer = undefined;
+		}
+		if (!this.#presence) {
+			try {
+				this.#presence = this.#api.joinPresence(
+					this.profile.profileId,
+					(members) => this.#onPresenceMembers(members),
+					() => {},
+				);
+			} catch {
+				return;
+			}
+			this.#tracked = null;
+			this.#present = false;
+		}
 		this.#trackOpen();
 	}
 
@@ -2496,14 +2599,24 @@ export class CompanyController {
 	#trackOpen(): void {
 		if (!this.#presence || this.#stopped) return;
 		const visible = typeof document === "undefined" || document.visibilityState !== "hidden";
+		const active = visible && this.#activity?.active === true;
 		const sessionId = this.#openSessionId;
 		const place = sessionId
 			? sessionPlace(this.store.get().sessions.find((session) => session.sessionId === sessionId))
 			: this.#openPlace;
 		const open = visible ? presenceValue(sessionId, place) : null;
-		if (open === this.#tracked) return;
-		this.#tracked = open;
-		this.#presence.setOpenThread(open);
+		if (!active && this.#present) {
+			this.#present = false;
+			this.#presence.setPresent?.(false);
+		}
+		if (open !== this.#tracked) {
+			this.#tracked = open;
+			this.#presence.setOpenThread(open);
+		}
+		if (active && !this.#present) {
+			this.#present = true;
+			this.#presence.setPresent?.(true);
+		}
 	}
 
 	/** Reads a conversation's new events, its waiting inputs and its coding sessions; with

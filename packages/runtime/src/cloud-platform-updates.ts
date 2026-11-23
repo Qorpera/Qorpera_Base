@@ -312,7 +312,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-23",
 		title: "Screenshots in interface sessions",
-		text: "Members can now attach screenshots and other images to the messages they send in an interface's sessions, when they start one and when they reply. The session's agent sees them: a folder or operations session gets their paths under Images the member attached and opens each with company_read; a code session opens each with coding_view_attachment. The images of the latest message are marked, so the agent knows which ones the member means now.",
+		text: "Members can now attach screenshots and other images to the messages they send in an interface's sessions, when they start one and when they reply. The session's agent sees them: a folder or operations session gets their paths under Images the member attached and opens each with company_read; a code session opens each with its attachment viewer. The images of the latest message are marked, so the agent knows which ones the member means now.",
 	},
 	{
 		id: "code-ops-git-read-claims-revert-and-lifecycle",

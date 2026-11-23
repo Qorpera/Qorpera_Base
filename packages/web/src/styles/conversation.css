@@ -60,7 +60,7 @@
 .thread-foot {
 	--glass-bg: color-mix(in srgb, var(--bg) 72%, transparent);
 	--glass-edge: color-mix(in srgb, var(--text) 10%, transparent);
-	--glass-blur: blur(18px) saturate(1.8);
+	--glass-blur: blur(10px) saturate(1.5);
 	--glass-shadow: 0 1px 2px rgb(18 18 17 / 5%), 0 6px 22px rgb(18 18 17 / 9%);
 	position: absolute; z-index: 5; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; pointer-events: none;
 }
@@ -194,7 +194,6 @@
 .message-prose li > input { min-height: 0; margin-right: 6px; }
 .message-prose a { color: var(--blue); text-decoration: none; }
 .message-prose a:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
-/* A folder link (ui/folder-links.ts) reads as a link and opens Storage in the app. */
 .message-prose .folder-link { display: inline; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--blue); text-align: inherit; cursor: default; }
 .message-prose .folder-link:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
 .message-prose .folder-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
@@ -336,7 +335,7 @@
 .composer-mic .icon { width: 17px; height: 17px; }
 /* Listening: red as a recording is, with a soft ring that breathes. */
 .composer-mic.is-listening, .composer-mic.is-listening:hover:not(:disabled) { background: #ff3b30; color: #fff; animation: composer-listening 1.4s ease-in-out infinite; }
-@keyframes composer-listening { 50% { box-shadow: 0 0 0 4px rgb(255 59 48 / 22%); } }
+@keyframes composer-listening { 50% { transform: scale(1.06); opacity: 0.85; } }
 .composer-dictation-note { margin: 6px 6px 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
 .composer-dictation-note[hidden] { display: none; }
 .composer-send { right: 3px; display: grid; place-items: center; padding: 0; border: 0; background: var(--composer-accent); color: var(--composer-on-accent); cursor: default; }
@@ -1259,9 +1258,6 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 /* Where the chat and the panel don't both fit, the panel covers the chat and has Close, as at phone width. */
 @container thread-body (max-width: 42em) { .side-panel { position: absolute; inset: 0; z-index: 25; flex-basis: auto; border-left: 0; } }
 @media (prefers-reduced-motion: reduce) { .side-panel { animation: none; } }
-/* An app's own page fills the main area, at full width and height, with no sheet's edge, shadow or slide, and no
- * header (Jonas, 10 November 2026): the app is the whole page. When it can't be shown, the line that says why has the
- * ways on under it: Reload, its folder in Storage, the way back. */
 .side-panel.is-page { z-index: auto; flex: 1 1 auto; width: 100%; height: 100%; border-left: 0; box-shadow: none; animation: none; }
 .side-panel-state { display: grid; justify-items: center; gap: 2px; margin: auto; }
 .side-panel-state .side-panel-status { margin: 0; padding-bottom: 10px; }
@@ -1274,15 +1270,6 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .side-panel-way:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 @media (max-width: 760px) { .side-panel.is-page { position: relative; inset: auto; z-index: auto; } }
 @container thread-body (max-width: 42em) { .side-panel.is-page { position: relative; inset: auto; z-index: auto; } }
-/* The Concepts viewer (views/concepts.ts; Jonas, 8 November 2026): full screen, no rail and no top bar. The side panel
- * stands where the company rail stands and is the rail — its width (views/concepts.ts reads the member's own, into
- * --concepts-width), its surface, its rows, its hover and its selection (Jonas, 13 November 2026: "polish it to match
- * the style and width of the regular sidepanel"); its tokens come from the rail's own (styles/app.css). The open
- * concept's frame fills the rest, edge to edge: nothing of Qorpera's frames it — no header, no border, no inset, no
- * band (Jonas, 13 November 2026: "minimize the borders/framing around the visual we are just trying to show"). The
- * panel ends with its list: Reload and Show in Storage are in a row's menu, and the strip under them is gone (Jonas,
- * 13 November 2026: "get rid of this at the bottom of the concepts sidepanel"). It folds to the compact rail's strip;
- * at phone width it is a top bar whose menu drops the list over the concept. */
 .frame.has-concepts .topbar { display: none; }
 .concepts { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; height: 100%; }
 /* Its edge is the rail's line, drawn inside it (an inset shadow) rather than as a border, so the line takes no width

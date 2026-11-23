@@ -7,7 +7,7 @@ function point(target: Element, type: string): void {
 	target.dispatchEvent(new MouseEvent(type, { bubbles: type !== "pointerleave", clientX: 40, clientY: 40 }));
 }
 
-function item(label: string, top: number, attributes: Record<string, string> = {}): HTMLElement {
+function item(label: string, top: number, attributes: Record<string, string | boolean> = {}): HTMLElement {
 	const element = h("button", { class: "context-menu-item", ...attributes }, label);
 	element.getBoundingClientRect = () => new DOMRect(16, top, 200, 32);
 	return element;
@@ -56,7 +56,7 @@ describe("hover glide in menus", () => {
 
 	it("passes over disabled items as a gap", () => {
 		const first = item("Brooks", 106);
-		const off = item("Fokusur", 138, { disabled: "" });
+		const off = item("Fokusur", 138, { disabled: true });
 		menu.append(first, off);
 
 		point(first, "pointerover");

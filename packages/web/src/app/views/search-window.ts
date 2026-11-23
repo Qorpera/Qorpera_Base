@@ -211,12 +211,22 @@ export class SearchWindow {
 		if (this.el.open) this.el.close();
 	}
 
+	reset(): void {
+		this.close();
+		this.#settle();
+	}
+
 	#settle(): void {
 		this.#fileSearch?.abort();
 		this.#fileSearch = null;
 		clearTimeout(this.#fileTimer);
 		const opener = this.#opener;
 		this.#opener = null;
+		this.#sources = undefined;
+		this.#files = null;
+		this.#recentFiles = [];
+		this.#shown = [];
+		this.#results.replaceChildren();
 		if (opener?.isConnected) opener.focus({ preventScroll: true });
 	}
 

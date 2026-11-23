@@ -46,8 +46,8 @@ describe("folder links in a message", () => {
 		);
 		const links = [...prose.querySelectorAll<HTMLButtonElement>("button.folder-link")];
 		expect(links.map((link) => [link.textContent, link.dataset.folderPath, link.type, link.title])).toEqual([
-			["the dashboard", "designs/sales-dashboard.html", "button", "Open designs/sales-dashboard.html in Storage"],
-			["Image: a chart", "designs/chart.png", "button", "Open designs/chart.png in Storage"],
+			["the dashboard", "designs/sales-dashboard.html", "button", "Open designs/sales-dashboard.html in Files"],
+			["Image: a chart", "designs/chart.png", "button", "Open designs/chart.png in Files"],
 		]);
 		expect(prose.querySelector("a")).toBeNull();
 	});

@@ -1,7 +1,7 @@
-@import "./settings-storage.css";
+@import "./settings-window.css";
 @import "./company-storage.css";
 
-.settings-overlay { position: fixed; z-index: 400; inset: 0; display: grid; place-items: center; padding: 36px; background: rgb(20 20 19 / 48%); backdrop-filter: blur(1.5px); font-family: var(--font-sans); font-optical-sizing: auto; font-synthesis: none; text-rendering: geometricPrecision; }
+.settings-overlay { position: fixed; z-index: 400; inset: 0; display: grid; place-items: center; padding: 36px; background: rgb(20 20 19 / 48%); font-family: var(--font-sans); font-optical-sizing: auto; font-synthesis: none; text-rendering: geometricPrecision; }
 .settings-dialog { position: relative; display: grid; grid-template-columns: 358px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); width: min(1200px, calc(100vw - 72px)); height: min(816px, calc(100dvh - 72px)); overflow: hidden; border: 1px solid #d9d9d6; border-radius: 16px; background: var(--overlay); color: #1d1d1b; box-shadow: 0 24px 80px rgb(0 0 0 / 24%); }
 /* The rail's font size sets the whole rail: search, tabs, count and the way
    back to the companies are sized in em from it. 20px is half again the old 13px; windows
@@ -274,9 +274,9 @@
 .connection-usage-meter > span { display: block; height: 100%; background: #608878; }
 .connection-usage-meter.is-low > span { background: #ff6b21; }
 .connection-usage-meter.is-stale > span { opacity: .55; }
-.connection-usage-meter.refilling > span { width: 0; animation: connection-refill 1.6s cubic-bezier(.34, 1.56, .64, 1) infinite; }
-@keyframes connection-refill { 0% { width: 0; } 70% { width: 100%; } 100% { width: 100%; } }
-@media (prefers-reduced-motion: reduce) { .connection-usage-meter.refilling > span { animation: none; width: 60%; } }
+.connection-usage-meter.refilling > span { width: 100%; transform-origin: left center; animation: connection-refill 1.6s cubic-bezier(.34, 1.56, .64, 1) infinite; }
+@keyframes connection-refill { 0% { transform: scaleX(0); } 70% { transform: scaleX(1); } 100% { transform: scaleX(1); } }
+@media (prefers-reduced-motion: reduce) { .connection-usage-meter.refilling > span { animation: none; transform: scaleX(0.6); } }
 .connection-resets { grid-column: 2 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; min-width: 0; padding-top: 12px; border-top: 1px solid #dededb; font-size: 11.5px; }
 .connection-resets .settings-copy { min-width: 0; }
 .connection-resets .settings-copy strong { font-size: 12px; }

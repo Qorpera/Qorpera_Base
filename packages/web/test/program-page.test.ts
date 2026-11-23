@@ -271,7 +271,7 @@ describe("a program app's page in the client", () => {
 				changed = listener;
 				return () => {};
 			},
-			openInStorage: vi.fn<(path: string) => void>(),
+			openInFiles: vi.fn<(path: string) => void>(),
 			openApp: vi.fn<(name: string) => void>(),
 			budgetKey: crypto.randomUUID(),
 		} satisfies AppPanelHost;

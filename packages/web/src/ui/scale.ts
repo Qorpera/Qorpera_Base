@@ -7,9 +7,27 @@
 
 /** Screen pixels per design pixel; 1 until the stylesheet is in the page. Read each time: the
  * preference or primary pointer can change (a tablet's keyboard, device emulation). */
+import { hasBrowserCompositor } from "./time-slice.ts";
+
+let cachedScaleKey = "";
+let cachedScale = 1;
+let scalePointerFine: MediaQueryList | undefined;
+
 export function uiScale(): number {
-	const scale = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--ui-scale"));
-	return Number.isFinite(scale) && scale > 0 ? scale : 1;
+	const root = document.documentElement;
+	if (!hasBrowserCompositor()) {
+		const scale = Number.parseFloat(getComputedStyle(root).getPropertyValue("--ui-scale"));
+		return Number.isFinite(scale) && scale > 0 ? scale : 1;
+	}
+	if (!scalePointerFine && typeof window.matchMedia === "function") {
+		scalePointerFine = window.matchMedia("(pointer: fine)");
+	}
+	const key = `${window.innerWidth}|${root.dataset.uiSize ?? ""}|${root.style.getPropertyValue("--ui-scale")}|${scalePointerFine?.matches ? 1 : 0}`;
+	if (key === cachedScaleKey) return cachedScale;
+	const scale = Number.parseFloat(getComputedStyle(root).getPropertyValue("--ui-scale"));
+	cachedScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+	cachedScaleKey = key;
+	return cachedScale;
 }
 
 /** A design length for an inline style; it follows --px, so a part that keeps its own size keeps it here too. */

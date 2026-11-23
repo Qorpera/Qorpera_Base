@@ -53,6 +53,11 @@ export class HoverGlide {
 			window.clearTimeout(this.#leaving);
 			window.clearTimeout(this.#lighting);
 			window.clearTimeout(this.#removing);
+			this.#animation?.cancel();
+			this.#animation = undefined;
+			this.#target = undefined;
+			this.#lit = undefined;
+			this.#to = undefined;
 		});
 	}
 
@@ -92,6 +97,10 @@ export class HoverGlide {
 		}
 		window.clearTimeout(this.#leaving);
 		this.#leaving = 0;
+		if (item === this.#target && this.attached) {
+			if (item.classList.contains("active")) item.classList.remove(LIT_CLASS);
+			return;
+		}
 		this.#glideTo(item);
 	}
 
@@ -126,7 +135,10 @@ export class HoverGlide {
 		const distance = Math.hypot(to.left - from.left, to.top - from.top);
 		const duration = Math.min(230, 150 + distance * 0.12);
 		this.#light(item, lit ? 0 : duration * 0.55);
-		const animation = this.tint.animate([frame(from), frame(to)], { duration, easing: easing("--ease-out") });
+		const animation = this.tint.animate([motionFrame(from, to), motionFrame(to, to)], {
+			duration,
+			easing: easing("--ease-out"),
+		});
 		this.#animation = animation;
 		const done = () => {
 			if (this.#animation === animation) this.#animation = undefined;
@@ -177,7 +189,8 @@ export class HoverGlide {
 // WHY: a menu still scaling in is measured at full size, and its border is not part of where the tint sits.
 export function boxWithin(list: HTMLElement, rect: DOMRect, radius: string): Box {
 	const outer = list.getBoundingClientRect();
-	const scale = list.offsetWidth > 0 && Math.abs(outer.width - list.offsetWidth) > 1 ? outer.width / list.offsetWidth : 1;
+	const scale =
+		list.offsetWidth > 0 && Math.abs(outer.width - list.offsetWidth) > 1 ? outer.width / list.offsetWidth : 1;
 	return {
 		left: (rect.left - outer.left) / scale - list.clientLeft + list.scrollLeft,
 		top: (rect.top - outer.top) / scale - list.clientTop + list.scrollTop,
@@ -202,6 +215,15 @@ function frame(box: Box): Keyframe & Record<string, string> {
 		width: `${box.width}px`,
 		height: `${box.height}px`,
 		borderRadius: box.radius,
+	};
+}
+
+function motionFrame(box: Box, target: Box): Keyframe {
+	const sx = target.width > 0 ? box.width / target.width : 1;
+	const sy = target.height > 0 ? box.height / target.height : 1;
+	return {
+		translate: `${box.left}px ${box.top}px`,
+		scale: `${sx} ${sy}`,
 	};
 }
 

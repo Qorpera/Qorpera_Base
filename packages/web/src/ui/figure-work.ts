@@ -127,8 +127,9 @@ let unit = 1;
 let tint: Tint = tintOf("#888888");
 const minW = (w: number) => Math.max(w, 1.1 / unit);
 function glow(c: CanvasRenderingContext2D, color: string, px: number): void {
+	if (unit < 0.75) return;
 	c.shadowColor = color;
-	c.shadowBlur = px * unit;
+	c.shadowBlur = Math.min(4, px * unit * 0.5);
 }
 function sparkle(c: CanvasRenderingContext2D, x: number, y: number, r: number, rot: number, col: string, a = 1): void {
 	if (r <= 0.01 || a <= 0.001) return;

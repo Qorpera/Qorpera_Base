@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
-import { parsePresenceValue, presenceValue } from "../src/app/presence-place.ts";
+import { ACTIVE_IDLE_MS } from "../src/app/online-mark.ts";
+import { COMPANY_PRESENCE_PLACE, parsePresenceValue, presenceValue } from "../src/app/presence-place.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { EMPTY_APP_LAYOUT, parseAppGroups } from "../src/cloud/app-groups.ts";
@@ -41,11 +42,14 @@ const tab = (userId: string, sessionId: string | null, name = "Presence name"): 
 
 let dispose: (() => void) | undefined;
 let visibility: DocumentVisibilityState = "visible";
+let focused = true;
 beforeEach(() => {
 	vi.useFakeTimers();
 	vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 	visibility = "visible";
+	focused = true;
 	Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+	vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
 });
 afterEach(() => {
 	dispose?.();
@@ -59,7 +63,13 @@ afterEach(() => {
 async function setup(options: { members?: HostedProfileMember[] } = {}) {
 	const f = fixture();
 	let publish: ((members: PresenceMember[]) => void) | undefined;
-	const handle = { setOpenThread: vi.fn(), sendTyping: vi.fn(), sendActivity: vi.fn(), stop: vi.fn(async () => {}) };
+	const handle = {
+		setOpenThread: vi.fn(),
+		setPresent: vi.fn(),
+		sendTyping: vi.fn(),
+		sendActivity: vi.fn(),
+		stop: vi.fn(async () => {}),
+	};
 	const join = vi.mocked(f.api.joinPresence).mockImplementation((_profile, onMembers) => {
 		publish = onMembers;
 		return handle;
@@ -173,6 +183,39 @@ describe("who is here now", () => {
 		expect(s.join).not.toHaveBeenCalled();
 		expect(s.here().hidden).toBe(true);
 	});
+
+	it("does not join presence while loaded in a hidden tab and leaves after staying hidden", async () => {
+		visibility = "hidden";
+		focused = false;
+		const s = await setup();
+		expect(s.join).not.toHaveBeenCalled();
+		visibility = "visible";
+		focused = true;
+		document.dispatchEvent(new Event("visibilitychange"));
+		expect(s.join).toHaveBeenCalledTimes(1);
+		expect(s.handle.setPresent).not.toHaveBeenCalledWith(true);
+
+		window.dispatchEvent(new Event("pointerdown"));
+		expect(s.handle.setPresent).toHaveBeenLastCalledWith(true);
+
+		await vi.advanceTimersByTimeAsync(ACTIVE_IDLE_MS);
+		expect(s.handle.setPresent).toHaveBeenLastCalledWith(false);
+
+		window.dispatchEvent(new Event("keydown"));
+		expect(s.handle.setPresent).toHaveBeenLastCalledWith(true);
+
+		visibility = "hidden";
+		focused = false;
+		document.dispatchEvent(new Event("visibilitychange"));
+		expect(s.handle.setPresent).toHaveBeenLastCalledWith(false);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(s.handle.stop).toHaveBeenCalledTimes(1);
+
+		visibility = "visible";
+		focused = true;
+		document.dispatchEvent(new Event("visibilitychange"));
+		expect(s.join).toHaveBeenCalledTimes(2);
+	});
 });
 
 describe("who is where in the company (the rail's markers)", () => {
@@ -222,6 +265,7 @@ describe("who is where in the company (the rail's markers)", () => {
 		expect(parsePresenceValue("s1@room:r1")).toEqual({ sessionId: "s1", place: "room:r1" });
 		expect(parsePresenceValue("@app:crm")).toEqual({ place: "app:crm" });
 		expect(parsePresenceValue("s1")).toEqual({ sessionId: "s1" });
+		expect(parsePresenceValue(`@${COMPANY_PRESENCE_PLACE}`)).toEqual({});
 		expect(parsePresenceValue(null)).toEqual({});
 		// Too long for the channel: the conversation alone.
 		expect(presenceValue("s1", `page:${"x".repeat(300)}`)).toBe("s1");

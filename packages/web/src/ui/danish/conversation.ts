@@ -319,7 +319,7 @@ export const CONVERSATION: Record<string, string> = {
 	// An app on its own page or a page beside the chat (app/views/app-panel.ts) and an app's card in a message
 	// (ui/markdown.ts)
 	"Beside the chat": "Ved siden af chatten",
-	"Show in Storage": "Vis i Lager",
+	"Show in Files": "Vis i Filer",
 	"Made by {name}": "Lavet af {name}",
 	"Made by an agent": "Lavet af en agent",
 	"A page of the Company File": "En side i Virksomhedsfilen",
