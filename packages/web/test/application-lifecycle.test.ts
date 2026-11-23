@@ -206,7 +206,6 @@ async function drafted(root: HTMLElement, text: string) {
 	return { input, button };
 }
 
-
 function surfacesOn() {
 	vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
 	vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockResolvedValue([]);

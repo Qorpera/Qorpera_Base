@@ -537,7 +537,8 @@ export class CompanyFolderBrowser {
 		this.#client = this.#source.folder();
 		void this.#options.usage?.().then(
 			(file) => {
-				if (!this.#disposed) this.#usage.textContent = t("{used} in total", { used: fmtBytes(file.storageUsedBytes) });
+				if (!this.#disposed)
+					this.#usage.textContent = t("{used} in total", { used: fmtBytes(file.storageUsedBytes) });
 			},
 			() => undefined,
 		);

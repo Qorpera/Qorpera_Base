@@ -51,7 +51,6 @@ export const COMPANY: Record<string, string> = {
 		"{name} er nu en mappe, så denne version kan ikke gendannes.",
 	"You may not change {name}.": "Du må ikke ændre {name}.",
 
-
 	// Organization (app/views/organization.ts)
 
 	// The company controller's own messages (app/company.ts)

@@ -317,7 +317,12 @@ export function mountApplication(
 		if (settings) closeSettings(false);
 		if (filesShown?.owner === controller) filesShown.browser.reveal(path);
 		else filesPending = { owner: controller, path };
-		navigate({ name: "company", profileId: controller.profile.profileId, section: "surface", id: filesSlug(controller) });
+		navigate({
+			name: "company",
+			profileId: controller.profile.profileId,
+			section: "surface",
+			id: filesSlug(controller),
+		});
 	}
 	function openSettings(tab?: SettingsTab): void {
 		if (settings || feedback || !auth.userId) return;
@@ -2855,7 +2860,12 @@ export function mountApplication(
 			}
 			case "file": {
 				navigate(
-					{ name: "company", profileId: controller.profile.profileId, section: "surface", id: filesSlug(controller) },
+					{
+						name: "company",
+						profileId: controller.profile.profileId,
+						section: "surface",
+						id: filesSlug(controller),
+					},
 					true,
 				);
 				return;

@@ -178,7 +178,6 @@ function realtimeFixture() {
 	return f;
 }
 
-
 function surfacesOn() {
 	vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
 	vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockResolvedValue([]);
@@ -602,11 +601,12 @@ describe("settings session lifecycle", () => {
 		composer.dispatchEvent(new Event("input", { bubbles: true }));
 		open(f.root);
 		await draw();
-		expect(
-			[...f.root.querySelectorAll('.settings-nav [role="tab"]')].map(
-				(tab) => tab.textContent,
-			),
-		).toEqual(["General", "Company", "Leaderboard", "AI subscriptions"]);
+		expect([...f.root.querySelectorAll('.settings-nav [role="tab"]')].map((tab) => tab.textContent)).toEqual([
+			"General",
+			"Company",
+			"Leaderboard",
+			"AI subscriptions",
+		]);
 		for (const tab of f.root.querySelectorAll('.settings-nav [role="tab"]'))
 			expect(tab.querySelector("svg.icon")).not.toBeNull();
 		// Appearance is part of General, under the account's settings; the agent rules are not.
@@ -637,9 +637,9 @@ describe("settings session lifecycle", () => {
 		const search = f.root.querySelector<HTMLInputElement>('.settings-header input[aria-label="Search settings"]')!;
 		search.value = "time zone";
 		search.dispatchEvent(new Event("input"));
-		const shownTabs = [
-			...f.root.querySelectorAll<HTMLElement>(".settings-nav [role=tab]"),
-		].filter((tab) => !tab.hidden);
+		const shownTabs = [...f.root.querySelectorAll<HTMLElement>(".settings-nav [role=tab]")].filter(
+			(tab) => !tab.hidden,
+		);
 		expect(shownTabs.map((tab) => tab.id)).toEqual(["settings-tab-general"]);
 		search.value = "team";
 		search.dispatchEvent(new Event("input"));
@@ -769,9 +769,9 @@ describe("settings session lifecycle", () => {
 		// Company holds the good will counted on sales, Leaderboard ranks friends by them; General has neither.
 		search.value = "sales";
 		search.dispatchEvent(new Event("input"));
-		const shown = [
-			...f.root.querySelectorAll<HTMLElement>('.settings-nav [role="tab"]'),
-		].filter((tab) => !tab.hidden);
+		const shown = [...f.root.querySelectorAll<HTMLElement>('.settings-nav [role="tab"]')].filter(
+			(tab) => !tab.hidden,
+		);
 		expect(shown.map((tab) => tab.id)).toEqual(["settings-tab-company", "settings-tab-leaderboard"]);
 		expect(f.root.querySelector("#settings-tab-company")?.getAttribute("aria-selected")).toBe("true");
 	});
