@@ -189,3 +189,92 @@ export function shortestTurn(from: number, to: number): number {
 	if (delta < -Math.PI) delta += turn;
 	return from + delta;
 }
+
+function channelHex(value: number): string {
+	return Math.round(Math.max(0, Math.min(1, value)) * 255)
+		.toString(16)
+		.padStart(2, "0");
+}
+
+function linearToSrgb(value: number): number {
+	const v = Math.max(0, Math.min(1, value));
+	return v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055;
+}
+
+function hueDegrees(token: string): number | undefined {
+	const match = /^(-?[\d.]+(?:e-?\d+)?)(deg|rad|grad|turn)?$/i.exec(token);
+	if (!match) return token.toLowerCase() === "none" ? 0 : undefined;
+	const value = Number(match[1]);
+	if (!Number.isFinite(value)) return undefined;
+	const unit = match[2]?.toLowerCase();
+	const degrees =
+		unit === "rad" ? (value * 180) / Math.PI : unit === "grad" ? value * 0.9 : unit === "turn" ? value * 360 : value;
+	return ((degrees % 360) + 360) % 360;
+}
+
+function amount(token: string, whole: number): number | undefined {
+	if (token.toLowerCase() === "none") return 0;
+	const match = /^(-?[\d.]+(?:e-?\d+)?)(%)?$/.exec(token);
+	if (!match) return undefined;
+	const value = Number(match[1]);
+	if (!Number.isFinite(value)) return undefined;
+	return match[2] ? (value / 100) * whole : value;
+}
+
+function hslToRgb(h: number, s: number, l: number): readonly [number, number, number] {
+	const k = (n: number) => (n + h / 30) % 12;
+	const a = s * Math.min(l, 1 - l);
+	const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+	return [f(0), f(8), f(4)];
+}
+
+function oklchToRgb(l: number, c: number, h: number): readonly [number, number, number] {
+	const a = c * Math.cos((h * Math.PI) / 180);
+	const b = c * Math.sin((h * Math.PI) / 180);
+	const lms = [
+		(l + 0.3963377774 * a + 0.2158037573 * b) ** 3,
+		(l - 0.1055613458 * a - 0.0638541728 * b) ** 3,
+		(l - 0.0894841775 * a - 1.291485548 * b) ** 3,
+	] as const;
+	return [
+		linearToSrgb(4.0767416621 * lms[0] - 3.3077115913 * lms[1] + 0.2309699292 * lms[2]),
+		linearToSrgb(-1.2684380046 * lms[0] + 2.6097574011 * lms[1] - 0.3413193965 * lms[2]),
+		linearToSrgb(-0.0041960863 * lms[0] - 0.7034186147 * lms[1] + 1.707614701 * lms[2]),
+	];
+}
+
+export function studioColorHex(value: string | undefined): string | undefined {
+	const text = value?.trim().toLowerCase() ?? "";
+	const hex = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(text)?.[1];
+	if (hex) {
+		const full = hex.length <= 4 ? [...hex.slice(0, 3)].map((digit) => digit + digit).join("") : hex.slice(0, 6);
+		return `#${full}`;
+	}
+	const call = /^(rgba?|hsla?|oklch)\(\s*([^)]*)\)$/.exec(text);
+	if (!call) return undefined;
+	const tokens = call[2]!
+		.split("/")[0]!
+		.trim()
+		.split(/[\s,]+/)
+		.filter(Boolean);
+	if (tokens.length !== 3) return undefined;
+	const [first, second, third] = tokens as [string, string, string];
+	let rgb: readonly [number, number, number] | undefined;
+	if (call[1]!.startsWith("rgb")) {
+		const parts = [amount(first, 255), amount(second, 255), amount(third, 255)];
+		if (parts.every((part): part is number => part !== undefined))
+			rgb = [parts[0]! / 255, parts[1]! / 255, parts[2]! / 255];
+	} else if (call[1]!.startsWith("hsl")) {
+		const h = hueDegrees(first);
+		const s = amount(second.endsWith("%") ? second : `${second}%`, 1);
+		const l = amount(third.endsWith("%") ? third : `${third}%`, 1);
+		if (h !== undefined && s !== undefined && l !== undefined)
+			rgb = hslToRgb(h, Math.max(0, Math.min(1, s)), Math.max(0, Math.min(1, l)));
+	} else {
+		const l = amount(first, 1);
+		const c = amount(second, 0.4);
+		const h = hueDegrees(third);
+		if (l !== undefined && c !== undefined && h !== undefined) rgb = oklchToRgb(l, Math.max(0, c), h);
+	}
+	return rgb ? `#${rgb.map(channelHex).join("")}` : undefined;
+}

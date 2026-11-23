@@ -66,7 +66,13 @@ function productStudio() {
 	});
 }
 
-async function productStoreWithFolder(binaries: () => Readonly<Record<string, StudioBinaryRef>>) {
+async function productStoreWithFolder(
+	binaries: () => Readonly<Record<string, StudioBinaryRef>>,
+	colorways: readonly { readonly name: string; readonly hex: string }[] = [
+		{ name: "Lavendel", hex: "#c3bbea" },
+		{ name: "Skifer", hex: "#4a5963" },
+	],
+) {
 	const surface = productStudio();
 	const readCloudBinary = vi.fn(async () => new Uint8Array([1, 2, 3]));
 	const store = storeWith(
@@ -80,10 +86,7 @@ async function productStoreWithFolder(binaries: () => Readonly<Record<string, St
 					{
 						"surfaces/thetabands/specs.json": JSON.stringify({
 							model: { kind: "headband", dimensions: "168 x 38 mm", layers: ["Cover", "Board"] },
-							colorways: [
-								{ name: "Lavendel", hex: "#c3bbea" },
-								{ name: "Skifer", hex: "#4a5963" },
-							],
+							colorways,
 						}),
 						"surfaces/thetabands/object.json": JSON.stringify({ model: "model.glb", tint: ["Shell"] }),
 					},
@@ -98,13 +101,51 @@ async function productStoreWithFolder(binaries: () => Readonly<Record<string, St
 	return { store, surface, readCloudBinary };
 }
 
-function fakeThree(options: { readonly webgl: boolean }) {
+function fakeThree(options: { readonly webgl: boolean; readonly model?: boolean }) {
 	const renderer = { dispose: vi.fn(), forceContextLoss: vi.fn() };
+	const materials: { name: string; color: FakeColor; dispose(): void }[] = [];
+	class FakeColor {
+		hex = "#ffffff";
+		set(value: string) {
+			this.hex = value;
+			return this;
+		}
+		copy(color: FakeColor) {
+			this.hex = color.hex;
+			return this;
+		}
+		lerp(color: FakeColor) {
+			this.hex = color.hex;
+			return this;
+		}
+	}
+	class Vector3 {
+		x: number;
+		y: number;
+		z: number;
+		constructor(x = 0, y = 0, z = 0) {
+			this.x = x;
+			this.y = y;
+			this.z = z;
+		}
+		set(x: number, y: number, z: number) {
+			this.x = x;
+			this.y = y;
+			this.z = z;
+			return this;
+		}
+	}
 	class Object3D {
 		name = "";
 		children: Object3D[] = [];
 		parent: Object3D | null = null;
+		position = new Vector3();
+		rotation = { x: 0, y: 0, z: 0 };
+		scale = new Vector3(1, 1, 1);
+		userData: Record<string, unknown> = {};
+		material?: (typeof materials)[number];
 		add(...objects: Object3D[]) {
+			for (const object of objects) object.parent = this;
 			this.children.push(...objects);
 			return this;
 		}
@@ -113,10 +154,19 @@ function fakeThree(options: { readonly webgl: boolean }) {
 		}
 		traverse(callback: (object: Object3D) => void) {
 			callback(this);
+			for (const child of this.children) child.traverse(callback);
+		}
+		updateMatrixWorld() {}
+		getWorldPosition(target: Vector3) {
+			return target.set(this.position.x, this.position.y, this.position.z);
+		}
+		worldToLocal(vector: Vector3) {
+			return vector;
 		}
 	}
 	return {
 		renderer,
+		materials,
 		library: {
 			WebGLRenderer: class {
 				readonly domElement: HTMLCanvasElement;
@@ -141,10 +191,26 @@ function fakeThree(options: { readonly webgl: boolean }) {
 			Group: Object3D,
 			PerspectiveCamera: class extends Object3D {
 				updateProjectionMatrix() {}
+				lookAt() {}
 			},
-			Box3: class {},
-			Vector3: class {},
-			Color: class {},
+			Box3: class {
+				min = new Vector3(-1, -1, -1);
+				max = new Vector3(1, 1, 1);
+				setFromObject() {
+					return this;
+				}
+				isEmpty() {
+					return false;
+				}
+				getCenter(target: Vector3) {
+					return target.set(0, 0, 0);
+				}
+				getSize(target: Vector3) {
+					return target.set(2, 2, 2);
+				}
+			},
+			Vector3,
+			Color: FakeColor,
 			PMREMGenerator: class {
 				fromScene() {
 					return { texture: { isTexture: true, dispose() {} } };
@@ -155,8 +221,24 @@ function fakeThree(options: { readonly webgl: boolean }) {
 				dispose() {}
 			},
 			GLTFLoader: class {
-				parse(_data: ArrayBuffer, _path: string, _ok: unknown, fail: (error: unknown) => void) {
-					fail(new Error("not a model"));
+				parse(
+					_data: ArrayBuffer,
+					_path: string,
+					ok: (gltf: { scene: Object3D }) => void,
+					fail: (error: unknown) => void,
+				) {
+					if (!options.model) {
+						fail(new Error("not a model"));
+						return;
+					}
+					const scene = new Object3D();
+					const mesh = new Object3D();
+					mesh.name = "Body";
+					const material = { name: "Shell", color: new FakeColor(), dispose() {} };
+					materials.push(material);
+					mesh.material = material;
+					scene.add(mesh);
+					ok({ scene });
 				}
 			},
 			AgXToneMapping: 7,
@@ -978,6 +1060,63 @@ describe("SurfaceStudioView", () => {
 		expect(three.renderer.dispose).toHaveBeenCalledTimes(1);
 		expect(three.renderer.forceContextLoss).toHaveBeenCalledTimes(1);
 		expect(stage.querySelector("canvas")).toBeNull();
+		store.dispose();
+	});
+
+	it("tints the named materials with every colour form a dot takes, and gives them back their own colour for one it cannot read", async () => {
+		const three = fakeThree({ webgl: true, model: true });
+		vi.stubGlobal("QORPERA_THREE", three.library);
+		vi.stubGlobal("matchMedia", () => ({ matches: true }));
+		const { store, surface } = await productStoreWithFolder(
+			() => ({ "surfaces/thetabands/model.glb": MODEL_REF }),
+			[
+				{ name: "Lavendel", hex: "oklch(0.7 0.1 290)" },
+				{ name: "Skifer", hex: "#4a5963cc" },
+				{ name: "Uklar", hex: "rgb(nope)" },
+			],
+		);
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		const stage = view.el.querySelector<HTMLElement>(".studio-model")!;
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		const shell = three.materials[0]!;
+		expect(stage.dataset.tint).toBe("#9d94d9");
+		expect(shell.color.hex).toBe("#9d94d9");
+		const dots = view.el.querySelectorAll<HTMLButtonElement>('[data-act="studio-colorway"]');
+		dots[1]!.click();
+		expect(shell.color.hex).toBe("#4a5963");
+		dots[2]!.click();
+		expect(stage.dataset.tint).toBeUndefined();
+		expect(shell.color.hex).toBe("#ffffff");
+		dots[0]!.click();
+		expect(shell.color.hex).toBe("#9d94d9");
+		view.dispose();
+		store.dispose();
+	});
+
+	it("draws the model again on a new context after the browser gives its graphics back", async () => {
+		const three = fakeThree({ webgl: true, model: true });
+		vi.stubGlobal("QORPERA_THREE", three.library);
+		const { store, surface, readCloudBinary } = await productStoreWithFolder(() => ({
+			"surfaces/thetabands/model.glb": MODEL_REF,
+		}));
+		const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+		const stage = view.el.querySelector<HTMLElement>(".studio-model")!;
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		const first = stage.querySelector("canvas")!;
+		const lost = new Event("webglcontextlost", { cancelable: true });
+		first.dispatchEvent(lost);
+		expect(lost.defaultPrevented).toBe(true);
+		expect(three.renderer.dispose).not.toHaveBeenCalled();
+		first.dispatchEvent(new Event("webglcontextrestored"));
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(1);
+		expect(first.isConnected).toBe(false);
+		await vi.waitFor(() => expect(stage.classList.contains("is-ready")).toBe(true));
+		const second = stage.querySelector("canvas")!;
+		expect(second).not.toBe(first);
+		expect(three.materials).toHaveLength(2);
+		expect(readCloudBinary).toHaveBeenCalledTimes(1);
+		view.dispose();
+		expect(three.renderer.dispose).toHaveBeenCalledTimes(2);
 		store.dispose();
 	});
 

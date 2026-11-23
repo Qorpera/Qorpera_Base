@@ -20,6 +20,7 @@ import {
 	type StudioVec3,
 	sameStudioModel,
 	shortestTurn,
+	studioColorHex,
 	tintedMaterials,
 } from "./surface-studio-model.ts";
 
@@ -56,6 +57,7 @@ interface StagePart {
 
 interface StageTint {
 	readonly material: ThreeMaterial & { color: ThreeColor };
+	readonly own: ThreeColor;
 	readonly target: ThreeColor;
 }
 
@@ -138,6 +140,7 @@ export class StudioModelStage {
 	#gl: StageGl | undefined;
 	#shown: StageShown | undefined;
 	#failed = false;
+	#lost = false;
 	#tintHex: string | undefined;
 	#tintLeft = 0;
 	#yaw = OPEN_YAW;
@@ -189,6 +192,11 @@ export class StudioModelStage {
 
 	update(model: StudioModelSource): void {
 		if (this.#signal.aborted) return;
+		if (this.#lost) {
+			this.#model = model;
+			this.#rebuild();
+			return;
+		}
 		if (sameStudioModel(this.#model, model)) {
 			this.#kick();
 			return;
@@ -207,14 +215,17 @@ export class StudioModelStage {
 		void this.#load(model);
 	}
 
-	setColorway(hex: string | undefined): void {
-		if (!hex || hex === this.#tintHex) return;
+	setColorway(value: string | undefined): void {
+		const hex = studioColorHex(value) ?? "";
+		if (hex === this.#tintHex) return;
 		const instant = this.#tintHex === undefined;
 		this.#tintHex = hex;
-		this.el.dataset.tint = hex;
+		if (hex) this.el.dataset.tint = hex;
+		else delete this.el.dataset.tint;
 		if (!this.#shown) return;
 		for (const tint of this.#shown.tints) {
-			tint.target.set(hex);
+			if (hex) tint.target.set(hex);
+			else tint.target.copy(tint.own);
 			if (instant || this.#reducedMotion()) tint.material.color.copy(tint.target);
 		}
 		this.#tintLeft = instant || this.#reducedMotion() ? 0 : TINT_SECONDS;
@@ -241,8 +252,12 @@ export class StudioModelStage {
 			if (!gl) return;
 			const bytes = await this.#read(model.ref, signal);
 			if (signal.aborted) return;
-			const data = new ArrayBuffer(bytes.byteLength);
-			new Uint8Array(data).set(bytes);
+			const data =
+				bytes.buffer instanceof ArrayBuffer &&
+				bytes.byteOffset === 0 &&
+				bytes.byteLength === bytes.buffer.byteLength
+					? bytes.buffer
+					: bytes.slice().buffer;
 			const gltf = await new Promise<{ readonly scene: ThreeObject3D }>((resolve, reject) => {
 				try {
 					new three.GLTFLoader().parse(data, "", resolve, reject);
@@ -292,11 +307,13 @@ export class StudioModelStage {
 			"webglcontextlost",
 			(event) => {
 				event.preventDefault();
-				this.#failed = true;
-				this.#teardown();
+				this.#lost = true;
+				if (this.#raf) cancelAnimationFrame(this.#raf);
+				this.#raf = 0;
 			},
 			{ signal: this.#signal },
 		);
+		canvas.addEventListener("webglcontextrestored", () => this.#rebuild(), { signal: this.#signal });
 		this.#bindPointer(canvas);
 		this.#box.append(canvas);
 		if (typeof ResizeObserver === "function") {
@@ -346,13 +363,15 @@ export class StudioModelStage {
 			for (const material of materials.get(name) ?? []) {
 				const color = material.color;
 				if (!color) continue;
+				const own = new three.Color();
+				own.copy(color);
 				const target = new three.Color();
 				target.copy(color);
 				if (this.#tintHex) {
 					target.set(this.#tintHex);
 					color.copy(target);
 				}
-				tints.push({ material: material as ThreeMaterial & { color: ThreeColor }, target });
+				tints.push({ material: material as ThreeMaterial & { color: ThreeColor }, own, target });
 			}
 		}
 		const scale = MODEL_SPAN / span;
@@ -370,6 +389,14 @@ export class StudioModelStage {
 			this.#animateTo([open[0], open[1]], 1300);
 		}
 		this.#kick();
+	}
+
+	#rebuild(): void {
+		const model = this.#model;
+		this.#lost = false;
+		this.#teardown();
+		this.#model = undefined;
+		if (model) this.update(model);
 	}
 
 	#clearShown(): void {
@@ -522,7 +549,7 @@ export class StudioModelStage {
 	}
 
 	#kick(): void {
-		if (this.#raf || !this.#gl || !this.#shown || this.#signal.aborted) return;
+		if (this.#raf || this.#lost || !this.#gl || !this.#shown || this.#signal.aborted) return;
 		if (typeof requestAnimationFrame !== "function") return;
 		this.#raf = requestAnimationFrame((now) => this.#frame(now));
 	}
