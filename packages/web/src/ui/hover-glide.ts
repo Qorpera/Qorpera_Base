@@ -97,7 +97,10 @@ export class HoverGlide {
 
 	#glideTo(item: HTMLElement): void {
 		const to = this.#boxOf(item);
-		if (item === this.#target && this.attached && this.#to && sameBox(to, this.#to)) return;
+		if (item === this.#target && this.attached && this.#to && sameBox(to, this.#to)) {
+			if (item.classList.contains("active")) item.classList.remove(LIT_CLASS);
+			return;
+		}
 		const from = this.#target && this.attached ? this.#currentBox() : undefined;
 		const lit = this.#lit === item && item.classList.contains(LIT_CLASS);
 		this.#target = item;
@@ -174,7 +177,7 @@ export class HoverGlide {
 // WHY: a menu still scaling in is measured at full size, and its border is not part of where the tint sits.
 export function boxWithin(list: HTMLElement, rect: DOMRect, radius: string): Box {
 	const outer = list.getBoundingClientRect();
-	const scale = list.offsetWidth > 0 && outer.width > 0 ? outer.width / list.offsetWidth : 1;
+	const scale = list.offsetWidth > 0 && Math.abs(outer.width - list.offsetWidth) > 1 ? outer.width / list.offsetWidth : 1;
 	return {
 		left: (rect.left - outer.left) / scale - list.clientLeft + list.scrollLeft,
 		top: (rect.top - outer.top) / scale - list.clientTop + list.scrollTop,
@@ -212,12 +215,9 @@ const GLIDE_ITEMS = [
 	".storage-recent-row",
 	"button.data-row",
 	".data-database",
-	".data-changes-day",
 	".routine-row",
 	".bank-category-row",
 	".concepts-item",
-	"a.interface-item",
-	"button.interface-item",
 	".surface-overview-option",
 	".surface-change",
 	".surface-variant",
@@ -250,7 +250,8 @@ export function installHoverGlides(signal: AbortSignal): void {
 			glides.set(
 				group,
 				new HoverGlide(group, {
-					signal,
+					// WHY: a derived signal is held weakly by the app's, so a closed menu's glide can be collected.
+					signal: AbortSignal.any([signal]),
 					tintClass: "hover-glide-tint",
 					item: (node) => {
 						const found = glideItem(node);

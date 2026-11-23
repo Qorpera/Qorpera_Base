@@ -106,7 +106,7 @@
 	transition: opacity 120ms ease;
 }
 .hover-glide-tint.is-on { opacity: 1; transition: opacity 90ms ease; }
-.glide-item:hover:not([aria-selected="true"], [aria-current]:not([aria-current="false"]), .active, .is-active, .is-open, .menu-open, [aria-expanded="true"]) { background-color: transparent !important; }
+.glide-item:hover:not([aria-selected="true"], [aria-pressed="true"], [aria-current]:not([aria-current="false"]), .active, .is-active, .is-open, .is-picked, .is-current, .menu-open, [aria-expanded="true"]) { background-color: transparent !important; }
 :is(.concepts-item, .surface-change, .surface-variant) { --glide-tint: var(--rail-hover); }
 .settings-nav :is([role=tab], .settings-back) { --glide-tint: #e8e8e5; }
 :root[data-theme="dark"] .settings-nav :is([role=tab], .settings-back) { --glide-tint: rgba(255, 255, 255, 0.06); }
