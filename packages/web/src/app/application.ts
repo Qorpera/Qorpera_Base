@@ -3141,10 +3141,17 @@ export function mountApplication(
 							return null;
 						}
 					};
+					const siteHosting = createWebSiteHosting(cloud, controller.profile);
 					const view = new SurfaceView(
 						{
 							store: surfaces,
 							mount: surfaceMount,
+							siteHosting: (surface) => {
+								if (isLocalSurfaceId(surface.id) || !surface.siteSlug) return undefined;
+								const site = liveWebsite(surface.siteSlug);
+								return site ? { siteId: site.id, client: siteHosting } : undefined;
+							},
+							managesSites,
 							isSiteLive: (surface) =>
 								surface.archetype === "live_build" &&
 								surface.siteSlug !== null &&
