@@ -30,6 +30,11 @@ visitor ──https──▶ Cloudflare (*.qorpera.com: the proxied wildcard rec
   hosts, and `qorpera_web_edge_tls_allow` denies `--p<8chars>` hosts to stay aligned with it. Accordingly, turning
   `qorpera_surface_settings.enabled = true` requires `site-serve` to remain the front for `--p<8chars>` preview hosts on
   the active `hosts_domain` (or a follow-up PR adding `--p` preview routing and session checks to `qorpera-web-router`).
+  Since `20260930878000` a preview host is `<slug>--p<8chars>.qorpera.com` whatever `hosts_domain` is
+  (`qorpera_site_preview_domain()`): the frame inside `app.qorpera.com` stays same-site, and site-serve keeps serving
+  it while own and `--next` hosts live on `qorpera.site` with the web router. `qorpera_site_host` reads a `--p<8chars>`
+  host only on `qorpera.com`; under `hosts_domain = 'qorpera.site'` an own or `--next` host on `qorpera.com` and a
+  `--p<8chars>` host on `qorpera.site` stay no site host.
 - **One domain, written in four places.** `qorpera.com` is in site-serve (`SITE_HOST`, its old host's `moved`), the
   web (`SITE_HOST` of `cloud/sites.ts`, which `cloud/releases.ts` reads Look first's link by) and the executor's change
   record, so SQL takes no other: `qorpera_site_settings.hosts_domain` is null or `qorpera.com`, nothing else (a check

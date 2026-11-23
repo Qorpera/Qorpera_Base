@@ -3,6 +3,7 @@ import {
 	type CompanySiteHostingState,
 	domainDnsSetup,
 	isApexHostname,
+	NATIVE_SITE_HOST,
 	type SiteCustomDomain,
 	type SiteDnsRecord,
 	siteDnsRecords,
@@ -735,7 +736,7 @@ export class SurfaceAddress {
 		const known = this.#known;
 		const manage = this.#setup.canManage();
 		const name = this.name();
-		const cut = name.endsWith(".qorpera.com") ? name.length - ".qorpera.com".length : name.lastIndexOf(".");
+		const cut = NATIVE_SITE_HOST.test(name) ? name.indexOf(".") : name.lastIndexOf(".");
 		const shownName = h(
 			"div",
 			{ class: "surface-address-name" },
