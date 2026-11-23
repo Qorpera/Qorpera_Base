@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -401,6 +401,33 @@ describe("surface code_repo parallel work, merge conflicts, previews, and scale 
 		expect(await readFile(join(lockedPeer.worktree, "locked.js"), "utf8")).toContain("export const l = 1;");
 		expect(existsSync(join(lockedPeer.worktree, "other.js"))).toBe(false);
 		await rm(lockPath, { force: true });
+
+		const partialBase = await f.commitMain({ "ro-dir/keep.js": "export const k = 1;\n" }, "Add ro-dir");
+		const partialPeer = await f.startSession(partialBase);
+		const partialHead = await partialPeer.commit({ "peer-only.js": "export const p = 1;\n" }, "Peer only");
+		const partialMain = await f.commitMain(
+			{ "a-new-main-file.js": "export const m = 1;\n", "ro-dir/blocked.js": "export const b = 1;\n" },
+			"Add main file and ro-dir file",
+		);
+		const roDir = join(partialPeer.worktree, "ro-dir");
+		await chmod(roDir, 0o555);
+		try {
+			const partialRebase = await rebaseSessionChanges(f.job, {
+				repository: f.repository,
+				workerId: partialPeer.workerId,
+				ontoSha: partialMain,
+				remainingChanges: [
+					{ changeId: randomUUID(), parentSha: partialBase, headSha: partialHead, title: "Peer only" },
+				],
+				updateBranchRef: true,
+			});
+			expect(partialRebase).toMatchObject({ status: "deferred", reason: "worktree_unsafe" });
+			expect(await f.git(f.repo, "rev-parse", `refs/heads/qorpera/coding/${partialPeer.workerId}`)).toBe(
+				partialHead,
+			);
+		} finally {
+			await chmod(roDir, 0o755);
+		}
 
 		await expect(
 			cherryPickChangeUnits(f.job, {

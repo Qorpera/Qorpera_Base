@@ -578,10 +578,22 @@ export async function rebaseSessionChanges(
 						const restoredTree = oldTip
 							? await run.git(wtAdmin, [`--work-tree=${wtTree}`, "reset", "--hard", "--quiet", oldTip])
 							: { status: 1 };
+						// WHY: A partial checkout can leave files newly added in cursor as untracked on disk even after reset --hard oldTip exits 0; re-verify cleanliness before reporting worktree_dirty.
+						const cleanAfterRestore =
+							restoredTree.status === 0 &&
+							(await run.clean([
+								`--git-dir=${wtAdmin}`,
+								`--work-tree=${wtTree}`,
+								"status",
+								"--porcelain",
+								"-z",
+								"--untracked-files=normal",
+								"--ignore-submodules=all",
+							]));
 						return {
 							status: "deferred" as const,
 							ontoSha,
-							reason: restoredTree.status === 0 ? ("worktree_dirty" as const) : ("worktree_unsafe" as const),
+							reason: cleanAfterRestore ? ("worktree_dirty" as const) : ("worktree_unsafe" as const),
 							restored: run.restored,
 						};
 					}
