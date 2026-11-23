@@ -324,9 +324,10 @@ describe("SurfaceStudioView", () => {
 		expect(view.el.querySelector('[data-token="colors.accent"] code')?.textContent).toBe("#c9643b");
 		expect(view.el.querySelector('[data-token="colors.accent"]')?.classList.contains("is-changed")).toBe(true);
 		expect(view.el.querySelector('[data-token="colors.paper"]')?.classList.contains("is-changed")).toBe(false);
-		expect(view.el.querySelector('[data-token="typography.display"] code')?.textContent).toBe(
-			"Newsreader, Georgia, serif",
-		);
+		expect(view.el.querySelector('[data-token="typography.display"] code')?.textContent).toBe("Newsreader");
+		expect(
+			view.el.querySelector<HTMLElement>('[data-token="typography.display"] .studio-type-sample')?.style.fontFamily,
+		).toContain("Newsreader");
 		expect(view.el.querySelector('[data-file="brand/voice.md"]')?.textContent).toContain(
 			"Warm, quiet, Danish craft.",
 		);
@@ -443,7 +444,13 @@ describe("SurfaceStudioView", () => {
 			signal: new AbortController().signal,
 			baseFiles: {},
 		});
-		expect(brand.el.querySelector(".studio-empty")?.textContent).toContain("No studio files yet.");
+		expect(brand.el.querySelector(".studio-empty")).toBeNull();
+		expect(brand.el.querySelector(".studio-product-head h2")?.textContent).toBe("Brand");
+		expect(brand.el.querySelector(".studio-product-line.is-empty")).not.toBeNull();
+		expect(brand.el.querySelector(".studio-section-head h2")?.textContent).toBe("Files");
+		expect(brand.el.querySelector(".studio-home-empty")?.textContent).toBe(
+			"Working files. Models, pictures and notes live here.",
+		);
 		brand.dispose();
 		store.dispose();
 	});
@@ -606,6 +613,18 @@ describe("SurfaceStudioView", () => {
 		expect(prepared).not.toContain("color: red");
 		expect(prepared).toContain("data:image/svg+xml;charset=utf-8,");
 		expect(prepared).not.toContain('href="./tokens.css"');
+
+		const scripted = prepareStudioHtmlPreview(
+			'<!doctype html><html><head><script type="module" src="./app.js"></script><script src="https://cdn.example/x.js"></script><script src="../outside.js"></script><script src="./missing.js"></script></head><body></body></html>',
+			"identity/index.html",
+			{ "identity/app.js": 'console.log("</script>");', "outside.js": "alert(1)" },
+			"",
+		);
+		expect(scripted).toContain('<script type="module">console.log("<\\/script>");</script>');
+		expect(scripted).toContain('<script src="https://cdn.example/x.js"></script>');
+		expect(scripted).toContain('<script src="../outside.js"></script>');
+		expect(scripted).toContain('<script src="./missing.js"></script>');
+		expect(scripted).not.toContain("alert(1)");
 	});
 
 	it("marks HTML pages Updated when inlined CSS changes and lists unrendered changed paths in Compare without code", async () => {

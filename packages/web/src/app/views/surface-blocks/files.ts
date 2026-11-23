@@ -2,6 +2,7 @@ import type { SurfaceFilesBlock } from "@qorpera/contracts";
 import { h } from "../../../ui/dom.ts";
 import { markdown } from "../../../ui/markdown.ts";
 import { t } from "../../../ui/preferences.ts";
+import { COLOR_VALUE, type ColorToken, collectColors } from "./colours.ts";
 import {
 	homeEmpty,
 	parseJsonObject,
@@ -11,7 +12,17 @@ import {
 	type SurfaceBlockPrepared,
 	sectionHead,
 } from "./context.ts";
-import { collectSpecs, renderSpecEntries, renderSpecTables, type SpecEntry, type SpecTable } from "./specs.ts";
+import { renderSwatches } from "./palette.ts";
+import {
+	COLOR_GROUPS,
+	collectSpecs,
+	renderSpecEntries,
+	renderSpecTables,
+	type SpecEntry,
+	type SpecTable,
+	TYPE_GROUPS,
+} from "./specs.ts";
+import { type Face, facesOf, renderTypeRows } from "./type-specimen.ts";
 
 export const HTML_FILE_RE = /\.html?$/i;
 export const SVG_FILE_RE = /\.svg$/i;
@@ -29,14 +40,17 @@ const NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
 	nbsp: " ",
 };
 
+export interface StudioHtmlFrame {
+	readonly html: string;
+	readonly path: string;
+	readonly title: string;
+	readonly files: Readonly<Record<string, string>>;
+	readonly className: string;
+	readonly listen?: (data: unknown) => void;
+}
+
 export interface StudioHtmlPages {
-	readonly frame: (
-		html: string,
-		htmlPath: string,
-		title: string,
-		files: Readonly<Record<string, string>>,
-		className: string,
-	) => HTMLElement;
+	readonly frame: (page: StudioHtmlFrame) => HTMLElement;
 	readonly linksChanged: (html: string, htmlPath: string) => boolean;
 }
 
@@ -105,7 +119,7 @@ export function renderPlainDoc(content: string, bodyClass: string, signal: Abort
 	return [textEl, moreBtn];
 }
 
-export function renderSvgAssets(svgs: readonly StudioSvgAsset[], heading: string): HTMLElement {
+function renderSvgAssets(svgs: readonly StudioSvgAsset[], heading: string): HTMLElement {
 	return h(
 		"section",
 		{ class: "studio-section" },
@@ -139,7 +153,7 @@ export function renderSvgAssets(svgs: readonly StudioSvgAsset[], heading: string
 	);
 }
 
-export function renderDoc(doc: StudioDoc, signal: AbortSignal): HTMLElement {
+function renderDoc(doc: StudioDoc, signal: AbortSignal): HTMLElement {
 	return h(
 		"section",
 		{ class: `studio-section studio-doc${doc.changed ? " is-changed" : ""}`, "data-file": doc.path },
@@ -158,6 +172,8 @@ export function renderDoc(doc: StudioDoc, signal: AbortSignal): HTMLElement {
 
 interface JsonCard {
 	readonly path: string;
+	readonly colours: readonly ColorToken[];
+	readonly faces: readonly Face[];
 	readonly entries: readonly SpecEntry[];
 	readonly tables: readonly SpecTable[];
 	readonly changed: boolean;
@@ -166,11 +182,20 @@ interface JsonCard {
 function jsonCard(path: string, content: string, baseContent: string | undefined): JsonCard | undefined {
 	const parsed = parseJsonObject(content);
 	if (!parsed) return undefined;
+	const base = parseJsonObject(baseContent);
+	const colours: ColorToken[] = [];
+	const faces: Face[] = [];
+	for (const [key, value] of Object.entries(parsed)) {
+		const lower = key.toLowerCase();
+		if (COLOR_GROUPS.has(lower) || (typeof value === "string" && COLOR_VALUE.test(value.trim())))
+			collectColors(value, base, [key], colours);
+		else if (TYPE_GROUPS.has(lower)) faces.push(...facesOf(value, base?.[key], key));
+	}
 	const entries: SpecEntry[] = [];
 	const tables: SpecTable[] = [];
-	collectSpecs(parsed, parseJsonObject(baseContent), [], entries, tables);
-	if (entries.length === 0 && tables.length === 0) return undefined;
-	return { path, entries, tables, changed: baseContent !== content };
+	collectSpecs(parsed, base, [], entries, tables);
+	if (colours.length + faces.length + entries.length + tables.length === 0) return undefined;
+	return { path, colours, faces, entries, tables, changed: baseContent !== content };
 }
 
 function renderJsonCard(card: JsonCard, signal: AbortSignal): HTMLElement {
@@ -178,6 +203,8 @@ function renderJsonCard(card: JsonCard, signal: AbortSignal): HTMLElement {
 		"section",
 		{ class: `studio-section${card.changed ? " is-changed" : ""}`, "data-file": card.path },
 		sectionHead(readableName(card.path), card.changed, h("code", { class: "studio-file-tag" }, card.path)),
+		card.colours.length ? renderSwatches(card.colours) : null,
+		card.faces.length ? renderTypeRows(card.faces) : null,
 		card.entries.length ? renderSpecEntries(card.entries) : null,
 		...renderSpecTables(card.tables, signal),
 	);
@@ -254,7 +281,13 @@ export function prepareFiles(
 						h("code", { class: "studio-file-tag" }, page.path),
 						page.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
 					),
-					htmlPages.frame(page.html, page.path, page.title, ctx.files, "studio-html-frame"),
+					htmlPages.frame({
+						html: page.html,
+						path: page.path,
+						title: page.title,
+						files: ctx.files,
+						className: "studio-html-frame",
+					}),
 				),
 		});
 	}

@@ -11,7 +11,7 @@ import {
 	sourceKey,
 } from "./context.ts";
 
-interface Face {
+export interface Face {
 	readonly key: string;
 	readonly label: string;
 	readonly name: string;
@@ -31,7 +31,7 @@ function firstFamily(stack: string): string {
 	return first.replace(/^(["'])(.*)\1$/, "$2") || stack;
 }
 
-function facesOf(value: unknown, base: unknown, prefix: string): Face[] {
+export function facesOf(value: unknown, base: unknown, prefix: string): Face[] {
 	if (!isPlainRecord(value)) return [];
 	const baseRecord = isPlainRecord(base) ? base : undefined;
 	return Object.entries(value).flatMap(([role, item]): Face[] => {
@@ -47,6 +47,23 @@ function facesOf(value: unknown, base: unknown, prefix: string): Face[] {
 			},
 		];
 	});
+}
+
+export function renderTypeRows(faces: readonly Face[]): HTMLElement {
+	return h(
+		"div",
+		{ class: "studio-type-list" },
+		faces.map((face) => {
+			const sample = h("p", { class: "studio-type-sample" }, t("Aa Bb Cc · 123"));
+			sample.style.fontFamily = face.stack;
+			return h(
+				"div",
+				{ class: `studio-type-row${face.changed ? " is-changed" : ""}`, "data-token": face.key },
+				h("div", { class: "studio-type-meta" }, h("strong", null, face.label), h("code", null, face.name)),
+				sample,
+			);
+		}),
+	);
 }
 
 export function prepareTypeSpecimen(block: SurfaceTypeSpecimenBlock, ctx: SurfaceBlockContext): SurfaceBlockPrepared {
@@ -65,28 +82,7 @@ export function prepareTypeSpecimen(block: SurfaceTypeSpecimenBlock, ctx: Surfac
 						{ class: `studio-section${changed ? " is-changed" : ""}`, "data-block": "type_specimen" },
 						heading ? sectionHead(heading, changed) : null,
 						filled
-							? h(
-									"div",
-									{ class: "studio-type-list" },
-									faces.map((face) => {
-										const sample = h("p", { class: "studio-type-sample" }, t("Aa Bb Cc · 123"));
-										sample.style.fontFamily = face.stack;
-										return h(
-											"div",
-											{
-												class: `studio-type-row${face.changed ? " is-changed" : ""}`,
-												"data-token": face.key,
-											},
-											h(
-												"div",
-												{ class: "studio-type-meta" },
-												h("strong", null, face.label),
-												h("code", null, face.name),
-											),
-											sample,
-										);
-									}),
-								)
+							? renderTypeRows(faces)
 							: h(
 									"div",
 									{ class: "studio-type-list is-empty", "aria-hidden": "true" },

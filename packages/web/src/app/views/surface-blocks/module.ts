@@ -1,0 +1,103 @@
+import { SURFACE_MODULE_MAX_HEIGHT, SURFACE_MODULE_MIN_HEIGHT, type SurfaceModuleBlock } from "@qorpera/contracts";
+import { h } from "../../../ui/dom.ts";
+import {
+	isPlainRecord,
+	readableName,
+	type SurfaceBlockContext,
+	type SurfaceBlockPrepared,
+	sectionHead,
+} from "./context.ts";
+import type { StudioHtmlPages } from "./files.ts";
+
+export const MODULE_HEIGHT_MESSAGE = "qorpera-module-height";
+const MODULE_INDEX = "index.html";
+const FIT_SCRIPT = `<script>(()=>{const root=document.documentElement;const post=()=>parent.postMessage({type:"${MODULE_HEIGHT_MESSAGE}",height:Math.ceil(root.getBoundingClientRect().height)},"*");new ResizeObserver(post).observe(root);addEventListener("load",post);})();</script>`;
+
+export interface SurfaceModulePlace {
+	readonly alone: boolean;
+}
+
+export function moduleFolder(block: SurfaceModuleBlock, ctx: SurfaceBlockContext): string | undefined {
+	return ctx.companyPath(block.from);
+}
+
+function under<T>(files: Readonly<Record<string, T>>, prefix: string): Record<string, T> {
+	return Object.fromEntries(Object.entries(files).filter(([path]) => path.startsWith(prefix)));
+}
+
+function textsChanged(next: Readonly<Record<string, string>>, base: Readonly<Record<string, string>>): boolean {
+	const paths = new Set([...Object.keys(next), ...Object.keys(base)]);
+	return [...paths].some((path) => next[path] !== base[path]);
+}
+
+function binariesChanged(next: SurfaceBlockContext["binaries"], base: SurfaceBlockContext["baseBinaries"]): boolean {
+	const paths = new Set([...Object.keys(next), ...Object.keys(base)]);
+	return [...paths].some((path) => next[path]?.fileSha256 !== base[path]?.fileSha256);
+}
+
+function fittedHeight(height: number): number {
+	return Math.min(SURFACE_MODULE_MAX_HEIGHT, Math.max(SURFACE_MODULE_MIN_HEIGHT, Math.ceil(height)));
+}
+
+export function prepareModule(
+	block: SurfaceModuleBlock,
+	ctx: SurfaceBlockContext,
+	pages: StudioHtmlPages,
+	place: SurfaceModulePlace,
+): SurfaceBlockPrepared {
+	const folder = moduleFolder(block, ctx);
+	const prefix = folder ? `${folder}/` : undefined;
+	const files = prefix ? under(ctx.files, prefix) : {};
+	const indexPath = `${folder}/${MODULE_INDEX}`;
+	const html = files[indexPath];
+	const filled = html !== undefined && html.trim() !== "";
+	const changed =
+		prefix !== undefined &&
+		(textsChanged(files, under(ctx.baseFiles, prefix)) ||
+			binariesChanged(under(ctx.binaries, prefix), under(ctx.baseBinaries, prefix)));
+	const heading = block.heading ? ctx.words(block.heading) : "";
+	const fits = !place.alone && block.height === "auto";
+	const fixed = typeof block.height === "number" ? block.height : undefined;
+	return {
+		filled,
+		pieces: [
+			{
+				heavy: filled,
+				build: () => {
+					let frame: HTMLElement;
+					if (filled) {
+						frame = pages.frame({
+							html: fits ? `${html}${FIT_SCRIPT}` : html,
+							path: indexPath,
+							title: heading || readableName(block.from),
+							files,
+							className: "studio-module-frame",
+							...(fits
+								? {
+										listen: (data: unknown) => {
+											if (!isPlainRecord(data) || data.type !== MODULE_HEIGHT_MESSAGE) return;
+											if (typeof data.height !== "number" || !Number.isFinite(data.height)) return;
+											frame.style.height = `${fittedHeight(data.height)}px`;
+										},
+									}
+								: {}),
+						});
+					} else {
+						frame = h("div", { class: "studio-module-frame is-empty", "aria-hidden": "true" });
+					}
+					if (fixed !== undefined) frame.style.setProperty(place.alone ? "min-height" : "height", `${fixed}px`);
+					return h(
+						"section",
+						{
+							class: `studio-section studio-module${place.alone ? " is-alone" : ""}${changed ? " is-changed" : ""}`,
+							"data-block": "module",
+							"data-module": block.from,
+						},
+						heading ? sectionHead(heading, changed) : null,
+						frame,
+					);
+				},
+			},
+		],
+	};
+}

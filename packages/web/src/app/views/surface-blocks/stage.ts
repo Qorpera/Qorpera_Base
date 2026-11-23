@@ -25,7 +25,7 @@ export interface StageTint {
 
 const GLB_FILE = /\.glb$/i;
 
-export function legacyModelConfig(
+function legacyModelConfig(
 	model: LegacyStudioModel,
 	title: string,
 	colours: readonly ColorToken[],
