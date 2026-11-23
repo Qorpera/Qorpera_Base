@@ -333,4 +333,6 @@ export const SURFACES: Record<string, string> = {
 	"Vector assets": "Vektorfiler",
 	"Other changed files": "Andre ændrede filer",
 	Removed: "Fjernet",
+	"Show all {count} rows": "Vis alle {count} rækker",
+	"Show full file": "Vis hele filen",
 };

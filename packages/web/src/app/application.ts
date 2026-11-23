@@ -39,6 +39,7 @@ import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
 import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
+import { deferOffFrame } from "../ui/time-slice.ts";
 import { AgentNotes } from "./agent-notes.ts";
 import type { AppTellSource, HeldNote } from "./app-actions.ts";
 import { AuthController, accountName, displayName, needsPassword } from "./auth.ts";
@@ -593,6 +594,22 @@ export function mountApplication(
 		| undefined;
 	let newProgramPage: { readonly company: CompanyController; readonly view: NewProgramPage } | undefined;
 	let surfaceView: { readonly company: CompanyController; readonly view: SurfaceView } | undefined;
+	const pendingSurfaceDisposals = new Set<() => void>();
+	const flushPendingSurfaceDisposals = (): void => {
+		for (const run of [...pendingSurfaceDisposals]) run();
+	};
+	const deferSurfaceDisposal = (view: SurfaceView): void => {
+		view.deactivate();
+		let cancel: (() => void) | undefined;
+		const finish = () => {
+			if (!pendingSurfaceDisposals.delete(finish)) return;
+			cancel?.();
+			cancel = undefined;
+			view.dispose();
+		};
+		pendingSurfaceDisposals.add(finish);
+		cancel = deferOffFrame(finish);
+	};
 	let releasesRead: CompanyController | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
@@ -796,6 +813,7 @@ export function mountApplication(
 		newProgramPage = undefined;
 		surfaceView?.view.dispose();
 		surfaceView = undefined;
+		flushPendingSurfaceDisposals();
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
@@ -833,6 +851,7 @@ export function mountApplication(
 		newProgramPage = undefined;
 		surfaceView?.view.dispose();
 		surfaceView = undefined;
+		flushPendingSurfaceDisposals();
 		conceptsView?.dispose();
 		conceptsView = undefined;
 		mail?.dispose();
@@ -2295,7 +2314,7 @@ export function mountApplication(
 			newProgramPage = undefined;
 		}
 		if (route.section !== "surface" || surfaceView?.company !== controller || surfaceView.view.slug !== route.id) {
-			surfaceView?.view.dispose();
+			if (surfaceView) deferSurfaceDisposal(surfaceView.view);
 			surfaceView = undefined;
 		}
 		if (route.section !== "new") {

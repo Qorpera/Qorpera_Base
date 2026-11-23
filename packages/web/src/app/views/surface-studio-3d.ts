@@ -215,14 +215,7 @@ export class Studio3DViewer {
 		);
 		this.#bindPointer();
 		this.#drawToolbar();
-		if (typeof requestAnimationFrame === "function") {
-			this.#raf = requestAnimationFrame(() => {
-				this.#raf = undefined;
-				if (!this.#signal.aborted) this.#render();
-			});
-		} else {
-			this.#render();
-		}
+		this.#scheduleRender();
 		signal.addEventListener(
 			"abort",
 			() => {
@@ -232,13 +225,26 @@ export class Studio3DViewer {
 		);
 	}
 
+	#scheduleRender(): void {
+		if (this.#signal.aborted) return;
+		if (typeof requestAnimationFrame !== "function") {
+			this.#render();
+			return;
+		}
+		if (this.#raf !== undefined) return;
+		this.#raf = requestAnimationFrame(() => {
+			this.#raf = undefined;
+			if (!this.#signal.aborted) this.#render();
+		});
+	}
+
 	update(config: Studio3DConfig): void {
 		this.#config = config;
 		if (this.#activeColorIndex >= config.colorways.length) this.#activeColorIndex = 0;
 		const dims = this.el.querySelector(".studio-3d-dims");
 		if (dims) dims.textContent = config.dimensions;
 		this.#drawToolbar();
-		this.#render();
+		this.#scheduleRender();
 	}
 
 	#bindPointer(): void {
@@ -264,7 +270,7 @@ export class Studio3DViewer {
 				this.#lastY = event.clientY;
 				this.#yaw += dx * 0.011;
 				this.#pitch = Math.max(-1.1, Math.min(1.1, this.#pitch + dy * 0.01));
-				this.#render();
+				this.#scheduleRender();
 			},
 			{ signal: this.#signal },
 		);
