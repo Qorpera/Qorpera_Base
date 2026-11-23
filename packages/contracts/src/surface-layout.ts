@@ -1323,7 +1323,10 @@ const IDENTITY_STARTER_LAYOUT: SurfaceLayout = {
 
 const CUSTOM_STARTER_LAYOUT: SurfaceLayout = {
 	schema: SURFACE_LAYOUT_SCHEMA,
-	tabs: [{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "files" }] }],
+	tabs: [
+		{ id: "overview", title: "Overview", blocks: [{ type: "title" }, { type: "files", heading: "Files" }] },
+		{ id: "reports", title: "Reports", blocks: [{ type: "report", match: "**/*.report.json" }] },
+	],
 };
 
 export const SURFACE_STARTER_LAYOUTS: Readonly<Record<SurfaceStarterKind, SurfaceLayout>> = {
