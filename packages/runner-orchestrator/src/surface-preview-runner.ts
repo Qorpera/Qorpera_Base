@@ -1,6 +1,7 @@
 import { type CloudCodingRepository, parseCodeChecksText, type SurfacePreviewConflict } from "@qorpera/contracts";
 import { type CodeHostJob, CodeHostJobFailure } from "./code-host-jobs.ts";
 import { type CodeHostChangeRange, composePreviewTree } from "./code-host-surfaces.ts";
+import { CODE_SITE_MAX_FILES, CODE_SITE_MAX_FOLDERS, type CodeSiteProblem } from "./code-site.ts";
 import { parseCodingJson } from "./coding-setup.ts";
 
 export interface SurfacePreviewRecipe {
@@ -38,6 +39,54 @@ export function previewBuildDetail(code: PreviewBuildCode, text: string): string
 	return [...whole].length <= PREVIEW_BUILD_DETAIL_CHARS
 		? whole
 		: [...whole].slice(0, PREVIEW_BUILD_DETAIL_CHARS).join("");
+}
+
+const SITE_LIMIT_PROBLEMS: ReadonlySet<CodeSiteProblem["code"]> = new Set([
+	"SITE_TOO_MANY_FILES",
+	"SITE_TOO_MANY_FOLDERS",
+	"SITE_FILE_TOO_LARGE",
+	"SITE_TOO_LARGE",
+	"SITE_FILE_NAME",
+]);
+
+export function previewSiteProblemDetail(problem: CodeSiteProblem, folder: string | null): string {
+	const path = problem.path === null || /[\r\n]/.test(problem.path) ? null : problem.path;
+	const named = (what: string) => (path === null ? what : `${what}: ${path}`);
+	let what: string;
+	switch (problem.code) {
+		case "SITE_FOLDER_MISSING":
+			what = "is not there";
+			break;
+		case "SITE_NO_INDEX":
+			what = "has no index.html at its top";
+			break;
+		case "SITE_TOO_MANY_FILES":
+			what = `has more than ${CODE_SITE_MAX_FILES} web files`;
+			break;
+		case "SITE_TOO_MANY_FOLDERS":
+			what = `has web files in more than ${CODE_SITE_MAX_FOLDERS} folders`;
+			break;
+		case "SITE_FILE_TOO_LARGE":
+			what = named("has a file over 10 MB");
+			break;
+		case "SITE_TOO_LARGE":
+			what = "is over 25 MB";
+			break;
+		case "SITE_FILE_NAME":
+			what = `${named("has a file whose name a site cannot serve")} (each part of a path takes only letters, digits, dots, hyphens and underscores, and starts with a letter, a digit or an underscore)`;
+			break;
+		case "SITE_HOLDS_SECRET":
+			what = "holds the value of one of the company's secrets";
+			break;
+		case "SITE_LINKS_FROM_ROOT":
+			what = named("has links that start with /");
+			break;
+	}
+	const where = folder === null ? "The site" : `The build's output in "${folder}"`;
+	return previewBuildDetail(
+		SITE_LIMIT_PROBLEMS.has(problem.code) ? PREVIEW_BUILD_TOO_LARGE : PREVIEW_BUILD_FAILED,
+		`${where} ${what}. [code=${problem.code}]`,
+	);
 }
 
 function declaresBuild(checksText: string): boolean {
