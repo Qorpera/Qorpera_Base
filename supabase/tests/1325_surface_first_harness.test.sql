@@ -650,11 +650,12 @@ begin
 	perform public.qorpera_undo_surface_change(v_exp_w_c2);
 	reset role;
 	perform pg_temp.sf_assert(
-		(select status from public.qorpera_surface_explorations where id = v_exploration_id) = 'open'
-		and (select chosen_session_id from public.qorpera_surface_explorations where id = v_exploration_id) is null
-		and (select status from public.qorpera_surface_changes where id = v_exp_l_c1) = 'staged'
+		(select status from public.qorpera_surface_explorations where id = v_exploration_id) = 'chosen'
+		and (select chosen_session_id from public.qorpera_surface_explorations where id = v_exploration_id) = v_exp_winner_id
+		and (select status from public.qorpera_surface_changes where id = v_exp_w_c2) = 'staged'
+		and (select status from public.qorpera_surface_changes where id = v_exp_l_c1) = 'discarded'
 		and (select status from public.qorpera_surface_changes where id = v_exp_l_manual_disc) = 'discarded',
-		'after all winner changes are undone, exploration reopens and only exploration-discarded sibling changes restore'
+		'after all winner changes are undone, the exploration stays chosen and the other options stay discarded'
 	);
 
 	update public.qorpera_surface_automations

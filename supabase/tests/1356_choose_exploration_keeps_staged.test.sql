@@ -28,6 +28,32 @@ begin
 	return v_errcode;
 end $$;
 
+create function pg_temp.ceks_errcode(p_user_id uuid, p_sql text)
+returns text language plpgsql as $$
+declare v_errcode text;
+begin
+	perform pg_temp.ceks_as(p_user_id);
+	set local role authenticated;
+	begin
+		execute p_sql;
+	exception when others then
+		v_errcode := sqlstate;
+	end;
+	reset role;
+	return v_errcode;
+end $$;
+
+create function pg_temp.ceks_snapshot(p_surface_id uuid)
+returns text language sql as $$
+	select coalesce((select string_agg(concat_ws('/', c.id, c.status, c.discarded_by_exploration, c.resolved_at, c.approved_by_user_id), ',' order by c.id)
+			from public.qorpera_surface_changes c where c.surface_id = p_surface_id), '')
+		|| '|' || coalesce((select string_agg(concat_ws('/', s.id, s.state, s.closed_at, s.updated_at, s.has_active_chat), ',' order by s.id)
+			from public.qorpera_surface_sessions s where s.surface_id = p_surface_id), '')
+		|| '|' || coalesce((select string_agg(concat_ws('/', e.id, e.status, e.chosen_session_id, e.resolved_at), ',' order by e.id)
+			from public.qorpera_surface_explorations e where e.surface_id = p_surface_id), '')
+		|| '|' || (select count(*) from public.qorpera_surface_jobs j where j.surface_id = p_surface_id)
+$$;
+
 do $$
 declare
 	v_claim jsonb := current_setting('qorpera_test.claim')::jsonb;
@@ -53,6 +79,8 @@ declare
 	v_unpublished_before integer;
 	v_jobs_before integer;
 	v_result jsonb;
+	v_again jsonb;
+	v_snapshot text;
 begin
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
 	insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role)
@@ -170,6 +198,45 @@ begin
 		and (v_result ->> 'openChangeCount')::integer = 2
 		and (select bool_and(c ->> 'status' = 'staged') from jsonb_array_elements(v_result -> 'changes') c),
 		'the answer is the chosen session with its staged changes, got ' || v_result::text);
+
+	v_snapshot := pg_temp.ceks_snapshot(v_surface);
+	perform pg_temp.ceks_as(v_bo);
+	set local role authenticated;
+	v_again := public.qorpera_choose_exploration(v_exploration, v_winner);
+	reset role;
+	perform pg_temp.ceks_assert(v_again = v_result and pg_temp.ceks_snapshot(v_surface) = v_snapshot,
+		'choosing the chosen option again answers the same and changes nothing');
+
+	perform pg_temp.ceks_assert(pg_temp.ceks_choose_refused(v_bo, v_exploration, v_loser_a) = '55000',
+		'choosing another option after the choice is refused');
+	perform pg_temp.ceks_assert(
+		pg_temp.ceks_errcode(v_anna, format('select public.qorpera_discard_exploration(%L::uuid)', v_exploration)) = '55000',
+		'discarding a chosen exploration is refused');
+	perform pg_temp.ceks_assert(
+		pg_temp.ceks_errcode(v_anna, format('select public.qorpera_undo_surface_change(%L::uuid)', v_a1)) = '22023',
+		'restoring an option that was not chosen is refused');
+	perform pg_temp.ceks_assert(pg_temp.ceks_snapshot(v_surface) = v_snapshot,
+		'the refused choice, discard and restore change nothing: the winner''s work stays staged');
+
+	perform pg_temp.ceks_as(v_anna);
+	set local role authenticated;
+	perform public.qorpera_discard_surface_change(v_w2);
+	reset role;
+	perform pg_temp.ceks_assert((select status from public.qorpera_surface_changes where id = v_w2) = 'discarded',
+		'a chosen option''s change can be discarded by hand');
+	perform pg_temp.ceks_as(v_anna);
+	set local role authenticated;
+	perform public.qorpera_undo_surface_change(v_w2);
+	reset role;
+	perform pg_temp.ceks_assert(
+		(select status = 'staged' and not discarded_by_exploration from public.qorpera_surface_changes where id = v_w2)
+		and (select status = 'chosen' and chosen_session_id = v_winner from public.qorpera_surface_explorations where id = v_exploration)
+		and (select bool_and(status = 'discarded' and discarded_by_exploration)
+			from public.qorpera_surface_changes where id in (v_a1, v_a2, v_b1))
+		and (select bool_and(state = 'discarded' and closed_at is not null)
+			from public.qorpera_surface_sessions where id in (v_loser_a, v_loser_b))
+		and (select state = 'ready' and closed_at is null from public.qorpera_surface_sessions where id = v_winner),
+		'undoing a hand discard of the chosen option''s change restores only that change; the exploration stays chosen');
 
 	perform pg_temp.ceks_as(v_anna);
 	set local role authenticated;
