@@ -75,7 +75,6 @@ select pg_temp.acct_assert(not exists (
 		'qorpera_presence_devices',
 		'qorpera_product_feedback', 'qorpera_profile_access_state', 'qorpera_profile_invitation_deliveries',
 		'qorpera_profile_invitations', 'qorpera_profile_members', 'qorpera_review_rules', 'qorpera_room_drafts',
-		-- Asks to publish a surface that the member made or was asked (20260930867000).
 		'qorpera_surface_publish_asks',
 		'qorpera_runtime_browser_membership_revocations', 'qorpera_runtime_office_wake_requests'])
 ), 'an account deletion reaches a table that is not the person''s own');
