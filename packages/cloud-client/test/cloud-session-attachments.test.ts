@@ -119,6 +119,25 @@ describe("member chat attachment transport", () => {
 		const { client } = fixture(() => new Response(new ReadableStream(), { status: 403 }));
 		await expect(client.read(sessionId, inputId, reference, signal)).rejects.toThrow("denied");
 	});
+	it("uploads a surface input's image by surface and reads it back by session", async () => {
+		const surfaceId = "29600000-0000-4000-8000-000000000080";
+		const { client, fetcher } = fixture();
+		expect(await client.uploadSurface(surfaceId, inputId, bytes, "image/png", signal)).toEqual(reference);
+		expect(fetcher.mock.calls[0][0]).toBe(
+			`https://gateway.test/v1/member-session-attachments/surface-upload/${surfaceId}/${inputId}/${reference.sha256}`,
+		);
+		expect(fetcher.mock.calls[0][1]?.method).toBe("PUT");
+		fetcher.mockImplementationOnce(async () => new Response(bytes));
+		expect(await client.readSurface(sessionId, inputId, reference, signal)).toEqual(new Uint8Array(bytes));
+		expect(fetcher.mock.calls[1][0]).toBe(
+			`https://gateway.test/v1/member-session-attachments/surface-input/${sessionId}/${inputId}/${reference.sha256}`,
+		);
+		expect(fetcher.mock.calls[1][1]?.method).toBe("GET");
+		fetcher.mockImplementationOnce(async () => new Response("BAD_BYTES"));
+		await expect(client.readSurface(sessionId, inputId, reference, signal)).rejects.toThrow("integrity");
+		await expect(client.uploadSurface("../surface", inputId, bytes, "image/png", signal)).rejects.toThrow();
+		expect(fetcher).toHaveBeenCalledTimes(3);
+	});
 	it.each([
 		"http://gateway.test",
 		"https://gateway.test/path",

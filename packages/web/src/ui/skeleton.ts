@@ -208,3 +208,90 @@ export function companyCardsSkeleton(label = t("Loading companies"), count = 3):
 		),
 	);
 }
+
+export type SurfaceSkeletonKind = "live" | "studio" | "report" | "ops";
+
+export function surfaceSkeleton(label = t("Opening surface…"), kind: SurfaceSkeletonKind = "live"): HTMLElement {
+	if (kind === "studio") {
+		return placeholder(
+			label,
+			"skeleton-surface skeleton-surface-studio",
+			h(
+				"div",
+				{ class: "skeleton-surface-studio-head" },
+				shape("line", "w-28"),
+				h(
+					"div",
+					{ class: "skeleton-surface-pills" },
+					shape("surface-pill"),
+					shape("surface-pill"),
+					shape("surface-pill"),
+				),
+			),
+			shape("surface-hero"),
+			h("div", { class: "skeleton-surface-grid" }, shape("surface-panel"), shape("surface-panel")),
+		);
+	}
+	if (kind === "report") {
+		return placeholder(
+			label,
+			"skeleton-surface skeleton-surface-report",
+			h(
+				"div",
+				{ class: "skeleton-surface-article" },
+				shape("line", "small", "w-28"),
+				shape("line", "title"),
+				h("div", { class: "skeleton-stack" }, shape("line", "w-92"), shape("line", "w-62")),
+				h(
+					"div",
+					{ class: "skeleton-surface-metrics" },
+					shape("surface-metric"),
+					shape("surface-metric"),
+					shape("surface-metric"),
+				),
+				h("div", { class: "skeleton-stack" }, shape("line", "w-92"), shape("line", "w-84"), shape("line", "w-58")),
+				shape("surface-panel"),
+			),
+		);
+	}
+	if (kind === "ops") {
+		return placeholder(
+			label,
+			"skeleton-surface skeleton-surface-ops",
+			shape("line", "title"),
+			h("div", { class: "skeleton-stack" }, shape("line", "w-58"), shape("line", "small", "w-34")),
+			h(
+				"div",
+				{ class: "skeleton-surface-rows" },
+				figureRow("list", "34", "58"),
+				figureRow("list", "46", "40"),
+				figureRow("list", "28", "52"),
+				figureRow("list", "40", "46"),
+			),
+		);
+	}
+	return placeholder(
+		label,
+		"skeleton-surface skeleton-surface-live",
+		h("div", { class: "skeleton-surface-nav" }, shape("line", "w-28"), shape("surface-pill")),
+		shape("surface-hero"),
+		h(
+			"div",
+			{ class: "skeleton-surface-grid" },
+			h(
+				"div",
+				{ class: "skeleton-surface-card" },
+				shape("line", "w-46"),
+				shape("line", "small", "w-84"),
+				shape("line", "small", "w-62"),
+			),
+			h(
+				"div",
+				{ class: "skeleton-surface-card" },
+				shape("line", "w-40"),
+				shape("line", "small", "w-92"),
+				shape("line", "small", "w-52"),
+			),
+		),
+	);
+}

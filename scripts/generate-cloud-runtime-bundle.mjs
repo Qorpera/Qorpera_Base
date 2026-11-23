@@ -7,15 +7,15 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929027599_runtime_bundle_activation_v275.sql";
-const activationVersion = 275;
-const previousActivationVersion = 274;
-const previousActivationSha256 = "39dfbcaf263f21a6fe0b0c3a5da63ec43010bdb745de64631cf1b798cfc98bb7";
+const activation = "supabase/migrations/20260929027699_runtime_bundle_activation_v276.sql";
+const activationVersion = 276;
+const previousActivationVersion = 275;
+const previousActivationSha256 = "7587f80b896c520e234d93404bfbc9ba09f932f26055de194b52907ec8a025c1";
 const activationRequires = Object.freeze([
 	[
-		"20260930858000_member_default_models_and_gemini_health",
-		"#2184 (Gemini 4 Neon diagnostics, key health/check, and member default models): bundle 275 records Gemini key errors and resolves member default models",
-		"to_regprocedure('public.qorpera_record_gemini_key_error(jsonb,text)') is not null and to_regprocedure('public.qorpera_get_member_default_models(uuid)') is not null",
+		"20260930865000_surface_message_images",
+		"#2214 (images on interface session messages): bundle 276 reads a surface session's images through qorpera_native_surface_session_images",
+		"to_regprocedure('public.qorpera_native_surface_session_images(uuid,uuid,uuid)') is not null and to_regclass('public.qorpera_surface_message_images') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

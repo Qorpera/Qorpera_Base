@@ -806,7 +806,7 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector("textarea")).toBe(composer);
 	});
 
-	it("reopens the drawer on the search field while a query keeps it open over the name", async () => {
+	it("reopens the drawer on the company's name", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		withInterfacesTab(f);
 		await draw();
@@ -814,18 +814,12 @@ describe("account and route ownership", () => {
 		toggle().click();
 		await draw();
 		expect(f.root.querySelector<HTMLElement>(".rail .rail-apps")!.hidden).toBe(false);
-		f.root.querySelector<HTMLButtonElement>(".rail .rail-search-toggle")!.click();
-		const input = f.root.querySelector<HTMLInputElement>(".rail .rail-search input")!;
-		input.value = "Fixture";
-		input.dispatchEvent(new Event("input"));
-		await draw();
-		// The name is inert under the open field, so the drawer comes back to the field.
 		window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
 		await draw();
 		expect(f.root.querySelector(".frame")?.classList.contains("navigation-open")).toBe(false);
 		toggle().click();
 		await draw();
-		expect(document.activeElement).toBe(input);
+		expect(document.activeElement).toBe(f.root.querySelector(".rail .rail-company"));
 	});
 
 	it("keeps profile-menu focus through refreshes and closes it before the mobile drawer", async () => {
@@ -862,6 +856,10 @@ describe("account and route ownership", () => {
 		f.root.querySelector<HTMLButtonElement>("#settings-tab-company")!.click();
 		await draw();
 		expect(f.root.querySelector(".settings-dialog")?.textContent).toContain("Delete company");
+		document.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }),
+		);
+		expect(document.querySelector("dialog.search-window[open]")).toBeNull();
 		f.root.querySelector<HTMLButtonElement>(".settings-close")!.click();
 		f.root.querySelector<HTMLButtonElement>(".rail .account-trigger")!.click();
 		f.root.querySelector<HTMLButtonElement>('.account-popover [data-account-action="friends"]')!.click();
@@ -1771,7 +1769,7 @@ describe("account and route ownership", () => {
 		expect(root.textContent).toContain("The cloud could not be reached. Network unavailable");
 	});
 
-	it("keeps rail searches bound to the current company and current route", () => {
+	it("keeps the rail bound to the current company and current route", () => {
 		const f = fixture();
 		const a = new CompanyController(f.api, profileA, userA.id),
 			b = new CompanyController(f.api, profileB, userA.id);
@@ -1793,9 +1791,7 @@ describe("account and route ownership", () => {
 		renderRail(rail, a, { ...context, route: { name: "company", profileId: profileA.profileId, section: "file" } });
 		renderRail(rail, b, { ...context, route: { name: "company", profileId: profileB.profileId, section: "file" } });
 		renderRail(rail, b, { ...context, route: { name: "company", profileId: profileB.profileId, section: "team" } });
-		const search = rail.querySelector("input")!;
-		search.value = "Fixture";
-		search.dispatchEvent(new Event("input"));
+		expect(rail.querySelector("input")).toBeNull();
 		expect(rail.querySelector(".account-trigger")?.textContent).toContain("Account A");
 		expect(rail.textContent).not.toContain("Company A PRIVATE");
 		expect(rail.querySelector('a[data-href$="/team"]')).toBeNull();
