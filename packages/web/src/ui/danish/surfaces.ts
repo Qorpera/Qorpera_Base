@@ -237,7 +237,6 @@ export const SURFACES: Record<string, string> = {
 	"Fold into a scheduled agent": "Gør til en planlagt agent",
 	"New scheduled agent": "Ny planlagt agent",
 	"Scheduled agent": "Planlagt agent",
-	"New conversation": "Ny samtale",
 	Scheduled: "Planlagte",
 	Prompt: "Prompt",
 	Schedule: "Tidsplan",
@@ -320,9 +319,6 @@ export const SURFACES: Record<string, string> = {
 	"Approved by {name}": "Godkendt af {name}",
 	"Review everything approved into Base. Roll back any change before going live.":
 		"Gennemgå alt der er godkendt til Base. Rul enhver ændring tilbage, før du udgiver.",
-	"Active surfaces": "Aktive surfaces",
-	"1 direction ready": "1 retning klar",
-	"{count} directions ready": "{count} retninger klar",
 	Product: "Produkt",
 	"Starting surfaces": "Start-surfaces",
 	"Existing site or inspiration URL (optional)": "Eksisterende hjemmeside eller inspirations-URL (valgfrit)",
