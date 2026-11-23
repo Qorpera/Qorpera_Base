@@ -2,6 +2,7 @@
 import { createHash, webcrypto } from "node:crypto";
 import { cloudFileBytesSha256 } from "@qorpera/cloud-client/cloud-file-bytes";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
+import { CloudSurfacesClient } from "@qorpera/cloud-client/surfaces";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
@@ -203,6 +204,14 @@ async function drafted(root: HTMLElement, text: string) {
 	expect(root.querySelector(".session-execution")?.textContent).toBe("");
 	expect(root.querySelector('[aria-label="Model account for this conversation"]')).toBeNull();
 	return { input, button };
+}
+
+
+function surfacesOn() {
+	vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
+	vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockResolvedValue([]);
+	vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+	vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(new Error("none"));
 }
 
 describe("account and route ownership", () => {
@@ -975,7 +984,7 @@ describe("account and route ownership", () => {
 		expect(f.root.querySelector<HTMLElement>("main")?.inert).toBe(false);
 	});
 
-	it("opens Company File links in Settings Storage, and redraws the browser when the member's role changes", async () => {
+	it("opens Company File links on the Files page, and draws the folder again when the member's role changes", async () => {
 		const list = vi.fn(async () => ({
 			asOfSeq: 1,
 			entries: [
@@ -992,16 +1001,17 @@ describe("account and route ownership", () => {
 			next: null,
 		}));
 		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue({ list } as never);
+		surfacesOn();
 		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
 		const f = mounted(`#/c/${profileA.profileId}/file`);
 		await draw();
 		await draw();
-		const page = f.root.querySelector(".settings-dialog .folder-page");
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/s/files`);
+		expect(f.root.querySelector(".settings-dialog")).toBeNull();
+		const page = f.root.querySelector("main .surface-files");
 		const row = page?.querySelector(".files-row");
 		expect(row?.querySelector(".files-name")?.textContent).toBe("notes");
-		expect(f.root.querySelector("main .folder-page")).toBeNull();
-		expect(location.hash).toBe(`#/c/${profileA.profileId}`);
-		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
 		vi.mocked(f.api.getTeam).mockResolvedValue({
 			...team,
 			role: "viewer",
@@ -1010,57 +1020,11 @@ describe("account and route ownership", () => {
 		f.hints.get("qorpera_profile_access_state")!();
 		await draw();
 		await draw();
-		const again = f.root.querySelector(".settings-dialog .folder-page");
+		const again = f.root.querySelector("main .surface-files");
 		expect(again?.querySelector(".files-row .files-name")?.textContent).toBe("notes");
 		expect(again?.querySelector(".files-row")).not.toBe(row);
 		expect(row?.isConnected).toBe(false);
 		expect(list).toHaveBeenCalledTimes(2);
-		f.root.querySelector<HTMLButtonElement>(".settings-close")!.click();
-		await draw();
-		expect(f.root.querySelector(".settings-dialog")).toBeNull();
-		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(false);
-		expect(f.root.querySelector("main .folder-page")).toBeNull();
-	});
-	it("opens Storage only after a Company File link resolves the Co-Founder conversation", async () => {
-		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue({
-			list: async () => ({ asOfSeq: 0, entries: [], next: null }),
-		} as never);
-		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
-		const f = mounted(`#/c/${profileA.profileId}/file`);
-		const cofounder = { ...staff, templateId: "co-founder" };
-		vi.mocked(f.api.listStaff).mockResolvedValue([cofounder]);
-		const opened = deferred<AgentThreadHandle>();
-		vi.spyOn(f.api, "agentThread").mockReturnValue(opened.promise);
-		await draw();
-		await draw();
-		expect(location.hash).toBe(`#/c/${profileA.profileId}`);
-		expect(f.root.querySelector(".settings-overlay")).toBeNull();
-		opened.resolve({ sessionId: session.sessionId, roomId: id(31), staffAgentId: staff.id, status: "active" });
-		await draw();
-		await draw();
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		expect(f.root.querySelector(".settings-dialog")).not.toBeNull();
-		expect(f.root.querySelector(".settings-dialog .folder-page")).not.toBeNull();
-		expect(f.root.querySelector("main .thread")).not.toBeNull();
-		f.root.querySelector<HTMLButtonElement>(".settings-close")!.click();
-		await draw();
-		expect(f.root.querySelector(".settings-dialog")).toBeNull();
-		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-	});
-	it("does not open a deferred Storage session after leaving the company", async () => {
-		const f = mounted(`#/c/${profileA.profileId}/file`);
-		vi.mocked(f.api.listStaff).mockResolvedValue([{ ...staff, templateId: "co-founder" }]);
-		const opened = deferred<AgentThreadHandle>();
-		vi.spyOn(f.api, "agentThread").mockReturnValue(opened.promise);
-		await draw();
-		await draw();
-		expect(f.api.agentThread).toHaveBeenCalledOnce();
-		location.hash = "#/account";
-		await draw();
-		opened.resolve({ sessionId: session.sessionId, roomId: id(31), staffAgentId: staff.id, status: "active" });
-		await draw();
-		expect(location.hash).toBe("#/account");
-		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 	});
 
 	/** The company's folder with one posted app, `apps/sales-board/`, made by the fixture's agent. */

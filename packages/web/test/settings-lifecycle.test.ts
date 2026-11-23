@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { CloudSurfacesClient } from "@qorpera/cloud-client/surfaces";
 import { REALTIME_SUBSCRIBE_STATES, RealtimeClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountApplication } from "../src/app/application.ts";
@@ -175,6 +176,14 @@ function realtimeFixture() {
 	// The fixture deliberately leaves removed channels registered, as the SDK
 	// does while an asynchronous unsubscribe is waiting for its response.
 	return f;
+}
+
+
+function surfacesOn() {
+	vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
+	vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockResolvedValue([]);
+	vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+	vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(new Error("none"));
 }
 
 describe("settings session lifecycle", () => {
@@ -711,6 +720,7 @@ describe("settings session lifecycle", () => {
 		return { prose, dashboard: dashboard!, operations: operations! };
 	}
 	it("opens the Files page at a folder link's file or folder, and an HTML page beside the chat first", async () => {
+		surfacesOn();
 		const folder = linkedFolder();
 		const f = await setup();
 		const { dashboard } = linksInMessage(f.root);
@@ -722,6 +732,7 @@ describe("settings session lifecycle", () => {
 			"dashboard.html",
 		);
 		f.root.querySelector<HTMLButtonElement>('.side-panel [aria-label="Show in Files"]')!.click();
+		await draw();
 		await draw();
 		await draw();
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/s/files`);

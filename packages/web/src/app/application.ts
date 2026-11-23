@@ -2380,39 +2380,53 @@ export function mountApplication(
 				const update = () => renderInterface(el, controller, page, interfaceWrites());
 				return { el, update, dispose: () => el.replaceChildren() };
 			}
-			const team = controller.store.get().team;
-			if (!team) return undefined;
+			if (!controller.store.get().team) return undefined;
 			const el = h("div", { class: "surface-files" });
-			const browser = new CompanyFolderBrowser(
-				el,
-				new WebCompanyFiles(
-					cloud,
-					controller.profile,
-					controller.userId,
-					team.role,
-					AbortSignal.any([controller.signal, signal]),
-					companyCurrent,
-					team.capabilities.write,
-				),
-				() => ({
-					me: controller.userId,
-					members: controller.store.get().team?.members ?? [],
-					staff: controller.store.get().staff,
-				}),
-				{ usage: () => api.getCompanyFile(controller.profile.environmentId) },
-			);
-			filesShown = { owner: controller, browser };
-			if (filesPending?.owner === controller) browser.reveal(filesPending.path);
-			filesPending = undefined;
-			void browser.open().catch(() => undefined);
-			return {
-				el,
-				update: () => undefined,
-				dispose: () => {
-					if (filesShown?.browser === browser) filesShown = undefined;
-					browser.dispose();
-				},
+			let shown: { browser: CompanyFolderBrowser; stop: AbortController; authority: string } | undefined;
+			const close = () => {
+				if (!shown) return;
+				if (filesShown?.browser === shown.browser) filesShown = undefined;
+				shown.stop.abort();
+				shown.browser.dispose();
+				shown = undefined;
 			};
+			const draw = () => {
+				const team = controller.store.get().team;
+				const authority =
+					team && !controller.store.get().accessLost
+						? JSON.stringify([team.role, team.capabilities.read, team.capabilities.write])
+						: "";
+				if (shown?.authority === authority) return;
+				close();
+				el.replaceChildren();
+				if (!team || !authority) return;
+				const stop = new AbortController();
+				const browser = new CompanyFolderBrowser(
+					el,
+					new WebCompanyFiles(
+						cloud,
+						controller.profile,
+						controller.userId,
+						team.role,
+						AbortSignal.any([controller.signal, signal, stop.signal]),
+						companyCurrent,
+						team.capabilities.write,
+					),
+					() => ({
+						me: controller.userId,
+						members: controller.store.get().team?.members ?? [],
+						staff: controller.store.get().staff,
+					}),
+					{ usage: () => api.getCompanyFile(controller.profile.environmentId) },
+				);
+				shown = { browser, stop, authority };
+				filesShown = { owner: controller, browser };
+				if (filesPending?.owner === controller) browser.reveal(filesPending.path);
+				filesPending = undefined;
+				void browser.open().catch(() => undefined);
+			};
+			draw();
+			return { el, update: draw, dispose: close };
 		};
 		switch (route.section) {
 			case "new": {
