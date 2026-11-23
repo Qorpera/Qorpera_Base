@@ -254,6 +254,7 @@ export const SURFACES: Record<string, string> = {
 	"Open {host}": "Åbn {host}",
 	"Interactive 3D model — drag to rotate": "Interaktiv 3D-model — træk for at dreje",
 	Colorways: "Farvevarianter",
+	"Model view": "Visning",
 	Whole: "Samlet",
 	Apart: "Adskilt",
 	Specs: "Specifikationer",

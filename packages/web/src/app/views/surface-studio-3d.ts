@@ -193,7 +193,7 @@ export class Studio3DViewer {
 			"aria-label": t("Interactive 3D model — drag to rotate"),
 		});
 		this.#callouts = h("div", { class: "studio-3d-callouts", hidden: true });
-		this.#controls = h("div", { class: "studio-3d-view", role: "radiogroup", "aria-label": t("View") });
+		this.#controls = h("div", { class: "studio-3d-view", role: "radiogroup", "aria-label": t("Model view") });
 		this.el = h(
 			"div",
 			{ class: `studio-3d${config.changed ? " is-changed" : ""}` },
@@ -201,6 +201,7 @@ export class Studio3DViewer {
 			this.#callouts,
 			this.#controls,
 		);
+		this.#markColorway();
 		this.#bindPointer();
 		this.#drawControls();
 		this.#scheduleRender();
@@ -213,14 +214,15 @@ export class Studio3DViewer {
 		);
 	}
 
-	get colorwayIndex(): number {
-		return this.#activeColorIndex;
-	}
-
 	setColorway(index: number): void {
 		if (index < 0 || index >= this.#config.colorways.length || index === this.#activeColorIndex) return;
 		this.#activeColorIndex = index;
+		this.#markColorway();
 		this.#scheduleRender();
+	}
+
+	#markColorway(): void {
+		this.el.dataset.colorway = this.#config.colorways[this.#activeColorIndex]?.name ?? "";
 	}
 
 	#scheduleRender(): void {
@@ -239,6 +241,7 @@ export class Studio3DViewer {
 	update(config: Studio3DConfig): void {
 		this.#config = config;
 		if (this.#activeColorIndex >= config.colorways.length) this.#activeColorIndex = 0;
+		this.#markColorway();
 		this.el.classList.toggle("is-changed", config.changed === true);
 		this.#drawControls();
 		this.#scheduleRender();

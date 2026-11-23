@@ -732,9 +732,9 @@ describe("SurfaceStudioView", () => {
 			signal: new AbortController().signal,
 			baseFiles: {
 				"surfaces/thetabands/specs.json": JSON.stringify({
-					tagline: "A calm band for the evening.",
 					model: { kind: "headband", dimensions: "168 x 38 mm", layers: ["Cover", "Board"] },
 					overview: {
+						tagline: "Calm, measured.",
 						sensors: "4 dry EEG",
 						materials: "Moulded PC-ABS with a soft-touch coat and a woven strap",
 						battery: "14 h",
@@ -750,7 +750,7 @@ describe("SurfaceStudioView", () => {
 			},
 		});
 		expect(view.el.querySelector(".studio-stage .studio-3d-canvas")).not.toBeNull();
-		expect(view.el.querySelector(".studio-product-line")?.textContent).toBe("A calm band for the evening.");
+		expect(view.el.querySelector(".studio-product-line")?.textContent).toBe("Calm, measured.");
 		expect([...view.el.querySelectorAll(".studio-fact")].map((fact) => fact.textContent)).toEqual([
 			"Sensors4 dry EEG",
 			"Battery14 h",
@@ -760,14 +760,21 @@ describe("SurfaceStudioView", () => {
 		expect(view.el.querySelector(".studio-kv")).toBeNull();
 		expect(view.el.querySelector(".studio-swatches")).toBeNull();
 
-		const dots = [...view.el.querySelectorAll<HTMLButtonElement>('[data-act="studio-colorway"]')];
-		expect(dots.map((dot) => dot.getAttribute("aria-label"))).toEqual(["Lavendel", "Skifer"]);
-		expect(dots.map((dot) => dot.getAttribute("aria-checked"))).toEqual(["true", "false"]);
-		dots[1]!.click();
-		expect(dots.map((dot) => dot.getAttribute("aria-checked"))).toEqual(["false", "true"]);
+		const dots = () => [...view.el.querySelectorAll<HTMLButtonElement>('[data-act="studio-colorway"]')];
+		const checked = () => dots().map((dot) => dot.getAttribute("aria-checked"));
+		const modelColour = () => view.el.querySelector<HTMLElement>(".studio-3d")?.dataset.colorway;
+		expect(dots().map((dot) => dot.getAttribute("aria-label"))).toEqual(["Lavendel", "Skifer"]);
+		expect(checked()).toEqual(["true", "false"]);
+		expect(modelColour()).toBe("Lavendel");
+		dots()[1]!.click();
+		expect(checked()).toEqual(["false", "true"]);
+		expect(modelColour()).toBe("Skifer");
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="specs"]')!.click();
 		expect(view.el.querySelector(".studio-kv")?.textContent).toContain("Moulded PC-ABS");
+		view.el.querySelector<HTMLButtonElement>('[data-act="studio-tab"][data-tab="overview"]')!.click();
+		expect(checked()).toEqual(["false", "true"]);
+		expect(modelColour()).toBe("Skifer");
 		view.dispose();
 		store.dispose();
 	});

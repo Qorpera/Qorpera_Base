@@ -175,6 +175,10 @@ function formatScalar(value: unknown): string {
 	return JSON.stringify(value);
 }
 
+function specLabel(key: string): string {
+	return key.split(" · ").at(-1) ?? key;
+}
+
 function lookupPath(root: Record<string, unknown> | undefined, segments: readonly string[]): unknown {
 	let current: unknown = root;
 	for (const segment of segments) {
@@ -1670,7 +1674,7 @@ export class SurfaceStudioView {
 		}
 
 		if (productPage && showOverview) {
-			const lineEntry = primarySpec?.entries.find((entry) => PRODUCT_LINE_KEY.test(entry.key));
+			const lineEntry = primarySpec?.entries.find((entry) => PRODUCT_LINE_KEY.test(specLabel(entry.key)));
 			const facts = (primarySpec?.entries ?? [])
 				.filter((entry) => entry !== lineEntry && entry.value !== "–" && entry.value.length <= MAX_FACT_CHARS)
 				.slice(0, 4);
@@ -2088,7 +2092,7 @@ export class SurfaceStudioView {
 					h(
 						"div",
 						{ class: `studio-fact${fact.changed ? " is-changed" : ""}` },
-						h("dt", null, fact.key.split(" · ").at(-1) ?? fact.key),
+						h("dt", null, specLabel(fact.key)),
 						h("dd", null, fact.value),
 					),
 				)
