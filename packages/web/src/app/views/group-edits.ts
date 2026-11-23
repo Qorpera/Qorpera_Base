@@ -113,7 +113,7 @@ export class GroupEdits {
 		if (change.members) this.#draft.members = change.members.map((member) => ({ ...member }));
 		// Reopening and typing after a failure must not silently replay an uncertain write.
 		if (!this.store.get().failed) void this.save();
-		else this.store.set({});
+		else this.store.notify();
 	}
 
 	reconcile(details: GroupChatDetails): void {
@@ -163,7 +163,7 @@ export class GroupEdits {
 				if (!signal.aborted) this.store.set({ status: t("Group details could not be refreshed."), failed: true });
 			} finally {
 				this.#resetting = false;
-				this.store.set({});
+				this.store.notify();
 			}
 		});
 	}

@@ -208,6 +208,15 @@ describe("the search window", () => {
 		expect(titles()).toEqual(["logo.svg"]);
 		expect(reads).toBe(2);
 	});
+
+	it("clears rendered results when reset closes the search window", () => {
+		const { window, type, titles } = mount();
+		type("brand");
+		expect(titles().length).toBeGreaterThan(0);
+		window.reset();
+		expect(window.isOpen).toBe(false);
+		expect(titles()).toEqual([]);
+	});
 });
 
 describe("lighting a setting", () => {

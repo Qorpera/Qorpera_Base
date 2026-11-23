@@ -398,6 +398,7 @@ export class CompanyLogos implements CompanyLogoStore {
 			if (!element) elements.delete(ref);
 			else paintCompanyLogo(element, url);
 		}
+		if (elements.size === 0) this.#elements.delete(profileId);
 	}
 }
 

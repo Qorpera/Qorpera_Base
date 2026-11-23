@@ -1084,6 +1084,7 @@ export class MachineScreenView {
 	streamEnded(): void {
 		this.#cleared++;
 		this.#dropPaint();
+		this.#streamCanvas.width = this.#streamCanvas.height = 0;
 	}
 
 	/** No picture any more: the view goes away, and the panel's state text shows. */
@@ -1132,6 +1133,8 @@ export class MachineScreenView {
 		this.#lookTurn++;
 		this.#cleared++;
 		this.#dropPaint();
+		this.#canvas.width = this.#canvas.height = 0;
+		this.#streamCanvas.width = this.#streamCanvas.height = 0;
 		this.el.remove();
 	}
 

@@ -347,6 +347,21 @@ export class SurfaceView {
 		if (revealSlot) playOnce(revealSlot, "is-entering");
 	}
 
+	#disposeMount(): void {
+		if (!this.#mount) return;
+		this.#mount.dispose();
+		this.#mount = undefined;
+		this.#mountedFor = "";
+		this.#mountSlot.replaceChildren();
+	}
+
+	#disposeAttachedReport(): void {
+		if (!this.#attachedReport) return;
+		this.#attachedReport.dispose();
+		this.#attachedReport = undefined;
+		this.#reportSlot.replaceChildren();
+	}
+
 	#clearFrames(): void {
 		const hadFrames = this.#framesMode !== "none" || this.#compareDoors.size > 0;
 		if (!hadFrames && this.#frames.hidden) return;
@@ -576,6 +591,7 @@ export class SurfaceView {
 			);
 			if (reportMode) {
 				this.#clearFrames();
+				if (surface.archetype === "live_build") this.#disposeMount();
 				this.#mountSlot.hidden = true;
 				this.#hideLoading(this.#reportSlot);
 				this.#reportSlot.hidden = false;
@@ -589,16 +605,20 @@ export class SurfaceView {
 				}
 				this.#attachedReport.update();
 			} else if (remoteCompare || showPrimary) {
+				this.#disposeAttachedReport();
 				this.#reportSlot.hidden = true;
+				if (surface.archetype === "live_build") this.#disposeMount();
 				this.#hideLoading(this.#frames);
 				this.#drawFrames(surface);
 				const identityTokens = store.companyIdentityTokens();
 				this.#primaryDoor.setIdentityTokens(identityTokens);
 				for (const entry of this.#compareDoors.values()) entry.stage.setIdentityTokens(identityTokens);
 			} else if (waitingForWorkspace || waitingForMount) {
+				this.#disposeAttachedReport();
 				this.#clearFrames();
 				this.#showLoading(skeletonKind, t("Opening surface…"));
 			} else {
+				this.#disposeAttachedReport();
 				this.#reportSlot.hidden = true;
 				this.#clearFrames();
 				this.#mountSlot.hidden = false;
