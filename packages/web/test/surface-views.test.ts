@@ -9,7 +9,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SurfacesClient } from "../src/app/surfaces-store.ts";
 import { SITE_DOOR_PASS, SITE_DOOR_READY, SITE_DOOR_SHOWN, SITE_DOOR_URL } from "../src/app/views/site-view.ts";
-import { SurfaceDoorStage } from "../src/app/views/surface-door.ts";
+import { previewStatusText, publishFailureText, SurfaceDoorStage } from "../src/app/views/surface-door.ts";
 import { openPublishPatchnotesSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
@@ -994,6 +994,31 @@ describe("the surface page", () => {
 		rb2.resolve(session(["staged", "staged"]));
 		await flush();
 		store.dispose();
+	});
+
+	it("words a failed build for the member by its code and never shows the build log", () => {
+		const failed = (errorDetail: string | null) => previewStatusText(previewFrame({ status: "failed", errorDetail }));
+		expect(failed('PREVIEW_BUILD_FAILED\nThe build "npm run build" exited with code 1.\nsrc/main.tsx: error')).toBe(
+			"The preview could not be built.",
+		);
+		expect(failed("PREVIEW_BUILD_NO_HOURS\nThe company has no computer hours left.")).toBe(
+			"The company is out of computer hours, so the preview could not be built.",
+		);
+		expect(failed("PREVIEW_BUILD_NO_MACHINE\nNo coding machine could be had.")).toBe(
+			"No machine was free to build the preview. Try again in a moment.",
+		);
+		expect(failed('PREVIEW_BUILD_TOO_LARGE\nThe build\'s output in "out" has more than 500 web files.')).toBe(
+			"The built preview does not fit within the limits of a site.",
+		);
+		expect(failed("CODE_HOST_SITE_READ_FAILED: x")).toBe("The preview could not be built.");
+		expect(failed(null)).toBe("The preview could not be built.");
+		expect(publishFailureText("PREVIEW_BUILD_FAILED\nlog")).toBe(
+			"The site could not be built, so nothing was published.",
+		);
+		expect(publishFailureText("PREVIEW_BUILD_TOO_LARGE\nlog")).toBe(
+			"The built site does not fit within the limits of a site, so nothing was published.",
+		);
+		expect(publishFailureText("Missing index.html")).toBeNull();
 	});
 
 	it("renders Retry preview button on failed door frames, Failed session badges & Retry action, pending merge toast, and publish errors in patch notes", async () => {

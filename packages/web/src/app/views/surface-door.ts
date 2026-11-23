@@ -71,6 +71,52 @@ export interface SurfaceDoorOptions {
 	readonly onNeedFreshPass?: (previewId: string, stalePass?: string) => Promise<boolean> | undefined;
 }
 
+export type BuildFailureCode =
+	| "PREVIEW_BUILD_FAILED"
+	| "PREVIEW_BUILD_NO_HOURS"
+	| "PREVIEW_BUILD_NO_MACHINE"
+	| "PREVIEW_BUILD_TOO_LARGE";
+
+const BUILD_FAILURE_CODES: ReadonlySet<string> = new Set<BuildFailureCode>([
+	"PREVIEW_BUILD_FAILED",
+	"PREVIEW_BUILD_NO_HOURS",
+	"PREVIEW_BUILD_NO_MACHINE",
+	"PREVIEW_BUILD_TOO_LARGE",
+]);
+
+export function buildFailureCode(detail: string | null | undefined): BuildFailureCode | null {
+	const code = detail?.split("\n", 1)[0]?.trim() ?? "";
+	return BUILD_FAILURE_CODES.has(code) ? (code as BuildFailureCode) : null;
+}
+
+function previewFailureText(detail: string | null | undefined): string {
+	switch (buildFailureCode(detail)) {
+		case "PREVIEW_BUILD_NO_HOURS":
+			return t("The company is out of computer hours, so the preview could not be built.");
+		case "PREVIEW_BUILD_NO_MACHINE":
+			return t("No machine was free to build the preview. Try again in a moment.");
+		case "PREVIEW_BUILD_TOO_LARGE":
+			return t("The built preview does not fit within the limits of a site.");
+		default:
+			return t("The preview could not be built.");
+	}
+}
+
+export function publishFailureText(detail: string | null | undefined): string | null {
+	switch (buildFailureCode(detail)) {
+		case "PREVIEW_BUILD_FAILED":
+			return t("The site could not be built, so nothing was published.");
+		case "PREVIEW_BUILD_NO_HOURS":
+			return t("The company is out of computer hours, so nothing was published.");
+		case "PREVIEW_BUILD_NO_MACHINE":
+			return t("No machine was free to build the site. Try publishing again in a moment.");
+		case "PREVIEW_BUILD_TOO_LARGE":
+			return t("The built site does not fit within the limits of a site, so nothing was published.");
+		default:
+			return null;
+	}
+}
+
 export function previewStatusText(frame: SurfacePreviewFrameState): string {
 	switch (frame.status) {
 		case "composing":
@@ -80,7 +126,7 @@ export function previewStatusText(frame: SurfacePreviewFrameState): string {
 		case "conflicted":
 			return t("These changes conflict. Turn one off to preview the rest.");
 		case "failed":
-			return frame.errorDetail ?? t("The preview could not be built.");
+			return previewFailureText(frame.errorDetail);
 		default:
 			return "";
 	}

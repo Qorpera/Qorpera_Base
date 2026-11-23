@@ -3,6 +3,7 @@ import { SurfaceDialog } from "../../ui/dialog.ts";
 import { fmtTime, h, icon, personAvatar } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import { askedToPublish, type SurfacesStore, unpublishedChanges } from "../surfaces-store.ts";
+import { publishFailureText } from "./surface-door.ts";
 import { surfaceTile } from "./surface-rail.ts";
 
 export function firstName(name: string): string {
@@ -113,7 +114,10 @@ export function openPublishPatchnotesSheet(
 			}
 			if (surface.publishStatus === "failed") {
 				awaitingAsyncPublish = false;
-				status.textContent = surface.lastPublishError ?? t("Publish failed. Try again.");
+				status.textContent =
+					publishFailureText(surface.lastPublishError) ??
+					surface.lastPublishError ??
+					t("Publish failed. Try again.");
 			}
 		}
 		const look = store.lookOf(surface);
@@ -134,7 +138,9 @@ export function openPublishPatchnotesSheet(
 
 		const publishError =
 			surface.publishStatus === "failed"
-				? surface.lastPublishError?.trim() || t("The last publish failed. Try again.")
+				? publishFailureText(surface.lastPublishError) ||
+					surface.lastPublishError?.trim() ||
+					t("The last publish failed. Try again.")
 				: "";
 
 		const renderKey = JSON.stringify([
