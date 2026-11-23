@@ -59,6 +59,27 @@ function recipientOf(change: SurfaceChangeUnit): string | null {
 	return name ? name.charAt(0).toLocaleUpperCase() + name.slice(1) : address;
 }
 
+function approveFace(text: string, shown: boolean, confirm: boolean, glyph?: string): HTMLElement {
+	return h(
+		"span",
+		{
+			class: ["surface-approve-face", confirm && "is-confirm", !shown && "is-ghost"].filter(Boolean).join(" "),
+			...(shown ? {} : { "aria-hidden": "true", "data-text": text }),
+		},
+		glyph ? icon(glyph) : null,
+		shown ? text : null,
+	);
+}
+
+function approveLabel(rest: string, armed: boolean, glyph?: string): HTMLElement {
+	return h(
+		"span",
+		{ class: "surface-approve-label" },
+		approveFace(rest, !armed, false, glyph),
+		approveFace(t("Confirm"), armed, true),
+	);
+}
+
 function actionCard(
 	change: SurfaceChangeUnit,
 	look: SurfaceLook,
@@ -111,8 +132,7 @@ function actionCard(
 							...(armed ? { "data-armed": "true" } : {}),
 							disabled: busy,
 						},
-						armed ? icon("check") : inbox ? icon("send") : null,
-						armed ? t("Confirm") : inbox ? t("Send") : t("Approve"),
+						approveLabel(inbox ? t("Send") : t("Approve"), armed, inbox ? "send" : undefined),
 					),
 					single
 						? h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard"))
@@ -1065,7 +1085,7 @@ export class SurfaceSessionDrawer {
 												"data-change": change.id,
 												...(armed ? { "data-armed": "true" } : {}),
 											},
-											armed ? t("Confirm") : inbox ? t("Send") : t("Approve"),
+											approveLabel(inbox ? t("Send") : t("Approve"), armed),
 										)
 									: null,
 							),
@@ -1124,7 +1144,7 @@ export class SurfaceSessionDrawer {
 													"data-change": change.id,
 													...(armed ? { "data-armed": "true" } : {}),
 												},
-												armed ? t("Confirm") : t("Approve"),
+												approveLabel(t("Approve"), armed),
 											)
 										: null,
 							),
@@ -1468,11 +1488,12 @@ export class SurfaceSessionDrawer {
 								"data-act": "approve-all",
 								...(armedAll ? { "data-armed": "true" } : {}),
 							},
-							armedAll
-								? t("Confirm")
-								: look.kind === "inbox"
+							approveLabel(
+								look.kind === "inbox"
 									? t("Send all {count}", { count: openActions.length })
 									: t("Approve all {count}", { count: openActions.length }),
+								armedAll,
+							),
 						),
 						h("button", { type: "button", class: "btn btn-small", "data-act": "discard" }, t("Discard")),
 					),
@@ -1559,7 +1580,7 @@ export class SurfaceSessionDrawer {
 																...(armed ? { "data-armed": "true" } : {}),
 																disabled: busyChange,
 															},
-															armed ? t("Confirm") : t("Approve"),
+															approveLabel(t("Approve"), armed),
 														),
 												h(
 													"button",
@@ -1619,7 +1640,7 @@ export class SurfaceSessionDrawer {
 											"data-act": "approve-all",
 											...(armedAll ? { "data-armed": "true" } : {}),
 										},
-										armedAll ? t("Confirm") : t("Approve all {count}", { count: open }),
+										approveLabel(t("Approve all {count}", { count: open }), armedAll),
 									)
 								: null,
 						open > 1

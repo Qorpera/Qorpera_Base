@@ -312,8 +312,8 @@ function codeBody(
 	const code = codeField(container, state.busy, (digits) => void auth.verifyEmailCode(digits));
 	const lead =
 		step.name === "confirm"
-			? t("We sent a 6-digit code to {email}. Type it here to finish your account.", { email: step.email })
-			: t("We sent a 6-digit code to {email}. Type it here to sign in.", { email: step.email });
+			? t("We sent an 8-digit code to {email}. Type it here to finish your account.", { email: step.email })
+			: t("We sent an 8-digit code to {email}. Type it here to sign in.", { email: step.email });
 	return [
 		h("h1", { id: "authTitle" }, t("Check your email")),
 		h("p", { class: "auth-lead" }, lead),
@@ -360,7 +360,7 @@ function resetBody(
 			{ class: "auth-lead" },
 			step.verified
 				? t("Pick a new password for {email}.", { email: step.email })
-				: t("We sent a 6-digit code to {email}. Type it, then pick a new password.", { email: step.email }),
+				: t("We sent an 8-digit code to {email}. Type it, then pick a new password.", { email: step.email }),
 		),
 		h(
 			"form",

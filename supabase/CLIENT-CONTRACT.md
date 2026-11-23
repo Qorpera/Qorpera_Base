@@ -2884,7 +2884,7 @@ above.
    `http://127.0.0.1:5180/` and `http://localhost:5180/` in the project's
    redirect allow-list for OAuth PKCE and magic links (decided 2026-09-02:
    the web app stays in the monorepo and is served from `app.qorpera.com`),
-   and confirm the email template includes the six-digit `{{ .Token }}` so
+   and confirm the email template includes the eight-digit `{{ .Token }}` so
    code entry works without a redirect.
 6. **Deployment status of Order 0 on the target project.** On
    `wovsmjvghnbcbfazdtvr.supabase.co` (the project the desktop is compiled
@@ -2917,7 +2917,7 @@ above.
    (`https://app.qorpera.com/**`, `http://localhost:5180/**`,
    `http://127.0.0.1:5180/**`; the Site URL stays `https://qorpera.com`).
    The "Magic link or OTP" and "Confirm sign up" templates now carry the
-   six-digit `{{ .Token }}` with Qorpera copy (sources in
+   eight-digit `{{ .Token }}` with Qorpera copy (sources in
    `packages/web/auth-email/`), subject "Your Qorpera sign-in code". Custom
    SMTP through Resend (`smtp.resend.com:465`, sender
    `Qorpera <no-reply@mail.qorpera.com>`) was prepared; the founder holds the

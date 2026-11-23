@@ -6,7 +6,7 @@ minimum_password_length = 8
 [auth.email]
 enable_confirmations = true
 max_frequency = "1m0s"
-otp_length = 6
+otp_length = 8
 
 [auth.email.notification.password_changed]
 enabled = true

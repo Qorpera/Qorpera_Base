@@ -4,7 +4,7 @@ import { forgetMemberFiles } from "../cloud/company-files.ts";
 import { t } from "../ui/preferences.ts";
 import { Store } from "./state.ts";
 
-export const CODE_LENGTH = 6;
+export const CODE_LENGTH = 8;
 export const PASSWORD_MIN = 8;
 const RESEND_WAIT_MS = 60_000;
 
@@ -313,7 +313,7 @@ export class AuthController {
 		const step = this.store.get().step;
 		if (step.name !== "confirm" && step.name !== "code") return;
 		const code = token.replace(/\D/g, "");
-		if (code.length !== CODE_LENGTH) return this.#fail(t("Enter the 6-digit code from the email."));
+		if (code.length !== CODE_LENGTH) return this.#fail(t("Enter the 8-digit code from the email."));
 		await this.#run(async () => {
 			const { error } = await this.#cloud.supabase.auth.verifyOtp({ email: step.email, token: code, type: "email" });
 			if (error) throw error;
@@ -325,7 +325,7 @@ export class AuthController {
 		const step = this.store.get().step;
 		if (step.name !== "reset") return;
 		const code = token.replace(/\D/g, "");
-		if (!step.verified && code.length !== CODE_LENGTH) return this.#fail(t("Enter the 6-digit code from the email."));
+		if (!step.verified && code.length !== CODE_LENGTH) return this.#fail(t("Enter the 8-digit code from the email."));
 		if (password.length < PASSWORD_MIN) return this.#fail(t("Use at least 8 characters for your password."));
 		await this.#run(async () => {
 			if (!step.verified) {
