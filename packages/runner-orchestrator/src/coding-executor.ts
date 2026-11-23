@@ -8,9 +8,11 @@ import {
 import { withAbortScope, withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
 import { type AppAutoRedeployHooks, parseAppDeployConfig, runPostLandAppAutoRedeploy } from "./app-auto-redeploy.ts";
 import type { CompanyMachineSecretsManager } from "./company-machine-secrets.ts";
+import type { SurfacePreviewBuildOutcome, SurfacePreviewRecipe } from "./surface-preview-runner.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA40 = /^[0-9a-f]{40}$/;
+const PREVIEW_BUILDER_KIND = "surface-preview-build";
 /** Failure-path cleanup: the custody lookups (normally well under a second)
  * plus stopping the session's commands in the guest and unplugging its
  * folders. The executor unit's TimeoutStopSec must stay well above it. */
@@ -36,6 +38,9 @@ export const CODING_EXECUTOR_RPCS = [
 	"qorpera_defer_coding_session",
 	"qorpera_emit_code_change_routine_wakes",
 	"qorpera_emit_app_unhealthy_routine_wakes",
+	"qorpera_check_surface_preview_build",
+	"qorpera_begin_surface_preview_build",
+	"qorpera_complete_surface_preview_build",
 ] as const;
 /** The turn cannot have its member's machine yet (a full node, a machine being
  * removed, the session still on another machine): it waits in the queue. */
@@ -289,6 +294,7 @@ export const PUBLICATION_UNFINISHED =
  * The web shows the founder's card line for checks by these exact words. */
 const CODING_LANDING_STEP = "Checking and saving the change";
 const CODING_STAGING_STEP = "Staging changes for preview";
+const CODING_PREVIEW_BUILD_STEP = "Building the interface preview";
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */
@@ -349,6 +355,51 @@ export interface CodingSessionClaim {
 	context: string;
 	followUp: string | null;
 	surfaceSession?: CodingSurfaceSessionClaim;
+	previewBuilder?: true;
+}
+
+export interface CodingPreviewBuild {
+	readonly buildId: string;
+	readonly commitSha: string;
+	readonly treeSha: string;
+	readonly recipe: SurfacePreviewRecipe;
+	readonly attempt: number;
+}
+
+export function parseCodingPreviewBuild(value: unknown): CodingPreviewBuild {
+	const item = record(value, "Invalid preview build");
+	const recipe = record(item.recipe, "Invalid preview build");
+	if (
+		typeof item.buildId !== "string" ||
+		!UUID.test(item.buildId) ||
+		typeof item.commitSha !== "string" ||
+		!SHA40.test(item.commitSha) ||
+		typeof item.treeSha !== "string" ||
+		!SHA40.test(item.treeSha) ||
+		!Number.isSafeInteger(item.attempt) ||
+		Number(item.attempt) < 1 ||
+		Number(item.attempt) > 9_999 ||
+		typeof recipe.run !== "string" ||
+		!recipe.run.trim() ||
+		typeof recipe.cwd !== "string" ||
+		typeof recipe.folder !== "string" ||
+		!Number.isSafeInteger(recipe.timeoutSeconds) ||
+		Number(recipe.timeoutSeconds) < 10 ||
+		Number(recipe.timeoutSeconds) > 600
+	)
+		throw new Error("Invalid preview build");
+	return {
+		buildId: item.buildId,
+		commitSha: item.commitSha,
+		treeSha: item.treeSha,
+		recipe: {
+			run: recipe.run,
+			cwd: recipe.cwd,
+			folder: recipe.folder,
+			timeoutSeconds: Number(recipe.timeoutSeconds),
+		},
+		attempt: Number(item.attempt),
+	};
 }
 
 /** What the harness left behind at the end of its turn (qorpera_submit_coding_turn). `picture`: the screenshot the
@@ -440,6 +491,11 @@ export interface CodingExecutorHost {
 	 * kept per-session VMs and close released ones; every failure is recorded
 	 * and returned. */
 	housekeep(signal: AbortSignal): Promise<CodingHousekeepingOutcome[]>;
+	buildPreview(
+		claim: CodingSessionClaim,
+		build: CodingPreviewBuild,
+		signal: AbortSignal,
+	): Promise<SurfacePreviewBuildOutcome>;
 	autoRedeploy?(
 		claim: CodingSessionClaim,
 		landed: NonNullable<CodingExecutorPublication["landed"]>,
@@ -528,6 +584,7 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 		context: text(dispatch.context ?? "", 16384),
 		followUp: optionalText(item.followUp, 8192),
 		...(surfaceSession ? { surfaceSession } : {}),
+		...(dispatch.kind === PREVIEW_BUILDER_KIND ? { previewBuilder: true as const } : {}),
 	};
 }
 
@@ -907,6 +964,39 @@ export class CloudCodingExecutor {
 				// 1. The workspace: the member's machine, the session's NAS folders, pinned base, seeded checkout.
 				let turn = await describe();
 				if (turn.phase !== "preparing") throw new Error("Coding turn is not preparing");
+				const finishBuild = async (
+					buildId: string | null,
+					outcome: "built" | "failed" | "none",
+					extra: { builtTreeSha?: string; errorDetail?: string } = {},
+				) => {
+					await again("qorpera_complete_surface_preview_build", {
+						...args,
+						p_build_id: buildId,
+						p_outcome: outcome,
+						p_built_tree_sha: extra.builtTreeSha ?? null,
+						p_error_detail: extra.errorDetail ?? null,
+					});
+				};
+				const checkBuild = async () =>
+					record(await again("qorpera_check_surface_preview_build", args), "Preview build check unconfirmed")
+						.state;
+				if (claimed.previewBuilder) {
+					const held = await checkBuild();
+					if (held === "wait") {
+						try {
+							await call("qorpera_defer_coding_session", { ...args, p_reason: "PREVIEW_BUILDS_BUSY" });
+						} catch (deferError) {
+							this.#reported("defer", deferError);
+							return "recovery-required";
+						}
+						return "deferred";
+					}
+					if (held !== "go") {
+						end();
+						await finishBuild(null, "none");
+						return "completed";
+					}
+				}
 				let workspace: CodingWorkspace;
 				try {
 					workspace = await this.#host.prepareWorkspace(claimed, turn, active);
@@ -947,6 +1037,14 @@ export class CloudCodingExecutor {
 					} catch (detachError) {
 						this.#reported("stop", detachError);
 					}
+					if (
+						claimed.previewBuilder &&
+						error.reason === "COMPUTER_HOURS_EXHAUSTED" &&
+						(await checkBuild()) === "none"
+					) {
+						await finishBuild(null, "none");
+						return "completed";
+					}
 					try {
 						await call("qorpera_defer_coding_session", { ...args, p_reason: error.reason });
 					} catch (deferError) {
@@ -955,6 +1053,42 @@ export class CloudCodingExecutor {
 						return "recovery-required";
 					}
 					return "deferred";
+				}
+				if (claimed.previewBuilder) {
+					const begun = record(
+						await again("qorpera_begin_surface_preview_build", args),
+						"Preview build begin unconfirmed",
+					);
+					if (begun.state === "wait") {
+						end();
+						try {
+							await this.#host.detachSession(claimed, active);
+						} catch (detachError) {
+							this.#reported("stop", detachError);
+						}
+						try {
+							await call("qorpera_defer_coding_session", { ...args, p_reason: "PREVIEW_BUILDS_BUSY" });
+						} catch (deferError) {
+							this.#reported("defer", deferError);
+							return "recovery-required";
+						}
+						return "deferred";
+					}
+					if (begun.state !== "build") {
+						end();
+						await finishBuild(null, "none");
+						return "completed";
+					}
+					const build = parseCodingPreviewBuild(begun.build);
+					await progress({ p_phase: "publishing", p_last_step: CODING_PREVIEW_BUILD_STEP });
+					const result = await this.#host.buildPreview(claimed, build, active);
+					end();
+					if (result.outcome === "built") {
+						await finishBuild(build.buildId, "built", { builtTreeSha: result.builtTreeSha });
+						return "completed";
+					}
+					await finishBuild(build.buildId, "failed", { errorDetail: result.errorDetail });
+					return "failed";
 				}
 				// 2. The model turn: admitted through the wake bus under the owner's sponsor.
 				// Wake admission never waits for its company's row, and every agent tool

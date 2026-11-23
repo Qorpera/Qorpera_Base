@@ -20,7 +20,13 @@ import {
 	keptRepositoryOf,
 	withJob,
 } from "./code-host-jobs.ts";
-import { type CodeSiteTreeFile, CodeSiteTreeInvalid, readSurfaceSiteTree } from "./code-host-sites.ts";
+import {
+	type CodeSiteTreeFile,
+	CodeSiteTreeInvalid,
+	readCodeSiteTree,
+	readSurfacePreviewPlan,
+	readSurfaceSiteTree,
+} from "./code-host-sites.ts";
 import { composePreviewTree, type RebaseSessionChangesResult } from "./code-host-surfaces.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { CODE_SITE_EXTENSIONS, CODE_SITE_PATH, codeSiteManifest, codeSiteTreeProblem } from "./code-site.ts";
@@ -38,6 +44,11 @@ import {
 	type SurfaceExecutionControlPlane,
 	undoSurfaceCodeRepoChange,
 } from "./surface-execution-bridge.ts";
+import {
+	previewSiteProblemDetail,
+	type SurfacePreviewPlan,
+	type SurfacePreviewRecipe,
+} from "./surface-preview-runner.ts";
 import type {
 	ClaimedSurfaceMergeJob,
 	ClaimedSurfacePreviewJob,
@@ -56,6 +67,7 @@ export const SURFACE_CODE_HOST_RPCS = [
 	"qorpera_surface_site_version_put",
 	"qorpera_surface_site_version_finish",
 	"qorpera_surface_shared_product_folder_roots",
+	"qorpera_surface_request_build",
 ] as const;
 
 export type SurfaceCodeHostRpc = (typeof SURFACE_CODE_HOST_RPCS)[number];
@@ -68,6 +80,8 @@ export interface SurfaceCodeHostWorkerOptions {
 	readonly control: SurfaceCodeHostControl;
 	readonly hosts: Pick<CodeHostJobs, "run">;
 	readonly readTree?: CodeSiteTreeRead;
+	readonly readBuiltTree?: CodeSiteTreeRead;
+	readonly readPlan?: SurfacePreviewPlanRead;
 	readonly batchLimit?: number;
 	readonly companyConcurrency?: number;
 	readonly uploadConcurrency?: number;
@@ -77,6 +91,21 @@ export interface SurfaceCodeHostWorkerOptions {
 	readonly yieldRetryDelaysMs?: readonly number[];
 	readonly report?: (event: Record<string, unknown>) => void;
 }
+
+export type SurfacePreviewPlanRead = (
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; tree: string },
+) => Promise<SurfacePreviewPlan>;
+
+type SurfaceBuildAnswer =
+	| { readonly state: "built"; readonly buildId: string; readonly builtTreeSha: string }
+	| { readonly state: "waiting" | "failed" };
+
+type ReadSite = {
+	readonly treeSha: string;
+	readonly files: readonly CodeSiteTreeFile[];
+	readonly sharedAssets: Readonly<Record<string, string>>;
+};
 
 export interface SurfaceCodeHostPassResult {
 	readonly previews: number;
@@ -107,6 +136,11 @@ function errorTextWithCause(error: unknown): string {
 		cur = cur instanceof Error ? cur.cause : undefined;
 	}
 	return parts.join(" ");
+}
+
+function surfaceFailureDetail(error: unknown, builtFolder: string | null, fallback: string): string {
+	if (error instanceof CodeSiteTreeInvalid) return previewSiteProblemDetail(error.problem, builtFolder);
+	return error instanceof Error ? error.message.slice(0, 1000) : fallback;
 }
 
 function isAlreadyCompletedJobError(error: unknown): boolean {
@@ -609,6 +643,8 @@ export class SurfaceCodeHostWorker {
 	readonly #control: SurfaceCodeHostControl;
 	readonly #hosts: Pick<CodeHostJobs, "run">;
 	readonly #readTree: CodeSiteTreeRead;
+	readonly #readBuiltTree: CodeSiteTreeRead;
+	readonly #readPlan: SurfacePreviewPlanRead;
 	readonly #batchLimit: number;
 	readonly #companyConcurrency: number;
 	readonly #uploadConcurrency: number;
@@ -622,6 +658,8 @@ export class SurfaceCodeHostWorker {
 		this.#control = options.control;
 		this.#hosts = options.hosts;
 		this.#readTree = options.readTree ?? readSurfaceSiteTree;
+		this.#readBuiltTree = options.readBuiltTree ?? readCodeSiteTree;
+		this.#readPlan = options.readPlan ?? readSurfacePreviewPlan;
 		this.#batchLimit = Math.min(Math.max(1, options.batchLimit ?? 8), 64);
 		this.#companyConcurrency = Math.min(Math.max(1, options.companyConcurrency ?? DEFAULT_COMPANY_CONCURRENCY), 16);
 		this.#uploadConcurrency = Math.min(Math.max(1, options.uploadConcurrency ?? DEFAULT_UPLOAD_CONCURRENCY), 16);
@@ -946,36 +984,122 @@ export class SurfaceCodeHostWorker {
 		}
 	}
 
+	async #requestBuild(
+		input: {
+			readonly kind: "preview" | "publish";
+			readonly id: string;
+			readonly leaseToken: string;
+			readonly commitSha: string;
+			readonly treeSha: string;
+			readonly recipe: SurfacePreviewRecipe;
+			readonly staleBuiltTree: string | null;
+		},
+		signal: AbortSignal,
+	): Promise<SurfaceBuildAnswer> {
+		const raw = await this.#control.call(
+			"qorpera_surface_request_build",
+			{
+				p_kind: input.kind,
+				p_id: input.id,
+				p_lease_token: input.leaseToken,
+				p_commit_sha: input.commitSha,
+				p_tree_sha: input.treeSha,
+				p_recipe: {
+					run: input.recipe.run,
+					cwd: input.recipe.cwd,
+					folder: input.recipe.folder,
+					timeoutSeconds: input.recipe.timeoutSeconds,
+				},
+				p_stale_built_tree: input.staleBuiltTree,
+			},
+			signal,
+		);
+		const answer = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+		const buildId = typeof answer.buildId === "string" && isUuid(answer.buildId) ? answer.buildId : null;
+		if (answer.state === "failed") return { state: "failed" };
+		if (buildId === null) throw new Error("Surface build request returned an invalid answer");
+		if (answer.state === "built" && typeof answer.builtTreeSha === "string" && GIT_SHA.test(answer.builtTreeSha))
+			return { state: "built", buildId, builtTreeSha: answer.builtTreeSha };
+		if (answer.state === "waiting") return { state: "waiting" };
+		throw new Error("Surface build request returned an invalid answer");
+	}
+
+	async #readBuiltSite(
+		at: { readonly profileId: string; readonly environmentId: string },
+		repository: CloudCodingRepository,
+		builtTreeSha: string,
+		productFolderRoots: readonly string[],
+		signal: AbortSignal,
+	): Promise<{ readonly yielded: true } | { readonly yielded: false; readonly site: ReadSite | null }> {
+		const ran = await this.#runYieldable<ReadSite | null>(at.profileId, at.environmentId, signal, async (job) => {
+			let files: readonly CodeSiteTreeFile[];
+			try {
+				files = (await this.#readBuiltTree(job, { repository, tree: builtTreeSha })).files;
+			} catch (error) {
+				if (error instanceof CodeHostRefusal && error.code === "CODE_HOST_SITE_TREE_UNKNOWN") return null;
+				throw error;
+			}
+			return {
+				treeSha: builtTreeSha,
+				files,
+				sharedAssets: await readSharedIdentityAssets(job, job.signal, productFolderRoots),
+			};
+		});
+		return ran.yielded ? { yielded: true } : { yielded: false, site: ran.value };
+	}
+
+	async #builtSite(
+		input: {
+			readonly kind: "preview" | "publish";
+			readonly id: string;
+			readonly leaseToken: string;
+			readonly profileId: string;
+			readonly environmentId: string;
+			readonly repository: CloudCodingRepository;
+			readonly commitSha: string;
+			readonly treeSha: string;
+			readonly recipe: SurfacePreviewRecipe;
+			readonly productFolderRoots: readonly string[];
+		},
+		signal: AbortSignal,
+	): Promise<"parked" | "yielded" | ReadSite> {
+		let stale: string | null = null;
+		for (let ask = 0; ask < 2; ask += 1) {
+			const answer = await this.#requestBuild({ ...input, staleBuiltTree: stale }, signal);
+			if (answer.state !== "built") return "parked";
+			const read = await this.#readBuiltSite(
+				input,
+				input.repository,
+				answer.builtTreeSha,
+				input.productFolderRoots,
+				signal,
+			);
+			if (read.yielded) return "yielded";
+			if (read.site !== null) return read.site;
+			stale = answer.builtTreeSha;
+		}
+		throw new Error("The built site is not in the repository");
+	}
+
 	async #runPreview(preview: ClaimedSurfacePreviewJob, signal: AbortSignal): Promise<boolean> {
 		const controlPlane = createControlPlaneBridge(this.#control);
 		const leaseField = preview.leaseToken !== undefined ? { leaseToken: preview.leaseToken } : {};
-		if (!preview.environmentId) {
+		const fail = async (errorDetail: string): Promise<true> => {
 			await controlPlane.completeSurfacePreview(
-				{
-					previewId: preview.previewId,
-					status: "failed",
-					errorDetail: "Preview job is missing environmentId",
-					...leaseField,
-				},
+				{ previewId: preview.previewId, status: "failed", errorDetail, ...leaseField },
 				signal,
 			);
 			return true;
-		}
+		};
+		if (!preview.environmentId) return await fail("Preview job is missing environmentId");
+		const environmentId = preview.environmentId;
 		const repository = parseSurfaceRepositoryKey(preview.repositoryKey);
-		if (!repository) {
-			await controlPlane.completeSurfacePreview(
-				{
-					previewId: preview.previewId,
-					status: "failed",
-					errorDetail: preview.repositoryKey
-						? `Invalid surface repositoryKey "${preview.repositoryKey}"`
-						: "Surface job is missing repositoryKey",
-					...leaseField,
-				},
-				signal,
+		if (!repository)
+			return await fail(
+				preview.repositoryKey
+					? `Invalid surface repositoryKey "${preview.repositoryKey}"`
+					: "Surface job is missing repositoryKey",
 			);
-			return true;
-		}
 
 		// WHY: Preview HTTP uploads must stay outside hosts.run so slow network I/O never blocks company merges or coding turns.
 		const baseSha = preview.baseSha && preview.baseSha !== ZERO_SHA ? preview.baseSha : undefined;
@@ -985,6 +1109,13 @@ export class SurfaceCodeHostWorker {
 					readonly lastCleanTreeSha: string;
 					readonly changeIds: readonly string[];
 					readonly paths: readonly string[];
+			  }
+			| { readonly status: "invalid"; readonly detail: string }
+			| {
+					readonly status: "build";
+					readonly compositeCommitSha: string;
+					readonly compositeTreeSha: string;
+					readonly recipe: SurfacePreviewRecipe;
 			  }
 			| {
 					readonly status: "ready";
@@ -999,7 +1130,7 @@ export class SurfaceCodeHostWorker {
 		try {
 			const ran = await this.#runYieldable<PreparedPreview>(
 				preview.profileId,
-				preview.environmentId,
+				environmentId,
 				signal,
 				async (codeHostJob) => {
 					await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
@@ -1021,6 +1152,15 @@ export class SurfaceCodeHostWorker {
 							paths: [...composed.conflictPaths],
 						};
 					}
+					const plan = await this.#readPlan(codeHostJob, { repository, tree: composed.compositeTreeSha });
+					if (plan.kind === "invalid") return { status: "invalid", detail: plan.detail };
+					if (plan.kind === "build")
+						return {
+							status: "build",
+							compositeCommitSha: composed.compositeCommitSha,
+							compositeTreeSha: composed.compositeTreeSha,
+							recipe: plan.recipe,
+						};
 					const treeData = await this.#readTree(codeHostJob, {
 						repository,
 						tree: composed.compositeTreeSha,
@@ -1047,17 +1187,7 @@ export class SurfaceCodeHostWorker {
 			prepared = ran.value;
 		} catch (error) {
 			if (signal.aborted) throw error;
-			const detail = error instanceof Error ? error.message.slice(0, 1000) : "Surface preview build failed";
-			await controlPlane.completeSurfacePreview(
-				{
-					previewId: preview.previewId,
-					status: "failed",
-					errorDetail: detail,
-					...leaseField,
-				},
-				signal,
-			);
-			return true;
+			return await fail(surfaceFailureDetail(error, null, "Surface preview build failed"));
 		}
 
 		if (prepared.status === "conflicted") {
@@ -1074,6 +1204,38 @@ export class SurfaceCodeHostWorker {
 			);
 			return true;
 		}
+		if (prepared.status === "invalid") return await fail(prepared.detail);
+
+		let site: ReadSite;
+		if (prepared.status === "build") {
+			if (!preview.leaseToken) return await fail("Preview job is missing its lease");
+			let built: "parked" | "yielded" | ReadSite;
+			try {
+				built = await this.#builtSite(
+					{
+						kind: "preview",
+						id: preview.previewId,
+						leaseToken: preview.leaseToken,
+						profileId: preview.profileId,
+						environmentId,
+						repository,
+						commitSha: prepared.compositeCommitSha,
+						treeSha: prepared.compositeTreeSha,
+						recipe: prepared.recipe,
+						productFolderRoots,
+					},
+					signal,
+				);
+			} catch (error) {
+				if (signal.aborted) throw error;
+				return await fail(surfaceFailureDetail(error, prepared.recipe.folder, "Surface preview build failed"));
+			}
+			if (built === "parked") return true;
+			if (built === "yielded") return false;
+			site = built;
+		} else {
+			site = { treeSha: prepared.compositeTreeSha, files: prepared.files, sharedAssets: prepared.sharedAssets };
+		}
 
 		try {
 			const uploaded = await uploadPreparedSiteTree(
@@ -1081,11 +1243,11 @@ export class SurfaceCodeHostWorker {
 				{
 					surfaceId: preview.surfaceId,
 					mainSha: prepared.compositeCommitSha,
-					treeSha: prepared.compositeTreeSha,
+					treeSha: site.treeSha,
 					title: `Preview ${preview.shortHostId}`,
 					promoteLive: false,
-					files: prepared.files,
-					sharedAssets: prepared.sharedAssets,
+					files: site.files,
+					sharedAssets: site.sharedAssets,
 					uploadConcurrency: this.#uploadConcurrency,
 				},
 				signal,
@@ -1105,17 +1267,13 @@ export class SurfaceCodeHostWorker {
 			return true;
 		} catch (error) {
 			if (signal.aborted) throw error;
-			const detail = error instanceof Error ? error.message.slice(0, 1000) : "Surface preview upload failed";
-			await controlPlane.completeSurfacePreview(
-				{
-					previewId: preview.previewId,
-					status: "failed",
-					errorDetail: detail,
-					...leaseField,
-				},
-				signal,
+			return await fail(
+				surfaceFailureDetail(
+					error,
+					prepared.status === "build" ? prepared.recipe.folder : null,
+					"Surface preview upload failed",
+				),
 			);
-			return true;
 		}
 	}
 
@@ -1233,26 +1391,48 @@ export class SurfaceCodeHostWorker {
 					? pub.liveHeadSha
 					: null;
 
-		type PreparedPublish = {
-			readonly headSha: string;
-			readonly treeSha: string;
-			readonly files: readonly CodeSiteTreeFile[];
-			readonly sharedAssets: Readonly<Record<string, string>>;
-		};
+		type PreparedPublish =
+			| { readonly status: "invalid"; readonly detail: string }
+			| {
+					readonly status: "build";
+					readonly headSha: string;
+					readonly treeSha: string;
+					readonly recipe: SurfacePreviewRecipe;
+			  }
+			| {
+					readonly status: "ready";
+					readonly headSha: string;
+					readonly treeSha: string;
+					readonly files: readonly CodeSiteTreeFile[];
+					readonly sharedAssets: Readonly<Record<string, string>>;
+			  };
 
+		const environmentId = pub.environmentId;
+		const failPublish = async (errorDetail: string): Promise<true> => {
+			await controlPlane.completeSurfacePublish(
+				{ jobId: pub.jobId, status: "failed", errorDetail, ...leaseField },
+				signal,
+			);
+			return true;
+		};
 		const productFolderRoots = await this.#resolveProductFolderRoots(pub.profileId, signal);
 		let prepared: PreparedPublish;
 		try {
 			const ran = await this.#runYieldable<PreparedPublish>(
 				pub.profileId,
-				pub.environmentId,
+				environmentId,
 				signal,
 				async (codeHostJob) => {
 					await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
 					const resolved = await resolveMainHeadAndTree(codeHostJob, repository, explicitHeadSha);
+					const plan = await this.#readPlan(codeHostJob, { repository, tree: resolved.treeSha });
+					if (plan.kind === "invalid") return { status: "invalid", detail: plan.detail };
+					if (plan.kind === "build")
+						return { status: "build", headSha: resolved.headSha, treeSha: resolved.treeSha, recipe: plan.recipe };
 					const treeData = await this.#readTree(codeHostJob, { repository, tree: resolved.treeSha });
 					const sharedAssets = await readSharedIdentityAssets(codeHostJob, codeHostJob.signal, productFolderRoots);
 					return {
+						status: "ready",
 						headSha: resolved.headSha,
 						treeSha: resolved.treeSha,
 						files: treeData.files,
@@ -1272,17 +1452,41 @@ export class SurfaceCodeHostWorker {
 			prepared = ran.value;
 		} catch (error) {
 			if (signal.aborted) throw error;
-			const detail = error instanceof Error ? error.message.slice(0, 1000) : "Surface publish read failed";
-			await controlPlane.completeSurfacePublish(
-				{
-					jobId: pub.jobId,
-					status: "failed",
-					errorDetail: detail,
-					...leaseField,
-				},
-				signal,
-			);
-			return true;
+			return await failPublish(surfaceFailureDetail(error, null, "Surface publish read failed"));
+		}
+		if (prepared.status === "invalid") return await failPublish(prepared.detail);
+
+		let site: ReadSite;
+		if (prepared.status === "build") {
+			if (!pub.leaseToken) return await failPublish("Publish job is missing its lease");
+			let built: "parked" | "yielded" | ReadSite;
+			try {
+				built = await this.#builtSite(
+					{
+						kind: "publish",
+						id: pub.jobId,
+						leaseToken: pub.leaseToken,
+						profileId: pub.profileId,
+						environmentId,
+						repository,
+						commitSha: prepared.headSha,
+						treeSha: prepared.treeSha,
+						recipe: prepared.recipe,
+						productFolderRoots,
+					},
+					signal,
+				);
+			} catch (error) {
+				if (signal.aborted) throw error;
+				return await failPublish(
+					surfaceFailureDetail(error, prepared.recipe.folder, "Surface publish build failed"),
+				);
+			}
+			if (built === "parked") return true;
+			if (built === "yielded") return false;
+			site = built;
+		} else {
+			site = { treeSha: prepared.treeSha, files: prepared.files, sharedAssets: prepared.sharedAssets };
 		}
 
 		try {
@@ -1291,11 +1495,11 @@ export class SurfaceCodeHostWorker {
 				{
 					surfaceId: pub.surfaceId,
 					mainSha: prepared.headSha,
-					treeSha: prepared.treeSha,
+					treeSha: site.treeSha,
 					title: null,
 					promoteLive: true,
-					files: prepared.files,
-					sharedAssets: prepared.sharedAssets,
+					files: site.files,
+					sharedAssets: site.sharedAssets,
 					uploadConcurrency: this.#uploadConcurrency,
 				},
 				signal,
@@ -1312,17 +1516,13 @@ export class SurfaceCodeHostWorker {
 			return true;
 		} catch (error) {
 			if (signal.aborted) throw error;
-			const detail = error instanceof Error ? error.message.slice(0, 1000) : "Surface publish upload failed";
-			await controlPlane.completeSurfacePublish(
-				{
-					jobId: pub.jobId,
-					status: "failed",
-					errorDetail: detail,
-					...leaseField,
-				},
-				signal,
+			return await failPublish(
+				surfaceFailureDetail(
+					error,
+					prepared.status === "build" ? prepared.recipe.folder : null,
+					"Surface publish upload failed",
+				),
 			);
-			return true;
 		}
 	}
 }

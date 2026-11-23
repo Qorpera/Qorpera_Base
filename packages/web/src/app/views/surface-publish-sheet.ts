@@ -3,6 +3,7 @@ import { SurfaceDialog } from "../../ui/dialog.ts";
 import { h, icon, personAvatar } from "../../ui/dom.ts";
 import { t } from "../../ui/preferences.ts";
 import { askedToPublish, type SurfacesStore, unpublishedChanges } from "../surfaces-store.ts";
+import { publishFailureText } from "./surface-door.ts";
 import { surfaceTile } from "./surface-rail.ts";
 
 export function firstName(name: string): string {
@@ -68,7 +69,9 @@ export function openPublishSheet(store: SurfacesStore, initialSurface: SurfaceSu
 
 		const publishError =
 			surface.publishStatus === "failed"
-				? surface.lastPublishError?.trim() || t("The last publish failed. Try again.")
+				? publishFailureText(surface.lastPublishError) ||
+					surface.lastPublishError?.trim() ||
+					t("The last publish failed. Try again.")
 				: "";
 
 		const renderKey = JSON.stringify([

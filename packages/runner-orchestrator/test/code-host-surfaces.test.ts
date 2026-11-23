@@ -22,7 +22,7 @@ import {
 	inspectChangeRange,
 	rebaseSessionChanges,
 } from "../src/code-host-surfaces.ts";
-import { parseFastPreviewRecipe } from "../src/surface-preview-runner.ts";
+import { readSurfacePreviewRecipe } from "../src/surface-preview-runner.ts";
 import { localShell } from "./helpers/code-host-shell.ts";
 
 const exec = promisify(execFile);
@@ -348,12 +348,7 @@ describe("code-host surfaces multi-change engine", () => {
 		expect(css).toContain("var(--q-font-body)");
 		expect(css).toContain("var(--q-font-heading)");
 		expect(css).not.toMatch(/#[0-9a-f]{3,8}/i);
-		expect(parseFastPreviewRecipe(checksText)).toEqual({
-			run: "true",
-			cwd: ".",
-			timeoutSeconds: 60,
-			folder: ".",
-		});
+		expect(readSurfacePreviewRecipe(checksText)).toEqual({ kind: "none" });
 
 		const repeated = await ensureSurfaceStarterRepository(job, { repository, title: "Ignored" });
 		expect(repeated.status).toBe("existing");
