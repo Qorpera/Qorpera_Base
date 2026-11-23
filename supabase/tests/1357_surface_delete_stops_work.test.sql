@@ -24,7 +24,7 @@ begin
 	return v_result;
 end $$;
 
-create function pg_temp.sdel_refused(p_user uuid, p_sql text, p_state text)
+create function pg_temp.sdel_refused(p_user uuid, p_sql text, p_state text, p_message text default null)
 returns void language plpgsql as $$
 begin
 	if p_user is null then
@@ -38,8 +38,9 @@ begin
 		execute p_sql;
 	exception when others then
 		reset role;
-		if sqlstate is distinct from p_state then
-			raise exception 'surface_delete_stops_work: expected %, got % (%) from %', p_state, sqlstate, sqlerrm, p_sql;
+		if sqlstate is distinct from p_state or (p_message is not null and sqlerrm is distinct from p_message) then
+			raise exception 'surface_delete_stops_work: expected % %, got % (%) from %',
+				p_state, coalesce(p_message, ''), sqlstate, sqlerrm, p_sql;
 		end if;
 		return;
 	end;
@@ -331,6 +332,20 @@ begin
 			)
 			and (select count(*) from public.qorpera_surface_sessions where surface_id in (v_site, v_note)) = 6,
 		'refused work leaves a deleted interface''s sessions as they were'
+	);
+
+	update public.qorpera_surfaces set unpublished_change_count = 1 where id in (v_site, v_note);
+	perform pg_temp.sdel_refused(v_anna,
+		format('select public.qorpera_approve_proposed_surface(%L)', v_site), '55000', 'This interface was deleted');
+	perform pg_temp.sdel_refused(v_anna,
+		format('select public.qorpera_ask_surface_publish(%L, %L)', v_site, v_bo), '55000', 'This interface was deleted');
+	perform pg_temp.sdel_refused(v_anna,
+		format('select public.qorpera_publish_surface(%L)', v_note), '55000', 'This interface was deleted');
+	perform pg_temp.sdel_assert(
+		(select count(*) from public.qorpera_surfaces
+			where id in (v_site, v_note) and status = 'archived' and unpublished_change_count = 1) = 2
+			and not exists (select 1 from public.qorpera_surface_publish_asks where surface_id in (v_site, v_note)),
+		'a deleted interface cannot be approved back, published or asked about'
 	);
 
 	perform pg_temp.sdel_as(v_anna);

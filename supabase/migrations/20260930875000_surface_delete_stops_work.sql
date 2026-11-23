@@ -4,7 +4,7 @@ set local lock_timeout = '3s';
 
 do $$ begin
 	if to_regprocedure('public.qorpera_surface_cancel_coding_workers(uuid[],text)') is null
-		or to_regclass('public.qorpera_surface_publish_asks') is null
+		or to_regprocedure('public.qorpera_ask_surface_publish(uuid,uuid)') is null
 		or to_regprocedure('public.qorpera_surface_automation_payer_problem(uuid,uuid,text)') is null then
 		raise exception '20260930875000 requires 20260930857000, 20260930867000 and 20260930868000';
 	end if;
@@ -175,6 +175,39 @@ $new$	-- WHY: 20260930875000: a scheduled agent whose own interface is gone does
 		order by s.sort_order asc, s.created_at asc
 		limit 1;
 	end if;$new$
+]);
+
+-- WHY: delete is final: its scheduled agents and open work are gone, so nothing may approve, publish or ask on the shell.
+select pg_temp.sds_patch('public.qorpera_approve_proposed_surface(uuid)'::regprocedure, array[
+$old$	perform public.qorpera_assert_surface_member(v_surface.profile_id, true);
+$old$,
+$new$	perform public.qorpera_assert_surface_member(v_surface.profile_id, true);
+	if v_surface.status = 'archived' then
+		raise exception 'This interface was deleted' using errcode = '55000';
+	end if;
+$new$
+]);
+
+select pg_temp.sds_patch('public.qorpera_ask_surface_publish(uuid,uuid)'::regprocedure, array[
+$old$	v_user_id := public.qorpera_assert_surface_member(v_surface.profile_id, true);
+	if p_user_id is null or p_user_id = v_user_id then$old$,
+$new$	v_user_id := public.qorpera_assert_surface_member(v_surface.profile_id, true);
+	if v_surface.status = 'archived' then
+		raise exception 'This interface was deleted' using errcode = '55000';
+	end if;
+	if p_user_id is null or p_user_id = v_user_id then$new$
+]);
+
+select pg_temp.sds_patch('public.qorpera_publish_surface(uuid)'::regprocedure, array[
+$old$	v_user_id := public.qorpera_assert_surface_member(v_surface.profile_id, true);
+
+	if v_surface.source_kind = 'code_repo' and v_surface.repository_key is not null then$old$,
+$new$	v_user_id := public.qorpera_assert_surface_member(v_surface.profile_id, true);
+	if v_surface.status = 'archived' then
+		raise exception 'This interface was deleted' using errcode = '55000';
+	end if;
+
+	if v_surface.source_kind = 'code_repo' and v_surface.repository_key is not null then$new$
 ]);
 
 revoke all on function
