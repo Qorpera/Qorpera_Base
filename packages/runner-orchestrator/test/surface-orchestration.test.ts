@@ -15,7 +15,7 @@ import {
 } from "../src/code-host-jobs.ts";
 import { cherryPickChangeUnits } from "../src/code-host-surfaces.ts";
 import { approveAndSyncSurfaceChanges } from "../src/surface-change-dispatcher.ts";
-import { buildCompositeSurfacePreview, parseFastPreviewRecipe } from "../src/surface-preview-runner.ts";
+import { buildCompositeSurfacePreview, readSurfacePreviewRecipe } from "../src/surface-preview-runner.ts";
 import { localShell } from "./helpers/code-host-shell.ts";
 
 const exec = promisify(execFile);
@@ -100,30 +100,39 @@ async function surfaceRepoFixture() {
 }
 
 describe("surface preview runner and change dispatcher", () => {
-	it("extracts fast preview recipe skipping slow test/lint checks", () => {
-		const explicit = parseFastPreviewRecipe(
-			JSON.stringify({
-				checks: [
-					{ name: "test", run: "npm test" },
-					{ name: "build", run: "npm run build" },
-				],
-				preview: { run: "npm run build:fast", folder: "dist", timeoutSeconds: 60 },
-				site: { folder: "dist" },
-			}),
-		);
-		expect(explicit).toEqual({ run: "npm run build:fast", cwd: ".", timeoutSeconds: 60, folder: "dist" });
-
-		const fallback = parseFastPreviewRecipe(
-			JSON.stringify({
-				checks: [
-					{ name: "lint", run: "npm run lint" },
-					{ name: "test", run: "npm test" },
-					{ name: "build", run: "vite build", cwd: "web" },
-				],
-				site: { folder: "web/dist" },
-			}),
-		);
-		expect(fallback).toEqual({ run: "vite build", cwd: "web", timeoutSeconds: 180, folder: "web/dist" });
+	it("reads the preview block as the only build contract", () => {
+		const checks = [{ name: "test", run: "npm test" }];
+		expect(
+			readSurfacePreviewRecipe(
+				JSON.stringify({
+					checks,
+					preview: { run: "npm ci && npm run build", folder: "dist", timeoutSeconds: 120 },
+					site: { folder: "public" },
+				}),
+			),
+		).toEqual({
+			kind: "recipe",
+			recipe: { run: "npm ci && npm run build", cwd: ".", folder: "dist", timeoutSeconds: 120 },
+		});
+		expect(
+			readSurfacePreviewRecipe(
+				JSON.stringify({ checks, preview: { run: "vite build", cwd: "web" }, site: { folder: "web/dist" } }),
+			),
+		).toEqual({ kind: "recipe", recipe: { run: "vite build", cwd: "web", folder: "web/dist", timeoutSeconds: 180 } });
+		expect(
+			readSurfacePreviewRecipe(
+				JSON.stringify({ checks: [...checks, { name: "build", run: "vite build" }], site: { folder: "dist" } }),
+			),
+		).toEqual({ kind: "none" });
+		expect(readSurfacePreviewRecipe(JSON.stringify({ checks, preview: { run: "true", folder: "." } }))).toEqual({
+			kind: "none",
+		});
+		expect(readSurfacePreviewRecipe(null)).toEqual({ kind: "none" });
+		expect(readSurfacePreviewRecipe("{ not json")).toEqual({ kind: "none" });
+		const invalid = readSurfacePreviewRecipe(JSON.stringify({ preview: { run: "vite build", folder: "../dist" } }));
+		expect(invalid.kind).toBe("invalid");
+		expect(invalid.kind === "invalid" && invalid.detail.split("\n")[0]).toBe("PREVIEW_BUILD_FAILED");
+		expect(invalid.kind === "invalid" && invalid.detail).toContain("/preview/folder");
 	});
 
 	it("builds clean composite previews and skips building on toggle conflicts", async () => {
